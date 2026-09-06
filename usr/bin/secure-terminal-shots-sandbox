@@ -13,9 +13,11 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [comparison|compat|zoom|zoom-live] [ARGS...]   (these are
-##   the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
-##   TSV and are run directly in the sandbox). compat regenerates the compatibility-page program
+## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom|zoom-live] [ARGS...]   (these
+##   are the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
+##   TSV and are run directly in the sandbox). `refresh` regenerates EVERY site gallery in one
+##   command: the offscreen lanes on the host (review/modes/compat) THEN the comparison lane in
+##   the sandbox, so none is ever missed. compat regenerates the compatibility-page program
 ##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. ARGS
 ##   pass through: for comparison e.g. --only NAME
 ##   / --case C / --st-only; for zoom / zoom-live the zoom-level list (default 50 75 100 125 150
@@ -50,10 +52,20 @@ cleanup() {
 trap cleanup EXIT
 
 lane='comparison'
+refresh_all=0
 if [ "$#" -ge 1 ]; then
    case "$1" in
       comparison|compat|zoom|zoom-live)
          lane="$1"
+         shift
+         ;;
+      refresh)
+         ## Regenerate EVERY site gallery in ONE command: the deterministic offscreen lanes
+         ## on the host (review/modes/compat, no display) THEN the comparison lane in the
+         ## sandbox -- so no lane is ever missed. Handled as the comparison flow plus a
+         ## host-side offscreen refresh (see below).
+         lane='comparison'
+         refresh_all=1
          shift
          ;;
       comparison-wayland|clipboard)
@@ -104,6 +116,19 @@ if [ "${lane}" = 'compat' ]; then
 elif [ "${lane}" != 'zoom' ] && [ "${lane}" != 'zoom-live' ]; then
    [ -d "${site}/comparison/shots" ] \
       || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
+fi
+
+## refresh: before the sandbox comparison flow, regenerate the deterministic OFFSCREEN site
+## galleries on the host (review/modes -> shots/, compat -> compatibility/shots/) via the
+## wrapper's own `refresh` -- so one `secure-terminal-shots-sandbox refresh` regenerates
+## EVERY gallery and none is missed. Offscreen + deterministic, so it needs no sandbox; a
+## failure here HARD-fails before any sandbox work.
+if [ "${refresh_all}" = 1 ]; then
+   [ -d "${site}/shots" ] && [ -d "${site}/compatibility/shots" ] \
+      || die "refresh: site galleries not found under '${site}' (need shots/ and compatibility/shots/; set SECURE_TERMINAL_SITE)"
+   printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the offscreen site galleries on the host ..." >&2
+   SECURE_TERMINAL_REPO="${secure_terminal}" "${dist_ai}/usr/bin/secure-terminal-shots" refresh "${site}" \
+      || die "refresh: the offscreen lane (review/modes/compat) failed"
 fi
 
 ## Transport check AFTER the tree checks so a missing tree is reported first and the preflight

@@ -8,8 +8,14 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|hero|modes|compat|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [refresh|review|hero|modes|compat|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
+##
+##   refresh     regenerate EVERY deterministic offscreen SITE gallery in one run (review +
+##               modes -> the site's shots/, compat -> compatibility/shots/), so a deploy
+##               cannot refresh one lane and leave another stale. NOTIFY-only for the
+##               X/labwc comparison lane (run that via secure-terminal-shots-sandbox).
+##               OUTPUT: the site checkout (arg 1, default under private-sources).
 ##
 ##   compat      deterministic compatibility-page program shots -- each line-oriented
 ##               program is RUN for real against a fixed fixture (no network/clock)
@@ -117,13 +123,38 @@ fi
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
       || [ "$1" = 'zoom' ] || [ "$1" = 'zoom-live' ] || [ "$1" = 'comparison' ] \
-      || [ "$1" = 'comparison-wayland' ] || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ]; }; then
+      || [ "$1" = 'comparison-wayland' ] || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ] \
+      || [ "$1" = 'refresh' ]; }; then
    mode="$1"
    shift
 fi
 
 export SECURE_TERMINAL_REPO="${repo}"
 export ST_REPO="${repo}"
+
+if [ "${mode}" = 'refresh' ]; then
+   ## Regenerate EVERY deterministic offscreen SITE gallery in ONE run, so a deploy can
+   ## never refresh one lane and leave another stale (the /shots/ review+modes lane going
+   ## stale while /comparison/shots/ was regenerated is exactly the drift this closes).
+   ## Each offscreen site lane is ONE line below -- the single place that lists them all;
+   ## re-invoking this wrapper per lane keeps the sizing/output logic in one place. The
+   ## comparison lane needs X/labwc, so it is NOT run here: NOTIFY that it is regenerated
+   ## separately via the sandbox driver, never silently claim it was done.
+   site="${1:-${HOME}/private-sources/secure-terminal.github.io}"
+   if [ ! -d "${site}/shots" ] || [ ! -d "${site}/compatibility/shots" ]; then
+      printf '%s\n' "secure-terminal-shots: site galleries not found under '${site}' (set the site checkout path)" >&2
+      exit 1
+   fi
+   self="$(readlink --canonicalize -- "$0")"
+   "${self}" review "${site}/shots"
+   "${self}" modes  "${site}/shots"
+   "${self}" compat "${site}/compatibility/shots"
+   printf '%s\n' \
+      "secure-terminal-shots: refreshed the offscreen site galleries (review + modes -> shots/, compat -> compatibility/shots/)." \
+      "secure-terminal-shots: NOTE: the /comparison/shots/ lane needs X/labwc and was NOT regenerated here." \
+      "secure-terminal-shots:       run it via:  secure-terminal-shots-sandbox comparison   (or: secure-terminal-shots-sandbox refresh, which does both)." >&2
+   exit 0
+fi
 
 ## The comparison + clipboard lanes need an X server on $DISPLAY (labwc nests on it; the
 ## clipboard lives on it) but do NOT start one themselves, so run them under a private Xvfb

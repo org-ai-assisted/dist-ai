@@ -1,0 +1,140 @@
+#!/usr/bin/python3 -Bsu
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Inventory guard for the secure-terminal.github.io shot galleries: every committed shot
+## file must be a page-referenced generator artifact, and every page reference into a shot
+## gallery must resolve to a committed file. This is the cheap "no hand-rolled screenshot"
+## guard -- it needs NO Qt and NO regeneration (just file listing + HTML parsing), so it
+## runs on every push (site CI) and pre-deploy, unlike a per-push regenerate-and-diff.
+##
+## It catches:
+##   - an ORPHAN shot: a file under shots/, comparison/shots/ or compatibility/shots/ that
+##     no page references (a hand-added image, or a stale shot left behind after a rename);
+##   - a DANGLING reference: a page <img>/<a> into a shot gallery whose target file is
+##     missing (a renamed/deleted shot still referenced).
+## It does NOT re-render or byte-compare shots (deliberately -- that is slow and
+## environment-sensitive); shot CONTENT freshness is the generators' + reviewers' job.
+##
+## Usage: secure-terminal-shots-inventory [SITE_DIR]
+##   SITE_DIR defaults to ~/private-sources/secure-terminal.github.io (override with
+##   SECURE_TERMINAL_SITE_REPO). Exit 0 = clean, 1 = drift found, 2 = usage/environment.
+
+import os
+import sys
+from html.parser import HTMLParser
+
+## The galleries this guard owns. A file directly under one of these (recursively) is a
+## "shot" that MUST be referenced; a reference whose resolved path lands under one of these
+## MUST exist.
+GALLERY_DIRS = ('shots', 'comparison/shots', 'compatibility/shots')
+IMAGE_EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.gif', '.svg')
+
+
+class _RefCollector(HTMLParser):
+    """Collect src/href attribute values (the page's local resource references)."""
+
+    def __init__(self):
+        super().__init__()
+        self.refs = []
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name in ('src', 'href') and value:
+                self.refs.append(value)
+
+
+def _resolve(ref, html_path, site):
+    """Resolve a page reference to a site-relative POSIX path, or None if it is external
+    or not a local image. Handles a root-absolute ('/a/b.webp') and a relative ('shots/x')
+    reference (relative to the HTML file's own directory), matching how a browser + GitHub
+    Pages serve them."""
+    low = ref.lower()
+    if ('://' in ref) or ref.startswith('//') or ref.startswith('data:') \
+            or ref.startswith('mailto:') or ref.startswith('#'):
+        return None
+    if not low.endswith(IMAGE_EXTS):
+        return None
+    path = ref.split('?', 1)[0].split('#', 1)[0]
+    if path.startswith('/'):
+        rel = path.lstrip('/')
+    else:
+        base = os.path.relpath(os.path.dirname(html_path), site)
+        rel = os.path.normpath(os.path.join(base, path))
+    return rel.replace(os.sep, '/')
+
+
+def _in_gallery(rel):
+    return any(rel == d or rel.startswith(d + '/') for d in GALLERY_DIRS)
+
+
+def main():
+    if len(sys.argv) > 2:
+        sys.stderr.write('usage: secure-terminal-shots-inventory [SITE_DIR]\n')
+        return 2
+    site = (sys.argv[1] if len(sys.argv) == 2
+            else os.environ.get('SECURE_TERMINAL_SITE_REPO')
+            or os.path.expanduser('~/private-sources/secure-terminal.github.io'))
+    site = os.path.abspath(site)
+    if not os.path.isdir(site):
+        sys.stderr.write('FATAL: site checkout not found: %s\n' % site)
+        return 2
+    present_galleries = [d for d in GALLERY_DIRS if os.path.isdir(os.path.join(site, d))]
+    if not present_galleries:
+        sys.stderr.write('FATAL: no shot galleries under %s (expected one of: %s)\n'
+                         % (site, ', '.join(GALLERY_DIRS)))
+        return 2
+
+    ## Every committed shot file (site-relative POSIX path).
+    shot_files = set()
+    for d in present_galleries:
+        for root, _dirs, names in os.walk(os.path.join(site, d)):
+            for n in names:
+                if n.lower().endswith(IMAGE_EXTS):
+                    rel = os.path.relpath(os.path.join(root, n), site)
+                    shot_files.add(rel.replace(os.sep, '/'))
+
+    ## Every local image reference, resolved to a site-relative path, from every page.
+    referenced = set()
+    for root, dirs, names in os.walk(site):
+        if '.git' in dirs:
+            dirs.remove('.git')
+        for n in names:
+            if not n.endswith('.html'):
+                continue
+            html_path = os.path.join(root, n)
+            parser = _RefCollector()
+            try:
+                with open(html_path, encoding='utf-8') as handle:
+                    parser.feed(handle.read())
+            except (OSError, UnicodeDecodeError) as exc:
+                sys.stderr.write('FATAL: cannot read %s: %s\n' % (html_path, exc))
+                return 2
+            for ref in parser.refs:
+                rel = _resolve(ref, html_path, site)
+                if rel is not None:
+                    referenced.add(rel)
+
+    failures = []
+    ## ORPHAN: a shot file no page references.
+    for rel in sorted(shot_files - referenced):
+        failures.append('orphan shot (no page references it): %s' % rel)
+    ## DANGLING: a reference INTO a gallery whose file is missing.
+    for rel in sorted(referenced):
+        if _in_gallery(rel) and rel not in shot_files:
+            failures.append('dangling reference (no such shot file): %s' % rel)
+
+    if failures:
+        sys.stderr.write('secure-terminal-shots-inventory: FAIL (%d)\n' % len(failures))
+        for line in failures:
+            sys.stderr.write('  ' + line + '\n')
+        return 1
+    print('ok: %d shot files, all page-referenced; no dangling shot references (%s)'
+          % (len(shot_files), ', '.join(present_galleries)))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

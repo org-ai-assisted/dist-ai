@@ -136,6 +136,28 @@ if [ -n "${page}" ]; then
       if grep --quiet --fixed-strings "compatibility/shots/${name}.webp" "${page}"; then rc=0; else rc=1; fi
       check "compatibility page references shots/${name}.webp (no drift)" "${rc}"
    done
+   ## Reverse drift: every committed compatibility shot must be a program the generator
+   ## produces -- so a hand-added / stale webp (one no --list program yields) is caught,
+   ## not just a missing one. site is the dir the page lives in.
+   site_shots="$(dirname -- "${page}")/shots"
+   ## --list is newline-separated; normalize to a single space-delimited string so the
+   ## membership match below is not defeated by the newlines (unquoted $names collapses
+   ## every run of whitespace to one space).
+   # shellcheck disable=SC2086
+   names_sp=" $(printf '%s ' ${names}) "
+   shopt -s nullglob
+   for webp in "${site_shots}"/*.webp; do
+      base="$(basename -- "${webp}" .webp)"
+      case "${names_sp}" in
+         *" ${base} "*)
+            rc=0
+            ;;
+         *)
+            rc=1
+            ;;
+      esac
+      check "committed compat shot ${base}.webp is a generator program (not hand-added)" "${rc}"
+   done
 else
    printf '%s\n' 'note: secure-terminal.github.io checkout not found; page-drift check not applicable here'
 fi
