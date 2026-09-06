@@ -291,36 +291,43 @@ github_owner_repo() {
   local url="$1" rest authority host path before
   case "${url}" in
     *://*)
-      ## scheme://[userinfo@]authority[/path]. Split the AUTHORITY off at the
-      ## first '/' BEFORE stripping userinfo: stripping '@' from the whole
-      ## remainder let a '@' in the PATH hide the real host, e.g.
-      ## 'https://attacker.example/a@github.com/o/r' parsing as github.com.
+      ## scheme://[userinfo@]authority[/path]. The authority ends at the FIRST
+      ## of '/', '?' or '#' (RFC 3986), and only THEN is userinfo stripped:
+      ##  - terminating on '/' alone let 'attacker.example?@github.com/o/r' keep
+      ##    '?@github.com' in the authority and parse as github.com;
+      ##  - stripping '@' from the whole remainder let a '@' in the PATH
+      ##    ('attacker.example/a@github.com/o/r') hide the real host.
       rest="${url#*://}"
       authority="${rest%%/*}"
-      if [ "${rest}" = "${authority}" ]; then
-        path=''
-      else
-        path="${rest#*/}"
-      fi
+      authority="${authority%%\?*}"
+      authority="${authority%%#*}"
+      ## path = whatever follows the authority, minus any query/fragment. The
+      ## leading slash(es) are stripped below with the trailing ones.
+      path="${rest#"${authority}"}"
+      path="${path%%\?*}"
+      path="${path%%#*}"
       authority="${authority##*@}"
       host="${authority%%:*}"
       ;;
     *)
       ## Possible scp-like '[userinfo@]host:path' -- but ONLY when the part
-      ## before the first ':' has no '/', matching git (a '/' before the ':'
-      ## makes it a local path, not a remote). Otherwise a '@' + ':' in a path
-      ## ('attacker.example:fake@github.com:o/r') would spoof the host too.
+      ## before the first ':' has no '/', '?' or '#', matching git (a '/' before
+      ## the ':' makes it a local path, not a remote). Otherwise a '@' + ':' in a
+      ## path ('attacker.example:fake@github.com:o/r') or a '?@'
+      ## ('attacker.example?@github.com:o/r') would spoof the host too.
       before="${url%%:*}"
       if [ "${before}" = "${url}" ]; then
         return 1
       fi
       case "${before}" in
-        */*)
+        */*|*\?*|*'#'*)
           return 1
           ;;
       esac
       host="${before##*@}"
       path="${url#*:}"
+      path="${path%%\?*}"
+      path="${path%%#*}"
       ;;
   esac
   case "${host,,}" in
@@ -1089,14 +1096,26 @@ enumerate_self_test() {
       '	url = https://github.com/Kicksecure/spacedname.git' \
       '[submodule "evilnl"]' \
       '	path = evilnl' \
-      '	url = "https://evil.example/x\ninjected\tKicksecure\tgoodrepo\t1111111111111111111111111111111111111111\t"'
+      '	url = "https://evil.example/x\ninjected\tKicksecure\tgoodrepo\t1111111111111111111111111111111111111111\t"' \
+      '[submodule "queryspoof"]' \
+      '	path = queryspoof' \
+      '	url = https://attacker.example?@github.com/Kicksecure/queryspoof.git' \
+      '[submodule "fragspoof"]' \
+      '	path = fragspoof' \
+      '	url = "https://attacker.example#@github.com/Kicksecure/fragspoof.git"' \
+      '[submodule "scpqspoof"]' \
+      '	path = scpqspoof' \
+      '	url = attacker.example?@github.com:Kicksecure/scpqspoof.git' \
+      '[submodule "unsafeslug"]' \
+      '	path = unsafeslug' \
+      '	url = "https://github.com/Kicksecure/unsafe slug.git"'
   } > "${tmp}/tree/.gitmodules"
   fixture_git -C "${tmp}/tree" add .gitmodules
   local sub
   ## 'orphan' deliberately gets NO stanza.
   for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path ' \
              hostspoof pathspoof mixedcase dup atpath atscp multislash \
-             spacedname evilnl; do
+             spacedname evilnl queryspoof fragspoof scpqspoof unsafeslug; do
     fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
   done
   fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
@@ -1160,8 +1179,14 @@ enumerate_self_test() {
   ## A relative URL must not be sent to the GitHub API.
   assert_record 'relative URL rejected' 'elsewhere' \
     'submodule URL is not a canonical github.com URL'
-  ## A '#' would truncate the REST path into a different, valid endpoint.
-  assert_record 'unsafe slug rejected' 'sneaky' \
+  ## A '#' AFTER the owner/repo is a fragment (git/curl drop it), so it resolves
+  ## cleanly to Kicksecure/sneaky -- and crucially the '#' never reaches the REST
+  ## path. (An authority-position '#'/'?' spoof is the queryspoof/fragspoof case.)
+  assert_clean_record 'path fragment stripped, resolves clean' 'sneaky' \
+    'Kicksecure' 'sneaky'
+  ## An owner/repo left unsafe AFTER parsing (a space here) is still rejected, so
+  ## no unusable slug reaches the REST path.
+  assert_record 'unsafe slug rejected' 'unsafeslug' \
     'unusable owner/repo in submodule URL'
   ## A gitlink with no stanza used to be invisible.
   assert_record 'orphan gitlink reported' 'orphan' \
@@ -1207,6 +1232,14 @@ enumerate_self_test() {
   ## newline; unsanitised it would split evilnl's record and forge a clean
   ## 'Kicksecure/goodrepo' pin. The whole url must stay on one line.
   assert_record 'newline url stays one record' 'evilnl' \
+    'not a canonical github.com URL'
+  ## A '?' or '#' terminates the authority (RFC 3986): a userinfo-looking
+  ## '?@github.com' / '#@github.com' after the real host must not spoof it.
+  assert_record 'query-delimited authority spoof rejected' 'queryspoof' \
+    'not a canonical github.com URL'
+  assert_record 'fragment-delimited authority spoof rejected' 'fragspoof' \
+    'not a canonical github.com URL'
+  assert_record 'scp query-in-host spoof rejected' 'scpqspoof' \
     'not a canonical github.com URL'
   case "${records}" in
     *"${TAB}goodrepo${TAB}"*)
@@ -1374,7 +1407,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (28 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (32 cases)'
   return 0
 }
 
