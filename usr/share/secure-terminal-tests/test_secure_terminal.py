@@ -360,8 +360,13 @@ ok(_bx_marks and all(k[1] == _prog and k[2] == 0x2500 for k in _bx_marks),
    'show mode: a box-drawing glyph carries the program SGR as its colour + its cp')
 ok(not any(isinstance(k, tuple) and k[:2] == (S.MARK_KEY, 'nonascii') for _t, k in _sh_box),
    'show mode: a box-drawing glyph is NOT tinted the non-ASCII risk colour')
-# a block element behaves identically
+# a block element behaves identically for the tint (program-coloured, not nonascii).
+# Guard the negative check with a non-empty mark assertion (like the box-drawing
+# sibling above): a dropped/empty run would make the bare `not any(...)` pass vacuously.
 _sh_blk, _ = S.cells_to_runs([], [(chr(0x2588), _prog)], 'show', True, True)
+_blk_marks = [k for _t, k in _sh_blk if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_blk_marks and all(k[1] == _prog and k[2] == 0x2588 for k in _blk_marks),
+   'show mode: a block element carries the program SGR as its colour + its cp')
 ok(not any(isinstance(k, tuple) and k[:2] == (S.MARK_KEY, 'nonascii') for _t, k in _sh_blk),
    'show mode: a block element is program-coloured, not risk-tinted')
 # with ANSI colours OFF (and markings on) a structural glyph is still TAGGED with its
@@ -995,8 +1000,9 @@ def _pre_run(*deps):
         with _pcl.redirect_stderr(err):
             PRE.require(*deps)
     except SystemExit as exc:
-        assert isinstance(exc.code, int)
-        rc = exc.code
+        # sys.exit(str) exits status 1 with the message on stderr; coerce a non-int
+        # code rather than letting a bare assert abort the whole suite.
+        rc = exc.code if isinstance(exc.code, int) else 1
     return rc, err.getvalue()
 
 
