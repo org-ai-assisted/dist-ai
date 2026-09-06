@@ -174,15 +174,31 @@ win._dismiss_advisory()
 ok(set(win._osc_actions) == {f[0] for f in _S.OSC_FEATURES},
    'every OSC feature has its own menu toggle')
 ok(win._osc_level()[0] == '#1f8a54', 'the OSC lamp is green when all features are off')
-win.set_osc('osc_hyperlink', True)                    # medium risk
-ok(win._osc_level()[0] == '#e5a50a' and win.current().osc_enabled('osc_hyperlink')
+# OSC side-effects are honored ONLY in TUI mode, so enabling a feature in the default
+# CLI mode ARMS it (menu checked, applied to the tab) but the lamp stays GREEN -- there
+# is no live risk to signal. It reports the 'OSC idle' state.
+win.set_osc('osc_hyperlink', True)                    # medium risk, inert in CLI
+ok(win._osc_level()[0] == '#1f8a54' and win._osc_level()[1] == 'OSC idle'
+   and win.current().osc_enabled('osc_hyperlink')
    and win._osc_actions['osc_hyperlink'].isChecked(),
-   'enabling a medium OSC feature dims the lamp to yellow, applies to the tab, checks the menu')
-win.set_osc('osc_clipboard', True)                    # high risk
-ok(win._osc_level()[0] == '#e5484d', 'enabling a high-risk OSC feature turns the lamp red')
+   'enabling an OSC feature in CLI mode arms it (menu checked, applied) but the lamp stays green (idle)')
+win.set_osc('osc_clipboard', True)                    # high risk, still inert in CLI
+ok(win._osc_level()[0] == '#1f8a54',
+   'even a high-risk OSC feature keeps the lamp green in CLI mode (not honored until TUI)')
+if tui_available():
+    # In TUI mode the enabled features are LIVE, so the lamp reflects the real risk.
+    win.set_tui(True)
+    ok(win._osc_level()[0] == '#e5484d',
+       'in TUI mode the enabled high-risk feature turns the lamp red')
+    win.set_osc('osc_clipboard', False)
+    ok(win._osc_level()[0] == '#e5a50a',
+       'in TUI mode a remaining medium OSC feature dims the lamp to yellow, applies to the tab')
+    win.set_tui(False)
+    ok(win._osc_level()[0] == '#1f8a54',
+       'back in CLI mode the lamp returns to green though osc_hyperlink is still armed')
 win.set_osc('osc_hyperlink', False)
 win.set_osc('osc_clipboard', False)
-ok(win._osc_level()[0] == '#1f8a54', 'the lamp returns to green when the features are disabled')
+ok(win._osc_level()[0] == '#1f8a54', 'the lamp is green when the features are disabled')
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
 # stdout in line mode, and never shows the OSC text in the document. Drive it from
 # a program (not typed input, which the tty would echo back in caret form).
