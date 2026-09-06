@@ -39,11 +39,11 @@ fi
 if [ ! -f "${subject}" ]; then
   printf '%s\n' "helper-scripts-lib-tests-verify: SKIP (curl-prgrs not found at '${subject}')" >&2
   printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
+  ## style-ok: allow-skip: curl-prgrs subject absent without a helper-scripts checkout -- set HELPER_SCRIPTS_REPO or install helper-scripts
   exit 77
 fi
 
 rc=0
-## style-ok: allow-python-dashdash -- run through the python3 on PATH (venv /
-## user-site), where python3-z3 may live.
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps (python3-z3)
 python3 -- "${tests_dir}/verify_curl_prgrs_formal.py" "$@" || rc=$?
 exit "${rc}"

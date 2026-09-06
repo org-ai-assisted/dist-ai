@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -42,6 +43,7 @@ fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
    printf 'secure-terminal-tests-fuzz-gui: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
    exit 77
 fi
 
@@ -53,5 +55,5 @@ iterations='6000'
 
 ## Run the fuzzer as a child and forward its exit code (no exec / process
 ## replacement). errexit propagates a non-zero status as this script's own.
-python3 -Bsu -- "${tests_dir}/fuzz_widget.py" \
+"${tests_dir}/fuzz_widget.py" \
    --iterations "${iterations}" "$@"

@@ -48,6 +48,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 repo="org-ai-assisted/derivative-maker"
 workflow="local-build.yml"
@@ -196,18 +197,21 @@ case "${scratch_free_kib}" in
       ;;
 esac
 
+## JSON readers for the GitHub API bodies: real parsers rather than fragile grep.
+libexec_dir="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai"
+[ -d "${libexec_dir}" ] || libexec_dir="/usr/libexec/dist-ai"
+run_id_reader="${libexec_dir}/dm-repro-run-id.py"
+artifact_reader="${libexec_dir}/dm-repro-artifact-list.py"
+if [ ! -r "${run_id_reader}" ] || [ ! -r "${artifact_reader}" ]; then
+   printf '%s\n' "${0##*/}: dm-repro JSON readers not found under ${libexec_dir}." >&2
+   exit 2
+fi
+
 ## Resolve the run to compare against.
 if [ -z "${run_id}" ]; then
    printf '%s\n' "${0##*/}: resolving the most recent successful '${workflow}' run on ${repo}..." >&2
    run_id="$( github-api GET "/repos/${repo}/actions/workflows/${workflow}/runs?status=success&per_page=1" 2>/dev/null \
-      | python3 -c 'import json,sys
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-runs = payload.get("workflow_runs") or []
-if runs:
-    print(runs[0]["id"])' )"
+      | "${run_id_reader}" )"
 fi
 if [ -z "${run_id}" ]; then
    printf '%s\n' "${0##*/}: no successful '${workflow}' run found on ${repo}; pass --run-id." >&2
@@ -218,15 +222,7 @@ printf '%s\n' "${0##*/}: comparing against run ${run_id}." >&2
 ## Download every artifact of that run whose name looks like a built image, and
 ## take the one carrying a buildinfo.
 artifact_list="$( github-api GET "/repos/${repo}/actions/runs/${run_id}/artifacts?per_page=100" 2>/dev/null \
-   | python3 -c 'import json,sys
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-for item in payload.get("artifacts") or []:
-    if item.get("expired"):
-        continue
-    print("%s\t%s" % (item["id"], item["name"]))' )"
+   | "${artifact_reader}" )"
 if [ -z "${artifact_list}" ]; then
    printf '%s\n' "${0##*/}: run ${run_id} has no unexpired artifacts (GitHub expires them; the default retention is short)." >&2
    exit 2
@@ -294,7 +290,7 @@ fi
 
 printf '%s\n' "${0##*/}: comparing the recorded INPUTS..." >&2
 input_rc=0
-python3 -- "${comparator}" "${local_buildinfo}" "${ci_buildinfo}" || input_rc="$?"
+"${comparator}" "${local_buildinfo}" "${ci_buildinfo}" || input_rc="$?"
 case "${input_rc}" in
    0)
       printf '%s\n' "${0##*/}: inputs match; a byte difference would now be a real reproducibility finding." >&2

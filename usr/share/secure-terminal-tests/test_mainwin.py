@@ -111,6 +111,31 @@ eq(win._escape_limit, 4096,
 eq(win.current().current_escape_limit(), 4096,
    'a freshly-defaulted tab carries the 4096 escape-limit bound')
 
+# --- OSC-feature tooltips name their risk class -------------------------------
+# Regression: _RISK_TAG mapped 'low' to '' so the sole low-risk feature
+# (Working-directory report / osc_cwd) showed no [risk] tag while medium/high did.
+ok(set(M._RISK_TAG) >= {f[4] for f in M.OSC_FEATURES},
+   'every OSC_FEATURES risk level has a _RISK_TAG entry')
+ok(all(M._RISK_TAG[_r].strip() for _r in M._RISK_TAG),
+   'no _RISK_TAG entry is blank (a blank drops the risk label from a tooltip)')
+_cwd_act = win._osc_actions.get('osc_cwd')
+ok(_cwd_act is not None and 'risk: low' in _cwd_act.toolTip(),
+   'osc_cwd (Working-directory report) tooltip names its low risk')
+
+# --- native menu QToolTip is styled readable, both themes ---------------------
+# Regression: menu action hints use Qt's native QToolTip, which was unstyled and
+# inherited a dark-on-dark platform palette. It must carry contrasting fg/bg.
+win.set_theme('dark')
+_ss_dark = APP.styleSheet()
+_d_bg, _d_fg, _d_bd = M._TIP_COLORS['dark']
+ok('QToolTip' in _ss_dark, 'app installs a QToolTip stylesheet')
+ok(_d_bg in _ss_dark and _d_fg in _ss_dark, 'dark QToolTip uses the dark card fg/bg')
+ok(_d_bg != _d_fg, 'QToolTip fg and bg differ (readable, not dark-on-dark)')
+win.set_theme('light')                       # restore the default for later tests
+_ss_light = APP.styleSheet()
+_l_bg, _l_fg, _l_bd = M._TIP_COLORS['light']
+ok(_l_bg in _ss_light and _l_fg in _ss_light, 'light QToolTip uses the light card fg/bg')
+
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 from PyQt6.QtWidgets import QFormLayout as _QFL                 # noqa: E402
 
@@ -137,8 +162,30 @@ QDialog.exec = _accept_exec
 try:
     win.show_about()
     ok(True, 'show_about builds and shows')
+    # About must be a _ZoomDialog so Ctrl+wheel zooms it (regression: it was a plain
+    # QDialog and its title was a fixed 16px, so nothing scaled).
+    from secure_terminal.main import _ZoomDialog as _ZD_about     # noqa: E402
+    _about_dlg = _dialogs[-1]
+    ok(isinstance(_about_dlg, _ZD_about), 'About is a _ZoomDialog (Ctrl+wheel zoomable)')
+    ok(_about_dlg.on_zoom is not None, 'About wires a Ctrl+wheel zoom handler')
+    _a_titles = [_l for _l in _about_dlg.findChildren(M.QLabel)
+                 if _l.text().startswith('secure-terminal ')]
+    ok(bool(_a_titles), 'About shows a version heading')
+    _a_pt0 = _a_titles[0].font().pointSizeF()
+    _about_dlg.on_zoom(1)                     # Ctrl+wheel up
+    ok(_a_titles[0].font().pointSizeF() > _a_pt0,
+       'zooming the About dialog enlarges its heading')
     win.show_locations()
     ok(True, 'show_locations builds and shows the paths dialog')
+    # Folders & Files must expose the transcripts directory (regression: no entry).
+    from secure_terminal import session as _SESS_loc            # noqa: E402
+    from PyQt6.QtWidgets import QLineEdit as _QLE_loc, QLabel as _QLbl_loc  # noqa: E402
+    _loc_dlg = _dialogs[-1]
+    _loc_labels = [_l.text() for _l in _loc_dlg.findChildren(_QLbl_loc)]
+    ok('Transcripts' in _loc_labels, 'Folders & Files lists a Transcripts entry')
+    _loc_fields = [_f.text() for _f in _loc_dlg.findChildren(_QLE_loc)]
+    ok(_SESS_loc._state_dir() in _loc_fields,
+       'the Transcripts row shows the transcript state directory')
     win.show_global_settings()
     ok(True, 'show_global_settings applies the chosen defaults on accept')
     # the paste-delay combo must SHOW the current value, even when it is not one of
@@ -171,6 +218,63 @@ try:
     _lbls79 = [l for l in _sd79.findChildren(_QLbl79) if l.toolTip()]
     ok(len(_lbls79) >= 9 and all('(i)' in l.text() for l in _lbls79),
        '#79: every tipped settings label shows the (i) indicator')
+
+    # --- Reset to defaults restores shipped defaults (drift-guarded) ----------
+    # Source of truth = a window loaded from a CLEAN (empty) config, so this fails if
+    # the Reset defaults ever drift from the constructor's fallbacks.
+    import tempfile as _tf_rd                                 # noqa: E402
+    from PyQt6.QtWidgets import QPushButton as _QPB           # noqa: E402
+    _clean_cfg = _tf_rd.mkdtemp()
+    _o_cfg = os.environ.get('XDG_CONFIG_HOME')
+    os.environ['XDG_CONFIG_HOME'] = _clean_cfg
+    try:
+        _dw = MainWindow()
+    finally:
+        os.environ['XDG_CONFIG_HOME'] = _o_cfg if _o_cfg is not None else _clean_cfg
+    _def_theme, _def_zoom, _def_ui = _dw._default_theme, _dw._default_zoom, _dw._ui_scale
+    _def_fs, _def_sb, _def_mode = _dw._default_font_size, _dw._scrollback, _dw._default_mode
+    _def_col, _def_tui = _dw._default_colors, _dw._default_tui
+    _def_pd, _def_esc, _def_pw = _dw._paste_delay, _dw._escape_limit, _dw._paste_warn
+    _def_sys, _def_persist = _dw._systray, _dw._persist_session
+    # perturb every field we assert, so Reset has something to revert
+    _dw._default_theme, _dw._default_zoom, _dw._default_tui = 'dark', 150, True
+    _dw._paste_delay, _dw._systray, _dw._persist_session = 5, True, False
+    _dw._default_mode, _dw._default_colors = 'box', False
+    _dialogs.clear()
+    _dw.show_global_settings()
+    _gs = _dialogs[-1]
+    _rb = [b for b in _gs.findChildren(_QPB) if b.text() == 'Reset to defaults']
+    ok(bool(_rb), 'Global settings has a Reset to defaults button')
+    _rb[0].click()
+    eq(_dlg_field(_gs, 'Theme').currentData(), _def_theme, 'reset: theme -> default')
+    eq(_dlg_field(_gs, 'Zoom').value(), _def_zoom, 'reset: zoom -> default')
+    eq(_dlg_field(_gs, 'Menu size').value(), _def_ui, 'reset: menu size -> default')
+    eq(_dlg_field(_gs, 'Font size').value(), _def_fs, 'reset: font size -> default')
+    eq(_dlg_field(_gs, 'Scrollback').currentData(), _def_sb, 'reset: scrollback -> default')
+    eq(_dlg_field(_gs, 'Unicode').currentData(), _def_mode, 'reset: unicode -> default')
+    ok(_dlg_field(_gs, 'Colours').isChecked() == _def_col, 'reset: colours -> default')
+    ok(_dlg_field(_gs, 'TUI mode').isChecked() == _def_tui, 'reset: tui -> default')
+    eq(_dlg_field(_gs, 'Paste delay').currentData(), _def_pd, 'reset: paste delay -> default')
+    ok(_dlg_field(_gs, 'System tray').isChecked() == _def_sys, 'reset: systray -> default')
+    ok(_dlg_field(_gs, 'Restore session').isChecked() == _def_persist,
+       'reset: restore-session -> default')
+    _dw.close()
+
+    # --- Global settings opens sized to its content (no default scrollbar) -----
+    _dialogs.clear()
+    win.show_global_settings()
+    _gs2 = _dialogs[-1]
+    from PyQt6.QtWidgets import QScrollArea as _QSA           # noqa: E402
+    _sa = _gs2.findChildren(_QSA)
+    ok(bool(_sa), 'settings dialog uses a scroll area')
+    # the dialog is tall enough that the scroll content is not clipped by default:
+    # its height covers the content's natural height (capped only by the screen).
+    _sc = _sa[0]
+    _fits = _gs2.height() >= min(_sc.widget().sizeHint().height(),
+                                 int(APP.primaryScreen().availableGeometry().height()
+                                     * 0.9))
+    ok(_fits, 'settings dialog opens tall enough to show content (no default scroll)')
+
     win._paste_delay = 3
     _dialogs.clear()
     # every dialog's descriptive text must be selectable so it can be copied
@@ -281,6 +385,56 @@ try:
     win._locked = _sl_uiz
 finally:
     QDialog.exec = _orig_exec
+
+# --- switching tabs focuses the terminal (no second click needed) -------------
+# Regression: _sync_chrome_to_tab did not focus the newly-current terminal, so a
+# QTabWidget switch left focus on the tab bar -- the tab was visible but typing
+# needed an extra click.
+_fw = MainWindow()
+_fw.new_tab()
+_fw.new_tab()                             # two real tabs
+_fw_first = _fw.tabs.widget(0)
+# Offscreen Qt never reports a real focus widget (no active window), so spy the call:
+# _sync_chrome_to_tab must invoke the newly-current terminal's setFocus() on a switch.
+_fw_focused = []
+_fw_first.setFocus = lambda *_a, **_k: _fw_focused.append(True)
+_fw.tabs.setCurrentIndex(1)
+_fw.tabs.setCurrentIndex(0)               # switch back to the first tab -> _sync_chrome_to_tab
+ok(_fw_focused, 'switching tabs gives the terminal keyboard focus (setFocus called)')
+_fw.close()
+
+# --- _InfoLabel: the (i) marker is a link; label text stays selectable ---------
+# Regression: clicking anywhere on the settings label popped the tip over the text
+# being selected. Now only the (i) anchor opens it; the text selects for copy.
+from PyQt6.QtCore import Qt as _QtIL                          # noqa: E402
+_il = M._InfoLabel('Notify on OSC use <span style="color:#5b9bd5">(i)</span>',
+                   'the explanation', win)
+ok('href="tip"' in _il.text(), '_InfoLabel renders the (i) marker as a link')
+ok(bool(_il.textInteractionFlags() & _QtIL.TextInteractionFlag.LinksAccessibleByMouse),
+   '_InfoLabel keeps the (i) link clickable')
+ok(bool(_il.textInteractionFlags() & _QtIL.TextInteractionFlag.TextSelectableByMouse),
+   '_InfoLabel text stays selectable for copy')
+_il_shown = []
+_o_sit = win.show_info_tip
+win.show_info_tip = lambda _w, _t: _il_shown.append(_t)
+try:
+    _il.linkActivated.emit('tip')            # clicking the (i) link
+finally:
+    win.show_info_tip = _o_sit
+eq(_il_shown, ['the explanation'], 'clicking the (i) link opens the InfoTip')
+
+# --- a new tab inherits the ACTIVE tab's working directory (konsole-like) ------
+# Guards the wiring new_tab -> active.shell_cwd() -> the new tab's cwd, so a new tab
+# opens where the current one is, not in secure-terminal's launch dir.
+import tempfile as _tf_ct                                     # noqa: E402
+_ct_dir = _tf_ct.mkdtemp()
+_cw = MainWindow()
+_cw.new_tab()
+_cw.current().shell_cwd = lambda: _ct_dir      # stub the active tab's reported cwd
+_cw.new_tab()
+eq(_cw.current()._cwd, _ct_dir,
+   'a new tab inherits the active tab shell_cwd, not the launch dir')
+_cw.close()
 
 # --- the `secure-terminal ctl ...` remote-control client (_ctl_main) -----------
 _orig_sr = M.ipc.send_request
@@ -828,6 +982,22 @@ try:
     win.open_transcript()                        # a second open REUSES the one file (no leak)
     ok(len(_opened) == 2 and _opened[0] == _opened[1],
        'open_transcript: reuses one file rather than leaking a new temp each time')
+    # Save/Open Current Screen: the live-frame counterparts (#12), delegating to the same
+    # helpers with transcript_text as the getter, writing screen.txt (not transcript.txt).
+    _opened.clear()
+    win.open_current_screen()
+    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'screen.txt'
+       and os.path.getsize(_opened[0]) > 0,
+       'open_current_screen: writes screen.txt under the state dir and opens it')
+    _cs_path = os.path.join(tempfile.mkdtemp(), 'screen-save.txt')
+    _ogsf2 = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_cs_path, ''))
+    try:
+        win.save_current_screen()
+        ok(os.path.exists(_cs_path) and os.path.getsize(_cs_path) > 0,
+           'save_current_screen: writes the current-screen capture to the chosen file')
+    finally:
+        QFileDialog.getSaveFileName = _ogsf2
     # ai-review #3: session state is SENSITIVE history -- the dir must be 0o700 (enforced
     # even on a pre-existing wider dir) and the files 0o600, never world-readable.
     import stat as _stat3
@@ -2907,32 +3077,26 @@ _tip2.deleteLater()
 APP.processEvents()
 
 # --- #95: a settings (i) marker is a CLICK target that pops the copyable InfoTip
-from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95, QPointF as _QPointF95  # noqa: E402
-from PyQt6.QtGui import QMouseEvent as _QMouseEvent95            # noqa: E402
-_il = M._InfoLabel('Theme <span>(i)</span>', 'the theme risk explanation', win)
-ok(_il.cursor().shape() == _Qt95.CursorShape.PointingHandCursor,
-   '#95: an info (i) marker uses a clickable pointing-hand cursor')
-_il.mousePressEvent(_QMouseEvent95(
-    _QEvent95.Type.MouseButtonPress, _QPointF95(1.0, 1.0),
-    _Qt95.MouseButton.LeftButton, _Qt95.MouseButton.LeftButton,
-    _Qt95.KeyboardModifier.NoModifier))
+from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95       # noqa: E402
+# The (i) marker is a LINK, so the label TEXT stays selectable for copy; ACTIVATING the
+# link (not clicking anywhere on the label) pops the tip and toggles it on the next.
+_il = M._InfoLabel('Theme ' + M._InfoLabel._MARK, 'the theme risk explanation', win)
+ok('href="tip"' in _il.text()
+   and bool(_il.textInteractionFlags() & _Qt95.TextInteractionFlag.LinksAccessibleByMouse),
+   '#95: the info (i) marker is a clickable link (the click target)')
+_il.linkActivated.emit('tip')
 _iltip = win._tip_filter._tip
 ok(_iltip.isVisible() and 'theme risk explanation' in _iltip.text(),
-   '#95: clicking an (i) marker shows the copyable InfoTip with the row help')
+   '#95: activating an (i) marker shows the copyable InfoTip with the row help')
 _iltip.hide()
 _iltip._poll.stop()
 
-# --- #132: a second click on the SAME (i) marker toggles the tip closed --------
-def _click95(label):
-    label.mousePressEvent(_QMouseEvent95(
-        _QEvent95.Type.MouseButtonPress, _QPointF95(1.0, 1.0),
-        _Qt95.MouseButton.LeftButton, _Qt95.MouseButton.LeftButton,
-        _Qt95.KeyboardModifier.NoModifier))
-_click95(_il)
-ok(_iltip.isVisible(), '#132: first click re-opens the InfoTip')
-_click95(_il)
+# --- #132: a second activation of the SAME (i) marker toggles the tip closed ----
+_il.linkActivated.emit('tip')
+ok(_iltip.isVisible(), '#132: first activation re-opens the InfoTip')
+_il.linkActivated.emit('tip')
 ok(not _iltip.isVisible(),
-   '#132: a second click on the same marker hides it (toggle)')
+   '#132: a second activation of the same marker hides it (toggle)')
 _iltip._poll.stop()
 
 # --- #130: the View > Paste delay check-mark follows the current delay ---------

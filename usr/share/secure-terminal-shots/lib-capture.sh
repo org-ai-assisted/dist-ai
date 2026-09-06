@@ -8,6 +8,8 @@
 ## style-ok: no-strict -- sourced-only fragment; a top-level strict-mode block
 ## would leak set -o errexit/nounset into the consumer (both already set it).
 
+## style-ok: allow-python-interpreter -- external tool path (corpus reproduce.py)
+
 ## Shared hostile-DATA contract for the secure-terminal comparison capture tools:
 ## comparison-capture.sh (pure X11, ImageMagick import) and wayland-capture.sh
 ## (native Wayland, grim). Sourced, never executed -- defines functions only.
@@ -67,6 +69,10 @@ shots_random_seed=0
 ## name would resolve only when usr/bin happens to be on PATH -- and fail AFTER the whole
 ## capture. BASH_SOURCE[0] is the absolute path both entry points source us by.
 shots_image_optimize="$(dirname -- "${BASH_SOURCE[0]}")/../../bin/image-optimize"
+
+## Deterministic random-garble generator for random.payload, a bundled sibling of
+## THIS file (resolved by the same BASH_SOURCE[0] path as image-optimize above).
+shots_random_garble="$(dirname -- "${BASH_SOURCE[0]}")/shots-random-garble.py"
 
 ## Fail BEFORE an expensive capture if that bundled optimizer is missing, never after it.
 shots_require_image_optimize() {
@@ -245,10 +251,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## so a stray escape sequence in the garble can never hijack the terminal (alt-screen / clear /
    ## OSC title), then sliced to the exact size. Not a corpus detection payload (no canary token)
    ## -- an inline page-facing demo like notify / zerowidth.
-   python3 -c 'import random,sys
-n=int(sys.argv[1]); r=random.Random(int(sys.argv[2]))
-buf=bytes(x for x in (r.getrandbits(8) for _ in range(n*2)) if x!=0x1b)[:n]
-sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
+   "${shots_random_garble}" "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
    ## art + gradient: display-only full-viewport colour boards (a sunset scene; a 24-bit gamut
    ## slice -- hue across, lightness down, plus a greyscale ramp). SAFE to cat -- each generator
    ## emits ONLY SGR truecolour, the half-block glyph, newlines and a trailing reset (no cursor

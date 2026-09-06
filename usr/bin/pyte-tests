@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -47,12 +48,15 @@ if [ -n "${PYTE_REPO:-}" ]; then
    fi
 fi
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import pyte' 2>/dev/null; then
    printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (pyte not importable).'
+   ## style-ok: allow-skip: pyte not importable -- optional target module absent
    exit 77
 fi
 if ! python3 -c 'import pytest' 2>/dev/null; then
    printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (python3-pytest not installed).'
+   ## style-ok: allow-skip: python3-pytest not installed -- optional test dep absent
    exit 77
 fi
 ## Capability gate: this suite targets the modern pyte API (0.8.3+). Older
@@ -61,6 +65,7 @@ fi
 ## Set PYTE_REPO to a current checkout to exercise the suite.
 if ! python3 -c 'from pyte.screens import grapheme_clusters' 2>/dev/null; then
    printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (pyte too old; needs 0.8.3+ API, set PYTE_REPO).'
+   ## style-ok: allow-skip: installed pyte too old (needs 0.8.3+ API) -- set PYTE_REPO to a current checkout
    exit 77
 fi
 
@@ -95,6 +100,7 @@ case "${rc}" in
    5)
       ## No tests collected -- treat as a skip rather than a hard failure.
       printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (no tests collected).'
+      ## style-ok: allow-skip: pytest collected no tests (exit 5) -- nothing to run
       exit 77
       ;;
    *)

@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 ## A set-but-empty TMP would put the venv at '/website-mobile-venv.*' (create
@@ -75,7 +76,7 @@ pip install --quiet playwright
 playwright install --with-deps chromium
 
 rc=0
-python3 -Bsu -- "${check_width}" "$@" || rc=$?
+"${check_width}" "$@" || rc=$?
 
 if [ "${rc}" -eq 77 ]; then
    printf '%s\n' 'FAIL: check_width.py SKIPped (exit 77) -- Playwright/chromium unavailable; this CI lane requires the browser, a skip is a setup failure here.' >&2

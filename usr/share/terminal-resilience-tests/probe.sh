@@ -24,6 +24,9 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
+
+## style-ok: allow-python-interpreter -- external tool path (secure-terminal cli)
 
 repo="$1"
 cli="${repo}/usr/bin/secure-terminal-cli"
@@ -79,7 +82,7 @@ if [ -z "${win}" ]; then
 else
    sleep 1
    title="$(xdotool getwindowname "${win}" 2>/dev/null || true)"
-   if printf '%s' "${title}" | grep --quiet --fixed-strings -- "${marker}"; then
+   if grep --quiet --fixed-strings -- "${marker}" <<< "${title}"; then
       printf 'ok   xterm: title HIJACKED to %s (traditional emulator acts on output)\n' "${marker}"
    else
       printf 'terminal-resilience-tests: FAIL (xterm title not hijacked; got %s)\n' "${title:-<empty>}" >&2
@@ -92,10 +95,10 @@ xterm_pid=''
 ## -- 2. secure-terminal: stream must be neutralized -----------------------
 out="$( printf '' | python3 -- "${cli}" -- printf "${payload}" 2>/dev/null || true )"
 
-if printf '%s' "${out}" | grep --quiet --perl-regexp -- '\x1b'; then
+if grep --quiet --perl-regexp -- '\x1b' <<< "${out}"; then
    printf 'terminal-resilience-tests: FAIL (secure-terminal output still carries an escape byte)\n' >&2
    overall=1
-elif printf '%s' "${out}" | grep --quiet --fixed-strings -- "${marker}"; then
+elif grep --quiet --fixed-strings -- "${marker}" <<< "${out}"; then
    printf 'terminal-resilience-tests: FAIL (secure-terminal leaked the title marker %s)\n' "${marker}" >&2
    overall=1
 else

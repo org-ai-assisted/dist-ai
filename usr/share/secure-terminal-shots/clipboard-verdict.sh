@@ -44,6 +44,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- external tool path (corpus reproduce.py)
+
 here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 out="${here}/shots"
 mkdir --parents -- "${out}"
@@ -134,13 +136,13 @@ else
    sleep 1
 fi
 
-read_clip() { QT_QPA_PLATFORM=xcb python3 "${reader_py}" 2>/dev/null || true; }
+read_clip() { QT_QPA_PLATFORM=xcb "${reader_py}" 2>/dev/null || true; }
 
 ## Seed the clipboard with the sentinel and hold it (background owner). Returns after the
 ## value is readable, so a later 'refused' really means "still the sentinel", not a race.
 seed_clipboard() {
    [ -z "${seeder_pid}" ] || { kill "${seeder_pid}" 2>/dev/null || true; wait "${seeder_pid}" 2>/dev/null || true; }
-   QT_QPA_PLATFORM=xcb python3 "${seeder_py}" "${SENTINEL}" >/dev/null 2>&1 &
+   QT_QPA_PLATFORM=xcb "${seeder_py}" "${SENTINEL}" >/dev/null 2>&1 &
    seeder_pid="$!"
    local _ now
    for _ in $(seq 1 20); do

@@ -30,6 +30,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 
 ## Checkout mode: put the repo's modules on PYTHONPATH. Installed mode uses the

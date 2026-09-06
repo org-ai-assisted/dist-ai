@@ -633,13 +633,14 @@ class TimeoutKillAfter(Rule):
 
 ## --- embedded interpreter programs -----------------------------------------
 
-INTERPRETERS = {"python", "python3", "perl", "ruby", "node", "php"}
-PY_INTERPRETERS = {"python", "python3"}
+## python is handled at ANY size (and in every form) by R-193, so it is NOT in
+## this set -- else a python heredoc double-flags R-190 and R-193.
+INTERPRETERS = {"perl", "ruby", "node", "php"}
 
 
 class InlineInterpreter(Rule):
     """R-190: a substantial interpreter program (>5 body lines) in a shell
-    heredoc belongs in its own file."""
+    heredoc belongs in its own file. python is owned by R-193 (any size)."""
 
     id = "R-190"
     waiver_tag = "allow-inline-interpreter"
@@ -659,38 +660,22 @@ class InlineInterpreter(Rule):
                         "its own file" % lines, ctx.path, cmd["Pos"]["Line"])
 
 
-class PythonDashDashScript(Rule):
-    """R-193: call an in-repo +x script directly via its shebang, not through a
-    'python3 -- <path>.py' prefix (which drops the shebang's interpreter flags)."""
+class PythonInterpreter(Rule):
+    """R-193: no explicit python interpreter in command position. Run a script
+    via its shebang + exec bit, not through 'python3 ...'; move an embedded
+    program ('-c', a heredoc/stdin program) into its own executable file. The one
+    exception is an UNPINNED 'python3 -m MODULE' -- an installed module has no
+    shebang -- and a version pin ('python3.11') is refused even there. Override a
+    deliberate PATH/venv python with the per-file waiver. Command position only
+    (a python name in a quoted string or comment is data), and the interpreter is
+    read unwrapped -- 'sudo python3 x.py' is out of scope, like R-190/R-192."""
 
     id = "R-193"
-    waiver_tag = "allow-python-dashdash"
+    waiver_tag = "allow-python-interpreter"
 
     def detect(self, ctx):
-        for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_name(call) not in PY_INTERPRETERS:
-                continue
-            tokens = list(bash_ast.command_tokens(
-                call, ctx.source, frozenset("WX"), frozenset()))
-            for index, (kind, _word, text) in enumerate(tokens):
-                if kind == "value":
-                    continue
-                if kind == "opt" and text == "--":
-                    after = tokens[index + 1] if index + 1 < len(tokens) \
-                        else None
-                    if after and after[2].rstrip("\"'").endswith(".py"):
-                        yield _fail(
-                            ctx, "R-193",
-                            "R-193 call the +x script directly via its shebang, "
-                            "not through an interpreter prefix", call)
-                    break
-                if kind == "opt" and (text in ("-m", "-c")
-                                      or (not text.startswith("--")
-                                          and ("m" in text[1:]
-                                               or "c" in text[1:]))):
-                    break
-                if kind == "operand":
-                    break
+        for call, message in h.python_interpreter_calls(ctx.tree, ctx.source):
+            yield _fail(ctx, "R-193", message, call)
 
 
 class ShellInlineShellC(Rule):
@@ -955,8 +940,13 @@ class UnauthorizedSkip(Rule):
             code_word = _skip_exit_code_word(call, ctx.source)
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
+            ## Check the statement's START line (and the line above) AND its END
+            ## line: a backslash-continued 'exit \<nl>77  ## style-ok: allow-skip'
+            ## carries the waiver on the END line, not the 'exit' keyword's line.
             line = call["Pos"]["Line"]
-            if _skip_waived(comment_by_line, line):
+            end = call["End"]["Line"]
+            if _skip_waived(comment_by_line, line) \
+                    or _skip_waived(comment_by_line, end):
                 continue
             yield _fail(
                 ctx, "R-220",
@@ -1678,12 +1668,6 @@ _STRICT_DIRECTIVES = (
     "shopt -s inherit_errexit", "shopt -s shift_verbose", "export LC_ALL=C",
 )
 _STRICT_HEADER_LINES = 160
-## A real was_executed()/was_sourced() guard CALL (command position), not a
-## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
-## Matched per code-only LINE (comments pre-stripped by code_only_lines), so a
-## '${var#pat}' '#' earlier on the line no longer hides the guard call.
-_SOURCE_GUARD = re.compile(
-    r'(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
 _GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
 _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
                               re.MULTILINE)
@@ -1718,8 +1702,13 @@ class StrictModeBlock(Rule):
         header_lines = set(line.strip("\r") for line in header.split("\n"))
         present = sum(1 for directive in _STRICT_DIRECTIVES
                       if directive in header_lines)
-        guarded = any(_SOURCE_GUARD.search(line)
-                      for line in h.code_only_lines(source, ctx.tree))
+        ## COMMAND-POSITION check, not a substring scan: only a real
+        ## was_executed()/was_sourced() CALL exempts the script. A mention in a
+        ## string ('echo "was_executed"') or elsewhere must NOT disable the
+        ## strict-mode requirement (the substring form did, a silent bypass).
+        guarded = any(
+            bash_ast.command_name(call) in ("was_executed", "was_sourced")
+            for call in bash_ast.call_exprs(ctx.tree))
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from all-seven. Enforce the
             ## indented shopt half + export only when the guard enables errexit.
@@ -2122,7 +2111,7 @@ RULES = (
     GrepQuiet(),
     MkdirTmpMode(),
     InlineInterpreter(),
-    PythonDashDashScript(),
+    PythonInterpreter(),
     TimeoutKillAfter(),
     AptGet(),
     Dpkg(),

@@ -22,6 +22,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- inline glue in test assertions
+
 if ! test -r /usr/libexec/helper-scripts/has.sh ; then
    printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
    exit 1

@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -65,6 +66,7 @@ qt_has_wayland_plugin() {
     '/usr/lib/*/qt5/plugins/platforms/libqwayland-*.so' >/dev/null 2>&1
 }
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python_has_sni_deps() {
   ## The StatusNotifierWatcher stub needs python3-dbus and python3-gi.
   python3 -c \

@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -74,10 +75,10 @@ check_case() {
    fi
 
    rc=0
-   out="$(python3 -- "${VALIDATOR}" "${case_dir}" 2>&1)" || rc=$?
+   out="$("${VALIDATOR}" "${case_dir}" 2>&1)" || rc=$?
 
    flagged='no'
-   if printf '%s\n' "${out}" | grep --quiet -- ':W-008:'; then
+   if grep --quiet -- ':W-008:' <<< "${out}"; then
       flagged='yes'
    fi
 

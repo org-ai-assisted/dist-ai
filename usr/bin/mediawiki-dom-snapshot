@@ -66,6 +66,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 readonly LIB=/usr/share/mediawiki-dom-snapshot
 [ -v PAGES_FILE ] || PAGES_FILE=/etc/mediawiki-dom-snapshot/pages.conf
@@ -107,7 +108,7 @@ EOF
 cmd_capture() {
    mkdir --parents -- "${RAW_DIR}"
    local rc=0
-   python3 "${LIB}/snapshot.py" || rc=$?
+   "${LIB}/snapshot.py" || rc=$?
    exit "${rc}"
 }
 
@@ -141,7 +142,7 @@ cmd_diff() {
    local a="$1"; shift
    local b="$1"; shift
    local rc=0
-   python3 "${LIB}/diff.py" "${FIX_DIR}/${a}" "${FIX_DIR}/${b}" "$@" || rc=$?
+   "${LIB}/diff.py" "${FIX_DIR}/${a}" "${FIX_DIR}/${b}" "$@" || rc=$?
    exit "${rc}"
 }
 
@@ -149,7 +150,7 @@ cmd_diff_baseline() {
    [ "$#" -ge 1 ] || { usage; exit 2; }
    local tag="$1"; shift
    local rc=0
-   python3 "${LIB}/diff.py" "${BASELINE_DIR}" "${FIX_DIR}/${tag}" "$@" || rc=$?
+   "${LIB}/diff.py" "${BASELINE_DIR}" "${FIX_DIR}/${tag}" "$@" || rc=$?
    exit "${rc}"
 }
 

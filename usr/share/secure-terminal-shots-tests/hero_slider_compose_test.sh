@@ -31,6 +31,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 shots_dir=''
@@ -60,7 +62,7 @@ fail=0
 
 check() {  ## $1=label $2=mode $3=expected-verdict
    local label="$1" mode="$2" want="$3" got
-   got="$(python3 "${checker}" "${compose}" "${mode}" 2>/dev/null || true)"
+   got="$("${checker}" "${compose}" "${mode}" 2>/dev/null || true)"
    if [ "${got}" = "${want}" ]; then
       printf '%s\n' "PASS: ${label}"
       pass=$(( pass + 1 ))

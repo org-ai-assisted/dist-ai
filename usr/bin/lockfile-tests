@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -31,5 +32,6 @@ else
 fi
 
 rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 -- "${tests_dir}/lockfile_test.py" "$@" || rc=$?
 exit "${rc}"

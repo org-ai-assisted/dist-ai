@@ -338,6 +338,76 @@ ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
    'and the primary-screen output that preceded the alt frame survives the restart')
 _ra.close()
 
+# --- Save Transcript vs Save Current Screen (Option B: #10 + #12) --------------
+# scrollback_text() is the append-only history: while a full-screen program holds the
+# alternate screen, it returns the PRIMARY scrollback (frozen at entry), never the
+# ephemeral grid; transcript_text() returns the live current frame (incl. the alt grid).
+_stx = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx, b'PRIMARY-SCROLLBACK-LINE\r\n')
+_stx._render_tui()
+APP.processEvents()
+feed_output(_stx, b'\x1b[?1049hALT-SCREEN-CONTENT')   # enter alt + draw
+_stx._render_tui()
+APP.processEvents()
+ok('PRIMARY-SCROLLBACK-LINE' in _stx.scrollback_text()
+   and 'ALT-SCREEN-CONTENT' not in _stx.scrollback_text(),
+   '#10: Save Transcript keeps the primary scrollback, excludes the live alt grid')
+ok('ALT-SCREEN-CONTENT' in _stx.transcript_text(),
+   '#12: Save Current Screen captures the live full-screen grid')
+feed_output(_stx, b'\x1b[?1049l')                     # leave the program
+_stx._render_tui()
+APP.processEvents()
+_sb = _stx.scrollback_text()
+ok('PRIMARY-SCROLLBACK-LINE' in _sb and 'ALT-SCREEN-CONTENT' in _sb
+   and 'full-screen application' in _sb,
+   '#10: after exit, the primary scrollback is back + a final-frame snapshot appended')
+_stx.close()
+
+# an EMPTY full-screen session adds no snapshot; the size cap drops the oldest snapshot
+_stx2 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx2, b'\x1b[?1049h')                    # enter, nothing drawn
+_stx2._render_tui()
+feed_output(_stx2, b'\x1b[?1049l')                    # leave -> blank frame, skipped
+_stx2._render_tui()
+APP.processEvents()
+ok('full-screen application' not in _stx2.scrollback_text(),
+   '#10: an empty full-screen session leaves no snapshot')
+_stx2._EXIT_SNAPSHOTS_MAX = 8                         # tiny cap so a 2nd snapshot evicts
+for _payload in (b'AAAA', b'BBBB'):
+    feed_output(_stx2, b'\x1b[?1049h' + _payload)
+    _stx2._render_tui()
+    feed_output(_stx2, b'\x1b[?1049l')
+    _stx2._render_tui()
+APP.processEvents()
+ok(len(_stx2._alt_exit_snapshots) == 1,
+   '#10: the exit-snapshot buffer is size-capped (oldest dropped)')
+_stx2.close()
+
+# regression (ai-review): primary output in the SAME read just before alt-entry is kept
+# -- _alt_enter renders the pyte model before freezing (the feed debounce would else drop
+# the final unpainted primary line).
+_stx3 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx3, b'BEFORE-ALT-SAMEREAD\r\n\x1b[?1049hALTX')   # primary+enter+alt, one read
+APP.processEvents()
+ok('BEFORE-ALT-SAMEREAD' in _stx3.scrollback_text()
+   and 'ALTX' not in _stx3.scrollback_text(),
+   'ai-review: primary output right before alt-entry (same read) is frozen, alt excluded')
+_stx3.close()
+
+# regression (ai-review): a whole enter/draw/leave in ONE read still snapshots the REAL
+# final frame (not a stale/empty one), because _alt_leave renders before the walk.
+_stx4 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx4, b'\x1b[?1049h\x1b[2J\x1b[HFINALFRAME\x1b[?1049l')
+APP.processEvents()
+ok('FINALFRAME' in _stx4.scrollback_text()
+   and 'full-screen application' in _stx4.scrollback_text(),
+   'ai-review: the exit snapshot captures the final alt frame even in a single read')
+_stx4.close()
+
 # #6 (ai-review): the keep_screen restart must RESET the pyte charset, else a program
 # that designated G0 = DEC special-graphics (ESC ( 0) leaves it set and the new shell's
 # ASCII 'q' renders as a box-drawing horizontal line, not the letter.

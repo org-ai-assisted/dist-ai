@@ -39,6 +39,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 ## The derivative-maker checkout under test. An explicitly named tree is the ONLY
 ## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
 ## the caller asked about, and a stale checkout there then reads as a defect in

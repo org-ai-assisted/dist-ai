@@ -56,6 +56,7 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
    exit 1
 fi
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import coverage' 2>/dev/null; then
    printf '%s\n' 'secure-terminal-tests-coverage: ERROR (python3-coverage not installed)' >&2
    exit 1

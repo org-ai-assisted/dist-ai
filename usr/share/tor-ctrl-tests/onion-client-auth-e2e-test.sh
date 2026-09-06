@@ -29,6 +29,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe and inline key glue
+
 work_dir=""
 tor_pid=""
 

@@ -36,6 +36,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 shots_dir=''
@@ -168,7 +170,7 @@ fi
 ## verify tool the row's label claims. CANARY: on the pre-fix code run_capture did no
 ## rc-check, so a missing/failing tool produced a shot and the generator exited 0.
 rc=0
-python3 "${script_dir}/compat_shot_rc_check.py" "${gen}" "${work}" || rc=$?
+"${script_dir}/compat_shot_rc_check.py" "${gen}" "${work}" || rc=$?
 check 'run_capture fails loud on a command that did not run cleanly (no silent-green)' "${rc}"
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"

@@ -33,6 +33,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 runner=''

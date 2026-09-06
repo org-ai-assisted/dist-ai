@@ -22,6 +22,7 @@
 ## caller runs in an env that HAS the helper, so the guard never fires there.
 if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
    printf '%s\n' 'tb-updater-tests: SKIP (helper-scripts check_runtime.bsh not found)' >&2
+   ## style-ok: allow-skip: helper-scripts check_runtime.bsh absent -- optional runtime dep
    exit 77
 fi
 source /usr/libexec/helper-scripts/check_runtime.bsh
@@ -49,9 +50,8 @@ main() {
    ## found, the test modules skip at import with a module-level pytest.skip -- for
    ## which pytest exits 0, not 5 -- so the suite would report PASS though nothing
    ## ran. Detect the unavailable target here and report SKIP (77) instead.
-   if ! python3 -c "import sys; sys.path.insert(0, '${tests_dir}'); \
-import tb_updater_testlib as T; T.update_torbrowser_script(); \
-T.desktop_starter_wrapper()"; then
+   if ! "${tests_dir}/target_available_probe.py"; then
+      ## style-ok: allow-skip: tb-updater target unavailable -- pytest would false-pass, report SKIP instead
       exit 77
    fi
 
@@ -60,6 +60,7 @@ T.desktop_starter_wrapper()"; then
    ## pytest exit 5 = no tests collected; report the suite as SKIP (77), not a
    ## failure.
    if [ "${rc}" = "5" ]; then
+      ## style-ok: allow-skip: pytest collected no tests (exit 5) -- nothing to run
       exit 77
    fi
    exit "${rc}"

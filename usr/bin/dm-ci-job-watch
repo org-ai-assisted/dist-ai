@@ -10,11 +10,6 @@
 ## The progress file grows ONLY on real state change. A line per tick would be a
 ## fabricated liveness signal -- the stall supervisor watches this file, so a
 ## wedged poller would look healthy forever.
-##
-## The parse must not use escaped double quotes inside a single-quoted
-## `python3 -c`: that is a SyntaxError, and with stderr discarded it fails
-## silently, leaving a watcher that polls forever and can never reach a verdict.
-## That happened once already today.
 
 set -o errexit
 set -o nounset
@@ -22,6 +17,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 usage() {
    printf '%s\n' \
@@ -67,6 +63,9 @@ note() {
 
 note "watching '${job_filter}' job(s) for ${head_sha}"
 
+state_helper="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-ci-job-watch-state.py"
+[ -r "${state_helper}" ] || state_helper='/usr/libexec/dist-ai/dm-ci-job-watch-state.py'
+
 last_state=""
 unreadable=0
 while true; do
@@ -74,37 +73,7 @@ while true; do
 
    state=""
    if [ -n "${payload}" ]; then
-      state="$(printf '%s' "${payload}" | python3 -c '
-import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-## Decide over ALL build jobs, never last-one-wins. This lane has two
-## (build (a) and build (b)); reporting the last one scanned would call the
-## whole build a success while the other was still running.
-import os
-flt = os.environ.get("job_filter", "uild")
-jobs = [r for r in d.get("check_runs", [])
-        if flt in r["name"] and "dry-run" not in r["name"]]
-if not jobs:
-    sys.exit(0)
-bad = [r for r in jobs
-       if r["conclusion"] not in (None, "success", "skipped")]
-if bad:
-    print("completed:" + str(bad[0]["conclusion"]))
-elif all(r["status"] == "completed" for r in jobs):
-    ## A SKIPPED job did not run, so it is not evidence of anything. Counting it
-    ## as success reported "compare PASSED" for a compare that never executed
-    ## because an upstream build had failed -- a job whose whole purpose is to
-    ## produce a verdict, reported as having produced a good one.
-    if any(r["conclusion"] == "success" for r in jobs):
-        print("completed:success")
-    else:
-        print("completed:skipped")
-else:
-    print("in_progress:None")
-' 2>/dev/null || printf '')"
+      state="$(printf '%s' "${payload}" | "${state_helper}" 2>/dev/null || printf '')"
    fi
 
    if [ -z "${state}" ]; then

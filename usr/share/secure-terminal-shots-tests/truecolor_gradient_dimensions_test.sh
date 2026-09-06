@@ -63,7 +63,7 @@ check_size() {  ## $1=label $2=want_rows $3=want_cols $4...=argv
       fail=$(( fail + 1 ))
       return
    fi
-   got="$(python3 "${measure}" "${out}")"
+   got="$("${measure}" "${out}")"
    if [ "${got}" = "${want_rows} ${want_cols} SAFE" ]; then
       printf '%s\n' "PASS: ${label} (${want_rows} rows x ${want_cols} cols, cat-safe)"
       pass=$(( pass + 1 ))

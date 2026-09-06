@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -30,8 +31,10 @@ else
    tests_dir='/usr/share/privleap-tests'
 fi
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import coverage' 2>/dev/null; then
    printf '%s\n' 'SKIP: python3-coverage not installed.' >&2
+   ## style-ok: allow-skip: python3-coverage optional dep not installed
    exit 77
 fi
 

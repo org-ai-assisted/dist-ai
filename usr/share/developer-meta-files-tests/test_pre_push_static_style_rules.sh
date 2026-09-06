@@ -866,6 +866,10 @@ guard_fail='R-010 strict-mode block'
 expect_rule "${guard_fail}" "was_executed=1"                     "present"
 ## A string mention of the token is NOT a guard call: enforce.
 expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}was_sourced${dq}" "present"
+## A SPACE-surrounded mention inside a string ('echo "usage: was_executed "')
+## is not a call either: the old substring regex matched it and silently
+## disabled the whole strict-mode requirement.
+expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}usage: was_executed ${dq}" "present"
 ## A real command-position guard call still exempts.
 expect_rule "${guard_fail}" "was_sourced && main"               "absent"
 
@@ -1147,21 +1151,24 @@ git -C "${inline_repo}" config user.name 'ci-test'
 git -C "${inline_repo}" commit --quiet --no-verify --allow-empty --message base
 inline_base="$(git -C "${inline_repo}" rev-parse HEAD)"
 
+## perl is the R-190 interpreter under test: python is owned by R-193 (any size),
+## so a python heredoc no longer double-flags R-190. The heredoc-parsing edges
+## (spacing, '#'-delimiter, commented opener, doc-body) are interpreter-agnostic.
 printf '%s\n' \
    '#!/bin/bash' \
-   'python3 - "$1" <<'"'"'PY'"'"'' \
-   'a = 1' \
-   'b = 2' \
-   'c = 3' \
-   'd = 4' \
-   'e = 5' \
-   'print(a, b, c, d, e)' \
-   'PY' > "${inline_repo}/longinline.sh"
+   'perl - "$1" <<'"'"'PL'"'"'' \
+   '$a = 1;' \
+   '$b = 2;' \
+   '$c = 3;' \
+   '$d = 4;' \
+   '$e = 5;' \
+   'print "$a $b $c $d $e";' \
+   'PL' > "${inline_repo}/longinline.sh"
 printf '%s\n' \
    '#!/bin/bash' \
-   'python3 - <<'"'"'PY'"'"'' \
-   'print("hi")' \
-   'PY' > "${inline_repo}/shortglue.sh"
+   'perl <<'"'"'PL'"'"'' \
+   'print "hi";' \
+   'PL' > "${inline_repo}/shortglue.sh"
 ## A heredoc that feeds a NON-interpreter must never be flagged, however long.
 printf '%s\n' \
    '#!/bin/bash' \
@@ -1177,74 +1184,74 @@ printf '%s\n' \
 printf '%s\n' \
    '#!/bin/bash' \
    '## style-ok: allow-inline-interpreter' \
-   'python3 - <<'"'"'PY'"'"'' \
-   'a = 1' \
-   'b = 2' \
-   'c = 3' \
-   'd = 4' \
-   'e = 5' \
-   'f = 6' \
-   'print(a, b, c, d, e, f)' \
-   'PY' > "${inline_repo}/waived.sh"
+   'perl <<'"'"'PL'"'"'' \
+   '$a = 1;' \
+   '$b = 2;' \
+   '$c = 3;' \
+   '$d = 4;' \
+   '$e = 5;' \
+   '$f = 6;' \
+   'print "$a $b $c $d $e $f";' \
+   'PL' > "${inline_repo}/waived.sh"
 ## A DOCUMENTATION heredoc whose body demonstrates an inline program is not
 ## itself one. Flagging it blocks a valid push, which is worse than a miss.
 printf '%s\n' \
    '#!/bin/bash' \
    'cat > /dev/null <<'"'"'DOC'"'"'' \
-   'python3 - <<'"'"'PY'"'"'' \
-   'a = 1' \
-   'b = 2' \
-   'c = 3' \
-   'd = 4' \
-   'e = 5' \
-   'f = 6' \
-   'PY' \
+   'perl <<'"'"'PL'"'"'' \
+   '$a = 1;' \
+   '$b = 2;' \
+   '$c = 3;' \
+   '$d = 4;' \
+   '$e = 5;' \
+   '$f = 6;' \
+   'PL' \
    'DOC' > "${inline_repo}/docexample.sh"
 ## A commented opener must not open a phantom body: on the way through it would
 ## swallow a REAL inline program later in the same file.
 printf '%s\n' \
    '#!/bin/bash' \
-   '## e.g. python3 - <<'"'"'PY'"'"'' \
-   '## a = 1' \
+   '## e.g. perl <<'"'"'PL'"'"'' \
+   '## $a = 1;' \
    'true' \
-   'python3 - <<'"'"'REAL'"'"'' \
-   'x = 1' \
-   'y = 2' \
-   'z = 3' \
-   'w = 4' \
-   'v = 5' \
-   'u = 6' \
+   'perl <<'"'"'REAL'"'"'' \
+   '$x = 1;' \
+   '$y = 2;' \
+   '$z = 3;' \
+   '$w = 4;' \
+   '$v = 5;' \
+   '$u = 6;' \
    'REAL' > "${inline_repo}/masked.sh"
 ## Bash allows whitespace after the operator, so this is a real violation.
 printf '%s\n' \
    '#!/bin/bash' \
-   'python3 - << '"'"'PY'"'"'' \
-   'a = 1' \
-   'b = 2' \
-   'c = 3' \
-   'd = 4' \
-   'e = 5' \
-   'f = 6' \
-   'PY' > "${inline_repo}/spaced.sh"
+   'perl << '"'"'PL'"'"'' \
+   '$a = 1;' \
+   '$b = 2;' \
+   '$c = 3;' \
+   '$d = 4;' \
+   '$e = 5;' \
+   '$f = 6;' \
+   'PL' > "${inline_repo}/spaced.sh"
 ## A '#'-bearing heredoc delimiter must not swallow a REAL inline interpreter that
 ## follows it: `<<EOF#x` has delimiter EOF#x, and mis-recording it as EOF (breaking
 ## the delimiter word at '#') never matches the EOF#x terminator, so the body would
-## run on and mask the python heredoc below.
+## run on and mask the perl heredoc below.
 printf '%s\n' \
    '#!/bin/bash' \
    'cat > /dev/null <<EOF#x' \
    'one' \
    'two' \
    'EOF#x' \
-   'python3 - <<'"'"'PY'"'"'' \
-   'a = 1' \
-   'b = 2' \
-   'c = 3' \
-   'd = 4' \
-   'e = 5' \
-   'f = 6' \
-   'print(a, b, c, d, e, f)' \
-   'PY' > "${inline_repo}/hashdelim.sh"
+   'perl <<'"'"'PL'"'"'' \
+   '$a = 1;' \
+   '$b = 2;' \
+   '$c = 3;' \
+   '$d = 4;' \
+   '$e = 5;' \
+   '$f = 6;' \
+   'print "$a $b $c $d $e $f";' \
+   'PL' > "${inline_repo}/hashdelim.sh"
 chmod 0755 -- "${inline_repo}"/*.sh
 git -C "${inline_repo}" add --all
 git -C "${inline_repo}" commit --quiet --no-verify --message inline
@@ -1289,40 +1296,67 @@ fi
 assert_gate_tag_absent 'R-190 honours the allow-inline-interpreter waiver' \
    'waived.sh' "${inline_hits}" "${inline_out}"
 
-## R-193: an in-repo script is called DIRECTLY via its shebang + exec bit, not
-## through an interpreter prefix that re-names it (which also drops shebang flags).
-## Only a LITERAL '<interpreter> -- <path>.py' is flagged. Fragments keep the flagged
-## sequence from appearing literally in THIS tracked file.
+## R-193: NO explicit python interpreter in command position. Run an in-repo +x
+## script via its shebang, not through 'python3 ...'; move an embedded program
+## ('-c', a stdin/heredoc program) into its own file. The only exception is an
+## UNPINNED 'python3 -m MODULE'. Fragments keep the flagged sequence from
+## appearing literally in THIS tracked file. The FAIL messages ARE the tags: no
+## R-193 NOTE exists, but matching a form-specific message keeps each case exact.
 py='foo.py'
-## The FAIL message is the tag, not the bare rule id: the waiver-skip NOTE also
-## carries 'R-193', so a bare-id match would read the skip as a violation.
-r193='R-193 call the +x script'
-## The interpreter-prefixed call is FLAGGED.
-expect_rule "${r193}" "python3 ${dd} ${dq}\${dir}/${py}${dq} arg" "present"
+r193_script='R-193 run the +x script'
+r193_c='R-193 move the embedded python program'
+r193_stdin='R-193 move the python program read from stdin'
+r193_bare='R-193 do not invoke the python interpreter directly'
+r193_pin='R-193 do not pin a python version'
+## SCRIPT-through-interpreter forms are all flagged: '--' prefix, a bare path, a
+## quoted/expanded path, a version pin, a path-qualified or quoted interpreter.
+expect_rule "${r193_script}" "python3 ${dd} ${dq}\${dir}/${py}${dq} arg" "present"
+expect_rule "${r193_script}" "python3 ${dq}\${dir}/${py}${dq} arg"       "present"
+expect_rule "${r193_script}" "python3 ${py}"                             "present"
+expect_rule "${r193_script}" "python3 -Bsu ${py}"                        "present"
+expect_rule "${r193_script}" "python2 ${py}"                             "present"
+expect_rule "${r193_script}" "/usr/bin/python3 ${py}"                    "present"
+expect_rule "${r193_script}" "${dq}python3${dq} ${py}"                   "present"
 ## The direct call (shebang honoured) is SPARED.
-expect_rule "${r193}" "${dq}\${dir}/${py}${dq} arg"              "absent"
-## A generic dispatcher ('interpreter -- "$@"') names no literal script -- glue, not
-## a call; SPARED.
-expect_rule "${r193}" "python3 ${dd} ${dq}\$@${dq}"              "absent"
+expect_rule "${r193_script}" "${dq}\${dir}/${py}${dq} arg"              "absent"
+## A generic dispatcher ('python3 -- "$@"') now runs its args through the
+## interpreter too -- the stricter rule flags it (it was previously spared).
+expect_rule "${r193_script}" "python3 ${dd} ${dq}\$@${dq}"              "present"
+## Any operand is a script: extension no longer matters ('x.py.txt', 'foo.py/bar').
+expect_rule "${r193_script}" "python3 ${dd} script.py.txt"             "present"
+expect_rule "${r193_script}" "python3 ${dd} ${py}/bar"                 "present"
+## EMBEDDED code ('-c') is flagged, pinned or not.
+expect_rule "${r193_c}" "python3 -c ${sq}import sys${sq}"       "present"
+expect_rule "${r193_c}" "python3.8 -c ${sq}x=1${sq}"           "present"
+## A program read from STDIN ('-') is flagged.
+expect_rule "${r193_stdin}" "python3 -"                        "present"
+## A BARE interpreter (a REPL / '--version', reading stdin) is flagged.
+expect_rule "${r193_bare}" "python3 --version"                 "present"
+## '-m MODULE' is the carve-out: UNPINNED is spared, a version PIN is flagged.
+expect_rule "R-193" "python3 -m venv .venv"                    "absent"
+expect_rule "${r193_pin}" "python3.11 -m pytest"              "present"
+## The '-c'/'-m' classification keys on the FIRST value-taking cluster letter,
+## not a substring: '-W'/'-X' take the rest of the cluster as a VALUE, so a 'c'/'m'
+## in it is not an option. '-Wmymodule script.py' runs the script (flag), and
+## '-mc' is '-m' with module 'c' (spared).
+expect_rule "${r193_script}" "python3 -Wmymodule script.py"    "present"
+expect_rule "${r193_script}" "python3 -X importtime script.py" "present"
+expect_rule "R-193" "python3 -mc"                              "absent"
 ## A COMMENT that merely spells the pattern must not self-trip.
-expect_rule "${r193}" "${hash}${hash} example python3 ${dd} bar.py" "absent"
-## The per-file waiver (a script deliberately NOT +x, or an external path) is honoured.
-expect_rule "${r193}" "${hash}${hash} style-ok: allow-python-dashdash${nlreal}python3 ${dd} ${dq}\${dir}/${py}${dq}" "absent"
-## The 'python' token is word-bounded: a command that merely ENDS in 'python' is spared.
-expect_rule "${r193}" "run_python ${dd} ${dq}\${dir}/${py}${dq}"  "absent"
-## The '.py' must end at a path boundary: 'x.py.txt' (not a .py file) is spared.
-expect_rule "${r193}" "python3 ${dd} script.py.txt"              "absent"
-## A 'python3 -- x.py' spelled INSIDE a quoted string is data, not a call: spared.
-expect_rule "${r193}" "echo ${sq}python3 ${dd} ${py}${sq}"       "absent"
+expect_rule "R-193" "${hash}${hash} example python3 -c bar"    "absent"
+## The renamed per-file waiver (a deliberate PATH/venv python) is honoured.
+expect_rule "R-193" "${hash}${hash} style-ok: allow-python-interpreter${nlreal}python3 ${py}" "absent"
+## The 'python' token is whole-word: a command that merely ENDS in 'python' is spared.
+expect_rule "R-193" "run_python ${dd} ${dq}\${dir}/${py}${dq}"  "absent"
+## A 'python3 ...' spelled INSIDE a quoted string is data, not a call: spared.
+expect_rule "R-193" "echo ${sq}python3 ${py}${sq}"             "absent"
 ## A trailing inline comment that merely spells the call is documentation: spared.
-expect_rule "${r193}" "run something ${hash} python3 ${dd} ${py}" "absent"
-## A '/' after '.py' is a path continuation, not a boundary: 'foo.py/bar' is spared.
-expect_rule "${r193}" "python3 ${dd} ${py}/bar"                  "absent"
+expect_rule "R-193" "run something ${hash} python3 ${py}"      "absent"
 ## A '#' inside a word (substring-removal '${var#pre}') is NOT a comment, so a real call
 ## LATER on the same line is still scanned and flagged.
-expect_rule "${r193}" "run ${dollar}{var${hash}pre} && python3 ${dd} real.py" "present"
+expect_rule "${r193_script}" "run ${dollar}{var${hash}pre} && python3 real.py" "present"
 ## A benign quoted occurrence before a real call on the same line does not mask the call.
-expect_rule "${r193}" "echo ${dq}python3 ${dd} ${py}${dq} ${sc} python3 ${dd} real.py" "present"
+expect_rule "${r193_script}" "echo ${dq}python3 ${py}${dq} ${sc} python3 real.py" "present"
 
 ## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
 ## carries a shebang for shellcheck dialect detection yet must stay non-executable:
@@ -1617,6 +1651,67 @@ assert_gate_tag_absent 'R-191 honours the allow-embedded-script waiver' \
    'waived.service' "${unit_hits}" "${unit_out}"
 assert_gate_tag_absent 'R-191 spares a markdown doc carrying an example Exec= line' \
    'doc.md' "${unit_hits}" "${unit_out}"
+
+## R-193 (config hosts): an explicit python interpreter in a systemd 'Exec*='
+## directive or a workflow 'run:' step. A script run through the interpreter and
+## an embedded '-c' are FLAGGED; a DIRECT +x '.py' Exec and an unpinned
+## 'python3 -m MODULE' are SPARED; the per-rule '## style-ok: R-193' override
+## exempts the file.
+pycfg_repo="$(mktemp --directory --tmpdir="${tmp_root}" pycfg.XXXXXX)"
+git -C "${pycfg_repo}" init --quiet
+git -C "${pycfg_repo}" config user.email 'ci-test@example.com'
+git -C "${pycfg_repo}" config user.name 'ci-test'
+git -C "${pycfg_repo}" commit --quiet --no-verify --allow-empty --message base
+pycfg_base="$(git -C "${pycfg_repo}" rev-parse HEAD)"
+mkdir -p -- "${pycfg_repo}/.github/workflows"
+## Two FLAGGED directives (script through python3, embedded -c) and two SPARED
+## (a direct +x '.py' Exec, an unpinned '-m MODULE').
+printf '%s\n' \
+   '[Service]' \
+   'ExecStartPre=/usr/bin/python3 /usr/libexec/x/ensure.py' \
+   "ExecStopPost=/usr/bin/python3 -c 'import shutil'" \
+   'ExecStart=/usr/libexec/x/run.py' \
+   'ExecReload=/usr/bin/python3 -m mymod' \
+   > "${pycfg_repo}/pyexec.service"
+printf '%s\n' \
+   '## style-ok: R-193' \
+   '[Service]' \
+   'ExecStartPre=/usr/bin/python3 /usr/libexec/x/ensure.py' \
+   > "${pycfg_repo}/pyexec-waived.service"
+## Workflow 'run:' steps: '-c' and a script are flagged; '-m' is spared.
+printf '%s\n' \
+   'jobs:' \
+   '  t:' \
+   '    steps:' \
+   "      - run: python3 -c 'import sys'" \
+   '      - run: python3 tools/gen.py' \
+   '      - run: python3 -m pytest -q' \
+   > "${pycfg_repo}/.github/workflows/py.yml"
+git -C "${pycfg_repo}" add --all
+git -C "${pycfg_repo}" commit --quiet --no-verify --message pycfg
+pycfg_out="$( cd -- "${pycfg_repo}" && "${GATE}" --check --range "${pycfg_base}" 2>&1 || true )"
+pycfg_hits="$( printf '%s\n' "${pycfg_out}" | grep --fixed-strings -- 'R-193' || true )"
+## Exactly the two flagged Exec directives (script + '-c'), not the direct '.py'
+## Exec or the '-m' one.
+pyexec_count="$( printf '%s\n' "${pycfg_hits}" \
+   | grep --count --fixed-strings -- 'pyexec.service' || true )"
+if [ "${pyexec_count}" = "2" ]; then
+   printf '%s\n' 'PASS: R-193 flags exactly the script + -c systemd Exec directives'
+else
+   printf '%s\n' "FAIL: R-193 systemd Exec count was ${pyexec_count}, expected 2" >&2
+   failures=$((failures + 1))
+fi
+assert_gate_tag_absent 'R-193 honours the per-rule override in a systemd unit' \
+   'pyexec-waived.service' "${pycfg_hits}" "${pycfg_out}"
+## Exactly the two flagged run: steps (-c + script), not the '-m' one.
+pyworkflow_count="$( printf '%s\n' "${pycfg_hits}" \
+   | grep --count --fixed-strings -- 'py.yml' || true )"
+if [ "${pyworkflow_count}" = "2" ]; then
+   printf '%s\n' 'PASS: R-193 flags exactly the -c + script workflow run: steps'
+else
+   printf '%s\n' "FAIL: R-193 workflow run: count was ${pyworkflow_count}, expected 2" >&2
+   failures=$((failures + 1))
+fi
 
 ## R-194: an apt config hook must not embed a multi-statement shell command in
 ## its quoted value. A ';'-separated or piped value is FLAGGED; a '|| true' /
@@ -2287,6 +2382,11 @@ expect_rule "${r030fmt}" "printf \$${sq}%s\n${sq} ${dq}\${x}${dq}" "absent"
 ## (The pre-fix _const_arith_exit_value only saw a bare $(( )), never "$(( ))".)
 expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}" "present"
 expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}  ${hash}${hash} style-ok: allow-skip: intentional" "absent"
+## A backslash-continued 'exit \<nl>77' carries the waiver on its END line, not
+## the 'exit' keyword's line -- the waiver check must look at both, else a valid
+## waiver is ignored (false positive).
+expect_rule 'R-220' "exit ${bslash}${nlreal}77  ${hash}${hash} style-ok: allow-skip: optional e2e" "absent"
+expect_rule 'R-220' "exit ${bslash}${nlreal}77" "present"
 
 ## R-212: apt resolves the option NAME case-insensitively, so a mixed-case
 ## '--ALLOW-DOWNGRADES' enables downgrades at runtime and MUST be flagged; a
@@ -2298,4 +2398,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
