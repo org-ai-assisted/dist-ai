@@ -204,6 +204,41 @@ def build_review(host, kind, delay):
     return bar
 
 
+def size_host_for_shot(app, host, bar):
+    """Size `host` (holding `bar`) to the tight shot geometry, headless. Shared with the
+    shot regression test so the test drives the REAL sizing, not a copy.
+
+    Width is fixed so the box's inline-expanded line + the button row are roomy (the
+    detail-mode <U+XXXX NAME> expansion makes the line long; a word-wrapping summary would
+    otherwise let the layout compress below the content's real width). The box is then
+    fixed to its ACTUAL line count (+ inset) so a short payload leaves no internal
+    dead-space band the tight-framing gate would reject (_trim_to_content only cuts OUTER
+    background, not a band between the box and the table below it)."""
+    box = bar._editor
+    box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    box.setMinimumHeight(0)
+    box.setMaximumHeight(16777215)        # lift the bar's live cap for the shot sizing
+    host.setFixedWidth(1180)
+    host.adjustSize()
+    host.show()
+    # let the layout settle so the box wraps to its final width before grabbing
+    app.processEvents()
+    app.processEvents()
+    _line_count = box.source().count('\n') + 1
+    box.setFixedHeight(_line_count * box.fontMetrics().lineSpacing() + 2 * PANE_INSET)
+    host.adjustSize()
+    app.processEvents()
+    # The "Outcome" breakdown reserves its true height via heightForWidth, so ask the bar
+    # for the exact height it needs at this fixed width and pin the host to it. adjustSize()
+    # is unreliable here (a SHOWN offscreen top-level will not grow to a sizeHint that only
+    # settles after the breakdown lays out), and heightForWidth is width-parameterised, so
+    # it is stable with no resize feedback. Without this the decision row is laid over the
+    # bottom ("Plain ASCII") verdict row.
+    host.setFixedHeight(host.heightForWidth(host.width()))
+    app.processEvents()
+
+
 def main(argv):
     if not 2 <= len(argv) <= 3 or (len(argv) == 3 and argv[2] not in ('paste', 'copy')):
         sys.stderr.write('usage: %s <output.png> [paste|copy]\n' % argv[0])
@@ -219,31 +254,7 @@ def main(argv):
 
     host = QWidget()
     bar = build_review(host, kind, delay)
-    # Drop the auto scrollbars so the shot has no stray scrollbar. Width sized so
-    # the box's inline-expanded line + the button row are roomy (the detail-mode
-    # <U+XXXX NAME> expansion makes the line long; the word-wrapping summary would
-    # otherwise let the layout compress below the content's real width).
-    box = bar._editor
-    box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    box.setMinimumHeight(0)
-    box.setMaximumHeight(16777215)        # lift the bar's live cap for the shot sizing
-    host.setFixedWidth(1180)
-    host.adjustSize()
-    host.show()
-    # let the layout settle so the box wraps to its final width before grabbing
-    app.processEvents()
-    app.processEvents()
-    # Size the box to its ACTUAL content line count (+ inset), so a short payload
-    # leaves no internal dead-space band the tight-framing gate would reject
-    # (_trim_to_content only cuts OUTER background, not a band between the box and the
-    # status line / table below it). A fixed 3-line box over a ~1-line payload was that
-    # band. The source counts logical '\n's -- Detail wraps to the width but the payload
-    # fits 1180 on one row, so line count == rendered rows here.
-    _line_count = box.source().count('\n') + 1
-    box.setFixedHeight(_line_count * box.fontMetrics().lineSpacing() + 2 * PANE_INSET)
-    host.adjustSize()
-    app.processEvents()
+    size_host_for_shot(app, host, bar)
 
     # Trim the fixed-minimum empty pane height off the grab so the shot is tight
     # and consistent with the other top-level shots (no dead white space below
