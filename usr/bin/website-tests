@@ -92,6 +92,15 @@ add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.git
 add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
 
+## The secure-terminal site alone carries the shot galleries, so resolve its root for the
+## shot-inventory guard below (only that site gets the check).
+st_site=''
+if [ -n "${SECURE_TERMINAL_SITE_REPO}" ] && [ -d "${SECURE_TERMINAL_SITE_REPO}/comparison/shots" ]; then
+   st_site="${SECURE_TERMINAL_SITE_REPO}"
+elif [ -d "${HOME}/private-sources/secure-terminal.github.io/comparison/shots" ]; then
+   st_site="${HOME}/private-sources/secure-terminal.github.io"
+fi
+
 if [ "${#roots[@]}" -eq 0 ]; then
    printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)' >&2
    ## style-ok: allow-skip: no site checkout resolved -- there is nothing to verify, and site-deploy already treats this SKIP as a publish failure.
@@ -156,6 +165,22 @@ else
       elif [ "${width_rc}" != '0' ]; then
          overall=1
       fi
+   fi
+fi
+
+## Shot-inventory guard (secure-terminal site only): every committed shot is a
+## page-referenced generator artifact and every gallery reference resolves -- no
+## hand-rolled/orphan shot, no dangling reference. Cheap (no Qt, no regen), so it gates
+## every push/deploy here as well as in CI. The tool is a sibling in this bin dir.
+if [ -n "${st_site}" ]; then
+   inv="${script_dir}/secure-terminal-shots-inventory"
+   [ -x "${inv}" ] || inv='/usr/bin/secure-terminal-shots-inventory'
+   if [ -x "${inv}" ]; then
+      "${inv}" "${st_site}" || overall=1
+   else
+      ## Ships in this same package, so absence is an environment bug, not a skip: FAIL.
+      printf '%s\n' 'website-tests: FAIL secure-terminal-shots-inventory not found (required)' >&2
+      overall=1
    fi
 fi
 

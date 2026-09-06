@@ -888,6 +888,12 @@ mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 ## since it launches a clean `bash -i` with no --rcfile path) plus the recorded pgid file, so a
 ## crashed run's orphans can be swept by exactly this string and nothing else.
 run_marker="${runtime_dir}"
+## Register the cleanup trap NOW -- the runtime dir + reaping marker exist and the first
+## argument-validation `exit` is just below -- so an early exit (bad SHOT_SCALE / --jobs /
+## --case / --only / unknown arg) removes the mktemp runtime dir instead of leaking it.
+## cleanup reads wm_pid under `set -u`, so define it here; the window manager starts far below.
+wm_pid=''
+trap cleanup EXIT
 ## Per-capture deadline (seconds): a render that hangs longer than this has its process group
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
 SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
@@ -1301,11 +1307,11 @@ XML
 ## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
 cd "${HOME}"
 
-wm_pid=''
 labwc_wid=''
 xwl_display=''
 base_wids=''
-trap cleanup EXIT
+## wm_pid + the cleanup trap are set far above (right after the runtime dir), so an early
+## argument-validation exit cannot leak it; wm_pid is re-set for real when the WM starts.
 
 ## labwc intermittently fails to come up under the parallel --jobs load (its wlroots x11
 ## backend racing several nested compositors) -- the single dominant cause of lost shots in a
@@ -1469,15 +1475,18 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify show notify-show'
       'notify box notify-tui tui'
       'notify show notify-tui-show tui'
-      'art box art'
-      'art detail art-detail'
+      ## art + gradient are full-viewport colour boards that differ ONLY in their colours,
+      ## so the NEUTRALISED views (Box / Detail, CLI and TUI) reduce both to byte-identical
+      ## output -- the colour that told them apart is exactly what those views strip. Capture
+      ## those once as a shared, board-agnostic "colorboard" shot (from the art payload), not
+      ## once per board (that committed two identical files). Only the SHOW views, which paint
+      ## the real colours, differ, so keep those per board.
+      'art box colorboard'
+      'art detail colorboard-detail'
+      'art box colorboard-tui tui'
       'art show art-show'
-      'art box art-tui tui'
       'art show art-tui-show tui'
-      'gradient box gradient'
-      'gradient detail gradient-detail'
       'gradient show gradient-show'
-      'gradient box gradient-tui tui'
       'gradient show gradient-tui-show tui'
       'unicode show unicode-show'
       'unicode show unicode-tui-show tui'
