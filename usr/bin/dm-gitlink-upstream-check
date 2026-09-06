@@ -104,6 +104,26 @@ readonly PARENT_CHECK_BRANCH='master'
 ## never  skip it
 parent_check='auto'
 
+## Attribution for the resolvable check (invariant 1), populated by main() from
+## the no-deviation set (invariant 2). A gitlink this fork INHERITED verbatim
+## from the parent upstream (equal SHA at the merge base) is upstream's to
+## answer for -- this fork may not deviate from it without failing invariant 2 --
+## so an unresolvable/problem verdict on an inherited pin is a WARNING, never a
+## red gate. Only a pin this fork INTRODUCED is held to 'must be upstream-merged'.
+## The defaults leave every pin attributed to this branch (the conservative
+## standalone-audit behavior) until main() proves inheritance.
+declare -gA EVAL_INHERITED=()
+EVAL_ATTRIBUTION_KNOWN='false'
+
+## Set by check_parent_deviation as a side effect so main() can reuse the one
+## merge-base diff for both invariants: PARENT_DEV_PATHS keys the gitlink paths
+## this checkout moves relative to the parent upstream, and PARENT_ATTRIBUTION_
+## KNOWN is 'true' only when that comparison actually ran (a reachable upstream
+## and a real merge base), so a network failure cannot masquerade as 'nothing
+## deviated, everything inherited'.
+declare -gA PARENT_DEV_PATHS=()
+PARENT_ATTRIBUTION_KNOWN='false'
+
 ## Fixture directory of the running parent self-test, for its cleanup trap.
 parent_self_test_tmp=''
 
@@ -343,21 +363,68 @@ enumerate_gitlinks() {
 
 
 evaluate() {
-  ## Read "path<TAB>owner<TAB>repo<TAB>sha" lines on stdin, classify each via
-  ## ${STATUS_FN}, print a report, and return 1 iff any pin is not-resolvable.
-  ## Errors (network / rate limit) are reported but do NOT fail the check.
-  local path owner repo sha problem verdict
-  local -a bad=() errored=()
+  ## Read "path<TAB>owner<TAB>repo<TAB>sha<TAB>problem" lines on stdin, classify
+  ## each via ${STATUS_FN}, print a report, and return 1 iff any pin THIS BRANCH
+  ## introduced is not-resolvable. Errors (network / rate limit) are reported but
+  ## do NOT fail the check.
+  ##
+  ## A not-resolvable / structurally-problematic gitlink is a HARD failure only
+  ## when this branch INTRODUCED it relative to the parent-upstream merge base.
+  ## A pin inherited verbatim from upstream (its path is absent from
+  ## EVAL_INHERITED's complement -- i.e. present in EVAL_INHERITED) is upstream's
+  ## to answer for: this fork may not deviate from it without failing the
+  ## no-deviation invariant, so its unresolvable/problem verdict is a WARNING,
+  ## never a red gate. That resolves the otherwise-standing conflict where the
+  ## parent upstream's own master pins a submodule to a commit not on that
+  ## submodule's GitHub mirror (canonical dev is elsewhere), which this fork
+  ## faithfully mirrors. When attribution is unknown (EVAL_ATTRIBUTION_KNOWN
+  ## false: no merge base, upstream unreachable, or the deviation check did not
+  ## run) every verdict is treated as this branch's -- the conservative default
+  ## for a standalone resolvability audit.
+  local path owner repo sha problem verdict rest record
+  local -a bad=() errored=() inherited=()
   local count=0 verified=0
-  while IFS="${TAB}" read -r path owner repo sha problem; do
+  local attribution="${EVAL_ATTRIBUTION_KNOWN:-false}"
+  ## Split each record by hand rather than 'IFS="${TAB}" read path owner repo
+  ## sha problem'. A tab is IFS-whitespace, so read COLLAPSES a run of them: a
+  ## problem record with empty owner AND repo (an orphan gitlink with no stanza,
+  ## a non-github URL, a tab/newline path -- exactly the shapes that must fail)
+  ## comes back with its fields shifted left, the problem text landing in 'repo'
+  ## and 'problem' emptied, so the hard-fail branch is silently skipped and the
+  ## pin is only warned. Manual %%/# splitting preserves empty interior fields.
+  while IFS= read -r record; do
+    if [ -z "${record}" ]; then
+      continue
+    fi
+    path="${record%%"${TAB}"*}"
+    rest="${record#*"${TAB}"}"
+    owner="${rest%%"${TAB}"*}"
+    rest="${rest#*"${TAB}"}"
+    repo="${rest%%"${TAB}"*}"
+    rest="${rest#*"${TAB}"}"
+    ## 'rest' is now 'sha' (a 4-field self-test record) or 'sha<TAB>problem' (the
+    ## 5-field enumerate record, whose problem may be empty but whose tab is
+    ## present). No trailing tab means no problem field.
+    sha="${rest%%"${TAB}"*}"
+    if [ "${rest}" = "${sha}" ]; then
+      problem=''
+    else
+      problem="${rest#*"${TAB}"}"
+    fi
     if [ -z "${path}" ]; then
       continue
     fi
     count=$(( count + 1 ))
     ## A pin whose upstream could not even be determined is a failure, not a
-    ## skip: it is exactly the shape a repointed submodule takes.
+    ## skip: it is exactly the shape a repointed submodule takes -- unless this
+    ## fork inherited that exact stanza from upstream, in which case it is
+    ## upstream's shape to answer for.
     if [ -n "${problem}" ]; then
-      bad+=("${path} @ ${sha} -- ${problem}")
+      if [ "${attribution}" = 'true' ] && [ -n "${EVAL_INHERITED[${path}]:-}" ]; then
+        inherited+=("${path} @ ${sha} -- ${problem}")
+      else
+        bad+=("${path} @ ${sha} -- ${problem}")
+      fi
       continue
     fi
     verdict="$("${STATUS_FN}" "${owner}" "${repo}" "${sha}")"
@@ -366,7 +433,11 @@ evaluate() {
         verified=$(( verified + 1 ))
         ;;
       not-resolvable)
-        bad+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
+        if [ "${attribution}" = 'true' ] && [ -n "${EVAL_INHERITED[${path}]:-}" ]; then
+          inherited+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
+        else
+          bad+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
+        fi
         ;;
       *)
         errored+=("${path} @ ${sha} -- upstream ${owner}/${repo} (${verdict})")
@@ -383,6 +454,16 @@ evaluate() {
     done
   fi
 
+  ## Inherited-from-upstream pins that do not resolve on their submodule mirror:
+  ## reported so the upstream-lag signal is not lost, but never a red gate here.
+  if (( ${#inherited[@]} > 0 )); then
+    printf '%s\n' \
+      '::warning::gitlink(s) not on the submodule upstream master, but INHERITED verbatim from the parent upstream (equal at the merge base); upstream owns these and this fork may not deviate, so not failing:' >&2
+    for entry in "${inherited[@]}"; do
+      printf '%s\n' "  [warn:upstream] ${entry}" >&2
+    done
+  fi
+
   if (( ${#bad[@]} > 0 )); then
     printf '%s\n' \
       '::error::submodule gitlink(s) NOT verified against a canonical upstream master:' >&2
@@ -390,17 +471,19 @@ evaluate() {
       printf '%s\n' "  [FAIL] ${entry}" >&2
     done
     printf '%s\n' \
-      'A gitlink on master must point to a commit that exists on the submodule' \
-      "upstream's master, under a canonical upstream org. Bump the pin to an" \
-      'upstream-merged commit, or land the submodule work upstream first. See' \
+      'A gitlink this branch introduces must point to a commit that exists on the' \
+      "submodule upstream's master, under a canonical upstream org. Bump the pin to" \
+      'an upstream-merged commit, or land the submodule work upstream first. See' \
       'the git / derivative-maker skills.' >&2
     return 1
   fi
 
   ## Some pins erroring is tolerated so a flaky API does not turn CI red. NONE
   ## of them resolving is a different thing: the sweep did not happen, and a
-  ## run that verified nothing must not report success.
-  if (( count > 0 )) && (( verified == 0 )); then
+  ## run that verified nothing must not report success. An all-INHERITED run is
+  ## NOT that case: those pins provably equal upstream master's, which is exactly
+  ## this fork's compliance, so it passes even with zero independently resolved.
+  if (( count > 0 )) && (( verified == 0 )) && (( ${#inherited[@]} == 0 )); then
     printf '%s\n' \
       "::error::not one of the ${count} gitlink(s) could be verified; the upstream sweep did not run (no token? rate limited?)" >&2
     return 2
@@ -408,12 +491,16 @@ evaluate() {
 
   ## Report what was actually verified. Counting the errored pins here would
   ## claim a rate-limited run checked them.
+  local suffix=''
+  if (( ${#inherited[@]} > 0 )); then
+    suffix="; ${#inherited[@]} inherited from upstream (see warnings)"
+  fi
   if (( ${#errored[@]} > 0 )); then
     printf '%s\n' \
-      "PASSED: ${verified} of ${count} gitlink(s) reachable on upstream master; ${#errored[@]} NOT verified (see warnings above)."
+      "PASSED: ${verified} of ${count} gitlink(s) reachable on upstream master; ${#errored[@]} NOT verified (see warnings above)${suffix}."
     return 0
   fi
-  printf '%s\n' "PASSED: ${verified} gitlink(s) reachable on upstream master."
+  printf '%s\n' "PASSED: ${verified} gitlink(s) reachable on upstream master${suffix}."
   return 0
 }
 
@@ -515,6 +602,16 @@ parent_deviations() {
 check_parent_deviation() {
   ## Fail iff this checkout moves any gitlink relative to its merge base with
   ## the parent upstream. Returns 0 clean, 1 deviating, 2 setup error.
+  ##
+  ## Side effect: on a definitive comparison (base reached and diffed) sets
+  ## PARENT_ATTRIBUTION_KNOWN=true and keys every moved gitlink path into
+  ## PARENT_DEV_PATHS, so main() can scope invariant 1's blame to what this
+  ## branch actually introduced without a second fetch. A transport failure or
+  ## setup error leaves PARENT_ATTRIBUTION_KNOWN=false, so attribution is never
+  ## faked from a run that did not compare.
+  PARENT_ATTRIBUTION_KNOWN='false'
+  PARENT_DEV_PATHS=()
+
   local rc=0
   deepen_history || rc=$?
   if (( rc != 0 )); then
@@ -550,7 +647,12 @@ check_parent_deviation() {
       continue
     fi
     deviations+=("${path}: ${base_sha} (merge base) -> ${head_sha} (this branch)")
+    PARENT_DEV_PATHS["${path}"]=1
   done <<< "${raw}"
+
+  ## The comparison ran to a verdict (zero or more deviations); attribution is
+  ## now trustworthy.
+  PARENT_ATTRIBUTION_KNOWN='true'
 
   local entry
   if (( ${#deviations[@]} > 0 )); then
@@ -815,6 +917,39 @@ enumerate_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## And each empty-owner-AND-repo problem record must fail ON ITS OWN. These
+  ## ('orphan' has no stanza; 'elsewhere' is a relative URL) carry two adjacent
+  ## tabs, which a tab-collapsing read shifts into the wrong fields, emptying the
+  ## problem and downgrading the pin to a resolvable-looking warning. Fed with
+  ## the batch above they hide behind 'forked'/'sneaky', which parse cleanly, so
+  ## this asserts them singly. STATUS_FN returns resolvable, so the ONLY thing
+  ## that can fail the run is the problem branch actually firing.
+  local prob_path prob_rec
+  for prob_path in orphan elsewhere; do
+    prob_rec=''
+    while IFS= read -r line; do
+      case "${line}" in
+        "${prob_path}${TAB}"*)
+          prob_rec="${line}"
+          ;;
+        *)
+          true "INFO: a different submodule's record"
+          ;;
+      esac
+    done <<< "${records}"
+    if [ -z "${prob_rec}" ]; then
+      printf '%s\n' "enumerate self-test FAIL: no record enumerated for '${prob_path}'" >&2
+      fails=$(( fails + 1 ))
+      continue
+    fi
+    rc=0
+    printf '%s\n' "${prob_rec}" | evaluate >/dev/null 2>&1 || rc=$?
+    if (( rc != 1 )); then
+      printf '%s\n' "enumerate self-test FAIL: lone '${prob_path}' problem record returned ${rc}, expected 1 (tab-collapse misparse?)" >&2
+      fails=$(( fails + 1 ))
+    fi
+  done
+
   ## The PASSED line must not claim unverified pins were verified. 'b' errors,
   ## 'a' resolves, so the run is a partial success and stays green.
   STATUS_FN='_enumerate_self_test_one_error'
@@ -902,7 +1037,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (15 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (17 cases)'
   return 0
 }
 
@@ -1152,6 +1287,134 @@ parent_self_test() {
 }
 
 
+inherited_self_test() {
+  ## Regression for the attribution scoping (invariant 1 vs the inherited set).
+  ## Every pin here is not-resolvable, so only attribution decides the verdict:
+  ##   - a pin INHERITED from upstream warns and passes (the standing false-red
+  ##     this fixes -- the parent upstream pins commits not on the submodule
+  ##     GitHub mirror, and this fork mirrors them and may not deviate);
+  ##   - a pin this branch INTRODUCED still hard-fails;
+  ##   - with attribution UNKNOWN every not-resolvable pin hard-fails (the
+  ##     conservative standalone-audit default);
+  ##   - an all-inherited sweep is a PASS, not a 'nothing verified' setup error.
+  ## FAILS on the pre-attribution evaluator, which failed the gate for inherited
+  ## pins too -- which is the whole bug.
+  local rc fails=0 out
+  STATUS_FN='_inherited_self_test_status'
+  _inherited_self_test_status() {
+    printf '%s\n' 'not-resolvable'
+  }
+
+  ## Case A: an inherited not-resolvable pin warns and passes.
+  EVAL_ATTRIBUTION_KNOWN='true'
+  EVAL_INHERITED=()
+  EVAL_INHERITED['sub-inherited']=1
+  rc=0
+  out="$(printf '%s\n' \
+    "sub-inherited${TAB}Kicksecure${TAB}a${TAB}dead1${TAB}" \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "inherited self-test FAIL: inherited not-resolvable pin returned ${rc}, expected 0" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *'[warn:upstream]'*'sub-inherited'*)
+      true "INFO: the inherited pin was warned, not failed"
+      ;;
+    *)
+      printf '%s\n' 'inherited self-test FAIL: inherited pin not reported as a warning; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+
+  ## Case B: a not-resolvable pin this branch INTRODUCED still fails the gate,
+  ## and the inherited one beside it must stay OUT of the FAIL set.
+  EVAL_ATTRIBUTION_KNOWN='true'
+  EVAL_INHERITED=()
+  EVAL_INHERITED['sub-inherited']=1
+  rc=0
+  out="$(printf '%s\n' \
+    "sub-inherited${TAB}Kicksecure${TAB}a${TAB}dead1${TAB}" \
+    "sub-introduced${TAB}Kicksecure${TAB}b${TAB}dead2${TAB}" \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "inherited self-test FAIL: introduced not-resolvable pin returned ${rc}, expected 1" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *'[FAIL]'*'sub-introduced'*)
+      true "INFO: the introduced pin failed the gate"
+      ;;
+    *)
+      printf '%s\n' 'inherited self-test FAIL: introduced pin not failed; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+  case "${out}" in
+    *'[FAIL]'*'sub-inherited'*)
+      printf '%s\n' 'inherited self-test FAIL: inherited pin wrongly failed alongside; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      true "INFO: the inherited pin stayed out of the FAIL set"
+      ;;
+  esac
+
+  ## Case C: attribution UNKNOWN -> a not-resolvable pin hard-fails (the
+  ## conservative default, unchanged from the standalone audit).
+  EVAL_ATTRIBUTION_KNOWN='false'
+  EVAL_INHERITED=()
+  rc=0
+  printf '%s\n' \
+    "sub-x${TAB}Kicksecure${TAB}a${TAB}dead1${TAB}" \
+    | evaluate >/dev/null 2>&1 || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "inherited self-test FAIL: unknown-attribution not-resolvable pin returned ${rc}, expected 1" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case D: an all-inherited sweep (nothing independently resolvable) PASSES --
+  ## the inherited pins ARE the compliance, so it is not a 'nothing verified'
+  ## setup error (exit 2).
+  EVAL_ATTRIBUTION_KNOWN='true'
+  EVAL_INHERITED=()
+  EVAL_INHERITED['only-inherited']=1
+  rc=0
+  out="$(printf '%s\n' \
+    "only-inherited${TAB}Kicksecure${TAB}a${TAB}dead1${TAB}" \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "inherited self-test FAIL: all-inherited sweep returned ${rc}, expected 0; got:" "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case E: an INHERITED structural problem (no stanza etc.) also warns, not
+  ## fails -- upstream owns a stanza this fork mirrors verbatim.
+  EVAL_ATTRIBUTION_KNOWN='true'
+  EVAL_INHERITED=()
+  EVAL_INHERITED['sub-problem']=1
+  rc=0
+  out="$(printf '%s\n' \
+    "sub-problem${TAB}${TAB}${TAB}dead1${TAB}gitlink has no .gitmodules stanza, so its upstream is unknown" \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "inherited self-test FAIL: inherited problem pin returned ${rc}, expected 0; got:" "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  STATUS_FN='upstream_status'
+  EVAL_ATTRIBUTION_KNOWN='false'
+  EVAL_INHERITED=()
+
+  if (( fails > 0 )); then
+    printf '%s\n' "inherited self-test: ${fails} assertion(s) FAILED" >&2
+    return 1
+  fi
+  printf '%s\n' 'inherited self-test: PASSED (5 cases)'
+  return 0
+}
+
+
 main() {
   local self_test_mode='false'
   while [ "$#" -gt 0 ]; do
@@ -1216,6 +1479,7 @@ main() {
     self_test || rc=$?
     enumerate_self_test || rc=$?
     parent_self_test || rc=$?
+    inherited_self_test || rc=$?
     return "${rc}"
   fi
 
@@ -1243,14 +1507,36 @@ main() {
     return 2
   fi
 
-  evaluate <<< "${records}" || rc=$?
-
-  ## Independent invariants: report both, and let the worse exit code win (2
-  ## setup error over 1 violation) rather than short-circuiting on the first.
+  ## No-deviation (invariant 2) runs FIRST: its deviation set is what scopes
+  ## invariant 1's blame to pins this branch introduced, so a pin inherited
+  ## verbatim from upstream is not failed for upstream's own mirror lag. Let the
+  ## worse exit code win (2 setup error over 1 violation) rather than
+  ## short-circuiting on the first.
   local parent_rc=0
   if parent_check_applies; then
     check_parent_deviation || parent_rc=$?
   fi
+
+  ## Attribute inherited (== upstream at the merge base) pins for evaluate(). Only
+  ## when the comparison actually ran; otherwise every pin stays this branch's.
+  EVAL_ATTRIBUTION_KNOWN="${PARENT_ATTRIBUTION_KNOWN}"
+  EVAL_INHERITED=()
+  if [ "${EVAL_ATTRIBUTION_KNOWN}" = 'true' ]; then
+    local irecord ipath
+    while IFS= read -r irecord; do
+      if [ -z "${irecord}" ]; then
+        continue
+      fi
+      ## Path is the first field; take it by prefix, not by a tab-collapsing read.
+      ipath="${irecord%%"${TAB}"*}"
+      if [ -z "${PARENT_DEV_PATHS[${ipath}]:-}" ]; then
+        EVAL_INHERITED["${ipath}"]=1
+      fi
+    done <<< "${records}"
+  fi
+
+  evaluate <<< "${records}" || rc=$?
+
   if (( parent_rc > rc )); then
     rc="${parent_rc}"
   fi
