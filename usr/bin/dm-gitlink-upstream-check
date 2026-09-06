@@ -97,6 +97,22 @@ readonly UPSTREAM_BASE='master'
 ## printf format strings stay fixed (R-030), so the tab travels as data.
 readonly TAB=$'\t'
 
+
+enc_field() {
+  ## Neutralise TAB/LF (which would desync a tab-delimited, line-oriented record
+  ## and poison a shared attribution key) into %09/%0A, escaping '%' FIRST so the
+  ## mapping is BIJECTIVE. A lossy '<TAB>'-style marker let a raw-TAB path collide
+  ## with a path literally containing the marker text; encoding the escape makes
+  ## distinct inputs distinct. No decoder is needed -- only equal inputs must map
+  ## to equal keys, and the encoded form is what both producer and consumer key
+  ## on. A git tree path may hold any byte but NUL and '/'.
+  local s="$1"
+  s="${s//%/%25}"
+  s="${s//${TAB}/%09}"
+  s="${s//$'\n'/%0A}"
+  printf '%s' "${s}"
+}
+
 ## The derivative-maker checkout whose gitlinks are checked. Overridden by
 ## --repo-root; defaults to the current directory.
 repo_root='.'
@@ -485,10 +501,8 @@ gitmodules_pairs() {
     name="${key#submodule.}"
     name="${name%.path}"
     url="$(git config --file "${modules}" --get "submodule.${name}.url")" || url=''
-    value="${value//${TAB}/<TAB>}"
-    value="${value//$'\n'/<LF>}"
-    url="${url//${TAB}/<TAB>}"
-    url="${url//$'\n'/<LF>}"
+    value="$(enc_field "${value}")"
+    url="$(enc_field "${url}")"
     printf '%s%s%s\n' "${value}" "${TAB}" "${url}"
   done < <(git config --file "${modules}" -z --get-regexp '^submodule\..*\.path$')
 }
@@ -540,11 +554,16 @@ enumerate_gitlinks() {
     repo=''
     ## -z output is unquoted, so a path may hold anything except NUL. A tab or
     ## a newline would split the record this function emits, so such a path is
-    ## reported, never carried.
-    path_safe="${path//${TAB}/<TAB>}"
-    path_safe="${path_safe//$'\n'/<LF>}"
-    if [ "${path_safe}" != "${path}" ]; then
-      problem='submodule path contains a tab or newline'
+    ## reported, never carried. Detect it EXPLICITLY (not by 'did encoding change
+    ## it'): enc_field also escapes '%', which a legitimate path may contain.
+    path_safe="$(enc_field "${path}")"
+    case "${path}" in
+      *"${TAB}"*|*$'\n'*)
+        problem='submodule path contains a tab or newline'
+        ;;
+    esac
+    if [ -n "${problem}" ]; then
+      true "INFO: a tab/newline path is reported, never resolved"
     elif ! url="$(gitmodules_url_for "${path}")"; then
       problem='gitlink has no .gitmodules stanza, so its upstream is unknown'
     elif ! owner_repo="$(github_owner_repo "${url}")"; then
@@ -567,12 +586,9 @@ enumerate_gitlinks() {
     ## consumer would read the forged half as a clean gitlink -- its owner/repo
     ## reaching the REST path never having passed safe_slug_component. Neutralise
     ## the framing bytes, exactly as path_safe already does for the path.
-    owner="${owner//${TAB}/<TAB>}"
-    owner="${owner//$'\n'/<LF>}"
-    repo="${repo//${TAB}/<TAB>}"
-    repo="${repo//$'\n'/<LF>}"
-    problem="${problem//${TAB}/<TAB>}"
-    problem="${problem//$'\n'/<LF>}"
+    owner="$(enc_field "${owner}")"
+    repo="$(enc_field "${repo}")"
+    problem="$(enc_field "${problem}")"
     printf '%s\n' \
       "${path_safe}${TAB}${owner}${TAB}${repo}${TAB}${sha}${TAB}${problem}"
   done < "${ls_tree_out}"
@@ -839,8 +855,7 @@ parent_deviations() {
     ## PARENT_DEV_PATHS by a truncated path and poisoning an UNRELATED
     ## submodule's attribution. Using the same neutralisation on both sides
     ## keeps the keys byte-identical.
-    path="${path//${TAB}/<TAB>}"
-    path="${path//$'\n'/<LF>}"
+    path="$(enc_field "${path}")"
     printf '%s\n' "${path}${TAB}${oldsha}${TAB}${newsha}"
   done < "${raw_file}"
   rm --force -- "${raw_file}"
@@ -1116,11 +1131,20 @@ self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case F: enc_field is BIJECTIVE -- it escapes '%' first, so a raw TAB and a
+  ## path literally containing that TAB's encoding map to DIFFERENT strings. The
+  ## old lossy '<TAB>' marker collided them, letting an unrelated path poison a
+  ## shared attribution key.
+  if [ "$(enc_field "a${TAB}b")" = "$(enc_field 'a%09b')" ]; then
+    printf '%s\n' 'self-test FAIL: enc_field collides a raw TAB with its literal encoding' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'self-test: PASSED (5 cases)'
+  printf '%s\n' 'self-test: PASSED (6 cases)'
   return 0
 }
 
@@ -1855,7 +1879,7 @@ parent_self_test() {
   ## prefix. The key must be the neutralised form, and the bare prefix must NOT
   ## appear.
   local tab_path="sub-a${TAB}decoy"
-  local tab_key_safe='sub-a<TAB>decoy'
+  local tab_key_safe='sub-a%09decoy'
   fixture_git init --quiet "${tmp}/upstream6"
   fixture_git -C "${tmp}/upstream6" update-index --add \
     --cacheinfo "160000,${sha_base},${tab_path}"
