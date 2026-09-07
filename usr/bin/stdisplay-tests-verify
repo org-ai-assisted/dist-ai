@@ -1,0 +1,51 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Formal verification of stdisplay() -- the sanitizer the whole stcat family
+## routes untrusted terminal output through (verify_stdisplay_formal.py): Z3 SMT
+## proofs of the per-character decision ladder and the SGR tier/gate logic,
+## cross-checked by EXHAUSTIVE enumeration over the entire Unicode space against
+## the REAL function, with canaries.
+##
+## SKIPs (77) ONLY when the stdisplay subject is absent (a source-tree / partial
+## run). A missing python3-z3 is a HARD FAILURE inside the harness, never a skip
+## -- a verification suite must not silently disable itself. Set STDISPLAY_REPO
+## to a helper-scripts checkout. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/stdisplay-tests" ]; then
+   tests_dir="${script_dir}/../share/stdisplay-tests"
+else
+   tests_dir='/usr/share/stdisplay-tests'
+fi
+
+[ -v STDISPLAY_REPO ] || STDISPLAY_REPO=""
+if [ -n "${STDISPLAY_REPO}" ]; then
+   subject="${STDISPLAY_REPO%/}/usr/lib/python3/dist-packages/stdisplay/stdisplay.py"
+else
+   subject='/usr/lib/python3/dist-packages/stdisplay/stdisplay.py'
+fi
+if [ ! -f "${subject}" ]; then
+   printf '%s\n' "stdisplay-tests-verify: SKIP (stdisplay not found at '${subject}')" >&2
+   printf '%s\n' "set STDISPLAY_REPO to a helper-scripts checkout, or install helper-scripts" >&2
+   ## style-ok: allow-skip: stdisplay subject absent without a helper-scripts checkout -- set STDISPLAY_REPO or install helper-scripts
+   exit 77
+fi
+
+rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps (python3-z3)
+python3 -- "${tests_dir}/verify_stdisplay_formal.py" "$@" || rc=$?
+exit "${rc}"

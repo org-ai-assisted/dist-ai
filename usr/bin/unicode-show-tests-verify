@@ -1,0 +1,51 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Formal verification of unicode-show (verify_unicode_show_formal.py): Z3 SMT
+## proofs that the suspicious-character classifier flags every non-ASCII / bad
+## control / DEL and clears every printable ASCII, that describe_char is pure
+## ASCII (never leaks a raw suspicious char), and that the [U+XXXX] formatter is
+## injective/reversible -- cross-checked by EXHAUSTIVE enumeration over the whole
+## Unicode space against the REAL functions, with canaries.
+##
+## SKIPs (77) ONLY when the unicode-show subject is absent (a source-tree /
+## partial run). A missing python3-z3 is a HARD FAILURE inside the harness, never
+## a skip. Set UNICODE_SHOW_REPO to a helper-scripts checkout. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/unicode-show-tests" ]; then
+   tests_dir="${script_dir}/../share/unicode-show-tests"
+else
+   tests_dir='/usr/share/unicode-show-tests'
+fi
+
+[ -v UNICODE_SHOW_REPO ] || UNICODE_SHOW_REPO=""
+if [ -n "${UNICODE_SHOW_REPO}" ]; then
+   subject="${UNICODE_SHOW_REPO%/}/usr/lib/python3/dist-packages/unicode_show/unicode_show.py"
+else
+   subject='/usr/lib/python3/dist-packages/unicode_show/unicode_show.py'
+fi
+if [ ! -f "${subject}" ]; then
+   printf '%s\n' "unicode-show-tests-verify: SKIP (unicode-show not found at '${subject}')" >&2
+   printf '%s\n' "set UNICODE_SHOW_REPO to a helper-scripts checkout, or install helper-scripts" >&2
+   ## style-ok: allow-skip: unicode-show subject absent without a helper-scripts checkout -- set UNICODE_SHOW_REPO or install helper-scripts
+   exit 77
+fi
+
+rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps (python3-z3)
+python3 -- "${tests_dir}/verify_unicode_show_formal.py" "$@" || rc=$?
+exit "${rc}"

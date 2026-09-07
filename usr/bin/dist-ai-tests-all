@@ -113,6 +113,7 @@ core_suites=(
    setup-wizard-dist-tests
    stcat-family-tests
    stdisplay-tests
+   stdisplay-tests-verify
    strip-markup-tests
    systemcheck-tests
    tb-updater-tests
@@ -120,6 +121,7 @@ core_suites=(
    tor-control-panel-tests
    tor-ctrl-tests
    unicode-show-tests
+   unicode-show-tests-verify
    web-analyzer-tests
    website-tests
    website-tests-delegation-test
