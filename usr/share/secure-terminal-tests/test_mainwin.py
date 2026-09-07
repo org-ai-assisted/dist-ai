@@ -3399,15 +3399,43 @@ import signal as _sg                                            # noqa: E402
 from PyQt6.QtGui import QTextCursor                             # noqa: E402
 while win.tabs.count() < 2:
     win.new_tab()
+win._goto_tab(0)                             # start at the first tab so a broken clamp is visible
 win._goto_tab(8)                             # Alt+9 -> clamp to the last tab
+ok(win.tabs.currentIndex() == win.tabs.count() - 1,
+   '_goto_tab: Alt+9 (index 8) clamps to the LAST tab')
 win._goto_tab(0)
-win.terminate_foreground()                   # routes to the current tab
-_sl3 = set(win._locked)
+ok(win.tabs.currentIndex() == 0, '_goto_tab(0): jumps to the first tab')
+# terminate_foreground routes to the CURRENT tab's terminal only (spy both, expect just current)
+_tf0 = win.tabs.widget(0)
+_tf1 = win.tabs.widget(1)
+_tf_hits = []
+_tf0_orig = _tf0.terminate_foreground
+_tf0.terminate_foreground = lambda: _tf_hits.append(0)
+_tf_spy1 = isinstance(_tf1, SecureTerminal)
+if _tf_spy1:
+    _tf1_orig = _tf1.terminate_foreground
+    _tf1.terminate_foreground = lambda: _tf_hits.append(1)
 try:
+    win.terminate_foreground()               # current tab is 0
+    eq(_tf_hits, [0], 'terminate_foreground routes to the current tab, not another')
+finally:
+    _tf0.terminate_foreground = _tf0_orig
+    if _tf_spy1:
+        _tf1.terminate_foreground = _tf1_orig
+# a 'bell' admin lock makes _update_bell_tray_action a no-op: the lock wins and it never
+# re-enables the tray channel past the admin lock (guards the admin-lock-bypass class)
+_bell_act = win._bell_actions['tray']
+_sl3 = set(win._locked)
+_bell_prev = _bell_act.isEnabled()
+try:
+    _bell_act.setEnabled(not win._systray)   # sentinel: opposite of what an UNLOCKED update forces
     win._locked = {'bell'}
     win._update_bell_tray_action()           # bell locked -> no-op
+    ok(_bell_act.isEnabled() == (not win._systray),
+       '_update_bell_tray_action: a bell lock is a no-op (does not override the admin lock)')
 finally:
     win._locked = _sl3
+    _bell_act.setEnabled(_bell_prev)
 ok(win._is_reserved_shortcut('') is False, '_is_reserved_shortcut: empty -> False')
 # #7: a shortcut rebound to a MODIFIED cursor/Home/End key (forwarded as ESC[1;p<final>)
 # or to Ctrl+<punctuation> (a C0 control byte) must be reserved -- else it shadows the key
