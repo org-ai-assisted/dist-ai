@@ -612,12 +612,12 @@ ok(win.run_command('/colors on') and win.current().colors_enabled(),
 ok(win.run_command('/zoom 150') and win.current().current_zoom() == 150,
    'command /zoom 150')
 ok(not win.run_command('/bogus xyz'), 'unknown command returns False')
-win.set_theme('light')
+win.set_theme('dark')          # NON-default: a default theme is omitted from the config (Part B)
 win.set_zoom(140)
 win.set_mode('reveal')
 win.close()
 cfg = settings.load()
-eq(cfg.get('theme'), 'light', 'setting persisted theme')
+eq(cfg.get('theme'), 'dark', 'setting persisted a non-default theme')
 eq(cfg.get('zoom'), '140', 'setting persisted zoom')
 eq(cfg.get('unicode_mode'), 'reveal', 'setting persisted mode')
 
