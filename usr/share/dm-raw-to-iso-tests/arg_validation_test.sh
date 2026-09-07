@@ -110,6 +110,26 @@ run --raw "${dummy_raw}" --output "${tmp}/out.iso" --source-date-epoch notanumbe
 expect_rc 1 'non-integer --source-date-epoch fails'
 expect_msg 'non-negative integer' 'bad --source-date-epoch named'
 
+## --grub-overlay without its value (last-token).
+run --raw "${dummy_raw}" --output "${tmp}/out.iso" --grub-overlay
+expect_rc 1 '--grub-overlay without value fails'
+expect_msg '--grub-overlay requires a value' 'missing --grub-overlay value named'
+
+## --grub-overlay pointing at a non-directory.
+run --raw "${dummy_raw}" --output "${tmp}/out.iso" --grub-overlay "${tmp}/no-such-dir"
+expect_rc 1 'non-directory --grub-overlay fails'
+expect_msg '--grub-overlay is not a directory' 'non-dir --grub-overlay named'
+
+## --live-overlay without its value (last-token).
+run --raw "${dummy_raw}" --output "${tmp}/out.iso" --live-overlay
+expect_rc 1 '--live-overlay without value fails'
+expect_msg '--live-overlay requires a value' 'missing --live-overlay value named'
+
+## --live-overlay pointing at a non-directory.
+run --raw "${dummy_raw}" --output "${tmp}/out.iso" --live-overlay "${tmp}/no-such-dir"
+expect_rc 1 'non-directory --live-overlay fails'
+expect_msg '--live-overlay is not a directory' 'non-dir --live-overlay named'
+
 printf '\narg_validation: %s pass, %s fail\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1
 [ "${pass}" -gt 0 ] || { printf 'FATAL: no assertions ran\n' >&2 ; exit 1 ; }

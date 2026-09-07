@@ -1,0 +1,164 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Guards the derivative-maker ISO GRUB menu template against feature loss.
+##
+## build-steps.d/3600_convert-raw-to-iso stages iso-build-data/grub-config/grub.cfg
+## into the ISO via help-steps/dm-raw-to-iso's --grub-overlay; that template is the
+## whole menu the ISO ships. This suite asserts, by content, that it still carries
+## every boot feature the live-build port had to preserve:
+##   - the three live boot roles (USER / SYSMAINT / UNRESTRICTED) with the exact
+##     titles and the exact extra kernel cmdline each adds -- these are consumed at
+##     runtime by user-sysmaint-split and live-config-dist, so dropping one silently
+##     breaks 'boot into sysmaint' on the ISO;
+##   - the Utilities submenu: memtest86+, UEFI firmware setup, medium verification;
+##   - the @APPEND_LIVE@ placeholder + /live kernel/initrd paths the tool fills in.
+##
+## Static content assertions (no root, no build). A single string here is not a
+## style choice: each is a boot feature a naive edit could quietly remove.
+##
+## Checkout: DERIVATIVE_MAKER_DIR, else ~/derivative-maker. A missing checkout is a
+## SKIP (77), the dist-ai-tests contract for a target not checked out.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+[ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
+
+grub_config_dir="${DERIVATIVE_MAKER_DIR}/iso-build-data/grub-config"
+menu_file="${grub_config_dir}/grub.cfg"
+config_file="${grub_config_dir}/config.cfg"
+
+for f in "${menu_file}" "${config_file}"; do
+   if [ ! -r "${f}" ]; then
+      printf '%s\n' "SKIP: missing ISO GRUB config: ${f}" >&2
+      printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere" >&2
+      ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
+      exit 77
+   fi
+done
+
+failures=0
+checks=0
+
+check_pass() {
+   checks=$(( checks + 1 ))
+   printf '%s\n' "PASS  ${1}"
+}
+
+check_fail() {
+   checks=$(( checks + 1 ))
+   failures=$(( failures + 1 ))
+   printf '%s\n' "FAIL  ${1}"
+}
+
+## Assert an extended-regexp matches somewhere in a file.
+assert_matches() {
+   local desc="$1" pattern="$2" file="$3"
+   if grep --quiet --extended-regexp -- "${pattern}" "${file}"; then
+      check_pass "${desc}"
+   else
+      check_fail "${desc} (pattern not found: ${pattern})"
+   fi
+}
+
+## Assert a single line carries ALL of the given fixed substrings (order-free) --
+## used for a menuentry's kernel command line, where the placeholder and the
+## role-specific parameters must land on the SAME 'linux' line.
+assert_line_has_all() {
+   local desc="$1" file="$2"
+   shift 2
+   local line found needle
+   while IFS= read -r line; do
+      found="true"
+      for needle in "$@"; do
+         case "${line}" in
+            *"${needle}"*)
+               ;;
+            *)
+               found="false"
+               break
+               ;;
+         esac
+      done
+      if [ "${found}" = "true" ]; then
+         check_pass "${desc}"
+         return 0
+      fi
+   done < "${file}"
+   check_fail "${desc} (no single line carries all of: $*)"
+}
+
+######################################################################
+## Menu skeleton.
+######################################################################
+assert_matches "menu sources config.cfg first" \
+   '^source /boot/grub/config\.cfg$' "${menu_file}"
+
+######################################################################
+## The three live boot-role entries: exact titles.
+######################################################################
+assert_matches "USER boot-role menuentry" \
+   '^menuentry "LIVE Mode \| USER Session \| disposable use" --hotkey=l \{' "${menu_file}"
+assert_matches "SYSMAINT boot-role menuentry" \
+   '^menuentry "LIVE Mode \| SYSMAINT Session \| system maintenance, install" \{' "${menu_file}"
+assert_matches "UNRESTRICTED boot-role menuentry" \
+   '^menuentry "LIVE Mode \| UNRESTRICTED Session \| system recovery, install" \{' "${menu_file}"
+
+######################################################################
+## Each boot role's kernel line: the tool-filled placeholder, the /live kernel,
+## and the role's own extra parameters, all on one 'linux' line.
+######################################################################
+assert_line_has_all "USER kernel line (placeholder + /live/vmlinuz)" "${menu_file}" \
+   'linux' '/live/vmlinuz' '@APPEND_LIVE@'
+assert_line_has_all "SYSMAINT kernel line (boot-role=sysmaint + unit + noautologin)" "${menu_file}" \
+   'linux' '/live/vmlinuz' '@APPEND_LIVE@' \
+   'systemd.unit=sysmaint-boot.target' 'boot-role=sysmaint' 'live-config.noautologin'
+assert_line_has_all "UNRESTRICTED kernel line (boot-role=unrestricted-admin)" "${menu_file}" \
+   'linux' '/live/vmlinuz' '@APPEND_LIVE@' 'boot-role=unrestricted-admin'
+assert_matches "live entries use /live/initrd.img" \
+   '^[[:space:]]*initrd[[:space:]]+/live/initrd\.img$' "${menu_file}"
+
+######################################################################
+## Utilities submenu: memtest86+, UEFI firmware setup, medium verification.
+######################################################################
+assert_matches "Utilities submenu" \
+   "^submenu 'Utilities\\.\\.\\.' --hotkey=u \\{" "${menu_file}"
+assert_matches "memtest (BIOS) entry boots /live/memtest.bin" \
+   'linux /live/memtest\.bin' "${menu_file}"
+assert_matches "memtest (EFI) entry boots /live/memtest.efi" \
+   'linux /live/memtest\.efi' "${menu_file}"
+assert_matches "UEFI firmware setup entry (fwsetup)" \
+   '^[[:space:]]*fwsetup$' "${menu_file}"
+assert_matches "medium verification entry (rd.live.check)" \
+   'rd\.live\.check' "${menu_file}"
+assert_line_has_all "verify entry reuses the live cmdline + rd.live.check" "${menu_file}" \
+   'linux' '/live/vmlinuz' '@APPEND_LIVE@' 'rd.live.check'
+
+######################################################################
+## Theme is applied inside the submenu too (matches the top-level menu look).
+######################################################################
+assert_matches "submenu sources the theme" \
+   '^[[:space:]]*source /boot/grub/theme\.cfg$' "${menu_file}"
+
+######################################################################
+## config.cfg: the timeout placeholder 3600 fills, and the theme wiring.
+######################################################################
+assert_matches "config.cfg carries the @TIMEOUT@ placeholder" \
+   '^set timeout=@TIMEOUT@$' "${config_file}"
+assert_matches "config.cfg sources the theme" \
+   '^source /boot/grub/theme\.cfg$' "${config_file}"
+assert_matches "config.cfg selects the graphical terminal" \
+   '^terminal_output gfxterm$' "${config_file}"
+
+printf '%s\n' "" "${checks} checks, ${failures} failed"
+[ "${failures}" -eq 0 ]

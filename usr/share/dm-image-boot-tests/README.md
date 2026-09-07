@@ -28,8 +28,9 @@ image is never modified:
   have no such field) and, on the `dm-cmdline=` sentinel, exposes the rest as
   `${dm_smbios_extra}`. `insmod smbios; insmod regexp` first.
 - The reader lives in TWO places, one per image kind:
-  - ISO: `live-build-data/grub-config/smbios-reader.cfg`, appended into
-    `config.cfg` by `3600_convert-raw-to-iso` (derivative-maker main tree).
+  - ISO: `iso-build-data/grub-config/smbios-reader.cfg`, appended into the GRUB
+    overlay's `config.cfg` by `3600_convert-raw-to-iso` (derivative-maker main
+    tree), which `dm-raw-to-iso` stages into the ISO.
   - Disk (qcow2/vbox): `vm-config-dist` `etc/grub.d/01_smbios-reader` +
     `etc/default/grub.d/99_smbios-cmdline.cfg` (appends `\${dm_smbios_extra}` to
     every generated kernel line). Regenerated on every `update-grub`.

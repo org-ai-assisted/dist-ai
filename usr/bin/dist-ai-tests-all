@@ -79,6 +79,7 @@ core_suites=(
    github-api-tests
    dm-grub-smbios-tests
    dm-grub-theme-tests
+   dm-iso-grub-menu-tests
    dm-help-steps-tests
    dm-package-depends-tests
    dm-reprepro-tracking-tests
@@ -625,6 +626,11 @@ wire() {
          ## build flag in help-steps, all inside the derivative-maker checkout.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-iso-grub-menu)
+         ## Reads the ISO GRUB menu template (iso-build-data/grub-config), in the
+         ## derivative-maker parent checkout.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
       dm-package-depends)
          ## A tree-wide packaging lint: it reads every packages/*/*/debian/control
          ## and the sources under each package, so it needs the checkout root.
@@ -780,7 +786,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-image-boot)
+      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
