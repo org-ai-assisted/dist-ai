@@ -78,7 +78,10 @@ for flavor in "${vs_flavors[@]}"; do
          ## Idempotency self-check: capture once more and require identical
          ## output. A difference means a volatile value slipped past
          ## normalization -- a bug to fix at the root, not to tolerate.
-         result_again="$(vs_capture_combo "${dm}" "${flavor}" "${target}")"
+         ## '|| true': if the recapture instead REJECTS (rc 1 -> validity itself
+         ## is non-deterministic), errexit would abort here before the diagnostic;
+         ## keep the reason so the mismatch branch reports it.
+         result_again="$(vs_capture_combo "${dm}" "${flavor}" "${target}")" || true
          if [ "${result}" != "${result_again}" ]; then
             printf '%s\n' "FATAL: non-deterministic capture for '${name}'; normalization is incomplete:" >&2
             diff <(printf '%s\n' "${result}") <(printf '%s\n' "${result_again}") >&2 || true

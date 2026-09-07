@@ -61,6 +61,21 @@ vs_targets=(
 ##                     '--target iso' combos; harmless for the rest)
 vs_fixed_args=( --freshness current --arch amd64 --freedom false )
 
+## Environment shared by BOTH the baseline sourcing and the combo capture. It
+## MUST be identical for the two, or a variable set here leaks: these names are
+## process-environment entries that 'declare -p' reports regardless of what
+## pre/variables do, so any set only for the combo would be absent from the
+## baseline and never subtracted -- polluting every snapshot (and masking the
+## case where 'variables' itself ever sets one of these names).
+##   dist_build_dump_varnames        triggers the dump hook at the end of variables
+##   dist_build_unlock_dangerous_options  allows the dangerous ci-tiny flavor
+##   dist_build_allow_root           lets pre source under root (CI/suite elevates)
+vs_capture_env=(
+   dist_build_dump_varnames=true
+   dist_build_unlock_dangerous_options=true
+   dist_build_allow_root=true
+)
+
 ## Shell-special names that 'declare -p' emits but 'variables' never sets. Most
 ## are already in the pre baseline; BASH_REMATCH and a few others populate
 ## lazily, so name-subtraction alone can miss them. Dropped unconditionally.
@@ -89,7 +104,7 @@ vs_declare_name() {
 ## 'variables' itself introduced. Printed sorted, one per line.
 vs_baseline_names() {
    local dm="$1"
-   ( cd -- "${dm}" && env dist_build_allow_root=true bash -c 'source help-steps/pre; declare -p' ) 2>/dev/null \
+   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash -c 'source help-steps/pre; declare -p' ) 2>/dev/null \
       | grep '^declare ' | vs_declare_name | LC_ALL=C sort -u
 }
 
@@ -99,7 +114,10 @@ vs_baseline_names() {
 vs_init_baseline() {
    local dm="$1"
    vs_baseline_file="$(mktemp)"
-   vs_baseline_names "${dm}" > "${vs_baseline_file}"
+   ## '|| true': vs_baseline_names ends in a pipeline, so under errexit+pipefail a
+   ## failed 'source pre' (empty output -> grep exits 1) would abort here BEFORE
+   ## the '-s' check, losing the actionable message below. Let the check report it.
+   vs_baseline_names "${dm}" > "${vs_baseline_file}" || true
    if [ ! -s "${vs_baseline_file}" ]; then
       printf '%s\n' "ERROR: empty variable baseline for '${dm}'; help-steps/pre failed to source." >&2
       return 1
@@ -110,18 +128,19 @@ vs_init_baseline() {
 ## stable placeholder. Args: <dm-checkout-path> <home>. Reads 'declare -p' lines
 ## on stdin, writes normalized lines on stdout.
 ##
-## Path substitution uses bash literal replacement ('${x//a/b}', no regex) so no
-## metacharacter escaping is needed; the checkout path is replaced before $HOME
-## because it is the more specific (longer) prefix. The git-describe version
-## token is replaced before the bare 40-hex commit id because the token contains
-## a hash.
+## Path substitution QUOTES the pattern ('${x//"$a"/b}') so bash matches it
+## literally -- an unquoted pattern is glob-expanded, and a '[' / '*' / '?' in the
+## checkout path or $HOME would then under- or over-match. The checkout path is
+## replaced before $HOME because it is the more specific (longer) prefix. The
+## git-describe version token is replaced before the bare 40-hex commit id because
+## the token contains a hash.
 vs_normalize() {
    local dm="$1" home="$2" line
    ## '|| [ -n "${line}" ]' processes a final line with no trailing newline (the
    ## rejection reason arrives that way); a plain 'while read' would drop it.
    while IFS= read -r line || [ -n "${line}" ]; do
-      line="${line//${dm}/@DM@}"
-      line="${line//${home}/@HOME@}"
+      line="${line//"${dm}"/@DM@}"
+      line="${line//"${home}"/@HOME@}"
       printf '%s\n' "${line}"
    done | sed -E '
       s/[0-9]+(\.[0-9]+)*-[0-9]+-g[0-9a-f]{7,40}/@VERSION@/g
