@@ -94,6 +94,20 @@ HTML
 rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'a dangling shot reference is caught' "${rc}" 1
 
+## a shot referenced with a ?cache-buster query string (or #fragment) must still resolve --
+## if the extension check runs before the query/fragment strip, such a reference is dropped
+## and its shot reads as a false orphan. Self-contained fixture (fresh index.html).
+printf 'z' > "${site}/comparison/shots/qbuster.webp"
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" alt="demo">
+<img src="/comparison/shots/qbuster.webp?v=2" alt="cache-busted">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a shot referenced with a ?query string is NOT a false orphan' "${rc}" 0
+safe-rm -- "${site}/comparison/shots/qbuster.webp"
+
 ## 2. LIVE: the real site checkout, when present, must be clean.
 live=''
 for cand in \

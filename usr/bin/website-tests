@@ -136,6 +136,12 @@ if [ -f "${tests_dir}/check_mobile.py" ]; then
    if [ "${mobile_rc}" != '77' ] && [ -n "${probe_err}" ]; then
       printf '%s\n' "${probe_err}" >&2
    fi
+else
+   ## check_mobile.py is a co-located, SHIPPED test (usr/share/website-tests/): its absence
+   ## is a broken install, not an optional skip. A bare '-f' guard let a missing required
+   ## test read as a full PASS (silent green) -- FATAL instead.
+   printf '%s\n' "website-mobile-tests: FATAL: check_mobile.py not found in ${tests_dir} (required test missing)" >&2
+   overall=1
 fi
 
 if [ "${mobile_rc}" = '77' ]; then
@@ -165,6 +171,11 @@ else
       elif [ "${width_rc}" != '0' ]; then
          overall=1
       fi
+   else
+      ## Same as check_mobile.py above: a shipped required test whose absence must FATAL,
+      ## not silently skip the width lane to a green pass.
+      printf '%s\n' "website-width-tests: FATAL: check_width.py not found in ${tests_dir} (required test missing)" >&2
+      overall=1
    fi
 fi
 
