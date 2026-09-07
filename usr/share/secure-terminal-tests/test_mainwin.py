@@ -267,7 +267,15 @@ try:
     _gs = _dialogs[-1]
     _rb = [b for b in _gs.findChildren(_QPB) if b.text() == 'Reset to defaults']
     ok(bool(_rb), 'Global settings has a Reset to defaults button')
+    # perturb the per-type OSC-notice toggles so Reset has something to revert (rd#1:
+    # _reset_defaults missed them, so Reset+Apply persisted a wrong mute set)
+    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC 0, 2)')
+    _nh_reset = _dlg_field(_gs, 'Hyperlinks  (OSC 8)')
+    _nt_reset.setChecked(True)       # un-mute title (non-default)
+    _nh_reset.setChecked(False)      # mute hyperlink (non-default)
     _rb[0].click()
+    ok(not _nt_reset.isChecked() and _nh_reset.isChecked(),
+       'reset: per-type OSC-notice toggles revert to default (title muted, hyperlink notified)')
     eq(_dlg_field(_gs, 'Theme').currentData(), _def_theme, 'reset: theme -> default')
     eq(_dlg_field(_gs, 'Zoom').value(), _def_zoom, 'reset: zoom -> default')
     eq(_dlg_field(_gs, 'Menu size').value(), _def_ui, 'reset: menu size -> default')
@@ -2320,11 +2328,13 @@ try:
     _pl_usrd = tempfile.mkdtemp(prefix='st-plusr-')
     _pl_o_sys, _pl_o_usr = _st_clip._system_dirs, _st_clip._user_config_dir
     _pl_o_locked, _pl_o_theme = set(win._locked), win._default_theme
+    _pl_o_zoom = win._default_zoom
     _st_clip._system_dirs = lambda: [_pl_sysd]
     _st_clip._user_config_dir = lambda: _pl_usrd
     try:
         win._locked = frozenset({'theme'})              # theme locked at launch
         win._default_theme = 'dark'
+        win._default_zoom = 175          # a NON-default key so "writes the rest" has one to check
         win._persist()
         _pw = {}
         _st_clip._parse_into(_st_clip.user_config_file(), _pw)
@@ -2332,6 +2342,7 @@ try:
            '_persist drops a startup-locked key (theme) but writes the rest')
     finally:
         win._locked, win._default_theme = _pl_o_locked, _pl_o_theme
+        win._default_zoom = _pl_o_zoom
         _st_clip._system_dirs, _st_clip._user_config_dir = _pl_o_sys, _pl_o_usr
 
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
@@ -4010,8 +4021,10 @@ ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shut
 _teardown_win.deleteLater()
 APP.processEvents()
 
-# global settings persist across restart (#68): _apply_global writes the defaults
-# to the config so a fresh window reads them back.
+# global settings persist across restart (#68): _apply_global writes the CHANGED
+# (non-default) settings to the config so a fresh window reads them back. A value
+# left at its default is omitted (the default applies on reload) -- so this asserts
+# NON-default values, which are the ones persistence must carry.
 import secure_terminal.settings as _ps                         # noqa: E402
 _pcfg_prev = os.environ.get('XDG_CONFIG_HOME')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-persist-')
@@ -4019,7 +4032,7 @@ try:
     _pw = MainWindow()
     ok(_pw._tui_autobox_notice,
        'tui_autobox_notice loads default-on from a fresh (absent) config')
-    _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
+    _pw._apply_global({'theme': 'dark', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc': {}, 'osc_notice': False,
                        'tui_autobox_notice': False,
                        'scrollback': 7000, 'paste_delay': 5, 'escape_limit': 65536,
@@ -4027,7 +4040,7 @@ try:
     ok(not _pw._tui_autobox_notice and not _pw.act_tui_autobox_notice.isChecked(),
        '_apply_global stores tui_autobox_notice and mirrors it on the menu action')
     _pc = _ps.load()
-    eq(_pc.get('theme'), 'light', 'settings persist: theme written to config')
+    eq(_pc.get('theme'), 'dark', 'settings persist: a non-default theme is written to config')
     eq(_pc.get('zoom'), '175', 'settings persist: zoom written to config')
     eq(_pc.get('unicode_mode'), 'reveal', 'settings persist: unicode mode written')
     eq(_pc.get('scrollback'), '7000', 'settings persist: scrollback written')
@@ -4936,6 +4949,33 @@ APP.clipboard().setText('')
 _tpcopy[0].click()
 eq(APP.clipboard().text(), _tppath,
    'the Copy button puts the transcript path on the clipboard')
+
+# --- Part B: the generated config stores ONLY non-default overrides -----------
+# A fresh-config window persists NO keys (every value == its default -> omitted),
+# which doubles as the drift guard for _PERSIST_DEFAULTS: a value here that diverges
+# from the constructor's actual default would be written and fail this.
+import tempfile as _tf_pb                                          # noqa: E402
+_pbdir = _tf_pb.mkdtemp()
+_o_pb = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = _pbdir
+try:
+    def _pb_lines():
+        _p = M.settings.user_config_file()
+        return ([_l.strip() for _l in open(_p)
+                 if _l.strip() and not _l.startswith('#')] if os.path.exists(_p) else [])
+    _pbw = MainWindow()
+    _pbw._persist()
+    ok(_pb_lines() == [],
+       'Part B: a fresh-config window persists NO keys (defaults omitted; _PERSIST_DEFAULTS drift guard)')
+    _pbw._default_zoom = 200            # one real override
+    _pbw._persist()
+    ok(_pb_lines() == ['zoom=200'], 'Part B: only a non-default override is written')
+    _pbw._default_zoom = int(M._PERSIST_DEFAULTS['zoom'])   # back to default
+    _pbw._persist()
+    ok(_pb_lines() == [], 'Part B: a key reset to its default is pruned from the file')
+    _pbw.close()
+finally:
+    os.environ['XDG_CONFIG_HOME'] = _o_pb if _o_pb is not None else _pbdir
 
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 
