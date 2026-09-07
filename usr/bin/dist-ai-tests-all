@@ -155,6 +155,7 @@ e2e_suites=(
 integration_suites=(
    private-ai-config-tests-resilience
    dm-image-boot-tests
+   dm-raw-to-iso-tests
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
@@ -610,6 +611,15 @@ wire() {
          ## usr/share/dm-image-boot-tests and takes the image to boot as an
          ## argument, so there is no checkout to point at. With no --disk/--iso
          ## it exits 77, which is the expected verdict in container CI.
+         wire_env=()
+         wire_args=()
+         ;;
+      dm-raw-to-iso)
+         ## Self-contained: the arg-validation tier drives the tool directly with
+         ## no checkout, and the build+boot tier reads its raw image from the
+         ## environment (DM_RAW_TO_ISO_TEST_IMAGE) and boots via the sibling
+         ## dm-image-boot harness. With no image / no root it exits 77, the
+         ## expected verdict in container CI.
          wire_env=()
          wire_args=()
          ;;

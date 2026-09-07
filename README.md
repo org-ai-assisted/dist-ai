@@ -43,6 +43,8 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests` (fuzz)  | shipping | `usr/share/iso-boot-tests/` |
 | `dm-image-boot-tests`    | shipping | `usr/share/dm-image-boot-tests/` |
+| `dm-raw-to-iso` (tool)   | shipping | `usr/bin/dm-raw-to-iso`, `usr/share/dm-raw-to-iso/` |
+| `dm-raw-to-iso-tests`    | shipping | `usr/share/dm-raw-to-iso-tests/` |
 | `dm-reproducible-build-tests` | shipping | `usr/share/dm-reproducible-build-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `developer-meta-files-tests` | shipping | `usr/share/developer-meta-files-tests/` |
@@ -613,6 +615,21 @@ check-ref-commits-for-unicode-tests
 check-ref-commits-for-unicode-tests-fuzz    # heavy fuzz sweep
 CHECK_REF_COMMITS_REPO=/path/to/helper-scripts check-ref-commits-for-unicode-tests
 ```
+
+## dm-raw-to-iso
+
+`usr/bin/dm-raw-to-iso` converts a bootable raw disk image (as produced by
+derivative-maker's `3200_create-raw-image`) into a highly boot-compatible hybrid
+ISO -- legacy BIOS + UEFI + UEFI Secure Boot (shim -> signed GRUB) + `loopback.cfg`
++ USB/DVD hybrid -- using only packages.debian.org tools, the same approach
+Debian `live-build` takes, reimplemented without live-build. It is the reference
+for porting `3600_convert-raw-to-iso` off live-build (that port is a separate,
+human-reviewed change and this tool does not modify derivative-maker).
+
+The exact command sequence and the reasoning for each step are in
+`usr/share/dm-raw-to-iso/README.md`. The companion suite `dm-raw-to-iso-tests`
+asserts the ISO's boot structure and boots it across `bios | efi | efi-secureboot`
+via the `dm-image-boot-tests` harness.
 
 ## Related
 
