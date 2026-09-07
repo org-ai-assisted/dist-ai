@@ -3577,16 +3577,21 @@ try:
 finally:
     win._locked = _sl2
 
-# --- save_transcript to an unwritable path is swallowed -----------------------
-from PyQt6.QtWidgets import QFileDialog as _QFD3                 # noqa: E402
+# --- save_transcript to an unwritable path WARNS the user (never silent) -------
+from PyQt6.QtWidgets import QFileDialog as _QFD3, QMessageBox as _QMB3   # noqa: E402
 _o_gsf = _QFD3.getSaveFileName
+_o_warn3 = _QMB3.warning
+_warned3 = []
 try:
     _QFD3.getSaveFileName = staticmethod(
         lambda *_a, **_k: ('/proc/nonexistent-dir/x.txt', ''))
-    win.save_transcript()                   # open() raises OSError -> swallowed
-    ok(True, 'save_transcript: an unwritable path is swallowed')
+    _QMB3.warning = staticmethod(lambda *_a, **_k: _warned3.append(_a))
+    win.save_transcript()                   # open() raises OSError -> warns, not silent
+    ok(bool(_warned3) and any('/proc/nonexistent-dir/x.txt' in str(_a) for _a in _warned3),
+       'save_transcript: a failed save warns the user (a denied write never vanishes)')
 finally:
     _QFD3.getSaveFileName = _o_gsf
+    _QMB3.warning = _o_warn3
 
 # --- _open_path opens an existing folder and falls back to a parent -----------
 # Stub openUrl: offscreen QPA does not spawn, but a direct run under a real desktop
@@ -4858,6 +4863,32 @@ eq(win._osc_notice_off, {'osc_colors'},
 ok(not win._osc_notice_actions['osc_colors'].isChecked()
    and win._osc_notice_actions['osc_title'].isChecked(),
    '_apply_global syncs the View-menu per-type notice actions to the dialog')
+
+# --- tab bar elides in the MIDDLE (keeps the trailing session number) ----------
+# ElideRight on many same-prefixed tabs (claude-rc-session: dev46x/dev47x) drops
+# the identifying number -> every tab reads the same prefix; ElideMiddle keeps it.
+from PyQt6.QtCore import Qt as _QtTB                              # noqa: E402
+eq(win.tabs.tabBar().elideMode(), _QtTB.TextElideMode.ElideMiddle,
+   'the tab bar elides in the middle so the session number survives')
+
+# --- Copy Transcript File Path: env-independent, one-click copy ----------------
+# Writes the scrollback to the app's default state-dir transcript file and shows
+# that path (no SECURE_TERMINAL_TRANSCRIPT_FILE required); the Copy button copies it.
+from PyQt6.QtWidgets import QLineEdit as _QLE11, QPushButton as _QPB11   # noqa: E402
+_dialogs.clear()
+win.copy_transcript_path()
+_tpdlg = _dialogs[-1]
+_tpfields = [w for w in _tpdlg.findChildren(_QLE11) if w.isReadOnly()]
+ok(bool(_tpfields) and _tpfields[0].text().endswith('transcript.txt')
+   and os.path.exists(_tpfields[0].text()),
+   'Copy Transcript File Path names a real default state-dir file (no env var needed)')
+_tppath = _tpfields[0].text()
+_tpcopy = [b for b in _tpdlg.findChildren(_QPB11) if 'Copy' in b.text()]
+ok(bool(_tpcopy), 'the transcript-path dialog has a Copy button')
+APP.clipboard().setText('')
+_tpcopy[0].click()
+eq(APP.clipboard().text(), _tppath,
+   'the Copy button puts the transcript path on the clipboard')
 
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 
