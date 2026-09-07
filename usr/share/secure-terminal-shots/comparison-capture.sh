@@ -1674,6 +1674,20 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
             ## discards a blank grab, leaving no file -- also a miss).
             if [ -f "${out}/secure-terminal.${st_suffix}.png" ] \
                   && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+               ## Colour boards (art/gradient) must fill the grid with NO hard-wrap: a board pinned
+               ## wider than the live grid overflows into short continuation rows -- the striped
+               ## shot. board-wrap-check.py reads the same transcript and fails (non-zero) if any
+               ## board row is short. Checked in SHOW mode only: there the transcript carries the
+               ## real U+2580 half-block the guard counts, and it is a sufficient canary -- every
+               ## board mode cats the SAME width-fixed art/gradient payload, so if Show fits the
+               ## grid, the width-preserving Box view does too (Detail expands each cell and flows
+               ## by design, so it is not a wrap). Deterministic, so a wrap is NOT retried: discard
+               ## + warn (the missing shot then trips the pages shot-inventory guard) and break.
+               if { [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; } && [ "${st_mode}" = show ] \
+                     && ! "${here}/board-wrap-check.py" "${st_transcript}" --cols "${ST_BOARD_COLS}"; then
+                  safe-rm --force -- "${out}/secure-terminal.${st_suffix}.png" 2>/dev/null || true
+                  printf '%s\n' "warn secure-terminal.${st_suffix}: colour board WRAPPED (pinned ST_BOARD_COLS=${ST_BOARD_COLS} exceeds the live grid) -- discarded, not published; re-derive ST_BOARD_COLS in lib-capture.sh" >&2
+               fi
                break
             fi
             st_verify_tries=$(( st_verify_tries + 1 ))

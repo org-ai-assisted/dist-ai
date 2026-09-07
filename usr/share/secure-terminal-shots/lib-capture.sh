@@ -62,6 +62,15 @@
 shots_random_bytes=1200
 shots_random_seed=0
 
+## Full-viewport colour-board width, in character columns: secure-terminal's INNER text grid at
+## the 860x620 shot window (st_win_w x st_win_h), Hack 9pt @ 72 DPI. Measured live via `stty size`
+## inside a running shot instance (the raw viewport//char_w overcounts -- _text_area reserves the
+## scrollbar + document margins). The single source of truth for both the board payloads and the
+## board-wrap-check.py guard. RE-DERIVE if st_win_w/st_win_h or the shot font changes; the guard
+## fails the capture LOUD if this pin ever exceeds the live grid, so a stale value cannot ship a
+## striped board. Override for a probe with the env var; the default is the shipped geometry.
+: "${ST_BOARD_COLS:=118}"
+
 ## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
 ## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
 ## both the installed tree and a source checkout. Resolve it by that path: a DIRECT
@@ -259,15 +268,14 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## page-facing capability demo: secure-terminal renders full 24-bit colour in every mode, and
    ## the gradient's ramps are smooth here where a 256-colour terminal bands.
    ##
-   ## PINNED board size (deterministic): the secure-terminal shot window is 860x620 (st_win_w x
-   ## st_win_h in comparison-capture.sh); at that size, Hack 9pt @ 72 DPI gives a 121-col x 39-row
-   ## grid. Size the board to 120 x 36 -- one column inside the grid (a vertical scrollbar can
-   ## reclaim one), and rows for the board plus the 'cat' prompt line above and a fresh prompt
-   ## below. A fixed size makes the shot byte-reproducible; sizing to the LIVE viewport instead
-   ## caught the WM resize mid-animation and produced run-to-run height drift. RE-DERIVE these two
-   ## numbers (offscreen probe of the real grid) if st_win_w/st_win_h or the shot font changes.
-   "${fallback}/truecolor-art.py" --cols 120 --rows 36 > "${dest}/art.payload" || return 1
-   "${fallback}/truecolor-gradient.py" --cols 120 --rows 36 > "${dest}/gradient.payload" || return 1
+   ## Sized to EXACTLY the inner grid width (ST_BOARD_COLS, defined + calibrated above) so the
+   ## board fills the viewport with no wrap -- pin it WIDER and every line hard-wraps into a short
+   ## continuation row (the striped-board shot); the linefeed deferred-wrap fix keeps the exact-fit
+   ## line from leaving a trailing blank row. 36 rows leaves room for the 'cat' prompt line above
+   ## and a fresh prompt below. A fixed size keeps the shot byte-reproducible (sizing to the LIVE
+   ## viewport caught the WM resize mid-animation and drifted the height run-to-run).
+   "${fallback}/truecolor-art.py" --cols "${ST_BOARD_COLS}" --rows 36 > "${dest}/art.payload" || return 1
+   "${fallback}/truecolor-gradient.py" --cols "${ST_BOARD_COLS}" --rows 36 > "${dest}/gradient.payload" || return 1
    ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
    ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
    ## specimen inline-ISOLATED one-per-line so an escape it starts aborts at the newline; SO is
