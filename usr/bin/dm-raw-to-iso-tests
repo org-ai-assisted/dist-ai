@@ -15,9 +15,10 @@
 ##     root, an image (DM_RAW_TO_ISO_TEST_IMAGE) and qemu/OVMF, so it exits 77
 ##     (SKIP) when those are absent -- an opt-in integration target.
 ##
-## Resolve the tool under test with DM_RAW_TO_ISO_BIN; otherwise the sibling
-## usr/bin/dm-raw-to-iso (checkout or installed). Works from a git checkout
-## (tests under usr/share/dm-raw-to-iso-tests) or installed (/usr/share/...).
+## The tool under test lives in derivative-maker (help-steps/dm-raw-to-iso); tests
+## and docs stay here in dist-ai. Resolve it with DM_RAW_TO_ISO_BIN, else via
+## DERIVATIVE_MAKER_DIR (default ~/derivative-maker). Works from a checkout or
+## installed (/usr/share/...).
 
 set -o errexit
 set -o nounset
@@ -35,13 +36,9 @@ else
    tests_dir='/usr/share/dm-raw-to-iso-tests'
 fi
 
-## The tool under test: explicit override, else the sibling entrypoint.
+## The tool under test: explicit override, else derivative-maker's help-steps copy.
 if [ -z "${DM_RAW_TO_ISO_BIN:-}" ]; then
-   if [ -x "${script_dir}/dm-raw-to-iso" ]; then
-      DM_RAW_TO_ISO_BIN="${script_dir}/dm-raw-to-iso"
-   else
-      DM_RAW_TO_ISO_BIN='/usr/bin/dm-raw-to-iso'
-   fi
+   DM_RAW_TO_ISO_BIN="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}/help-steps/dm-raw-to-iso"
 fi
 export DM_RAW_TO_ISO_BIN
 
