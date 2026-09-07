@@ -18,8 +18,10 @@
 ##   - the Utilities submenu: memtest86+, UEFI firmware setup, medium verification;
 ##   - the @APPEND_LIVE@ placeholder + /live kernel/initrd paths the tool fills in.
 ##
-## Static content assertions (no root, no build). A single string here is not a
-## style choice: each is a boot feature a naive edit could quietly remove.
+## Assertions are SCOPED to each menuentry/submenu block, not file-global: a check
+## on the USER entry must fail when the USER entry (not merely some other entry) is
+## wrong. A single string here is not a style choice: each is a boot feature a
+## naive edit could quietly remove.
 ##
 ## Checkout: DERIVATIVE_MAKER_DIR, else ~/derivative-maker. A missing checkout is a
 ## SKIP (77), the dist-ai-tests contract for a target not checked out.
@@ -61,21 +63,37 @@ check_fail() {
    printf '%s\n' "FAIL  ${1}"
 }
 
-## Assert an extended-regexp matches somewhere in a file.
-assert_matches() {
-   local desc="$1" pattern="$2" file="$3"
-   if grep --quiet --extended-regexp -- "${pattern}" "${file}"; then
+## Print the menuentry/submenu block whose header line contains the fixed string
+## $1, from that header to its matching closing brace (brace-depth counted, so a
+## submenu's nested menuentries are included).
+entry_block() {
+   awk -v pat="$1" '
+      state == 0 && index($0, pat) { state = 1 }
+      state == 1 {
+         print
+         opens = gsub(/\{/, "{"); depth += opens
+         if (opens > 0) { seen = 1 }
+         closes = gsub(/\}/, "}"); depth -= closes
+         if (seen && depth <= 0) { state = 2 }
+      }
+   ' "${menu_file}"
+}
+
+## Assert an extended-regexp matches somewhere in a block/text passed as $2.
+block_matches() {
+   local desc="$1" block="$2" pattern="$3"
+   if grep --quiet --extended-regexp -- "${pattern}" <<< "${block}"; then
       check_pass "${desc}"
    else
-      check_fail "${desc} (pattern not found: ${pattern})"
+      check_fail "${desc} (pattern not found in block: ${pattern})"
    fi
 }
 
-## Assert a single line carries ALL of the given fixed substrings (order-free) --
-## used for a menuentry's kernel command line, where the placeholder and the
-## role-specific parameters must land on the SAME 'linux' line.
-assert_line_has_all() {
-   local desc="$1" file="$2"
+## Assert a SINGLE line of the block ($2) carries ALL of the given fixed
+## substrings (order-free) -- for a menuentry's kernel command line, where the
+## placeholder and the role-specific parameters must land on the same 'linux' line.
+block_line_has_all() {
+   local desc="$1" block="$2"
    shift 2
    local line found needle
    while IFS= read -r line; do
@@ -94,8 +112,18 @@ assert_line_has_all() {
          check_pass "${desc}"
          return 0
       fi
-   done < "${file}"
-   check_fail "${desc} (no single line carries all of: $*)"
+   done <<< "${block}"
+   check_fail "${desc} (no single line in the block carries all of: $*)"
+}
+
+## Assert a file-level extended-regexp (for config.cfg, a small flat file).
+assert_matches() {
+   local desc="$1" pattern="$2" file="$3"
+   if grep --quiet --extended-regexp -- "${pattern}" "${file}"; then
+      check_pass "${desc}"
+   else
+      check_fail "${desc} (pattern not found: ${pattern})"
+   fi
 }
 
 ######################################################################
@@ -105,50 +133,56 @@ assert_matches "menu sources config.cfg first" \
    '^source /boot/grub/config\.cfg$' "${menu_file}"
 
 ######################################################################
-## The three live boot-role entries: exact titles.
+## The three live boot-role entries, each checked WITHIN its own block.
 ######################################################################
-assert_matches "USER boot-role menuentry" \
-   '^menuentry "LIVE Mode \| USER Session \| disposable use" --hotkey=l \{' "${menu_file}"
-assert_matches "SYSMAINT boot-role menuentry" \
-   '^menuentry "LIVE Mode \| SYSMAINT Session \| system maintenance, install" \{' "${menu_file}"
-assert_matches "UNRESTRICTED boot-role menuentry" \
-   '^menuentry "LIVE Mode \| UNRESTRICTED Session \| system recovery, install" \{' "${menu_file}"
+user_block="$(entry_block 'USER Session')"
+sysmaint_block="$(entry_block 'SYSMAINT Session')"
+unrestricted_block="$(entry_block 'UNRESTRICTED Session')"
 
-######################################################################
-## Each boot role's kernel line: the tool-filled placeholder, the /live kernel,
-## and the role's own extra parameters, all on one 'linux' line.
-######################################################################
-assert_line_has_all "USER kernel line (placeholder + /live/vmlinuz)" "${menu_file}" \
+## Exact titles (block header present at all).
+block_matches "USER boot-role menuentry" "${user_block}" \
+   '^menuentry "LIVE Mode \| USER Session \| disposable use" --hotkey=l \{'
+block_matches "SYSMAINT boot-role menuentry" "${sysmaint_block}" \
+   '^menuentry "LIVE Mode \| SYSMAINT Session \| system maintenance, install" \{'
+block_matches "UNRESTRICTED boot-role menuentry" "${unrestricted_block}" \
+   '^menuentry "LIVE Mode \| UNRESTRICTED Session \| system recovery, install" \{'
+
+## Each role's kernel line: the tool-filled placeholder, the /live kernel, and the
+## role's own extra parameters, all on one 'linux' line WITHIN that role's block.
+block_line_has_all "USER kernel line (placeholder + /live/vmlinuz)" "${user_block}" \
    'linux' '/live/vmlinuz' '@APPEND_LIVE@'
-assert_line_has_all "SYSMAINT kernel line (boot-role=sysmaint + unit + noautologin)" "${menu_file}" \
+block_line_has_all "SYSMAINT kernel line (boot-role=sysmaint + unit + noautologin)" "${sysmaint_block}" \
    'linux' '/live/vmlinuz' '@APPEND_LIVE@' \
    'systemd.unit=sysmaint-boot.target' 'boot-role=sysmaint' 'live-config.noautologin'
-assert_line_has_all "UNRESTRICTED kernel line (boot-role=unrestricted-admin)" "${menu_file}" \
+block_line_has_all "UNRESTRICTED kernel line (boot-role=unrestricted-admin)" "${unrestricted_block}" \
    'linux' '/live/vmlinuz' '@APPEND_LIVE@' 'boot-role=unrestricted-admin'
-assert_matches "live entries use /live/initrd.img" \
-   '^[[:space:]]*initrd[[:space:]]+/live/initrd\.img$' "${menu_file}"
+
+## Each role loads the /live initrd, checked within its own block.
+block_matches "USER initrd is /live/initrd.img" "${user_block}" \
+   '^[[:space:]]*initrd[[:space:]]+/live/initrd\.img$'
+block_matches "SYSMAINT initrd is /live/initrd.img" "${sysmaint_block}" \
+   '^[[:space:]]*initrd[[:space:]]+/live/initrd\.img$'
+block_matches "UNRESTRICTED initrd is /live/initrd.img" "${unrestricted_block}" \
+   '^[[:space:]]*initrd[[:space:]]+/live/initrd\.img$'
 
 ######################################################################
-## Utilities submenu: memtest86+, UEFI firmware setup, medium verification.
+## Utilities submenu, checked WITHIN the submenu block: memtest86+, UEFI firmware
+## setup, medium verification, and the theme sourced inside it.
 ######################################################################
-assert_matches "Utilities submenu" \
-   "^submenu 'Utilities\\.\\.\\.' --hotkey=u \\{" "${menu_file}"
-assert_matches "memtest (BIOS) entry boots /live/memtest.bin" \
-   'linux /live/memtest\.bin' "${menu_file}"
-assert_matches "memtest (EFI) entry boots /live/memtest.efi" \
-   'linux /live/memtest\.efi' "${menu_file}"
-assert_matches "UEFI firmware setup entry (fwsetup)" \
-   '^[[:space:]]*fwsetup$' "${menu_file}"
-assert_matches "medium verification entry (rd.live.check)" \
-   'rd\.live\.check' "${menu_file}"
-assert_line_has_all "verify entry reuses the live cmdline + rd.live.check" "${menu_file}" \
+util_block="$(entry_block "Utilities...")"
+
+block_matches "Utilities submenu present" "${util_block}" \
+   "^submenu 'Utilities\\.\\.\\.' --hotkey=u \\{"
+block_matches "submenu re-sources the theme" "${util_block}" \
+   '^[[:space:]]+source /boot/grub/theme\.cfg$'
+block_matches "memtest (BIOS) entry boots /live/memtest.bin" "${util_block}" \
+   'linux /live/memtest\.bin'
+block_matches "memtest (EFI) entry boots /live/memtest.efi" "${util_block}" \
+   'linux /live/memtest\.efi'
+block_matches "UEFI firmware setup entry (fwsetup)" "${util_block}" \
+   '^[[:space:]]+fwsetup$'
+block_line_has_all "verify entry reuses the live cmdline + rd.live.check" "${util_block}" \
    'linux' '/live/vmlinuz' '@APPEND_LIVE@' 'rd.live.check'
-
-######################################################################
-## Theme is applied inside the submenu too (matches the top-level menu look).
-######################################################################
-assert_matches "submenu sources the theme" \
-   '^[[:space:]]*source /boot/grub/theme\.cfg$' "${menu_file}"
 
 ######################################################################
 ## config.cfg: the timeout placeholder 3600 fills, and the theme wiring.

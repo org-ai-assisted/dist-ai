@@ -155,15 +155,25 @@ iso_boot_structure_ok() {
          problems="${problems} no-loopback.cfg"
          ;;
    esac
+   ## Per-arch EFI removable-media loader name (matches dm-raw-to-iso's efi-image
+   ## mapping). Unknown arch is an error, not an amd64 default -- treating i386 or
+   ## armhf as amd64 makes the loader check pass/fail on the wrong filename.
    case "${target_arch}" in
       amd64)
          efi_loader="/EFI/boot/bootx64.efi"
          ;;
+      i386)
+         efi_loader="/EFI/boot/bootia32.efi"
+         ;;
       arm64)
          efi_loader="/EFI/boot/bootaa64.efi"
          ;;
+      armhf)
+         efi_loader="/EFI/boot/bootarm.efi"
+         ;;
       *)
-         efi_loader="/EFI/boot/bootx64.efi"
+         printf 'unsupported --arch for boot-structure check: %s\n' "${target_arch}" >&2
+         return 1
          ;;
    esac
    case "${paths}" in
@@ -284,18 +294,31 @@ fi
 ## Per-arch: amd64 has SeaBIOS + OVMF (efi/efi-secureboot); arm64 boots edk2 UEFI
 ## under dm-qemu's 'bios' firmware (efi/efi-secureboot are x86-only and exit 2).
 ## Gate on the arch's OWN qemu binary, not always qemu-system-x86_64.
+## Per-arch QEMU binary + firmware legs. amd64 gets the full BIOS + x64/ia32 EFI +
+## Secure Boot matrix; i386 has BIOS + ia32 EFI (no Secure Boot); arm has no BIOS,
+## its single UEFI leg runs under dm-qemu's 'bios' firmware (efi/efi-secureboot are
+## x86-only and exit 2). Unknown arch is an error, not an x86 default -- routing an
+## ARM image to qemu-system-x86_64 fails every leg for the wrong reason.
 case "${arch}" in
    amd64)
       qemu_bin="qemu-system-x86_64"
       firmwares="bios efi efi-secureboot"
       ;;
+   i386)
+      qemu_bin="qemu-system-i386"
+      firmwares="bios efi"
+      ;;
    arm64)
       qemu_bin="qemu-system-aarch64"
       firmwares="bios"
       ;;
+   armhf)
+      qemu_bin="qemu-system-arm"
+      firmwares="bios"
+      ;;
    *)
-      qemu_bin="qemu-system-x86_64"
-      firmwares="bios efi efi-secureboot"
+      printf 'unsupported DM_RAW_TO_ISO_TEST_ARCH: %s\n' "${arch}" >&2
+      exit 2
       ;;
 esac
 

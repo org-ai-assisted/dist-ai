@@ -121,6 +121,8 @@ fi
 ##   smbios --type 1 --get-string 4 -- the QEMU gate reads Manufacturer
 for required in \
    'insmod serial' \
+   'insmod regexp' \
+   'regexp --set 1:dm_smbios_extra "^dm-cmdline=(.*)"' \
    'set dm_smbios_vendor=' \
    'set dm_smbios_serial_index=0' \
    'set dm_smbios_oem=' \
@@ -425,7 +427,7 @@ assert_inside_conditional \
    "iso reader inlining" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   '^cat -- .*smbios-reader\.cfg.*config\.cfg'
+   '^cat -- .*smbios-reader\.cfg.*>>.*config\.cfg'
 
 ## The ${dm_smbios_extra} placeholder is added to --bootappend only inside the
 ## same branch, so a released ISO carries neither the reader nor the placeholder.
@@ -465,9 +467,9 @@ fi
 iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso"
 if [ ! -r "${iso_build_file}" ]; then
    check_fail "missing ${iso_build_file}"
-elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend .*dm_smbios_extra' "${iso_build_file}"; then
+elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend[= ].*dm_smbios_extra' "${iso_build_file}"; then
    check_fail "iso: --bootappend carries the placeholder UNCONDITIONALLY in ${iso_build_file}" \
-      "$(grep -nE -- '^[[:space:]]*--bootappend ' "${iso_build_file}" || true)"
+      "$(grep -nE -- '^[[:space:]]*--bootappend[= ]' "${iso_build_file}" || true)"
 else
    check_pass "iso: --bootappend placeholder is behind the build option"
 fi
