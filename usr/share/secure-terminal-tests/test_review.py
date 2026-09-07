@@ -765,6 +765,16 @@ for _theme in ('dark', 'light'):
            '%s reads on the %s theme background' % (_name, _theme))
 _bar._choose('reject')
 
+# a DONE (no-op) transform's check is green like an active transform, but NOT bold
+# -- so "already applied" reads lighter than the bold, clickable active buttons.
+_bar.show_review(_FakeTerm(), 'plain ascii text', 0, 'paste')
+_noop_ss = _bar._strip.styleSheet()
+ok(not _bar._strip.isEnabled() and _SAFE_FG in _noop_ss and 'font-weight:400' in _noop_ss,
+   'a no-op (done) transform is green and not bold')
+ok('font-weight:600' not in _noop_ss,
+   'a no-op (done) transform is not bold (distinct from the bold active transforms)')
+_bar._choose('reject')
+
 # --- CANARY: the summary depends on classify_paste (has teeth) ----------------
 _saved_classify = _rev.classify_paste
 _rev.classify_paste = lambda text: []              # broken: detects no hidden classes
