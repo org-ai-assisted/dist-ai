@@ -84,6 +84,8 @@ omit =
 EOF
 
 overall=0
+saw_pass=0
+shim_skipped=0
 
 run_in_process() {
    local suite
@@ -92,16 +94,40 @@ run_in_process() {
       local rc=0
       COVERAGE_RCFILE="${rc_file}" python3 -m coverage run \
          -- "${tests_dir}/${suite}.py" >/dev/null 2>&1 || rc=$?
-      if [ "${rc}" != '0' ] && [ "${rc}" != '77' ]; then
-         printf '%s\n' "  ${suite}: exit ${rc}" >&2
-         overall=1
+      if [ "${rc}" = '0' ]; then
+         saw_pass=1
+         continue
       fi
+      if [ "${rc}" = '77' ]; then
+         ## shim_test's 77 = /usr/libexec/privleap/shim.py missing. shim.py is
+         ## the component that performs the privilege change; skipping it is a
+         ## PARTIAL install, not "privleap absent". Record it distinctly so it
+         ## is not silently dropped from the coverage figure with no trace.
+         if [ "${suite}" = 'shim_test' ]; then
+            printf '%s\n' \
+               "  ${suite}: SKIP -- shim.py missing; shim coverage absent" >&2
+            shim_skipped=1
+         fi
+         continue
+      fi
+      printf '%s\n' "  ${suite}: exit ${rc}" >&2
+      overall=1
    done
 }
 
 printf '%s\n' '######## in-process lane ########'
 run_in_process parser_fuzz authorizer_test unit_test daemon_test config_test \
    client_test shim_test
+
+## privleap IS present (some in-process suite passed) yet the shim was skipped:
+## a partial install whose privilege boundary is NOT in the figure below. Fail
+## rather than report an understated coverage number as if it were complete.
+if [ "${shim_skipped}" != '0' ] && [ "${saw_pass}" != '0' ]; then
+   printf '%s\n' \
+      'privleap-tests-coverage: shim.py missing (partial install); the shim' \
+      'privilege boundary is NOT covered below.' >&2
+   overall=1
+fi
 
 printf '%s\n' ''
 printf '%s\n' '######## live-daemon lane (needs sudo) ########'

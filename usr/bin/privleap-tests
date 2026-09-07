@@ -32,6 +32,8 @@ fi
 
 overall=0
 saw_pass=0
+core_pass=0
+shim_skipped=0
 
 ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 run_one() {
@@ -39,6 +41,35 @@ run_one() {
   python3 -- "$@" || rc=$?
   if [ "${rc}" = '77' ]; then
     ## TAP/automake "skipped"; only fatal if nothing else passed.
+    return 0
+  fi
+  if [ "${rc}" != '0' ]; then
+    overall=1
+  else
+    saw_pass=1
+    ## A core in-process suite passed, so the privleap library IS present.
+    ## The pytest lane cannot prove this (its module-level skip still exits 0),
+    ## so it is the authority for "partial install vs privleap absent" below.
+    core_pass=1
+  fi
+  return 0
+}
+
+## shim_test.py owns an INDEPENDENT skip: its 77 means /usr/libexec/privleap/
+## shim.py is missing -- a PARTIAL install, not "privleap absent". shim.py is
+## the component that performs the privilege change, so that skip is a real
+## coverage hole, NOT the same benign "privleap not found" the other suites
+## report. Record it separately: if privleap is otherwise present (saw_pass),
+## a shim skip must surface as a FAIL rather than being absorbed as a normal
+## skip and passing the run.
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
+run_shim_suite() {
+  local rc=0
+  python3 -- "$@" || rc=$?
+  if [ "${rc}" = '77' ]; then
+    printf '%s\n' \
+      'shim_test: SKIP -- shim.py missing; privilege-boundary tests did not run'
+    shim_skipped=1
     return 0
   fi
   if [ "${rc}" != '0' ]; then
@@ -93,7 +124,7 @@ printf '%s\n' '################# client tool tests #######################'
 run_one "${tests_dir}/client_test.py"
 printf '%s\n' ''
 printf '%s\n' '################### PAM shim tests ########################'
-run_one "${tests_dir}/shim_test.py"
+run_shim_suite "${tests_dir}/shim_test.py"
 printf '%s\n' ''
 printf '%s\n' '############### Hypothesis property tests ##################'
 run_pytest "${tests_dir}/test_property.py"
@@ -107,6 +138,16 @@ if [ "${saw_pass}" = '0' ]; then
   printf '%s\n' 'privleap-tests: OVERALL RESULT: SKIPPED (privleap not found)'
   ## style-ok: allow-skip: privleap not found -- optional target absent
   exit 77
+fi
+if [ "${shim_skipped}" != '0' ] && [ "${core_pass}" != '0' ]; then
+  ## privleap IS present (a core suite passed) yet the shim tests skipped: a
+  ## partial install whose privilege-boundary suite never ran. Not a pass.
+  ## When privleap is wholly absent (no core pass) the shim skip is the same
+  ## benign "privleap not found" the SKIPPED path above reports, so it is only
+  ## a failure when the library is present.
+  printf '%s\n' \
+    'privleap-tests: OVERALL RESULT: FAIL (shim.py missing; PAM shim tests did not run)'
+  exit 1
 fi
 printf '%s\n' 'privleap-tests: OVERALL RESULT: PASS'
 exit 0
