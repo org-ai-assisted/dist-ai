@@ -32,7 +32,6 @@ export LC_ALL=C
 ## style-ok: allow-python-interpreter -- python3 -c dep probe
 
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
-[ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 
 if [ -n "${MSGCOLLECTOR_REPO}" ]; then
    subject="${MSGCOLLECTOR_REPO}/usr/libexec/msgcollector/generic_gui_message.py"
@@ -46,22 +45,10 @@ if [ ! -r "${subject}" ]; then
    exit 1
 fi
 
-## The no-display guard lives in helper-scripts' guimessages.display, which the
-## script imports. In checkout mode put that repo's modules on PYTHONPATH; the
-## installed package is on the default path.
-if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   PYTHONPATH="${HELPER_SCRIPTS_REPO%/}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-   export PYTHONPATH
-fi
-
-## The script imports PyQt5 and guimessages.display at module load, before the
-## guard runs; without either there is nothing to exercise.
+## The subject imports PyQt5 at module load and implements its own inline
+## no-display guard; without PyQt5 there is nothing to exercise.
 if ! python3 -c 'import PyQt5' >/dev/null 2>&1; then
    printf '%s\n' "FATAL: PyQt5 not importable (install python3-pyqt5)" >&2
-   exit 1
-fi
-if ! python3 -c 'import guimessages.display' >/dev/null 2>&1; then
-   printf '%s\n' "FATAL: guimessages.display not importable (set HELPER_SCRIPTS_REPO or install helper-scripts)" >&2
    exit 1
 fi
 
@@ -119,10 +106,12 @@ fi
 ## must still be rejected (argparse exits 2), proving the guard sits after
 ## parse_args() rather than short-circuiting every headless invocation.
 rc="$(run_headless invalid_type "Title" "msg" "" ok)"
-if [ "${rc}" -eq 0 ]; then
+if [ "${rc}" -ge 128 ]; then
+   fail "headless invalid type: killed by signal (exit ${rc}) -- reached Qt dialog construction instead of a clean argparse rejection"
+elif [ "${rc}" -eq 0 ]; then
    fail "headless invalid type: accepted (guard placed before argparse)"
 else
-   pass "headless invalid type: still rejected (exit ${rc})"
+   pass "headless invalid type: still rejected cleanly (exit ${rc})"
 fi
 
 ## An explicit platform override must NOT be short-circuited: with

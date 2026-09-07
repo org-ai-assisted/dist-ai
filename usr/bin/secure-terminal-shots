@@ -65,7 +65,7 @@
 ##               --x11-terminals / --only NAME / --case C / --quick / --settle S.
 ##
 ## Both target a secure-terminal checkout resolved from SECURE_TERMINAL_REPO (or a
-## default under the operator's private-sources); SKIPs (exit 77) if it is absent.
+## default under the operator's private-sources); an absent checkout is FATAL (exit 1).
 
 set -o errexit
 set -o nounset

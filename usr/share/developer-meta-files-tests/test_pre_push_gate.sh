@@ -415,10 +415,12 @@ victim="$(new_repo)/victim.txt"
 printf 'VICTIM ORIGINAL no newline' > "${victim}"
 ln -s "${victim}" "$(dirname -- "${victim}")/target.sh"
 toctou="$(PYTHONPATH="${fixer_lib}" "${tool_test_dir}/precommit_fixer_symlink_toctou_probe.py" "$(dirname -- "${victim}")" "${victim}")"
-if [ "${toctou}" = 'VICTIM ORIGINAL no newline' ]; then
+## The probe repr's the content, so a followed-symlink corruption that only
+## APPENDS a newline (which $(...) would otherwise strip) shows as a mismatch.
+if [ "${toctou}" = "'VICTIM ORIGINAL no newline'" ]; then
    note_pass "the pre-commit fixer refuses a symlink swapped in after the scan"
 else
-   note_fail "the pre-commit fixer followed a swapped-in symlink (victim='${toctou}')"
+   note_fail "the pre-commit fixer followed a swapped-in symlink (victim=${toctou})"
 fi
 
 if [ "${fail}" -ne 0 ]; then

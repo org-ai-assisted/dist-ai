@@ -15,7 +15,7 @@
 ## FAILS on a tree without argparse (a fixed-size board): the panorama check would see the
 ## default width, not 130.
 ##
-## Subject: truecolor-gradient.py in secure-terminal-shots/ (absent -> exit 77 SKIP). Pure
+## Subject: truecolor-gradient.py in secure-terminal-shots/ (absent -> exit 1 FATAL). Pure
 ## Python stdlib, no display, no Qt -- runs in the dist-ai container in milliseconds.
 
 set -o errexit

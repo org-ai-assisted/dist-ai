@@ -15,4 +15,7 @@ import sys
 from dist_ai import precommit
 base, victim = sys.argv[1], sys.argv[2]
 list(precommit._run_fixer("end-of-file-fixer", ["target.sh"], base))
-print(open(victim).read())
+## repr so a trailing-newline corruption (all end-of-file-fixer can add) is
+## VISIBLE: the caller reads this via $(...), which strips a trailing newline,
+## so printing the raw content would hide exactly the byte this probes for.
+print(repr(open(victim).read()))

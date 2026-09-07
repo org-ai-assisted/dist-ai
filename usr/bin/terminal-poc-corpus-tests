@@ -100,10 +100,11 @@ overall=0
 run_stage() {
    local label="$1"; shift
    printf '\n== %s ==\n' "${label}"
-   if python3 -Bu -- "$@"; then
+   local rc=0
+   python3 -Bu -- "$@" || rc="$?"
+   if [ "${rc}" = '0' ]; then
       return 0
    fi
-   local rc="$?"
    if [ "${rc}" = '77' ]; then
       printf 'terminal-poc-corpus-tests: %s SKIPPED (exit 77)\n' "${label}" >&2
       return 0

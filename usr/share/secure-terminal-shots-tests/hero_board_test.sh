@@ -17,7 +17,7 @@
 ## returns non-'OK cat-safe'), and where the source carries a literal non-ASCII byte -- a genuine
 ## regression test, not a tautology.
 ##
-## Subject: hero-board.py in secure-terminal-shots/ (absent -> exit 77 SKIP). Pure Python stdlib,
+## Subject: hero-board.py in secure-terminal-shots/ (absent -> exit 1 FATAL). Pure Python stdlib,
 ## no display, no Qt -- runs in the dist-ai container in milliseconds.
 
 set -o errexit
