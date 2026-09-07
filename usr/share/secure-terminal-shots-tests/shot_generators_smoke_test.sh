@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Regression: the headless offscreen shot generators (hero-shot.py, display-modes-shot.py,
-## paste-warning-shot.py) must RUN, not just parse. The shell capture tests never import them,
+## paste-warning-shot.py, tooltip-shot.py) must RUN, not just parse. The shell capture tests never import them,
 ## so a stale reference left by a rename -- e.g. paste-warning-shot.py calling a renamed
 ## `_dark_palette` -- is a runtime NameError that no other test catches and that silently
 ## disarms the review-shot lane. This runs each generator offscreen (QT_QPA_PLATFORM=offscreen)
@@ -108,6 +108,8 @@ run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/paste.png" paste
 run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
+run_gen 'tooltip-shot' "${work}/tooltip.png" \
+   "${shots_dir}/tooltip-shot.py" "${work}/tooltip.png"
 ## zoom-shot.py sweeps the font-zoom levels and grabs the LIVE TUI grid at each (the
 ## white-band diagnostic). It writes one PNG per level into a DIR (not a single file),
 ## so smoke it with a two-level sweep and check the per-level file exists. Its output
@@ -145,6 +147,9 @@ check_tight() {  ## $1=label $2=png
 
 check_tight 'paste-warning-shot (paste)' "${work}/paste.png"
 check_tight 'paste-warning-shot (copy)'  "${work}/copy.png"
+## The tooltip shot composites a HiDPI card grab; a devicePixelRatio slip draws it at half
+## size and leaves a huge terminal-background band (the exact bug this shot hit in review).
+check_tight 'tooltip-shot' "${work}/tooltip.png"
 
 ## The review shots must SHOW the unicode-revealing render: the editable box, opened in the
 ## keep-printable form, must NAME each hidden look-alike inline (detail mode). A generator
