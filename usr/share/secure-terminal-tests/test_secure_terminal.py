@@ -1600,6 +1600,38 @@ with open(os.path.join(_sysd, '25-rc.conf'), 'w', encoding='utf-8') as _h:
 eq(SET.load().get('remote_control'), 'true',
    'settings: only a privileged dir can enable remote_control')
 
+# omit-default vs the SYSTEM layer: a user value equal to the BUILT-IN default but
+# DIFFERENT from an unlocked system value must be WRITTEN, not omitted -- else the safer
+# user choice is silently dropped and the less-safe system value re-applies on restart
+# (a security downgrade). save() must compare against the EFFECTIVE lower-precedence
+# value (the system layer when it sets the key), not the built-in default alone.
+with open(os.path.join(_sysd, '15-sysdef.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('paste_warn=never\n')                 # unlocked, LESS-safe system policy
+SET.save({'paste_warn': 'unicode'}, defaults={'paste_warn': 'unicode'})  # user picks the safer one
+with open(SET.user_config_file(), encoding='utf-8') as _h:
+    _uc = _h.read()
+ok('paste_warn=unicode' in _uc,
+   'settings: a user value equal to the built-in default but != an unlocked system value IS written')
+eq(SET.load().get('paste_warn'), 'unicode',
+   'settings: the safer user choice survives restart (not downgraded to system paste_warn=never)')
+# control: with NO system override, the same value equal to the default IS omitted (pruned)
+os.remove(os.path.join(_sysd, '15-sysdef.conf'))
+SET.save({'paste_warn': 'unicode'}, defaults={'paste_warn': 'unicode'})
+with open(SET.user_config_file(), encoding='utf-8') as _h:
+    _uc2 = _h.read()
+ok('paste_warn' not in _uc2,
+   'settings: with no system override, a value equal to the built-in default is omitted')
+
+# the settings file holds security toggles -> it must be 0600 (no group/world bits),
+# regardless of umask (a plain open('w') would leave it world-readable under a lax umask).
+_um = os.umask(0)                    # permissive: the old umask-dependent write would leak bits
+try:
+    SET.save({'paste_warn': 'unicode'})
+finally:
+    os.umask(_um)
+eq(os.stat(SET.user_config_file()).st_mode & 0o077, 0,
+   'settings: the user config file is written 0600 regardless of umask (no group/world access)')
+
 # --- ipc: single-instance socket helpers (Qt-free) ----------------------------
 import struct                                          # noqa: E402
 from secure_terminal import ipc as IPC                # noqa: E402
