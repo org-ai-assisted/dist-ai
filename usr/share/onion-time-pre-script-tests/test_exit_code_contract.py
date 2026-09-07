@@ -79,6 +79,8 @@ _DEFAULTS = {
 class TestExitCodeContract(PreScriptTestBase):
     """Drive the real te_pe_tb_check across states; assert the sdwdate code."""
 
+    helper_scripts_path: str
+
     def _consensus_stub(self, kind: str, now: int) -> str:
         """
         Bodies for tor_consensus_valid-after / -until that make the REAL
@@ -86,8 +88,8 @@ class TestExitCodeContract(PreScriptTestBase):
         the fixture times a full hour off the wall clock so the run's own
         `date +%s` still lands on the intended side.
         """
-        after = now - 3600
-        until = now + 3600
+        after: "int | str" = now - 3600
+        until: "int | str" = now + 3600
         aec = '0'
         uec = '0'
         if kind == 'ok':
