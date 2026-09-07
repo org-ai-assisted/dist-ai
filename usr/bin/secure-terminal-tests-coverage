@@ -41,6 +41,27 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
+## Run the coverage suites under a REAL headless Wayland compositor (labwc, via
+## wl-headless-run) so the Qt suites use the 'wayland' QPA platform, not offscreen. One
+## compositor serves the whole run. A no-op when already under a compositor; a bare direct
+## run still works (offscreen fallback). REQUIRED tooling -> FATAL if absent, never a silent
+## skip. DIST_AI_TESTS_NO_WL=1 forces the direct (unwrapped) path.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${DIST_AI_TESTS_NO_WL:-}" != '1' ]; then
+   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+   else
+      printf '%s\n' 'secure-terminal-tests-coverage: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
+      exit 1
+   fi
+   export DIST_AI_TESTS_NO_WL=1
+   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
+   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
+   ## above makes the re-run skip this block.
+   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
+fi
+
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then
@@ -62,17 +83,14 @@ if ! python3 -c 'import coverage' 2>/dev/null; then
    exit 1
 fi
 
-## Select the sys.monitoring core (PEP 669, Python 3.12+) over coverage's default
-## C tracer. The C tracer drives sys.settrace PER THREAD, and test_mainwin runs a
-## REAL single-instance IPC handoff with the client in a background thread while
-## the server side (on_ready) runs on the main thread inside the Qt event loop.
-## Under trace, the two threads' settrace machinery races Qt native code and the
-## SIGCHLD that reaps the windows' pty children -> an intermittent SIGSEGV (exit
-## 139) mid-suite. sys.monitoring does not use sys.settrace and is thread-safe, so
-## it makes the crash RARE while measuring identically (same stmt count) -- but the
-## Qt-native/SIGCHLD race can still SIGSEGV occasionally under sysmon too, so
-## run_suite_under_coverage (below) retries a crashed suite. Honour an explicit
-## COVERAGE_CORE so a developer can still force a core.
+## Select the sys.monitoring core (PEP 669, Python 3.12+) over coverage's default C tracer.
+## The C tracer drives sys.settrace PER THREAD; a Qt suite that runs Qt native code + a
+## SIGCHLD pty reaper alongside the tracer can race it into an intermittent SIGSEGV (exit
+## 139) mid-suite (coveragepy#1316). sys.monitoring does not use sys.settrace and is
+## thread-safe, so it makes that crash RARE while measuring identically (same stmt count) --
+## but a residual tracer/native race can still SIGSEGV occasionally under sysmon too, so
+## run_suite_under_coverage (below) retries a crashed suite. Honour an explicit COVERAGE_CORE
+## so a developer can still force a core.
 if [ -z "${COVERAGE_CORE:-}" ] \
    && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
    && python3 -c 'import coverage.sysmon' 2>/dev/null; then
@@ -151,23 +169,23 @@ assert_gated_globs_resolve 'Qt widget' "${gated_qt}" "${pkg}"
 assert_every_module_gated
 
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
-## (and any forked child's) data in its own file, then merges them. The Qt
-## suites run on the offscreen platform and fail closed (exit 1) when PyQt6 or
-## pyte is missing -- a security-relevant suite must never silently disable
-## itself -- so both tiers below are always gated.
-export QT_QPA_PLATFORM=offscreen
+## (and any forked child's) data in its own file, then merges them. The Qt suites run on the
+## REAL 'wayland' QPA platform (this script re-execs under wl-headless-run at the top, which
+## exports QT_QPA_PLATFORM=wayland); a bare direct run with no compositor falls back to each
+## suite's own offscreen setdefault. They fail closed (exit 1) when PyQt6 or pyte is missing
+## -- a security-relevant suite must never silently disable itself -- so both tiers below are
+## always gated.
 ## Pin the font DPI to 72 for every suite process BEFORE Qt starts, so the Qt
 ## suites' font-metric-derived geometry (the responsive-toolbar tier widths in
 ## test_mainwin especially) is deterministic under coverage without relying on a
 ## per-module setdefault. Honour an explicit override so this stays a safe
 ## default rather than a lock.
 export QT_FONT_DPI="${QT_FONT_DPI:-72}"
-## test_mainwin's real single-instance IPC handoff (background client thread +
-## main-thread Qt event loop + SIGCHLD pty reaping) intermittently SIGSEGVs (exit 139)
-## under coverage even on the thread-safe sysmon core: a CRASH artifact of the
-## Qt-native/signal race, NOT a test verdict (a real failure exits 1; the uninstrumented
-## suite never crashes). coverage combine UNIONS per-file line data, so a crashed
-## attempt's partial parallel-mode file can only re-add already-covered lines -- it
+## A Qt suite under coverage can intermittently SIGSEGV (exit 139) even on the thread-safe
+## sysmon core: a residual coverage-tracer/Qt-native race (coveragepy#1316), NOT a test
+## verdict (a real failure exits 1; the uninstrumented suite never crashes). coverage combine
+## UNIONS per-file line data, so a crashed attempt's partial parallel-mode file can only
+## re-add already-covered lines -- it
 ## cannot inflate or corrupt the measurement. Retry a segfaulting suite so the gate is
 ## not flaky-red for no code reason; fail loud only if it crashes on EVERY attempt.
 ## Bounded by COVERAGE_SEGV_RETRIES.

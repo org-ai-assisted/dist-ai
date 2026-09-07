@@ -32,6 +32,26 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
+## Run the live-GUI fuzzer under a REAL headless Wayland compositor (labwc, via
+## wl-headless-run), not offscreen. A no-op when already under a compositor; a bare direct
+## run falls back to offscreen (the export below). REQUIRED tooling -> FATAL if absent.
+## DIST_AI_TESTS_NO_WL=1 forces the direct (unwrapped) path.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${DIST_AI_TESTS_NO_WL:-}" != '1' ]; then
+   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+   else
+      printf '%s\n' 'secure-terminal-tests-fuzz-gui: FATAL: wl-headless-run not found (install dist-ai-tests-common)' >&2
+      exit 1
+   fi
+   export DIST_AI_TESTS_NO_WL=1
+   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
+   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
+   ## above makes the re-run skip this block.
+   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
+fi
+
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then
