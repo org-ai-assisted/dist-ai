@@ -157,6 +157,36 @@ else
    fail "capturing (147) announced ${dip_147_n} times (want 1) -- a dip must not re-announce capturing"
 fi
 
+## --- Scenario 1b-peaks: RISING transient peaks in the compress tail must not re-flip ----------
+## Once compressing, per-shot webp writes on a DIFFERENT file each poll produce a RISING sequence
+## of transient peaks (148, then 149, ...), each exceeding the previous _pp_last -- unlike the 1b
+## dip, a bare `-gt _pp_last` test accepts each as new progress and re-flips to capturing. They
+## must NOT reprint a capturing line nor re-announce compressing.
+peaks_log="$(
+   PP_FREEZE_POLLS=2
+   # shellcheck source=../secure-terminal-shots/phase-progress.sh
+   source "${lib}"
+   pp_begin comparison
+   pp_capture_tick 147
+   pp_capture_tick 147   # frozen 1
+   pp_capture_tick 147   # frozen 2 -> compressing (147 captured)
+   pp_capture_tick 148   # webp write, file A -> transient peak (> 147)
+   pp_capture_tick 147   # file A .png removed
+   pp_capture_tick 149   # webp write, file B -> higher transient peak (> 148)
+   pp_capture_tick 147   # file B .png removed
+)"
+if grep --quiet --extended-regexp 'capturing comparison \(14[89] shot' <<< "${peaks_log}"; then
+   fail 'a rising transient peak (148/149) fabricated a capturing line during the compress tail'
+else
+   pass 'rising transient peaks in the compress tail do not fabricate a capturing line'
+fi
+peaks_compress_n="$(printf '%s\n' "${peaks_log}" | grep --count --fixed-strings 'phase: compressing' || true)"
+if [ "${peaks_compress_n}" = '1' ]; then
+   pass 'compressing announced exactly once despite rising transient peaks'
+else
+   fail "compressing announced ${peaks_compress_n} times (want 1) under rising transient peaks"
+fi
+
 ## --- Scenario 1c: PP_FREEZE_POLLS sanitizer rejects an all-zero string ------------------------
 ## '00' is all-digits so a digit-only guard lets it pass, but -ge reads it as 0 -> a single frozen
 ## poll would prematurely declare compressing. The sanitizer must force it to the default (>=1).
