@@ -2387,6 +2387,14 @@ expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}  ${hash}${hash} style-ok: allow-s
 ## waiver is ignored (false positive).
 expect_rule 'R-220' "exit ${bslash}${nlreal}77  ${hash}${hash} style-ok: allow-skip: optional e2e" "absent"
 expect_rule 'R-220' "exit ${bslash}${nlreal}77" "present"
+## A variable that ALWAYS holds the constant 77 ('SKIP=77; exit "${SKIP}"') is the
+## same skip as the literal. Declined (safe): a dynamic value ('RC=$?'), a non-77
+## constant, and a name a 'local'/'declare' can rebind in a function scope.
+expect_rule 'R-220' "SKIP=77${nlreal}exit ${dq}\${SKIP}${dq}" "present"
+expect_rule 'R-220' "SKIP=77${nlreal}exit ${dq}\${SKIP}${dq}  ${hash}${hash} style-ok: allow-skip: opt" "absent"
+expect_rule 'R-220' "RC=\$?${nlreal}exit ${dq}\${RC}${dq}" "absent"
+expect_rule 'R-220' "SKIP=5${nlreal}exit ${dq}\${SKIP}${dq}" "absent"
+expect_rule 'R-220' "SKIP=77${nlreal}f() { local SKIP=\$?${sc} exit ${dq}\${SKIP}${dq}${sc} }${nlreal}f" "absent"
 
 ## R-212: apt resolves the option NAME case-insensitively, so a mixed-case
 ## '--ALLOW-DOWNGRADES' enables downgrades at runtime and MUST be flagged; a
