@@ -125,16 +125,38 @@ ok(_cwd_act is not None and 'risk: low' in _cwd_act.toolTip(),
 # --- native menu QToolTip is styled readable, both themes ---------------------
 # Regression: menu action hints use Qt's native QToolTip, which was unstyled and
 # inherited a dark-on-dark platform palette. It must carry contrasting fg/bg.
+#
+# The stylesheet ALONE is not enough: under the Fusion style + a platform theme
+# (qt5ct) Qt paints the tooltip from its PALETTE (ToolTipBase/ToolTipText), which a
+# QToolTip{} stylesheet rule does NOT override -- so the fix must ALSO pin the palette.
+# The palette assertions below are the canary: they FAIL on the stylesheet-only code
+# that read green while the real desktop stayed dark-on-dark.
+from PyQt6.QtWidgets import QToolTip as _QTT                       # noqa: E402
+from PyQt6.QtGui import QPalette as _QPal, QColor as _QCol         # noqa: E402
+_TT_BASE = _QPal.ColorRole.ToolTipBase
+_TT_TEXT = _QPal.ColorRole.ToolTipText
+# Qt paints a QTipLabel from the INACTIVE color group (a tooltip is never an active
+# window), so the pin that the desktop actually shows lives there -- assert that group,
+# not the default (Active) group, else the check can read green while qt5ct paints dark.
+_TT_INACT = _QPal.ColorGroup.Inactive
 win.set_theme('dark')
 _ss_dark = APP.styleSheet()
 _d_bg, _d_fg, _d_bd = M._TIP_COLORS['dark']
 ok('QToolTip' in _ss_dark, 'app installs a QToolTip stylesheet')
 ok(_d_bg in _ss_dark and _d_fg in _ss_dark, 'dark QToolTip uses the dark card fg/bg')
 ok(_d_bg != _d_fg, 'QToolTip fg and bg differ (readable, not dark-on-dark)')
+ok(_QTT.palette().color(_TT_INACT, _TT_BASE) == _QCol(_d_bg),
+   'dark QToolTip INACTIVE-group base is pinned to the card bg (the group Qt paints)')
+ok(_QTT.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_d_fg),
+   'dark QToolTip INACTIVE-group text is pinned to the card fg (not the dark platform text)')
 win.set_theme('light')                       # restore the default for later tests
 _ss_light = APP.styleSheet()
 _l_bg, _l_fg, _l_bd = M._TIP_COLORS['light']
 ok(_l_bg in _ss_light and _l_fg in _ss_light, 'light QToolTip uses the light card fg/bg')
+ok(_QTT.palette().color(_TT_INACT, _TT_BASE) == _QCol(_l_bg),
+   'light QToolTip INACTIVE-group base is pinned to the card bg')
+ok(_QTT.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
+   'light QToolTip INACTIVE-group text is pinned to the card fg')
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 from PyQt6.QtWidgets import QFormLayout as _QFL                 # noqa: E402
@@ -401,6 +423,36 @@ _fw_first.setFocus = lambda *_a, **_k: _fw_focused.append(True)
 _fw.tabs.setCurrentIndex(1)
 _fw.tabs.setCurrentIndex(0)               # switch back to the first tab -> _sync_chrome_to_tab
 ok(_fw_focused, 'switching tabs gives the terminal keyboard focus (setFocus called)')
+
+# Window ACTIVATION (alt-tab back, a fresh open-all launch, a raise) must ALSO focus the
+# current terminal, but ONLY when focus is loose -- Qt leaves it on no child (or the tab
+# bar), so the window looks active yet typing needs an extra click. If a real input child
+# already holds focus (the paste/copy review editor, the zoom box, the find bar) activation
+# must NOT steal it, or the next Enter/Esc drops the pending review.
+# Canary: fails on a MainWindow without the changeEvent focus grab / the predicate.
+from PyQt6.QtCore import QEvent as _QEv                        # noqa: E402
+from PyQt6.QtWidgets import QLineEdit as _QLE                  # noqa: E402
+# The loose-vs-held decision is a pure predicate -- assert it directly (deterministic
+# offscreen, where real focus tracking needs a shown top-level).
+ok(_fw._activation_should_claim_focus(None),
+   'activation claims focus when nothing holds it (the extra-click case)')
+ok(_fw._activation_should_claim_focus(_fw.tabs.tabBar()),
+   'activation claims focus off the tab bar (arrow keys would step tabs, not type)')
+ok(not _fw._activation_should_claim_focus(_QLE()),
+   'activation does NOT steal focus from an input editor (review bar / zoom box)')
+# changeEvent, given loose focus, actually drives the grab (offscreen focusWidget() is None).
+_fw_act = []
+_fw_cur = _fw.current()
+_fw_cur.setFocus = lambda *_a, **_k: _fw_act.append(True)
+_fw.isActiveWindow = lambda: True         # offscreen has no real active window; force it
+_fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
+ok(_fw_act, 'window activation with loose focus focuses the current terminal')
+# Loose focus but the find bar is open -> the helper's own guard keeps focus in the field.
+# Offscreen never shows the top-level, so a child's isVisible() stays False; stub it.
+_fw._find_bar.isVisible = lambda: True
+_fw_act.clear()
+_fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
+ok(not _fw_act, 'window activation leaves focus in an open find bar')
 _fw.close()
 
 # --- _InfoLabel: the (i) marker is a link; label text stays selectable ---------
