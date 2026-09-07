@@ -3660,6 +3660,16 @@ try:
     # the theme lacks the symbol -> _toggle_icon draws the letter-chip fallback
     ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
        '_toggle_icon: draws the letter-chip fallback when the theme lacks the symbol')
+    # regression: with no theme icon, _app_icon resolves the shipped SVG and MUST build a
+    # MULTI-SIZE icon -- a bare QIcon(<svg path>) reports no availableSizes(), so Qt's X11
+    # _NET_WM_ICON export emits nothing and the window/taskbar icon silently vanishes to the
+    # WM default. (Real os.path.exists here, so it resolves the checkout SVG; needs the
+    # qt6-svg-plugins image plugin, a pinned test dep.)
+    _svg_app_icon = _REAL_APP_ICON()
+    ok(not _svg_app_icon.isNull(),
+       '_app_icon: resolves the shipped SVG when the theme has no icon')
+    ok(len(_svg_app_icon.availableSizes()) > 0,
+       '_app_icon: SVG fallback carries concrete sizes so _NET_WM_ICON is exported')
     _o_exists = os.path.exists
     try:
         os.path.exists = lambda path: True          # a shipped icon path is present
