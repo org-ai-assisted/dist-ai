@@ -152,7 +152,7 @@ win.set_osc_notice_type('osc_clipboard', False)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
 _octab2.osc_used.emit('osc_clipboard')
 ok(win._banner.isHidden(), 'a per-type muted OSC notice does not show')
-_octab2.osc_used.emit('osc_colors')
+_octab2.osc_used.emit('osc_hyperlink')     # NOT muted by default (unlike title/palette)
 ok(not win._banner.isHidden(), 'a non-muted OSC type still notifies')
 win.set_osc_notice_type('osc_clipboard', True)
 win._dismiss_advisory()
@@ -162,6 +162,7 @@ win.set_osc_notice(False)
 ok(win._banner.isHidden(), 'switching OSC notices off dismisses a showing banner')
 win.set_osc_notice(True)
 # enabling "allow title / notifications" clears a stale OSC notice.
+win.set_osc_notice_type('osc_title', True)   # muted by default -> un-mute so it shows
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
 _octab2.osc_used.emit('osc_title')
 ok(not win._banner.isHidden(), 'an OSC notice is showing again')

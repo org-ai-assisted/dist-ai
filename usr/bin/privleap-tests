@@ -92,13 +92,26 @@ run_pytest() {
     overall=1
     return 0
   fi
-  local rc=0
-  python3 -m pytest --import-mode=importlib -q "$@" || rc=$?
+  local rc=0 out
+  out="$(python3 -m pytest --import-mode=importlib -q "$@" 2>&1)" || rc=$?
+  printf '%s\n' "${out}"
   if [ "${rc}" = '0' ]; then
     saw_pass=1
   elif [ "${rc}" = '5' ]; then
-    printf '%s\n' 'FAIL: pytest collected no tests; the property file is not being run.'
-    overall=1
+    ## pytest rc=5 = "no tests collected" -- two distinct causes, only ONE is a failure:
+    ##  - the property module MODULE-SKIPPED: privleap is genuinely absent, so test_property.py
+    ##    does pytest.skip(..., allow_module_level=True) and pytest prints "N skipped". That is
+    ##    the suite's normal privleap-absent path; it must flow to the OVERALL SKIPPED (77) exit
+    ##    below (saw_pass stays 0), NOT be miscounted as a failure (that was a false RED whenever
+    ##    privleap was not installed).
+    ##  - the property file was genuinely NOT COLLECTED (broken/misnamed -> "no tests ran", no
+    ##    skip): the property layer silently ran nothing. THAT stays a FAIL -- the original guard.
+    if grep --quiet --extended-regexp '[1-9][0-9]* skipped' <<< "${out}"; then
+      printf '%s\n' 'SKIP: property tests module-skipped (privleap not found); property layer not counted as run.'
+    else
+      printf '%s\n' 'FAIL: pytest collected no tests; the property file is not being run.'
+      overall=1
+    fi
   else
     overall=1
   fi

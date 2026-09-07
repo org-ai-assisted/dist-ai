@@ -213,7 +213,13 @@ if [ "${mode}" = 'zoom-live' ]; then
    xvfb-run --auto-servernum \
       --server-args="-screen 0 $(( 1600 * shot_scale ))x$(( 1000 * shot_scale ))x24" \
       "${shots_dir}/comparison-capture.sh" --zoom-live "$@" || run_rc="$?"
-   printf '%s\n' "secure-terminal-shots: wrote real-GUI zoom-live shots to ${shots_dir}/shots"
+   ## Only claim success when the capture actually succeeded: '|| run_rc=' catches the
+   ## failure so errexit does not stop us, so the success line must be gated on run_rc --
+   ## else a failed sweep (unreachable ctl, zero valid shots) still prints "wrote ... shots"
+   ## on stdout while exiting non-zero, misleading a stdout-scraping caller (false green).
+   if [ "${run_rc}" = '0' ]; then
+      printf '%s\n' "secure-terminal-shots: wrote real-GUI zoom-live shots to ${shots_dir}/shots"
+   fi
    exit "${run_rc}"
 fi
 

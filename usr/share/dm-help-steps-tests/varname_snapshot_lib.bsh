@@ -1,0 +1,221 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared capture + normalization for the derivative-maker variable snapshots.
+## Sourced by both the generator 'dm-varname-snapshot' and the drift test
+## 'varname_snapshot_test.sh', so the two cannot diverge on what a snapshot is.
+##
+## What a snapshot is: for one build command (a --flavor x --target pair), the
+## set of variables that 'help-steps/variables' introduces on top of a bare
+## 'help-steps/pre', dumped as 'declare -p' lines with all machine-, clock-, and
+## checkout-varying values normalized to placeholders -- so a rerun on any
+## machine yields byte-identical output. This is the baseline a large 'variables'
+## refactoring is checked against.
+##
+## Not a '*_test.sh', so 'dm-help-steps-tests' does not run it as a test.
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset' would leak into (and could kill) the sourcing shell.
+
+## The build commands to snapshot: every flavor x every target. Invalid combos
+## are rejected by derivative-maker's own parse-cmd/variables validation and
+## recorded in '_rejected.txt', not curated here (we do not reinvent dm's
+## validity matrix). Flavor and target lists mirror parse_cmd_flavor_error and
+## parse_cmd_target_error in help-steps/parse-cmd.
+vs_flavors=(
+   whonix-gateway-lxqt
+   whonix-gateway-rpi
+   whonix-gateway-cli
+   whonix-workstation-lxqt
+   whonix-workstation-cli
+   whonix-custom-workstation
+   whonix-host-lxqt
+   whonix-host-cli
+   kicksecure-cli
+   kicksecure-lxqt
+   kicksecure-ci-tiny-do-not-use
+   dist-installer-cli
+   source
+)
+vs_targets=(
+   virtualbox
+   qcow2
+   utm
+   iso
+   raw
+   dist-installer-cli
+   windows
+   root
+)
+
+## Fixed, deterministic build inputs shared by every capture, so only the
+## flavor/target axes vary between snapshots.
+##   --arch amd64      pins every architecture-derived value (the suite/CI run amd64)
+##   --freshness current  satisfies the mandatory freshness choice without touching
+##                        a frozen pin file
+##   --freedom false   satisfies the mandatory firmware choice (required for the
+##                     '--target iso' combos; harmless for the rest)
+vs_fixed_args=( --freshness current --arch amd64 --freedom false )
+
+## Environment shared by BOTH the baseline sourcing and the combo capture. It
+## MUST be identical for the two, or a variable set here leaks: these names are
+## process-environment entries that 'declare -p' reports regardless of what
+## pre/variables do, so any set only for the combo would be absent from the
+## baseline and never subtracted -- polluting every snapshot (and masking the
+## case where 'variables' itself ever sets one of these names).
+##   dist_build_dump_varnames        triggers the dump hook at the end of variables
+##   dist_build_unlock_dangerous_options  allows the dangerous ci-tiny flavor
+##   dist_build_allow_root           lets pre source under root (CI/suite elevates)
+vs_capture_env=(
+   dist_build_dump_varnames=true
+   dist_build_unlock_dangerous_options=true
+   dist_build_allow_root=true
+)
+
+## Shell-special names that 'declare -p' emits but 'variables' never sets. Most
+## are already in the pre baseline; BASH_REMATCH and a few others populate
+## lazily, so name-subtraction alone can miss them. Dropped unconditionally.
+vs_shell_special_re='^(BASH_REMATCH|BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_SOURCE|BASH_COMMAND|BASH_SUBSHELL|BASH_EXECUTION_STRING|FUNCNAME|PIPESTATUS|LINENO|RANDOM|SECONDS|SRANDOM|EPOCHREALTIME|EPOCHSECONDS|_)$'
+
+## Set by vs_init_baseline: a sorted file of the names to subtract.
+vs_baseline_file=""
+
+## Resolve the derivative-maker checkout (env override, else ~/derivative-maker),
+## matching help_steps_test_lib.bsh.
+vs_resolve_dm() {
+   if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+      printf '%s\n' "${DERIVATIVE_MAKER_DIR}"
+   else
+      printf '%s\n' "${HOME}/derivative-maker"
+   fi
+}
+
+## Extract the variable name from a single 'declare -p' line.
+vs_declare_name() {
+   sed -E 's/^declare -[-a-zA-Z]+ ([A-Za-z_][A-Za-z0-9_]*).*/\1/'
+}
+
+## Names present after sourcing only help-steps/pre (no parse-cmd, no variables):
+## the inherited-env + pre baseline to subtract, so a snapshot shows only what
+## 'variables' itself introduced. Printed sorted, one per line.
+vs_baseline_names() {
+   local dm="$1"
+   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash -c 'source help-steps/pre; declare -p' ) 2>/dev/null \
+      | grep '^declare ' | vs_declare_name | LC_ALL=C sort -u
+}
+
+## Compute the baseline once for a checkout, into a temp file named by
+## vs_baseline_file. Non-zero (and an error) if pre cannot be sourced -- an empty
+## baseline would make every inherited name look 'introduced'.
+vs_init_baseline() {
+   local dm="$1"
+   vs_baseline_file="$(mktemp)"
+   ## '|| true': vs_baseline_names ends in a pipeline, so under errexit+pipefail a
+   ## failed 'source pre' (empty output -> grep exits 1) would abort here BEFORE
+   ## the '-s' check, losing the actionable message below. Let the check report it.
+   vs_baseline_names "${dm}" > "${vs_baseline_file}" || true
+   if [ ! -s "${vs_baseline_file}" ]; then
+      printf '%s\n' "ERROR: empty variable baseline for '${dm}'; help-steps/pre failed to source." >&2
+      return 1
+   fi
+}
+
+## Replace every machine-, clock-, checkout-, and arch-varying value with a
+## stable placeholder. Args: <dm-checkout-path> <home>. Reads 'declare -p' lines
+## on stdin, writes normalized lines on stdout.
+##
+## Path substitution QUOTES the pattern ('${x//"$a"/b}') so bash matches it
+## literally -- an unquoted pattern is glob-expanded, and a '[' / '*' / '?' in the
+## checkout path or $HOME would then under- or over-match. The checkout path is
+## replaced before $HOME because it is the more specific (longer) prefix. The
+## git-describe version token is replaced before the bare 40-hex commit id because
+## the token contains a hash.
+vs_normalize() {
+   local dm="$1" home="$2" line
+   ## '|| [ -n "${line}" ]' processes a final line with no trailing newline (the
+   ## rejection reason arrives that way); a plain 'while read' would drop it.
+   while IFS= read -r line || [ -n "${line}" ]; do
+      line="${line//"${dm}"/@DM@}"
+      line="${line//"${home}"/@HOME@}"
+      printf '%s\n' "${line}"
+   done | sed -E '
+      s/[0-9]+(\.[0-9]+)*-[0-9]+-g[0-9a-f]{7,40}/@VERSION@/g
+      s/[0-9a-f]{40}/@GITHEAD@/g
+      s/(SOURCE_DATE_EPOCH=")[0-9]+/\1@EPOCH@/g
+      s/(host_architecture=")[^"]*/\1@ARCH@/g
+      s/(user_name=")[^"]*/\1@USER@/g
+   '
+}
+
+## Keep only variables-introduced names (drop the baseline and shell-specials),
+## then normalize. Arg: <dm-checkout-path>. Reads 'declare -p' lines on stdin.
+vs_filter_and_normalize() {
+   local dm="$1"
+   grep '^declare ' \
+      | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" '
+           BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
+           {
+              name = $0
+              sub(/^declare -[-a-zA-Z]+ /, "", name)
+              sub(/[^A-Za-z0-9_].*/, "", name)
+              if (name in base) next
+              if (name ~ specialre) next
+              print
+           }' \
+      | vs_normalize "${dm}" "${HOME}"
+}
+
+## Capture the outcome of one build command. Args: <dm> <flavor> <target>.
+##   Valid combo:    prints the normalized snapshot to stdout, returns 0.
+##   Rejected combo: prints a single-line sanitized rejection reason to stdout,
+##                   returns 1.
+## The caller distinguishes the two by return code and captures either result
+## from stdout the same way -- so it works through '$(...)' (a subshell), where a
+## global side-effect would be lost.
+##
+## dm's exception handler prints its error block to STDOUT (only bash's own
+## 'command not found' for the absent full-harness error helper reaches stderr),
+## so both streams are captured and the salient 'message:' line is pulled from
+## either. The reason is normalized and reduced to printable ASCII so
+## '_rejected.txt' stays byte-identical across reruns (ASCII-only, per repo
+## rules; no stray color escapes or checkout paths).
+vs_capture_combo() {
+   local dm="$1" flavor="$2" target="$3"
+   local outfile errfile rc reason
+   outfile="$(mktemp)"
+   errfile="$(mktemp)"
+   if (
+      cd -- "${dm}" \
+         && env dist_build_dump_varnames=true dist_build_unlock_dangerous_options=true \
+            dist_build_allow_root=true \
+            bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
+            --flavor "${flavor}" --target "${target}" "${vs_fixed_args[@]}"
+   ) >"${outfile}" 2>"${errfile}"; then
+      rc=0
+   else
+      rc=$?
+   fi
+   if [ "${rc}" -ne 0 ]; then
+      reason="$(cat -- "${outfile}" "${errfile}" | grep -m1 -E '^message:' || true)"
+      [ -n "${reason}" ] || reason="rejected by derivative-maker (no 'message:' emitted)"
+      ## Strip ANSI color escapes, normalize volatile substrings, keep printable
+      ## ASCII only, collapse whitespace to one line.
+      reason="$(
+         printf '%s' "${reason}" \
+            | LC_ALL=C sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+            | vs_normalize "${dm}" "${HOME}" \
+            | LC_ALL=C tr -cd '[:print:]' \
+            | LC_ALL=C sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+      )"
+      safe-rm --force -- "${outfile}" "${errfile}"
+      printf '%s\n' "${reason}"
+      return 1
+   fi
+   safe-rm --force -- "${errfile}"
+   vs_filter_and_normalize "${dm}" < "${outfile}"
+   safe-rm --force -- "${outfile}"
+}

@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## guimessages.display: the shared "is a GUI available" guard used by the PyQt
+## guimessages.check_display: the shared "is a GUI available" guard used by the PyQt
 ## helpers (generic_gui_message.py and the other msgcollector dialog entry
 ## points) to avoid Qt's SIGABRT-on-no-display (exit 134). One place to test the
 ## logic instead of duplicating it per GUI app.
@@ -41,8 +41,8 @@ if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
    export PYTHONPATH
 fi
 
-if ! python3 -c 'import guimessages.display' >/dev/null 2>&1; then
-   printf '%s\n' "FATAL: guimessages.display not importable" >&2
+if ! python3 -c 'import guimessages.check_display' >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: guimessages.check_display not importable" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install it" >&2
    exit 1
 fi
@@ -64,7 +64,7 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## than encoding it in the exit code) keeps a crash distinguishable: an uncaught
 ## exception exits non-zero with no TRUE/FALSE line, so a broken implementation
 ## cannot masquerade as a correct 'false' (which shares exit code 1).
-avail_probe='from guimessages.display import gui_available; print("TRUE" if gui_available() else "FALSE")'
+avail_probe='from guimessages.check_display import gui_available; print("TRUE" if gui_available() else "FALSE")'
 
 check_available() {
    local description want rc out
@@ -90,8 +90,8 @@ check_available "all empty"            false DISPLAY= WAYLAND_DISPLAY= QT_QPA_PL
 
 ## exit_if_no_gui(): BEFORE prints, then the call either exits (no GUI) or
 ## returns (GUI) so AFTER prints. Default exit code is 0.
-guard_probe='from guimessages.display import exit_if_no_gui; import sys; print("BEFORE"); exit_if_no_gui(); print("AFTER")'
-guard_probe_code='from guimessages.display import exit_if_no_gui; import sys; print("BEFORE"); exit_if_no_gui(1); print("AFTER")'
+guard_probe='from guimessages.check_display import exit_if_no_gui; import sys; print("BEFORE"); exit_if_no_gui(); print("AFTER")'
+guard_probe_code='from guimessages.check_display import exit_if_no_gui; import sys; print("BEFORE"); exit_if_no_gui(1); print("AFTER")'
 
 ## no GUI: exits 0, stdout has BEFORE but not AFTER, stderr carries a diagnostic.
 out="${work_dir}/o"; err="${work_dir}/e"; rc=0

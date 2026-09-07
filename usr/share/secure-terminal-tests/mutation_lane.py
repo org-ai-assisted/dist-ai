@@ -125,11 +125,9 @@ def _run_suite(repo_copy, suite):
     env['PYTHONPATH'] = os.path.join(repo_copy, _PKG_REL) \
         + os.pathsep + env.get('PYTHONPATH', '')
     env['SECURE_TERMINAL_REPO'] = repo_copy
-    # env already copies the parent's environ, so under the runner's wl-headless wrapper the
-    # subprocess inherits WAYLAND_DISPLAY + QT_QPA_PLATFORM=wayland + the compositor's
-    # XDG_RUNTIME_DIR. Only force offscreen as the bare-direct-run fallback (no compositor).
-    if not env.get('WAYLAND_DISPLAY'):
-        env['QT_QPA_PLATFORM'] = 'offscreen'
+    # QT_QPA_PLATFORM=wayland + WAYLAND_DISPLAY + the compositor's XDG_RUNTIME_DIR are inherited
+    # from os.environ (the -mutation runner runs the whole lane under wl-headless-run), so each
+    # mutant's real suite runs on the headless-Wayland platform with no offscreen fallback.
     try:
         proc = subprocess.run([sys.executable, '-Bsu',
                                os.path.join(TESTS_DIR, suite)],

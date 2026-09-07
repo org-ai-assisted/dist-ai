@@ -17,7 +17,8 @@ import os
 import sys
 import time
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(mainwin)')
 # Pin the font DPI to 72 BEFORE any QApplication so font metrics are deterministic
 # by default. The responsive-toolbar tier assertions below are calibrated to the
 # real compositor's ~9pt metrics; bare offscreen defaults to a different DPI (a
@@ -266,7 +267,15 @@ try:
     _gs = _dialogs[-1]
     _rb = [b for b in _gs.findChildren(_QPB) if b.text() == 'Reset to defaults']
     ok(bool(_rb), 'Global settings has a Reset to defaults button')
+    # perturb the per-type OSC-notice toggles so Reset has something to revert (rd#1:
+    # _reset_defaults missed them, so Reset+Apply persisted a wrong mute set)
+    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC 0, 2)')
+    _nh_reset = _dlg_field(_gs, 'Hyperlinks  (OSC 8)')
+    _nt_reset.setChecked(True)       # un-mute title (non-default)
+    _nh_reset.setChecked(False)      # mute hyperlink (non-default)
     _rb[0].click()
+    ok(not _nt_reset.isChecked() and _nh_reset.isChecked(),
+       'reset: per-type OSC-notice toggles revert to default (title muted, hyperlink notified)')
     eq(_dlg_field(_gs, 'Theme').currentData(), _def_theme, 'reset: theme -> default')
     eq(_dlg_field(_gs, 'Zoom').value(), _def_zoom, 'reset: zoom -> default')
     eq(_dlg_field(_gs, 'Menu size').value(), _def_ui, 'reset: menu size -> default')
@@ -366,21 +375,23 @@ try:
     # setting looked editable and set_clip_autostart silently dropped the change).
     _ca_lock = set(win._locked)
     _ca_cce = win._clip_controls_enabled
-    win._clip_controls_enabled = lambda: True     # simulate tray on + available
-    win._locked = set()
-    _dialogs.clear()
-    win.show_global_settings()
-    _ca_on = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
-    ok(_ca_on is not None and _ca_on.isEnabled(),
-       'clip_autostart is editable when unlocked and the tray is available')
-    win._locked = {'clip_autostart'}
-    _dialogs.clear()
-    win.show_global_settings()
-    _ca_off = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
-    ok(_ca_off is not None and not _ca_off.isEnabled(),
-       'a locked clip_autostart disables its Global Settings control (not editable-but-ignored)')
-    win._clip_controls_enabled = _ca_cce
-    win._locked = _ca_lock
+    try:      # stubs the SHARED win -> restore in finally so a raise cannot leak them
+        win._clip_controls_enabled = lambda: True     # simulate tray on + available
+        win._locked = set()
+        _dialogs.clear()
+        win.show_global_settings()
+        _ca_on = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+        ok(_ca_on is not None and _ca_on.isEnabled(),
+           'clip_autostart is editable when unlocked and the tray is available')
+        win._locked = {'clip_autostart'}
+        _dialogs.clear()
+        win.show_global_settings()
+        _ca_off = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+        ok(_ca_off is not None and not _ca_off.isEnabled(),
+           'a locked clip_autostart disables its Global Settings control (not editable-but-ignored)')
+    finally:
+        win._clip_controls_enabled = _ca_cce
+        win._locked = _ca_lock
     # #24: a Ctrl+wheel live-zoom during Global settings must be DISCARDED on Cancel, like
     # every other field. _live_zoom mutates self._ui_scale and _persist()s it LIVE, so a
     # bare cancel-returns-without-applying left the wheeled scale applied AND on disk.
@@ -388,17 +399,19 @@ try:
     win._ui_scale = 100                       # sub-max so on_zoom(1) MUST raise it
     _persisted24 = []
     _orig_persist24 = win._persist
-    win._persist = lambda: _persisted24.append(win._ui_scale)
+    try:      # stubs the SHARED win._persist + QDialog.exec -> restore in finally
+        win._persist = lambda: _persisted24.append(win._ui_scale)
 
-    def _cancel_after_zoom(_self):
-        _dialogs.append(_self)
-        if getattr(_self, 'on_zoom', None) is not None:
-            _self.on_zoom(1)                  # a Ctrl+wheel step WHILE the dialog is open
-        return int(QDialog.DialogCode.Rejected)
-    QDialog.exec = _cancel_after_zoom
-    win.show_global_settings()
-    QDialog.exec = _accept_exec
-    win._persist = _orig_persist24
+        def _cancel_after_zoom(_self):
+            _dialogs.append(_self)
+            if getattr(_self, 'on_zoom', None) is not None:
+                _self.on_zoom(1)              # a Ctrl+wheel step WHILE the dialog is open
+            return int(QDialog.DialogCode.Rejected)
+        QDialog.exec = _cancel_after_zoom
+        win.show_global_settings()
+    finally:
+        QDialog.exec = _accept_exec
+        win._persist = _orig_persist24
     eq(win._ui_scale, 100,
        '#24: a Ctrl+wheel live-zoom is reverted when Global settings is cancelled')
     ok(_persisted24 and _persisted24[-1] == 100,
@@ -1014,13 +1027,13 @@ _oou = _QDS.openUrl
 _osd = _sess._state_dir
 _opened = []
 _state_tmp = tempfile.mkdtemp(prefix='st-transcript-state-')
+_ocur = win.current           # restored in the finally: this stubs the SHARED win
 try:
     def _spy_open_url(url):
         _opened.append(url.toLocalFile())
         return True
     _QDS.openUrl = staticmethod(_spy_open_url)
     _sess._state_dir = lambda: _state_tmp
-    _ocur = win.current
     win.current = lambda: None                  # no active tab -> no-op
     win.open_transcript()
     ok(_opened == [], 'open_transcript: no active tab is a no-op')
@@ -1088,6 +1101,7 @@ try:
 finally:
     _QDS.openUrl = _oou
     _sess._state_dir = _osd
+    win.current = _ocur       # backstop: a raise mid-try must not leak the None stub
 
 # --- ai-review #2: rename_tab on a session-restore placeholder (a bare QWidget, not a
 # SecureTerminal) must be a safe no-op, not an AttributeError (term.cwd_basename()) that
@@ -2314,11 +2328,13 @@ try:
     _pl_usrd = tempfile.mkdtemp(prefix='st-plusr-')
     _pl_o_sys, _pl_o_usr = _st_clip._system_dirs, _st_clip._user_config_dir
     _pl_o_locked, _pl_o_theme = set(win._locked), win._default_theme
+    _pl_o_zoom = win._default_zoom
     _st_clip._system_dirs = lambda: [_pl_sysd]
     _st_clip._user_config_dir = lambda: _pl_usrd
     try:
         win._locked = frozenset({'theme'})              # theme locked at launch
         win._default_theme = 'dark'
+        win._default_zoom = 175          # a NON-default key so "writes the rest" has one to check
         win._persist()
         _pw = {}
         _st_clip._parse_into(_st_clip.user_config_file(), _pw)
@@ -2326,6 +2342,7 @@ try:
            '_persist drops a startup-locked key (theme) but writes the rest')
     finally:
         win._locked, win._default_theme = _pl_o_locked, _pl_o_theme
+        win._default_zoom = _pl_o_zoom
         _st_clip._system_dirs, _st_clip._user_config_dir = _pl_o_sys, _pl_o_usr
 
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
@@ -3577,16 +3594,62 @@ try:
 finally:
     win._locked = _sl2
 
-# --- save_transcript to an unwritable path is swallowed -----------------------
-from PyQt6.QtWidgets import QFileDialog as _QFD3                 # noqa: E402
+# --- save_transcript to an unwritable path WARNS the user (never silent) -------
+from PyQt6.QtWidgets import QFileDialog as _QFD3, QMessageBox as _QMB3   # noqa: E402
 _o_gsf = _QFD3.getSaveFileName
+_o_warn3 = _QMB3.warning
+_warned3 = []
 try:
     _QFD3.getSaveFileName = staticmethod(
         lambda *_a, **_k: ('/proc/nonexistent-dir/x.txt', ''))
-    win.save_transcript()                   # open() raises OSError -> swallowed
-    ok(True, 'save_transcript: an unwritable path is swallowed')
+    _QMB3.warning = staticmethod(lambda *_a, **_k: _warned3.append(_a))
+    win.save_transcript()                   # open() raises OSError -> warns, not silent
+    ok(bool(_warned3) and any('/proc/nonexistent-dir/x.txt' in str(_a) for _a in _warned3),
+       'save_transcript: a failed save warns the user (a denied write never vanishes)')
 finally:
     _QFD3.getSaveFileName = _o_gsf
+    _QMB3.warning = _o_warn3
+
+# _save_capture falls back to the bare filename when the state dir cannot be made
+# (so the dialog still opens rather than crashing on the join).
+_o_ens = M.session.ensure_state_dir
+_start_args = []
+try:
+    M.session.ensure_state_dir = staticmethod(
+        lambda: (_ for _ in ()).throw(OSError('no state dir')))
+    _QFD3.getSaveFileName = staticmethod(
+        lambda *_a, **_k: (_start_args.append(_a), ('', ''))[1])
+    win.save_transcript()               # empty return path -> no write attempted
+    ok(bool(_start_args) and _start_args[0][2] == 'secure-terminal-transcript.txt',
+       '_save_capture opens with the bare filename when the state dir is unavailable')
+finally:
+    _QFD3.getSaveFileName = _o_gsf
+    M.session.ensure_state_dir = _o_ens
+
+# copy_transcript_path WARNS when the transcript file cannot be written.
+_o_ens2 = M.session.ensure_state_dir
+_o_warncp = _QMB3.warning
+_warned_cp = []
+try:
+    M.session.ensure_state_dir = staticmethod(
+        lambda: (_ for _ in ()).throw(OSError('no space')))
+    _QMB3.warning = staticmethod(lambda *_a, **_k: _warned_cp.append(_a))
+    win.copy_transcript_path()
+    ok(bool(_warned_cp),
+       'copy_transcript_path warns when the transcript file cannot be written')
+finally:
+    _QMB3.warning = _o_warncp
+    M.session.ensure_state_dir = _o_ens2
+
+# copy_transcript_path is a safe no-op when there is no live current tab.
+_o_cur_cp = win.current
+try:
+    win.current = lambda: None
+    _dialogs.clear()
+    win.copy_transcript_path()
+    ok(not _dialogs, 'copy_transcript_path is a no-op (no dialog) with no current tab')
+finally:
+    win.current = _o_cur_cp
 
 # --- _open_path opens an existing folder and falls back to a parent -----------
 # Stub openUrl: offscreen QPA does not spawn, but a direct run under a real desktop
@@ -3958,8 +4021,10 @@ ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shut
 _teardown_win.deleteLater()
 APP.processEvents()
 
-# global settings persist across restart (#68): _apply_global writes the defaults
-# to the config so a fresh window reads them back.
+# global settings persist across restart (#68): _apply_global writes the CHANGED
+# (non-default) settings to the config so a fresh window reads them back. A value
+# left at its default is omitted (the default applies on reload) -- so this asserts
+# NON-default values, which are the ones persistence must carry.
 import secure_terminal.settings as _ps                         # noqa: E402
 _pcfg_prev = os.environ.get('XDG_CONFIG_HOME')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-persist-')
@@ -3967,7 +4032,7 @@ try:
     _pw = MainWindow()
     ok(_pw._tui_autobox_notice,
        'tui_autobox_notice loads default-on from a fresh (absent) config')
-    _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
+    _pw._apply_global({'theme': 'dark', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc': {}, 'osc_notice': False,
                        'tui_autobox_notice': False,
                        'scrollback': 7000, 'paste_delay': 5, 'escape_limit': 65536,
@@ -3975,7 +4040,7 @@ try:
     ok(not _pw._tui_autobox_notice and not _pw.act_tui_autobox_notice.isChecked(),
        '_apply_global stores tui_autobox_notice and mirrors it on the menu action')
     _pc = _ps.load()
-    eq(_pc.get('theme'), 'light', 'settings persist: theme written to config')
+    eq(_pc.get('theme'), 'dark', 'settings persist: a non-default theme is written to config')
     eq(_pc.get('zoom'), '175', 'settings persist: zoom written to config')
     eq(_pc.get('unicode_mode'), 'reveal', 'settings persist: unicode mode written')
     eq(_pc.get('scrollback'), '7000', 'settings persist: scrollback written')
@@ -4762,6 +4827,156 @@ finally:
 _lkw.close()
 _wcg.close()
 APP.processEvents()
+# --- OSC-notice defaults -------------------------------------------------------
+# The title/palette OSC notices fire on routine output, so they are muted by
+# DEFAULT (OSC_NOTICE_DEFAULT_OFF) when the key is ABSENT. A present value (even
+# empty) is the user's own choice. These canary-fail on the pre-change code
+# (which seeded _osc_notice_off empty regardless of the key's presence).
+import tempfile as _tf_nm                                        # noqa: E402
+
+
+def _win_with_conf(entries):
+    """Build a MainWindow whose ONLY user config is `entries` (a KEY->value dict,
+    or None for no user file) in an isolated XDG dir. Returns (win, cfg_dir)."""
+    _d = _tf_nm.mkdtemp()
+    _confdir = os.path.join(_d, 'secure-terminal.d')
+    os.makedirs(_confdir)
+    if entries is not None:
+        with open(os.path.join(_confdir, '20_auto-generated.conf'), 'w',
+                  encoding='utf-8') as _fh:
+            for _k, _v in entries.items():
+                _fh.write('%s=%s\n' % (_k, _v))
+    _o = os.environ.get('XDG_CONFIG_HOME')
+    os.environ['XDG_CONFIG_HOME'] = _d
+    try:
+        _w = MainWindow()
+    finally:
+        os.environ['XDG_CONFIG_HOME'] = _o if _o is not None else _d
+    return _w, _d
+
+
+# (a) key ABSENT (fresh / default config): the noisy types are muted by default.
+_wa, _ = _win_with_conf(None)
+eq(_wa._osc_notice_off, {'osc_title', 'osc_colors'},
+   'an absent osc_notice_off mutes the title + palette notices by default')
+_wa.close()
+
+# (b) key PRESENT (here empty): honoured verbatim as the user's own choice -- the
+# default is NOT injected, so an explicit empty means notify about every type.
+_wb, _ = _win_with_conf({'osc_notice_off': ''})
+eq(_wb._osc_notice_off, set(),
+   'a present (empty) osc_notice_off is honoured as-is (no default injected)')
+_wb.close()
+
+# (c) a present non-empty osc_notice_off is parsed to exactly its listed types.
+_wc, _ = _win_with_conf({'osc_notice_off': 'osc_cwd,osc_hyperlink'})
+eq(_wc._osc_notice_off, {'osc_cwd', 'osc_hyperlink'},
+   'a present osc_notice_off is parsed to its listed types')
+_wc.close()
+
+# --- Global settings: per-type OSC-notice toggles ------------------------------
+# The dialog exposes one notify toggle per OSC type (ticked == notify), mirroring
+# the View > Notify on OSC use submenu. The notice rows carry "(OSC <codes>)" in
+# their label, which the OSC-feature rows do not -- match on that to target them.
+win._osc_notice_off = {'osc_title'}
+QDialog.exec = _accept_exec
+_dialogs.clear()
+win.show_global_settings()
+_gsn = _dialogs[-1]
+_nt = _dlg_field(_gsn, 'Window / tab title  (OSC 0, 2)')
+_nh = _dlg_field(_gsn, 'Hyperlinks  (OSC 8)')
+ok(_nt is not None and not _nt.isChecked(),
+   'per-type notice: a muted type (osc_title) shows unticked in Global settings')
+ok(_nh is not None and _nh.isChecked(),
+   'per-type notice: an un-muted type (osc_hyperlink) shows ticked')
+ok(_dlg_field(_gsn, 'All OSC notices') is not None,
+   'Global settings shows the master "All OSC notices" toggle')
+
+# an admin-locked osc_notice_off greys every per-type notice checkbox in the
+# dialog (an editable-but-ignored control misleads worse than a greyed one).
+_sl_nd = set(win._locked)
+try:
+    win._locked = {'osc_notice_off'}
+    _dialogs.clear()
+    win.show_global_settings()
+    _gsl = _dialogs[-1]
+    _ntl = _dlg_field(_gsl, 'Window / tab title  (OSC 0, 2)')
+    ok(_ntl is not None and not _ntl.isEnabled(),
+       'a locked osc_notice_off greys the per-type notice checkboxes in Global settings')
+finally:
+    win._locked = _sl_nd
+
+# _apply_global with osc_notice_types updates _osc_notice_off AND syncs the
+# View-menu actions (ticked == notify; an unticked type is muted).
+win._locked = set()
+win._osc_notice_off = set()
+_types = {_k: (_k != 'osc_colors') for _k, *_ in M.OSC_FEATURES}   # mute only palette
+win._apply_global({'theme': 'light', 'zoom': 100, 'mode': 'box',
+                   'font_family': 'Hack', 'font_size': 11,
+                   'colors': True, 'line_edits': True, 'tui': False,
+                   'osc_notice': True, 'osc_notice_types': _types,
+                   'tui_autobox_notice': True, 'osc': {},
+                   'scrollback': 1000, 'paste_delay': 3, 'escape_limit': 4096,
+                   'persist': False})
+eq(win._osc_notice_off, {'osc_colors'},
+   '_apply_global mutes exactly the unticked per-type notice (palette)')
+ok(not win._osc_notice_actions['osc_colors'].isChecked()
+   and win._osc_notice_actions['osc_title'].isChecked(),
+   '_apply_global syncs the View-menu per-type notice actions to the dialog')
+
+# --- tab bar elides in the MIDDLE (keeps the trailing session number) ----------
+# ElideRight on many same-prefixed tabs (claude-rc-session: dev46x/dev47x) drops
+# the identifying number -> every tab reads the same prefix; ElideMiddle keeps it.
+from PyQt6.QtCore import Qt as _QtTB                              # noqa: E402
+eq(win.tabs.tabBar().elideMode(), _QtTB.TextElideMode.ElideMiddle,
+   'the tab bar elides in the middle so the session number survives')
+
+# --- Copy Transcript File Path: env-independent, one-click copy ----------------
+# Writes the scrollback to the app's default state-dir transcript file and shows
+# that path (no SECURE_TERMINAL_TRANSCRIPT_FILE required); the Copy button copies it.
+from PyQt6.QtWidgets import QLineEdit as _QLE11, QPushButton as _QPB11   # noqa: E402
+_dialogs.clear()
+win.copy_transcript_path()
+_tpdlg = _dialogs[-1]
+_tpfields = [w for w in _tpdlg.findChildren(_QLE11) if w.isReadOnly()]
+ok(bool(_tpfields) and _tpfields[0].text().endswith('transcript.txt')
+   and os.path.exists(_tpfields[0].text()),
+   'Copy Transcript File Path names a real default state-dir file (no env var needed)')
+_tppath = _tpfields[0].text()
+_tpcopy = [b for b in _tpdlg.findChildren(_QPB11) if 'Copy' in b.text()]
+ok(bool(_tpcopy), 'the transcript-path dialog has a Copy button')
+APP.clipboard().setText('')
+_tpcopy[0].click()
+eq(APP.clipboard().text(), _tppath,
+   'the Copy button puts the transcript path on the clipboard')
+
+# --- Part B: the generated config stores ONLY non-default overrides -----------
+# A fresh-config window persists NO keys (every value == its default -> omitted),
+# which doubles as the drift guard for _PERSIST_DEFAULTS: a value here that diverges
+# from the constructor's actual default would be written and fail this.
+import tempfile as _tf_pb                                          # noqa: E402
+_pbdir = _tf_pb.mkdtemp()
+_o_pb = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = _pbdir
+try:
+    def _pb_lines():
+        _p = M.settings.user_config_file()
+        return ([_l.strip() for _l in open(_p)
+                 if _l.strip() and not _l.startswith('#')] if os.path.exists(_p) else [])
+    _pbw = MainWindow()
+    _pbw._persist()
+    ok(_pb_lines() == [],
+       'Part B: a fresh-config window persists NO keys (defaults omitted; _PERSIST_DEFAULTS drift guard)')
+    _pbw._default_zoom = 200            # one real override
+    _pbw._persist()
+    ok(_pb_lines() == ['zoom=200'], 'Part B: only a non-default override is written')
+    _pbw._default_zoom = int(M._PERSIST_DEFAULTS['zoom'])   # back to default
+    _pbw._persist()
+    ok(_pb_lines() == [], 'Part B: a key reset to its default is pruned from the file')
+    _pbw.close()
+finally:
+    os.environ['XDG_CONFIG_HOME'] = _o_pb if _o_pb is not None else _pbdir
+
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 
 print('secure-terminal-tests(mainwin): all passed' if not _failures else

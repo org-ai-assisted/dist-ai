@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-"""GUI fuzzer: drive the LIVE SecureTerminal widget (offscreen Qt) with adversarial
-input, not just the pure sanitizer functions (fuzz_secure_terminal.py covers those).
+"""GUI fuzzer: drive the LIVE SecureTerminal widget (real headless-Wayland Qt) with
+adversarial input, not just the pure sanitizer functions (fuzz_secure_terminal.py covers those).
 
 Feeds random escape/C1/unicode/combining-mark byte streams through the real
 _on_readable render pipeline in every display mode and in both CLI and TUI mode,
@@ -23,7 +23,7 @@ A crash, a hang, or a leaked control byte is a terminal that failed to sanitize.
 The phases here are the reusable fuzz core; the deterministic test_fuzz_widget.py
 drives them under coverage, this file's CLI runs them heavily. Override with
 --iterations N / --seed N / --phase NAME; a failure prints the seed to replay.
-Needs PyQt6 + pyte and QT_QPA_PLATFORM=offscreen (the entrypoint sets it)."""
+Needs PyQt6 + pyte and QT_QPA_PLATFORM=wayland (the runner's wl-headless-run wrap sets it)."""
 
 import argparse
 import os
@@ -449,7 +449,7 @@ def main():                                              # pragma: no cover - CL
               flush=True)
     print('fuzz_widget: PASS', flush=True)
     sys.stdout.flush()
-    os._exit(0)                                          # skip Qt's offscreen teardown
+    os._exit(0)                                          # skip Qt's static teardown
 
 
 if __name__ == '__main__':                               # pragma: no cover - CLI entry

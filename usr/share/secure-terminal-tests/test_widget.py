@@ -1946,6 +1946,8 @@ ok(_selstick.textCursor().hasSelection(), 'canary: a held selection is establish
 _selstick.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton, pos=(50, 50)))
 ok(not _selstick.textCursor().hasSelection(),
    'a plain click in a mouse-reporting TUI dismisses a stuck selection before forwarding the click')
+ok(any(_w.startswith(b'\x1b[<') for _w in _ss_sent),
+   'the plain click IS then forwarded to the child as an SGR mouse report (the captured writes)')
 _selstick.close()
 
 # Regression (operator, "single line unselectable"): Shift is the mandatory local override to
@@ -1973,6 +1975,8 @@ _selfresh.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.Left
                                mods=Qt.KeyboardModifier.ShiftModifier, pos=_sf_click))
 eq(_selfresh.textCursor().anchor(), _sf_clickpos,
    'a Shift bypass-press anchors a FRESH selection at the click, not extending from the pinned grid cursor')
+ok(not _sf_sent,
+   'a Shift bypass-press is a LOCAL selection, NOT forwarded to the child (no captured writes)')
 _selfresh.close()
 # scrollback navigation in line mode: plain PageUp/PageDown forward to the shell
 # (\e[5~/\e[6~) like a real terminal; Shift+PageUp/Down scroll the buffer, Shift+
@@ -2793,6 +2797,8 @@ import tempfile as _tfcwd                                  # noqa: E402
 
 
 def _wait_cwd(pid, target, tries=60):
+    if pid is None:
+        return False           # the child never spawned -> clean FAIL, not a '%d'%None TypeError
     _rt = os.path.realpath(target)
     for _ in range(tries):
         try:
@@ -3028,10 +3034,12 @@ eq(insh._cp_at(glyph_pt(insh, 1)), 0x0416,
 # (not dropped to a blank format) and still carries the codepoint (codex P2 fix).
 from PyQt6.QtCore import QPoint                           # noqa: E402
 _sgrk = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
-_mfmt = SecureTerminal(command='/bin/cat')._fmt_from_key((_S.MARK_KEY, _sgrk, 0x202E))
+_mterm = SecureTerminal(command='/bin/cat')     # bind it: an unbound term leaks its pty/fd + child
+_mfmt = _mterm._fmt_from_key((_S.MARK_KEY, _sgrk, 0x202E))
 eq(_mfmt.foreground().color().name(), '#cd0000',
    'markings off + colours on keeps the program ANSI colour on the marking')
 eq(_mfmt.property(_CP_PROP), 0x202E, 'and the marking still carries the codepoint')
+_mterm.shutdown()                               # release the pty (the format is independent of the live term)
 # the hit-test targets ONLY the character under the point, never its neighbour: a
 # point over "_" reads the RLO, a point over the adjacent ASCII reads nothing
 # (codex P2: probing both sides bled the popup into adjacent glyphs).
@@ -4145,9 +4153,12 @@ _gcli._gutter.repaint()                       # paintEvent -> _paint_gutter -> g
 APP.processEvents()
 _gcli._update_gutter_area(_gcli.viewport().rect(), 5)    # scroll branch + width re-reserve
 _gcli._update_gutter_area(_gcli.viewport().rect(), 0)    # plain-update branch
-_gflag_y = next(top + 1 for b, top, bot in _gcli._gutter_blocks()
-                if _gcli._block_no_newline(b))
-_gutter_hover(_gcli, _gflag_y)               # over the flagged line -> tooltip shown
+_gflag_y = next((top + 1 for b, top, bot in _gcli._gutter_blocks()
+                 if _gcli._block_no_newline(b)), None)
+ok(_gflag_y is not None,
+   'gutter: a no-newline line is flagged (clean FAIL, not a StopIteration crash)')
+if _gflag_y is not None:
+    _gutter_hover(_gcli, _gflag_y)           # over the flagged line -> tooltip shown
 _gutter_hover(_gcli, 1000000)                # below every row -> no block -> tooltip hidden
 _gcli.shutdown()
 
@@ -4231,9 +4242,10 @@ _gwrap._force_current_frame()
 _wrapped = [(b, top, bot) for b, top, bot in _gwrap._gutter_blocks()
             if _gwrap._block_no_newline(b) and b.layout().lineCount() > 1]
 ok(bool(_wrapped), 'gutter regression: the flagged detail-mode block wraps to >1 visual line')
-_wb, _wtop, _wbot = _wrapped[0]
-ok(_gwrap._block_last_line_center(_wb, _wtop) > (_wtop + _wbot) / 2,
-   'gutter regression: the glyph rides the block LAST visual line, not its centre')
+if _wrapped:                                    # guard: an empty list is a clean FAIL above, not an IndexError
+    _wb, _wtop, _wbot = _wrapped[0]
+    ok(_gwrap._block_last_line_center(_wb, _wtop) > (_wtop + _wbot) / 2,
+       'gutter regression: the glyph rides the block LAST visual line, not its centre')
 _gwrap._gutter.repaint()                        # paint the wrapped-block glyph path
 APP.processEvents()
 _gwrap.shutdown()
@@ -4520,12 +4532,16 @@ eq(cp.current_copy_warn(), 'unicode', 'an unknown copy-warn mode falls back to i
 cp.apply_copy_warn('unicode')
 from PyQt6.QtCore import QPoint as _QPoint2                # noqa: E402
 _menu = cp._reviewed_context_menu(_QPoint2(5, 5))
-_copy_act = [a for a in _menu.actions() if a.objectName() == 'edit-copy'][0]
-_creq.clear(); _QGA3.clipboard().setText('OLD'); cp.selectAll()
-_copy_act.trigger()
-ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD',
-   'the context-menu Copy is routed through the copy review, not straight to the clipboard')
-cp.dispatch_pending_copy('reject')
+_copy_acts = [a for a in _menu.actions() if a.objectName() == 'edit-copy']
+ok(bool(_copy_acts),                            # guard: a renamed action is a clean FAIL, not an IndexError
+   'the reviewed context menu exposes an edit-copy action')
+if _copy_acts:
+    _copy_act = _copy_acts[0]
+    _creq.clear(); _QGA3.clipboard().setText('OLD'); cp.selectAll()
+    _copy_act.trigger()
+    ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD',
+       'the context-menu Copy is routed through the copy review, not straight to the clipboard')
+    cp.dispatch_pending_copy('reject')
 
 # --- FIX A: multi-path copy-oracle for Show-mode inert display glyphs ----------
 # A user copied a boxed cell and got only spaces: the ASCII export paths dropped the

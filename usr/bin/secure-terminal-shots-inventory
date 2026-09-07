@@ -51,13 +51,16 @@ def _resolve(ref, html_path, site):
     or not a local image. Handles a root-absolute ('/a/b.webp') and a relative ('shots/x')
     reference (relative to the HTML file's own directory), matching how a browser + GitHub
     Pages serve them."""
-    low = ref.lower()
     if ('://' in ref) or ref.startswith('//') or ref.startswith('data:') \
             or ref.startswith('mailto:') or ref.startswith('#'):
         return None
-    if not low.endswith(IMAGE_EXTS):
-        return None
+    ## Strip ?query / #fragment BEFORE the extension check: a real image reference can
+    ## carry a cache-buster ('shots/x.webp?v=2') or fragment, which otherwise fails the
+    ## endswith() test -> the reference is dropped, producing a false "orphan shot" (and
+    ## equally hiding a genuine dangling reference that carries a query/fragment).
     path = ref.split('?', 1)[0].split('#', 1)[0]
+    if not path.lower().endswith(IMAGE_EXTS):
+        return None
     if path.startswith('/'):
         rel = path.lstrip('/')
     else:

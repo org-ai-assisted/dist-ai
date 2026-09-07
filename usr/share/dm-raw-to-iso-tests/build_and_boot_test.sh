@@ -42,9 +42,16 @@ skip() {
 [ "${EUID}" -eq 0 ] || skip "not root (dm-raw-to-iso needs kpartx/chroot/mksquashfs)"
 [ -n "${raw_image}" ] || skip "DM_RAW_TO_ISO_TEST_IMAGE not set (no raw image to convert)"
 [ -r "${raw_image}" ] || skip "DM_RAW_TO_ISO_TEST_IMAGE not readable: ${raw_image}"
-type -P xorriso    >/dev/null 2>&1 || skip "xorriso not installed"
-type -P kpartx     >/dev/null 2>&1 || skip "kpartx not installed"
-type -P mksquashfs >/dev/null 2>&1 || skip "squashfs-tools not installed"
+type -P xorriso     >/dev/null 2>&1 || skip "xorriso not installed"
+type -P kpartx      >/dev/null 2>&1 || skip "kpartx not installed"
+type -P mksquashfs  >/dev/null 2>&1 || skip "squashfs-tools not installed"
+type -P grub-mkimage >/dev/null 2>&1 || skip "grub-common not installed"
+type -P mkfs.msdos  >/dev/null 2>&1 || skip "dosfstools not installed"
+type -P mcopy       >/dev/null 2>&1 || skip "mtools not installed"
+## The GRUB platform payloads are what dm-raw-to-iso require_file's: their absence
+## is a missing build dependency, not a code fault, so skip rather than FAIL.
+[ -r /usr/lib/grub/i386-pc/cdboot.img ] || skip "grub-pc-bin not installed (no i386-pc BIOS payload)"
+[ -r /usr/lib/grub/x86_64-efi/normal.mod ] || skip "grub-efi-amd64-bin not installed (no x86_64-efi payload)"
 
 pass=0
 fail=0

@@ -52,7 +52,8 @@ import os
 import sys
 from typing import Any
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(invariants)')
 
 try:
     from hypothesis import given, settings, strategies as st

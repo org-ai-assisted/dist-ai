@@ -113,6 +113,7 @@ core_suites=(
    setup-wizard-dist-tests
    stcat-family-tests
    stdisplay-tests
+   stdisplay-tests-verify
    strip-markup-tests
    systemcheck-tests
    tb-updater-tests
@@ -120,6 +121,7 @@ core_suites=(
    tor-control-panel-tests
    tor-ctrl-tests
    unicode-show-tests
+   unicode-show-tests-verify
    web-analyzer-tests
    website-tests
    website-tests-delegation-test
@@ -384,8 +386,13 @@ wire() {
          ;;
       dist-installer-cli)
          ## The suite drives usability-misc's shipped ci/vbox-back-to-default-repo.sh
-         ## with a stubbed installer; it needs the usability-misc checkout.
-         wire_env=( "USABILITY_MISC_REPO=$( pkg_dir usability-misc )" )
+         ## with a stubbed installer; it needs the usability-misc checkout. The
+         ## dry-run wiring lane sources the self-contained standalone, whose inlined
+         ## log_run needs stecho / sanitize-string from helper-scripts.
+         wire_env=(
+            "USABILITY_MISC_REPO=$( pkg_dir usability-misc )"
+            "HELPER_SCRIPTS_PATH=$( pkg_dir helper-scripts )"
+         )
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )

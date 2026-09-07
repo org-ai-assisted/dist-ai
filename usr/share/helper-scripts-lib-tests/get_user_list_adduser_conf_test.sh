@@ -112,6 +112,18 @@ else
    notok "non-numeric FIRST_UID was accepted"
 fi
 
+## A commented-out key must be ignored even when it is the LAST matching line.
+## A non-anchored match would pick '# FIRST_UID=3000' and exclude alice (2500);
+## the anchored match uses FIRST_UID=1000, so bob and alice are both listed.
+run_case "commented key ignored" $'FIRST_UID=1000\n# FIRST_UID=3000\nLAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "commented key ignored: FIRST_UID=1000 used (bob and alice listed)"
+else
+   notok "commented key not ignored: rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"
 [ "${fail_count}" -eq 0 ]

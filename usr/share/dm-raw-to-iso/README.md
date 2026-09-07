@@ -21,7 +21,7 @@ produces:
 | 4 | UEFI, USB/HDD | the same `efi.img` also exposed as a real GPT "basic data" partition, so a firmware ESP scan finds it on a block device |
 | 5 | UEFI Secure Boot | the ESP holds the Microsoft-CA-signed **shim** as `BOOT<arch>.EFI`; shim chainloads the distro-signed `grub<arch>.efi`; GRUB's `shim_lock` verifier then requires a signed kernel |
 | 6 | 32-bit UEFI (amd64) | an extra `/EFI/BOOT/BOOTIA32.EFI` in the same ESP, added when a signed grub is present (live-build parity) |
-| 7 | Apple/Mac EFI | an Apple Partition Map entry (`-isohybrid-apm-hfsplus`) alongside the GPT |
+| 7 | Apple/Mac EFI | NOT provided: an Apple Partition Map only maps an HFS+ partition, and this ISO ships none, so `-isohybrid-apm-hfsplus` would emit nothing (and is dropped by the grub2-mbr system area on amd64) |
 | 8 | Loop-mounted `.iso` file | `/boot/grub/loopback.cfg` (sources the main `grub.cfg`); the live entry carries `iso-scan/filename=${iso_path}` / `findiso=` so the initramfs finds the ISO file on the host partition |
 | 9 | Any OS reading the filesystem | ISO9660 + Rock Ridge (`-R -r`) + Joliet (`-J -joliet-long`) |
 
@@ -156,7 +156,7 @@ xorriso -as mkisofs -R -r -J -joliet-long -l -cache-inodes -iso-level 3 \
    -no-emul-boot -boot-load-size 4 -boot-info-table -b boot/grub/grub_eltorito \  # amd64 only
    -eltorito-alt-boot \                                                   # amd64 only
    -e boot/grub/efi.img -no-emul-boot \
-   -isohybrid-gpt-basdat -isohybrid-apm-hfsplus \
+   -isohybrid-gpt-basdat \
    -o ISO binary
 implantisomd5 ISO                       # optional: enables GRUB/dracut rd.live.check
 touch -d@$SOURCE_DATE_EPOCH ISO          # reproducibility

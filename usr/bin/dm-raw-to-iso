@@ -156,6 +156,11 @@ done
 [ -n "${raw}" ]    || error "--raw is required (see --help)"
 [ -n "${output}" ] || error "--output is required (see --help)"
 [ -r "${raw}" ]    || error "raw image not readable: '${raw}'"
+## The output is removed before it is written; if it is the input image, that
+## destroys the raw. Refuse output == input (resolved, so a symlink cannot alias).
+if [ "$(readlink -f -- "${raw}")" = "$(readlink -f -- "${output}" 2>/dev/null)" ] ; then
+   error "--output must not be the same file as --raw"
+fi
 
 if [ -z "${arch}" ] ; then
    require_cmd dpkg
@@ -174,6 +179,10 @@ if [ -z "${source_date_epoch}" ] ; then
    source_date_epoch="$(stat -c %Y -- "${raw}")"
 fi
 case "${source_date_epoch}" in ''|*[!0-9]*) error "--source-date-epoch must be a non-negative integer" ;; esac
+## Normalize to base 10: a value with a leading zero (e.g. '08') is later used in
+## arithmetic, where bash would read it as octal and abort ('08: value too great
+## for base'). 10# forces decimal and strips the leading zeros here, once.
+source_date_epoch="$(( 10#${source_date_epoch} ))"
 export SOURCE_DATE_EPOCH="${source_date_epoch}"
 
 ## Per-arch GRUB platform / EFI naming, matching live-build's efi-image mapping.
@@ -208,7 +217,9 @@ kpartx_image=""
 mounts=()
 
 cleanup() {
-   local rc="$?"
+   ## Explicit rc for a signal handler (see on_signal) so an interruption during a
+   ## successful command does not exit 0 and read as success; otherwise $?.
+   local rc="${1:-$?}"
    local m
    ## Unmount in reverse order.
    for (( idx=${#mounts[@]}-1 ; idx>=0 ; idx-- )) ; do
@@ -226,7 +237,13 @@ cleanup() {
    trap - EXIT
    exit "${rc}"
 }
-trap cleanup EXIT INT TERM
+## A signal must exit non-zero even if it lands right after a command that
+## returned 0 -- never report success for an interrupted build.
+on_signal() {
+   cleanup 143
+}
+trap cleanup EXIT
+trap on_signal INT TERM
 
 binary="${workdir}/binary"
 rootfs="${workdir}/rootfs"
@@ -240,7 +257,9 @@ mkdir -p -- "${binary}/boot/grub" "${binary}/live" "${binary}/.disk" "${rootfs}"
 ## mapped partition really looks like a root filesystem before trusting it.
 printf '%s: mapping partitions of %s\n' "${me}" "${raw}" >&2
 kpartx_image="${raw}"
-kpartx_output="$(kpartx -a -s -v -- "${raw}")"
+## -r: read-only device-mapper devices, so mounting an unclean ext4 cannot replay
+## its journal and mutate the input image (the "input is never modified" guarantee).
+kpartx_output="$(kpartx -a -r -s -v -- "${raw}")"
 [ -n "${kpartx_output}" ] || error "kpartx produced no partition maps for '${raw}'"
 
 ## Pick the last mapped partition (grml --vmefi root), same heuristic mount-raw uses.
@@ -282,7 +301,10 @@ done
 
 ## sort -V (version sort): a plain sort is lexical (5.9 > 5.19), so an image
 ## carrying more than one kernel would pick the wrong "newest" one.
-kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort -V | tail -n 1)"
+## '|| true': grep exits 1 when no vmlinuz-* matches, which under pipefail+errexit
+## would abort the assignment and make the diagnostic below dead code (bare exit 1,
+## no message). Swallow it so the '-n' guard fires with an actionable error instead.
+kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort -V | tail -n 1 || true)"
 [ -n "${kernel_img}" ] || error "no /boot/vmlinuz-* kernel found in the rootfs"
 kernel_ver="${kernel_img#vmlinuz-}"
 printf '%s: building dracut-live initramfs for kernel %s\n' "${me}" "${kernel_ver}" >&2
@@ -503,10 +525,13 @@ fi
 ## real GPT partition so USB/HDD firmware ESP-scan finds it. -efi-boot-part must
 ## apply on arm64 too (it has no BIOS block), or an arm64 ISO has only the optical
 ## El Torito EFI entry and no partition to boot from as a USB stick.
+## No -isohybrid-apm-hfsplus: an Apple Partition Map only maps an HFS+ partition,
+## and this ISO ships none (just the FAT ESP), so it emits nothing here and is
+## dropped by the grub2-mbr system area on amd64 -- we do not claim Mac/APM boot.
 xorriso_opts+=(
    -efi-boot-part --efi-boot-image
    -e boot/grub/efi.img -no-emul-boot
-   -isohybrid-gpt-basdat -isohybrid-apm-hfsplus
+   -isohybrid-gpt-basdat
 )
 
 safe-rm --force -- "${output}"
