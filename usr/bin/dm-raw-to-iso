@@ -282,7 +282,10 @@ done
 
 ## sort -V (version sort): a plain sort is lexical (5.9 > 5.19), so an image
 ## carrying more than one kernel would pick the wrong "newest" one.
-kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort -V | tail -n 1)"
+## '|| true': grep exits 1 when no vmlinuz-* matches, which under pipefail+errexit
+## would abort the assignment and make the diagnostic below dead code (bare exit 1,
+## no message). Swallow it so the '-n' guard fires with an actionable error instead.
+kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort -V | tail -n 1 || true)"
 [ -n "${kernel_img}" ] || error "no /boot/vmlinuz-* kernel found in the rootfs"
 kernel_ver="${kernel_img#vmlinuz-}"
 printf '%s: building dracut-live initramfs for kernel %s\n' "${me}" "${kernel_ver}" >&2
