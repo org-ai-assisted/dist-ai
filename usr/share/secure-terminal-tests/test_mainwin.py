@@ -4762,6 +4762,103 @@ finally:
 _lkw.close()
 _wcg.close()
 APP.processEvents()
+# --- OSC-notice defaults -------------------------------------------------------
+# The title/palette OSC notices fire on routine output, so they are muted by
+# DEFAULT (OSC_NOTICE_DEFAULT_OFF) when the key is ABSENT. A present value (even
+# empty) is the user's own choice. These canary-fail on the pre-change code
+# (which seeded _osc_notice_off empty regardless of the key's presence).
+import tempfile as _tf_nm                                        # noqa: E402
+
+
+def _win_with_conf(entries):
+    """Build a MainWindow whose ONLY user config is `entries` (a KEY->value dict,
+    or None for no user file) in an isolated XDG dir. Returns (win, cfg_dir)."""
+    _d = _tf_nm.mkdtemp()
+    _confdir = os.path.join(_d, 'secure-terminal.d')
+    os.makedirs(_confdir)
+    if entries is not None:
+        with open(os.path.join(_confdir, '20_auto-generated.conf'), 'w',
+                  encoding='utf-8') as _fh:
+            for _k, _v in entries.items():
+                _fh.write('%s=%s\n' % (_k, _v))
+    _o = os.environ.get('XDG_CONFIG_HOME')
+    os.environ['XDG_CONFIG_HOME'] = _d
+    try:
+        _w = MainWindow()
+    finally:
+        os.environ['XDG_CONFIG_HOME'] = _o if _o is not None else _d
+    return _w, _d
+
+
+# (a) key ABSENT (fresh / default config): the noisy types are muted by default.
+_wa, _ = _win_with_conf(None)
+eq(_wa._osc_notice_off, {'osc_title', 'osc_colors'},
+   'an absent osc_notice_off mutes the title + palette notices by default')
+_wa.close()
+
+# (b) key PRESENT (here empty): honoured verbatim as the user's own choice -- the
+# default is NOT injected, so an explicit empty means notify about every type.
+_wb, _ = _win_with_conf({'osc_notice_off': ''})
+eq(_wb._osc_notice_off, set(),
+   'a present (empty) osc_notice_off is honoured as-is (no default injected)')
+_wb.close()
+
+# (c) a present non-empty osc_notice_off is parsed to exactly its listed types.
+_wc, _ = _win_with_conf({'osc_notice_off': 'osc_cwd,osc_hyperlink'})
+eq(_wc._osc_notice_off, {'osc_cwd', 'osc_hyperlink'},
+   'a present osc_notice_off is parsed to its listed types')
+_wc.close()
+
+# --- Global settings: per-type OSC-notice toggles ------------------------------
+# The dialog exposes one notify toggle per OSC type (ticked == notify), mirroring
+# the View > Notify on OSC use submenu. The notice rows carry "(OSC <codes>)" in
+# their label, which the OSC-feature rows do not -- match on that to target them.
+win._osc_notice_off = {'osc_title'}
+QDialog.exec = _accept_exec
+_dialogs.clear()
+win.show_global_settings()
+_gsn = _dialogs[-1]
+_nt = _dlg_field(_gsn, 'Window / tab title  (OSC 0, 2)')
+_nh = _dlg_field(_gsn, 'Hyperlinks  (OSC 8)')
+ok(_nt is not None and not _nt.isChecked(),
+   'per-type notice: a muted type (osc_title) shows unticked in Global settings')
+ok(_nh is not None and _nh.isChecked(),
+   'per-type notice: an un-muted type (osc_hyperlink) shows ticked')
+ok(_dlg_field(_gsn, 'All OSC notices') is not None,
+   'Global settings shows the master "All OSC notices" toggle')
+
+# an admin-locked osc_notice_off greys every per-type notice checkbox in the
+# dialog (an editable-but-ignored control misleads worse than a greyed one).
+_sl_nd = set(win._locked)
+try:
+    win._locked = {'osc_notice_off'}
+    _dialogs.clear()
+    win.show_global_settings()
+    _gsl = _dialogs[-1]
+    _ntl = _dlg_field(_gsl, 'Window / tab title  (OSC 0, 2)')
+    ok(_ntl is not None and not _ntl.isEnabled(),
+       'a locked osc_notice_off greys the per-type notice checkboxes in Global settings')
+finally:
+    win._locked = _sl_nd
+
+# _apply_global with osc_notice_types updates _osc_notice_off AND syncs the
+# View-menu actions (ticked == notify; an unticked type is muted).
+win._locked = set()
+win._osc_notice_off = set()
+_types = {_k: (_k != 'osc_colors') for _k, *_ in M.OSC_FEATURES}   # mute only palette
+win._apply_global({'theme': 'light', 'zoom': 100, 'mode': 'box',
+                   'font_family': 'Hack', 'font_size': 11,
+                   'colors': True, 'line_edits': True, 'tui': False,
+                   'osc_notice': True, 'osc_notice_types': _types,
+                   'tui_autobox_notice': True, 'osc': {},
+                   'scrollback': 1000, 'paste_delay': 3, 'escape_limit': 4096,
+                   'persist': False})
+eq(win._osc_notice_off, {'osc_colors'},
+   '_apply_global mutes exactly the unticked per-type notice (palette)')
+ok(not win._osc_notice_actions['osc_colors'].isChecked()
+   and win._osc_notice_actions['osc_title'].isChecked(),
+   '_apply_global syncs the View-menu per-type notice actions to the dialog')
+
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 
 print('secure-terminal-tests(mainwin): all passed' if not _failures else
