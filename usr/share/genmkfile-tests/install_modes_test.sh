@@ -42,7 +42,7 @@ locate_genmkfile() {
       return 0
    fi
    local checkout
-   checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
+   checkout="${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
    if [ -x "${checkout}" ]; then
       printf '%s\n' "${checkout}"
       return 0
