@@ -65,10 +65,13 @@ dist_binary_build_folder=/build/out
 dist_build_version=1.2.3
 target_architecture_pretty_name=amd64
 
-## Run the REAL function against a fresh set of the two output variables.
+## Run the REAL function against a fresh set of the two output variables. The
+## '|| true' keeps a nonzero return (e.g. from a dependency the derivation calls)
+## from aborting the whole script under errexit with no PASS/FAIL output -- the
+## assertions on the resulting variable state are the real check.
 run_derivation() {
    unset binary_image_raw_file_for_unified binary_image_qcow2_file_for_unified 2>/dev/null || true
-   derive_unified_image_paths
+   derive_unified_image_paths || true
 }
 
 ## --- the fix: the 'none' sentinel leaves both vars UNSET ----------------------

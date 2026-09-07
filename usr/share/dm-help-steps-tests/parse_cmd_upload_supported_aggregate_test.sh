@@ -60,19 +60,28 @@ architecture_all_list=( amd64 arm64 source )
 ## Run the REAL parser in a subshell with a full, valid argument set and print the
 ## resulting 'dist_build_image_upload_supported'. The subshell isolates parse-cmd's
 ## strict-mode and any error()/exit from this test and from the other runs.
+##
+## A FAILED parse must never read as a value: if the parser returns nonzero, emit a
+## 'PARSE-FAILED' sentinel (not the possibly-half-set flag) so the assertions FAIL
+## rather than pass on a bad parse; if it aborts via exit() (the real error() path),
+## the subshell dies before printf and the capture is empty -- the '|| true' at each
+## call site keeps the script from aborting under errexit, and empty likewise FAILs.
 upload_supported_for() {
    (
       # shellcheck disable=SC1090
       source "${parse_cmd}"
-      dist_build_one_parse_cmd "$@" >/dev/null 2>&1 || true
-      printf '%s' "${dist_build_image_upload_supported:-UNSET}"
+      if dist_build_one_parse_cmd "$@" >/dev/null 2>&1; then
+         printf '%s' "${dist_build_image_upload_supported:-UNSET}"
+      else
+         printf 'PARSE-FAILED'
+      fi
    )
 }
 
 base_args=( --flavor kicksecure-cli --arch amd64 --freshness current --freedom true )
 
 ## --- the fix: order must NOT matter; a supported target keeps the flag true ----
-iso_then_raw="$( upload_supported_for --type host --target iso --target raw "${base_args[@]}" )"
+iso_then_raw="$( upload_supported_for --type host --target iso --target raw "${base_args[@]}" )" || true
 case "${iso_then_raw}" in
    true)
       pass "--target iso --target raw keeps upload_supported=true"
@@ -82,7 +91,7 @@ case "${iso_then_raw}" in
       ;;
 esac
 
-raw_then_iso="$( upload_supported_for --type host --target raw --target iso "${base_args[@]}" )"
+raw_then_iso="$( upload_supported_for --type host --target raw --target iso "${base_args[@]}" )" || true
 case "${raw_then_iso}" in
    true)
       pass "--target raw --target iso keeps upload_supported=true"
@@ -102,7 +111,7 @@ fi
 ## --- CANARY: a pure-unsupported target set must still read false ---------------
 ## Proves the probe can OBSERVE a false result, so the assertions above are not
 ## vacuously green; and it is the correct semantics (nothing to upload).
-raw_only="$( upload_supported_for --type vm --target raw "${base_args[@]}" )"
+raw_only="$( upload_supported_for --type vm --target raw "${base_args[@]}" )" || true
 case "${raw_only}" in
    false)
       pass "canary: --target raw alone reads upload_supported=false"
