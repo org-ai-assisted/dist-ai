@@ -510,6 +510,15 @@ eq(_bar._editor.source(), 'example.com', 'ASCII-fold replaces the Cyrillic with 
 ok('Replaced look-alikes' in _bar._status.text(), 'the status names the fold')
 ok(_bar._deliver.text() == 'Paste ASCII', 'fold -> Paste ASCII')
 
+# rd#2 (SECURITY): a long paste whose BOX is ASCII but whose un-shown TAIL (past
+# _BOX_MAX) carries a look-alike must NOT read "Paste ASCII" -- the tail is delivered
+# KEPT at the default reveal tier (sanitize_paste_unicode preserves printable
+# non-ASCII on the way out), so a homoglyph would cross under an "ASCII" label. The
+# button now judges box + the neutralized tail, so it reads "Paste unicode" (amber).
+_bar.show_review(_t, ('a' * _rev._BOX_MAX) + CYR_A, 0, 'paste')
+ok('unicode' in _bar._deliver.text() and _rev.CAUTION_FG in _bar._deliver.styleSheet(),
+   'rd#2: an ASCII box + a look-alike in the un-shown tail reads "Paste unicode" (amber), not "ASCII"')
+
 # --- [Restore original]: re-reveals the trap + re-blocks Deliver -----------------
 _bar.show_review(_t, _raw, 0, 'paste')
 _bar._do_strip()                                   # clean it -> deliverable
