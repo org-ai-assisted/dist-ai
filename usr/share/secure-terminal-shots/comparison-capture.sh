@@ -963,6 +963,10 @@ _known() {  ## $1=value $2=space-separated known list
 ## --zoom-live: the real-GUI live-zoom diagnostic sweep (see zoom_live_capture). Single-lane,
 ## secure-terminal-only; any trailing args are the zoom-level list (default band otherwise).
 zoom_live=''
+## Set when a colour board WRAPPED (board-wrap-check.py rejected it): the striped shot is
+## discarded, but the whole capture must then exit NON-ZERO -- a discarded-but-green run reads as
+## success with a required shot silently missing/stale. Carried to the final exit below.
+board_wrap_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
@@ -1052,6 +1056,15 @@ case "${jobs}" in
       exit 2
       ;;
 esac
+
+## --zoom-live is a single-lane real-GUI diagnostic (it drives ONE running instance over ctl) with
+## no grid to partition, and its dispatch (far below) runs only after the --jobs orchestrator has
+## already exited. --jobs parsed before --zoom-live on the command line leaves both set, which
+## would silently run the full parallel matrix and ignore the requested zoom sweep. Reject it.
+if [ -n "${zoom_live}" ] && [ "${jobs}" -gt 1 ]; then
+   printf '%s\n' "comparison-capture: --zoom-live is single-lane; do not combine it with --jobs ${jobs}" >&2
+   exit 2
+fi
 
 ## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
 ## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
@@ -1676,17 +1689,20 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
                   && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
                ## Colour boards (art/gradient) must fill the grid with NO hard-wrap: a board pinned
                ## wider than the live grid overflows into short continuation rows -- the striped
-               ## shot. board-wrap-check.py reads the same transcript and fails (non-zero) if any
-               ## board row is short. Checked in SHOW mode only: there the transcript carries the
-               ## real U+2580 half-block the guard counts, and it is a sufficient canary -- every
-               ## board mode cats the SAME width-fixed art/gradient payload, so if Show fits the
-               ## grid, the width-preserving Box view does too (Detail expands each cell and flows
-               ## by design, so it is not a wrap). Deterministic, so a wrap is NOT retried: discard
-               ## + warn (the missing shot then trips the pages shot-inventory guard) and break.
-               if { [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; } && [ "${st_mode}" = show ] \
-                     && ! "${here}/board-wrap-check.py" "${st_transcript}" --cols "${ST_BOARD_COLS}"; then
+               ## shot. board-wrap-check.py reads the same transcript and fails (non-zero) if the
+               ## board rendered ragged. Run in SHOW and BOX (the width-preserving modes) so BOTH
+               ## the truecolour board AND the neutralised colorboard are covered -- each is a
+               ## separate capture, so each striped shot is caught on its own; Detail expands each
+               ## cell and flows by design, so it is not checked. Deterministic, so a wrap is NOT
+               ## retried: discard + warn (the missing shot then trips the pages shot-inventory
+               ## guard) and break.
+               if { [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; } \
+                     && { [ "${st_mode}" = show ] || [ "${st_mode}" = box ]; } \
+                     && ! "${here}/board-wrap-check.py" "${st_transcript}" \
+                           --cols "${ST_BOARD_COLS}" --prompt "${SHOT_PROMPT}"; then
                   safe-rm --force -- "${out}/secure-terminal.${st_suffix}.png" 2>/dev/null || true
                   printf '%s\n' "warn secure-terminal.${st_suffix}: colour board WRAPPED (pinned ST_BOARD_COLS=${ST_BOARD_COLS} exceeds the live grid) -- discarded, not published; re-derive ST_BOARD_COLS in lib-capture.sh" >&2
+                  board_wrap_failed=1
                fi
                break
             fi
@@ -1731,6 +1747,14 @@ esac
 ## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.
 if [ -z "${no_optimize}" ]; then
    shots_optimize_to_webp "${out}"/*.png
+fi
+
+## A wrapped colour board is a HARD failure of the run, not a warn: the striped shot was
+## discarded (never published), so exiting 0 here would report success while a required shot is
+## missing/stale. Fail loud so the pin gets re-derived and the shots regenerated.
+if [ -n "${board_wrap_failed}" ]; then
+   printf '%s\n' 'ERROR: colour board(s) WRAPPED -- pinned ST_BOARD_COLS exceeds the live secure-terminal grid; the striped shot(s) were discarded. Re-derive ST_BOARD_COLS in lib-capture.sh and re-run.' >&2
+   exit 1
 fi
 
 printf '%s\n' "done; shots in ${out}"

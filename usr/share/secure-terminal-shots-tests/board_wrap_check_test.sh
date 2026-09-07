@@ -7,11 +7,13 @@
 
 ## Regression: the full-viewport colour boards (truecolor-art.py / truecolor-gradient.py) are
 ## pinned to secure-terminal's inner grid width (ST_BOARD_COLS). Pin them WIDER than the live
-## grid and every board line hard-wraps into a short continuation row -- the "striped gradient"
-## shot that once shipped when the pinned width drifted past the real grid. board-wrap-check.py
-## reads the captured transcript (SECURE_TERMINAL_TRANSCRIPT_FILE) and FAILS a capture whose
-## board wrapped, so a stale pin cannot silently publish a striped board. This exercises that
-## guard against synthetic transcripts (no display, no Qt, milliseconds).
+## grid and every board line hard-wraps into a short continuation row -- the "striped board" shot
+## that once shipped when the pinned width drifted past the real grid. board-wrap-check.py reads
+## the captured transcript (SECURE_TERMINAL_TRANSCRIPT_FILE) and FAILS a capture whose board
+## wrapped, so a stale pin cannot silently publish a striped board. The check is mode-agnostic (a
+## clean board is a rectangle of equal-width rows once the prompt is dropped), so it covers BOTH
+## the Show board (U+2580 rows) AND the neutralised Box board (multi-char cells, no U+2580). This
+## exercises the guard against synthetic transcripts (no display, no Qt, milliseconds).
 ##
 ## FAILS on a tree without the guard: board-wrap-check.py is absent -> FATAL below (the exact
 ## silent-drift regression this closes).
@@ -46,6 +48,8 @@ if [ -z "${shots_dir}" ]; then
 fi
 guard="${shots_dir}/board-wrap-check.py"
 
+prompt='user@host:~$ '
+
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -56,18 +60,31 @@ fail=0
 ## U+2580 UPPER HALF BLOCK as its raw UTF-8 bytes (E2 96 80), emitted via octal escape so this
 ## test source stays pure ASCII; board-wrap-check.py decodes the file as UTF-8 regardless of the
 ## C locale set above.
-hb_line() {  ## $1=count -> that many half-block glyphs + newline
-   local n="$1" i line=''
+hb_line() {  ## $1=count [$2=trailing-space-count] -> half-blocks (+ optional trailing spaces) + newline
+   local n="$1" pad="${2:-0}" i line=''
    for (( i = 0; i < n; i++ )); do
       line+="$(printf '\342\226\200')"
+   done
+   for (( i = 0; i < pad; i++ )); do
+      line+=' '
    done
    printf '%s\n' "${line}"
 }
 
-## $1=label $2=expected-rc  -- runs the guard on ${work}/t.txt at --cols 118 and compares rc.
-run_rc() {  ## $1=label $2=want-rc  (transcript already written to ${work}/t.txt)
+## A neutralised (Box-mode) board row: a multi-char cell unit repeated, no U+2580. Width scales
+## with the cell count, exactly like the real Box transcript (each cell many chars).
+box_line() {  ## $1=cell-count -> that many '[X]' cells + newline
+   local n="$1" i line=''
+   for (( i = 0; i < n; i++ )); do
+      line+='[X]'
+   done
+   printf '%s\n' "${line}"
+}
+
+## $1=label $2=want-rc  (transcript already written to ${work}/t.txt)
+run_rc() {
    local label="$1" want="$2" got=0
-   "${guard}" "${work}/t.txt" --cols 118 >/dev/null 2>&1 || got="$?"
+   "${guard}" "${work}/t.txt" --cols 118 --prompt "${prompt}" >/dev/null 2>&1 || got="$?"
    if [ "${got}" = "${want}" ]; then
       printf '%s\n' "PASS: ${label} (rc=${got})"
       pass=$(( pass + 1 ))
@@ -79,34 +96,55 @@ run_rc() {  ## $1=label $2=want-rc  (transcript already written to ${work}/t.txt
    fi
 }
 
-## A CLEAN board: 3 rows, each exactly the pinned 118 wide -> passes (rc 0). This is the shape a
-## correctly-pinned board renders (the linefeed deferred-wrap fix leaves no trailing blank row).
-{ hb_line 118; hb_line 118; hb_line 118; } > "${work}/t.txt"
-run_rc 'a clean 118-wide board passes' 0
+## --- Show board (U+2580 rows) ---
 
-## A WRAPPED board: the exact striped-shot shape -- each source line overflowed the 118 grid by 2
-## and hard-wrapped, so a full 118 row alternates with a 2-wide continuation fragment. MUST fail.
-{ hb_line 118; hb_line 2; hb_line 118; hb_line 2; hb_line 118; hb_line 2; } > "${work}/t.txt"
-run_rc 'a wrapped board (full rows + short fragments) is rejected' 1
-
-## An OVERSHOT board: the pin (118) is WIDER than the live grid (all rows rendered at 110), so
-## every row is short. The original bug: a board pinned past the grid renders uniformly narrow.
-{ hb_line 110; hb_line 110; hb_line 110; } > "${work}/t.txt"
-run_rc 'a board narrower than the pin (grid shrank) is rejected' 1
-
-## Board rows mixed with the shell echo + prompt (non-half-block lines): the prompt/echo are
-## ignored, the board rows are all 118 -> passes. Proves the guard keys on board rows only.
-{ printf '%s\n' 'user@host:~$ cat gradient.payload'; hb_line 118; hb_line 118; \
+## Clean: 3 rows each exactly the pinned 118 wide, with the prompt echo + returning prompt around
+## it -- the prompt lines are dropped, the board is a clean rectangle -> passes.
+{ printf '%s\n' 'user@host:~$ cat gradient.payload'; hb_line 118; hb_line 118; hb_line 118; \
    printf '%s\n' 'user@host:~$'; } > "${work}/t.txt"
-run_rc 'prompt/echo lines are ignored; a clean board still passes' 0
+run_rc 'a clean 118-wide Show board (with prompt lines) passes' 0
 
-## No board rows at all (an empty / never-rendered transcript) is a MISS, never a pass.
+## Wrapped: the striped-shot shape -- each source line overflowed by 2 and hard-wrapped, so a full
+## 118 row alternates with a 2-wide fragment.
+{ hb_line 118; hb_line 2; hb_line 118; hb_line 2; hb_line 118; hb_line 2; } > "${work}/t.txt"
+run_rc 'a wrapped Show board (ragged rows) is rejected' 1
+
+## Uniformly narrow: every Show row rendered at 110 (the pin 118 does not match) -> rejected even
+## though the rows are all the same width (payload/grid mismatch, caught by the exact-cols check).
+{ hb_line 110; hb_line 110; hb_line 110; } > "${work}/t.txt"
+run_rc 'a uniformly-narrow Show board (width != pinned cols) is rejected' 1
+
+## --- Neutralised Box board (multi-char cells, no U+2580) ---
+
+## Clean: 3 rows of 118 identical multi-char cells -> a clean rectangle -> passes (no exact-cols
+## assertion for a non-Show board, since a cell is many chars wide).
+{ box_line 118; box_line 118; box_line 118; } > "${work}/t.txt"
+run_rc 'a clean Box board (multi-char cells) passes' 0
+
+## Wrapped: full 118-cell rows alternating with 2-cell fragments -- the striped Box shot the
+## old Show-only guard missed entirely.
+{ box_line 118; box_line 2; box_line 118; box_line 2; box_line 118; box_line 2; } > "${work}/t.txt"
+run_rc 'a wrapped Box board (ragged rows) is rejected' 1
+
+## --- trailing-whitespace robustness (grid padding) ---
+
+## A wrap fragment padded with trailing spaces is still a fragment (width is rstrip'd) -> rejected.
+{ hb_line 118; hb_line 2 116; hb_line 118; hb_line 2 116; } > "${work}/t.txt"
+run_rc 'a space-padded wrap fragment is still caught' 1
+
+## A clean board whose rows carry trailing grid padding is still clean -> passes.
+{ hb_line 118 3; hb_line 118 3; hb_line 118 3; } > "${work}/t.txt"
+run_rc 'a clean board with trailing grid padding still passes' 0
+
+## --- degenerate transcripts ---
+
+## No board rows at all (only prompts) is a MISS, never a pass.
 printf '%s\n' 'user@host:~$' '' > "${work}/t.txt"
 run_rc 'a transcript with no board rows is rejected (board never rendered)' 1
 
 ## A missing transcript file is an error (rc 2), not a silent pass.
 missing_rc=0
-"${guard}" "${work}/does-not-exist.txt" --cols 118 >/dev/null 2>&1 || missing_rc="$?"
+"${guard}" "${work}/does-not-exist.txt" --cols 118 --prompt "${prompt}" >/dev/null 2>&1 || missing_rc="$?"
 if [ "${missing_rc}" = 2 ]; then
    printf '%s\n' 'PASS: a missing transcript file errors (rc=2), not a pass'
    pass=$(( pass + 1 ))
