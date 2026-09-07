@@ -111,6 +111,14 @@ def _expect_caught(label, caught):
         fail("canary %s: a broken model was NOT caught" % label)
 
 
+def _printable_ascii(ch):
+    """The tool's own output must be printable ASCII: not merely 7-bit, but free
+    of raw control bytes (ESC, DEL, ...) too, so it can never inject terminal
+    control. describe_char emits only ascii()-escaped text on one line, so every
+    character is in 0x20..0x7E."""
+    return SP <= ord(ch) <= TILDE
+
+
 def z3_prove(name, claim, assumptions=(), report=True):
     solver = z3.Solver()
     for assumption in assumptions:
@@ -234,33 +242,39 @@ _HOSTILE = [
 
 
 def _u2_enumerate():
-    """The REAL describe_char emits pure ASCII for EVERY code point (full sweep)
-    and never raises; spot-check the hostile corpus too."""
+    """The REAL describe_char emits only printable ASCII (no raw control byte,
+    ESC or DEL included) for EVERY code point (full sweep) and never raises;
+    spot-check the hostile corpus too."""
     for cp in range(0, MAX_CP + 1):
         try:
             desc = describe_char(chr(cp))
         except Exception as exc:  # pylint: disable=broad-except
             fail("U2 enumerate: describe_char(U+%04X) raised %r" % (cp, exc))
             return
-        bad = next((ch for ch in desc if ord(ch) >= 0x80), None)
+        bad = next((ch for ch in desc if not _printable_ascii(ch)), None)
         if bad is not None:
-            fail("U2 enumerate: describe_char(U+%04X) leaked non-ASCII U+%04X"
+            fail("U2 enumerate: describe_char(U+%04X) leaked non-printable U+%04X"
                  % (cp, ord(bad)))
             return
     for c in _HOSTILE:
         marker = "[U+%04X]" % ord(c)
-        if any(ord(ch) >= 0x80 for ch in marker):
-            fail("U2 enumerate: marker for U+%04X is not ASCII" % ord(c))
+        if any(not _printable_ascii(ch) for ch in marker):
+            fail("U2 enumerate: marker for U+%04X is not printable ASCII" % ord(c))
 
 
 def _u2_canaries():
     _expect_caught("U2/z3-hexdigit", not _u2_z3(broken=True))
     ## A describe that used repr() instead of ascii() would pass a printable
-    ## non-ASCII char through literally -- the ASCII guard must catch that.
+    ## non-ASCII char through literally -- the guard must catch that.
     def repr_describe(c):
         return "%s (U+%04X)" % (repr(c), ord(c))
     leaky = repr_describe(chr(0xE9))
-    _expect_caught("U2/model-repr-leak", any(ord(ch) >= 0x80 for ch in leaky))
+    _expect_caught("U2/model-repr-leak", any(not _printable_ascii(ch) for ch in leaky))
+    ## A raw control byte (ESC) in the output must ALSO be caught -- the oracle
+    ## rejects control bytes, not merely non-ASCII (7-bit ESC would slip a >=0x80
+    ## check).
+    _expect_caught("U2/model-control-leak",
+                   any(not _printable_ascii(ch) for ch in "x\x1by"))
 
 
 ## ==================== U3: formatter injectivity/reversibility ================
@@ -284,35 +298,27 @@ def _u3_z3(broken=False):
     return z3_prove("U3-token-injective", claim, dom, report=not broken)
 
 
-_U3_SAMPLE = (
-    list(range(0, 0x200))
-    + [SP, TILDE, DEL, 0x80, 0xFF, 0x100, 0xFFF, 0x1000, 0xFFFF, 0x10000, 0x10FFFF]
-    + [0x200B, 0x202E, 0xFEFF, 0x4E2D, 0x1F600]
-)
 _TOKEN_RE = re.compile(r"U\+([0-9A-F]+)")
 
 
 def _u3_enumerate():
-    """The REAL describe_char embeds a U+XXXX token; over the sample it must be
-    injective (distinct cp -> distinct token) and reversible (hex decodes to cp),
-    with at least 4 hex digits."""
-    seen = {}
-    for cp in _U3_SAMPLE:
+    """The REAL describe_char embeds a U+XXXX token; over the ENTIRE Unicode
+    space it must be reversible -- the hex decodes back to the code point, with at
+    least 4 digits. Round-trip over every cp is exactly injectivity: if every
+    token decodes to its own cp, no two distinct code points can share a token."""
+    for cp in range(0, MAX_CP + 1):
         desc = describe_char(chr(cp))
         m = _TOKEN_RE.search(desc)
         if not m:
             fail("U3 enumerate: no U+ token in describe_char(U+%04X): %r" % (cp, desc))
-            continue
+            return
         hexpart = m.group(1)
         if len(hexpart) < 4:
             fail("U3 enumerate: token for U+%04X under-padded: %r" % (cp, hexpart))
+            return
         if int(hexpart, 16) != cp:
             fail("U3 enumerate: token %r does not decode to U+%04X" % (hexpart, cp))
-        token = m.group(0)
-        if token in seen and seen[token] != cp:
-            fail("U3 enumerate: token %r collides U+%04X and U+%04X"
-                 % (token, seen[token], cp))
-        seen[token] = cp
+            return
 
 
 def _u3_canaries():

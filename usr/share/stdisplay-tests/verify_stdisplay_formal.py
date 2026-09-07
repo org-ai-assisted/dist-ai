@@ -36,7 +36,11 @@ of the SGR lookahead.
 Theorems:
   T1  Output-alphabet invariant -- every output character is in
       {ESC, tab, newline} u [0x20..0x7E]; corollaries: no non-ASCII, no C0
-      control except tab/newline/ESC, no DEL.
+      control except tab/newline/ESC, no DEL. The ESC arm (which the exhaustive
+      non-ESC sweep cannot reach) is checked separately: no bare or non-SGR ESC
+      sequence (CSI screen-clear, DSR query, OSC title/hyperlink, DCS, RIS, an
+      SGR body missing its 'm') survives -- every ESC in it is redacted -- at
+      every colour depth.
   T2  Neutralization -- every non-ASCII (cp>=0x80), every C0 control except
       tab/newline, and DEL (0x7F), when not ESC, is replaced by underscore.
   T3  Idempotence -- stdisplay(stdisplay(s)) == stdisplay(s). Z3 proves the
@@ -216,6 +220,26 @@ _NONESC_INPUT = "".join(chr(cp) for cp in _NONESC_CPS)
 _NONESC_EXPECT = "".join(chr(cp) if _keep_ordinary(cp) else "_" for cp in _NONESC_CPS)
 
 
+## ESC sequences that carry NO valid SGR, so EVERY ESC in them must be redacted
+## at EVERY colour depth (a bare or non-SGR ESC never survives -- only a valid SGR
+## lead does). Written as escapes (ASCII-only source).
+_DANGEROUS_ESC = [
+    "\x1b",                                  # lone ESC
+    "\x1b[",                                 # ESC + CSI opener only
+    "\x1bX",                                 # ESC + non-CSI
+    "\x1b[2J",                               # CSI erase-display (screen clear)
+    "\x1b[H",                                # CSI cursor home
+    "\x1b[6n",                               # CSI device-status-report query
+    "\x1b[31",                               # SGR body without the terminating 'm'
+    "\x1b[999m",                             # out-of-range SGR (no valid palette)
+    "\x1bc",                                 # RIS full reset
+    "\x1b]0;title\x07",                      # OSC set-title (BEL-terminated)
+    "\x1b]8;;http://x\x07link\x1b]8;;\x07",  # OSC-8 hyperlink
+    "\x1bP0;0|17/ab\x1b\\",                  # DCS
+    "\x1b[2Jvulnerable: True\x08\x08False",  # documented smuggling example
+]
+
+
 ## ============================ T1: alphabet invariant =========================
 
 def t1_z3():
@@ -261,9 +285,19 @@ def t1_enumerate():
         if bad:
             fail("T1 enumerate[%s]: output escaped the alphabet: %r"
                  % (name, sorted(ord(c) for c in bad)[:8]))
-        ## A lone ESC (no following valid SGR) is always redacted.
-        if stdisplay("\x1b", sgr=level) != "_":
-            fail("T1 enumerate[%s]: lone ESC not redacted" % name)
+        ## No bare / non-SGR ESC survives at ANY depth: a sequence carrying no
+        ## valid SGR must contain no ESC in its sanitized output (its leading ESC
+        ## and every other ESC redacted to underscore). This is the ESC arm the
+        ## exhaustive non-ESC sweep above cannot reach.
+        for seq in _DANGEROUS_ESC:
+            out = stdisplay(seq, sgr=level)
+            if "\x1b" in out:
+                fail("T1 enumerate[%s]: ESC survived a non-SGR sequence %r -> %r"
+                     % (name, seq, out))
+            bad = set(ch for ch in out if not _allowed_output_char(ch))
+            if bad:
+                fail("T1 enumerate[%s]: non-SGR sequence %r left %r outside the alphabet"
+                     % (name, seq, sorted(ord(c) for c in bad)[:8]))
 
 
 def t1_canaries():
@@ -384,12 +418,13 @@ def t3_canaries():
 
 ## ============================ T4: SGR tier gate ============================
 
-## (name, sgr threshold, a valid SGR body of that tier).
+## (name, sgr threshold, several valid SGR bodies of that tier). Multiple bodies
+## per tier so a regression on one code -- not just the representative -- is caught.
 SGR_TIERS = [
-    ("3bit", 8, "31"),
-    ("4bit", 16, "91"),
-    ("8bit", 88, "38;5;200"),
-    ("24bit", 2 ** 24, "38;2;10;20;30"),
+    ("3bit", 8, ["30", "31", "32", "37", "40", "47", "0"]),
+    ("4bit", 16, ["1", "90", "91", "97", "100", "107"]),
+    ("8bit", 88, ["38;5;0", "38;5;200", "38;5;255", "48;5;16", "38:5:200"]),
+    ("24bit", 2 ** 24, ["38;2;0;0;0", "38;2;10;20;30", "48;2;255;255;255", "38:2:1:2:3"]),
 ]
 
 
@@ -425,23 +460,24 @@ def t4_enumerate():
     """Drive the REAL stdisplay with a valid SGR sequence of each tier at sgr
     just below and at its threshold: preserved verbatim at/above, ESC redacted
     below. Also confirm fail-closed at sgr=-1 (SGR fully disabled)."""
-    for name, thr, body in SGR_TIERS:
-        seq = "\x1b[" + body + "m"
+    for name, thr, bodies in SGR_TIERS:
         below = thr - 1
-        got_below = stdisplay(seq, sgr=below)
-        if got_below == seq:
-            fail("T4 enumerate[%s]: tier survived below threshold (sgr=%d)"
-                 % (name, below))
-        if not got_below.startswith("_"):
-            fail("T4 enumerate[%s]: ESC not redacted below threshold: %r"
-                 % (name, got_below))
-        got_at = stdisplay(seq, sgr=thr)
-        if got_at != seq:
-            fail("T4 enumerate[%s]: valid tier sequence not preserved at sgr=%d: %r"
-                 % (name, thr, got_at))
-        ## SGR fully disabled: even the lowest tier's ESC is stripped.
-        if stdisplay(seq, sgr=-1) == seq:
-            fail("T4 enumerate[%s]: sequence survived with SGR disabled" % name)
+        for body in bodies:
+            seq = "\x1b[" + body + "m"
+            got_below = stdisplay(seq, sgr=below)
+            if got_below == seq:
+                fail("T4 enumerate[%s]: tier survived below threshold (sgr=%d): %r"
+                     % (name, below, seq))
+            if not got_below.startswith("_"):
+                fail("T4 enumerate[%s]: ESC not redacted below threshold: %r"
+                     % (name, got_below))
+            got_at = stdisplay(seq, sgr=thr)
+            if got_at != seq:
+                fail("T4 enumerate[%s]: valid tier sequence not preserved at sgr=%d: %r"
+                     % (name, thr, got_at))
+            ## SGR fully disabled: even the lowest tier's ESC is stripped.
+            if stdisplay(seq, sgr=-1) == seq:
+                fail("T4 enumerate[%s]: sequence survived with SGR disabled: %r" % (name, seq))
     ## The real pattern is the never-match "(?!)" when SGR is disabled.
     if get_sgr_pattern(sgr=-1, exclude_sgr=None) != r"(?!)":
         fail("T4 enumerate: get_sgr_pattern(-1) is not the never-match guard")
