@@ -17,7 +17,8 @@ import os
 import sys
 import time
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(mainwin)')
 # Pin the font DPI to 72 BEFORE any QApplication so font metrics are deterministic
 # by default. The responsive-toolbar tier assertions below are calibrated to the
 # real compositor's ~9pt metrics; bare offscreen defaults to a different DPI (a
@@ -366,21 +367,23 @@ try:
     # setting looked editable and set_clip_autostart silently dropped the change).
     _ca_lock = set(win._locked)
     _ca_cce = win._clip_controls_enabled
-    win._clip_controls_enabled = lambda: True     # simulate tray on + available
-    win._locked = set()
-    _dialogs.clear()
-    win.show_global_settings()
-    _ca_on = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
-    ok(_ca_on is not None and _ca_on.isEnabled(),
-       'clip_autostart is editable when unlocked and the tray is available')
-    win._locked = {'clip_autostart'}
-    _dialogs.clear()
-    win.show_global_settings()
-    _ca_off = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
-    ok(_ca_off is not None and not _ca_off.isEnabled(),
-       'a locked clip_autostart disables its Global Settings control (not editable-but-ignored)')
-    win._clip_controls_enabled = _ca_cce
-    win._locked = _ca_lock
+    try:      # stubs the SHARED win -> restore in finally so a raise cannot leak them
+        win._clip_controls_enabled = lambda: True     # simulate tray on + available
+        win._locked = set()
+        _dialogs.clear()
+        win.show_global_settings()
+        _ca_on = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+        ok(_ca_on is not None and _ca_on.isEnabled(),
+           'clip_autostart is editable when unlocked and the tray is available')
+        win._locked = {'clip_autostart'}
+        _dialogs.clear()
+        win.show_global_settings()
+        _ca_off = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+        ok(_ca_off is not None and not _ca_off.isEnabled(),
+           'a locked clip_autostart disables its Global Settings control (not editable-but-ignored)')
+    finally:
+        win._clip_controls_enabled = _ca_cce
+        win._locked = _ca_lock
     # #24: a Ctrl+wheel live-zoom during Global settings must be DISCARDED on Cancel, like
     # every other field. _live_zoom mutates self._ui_scale and _persist()s it LIVE, so a
     # bare cancel-returns-without-applying left the wheeled scale applied AND on disk.
@@ -388,17 +391,19 @@ try:
     win._ui_scale = 100                       # sub-max so on_zoom(1) MUST raise it
     _persisted24 = []
     _orig_persist24 = win._persist
-    win._persist = lambda: _persisted24.append(win._ui_scale)
+    try:      # stubs the SHARED win._persist + QDialog.exec -> restore in finally
+        win._persist = lambda: _persisted24.append(win._ui_scale)
 
-    def _cancel_after_zoom(_self):
-        _dialogs.append(_self)
-        if getattr(_self, 'on_zoom', None) is not None:
-            _self.on_zoom(1)                  # a Ctrl+wheel step WHILE the dialog is open
-        return int(QDialog.DialogCode.Rejected)
-    QDialog.exec = _cancel_after_zoom
-    win.show_global_settings()
-    QDialog.exec = _accept_exec
-    win._persist = _orig_persist24
+        def _cancel_after_zoom(_self):
+            _dialogs.append(_self)
+            if getattr(_self, 'on_zoom', None) is not None:
+                _self.on_zoom(1)              # a Ctrl+wheel step WHILE the dialog is open
+            return int(QDialog.DialogCode.Rejected)
+        QDialog.exec = _cancel_after_zoom
+        win.show_global_settings()
+    finally:
+        QDialog.exec = _accept_exec
+        win._persist = _orig_persist24
     eq(win._ui_scale, 100,
        '#24: a Ctrl+wheel live-zoom is reverted when Global settings is cancelled')
     ok(_persisted24 and _persisted24[-1] == 100,
@@ -1014,13 +1019,13 @@ _oou = _QDS.openUrl
 _osd = _sess._state_dir
 _opened = []
 _state_tmp = tempfile.mkdtemp(prefix='st-transcript-state-')
+_ocur = win.current           # restored in the finally: this stubs the SHARED win
 try:
     def _spy_open_url(url):
         _opened.append(url.toLocalFile())
         return True
     _QDS.openUrl = staticmethod(_spy_open_url)
     _sess._state_dir = lambda: _state_tmp
-    _ocur = win.current
     win.current = lambda: None                  # no active tab -> no-op
     win.open_transcript()
     ok(_opened == [], 'open_transcript: no active tab is a no-op')
@@ -1088,6 +1093,7 @@ try:
 finally:
     _QDS.openUrl = _oou
     _sess._state_dir = _osd
+    win.current = _ocur       # backstop: a raise mid-try must not leak the None stub
 
 # --- ai-review #2: rename_tab on a session-restore placeholder (a bare QWidget, not a
 # SecureTerminal) must be a safe no-op, not an AttributeError (term.cwd_basename()) that
