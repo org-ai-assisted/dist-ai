@@ -84,26 +84,6 @@ done
 ## fails deterministically, host firmware irrelevant.
 override_condition='if [ "${dist_build_grub_bios_theme:-}" != "true" ] && [ -d /sys/firmware/efi ]; then'
 
-## Drive the REAL snippet with cp/rm shadowed as recording sinks. var=true makes
-## the condition false, short-circuiting before /sys is touched, so the 4x3 branch
-## must run on any host. Records every cp so the selected variant is observable.
-drive_var_true() {
-   local cfg="${1}"
-   (
-      dist_build_grub_bios_theme="true"
-      GRUB_GFXMODE="UNSET"
-      ## Sinks: no /boot write, and each cp is recorded so the variant is observable.
-      ## Invoked indirectly by the sourced snippet below.
-      # shellcheck disable=SC2317
-      cp() { printf 'CP %s\n' "$*"; }
-      # shellcheck disable=SC2317
-      rm() { :; }
-      # shellcheck disable=SC1090
-      . "${cfg}"
-      printf 'GFXMODE=%s\n' "${GRUB_GFXMODE}"
-   ) 2>/dev/null
-}
-
 for entry in "${cfgs[@]}"; do
    name="${entry%%:*}"
    rest="${entry#*:}"
@@ -136,14 +116,16 @@ for entry in "${cfgs[@]}"; do
       check_fail "${name}: 4x3 resolution 1024x768,auto MISSING in ${cfg}"
    fi
 
-   ## Behavioral: the REAL snippet, forced, selects the 4x3 variant.
-   result="$(drive_var_true "${cfg}")" || true
-   if grep --quiet --fixed-strings -- 'GFXMODE=1024x768,auto' <<< "${result}" \
-      && grep --quiet --fixed-strings -- "theme-4x3.txt" <<< "${result}" \
-      && ! grep --quiet --fixed-strings -- "theme-16x9.txt" <<< "${result}"; then
-      check_pass "${name}: dist_build_grub_bios_theme=true selects 4x3 (real snippet)"
+   ## The build-forced (else) branch installs the 4x3 variant as the active theme.
+   ## Asserted structurally, never by sourcing: the snippet's writes are absolute
+   ## /boot paths that would run for real (only cp/rm are shadowable, not mv/ln/...),
+   ## and the verbatim override clause above already proves var=true short-circuits
+   ## the firmware probe into this branch.
+   if grep --quiet --fixed-strings -- \
+      "cp -- /boot/grub/themes/${theme_dir}/theme-4x3.txt /boot/grub/themes/${theme_dir}/theme.txt" "${cfg}"; then
+      check_pass "${name}: 4x3 variant copied into the active theme (build default)"
    else
-      check_fail "${name}: forced build did NOT select 4x3 in ${cfg}" "${result}"
+      check_fail "${name}: 4x3 theme-4x3.txt is not copied to theme.txt in ${cfg}"
    fi
 
    ## The snippet must reference this package's OWN theme dir (no cross-package drift).
