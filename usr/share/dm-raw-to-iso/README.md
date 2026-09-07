@@ -44,10 +44,17 @@ Arch-agnostic (host): `xorriso grub-common mtools dosfstools squashfs-tools
 isomd5sum kpartx safe-rm`.
 
 Arch-specific (host, for the target arch):
-- amd64: `grub-pc-bin` (BIOS core + `boot_hybrid.img`), `grub-efi-amd64-bin`,
-  `grub-efi-ia32-bin`, and for Secure Boot `grub-efi-amd64-signed` + `shim-signed`.
-- arm64: `grub-efi-arm64-bin`, and for Secure Boot `grub-efi-arm64-signed` +
-  `shim-signed`. (No legacy BIOS on arm.)
+- amd64: `grub-pc-bin` (BIOS core + `boot_hybrid.img`), plus the signed EFI loaders
+  `grub-efi-amd64-signed` + `shim-signed`.
+- arm64: the signed EFI loaders `grub-efi-arm64-signed` + `shim-signed`. (No legacy
+  BIOS on arm.)
+
+The EFI side ships ONLY Debian's signed shim + signed grub -- no unsigned GRUB EFI
+core is built, so `grub-efi-*-bin` is not needed. The signed shim boots UEFI whether
+Secure Boot is on or off, so one loader covers plain UEFI and Secure Boot. The
+SUPPORTED EFI platform for the arch (x64 on amd64, aa64 on arm64) is required: a
+missing signed dependency there is a hard error. OPTIONAL platforms (32-bit UEFI)
+auto-skip when their signed pair is absent.
 
 The live initramfs is built by the **rootfs's own** `dracut` inside a chroot, so
 the host needs no dracut; `dracut` + `dracut-live` must be present in the input
@@ -102,27 +109,26 @@ cp -a /usr/lib/grub/i386-pc/*.mod *.lst binary/boot/grub/i386-pc/   # runtime mo
 + `iso9660` are enough to reach `/boot/grub` on the medium, the rest load from
 `i386-pc/`.
 
-### 6. EFI GRUB cores + FAT ESP (per platform of the arch)
+### 6. EFI System Partition: signed shim + signed grub (per platform of the arch)
 For each `(platform:efi_name)` -- amd64: `x86_64-efi:x64` then `i386-efi:ia32`;
-arm64: `arm64-efi:aa64`:
+arm64: `arm64-efi:aa64` -- install ONLY the Debian-signed loaders into `EFI/boot/`
+(uppercase `EFI` for TianoCore firmware). No unsigned GRUB EFI core is built.
 ```
-# 6a. memdisk skeleton config: find the medium, source the platform config on it
-#     search --file --set=root /.disk/info ; set prefix=($root)/boot/grub ; source $prefix/<platform>/grub.cfg
-# 6b. platform config on the ISO: insmod partition modules unless Secure-Boot lockdown, then main grub.cfg
-grub-mkimage -O <platform> -m memdisk.tar -o boot<efi>.efi -p '(memdisk)/boot/grub' \
-   search iso9660 configfile normal memdisk tar <part_*> fat
-cp -a /usr/lib/grub/<platform>/*.mod binary/boot/grub/<platform>/   # runtime modules (grub-cpmodules equiv.)
-# 6c. Secure Boot overlay into EFI/boot/ (uppercase EFI for TianoCore):
-cp /usr/lib/grub/<platform>-signed/gcd<efi>.efi.signed   EFI/boot/grub<efi>.efi   # distro-signed grub
 cp --dereference /usr/lib/shim/shim<efi>.efi.signed      EFI/boot/boot<efi>.efi   # MS-signed shim (loaded first)
-#     shim-only fallback: signed shim + unsigned monolithic gcd<efi>.efi + mm<efi>.efi (MokManager)
+cp /usr/lib/grub/<platform>-signed/gcd<efi>.efi.signed   EFI/boot/grub<efi>.efi   # distro-signed grub
+cp /usr/lib/shim/mm<efi>.efi.signed                      EFI/boot/mm<efi>.efi     # MokManager (if present)
 ```
 The `gcd*` (removable-media) signed grub variant is used, not `grub*` (hard disk).
+The signed shim boots UEFI with Secure Boot on OR off, so this one path is EFI and
+Secure Boot. The supported platform (x64/aa64) errors if its signed pair is missing;
+optional platforms (32-bit UEFI) auto-skip. No embedded configuration files: the signed grub carries
+its own embedded config (Debian's, not built or controlled here), and it reads the
+menu from the real `grub.cfg` on the medium.
 
 ```
-# 6d. ESP-redirect grub.cfg (some firmware sets root to the ESP itself):
+# 6c. ESP-redirect grub.cfg (some firmware sets root to the ESP itself):
 #     search --set=root --file /.disk/info ; set prefix=($root)/boot/grub ; configfile ($root)/boot/grub/grub.cfg
-# 6e. pack a minimal FAT ESP:
+# 6d. pack a minimal FAT ESP:
 mkfs.msdos -C binary/boot/grub/efi.img <blocks> -i <volid-from-SOURCE_DATE_EPOCH>
 mmd   -i efi.img ::EFI ::EFI/boot ::boot ::boot/grub
 mcopy -m -o -i efi.img EFI/boot/*.efi ::EFI/boot

@@ -130,10 +130,7 @@ Recommends: qemu-system-arm,
  librsvg2-bin,
  imagemagick,
  grub-pc-bin,
- grub-efi-amd64-bin,
  grub-efi-amd64-signed,
- grub-efi-ia32-bin,
- grub-efi-arm64-bin,
  grub-efi-arm64-signed,
  shim-signed
 Description: Comprehensive regression, fuzz and integration suites for Kicksecure tooling

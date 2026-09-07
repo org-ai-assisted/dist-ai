@@ -3065,33 +3065,34 @@ ok('font-size:26px' in win._banner.styleSheet(),
 win.set_zoom(100)
 
 # --- InfoTip: theme-aware colours + anchored CLEAR of the source widget ---------
-from PyQt6.QtWidgets import QApplication as _QApp_it, QWidget as _QW_it  # noqa: E402
 _ittip = win._tip_filter._tip
 _ittip.show_for(win, 'x', 100, 'dark')
 ok('#252a31' in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
 _ittip.show_for(win, 'x', 100, 'light')
 ok('#fbfbfd' in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
-_itavail = _QApp_it.primaryScreen().availableGeometry()
-_ittop = _QW_it()
-_ittop.resize(40, 20)
-_ittop.move(_itavail.left() + 20, _itavail.top() + 10)
-_ittop.show()
-APP.processEvents()
-_ittip.show_for(_ittop, 'placed below', 100, 'light')
-ok(_ittip.geometry().top() >= _ittop.mapToGlobal(QPoint(0, _ittop.height())).y(),
-   'InfoTip: anchored below the source (never over it) so the widget stays clickable')
-_itbot = _QW_it()
-_itbot.resize(40, 20)
-_itbot.move(_itavail.left() + 20, _itavail.bottom() - 8)
-_itbot.show()
-APP.processEvents()
-_ittip.show_for(_itbot, 'flipped above', 100, 'light')
-ok(_ittip.geometry().bottom() <= _itbot.mapToGlobal(QPoint(0, 0)).y(),
+# Placement (below-by-preference / flip-above / clamp) is tested via the PURE _placement
+# helper with synthetic source + screen rects. A headless Wayland compositor cannot position
+# or query the absolute geometry of a standalone top-level, so the old real-window placement
+# test is not portable; the flip/clamp math is. The real _place path (mapToGlobal + move) is
+# still exercised by the theme show_for() calls above.
+from PyQt6.QtCore import QRect as _QRect_it, QSize as _QSize_it   # noqa: E402
+_it_gap = _ittip._GAP
+_it_avail = _QRect_it(0, 0, 1000, 800)
+_it_size = _QSize_it(200, 60)
+# room below -> the tip sits BELOW the source (never over it)
+_it_below = _ittip._placement(_QRect_it(100, 100, 40, 20), _it_size, _it_avail, _it_gap)
+ok(_it_below.y() >= 100 + 20,
+   'InfoTip: anchored below the source when there is room (widget stays clickable)')
+# source hard against the screen bottom -> no room below -> FLIP above
+_it_above = _ittip._placement(_QRect_it(100, 780, 40, 20), _it_size, _it_avail, _it_gap)
+ok(_it_above.y() + _it_size.height() <= 780,
    'InfoTip: flips above the source when there is no room below')
+# a source near the right edge -> the tip is CLAMPED on-screen
+_it_clamp = _ittip._placement(_QRect_it(950, 100, 40, 20), _it_size, _it_avail, _it_gap)
+ok(_it_clamp.x() + _it_size.width() <= _it_avail.right() + 1,
+   'InfoTip: clamps a wide tip so it never runs off the right edge')
 _ittip.hide()
 _ittip._poll.stop()
-_ittop.deleteLater()
-_itbot.deleteLater()
 APP.processEvents()
 
 # --- pyte cell -> QTextCharFormat rendering (_pyte_format / _pyte_qcolor) ------

@@ -105,11 +105,6 @@ run --raw "${dummy_raw}" --output "${tmp}/out.iso" --arch sparc
 expect_rc 1 'bad --arch fails'
 expect_msg 'unsupported --arch' 'bad --arch named'
 
-## Unsupported secure-boot mode.
-run --raw "${dummy_raw}" --output "${tmp}/out.iso" --secure-boot maybe
-expect_rc 1 'bad --secure-boot fails'
-expect_msg 'unsupported --secure-boot' 'bad --secure-boot named'
-
 ## Non-integer source-date-epoch.
 run --raw "${dummy_raw}" --output "${tmp}/out.iso" --source-date-epoch notanumber
 expect_rc 1 'non-integer --source-date-epoch fails'

@@ -1021,10 +1021,10 @@ test_messagecli_sanitizes_dangerous_input() {
 test_messagecli_color_conversion_preserved() {
   ## <font color="..."> must still become a terminal ANSI color, and that color
   ## must survive the final stdisplay pass. Force a color environment so
-  ## get_colors emits real codes (ASSUME_TERM_PRESENT bypasses the tty check)
+  ## get_colors emits real codes (COLOR_FORCE_YES bypasses the tty check)
   ## and stdisplay allows the SGR (TERM advertises colors).
   local out
-  ASSUME_TERM_PRESENT=true TERM=xterm-256color NO_COLOR='' \
+  COLOR_FORCE_YES=true TERM=xterm-256color NO_COLOR='' \
     ${MSGCOLLECTOR} --identifier colorprestest --messagecli --typecli info \
       --message '<font color="green">GREENWORD</font>' >/dev/null 2>&1 || true
   out="${msgcollector_run_dir}/colorprestest_messagecli"

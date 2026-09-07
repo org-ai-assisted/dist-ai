@@ -48,10 +48,6 @@ Options:
   --arch <amd64|arm64>     target architecture (default: host dpkg architecture)
   --label <volid>          ISO volume label; must match root=live:CDLABEL=<volid>
                            (default: DM_LIVE)
-  --secure-boot <mode>     auto|enable|disable (default: auto)
-                           auto    = use signed shim+grub if installed, else fall back
-                           enable  = require signed shim+grub, fail if missing
-                           disable = unsigned GRUB EFI only, no shim
   --bootappend <str>       extra kernel command line appended to the live entry
   --serial-console         bake a serial console (ttyS0,115200) into GRUB and the
                            kernel cmdline and boot the default entry immediately
@@ -96,7 +92,6 @@ raw=""
 output=""
 arch=""
 label="DM_LIVE"
-secure_boot="auto"
 bootappend=""
 serial_console="false"
 grub_config_append=""
@@ -123,11 +118,6 @@ while [ "$#" -gt 0 ] ; do
       --label)
          [ "$#" -ge 2 ] || error "--label requires a value"
          label="$2"
-         shift 2
-         ;;
-      --secure-boot)
-         [ "$#" -ge 2 ] || error "--secure-boot requires a value"
-         secure_boot="$2"
          shift 2
          ;;
       --bootappend)
@@ -174,8 +164,6 @@ fi
 
 case "${arch}" in amd64|arm64) true ;; *) error "unsupported --arch '${arch}' (supported: amd64, arm64)" ;; esac
 
-case "${secure_boot}" in auto|enable|disable) true ;; *) error "unsupported --secure-boot '${secure_boot}' (auto|enable|disable)" ;; esac
-
 ## --label becomes BOTH the ISO9660 volume id and the root=live:CDLABEL= value the
 ## initramfs searches for; a space would split the kernel cmdline and desync the two,
 ## and an empty label makes xorriso invent a volume id the cmdline does not match.
@@ -211,10 +199,6 @@ if [ "${bios}" = "true" ] ; then
    require_file /usr/lib/grub/i386-pc/cdboot.img /usr/lib/grub/i386-pc/boot_hybrid.img
    require_file /usr/lib/grub/i386-pc/normal.mod
 fi
-for pair in "${efi_platforms[@]}" ; do
-   platform="${pair%%:*}"
-   require_file "/usr/lib/grub/${platform}/normal.mod"
-done
 require_file /usr/share/grub/unicode.pf2
 
 ## Work directory + teardown. Track loop/kpartx maps and mounts and tear them down
@@ -371,113 +355,43 @@ if [ "${bios}" = "true" ] ; then
 fi
 
 ######################################################################
-## 6. EFI GRUB cores + FAT ESP (all arches), incl. Secure Boot overlay.
+## 6. EFI System Partition: signed shim + signed grub, then pack the FAT ESP.
 ######################################################################
-## Reimplements live-build's efi-image + grub-cpmodules + binary_grub-efi inline,
-## using only Debian tools. Produces binary/boot/grub/efi.img (the FAT ESP) and a
-## plain-file copy of EFI/boot/*.efi in the ISO tree.
-printf '%s: building EFI GRUB cores and ESP\n' "${me}" >&2
+## Debian-signed loaders only (shim boots UEFI with Secure Boot on OR off), plus
+## the FAT ESP xorriso registers as the El Torito EFI entry and as a GPT partition.
+## Produces binary/boot/grub/efi.img and a plain-file copy of EFI/boot/*.efi.
+printf '%s: installing signed EFI loaders and building the ESP\n' "${me}" >&2
 esp_stage="${workdir}/esp"
 mkdir -p -- "${esp_stage}/EFI/boot" "${esp_stage}/boot/grub"
 
-sb_grub_present="false"
+## Per EFI platform: install the MS-signed shim (loaded first) + the distro-signed
+## grub it chainloads. The signed shim boots UEFI whether Secure Boot is ON or OFF,
+## so this single path is EFI AND Secure Boot -- no unsigned core, no embedded
+## config. gcd* is the removable-media (CD/USB) signed grub variant.
+## The FIRST platform is the SUPPORTED one for the arch (x64 on amd64, aa64 on
+## arm64): a missing signed dependency there is a hard error. The rest are OPTIONAL
+## (32-bit UEFI): auto-skip them when their signed pair is absent.
 for pair in "${efi_platforms[@]}" ; do
    platform="${pair%%:*}"
    efi_name="${pair##*:}"
-
-   ## 6a. Partition modules are insmod'd at runtime only when NOT under Secure
-   ## Boot lockdown (they are unsigned). Build the platform module list.
-   partmods=()
-   for modpath in /usr/lib/grub/"${platform}"/part_*.mod ; do
-      [ -e "${modpath}" ] || continue
-      modname="${modpath##*/}"
-      partmods+=( "${modname%.mod}" )
-   done
-
-   ## 6b. Skeleton config in a memdisk: find the real boot medium (/.disk/info),
-   ## then source the platform config on that medium.
-   memdisk_root="${workdir}/memdisk-${platform}"
-   mkdir -p -- "${memdisk_root}/boot/grub"
-   cat > "${memdisk_root}/boot/grub/grub.cfg" <<EOF
-search --file --set=root /.disk/info
-set prefix=(\$root)/boot/grub
-source \$prefix/${platform}/grub.cfg
-EOF
-   find "${memdisk_root}" -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" -- {} +
-   memdisk_tar="${workdir}/memdisk-${platform}.tar"
-   tar --create --file "${memdisk_tar}" --directory "${memdisk_root}" boot
-
-   ## 6c. The platform config that lives on the ISO: insmod partition modules
-   ## (skipped under Secure Boot lockdown), then hand off to the main grub.cfg.
-   mkdir -p -- "${binary}/boot/grub/${platform}"
-   {
-      printf 'if [ x$grub_platform == xefi -a x$lockdown != xy ] ; then\n'
-      for modname in "${partmods[@]}" ; do
-         printf '    insmod %s\n' "${modname}"
-      done
-      printf 'fi\n'
-      printf 'source /boot/grub/grub.cfg\n'
-   } > "${binary}/boot/grub/${platform}/grub.cfg"
-
-   ## 6d. Build the unsigned EFI core (the non-Secure-Boot loader / fallback).
-   unsigned_efi="${workdir}/boot${efi_name}.efi"
-   grub-mkimage -O "${platform}" -m "${memdisk_tar}" -o "${unsigned_efi}" -p '(memdisk)/boot/grub' \
-      search iso9660 configfile normal memdisk tar "${partmods[@]}" fat
-   ## Copy the platform runtime modules onto the ISO (grub-cpmodules equivalent).
-   cp -a -- /usr/lib/grub/"${platform}"/*.mod "${binary}/boot/grub/${platform}/" 2>/dev/null || true
-   cp -a -- /usr/lib/grub/"${platform}"/*.lst "${binary}/boot/grub/${platform}/" 2>/dev/null || true
-
-   ## 6e. Seed EFI/boot with the unsigned core as boot<arch>.efi.
-   cp -- "${unsigned_efi}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
-
-   ## 6f. Secure Boot overlay: shim as boot<arch>.efi (loaded first), distro-signed
-   ## grub as grub<arch>.efi. Source paths from shim-signed and grub-efi-<arch>-signed;
-   ## gcd* is the removable-media (CD/USB) signed grub variant.
    signed_grub="/usr/lib/grub/${platform}-signed/gcd${efi_name}.efi.signed"
    signed_shim="/usr/lib/shim/shim${efi_name}.efi.signed"
    mokmanager="/usr/lib/shim/mm${efi_name}.efi.signed"
-   monolithic_grub="/usr/lib/grub/${platform}/monolithic/gcd${efi_name}.efi"
-   ## The first platform is PRIMARY (x64 on amd64, aa64 on arm64); the rest (ia32)
-   ## are best-effort secondaries, exactly as live-build adds ia32 only when signed.
-   is_primary="false"
-   if [ "${pair}" = "${efi_platforms[0]}" ] ; then
-      is_primary="true"
-   fi
 
-   if [ "${secure_boot}" != "disable" ] ; then
-      if [ -r "${signed_grub}" ] && [ -r "${signed_shim}" ] ; then
-         ## Fully signed: firmware -> MS-signed shim -> distro-signed grub.
-         cp -a -- "${signed_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
-         cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
-         sb_grub_present="true"
-      elif [ "${secure_boot}" = "auto" ] && [ -r "${signed_shim}" ] && [ -r "${monolithic_grub}" ] ; then
-         ## auto ONLY: signed shim + UNSIGNED monolithic grub + MokManager (weaker,
-         ## needs a MOK enrollment). Never under 'enable' -- 'enable' is fully signed.
-         cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
-         cp -a -- "${monolithic_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
-         if [ -r "${mokmanager}" ] ; then
-            cp -a -- "${mokmanager}" "${esp_stage}/EFI/boot/mm${efi_name}.efi"
-         fi
-      elif [ "${is_primary}" = "true" ] ; then
-         ## Primary, no signed pair. 'enable' fails as --help promises; 'auto' keeps
-         ## the unsigned core seeded at 6e (a global warning fires after the loop).
-         if [ "${secure_boot}" = "enable" ] ; then
-            error "--secure-boot enable but no signed shim+grub for ${efi_name} (need ${signed_shim} and ${signed_grub}). Install shim-signed and grub-efi-${arch}-signed."
-         fi
-      else
-         ## Secondary platform (32-bit UEFI) without a signed pair: omit it rather
-         ## than ship an unsigned secondary or abort an otherwise-signed build.
-         printf '%s: NOTE: no signed loader for secondary platform %s; omitting it.\n' "${me}" "${efi_name}" >&2
-         safe-rm --force -- "${esp_stage}/EFI/boot/boot${efi_name}.efi"
+   if [ -r "${signed_grub}" ] && [ -r "${signed_shim}" ] ; then
+      cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
+      cp -a -- "${signed_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
+      if [ -r "${mokmanager}" ] ; then
+         cp -a -- "${mokmanager}" "${esp_stage}/EFI/boot/mm${efi_name}.efi"
       fi
+   elif [ "${pair}" = "${efi_platforms[0]}" ] ; then
+      error "missing signed EFI dependency for the supported platform ${efi_name} (${arch}): install shim-signed and grub-efi-${arch}-signed (need ${signed_shim} and ${signed_grub})"
+   else
+      printf '%s: NOTE: no signed shim+grub for optional EFI platform %s; skipping it.\n' "${me}" "${efi_name}" >&2
    fi
 done
 
-if [ "${secure_boot}" = "auto" ] && [ "${sb_grub_present}" = "false" ] ; then
-   printf '%s: WARNING: signed shim/grub not installed; ISO will boot UEFI but NOT under Secure Boot.\n' "${me}" >&2
-fi
-
-## 6g. ESP-redirect grub.cfg: some firmware loads the EFI grub with root set to the
+## ESP-redirect grub.cfg: some firmware loads the EFI grub with root set to the
 ## ESP itself, so redirect to the real config on the medium carrying /.disk/info.
 cat > "${esp_stage}/boot/grub/grub.cfg" <<EOF
 search --set=root --file /.disk/info
@@ -485,7 +399,7 @@ set prefix=(\$root)/boot/grub
 configfile (\$root)/boot/grub/grub.cfg
 EOF
 
-## 6h. Pack EFI/boot/*.efi + the redirect grub.cfg into a minimal FAT ESP.
+## Pack EFI/boot/*.efi + the redirect grub.cfg into a minimal FAT ESP.
 find "${esp_stage}" -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" -- {} +
 esp_bytes=0
 while IFS= read -r -d '' f ; do

@@ -5519,14 +5519,22 @@ _mid_pt = _selpt(_mid, 3)
 _sel_dbl(_mid, _mid_pt)
 _mid.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _mid_pt,
                                buttons=_Qt_sel.MouseButton.NoButton))
+eq(_mid.textCursor().selectedText(), 'clickme',
+   'sel: a double-click word-selects the word under the cursor')
 _mid.mousePressEvent(_QME_sel(_QEv_sel.Type.MouseButtonPress, _mid_pt, _mid_pt,
                               _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.MiddleButton,
                               _Qt_sel.KeyboardModifier.NoModifier))
 _mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_pt,
                                 _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.NoButton,
                                 _Qt_sel.KeyboardModifier.NoModifier))
-eq(_mid.textCursor().selectedText(), 'clickme',
-   'sel: a middle-click release does not clobber or swallow the word selection')
+# The middle release falls through to super (its PRIMARY paste), NOT swallowed by the
+# LEFT-only word/line branch, so the word-select MODE persists until the next LEFT press.
+# The mode is the platform-independent invariant here: whether the display selection TEXT
+# itself survives is not -- a real compositor supports PRIMARY selection, so super moves the
+# caret (clearing it) on a middle-click, while the offscreen platform has no PRIMARY and
+# leaves it. Asserting selectedText() would encode offscreen-only behaviour.
+eq(_mid._select_mode, 'word',
+   'sel: a middle-click release does not reset the word-select mode (left-only branch)')
 
 
 # --- #28: ctl_send_text(submit=True) must NOT fire a bare submit CR when the line was only
