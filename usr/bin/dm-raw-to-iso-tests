@@ -1,0 +1,94 @@
+#!/bin/bash
+
+## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the dm-raw-to-iso suite. Two tiers:
+##   - arg_validation_test.sh: drives the REAL dm-raw-to-iso with bad/missing
+##     arguments and asserts its exit codes and messages. Needs no root, no ISO
+##     tools and no image, so it always runs and always gates the argument
+##     surface.
+##   - build_and_boot_test.sh: builds a real ISO from a raw image and boots it
+##     across bios/efi/efi-secureboot via the sibling dm-image-boot harness. Needs
+##     root, an image (DM_RAW_TO_ISO_TEST_IMAGE) and qemu/OVMF, so it exits 77
+##     (SKIP) when those are absent -- an opt-in integration target.
+##
+## Resolve the tool under test with DM_RAW_TO_ISO_BIN; otherwise the sibling
+## usr/bin/dm-raw-to-iso (checkout or installed). Works from a git checkout
+## (tests under usr/share/dm-raw-to-iso-tests) or installed (/usr/share/...).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-raw-to-iso-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-raw-to-iso-tests"
+else
+   tests_dir='/usr/share/dm-raw-to-iso-tests'
+fi
+
+## The tool under test: explicit override, else the sibling entrypoint.
+if [ -z "${DM_RAW_TO_ISO_BIN:-}" ]; then
+   if [ -x "${script_dir}/dm-raw-to-iso" ]; then
+      DM_RAW_TO_ISO_BIN="${script_dir}/dm-raw-to-iso"
+   else
+      DM_RAW_TO_ISO_BIN='/usr/bin/dm-raw-to-iso'
+   fi
+fi
+export DM_RAW_TO_ISO_BIN
+
+## The boot engine the build test uses: dm-qemu (checks the ISO reaches a serial
+## login across firmware) -- NOT dm-boot-test, whose systemcheck stage is specific
+## to a Kicksecure userland. dm-raw-to-iso is responsible for the ISO BOOTING, so
+## dm-qemu is the right level and works for any bootable image.
+if [ -z "${DM_QEMU_BIN:-}" ]; then
+   if [ -x "${script_dir}/../share/dm-image-boot-tests/dm-qemu" ]; then
+      DM_QEMU_BIN="${script_dir}/../share/dm-image-boot-tests/dm-qemu"
+   else
+      DM_QEMU_BIN='/usr/share/dm-image-boot-tests/dm-qemu'
+   fi
+fi
+export DM_QEMU_BIN
+
+printf 'subject: %s\n' "${DM_RAW_TO_ISO_BIN}" >&2
+
+shopt -s nullglob
+failures=0
+skipped=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+   ran=$(( ran + 1 ))
+   printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+   rc=0
+   bash -- "${test_script}" "$@" || rc=$?
+   if [ "${rc}" -eq 77 ]; then
+      printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+      skipped=$(( skipped + 1 ))
+   elif [ "${rc}" -ne 0 ]; then
+      printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+      failures=$(( failures + 1 ))
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+   exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+   printf '\nFAILED: %s dm-raw-to-iso test script(s) failed\n' "${failures}" >&2
+   exit 1
+fi
+if [ "${skipped}" -eq "${ran}" ]; then
+   printf '%s\n' '' "SKIP: all ${skipped} dm-raw-to-iso test script(s) skipped"
+   ## style-ok: allow-skip: propagates an all-skipped verdict (no root / no raw image); no required dep here should be FATAL -- build+boot is opt-in integration
+   exit 77
+fi
+printf '\nOK: all dm-raw-to-iso test scripts passed (%s ran, %s skipped)\n' "${ran}" "${skipped}"

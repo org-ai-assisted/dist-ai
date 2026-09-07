@@ -65,12 +65,16 @@ allowed_unregistered=(
 ##   dm-image-boot    self-contained; takes a built image as an argument
 ##   dm-gitlink-upstream-check  self-contained; offline --self-test of dist-ai's
 ##                    own tool, no component checkout under test
+##   dm-raw-to-iso    dist-ai's own ISO-builder tool; the suite drives it directly
+##                    and reads its raw image from the environment, no component
+##                    checkout under test
 allowed_no_component=(
    'web-analyzer'
    'website'
    'iso-boot'
    'dm-image-boot'
    'dm-gitlink-upstream-check'
+   'dm-raw-to-iso'
 )
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"

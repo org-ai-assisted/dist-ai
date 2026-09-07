@@ -84,7 +84,18 @@ Depends: ${misc:Depends},
  pre-commit-hooks,
  genmkfile,
  helper-scripts,
- safe-rm
+ safe-rm,
+ mtools,
+ dosfstools,
+ squashfs-tools,
+ isomd5sum,
+ grub-common,
+ kpartx
+## ISO-builder (dm-raw-to-iso) tools. Arch-agnostic ones above are Depends
+## (xorriso already listed). The GRUB platform + signed shim/grub packages are
+## arch-specific (amd64/i386 vs arm64) and this package is Architecture: all, so
+## they are Recommends -- a hard Depends would make the .deb uninstallable on the
+## other arch. dm-raw-to-iso fails loud at runtime when a needed tool is absent.
 ## Deliberately NOT in Depends: playwright and imagehash are not Debian-packaged
 ## (no apt candidate), so listing them makes the .deb itself uninstallable and
 ## breaks 'genmkfile deb-run-dep', which apt-installs the whole Depends set in one
@@ -117,7 +128,14 @@ Recommends: qemu-system-arm,
  jpegoptim,
  webp,
  librsvg2-bin,
- imagemagick
+ imagemagick,
+ grub-pc-bin,
+ grub-efi-amd64-bin,
+ grub-efi-amd64-signed,
+ grub-efi-ia32-bin,
+ grub-efi-arm64-bin,
+ grub-efi-arm64-signed,
+ shim-signed
 Description: Comprehensive regression, fuzz and integration suites for Kicksecure tooling
  The AI-maintained test surface for the derivative-maker ecosystem: regression,
  fuzz, end-to-end and integration suites for helper-scripts,
