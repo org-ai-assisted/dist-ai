@@ -1,0 +1,192 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Guards the reproducible-build grub THEME override across its three copies and
+## the derivative-maker build flag that arms it.
+##
+## Each base-files package ships one /etc/default/grub.d snippet that picks the
+## grub theme + resolution. grub-mkconfig runs in the build chroot, so an
+## unguarded '[ -d /sys/firmware/efi ]' would read the BUILD HOST's firmware and
+## make the image non-reproducible. 'dist_build_grub_bios_theme=true' (a build
+## env var that crosses into the chroot via env_vars_keep_list) forces the
+## 4x3/BIOS variant regardless of build-host firmware. Absent on an installed
+## system, the snippet falls back to probing the running firmware.
+##
+##   kicksecure: packages/kicksecure/kicksecure-base-files/.../30_kicksecure.cfg
+##   gateway:    packages/whonix/anon-gw-base-files/.../30_whonix-gateway.cfg
+##   workstation:packages/whonix/anon-ws-base-files/.../30_whonix-workstation.cfg
+##
+## Checkout: DERIVATIVE_MAKER_DIR, else ~/derivative-maker. The snippets live in
+## submodules absent from the standard dist-ai-tests component checkout, so a
+## missing checkout is a SKIP (77), not a failure.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+[ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
+
+parse_cmd_file="${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd"
+variables_file="${DERIVATIVE_MAKER_DIR}/help-steps/variables"
+
+## 'name:theme-dir:relative-path'
+cfgs=(
+   "kicksecure:kicksecure:packages/kicksecure/kicksecure-base-files/etc/default/grub.d/30_kicksecure.cfg"
+   "gateway:whonix-gateway:packages/whonix/anon-gw-base-files/etc/default/grub.d/30_whonix-gateway.cfg"
+   "workstation:whonix-workstation:packages/whonix/anon-ws-base-files/etc/default/grub.d/30_whonix-workstation.cfg"
+)
+
+failures=0
+checks=0
+
+check_pass() {
+   checks=$(( checks + 1 ))
+   printf '%s\n' "PASS  ${1}"
+}
+
+check_fail() {
+   checks=$(( checks + 1 ))
+   failures=$(( failures + 1 ))
+   printf '%s\n' "FAIL  ${1}"
+   [ "$#" -lt 2 ] || printf '%s\n' "${2}"
+}
+
+## Skip only when the checkout is genuinely absent -- the snippets and the
+## build-flag files all live in the derivative-maker tree.
+for probe in "${parse_cmd_file}" "${variables_file}" \
+   "${DERIVATIVE_MAKER_DIR}/${cfgs[0]#*:*:}"; do
+   if [ ! -r "${probe}" ]; then
+      printf '%s\n' "SKIP: missing ${probe}" >&2
+      printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere, or check out the submodules" >&2
+      ## style-ok: allow-skip: grub theme snippets + build flag live in the derivative-maker tree / submodules, absent in the standard dist-ai-tests component checkout
+      exit 77
+   fi
+done
+
+## The exact override condition: the build-flag clause must SHORT-CIRCUIT the
+## firmware probe (so a forced 4x3 build never reads /sys), and the probe must
+## remain for the installed-system fallback. A revert drops the clause and this
+## fails deterministically, host firmware irrelevant.
+override_condition='if [ "${dist_build_grub_bios_theme:-}" != "true" ] && [ -d /sys/firmware/efi ]; then'
+
+## Drive the REAL snippet with cp/rm shadowed as recording sinks. var=true makes
+## the condition false, short-circuiting before /sys is touched, so the 4x3 branch
+## must run on any host. Records every cp so the selected variant is observable.
+drive_var_true() {
+   local cfg="${1}"
+   (
+      dist_build_grub_bios_theme="true"
+      GRUB_GFXMODE="UNSET"
+      ## Sinks: no /boot write, and each cp is recorded so the variant is observable.
+      ## Invoked indirectly by the sourced snippet below.
+      # shellcheck disable=SC2317
+      cp() { printf 'CP %s\n' "$*"; }
+      # shellcheck disable=SC2317
+      rm() { :; }
+      # shellcheck disable=SC1090
+      . "${cfg}"
+      printf 'GFXMODE=%s\n' "${GRUB_GFXMODE}"
+   ) 2>/dev/null
+}
+
+for entry in "${cfgs[@]}"; do
+   name="${entry%%:*}"
+   rest="${entry#*:}"
+   theme_dir="${rest%%:*}"
+   rel="${rest#*:}"
+   cfg="${DERIVATIVE_MAKER_DIR}/${rel}"
+
+   if [ ! -r "${cfg}" ]; then
+      check_fail "${name}: unreadable snippet ${cfg}"
+      continue
+   fi
+
+   ## Structural: the override clause is present verbatim (revert guard).
+   if grep --quiet --fixed-strings -- "${override_condition}" "${cfg}"; then
+      check_pass "${name}: build-flag override clause present"
+   else
+      check_fail "${name}: build-flag override clause MISSING/CHANGED in ${cfg}" \
+         "expected line: ${override_condition}"
+   fi
+
+   ## Structural: both variants keep their resolution (installed-system behavior intact).
+   if grep --quiet --fixed-strings -- 'GRUB_GFXMODE="1280x720,auto"' "${cfg}"; then
+      check_pass "${name}: 16x9/EFI resolution 1280x720,auto present"
+   else
+      check_fail "${name}: 16x9 resolution 1280x720,auto MISSING in ${cfg}"
+   fi
+   if grep --quiet --fixed-strings -- 'GRUB_GFXMODE="1024x768,auto"' "${cfg}"; then
+      check_pass "${name}: 4x3/BIOS resolution 1024x768,auto present"
+   else
+      check_fail "${name}: 4x3 resolution 1024x768,auto MISSING in ${cfg}"
+   fi
+
+   ## Behavioral: the REAL snippet, forced, selects the 4x3 variant.
+   result="$(drive_var_true "${cfg}")" || true
+   if grep --quiet --fixed-strings -- 'GFXMODE=1024x768,auto' <<< "${result}" \
+      && grep --quiet --fixed-strings -- "theme-4x3.txt" <<< "${result}" \
+      && ! grep --quiet --fixed-strings -- "theme-16x9.txt" <<< "${result}"; then
+      check_pass "${name}: dist_build_grub_bios_theme=true selects 4x3 (real snippet)"
+   else
+      check_fail "${name}: forced build did NOT select 4x3 in ${cfg}" "${result}"
+   fi
+
+   ## The snippet must reference this package's OWN theme dir (no cross-package drift).
+   if grep --quiet --fixed-strings -- "/boot/grub/themes/${theme_dir}/theme-4x3.txt" "${cfg}"; then
+      check_pass "${name}: references its own theme dir ${theme_dir}"
+   else
+      check_fail "${name}: does not reference theme dir ${theme_dir} in ${cfg}"
+   fi
+
+   ## Both destination names are produced, or grub renders a half-applied theme.
+   for produced in background.png theme.txt; do
+      if grep --quiet --fixed-strings -- "/boot/grub/themes/${theme_dir}/${produced}" "${cfg}"; then
+         check_pass "${name}: produces ${produced}"
+      else
+         check_fail "${name}: never produces ${produced} in ${cfg}"
+      fi
+   done
+
+   ## Every source variant must exist in the package, or the cp has nothing to copy.
+   pkg_root="${cfg%/etc/default/grub.d/*}"
+   for variant in background-4x3.png theme-4x3.txt background-16x9.png theme-16x9.txt; do
+      if [ -r "${pkg_root}/boot/grub/themes/${theme_dir}/${variant}" ]; then
+         check_pass "${name}: source variant ${variant} present"
+      else
+         check_fail "${name}: source variant ${variant} MISSING under themes/${theme_dir}"
+      fi
+   done
+done
+
+## The derivative-maker side that arms the flag and carries it into the chroot.
+if grep --quiet --extended-regexp -- '^[[:space:]]*--grub-bios-theme\)' "${parse_cmd_file}"; then
+   check_pass "build option --grub-bios-theme exists"
+else
+   check_fail "build option --grub-bios-theme MISSING in ${parse_cmd_file}"
+fi
+
+if grep --quiet --fixed-strings -- 'dist_build_grub_bios_theme="true"' "${variables_file}"; then
+   check_pass "build flag defaults to true (4x3 is the build default)"
+else
+   check_fail "build flag default true MISSING in ${variables_file}"
+fi
+
+## Must be on env_vars_keep_list, or --preserve-env drops it and it never reaches
+## grub-mkconfig in the chroot -- the snippet would then always probe the build host.
+if grep --quiet --extended-regexp -- '^[[:space:]]*dist_build_grub_bios_theme[[:space:]]*$' "${variables_file}"; then
+   check_pass "build flag is on env_vars_keep_list (crosses into the chroot)"
+else
+   check_fail "build flag NOT on env_vars_keep_list in ${variables_file}" \
+      "without it --preserve-env strips the var and grub-mkconfig cannot read it"
+fi
+
+printf '%s\n' "" "${checks} checks, ${failures} failed"
+[ "${failures}" -eq 0 ]

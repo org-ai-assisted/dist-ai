@@ -542,7 +542,7 @@ if [ "${quick}" = "true" ]; then
 else
    stage "dist-ai suites over this checkout"
    suite_ran=false
-   for suite in dm-help-steps-tests dm-grub-smbios-tests; do
+   for suite in dm-help-steps-tests dm-grub-smbios-tests dm-grub-theme-tests; do
       if ! type -P "${suite}" >/dev/null; then
          continue
       fi
