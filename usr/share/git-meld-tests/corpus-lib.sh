@@ -31,8 +31,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 bindir="${1:-/usr/bin}"
 gdr="${bindir}/git-diff-review"

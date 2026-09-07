@@ -17,7 +17,7 @@
 ##   * R-040/R-110 (log/die from log_run_die.sh): self-contained,
 ##     uses bare printf and a local die() so the script runs on a
 ##     developer machine without sourcing helper-scripts.
-##   * R-090 (has from has.sh): same reason; uses '[ -x ... ]'.
+##   * R-090 (has from has.bsh): same reason; uses '[ -x ... ]'.
 
 set -x
 set -o errexit

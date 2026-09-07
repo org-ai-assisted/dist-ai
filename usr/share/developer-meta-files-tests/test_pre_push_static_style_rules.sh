@@ -49,10 +49,10 @@ assert_prerequisite() {
 }
 
 assert_prerequisite \
-   'helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)' \
-   test -r '/usr/libexec/helper-scripts/has.sh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+   'helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)' \
+   test -r '/usr/libexec/helper-scripts/has.bsh'
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'git not on PATH' has git
 assert_prerequisite 'safe-rm not on PATH' has safe-rm
@@ -646,7 +646,7 @@ expect_rule "R-026" "c=\${arr${atall}:${altop}word}"   "absent"
 expect_rule "R-090" "if ! command${sp}-v foo${sc} then true${sc} fi" "present"
 expect_rule "R-090" "## uses command${sp}-v not has"             "absent"
 ## ... and it does NOT fire in a POSIX '/bin/sh' script, where 'type -P' is
-## undefined (SC3045) and sourcing has.sh is not an option: 'command -v' is the
+## undefined (SC3045) and sourcing has.bsh is not an option: 'command -v' is the
 ## only portable spelling, so flagging it would demand code shellcheck rejects.
 expect_rule "R-090" "if ! command${sp}-v foo${sc} then true${sc} fi" "absent"  '#!/bin/sh'
 

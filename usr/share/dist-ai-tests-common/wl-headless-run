@@ -41,7 +41,7 @@ shopt -s nullglob
 
 ## helper-scripts 'has' for the command-presence checks (R-090).
 # shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.bsh
 
 autoconfirm='true'
 case "${1:-}" in

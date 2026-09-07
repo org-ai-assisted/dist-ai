@@ -50,7 +50,7 @@ if [ ! -x "${subject}" ]; then
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
    exit 1
 fi
-if [ ! -r "${libdir}/has.sh" ] || [ ! -r "${libdir}/check_runtime.bsh" ]; then
+if [ ! -r "${libdir}/has.bsh" ] || [ ! -r "${libdir}/check_runtime.bsh" ]; then
    printf '%s\n' "FATAL: helper-scripts libs not readable under '${libdir}'" >&2
    exit 1
 fi
@@ -60,7 +60,7 @@ if [ ! -x "${stub_file}" ] || [ ! -x "${probe}" ]; then
 fi
 
 # shellcheck disable=SC1090,SC1091
-source "${libdir}/has.sh"
+source "${libdir}/has.bsh"
 
 if ! has safe-rm ; then
    printf '%s\n' "FATAL: safe-rm not on PATH" >&2

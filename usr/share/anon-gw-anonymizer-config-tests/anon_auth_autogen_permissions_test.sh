@@ -43,15 +43,15 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if ! test -r /usr/libexec/helper-scripts/has.sh ; then
-   printf '%s\n' "FATAL: /usr/libexec/helper-scripts/has.sh is not installed; the subject sources it" >&2
+if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
+   printf '%s\n' "FATAL: /usr/libexec/helper-scripts/has.bsh is not installed; the subject sources it" >&2
    exit 1
 fi
 ## Installed path: this repo is outside the dm source tree, so helper-scripts
 ## is not a relative sibling here.
-# shellcheck source=./has.sh
+# shellcheck source=./has.bsh
 # shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.bsh
 
 ## openssl is the subject's key generator, not a convenience: without it there
 ## is no private key to check the mode of, and every assertion below would be

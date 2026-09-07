@@ -316,7 +316,7 @@ wire() {
          )
          ;;
       helper-scripts-lib)
-         ## The sourced shell libraries (has.sh, strings.bsh) live in
+         ## The sourced shell libraries (has.bsh, strings.bsh) live in
          ## helper-scripts' libexec. Unwired, both lanes fall back to the
          ## INSTALLED path, which does not exist in CI, and each degrades to a
          ## SKIP the run would still report as a clean pass.
@@ -422,7 +422,7 @@ wire() {
          wire_env=( "PYTE_REPO=$( pkg_dir pyte )" )
          ;;
       genmkfile)
-         ## genmkfile's make-helper sources helper-scripts at runtime (has.sh,
+         ## genmkfile's make-helper sources helper-scripts at runtime (has.bsh,
          ## trace.bsh) and shells out to its tools; give it the full
          ## helper-scripts runtime (env here; the /usr/libexec/helper-scripts
          ## system path is provided by the CI setup step) when a helper-scripts

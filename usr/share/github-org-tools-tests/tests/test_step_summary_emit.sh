@@ -24,11 +24,11 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
 ## R-090: probe via helper-scripts' has(), not 'command -v'. helper-scripts is
 ## not guaranteed in a consumer CI image, so fall back to the checkout path
-## rather than failing when has.sh is absent.
+## rather than failing when has.bsh is absent.
 HELPER=''
-if [ -r '/usr/libexec/helper-scripts/has.sh' ]; then
-   # shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-   source /usr/libexec/helper-scripts/has.sh
+if [ -r '/usr/libexec/helper-scripts/has.bsh' ]; then
+   # shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+   source /usr/libexec/helper-scripts/has.bsh
    if has step-summary-emit; then
       HELPER="$(type -P step-summary-emit)"
    fi

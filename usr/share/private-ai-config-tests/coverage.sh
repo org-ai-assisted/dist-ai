@@ -63,8 +63,8 @@ fi
 
 ## Sourced after the checkout guard above, so a missing PRIVATE_AI_CONFIG_PATH
 ## still SKIPs rather than dying here.
-# shellcheck source=./has.sh
-source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+# shellcheck source=./has.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 ## A missing DEPENDENCY is a hard FAIL, not a SKIP. Only an absent SUBJECT (the
 ## checkout guarded above) earns 77. kcov and jq are this lane's tooling: if they

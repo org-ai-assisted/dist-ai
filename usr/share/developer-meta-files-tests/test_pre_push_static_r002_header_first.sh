@@ -25,12 +25,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if ! test -r /usr/libexec/helper-scripts/has.sh ; then
-   printf '%s\n' "FATAL: helper-scripts has.sh is not installed" >&2
+if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
+   printf '%s\n' "FATAL: helper-scripts has.bsh is not installed" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 if ! has safe-rm ; then
    printf '%s\n' "FATAL: safe-rm not on PATH" >&2

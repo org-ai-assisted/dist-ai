@@ -81,7 +81,7 @@ run_setup_dist() {
       printf '%s\n' 'yellow="_Y_"'
       printf '%s\n' 'nocolor="_N_"'
    } >"${base}/helpers/get_colors.sh"
-   printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${base}/helpers/has.sh"
+   printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${base}/helpers/has.bsh"
 
    {
       printf '%s\n' '#!/bin/bash'

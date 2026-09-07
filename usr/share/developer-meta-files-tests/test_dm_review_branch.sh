@@ -25,8 +25,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 ## Fail closed. A missing prerequisite is an environment defect: skipping on
 ## it reports green while the test never ran, which is worse than no test.

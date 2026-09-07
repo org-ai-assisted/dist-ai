@@ -60,7 +60,7 @@ trap test_cleanup_handler EXIT
 stubs="${work_dir}/helper-scripts"
 mkdir --parents -- "${stubs}"
 printf '%s\n' 'as_root() { true; }' >"${stubs}/as_root.sh"
-printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${stubs}/has.sh"
+printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${stubs}/has.bsh"
 
 ## append-once is provided by helper-scripts as a COMMAND, not a function.
 bin_stubs="${work_dir}/bin"

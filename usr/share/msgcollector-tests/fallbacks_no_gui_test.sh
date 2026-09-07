@@ -43,9 +43,9 @@ if [ ! -r "${subject}" ]; then
    exit 1
 fi
 
-## msgfallbacks sources helper-scripts has.sh itself; require it (do not stub).
-if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/has.sh" ]; then
-   printf '%s\n' "FATAL: helper-scripts has.sh not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
+## msgfallbacks sources helper-scripts has.bsh itself; require it (do not stub).
+if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/has.bsh" ]; then
+   printf '%s\n' "FATAL: helper-scripts has.bsh not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
    exit 1
 fi
 
@@ -77,7 +77,7 @@ run_fallbacks() {
       printf '%s\n' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
          'set -o errtrace' 'shopt -s inherit_errexit'
       ## The caller provides error_handler before sourcing the file; msgfallbacks
-      ## sources the real has.sh itself, so has is NOT stubbed here.
+      ## sources the real has.bsh itself, so has is NOT stubbed here.
       printf '%s\n' 'error_handler() { printf "%s\n" "STUB error_handler"; }'
       printf '%s\n' "source ${subject}"
       printf '%s\n' 'fallbacks'

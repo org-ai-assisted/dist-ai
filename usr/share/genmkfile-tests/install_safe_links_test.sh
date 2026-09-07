@@ -114,7 +114,7 @@ locate_genmkfile() {
 
 ## helper-scripts 'has' for the rsync presence check (R-090).
 # shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.bsh
 
 ## 'genmkfile install' shells out to rsync; without it the suite cannot
 ## exercise the code path, so SKIP rather than fail.
