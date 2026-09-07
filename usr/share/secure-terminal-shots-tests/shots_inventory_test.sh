@@ -108,6 +108,41 @@ rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'a shot referenced with a ?query string is NOT a false orphan' "${rc}" 0
 safe-rm -- "${site}/comparison/shots/qbuster.webp"
 
+## a URL-ENCODED reference (%2E) and a srcset-only reference must resolve to their files
+## (the browser decodes %XX and honours srcset URLs) -- else the shot reads as a false orphan.
+printf 'e' > "${site}/comparison/shots/enc.webp"
+printf 's' > "${site}/comparison/shots/set.webp"
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" alt="demo">
+<img src="/comparison/shots/enc%2Ewebp" alt="url-encoded">
+<img srcset="/comparison/shots/set.webp 1x, /comparison/shots/demo.webp 2x" alt="srcset">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a URL-encoded (%2E) and a srcset reference resolve (not false orphans)' "${rc}" 0
+safe-rm -- "${site}/comparison/shots/enc.webp" "${site}/comparison/shots/set.webp"
+
+## a DANGLING URL-encoded reference (points at a missing shot) must be caught.
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" alt="demo">
+<img src="/comparison/shots/missing%2Ewebp" alt="dangling-encoded">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a dangling URL-encoded reference is caught' "${rc}" 1
+
+## a DANGLING srcset reference must be caught.
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" alt="demo">
+<img srcset="/comparison/shots/missing-set.webp 2x" alt="dangling-srcset">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a dangling srcset reference is caught' "${rc}" 1
+
 ## 2. LIVE: the real site checkout, when present, must be clean.
 live=''
 for cand in \
