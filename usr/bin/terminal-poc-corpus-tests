@@ -108,12 +108,14 @@ if [ -x "${corpus}/conformance/acquire.sh" ]; then
 fi
 
 overall=0
+ran=0
 run_stage() {
    local label="$1"; shift
    printf '\n== %s ==\n' "${label}"
    local rc=0
    python3 -Bu -- "$@" || rc="$?"
    if [ "${rc}" = '0' ]; then
+      ran=$(( ran + 1 ))
       return 0
    fi
    if [ "${rc}" = '77' ]; then
@@ -124,8 +126,23 @@ run_stage() {
    overall=1
 }
 
+report_stage_result() {
+   ## A real stage failure trumps everything.
+   if [ "${overall}" -ne 0 ]; then
+      exit "${overall}"
+   fi
+   ## Every stage skipped (rc=77) -> NOTHING was verified: no PoC detector fired, no
+   ## conformance invariant checked. Exiting 0 here reported GREEN with zero PoCs run
+   ## -- the exact silent-green this suite's header warns against. Route it through the
+   ## same absent-target gate: FATAL unless the orchestrator authorized the skip.
+   if [ "${ran}" -eq 0 ]; then
+      skip_or_fatal 'every stage skipped (exit 77) -- no PoC was verified'
+   fi
+   exit 0
+}
+
 run_stage 'adversarial --self-test'  "${corpus}/harness/adversarial.py" --self-test
 run_stage 'adversarial corpus'       "${corpus}/harness/adversarial.py"
 run_stage 'conformance'              "${corpus}/harness/conformance.py" "$@"
 
-exit "${overall}"
+report_stage_result

@@ -36,11 +36,18 @@ if [ ! -r "${runner}" ]; then
    exit 1
 fi
 
-## The fix replaced three unconditional 'exit 77' blocks with skip_or_fatal.
-## Its ABSENCE is the regression, so a missing function is a FAIL.
+## The fix replaced three unconditional 'exit 77' blocks with skip_or_fatal, and
+## added report_stage_result (all-stages-skipped -> not a green PASS). Their
+## ABSENCE is the regression, so a missing function is a FAIL.
 eval "$(sed -n '/^skip_or_fatal() {/,/^}/p' -- "${runner}")"
+eval "$(sed -n '/^report_stage_result() {/,/^}/p' -- "${runner}")"
 if ! declare -F skip_or_fatal >/dev/null; then
    fail 'runner has no skip_or_fatal(): the unauthorized-absent-target skip fix is missing (pre-fix unconditional "exit 77")'
+   printf '%s\n' "===== ${pass_count} passed, ${fail_count} failed =====" >&2
+   exit 1
+fi
+if ! declare -F report_stage_result >/dev/null; then
+   fail 'runner has no report_stage_result(): the all-stages-skipped false-green fix is missing (pre-fix "exit ${overall}")'
    printf '%s\n' "===== ${pass_count} passed, ${fail_count} failed =====" >&2
    exit 1
 fi
@@ -66,6 +73,31 @@ run_gate '' 1 'DIST_AI_SKIP_AUTHORIZED unset -> FATAL (1)'
 run_gate 1 77 'DIST_AI_SKIP_AUTHORIZED=1 -> SKIP (77)'
 ## A non-1 value is NOT authorization.
 run_gate 0 1 'DIST_AI_SKIP_AUTHORIZED=0 -> FATAL (1)'
+
+## report_stage_result: the stage-level silent-green guard. Runs in a subshell with
+## controlled globals (overall/ran) + a controlled DIST_AI_SKIP_AUTHORIZED.
+check_stage_result() {
+   local _overall="$1" _ran="$2" authval="$3" want="$4" label="$5" rc=0
+   (
+      overall="${_overall}"; ran="${_ran}"
+      if [ -z "${authval}" ]; then unset DIST_AI_SKIP_AUTHORIZED; else DIST_AI_SKIP_AUTHORIZED="${authval}"; fi
+      report_stage_result
+   ) >/dev/null 2>&1 || rc=$?
+   if [ "${rc}" = "${want}" ]; then
+      pass "${label}: exit ${rc}"
+   else
+      fail "${label}: exit ${rc}, want ${want}"
+   fi
+}
+
+## A real stage failure trumps.
+check_stage_result 1 0 '' 1 'overall!=0 -> FAIL (1)'
+## Every stage skipped (ran==0), unauthorized -> FATAL, not a green PASS (the finding).
+check_stage_result 0 0 '' 1 'all stages skipped, unauthorized -> FATAL (1)'
+## Every stage skipped, authorized by the orchestrator -> SKIP.
+check_stage_result 0 0 1 77 'all stages skipped, authorized -> SKIP (77)'
+## At least one stage ran and none failed -> real PASS.
+check_stage_result 0 2 '' 0 'ran>0, overall==0 -> PASS (0)'
 
 ## Structural: every legitimate 'exit 77' now lives inside skip_or_fatal, so a
 ## reintroduced bare skip on an absent target (evading the gate) shows up as a
