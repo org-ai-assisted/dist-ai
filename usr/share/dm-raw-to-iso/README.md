@@ -51,8 +51,10 @@ Arch-specific (host, for the target arch):
 
 The EFI side ships ONLY Debian's signed shim + signed grub -- no unsigned GRUB EFI
 core is built, so `grub-efi-*-bin` is not needed. The signed shim boots UEFI whether
-Secure Boot is on or off, so one loader covers plain UEFI and Secure Boot. An EFI
-platform whose signed pair is absent (e.g. 32-bit UEFI) is auto-skipped.
+Secure Boot is on or off, so one loader covers plain UEFI and Secure Boot. The
+SUPPORTED EFI platform for the arch (x64 on amd64, aa64 on arm64) is required: a
+missing signed dependency there is a hard error. OPTIONAL platforms (32-bit UEFI)
+auto-skip when their signed pair is absent.
 
 The live initramfs is built by the **rootfs's own** `dracut` inside a chroot, so
 the host needs no dracut; `dracut` + `dracut-live` must be present in the input
@@ -118,8 +120,8 @@ cp /usr/lib/shim/mm<efi>.efi.signed                      EFI/boot/mm<efi>.efi   
 ```
 The `gcd*` (removable-media) signed grub variant is used, not `grub*` (hard disk).
 The signed shim boots UEFI with Secure Boot on OR off, so this one path is EFI and
-Secure Boot. A platform whose signed pair is absent is auto-skipped; if none is
-present the build fails. No embedded configuration files: the signed grub carries
+Secure Boot. The supported platform (x64/aa64) errors if its signed pair is missing;
+optional platforms (32-bit UEFI) auto-skip. No embedded configuration files: the signed grub carries
 its own embedded config (Debian's, not built or controlled here), and it reads the
 menu from the real `grub.cfg` on the medium.
 

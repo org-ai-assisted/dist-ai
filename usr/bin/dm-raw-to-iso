@@ -367,10 +367,10 @@ mkdir -p -- "${esp_stage}/EFI/boot" "${esp_stage}/boot/grub"
 ## Per EFI platform: install the MS-signed shim (loaded first) + the distro-signed
 ## grub it chainloads. The signed shim boots UEFI whether Secure Boot is ON or OFF,
 ## so this single path is EFI AND Secure Boot -- no unsigned core, no embedded
-## config. A platform whose signed pair is not installed is auto-skipped (e.g.
-## 32-bit UEFI when grub-efi-ia32-signed is absent). gcd* is the removable-media
-## (CD/USB) signed grub variant.
-efi_count=0
+## config. gcd* is the removable-media (CD/USB) signed grub variant.
+## The FIRST platform is the SUPPORTED one for the arch (x64 on amd64, aa64 on
+## arm64): a missing signed dependency there is a hard error. The rest are OPTIONAL
+## (32-bit UEFI): auto-skip them when their signed pair is absent.
 for pair in "${efi_platforms[@]}" ; do
    platform="${pair%%:*}"
    efi_name="${pair##*:}"
@@ -384,15 +384,12 @@ for pair in "${efi_platforms[@]}" ; do
       if [ -r "${mokmanager}" ] ; then
          cp -a -- "${mokmanager}" "${esp_stage}/EFI/boot/mm${efi_name}.efi"
       fi
-      efi_count=$(( efi_count + 1 ))
+   elif [ "${pair}" = "${efi_platforms[0]}" ] ; then
+      error "missing signed EFI dependency for the supported platform ${efi_name} (${arch}): install shim-signed and grub-efi-${arch}-signed (need ${signed_shim} and ${signed_grub})"
    else
-      printf '%s: NOTE: no signed shim+grub for EFI platform %s; skipping it.\n' "${me}" "${efi_name}" >&2
+      printf '%s: NOTE: no signed shim+grub for optional EFI platform %s; skipping it.\n' "${me}" "${efi_name}" >&2
    fi
 done
-
-if [ "${efi_count}" -eq 0 ] ; then
-   error "no signed EFI loader for ${arch}; install shim-signed and grub-efi-${arch}-signed"
-fi
 
 ## ESP-redirect grub.cfg: some firmware loads the EFI grub with root set to the
 ## ESP itself, so redirect to the real config on the medium carrying /.disk/info.
