@@ -143,6 +143,17 @@ HTML
 rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'a dangling srcset reference is caught' "${rc}" 1
 
+## a root-absolute reference with a redundant '//' must normalize like the relative branch,
+## so a dangling one is still caught (not silently excluded from the gallery prefix match).
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" alt="demo">
+<img src="/comparison//shots/missing.webp" alt="doubled-slash-dangling">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a dangling root-absolute ref with // is caught (path normalized)' "${rc}" 1
+
 ## 2. LIVE: the real site checkout, when present, must be clean.
 live=''
 for cand in \

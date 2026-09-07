@@ -78,8 +78,13 @@ def _resolve(ref, html_path, site):
     path = unquote(path)
     if not path.lower().endswith(IMAGE_EXTS):
         return None
+    ## normpath BOTH branches: _in_gallery matches by exact prefix, so an un-normalized
+    ## '//' or '/./' in a root-absolute ref (e.g. '/comparison//shots/x.webp') would not
+    ## start with 'comparison/shots/' and be silently excluded from the gallery -> a real
+    ## dangling reference goes unreported (the relative branch already normalized; the
+    ## root-absolute one only lstrip'd).
     if path.startswith('/'):
-        rel = path.lstrip('/')
+        rel = os.path.normpath(path.lstrip('/'))
     else:
         base = os.path.relpath(os.path.dirname(html_path), site)
         rel = os.path.normpath(os.path.join(base, path))
