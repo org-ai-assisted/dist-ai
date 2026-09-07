@@ -21,7 +21,8 @@ import sys
 import tempfile
 import time
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(clipboard-watch)')
 
 try:
     from PyQt6.QtWidgets import QApplication

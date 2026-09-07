@@ -15,7 +15,8 @@ import os
 import sys
 import random
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(fuzz-widget)')
 
 try:
     from PyQt6.QtWidgets import QApplication

@@ -9,7 +9,7 @@
 ## NOT steal a live primary's socket. In-process unit tests (test_mainwin) cover
 ## the decision logic, but coexistence can only be shown with REAL processes: two
 ## windows sharing one main-thread event loop cannot answer each other's blocking
-## ping, so this suite spawns real offscreen secure-terminal processes and drives
+## ping, so this suite spawns real headless-Wayland secure-terminal processes and drives
 ## the actual sockets. Each child runs in its OWN session (start_new_session) and
 ## is reaped by process-group in a finally, so a crash mid-suite leaks nothing and
 ## the reaper can never reach another session's processes.
@@ -25,7 +25,8 @@ import tempfile
 import subprocess
 import importlib.util
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(instances)')
 
 try:
     # The spawned instances need PyQt6; probe (not import) so a missing dependency
@@ -39,14 +40,15 @@ except Exception as exc:  # fail closed: a required dependency must not silently
     sys.exit(1)
 
 
-# Isolate every XDG surface so the spawned instances load clean defaults and share
-# ONE socket dir with this parent (which pings via ipc.send_request, reading
-# XDG_RUNTIME_DIR from its own environ -- it must match the children's).
-_RUN = tempfile.mkdtemp(prefix='st-inst-run-')
-os.environ['XDG_RUNTIME_DIR'] = _RUN
+# Isolate the HOME / config / state XDG surfaces so the spawned instances load clean defaults.
+# Under the runner's headless-Wayland compositor the children are wayland clients: they reach
+# the compositor socket via its XDG_RUNTIME_DIR, so INHERIT it -- it is already a fresh, isolated
+# mktemp dir, so the IPC socket dir stays isolated -- and it is ALSO the single-instance socket
+# dir this parent pings through ipc.send_request (parent and children must share it, both reading
+# XDG_RUNTIME_DIR from their environ). QT_QPA_PLATFORM=wayland + WAYLAND_DISPLAY pass through from
+# the compositor (the require_wayland guard above has already ensured they are set).
+_RUN = os.environ['XDG_RUNTIME_DIR']       # the compositor's dir; shared parent<->children
 _ENV = dict(os.environ,
-            QT_QPA_PLATFORM='offscreen',
-            XDG_RUNTIME_DIR=_RUN,
             HOME=tempfile.mkdtemp(prefix='st-inst-home-'),
             XDG_CONFIG_HOME=tempfile.mkdtemp(prefix='st-inst-cfg-'),
             XDG_STATE_HOME=tempfile.mkdtemp(prefix='st-inst-state-'),
@@ -66,9 +68,9 @@ if not os.path.isfile(_BIN):
                      'at %s\n' % _BIN)
     sys.exit(1)
 
-# Qt's offscreen QPA platform can SIGSEGV/SIGABRT during QApplication startup under
-# concurrent process launches -- an environmental artifact (empty stderr, the process
-# dies before it binds or hands off), NOT a product fault. Every single-launch scenario
+# Qt can SIGSEGV/SIGABRT during QApplication startup under concurrent process launches
+# -- an environmental artifact (empty stderr, the process dies before it binds or hands
+# off), NOT a product fault. Every single-launch scenario
 # RESPAWNS a launch that dies this way (see _primary/_coexisting/_handoff below), so a
 # flake never reads as a product failure; a launch that exits for ANY OTHER reason, or a
 # genuine coexistence/handoff failure, is reported. A whole-suite retry backstops the one
@@ -314,7 +316,7 @@ def _run_suite(tag):
 # a failure with NO Qt-startup crash is a real bug, reported at once and never retried
 # (the gate that keeps this from masking a genuine regression).
 #
-# The underlying crash is a Qt-offscreen QApplication-startup SIGSEGV/SIGABRT under
+# The underlying crash is a Qt QApplication-startup SIGSEGV/SIGABRT under
 # concurrent launches: empty stderr, no core, dies before it binds -- a Qt-internal
 # artifact, not a product fault, and NOT fixable by test-env isolation (the resource it
 # races on, XDG_RUNTIME_DIR, MUST be shared so the instances find each other's socket --
@@ -332,7 +334,7 @@ for _attempt in range(_MAX_ATTEMPTS):
         sys.exit(0)
     if not _saw_crash:
         break  # a real failure (no Qt-startup crash) -> report now, never masked by a retry
-    print('secure-terminal-tests(instances): attempt %d/%d hit the Qt-offscreen '
+    print('secure-terminal-tests(instances): attempt %d/%d hit the Qt '
           'startup-crash flake (%d failed); retrying on fresh groups'
           % (_attempt + 1, _MAX_ATTEMPTS, _failures), file=sys.stderr)
 

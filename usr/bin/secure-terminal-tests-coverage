@@ -41,6 +41,23 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
+## Resolve the headless-wayland compositor helper. Each parallel coverage suite runs under its
+## OWN wl-headless-run (labwc) so the suites use the 'wayland' QPA platform -- the only supported
+## platform (no offscreen). A single shared compositor is NOT usable here: each suite needs a
+## private XDG_RUNTIME_DIR (its single-instance-socket namespace), and a shared compositor's
+## wayland socket lives in the compositor's own runtime dir -- so a per-suite dir cannot reach it
+## ("Failed to create wl_display"). A per-suite compositor mints its own runtime dir, giving each
+## suite both a working wayland socket AND an isolated socket namespace. REQUIRED tooling -> FATAL
+## if absent, never a silent skip.
+if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+   wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+   wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+else
+   printf '%s\n' 'secure-terminal-tests-coverage: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
+   exit 1
+fi
+
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then
@@ -96,7 +113,7 @@ export HYPOTHESIS_STORAGE_DIRECTORY="${HYPOTHESIS_STORAGE_DIRECTORY:-${work}/.hy
 ##
 ## Tier 1 -- covered by the Qt-FREE suites.
 gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py,*/resource_isolation.py'
-## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
+## Tier 2 -- covered by the headless-Wayland Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
 gated_qt='*/clipboard_watch.py,*/review.py,*/revealed_editor.py,*/terminal.py,*/main.py'
@@ -149,10 +166,10 @@ assert_every_module_gated
 
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
 ## (and any forked child's) data in its own file, then merges them. The Qt suites run on the
-## offscreen platform and fail closed (exit 1) when PyQt6 or pyte is missing -- a
-## security-relevant suite must never silently disable itself -- so both tiers below are
-## always gated.
-export QT_QPA_PLATFORM=offscreen
+## real headless-Wayland platform (each suite is wrapped in its own wl-headless-run inside
+## run_suite_under_coverage, which exports QT_QPA_PLATFORM=wayland) and fail closed (exit 1)
+## when PyQt6 or pyte is missing -- a security-relevant suite must never silently disable
+## itself -- so both tiers below are always gated.
 ## Pin the font DPI to 72 for every suite process BEFORE Qt starts, so the Qt
 ## suites' font-metric-derived geometry (the responsive-toolbar tier widths in
 ## test_mainwin especially) is deterministic under coverage without relying on a
@@ -190,8 +207,12 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
    [ "${retries}" -le 20 ] || retries=20
    for (( attempt=1; attempt<=retries; attempt++ )); do
       rc=0
-      python3 -m coverage run --parallel-mode --source="${pkg}" -- \
-         "${suite_path}" || rc="$?"
+      ## Each attempt gets its OWN headless-Wayland compositor (wl-headless-run mints a private
+      ## XDG_RUNTIME_DIR + wayland socket and tears them down on exit), so parallel suites never
+      ## contend for one compositor's socket and a retried suite starts from a fresh compositor.
+      "${wl_headless_run}" --no-autoconfirm -- \
+         python3 -m coverage run --parallel-mode --source="${pkg}" -- \
+            "${suite_path}" || rc="$?"
       [ "${rc}" = '139' ] || return "${rc}"
       printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${retries}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
    done
@@ -222,10 +243,12 @@ python3 -m coverage erase
 ## process write its OWN data file, so `coverage combine` unions them regardless of
 ## order or timing -- the same union the old sequential loop produced, just faster
 ## (wall-clock drops toward the slowest single suite). Bounded to COVERAGE_SUITE_JOBS
-## concurrent jobs (default: nproc) so the Qt-offscreen suites do not thrash a small
-## box. Each suite runs under its OWN XDG_{RUNTIME,CONFIG,STATE} dir so two concurrent
-## suites can NEVER collide on the single-instance socket or a config path (the suites
-## also self-isolate via mkdtemp, but the runner guarantees it regardless). Per-suite
+## concurrent jobs (default: nproc) so the Qt suites (each with its own headless-Wayland
+## compositor) do not thrash a small box. Each suite runs under its OWN compositor-minted
+## XDG_RUNTIME_DIR (isolated single-instance socket namespace) plus its own XDG_CONFIG/STATE
+## dir, so two concurrent suites can NEVER collide on the single-instance socket or a config
+## path (the suites also self-isolate via mkdtemp, but the runner guarantees it regardless).
+## Per-suite
 ## output + rc are captured and replayed in canonical order after the barrier, so the
 ## log stays deterministic; a failure is reported then (fail-fast ordering is moot once
 ## parallel -- total time is the slowest suite either way).
@@ -245,26 +268,29 @@ suite_jobs="$(( 10#${suite_jobs} ))"
 [ "${suite_jobs}" -ge 1 ] || suite_jobs="${ncpu}"
 ## Clamp to a sane UPPER bound: without it a pathological COVERAGE_SUITE_JOBS (e.g. a
 ## 20-digit value) survives the >=1 check and, since the job count maxes at the suite
-## count, the `wait -n` throttle never fires -> every Qt-offscreen suite launches at once
-## and thrashes/self-DoSes the box. Cap at 4x the core count (headroom for the I/O-bound
+## count, the `wait -n` throttle never fires -> every Qt suite (and its own labwc) launches at
+## once and thrashes/self-DoSes the box. Cap at 4x the core count (headroom for the I/O-bound
 ## Qt suites without oversubscribing a small runner).
 suite_cap="$(( ncpu * 4 ))"
 [ "${suite_jobs}" -le "${suite_cap}" ] || suite_jobs="${suite_cap}"
 
-run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG
+run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG config/state
    local suite="$1" rc=0
    local xdg="${work}/xdg-${suite}"
-   ## Guard the XDG setup INSIDE an if-condition (exempt from errexit): a mkdir/chmod
-   ## failure must record a FAILING rc, never errexit-abort the backgrounded job before it
-   ## writes rc-<suite> -- an abort would make the throttling `wait -n` inherit the failure
-   ## and kill the whole gate (and the EXIT trap would then wipe the shared work dir out
-   ## from under the still-running suites). So this function always reaches the printf.
-   if mkdir -p "${xdg}/run" "${xdg}/config" "${xdg}/state" \
-         && chmod 700 "${xdg}/run"; then   ## XDG_RUNTIME_DIR must be 0700 or Qt refuses it
+   ## XDG_RUNTIME_DIR is NOT set here: run_suite_under_coverage runs the suite under its own
+   ## wl-headless-run, which mints a private XDG_RUNTIME_DIR (the wayland socket + the app's
+   ## single-instance socket namespace) and removes it on exit -- so each parallel suite is
+   ## isolated regardless. Only the config/state surfaces need isolating here so two concurrent
+   ## suites load clean defaults.
+   ## Guard the XDG setup INSIDE an if-condition (exempt from errexit): a mkdir failure must
+   ## record a FAILING rc, never errexit-abort the backgrounded job before it writes rc-<suite>
+   ## -- an abort would make the throttling `wait -n` inherit the failure and kill the whole gate
+   ## (and the EXIT trap would then wipe the shared work dir out from under the still-running
+   ## suites). So this function always reaches the printf.
+   if mkdir -p "${xdg}/config" "${xdg}/state"; then
       ## Swallow the suite rc into a file and RETURN 0, so the backgrounded job never trips
       ## the caller's errexit via wait; the rc is judged from the file after the barrier.
-      XDG_RUNTIME_DIR="${xdg}/run" XDG_CONFIG_HOME="${xdg}/config" \
-         XDG_STATE_HOME="${xdg}/state" \
+      XDG_CONFIG_HOME="${xdg}/config" XDG_STATE_HOME="${xdg}/state" \
          run_suite_under_coverage "${tests_dir}/${suite}.py" \
             > "${work}/out-${suite}" 2>&1 || rc="$?"
    else
@@ -324,8 +350,8 @@ if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
    fuzz_cov="${work}/.cov-fuzz-gui"
    fuzz_rc=0
    ( cd "${tests_dir}" \
-      && COVERAGE_FILE="${fuzz_cov}" python3 -m coverage run \
-            --source=fuzz_widget -- test_fuzz_widget.py ) || fuzz_rc="$?"
+      && COVERAGE_FILE="${fuzz_cov}" "${wl_headless_run}" --no-autoconfirm -- \
+            python3 -m coverage run --source=fuzz_widget -- test_fuzz_widget.py ) || fuzz_rc="$?"
    if [ "${fuzz_rc}" != '0' ] && [ "${fuzz_rc}" != '77' ]; then
       printf '%s\n' "secure-terminal-tests-coverage: GUI fuzzer failed (exit ${fuzz_rc})" >&2
       exit "${fuzz_rc}"

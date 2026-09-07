@@ -34,6 +34,27 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
+## Run the Qt suites under a REAL headless Wayland compositor (labwc, via wl-headless-run) so
+## they use the 'wayland' QPA platform -- the only supported platform (no offscreen). One
+## compositor serves the whole (sequential) run; a no-op when already under a compositor (a
+## real session, or our own re-exec). The compositor helper is REQUIRED tooling -> FATAL if
+## absent, never a silent skip. ST_TESTS_NO_WL_WRAP is the re-exec loop guard only.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${ST_TESTS_NO_WL_WRAP:-}" != '1' ]; then
+   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+   else
+      printf '%s\n' 'secure-terminal-tests: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
+      exit 1
+   fi
+   export ST_TESTS_NO_WL_WRAP=1
+   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
+   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
+   ## above makes the re-run skip this block.
+   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
+fi
+
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then

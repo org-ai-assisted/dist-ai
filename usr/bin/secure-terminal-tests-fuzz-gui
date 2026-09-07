@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-## Heavy randomized GUI fuzz run: drives the LIVE SecureTerminal widget (offscreen
-## Qt) with adversarial escape/C1/unicode/combining-mark output, mode switches,
+## Heavy randomized GUI fuzz run: drives the LIVE SecureTerminal widget (real
+## headless-Wayland Qt) with adversarial escape/C1/unicode/combining-mark output, mode switches,
 ## pastes and key events, asserting the terminal never crashes, freezes (a per-feed
 ## wall-clock bound catches a Zalgo reshape DoS), leaks a control byte into the
 ## document, or lets a dangerous byte reach the pty on a paste. Complements the
@@ -30,6 +30,26 @@ if [ -d "${script_dir}/../share/secure-terminal-tests" ]; then
    tests_dir="${script_dir}/../share/secure-terminal-tests"
 else
    tests_dir='/usr/share/secure-terminal-tests'
+fi
+
+## Run the live-GUI fuzzer under a REAL headless Wayland compositor (labwc, via wl-headless-run),
+## on the 'wayland' QPA platform -- the only supported platform (no offscreen). A no-op when
+## already under a compositor. REQUIRED tooling -> FATAL if absent, never a silent skip.
+## ST_TESTS_NO_WL_WRAP is the re-exec loop guard only.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${ST_TESTS_NO_WL_WRAP:-}" != '1' ]; then
+   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+   else
+      printf '%s\n' 'secure-terminal-tests-fuzz-gui: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
+      exit 1
+   fi
+   export ST_TESTS_NO_WL_WRAP=1
+   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
+   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
+   ## above makes the re-run skip this block.
+   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
 fi
 
 repo=''
@@ -58,8 +78,7 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
 fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-## The live widget needs a Qt platform; offscreen keeps it headless.
-[ -v QT_QPA_PLATFORM ] || export QT_QPA_PLATFORM=offscreen
+## The live widget's Qt platform is 'wayland', provided by the wl-headless-run wrap above.
 
 iterations='6000'
 

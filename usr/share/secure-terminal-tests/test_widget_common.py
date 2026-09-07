@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 """
-Shared harness for the offscreen widget/window tests, split across test_widget.py
+Shared harness for the headless-Wayland widget/window tests, split across test_widget.py
 and test_widget2.py so the two halves run as separate processes (the coverage gate
 runs them concurrently; combine unions the result). Each half does
 `from test_widget_common import *`, runs its sections, then calls finish(<label>).
@@ -15,7 +15,7 @@ The pass/fail counters live HERE: ok()/eq() (imported into each half) mutate thi
 module's PASS/FAIL, and finish() reads them -- so a half's tally is correct even
 though `from ... import *` binds its own PASS/FAIL names to the import-time value.
 
-Needs PyQt6 (offscreen) and python3-pyte, declared dependencies of the test, so a
+Needs PyQt6 (headless Wayland) and python3-pyte, declared dependencies of the test, so a
 missing one is a hard FAILURE, not a skip -- a security-relevant test must never be
 silently disabled.
 """
@@ -26,7 +26,8 @@ import signal
 import tempfile
 import weakref
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from st_qt_platform import require_wayland
+require_wayland('secure-terminal-tests(widget)')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-widget-cfg-')
 # Isolate session state too, or a real leftover session on the box would be
 # restored and make the window's initial mode/tabs nondeterministic.
@@ -164,7 +165,7 @@ QMessageBox.question = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton
 # master fds + children were left to the process os._exit. Track every construction (this
 # catches standalone terminals AND the tabs a MainWindow builds) and shut them all down in
 # finish() -- shutdown() only releases the pty (fd + child hang-up via _release_pty, which is
-# idempotent), it does NOT destroy the QWidget, so it cannot trigger the offscreen-Qt static
+# idempotent), it does NOT destroy the QWidget, so it cannot trigger the Qt static
 # teardown crash that os._exit exists to dodge. This owns the resources instead of leaking
 # them to exit; it is scoped to the two widget halves (only they import this harness).
 _LIVE_TERMS = []
@@ -226,8 +227,8 @@ def glyph_pt(term, idx):
 
 
 def spawn_live(**kw):
-    """Construct a SecureTerminal whose pty child SURVIVED startup, respawning a Qt-offscreen
-    startup SIGSEGV/SIGABRT the way test_instances does. The child forks from this offscreen-Qt
+    """Construct a SecureTerminal whose pty child SURVIVED startup, respawning a Qt
+    startup SIGSEGV/SIGABRT the way test_instances does. The child forks from this Qt
     process and occasionally crashes BEFORE execvp; that dead-on-arrival pid makes the
     child-liveness readers (cwd_basename / shell_cwd / has_foreground_program) flip and fail an
     otherwise-clean suite (the intermittent "1 failed" on CI). A bounded respawn turns that env
@@ -254,7 +255,7 @@ def spawn_live(**kw):
 
 
 def finish(label):
-    """Report this half's tally and exit. The offscreen Qt platform can crash in its
+    """Report this half's tally and exit. Qt can crash in its
     static teardown after a clean run (destroying the many widgets/pyte screens/timers
     these suites build), which would turn a fully-passing run into a non-zero exit. All
     tests have run and the result is known, so persist coverage and exit hard, bypassing
