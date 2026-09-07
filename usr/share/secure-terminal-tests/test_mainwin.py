@@ -420,6 +420,73 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
+# --- reviewdrain #9/#10/#11/#13: main.py behavioural fixes --------------------
+# #10: the Line-editing toggle applies to EVERY tab, not just current() -- a background
+# tab kept the old policy silently (unlike set_paste_warn / set_copy_warn).
+_lew = MainWindow()
+_lew.new_tab()
+_lew.new_tab()                                  # two real tabs
+_lew.set_line_edits(False)
+ok(all(not t.line_edits_enabled() for t in _lew._real_terms()),
+   '#10: set_line_edits(False) applies to every tab, not just the current one')
+_lew.set_line_edits(True)
+ok(all(t.line_edits_enabled() for t in _lew._real_terms()),
+   '#10: set_line_edits(True) re-applies to every tab')
+_lew.deleteLater()
+APP.processEvents()                             # reap the tabs' shells (free ptys/fds)
+
+# #9: _ipc_open must count only tabs it ACTUALLY opened. An explicit empty command opens
+# NO tab, so opened=0 and the bare-reuse fallback (a fresh tab) still fires.
+_ipw = MainWindow()
+_ipw.new_tab()
+_ip_before = _ipw.tabs.count()
+_ip_reply = _ipw._ipc_open({'tabs': [{'command': []}]})
+eq(_ip_reply.get('opened'), 0,
+   '#9: _ipc_open reports opened=0 when a spec (empty command) opens no tab')
+ok(_ipw.tabs.count() > _ip_before,
+   '#9: an all-declined open batch still falls back to a fresh tab (contract kept)')
+_ipw.deleteLater()
+APP.processEvents()
+
+# #13: a non-preset scrollback (any int via /scrollback N) must show a fallback combo item
+# in Global Settings, so OK does not read currentData()=None and corrupt the config
+# (scrollback=None -> int('None') crashes the next launch, resetting to Unlimited).
+_sbw = MainWindow()
+_sbw.new_tab()
+_sbw._scrollback = 5000                          # not one of SCROLLBACK_CHOICES
+_dialogs.clear()
+QDialog.exec = _accept_exec
+try:
+    _sbw.show_global_settings()
+    eq(_dlg_field(_dialogs[-1], 'Scrollback').currentData(), 5000,
+       '#13: a non-preset scrollback shows a real fallback combo item (not a blank)')
+    eq(_sbw._scrollback, 5000,
+       '#13: the non-preset scrollback survives Global Settings OK (not overwritten with None)')
+finally:
+    QDialog.exec = _orig_exec
+_sbw.deleteLater()
+APP.processEvents()
+
+# #11: a config keybinding override that COLLIDES with another action's default must not
+# leave BOTH on the same chord (Qt renders an ambiguous chord dead for both) -- the
+# override loses, protecting the built-in default (here the Terminate panic key).
+_kb_dir = tempfile.mkdtemp()
+os.makedirs(os.path.join(_kb_dir, 'secure-terminal.d'))
+with open(os.path.join(_kb_dir, 'secure-terminal.d', '50_kb.conf'), 'w', encoding='utf-8') as _kh:
+    _kh.write('keybindings=copy=Ctrl+Shift+K\n')  # collides with terminate's default
+_kb_o_cfg = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = _kb_dir
+try:
+    _kbw = MainWindow()
+    eq(_kbw.act_terminate.shortcut().toString(), 'Ctrl+Shift+K',
+       '#11: the Terminate panic key keeps Ctrl+Shift+K despite a colliding config override')
+    ok(_kbw.act_copy.shortcut().toString() != 'Ctrl+Shift+K',
+       '#11: the colliding copy override does not double-bind Ctrl+Shift+K (reverts to default)')
+    _kbw.deleteLater()
+finally:
+    os.environ['XDG_CONFIG_HOME'] = _kb_o_cfg if _kb_o_cfg is not None else _kb_dir
+APP.processEvents()
+
 # --- switching tabs focuses the terminal (no second click needed) -------------
 # Regression: _sync_chrome_to_tab did not focus the newly-current terminal, so a
 # QTabWidget switch left focus on the tab bar -- the tab was visible but typing
