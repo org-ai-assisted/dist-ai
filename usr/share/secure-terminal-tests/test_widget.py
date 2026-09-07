@@ -408,6 +408,24 @@ ok('FINALFRAME' in _stx4.scrollback_text()
    'ai-review: the exit snapshot captures the final alt frame even in a single read')
 _stx4.close()
 
+# regression (CodeRabbit): entering the alt screen must keep the primary SCROLLBACK
+# HISTORY (lines scrolled off the visible grid), not just the visible rows. The first fix
+# force-rendered with _alt_screen already True, whose alt branch _reset_grid_view()s the
+# carried-in history away before the freeze.
+_stx5 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_hist = b''.join(b'HIST-LINE-%02d\r\n' % _i for _i in range(60))   # > grid height -> history
+feed_output(_stx5, _hist)
+_stx5._render_tui()
+APP.processEvents()
+feed_output(_stx5, b'\x1b[?1049hALTGRID')                          # enter the alt screen
+APP.processEvents()
+_sb5 = _stx5.scrollback_text()
+ok('HIST-LINE-00' in _sb5 and 'HIST-LINE-59' in _sb5,
+   'CodeRabbit: entering alt keeps the FULL primary scrollback history, not just visible rows')
+ok('ALTGRID' not in _sb5, 'CodeRabbit: the alt grid is still excluded from the scrollback')
+_stx5.close()
+
 # #6 (ai-review): the keep_screen restart must RESET the pyte charset, else a program
 # that designated G0 = DEC special-graphics (ESC ( 0) leaves it set and the new shell's
 # ASCII 'q' renders as a box-drawing horizontal line, not the letter.
