@@ -107,6 +107,9 @@ check_case() {
 
 ## The rule bites.
 check_case 'ungated'          'flag'  'an ungated job with steps is flagged'
+## The literal is present but ORed with a tautology, so the job still runs
+## unconditionally -- a bare substring test misses this.
+check_case 'or-bypass'        'flag'  'a "literal || true" gate is flagged'
 ## An unexplained carve-out is itself a finding: a gate nobody had to
 ## justify turning off is how coverage quietly disappears.
 check_case 'exempt-no-reason' 'flag'  'an exemption with no reason is flagged'

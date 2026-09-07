@@ -104,6 +104,46 @@ DEPRECATED_MARKERS = {
 ## run still reports green.
 OWNER_GATE_LITERAL = "vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'"
 
+
+def effective_condition(cond):
+    """The if-expression with a single surrounding '${{ ... }}' stripped (an
+    'if:' may be written with or without it)."""
+    text = str(cond).strip()
+    match = re.match(r'\A\$\{\{\s*(.*?)\s*\}\}\Z', text, re.DOTALL)
+    return match.group(1).strip() if match else text
+
+
+def top_level_or_parts(expr):
+    """EXPR split on '||' at paren depth 0, outside single-quoted string
+    literals. Used to require the CI-gate literal in EVERY top-level disjunct:
+    'literal || true' has a disjunct ('true') that runs the job regardless of the
+    gate, which a bare substring test misses."""
+    parts = []
+    depth = 0
+    in_str = False
+    start = 0
+    index = 0
+    while index < len(expr):
+        char = expr[index]
+        if in_str:
+            if char == "'":
+                in_str = False
+        elif char == "'":
+            in_str = True
+        elif char == '(':
+            depth += 1
+        elif char == ')':
+            depth = max(0, depth - 1)
+        elif char == '|' and depth == 0 \
+                and index + 1 < len(expr) and expr[index + 1] == '|':
+            parts.append(expr[start:index])
+            index += 2
+            start = index
+            continue
+        index += 1
+    parts.append(expr[start:])
+    return [part.strip() for part in parts]
+
 SHA40 = re.compile(r'^[0-9a-f]{40}$')
 
 RULE_LEGEND = [
@@ -376,7 +416,11 @@ def check_owner_gate(repo_root, targets, findings):
             ## 'if: false' parses to the boolean, not a string.
             if cond is False:
                 continue
-            if OWNER_GATE_LITERAL in str(cond):
+            ## The literal must gate EVERY top-level disjunct, not merely appear
+            ## somewhere: 'literal || true' contains it but still runs the job
+            ## unconditionally.
+            if all(OWNER_GATE_LITERAL in part
+                   for part in top_level_or_parts(effective_condition(cond))):
                 continue
             key = f'{rel}:{job_id}'
             if key in exempt:
