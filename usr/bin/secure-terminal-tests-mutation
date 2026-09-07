@@ -32,26 +32,6 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
-## Run the mutation lane's Qt suites under a REAL headless Wayland compositor (labwc, via
-## wl-headless-run), not offscreen. A no-op when already under a compositor; a bare direct run
-## falls back to offscreen. REQUIRED tooling -> FATAL if absent. DIST_AI_TESTS_NO_WL=1 forces
-## the direct (unwrapped) path.
-if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${DIST_AI_TESTS_NO_WL:-}" != '1' ]; then
-   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
-      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
-   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
-      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
-   else
-      printf '%s\n' 'secure-terminal-tests-mutation: FATAL: wl-headless-run not found (install dist-ai-tests-common)' >&2
-      exit 1
-   fi
-   export DIST_AI_TESTS_NO_WL=1
-   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
-   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
-   ## above makes the re-run skip this block.
-   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
-fi
-
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then
@@ -78,7 +58,5 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
 fi
 
 export SECURE_TERMINAL_REPO="${repo}"
-## Under the wl-headless wrapper QT_QPA_PLATFORM=wayland is already exported; honour it.
-## A bare direct run (no compositor) falls back to offscreen.
-[ -v QT_QPA_PLATFORM ] || export QT_QPA_PLATFORM=offscreen
+export QT_QPA_PLATFORM=offscreen
 "${tests_dir}/mutation_lane.py" "$@"

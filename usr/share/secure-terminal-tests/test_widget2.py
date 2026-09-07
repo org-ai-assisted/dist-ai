@@ -3071,10 +3071,10 @@ ok('#252a31' in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface 
 _ittip.show_for(win, 'x', 100, 'light')
 ok('#fbfbfd' in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
 # Placement (below-by-preference / flip-above / clamp) is tested via the PURE _placement
-# helper with synthetic source + screen rects. A headless Wayland compositor cannot position
-# or query the absolute geometry of a standalone top-level, so the old real-window placement
-# test is not portable; the flip/clamp math is. The real _place path (mapToGlobal + move) is
-# still exercised by the theme show_for() calls above.
+# helper with synthetic source + screen rects, so the flip/clamp decision is exercised in
+# isolation -- deterministic, no dependence on a real window manager placing/reporting a
+# top-level. The real _place path (mapToGlobal + move) is still exercised by the theme
+# show_for() calls above.
 from PyQt6.QtCore import QRect as _QRect_it, QSize as _QSize_it   # noqa: E402
 _it_gap = _ittip._GAP
 _it_avail = _QRect_it(0, 0, 1000, 800)

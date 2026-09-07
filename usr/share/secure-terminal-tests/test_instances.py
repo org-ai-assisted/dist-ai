@@ -39,28 +39,18 @@ except Exception as exc:  # fail closed: a required dependency must not silently
     sys.exit(1)
 
 
-# Isolate every XDG surface so the spawned instances load clean defaults and share ONE
-# socket dir with this parent (which pings via ipc.send_request, reading XDG_RUNTIME_DIR
-# from its own environ -- it must match the children's). Under a REAL compositor
-# (WAYLAND_DISPLAY set by the wl-headless wrapper) the children are wayland clients that
-# reach the compositor socket via its XDG_RUNTIME_DIR, so INHERIT it -- it is already a
-# fresh, isolated mktemp dir, so the IPC socket dir stays isolated -- and let
-# QT_QPA_PLATFORM=wayland + WAYLAND_DISPLAY pass through. With no compositor (a bare direct
-# run) mint a private runtime dir and fall back to the offscreen platform.
-if os.environ.get('WAYLAND_DISPLAY'):
-    _RUN = os.environ['XDG_RUNTIME_DIR']       # the compositor's dir; shared parent<->children
-    _PLATFORM_ENV = {}                         # inherit wayland QPA + WAYLAND_DISPLAY
-else:
-    _RUN = tempfile.mkdtemp(prefix='st-inst-run-')
-    os.environ['XDG_RUNTIME_DIR'] = _RUN
-    _PLATFORM_ENV = {'QT_QPA_PLATFORM': 'offscreen'}
+# Isolate every XDG surface so the spawned instances load clean defaults and share
+# ONE socket dir with this parent (which pings via ipc.send_request, reading
+# XDG_RUNTIME_DIR from its own environ -- it must match the children's).
+_RUN = tempfile.mkdtemp(prefix='st-inst-run-')
+os.environ['XDG_RUNTIME_DIR'] = _RUN
 _ENV = dict(os.environ,
+            QT_QPA_PLATFORM='offscreen',
             XDG_RUNTIME_DIR=_RUN,
             HOME=tempfile.mkdtemp(prefix='st-inst-home-'),
             XDG_CONFIG_HOME=tempfile.mkdtemp(prefix='st-inst-cfg-'),
             XDG_STATE_HOME=tempfile.mkdtemp(prefix='st-inst-state-'),
-            SHELL='/bin/bash',
-            **_PLATFORM_ENV)
+            SHELL='/bin/bash')
 
 # Drive the ACTUAL usr/bin/secure-terminal launcher (not a re-embedded copy),
 # derived from the package location so it resolves in a checkout or an install:
