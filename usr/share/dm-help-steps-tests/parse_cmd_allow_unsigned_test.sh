@@ -12,8 +12,9 @@
 ## hatch. An AI agent (CLAUDECODE set) must NOT use it -- it has a sanctioned
 ## alternative (--sign-and-tag) that keeps verification meaningful. A general
 ## 'dist_build_forbid_allow_unsigned=true' lets any other context (CI, a hardened
-## policy) forbid it too. Both are overridable only by the explicit
-## dangerous-options unlock.
+## policy) forbid it too. This gate is HARDENED: the dangerous-options unlock does
+## NOT override it -- an AI or a forbid context can never skip verification. A plain
+## human build (no CLAUDECODE, no forbid) is allowed, as before.
 ##
 ## Drives the REAL parse-cmd. It normally gets colors + error() from help-steps/pre;
 ## standalone it does not source pre, so this stubs ONLY that reporting layer (empty
@@ -58,7 +59,15 @@ error() {
 }
 export -f error
 
-REFUSAL='allow-unsigned true is refused'
+## A stable substring of parse-cmd's refusal message. Guarded below against drift:
+## if the message is reworded so this no longer matches, every 'refused' probe would
+## silently read 'allowed' and the gate would stop testing -- so a missing sentinel
+## is a hard error, not a quiet mis-report.
+REFUSAL='forbidden for AI sessions'
+if ! grep --quiet --fixed-strings -- "${REFUSAL}" "${parse_cmd}"; then
+   printf '%s\n' "FATAL: refusal sentinel '${REFUSAL}' not found in '${parse_cmd}'; the message drifted -- update this test." >&2
+   exit 1
+fi
 
 ## $1 label, $2 expected (refused|allowed), then env assignments for this run.
 probe() {
@@ -78,14 +87,16 @@ probe() {
    fi
 }
 
-## Refused: AI session, and any context that opts into the general forbid.
-probe "AI session (CLAUDECODE=1)"                refused CLAUDECODE=1
-probe "general forbid var, no AI"               refused -u CLAUDECODE dist_build_forbid_allow_unsigned=true
+## Refused: AI session, and any context that opts into the general forbid. The
+## dangerous-options unlock does NOT override this gate (hardened) -- so the two
+## unlock probes below must STILL be refused.
+probe "AI session (CLAUDECODE=1)"                       refused CLAUDECODE=1
+probe "general forbid var, no AI"                       refused -u CLAUDECODE dist_build_forbid_allow_unsigned=true
+probe "AI + dangerous-options unlock (no override)"     refused CLAUDECODE=1 dist_build_unlock_dangerous_options=true
+probe "forbid + dangerous-options unlock (no override)" refused -u CLAUDECODE dist_build_forbid_allow_unsigned=true dist_build_unlock_dangerous_options=true
 
-## Allowed: a human build (no marker), and the explicit dangerous-options unlock.
-probe "human (no CLAUDECODE, no forbid)"        allowed -u CLAUDECODE
-probe "AI + dangerous-options unlock"           allowed CLAUDECODE=1 dist_build_unlock_dangerous_options=true
-probe "forbid var + dangerous-options unlock"   allowed -u CLAUDECODE dist_build_forbid_allow_unsigned=true dist_build_unlock_dangerous_options=true
+## Allowed: a plain human build (no CLAUDECODE, no forbid).
+probe "human (no CLAUDECODE, no forbid)"                allowed -u CLAUDECODE
 
 ## --allow-unsigned false never trips the gate, even for an AI session.
 false_out="$( env CLAUDECODE=1 "${parse_cmd}" --allow-unsigned false 2>&1 || true )"
