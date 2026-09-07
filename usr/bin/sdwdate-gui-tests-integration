@@ -227,15 +227,29 @@ run_sni_phase() {
   fi
 }
 
+report_result() {
+  printf '\n=== integration summary: %s run, %s failed ===\n' "${ran}" "${failed}"
+  ## A real failure trumps everything.
+  if [ "${failed}" -ne 0 ]; then
+    exit 1
+  fi
+  ## Every phase skipped for missing tooling -> NOTHING was verified. Per the
+  ## 0=PASS / 77=SKIP / else=FAIL orchestrator contract, that is a SKIP, never a
+  ## PASS: falling through to 'exit 0' here reported GREEN with zero tests run.
+  if [ "${ran}" -eq 0 ]; then
+    ## Nothing ran -> NOTHING verified. Per 0=PASS / 77=SKIP / else=FAIL, that is a
+    ## SKIP, never a PASS: falling through to 'exit 0' reported GREEN with zero tests
+    ## run. This is the OPTIONAL integration lane (dist-ai-tests-all --integration);
+    ## its tooling (Xvfb/weston/stalonetray/xdotool/dbus/python3-dbus/gi) is absent on
+    ## a generic CI container.
+    printf 'SKIP: no integration phase ran; install the tooling above.\n'
+    ## style-ok: allow-skip: nothing ran -- optional integration tooling absent
+    exit 77
+  fi
+  exit 0
+}
+
 run_x11_phase
 run_wayland_phase
 run_sni_phase
-
-printf '\n=== integration summary: %s run, %s failed ===\n' "${ran}" "${failed}"
-if [ "${ran}" -eq 0 ]; then
-  printf 'NOTE: no integration phase ran; install the tooling above.\n'
-fi
-if [ "${failed}" -ne 0 ]; then
-  exit 1
-fi
-exit 0
+report_result

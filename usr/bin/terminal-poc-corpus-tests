@@ -36,6 +36,23 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
+skip_or_fatal() {
+   ## An absent REQUIRED target/dep read GREEN as a bare 'exit 77' SKIP -- the exact
+   ## "terminal-poc-corpus-tests reported SKIP in CI for weeks while the gate looked wired"
+   ## regression dist-ai-tests-all documents. So it is FATAL (exit 1) unless the orchestrator
+   ## authorized the skip (DIST_AI_SKIP_AUTHORIZED=1, which dist-ai-tests-all sets when the
+   ## target is legitimately absent in that run) -- matching secure-terminal-tests-fuzz. A
+   ## standalone / lenient / --allow-skip run now FATALs instead of silently passing.
+   local msg="$1"
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf 'terminal-poc-corpus-tests: SKIP (%s) [authorized]\n' "${msg}" >&2
+      ## style-ok: allow-skip: authorized by the orchestrator (DIST_AI_SKIP_AUTHORIZED=1); absent required target
+      exit 77
+   fi
+   printf 'terminal-poc-corpus-tests: FATAL: %s (unauthorized absent-target skip)\n' "${msg}" >&2
+   exit 1
+}
+
 ## Resolve the terminal-poc-corpus checkout.
 corpus=''
 [ -v TERMINAL_POC_CORPUS_REPO ] || TERMINAL_POC_CORPUS_REPO=''
@@ -48,9 +65,7 @@ elif [ -d "${script_dir}/../../../../terminal-poc-corpus/harness" ]; then
 fi
 
 if [ -z "${corpus}" ] || [ ! -f "${corpus}/harness/conformance.py" ]; then
-   printf 'terminal-poc-corpus-tests: SKIP (terminal-poc-corpus not found; set TERMINAL_POC_CORPUS_REPO)\n' >&2
-   ## style-ok: allow-skip: terminal-poc-corpus checkout absent -- set TERMINAL_POC_CORPUS_REPO
-   exit 77
+   skip_or_fatal 'terminal-poc-corpus not found; set TERMINAL_POC_CORPUS_REPO'
 fi
 
 ## Resolve the secure-terminal checkout the harness drives.
@@ -65,9 +80,7 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf 'terminal-poc-corpus-tests: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
-   ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
-   exit 77
+   skip_or_fatal 'secure_terminal not found; set SECURE_TERMINAL_REPO'
 fi
 
 ## The corpus harness drives the real (Qt) secure-terminal widget through pyte, so
@@ -75,9 +88,7 @@ fi
 ## Absent -> SKIP, matching the widget-test convention.
 ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import PyQt6, pyte' 2>/dev/null; then
-   printf 'terminal-poc-corpus-tests: SKIP (python3-pyqt6 / python3-pyte not installed)\n' >&2
-   ## style-ok: allow-skip: python3-pyqt6 / python3-pyte not installed -- optional deps absent
-   exit 77
+   skip_or_fatal 'python3-pyqt6 / python3-pyte not installed'
 fi
 
 export SECURE_TERMINAL_REPO="${repo}"
