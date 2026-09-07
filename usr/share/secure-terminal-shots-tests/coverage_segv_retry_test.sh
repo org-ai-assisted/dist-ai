@@ -105,6 +105,18 @@ PY
 ## --source needs a real path to scope measurement; the stub dir is harmless.
 pkg="${work}"
 hooks="${work}"
+## run_suite_under_coverage wraps the coverage run in "${wl_headless_run}" --no-autoconfirm --
+## (each attempt gets its own headless-Wayland compositor). This unit test drives the RETRY
+## logic with a segfaulting stub, no Qt/compositor needed, so stub wl_headless_run with a
+## passthrough that strips --no-autoconfirm + the -- and execs the real command.
+wl_headless_run="${work}/wl-headless-run-stub"
+cat > "${wl_headless_run}" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = '--no-autoconfirm' ] && shift
+[ "${1:-}" = '--' ] && shift
+exec "$@"
+EOF
+chmod +x -- "${wl_headless_run}"
 # shellcheck disable=SC1090  # a runtime-extracted temp file has no static path to follow
 source "${fn}"
 
