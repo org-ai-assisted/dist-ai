@@ -2065,14 +2065,17 @@ def _git_subcommand_index(call_args):
 class DashDashDenylist(Rule):
     """R-062: a standalone '--' passed to a tool that does NOT accept the
     end-of-options marker (it becomes a literal operand and misbehaves).
-    Denylisted callers: 'git check-ref-format' and 'stcat'. fix() drops the '--'.
+    Denylisted caller: 'git check-ref-format'. fix() drops the '--'.
     Command position and the git subcommand are read from the AST, so a '--' that
     is a data operand of some OTHER command on the line is not mistaken for one of
-    these (the former line-regex could not tell them apart)."""
+    these (the former line-regex could not tell them apart).
+
+    'stcat' is NOT denylisted: it implements the end-of-options marker (it drops a
+    leading '--'), so 'stcat -- FILE' correctly reads FILE."""
 
     id = "R-062"
     ## (command-name, required-subcommand-or-None) that reject '--'.
-    _DENY = (("git", "check-ref-format"), ("stcat", None))
+    _DENY = (("git", "check-ref-format"),)
 
     def applies(self, ctx):
         return super().applies(ctx)

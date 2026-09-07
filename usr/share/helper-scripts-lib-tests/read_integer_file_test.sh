@@ -8,16 +8,12 @@
 ## strings.bsh: read_integer_file, which reads a number back out of a state
 ## file.
 ##
-## THE BUG: the read went through 'stcat -- "${target_file}"'. stcat takes
-## EVERY argument as a path, so it read the '--' separator itself as a
-## filename and died with FileNotFoundError. read_integer_file then reported
-## "Cannot stcat target file" for a file that was present and readable, and
-## four of tb-updater's e2e scenarios failed on it -- all of them the ones
-## that read a cached signature timestamp back.
-##
-## R-062 is why it was added: the separator is right for tools that accept
-## one. It is a bug for tools that do not, which is the rule's negative half.
-## pre-push-static now denylists 'stcat --'; this test pins the runtime side.
+## read_integer_file reads through 'stcat -- "${target_file}"'. stcat implements
+## the end-of-options marker (it drops a leading '--'), so the separator is
+## correct and the file's number is read back. This pins that runtime behavior:
+## a regression in stcat's '--' handling would resurface as "Cannot stcat target
+## file" for a present, readable file (it once broke four tb-updater e2e cache
+## reads).
 ##
 ## Tests the INSTALLED library by default; a self-relative source would pass
 ## against a stale install, which is the failure mode this suite exists to
