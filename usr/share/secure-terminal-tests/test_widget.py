@@ -3388,6 +3388,31 @@ _tc._tui_key(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_U,
 eq(_tc._staged_paste, ['keepme'], '#38: TUI Ctrl+U does NOT abandon the held paste')
 _tc.close()
 
+# TUI scrollback jump-to-bottom: in TUI mode on the PRIMARY grid (claude-rc-session
+# keeps alternate-screen off, so ST has its own scrollback), Shift+End/Home/PageUp/
+# PageDown scroll ST's scrollback (konsole parity) instead of going to the child --
+# so there is a reliable keyboard "jump to bottom". On the ALT screen they go to the
+# child (no ST scrollback there).
+_sbj = SecureTerminal(tui=True)
+_sbj.apply_tui(True)
+_sbj.has_foreground_program = lambda: False
+_sbj._alt_screen = False
+_sbj_sent = spy_writes(_sbj)
+_sbj.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_End,
+                             Qt.KeyboardModifier.ShiftModifier, ''))
+ok(not _sbj_sent,
+   'TUI Shift+End scrolls ST scrollback (jump to bottom), not forwarded to the child')
+_sbj.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A,
+                             Qt.KeyboardModifier.NoModifier, 'a'))
+ok(bool(_sbj_sent), 'TUI a plain key is still forwarded to the child')
+_sbj_sent.clear()
+_sbj._alt_screen = True
+_sbj.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_End,
+                             Qt.KeyboardModifier.ShiftModifier, ''))
+ok(bool(_sbj_sent),
+   'alt-screen Shift+End goes to the child (no ST scrollback on the fixed canvas)')
+_sbj.close()
+
 # #39: a foreground program EXITING back to the shell must also DROP a held paste -- a
 # non-bracketed TUI child force-reviews a multiline paste and stages the remainder as ITS
 # input; once it exits, a paste gesture at the returning shell prompt would insert those
