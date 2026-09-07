@@ -89,7 +89,8 @@ Depends: ${misc:Depends},
  dosfstools,
  squashfs-tools,
  isomd5sum,
- grub-common
+ grub-common,
+ kpartx
 ## ISO-builder (dm-raw-to-iso) tools. Arch-agnostic ones above are Depends
 ## (xorriso already listed). The GRUB platform + signed shim/grub packages are
 ## arch-specific (amd64/i386 vs arm64) and this package is Architecture: all, so

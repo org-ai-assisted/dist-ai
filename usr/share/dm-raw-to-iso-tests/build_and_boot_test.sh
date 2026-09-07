@@ -218,14 +218,29 @@ fi
 ######################################################################
 ## Boot the ISO across firmware via dm-qemu.
 ######################################################################
-if [ ! -x "${dm_qemu}" ] || ! type -P qemu-system-x86_64 >/dev/null 2>&1; then
-   printf 'NOTE: dm-qemu or qemu-system-x86_64 absent; skipping the boot legs (structure checks above still ran).\n' >&2
+## Per-arch: amd64 has SeaBIOS + OVMF (efi/efi-secureboot); arm64 boots edk2 UEFI
+## under dm-qemu's 'bios' firmware (efi/efi-secureboot are x86-only and exit 2).
+## Gate on the arch's OWN qemu binary, not always qemu-system-x86_64.
+case "${arch}" in
+   amd64)
+      qemu_bin="qemu-system-x86_64"
+      firmwares="bios efi efi-secureboot"
+      ;;
+   arm64)
+      qemu_bin="qemu-system-aarch64"
+      firmwares="bios"
+      ;;
+   *)
+      qemu_bin="qemu-system-x86_64"
+      firmwares="bios efi efi-secureboot"
+      ;;
+esac
+
+boot_ran=0
+if [ ! -x "${dm_qemu}" ] || ! type -P "${qemu_bin}" >/dev/null 2>&1; then
+   printf 'NOTE: dm-qemu or %s absent; boot cannot be validated.\n' "${qemu_bin}" >&2
 else
-   for fw in bios efi efi-secureboot; do
-      ## arm64 has no legacy BIOS; skip that leg.
-      if [ "${arch}" != "amd64" ] && [ "${fw}" = "bios" ]; then
-         continue
-      fi
+   for fw in ${firmwares}; do
       printf '### boot leg: firmware=%s\n' "${fw}" >&2
       slog="${workdir}/boot-${fw}.serial.log"
       rc=0
@@ -243,15 +258,26 @@ else
          bad "boot leg firmware=${fw}: dm-qemu setup error (rc 2)"
       elif grep --quiet --ignore-case --extended-regexp 'login:' "${slog}" 2>/dev/null; then
          ok "boot leg firmware=${fw} reached a login prompt (full boot)"
+         boot_ran=$(( boot_ran + 1 ))
       elif grep --quiet --ignore-case --extended-regexp 'Reached target|systemd\[1\]|Welcome to|Linux version' "${slog}" 2>/dev/null; then
          ok "boot leg firmware=${fw} booted (kernel+systemd reached -> boot chain OK)"
+         boot_ran=$(( boot_ran + 1 ))
       else
          bad "boot leg firmware=${fw} did not boot (no kernel/systemd marker); see ${slog}"
       fi
    done
 fi
 
-printf '\nbuild_and_boot: %s pass, %s fail\n' "${pass}" "${fail}"
+## Do NOT pass on the structure checks alone: if not a single boot leg actually
+## validated the ISO (harness/qemu absent, or every leg skipped), report SKIP
+## rather than a green "build_and_boot" with no boot exercised.
+if [ "${fail}" -eq 0 ] && [ "${boot_ran}" -eq 0 ]; then
+   printf 'SKIP: structure checks passed but NO boot leg validated the ISO (dm-qemu / %s unavailable).\n' "${qemu_bin}" >&2
+   ## style-ok: allow-skip: the boot harness was unavailable so boot was not exercised; structure-only is not a build+boot pass
+   exit 77
+fi
+
+printf '\nbuild_and_boot: %s pass, %s fail (boot legs validated: %s)\n' "${pass}" "${fail}" "${boot_ran}"
 [ "${fail}" -eq 0 ] || exit 1
 [ "${pass}" -gt 0 ] || { printf 'FATAL: no assertions ran\n' >&2 ; exit 1 ; }
 exit 0

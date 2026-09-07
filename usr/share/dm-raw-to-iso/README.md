@@ -41,7 +41,7 @@ rootfs out and never modifies the input image.
 ## Debian packages used
 
 Arch-agnostic (host): `xorriso grub-common mtools dosfstools squashfs-tools
-isomd5sum safe-rm`.
+isomd5sum kpartx safe-rm`.
 
 Arch-specific (host, for the target arch):
 - amd64: `grub-pc-bin` (BIOS core + `boot_hybrid.img`), `grub-efi-amd64-bin`,
@@ -81,10 +81,11 @@ umount {.../run,.../sys,.../proc,.../dev/pts,.../dev}
 ### 3. Pack the rootfs into a reproducible squashfs
 ```
 mksquashfs rootfs binary/live/filesystem.squashfs -noappend -comp xz \
-   -all-time $SOURCE_DATE_EPOCH -mkfs-time $SOURCE_DATE_EPOCH \
    -wildcards -e "dev/*" "run/*" "tmp/*"
 ```
 `/dev` is repopulated by devtmpfs at boot; `/run` and `/tmp` are runtime tmpfs.
+Reproducible timestamps come from the exported `SOURCE_DATE_EPOCH` (mksquashfs honors
+it); do NOT also pass `-all-time`/`-mkfs-time` -- mksquashfs rejects using both at once.
 
 ### 4. Boot-medium marker
 ```

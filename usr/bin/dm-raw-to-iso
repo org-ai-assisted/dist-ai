@@ -176,6 +176,12 @@ case "${arch}" in amd64|arm64) true ;; *) error "unsupported --arch '${arch}' (s
 
 case "${secure_boot}" in auto|enable|disable) true ;; *) error "unsupported --secure-boot '${secure_boot}' (auto|enable|disable)" ;; esac
 
+## --label becomes BOTH the ISO9660 volume id and the root=live:CDLABEL= value the
+## initramfs searches for; a space would split the kernel cmdline and desync the two,
+## and an empty label makes xorriso invent a volume id the cmdline does not match.
+case "${label}" in ''|*[!A-Za-z0-9_.-]*) error "--label must be 1-32 chars from [A-Za-z0-9_.-] with no spaces (it is the ISO volume id and the root=live:CDLABEL= value)" ;; esac
+[ "${#label}" -le 32 ] || error "--label too long (max 32 characters for an ISO9660 volume id)"
+
 if [ -z "${source_date_epoch}" ] ; then
    source_date_epoch="$(stat -c %Y -- "${raw}")"
 fi
@@ -290,22 +296,34 @@ for api in /dev /dev/pts /proc /sys /run ; do
    mounts+=( "${target}" )
 done
 
-kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort | tail -n 1)"
+## sort -V (version sort): a plain sort is lexical (5.9 > 5.19), so an image
+## carrying more than one kernel would pick the wrong "newest" one.
+kernel_img="$(chroot "${rootfs}" sh -c 'ls -1 /boot' | grep '^vmlinuz-' | sort -V | tail -n 1)"
 [ -n "${kernel_img}" ] || error "no /boot/vmlinuz-* kernel found in the rootfs"
 kernel_ver="${kernel_img#vmlinuz-}"
 printf '%s: building dracut-live initramfs for kernel %s\n' "${me}" "${kernel_ver}" >&2
 
 ## --no-hostonly: a portable live initramfs, not tied to this build host.
 ## dmsquash-live comes from the dracut-live package installed in the rootfs; dracut
-## adds it automatically. Fail loud if the rootfs lacks dracut.
+## adds it automatically. Fail loud if the rootfs lacks dracut OR the live module:
+## without 90dmsquash-live the initramfs cannot read root=live:CDLABEL= / rd.live.*
+## and the ISO boots to an emergency shell.
 chroot "${rootfs}" sh -c 'command -v dracut >/dev/null 2>&1' \
    || error "the rootfs has no 'dracut'; a live ISO needs dracut + dracut-live installed in the image"
+[ -e "${rootfs}/usr/lib/dracut/modules.d/90dmsquash-live" ] \
+   || error "the rootfs lacks the dracut 'dmsquash-live' module; install 'dracut-live' in the image (the live ISO cannot boot without it)"
 ## env TMPDIR=/tmp: the caller's TMPDIR (e.g. a per-uid /tmp/user/<uid>) does not
 ## exist inside the chroot, and dracut aborts on an invalid tmpdir. /tmp always
 ## exists in a Debian rootfs, so force it rather than leaking the host's path.
 chroot "${rootfs}" env TMPDIR=/tmp dracut --no-hostonly --kver "${kernel_ver}" --force --reproducible /boot/initrd.img-live "${kernel_ver}"
 
-cp --dereference -- "${rootfs}/boot/${kernel_img}" "${binary}/live/vmlinuz"
+## Do NOT --dereference: the copy runs in the HOST namespace, so an absolute
+## symlink in the guest /boot would resolve against the host filesystem and pull a
+## host file into the ISO. A normal kernel is a regular file; refuse a symlink.
+if [ -L "${rootfs}/boot/${kernel_img}" ] ; then
+   error "kernel '/boot/${kernel_img}' is a symlink; refusing (it would resolve against the host filesystem, not the guest)"
+fi
+cp -- "${rootfs}/boot/${kernel_img}" "${binary}/live/vmlinuz"
 cp -- "${rootfs}/boot/initrd.img-live" "${binary}/live/initrd.img"
 safe-rm --force -- "${rootfs}/boot/initrd.img-live"
 
@@ -419,18 +437,39 @@ EOF
    signed_shim="/usr/lib/shim/shim${efi_name}.efi.signed"
    mokmanager="/usr/lib/shim/mm${efi_name}.efi.signed"
    monolithic_grub="/usr/lib/grub/${platform}/monolithic/gcd${efi_name}.efi"
+   ## The first platform is PRIMARY (x64 on amd64, aa64 on arm64); the rest (ia32)
+   ## are best-effort secondaries, exactly as live-build adds ia32 only when signed.
+   is_primary="false"
+   if [ "${pair}" = "${efi_platforms[0]}" ] ; then
+      is_primary="true"
+   fi
 
-   if [ "${secure_boot}" != "disable" ] && [ -r "${signed_grub}" ] && [ -r "${signed_shim}" ] ; then
-      cp -a -- "${signed_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
-      cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
-      sb_grub_present="true"
-   elif [ "${secure_boot}" != "disable" ] && [ -r "${signed_shim}" ] && [ -r "${monolithic_grub}" ] ; then
-      ## shim-only fallback: signed shim + unsigned monolithic grub + MokManager.
-      cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
-      cp -a -- "${monolithic_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
-      [ -r "${mokmanager}" ] && cp -a -- "${mokmanager}" "${esp_stage}/EFI/boot/mm${efi_name}.efi"
-   elif [ "${secure_boot}" = "enable" ] ; then
-      error "--secure-boot enable but signed shim/grub not found (need ${signed_shim} and ${signed_grub}). Install shim-signed and grub-efi-${arch}-signed."
+   if [ "${secure_boot}" != "disable" ] ; then
+      if [ -r "${signed_grub}" ] && [ -r "${signed_shim}" ] ; then
+         ## Fully signed: firmware -> MS-signed shim -> distro-signed grub.
+         cp -a -- "${signed_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
+         cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
+         sb_grub_present="true"
+      elif [ "${secure_boot}" = "auto" ] && [ -r "${signed_shim}" ] && [ -r "${monolithic_grub}" ] ; then
+         ## auto ONLY: signed shim + UNSIGNED monolithic grub + MokManager (weaker,
+         ## needs a MOK enrollment). Never under 'enable' -- 'enable' is fully signed.
+         cp -a --dereference -- "${signed_shim}" "${esp_stage}/EFI/boot/boot${efi_name}.efi"
+         cp -a -- "${monolithic_grub}" "${esp_stage}/EFI/boot/grub${efi_name}.efi"
+         if [ -r "${mokmanager}" ] ; then
+            cp -a -- "${mokmanager}" "${esp_stage}/EFI/boot/mm${efi_name}.efi"
+         fi
+      elif [ "${is_primary}" = "true" ] ; then
+         ## Primary, no signed pair. 'enable' fails as --help promises; 'auto' keeps
+         ## the unsigned core seeded at 6e (a global warning fires after the loop).
+         if [ "${secure_boot}" = "enable" ] ; then
+            error "--secure-boot enable but no signed shim+grub for ${efi_name} (need ${signed_shim} and ${signed_grub}). Install shim-signed and grub-efi-${arch}-signed."
+         fi
+      else
+         ## Secondary platform (32-bit UEFI) without a signed pair: omit it rather
+         ## than ship an unsigned secondary or abort an otherwise-signed build.
+         printf '%s: NOTE: no signed loader for secondary platform %s; omitting it.\n' "${me}" "${efi_name}" >&2
+         safe-rm --force -- "${esp_stage}/EFI/boot/boot${efi_name}.efi"
+      fi
    fi
 done
 
@@ -540,15 +579,18 @@ if [ "${bios}" = "true" ] ; then
    xorriso_opts+=(
       --grub2-boot-info
       --grub2-mbr /usr/lib/grub/i386-pc/boot_hybrid.img
-      -efi-boot-part --efi-boot-image
       -no-emul-boot -boot-load-size 4 -boot-info-table
       -b boot/grub/grub_eltorito
       -eltorito-alt-boot
    )
 fi
 
-## UEFI: ESP as the El Torito EFI entry + as a real GPT (and APM) partition for USB.
+## UEFI (ALL arches): expose the ESP FAT image as the El Torito EFI entry AND as a
+## real GPT partition so USB/HDD firmware ESP-scan finds it. -efi-boot-part must
+## apply on arm64 too (it has no BIOS block), or an arm64 ISO has only the optical
+## El Torito EFI entry and no partition to boot from as a USB stick.
 xorriso_opts+=(
+   -efi-boot-part --efi-boot-image
    -e boot/grub/efi.img -no-emul-boot
    -isohybrid-gpt-basdat -isohybrid-apm-hfsplus
 )
