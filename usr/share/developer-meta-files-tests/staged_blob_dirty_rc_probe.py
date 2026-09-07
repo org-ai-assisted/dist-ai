@@ -12,17 +12,17 @@
 ## working tree -- else a dirty/unstaged 'disable=...' would suppress a real
 ## finding in the object that SHIPS (the dirty-rc bypass). argv[1]=test_dir;
 ## prints the SC2016 FAIL count (want non-zero: the dirty rc is ignored).
-import sys, os, subprocess
+import sys, os, subprocess, pathlib
 from dist_ai import context, engine, model
 D = os.path.join(sys.argv[1], "blobtree")
 os.makedirs(D)
 def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
 git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
-open(D + "/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+pathlib.Path(D + "/prog.sh").write_text("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
 git("add", "prog.sh"); git("commit", "--quiet", "-m", "init")
-open(D + "/.shellcheckrc", "w").write("disable=SC2016\n")           # DIRTY, unstaged, not in the tree
+pathlib.Path(D + "/.shellcheckrc").write_text("disable=SC2016\n")           # DIRTY, unstaged, not in the tree
 ## source_rev="" -> the INDEX (a staged blob); the rc must come from the tree.
-ctx = context.FileContext("prog.sh", open(D + "/prog.sh").read(),
+ctx = context.FileContext("prog.sh", pathlib.Path(D + "/prog.sh").read_text(),
                           abspath=D + "/prog.sh", source_rev="")
 findings = engine.detect(ctx, include_external=True)
 print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))

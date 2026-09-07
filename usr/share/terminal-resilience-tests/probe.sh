@@ -93,9 +93,20 @@ kill "${xterm_pid}" 2>/dev/null || true
 xterm_pid=''
 
 ## -- 2. secure-terminal: stream must be neutralized -----------------------
-out="$( printf '' | python3 -- "${cli}" -- printf "${payload}" 2>/dev/null || true )"
+## Capture the CLI's real exit status: a failed or crashed invocation, and an EMPTY
+## output, both satisfy the "no escape byte AND no marker" condition -- so a false
+## pass would hide a CLI that never ran. Require it to have run (exit 0) and produced
+## output BEFORE judging the stream neutralized.
+cli_rc=0
+out="$( printf '' | python3 -- "${cli}" -- printf "${payload}" 2>/dev/null )" || cli_rc="$?"
 
-if grep --quiet --perl-regexp -- '\x1b' <<< "${out}"; then
+if [ "${cli_rc}" -ne 0 ]; then
+   printf 'terminal-resilience-tests: FAIL (secure-terminal-cli invocation failed, exit %s)\n' "${cli_rc}" >&2
+   overall=1
+elif [ -z "${out}" ]; then
+   printf 'terminal-resilience-tests: FAIL (secure-terminal-cli produced no output; nothing was tested)\n' >&2
+   overall=1
+elif grep --quiet --perl-regexp -- '\x1b' <<< "${out}"; then
    printf 'terminal-resilience-tests: FAIL (secure-terminal output still carries an escape byte)\n' >&2
    overall=1
 elif grep --quiet --fixed-strings -- "${marker}" <<< "${out}"; then

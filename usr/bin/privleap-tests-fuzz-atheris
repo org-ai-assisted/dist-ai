@@ -33,8 +33,20 @@ else
   tests_dir='/usr/share/privleap-tests'
 fi
 
-if [ "$#" -eq 0 ]; then
-  set -- "-max_total_time=${PRIVLEAP_FUZZ_SECONDS:-60}"
+## Apply the default time budget unless the caller already set their own stop
+## condition. Documented usage includes passing only a corpus directory, so
+## gating the budget on a zero-arg invocation alone would drop it there and let
+## libFuzzer/Atheris run unbounded.
+have_stop_condition=0
+for arg in "$@"; do
+  case "${arg}" in
+    -max_total_time=* | -runs=*)
+      have_stop_condition=1
+      ;;
+  esac
+done
+if [ "${have_stop_condition}" -eq 0 ]; then
+  set -- "$@" "-max_total_time=${PRIVLEAP_FUZZ_SECONDS:-60}"
 fi
 
 rc=0

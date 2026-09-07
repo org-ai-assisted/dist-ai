@@ -17,7 +17,7 @@
 ## FAILS on the pre-change tree: without argparse, `--cols 130` is ignored and the width
 ## stays 80, so the panorama check fails -- a genuine regression test, not a tautology.
 ##
-## Subject: truecolor-art.py in secure-terminal-shots/ (absent -> exit 77 SKIP). Pure Python
+## Subject: truecolor-art.py in secure-terminal-shots/ (absent -> exit 1 FATAL). Pure Python
 ## stdlib, no display, no Qt -- runs in the dist-ai container in milliseconds.
 
 set -o errexit

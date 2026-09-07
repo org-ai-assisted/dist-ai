@@ -134,7 +134,7 @@ class PrintfVUnchecked(Rule):
         guards = h.check_variable_name_sites(tree)
         boundaries = h.boundary_spans(tree)
         for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_name(call) != "printf":
+            if bash_ast.command_basename(call) != "printf":
                 continue
             name_word = h.printf_v_target(call)
             if name_word is None:
@@ -295,7 +295,7 @@ class GrepQuiet(Rule):
             cmd = right.get("Cmd") if isinstance(right, dict) else None
             if not isinstance(cmd, dict) or cmd.get("Type") != "CallExpr":
                 continue
-            if bash_ast.command_name(cmd) != "grep":
+            if bash_ast.command_basename(cmd) != "grep":
                 continue
             is_quiet, _ = _grep_quiet(cmd, ctx.source)
             if is_quiet:
@@ -303,7 +303,7 @@ class GrepQuiet(Rule):
                 yield _fail(ctx, "R-161", "R-161 quiet grep consuming a pipe",
                             cmd)
         for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_name(call) != "grep" \
+            if bash_ast.command_basename(call) != "grep" \
                     or id(call) in pipe_reported:
                 continue
             _, is_short = _grep_quiet(call, ctx.source)
@@ -313,7 +313,7 @@ class GrepQuiet(Rule):
 
     def fix(self, ctx):
         for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_name(call) != "grep":
+            if bash_ast.command_basename(call) != "grep":
                 continue
             options = _grep_option_words(call)
             if _grep_has_arg_taker(options):
@@ -369,7 +369,7 @@ class MkdirTmpMode(Rule):
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_name(call) != "mkdir":
+            if bash_ast.command_basename(call) != "mkdir":
                 continue
             is_temp = any(bash_ast.word_param_names(word) & TMP_PARAMS
                           for word in bash_ast.args(call)[1:])
@@ -404,7 +404,7 @@ class MkdirTmpMode(Rule):
         data = text.encode("utf-8")
         disabled_lines: set[int] = set()
         for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_name(call) != "mkdir":
+            if bash_ast.command_basename(call) != "mkdir":
                 continue
             call_args = bash_ast.args(call)
             if not any(bash_ast.word_param_names(word) & TMP_PARAMS
@@ -546,7 +546,7 @@ class TimeoutKillAfter(Rule):
                         "target it, not coreutils" % ctx.path, 1)
             return
         for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_name(call) != "timeout":
+            if bash_ast.command_basename(call) != "timeout":
                 continue
             call_args = bash_ast.args(call)
             if len(call_args) < 2:
@@ -589,7 +589,7 @@ class TimeoutKillAfter(Rule):
                 tree, "timeout"):
             return
         for call in h.editable_calls(tree):
-            if bash_ast.command_name(call) != "timeout":
+            if bash_ast.command_basename(call) != "timeout":
                 continue
             if len(bash_ast.args(call)) < 3:
                 ## Need a duration and at least one wrapped command word.
@@ -650,7 +650,7 @@ class InlineInterpreter(Rule):
             cmd = stmt.get("Cmd")
             if not isinstance(cmd, dict) or cmd.get("Type") != "CallExpr":
                 continue
-            if bash_ast.command_name(cmd) not in INTERPRETERS:
+            if bash_ast.command_basename(cmd) not in INTERPRETERS:
                 continue
             for _redirect, lines in bash_ast.heredoc_bodies(stmt):
                 if lines > 5:
@@ -820,7 +820,69 @@ def _is_skip_code_77(word):
 _EXIT_CALL_WRAPPERS = ("builtin", "command")
 
 
-def _skip_exit_code_word(call, source):
+_DECIMAL_LITERAL = re.compile(r'\A[+-]?[0-9]+\Z')
+
+
+def _single_param_name(word):
+    """The variable name if WORD is exactly a plain '$VAR'/'${VAR}' expansion
+    (optionally double-quoted), with NO default/modifier ('${VAR:-x}', which has
+    an 'Exp') and no other text ('${VAR}x', two parts); else None."""
+    parts = word.get("Parts") or []
+    if len(parts) != 1:
+        return None
+    part = parts[0]
+    if part.get("Type") == "DblQuoted":
+        inner = part.get("Parts") or []
+        if len(inner) != 1:
+            return None
+        part = inner[0]
+    if part.get("Type") == "ParamExp" and not part.get("Exp"):
+        return (part.get("Param") or {}).get("Value")
+    return None
+
+
+def _constant_int_vars(tree):
+    """{name: value_str} for a variable assigned EXACTLY ONE literal integer
+    constant at command position ('SKIP=77') and never otherwise -- so 'exit
+    "${SKIP}"' resolves to the constant it always runs as. EXCLUDED (declined,
+    the safe direction): a second assignment, any non-literal assignment, and any
+    name a scope command (local/declare/readonly/export/typeset) binds, since
+    that can rebind it dynamically inside a function."""
+    values = {}
+    excluded = set()
+
+    def drop(name):
+        excluded.add(name)
+        values.pop(name, None)
+
+    ## local/declare/readonly/export/typeset are DeclClause nodes (not CallExpr):
+    ## a name any of them binds can be rebound dynamically (a function's 'local'),
+    ## so never treat it as a file-wide constant.
+    for decl in bash_ast.nodes_of_type(tree, "DeclClause"):
+        for arg in decl.get("Args") or []:
+            declared = (arg.get("Name") or {}).get("Value")
+            if declared:
+                drop(declared)
+
+    for call in bash_ast.call_exprs(tree):
+        for assign in bash_ast.assigns(call):
+            name = bash_ast.assign_name(assign)
+            if name is None:
+                continue
+            if name in values or name in excluded:
+                drop(name)
+                continue
+            value_word = bash_ast.assign_value(assign)
+            literal = (bash_ast.word_string(value_word)
+                       if value_word is not None else None)
+            if literal is not None and _DECIMAL_LITERAL.match(literal):
+                values[name] = literal
+            else:
+                excluded.add(name)
+    return values
+
+
+def _skip_exit_code_word(call, source, const_ints=None):
     """The exit/return CODE word for CALL if it is a test skip, else None.
     Resolves the spellings bash runs identically as the exit/return builtin:
       - a leading-backslash or QUOTED name ('\\exit 77', '"exit" 77') -- word_string
@@ -892,6 +954,13 @@ def _skip_exit_code_word(call, source):
     code = bash_ast.word_string(words[index])
     if code is not None:
         return code
+    ## A variable that ALWAYS holds one constant int ('SKIP=77; exit "${SKIP}"')
+    ## runs the same skip as the literal -- resolve it so the indirection does
+    ## not evade R-220.
+    if const_ints:
+        var = _single_param_name(words[index])
+        if var is not None and var in const_ints:
+            return const_ints[var]
     value = _const_arith_exit_value(words[index], source)
     return None if value is None else str(value)
 
@@ -931,13 +1000,15 @@ class UnauthorizedSkip(Rule):
             number = comment.get("Hash", {}).get("Line")
             if number:
                 comment_by_line[number] = "#" + comment.get("Text", "")
+        const_ints = _constant_int_vars(ctx.tree)
         for call in bash_ast.call_exprs(ctx.tree):
             ## _skip_exit_code_word resolves exit/return incl. the '\exit' /
             ## 'builtin exit' / 'command exit' spellings, then word_string
             ## (quote-aware) so 'exit "77"' is the same skip as 'exit 77';
             ## _is_skip_code_77 normalizes a leading '+' and decimal leading zeros
-            ## ('exit +77' / 'exit 077' both run as 77).
-            code_word = _skip_exit_code_word(call, ctx.source)
+            ## ('exit +77' / 'exit 077' both run as 77); const_ints resolves a
+            ## constant-var indirection ('SKIP=77; exit "${SKIP}"').
+            code_word = _skip_exit_code_word(call, ctx.source, const_ints)
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
             ## Check the statement's START line (and the line above) AND its END
@@ -1377,7 +1448,7 @@ class InterpreterPrepend(Rule):
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_name(call) not in ("bash", "sh"):
+            if bash_ast.command_basename(call) not in ("bash", "sh"):
                 continue
             ## Skip leading OPTIONS to reach the script operand, so 'bash -x
             ## build.sh' is caught, not just 'bash build.sh'. Handle the forms
@@ -1474,7 +1545,7 @@ def _printf_calls(tree):
     for stmt in bash_ast.iter_stmts(tree):
         cmd = stmt.get("Cmd")
         if (isinstance(cmd, dict) and cmd.get("Type") == "CallExpr"
-                and bash_ast.command_name(cmd) == "printf"):
+                and bash_ast.command_basename(cmd) == "printf"):
             yield stmt, cmd
 
 
@@ -2009,7 +2080,7 @@ class DashDashDenylist(Rule):
     def _denied_dashdash(self, call):
         """The standalone '--' word of a denylisted call, or None. A '--' is
         standalone when the whole word is exactly '--' (so '--branch' is spared)."""
-        name = bash_ast.command_name(call)
+        name = bash_ast.command_basename(call)
         call_args = bash_ast.args(call)
         for deny_name, sub in self._DENY:
             if name != deny_name:

@@ -12,17 +12,17 @@
 ## ':<stage 0>:pwn/.shellcheckrc' -- reading a DIFFERENT, attacker-planted rc to
 ## SUPPRESS shellcheck on the PR's own scripts. argv[1]=test_dir; prints the
 ## SC2016 FAIL count (want non-zero: the collision does not suppress the finding).
-import sys, os, subprocess
+import sys, os, subprocess, pathlib
 from dist_ai import context, engine, model
 D = os.path.join(sys.argv[1], "collide")
 os.makedirs(os.path.join(D, "0:pwn"))
 os.makedirs(os.path.join(D, "pwn"))
 def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
 git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
-open(D + "/0:pwn/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
-open(D + "/pwn/.shellcheckrc", "w").write("disable=all\n")               # the misparse target
+pathlib.Path(D + "/0:pwn/prog.sh").write_text("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+pathlib.Path(D + "/pwn/.shellcheckrc").write_text("disable=all\n")               # the misparse target
 git("add", "-A"); git("commit", "--quiet", "-m", "init")
-ctx = context.FileContext("0:pwn/prog.sh", open(D + "/0:pwn/prog.sh").read(),
+ctx = context.FileContext("0:pwn/prog.sh", pathlib.Path(D + "/0:pwn/prog.sh").read_text(),
                           abspath=D + "/0:pwn/prog.sh", source_rev="")
 findings = engine.detect(ctx, include_external=True)
 print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))

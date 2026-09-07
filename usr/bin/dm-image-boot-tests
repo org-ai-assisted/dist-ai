@@ -74,6 +74,7 @@ for arg in "$@"; do
 done
 if [ "${image_given}" != 'true' ]; then
    printf '%s\n' "dm-image-boot-tests: no --disk/--iso given; nothing to boot-test. SKIP." >&2
+   ## style-ok: allow-skip: no --disk/--iso image given -- an optional boot target
    exit "${SKIP}"
 fi
 
@@ -81,6 +82,7 @@ fi
 if ! type -P qemu-system-x86_64 >/dev/null 2>&1 \
    && ! type -P qemu-system-aarch64 >/dev/null 2>&1; then
    printf '%s\n' "dm-image-boot-tests: no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
+   ## style-ok: allow-skip: no qemu-system-* on PATH -- boot test needs an emulator
    exit "${SKIP}"
 fi
 

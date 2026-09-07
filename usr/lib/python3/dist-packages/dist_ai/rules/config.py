@@ -197,7 +197,18 @@ class AptHook(Rule):
 
 class CronTable(Rule):
     """R-195: a cron entry's command field runs via 'sh -c'; a multi-statement
-    command belongs in a script."""
+    command belongs in a script.
+
+    SCOPE LIMIT (deliberate, not implemented -- no cron files exist in these
+    repos to gate): the schedule fields ('min hour dom mon dow [user]') are NOT
+    stripped before the shell parse, so a command whose FIRST token is a control
+    keyword ('* * * * * root if [ -f x ]; then ...; fi') makes the whole line an
+    unparsable shell fragment -> declined, not flagged. The common ';'-chained
+    form IS caught (the schedule fields parse as glob-words and the ';' still
+    yields >1 statement). Stripping the schedule robustly needs a cron-format
+    parser (system-table user field vs user-table, '@reboot'/'@daily', ...), and
+    per the no-reinvent-a-parser rule that is not worth building for zero live
+    cron files. Revisit if a cron.d/crontab is ever added here."""
 
     id = "R-195"
 

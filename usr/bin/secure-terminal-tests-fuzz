@@ -16,8 +16,10 @@
 ## past the sanitizer; every iteration is checked against an independent
 ## terminal-safety oracle and per-function invariants. Override with
 ## --iterations N / --seed N; a failure prints the seed to replay. Same target
-## resolution and SECURE_TERMINAL_REPO override as secure-terminal-tests; a
-## missing checkout SKIPs (exit 77) rather than failing.
+## resolution and SECURE_TERMINAL_REPO override as secure-terminal-tests; the
+## checkout IS the target under test, so an absent checkout is FATAL (exit 1)
+## unless the caller authorized the skip (DIST_AI_SKIP_AUTHORIZED=1), in which
+## case it SKIPs (exit 77).
 
 set -o errexit
 set -o nounset
@@ -46,9 +48,18 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf 'secure-terminal-tests-fuzz: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
-   ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
-   exit 77
+   ## The secure_terminal checkout IS the target under test. Absent, there is nothing to
+   ## test -- but a bare SKIP reads green, so an absent target is FATAL unless the run that
+   ## invoked us authorized the skip: DIST_AI_SKIP_AUTHORIZED=1, which dist-ai-tests-all
+   ## sets for a --allow-skip'd (or lenient non-strict) run. The gate/CI env always provides
+   ## the checkout, so there it simply runs; a standalone or unauthorized run FATALs.
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf '%s\n' 'secure-terminal-tests-fuzz: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO) [authorized]' >&2
+      ## style-ok: allow-skip: target checkout absent AND the skip was authorized by the orchestrator
+      exit 77
+   fi
+   printf '%s\n' 'secure-terminal-tests-fuzz: FATAL: secure_terminal not found; set SECURE_TERMINAL_REPO (unauthorized absent-target skip)' >&2
+   exit 1
 fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"

@@ -203,6 +203,10 @@ run_sni_phase() {
   ## 'blind' is the negative control (the pre-fix construct+show MUST fail
   ## to register via SNI, proving the bug is real); 'deferred' drives the
   ## real install_tray_when_available() fix (MUST register via SNI).
+  if [ ! -r "${integration_dir}/sni_late_host_harness.py" ]; then
+    printf 'SKIP sni: harness sni_late_host_harness.py not present\n'
+    return 0
+  fi
   if ! have_all Xvfb dbus-run-session || ! python_has_sni_deps; then
     printf 'SKIP sni: needs Xvfb, dbus-run-session, python3-dbus, python3-gi\n'
     printf '  install: sudo apt-get install --no-install-recommends %s\n' \

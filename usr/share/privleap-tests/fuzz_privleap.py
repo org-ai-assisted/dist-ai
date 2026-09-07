@@ -42,28 +42,16 @@ import os
 import socket
 import sys
 
-DEFAULT_REPO: str = "/home/user/derivative-maker/packages/kicksecure/privleap"
-INSTALLED_PARENT: str = "/usr/lib/python3/dist-packages"
+HERE: str = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-
-def _dist_packages_dir() -> str | None:
-    """Resolve the directory to put on sys.path so ``import privleap.privleap``
-    finds the target: PRIVLEAP_REPO, else installed, else the in-tree checkout."""
-
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
-    if repo:
-        candidate: str = os.path.join(repo, "usr/lib/python3/dist-packages")
-        if os.path.isfile(os.path.join(candidate, "privleap", "privleap.py")):
-            return candidate
-        return None
-    if os.path.isfile(
-        os.path.join(INSTALLED_PARENT, "privleap", "privleap.py")
-    ):
-        return INSTALLED_PARENT
-    candidate = os.path.join(DEFAULT_REPO, "usr/lib/python3/dist-packages")
-    if os.path.isfile(os.path.join(candidate, "privleap", "privleap.py")):
-        return candidate
-    return None
+## Reuse pl_testlib's canonical target resolution so PRIVLEAP_REPO handling
+## matches the rest of the suite and cannot drift: a set-but-WRONG
+## PRIVLEAP_REPO stays FATAL (exit 1 via _skip_not_found) instead of silently
+## skipping, and "nothing configured" is the only path that maps to a skip.
+# pylint: disable=wrong-import-position
+from pl_testlib import _dist_packages_dir, _skip_not_found  # noqa: E402
 
 
 _PARENT: str | None = _dist_packages_dir()
@@ -216,13 +204,14 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 (Atheris contract name)
 
 def main() -> None:
     if _PARENT is None:
-        print("SKIP: privleap library not found.")
-        print("      set PRIVLEAP_REPO to a derivative-maker checkout root.")
-        raise SystemExit(77)
+        ## Splits skip-vs-FATAL: exit 77 only when nothing was configured, but
+        ## exit 1 when PRIVLEAP_REPO named a target that has no privleap tree.
+        _skip_not_found("privleap library")
     if not _HAVE_ATHERIS:
         print("SKIP: atheris is not installed (pip install atheris).")
         print("      this is the coverage-guided harness; for a no-dependency")
         print("      fuzz run use privleap-tests-fuzz instead.")
+        ## style-ok: allow-skip: atheris optional fuzzing dep not installed
         raise SystemExit(77)
     atheris.Setup(sys.argv, TestOneInput)
     atheris.Fuzz()

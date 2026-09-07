@@ -405,6 +405,18 @@ def command_name(call):
     return word_string(word) if word is not None else None
 
 
+def command_basename(call):
+    """The BASENAME of CALL's literal command name: '/usr/bin/printf' and
+    'printf' are the same program, so a name-keyed rule is not bypassed by an
+    absolute-path spelling. None passes through (no command word, or an
+    expansion). Unlike effective_command it does NOT peel sudo/env/command
+    wrappers -- those SHIFT the argument positions a rule reads, so a rule that
+    inspects args positionally (printf -v target, bash <script>, '--' denylist)
+    must resolve only the path here, not the wrapper."""
+    name = command_name(call)
+    return name.rsplit("/", 1)[-1] if name is not None else None
+
+
 def resolve_long(name, names):
     """Resolve a '--' long-option NAME (leading '--' and any '=value' already
     stripped) to the single option in NAMES it denotes under GNU getopt_long's
