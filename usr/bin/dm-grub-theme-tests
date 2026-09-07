@@ -60,9 +60,16 @@ check_fail() {
 }
 
 ## Skip only when the checkout is genuinely absent -- the snippets and the
-## build-flag files all live in the derivative-maker tree.
-for probe in "${parse_cmd_file}" "${variables_file}" \
-   "${DERIVATIVE_MAKER_DIR}/${cfgs[0]#*:*:}"; do
+## build-flag files all live in the derivative-maker tree. Probe EVERY snippet,
+## not just the first: the three live in separate submodules that initialise
+## independently, so a partial checkout would otherwise pass this gate and then
+## check_fail on the absent ones -- a fail on a checkout fact, not the SKIP the
+## contract above promises.
+probe_files=( "${parse_cmd_file}" "${variables_file}" )
+for entry in "${cfgs[@]}"; do
+   probe_files+=( "${DERIVATIVE_MAKER_DIR}/${entry#*:*:}" )
+done
+for probe in "${probe_files[@]}"; do
    if [ ! -r "${probe}" ]; then
       printf '%s\n' "SKIP: missing ${probe}" >&2
       printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere, or check out the submodules" >&2
