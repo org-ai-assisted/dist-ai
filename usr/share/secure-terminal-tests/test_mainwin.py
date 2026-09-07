@@ -3593,6 +3593,47 @@ finally:
     _QFD3.getSaveFileName = _o_gsf
     _QMB3.warning = _o_warn3
 
+# _save_capture falls back to the bare filename when the state dir cannot be made
+# (so the dialog still opens rather than crashing on the join).
+_o_ens = M.session.ensure_state_dir
+_start_args = []
+try:
+    M.session.ensure_state_dir = staticmethod(
+        lambda: (_ for _ in ()).throw(OSError('no state dir')))
+    _QFD3.getSaveFileName = staticmethod(
+        lambda *_a, **_k: (_start_args.append(_a), ('', ''))[1])
+    win.save_transcript()               # empty return path -> no write attempted
+    ok(bool(_start_args) and _start_args[0][2] == 'secure-terminal-transcript.txt',
+       '_save_capture opens with the bare filename when the state dir is unavailable')
+finally:
+    _QFD3.getSaveFileName = _o_gsf
+    M.session.ensure_state_dir = _o_ens
+
+# copy_transcript_path WARNS when the transcript file cannot be written.
+_o_ens2 = M.session.ensure_state_dir
+_o_warncp = _QMB3.warning
+_warned_cp = []
+try:
+    M.session.ensure_state_dir = staticmethod(
+        lambda: (_ for _ in ()).throw(OSError('no space')))
+    _QMB3.warning = staticmethod(lambda *_a, **_k: _warned_cp.append(_a))
+    win.copy_transcript_path()
+    ok(bool(_warned_cp),
+       'copy_transcript_path warns when the transcript file cannot be written')
+finally:
+    _QMB3.warning = _o_warncp
+    M.session.ensure_state_dir = _o_ens2
+
+# copy_transcript_path is a safe no-op when there is no live current tab.
+_o_cur_cp = win.current
+try:
+    win.current = lambda: None
+    _dialogs.clear()
+    win.copy_transcript_path()
+    ok(not _dialogs, 'copy_transcript_path is a no-op (no dialog) with no current tab')
+finally:
+    win.current = _o_cur_cp
+
 # --- _open_path opens an existing folder and falls back to a parent -----------
 # Stub openUrl: offscreen QPA does not spawn, but a direct run under a real desktop
 # platform would pop an external file-manager window -- capture the path instead.
