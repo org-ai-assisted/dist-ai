@@ -26,7 +26,10 @@ script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 ## dist-ai repo root: this file is at usr/share/dm-boot-test-tests/<f>.
 repo_root="$(dirname -- "$(dirname -- "$(dirname -- "${script_dir}")")")"
 dm_boot_test="${repo_root}/usr/bin/dm-boot-test"
-hs="${HOME}/derivative-maker/packages/kicksecure/helper-scripts"
+## Honour DERIVATIVE_MAKER_DIR (dist-ai-tests-all wires it; CI checks out
+## derivative-maker at $GITHUB_WORKSPACE, not under $HOME) before falling back.
+dm_dir="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
+hs="${dm_dir}/packages/kicksecure/helper-scripts"
 
 for f in "${dm_boot_test}" "${hs}/usr/libexec/helper-scripts/package_installed_check.sh"; do
    if [ ! -e "${f}" ]; then

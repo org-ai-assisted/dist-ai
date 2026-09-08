@@ -638,6 +638,18 @@ wire() {
          ## and the sources under each package, so it needs the checkout root.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-boot-test)
+         ## The resolution test drives the real dm-boot-test and reads
+         ## helper-scripts from the derivative-maker checkout; point it there.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         wire_args=()
+         ;;
+      dm-ci-job-watch)
+         ## Self-contained: drives dm-ci-job-watch-state.py from this dist-ai
+         ## checkout with crafted JSON on stdin; no external checkout to point at.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-image-boot)
          ## Self-contained: it bundles dm-qemu + dm-image-test under
          ## usr/share/dm-image-boot-tests and takes the image to boot as an

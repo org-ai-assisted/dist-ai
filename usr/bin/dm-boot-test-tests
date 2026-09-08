@@ -28,6 +28,7 @@ fi
 
 shopt -s nullglob
 failures=0
+skips=0
 ran=0
 for test_script in "${tests_dir}"/*_test.sh; do
   ran=$(( ran + 1 ))
@@ -36,6 +37,7 @@ for test_script in "${tests_dir}"/*_test.sh; do
   bash -- "${test_script}" "$@" || rc=$?
   if [ "${rc}" -eq 77 ]; then
     printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    skips=$(( skips + 1 ))
   elif [ "${rc}" -ne 0 ]; then
     printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
     failures=$(( failures + 1 ))
@@ -50,5 +52,12 @@ if [ "${failures}" -ne 0 ]; then
   printf '\nFAILED: %s dm-boot-test test script(s) failed\n' "${failures}" >&2
   exit 1
 fi
-printf '\nOK: all dm-boot-test test scripts passed\n'
+## Propagate a whole-suite skip: if EVERY script skipped (77) and none ran, exit
+## 77 so the orchestrator records SKIP -- and skip_is_fatal fails an unauthorized
+## one -- instead of a green PASS that hides that nothing actually ran.
+if [ "${skips}" -eq "${ran}" ]; then
+  printf '\nSKIP: all %s dm-boot-test test script(s) skipped\n' "${ran}" >&2
+  exit 77  ## style-ok: allow-skip: whole-suite skip propagated so the orchestrator records SKIP, not a false green
+fi
+printf '\nOK: all dm-boot-test test scripts passed (%s skipped)\n' "${skips}"
 exit 0
