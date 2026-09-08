@@ -177,17 +177,14 @@ runtime_dir="${work}/rt"; mkdir --parents -- "${runtime_dir}"
 export HOME="${work}/home"; mkdir --parents -- "${HOME}"
 printf '%s\n' 'board' > "${HOME}/tui-showcase.payload"
 out="${work}/shots"; mkdir --parents -- "${out}"
-xwl_display=':99'
 ## st_bin is the executable logging stub created above (do NOT truncate it here).
 st_pkg="${work}/pkg"
-SHOT_SCALE=1
 SHOT_DEADLINE=90
 rc_dropin=''
-## zoom_live_capture reads ${run_marker} (its --name), so it must be BOUND or set -u aborts the
-## sourced function fatally (uncaught by the `|| true` below -> a silent exit 1). The value is
-## inert here: shots_spawn_session is stubbed to a no-op, so nothing consumes the marker.
+## zoom_live_capture interpolates ${run_marker} into the ST launch (the SHOTS_RUN_MARKER env), so
+## it must be BOUND or set -u aborts the sourced function fatally (uncaught by the `|| true` below
+## -> a silent exit 1). Inert here: shots_spawn_session is stubbed to a no-op, so nothing runs it.
 run_marker="${runtime_dir}/run-marker"
-FRAME_TOP=26
 
 ## Drive the live-zoom loop over three levels (incl. a clamp-boundary value).
 zoom_live_capture 50 150 400 >/dev/null 2>&1 || true

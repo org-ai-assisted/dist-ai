@@ -493,11 +493,15 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
    local pgid_file="$1"
    shift
    ## setsid makes the inner bash a session/group leader, so its PID == its PGID == $$; it records
-   ## that, then runs the real command as a CHILD in the same session. The child inherits that
-   ## PGID, so teardown's `kill -- -PGID` reaps the whole group (leader bash + child + any tree it
-   ## spawns) exactly as before. No explicit `exec` (R-103): whether bash forks the final command
-   ## or last-command-optimises it into an in-place replacement, the recorded PGID is unchanged.
-   setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"' bash "${pgid_file}" "$@" &
+   ## that, then runs the real command as a CHILD in the same session. The child inherits that PGID,
+   ## so teardown's `kill -- -PGID` reaps the whole group (leader bash + child + any tree it spawns).
+   ## The trailing `exit "$?"` DELIBERATELY prevents bash's last-command exec-optimisation: the
+   ## leader bash must LINGER (not exec-replace itself with the command), so its own argv -- which
+   ## carries "${pgid_file}" (a path UNDER the run's unique mktemp runtime dir, i.e. the reaping
+   ## MARKER) -- stays visible to the crash-sweep's `safe-pgrep --full "${run_marker}"`. Without it,
+   ## a command that then `env`-execs (secure-terminal) leaves a surviving argv with NO marker (env
+   ## assignments do not persist in argv), so an orphaned GUI from a SIGKILLed run could not be swept.
+   setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"; exit "$?"' bash "${pgid_file}" "$@" &
 }
 
 ## Reap ONE recorded process group: TERM the whole group, then KILL after a short grace. Guards

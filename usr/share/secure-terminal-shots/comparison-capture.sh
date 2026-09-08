@@ -603,12 +603,19 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## viewport) -- the same real full-viewport payload the comparison TUI shots use, so the grid is
    ## genuinely full when the scrollbar / white-band bug would show. Build the with-prompt sibling
    ## that the TUI inject command cats (the plain one is stripped in place for CLI).
-   cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
-   st_cmd="$(shots_st_inject_cmd tui-showcase tui)"
+   ## errexit is SUPPRESSED inside this function (its call site is `zoom_live_capture ... || rc=$?`),
+   ## so a bare failing command does NOT abort -- it silently continues to a misleading downstream
+   ## error. Guard the top-level steps EXPLICITLY (same discipline as shots_generate_logs): a missing
+   ## payload here means generation did not run, and must fail loud at its true source.
+   if ! cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"; then
+      printf '%s\n' "zoom-live: ${HOME}/tui-showcase.payload is missing -- payload generation did not run; cannot build the TUI board" >&2
+      return 1
+   fi
+   st_cmd="$(shots_st_inject_cmd tui-showcase tui)" || return 1
    st_win_w="$(px 860)"
    st_win_h="$(px 820)"
 
-   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")" || return 1
    st_flagf="${st_pgf}.timeout"
    st_transcript="${st_pgf}.transcript"
    safe-rm -f -- "${st_transcript}" 2>/dev/null || true
@@ -969,10 +976,11 @@ board_wrap_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
-## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
-## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
-## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
-## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
+## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
+## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
+## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
+## skips the secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts
+## existing PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
 jobs=1
 no_st=''
 no_optimize=''
@@ -1075,9 +1083,10 @@ if [ -n "${optimize_only}" ]; then
 fi
 
 ## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
-## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
-## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
-## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
+## comparison-capture.sh run over a scope subset in its OWN private headless labwc compositor (no
+## host X; the bringup + Xwayland-socket discovery is flock-serialized in wl_headless_start, so
+## concurrent lanes do not race the shared X socket dir). The capture code is reused UNCHANGED;
+## only the work is split. A final --optimize-only pass webp-converts
 ## once, so concurrent lanes never race on the shared shots dir's optimize step.
 if [ "${jobs}" -gt 1 ]; then
    self="${here}/comparison-capture.sh"
@@ -1128,8 +1137,11 @@ if [ "${jobs}" -gt 1 ]; then
       prep_args=()
       [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
       [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
+      ## Each lane brings up its OWN private headless labwc (no host X, no xvfb-run). Concurrent
+      ## labwc share the protocol-fixed /tmp/.X11-unix; wl_headless_start serializes just the
+      ## per-lane compositor bringup + Xwayland-socket discovery under a flock, so a lane's X11-only
+      ## trio (xterm/urxvt/st) cannot bind another lane's compositor. Captures then run in parallel.
+      "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
       lane_pids+=("$!")
       lane_logs+=("${log}")
       lane_i=$(( lane_i + 1 ))
@@ -1179,7 +1191,7 @@ if [ "${jobs}" -gt 1 ]; then
    ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
    ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
    ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
-   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
+   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one compositor at a time,
    ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
    ## (rc=1), never a silent stale shot.
    if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
@@ -1212,8 +1224,7 @@ if [ "${jobs}" -gt 1 ]; then
             ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
             ## NOT folded into the run's rc. Whether the shot now exists is decided by the
             ## authoritative missing-check after the rounds; a shot still absent then fails hard.
-            xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
+            "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
                > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
             cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
          done
@@ -1239,8 +1250,7 @@ if [ "${jobs}" -gt 1 ]; then
       st_prep=()
       [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
       st_rc=0
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
+      "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
          > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
       cat -- "${lane_dir}/st.log" 2>/dev/null || true
       [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
