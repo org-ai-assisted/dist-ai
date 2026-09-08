@@ -3664,6 +3664,31 @@ ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
 QGuiApplication.clipboard().clear()
 _ctc.close()
 
+# OSC-52 clipboard-WRITE FLOOD: a program spamming ]52 writes is REPORTED once per tab,
+# never throttled -- a rate throttle would drop legitimate rapid DISTINCT writes, so the
+# write always applies and the user is advised a single time (per session/tab). (canary:
+# with no flood notice a hostile program silently overwrites the clipboard on a loop; with
+# a throttle instead, a legit rapid writer loses writes.)
+_cwf = SecureTerminal(command='/bin/cat')
+_cwf_adv: list[str] = []
+_cwf.advise_signal.connect(_cwf_adv.append)
+_cwf_payload = b'c;eA=='                               # OSC-52 SET, base64('x')
+for _i in range(15):                                   # > _CLIP_FLOOD_COUNT (12), one window
+    _cwf._osc_clipboard(_cwf_payload)
+ok(len(_cwf_adv) == 1 and 'overwriting the clipboard' in _cwf_adv[0],
+   'OSC-52 write flooding is advised exactly once per tab (the writes still apply)')
+for _i in range(15):                                   # a second flood does NOT re-advise
+    _cwf._osc_clipboard(_cwf_payload)
+ok(len(_cwf_adv) == 1, 'the clipboard-flood notice is one-shot -- it does not repeat')
+_cwf.close()
+_cwf2 = SecureTerminal(command='/bin/cat')
+_cwf2_adv: list[str] = []
+_cwf2.advise_signal.connect(_cwf2_adv.append)
+for _i in range(5):                                    # < _CLIP_FLOOD_COUNT: no flood
+    _cwf2._osc_clipboard(_cwf_payload)
+ok(len(_cwf2_adv) == 0, 'a handful of clipboard writes does not trip the flood notice')
+_cwf2.close()
+
 # #30: an OSC 8 hyperlink split across two PTY reads (opener+text in one, closer in the
 # next) must STILL fire the anti-phishing notice. (canary: the BEL-terminated opener was
 # not carried, so _OSC8 never saw the pair and the notice was silently evaded.)
