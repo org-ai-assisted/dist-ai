@@ -623,7 +623,7 @@ derivative-maker's `3200_create-raw-image`) into a highly boot-compatible hybrid
 ISO -- legacy BIOS + UEFI + UEFI Secure Boot (shim -> signed GRUB) + `loopback.cfg`
 + USB/DVD hybrid -- using only packages.debian.org tools, the same approach
 Debian `live-build` takes, reimplemented without live-build. It is the reference
-for porting `3600_convert-raw-to-iso` off live-build (that port is a separate,
+for porting `4310_convert-raw-to-iso` off live-build (that port is a separate,
 human-reviewed change and this tool does not modify derivative-maker).
 
 The exact command sequence and the reasoning for each step are in

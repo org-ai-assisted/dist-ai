@@ -214,7 +214,7 @@ normalization in the caller if bit-identical output matters.
 
 ## Relationship to derivative-maker
 
-This is the reference for porting derivative-maker's `3600_convert-raw-to-iso`
+This is the reference for porting derivative-maker's `4310_convert-raw-to-iso`
 off live-build. The port itself (editing derivative-maker) is a separate,
 human-reviewed change; this tool and doc do not modify derivative-maker. A
 consumer that needs extra GRUB config on the ISO (for example derivative-maker's
