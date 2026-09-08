@@ -115,7 +115,7 @@ source "${helper_scripts_base}/usr/libexec/helper-scripts/package_installed_chec
 ## firmware for an architecture it never touches. On a host without them that
 ## forced an apt round-trip (and, where apt cannot verify a repository, an
 ## outright failure) to install packages the run would not use.
-boot_test_packages=( qemu-utils python3-pexpect python3-pytest xorriso )
+boot_test_packages=( qemu-utils python3-pexpect python3-pytest xorriso imagemagick )
 case "${arch}" in
    amd64)
       ## SeaBIOS ships with qemu-system-x86; ovmf provides both the plain and the
