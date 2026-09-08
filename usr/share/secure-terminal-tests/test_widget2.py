@@ -3161,6 +3161,15 @@ ok(_it_above.y() + _it_size.height() <= 780,
 _it_clamp = _ittip._placement(_QRect_it(950, 100, 40, 20), _it_size, _it_avail, _it_gap)
 ok(_it_clamp.x() + _it_size.width() <= _it_avail.right() + 1,
    'InfoTip: clamps a wide tip so it never runs off the right edge')
+# a tip TALLER than the room both below AND above the source: neither flip fits, so a
+# naive vertical clamp would land the tip ON the source and cover it. The place-beside
+# path must move the tip clear of the source so the underlying widget stays clickable
+# (the review-bar countdown Paste button, task 12).
+_it_src_tall = _QRect_it(100, 370, 40, 60)
+_it_tall = _QSize_it(200, 720)
+_it_beside = _ittip._placement(_it_src_tall, _it_tall, _it_avail, _it_gap)
+ok(not _QRect_it(_it_beside, _it_tall).intersects(_it_src_tall),
+   'InfoTip: a too-tall tip is placed beside the source, never over it (source clickable)')
 _ittip.hide()
 _ittip._poll.stop()
 APP.processEvents()
