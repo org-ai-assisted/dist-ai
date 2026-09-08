@@ -356,10 +356,18 @@ SHOTS_EMULATOR_SKIP_CASES=' notify art gradient unicode '
 ## passes only INSTALLED emulators, so an authorized skip (absent emulator) has no expected shot
 ## and is never chased.
 shots_missing_emulator_shots() {  ## $1=out-dir  $2=emulators (space-sep)  $3=cases (space-sep)
-   local out_dir emus cases e c
-   out_dir="$1"; emus="$2"; cases="$3"
-   for e in ${emus}; do
-      for c in ${cases}; do
+   local out_dir e c
+   local -a _emus_arr _cases_arr
+   out_dir="$1"
+   ## Split the space-separated args into arrays with NO glob/word-split (read -ra), matching the
+   ## defensive idiom the main capture loop already uses: an unvalidated CASES='*' (reachable when
+   ## CASES is exported instead of passed via --case) must stay LITERAL here, not glob-expand the
+   ## launch-time CWD. Otherwise the real case names go unchecked and this fail-loud missing-shot
+   ## guard is silently defeated (a genuinely failed grab passes the re-capture net unnoticed).
+   read -ra _emus_arr <<< "$2"
+   read -ra _cases_arr <<< "$3"
+   for e in "${_emus_arr[@]}"; do
+      for c in "${_cases_arr[@]}"; do
          case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
          [ -f "${out_dir}/${e}.${c}.png" ] || [ -f "${out_dir}/${e}.${c}.webp" ] \
             || printf '%s\n' "${e} ${c}"

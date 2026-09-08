@@ -265,6 +265,19 @@ ok('swordfish' not in _t6w.toPlainText(),
    'task6: a \\r-overwrite-wiped password is not resurrected by a reflow')
 _t6w.close()
 
+# feed_line_edits must be LINEAR in a long safe-char run, not quadratic: the fast path
+# matches the run ONCE and consumes it in autowrap-sized chunks. A regression that re-matches
+# (and re-copies) the whole remaining run on every wrap is O(n^2) -- 200k spaces at width 40
+# took ~5s pre-fix (a >=1MB reflow could hang the UI for minutes); linear is ~0.03s. Bound
+# generously so a loaded CI runner never flakes while the quadratic form still trips it.
+import time as _fle_time                                             # noqa: E402
+_fle_t0 = _fle_time.perf_counter()
+_t6fle([], 0, {'fg': None, 'bg': None, 'bold': False}, ' ' * 200000 + 'x\n', 40, True)
+_fle_dt = _fle_time.perf_counter() - _fle_t0
+ok(_fle_dt < 3.0,
+   'feed_line_edits stays linear on a long run (200k spaces in %.3fs < 3s; quadratic ~5s)'
+   % _fle_dt)
+
 # #4 (ai-review): the debounced width-reflow (_reflow, the timer slot) replays the FULL
 # retained _raw, not just the _RERENDER_TAIL, so a resize never DELETES older scrollback.
 _t8._cols = 100

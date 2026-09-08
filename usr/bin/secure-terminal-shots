@@ -127,8 +127,9 @@ if [ "${mode}" = 'refresh' ]; then
    ## stale while /comparison/shots/ was regenerated is exactly the drift this closes).
    ## Each offscreen site lane is ONE line below -- the single place that lists them all;
    ## re-invoking this wrapper per lane keeps the sizing/output logic in one place. The
-   ## comparison lane needs X/labwc, so it is NOT run here: NOTIFY that it is regenerated
-   ## separately via the sandbox driver, never silently claim it was done.
+   ## comparison AND tooltip lanes need labwc (tooltip is now a native-Wayland capture), so
+   ## they are NOT run here: NOTIFY that they are regenerated separately via the sandbox
+   ## driver, never silently claim they were done.
    site="${1:-${HOME}/private-sources/secure-terminal.github.io}"
    if [ ! -d "${site}/shots" ] || [ ! -d "${site}/compatibility/shots" ]; then
       printf '%s\n' "secure-terminal-shots: site galleries not found under '${site}' (set the site checkout path)" >&2
@@ -137,12 +138,11 @@ if [ "${mode}" = 'refresh' ]; then
    self="$(readlink --canonicalize -- "$0")"
    "${self}" review  "${site}/shots"
    "${self}" modes   "${site}/shots"
-   "${self}" tooltip "${site}/shots"
    "${self}" compat  "${site}/compatibility/shots"
    printf '%s\n' \
       "secure-terminal-shots: refreshed the offscreen site galleries (review + modes -> shots/, compat -> compatibility/shots/)." \
-      "secure-terminal-shots: NOTE: the /comparison/shots/ lane needs X/labwc and was NOT regenerated here." \
-      "secure-terminal-shots:       run it via:  secure-terminal-shots-sandbox comparison   (or: secure-terminal-shots-sandbox refresh, which does both)." >&2
+      "secure-terminal-shots: NOTE: the /comparison/shots/ and the tooltip lanes need labwc and were NOT regenerated here." \
+      "secure-terminal-shots:       run them via:  secure-terminal-shots-sandbox comparison / tooltip   (or: secure-terminal-shots-sandbox refresh)." >&2
    exit 0
 fi
 
