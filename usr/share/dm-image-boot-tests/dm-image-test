@@ -347,6 +347,12 @@ def run_checks(child, args, log):
         ## PR #5, closed for that reason). The string names the mount point, so a
         ## different failing mount is still reported.
         systemcheck_cmd += " --journal-ignore-fixed \"mount: /mnt/shared: wrong fs type\""
+        ## sdwdate cannot reach Tor on a no-network CI boot, so its anondate-set
+        ## helper exits 1 and logs "Unexpected error", which check_journal greps as
+        ## an error and fails every leg. Same no-tor condition the check_tor_* skips
+        ## above cover; ignore the anondate-set non-zero-exit line (both the
+        ## anondate and the sdwdate-file-watcher journal copies share this text).
+        systemcheck_cmd += " --journal-ignore-fixed \"anondate-set: ### END: ### Exiting with exit_code '1'\""
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
         ## defect. Ignore only that one unit, and only for the secureboot legs.
