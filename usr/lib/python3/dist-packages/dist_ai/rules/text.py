@@ -325,16 +325,18 @@ class PythonShellGuard(Rule):
                 and node.value.value == SHELL_GUARD_VALUE)
 
     def _positions(self, source):
-        ## (guard-statement line, first top-level import line) from the PARSED
-        ## module; either may be None. 1-based ast linenos. Raises on a syntax error.
+        ## ((guard body-index, lineno) | None, (first-import body-index, lineno) |
+        ## None) from the PARSED module. Order is by STATEMENT POSITION in the body,
+        ## NOT line number -- a same-line 'import os; <guard>' puts the import first
+        ## though ast gives both the same lineno. Raises on a syntax error.
         tree = ast.parse(source)
-        guard_line = import_line = None
-        for node in tree.body:
-            if guard_line is None and self._is_guard_stmt(node):
-                guard_line = node.lineno
-            if import_line is None and isinstance(node, (ast.Import, ast.ImportFrom)):
-                import_line = node.lineno
-        return guard_line, import_line
+        guard = first_import = None
+        for index, node in enumerate(tree.body):
+            if guard is None and self._is_guard_stmt(node):
+                guard = (index, node.lineno)
+            if first_import is None and isinstance(node, (ast.Import, ast.ImportFrom)):
+                first_import = (index, node.lineno)
+        return guard, first_import
 
     def _absent(self, ctx):
         return model.fail(
@@ -354,21 +356,21 @@ class PythonShellGuard(Rule):
                 yield self._absent(ctx)
             return
         try:
-            guard_line, import_line = self._positions(ctx.source)
+            guard, first_import = self._positions(ctx.source)
         except (SyntaxError, ValueError):
             ## Unparseable python has bigger problems; a raw check still flags a
             ## missing guard (ordering is not decidable without a parse).
             if SHELL_GUARD_LINE not in ctx.source:
                 yield self._absent(ctx)
             return
-        if guard_line is None:
+        if guard is None:
             yield self._absent(ctx)
-        elif import_line is not None and import_line < guard_line:
+        elif first_import is not None and first_import[0] < guard[0]:
             yield model.fail(
                 "python-shell-guard",
                 "python-shell-guard: the guard must come BEFORE the first import "
-                "(line %d)" % import_line,
-                ctx.path, guard_line)
+                "(line %d)" % first_import[1],
+                ctx.path, guard[1])
 
     def fix(self, ctx):
         if ctx.source is None:

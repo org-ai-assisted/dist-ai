@@ -174,6 +174,13 @@ import os
 '
 ## #3 a non-UTF-8 usr/bin entry point (stray 0xff) still needs the guard checked.
 badutf8=$'#!/usr/bin/python3 -Bsu\n\n## invalid utf8: \xff\ncmd = 1\nimport os\n'
+## grok re-review: a SAME-LINE import before the guard (ast gives both one lineno)
+## still runs the import first under a shell -- order must be by statement, not line.
+sameline='#!/usr/bin/python3 -Bsu
+
+import os; '"${guard_line}"'
+print(os.getpid())
+'
 
 ## -- --check: flagged / spared -------------------------------------------------
 expect_flag 'usr/bin no-guard no-doc flagged' 'usr/bin/tool_a' "${nodoc}" present
@@ -231,6 +238,7 @@ fi
 ## -- regression canaries for the ai-review findings (must fail on the pre-fix rule) --
 expect_flag 'guard only in docstring not counted' 'usr/bin/rf_docguard' "${docguard}" present
 expect_flag 'semicolon import before guard flagged' 'usr/bin/rf_semi' "${semi}" present
+expect_flag 'same-line import before guard flagged' 'usr/bin/rf_sameline' "${sameline}" present
 expect_flag 'non-utf8 missing guard flagged' 'usr/bin/rf_badutf8' "${badutf8}" present
 expect_flag 'u-string docstring flagged (no guard)' 'usr/bin/rf_udoc' "${udoc}" present
 expect_guard 'u-string docstring NOT auto-guarded' 'usr/bin/rf_udoc_fix' "${udoc}" absent
