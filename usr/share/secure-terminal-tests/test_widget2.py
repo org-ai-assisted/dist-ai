@@ -3135,10 +3135,11 @@ win.set_zoom(100)
 
 # --- InfoTip: theme-aware colours + anchored CLEAR of the source widget ---------
 _ittip = win._tip_filter._tip
+from secure_terminal.main import _TIP_COLORS as _TIPC           # noqa: E402
 _ittip.show_for(win, 'x', 100, 'dark')
-ok('#252a31' in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
+ok(_TIPC['dark'][0] in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
 _ittip.show_for(win, 'x', 100, 'light')
-ok('#fbfbfd' in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
+ok(_TIPC['light'][0] in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
 # Placement (below-by-preference / flip-above / clamp) is tested via the PURE _placement
 # helper with synthetic source + screen rects. A headless Wayland compositor cannot position
 # or query the absolute geometry of a standalone top-level, so the old real-window placement
