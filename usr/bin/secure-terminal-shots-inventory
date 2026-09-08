@@ -4,6 +4,11 @@
 
 ## AI-Assisted
 
+## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
+## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
+## which freezes X). Re-exec under python3; inert as a string literal in python3.
+"exec" "python3" "-Bsu" "$0" "$@"
+
 ## Inventory guard for the secure-terminal.github.io shot galleries: every committed shot
 ## file must be a page-referenced generator artifact, and every page reference into a shot
 ## gallery must resolve to a committed file. This is the cheap "no hand-rolled screenshot"

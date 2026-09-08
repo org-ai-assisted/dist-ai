@@ -225,8 +225,8 @@ assert_matches "4310 enforces native arch for a real ISO conversion" \
 
 ## parse-cmd must reject an ISO --arch the converter cannot build (fail fast, not
 ## ~40 min in and then deep inside dm-raw-to-iso).
-assert_matches "parse-cmd gates ISO builds to the converter's arch set" \
-   'amd64\|arm64\|armhf\)' "${parse_cmd_file}"
+assert_matches "parse-cmd gates ISO builds to the buildable arch set" \
+   'amd64\|arm64\)' "${parse_cmd_file}"
 
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]

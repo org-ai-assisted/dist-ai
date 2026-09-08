@@ -3,6 +3,11 @@
 ## See the file COPYING for copying conditions.
 ## AI-Assisted
 
+## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
+## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
+## which freezes X). Re-exec under python3; inert as a string literal in python3.
+"exec" "python3" "-Bsu" "$0" "$@"
+
 """Reproducible terminal-fingerprint comparison. Sends the standard terminal
 identification/query escapes to each terminal and records what it ANSWERS (a
 terminal that answers leaks that datum to any program, incl. a remote host over
@@ -29,7 +34,11 @@ if not os.path.isdir(SHARE):                      # source checkout layout
 PROBE = os.path.join(SHARE, 'probe.py')
 PROBE_ST = os.path.join(SHARE, 'probe-secure-terminal.py')
 
-# real emulators to probe under Xvfb: (label, argv-template using {probe} {out})
+# Real emulators to probe under Xvfb: (label, argv-template using {probe} {out}).
+# Xvfb (not the shared headless-labwc stack) on purpose: xterm/st/urxvt are X11-ONLY, so
+# there is no native-Wayland path to move them to, and this probe reads the emulator's PTY
+# answer-back bytes -- it captures NO pixels, so a compositor buys nothing over a bare X
+# server. Routing them through labwc's Xwayland instead would still be X11, just heavier.
 EMULATORS = [
     ('xterm', ['xterm', '-e']),
     ('st', ['st', '-e']),
