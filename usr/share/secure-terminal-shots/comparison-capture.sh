@@ -307,6 +307,14 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
 inject() {  ## $1=window-id (unused: the mapped window has focus)  $2=command
    local run_cmd="$2"
    sleep 0.4
+   ## wtype loses its FIRST keystroke(s) into a not-yet-ready readline (the slow
+   ## gnome-terminal-server maps its chrome, so the window is non-blank, well before the interactive
+   ## bash prints its prompt), so the injected `cat` arrives as `at` -- a corrupt shot. Erase+retype
+   ## makes the typed line deterministic regardless of startup timing: type it, Ctrl-U to kill
+   ## whatever landed (readline is active by now, having received that input), then type it AGAIN
+   ## onto the now-ready empty line and run. No visible artifact (Ctrl-U erases in place).
+   wtype -- "${run_cmd}" 2>/dev/null || true
+   wtype -M ctrl -k u -m ctrl 2>/dev/null || true
    wtype -- "${run_cmd}" 2>/dev/null || true
    sleep 0.3
    wtype -k Return 2>/dev/null || true
