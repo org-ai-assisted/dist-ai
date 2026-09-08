@@ -154,14 +154,39 @@ wl_headless_start() {
    ## socket -- a second lane's X11 clients then bind the first lane's compositor. A per-user flock
    ## held ONLY across labwc-start + socket discovery (a couple of seconds) serializes the bringups
    ## so each lane's new sockets are unambiguous; the captures afterwards still run fully parallel.
-   ## Best-effort: if the lock cannot be taken, the bringup proceeds anyway (single-lane callers,
-   ## the common case, never contend).
-   local _wl_lock_fd='' _wl_lock
-   _wl_lock="${TMPDIR:-/tmp}/wl-headless-bringup.$(id --user).lock"
-   if exec {_wl_lock_fd}>"${_wl_lock}" 2>/dev/null; then
-      flock "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+   ##
+   ## The lock must sit at a STABLE per-user path so separate lane PROCESSES contend on the SAME
+   ## file -- but NOT a predictable name directly in world-writable /tmp: that is symlink- and
+   ## fifo-plantable, so a plain O_TRUNC `>` open would follow a planted symlink and truncate an
+   ## arbitrary victim-writable file, a planted fifo would hang the open, and a pre-created
+   ## unwritable file would silently drop the lock and re-open the very --jobs race this guards
+   ## (the same attack class lib-capture.sh's state-dir already refuses). Home it in the caller's
+   ## own 0700 XDG_RUNTIME_DIR (/run/user/UID, safe by construction) when present; else a
+   ## self-owned 0700 dir we create + verify under TMPDIR (no foreign entry can be planted inside
+   ## a dir only we can write). Open with <> (no truncate; O_RDWR on a fifo would not block).
+   local _wl_lock_fd='' _wl_lock _wl_lock_dir=''
+   if [ -n "${WL_HEADLESS_SAVED_XDG_SET}" ] && [ -d "${WL_HEADLESS_SAVED_XDG}" ] \
+         && [ -O "${WL_HEADLESS_SAVED_XDG}" ] && [ ! -L "${WL_HEADLESS_SAVED_XDG}" ]; then
+      _wl_lock_dir="${WL_HEADLESS_SAVED_XDG}"
    else
-      _wl_lock_fd=''
+      _wl_lock_dir="${TMPDIR:-/tmp}/wl-headless.$(id --user)"
+      if [ -L "${_wl_lock_dir}" ] \
+            || { [ -e "${_wl_lock_dir}" ] && { [ ! -d "${_wl_lock_dir}" ] || [ ! -O "${_wl_lock_dir}" ]; }; }; then
+         printf '%s\n' "wl_headless_start: refusing unsafe lock dir '${_wl_lock_dir}' (symlink or not owned by us); bringup serialization skipped" >&2
+         _wl_lock_dir=''
+      elif ! mkdir --parents -- "${_wl_lock_dir}" 2>/dev/null || ! chmod 700 -- "${_wl_lock_dir}" 2>/dev/null; then
+         ## idempotent (reused across the user's runs); the guard above already refused a symlink
+         ## or foreign-owned entry, so this creates/locks-down only our own dir.
+         _wl_lock_dir=''
+      fi
+   fi
+   if [ -n "${_wl_lock_dir}" ]; then
+      _wl_lock="${_wl_lock_dir}/wl-headless-bringup.lock"
+      if exec {_wl_lock_fd}<>"${_wl_lock}" 2>/dev/null; then
+         flock "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+      else
+         _wl_lock_fd=''
+      fi
    fi
 
    local xwl_marker="${runtime}/.xwl-marker"
@@ -300,7 +325,7 @@ wl_headless_capture_window() {
 ## writing the output if it never stabilises within `tries`, so the caller fails loud rather
 ## than publishing a mid-paint frame.
 wl_headless_capture_settled() {  ## $1=outfile  $2=max-tries(default 12)  $3=max-diff-pixels(default 0)
-   local outfile="$1" tries="${2:-12}" maxdiff="${3:-0}" prev cur ae n rc=1
+   local outfile="$1" tries="${2:-12}" maxdiff="${3:-0}" prev cur ae ae_int n rc=1
    if [ -z "${outfile}" ]; then
       printf '%s\n' 'wl_headless_capture_settled: no output file' >&2
       return 2
@@ -315,11 +340,15 @@ wl_headless_capture_settled() {  ## $1=outfile  $2=max-tries(default 12)  $3=max
       for (( n = 1; n <= tries; n++ )); do
          sleep 0.4
          wl_headless_capture_window "${cur}" || continue
-         ## AE = count of differing pixels (to stderr). A SIZE mismatch (window still resizing)
-         ## makes compare print an error string, not a number -- taken as not-yet-settled.
+         ## AE = count of differing pixels (to stderr). compare prints it in SCIENTIFIC notation
+         ## once it exceeds ~1e6 (e.g. "1.44e+06"), so a leading-digits trim would read that as
+         ## "1" and wrongly settle against any maxdiff>=1 (publishing a mid-paint frame). Take the
+         ## first token and round to an integer via printf; a SIZE mismatch (window still resizing)
+         ## prints a non-numeric error string -> printf fails -> ae_int empty -> not-yet-settled.
          ae="$(compare -metric AE "${prev}" "${cur}" null: 2>&1)"
-         ae="${ae%%[!0-9]*}"
-         if [ -n "${ae}" ] && [ "${ae}" -le "${maxdiff}" ]; then
+         ae="${ae%%[[:space:]]*}"
+         ae_int="$(printf '%.0f' "${ae}" 2>/dev/null)" || ae_int=''
+         if [ -n "${ae_int}" ] && [ "${ae_int}" -le "${maxdiff}" ]; then
             cp -- "${cur}" "${outfile}"
             rc=0
             break

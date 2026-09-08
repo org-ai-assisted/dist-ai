@@ -45,6 +45,27 @@ SESSION_CMDLINE = {
     "sysmaint": "boot-role=sysmaint systemd.unit=sysmaint-boot.target",
 }
 
+## Kernel command-line hardening that security-misc sets via /etc/default/grub.d and
+## grub-mkconfig emits on the disk 'linux' line. A live ISO carries it only if
+## build-steps.d/4310_convert-raw-to-iso scrapes it into the live boot append; a
+## regression dropping that scrape boots an UNHARDENED live system, and with
+## rd.shell=0/rd.emergency=halt gone the initramfs drops to a dracut rescue shell
+## instead of halting. Asserted on the ISO legs only -- the disk image inherits these
+## straight from its installed grub, a separate pre-existing path.
+ISO_HARDENING_TOKENS = ("slab_nomerge", "rd.shell=0", "rd.emergency=halt")
+
+
+def hardening_cmdline_check(cmdline_path="/proc/cmdline"):
+    """Shell command that exits 0 iff every ISO_HARDENING_TOKENS entry is present as
+    a whole word in cmdline_path, else prints the first missing token and exits 1."""
+    import shlex
+    parts = [
+        "grep -q -F -w -- %s %s || { echo MISSING-HARDENING:%s; exit 1; }"
+        % (shlex.quote(token), shlex.quote(cmdline_path), token)
+        for token in ISO_HARDENING_TOKENS
+    ]
+    return "; ".join(parts) + "; true"
+
 
 def die_setup(message) -> NoReturn:
     print("dm-image-test: %s" % message, file=sys.stderr)
@@ -391,6 +412,13 @@ def run_checks(child, args, log):
             " echo \"UNIT-DIAG-END $unit\";"
             " done; true")
         commands = [(systemcheck_cmd, False, True), (diag_cmd, True, False)]
+        ## On the live ISO legs, assert the Kicksecure kernel hardening reached
+        ## /proc/cmdline: the live cmdline is assembled by 4310's grub-mkconfig
+        ## scrape, and a regression that drops it boots unhardened. Root, rc-checked,
+        ## and first so it reads near the top of the serial log. The disk legs get
+        ## their hardening from the installed grub and are not asserted here.
+        if args.iso:
+            commands.insert(0, (hardening_cmdline_check(), True, True))
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by

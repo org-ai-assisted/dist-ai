@@ -467,10 +467,11 @@ class _FakeChild:
     ## the exact serial output the real root shell would produce, so run_checks'
     ## real read/sentinel loop drives to a verdict with no VM. read_nonblocking
     ## hands back the buffered reply, then raises pexpect.TIMEOUT (its idle poll).
-    def __init__(self, pid, systemcheck_rc, diag_rc):
+    def __init__(self, pid, systemcheck_rc, diag_rc, hardening_rc=0):
         self.pid = pid
         self.systemcheck_rc = systemcheck_rc
         self.diag_rc = diag_rc
+        self.hardening_rc = hardening_rc
         self.buf = ""
 
     def sendline(self, line):
@@ -488,8 +489,12 @@ class _FakeChild:
             m = re.search(r"DMRC\d+", line)
             assert m is not None
             sentinel = m.group(0)
-            rc = self.diag_rc if "FAILED-UNITS-BEGIN" in line \
-                else self.systemcheck_rc
+            if "MISSING-HARDENING" in line:
+                rc = self.hardening_rc
+            elif "FAILED-UNITS-BEGIN" in line:
+                rc = self.diag_rc
+            else:
+                rc = self.systemcheck_rc
             self.buf += "%s:%d:%s\n" % (sentinel, rc, sentinel)
 
     def read_nonblocking(self, size=1, timeout=None):
@@ -509,7 +514,68 @@ def test_diag_cmd_exempt_from_expect_rc():
     m = _load_dm_image_test()
     child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0)
     args = types.SimpleNamespace(
-        timeout=30, run=None, login_user="user", expect_rc=1, firmware="")
+        timeout=30, run=None, login_user="user", expect_rc=1, firmware="",
+        iso=None)
     logs: list[str] = []
     rc = m.run_checks(child, args, logs.append)
     assert rc == m.PASS, (rc, logs)
+
+
+## --- ISO kernel-hardening cmdline check ---------------------------------------
+## build-steps.d/4310_convert-raw-to-iso scrapes the rootfs kernel hardening into
+## the live boot append; dropping that scrape boots an unhardened live ISO. These
+## lock the check that catches that regression on the ISO boot legs.
+
+def test_hardening_cmdline_check_passes_when_all_tokens_present(tmp_path):
+    m = _load_dm_image_test()
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text(
+        "BOOT_IMAGE=/live/vmlinuz boot=live components splash "
+        "slab_nomerge rd.shell=0 rd.emergency=halt mitigations=auto,nosmt\n",
+        encoding="utf-8")
+    cmd = m.hardening_cmdline_check(str(cmdline))
+    assert subprocess.call(["bash", "-c", cmd]) == 0
+
+
+@pytest.mark.parametrize("missing", ["slab_nomerge", "rd.shell=0", "rd.emergency=halt"])
+def test_hardening_cmdline_check_fails_when_a_token_missing(tmp_path, missing):
+    ## Canary: an unhardened live cmdline (any one hardening token dropped) must fail
+    ## the check, so the 4310 scrape regression cannot pass the ISO legs green.
+    m = _load_dm_image_test()
+    kept = [token for token in m.ISO_HARDENING_TOKENS if token != missing]
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text("BOOT_IMAGE=/live/vmlinuz " + " ".join(kept) + "\n",
+                       encoding="utf-8")
+    cmd = m.hardening_cmdline_check(str(cmdline))
+    assert subprocess.call(["bash", "-c", cmd]) != 0
+
+
+def test_iso_leg_inserts_hardening_check_and_a_failure_fails_the_verdict():
+    ## Wiring: on the ISO path (args.iso set) run_checks prepends the hardening
+    ## check; when it fails (hardening_rc != expect_rc) the whole leg is FAIL even
+    ## though systemcheck passed.
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    base = dict(timeout=30, run=None, login_user="root", expect_rc=0, firmware="")
+    ## Hardened ISO: hardening check passes, systemcheck passes -> PASS.
+    child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, hardening_rc=0)
+    ok = m.run_checks(child, types.SimpleNamespace(iso="x.iso", **base), (lambda _: None))
+    assert ok == m.PASS
+    ## Unhardened ISO: hardening check fails -> FAIL, regardless of systemcheck.
+    child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, hardening_rc=1)
+    logs: list[str] = []
+    bad = m.run_checks(child, types.SimpleNamespace(iso="x.iso", **base), logs.append)
+    assert bad == m.FAIL, logs
+
+
+def test_disk_leg_does_not_insert_hardening_check():
+    ## The disk legs inherit hardening from their installed grub; run_checks must not
+    ## add the ISO-only cmdline assertion there (args.iso is None).
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    ## hardening_rc=1 would fail the verdict IF the check were (wrongly) inserted.
+    child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, hardening_rc=1)
+    args = types.SimpleNamespace(
+        timeout=30, run=None, login_user="root", expect_rc=0, firmware="", iso=None)
+    rc = m.run_checks(child, args, (lambda _: None))
+    assert rc == m.PASS
