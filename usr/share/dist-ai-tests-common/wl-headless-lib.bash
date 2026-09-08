@@ -183,7 +183,10 @@ wl_headless_start() {
    if [ -n "${_wl_lock_dir}" ]; then
       _wl_lock="${_wl_lock_dir}/wl-headless-bringup.lock"
       if exec {_wl_lock_fd}<>"${_wl_lock}" 2>/dev/null; then
-         flock "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+         ## Bounded wait: a normal bringup holds the lock only a few seconds, so 30s means the
+         ## holder is wedged -- proceed UNLOCKED (the single-lane common case never contends, and a
+         ## --jobs lane racing a genuinely-stuck peer is better than deadlocking the whole run).
+         flock -w 30 "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
       else
          _wl_lock_fd=''
       fi
@@ -192,7 +195,17 @@ wl_headless_start() {
    local xwl_marker="${runtime}/.xwl-marker"
    touch -- "${xwl_marker}"
 
-   labwc -C "${cfg}" >"${runtime}/labwc.log" 2>&1 &
+   ## Start labwc with the bringup lock fd CLOSED in the child ({fd}>&-). A flock is held as long
+   ## as ANY fd on the open file description stays open, and labwc (and the Xwayland it spawns)
+   ## would otherwise INHERIT the fd -- so the lock would stay held for labwc's whole LIFETIME,
+   ## not just bringup, serializing every concurrent bringup against every running compositor and
+   ## deadlocking parallel --jobs / cross-session callers. Closing it in the child means the
+   ## parent's release below actually frees the lock once discovery is done.
+   if [ -n "${_wl_lock_fd}" ]; then
+      labwc -C "${cfg}" >"${runtime}/labwc.log" 2>&1 {_wl_lock_fd}>&- &
+   else
+      labwc -C "${cfg}" >"${runtime}/labwc.log" 2>&1 &
+   fi
    WL_HEADLESS_LABWC_PID="$!"
 
    ## Discover the NEW wayland-N socket labwc creates (its .lock companion is not a socket;
