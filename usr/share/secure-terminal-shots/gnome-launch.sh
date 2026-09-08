@@ -24,8 +24,9 @@
 ##    the pre-started server shares the client's bus and is reaped with the capture's PGID.
 ##
 ## With --hero: also set the system monospace font (VTE uses it via the built-in profile's
-## use-system-font) and Xft.dpi to 72 x SHOT_SCALE, matching secure-terminal's hero cell
-## metrics so the homepage before/after slider's two windows share a cell size.
+## use-system-font) and Xft.dpi to 72, matching secure-terminal's hero cell metrics so the
+## homepage before/after slider's two windows share a cell size. The headless labwc OUTPUT
+## already scales by SHOT_SCALE, so the base 72 (NOT 72 x SHOT_SCALE) is correct here.
 ##
 ## Usage (in the dbus session): gnome-launch.sh [--hero] <COLSxROWS> -- <shell> [args...]
 
@@ -56,17 +57,18 @@ shift
 [ "${1:-}" = '--' ] && shift
 
 if [ "${hero}" = 1 ]; then
-   ## HiDPI: scale the hero cell size by SHOT_SCALE (default 2) so this gnome-terminal render
-   ## overlaps secure-terminal's hero shot (captured at QT_FONT_DPI=72 x QT_SCALE_FACTOR).
-   ## '0*' rejects the whole leading-zero class (0/00/08/09): a leading zero is read as octal
-   ## in the arithmetic below (00 -> DPI 0, 08/09 -> fatal abort). Fall back to 2.
-   shot_scale="${SHOT_SCALE:-2}"
-   case "${shot_scale}" in ''|*[!0-9]*|0*) shot_scale=2 ;; esac
-   hero_dpi="$(( 72 * shot_scale ))"
+   ## Match secure-terminal's hero cell metrics: it is launched at QT_FONT_DPI=72, with the 2x
+   ## supplied by the compositor OUTPUT scale (wl_headless_start --output-scale SHOT_SCALE), not
+   ## by the app. VTE/GTK on WAYLAND ignores Xft.dpi (an X resource), so the font DPI is set via
+   ## GDK_DPI_SCALE instead: GTK's Wayland base is 96 logical DPI, and 72/96 = 0.75 brings the
+   ## font to secure-terminal's 72 before the output scale doubles both. Exported BEFORE the
+   ## pre-started gnome-terminal-server below, since that server does the rendering. Without this
+   ## the font stayed at 96 (1.33x too big): text wrapped and the window grew too tall, dwarfing
+   ## the secure-terminal side of the homepage slider.
    ## Best-effort (|| true): a sandbox without the gsettings schema still captures, just with
    ## the default font.
    gsettings set org.gnome.desktop.interface monospace-font-name 'Hack 11' 2>/dev/null || true
-   printf '%s\n' "Xft.dpi: ${hero_dpi}" | xrdb -merge 2>/dev/null || true
+   export GDK_DPI_SCALE=0.75
 fi
 
 ## Pre-start the server and wait for its bus name (see the header). Best-effort start: a
