@@ -58,6 +58,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+## Xvfb (not the shared headless-labwc stack) on purpose: xterm is X11-ONLY, so there is no
+## native-Wayland path for it, and this probe reads the WM_NAME title via xdotool -- it captures
+## NO pixels, so a compositor buys nothing over a bare X server. Routing xterm through labwc's
+## Xwayland instead would still be X11, just heavier.
 Xvfb "${DISPLAY}" -screen 0 800x600x24 >/dev/null 2>&1 &
 xvfb_pid="$!"
 sleep 2

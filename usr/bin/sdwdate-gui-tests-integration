@@ -31,10 +31,20 @@ else
   integration_dir='/usr/share/sdwdate-gui-tests/integration'
 fi
 
-wayland_socket='wayland-sdwd99'
+## Shared headless-Wayland bringup (labwc), used by the wayland phase (no private weston). Same
+## source the shots capture and the other GUI-test harnesses use.
+if [ -f "${script_dir}/../share/dist-ai-tests-common/wl-headless-lib.bash" ]; then
+  wl_headless_lib="${script_dir}/../share/dist-ai-tests-common/wl-headless-lib.bash"
+else
+  wl_headless_lib='/usr/share/dist-ai-tests-common/wl-headless-lib.bash'
+fi
+# shellcheck source=../share/dist-ai-tests-common/wl-headless-lib.bash
+source "${wl_headless_lib}"
+
 ran=0
 failed=0
 bg_pids=()
+wl_started=''
 
 # shellcheck disable=SC2317  # body runs only via the EXIT trap
 cleanup() {
@@ -44,6 +54,10 @@ cleanup() {
       kill "${pid}" 2>/dev/null || true
     fi
   done
+  ## Tear down the labwc compositor if the wayland phase brought one up.
+  if [ -n "${wl_started}" ]; then
+    wl_headless_stop
+  fi
 }
 trap cleanup EXIT
 
@@ -125,30 +139,22 @@ run_x11_phase() {
 }
 
 run_wayland_phase() {
-  if ! have_all weston || ! qt_has_wayland_plugin; then
-    printf 'SKIP wayland: needs weston and the Qt wayland plugin\n'
+  if ! have_all labwc || ! qt_has_wayland_plugin; then
+    printf 'SKIP wayland: needs labwc and the Qt wayland plugin\n'
     printf '  install: sudo apt-get install --no-install-recommends %s\n' \
-      'weston qtwayland5'
+      'labwc qtwayland5'
     return 0
   fi
 
-  local runtime_dir
-  runtime_dir="/run/user/$(id --user)"
-  export XDG_RUNTIME_DIR="${runtime_dir}"
-
-  weston --backend=headless --socket="${wayland_socket}" --idle-time=0 \
-    >/dev/null 2>&1 &
-  bg_pids+=("$!")
-
-  local _
-  for _ in $(seq 1 30); do
-    if [ -S "${XDG_RUNTIME_DIR}/${wayland_socket}" ]; then
-      break
-    fi
-    sleep 0.3
-  done
-
-  export WAYLAND_DISPLAY="${wayland_socket}"
+  ## Bring up the shared headless labwc (mints its own private runtime dir, exports
+  ## WAYLAND_DISPLAY, hides the pointer). The harness only needs a real 'wayland' plugin
+  ## target -- no capture -- so no icon theme / output scale.
+  # shellcheck disable=SC2119
+  if ! wl_headless_start; then
+    printf 'SKIP wayland: labwc failed to start a compositor\n'
+    return 0
+  fi
+  wl_started='1'
   export QT_QPA_PLATFORM='wayland'
 
   ran=$((ran + 1))
@@ -157,7 +163,9 @@ run_wayland_phase() {
     failed=$((failed + 1))
   fi
 
-  unset WAYLAND_DISPLAY QT_QPA_PLATFORM
+  unset QT_QPA_PLATFORM
+  wl_headless_stop
+  wl_started=''
 }
 
 sni_run_arm() {

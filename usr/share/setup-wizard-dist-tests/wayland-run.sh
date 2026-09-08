@@ -5,10 +5,12 @@
 
 ## AI-Assisted
 
-## Run a command against a private, headless weston compositor, analogous to
-## xvfb-run for X11. Starts weston with the headless backend on a fresh socket
-## in a private XDG_RUNTIME_DIR, exports WAYLAND_DISPLAY and QT_QPA_PLATFORM,
-## runs the command, then tears down the exact weston pid and the runtime dir.
+## Run a command against a private, headless Wayland compositor (the xvfb-run analogue for
+## Wayland), so a Qt client connects to the real 'wayland' platform plugin. Delegates to the
+## shared wl-headless-run (labwc on WLR_BACKENDS=headless), the single source of the compositor
+## bringup used by the shots capture and the other GUI-test harnesses -- no private weston.
+## --no-autoconfirm: the setup-wizard render probe self-captures via Qt grab() and has no
+## dialog to click, so the input auto-confirm loop is not needed here.
 ##
 ##   wayland-run.sh <command> [args...]
 
@@ -18,59 +20,8 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
-## helper-scripts 'has' for the command-presence check (R-090).
-# shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.bsh
-
-if ! has weston; then
-   printf 'wayland-run.sh: weston is not installed\n' >&2
-   exit 127
-fi
-
-runtime_dir="$(mktemp --directory)"
-chmod 700 "${runtime_dir}"
-export XDG_RUNTIME_DIR="${runtime_dir}"
-
-socket="wayland-swdtest-$$"
-
-## --idle-time=0 keeps the compositor from going idle; the headless backend
-## needs no GPU or display hardware.
-weston --backend=headless-backend.so --socket="${socket}" --idle-time=0 \
-   >"${runtime_dir}/weston.log" 2>&1 &
-weston_pid=$!
-
-cleanup() {
-   ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
-   # shellcheck disable=SC2317
-   kill "${weston_pid}" 2>/dev/null || true
-   # shellcheck disable=SC2317
-   wait "${weston_pid}" 2>/dev/null || true
-   # shellcheck disable=SC2317
-   safe-rm --recursive --force -- "${runtime_dir}"
-}
-trap cleanup EXIT
-
-## Wait for the compositor socket to appear.
-socket_ready="false"
-for _ in $(seq 1 100); do
-   if [ -S "${runtime_dir}/${socket}" ]; then
-      socket_ready="true"
-      break
-   fi
-   sleep 0.1
-done
-
-if [ "${socket_ready}" != "true" ]; then
-   printf 'wayland-run.sh: weston socket did not appear\n' >&2
-   cat "${runtime_dir}/weston.log" >&2 || true
-   exit 1
-fi
-
-export WAYLAND_DISPLAY="${socket}"
-export QT_QPA_PLATFORM="wayland"
-
-## Run the target; its exit code is the script's exit code (cleanup runs on EXIT).
-rc=0
-"$@" || rc=$?
-exit "${rc}"
+here="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+## Last command: its exit code is this script's (no `exec` process-replacement, per R-103).
+"${here}/../dist-ai-tests-common/wl-headless-run" --no-autoconfirm -- "$@"
