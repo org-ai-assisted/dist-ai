@@ -435,6 +435,11 @@ capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
    dest="$1"; wid="$2"; skip_tighten="${3:-}"; tries=0
    while [ "${tries}" -lt 3 ]; do
       if ! capture_window "${dest}" "${wid}"; then
+         ## Leave NO file on failure -- else a stale dest from a prior attempt survives and the
+         ## caller's `[ -f dest ]` check accepts it as a fresh shot. (The still-blank path below
+         ## discards too; this makes capture_settled leave a file ONLY on success, so every
+         ## caller's file-existence guard is valid.)
+         safe-rm --force -- "${dest}" 2>/dev/null || true
          printf '%s\n' "warn: screenshot failed for $(basename -- "${dest}")"
          return 1
       fi

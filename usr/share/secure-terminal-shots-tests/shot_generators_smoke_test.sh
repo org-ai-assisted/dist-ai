@@ -106,8 +106,20 @@ run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/paste.png" paste
 run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
-run_gen 'tooltip-shot' "${work}/tooltip.png" \
-   "${shots_dir}/tooltip-shot.py" "${work}/tooltip.png"
+## The tooltip shot is captured on a REAL headless Wayland compositor (tooltip-capture.sh
+## -> labwc + grim), unlike the offscreen gens above -- so it is OPT-IN: run where labwc +
+## grim are present (the sandbox), skipped in a display-free lane that cannot bring up a
+## compositor. tooltip-capture.sh itself starts labwc; it just needs the two binaries.
+## style-ok: allow-skip: the wayland tooltip capture needs labwc + grim; a display-free lane cannot provide a compositor
+## style-ok: no-has -- self-contained test harness probing for two capture binaries; no helper-scripts sourced here
+tooltip_ran=0
+if command -v labwc >/dev/null 2>&1 && command -v grim >/dev/null 2>&1; then
+   run_gen 'tooltip-capture' "${work}/tooltip.png" \
+      "${shots_dir}/tooltip-capture.sh" "${work}/tooltip.png"
+   tooltip_ran=1
+else
+   printf '%s\n' 'SKIP: tooltip-capture (needs a headless wayland compositor: labwc + grim)'
+fi
 
 ## The largest contiguous run of pure-background rows a tight review shot may contain: the
 ## uniform frame margin plus small inter-element gaps. A dead-space regression (empty pane
@@ -139,9 +151,11 @@ check_tight() {  ## $1=label $2=png
 
 check_tight 'paste-warning-shot (paste)' "${work}/paste.png"
 check_tight 'paste-warning-shot (copy)'  "${work}/copy.png"
-## The tooltip shot composites a HiDPI card grab; a devicePixelRatio slip draws it at half
-## size and leaves a huge terminal-background band (the exact bug this shot hit in review).
-check_tight 'tooltip-shot' "${work}/tooltip.png"
+## The wayland tooltip shot is trimmed tight to the card; a dead-space band would signal a
+## capture/trim regression (e.g. an output-scale slip). Only when the opt-in arm ran.
+if [ "${tooltip_ran}" = 1 ]; then
+   check_tight 'tooltip-capture' "${work}/tooltip.png"
+fi
 
 ## The review shots must SHOW the unicode-revealing render: the editable box, opened in the
 ## keep-printable form, must NAME each hidden look-alike inline (detail mode). A generator
