@@ -1,0 +1,222 @@
+#!/usr/bin/python3 -Bsu
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
+## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
+## which freezes X). Re-exec under python3; inert as a string literal in python3.
+"exec" "python3" "-Bsu" "$0" "$@"
+
+## Dimension guard for the secure-terminal.github.io shot galleries: every <img> that
+## references a gallery asset AND pins width/height in pixels must declare the asset's
+## TRUE intrinsic dimensions. The shots are rendered at 2x device pixels and the page pins
+## the full intrinsic size (the browser downscales for 1x) -- so a stale pin after a
+## re-capture (a window/board/chrome size change) silently ships wrong-aspect, layout-
+## shifting <img> tags. The sibling secure-terminal-shots-inventory checks that references
+## RESOLVE (orphan/dangling); this checks that the pinned PIXELS match. Neither re-renders.
+##
+## Flags, per gallery <img>:
+##   - a MISMATCH: declared width/height != the referenced asset's intrinsic pixels;
+##   - a PARTIAL pin: exactly one of width/height in pixels (a half-pin still shifts layout
+##     and blinds this guard to the other axis).
+## It skips: non-gallery <img> (logos, favicons); a gallery <img> with NO width/height
+## (unpinned -- deliberate responsive use is legitimate; inventory still guards existence);
+## a non-integer dimension ('100%' etc. -- not a pixel pin); a dangling ref (inventory's job).
+##
+## --fix rewrites every drifted/partial gallery pin to the asset's intrinsic dimensions
+## in place (a raw-text edit of the width/height values only; everything else byte-identical).
+## This is what the capture driver runs right after pulling fresh shots into the site, so a
+## re-capture that changes a shot's size can never silently leave a stale pin behind -- the
+## exact drift this guard otherwise only reports. The READ-ONLY guard (no --fix) is the
+## default and is what CI runs.
+##
+## Usage: secure-terminal-shots-dims [--fix] [SITE_DIR]
+##   SITE_DIR defaults to ~/private-sources/secure-terminal.github.io (override with
+##   SECURE_TERMINAL_SITE_REPO). Exit 0 = clean (or --fix applied), 1 = drift found (no --fix),
+##   2 = usage/environment.
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+## An <img> tag: everything up to the first '>' (DOTALL, so a tag wrapped across lines still
+## matches). <img> carries no '>' in its attribute values, so the non-greedy stop is exact.
+_IMG_TAG = re.compile(r'<img\b[^>]*?>', re.DOTALL)
+_SRC_ATTR = re.compile(r'\bsrc\s*=\s*"([^"]*)"')
+_WIDTH_ATTR = re.compile(r'\bwidth\s*=\s*"(\d+)"')
+_HEIGHT_ATTR = re.compile(r'\bheight\s*=\s*"(\d+)"')
+
+## A gallery shot is a terminal window / program output -- hundreds of px. A referenced asset
+## smaller than this in either axis is a FAILED capture (a nothing-mapped grab trims to ~1x1),
+## not a real shot: flag it, and never pin/re-pin to its bogus size (which would let a broken
+## shot pass the guard, as a shipped 1x1 xterm.escape.webp once did). Matches the compositor
+## capture's own degenerate threshold in wl-headless-lib.bash.
+_MIN_SANE_PX = 20
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), os.pardir, 'share', 'secure-terminal-shots'))
+import shots_site_refs as ssr  # noqa: E402  (path set above so both install + checkout resolve)
+
+
+def _pixels(raw):
+    """The RAW width/height attribute as an integer pixel count, or None if it is absent or
+    not a bare integer (so '100%'/'auto' are treated as 'not a pixel pin', not a partial one)."""
+    if raw is None:
+        return None
+    raw = raw.strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _intrinsic(path):
+    """(width, height) of the image via ImageMagick identify, or None if it cannot be read.
+    '%w %h' on the first frame; a bad/corrupt asset -> None (reported as a failure)."""
+    try:
+        result = subprocess.run(
+            ['identify', '-format', '%w %h', path + '[0]'],
+            capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    parts = result.stdout.split()
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def _fix_page(html_path, site):
+    """Rewrite drifted/partial gallery <img> pins in one page to intrinsic dimensions.
+    Returns a list of (rel, 'WxH->WxH') change descriptions; writes the file only if changed."""
+    with open(html_path, encoding='utf-8') as handle:
+        original = handle.read()
+    changes = []
+
+    def repin(match):
+        tag = match.group(0)
+        src = _SRC_ATTR.search(tag)
+        if not src:
+            return tag
+        rel = ssr.resolve_ref(src.group(1), html_path, site)
+        if rel is None or not ssr.in_gallery(rel):
+            return tag
+        fpath = os.path.join(site, rel)
+        if not os.path.isfile(fpath):
+            return tag
+        w = _WIDTH_ATTR.search(tag)
+        h = _HEIGHT_ATTR.search(tag)
+        if not w and not h:
+            return tag  ## unpinned -- leave responsive layout alone
+        intrinsic = _intrinsic(fpath)
+        if intrinsic is None:
+            return tag  ## unreadable -- the guard reports it; do not fabricate a pin
+        cw, ch = intrinsic
+        if cw < _MIN_SANE_PX or ch < _MIN_SANE_PX:
+            return tag  ## degenerate/broken asset -- do NOT pin to its bogus size; the guard flags it
+        old = '%sx%s' % (w.group(1) if w else '-', h.group(1) if h else '-')
+        if w and h:
+            if (int(w.group(1)), int(h.group(1))) == (cw, ch):
+                return tag  ## already correct
+            new_tag = _HEIGHT_ATTR.sub('height="%d"' % ch, _WIDTH_ATTR.sub('width="%d"' % cw, tag, count=1), count=1)
+        elif w:
+            new_tag = _WIDTH_ATTR.sub('width="%d" height="%d"' % (cw, ch), tag, count=1)
+        else:
+            new_tag = _HEIGHT_ATTR.sub('width="%d" height="%d"' % (cw, ch), tag, count=1)
+        changes.append((rel, '%s->%dx%d' % (old, cw, ch)))
+        return new_tag
+
+    updated = _IMG_TAG.sub(repin, original)
+    if updated != original:
+        with open(html_path, 'w', encoding='utf-8') as handle:
+            handle.write(updated)
+    return changes
+
+
+def main():
+    fix = False
+    positional = []
+    for arg in sys.argv[1:]:
+        if arg == '--fix':
+            fix = True
+        else:
+            positional.append(arg)
+    if len(positional) > 1:
+        sys.stderr.write('usage: secure-terminal-shots-dims [--fix] [SITE_DIR]\n')
+        return 2
+    if shutil.which('identify') is None:
+        sys.stderr.write("FATAL: ImageMagick 'identify' is required to read intrinsic dimensions\n")
+        return 2
+    try:
+        site, _present = ssr.resolve_site(positional[0] if positional else None)
+    except ssr.SiteError as exc:
+        sys.stderr.write('FATAL: %s\n' % exc)
+        return 2
+
+    if fix:
+        total = 0
+        for html_path in ssr.iter_html_paths(site):
+            for rel, delta in _fix_page(html_path, site):
+                print('repinned %s: %s' % (rel, delta))
+                total += 1
+        print('ok: repinned %d gallery <img> dimension(s) to match their assets' % total)
+        return 0
+
+    try:
+        pages = ssr.collect_from_pages(site, ssr.ImgDimCollector)
+    except ssr.SiteError as exc:
+        sys.stderr.write('FATAL: %s\n' % exc)
+        return 2
+
+    failures = []
+    checked = 0
+    seen = set()
+    for html_path, collector in pages:
+        for src, w_raw, h_raw in collector.images:
+            rel = ssr.resolve_ref(src, html_path, site)
+            if rel is None or not ssr.in_gallery(rel):
+                continue
+            fpath = os.path.join(site, rel)
+            if not os.path.isfile(fpath):
+                continue  ## dangling reference -- secure-terminal-shots-inventory owns that
+            w = _pixels(w_raw)
+            h = _pixels(h_raw)
+            ## A present-but-non-integer dimension is not a pixel pin -- skip the whole <img>.
+            if (w_raw is not None and w is None) or (h_raw is not None and h is None):
+                continue
+            if w_raw is None and h_raw is None:
+                continue  ## unpinned -- legitimate; not this guard's concern
+            key = (rel, w_raw, h_raw)
+            if key in seen:
+                continue
+            seen.add(key)
+            if w is None or h is None:
+                failures.append('partial dimension pin (need both width+height in px): %s '
+                                '(width=%r height=%r)' % (rel, w_raw, h_raw))
+                continue
+            intrinsic = _intrinsic(fpath)
+            if intrinsic is None:
+                failures.append('cannot read intrinsic dimensions (corrupt/unreadable): %s' % rel)
+                continue
+            if intrinsic[0] < _MIN_SANE_PX or intrinsic[1] < _MIN_SANE_PX:
+                failures.append('degenerate/broken shot (%dx%d -- a failed capture, not a real shot): %s'
+                                % (intrinsic[0], intrinsic[1], rel))
+                continue
+            checked += 1
+            if (w, h) != intrinsic:
+                failures.append('dimension mismatch: %s declares %dx%d but asset is %dx%d'
+                                % (rel, w, h, intrinsic[0], intrinsic[1]))
+
+    if failures:
+        sys.stderr.write('secure-terminal-shots-dims: FAIL (%d)\n' % len(failures))
+        for line in failures:
+            sys.stderr.write('  ' + line + '\n')
+        return 1
+    print('ok: %d pinned gallery <img> dimensions match their assets' % checked)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

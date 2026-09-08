@@ -218,10 +218,20 @@ assert_matches "4310 scrapes the rootfs kernel cmdline via grub-mkconfig" \
 assert_matches "4310 carries the scrape into the live bootappend" \
    'bootappend=.*rootfs_kernel_hardening' "${iso_step}"
 
-## Native-only: a real ISO conversion needs the TARGET-arch loaders on the host, and
-## 1200 installs them for the HOST arch, so 4310 must reject target arch != host arch.
-assert_matches "4310 enforces native arch for a real ISO conversion" \
-   'dist_build_target_arch.*!=.*host_architecture' "${iso_step}"
+## Cross-build: dm-raw-to-iso must source the signed EFI loaders from the TARGET
+## rootfs (correct arch even on a cross-build), NOT the host /usr/lib -- otherwise a
+## cross-arch ISO build fails on the host's wrong-arch loaders. Guards against a
+## regression back to host-sourced loaders (which is what broke cross-build before).
+raw_to_iso="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
+if [ ! -r "${raw_to_iso}" ]; then
+   printf '%s\n' "SKIP: missing source file: ${raw_to_iso}" >&2
+   ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
+   exit 77
+fi
+assert_matches "dm-raw-to-iso sources signed EFI loaders from the target rootfs" \
+   'signed_grub=.*\$\{rootfs\}/usr/lib/grub' "${raw_to_iso}"
+assert_matches "dm-raw-to-iso sources the shim from the target rootfs" \
+   'signed_shim=.*\$\{rootfs\}/usr/lib/shim' "${raw_to_iso}"
 
 ## parse-cmd must reject an ISO --arch the converter cannot build (fail fast, not
 ## ~40 min in and then deep inside dm-raw-to-iso).

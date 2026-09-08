@@ -48,10 +48,11 @@ type -P mksquashfs  >/dev/null 2>&1 || skip "squashfs-tools not installed"
 type -P grub-mkimage >/dev/null 2>&1 || skip "grub-common not installed"
 type -P mkfs.msdos  >/dev/null 2>&1 || skip "dosfstools not installed"
 type -P mcopy       >/dev/null 2>&1 || skip "mtools not installed"
-## The GRUB platform payloads are what dm-raw-to-iso require_file's: their absence
-## is a missing build dependency, not a code fault, so skip rather than FAIL.
-[ -r /usr/lib/grub/i386-pc/cdboot.img ] || skip "grub-pc-bin not installed (no i386-pc BIOS payload)"
-[ -r /usr/lib/grub/x86_64-efi/normal.mod ] || skip "grub-efi-amd64-bin not installed (no x86_64-efi payload)"
+## The GRUB modules + signed EFI loaders now come from the raw image's TARGET rootfs
+## (dm-raw-to-iso sources them from there so a cross-arch build gets the target-arch
+## loaders), NOT the host -- so there is nothing host-side to gate on here. A real
+## Kicksecure raw carries grub-efi-${arch}-signed + shim-signed + the grub -bin
+## package; the tool errors clearly if the image lacks them.
 
 pass=0
 fail=0

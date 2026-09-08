@@ -51,6 +51,30 @@ PYTHON_SHEBANG_BYTES = PYTHON_SHEBANG.encode("ascii")
 ## A basename that IS a python interpreter ('python', 'python3', 'python3.11').
 PYTHON_NAME_RE = re.compile(rb'^python[0-9.]*$')
 
+## The shell-invocation guard: a no-op string-literal statement under python3, but
+## a re-exec under any shell. A python entry point run under a shell ('bash tool')
+## has its shebang ignored and its 'import' line executed as the command 'import'
+## -- ImageMagick's screen grabber, which XGrabServer()s and freezes the GUI. The
+## guard, placed before the first import, makes a shell invocation harmless.
+SHELL_GUARD_LINE = '"exec" "python3" "-Bsu" "$0" "$@"'
+SHELL_GUARD_BLOCK = (
+    "## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`\n"
+    "## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,\n"
+    "## which freezes X). Re-exec under python3; inert as a string literal in python3.\n"
+    + SHELL_GUARD_LINE + "\n\n"
+)
+## A model INVOKES a usr/bin tool by name, so a 'bash <tool>' typo is the realistic
+## trap surface -- and the freeze already happened there. usr/libexec helpers and
+## usr/share test probes are driven by their own harness (python3 X), and the
+## interpreter-invocation PreToolUse guard backstops every location; so this rule
+## is scoped to usr/bin entry points, where it is zero-churn (all already guarded).
+_USR_BIN_ENTRY_RE = re.compile(r'(?:^|/)usr/bin/[^/]+$')
+## A leading string literal is the module docstring; inserting the guard before it
+## would demote __doc__ (some tools pass it to argparse). Detect flags such a file;
+## fix() leaves it for a human to place the guard minding __doc__.
+_DOCSTRING_START = ('"""', "'''", '"', "'", 'r"""', "r'''", 'r"', "r'",
+                    'b"', "b'", 'rb"', "rb'")
+
 NON_ASCII_RE = re.compile(rb'[^\x00-\x7f]')
 ## Trailing blanks before end-of-line: a LF, a CRLF, or a lone trailing CR /
 ## end-of-file. The '\r?' in the end-of-file branch matters -- 'foo  \r' with no
@@ -264,8 +288,90 @@ class PythonShebang(Rule):
             yield Edit(0, end, PYTHON_SHEBANG, "python-shebang")
 
 
+class PythonShellGuard(Rule):
+    """A usr/bin python entry point must carry the shell-invocation guard line
+    before its first import, so running it under a shell ('bash tool') re-execs
+    python3 instead of running its 'import' line as ImageMagick's screen grabber
+    (XGrabServer -> whole-GUI freeze).
+
+    Fires only on a file whose LINE 1 is a python shebang AND which sits directly
+    under a usr/bin directory (the model-invoked entry-point surface). fix() adds
+    the guard automatically -- but only to a file with NO module docstring, where
+    the insertion is unambiguous; a docstring-bearing file is reported (not fixed)
+    so a human places the guard without demoting __doc__. Opts out with the
+    '## style-ok: allow-shell-guard' file waiver (e.g. a deliberate demonstrator)."""
+
+    id = "python-shell-guard"
+    waiver_tag = "allow-shell-guard"
+
+    def applies(self, ctx):
+        if not (super().applies(ctx) and ctx.data is not None
+                and not ctx.is_binary):
+            return False
+        if not _USR_BIN_ENTRY_RE.search(ctx.path or ""):
+            return False
+        first, _end = _first_line_span(ctx.data)
+        return _python_interpreter_shebang(first)
+
+    def _scan(self, source):
+        ## (guard line index, first top-level import line index); either may be
+        ## None. A top-level 'import'/'from' only -- an indented import (inside a
+        ## function) is not the file's first executable statement.
+        guard_index = None
+        import_index = None
+        for index, line in enumerate(source.split("\n")):
+            if guard_index is None and line.strip() == SHELL_GUARD_LINE:
+                guard_index = index
+            if import_index is None and (line.startswith("import ")
+                                         or line.startswith("from ")):
+                import_index = index
+        return guard_index, import_index
+
+    def detect(self, ctx):
+        if ctx.source is None:
+            return
+        guard_index, import_index = self._scan(ctx.source)
+        if guard_index is None:
+            yield model.fail(
+                "python-shell-guard",
+                "python-shell-guard: add the guard line '%s' before the first "
+                "import -- a shell running this file executes its imports as "
+                "commands ('import' is ImageMagick -> XGrabServer -> GUI freeze)"
+                % SHELL_GUARD_LINE,
+                ctx.path, 1)
+        elif import_index is not None and import_index < guard_index:
+            yield model.fail(
+                "python-shell-guard",
+                "python-shell-guard: the guard line must come BEFORE the first "
+                "import (line %d)" % (import_index + 1),
+                ctx.path, guard_index + 1)
+
+    def fix(self, ctx):
+        if ctx.source is None or SHELL_GUARD_LINE in ctx.source:
+            return
+        lines = ctx.source.splitlines(keepends=True)
+        index = 0
+        offset = 0
+        if index < len(lines) and lines[index].startswith("#!"):
+            offset += len(lines[index].encode("utf-8"))
+            index += 1
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if stripped == "" or stripped.startswith("#"):
+                offset += len(lines[index].encode("utf-8"))
+                index += 1
+                continue
+            break
+        ## A module docstring as the first statement: do not auto-insert (it would
+        ## demote __doc__); detect() has already flagged the file for a human.
+        if index < len(lines) and lines[index].lstrip().startswith(_DOCSTRING_START):
+            return
+        yield Edit(offset, offset, SHELL_GUARD_BLOCK, "python-shell-guard")
+
+
 RULES = (
     Confusables(),
     TrailingWhitespace(),
     PythonShebang(),
+    PythonShellGuard(),
 )

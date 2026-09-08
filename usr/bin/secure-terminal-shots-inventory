@@ -20,8 +20,9 @@
 ##     no page references (a hand-added image, or a stale shot left behind after a rename);
 ##   - a DANGLING reference: a page <img>/<a> into a shot gallery whose target file is
 ##     missing (a renamed/deleted shot still referenced).
-## It does NOT re-render or byte-compare shots (deliberately -- that is slow and
-## environment-sensitive); shot CONTENT freshness is the generators' + reviewers' job.
+## It does NOT re-render or byte-compare shots, nor check pixel dimensions (the sibling
+## secure-terminal-shots-dims owns declared-vs-intrinsic dimensions); shot CONTENT
+## freshness is the generators' + reviewers' job.
 ##
 ## Usage: secure-terminal-shots-inventory [SITE_DIR]
 ##   SITE_DIR defaults to ~/private-sources/secure-terminal.github.io (override with
@@ -29,123 +30,36 @@
 
 import os
 import sys
-from html.parser import HTMLParser
-from urllib.parse import unquote
 
-## The galleries this guard owns. A file directly under one of these (recursively) is a
-## "shot" that MUST be referenced; a reference whose resolved path lands under one of these
-## MUST exist.
-GALLERY_DIRS = ('shots', 'comparison/shots', 'compatibility/shots')
-IMAGE_EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.gif', '.svg')
-
-
-class _RefCollector(HTMLParser):
-    """Collect src/href/srcset attribute values (the page's local resource references)."""
-
-    def __init__(self):
-        super().__init__()
-        self.refs = []
-
-    def handle_starttag(self, tag, attrs):
-        for name, value in attrs:
-            if not value:
-                continue
-            if name in ('src', 'href'):
-                self.refs.append(value)
-            elif name == 'srcset':
-                ## srcset is a comma-separated list of "<url> [descriptor]" candidates
-                ## (e.g. 'a.webp 1x, b.webp 2x'); collect each URL, or a shot referenced
-                ## only via srcset (a missing one) is invisible to the dangling-ref guard.
-                for candidate in value.split(','):
-                    fields = candidate.split()
-                    if fields:
-                        self.refs.append(fields[0])
-
-
-def _resolve(ref, html_path, site):
-    """Resolve a page reference to a site-relative POSIX path, or None if it is external
-    or not a local image. Handles a root-absolute ('/a/b.webp') and a relative ('shots/x')
-    reference (relative to the HTML file's own directory), matching how a browser + GitHub
-    Pages serve them."""
-    if ('://' in ref) or ref.startswith('//') or ref.startswith('data:') \
-            or ref.startswith('mailto:') or ref.startswith('#'):
-        return None
-    ## Strip ?query / #fragment BEFORE the extension check: a real image reference can
-    ## carry a cache-buster ('shots/x.webp?v=2') or fragment, which otherwise fails the
-    ## endswith() test -> the reference is dropped, producing a false "orphan shot" (and
-    ## equally hiding a genuine dangling reference that carries a query/fragment).
-    path = ref.split('?', 1)[0].split('#', 1)[0]
-    ## URL-decode before the extension check + file match: a browser requests the DECODED
-    ## path, so a percent-encoded reference ('shots/x%2Ewebp', 'shots/a%20b.webp') otherwise
-    ## fails endswith()/os.path lookup -> a dangling %-encoded ref evades the guard (and a real
-    ## one is mismatched to its file). The '?'/'#' split above uses the RAW delimiters first, so
-    ## an encoded %3F/%23 inside the path is preserved for the browser-equivalent decode here.
-    path = unquote(path)
-    if not path.lower().endswith(IMAGE_EXTS):
-        return None
-    ## normpath BOTH branches: _in_gallery matches by exact prefix, so an un-normalized
-    ## '//' or '/./' in a root-absolute ref (e.g. '/comparison//shots/x.webp') would not
-    ## start with 'comparison/shots/' and be silently excluded from the gallery -> a real
-    ## dangling reference goes unreported (the relative branch already normalized; the
-    ## root-absolute one only lstrip'd).
-    if path.startswith('/'):
-        rel = os.path.normpath(path.lstrip('/'))
-    else:
-        base = os.path.relpath(os.path.dirname(html_path), site)
-        rel = os.path.normpath(os.path.join(base, path))
-    return rel.replace(os.sep, '/')
-
-
-def _in_gallery(rel):
-    return any(rel == d or rel.startswith(d + '/') for d in GALLERY_DIRS)
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), os.pardir, 'share', 'secure-terminal-shots'))
+import shots_site_refs as ssr  # noqa: E402  (path set above so both install + checkout resolve)
 
 
 def main():
     if len(sys.argv) > 2:
         sys.stderr.write('usage: secure-terminal-shots-inventory [SITE_DIR]\n')
         return 2
-    site = (sys.argv[1] if len(sys.argv) == 2
-            else os.environ.get('SECURE_TERMINAL_SITE_REPO')
-            or os.path.expanduser('~/private-sources/secure-terminal.github.io'))
-    site = os.path.abspath(site)
-    if not os.path.isdir(site):
-        sys.stderr.write('FATAL: site checkout not found: %s\n' % site)
-        return 2
-    present_galleries = [d for d in GALLERY_DIRS if os.path.isdir(os.path.join(site, d))]
-    if not present_galleries:
-        sys.stderr.write('FATAL: no shot galleries under %s (expected one of: %s)\n'
-                         % (site, ', '.join(GALLERY_DIRS)))
+    try:
+        site, present_galleries = ssr.resolve_site(sys.argv[1] if len(sys.argv) == 2 else None)
+    except ssr.SiteError as exc:
+        sys.stderr.write('FATAL: %s\n' % exc)
         return 2
 
-    ## Every committed shot file (site-relative POSIX path).
-    shot_files = set()
-    for d in present_galleries:
-        for root, _dirs, names in os.walk(os.path.join(site, d)):
-            for n in names:
-                if n.lower().endswith(IMAGE_EXTS):
-                    rel = os.path.relpath(os.path.join(root, n), site)
-                    shot_files.add(rel.replace(os.sep, '/'))
+    shot_files = ssr.collect_shot_files(site, present_galleries)
 
     ## Every local image reference, resolved to a site-relative path, from every page.
     referenced = set()
-    for root, dirs, names in os.walk(site):
-        if '.git' in dirs:
-            dirs.remove('.git')
-        for n in names:
-            if not n.endswith('.html'):
-                continue
-            html_path = os.path.join(root, n)
-            parser = _RefCollector()
-            try:
-                with open(html_path, encoding='utf-8') as handle:
-                    parser.feed(handle.read())
-            except (OSError, UnicodeDecodeError) as exc:
-                sys.stderr.write('FATAL: cannot read %s: %s\n' % (html_path, exc))
-                return 2
-            for ref in parser.refs:
-                rel = _resolve(ref, html_path, site)
-                if rel is not None:
-                    referenced.add(rel)
+    try:
+        pages = ssr.collect_from_pages(site, ssr.RefCollector)
+    except ssr.SiteError as exc:
+        sys.stderr.write('FATAL: %s\n' % exc)
+        return 2
+    for html_path, parser in pages:
+        for ref in parser.refs:
+            rel = ssr.resolve_ref(ref, html_path, site)
+            if rel is not None:
+                referenced.add(rel)
 
     failures = []
     ## ORPHAN: a shot file no page references.
@@ -153,7 +67,7 @@ def main():
         failures.append('orphan shot (no page references it): %s' % rel)
     ## DANGLING: a reference INTO a gallery whose file is missing.
     for rel in sorted(referenced):
-        if _in_gallery(rel) and rel not in shot_files:
+        if ssr.in_gallery(rel) and rel not in shot_files:
             failures.append('dangling reference (no such shot file): %s' % rel)
 
     if failures:
