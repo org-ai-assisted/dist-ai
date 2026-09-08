@@ -310,7 +310,10 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
 shots_shot_is_blank() {  ## $1=png
    local flat
    [ -s "$1" ] || return 0
-   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '0')"
+   ## FAIL-CLOSED: if convert cannot read the file (a corrupt/truncated grab), treat it as blank
+   ## ('1') so the caller re-grabs/discards it -- never accept an unreadable shot as valid (that
+   ## silent-green shipped a corrupt shot before). Only a readable, genuinely-flat frame is blank.
+   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '1')"
    [ "${flat}" = '1' ]
 }
 

@@ -208,7 +208,11 @@ if [ "${mode}" = 'compat' ]; then
    ## variable FIRST (not inline in the for-list): under errexit a failed --list then
    ## aborts the lane, instead of a `for x in $(failed)` silently looping zero times.
    compat_names="$("${shots_dir}/compat-shot.py" --list)"
-   for name in ${compat_names}; do
+   ## Split the (newline-separated) names into an ARRAY rather than an unquoted word-split, so a
+   ## name is never glob-expanded or re-split. Capture-first (above) keeps the errexit guard.
+   mapfile -t compat_arr <<< "${compat_names}"
+   for name in "${compat_arr[@]}"; do
+      [ -n "${name}" ] || continue
       optimize_to_webp "${out_dir}/${name}.png"
    done
    printf '%s\n' "secure-terminal-shots: wrote compatibility shots to ${out_dir}"
