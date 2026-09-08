@@ -77,6 +77,51 @@ def _pixels(raw):
     return int(raw)
 
 
+## The homepage before/after slider (herocmp-stage) carries an inline aspect-ratio that MUST
+## equal the composed hero image's intrinsic W/H: the slider overlays a WIDTH-scaled base image
+## and a HEIGHT-scaled top image (style.css), so the two layers align ONLY when the stage aspect
+## equals the image aspect. A stale aspect-ratio after a hero re-capture misaligns and clips the
+## slider -- drift the <img>-pin guard cannot see (it is on a <div>, not an <img>). Matched with a
+## SIMPLE match over our own HTML, not a general parser: the stage's start tag, then the
+## aspect-ratio inside it.
+_HERO_STAGE_TAG = re.compile(
+    r'''(?is)<[a-z][^>]*\bclass\s*=\s*(["'])[^"']*\bherocmp-stage\b[^"']*\1[^>]*>''')
+_ASPECT_RATIO = re.compile(r'(?i)(aspect-ratio\s*:\s*)(\d+)(\s*/\s*)(\d+)')
+
+
+def _hero_target_dims(img_srcs, html_path, site):
+    """Intrinsic (w, h) of the composed hero image referenced on this page (a gallery hero-*.webp
+    -- the compose_hero_slider output naming), or None. The slider's base + top images share one
+    size, so any one is the aspect target."""
+    for src in img_srcs:
+        base = os.path.basename(src.split('?', 1)[0].split('#', 1)[0])
+        if not base.startswith('hero-'):
+            continue
+        rel = ssr.resolve_ref(src, html_path, site)
+        if rel is None or not ssr.in_gallery(rel):
+            continue
+        fpath = os.path.join(site, rel)
+        if not os.path.isfile(fpath):
+            continue
+        intrinsic = _intrinsic(fpath)
+        if intrinsic and intrinsic[0] >= _MIN_SANE_PX and intrinsic[1] >= _MIN_SANE_PX:
+            return intrinsic
+    return None
+
+
+def _hero_stage_aspect(text):
+    """(start, end, (w, h)) of the herocmp-stage's `aspect-ratio:W/H` within the page text, or
+    None if the page has no such stage / aspect-ratio. [start:end] spans just the declaration."""
+    tag = _HERO_STAGE_TAG.search(text)
+    if not tag:
+        return None
+    ar = _ASPECT_RATIO.search(tag.group(0))
+    if not ar:
+        return None
+    return (tag.start() + ar.start(), tag.start() + ar.end(),
+            (int(ar.group(2)), int(ar.group(4))))
+
+
 def _intrinsic(path):
     """(width, height) of the image via ImageMagick identify, or None if it cannot be read.
     '%w %h' on the first frame; a bad/corrupt asset -> None (reported as a failure)."""
@@ -196,10 +241,21 @@ def _fix_page(html_path, site):
     for start, end, new_raw, rel, delta in sorted(edits, key=lambda e: e[0], reverse=True):
         text = text[:start] + new_raw + text[end:]
         changes.append((rel, delta))
+    changes.reverse()  ## report in document order
+    ## Also re-pin the herocmp-stage aspect-ratio to the composed hero image's intrinsic W/H (see
+    ## the module note): the slider aligns only when they match, and it is drift the <img> guard
+    ## cannot see. Run on the post-img-edit text so the offsets are fresh.
+    aspect = _hero_stage_aspect(text)
+    if aspect is not None:
+        a_start, a_end, cur = aspect
+        target = _hero_target_dims([hit[2] for hit in collector.hits], html_path, site)
+        if target is not None and target != cur:
+            text = text[:a_start] + ('aspect-ratio:%d/%d' % target) + text[a_end:]
+            changes.append(('herocmp-stage', 'aspect-ratio %d/%d->%d/%d'
+                            % (cur[0], cur[1], target[0], target[1])))
     if changes:
         with open(html_path, 'w', encoding='utf-8') as handle:
             handle.write(text)
-    changes.reverse()  ## report in document order
     return changes
 
 
@@ -276,6 +332,21 @@ def main():
             if (w, h) != intrinsic:
                 failures.append('dimension mismatch: %s declares %dx%d but asset is %dx%d'
                                 % (rel, w, h, intrinsic[0], intrinsic[1]))
+        ## herocmp-stage aspect-ratio must equal the composed hero image's W/H (see module note);
+        ## a stale value misaligns/clips the slider -- drift the <img> pins above cannot show.
+        try:
+            with open(html_path, encoding='utf-8') as handle:
+                page_text = handle.read()
+        except OSError:
+            page_text = ''
+        aspect = _hero_stage_aspect(page_text)
+        if aspect is not None:
+            _s, _e, cur = aspect
+            target = _hero_target_dims([img[0] for img in collector.images], html_path, site)
+            if target is not None and target != cur:
+                failures.append('herocmp-stage aspect-ratio %d/%d does not match the hero image '
+                                '%dx%d (the slider will misalign)'
+                                % (cur[0], cur[1], target[0], target[1]))
 
     if failures:
         sys.stderr.write('secure-terminal-shots-dims: FAIL (%d)\n' % len(failures))

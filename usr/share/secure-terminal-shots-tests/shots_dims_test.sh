@@ -290,6 +290,35 @@ HTML
 rc=0; "${tool}" "${qsite}" >/dev/null 2>&1 || rc=$?
 check '--fix repins a single-quoted pin (guard clean after)' "${rc}" 0
 
+## herocmp-stage aspect-ratio must equal the composed hero image's intrinsic W/H: the slider's
+## width-scaled base and height-scaled overlay (style.css) align ONLY when they match, so a stale
+## aspect-ratio after a hero re-capture misaligns/clips the slider -- drift on a <div>, invisible
+## to the <img> pin guard. The check catches it and --fix repins it (what the driver runs).
+arsite="${work}/arsite"
+mkdir --parents -- "${arsite}/comparison/shots"
+mkshot "${arsite}/comparison/shots/hero-secure.webp" 1394x779
+mkshot "${arsite}/comparison/shots/hero-traditional.webp" 1394x779
+cat > "${arsite}/index.html" <<'HTML'
+<!doctype html><html><body>
+<div class="herocmp-stage" style="aspect-ratio:1394/779">
+<img src="/comparison/shots/hero-traditional.webp" width="1394" height="779" alt="base">
+<img src="/comparison/shots/hero-secure.webp" width="1394" height="779" alt="top">
+</div>
+</body></html>
+HTML
+rc=0; "${tool}" "${arsite}" >/dev/null 2>&1 || rc=$?
+check 'a herocmp-stage aspect-ratio matching the hero image passes' "${rc}" 0
+## stale aspect-ratio (the old value after a hero re-capture changed the size) -> must FAIL.
+sed -i 's#aspect-ratio:1394/779#aspect-ratio:1396/737#' "${arsite}/index.html"
+rc=0; "${tool}" "${arsite}" >/dev/null 2>&1 || rc=$?
+check 'a stale herocmp-stage aspect-ratio is caught' "${rc}" 1
+## --fix rewrites the aspect-ratio to the hero image dims; the guard is then clean.
+"${tool}" --fix "${arsite}" >/dev/null 2>&1 || true
+rc=0; grep --fixed-strings --quiet 'aspect-ratio:1394/779' "${arsite}/index.html" || rc=1
+check '--fix repins the herocmp-stage aspect-ratio to the hero image' "${rc}" 0
+rc=0; "${tool}" "${arsite}" >/dev/null 2>&1 || rc=$?
+check '--fix leaves the aspect-ratio guard clean' "${rc}" 0
+
 ## 2. LIVE: the real site checkout, when present, must have matching pins.
 live=''
 for cand in \
