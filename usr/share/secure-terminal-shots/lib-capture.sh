@@ -380,6 +380,15 @@ shots_install_icon_theme() {  ## $1 = XDG_DATA_HOME target dir
          "${th}/${sz}x${sz}/apps/secure-terminal.png" 2>/dev/null || true
    done
    gtk-update-icon-cache -f "${th}" 2>/dev/null || true
+   ## labwc maps a window to its titlebar icon by app-id/WM_CLASS -> a matching .desktop's
+   ## Icon= -> the icon theme. Install secure-terminal's .desktop (StartupWMClass=secure-terminal,
+   ## Icon=secure-terminal) so labwc can complete that mapping for the ST window; the emulators'
+   ## .desktops are already in /usr/share/applications from their packages.
+   local st_desktop="${ST_REPO}/usr/share/applications/secure-terminal.desktop"
+   if [ -f "${st_desktop}" ]; then
+      mkdir --parents -- "${data_home}/applications"
+      cp -- "${st_desktop}" "${data_home}/applications/secure-terminal.desktop"
+   fi
 }
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place

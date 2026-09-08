@@ -487,6 +487,40 @@ finally:
     os.environ['XDG_CONFIG_HOME'] = _kb_o_cfg if _kb_o_cfg is not None else _kb_dir
 APP.processEvents()
 
+# #11 (the other collision direction): an EARLY-bound override colliding with a LATER
+# action's DEFAULT -- the later default stands and the earlier override is reverted (new_tab
+# binds before terminate, so terminate's Ctrl+Shift+K default reverts the new_tab override).
+with open(os.path.join(_kb_dir, 'secure-terminal.d', '50_kb.conf'), 'w', encoding='utf-8') as _kh:
+    _kh.write('keybindings=new_tab=Ctrl+Shift+K\n')
+_kb_o_cfg2 = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = _kb_dir
+try:
+    _kbw2 = MainWindow()
+    eq(_kbw2.act_terminate.shortcut().toString(), 'Ctrl+Shift+K',
+       '#11: a later built-in default stands; the earlier colliding override is reverted')
+    ok(_kbw2.act_new.shortcut().toString() != 'Ctrl+Shift+K',
+       '#11: the earlier new_tab override reverts off the collided chord')
+    _kbw2.deleteLater()
+finally:
+    os.environ['XDG_CONFIG_HOME'] = _kb_o_cfg2 if _kb_o_cfg2 is not None else _kb_dir
+APP.processEvents()
+
+# coverage: the tab-chrome helpers are safe no-ops in a degenerate state (defensive guards).
+_tt_orig = QApplication.instance
+QApplication.instance = staticmethod(lambda: None)
+try:
+    win._apply_tooltip_style('dark')                    # no QApplication instance -> no-op
+    ok(True, '_apply_tooltip_style is a no-op with no QApplication instance')
+finally:
+    QApplication.instance = _tt_orig
+_fc_orig = win.current
+win.current = lambda: M.QWidget()                       # a placeholder, not a SecureTerminal
+try:
+    win._focus_current_terminal()                       # current() not a real terminal -> no-op
+    ok(True, '_focus_current_terminal is a no-op when current() is not a terminal')
+finally:
+    win.current = _fc_orig
+
 # --- switching tabs focuses the terminal (no second click needed) -------------
 # Regression: _sync_chrome_to_tab did not focus the newly-current terminal, so a
 # QTabWidget switch left focus on the tab bar -- the tab was visible but typing
