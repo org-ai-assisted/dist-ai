@@ -54,9 +54,15 @@ cleanup() {
 }
 
 main() {
-   local out="${1:-}" theme="${2:-dark}" probe mapped=0 _i
+   local out="${1:-}" theme="${2:-dark}" probe mapped=0 _i rc
    if [ -z "${out}" ]; then
       printf '%s\n' 'tooltip-capture: no output file' >&2
+      return 2
+   fi
+   ## Default DARK (the deployed shot shows the dark-mode themed tooltip); reject any other
+   ## value rather than silently defaulting, so a typo'd theme fails loud not wrong-themed.
+   if [ "${theme}" != 'dark' ] && [ "${theme}" != 'light' ]; then
+      printf '%s\n' "tooltip-capture: invalid theme '${theme}' (want dark|light)" >&2
       return 2
    fi
 
@@ -79,15 +85,25 @@ main() {
    ## frame is degenerate (nothing mapped yet), so wait for the tip to actually map first.
    probe="$(mktemp --suffix=.png)"
    for _i in $(seq 1 40); do
-      if wl_headless_capture_window "${probe}" 2>/dev/null; then
+      rc=0
+      wl_headless_capture_window "${probe}" || rc="$?"
+      if [ "${rc}" = 0 ]; then
          mapped=1
          break
+      fi
+      ## rc 2 = degenerate (tip not mapped yet) -> retry. Anything else is PERMANENT
+      ## (127 grim absent, 1 grim/convert failure) -> fail fast with the real cause rather
+      ## than polling 10s and blaming a non-existent window-mapping problem.
+      if [ "${rc}" != 2 ]; then
+         safe-rm --force -- "${probe}" 2>/dev/null || true
+         printf '%s\n' "tooltip-capture: capture command failed (wl_headless_capture_window rc=${rc}; grim/imagemagick missing or broken)" >&2
+         return 1
       fi
       sleep 0.25
    done
    safe-rm --force -- "${probe}" 2>/dev/null || true
    if [ "${mapped}" != 1 ]; then
-      printf '%s\n' 'tooltip-capture: tip never mapped' >&2
+      printf '%s\n' 'tooltip-capture: tip never mapped (timed out waiting for the wayland window)' >&2
       return 1
    fi
 

@@ -43,7 +43,7 @@ os.environ['QT_QPA_PLATFORM'] = 'wayland'
 
 from PyQt6.QtWidgets import QApplication, QWidget      # noqa: E402
 from PyQt6.QtGui import QFont, QPainter, QColor, QPen  # noqa: E402
-from PyQt6.QtCore import Qt, QRectF                    # noqa: E402
+from PyQt6.QtCore import Qt, QRectF, QTimer            # noqa: E402
 
 from secure_terminal.main import InfoTip, _TIP_COLORS  # noqa: E402
 from secure_terminal.sanitize import OSC_FEATURES      # noqa: E402
@@ -86,7 +86,16 @@ class _Card(QWidget):
 
 
 def main(argv):
-    theme = argv[1] if len(argv) >= 2 and argv[1] in ('dark', 'light') else 'dark'
+    # Default DARK: the deployed site shot shows the dark-mode themed tooltip -- the
+    # dark-on-dark readability this shot demonstrates. light is available for callers that
+    # want it. An out-of-set theme string is a caller error, not a silent dark fallback.
+    if len(argv) >= 2:
+        if argv[1] not in ('dark', 'light'):
+            sys.stderr.write("tooltip-shot: invalid theme %r (want dark|light)\n" % argv[1])
+            return 2
+        theme = argv[1]
+    else:
+        theme = 'dark'
     try:
         zoom = int(argv[2]) if len(argv) >= 3 else 100
     except (TypeError, ValueError):
@@ -117,6 +126,12 @@ def main(argv):
     app.processEvents()
 
     signal.signal(signal.SIGTERM, lambda *_a: app.quit())
+    # A Python signal handler runs only BETWEEN bytecodes, but app.exec() blocks in Qt's
+    # C++ event loop -- so pump the interpreter periodically for the pending SIGTERM to be
+    # delivered (the capture orchestrator SIGTERMs this helper once the shot is taken).
+    _pump = QTimer()
+    _pump.timeout.connect(lambda: None)
+    _pump.start(150)
     sys.stderr.write('tooltip-shot: mapped %dx%d theme=%s\n' % (host.width(), host.height(), theme))
     return app.exec()
 
