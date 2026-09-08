@@ -306,8 +306,9 @@ try:
     ok(_fits, 'settings dialog opens tall enough to show content (no default scroll)')
 
     win._paste_delay = 3
-    _dialogs.clear()
-    # every dialog's descriptive text must be selectable so it can be copied
+    # every dialog's descriptive text must be selectable so it can be copied.
+    # (asserts the settings dialog opened just above, still in _dialogs -- do NOT
+    # clear _dialogs here or this loop runs over an empty list and never checks.)
     from PyQt6.QtWidgets import QLabel as _QLabelD           # noqa: E402
     from PyQt6.QtCore import Qt as _QtD                      # noqa: E402
     _seld = _QtD.TextInteractionFlag.TextSelectableByMouse
