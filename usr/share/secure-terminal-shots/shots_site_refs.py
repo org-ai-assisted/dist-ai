@@ -67,13 +67,22 @@ class ImgDimCollector(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag != 'img':
             return
-        d = dict(attrs)
-        src = d.get('src')
+        ## FIRST occurrence of each attribute, not dict(attrs) (which keeps the LAST): on a
+        ## duplicate width/height the browser lays out with the FIRST per HTML5, so the guard
+        ## must judge the pin the browser actually uses.
+        src = width = height = None
+        for name, value in attrs:
+            if name == 'src' and src is None:
+                src = value
+            elif name == 'width' and width is None:
+                width = value
+            elif name == 'height' and height is None:
+                height = value
         if not src:
             ## srcset-only <img> carries no single intrinsic target to pin against; the
             ## inventory guard covers its existence, this guard skips it.
             return
-        self.images.append((src, d.get('width'), d.get('height')))
+        self.images.append((src, width, height))
 
     def handle_startendtag(self, tag, attrs):
         ## self-closing '<img .../>' -- HTMLParser routes it here, not to handle_starttag.
