@@ -194,5 +194,39 @@ assert_matches "config.cfg sources the theme" \
 assert_matches "config.cfg selects the graphical terminal" \
    '^terminal_output gfxterm$' "${config_file}"
 
+######################################################################
+## ISO-build integrity the menu template cannot express: structural (source)
+## guards on build-steps.d/4310 and help-steps/parse-cmd, complementing the runtime
+## boot-leg checks in dm-image-boot-tests. Absent files -> SKIP (same contract).
+######################################################################
+iso_step="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
+parse_cmd_file="${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd"
+for f in "${iso_step}" "${parse_cmd_file}"; do
+   if [ ! -r "${f}" ]; then
+      printf '%s\n' "SKIP: missing source file: ${f}" >&2
+      ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
+      exit 77
+   fi
+done
+
+## Kernel hardening: 4310 must scrape the rootfs 'linux' cmdline (grub-mkconfig) and
+## carry it into the live bootappend, or the ISO boots UNHARDENED. dm-image-boot-tests
+## asserts the runtime effect on the ISO legs; this catches a 4310 regression at the
+## fast local gate.
+assert_matches "4310 scrapes the rootfs kernel cmdline via grub-mkconfig" \
+   'chroot_run grub-mkconfig' "${iso_step}"
+assert_matches "4310 carries the scrape into the live bootappend" \
+   'bootappend=.*rootfs_kernel_hardening' "${iso_step}"
+
+## Native-only: a real ISO conversion needs the TARGET-arch loaders on the host, and
+## 1200 installs them for the HOST arch, so 4310 must reject target arch != host arch.
+assert_matches "4310 enforces native arch for a real ISO conversion" \
+   'dist_build_target_arch.*!=.*host_architecture' "${iso_step}"
+
+## parse-cmd must reject an ISO --arch the converter cannot build (fail fast, not
+## ~40 min in and then deep inside dm-raw-to-iso).
+assert_matches "parse-cmd gates ISO builds to the converter's arch set" \
+   'amd64\|arm64\|armhf\)' "${parse_cmd_file}"
+
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]
