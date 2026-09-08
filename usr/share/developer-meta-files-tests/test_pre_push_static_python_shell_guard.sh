@@ -145,6 +145,35 @@ guarded='#!/usr/bin/python3 -Bsu
 
 import os
 '
+## ai-review canaries (all reproduced against the shipped rule):
+## #1 guard text only inside a docstring is inert prose, not the guard statement.
+docguard='#!/usr/bin/python3 -Bsu
+
+"""demonstrates the guard pattern:
+'"${guard_line}"'
+in prose."""
+import os
+'
+## #2 a ;-joined import before the guard still runs first under a shell.
+semi='#!/usr/bin/python3 -Bsu
+
+x = 1; import os
+'"${guard_line}"'
+import sys
+'
+## #4 a prefixed / parenthesized string is still a module docstring.
+udoc='#!/usr/bin/python3 -Bsu
+
+u"""Module docstring."""
+import os
+'
+paren='#!/usr/bin/python3 -Bsu
+
+("""Module docstring.""")
+import os
+'
+## #3 a non-UTF-8 usr/bin entry point (stray 0xff) still needs the guard checked.
+badutf8=$'#!/usr/bin/python3 -Bsu\n\n## invalid utf8: \xff\ncmd = 1\nimport os\n'
 
 ## -- --check: flagged / spared -------------------------------------------------
 expect_flag 'usr/bin no-guard no-doc flagged' 'usr/bin/tool_a' "${nodoc}" present
@@ -198,6 +227,14 @@ if [ -z "${guard_ln}" ] || [ -z "${import_ln}" ] || [ "${guard_ln}" -ge "${impor
       "${guard_ln:-none}" "${import_ln:-none}" >&2
    failures=$((failures + 1))
 fi
+
+## -- regression canaries for the ai-review findings (must fail on the pre-fix rule) --
+expect_flag 'guard only in docstring not counted' 'usr/bin/rf_docguard' "${docguard}" present
+expect_flag 'semicolon import before guard flagged' 'usr/bin/rf_semi' "${semi}" present
+expect_flag 'non-utf8 missing guard flagged' 'usr/bin/rf_badutf8' "${badutf8}" present
+expect_flag 'u-string docstring flagged (no guard)' 'usr/bin/rf_udoc' "${udoc}" present
+expect_guard 'u-string docstring NOT auto-guarded' 'usr/bin/rf_udoc_fix' "${udoc}" absent
+expect_guard 'parenthesized docstring NOT auto-guarded' 'usr/bin/rf_paren_fix' "${paren}" absent
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_python_shell_guard: ${failures} failure(s)" >&2

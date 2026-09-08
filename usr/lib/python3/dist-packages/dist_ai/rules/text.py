@@ -12,6 +12,7 @@ The detect/fix asymmetry is real and preserved: detect() reports ANY non-ASCII
 byte; fix() rewrites only the KNOWN confusable table (an intentional UTF-8
 fixture is never silently mangled), so a residual non-ASCII still blocks."""
 
+import ast
 import re
 
 from dist_ai import model
@@ -57,6 +58,11 @@ PYTHON_NAME_RE = re.compile(rb'^python[0-9.]*$')
 ## -- ImageMagick's screen grabber, which XGrabServer()s and freezes the GUI. The
 ## guard, placed before the first import, makes a shell invocation harmless.
 SHELL_GUARD_LINE = '"exec" "python3" "-Bsu" "$0" "$@"'
+## The single string value python sees for the guard (adjacent literals
+## concatenated): the guard is DETECTED as a top-level string-expression
+## statement holding this value -- so guard text sitting in a comment or a
+## docstring is NOT mistaken for the real statement.
+SHELL_GUARD_VALUE = ast.literal_eval(SHELL_GUARD_LINE)
 SHELL_GUARD_BLOCK = (
     "## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`\n"
     "## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,\n"
@@ -69,11 +75,6 @@ SHELL_GUARD_BLOCK = (
 ## interpreter-invocation PreToolUse guard backstops every location; so this rule
 ## is scoped to usr/bin entry points, where it is zero-churn (all already guarded).
 _USR_BIN_ENTRY_RE = re.compile(r'(?:^|/)usr/bin/[^/]+$')
-## A leading string literal is the module docstring; inserting the guard before it
-## would demote __doc__ (some tools pass it to argparse). Detect flags such a file;
-## fix() leaves it for a human to place the guard minding __doc__.
-_DOCSTRING_START = ('"""', "'''", '"', "'", 'r"""', "r'''", 'r"', "r'",
-                    'b"', "b'", 'rb"', "rb'")
 
 NON_ASCII_RE = re.compile(rb'[^\x00-\x7f]')
 ## Trailing blanks before end-of-line: a LF, a CRLF, or a lone trailing CR /
@@ -289,16 +290,18 @@ class PythonShebang(Rule):
 
 
 class PythonShellGuard(Rule):
-    """A usr/bin python entry point must carry the shell-invocation guard line
-    before its first import, so running it under a shell ('bash tool') re-execs
-    python3 instead of running its 'import' line as ImageMagick's screen grabber
-    (XGrabServer -> whole-GUI freeze).
+    """A usr/bin python entry point must carry the shell-invocation guard as a
+    top-level statement before its first import, so running it under a shell
+    ('bash tool') re-execs python3 instead of running its 'import' line as
+    ImageMagick's screen grabber (XGrabServer -> whole-GUI freeze).
 
     Fires only on a file whose LINE 1 is a python shebang AND which sits directly
-    under a usr/bin directory (the model-invoked entry-point surface). fix() adds
-    the guard automatically -- but only to a file with NO module docstring, where
-    the insertion is unambiguous; a docstring-bearing file is reported (not fixed)
-    so a human places the guard without demoting __doc__. Opts out with the
+    under a usr/bin directory (the model-invoked entry-point surface). Presence and
+    ordering are judged from the PARSED module, so guard text in a comment or
+    docstring is not mistaken for the real statement and a ';'-joined (or otherwise
+    non-line-leading) import is still seen. fix() inserts the guard only into a file
+    with NO module docstring (unambiguous, no __doc__ to demote); a docstring-
+    bearing or unparseable file is reported for a human. Opts out with the
     '## style-ok: allow-shell-guard' file waiver (e.g. a deliberate demonstrator)."""
 
     id = "python-shell-guard"
@@ -313,42 +316,75 @@ class PythonShellGuard(Rule):
         first, _end = _first_line_span(ctx.data)
         return _python_interpreter_shebang(first)
 
-    def _scan(self, source):
-        ## (guard line index, first top-level import line index); either may be
-        ## None. A top-level 'import'/'from' only -- an indented import (inside a
-        ## function) is not the file's first executable statement.
-        guard_index = None
-        import_index = None
-        for index, line in enumerate(source.split("\n")):
-            if guard_index is None and line.strip() == SHELL_GUARD_LINE:
-                guard_index = index
-            if import_index is None and (line.startswith("import ")
-                                         or line.startswith("from ")):
-                import_index = index
-        return guard_index, import_index
+    @staticmethod
+    def _is_guard_stmt(node):
+        ## A bare string-expression statement whose value is the guard's -- NOT the
+        ## same text sitting in a comment or docstring, which is not this node.
+        return (isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and node.value.value == SHELL_GUARD_VALUE)
+
+    def _positions(self, source):
+        ## (guard-statement line, first top-level import line) from the PARSED
+        ## module; either may be None. 1-based ast linenos. Raises on a syntax error.
+        tree = ast.parse(source)
+        guard_line = import_line = None
+        for node in tree.body:
+            if guard_line is None and self._is_guard_stmt(node):
+                guard_line = node.lineno
+            if import_line is None and isinstance(node, (ast.Import, ast.ImportFrom)):
+                import_line = node.lineno
+        return guard_line, import_line
+
+    def _absent(self, ctx):
+        return model.fail(
+            "python-shell-guard",
+            "python-shell-guard: add the guard line '%s' as the first statement "
+            "(before any import) -- a shell running this file executes its imports "
+            "as commands ('import' is ImageMagick -> XGrabServer -> GUI freeze)"
+            % SHELL_GUARD_LINE,
+            ctx.path, 1)
 
     def detect(self, ctx):
         if ctx.source is None:
+            ## Non-decodable text cannot be parsed; only the guard's ABSENCE is
+            ## decidable from raw bytes, and a missing guard reading as clean is the
+            ## case worth catching. Flag it, else stay quiet.
+            if SHELL_GUARD_LINE.encode("utf-8") not in ctx.data:
+                yield self._absent(ctx)
             return
-        guard_index, import_index = self._scan(ctx.source)
-        if guard_index is None:
+        try:
+            guard_line, import_line = self._positions(ctx.source)
+        except (SyntaxError, ValueError):
+            ## Unparseable python has bigger problems; a raw check still flags a
+            ## missing guard (ordering is not decidable without a parse).
+            if SHELL_GUARD_LINE not in ctx.source:
+                yield self._absent(ctx)
+            return
+        if guard_line is None:
+            yield self._absent(ctx)
+        elif import_line is not None and import_line < guard_line:
             yield model.fail(
                 "python-shell-guard",
-                "python-shell-guard: add the guard line '%s' before the first "
-                "import -- a shell running this file executes its imports as "
-                "commands ('import' is ImageMagick -> XGrabServer -> GUI freeze)"
-                % SHELL_GUARD_LINE,
-                ctx.path, 1)
-        elif import_index is not None and import_index < guard_index:
-            yield model.fail(
-                "python-shell-guard",
-                "python-shell-guard: the guard line must come BEFORE the first "
-                "import (line %d)" % (import_index + 1),
-                ctx.path, guard_index + 1)
+                "python-shell-guard: the guard must come BEFORE the first import "
+                "(line %d)" % import_line,
+                ctx.path, guard_line)
 
     def fix(self, ctx):
-        if ctx.source is None or SHELL_GUARD_LINE in ctx.source:
+        if ctx.source is None:
             return
+        try:
+            tree = ast.parse(ctx.source)
+        except (SyntaxError, ValueError):
+            return  ## unparseable -> leave for a human
+        if any(self._is_guard_stmt(node) for node in tree.body):
+            return  ## already guarded
+        ## A module docstring (any prefix / parenthesized form) as the first
+        ## statement: inserting ahead of it would demote __doc__ -- leave it for a
+        ## human; detect() still flags it.
+        if ast.get_docstring(tree, clean=False) is not None:
+            return
+        ## Insert after the shebang + contiguous leading comment/blank lines.
         lines = ctx.source.splitlines(keepends=True)
         index = 0
         offset = 0
@@ -362,10 +398,6 @@ class PythonShellGuard(Rule):
                 index += 1
                 continue
             break
-        ## A module docstring as the first statement: do not auto-insert (it would
-        ## demote __doc__); detect() has already flagged the file for a human.
-        if index < len(lines) and lines[index].lstrip().startswith(_DOCSTRING_START):
-            return
         yield Edit(offset, offset, SHELL_GUARD_BLOCK, "python-shell-guard")
 
 
