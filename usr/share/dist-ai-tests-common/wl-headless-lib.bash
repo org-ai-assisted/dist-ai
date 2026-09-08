@@ -307,11 +307,17 @@ wl_headless_capture_window() {
       return 1
    }
    safe-rm --force -- "${full}"
-   ## Degenerate (a few px in either dimension) means nothing mapped -- report it.
+   ## Degenerate (a few px in either dimension) means nothing mapped -- report it, and REMOVE the
+   ## degenerate outfile. Trim of an all-black (nothing-rendered) grab collapses to ~1x1; leaving
+   ## that file behind lets a later blanket step (comparison-capture's --optimize-only webp-converts
+   ## every shots/*.png) publish a 1x1 "shot". Deleting it means a never-mapped window yields NO
+   ## file -> the caller's discard/retry sees the miss, and a persistently-missing shot fails LOUD
+   ## (the driver's missing-shot check) instead of shipping a degenerate placeholder.
    local dims w h
    dims="$(identify -format '%w %h' "${outfile}" 2>/dev/null || printf '0 0')"
    w="${dims% *}"; h="${dims#* }"
    if [ "${w:-0}" -lt 20 ] || [ "${h:-0}" -lt 20 ]; then
+      safe-rm --force -- "${outfile}" 2>/dev/null || true
       return 2
    fi
    return 0
