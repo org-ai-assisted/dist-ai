@@ -140,9 +140,12 @@ if [ "${#boot_test_missing[@]}" -eq 0 ]; then
    printf '%s\n' "${BASH_SOURCE[0]}: all runtime dependencies already installed; skipping apt." >&2
 else
    printf '%s\n' "${BASH_SOURCE[0]}: installing missing dependencies: ${boot_test_missing[*]}" >&2
-   sudo --non-interactive -- apt-get-noninteractive update
-   sudo --non-interactive -- apt-get-noninteractive install --yes --no-install-recommends \
-      -- "${boot_test_missing[@]}"
+   ## Plain apt-get, not the helper-scripts apt-get-noninteractive wrapper: this
+   ## runs in the derivative-maker build container where that wrapper is not on
+   ## sudo's PATH (and would itself source helper-scripts libs absent there).
+   sudo --non-interactive -- env DEBIAN_FRONTEND=noninteractive apt-get update
+   sudo --non-interactive -- env DEBIAN_FRONTEND=noninteractive apt-get install \
+      --yes --no-install-recommends -- "${boot_test_missing[@]}"
 fi
 
 script_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
