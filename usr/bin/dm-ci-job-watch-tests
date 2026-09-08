@@ -1,0 +1,60 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the dm-ci-job-watch regression suite. dm-ci-job-watch reduces a commit's
+## GitHub check-runs to one build-lane verdict; the suite drives the REAL state
+## reducer (dm-ci-job-watch-state.py) with crafted check-runs JSON and asserts the
+## newest check-suite decides -- so a stale prior run on the same head-sha cannot
+## report a fresh, still-running build as already failed. No network, no root.
+## Works installed (tests under /usr/share/dm-ci-job-watch-tests) or from a git
+## checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-ci-job-watch-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-ci-job-watch-tests"
+else
+   tests_dir='/usr/share/dm-ci-job-watch-tests'
+fi
+
+## Run every *_test.sh in the suite. Exit 77 means SKIP (missing tooling) and does
+## not count as a failure; any other non-zero exit is a failure. Overall exit is
+## non-zero iff at least one test failed.
+shopt -s nullglob
+failures=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+  printf '\nFAILED: %s dm-ci-job-watch test script(s) failed\n' "${failures}" >&2
+  exit 1
+fi
+printf '\nOK: all dm-ci-job-watch test scripts passed\n'
+exit 0
