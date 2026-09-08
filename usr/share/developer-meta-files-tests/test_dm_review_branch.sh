@@ -389,6 +389,75 @@ else
    pass 'no raw ref name leaks to the terminal (set -x is off)'
 fi
 
+## 12) review_prompt_or_die's rc >= 2 (scan-could-not-run) path, reached via a ref that
+## RESOLVES to a commit but has NO new commits vs HEAD. dm-review-branch now pins the ref to an
+## immutable commit up front (case 13), so a NONEXISTENT ref (case 7) fails at that resolve step
+## BEFORE the scan runs -- it no longer exercises review_prompt_or_die's rc >= 2 handling. A
+## "no new commits" ref does: check-ref-commits-for-unicode exits 2 ('No new commits'), which must
+## fail closed with the real error, never a spoofing prompt. Reviewing master while ON master is
+## exactly that (HEAD..master is empty).
+nonew_out="${work}/nonew-out"
+rc=0
+( cd -- "${repo}" && setsid dm-review-branch master ) </dev/null >"${nonew_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'reviewing a ref with no new commits should fail (non-zero), but it exited 0'
+elif [ "${rc}" -lt 2 ]; then
+   fail "a no-new-commits scan error must exit >= 2 (not the rc-1 detection code), got ${rc}"
+elif grep --ignore-case --quiet -- 'continue the review anyway' "${nonew_out}"; then
+   fail 'a no-new-commits scan error triggered a pointless continue-prompt'
+else
+   pass 'review_prompt_or_die rc >= 2: a no-new-commits scan error fails closed, no spoofing prompt'
+fi
+
+## 13) TOCTOU: dm-review-branch must resolve the ref to an IMMUTABLE commit ONCE and drive every
+## step from it, so a concurrent 'git fetch' moving the ref (the primary caller reviews a
+## refs/remotes/<remote>/<branch>) between the scan and the minutes-long git-meld/git-kdiff3
+## windows cannot display commits that were never scanned. Simulate the move from a stubbed
+## scanner and assert the display step receives the ORIGINAL tip's COMMIT ID -- not the ref name,
+## which re-resolves to the moved tip. Fails on the pre-fix code (display got "...${ref-name}").
+toctou_dir="${work}/toctou-bin"
+mkdir -p "${toctou_dir}"
+scan_arg_file="${work}/toctou-scan-arg"
+meld_arg_file="${work}/toctou-meld-arg"
+orig_tip="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+## Stubbed content scanner: record the arg it was handed, then MOVE feature to master (a
+## DIFFERENT commit) -- the concurrent-fetch simulation -- and report clean.
+cat > "${toctou_dir}/check-ref-commits-for-unicode" <<STUB
+#!/bin/bash
+printf '%s\n' "\${1}" > "${scan_arg_file}"
+git -C "${repo}" branch --force -- feature master
+exit 0
+STUB
+## Name scan: clean.
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${toctou_dir}/check-ref-names-for-unicode"
+## Stubbed display sink: record the range git-meld receives.
+cat > "${toctou_dir}/git-meld" <<STUB
+#!/bin/bash
+printf '%s\n' "\${1}" > "${meld_arg_file}"
+exit 0
+STUB
+chmod +x "${toctou_dir}/check-ref-commits-for-unicode" \
+   "${toctou_dir}/check-ref-names-for-unicode" "${toctou_dir}/git-meld"
+rc=0
+( cd -- "${repo}" \
+   && PATH="${toctou_dir}:${work}/bin:${DMF_REPO}/usr/bin:${PATH}" setsid dm-review-branch feature ) \
+   </dev/null >/dev/null 2>&1 || rc="$?"
+## Restore feature for any later use.
+git -C "${repo}" branch --force -- feature "${orig_tip}" >/dev/null 2>&1 || true
+meld_arg="$(cat "${meld_arg_file}" 2>/dev/null || printf '')"
+scan_arg="$(cat "${scan_arg_file}" 2>/dev/null || printf '')"
+if [ "${rc}" != 0 ]; then
+   fail "TOCTOU canary: a clean review should exit 0, got ${rc}"
+elif [ "${meld_arg}" = "...feature" ]; then
+   fail 'TOCTOU: git-meld got the ref NAME, which re-resolves to the moved tip (content never scanned)'
+elif [ "${meld_arg}" != "...${orig_tip}" ]; then
+   fail "TOCTOU: git-meld range '${meld_arg}' is not the immutable tip resolved at invocation '...${orig_tip}'"
+elif [ "${scan_arg}" != "${orig_tip}" ]; then
+   fail "TOCTOU: the scan saw '${scan_arg}', not the immutable tip '${orig_tip}' the display uses"
+else
+   pass 'TOCTOU: scan and display both see the immutable commit resolved at invocation, not the movable ref name'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
