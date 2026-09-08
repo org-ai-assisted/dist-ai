@@ -3064,26 +3064,76 @@ finally:
 # --- session persistence + quit/close handlers --------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
 win.clear_saved_session()
-_o_qapp_quit = QApplication.quit
+_o_sig_close = M._signal_close_windows
 try:
-    _quit_calls = []
-    QApplication.quit = lambda *_a, **_k: _quit_calls.append(1)
-    win._force_close = False                 # handler must flip this before quit
-    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM handlers
+    _sig_close_calls = []
+    M._signal_close_windows = lambda _app: _sig_close_calls.append(_app)
+    win._force_close = False                 # crash-safe path must NOT force-close
+    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM/SIGHUP handlers
     import signal as _sig2
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
         _h(_sig2.SIGINT, None)              # fire the handler
-    # The quit is QUEUED (QTimer.singleShot), not synchronous: it must NOT have
-    # fired yet -- that is exactly what lets a signal arriving before exec() still
-    # be honored. The event loop then delivers it.
-    ok(not _quit_calls, 'signal-quit handler does not call app.quit synchronously')
+    # The close is QUEUED (QTimer.singleShot), not synchronous: it must NOT have
+    # run yet -- that is exactly what lets a signal arriving before exec() still be
+    # honored, and what keeps the confirm modal off the teardown path. CANARY: the
+    # old handler force-closed here (set _force_close, queued app.quit) so a stray
+    # SIGTERM/SIGHUP killed a running program with no confirmation.
+    ok(not _sig_close_calls, 'signal handler defers the close (does not run it synchronously)')
+    ok(win._force_close is False,
+       'signal handler no longer force-closes -- the crash-safe confirm path runs instead')
     APP.processEvents()
-    ok(_quit_calls, 'signal-quit handler queues app.quit (honored once the loop runs)')
-    ok(win._force_close is True,
-       'signal-quit handler force-closes windows so teardown skips the modal')
+    ok(_sig_close_calls == [APP],
+       'signal handler queues the live-loop window close (honored once the loop runs)')
+    # A second signal while a close is already pending does NOT stack another (the
+    # mocked close never clears app._signal_close_pending, mimicking a prompt still up).
+    _sig_close_calls.clear()
+    if callable(_h):
+        _h(_sig2.SIGINT, None)
+    APP.processEvents()
+    ok(not _sig_close_calls, 'a second signal while a close is pending is ignored (no stacked prompt)')
 finally:
-    QApplication.quit = _o_qapp_quit
+    M._signal_close_windows = _o_sig_close
+    APP._signal_close_pending = False        # do not leave the global handler wedged
+
+# _signal_close_windows itself: a terminate signal runs each window's NORMAL close,
+# so a running program is CONFIRMED (crash-safe: the modal runs on the live loop),
+# never force-closed. A fake app drives it so the sweep does not tear down sibling
+# test windows. (canary: old code bypassed the confirm on any signal.)
+class _SigFakeApp:
+    def __init__(self, windows):
+        self._windows = windows
+        self._signal_close_pending = True    # set by the real handler before deferring
+        self.quit_calls = 0
+    def topLevelWidgets(self):
+        return self._windows
+    def quit(self):
+        self.quit_calls += 1
+
+_sigw = MainWindow()
+_sigw.set_persist_session(False)
+_sigw.clear_saved_session()
+_sigw._confirm_close = True                   # arm the confirm-on-close prompt
+_sig_shut = []
+for _i in range(_sigw.tabs.count()):
+    _sigw.tabs.widget(_i).has_foreground_program = lambda: True
+    _sigw.tabs.widget(_i).shutdown = lambda: _sig_shut.append(True)
+_sig_asked = []
+QMessageBox.question = staticmethod(lambda *_a, **_k: (_sig_asked.append(1), _No)[1])
+_fa = _SigFakeApp([_sigw])
+M._signal_close_windows(_fa)
+ok(_sig_asked and not _sig_shut and _fa.quit_calls == 0 and _sigw._force_close is False,
+   'a signal-driven close runs the confirm; a veto keeps the window (no force-close, no quit)')
+ok(_fa._signal_close_pending is False, 'the signal-close guard re-arms after the prompt resolves')
+QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
+M._signal_close_windows(_fa)
+ok(_sig_shut, 'a confirmed signal-driven close proceeds to shut the window down')
+_fa_empty = _SigFakeApp([])
+M._signal_close_windows(_fa_empty)
+ok(_fa_empty.quit_calls == 1 and _fa_empty._signal_close_pending is False,
+   'a signal with no windows left honors the terminate by quitting')
+_sigw.deleteLater()
+APP.processEvents()
 
 # _quiet_font_warnings installs a message handler that drops the font-db noise
 M._quiet_font_warnings()
