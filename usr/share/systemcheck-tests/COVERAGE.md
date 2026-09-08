@@ -49,6 +49,7 @@ Map of what the suite exercises and where the gaps are. Run everything with:
 | check_tor_enabled           | yes | yes | -   | isolated: enabled / disabled + templatevm skip |
 | check_qubes_network_interface | yes | yes | yes | isolated: 6 branches (ok / daemon-fail / invalid-ip / netvm-unset / netvm-ok / templatevm skip) |
 | check_qubes_vm_type         | yes | yes | -   | isolated: gateway/workstation ok + wrong-type + machine no-op |
+| check_kernel_hardening_cmdline | yes | yes | -   | isolated: all-present / all-missing / each-token-individually-missing / substring-collision / qubes-info / empty-cmdline-info / verbose gating |
 
 ## Coverage gaps (ranked)
 
