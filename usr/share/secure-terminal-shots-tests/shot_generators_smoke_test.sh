@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Regression: the headless offscreen shot generators (hero-shot.py, display-modes-shot.py,
+## Regression: the headless offscreen shot generators (display-modes-shot.py,
 ## paste-warning-shot.py, tooltip-shot.py) must RUN, not just parse. The shell capture tests never import them,
 ## so a stale reference left by a rename -- e.g. paste-warning-shot.py calling a renamed
 ## `_dark_palette` -- is a runtime NameError that no other test catches and that silently
@@ -45,7 +45,7 @@ for cand in \
    "${script_dir}/../secure-terminal-shots" \
    "${script_dir}/../../share/secure-terminal-shots" \
    '/usr/share/secure-terminal-shots'; do
-   if [ -n "${cand}" ] && [ -d "${cand}" ] && [ -f "${cand}/hero-shot.py" ]; then
+   if [ -n "${cand}" ] && [ -d "${cand}" ] && [ -f "${cand}/display-modes-shot.py" ]; then
       shots_dir="$(readlink --canonicalize -- "${cand}")"
       break
    fi
@@ -100,8 +100,6 @@ run_gen() {  ## $1=label $2=output $3...=argv (first is the +x generator, called
    fi
 }
 
-run_gen 'hero-shot'          "${work}/hero.png" \
-   "${shots_dir}/hero-shot.py" "${work}/hero.png"
 run_gen 'display-modes-shot' "${work}/modes.png" \
    "${shots_dir}/display-modes-shot.py" "${work}/modes.png"
 run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
@@ -110,12 +108,6 @@ run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
 run_gen 'tooltip-shot' "${work}/tooltip.png" \
    "${shots_dir}/tooltip-shot.py" "${work}/tooltip.png"
-## zoom-shot.py sweeps the font-zoom levels and grabs the LIVE TUI grid at each (the
-## white-band diagnostic). It writes one PNG per level into a DIR (not a single file),
-## so smoke it with a two-level sweep and check the per-level file exists. Its output
-## PATH is the dir; the checked file is one level inside it.
-run_gen 'zoom-shot' "${work}/zoom/zoom-100.png" \
-   "${shots_dir}/zoom-shot.py" "${work}/zoom" 100 200
 
 ## The largest contiguous run of pure-background rows a tight review shot may contain: the
 ## uniform frame margin plus small inter-element gaps. A dead-space regression (empty pane

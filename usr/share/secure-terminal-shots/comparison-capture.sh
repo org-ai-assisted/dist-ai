@@ -570,13 +570,12 @@ shots_rc_dropin_remove() {  ## $1=drop-in path
    return 0
 }
 
-## zoom-live: the REAL-GUI counterpart to the offscreen zoom-shot.py diagnostic. Launch
-## secure-terminal ONCE as the group PRIMARY (so `secure-terminal ctl` can reach it), with a
-## full-screen TUI board, then step the font zoom LIVE via `ctl zoom` against the SAME running
-## instance -- NO restart between levels -- screenshotting the real decorated window at each. This
-## is the definitive test the offscreen zoom-shot.py cannot be: it proves, on the real app, that
-## the horizontal scrollbar stays suppressed on the grid and no mid-screen white band appears as
-## the grid re-lays-out under a live zoom. Writes zoom-live-<pct>.png into ${out}.
+## zoom-live: the REAL-GUI white-band/scrollbar diagnostic. Launch secure-terminal ONCE as the
+## group PRIMARY (so `secure-terminal ctl` can reach it), with a full-screen TUI board, then step
+## the font zoom LIVE via `ctl zoom` against the SAME running instance -- NO restart between levels
+## -- screenshotting the real decorated window at each. On the real app (unlike an offscreen widget
+## grab) it proves the horizontal scrollbar stays suppressed on the grid and no mid-screen white
+## band appears as the grid re-lays-out under a live zoom. Writes zoom-live-<pct>.png into ${out}.
 zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    local level st_pgf st_flagf st_transcript st_wdog stwid st_win_w st_win_h st_cmd rc_dir dropin
    local st_tab_line st_tab_id failures shots level_padded zoom_out_file zoom_result reap_pgid
