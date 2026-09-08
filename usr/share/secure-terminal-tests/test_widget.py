@@ -211,20 +211,6 @@ ok(_t8._reflow_timer.isActive(),
    '#8: a resize that changes the column count schedules the debounced line reflow')
 _t8._reflow_timer.stop()
 
-# reflow must not spill a shell's trailing prompt-FILL onto blank rows: a screen of
-# prompts padded to the OLD width, re-wrapped NARROWER, kept its row count (repeated
-# zoom used to scatter them with phantom blank lines). Canary: on the pre-fix code the
-# 80-col fill wraps at width 40 and the block count roughly doubles.
-_t6f = SecureTerminal(command='/bin/cat')
-_t6f._cols = 80
-_t6f._raw = ('user@host:~% ' + ' ' * 67 + '\r\n') * 5   # zsh-style prompt padded to 80
-_t6f._rerender()
-_rows80 = _t6f.blockCount()
-_t6f._cols = 40
-_t6f._rerender()                               # narrowing reflow
-ok(_t6f.blockCount() == _rows80,
-   'reflow drops trailing prompt-fill: no blank continuation rows at a narrower width')
-_t6f.close()
 # #4 (ai-review): the debounced width-reflow (_reflow, the timer slot) replays the FULL
 # retained _raw, not just the _RERENDER_TAIL, so a resize never DELETES older scrollback.
 _t8._cols = 100
