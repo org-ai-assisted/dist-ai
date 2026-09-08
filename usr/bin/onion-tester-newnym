@@ -5,6 +5,11 @@
 
 ## AI-Assisted
 
+## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
+## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
+## which freezes X). Re-exec under python3; inert as a string literal in python3.
+"exec" "python3" "-Bsu" "$0" "$@"
+
 ## Signal NEWNYM on the CI Tor control port so the next onion-tester attempt
 ## is an INDEPENDENT trial rather than a replay of the previous one.
 ##
