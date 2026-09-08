@@ -10,9 +10,9 @@
 
 ## style-ok: allow-python-interpreter -- external tool path (corpus reproduce.py)
 
-## Shared hostile-DATA contract for the secure-terminal comparison capture tools:
-## comparison-capture.sh (pure X11, ImageMagick import) and wayland-capture.sh
-## (native Wayland, grim). Sourced, never executed -- defines functions only.
+## Shared hostile-DATA contract for the secure-terminal comparison capture tool
+## comparison-capture.sh (native headless Wayland, grim). Sourced, never executed --
+## defines functions only.
 ##
 ## Deliberately kept HERE, in dist-ai, next to its two consumers rather than
 ## reusing private-ai-config's headless-capture backends: the sandbox that runs these
@@ -74,7 +74,7 @@ shots_random_seed=0
 ## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
 ## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
 ## both the installed tree and a source checkout. Resolve it by that path: a DIRECT
-## comparison-capture.sh / wayland-capture.sh run has no wrapper to prime PATH, so a bare
+## comparison-capture.sh run has no wrapper to prime PATH, so a bare
 ## name would resolve only when usr/bin happens to be on PATH -- and fail AFTER the whole
 ## capture. BASH_SOURCE[0] is the absolute path both entry points source us by.
 shots_image_optimize="$(dirname -- "${BASH_SOURCE[0]}")/../../bin/image-optimize"

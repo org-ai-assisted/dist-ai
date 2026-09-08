@@ -5,11 +5,11 @@ committed generators. To update a shot, RE-RUN the generator; nothing is
 hand-drawn. Each generator captures a PNG and then losslessly converts it to
 `.webp` (via the shipped `image-optimize --webp`), because the site references
 the shots as `.webp`; a regenerated shot therefore lands already optimized. One
-entry point drives both:
+entry point drives every lane:
 
-    secure-terminal-shots [review|comparison|comparison-wayland] [ARGS...]
+    secure-terminal-shots [review|comparison|clipboard|...] [ARGS...]
 
-Both resolve a secure-terminal checkout from `SECURE_TERMINAL_REPO` (or a default
+They resolve a secure-terminal checkout from `SECURE_TERMINAL_REPO` (or a default
 under `~/private-sources`).
 
 ## review (default) -> the site's `shots/` - the paste/copy review bar
@@ -21,31 +21,33 @@ deterministic, no display). Generator: `paste-warning-shot.py <out.png>
 
 ## comparison -> the site's `comparison/shots/` - real terminals
 
-`comparison-capture.sh` feeds two hostile byte streams to a set of Debian
-terminal emulators AND to secure-terminal, under a nested `labwc` compositor (the
-wlroots compositor LXQt ships) on the host X server, with the Clearlooks Openbox
-theme - so an OSC-0 title hijack shows in the same real, themed title bar it would
-on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
-`comparison/shots/`. **Needs an X server + labwc**, so run it in a sandbox.
+`comparison-capture.sh` feeds hostile byte streams to a set of Debian terminal
+emulators AND to secure-terminal, under a PRIVATE headless `labwc` compositor
+(`WLR_BACKENDS=headless` + `WLR_RENDERER=pixman` -- software, no GPU, no host X
+server), and screenshots each window with `grim`. The toolkit terminals and
+secure-terminal run as NATIVE Wayland clients; the three X11-only emulators
+(`xterm`/`urxvt`/`st`) run under labwc's own Xwayland. labwc draws the same real,
+themed server-side title bar on EVERY window -- so an OSC-0 title hijack shows in
+that bar as it would on a real desktop. It writes to its own `shots/`; copy those
+to the site's `comparison/shots/`. Needs NO host X server; run it in a sandbox.
 
-    # install the emulators + compositor (this repo installs nothing itself):
+    # install the compositor + capture tools + emulators (this repo installs nothing itself):
     sudo apt install --no-install-recommends \
       xterm rxvt-unicode stterm konsole gnome-terminal xfce4-terminal mate-terminal \
       lxterminal qterminal alacritty kitty \
-      labwc openbox xdotool wmctrl x11-utils x11-xserver-utils imagemagick
+      labwc wlr-randr grim wtype imagemagick papirus-icon-theme
 
-    # then, on a machine with an X server on $DISPLAY:
+    # then, anywhere (no display needed -- labwc brings up its own headless output):
     SECURE_TERMINAL_REPO=/path/to/secure-terminal secure-terminal-shots comparison
 
 ### Running it in a sandbox
 
-- The host dev VM has no compositor/WM tooling: add `labwc openbox wmctrl` to the
-  apt line above.
-- `labwc` nests on the sandbox's X server (`WLR_BACKENDS=x11`, set by the harness);
-  it only needs a real `$DISPLAY` (defaults to `:0`).
-- Direct run, bypassing the wrapper:
+- `secure-terminal-shots-sandbox comparison` is the forget-proof driver: it fresh-syncs the
+  secure-terminal / dist-ai / terminal-poc-corpus trees into temp-claude, preflights the capture
+  stack, runs the lane there, and pulls the shots back into the site.
+- Direct run, bypassing the wrapper (no display required):
 
-      ST_REPO=/path/to/secure-terminal DISPLAY=:0 ALLOW_SKIP=1 ./comparison-capture.sh
+      ST_REPO=/path/to/secure-terminal ALLOW_SKIP=1 ./comparison-capture.sh
 
   `ALLOW_SKIP=1` authorizes a LOGGED skip of a missing emulator (or of
   secure-terminal); without it a missing one is a hard error, because an incomplete
@@ -58,45 +60,43 @@ on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
   error, so unreadable `confusables.json` degrades SILENTLY: the Cyrillic byte drops
   out of the `confusable` class (rose) into plain `nonascii` (purple) and the
   homoglyph shots are subtly wrong with no warning.
-- Fetching the PNGs back out: `qube-ctl pull REMOTE LOCAL_DIR` treats the 2nd arg as
-  a DIRECTORY (files land in `LOCAL_DIR/<basename-of-REMOTE>/`) and MERGES into an
-  existing target. Pull into a FRESH empty dir, or stale shots from an earlier run
-  contaminate the set.
 - Reaping: each terminal + the secure-terminal GUI runs in its OWN session (setsid) and is
   reaped by the recorded PGID (`kill -- -PGID`), with a per-capture `SHOT_DEADLINE` (default
-  90s) watchdog. The GUI runs as `python3 .../secure-terminal`, so it is NEVER reaped by name
-  (`pkill -x secure-terminal` misses it; `pkill -x python3` would hit unrelated GUIs). Orphans
-  from a crashed run are marker-scoped (the run's unique mktemp dir, in every spawned argv);
-  a startup pre-clean reaps the prior run, and `secure-terminal-shots --cleanup` reaps leftovers
-  by hand. Discovery/sweep uses `safe-pgrep` / `safe-pkill` only -- their absence HARD-FAILS.
+  90s) watchdog. The GUI runs as `python3 .../secure-terminal` (its shebang), so it is NEVER
+  reaped by name (`pkill -x secure-terminal` misses it; `pkill -x python3` would hit unrelated
+  GUIs). Orphans from a crashed run are marker-scoped (the run's unique mktemp dir, in every
+  spawned argv -- the emulators via `--rcfile`, the GUI via the `SHOTS_RUN_MARKER` env); a
+  startup pre-clean reaps the prior run, and `secure-terminal-shots --cleanup` reaps leftovers by
+  hand. Discovery/sweep uses `safe-pgrep` / `safe-pkill` only -- their absence HARD-FAILS.
 
 ### Why comparison-capture.sh does what it does
 
-X11 path only. `wayland-capture.sh` prints the prompt itself and runs the command via
-`sh -c`, so the typing and cwd items below do not apply to it.
-
-- Keymap: `xdotool type` mangles symbols (`/` arrives as `&`) unless `setxkbmap us`
-  runs on the Xwayland display. A newly connecting Xwayland client resets the keymap,
-  so `inject()` re-applies it before EVERY injection, not once at startup.
-- cwd: each emulator is launched from the harness's private `${HOME}` by `cd`-ing in
-  the LAUNCHER, so a typed `cat crafted.payload` resolves. Keep `cd` OUT of the rcfile
-  (`.strc`) -- the shell inside secure-terminal sees a different `$HOME`, would walk
-  away from the payload logs, and `cat crafted.payload` would fail under a caption
-  claiming a hijack that never happened.
-- qterminal: ignores `-geometry` and opens MAXIMIZED, ignoring a plain resize.
-  `shoot()` special-cases it -- `wmctrl -b remove,maximized_vert,maximized_horz`, then
-  `xdotool windowsize 720 <h>` (`<h>` is the case's resize height). Window SELECTION is
-  not special-cased: `find_window()` picks the largest new non-baseline window for every
-  emulator.
-- Under labwc the random stream does not shrink or kill windows, so all 10 emulators
-  yield a random shot too. A generic post-injection rescue still resizes any window
-  left narrower than 300px.
-- Window height is CASE-AWARE. The short cases run at 84x24 (kitty/qterminal at their
-  prior pixel heights) so their shots -- and the committed on-page `<img>` dimensions --
-  do not move. Only `tui-showcase` runs taller (84x32; kitty/qterminal/ST resized up),
-  because its board paints ~26 lines on the alternate screen and would otherwise scroll
-  its title bar off the top. `launch()`/`shoot()` take the case; the ST loop picks
-  `st_win_h` per case. `tighten_deadspace` trims each shot back to its own content.
+- Locale: the emulators launch under `LC_ALL=C.UTF-8` (C collation, UTF-8 encoding). The harness
+  runs under `LC_ALL=C` for deterministic payload BYTE generation, but a terminal must render
+  those bytes as UTF-8 or the unicode attacks show as mojibake -- and, critically, the X11 trio
+  (xterm/urxvt/st) SILENTLY EXIT under a non-UTF-8 locale (no window, no error).
+- Injection: `wtype` drives the compositor's virtual keyboard, delivered to the focused window
+  (native Wayland and Xwayland alike); labwc focuses the single window we just mapped. No keymap
+  dance and no window-id needed. secure-terminal is driven instead by `ctl send-text --submit`
+  (a real remote-control command) so the payload runs even without keyboard focus.
+- cwd: each emulator is launched from the harness's private `${HOME}` by `cd`-ing in the LAUNCHER
+  so a typed `cat crafted.payload` resolves. Keep `cd` OUT of the rcfile (`.strc`).
+- Sizing: native Wayland has no external post-launch resize. Grid-honouring emulators (konsole
+  `-p`, alacritty `-o`, kitty px, the Xwayland trio `-geometry`) size from their launch flags;
+  the maximizing / geometry-ignoring ones (qterminal, and the GTK/VTE xfce4/mate/gnome) are pinned
+  on MAP by a labwc `<windowRule><action name="ResizeTo">` keyed on their app-id (`set_window_rule`
+  rewrites rc.xml + reconfigures labwc). secure-terminal is sized the same way (app-id
+  `secure-terminal`).
+- Favicon: the shots pass NO window-identity flag to secure-terminal. It sets its own Wayland
+  app-id (`secure-terminal`, via `setDesktopFileName`) idiomatically, which labwc resolves through
+  the Papirus theme -> hicolor -> the shipped `secure-terminal.svg`. Stamping a per-run temp path
+  on `--class`/`--name` (the old reaping-marker trick) would become the app-id and force labwc's
+  generic fallback, so the marker rides the `SHOTS_RUN_MARKER` env instead. `favicon_appid_test`
+  guards this.
+- Window height is CASE-AWARE. The short cases keep their prior heights so their committed on-page
+  `<img>` dimensions do not move; only `tui-showcase` runs taller (its board paints ~26+ lines and
+  would otherwise scroll its title bar off). `tighten_deadspace` trims each shot back to its own
+  content.
 
 ### The payloads (inputs to the comparison)
 
@@ -126,15 +126,13 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   not a corpus detection payload.
 
 These cases (the payload command + which corpus PoC supplies its bytes) are defined
-ONCE in `lib-capture.sh`, sourced by both comparison generators - the X11
-`comparison-capture.sh` and the native-Wayland `wayland-capture.sh` - so the cases
-cannot drift between them. The attack bytes are NOT hand-written here: they are
-reproduced from the `terminal-poc-corpus` (single source of truth, canary-forked and
-harness-verified) via its `tools/reproduce.py`, so that checkout must ALSO be synced
-into the sandbox (resolved from `CORPUS_REPO` or a default under `~/private-sources`;
-a missing corpus is a logged SKIP). Only the page-facing `notify` demo and the
-`random` case are generated inline. The compositor/grab pipeline stays per-generator;
-that is why they do NOT reuse private-ai-config's generic `headless-capture`.
+ONCE in `lib-capture.sh`, sourced by `comparison-capture.sh`, so they cannot drift. The
+attack bytes are NOT hand-written here: they are reproduced from the `terminal-poc-corpus`
+(single source of truth, canary-forked and harness-verified) via its `tools/reproduce.py`,
+so that checkout must ALSO be synced into the sandbox (resolved from `CORPUS_REPO` or a
+default under `~/private-sources`; a missing corpus is a logged SKIP). Only the page-facing
+`notify` demo and the `random` case are generated inline. The compositor/grab pipeline stays
+in this generator; that is why it does NOT reuse private-ai-config's generic `headless-capture`.
 
 ### What you should see
 
@@ -150,27 +148,26 @@ the shot. Caption it honestly -- the other emulators leave the hijacked title st
 
 ## Notes / gotchas
 
-Three non-obvious things about `comparison-capture.sh` worth knowing before you touch it:
+A few non-obvious things about `comparison-capture.sh` + its shared bringup worth knowing:
 
-- **labwc bringup is detected by window ID, not name.** labwc's wlroots x11-backend
-  output window carries no `WM_NAME` over a nested Xvfb (wlroots cannot set it -- the
-  `BadAtom` warnings in `labwc.log`; observed with labwc 0.8 / wlroots 0.18), so an
-  `xdotool search --name` never matches and the wait would time out ("labwc did not
-  start"). `start_labwc` enumerates root's child windows by ID (`host_child_windows`,
-  via `xwininfo -root -children`) instead -- name-independent.
-- **Every shot is captured at `SHOT_SCALE`x device resolution (default 2, i.e. HiDPI).**
-  It drives: X-client fonts via `Xft.dpi`, the secure-terminal Qt GUI via `QT_SCALE_FACTOR`, kitty's own font
-  DPI, the labwc title-bar font, and every hardcoded pixel geometry (through `px()`). The
-  character GRID (cols x rows) is unchanged -- only pixels-per-cell double. A 1x shot was
-  blurry once the browser upscaled it on a HiDPI display (the raster, not webp
-  compression: shots are lossless VP8L); the rest of the site was already 2x-source.
-- **A blank/black grab is never shipped.** The emulator pass runs a sequential re-capture
-  net (PHASE 1.5) that re-shoots any shot the parallel `--jobs` lanes left missing (a
-  discarded blank leaves no file). Per shot, `capture_settled` retries a blank grab before
-  returning, and `st_wait_render_settled` waits for a REAL settle (two consecutive matching
-  grabs, wall-clock bounded under `SHOT_DEADLINE`) so a slow row-by-row board is not grabbed
-  half-drawn. A spec that never renders is discarded with a `warn`, never emitted as black,
-  and any prior good shot is left intact.
+- **The compositor bringup is the shared `wl-headless-lib.bash`** (in
+  `dist-ai-tests-common`): it starts `labwc WLR_BACKENDS=headless`, discovers the new Wayland
+  socket and labwc's Xwayland display (by mtime, robust to stale sockets), installs a BLANK
+  Xcursor (so a stray pointer never defeats the trim), points labwc at the Papirus icon theme, and
+  raises the output to `SHOT_SCALE` via `wlr-randr`. `grim` grabs the whole output; a 1px black
+  border + `-trim` crops exactly to the single window (labwc's default theme draws no shadow).
+- **Every shot is captured at `SHOT_SCALE`x device resolution (default 2, i.e. HiDPI).** This is
+  applied ONCE, at the source: the headless OUTPUT is set to scale `SHOT_SCALE`, so native Wayland
+  clients AND labwc's SSD title bar render at 2x automatically, and labwc scales its Xwayland
+  clients the same. No per-client scale env (`px()` is the identity). The character GRID (cols x
+  rows) is unchanged -- only pixels-per-cell double. A 1x shot was blurry once a browser upscaled
+  it on a HiDPI display (the raster, not webp compression: shots are lossless VP8L).
+- **A blank/black grab is never shipped.** The emulator pass runs a sequential re-capture net that
+  re-shoots any shot the parallel `--jobs` lanes left missing (a discarded blank leaves no file).
+  Per shot, `capture_settled` retries a blank grab before returning, and `st_wait_render_settled`
+  waits for a REAL settle (two consecutive matching grabs, wall-clock bounded under `SHOT_DEADLINE`)
+  so a slow row-by-row board is not grabbed half-drawn. A spec that never renders is discarded with
+  a `warn`, never emitted as black, and any prior good shot is left intact.
 
 ## Related
 

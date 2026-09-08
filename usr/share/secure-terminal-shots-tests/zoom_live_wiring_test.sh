@@ -84,18 +84,17 @@ if ! declare -F zoom_live_capture >/dev/null 2>&1; then
    exit 1
 fi
 
-## A fake secure-terminal CLI: records every `ctl ...` invocation. zoom_live_capture calls it as
-## `env VAR=val python3 "${st_bin}" ctl <args>`, so a python3 on PATH that logs its args (dropping
-## the leading st_bin path) captures exactly the ctl subcommands issued.
+## A fake secure-terminal CLI (this IS st_bin): records every `ctl ...` invocation. zoom_live_capture
+## calls it DIRECTLY as `env VAR=val "${st_bin}" ctl <args>` (via its shebang, NOT wrapped in a bare
+## python3), so an executable at st_bin that logs its args captures exactly the ctl subcommands.
 ctl_log="${work}/ctl.log"
 true > "${ctl_log}"
-mkdir --parents -- "${work}/bin"
-cat > "${work}/bin/python3" <<PY
+st_bin="${work}/fake-st"
+cat > "${st_bin}" <<PY
 #!/bin/bash
-## args: <st_bin> ctl <subcmd...>; drop the st_bin path, log the rest. ZL_STUB_MODE drives the
-## failure scenarios: 'no-tab' makes 'ctl ls' return nothing; 'ctl-ls-fail' makes 'ctl ls' EXIT
-## NONZERO; 'zoom-fail' makes every 'ctl zoom' exit nonzero; anything else is the happy path.
-shift || true
+## args: ctl <subcmd...>; log them. ZL_STUB_MODE drives the failure scenarios: 'no-tab' makes
+## 'ctl ls' return nothing; 'ctl-ls-fail' makes 'ctl ls' EXIT NONZERO; 'zoom-fail' makes every
+## 'ctl zoom' exit nonzero; anything else is the happy path.
 printf '%s\n' "\$*" >> "${ctl_log}"
 zl_mode="\${ZL_STUB_MODE:-ok}"
 case "\$1 \$2" in
@@ -129,8 +128,7 @@ case "\$1 \$2" in
 esac
 exit 0
 PY
-chmod +x "${work}/bin/python3"
-export PATH="${work}/bin:${PATH}"
+chmod +x "${st_bin}"
 
 ## sudo: the privileged drop-in work must not need real root in the test. mkdir/other succeed as a
 ## no-op; 'mktemp' makes a UNIQUE zoom-live-rc.*.conf under the test work dir (never touches the
@@ -167,6 +165,7 @@ shots_spawn_session() { : ; }           ## no real launch
 shots_watchdog_start() { printf '%s' '0'; }
 shots_watchdog_cancel() { : ; }
 shots_reap_group() { : ; }
+set_window_rule() { : ; }                ## no compositor: skip the labwc windowRule/reconfigure
 find_window() { printf '%s' '12345'; }  ## a non-empty window id
 wait_window_ready() { : ; }
 inject() { : ; }
@@ -179,7 +178,7 @@ export HOME="${work}/home"; mkdir --parents -- "${HOME}"
 printf '%s\n' 'board' > "${HOME}/tui-showcase.payload"
 out="${work}/shots"; mkdir --parents -- "${out}"
 xwl_display=':99'
-st_bin="${work}/fake-st"; true > "${st_bin}"
+## st_bin is the executable logging stub created above (do NOT truncate it here).
 st_pkg="${work}/pkg"
 SHOT_SCALE=1
 SHOT_DEADLINE=90
