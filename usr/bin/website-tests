@@ -34,41 +34,44 @@ else
    tests_dir='/usr/share/website-tests'
 fi
 
+run_required_unit_test() {
+   ## A co-located, SHIPPED unit-regression test: its absence is a broken install, not an
+   ## optional skip. A bare `if [ -f ... ]` guard lets a missing required test read as a
+   ## green pass (silent green) -- run it (fail-fast on a real regression), FATAL if absent.
+   local name="$1" path="${tests_dir}/$1"
+   if [ -f "${path}" ]; then
+      "${path}" || exit 1
+   else
+      printf '%s\n' "website-tests: FATAL: ${name} not found in ${tests_dir} (required test missing)" >&2
+      exit 1
+   fi
+}
+
 ## Unit regression for check_site's own logic (the image-format gate + the
 ## render-source recognition it depends on). Fixture-based, no site checkout or
 ## image tools needed; a failure here is a real logic regression, so it fails the
 ## run outright rather than hiding behind the no-checkout SKIP below.
-if [ -f "${tests_dir}/check_site_test.py" ]; then
-   "${tests_dir}/check_site_test.py" || exit 1
-fi
+run_required_unit_test check_site_test.py
 
 ## Unit regression for check_mobile's browser-free logic (page discovery +
 ## gate wiring). Playwright is imported inside its main(), so this test runs
 ## everywhere without a browser; a failure is a real logic regression.
-if [ -f "${tests_dir}/check_mobile_test.py" ]; then
-   "${tests_dir}/check_mobile_test.py" || exit 1
-fi
+run_required_unit_test check_mobile_test.py
 
 ## Unit regression for check_width's browser-free logic (the offender predicate +
 ## gate wiring). Playwright is imported inside its main(), so this runs everywhere
 ## without a browser; a failure is a real logic regression.
-if [ -f "${tests_dir}/check_width_test.py" ]; then
-   "${tests_dir}/check_width_test.py" || exit 1
-fi
+run_required_unit_test check_width_test.py
 
 ## Unit regression for check_seo's logic (host derivation, sitemap/robots
 ## renderers, the PNG size probe, the drift gate + its main() wiring). Pure
 ## stdlib, no site checkout; a failure is a real logic regression.
-if [ -f "${tests_dir}/check_seo_test.py" ]; then
-   "${tests_dir}/check_seo_test.py" || exit 1
-fi
+run_required_unit_test check_seo_test.py
 
 ## Regression for site-generate's write-safety guards (dirty fail-closed,
 ## symlink refusal). Uses git in a tempdir; no site checkout. A failure is a
 ## real logic regression.
-if [ -f "${tests_dir}/site_generate_test.py" ]; then
-   "${tests_dir}/site_generate_test.py" || exit 1
-fi
+run_required_unit_test site_generate_test.py
 
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''

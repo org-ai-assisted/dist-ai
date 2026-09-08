@@ -51,7 +51,7 @@ if [ ! -x "${subject}" ]; then
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
    exit 77  ## style-ok: allow-skip: curl-prgrs subject absent (source-tree / helper-scripts not installed)
 fi
-for lib in check_runtime.bsh progress-bar strings.bsh has.sh; do
+for lib in check_runtime.bsh progress-bar strings.bsh has.bsh; do
    if [ ! -r "${libdir}/${lib}" ]; then
       printf '%s\n' "SKIP: helper-scripts lib '${lib}' not readable under '${libdir}'" >&2
       exit 77  ## style-ok: allow-skip: helper-scripts lib absent (source-tree / helper-scripts not installed)
@@ -65,7 +65,7 @@ for support in "${fake_curl}" "${probe_script}" "${fuzz_script}"; do
 done
 
 # shellcheck disable=SC1090
-source "${libdir}/has.sh"
+source "${libdir}/has.bsh"
 
 ## curl-prgrs runs helper-scripts' OWN executables (stecho, stcat). On a checkout
 ## that is not installed to /usr/bin (the CI container), they resolve only from

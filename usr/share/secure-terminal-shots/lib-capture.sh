@@ -458,7 +458,7 @@ shots_require_safe_ps() {
    ## `type -P` (a bash builtin: no PATH lookup of its own, so it still answers under an empty
    ## PATH) resolves an executable ON PATH only -- unlike `command -v` it ignores aliases/
    ## functions, matching helper-scripts `has`. `has` itself is not used here: this fragment is
-   ## deliberately self-contained (its sandbox has no helper-scripts checkout to source has.sh
+   ## deliberately self-contained (its sandbox has no helper-scripts checkout to source has.bsh
    ## from), so it must not add that dependency.
    if type -P safe-pgrep >/dev/null 2>&1 && type -P safe-pkill >/dev/null 2>&1; then
       return 0

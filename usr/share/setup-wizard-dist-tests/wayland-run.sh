@@ -21,7 +21,7 @@ shopt -s shift_verbose
 
 ## helper-scripts 'has' for the command-presence check (R-090).
 # shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.bsh
 
 if ! has weston; then
    printf 'wayland-run.sh: weston is not installed\n' >&2

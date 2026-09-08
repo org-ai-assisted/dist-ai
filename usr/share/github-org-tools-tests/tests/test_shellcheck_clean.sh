@@ -25,8 +25,8 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 has shellcheck \
    || { printf '%s\n' 'error: shellcheck not found on PATH; install via apt.' >&2; exit 1; }

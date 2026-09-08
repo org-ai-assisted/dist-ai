@@ -10,10 +10,9 @@
 ## derivative-maker boots two ways and each has its OWN copy of the reader:
 ##   disk: packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader
 ##         (grub-mkconfig emits it into the image's grub.cfg)
-##   iso:  live-build-data/grub-config/smbios-reader.cfg
-##         (3600_convert-raw-to-iso appends it into config.cfg; grub-mkconfig
-##          output never reaches the ISO bootloader, only its 'linux' line is
-##          scraped)
+##   iso:  iso-build-data/grub-config/smbios-reader.cfg
+##         (3600_convert-raw-to-iso appends it into the GRUB overlay's config.cfg
+##          under --smbios-reader; dm-raw-to-iso stages that overlay into the ISO)
 ##
 ## They cannot be merged, so they are asserted equal instead. Drift here is not
 ## cosmetic: without the serial/timeout block a headless boot-tester injecting a
@@ -40,7 +39,7 @@ export LC_ALL=C
 [ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
 
 [ -v DM_SMBIOS_DISK_FILE ] || DM_SMBIOS_DISK_FILE="${DERIVATIVE_MAKER_DIR}/packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader"
-[ -v DM_SMBIOS_ISO_FILE ]  || DM_SMBIOS_ISO_FILE="${DERIVATIVE_MAKER_DIR}/live-build-data/grub-config/smbios-reader.cfg"
+[ -v DM_SMBIOS_ISO_FILE ]  || DM_SMBIOS_ISO_FILE="${DERIVATIVE_MAKER_DIR}/iso-build-data/grub-config/smbios-reader.cfg"
 
 [ -v DM_SMBIOS_CMDLINE_FILE ] || DM_SMBIOS_CMDLINE_FILE="${DERIVATIVE_MAKER_DIR}/packages/kicksecure/vm-config-dist/etc/default/grub.d/99_smbios-cmdline.cfg"
 
@@ -122,6 +121,8 @@ fi
 ##   smbios --type 1 --get-string 4 -- the QEMU gate reads Manufacturer
 for required in \
    'insmod serial' \
+   'insmod regexp' \
+   'regexp --set 1:dm_smbios_extra "^dm-cmdline=(.*)"' \
    'set dm_smbios_vendor=' \
    'set dm_smbios_serial_index=0' \
    'set dm_smbios_oem=' \
@@ -418,19 +419,23 @@ assert_inside_conditional \
    "disk build drop-in" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3500_install-packages" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   '\$\{cp_reproducible\[@\]\}.*50_dm-smbios-reader\.cfg'
+   'install --mode=0644 .*50_dm-smbios-reader\.cfg'
 
+## The reader is appended into the GRUB overlay's config.cfg, which
+## dm-raw-to-iso stages into the ISO, only inside the --smbios-reader branch.
 assert_inside_conditional \
    "iso reader inlining" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   '^cat -- bootloaders/grub-pc/smbios-reader\.cfg >> bootloaders/grub-pc/config\.cfg$'
+   '^cat -- .*smbios-reader\.cfg.*>>.*config\.cfg'
 
+## The ${dm_smbios_extra} placeholder is added to --bootappend only inside the
+## same branch, so a released ISO carries neither the reader nor the placeholder.
 assert_inside_conditional \
    "iso cmdline placeholder" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   '^smbios_reader_cmdline=" .*dm_smbios_extra'
+   '^bootappend=.*dm_smbios_extra'
 
 ## POLARITY, not token presence: an inverted guard keeps every token while
 ## reversing the default, so the reader would ship in released images with all the
@@ -454,18 +459,19 @@ else
       "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${cmdline_file}" | tail -3 || true)"
 fi
 
-## The ISO placeholder must not be unconditional. 3600 builds it into a variable
-## that stays empty unless the build opted in, so a bare '${dm_smbios_extra}' left
-## inline on the --bootappend-live line would defeat the gate while every check
-## above still passed.
+## The ISO placeholder must not be unconditional. 3600 builds it into the
+## 'bootappend' variable that stays empty unless the build opted in, then passes
+## that variable to dm-raw-to-iso via --bootappend. A bare '${dm_smbios_extra}'
+## inlined directly on the --bootappend argument would defeat the gate while every
+## check above still passed.
 iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso"
 if [ ! -r "${iso_build_file}" ]; then
    check_fail "missing ${iso_build_file}"
-elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend-live .*dm_smbios_extra' "${iso_build_file}"; then
-   check_fail "iso: --bootappend-live carries the placeholder UNCONDITIONALLY in ${iso_build_file}" \
-      "$(grep -nE -- '^[[:space:]]*--bootappend-live ' "${iso_build_file}" || true)"
+elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend[= ].*dm_smbios_extra' "${iso_build_file}"; then
+   check_fail "iso: --bootappend carries the placeholder UNCONDITIONALLY in ${iso_build_file}" \
+      "$(grep -nE -- '^[[:space:]]*--bootappend[= ]' "${iso_build_file}" || true)"
 else
-   check_pass "iso: --bootappend-live placeholder is behind the build option"
+   check_pass "iso: --bootappend placeholder is behind the build option"
 fi
 
 ## The placeholder must trail everything grub-mkconfig emits, or an injected

@@ -5,10 +5,10 @@
 
 ## AI-Assisted
 
-## Every script in this package that CALLS 'has' must also SOURCE has.sh.
+## Every script in this package that CALLS 'has' must also SOURCE has.bsh.
 ##
 ## THE BUG: 'has' is a shell FUNCTION from
-## /usr/libexec/helper-scripts/has.sh, not an executable.
+## /usr/libexec/helper-scripts/has.bsh, not an executable.
 ## anon-server-to-client-install called it without sourcing it, so every
 ## invocation died with 'has: command not found'.
 ##
@@ -52,10 +52,10 @@ while IFS= read -r script; do
       continue
    fi
    caller_count=$(( caller_count + 1 ))
-   if grep --fixed-strings -- 'helper-scripts/has.sh' "${script}" >/dev/null; then
-      printf '%s\n' "PASS: $(basename -- "${script}") calls has, sources has.sh"
+   if grep --fixed-strings -- 'helper-scripts/has.bsh' "${script}" >/dev/null; then
+      printf '%s\n' "PASS: $(basename -- "${script}") calls has, sources has.bsh"
    else
-      printf '%s\n' "FAIL: $(basename -- "${script}") calls has WITHOUT sourcing has.sh"
+      printf '%s\n' "FAIL: $(basename -- "${script}") calls has WITHOUT sourcing has.bsh"
       grep --line-number --extended-regexp -- '^[[:space:]]*has[[:space:]]+[^=]' "${script}" | head -1
       fail=1
    fi

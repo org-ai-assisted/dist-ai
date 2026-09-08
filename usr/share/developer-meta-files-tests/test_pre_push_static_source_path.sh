@@ -12,7 +12,7 @@
 ## THE BUG: shellcheck resolves such a path relative to the CURRENT WORKING
 ## DIRECTORY unless given --source-path=SCRIPTDIR. Every directive in these
 ## repos is script-relative -- helper-scripts' usr/bin/gpg-dearmor carries
-## 'source=../libexec/helper-scripts/has.sh', correct from usr/bin/ -- so
+## 'source=../libexec/helper-scripts/has.bsh', correct from usr/bin/ -- so
 ## running the gate from the repo root made them resolve OUTSIDE the repo and
 ## report SC1091 "does not exist", and every variable the sourced file defines
 ## then looked unassigned (SC2154).
@@ -34,12 +34,12 @@ export LC_ALL=C
 ## SKIPS its entire shellcheck tier and returns SUCCESS when shellcheck is
 ## absent -- so without this every assertion below would pass while never
 ## exercising --source-path at all. A skipped check is a failure, not a pass.
-if ! test -r /usr/libexec/helper-scripts/has.sh ; then
-   printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
+if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
+   printf '%s\n' "FATAL: helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 if ! has shellcheck ; then
    printf '%s\n' "FATAL: shellcheck not on PATH (apt-get install shellcheck)" >&2

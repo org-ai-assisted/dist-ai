@@ -530,10 +530,20 @@ ok(RTL in _bar._editor.source() and ZWSP in _bar._editor.source(),
 ok(not _bar._deliver.isEnabled() and 'blocked' in _bar._deliver.text(),
    'Restore original re-blocks Deliver')
 ok('Showing the full paste' in _bar._status.text(), 'Restore relabels the status to reveal')
-# Restore original is a no-op once the review is resolved (no _term)
+# Restore original is a no-op once the review is resolved (no _term): the `_term is None`
+# guard must hold. Re-STRIP to a clean editor first, then resolve, so a dropped guard is
+# observable -- a broken _do_restore would set_source_revealed the RTL/ZWSP raw back in and
+# relabel the status (verify the side effects, not just that reviewed_term() stays None).
+_bar._do_strip()                                   # editor clean again, no invisibles
 _bar._choose('reject')
+_ed_after_reject = _bar._editor.source()
+_st_after_reject = _bar._status.text()
 _bar._do_restore()
 ok(_bar.reviewed_term() is None, 'Restore original is a no-op with no review open')
+ok(_bar._editor.source() == _ed_after_reject and RTL not in _bar._editor.source(),
+   '_do_restore on a resolved review does not re-reveal the trap into the editor')
+eq(_bar._status.text(), _st_after_reject,
+   '_do_restore on a resolved review does not relabel the status')
 
 # --- Deliver dispatches the box via the unicode action, exactly once ----------
 _t2 = _FakeTerm()

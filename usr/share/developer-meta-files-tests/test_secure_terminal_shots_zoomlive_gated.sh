@@ -48,13 +48,22 @@ if [ -z "${block}" ]; then
    exit 1
 fi
 
-## The success line must exist AND be gated on run_rc == 0.
+## The success line must be INSIDE the `if [ "${run_rc}" = '0' ]; then ... fi` body -- not
+## merely coexist with such an `if` somewhere in the zoom-live block (an unconditional print
+## next to an unrelated run_rc check would satisfy a mere "both substrings present" test).
+## Extract the run_rc if-body (fixed-string match via -v to dodge awk regex escaping) and
+## assert the success line is in IT.
+runrc_body="$(awk -v s="if [ \"\${run_rc}\" = '0' ]; then" '
+   index($0, s) { grab=1; next }
+   grab && $0 ~ /^ *fi$/ { grab=0 }
+   grab { print }
+' <<< "${block}")"
 if ! grep --quiet --fixed-strings 'wrote real-GUI zoom-live shots' <<< "${block}"; then
    fail 'zoom-live success line not found (test is stale -- update the pattern)'
-elif grep --quiet --extended-regexp 'if \[ "\$\{run_rc\}" = .0. \]; then' <<< "${block}"; then
-   pass 'the zoom-live success line is gated on run_rc == 0 (no false-green on a failed sweep)'
+elif grep --quiet --fixed-strings 'wrote real-GUI zoom-live shots' <<< "${runrc_body}"; then
+   pass 'the zoom-live success line is INSIDE the run_rc==0 guard (no false-green on a failed sweep)'
 else
-   fail 'the zoom-live success line is NOT gated on run_rc == 0 -> a failed sweep still prints "wrote ... shots" (false green)'
+   fail 'the zoom-live success line is NOT inside the run_rc==0 guard -> a failed sweep still prints "wrote ... shots" (false green)'
 fi
 
 printf '%s\n' "" "test_secure_terminal_shots_zoomlive_gated: ${pass_count} pass, ${fail_count} fail, 0 skip"

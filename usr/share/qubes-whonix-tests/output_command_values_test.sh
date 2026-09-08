@@ -58,7 +58,7 @@ while IFS= read -r value; do
    if grep --extended-regexp -- "^${value}\(\) \{" "${subject}" >/dev/null; then
       printf '%s\n' "PASS: '${value}' is a function defined in the script"
    ## 'type -t' rather than R-090's 'has': one of the values IS a shell
-   ## builtin ('true'), and an installed has.sh predating the builtin fix
+   ## builtin ('true'), and an installed has.bsh predating the builtin fix
    ## answers false for those -- which would fail this lane on a correct
    ## script. 'type -t' reports function, builtin, file, alias or keyword, so a
    ## non-empty answer is exactly "bash can run this".

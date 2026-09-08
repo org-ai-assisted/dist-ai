@@ -8,7 +8,7 @@
 ## CI helper for reusable-dist-ai-tests.yml: expose a checked-out helper-scripts
 ## tree's runtime files at the system path /usr/libexec/helper-scripts, for
 ## tools that source them via an ABSOLUTE path (genmkfile's make-helper ->
-## trace.bsh, git-meld -> has.sh). PATH / PYTHONPATH / HELPER_SCRIPTS_PATH are
+## trace.bsh, git-meld -> has.bsh). PATH / PYTHONPATH / HELPER_SCRIPTS_PATH are
 ## wired per-suite by dist-ai-tests-all; only this absolute path needs a link.
 ##
 ## Usage: dist-ai-tests-ci-hs-runtime.sh <helper-scripts checkout root>

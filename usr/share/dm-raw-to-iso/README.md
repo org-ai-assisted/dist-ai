@@ -4,9 +4,32 @@ Convert a bootable raw disk image into a **highly boot-compatible hybrid Debian
 ISO**, using only tools from packages.debian.org -- the same approach Debian's
 `live-build` uses, reimplemented without live-build.
 
-The tool is `usr/bin/dm-raw-to-iso`. This document is the reference for the exact
-command sequence it runs and why, so the recipe is usable independently of the
-script.
+The tool is **`derivative-maker/help-steps/dm-raw-to-iso`** (its static GRUB config
+templates live in `dm-raw-to-iso.d/` beside it); the tests and this doc stay in
+dist-ai. This document is the reference for the exact command sequence it runs and
+why, so the recipe is usable independently of the script.
+
+## Key properties (learned)
+
+- **dracut only.** The live initramfs is built with dracut; porting it to
+  initramfs-tools is prohibited.
+- **Force the live module:** `dracut --no-hostonly --add dmsquash-live`. Its check()
+  is include-on-demand and a hardened image (Kicksecure security-misc) suppresses it;
+  without it dracut FATALs on `root=live:CDLABEL=` and powers the guest off.
+- **Neutralize the input's `/etc/fstab` + `/etc/crypttab`.** A disk rootfs mounts its
+  own partitions there (root-by-UUID, `/boot/efi`, swap) -- none exist in a live boot,
+  so `local-fs.target` fails and the guest drops to emergency mode (no login).
+- **Static config, never auto-generated:** the grub configs come from templates in
+  `dm-raw-to-iso.d/` (copy + substitute `@TIMEOUT@` / `@APPEND_LIVE@`).
+- **Architectures:** amd64, i386, arm64, armhf -- the same set as live-build.
+- **No `/boot` vs `/live` duplication:** kernel/initrd/squashfs only under `/live`;
+  `/boot/grub` holds only grub config + images.
+- **Fast iteration:** reuse an existing bootable raw (e.g. a built Kicksecure raw in
+  `binary_mnt`) as the fixed input and rebuild only the ISO + boot legs -- no full dm
+  image rebuild per change.
+
+Verified against a real Kicksecure-CLI raw: the ISO boots to a `login:` prompt under
+BIOS (and boots the kernel+systemd under UEFI and UEFI Secure Boot).
 
 ## What "highly boot-compatible" means
 

@@ -420,6 +420,73 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
+# --- reviewdrain #9/#10/#11/#13: main.py behavioural fixes --------------------
+# #10: the Line-editing toggle applies to EVERY tab, not just current() -- a background
+# tab kept the old policy silently (unlike set_paste_warn / set_copy_warn).
+_lew = MainWindow()
+_lew.new_tab()
+_lew.new_tab()                                  # two real tabs
+_lew.set_line_edits(False)
+ok(all(not t.line_edits_enabled() for t in _lew._real_terms()),
+   '#10: set_line_edits(False) applies to every tab, not just the current one')
+_lew.set_line_edits(True)
+ok(all(t.line_edits_enabled() for t in _lew._real_terms()),
+   '#10: set_line_edits(True) re-applies to every tab')
+_lew.deleteLater()
+APP.processEvents()                             # reap the tabs' shells (free ptys/fds)
+
+# #9: _ipc_open must count only tabs it ACTUALLY opened. An explicit empty command opens
+# NO tab, so opened=0 and the bare-reuse fallback (a fresh tab) still fires.
+_ipw = MainWindow()
+_ipw.new_tab()
+_ip_before = _ipw.tabs.count()
+_ip_reply = _ipw._ipc_open({'tabs': [{'command': []}]})
+eq(_ip_reply.get('opened'), 0,
+   '#9: _ipc_open reports opened=0 when a spec (empty command) opens no tab')
+ok(_ipw.tabs.count() > _ip_before,
+   '#9: an all-declined open batch still falls back to a fresh tab (contract kept)')
+_ipw.deleteLater()
+APP.processEvents()
+
+# #13: a non-preset scrollback (any int via /scrollback N) must show a fallback combo item
+# in Global Settings, so OK does not read currentData()=None and corrupt the config
+# (scrollback=None -> int('None') crashes the next launch, resetting to Unlimited).
+_sbw = MainWindow()
+_sbw.new_tab()
+_sbw._scrollback = 5000                          # not one of SCROLLBACK_CHOICES
+_dialogs.clear()
+QDialog.exec = _accept_exec
+try:
+    _sbw.show_global_settings()
+    eq(_dlg_field(_dialogs[-1], 'Scrollback').currentData(), 5000,
+       '#13: a non-preset scrollback shows a real fallback combo item (not a blank)')
+    eq(_sbw._scrollback, 5000,
+       '#13: the non-preset scrollback survives Global Settings OK (not overwritten with None)')
+finally:
+    QDialog.exec = _orig_exec
+_sbw.deleteLater()
+APP.processEvents()
+
+# #11: a config keybinding override that COLLIDES with another action's default must not
+# leave BOTH on the same chord (Qt renders an ambiguous chord dead for both) -- the
+# override loses, protecting the built-in default (here the Terminate panic key).
+_kb_dir = tempfile.mkdtemp()
+os.makedirs(os.path.join(_kb_dir, 'secure-terminal.d'))
+with open(os.path.join(_kb_dir, 'secure-terminal.d', '50_kb.conf'), 'w', encoding='utf-8') as _kh:
+    _kh.write('keybindings=copy=Ctrl+Shift+K\n')  # collides with terminate's default
+_kb_o_cfg = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = _kb_dir
+try:
+    _kbw = MainWindow()
+    eq(_kbw.act_terminate.shortcut().toString(), 'Ctrl+Shift+K',
+       '#11: the Terminate panic key keeps Ctrl+Shift+K despite a colliding config override')
+    ok(_kbw.act_copy.shortcut().toString() != 'Ctrl+Shift+K',
+       '#11: the colliding copy override does not double-bind Ctrl+Shift+K (reverts to default)')
+    _kbw.deleteLater()
+finally:
+    os.environ['XDG_CONFIG_HOME'] = _kb_o_cfg if _kb_o_cfg is not None else _kb_dir
+APP.processEvents()
+
 # --- switching tabs focuses the terminal (no second click needed) -------------
 # Regression: _sync_chrome_to_tab did not focus the newly-current terminal, so a
 # QTabWidget switch left focus on the tab bar -- the tab was visible but typing
@@ -2523,7 +2590,7 @@ _ovt = _ov.current()
 _ov_rows0, _ov_cols0 = _ovt._rows, _ovt._cols
 _ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
 _ov._advisories.pop(_ovt, None)
-_ov._on_osc_used(_ovt, 'osc_title')          # raise the OSC advisory for the current tab
+_ov._on_osc_used(_ovt, 'osc_hyperlink')      # raise an OSC advisory (a type NOT muted by default)
 pump(50)
 ok(_ov._banner.isVisible(), 'advisory overlay: the banner is shown for the current tab')
 eq(_ovt._rows, _ov_rows0,
@@ -2553,7 +2620,7 @@ _ov2 = MainWindow()
 _ov2.resize(900, 640)
 _ov2.show()
 pump(50)
-_ov2._on_osc_used(_ov2.current(), 'osc_title')
+_ov2._on_osc_used(_ov2.current(), 'osc_hyperlink')   # a type NOT muted by default
 pump(20)
 ok(_ov2._banner.isVisible(), 'advisory overlay: banner shown before the last-tab close')
 _ov2.close_tab(0)                             # empties the window with the banner still visible
@@ -3399,15 +3466,43 @@ import signal as _sg                                            # noqa: E402
 from PyQt6.QtGui import QTextCursor                             # noqa: E402
 while win.tabs.count() < 2:
     win.new_tab()
+win._goto_tab(0)                             # start at the first tab so a broken clamp is visible
 win._goto_tab(8)                             # Alt+9 -> clamp to the last tab
+ok(win.tabs.currentIndex() == win.tabs.count() - 1,
+   '_goto_tab: Alt+9 (index 8) clamps to the LAST tab')
 win._goto_tab(0)
-win.terminate_foreground()                   # routes to the current tab
-_sl3 = set(win._locked)
+ok(win.tabs.currentIndex() == 0, '_goto_tab(0): jumps to the first tab')
+# terminate_foreground routes to the CURRENT tab's terminal only (spy both, expect just current)
+_tf0 = win.tabs.widget(0)
+_tf1 = win.tabs.widget(1)
+_tf_hits = []
+_tf0_orig = _tf0.terminate_foreground
+_tf0.terminate_foreground = lambda: _tf_hits.append(0)
+_tf_spy1 = isinstance(_tf1, SecureTerminal)
+if _tf_spy1:
+    _tf1_orig = _tf1.terminate_foreground
+    _tf1.terminate_foreground = lambda: _tf_hits.append(1)
 try:
+    win.terminate_foreground()               # current tab is 0
+    eq(_tf_hits, [0], 'terminate_foreground routes to the current tab, not another')
+finally:
+    _tf0.terminate_foreground = _tf0_orig
+    if _tf_spy1:
+        _tf1.terminate_foreground = _tf1_orig
+# a 'bell' admin lock makes _update_bell_tray_action a no-op: the lock wins and it never
+# re-enables the tray channel past the admin lock (guards the admin-lock-bypass class)
+_bell_act = win._bell_actions['tray']
+_sl3 = set(win._locked)
+_bell_prev = _bell_act.isEnabled()
+try:
+    _bell_act.setEnabled(not win._systray)   # sentinel: opposite of what an UNLOCKED update forces
     win._locked = {'bell'}
     win._update_bell_tray_action()           # bell locked -> no-op
+    ok(_bell_act.isEnabled() == (not win._systray),
+       '_update_bell_tray_action: a bell lock is a no-op (does not override the admin lock)')
 finally:
     win._locked = _sl3
+    _bell_act.setEnabled(_bell_prev)
 ok(win._is_reserved_shortcut('') is False, '_is_reserved_shortcut: empty -> False')
 # #7: a shortcut rebound to a MODIFIED cursor/Home/End key (forwarded as ESC[1;p<final>)
 # or to Ctrl+<punctuation> (a C0 control byte) must be reserved -- else it shadows the key
@@ -3565,6 +3660,16 @@ try:
     # the theme lacks the symbol -> _toggle_icon draws the letter-chip fallback
     ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
        '_toggle_icon: draws the letter-chip fallback when the theme lacks the symbol')
+    # regression: with no theme icon, _app_icon resolves the shipped SVG and MUST build a
+    # MULTI-SIZE icon -- a bare QIcon(<svg path>) reports no availableSizes(), so Qt's X11
+    # _NET_WM_ICON export emits nothing and the window/taskbar icon silently vanishes to the
+    # WM default. (Real os.path.exists here, so it resolves the checkout SVG; needs the
+    # qt6-svg-plugins image plugin, a pinned test dep.)
+    _svg_app_icon = _REAL_APP_ICON()
+    ok(not _svg_app_icon.isNull(),
+       '_app_icon: resolves the shipped SVG when the theme has no icon')
+    ok(len(_svg_app_icon.availableSizes()) > 0,
+       '_app_icon: SVG fallback carries concrete sizes so _NET_WM_ICON is exported')
     _o_exists = os.path.exists
     try:
         os.path.exists = lambda path: True          # a shipped icon path is present

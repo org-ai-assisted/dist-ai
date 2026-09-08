@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## style-ok: no-has -- SKIP-guards on external tools (dosfstools/mtools); this
-## test may run before helper-scripts has.sh is available.
+## test may run before helper-scripts has.bsh is available.
 
 ## dm-normalize-fat-partition must make a FAT filesystem byte-reproducible
 ## regardless of the order its files were written.

@@ -80,7 +80,7 @@ def reap_group():
 
 
 buf = b""
-sent = False
+answered = 0
 killed = False
 
 
@@ -122,9 +122,18 @@ while status is None:
             data = b""
         if data:
             buf += data
-            if not sent and b"Continue the review anyway" in buf:
+            ## dm-review-branch asks "Continue the review anyway?" ONCE PER failing
+            ## scan -- up to twice in a run (ref-content unicode, then ref-name
+            ## unicode). Answer EVERY new occurrence, not just the first: a latched
+            ## one-shot answer left the second prompt unanswered, so a combined
+            ## content+name violation blocked on the second read and false-timed-out
+            ## (exit 124) instead of returning the tool's real verdict. count() sees
+            ## only COMPLETE occurrences, so a prompt split across reads is answered
+            ## once it fully lands; an extra write to a non-reading tool is harmless.
+            seen = buf.count(b"Continue the review anyway")
+            while answered < seen:
                 os.write(fd, ans)
-                sent = True
+                answered += 1
             continue
         ## EOF: the child closed the pty and will not write again -- reap it.
         status = reap(False)
@@ -146,7 +155,7 @@ if capture:
 ## or the prompt never appeared (so the answer was never sent). A child that
 ## answered and then exited on its own -- even after a quiet gap -- reports its
 ## real exit code; a post-prompt quiet spell is not a hang.
-if killed or not sent:
+if killed or answered == 0:
     reason = ("child wedged; SIGKILLed"
               if killed
               else "no 'Continue the review anyway' prompt appeared")

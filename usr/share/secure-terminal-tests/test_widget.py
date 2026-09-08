@@ -3160,6 +3160,19 @@ ok(cw._line_dirty, 'a readline control edit (Ctrl+A) marks the line unverifiable
 cw._line_dirty = False
 key(cw, Qt.Key.Key_BracketRight, '\x1d', mods=_ctrl_mod)   # generic control edit
 ok(cw._line_dirty, 'a generic control edit marks the line unverifiable')
+
+# Ctrl+Shift is RESERVED for the window: Ctrl+Shift+Tab/Return/Backspace must NOT send a
+# raw byte to the child (they were falling through to the unconditional _write, shadowing
+# a window shortcut and injecting \t / \r / \x7f into the running program).
+_csm = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+_hsent.clear()
+key(cw, Qt.Key.Key_Tab, '\t', mods=_csm)
+key(cw, Qt.Key.Key_Return, '\r', mods=_csm)
+key(cw, Qt.Key.Key_Backspace, mods=_csm)
+ok(_hsent == [], 'Ctrl+Shift+Tab/Return/Backspace send NO raw byte (reserved for the window)')
+_hsent.clear()
+key(cw, Qt.Key.Key_Tab, '\t')                          # plain Tab still reaches the child
+ok(b'\t' in b''.join(_hsent), 'plain Tab still sends the tab byte (guard is Ctrl+Shift-only)')
 cw._line_dirty = False
 cw._line_buffer = 'x'
 key(cw, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard

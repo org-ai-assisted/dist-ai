@@ -114,7 +114,7 @@ run_anon_dns() {
    ## gate greps this line even though it is a stub BODY. For this fixture the
    ## two are equivalent -- anon-dns only uses 'has' to probe whether
    ## qubesdb-read exists, and the 'absent' case removes it from PATH entirely.
-   printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${helpers}/has.sh"
+   printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${helpers}/has.bsh"
 
    true >"${etc}/resolv.conf"
 

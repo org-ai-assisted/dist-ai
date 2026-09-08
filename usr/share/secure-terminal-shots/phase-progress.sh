@@ -95,13 +95,20 @@ pp_capture_tick() {
          ;;
    esac
 
-   if [ -n "${count}" ] && { [ -z "${_pp_last}" ] || [ "${count}" -gt "${_pp_last}" ]; }; then
+   if [ -n "${count}" ] && [ "${_pp_phase}" != 'compressing' ] \
+      && { [ -z "${_pp_last}" ] || [ "${count}" -gt "${_pp_last}" ]; }; then
       ## A strict INCREASE (or the first observation) is real capture progress. Only an increase,
       ## never merely a change: per-shot webp optimization bumps the *.png+*.webp count UP (webp
       ## written) then DOWN (source .png removed), so a `!=` test would reprint an earlier count
       ## line byte-for-byte on the dip and flip the phase back to capturing -- the exact
       ## duplicated-progress defect this module removes. A dip is not new progress -> treat it as
       ## a frozen poll.
+      ## The `!= compressing` guard closes the SAME defect for a rising TRANSIENT: once the tail
+      ## has been declared (capture frozen -> compressing), the module's contract is that no
+      ## per-shot signal follows -- so webp-write peaks that each exceed the previous _pp_last (a
+      ## DIFFERENT shot optimized each poll: 148, then 147, then 149, ...) must NOT re-flip to
+      ## capturing and reprint. Without it, each new peak > _pp_last fabricates a capturing line
+      ## and can re-announce compressing.
       _pp_last="${count}"
       _pp_frozen=0
       _pp_phase='capturing'

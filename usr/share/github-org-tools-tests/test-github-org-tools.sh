@@ -56,8 +56,8 @@ if [ ! -r "${DEVELOPER_META_FILES_PATH:-}/usr/libexec/developer-meta-files/githu
   exit 1
 fi
 
-# shellcheck source=../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 ## sanitize-string is a runtime dep of github-org-lib for safe
 ## display. The tests use the lib's audit/error paths which call it.

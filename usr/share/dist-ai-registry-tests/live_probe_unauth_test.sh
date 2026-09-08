@@ -53,7 +53,7 @@ fi
 probe="${repo}/ci/live-probe-unauth.sh"
 
 ## A missing dependency is a hard FAIL naming itself. 'type -P', not the house
-## 'has': the probe sources has.sh itself; this check runs before that.
+## 'has': the probe sources has.bsh itself; this check runs before that.
 if ! type -P jq >/dev/null; then
    printf '%s\n' \
       'FAIL: live-probe-unauth-test: jq not on PATH; the probe cannot run' >&2

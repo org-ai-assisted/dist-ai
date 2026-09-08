@@ -25,6 +25,7 @@
 import os
 import sys
 from html.parser import HTMLParser
+from urllib.parse import unquote
 
 ## The galleries this guard owns. A file directly under one of these (recursively) is a
 ## "shot" that MUST be referenced; a reference whose resolved path lands under one of these
@@ -34,7 +35,7 @@ IMAGE_EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.gif', '.svg')
 
 
 class _RefCollector(HTMLParser):
-    """Collect src/href attribute values (the page's local resource references)."""
+    """Collect src/href/srcset attribute values (the page's local resource references)."""
 
     def __init__(self):
         super().__init__()
@@ -42,8 +43,18 @@ class _RefCollector(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         for name, value in attrs:
-            if name in ('src', 'href') and value:
+            if not value:
+                continue
+            if name in ('src', 'href'):
                 self.refs.append(value)
+            elif name == 'srcset':
+                ## srcset is a comma-separated list of "<url> [descriptor]" candidates
+                ## (e.g. 'a.webp 1x, b.webp 2x'); collect each URL, or a shot referenced
+                ## only via srcset (a missing one) is invisible to the dangling-ref guard.
+                for candidate in value.split(','):
+                    fields = candidate.split()
+                    if fields:
+                        self.refs.append(fields[0])
 
 
 def _resolve(ref, html_path, site):
@@ -59,10 +70,21 @@ def _resolve(ref, html_path, site):
     ## endswith() test -> the reference is dropped, producing a false "orphan shot" (and
     ## equally hiding a genuine dangling reference that carries a query/fragment).
     path = ref.split('?', 1)[0].split('#', 1)[0]
+    ## URL-decode before the extension check + file match: a browser requests the DECODED
+    ## path, so a percent-encoded reference ('shots/x%2Ewebp', 'shots/a%20b.webp') otherwise
+    ## fails endswith()/os.path lookup -> a dangling %-encoded ref evades the guard (and a real
+    ## one is mismatched to its file). The '?'/'#' split above uses the RAW delimiters first, so
+    ## an encoded %3F/%23 inside the path is preserved for the browser-equivalent decode here.
+    path = unquote(path)
     if not path.lower().endswith(IMAGE_EXTS):
         return None
+    ## normpath BOTH branches: _in_gallery matches by exact prefix, so an un-normalized
+    ## '//' or '/./' in a root-absolute ref (e.g. '/comparison//shots/x.webp') would not
+    ## start with 'comparison/shots/' and be silently excluded from the gallery -> a real
+    ## dangling reference goes unreported (the relative branch already normalized; the
+    ## root-absolute one only lstrip'd).
     if path.startswith('/'):
-        rel = path.lstrip('/')
+        rel = os.path.normpath(path.lstrip('/'))
     else:
         base = os.path.relpath(os.path.dirname(html_path), site)
         rel = os.path.normpath(os.path.join(base, path))

@@ -68,12 +68,29 @@ iso="${workdir}/out.iso"
 label="DMTEST"
 
 ######################################################################
+## Overlays: exercise --grub-overlay (staged into /boot/grub, with @APPEND_LIVE@
+## substituted in *.cfg) and --live-overlay (staged into /live). Additive files
+## only, so the tool's built-in grub.cfg/config.cfg (and the structure assertions
+## below) are unaffected.
+######################################################################
+grub_overlay="${workdir}/grub-overlay"
+live_overlay="${workdir}/live-overlay"
+mkdir --parents -- "${grub_overlay}" "${live_overlay}"
+## A *.cfg carrying the placeholder: the tool must substitute the live cmdline.
+printf 'probe %s done\n' '@APPEND_LIVE@' > "${grub_overlay}/probe.cfg"
+## A non-*.cfg file: copied verbatim, no substitution.
+printf 'overlay-marker\n' > "${grub_overlay}/marker.txt"
+## A /live overlay file.
+printf 'live-overlay-marker\n' > "${live_overlay}/probe.marker"
+
+######################################################################
 ## Build the ISO (fixed SOURCE_DATE_EPOCH so we can also check reproducibility).
 ######################################################################
 sde=1700000000
 printf '### building ISO from %s (arch=%s)\n' "${raw_image}" "${arch}" >&2
 "${bin}" --raw "${raw_image}" --output "${iso}" --arch "${arch}" \
-   --label "${label}" --serial-console --source-date-epoch "${sde}"
+   --label "${label}" --serial-console --source-date-epoch "${sde}" \
+   --grub-overlay "${grub_overlay}" --live-overlay "${live_overlay}"
 [ -f "${iso}" ] || { bad "dm-raw-to-iso produced no ISO" ; printf '\nbuild_and_boot: %s pass, %s fail\n' "${pass}" "${fail}" ; exit 1 ; }
 ok "ISO built: ${iso}"
 
@@ -138,15 +155,25 @@ iso_boot_structure_ok() {
          problems="${problems} no-loopback.cfg"
          ;;
    esac
+   ## Per-arch EFI removable-media loader name (matches dm-raw-to-iso's efi-image
+   ## mapping). Unknown arch is an error, not an amd64 default -- treating i386 or
+   ## armhf as amd64 makes the loader check pass/fail on the wrong filename.
    case "${target_arch}" in
       amd64)
          efi_loader="/EFI/boot/bootx64.efi"
          ;;
+      i386)
+         efi_loader="/EFI/boot/bootia32.efi"
+         ;;
       arm64)
          efi_loader="/EFI/boot/bootaa64.efi"
          ;;
+      armhf)
+         efi_loader="/EFI/boot/bootarm.efi"
+         ;;
       *)
-         efi_loader="/EFI/boot/bootx64.efi"
+         printf 'unsupported --arch for boot-structure check: %s\n' "${target_arch}" >&2
+         return 1
          ;;
    esac
    case "${paths}" in
@@ -192,6 +219,44 @@ case "${grub_cfg}" in
 esac
 
 ######################################################################
+## --grub-overlay / --live-overlay staging.
+######################################################################
+## Non-*.cfg overlay file lands verbatim in /boot/grub.
+ov_marker="$(xorriso -osirrox on -indev "${iso}" -cpx /boot/grub/marker.txt "${workdir}/marker.txt" 2>/dev/null && cat "${workdir}/marker.txt" || true)"
+case "${ov_marker}" in
+   *"overlay-marker"*)
+      ok "--grub-overlay: non-cfg file staged into /boot/grub verbatim"
+      ;;
+   *)
+      bad "--grub-overlay: /boot/grub/marker.txt missing or wrong content"
+      ;;
+esac
+## *.cfg overlay file has @APPEND_LIVE@ substituted with the live cmdline, and no
+## literal placeholder remains.
+ov_probe="$(xorriso -osirrox on -indev "${iso}" -cpx /boot/grub/probe.cfg "${workdir}/probe.cfg" 2>/dev/null && cat "${workdir}/probe.cfg" || true)"
+case "${ov_probe}" in
+   *"@APPEND_LIVE@"*)
+      bad "--grub-overlay: @APPEND_LIVE@ left unsubstituted in a staged *.cfg"
+      ;;
+   *"root=live:CDLABEL=${label}"*)
+      ok "--grub-overlay: @APPEND_LIVE@ substituted with the live cmdline in a staged *.cfg"
+      ;;
+   *)
+      bad "--grub-overlay: probe.cfg missing or not substituted (${ov_probe})"
+      ;;
+esac
+## --live-overlay file lands in /live.
+ov_live="$(xorriso -osirrox on -indev "${iso}" -cpx /live/probe.marker "${workdir}/probe.marker" 2>/dev/null && cat "${workdir}/probe.marker" || true)"
+case "${ov_live}" in
+   *"live-overlay-marker"*)
+      ok "--live-overlay: file staged into /live"
+      ;;
+   *)
+      bad "--live-overlay: /live/probe.marker missing or wrong content"
+      ;;
+esac
+
+######################################################################
 ## Canary the structure checker: a plain data ISO with no boot catalog
 ## MUST be rejected, or the checker proves nothing.
 ######################################################################
@@ -209,7 +274,8 @@ fi
 ######################################################################
 iso2="${workdir}/out2.iso"
 "${bin}" --raw "${raw_image}" --output "${iso2}" --arch "${arch}" \
-   --label "${label}" --serial-console --source-date-epoch "${sde}"
+   --label "${label}" --serial-console --source-date-epoch "${sde}" \
+   --grub-overlay "${grub_overlay}" --live-overlay "${live_overlay}"
 ## Informational, NOT a pass/fail gate. dm-raw-to-iso's PACKAGING is deterministic
 ## given a fixed staging tree + SOURCE_DATE_EPOCH, but two FULL builds re-run
 ## dracut on a fresh rootfs copy, and byte-identical output additionally requires
@@ -228,18 +294,31 @@ fi
 ## Per-arch: amd64 has SeaBIOS + OVMF (efi/efi-secureboot); arm64 boots edk2 UEFI
 ## under dm-qemu's 'bios' firmware (efi/efi-secureboot are x86-only and exit 2).
 ## Gate on the arch's OWN qemu binary, not always qemu-system-x86_64.
+## Per-arch QEMU binary + firmware legs. amd64 gets the full BIOS + x64/ia32 EFI +
+## Secure Boot matrix; i386 has BIOS + ia32 EFI (no Secure Boot); arm has no BIOS,
+## its single UEFI leg runs under dm-qemu's 'bios' firmware (efi/efi-secureboot are
+## x86-only and exit 2). Unknown arch is an error, not an x86 default -- routing an
+## ARM image to qemu-system-x86_64 fails every leg for the wrong reason.
 case "${arch}" in
    amd64)
       qemu_bin="qemu-system-x86_64"
       firmwares="bios efi efi-secureboot"
       ;;
+   i386)
+      qemu_bin="qemu-system-i386"
+      firmwares="bios efi"
+      ;;
    arm64)
       qemu_bin="qemu-system-aarch64"
       firmwares="bios"
       ;;
+   armhf)
+      qemu_bin="qemu-system-arm"
+      firmwares="bios"
+      ;;
    *)
-      qemu_bin="qemu-system-x86_64"
-      firmwares="bios efi efi-secureboot"
+      printf 'unsupported DM_RAW_TO_ISO_TEST_ARCH: %s\n' "${arch}" >&2
+      exit 2
       ;;
 esac
 

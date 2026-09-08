@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Mock-API test for dm-github-fork-sync. The wrapper sources
-## github-org-lib.bsh (transitively pulling in log_run_die.sh + has.sh
+## github-org-lib.bsh (transitively pulling in log_run_die.sh + has.bsh
 ## + strings.bsh AND inheriting LOG_MAX_LEN) and spawns
 ## github-org-fork once per source org with the project's policy
 ## flags. This test pins:

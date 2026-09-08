@@ -66,14 +66,14 @@ validator_mode=""
 helper_libexec=""
 if [ -n "${HELPER_SCRIPTS_PATH}" ] \
    && [ -r "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" ] \
-   && [ -r "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/has.sh" ]; then
+   && [ -r "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/has.bsh" ]; then
    validator_mode='real-checkout'
    helper_libexec="${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts"
    export HELPER_SCRIPTS_PATH
    export PATH="${HELPER_SCRIPTS_PATH}/usr/bin:${PATH}"
    export PYTHONPATH="${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 elif [ -r '/usr/libexec/helper-scripts/strings.bsh' ] \
-   && [ -r '/usr/libexec/helper-scripts/has.sh' ]; then
+   && [ -r '/usr/libexec/helper-scripts/has.bsh' ]; then
    validator_mode='real-installed'
    helper_libexec='/usr/libexec/helper-scripts'
 else
@@ -166,20 +166,20 @@ run_script() {
 
    if [ "${validator_mode}" = 'stub' ]; then
       strings_src="${base}/strings.bsh"
-      has_src="${base}/has.sh"
+      has_src="${base}/has.bsh"
       write_stub_helpers "${strings_src}" "${has_src}"
    else
       ## Point the shipped scripts' own 'source' lines at the REAL helper-scripts
-      ## strings.bsh / has.sh so validate_safe_filename runs for real.
+      ## strings.bsh / has.bsh so validate_safe_filename runs for real.
       strings_src="${helper_libexec}/strings.bsh"
-      has_src="${helper_libexec}/has.sh"
+      has_src="${helper_libexec}/has.bsh"
    fi
 
    sed -e "s|/usr/share/doc/onion-grater-merger/examples|${examples}|g" \
        -e "s|/usr/local/etc/onion-grater-merger.d|${target_dir}|g" \
        -e 's|^\(\s*\)systemctl |\1true systemctl |' \
        -e 's|"$(id -u)"|"0"|' \
-       -e "s|^source /usr/libexec/helper-scripts/has.sh$|source ${has_src}|" \
+       -e "s|^source /usr/libexec/helper-scripts/has.bsh$|source ${has_src}|" \
        -e "s|^source /usr/libexec/helper-scripts/strings.bsh$|source ${strings_src}|" \
        -- "${bin_dir}/${script}" >"${base}/${script}"
 

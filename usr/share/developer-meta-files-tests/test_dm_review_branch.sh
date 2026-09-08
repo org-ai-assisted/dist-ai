@@ -25,8 +25,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source /usr/libexec/helper-scripts/has.bsh
 
 ## Fail closed. A missing prerequisite is an environment defect: skipping on
 ## it reports green while the test never ran, which is worse than no test.
@@ -186,6 +186,24 @@ if [ "${rc}" != 0 ]; then
 else
    fail 'interactive no should abort the review, but it exited 0'
 fi
+
+## 4b) COMBINED violation: the reviewed ref ('dirty') has a U+202E commit MESSAGE (content
+## scan fails -> prompt 1) AND a spoofed SIBLING ref name exists (name scan fails -> prompt 2),
+## so dm-review-branch asks "Continue the review anyway?" TWICE. The pty driver must answer BOTH
+## -- a one-shot latch leaves the second prompt hanging, false-timing-out (124) instead of the
+## real verdict. This is the two-prompt path no single-violation case exercises.
+combo_spoof="$(printf 'evil\xe2\x80\xaecombo')"
+git -C "${repo}" branch -- "${combo_spoof}" master
+rc=0
+run_review_tty dirty y >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" = '124' ]; then
+   fail 'combined content+name violation false-timed-out (124): the second Continue prompt was unanswered'
+elif [ "${rc}" = 0 ]; then
+   pass 'combined content+name violation: both Continue prompts answered, real verdict (0) returned'
+else
+   fail "combined content+name violation: exit ${rc}, want 0"
+fi
+git -C "${repo}" branch --delete --force -- "${combo_spoof}" >/dev/null 2>&1 || true
 
 ## 5) After the operator CONSENTS to continue (case 4's 'yes' path), the raw
 ## commit message still reaches the terminal via 'git log'. It must be

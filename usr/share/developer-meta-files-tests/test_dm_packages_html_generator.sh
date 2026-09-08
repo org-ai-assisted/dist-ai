@@ -90,7 +90,7 @@ cleanup() {
 locate_generator() {
    local candidate source_dir
 
-   ## 'type -P', not R-090's 'has': has.sh is deliberately sourced only AFTER
+   ## 'type -P', not R-090's 'has': has.bsh is deliberately sourced only AFTER
    ## the subject-absence SKIP below, so 'has' is not defined yet here and the
    ## installed-binary branch could never succeed -- an installed generator
    ## with no checkout around it was reported as "not shipped".
@@ -136,8 +136,8 @@ fi
 ## first, so on a host with neither helper-scripts nor the generator the script
 ## exited 1 before it could ever reach the SKIP above -- which defeated the point
 ## of that SKIP and gated unrelated PRs on a tool that was never shipped.
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'safe-rm not found' has safe-rm
 

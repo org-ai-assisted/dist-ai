@@ -205,9 +205,14 @@ source "${dist_ai}/usr/share/secure-terminal-shots/phase-progress.sh"
 ## liveness signal that still exposes a genuine wedge (the count stops advancing, and -- unlike
 ## the old reprinting loop -- the progress file then stops growing too). Delegates to the synced
 ## sibling script, NOT an inline bash -lc.
-sandbox "${target_arg[@]}" exec -- \
-   "${HOME}/${base}/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" \
-   "${base}" "${lane}" "$@" &
+## ${HOME} must expand on the REMOTE sandbox (its user home), not the host: the tree was
+## synced to "${base}/dist-ai" relative to the sandbox's own $HOME, which differs from the
+## host's when dom0/host and the target qube are different users. A host-expanded path fails
+## to exist in the sandbox. Single-quote $HOME so the remote bash expands it (same pattern as
+## the rendered-count probe below); ${base}/${lane}/"$@" ride as positional args.
+sandbox "${target_arg[@]}" exec -- bash -c \
+   '"${HOME}/'"${base}"'/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" "$@"' \
+   bash "${base}" "${lane}" "$@" &
 capture_pid=$!
 pp_begin "${lane}"
 while kill -0 "${capture_pid}" 2>/dev/null; do

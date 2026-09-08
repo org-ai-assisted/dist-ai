@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## has.sh: 'has' is the R-090 replacement for 'command -v', so it has to
+## has.bsh: 'has' is the R-090 replacement for 'command -v', so it has to
 ## succeed for everything 'command -v' succeeds for -- including shell
 ## builtins, where 'command -v' prints a bare word instead of a path.
 ##
@@ -13,7 +13,7 @@
 ## resolved it as a RELATIVE path in the current directory. So 'has printf'
 ## answered yes or no depending on what happened to sit in the cwd.
 ##
-## Sources the INSTALLED has.sh by default, not a copy resolved relative to
+## Sources the INSTALLED has.bsh by default, not a copy resolved relative to
 ## this file. A self-relative source validates the checkout and passes even
 ## when the deployed copy is stale, which is exactly the failure it must be
 ## able to catch -- it reported 7/7 against a broken install once already.
@@ -34,13 +34,13 @@ export LC_ALL=C
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 
 if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   has_sh_path="${HELPER_SCRIPTS_REPO}/usr/libexec/helper-scripts/has.sh"
+   has_sh_path="${HELPER_SCRIPTS_REPO}/usr/libexec/helper-scripts/has.bsh"
 else
-   has_sh_path='/usr/libexec/helper-scripts/has.sh'
+   has_sh_path='/usr/libexec/helper-scripts/has.bsh'
 fi
 
 if [ ! -r "${has_sh_path}" ]; then
-   printf '%s\n' "FATAL: has.sh not readable at '${has_sh_path}'" >&2
+   printf '%s\n' "FATAL: has.bsh not readable at '${has_sh_path}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a checkout, or install helper-scripts" >&2
    exit 1
 fi

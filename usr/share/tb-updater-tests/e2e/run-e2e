@@ -34,7 +34,7 @@ export LC_ALL
 ## helper-scripts 'has' for the command-presence checks (R-090). The suite
 ## already requires the helper-scripts package (safe-rm below is from it).
 # shellcheck disable=SC1091
-source /usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.bsh
 
 if ! [ "${TB_UPDATER_TESTS_E2E:-}" = "1" ]; then
   printf '%s\n' "$0: These tests must be run via the tb-updater-tests-e2e entrypoint." >&2

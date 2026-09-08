@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Suite runner for the helper-scripts SHELL LIBRARIES -- the files under
-## /usr/libexec/helper-scripts that callers 'source' (has.sh, strings.bsh),
+## /usr/libexec/helper-scripts that callers 'source' (has.bsh, strings.bsh),
 ## as opposed to the executables, which have their own per-tool suites
 ## (stcat-family, sanitize-string, stdisplay, ...).
 ##

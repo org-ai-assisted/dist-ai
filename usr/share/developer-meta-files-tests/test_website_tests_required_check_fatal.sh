@@ -57,5 +57,36 @@ check_guard_fatal() {
 check_guard_fatal 'check_mobile.py'
 check_guard_fatal 'check_width.py'
 
+## The five *_test.py unit regressions run via the run_required_unit_test helper, which
+## FATALs on an absent shipped test. Assert: (a) the helper exists and FATALs on absence,
+## (b) every one of the five is invoked through it, and (c) NO bare `if [ -f
+## "${tests_dir}/<x>_test.py" ]` guard remains (that was the silent-skip pattern).
+if grep --quiet --extended-regexp '^run_required_unit_test\(\) \{' "${runner}"; then
+   helper_body="$(sed -n '/^run_required_unit_test() {/,/^}/p' -- "${runner}")"
+   if grep --quiet --fixed-strings 'FATAL:' <<< "${helper_body}" \
+         && grep --quiet --extended-regexp 'exit 1' <<< "${helper_body}"; then
+      pass 'run_required_unit_test helper FATALs (message + exit 1) on an absent shipped test'
+   else
+      fail 'run_required_unit_test helper does not FATAL on an absent test'
+   fi
+else
+   fail 'run_required_unit_test helper is missing (the 5 unit-test guards lost their FATAL)'
+fi
+
+for ut in check_site_test.py check_mobile_test.py check_width_test.py check_seo_test.py site_generate_test.py; do
+   if grep --quiet --fixed-strings "run_required_unit_test ${ut}" "${runner}"; then
+      pass "${ut}: invoked via run_required_unit_test (FATAL-on-absent)"
+   else
+      fail "${ut}: not routed through run_required_unit_test -> may be a silent-skip bare guard"
+   fi
+done
+
+## No bare `if [ -f "${tests_dir}/<x>_test.py" ]` unit-test guard may survive (the silent-skip shape).
+if grep --quiet --extended-regexp 'if \[ -f "\$\{tests_dir\}/[a-z_]+_test\.py" \]' "${runner}"; then
+   fail 'a bare -f guard on a *_test.py unit test remains (silent-skip); route it through run_required_unit_test'
+else
+   pass 'no bare -f guard on a *_test.py unit test remains'
+fi
+
 printf '%s\n' "" "test_website_tests_required_check_fatal: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
