@@ -338,6 +338,39 @@ ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
    'and the primary-screen output that preceded the alt frame survives the restart')
 _ra.close()
 
+# alt-screen leak on foreground-return: a `cat` of a file that enters the alt screen
+# (?1049h) but never leaves it (no ?1049l) must not strand the terminal in the alt buffer
+# -- no scrollback, vertical scrolling dead -- once the shell regains the foreground. But a
+# full-screen program merely SUSPENDED (Ctrl-Z) into the background also yields the fg to
+# the shell yet must keep its held frame. The distinction is the alt-owner pgrp's liveness.
+_al = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_al, b'user@host:~$ ')
+feed_output(_al, b'\x1b[?1049hALT-LEFTOVER\r\n')       # enter alt, never leave
+_al._render_tui()
+ok(_al._alt_screen, 'alt entered from output')
+_al._alt_owner_dead = lambda: True                     # the program (cat) has exited
+_al._bracket_had_fg = True
+_al.has_foreground_program = lambda: False             # shell regained the foreground
+feed_output(_al, b'user@host:~$ ')                     # returning prompt -> fg-return edge
+ok(not _al._alt_screen,
+   'a dead alt-owner (exited cat) is left on foreground-return -- no stuck alt screen')
+_al.close()
+
+_as_ = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_as_, b'user@host:~$ ')
+feed_output(_as_, b'\x1b[?1049hHELD-FRAME\r\n')
+_as_._render_tui()
+ok(_as_._alt_screen, 'alt entered from output (suspended case)')
+_as_._alt_owner_dead = lambda: False                   # merely suspended, still alive
+_as_._bracket_had_fg = True
+_as_.has_foreground_program = lambda: False
+feed_output(_as_, b'user@host:~$ ')
+ok(_as_._alt_screen,
+   'a live (suspended) alt-owner keeps its held frame across a foreground-return')
+_as_.close()
+
 # --- Save Transcript vs Save Current Screen (Option B: #10 + #12) --------------
 # scrollback_text() is the append-only history: while a full-screen program holds the
 # alternate screen, it returns the PRIMARY scrollback (frozen at entry), never the
