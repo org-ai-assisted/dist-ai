@@ -129,12 +129,28 @@ start_labwc() {
       before_sock+="${f##*/} "
    done
    before_win=" $(host_child_windows | tr '\n' ' ')"
+   ## Honest per-app favicons: labwc's SSD titlebar resolves each window's app icon (libsfdo)
+   ## via app-id/WM_CLASS -> matching .desktop Icon= -> ICON THEME. Unset (labwc's default),
+   ## nothing resolves and every window shows <fallbackAppIcon> (labwc's own logo). Point it at
+   ## Papirus: it carries the competitors' declared icons (utilities-terminal, Alacritty, kitty,
+   ## xterm, org.gnome.Terminal, ...) that bare hicolor/Adwaita lack, and inherits hicolor so
+   ## secure-terminal's session-installed icon (shots_install_icon_theme) resolves too.
+   local lw_cfg="${runtime_dir}/labwc-config"
+   mkdir --parents -- "${lw_cfg}"
+   cat > "${lw_cfg}/rc.xml" <<'RCXML'
+<?xml version="1.0"?>
+<labwc_config>
+  <theme>
+    <icon>Papirus</icon>
+  </theme>
+</labwc_config>
+RCXML
    ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
    ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
    ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
    ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
    WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
-      labwc >"${runtime_dir}/labwc.log" 2>&1 &
+      labwc -C "${lw_cfg}" >"${runtime_dir}/labwc.log" 2>&1 &
    wm_pid="$!"
    labwc_wid=''; xwl_display=''
    for _ in $(seq 1 60); do
@@ -607,7 +623,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
       "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
       PYTHONPATH="${st_pkg}" python3 "${st_bin}" --tui \
-      --name "${run_marker}" >/dev/null 2>&1
+      --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
 
    st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
    stwid="$(find_window || true)"
@@ -884,9 +900,10 @@ export XDG_CONFIG_HOME="${runtime_dir}/config"
 mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 
 ## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
-## carries in its argv (the emulators via `--rcfile ${HOME}/.strc`; secure-terminal via `--name`,
-## since it launches a clean `bash -i` with no --rcfile path) plus the recorded pgid file, so a
-## crashed run's orphans can be swept by exactly this string and nothing else.
+## carries in its argv (the emulators via `--rcfile ${HOME}/.strc`; secure-terminal via `--class`,
+## a WM-neutral slot -- labwc resolves the titlebar icon from the WM_CLASS instance, which we pin
+## to `secure-terminal` via `--name`) plus the recorded pgid file, so a crashed run's orphans can
+## be swept by exactly this string and nothing else.
 run_marker="${runtime_dir}"
 ## Register the cleanup trap NOW -- the runtime dir + reaping marker exist and the first
 ## argument-validation `exit` is just below -- so an early exit (bad SHOT_SCALE / --jobs /
@@ -1294,7 +1311,8 @@ RC
 ## secure-terminal launches a clean `bash -i` (no ugly temp --rcfile path in its launch
 ## banner); a non-login interactive bash reads ~/.bashrc, so write the same prompt there.
 ## The emulators keep --rcfile ${HOME}/.strc (that path is their reaping marker); ST carries
-## the marker via --name instead (see the ST launch), so its banner stays clean.
+## the marker via --class instead (see the ST launch), so its banner stays clean AND labwc still
+## resolves its titlebar icon from the WM_CLASS instance (pinned to `secure-terminal` via --name).
 cat > "${HOME}/.bashrc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
@@ -1548,7 +1566,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
       QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
       PYTHONPATH="${st_pkg}" "${st_bin}" --new-instance --mode box \
-      --name "${run_marker}" >/dev/null 2>&1
+      --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
    warm_wid="$(find_window || true)"
    [ -n "${warm_wid}" ] && wait_window_ready "${warm_wid}"
    clear_windows
@@ -1618,7 +1636,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" \
-         --name "${run_marker}" >/dev/null 2>&1
+         --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
       st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
       stwid="$(find_window || true)"
