@@ -23,6 +23,15 @@ jobs = [r for r in d.get("check_runs", [])
         if flt in r["name"] and "dry-run" not in r["name"]]
 if not jobs:
     sys.exit(0)
+## A commit can carry check-runs from MORE THAN ONE workflow run -- a rerun, or a
+## fresh dispatch on the same head-sha. Each workflow run is exactly one
+## check-suite, and suite ids grow with time, so a stale prior run's
+## completed:failure must not outvote the current run that is still in progress.
+## Keep only the newest suite's jobs before deciding the verdict.
+def _suite_id(r):
+    return (r.get("check_suite") or {}).get("id") or 0
+_latest = max(_suite_id(r) for r in jobs)
+jobs = [r for r in jobs if _suite_id(r) == _latest]
 bad = [r for r in jobs
        if r["conclusion"] not in (None, "success", "skipped")]
 if bad:

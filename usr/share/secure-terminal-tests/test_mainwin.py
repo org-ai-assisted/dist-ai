@@ -553,19 +553,26 @@ ok(_fw._activation_should_claim_focus(_fw.tabs.tabBar()),
    'activation claims focus off the tab bar (arrow keys would step tabs, not type)')
 ok(not _fw._activation_should_claim_focus(_QLE()),
    'activation does NOT steal focus from an input editor (review bar / zoom box)')
-# changeEvent, given loose focus, actually drives the grab (offscreen focusWidget() is None).
-_fw_act = []
-_fw_cur = _fw.current()
-_fw_cur.setFocus = lambda *_a, **_k: _fw_act.append(True)
-_fw.isActiveWindow = lambda: True         # offscreen has no real active window; force it
-_fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
-ok(_fw_act, 'window activation with loose focus focuses the current terminal')
-# Loose focus but the find bar is open -> the helper's own guard keeps focus in the field.
-# Offscreen never shows the top-level, so a child's isVisible() stays False; stub it.
-_fw._find_bar.isVisible = lambda: True
-_fw_act.clear()
-_fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
-ok(not _fw_act, 'window activation leaves focus in an open find bar')
+# changeEvent, given loose focus, actually drives the grab. focusWidget() is GLOBAL Qt
+# state -- a prior test that left an input widget focused makes it non-None, so the
+# predicate would decline and this flakes. Force the loose-focus case the test means.
+_o_focus_widget = QApplication.focusWidget
+QApplication.focusWidget = staticmethod(lambda: None)     # loose focus: nothing holds it
+try:
+    _fw_act = []
+    _fw_cur = _fw.current()
+    _fw_cur.setFocus = lambda *_a, **_k: _fw_act.append(True)
+    _fw.isActiveWindow = lambda: True     # offscreen has no real active window; force it
+    _fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
+    ok(_fw_act, 'window activation with loose focus focuses the current terminal')
+    # Loose focus but the find bar is open -> the helper's own guard keeps focus in the
+    # field. Offscreen never shows the top-level, so a child's isVisible() stays False; stub it.
+    _fw._find_bar.isVisible = lambda: True
+    _fw_act.clear()
+    _fw.changeEvent(_QEv(_QEv.Type.ActivationChange))
+    ok(not _fw_act, 'window activation leaves focus in an open find bar')
+finally:
+    QApplication.focusWidget = _o_focus_widget
 _fw.close()
 
 # --- _InfoLabel: the (i) marker is a link; label text stays selectable ---------
