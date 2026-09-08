@@ -8,7 +8,7 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [refresh|review|hero|modes|tooltip|compat|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [refresh|review|hero|modes|tooltip|compat|zoom|zoom-live|comparison|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
 ##
 ##   refresh     regenerate EVERY deterministic offscreen SITE gallery in one run (review +
@@ -54,15 +54,13 @@
 ##               counterpart to `zoom`: it can see the actual horizontal scrollbar + any white
 ##               band. NEEDS an X server + labwc (run in a sandbox). Levels: trailing args, else
 ##               the default band. Writes zoom-live-<pct>.png into the local shots/ dir.
-##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators
-##               under a nested labwc compositor (X11 clients). NEEDS an X server +
-##               labwc; run it in a sandbox. Writes to its own shots/; copy them to
-##               the site's comparison/shots/. Forwards ST_REPO etc.
-##   comparison-wayland  the same comparison, but the terminals run as NATIVE
-##               WAYLAND clients (X11-only ones via labwc's Xwayland) and grim
-##               captures. Runs inside its own net+mount namespace. Extra args pass
-##               through: --all-terminals (default) / --wayland-terminals /
-##               --x11-terminals / --only NAME / --case C / --quick / --settle S.
+##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators as
+##               NATIVE WAYLAND clients (the X11-only trio xterm/urxvt/st via labwc's
+##               Xwayland) under a private headless labwc compositor, captured with grim.
+##               Needs NO host X server (labwc runs WLR_BACKENDS=headless); run it in a
+##               sandbox. Writes to its own shots/; copy them to the site's
+##               comparison/shots/. Forwards ST_REPO etc. Extra args pass through:
+##               --only NAME / --case C / --quick / --st-only / --no-st / --jobs N.
 ##
 ## Both target a secure-terminal checkout resolved from SECURE_TERMINAL_REPO (or a
 ## default under the operator's private-sources); an absent checkout is FATAL (exit 1).
@@ -123,7 +121,7 @@ fi
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
       || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom' ] || [ "$1" = 'zoom-live' ] \
-      || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ] \
+      || [ "$1" = 'comparison' ] \
       || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ] || [ "$1" = 'refresh' ]; }; then
    mode="$1"
    shift
@@ -157,46 +155,18 @@ if [ "${mode}" = 'refresh' ]; then
    exit 0
 fi
 
-## The comparison + clipboard lanes need an X server on $DISPLAY (labwc nests on it; the
-## clipboard lives on it) but do NOT start one themselves, so run them under a private Xvfb
-## via xvfb-run -- a bare `secure-terminal-shots comparison` then just works in a headless
-## sandbox with no display to remember. xvfb-run is a REQUIRED dependency (provisioned; the
-## sandbox has it): no fallback, its absence is a provisioning bug and exec fails loudly.
-## A fresh nested Xvfb each run also keeps the capture deterministic and off any real desktop.
+## The comparison + zoom-live lanes bring up their OWN private headless labwc compositor
+## (WLR_BACKENDS=headless + WLR_RENDERER=pixman, no host X server, no GPU) and capture with
+## grim, so they need NO outer Xvfb -- a bare `secure-terminal-shots comparison` just works in
+## a headless sandbox. The X11-only trio (xterm/urxvt/st) reach labwc's own Xwayland. Only the
+## clipboard lane below still needs a real X clipboard (run under xvfb-run).
 
 if [ "${mode}" = 'comparison' ]; then
-   ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
-   ## itself and writes to its own shots/. Run under xvfb-run + forward its exit.
-   ## EXCEPTION: `--jobs N` (N>1) is the orchestrator -- it launches each lane under its
-   ## OWN xvfb-run, so it must NOT sit inside a single shared outer Xvfb (that would put
-   ## every lane's compositor on one display and defeat the parallelism). Detect the flag
-   ## value and, for N>1, run the orchestrator directly.
-   jobs_val=1
-   prev=''
-   for a in "$@"; do
-      [ "${prev}" = '--jobs' ] && jobs_val="${a}"
-      prev="${a}"
-   done
-   case "${jobs_val}" in
-      ''|*[!0-9]*)
-         jobs_val=1
-         ;;
-   esac
+   ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO itself,
+   ## brings up its own headless labwc, and writes to its own shots/. --jobs N is handled inside
+   ## comparison-capture.sh (N parallel headless compositors, one per lane). Forward its exit.
    run_rc=0
-   ## Size the outer Xvfb to fit the HiDPI compositor output (comparison-capture.sh scales its
-   ## labwc output by SHOT_SCALE). Default 2x; a non-numeric value falls back to 2. The --jobs
-   ## orchestrator sizes each lane's own Xvfb itself, so it is skipped here.
-   shot_scale="${SHOT_SCALE:-2}"
-   ## '0*' rejects the whole leading-zero class (0/00/08/09): a leading zero is read as
-   ## octal in the arithmetic below (00 -> 0, 08/09 -> fatal abort). Fall back to 2.
-   case "${shot_scale}" in ''|*[!0-9]*|0*) shot_scale=2 ;; esac
-   if [ "${jobs_val}" -gt 1 ]; then
-      "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
-   else
-      xvfb-run --auto-servernum \
-         --server-args="-screen 0 $(( 1600 * shot_scale ))x$(( 1000 * shot_scale ))x24" \
-         "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
-   fi
+   "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
    exit "${run_rc}"
 fi
 
@@ -207,13 +177,9 @@ if [ "${mode}" = 'zoom-live' ]; then
    ## screenshotting the real decorated window at each level, no restarts. The real-app
    ## counterpart to the offscreen `zoom` lane: it can see the actual horizontal scrollbar and
    ## any white band the offscreen grab cannot. Levels: trailing args, else the default band.
-   ## Same nested-Xvfb sizing as comparison; comparison-capture.sh writes PNGs into its shots/.
+   ## comparison-capture.sh brings up its own headless labwc (no Xvfb) and writes PNGs to shots/.
    run_rc=0
-   shot_scale="${SHOT_SCALE:-2}"
-   case "${shot_scale}" in ''|*[!0-9]*|0*) shot_scale=2 ;; esac
-   xvfb-run --auto-servernum \
-      --server-args="-screen 0 $(( 1600 * shot_scale ))x$(( 1000 * shot_scale ))x24" \
-      "${shots_dir}/comparison-capture.sh" --zoom-live "$@" || run_rc="$?"
+   "${shots_dir}/comparison-capture.sh" --zoom-live "$@" || run_rc="$?"
    ## Only claim success when the capture actually succeeded: '|| run_rc=' catches the
    ## failure so errexit does not stop us, so the success line must be gated on run_rc --
    ## else a failed sweep (unreachable ctl, zero valid shots) still prints "wrote ... shots"
@@ -231,15 +197,6 @@ if [ "${mode}" = 'clipboard' ]; then
    xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
       "${shots_dir}/clipboard-verdict.sh" "$@" || run_rc="$?"
    exit "${run_rc}"
-fi
-
-if [ "${mode}" = 'comparison-wayland' ]; then
-   ## Native-Wayland comparison capture (labwc X11-backend + native Wayland clients
-   ## + grim), run inside its own net+mount namespace. Extra args pass through.
-   ## style-ok: allow-exec -- deliberate handoff: exec replaces the process so it does
-   ## not fall through to the later mode blocks; the capture script needs no post-run
-   ## cleanup in this shell.
-   ST_REPO="${repo}" exec "${shots_dir}/wayland-capture.sh" "$@"
 fi
 
 if [ "${mode}" = 'zoom' ]; then

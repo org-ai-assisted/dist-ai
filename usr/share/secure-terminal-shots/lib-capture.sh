@@ -10,9 +10,9 @@
 
 ## style-ok: allow-python-interpreter -- external tool path (corpus reproduce.py)
 
-## Shared hostile-DATA contract for the secure-terminal comparison capture tools:
-## comparison-capture.sh (pure X11, ImageMagick import) and wayland-capture.sh
-## (native Wayland, grim). Sourced, never executed -- defines functions only.
+## Shared hostile-DATA contract for the secure-terminal comparison capture tool
+## comparison-capture.sh (native headless Wayland, grim). Sourced, never executed --
+## defines functions only.
 ##
 ## Deliberately kept HERE, in dist-ai, next to its two consumers rather than
 ## reusing private-ai-config's headless-capture backends: the sandbox that runs these
@@ -74,7 +74,7 @@ shots_random_seed=0
 ## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
 ## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
 ## both the installed tree and a source checkout. Resolve it by that path: a DIRECT
-## comparison-capture.sh / wayland-capture.sh run has no wrapper to prime PATH, so a bare
+## comparison-capture.sh run has no wrapper to prime PATH, so a bare
 ## name would resolve only when usr/bin happens to be on PATH -- and fail AFTER the whole
 ## capture. BASH_SOURCE[0] is the absolute path both entry points source us by.
 shots_image_optimize="$(dirname -- "${BASH_SOURCE[0]}")/../../bin/image-optimize"
@@ -493,11 +493,15 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
    local pgid_file="$1"
    shift
    ## setsid makes the inner bash a session/group leader, so its PID == its PGID == $$; it records
-   ## that, then runs the real command as a CHILD in the same session. The child inherits that
-   ## PGID, so teardown's `kill -- -PGID` reaps the whole group (leader bash + child + any tree it
-   ## spawns) exactly as before. No explicit `exec` (R-103): whether bash forks the final command
-   ## or last-command-optimises it into an in-place replacement, the recorded PGID is unchanged.
-   setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"' bash "${pgid_file}" "$@" &
+   ## that, then runs the real command as a CHILD in the same session. The child inherits that PGID,
+   ## so teardown's `kill -- -PGID` reaps the whole group (leader bash + child + any tree it spawns).
+   ## The trailing `exit "$?"` DELIBERATELY prevents bash's last-command exec-optimisation: the
+   ## leader bash must LINGER (not exec-replace itself with the command), so its own argv -- which
+   ## carries "${pgid_file}" (a path UNDER the run's unique mktemp runtime dir, i.e. the reaping
+   ## MARKER) -- stays visible to the crash-sweep's `safe-pgrep --full "${run_marker}"`. Without it,
+   ## a command that then `env`-execs (secure-terminal) leaves a surviving argv with NO marker (env
+   ## assignments do not persist in argv), so an orphaned GUI from a SIGKILLed run could not be swept.
+   setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"; exit "$?"' bash "${pgid_file}" "$@" &
 }
 
 ## Reap ONE recorded process group: TERM the whole group, then KILL after a short grace. Guards

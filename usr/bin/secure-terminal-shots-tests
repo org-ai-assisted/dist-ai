@@ -7,7 +7,7 @@
 
 ## Regression suite for the secure-terminal comparison SHOTS harness (the shell capture
 ## pipeline in usr/share/secure-terminal-shots: lib-capture.sh + comparison-capture.sh
-## + wayland-capture.sh + the secure-terminal-shots wrapper). No display, no real capture.
+## + the secure-terminal-shots wrapper). No display, no real capture.
 ##
 ## The shots harness itself ships in dist-ai and is resolved checkout-relative, so the
 ## pure-shell payloads run anywhere. Some payloads drive the real secure-terminal app or

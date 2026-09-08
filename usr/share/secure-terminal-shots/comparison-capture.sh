@@ -40,14 +40,16 @@
 ## theme. labwc draws the SAME real, themed server-side title bar on EVERY window
 ## it manages, X11 (Xwayland) and toolkit alike, exactly as on a real LXQt
 ## desktop -- so an OSC-0 title hijack shows up in that bar as it would for a
-## user. Each shot is cropped to the emulator's window by its real geometry grown
-## by the WM's title bar (labwc's _NET_FRAME_EXTENTS). Nothing is painted on.
+## user. Each shot is grim-grabbed from the wayland output and trimmed to the single
+## window's decorations (a blank pointer + labwc's shadowless default theme make the
+## trim exact). Nothing is painted on.
 ##
-## Needs: an X server on $DISPLAY, labwc (+ its Xwayland), the Clearlooks Openbox
-## theme, x11-xserver-utils (setxkbmap), xdotool, wmctrl, xprop, xwininfo,
-## ImageMagick, and optipng/jpegoptim/cwebp for the webp encode. Installs NOTHING
-## itself (supply-chain hygiene); in the sandbox `sandbox provision shots` installs
-## the whole set, and secure-terminal-shots-sandbox preflights it.
+## Needs: labwc (its own headless Wayland compositor, WLR_BACKENDS=headless + pixman,
+## plus the bundled Xwayland for the X11-only trio xterm/urxvt/st), wlr-randr (HiDPI
+## output scale), grim (capture), wtype (key injection), ImageMagick (trim), and
+## optipng/jpegoptim/cwebp for the webp encode. Installs NOTHING itself (supply-chain
+## hygiene); in the sandbox `sandbox provision shots` installs the whole set, and
+## secure-terminal-shots-sandbox preflights it.
 ##
 ## Usage (normally via the wrapper: 'secure-terminal-shots comparison'):
 ##   ST_REPO=/path/to/secure-terminal/checkout ./comparison-capture.sh
@@ -74,6 +76,10 @@ here="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 ## the shared hostile-DATA contract (payload command + log generation).
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
+## Single source for the labwc-headless bringup (compositor + socket/Xwayland discovery,
+## blank cursor, favicon theme, grim trim-to-window). Native Wayland, no host X server.
+# shellcheck source=../dist-ai-tests-common/wl-headless-lib.bash
+source "${here}/../dist-ai-tests-common/wl-headless-lib.bash"
 
 ## check_runtime.bsh provides was_executed, so this script can be SOURCED (its functions reused
 ## by the dist-ai secure-terminal-shots tests) WITHOUT running the capture. Absent -> fail loud.
@@ -83,8 +89,12 @@ if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
 fi
 source /usr/libexec/helper-scripts/check_runtime.bsh
 
-## px() -- scale a base (1x) pixel constant by SHOT_SCALE. Used at every hardcoded geometry.
-px() { printf '%s' "$(( $1 * SHOT_SCALE ))"; }
+## px() -- a geometry constant in LOGICAL pixels. HiDPI is supplied by the compositor's OUTPUT
+## SCALE (SHOT_SCALE), set on the headless output by wl_headless_start: native Wayland clients
+## render at that scale automatically and labwc scales Xwayland the same, so every window is
+## captured at SHOT_SCALE x device pixels for the SAME logical size. So px() is now the identity
+## (was `$1 * SHOT_SCALE` under the old per-client-DPI X11 path, which would double-scale here).
+px() { printf '%s' "$1"; }
 
 ## Shared hero-compare window WIDTH (logical 1x px, scaled through px()). The homepage
 ## before/after slider overlays the secure-terminal and gnome-terminal hero shots, so BOTH
@@ -98,8 +108,8 @@ cleanup() {
    ## from the registry (its groups are gone) BEFORE the runtime dir is removed.
    shots_reap_run "${run_marker}" 2>/dev/null || true
    shots_deregister_run "${run_marker}" 2>/dev/null || true
-   [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
-   [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
+   ## Tear down the compositor (kills labwc; the runtime dir is ours, removed below).
+   wl_headless_stop 2>/dev/null || true
    ## remove the throwaway privileged remote_control drop-in (root-owned, so sudo) either lane may
    ## have created; LOUD on failure (a leaked drop-in keeps remote_control on system-wide), but
    ## never aborts the trap.
@@ -107,93 +117,105 @@ cleanup() {
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
-## List the child window IDs of the root window on the host X server. labwc's
-## wlroots x11-backend output window is a normal child of root but carries NO
-## WM_NAME: over a nested Xvfb wlroots (observed with labwc 0.8 / wlroots 0.18)
-## cannot set it (the `BadAtom` ChangeProperty warnings in labwc.log), so a
-## name-based `xdotool search --name` never matches it and the bringup wait times
-## out ("labwc did not start"). Enumerate children by ID instead -- name-independent,
-## so it is robust to that wlroots/labwc behaviour.
-host_child_windows() {
-   DISPLAY="${host_display}" xwininfo -root -children 2>/dev/null \
-      | awk '/[0-9]+ (child|children):/{f=1; next} f && $1 ~ /^0x[0-9a-fA-F]+$/ {print $1}'
+
+## Bring up the private headless-Wayland compositor via the shared lib: labwc on
+## WLR_BACKENDS=headless + WLR_RENDERER=pixman (no host X server, no GPU), a transparent
+## pointer (so the trim-to-window crop is exact), the Papirus icon theme (honest per-app
+## favicons: app-id/WM_CLASS -> .desktop Icon= -> theme; secure-terminal's own icon is
+## session-installed by shots_install_icon_theme, which Papirus inherits via hicolor).
+## WAYLAND_DISPLAY + WL_XWAYLAND_DISPLAY are exported; grim captures the wayland output
+## directly, so there is no host output window to find.
+start_labwc() {
+   # shellcheck disable=SC2119
+   wl_headless_start --runtime "${runtime_dir}" --icon-theme Papirus --output-scale "${SHOT_SCALE}" || return 1
+   wm_pid="${WL_HEADLESS_LABWC_PID}"
+   xwl_display="${WL_XWAYLAND_DISPLAY}"
+   labwc_rc="${runtime_dir}/labwc-config/rc.xml"
+   ## The X11-only emulators (xterm/urxvt/st) read Xft.dpi from their Xwayland display, so their
+   ## fonts scale by SHOT_SCALE for the SAME point size (character grid unchanged, pixels-per-cell
+   ## scaled) -- matching the native clients' scaled output.
+   if [ -n "${xwl_display}" ]; then
+      printf '%s\n' "Xft.dpi: ${xft_dpi}" | DISPLAY="${xwl_display}" xrdb -merge 2>/dev/null || true
+   fi
+   return 0
 }
 
-## start labwc nested on the host X server; discover its Xwayland display and its
-## host window (the compositor output we screenshot).
-start_labwc() {
-   local before_sock before_win after_win _ s w f
-   before_sock=' '
-   for f in /tmp/.X11-unix/X*; do
-      [ -e "${f}" ] || continue        # no match -> the literal glob; skip it
-      before_sock+="${f##*/} "
-   done
-   before_win=" $(host_child_windows | tr '\n' ' ')"
-   ## Honest per-app favicons: labwc's SSD titlebar resolves each window's app icon (libsfdo)
-   ## via app-id/WM_CLASS -> matching .desktop Icon= -> ICON THEME. Unset (labwc's default),
-   ## nothing resolves and every window shows <fallbackAppIcon> (labwc's own logo). Point it at
-   ## Papirus: it carries the competitors' declared icons (utilities-terminal, Alacritty, kitty,
-   ## xterm, org.gnome.Terminal, ...) that bare hicolor/Adwaita lack, and inherits hicolor so
-   ## secure-terminal's session-installed icon (shots_install_icon_theme) resolves too.
-   local lw_cfg="${runtime_dir}/labwc-config"
-   mkdir --parents -- "${lw_cfg}"
-   cat > "${lw_cfg}/rc.xml" <<'RCXML'
+## Pin the next-mapped window's size via a labwc windowRule keyed on its app-id (native) or
+## WM_CLASS (Xwayland), then reconfigure labwc so the rule applies on the client's map. This
+## REPLACES every post-launch xdotool/wmctrl resize: native Wayland has no external window
+## resize, and a rule is deterministic (it also un-maximizes qterminal, which ignores geometry).
+## Sizes are logical px scaled by SHOT_SCALE, matching the old geometry.
+set_window_rule() {  ## $1=identifier(app-id/WM_CLASS)  $2=width-base  $3=height-base
+   local ident="$1" w h
+   w="$(px "$2")"; h="$(px "$3")"
+   cat > "${labwc_rc}" <<RCXML
 <?xml version="1.0"?>
 <labwc_config>
-  <theme>
-    <icon>Papirus</icon>
-  </theme>
+  <theme><icon>Papirus</icon></theme>
+  <windowRules>
+    <windowRule identifier="${ident}"><action name="ResizeTo" width="${w}" height="${h}"/></windowRule>
+  </windowRules>
 </labwc_config>
 RCXML
-   ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
-   ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
-   ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
-   ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
-   WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
-      labwc -C "${lw_cfg}" >"${runtime_dir}/labwc.log" 2>&1 &
-   wm_pid="$!"
-   labwc_wid=''; xwl_display=''
-   for _ in $(seq 1 60); do
-      kill -0 "${wm_pid}" 2>/dev/null || return 1
-      if [ -z "${xwl_display}" ]; then
-         for f in /tmp/.X11-unix/X*; do
-            [ -e "${f}" ] || continue
-            s="${f##*/}"
-            case "${before_sock}" in *" ${s} "*) : ;; *) xwl_display=":${s#X}" ;; esac
-         done
-      fi
-      if [ -z "${labwc_wid}" ]; then
-         after_win=" $(host_child_windows | tr '\n' ' ')"
-         for w in ${after_win}; do
-            case "${before_win}" in *" ${w} "*) : ;; *) labwc_wid="${w}" ;; esac
-         done
-      fi
-      if [ -n "${xwl_display}" ] && [ -n "${labwc_wid}" ]; then
-         sleep 1
-         ## give labwc a roomier output than the 1024x768 default (scaled for HiDPI capture,
-         ## so a 2x window still fits within the compositor output).
-         DISPLAY="${host_display}" xdotool windowsize "${labwc_wid}" "$(px 1440)" "$(px 900)" 2>/dev/null || true
-         ## HiDPI: set the Xft DPI every X client on this Xwayland reads, so xterm / urxvt / st /
-         ## VTE (gnome/xfce4/mate) / konsole / qterminal / alacritty all render their fonts at
-         ## SHOT_SCALE x pixels for the SAME point size -- the character grid is unchanged, only
-         ## the pixels-per-cell double. secure-terminal pins its own QT_FONT_DPI and scales via
-         ## QT_SCALE_FACTOR instead (see the ST pass); kitty sets its own font DPI at launch.
-         printf '%s\n' "Xft.dpi: ${xft_dpi}" | DISPLAY="${xwl_display}" xrdb -merge 2>/dev/null || true
-         sleep 1
-         base_wids=" $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
-         return 0
-      fi
-      sleep 0.5
-   done
-   return 1
+   kill -s HUP "${wm_pid}" 2>/dev/null || true
+   sleep 0.4
 }
 
-## launch an emulator as an Xwayland (X11) client so labwc decorates it, in its OWN session so
-## the whole tree (emulator + shell + any server it spawns) can be reaped by one recorded PGID.
+## The labwc app-id (native Wayland) or WM_CLASS (Xwayland) each emulator maps under -- the
+## windowRule match key. Verified against the running windows; fix a value if a shot is mis-sized.
+emu_window_id() {  ## $1=emulator -> echoes its labwc identifier
+   case "$1" in
+      konsole)
+         printf '%s' 'org.kde.konsole'
+         ;;
+      qterminal)
+         printf '%s' 'qterminal'
+         ;;
+      xfce4-terminal)
+         printf '%s' 'xfce4-terminal'
+         ;;
+      mate-terminal)
+         printf '%s' 'mate-terminal'
+         ;;
+      gnome-terminal)
+         printf '%s' 'org.gnome.Terminal'
+         ;;
+      alacritty)
+         printf '%s' 'Alacritty'
+         ;;
+      kitty)
+         printf '%s' 'kitty'
+         ;;
+      xterm)
+         printf '%s' 'xterm'
+         ;;
+      urxvt)
+         printf '%s' 'URxvt'
+         ;;
+      st)
+         printf '%s' 'st'
+         ;;
+      *)
+         printf '%s' "$1"
+         ;;
+   esac
+}
+
+## launch an emulator so labwc decorates it (native Wayland, or Xwayland for the X11-only trio),
+## in its OWN session so the whole tree (emulator + shell + any server it spawns) can be reaped by
+## one recorded PGID.
 launch() {  ## $1=emulator  $2=case  $3=pgid-file
-   local e case pgf base sh rows kh cmd
+   local e case pgf wl x sh rows kh cmd
    e="$1"; case="$2"; pgf="$3"
-   base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
+   ## LC_ALL=C.UTF-8 on every emulator: the harness runs under LC_ALL=C (deterministic payload
+   ## byte-generation), but a terminal MUST render those bytes as UTF-8 or the unicode attack
+   ## payloads show as mojibake -- and, critically, xterm/urxvt/st (Xwayland) SILENTLY EXIT under a
+   ## non-UTF-8 locale (no window, no error), which is why the whole trio was lost. C.UTF-8 keeps C
+   ## collation (deterministic) with UTF-8 encoding, and is built into glibc (always present).
+   ## Native Wayland for the toolkit terminals (Qt QPA + GTK backend both set; each reads its own).
+   ## Xwayland (a private DISPLAY, WAYLAND_DISPLAY unset) ONLY for the X11-only trio xterm/urxvt/st.
+   wl=(env LC_ALL=C.UTF-8 QT_QPA_PLATFORM=wayland GDK_BACKEND=wayland)
+   x=(env LC_ALL=C.UTF-8 --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
    sh=(bash --rcfile "${HOME}/.strc" -i)
    ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
    ## the short cases use, its title bar scrolled off the top. Only that case gets the
@@ -213,23 +235,25 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## line-drawing, not the AA'd font glyph. The font glyph rendered with a
          ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
          ## the internal line-drawing is pixel-exact and deterministic.
-         cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
+         cmd=("${x[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
             -geometry "${cols}x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
          ;;
       urxvt)
-         cmd=("${base[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
+         cmd=("${x[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
          ;;
       st)
-         cmd=("${base[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
+         cmd=("${x[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
          ;;
       konsole)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
+         cmd=("${wl[@]}" konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
          ;;
       qterminal)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
+         ## qterminal opens MAXIMIZED and ignores geometry; shoot() pins its size via a labwc
+         ## windowRule before launch (the column count follows from the pinned pixels).
+         cmd=("${wl[@]}" qterminal -e "${sh[@]}")
          ;;
       xfce4-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
+         cmd=("${wl[@]}" xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       gnome-terminal)
          ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
@@ -248,24 +272,23 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          if [ "${case}" = hero-compare ]; then
             ## --hero also matches secure-terminal's Hack 72-DPI cell metrics so the homepage
             ## slider's two windows share a cell size.
-            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+            cmd=("${wl[@]}" dbus-run-session -- \
                "${here}/gnome-launch.sh" --hero "${cols}x${rows}" -- "${sh[@]}")
          else
-            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+            cmd=("${wl[@]}" dbus-run-session -- \
                "${here}/gnome-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
          fi
          ;;
       mate-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
+         cmd=("${wl[@]}" mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       alacritty)
-         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
+         cmd=("${wl[@]}" alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
          ;;
       kitty)
-         ## kitty computes its cell from font_size(pt) x the X server DPI (the Xft.dpi we set),
-         ## so its font scales like the other X clients; only its PIXEL window size is scaled
-         ## here so the same column count fits the now-2x cells.
-         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o "initial_window_width=$(px 720)" -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
+         ## kitty (native Wayland) computes its cell from font_size(pt) x the output scale; only
+         ## its PIXEL window size is set here so the same column count fits the cells.
+         cmd=("${wl[@]}" kitty -o 'remember_window_size=no' -o "initial_window_width=$(px 720)" -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
          ;;
    esac
    if [ "${#cmd[@]}" -eq 0 ]; then
@@ -277,48 +300,23 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    shots_spawn_session "${pgf}" "${cmd[@]}"
 }
 
-## type a command into the focused terminal window and run it, as if a user did.
-inject() {  ## $1=window-id  $2=command
-   local wid cmd
-   wid="$1"; cmd="$2"
-   DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
-   DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
+## Type a command into the focused terminal and run it, as if a user did. wtype drives the
+## compositor's virtual keyboard, which labwc delivers to the FOCUSED window -- native Wayland
+## and Xwayland alike -- and labwc focuses the single window we just mapped. No keymap dance
+## (wtype sends the text directly, so the old xdotool '/'-becomes-'&' problem is gone).
+inject() {  ## $1=window-id (unused: the mapped window has focus)  $2=command
+   local run_cmd="$2"
    sleep 0.4
-   DISPLAY="${xwl_display}" xdotool type --delay 12 -- "${cmd}"
+   wtype -- "${run_cmd}" 2>/dev/null || true
    sleep 0.3
-   DISPLAY="${xwl_display}" xdotool key --clearmodifiers Return
+   wtype -k Return 2>/dev/null || true
 }
 
-## screenshot labwc's output, crop to the emulator's window by its geometry grown
-## by the themed frame (labwc's _NET_FRAME_EXTENTS, fallback FRAME_TOP).
-capture_window() {  ## $1=output-path  $2=xwayland-window-id
-   local dest wid tmp X Y WIDTH HEIGHT ext l r t b
-   dest="$1"; wid="$2"; X=''; Y=''; WIDTH=''; HEIGHT=''
-   ## park the pointer in the far corner of the (scaled) compositor output, off any window.
-   DISPLAY="${host_display}" xdotool mousemove "$(px 1439)" "$(px 899)" 2>/dev/null || true
-   sleep 0.3
-   tmp="$(mktemp --suffix=.png)"
-   if ! import -display "${host_display}" -window "${labwc_wid}" "${tmp}" 2>/dev/null; then
-      safe-rm -f -- "${tmp}"
-      return 1
-   fi
-   eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null \
-      | grep -E '^(X|Y|WIDTH|HEIGHT)=' || true)"
-   ext="$(DISPLAY="${xwl_display}" xprop -id "${wid}" _NET_FRAME_EXTENTS 2>/dev/null | grep -oE '= .*' || true)"
-   ext="${ext#= }"; ext="${ext//,/}"
-   read -r l r t b <<< "${ext}"
-   [ -n "${b:-}" ] || { l=1; r=1; t="${FRAME_TOP}"; b=1; }
-   if [ -n "${X}" ] && [ -n "${WIDTH}" ] && [ "${WIDTH}" -gt 0 ]; then
-      local cx cy cw ch
-      cx=$(( X - l )); [ "${cx}" -lt 0 ] && cx=0
-      cy=$(( Y - t )); [ "${cy}" -lt 0 ] && cy=0
-      cw=$(( WIDTH + l + r )); ch=$(( HEIGHT + t + b ))
-      convert "${tmp}" -crop "${cw}x${ch}+${cx}+${cy}" +repage "${dest}" \
-         2>/dev/null || cp -- "${tmp}" "${dest}"
-   else
-      cp -- "${tmp}" "${dest}"
-   fi
-   safe-rm -f -- "${tmp}"
+## Screenshot the single visible window. grim grabs the whole wayland output; the pointer is
+## hidden (blank Xcursor) and labwc draws no shadow, so a black-border trim crops exactly to the
+## window's decorations -- no window geometry, no frame extents, no host X server.
+capture_window() {  ## $1=output-path  $2=window-id (unused: one window on the output)
+   wl_headless_capture_window "$1"
 }
 
 ## Remove the largest contiguous run of empty (background) terminal rows from a shot,
@@ -605,25 +603,34 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## viewport) -- the same real full-viewport payload the comparison TUI shots use, so the grid is
    ## genuinely full when the scrollbar / white-band bug would show. Build the with-prompt sibling
    ## that the TUI inject command cats (the plain one is stripped in place for CLI).
-   cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
-   st_cmd="$(shots_st_inject_cmd tui-showcase tui)"
+   ## errexit is SUPPRESSED inside this function (its call site is `zoom_live_capture ... || rc=$?`),
+   ## so a bare failing command does NOT abort -- it silently continues to a misleading downstream
+   ## error. Guard the top-level steps EXPLICITLY (same discipline as shots_generate_logs): a missing
+   ## payload here means generation did not run, and must fail loud at its true source.
+   if ! cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"; then
+      printf '%s\n' "zoom-live: ${HOME}/tui-showcase.payload is missing -- payload generation did not run; cannot build the TUI board" >&2
+      return 1
+   fi
+   st_cmd="$(shots_st_inject_cmd tui-showcase tui)" || return 1
    st_win_w="$(px 860)"
    st_win_h="$(px 820)"
 
-   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")" || return 1
    st_flagf="${st_pgf}.timeout"
    st_transcript="${st_pgf}.transcript"
    safe-rm -f -- "${st_transcript}" 2>/dev/null || true
 
    ## Launch ST as the group PRIMARY: NO --new-instance (a --new-instance window is standalone and
-   ## never claims the ctl socket, so `ctl zoom` could not reach it). --tui opens full-screen. Same
-   ## deterministic 72-DPI / SHOT_SCALE screenshot env as the comparison ST pass; reaped by PGID.
+   ## never claims the ctl socket, so `ctl zoom` could not reach it). --tui opens full-screen. Native
+   ## Wayland, same deterministic 72-DPI / SECURE_TERMINAL_SHOT env as the comparison ST pass (the
+   ## output scale supplies 2x, so NO QT_SCALE_FACTOR); reaped by PGID. Size on map via a labwc
+   ## windowRule keyed on the app_id (native Wayland has no external resize), set before the launch.
+   set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
    shots_spawn_session "${st_pgf}" \
-      env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+      env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+      QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
       "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
-      PYTHONPATH="${st_pkg}" python3 "${st_bin}" --tui \
-      --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
+      PYTHONPATH="${st_pkg}" "${st_bin}" --tui >/dev/null 2>&1
 
    st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
    stwid="$(find_window || true)"
@@ -633,9 +640,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
       return 1
    fi
-   sleep 2
-   DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
-   sleep 0.6
+   ## Window is sized on map by the windowRule above; wait until it has painted before injecting.
    wait_window_ready "${stwid}"
 
    ## Warm the shell/board once so the first `ctl ls` + inject run against a settled prompt.
@@ -647,7 +652,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## instance numbers tab ids from 0, so a hardcoded id would miss; parse the real one. A reachable
    ## `ctl ls` also confirms remote_control is on AND the socket was claimed -- else every level
    ## below would silently no-op and all shots would be the launch zoom.
-   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1 || true)"
+   st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" ctl ls 2>/dev/null | head -1 || true)"
    st_tab_id="${st_tab_line%%	*}"
    if [ -n "${st_tab_id}" ]; then
       printf '%s\n' "zoom-live: ctl reachable (remote_control on, primary socket claimed); zooming tab id:${st_tab_id}"
@@ -670,7 +675,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       esac
       ## Step the zoom LIVE on the SAME instance -- no restart -- routed to the discovered tab.
       zoom_out_file="${runtime_dir}/zoom.${level}.out"
-      if env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" \
+      if env PYTHONPATH="${st_pkg}" "${st_bin}" \
             ctl zoom --tab "id:${st_tab_id}" "${level}" >"${zoom_out_file}" 2>&1; then
          zoom_result="$(cat -- "${zoom_out_file}" 2>/dev/null || true)"
          printf '%s\n' "zoom-live: ctl zoom ${level} -> ${zoom_result}"
@@ -743,17 +748,12 @@ wait_window_ready() {  ## $1=window-id
    return 0
 }
 
-clear_windows() {
-   local wid
-   for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
-      case "${base_wids}" in *" ${wid} "*) continue ;; esac
-      DISPLAY="${xwl_display}" xdotool windowkill "${wid}" 2>/dev/null || true
-   done
-}
-
-## the largest NEW (non-baseline) window: the emulator's real top-level.
+## Wait until the emulator's window has MAPPED. Native Wayland has no external window list
+## (xdotool sees only Xwayland), so readiness is a non-degenerate grab -- the single window on
+## the output produced a trimmable frame -- not a window search. Returns a placeholder id: with
+## grim capture + wtype inject, nothing downstream needs a real window-id, only "it appeared".
 find_window() {  ## $1=emulator
-   local e _ cur wid best X Y WIDTH HEIGHT area tries
+   local e tmp tries n
    e="${1:-}"
    ## gnome-terminal is a D-Bus-activated server whose portal-stalled startup (see
    ## gnome-launch.sh) delays its window ~26s -- past the direct-spawn emulators' 20s
@@ -761,95 +761,86 @@ find_window() {  ## $1=emulator
    ## SHOT_DEADLINE watchdog (default 90s) so a truly dead launch still fails, not hangs.
    tries=80
    [ "${e}" = gnome-terminal ] && tries=280
-   for _ in $(seq 1 "${tries}"); do
-      kill -0 "${wm_pid}" 2>/dev/null || return 1
-      wid=''; best=0
-      for cur in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
-         case "${base_wids}" in *" ${cur} "*) continue ;; esac
-         X=''; Y=''; WIDTH=''; HEIGHT=''
-         eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${cur}" 2>/dev/null | grep -E '^(WIDTH|HEIGHT)=' || true)"
-         area=$(( ${WIDTH:-0} * ${HEIGHT:-0} ))
-         if [ "${area}" -gt "${best}" ]; then best="${area}"; wid="${cur}"; fi
-      done
-      if [ -n "${wid}" ] && [ "${best}" -gt 40000 ]; then
-         printf '%s' "${wid}"
+   tmp="$(mktemp --suffix=.png)"
+   for (( n = 1; n <= tries; n++ )); do
+      if ! kill -0 "${wm_pid}" 2>/dev/null; then
+         safe-rm --force -- "${tmp}"
+         return 1
+      fi
+      if wl_headless_capture_window "${tmp}" 2>/dev/null; then
+         safe-rm --force -- "${tmp}"
+         printf '%s' 'wl'
          return 0
       fi
       sleep 0.25
    done
+   safe-rm --force -- "${tmp}"
    return 1
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h pgf flagf epgid wdog cur_w cur_h
+   local e case wid pgf flagf epgid wdog win_w win_h emu_err
    e="$1"; case="$2"; wid=''
-   ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
-   ## the shrink rescue); the short cases keep their prior heights so their shots and
-   ## committed page dimensions do not move.
-   rescue_h="$(px 430)"; [ "${case}" = tui-showcase ] && rescue_h="$(px 620)"
+   ## Window pixel size for the windowRule-sized emulators: qterminal opens MAXIMIZED and the
+   ## GTK/VTE terminals (xfce4/mate/gnome) ignore --geometry on Wayland, so a labwc windowRule
+   ## pins them on map. The grid-honouring ones (konsole -p, alacritty -o, kitty px, the
+   ## Xwayland xterm/urxvt/st -geometry) size themselves from their launch flags and take no
+   ## rule. tui-showcase needs a taller window (its board is ~32 rows); hero-compare pins the
+   ## shared width so the homepage before/after slider overlays cleanly.
+   win_w="$(px 760)"; win_h="$(px 500)"
+   [ "${case}" = tui-showcase ] && win_h="$(px 680)"
+   [ "${case}" = hero-compare ] && win_w="$(px "${HERO_WIN_W_BASE}")"
+   case "${e}" in
+      qterminal|xfce4-terminal|mate-terminal|gnome-terminal)
+         set_window_rule "$(emu_window_id "${e}")" "${win_w}" "${win_h}"
+         ;;
+   esac
    pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
    flagf="${pgf}.timeout"
+   ## Capture the emulator's OWN stderr to a per-shot file (the spawned child inherits this fd),
+   ## so a launch that dies before mapping -- the Xwayland trio's failure mode under the full
+   ## matrix -- is DIAGNOSABLE, not swallowed. Surfaced verbatim on the "window never appeared"
+   ## warning below; a permanent diagnostic, not a throwaway.
+   emu_err="${pgf}.err"
    ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
    ## watchdog that reaps that group if the render hangs past the deadline.
-   launch "${e}" "${case}" "${pgf}" >/dev/null 2>&1
+   launch "${e}" "${case}" "${pgf}" >/dev/null 2>"${emu_err}"
    ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
    ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
    wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
    wid="$(find_window "${e}" || true)"
    if [ -z "${wid}" ]; then
       printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
+      ## Surface the emulator's own stderr (a lost shot's cause shows here), so a failure is
+      ## diagnosable instead of silent. Prefixed per line; empty file -> nothing printed.
+      if [ -s "${emu_err}" ]; then
+         sed "s/^/warn ${e}.${case} stderr: /" -- "${emu_err}" >&2 || true
+      fi
       shots_watchdog_cancel "${wdog}"
       epgid="$(cat "${pgf}" 2>/dev/null || true)"
-      clear_windows
       shots_reap_group "${epgid}"
-      safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
+      safe-rm -f -- "${pgf}" "${flagf}" "${emu_err}" 2>/dev/null || true
       return 1
    fi
-   ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
-   if [ "${e}" = qterminal ]; then
-      DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
-      sleep 0.7
-   fi
-   sleep 2
-   ## tui-showcase's ~26-line board is taller than some emulators actually render (konsole
-   ## ignores TerminalRows headlessly and paints ~22 rows), so the board's TOP line -- the
-   ## embedded 'cat tui-showcase.payload' prompt that shows what produced the board -- scrolls
-   ## off. Force a taller WINDOW before the board renders (the emulator reflows on the resize),
-   ## keeping the emulator's own width, so that top line stays on-screen.
-   if [ "${case}" = tui-showcase ]; then
-      cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
-      [ -n "${cur_w}" ] || cur_w="$(px 1100)"
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" "$(px 880)" 2>/dev/null || true
-      sleep 0.6
-   fi
-   ## hero-compare: pin the window to the shared HERO_WIN_W_BASE width, so this traditional
-   ## terminal is the SAME horizontal length as the secure-terminal hero window and the two
-   ## overlay perfectly in the homepage before/after slider (no dead-space band on either side).
-   ## Keep the emulator's own height (compose aligns the text tops and pads heights). Resize
-   ## BEFORE inject so the board renders at the final width and never reflows after.
-   if [ "${case}" = hero-compare ]; then
-      cur_h="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^HEIGHT=//p' || true)"
-      [ -n "${cur_h}" ] || cur_h="${rescue_h}"
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px "${HERO_WIN_W_BASE}")" "${cur_h}" 2>/dev/null || true
-      sleep 0.6
-   fi
+   ## The window is sized on map (launch flags or the windowRule above); native Wayland has no
+   ## external post-launch resize and grim+trim crops to whatever the window is. Wait for the
+   ## first content, inject the case payload as a user would, let it render, then capture.
    wait_window_ready "${wid}"
    inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
-   ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
-   if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
-      sleep 1.5
+   if ! capture_settled "${out}/${e}.${case}.png" "${wid}"; then
+      printf '%s\n' "warn ${e}.${case}: screenshot failed"
+      ## Surface the emulator's own stderr on ANY lost shot (a trio member that maps then dies
+      ## shows here, not on the window-never-appeared path). Empty file -> nothing printed.
+      if [ -s "${emu_err}" ]; then
+         sed "s/^/warn ${e}.${case} stderr: /" -- "${emu_err}" >&2 || true
+      fi
    fi
-   capture_settled "${out}/${e}.${case}.png" "${wid}" \
-      || printf '%s\n' "warn ${e}.${case}: screenshot failed"
    shots_watchdog_cancel "${wdog}"
    [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
    epgid="$(cat "${pgf}" 2>/dev/null || true)"
-   clear_windows
    shots_reap_group "${epgid}"
-   safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
+   safe-rm -f -- "${pgf}" "${flagf}" "${emu_err}" 2>/dev/null || true
 }
 
 ## Strict mode ONLY when executed, so sourcing this file (a test reusing the functions above)
@@ -886,24 +877,20 @@ shots_require_image_optimize || exit 1
 CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
 export CORPUS_REPO
 
-host_display="${DISPLAY:-:0}"
-THEME='Clearlooks'
-## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
-## Scaled by SHOT_SCALE below, once the knob is parsed (the real frame grows with the
-## scaled title-bar font; _NET_FRAME_EXTENTS is read dynamically, this is only the fallback).
-FRAME_TOP_BASE=26
-
 runtime_dir="$(mktemp --directory)"
 export XDG_RUNTIME_DIR="${runtime_dir}"
 export HOME="${runtime_dir}/home"
 export XDG_CONFIG_HOME="${runtime_dir}/config"
-mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
+mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}"
 
 ## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
-## carries in its argv (the emulators via `--rcfile ${HOME}/.strc`; secure-terminal via `--class`,
-## a WM-neutral slot -- labwc resolves the titlebar icon from the WM_CLASS instance, which we pin
-## to `secure-terminal` via `--name`) plus the recorded pgid file, so a crashed run's orphans can
-## be swept by exactly this string and nothing else.
+## carries in its argv (the emulators via `--rcfile ${HOME}/.strc`; secure-terminal via the
+## `SHOTS_RUN_MARKER=` env, which env(1) places in the process argv but labwc ignores) plus the
+## recorded pgid file, so a crashed run's orphans can be swept by exactly this string and nothing
+## else. The marker is deliberately kept OFF ST's identity: labwc resolves the titlebar icon from
+## the Wayland app-id, so a per-run temp path there breaks the favicon. The shots pass NO identity
+## flag to secure-terminal -- it sets its own app-id (`secure-terminal`, via setDesktopFileName)
+## idiomatically, which labwc resolves to the real icon; the shots only avoid sabotaging it.
 run_marker="${runtime_dir}"
 ## Register the cleanup trap NOW -- the runtime dir + reaping marker exist and the first
 ## argument-validation `exit` is just below -- so an early exit (bad SHOT_SCALE / --jobs /
@@ -918,15 +905,16 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published webp
 ## stays crisp when a browser upscales it on a HiDPI/Retina display (a 1x shot was blurry
 ## both on-page and opened fullscreen). The whole SITE already follows the 2x-source /
-## display-1x convention (logo/icons/badges); the shots were the one 1x exception. The knob
-## drives: Xft.dpi for X clients (xterm/urxvt/st/VTE/konsole/qterminal/alacritty scale their
-## fonts by it), QT_SCALE_FACTOR for the secure-terminal Qt GUI, kitty's own font DPI, the
-## labwc title-bar font (so the server-side chrome scales WITH the content, not against it),
-## and every hardcoded pixel geometry (compositor output, Xvfb screen, window resizes,
-## mouse-park, dead-space trim). The character GRID (cols x rows) is unchanged -- only the
-## pixels-per-cell doubles -- so payload sizing and the toolbar tier are preserved. On-page
-## the shots keep their size (CSS width:100%); the committed <img> width/height become the
-## new raster dims (= raster; the browser never upscales them).
+## display-1x convention (logo/icons/badges); the shots were the one 1x exception. It is applied
+## ONCE, at the source: the labwc headless OUTPUT is set to scale SHOT_SCALE (wl_headless_start
+## --output-scale), so native Wayland clients (secure-terminal, konsole, qterminal, alacritty,
+## kitty, the VTE terminals) AND labwc's own SSD title bar render at SHOT_SCALE x device px for
+## the SAME logical layout automatically, and labwc scales its Xwayland clients (xterm/urxvt/st)
+## the same. grim grabs the physical (scaled) pixels. So all geometry here stays LOGICAL (px() is
+## the identity); no per-client scale env. The character GRID (cols x rows) is unchanged -- only
+## the pixels-per-cell doubles -- so payload sizing and the toolbar tier are preserved. On-page
+## the shots keep their size (CSS width:100%); the committed <img> width/height become the new
+## raster dims (= raster; the browser never upscales them).
 SHOT_SCALE="${SHOT_SCALE:-2}"
 ## Reject empty, non-digit, AND any leading zero: a leading-zero value (0, 00, 08, 09) is
 ## read as OCTAL in bash arithmetic below -- 00 -> a 0 scale, 08/09 -> a fatal "value too
@@ -944,10 +932,11 @@ SHOT_SCALE=$(( 10#${SHOT_SCALE} ))
 ## Exported so child scripts inherit the same factor: gnome-launch.sh --hero (hero cell size)
 ## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
 export SHOT_SCALE
-## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
+## Xft DPI for the Xwayland (X11-only) emulators. Base 96 (NOT x SHOT_SCALE): labwc applies the
+## output SCALE to Xwayland clients too, so a base-DPI font is already rendered at SHOT_SCALE x
+## device pixels -- multiplying here would double-scale (4x).
 XFT_BASE_DPI=96
-xft_dpi=$(( XFT_BASE_DPI * SHOT_SCALE ))
-FRAME_TOP="$(px "${FRAME_TOP_BASE}")"
+xft_dpi="${XFT_BASE_DPI}"
 
 ## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
 ## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
@@ -987,10 +976,11 @@ board_wrap_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
-## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
-## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
-## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
-## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
+## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
+## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
+## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
+## skips the secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts
+## existing PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
 jobs=1
 no_st=''
 no_optimize=''
@@ -1093,9 +1083,10 @@ if [ -n "${optimize_only}" ]; then
 fi
 
 ## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
-## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
-## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
-## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
+## comparison-capture.sh run over a scope subset in its OWN private headless labwc compositor (no
+## host X; the bringup + Xwayland-socket discovery is flock-serialized in wl_headless_start, so
+## concurrent lanes do not race the shared X socket dir). The capture code is reused UNCHANGED;
+## only the work is split. A final --optimize-only pass webp-converts
 ## once, so concurrent lanes never race on the shared shots dir's optimize step.
 if [ "${jobs}" -gt 1 ]; then
    self="${here}/comparison-capture.sh"
@@ -1146,8 +1137,11 @@ if [ "${jobs}" -gt 1 ]; then
       prep_args=()
       [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
       [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
+      ## Each lane brings up its OWN private headless labwc (no host X, no xvfb-run). Concurrent
+      ## labwc share the protocol-fixed /tmp/.X11-unix; wl_headless_start serializes just the
+      ## per-lane compositor bringup + Xwayland-socket discovery under a flock, so a lane's X11-only
+      ## trio (xterm/urxvt/st) cannot bind another lane's compositor. Captures then run in parallel.
+      "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
       lane_pids+=("$!")
       lane_logs+=("${log}")
       lane_i=$(( lane_i + 1 ))
@@ -1197,7 +1191,7 @@ if [ "${jobs}" -gt 1 ]; then
    ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
    ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
    ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
-   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
+   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one compositor at a time,
    ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
    ## (rc=1), never a silent stale shot.
    if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
@@ -1230,8 +1224,7 @@ if [ "${jobs}" -gt 1 ]; then
             ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
             ## NOT folded into the run's rc. Whether the shot now exists is decided by the
             ## authoritative missing-check after the rounds; a shot still absent then fails hard.
-            xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
+            "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
                > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
             cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
          done
@@ -1257,8 +1250,7 @@ if [ "${jobs}" -gt 1 ]; then
       st_prep=()
       [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
       st_rc=0
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
+      "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
          > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
       cat -- "${lane_dir}/st.log" 2>/dev/null || true
       [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
@@ -1310,37 +1302,22 @@ PS1='${SHOT_PROMPT}'
 RC
 ## secure-terminal launches a clean `bash -i` (no ugly temp --rcfile path in its launch
 ## banner); a non-login interactive bash reads ~/.bashrc, so write the same prompt there.
-## The emulators keep --rcfile ${HOME}/.strc (that path is their reaping marker); ST carries
-## the marker via --class instead (see the ST launch), so its banner stays clean AND labwc still
-## resolves its titlebar icon from the WM_CLASS instance (pinned to `secure-terminal` via --name).
+## The emulators keep --rcfile ${HOME}/.strc (that path is their reaping marker); ST carries the
+## marker via the SHOTS_RUN_MARKER env instead (see the ST launch), so its banner stays clean AND
+## the shots never stamp a per-run temp path on ST's Wayland app-id. secure-terminal sets its own
+## app-id (`secure-terminal`, via setDesktopFileName) idiomatically, so labwc resolves the real
+## titlebar icon with no identity flag from the shots (a temp path there would force the fallback).
 cat > "${HOME}/.bashrc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
 
-## labwc config: the Clearlooks theme, server-side decorations. The title-bar font is
-## scaled by SHOT_SCALE so the server-side chrome (and its title -- where the OSC-0 hijack
-## shows) renders at the same 2x as the terminal content, not half-scale against it. labwc
-## is a native Wayland compositor and does NOT read Xft.dpi, so its font is scaled here.
-titlebar_pt="$(( 10 * SHOT_SCALE ))"
-cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
-<?xml version="1.0"?>
-<labwc_config>
-  <theme>
-    <name>${THEME}</name>
-    <font place="ActiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
-    <font place="InactiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
-  </theme>
-  <core><decoration>server</decoration></core>
-  <placement><policy>automatic</policy></placement>
-</labwc_config>
-XML
-
 ## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
 cd "${HOME}"
 
-labwc_wid=''
+## start_labwc (wl_headless_start) sets these for real; init here so an early exit / the
+## cleanup trap reads them safely under `set -u`. The compositor's SSD title bar (where an
+## OSC-0 hijack shows) and its font are drawn at the output SCALE, so no per-font pt scaling.
 xwl_display=''
-base_wids=''
 ## wm_pid + the cleanup trap are set far above (right after the runtime dir), so an early
 ## argument-validation exit cannot leak it; wm_pid is re-set for real when the WM starts.
 
@@ -1364,6 +1341,10 @@ done
 if [ -z "${labwc_started}" ]; then
    printf '%s\n' 'labwc did not start after retries; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
 fi
+## Name the discovered displays once, up front: a lost trio shot (xterm/urxvt/st, the only
+## Xwayland clients) is almost always an empty/undiscovered WL_XWAYLAND_DISPLAY -- surface it so
+## the failure is diagnosable rather than a bare "window never appeared".
+printf '%s\n' "labwc up: WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} WL_XWAYLAND_DISPLAY=[${xwl_display}]" >&2
 
 ## zoom-live: real-GUI live-zoom sweep -- one ST launch, zoom stepped via `ctl zoom` on the SAME
 ## instance. Runs here (labwc up, HOME/.strc + payloads + icon theme prepared, trap armed) and
@@ -1563,13 +1544,11 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## app with ONE throwaway launch (waited-on, then killed) so every real spec below is warm.
    warm_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
    shots_spawn_session "${warm_pgf}" \
-      env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
-      PYTHONPATH="${st_pkg}" "${st_bin}" --new-instance --mode box \
-      --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
+      env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+      QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+      PYTHONPATH="${st_pkg}" "${st_bin}" --new-instance --mode box >/dev/null 2>&1
    warm_wid="$(find_window || true)"
    [ -n "${warm_wid}" ] && wait_window_ready "${warm_wid}"
-   clear_windows
    shots_reap_group "$(cat "${warm_pgf}" 2>/dev/null || true)"
    safe-rm --force -- "${warm_pgf}" 2>/dev/null || true
 
@@ -1616,39 +1595,29 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## A --new-instance standalone claims no socket (ctl could not reach it); a unique group also
       ## avoids socket reuse across the sequential captures.
       st_group="cmp-$(basename -- "${st_pgf}")"
-      ## Pin the font DPI to 72 so the render is deterministic regardless of the X
-      ## server's DPI. The responsive toolbar's 860 default (st_win_w) is calibrated
-      ## to the real compositor's ~9pt/72-DPI metrics (labeled tier: captioned chips,
-      ## no ">>" overflow); a default Xvfb reports 96 DPI, which widens the toolbar
-      ## and silently drops it to the leaner icons tier (captions hidden). Same
-      ## font-metric determinism the test runner pins for the tier assertions.
-      ## SECURE_TERMINAL_SHOT=1: deterministic screenshot mode (caret hidden +
-      ## synchronous render) so the GUI shot is byte-reproducible run-to-run. Set on
-      ## the secure-terminal GUI launch ONLY -- never on the competitor terminals.
-      ## QT_SCALE_FACTOR scales the WHOLE Qt UI (toolbar, tabs, terminal, banner) by SHOT_SCALE
-      ## uniformly -> crisp 2x pixels at the SAME logical layout. QT_FONT_DPI stays 72 (font-metric
-      ## determinism for the toolbar tier); QT_AUTO_SCREEN_SCALE_FACTOR=0 stops Qt ALSO auto-scaling
-      ## from the Xft.dpi we set for the X clients (that would compound to 4x). The window is sized in
-      ## DEVICE px below (= logical st_win_w x SHOT_SCALE), so the logical width still lands in the
-      ## labeled toolbar tier.
+      ## Pin the font DPI to 72 so the render is deterministic. The responsive toolbar's 860
+      ## default (st_win_w) is calibrated to the compositor's ~9pt/72-DPI metrics (labeled tier:
+      ## captioned chips, no ">>" overflow) -- the same font-metric determinism the test runner
+      ## pins for the tier assertions. SECURE_TERMINAL_SHOT=1: deterministic screenshot mode (caret
+      ## hidden + synchronous render) so the shot is byte-reproducible run-to-run; set on the
+      ## secure-terminal GUI launch ONLY, never on the competitor terminals. NO QT_SCALE_FACTOR: the
+      ## compositor OUTPUT SCALE (SHOT_SCALE) already renders the whole Qt UI at 2x device px for the
+      ## SAME logical layout, so st_win_w stays LOGICAL and still lands in the labeled toolbar tier.
+      ## Size the window on MAP via a labwc windowRule keyed on secure-terminal's Wayland app_id
+      ## (native Wayland has no external post-launch resize); reconfigures labwc before the launch.
+      set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
       shots_spawn_session "${st_pgf}" \
-         env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
-         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" \
-         --name secure-terminal --class "${run_marker}" >/dev/null 2>&1
+         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
       st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
-         sleep 2
-         ## Size the window so the whole toolbar fits (no ">>" overflow chevron),
-         ## then let the layout settle before injecting + grabbing.
-         DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
-         sleep 0.6
-         ## Qt cold start: wait until the app has actually painted its prompt before typing,
-         ## or the 'cat' is injected into a not-yet-ready window and never runs (a black shot,
-         ## seen on the FIRST secure-terminal launch under the parallel --jobs load).
+         ## Window is sized on map by the windowRule above. Qt cold start: wait until the app has
+         ## actually painted its prompt before typing, or the 'cat' is injected into a not-yet-ready
+         ## window and never runs (a black shot, seen on the FIRST launch under parallel --jobs load).
          wait_window_ready "${stwid}"
          ## The command to inject (mode-aware; see shots_st_inject_cmd). secure-terminal now
          ## pins the alternate screen to the top (as a real terminal does), so a short
@@ -1660,7 +1629,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## the drop-in did not apply; the verify loop then discards the empty shot and warns.
          st_tab_id=''
          for _ct_try in 1 2 3 4 5; do
-            st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" "${st_bin}" \
+            st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
                ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
             st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
             [ -n "${st_tab_id}" ] && break
@@ -1681,7 +1650,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
             ## Run the demo command via REMOTE CONTROL: ctl send-text --submit types it AND presses
             ## Enter on the discovered tab (a real command run), replacing xdotool key-injection into
             ## a possibly-unfocused window. Single-line `cat X.payload`, so --submit accepts it.
-            env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" "${st_bin}" \
+            env PYTHONPATH="${st_pkg}" "${st_bin}" \
                ctl --instance-group "${st_group}" send-text --tab "id:${st_tab_id:-0}" --submit "${st_cmd}" \
                >/dev/null 2>&1 || true
             ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
@@ -1739,7 +1708,6 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       shots_watchdog_cancel "${st_wdog}"
       [ -e "${st_flagf}" ] && printf '%s\n' "warn secure-terminal.${st_suffix}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
       st_epgid="$(cat "${st_pgf}" 2>/dev/null || true)"
-      clear_windows
       shots_reap_group "${st_epgid}"
       safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
    done

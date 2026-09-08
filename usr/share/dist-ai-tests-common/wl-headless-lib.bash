@@ -144,10 +144,26 @@ wl_headless_start() {
       [ -S "${s}" ] || continue
       before_wl+="$(basename -- "${s}") "
    done
-   ## The Xwayland socket lives in the SHARED /tmp/.X11-unix, where dead prior servers leave
-   ## lingering socket files -- so a name/existence diff mis-fires when labwc's Xwayland reuses a
-   ## stale display number. A marker stamped just before labwc starts lets discovery pick the X
-   ## socket labwc (re)CREATES after it (newer mtime), robust to those leftovers.
+   ## The Xwayland socket lives in the SHARED, protocol-fixed /tmp/.X11-unix, where dead prior
+   ## servers leave lingering socket files -- so a name/existence diff mis-fires when labwc's
+   ## Xwayland reuses a stale display number. A marker stamped just before labwc starts lets
+   ## discovery pick the X socket labwc (re)CREATES after it (newer mtime), robust to leftovers.
+   ##
+   ## CONCURRENCY: two compositors brought up AT ONCE (the shots --jobs lanes) both create X
+   ## sockets against that one shared dir, so the newer-than-marker test can hand BOTH the same
+   ## socket -- a second lane's X11 clients then bind the first lane's compositor. A per-user flock
+   ## held ONLY across labwc-start + socket discovery (a couple of seconds) serializes the bringups
+   ## so each lane's new sockets are unambiguous; the captures afterwards still run fully parallel.
+   ## Best-effort: if the lock cannot be taken, the bringup proceeds anyway (single-lane callers,
+   ## the common case, never contend).
+   local _wl_lock_fd='' _wl_lock
+   _wl_lock="${TMPDIR:-/tmp}/wl-headless-bringup.$(id --user).lock"
+   if exec {_wl_lock_fd}>"${_wl_lock}" 2>/dev/null; then
+      flock "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+   else
+      _wl_lock_fd=''
+   fi
+
    local xwl_marker="${runtime}/.xwl-marker"
    touch -- "${xwl_marker}"
 
@@ -171,6 +187,7 @@ wl_headless_start() {
    if [ -z "${socket}" ]; then
       printf '%s\n' 'wl_headless_start: labwc did not create a Wayland socket.' >&2
       cat -- "${runtime}/labwc.log" >&2 || true
+      [ -n "${_wl_lock_fd}" ] && { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
       wl_headless_stop
       return 1
    fi
@@ -196,6 +213,9 @@ wl_headless_start() {
       sleep 0.1
    done
    export WL_XWAYLAND_DISPLAY
+   ## Bringup done: THIS compositor's sockets are discovered, so a concurrent lane can safely
+   ## bring up its own now. Release the serialization lock (captures run parallel from here).
+   [ -n "${_wl_lock_fd}" ] && { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
 
    ## HiDPI: raise the single headless output to `output_scale`, sized to a generous logical
    ## area so any shot window fits. Native Wayland clients then render at that scale automatically

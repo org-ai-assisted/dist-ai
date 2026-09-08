@@ -3473,6 +3473,23 @@ ok(win._tip_filter.eventFilter(_wtip128, _he128)
 win._tip_filter._tip.hide()
 win._tip_filter._tip._poll.stop()
 
+# the tool-window InfoTip text stays SELECTABLE + copyable after the minimal-crisp
+# restyle (the style change must never drop the interaction flags), and carries the
+# crisp look (4px radius) + the theme card colours.
+_tipsel = M.InfoTip(win)
+_tipsel.show_for(win, 'selectable tip text', 100, 'dark')
+_selflags = _tipsel.textInteractionFlags()
+ok(bool(_selflags & _QtIL.TextInteractionFlag.TextSelectableByMouse)
+   and bool(_selflags & _QtIL.TextInteractionFlag.TextSelectableByKeyboard),
+   'InfoTip text is selectable by mouse + keyboard (copyable)')
+ok('border-radius:4px' in _tipsel.styleSheet(),
+   'InfoTip uses the minimal-crisp 4px radius')
+_tc_bg, _tc_fg, _ = M._TIP_COLORS['dark']
+ok(_tc_bg in _tipsel.styleSheet() and _tc_fg in _tipsel.styleSheet(),
+   'InfoTip paints the theme card colours (bg + fg)')
+_tipsel.hide()
+_tipsel._poll.stop()
+
 # --- _set_shortcuts skips an unknown ident in the apply loop ------------------
 ok(isinstance(win._set_shortcuts({'unknown-x': ''}), list),
    '_set_shortcuts: an unknown ident is skipped')

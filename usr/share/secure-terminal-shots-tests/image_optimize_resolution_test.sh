@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Regression: the shots harness must resolve the bundled image-optimize by a
-## CHECKOUT-RELATIVE path, so a DIRECT comparison-capture.sh / wayland-capture.sh run (no
+## CHECKOUT-RELATIVE path, so a DIRECT comparison-capture.sh run (no
 ## secure-terminal-shots wrapper priming PATH) still finds it -- and fails FAST if missing,
 ## not after the whole capture. Pure shell: asserts the RESOLUTION, never runs the optimizer,
 ## so it needs no optipng/cwebp and runs in the dist-ai container in milliseconds.

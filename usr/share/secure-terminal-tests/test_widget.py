@@ -2250,7 +2250,12 @@ ok(gz.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
 ok(gz.horizontalScrollBar().maximum() == 0,
    'a grid that fits the viewport shows no horizontal scrollbar (nothing to scroll)')
 _gcols, _grows = gz._tui_grid_size()
-_gcw = gz.fontMetrics().horizontalAdvance('M') or 1
+# The document engine lays glyphs out at the font's FRACTIONAL 'M' advance, so the
+# overflow check must use that advance -- the qRound()ed integer advance over-counts
+# when it rounds up and would false-fail on a font whose 'M' advance is not integral
+# (fonts-hack under QT_FONT_DPI in CI), even though the fractional layout fits.
+from PyQt6.QtGui import QFontMetricsF as _QFMF_gz               # noqa: E402
+_gcw = _QFMF_gz(gz.font()).horizontalAdvance('M') or 1.0
 _gmargin = int(gz.document().documentMargin())
 _gvbar = gz.verticalScrollBar().width() if gz.verticalScrollBar().isVisible() else 0
 ok(_gcols * _gcw <= gz.viewport().width() - 2 * _gmargin + _gvbar,

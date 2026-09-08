@@ -68,8 +68,8 @@ if [ "$#" -ge 1 ]; then
          refresh_all=1
          shift
          ;;
-      comparison-wayland|clipboard)
-         die "this driver auto-syncs + pulls the 'comparison', 'zoom' and 'zoom-live' shots only; '$1' writes elsewhere (shots-wayland / a .tsv). Run that lane directly in the sandbox."
+      clipboard)
+         die "this driver auto-syncs + pulls the 'comparison', 'zoom' and 'zoom-live' shots only; 'clipboard' writes a .tsv, not shots. Run that lane directly in the sandbox."
          ;;
    esac
 fi
@@ -148,8 +148,8 @@ target_arg=()
 ## compat is a headless OFFSCREEN-Qt grab too (no labwc / X / window tools), so it skips the
 ## heavy capture-stack preflight -- but it webp-optimizes, so it still needs optipng/jpegoptim/cwebp.
 if [ "${lane}" != 'zoom' ] && [ "${lane}" != 'compat' ] \
-   && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland xvfb-run xdotool wmctrl xwininfo import optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
-   die "the comparison-shot capture stack (labwc/Xwayland/xdotool/wmctrl/xwininfo/import/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
+   && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland wlr-randr grim wtype convert compare identify optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
+   die "the comparison-shot capture stack (labwc/Xwayland/wlr-randr/grim/wtype/imagemagick/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
 fi
 if [ "${lane}" = 'compat' ] \
    && ! sandbox "${target_arg[@]}" exec 'for b in optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
