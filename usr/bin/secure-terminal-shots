@@ -221,12 +221,16 @@ fi
 
 if [ "${mode}" = 'modes' ] || [ "${mode}" = 'tooltip' ]; then
    if [ "${mode}" = 'tooltip' ]; then
-      gen='tooltip-shot.py'; outfile='tooltip.png'
+      ## tooltip is captured on a REAL headless Wayland compositor (tooltip-capture.sh ->
+      ## labwc + grim), NOT offscreen: the InfoTip is a frameless popup and the operator
+      ## wants the whole shot pipeline on wayland. The orchestrator produces the PNG; the
+      ## optimize_to_webp below converts it, same as the offscreen lanes.
+      gen='tooltip-capture.sh'; outfile='tooltip.png'
    else
       gen='display-modes-shot.py'; outfile='display-modes.png'
    fi
-   ## Headless shot into the site's shots/. Same offscreen-Qt path as review: the
-   ## real renderer, no display, byte-for-byte regenerable.
+   ## Headless shot into the site's shots/ -- the real renderer, byte-for-byte regenerable
+   ## (modes is offscreen-Qt; tooltip is native-Wayland via tooltip-capture.sh).
    out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/shots}"
    if [ ! -d "${out_dir}" ]; then
       printf '%s\n' "secure-terminal-shots: output dir does not exist: ${out_dir}" >&2
