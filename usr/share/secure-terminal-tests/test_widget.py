@@ -234,6 +234,18 @@ _t6mid = _t6segs('a' + ' ' * 80 + 'b\n', 40)
 ok(len(_t6mid) == 3 and _t6mid[-1].strip() == 'b',
    'task6: a blank MIDDLE wrap continuation is kept (dropping it would shift later text)')
 ok(_t6segs('x\n\ny\n', 40) == ['x', '', 'y'], 'task6: a genuine blank line is preserved')
+# a wrapped space-fill line ending in the no-trailing-newline marker must keep its gutter
+# glyph -- the marker cell is content, not fill (ai-review/grok).
+from secure_terminal.sanitize import (cells_to_runs as _t6c2r,               # noqa: E402
+                                       PROMPT_START as _t6ps,
+                                       _NO_NEWLINE_KEY as _t6nnk)
+_t6nn_c, _t6nn_cur, _c, _s, _t6nn_w = _t6fle(
+    [], 0, {'fg': None, 'bg': None, 'bold': False},
+    'hello' + ' ' * 45 + _t6ps + 'user$ \n', 40, True)
+_t6nn_oc, _t6nn_ow = _t6trim(_t6nn_c, _t6nn_w)
+_t6nn_runs, _t6nn_pref = _t6c2r(_t6nn_oc, _t6nn_cur, 'box', False, True, _t6nn_ow)
+ok(any(k == _t6nnk for _t, k in _t6nn_runs),
+   'task6: the no-trailing-newline gutter marker survives the blank-fill trim')
 # end-to-end through the real widget _rerender; the block count is the canary (pre-fix the
 # 80-col fill wraps at 40 and roughly doubles), and a \r-wiped line must not resurrect.
 _t6w = SecureTerminal(command='/bin/cat')
