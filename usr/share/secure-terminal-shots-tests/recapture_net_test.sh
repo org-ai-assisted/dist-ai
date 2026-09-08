@@ -133,6 +133,17 @@ case "${SHOTS_EMULATOR_SKIP_CASES}" in
       ;;
 esac
 
+## GLOB-HARDENING: an unvalidated CASES='*' (exported, not passed via --case) must be treated
+## LITERALLY, never glob-expanded against the launch CWD. Run from a dir holding decoy files and
+## pass '*' as the single case: the hardened helper emits the literal 'xterm *' (that case has no
+## shot), while the OLD unquoted `for c in ${cases}` would glob to the decoy filenames -- so this
+## FAILS on the pre-fix code, a real regression tripwire.
+decoy="${tmp}/decoy"
+mkdir --parents -- "${decoy}"
+touch -- "${decoy}/alpha.txt" "${decoy}/beta.txt"
+glob_got="$(cd "${decoy}" && shots_missing_emulator_shots "${out}" 'xterm' '*')"
+check "${glob_got}" 'xterm *' "CASES='*' stays literal (no CWD glob-expansion in the missing-shot guard)"
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
