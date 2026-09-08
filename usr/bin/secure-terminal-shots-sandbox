@@ -13,12 +13,14 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live] [ARGS...]   (these
-##   are the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
-##   TSV and are run directly in the sandbox). `refresh` regenerates EVERY site gallery in one
-##   command: the offscreen lanes on the host (review/modes/compat) THEN the comparison lane in
-##   the sandbox, so none is ever missed. compat regenerates the compatibility-page program
-##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. ARGS
+## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live|tooltip] [ARGS...]
+##   (these are the lanes this driver pulls back -- the clipboard lane writes a TSV and is run
+##   directly in the sandbox). `refresh` regenerates EVERY site gallery in one command: the
+##   offscreen lanes on the host (review/modes/compat) THEN the comparison lane AND the tooltip
+##   lane in the sandbox, so none is ever missed. compat regenerates the compatibility-page program
+##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. tooltip
+##   regenerates the InfoTip risk-tooltip shot (native-Wayland, tooltip-capture.sh) into the site's
+##   shots/tooltip.webp. ARGS
 ##   pass through: for comparison e.g. --only NAME
 ##   / --case C / --st-only; for zoom-live the zoom-level list (default 50 75 100 125 150 175 200).
 ##   zoom-live is the REAL-GUI white-band/scrollbar diagnostic (one ST launch under labwc, zoom
@@ -55,7 +57,7 @@ lane='comparison'
 refresh_all=0
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|compat|zoom-live)
+      comparison|compat|zoom-live|tooltip)
          lane="$1"
          shift
          ;;
@@ -113,6 +115,9 @@ site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}
 if [ "${lane}" = 'compat' ]; then
    [ -d "${site}/compatibility/shots" ] \
       || die "site compat shots dir not found at '${site}/compatibility/shots' (set SECURE_TERMINAL_SITE)"
+elif [ "${lane}" = 'tooltip' ]; then
+   [ -d "${site}/shots" ] \
+      || die "site shots dir not found at '${site}/shots' (set SECURE_TERMINAL_SITE)"
 elif [ "${lane}" != 'zoom-live' ]; then
    [ -d "${site}/comparison/shots" ] \
       || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
@@ -245,6 +250,8 @@ fi
 ## in compatibility/shots.
 if [ "${lane}" = 'compat' ]; then
    site_dest="${site}/compatibility/shots"
+elif [ "${lane}" = 'tooltip' ]; then
+   site_dest="${site}/shots"
 else
    site_dest="${site}/comparison/shots"
 fi
@@ -266,3 +273,15 @@ dims_tool="${script_dir}/secure-terminal-shots-dims"
 "${dims_tool}" --fix "${site}" || die "re-pinning on-page <img> dimensions to the pulled assets failed"
 
 pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/ (on-page dimensions re-pinned)"
+
+## refresh regenerates EVERY gallery, and the tooltip shot is now its OWN native-Wayland lane
+## (not part of comparison), so a `refresh` must run it too -- else `secure-terminal-shots-sandbox
+## refresh` silently skips tooltip.webp despite the wrapper NOTE promising it. Re-run this driver
+## for the tooltip lane with the trees ALREADY synced (assert-synced verifies), so refresh stays
+## one command. A plain call (not exec): errexit aborts refresh if tooltip fails, and this run's
+## EXIT trap still cleans its pull_tmp. Env (SECURE_TERMINAL_*/SANDBOX_TARGET) is inherited, so no
+## positional site (which would be a host path, wrong inside the sandbox).
+if [ "${refresh_all}" = 1 ]; then
+   printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the tooltip shot (native-Wayland) ..." >&2
+   "${script_dir}/secure-terminal-shots-sandbox" tooltip --assume-synced
+fi

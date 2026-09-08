@@ -39,10 +39,11 @@ shots_out="${HOME}/${sandbox_base}/dist-ai/usr/share/secure-terminal-shots/shots
 safe-rm --recursive --force -- "${shots_out}"
 mkdir --parents -- "${shots_out}"
 
-## The compat lane's wrapper default output dir is the site's compatibility/shots/, which does
-## not exist in the sandbox; point it at the same shots_out the driver pulls from, so compat
-## reuses the comparison lane's capture-then-pull path (and its stale-clear above).
-if [ "${1:-}" = 'compat' ]; then
+## The compat and tooltip lanes take an OUTPUT DIR whose wrapper default (the site's
+## compatibility/shots/ or shots/) does not exist in the sandbox; point each at the same shots_out
+## the driver pulls from, so they reuse the comparison lane's capture-then-pull path (and its
+## stale-clear above).
+if [ "${1:-}" = 'compat' ] || [ "${1:-}" = 'tooltip' ]; then
    set -- "$@" "${shots_out}"
 fi
 
