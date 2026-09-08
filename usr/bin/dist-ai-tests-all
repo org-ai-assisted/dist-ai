@@ -77,6 +77,7 @@ core_suites=(
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
    github-api-tests
+   dm-boot-test-tests
    dm-ci-job-watch-tests
    dm-grub-smbios-tests
    dm-grub-theme-tests
@@ -637,6 +638,18 @@ wire() {
          ## and the sources under each package, so it needs the checkout root.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-boot-test)
+         ## The resolution test drives the real dm-boot-test and reads
+         ## helper-scripts from the derivative-maker checkout; point it there.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         wire_args=()
+         ;;
+      dm-ci-job-watch)
+         ## Self-contained: drives dm-ci-job-watch-state.py from this dist-ai
+         ## checkout with crafted JSON on stdin; no external checkout to point at.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-image-boot)
          ## Self-contained: it bundles dm-qemu + dm-image-test under
          ## usr/share/dm-image-boot-tests and takes the image to boot as an
@@ -789,7 +802,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot|dm-raw-to-iso)
+      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot|dm-raw-to-iso)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

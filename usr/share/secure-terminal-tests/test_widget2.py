@@ -602,6 +602,74 @@ win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': Tr
                    'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
                    'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
+
+# --- regression: settings-apply backstop, zoom no-truncation, About body zoom ---
+from PyQt6.QtWidgets import QMessageBox as _QMB_reg          # noqa: E402
+from PyQt6.QtGui import QFontMetricsF as _QFMF_reg           # noqa: E402
+# A raising _apply_global must NOT abort the process: under PyQt6 an uncaught
+# exception in the act_global slot calls abort(), killing the session. The backstop
+# in show_global_settings catches it and warns instead.
+_reg_warned = [0]
+_reg_orig_warn = _QMB_reg.warning
+_QMB_reg.warning = staticmethod(lambda *a, **k: _reg_warned.__setitem__(0, _reg_warned[0] + 1))
+_reg_orig_exec = _QDialog.exec
+_QDialog.exec = lambda _self: int(_QDialog.DialogCode.Accepted)
+def _reg_boom(_opts):
+    raise RuntimeError('injected apply failure')
+win._apply_global = _reg_boom
+_reg_raised = False
+try:
+    win.show_global_settings()
+except BaseException:
+    _reg_raised = True
+del win._apply_global                                        # restore the class method
+_QDialog.exec = _reg_orig_exec
+_QMB_reg.warning = _reg_orig_warn
+ok(not _reg_raised and _reg_warned[0] == 1,
+   'settings-apply backstop catches a failing apply (no crash, user warned)')
+
+# A live zoom sweep must never right-truncate: cols come from the fractional advance,
+# so cols glyphs never lay out wider than the text area (NoWrap TUI has no h-scrollbar).
+win.resize(1000, 700)
+win.show()
+APP.processEvents()
+_reg_term = win.current()
+_reg_deb = _reg_term._zoom_debounce_ms
+_reg_term._zoom_debounce_ms = 0                              # synchronous apply per notch
+_reg_overflow = []
+for _reg_z in range(80, 221, 2):
+    _reg_term.apply_zoom(_reg_z)
+    APP.processEvents()
+    _reg_w, _reg_h = _reg_term._text_area()
+    _reg_adv = _QFMF_reg(_reg_term.font()).horizontalAdvance('M') or 1.0
+    for _reg_cols, _reg_rows in (_reg_term._grid_size(), _reg_term._tui_grid_size()):
+        if _reg_cols * _reg_adv > _reg_w + 1e-6:
+            _reg_overflow.append((_reg_z, _reg_cols, _reg_adv, _reg_w))
+_reg_term._zoom_debounce_ms = _reg_deb
+_reg_term.apply_zoom(100)
+ok(not _reg_overflow,
+   'zoom sweep never right-truncates the grid (overflow cases=%d)' % len(_reg_overflow))
+
+# The About body text scales with the dialog zoom, not only the heading.
+_reg_about = {}
+def _reg_about_exec(self):
+    for _lbl in self.findChildren(QLabel):
+        if 'paste is safe by design' in _lbl.text():
+            _reg_about['b'] = _lbl
+    _reg_about['s0'] = _reg_about['b'].font().pointSizeF()
+    for _ in range(5):
+        if getattr(self, 'on_zoom', None):
+            self.on_zoom(1)
+    _reg_about['s1'] = _reg_about['b'].font().pointSizeF()
+    return int(_QDialog.DialogCode.Rejected)
+_reg_orig_exec2 = _QDialog.exec
+_QDialog.exec = _reg_about_exec
+win.show_about()
+_QDialog.exec = _reg_orig_exec2
+ok(_reg_about.get('s1', 0) > _reg_about.get('s0', 0) > 0,
+   'About body text zooms with the dialog (%.1f -> %.1f pt)'
+   % (_reg_about.get('s0', -1.0), _reg_about.get('s1', -1.0)))
+
 # slash-command palette: applies settings, leading slash optional, invalid -> False
 ok(win.run_command('/theme light') and win.current().current_theme() == 'light',
    'command /theme light')

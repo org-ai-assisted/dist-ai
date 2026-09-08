@@ -11,7 +11,7 @@
 ##   disk: packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader
 ##         (grub-mkconfig emits it into the image's grub.cfg)
 ##   iso:  iso-build-data/grub-config/smbios-reader.cfg
-##         (3600_convert-raw-to-iso appends it into the GRUB overlay's config.cfg
+##         (4310_convert-raw-to-iso appends it into the GRUB overlay's config.cfg
 ##          under --smbios-reader; dm-raw-to-iso stages that overlay into the ISO)
 ##
 ## They cannot be merged, so they are asserted equal instead. Drift here is not
@@ -425,7 +425,7 @@ assert_inside_conditional \
 ## dm-raw-to-iso stages into the ISO, only inside the --smbios-reader branch.
 assert_inside_conditional \
    "iso reader inlining" \
-   "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
    '^cat -- .*smbios-reader\.cfg.*>>.*config\.cfg'
 
@@ -433,7 +433,7 @@ assert_inside_conditional \
 ## same branch, so a released ISO carries neither the reader nor the placeholder.
 assert_inside_conditional \
    "iso cmdline placeholder" \
-   "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
    '^bootappend=.*dm_smbios_extra'
 
@@ -464,7 +464,7 @@ fi
 ## that variable to dm-raw-to-iso via --bootappend. A bare '${dm_smbios_extra}'
 ## inlined directly on the --bootappend argument would defeat the gate while every
 ## check above still passed.
-iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso"
+iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
 if [ ! -r "${iso_build_file}" ]; then
    check_fail "missing ${iso_build_file}"
 elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend[= ].*dm_smbios_extra' "${iso_build_file}"; then

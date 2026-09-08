@@ -7,7 +7,7 @@
 
 ## Guards the derivative-maker ISO GRUB menu template against feature loss.
 ##
-## build-steps.d/3600_convert-raw-to-iso stages iso-build-data/grub-config/grub.cfg
+## build-steps.d/4310_convert-raw-to-iso stages iso-build-data/grub-config/grub.cfg
 ## into the ISO via help-steps/dm-raw-to-iso's --grub-overlay; that template is the
 ## whole menu the ISO ships. This suite asserts, by content, that it still carries
 ## every boot feature the live-build port had to preserve:

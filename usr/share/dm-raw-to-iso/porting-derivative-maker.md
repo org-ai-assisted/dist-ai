@@ -6,7 +6,7 @@ initramfs to initramfs-tools is prohibited.
 
 ## How derivative-maker used live-build (before this port)
 
-Sole consumer: `build-steps.d/3600_convert-raw-to-iso` (`create-live-build-image`),
+Sole consumer: `build-steps.d/4310_convert-raw-to-iso` (`create-live-build-image`),
 guarded by `dist_build_iso=true`. It built a Kicksecure live-build fork (git
 submodule) into a .deb in `1400_local-dependencies` (`live_build_installation`),
 then drove `lb config/bootstrap/chroot/binary`. The rootfs was NOT bootstrapped by
@@ -56,7 +56,7 @@ extended (not the ISO downgraded) to express them:
    submenu, theme.cfg, live-theme/, splash.svg, smbios-reader.cfg), de-`lb`-named and
    reworked off live-build's `@LINUX_LIVE@` expansion. The ISO extra package lists
    moved to `iso-build-data/package-list-{live,kicksecure}`.
-3. `3600_convert-raw-to-iso` was rewritten to: mount the raw (chroot lifecycle),
+3. `4310_convert-raw-to-iso` was rewritten to: mount the raw (chroot lifecycle),
    strip the ISO build markers, generate kb_layouts (`set-grub-keymap` + `44_kb_layout`)
    and the package manifest, rasterize `splash.png`, assemble the GRUB + `/live`
    overlays (SMBIOS reader + `${dm_smbios_extra}` placeholder only under
