@@ -77,6 +77,7 @@ core_suites=(
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
    github-api-tests
+   dm-boot-test-tests
    dm-ci-job-watch-tests
    dm-grub-smbios-tests
    dm-grub-theme-tests
@@ -789,7 +790,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot|dm-raw-to-iso)
+      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot|dm-raw-to-iso)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

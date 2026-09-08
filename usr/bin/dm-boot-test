@@ -96,8 +96,19 @@ done
 ## zero-byte serial log, which reads as a boot failure and is nothing of the
 ## kind. Nothing here is version-sensitive, so "already installed" is a complete
 ## answer and the network round-trip is pure risk.
+## Locate package_installed_check.sh: an explicit HELPER_SCRIPTS_PATH wins; else
+## the production install under /usr/libexec; else the in-tree checkout. In CI the
+## boot harness runs from dist-ai/usr/bin nested in the derivative-maker workspace
+## (dist-ai mounted at ./dist-ai) alongside packages/kicksecure/helper-scripts,
+## which is checked out but NOT installed -- without this fallback the hardcoded
+## /usr/libexec path aborts every boot-test leg before qemu even starts.
+dm_boot_test_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+helper_scripts_base="${HELPER_SCRIPTS_PATH:-}"
+if [ -z "${helper_scripts_base}" ] && [ ! -e /usr/libexec/helper-scripts/package_installed_check.sh ]; then
+   helper_scripts_base="${dm_boot_test_dir}/../../../packages/kicksecure/helper-scripts"
+fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/package_installed_check.sh
-source /usr/libexec/helper-scripts/package_installed_check.sh
+source "${helper_scripts_base}/usr/libexec/helper-scripts/package_installed_check.sh"
 
 ## Only what THIS --arch needs. The list used to be unconditional, so an amd64
 ## boot test demanded qemu-system-arm and qemu-efi-aarch64 -- emulator and

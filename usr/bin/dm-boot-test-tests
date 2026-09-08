@@ -1,0 +1,54 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the dm-boot-test regression suite: asserts the CI boot harness front-end
+## (dm-boot-test) locates helper-scripts' package_installed_check.sh in the layout
+## the boot-test job uses (dist-ai checked out beside a helper-scripts checkout, not
+## installed), so a leg is not aborted before qemu starts. No network, no root.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-boot-test-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-boot-test-tests"
+else
+   tests_dir='/usr/share/dm-boot-test-tests'
+fi
+
+shopt -s nullglob
+failures=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+  printf '\nFAILED: %s dm-boot-test test script(s) failed\n' "${failures}" >&2
+  exit 1
+fi
+printf '\nOK: all dm-boot-test test scripts passed\n'
+exit 0
