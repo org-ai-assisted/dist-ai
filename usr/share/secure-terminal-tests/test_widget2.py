@@ -620,7 +620,7 @@ win._apply_global = _reg_boom
 _reg_raised = False
 try:
     win.show_global_settings()
-except BaseException:
+except Exception:            # backstop test: the injected failure is a RuntimeError
     _reg_raised = True
 del win._apply_global                                        # restore the class method
 _QDialog.exec = _reg_orig_exec
