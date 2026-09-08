@@ -194,6 +194,41 @@ else
    fail "arch-excluded handling wrong: excluded=${excluded} in_list=${in_list} debs=[${make_package_debs_files_list[*]}]"
 fi
 
+## --- the LAST stanza must be flushed (regression: single-binary package) ---
+## '$(grep-dctrl ...)' strips grep-dctrl's trailing blank line, and the loop flushes a
+## stanza only when it reads a following blank line, so without a re-added terminator the
+## LAST stanza is dropped. For a single-binary 'Architecture: all' package (e.g.
+## developer-meta-files) that empties make_package_debs_files_list entirely, so deb-install
+## installs nothing and installcheck then fails. Mirror that exact shape.
+cat > "${test_root}/control-single" <<'EOF'
+Source: solosrc
+
+Package: solopkg
+Architecture: all
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-single"
+make_source_package_name='solosrc'
+make_pkg_version='1.0'
+make_pkg_revision='-1'
+target_architecture='arm64'
+DISTDIR="${test_root}/dist"
+make_package_debs_files_list=()
+make_package_list=()
+all_target_debs_are_arch_all='true'
+make_get_variables_parse_stanzas
+
+tests_total=$(( tests_total + 1 ))
+want_solo="${DISTDIR}/solopkg_1.0-1_all.deb"
+found='false'
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${want_solo}" ] && found='true'
+done
+if [ "${found}" = 'true' ]; then
+   pass 'the last (single) binary stanza is flushed -> its .deb is listed'
+else
+   fail "last stanza dropped -> ${want_solo} not in [${make_package_debs_files_list[*]}] (deb-install would install nothing)"
+fi
+
 ## --- a malformed debian/control must ABORT, not silently drop packages ---
 ## grep-dctrl exits non-zero and emits only the stanzas parsed so far on a syntax error; the parser
 ## must fail loud, not read the truncated output and drop the rest. Override exit_with_error (its
