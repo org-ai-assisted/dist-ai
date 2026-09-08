@@ -100,7 +100,9 @@ export GRIM_STUB_FRAME='content'
 rc=0; wl_headless_capture_window "${out2}" >/dev/null 2>&1 || rc=$?
 check 'a mapped window captures successfully (rc 0)' "$([ "${rc}" -eq 0 ] && printf y)"
 if [ -f "${out2}" ]; then
-   read -r gw gh < <(identify -format '%w %h' "${out2}" 2>/dev/null || printf '0 0')
+   ## `|| true`: identify prints no trailing newline, so `read` returns 1 at EOF, which would
+   ## abort under errexit even though gw/gh were assigned.
+   read -r gw gh < <(identify -format '%w %h' "${out2}" 2>/dev/null || printf '0 0') || true
    check "the captured shot has sane dimensions (${gw}x${gh}, both >= 20)" \
       "$([ "${gw:-0}" -ge 20 ] && [ "${gh:-0}" -ge 20 ] && printf y)"
 else

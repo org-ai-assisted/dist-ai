@@ -107,6 +107,10 @@ wl_headless_start() {
       runtime="$(mktemp --directory)"
       WL_HEADLESS_RUNTIME_MINTED=1
    fi
+   ## Create a caller-supplied --runtime that does not exist yet, so the chmod (and everything
+   ## below) has a dir to act on -- otherwise, under the caller's set -e (this fragment runs
+   ## without its own), a chmod of a missing path aborts the WHOLE calling shell.
+   mkdir --parents -- "${runtime}"
    chmod 700 -- "${runtime}"
    WL_HEADLESS_RUNTIME="${runtime}"
    export XDG_RUNTIME_DIR="${runtime}"
@@ -170,23 +174,29 @@ wl_headless_start() {
       _wl_lock_dir="${WL_HEADLESS_SAVED_XDG}"
    else
       _wl_lock_dir="${TMPDIR:-/tmp}/wl-headless.$(id --user)"
-      if [ -L "${_wl_lock_dir}" ] \
-            || { [ -e "${_wl_lock_dir}" ] && { [ ! -d "${_wl_lock_dir}" ] || [ ! -O "${_wl_lock_dir}" ]; }; }; then
+      ## mkdir --mode=700 sets the mode ATOMICALLY at create -- no separate chmod that would
+      ## follow a symlink planted between a check and the chmod (the TOCTOU the check-then-chmod
+      ## form had). Then VERIFY after: whether we just created it or it pre-existed, it must be a
+      ## real dir we own and NOT a symlink. A pre-planted symlink / foreign entry is refused; a
+      ## dir we created cannot then be swapped (the /tmp sticky bit stops another user deleting
+      ## our entry). Idempotent -- reused across the user's runs.
+      mkdir --mode=700 -- "${_wl_lock_dir}" 2>/dev/null || true
+      if [ -L "${_wl_lock_dir}" ] || [ ! -d "${_wl_lock_dir}" ] || [ ! -O "${_wl_lock_dir}" ]; then
          printf '%s\n' "wl_headless_start: refusing unsafe lock dir '${_wl_lock_dir}' (symlink or not owned by us); bringup serialization skipped" >&2
-         _wl_lock_dir=''
-      elif ! mkdir --parents -- "${_wl_lock_dir}" 2>/dev/null || ! chmod 700 -- "${_wl_lock_dir}" 2>/dev/null; then
-         ## idempotent (reused across the user's runs); the guard above already refused a symlink
-         ## or foreign-owned entry, so this creates/locks-down only our own dir.
          _wl_lock_dir=''
       fi
    fi
    if [ -n "${_wl_lock_dir}" ]; then
       _wl_lock="${_wl_lock_dir}/wl-headless-bringup.lock"
       if exec {_wl_lock_fd}<>"${_wl_lock}" 2>/dev/null; then
-         ## Bounded wait: a normal bringup holds the lock only a few seconds, so 30s means the
-         ## holder is wedged -- proceed UNLOCKED (the single-lane common case never contends, and a
-         ## --jobs lane racing a genuinely-stuck peer is better than deadlocking the whole run).
-         flock -w 30 "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+         ## Bounded wait: a bringup holds the lock through its socket-discovery polls (~15s worst
+         ## case), so serialized --jobs lanes queue at ~15s each; 120s covers a realistic lane
+         ## depth. A wedged holder still cannot deadlock a caller forever -- after 120s it proceeds
+         ## UNLOCKED. A residual race (proceeding unlocked while a HEALTHY peer still holds, only at
+         ## very deep --jobs under load) can hand two lanes the same Xwayland socket; the
+         ## orchestrator's sequential missing-shot RE-SHOOT net recovers that (a re-shoot, not a
+         ## corrupt result). The single-lane common case never contends.
+         flock -w 120 "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
       else
          _wl_lock_fd=''
       fi
