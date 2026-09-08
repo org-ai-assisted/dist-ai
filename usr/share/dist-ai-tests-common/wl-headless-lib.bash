@@ -52,8 +52,18 @@ _wl_headless_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 _wl_x11_socket_dir='/tmp/.X11-unix'
 
 wl_headless_start() {
-   local runtime='' icon_theme=''
+   local runtime='' icon_theme='' output_scale=1
    while [ "$#" -gt 0 ]; do
+      ## Every option here takes a value; guard the value so a missing one is a clean usage
+      ## error, not an unbound-variable abort (nounset caller) or a shift-past-end spin.
+      case "$1" in
+         --runtime|--icon-theme|--output-scale)
+            if [ "$#" -lt 2 ]; then
+               printf '%s\n' "wl_headless_start: ${1} needs a value" >&2
+               return 2
+            fi
+            ;;
+      esac
       case "$1" in
          --runtime)
             runtime="$2"
@@ -63,17 +73,34 @@ wl_headless_start() {
             icon_theme="$2"
             shift 2
             ;;
+         --output-scale)
+            output_scale="$2"
+            shift 2
+            ;;
          *)
             printf '%s\n' "wl_headless_start: unknown option '$1'" >&2
             return 2
             ;;
       esac
    done
+   ## icon-theme is interpolated into rc.xml; keep it a plain theme name so a stray '&' or '<'
+   ## cannot break (or inject into) the XML and silently disable the whole config.
+   case "${icon_theme}" in
+      *[!A-Za-z0-9._-]*)
+         printf '%s\n' "wl_headless_start: --icon-theme must be a plain theme name, got '${icon_theme}'" >&2
+         return 2
+         ;;
+   esac
 
    if ! has labwc; then
       printf '%s\n' 'wl_headless_start: labwc not installed (Debian: labwc); cannot start a headless Wayland compositor.' >&2
       return 127
    fi
+
+   ## Save the caller's runtime/display env so wl_headless_stop can restore it -- a long-lived
+   ## sourcing shell must not be left pointing at the (removed) private runtime dir.
+   WL_HEADLESS_SAVED_XDG_SET="${XDG_RUNTIME_DIR+1}"; WL_HEADLESS_SAVED_XDG="${XDG_RUNTIME_DIR:-}"
+   WL_HEADLESS_SAVED_WL_SET="${WAYLAND_DISPLAY+1}"; WL_HEADLESS_SAVED_WL="${WAYLAND_DISPLAY:-}"
 
    WL_HEADLESS_RUNTIME_MINTED=''
    if [ -z "${runtime}" ]; then
@@ -110,26 +137,35 @@ wl_headless_start() {
       printf '%s\n' '</labwc_config>'
    } > "${cfg}/rc.xml"
 
-   ## X sockets present BEFORE labwc, so its own Xwayland display is the one that appears after.
-   local before_x=' ' s
+   ## Sockets present BEFORE labwc, so the ones it creates are those that appear after. Snapshot
+   ## BOTH the X sockets (its Xwayland display) and the wayland-N sockets: a caller-supplied
+   ## --runtime may already hold a live wayland socket (a prior compositor / the user session),
+   ## and picking that one would attach clients to the wrong compositor.
+   local before_x=' ' before_wl=' ' s
    if [ -d "${_wl_x11_socket_dir}" ]; then
       for s in "${_wl_x11_socket_dir}"/X*; do
          [ -S "${s}" ] || continue
          before_x+="${s##*/X} "
       done
    fi
+   for s in "${runtime}"/wayland-[0-9]*; do
+      [ -S "${s}" ] || continue
+      before_wl+="$(basename -- "${s}") "
+   done
 
    labwc -C "${cfg}" >"${runtime}/labwc.log" 2>&1 &
    WL_HEADLESS_LABWC_PID="$!"
 
-   ## Discover the wayland-N socket labwc creates (its .lock companion is not a socket).
-   local socket='' candidate
+   ## Discover the NEW wayland-N socket labwc creates (its .lock companion is not a socket;
+   ## a pre-existing socket from the snapshot above is skipped).
+   local socket='' candidate cand_base
    for _ in $(seq 1 100); do
       for candidate in "${runtime}"/wayland-[0-9]*; do
-         if [ -S "${candidate}" ]; then
-            socket="$(basename -- "${candidate}")"
-            break
-         fi
+         [ -S "${candidate}" ] || continue
+         cand_base="$(basename -- "${candidate}")"
+         case "${before_wl}" in *" ${cand_base} "*) continue ;; esac
+         socket="${cand_base}"
+         break
       done
       [ -n "${socket}" ] && break
       sleep 0.1
@@ -137,6 +173,7 @@ wl_headless_start() {
    if [ -z "${socket}" ]; then
       printf '%s\n' 'wl_headless_start: labwc did not create a Wayland socket.' >&2
       cat -- "${runtime}/labwc.log" >&2 || true
+      wl_headless_stop
       return 1
    fi
    export WAYLAND_DISPLAY="${socket}"
@@ -160,6 +197,28 @@ wl_headless_start() {
       sleep 0.1
    done
    export WL_XWAYLAND_DISPLAY
+
+   ## HiDPI: raise the single headless output to `output_scale`, sized to a generous logical
+   ## area so any shot window fits. Native Wayland clients then render at that scale automatically
+   ## (the wl_output scale), and labwc applies the same scale to Xwayland clients -- so a 2x
+   ## capture is crisp for both without any per-client scale env. grim grabs the physical
+   ## (scaled) pixels. Geometry stays in LOGICAL units; the scale supplies the device pixels.
+   case "${output_scale}" in ''|*[!0-9]*) output_scale=1 ;; esac
+   if [ "${output_scale}" -gt 1 ]; then
+      if ! has wlr-randr; then
+         printf '%s\n' "wl_headless_start: wlr-randr not installed (Debian: wlr-randr); cannot set output scale ${output_scale}." >&2
+         wl_headless_stop
+         return 1
+      fi
+      local out_name lw=1600 lh=1000
+      out_name="$(wlr-randr 2>/dev/null | awk 'NR==1{print $1; exit}')"
+      [ -n "${out_name}" ] || out_name='HEADLESS-1'
+      wlr-randr --output "${out_name}" \
+         --custom-mode "$(( lw * output_scale ))x$(( lh * output_scale ))" \
+         --scale "${output_scale}" 2>/dev/null \
+         || printf '%s\n' "wl_headless_start: wlr-randr failed to set ${out_name} scale ${output_scale}" >&2
+      sleep 0.5
+   fi
    return 0
 }
 
@@ -172,6 +231,13 @@ wl_headless_stop() {
    if [ "${WL_HEADLESS_RUNTIME_MINTED:-}" = '1' ] && [ -n "${WL_HEADLESS_RUNTIME:-}" ]; then
       safe-rm --recursive --force -- "${WL_HEADLESS_RUNTIME}"
       WL_HEADLESS_RUNTIME_MINTED=''
+   fi
+   ## Restore the caller's runtime/display env (wl_headless_start overwrote it) so a long-lived
+   ## sourcing shell is not left pointing at the removed private runtime dir. Only if start ran.
+   if [ -n "${WL_HEADLESS_SAVED_XDG_SET+x}" ]; then
+      if [ "${WL_HEADLESS_SAVED_XDG_SET}" = 1 ]; then export XDG_RUNTIME_DIR="${WL_HEADLESS_SAVED_XDG}"; else unset XDG_RUNTIME_DIR; fi
+      if [ "${WL_HEADLESS_SAVED_WL_SET}" = 1 ]; then export WAYLAND_DISPLAY="${WL_HEADLESS_SAVED_WL}"; else unset WAYLAND_DISPLAY; fi
+      unset WL_HEADLESS_SAVED_XDG_SET WL_HEADLESS_SAVED_XDG WL_HEADLESS_SAVED_WL_SET WL_HEADLESS_SAVED_WL
    fi
 }
 
