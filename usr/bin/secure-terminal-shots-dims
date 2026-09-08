@@ -42,13 +42,14 @@ import re
 import shutil
 import subprocess
 import sys
+from html.parser import HTMLParser
 
-## An <img> tag: everything up to the first '>' (DOTALL, so a tag wrapped across lines still
-## matches). <img> carries no '>' in its attribute values, so the non-greedy stop is exact.
-_IMG_TAG = re.compile(r'<img\b[^>]*?>', re.DOTALL)
-_SRC_ATTR = re.compile(r'\bsrc\s*=\s*"([^"]*)"')
-_WIDTH_ATTR = re.compile(r'\bwidth\s*=\s*"(\d+)"')
-_HEIGHT_ATTR = re.compile(r'\bheight\s*=\s*"(\d+)"')
+## width/height WITHIN a single <img> tag's own source text (which HTMLParser hands us via
+## get_starttag_text(), so there is no comment / <script> / other-tag contamination). The
+## boundary `(?<![-\w])` excludes data-width / data-height look-alikes; case-insensitive and
+## either quote style; the FIRST match is the attribute the browser lays out with (HTML5).
+_TAG_WIDTH = re.compile(r'(?i)(?<![-\w])width\s*=\s*(["\'])(\d+)\1')
+_TAG_HEIGHT = re.compile(r'(?i)(?<![-\w])height\s*=\s*(["\'])(\d+)\1')
 
 ## A gallery shot is a terminal window / program output -- hundreds of px. A referenced asset
 ## smaller than this in either axis is a FAILED capture (a nothing-mapped grab trims to ~1x1),
@@ -64,11 +65,16 @@ import shots_site_refs as ssr  # noqa: E402  (path set above so both install + c
 
 def _pixels(raw):
     """The RAW width/height attribute as an integer pixel count, or None if it is absent or
-    not a bare integer (so '100%'/'auto' are treated as 'not a pixel pin', not a partial one)."""
+    not a bare integer (so '100%'/'auto' are treated as 'not a pixel pin', not a partial one).
+    Caps the digit count: a real pixel dimension is small, and CPython raises ValueError
+    converting a >4300-digit string -- so a pathological huge-digit attribute is 'not a pixel
+    pin' rather than an uncaught crash of the whole tool."""
     if raw is None:
         return None
     raw = raw.strip()
-    return int(raw) if raw.isdigit() else None
+    if not raw.isdigit() or len(raw) > 6:
+        return None
+    return int(raw)
 
 
 def _intrinsic(path):
@@ -88,50 +94,112 @@ def _intrinsic(path):
     return int(parts[0]), int(parts[1])
 
 
-def _fix_page(html_path, site):
-    """Rewrite drifted/partial gallery <img> pins in one page to intrinsic dimensions.
-    Returns a list of (rel, 'WxH->WxH') change descriptions; writes the file only if changed."""
-    with open(html_path, encoding='utf-8') as handle:
-        original = handle.read()
-    changes = []
+class _ImgFixCollector(HTMLParser):
+    """Locate each <img> tag for --fix using the SAME parser as the read-only guard, so the two
+    never disagree. Records the tag's source position + exact source text (get_starttag_text)
+    + its FIRST src/width/height (HTML5 first-wins). HTMLParser does not emit tags inside
+    comments or <script>/<style>, so --fix cannot rewrite an <img> in a JS string or comment."""
 
-    def repin(match):
-        tag = match.group(0)
-        src = _SRC_ATTR.search(tag)
-        if not src:
-            return tag
-        rel = ssr.resolve_ref(src.group(1), html_path, site)
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.hits = []
+
+    def _record(self, tag, attrs):
+        if tag != 'img':
+            return
+        src = width = height = None
+        for name, value in attrs:
+            if name == 'src' and src is None:
+                src = value
+            elif name == 'width' and width is None:
+                width = value
+            elif name == 'height' and height is None:
+                height = value
+        if src is None:
+            return
+        self.hits.append((self.getpos(), self.get_starttag_text(), src, width, height))
+
+    def handle_starttag(self, tag, attrs):
+        self._record(tag, attrs)
+
+    def handle_startendtag(self, tag, attrs):
+        self._record(tag, attrs)
+
+
+def _rewrite_dims(raw, cw, ch):
+    """Rewrite the FIRST real width/height value in one <img> tag's source to cw x ch, inserting
+    a missing axis next to the present one. Operates only within the tag's own text, so no other
+    tag/comment/script is touched. Returns the tag unchanged if neither axis is present."""
+    have_w = _TAG_WIDTH.search(raw)
+    have_h = _TAG_HEIGHT.search(raw)
+    if have_w and have_h:
+        raw = _TAG_WIDTH.sub(lambda m: 'width=%s%d%s' % (m.group(1), cw, m.group(1)), raw, count=1)
+        raw = _TAG_HEIGHT.sub(lambda m: 'height=%s%d%s' % (m.group(1), ch, m.group(1)), raw, count=1)
+    elif have_w:
+        raw = _TAG_WIDTH.sub(
+            lambda m: 'width=%s%d%s height="%d"' % (m.group(1), cw, m.group(1), ch), raw, count=1)
+    elif have_h:
+        raw = _TAG_HEIGHT.sub(
+            lambda m: 'width="%d" height=%s%d%s' % (cw, m.group(1), ch, m.group(1)), raw, count=1)
+    return raw
+
+
+def _line_offsets(text):
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    return offsets
+
+
+def _fix_page(html_path, site):
+    """Rewrite drifted/partial gallery <img> pins in one page to intrinsic dimensions, using
+    HTMLParser to locate each tag (so --fix and the read-only guard parse identically). Returns
+    a list of (rel, 'WxH->WxH') change descriptions in document order; writes only if changed."""
+    with open(html_path, encoding='utf-8') as handle:
+        text = handle.read()
+    collector = _ImgFixCollector()
+    collector.feed(text)
+    offsets = _line_offsets(text)
+    edits = []
+    for (line, col), raw, src, w_raw, h_raw in collector.hits:
+        rel = ssr.resolve_ref(src, html_path, site)
         if rel is None or not ssr.in_gallery(rel):
-            return tag
+            continue
         fpath = os.path.join(site, rel)
         if not os.path.isfile(fpath):
-            return tag
-        w = _WIDTH_ATTR.search(tag)
-        h = _HEIGHT_ATTR.search(tag)
-        if not w and not h:
-            return tag  ## unpinned -- leave responsive layout alone
+            continue  ## dangling reference -- secure-terminal-shots-inventory owns that
+        w = _pixels(w_raw)
+        h = _pixels(h_raw)
+        ## a present-but-non-integer axis is not a pixel pin -- leave the tag alone
+        if (w_raw is not None and w is None) or (h_raw is not None and h is None):
+            continue
+        if w_raw is None and h_raw is None:
+            continue  ## unpinned -- leave responsive layout alone
         intrinsic = _intrinsic(fpath)
         if intrinsic is None:
-            return tag  ## unreadable -- the guard reports it; do not fabricate a pin
+            continue  ## unreadable -- the guard reports it; do not fabricate a pin
         cw, ch = intrinsic
         if cw < _MIN_SANE_PX or ch < _MIN_SANE_PX:
-            return tag  ## degenerate/broken asset -- do NOT pin to its bogus size; the guard flags it
-        old = '%sx%s' % (w.group(1) if w else '-', h.group(1) if h else '-')
-        if w and h:
-            if (int(w.group(1)), int(h.group(1))) == (cw, ch):
-                return tag  ## already correct
-            new_tag = _HEIGHT_ATTR.sub('height="%d"' % ch, _WIDTH_ATTR.sub('width="%d"' % cw, tag, count=1), count=1)
-        elif w:
-            new_tag = _WIDTH_ATTR.sub('width="%d" height="%d"' % (cw, ch), tag, count=1)
-        else:
-            new_tag = _HEIGHT_ATTR.sub('width="%d" height="%d"' % (cw, ch), tag, count=1)
-        changes.append((rel, '%s->%dx%d' % (old, cw, ch)))
-        return new_tag
-
-    updated = _IMG_TAG.sub(repin, original)
-    if updated != original:
+            continue  ## degenerate/broken asset -- do NOT pin to its bogus size; the guard flags it
+        if w is not None and h is not None and (w, h) == (cw, ch):
+            continue  ## already correct
+        new_raw = _rewrite_dims(raw, cw, ch)
+        if new_raw == raw:
+            continue
+        start = offsets[line - 1] + col
+        if text[start:start + len(raw)] != raw:
+            continue  ## defensive: only edit a span that really is this tag
+        old = '%sx%s' % (w_raw if w_raw is not None else '-', h_raw if h_raw is not None else '-')
+        edits.append((start, start + len(raw), new_raw, rel, '%s->%dx%d' % (old, cw, ch)))
+    changes = []
+    ## apply back-to-front so earlier offsets stay valid
+    for start, end, new_raw, rel, delta in sorted(edits, key=lambda e: e[0], reverse=True):
+        text = text[:start] + new_raw + text[end:]
+        changes.append((rel, delta))
+    if changes:
         with open(html_path, 'w', encoding='utf-8') as handle:
-            handle.write(updated)
+            handle.write(text)
+    changes.reverse()  ## report in document order
     return changes
 
 

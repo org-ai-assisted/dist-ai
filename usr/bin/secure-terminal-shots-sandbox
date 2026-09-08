@@ -13,17 +13,17 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom|zoom-live] [ARGS...]   (these
+## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live] [ARGS...]   (these
 ##   are the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
 ##   TSV and are run directly in the sandbox). `refresh` regenerates EVERY site gallery in one
 ##   command: the offscreen lanes on the host (review/modes/compat) THEN the comparison lane in
 ##   the sandbox, so none is ever missed. compat regenerates the compatibility-page program
 ##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. ARGS
 ##   pass through: for comparison e.g. --only NAME
-##   / --case C / --st-only; for zoom / zoom-live the zoom-level list (default 50 75 100 125 150
-##   175 200). The zoom lane is the diagnostic white-band sweep (offscreen, no labwc/X); zoom-live
-##   is its REAL-GUI counterpart (one ST launch under labwc, zoom stepped live via `ctl zoom`).
-##   Both pull PNGs into ZOOM_OUT_DIR (default ~/secure-terminal-zoom-shots), NOT the site.
+##   / --case C / --st-only; for zoom-live the zoom-level list (default 50 75 100 125 150 175 200).
+##   zoom-live is the REAL-GUI white-band/scrollbar diagnostic (one ST launch under labwc, zoom
+##   stepped live via `ctl zoom`); it pulls PNGs into ZOOM_OUT_DIR (default
+##   ~/secure-terminal-zoom-shots), NOT the site.
 ##
 ## Env overrides (all default to ~/private-sources/<name>):
 ##   SECURE_TERMINAL_REPO   the Qt app source (holds usr/lib/.../secure_terminal)
@@ -55,7 +55,7 @@ lane='comparison'
 refresh_all=0
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|compat|zoom|zoom-live)
+      comparison|compat|zoom-live)
          lane="$1"
          shift
          ;;
@@ -69,7 +69,7 @@ if [ "$#" -ge 1 ]; then
          shift
          ;;
       clipboard)
-         die "this driver auto-syncs + pulls the 'comparison', 'zoom' and 'zoom-live' shots only; 'clipboard' writes a .tsv, not shots. Run that lane directly in the sandbox."
+         die "this driver auto-syncs + pulls the 'comparison', 'compat' and 'zoom-live' shots only; 'clipboard' writes a .tsv, not shots. Run that lane directly in the sandbox."
          ;;
    esac
 fi
@@ -108,12 +108,12 @@ site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}
 [ -f "${dist_ai}/usr/bin/secure-terminal-shots" ] \
    || die "dist-ai runner not found at '${dist_ai}/usr/bin/secure-terminal-shots'"
 ## The site is a pull target for comparison (comparison/shots) and compat
-## (compatibility/shots); the zoom lanes write diagnostic PNGs to a local dir, so they
-## need no site checkout.
+## (compatibility/shots); the zoom-live lane writes diagnostic PNGs to a local dir, so it
+## needs no site checkout.
 if [ "${lane}" = 'compat' ]; then
    [ -d "${site}/compatibility/shots" ] \
       || die "site compat shots dir not found at '${site}/compatibility/shots' (set SECURE_TERMINAL_SITE)"
-elif [ "${lane}" != 'zoom' ] && [ "${lane}" != 'zoom-live' ]; then
+elif [ "${lane}" != 'zoom-live' ]; then
    [ -d "${site}/comparison/shots" ] \
       || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
 fi
@@ -142,12 +142,10 @@ target_arg=()
 ## window + screenshot + webp tools) the capture renders 0 shots and fails deep
 ## inside the lane with a cryptic message; check the load-bearing binaries up front
 ## and point at the one-shot provisioner instead. `sandbox exec` passes the remote
-## exit code through, so a missing binary makes the loop exit 1 here. The 'zoom'
-## lane is a headless OFFSCREEN-Qt grab (no labwc / X / window tools), so it skips
-## this preflight -- it needs only the PyQt6 + fonts-hack the app itself needs.
-## compat is a headless OFFSCREEN-Qt grab too (no labwc / X / window tools), so it skips the
+## exit code through, so a missing binary makes the loop exit 1 here.
+## compat is a headless OFFSCREEN-Qt grab (no labwc / X / window tools), so it skips the
 ## heavy capture-stack preflight -- but it webp-optimizes, so it still needs optipng/jpegoptim/cwebp.
-if [ "${lane}" != 'zoom' ] && [ "${lane}" != 'compat' ] \
+if [ "${lane}" != 'compat' ] \
    && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland wlr-randr grim wtype convert compare identify optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
    die "the comparison-shot capture stack (labwc/Xwayland/wlr-randr/grim/wtype/imagemagick/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
 fi
@@ -226,11 +224,10 @@ pp_pull_begin
 ## Pull the freshly captured shots back.
 pull_tmp="$(mktemp --directory)"
 
-if [ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ]; then
-   ## The zoom / zoom-live lanes are DIAGNOSTICS: they write PNGs (offscreen per-level + contact
-   ## sheet for zoom; real-GUI per-level for zoom-live), not site webp. Pull them into a local
-   ## diagnostic dir (override with ZOOM_OUT_DIR) and print the path -- never into the site,
-   ## which references none of them. zoom-live's shots are prefixed zoom-live-<pct>.
+if [ "${lane}" = 'zoom-live' ]; then
+   ## The zoom-live lane is a DIAGNOSTIC: it writes real-GUI per-level PNGs, not site webp. Pull
+   ## them into a local diagnostic dir (override with ZOOM_OUT_DIR) and print the path -- never
+   ## into the site, which references none of them. zoom-live's shots are prefixed zoom-live-<pct>.
    zoom_out="${ZOOM_OUT_DIR:-${HOME}/secure-terminal-zoom-shots}"
    mkdir --parents -- "${zoom_out}"
    sandbox "${target_arg[@]}" pull "${remote_shots}" "${pull_tmp}/" \

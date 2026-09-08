@@ -68,6 +68,23 @@ else
    check 'the bringup flock is bounded with -w (no indefinite deadlock)' ''
 fi
 
+## 3. a caller-supplied --runtime is mkdir'd before the chmod, so a chmod of a missing dir cannot
+## abort the caller's set -e shell.
+if grep --extended-regexp --quiet 'mkdir --parents -- "\$\{runtime\}"' "${lib}"; then
+   check 'a caller-supplied --runtime is created before chmod (no set -e abort)' '1'
+else
+   check 'a caller-supplied --runtime is created before chmod (no set -e abort)' ''
+fi
+
+## 4. the fallback /tmp lock dir is created with mkdir --mode=700 (atomic) and NOT a separate
+## chmod that would follow a symlink planted between the check and the chmod (TOCTOU).
+if grep --extended-regexp --quiet 'mkdir --mode=700 -- "\$\{_wl_lock_dir\}"' "${lib}" \
+   && ! grep --extended-regexp --quiet 'chmod 700 -- "\$\{_wl_lock_dir\}"' "${lib}"; then
+   check 'the fallback lock dir is created atomically (mkdir --mode=700, no chmod-after TOCTOU)' '1'
+else
+   check 'the fallback lock dir is created atomically (mkdir --mode=700, no chmod-after TOCTOU)' ''
+fi
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1

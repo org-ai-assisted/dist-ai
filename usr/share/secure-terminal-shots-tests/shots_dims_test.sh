@@ -183,6 +183,28 @@ rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'a degenerate (1x1 broken) shot is flagged even when its pin matches' "${rc}" 1
 safe-rm -- "${site}/comparison/shots/broken.webp"
 
+## a DUPLICATE width -- the guard must judge the FIRST (what HTML5 lays out with), not dict-last.
+mkshot "${site}/comparison/shots/dup.webp" 200x120
+cat > "${site}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/comparison/shots/dup.webp" width="999" width="200" height="120" alt="dup">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a duplicate width is judged by the FIRST value (HTML5), not the last' "${rc}" 1
+safe-rm -- "${site}/comparison/shots/dup.webp"
+
+## a pathological >4300-digit dimension must NOT crash the tool (CPython int() ValueError) --
+## it is treated as 'not a pixel pin' (rc 0 here: no valid pinned gallery img), never rc 2.
+big="$(printf '9%.0s' $(seq 1 5000))"
+cat > "${site}/index.html" <<HTML
+<!doctype html><html><body>
+<img src="/comparison/shots/demo.webp" width="${big}" height="80" alt="huge">
+</body></html>
+HTML
+rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
+check 'a >4300-digit dimension does not crash the tool' "${rc}" 0
+
 ## --fix rewrites drifted + partial pins to intrinsic in place, and the guard is then clean.
 ## (This is what the capture driver runs after pulling fresh shots, so a re-capture cannot
 ## leave a stale pin.) A tag with correct pins and a non-gallery tag must be left untouched.
@@ -226,6 +248,47 @@ if grep --fixed-strings --quiet 'width="1" height="1"' "${degsite}/index.html"; 
 check '--fix does not pin a degenerate shot to its bogus 1x1 size' "${rc}" 0
 rc=0; "${tool}" "${degsite}" >/dev/null 2>&1 || rc=$?
 check '--fix leaves the degenerate shot flagged for a human' "${rc}" 1
+
+## --fix must not misread data-src/data-width look-alikes (the old \b-regex bug): a tag whose
+## real src is a non-gallery placeholder + a data-src lazy-load target must be left UNTOUCHED.
+dsite="${work}/dsite"
+mkdir --parents -- "${dsite}/comparison/shots"
+mkshot "${dsite}/comparison/shots/real.webp" 300x150
+cat > "${dsite}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src="/placeholder.png" data-src="/comparison/shots/real.webp" width="10" height="10" alt="lazy">
+</body></html>
+HTML
+"${tool}" --fix "${dsite}" >/dev/null 2>&1 || true
+if grep --fixed-strings --quiet 'width="10" height="10"' "${dsite}/index.html"; then rc=0; else rc=1; fi
+check '--fix does not misread data-src/data-width and corrupt an unrelated tag' "${rc}" 0
+
+## --fix must not rewrite an <img> that lives inside an HTML comment (HTMLParser skips it).
+csite="${work}/csite"
+mkdir --parents -- "${csite}/comparison/shots"
+mkshot "${csite}/comparison/shots/c.webp" 300x150
+cat > "${csite}/index.html" <<'HTML'
+<!doctype html><html><body>
+<!-- <img src="/comparison/shots/c.webp" width="10" height="10"> -->
+<img src="/comparison/shots/c.webp" width="300" height="150" alt="real">
+</body></html>
+HTML
+"${tool}" --fix "${csite}" >/dev/null 2>&1 || true
+if grep --fixed-strings --quiet 'width="10" height="10"' "${csite}/index.html"; then rc=0; else rc=1; fi
+check '--fix leaves an <img> inside a comment untouched' "${rc}" 0
+
+## --fix must repin a SINGLE-QUOTED pin (the old double-quote-only regex missed it -> guard stays red).
+qsite="${work}/qsite"
+mkdir --parents -- "${qsite}/comparison/shots"
+mkshot "${qsite}/comparison/shots/q.webp" 300x150
+cat > "${qsite}/index.html" <<'HTML'
+<!doctype html><html><body>
+<img src='/comparison/shots/q.webp' width='10' height='10' alt="single-quoted">
+</body></html>
+HTML
+"${tool}" --fix "${qsite}" >/dev/null 2>&1 || true
+rc=0; "${tool}" "${qsite}" >/dev/null 2>&1 || rc=$?
+check '--fix repins a single-quoted pin (guard clean after)' "${rc}" 0
 
 ## 2. LIVE: the real site checkout, when present, must have matching pins.
 live=''

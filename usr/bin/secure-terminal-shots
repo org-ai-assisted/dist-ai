@@ -8,7 +8,7 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [refresh|review|hero|modes|tooltip|compat|zoom|zoom-live|comparison|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [refresh|review|modes|tooltip|compat|zoom-live|comparison|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
 ##
 ##   refresh     regenerate EVERY deterministic offscreen SITE gallery in one run (review +
@@ -20,7 +20,7 @@
 ##   compat      deterministic compatibility-page program shots -- each line-oriented
 ##               program is RUN for real against a fixed fixture (no network/clock)
 ##               and what secure-terminal DISPLAYS of its output is grabbed, headless
-##               and byte-reproducible (same offscreen-Qt path as hero/modes). One
+##               and byte-reproducible (same offscreen-Qt path as modes). One
 ##               webp per compatibility-table row, into the site's compatibility/shots/.
 ##
 ##   --cleanup   reap any leftover capture process groups (the terminals + the secure-terminal
@@ -34,26 +34,17 @@
 ##   review      (default) the paste + copy REVIEW-BAR shots -- headless, offscreen
 ##               Qt grab of the real ReviewBar, deterministic. OUTPUT_DIR defaults
 ##               to the site's shots/. This is the safe, no-display path.
-##   hero        a short realistic session in the default mode -- the site's hero
-##               image. Headless offscreen-Qt; it is the terminal's DISPLAY, not a
-##               window capture (no title bar / tabs / toolbar).
 ##   modes       the four unicode DISPLAY MODES (box/show/reveal/detail) of one
 ##               hostile payload, as a single labelled grid -- same headless
 ##               offscreen-Qt path as review. OUTPUT_DIR defaults to the site's
 ##               shots/.
-##   zoom        DIAGNOSTIC (not a site asset): sweep the font-zoom levels and grab
-##               the LIVE TUI grid at each, headless + offscreen, to look for a
-##               mid-screen white band when the grid is full. One PNG per level plus
-##               a labelled contact sheet, into the local working shots/ dir (NOT
-##               webp-optimized). Levels: extra args, else ZOOM_LEVELS, else the
-##               default 50 75 100 125 150 175 200. Run via secure-terminal-shots-sandbox.
 ##   zoom-live   DIAGNOSTIC (not a site asset): the REAL-GUI live-zoom sweep -- one secure-terminal
 ##               launch under the real labwc/Xwayland capture chain running a full-screen TUI, the
 ##               font zoom stepped LIVE via `secure-terminal ctl zoom` on the SAME instance (no
-##               restarts), the real decorated window screenshotted at each level. The real-app
-##               counterpart to `zoom`: it can see the actual horizontal scrollbar + any white
-##               band. NEEDS an X server + labwc (run in a sandbox). Levels: trailing args, else
-##               the default band. Writes zoom-live-<pct>.png into the local shots/ dir.
+##               restarts), the real decorated window screenshotted at each level, so it sees the
+##               actual horizontal scrollbar + any white band. NEEDS an X server + labwc (run in a
+##               sandbox). Levels: trailing args, else the default band. Writes zoom-live-<pct>.png
+##               into the local shots/ dir.
 ##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators as
 ##               NATIVE WAYLAND clients (the X11-only trio xterm/urxvt/st via labwc's
 ##               Xwayland) under a private headless labwc compositor, captured with grim.
@@ -119,8 +110,8 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
 fi
 
 mode='review'
-if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
-      || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom' ] || [ "$1" = 'zoom-live' ] \
+if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] \
+      || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom-live' ] \
       || [ "$1" = 'comparison' ] \
       || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ] || [ "$1" = 'refresh' ]; }; then
    mode="$1"
@@ -174,9 +165,9 @@ if [ "${mode}" = 'zoom-live' ]; then
    ## Real-GUI live-zoom DIAGNOSTIC (not a site asset): launch secure-terminal ONCE under the
    ## real labwc/Xwayland capture chain (the comparison path, NOT offscreen), run a full-screen
    ## TUI, and step the font zoom LIVE via `secure-terminal ctl zoom` on the SAME instance --
-   ## screenshotting the real decorated window at each level, no restarts. The real-app
-   ## counterpart to the offscreen `zoom` lane: it can see the actual horizontal scrollbar and
-   ## any white band the offscreen grab cannot. Levels: trailing args, else the default band.
+   ## screenshotting the real decorated window at each level, no restarts. It can see the
+   ## actual horizontal scrollbar and any white band a widget grab cannot. Levels: trailing
+   ## args, else the default band.
    ## comparison-capture.sh brings up its own headless labwc (no Xvfb) and writes PNGs to shots/.
    run_rc=0
    "${shots_dir}/comparison-capture.sh" --zoom-live "$@" || run_rc="$?"
@@ -199,25 +190,9 @@ if [ "${mode}" = 'clipboard' ]; then
    exit "${run_rc}"
 fi
 
-if [ "${mode}" = 'zoom' ]; then
-   ## Zoom-band DIAGNOSTIC: sweep the font-zoom levels, grab the LIVE TUI grid at
-   ## each (offscreen, deterministic -- same headless-Qt path as hero/modes) and
-   ## look for a mid-screen white band. Multiple PNGs (one per level + a labelled
-   ## contact sheet), written to the local (gitignored) working shots/ dir -- NOT
-   ## the site (these are diagnostics, not published assets), so they are NOT
-   ## webp-optimized. secure-terminal-shots-sandbox pulls them back from there.
-   ## Levels: extra args, else the ZOOM_LEVELS env, else the built-in default set.
-   zoom_out="${shots_dir}/shots"
-   mkdir --parents -- "${zoom_out}"
-   export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-   "${shots_dir}/zoom-shot.py" "${zoom_out}" "$@"
-   printf '%s\n' "secure-terminal-shots: wrote zoom-band shots to ${zoom_out}"
-   exit 0
-fi
-
 if [ "${mode}" = 'compat' ]; then
    ## Deterministic compatibility-program shots into the site's compatibility/shots/.
-   ## Same offscreen-Qt path as hero/modes: each program is RUN for real against a
+   ## Same offscreen-Qt path as modes: each program is RUN for real against a
    ## fixed fixture and what secure-terminal DISPLAYS of its output is grabbed, so the
    ## picture backs the page's "was run and verified" claim. One PNG per program
    ## (webp-optimized), named for its compatibility-table row.
@@ -240,10 +215,8 @@ if [ "${mode}" = 'compat' ]; then
    exit 0
 fi
 
-if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ] || [ "${mode}" = 'tooltip' ]; then
-   if [ "${mode}" = 'hero' ]; then
-      gen='hero-shot.py'; outfile='hero.png'
-   elif [ "${mode}" = 'tooltip' ]; then
+if [ "${mode}" = 'modes' ] || [ "${mode}" = 'tooltip' ]; then
+   if [ "${mode}" = 'tooltip' ]; then
       gen='tooltip-shot.py'; outfile='tooltip.png'
    else
       gen='display-modes-shot.py'; outfile='display-modes.png'
