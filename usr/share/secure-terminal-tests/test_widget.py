@@ -211,6 +211,48 @@ ok(_t8._reflow_timer.isActive(),
    '#8: a resize that changes the column count schedules the debounced line reflow')
 _t8._reflow_timer.stop()
 
+# task 6: a reflow must not scatter a shell's trailing prompt-FILL onto phantom blank
+# rows. _rerender re-wraps retained _raw at the new width; padding wrapped narrower used
+# to land on blank continuation rows (repeated zoom scattered prompts with blank lines).
+# The fix drops TRAILING all-blank autowrap continuations only -- POST-overwrite (a
+# \r/\b/CSI-G-wiped line stays wiped, never resurrected), and a blank MIDDLE continuation
+# (which would shift later text) and a genuine blank line are kept.
+from secure_terminal.terminal import _trim_blank_wrap_fill as _t6trim       # noqa: E402
+from secure_terminal.sanitize import feed_line_edits as _t6fle              # noqa: E402
+
+
+def _t6segs(raw, w):
+    c, _cells, _col, _sgr, wr = _t6fle([], 0, {'fg': None, 'bg': None, 'bold': False},
+                                       raw, w, True)
+    c, wr = _t6trim(c, wr)
+    return [''.join(x[0] for x in seg) for seg in c]
+
+
+ok(len(_t6segs('user@host:~% ' + ' ' * 67 + '\r\n', 40)) == 1,
+   'task6: a padded prompt re-wrapped narrower collapses to one row (blank fill dropped)')
+_t6mid = _t6segs('a' + ' ' * 80 + 'b\n', 40)
+ok(len(_t6mid) == 3 and _t6mid[-1].strip() == 'b',
+   'task6: a blank MIDDLE wrap continuation is kept (dropping it would shift later text)')
+ok(_t6segs('x\n\ny\n', 40) == ['x', '', 'y'], 'task6: a genuine blank line is preserved')
+# end-to-end through the real widget _rerender; the block count is the canary (pre-fix the
+# 80-col fill wraps at 40 and roughly doubles), and a \r-wiped line must not resurrect.
+_t6w = SecureTerminal(command='/bin/cat')
+_t6w._cols = 80
+_t6w._raw = ('user@host:~% ' + ' ' * 67 + '\r\n') * 5
+_t6w._rerender()
+_t6n80 = _t6w.blockCount()
+_t6w._cols = 40
+_t6w._rerender()                                   # narrowing reflow
+ok(_t6w.blockCount() == _t6n80,
+   'task6: a narrowing reflow keeps the row count (no phantom blank rows)')
+_t6w._raw = 'secretpw: swordfish\r' + ' ' * 40 + '\r\ndone\r\n'
+_t6w._rerender()
+_t6w._cols = 80
+_t6w._rerender()
+ok('swordfish' not in _t6w.toPlainText(),
+   'task6: a \\r-overwrite-wiped password is not resurrected by a reflow')
+_t6w.close()
+
 # #4 (ai-review): the debounced width-reflow (_reflow, the timer slot) replays the FULL
 # retained _raw, not just the _RERENDER_TAIL, so a resize never DELETES older scrollback.
 _t8._cols = 100
