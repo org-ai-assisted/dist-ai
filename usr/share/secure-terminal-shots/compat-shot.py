@@ -11,10 +11,16 @@ The compatibility page claims each program "was run and its output verified".
 This backs that claim with an artifact: every program below is executed for real
 against a fixed fixture (no network, no clock, pinned locale/timezone/identity),
 its RAW output captured -- colour escapes and all -- and rendered through the
-SAME offscreen path the hero/modes shots use (SecureTerminal.render_preview, which
+SAME offscreen path the modes shots use (SecureTerminal.render_preview, which
 reuses the live CLI line pipeline). So the picture is what the terminal actually
 shows, not a mock, and re-running it on the same host is a no-op when nothing
 changed.
+
+Deliberately OFFSCREEN, not migrated to the wl-headless (labwc+grim) stack (reviewed
+decision): render_preview grabs a widget render, not a top-level window, and this generator
+produces MANY per-program figures. grim captures a compositor window, not a widget -- so
+offscreen grab() is the correct tool and keeps these display-free CI-testable. The real
+WINDOW shots (the comparison terminals) are native-Wayland; these widget figures stay offscreen.
 
 Scope, so the page caption stays honest: ONLY the line-oriented programs whose
 output can be made byte-stable are here. Full-screen/TUI programs (a grid render),

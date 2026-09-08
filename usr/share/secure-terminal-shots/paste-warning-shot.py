@@ -17,6 +17,12 @@ remains) appear exactly as a user sees them. Used to generate the shot on the pr
 Pages site; run it again to regenerate. No display is needed: it uses Qt's offscreen
 platform and grab().
 
+Deliberately OFFSCREEN, not migrated to the wl-headless (labwc+grim) stack (reviewed
+decision): this grabs the in-window review-BAR widget via render_preview, not a top-level
+window. grim captures a compositor window, not an arbitrary widget -- so offscreen grab() is
+the correct tool and keeps this generator display-free CI-testable. The real WINDOW shots
+(the comparison terminals) are native-Wayland; these widget/composite figures stay offscreen.
+
 It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
 

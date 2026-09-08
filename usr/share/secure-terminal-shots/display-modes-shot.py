@@ -26,6 +26,14 @@ real handling instead of asserting it:
 No display is needed: Qt's offscreen platform plus grab(). Composition uses
 QPainter, so this adds no dependency beyond the PyQt6 the app already needs.
 
+Deliberately OFFSCREEN, not migrated to the wl-headless (labwc+grim) stack (reviewed
+decision): this is a QPainter COMPOSITE of four widget renders, not a screenshot of a
+window. grim captures a compositor window, not a composed multi-panel figure -- migrating
+would mean rendering four real windows, grim-ing each, and re-compositing externally: more
+code, compositor flakiness, and the loss of this generator's display-free CI coverage, for
+the identical image. The real WINDOW shots (the comparison terminals) are native-Wayland;
+these composite figures stay offscreen.
+
     PYTHONPATH=<secure-terminal>/usr/lib/python3/dist-packages \
         usr/share/secure-terminal-shots/display-modes-shot.py <output.png>
 
