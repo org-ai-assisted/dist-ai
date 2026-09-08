@@ -260,4 +260,12 @@ webp=("${pull_tmp}/shots/"*.webp)
 [ "${#webp[@]}" -gt 0 ] || die "no .webp shots were produced in the sandbox (capture failed silently?)"
 cp --force -- "${webp[@]}" "${site_dest}/"
 
-pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/"
+## Re-pin every on-page <img> width/height to the freshly pulled assets' intrinsic size. A
+## capture that changed a shot's dimensions otherwise leaves a stale, layout-shifting pin that
+## only secure-terminal-shots-dims catches at gate time -- so re-pin here, at the pull, and the
+## drift cannot arise. Bundled dist-ai sibling; an absent one is a broken checkout (fail loud).
+dims_tool="${script_dir}/secure-terminal-shots-dims"
+[ -x "${dims_tool}" ] || die "required sibling ${dims_tool} not found (broken checkout); cannot re-pin on-page <img> dimensions"
+"${dims_tool}" --fix "${site}" || die "re-pinning on-page <img> dimensions to the pulled assets failed"
+
+pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/ (on-page dimensions re-pinned)"
