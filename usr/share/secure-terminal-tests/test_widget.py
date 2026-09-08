@@ -4863,7 +4863,9 @@ if tui_available():
     before = len(titles)
     tui._stream.feed(b'\x1b]2;ignored\x07')
     ok(len(titles) == before, 'allow_title off: the guarded feed path emits no title')
-    tui._handle_osc(b'\x1b]2;ignored\x07')  # guard is in _on_readable
+    tui._handle_osc(b'\x1b]2;ignored\x07')  # _handle_osc ALSO gates on _osc['osc_title']
+    ok(len(titles) == before,
+       'allow_title off: the _handle_osc path also emits no title (guard checked)')
     # --- granular OSC handlers: each off by default, honored only when enabled ---
     import base64 as _b64                                   # noqa: E402
     from PyQt6.QtGui import QGuiApplication as _QGA2         # noqa: E402

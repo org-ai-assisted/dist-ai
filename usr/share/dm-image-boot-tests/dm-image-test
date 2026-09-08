@@ -401,10 +401,15 @@ def run_checks(child, args, log):
     overall = PASS
     for command, force_root, check_rc in commands:
         if not force_root and args.login_user and args.login_user != "root":
-            ## TODO(dm-image-boot-tests): a --login-user beginning with '-' is quoted but
-            ## still passed as a bare word, so su may parse it as an option. An end-of-
-            ## options guard ("su - -c CMD -- USER" form) would harden it; needs an image
-            ## boot to verify su's exact arg handling, so left documented, not fixed here.
+            ## shlex.quote leaves a bare '-x' unquoted, so 'su - -x -c CMD' would
+            ## parse -x as an su OPTION and silently run the command as ROOT instead
+            ## of the account. Reject a login user beginning with '-': the boot-test
+            ## matrix sets a real name ('user'/'sysmaint'), so this only fail-closes
+            ## a malformed override rather than passing it to su.
+            if args.login_user.startswith("-"):
+                log("dm-image-test: refusing --login-user %r: a leading '-' would be"
+                    " parsed as an su option" % args.login_user)
+                return FAIL
             payload = "su - %s -c %s" % (shlex.quote(args.login_user),
                                          shlex.quote(command))
         else:
