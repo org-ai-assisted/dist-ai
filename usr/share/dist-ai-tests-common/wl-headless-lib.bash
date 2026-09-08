@@ -137,21 +137,19 @@ wl_headless_start() {
       printf '%s\n' '</labwc_config>'
    } > "${cfg}/rc.xml"
 
-   ## Sockets present BEFORE labwc, so the ones it creates are those that appear after. Snapshot
-   ## BOTH the X sockets (its Xwayland display) and the wayland-N sockets: a caller-supplied
-   ## --runtime may already hold a live wayland socket (a prior compositor / the user session),
-   ## and picking that one would attach clients to the wrong compositor.
-   local before_x=' ' before_wl=' ' s
-   if [ -d "${_wl_x11_socket_dir}" ]; then
-      for s in "${_wl_x11_socket_dir}"/X*; do
-         [ -S "${s}" ] || continue
-         before_x+="${s##*/X} "
-      done
-   fi
+   ## A caller-supplied --runtime may already hold a live wayland-N socket (a prior compositor /
+   ## the user session); snapshot the existing ones so the discovery below picks labwc's NEW one.
+   local before_wl=' ' s
    for s in "${runtime}"/wayland-[0-9]*; do
       [ -S "${s}" ] || continue
       before_wl+="$(basename -- "${s}") "
    done
+   ## The Xwayland socket lives in the SHARED /tmp/.X11-unix, where dead prior servers leave
+   ## lingering socket files -- so a name/existence diff mis-fires when labwc's Xwayland reuses a
+   ## stale display number. A marker stamped just before labwc starts lets discovery pick the X
+   ## socket labwc (re)CREATES after it (newer mtime), robust to those leftovers.
+   local xwl_marker="${runtime}/.xwl-marker"
+   touch -- "${xwl_marker}"
 
    labwc -C "${cfg}" >"${runtime}/labwc.log" 2>&1 &
    WL_HEADLESS_LABWC_PID="$!"
@@ -178,17 +176,18 @@ wl_headless_start() {
    fi
    export WAYLAND_DISPLAY="${socket}"
 
-   ## Discover labwc's Xwayland display (the X socket that appeared after labwc started). Absent
-   ## is fine -- only the X11-only emulators need it; a caller that uses none can ignore it.
+   ## Discover labwc's Xwayland display: the X socket (re)created AFTER the marker above (newer
+   ## mtime). Absent is fine -- only the X11-only emulators need it; a caller that uses none can
+   ## ignore it. wlroots creates Xwayland lazily, so poll a while for the socket to appear.
    WL_XWAYLAND_DISPLAY=''
    local n
    for _ in $(seq 1 50); do
       if [ -d "${_wl_x11_socket_dir}" ]; then
          for s in "${_wl_x11_socket_dir}"/X*; do
             [ -S "${s}" ] || continue
+            [ "${s}" -nt "${xwl_marker}" ] || continue
             n="${s##*/X}"
             case "${n}" in ''|*[!0-9]*) continue ;; esac
-            case "${before_x}" in *" ${n} "*) continue ;; esac
             WL_XWAYLAND_DISPLAY=":${n}"
             break
          done
