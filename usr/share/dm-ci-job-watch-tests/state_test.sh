@@ -109,5 +109,18 @@ check "absent check_suite falls back to plain aggregation" "completed:failure" "
 ]}
 JSON
 
+## The newest suite (id 300) is still in its BUILD phase and has not created the
+## filtered job type (boot-test legs) yet; an older suite (id 200) on the same
+## head-sha has completed, green boot-test legs. Watching boot-test must NOT read
+## the old suite's success -- it must keep waiting (empty output).
+check "newest suite lacking the filtered job type does not read a prior run" "" "boot-test" <<'JSON'
+{"check_runs":[
+  {"name":"build (a)","status":"in_progress","conclusion":null,"check_suite":{"id":300}},
+  {"name":"build (b)","status":"in_progress","conclusion":null,"check_suite":{"id":300}},
+  {"name":"boot-test (iso, bios, user)","status":"completed","conclusion":"success","check_suite":{"id":200}},
+  {"name":"boot-test (iso, efi, user)","status":"completed","conclusion":"success","check_suite":{"id":200}}
+]}
+JSON
+
 printf '%s\n' "state_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
