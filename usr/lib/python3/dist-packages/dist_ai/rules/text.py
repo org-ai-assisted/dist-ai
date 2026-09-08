@@ -77,11 +77,11 @@ SHELL_GUARD_BLOCK = (
 _USR_BIN_ENTRY_RE = re.compile(r'(?:^|/)usr/bin/[^/]+$')
 
 NON_ASCII_RE = re.compile(rb'[^\x00-\x7f]')
-## Trailing blanks before end-of-line: a LF, a CRLF, or a lone trailing CR /
-## end-of-file. The '\r?' in the end-of-file branch matters -- 'foo  \r' with no
-## LF (old-Mac line end) has blanks before a bare CR, which the former fixer
-## stripped (peel CR, rstrip) and a plain '\Z' lookahead would miss.
-TRAILING_RE = re.compile(rb'[ \t]+(?=\r?\n|\r?\Z)')
+## Trailing blanks before any line end (LF, CR of a CRLF, or a bare CR -- old-Mac
+## line ends, mid-file too, not only the last one) or end-of-file. Matching the
+## bare CR via the '[\r\n]' class, not just '\r?\n', is what catches blanks before
+## a mid-file '\r' (a '\r?\n' lookahead needs a following LF and misses it).
+TRAILING_RE = re.compile(rb'[ \t]+(?=[\r\n]|\Z)')
 
 
 def _line_of_byte(data, offset):
