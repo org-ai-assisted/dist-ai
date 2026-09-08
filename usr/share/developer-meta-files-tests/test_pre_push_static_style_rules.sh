@@ -930,6 +930,9 @@ expect_rule "trailing-whitespace" "true"       "absent"
 ## CRLF line (bare CR, no preceding blank) must be SPARED.
 expect_rule "trailing-whitespace" "true${sp}${cr}" "present"
 expect_rule "trailing-whitespace" "true${cr}"      "absent"
+## a blank before a MID-FILE bare CR (old-Mac line end, not the last line) must be
+## FLAGGED too -- a '\r?\n'-only lookahead missed it (ai-review).
+expect_rule "trailing-whitespace" "a${sp}${cr}b=1" "present"
 
 ## is_shell_file must detect a CRLF-terminated shebang. Regression for a '\r'
 ## left on the first line by 'read', which defeated the end-anchored

@@ -62,6 +62,42 @@ os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp()
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp()
 os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()   # single-instance socket dir
 
+# --- default-safe pty teardown backstop --------------------------------------
+# The app installs a SIGCHLD handler (main._reap_pty_children) that reaps ONLY our
+# pty shells (SecureTerminal._LIVE_PTY_PIDS), never a subprocess child, so a closed
+# tab's hung-up shell never lingers defunct. These tests drive MainWindow WITHOUT going
+# through main(), so that handler is absent by default and every closed window's shell
+# leaks a zombie. Install the REAL handler here (not SIG_IGN, which would defang a
+# subprocess returncode) so the test environment matches production; the main() startup
+# tests below save/restore SIGCHLD around their own calls, so this ambient value is
+# transparent to them. Belt-and-suspenders: an atexit sweep force-closes any window a
+# test tore down with deleteLater() (or left open) so its shell is hung up and reaped
+# instead of escaping the test process. Default-safe by design: no per-test teardown
+# call to remember, so a future window cannot silently reintroduce the leak.
+import signal as _sig_reap                                       # noqa: E402
+import atexit as _atexit_reap                                    # noqa: E402
+from secure_terminal.terminal import SecureTerminal as _ST_reap  # noqa: E402
+_sig_reap.signal(_sig_reap.SIGCHLD, M._reap_pty_children)
+
+
+def _pty_teardown_sweep():
+    for _w in list(APP.topLevelWidgets()):
+        if isinstance(_w, MainWindow):
+            _w._force_close = True
+            try:
+                _w.close()          # -> closeEvent -> tab.shutdown() -> SIGHUP the shell
+            except RuntimeError:
+                pass                # C++ object already deleted (deleteLater processed)
+    APP.processEvents()
+    for _ in range(25):             # SIGHUP is async: reap as the hung-up shells die
+        if not _ST_reap._LIVE_PTY_PIDS:
+            break
+        _ST_reap.reap_pty_children()
+        time.sleep(0.02)
+
+
+_atexit_reap.register(_pty_teardown_sweep)
+
 _failures = 0
 
 

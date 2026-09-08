@@ -12,7 +12,7 @@ The rest of the suite drives the wizard under the offscreen QPA plugin, which
 proves the QWizard option state but not that a real windowing backend maps the
 button box the same way. These tests spawn render_probe.py against a genuine,
 headless display server -- X11 via xvfb-run + the xcb plugin, and Wayland via a
-headless weston + the wayland plugin -- and assert the Back button is not mapped
+headless labwc + the wayland plugin -- and assert the Back button is not mapped
 on the single-page wizard yet is mapped once past the start page on the
 multi-page wizard, on BOTH backends. A screenshot of each rendered wizard is
 saved as an artifact.
@@ -20,7 +20,7 @@ saved as an artifact.
 The probe runs in a subprocess so it does not collide with the offscreen
 QApplication the rest of the suite creates. These tests do NOT skip: a missing
 or broken backend is a real failure, so the render path is always exercised.
-The required tools (xvfb + xcb libs, weston + qtwayland5) are declared in the
+The required tools (xvfb + xcb libs, labwc + qtwayland5) are declared in the
 consumer's dm-consumer.yml.
 """
 

@@ -9,7 +9,7 @@
 Real-backend render probe for the headless render test.
 
 Run under a real windowing backend (xcb on an Xvfb display, or wayland on a
-headless weston), NOT the offscreen QPA plugin, so it exercises the actual
+headless labwc), NOT the offscreen QPA plugin, so it exercises the actual
 window mapping and button-layout the user sees. Constructs the setup_wizard_dist
 wizard, shows it, and reports the Back button visibility as one JSON line on
 stdout; optionally saves a screenshot of the rendered wizard (grab of the real
@@ -18,7 +18,7 @@ widget tree) to a PNG.
     python3 render_probe.py {single|multi} [screenshot.png]
 
 The platform comes from QT_QPA_PLATFORM in the environment (xcb or wayland), set
-by the caller (test_headless_render.py under xvfb-run or a headless weston). It
+by the caller (test_headless_render.py under xvfb-run or a headless labwc). It
 defaults to xcb only if the caller left it unset; swd_testlib's offscreen
 default is bypassed because this probe sets it first.
 """
