@@ -35,6 +35,10 @@
 ##   wl_headless_capture_window <outfile.png>
 ##       grim the whole output, trim the black field to the single visible window. Returns 2 if
 ##       the trimmed result is degenerate (no window rendered).
+##   wl_headless_capture_settled <outfile.png> [tries] [max-diff-px]
+##       As capture_window, but grab until two consecutive frames match (rendering settled), then
+##       write the stable frame. Returns non-zero WITHOUT writing the output if it never
+##       stabilises within tries -- so a mid-paint frame is never published.
 ##
 ## helper-scripts 'has' for command-presence checks (R-090).
 # shellcheck disable=SC1091
@@ -201,4 +205,43 @@ wl_headless_capture_window() {
       return 2
    fi
    return 0
+}
+
+## Grab repeatedly until the window stops painting, then write the STABLE frame. Two
+## consecutive trim-to-window grabs that match (<= max-diff pixels) mean rendering settled --
+## the pixman software renderer is deterministic, so a settled frame reprints identically while
+## a still-painting one differs (or changes size). Use it for content that maps then fills in
+## (a truecolor board, a tooltip popup, an app still laying out). Returns non-zero WITHOUT
+## writing the output if it never stabilises within `tries`, so the caller fails loud rather
+## than publishing a mid-paint frame.
+wl_headless_capture_settled() {  ## $1=outfile  $2=max-tries(default 12)  $3=max-diff-pixels(default 0)
+   local outfile="$1" tries="${2:-12}" maxdiff="${3:-0}" prev cur ae n rc=1
+   if [ -z "${outfile}" ]; then
+      printf '%s\n' 'wl_headless_capture_settled: no output file' >&2
+      return 2
+   fi
+   if ! has compare; then
+      printf '%s\n' 'wl_headless_capture_settled: compare (Debian: imagemagick) not installed; cannot detect a settled frame.' >&2
+      return 127
+   fi
+   prev="$(mktemp --suffix=.png)"
+   cur="$(mktemp --suffix=.png)"
+   if wl_headless_capture_window "${prev}"; then
+      for (( n = 1; n <= tries; n++ )); do
+         sleep 0.4
+         wl_headless_capture_window "${cur}" || continue
+         ## AE = count of differing pixels (to stderr). A SIZE mismatch (window still resizing)
+         ## makes compare print an error string, not a number -- taken as not-yet-settled.
+         ae="$(compare -metric AE "${prev}" "${cur}" null: 2>&1)"
+         ae="${ae%%[!0-9]*}"
+         if [ -n "${ae}" ] && [ "${ae}" -le "${maxdiff}" ]; then
+            cp -- "${cur}" "${outfile}"
+            rc=0
+            break
+         fi
+         cp -- "${cur}" "${prev}"
+      done
+   fi
+   safe-rm --force -- "${prev}" "${cur}"
+   return "${rc}"
 }
