@@ -122,5 +122,21 @@ check "newest suite lacking the filtered job type does not read a prior run" "" 
 ]}
 JSON
 
+## Malformed / unexpected-shape input must yield NO verdict and exit 0 (the
+## documented contract), never a stack-trace crash: the JSON is a network payload
+## whose shape is not guaranteed (an error body, a truncated read, a list instead
+## of an object). rc is captured so a crash reads as a FAIL, not an errexit abort.
+for bad_input in '[]' '{}' 'not json' '{"check_runs":"x"}' '{"check_runs":[null,3]}'; do
+   bad_rc=0
+   bad_out="$(printf '%s' "${bad_input}" | job_filter=uild "${helper}" 2>&1)" || bad_rc=$?
+   if [ "${bad_rc}" -eq 0 ] && [ -z "${bad_out}" ]; then
+      printf 'PASS  malformed input yields no verdict, no crash: %s\n' "${bad_input}"
+      pass=$(( pass + 1 ))
+   else
+      printf 'FAIL  malformed input crashed or emitted (rc=%s out=[%s]): %s\n' "${bad_rc}" "${bad_out}" "${bad_input}"
+      fail=$(( fail + 1 ))
+   fi
+done
+
 printf '%s\n' "state_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
