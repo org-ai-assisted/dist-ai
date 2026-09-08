@@ -157,7 +157,14 @@ run_target() {
    ## are lowercase, so this never bites in practice.
    out="$(
       cd "${pkg_dir}"
+      ## Hermetic: a developer shell that exports make_use_cowbuilder=true (plus
+      ## make_cowbuilder_dist_folder) makes make_get_distdir FORCE DISTDIR to that
+      ## folder, overriding the DISTDIR we set here -- genmkfile would then look for
+      ## the .changes we planted in ${dist_dir} in the cowbuilder folder instead and
+      ## test -f would fail. Pin it off so our DISTDIR is authoritative regardless of
+      ## the caller's environment (clean CI never sets it; a dev shell does).
       DISTDIR="${dist_dir}" \
+      make_use_cowbuilder=false \
       make_reprepro_wrapper="${reprepro_stub}" \
       make_debdist_tolower=false \
       make_upstream_tarball_relative_path_tolower=false \
