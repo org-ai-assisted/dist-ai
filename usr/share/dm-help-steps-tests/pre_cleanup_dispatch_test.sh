@@ -68,7 +68,7 @@ make_stub_steps() {
    failing_step="$3"
 
    for step_name in remove-local-temp-apt-repo unchroot-raw \
-      unprevent-daemons-from-starting unmount-raw unmount-lb; do
+      unprevent-daemons-from-starting unmount-raw; do
       {
          printf '%s\n' '#!/bin/bash'
          printf '%s\n' "printf '%s\\n' '${step_name}' >> '${log_file}'"
@@ -129,9 +129,12 @@ main() {
    require_steps "${steps_ran}" "unmount-raw " "kind 'unmount' runs unmount-raw"
 
    true > "${log_file}"
+   ## unmount_lb was the live-build cleanup kind; the port off live-build removed
+   ## it (help-steps/unmount-lb is deleted), so it must now dispatch to nothing
+   ## like any other unrecognized kind -- this locks the removal against a revert.
    exception_handler_cleanup_run unmount_lb "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
-   require_steps "${steps_ran}" "unmount-lb " "kind 'unmount_lb' runs unmount-lb"
+   require_steps "${steps_ran}" "" "removed kind 'unmount_lb' runs nothing"
 
    true > "${log_file}"
    exception_handler_cleanup_run general "abort-on-failure"

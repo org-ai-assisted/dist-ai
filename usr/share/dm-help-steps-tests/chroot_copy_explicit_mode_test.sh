@@ -49,15 +49,22 @@ fail() {
    printf '%s\n' "FAIL: $*" >&2
 }
 
-## Any 'cp' whose destination is inside the chroot inherits a umask-dependent
+## Any 'cp' whose DESTINATION is inside the chroot inherits a umask-dependent
 ## mode. The named cp_reproducible / cp_reproducible_exec arrays (help-steps/
 ## variables) state the intent instead.
 ## BOTH parameter forms: a step writing "$CHROOT_FOLDER/etc/x" creates the same
 ## umask-dependent mode, and matching only the braced form would report success.
 chroot_folder_ref='(\$\{CHROOT_FOLDER\}|\$CHROOT_FOLDER)'
+## Scope: the DESTINATION, i.e. the chroot ref must be the LAST argument (path
+## suffix, an optional closing quote, then end of line). A copy that READS FROM
+## the chroot into a host-side path -- e.g. 3600 lifting boot/grub/kb_layouts out
+## to the ISO grub overlay -- does not create a umask-dependent mode inside the
+## image chroot, so flagging it (the chroot ref mid-line, more args after) is a
+## false positive; that copy pins its own modes explicitly downstream.
+cp_into_chroot_re="cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}[^[:space:]\"]*\"?[[:space:]]*\$"
 ## Commented-out lines are not build steps. Without this the broadened pattern
 ## flags a disabled 'cp' in 3400_copy-vms-into-raw and the rule cries wolf.
-offenders="$( grep -nE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" \
+offenders="$( grep -nE "${cp_into_chroot_re}" \
    -- "${dm_checkout}"/build-steps.d/* 2>/dev/null \
    | grep -vE '^[^:]+:[0-9]+: *#' || true )"
 
@@ -78,7 +85,7 @@ cleanup() {
 }
 trap cleanup EXIT
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    pass 'canary: the pattern does match a plain chroot cp, so a clean result means something'
 else
    fail 'canary broken: the pattern matches nothing, so this test proves nothing'
@@ -86,7 +93,7 @@ fi
 
 ## ...and it must NOT flag the fixed form, or the rule would be unusable.
 printf '%s\n' '   ${SUDO_TO_ROOT} "${cp_reproducible[@]}" "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    fail 'the pattern flags the CORRECT cp_reproducible form; it would fire forever'
 else
    pass 'the fixed cp_reproducible form is not flagged'
@@ -94,10 +101,20 @@ fi
 
 ## UNBRACED canary: the form coderabbit flagged as bypassing the braced pattern.
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "$CHROOT_FOLDER/etc/x"' > "${canary_file}"
-if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    pass 'canary: the unbraced $CHROOT_FOLDER form is matched too'
 else
    fail 'the unbraced $CHROOT_FOLDER form is NOT matched; a build step using it would bypass this test'
+fi
+
+## DESTINATION-SCOPE canary: a copy that READS FROM the chroot into a host path
+## (chroot ref mid-line, another arg after) is NOT the guarded bug and must not
+## be flagged -- otherwise 3600's kb_layouts lift would fire this rule forever.
+printf '%s\n' '   ${SUDO_TO_ROOT} cp --recursive -- "${CHROOT_FOLDER}/boot/grub/kb_layouts/." "${grub_overlay}/kb_layouts/"' > "${canary_file}"
+if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
+   fail 'a copy reading FROM the chroot is flagged; the rule is source-blind and cries wolf'
+else
+   pass 'canary: a copy reading from the chroot into a host path is not flagged'
 fi
 
 ## The build must also pin a umask, or every file it creates outside these five

@@ -9,8 +9,7 @@
 ## any stragglers it hands off to 'unmount-tree' to detach the submounts under
 ## the tree. 'unmount-tree' REQUIRES the tree as its argument (it dies "no
 ## parameter given!" without one), so mount-cleanup must forward its own
-## already-validated target -- as its two sibling callers (1300_cowbuilder-setup,
-## unmount-lb) do.
+## already-validated target -- as its sibling caller 1300_cowbuilder-setup does.
 ##
 ## The bug this pins: mount-cleanup called 'unmount-tree' with NO argument, so
 ## every invocation died at the handoff. Where a caller wrapped it in '|| true'

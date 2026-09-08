@@ -37,11 +37,15 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
-shopt -s nullglob
+export LC_ALL=C
 
 ## helper-scripts 'has' for the command-presence checks (R-090).
 # shellcheck disable=SC1091
 source /usr/libexec/helper-scripts/has.bsh
+## Single source for the labwc-headless bringup (compositor, socket + Xwayland discovery,
+## blank cursor, teardown), shared with the shots capture and the other GUI-test harnesses.
+# shellcheck source=./wl-headless-lib.bash
+source "$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/wl-headless-lib.bash"
 
 autoconfirm='true'
 case "${1:-}" in
@@ -59,24 +63,10 @@ if [ "$#" -eq 0 ]; then
    exit 2
 fi
 
-if ! has labwc; then
-   printf '%s\n' 'wl-headless-run: labwc not installed (Debian: labwc); cannot start a headless Wayland compositor.' >&2
-   exit 127
-fi
 if [ "${autoconfirm}" = 'true' ] && ! has wtype; then
    printf '%s\n' 'wl-headless-run: wtype not installed (Debian: wtype); cannot auto-confirm dialogs. Install it or pass --no-autoconfirm.' >&2
    exit 127
 fi
-
-runtime="$(mktemp --directory)"
-chmod 700 -- "${runtime}"
-## A wlroots headless compositor needs no GPU: pixman is the software renderer.
-export XDG_RUNTIME_DIR="${runtime}"
-export WLR_BACKENDS='headless'
-export WLR_RENDERER='pixman'
-
-labwc >"${runtime}/labwc.log" 2>&1 &
-labwc_pid="$!"
 
 loop_pid=''
 cleanup() {
@@ -86,38 +76,16 @@ cleanup() {
       kill "${loop_pid}" 2>/dev/null || true
    fi
    # shellcheck disable=SC2317
-   kill "${labwc_pid}" 2>/dev/null || true
-   # shellcheck disable=SC2317
-   wait "${labwc_pid}" 2>/dev/null || true
-   # shellcheck disable=SC2317
-   safe-rm --recursive --force -- "${runtime}"
+   wl_headless_stop
 }
 trap cleanup EXIT
 
-## labwc picks the first free wayland-N socket in XDG_RUNTIME_DIR; discover it
-## rather than assuming a name (the '.lock' companion file is excluded by the
-## -S socket test).
-socket=''
-for _ in $(seq 1 100); do
-   for candidate in "${runtime}"/wayland-[0-9]*; do
-      if [ -S "${candidate}" ]; then
-         socket="$(basename -- "${candidate}")"
-         break
-      fi
-   done
-   if [ -n "${socket}" ]; then
-      break
-   fi
-   sleep 0.1
-done
-
-if [ -z "${socket}" ]; then
-   printf '%s\n' 'wl-headless-run: labwc did not create a Wayland socket.' >&2
-   cat -- "${runtime}/labwc.log" >&2 || true
-   exit 1
-fi
-
-export WAYLAND_DISPLAY="${socket}"
+## Bring up the compositor (mints XDG_RUNTIME_DIR, starts labwc, exports WAYLAND_DISPLAY +
+## WL_XWAYLAND_DISPLAY, hides the pointer). A Qt client connects to the real 'wayland'
+## platform plugin -- the exact path that regressed when dialogs defaulted to xcb.
+## No favicon theme needed here (render/dialog checks, not shots); take the bringup defaults.
+# shellcheck disable=SC2119
+wl_headless_start || exit "$?"
 export QT_QPA_PLATFORM='wayland'
 
 if [ "${autoconfirm}" = 'true' ]; then

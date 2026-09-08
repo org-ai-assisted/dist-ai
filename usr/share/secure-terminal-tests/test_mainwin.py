@@ -3103,10 +3103,10 @@ finally:
     M._signal_close_windows = _o_sig_close
     APP._signal_close_pending = False        # do not leave the global handler wedged
 
-# _signal_close_windows itself: a terminate signal runs each window's NORMAL close,
-# so a running program is CONFIRMED (crash-safe: the modal runs on the live loop),
-# never force-closed. A fake app drives it so the sweep does not tear down sibling
-# test windows. (canary: old code bypassed the confirm on any signal.)
+# _signal_close_windows: a terminate signal is ATOMIC across every window -- confirm
+# ONCE, and a veto keeps EVERY window (never close an idle one while another's prompt
+# is unanswered). On confirm, force every window closed. A fake app drives it so the
+# sweep does not tear down sibling test windows.
 class _SigFakeApp:
     def __init__(self, windows):
         self._windows = windows
@@ -3117,29 +3117,51 @@ class _SigFakeApp:
     def quit(self):
         self.quit_calls += 1
 
-_sigw = MainWindow()
-_sigw.set_persist_session(False)
-_sigw.clear_saved_session()
-_sigw._confirm_close = True                   # arm the confirm-on-close prompt
-_sig_shut = []
-for _i in range(_sigw.tabs.count()):
-    _sigw.tabs.widget(_i).has_foreground_program = lambda: True
-    _sigw.tabs.widget(_i).shutdown = lambda: _sig_shut.append(True)
+def _mk_sig_window(running, shut_sink):
+    _w = MainWindow()
+    _w.set_persist_session(False)
+    _w.clear_saved_session()
+    _w._confirm_close = True                  # arm the confirm-on-close prompt
+    _has = (lambda: True) if running else (lambda: False)
+    for _i in range(_w.tabs.count()):
+        _w.tabs.widget(_i).has_foreground_program = _has
+        _w.tabs.widget(_i).shutdown = lambda: shut_sink.append(True)
+    return _w
+
+# grok's case: window A is an idle shell, window B runs a program. A veto must keep
+# BOTH -- the old per-window loop closed idle A before B's prompt was answered No, so
+# the terminate applied only partly. (canary: fails on a per-window close.)
+_shut_a, _shut_b = [], []
+_win_a = _mk_sig_window(False, _shut_a)
+_win_b = _mk_sig_window(True, _shut_b)
 _sig_asked = []
 QMessageBox.question = staticmethod(lambda *_a, **_k: (_sig_asked.append(1), _No)[1])
-_fa = _SigFakeApp([_sigw])
+_fa = _SigFakeApp([_win_a, _win_b])
 M._signal_close_windows(_fa)
-ok(_sig_asked and not _sig_shut and _fa.quit_calls == 0 and _sigw._force_close is False,
-   'a signal-driven close runs the confirm; a veto keeps the window (no force-close, no quit)')
-ok(_fa._signal_close_pending is False, 'the signal-close guard re-arms after the prompt resolves')
+ok(_sig_asked and not _shut_a and not _shut_b and not _win_a._force_close
+   and not _win_b._force_close and _fa.quit_calls == 0,
+   'signal terminate is atomic: a veto keeps EVERY window, even an idle one (no partial close)')
+ok(_fa._signal_close_pending is False, 'the signal-terminate guard re-arms after a veto')
+# confirm -> every window is force-closed and shut down
 QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
 M._signal_close_windows(_fa)
-ok(_sig_shut, 'a confirmed signal-driven close proceeds to shut the window down')
+ok(_shut_a and _shut_b and _win_a._force_close and _win_b._force_close,
+   'a confirmed terminate force-closes and shuts down every window')
+# nothing running -> no prompt, closes anyway
+_shut_c = []
+_win_c = _mk_sig_window(False, _shut_c)
+_asked_c = []
+QMessageBox.question = staticmethod(lambda *_a, **_k: (_asked_c.append(1), _No)[1])
+M._signal_close_windows(_SigFakeApp([_win_c]))
+ok(not _asked_c and _shut_c and _win_c._force_close,
+   'a terminate with no running program closes without asking')
+# no windows -> quit
 _fa_empty = _SigFakeApp([])
 M._signal_close_windows(_fa_empty)
 ok(_fa_empty.quit_calls == 1 and _fa_empty._signal_close_pending is False,
    'a signal with no windows left honors the terminate by quitting')
-_sigw.deleteLater()
+for _w in (_win_a, _win_b, _win_c):
+    _w.deleteLater()
 APP.processEvents()
 
 # _quiet_font_warnings installs a message handler that drops the font-db noise
