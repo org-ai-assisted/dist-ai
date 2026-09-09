@@ -1,0 +1,14 @@
+# secure-terminal state dump v2
+mode: tui            size: 24x4
+cursor: x=0 y=0 visible=yes
+pen: default
+dec-modes: DECAWM DECTCEM
+ansi-modes: (none)
+alt-screen: no    saved-primary: none
+scroll-region: full
+charset: active=G0 G0=LAT1 G1=VT100
+mouse: (none)
+palette: (none)
+title: ''
+tabstops: default(8)
+--- grid ---  (blank cells and fully-blank rows elided; row index shows gaps)
