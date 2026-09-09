@@ -1012,5 +1012,55 @@ except SystemExit as _sel2:
     _rejl2 = (_sel2.code == 2)
 ok(_rejl2, '#44: a -- LIST with a whitespace-only first element also exits(2)')
 
+import os as _symos                                    # noqa: E402
+import tempfile as _symtf                              # noqa: E402
+
+# grok#2 (dump-state --file): a symlink pre-planted at the PREDICTABLE <path>.tmp must not
+# redirect the write onto its target. The old fixed-name open('<path>.tmp','w') followed it;
+# mkstemp's unguessable O_EXCL name ignores it, so the victim is untouched and <path> gets the
+# dump. Mirrors the transcript/sound mkstemp guards. send_request is mocked (no live server).
+_g2_dir = _symtf.mkdtemp(prefix='st-dumpsym-')
+_g2_path = _symos.path.join(_g2_dir, 'state.dump')
+_g2_victim = _symos.path.join(_g2_dir, 'victim')
+with open(_g2_victim, 'w', encoding='utf-8') as _g2vh:
+    _g2vh.write('KEEP-ME')
+_symos.symlink(_g2_victim, _g2_path + '.tmp')          # attacker pre-plants the predictable tmp
+_g2_osr = M.ipc.send_request
+try:
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'text': 'DUMP-OK\n'}
+    eq(_ctl_main(['dump-state', '--tab', 'id:1', '--file', _g2_path]), 0,
+       'grok#2: ctl dump-state --file writes despite a planted <path>.tmp symlink')
+finally:
+    M.ipc.send_request = _g2_osr
+with open(_g2_victim, encoding='utf-8') as _g2vh:
+    ok(_g2vh.read() == 'KEEP-ME',
+       'grok#2: a symlink at <path>.tmp does NOT redirect the dump onto its target')
+with open(_g2_path, encoding='utf-8') as _g2ph:
+    ok(_g2ph.read() == 'DUMP-OK\n', 'grok#2: the dump lands at the requested path')
+
+# #4 (--test-canary marker): a symlink pre-planted at the fixed marker must not be followed.
+# O_NOFOLLOW makes the open fail loud (exit 1) instead of writing onto the target. Redirect
+# XDG_RUNTIME_DIR to a throwaway so socket_dir()/canary is ours, then restore it.
+_c4_dir = _symtf.mkdtemp(prefix='st-canarysym-')
+_c4_victim = _symos.path.join(_c4_dir, 'victim')
+with open(_c4_victim, 'w', encoding='utf-8') as _c4vh:
+    _c4vh.write('KEEP-ME')
+_c4_oxdg = _symos.environ.get('XDG_RUNTIME_DIR')
+_symos.environ['XDG_RUNTIME_DIR'] = _c4_dir
+try:
+    _c4_marker = _MM.canary_marker_path()
+    _symos.makedirs(_symos.path.dirname(_c4_marker), mode=0o700, exist_ok=True)
+    _symos.symlink(_c4_victim, _c4_marker)             # plant a symlink at the marker
+    eq(_MM._test_canary(), 1,
+       '#4: --test-canary refuses to write through a symlinked marker (O_NOFOLLOW, exit 1)')
+    with open(_c4_victim, encoding='utf-8') as _c4vh:
+        ok(_c4vh.read() == 'KEEP-ME',
+           '#4: the symlinked canary marker is not followed onto its target')
+finally:
+    if _c4_oxdg is None:
+        _symos.environ.pop('XDG_RUNTIME_DIR', None)
+    else:
+        _symos.environ['XDG_RUNTIME_DIR'] = _c4_oxdg
+
 
 finish('mainwin2')
