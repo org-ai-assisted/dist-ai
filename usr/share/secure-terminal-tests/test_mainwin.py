@@ -5,10 +5,11 @@
 ## AI-Assisted
 
 ## Tests for secure_terminal.main's window-level dialogs and the `ctl`
-## remote-control client. Kept as its own small offscreen suite -- rather than
-## folded into the large widget suite -- because a second long-lived MainWindow
-## plus its modal dialogs perturbs the big suite's Qt teardown; here the window
-## is built, exercised and destroyed in isolation. The modal dialogs are shown
+## remote-control client. Runs under a REAL headless Wayland compositor (labwc, via
+## require_wayland below) like the widget suites -- NEVER the offscreen QPA platform, whose
+## focus/active-window/tray behaviour differs. Kept separate from the large widget suite --
+## a second long-lived MainWindow plus its modal dialogs perturbs the big suite's Qt
+## teardown; here the window is built, exercised and destroyed in isolation. The modal dialogs are shown
 ## with QDialog.exec() stubbed (Accepted/Rejected) so nothing blocks, and the
 ## ctl client is driven with ipc.send_request stubbed to canned replies.
 ## Fails closed (exit 1) if a required dependency is missing -- deps are hard.

@@ -3170,6 +3170,13 @@ _it_tall = _QSize_it(200, 720)
 _it_beside = _ittip._placement(_it_src_tall, _it_tall, _it_avail, _it_gap)
 ok(not _QRect_it(_it_beside, _it_tall).intersects(_it_src_tall),
    'InfoTip: a too-tall tip is placed beside the source, never over it (source clickable)')
+# a too-tall source hard against the RIGHT edge: more room on the LEFT, so the beside path
+# places the tip to the left of the source (the other branch of the beside choice).
+_it_src_right = _QRect_it(940, 370, 40, 60)
+_it_left = _ittip._placement(_it_src_right, _it_tall, _it_avail, _it_gap)
+ok(_it_left.x() + _it_tall.width() <= _it_src_right.left()
+   and not _QRect_it(_it_left, _it_tall).intersects(_it_src_right),
+   'InfoTip: a too-tall tip beside a right-edge source is placed to its LEFT, clear of it')
 _ittip.hide()
 _ittip._poll.stop()
 APP.processEvents()

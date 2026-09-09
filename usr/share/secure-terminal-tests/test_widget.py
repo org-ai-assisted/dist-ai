@@ -2938,6 +2938,19 @@ _cwt2._pid = 2 ** 30           # a pid that does not exist -> os.readlink raises
 eq(_cwt2.shell_cwd(), '', 'shell_cwd returns empty when the shell pid is unreadable')
 _cwt2._pid = _realpid          # restore so close() reaps the real child
 _cwt2.close()
+
+# _alt_owner_dead: the REAL method (it is STUBBED in the alt-leak tests above). A None owner
+# is treated as dead (nothing live to protect); a live pgrp is kept (a SUSPENDED full-screen
+# program's frame); a vanished pgrp is dead (stale leftover to clear).
+_aod = SecureTerminal(command='/bin/cat')
+_aod._alt_owner_pgrp = None
+ok(_aod._alt_owner_dead() is True, '_alt_owner_dead: an unknown (None) owner is dead')
+_aod._alt_owner_pgrp = os.getpgrp()          # our own live process group
+ok(_aod._alt_owner_dead() is False, '_alt_owner_dead: a live owner pgrp is kept (suspended)')
+_aod._alt_owner_pgrp = 2 ** 30               # a pgrp that cannot exist -> ProcessLookupError
+ok(_aod._alt_owner_dead() is True, '_alt_owner_dead: a vanished owner pgrp is dead')
+_aod.close()
+_cwt2.close()
 # regression: output that fills the reported width hard-wraps (real autowrap), so
 # a shell's width-padded end-of-line marker (zsh PROMPT_SP / PROMPT_EOL_MARK) and
 # the following prompt do not collapse onto one logical line -- which lost the
