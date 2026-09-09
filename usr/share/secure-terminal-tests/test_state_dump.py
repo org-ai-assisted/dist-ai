@@ -212,6 +212,13 @@ _hobj = _json.loads(sd.dump_json(_hugetitle, max_bytes=2000))
 ok(len(sd.dump_json(_hugetitle, max_bytes=2000).encode()) <= 2000
    and _hobj.get('truncated') is True,
    'an un-shrinkable oversized field falls back to minimal valid JSON under budget')
+# The final fallback must be BOUNDED by max_bytes too (ai-review #7): a tiny budget on an
+# un-shrinkable field previously returned a fixed ~112-byte fallback that EXCEEDED the
+# budget. It must shed its own optional fields (note, then mode) until it fits.
+_tiny = sd.dump_json(_hugetitle, max_bytes=60)
+_tinyobj = _json.loads(_tiny)            # still valid JSON
+ok(len(_tiny.encode()) <= 60 and _tinyobj.get('truncated') is True,
+   'the final fallback is itself bounded: a tiny budget yields valid JSON under it')
 
 
 # --- 2. Live widget path -----------------------------------------------------------
