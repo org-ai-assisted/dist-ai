@@ -147,7 +147,7 @@ check "source: every function defined" \
       stderr_is_tty initialize_terminal initialize_variables initialize_temporary_files \
       check_variables \
       shutdown traps_enable compute_percent print_progress curl_exit \
-      classify_download_size content_length_ceiling_for_phase enforce_final_size \
+      classify_download_size content_length_ceiling_for_phase enforce_file_size \
       curl_download remove_argument_for_header_request run_body_download \
       run_download main was_executed)" \
    "function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,"
@@ -184,8 +184,8 @@ check "strip: plain args preserved"       "$(strip_args -sSL url)"              
 ## ============================================================
 ## (E) initialize_terminal -- both fd-4 arms via the stderr_is_tty seam.
 ## ============================================================
-check "initialize_terminal: TTY branch (exec 4>&2)"           "$(probe_rc term 0)" "0"
-check "initialize_terminal: non-TTY branch (exec 4>/dev/null)" "$(probe_rc term 1)" "0"
+check "initialize_terminal: TTY branch (exec {stderr_fd}>&2)"           "$(probe_rc term 0)" "0"
+check "initialize_terminal: non-TTY branch (exec {stderr_fd}>/dev/null)" "$(probe_rc term 1)" "0"
 
 ## ============================================================
 ## (F) curl_exit -- statusfile write, the return-0 fast path, and the kill arm.
@@ -261,14 +261,14 @@ check "print_progress: redraw runs CURL_PRGRS_EXEC"  "$(probe_out_rc print_progr
 check "curl_download: non-numeric content length -> 116" "$(probe_rc curl_download_bad_length)" "116"
 
 ## ============================================================
-## (L) enforce_final_size -- the post-loop final-size re-check, driven directly
+## (L) enforce_file_size -- the post-loop final-size re-check, driven directly
 ## so the over-cap arm is deterministic (a live download races loop vs post-loop).
 ## ============================================================
-check "enforce_final_size: within bounds -> re-reads size, no exit" \
+check "enforce_file_size: within bounds -> re-reads size, no exit" \
    "$(probe_out_rc enforce 50 100 100000)" "0|50"
-check "enforce_final_size: over the max cap -> 81" \
+check "enforce_file_size: over the max cap -> 81" \
    "$(probe_out_rc enforce 500 100 100000)" "81|"
-check "enforce_final_size: absent file -> 0" "$(probe_rc enforce_nofile)" "0"
+check "enforce_file_size: absent file -> 0" "$(probe_rc enforce_nofile)" "0"
 
 ## ============================================================
 ## (M) Full EXEC runs against the fake curl. Each scenario uses its OWN output
@@ -338,7 +338,7 @@ rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
 check "exec: body never writes a file -> 0" "${rc}" "0"
 
 ## (The post-loop final-size over-cap path is covered deterministically by the
-## direct enforce_final_size probe above; a full-run version would race the poll
+## direct enforce_file_size probe above; a full-run version would race the poll
 ## loop against the post-loop check and is therefore omitted.)
 
 ## M10 the body worker dies WITHOUT curl_exit: a failing CURL_PRGRS_EXEC progress
@@ -372,7 +372,7 @@ check "exec: empty CURL_OUT_FILE -> 57 (setup failure not masked)" "${rc}" "57"
 
 ## M13 REGRESSION (header-phase ceiling): a large-but-legal header response
 ## (over expected_header_size 8000, under maximum_http_header_size 32000) must
-## NOT be rejected as 114. enforce_final_size treated the 8000-byte ESTIMATE as a
+## NOT be rejected as 114. enforce_file_size treated the 8000-byte ESTIMATE as a
 ## hard ceiling for the header phase; the real limit is maximum_http_header_size.
 ## A 9000-byte header file -> download proceeds -> 0. (Old code: 114.)
 out_file="${test_dir}/M13.bin"
