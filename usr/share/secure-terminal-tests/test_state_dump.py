@@ -369,8 +369,15 @@ _ct.close()
 
 # restart_as_shell lands the SAME baseline, and specifically fixes the two regressions.
 _rs = _arm_terminal(True)
+# Dump the reset result BEFORE pumping the event loop. restart_as_shell resets the VT
+# baseline synchronously, THEN forks a fresh login shell whose OWN startup output
+# (bracketed-paste enable \x1b[?2004h + a prompt) arrives asynchronously on the pty. Pumping
+# events first would read that output and re-arm DEC 2004, failing is_baseline -- but that is
+# the NEW shell's state, not the exited program's leaked state (which is what this asserts).
+# Whether the shell emits within one processEvents is shell/timing dependent (a fast /bin/sh
+# does, a slower zsh does not), so a post-pump check races: green locally, red in CI. The
+# reset is synchronous, so a pre-pump dump is deterministic across environments.
 _rs.restart_as_shell()
-APP.processEvents()
 _ra = _json.loads(_rs.dump_state('json'))
 ok(_ra['scroll_region'] is None,
    'restart_as_shell resets the scroll region (regression: margins were never reset)')
