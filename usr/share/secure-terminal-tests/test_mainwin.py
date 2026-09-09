@@ -1615,6 +1615,18 @@ try:
        'ipc: ctl-send-text with non-string text is rejected')
     _rd = _disp({'op': 'ctl-dump-tab', 'tab': 'id:%d' % _tid0, 'lines': 2})
     ok(_rd['ok'] and 'text' in _rd, 'ipc: ctl-dump-tab returns the rendered text')
+    # ctl-dump-state: the deterministic full state dump (text default + json).
+    _rs = _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0})
+    ok(_rs['ok'] and _rs.get('text', '').startswith('# secure-terminal state dump'),
+       'ipc: ctl-dump-state returns a headed state dump (text default)')
+    _rj = _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0, 'format': 'json'})
+    ok(_rj['ok'] and _json.loads(_rj['text']).get('version') == 1,
+       'ipc: ctl-dump-state format=json returns a parseable dump')
+    ok(not _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0,
+                  'format': 'yaml'})['ok'],
+       'ipc: ctl-dump-state rejects an unknown format')
+    ok(not _disp({'op': 'ctl-dump-state', 'tab': 'id:999999'})['ok'],
+       'ipc: ctl-dump-state on a non-matching tab -> error')
     ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'title:%s' % _title0,
               'title': 'Renamed'})['ok'],
        'ipc: ctl-set-tab-title matched by title')
