@@ -186,12 +186,14 @@ try:
     _def_theme, _def_zoom, _def_ui = _dw._default_theme, _dw._default_zoom, _dw._ui_scale
     _def_fs, _def_sb, _def_mode = _dw._default_font_size, _dw._scrollback, _dw._default_mode
     _def_col, _def_tui = _dw._default_colors, _dw._default_tui
+    _def_mk, _def_cra = _dw._default_markings, _dw._osc_clipboard_read_always
     _def_pd, _def_esc, _def_pw = _dw._paste_delay, _dw._escape_limit, _dw._paste_warn
     _def_sys, _def_persist = _dw._systray, _dw._persist_session
     # perturb every field we assert, so Reset has something to revert
     _dw._default_theme, _dw._default_zoom, _dw._default_tui = 'dark', 150, True
     _dw._paste_delay, _dw._systray, _dw._persist_session = 5, True, False
     _dw._default_mode, _dw._default_colors = 'box', False
+    _dw._default_markings, _dw._osc_clipboard_read_always = False, True
     _dialogs.clear()
     _dw.show_global_settings()
     _gs = _dialogs[-1]
@@ -213,6 +215,10 @@ try:
     eq(_dlg_field(_gs, 'Scrollback').currentData(), _def_sb, 'reset: scrollback -> default')
     eq(_dlg_field(_gs, 'Unicode').currentData(), _def_mode, 'reset: unicode -> default')
     ok(_dlg_field(_gs, 'Colours').isChecked() == _def_col, 'reset: colours -> default')
+    ok(_dlg_field(_gs, 'Colored markings').isChecked() == _def_mk,
+       'reset: colored markings -> default')
+    ok(_dlg_field(_gs, 'Always allow clipboard read').isChecked() == _def_cra,
+       'reset: clipboard-read-always -> default')
     ok(_dlg_field(_gs, 'TUI mode').isChecked() == _def_tui, 'reset: tui -> default')
     eq(_dlg_field(_gs, 'Paste delay').currentData(), _def_pd, 'reset: paste delay -> default')
     ok(_dlg_field(_gs, 'System tray').isChecked() == _def_sys, 'reset: systray -> default')
