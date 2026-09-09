@@ -95,6 +95,19 @@ try:
     _about_dlg.on_zoom(1)                     # Ctrl+wheel up
     ok(_a_titles[0].font().pointSizeF() > _a_pt0,
        'zooming the About dialog enlarges its heading')
+    # The body lives in a scroll area so a zoomed (or maximized-parent) About SCROLLS
+    # instead of overflowing/overlapping the fixed frame (the reported bug). The old
+    # plain-QVBoxLayout About had no scroll area, so this fails pre-fix.
+    _a_scroll = _about_dlg.findChild(M.QScrollArea)
+    ok(_a_scroll is not None and _a_scroll.widgetResizable(),
+       'About hosts its content in a resizable scroll area (no zoom overflow/overlap)')
+    # Zooming hard must keep the dialog on-screen (fit-to-screen resize) and keep the
+    # content hosted by the scroll area (it scrolls, never clips).
+    _avail_h = M.QApplication.primaryScreen().availableGeometry().height()
+    for _ in range(8):
+        _about_dlg.on_zoom(1)
+    ok(_about_dlg.height() <= _avail_h and _a_scroll.widget() is not None,
+       'a heavily-zoomed About stays within the screen and keeps its content scrollable')
     win.show_locations()
     ok(True, 'show_locations builds and shows the paths dialog')
     # Folders & Files must expose the transcripts directory (regression: no entry).
