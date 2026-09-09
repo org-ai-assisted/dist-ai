@@ -69,14 +69,39 @@ iso="${workdir}/out.iso"
 label="DMTEST"
 
 ######################################################################
-## Overlays: exercise --grub-overlay (staged into /boot/grub, with @APPEND_LIVE@
-## substituted in *.cfg) and --live-overlay (staged into /live). Additive files
-## only, so the tool's built-in grub.cfg/config.cfg (and the structure assertions
-## below) are unaffected.
+## GRUB overlay: dm-raw-to-iso ships NO config, so --grub-overlay must be a
+## COMPLETE /boot/grub (config.cfg, grub.cfg, loopback.cfg, esp-redirect.cfg). A
+## minimal-but-bootable set carrying the tool's tokens (@TIMEOUT@, @APPEND_LIVE@)
+## -- the fixture INPUT to the real tool, not a copy of it. Two extra probes
+## exercise staging (a *.cfg the tool substitutes in, a non-*.cfg copied verbatim);
+## --live-overlay stages files into /live.
 ######################################################################
 grub_overlay="${workdir}/grub-overlay"
 live_overlay="${workdir}/live-overlay"
 mkdir --parents -- "${grub_overlay}" "${live_overlay}"
+cat > "${grub_overlay}/config.cfg" <<'CFG'
+set default=0
+set timeout=@TIMEOUT@
+insmod all_video
+insmod gfxterm
+if loadfont $prefix/unicode.pf2 ; then
+   set gfxmode=auto
+   terminal_output gfxterm
+fi
+CFG
+cat > "${grub_overlay}/grub.cfg" <<'CFG'
+source /boot/grub/config.cfg
+menuentry "Live" {
+   linux /live/vmlinuz @APPEND_LIVE@
+   initrd /live/initrd.img
+}
+CFG
+printf '%s\n' 'source /boot/grub/grub.cfg' > "${grub_overlay}/loopback.cfg"
+cat > "${grub_overlay}/esp-redirect.cfg" <<'CFG'
+search --set=root --file /.disk/info
+set prefix=($root)/boot/grub
+configfile ($root)/boot/grub/grub.cfg
+CFG
 ## A *.cfg carrying the placeholder: the tool must substitute the live cmdline.
 printf 'probe %s done\n' '@APPEND_LIVE@' > "${grub_overlay}/probe.cfg"
 ## A non-*.cfg file: copied verbatim, no substitution.
@@ -216,6 +241,28 @@ case "${grub_cfg}" in
       ;;
    *)
       bad "live entry lacks findiso/iso-scan=\${iso_path}"
+      ;;
+esac
+## config.cfg: the tool substitutes @TIMEOUT@ (0 under --serial-console, so the
+## default entry boots headless) and appends a serial terminal for --serial-console.
+cfg_cfg="$(xorriso -osirrox on -indev "${iso}" -cpx /boot/grub/config.cfg "${workdir}/config.cfg" 2>/dev/null && cat "${workdir}/config.cfg" || true)"
+case "${cfg_cfg}" in
+   *"@TIMEOUT@"*)
+      bad "config.cfg: @TIMEOUT@ left unsubstituted"
+      ;;
+   *"set timeout=0"*)
+      ok "config.cfg: @TIMEOUT@ substituted (--serial-console -> timeout 0)"
+      ;;
+   *)
+      bad "config.cfg: @TIMEOUT@ not substituted to 0 (${cfg_cfg})"
+      ;;
+esac
+case "${cfg_cfg}" in
+   *"terminal_output serial console"*)
+      ok "config.cfg: --serial-console appended a serial terminal"
+      ;;
+   *)
+      bad "config.cfg: --serial-console did not append a serial terminal"
       ;;
 esac
 
