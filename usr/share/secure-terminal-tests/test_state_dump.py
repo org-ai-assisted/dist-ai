@@ -125,6 +125,45 @@ ok('pen: bg=#0000ff' in sd.dump_text(_bgpen),
    'a bg-only CLI pen (fg unset) dumps just the background')
 
 
+# --- 1c. JSON size-budget truncation stays VALID JSON (ST ai-review regression) ----
+# A large dump that exceeds a transport frame must be shrunk at the SNAPSHOT level
+# (whole rows / document), never byte-sliced into an unparseable fragment.
+_big = pyte.HistoryScreen(60, 40, history=10)
+_bst = pyte.Stream(_big)
+for _y in range(40):
+    _bst.feed('\r\n')
+    for _x in range(0, 60, 3):
+        _bst.feed('\x1b[3%dmXYZ' % (_x % 8))     # non-coalescing colour runs
+_bsnap = sd.collect(_big, mode='tui', columns=60, alt_screen=False, saved_primary=None,
+                    mouse_modes=set(), title='big')
+_full = sd.dump_json(_bsnap)
+ok(len(_full.encode()) > 5000, 'the big grid json is large enough to force truncation')
+# no-op budget: a budget above the size returns the dump unchanged.
+ok(sd.dump_json(_bsnap, max_bytes=10_000_000) == _full,
+   'a budget above the dump size leaves it unchanged')
+# tight budget: TUI row-drop keeps it valid + records how many rows went.
+_bounded = sd.dump_json(_bsnap, max_bytes=3000)
+_bobj = _json.loads(_bounded)          # MUST parse -- the whole point of the fix
+ok(len(_bounded.encode()) <= 3000 and _bobj.get('truncated_rows', 0) > 0,
+   'an over-budget TUI json dump is row-truncated to valid JSON under the budget')
+# canary: byte-slicing the SAME dump (the old _fit_dump_reply behaviour) is invalid JSON,
+# which is exactly the bug structural truncation avoids.
+_sliced_ok = True
+try:
+    _json.loads(_full.encode()[:3000])
+except ValueError:
+    _sliced_ok = False
+ok(not _sliced_ok,
+   'canary: byte-slicing a json dump yields invalid JSON -- structural truncation required')
+# CLI document truncation path stays valid too.
+_cbudget = sd.collect(None, mode='cli', columns=80, alt_screen=False, saved_primary=None,
+                      mouse_modes=set(), title='', cli_pen={}, document='D' * 20000)
+_ctrunc = sd.dump_json(_cbudget, max_bytes=2000)
+_cobj = _json.loads(_ctrunc)
+ok(len(_ctrunc.encode()) <= 2000 and _cobj.get('document_truncated') is True,
+   'an over-budget CLI json dump truncates the document to valid JSON under the budget')
+
+
 # --- 2. Live widget path -----------------------------------------------------------
 # TUI mode: the full pyte grid dumps with per-cell attributes.
 _tui = SecureTerminal(command='/bin/cat', tui=True)
