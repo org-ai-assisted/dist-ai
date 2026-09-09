@@ -5,10 +5,11 @@
 ## AI-Assisted
 
 ## Tests for secure_terminal.main's window-level dialogs and the `ctl`
-## remote-control client. Kept as its own small offscreen suite -- rather than
-## folded into the large widget suite -- because a second long-lived MainWindow
-## plus its modal dialogs perturbs the big suite's Qt teardown; here the window
-## is built, exercised and destroyed in isolation. The modal dialogs are shown
+## remote-control client. Runs under a REAL headless Wayland compositor (labwc, via
+## require_wayland below) like the widget suites -- NEVER the offscreen QPA platform, whose
+## focus/active-window/tray behaviour differs. Kept separate from the large widget suite --
+## a second long-lived MainWindow plus its modal dialogs perturbs the big suite's Qt
+## teardown; here the window is built, exercised and destroyed in isolation. The modal dialogs are shown
 ## with QDialog.exec() stubbed (Accepted/Rejected) so nothing blocks, and the
 ## ctl client is driven with ipc.send_request stubbed to canned replies.
 ## Fails closed (exit 1) if a required dependency is missing -- deps are hard.
@@ -691,6 +692,32 @@ try:
     ok(_sentz.get('op') == 'ctl-zoom' and _sentz.get('tab') == 'id:1'
        and _sentz.get('level') == '150',
        'ctl: the client builds the ctl-zoom request (tab + level forwarded)')
+    # dump-state: forwards tab + format, prints the reply to stdout by default and
+    # writes it to --file otherwise (the client-side arg-build + reply-print path).
+    _sents: dict[str, object] = {}
+    def _cap_reqs(*_a, **_k):
+        for _x in _a:
+            if isinstance(_x, dict) and 'op' in _x:
+                _sents.clear()
+                _sents.update(_x)
+        return {'ok': True, 'text': '# secure-terminal state dump v1\nmode: tui\n'}
+    M.ipc.send_request = _cap_reqs
+    eq(_ctl_main(['dump-state', '--tab', 'id:1']), 0, 'ctl dump-state -> 0')
+    ok(_sents.get('op') == 'ctl-dump-state' and _sents.get('tab') == 'id:1'
+       and _sents.get('format') == 'text',
+       'ctl: the client builds ctl-dump-state (tab + default format=text forwarded)')
+    eq(_ctl_main(['dump-state', '--tab', 'id:1', '--format', 'json']), 0,
+       'ctl dump-state --format json -> 0')
+    ok(_sents.get('format') == 'json',
+       'ctl: dump-state --format json is forwarded')
+    # --file writes the reply atomically instead of stdout.
+    _sd_dir = tempfile.mkdtemp(prefix='st-dumpstate-')
+    _sd_path = os.path.join(_sd_dir, 'state.dump')
+    eq(_ctl_main(['dump-state', '--tab', 'id:1', '--file', _sd_path]), 0,
+       'ctl dump-state --file -> 0')
+    with open(_sd_path, encoding='utf-8') as _sdh:
+        ok(_sdh.read() == '# secure-terminal state dump v1\nmode: tui\n',
+           'ctl: dump-state --file writes the reply to the path (atomic tmp+rename)')
 finally:
     M.ipc.send_request = _orig_sr
 
@@ -1614,6 +1641,18 @@ try:
        'ipc: ctl-send-text with non-string text is rejected')
     _rd = _disp({'op': 'ctl-dump-tab', 'tab': 'id:%d' % _tid0, 'lines': 2})
     ok(_rd['ok'] and 'text' in _rd, 'ipc: ctl-dump-tab returns the rendered text')
+    # ctl-dump-state: the deterministic full state dump (text default + json).
+    _rs = _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0})
+    ok(_rs['ok'] and _rs.get('text', '').startswith('# secure-terminal state dump'),
+       'ipc: ctl-dump-state returns a headed state dump (text default)')
+    _rj = _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0, 'format': 'json'})
+    ok(_rj['ok'] and _json.loads(_rj['text']).get('version') == 1,
+       'ipc: ctl-dump-state format=json returns a parseable dump')
+    ok(not _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0,
+                  'format': 'yaml'})['ok'],
+       'ipc: ctl-dump-state rejects an unknown format')
+    ok(not _disp({'op': 'ctl-dump-state', 'tab': 'id:999999'})['ok'],
+       'ipc: ctl-dump-state on a non-matching tab -> error')
     ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'title:%s' % _title0,
               'title': 'Renamed'})['ok'],
        'ipc: ctl-set-tab-title matched by title')

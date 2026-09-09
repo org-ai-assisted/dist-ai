@@ -112,7 +112,7 @@ export HYPOTHESIS_STORAGE_DIRECTORY="${HYPOTHESIS_STORAGE_DIRECTORY:-${work}/.hy
 ## justified `# pragma: no cover` in the source, not a blanket exclusion.
 ##
 ## Tier 1 -- covered by the Qt-FREE suites.
-gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py,*/resource_isolation.py'
+gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py,*/resource_isolation.py,*/state_dump.py'
 ## Tier 2 -- covered by the headless-Wayland Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
@@ -254,7 +254,8 @@ python3 -m coverage erase
 ## parallel -- total time is the slowest suite either way).
 suites=(test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
         test_corpus test_invariants test_cli test_unicode_tag test_modules \
-        test_review test_widget test_widget2 test_sclip test_clipboard_watch)
+        test_review test_widget test_widget2 test_state_dump test_sclip \
+        test_clipboard_watch)
 ## Concurrency: auto-detect cores (nproc), overridable via COVERAGE_SUITE_JOBS.
 ncpu="$(nproc 2>/dev/null || printf '%s\n' 2)"
 case "${ncpu}" in ''|*[!0-9]*) ncpu=2 ;; esac

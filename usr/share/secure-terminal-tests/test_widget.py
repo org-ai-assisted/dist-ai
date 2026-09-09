@@ -2938,6 +2938,19 @@ _cwt2._pid = 2 ** 30           # a pid that does not exist -> os.readlink raises
 eq(_cwt2.shell_cwd(), '', 'shell_cwd returns empty when the shell pid is unreadable')
 _cwt2._pid = _realpid          # restore so close() reaps the real child
 _cwt2.close()
+
+# _alt_owner_dead: the REAL method (it is STUBBED in the alt-leak tests above). A None owner
+# is treated as dead (nothing live to protect); a live pgrp is kept (a SUSPENDED full-screen
+# program's frame); a vanished pgrp is dead (stale leftover to clear).
+_aod = SecureTerminal(command='/bin/cat')
+_aod._alt_owner_pgrp = None
+ok(_aod._alt_owner_dead() is True, '_alt_owner_dead: an unknown (None) owner is dead')
+_aod._alt_owner_pgrp = os.getpgrp()          # our own live process group
+ok(_aod._alt_owner_dead() is False, '_alt_owner_dead: a live owner pgrp is kept (suspended)')
+_aod._alt_owner_pgrp = 2 ** 30               # a pgrp that cannot exist -> ProcessLookupError
+ok(_aod._alt_owner_dead() is True, '_alt_owner_dead: a vanished owner pgrp is dead')
+_aod.close()
+_cwt2.close()
 # regression: output that fills the reported width hard-wraps (real autowrap), so
 # a shell's width-padded end-of-line marker (zsh PROMPT_SP / PROMPT_EOL_MARK) and
 # the following prompt do not collapse onto one logical line -- which lost the
@@ -5749,6 +5762,18 @@ _p30._fd = _fd30
 _p30._pid = None
 ok(not _p30._pid_is_current_child(),
    '#30: the identity guard is False when there is no child pid')
+# F2 (ai-review): an exec-FAILED launch (missing / non-executable -- PROGRAM) leaves
+# _spawn_starttime None too, but no child ever ran, so the guard must REFUSE rather than fall
+# through to the unreadable-at-spawn "assume ours" case -- else SIGHUP/killpg / proc-cwd readers
+# trust the exec-failed pid's (reused) slot. Canary: pre-fix the None fallback returned True.
+_p30._pid = os.getpid()                      # a live, unrelated pid in the freed slot
+_p30._spawn_starttime = None
+_p30._command_exec_failed = True
+ok(not _p30._pid_is_current_child(),
+   'F2: the identity guard refuses an exec-failed launch (never our child) despite a None baseline')
+_p30._command_exec_failed = False            # a child that DID exec, baseline unreadable at spawn
+ok(_p30._pid_is_current_child(),
+   'F2: an exec\'d child with an unreadable spawn baseline still falls back to ours (preserved)')
 _p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
 _p30.shutdown()
 
