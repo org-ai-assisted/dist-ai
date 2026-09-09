@@ -75,8 +75,13 @@ pip install --quiet --upgrade pip
 pip install --quiet playwright
 playwright install --with-deps chromium
 
+## Run the check through the VENV interpreter, not by direct-exec: check_mobile.py
+## carries an absolute-path shebang ('#!/usr/bin/python3 -Bsu') that ignores $PATH,
+## so executing the file directly bypasses the venv and its just-installed
+## Playwright (-> a spurious exit 77 -> this mandatory lane fails). '-Bsu' preserves
+## the shebang's isolation (no pyc, no user-site, unbuffered).
 rc=0
-"${check_mobile}" "$@" || rc=$?
+"${venv_dir}/bin/python3" -Bsu "${check_mobile}" "$@" || rc=$?
 
 if [ "${rc}" -eq 77 ]; then
    printf '%s\n' 'FAIL: check_mobile.py SKIPped (exit 77) -- Playwright/chromium unavailable; this CI lane requires the browser, a skip is a setup failure here.' >&2

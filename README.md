@@ -43,7 +43,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests` (fuzz)  | shipping | `usr/share/iso-boot-tests/` |
 | `dm-image-boot-tests`    | shipping | `usr/share/dm-image-boot-tests/` |
-| `dm-raw-to-iso` (tool)   | shipping | `usr/bin/dm-raw-to-iso`, `usr/share/dm-raw-to-iso/` |
+| `dm-raw-to-iso` (docs)   | shipping | `usr/share/dm-raw-to-iso/` (tool lives in derivative-maker) |
 | `dm-raw-to-iso-tests`    | shipping | `usr/share/dm-raw-to-iso-tests/` |
 | `dm-reproducible-build-tests` | shipping | `usr/share/dm-reproducible-build-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
@@ -618,18 +618,19 @@ CHECK_REF_COMMITS_REPO=/path/to/helper-scripts check-ref-commits-for-unicode-tes
 
 ## dm-raw-to-iso
 
-`usr/bin/dm-raw-to-iso` converts a bootable raw disk image (as produced by
+`dm-raw-to-iso` converts a bootable raw disk image (as produced by
 derivative-maker's `3200_create-raw-image`) into a highly boot-compatible hybrid
 ISO -- legacy BIOS + UEFI + UEFI Secure Boot (shim -> signed GRUB) + `loopback.cfg`
 + USB/DVD hybrid -- using only packages.debian.org tools, the same approach
-Debian `live-build` takes, reimplemented without live-build. It is the reference
-for porting `4310_convert-raw-to-iso` off live-build (that port is a separate,
-human-reviewed change and this tool does not modify derivative-maker).
+Debian `live-build` takes, reimplemented without live-build. The tool itself lives
+in derivative-maker as `help-steps/dm-raw-to-iso` (this package ships only its docs
+and test suite); dist-ai does not ship a `usr/bin/dm-raw-to-iso`.
 
 The exact command sequence and the reasoning for each step are in
 `usr/share/dm-raw-to-iso/README.md`. The companion suite `dm-raw-to-iso-tests`
-asserts the ISO's boot structure and boots it across `bios | efi | efi-secureboot`
-via the `dm-image-boot-tests` harness.
+resolves the tool via `DM_RAW_TO_ISO_BIN` (else `DERIVATIVE_MAKER_DIR`), asserts the
+ISO's boot structure, and boots it across `bios | efi | efi-secureboot` via the
+`dm-image-boot-tests` harness.
 
 ## Related
 
