@@ -120,6 +120,19 @@ run --raw "${dummy_raw}" --output "${tmp}/out.iso" --grub-overlay "${tmp}/no-suc
 expect_rc 1 'non-directory --grub-overlay fails'
 expect_msg '--grub-overlay is not a directory' 'non-dir --grub-overlay named'
 
+## --grub-overlay omitted entirely: it is required (the tool ships no GRUB config).
+run --raw "${dummy_raw}" --output "${tmp}/out.iso"
+expect_rc 1 'missing --grub-overlay fails'
+expect_msg '--grub-overlay is required' 'missing --grub-overlay named'
+
+## --grub-overlay present but not a complete /boot/grub (missing a core file).
+incomplete_overlay="${tmp}/incomplete-overlay"
+mkdir --parents -- "${incomplete_overlay}"
+printf 'set default=0\n' > "${incomplete_overlay}/config.cfg"
+run --raw "${dummy_raw}" --output "${tmp}/out.iso" --grub-overlay "${incomplete_overlay}"
+expect_rc 1 'incomplete --grub-overlay fails'
+expect_msg 'missing required file' 'incomplete --grub-overlay named'
+
 ## --live-overlay without its value (last-token).
 run --raw "${dummy_raw}" --output "${tmp}/out.iso" --live-overlay
 expect_rc 1 '--live-overlay without value fails'
