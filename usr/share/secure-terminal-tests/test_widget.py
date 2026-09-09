@@ -5762,6 +5762,18 @@ _p30._fd = _fd30
 _p30._pid = None
 ok(not _p30._pid_is_current_child(),
    '#30: the identity guard is False when there is no child pid')
+# F2 (ai-review): an exec-FAILED launch (missing / non-executable -- PROGRAM) leaves
+# _spawn_starttime None too, but no child ever ran, so the guard must REFUSE rather than fall
+# through to the unreadable-at-spawn "assume ours" case -- else SIGHUP/killpg / proc-cwd readers
+# trust the exec-failed pid's (reused) slot. Canary: pre-fix the None fallback returned True.
+_p30._pid = os.getpid()                      # a live, unrelated pid in the freed slot
+_p30._spawn_starttime = None
+_p30._command_exec_failed = True
+ok(not _p30._pid_is_current_child(),
+   'F2: the identity guard refuses an exec-failed launch (never our child) despite a None baseline')
+_p30._command_exec_failed = False            # a child that DID exec, baseline unreadable at spawn
+ok(_p30._pid_is_current_child(),
+   'F2: an exec\'d child with an unreadable spawn baseline still falls back to ours (preserved)')
 _p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
 _p30.shutdown()
 
