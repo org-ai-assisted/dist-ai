@@ -49,6 +49,23 @@ class TestRegressionInvariants(SystemcheckTestBase):
                     f"{os.path.basename(path)}:{num} still uses a ' ->' arrow",
                 )
 
+    def test_no_break_after_paragraph_close(self) -> None:
+        """A '<br/>' on the line right after a '</p>' is a line break outside
+        the just-closed paragraph; it renders as an extra blank line -- the
+        double-newline reported in check_qubes_vm_type and found in
+        check_pvclock. Keep content inside one <p>, or open a new <p> for the
+        next paragraph."""
+        br_open = re.compile(r'^\s*<br\s*/>')
+        p_close = re.compile(r'</p>\s*$')
+        for path in self.files:
+            lines = read(path).split('\n')
+            for idx in range(1, len(lines)):
+                if p_close.search(lines[idx - 1]) and br_open.match(lines[idx]):
+                    self.fail(
+                        f"{os.path.basename(path)}:{idx + 1} '<br/>' directly "
+                        "after '</p>' renders as a double blank line"
+                    )
+
     def test_no_whonix_gateway_typo(self) -> None:
         for path in self.files:
             self.assertNotIn('Whonix-Gatway', read(path),
