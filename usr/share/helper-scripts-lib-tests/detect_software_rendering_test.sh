@@ -159,14 +159,19 @@ sc2="$(run_subject "${llvmpipe_line}" '' "${no_dri}" "${count_file}")"
 check "no DRM node -> software/0" "${sc2}" "software:0"
 check "no-DRM short-circuit does not invoke eglinfo" "$(count_of "${count_file}")" "0"
 
-## NVIDIA control node present with no DRM node -> NOT short-circuited; falls
-## through to eglinfo (proprietary NVIDIA renders via /dev/nvidia*, not a DRM node).
+## /dev/nvidiactl is NOT checked by design: gpu_node_present scans only DRI
+## nodes (renderD*/card*), so a missing DRM node short-circuits to software even
+## with an NVIDIA control node present -- and WITHOUT probing eglinfo (the stub
+## would report accelerated, so a software verdict proves it was never called).
+safe-rm -f -- "${count_file}"
 nv_rc=0
 nv_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
    DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_present}" \
    EGLINFO_STUB_RENDERER='OpenGL core profile renderer: NVIDIA GeForce' \
+   EGLINFO_STUB_COUNT="${count_file}" \
    XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || nv_rc=$?
-check "NVIDIA node present, no DRM -> falls through to eglinfo" "${nv_out}:${nv_rc}" "accelerated:1"
+check "NVIDIA control node present, no DRM node -> software/0 (nvidiactl not checked)" "${nv_out}:${nv_rc}" "software:0"
+check "no-DRM short-circuit does not invoke eglinfo (even with NVIDIA node)" "$(count_of "${count_file}")" "0"
 
 ## LIBGL_ALWAYS_SOFTWARE is a deliberate user/admin directive: honored
 ## unconditionally (software), even with an NVIDIA node present, and WITHOUT

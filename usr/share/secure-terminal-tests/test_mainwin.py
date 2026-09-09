@@ -77,6 +77,25 @@ ok(_QTT.palette().color(_TT_INACT, _TT_BASE) == _QCol(_l_bg),
    'light QToolTip INACTIVE-group base is pinned to the card bg')
 ok(_QTT.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
    'light QToolTip INACTIVE-group text is pinned to the card fg')
+# Regression (the reported light-theme dark-on-dark tooltips): the base app palette is
+# captured from the DESKTOP theme, which may be DARK; a native (non-Fusion) light style
+# can paint QToolTip from the APP palette, so the light path must RE-PIN the tooltip roles
+# rather than restore the dark base verbatim (QToolTip.setPalette + the QToolTip{} QSS are
+# not honoured by every platform style). Simulate a dark-desktop base and confirm light
+# re-pins the APP-palette tooltip roles. FAILS on the old code that restored the base as-is.
+_saved_base = win._base_app_palette
+_dark_base = _QPal(win._base_app_palette)
+_dark_base.setColor(_TT_INACT, _TT_BASE, _QCol('#0f1216'))    # dark desktop tooltip bg
+_dark_base.setColor(_TT_INACT, _TT_TEXT, _QCol('#0f1216'))    # dark-on-dark (the reported bug)
+win._base_app_palette = _dark_base
+win.set_theme('dark')                        # bounce so the light path re-runs
+win.set_theme('light')
+ok(APP.palette().color(_TT_INACT, _TT_BASE) == _QCol(_l_bg),
+   'light re-pins the APP-palette tooltip base even when the desktop base is dark')
+ok(APP.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
+   'light re-pins the APP-palette tooltip text (no dark-on-dark leak from the desktop)')
+win._base_app_palette = _saved_base
+win.set_theme('light')                       # restore the clean default for later tests
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 try:
@@ -95,6 +114,19 @@ try:
     _about_dlg.on_zoom(1)                     # Ctrl+wheel up
     ok(_a_titles[0].font().pointSizeF() > _a_pt0,
        'zooming the About dialog enlarges its heading')
+    # The body lives in a scroll area so a zoomed (or maximized-parent) About SCROLLS
+    # instead of overflowing/overlapping the fixed frame (the reported bug). The old
+    # plain-QVBoxLayout About had no scroll area, so this fails pre-fix.
+    _a_scroll = _about_dlg.findChild(M.QScrollArea)
+    ok(_a_scroll is not None and _a_scroll.widgetResizable(),
+       'About hosts its content in a resizable scroll area (no zoom overflow/overlap)')
+    # Zooming hard must keep the dialog on-screen (fit-to-screen resize) and keep the
+    # content hosted by the scroll area (it scrolls, never clips).
+    _avail_h = M.QApplication.primaryScreen().availableGeometry().height()
+    for _ in range(8):
+        _about_dlg.on_zoom(1)
+    ok(_about_dlg.height() <= _avail_h and _a_scroll.widget() is not None,
+       'a heavily-zoomed About stays within the screen and keeps its content scrollable')
     win.show_locations()
     ok(True, 'show_locations builds and shows the paths dialog')
     # Folders & Files must expose the transcripts directory (regression: no entry).
@@ -154,12 +186,14 @@ try:
     _def_theme, _def_zoom, _def_ui = _dw._default_theme, _dw._default_zoom, _dw._ui_scale
     _def_fs, _def_sb, _def_mode = _dw._default_font_size, _dw._scrollback, _dw._default_mode
     _def_col, _def_tui = _dw._default_colors, _dw._default_tui
+    _def_mk, _def_cra = _dw._default_markings, _dw._osc_clipboard_read_always
     _def_pd, _def_esc, _def_pw = _dw._paste_delay, _dw._escape_limit, _dw._paste_warn
     _def_sys, _def_persist = _dw._systray, _dw._persist_session
     # perturb every field we assert, so Reset has something to revert
     _dw._default_theme, _dw._default_zoom, _dw._default_tui = 'dark', 150, True
     _dw._paste_delay, _dw._systray, _dw._persist_session = 5, True, False
     _dw._default_mode, _dw._default_colors = 'box', False
+    _dw._default_markings, _dw._osc_clipboard_read_always = False, True
     _dialogs.clear()
     _dw.show_global_settings()
     _gs = _dialogs[-1]
@@ -181,6 +215,10 @@ try:
     eq(_dlg_field(_gs, 'Scrollback').currentData(), _def_sb, 'reset: scrollback -> default')
     eq(_dlg_field(_gs, 'Unicode').currentData(), _def_mode, 'reset: unicode -> default')
     ok(_dlg_field(_gs, 'Colours').isChecked() == _def_col, 'reset: colours -> default')
+    ok(_dlg_field(_gs, 'Colored markings').isChecked() == _def_mk,
+       'reset: colored markings -> default')
+    ok(_dlg_field(_gs, 'Always allow clipboard read').isChecked() == _def_cra,
+       'reset: clipboard-read-always -> default')
     ok(_dlg_field(_gs, 'TUI mode').isChecked() == _def_tui, 'reset: tui -> default')
     eq(_dlg_field(_gs, 'Paste delay').currentData(), _def_pd, 'reset: paste delay -> default')
     ok(_dlg_field(_gs, 'System tray').isChecked() == _def_sys, 'reset: systray -> default')

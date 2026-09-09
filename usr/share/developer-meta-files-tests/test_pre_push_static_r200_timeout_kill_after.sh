@@ -215,10 +215,17 @@ assert_spared "zero-duration" "$(body_of "${tmo} 0 do_thing")"
 ## them would demand a kill-after the fixer (rightly) refuses to add.
 assert_spared "zero-leading-dot"  "$(body_of "${tmo} .0 do_thing")"
 assert_spared "zero-trailing-dot" "$(body_of "${tmo} 0. do_thing")"
-## A file defining its OWN timeout() function: every call targets that function,
-## not coreutils, so R-200 skips the whole file.
+## A file defining its OWN timeout() function: a BARE 'timeout' call targets that
+## function, not coreutils, so R-200 spares it.
 assert_spared "local-timeout-def" \
    "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
+## CANARY: a PATH-QUALIFIED '/usr/bin/timeout' bypasses the script's own timeout()
+## function (a '/' makes bash skip the function and reach coreutils), so it still
+## needs '--kill-after' and MUST be flagged EVEN in a file defining timeout(). The
+## former file-wide exemption returned before inspecting any call, letting a
+## wedge-prone coreutils invocation evade the gate.
+assert_flagged "path-qualified-funcdef" \
+   "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "/usr/bin/${tmo} 5 do_thing")"
 
 ## --- (2) pre-push-fix behaviour ---
 run_fix() {
@@ -310,9 +317,19 @@ assert_fix_unchanged() {
       fail=1
    fi
 }
-## An option before the duration: the fixer cannot skip a space-separated option
-## value safely, so it bails and the gate reports it.
-assert_fix_unchanged "opt-signal" "${tmo} ${sig} 5 do_thing"
+## An option before the duration is NOT a bail case: the AST fixer finds the first
+## OPERAND as the duration (command_tokens knows '--signal' takes a value), so it
+## inserts the kill-after just as for a bare timeout. detect() FLAGS this exact form
+## (assert_flagged 'signal-no-ka'), so the fixer MUST resolve it -- every format the
+## gate flags, the fixer handles, or the lint loop is unresolvable.
+run_fix "opt-signal" "${tmo} ${sig} 5 do_thing"
+if grep --fixed-strings -- "${tmo} ${sig} ${ka}=5 5 do_thing" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix expanded an option-before-duration timeout"
+else
+   printf '%s\n' "FAIL: pre-push-fix did not expand an option-before-duration timeout"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## An expression duration cannot be copied into a kill-after literal.
 assert_fix_unchanged "expr-duration" "${tmo} ${dq}\${T}${dq} do_thing"
 ## timeout inside a string is data, not a command.
@@ -342,8 +359,17 @@ assert_fix_unchanged "mlquote-reopen" "${mlquote_reopen}"
 assert_fix_unchanged "waived" \
    "$(printf '%s\n' '## style-ok: allow-bare-timeout' "${tmo} 5 do_thing")"
 ## A leading-option timeout whose WRAPPED command carries a literal 'timeout <N>'
-## argument: the anchored duration regex must not wander onto that argument.
-assert_fix_unchanged "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"
+## argument: the fixer inserts the kill-after at the FIRST operand (the real
+## duration) and must NOT wander onto the 'timeout 5' argument of the wrapped
+## 'echo'. Expanding it (not bailing) keeps detect and fix in lockstep.
+run_fix "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"
+if grep --fixed-strings -- "${tmo} ${sig} ${ka}=5 5 echo ${tmo} 5" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix expanded opt-then-arg without touching the wrapped argument"
+else
+   printf '%s\n' "FAIL: pre-push-fix mishandled opt-then-arg"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## A control keyword passed as a literal ARGUMENT is not command position.
 assert_fix_unchanged "keyword-arg" "echo then ${tmo} 5 x"
 ## A ZERO-duration timeout is a no-op; the fixer must NOT emit '--kill-after=0'.
@@ -352,10 +378,23 @@ assert_fix_unchanged "zero-duration" "${tmo} 0 do_thing"
 ## emitting a disabled '--kill-after=0'.
 assert_fix_unchanged "zero-leading-dot"  "${tmo} .0 do_thing"
 assert_fix_unchanged "zero-trailing-dot" "${tmo} 0. do_thing"
-## A file defining its own timeout(): the fixer DECLINES it -- a call targets the
-## function, and rewriting it to '--kill-after=5 5 ...' would corrupt its args.
+## A file defining its own timeout(): the fixer DECLINES a BARE call -- it targets
+## the function, and rewriting it to '--kill-after=5 5 ...' would corrupt its args.
 assert_fix_unchanged "local-timeout-def" \
    "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
+## CANARY: in that same file, a PATH-QUALIFIED '/usr/bin/timeout' reaches coreutils
+## (the function cannot intercept a '/'-spelled name), so the fixer MUST insert its
+## '--kill-after' -- lockstep with detect flagging it. The former file-wide skip
+## left this real coreutils call un-fixed (an unresolvable lint loop).
+run_fix "path-qualified-funcdef" \
+   "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "/usr/bin/${tmo} 5 do_thing")"
+if grep --fixed-strings -- "/usr/bin/${tmo} ${ka}=5 5 do_thing" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix inserted --kill-after into a path-qualified timeout in a funcdef file"
+else
+   printf '%s\n' "FAIL: pre-push-fix did not fix a path-qualified timeout in a funcdef file"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 
 ## --- (2b) heredoc / multi-line-quote bodies are shell DATA, never rewritten ---
 heredoc_body="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF")"

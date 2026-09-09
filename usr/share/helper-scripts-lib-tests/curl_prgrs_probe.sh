@@ -20,8 +20,10 @@ source "${SUBJECT}"
 operation="${1:-}"
 shift || true
 
-## Scaffolding the reusable functions expect. fd 4 is curl-prgrs' progress sink.
-exec 4>/dev/null
+## Scaffolding the reusable functions expect. curl-prgrs draws the progress bar
+## to the allocated ${stderr_fd} (set by initialize_terminal); allocate it here
+## pointed at /dev/null so print_progress can draw without a real TTY.
+exec {stderr_fd}>/dev/null
 probe_tmp="$(mktemp --directory)"
 ## Clean up on exit -- the suite invokes this probe dozens of times. The shutdown
 ## and wrapper operations run curl-prgrs' own 'trap - EXIT' and remove the dir
@@ -138,7 +140,7 @@ case "${operation}" in
       curl_download https://example.com/file
       ;;
 
-   ## enforce_final_size against a file of SIZE ($1) with max ($2) and content
+   ## enforce_file_size against a file of SIZE ($1) with max ($2) and content
    ## length ($3) under errexit: the over-cap arm aborts via curl_exit; otherwise
    ## prints the re-read size.
    enforce)
@@ -147,7 +149,7 @@ case "${operation}" in
       CURL_PRGRS_MAX_FILE_SIZE_BYTES="${2}"
       curl_prgrs_content_length="${3}"
       set -o errexit
-      enforce_final_size "${curl_prgrs_content_length}"
+      enforce_file_size "${curl_prgrs_content_length}"
       printf '%s' "${size_file_downloaded_bytes}"
       ;;
 
@@ -164,12 +166,12 @@ case "${operation}" in
       fi
       ;;
 
-   ## enforce_final_size when the output file is absent: nothing to do, returns 0.
+   ## enforce_file_size when the output file is absent: nothing to do, returns 0.
    enforce_nofile)
       CURL_OUT_FILE="${probe_tmp}/does-not-exist"
       CURL_PRGRS_MAX_FILE_SIZE_BYTES=100
       curl_prgrs_content_length=100
-      enforce_final_size "${curl_prgrs_content_length}"
+      enforce_file_size "${curl_prgrs_content_length}"
       ;;
 
    *)

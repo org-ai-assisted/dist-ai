@@ -374,6 +374,16 @@ ok('remote_control' not in _cfg,
 ok(not _cfg.is_locked('font_size'),
    'settings: an unlocked key reports is_locked False')
 
+# save() excludes PRIVILEGED_ONLY (remote_control) INDEPENDENT of the caller's locked=:
+# a direct save with no locked= must still never persist it (defence in depth -- a future
+# caller that forgets locked= must not be able to write the admin-only key).
+settings.save({'remote_control': 'true', 'zoom': '4'})       # NB: no locked= passed
+_rcd: dict[str, str] = {}
+settings._parse_into(settings.user_config_file(), _rcd)
+ok('remote_control' not in _rcd,
+   'settings: save() never persists a PRIVILEGED_ONLY key even without locked=')
+eq(_rcd.get('zoom'), '4', 'settings: save() still writes the unlocked keys')
+
 # ---- set_user_key / update_user honor an admin lock -------------------------
 # The lock path is exercised by monkeypatching _system_dirs in-process (the
 # suite-wide convention, cf. test_widget.py); production keeps these dirs fixed to
@@ -454,6 +464,21 @@ try:
     ok(True, 'settings: the write lock is re-acquirable once released')
 finally:
     settings._user_config_dir = _orig_lud
+
+# ---- a planted symlink at the .lock path is refused (O_NOFOLLOW), not followed ------
+_symld = tempfile.mkdtemp(prefix='st-locksym-')
+_orig_syd = settings._user_config_dir
+settings._user_config_dir = lambda: _symld
+try:
+    os.makedirs(os.path.dirname(settings.user_config_file()), exist_ok=True)
+    _victim = os.path.join(_symld, 'victim')             # does NOT exist yet
+    os.symlink(_victim, settings.user_config_file() + '.lock')
+    ok(settings._user_write_lock() is None,
+       'settings: _user_write_lock refuses a symlinked .lock (O_NOFOLLOW)')
+    ok(not os.path.exists(_victim),
+       'settings: the refused .lock open does not create the symlink target')
+finally:
+    settings._user_config_dir = _orig_syd
 
 # ---- the write lock is best-effort: None when its dir cannot be created -----
 _nolockp = os.path.join(tempfile.mkdtemp(prefix='st-nolock-'), 'afile')

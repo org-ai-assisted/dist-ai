@@ -512,6 +512,18 @@ TIMEOUT_LONG = frozenset({
 TIMEOUT_VALUE_SHORT = frozenset("ks")
 
 
+def _timeout_shadowed_by_local_func(tree, call, defines):
+    """A BARE 'timeout' call resolves to a script-defined timeout() function, so
+    R-200 (a coreutils-only concern) does not apply to it. A PATH-QUALIFIED
+    spelling ('/usr/bin/timeout') bypasses the function and always reaches
+    coreutils, so it stays subject to R-200 even in a file that defines its own
+    timeout(). A '/' in the command word is the ONLY thing that makes bash skip a
+    function (quoting/backslash suppress alias, not function, expansion; a
+    'command'/'env' wrapper carries that basename, not 'timeout', so it never
+    reaches here)."""
+    return defines and "/" not in (bash_ast.command_name(call) or "")
+
+
 def _timeout_cluster_has_kill(cluster):
     """True if a short-option CLUSTER (no leading '-') activates timeout's -k. A
     value-taking short option consumes the REST of the cluster as its value, so
@@ -540,13 +552,17 @@ class TimeoutKillAfter(Rule):
                         "R-200 skipped: 'style-ok: allow-bare-timeout' waiver "
                         "in '%s'" % ctx.path, 1)
             return
-        if bash_ast.defines_function(tree, "timeout"):
+        defines = bash_ast.defines_function(tree, "timeout")
+        if defines:
             yield _note(ctx, "R-200",
-                        "R-200 skipped: '%s' defines its own timeout() -- calls "
-                        "target it, not coreutils" % ctx.path, 1)
-            return
+                        "R-200: '%s' defines its own timeout() -- a BARE 'timeout' "
+                        "call targets it, but a path-qualified '/usr/bin/timeout' "
+                        "still bypasses it to coreutils and is checked" % ctx.path,
+                        1)
         for call in bash_ast.call_exprs(tree):
             if bash_ast.command_basename(call) != "timeout":
+                continue
+            if _timeout_shadowed_by_local_func(tree, call, defines):
                 continue
             call_args = bash_ast.args(call)
             if len(call_args) < 2:
@@ -583,13 +599,17 @@ class TimeoutKillAfter(Rule):
 
     def fix(self, ctx):
         tree = ctx.tree
-        ## In lockstep with detect's exemptions: a waived file or one defining
-        ## its own timeout() is not rewritten.
-        if ctx.has_waiver(TIMEOUT_WAIVER) or bash_ast.defines_function(
-                tree, "timeout"):
+        ## In lockstep with detect's exemptions: a waived file is not rewritten,
+        ## and a BARE 'timeout' call in a file defining its own timeout() targets
+        ## that function -- but a path-qualified '/usr/bin/timeout' still reaches
+        ## coreutils and IS rewritten (per-call, mirroring detect).
+        if ctx.has_waiver(TIMEOUT_WAIVER):
             return
+        defines = bash_ast.defines_function(tree, "timeout")
         for call in h.editable_calls(tree):
             if bash_ast.command_basename(call) != "timeout":
+                continue
+            if _timeout_shadowed_by_local_func(tree, call, defines):
                 continue
             if len(bash_ast.args(call)) < 3:
                 ## Need a duration and at least one wrapped command word.
@@ -848,7 +868,7 @@ def _constant_int_vars(tree):
     the safe direction): a second assignment, any non-literal assignment, and any
     name a scope command (local/declare/readonly/export/typeset) binds, since
     that can rebind it dynamically inside a function."""
-    values = {}
+    values: dict[str, str] = {}
     excluded = set()
 
     def drop(name):

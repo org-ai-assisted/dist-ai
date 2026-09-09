@@ -317,6 +317,16 @@ wire() {
             "SANITIZE_ECHO_BIN=${hs}/usr/bin/sanitize-echo"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
+         ## sanitize_family's biased fuzzer defaults to 3000 iterations (~5 min
+         ## in the resource-constrained sandbox where core tests must run), past
+         ## the 300s core budget -- a guaranteed TIMEOUT verdict, not a fuzz run.
+         ## Cap the CORE suite to a count that fits (measured ~103s at 1000); the
+         ## full fuzz runs in the --fuzz tier (sanitize-string-tests-fuzz) and
+         ## stays available by hand: sanitize-string-tests --iterations N. Scoped
+         ## to the exact core suite so the -fuzz variant is not capped.
+         if [ "${suite}" = 'sanitize-string-tests' ]; then
+            wire_args=( '--iterations' '1000' )
+         fi
          ;;
       helper-scripts-lib)
          ## The sourced shell libraries (has.bsh, strings.bsh) live in

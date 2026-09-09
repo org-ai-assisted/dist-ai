@@ -602,6 +602,11 @@ eq(_fcc(['\x1b' + '(' * 5000, 'BAFTER'])[0], 'AFTER',
 # short split escapes still round-trip through feed_chunk_carry (regression)
 eq(_fcc(['pre\x1b]2;a ti', 'tle\x07post'])[0], 'prepost', 'a short split OSC leaks nothing')
 eq(_fcc(['a\x1b[38;5', ';2mb'])[0], 'ab', 'a short split CSI leaks nothing')
+# feed_chunk_carry is robust at its parameter edges: a lone trailing ESC with cap<=0
+# (no room to carry, matched group len 1) must not index g[1] out of range -- it enters
+# the generic-ESC discard state. Shipped call sites use cap=4096; this guards the edge.
+eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '', '\x1b', 1),
+   'feed_chunk_carry: a lone trailing ESC at cap<=0 discards, never crashes')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 
 # --- OSC feature registry: single source of truth for the granular controls ---

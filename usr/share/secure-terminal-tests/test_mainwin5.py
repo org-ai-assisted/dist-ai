@@ -706,6 +706,18 @@ ok(_cw2.current().colors_enabled(),
    'claude: colors defaults ON on restore when unset (consistent with line_edits/markings)')
 _cw2.close(); _cw2.deleteLater(); APP.processEvents()
 
+# claude (#9): an ABSENT granular OSC key must fall back to the feature's DEFAULT, not a
+# forced False. With the default ON (set_allow_title True seeds osc_title/osc_notify on) and
+# a saved osc dict that OMITS osc_title, the restored tab must inherit the enabled default.
+# The old osc_state.get(key, False) handed _saved_bool a real bool for an absent key, pinning
+# it OFF even where the default was ON (a session saved before the feature key existed).
+_p9w = MainWindow(); _p9w._locked = set()
+_p9w.set_allow_title(True)                       # seeds osc_title/osc_notify defaults ON
+_p9w._restore_tab({'osc': {'osc_clipboard': 'false'}})   # dict present, osc_title ABSENT
+ok(_p9w.current().osc_enabled('osc_title'),
+   'claude #9: an absent OSC key restores to the enabled default, not a forced False')
+_p9w.close(); _p9w.deleteLater(); APP.processEvents()
+
 # grok: _on_tab_step must SKIP a disabled restore placeholder and keep walking
 # (wrapping) to the next real tab, not dead-end on it -- a single `if enabled` did.
 # Indices are computed from count() (a fresh MainWindow already owns one live tab).

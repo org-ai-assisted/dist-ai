@@ -105,9 +105,15 @@ else
 fi
 ## arm the watchdog with a 2s deadline; do NOT cancel -> it must reap the group + flag it.
 wdog1="$(shots_watchdog_start 2 "${pgf1}" "${pgf1}.timeout")"
-## wait up to ~8s for the reap (2s deadline + grace).
+## Poll generously (up to ~30s). The watchdog's worst-case reap is the 2s deadline plus the
+## TERM -> grace -> KILL escalation (~5s), but a loaded/contended CI runner stretches its
+## per-second sleeps well past that, so a tight window reads a not-yet-reaped group as a
+## spurious 'alive'. The loop BREAKS the instant the group dies, so a healthy reap still
+## returns in ~5s; the wide ceiling only absorbs scheduling slop. (wait cannot help here:
+## the watchdog is backgrounded inside shots_watchdog_start's `$()`, so it is not a child
+## of this shell and `wait` on its PID no-ops.)
 reaped=alive
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do
    if ! kill -0 "-${pgid1}" 2>/dev/null; then
       reaped=dead
       break
