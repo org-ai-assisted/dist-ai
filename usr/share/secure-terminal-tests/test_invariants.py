@@ -35,6 +35,10 @@ cli.py -- so it forwards keystrokes verbatim and makes no auto-submit claim to p
          OSC reach-out enabled writes NOTHING back to the child, EXCEPT the single
          per-tab-GATED reply (the OSC 52 clipboard read, which needs an explicit
          grant). No DSR / answerback / mouse / query reflection path exists.
+  INV-7  nothing leaks into the next prompt except scrollback: after ANY output stream,
+         a foreground-exit reset (_reset_vt_to_prompt_baseline) lands the clean baseline
+         -- state_dump.is_baseline holds -- so no mouse/charset/scroll/palette/SGR/hidden
+         cursor/stray DEC mode survives. dump_state is the oracle.
 
 Every property is CANARY-VERIFIED: a deliberately-broken stub (an un-stripped paste,
 a leaked escape, a reflected write, a modified earlier line) must make the property's
@@ -58,6 +62,7 @@ require_wayland('secure-terminal-tests(invariants)')
 try:
     from hypothesis import given, settings, strategies as st
     from secure_terminal import sanitize as S
+    from secure_terminal import state_dump as _sd
 except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(invariants): FAIL missing dependency: '
                      '%s\n' % exc)
@@ -514,6 +519,51 @@ def inv6_corpus():
             fail('INV-6 corpus: output induced a write-back for %r' % seed[:60])
 
 
+# ----- INV-7: nothing leaks into the next prompt except scrollback ----------------
+_WT7 = SecureTerminal(command='/bin/cat', tui=True)
+_WT7.apply_osc('osc_colors', True)                  # so OSC 4/10/11/12 palette is tracked
+
+# Atoms that ARM leak-prone VT state (mouse, hidden cursor, bracketed paste, origin /
+# autowrap, charset designation, scroll region, palette, SGR), mixed with the generic
+# ANY_ATOM, so an example frequently leaves real state for the reset to clear.
+_INV7_ARM = st.sampled_from([
+    '\x1b[?1000h', '\x1b[?1006h', '\x1b[?1003h',    # mouse tracking
+    '\x1b[?25l',                                     # hide cursor (DECTCEM)
+    '\x1b[?2004h',                                   # bracketed paste (DEC 2004)
+    '\x1b[?6h', '\x1b[?7l',                          # origin mode, autowrap off
+    '\x1b(0', '\x1b)0',                              # G0/G1 charset designation
+    '\x1b[2;10r',                                    # scroll region (DECSTBM)
+    '\x1b]4;1;#ff0000\x07', '\x1b]10;#00ff00\x07',   # OSC palette overrides
+    '\x1b[1;31m',                                    # SGR pen
+])
+INV7_STREAM = st.lists(st.one_of(ANY_ATOM, _INV7_ARM), max_size=18).map(''.join)
+
+
+def _inv7_predicate(term, stream):
+    """After feeding `stream` then running the foreground-exit reset, the terminal is at
+    the clean baseline (state_dump.is_baseline) -- no VT state leaked past the reset.
+    Predicate form so a broken reset that leaves state armed can be canaried."""
+    feed_output(term, stream.encode('utf-8', 'surrogatepass'))
+    term._render_tui()
+    term._reset_vt_to_prompt_baseline()
+    snap = term._collect_state()
+    return _sd.is_baseline(snap), snap
+
+
+@RUN_GUI
+@given(INV7_STREAM)
+def prop_inv7_reset_inert(stream):
+    okp, snap = _inv7_predicate(_WT7, stream)
+    assert okp, 'reset left non-baseline VT state: %r' % (snap,)
+
+
+def inv7_corpus():
+    for seed in CORPUS_SEEDS:
+        okp, snap = _inv7_predicate(_WT7, seed)
+        if not okp:
+            fail('INV-7 corpus: reset left non-baseline state for %r' % seed[:60])
+
+
 # ===========================================================================
 # CANARIES: each property must FAIL against a deliberately-broken stub. A green
 # run then means the checks have teeth (not a tautology). Mirrors the adversarial
@@ -621,6 +671,17 @@ def _canaries():
         assert _INV2_SENTINEL in blocks[:-1], 'earlier line modified'
     _expect_violation('INV-2', canary_inv2)
 
+    # INV-7: a reset that LEAVES a bit armed (the pre-fix leak -- ordinary exit reset only
+    # SGR/alt/paste, never mouse) must be caught. Model it by running the real reset then
+    # re-arming mouse, so is_baseline sees the surviving mouse mode and the property fails.
+    def canary_inv7():
+        feed_output(_WT7, b'\x1b[?1000h')            # arm mouse tracking
+        _WT7._render_tui()
+        _WT7._reset_vt_to_prompt_baseline()
+        _WT7._mouse_modes = {1000}                   # the OLD behaviour: mouse survived
+        assert _sd.is_baseline(_WT7._collect_state()), 'mouse leaked past the reset'
+    _expect_violation('INV-7', canary_inv7)
+
 
 # ===========================================================================
 # Run.
@@ -633,6 +694,7 @@ PROPS = [
     ('INV-5 multi-line held until dispatch', prop_inv5_multiline_held_until_dispatch),
     ('INV-2 earlier line immutable', prop_inv2_earlier_line_immutable),
     ('INV-6 no induced reply', prop_inv6_no_induced_reply),
+    ('INV-7 reset inert (random)', prop_inv7_reset_inert),
 ]
 CORPUS_CHECKS = [
     ('INV-3 corpus', inv3_corpus),
@@ -641,6 +703,7 @@ CORPUS_CHECKS = [
     ('INV-1 autosubmit strip', inv1_autosubmit_strip),
     ('INV-2 corpus', inv2_corpus),
     ('INV-6 corpus', inv6_corpus),
+    ('INV-7 corpus', inv7_corpus),
 ]
 
 for name, prop in PROPS:
@@ -657,7 +720,7 @@ for name, check in CORPUS_CHECKS:
 
 _canaries()
 
-for term in (_WL, _WL2, _WT6):
+for term in (_WL, _WL2, _WT6, _WT7):
     try:
         term.close()
     except Exception:  # pylint: disable=broad-except

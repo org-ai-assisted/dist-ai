@@ -700,7 +700,7 @@ try:
             if isinstance(_x, dict) and 'op' in _x:
                 _sents.clear()
                 _sents.update(_x)
-        return {'ok': True, 'text': '# secure-terminal state dump v1\nmode: tui\n'}
+        return {'ok': True, 'text': '# secure-terminal state dump v2\nmode: tui\n'}
     M.ipc.send_request = _cap_reqs
     eq(_ctl_main(['dump-state', '--tab', 'id:1']), 0, 'ctl dump-state -> 0')
     ok(_sents.get('op') == 'ctl-dump-state' and _sents.get('tab') == 'id:1'
@@ -716,7 +716,7 @@ try:
     eq(_ctl_main(['dump-state', '--tab', 'id:1', '--file', _sd_path]), 0,
        'ctl dump-state --file -> 0')
     with open(_sd_path, encoding='utf-8') as _sdh:
-        ok(_sdh.read() == '# secure-terminal state dump v1\nmode: tui\n',
+        ok(_sdh.read() == '# secure-terminal state dump v2\nmode: tui\n',
            'ctl: dump-state --file writes the reply to the path (atomic tmp+rename)')
 finally:
     M.ipc.send_request = _orig_sr
@@ -1646,7 +1646,7 @@ try:
     ok(_rs['ok'] and _rs.get('text', '').startswith('# secure-terminal state dump'),
        'ipc: ctl-dump-state returns a headed state dump (text default)')
     _rj = _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0, 'format': 'json'})
-    ok(_rj['ok'] and _json.loads(_rj['text']).get('version') == 1,
+    ok(_rj['ok'] and _json.loads(_rj['text']).get('version') == 2,
        'ipc: ctl-dump-state format=json returns a parseable dump')
     ok(not _disp({'op': 'ctl-dump-state', 'tab': 'id:%d' % _tid0,
                   'format': 'yaml'})['ok'],
