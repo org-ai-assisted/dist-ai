@@ -77,6 +77,10 @@ run_required_unit_test site_generate_test.py
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
 [ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
+## The defaults are rooted at ${HOME}; under nounset an unset HOME (a scrubbed CI /
+## systemd env) would crash rather than honor the documented no-checkout SKIP. Empty it
+## so the defaults resolve to absent absolute paths -> no root added -> the SKIP path.
+[ -v HOME ] || HOME=''
 
 declare -a roots=()
 add_root(){
