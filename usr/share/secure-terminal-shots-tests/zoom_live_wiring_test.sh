@@ -322,9 +322,10 @@ if grep --quiet --fixed-strings -- "= 'zoom-live' ]" "${wrapper}" \
 else
    check '1' '0' "secure-terminal-shots wrapper dispatches the zoom-live mode"
 fi
-# Match only the zoom-live case label, NOT the full sibling list -- adding a lane (e.g.
-# 'compat') to the driver's `comparison|compat|zoom|zoom-live)` case must not break this.
-if grep --quiet --fixed-strings -- 'zoom-live)' "${sandbox_driver}"; then
+# Match the zoom-live case label wherever it sits in the sibling alternation: followed by
+# another lane (`zoom-live|tooltip)`) OR closing the pattern (`...|zoom-live)`). A fixed
+# 'zoom-live)' broke when a lane was appended AFTER it; [|)] tolerates a sibling on either side.
+if grep --quiet --extended-regexp -- 'zoom-live[|)]' "${sandbox_driver}"; then
    check '0' '0' "secure-terminal-shots-sandbox accepts the zoom-live lane"
 else
    check '1' '0' "secure-terminal-shots-sandbox accepts the zoom-live lane"
