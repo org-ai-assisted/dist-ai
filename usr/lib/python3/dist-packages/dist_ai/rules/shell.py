@@ -868,7 +868,7 @@ def _constant_int_vars(tree):
     the safe direction): a second assignment, any non-literal assignment, and any
     name a scope command (local/declare/readonly/export/typeset) binds, since
     that can rebind it dynamically inside a function."""
-    values = {}
+    values: dict[str, str] = {}
     excluded = set()
 
     def drop(name):
