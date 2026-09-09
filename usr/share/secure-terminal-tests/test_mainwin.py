@@ -77,6 +77,25 @@ ok(_QTT.palette().color(_TT_INACT, _TT_BASE) == _QCol(_l_bg),
    'light QToolTip INACTIVE-group base is pinned to the card bg')
 ok(_QTT.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
    'light QToolTip INACTIVE-group text is pinned to the card fg')
+# Regression (the reported light-theme dark-on-dark tooltips): the base app palette is
+# captured from the DESKTOP theme, which may be DARK; a native (non-Fusion) light style
+# can paint QToolTip from the APP palette, so the light path must RE-PIN the tooltip roles
+# rather than restore the dark base verbatim (QToolTip.setPalette + the QToolTip{} QSS are
+# not honoured by every platform style). Simulate a dark-desktop base and confirm light
+# re-pins the APP-palette tooltip roles. FAILS on the old code that restored the base as-is.
+_saved_base = win._base_app_palette
+_dark_base = _QPal(win._base_app_palette)
+_dark_base.setColor(_TT_INACT, _TT_BASE, _QCol('#0f1216'))    # dark desktop tooltip bg
+_dark_base.setColor(_TT_INACT, _TT_TEXT, _QCol('#0f1216'))    # dark-on-dark (the reported bug)
+win._base_app_palette = _dark_base
+win.set_theme('dark')                        # bounce so the light path re-runs
+win.set_theme('light')
+ok(APP.palette().color(_TT_INACT, _TT_BASE) == _QCol(_l_bg),
+   'light re-pins the APP-palette tooltip base even when the desktop base is dark')
+ok(APP.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
+   'light re-pins the APP-palette tooltip text (no dark-on-dark leak from the desktop)')
+win._base_app_palette = _saved_base
+win.set_theme('light')                       # restore the clean default for later tests
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 try:
