@@ -162,6 +162,33 @@ _ctrunc = sd.dump_json(_cbudget, max_bytes=2000)
 _cobj = _json.loads(_ctrunc)
 ok(len(_ctrunc.encode()) <= 2000 and _cobj.get('document_truncated') is True,
    'an over-budget CLI json dump truncates the document to valid JSON under the budget')
+# CLI truncation must keep the TAIL (the current screen), like the text path -- not the
+# oldest prefix. (ST ai-review finding 1.)
+_tailsnap = sd.collect(None, mode='cli', columns=80, alt_screen=False, saved_primary=None,
+                       mouse_modes=set(), title='', cli_pen={},
+                       document=('old line\n' * 5000) + 'UNIQUE_TAIL_MARKER')
+_tobj = _json.loads(sd.dump_json(_tailsnap, max_bytes=2000))
+ok('UNIQUE_TAIL_MARKER' in _tobj['document'],
+   'CLI json truncation keeps the live tail (current screen), not the oldest prefix')
+# A field other than rows/document (a HTS-every-column tab-stop flood) must not leave the
+# JSON over budget; it collapses to a count and the bound still holds. (ST ai-review #2.)
+_floodrows = pyte.HistoryScreen(20, 3, history=5)
+_flood = sd.collect(_floodrows, mode='tui', columns=20, alt_screen=False,
+                    saved_primary=None, mouse_modes=set(), title='')
+_flood['tabstops'] = list(range(65535))
+_fobj = _json.loads(sd.dump_json(_flood, max_bytes=4000))    # must parse
+ok(len(sd.dump_json(_flood, max_bytes=4000).encode()) <= 4000
+   and str(_fobj.get('tabstops', '')).startswith('truncated('),
+   'a tab-stop flood collapses to a count so the json budget still holds')
+# Final backstop: an oversized field that is neither rows/document/tabstops (a huge title)
+# still yields minimal VALID JSON under budget, marked truncated. (ST ai-review #2.)
+_hugetitle = sd.collect(pyte.HistoryScreen(5, 2, history=2), mode='tui', columns=5,
+                        alt_screen=False, saved_primary=None, mouse_modes=set(),
+                        title='T' * 500000)
+_hobj = _json.loads(sd.dump_json(_hugetitle, max_bytes=2000))
+ok(len(sd.dump_json(_hugetitle, max_bytes=2000).encode()) <= 2000
+   and _hobj.get('truncated') is True,
+   'an un-shrinkable oversized field falls back to minimal valid JSON under budget')
 
 
 # --- 2. Live widget path -----------------------------------------------------------
@@ -195,6 +222,27 @@ APP.processEvents()
 ok('alt-screen: no' in _tui.dump_state('text'),
    'after the program leaves the alternate screen the dump reports alt-screen: no')
 _tui.close()
+
+# A frozen primary is held across a TUI->CLI switch (apply_tui does not leave the alt
+# screen), so a CLI dump must still report saved-primary, not null. (ST ai-review #3.)
+_sw = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_sw, b'PRIMARY\r\n\x1b[?1049hALT')          # enter alt -> _alt_saved set
+_sw._render_tui()
+APP.processEvents()
+if not _sw._grid_mode():                                 # pragma: no cover - tui was requested
+    ok(False, 'setup: _sw should be in TUI mode after tui=True')
+_sw.apply_tui(False)                                     # switch to CLI while alt still held
+APP.processEvents()
+# The switch must take effect for this to exercise the CLI branch (the regression: old
+# code returned saved_primary null there). Fail loud if it did not, rather than pass
+# vacuously in TUI mode where saved_primary was non-null on the old code too.
+ok(not _sw._grid_mode() and _sw._alt_saved is not None,
+   'setup: the tab is now in CLI mode with the alt primary still held')
+_swobj = _json.loads(_sw.dump_state('json'))
+ok(_swobj['alt_screen'] is True and _swobj['saved_primary'] is not None,
+   'a TUI->CLI switch with alt held still reports saved_primary in the dump')
+_sw.close()
 
 # CLI (line) mode: no pyte grid; the dump is the line document + pen.
 _cli = SecureTerminal(command='/bin/cat')
