@@ -2706,7 +2706,7 @@ _sgc.close()
 
 # Q2 by-class colours: a bidi override, a homoglyph and a zero-width each get their
 # own class colour + inspectable codepoint in the grid, exactly as CLI box mode.
-for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
+for _pl, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
                                     (chr(0x0430), 0x0430, 'confusable'),
                                     (chr(0x200B), 0x200B, 'invisible')):
     _q2 = SecureTerminal(command='/bin/cat', tui=True)
@@ -2714,7 +2714,7 @@ for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
     _q2.resize(600, 300)
     _q2.show()
     pump(60)
-    _q2._feed_stream(('x' + _payload + 'y\r\n').encode())
+    _q2._feed_stream(('x' + _pl + 'y\r\n').encode())
     _q2._render_tui()
     pump(30)
     _idx = _q2.toPlainText().index('_')

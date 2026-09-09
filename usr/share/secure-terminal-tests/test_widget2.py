@@ -1212,7 +1212,7 @@ import base64 as _b64_clip                                            # noqa: E4
 QGuiApplication.clipboard().setText('x' * (_CLIP_CAP - 2) + '\U0001f4a9')  # emoji straddles the cap
 _osz._clipboard_read = True
 _osz._last_clip_read = 0.0
-_clipcap = []
+_clipcap: list = []
 _o_wc = _osz._write
 _osz._write = _clipcap.append          # pylint: disable=protected-access
 try:
@@ -3091,26 +3091,26 @@ _tuikey(Qt.Key.Key_unknown, chr(0x202E))                           # bidi overri
 eq(_tksent, [], 'TUI: a non-printable keystroke is dropped')
 
 # --- foreground process group / cwd helpers -----------------------------------
-_fg = SecureTerminal(command='/bin/cat')
-_saved_fd = _fg._fd
-_fg._fd = None
-ok(_fg._foreground_pgrp() is None, '_foreground_pgrp: no pty fd -> None')
-ok(_fg.cwd_basename() is None or isinstance(_fg.cwd_basename(), str),
+_fgt = SecureTerminal(command='/bin/cat')
+_saved_fd = _fgt._fd
+_fgt._fd = None
+ok(_fgt._foreground_pgrp() is None, '_foreground_pgrp: no pty fd -> None')
+ok(_fgt.cwd_basename() is None or isinstance(_fgt.cwd_basename(), str),
    'cwd_basename: tolerates a missing foreground')
-_fg._fd = _saved_fd
+_fgt._fd = _saved_fd
 # a pipe fd is not a tty -> tcgetpgrp raises -> None
 _pr, _pw = os.pipe()
-_fg._fd = _pr
-ok(_fg._foreground_pgrp() is None,
+_fgt._fd = _pr
+ok(_fgt._foreground_pgrp() is None,
    '_foreground_pgrp: a non-tty fd -> None (tcgetpgrp fails)')
-_fg._fd = _saved_fd
+_fgt._fd = _saved_fd
 os.close(_pr)
 os.close(_pw)
 # has_foreground_program / terminate_foreground with nothing to act on
-_fg._foreground_pgrp = lambda: None
-ok(not _fg.has_foreground_program(),
+_fgt._foreground_pgrp = lambda: None
+ok(not _fgt.has_foreground_program(),
    'has_foreground_program: no foreground group -> False')
-ok(not _fg.terminate_foreground(),
+ok(not _fgt.terminate_foreground(),
    'terminate_foreground: nothing running -> no signal sent')
 
 # --- Ctrl+wheel zoom ----------------------------------------------------------
@@ -3398,7 +3398,7 @@ _xc.close()
 # program and the panic Terminate kills it.
 _saved_readlink5 = os.readlink
 try:
-    os.readlink = lambda _p: '/usr/bin/bash (deleted)'
+    os.readlink = lambda _p: '/usr/bin/bash (deleted)'  # type: ignore[assignment, misc]
     eq(SecureTerminal._read_exe(1), '/usr/bin/bash',
        '#5: _read_exe strips a " (deleted)" suffix (unlinked binary)')
 finally:
@@ -3406,7 +3406,7 @@ finally:
 _xc5 = SecureTerminal(command=None)               # login-shell tab (_command is None)
 _saved_readlink5b = os.readlink
 try:
-    os.readlink = lambda _p: (_xc5._spawn_exe or '/bin/sh') + ' (deleted)'
+    os.readlink = lambda _p: (_xc5._spawn_exe or '/bin/sh') + ' (deleted)'  # type: ignore[assignment, misc]
     ok(_xc5._child_execd() is False,
        '#5: an idle shell whose binary was unlinked is NOT flagged as foreground')
 finally:
@@ -3944,14 +3944,14 @@ finally:
 ok(_wstate['n'] >= 2, '_write retries after an EAGAIN on the non-blocking fd')
 
 # the grid-mode feed path caps the retained raw output
-_bg = SecureTerminal(command='/bin/cat')
-_bg.apply_tui(True)
-feed_output(_bg, b'\x1b[?1049h')            # grid mode
-_bg._raw = 'x' * _bg._RAW_MAX               # already at the cap
-feed_output(_bg, b'y')                      # one more byte -> over cap -> trimmed
-ok(len(_bg._raw) <= _bg._RAW_MAX, 'grid-mode feed caps the retained raw output')
-_bg._render_timer.stop()
-_bg._sync_timer.stop()
+_bgt = SecureTerminal(command='/bin/cat')
+_bgt.apply_tui(True)
+feed_output(_bgt, b'\x1b[?1049h')            # grid mode
+_bgt._raw = 'x' * _bgt._RAW_MAX               # already at the cap
+feed_output(_bgt, b'y')                      # one more byte -> over cap -> trimmed
+ok(len(_bgt._raw) <= _bgt._RAW_MAX, 'grid-mode feed caps the retained raw output')
+_bgt._render_timer.stop()
+_bgt._sync_timer.stop()
 
 # --- OSC 52 clipboard WRITE (_osc_clipboard) ----------------------------------
 import base64 as _b64                                           # noqa: E402
@@ -4096,10 +4096,10 @@ try:
     _src3 = os.path.join(_ti3, 'secure-terminal.ti')
     with open(_src3, 'w', encoding='utf-8') as _f:
         _f.write(_TISRC)
-    _blk = os.path.join(_ti3, 'blocker')
-    with open(_blk, 'w', encoding='utf-8') as _f:
+    _blkp = os.path.join(_ti3, 'blocker')
+    with open(_blkp, 'w', encoding='utf-8') as _f:
         _f.write('x')
-    os.environ['XDG_CACHE_HOME'] = os.path.join(_blk, 'sub')   # parent is a file
+    os.environ['XDG_CACHE_HOME'] = os.path.join(_blkp, 'sub')   # parent is a file
     _term._terminfo_source = lambda: _src3
     ok(_term.cli_terminfo_dir() is None,
        'cli_terminfo_dir: an un-creatable cache dir falls back to None')
@@ -5002,20 +5002,20 @@ _alt.shutdown()
 # 10. A scrollback cap smaller than one screen prunes the oldest grid blocks: the
 # incremental model keeps only the surviving trailing rows in step, so the next
 # delete never computes a negative start (no crash, model stays consistent).
-_cap = SecureTerminal(command='/bin/cat', tui=True)
-_cap.apply_mode('show')
-_cap.apply_scrollback(4)
-_cap.resize(700, 400)
-_cap.show()
+_capt = SecureTerminal(command='/bin/cat', tui=True)
+_capt.apply_mode('show')
+_capt.apply_scrollback(4)
+_capt.resize(700, 400)
+_capt.show()
 pump(40)
-for _k in range(_cap._screen.lines):
-    _cap._feed_stream(('cap-%02d\r\n' % _k).encode())
-    _cap._render_tui()
-ok(_cap.document().blockCount() >= 1 and _cap._grid_rows <= _cap.document().blockCount(),
+for _k in range(_capt._screen.lines):
+    _capt._feed_stream(('cap-%02d\r\n' % _k).encode())
+    _capt._render_tui()
+ok(_capt.document().blockCount() >= 1 and _capt._grid_rows <= _capt.document().blockCount(),
    'a tiny scrollback cap keeps the incremental grid render consistent (no crash)')
-eq(len(_cap._grid_row_sig), _cap._grid_rows,
+eq(len(_capt._grid_row_sig), _capt._grid_rows,
    'the incremental model tracks exactly the surviving grid blocks under a tiny cap')
-_cap.shutdown()
+_capt.shutdown()
 
 # 11. The trailing-blank trim tests the RENDERED glyph, not cell.data.strip(): a
 # lone U+00A0 (str.strip() drops it as whitespace) renders as a visible MARKED
