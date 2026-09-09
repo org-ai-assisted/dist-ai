@@ -544,8 +544,8 @@ ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
 win._restore_tab({'tui': 'false'})
 ok(win.current().tui_active() is False,
    'a non-bool saved flag falls back to the default, not bool()-coerced True (#5)')
-# (OSC-map fail-closed restore is tested at the END of this module, after the
-# ctl-dump-tab COR-7 assertions, so its probe tab cannot perturb their fixture.)
+# (OSC-map fail-closed restore is tested in test_mainwin5, after the ctl-dump-tab
+# COR-7 assertions, so its probe tab cannot perturb their fixture.)
 # a corrupt/hand-edited session with a non-str font_family or non-int font_size must
 # fall back to the default, not crash the restore (.strip() / int() on a bad type).
 eq(_bad_tab.current_font_family(), win._default_font_family,

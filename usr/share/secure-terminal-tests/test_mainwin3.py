@@ -122,7 +122,10 @@ try:
     _mode_line = [ln for ln in MainWindow._COMMAND_HELP.split('\n')
                   if ln.strip().startswith('/mode')]
     eq(len(_mode_line), 1, 'the palette help documents /mode exactly once')
-    eq(sorted(_mode_line[0].split(None, 1)[1].split('|')), sorted(_san.DISPLAY_MODES),
+    # default to '' so a missing/renamed /mode line records a clean FAIL below rather
+    # than an IndexError that aborts the rest of the suite and drops its coverage.
+    _mode_alts = _mode_line[0].split(None, 1)[1].split('|') if _mode_line else []
+    eq(sorted(_mode_alts), sorted(_san.DISPLAY_MODES),
        'the /mode alternatives in the help equal sanitize.DISPLAY_MODES')
 finally:
     win._locked = _sl

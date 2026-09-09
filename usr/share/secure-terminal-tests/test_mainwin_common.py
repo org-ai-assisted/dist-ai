@@ -112,8 +112,11 @@ M._app_icon = lambda: M._letter_icon('S', '#336699')
 # tests save/restore SIGCHLD around their own calls, so this ambient value is
 # transparent to them. Belt-and-suspenders: an atexit sweep force-closes any window a
 # test tore down with deleteLater() (or left open) so its shell is hung up and reaped
-# instead of escaping the test process. Default-safe by design: no per-test teardown
-# call to remember, so a future window cannot silently reintroduce the leak.
+# instead of escaping the test process. It runs ONLY on the uncaught-exception path
+# (interpreter shutdown); the normal path exits via finish()'s os._exit, where the
+# live SIGCHLD reaper and the OS closing every fd hang up the pty children -- closing
+# widgets there would re-enter the Qt teardown crash os._exit dodges. Default-safe by
+# design: no per-test teardown call to remember.
 signal.signal(signal.SIGCHLD, M._reap_pty_children)
 
 
@@ -269,7 +272,10 @@ def finish(label):
     after a clean run (destroying the many widgets/pyte screens/timers a suite
     builds), which would turn a fully-passing run into a non-zero exit. All tests
     have run and the result is known, so persist coverage and exit hard, bypassing
-    that teardown. os._exit skips atexit, so save coverage explicitly first."""
+    that teardown. Do NOT close/destroy windows here: that would re-enter the Qt
+    static-teardown crash os._exit exists to dodge -- the live SIGCHLD reaper plus
+    the OS closing every fd on process exit hang up and reap the pty children.
+    os._exit skips atexit, so save coverage explicitly first."""
     print('secure-terminal-tests(%s): all passed' % label if not FAIL else
           'secure-terminal-tests(%s): %d failed' % (label, FAIL))
     try:
