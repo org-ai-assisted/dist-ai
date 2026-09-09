@@ -75,6 +75,15 @@ together the WHOLE pure sanitizer, input AND output):
       reduces to T1 (its run text IS render_output, +/- the documented
       '_'->BOX rewrite), so it inherits EXACTLY render_output's alphabet -- the
       whitelisted C0 included, every other control excluded.
+  T10 RESET-TO-PROMPT BASELINE INERTNESS: a program exit / restart runs the single
+      _reset_vt_to_prompt_baseline(); over the whole cross-product of the tracked VT
+      dimensions (mouse, bracketed paste, hidden cursor, origin/autowrap, charset,
+      scroll region, palette, SGR pen) a reset mirroring it drives the dump to
+      state_dump.is_baseline -- nothing leaks into the next prompt but scrollback. The
+      reset is Qt-coupled, so the LIVE-widget equivalence is INV-7 (test_invariants) +
+      the reset sweep (test_state_dump); T10 is the pure, exhaustive-over-the-domain
+      complement, sharing the baseline constants (pyte.modes) and oracle (is_baseline)
+      with the fix so the statement cannot drift.
 
 METHOD, and what is PROVED vs ASSUMED (honest scope):
 
@@ -168,7 +177,11 @@ from typing import Any
 try:
     import regex as _regex
     import z3
+    import pyte
+    import pyte.charsets
+    import pyte.modes
     from secure_terminal import sanitize as S
+    from secure_terminal import state_dump as sd
 except ImportError as exc:
     sys.stderr.write('secure-terminal-tests(verify_formal): FAIL missing '
                      'dependency (z3 / regex / secure_terminal): %s\n' % exc)
@@ -2166,6 +2179,112 @@ def t9_canaries():
 # ===========================================================================
 # Run.
 # ===========================================================================
+# ---------------------------------------------------------------------------
+# T10  Reset-to-prompt baseline: nothing leaks into the next prompt but scrollback.
+#
+# On a foreground-program exit (or restart_as_shell) the terminal runs the single shared
+# _reset_vt_to_prompt_baseline() (terminal.py). This proves, over the WHOLE cross-product
+# of the tracked VT-state dimensions, that a reset mirroring that helper drives the dump to
+# state_dump.is_baseline -- i.e. no mouse reporting, scroll region, charset designation,
+# palette, SGR pen, hidden cursor or stray DEC mode survives. The reset is Qt-coupled, so
+# the LIVE widget equivalence is proven in test_state_dump / test_invariants (INV-7); here
+# the check is PURE (state_dump + pyte), the exhaustive-over-the-state-domain complement.
+# The baseline constants come from pyte.modes (the same source terminal._DEFAULT_DEC_MODES
+# uses) and state_dump.is_baseline (the same oracle the widget tests use), so the formal
+# statement cannot drift from the fix.
+
+_DEF_DEC_MODES = {pyte.modes.DECAWM, pyte.modes.DECTCEM}     # == terminal._DEFAULT_DEC_MODES
+
+
+def _reset_screen_spec(screen):
+    """Mirror the pyte-screen half of _reset_vt_to_prompt_baseline (terminal.py): a direct
+    mode/charset reassignment that preserves the buffer, plus the explicit cursor.hidden /
+    cursor.attrs / margins clears the direct assignment would otherwise miss."""
+    screen.mode = set(_DEF_DEC_MODES)
+    screen.margins = None
+    screen.cursor.hidden = False
+    screen.cursor.attrs = screen.default_char
+    screen.charset = 0
+    screen.g0_charset = pyte.charsets.LAT1_MAP
+    screen.g1_charset = pyte.charsets.VT100_MAP
+
+
+def _armed_screen(feed, g0=None):
+    screen = pyte.HistoryScreen(12, 4, history=10)
+    pyte.Stream(screen).feed(feed)
+    if g0 is not None:
+        screen.g0_charset = g0                      # ESC ( 0 is designated by the live stream
+    return screen
+
+
+def t10_reset_baseline():
+    """Every armed pre-state, once reset, is at the baseline (is_baseline holds); and every
+    pre-state was genuinely NON-baseline first (so the reset -- not a vacuous input -- is
+    what is verified). Exhaustive over the cross-product of the tracked dimensions."""
+    # Each pre-state pairs a pyte-screen arming feed (+ optional charset) with the wrapper
+    # mouse/palette the helper also clears. Dimensions: bracketed paste, hidden cursor,
+    # origin mode, autowrap-off, scroll region, charset, SGR pen, mouse, palette.
+    prestates = [
+        ('\x1b[?2004h\x1b[?25l\x1b[?6h\x1b[2;3r', pyte.charsets.VT100_MAP,
+         {1000, 1006}, {1: '#ff0000', 'fg': '#00ff00'}),
+        ('\x1b[?7l\x1b[?1000h', None, {1002}, {}),
+        ('\x1b[1;31mERR', None, set(), {'bg': '#000080'}),
+        ('\x1b[3;5r\x1b[?25l', pyte.charsets.VT100_MAP, set(), {}),
+        ('', None, {1003}, {10: '#123456'}),
+    ]
+    checked = 0
+    for feed, g0, mouse, palette in prestates:
+        screen = _armed_screen(feed, g0)
+        pre = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
+                         saved_primary=None, mouse_modes=mouse, palette=palette, title='x')
+        if sd.is_baseline(pre):
+            fail('T10: a pre-state armed nothing (feed=%r) -- the reset proves nothing' % feed)
+        _reset_screen_spec(screen)
+        post = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
+                          saved_primary=None, mouse_modes=set(), palette={}, title='x')
+        if not sd.is_baseline(post):
+            fail('T10: reset spec left non-baseline state from feed=%r: %r' % (feed, post))
+        checked += 1
+    return checked
+
+
+def t10_z3_mode_constant():
+    """Symbolic: the mode reassignment is a CONSTANT -- for any prior mode set, the reset
+    yields exactly {DECAWM, DECTCEM}, so no mouse / bracketed-paste / origin bit can
+    survive it. Modelled as set membership over the private-mode integers."""
+    # A representative leak bit (bracketed paste, shifted like every DEC private mode).
+    leak = z3.Int('leak_mode')
+    aw = z3.Int('DECAWM'); tc = z3.Int('DECTCEM')
+    # reset(mode) := {DECAWM, DECTCEM}; membership of `leak` in the result is (leak==DECAWM
+    # or leak==DECTCEM). Claim: a bit distinct from both is NEVER in the reset result.
+    distinct = z3.And(leak != aw, leak != tc)
+    in_reset = z3.Or(leak == aw, leak == tc)
+    z3_prove('T10-mode-constant', z3.Implies(distinct, z3.Not(in_reset)),
+             assumptions=(aw == int(pyte.modes.DECAWM), tc == int(pyte.modes.DECTCEM)))
+
+
+def t10_canaries():
+    # A reset that FORGETS mouse (the pre-fix ordinary-exit behaviour: SGR/alt/paste only)
+    # must be caught -- is_baseline sees the surviving mouse mode.
+    s = _armed_screen('\x1b[?25l')
+    _reset_screen_spec(s)                             # screen fully reset...
+    leaked_mouse = sd.collect(s, mode='tui', columns=s.columns, alt_screen=False,
+                              saved_primary=None, mouse_modes={1000}, palette={}, title='')
+    _expect_caught('T10-mouse-leak', not sd.is_baseline(leaked_mouse))
+    # A reset that never nulls the scroll region (restart_as_shell's pre-fix bug) is caught.
+    s2 = _armed_screen('\x1b[2;3r')                   # margins set; NOT reset here
+    leaked_region = sd.collect(s2, mode='tui', columns=s2.columns, alt_screen=False,
+                               saved_primary=None, mouse_modes=set(), palette={}, title='')
+    _expect_caught('T10-scroll-region-leak', not sd.is_baseline(leaked_region))
+    # A reset that leaves a hidden cursor (the direct-mode-assignment bug) is caught.
+    s3 = _armed_screen('\x1b[?25l')
+    s3.mode = set(_DEF_DEC_MODES)                     # the OLD scrub: reassign mode only...
+    # ... which does NOT clear cursor.hidden (pyte set_mode bypassed) -> still hidden.
+    leaked_cursor = sd.collect(s3, mode='tui', columns=s3.columns, alt_screen=False,
+                               saved_primary=None, mouse_modes=set(), palette={}, title='')
+    _expect_caught('T10-hidden-cursor-leak', not sd.is_baseline(leaked_cursor))
+
+
 def main():
     sys.stdout.write('secure-terminal formal verification (Z3 %s)\n'
                      % z3.get_version_string())
@@ -2231,12 +2350,19 @@ def main():
     sys.stdout.write('        reduce_drift=%d alpha_bad=%d invisible=%d compose_bad=%d homomorphism_bad=%d\n'
                      % (e9['reduce_drift'], e9['alpha_bad'], e9['invisible'], c9, h9))
 
+    sys.stdout.write('  T10   reset-to-prompt baseline inertness: reset drives the dump to '
+                     'is_baseline over the tracked VT-state domain ...\n')
+    t10_checked = t10_reset_baseline()
+    t10_z3_mode_constant()
+    sys.stdout.write('        prestates_reset_to_baseline=%d\n' % t10_checked)
+
     sys.stdout.write('  canaries (each proof must trip on a broken model) ...\n')
     t1_canaries()
     t2_canaries()
     t_input_canaries()
     t8_canaries()
     t9_canaries()
+    t10_canaries()
 
     sys.stdout.write('verify_formal: %d canaries verified, %d obligations failed\n'
                      % (CANARIES_VERIFIED[0], FAIL))

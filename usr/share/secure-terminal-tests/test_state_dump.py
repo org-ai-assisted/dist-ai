@@ -88,6 +88,29 @@ ok('alt-screen: yes' in _ctext,
    'alt-screen flag is reported in CLI mode too')
 
 
+# is_baseline oracle (shared by the reset sweep, INV-7 and the T10 formal check): a fresh
+# screen reads baseline; any single leaked dimension reads non-baseline; CLI keys only on
+# mouse/palette/pen.
+_fresh_snap = sd.collect(pyte.HistoryScreen(10, 3, history=10), mode='tui', columns=10,
+                         alt_screen=False, saved_primary=None, mouse_modes=set(),
+                         palette={}, title='')
+ok(sd.is_baseline(_fresh_snap), 'is_baseline: a fresh screen with no wrapper state is baseline')
+ok(not sd.is_baseline(dict(_fresh_snap, mouse_modes=[1000])),
+   'is_baseline: a leaked mouse mode is non-baseline')
+ok(not sd.is_baseline(dict(_fresh_snap, palette_overrides={'1': '#ff0000'})),
+   'is_baseline: a leaked palette override is non-baseline')
+_hidden = pyte.HistoryScreen(10, 3, history=10)
+pyte.Stream(_hidden).feed('\x1b[?25l')             # hide the cursor (DECTCEM)
+ok(not sd.is_baseline(sd.collect(_hidden, mode='tui', columns=10, alt_screen=False,
+                                 saved_primary=None, mouse_modes=set(), palette={}, title='')),
+   'is_baseline: a hidden cursor (DECTCEM) is non-baseline')
+ok(sd.is_baseline({'mode': 'cli', 'mouse_modes': [], 'palette_overrides': {}, 'pen': {}}),
+   'is_baseline: a CLI dump with no mouse/palette/pen is baseline')
+ok(not sd.is_baseline({'mode': 'cli', 'mouse_modes': [], 'palette_overrides': {},
+                       'pen': {'bold': True}}),
+   'is_baseline: a CLI dump with a non-default pen is non-baseline')
+
+
 # --- 1b. Pure format edge branches (full coverage of the rendering paths) ----------
 ok(sd._mode_name(999999) == 'mode:999999',
    'an unmapped mode int renders as mode:<n>, never crashes')
@@ -267,5 +290,147 @@ _big_u = chr(0x2588) * _ipc._MAX_REQUEST     # U+2588 FULL BLOCK; no raw non-ASC
 ok(len(_json.dumps({'ok': True, 'text': _fit_dump_reply(_big_u)}).encode('utf-8'))
    <= _ipc._MAX_REQUEST,
    '_fit_dump_reply accounts for json ensure_ascii expansion of non-ASCII output')
+
+# --- 3. Committed golden dumps ------------------------------------------------------
+# A curated, review-readable set of dumps (synthetic pyte screens, deterministic + grid-
+# geometry independent) is committed under state-dumps/; drift fails loud. state_dump_goldens
+# single-sources the scenarios so the test and the regenerator cannot diverge.
+import os                                          # noqa: E402
+from state_dump_goldens import SCENARIOS as _GOLDENS   # noqa: E402
+
+_GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'state-dumps')
+for _gname, _gbuild in sorted(_GOLDENS.items()):
+    try:
+        with open(os.path.join(_GOLDEN_DIR, _gname), encoding='utf-8') as _gh:
+            _committed = _gh.read()
+    except FileNotFoundError:
+        _committed = None
+    ok(_committed == _gbuild(),
+       "committed golden %s matches (regenerate if intended: python3 -c "
+       "'import state_dump_goldens as g; g.write_all()')" % _gname)
+
+
+# --- 4. Reset-to-prompt baseline (the fix): nothing leaks except scrollback ----------
+# Property under test: after a foreground program exits (the fg-edge in _read_and_render)
+# OR a restart_as_shell, the terminal returns to ONE canonical clean baseline -- no leaked
+# mouse tracking, charset, scroll region, palette, SGR, hidden cursor or stray DEC mode.
+# _reset_vt_to_prompt_baseline() is the single shared reset both call; dump_state is the
+# oracle. (Fixes the exit-vs-restart reset asymmetry, plus two restart bugs: the scroll
+# region was never reset, and a direct screen.mode assignment left cursor.hidden stuck.)
+from test_fuzz_harnesses import _repo_root as _st_root, _load_seeds as _st_seeds  # noqa: E402
+
+# sd.is_baseline is the shared clean-baseline oracle (also used by INV-7 + the T10 formal
+# check), so 'clean' is defined once against the dump schema, not re-spelled per suite.
+
+# A payload arming every leak-prone bit the widget tracks (mouse, hidden cursor, bracketed
+# paste, origin mode, DEC special-graphics G0, scroll region, OSC-4 palette, stuck SGR).
+_ARM = (b'\x1b[?1000h\x1b[?1006h'     # mouse: button-track + sgr-ext
+        b'\x1b[?25l'                   # hide cursor (DECTCEM)
+        b'\x1b[?2004h'                 # bracketed paste (DEC 2004)
+        b'\x1b[?6h'                    # origin mode (DECOM)
+        b'\x1b(0'                      # G0 -> DEC special graphics
+        b'\x1b[2;10r'                  # scroll region (DECSTBM)
+        b'\x1b]4;1;#ff0000\x07'        # OSC 4 palette override (needs osc_colors on)
+        b'\x1b[1;31mSTUCK')            # bold red SGR, left stuck
+
+
+def _arm_terminal(tui):
+    term = SecureTerminal(command='/bin/cat', tui=tui)
+    term._osc['osc_colors'] = True               # so OSC 4/10/11/12 palette is tracked
+    APP.processEvents()
+    feed_output(term, _ARM)
+    if tui:
+        term._render_tui()
+    APP.processEvents()
+    return term
+
+
+# Canary: the arm payload MUST reach non-baseline state, else the resets below prove nothing.
+_ct = _arm_terminal(True)
+_armed = _json.loads(_ct.dump_state('json'))
+ok(_armed['mouse_modes'] == [1000, 1006]
+   and _armed['palette_overrides'].get('1') == '#ff0000'
+   and _armed['cursor']['visible'] is False
+   and _armed['scroll_region'] is not None
+   and _armed['charset']['g0'] != 'LAT1'
+   and 'BRACKETED_PASTE' in _armed['dec_modes'],
+   'canary: the arm payload set mouse/palette/hidden-cursor/scroll/charset/paste (armed)')
+
+# Direct helper: clears every armed bit to the baseline, scrollback untouched.
+_before_doc = _json.loads(_ct.dump_state('json'))['rows']
+_ct._reset_vt_to_prompt_baseline()
+_reset = _json.loads(_ct.dump_state('json'))
+ok(sd.is_baseline(_reset) and _reset['alt_screen'] is False,
+   'TUI: _reset_vt_to_prompt_baseline clears every armed VT bit to the clean baseline')
+ok(_reset['rows'] == _before_doc,
+   'reset preserves the grid/scrollback content (only VT state changes, not the buffer)')
+_ct.close()
+
+# restart_as_shell lands the SAME baseline, and specifically fixes the two regressions.
+_rs = _arm_terminal(True)
+_rs.restart_as_shell()
+APP.processEvents()
+_ra = _json.loads(_rs.dump_state('json'))
+ok(_ra['scroll_region'] is None,
+   'restart_as_shell resets the scroll region (regression: margins were never reset)')
+ok(_ra['cursor']['visible'] is True,
+   'restart_as_shell shows the cursor (regression: direct mode-set left cursor.hidden)')
+ok(sd.is_baseline(_ra),
+   'restart_as_shell lands the same clean baseline as the fg-exit edge')
+_rs.close()
+
+# The ordinary-exit fg-edge (in _read_and_render) calls the same reset when the foreground
+# program exits and the shell prompt returns. Drive the True->False edge deterministically.
+_fe = _arm_terminal(True)
+_fe._bracket_had_fg = True                        # a foreground program was present
+_fe.has_foreground_program = lambda: False        # ... and has now exited (prompt returning)
+feed_output(_fe, b'\r\nplain-prompt$ ')           # neutral prompt bytes (re-arm nothing)
+_fe._render_tui()
+APP.processEvents()
+_fo = _json.loads(_fe.dump_state('json'))
+ok(sd.is_baseline(_fo) and _fo['alt_screen'] is False,
+   'ordinary-exit fg-edge restores the clean baseline (nothing leaks into the prompt)')
+_fe.close()
+
+# fg-edge where the EXITED program held the alt screen: alt-leave restores the primary
+# (owner gone, not a suspended app) AND the baseline reset runs -- both on the one edge.
+_fa = _arm_terminal(True)
+feed_output(_fa, b'\x1b[?1049hALTFRAME')          # enter the alt screen
+_fa._render_tui()
+APP.processEvents()
+_fa._bracket_had_fg = True
+_fa._alt_owner_pgrp = None                        # unknown owner -> treated as dead (gone)
+_fa.has_foreground_program = lambda: False        # program exited, prompt returning
+feed_output(_fa, b'\r\nplain-prompt$ ')
+_fa._render_tui()
+APP.processEvents()
+_fa_snap = _json.loads(_fa.dump_state('json'))
+ok(_fa_snap['alt_screen'] is False and sd.is_baseline(_fa_snap),
+   'fg-edge with alt held: alt-leave restores the primary AND the reset lands baseline')
+_fa.close()
+
+# Full-corpus sweep: EVERY shared fuzz seed, in BOTH modes, must land the baseline after a
+# reset -- the reset is total against the whole adversarial corpus, not just the armed bits.
+_seeds = _st_seeds(os.path.join(_st_root(), 'fuzz', 'corpus', 'seeds.txt'))
+ok(len(_seeds) >= 100, 'reset sweep loaded the shared seed corpus (%d seeds)' % len(_seeds))
+_sweep_fail = None
+for _tui in (True, False):
+    _sw = SecureTerminal(command='/bin/cat', tui=_tui)
+    _sw._osc['osc_colors'] = True
+    APP.processEvents()
+    for _sname, _blob in _seeds:
+        feed_output(_sw, _blob)
+        if _tui:
+            _sw._render_tui()
+        _sw._reset_vt_to_prompt_baseline()
+        if not sd.is_baseline(_json.loads(_sw.dump_state('json'))):
+            _sweep_fail = (_sname, 'tui' if _tui else 'cli')
+            break
+    _sw.close()
+    if _sweep_fail:
+        break
+ok(_sweep_fail is None,
+   'reset sweep: every seed x mode lands the baseline (first offender: %r)' % (_sweep_fail,))
+
 
 finish('state_dump')

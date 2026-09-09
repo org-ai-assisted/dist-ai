@@ -1,0 +1,16 @@
+# secure-terminal state dump v2
+mode: tui            size: 24x4
+cursor: x=0 y=0 visible=no
+pen: default
+dec-modes: DECAWM
+ansi-modes: (none)
+alt-screen: no    saved-primary: none
+scroll-region: top=1 bottom=2
+charset: active=G0 G0=VT100 G1=VT100
+mouse: 1000 1006 (button-track sgr-ext)
+palette: 1=#ff0000 fg=#00ff00
+title: 'vim'
+tabstops: default(8)
+--- grid ---  (blank cells and fully-blank rows elided; row index shows gaps)
+   0: ERR ok   @0-2 fg=red bold
+   1: plain line 2

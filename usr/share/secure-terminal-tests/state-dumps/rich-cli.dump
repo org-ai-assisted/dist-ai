@@ -1,0 +1,10 @@
+# secure-terminal state dump v2
+mode: cli            width: 80
+pen: fg=3 bold
+alt-screen: no
+mouse: 1002 (drag-track)
+palette: bg=#000080
+title: 'build'
+--- document (line mode; no cell grid) ---
+build ok
+$
