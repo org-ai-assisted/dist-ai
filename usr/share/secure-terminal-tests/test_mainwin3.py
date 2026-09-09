@@ -392,7 +392,7 @@ win._esc_notified.discard(_esc_term)
 win._advisories.pop(_esc_term, None)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _esc_term}
 win._on_escape_suppressed(_esc_term)         # freeze notice up
-win._on_osc_used(_esc_term, 'osc_other')     # must NOT clobber it
+win._on_osc_used(_esc_term, 'osc_other', -1)     # must NOT clobber it
 eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
    'the freeze notice wins: _on_osc_used does not clobber an active escape advisory')
 ok((_esc_term, 'osc_other') not in win._osc_notified,
@@ -431,7 +431,7 @@ _ovt = _ov.current()
 _ov_rows0, _ov_cols0 = _ovt._rows, _ovt._cols
 _ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
 _ov._advisories.pop(_ovt, None)
-_ov._on_osc_used(_ovt, 'osc_hyperlink')      # raise an OSC advisory (a type NOT muted by default)
+_ov._on_osc_used(_ovt, 'osc_hyperlink', 8)      # raise an OSC advisory (a type NOT muted by default)
 pump(50)
 ok(_ov._banner.isVisible(), 'advisory overlay: the banner is shown for the current tab')
 eq(_ovt._rows, _ov_rows0,
@@ -461,7 +461,7 @@ _ov2 = MainWindow()
 _ov2.resize(900, 640)
 _ov2.show()
 pump(50)
-_ov2._on_osc_used(_ov2.current(), 'osc_hyperlink')   # a type NOT muted by default
+_ov2._on_osc_used(_ov2.current(), 'osc_hyperlink', 8)   # a type NOT muted by default
 pump(20)
 ok(_ov2._banner.isVisible(), 'advisory overlay: banner shown before the last-tab close')
 _ov2.close_tab(0)                             # empties the window with the banner still visible
