@@ -163,13 +163,51 @@ try:
 
     _calls.clear(); _calls['running'] = False
     win.set_clip_run(True)
-    ok('launched' in _calls, 'clip: set_clip_run(True) launches the daemon when absent')
+    ok(win._clip_bg_watcher is not None and 'launched' not in _calls,
+       'clip: set_clip_run(True) starts the IN-PROCESS watcher (no daemon spawn -> no 2nd icon)')
+    _first_bg = win._clip_bg_watcher
+    win.set_clip_run(True)
+    ok(win._clip_bg_watcher is _first_bg,
+       'clip: set_clip_run(True) is idempotent (keeps the single in-process watcher)')
+    win.set_clip_run(False)
+    ok(win._clip_bg_watcher is None and _calls.get('stopped'),
+       'clip: set_clip_run(False) stops the in-process watcher (and any daemon)')
+    # If an autostart DAEMON is already watching, set_clip_run(True) DEFERS to it --
+    # no double-watch, no in-process watcher spawned.
     _calls.clear(); _calls['running'] = True
     win.set_clip_run(True)
-    ok('launched' not in _calls, 'clip: set_clip_run(True) idempotent when already running')
+    ok(win._clip_bg_watcher is None and 'launched' not in _calls,
+       'clip: set_clip_run(True) defers to a running daemon (no double-watch)')
     _calls.clear()
+
+    # close-to-tray: with the tray on AND the in-process sanitizer running, a window
+    # CLOSE hides to tray (keeps the process + sanitizer alive) instead of quitting.
+    from PyQt6.QtGui import QCloseEvent                              # noqa: E402
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+    win._systray = True
+    win._tray_icon()                    # the single tray icon must exist for close-to-tray
+    _calls['running'] = False
+    win.set_clip_run(True)              # start the in-process watcher
+    win._really_quit = False
+    win.show()
+    _ce = QCloseEvent()
+    win.closeEvent(_ce)
+    ok(not _ce.isAccepted() and win.isHidden(),
+       'close-to-tray: a window close hides to tray + keeps the sanitizer (not a quit)')
+    win.show()
+    # while the in-process watcher runs: the menu shows Run-in-background ticked, and
+    # Warn-on-any live-updates the IN-PROCESS watcher (not only a daemon over IPC).
+    _cmenu = QMenu()
+    win._populate_clipboard_menu(_cmenu)
+    _run_a = [a for a in _cmenu.actions() if a.text() == 'Run in the background'][0]
+    ok(_run_a.isChecked(),
+       'clip menu: Run-in-background ticked while the in-process watcher runs')
+    win.set_clip_warn_any(True)
+    ok(win._clip_bg_watcher._any_mode is True,
+       'set_clip_warn_any live-updates the in-process watcher, not only a daemon')
+    win.set_clip_warn_any(False)
     win.set_clip_run(False)
-    ok(_calls.get('stopped'), 'clip: set_clip_run(False) stops the daemon')
+    _calls.clear()
 
     win.set_clip_warn_any(True)
     ok(win._clip_warn_any is True, 'clip: set_clip_warn_any records the setting')
@@ -313,7 +351,41 @@ finally:
     win._systray = _o_systray_c
     win._clip_warn_any = _o_warnany_c
     win._clip_reviewer = None
+    if win._clip_bg_watcher is not None:      # stop any in-process watcher this block left
+        win._clip_bg_watcher.stop()
+        win._clip_bg_watcher = None
+    win._really_quit = False
+    if win._tray is not None:                 # drop the tray the close-to-tray test created
+        win._tray.hide()
+        win._tray = None
+    win.show()                                # undo the close-to-tray hide()
     APP.clipboard().setMimeData(_o_clip_c)
+
+# tray Quit (close-to-tray TEARDOWN): an explicit Quit sets _really_quit so the SAME
+# close tears down instead of hiding, even with the background sanitizer running. A
+# throwaway window (closing destroys it), so it never disturbs the shared `win`.
+_qsta_o3 = QSystemTrayIcon.isSystemTrayAvailable
+_cwir_o3 = _cw.is_running
+QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+_cw.is_running = lambda: False
+_qw = MainWindow()
+_qw.new_tab()
+_qw._systray = True
+_qw._tray_icon()
+_qw.set_clip_run(True)                  # bg watcher running -> close-to-tray would else hide
+_qw._force_close = True                 # no running-program confirm on teardown
+_qw._quit_from_tray()                   # sets _really_quit + close() -> closeEvent tears down
+ok(_qw._really_quit and _qw._clip_bg_watcher is None,
+   'tray Quit tears down (really_quit set + sanitizer stopped), NOT hide-to-tray')
+_cw.is_running = _cwir_o3
+QSystemTrayIcon.isSystemTrayAvailable = _qsta_o3
+
+# ClipboardWatcher.stop() is idempotent: a second stop (its clipboard signal already
+# disconnected) hits the disconnect-failure branch harmlessly.
+_idem_w = _cw.ClipboardWatcher(APP, theme='dark', watch=True)
+_idem_w.stop()
+_idem_w.stop()
+ok(True, 'ClipboardWatcher.stop() is idempotent (a double stop does not raise)')
 
 # a tab terminal's right-click menu gains the app toggles through its MainWindow
 from PyQt6.QtCore import QPoint                                    # noqa: E402
