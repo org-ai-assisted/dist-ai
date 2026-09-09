@@ -124,47 +124,62 @@ ok(win._banner.isHidden(), 'dismiss clears the current tab advisory')
 ok(win._osc_notice, 'the OSC-use notice is on by default')
 _octab = win.current()
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
-_octab.osc_used.emit('osc_clipboard')
+_octab.osc_used.emit('osc_clipboard', 52)
 ok(not win._banner.isHidden() and 'clipboard' in win._banner_label.text().lower(),
    'an OSC escape raises the notice banner, naming the type')
 win._dismiss_advisory()
-_octab.osc_used.emit('osc_clipboard')   # the SAME type again does not re-show
+_octab.osc_used.emit('osc_clipboard', 52)   # the SAME type again does not re-show
 ok(win._banner.isHidden(), 'the OSC notice fires only once per type per tab')
-_octab.osc_used.emit('osc_hyperlink')   # a DIFFERENT type does show
+_octab.osc_used.emit('osc_hyperlink', 8)   # a DIFFERENT type does show
 ok(not win._banner.isHidden() and 'hyperlink' in win._banner_label.text().lower(),
    'a different OSC type raises its own notice')
+win._dismiss_advisory()
+# An UNREGISTERED OSC code is named by its number, not the generic 'an escape'. Fed
+# end-to-end (feed_output drives the real read -> _notice_osc classifies ESC]1337 to
+# osc_other AND threads the numeric code 1337 through osc_used to the notice), proving the
+# code survives classification, not just a hand-emitted signal.
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+feed_output(_octab, b'\x1b]1337;foo\x07')     # iTerm2 OSC 1337: no registry entry -> osc_other
+ok(not win._banner.isHidden() and 'osc 1337' in win._banner_label.text().lower(),
+   'a program-emitted unregistered OSC (1337) is named OSC 1337 end-to-end, not "an escape"')
+win._dismiss_advisory()
+# ... but an over-cap OSC whose code is unknowable (-1) keeps the generic fallback.
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+_octab.osc_used.emit('osc_other', -1)
+ok(not win._banner.isHidden() and 'an escape' in win._banner_label.text().lower(),
+   'an over-cap OSC with an unknowable code (-1) falls back to "an escape"')
 win._dismiss_advisory()
 # disabled globally: a fresh tab's OSC shows nothing; re-enabling re-arms it.
 win.new_tab()
 _octab2 = win.current()
 win.set_osc_notice(False)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
-_octab2.osc_used.emit('osc_clipboard')
+_octab2.osc_used.emit('osc_clipboard', 52)
 ok(win._banner.isHidden(), 'the OSC notice is suppressed when notices are all off')
 ok((_octab2, 'osc_clipboard') not in win._osc_notified,
    'a suppressed notice does not consume the per-type state')
 win.set_osc_notice(True)
-_octab2.osc_used.emit('osc_clipboard')
+_octab2.osc_used.emit('osc_clipboard', 52)
 ok(not win._banner.isHidden(), 're-enabling the toggle re-arms the OSC notice')
 win._dismiss_advisory()
 # per-TYPE mute: muting clipboard notices silences that type but not others.
 win.set_osc_notice_type('osc_clipboard', False)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
-_octab2.osc_used.emit('osc_clipboard')
+_octab2.osc_used.emit('osc_clipboard', 52)
 ok(win._banner.isHidden(), 'a per-type muted OSC notice does not show')
-_octab2.osc_used.emit('osc_hyperlink')     # NOT muted by default (unlike title/palette)
+_octab2.osc_used.emit('osc_hyperlink', 8)     # NOT muted by default (unlike title/palette)
 ok(not win._banner.isHidden(), 'a non-muted OSC type still notifies')
 win.set_osc_notice_type('osc_clipboard', True)
 win._dismiss_advisory()
 # turning notices OFF while showing dismisses the banner immediately.
-_octab2.osc_used.emit('osc_cwd')
+_octab2.osc_used.emit('osc_cwd', 7)
 win.set_osc_notice(False)
 ok(win._banner.isHidden(), 'switching OSC notices off dismisses a showing banner')
 win.set_osc_notice(True)
 # enabling "allow title / notifications" clears a stale OSC notice.
 win.set_osc_notice_type('osc_title', True)   # muted by default -> un-mute so it shows
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
-_octab2.osc_used.emit('osc_title')
+_octab2.osc_used.emit('osc_title', 0)
 ok(not win._banner.isHidden(), 'an OSC notice is showing again')
 win.set_allow_title(True)
 ok(win._banner.isHidden(), 'enabling program title/notifications clears the OSC notice')
