@@ -3008,7 +3008,27 @@ try:
     try:
         _bell = SecureTerminal(command='/bin/cat')
         _bell.apply_bell_sound(_outside)
-        ok(_bell._bell_sound == _outside, 'apply_bell_sound: an allowed path is stored')
+        ok(_bell._bell_sound == os.path.realpath(_outside),
+           'apply_bell_sound: an allowed path is stored (resolved)')
+        # F5 (ai-review): validate-then-use TOCTOU. A symlink inside an allowed dir
+        # passes realpath validation, but the ORIGINAL path was stored + played, so a
+        # later repoint of the symlink escaped to a new target. The fix stores the
+        # RESOLVED realpath, so what plays is the concrete file, immune to a repoint.
+        _f5_real = os.path.join(_snd_tmp, 'f5_real.wav')
+        with open(_f5_real, 'wb') as _f5w:
+            _f5w.write(b'RIFF')
+        _f5_link = os.path.join(_snd_tmp, 'f5_link.wav')
+        os.symlink(_f5_real, _f5_link)
+        # canary: pre-fix this returned True (a bool), not the resolved path
+        eq(_term.sound_file_allowed(_f5_link), os.path.realpath(_f5_real),
+           'F5: sound_file_allowed returns the RESOLVED realpath of an allowed symlink')
+        _f5t = SecureTerminal(command='/bin/cat')
+        _f5t.apply_bell_sound(_f5_link)
+        # canary: pre-fix _bell_sound == _f5_link (the symlink), which a later repoint follows
+        eq(_f5t._bell_sound, os.path.realpath(_f5_real),
+           'F5: apply_bell_sound stores the resolved realpath, NOT the symlink path')
+        ok(_f5t._bell_sound != _f5_link,
+           'F5: the stored sound is not the symlink (a post-validation repoint cannot redirect it)')
         ok(_bell._play_sound() is True,
            '_play_sound: builds the sound effect and plays it -> True')
         _bell._sound_effect = None
