@@ -30,6 +30,10 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./help_steps_test_lib.bsh
+source "${test_dir}/help_steps_test_lib.bsh"
+
 subject=""
 for candidate in "${DM_VARIABLES:-}" \
    "${DERIVATIVE_MAKER_DIR:-}/help-steps/variables" \
@@ -45,6 +49,13 @@ if [ -z "${subject}" ]; then
    exit 1
 fi
 
+## help-steps/variables is a loader sourcing variables.d/*.bsh; the mismatch
+## diagnostic block lives in a module. Extract from the effective sourced
+## sequence (loader + modules in load order). Cleaned up by cleanup() below (a
+## second 'trap ... EXIT' would replace the workdir trap).
+subject_effective="$(mktemp)"
+help_steps_variables_effective "${subject}" > "${subject_effective}"
+
 pass_count=0
 fail_count=0
 pass() {
@@ -59,7 +70,7 @@ fail() {
 ## Exercise the SHIPPED block, not a restatement of it. A private copy of the
 ## comparison would keep passing after the real one regressed -- which is the
 ## failure mode this whole file exists to catch.
-block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^fi$/p' -- "${subject}" | sed '$d' )"
+block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^fi$/p' -- "${subject_effective}" | sed '$d' )"
 if [ -z "${block}" ]; then
    fail 'could not extract the mismatch diagnostic from help-steps/variables'
    summary_line="===== inherited dist_build_version: ${pass_count} pass, ${fail_count} fail ====="
@@ -114,6 +125,7 @@ workdir="$( mktemp --directory )"
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
    safe-rm --recursive --force -- "${workdir}"
+   [ -z "${subject_effective:-}" ] || safe-rm --force -- "${subject_effective}"
 }
 trap cleanup EXIT
 

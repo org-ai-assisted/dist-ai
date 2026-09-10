@@ -35,6 +35,29 @@ fail() {
    test_failures=$((test_failures + 1))
 }
 
+## Compose the EFFECTIVE text of help-steps/variables to stdout: the loader
+## followed by each variables.d/*.bsh module in the order the loader sources it.
+## Since the variables.d split, blocks the tests inspect (version derivation, the
+## frozen-pin assignment, the DIST_APTGETOPT declaration, the inherited-version
+## diagnostic) live in modules, not the loader. Module order is read from the
+## loader's own 'source .../variables.d/<name>.bsh' lines (deduped, first
+## occurrence wins, so the '# shellcheck source=' comment preceding each real
+## source line does not double-count). Arg: the loader path (help-steps/
+## variables). A checkout with no variables.d/ yields the loader alone, so a
+## caller works both before and after the split.
+help_steps_variables_effective() {
+   local hsve_loader hsve_dir hsve_mod
+   hsve_loader="$1"
+   hsve_dir="$(dirname -- "${hsve_loader}")/variables.d"
+   cat -- "${hsve_loader}"
+   grep -oE 'variables\.d/[A-Za-z0-9._-]+\.bsh' -- "${hsve_loader}" \
+      | sed 's#variables\.d/##' | awk '!seen[$0]++' \
+      | while IFS= read -r hsve_mod; do
+           [ -r "${hsve_dir}/${hsve_mod}" ] || continue
+           cat -- "${hsve_dir}/${hsve_mod}"
+        done
+}
+
 ## Resolve the help-steps script named '$1' (first hit wins):
 ##   '$2', when non-empty -- the suite's env override
 ##   -> a copy staged in '$3', the calling test's directory

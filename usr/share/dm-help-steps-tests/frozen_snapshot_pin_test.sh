@@ -52,6 +52,15 @@ if [ -z "${variables}" ]; then
    exit 1
 fi
 
+## help-steps/variables is a loader sourcing variables.d/*.bsh; the frozen-pin
+## block lives in a module. Extract from the effective sourced sequence (loader
+## + modules in load order), not the loader alone.
+variables_effective="$(mktemp)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup_variables_effective() { safe-rm --force -- "${variables_effective}"; }
+trap cleanup_variables_effective EXIT
+help_steps_variables_effective "${variables}" > "${variables_effective}"
+
 ## Extract the top-level frozen-pin block. There is MORE than one col-0
 ## 'if [ "${dist_build_apt_freshness...}" = "frozen" ]' block, so select the one
 ## that actually mentions dist_frozen_snapshot_pin. Opening 'if' and closing 'fi'
@@ -65,9 +74,9 @@ block="$(awk '
          cap = 0; buf = ""
       }
    }
-' < "${variables}")"
+' < "${variables_effective}")"
 if [ -z "${block}" ] || [[ "${block}" != *dist_frozen_snapshot_pin* ]]; then
-   printf '%s\n' "FATAL: could not extract the frozen-pin block from ${variables}." >&2
+   printf '%s\n' "FATAL: could not extract the frozen-pin block from ${variables} (variables.d modules)." >&2
    exit 1
 fi
 
