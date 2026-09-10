@@ -284,57 +284,68 @@ def _run_hook(hook, flags, files, base_cwd):
         yield model.fail(hook, message, files[0])
 
 
-def _run_fixer(hook, files, base_cwd):
-    """Run a content FIXER (end-of-file-fixer, ...) against throwaway copies so
-    the working tree / a detached checkout is never mutated. The non-zero exit
-    (the hook's 'would modify' signal) still fails the gate."""
+def _run_fixer(hook, files, base_cwd, apply=False):
+    """Run a content FIXER (end-of-file-fixer, ...) like the engine's AST fixes:
+    APPLY in place in a writing mode, else DETECT without mutating (the default).
+
+    APPLY (working tree is the judged target, e.g. --staged --all): run the fixer
+    directly on the working-tree files and let it rewrite in place. The tree goes
+    dirty, ready for review -- git itself is the per-file report, so a modified
+    batch yields one advisory NOTE, never a FAIL.
+
+    DETECT (--staged index / --range HEAD / --check; BASE_CWD is the blob mirror,
+    all regular files): judge each file on its OWN throwaway copy so the fixer's
+    non-zero exit names the true offender -- NOT files[0]. The copy exists only to
+    avoid mutating during detection, never as a security sandbox (a symlink swap
+    is an adversarial local race, out of the AI-accident threat model, and cannot
+    reach here anyway: the blob mirror holds no symlinks)."""
     if not files:
         return
-    mirror = tempfile.mkdtemp()
-    try:
-        for path in files:
-            ## Force the copy INSIDE the mirror: os.path.join drops the mirror
-            ## entirely for an absolute 'path', and a '..' would climb out --
-            ## either way the fixer would run against (and the copy could clobber)
-            ## a real tree, breaking the throwaway-copy guarantee. normpath+strip
-            ## anchors every path under the mirror.
-            rel = os.path.normpath(os.sep + path).lstrip(os.sep)
-            dest = os.path.join(mirror, rel)
-            try:
-                os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
-                ## Read the source through O_NOFOLLOW|O_NONBLOCK and write a plain
-                ## REGULAR file into the mirror. copy2(follow_symlinks=False) would
-                ## copy a symlink AS a symlink, and the fixer -- opening it in the
-                ## mirror -- would FOLLOW it and rewrite the target OUTSIDE the
-                ## repo (a TOCTOU: a regular file swapped for a symlink after
-                ## _classify). O_NOFOLLOW refuses that swap (ELOOP -> skip), so the
-                ## fixer only ever sees a real file it cannot escape -- the same
-                ## O_NOFOLLOW guard the engine's in-place fixer already uses.
-                def _nofollow(open_path, flags):
-                    return os.open(
-                        open_path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
-                with open(_abs(base_cwd, path), "rb",
-                          opener=_nofollow) as src_handle:
-                    content = src_handle.read()
-                with open(dest, "wb") as dst_handle:
-                    dst_handle.write(content)
-            except OSError:
-                ## Unreadable / gone / a symlink swapped in / same-file: skip this
-                ## one rather than crash the batch. The detect pass still sees it.
-                continue
+    if apply:
         try:
             proc = subprocess.run(
-                [hook, "--"] + list(files),
-                capture_output=True, cwd=mirror)
+                [hook, "--"] + list(files), capture_output=True, cwd=base_cwd)
         except OSError as exc:
             yield model.fail(hook, "%s: could not run: %s" % (hook, exc),
                              files[0])
             return
         if proc.returncode != 0:
-            yield model.fail(
+            yield model.note(
                 hook,
-                "%s: would modify file(s) -- run '%s' locally and commit the "
-                "result" % (hook, hook), files[0])
+                "%s: applied fixes to the working tree; review with 'git diff' "
+                "and commit" % hook)
+        return
+    mirror = tempfile.mkdtemp()
+    try:
+        for path in files:
+            ## Force the copy INSIDE the mirror: os.path.join drops the mirror
+            ## entirely for an absolute 'path', and a '..' would climb out.
+            ## normpath+strip anchors every path under the mirror, so the copy and
+            ## the fixer's target (the same rel, cwd=mirror) always coincide.
+            rel = os.path.normpath(os.sep + path).lstrip(os.sep)
+            dest = os.path.join(mirror, rel)
+            try:
+                os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
+                with open(_abs(base_cwd, path), "rb") as src_handle:
+                    content = src_handle.read()
+                with open(dest, "wb") as dst_handle:
+                    dst_handle.write(content)
+            except OSError:
+                ## Unreadable / gone: skip this hygiene fixer for it rather than
+                ## crash the batch (the secret scanners fail closed separately).
+                continue
+            try:
+                proc = subprocess.run(
+                    [hook, "--", rel], capture_output=True, cwd=mirror)
+            except OSError as exc:
+                yield model.fail(hook, "%s: could not run: %s" % (hook, exc),
+                                 path)
+                continue
+            if proc.returncode != 0:
+                yield model.fail(
+                    hook,
+                    "%s: would modify '%s' -- run '%s' locally and commit the "
+                    "result" % (hook, path, hook), path)
     finally:
         shutil.rmtree(mirror, ignore_errors=True)
 
@@ -436,7 +447,8 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
     return lists
 
 
-def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None):
+def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None,
+        apply=False):
     """Yield Findings from the pre-commit-hooks batch over PATHS (the changed
     file set, in the gate's own path spelling). BASE_CWD is the repo root for a
     git mode (paths are repo-relative there), else None (paths are as-given).
@@ -444,8 +456,10 @@ def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None):
     every CONTENT/size/exec hook read the git OBJECT that ships, via a temp
     mirror, instead of the working tree -- else a staged private key / large file
     overwritten clean in the working copy would pass the batch (the same bypass
-    the per-file blob gating closes). Fail-open with a NOTE when the hooks are not
-    installed."""
+    the per-file blob gating closes). APPLY (a writing mode: source_rev is None,
+    the working tree is the target) lets the content fixers rewrite in place like
+    the engine's AST fixes; else they detect only. Fail-open with a NOTE when the
+    hooks are not installed."""
     if base_cwd is None:
         base_cwd = os.getcwd()
     if shutil.which("check-yaml") is None:
@@ -473,13 +487,14 @@ def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None):
                 "scans did not run (failing closed)" % path, path)
     try:
         yield from _run_batch(paths, base_ref, staged_mode, base_cwd,
-                              content_cwd, source_rev)
+                              content_cwd, source_rev, apply)
     finally:
         if mirror is not None:
             shutil.rmtree(mirror, ignore_errors=True)
 
 
-def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
+def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev,
+               apply):
     ## content_cwd (the mirror in a git mode) feeds only the PURE-CONTENT hooks --
     ## those that read a file's bytes and call no git themselves. The many
     ## git-aware hooks (they run 'git ls-files' / 'git rev-parse' internally and
@@ -535,9 +550,9 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
     yield from _run_hook("detect-aws-credentials",
                          ["--allow-missing-credentials"], scan, content_cwd)
     yield from _run_hook("detect-private-key", [], scan, content_cwd)
-    yield from _run_fixer("fix-byte-order-marker", text, content_cwd)
-    yield from _run_fixer("end-of-file-fixer", text, content_cwd)
-    yield from _run_fixer("trailing-whitespace-fixer", text, content_cwd)
+    yield from _run_fixer("fix-byte-order-marker", text, content_cwd, apply)
+    yield from _run_fixer("end-of-file-fixer", text, content_cwd, apply)
+    yield from _run_fixer("trailing-whitespace-fixer", text, content_cwd, apply)
     yield from _run_hook("mixed-line-ending", ["--fix=no"], text, content_cwd)
 
     ## check-shebang-scripts-are-executable: exempt a sourced fragment (waiver)
@@ -602,5 +617,6 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                 "format)" % path)
             continue
         json_fmt.append(path)
-    yield from _run_fixer("pretty-format-json", json_fmt, content_cwd)
-    yield from _run_fixer("requirements-txt-fixer", lists["req"], content_cwd)
+    yield from _run_fixer("pretty-format-json", json_fmt, content_cwd, apply)
+    yield from _run_fixer("requirements-txt-fixer", lists["req"], content_cwd,
+                          apply)
