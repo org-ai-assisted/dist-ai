@@ -66,9 +66,13 @@ if [ "${rc}" -ne 0 ]; then
 else
    fail "bash <script> exited 0 on an unverified repo (fail-OPEN bootstrap)"
 fi
+## Fail-closed can trip at the FIRST unresolvable bootstrap source (get_colors.sh,
+## guarded with 'FATAL: cannot source ...') or later at the was_executed /
+## check_runtime guard ('refusing to run unverified'). Either is a named abort;
+## accept both -- the point is that it names a reason, not which one it reaches first.
 case "${out}" in
-   *"refusing to run unverified"*)
-      pass "the abort names the reason (refusing to run unverified)"
+   *"refusing to run unverified"* | *"FATAL: cannot source"*)
+      pass "the abort names the reason (fail-closed bootstrap)"
       ;;
    *)
       fail "no fail-closed message; got: ${out}"
