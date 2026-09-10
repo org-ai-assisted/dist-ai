@@ -950,6 +950,26 @@ try:
                'main: --tray dispatches into hidden-to-tray mode (window not shown)')
         finally:
             M.MainWindow._enter_tray_mode = _o_etm
+        # (d) --tray HONORS an admin systray lock: a tray locked OFF must NOT be
+        # force-enabled by the autostart, so the process exits cleanly (0) BEFORE
+        # building a window rather than bypass the policy (the tray is available above).
+        _o_load = M.settings.load
+
+        class _LockedOffCfg:
+            locked = frozenset({'systray'})
+
+            def get(self, key, default=None):
+                return 'false' if key == 'systray' else default
+
+        M.settings.load = lambda: _LockedOffCfg()
+        _errd = _io.StringIO()
+        try:
+            with _ctx.redirect_stderr(_errd):
+                eq(_main(), 0, 'main: --tray with an admin systray lock (off) exits 0')
+            ok('disabled by policy' in _errd.getvalue(),
+               'main: --tray with a locked-off tray names the policy on stderr')
+        finally:
+            M.settings.load = _o_load
     finally:
         QSystemTrayIcon.isSystemTrayAvailable = _o_avail2
         M._bind_instance_server = _o_bind2

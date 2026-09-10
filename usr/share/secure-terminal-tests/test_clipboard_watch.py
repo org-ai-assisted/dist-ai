@@ -102,6 +102,13 @@ def _test_autostart():
                 handle.write('[Desktop Entry]\nX-GNOME-Autostart-enabled=true\n')
             ok(CW.autostart_enabled(),
                'autostart: a non-disabling override reports enabled')
+            # a non-UTF-8 override (a hand edit / a Latin-1 tool / a crash mid-write) must
+            # not crash the callers (clipboard menu, set_systray, settings dialog): read
+            # fails with UnicodeDecodeError -> treated as enabled, like an unreadable file.
+            with open(path, 'wb') as handle:
+                handle.write(b'[Desktop Entry]\nName=\xff\xfe not utf8\n')
+            ok(CW.autostart_enabled(),
+               'autostart: a non-UTF-8 override is treated as enabled, not a crash')
         finally:
             if old is None:
                 os.environ.pop('XDG_CONFIG_HOME', None)
