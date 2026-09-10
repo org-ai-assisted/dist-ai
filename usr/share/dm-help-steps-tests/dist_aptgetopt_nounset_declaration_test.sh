@@ -22,10 +22,10 @@
 ## Reads the CURRENT help-steps/variables text (no copy, no drift): checks the
 ## declaration exists, precedes every consumer, and functionally behaves.
 ##
-## help-steps/variables is a thin loader that sources help-steps/variables.d/*.bsh
+## help-steps/variables is a thin loader that sources help-steps/buildconfig.d/*.bsh
 ## in a fixed order; the declaration and its consumer live in different modules.
 ## So the checks run against the EFFECTIVE sourced sequence: the loader followed
-## by each variables.d module in the order the loader sources it. This composes
+## by each buildconfig.d module in the order the loader sources it. This composes
 ## the real files (no copy) so line-order across the split still means what it did
 ## when everything was one file.
 ##
@@ -50,7 +50,7 @@ if [ ! -r "${variables_file}" ]; then
    exit 1
 fi
 
-## Compose the effective sourced sequence (loader + variables.d modules in load
+## Compose the effective sourced sequence (loader + buildconfig.d modules in load
 ## order) via the shared helper, so the line-order logic below still means what
 ## it did when everything was one file.
 effective_file="$(mktemp)"

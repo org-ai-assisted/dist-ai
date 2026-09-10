@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Regression test for derivative-maker 'help-steps/variables-lib.bsh'
+## Regression test for derivative-maker 'help-steps/buildconfig.d/05_lib.bsh'
 ## derive_unified_image_paths(): the 'none' sentinel must leave the unified-image
 ## path variables UNSET.
 ##
@@ -33,7 +33,10 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-variables_lib="${DM_VARIABLES_LIB:-${dm_checkout}/help-steps/variables-lib.bsh}"
+## variables-lib.bsh was folded into the top-level buildconfig.d/ module dir as
+## 05_lib.bsh (loaded first by help-steps/variables). Still a separate
+## sourced-only file so this test can source the helpers directly.
+variables_lib="${DM_VARIABLES_LIB:-${dm_checkout}/buildconfig.d/05_lib.bsh}"
 if [ ! -r "${variables_lib}" ]; then
    printf '%s\n' "FATAL: variables-lib.bsh not found/readable at '${variables_lib}' (set DM_VARIABLES_LIB or DERIVATIVE_MAKER_DIR)." >&2
    exit 1

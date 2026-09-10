@@ -271,15 +271,17 @@ def _enumerate(args, prog):
 
 
 def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
-                    tool_dir, skew_ref, source_rev):
+                    tool_dir, skew_ref, source_rev, apply):
     """The repo-level checks that judge the whole changed set / range: the
     pre-commit-hooks batch, the changelog convention, the commit-message floor,
     and the advisory comment audit. Yields Findings. SOURCE_REV routes the
     pre-commit batch to the git OBJECT (None=working tree, ''=index, a commit-ish
-    =that tree), so a staged secret is not hidden by a clean working copy.
-    SKEW_REF drives the working-tree-skew NOTE; None suppresses it."""
+    =that tree), so a staged secret is not hidden by a clean working copy. APPLY
+    lets the content fixers rewrite the working tree in place (a writing mode),
+    matching the AST fixes. SKEW_REF drives the working-tree-skew NOTE; None
+    suppresses it."""
     yield from precommit.run(names, base_ref, staged_mode, base_cwd,
-                             source_rev=source_rev)
+                             source_rev=source_rev, apply=apply)
     if staged_mode:
         yield from gate.check_changelog_staged(names, message_file, base_cwd)
     else:
@@ -409,9 +411,13 @@ def style_main(argv, prog="dist-ai-style"):
             skew_ref = None
         ## source_rev for the batch: '' index, 'HEAD' range, None working tree.
         batch_rev = (blob_rev or "") if use_blob else None
+        ## Apply the content fixers in place only when writing is allowed AND the
+        ## working tree is the judged target -- the same condition that lets the
+        ## AST fixes write above (a blob mode has no writable target).
+        batch_apply = (not args.check) and not use_blob
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
                                        args.message_file, tool_dir, skew_ref,
-                                       batch_rev):
+                                       batch_rev, batch_apply):
             if finding.severity == model.FAIL:
                 fail_count += 1
             _print_finding(prog, finding)

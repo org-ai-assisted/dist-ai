@@ -70,7 +70,7 @@ if ! locate_repo_root; then
 fi
 
 build_twice="${repo_root}/ci/reproducible-build-twice"
-## help-steps/variables is a loader sourcing variables.d/*.bsh; the git-describe
+## help-steps/variables is a loader sourcing buildconfig.d/*.bsh; the git-describe
 ## needle lives in a module. Assert against the effective sourced sequence
 ## (loader + modules in load order), not the loader alone. Cleaned up by the
 ## fixture's cleanup() below (a second 'trap ... EXIT' would replace it).

@@ -49,7 +49,7 @@ if [ -z "${subject}" ]; then
    exit 1
 fi
 
-## help-steps/variables is a loader sourcing variables.d/*.bsh; the mismatch
+## help-steps/variables is a loader sourcing buildconfig.d/*.bsh; the mismatch
 ## diagnostic block lives in a module. Extract from the effective sourced
 ## sequence (loader + modules in load order). Cleaned up by cleanup() below (a
 ## second 'trap ... EXIT' would replace the workdir trap).

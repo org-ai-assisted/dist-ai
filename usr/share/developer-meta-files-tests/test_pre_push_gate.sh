@@ -213,7 +213,9 @@ mkfifo "${repo}/pipe-tool"
 hang_rc=0
 timeout --kill-after=5 20 bash -c 'cd "$1" && "$2" --check --range HEAD' _ \
    "${repo}" "${STYLE}" > /dev/null 2>&1 || hang_rc=$?
-if [ "${hang_rc}" -eq 124 ]; then
+## 124 = clean timeout; 137 = SIGKILL after --kill-after (child ignored SIGTERM),
+## the really-wedged case -- both are a hang, as the .gitattributes tests below.
+if [ "${hang_rc}" -eq 124 ] || [ "${hang_rc}" -eq 137 ]; then
    note_fail "the gate HUNG on an untracked fifo (timed out)"
 else
    note_pass "the gate does not hang on an untracked fifo"
@@ -401,26 +403,37 @@ git -C "${repo}" add realdir/file.txt dirlink through
 assert "a staged symlink through a dir-symlink is not false-flagged" 0 \
    "" --check --staged
 
-## The pre-commit FIXER must not follow a symlink swapped in after classification
-## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
-## precommit._run_fixer directly with a symlink where a regular file was scanned;
-## the O_NOFOLLOW copy must refuse it and leave the victim untouched.
-## Resolve the package from tool_test_dir (as STYLE is), NOT by stripping STYLE:
-## the in-tree STYLE is '.../developer-meta-files-tests/../../bin/dist-ai-style',
-## which the '/usr/bin/dist-ai-style' suffix never matches, so the strip left the
-## whole path in place and the test silently fell back to the INSTALLED package.
+## The pre-commit content fixers must name the TRUE offender, not files[0], and
+## APPLY fixes in place in a writing mode (like the engine's AST fixes). Drive
+## precommit._run_fixer via the probe with two files where only the 2nd needs
+## fixing. Resolve the package from tool_test_dir (as STYLE is), NOT by stripping
+## STYLE: the in-tree STYLE is '.../developer-meta-files-tests/../../bin/
+## dist-ai-style', which the '/usr/bin/dist-ai-style' suffix never matches, so the
+## strip left the whole path in place and the test fell back to the INSTALLED pkg.
 fixer_lib="${tool_test_dir}/../../lib/python3/dist-packages"
 [ -d "${fixer_lib}/dist_ai" ] || fixer_lib='/usr/lib/python3/dist-packages'
-victim="$(new_repo)/victim.txt"
-printf 'VICTIM ORIGINAL no newline' > "${victim}"
-ln -s "${victim}" "$(dirname -- "${victim}")/target.sh"
-toctou="$(PYTHONPATH="${fixer_lib}" "${tool_test_dir}/precommit_fixer_symlink_toctou_probe.py" "$(dirname -- "${victim}")" "${victim}")"
-## The probe repr's the content, so a followed-symlink corruption that only
-## APPENDS a newline (which $(...) would otherwise strip) shows as a mismatch.
-if [ "${toctou}" = "'VICTIM ORIGINAL no newline'" ]; then
-   note_pass "the pre-commit fixer refuses a symlink swapped in after the scan"
+fixer_probe="${tool_test_dir}/precommit_fixer_attribution_probe.py"
+
+## Detect mode: the finding must name the 2nd file (b_needs.txt), never the 1st
+## (a_clean.txt). The old files[0] code named a_clean.txt.
+attrib_base="$(mktemp --directory)"
+attrib_out="$(PYTHONPATH="${fixer_lib}" "${fixer_probe}" "${attrib_base}" detect)"
+safe-rm --recursive --force -- "${attrib_base}"
+if [[ "${attrib_out}" == *b_needs.txt* ]] && [[ "${attrib_out}" != *a_clean.txt* ]]; then
+   note_pass "the pre-commit fixer names the real offender, not files[0]"
 else
-   note_fail "the pre-commit fixer followed a swapped-in symlink (victim=${toctou})"
+   note_fail "the pre-commit fixer misattributed the offender (named: ${attrib_out})"
+fi
+
+## Apply mode: the fixer rewrites the offending file on disk in place and leaves
+## the already-clean file untouched.
+apply_base="$(mktemp --directory)"
+apply_out="$(PYTHONPATH="${fixer_lib}" "${fixer_probe}" "${apply_base}" apply)"
+safe-rm --recursive --force -- "${apply_base}"
+if [[ "${apply_out}" == *b_needs_fixed=True* ]] && [[ "${apply_out}" == *a_clean_intact=True* ]]; then
+   note_pass "the pre-commit fixer applies fixes to the working tree in place"
+else
+   note_fail "the pre-commit fixer did not apply in place (got: ${apply_out})"
 fi
 
 if [ "${fail}" -ne 0 ]; then

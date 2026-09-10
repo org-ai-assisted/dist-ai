@@ -16,7 +16,7 @@
 ## got each of these DOUBLED (e.g. DIST_APTGETOPT with every -o option listed
 ## twice), silently corrupting the apt / cowbuilder option sets. The fix is a
 ## same-shell re-source guard: the loader sets 'variables_finalized' after
-## sourcing every variables.d module and returns early on a second source. It is
+## sourcing every buildconfig.d module and returns early on a second source. It is
 ## deliberately NOT exported -- a fresh process (every build step) must still
 ## resolve -- so this can only be observed by re-sourcing in one shell, which is
 ## exactly what this test does.
