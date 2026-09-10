@@ -8,17 +8,12 @@
 ## Regression test for derivative-maker '--package-jobs N' (parallel package
 ## builds in build-steps.d/2100_create-debian-packages).
 ##
-## THE TRAP IT GUARDS: parallelism is only safe when genmkfile supports
-## 'make_cow_suffix', which gives each worker its own 'cow.cow_<arch>.<slot>'
-## snapshot. Without it N workers share ONE 'cow.cow_<arch>' and corrupt each
-## other's chroot. A precondition carried only in prose, with nothing checking
-## it, means enabling the speed-up against an older genmkfile silently produces
-## a broken build.
-##
-## The contract now: the request is safe to pass unconditionally. 2100 verifies
-## the preconditions itself and falls back to serial, SAYING SO, when one is not
-## met -- never silently, because a request that was quietly reduced is
-## indistinguishable from one that was honoured.
+## Parallel builds need cowbuilder (each worker gets its own cow snapshot via
+## genmkfile's make_cow_suffix, which the pinned submodule always ships -- no
+## backwards compatibility, so it is not probed for). '--package-jobs' is thus
+## safe to pass unconditionally: 2100 falls back to serial, SAYING SO, when
+## cowbuilder is not in use -- never silently, because a request that was quietly
+## reduced is indistinguishable from one that was honoured.
 ##
 ## Needs no root, no network -- it reads the shipped scripts.
 
@@ -81,11 +76,9 @@ assert_contains "${parse_cmd}" 'export dist_build_package_jobs="${2:-}"' \
 assert_contains "${parse_cmd}" '--package-jobs N' \
    "parse-cmd documents --package-jobs in its usage"
 
-## Both preconditions are CHECKED, not merely documented.
+## The cowbuilder precondition is CHECKED, not merely documented.
 assert_contains "${create_packages}" 'make_use_cowbuilder' \
    "2100 checks that cowbuilder is in use"
-assert_contains "${create_packages}" "grep --fixed-strings -- 'make_cow_suffix'" \
-   "2100 probes genmkfile for make_cow_suffix support"
 
 ## An unmet precondition must fall back, and must say so. Both matter: a silent
 ## fallback is the failure mode this test exists to prevent.
@@ -102,12 +95,6 @@ if grep --quiet --fixed-strings -- 'error "dist_build_package_jobs must be a pos
 else
    fail "2100 no longer validates the job count; 0 / non-numeric would spin the free-slot loop"
 fi
-
-## The probe must point at the genmkfile the build actually runs, i.e. the
-## submodule copy 2100 invokes, not an installed one that may differ.
-assert_contains "${create_packages}" \
-   'packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh' \
-   "2100 probes the genmkfile copy it builds with"
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
