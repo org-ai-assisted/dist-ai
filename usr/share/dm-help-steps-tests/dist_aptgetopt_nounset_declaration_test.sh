@@ -22,6 +22,13 @@
 ## Reads the CURRENT help-steps/variables text (no copy, no drift): checks the
 ## declaration exists, precedes every consumer, and functionally behaves.
 ##
+## help-steps/variables is a thin loader that sources help-steps/variables.d/*.bsh
+## in a fixed order; the declaration and its consumer live in different modules.
+## So the checks run against the EFFECTIVE sourced sequence: the loader followed
+## by each variables.d module in the order the loader sources it. This composes
+## the real files (no copy) so line-order across the split still means what it did
+## when everything was one file.
+##
 ## No root, no network, no build.
 
 set -o errexit
@@ -43,20 +50,29 @@ if [ ! -r "${variables_file}" ]; then
    exit 1
 fi
 
+## Compose the effective sourced sequence (loader + variables.d modules in load
+## order) via the shared helper, so the line-order logic below still means what
+## it did when everything was one file.
+effective_file="$(mktemp)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup_effective() { safe-rm --force -- "${effective_file}"; }
+trap cleanup_effective EXIT
+help_steps_variables_effective "${variables_file}" > "${effective_file}"
+
 ## An ACTIVE (uncommented) array declaration -- the first non-'#', non-blank
 ## token on the line, so a commented-out '#DIST_APTGETOPT=()' does NOT count
 ## (that commented form is exactly the regression this test catches).
-decl_lineno="$(grep -nE '^[[:space:]]*[^#[:space:]].*\bDIST_APTGETOPT=\(\)' -- "${variables_file}" | head -1 | cut -d: -f1 || true)"
+decl_lineno="$(grep -nE '^[[:space:]]*[^#[:space:]].*\bDIST_APTGETOPT=\(\)' -- "${effective_file}" | head -1 | cut -d: -f1 || true)"
 
 if [ -n "${decl_lineno}" ]; then
-   pass "help-steps/variables actively declares 'DIST_APTGETOPT=()' (line ${decl_lineno})"
+   pass "help-steps/variables actively declares 'DIST_APTGETOPT=()' (effective-sequence line ${decl_lineno})"
 else
    fail "no active 'DIST_APTGETOPT=()' declaration -- a commented-out declaration reintroduces the nounset 'unbound variable' abort"
 fi
 
 ## The declaration must precede every '${#DIST_APTGETOPT[@]}' consumer, or the
 ## consumer can still run on an undeclared array.
-first_consumer="$(grep -nF '${#DIST_APTGETOPT[@]}' -- "${variables_file}" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1 || true)"
+first_consumer="$(grep -nF '${#DIST_APTGETOPT[@]}' -- "${effective_file}" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1 || true)"
 
 if [ -z "${first_consumer}" ]; then
    ## No consumer today -> the invariant is not currently exercised. Not a
@@ -72,7 +88,7 @@ fi
 ## 'set -o nounset'. On an unset array it must make '${#DIST_APTGETOPT[@]}' safe
 ## (report empty, not crash); on a pre-populated array it must preserve it.
 if [ -n "${decl_lineno}" ]; then
-   decl_text="$(sed -n "${decl_lineno}p" -- "${variables_file}")"
+   decl_text="$(sed -n "${decl_lineno}p" -- "${effective_file}")"
 
    unset_rc=0
    unset_result="$(bash -c 'set -o nounset; '"${decl_text}"'; if [ "${#DIST_APTGETOPT[@]}" -gt 0 ]; then echo NONEMPTY; else echo EMPTY; fi' 2>&1)" || unset_rc="$?"

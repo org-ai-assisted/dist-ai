@@ -70,7 +70,12 @@ if ! locate_repo_root; then
 fi
 
 build_twice="${repo_root}/ci/reproducible-build-twice"
-variables="${repo_root}/help-steps/variables"
+## help-steps/variables is a loader sourcing variables.d/*.bsh; the git-describe
+## needle lives in a module. Assert against the effective sourced sequence
+## (loader + modules in load order), not the loader alone. Cleaned up by the
+## fixture's cleanup() below (a second 'trap ... EXIT' would replace it).
+variables="$(mktemp)"
+help_steps_variables_effective "${repo_root}/help-steps/variables" > "${variables}"
 
 ## --- fixture -----------------------------------------------------------------
 ## A repo shaped like derivative-maker at build time: a channel-suffixed release
@@ -78,6 +83,7 @@ variables="${repo_root}/help-steps/variables"
 fixture=""
 cleanup() {
    [ -z "${fixture}" ] || safe-rm --recursive --force -- "${fixture}"
+   [ -z "${variables:-}" ] || safe-rm --force -- "${variables}"
 }
 trap cleanup EXIT
 
