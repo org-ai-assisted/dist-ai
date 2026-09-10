@@ -229,6 +229,7 @@ try:
     ok(_etm_persists == [],
        '_enter_tray_mode: does NOT persist (launch mode) -- no set_systray re-entry')
     win.set_clip_run(False)
+    assert win._tray is not None            # _enter_tray_mode armed the single tray icon
     win._tray.hide()
     win._tray = None
     _calls.clear()
@@ -300,7 +301,7 @@ try:
         win._default_theme = 'dark'
         win._default_zoom = 175          # a NON-default key so "writes the rest" has one to check
         win._persist()
-        _pw = {}
+        _pw: dict[str, str] = {}
         _st_clip._parse_into(_st_clip.user_config_file(), _pw)
         ok('theme' not in _pw and 'zoom' in _pw,
            '_persist drops a startup-locked key (theme) but writes the rest')
@@ -969,11 +970,19 @@ def _mk_sig_window(running, shut_sink):
 # grok's case: window A is an idle shell, window B runs a program. A veto must keep
 # BOTH -- the old per-window loop closed idle A before B's prompt was answered No, so
 # the terminate applied only partly. (canary: fails on a per-window close.)
-_shut_a, _shut_b = [], []
+_shut_a: list[bool] = []
+_shut_b: list[bool] = []
 _win_a = _mk_sig_window(False, _shut_a)
 _win_b = _mk_sig_window(True, _shut_b)
-_sig_asked = []
-QMessageBox.question = staticmethod(lambda *_a, **_k: (_sig_asked.append(1), _No)[1])
+_sig_asked: list[int] = []
+
+
+def _sig_veto_q(*_a, **_k):
+    _sig_asked.append(1)
+    return _No
+
+
+QMessageBox.question = staticmethod(_sig_veto_q)
 _fa = _SigFakeApp([_win_a, _win_b])
 M._signal_close_windows(_fa)
 ok(_sig_asked and not _shut_a and not _shut_b and not _win_a._force_close
@@ -986,10 +995,17 @@ M._signal_close_windows(_fa)
 ok(_shut_a and _shut_b and _win_a._force_close and _win_b._force_close,
    'a confirmed terminate force-closes and shuts down every window')
 # nothing running -> no prompt, closes anyway
-_shut_c = []
+_shut_c: list[bool] = []
 _win_c = _mk_sig_window(False, _shut_c)
-_asked_c = []
-QMessageBox.question = staticmethod(lambda *_a, **_k: (_asked_c.append(1), _No)[1])
+_asked_c: list[int] = []
+
+
+def _sig_noask_q(*_a, **_k):
+    _asked_c.append(1)
+    return _No
+
+
+QMessageBox.question = staticmethod(_sig_noask_q)
 M._signal_close_windows(_SigFakeApp([_win_c]))
 ok(not _asked_c and _shut_c and _win_c._force_close,
    'a terminate with no running program closes without asking')

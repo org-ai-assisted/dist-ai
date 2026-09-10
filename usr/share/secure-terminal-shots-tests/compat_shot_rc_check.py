@@ -25,6 +25,7 @@ def main():
         return 2
     gen, work = sys.argv[1], sys.argv[2]
     spec = importlib.util.spec_from_file_location('compat_shot', gen)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     env = dict(os.environ)

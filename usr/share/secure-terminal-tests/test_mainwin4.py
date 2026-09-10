@@ -710,8 +710,10 @@ _start_args = []
 try:
     M.session.ensure_state_dir = staticmethod(
         lambda: (_ for _ in ()).throw(OSError('no state dir')))
-    _QFD3.getSaveFileName = staticmethod(
-        lambda *_a, **_k: (_start_args.append(_a), ('', ''))[1])
+    def _gsf_capture(*_a, **_k):
+        _start_args.append(_a)
+        return ('', '')
+    _QFD3.getSaveFileName = staticmethod(_gsf_capture)
     win.save_transcript()               # empty return path -> no write attempted
     ok(bool(_start_args) and _start_args[0][2] == 'secure-terminal-transcript.txt',
        '_save_capture opens with the bare filename when the state dir is unavailable')

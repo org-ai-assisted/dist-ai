@@ -394,6 +394,7 @@ try:
     for _key, _field, _attr in _gk:
         _before = getattr(win, _attr)
         # A value guaranteed to differ from the current one, per type.
+        _other: object
         if isinstance(_before, bool):
             _other = not _before
         elif isinstance(_before, int):

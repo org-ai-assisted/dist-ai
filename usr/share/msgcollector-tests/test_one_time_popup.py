@@ -55,6 +55,7 @@ def _load_module():
     ## under test; a top-level guimessages import would fail here if the helper
     ## were absent, and always couples the passive path to it.
     spec = importlib.util.spec_from_file_location('one_time_popup', _SCRIPT)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
