@@ -222,6 +222,32 @@ def run():
     finally:
         unicode_tag.marking_class = _saved_mc
 
+    # 10. has_deceptive is the allocation-free, early-exit boolean behind tag_text (the
+    #     clipboard watcher's trigger). It must agree with `tag_text(s) != s` for every
+    #     input at ANY size -- there is no scan cap, so a hazard past 1M is still caught.
+    _hd = unicode_tag.has_deceptive
+    ZWSP = chr(0x200b); RLO = chr(0x202e); CYR_A = chr(0x430); GREEK_O = chr(0x3bf)
+    _past_cap = 'a' * 1_050_000 + ZWSP     # zero-width space past the old 1M cap
+    # Honest Cyrillic word (privet) for the mixed/adjacent-token case.
+    _cyr_word = ''.join(chr(c) for c in (0x43f, 0x440, 0x438, 0x432, 0x435, 0x442))
+    _corpus = [
+        '', 'plain ascii', 'a\tb\nc', 'caf' + chr(0xe9),
+        chr(0x65e5) + chr(0x672c) + chr(0x8a9e),          # honest CJK
+        chr(0x3b1) + chr(0x3b2) + chr(0x3b3),             # honest Greek
+        'release' + RLO + 'gpj', 'veri' + ZWSP + 'fied', 'a\x1bb', 'cr\rx',
+        'm' + CYR_A + 'ster', 'go' + GREEK_O + 'gle',     # homoglyphs posing as ASCII
+        'm' + CYR_A + 'ster ' + _cyr_word,                # homoglyph token + honest word
+        'ok' + chr(0xdc80) + 'z',                         # surrogateescape raw undecodable byte
+        _past_cap, 'c' * 1_050_000,
+    ]
+    for _s in _corpus:
+        ok(_hd(_s) == (unicode_tag.tag_text(_s) != _s),
+           'has_deceptive == (tag_text != s) on a %d-char input' % len(_s))
+    ok(_hd(_past_cap),
+       'has_deceptive: a zero-width char PAST the old 1M cap is caught (no size cap)')
+    ok(not _hd('c' * 1_050_000),
+       'has_deceptive: a clean multi-MB string is not deceptive (no false positive)')
+
     print('test_unicode_tag: %d pass, %d fail, 0 skip' % (_passed, _failed))
     return 1 if _failed else 0
 

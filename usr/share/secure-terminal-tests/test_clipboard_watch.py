@@ -102,6 +102,43 @@ def _test_autostart():
                 handle.write('[Desktop Entry]\nX-GNOME-Autostart-enabled=true\n')
             ok(CW.autostart_enabled(),
                'autostart: a non-disabling override reports enabled')
+            # A raw whole-file substring match false-reports 'disabled' when a Comment=/
+            # Name= VALUE merely CONTAINS the literal, or when a [Desktop Action] section
+            # (not [Desktop Entry]) carries the key. The section-aware parse reads only the
+            # actual [Desktop Entry] keys. (canary: the old substring code returned False
+            # -- disabled -- for the Comment case below.)
+            os.remove(path)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('[Desktop Entry]\nName=x\n'
+                             'Comment=Do not set Hidden=true here\n')
+            ok(CW.autostart_enabled(),
+               'autostart: Hidden=true inside a Comment= VALUE does not disable (canary)')
+            os.remove(path)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('[Desktop Entry]\nName=x\n'
+                             '[Desktop Action foo]\nHidden=true\n')
+            ok(CW.autostart_enabled(),
+               'autostart: Hidden=true in a [Desktop Action] section does not disable')
+            os.remove(path)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('[Desktop Entry]\nExec=secure-terminal --tray %F\n'
+                             'Hidden=true\n')
+            ok(not CW.autostart_enabled(),
+               'autostart: a real Hidden=true under [Desktop Entry] disables '
+               '(an Exec %-code does not crash the parse)')
+            # A file with no [Desktop Entry] section (KeyError) or no section header at
+            # all (configparser.Error) is not a valid disabling override -> fail-safe
+            # enabled, exercising the parse-failure branch.
+            os.remove(path)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('[Other]\nHidden=true\n')
+            ok(CW.autostart_enabled(),
+               'autostart: no [Desktop Entry] section -> enabled (fail-safe)')
+            os.remove(path)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('not a desktop file at all\n')
+            ok(CW.autostart_enabled(),
+               'autostart: a file with no section header -> enabled (fail-safe)')
             # a non-UTF-8 override (a hand edit / a Latin-1 tool / a crash mid-write) must
             # not crash the callers (clipboard menu, set_systray, settings dialog): read
             # fails with UnicodeDecodeError -> treated as enabled, like an unreadable file.
@@ -238,6 +275,25 @@ def _test_watcher():
        '#2: a cleaned Replace sanitizes the FULL clipboard (box PLUS its un-reviewed '
        'tail); delivered %d chars, expected %d'
        % (len(_delivered_full), len(_expected_full)))
+
+    # F2 (trigger scan cap removed): a deceptive char living PAST the old 1M trigger cap
+    # must still raise the review. The trigger now scans the FULL clipboard with an
+    # allocation-free early-exit predicate, so there is no >1M blind spot. (canary: the old
+    # code scanned only text[:1_000_000] and would NOT pop for a hidden char at ~1.05M.)
+    w._last_written = None
+    w._dismissed = None
+    past_cap = 'a' * 1_050_000 + ZWSP + 'b'
+    cb.setText(past_cap)
+    w._on_change()
+    ok(w._popup.isVisible(),
+       'watcher: a deceptive char PAST the old 1M cap still pops the review (no blind spot)')
+    w.resolve(past_cap, 'reject')
+    # A clean multi-MB clipboard (larger than the old cap) must still stay silent -- the
+    # full-text scan neither false-pops nor allocates a copy of it.
+    cb.setText('c' * 1_050_000)
+    w._on_change()
+    ok(not w._popup.isVisible(),
+       'watcher: a clean multi-MB clipboard stays silent (full-text scan, no false pop)')
 
     # review_now: nothing when empty, a popup even for clean text
     cb.setText('')
