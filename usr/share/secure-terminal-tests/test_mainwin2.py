@@ -962,13 +962,23 @@ try:
                 return 'false' if key == 'systray' else default
 
         M.settings.load = lambda: _LockedOffCfg()
+        # Spy _enter_tray_mode and assert it is NEVER reached: the guard must exit BEFORE
+        # building a window, not log the policy and fall through into hidden-to-tray. A
+        # fail-open regression (print "disabled by policy" but omit the early return) would
+        # else satisfy the exit-0 + stderr checks alone -- this catches that bypass.
+        _o_etm_d = M.MainWindow._enter_tray_mode
+        _entered_d = []
+        M.MainWindow._enter_tray_mode = lambda self: _entered_d.append(True)
         _errd = _io.StringIO()
         try:
             with _ctx.redirect_stderr(_errd):
                 eq(_main(), 0, 'main: --tray with an admin systray lock (off) exits 0')
             ok('disabled by policy' in _errd.getvalue(),
                'main: --tray with a locked-off tray names the policy on stderr')
+            ok(_entered_d == [],
+               'main: --tray with a locked-off tray exits BEFORE hidden-to-tray (no bypass)')
         finally:
+            M.MainWindow._enter_tray_mode = _o_etm_d
             M.settings.load = _o_load
     finally:
         QSystemTrayIcon.isSystemTrayAvailable = _o_avail2
@@ -1006,6 +1016,24 @@ for _combo in (['--reuse', '--new-instance'], ['--window', '--new-instance'],
     except SystemExit:
         _rej = True
     ok(_rej, 'parse: %s is rejected (mutually exclusive dispositions)' % ' '.join(_combo))
+
+# --tray (the single hidden-to-tray sanitizer owner, which defers to a running primary)
+# and --new-instance (standalone, never the group primary, skips the peer_owns dedup)
+# contradict: the pair would spawn a SECOND tray icon + ClipboardWatcher next to a running
+# primary. Reject it in BOTH orders. (canary: the old parser built a launch with
+# tray=new_instance=True and main() forced is_primary True, duplicating the tray icon.)
+for _tcombo in (['--tray', '--new-instance'], ['--new-instance', '--tray']):
+    _rejt = None
+    try:
+        _pla(_tcombo)
+    except SystemExit as _set:
+        _rejt = _set.code
+    ok(_rejt == 2,
+       'parse: %s exits(2) (--tray + --new-instance contradict)' % ' '.join(_tcombo))
+ok(_pla(['--tray']).tray is True and _pla(['--tray']).new_instance is False,
+   'parse: --tray alone -> hidden-to-tray, not new_instance')
+ok(_pla(['--new-instance']).new_instance is True and _pla(['--new-instance']).tray is False,
+   'parse: --new-instance alone -> standalone, not tray')
 
 # --if-absent (idempotent reuse) parses and flows into the open request.
 ok(_pla(['--if-absent']).if_absent is True, 'parse: --if-absent -> if_absent')

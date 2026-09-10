@@ -31,14 +31,22 @@ QMessageBox.information = staticmethod(lambda *_a, **_k: None)
 QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
 _sl = set(win._locked)
 try:
+    # Each admin-locked setter must REFUSE: set the OPPOSITE of the current value while
+    # locked, read the resulting state back, and assert it did NOT change. (canary: drop
+    # the `_locked` check from any of these setters and the value flips -> its read-back
+    # below fails; without the read-back the calls only proved they do not raise.)
     win._locked = {'osc_notice'}
-    win.set_osc_notice(True)
+    win.set_osc_notice(False)                # locked (default on) -> refused, stays on
+    _lk_osc_notice = win._osc_notice is True
     win._locked = {'tui_autobox_notice'}
-    win.set_tui_autobox_notice(False)       # admin-locked -> refused
+    win.set_tui_autobox_notice(False)        # locked (default on) -> refused, stays on
+    _lk_autobox = win._tui_autobox_notice is True
     win._locked = {'tui'}
-    win.set_tui(True)
+    win.set_tui(True)                        # locked (default CLI) -> refused, stays CLI
+    _lk_tui = win.current().current_tui() is False
     win._locked = {'allow_title'}
-    win.set_allow_title(True)
+    win.set_allow_title(True)                # locked (default off) -> refused, stays off
+    _lk_allow_title = win.current().allow_title_enabled() is False
     win._locked = {'bell'}
     win.set_bell_channel('audible', True)    # locked -> refused
     _lk_bell = 'audible' in win.current().bell_channels()
@@ -53,9 +61,10 @@ try:
     _add_tray = 'tray' in win.current().bell_channels()
     win.set_bell_channel('tray', False)      # unlocked -> removed
     _rm_tray = 'tray' not in win.current().bell_channels()
-    ok(not _lk_bell and not _lk_osc and not _lk_osc_alias and _add_tray and _rm_tray,
-       'admin locks refuse bell / osc_title / allow_title->osc_title; '
-       'unlocked bell channels add and remove (read-back)')
+    ok(not _lk_bell and not _lk_osc and not _lk_osc_alias and _add_tray and _rm_tray
+       and _lk_osc_notice and _lk_autobox and _lk_tui and _lk_allow_title,
+       'admin locks refuse osc_notice / tui_autobox_notice / tui / allow_title / bell / '
+       'osc_title / allow_title->osc_title; unlocked bell channels add+remove (read-back)')
     for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
                'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
                'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
@@ -200,11 +209,25 @@ try:
     win.set_clip_run(False)
     win._tray = None
     win._systray = False
-    win._enter_tray_mode()
+    win.act_systray.setChecked(False)
+    # A --tray launch forces the tray on for THIS session but must NOT persist it (a
+    # launch mode, not a settings change): the display-only setChecked(True) must not
+    # re-enter set_systray -> _persist, which would write systray=true and leave the tray
+    # on for later NORMAL launches. (canary: without blockSignals the toggled signal fires
+    # set_systray -> _persist.) None of the other _enter_tray_mode calls persist.
+    _etm_persists = []
+    _etm_o_persist = win._persist
+    win._persist = lambda *a, **k: _etm_persists.append(1)
+    try:
+        win._enter_tray_mode()
+    finally:
+        win._persist = _etm_o_persist
     ok(win._systray and win._tray is not None,
        '_enter_tray_mode: forces the tray on and creates the single icon')
     ok(win._clip_bg_watcher is not None,
        '_enter_tray_mode: arms the in-process clipboard sanitizer')
+    ok(_etm_persists == [],
+       '_enter_tray_mode: does NOT persist (launch mode) -- no set_systray re-entry')
     win.set_clip_run(False)
     win._tray.hide()
     win._tray = None

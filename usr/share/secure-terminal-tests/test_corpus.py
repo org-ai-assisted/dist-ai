@@ -322,6 +322,12 @@ def assert_all_paths(name, text):
     classes = S.classify_paste(text)
     ok(isinstance(classes, list), '%s: classify_paste returned %r, want a list'
        % (name, type(classes).__name__))
+    # has_paste_finding is the allocation-free, early-exit boolean the clipboard watcher's
+    # 'any' mode triggers on; it must agree with bool(classify_paste(text)) for every
+    # corpus payload (both reuse the single _paste_class predicate, so any divergence is
+    # a bug). This closes the >1M scan-cap gap without a copy of the clipboard.
+    ok(S.has_paste_finding(text) == bool(classes),
+       '%s: has_paste_finding == bool(classify_paste)' % name)
     # A payload carrying a dangerous code point must be REPORTED, not shrugged at:
     # a hostile paste described as clean is a silent failure of the review bar.
     if any(ord(ch) in DANGEROUS_CPS for ch in text):
