@@ -179,6 +179,12 @@ _ocr = win._banner_label.text().lower()
 ok(not win._banner.isHidden() and 'osc 52' in _ocr and 'read' in _ocr,
    'OSC 52 read sense reads distinctly from write (read the system clipboard)')
 win._dismiss_advisory()
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+_octab.osc_used.emit('osc_other', 5)             # OSC 5: no entry in the description table
+_oc5 = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 5' in _oc5 and 'osc 5:' not in _oc5,
+   'an OSC code with no accurate description is named by bare number (OSC 5), never guessed')
+win._dismiss_advisory()
 # disabled globally: a fresh tab's OSC shows nothing; re-enabling re-arms it.
 win.new_tab()
 _octab2 = win.current()
