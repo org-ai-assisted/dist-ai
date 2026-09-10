@@ -308,6 +308,22 @@ for _thm, (_cbg, _cfg, _cbd) in M._TIP_COLORS.items():
     ok(not _san_tt.too_close(_cbg_rgb, _cfg_rgb),
        'InfoTip: the %s tooltip card has readable bg/fg contrast' % _thm)
 
+# A tab's per-tab tooltip renders through the InfoTip filter, not Qt's native (dark-on-dark)
+# tab tooltip: a ToolTip help-event over a tab shows that tab's own tooltip via InfoTip.
+from PyQt6.QtGui import QHelpEvent as _QHE_tt              # noqa: E402
+from PyQt6.QtCore import QEvent as _QEv_tt                 # noqa: E402
+win.show()
+APP.processEvents()
+_ttbar = win.tabs.tabBar()
+win.tabs.setTabToolTip(0, 'TABHINT-xyz')
+_ttpos = _ttbar.tabRect(0).center()
+APP.sendEvent(_ttbar, _QHE_tt(_QEv_tt.Type.ToolTip, _ttpos, _ttbar.mapToGlobal(_ttpos)))
+_ttip = win._tip_filter._tip
+ok(_ttip.isVisible() and 'TABHINT-xyz' in _ttip.text(),
+   'the tab bar per-tab tooltip renders through the InfoTip filter (not the native tab tooltip)')
+_ttip.hide()
+_ttip._poll.stop()
+
 # --- #95: a settings (i) marker is a CLICK target that pops the copyable InfoTip
 from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95       # noqa: E402
 # The (i) marker is a LINK, so the label TEXT stays selectable for copy; ACTIVATING the
