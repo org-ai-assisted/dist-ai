@@ -1263,66 +1263,6 @@ dist_build_source_config_dir ()
         true "${cyan}INFO: Skipping $1 because it does not exist.${reset}";
     fi
 }
-dm_layer_capture ()
-{
-    local dm_lc_name dm_lc_line dm_lc_flags dm_lc_dump;
-    declare -gA "$1";
-    local -n dm_lc_dst="$1";
-    dm_lc_dst=();
-    dm_lc_dump="$(declare -p)";
-    while IFS= read -r dm_lc_line; do
-        [[ "${dm_lc_line}" =~ ^declare\ -([a-zA-Z-]+)\ ([A-Za-z_][A-Za-z0-9_]*)= ]] || continue;
-        dm_lc_flags="${BASH_REMATCH[1]}";
-        case "${dm_lc_flags}" in
-            *a* | *A* | *r*)
-                continue
-            ;;
-        esac;
-        dm_lc_name="${BASH_REMATCH[2]}";
-        case "${dm_lc_name}" in
-            dm_layer_* | dm_lc_* | dm_lr_* | dm_cc_*)
-                continue
-            ;;
-            RANDOM | SRANDOM | SECONDS | LINENO | BASHPID | EPOCHSECONDS | EPOCHREALTIME | BASH_COMMAND | BASH_SUBSHELL | _)
-                continue
-            ;;
-        esac;
-        dm_lc_dst["${dm_lc_name}"]="${!dm_lc_name:-}";
-    done <<< "${dm_lc_dump}"
-}
-dm_layer_cleanup ()
-{
-    unset dm_layer_env dm_layer_after_pc dm_layer_cli dm_layer_preconfig dm_layer_postconfig
-}
-dm_layer_compute_cli ()
-{
-    local dm_cc_name;
-    declare -gA dm_layer_cli;
-    dm_layer_cli=();
-    for dm_cc_name in "${!dm_layer_after_pc[@]}";
-    do
-        if [ ! "${dm_layer_after_pc[${dm_cc_name}]}" = "${dm_layer_env[${dm_cc_name}]:-}" ]; then
-            dm_layer_cli["${dm_cc_name}"]="${dm_layer_after_pc[${dm_cc_name}]}";
-        fi;
-    done
-}
-dm_layer_reapply ()
-{
-    local dm_lr_name;
-    for dm_lr_name in "${!dm_layer_postconfig[@]}";
-    do
-        if [ "${dm_layer_postconfig[${dm_lr_name}]}" = "${dm_layer_preconfig[${dm_lr_name}]:-}" ]; then
-            continue;
-        fi;
-        if [ -n "${dm_layer_cli[${dm_lr_name}]+set}" ]; then
-            printf -v "${dm_lr_name}" '%s' "${dm_layer_cli[${dm_lr_name}]}";
-        else
-            if [ -n "${dm_layer_env[${dm_lr_name}]+set}" ]; then
-                printf -v "${dm_lr_name}" '%s' "${dm_layer_env[${dm_lr_name}]}";
-            fi;
-        fi;
-    done
-}
 error_dangerous_option_maybe ()
 {
     if [ "${dist_build_unlock_dangerous_options:-}" = 'true' ]; then
