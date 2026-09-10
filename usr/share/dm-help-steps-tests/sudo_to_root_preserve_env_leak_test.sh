@@ -80,9 +80,12 @@ child_preserve_env_verdict() {
    ## The probe sources 'variables' behind pre's exception handler, whose
    ## normal-exit notice ('INFO: Script _ completed ...') also lands on stdout;
    ## extract only the verdict token so trailing notices cannot corrupt it.
+   ## '|| true': if the probe emits no verdict (e.g. 'variables' failed to source),
+   ## surface an EMPTY verdict to the assertion below -- which names it -- rather
+   ## than letting pipefail+errexit abort the whole test with no diagnostic.
    ( cd -- "${dm_checkout}" \
       && env "${capture_env[@]}" "${extra_env[@]}" bash "${probe_script}" "$@" \
-   ) | grep --only-matching --extended-regexp 'CHILD_(HAS|MISSING)_PRESERVE_ENV' | tail -n 1
+   ) | grep --only-matching --extended-regexp 'CHILD_(HAS|MISSING)_PRESERVE_ENV' | tail -n 1 || true
 }
 
 ## Print the 'declare' attribute line for the guard flag from a single real
