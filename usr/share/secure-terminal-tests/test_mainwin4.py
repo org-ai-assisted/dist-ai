@@ -329,6 +329,42 @@ ok(_tthandled and _ttip.isVisible() and 'TABHINT-xyz' in _ttip.text(),
 _ttip.hide()
 _ttip._poll.stop()
 
+# Hover ROUTING (in-window): a codepoint hover shows the char info via the window's InfoTip
+# (selectable + zoomable, anchored at the glyph), not Qt's plain tooltip; a hover off it
+# hides that tip. Uses a throwaway tab so the main tab's mode/content is untouched.
+from PyQt6.QtGui import QHelpEvent as _QHE_hw, QTextCursor as _QTC_hw  # noqa: E402
+from PyQt6.QtCore import QEvent as _QEv_hw, QPoint as _QP_hw, Qt as _Qt_hw  # noqa: E402
+win.new_tab()
+_hwterm = win.current()
+_hwterm.apply_mode('reveal')
+_hwterm._append(chr(0x20AC))                          # euro -> a reveal badge (>= 8 cells)
+_hwterm.resize(600, 200)
+_hwterm.show()
+APP.processEvents()
+_hwca = _QTC_hw(_hwterm.document()); _hwca.setPosition(4)
+_hwcb = _QTC_hw(_hwterm.document()); _hwcb.setPosition(5)
+_hwra = _hwterm.cursorRect(_hwca); _hwrb = _hwterm.cursorRect(_hwcb)
+_hwx = (_hwra.x() + _hwrb.x()) // 2 if _hwrb.x() > _hwra.x() else _hwra.x() + 3
+_hwpt = _QP_hw(_hwx, _hwra.center().y())
+ok(_hwterm._hover_tip_window() is win,
+   'an in-window terminal routes hovers to the window InfoTip')
+_hwtip = win._tip_filter._tip
+ok(_hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hwpt, _hwterm.viewport().mapToGlobal(_hwpt)))
+   and _hwtip.isVisible() and 'U+20AC' in _hwtip.text(),
+   'a codepoint hover shows the char-info InfoTip (selectable/zoomable), not a plain tooltip')
+ok(bool(_hwtip.textInteractionFlags() & _Qt_hw.TextInteractionFlag.TextSelectableByMouse),
+   'the codepoint hover tip is selectable (InfoTip, not the plain QToolTip)')
+_hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hwpt, _hwterm.viewport().mapToGlobal(_hwpt)))
+ok(_hwtip.isVisible(), 'a repeated hover over the same glyph keeps the tip up (no toggle)')
+_hw_empty = _QP_hw(_hwterm.viewport().width() - 2, _hwterm.viewport().height() - 2)
+_hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hw_empty,
+                      _hwterm.viewport().mapToGlobal(_hw_empty)))
+ok(not _hwtip.isVisible(), 'a hover off the codepoint hides the char-info tip')
+win.hide_hover_tip(win)                               # nothing of that anchor shows -> no-op
+ok(not _hwtip.isVisible(), 'hide_hover_tip is a no-op when nothing of that anchor shows')
+win.close_tab(win.tabs.indexOf(_hwterm))
+APP.processEvents()
+
 # --- #95: a settings (i) marker is a CLICK target that pops the copyable InfoTip
 from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95       # noqa: E402
 # The (i) marker is a LINK, so the label TEXT stays selectable for copy; ACTIVATING the

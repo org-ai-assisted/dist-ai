@@ -3139,6 +3139,19 @@ inr.show()
 pump(30)
 _badge_pt = glyph_pt(inr, 4)                            # inside "<U+20AC>"
 eq(inr._cp_at(_badge_pt), 0x20AC, '_cp_at recovers the codepoint under a point (reveal)')
+# Hover ROUTING: a codepoint hover is handled; a terminal used OUTSIDE a MainWindow has no
+# window InfoTip API, so it falls back to the plain QToolTip (both fallback branches).
+from PyQt6.QtGui import QHelpEvent as _QHE_hv           # noqa: E402
+from PyQt6.QtCore import QEvent as _QEv_hv, QPoint as _QP_hv   # noqa: E402
+ok(inr._hover_tip_window() is None,
+   'a standalone terminal has no window InfoTip API (plain-tooltip fallback)')
+ok(inr.event(_QHE_hv(_QEv_hv.Type.ToolTip, _badge_pt,
+                     inr.viewport().mapToGlobal(_badge_pt))),
+   'a codepoint hover is handled (fallback path)')
+_hv_empty = _QP_hv(inr.viewport().width() - 2, inr.viewport().height() - 2)
+ok(inr.event(_QHE_hv(_QEv_hv.Type.ToolTip, _hv_empty,
+                     inr.viewport().mapToGlobal(_hv_empty))),
+   'a hover off any codepoint is handled (hide fallback)')
 # and in SHOW mode a readable glyph keeps no tag but IS its own codepoint: _cp_at
 # falls back to the character itself (three copies give a stable mid target).
 insh = SecureTerminal(command='/bin/cat')
