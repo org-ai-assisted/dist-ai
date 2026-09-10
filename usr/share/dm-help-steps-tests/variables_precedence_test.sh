@@ -15,16 +15,12 @@
 ##   command-line  >  environment  >  config-file (set_default_variable)  >  default
 ##
 ## A config file participates in the ladder by using 'set_default_variable NAME
-## value' (fill-if-empty), which therefore RESPECTS an env value or a --CLI flag.
+## value' (fill-if-empty): it OVERRIDES a built-in code default (the user config
+## tiers are sourced in 10_core.bsh BEFORE the defaults), yet still RESPECTS an
+## env value or a --CLI flag (both already set by then, so fill-if-empty skips).
 ## A bare 'NAME=value' in a config file is a deliberate FORCED OVERRIDE (the
 ## documented power-user escape hatch) and wins over everything -- that is the
 ## meaning of an unconditional assignment, not a bug.
-##
-## KNOWN, DOCUMENTED limitation: a config FILE cannot override a value that has a
-## built-in code default, because the default is applied before the config file
-## is sourced; override such a value via env or the command line (both work), or
-## with a bare assignment. This is the honest contract of the guard idiom without
-## any capture/re-apply machinery.
 ##
 ## Verified on a representative input, 'dist_build_hostname' (CLI '--hostname',
 ## env 'dist_build_hostname', default 'localhost'), by resolving the REAL
@@ -96,7 +92,10 @@ resolve_check "env beats default"     ENVVAL    "dist_build_hostname=ENVVAL" --
 resolve_check "CLI beats default"     CLIVAL    ""                          --hostname CLIVAL
 resolve_check "CLI beats env"         CLIVAL    "dist_build_hostname=ENVVAL" --hostname CLIVAL
 
-## --- a config file using set_default_variable RESPECTS env and CLI ----------
+## --- a config file using set_default_variable OVERRIDES a code default -------
+resolve_check "config(set_default_variable) beats default" CONFVAL "" --conffile "${conf_sdv}"
+
+## --- ... but still RESPECTS env and CLI --------------------------------------
 resolve_check "config(set_default_variable) yields to CLI" CLIVAL "" --hostname CLIVAL --conffile "${conf_sdv}"
 resolve_check "config(set_default_variable) yields to env" ENVVAL "dist_build_hostname=ENVVAL" --conffile "${conf_sdv}"
 
