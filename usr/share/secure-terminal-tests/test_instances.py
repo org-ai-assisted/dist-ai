@@ -184,6 +184,7 @@ def _run_suite(tag):
     other = 'other-' + tag
     race = 'race-' + tag
     reelect = 'reelect-' + tag
+    tray = 'tray-' + tag
     saw_crash = False
     try:
         # A: the first launch of a group becomes its PRIMARY (owns the group socket).
@@ -288,6 +289,19 @@ def _run_suite(tag):
         _g2, _rg2 = spawn_primary(reelect, '--reuse', '--instance-group', reelect)
         ok(_rg2 is not None and _rg2.get('pid') == _g2.pid,
            'G: after the primary dies, a new --reuse becomes a reachable primary')
+
+        # H: --tray needs a system tray to live in. Under the headless test compositor
+        # there is none, so the launcher exits 1 at the precheck rather than running a
+        # hidden, iconless session (the single-process replacement for the retired
+        # --clipboard-watch daemon's "no tray -> exit"). Its own group so it never
+        # disturbs the scenarios above.
+        _h = spawn('--tray', '--instance-group', tray)
+        try:
+            _hrc = _h.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            _hrc = None
+        ok(_hrc == 1,
+           'H: --tray with no system tray available exits 1 (no hidden iconless session)')
     finally:
         # Note a Qt-startup crash BEFORE the reap rewrites returncodes to -SIGTERM/-SIGKILL.
         # A child SIGKILL'd on purpose (G's _g1) exits -SIGKILL, which is not in the set.

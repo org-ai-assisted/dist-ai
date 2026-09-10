@@ -127,6 +127,16 @@ try:
         _about_dlg.on_zoom(1)
     ok(_about_dlg.height() <= _avail_h and _a_scroll.widget() is not None,
        'a heavily-zoomed About stays within the screen and keeps its content scrollable')
+    # _fit_about's no-screen guard: with no primary screen it cannot read
+    # availableGeometry, so the fit is skipped -- a zoom must still not crash. (The
+    # dialog is maxed out above, so zoom DOWN to force a real rescale -> _fit_about.)
+    _o_ps_about = M.QApplication.primaryScreen
+    M.QApplication.primaryScreen = staticmethod(lambda: None)
+    try:
+        _about_dlg.on_zoom(-1)               # a scale change -> _apply_about_scale -> _fit_about
+        ok(True, 'About zoom tolerates a missing primary screen (fit is skipped, no crash)')
+    finally:
+        M.QApplication.primaryScreen = _o_ps_about
     win.show_locations()
     ok(True, 'show_locations builds and shows the paths dialog')
     # Folders & Files must expose the transcripts directory (regression: no entry).

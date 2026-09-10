@@ -823,15 +823,13 @@ _lkw._systray = True
 _o_avail_lk = _QSTI_lk.isSystemTrayAvailable
 _QSTI_lk.isSystemTrayAvailable = staticmethod(lambda: True)   # tray present: lock is the only gate
 _lk_probe = []
-_o_isr, _o_sd, _o_sa = _cw_lk.is_running, _cw_lk.stop_running, _cw_lk.set_autostart
-_cw_lk.is_running = lambda: (_lk_probe.append('run'), False)[1]
-_cw_lk.stop_running = lambda: _lk_probe.append('run')
+_o_sa = _cw_lk.set_autostart
 _cw_lk.set_autostart = lambda _v: _lk_probe.append('auto')
 try:
-    _lkw.set_clip_run(True)          # locked -> must return before touching clipboard_watch
+    _lkw.set_clip_run(True)          # locked -> must return before creating a watcher
     _lkw.set_clip_run(False)
     _lkw.set_clip_autostart(True)    # locked -> must return before set_autostart
-    ok(not _lk_probe,
+    ok(not _lk_probe and _lkw._clip_bg_watcher is None,
        'ai-review #1: set_clip_run / set_clip_autostart are no-ops when admin-locked')
     _lkm = _QMenu_lk()
     _lkw._populate_clipboard_menu(_lkm)
@@ -841,7 +839,7 @@ try:
     ok(not _lk_by['Start on login'].isEnabled(),
        'ai-review #1: Start-on-login greyed when clip_autostart admin-locked')
 finally:
-    _cw_lk.is_running, _cw_lk.stop_running, _cw_lk.set_autostart = _o_isr, _o_sd, _o_sa
+    _cw_lk.set_autostart = _o_sa
     _QSTI_lk.isSystemTrayAvailable = _o_avail_lk
 _lkw.close()
 _wcg.close()
