@@ -209,11 +209,25 @@ try:
     win.set_clip_run(False)
     win._tray = None
     win._systray = False
-    win._enter_tray_mode()
+    win.act_systray.setChecked(False)
+    # A --tray launch forces the tray on for THIS session but must NOT persist it (a
+    # launch mode, not a settings change): the display-only setChecked(True) must not
+    # re-enter set_systray -> _persist, which would write systray=true and leave the tray
+    # on for later NORMAL launches. (canary: without blockSignals the toggled signal fires
+    # set_systray -> _persist.) None of the other _enter_tray_mode calls persist.
+    _etm_persists = []
+    _etm_o_persist = win._persist
+    win._persist = lambda *a, **k: _etm_persists.append(1)
+    try:
+        win._enter_tray_mode()
+    finally:
+        win._persist = _etm_o_persist
     ok(win._systray and win._tray is not None,
        '_enter_tray_mode: forces the tray on and creates the single icon')
     ok(win._clip_bg_watcher is not None,
        '_enter_tray_mode: arms the in-process clipboard sanitizer')
+    ok(_etm_persists == [],
+       '_enter_tray_mode: does NOT persist (launch mode) -- no set_systray re-entry')
     win.set_clip_run(False)
     win._tray.hide()
     win._tray = None
