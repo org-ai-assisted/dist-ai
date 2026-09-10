@@ -84,6 +84,11 @@ vs_shell_special_re='^(BASH_REMATCH|BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_SOURCE|
 ## Set by vs_init_baseline: a sorted file of the names to subtract.
 vs_baseline_file=""
 
+## Set by vs_init_func_baseline: a sorted file of the function NAMES to subtract
+## (those 'help-steps/pre' defines), so a function snapshot shows only the
+## functions 'variables' itself introduces.
+vs_baseline_func_file=""
+
 ## Resolve the derivative-maker checkout (env override, else ~/derivative-maker),
 ## matching help_steps_test_lib.bsh.
 vs_resolve_dm() {
@@ -217,5 +222,81 @@ vs_capture_combo() {
    fi
    safe-rm --force -- "${errfile}"
    vs_filter_and_normalize "${dm}" < "${outfile}"
+   safe-rm --force -- "${outfile}"
+}
+
+## Function names present after sourcing only help-steps/pre: the baseline of
+## functions to subtract, so a function snapshot shows only what 'variables'
+## introduces. 'declare -F' prints 'declare -f NAME' lines; keep the NAME.
+## Printed sorted, one per line.
+vs_baseline_func_names() {
+   local dm="$1"
+   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash -c 'source help-steps/pre; declare -F' ) 2>/dev/null \
+      | awk '{ print $3 }' | LC_ALL=C sort -u
+}
+
+## Compute the function-name baseline once for a checkout, into a temp file named
+## by vs_baseline_func_file. Non-zero (and an error) if pre cannot be sourced --
+## an empty baseline would make every inherited function look 'introduced'.
+vs_init_func_baseline() {
+   local dm="$1"
+   vs_baseline_func_file="$(mktemp)"
+   ## '|| true': the pipeline can fail (empty output -> awk still 0, but keep the
+   ## same shape as vs_init_baseline); let the '-s' check report an empty baseline.
+   vs_baseline_func_names "${dm}" > "${vs_baseline_func_file}" || true
+   if [ ! -s "${vs_baseline_func_file}" ]; then
+      printf '%s\n' "ERROR: empty function baseline for '${dm}'; help-steps/pre failed to source." >&2
+      return 1
+   fi
+}
+
+## Drop the baseline functions from a 'declare -f' dump, keeping only the
+## functions 'variables' introduces. Reads 'declare -f' output on stdin. Relies
+## on bash's stable pretty-print format: a definition begins with a
+## 'name () ' header line and its body closes with a '}' at column 0 (nested
+## braces are indented, so a bare '}' only ever closes a function). Then
+## normalize, so a stray checkout path in a body cannot vary the snapshot.
+##
+## Emits ONLY the lines INSIDE a kept function block. Anything outside a block is
+## dropped: leading chatter 'variables' prints while sourcing, and -- critically
+## -- the trailing 'help-steps/pre' EXIT-trap banner (its 'Execution Time: Ns'
+## varies run to run, which would otherwise trip the caller's determinism check).
+## This is the function-path analogue of the variable path's "grep '^declare '".
+vs_filter_functions() {
+   local dm="$1"
+   awk -v basefile="${vs_baseline_func_file}" '
+      BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
+      /^[A-Za-z_][A-Za-z0-9_]* \(\) $/ { inblock = 1; keep = ($1 in base) ? 0 : 1 }
+      { if (inblock && keep) print }
+      /^}$/ { inblock = 0; keep = 0 }
+   ' \
+      | vs_normalize "${dm}" "${HOME}"
+}
+
+## Capture the function definitions 'variables' introduces for one build command.
+## Args: <dm> <flavor> <target>. Prints the filtered, normalized snapshot to
+## stdout and returns 0 on a valid combo; returns 1 (no output) on a rejected
+## combo -- the caller uses a KNOWN-valid combo, so a non-zero here is an error.
+## Mirrors vs_capture_combo but drives the 'dist_build_dump_funcnames' hook.
+vs_capture_functions() {
+   local dm="$1" flavor="$2" target="$3"
+   local outfile rc
+   outfile="$(mktemp)"
+   if (
+      cd -- "${dm}" \
+         && env dist_build_dump_funcnames=true dist_build_unlock_dangerous_options=true \
+            dist_build_allow_root=true \
+            bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
+            --flavor "${flavor}" --target "${target}" "${vs_fixed_args[@]}"
+   ) >"${outfile}" 2>/dev/null; then
+      rc=0
+   else
+      rc=$?
+   fi
+   if [ "${rc}" -ne 0 ]; then
+      safe-rm --force -- "${outfile}"
+      return 1
+   fi
+   vs_filter_functions "${dm}" < "${outfile}"
    safe-rm --force -- "${outfile}"
 }

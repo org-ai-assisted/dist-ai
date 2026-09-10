@@ -59,15 +59,18 @@ printf '%s\n' "INFO: derivative-maker checkout: ${dm}"
 printf '%s\n' "INFO: output directory:          ${out_dir}"
 
 vs_init_baseline "${dm}"
+vs_init_func_baseline "${dm}"
 
 mkdir --parents -- "${out_dir}"
 ## Regenerate clean: drop stale snapshots so a removed/renamed combo cannot
 ## linger. Scoped to this tool's own output names only.
-safe-rm --force -- "${out_dir}"/*.vars "${out_dir}/_rejected.txt"
+safe-rm --force -- "${out_dir}"/*.vars "${out_dir}/_rejected.txt" "${out_dir}/functions.snapshot"
 
 rejected_tmp="$(mktemp)"
 valid_count=0
 rejected_count=0
+first_valid_flavor=""
+first_valid_target=""
 
 for flavor in "${vs_flavors[@]}"; do
    for target in "${vs_targets[@]}"; do
@@ -75,6 +78,14 @@ for flavor in "${vs_flavors[@]}"; do
       ## vs_capture_combo prints the snapshot (rc 0) or the rejection reason
       ## (rc 1) to stdout; 'if' captures either and guards errexit.
       if result="$(vs_capture_combo "${dm}" "${flavor}" "${target}")"; then
+         ## Remember the first valid combo to source the function snapshot from
+         ## (function definitions are invariant across the flavor/target axes --
+         ## no function in 'variables' is defined conditionally on either -- so
+         ## one representative valid combo captures them all).
+         if [ -z "${first_valid_flavor}" ]; then
+            first_valid_flavor="${flavor}"
+            first_valid_target="${target}"
+         fi
          ## Idempotency self-check: capture once more and require identical
          ## output. A difference means a volatile value slipped past
          ## normalization -- a bug to fix at the root, not to tolerate.
@@ -105,4 +116,25 @@ done
 } > "${out_dir}/_rejected.txt"
 safe-rm --force -- "${rejected_tmp}"
 
-printf '%s\n' "INFO: wrote ${valid_count} snapshot file(s), ${rejected_count} rejected combo(s)."
+## Function snapshot: the functions 'variables' introduces on top of 'pre',
+## captured from one representative valid combo (see first_valid note above).
+## The companion to the per-combo '.vars' files -- 'declare -p' cannot see
+## functions, so without this a refactoring could silently drop or alter a
+## function body and every '.vars' file would still match.
+if [ -z "${first_valid_flavor}" ]; then
+   printf '%s\n' "FATAL: no valid build combo found; cannot capture the function snapshot." >&2
+   exit 1
+fi
+funcs="$(vs_capture_functions "${dm}" "${first_valid_flavor}" "${first_valid_target}")" \
+   || { printf '%s\n' "FATAL: function capture failed for the '${first_valid_flavor}__${first_valid_target}' combo." >&2; exit 1; }
+## Idempotency self-check, matching the per-combo '.vars' guard: a second capture
+## must be byte-identical, or a volatile value slipped past normalization.
+funcs_again="$(vs_capture_functions "${dm}" "${first_valid_flavor}" "${first_valid_target}")" || true
+if [ "${funcs}" != "${funcs_again}" ]; then
+   printf '%s\n' "FATAL: non-deterministic function capture; normalization is incomplete:" >&2
+   diff <(printf '%s\n' "${funcs}") <(printf '%s\n' "${funcs_again}") >&2 || true
+   exit 1
+fi
+printf '%s\n' "${funcs}" > "${out_dir}/functions.snapshot"
+
+printf '%s\n' "INFO: wrote ${valid_count} snapshot file(s), ${rejected_count} rejected combo(s), 1 function snapshot."
