@@ -310,16 +310,21 @@ for _thm, (_cbg, _cfg, _cbd) in M._TIP_COLORS.items():
 
 # A tab's per-tab tooltip renders through the InfoTip filter, not Qt's native (dark-on-dark)
 # tab tooltip: a ToolTip help-event over a tab shows that tab's own tooltip via InfoTip.
+# Drive win's OWN filter directly -- several MainWindows in this suite each install a
+# _ToolTipFilter on the app, and app filters fire most-recent-first, so a bare sendEvent
+# could be served by another window's tip; a direct call pins the assertion to win's tip.
 from PyQt6.QtGui import QHelpEvent as _QHE_tt              # noqa: E402
 from PyQt6.QtCore import QEvent as _QEv_tt                 # noqa: E402
+win.resize(800, 400)
 win.show()
 APP.processEvents()
 _ttbar = win.tabs.tabBar()
 win.tabs.setTabToolTip(0, 'TABHINT-xyz')
 _ttpos = _ttbar.tabRect(0).center()
-APP.sendEvent(_ttbar, _QHE_tt(_QEv_tt.Type.ToolTip, _ttpos, _ttbar.mapToGlobal(_ttpos)))
+_tthandled = win._tip_filter.eventFilter(
+    _ttbar, _QHE_tt(_QEv_tt.Type.ToolTip, _ttpos, _ttbar.mapToGlobal(_ttpos)))
 _ttip = win._tip_filter._tip
-ok(_ttip.isVisible() and 'TABHINT-xyz' in _ttip.text(),
+ok(_tthandled and _ttip.isVisible() and 'TABHINT-xyz' in _ttip.text(),
    'the tab bar per-tab tooltip renders through the InfoTip filter (not the native tab tooltip)')
 _ttip.hide()
 _ttip._poll.stop()
