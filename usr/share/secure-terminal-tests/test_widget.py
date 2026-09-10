@@ -5423,6 +5423,37 @@ eq(_selw.textCursor().selectedText(), 'host',
 _sel_dbl(_selw, _selpt(_selw, 34))
 eq(_selw.textCursor().selectedText(), 'port',
    'sel: word after the colon selects on its own')
+
+# Double-click a word while SCROLLED UP in the scrollback: it selects the word under the
+# pointer and the view stays put. The first release of the double-click used to
+# reset_caret() to _out_cursor, whose ensureCursorVisible() snapped the view to the live
+# bottom BEFORE the word was resolved -- so the wrong word (or none) was picked and the
+# view jumped. Deliver the real Qt sequence (press, release, dblclick, release): the
+# release is the culprit, so a test that only calls mouseDoubleClickEvent would not catch it.
+_selsb = SecureTerminal(command='/bin/cat')
+_selsb.resize(700, 300)
+_selsb.show()
+APP.processEvents()
+_selsb._cols = 0                       # no soft-wrap: TARGETWORD keeps a stable docpos
+feed_output(_selsb, b'TARGETWORD near the top\r\n')
+feed_output(_selsb, b''.join([b'filler line %d\r\n' % _i for _i in range(200)]))
+_selsb._force_current_frame()
+APP.processEvents()
+_selsb_bar = _selsb.verticalScrollBar()
+_selsb_bar.setValue(_selsb_bar.minimum())      # scroll UP to the top (into the scrollback)
+APP.processEvents()
+_selsb_held = _selsb_bar.value()
+ok(_selsb_held < _selsb_bar.maximum(),
+   'sel-scroll: precondition -- the view is scrolled up off the bottom')
+_selsb_pt = _selpt(_selsb, 4)                  # inside TARGETWORD, visible at the top
+_sel_press(_selsb, _selsb_pt)
+_selsb.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _selsb_pt))
+_sel_dbl(_selsb, _selsb_pt)
+_selsb.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _selsb_pt))
+eq(_selsb.textCursor().selectedText(), 'TARGETWORD',
+   'sel-scroll: double-click in the scrollback selects the word under the pointer')
+eq(_selsb_bar.value(), _selsb_held,
+   'sel-scroll: a click does not snap the scrolled-up view to the bottom')
 # Double-click inside a run of blanks (word char on neither side) has no word -> falls
 # back to Qt's default, char mode.
 _selb = SecureTerminal(command='/bin/cat')

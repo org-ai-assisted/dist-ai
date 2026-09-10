@@ -279,6 +279,35 @@ ok(_tip_running and not _tip2._poll.isActive(),
 _tip2.deleteLater()
 APP.processEvents()
 
+# --- InfoTip readability: the card background paints opaque and contrasts the text -----
+# The reported black-on-black was the InfoTip card background not painting under
+# WA_TranslucentBackground; InfoTip.paintEvent now fills the card explicitly. Grab the
+# rendered pixels and assert the light-theme card renders light (opaque) and clears the
+# shared contrast guard vs the text colour. (Style-independent: grab() bypasses the
+# platform compositor, so this guards gross regressions; the real fix is the explicit fill.)
+from secure_terminal import sanitize as _san_tt                # noqa: E402
+_rt = M.InfoTip(win)
+_rt.show_for(win, 'readable?', 100, 'light')
+APP.processEvents()
+_rt_img = _rt.grab().toImage()
+_rt_bgpix = _rt_img.pixelColor(6, 6)                            # just inside the border+padding
+_rt_bg = (_rt_bgpix.red(), _rt_bgpix.green(), _rt_bgpix.blue())
+_rt_fg_hex = M._TIP_COLORS['light'][1]
+_rt_fg = (int(_rt_fg_hex[1:3], 16), int(_rt_fg_hex[3:5], 16), int(_rt_fg_hex[5:7], 16))
+ok(_san_tt.luminance(_rt_bg) > 127,
+   'InfoTip: the light-theme card background renders light (opaque), not dark-on-dark')
+ok(not _san_tt.too_close(_rt_bg, _rt_fg),
+   'InfoTip: the card background and text colour clear the contrast threshold (readable)')
+_rt.close()
+_rt.deleteLater()
+APP.processEvents()
+# Every _TIP_COLORS pair must itself be readable (bg vs fg clears the contrast guard).
+for _thm, (_cbg, _cfg, _cbd) in M._TIP_COLORS.items():
+    _cbg_rgb = (int(_cbg[1:3], 16), int(_cbg[3:5], 16), int(_cbg[5:7], 16))
+    _cfg_rgb = (int(_cfg[1:3], 16), int(_cfg[3:5], 16), int(_cfg[5:7], 16))
+    ok(not _san_tt.too_close(_cbg_rgb, _cfg_rgb),
+       'InfoTip: the %s tooltip card has readable bg/fg contrast' % _thm)
+
 # --- #95: a settings (i) marker is a CLICK target that pops the copyable InfoTip
 from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95       # noqa: E402
 # The (i) marker is a LINK, so the label TEXT stays selectable for copy; ACTIVATING the

@@ -628,6 +628,23 @@ ok(S.OSC_FEATURE_BY_KEY['osc_clipboard'][3] == 'high'
 ok('osc_iterm2' not in S.OSC_FEATURE_BY_KEY,
    'iTerm2 file-transfer escapes have no toggle (always neutralized)')
 
+# --- OSC code descriptions: every registered code is describable; unknown -> None -----
+# Parse each feature's human 'codes' string and assert osc_code_description resolves it, so
+# adding a feature/code without a description fails here rather than shipping a bare-number
+# notice (drift guard tying the description table to OSC_FEATURES).
+for _oscf in S.OSC_FEATURES:
+    _osck = _oscf[0]
+    for _oscc in _oscf[2].split(','):
+        _oscn = int(_oscc.strip())
+        ok(S.osc_code_description(_osck, _oscn) is not None,
+           'OSC %d (%s) has a human description' % (_oscn, _osck))
+ok(S.osc_code_description(None, 9999) is None,
+   'an unknown OSC code has no description (the notice falls back to a bare number)')
+ok(S.osc_code_description('osc_clipboard_read', 52) == 'read the system clipboard'
+   and S.osc_code_description('osc_clipboard', 52) == 'write to the system clipboard'
+   and S.osc_code_description('osc_clipboard', 52) != S.osc_code_description(None, 52),
+   'OSC 52 read and write senses read distinctly (key disambiguates the shared code)')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('box', 'show', 'reveal', 'detail'):
