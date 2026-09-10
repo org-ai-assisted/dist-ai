@@ -52,7 +52,7 @@ if [ -z "${variables}" ]; then
    exit 1
 fi
 
-## help-steps/variables is a loader sourcing variables.d/*.bsh; the frozen-pin
+## help-steps/variables is a loader sourcing buildconfig.d/*.bsh; the frozen-pin
 ## block lives in a module. Extract from the effective sourced sequence (loader
 ## + modules in load order), not the loader alone.
 variables_effective="$(mktemp)"
@@ -76,7 +76,7 @@ block="$(awk '
    }
 ' < "${variables_effective}")"
 if [ -z "${block}" ] || [[ "${block}" != *dist_frozen_snapshot_pin* ]]; then
-   printf '%s\n' "FATAL: could not extract the frozen-pin block from ${variables} (variables.d modules)." >&2
+   printf '%s\n' "FATAL: could not extract the frozen-pin block from ${variables} (buildconfig.d modules)." >&2
    exit 1
 fi
 

@@ -36,22 +36,24 @@ fail() {
 }
 
 ## Compose the EFFECTIVE text of help-steps/variables to stdout: the loader
-## followed by each variables.d/*.bsh module in the order the loader sources it.
-## Since the variables.d split, blocks the tests inspect (version derivation, the
+## followed by each buildconfig.d/*.bsh module in the order the loader sources it.
+## Since the buildconfig.d split, blocks the tests inspect (version derivation, the
 ## frozen-pin assignment, the DIST_APTGETOPT declaration, the inherited-version
 ## diagnostic) live in modules, not the loader. Module order is read from the
-## loader's own 'source .../variables.d/<name>.bsh' lines (deduped, first
+## loader's own 'source .../buildconfig.d/<name>.bsh' lines (deduped, first
 ## occurrence wins, so the '# shellcheck source=' comment preceding each real
 ## source line does not double-count). Arg: the loader path (help-steps/
-## variables). A checkout with no variables.d/ yields the loader alone, so a
+## variables). A checkout with no buildconfig.d/ yields the loader alone, so a
 ## caller works both before and after the split.
 help_steps_variables_effective() {
    local hsve_loader hsve_dir hsve_mod
    hsve_loader="$1"
-   hsve_dir="$(dirname -- "${hsve_loader}")/variables.d"
+   ## buildconfig.d/ is a top-level sibling of help-steps/ (source_code_folder_dist),
+   ## so it is one directory ABOVE the loader (help-steps/variables).
+   hsve_dir="$(dirname -- "$(dirname -- "${hsve_loader}")")/buildconfig.d"
    cat -- "${hsve_loader}"
-   grep -oE 'variables\.d/[A-Za-z0-9._-]+\.bsh' -- "${hsve_loader}" \
-      | sed 's#variables\.d/##' | awk '!seen[$0]++' \
+   grep -oE 'buildconfig\.d/[A-Za-z0-9._-]+\.bsh' -- "${hsve_loader}" \
+      | sed 's#buildconfig\.d/##' | awk '!seen[$0]++' \
       | while IFS= read -r hsve_mod; do
            [ -r "${hsve_dir}/${hsve_mod}" ] || continue
            cat -- "${hsve_dir}/${hsve_mod}"
