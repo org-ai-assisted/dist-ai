@@ -213,7 +213,9 @@ mkfifo "${repo}/pipe-tool"
 hang_rc=0
 timeout --kill-after=5 20 bash -c 'cd "$1" && "$2" --check --range HEAD' _ \
    "${repo}" "${STYLE}" > /dev/null 2>&1 || hang_rc=$?
-if [ "${hang_rc}" -eq 124 ]; then
+## 124 = clean timeout; 137 = SIGKILL after --kill-after (child ignored SIGTERM),
+## the really-wedged case -- both are a hang, as the .gitattributes tests below.
+if [ "${hang_rc}" -eq 124 ] || [ "${hang_rc}" -eq 137 ]; then
    note_fail "the gate HUNG on an untracked fifo (timed out)"
 else
    note_pass "the gate does not hang on an untracked fifo"
