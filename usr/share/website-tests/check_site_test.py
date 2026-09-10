@@ -618,19 +618,19 @@ def run():
 
     # check_banner: the status-pill compliance check must not depend on
     # class="status" being the pill's first attribute.
-    def _banner_failures(root):
+    def _banner_failures_attr_order(root):
         failures: list[str] = []
         check_site.check_banner(root, failures)
         return failures
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<span id="x" class="status">working</span>')
         check('banner pill checked regardless of attribute order',
-              any('status banner' in f for f in _banner_failures(root)),
-              repr(_banner_failures(root)))
+              any('status banner' in f for f in _banner_failures_attr_order(root)),
+              repr(_banner_failures_attr_order(root)))
         _write(root, 'index.html',
                '<span id="x" class="status">review needed</span>')
         check('compliant banner passes regardless of attribute order',
-              _banner_failures(root) == [], repr(_banner_failures(root)))
+              _banner_failures_attr_order(root) == [], repr(_banner_failures_attr_order(root)))
 
     # A dotted directory name ('blog.v2/') is a page dir, not a file extension.
     dotted = check_site._abs_candidates('blog.v2/', ['/nonexistent-root'])

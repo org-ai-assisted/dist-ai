@@ -44,6 +44,7 @@ def main():
         sys.stderr.write('usage: review_shot_overlap_check.py <generator>\n')
         return 2
     spec = importlib.util.spec_from_file_location('paste_warning_shot', sys.argv[1])
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 

