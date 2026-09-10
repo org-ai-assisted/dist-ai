@@ -125,14 +125,17 @@ ok(win._osc_notice, 'the OSC-use notice is on by default')
 _octab = win.current()
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
 _octab.osc_used.emit('osc_clipboard', 52)
-ok(not win._banner.isHidden() and 'clipboard' in win._banner_label.text().lower(),
-   'an OSC escape raises the notice banner, naming the type')
+_octxt = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'clipboard' in _octxt
+   and 'osc 52' in _octxt and 'write' in _octxt,
+   'an OSC escape raises the notice banner, naming the code (OSC 52) and what it does (write)')
 win._dismiss_advisory()
 _octab.osc_used.emit('osc_clipboard', 52)   # the SAME type again does not re-show
 ok(win._banner.isHidden(), 'the OSC notice fires only once per type per tab')
 _octab.osc_used.emit('osc_hyperlink', 8)   # a DIFFERENT type does show
-ok(not win._banner.isHidden() and 'hyperlink' in win._banner_label.text().lower(),
-   'a different OSC type raises its own notice')
+_ochtxt = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'hyperlink' in _ochtxt and 'osc 8' in _ochtxt,
+   'a different OSC type raises its own notice, named by code (OSC 8)')
 win._dismiss_advisory()
 # An UNREGISTERED OSC code is named by its number, not the generic 'an escape'. Fed
 # end-to-end (feed_output drives the real read -> _notice_osc classifies ESC]1337 to
@@ -140,14 +143,38 @@ win._dismiss_advisory()
 # code survives classification, not just a hand-emitted signal.
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
 feed_output(_octab, b'\x1b]1337;foo\x07')     # iTerm2 OSC 1337: no registry entry -> osc_other
-ok(not win._banner.isHidden() and 'osc 1337' in win._banner_label.text().lower(),
-   'a program-emitted unregistered OSC (1337) is named OSC 1337 end-to-end, not "an escape"')
+_oc1337 = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 1337' in _oc1337 and 'file transfer' in _oc1337,
+   'an unregistered OSC (1337) is named AND described (iTerm2 file transfer) end-to-end')
 win._dismiss_advisory()
 # ... but an over-cap OSC whose code is unknowable (-1) keeps the generic fallback.
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
 _octab.osc_used.emit('osc_other', -1)
 ok(not win._banner.isHidden() and 'an escape' in win._banner_label.text().lower(),
    'an over-cap OSC with an unknowable code (-1) falls back to "an escape"')
+win._dismiss_advisory()
+# Per-code descriptions: an unregistered code is named AND described; the multi-code colour
+# feature is broken out per code (not lumped as 'palette / colours'); OSC 52's read and write
+# senses read distinctly.
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+feed_output(_octab, b'\x1b]1;icon\x07')          # OSC 1 (icon name): unregistered -> osc_other
+_oc1 = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 1:' in _oc1 and 'icon name' in _oc1,
+   'OSC 1 is named AND described (set the window icon name), not a bare number')
+win._dismiss_advisory()
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+win.set_osc_notice_type('osc_colors', True)      # colour notices are muted by default
+_octab.osc_used.emit('osc_colors', 11)
+_oc11 = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 11' in _oc11 and 'background colour' in _oc11,
+   'OSC 11 is broken out per code (set the default background colour), not lumped as palette/colours')
+win._dismiss_advisory()
+win.set_osc_notice_type('osc_colors', False)     # restore the default mute
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+_octab.osc_used.emit('osc_clipboard_read', 52)   # same code 52, READ sense
+_ocr = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 52' in _ocr and 'read' in _ocr,
+   'OSC 52 read sense reads distinctly from write (read the system clipboard)')
 win._dismiss_advisory()
 # disabled globally: a fresh tab's OSC shows nothing; re-enabling re-arms it.
 win.new_tab()
@@ -3620,6 +3647,30 @@ _rc.reset_caret()
 # ran), not merely that reset_caret did not raise. A broken else leaves it at start.
 ok(_rc.textCursor().atEnd() and not _rc.textCursor().atStart(),
    'reset_caret: with no output cursor it snaps the caret to the document end')
+
+# reset_caret(keep_view=True) preserves a scrolled-up view (a mouse click must not snap the
+# scrollback to the live bottom); the default still snaps the view to the output cursor.
+_rck = SecureTerminal(command='/bin/cat')
+_rck.resize(600, 200)
+_rck.show()
+APP.processEvents()
+feed_output(_rck, b''.join([b'kv line %d\r\n' % _i for _i in range(200)]))
+_rck._force_current_frame()
+APP.processEvents()
+_rckbar = _rck.verticalScrollBar()
+_rckbar.setValue(_rckbar.maximum() // 2)       # scroll up off the bottom
+APP.processEvents()
+_rckheld = _rckbar.value()
+ok(0 < _rckheld < _rckbar.maximum(), 'reset_caret: precondition -- scrolled to the middle')
+_rck.reset_caret(keep_view=True)
+eq(_rckbar.value(), _rckheld,
+   'reset_caret(keep_view=True) keeps a scrolled-up view put (a click never snaps to bottom)')
+ok(_rck._out_cursor is not None
+   and _rck.textCursor().position() == _rck._out_cursor.position(),
+   'reset_caret(keep_view=True) still returns the caret to the output cursor')
+_rck.reset_caret()
+eq(_rckbar.value(), _rckbar.maximum(),
+   'reset_caret() default snaps the view to the output cursor at the bottom')
 
 # --- defensive syscall guards, fault-injected ---------------------------------
 import os as _os

@@ -942,6 +942,45 @@ ok(not win._osc_notice_actions['osc_colors'].isChecked()
    and win._osc_notice_actions['osc_title'].isChecked(),
    '_apply_global syncs the View-menu per-type notice actions to the dialog')
 
+# Ctrl+wheel anywhere in the Global settings dialog live-zooms, even over the scroll-area
+# viewport (or a spinbox) that would otherwise consume the wheel -- the regression where the
+# QScrollArea wrapper swallowed Ctrl+wheel so the dialog stopped zooming. Deliver the wheel
+# to a CHILD (the viewport), which is what exposes the bug; a wheel sent to the dialog
+# directly would zoom even with the bug live.
+from PyQt6.QtWidgets import QScrollArea as _QSA_gz             # noqa: E402
+from PyQt6.QtGui import QWheelEvent as _QWE_gz                 # noqa: E402
+from PyQt6.QtCore import QPoint as _QP_gz, QPointF as _QPF_gz  # noqa: E402
+_gz_ui_orig = win._ui_scale
+win._locked = set()
+win._ui_scale = 100                        # a mid value on the 75..300 / step-25 grid
+_dialogs.clear()
+win.show_global_settings()
+_gsz = _dialogs[-1]
+ok(isinstance(_gsz, M._ZoomDialog) and _gsz.on_zoom is not None,
+   'Global settings is a _ZoomDialog with its Ctrl+wheel zoom wired')
+_gsz.show()                                # a real showEvent installs the wheel event filter
+_gsz.resize(320, 240)                      # force the tall content to overflow -> scrollable
+APP.processEvents()
+_gsz_sa = _gsz.findChild(_QSA_gz)
+ok(_gsz_sa is not None, 'the Global settings body is a scroll area')
+_gsz_vp = _gsz_sa.viewport()
+_gsz_sa.verticalScrollBar().setValue(_gsz_sa.verticalScrollBar().maximum() // 2)
+
+
+def _gz_ctrl_wheel(target, dy):
+    ev = _QWE_gz(_QPF_gz(5, 5), _QPF_gz(5, 5), _QP_gz(0, 0), _QP_gz(0, dy),
+                 _Qt_sc.MouseButton.NoButton, _Qt_sc.KeyboardModifier.ControlModifier,
+                 _Qt_sc.ScrollPhase.NoScrollPhase, False)
+    APP.sendEvent(target, ev)
+
+
+_gz_before = win._ui_scale
+_gz_ctrl_wheel(_gsz_vp, 120)               # Ctrl+wheel UP over the scroll-area viewport
+eq(win._ui_scale, _gz_before + M.UI_SCALE_STEP,
+   'Ctrl+wheel over the scroll-area viewport zooms the Global settings dialog (was swallowed)')
+_gsz.close()
+win._ui_scale = _gz_ui_orig
+
 # --- tab bar elides in the MIDDLE (keeps the trailing session number) ----------
 # ElideRight on many same-prefixed tabs (claude-rc-session: dev46x/dev47x) drops
 # the identifying number -> every tab reads the same prefix; ElideMiddle keeps it.

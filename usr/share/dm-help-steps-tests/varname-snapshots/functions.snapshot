@@ -1249,15 +1249,15 @@ Parameters:
 }
 dist_build_source_config_dir ()
 {
-    true "${cyan}INFO: Checking if dist_build_config_dir_item ${dist_build_config_dir_item} exists...${reset}";
+    true "${cyan}INFO: Checking if config dir $1 exists...${reset}";
     if [ -d "$1" ]; then
         true "${cyan}INFO: Parsing $1...${reset}";
         shopt -s nullglob;
-        local i;
-        for i in "$1/"*".conf";
+        local dist_build_config_conf_item;
+        for dist_build_config_conf_item in "$1/"*".conf";
         do
-            bash -n -- "${i}";
-            source "${i}";
+            bash -n -- "${dist_build_config_conf_item}";
+            source "${dist_build_config_conf_item}";
         done;
     else
         true "${cyan}INFO: Skipping $1 because it does not exist.${reset}";
