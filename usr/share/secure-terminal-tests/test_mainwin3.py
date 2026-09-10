@@ -134,15 +134,14 @@ finally:
 
 # --- clipboard-sanitizer controls (menu / setters / systray coupling) ----------
 from secure_terminal import clipboard_watch as _cw                # noqa: E402
-from PyQt6.QtCore import QMimeData, QProcess                       # noqa: E402
+from PyQt6.QtCore import QMimeData                                 # noqa: E402
 from PyQt6.QtWidgets import QMenu                                  # noqa: E402
 
-_cw_saved = (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
-             _cw.set_autostart, _cw.autostart_enabled)
-_o_startdet = QProcess.startDetached
+_cw_saved = (_cw.set_autostart, _cw.autostart_enabled)
 _o_avail_c = QSystemTrayIcon.isSystemTrayAvailable
 _o_systray_c = win._systray
 _o_warnany_c = win._clip_warn_any
+_o_primary_c = win._is_primary
 ## Save the process clipboard (every MIME format) and restore it in finally:
 ## the test overwrites it, and a bare clear() would discard a developer's real
 ## clipboard on a live (non-offscreen) desktop session.
@@ -153,32 +152,71 @@ if _src_clip_c is not None:
         _o_clip_c.setData(_clip_fmt_c, _src_clip_c.data(_clip_fmt_c))
 _calls: dict[str, object] = {}
 try:
-    _cw.is_running = lambda: _calls.get('running', False)
-    _cw.stop_running = lambda: _calls.__setitem__('stopped', True)
-    _cw.push_warn_any = lambda v: _calls.__setitem__('pushed', v)
     _cw.set_autostart = lambda v: _calls.__setitem__('autostart', v)
     _cw.autostart_enabled = lambda: _calls.get('autostart_state', True)
-    QProcess.startDetached = staticmethod(
-        lambda *a, **k: _calls.__setitem__('launched', True))
 
-    _calls.clear(); _calls['running'] = False
-    win.set_clip_run(True)
-    ok('launched' in _calls, 'clip: set_clip_run(True) launches the daemon when absent')
-    _calls.clear(); _calls['running'] = True
-    win.set_clip_run(True)
-    ok('launched' not in _calls, 'clip: set_clip_run(True) idempotent when already running')
     _calls.clear()
+    win.set_clip_run(True)
+    ok(win._clip_bg_watcher is not None,
+       'clip: set_clip_run(True) starts the IN-PROCESS watcher (no daemon spawn -> no 2nd icon)')
+    _first_bg = win._clip_bg_watcher
+    win.set_clip_run(True)
+    ok(win._clip_bg_watcher is _first_bg,
+       'clip: set_clip_run(True) is idempotent (keeps the single in-process watcher)')
     win.set_clip_run(False)
-    ok(_calls.get('stopped'), 'clip: set_clip_run(False) stops the daemon')
+    ok(win._clip_bg_watcher is None,
+       'clip: set_clip_run(False) stops the in-process watcher')
+    _calls.clear()
+
+    # close-to-tray: with the tray on AND the in-process sanitizer running, a window
+    # CLOSE hides to tray (keeps the process + sanitizer alive) instead of quitting.
+    from PyQt6.QtGui import QCloseEvent                              # noqa: E402
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+    win._systray = True
+    win._apply_primary(True)            # the single tray icon exists only on the primary
+    win._tray_icon()                    # the single tray icon must exist for close-to-tray
+    win.set_clip_run(True)              # start the in-process watcher
+    win._really_quit = False
+    win.show()
+    _ce = QCloseEvent()
+    win.closeEvent(_ce)
+    ok(not _ce.isAccepted() and win.isHidden(),
+       'close-to-tray: a window close hides to tray + keeps the sanitizer (not a quit)')
+    win.show()
+    # while the in-process watcher runs: the menu shows Run-in-background ticked, and
+    # Warn-on-any live-updates the IN-PROCESS watcher.
+    _cmenu = QMenu()
+    win._populate_clipboard_menu(_cmenu)
+    _run_a = [a for a in _cmenu.actions() if a.text() == 'Run in the background'][0]
+    ok(_run_a.isChecked(),
+       'clip menu: Run-in-background ticked while the in-process watcher runs')
+    win.set_clip_warn_any(True)
+    ok(win._clip_bg_watcher._any_mode is True,
+       'set_clip_warn_any live-updates the in-process watcher')
+    win.set_clip_warn_any(False)
+
+    # --tray hidden-to-tray setup forces the tray on (this session), creates the single
+    # icon, and arms the in-process sanitizer -- without showing the window.
+    win.set_clip_run(False)
+    win._tray = None
+    win._systray = False
+    win._enter_tray_mode()
+    ok(win._systray and win._tray is not None,
+       '_enter_tray_mode: forces the tray on and creates the single icon')
+    ok(win._clip_bg_watcher is not None,
+       '_enter_tray_mode: arms the in-process clipboard sanitizer')
+    win.set_clip_run(False)
+    win._tray.hide()
+    win._tray = None
+    _calls.clear()
 
     win.set_clip_warn_any(True)
     ok(win._clip_warn_any is True, 'clip: set_clip_warn_any records the setting')
-    eq(_calls.get('pushed'), True, 'clip: set_clip_warn_any live-updates the daemon')
     win.set_clip_warn_any(False)
 
-    ## Finding-2 regression: the clipboard-watch tray persists clip_warn_any via a
-    ## single-key write; a later terminal _persist (a bulk write for some OTHER
-    ## setting) must PRESERVE it, not clobber it with the terminal's stale value.
+    ## Finding-2 regression: clip_warn_any is written with a single-key update; a later
+    ## terminal _persist (a bulk write for some OTHER setting) must PRESERVE a value
+    ## another instance wrote on disk, not clobber it with this terminal's stale value.
     from secure_terminal import settings as _st_clip   # noqa: PLC0415
     # isolate the privileged dirs to an EMPTY temp dir: a real admin lock= on
     # clip_warn_any (a supported /etc config) would otherwise pin the value and
@@ -187,44 +225,39 @@ try:
     _clip_orig_sysd = _st_clip._system_dirs
     _st_clip._system_dirs = lambda: [_clip_sysd]
     try:
-        _st_clip.set_user_key('clip_warn_any', 'true')  # the tray toggles it ON on disk
-        win._clip_warn_any = False                       # the terminal's stale in-memory value
+        _st_clip.set_user_key('clip_warn_any', 'true')  # another instance sets it ON on disk
+        win._clip_warn_any = False                       # this terminal's stale in-memory value
         win._persist()                                   # a bulk write for another setting
         ok(_st_clip.load().get('clip_warn_any') == 'true',
-           'terminal _persist preserves the tray-set clip_warn_any (no clobber)')
+           'terminal _persist preserves an externally-set clip_warn_any (no clobber)')
     finally:
         _st_clip._system_dirs = _clip_orig_sysd
 
-    # Fix-3: Global-settings Apply must NOT write clip_warn_any when the user did
-    # not toggle it here -- the daemon may have changed it on disk since the dialog
-    # opened, so a theme-only Apply must leave the daemon value and not push a stale
-    # checkbox to a running daemon.
+    # Fix-3: Global-settings Apply must NOT write clip_warn_any when the user did not
+    # toggle it here -- another instance may have changed it on disk since the dialog
+    # opened, so a theme-only Apply must leave that value untouched.
     _clip_sysd3 = tempfile.mkdtemp(prefix='st-clipsys3-')
     _clip_orig_sysd3 = _st_clip._system_dirs
     _st_clip._system_dirs = lambda: [_clip_sysd3]
     try:
         win._clip_warn_any = False                       # dialog opened with it OFF
-        _st_clip.set_user_key('clip_warn_any', 'true')   # daemon turns it ON afterwards
-        _calls.clear()
+        _st_clip.set_user_key('clip_warn_any', 'true')   # another instance turns it ON afterwards
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                            'colors': True, 'line_edits': True, 'scrollback': 1000,
                            'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': False})       # unchanged from win._clip_warn_any
         eq(_st_clip.load().get('clip_warn_any'), 'true',
            'apply: a clip_warn_any unchanged in the dialog is not clobbered')
-        ok('pushed' not in _calls,
-           'apply: no daemon push when clip_warn_any was not toggled')
-        # ...but a value the user DID toggle here is written to DISK and pushed.
+        # ...but a value the user DID toggle here is written to DISK.
         _st_clip.set_user_key('clip_warn_any', 'false')  # reset disk so the write shows
         win._clip_warn_any = False
-        _calls.clear()
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                            'colors': True, 'line_edits': True, 'scrollback': 1000,
                            'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': True})        # toggled ON in the dialog
-        ok(win._clip_warn_any is True and _calls.get('pushed') is True
+        ok(win._clip_warn_any is True
            and _st_clip.load().get('clip_warn_any') == 'true',
-           'apply: a clip_warn_any toggled in the dialog is written to disk and pushed')
+           'apply: a clip_warn_any toggled in the dialog is written to disk')
     finally:
         _st_clip._system_dirs = _clip_orig_sysd3
 
@@ -306,14 +339,44 @@ try:
     ok(win._clip_reviewer is not None, 'clip: Review-now builds an in-process reviewer')
     win._clip_reviewer._popup.hide()
 finally:
-    (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
-     _cw.set_autostart, _cw.autostart_enabled) = _cw_saved
-    QProcess.startDetached = _o_startdet
+    (_cw.set_autostart, _cw.autostart_enabled) = _cw_saved
     QSystemTrayIcon.isSystemTrayAvailable = _o_avail_c
     win._systray = _o_systray_c
     win._clip_warn_any = _o_warnany_c
+    win._apply_primary(_o_primary_c)
     win._clip_reviewer = None
+    if win._clip_bg_watcher is not None:      # stop any in-process watcher this block left
+        win._clip_bg_watcher.stop()
+        win._clip_bg_watcher = None
+    win._really_quit = False
+    if win._tray is not None:                 # drop the tray the close-to-tray test created
+        win._tray.hide()
+        win._tray = None
+    win.show()                                # undo the close-to-tray hide()
     APP.clipboard().setMimeData(_o_clip_c)
+
+# tray Quit (close-to-tray TEARDOWN): an explicit Quit sets _really_quit so the SAME
+# close tears down instead of hiding, even with the background sanitizer running. A
+# throwaway window (closing destroys it), so it never disturbs the shared `win`.
+_qsta_o3 = QSystemTrayIcon.isSystemTrayAvailable
+QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+_qw = MainWindow()
+_qw.new_tab()
+_qw._systray = True
+_qw._tray_icon()
+_qw.set_clip_run(True)                  # bg watcher running -> close-to-tray would else hide
+_qw._force_close = True                 # no running-program confirm on teardown
+_qw._quit_from_tray()                   # sets _really_quit + close() -> closeEvent tears down
+ok(_qw._really_quit and _qw._clip_bg_watcher is None,
+   'tray Quit tears down (really_quit set + sanitizer stopped), NOT hide-to-tray')
+QSystemTrayIcon.isSystemTrayAvailable = _qsta_o3
+
+# ClipboardWatcher.stop() is idempotent: a second stop (its clipboard signal already
+# disconnected) hits the disconnect-failure branch harmlessly.
+_idem_w = _cw.ClipboardWatcher(APP, theme='dark', watch=True)
+_idem_w.stop()
+_idem_w.stop()
+ok(True, 'ClipboardWatcher.stop() is idempotent (a double stop does not raise)')
 
 # a tab terminal's right-click menu gains the app toggles through its MainWindow
 from PyQt6.QtCore import QPoint                                    # noqa: E402

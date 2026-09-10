@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Regression test for derivative-maker 'build-steps.d/1200_prepare-build-machine'
-## normalize-symlinks (with normalize_symlinks_in_tree + normalize_file_modes_in_tree).
+## normalize-symlinks.
 ##
 ## WHAT IT GUARDS: an indexed symlink (mode 120000) is checked out as a REAL
 ## symlink on a core.symlinks=true host (plain Debian, CI) and as a REGULAR text
@@ -59,13 +59,11 @@ if [ -z "${prepare}" ]; then
    exit 1
 fi
 
-for fn in 'normalize-symlinks()' 'normalize_symlinks_in_tree()' 'normalize_file_modes_in_tree()'; do
-   if grep --quiet --fixed-strings "${fn}" "${prepare}"; then
-      pass "1200 defines ${fn}"
-   else
-      fail "1200 does not define ${fn} (regressed?)"
-   fi
-done
+if grep --quiet --fixed-strings 'normalize-symlinks()' "${prepare}"; then
+   pass "1200 defines normalize-symlinks()"
+else
+   fail "1200 does not define normalize-symlinks() (regressed?)"
+fi
 
 ## Must be dispatched from main; a defined-but-uncalled normaliser is dead code.
 if grep --quiet --extended-regexp '^ +normalize-symlinks "\$@"' "${prepare}"; then
@@ -82,10 +80,9 @@ trap cleanup EXIT
 workdir="$(mktemp --directory)"
 
 ## Config isolation: null the system gitconfig (so the Kicksecure host's
-## /etc/gitconfig core.symlinks=false cannot MASK what normalize-symlinks sets --
-## a plain host has no such system setting) and point --global at a throwaway, so
-## normalize-symlinks' 'git config --global core.symlinks false' is contained (no
-## operator-config side effect) and this test actually exercises the global pin.
+## /etc/gitconfig core.symlinks=false cannot MASK the true_clone's compiled-default
+## symlink checkout -- a plain host has no such system setting) and point --global
+## at a throwaway so nothing here touches the operator's git config.
 export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CONFIG_GLOBAL="${workdir}/gitconfig-global"
 touch -- "${GIT_CONFIG_GLOBAL}"
@@ -136,8 +133,6 @@ run_normalize() {
       # shellcheck disable=SC1090
       source <(sed -n \
          -e '/^normalize-symlinks() {/,/^}/p' \
-         -e '/^normalize_file_modes_in_tree() {/,/^}/p' \
-         -e '/^normalize_symlinks_in_tree() {/,/^}/p' \
          -- "${prepare}")
       normalize-symlinks
    )
@@ -148,10 +143,8 @@ sublink='packages/kicksecure/testpkg/sublink'
 
 ## --- core.symlinks=true clone: the plain-Debian host with REAL symlinks -------
 ## The one-shot '-c core.symlinks=true' materialises REAL symlinks at checkout but
-## is NOT persisted to the clone's config (git never writes core.symlinks locally),
-## so the tree relies on git's compiled default -- exactly like a real plain host.
-## That is what lets normalize-symlinks' GLOBAL 'core.symlinks=false' override it;
-## a persisted LOCAL true would beat --global and is not how a real host looks.
+## is NOT persisted to the clone's config -- exactly like a real plain-Debian host,
+## the state normalize-symlinks must flatten to text placeholders.
 true_clone="${workdir}/host_true"
 git_x -c core.symlinks=true clone --quiet --recurse-submodules -- "${origin}" "${true_clone}"
 
@@ -191,24 +184,6 @@ else
    fail "placeholder byte length wrong: a trailing newline would break reproducibility"
 fi
 
-## The flattened placeholder mode is deterministic 0644 (not the checkout umask).
-flat_mode="$(stat --format='%a' -- "${true_clone}/${logo}")"
-if [ "${flat_mode}" = "644" ]; then
-   pass "flattened placeholder mode pinned to 0644"
-else
-   fail "flattened placeholder mode not normalised: got 0${flat_mode}, expected 0644"
-fi
-
-## Even a plain-Debian checkout is CLEAN after normalise: the driver pins
-## core.symlinks=false GLOBALLY, so git reads the flattened placeholders as the
-## text blob rather than a 'T' typechange (it would be dirty if the pin were gone).
-true_status="$(git_x -C "${true_clone}" status --porcelain)"
-if [ -z "${true_status}" ]; then
-   pass "core.symlinks=true clone: git status clean after normalise (core.symlinks pinned false)"
-else
-   fail "core.symlinks=true clone: dirty tree after normalise (typechange leaked): ${true_status}"
-fi
-
 ## --- core.symlinks=false clone: the Kicksecure host, ALREADY a placeholder ----
 false_clone="${workdir}/host_false"
 git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${false_clone}"
@@ -246,35 +221,6 @@ if diff --recursive --no-dereference --exclude='.git' -- "${true_clone}" "${fals
    pass "reproducible: core.symlinks true (flattened) and false (untouched) trees are byte-identical"
 else
    fail "not reproducible: the two hosts' trees differ after normalise"
-fi
-
-## --- file MODE normalisation of regular files (unchanged behaviour) ----------
-chmod 0640 "${false_clone}/live-build-data/d-i-branding/logo_debian.png"
-run_normalize "${false_clone}"
-mode_now="$(stat --format='%a' -- "${false_clone}/live-build-data/d-i-branding/logo_debian.png")"
-if [ "${mode_now}" = "644" ]; then
-   pass "file mode normalised to git's recorded 0644 (was forced 0640)"
-else
-   fail "file mode not normalised: got 0${mode_now}, expected 0644"
-fi
-chmod 0700 "${false_clone}/an_executable"
-run_normalize "${false_clone}"
-exec_mode="$(stat --format='%a' -- "${false_clone}/an_executable")"
-if [ "${exec_mode}" = "755" ]; then
-   pass "executable mode normalised to git's recorded 0755 (was forced 0700)"
-else
-   fail "executable mode not normalised: got 0${exec_mode}, expected 0755"
-fi
-
-## An existing placeholder's MODE is pinned to 0644 too (the checkout umask must
-## not leak): force a non-0644 mode and confirm normalise resets it.
-chmod 0600 "${false_clone}/${logo}"
-run_normalize "${false_clone}"
-ph_mode="$(stat --format='%a' -- "${false_clone}/${logo}")"
-if [ "${ph_mode}" = "644" ]; then
-   pass "placeholder mode pinned to 0644 (was forced 0600)"
-else
-   fail "placeholder mode not normalised: got 0${ph_mode}, expected 0644"
 fi
 
 ## --- GIT_DIR robustness: a decoy GIT_DIR must not skip the flatten -----------

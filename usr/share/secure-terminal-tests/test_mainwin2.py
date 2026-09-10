@@ -135,6 +135,7 @@ ok(win._find_bar.isHidden(),                # isHidden(): own state, not the uns
 # --- the system-tray icon: disabled, unavailable, and created -----------------
 _o_avail = QSystemTrayIcon.isSystemTrayAvailable
 _o_systray = win._systray
+_o_primary = win._is_primary
 try:
     win._systray = False
     ok(win._tray_icon() is None, 'tray: disabled in settings -> None')
@@ -146,9 +147,17 @@ try:
     win._tray = None
     win._tray_icon()                        # -> creates + shows the tray icon
     ok(win._tray is not None, 'tray: created when enabled and available')
+    # Only the group PRIMARY shows the single icon: a coexisting non-primary window
+    # suppresses it, so N windows never stack N icons (the reported second-icon class).
+    win._apply_primary(False)               # _sync_tray_presence drops the icon
+    ok(win._tray is None, 'tray: _apply_primary(False) drops the icon on a non-primary')
+    ok(win._tray_icon() is None, 'tray: a non-primary window creates no icon')
+    win._apply_primary(True)                # primary again -> _sync re-creates the one icon
+    ok(win._tray is not None, 'tray: _apply_primary(True) re-creates the single icon')
 finally:
     QSystemTrayIcon.isSystemTrayAvailable = _o_avail
     win._systray = _o_systray
+    win._apply_primary(_o_primary)
 
 # --- copy/paste/zoom + input-dialog actions routed through the current tab -----
 from PyQt6.QtWidgets import QInputDialog, QSystemTrayIcon        # noqa: E402
@@ -905,20 +914,70 @@ try:
         del os.environ['SECURE_TERMINAL_SHOT']
         APP.setCursorFlashTime(_o_flash)
 
-    # --clipboard-watch: the tray-only clipboard sanitizer, dispatched early in
-    # main() (opening no terminal window). With no system tray (offscreen) its
-    # run() returns 1; this covers the dispatch branch and _clipboard_watch_main.
-    # Placed AFTER the delicate threaded-handoff + shot tests so it cannot perturb
-    # them (see the note above).
-    _o_qlwc = APP.quitOnLastWindowClosed()
-    sys.argv = ['secure-terminal', '--clipboard-watch']
-    eq(_main(), 1, 'main: --clipboard-watch runs the tray sanitizer (no tray -> 1)')
-    APP.setQuitOnLastWindowClosed(_o_qlwc)
-    # its own font-missing abort (like the normal path, it fails loud before Qt work)
+    # --tray: the login-autostart mode (single-process, hidden-to-tray). It goes
+    # through the NORMAL instance path -- deferring to an existing primary, or becoming
+    # one and starting hidden with the sanitizer armed (no separate daemon process, so
+    # no second tray icon). Placed AFTER the delicate threaded-handoff + shot tests so
+    # it cannot perturb them (see the note above).
+    # (a) A primary already owns the group -> --tray defers + exits 0 without starting
+    # a second hidden process (the reported second-icon class).
+    _o_bind2 = M._bind_instance_server
+    M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
+    sys.argv = ['secure-terminal', '--tray']
+    eq(_main(), 0, 'main: --tray defers to an existing primary and exits 0')
+    # (b) --tray becoming primary with NO system tray available -> exit 1 BEFORE a
+    # window is built (a tray-less session must not run hidden with no icon).
+    _o_avail2 = QSystemTrayIcon.isSystemTrayAvailable
+    try:
+        M._bind_instance_server = lambda *_a, **_k: (None, 'failed')
+        QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: False)
+        _err2 = _io.StringIO()
+        with _ctx.redirect_stderr(_err2):
+            eq(_main(), 1, 'main: --tray with no system tray available -> exit 1')
+        ok('--tray needs one' in _err2.getvalue(),
+           'main: --tray with no tray names the requirement on stderr')
+        # (c) --tray becoming primary WITH a tray available -> build the window and
+        # dispatch into hidden-to-tray mode. _enter_tray_mode has its own unit test, so
+        # stub it to a recorder here: this covers main()'s tray dispatch line without
+        # arming a real clipboard watcher that would outlive the throwaway window.
+        QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+        _o_etm = M.MainWindow._enter_tray_mode
+        _entered = []
+        M.MainWindow._enter_tray_mode = lambda self: _entered.append(True)
+        try:
+            eq(_main(), 0, 'main: --tray with a tray available starts hidden-to-tray (0)')
+            ok(_entered == [True],
+               'main: --tray dispatches into hidden-to-tray mode (window not shown)')
+        finally:
+            M.MainWindow._enter_tray_mode = _o_etm
+        # (d) --tray HONORS an admin systray lock: a tray locked OFF must NOT be
+        # force-enabled by the autostart, so the process exits cleanly (0) BEFORE
+        # building a window rather than bypass the policy (the tray is available above).
+        _o_load = M.settings.load
+
+        class _LockedOffCfg:
+            locked = frozenset({'systray'})
+
+            def get(self, key, default=None):
+                return 'false' if key == 'systray' else default
+
+        M.settings.load = lambda: _LockedOffCfg()
+        _errd = _io.StringIO()
+        try:
+            with _ctx.redirect_stderr(_errd):
+                eq(_main(), 0, 'main: --tray with an admin systray lock (off) exits 0')
+            ok('disabled by policy' in _errd.getvalue(),
+               'main: --tray with a locked-off tray names the policy on stderr')
+        finally:
+            M.settings.load = _o_load
+    finally:
+        QSystemTrayIcon.isSystemTrayAvailable = _o_avail2
+        M._bind_instance_server = _o_bind2
+    # font-missing abort still fails loud before any Qt work (shared with every path)
     M.QFontDatabase = _FontDBAbsent
     with _ctx.redirect_stderr(_io.StringIO()):
         eq(_main(), 1,
-           'main: --clipboard-watch aborts (exit 1) when the default font is missing')
+           'main: --tray aborts (exit 1) when the default font is missing')
     M.QFontDatabase = _FontDBPresent
 finally:
     sys.argv = _o_argv

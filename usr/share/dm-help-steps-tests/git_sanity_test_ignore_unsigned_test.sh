@@ -12,7 +12,9 @@
 ## or a buildconfig.d snippet, bypassing the flag. sq_git_verify() is where the skip
 ## is HONORED, so the AI refusal lives there too: an AI session (CLAUDECODE) or a
 ## context setting dist_build_forbid_allow_unsigned=true must NOT skip signature
-## verification; human override dist_build_unlock_dangerous_options=true.
+## verification. The AI forbid is UNCONDITIONAL -- dist_build_unlock_dangerous_options
+## does NOT override it (the allow-unsigned gate is hardened, no escape hatch); only
+## a human build (no CLAUDECODE, not forbidden) may skip.
 ##
 ## git_sanity_test is source-able (the `sourceable` skill): main() auto-runs only
 ## when executed, so sourcing it here defines sq_git_verify (plus the real colors +
@@ -82,16 +84,17 @@ else
    fail "dist_build_forbid_allow_unsigned=true did not refuse the skip"
 fi
 
-## Allowed (zero = skip proceeds): a human build, and the dangerous-options unlock.
+## Allowed (zero = skip proceeds): a human build only.
 if [ "$(verify_rc 'unset CLAUDECODE')" -eq 0 ]; then
    pass "human (no CLAUDECODE) skip proceeds"
 else
    fail "human skip was wrongly refused"
 fi
-if [ "$(verify_rc 'export CLAUDECODE=1 dist_build_unlock_dangerous_options=true')" -eq 0 ]; then
-   pass "AI + dangerous-options unlock skip proceeds"
+## Hardened: dist_build_unlock_dangerous_options does NOT override the AI forbid.
+if [ "$(verify_rc 'export CLAUDECODE=1 dist_build_unlock_dangerous_options=true')" -ne 0 ]; then
+   pass "AI + dangerous-options unlock is STILL refused (no escape hatch)"
 else
-   fail "dangerous-options unlock did not allow the skip"
+   fail "dangerous-options unlock let an AI session skip -- allow-unsigned hardening bypassed"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

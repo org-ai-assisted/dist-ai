@@ -4,31 +4,23 @@
 
 ## AI-Assisted
 
-## Tests for secure_terminal.clipboard_watch: the reusable ClipboardWatcher core,
-## the standalone tray daemon (ClipboardWatchApp) and its SINGLETON IPC server, the
-## autostart / warn-any helpers, and the deceptive/any-non-ASCII triggers. Driven
+## Tests for secure_terminal.clipboard_watch: the reusable ClipboardWatcher core (the
+## main window embeds it in-process -- there is no standalone daemon), the autostart
+## helpers + their --tray Exec line, and the deceptive/any-non-ASCII triggers. Driven
 ## offscreen. Fails closed (exit 1) when PyQt6 is unavailable -- a security-relevant
 ## suite must not skip. Source stays pure ASCII: deceptive fixtures are \\u escapes.
 
 import builtins
-import contextlib
-import io
-import json
 import os
-import signal
-import struct
 import sys
 import tempfile
-import time
 
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(clipboard-watch)')
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtNetwork import QLocalSocket
     from secure_terminal import clipboard_watch as CW
-    from secure_terminal import ipc
     from secure_terminal.sanitize import (
         sanitize_clipboard, sanitize_clipboard_unicode,
     )
@@ -60,28 +52,6 @@ RLO = '\u202e'      # right-to-left override (bidi)
 CYR_A = '\u0430'    # Cyrillic a -- a homoglyph posing as ASCII 'a'
 
 
-class _FakeTray:
-    """Stand-in for QSystemTrayIcon so the tray/run lifecycle is deterministic
-    offscreen -- exercises every _build_tray line without a real desktop tray."""
-    available = True
-
-    @staticmethod
-    def isSystemTrayAvailable():
-        return _FakeTray.available
-
-    def __init__(self, *_args):
-        pass
-
-    def setToolTip(self, *_args):
-        pass
-
-    def setContextMenu(self, *_args):
-        pass
-
-    def show(self):
-        pass
-
-
 def _test_predicates():
     ok(CW._deceptive('a' + ZWSP), 'deceptive: zero-width space')
     ok(CW._deceptive('a' + RLO + 'b'), 'deceptive: bidi override')
@@ -103,6 +73,11 @@ def _test_autostart():
                'autostart: enabled by default when no user override exists')
             CW.set_autostart(False)
             ok(os.path.isfile(path), 'autostart: disable writes a per-user override')
+            with open(path, 'r', encoding='utf-8') as handle:
+                override = handle.read()
+            ok('Exec=secure-terminal --tray' in override,
+               'autostart: the override Exec launches the app with --tray, '
+               'not the retired --clipboard-watch')
             ok(not CW.autostart_enabled(),
                'autostart: a disabling override reports disabled')
             CW.set_autostart(True)
@@ -127,105 +102,14 @@ def _test_autostart():
                 handle.write('[Desktop Entry]\nX-GNOME-Autostart-enabled=true\n')
             ok(CW.autostart_enabled(),
                'autostart: a non-disabling override reports enabled')
+            # a non-UTF-8 override (a hand edit / a Latin-1 tool / a crash mid-write) must
+            # not crash the callers (clipboard menu, set_systray, settings dialog): read
+            # fails with UnicodeDecodeError -> treated as enabled, like an unreadable file.
+            with open(path, 'wb') as handle:
+                handle.write(b'[Desktop Entry]\nName=\xff\xfe not utf8\n')
+            ok(CW.autostart_enabled(),
+               'autostart: a non-UTF-8 override is treated as enabled, not a crash')
         finally:
-            if old is None:
-                os.environ.pop('XDG_CONFIG_HOME', None)
-            else:
-                os.environ['XDG_CONFIG_HOME'] = old
-
-
-def _test_warn_any_default():
-    from secure_terminal import settings as _st          # noqa: PLC0415
-    with tempfile.TemporaryDirectory() as cfg, tempfile.TemporaryDirectory() as _sysd:
-        old = os.environ.get('XDG_CONFIG_HOME')
-        os.environ['XDG_CONFIG_HOME'] = cfg
-        ## Isolate the privileged dirs: warn_any_default() -> settings.load() merges
-        ## /usr/lib,/etc,/usr/local/etc, so a real admin lock=clip_warn_any would
-        ## false-fail/green these defaults (cf. _test_tray_warn_any_persist).
-        _orig_sysd = _st._system_dirs
-        _st._system_dirs = lambda: [_sysd]
-        try:
-            ok(not CW.warn_any_default(),
-               'warn-any default: off when unset in settings')
-            confd = os.path.join(cfg, 'secure-terminal.d')
-            os.makedirs(confd)
-            with open(_st.user_config_file(), 'w', encoding='utf-8') as h:
-                h.write('clip_warn_any=true\n')
-            ok(CW.warn_any_default(),
-               'warn-any default: on when clip_warn_any=true is persisted')
-        finally:
-            _st._system_dirs = _orig_sysd
-            if old is None:
-                os.environ.pop('XDG_CONFIG_HOME', None)
-            else:
-                os.environ['XDG_CONFIG_HOME'] = old
-
-
-def _test_tray_warn_any_persist():
-    ## The tray "Warn on any non-ASCII" toggle PERSISTS the choice -- unlike the
-    ## live-only IPC set-warn-any -- so it survives a daemon restart (a later
-    ## daemon reads clip_warn_any via warn_any_default() at startup). Canary: on
-    ## the pre-fix wiring the toggle only live-updated, so nothing was persisted.
-    from secure_terminal import settings as _st          # noqa: PLC0415
-    with tempfile.TemporaryDirectory() as cfg, tempfile.TemporaryDirectory() as _sysd:
-        old = os.environ.get('XDG_CONFIG_HOME')
-        os.environ['XDG_CONFIG_HOME'] = cfg
-        ## Isolate the privileged dirs too: warn_any_default() -> settings.load()
-        ## also merges /usr/lib,/etc,/usr/local/etc, so a real admin lock=clip_warn_any
-        ## would false-fail/false-green these persist assertions (cf. test_mainwin).
-        _orig_sysd = _st._system_dirs
-        _st._system_dirs = lambda: [_sysd]
-        try:
-            app = CW.ClipboardWatchApp(APP)
-            menu = app._build_menu()
-            warn_act = next(a for a in menu.actions()
-                            if a.text() == 'Warn on any non-ASCII')
-            warn_act.setChecked(True)
-            ok(CW.warn_any_default(),
-               'tray warn-any: toggling ON persists (survives a daemon restart)')
-            ok(app._watcher._any_mode is True,
-               'tray warn-any: ON also live-updates this watcher')
-            warn_act.setChecked(False)
-            ok(not CW.warn_any_default(),
-               'tray warn-any: toggling OFF persists too')
-            ok(app._watcher._any_mode is False,
-               'tray warn-any: OFF also live-updates this watcher')
-
-            ## The persist writes ONLY the app's own user file (20_auto-generated.conf),
-            ## never the MERGED config -- else it would pin a system/admin (or another
-            ## drop-in's) key into user config, overriding a later policy change.
-            confd = os.path.join(cfg, 'secure-terminal.d')
-            os.makedirs(confd, exist_ok=True)
-            with open(os.path.join(confd, '40_foreign.conf'), 'w', encoding='utf-8') as h:
-                h.write('foreign_key=x\n')
-            app2 = CW.ClipboardWatchApp(APP)
-            menu2 = app2._build_menu()
-            next(a for a in menu2.actions()
-                 if a.text() == 'Warn on any non-ASCII').setChecked(True)
-            with open(_st.user_config_file(), encoding='utf-8') as h:
-                written = h.read()
-            ok('clip_warn_any=true' in written,
-               'tray persist writes clip_warn_any to the app user file')
-            ok('foreign_key' not in written,
-               'tray persist does NOT pin a merged (other-drop-in/admin) key into user config')
-            ## admin lock: with lock=clip_warn_any in a privileged dir, the daemon's
-            ## tray toggle must NOT change the LIVE watcher -- codex ai-review found the
-            ## live set_any_mode ran before the locked persist write was rejected, so the
-            ## daemon bypassed the lock for the session. The action is greyed too.
-            with open(os.path.join(_sysd, '90_lock.conf'), 'w', encoding='utf-8') as h:
-                h.write('clip_warn_any=false\nlock=clip_warn_any\n')
-            app3 = CW.ClipboardWatchApp(APP)
-            app3._watcher.set_any_mode(False)          # known starting state
-            menu3 = app3._build_menu()                 # HELD, or Qt GCs its QActions
-            lock_act = next(a for a in menu3.actions()
-                            if a.text() == 'Warn on any non-ASCII')
-            ok(not lock_act.isEnabled(),
-               'tray warn-any: greyed when clip_warn_any is admin-locked')
-            app3._set_warn_any(True)                    # setter must refuse a locked change
-            ok(app3._watcher._any_mode is False,
-               'tray warn-any: a locked clip_warn_any does NOT live-update the watcher')
-        finally:
-            _st._system_dirs = _orig_sysd
             if old is None:
                 os.environ.pop('XDG_CONFIG_HOME', None)
             else:
@@ -376,360 +260,29 @@ def _test_watcher():
     ok(not w.review_is_open(), 'review_is_open: False once the review is resolved')
 
 
-def _roundtrip(req):
-    """Send one framed request to the running singleton server and read its reply,
-    driving both sides on the main thread with processEvents (no thread -> no
-    Qt-native/settrace segfault class)."""
-    client = QLocalSocket()
-    client.connectToServer(ipc.socket_path(CW.INSTANCE_GROUP))
-    ok(client.waitForConnected(1000), 'ipc: client connects to the singleton socket')
-    client.write(ipc.frame(json.dumps(req).encode('utf-8')))
-    client.flush()
-    framer = ipc.Framer()
-    payload = None
-    deadline = time.monotonic() + 3.0
-    while payload is None and time.monotonic() < deadline:
-        APP.processEvents()
-        if client.bytesAvailable():
-            payload = framer.feed(bytes(client.readAll()))
-        else:
-            client.waitForReadyRead(50)
-    client.disconnectFromServer()
-    return json.loads(payload.decode('utf-8')) if payload is not None else {}
-
-
-def _test_daemon_ipc():
-    with tempfile.TemporaryDirectory() as runtime:
-        old = os.environ.get('XDG_RUNTIME_DIR')
-        os.environ['XDG_RUNTIME_DIR'] = runtime
-        try:
-            app = CW.ClipboardWatchApp(APP)
-
-            # _dispatch directly: every op + the malformed/unknown paths
-            eq(app._dispatch(json.dumps({'op': 'ping'}).encode('utf-8')).get('ok'),
-               True, 'dispatch: ping ok')
-            r = app._dispatch(json.dumps({'op': 'set-warn-any',
-                                          'value': True}).encode('utf-8'))
-            eq(r.get('ok'), True, 'dispatch: set-warn-any ok')
-            ok(app._watcher._any_mode is True, 'dispatch: set-warn-any updates watcher')
-            eq(app._dispatch(json.dumps({'op': 'quit'}).encode('utf-8')).get('ok'),
-               True, 'dispatch: quit ok (schedules app.quit)')
-            eq(app._dispatch(b'not json').get('ok'), False,
-               'dispatch: malformed JSON rejected')
-            eq(app._dispatch(json.dumps(['a']).encode('utf-8')).get('ok'), False,
-               'dispatch: a non-dict request rejected')
-            eq(app._dispatch(json.dumps({'op': 'bogus'}).encode('utf-8')).get('ok'),
-               False, 'dispatch: unknown op rejected')
-            # REGRESSION (finding #4): deeply-nested JSON makes json.loads raise
-            # RecursionError (NOT ValueError); uncaught it would SIGABRT this same-UID
-            # daemon. _dispatch must catch it like main.py's IPC dispatch. CANARY: on the
-            # pre-fix except (ValueError, UnicodeDecodeError) this propagates and crashes.
-            _deep = b'[' * 100000 + b']' * 100000
-            eq(app._dispatch(_deep).get('ok'), False,
-               'dispatch: deeply-nested JSON (RecursionError) rejected, not crashed')
-            # an admin lock must be honoured over IPC too (codex ai-review): a direct
-            # set-warn-any request cannot override a locked clip_warn_any -- the lock
-            # is enforced at the daemon, not only the tray/main-window UI.
-            from secure_terminal import settings as _st      # noqa: PLC0415
-            _locksys = tempfile.mkdtemp(prefix='st-ipclock-')
-            with open(os.path.join(_locksys, '90_lock.conf'), 'w', encoding='utf-8') as _h:
-                _h.write('clip_warn_any=false\nlock=clip_warn_any\n')
-            _o_sysd_ipc = _st._system_dirs
-            _st._system_dirs = lambda: [_locksys]
-            try:
-                app._watcher.set_any_mode(False)         # known state
-                rl = app._dispatch(json.dumps({'op': 'set-warn-any',
-                                               'value': True}).encode('utf-8'))
-                eq(rl.get('ok'), False,
-                   'dispatch: a locked clip_warn_any refuses set-warn-any over IPC')
-                ok(app._watcher._any_mode is False,
-                   'dispatch: a locked clip_warn_any is NOT changed by IPC')
-            finally:
-                _st._system_dirs = _o_sysd_ipc
-
-            # claim the free singleton socket (real QLocalServer.listen)
-            ok(app._claim_singleton() is True, 'singleton: claims the free socket')
-            ok(app._server is not None, 'singleton: server is listening')
-            ok(CW.is_running(), 'is_running: True once the socket is bound')
-
-            # a full round-trip drives _on_ipc_connection + on_ready
-            reply = _roundtrip({'op': 'ping'})
-            eq(reply.get('ok'), True, 'ipc: ping round-trips through the server')
-            eq(reply.get('pid'), os.getpid(), 'ipc: ping returns our pid')
-
-            # a malformed (over-long) frame -> the server ABORTS the connection
-            # (defensive), without crashing
-            bad = QLocalSocket()
-            bad.connectToServer(ipc.socket_path(CW.INSTANCE_GROUP))
-            ok(bad.waitForConnected(1000), 'ipc: over-long-frame client connects')
-            bad.write(struct.pack('<I', (1 << 20) + 1))   # claims a >1 MiB frame
-            bad.flush()
-            deadline = time.monotonic() + 3.0
-            unconnected = QLocalSocket.LocalSocketState.UnconnectedState
-            while bad.state() != unconnected and time.monotonic() < deadline:
-                APP.processEvents()
-                bad.waitForDisconnected(50)
-            ok(bad.state() == unconnected,
-               'ipc: an over-long frame is aborted by the server')
-
-            # a second instance finds the lock already held -> declines
-            other = CW.ClipboardWatchApp(APP)
-            ok(other._claim_singleton() is False,
-               'singleton: a second instance finds the lock held and declines')
-
-            # TOCTOU regression: even in the concurrent window -- where neither watcher
-            # yet sees the other's socket as live (socket_is_live == False) -- the flock
-            # gate still rejects the second claimant, so two watchers never both bind and
-            # race duplicate review bars. Pre-flock, the second removeServer()'d the
-            # incumbent's just-bound socket and listen()'d, so BOTH ran.
-            _live = ipc.socket_is_live
-            ipc.socket_is_live = lambda *a, **k: False
-            try:
-                race = CW.ClipboardWatchApp(APP)
-                ok(race._claim_singleton() is False,
-                   'singleton: flock rejects a concurrent second binder (TOCTOU)')
-                ok(race._server is None,
-                   'singleton: the rejected claimant binds no socket')
-                ok(race._lock_fd is None,
-                   'singleton: the rejected claimant holds no lock fd')
-            finally:
-                ipc.socket_is_live = _live
-            ok(CW.is_running(),
-               'singleton: the incumbent socket survived the concurrent claim')
-
-            # ensure_socket_dir failure -> proceed without a singleton
-            _real = ipc.ensure_socket_dir
-
-            def _boom():
-                raise OSError('no runtime dir')
-
-            ipc.ensure_socket_dir = _boom
-            try:
-                nrt = CW.ClipboardWatchApp(APP)
-                ok(nrt._claim_singleton() is True,
-                   'singleton: no runtime dir -> proceed (True)')
-            finally:
-                ipc.ensure_socket_dir = _real
-
-            _flock = CW.fcntl.flock
-            _open = CW.os.open
-
-            def _open_boom(*_a, **_k):
-                # os.open itself raising EAGAIN (FUSE / mandatory-lock conflict): must
-                # degrade to best effort, never reach os.close(None) and crash.
-                raise BlockingIOError('cannot open lock file')
-
-            def _flock_unsupported(*_a, **_k):
-                raise OSError('flock unsupported')      # NOT BlockingIOError
-
-            # DEFER, never steal (app still holds a real, live socket here):
-            # (a) flock taken, but a pre-flock incumbent's socket is live -> back off,
-            #     releasing the just-taken lock.
-            CW.fcntl.flock = lambda *_a, **_k: None      # pretend the lock is free
-            try:
-                inc = CW.ClipboardWatchApp(APP)
-                ok(inc._claim_singleton() is False,
-                   'singleton: live incumbent (lock free) -> back off (False)')
-                ok(inc._server is None, 'singleton: incumbent back-off binds no socket')
-                ok(inc._lock_fd is None,
-                   'singleton: incumbent back-off releases the lock fd')
-            finally:
-                CW.fcntl.flock = _flock
-
-            # (b) lock file unusable AND a live incumbent -> back off, no lock to release.
-            CW.os.open = _open_boom
-            try:
-                oi = CW.ClipboardWatchApp(APP)
-                ok(oi._claim_singleton() is False,
-                   'singleton: no usable lock + live incumbent -> back off (False)')
-                ok(oi._lock_fd is None and oi._server is None,
-                   'singleton: back-off binds nothing when the lock is unusable')
-            finally:
-                CW.os.open = _open
-
-            # release the primary so the best-effort BIND cases below see no incumbent
-            app._server.close()
-            os.close(app._lock_fd)          # release the singleton flock (test isolation)
-            app._server = None
-            app._lock_fd = None
-
-            # (c) lock-file open error, no incumbent -> best effort STILL binds the socket
-            #     (drops only the flock gate), so is_running() keeps working. Without this
-            #     the daemon would run with no IPC and terminals would spawn duplicates.
-            CW.os.open = _open_boom
-            try:
-                oe = CW.ClipboardWatchApp(APP)
-                ok(oe._claim_singleton() is True,
-                   'singleton: lock open error, no incumbent -> best-effort bind (True)')
-                ok(oe._lock_fd is None, 'singleton: best-effort holds no lock fd')
-                ok(oe._server is not None,
-                   'singleton: best-effort still binds the IPC socket')
-                oe._server.close()
-            finally:
-                CW.os.open = _open
-
-            # (d) flock unsupported (non-contention OSError), no incumbent -> best-effort bind
-            CW.fcntl.flock = _flock_unsupported
-            try:
-                fu = CW.ClipboardWatchApp(APP)
-                ok(fu._claim_singleton() is True,
-                   'singleton: flock unsupported, no incumbent -> best-effort bind (True)')
-                ok(fu._lock_fd is None, 'singleton: no lock fd when flock unsupported')
-                ok(fu._server is not None,
-                   'singleton: flock-unsupported still binds the socket')
-                fu._server.close()
-            finally:
-                CW.fcntl.flock = _flock
-
-            # (e) flock taken but the control socket FAILS to bind -> release the
-            #     lock and raise _SingletonBindError. A wedged, uncontrollable,
-            #     lock-holding daemon (no stop_running() socket, blocks every
-            #     replacement) must NOT start. Old code returned True with the
-            #     lock still held -- the canary here fails on it.
-            from PyQt6.QtNetwork import QLocalServer   # noqa: PLC0415
-            _listen = QLocalServer.listen
-            QLocalServer.listen = lambda _self, _name: False
-            try:
-                # (e1) a real flock is held -> its fd must be closed on failure.
-                lf = CW.ClipboardWatchApp(APP)
-                raised = False
-                try:
-                    lf._claim_singleton()
-                except CW._SingletonBindError:
-                    raised = True
-                ok(raised, 'singleton: listen failure raises _SingletonBindError')
-                ok(lf._lock_fd is None,
-                   'singleton: listen failure releases the held flock (no fd leak)')
-                ok(lf._server is None, 'singleton: listen failure keeps no server')
-
-                # (e2) best-effort (flock unsupported, no lock fd) -> same raise,
-                #      no fd to close.
-                CW.fcntl.flock = _flock_unsupported
-                try:
-                    be = CW.ClipboardWatchApp(APP)
-                    raised2 = False
-                    try:
-                        be._claim_singleton()
-                    except CW._SingletonBindError:
-                        raised2 = True
-                    ok(raised2,
-                       'singleton: best-effort listen failure also raises')
-                    ok(be._lock_fd is None and be._server is None,
-                       'singleton: best-effort listen failure leaves nothing held')
-                finally:
-                    CW.fcntl.flock = _flock
-            finally:
-                QLocalServer.listen = _listen
-        finally:
-            if old is None:
-                os.environ.pop('XDG_RUNTIME_DIR', None)
-            else:
-                os.environ['XDG_RUNTIME_DIR'] = old
-
-
-def _test_module_ipc_helpers():
-    calls = {}
-    _real_send = ipc.send_request
-    _real_live = ipc.socket_is_live
-
-    def _fake_send(group, req, *_a, **_k):
-        calls['send'] = (group, req)
-        return {'ok': True}                 # a live daemon answered
-
-    def _fake_live(group='default', **_k):
-        calls['live'] = group
-        return True
-
-    ipc.send_request = _fake_send
-    ipc.socket_is_live = _fake_live
-    try:
-        ok(CW.is_running(), 'is_running delegates to socket_is_live')
-        eq(calls['live'], CW.INSTANCE_GROUP, 'is_running uses the clipboard group')
-        ok(CW.stop_running(), 'stop_running: True when a daemon answered')
-        eq(calls['send'][1], {'op': 'quit'}, 'stop_running sends the quit op')
-        CW.push_warn_any(True)
-        eq(calls['send'][1], {'op': 'set-warn-any', 'value': True},
-           'push_warn_any sends the set-warn-any op')
-    finally:
-        ipc.send_request = _real_send
-        ipc.socket_is_live = _real_live
-
-    # stop_running False when nothing answered
-    def _none_send(*_a, **_k):
-        return None
-
-    ipc.send_request = _none_send
-    try:
-        ok(not CW.stop_running(), 'stop_running: False when no daemon answered')
-    finally:
-        ipc.send_request = _real_send
-
-
-def _test_tray_and_run():
-    orig_tray = CW.QSystemTrayIcon
-    o_exec = QApplication.exec
-    o_term = signal.getsignal(signal.SIGTERM)
-    o_int = signal.getsignal(signal.SIGINT)
-    o_qlwc = APP.quitOnLastWindowClosed()
-    CW.QSystemTrayIcon = _FakeTray
-    try:
-        app = CW.ClipboardWatchApp(APP)
-        _FakeTray.available = True
-        ok(app._build_tray() is not None, 'tray: built when available')
-        _FakeTray.available = False
-        ok(app._build_tray() is None, 'tray: None when unavailable')
-
-        # run(): a singleton already running -> exit 0 (not an error)
-        app2 = CW.ClipboardWatchApp(APP)
-        app2._claim_singleton = lambda: False
-        eq(app2.run(), 0, 'run: another watcher already runs -> exit 0')
-
-        # run(): claimed but no tray -> exit 1
-        _FakeTray.available = False
-        app3 = CW.ClipboardWatchApp(APP)
-        app3._claim_singleton = lambda: True
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            eq(app3.run(), 1, 'run: claimed but no tray -> exit 1')
-        ok('no system tray' in err.getvalue(), 'run: reports the missing tray')
-
-        # run(): claimed + tray -> installs signals + enters the (stubbed) loop
-        _FakeTray.available = True
-        QApplication.exec = lambda _self: 0
-        app4 = CW.ClipboardWatchApp(APP)
-        app4._claim_singleton = lambda: True
-        eq(app4.run(), 0, 'run: with a tray it enters the event loop (stubbed exec)')
-
-        # run(): the flock was taken but the control socket did not bind ->
-        # _SingletonBindError -> exit 1 (startup failure, NOT 0 'another watcher')
-        _FakeTray.available = True
-        app5 = CW.ClipboardWatchApp(APP)
-
-        def _raise_bind():
-            raise CW._SingletonBindError('/run/user/x/clipboard-watch.sock')
-
-        app5._claim_singleton = _raise_bind
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            eq(app5.run(), 1, 'run: singleton bind failure -> exit 1')
-        ok('could not bind' in err.getvalue(), 'run: reports the bind failure')
-    finally:
-        CW.QSystemTrayIcon = orig_tray
-        QApplication.exec = o_exec
-        signal.signal(signal.SIGTERM, o_term)
-        signal.signal(signal.SIGINT, o_int)
-        APP.setQuitOnLastWindowClosed(o_qlwc)
+def _test_shipped_autostart_exec():
+    ## The shipped login-autostart entry must launch the app hidden-to-tray (--tray),
+    ## the single-process sanitizer -- NOT the retired --clipboard-watch daemon. Located
+    ## relative to the imported package so it checks the working tree under test.
+    pkg = os.path.dirname(CW.__file__)                     # .../secure_terminal
+    repo = os.path.normpath(os.path.join(pkg, *(['..'] * 5)))  # up: pkg->dist-packages->python3->lib->usr->repo
+    desktop = os.path.join(
+        repo, 'etc', 'xdg', 'autostart', 'sclip-clipboard-watch.desktop')
+    ok(os.path.isfile(desktop),
+       'shipped autostart: the .desktop entry exists in the tree')
+    with open(desktop, 'r', encoding='utf-8') as handle:
+        body = handle.read()
+    ok('Exec=secure-terminal --tray' in body,
+       'shipped autostart: Exec launches --tray (hidden-to-tray single process)')
+    ok('--clipboard-watch' not in body,
+       'shipped autostart: the retired --clipboard-watch flag is gone')
 
 
 def run():
     _test_predicates()
     _test_autostart()
-    _test_warn_any_default()
-    _test_tray_warn_any_persist()
+    _test_shipped_autostart_exec()
     _test_watcher()
-    _test_daemon_ipc()
-    _test_module_ipc_helpers()
-    _test_tray_and_run()
     print('\n%s' % ('PASS' if _failures == 0 else 'FAIL'))
     return 1 if _failures else 0
 

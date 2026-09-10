@@ -73,10 +73,15 @@ while [ "${#queue[@]}" -gt 0 ]; do
 done
 
 if [ "${#closure[@]}" -eq 0 ]; then
-   fail "canary: computed an EMPTY source-closure for apt-get-noninteractive -- the grep matched nothing, so this test proves nothing"
-else
-   pass "canary: wrapper source-closure is non-empty (${closure[*]})"
+   ## Empty closure -> the rest cannot run (closure[0] would be an unbound-var
+   ## crash under nounset). Report the real problem and stop cleanly: the wrapper
+   ## staged in CI sources no '/usr/libexec/helper-scripts/*.bsh' the grep matched
+   ## (a stale helper-scripts checkout, or the wrapper's source syntax changed).
+   fail "canary: computed an EMPTY source-closure for apt-get-noninteractive -- the grep matched nothing in ${wrapper}"
+   printf '%s\n' "apt_get_wrapper_closure_test: ${pass} pass, ${fail} fail, 0 skip"
+   exit 1
 fi
+pass "canary: wrapper source-closure is non-empty (${closure[*]})"
 
 ## What 3500 stages: the wrapper itself (an explicit 'install ... apt-get-noninteractive
 ## ... CHROOT_FOLDER') plus every basename listed in its staging loop over
