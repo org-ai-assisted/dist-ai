@@ -38,6 +38,9 @@
 ## --check  detect only, no commit. Exit 0 = nothing to bump (or not a
 ##          derivative-maker checkout); exit 3 = a published-ahead submodule is
 ##          unpinned (the pre-push hook rejects on this). No network either way.
+##          It inspects the CHECKED-OUT superproject + submodule HEADs (the 'ai'
+##          working checkout, the supported workflow), not an arbitrary ref a
+##          push might carry from a different checked-out branch.
 ##
 ## Exit: 0 done / nothing to do | 2 usage / not a checkout | 3 (--check) bump needed.
 
@@ -117,13 +120,17 @@ if [ ! "$( readlink -f -- "${top}" )" = "$( readlink -f -- "${source_dir}" )" ];
    exit 2
 fi
 
-## Collect direct (non-recursive) submodule paths, relative to the superproject
-## root. foreach visits only INITIALIZED submodules; an uninitialized one has
-## nothing checked out, so it can never be ahead of its pin.
+## Direct submodule paths from .gitmodules (relative to the superproject root).
+## Read the config, NOT 'git submodule foreach': foreach aborts at the first
+## broken/absent submodule and its non-zero exit would be swallowed, hiding
+## every submodule after it -- a gate must never fail OPEN. Uninitialized or
+## broken paths are filtered per-iteration below. A path is the value after the
+## key; paths with spaces survive, the (non-occurring) newline case does not.
 sub_paths=()
-if git -C "${top}" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-   mapfile -t sub_paths < <( git -C "${top}" submodule --quiet foreach 'printf "%s\n" "${sm_path}"' 2>/dev/null || true )
-fi
+while IFS= read -r path; do
+   [ -n "${path}" ] && sub_paths+=( "${path}" )
+done < <( git -C "${top}" config --file "${top}/.gitmodules" \
+   --get-regexp '^submodule\..*\.path$' 2>/dev/null | sed 's/^[^ ]* //' )
 
 ## Classify each submodule. A submodule qualifies for a bump only if it is on
 ## 'ai', clean, strictly ahead of the pin, and its HEAD is exactly a published
@@ -137,13 +144,18 @@ for path in "${sub_paths[@]}"; do
    sub="${top}/${path}"
    [ -d "${sub}/.git" ] || [ -f "${sub}/.git" ] || continue
 
-   branch="$( git -C "${sub}" symbolic-ref --quiet --short HEAD 2>/dev/null || true )"
-   [ "${branch}" = "${AI_BRANCH}" ] || continue
+   ## On branch 'ai'? Compare the FULL ref, not '--short': 'symbolic-ref --short'
+   ## disambiguates to 'heads/ai' when a tag named 'ai' also exists.
+   ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+   [ "${ref}" = "refs/heads/${AI_BRANCH}" ] || continue
 
-   ## Clean: no uncommitted tracked changes. Untracked files do not block a pin.
-   if [ -n "$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )" ]; then
+   ## Clean: no uncommitted tracked changes. A FAILED 'git status' (corrupt
+   ## index, unreadable submodule) yields empty stdout -- do not read that as
+   ## clean; skip it rather than bump on a repo we could not inspect.
+   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )"; then
       continue
    fi
+   [ -z "${sub_status}" ] || continue
 
    head_sha="$( git -C "${sub}" rev-parse --verify HEAD 2>/dev/null || true )"
    [ -n "${head_sha}" ] || continue
@@ -155,16 +167,28 @@ for path in "${sub_paths[@]}"; do
    ## Strictly AHEAD: the pin is an ancestor of HEAD. Behind or diverged -> skip.
    git -C "${sub}" merge-base --is-ancestor "${pin_sha}" "${head_sha}" 2>/dev/null || continue
 
-   ## Published AT a tip: HEAD must EQUAL a remote-tracking 'ai' tip, not merely
-   ## be contained in one -- otherwise a stale local ai behind the fork tip would
-   ## pin an intermediate commit. Local refs only, no network.
+   ## Published AT a tip: HEAD must EQUAL the remote-tracking 'ai' tip of a
+   ## NETWORK remote -- not merely be contained in one (a stale local ai behind
+   ## the fork tip would pin an intermediate commit), and not a local-path
+   ## scratch remote that a fresh CI checkout could never fetch. Local refs
+   ## only, no network.
    at_published_tip="false"
-   while IFS= read -r rt_tip; do
+   while IFS= read -r remote; do
+      [ -n "${remote}" ] || continue
+      ## Skip a non-network remote (bare local path): CI cannot fetch from it.
+      case "$( git -C "${sub}" remote get-url "${remote}" 2>/dev/null )" in
+         *://* | *@*:*)
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      rt_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${remote}/${AI_BRANCH}" 2>/dev/null || true )"
       if [ "${rt_tip}" = "${head_sha}" ]; then
          at_published_tip="true"
          break
       fi
-   done < <( git -C "${sub}" for-each-ref --format='%(objectname)' 'refs/remotes/*/ai' 2>/dev/null )
+   done < <( git -C "${sub}" remote 2>/dev/null )
 
    if [ "${at_published_tip}" = "true" ]; then
       to_bump_paths+=( "${path}" )
@@ -195,10 +219,11 @@ if [ "${#to_bump_paths[@]}" -eq 0 ]; then
    exit 0
 fi
 
-## The parent commit must land on 'ai'.
-super_branch="$( git -C "${top}" symbolic-ref --quiet --short HEAD 2>/dev/null || true )"
-if [ "${super_branch}" != "${AI_BRANCH}" ]; then
-   printf '%s\n' "${0##*/}: superproject is on '${super_branch:-DETACHED}', not '${AI_BRANCH}'; refusing to bump." >&2
+## The parent commit must land on 'ai'. Full ref, not '--short' (a tag named
+## 'ai' would make --short report 'heads/ai').
+super_ref="$( git -C "${top}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+if [ "${super_ref}" != "refs/heads/${AI_BRANCH}" ]; then
+   printf '%s\n' "${0##*/}: superproject is not on '${AI_BRANCH}' (HEAD '${super_ref:-DETACHED}'); refusing to bump." >&2
    exit 2
 fi
 
