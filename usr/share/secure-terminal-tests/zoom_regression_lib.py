@@ -464,15 +464,25 @@ def block_texts(term):
     return out
 
 
-def interior_blank_blocks(term):
-    """Count empty blocks that have a non-empty block both before AND after -- the
-    signature of a spurious blank row split into the middle of content."""
-    texts = [t.strip('\ufeff') for t in block_texts(term)]
-    nonempty = [i for i, t in enumerate(texts) if t != '']
-    if not nonempty:
+def _interior_blank_count(texts):
+    """Blank blocks that have a non-blank block both before AND after (a spurious blank
+    row split into the middle of content). A block is "blank" when it has no visible
+    text -- whitespace-only counts as blank. The SAME normalization (full strip) decides
+    both the non-blank span and the interior blanks, so a whitespace-only leading or
+    trailing block (e.g. a wrapped continuation of spaces) is not miscounted as interior.
+    Pure over a block-text list, so the edge cases are directly testable."""
+    norm = [t.strip() for t in texts]
+    nonblank = [i for i, t in enumerate(norm) if t != '']
+    if not nonblank:
         return 0
-    first, last = nonempty[0], nonempty[-1]
-    return sum(1 for i in range(first, last) if texts[i].strip() == '')
+    first, last = nonblank[0], nonblank[-1]
+    return sum(1 for i in range(first, last) if norm[i] == '')
+
+
+def interior_blank_blocks(term):
+    """Interior blank count over the tab's rendered blocks. The no-newline marker is a
+    gutter glyph / zero-text run, not inline text, so it never reaches block text."""
+    return _interior_blank_count(block_texts(term))
 
 
 def trailing_blank_blocks(term):

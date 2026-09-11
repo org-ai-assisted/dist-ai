@@ -47,8 +47,19 @@ import zoom_regression_lib as Z
 
 
 def _parse_res(s):
-    w, h = s.lower().split('x')
-    return (int(w), int(h))
+    try:
+        w, h = s.lower().split('x')
+        return (int(w), int(h))
+    except (ValueError, AttributeError):
+        raise SystemExit('zoom-sweep: bad resolution %r (want WIDTHxHEIGHT, e.g. 1280x800)' % (s,))
+
+
+def _check_boards(names):
+    unknown = [n for n in names if n not in Z.BOARDS]
+    if unknown:
+        raise SystemExit('zoom-sweep: unknown board(s) %s; known: %s'
+                         % (', '.join(unknown), ', '.join(sorted(Z.BOARDS))))
+    return names
 
 
 def _display_mode(term):
@@ -93,7 +104,7 @@ def cmd_one(args):
 
 
 def cmd_full(args):
-    boards = args.boards.split(',') if args.boards else list(Z.BOARDS)
+    boards = _check_boards(args.boards.split(',')) if args.boards else list(Z.BOARDS)
     resolutions = [_parse_res(s) for s in args.res.split(',')] if args.res else list(Z.RESOLUTIONS)
     zooms = [int(z) for z in args.zooms.split(',')] if args.zooms else list(Z.CANONICAL_ZOOMS)
     displays = args.display.split(',') if args.display else [Z.PRIMARY_DISPLAY]
@@ -182,7 +193,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest='cmd', required=True)
 
     po = sub.add_parser('one')
-    po.add_argument('board')
+    po.add_argument('board', choices=sorted(Z.BOARDS))
     po.add_argument('mode', choices=Z.MODES)
     po.add_argument('res')
     po.add_argument('zoom')
@@ -211,7 +222,15 @@ def main(argv=None):
 if __name__ == '__main__':
     # os._exit, never sys.exit: a normal interpreter shutdown runs Qt's static
     # destructors and SIGSEGVs (the same reason the widget suites os._exit in finish()).
-    _rc = main()
+    # A SystemExit raised AFTER the harness (QApplication) exists -- e.g. a validation
+    # error in cmd_one/cmd_full -- would otherwise unwind normally and hit that teardown
+    # crash, masking the clean exit code; catch it and route it through os._exit too.
+    try:
+        _rc = main()
+    except SystemExit as _exc:
+        _rc = _exc.code if isinstance(_exc.code, int) else (0 if _exc.code is None else 1)
+        if isinstance(_exc.code, str):
+            sys.stderr.write(_exc.code + '\n')
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_rc)

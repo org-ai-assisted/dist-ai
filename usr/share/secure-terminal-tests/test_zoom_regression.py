@@ -130,6 +130,19 @@ def canaries():
     r = cap(b'a\r\n\r\nb\r\n', 'cli', (1280, 800), 100, 'detail')
     ok(Z.interior_blank_blocks(r['term']) == 1, 'interior_blank 1 on one blank between lines')
     H.close_term(r['term'])
+    # Pure interior-blank logic: whitespace-only leading/trailing blocks must NOT count
+    # as interior (they are blank, so the non-blank span starts at the first real line).
+    # Regression -- an inconsistent strip (BOM-only for the span, full strip for the
+    # count) counted a whitespace-only first block as both non-blank AND blank -> 2.
+    ok(Z._interior_blank_count(['a', '', 'b']) == 1, 'interior 1 on one blank between lines')
+    ok(Z._interior_blank_count(['a', 'b', 'c']) == 0, 'interior 0 on contiguous lines')
+    ok(Z._interior_blank_count(['   ', '', 'b']) == 0,
+       'interior 0 when a whitespace-only block leads (not counted as interior)')
+    ok(Z._interior_blank_count(['a', '', 'b', '   ']) == 1,
+       'interior 1 with a whitespace-only trailing block (only the real interior blank counts)')
+    ok(Z._interior_blank_count(['a', '   ', 'b']) == 1,
+       'interior 1 when the blank between content is whitespace-only')
+    ok(Z._interior_blank_count(['', '', '']) == 0, 'interior 0 on an all-blank document')
 
     # trailing_blank_blocks: extra blank lines beyond the single cursor line.
     r = cap(b'a\r\nb\r\n\r\n\r\n', 'cli', (1280, 800), 100, 'detail')
