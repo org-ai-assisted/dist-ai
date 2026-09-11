@@ -84,7 +84,11 @@ printf 'v3\n' > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v3"
 sub_tip="$(gitq -C "${sub_src}" rev-parse HEAD)"
-gitq -C "${sub_src}" remote add fork "${fork}"
+## file:// (a URL scheme), not a bare path: dm-gitlink-bump only trusts a
+## remote-tracking 'ai' tip from a NETWORK remote (scheme or user@host:), the
+## same *://*|*@*:* classification dm-preflight uses. A bare-path scratch remote
+## is deliberately NOT accepted as published.
+gitq -C "${sub_src}" remote add fork "file://${fork}"
 gitq -C "${sub_src}" push --quiet fork ai
 
 ## Superproject on 'ai', with the submodule pinned at PIN (the stale pointer).
@@ -95,7 +99,7 @@ printf 'x\n' > "${super}/build-steps.d/keep"
 printf 'x\n' > "${super}/help-steps/keep"
 gitq -C "${super}" add build-steps.d help-steps
 gitq -C "${super}" commit --quiet -m "super base"
-gitq -C "${super}" -c protocol.file.allow=always submodule --quiet add -b ai "${fork}" sub
+gitq -C "${super}" -c protocol.file.allow=always submodule --quiet add -b ai "file://${fork}" sub
 ## Force the recorded gitlink to PIN (submodule add records the tip; we want stale).
 gitq -C "${super}/sub" checkout --quiet "${sub_pin}"
 gitq -C "${super}" update-index --cacheinfo "160000,${sub_pin},sub"
@@ -167,7 +171,21 @@ else
    fail "pin unexpectedly changed to '$(pin_now)'"
 fi
 
-## --- Assertion 5: a DETACHED submodule HEAD is never bumped ---------------------
+## --- Assertion 5: a bare-PATH remote tip is NOT "published" (CI can't fetch) --
+## HEAD at the published TIP and ahead of the pin, but the only remote carrying
+## that ai tip is a bare filesystem path -- a fresh CI checkout using the URL
+## could never fetch it, so it must not be pinned.
+gitq -C "${super}/sub" checkout --quiet ai
+gitq -C "${super}/sub" reset --quiet --hard "${sub_tip}"
+gitq -C "${super}/sub" remote set-url origin "${fork}"   ## bare path, not file://
+if "${tool}" --check --dir "${super}" >/dev/null 2>&1; then
+   pass "--check exits 0 when the ai tip is only on a bare-path remote (not CI-fetchable)"
+else
+   fail "a bare-path remote tip must not count as published (--check exited $?)"
+fi
+gitq -C "${super}/sub" remote set-url origin "file://${fork}"   ## restore network remote
+
+## --- Assertion 6: a DETACHED submodule HEAD is never bumped ---------------------
 gitq -C "${super}/sub" checkout --quiet ai
 gitq -C "${super}/sub" reset --quiet --hard "${sub_tip}"
 gitq -C "${super}/sub" checkout --quiet --detach "${sub_tip}"
@@ -177,7 +195,7 @@ else
    fail "a detached submodule HEAD must not be bumped (--check exited $?)"
 fi
 
-## --- Assertion 6: not a derivative-maker checkout -> check no-ops, bump errors --
+## --- Assertion 7: not a derivative-maker checkout -> check no-ops, bump errors --
 plain="${workspace}/plain"
 gitq init --quiet -- "${plain}"
 if "${tool}" --check --dir "${plain}" >/dev/null 2>&1; then
