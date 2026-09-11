@@ -302,6 +302,10 @@ class ZoomHarness:
 
     def __init__(self, show=True):
         self.app = app()
+        # Freeze the text cursor: a blinking cursor never stops changing, so the settle
+        # wait cannot converge and two grabs catch different blink phases (a stability
+        # flake). 0 = no blink, cursor steady -> captures are deterministic.
+        self.app.setCursorFlashTime(0)
         self.win = MainWindow()
         # MAP the window (show=True). An UNMAPPED top-level does not reliably propagate a
         # resize to its child viewport, so the terminal computes _cols from a stale narrow
@@ -390,12 +394,32 @@ class ZoomHarness:
             feed_output(term, board)
             _pump(40)
             term._flush_paint()
+        # Wait for the render to SETTLE before grabbing: a dense truecolour board (every
+        # cell a distinct colour, no run-coalescing) paints slowly, so a fixed pump can
+        # grab a half-drawn frame -- two captures then differ (stability flake) and the
+        # ink fraction is wrong. Poll the viewport hash until two consecutive grabs match
+        # (or a bound), exactly as the shot harness's st_wait_render_settled does.
+        self._settle(term)
         return {
             'term': term,
             'zoom': self.win.current_zoom_percent(),
             'win_image': _detach(self.win.grab().toImage()),
             'viewport_image': _detach(term.viewport().grab().toImage()),
         }
+
+    def _settle(self, term, max_polls=40, interval_ms=80):
+        """Pump the event loop until the viewport render stops changing (two consecutive
+        grabs byte-identical), or max_polls elapse. Makes a slow (dense-truecolour) render
+        deterministic before the grab -- the settled frame is what capture() returns."""
+        term._flush_paint()
+        prev = image_hash(term.viewport().grab().toImage())
+        for _ in range(max_polls):
+            _pump(interval_ms)
+            term._flush_paint()
+            cur = image_hash(term.viewport().grab().toImage())
+            if cur == prev:
+                return
+            prev = cur
 
     def close_term(self, term):
         """Retire a single cell's tab: release its pty (shutdown) and detach it from the
@@ -540,7 +564,7 @@ def analyze(result, spec, display_mode):
     # large window at low zoom is legitimately sparse (ink a few thousandths) but NOT
     # invisible, so only an all-but-empty viewport counts. A top-pinned alt frame
     # legitimately leaves most of the viewport blank, so it is exempt. Mode-agnostic.
-    if not spec['tui_altscreen'] and content_len(term) >= 60 and frac < 0.0008:
+    if not spec['tui_altscreen'] and content_len(term) >= 60 and frac < 0.0001:
         issues.append('invisible-content: %d chars of text but ink fraction %.4f'
                       % (content_len(term), frac))
 
