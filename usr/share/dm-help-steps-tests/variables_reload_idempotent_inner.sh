@@ -20,14 +20,6 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## Real derivative-maker builds start NON-ROOT and sudo internally; the dist-ai CI
-## container runs as root. Re-exec as a non-root build user FIRST, before consuming
-## args, so the resolver runs faithfully (no root-check / empty-user_name gymnastics).
-reload_inner_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./help_steps_test_lib.bsh
-source "${reload_inner_dir}/help_steps_test_lib.bsh"
-reexec_as_build_user "$0" "$@"
-
 reload_first_snapshot="$1"
 reload_second_snapshot="$2"
 shift 2
