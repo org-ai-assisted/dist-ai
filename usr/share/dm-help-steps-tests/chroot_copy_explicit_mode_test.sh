@@ -38,6 +38,10 @@ if [ ! -d "${dm_checkout}/build-steps.d" ]; then
    exit 1
 fi
 
+test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./help_steps_test_lib.bsh
+source "${test_dir}/help_steps_test_lib.bsh"
+
 pass_count=0
 fail_count=0
 pass() {
@@ -119,11 +123,17 @@ fi
 
 ## The build must also pin a umask, or every file it creates outside these five
 ## sites still inherits the builder's. That is the same defect, one layer up.
-if grep --quiet --extended-regexp '^umask 0022' -- "${dm_checkout}/help-steps/variables"; then
-   pass 'help-steps/variables pins a deterministic umask'
+## The umask pin lives in the resolver source, which since the buildconfig.d split
+## spans the loader PLUS its modules -- inspect the composed effective text, not the
+## loader file alone (the pin moved into buildconfig.d/00_preamble.bsh).
+variables_effective="$(mktemp)"
+help_steps_variables_effective "${dm_checkout}/help-steps/variables" > "${variables_effective}"
+if grep --quiet --extended-regexp '^umask 0022' -- "${variables_effective}"; then
+   pass 'the resolver pins a deterministic umask'
 else
-   fail 'help-steps/variables does not pin a umask; file modes still depend on the builder'
+   fail 'the resolver does not pin a umask; file modes still depend on the builder'
 fi
+safe-rm --force -- "${variables_effective}"
 
 summary_line="===== chroot copy explicit mode: ${pass_count} pass, ${fail_count} fail ====="
 printf '%s\n' "${summary_line}"

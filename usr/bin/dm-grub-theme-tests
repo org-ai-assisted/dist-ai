@@ -162,20 +162,32 @@ else
    check_fail "build option --grub-bios-theme MISSING in ${parse_cmd_file}"
 fi
 
-if grep --quiet --fixed-strings -- 'dist_build_grub_bios_theme="true"' "${variables_file}"; then
+## The build flag default + its env_vars_keep_list entry live in the resolver source,
+## which since the buildconfig.d split spans the loader PLUS its modules. Inspect the
+## composed effective text (loader + buildconfig.d/*.bsh), not the loader file alone.
+grub_theme_tests_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../share/dm-help-steps-tests/help_steps_test_lib.bsh
+source "${grub_theme_tests_dir}/../share/dm-help-steps-tests/help_steps_test_lib.bsh"
+variables_effective="$(mktemp)"
+help_steps_variables_effective "${variables_file}" > "${variables_effective}"
+
+## The default is set via the unified set_default_variable idiom (fill-if-empty),
+## not a bare 'NAME="true"' assignment.
+if grep --quiet --extended-regexp -- '^[[:space:]]*set_default_variable[[:space:]]+dist_build_grub_bios_theme[[:space:]]+"true"' "${variables_effective}"; then
    check_pass "build flag defaults to true (4x3 is the build default)"
 else
-   check_fail "build flag default true MISSING in ${variables_file}"
+   check_fail "build flag default true MISSING in the resolver source"
 fi
 
 ## Must be on env_vars_keep_list, or --preserve-env drops it and it never reaches
 ## grub-mkconfig in the chroot -- the snippet would then always probe the build host.
-if grep --quiet --extended-regexp -- '^[[:space:]]*dist_build_grub_bios_theme[[:space:]]*$' "${variables_file}"; then
+if grep --quiet --extended-regexp -- '^[[:space:]]*dist_build_grub_bios_theme[[:space:]]*$' "${variables_effective}"; then
    check_pass "build flag is on env_vars_keep_list (crosses into the chroot)"
 else
-   check_fail "build flag NOT on env_vars_keep_list in ${variables_file}" \
+   check_fail "build flag NOT on env_vars_keep_list in the resolver source" \
       "without it --preserve-env strips the var and grub-mkconfig cannot read it"
 fi
+safe-rm --force -- "${variables_effective}"
 
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]

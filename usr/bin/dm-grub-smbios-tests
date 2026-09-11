@@ -295,11 +295,21 @@ assert_gate_structure iso "${iso_file}"
 ## line. Presence of the gate is the security property; the QEMU check above only
 ## narrows an image that was deliberately built with the reader.
 ##
+## The reader's build-option default lives in the resolver source, which since the
+## buildconfig.d split spans the loader PLUS its modules. Inspect the composed effective
+## text (loader + buildconfig.d/*.bsh), not the loader file alone. The checkout is present
+## here (the SKIP guard above already exited otherwise).
+smbios_tests_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../share/dm-help-steps-tests/help_steps_test_lib.bsh
+source "${smbios_tests_dir}/../share/dm-help-steps-tests/help_steps_test_lib.bsh"
+variables_effective="$(mktemp)"
+help_steps_variables_effective "${DERIVATIVE_MAKER_DIR}/help-steps/variables" > "${variables_effective}"
+
 ## Each entry is 'description|file|extended regexp'.
 optin_checks=(
    "cmdline fragment exports the variable to the grub.d helpers|${cmdline_file}|^[[:space:]]*export GRUB_ENABLE_DM_SMBIOS_READER\$"
    "build option --smbios-reader exists|${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd|--smbios-reader\\)"
-   "build option defaults to false|${DERIVATIVE_MAKER_DIR}/help-steps/variables|dist_build_smbios_reader=\"false\""
+   "build option defaults to false|${variables_effective}|^[[:space:]]*set_default_variable[[:space:]]+dist_build_smbios_reader[[:space:]]+\"false\""
 )
 
 for entry in "${optin_checks[@]}"; do
@@ -315,6 +325,7 @@ for entry in "${optin_checks[@]}"; do
       check_fail "${description}: pattern not found in ${target_file}" "${pattern}"
    fi
 done
+safe-rm --force -- "${variables_effective}"
 
 ## CONTAINMENT, not co-occurrence. Finding the enabling condition somewhere in a build step
 ## and the guarded action somewhere in the same file proves nothing: an UNCONDITIONAL reader
