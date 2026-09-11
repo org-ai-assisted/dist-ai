@@ -222,10 +222,18 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
     if ! git cat-file -e "${pinned}^{commit}" 2>/dev/null; then
        pin_present_locally=false
     fi
+    ## "On no remote-tracking branch of ANY remote in this clone" is a SUSPICION
+    ## of an unpushed pin, NOT a verdict: it also fires for a fork-published pin
+    ## whose fork this clone does not track (its submodule remote is upstream).
+    ## GitHub serves a fork-only commit from the UPSTREAM url too (shared object
+    ## store), so such a pin fetches fine in CI -- the old terminal UNFETCHABLE
+    ## here was a false positive that blocked legitimate dispatches. Record the
+    ## signal and let the network probe below decide; it is consulted again only
+    ## at the terminal branch, once fetch-by-sha has ALREADY failed.
+    pin_on_no_remote_branch=false
     if [ "${pin_present_locally}" = "true" ] \
        && [ -z "$(git branch --remotes --contains "${pinned}" 2>/dev/null)" ]; then
-       printf "UNFETCHABLE %s (pinned %.12s: on no remote branch)\n" "${displaypath}" "${pinned}"
-       exit 0
+       pin_on_no_remote_branch=true
     fi
     ## "Reachable from SOME remote in this clone" is not the question a fresh
     ## checkout asks. `git clone --recurse-submodules` uses the URL in
@@ -361,11 +369,20 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        printf "UNVERIFIED %s (pinned %.12s: %s refuses fetch-by-sha)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
        exit 0
     fi
-    ## Reached only when the network probe could NOT fetch the pin. For a pin
-    ## present locally this is FORK-ONLY (CI rewrites urls; a plain clone will
-    ## not). For a pin ABSENT locally it means no one has it -- a true MISSING.
+    ## Reached only when the network probe could NOT fetch the pin -- so it is on
+    ## no fork the .gitmodules url object store can reach. For a pin present
+    ## locally, the "on no remote-tracking branch" signal now discriminates:
+    ##   - on some remote branch (a fork whose url differs from .gitmodules):
+    ##     FORK-ONLY -- the CI url-rewrite reaches it, legitimate on a feature branch.
+    ##   - on NO remote branch: it exists only in this clone (committed but
+    ##     unpushed) -- the CI recursive checkout WILL fail: UNFETCHABLE.
+    ## For a pin ABSENT locally, no one has it -- a true MISSING.
     if [ "${pin_present_locally}" = "true" ]; then
-       printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+       if [ "${pin_on_no_remote_branch}" = "true" ]; then
+          printf "UNFETCHABLE %s (pinned %.12s: present only locally, on no remote branch, not fetchable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+       else
+          printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+       fi
     else
        printf "MISSING %s (pinned %.12s: absent locally and not fetchable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
     fi' 2>/dev/null )" || pin_report_rc="$?"

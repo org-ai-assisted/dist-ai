@@ -223,6 +223,59 @@ else
 ${output_unreachable}"
 fi
 
+## Delete every remote-tracking ref in a submodule clone, so 'git branch
+## --remotes --contains' finds the pin on NO remote branch while the object stays
+## present locally -- the shape a fork-published pin this clone does not track has.
+strip_remote_tracking() {
+   local repo="$1" ref
+   git_quiet -C "${repo}" for-each-ref --format='%(refname)' refs/remotes \
+      | while IFS= read -r ref; do
+           git_quiet -C "${repo}" update-ref -d "${ref}"
+        done
+}
+
+## --- a REACHABLE pin off every remote-tracking branch is VERIFIED -----------
+## THE FALSE POSITIVE THIS GUARDS: a fork-published pin whose fork this clone does
+## not track reads as "on no remote branch", yet is fetchable by sha from the
+## configured url (GitHub serves a fork-only commit from the upstream url via a
+## shared object store). The old check short-circuited such a pin to a FATAL
+## UNFETCHABLE before the network probe ever ran, blocking legitimate dispatches.
+## Model it by deleting the submodule's remote-tracking refs while the object
+## stays present and reachable from the configured url.
+untracked="${workdir}/super-untracked"
+build_super "${untracked}" "${upstream}" "${ancestor_sha}"
+strip_remote_tracking "${untracked}/sub"
+output_untracked="$( run_preflight "${untracked}" )"
+if grep --quiet 'UNFETCHABLE' <<< "${output_untracked}"; then
+   fail "a pin present locally, off every remote-tracking branch, but fetchable from the configured url was reported UNFETCHABLE -- the pre-probe short-circuit is back:
+$( printf '%s\n' "${output_untracked}" | grep 'UNFETCHABLE' )"
+elif grep --quiet 'FORK-ONLY' <<< "${output_untracked}"; then
+   fail "the same pin was reported FORK-ONLY though fetch-by-sha from the configured url succeeds:
+$( printf '%s\n' "${output_untracked}" | grep 'FORK-ONLY' )"
+else
+   pass 'a reachable pin off every remote-tracking branch is verified, not short-circuited to UNFETCHABLE'
+fi
+
+## --- a pin present ONLY locally (unpushed) is still UNFETCHABLE --------------
+## The guard the false-positive fix must NOT weaken: a committed-but-unpushed pin
+## is present locally, on no remote-tracking branch, and reachable from nowhere
+## the configured url can serve -- CI's recursive checkout WILL fail. Model it
+## with the fork-only shape (config url repointed to a repo that never had the
+## commit) PLUS the tracking refs stripped, so it is off every remote branch.
+onlylocal="${workdir}/super-onlylocal"
+build_super "${onlylocal}" "${fork_upstream}" "${orphan_sha}"
+git_quiet -C "${onlylocal}" config -f .gitmodules submodule.sub.url "file://${lonely}"
+git_quiet -C "${onlylocal}" add .gitmodules
+git_quiet -C "${onlylocal}" commit --quiet --message repoint-onlylocal
+strip_remote_tracking "${onlylocal}/sub"
+output_onlylocal="$( run_preflight "${onlylocal}" )"
+if grep --quiet 'UNFETCHABLE' <<< "${output_onlylocal}"; then
+   pass 'a pin present only locally, off every remote branch and unreachable, is reported UNFETCHABLE'
+else
+   fail "an unpushed local-only pin was NOT caught as UNFETCHABLE; the guard was lost:
+${output_onlylocal}"
+fi
+
 ## --- the probe must not mutate the repo under inspection -------------------
 ## A --depth=1 fetch into a full clone writes a .git/shallow graft. An
 ## inspection tool that corrupts its subject is not an inspection tool.
