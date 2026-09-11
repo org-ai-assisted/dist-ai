@@ -41,7 +41,7 @@ import random
 import zlib
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QEventLoop, QTimer, Qt
+from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtGui import QImage
 
 from secure_terminal.main import MainWindow, ZOOM_MIN, ZOOM_MAX
@@ -329,7 +329,7 @@ class ZoomHarness:
                 try:
                     w.shutdown()
                 except Exception:
-                    pass
+                    pass                 # best-effort pty release; removeTab still detaches it
             self.win.tabs.removeTab(i)
 
     def _new_tab(self, mode, display_mode):
@@ -436,7 +436,7 @@ class ZoomHarness:
         try:
             term.shutdown()
         except Exception:
-            pass
+            pass                         # best-effort pty release; the retire proceeds regardless
         idx = self.win.tabs.indexOf(term)
         if idx >= 0:
             self.win.tabs.removeTab(idx)

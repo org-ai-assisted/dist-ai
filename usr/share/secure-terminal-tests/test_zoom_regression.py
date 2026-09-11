@@ -37,7 +37,7 @@ import tempfile
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)   # auto-reap the boards' /bin/cat children
 except (OSError, ValueError, AttributeError):
-    pass
+    pass                                # not the main thread / unsupported: reaping is optional
 
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(zoom)')
@@ -77,7 +77,7 @@ def finish():
         if _cov is not None:
             _cov.save()
     except Exception:
-        pass
+        pass                            # coverage is optional instrumentation, never fatal
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0 if FAIL == 0 else 1)
