@@ -18,8 +18,9 @@ Subcommands:
   full [--dump DIR] [--boards B,B] [--res WxH,WxH] [--zooms N,N]
         The comprehensive diagnostic sweep across the full matrix; prints every
         artifact found. --dump saves a PNG per cell.
-  publish --out DIR [--webp]
-        Emit the curated human-verification subset (window PNGs, optional webp).
+  publish --out DIR
+        Emit the curated human-verification subset as window PNGs + a manifest.tsv.
+        The page-build step converts these to webp; this command stays PNG-only.
 
 Exit non-zero if ANY cell reports an artifact (so `full` doubles as a gate).
 """
@@ -64,13 +65,28 @@ def _check_boards(names):
 
 def _parse_zoom(s):
     try:
-        return int(s)
+        v = int(s)
     except (ValueError, TypeError):
         raise SystemExit('zoom-sweep: bad zoom %r (want an integer percent, e.g. 150)' % (s,))
+    # Reject out-of-range up front: the app clamps a zoom to ZOOM_MIN..ZOOM_MAX, so
+    # accepting e.g. 999999 would render at ZOOM_MAX while the cell label / dump filename
+    # (_tag) still said 999999 -- a shot whose own name lies about its zoom.
+    if not (Z.ZOOM_MIN <= v <= Z.ZOOM_MAX):
+        raise SystemExit('zoom-sweep: zoom %d out of range %d..%d'
+                         % (v, Z.ZOOM_MIN, Z.ZOOM_MAX))
+    return v
 
 
 def _parse_zooms(s):
     return [_parse_zoom(z) for z in s.split(',')]
+
+
+def _check_displays(names):
+    unknown = [n for n in names if n not in Z.DISPLAY_MODES_TESTED]
+    if unknown:
+        raise SystemExit('zoom-sweep: unknown display mode(s) %s; known: %s'
+                         % (', '.join(unknown), ', '.join(Z.DISPLAY_MODES_TESTED)))
+    return names
 
 
 def _display_mode(term):
@@ -123,7 +139,7 @@ def cmd_full(args):
     boards = _check_boards(args.boards.split(',')) if args.boards else list(Z.BOARDS)
     resolutions = [_parse_res(s) for s in args.res.split(',')] if args.res else list(Z.RESOLUTIONS)
     zooms = _parse_zooms(args.zooms) if args.zooms else list(Z.CANONICAL_ZOOMS)
-    displays = args.display.split(',') if args.display else [Z.PRIMARY_DISPLAY]
+    displays = _check_displays(args.display.split(',')) if args.display else [Z.PRIMARY_DISPLAY]
     h = Z.ZoomHarness()
     total = 0
     flagged = 0
@@ -228,7 +244,6 @@ def main(argv=None):
 
     pp = sub.add_parser('publish')
     pp.add_argument('--out', required=True)
-    pp.add_argument('--webp', action='store_true')
     pp.set_defaults(fn=cmd_publish)
 
     args = p.parse_args(argv)
