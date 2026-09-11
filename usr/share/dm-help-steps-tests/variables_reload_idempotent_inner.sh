@@ -24,6 +24,10 @@ reload_first_snapshot="$1"
 reload_second_snapshot="$2"
 shift 2
 
+## CI/suite runs as root; the resolver's pre root-check refuses that without
+## this documented override (help-steps/pre). No-op when not root.
+export dist_build_allow_root=true
+
 source help-steps/pre
 source help-steps/variables "$@"
 declare -p | LC_ALL=C sort > "${reload_first_snapshot}"
