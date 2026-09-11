@@ -515,14 +515,22 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
    setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"; exit "$?"' bash "${pgid_file}" "$@" &
 }
 
-## PIDs currently in process group PGID (matched on the pgid column). Used to reap a group
-## member-by-member when a single `kill -- -PGID` does not reach the members -- observed on a
-## container / PID-namespaced CI runner, where the negative-PGID signal left a hung capture
-## alive past its deadline. Per-PID kills (same UID) are the reliable reaper there.
+## PIDs currently in process group PGID. Used to reap a group member-by-member when a single
+## `kill -- -PGID` does not reach the members -- observed on a container / PID-namespaced CI
+## runner, where the negative-PGID signal left a hung capture alive past its deadline. Per-PID
+## kills (same UID) are the reliable reaper there. Enumerates via /proc (no ps/awk dependency
+## -- the CI container is minimal): each /proc/PID/stat is "PID (comm) state ppid pgrp ...";
+## comm may hold spaces or ')', so read the fields AFTER the last ')' -- field 3 is the pgid.
 shots_group_members() {  ## $1=pgid -> member PIDs, one per line
-   local pgid="$1"
+   local pgid="$1" d pid line rest pgrp
    case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
-   ps -eo pid=,pgid= 2>/dev/null | awk -v g="${pgid}" '$2 == g { print $1 }'
+   for d in /proc/[0-9]*; do
+      pid="${d#/proc/}"
+      read -r line < "${d}/stat" 2>/dev/null || continue
+      rest="${line##*) }"
+      read -r _ _ pgrp _ <<< "${rest}"
+      [ "${pgrp}" = "${pgid}" ] && printf '%s\n' "${pid}"
+   done
 }
 
 ## Reap ONE recorded process group: TERM then, after a short grace, KILL -- signalling BOTH the
