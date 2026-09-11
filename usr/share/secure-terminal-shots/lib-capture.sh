@@ -515,21 +515,37 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
    setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"; exit "$?"' bash "${pgid_file}" "$@" &
 }
 
-## Reap ONE recorded process group: TERM the whole group, then KILL after a short grace. Guards
-## against a non-numeric / bogus id and against ever signalling this shell's OWN group.
+## PIDs currently in process group PGID (matched on the pgid column). Used to reap a group
+## member-by-member when a single `kill -- -PGID` does not reach the members -- observed on a
+## container / PID-namespaced CI runner, where the negative-PGID signal left a hung capture
+## alive past its deadline. Per-PID kills (same UID) are the reliable reaper there.
+shots_group_members() {  ## $1=pgid -> member PIDs, one per line
+   local pgid="$1"
+   case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
+   ps -eo pid=,pgid= 2>/dev/null | awk -v g="${pgid}" '$2 == g { print $1 }'
+}
+
+## Reap ONE recorded process group: TERM then, after a short grace, KILL -- signalling BOTH the
+## whole group (kill -- -PGID) AND each member individually, since the group-wide signal is
+## unreliable under some container / PID-namespace CI runners (a hung capture survived its
+## deadline there). Aliveness is judged by remaining group MEMBERS, not `kill -0 -PGID`, for the
+## same reason. Guards against a non-numeric / bogus id and against ever signalling this shell's
+## OWN group.
 shots_reap_group() {  ## $1=pgid
-   local pgid="$1" self i
+   local pgid="$1" self i m
    [ -n "${pgid}" ] || return 0
    case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
    [ "${pgid}" -gt 1 ] || return 0
    self="$(shots_pgid_of "$$" || true)"
    [ "${pgid}" = "${self}" ] && return 0
    kill -s TERM "-${pgid}" 2>/dev/null || true
+   for m in $(shots_group_members "${pgid}"); do kill -s TERM "${m}" 2>/dev/null || true; done
    for i in 1 2 3 4 5 6; do
-      kill -0 "-${pgid}" 2>/dev/null || return 0
+      [ -z "$(shots_group_members "${pgid}")" ] && return 0
       sleep 0.5
    done
    kill -s KILL "-${pgid}" 2>/dev/null || true
+   for m in $(shots_group_members "${pgid}"); do kill -s KILL "${m}" 2>/dev/null || true; done
 }
 
 ## Escape a string into a LITERAL POSIX-ERE pattern. safe-pgrep / safe-pkill match `--full` via
@@ -560,7 +576,7 @@ shots_ere_escape() {  ## $1=literal -> ERE-escaped
 ## pgrep -f / pkill -f / pkill -x. Because MARKER is a per-run mktemp path, this can NEVER touch a
 ## process that does not carry that exact marker.
 shots_reap_run() {  ## $1=marker
-   local marker="$1" pid pgid self pgids='' p marker_re
+   local marker="$1" pid pgid self pgids='' p m marker_re
    shots_require_safe_ps || return 1
    [ -n "${marker}" ] || return 0
    ## match the marker LITERALLY (pgrep -f is a regex; the marker is a filesystem path).
@@ -574,9 +590,17 @@ shots_reap_run() {  ## $1=marker
       [ "${pgid}" = "${self}" ] && continue
       case " ${pgids} " in *" ${pgid} "*) : ;; *) pgids+=" ${pgid}" ;; esac
    done
-   for p in ${pgids}; do kill -s TERM "-${p}" 2>/dev/null || true; done
+   ## group-wide AND per-member signals -- the negative-PGID signal is unreliable under some
+   ## container / PID-namespace runners (see shots_reap_group), so reap members individually too.
+   for p in ${pgids}; do
+      kill -s TERM "-${p}" 2>/dev/null || true
+      for m in $(shots_group_members "${p}"); do kill -s TERM "${m}" 2>/dev/null || true; done
+   done
    [ -n "${pgids}" ] && sleep 2
-   for p in ${pgids}; do kill -s KILL "-${p}" 2>/dev/null || true; done
+   for p in ${pgids}; do
+      kill -s KILL "-${p}" 2>/dev/null || true
+      for m in $(shots_group_members "${p}"); do kill -s KILL "${m}" 2>/dev/null || true; done
+   done
    ## final sweep: a MARKED straggler whose group we missed (exit 1 = none, forgiven).
    safe-pkill --signal KILL --full -- "${marker_re}" 2>/dev/null || true
 }
