@@ -367,6 +367,12 @@ win.show_hover_tip(_hwterm, 'reanchor-same-text', _hw_rA)
 win.show_hover_tip(_hwterm, 'reanchor-same-text', _hw_rB)
 ok(_hwtip._src_rect == _hw_rB,
    'show_hover_tip re-anchors on an at_rect change even with identical text')
+win.show_hover_tip(_hwterm, 'reanchor-same-text', _hw_rB)   # anchor+text+rect all identical
+ok(_hwtip._src_rect == _hw_rB and _hwtip.text() == 'reanchor-same-text',
+   'show_hover_tip is idempotent when anchor, text AND at_rect all match (no re-show)')
+ok(_hwterm._glyph_rect(_QP_hw(_hwterm.viewport().width() - 3,
+                              _hwterm.viewport().height() - 3)).width() >= 1,
+   '_glyph_rect over empty space returns a minimal rect (fallback), not a crash')
 _hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hwpt, _hwterm.viewport().mapToGlobal(_hwpt)))
 ok(_hwtip.isVisible(), 'a repeated hover over the same glyph keeps the tip up (no toggle)')
 _hw_empty = _QP_hw(_hwterm.viewport().width() - 2, _hwterm.viewport().height() - 2)
