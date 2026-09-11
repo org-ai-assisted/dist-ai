@@ -171,8 +171,8 @@ if [ "${submodules}" = 'true' ]; then
       ## '--force' re-checks-out the working tree even when the gitlink already
       ## matches. A fresh clone does not hit this; the actions/checkout state does.
       if ( cd -- "${component_dir}" \
-           && git submodule sync \
-           && git submodule update --init --force ) >&2 2>&1; then
+           && git submodule sync --quiet \
+           && git submodule update --init --force --quiet ); then
          printf '%s\n' "dist-ai-tests-ci-config: initialized ${component_dir} submodules" >&2
       else
          ## Not fatal here: the suite that needs one will exit 77 and be counted
@@ -180,29 +180,6 @@ if [ "${submodules}" = 'true' ]; then
          ## swallowing this would turn that into a green run.
          printf '%s\n' 'dist-ai-tests-ci-config: submodule init FAILED; suites needing one will report an unauthorized skip' >&2
       fi
-      ## TEMP-DIAG (remove after CI submodule debug): reveal the on-runner state.
-      diag_gitmodules='ABSENT'
-      [ -f "${component_dir}/.gitmodules" ] && diag_gitmodules='present'
-      diag_hs_count="$(find "${component_dir}/packages/kicksecure/helper-scripts" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
-      diag_dmf_count="$(find "${component_dir}/packages/kicksecure/developer-meta-files" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
-      diag_check_runtime='MISSING'
-      [ -f "${component_dir}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh" ] && diag_check_runtime='present'
-      {
-         printf 'TEMP-DIAG git: %s\n' "$(git --version)"
-         printf 'TEMP-DIAG gitmodules: %s\n' "${diag_gitmodules}"
-         printf 'TEMP-DIAG submodule status:\n'
-         ( cd -- "${component_dir}" && git submodule status 2>&1 ) | sed 's/^/   /'
-         printf 'TEMP-DIAG helper-scripts entries: %s   check_runtime.bsh: %s\n' "${diag_hs_count}" "${diag_check_runtime}"
-         printf 'TEMP-DIAG dmf entries: %s\n' "${diag_dmf_count}"
-         printf 'TEMP-DIAG insteadof:\n'
-         git config --get-regexp 'url\..*\.insteadof' 2>&1 | sed 's/^/   /'
-         printf 'TEMP-DIAG submodule url (helper-scripts/dmf):\n'
-         ( cd -- "${component_dir}" && git config --get-regexp 'submodule\..*\.url' 2>/dev/null | grep -E 'helper-scripts|developer-meta-files' ) | sed 's/^/   /'
-         printf 'TEMP-DIAG whoami: %s\n' "$(whoami 2>/dev/null)"
-         printf 'TEMP-DIAG resolver run (stderr shown; the tests suppress it):\n'
-         ( cd -- "${component_dir}" \
-           && bash -c 'source help-steps/pre; source help-steps/variables --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false; printf "TEMP-DIAG RESOLVER_HOSTNAME=[%s] rc-of-source-was-0\n" "${dist_build_hostname:-UNSET}"' ) 2>&1 | sed 's/^/   /'
-      } >&2
    fi
 fi
 
