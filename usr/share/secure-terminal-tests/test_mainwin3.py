@@ -881,6 +881,26 @@ if _lfd is not None:
     os.close(_lfd)
 if os.path.exists(_lp) and not os.path.isdir(_lp):
     os.remove(_lp)
+# claude (ai-review): a SYMLINK planted at the predictable lock path must not be followed.
+# O_NOFOLLOW turns it into an ELOOP that the SAME self-heal (unlink+retry) clears -- the
+# symlink is replaced by a real regular file and its target is never opened through the
+# link. (O_NOFOLLOW is not bypassed by root, so this holds under CI's root too.) canary:
+# without O_NOFOLLOW os.open follows the symlink and the lock path stays a symlink.
+_lsym_victim = os.path.join(os.path.dirname(_lp), 'lock-victim')
+with open(_lsym_victim, 'w', encoding='utf-8') as _lvh:
+    _lvh.write('KEEP-ME')
+os.symlink(_lsym_victim, _lp)
+_lsfd = M._acquire_group_lock(_lg)
+ok(_lsfd is not None and not os.path.islink(_lp) and os.path.isfile(_lp),
+   '_acquire_group_lock: a symlink at the lock path is self-healed (O_NOFOLLOW), not followed')
+with open(_lsym_victim, encoding='utf-8') as _lvh:
+    ok(_lvh.read() == 'KEEP-ME',
+       '_acquire_group_lock: the symlink target is untouched (never opened through the link)')
+if _lsfd is not None:
+    os.close(_lsfd)
+if os.path.exists(_lp) and not os.path.isdir(_lp):
+    os.remove(_lp)
+os.remove(_lsym_victim)
 os.mkdir(_lp)                                    # unopenable AND unlinkable -> degrade
 ok(M._acquire_group_lock(_lg) is None,
    '_acquire_group_lock: an unusable lock path degrades to None, never raises')
