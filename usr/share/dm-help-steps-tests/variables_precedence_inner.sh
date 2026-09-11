@@ -24,6 +24,10 @@ export LC_ALL=C
 prec_var_name="$1"
 shift
 
+## CI/suite runs as root; the resolver's pre root-check refuses that without
+## this documented override (help-steps/pre). No-op when not root.
+export dist_build_allow_root=true
+
 source help-steps/pre
 source help-steps/variables "$@"
 
