@@ -62,6 +62,17 @@ def _check_boards(names):
     return names
 
 
+def _parse_zoom(s):
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        raise SystemExit('zoom-sweep: bad zoom %r (want an integer percent, e.g. 150)' % (s,))
+
+
+def _parse_zooms(s):
+    return [_parse_zoom(z) for z in s.split(',')]
+
+
 def _display_mode(term):
     return getattr(term, '_mode', 'detail')
 
@@ -80,14 +91,18 @@ def _tag(board, mode, display, res, zoom):
 
 
 def cmd_one(args):
+    # Parse/validate args (clean SystemExit) BEFORE building the harness, so a bad value
+    # never reaches the Qt objects (a raw exception after that hits the static-teardown
+    # SIGSEGV path). res/zoom raise SystemExit -> routed through os._exit in __main__.
+    res = _parse_res(args.res)
+    zoom = _parse_zoom(args.zoom)
     h = Z.ZoomHarness()
     try:
-        res = _parse_res(args.res)
-        result = h.capture(Z.BOARDS[args.board][0], args.mode, res, int(args.zoom),
+        result = h.capture(Z.BOARDS[args.board][0], args.mode, res, zoom,
                            display_mode=args.display)
         spec = Z.board_spec(args.board)
         issues = Z.analyze(result, spec, _display_mode(result['term']))
-        tag = _tag(args.board, args.mode, args.display, res, int(args.zoom))
+        tag = _tag(args.board, args.mode, args.display, res, zoom)
         saved = _save(result, args.dump, tag) if args.dump else None
         print('cell %s zoom=%d blocks=%d ink=%.3f%s'
               % (tag, result['zoom'], result['term'].document().blockCount(),
@@ -104,9 +119,10 @@ def cmd_one(args):
 
 
 def cmd_full(args):
+    # All arg validation (clean SystemExit) BEFORE the harness -- see cmd_one.
     boards = _check_boards(args.boards.split(',')) if args.boards else list(Z.BOARDS)
     resolutions = [_parse_res(s) for s in args.res.split(',')] if args.res else list(Z.RESOLUTIONS)
-    zooms = [int(z) for z in args.zooms.split(',')] if args.zooms else list(Z.CANONICAL_ZOOMS)
+    zooms = _parse_zooms(args.zooms) if args.zooms else list(Z.CANONICAL_ZOOMS)
     displays = args.display.split(',') if args.display else [Z.PRIMARY_DISPLAY]
     h = Z.ZoomHarness()
     total = 0
