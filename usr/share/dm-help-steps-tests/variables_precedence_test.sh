@@ -76,7 +76,7 @@ resolve_check() {
    got="$(
       cd -- "${dm_checkout}" \
          && env dist_build_allow_root=true dist_build_unlock_dangerous_options=true ${envassign} \
-            bash "${inner}" dist_build_hostname "${base_args[@]}" "$@" 2>/dev/null \
+            bash "${inner}" dist_build_hostname "${base_args[@]}" "$@" 2>&2 \
          | grep '^RESULT=' | head -1 | cut -d= -f2-
    )" || true
    if [ "${got}" = "${expected}" ]; then
