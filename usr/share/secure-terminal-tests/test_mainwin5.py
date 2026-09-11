@@ -719,6 +719,19 @@ ok(_p9w.current().osc_enabled('osc_title'),
    'claude #9: an absent OSC key restores to the enabled default, not a forced False')
 _p9w.close(); _p9w.deleteLater(); APP.processEvents()
 
+# claude (ai-review): _restore_tab must seed the global 'always allow clipboard READ (no
+# prompt)' default, exactly as _apply_osc_defaults does for a NEW tab. The old restore
+# path applied the per-key OSC capabilities but never called set_clipboard_read_always, so
+# every tab restored from a saved session silently reverted to per-request prompting --
+# dropping the user's persisted 'no prompt' choice. (canary: old code left the term at its
+# constructor default False.)
+_craw = MainWindow(); _craw._locked = set()
+_craw._osc_clipboard_read_always = True           # persisted 'always allow read, no prompt'
+_craw._restore_tab({'osc': {'osc_clipboard_read': 'true'}})
+ok(_craw.current()._clipboard_read_always is True,
+   'claude: a restored tab inherits the global always-allow-clipboard-read default')
+_craw.close(); _craw.deleteLater(); APP.processEvents()
+
 # grok: _on_tab_step must SKIP a disabled restore placeholder and keep walking
 # (wrapping) to the next real tab, not dead-end on it -- a single `if enabled` did.
 # Indices are computed from count() (a fresh MainWindow already owns one live tab).
