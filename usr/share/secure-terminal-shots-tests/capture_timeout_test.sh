@@ -105,40 +105,21 @@ else
 fi
 ## arm the watchdog with a 2s deadline; do NOT cancel -> it must reap the group + flag it.
 wdog1="$(shots_watchdog_start 2 "${pgf1}" "${pgf1}.timeout")"
-## Poll generously (up to ~30s). The watchdog's worst-case reap is the 2s deadline plus the
-## TERM -> grace -> KILL escalation (~5s), but a loaded/contended CI runner stretches its
-## per-second sleeps well past that, so a tight window reads a not-yet-reaped group as a
-## spurious 'alive'. The loop BREAKS the instant the group dies, so a healthy reap still
-## returns in ~5s; the wide ceiling only absorbs scheduling slop. (wait cannot help here:
-## the watchdog is backgrounded inside shots_watchdog_start's `$()`, so it is not a child
-## of this shell and `wait` on its PID no-ops.)
+## Poll (up to ~30s) for the group's LIVE members to drain. Do NOT judge by `kill -0 -PGID`:
+## a killed member lingers as a ZOMBIE when the CI container's PID 1 does not reap orphans, and
+## kill -0 succeeds on a zombie -- so a reaped group read as a spurious 'alive'. shots_group_members
+## counts only LIVE (non-Z) members; the loop breaks the instant the last one goes. The wide
+## ceiling only absorbs a loaded runner's scheduling slop. (wait cannot help: the watchdog is
+## backgrounded inside shots_watchdog_start's `$()`, so it is not a child of this shell.)
 reaped=alive
 for _ in $(seq 1 120); do
-   if ! kill -0 "-${pgid1}" 2>/dev/null; then
+   if [ -z "$(shots_group_members "${pgid1}")" ]; then
       reaped=dead
       break
    fi
    sleep 0.25
 done
 wait "${wdog1}" 2>/dev/null || true
-if [ "${reaped}" = alive ]; then
-   {
-      printf 'DIAG: pgid1=%s pgid_file=[%s]\n' "${pgid1}" "$(cat "${pgf1}" 2>/dev/null)"
-      printf 'DIAG: kill -0 -pgid from test -> %s\n' \
-         "$(kill -0 "-${pgid1}" 2>/dev/null && printf signalable || printf NOT-signalable)"
-      printf 'DIAG: /proc members of pgid1 = [%s]\n' \
-         "$(shots_group_members "${pgid1}" | tr '\n' ' ')"
-      printf 'DIAG: direct group kill from test (-pgid) ...\n'
-      kill -s KILL "-${pgid1}" 2>&1 || printf 'DIAG: kill -pgid rc=%s\n' "$?"
-      for m in $(shots_group_members "${pgid1}"); do
-         kill -s KILL "${m}" 2>&1 && printf 'DIAG: killed member %s\n' "${m}" \
-            || printf 'DIAG: kill member %s FAILED rc=%s\n' "${m}" "$?"
-      done
-      sleep 0.5
-      printf 'DIAG: members after direct kill = [%s]\n' \
-         "$(shots_group_members "${pgid1}" | tr '\n' ' ')"
-   } >&2
-fi
 check "${reaped}" dead 'watchdog reaped the hung capture group within the deadline'
 if [ -e "${pgf1}.timeout" ]; then
    check flagged flagged 'watchdog flagged the timeout so the caller can warn'

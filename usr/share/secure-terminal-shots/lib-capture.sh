@@ -521,39 +521,41 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
 ## kills (same UID) are the reliable reaper there. Enumerates via /proc (no ps/awk dependency
 ## -- the CI container is minimal): each /proc/PID/stat is "PID (comm) state ppid pgrp ...";
 ## comm may hold spaces or ')', so read the fields AFTER the last ')' -- field 3 is the pgid.
-shots_group_members() {  ## $1=pgid -> member PIDs, one per line
-   local pgid="$1" d pid line rest pgrp
+## Returns only LIVE members: a ZOMBIE (state Z) is already dead but lingers in /proc with its
+## pgid when the container's PID 1 does not reap orphans (the GitHub Actions container has no
+## init that does) -- and `kill -0 -PGID` still succeeds on it, so counting it as alive made the
+## reap look like it never completed (the capture_timeout flake). Skip state Z.
+shots_group_members() {  ## $1=pgid -> LIVE member PIDs, one per line
+   local pgid="$1" d pid line rest state pgrp
    case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
    for d in /proc/[0-9]*; do
       pid="${d#/proc/}"
       read -r line < "${d}/stat" 2>/dev/null || continue
       rest="${line##*) }"
-      read -r _ _ pgrp _ <<< "${rest}"
+      read -r state _ pgrp _ <<< "${rest}"
+      [ "${state}" = "Z" ] && continue
       [ "${pgrp}" = "${pgid}" ] && printf '%s\n' "${pid}"
    done
 }
 
-## Reap ONE recorded process group: TERM then, after a short grace, KILL -- signalling BOTH the
-## whole group (kill -- -PGID) AND each member individually, since the group-wide signal is
-## unreliable under some container / PID-namespace CI runners (a hung capture survived its
-## deadline there). Aliveness is judged by remaining group MEMBERS, not `kill -0 -PGID`, for the
-## same reason. Guards against a non-numeric / bogus id and against ever signalling this shell's
-## OWN group.
+## Reap ONE recorded process group: TERM the whole group, then KILL after a short grace.
+## Aliveness is judged by remaining LIVE members (shots_group_members), NOT `kill -0 -PGID`:
+## a killed member lingers as a ZOMBIE where the container's PID 1 does not reap orphans, and
+## kill -0 succeeds on a zombie -- so the reap would spin the full grace every time. Guards
+## against a non-numeric / bogus id and against ever signalling this shell's OWN group.
 shots_reap_group() {  ## $1=pgid
-   local pgid="$1" self i m
+   local pgid="$1" self i
    [ -n "${pgid}" ] || return 0
    case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
    [ "${pgid}" -gt 1 ] || return 0
    self="$(shots_pgid_of "$$" || true)"
    [ "${pgid}" = "${self}" ] && return 0
    kill -s TERM "-${pgid}" 2>/dev/null || true
-   for m in $(shots_group_members "${pgid}"); do kill -s TERM "${m}" 2>/dev/null || true; done
    for i in 1 2 3 4 5 6; do
       [ -z "$(shots_group_members "${pgid}")" ] && return 0
       sleep 0.5
    done
    kill -s KILL "-${pgid}" 2>/dev/null || true
-   for m in $(shots_group_members "${pgid}"); do kill -s KILL "${m}" 2>/dev/null || true; done
 }
 
 ## Escape a string into a LITERAL POSIX-ERE pattern. safe-pgrep / safe-pkill match `--full` via
@@ -584,7 +586,7 @@ shots_ere_escape() {  ## $1=literal -> ERE-escaped
 ## pgrep -f / pkill -f / pkill -x. Because MARKER is a per-run mktemp path, this can NEVER touch a
 ## process that does not carry that exact marker.
 shots_reap_run() {  ## $1=marker
-   local marker="$1" pid pgid self pgids='' p m marker_re
+   local marker="$1" pid pgid self pgids='' p marker_re
    shots_require_safe_ps || return 1
    [ -n "${marker}" ] || return 0
    ## match the marker LITERALLY (pgrep -f is a regex; the marker is a filesystem path).
@@ -598,17 +600,9 @@ shots_reap_run() {  ## $1=marker
       [ "${pgid}" = "${self}" ] && continue
       case " ${pgids} " in *" ${pgid} "*) : ;; *) pgids+=" ${pgid}" ;; esac
    done
-   ## group-wide AND per-member signals -- the negative-PGID signal is unreliable under some
-   ## container / PID-namespace runners (see shots_reap_group), so reap members individually too.
-   for p in ${pgids}; do
-      kill -s TERM "-${p}" 2>/dev/null || true
-      for m in $(shots_group_members "${p}"); do kill -s TERM "${m}" 2>/dev/null || true; done
-   done
+   for p in ${pgids}; do kill -s TERM "-${p}" 2>/dev/null || true; done
    [ -n "${pgids}" ] && sleep 2
-   for p in ${pgids}; do
-      kill -s KILL "-${p}" 2>/dev/null || true
-      for m in $(shots_group_members "${p}"); do kill -s KILL "${m}" 2>/dev/null || true; done
-   done
+   for p in ${pgids}; do kill -s KILL "-${p}" 2>/dev/null || true; done
    ## final sweep: a MARKED straggler whose group we missed (exit 1 = none, forgiven).
    safe-pkill --signal KILL --full -- "${marker_re}" 2>/dev/null || true
 }
