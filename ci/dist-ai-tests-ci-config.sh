@@ -158,7 +158,21 @@ if [ "${submodules}" = 'true' ]; then
       fi
       ## NOT --recursive: the suites assert on the component's OWN submodules,
       ## and recursing multiplies the checkout for no coverage.
-      if ( cd -- "${component_dir}" && git submodule update --init --quiet ); then
+      ##
+      ## 'sync' then '--force': actions/checkout leaves the component with the
+      ## submodule paths present as EMPTY dirs and their remote URLs registered
+      ## upstream (pre the configure-fork-mirror rewrite above). A plain
+      ## 'update --init' then sees the gitlink already at its pin and does
+      ## NOTHING -- returning 0 while the working trees stay empty, so a resolver
+      ## that sources a submodule file (help-steps/pre -> helper-scripts,
+      ## 60_repos-cowbuilder-dump -> developer-meta-files) aborts and every
+      ## dependent suite fails with a confusing 'no valid build combo'. 'sync'
+      ## re-derives each remote URL through the fork-mirror insteadOf, and
+      ## '--force' re-checks-out the working tree even when the gitlink already
+      ## matches. A fresh clone does not hit this; the actions/checkout state does.
+      if ( cd -- "${component_dir}" \
+           && git submodule sync --quiet \
+           && git submodule update --init --force --quiet ); then
          printf '%s\n' "dist-ai-tests-ci-config: initialized ${component_dir} submodules" >&2
       else
          ## Not fatal here: the suite that needs one will exit 77 and be counted
