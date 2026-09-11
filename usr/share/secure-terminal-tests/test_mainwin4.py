@@ -1250,6 +1250,35 @@ ok(bool(_gm_calls),
    'applying Global Settings refreshes an open review mirror (rerender_mirror called)')
 _gmwin.close()
 
+# --- REGRESSION (ai-review): the find bar must not crash when the current tab is a restore
+# placeholder (current() is None). _find_update's single-tab branch called _highlight_matches
+# with a None term -> AttributeError aborting the app. Stub current() to a placeholder.
+_fu_orig_current = win.current
+try:
+    win.current = lambda: None
+    win._find_bar.all_tabs.setChecked(False)
+    win._find_bar.input.setText('needle')
+    win._find_update()                       # must not raise
+    ok(win._find_bar.count.text() == '',
+       '_find_update on a None current tab clears the count and does not crash')
+finally:
+    win.current = _fu_orig_current
+    win._find_bar.input.setText('')
+
+# --- REGRESSION (ai-review): _tab_index tolerates a term whose C++ object was DELETED while a
+# context menu was open (indexOf on a dead wrapper raises RuntimeError). A live term resolves
+# to its index; a removed + deleted term resolves to -1 (a no-op for every menu action).
+win.new_tab()
+_ti_live = win.current()
+ok(win._tab_index(_ti_live) == win.tabs.indexOf(_ti_live),
+   '_tab_index returns the real index for a live term')
+win.new_tab()
+_ti_dead = win.current()
+win.close_tab(win.tabs.indexOf(_ti_dead))
+sip.delete(_ti_dead)                         # force immediate C++ deletion (the menu race)
+ok(win._tab_index(_ti_dead) == -1,
+   '_tab_index returns -1 for a removed + deleted term, no RuntimeError')
+
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
 # The full-startup main() runs above connected _shutdown_all_tabs to
 # app.aboutToQuit; fire it with a tab whose shutdown() raises to drive the
