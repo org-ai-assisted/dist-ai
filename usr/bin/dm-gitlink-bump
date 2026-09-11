@@ -1,0 +1,231 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Bump derivative-maker's submodule gitlinks to the submodule work you have
+## ALREADY committed and published, in ONE parent commit -- the step that is
+## forgotten after a submodule commit, leaving CI to build the stale pin.
+##
+## WHY A TOOL, NOT A HABIT: a submodule advanced + pushed but whose parent
+## pointer never moved is invisible to the author (a fresh checkout shows the
+## submodule AT the pin) yet builds the wrong tree in CI. dm-push stays
+## push-only; this is the sole thing that touches gitlinks.
+##
+## WHAT IT BUMPS -- a direct submodule qualifies only when ALL hold:
+##   - on branch 'ai' (the single work branch) and clean (no uncommitted work)
+##   - its HEAD is strictly AHEAD of the recorded gitlink (pin is an ancestor)
+##   - its HEAD EQUALS a remote-tracking 'ai' tip (LOCAL check, no network): the
+##     local ai is exactly at a known published fork tip, so the new pin is
+##     fetchable AND current -- not an intermediate published commit.
+## A submodule ahead but NOT at a published ai tip is left alone and reported:
+## it is either unpushed WIP, or a local ai behind the fork tip. Publish
+## (dm-push) or fetch, then re-run to advance the pin. Behind / diverged /
+## detached / dirty submodules are skipped. Freshness of the "published tip" is
+## bounded by the last fetch -- a fetch refreshes it; the tool never reaches out.
+##
+## The bump is a parent commit of ONLY the gitlink paths. It sets the sanctioned
+## commit-guard overrides for itself (GIT_BRANCH_GUARD_ALLOW + GIT_GITLINK_GUARD_ALLOW):
+## the gitlink guard exists to catch ACCIDENTAL pointer bumps, and this is the
+## DELIBERATE, reviewed bumper.
+##
+## Usage:
+##   dm-gitlink-bump [--dir <derivative-maker checkout>] [--dry-run]
+##   dm-gitlink-bump --check [--dir <checkout>]
+##
+## --check  detect only, no commit. Exit 0 = nothing to bump (or not a
+##          derivative-maker checkout); exit 3 = a published-ahead submodule is
+##          unpinned (the pre-push hook rejects on this). No network either way.
+##
+## Exit: 0 done / nothing to do | 2 usage / not a checkout | 3 (--check) bump needed.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+AI_BRANCH="ai"
+
+source_dir=""
+dry_run="false"
+check_only="false"
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      --check)
+         check_only="true"
+         shift
+         ;;
+      -h|--help)
+         printf '%s\n' \
+            "Bump derivative-maker submodule gitlinks to committed+published" \
+            "submodule HEADs, in one parent commit. dm-push stays push-only." \
+            "" \
+            "Usage: ${0##*/} [--dir <derivative-maker checkout>] [--dry-run]" \
+            "       ${0##*/} --check [--dir <checkout>]" \
+            "" \
+            "  --dir      the checkout to operate on (default: current directory)" \
+            "  --dry-run  report what would be bumped; make no commit" \
+            "  --check    detect only; exit 3 if a published-ahead pin is unbumped" \
+            "" \
+            "Exit: 0 done/nothing | 2 usage/not a checkout | 3 (--check) bump needed."
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+
+## Not a derivative-maker checkout: nothing to enforce. --check is invoked
+## unconditionally by the pre-push hook on EVERY push, so this must be a clean
+## no-op (exit 0) outside derivative-maker, not an error.
+if [ ! -d "${source_dir}/build-steps.d" ] || [ ! -d "${source_dir}/help-steps" ]; then
+   if [ "${check_only}" = "true" ]; then
+      exit 0
+   fi
+   printf '%s\n' "${0##*/}: '${source_dir}' is not a derivative-maker checkout (no build-steps.d + help-steps)." >&2
+   exit 2
+fi
+
+top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+if [ -z "${top}" ]; then
+   [ "${check_only}" = "true" ] && exit 0
+   printf '%s\n' "${0##*/}: '${source_dir}' is not inside a git worktree." >&2
+   exit 2
+fi
+if [ ! "$( readlink -f -- "${top}" )" = "$( readlink -f -- "${source_dir}" )" ]; then
+   [ "${check_only}" = "true" ] && exit 0
+   printf '%s\n' "${0##*/}: '${source_dir}' is not the worktree ROOT (that is '${top}')." >&2
+   exit 2
+fi
+
+## Collect direct (non-recursive) submodule paths, relative to the superproject
+## root. foreach visits only INITIALIZED submodules; an uninitialized one has
+## nothing checked out, so it can never be ahead of its pin.
+sub_paths=()
+if git -C "${top}" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+   mapfile -t sub_paths < <( git -C "${top}" submodule --quiet foreach 'printf "%s\n" "${sm_path}"' 2>/dev/null || true )
+fi
+
+## Classify each submodule. A submodule qualifies for a bump only if it is on
+## 'ai', clean, strictly ahead of the pin, and its HEAD is exactly a published
+## ai tip.
+to_bump_paths=()
+to_bump_shas=()
+skipped_notes=()
+
+for path in "${sub_paths[@]}"; do
+   [ -n "${path}" ] || continue
+   sub="${top}/${path}"
+   [ -d "${sub}/.git" ] || [ -f "${sub}/.git" ] || continue
+
+   branch="$( git -C "${sub}" symbolic-ref --quiet --short HEAD 2>/dev/null || true )"
+   [ "${branch}" = "${AI_BRANCH}" ] || continue
+
+   ## Clean: no uncommitted tracked changes. Untracked files do not block a pin.
+   if [ -n "$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )" ]; then
+      continue
+   fi
+
+   head_sha="$( git -C "${sub}" rev-parse --verify HEAD 2>/dev/null || true )"
+   [ -n "${head_sha}" ] || continue
+
+   pin_sha="$( git -C "${top}" rev-parse --verify "HEAD:${path}" 2>/dev/null || true )"
+   [ -n "${pin_sha}" ] || continue
+   [ "${head_sha}" != "${pin_sha}" ] || continue
+
+   ## Strictly AHEAD: the pin is an ancestor of HEAD. Behind or diverged -> skip.
+   git -C "${sub}" merge-base --is-ancestor "${pin_sha}" "${head_sha}" 2>/dev/null || continue
+
+   ## Published AT a tip: HEAD must EQUAL a remote-tracking 'ai' tip, not merely
+   ## be contained in one -- otherwise a stale local ai behind the fork tip would
+   ## pin an intermediate commit. Local refs only, no network.
+   at_published_tip="false"
+   while IFS= read -r rt_tip; do
+      if [ "${rt_tip}" = "${head_sha}" ]; then
+         at_published_tip="true"
+         break
+      fi
+   done < <( git -C "${sub}" for-each-ref --format='%(objectname)' 'refs/remotes/*/ai' 2>/dev/null )
+
+   if [ "${at_published_tip}" = "true" ]; then
+      to_bump_paths+=( "${path}" )
+      to_bump_shas+=( "${head_sha}" )
+   else
+      skipped_notes+=( "${path} (HEAD ${head_sha:0:12} ahead of pin but not at a published ai tip; dm-push or fetch, then re-run)" )
+   fi
+done
+
+## --check: the pre-push gate. A published-ahead pin left unbumped is the bug.
+if [ "${check_only}" = "true" ]; then
+   [ "${#to_bump_paths[@]}" -eq 0 ] && exit 0
+   printf '%s\n' "${0##*/}: ${#to_bump_paths[@]} submodule gitlink(s) behind published HEAD:" >&2
+   for i in "${!to_bump_paths[@]}"; do
+      printf '   %s -> %s\n' "${to_bump_paths[${i}]}" "${to_bump_shas[${i}]:0:12}" >&2
+   done
+   exit 3
+fi
+
+## Report ahead-but-not-at-a-published-tip submodules (WIP or stale local; not
+## an error).
+for note in "${skipped_notes[@]}"; do
+   printf 'NOTE: %s\n' "${note}" >&2
+done
+
+if [ "${#to_bump_paths[@]}" -eq 0 ]; then
+   printf '%s\n' "${0##*/}: every dm gitlink is current; nothing to bump."
+   exit 0
+fi
+
+## The parent commit must land on 'ai'.
+super_branch="$( git -C "${top}" symbolic-ref --quiet --short HEAD 2>/dev/null || true )"
+if [ "${super_branch}" != "${AI_BRANCH}" ]; then
+   printf '%s\n' "${0##*/}: superproject is on '${super_branch:-DETACHED}', not '${AI_BRANCH}'; refusing to bump." >&2
+   exit 2
+fi
+
+printf '%s\n' "${0##*/}: bumping ${#to_bump_paths[@]} gitlink(s):"
+for i in "${!to_bump_paths[@]}"; do
+   printf '   %s: %s -> %s\n' \
+      "${to_bump_paths[${i}]}" \
+      "$( git -C "${top}" rev-parse --verify --short "HEAD:${to_bump_paths[${i}]}" 2>/dev/null )" \
+      "${to_bump_shas[${i}]:0:12}"
+done
+
+if [ "${dry_run}" = "true" ]; then
+   printf '%s\n' "${0##*/}: --dry-run; no commit made."
+   exit 0
+fi
+
+## Commit ONLY those gitlink paths. Each qualifying submodule is on 'ai', clean,
+## and its HEAD IS the target published tip, so a partial commit of the path
+## records that HEAD as the new pin. The pathspec keeps any unrelated staged
+## change out (a bare 'commit' would sweep them in). Fixed subject: the diff
+## already names the submodules, so listing them here would only restate it.
+## Overrides: this IS the deliberate gitlink bumper -- the guard that would
+## otherwise refuse a pointer commit is meant for ACCIDENTAL bumps.
+GIT_BRANCH_GUARD_ALLOW=1 GIT_GITLINK_GUARD_ALLOW=1 \
+   git -C "${top}" commit --quiet \
+      -m "Bump submodule gitlinks to published ai tips" \
+      -- "${to_bump_paths[@]}"
+
+printf '%s\n' "${0##*/}: committed. Push with dm-push (submodules first if any were unpublished)."
+exit 0

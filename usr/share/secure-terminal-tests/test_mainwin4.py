@@ -665,6 +665,53 @@ _sip.delete(_probe_w)
 _tip._check_pointer()
 ok(not _tip.isVisible() and _tip._source is None,
    'InfoTip: a destroyed source is caught (source cleared, no crash) and the tip hides')
+# Regression: a GLYPH-scoped hover (at_rect) hides on leaving the glyph even while the
+# pointer is still over the source widget -- the codepoint tip used to persist across the
+# whole terminal. Source rect is huge (covers the cursor); the glyph rect is far away, so
+# the leave-poll's over-source check must key on the glyph, not the widget.
+from PyQt6.QtCore import QRect as _QRect_gs                     # noqa: E402
+_gsw = MainWindow()
+_gsw.move(0, 0)
+_gsw.resize(2000, 2000)
+_gsw.show()
+APP.processEvents()
+_gstip = M.InfoTip(win)
+_gstip.show_for(_gsw, 'glyph info', 100, 'light', _QRect_gs(9000, 9000, 8, 16))
+_gstip.move(9000, 9000)                                         # tip off the cursor too
+_gstip._check_pointer()
+ok(not _gstip.isVisible(),
+   'InfoTip: a glyph-scoped (at_rect) hover hides on leaving the glyph, not the whole widget')
+_gstip.show_for(_gsw, 'widget info', 100, 'light')             # at_rect=None: widget-anchored
+_gstip.move(9000, 9000)
+_gstip._check_pointer()
+ok(_gstip.isVisible(),
+   'InfoTip: a widget-anchored tip stays while the pointer is over the source widget')
+_gstip.hide()
+_gstip._poll.stop()
+_gsw.close()
+# Ctrl+wheel over a shown tip zooms it in place (tip-local); a plain wheel does not.
+from PyQt6.QtGui import QWheelEvent as _QWE_tz                  # noqa: E402
+from PyQt6.QtCore import QPoint as _QP_tz, QPointF as _QPF_tz, Qt as _Qt_tz  # noqa: E402
+_tztip = M.InfoTip(win)
+_tztip.show_for(win, 'zoom me', 100, 'light')
+_tz_z0 = _tztip._zoom
+
+
+def _tz_wheel(dy, mods):
+    return _QWE_tz(_QPF_tz(3, 3), _QPF_tz(3, 3), _QP_tz(0, 0), _QP_tz(0, dy),
+                   _Qt_tz.MouseButton.NoButton, mods,
+                   _Qt_tz.ScrollPhase.NoScrollPhase, False)
+
+
+_tztip.wheelEvent(_tz_wheel(120, _Qt_tz.KeyboardModifier.ControlModifier))
+ok(_tztip._zoom > _tz_z0, 'InfoTip: Ctrl+wheel zooms the tip in (tip-local)')
+_tz_z1 = _tztip._zoom
+_tztip.wheelEvent(_tz_wheel(120, _Qt_tz.KeyboardModifier.NoModifier))
+ok(_tztip._zoom == _tz_z1, 'InfoTip: a plain wheel does not zoom the tip')
+_tztip.wheelEvent(_tz_wheel(-120, _Qt_tz.KeyboardModifier.ControlModifier))
+ok(_tztip._zoom < _tz_z1, 'InfoTip: Ctrl+wheel down zooms the tip out')
+_tztip.hide()
+_tztip._poll.stop()
 from PyQt6.QtGui import QKeyEvent as _QKE2                       # noqa: E402
 from PyQt6.QtCore import QEvent as _QEv2                         # noqa: E402
 _tip.show_for(win, 'inspect', 100, 'light')
