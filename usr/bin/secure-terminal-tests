@@ -128,6 +128,7 @@ for test_file in \
    "${tests_dir}/test_widget.py" \
    "${tests_dir}/test_widget2.py" \
    "${tests_dir}/test_state_dump.py" \
+   "${tests_dir}/test_zoom_regression.py" \
    "${tests_dir}/test_fuzz_widget.py"; do
    [ -f "${test_file}" ] || continue
    ## Capture the suite's real exit status. A bare `if python3 ...; then` would leave `$?` as the
