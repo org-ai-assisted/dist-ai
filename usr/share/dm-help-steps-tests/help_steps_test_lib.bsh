@@ -26,6 +26,39 @@ else
    dm_checkout="${HOME}/derivative-maker"
 fi
 
+## Real derivative-maker builds START as a non-root user and sudo INTERNALLY; the
+## resolver (help-steps/pre + variables) is written for a non-root invoker (it
+## refuses root, and derives user_name from the login user). The dist-ai CI
+## container runs as root, so sourcing the resolver there is UNFAITHFUL and trips
+## those guards (root-check, empty user_name). Re-exec the calling test as a
+## dedicated non-root build user -- created on demand, given passwordless sudo for
+## dm's internal privileged steps, with the root-owned checkout marked git-safe --
+## so the resolver runs exactly as a real build does. No-op when already non-root,
+## so it is transparent on a developer host. Call FIRST in a resolver test:
+##    reexec_as_build_user "$0" "$@"
+reexec_as_build_user() {
+   [ "$(id -u)" = "0" ] || return 0
+   local build_user="dm-ci-build"
+   id "${build_user}" >/dev/null 2>&1 \
+      || useradd --create-home --shell /bin/bash "${build_user}" >&2
+   ## dm runs 'sudo' internally for privileged build steps; grant it. Written
+   ## unconditionally -- inert if sudo is not installed, so no availability probe.
+   printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${build_user}" \
+      > "/etc/sudoers.d/${build_user}" 2>/dev/null || true
+   ## The checkout is root-owned; without this the build user's 'git rev-parse
+   ## HEAD' (30_version-paths) is refused for dubious ownership and the resolver
+   ## aborts. '*' because submodule git dirs need it too.
+   runuser -u "${build_user}" -- \
+      git config --global --add safe.directory '*' >/dev/null 2>&1 || true
+   ## Re-run the SAME script as the build user, PRESERVING the environment (the
+   ## precedence test seeds dist_build_* env vars the resolver must still see);
+   ## only HOME is repointed at the build user's own writable home.
+   ## style-ok: R-103 -- a deliberate re-exec into the faithful non-root build
+   ## context IS the purpose here; forwarding an exit code would not drop privileges.
+   exec runuser --preserve-environment -u "${build_user}" -- \
+      env HOME="/home/${build_user}" bash "$@"
+}
+
 pass() {
    printf '%s\n' "PASS: $*"
 }
