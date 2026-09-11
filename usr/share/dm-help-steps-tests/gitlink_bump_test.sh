@@ -214,8 +214,33 @@ else
    fi
 fi
 
+## --- Assertion 8: refuse to bump when the superproject is on master ----------
+## Gitlinks are committed only on 'ai', never master. Set up a genuinely
+## bumpable submodule (on ai at the published tip, ahead of the pin) so the tool
+## reaches the branch check rather than short-circuiting on "nothing to bump".
+gitq -C "${super}/sub" checkout --quiet ai
+gitq -C "${super}/sub" reset --quiet --hard "${sub_tip}"
+gitq -C "${super}" checkout --quiet -b master
+pin_before_master="$(pin_now)"
+if "${tool}" --dir "${super}" >/dev/null 2>&1; then
+   fail "bump must refuse on master, but it ran"
+else
+   rc=$?
+   if [ "${rc}" -eq 2 ]; then
+      pass "bump refuses on master (exit 2)"
+   else
+      fail "expected exit 2 on master, got ${rc}"
+   fi
+fi
+if [ "$(pin_now)" = "${pin_before_master}" ]; then
+   pass "no gitlink committed on master"
+else
+   fail "a gitlink was committed on master"
+fi
+gitq -C "${super}" checkout --quiet ai
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-gitlink-bump bumps published tips, skips stale/detached/below-tip."
+printf '%s\n' "OK: dm-gitlink-bump bumps published tips, skips stale/detached/below-tip, refuses on master."
