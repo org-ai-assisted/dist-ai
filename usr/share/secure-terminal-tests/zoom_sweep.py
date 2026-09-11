@@ -31,15 +31,20 @@ import os
 import signal
 import sys
 
+_FAULT_LOG = None
 if os.environ.get('ZOOM_FAULT_LOG'):
-    faulthandler.enable(file=open(os.environ['ZOOM_FAULT_LOG'], 'w'), all_threads=True)
+    # Held open for the whole process: faulthandler writes the crash traceback to it, so
+    # it must stay open until the process ends (the OS closes it at os._exit). Kept in a
+    # module global so it is not garbage-collected in the meantime.
+    _FAULT_LOG = open(os.environ['ZOOM_FAULT_LOG'], 'w', encoding='ascii')
+    faulthandler.enable(file=_FAULT_LOG, all_threads=True)
 else:
     faulthandler.enable()
 
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)   # auto-reap the boards' /bin/cat children
 except (OSError, ValueError, AttributeError):
-    pass
+    pass                                # not the main thread / unsupported: reaping is optional
 
 from st_qt_platform import require_wayland
 require_wayland('zoom-sweep')
