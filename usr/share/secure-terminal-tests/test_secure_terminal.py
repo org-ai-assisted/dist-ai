@@ -2063,8 +2063,11 @@ eq(S.tail_from_escape_boundary('\x1b]0;pwned\x07', 6), '',
 _ir = S.ANSI_RE.sub('', '\x1b#\x07plain')
 ok('\x1b' not in _ir and '#' not in _ir and 'plain' in _ir,
    'ANSI_RE strips an ESC+intermediate run interrupted by a non-final byte (no leak)')
-ok(S.ANSI_RE.sub('', '\x1b\x1b') == '',
-   'ANSI_RE strips a bare ESC -- no unmatched ESC survives')
+# A LONE ESC is NOT stripped here: it is left for the per-code-point classifier to MARK
+# (a visible box/badge), which the formal proofs (T1) require. Only ESC + intermediate(s) is
+# consumed as an interrupted sequence.
+ok(S.ANSI_RE.sub('', '\x1b#') == '' and S.ANSI_RE.sub('', '\x1b') == '\x1b',
+   'ANSI_RE strips ESC+intermediate but leaves a lone ESC for the marking path')
 _it = S.tail_from_escape_boundary('X' * 10 + '\x1b#\x07' + 'Y' * 10, 12)
 ok(not _it.startswith('#') and '\x1b' not in _it,
    'tail_from_escape_boundary never starts inside an interrupted escape')
