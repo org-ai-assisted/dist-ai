@@ -192,7 +192,12 @@ fi
 ## Branch AND tag are both tried, and a fully-qualified ref is passed through:
 ## --ref is documented as a git ref, and querying only refs/heads made a tag look
 ## like "not pushed".
-local_sha="$( git -C "${source_dir}" rev-parse --end-of-options "${ref}" )"
+## '--verify' is load-bearing, not decorative: without it 'git rev-parse' ECHOES
+## '--end-of-options' back as its own output line ahead of the sha (it treats the
+## separator as a passthrough token), so local_sha becomes two lines and NEVER
+## equals remote_sha -- a spurious "local X, remote Y -- Push first" that blocks
+## every dispatch. '--verify' makes rev-parse emit the single resolved object only.
+local_sha="$( git -C "${source_dir}" rev-parse --verify --end-of-options "${ref}" )"
 
 ## The object-sha reader for a git-ref API body: a real JSON parser rather than
 ## a fragile grep.
