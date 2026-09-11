@@ -198,6 +198,10 @@ if [ "${submodules}" = 'true' ]; then
          git config --get-regexp 'url\..*\.insteadof' 2>&1 | sed 's/^/   /'
          printf 'TEMP-DIAG submodule url (helper-scripts/dmf):\n'
          ( cd -- "${component_dir}" && git config --get-regexp 'submodule\..*\.url' 2>/dev/null | grep -E 'helper-scripts|developer-meta-files' ) | sed 's/^/   /'
+         printf 'TEMP-DIAG whoami: %s\n' "$(whoami 2>/dev/null)"
+         printf 'TEMP-DIAG resolver run (stderr shown; the tests suppress it):\n'
+         ( cd -- "${component_dir}" \
+           && bash -c 'source help-steps/pre; source help-steps/variables --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false; printf "TEMP-DIAG RESOLVER_HOSTNAME=[%s] rc-of-source-was-0\n" "${dist_build_hostname:-UNSET}"' ) 2>&1 | sed 's/^/   /'
       } >&2
    fi
 fi
