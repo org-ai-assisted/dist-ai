@@ -180,6 +180,15 @@ if [ "${submodules}" = 'true' ]; then
          ## swallowing this would turn that into a green run.
          printf '%s\n' 'dist-ai-tests-ci-config: submodule init FAILED; suites needing one will report an unauthorized skip' >&2
       fi
+      ## TEMP-DIAG2 (remove after debug): run the resolver WITH the root override and
+      ## show its stderr, non-fatally, to reveal what aborts it in the slim CI container
+      ## (a command absent from debian:trixie-slim vs a full host). '|| true' so it never
+      ## fails this step.
+      {
+         printf 'TEMP-DIAG2 resolver (override on):\n'
+         ( cd -- "${component_dir}" \
+           && env dist_build_allow_root=true bash -c 'source help-steps/pre; source help-steps/variables --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false; printf "TEMP-DIAG2 HOSTNAME=[%s]\n" "${dist_build_hostname:-UNSET}"' 2>&1 ) | sed 's/^/   /'
+      } >&2 || true
    fi
 fi
 
