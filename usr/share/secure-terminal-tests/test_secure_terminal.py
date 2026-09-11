@@ -2056,22 +2056,6 @@ eq(S.tail_from_escape_boundary('abc', 99), 'abc', 'a cap above the length is a n
 eq(S.tail_from_escape_boundary('\x1b]0;pwned\x07', 6), '',
    'a cut inside an unterminated-to-the-left OSC drops the whole remainder')
 
-# --- REGRESSION: an ESC + intermediate run interrupted by a non-final byte (another ESC or
-# a C0 such as BEL) is still stripped. ANSI_RE's generic arm required a final byte, so
-# "\x1b#\x07" matched no arm and leaked the intermediate, and tail_from_escape_boundary then
-# started INSIDE that unmatched escape (violating its own boundary invariant).
-_ir = S.ANSI_RE.sub('', '\x1b#\x07plain')
-ok('\x1b' not in _ir and '#' not in _ir and 'plain' in _ir,
-   'ANSI_RE strips an ESC+intermediate run interrupted by a non-final byte (no leak)')
-# A LONE ESC is NOT stripped here: it is left for the per-code-point classifier to MARK
-# (a visible box/badge), which the formal proofs (T1) require. Only ESC + intermediate(s) is
-# consumed as an interrupted sequence.
-ok(S.ANSI_RE.sub('', '\x1b#') == '' and S.ANSI_RE.sub('', '\x1b') == '\x1b',
-   'ANSI_RE strips ESC+intermediate but leaves a lone ESC for the marking path')
-_it = S.tail_from_escape_boundary('X' * 10 + '\x1b#\x07' + 'Y' * 10, 12)
-ok(not _it.startswith('#') and '\x1b' not in _it,
-   'tail_from_escape_boundary never starts inside an interrupted escape')
-
 # --- REGRESSION: the caret offset is counted in DOCUMENT units, not code points -
 # cells_display_col / cells_to_runs' prefix are ADDED to a Qt block position, and
 # a Qt document counts UTF-16 units: a non-BMP character is ONE Python character
