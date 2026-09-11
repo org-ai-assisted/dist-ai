@@ -1098,6 +1098,19 @@ try:
 except SystemExit as _sel2:
     _rejl2 = (_sel2.code == 2)
 ok(_rejl2, '#44: a -- LIST with a whitespace-only first element also exits(2)')
+# A bare trailing `--` with NOTHING after it (command == [], e.g. a wrapper `exec
+# secure-terminal -- "$@"` called with no args) names no program and no tab: it must
+# collapse to bare-invocation startup (tabs == []) so __init__ RESTORES the session.
+# (canary: old _empty() tested `[] is not None` -> True, so the spec looked non-empty;
+# __init__ took the launch branch, skipped restore, opened one blank tab, and closeEvent
+# then OVERWROTE the saved session -- silent data loss. Distinct from `-- ""`/`-- '  '`
+# above, an explicit empty program NAME, which correctly fail closed.)
+ok(_pla(['--']).tabs == [],
+   'a bare trailing `--` (empty command list) collapses to bare invocation (restore)')
+ok(_pla(['--tab', '--']).tabs == [],
+   'empty --tab groups plus a bare `--` collapse to bare invocation, not a blank tab')
+ok(_pla(['--', 'htop']).tabs[-1]['command'] == ['htop'],
+   'a real `-- PROGRAM` is still preserved after the empty-`--` collapse fix')
 
 import os as _symos                                    # noqa: E402
 import tempfile as _symtf                              # noqa: E402
