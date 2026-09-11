@@ -354,6 +354,19 @@ ok(_hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hwpt, _hwterm.viewport().mapToGl
    'a codepoint hover shows the char-info InfoTip (selectable/zoomable), not a plain tooltip')
 ok(bool(_hwtip.textInteractionFlags() & _Qt_hw.TextInteractionFlag.TextSelectableByMouse),
    'the codepoint hover tip is selectable (InfoTip, not the plain QToolTip)')
+# _glyph_rect must be the real cell BOX, not the 0-width hidden caret -- else the glyph-scoped
+# leave-poll self-dismisses over a wide cell / at high zoom.
+ok(_hwterm._glyph_rect(_hwpt).width() > 1,
+   'the glyph anchor rect is the real cell box, not a 0-width caret')
+# show_hover_tip must re-anchor when the glyph (at_rect) changes even if the text is identical
+# (moving to another copy of the same character), not early-return and stick at the old glyph.
+from PyQt6.QtCore import QRect as _QRect_hw            # noqa: E402
+_hw_rA = _QRect_hw(120, 90, 14, 18)
+_hw_rB = _QRect_hw(320, 90, 14, 18)
+win.show_hover_tip(_hwterm, 'reanchor-same-text', _hw_rA)
+win.show_hover_tip(_hwterm, 'reanchor-same-text', _hw_rB)
+ok(_hwtip._src_rect == _hw_rB,
+   'show_hover_tip re-anchors on an at_rect change even with identical text')
 _hwterm.event(_QHE_hw(_QEv_hw.Type.ToolTip, _hwpt, _hwterm.viewport().mapToGlobal(_hwpt)))
 ok(_hwtip.isVisible(), 'a repeated hover over the same glyph keeps the tip up (no toggle)')
 _hw_empty = _QP_hw(_hwterm.viewport().width() - 2, _hwterm.viewport().height() - 2)
