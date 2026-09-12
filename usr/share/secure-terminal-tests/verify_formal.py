@@ -2268,22 +2268,33 @@ def t10_reset_baseline():
     return checked
 
 
-def t10_z3_mode_constant():
-    """Symbolic: the mode reassignment is a CONSTANT -- for any prior mode set, the reset
-    yields exactly {DECAWM, DECTCEM}, so no mouse / bracketed-paste / origin bit can
-    survive it. Modelled as set membership over the private-mode integers."""
-    # A representative leak bit (bracketed paste, shifted like every DEC private mode).
+def t10_z3_mode_constant(broken=False):
+    """Symbolic: the reset mode set is the CONSTANT {DECAWM, DECTCEM}, so a leak bit
+    (mouse / origin / bracketed paste) cannot survive it. Proven for a REPRESENTATIVE
+    leak bit -- origin mode (DECOM) -- bound to its real pyte integer alongside the
+    real DECAWM/DECTCEM: the claim is that DECOM is NOT in the reset result, and it
+    holds only BECAUSE DECOM differs from both reset modes. The assumptions are
+    load-bearing (a wrong DECAWM/DECTCEM/DECOM integer breaks it), and a `broken`
+    reset that also retains DECOM makes the claim FALSE (t10_canaries proves this),
+    so the obligation is not a self-referential Implies(P, P) tautology."""
     leak = z3.Int('leak_mode')
     aw = z3.Int('DECAWM'); tc = z3.Int('DECTCEM')
-    # reset(mode) := {DECAWM, DECTCEM}; membership of `leak` in the result is (leak==DECAWM
-    # or leak==DECTCEM). Claim: a bit distinct from both is NEVER in the reset result.
-    distinct = z3.And(leak != aw, leak != tc)
+    # reset(mode) := {DECAWM, DECTCEM}; a broken reset additionally keeps `leak`.
     in_reset = z3.Or(leak == aw, leak == tc)
-    z3_prove('T10-mode-constant', z3.Implies(distinct, z3.Not(in_reset)),
-             assumptions=(aw == int(pyte.modes.DECAWM), tc == int(pyte.modes.DECTCEM)))
+    if broken:
+        in_reset = z3.Or(in_reset, leak == int(pyte.modes.DECOM))
+    return z3_prove('T10-mode-constant', z3.Not(in_reset),
+                    assumptions=(aw == int(pyte.modes.DECAWM),
+                                 tc == int(pyte.modes.DECTCEM),
+                                 leak == int(pyte.modes.DECOM)),
+                    report=not broken)
 
 
 def t10_canaries():
+    # The Z3 obligation itself has teeth: a broken reset that RETAINS the origin bit
+    # (DECOM) makes 'the leak bit is not in the reset result' FALSE, so the proof must
+    # fail. Guards against the obligation degrading into a self-referential tautology.
+    _expect_caught('T10/z3-origin-survives', not t10_z3_mode_constant(broken=True))
     # A reset that FORGETS mouse (the pre-fix ordinary-exit behaviour: SGR/alt/paste only)
     # must be caught -- is_baseline sees the surviving mouse mode.
     s = _armed_screen('\x1b[?25l')
