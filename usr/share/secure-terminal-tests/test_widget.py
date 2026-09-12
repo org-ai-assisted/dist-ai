@@ -5927,6 +5927,20 @@ ok(_rows[1].startswith('NEXT'),
    'T1: no spurious blank row after a combining mark on a width-filling line')
 _t1w.shutdown()
 
+# T1 (coverage): a combining mark at COLUMN 0 composes into the PREVIOUS row's last cell --
+# _merge_combining's cursor.x == 0 branch, reached when that row is full. The blank-row canary
+# above only drives the cursor.x == columns branch; this exercises the x == 0 target selection.
+# Behaviour matches pyte (a correct branch, so this is a coverage case, not a fix-canary).
+_t1c = SecureTerminal(command='/bin/cat', tui=True)
+_t1c.resize(420, 240)
+_t1c.show()
+pump(30)
+_cols_c = _t1c._screen.columns
+feed_output(_t1c, (b'X' * _cols_c) + b'\r\n' + b'\xcc\x81')  # fill row 0, newline, U+0301 at (1, 0)
+ok('\u0301' in _t1c._screen.buffer[0][_cols_c - 1].data,
+   'T1: a combining mark at column 0 composes into the previous row last cell (x==0 branch)')
+_t1c.shutdown()
+
 # T4: a paste larger than the per-tab cap is truncated (bounding the GUI-thread scan)
 # and the user is advised. Use a tiny cap so the test stays fast and deterministic; hold
 # for review (warn=always) so the held text is inspectable. (canary: pre-fix has no cap
