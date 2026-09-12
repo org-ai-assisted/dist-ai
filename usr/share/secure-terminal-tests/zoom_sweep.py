@@ -207,7 +207,10 @@ def cmd_publish(args):
     manifest = []
     try:
         for board, mode, display, res, zoom in PUBLISH_SUBSET:
-            result = h.capture(Z.BOARDS[board][0], mode, res, zoom, display_mode=display)
+            # board_name -> CLI shots cat the real terminal-safe-corpus file, so the
+            # banner names the reproduce path (TUI keeps the out-of-band feed).
+            result = h.capture(Z.BOARDS[board][0], mode, res, zoom, display_mode=display,
+                               board_name=board)
             tag = _tag(board, mode, display, res, zoom)
             path = os.path.join(args.out, 'zoom-verify-%s.png' % tag)
             result['win_image'].save(path)
