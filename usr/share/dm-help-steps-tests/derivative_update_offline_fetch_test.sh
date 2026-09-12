@@ -72,7 +72,7 @@ else
    if [[ "${guard_window}" =~ update_only[^$'\n']*!=[^$'\n']*\"true\" ]] \
       || { [[ "${guard_window}" =~ update_only[^$'\n']*=[^$'\n']*\"true\" ]] \
            && [[ "${guard_window}" =~ else ]]; }; then
-      pass 'the remote fetch is guarded by --update-only (skipped in build/verify-only mode)'
+      pass 'the bulk remote fetch is guarded by --update-only (submodule update self-fetches instead)'
    else
       fail "the 'git fetch --recurse-submodules' is not guarded by an update_only conditional -- the unconditional-fetch regression is back (offline / ssh-remote builds will die here):
 $( printf '%s\n' "${guard_window}" )"
