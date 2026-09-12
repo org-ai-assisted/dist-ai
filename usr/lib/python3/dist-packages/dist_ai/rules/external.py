@@ -129,17 +129,57 @@ def _blob_shellcheckrc_bytes(ctx):
         reldir = os.path.dirname(reldir)
 
 
+def _rewrite_scriptdir_source_paths(data, src_dir):
+    """Rewrite a materialized '.shellcheckrc' so its SCRIPTDIR-relative 'source-path='
+    entries point at SRC_DIR (the checked file's REAL directory), returned as bytes.
+
+    shellcheck's SCRIPTDIR resolves to the directory of the CHECKED FILE. A staged /
+    committed blob is checked as a temp file under /tmp (see context.materialized), so
+    SCRIPTDIR is /tmp there and a 'source-path=SCRIPTDIR/../libexec/...' entry silently
+    misses the real siblings -- dropping '# shellcheck source=' resolution that works
+    in place (SC1091), and with it the cross-file SC2034 tracking. Anchoring those
+    entries to the real SRC_DIR makes the staged check resolve intra-repo sources
+    exactly like the on-disk check. Only leading-SCRIPTDIR entries are touched;
+    absolute paths and every other directive pass through byte-for-byte. On any
+    decode error the input is returned unchanged (fail-safe: never corrupt the rc)."""
+    if not src_dir:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    out_lines = []
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        newline = line[len(body):]
+        stripped = body.lstrip()
+        indent = body[:len(body) - len(stripped)]
+        if stripped.startswith("source-path="):
+            value = stripped[len("source-path="):]
+            if value == "SCRIPTDIR" or value.startswith("SCRIPTDIR/"):
+                rest = value[len("SCRIPTDIR"):]           # '' or '/...'
+                resolved = os.path.normpath(src_dir + rest)
+                out_lines.append(indent + "source-path=" + resolved + newline)
+                continue
+        out_lines.append(line)
+    return "".join(out_lines).encode("utf-8")
+
+
 @contextlib.contextmanager
 def _shellcheckrc_for(ctx, src_dir):
     """Yield a filesystem path to the '.shellcheckrc' governing CTX, or None. A
     DISK context (source_rev is None) reads it from SRC_DIR on disk. A BLOB context
     (staged/committed, source_rev set) reads it from its own git tree and
     materializes it to a temp file for the with-block, so the blob is judged by the
-    config that ships with it, not a diverged working copy."""
+    config that ships with it, not a diverged working copy. Its SCRIPTDIR-relative
+    'source-path=' entries are re-anchored to SRC_DIR so a '# shellcheck source='
+    resolves against the real siblings, not the /tmp staged temp dir."""
     if getattr(ctx, "source_rev", None) is None:
         yield _find_shellcheckrc(src_dir)
         return
     data = _blob_shellcheckrc_bytes(ctx)
+    if data is not None:
+        data = _rewrite_scriptdir_source_paths(data, src_dir)
     if data is None:
         ## No rc in the blob's OWN tree. Do NOT yield None: shellcheck would then
         ## fall back to its own discovery and find the WORKING-TREE '.shellcheckrc'
