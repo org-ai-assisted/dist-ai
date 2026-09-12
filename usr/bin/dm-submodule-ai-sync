@@ -1,0 +1,252 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fetch each derivative-maker submodule's fork remote and bring its local 'ai'
+## to the published fork tip -- the fetch + re-attach + fast-forward that dm-tidy
+## steps 1-2 need and no existing tool does (dm-git-sync assumes submodules are
+## already sitting on their published tips).
+##
+## HAPPY-PATH ONLY. Auto-handles the two states we actually hit:
+##   - local 'ai' strictly BEHIND the fork tip  -> fast-forward.
+##   - detached / off 'ai' (clean)              -> re-attach to 'ai', then
+##                                                 fast-forward if behind.
+## Everything else STOPS and is surfaced for a human -- never auto-fixed, forced,
+## reset, or published:
+##   - dirty working tree (uncommitted / a sibling session's work)
+##   - local 'ai' AHEAD of or DIVERGED from the fork tip (unpushed work)
+##   - no fork 'ai' tip (submodule 'ai' never published) / no fork remote
+##   - a fetch that fails
+## A STOP makes the tool exit 1 so the caller halts before the pin/mirror steps;
+## a human resolves the stopped submodules by hand. Do NOT extend this to
+## auto-resolve those cases.
+##
+## NEVER 'git submodule update' / 'checkout --recurse-submodules': that detaches
+## submodules off 'ai' -- the exact mess this undoes. Works per submodule via git -C.
+##
+## Usage: dm-submodule-ai-sync [--dir <derivative-maker checkout>] [--dry-run]
+##   --dry-run  still FETCHES (the only way to classify accurately) but performs
+##              no checkout, fast-forward, or branch creation.
+##
+## Exit: 0 all current/advanced | 1 one or more STOPped | 2 usage / not a checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+AI_BRANCH="ai"
+## The published fork that carries 'ai' work and that CI fetches (git skill).
+FORK_REMOTE="org-ai-assisted"
+
+source_dir=""
+dry_run="false"
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      -h|--help)
+         printf '%s\n' \
+            "Fetch each derivative-maker submodule's ${FORK_REMOTE} remote and bring its" \
+            "local '${AI_BRANCH}' to the published fork tip (fast-forward / re-attach only)." \
+            "" \
+            "Usage: ${0##*/} [--dir <derivative-maker checkout>] [--dry-run]" \
+            "" \
+            "  --dir      the derivative-maker checkout to operate on (default: cwd)" \
+            "  --dry-run  fetch + classify + report; make no checkout / fast-forward" \
+            "" \
+            "Happy-path only: behind -> fast-forward, detached -> re-attach. Ahead/" \
+            "diverged/dirty/unpublished/fetch-failure STOP and are surfaced for a human." \
+            "" \
+            "Exit: 0 all current/advanced | 1 one or more STOPped | 2 usage/not a checkout."
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+
+log() {
+   printf '%s\n' "${0##*/}: $*"
+}
+
+die() {
+   local code="$1" ; shift
+   printf '%s\n' "${0##*/}: $*" >&2
+   exit "${code}"
+}
+
+is_dm_superproject() {
+   [ -d "$1/build-steps.d" ] && [ -d "$1/help-steps" ]
+}
+
+top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+[ -n "${top}" ] || die 2 "'${source_dir}' is not inside a git worktree."
+is_dm_superproject "${top}" \
+   || die 2 "'${top}' is not a derivative-maker checkout (no build-steps.d + help-steps)."
+
+## Direct submodule paths from .gitmodules (relative to the superproject root).
+## Read the config, NOT 'git submodule foreach': foreach aborts at the first
+## broken/absent submodule and hides every one after it. Uninitialised paths are
+## filtered per-iteration below.
+sub_paths=()
+while IFS= read -r path; do
+   [ -n "${path}" ] && sub_paths+=( "${path}" )
+done < <( git -C "${top}" config --file "${top}/.gitmodules" \
+   --get-regexp '^submodule\..*\.path$' 2>/dev/null | sed 's/^[^ ]* //' )
+
+[ "${#sub_paths[@]}" -gt 0 ] || die 2 "'${top}' has no submodules in .gitmodules."
+
+## Result buckets. 'stopped' entries are "path :: reason".
+advanced=()
+reattached=()
+current=()
+uninit=()
+stopped=()
+
+for path in "${sub_paths[@]}"; do
+   [ -n "${path}" ] || continue
+   sub="${top}/${path}"
+
+   ## Uninitialised submodule: nothing to sync. Not a STOP (it gets no pin bump
+   ## either); note it and move on.
+   if [ ! -d "${sub}/.git" ] && [ ! -f "${sub}/.git" ]; then
+      uninit+=( "${path}" )
+      continue
+   fi
+
+   ## Must carry the fork remote at all.
+   if ! git -C "${sub}" remote get-url -- "${FORK_REMOTE}" &>/dev/null; then
+      stopped+=( "${path} :: no '${FORK_REMOTE}' remote" )
+      continue
+   fi
+
+   ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
+   ## never 'submodule update'.
+   if ! git -C "${sub}" fetch --quiet "${FORK_REMOTE}" 2>/dev/null; then
+      stopped+=( "${path} :: fetch from '${FORK_REMOTE}' failed" )
+      continue
+   fi
+
+   fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
+   if [ -z "${fork_tip}" ]; then
+      stopped+=( "${path} :: no '${FORK_REMOTE}/${AI_BRANCH}' tip ('${AI_BRANCH}' never published)" )
+      continue
+   fi
+
+   ## Dirty check BEFORE any mutation. A FAILED 'git status' yields empty stdout;
+   ## a failure is NOT clean -- STOP rather than act on a repo we could not read.
+   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )"; then
+      stopped+=( "${path} :: 'git status' failed (unreadable repo)" )
+      continue
+   fi
+   if [ -n "${sub_status}" ]; then
+      stopped+=( "${path} :: dirty working tree (uncommitted / sibling work)" )
+      continue
+   fi
+
+   ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+   on_ai="false"
+   [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
+   have_ai="false"
+   git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" && have_ai="true"
+
+   ## No local 'ai' at all (and not on it): create it at the fork tip.
+   if [ "${have_ai}" = "false" ]; then
+      if [ "${dry_run}" = "true" ]; then
+         log "[dry-run] ${path}: would create '${AI_BRANCH}' at ${FORK_REMOTE}/${AI_BRANCH} (${fork_tip:0:12})"
+      else
+         git -C "${sub}" checkout --quiet -b "${AI_BRANCH}" "${fork_tip}"
+      fi
+      reattached+=( "${path} (created '${AI_BRANCH}' at tip)" )
+      continue
+   fi
+
+   local_ai="$( git -C "${sub}" rev-parse --verify "refs/heads/${AI_BRANCH}" 2>/dev/null || true )"
+   if [ -z "${local_ai}" ]; then
+      stopped+=( "${path} :: cannot resolve local '${AI_BRANCH}'" )
+      continue
+   fi
+
+   ## Classify local 'ai' against the fork tip.
+   if [ "${local_ai}" = "${fork_tip}" ]; then
+      ## Already at the tip. Re-attach if detached; otherwise a no-op.
+      if [ "${on_ai}" = "true" ]; then
+         current+=( "${path}" )
+      else
+         if [ "${dry_run}" = "true" ]; then
+            log "[dry-run] ${path}: would re-attach to '${AI_BRANCH}' (already at tip)"
+         else
+            git -C "${sub}" checkout --quiet "${AI_BRANCH}"
+         fi
+         reattached+=( "${path} (already at tip)" )
+      fi
+      continue
+   fi
+
+   if git -C "${sub}" merge-base --is-ancestor "${local_ai}" "${fork_tip}" 2>/dev/null; then
+      ## Strictly BEHIND -> fast-forward (re-attaching first if detached).
+      if [ "${dry_run}" = "true" ]; then
+         if [ "${on_ai}" = "true" ]; then
+            log "[dry-run] ${path}: would fast-forward '${AI_BRANCH}' ${local_ai:0:12} -> ${fork_tip:0:12}"
+         else
+            log "[dry-run] ${path}: would re-attach '${AI_BRANCH}' + fast-forward ${local_ai:0:12} -> ${fork_tip:0:12}"
+         fi
+      else
+         [ "${on_ai}" = "true" ] || git -C "${sub}" checkout --quiet "${AI_BRANCH}"
+         git -C "${sub}" merge --quiet --ff-only "${fork_tip}"
+      fi
+      if [ "${on_ai}" = "true" ]; then
+         advanced+=( "${path} (${local_ai:0:12} -> ${fork_tip:0:12})" )
+      else
+         advanced+=( "${path} (re-attached + ${local_ai:0:12} -> ${fork_tip:0:12})" )
+      fi
+      continue
+   fi
+
+   ## Ahead of or diverged from the fork tip: unpushed work. STOP.
+   stopped+=( "${path} :: local '${AI_BRANCH}' ${local_ai:0:12} ahead of / diverged from ${FORK_REMOTE}/${AI_BRANCH} ${fork_tip:0:12} (unpushed work)" )
+done
+
+## --- Summary --------------------------------------------------------------------
+print_bucket() {
+   local title="$1" ; shift
+   [ "$#" -gt 0 ] || return 0
+   printf '%s (%d):\n' "${title}" "$#"
+   printf '   %s\n' "$@"
+}
+
+mode_label="against"
+[ "${dry_run}" = "true" ] && mode_label="dry-run against"
+printf '%s\n' "${0##*/}: submodule '${AI_BRANCH}' sync summary (${mode_label} ${FORK_REMOTE}/${AI_BRANCH}):"
+print_bucket "advanced"    "${advanced[@]}"
+print_bucket "re-attached" "${reattached[@]}"
+print_bucket "already current" "${current[@]}"
+print_bucket "uninitialised (skipped)" "${uninit[@]}"
+
+if [ "${#stopped[@]}" -gt 0 ]; then
+   printf '\n%s\n' "STOPPED -- resolve by hand, then re-run:" >&2
+   printf '   %s\n' "${stopped[@]}" >&2
+   die 1 "${#stopped[@]} submodule(s) STOPPED; not safe to pin/mirror until resolved."
+fi
+
+log "all submodules on '${AI_BRANCH}' at the published fork tip."
+exit 0
