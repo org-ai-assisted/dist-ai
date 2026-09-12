@@ -193,6 +193,14 @@ gitq -C "${plain}" add f
 gitq -C "${plain}" commit --quiet -m base
 refuse_touches_nothing "non-derivative-maker repo" --dir "${plain}"
 
+## 3e. submodule is clean on ai but the PARENT is on master: must refuse and
+## publish NOTHING. Without the up-front parent validation the submodule would be
+## pushed before the parent check aborts -- a partial mutation (ai-review finding).
+gitq -C "${super}/sub" checkout --quiet ai
+gitq -C "${super}" checkout --quiet master
+refuse_touches_nothing "submodule clean, parent on master (no partial publish)" --dir "${super}/sub"
+gitq -C "${super}" checkout --quiet ai
+
 ## --- Case 4: --dry-run bumps in dry mode, cherry-picks --no-push, NEVER pushes --
 reset_log
 if "${tool}" --dir "${super}" --dry-run >/dev/null 2>&1; then

@@ -191,6 +191,14 @@ fi
 parent="$( git -C "${top}" rev-parse --show-superproject-working-tree 2>/dev/null || true )"
 if [ -n "${parent}" ] && is_dm_superproject "${parent}"; then
    log "syncing submodule '${top}' of parent '${parent}'."
+   ## Validate the PARENT's preconditions BEFORE any mutation: publishing the
+   ## submodule then discovering the parent is on master / detached / dirty would
+   ## leave a partial mutation (submodule published, parent gitlink never bumped) --
+   ## exactly the desync this tool prevents. Refuse first; touch nothing.
+   on_ai "${parent}" \
+      || die 2 "parent '${parent}' is not on '${AI_BRANCH}' (detached or another branch); refusing (nothing pushed)."
+   is_clean "${parent}" \
+      || die 2 "parent '${parent}' has uncommitted changes; commit first, then sync (nothing pushed)."
    ## 1. PUBLISH the submodule 'ai' first -- this is what makes the parent bump
    ##    sound (the pushed sha becomes a fetchable, remote-tracking 'ai' tip).
    push_repo "${top}"
