@@ -749,34 +749,63 @@ def _eval_const_arith(node):
     """The int value of an ast arithmetic node built from integer literals and the
     shared '+ - * / %' operators, else None. bash truncates '/' toward zero and takes
     '%' with the dividend's sign, so both are matched rather than using Python's
-    flooring operators."""
+    flooring operators.
+
+    Evaluated with an EXPLICIT stack, not recursion: a long operator chain
+    ('1+1+1+...') parses as a deeply left-nested BinOp, and a recursive walk
+    overflows the interpreter stack (uncaught RecursionError) on the very
+    anti-evasion path R-220 relies on. Iterative, like the module's other
+    deliberately-non-recursive tree walkers."""
     if isinstance(node, ast.Expression):
-        return _eval_const_arith(node.body)
-    if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, int) and not isinstance(
-            node.value, bool) else None
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        val = _eval_const_arith(node.operand)
-        if val is None:
+        node = node.body
+    _mod_ops = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod)
+    computed = {}
+    stack = [(node, False)]
+    while stack:
+        cur, expanded = stack.pop()
+        if isinstance(cur, ast.Constant):
+            if isinstance(cur.value, int) and not isinstance(cur.value, bool):
+                computed[id(cur)] = cur.value
+                continue
             return None
-        return val if isinstance(node.op, ast.UAdd) else -val
-    if isinstance(node, ast.BinOp):
-        left = _eval_const_arith(node.left)
-        right = _eval_const_arith(node.right)
-        if left is None or right is None:
-            return None
-        op = node.op
-        if isinstance(op, ast.Add):
-            return left + right
-        if isinstance(op, ast.Sub):
-            return left - right
-        if isinstance(op, ast.Mult):
-            return left * right
-        if isinstance(op, (ast.Div, ast.FloorDiv)):
-            return None if right == 0 else _trunc_div(left, right)
-        if isinstance(op, ast.Mod):
-            return None if right == 0 else left - right * _trunc_div(left, right)
-    return None
+        if isinstance(cur, ast.UnaryOp) and isinstance(cur.op, (ast.UAdd, ast.USub)):
+            if not expanded:
+                stack.append((cur, True))
+                stack.append((cur.operand, False))
+                continue
+            val = computed.get(id(cur.operand))
+            if val is None:
+                return None
+            computed[id(cur)] = val if isinstance(cur.op, ast.UAdd) else -val
+            continue
+        if isinstance(cur, ast.BinOp) and isinstance(cur.op, _mod_ops):
+            if not expanded:
+                stack.append((cur, True))
+                stack.append((cur.left, False))
+                stack.append((cur.right, False))
+                continue
+            left = computed.get(id(cur.left))
+            right = computed.get(id(cur.right))
+            if left is None or right is None:
+                return None
+            op = cur.op
+            if isinstance(op, ast.Add):
+                computed[id(cur)] = left + right
+            elif isinstance(op, ast.Sub):
+                computed[id(cur)] = left - right
+            elif isinstance(op, ast.Mult):
+                computed[id(cur)] = left * right
+            elif isinstance(op, (ast.Div, ast.FloorDiv)):
+                if right == 0:
+                    return None
+                computed[id(cur)] = _trunc_div(left, right)
+            else:
+                if right == 0:
+                    return None
+                computed[id(cur)] = left - right * _trunc_div(left, right)
+            continue
+        return None
+    return computed.get(id(node))
 
 
 def _const_arith_exit_value(word, source):
@@ -1993,12 +2022,23 @@ class HelpFromComments(Rule):
 
         def stage_stmts(stmt):
             """Flatten a (possibly nested) pipeline STMT to its leaf stage
-            statements; a non-pipe statement is its own single stage."""
-            cmd = stmt.get("Cmd") if isinstance(stmt, dict) else None
-            if isinstance(cmd, dict) and cmd.get("Type") == "BinaryCmd" \
-                    and cmd.get("Op") in pipe_ops:
-                return stage_stmts(cmd.get("X")) + stage_stmts(cmd.get("Y"))
-            return [stmt] if isinstance(stmt, dict) else []
+            statements; a non-pipe statement is its own single stage. Uses an
+            EXPLICIT stack, not recursion: a very long pipeline ('a | b | ...')
+            nests one BinaryCmd per stage, and a recursive walk overflows the
+            interpreter stack (uncaught RecursionError) on valid input."""
+            leaves = []
+            work = [stmt]
+            while work:
+                cur = work.pop()
+                cmd = cur.get("Cmd") if isinstance(cur, dict) else None
+                if isinstance(cmd, dict) and cmd.get("Type") == "BinaryCmd" \
+                        and cmd.get("Op") in pipe_ops:
+                    ## Push Y then X so X's stages are emitted first (left to right).
+                    work.append(cmd.get("Y"))
+                    work.append(cmd.get("X"))
+                elif isinstance(cur, dict):
+                    leaves.append(cur)
+            return leaves
 
         def scrape(stmts):
             """(anchor_command, reads_self) over a group of stage statements: the
