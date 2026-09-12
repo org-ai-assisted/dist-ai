@@ -33,14 +33,24 @@ try:
     payload = json.load(sys.stdin)
 except Exception:
     raise SystemExit(0)
+## A body that parses but is not an object (a bare list or null a proxy or error
+## page can produce) has no .get; treat it as no artifacts. A partial entry
+## missing 'name'/'id' is skipped, never a fatal KeyError.
+if not isinstance(payload, dict):
+    raise SystemExit(0)
 for item in payload.get("artifacts") or []:
+    if not isinstance(item, dict):
+        continue
     if item.get("expired"):
         continue
-    name = item["name"]
+    name = item.get("name")
     if not is_safe_name(name):
         print(
             "dm-repro-artifact-list: skipping artifact with unsafe name: %r" % (name,),
             file=sys.stderr,
         )
         continue
-    print("%s\t%s" % (item["id"], name))
+    item_id = item.get("id")
+    if item_id is None:
+        continue
+    print("%s\t%s" % (item_id, name))
