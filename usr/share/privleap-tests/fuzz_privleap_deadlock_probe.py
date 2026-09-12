@@ -53,7 +53,9 @@ if not os.path.isfile(_module_path):
 _ns = {"__name__": "fuzz_privleap_under_test", "__file__": _module_path}
 try:
     with open(_module_path, encoding="utf-8") as _fh:
-        exec(compile(_fh.read(), _module_path, "exec"), _ns)  # noqa: S102
+        ## exec loads the REAL shipped fuzz harness (its own source file under test),
+        ## never untrusted input; this is how the probe drives the real _drive.
+        exec(compile(_fh.read(), _module_path, "exec"), _ns)  # nosec B102 -- shipped harness under test  # noqa: S102
 except ModuleNotFoundError as _exc:
     ## A required module (privleap, pl_testlib) is absent: fail LOUDLY, never a
     ## silent skip -- privleap-tests requires the real package to be present.
