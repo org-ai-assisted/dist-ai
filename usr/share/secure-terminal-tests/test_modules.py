@@ -444,6 +444,44 @@ try:
 finally:
     settings._user_config_dir = _orig_bud
 
+# ---- read paths refuse a symlink / FIFO (O_NOFOLLOW + regular-file guard) ----
+# A drop-in that is a symlink must not redirect the read to the target's content
+# (the write side already guards with O_NOFOLLOW), and a FIFO planted in a scanned
+# dir must not hang the read (a plain open() blocks forever waiting for a writer).
+# Both are refused and skipped, upholding "never raises, never hangs". (canary:
+# pre-fix _parse_into/_read_user_base used a plain open() -> symlink followed, FIFO hung.)
+_defrd = tempfile.mkdtemp(prefix='st-defread-')
+_orig_dfd = settings._user_config_dir
+settings._user_config_dir = lambda: _defrd
+try:
+    _cfgdir = os.path.dirname(settings.user_config_file())
+    os.makedirs(_cfgdir, exist_ok=True)
+    _sym_secret = os.path.join(_defrd, 'outside_secret.conf')
+    with open(_sym_secret, 'w', encoding='utf-8') as _sh:
+        _sh.write('SECRET_DATA=leaked-from-outside\n')
+    _sym_dropin = os.path.join(_cfgdir, '30_symlink.conf')
+    os.symlink(_sym_secret, _sym_dropin)
+    _sd: dict[str, str] = {}
+    settings._parse_into(_sym_dropin, _sd)
+    ok(_sd == {},
+       'settings: _parse_into refuses a symlinked drop-in (O_NOFOLLOW), folds no content')
+    os.symlink(_sym_secret, settings.user_config_file())
+    ok(settings._read_user_base() is None,
+       'settings: _read_user_base refuses a symlinked user file (no attacker content folded in)')
+    os.remove(settings.user_config_file())
+    # FIFO drop-in: run the read in a daemon thread and bound it -- a regression HANGS
+    # the thread (stays alive) and FAILS here, without wedging the whole suite.
+    _fifo = os.path.join(_cfgdir, '40_fifo.conf')
+    os.mkfifo(_fifo)
+    _fd: dict[str, str] = {}
+    _fifo_t = threading.Thread(target=settings._parse_into, args=(_fifo, _fd), daemon=True)
+    _fifo_t.start()
+    _fifo_t.join(5)
+    ok(not _fifo_t.is_alive() and _fd == {},
+       'settings: a FIFO drop-in is skipped without hanging (O_NONBLOCK + S_ISREG)')
+finally:
+    settings._user_config_dir = _orig_dfd
+
 # ---- the user-file write lock serializes the two writers (flock) ------------
 _lockd = tempfile.mkdtemp(prefix='st-lock-')
 _orig_lud = settings._user_config_dir

@@ -1096,6 +1096,29 @@ try:
     win.save_transcript()                              # must NOT crash (guarded)
     ok(not os.path.exists(_sv_path),
        'save_transcript: a tab deleted during the dialog is skipped -- no crash, no write')
+    # a symlink planted at the chosen save path must NOT be followed (O_NOFOLLOW):
+    # the save fails+warns rather than overwriting the link target, matching every
+    # sibling transcript writer. (canary: pre-fix _save_capture used open(path,'w')
+    # and silently clobbered the target through the symlink.) The open fails with
+    # ELOOP before getter(term) runs, so the current tab's content is irrelevant --
+    # do not add a tab here (that would pollute win.current() for later tests).
+    _lk_dir = tempfile.mkdtemp(prefix='st-savesym-')
+    _lk_victim = os.path.join(_lk_dir, 'victim.txt')
+    with open(_lk_victim, 'w', encoding='utf-8') as _vh:
+        _vh.write('ORIGINAL')
+    _lk_link = os.path.join(_lk_dir, 'save-here.txt')
+    os.symlink(_lk_victim, _lk_link)
+    _owarn = QMessageBox.warning
+    _lk_warned = []
+    QMessageBox.warning = staticmethod(lambda *_a, **_k: _lk_warned.append(True))
+    try:
+        QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_lk_link, ''))
+        win.save_transcript()
+    finally:
+        QMessageBox.warning = _owarn
+    with open(_lk_victim, encoding='utf-8') as _vr:
+        ok(_vr.read() == 'ORIGINAL' and bool(_lk_warned),
+           'save_transcript: a symlinked target is refused (O_NOFOLLOW), link target intact')
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
