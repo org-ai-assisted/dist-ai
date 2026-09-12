@@ -925,6 +925,34 @@ def check_nav(root, failures):
                         '(%s)' % (rel, '; '.join(detail)))
 
 
+def check_toc_complete(root, failures):
+    # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
+    # section (<section class="cat" id=...>), so a newly added section cannot silently
+    # drift out of the page navigation. The zoom-verify screenshots section shipped with a
+    # full section but no TOC entry, and nothing caught it -- check_nav only guards the
+    # site-wide header nav, and check_links only that a TOC anchor RESOLVES, never that a
+    # section is REACHED. Directional: a TOC may also link non-section anchors (rows, sub-
+    # headings); only a `.cat` section missing from the TOC is a failure.
+    for page in html_files(root):
+        with open(page, encoding='utf-8') as handle:
+            markup = handle.read()
+        toc = re.search(r'<nav\b[^>]*class="[^"]*\btoc\b[^"]*"[^>]*>(.*?)</nav>',
+                        markup, re.DOTALL | re.IGNORECASE)
+        if not toc:
+            continue                       # a page with no on-this-page TOC is exempt
+        linked = set(re.findall(r'href="#([^"]+)"', toc.group(1)))
+        rel = os.path.relpath(page, root)
+        for sect in re.finditer(r'<section\b([^>]*)>', markup, re.IGNORECASE):
+            attrs = sect.group(1)
+            cls = re.search(r'class="([^"]*)"', attrs)
+            if not cls or 'cat' not in cls.group(1).split():
+                continue
+            sid = re.search(r'id="([^"]+)"', attrs)
+            if sid and sid.group(1) not in linked:
+                failures.append('%s: section #%s is missing from the on-this-page TOC'
+                                % (rel, sid.group(1)))
+
+
 # --- Forced line breaks in headings -------------------------------------------
 # A hard <br> inside a heading forces a wrap point that fights responsive
 # reflow: on a narrow phone the heading's first segment already wraps on its own,
@@ -1340,6 +1368,7 @@ def main():
         check_assets(root, failures)
         check_card_layout(root, failures)
         check_nav(root, failures)
+        check_toc_complete(root, failures)
         check_heading_breaks(root, failures)
         check_contrast(root, failures)
         check_undefined_classes(root, failures)
@@ -1353,6 +1382,7 @@ def main():
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
                              'no-inline-js + '
                              'supply-chain + assets + card-layout + nav + '
+                             'toc-complete + '
                              'heading-breaks + contrast + undefined-classes + '
                              'seo clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)

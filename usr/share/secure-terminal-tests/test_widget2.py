@@ -153,14 +153,23 @@ _octab.osc_used.emit('osc_other', -1)
 ok(not win._banner.isHidden() and 'an escape' in win._banner_label.text().lower(),
    'an over-cap OSC with an unknowable code (-1) falls back to "an escape"')
 win._dismiss_advisory()
-# Per-code descriptions: an unregistered code is named AND described; the multi-code colour
-# feature is broken out per code (not lumped as 'palette / colours'); OSC 52's read and write
-# senses read distinctly.
+# OSC 1 (icon name) is classified as osc_title (window / tab title), which is muted by
+# DEFAULT (OSC_NOTICE_DEFAULT_OFF) -- so a program, or a shell prompt at each new tab,
+# using it raises NO banner. Regression: OSC 1 previously fell into the ungated osc_other
+# bucket and fired the notice on every new tab.
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
-feed_output(_octab, b'\x1b]1;icon\x07')          # OSC 1 (icon name): unregistered -> osc_other
-_oc1 = win._banner_label.text().lower()
-ok(not win._banner.isHidden() and 'osc 1:' in _oc1 and 'icon name' in _oc1,
-   'OSC 1 is named AND described (set the window icon name), not a bare number')
+feed_output(_octab, b'\x1b]1;icon\x07')          # OSC 1: icon name -> osc_title, muted by default
+ok(win._banner.isHidden(),
+   'OSC 1 (icon name) is osc_title, muted by default -- no banner on a new tab')
+win._dismiss_advisory()
+# Per-code descriptions: an UNREGISTERED code (OSC 3, no feature entry -> osc_other) is still
+# named AND described; the multi-code colour feature is broken out per code (not lumped as
+# 'palette / colours'); OSC 52's read and write senses read distinctly.
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+feed_output(_octab, b'\x1b]3;prop\x07')          # OSC 3 (X11 property): unregistered -> osc_other
+_oc3 = win._banner_label.text().lower()
+ok(not win._banner.isHidden() and 'osc 3' in _oc3 and 'x11 window property' in _oc3,
+   'an unregistered OSC (3) is named AND described (set an X11 window property), not a bare number')
 win._dismiss_advisory()
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
 _oc_had_colors_mute = 'osc_colors' in win._osc_notice_off
@@ -239,18 +248,21 @@ ok(win._osc_level()[0] == '#1f8a54',
    'even a high-risk OSC feature keeps the lamp green in CLI mode (not honored until TUI)')
 if tui_available():
     # In TUI mode the enabled features are LIVE, so the lamp reflects the real risk.
+    # set_tui / set_osc apply asynchronously (queued), so settle the lamp with wait_for
+    # rather than reading it on the next line (a synchronous read races under load).
     win.set_tui(True)
-    ok(win._osc_level()[0] == '#e5484d',
+    ok(wait_for(lambda: win._osc_level()[0] == '#e5484d'),
        'in TUI mode the enabled high-risk feature turns the lamp red')
     win.set_osc('osc_clipboard', False)
-    ok(win._osc_level()[0] == '#e5a50a',
+    ok(wait_for(lambda: win._osc_level()[0] == '#e5a50a'),
        'in TUI mode a remaining medium OSC feature dims the lamp to yellow, applies to the tab')
     win.set_tui(False)
-    ok(win._osc_level()[0] == '#1f8a54',
+    ok(wait_for(lambda: win._osc_level()[0] == '#1f8a54'),
        'back in CLI mode the lamp returns to green though osc_hyperlink is still armed')
 win.set_osc('osc_hyperlink', False)
 win.set_osc('osc_clipboard', False)
-ok(win._osc_level()[0] == '#1f8a54', 'the lamp is green when the features are disabled')
+ok(wait_for(lambda: win._osc_level()[0] == '#1f8a54'),
+   'the lamp is green when the features are disabled')
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
 # stdout in line mode, and never shows the OSC text in the document. Drive it from
 # a program (not typed input, which the tty would echo back in caret form).
@@ -862,6 +874,22 @@ pump(80)
 ok(not _lb.current().osc_enabled('not_a_feature'),
    'launch: an unknown --osc feature is ignored')
 _lb.close()
+
+# --new-instance is EPHEMERAL: a coexisting standalone window must NOT restore the shared
+# session (that cloned the primary's tabs), and its close must not save over it. Mock a
+# session that WOULD restore two tabs; the ephemeral window ignores it (opens one fresh
+# tab), proving session.load is never consulted (a normal window would show two).
+import secure_terminal.session as _sess            # noqa: E402
+_orig_sload = _sess.load
+_sess.load = lambda: [{'command': None}, {'command': None}]   # a session that WOULD restore 2 tabs
+try:
+    _lne = MainWindow(launch=_pla(['--new-instance']))
+    ok(_lne._ephemeral is True and _lne.tabs.count() == 1,
+       '--new-instance is ephemeral: the saved session is never consulted, one fresh tab')
+finally:
+    _sess.load = _orig_sload                        # (a normal window has _ephemeral False,
+                                                    #  exercised by every other window here)
+_lne.close()                                        # closeEvent: ephemeral -> save skipped
 
 # --- single-instance IPC: a running instance opens a client's tabs ------------
 import threading                                       # noqa: E402
@@ -3400,6 +3428,198 @@ except _subprocess.TimeoutExpired:
     _victim.wait(timeout=5)
 ok(_killed_by_survivor,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
+
+# E2E: terminate_foreground kills a REAL foreground child resolved via the REAL
+# _foreground_pgrp (os.tcgetpgrp on the pty) -- the path EVERY other terminate test mocks
+# out, which is why the "Terminate does nothing on `sleep 10`" class was uncovered. Drives a
+# real login-shell tab (default $SHELL), types a real `sleep`, and asserts the child is gone
+# after Terminate. No mock of _foreground_pgrp / has_foreground_program.
+def _sleep_pids():
+    out = set()
+    for _d in os.listdir('/proc'):
+        if not _d.isdigit():
+            continue
+        try:
+            with open('/proc/%s/comm' % _d) as _fh:
+                if _fh.read().strip() == 'sleep':
+                    out.add(int(_d))
+        except OSError:
+            pass
+    return out
+
+def _pid_dead(pid):                              # gone, or a reaped-pending zombie ('Z')
+    try:
+        with open('/proc/%d/stat' % pid) as _fh:
+            _s = _fh.read()
+        return _s[_s.rindex(')') + 2] == 'Z'
+    except (OSError, ValueError, IndexError):
+        return True
+
+_e2e = spawn_live()                              # a real login shell (default $SHELL)
+_e2e_pre = _sleep_pids()
+_e2e._write(b'sleep 6\r')                         # CR submits the line under bash AND zsh ZLE
+_e2e_new: set = set()
+for _ in range(120):                             # up to ~6s for the child to take the foreground
+    pump(50)
+    _e2e_new = _sleep_pids() - _e2e_pre
+    if _e2e_new and _e2e.has_foreground_program():
+        break
+ok(bool(_e2e_new) and _e2e.has_foreground_program(),
+   'E2E: a real foreground sleep is seen via the real tcgetpgrp path (has_foreground_program)')
+_e2e_killed = _e2e.terminate_foreground()
+_e2e_gone = False
+for _ in range(80):                              # SIGTERM kills sleep before the 2s survivor
+    pump(50)
+    if _e2e_new and all(_pid_dead(_p) for _p in _e2e_new):
+        _e2e_gone = True
+        break
+ok(_e2e_killed and _e2e_gone,
+   'E2E: terminate_foreground actually kills the real foreground child (sleep reaped/gone)')
+for _p in _e2e_new:                              # never leak a live sleep, even on failure
+    try:
+        os.kill(_p, 9)
+    except OSError:
+        pass
+_e2e.shutdown()
+
+# E2E through the REAL BUTTON: act_terminate.trigger() -> MainWindow.terminate_foreground
+# -> current().terminate_foreground -> killpg. The CLICK path the direct-method test above
+# does not exercise -- a "clicking Terminate is a no-op" regression lives HERE (a broken
+# action->window->current() route or an enable/click term mismatch), invisible to a test
+# that calls terminate_foreground() directly or mocks it.
+_btw = MainWindow()
+_bt = _btw.new_tab(command=None)                 # a default login-shell tab, like a user's
+if not isinstance(_bt, SecureTerminal):
+    _bt = _btw.current()
+_btw.tabs.setCurrentWidget(_bt)
+for _ in range(120):
+    pump(50)
+    if _bt._pid and os.path.isdir('/proc/%d' % _bt._pid):
+        break
+_bt_pre = _sleep_pids()
+_bt._write(b'sleep 6\r')
+_bt_new: set = set()
+for _ in range(120):                             # up to ~6s for the child to take the foreground
+    pump(50)
+    _btw._update_terminate_enabled()             # the same poll that drives the toolbar/menu
+    _bt_new = _sleep_pids() - _bt_pre
+    if _bt_new and _btw.act_terminate.isEnabled():
+        break
+ok(bool(_bt_new) and _btw.act_terminate.isEnabled(),
+   'E2E: the Terminate action ENABLES when a real foreground program runs (button path)')
+_btw.act_terminate.trigger()                      # THE CLICK -- exactly what the toolbar/menu fire
+_bt_gone = False
+for _ in range(80):
+    pump(50)
+    if _bt_new and all(_pid_dead(_p) for _p in _bt_new):
+        _bt_gone = True
+        break
+ok(_bt_gone,
+   'E2E: triggering the Terminate ACTION kills the real foreground child (full button->kill path)')
+for _p in _bt_new:
+    try:
+        os.kill(_p, 9)
+    except OSError:
+        pass
+_bt.shutdown()
+
+# FLIPPING foreground -- the field "Terminate does nothing" bug. A shell that reclaims the
+# terminal between commands (an async prompt) makes tcgetpgrp alternate between the bare
+# shell and the running job, so a SINGLE read can catch the shell and no-op. Simulate the
+# flip with a scripted _foreground_pgrp over a REAL login-shell tab; the job is a real
+# TERM-ignoring group so the 2s survivor SIGKILL proves the JOB (not the shell) was targeted.
+_flipvic = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'], start_new_session=True)
+pump(60)
+_flipvic_pgrp = os.getpgid(_flipvic.pid)
+_flip = spawn_live()                             # a real login-shell tab (_command is None)
+_flip_shell = os.getpgid(_flip._pid)
+_flip_reads = [_flip_shell, _flip_shell, _flip_shell, _flipvic_pgrp]   # bare shell, then the job
+_flip._foreground_pgrp = lambda: _flip_reads.pop(0) if _flip_reads else _flipvic_pgrp
+ok(_flip.terminate_foreground(),
+   'FLIPPING: terminate samples past bare-shell reads and catches the real foreground job')
+pump(2300)                                       # let the survivor SIGKILL the TERM-ignoring job
+_flip_killed = True
+try:
+    _flipvic.wait(timeout=3)
+except _subprocess.TimeoutExpired:
+    _flip_killed = False
+    _flipvic.kill()
+    _flipvic.wait(timeout=5)
+ok(_flip_killed, 'FLIPPING: the caught job group is SIGKILLed by the survivor (job, not shell)')
+# a STABLE bare prompt (every sample is the shell) still no-ops -- the shell stays protected.
+_flip._foreground_pgrp = lambda: _flip_shell
+ok(not _flip.terminate_foreground(),
+   'FLIPPING: a stable bare-shell foreground still no-ops (never kills the shell)')
+_flip.shutdown()
+
+# terminate_debug reports the decision AND performs the real Terminate, so the diagnosis
+# and the outcome are one correlated attempt; it names each verdict.
+_dbg = SecureTerminal(command='/bin/cat')
+_dbg._pid = None                                 # child_pgrp None -> no bare-shell case
+_dbgour = os.getpgrp()
+_dbgvic = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'], start_new_session=True)
+pump(60)
+_dbgvic_pgrp = os.getpgid(_dbgvic.pid)
+_dbg._foreground_pgrp = lambda: _dbgvic_pgrp
+_dbg_r = _dbg.terminate_debug()
+ok('foreground pgrp samples' in _dbg_r and ('killpg(%d, 0) probe' % _dbgvic_pgrp) in _dbg_r
+   and 'SHOULD signal it' in _dbg_r and 'terminate_foreground()' in _dbg_r,
+   'terminate_debug: samples, killpg(0) probe, would-signal verdict, and the real result')
+pump(2300)                                        # the TERM-ignoring job dies via the 2s survivor
+_dbg_killed = True
+try:
+    _dbgvic.wait(timeout=3)
+except _subprocess.TimeoutExpired:
+    _dbg_killed = False
+    _dbgvic.kill()
+    _dbgvic.wait(timeout=5)
+ok(_dbg_killed,
+   'terminate_debug ACTUALLY terminates (survivor SIGKILLs the TERM-ignoring job)')
+_dbg._foreground_pgrp = lambda: None
+ok('no foreground process group' in _dbg.terminate_debug(),
+   'terminate_debug: names the no-foreground verdict')
+_dbg._foreground_pgrp = lambda: _dbgour
+ok('our own' in _dbg.terminate_debug(),
+   'terminate_debug: names the our-own-group verdict')
+_dbg.close()
+# a real login-shell tab for the bare-shell verdict, the FLIPPING flag, and error paths.
+_dbg3 = spawn_live()
+_dbg3_pgrp = os.getpgid(_dbg3._pid)
+_dbg3._foreground_pgrp = lambda: _dbg3_pgrp       # only the bare shell in front
+ok('only the bare login shell' in _dbg3.terminate_debug(),
+   'terminate_debug: names the bare-login-shell verdict')
+_flipseq = [_dbg3_pgrp, os.getpgrp()] * 6         # alternating distinct foreground values
+_dbg3._foreground_pgrp = lambda: _flipseq.pop(0) if _flipseq else _dbg3_pgrp
+ok('FLIPPING' in _dbg3.terminate_debug(),
+   'terminate_debug: flags a FLIPPING (unstable) foreground')
+_dbg3._foreground_pgrp = lambda: 2 ** 30          # a job pgrp that does not exist -> ESRCH
+ok('ERROR' in _dbg3.terminate_debug(),
+   'terminate_debug: a non-existent job pgrp surfaces the killpg-probe error')
+_dbg3._pid = 2 ** 30                              # a vanished child pid -> getpgid error inline
+_dbg3._foreground_pgrp = lambda: os.getpgrp()
+ok('child process group' in _dbg3.terminate_debug(),
+   'terminate_debug: a vanished child pid surfaces the getpgid error inline')
+_dbg3.shutdown()
+
+# run_command dispatch for /terminate and /terminate-debug (the modal diagnostic's exec is
+# stubbed so it does not block; both the with-terminal and no-terminal branches are hit).
+from PyQt6.QtWidgets import QMessageBox as _QMB2      # noqa: E402
+_o_mb_exec = _QMB2.exec
+_QMB2.exec = lambda _self: None
+_o_cur = win.current
+try:
+    ok(win.run_command('/terminate-debug'),
+       'run_command: /terminate-debug is recognized and shows the diagnostic')
+    ok(win.run_command('/terminate'),
+       'run_command: /terminate is recognized (button-parity command)')
+    win.current = lambda: None                       # no current terminal tab
+    ok(not win.run_command('/terminate-debug'),
+       'run_command: /terminate-debug with no current terminal returns False')
+    ok(win.run_command('/terminate'),
+       'run_command: /terminate with no current terminal is a recognized no-op')
+finally:
+    win.current = _o_cur
+    _QMB2.exec = _o_mb_exec
 
 # #35/#42: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
 # pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc/<pid>/exe now points

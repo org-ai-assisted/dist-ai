@@ -86,144 +86,36 @@ def clamp_zoom(level):
     return max(ZOOM_MIN, min(ZOOM_MAX, int(level)))
 
 
-# ---------------------------------------------------------------------------
-# Boards. Each is bytes fed as child output. A board also declares per-detector
-# expectations so a legitimately-sparse board (an alt-screen frame pinned to the top)
-# is not mis-flagged. `interior_blanks` is the count of INTENTIONAL blank lines that
-# sit between content lines; `dense` marks a board that should fill the screen (so a
-# near-empty render is the blank-screen artifact); `tui_altscreen` marks a board whose
-# TUI form legitimately leaves the lower viewport blank (top-pinned alt screen).
-# ---------------------------------------------------------------------------
-
-def _box(width, title):
-    # ASCII source (no raw non-ASCII in test source); \u escapes render byte-identical.
-    # 250c/2500/2510 = box down+right / horizontal / down+left; 2502 vertical;
-    # 2514/2518 = up+right / up+left.
-    top = '\u250c' + '\u2500' * width + '\u2510'
-    body = '\u2502' + (' ' + title).ljust(width) + '\u2502'
-    bot = '\u2514' + '\u2500' * width + '\u2518'
-    return (top + '\r\n' + body + '\r\n' + bot + '\r\n').encode('utf-8')
+# Board byte-generators are single-sourced in a Qt-free module (zoom_boards) so the
+# terminal-safe-corpus drift gate can regenerate them without PyQt6. Re-exported here
+# (Z.BOARDS / Z.board_spec) for the capture harness, the sweep, and the suite.
+from zoom_boards import BOARDS, board_spec   # noqa: F401  (re-export)
 
 
-def _tui_showcase():
-    # Box frame + colour SGR + a Unicode row + mixed content: the general-purpose
-    # showcase, close to the site's tui-showcase board but synthesized so the board
-    # needs no external payload file.
-    parts = [_box(46, 'secure-terminal zoom showcase')]
-    parts.append(b'\x1b[1mbold\x1b[0m \x1b[4munderline\x1b[0m \x1b[7mreverse\x1b[0m normal\r\n')
-    parts.append(b'\x1b[31mred \x1b[32mgreen \x1b[33myellow \x1b[34mblue \x1b[35mmagenta \x1b[36mcyan\x1b[0m\r\n')
-    parts.append('unicode: \u00e9\u00e8\u00ea caf\u00e9 na\u00efve -- quotes \u201cx\u201d \u2018y\u2019\r\n'.encode('utf-8'))
-    parts.append('box glyphs: \u250c\u2500\u2510 \u2502 \u2514\u2500\u2518 \u2588\u2593\u2592\u2591\r\n'.encode('utf-8'))
-    parts.append(b'path: /usr/lib/python3/dist-packages/secure_terminal/terminal.py\r\n')
-    parts.append(b'$ prompt line, then a tail marker >>\r\n')
-    return b''.join(parts)
+# A board's committed copy in the corpus, RELATIVE to the corpus root (so a published
+# shot's banner shows a clean `cat demos/zoom-<name>-safe-to-cat.txt`, the exact reproduce
+# path, not an absolute build-tree path).
+def corpus_board_relpath(name):
+    return os.path.join('demos', 'zoom-%s-safe-to-cat.txt' % name)
 
 
-def _colorgrad(rows=24, cols=100):
-    # Dense truecolor gradient: every cell a distinct 24-bit colour, full width,
-    # many rows -- the payload most prone to reflow striping / hard-wrap when the grid
-    # narrows under zoom.
-    out = []
-    for r in range(rows):
-        line = []
-        for c in range(cols):
-            red = (c * 255) // max(1, cols - 1)
-            grn = (r * 255) // max(1, rows - 1)
-            blu = 255 - red
-            line.append('\x1b[48;2;%d;%d;%dm ' % (red, grn, blu))
-        line.append('\x1b[0m\r\n')
-        out.append(''.join(line))
-    return ''.join(out).encode('utf-8')
-
-
-def _longline_box():
-    # Box frame + several UNBROKEN long lines longer than any tested grid -- directly
-    # targets "words cut off the right edge" and wrap behaviour across zoom.
-    parts = [_box(60, 'long-line + box board')]
-    parts.append(b'short line\r\n')
-    parts.append(b'L' + b'ong-unbroken-line-' * 18 + b'END\r\n')     # ~330 chars, no spaces
-    parts.append(b'word ' * 60 + b'lastword\r\n')                    # ~300 chars, wrappable
-    parts.append(('\u2502' + '=' * 200 + '\u2502\r\n').encode('utf-8'))
-    parts.append(b'tail marker line >>\r\n')
-    return b''.join(parts)
-
-
-def _art():
-    art = r"""
-   ____                           _______                    _             _
-  / ___|  ___  ___ _   _ _ __ ___|_   _|__ _ __ _ __ ___ (_)_ __   __ _| |
-  \___ \ / _ \/ __| | | | '__/ _ \ | |/ _ \ '__| '_ ` _ \| | '_ \ / _` | |
-   ___) |  __/ (__| |_| | | |  __/ | |  __/ |  | | | | | | | | | | (_| | |
-  |____/ \___|\___|\__,_|_|  \___| |_|\___|_|  |_| |_| |_|_|_| |_|\__,_|_|
-                                                                tail >>
-"""
-    return art.replace('\n', '\r\n').encode('utf-8')
-
-
-def _exact_grid():
-    # Lines at a spread of exact widths (incl. widths equal to common grid sizes) each
-    # ended by a bare LF -- the classic pyte last-col wrap-pending + LF double-advance
-    # that produced a spurious blank row. Every width here must render with NO extra
-    # blank line between it and the next.
-    out = []
-    for w in (40, 79, 80, 81, 100, 117, 118, 119, 120):
-        out.append(('#%d ' % w).ljust(w, 'x'))
-        out.append('\r\n')
-    out.append('tail marker >>\r\n')
-    return ''.join(out).encode('utf-8')
-
-
-def _trailing_ws():
-    # Content followed by long trailing whitespace runs, then more content -- probes
-    # "empty space" handling (trailing spaces must not become blank rows or shove the
-    # tail off screen).
-    out = []
-    for i in range(6):
-        out.append('row %d content' % i + ' ' * 80 + '\r\n')
-    out.append('tail marker >>\r\n')
-    return ''.join(out).encode('utf-8')
-
-
-def _altscreen_short():
-    # A SHORT alt-screen frame: enter alt screen, draw two lines at the top, leave the
-    # rest blank. TUI must pin row 0 to the top (a short alt frame must not scroll off).
-    seq = ('\x1b[?1049h'          # enter alt screen
-           '\x1b[2J\x1b[H'        # clear + home
-           'ALT SCREEN TOP LINE >>\r\n'
-           'second line of the short alt frame\r\n')
-    return seq.encode('utf-8')
-
-
-def _wide_cjk():
-    # Wide CJK + emoji interleaved with ASCII: width handling as the font scales.
-    line1 = 'ASCII \u4f60\u597d\u4e16\u754c CJK mix \u65e5\u672c\u8a9e end\r\n'
-    line2 = 'emoji \U0001f600 \U0001f680 \U0001f512 between ascii words\r\n'
-    line3 = 'M' * 40 + ' ' + '\u5e45' * 20 + ' tail >>\r\n'
-    return (line1 + line2 + line3).encode('utf-8')
-
-
-# name -> (bytes, spec). spec keys: dense (bool -- should fill the screen, so a near-empty
-# render is the blank-screen artifact), tui_altscreen (bool -- its TUI form legitimately
-# leaves the lower viewport blank, a top-pinned alt frame, so the dense/ink check is
-# skipped there).
-BOARDS = {
-    'tui-showcase': (_tui_showcase(), {}),
-    'colorgrad': (_colorgrad(), {'dense': True}),
-    'longline-box': (_longline_box(), {}),
-    'art': (_art(), {}),
-    'exact-grid': (_exact_grid(), {}),
-    'trailing-ws': (_trailing_ws(), {}),
-    'altscreen-short': (_altscreen_short(), {'tui_altscreen': True}),
-    'wide-cjk': (_wide_cjk(), {}),
-}
-
-
-def board_spec(name):
-    _bytes, spec = BOARDS[name]
-    return {
-        'dense': spec.get('dense', False),
-        'tui_altscreen': spec.get('tui_altscreen', False),
-    }
+def corpus_root():
+    """The terminal-safe-corpus checkout root that carries the zoom demos, or None if
+    the corpus is not checked out. The board bytes there ARE zoom_boards output (the
+    corpus drift-gates them), so a shot that `cat`s the file is single-sourced with the
+    harness. Env override TERMINAL_SAFE_CORPUS_REPO; else the sibling-checkout layout."""
+    roots = []
+    env = os.environ.get('TERMINAL_SAFE_CORPUS_REPO')
+    if env:
+        roots.append(env)
+    up = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):                 # walk up to find a sibling terminal-safe-corpus
+        up = os.path.dirname(up)
+        roots.append(os.path.join(up, 'terminal-safe-corpus'))
+    for root in roots:
+        if os.path.isfile(os.path.join(root, corpus_board_relpath('colorgrad'))):
+            return root
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +224,15 @@ class ZoomHarness:
                     pass                 # best-effort pty release; removeTab still detaches it
             self.win.tabs.removeTab(i)
 
-    def _new_tab(self, mode, display_mode):
-        term = self.win.new_tab(command='/bin/cat', tui=(mode == 'tui'))
+    def _new_tab(self, mode, display_mode, cat_file=None):
+        # cat_file (CLI publish path): launch `cat <corpus-file> -` so the tab banner
+        # honestly shows the reproduce path; the file's bytes arrive via the real pty read
+        # (same _raw/reflow path feed_output drives). The trailing `-` makes cat read stdin
+        # AFTER the file, so it does NOT exit into a shell prompt -- the shot stays clean
+        # (banner + board only), matching the bare-cat shots. Else a bare `cat` fed out of
+        # band -- required for TUI (feed AFTER the zoom, see capture) and the regression suite.
+        command = ['/bin/cat', cat_file, '-'] if cat_file else '/bin/cat'
+        term = self.win.new_tab(command=command, tui=(mode == 'tui'))
         # new_tab returns None in some builds; fall back to the current widget.
         if not isinstance(term, SecureTerminal):
             term = self.win.tabs.currentWidget()
@@ -361,15 +260,42 @@ class ZoomHarness:
         _pump(90)                  # font-debounce + reflow settle
         term._flush_paint()
 
-    def capture(self, board, mode, resolution, zoom, display_mode=PRIMARY_DISPLAY, seed=None):
+    def capture(self, board, mode, resolution, zoom, display_mode=PRIMARY_DISPLAY, seed=None,
+                board_name=None):
         """Build a tab in the given tab-mode (cli/tui) + unicode display-mode, feed the
         board, walk+pin zoom, settle, and return a result dict {term, win_image,
         viewport_image, zoom}. The tab is left open (reaped by close_term/close) so
-        callers may inspect the live document before it is retired."""
+        callers may inspect the live document before it is retired.
+
+        board_name (the PUBLISH path): in CLI mode, `cat` the board's committed
+        terminal-safe-corpus file instead of injecting the bytes -- so the shot's banner
+        names the real reproduce path (`/bin/cat .../demos/zoom-<name>-safe-to-cat.txt`).
+        Requires the corpus checked out (fail loud if the file is absent -- a silent
+        fallback would re-ship the bare `/bin/cat` banner). TUI keeps the out-of-band feed
+        (a static cat dumped before the zoom would garble; see the feed-order note)."""
         w, h = resolution
         self.win.resize(w, h)
         _pump(60)
-        term = self._new_tab(mode, display_mode)
+        cat_file = None
+        prev_cwd = None
+        if board_name is not None and mode == 'cli':
+            root = corpus_root()
+            cat_file = corpus_board_relpath(board_name)
+            if root is None or not os.path.isfile(os.path.join(root, cat_file)):
+                raise SystemExit(
+                    'zoom publish: terminal-safe-corpus board file %r not found; '
+                    'check out terminal-safe-corpus as a sibling or set '
+                    'TERMINAL_SAFE_CORPUS_REPO' % cat_file)
+            # Spawn cat from the corpus root so the banner shows the RELATIVE reproduce
+            # path (a clean `demos/...`, not an absolute build-tree path). The child's cwd
+            # is fixed at fork, so restore ours right after.
+            prev_cwd = os.getcwd()
+            os.chdir(root)
+        try:
+            term = self._new_tab(mode, display_mode, cat_file=cat_file)
+        finally:
+            if prev_cwd is not None:
+                os.chdir(prev_cwd)
         if seed is None:
             # A STABLE seed (crc32, not builtin hash() -- hash() is per-process randomized
             # by PYTHONHASHSEED, which would make the "reproducible" walk differ every run
@@ -386,8 +312,17 @@ class ZoomHarness:
         #    FINAL grid exactly as a SIGWINCH-aware program would (the same reason the
         #    zoom-live capture re-injects after each zoom).
         if mode == 'cli':
-            feed_output(term, board)
-            _pump(40)
+            if cat_file is not None:
+                # cat reads the real file: its output arrives via the pty (real _on_readable,
+                # setting _raw), so wait for it to land before walking the zoom.
+                for _ in range(200):
+                    _pump(20)
+                    if term._raw:
+                        break
+                _pump(40)
+            else:
+                feed_output(term, board)
+                _pump(40)
             self._zoom_walk(term, zoom, seed)
         else:
             self._zoom_walk(term, zoom, seed)
