@@ -821,7 +821,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|github-api|image-optimize|dm-ci-job-watch)
+      dist-ai-registry|github-api|image-optimize|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-gw-anonymizer-config)
@@ -1052,6 +1052,18 @@ require_value() {
    fi
 }
 
+## A --timeout-* value is handed straight to timeout(1) (run_suite). A non-interval
+## ('--timeout-core abc') makes timeout exit 125 for EVERY suite, reported as a mass
+## FAIL(125) with timeout's own stderr instead of a one-line usage error. Validate
+## the shape here -- like the directory options are validated -- and exit 2 clearly.
+require_timeout() {
+   require_value "$@"
+   if ! [[ "$2" =~ ^[0-9]+(\.[0-9]+)?[smhd]?$ ]]; then
+      printf '%s\n' "dist-ai-tests-all: $1 requires a timeout(1) interval (e.g. 300, 600s, 10m): got '$2'" >&2
+      exit 2
+   fi
+}
+
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --core)
@@ -1108,17 +1120,17 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       --timeout-core)
-         require_value "$@"
+         require_timeout "$@"
          timeout_core="$2"
          shift
          ;;
       --timeout-fuzz)
-         require_value "$@"
+         require_timeout "$@"
          timeout_fuzz="$2"
          shift
          ;;
       --timeout-heavy)
-         require_value "$@"
+         require_timeout "$@"
          timeout_heavy="$2"
          shift
          ;;
