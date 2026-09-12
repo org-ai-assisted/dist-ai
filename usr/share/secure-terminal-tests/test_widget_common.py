@@ -64,8 +64,8 @@ __all__ = [
     'QApplication', 'QInputDialog', 'QKeyEvent', 'QColor', 'QTextCursor',
     'QEvent', 'Qt', 'QTimer', 'QEventLoop', 'QMimeData', 'QPoint', 'QMessageBox',
     'SecureTerminal', 'tui_available', 'APP', 'PASS', 'FAIL',
-    'ok', 'eq', 'pump', 'key', 'spy_writes', 'feed_output', 'spawn_live', 'mark_fg', 'mark_bg',
-    'fmt_of_char', 'glyph_pt', 'finish',
+    'ok', 'eq', 'pump', 'wait_for', 'key', 'spy_writes', 'feed_output', 'spawn_live',
+    'mark_fg', 'mark_bg', 'fmt_of_char', 'glyph_pt', 'finish',
 ]
 
 
@@ -86,6 +86,20 @@ def pump(ms):
     loop = QEventLoop()
     QTimer.singleShot(ms, loop.quit)
     loop.exec()
+
+
+def wait_for(predicate, timeout_ms=2000, step_ms=10):
+    """Pump the event loop until predicate() is true, or timeout; return its final value.
+    For an assert reading state that a QUEUED setter changes -- set_tui / set_osc apply
+    asynchronously (signal/event), so a synchronous read on the very next line races the
+    apply under load and flakes. `ok(wait_for(lambda: ...))` settles it deterministically."""
+    import time as _time
+    deadline = _time.monotonic() + timeout_ms / 1000.0
+    while not predicate():
+        if _time.monotonic() >= deadline:
+            return predicate()
+        pump(step_ms)
+    return True
 
 
 def key(term, qtkey, text='', mods=Qt.KeyboardModifier.NoModifier):

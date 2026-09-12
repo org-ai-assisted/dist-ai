@@ -2786,6 +2786,24 @@ ok(len(_capf._fmt_cache) <= _MARK_CACHE_MAX,
    % len(_capf._fmt_cache))
 _capf.close()
 
+# BUG C on the CLI LINE path (the reported colorgrad cli-show shots): the fg-vs-bg
+# readability guard protects visible TEXT, but it also ran on a blank (space) cell
+# carrying only a background. The line-path fallback fg is the theme fg (black in light),
+# which stays too-close to a dark bg -> the bg was DROPPED and a dark bg-only space went
+# WHITE (the colorgrad row-0 near-black-blue cells). A space has no fg ink to hide, so its
+# background must survive. Fed through the real _on_readable -> _paint_line -> _fmt_from_key
+# render. Regression: fails on the pre-fix line-path guard (space went white).
+_glcli = SecureTerminal(command='/bin/cat')
+_glcli.apply_colors(True)
+_glcli.apply_theme('light')
+_glcli.apply_mode('show')
+feed_output(_glcli, b'\x1b[48;2;0;0;255m \x1b[0mX')   # dark-blue bg-only SPACE, reset, then X
+_glsp = fmt_of_char(_glcli, ' ')
+ok(_glsp.background().style() != Qt.BrushStyle.NoBrush
+   and _glsp.background().color().name() == '#0000ff',
+   'BUG C (CLI Show): a bg-only dark space keeps its background on the line path (not white)')
+_glcli.close()
+
 # COR-5: an AIXTERM bright-background SGR (100-107) must render a genuinely BRIGHT bg, not
 # the dim base. pyte encodes it as base-name bg + bold=True, so the fork disentangles it:
 # a bright bg name (no phantom bold that would brighten the fg / bold the font).
@@ -4087,6 +4105,18 @@ feed_output(_ocg, b'X' * (_ocg._OSC_CARRY_MAX + 100))                     # tips
 _ocg.close()
 ok('deferred' in _ocgtitles,
    'over-cap keeps a complete OSC after an unclosed OSC-8 opener dispatchable (no strip drop)')
+# OSC 1 (set icon name) is honored by the title feature just like OSC 0/2: secure-terminal
+# has one title surface, so an enabled 'Window / tab title' sets it from the icon name too.
+# Regression: OSC 1 was in no feature (osc_other) -- unrecognized, never dispatched even when
+# titles were enabled -- and fired a notice on every new tab.
+_oc1h = SecureTerminal(command='/bin/cat', tui=True)
+_oc1h.apply_osc('osc_title', True)
+_oc1htitles = []
+_oc1h.title_changed.connect(_oc1htitles.append)
+feed_output(_oc1h, b'\x1b]1;myicon\x07')
+_oc1h.close()
+ok(_oc1htitles == ['myicon'],
+   'OSC 1 (icon name) sets the title when the title feature is enabled (honored like OSC 0/2)')
 # _OSC_ANY (shared with _handle_osc) retries at every position: a code-0 whose params hold a
 # raw ESC is not a valid OSC, but the embedded well-formed OSC 52 after it IS -- so the advisory
 # reports the clipboard write _handle_osc would actually dispatch, not the broken title.
