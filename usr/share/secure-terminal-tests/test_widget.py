@@ -5867,4 +5867,104 @@ finally:
 _lt26.shutdown()
 
 
+# ======================================================================================
+# PR-1: untrusted-output safety (terminal.py) -- crash/data-loss/DoS on untrusted PTY
+# output + paste. Each assertion FAILS on the pre-fix code (canary noted per block).
+# ======================================================================================
+
+# T5: a malformed OSC 7 cwd URL must NOT crash the PTY read path. urlparse raises
+# ValueError('Invalid IPv6 URL') on a bracketed authority like file://[bad-ipv6 ; every
+# other _handle_osc branch is hardened, so this one must be too. (canary: pre-fix
+# _osc_cwd calls urlparse unguarded -> the ValueError propagates out of _handle_osc.)
+_oc5 = SecureTerminal(command='/bin/cat')
+_oc5.apply_osc('osc_cwd', True)
+_oc5_seen = []
+_oc5.cwd_changed.connect(_oc5_seen.append)
+_oc5_crashed = False
+try:
+    _oc5._handle_osc(b'\x1b]7;file://[bad-ipv6\x07')          # malformed IPv6 authority
+    _oc5._handle_osc(b'\x1b]7;file://[::1junk]/x\x07')        # another malformed authority
+except ValueError:
+    _oc5_crashed = True
+ok(not _oc5_crashed,
+   'T5: a malformed OSC 7 URL is swallowed, not raised out of the PTY read path')
+_oc5_ok = []
+_oc5.cwd_changed.connect(_oc5_ok.append)
+_oc5._reported_cwd = ''
+_oc5._handle_osc(b'\x1b]7;file://host/tmp/dir\x07')           # a well-formed one still works
+ok(_oc5_ok and _oc5_ok[-1].endswith('/tmp/dir'),
+   'T5: a well-formed OSC 7 cwd still reports its path after the guard')
+_oc5.shutdown()
+
+# T6: a private ("?"-prefixed) non-SGR CSI must not drop the REST of the PTY read chunk.
+# pyte dispatches such a CSI with private=True; the non-mode handlers (insert_lines here,
+# ESC[?4L) take no private kwarg, so pre-fix they raise TypeError inside pyte and every
+# later byte of that chunk vanishes. (canary: pre-fix 'HELLOAFTER' is dropped.)
+_t6p = SecureTerminal(command='/bin/cat', tui=True)
+_t6p.resize(400, 240)
+_t6p.show()
+pump(30)
+feed_output(_t6p, b'\x1b[?4LHELLOAFTER\r\n')
+ok('HELLOAFTER' in _t6p.toPlainText(),
+   'T6: text after a private non-SGR CSI (ESC[?4L) still renders (chunk not dropped)')
+feed_output(_t6p, b'\x1b[?2JAFTERDECSED\r\n')                 # private DECSED (our own override)
+ok('AFTERDECSED' in _t6p.toPlainText(),
+   'T6: text after a private DECSED (ESC[?2J) still renders')
+_t6p.shutdown()
+
+# T1: a trailing combining mark on a line filling the EXACT grid width must not defeat
+# the deferred-wrap compensation (pyte's draw resolves the pending wrap on the mark,
+# leaving a spurious blank row). U+0301 is COMBINING ACUTE ACCENT (built from an escape,
+# no raw non-ASCII in source). (canary: pre-fix NEXT lands on row 2, row 1 blank.)
+_t1w = SecureTerminal(command='/bin/cat', tui=True)
+_t1w.resize(420, 240)
+_t1w.show()
+pump(30)
+_cols = _t1w._screen.columns
+feed_output(_t1w, (b'0' * _cols) + b'\xcc\x81' + b'\r\nNEXT')  # U+0301 COMBINING ACUTE, ASCII-safe source
+_rows = _t1w._screen.display
+ok(_rows[1].startswith('NEXT'),
+   'T1: no spurious blank row after a combining mark on a width-filling line')
+_t1w.shutdown()
+
+# T4: a paste larger than the per-tab cap is truncated (bounding the GUI-thread scan)
+# and the user is advised. Use a tiny cap so the test stays fast and deterministic; hold
+# for review (warn=always) so the held text is inspectable. (canary: pre-fix has no cap
+# -> the full 250-char paste is held.)
+from PyQt6.QtCore import QMimeData as _QMimeData             # noqa: E402
+_p4 = SecureTerminal(command='/bin/cat')
+_p4.apply_paste_warn('always')
+_p4._PASTE_MAX = 100
+_p4_adv = []
+_p4.advise_signal.connect(_p4_adv.append)
+_md4 = _QMimeData()
+_md4.setText('a' * 250)
+_p4.insertFromMimeData(_md4)
+ok(_p4._pending_paste == 'a' * 100,
+   'T4: an oversized paste is truncated to the cap before the scans run')
+ok(any('truncated' in _m for _m in _p4_adv),
+   'T4: the user is advised that the paste was truncated')
+_p4.dispatch_pending_paste('reject')
+_p4.shutdown()
+
+# T2: a PENDING OSC-52 clipboard-read consent must NOT survive an ORDINARY foreground
+# program's exit back to the SAME shell (the shared prompt-baseline reset) -- else a late
+# Allow replies the clipboard into that shell. Unlike restart_as_shell, a standing per-tab
+# allow-always grant is KEPT (same shell, same tab). (canary: pre-fix
+# _reset_vt_to_prompt_baseline leaves _clipboard_read 'pending'.)
+_c2 = SecureTerminal(command='/bin/cat')
+_c2._clipboard_read = 'pending'
+_c2._clipboard_read_always = True
+_c2._reset_vt_to_prompt_baseline()
+ok(_c2._clipboard_read is None,
+   'T2: the foreground-exit baseline drops a pending OSC-52 clipboard-read consent')
+ok(_c2._clipboard_read_always is True,
+   'T2: the foreground-exit baseline keeps a standing allow-always grant (same shell)')
+_c2._clipboard_read = True                                   # a decided grant is untouched
+_c2._reset_vt_to_prompt_baseline()
+ok(_c2._clipboard_read is True,
+   'T2: the foreground-exit baseline keeps a decided allow-read grant')
+_c2.shutdown()
+
+
 finish('widget')
