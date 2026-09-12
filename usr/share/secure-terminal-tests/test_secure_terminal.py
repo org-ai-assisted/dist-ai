@@ -2181,7 +2181,7 @@ ok(chr(0x202E) not in _out and '\x1b' not in _out,
 # HOW they mark -- box, glyph, badge -- never in WHAT they let through unmarked,
 # so a code point safe in one mode and dangerous in another is a bypass reachable
 # from the View menu.
-_STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0D, ord(S.BOX)))
+_STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, ord(S.BOX)))
 # EXHAUSTIVE over every Unicode scalar value. The single-code-point neutralization
 # invariant is decidable per code point, so this sweep is not a sample of interesting
 # ranges -- it is EVERY one of the ~1.1M scalar values, making the property a proof for
@@ -2268,6 +2268,7 @@ eq(S.tui_cell('e' + chr(0x0301), 'show'), 'e' + chr(0x0301),
 # byte survives, so an ESC-only assertion on the whole payload cannot see it.
 _WHOLE = '\x1b]0;\rroot@host:~# sudo -S \x07OK\n'
 _CHUNK_BAD = []
+_LEAK_BAD = []
 for _cut in range(1, len(_WHOLE)):
     _carry, _drop, _parts = '', '', []
     for _chunk in (_WHOLE[:_cut], _WHOLE[_cut:]):
@@ -2275,10 +2276,14 @@ for _cut in range(1, len(_WHOLE)):
         _parts.append(S.render_output(_text, 'box'))
     if ''.join(_parts) != S.render_output(_WHOLE, 'box') or _carry:
         _CHUNK_BAD.append(_cut)
+    # The anti-leak check must run at EVERY cut, not once after the loop on the
+    # last cut's _parts -- a leak at any earlier split would otherwise be invisible.
+    if 'root@host' in ''.join(_parts):
+        _LEAK_BAD.append(_cut)
 eq(_CHUNK_BAD, [],
    'chunked CLI rendering with the carry equals whole-text rendering at every cut')
-ok('root@host' not in ''.join(_parts),
-   'a split OSC never spills a fake prompt onto the outer terminal')
+eq(_LEAK_BAD, [],
+   'a split OSC never spills a fake prompt onto the outer terminal (at ANY cut)')
 # (that the CLI wrapper's own read loop wires the carry up is proved
 # BEHAVIOURALLY in test_cli.py, by splitting a sequence across two real pty reads
 # -- a source grep for the call could not tell a wired call from a dead one.)

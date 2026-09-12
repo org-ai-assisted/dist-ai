@@ -119,6 +119,7 @@ def run():
             captured = sys.stdout.buffer.getvalue().decode('utf-8')
         finally:
             os.unlink(path)
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(rc == 0 and captured == 'x[U+202E RIGHT-TO-LEFT OVERRIDE]y',
            'main() with a file argument tags its bytes')
 
@@ -132,6 +133,7 @@ def run():
             captured = sys.stdout.buffer.getvalue().decode('utf-8')
         finally:
             sys.stdin = saved_stdin
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(rc == 0 and captured == 'a[U+200B ZERO WIDTH SPACE]b',
            'main() with no args reads stdin')
 
@@ -144,6 +146,7 @@ def run():
             err = sys.stderr.getvalue()
         finally:
             sys.stderr = saved_err
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(rc == 1 and 'unicode-tag:' in err,
            'main() reports an unreadable file cleanly (rc=1), no traceback')
 
@@ -159,6 +162,7 @@ def run():
             captured = sys.stdout.buffer.getvalue().decode('utf-8')
         finally:
             sys.stdin = saved_stdin
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(rc == 0 and captured == 'm[U+0430 CYRILLIC SMALL LETTER A]ster',
            'main_stdin() tags stdin and ignores its argv')
 
@@ -181,6 +185,7 @@ def run():
         finally:
             sys.stdin = saved_stdin
             sys.stderr = saved_err
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(rc == 1 and 'unicode-tag:' in err,
            'main_stdin reports an unreadable stdin cleanly (rc=1)')
 

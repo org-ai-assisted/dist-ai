@@ -468,7 +468,7 @@ _stale.shutdown()
 
 # --- the shortcuts dialog surfaces a save problem in a warning box -------------
 # (no leftover-lock clear needed: the locked-keybindings block above restores it)
-assert 'keybindings' not in win._locked, 'keybindings lock leaked into later tests'
+ok('keybindings' not in win._locked, 'keybindings lock leaked into later tests')
 _o_ss = win._set_shortcuts
 _o_w2 = QMessageBox.warning
 _warned = []
@@ -825,7 +825,7 @@ try:
     _o_exists = os.path.exists
     try:
         os.path.exists = lambda path: True          # a shipped icon path is present
-        ok(_REAL_APP_ICON() is not None,
+        ok(not _REAL_APP_ICON().isNull(),
            '_app_icon: loads the shipped SVG by path when no theme icon exists')
         os.path.exists = lambda path: False
         ok(_REAL_APP_ICON().isNull(), '_app_icon: a null icon when nothing is found')
@@ -1095,7 +1095,13 @@ from PyQt6.QtWidgets import QDialog as _QDlgScale                  # noqa: E402
 _probe_dlg = _QDlgScale()
 _probe_before = _probe_dlg.font().pointSizeF()
 _sel_scale(_probe_dlg, 150)
-ok(_probe_dlg.font().pointSizeF() > _probe_before or _probe_before <= 0,
+## _select_labels sets pointSizeF = _UI_BASE_POINT * scale/100, and _UI_BASE_POINT
+## is always positive (>=10), so a working scale yields a POSITIVE size STRICTLY
+## larger than the baseline. Require both -- no 'or baseline <= 0' escape, which
+## passed unconditionally on a pixel-sized default font (pointSizeF() == -1) and
+## so could not catch a no-op _select_labels regression.
+_probe_after = _probe_dlg.font().pointSizeF()
+ok(_probe_after > 0 and _probe_after > _probe_before,
    '_select_labels(scale=150) enlarges the dialog font (menu zoom)')
 _probe_dlg2 = _QDlgScale()
 _pb2 = _probe_dlg2.font().pointSizeF()

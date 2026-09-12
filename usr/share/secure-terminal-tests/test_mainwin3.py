@@ -22,6 +22,7 @@ win.new_tab()
 from PyQt6.QtWidgets import QSystemTrayIcon      # noqa: E402
 from PyQt6.QtCore import QObject as _QObject, pyqtSignal as _pyqtSignal  # noqa: E402
 import json as _json                             # noqa: E402
+import shutil                                     # noqa: E402
 
 # --- set_* admin-locked returns + bell channels + run_command palette ---------
 from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
@@ -229,7 +230,7 @@ try:
     ok(_etm_persists == [],
        '_enter_tray_mode: does NOT persist (launch mode) -- no set_systray re-entry')
     win.set_clip_run(False)
-    assert win._tray is not None            # _enter_tray_mode armed the single tray icon
+    ok(win._tray is not None, '_enter_tray_mode armed the single tray icon')
     win._tray.hide()
     win._tray = None
     _calls.clear()
@@ -256,6 +257,7 @@ try:
            'terminal _persist preserves an externally-set clip_warn_any (no clobber)')
     finally:
         _st_clip._system_dirs = _clip_orig_sysd
+        shutil.rmtree(_clip_sysd, ignore_errors=True)
 
     # Fix-3: Global-settings Apply must NOT write clip_warn_any when the user did not
     # toggle it here -- another instance may have changed it on disk since the dialog
@@ -284,6 +286,7 @@ try:
            'apply: a clip_warn_any toggled in the dialog is written to disk')
     finally:
         _st_clip._system_dirs = _clip_orig_sysd3
+        shutil.rmtree(_clip_sysd3, ignore_errors=True)
 
     # _persist must DROP a key locked at STARTUP (win._locked) even when it is not
     # currently locked in the system config -- i.e. it passes its startup snapshot
@@ -309,6 +312,8 @@ try:
         win._locked, win._default_theme = _pl_o_locked, _pl_o_theme
         win._default_zoom = _pl_o_zoom
         _st_clip._system_dirs, _st_clip._user_config_dir = _pl_o_sys, _pl_o_usr
+        shutil.rmtree(_pl_sysd, ignore_errors=True)
+        shutil.rmtree(_pl_usrd, ignore_errors=True)
 
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
     win._systray = True
@@ -408,9 +413,10 @@ _rcmenu = win.current()._reviewed_context_menu(QPoint(0, 0))
 ok(any(a.text() == 'System tray icon' for a in _rcmenu.actions()),
    'context menu: a tab terminal gains the app toggles via its window')
 
-# icon helpers build an icon (themed, path, or letter fallback)
-ok(M._app_icon() is not None, '_app_icon returns an icon')
-ok(M._letter_icon('A', '#3b82f6') is not None, '_letter_icon renders a fallback icon')
+# icon helpers build a NON-NULL icon (themed, path, or letter fallback). A QIcon is
+# never None even on failure -- it returns a null icon -- so assert not .isNull().
+ok(not M._app_icon().isNull(), '_app_icon returns a non-null icon')
+ok(not M._letter_icon('A', '#3b82f6').isNull(), '_letter_icon renders a fallback icon')
 
 # config init: an out-of-range scrollback normalises; allow_title seeds the OSC
 # defaults; and a locked allow_title enforces both granular title settings
@@ -425,6 +431,9 @@ ok(_wc._default_allow_title and 'osc_title' in _wc._osc_defaults,
    'config: legacy allow_title seeds the granular OSC title default')
 _wc.deleteLater()
 APP.processEvents()
+## The drop-in is consumed; remove it so its tui=true/scrollback etc. do not leak
+## into the ~dozen later MainWindow() instances built in this file.
+os.remove(os.path.join(_cfgd2, '80-init.conf'))
 
 # a locked allow_title enforces both title settings (via a stubbed Config)
 from secure_terminal import settings as _settings              # noqa: E402
@@ -935,8 +944,14 @@ try:
     _sig_close_calls = []
     M._signal_close_windows = lambda _app: _sig_close_calls.append(_app)
     win._force_close = False                 # crash-safe path must NOT force-close
-    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM/SIGHUP handlers
     import signal as _sig2
+    # Save the REAL SIGINT/SIGTERM/SIGHUP dispositions so the finally can restore
+    # them: _install_signal_quit replaces them PROCESS-WIDE, and without a restore a
+    # signal delivered to this process later (e.g. a CI process-group signal) would
+    # run secure_terminal's handler instead of the original.
+    _o_sig_handlers = {_s: _sig2.getsignal(_s)
+                       for _s in (_sig2.SIGINT, _sig2.SIGTERM, _sig2.SIGHUP)}
+    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM/SIGHUP handlers
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
         _h(_sig2.SIGINT, None)              # fire the handler
@@ -961,6 +976,8 @@ try:
 finally:
     M._signal_close_windows = _o_sig_close
     APP._signal_close_pending = False        # do not leave the global handler wedged
+    for _s, _oh in _o_sig_handlers.items():
+        _sig2.signal(_s, _oh)                # restore the real SIGINT/SIGTERM/SIGHUP handlers
 
 # _signal_close_windows: a terminate signal is ATOMIC across every window -- confirm
 # ONCE, and a veto keeps EVERY window (never close an idle one while another's prompt
@@ -1002,6 +1019,10 @@ def _sig_veto_q(*_a, **_k):
     return _No
 
 
+## Save the harness default (test_mainwin_common installs an always-Yes question
+## so no modal blocks the headless run) and restore it after this block -- else
+## the always-No / always-Yes stubs below leak to any later confirm dialog.
+_o_sig_q = QMessageBox.question
 QMessageBox.question = staticmethod(_sig_veto_q)
 _fa = _SigFakeApp([_win_a, _win_b])
 M._signal_close_windows(_fa)
@@ -1037,6 +1058,7 @@ ok(_fa_empty.quit_calls == 1 and _fa_empty._signal_close_pending is False,
 for _w in (_win_a, _win_b, _win_c):
     _w.deleteLater()
 APP.processEvents()
+QMessageBox.question = _o_sig_q          # restore the shared always-Yes default
 
 # _quiet_font_warnings installs a message handler that drops the font-db noise
 M._quiet_font_warnings()

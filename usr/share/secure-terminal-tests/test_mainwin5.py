@@ -740,12 +740,15 @@ _craw.close(); _craw.deleteLater(); APP.processEvents()
 # clear_saved_session calls that now live in a different split suite).
 _ds.clear()
 _stw = MainWindow()
+_stw.new_tab()                            # a SECOND live tab (idx 1): the start index must
+                                          # DIFFER from the wrap target (live 0), else a no-op
+                                          # _on_tab_step would also "pass" (start == expected end)
 _stw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _stw.tabs.count())  # nosec B108 (inert cwd string) -- placeholder LAST
 _stw_phi = _stw.tabs.count() - 1
-_stw.tabs.setCurrentIndex(_stw_phi - 1)   # the last live tab, just before the placeholder
+_stw.tabs.setCurrentIndex(_stw_phi - 1)   # the last LIVE tab (idx 1), just before the placeholder
 _stw._on_tab_step(1)                      # PageDown: -> ph (skip) -> wrap -> live 0
 ok(_stw.tabs.currentIndex() == 0,
-   'grok: tab-step skips a disabled placeholder and wraps to the next live tab')
+   'grok: tab-step from the last live tab skips a disabled placeholder and wraps to live 0')
 _stw.tabs.removeTab(_stw_phi)             # drop the orphan before close (closeEvent covered below)
 _stw.close(); _stw.deleteLater(); APP.processEvents()
 
@@ -882,7 +885,10 @@ def _win_with_conf(entries):
     try:
         _w = MainWindow()
     finally:
-        os.environ['XDG_CONFIG_HOME'] = _o if _o is not None else _d
+        if _o is None:
+            os.environ.pop('XDG_CONFIG_HOME', None)   # was unset: pop, do not pin to the temp dir
+        else:
+            os.environ['XDG_CONFIG_HOME'] = _o
     return _w, _d
 
 
@@ -1045,7 +1051,10 @@ try:
     ok(_pb_lines() == [], 'Part B: a key reset to its default is pruned from the file')
     _pbw.close()
 finally:
-    os.environ['XDG_CONFIG_HOME'] = _o_pb if _o_pb is not None else _pbdir
+    if _o_pb is None:
+        os.environ.pop('XDG_CONFIG_HOME', None)   # was unset: pop, do not pin to the temp dir
+    else:
+        os.environ['XDG_CONFIG_HOME'] = _o_pb
 
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 

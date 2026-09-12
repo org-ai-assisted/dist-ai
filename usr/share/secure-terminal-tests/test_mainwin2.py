@@ -60,13 +60,14 @@ try:
     win.set_line_edits(False)               # locked -> early return
     eq(win._default_line_edits, True,
        'a locked line_edits cannot be turned off by the user')
-    ok(win._default_bell_sound != '/etc/hostname' and _lk_copy != 'always',
-       'admin locks refuse bell_sound and copy_warn too (read-back, no change)')
+    ok(win.current().current_copy_warn() == _lk_copy,
+       'an admin-locked copy_warn reads back UNCHANGED (== its original, not any other value)')
     # a locked paste_warn / copy_warn is greyed out in the menu, not silently
     # clickable-but-ignored.
     win._locked = {'copy_warn', 'paste_warn'}
     win._apply_locks()
-    ok(all(not a.isEnabled() for a in win._copy_warn_actions.values())
+    ok(win._copy_warn_actions and win._paste_warn_actions
+       and all(not a.isEnabled() for a in win._copy_warn_actions.values())
        and all(not a.isEnabled() for a in win._paste_warn_actions.values()),
        'a locked paste_warn / copy_warn greys out its menu actions')
     # a locked zoom greys its View-menu actions too (its setter already refuses,
@@ -173,12 +174,17 @@ finally:
 # --- copy/paste/zoom + input-dialog actions routed through the current tab -----
 from PyQt6.QtWidgets import QInputDialog, QSystemTrayIcon        # noqa: E402
 
+_z0 = win.current().current_zoom()
 win.copy_selection()
 win.paste_clipboard()
 win.zoom_in()
 win.zoom_out()
 win._on_zoom_step(1)
-ok(True, 'copy/paste/zoom route through the current tab')
+# zoom_in then zoom_out net to zero, then _on_zoom_step(1) leaves the CURRENT tab's
+# zoom strictly ABOVE the baseline -- proving the zoom ops route to it (a no-op would
+# leave it AT _z0), without hardcoding the step size. Replaces a vacuous ok(True).
+ok(win.current().current_zoom() > _z0,
+   'copy/paste/zoom route through the current tab (a zoom step lands on it)')
 
 _ogt = QInputDialog.getText
 try:
@@ -322,6 +328,9 @@ ok(_wk._shortcuts['copy'][0].shortcut().toString() != 'Ctrl+C',
    'a config keybindings= cannot rebind Ctrl+C away from the running program')
 _wk.deleteLater()
 APP.processEvents()
+## The drop-in is consumed; remove it so it does not leak its non-default
+## keybindings into every later MainWindow() built in this process.
+os.remove(os.path.join(_cfgd, '90-keys.conf'))
 
 # --- the single-instance IPC server: request dispatch + ctl/open/restore ------
 import json as _json                                            # noqa: E402
@@ -669,7 +678,7 @@ try:
         'theme': 'light' if win._default_theme == 'dark' else 'dark',
         'zoom': win._default_zoom + 40,
         'scrollback': win._scrollback + 500,
-        'font_family': win._default_font_family,
+        'font_family': 'nondefault-probe-font',
         'font_size': win._default_font_size + 3,
     }
     win._locked = {'unicode_mode', 'tui', 'colors', 'line_edits',
@@ -689,6 +698,8 @@ try:
     eq(_rt.current_scrollback(), win._scrollback, 'restore honours a locked scrollback')
     eq(_rt.current_font_size(), win._default_font_size,
        'restore honours a locked font_size')
+    eq(_rt.current_font_family(), win._default_font_family,
+       'restore honours a locked font_family (the non-default is refused)')
     # nothing locked: the saved values are restored, not clobbered by the default
     win._locked = set()
     win._restore_tab(_rl_info, activate=True)
@@ -882,32 +893,37 @@ try:
     _o_sil = M.ipc.socket_is_live
     _o_ho = M._handoff
     _o_bind = M._bind_instance_server
-    M.ipc.socket_is_live = lambda *_a, **_k: True
-    M._handoff = lambda *_a, **_k: {'ok': True}
-    sys.argv = ['secure-terminal', '--reuse', '--title', 'busy']
-    eq(_main(), 0, 'main: --reuse to a bound-but-busy primary retries via _handoff -> 0')
-    # --reuse that found no primary, then LOST the atomic bind to a peer that became
-    # primary meanwhile: _bind returns peer_owns and main() hands off via _handoff.
-    M.ipc.socket_is_live = lambda *_a, **_k: False   # skip the busy-peer retry above
-    M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
-    sys.argv = ['secure-terminal', '--reuse', '--title', 'raced']
-    eq(_main(), 0, 'main: --reuse losing the bind race hands off to the new primary -> 0')
-    # --reuse that DEFERRED to a live peer which then DIED mid-handoff (a RESTART: the
-    # old primary is still bound when we launch, so we defer, then it exits). _handoff
-    # returns None, so main() must RE-CLAIM the freed socket -- else it opens a
-    # server-less window and the group has NO primary, so every later --reuse opens
-    # yet another window (the reported duplicate-window regression). Here the re-claim
-    # finds nothing to take ('failed') so the window is server-less, but the re-claim
-    # LINE runs; without it there is no second attempt at all.
-    _bind_seq = [(None, 'peer_owns'), (None, 'failed')]
-    M._bind_instance_server = lambda *_a, **_k: _bind_seq.pop(0)
-    M._handoff = lambda *_a, **_k: None
-    sys.argv = ['secure-terminal', '--reuse', '--title', 'peerdied']
-    eq(_main(), 0,
-       'main: --reuse whose peer died mid-handoff re-claims (no lingering primary-less window)')
-    M.ipc.socket_is_live = _o_sil
-    M._handoff = _o_ho
-    M._bind_instance_server = _o_bind
+    try:
+        M.ipc.socket_is_live = lambda *_a, **_k: True
+        M._handoff = lambda *_a, **_k: {'ok': True}
+        sys.argv = ['secure-terminal', '--reuse', '--title', 'busy']
+        eq(_main(), 0, 'main: --reuse to a bound-but-busy primary retries via _handoff -> 0')
+        # --reuse that found no primary, then LOST the atomic bind to a peer that became
+        # primary meanwhile: _bind returns peer_owns and main() hands off via _handoff.
+        M.ipc.socket_is_live = lambda *_a, **_k: False   # skip the busy-peer retry above
+        M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
+        sys.argv = ['secure-terminal', '--reuse', '--title', 'raced']
+        eq(_main(), 0, 'main: --reuse losing the bind race hands off to the new primary -> 0')
+        # --reuse that DEFERRED to a live peer which then DIED mid-handoff (a RESTART: the
+        # old primary is still bound when we launch, so we defer, then it exits). _handoff
+        # returns None, so main() must RE-CLAIM the freed socket -- else it opens a
+        # server-less window and the group has NO primary, so every later --reuse opens
+        # yet another window (the reported duplicate-window regression). Here the re-claim
+        # finds nothing to take ('failed') so the window is server-less, but the re-claim
+        # LINE runs; without it there is no second attempt at all.
+        _bind_seq = [(None, 'peer_owns'), (None, 'failed')]
+        M._bind_instance_server = lambda *_a, **_k: _bind_seq.pop(0)
+        M._handoff = lambda *_a, **_k: None
+        sys.argv = ['secure-terminal', '--reuse', '--title', 'peerdied']
+        eq(_main(), 0,
+           'main: --reuse whose peer died mid-handoff re-claims (no lingering primary-less window)')
+    finally:
+        # Restore even if an eq() above raises: without try/finally an IndexError
+        # (e.g. _bind_seq.pop on an extra call) would leak these stubs into every
+        # later main()/MainWindow() test in this process.
+        M.ipc.socket_is_live = _o_sil
+        M._handoff = _o_ho
+        M._bind_instance_server = _o_bind
     M.ipc.send_request = lambda *_a, **_k: None
 
     # _require_default_font: the Hack font (fonts-hack) is a hard dependency. Qt
