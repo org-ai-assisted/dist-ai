@@ -18,8 +18,10 @@
 ## reset, or published:
 ##   - dirty working tree (uncommitted / a sibling session's work)
 ##   - local 'ai' AHEAD of or DIVERGED from the fork tip (unpushed work)
+##   - detached HEAD not contained in the fork tip (re-attach would orphan it)
 ##   - no fork 'ai' tip (submodule 'ai' never published) / no fork remote
-##   - a fetch that fails
+##   - a fetch, checkout, or fast-forward that fails
+##   - a '.gitmodules' path that resolves outside the superproject
 ## A STOP makes the tool exit 1 so the caller halts before the pin/mirror steps;
 ## a human resolves the stopped submodules by hand. Do NOT extend this to
 ## auto-resolve those cases.
@@ -40,6 +42,12 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+
+## An inherited GIT_DIR / GIT_WORK_TREE (e.g. from a 'git submodule foreach'
+## parent) would redirect every 'git -C <sub>' at the superproject instead of the
+## submodule -- silently fast-forwarding the wrong repo. Clear them; this tool
+## addresses each submodule by path.
+unset GIT_DIR GIT_WORK_TREE
 
 AI_BRANCH="ai"
 ## The published fork that carries 'ai' work and that CI fetches (git skill).
@@ -122,9 +130,25 @@ current=()
 uninit=()
 stopped=()
 
+top_real="$( realpath -m -- "${top}" )"
+
 for path in "${sub_paths[@]}"; do
    [ -n "${path}" ] || continue
    sub="${top}/${path}"
+
+   ## Containment: a '.gitmodules' path is trusted content, but a stray '..' (a
+   ## bad edit, or a crafted entry) would point 'sub' outside the superproject
+   ## and mutate an unrelated repo. Refuse anything that does not resolve under
+   ## 'top'.
+   sub_real="$( realpath -m -- "${sub}" )"
+   case "${sub_real}/" in
+      "${top_real}"/*)
+         ;;
+      *)
+         stopped+=( "${path} :: resolves outside the superproject ('${sub_real}')" )
+         continue
+         ;;
+   esac
 
    ## Uninitialised submodule: nothing to sync. Not a STOP (it gets no pin bump
    ## either); note it and move on.
@@ -166,15 +190,31 @@ for path in "${sub_paths[@]}"; do
    ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
    on_ai="false"
    [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
+
+   ## Detached HEAD: re-attaching to 'ai' would orphan any commit not already
+   ## contained in the fork tip. Refuse unless the detached commit is an ancestor
+   ## of the fork tip (then re-attach + fast-forward loses nothing). An on-another-
+   ## branch HEAD is safe -- that branch ref persists after checkout.
+   if [ -z "${ref}" ]; then
+      head_sha="$( git -C "${sub}" rev-parse --verify HEAD 2>/dev/null || true )"
+      if [ -n "${head_sha}" ] \
+         && ! git -C "${sub}" merge-base --is-ancestor "${head_sha}" "${fork_tip}" 2>/dev/null; then
+         stopped+=( "${path} :: detached HEAD ${head_sha:0:12} not contained in ${FORK_REMOTE}/${AI_BRANCH} (unpushed work)" )
+         continue
+      fi
+   fi
+
    have_ai="false"
    git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" && have_ai="true"
 
-   ## No local 'ai' at all (and not on it): create it at the fork tip.
+   ## No local 'ai' at all (and not on it): create it at the fork tip. A detached
+   ## HEAD reaching here is an ancestor of the fork tip, so nothing is orphaned.
    if [ "${have_ai}" = "false" ]; then
       if [ "${dry_run}" = "true" ]; then
          log "[dry-run] ${path}: would create '${AI_BRANCH}' at ${FORK_REMOTE}/${AI_BRANCH} (${fork_tip:0:12})"
-      else
-         git -C "${sub}" checkout --quiet -b "${AI_BRANCH}" "${fork_tip}"
+      elif ! git -C "${sub}" checkout --quiet -b "${AI_BRANCH}" "${fork_tip}"; then
+         stopped+=( "${path} :: could not create '${AI_BRANCH}' at the fork tip" )
+         continue
       fi
       reattached+=( "${path} (created '${AI_BRANCH}' at tip)" )
       continue
@@ -191,19 +231,22 @@ for path in "${sub_paths[@]}"; do
       ## Already at the tip. Re-attach if detached; otherwise a no-op.
       if [ "${on_ai}" = "true" ]; then
          current+=( "${path}" )
-      else
-         if [ "${dry_run}" = "true" ]; then
-            log "[dry-run] ${path}: would re-attach to '${AI_BRANCH}' (already at tip)"
-         else
-            git -C "${sub}" checkout --quiet "${AI_BRANCH}"
-         fi
+      elif [ "${dry_run}" = "true" ]; then
+         log "[dry-run] ${path}: would re-attach to '${AI_BRANCH}' (already at tip)"
          reattached+=( "${path} (already at tip)" )
+      elif git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+         reattached+=( "${path} (already at tip)" )
+      else
+         stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}'" )
       fi
       continue
    fi
 
    if git -C "${sub}" merge-base --is-ancestor "${local_ai}" "${fork_tip}" 2>/dev/null; then
-      ## Strictly BEHIND -> fast-forward (re-attaching first if detached).
+      ## Strictly BEHIND -> fast-forward (re-attaching first if detached). Guard
+      ## the mutations: a failure (e.g. an untracked file the incoming commit also
+      ## adds) becomes a STOP for this submodule, never an errexit crash that
+      ## abandons the rest of the loop with no summary.
       if [ "${dry_run}" = "true" ]; then
          if [ "${on_ai}" = "true" ]; then
             log "[dry-run] ${path}: would fast-forward '${AI_BRANCH}' ${local_ai:0:12} -> ${fork_tip:0:12}"
@@ -211,8 +254,14 @@ for path in "${sub_paths[@]}"; do
             log "[dry-run] ${path}: would re-attach '${AI_BRANCH}' + fast-forward ${local_ai:0:12} -> ${fork_tip:0:12}"
          fi
       else
-         [ "${on_ai}" = "true" ] || git -C "${sub}" checkout --quiet "${AI_BRANCH}"
-         git -C "${sub}" merge --quiet --ff-only "${fork_tip}"
+         if [ "${on_ai}" != "true" ] && ! git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+            stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}' before fast-forward" )
+            continue
+         fi
+         if ! git -C "${sub}" merge --quiet --ff-only "${fork_tip}"; then
+            stopped+=( "${path} :: fast-forward to ${FORK_REMOTE}/${AI_BRANCH} failed (untracked-file collision?)" )
+            continue
+         fi
       fi
       if [ "${on_ai}" = "true" ]; then
          advanced+=( "${path} (${local_ai:0:12} -> ${fork_tip:0:12})" )

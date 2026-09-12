@@ -62,17 +62,17 @@ export SUBUPDATE_LOG
 printf '' > "${SUBUPDATE_LOG}"
 shimbin="${workspace}/shimbin"
 mkdir --parents -- "${shimbin}"
-{
-   printf '%s\n' '#!/bin/bash'
-   printf '%s\n' 'prev=""'
-   printf '%s\n' 'for a in "$@"; do'
-   printf '%s\n' '   if [ "${prev}" = "submodule" ] && [ "${a}" = "update" ]; then'
-   printf '%s\n' '      printf "SUBMODULE_UPDATE %s\n" "$*" >> "${SUBUPDATE_LOG}"'
-   printf '%s\n' '   fi'
-   printf '%s\n' '   prev="${a}"'
-   printf '%s\n' 'done'
-   printf '%s\n' 'exec "${REAL_GIT}" "$@"'
-} > "${shimbin}/git"
+cat > "${shimbin}/git" <<'SHIM'
+#!/bin/bash
+prev=""
+for a in "$@"; do
+   if [ "${prev}" = "submodule" ] && [ "${a}" = "update" ]; then
+      printf 'SUBMODULE_UPDATE %s\n' "$*" >> "${SUBUPDATE_LOG}"
+   fi
+   prev="${a}"
+done
+exec "${REAL_GIT}" "$@"
+SHIM
 chmod +x -- "${shimbin}/git"
 export PATH="${shimbin}:${PATH}"
 
@@ -288,6 +288,109 @@ require_result "${stop_out}" "ahead of / diverged" "STOP surfaces the ahead/dive
 require_result "${stop_out}" "dirty working tree"  "STOP surfaces the dirty reason"
 require_result "${stop_out}" "never published"     "STOP surfaces the unpublished-ai reason"
 require_result "${stop_out}" "no 'org-ai-assisted' remote" "STOP surfaces the missing-remote reason"
+
+## =============================================================================
+## Superproject C: mutation-failure and containment STOPs must not crash the loop
+## or lose work; a healthy submodule ordered AFTER them is still processed.
+## =============================================================================
+superC="${workspace}/superC"
+new_super "${superC}"
+
+## aa_collide: behind, but an untracked file collides with a file the incoming
+## fork commit adds -> 'merge --ff-only' fails; must STOP (guarded), not crash.
+gitq init --quiet --bare -- "${workspace}/fork-collide.git"
+gitq init --quiet -- "${workspace}/drv-collide"
+gitq -C "${workspace}/drv-collide" checkout --quiet -b ai
+printf 'c1\n' > "${workspace}/drv-collide/f"
+gitq -C "${workspace}/drv-collide" add f
+gitq -C "${workspace}/drv-collide" commit --quiet -m c1
+gitq -C "${workspace}/drv-collide" remote add fork "file://${workspace}/fork-collide.git"
+gitq -C "${workspace}/drv-collide" push --quiet fork ai
+add_sub "${superC}" "${workspace}/fork-collide.git" aa_collide
+## fork adds a NEW tracked file 'newfile'.
+printf 'from-fork\n' > "${workspace}/drv-collide/newfile"
+gitq -C "${workspace}/drv-collide" add newfile
+gitq -C "${workspace}/drv-collide" commit --quiet -m "add newfile"
+gitq -C "${workspace}/drv-collide" push --quiet fork ai
+## untracked collision in the submodule working tree.
+printf 'attacker\n' > "${superC}/aa_collide/newfile"
+collide_head="$(head_of "${superC}/aa_collide")"
+
+## detuniq: local ai == fork tip, but HEAD is detached at a UNIQUE extra commit.
+## Re-attaching would orphan it -> must STOP, not silently drop the commit.
+new_fork "${workspace}/fork-detuniq.git" "${workspace}/drv-detuniq"
+add_sub "${superC}" "${workspace}/fork-detuniq.git" detuniq
+gitq -C "${superC}/detuniq" checkout --quiet --detach ai
+printf 'unique\n' > "${superC}/detuniq/g"
+gitq -C "${superC}/detuniq" add g
+gitq -C "${superC}/detuniq" commit --quiet -m "unique detached commit"
+detuniq_head="$(head_of "${superC}/detuniq")"
+
+## evil: a '.gitmodules' path that escapes the superproject -> must STOP.
+gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evil.path ../outside
+gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evil.url "file:///unused"
+
+## zz_healthy: behind + clean, ordered AFTER the failing ones -> must still FF.
+new_fork "${workspace}/fork-healthy.git" "${workspace}/drv-healthy"
+add_sub "${superC}" "${workspace}/fork-healthy.git" zz_healthy
+advance_fork "${workspace}/drv-healthy" "${workspace}/fork-healthy.git"
+healthy_tip="$(gitq -C "${workspace}/drv-healthy" rev-parse ai)"
+
+rc=0
+c_out="$("${tool}" --dir "${superC}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "mixed STOP+healthy run exits 1"
+else
+   fail "mixed run exited ${rc} (expected 1); output:<<<${c_out}>>>"
+fi
+if [ "$(head_of "${superC}/aa_collide")" = "${collide_head}" ] && [ "$(cat -- "${superC}/aa_collide/newfile")" = "attacker" ]; then
+   pass "untracked-collision submodule STOPped without mutation (no errexit crash)"
+else
+   fail "untracked-collision submodule was mutated / lost its untracked file"
+fi
+if [ "$(head_of "${superC}/detuniq")" = "${detuniq_head}" ]; then
+   pass "detached-at-unique-commit submodule left untouched (commit not orphaned)"
+else
+   fail "detached-at-unique-commit submodule was mutated (orphaned the unique commit)"
+fi
+if [ "$(head_of "${superC}/zz_healthy")" = "${healthy_tip}" ]; then
+   pass "healthy submodule after a STOP is STILL fast-forwarded (loop not abandoned)"
+else
+   fail "healthy submodule after a STOP was skipped (loop abandoned mid-run)"
+fi
+require_result "${c_out}" "untracked-file collision" "STOP surfaces the fast-forward-failure reason"
+require_result "${c_out}" "not contained in"          "STOP surfaces the detached-not-contained reason"
+require_result "${c_out}" "resolves outside the superproject" "STOP surfaces the out-of-tree-path reason"
+
+## =============================================================================
+## Superproject D: an inherited GIT_DIR/GIT_WORK_TREE must NOT redirect the tool
+## at the superproject; the submodule (not the super) is fast-forwarded.
+## =============================================================================
+superD="${workspace}/superD"
+new_super "${superD}"
+new_fork "${workspace}/fork-gd.git" "${workspace}/drv-gd"
+add_sub "${superD}" "${workspace}/fork-gd.git" gd
+advance_fork "${workspace}/drv-gd" "${workspace}/fork-gd.git"
+gd_tip="$(gitq -C "${workspace}/drv-gd" rev-parse ai)"
+superD_head_before="$(gitq -C "${superD}" rev-parse HEAD)"
+
+rc=0
+GIT_DIR="${superD}/.git" GIT_WORK_TREE="${superD}" "${tool}" --dir "${superD}" >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   pass "run with inherited GIT_DIR/GIT_WORK_TREE exits 0"
+else
+   fail "run with inherited GIT_DIR exited ${rc}"
+fi
+if [ "$(head_of "${superD}/gd")" = "${gd_tip}" ]; then
+   pass "with GIT_DIR set, the SUBMODULE is fast-forwarded (not the superproject)"
+else
+   fail "with GIT_DIR set, the submodule was not fast-forwarded (redirected at super)"
+fi
+if [ "$(gitq -C "${superD}" rev-parse HEAD)" = "${superD_head_before}" ]; then
+   pass "with GIT_DIR set, the superproject HEAD is untouched"
+else
+   fail "with GIT_DIR set, the superproject was mutated"
+fi
 
 ## =============================================================================
 ## Invariant: no 'git submodule update' ever ran.
