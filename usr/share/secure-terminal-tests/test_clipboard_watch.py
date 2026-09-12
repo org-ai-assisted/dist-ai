@@ -214,10 +214,15 @@ def _test_watcher():
        'watcher: bar Strip + Replace dispatches the ASCII form to the clipboard')
     ok(not w._popup.isVisible(), 'watcher: resolving hides the popup')
 
+    # Set our own-last-write to a DANGEROUS payload: WITHOUT the feedback guard this
+    # deceptive text WOULD pop, so 'no popup' now proves the guard recognizes our own
+    # write and skips it -- not merely that clean ASCII never pops (a tautology).
+    w._last_written = payload
     cb.setText(w._last_written)
     w._on_change()
     _settle()
     ok(not w._popup.isVisible(), 'watcher: our own write is ignored (feedback guard)')
+    w._last_written = ''             # reset so the next sub-test's payload is not seen as ours
 
     cb.setText(payload)
     w._on_change()
