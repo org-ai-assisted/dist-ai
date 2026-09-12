@@ -152,6 +152,11 @@ assert_spared() {
 ## --- (1) pipe + quiet is FLAGGED ---
 assert_flagged "pipe-long"  "$(body_of "seq 5 ${pipe} ${grp} ${ql} 5")"
 assert_flagged "pipe-short" "$(body_of "seq 5 ${pipe} ${grp} ${qs} bar")"
+## A wrapper (sudo/env/command) does not bypass R-161: the real grep is peeled.
+## CANARY: the pre-effective_call gate keyed on the wrapper basename and MISSED
+## 'seq | sudo grep -q' and 'sudo grep -q ...'.
+assert_flagged "pipe-sudo"  "$(body_of "seq 5 ${pipe} sudo ${grp} ${qs} bar")"
+assert_flagged "short-sudo" "$(body_of "sudo ${grp} ${qs} x /etc/os-release")"
 assert_flagged "pipe-silent" "$(body_of "seq 5 ${pipe} ${grp} ${sil} bar")"
 ## An UNAMBIGUOUS getopt_long abbreviation of '--quiet' is still a quiet flag, so
 ## a pipe-consuming '--qu' grep is FLAGGED. CANARY: the pre-abbrev exact-match
@@ -166,6 +171,8 @@ assert_spared "herestring" \
    "$(body_of 'v="x"' "${grp} ${ql} ${dd} pat <<< \"\${v}\"")"
 assert_spared "file-read"  "$(body_of "${grp} ${ql} ${dd} pat /etc/os-release")"
 assert_spared "pipe-no-quiet" "$(body_of "seq 5 ${pipe} ${grp} 5")"
+## A wrapped grep with NO quiet flag is still spared (the peel must not over-flag).
+assert_spared "pipe-sudo-no-quiet" "$(body_of "seq 5 ${pipe} sudo ${grp} 5")"
 
 ## --- (2) short quiet cluster is FLAGGED ---
 assert_flagged "short-bare" "$(body_of "${grp} ${qs} x /etc/os-release")"

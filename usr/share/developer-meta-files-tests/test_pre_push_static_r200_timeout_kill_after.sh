@@ -160,6 +160,14 @@ assert_flagged "assign-prefix" "$(body_of "LC_ALL=C ${tmo} 5 do_thing")"
 assert_flagged "signal-no-ka"  "$(body_of "${tmo} ${sig} 5 do_thing")"
 assert_flagged "cmd-subst"     "$(body_of "printf '%s' \"\$(${tmo} 5 do_thing)\"")"
 
+## --- (1) a wrapper-hidden timeout is FLAGGED: sudo/env/command do not bypass.
+## CANARY: the pre-effective_call gate keyed on the wrapper basename and MISSED
+## every wrapped form, so a 'sudo timeout 5 cmd' with no --kill-after evaded R-200.
+assert_flagged "sudo-wrap"     "$(body_of "sudo ${tmo} 5 do_thing")"
+assert_flagged "sudo-opt-wrap" "$(body_of "sudo -u www-data ${tmo} 5 do_thing")"
+assert_flagged "env-wrap"      "$(body_of "env VAR=1 ${tmo} 5 do_thing")"
+assert_flagged "command-wrap"  "$(body_of "command ${tmo} 5 do_thing")"
+
 ## --- (1) a kill-after option, a string, an argument, and the waiver SPARED ---
 assert_spared "ka-long"        "$(body_of "${tmo} ${ka}=5 5 do_thing")"
 assert_spared "ka-short"       "$(body_of "${tmo} ${ks} 5 10 do_thing")"
@@ -172,6 +180,9 @@ assert_spared "ka-after-signal" "$(body_of "${tmo} ${sig} ${ka}=5 5 do_thing")"
 ## positive).
 assert_spared "ka-abbrev-eq"    "$(body_of "${tmo} --kill-af=5 5 do_thing")"
 assert_spared "ka-abbrev-space" "$(body_of "${tmo} --kill-af 5 5 do_thing")"
+## A COMPLIANT wrapped timeout stays spared: peeling the wrapper must not
+## invent a false positive on a form that already carries --kill-after.
+assert_spared "sudo-ka"         "$(body_of "sudo ${tmo} ${ka}=5 5 do_thing")"
 ## GNU-BUNDLED short -k ('-vk 10' = -v -k 10, '-vk5' = -v -k5) carries the
 ## kill-after, so the timeout is SPARED. CANARY: a first-char-only 'startswith
 ## -k' test missed the bundled forms, wrongly flagging a VALID command it cannot
@@ -216,9 +227,17 @@ assert_spared "zero-duration" "$(body_of "${tmo} 0 do_thing")"
 assert_spared "zero-leading-dot"  "$(body_of "${tmo} .0 do_thing")"
 assert_spared "zero-trailing-dot" "$(body_of "${tmo} 0. do_thing")"
 ## A file defining its OWN timeout() function: a BARE 'timeout' call targets that
-## function, not coreutils, so R-200 spares it.
+## function, not coreutils, so R-200 spares it. The wrapper body reaches coreutils
+## via 'command timeout' (bypassing the function), so it must itself carry
+## --kill-after to stay green -- effective_call now inspects it like any coreutils
+## timeout, per the path-qualified canary's principle below.
 assert_spared "local-timeout-def" \
-   "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
+   "$(body_of "${tmo} () { command ${tmo} ${ka}=5 ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
+## The same self-wrapper WITHOUT --kill-after reaches coreutils just as
+## '/usr/bin/timeout' does, so it is FLAGGED. CANARY: the wrapper basename hid
+## 'command timeout' from R-200 before effective_call peeled it.
+assert_flagged "funcdef-wrapper-no-ka" \
+   "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }")"
 ## CANARY: a PATH-QUALIFIED '/usr/bin/timeout' bypasses the script's own timeout()
 ## function (a '/' makes bash skip the function and reach coreutils), so it still
 ## needs '--kill-after' and MUST be flagged EVEN in a file defining timeout(). The

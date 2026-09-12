@@ -292,19 +292,25 @@ class GrepQuiet(Rule):
         pipe_reported = set()
         for pipe in bash_ast.pipe_binary_cmds(tree):
             right = pipe.get("Y")
-            cmd = right.get("Cmd") if isinstance(right, dict) else None
-            if not isinstance(cmd, dict) or cmd.get("Type") != "CallExpr":
+            raw_cmd = right.get("Cmd") if isinstance(right, dict) else None
+            if not isinstance(raw_cmd, dict) or raw_cmd.get("Type") != "CallExpr":
                 continue
-            if bash_ast.command_basename(cmd) != "grep":
+            ## Rebase past a leading exec wrapper so 'x | sudo grep -q' is read as
+            ## a quiet grep pipe consumer (else the wrapper basename bypasses it).
+            ## Dedup is keyed on the ORIGINAL node, which is what call_exprs yields.
+            cmd = h.effective_call(raw_cmd, ctx.source)
+            if cmd is None or bash_ast.command_basename(cmd) != "grep":
                 continue
             is_quiet, _ = _grep_quiet(cmd, ctx.source)
             if is_quiet:
-                pipe_reported.add(id(cmd))
+                pipe_reported.add(id(raw_cmd))
                 yield _fail(ctx, "R-161", "R-161 quiet grep consuming a pipe",
                             cmd)
-        for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_basename(call) != "grep" \
-                    or id(call) in pipe_reported:
+        for raw_call in bash_ast.call_exprs(tree):
+            if id(raw_call) in pipe_reported:
+                continue
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "grep":
                 continue
             _, is_short = _grep_quiet(call, ctx.source)
             if is_short:
@@ -312,8 +318,9 @@ class GrepQuiet(Rule):
                             "R-161 grep short quiet flag (use --quiet)", call)
 
     def fix(self, ctx):
-        for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_basename(call) != "grep":
+        for raw_call in h.editable_calls(ctx.tree):
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "grep":
                 continue
             options = _grep_option_words(call)
             if _grep_has_arg_taker(options):
@@ -368,8 +375,11 @@ class MkdirTmpMode(Rule):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_basename(call) != "mkdir":
+        for raw_call in bash_ast.call_exprs(ctx.tree):
+            ## Rebase past a leading exec wrapper so 'sudo mkdir ...' is read as
+            ## 'mkdir ...' (else the wrapper basename bypasses R-172).
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "mkdir":
                 continue
             is_temp = any(bash_ast.word_param_names(word) & TMP_PARAMS
                           for word in bash_ast.args(call)[1:])
@@ -403,8 +413,9 @@ class MkdirTmpMode(Rule):
         text = ctx.source
         data = text.encode("utf-8")
         disabled_lines: set[int] = set()
-        for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_basename(call) != "mkdir":
+        for raw_call in h.editable_calls(ctx.tree):
+            call = h.effective_call(raw_call, text)
+            if call is None or bash_ast.command_basename(call) != "mkdir":
                 continue
             call_args = bash_ast.args(call)
             if not any(bash_ast.word_param_names(word) & TMP_PARAMS
@@ -521,7 +532,11 @@ def _timeout_shadowed_by_local_func(tree, call, defines):
     function (quoting/backslash suppress alias, not function, expansion; a
     'command'/'env' wrapper carries that basename, not 'timeout', so it never
     reaches here)."""
-    return defines and "/" not in (bash_ast.command_name(call) or "")
+    ## CALL is the ORIGINAL (pre-unwrap) call: only a bare, unqualified 'timeout'
+    ## command word resolves to the function. A wrapped 'sudo/command/env timeout'
+    ## execs coreutils (command word is the wrapper) and a '/usr/bin/timeout' names
+    ## the binary -- neither is shadowed, both stay subject to R-200.
+    return defines and bash_ast.command_name(call) == "timeout"
 
 
 def _timeout_cluster_has_kill(cluster):
@@ -559,10 +574,13 @@ class TimeoutKillAfter(Rule):
                         "call targets it, but a path-qualified '/usr/bin/timeout' "
                         "still bypasses it to coreutils and is checked" % ctx.path,
                         1)
-        for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_basename(call) != "timeout":
+        for raw_call in bash_ast.call_exprs(tree):
+            ## Rebase past a leading exec wrapper so 'sudo timeout 5 cmd' is read
+            ## as 'timeout 5 cmd' (else the wrapper basename bypasses R-200).
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "timeout":
                 continue
-            if _timeout_shadowed_by_local_func(tree, call, defines):
+            if _timeout_shadowed_by_local_func(tree, raw_call, defines):
                 continue
             call_args = bash_ast.args(call)
             if len(call_args) < 2:
@@ -606,10 +624,11 @@ class TimeoutKillAfter(Rule):
         if ctx.has_waiver(TIMEOUT_WAIVER):
             return
         defines = bash_ast.defines_function(tree, "timeout")
-        for call in h.editable_calls(tree):
-            if bash_ast.command_basename(call) != "timeout":
+        for raw_call in h.editable_calls(tree):
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "timeout":
                 continue
-            if _timeout_shadowed_by_local_func(tree, call, defines):
+            if _timeout_shadowed_by_local_func(tree, raw_call, defines):
                 continue
             if len(bash_ast.args(call)) < 3:
                 ## Need a duration and at least one wrapped command word.
