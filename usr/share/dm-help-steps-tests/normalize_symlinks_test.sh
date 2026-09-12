@@ -127,6 +127,8 @@ run_normalize() {
       ## safe-rm is a helper-scripts tool that may be absent in the test image;
       ## the function under test only uses it to remove a file it just read.
       ## Called indirectly by the sourced normalise functions.
+      ## style-ok: R-120 -- this IS the safe-rm shim; 'command rm' is the only way
+      ## to implement it without recursing into itself.
       # shellcheck disable=SC2317
       safe-rm() { command rm "$@"; }
       source_code_folder_dist="${clone}"
@@ -256,11 +258,17 @@ ln --symbolic -- "${target_with_nl}" "${nl_clone}/weird_link"
 ## The normaliser only touches INDEXED (mode-120000) entries, so stage it.
 git_x -C "${nl_clone}" add -- weird_link
 run_normalize "${nl_clone}"
+## The cat comparison strips ALL trailing newlines from both sides, so it cannot
+## see an extra (or missing) trailing byte in the placeholder -- exactly the
+## reproducibility regression this case guards. Add a byte-exact length check
+## (like the logo placeholder test above): the placeholder must be EXACTLY the
+## target bytes ('a\nb', 3 bytes), never 'a\nb\n' with readlink's own newline kept.
 if [ ! -L "${nl_clone}/weird_link" ] \
-   && [ "$(cat -- "${nl_clone}/weird_link")" = "${target_with_nl}" ]; then
-   pass "a symlink target containing a newline is flattened without losing bytes"
+   && [ "$(cat -- "${nl_clone}/weird_link")" = "${target_with_nl}" ] \
+   && [ "$(wc --bytes < "${nl_clone}/weird_link")" -eq "${#target_with_nl}" ]; then
+   pass "a symlink target containing a newline is flattened without losing bytes (byte-exact)"
 else
-   fail "a newline in the symlink target was not preserved by the flatten"
+   fail "a newline in the symlink target was not preserved byte-exactly by the flatten"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

@@ -100,9 +100,27 @@ out_file="${work}/out"
 hex_to_pcre() { printf '%s' "$1" | sed 's/../\\x&/g'; }
 
 ## name_is_flagged <branch> -- true if a ref-name scan flags the branch name.
+## The trailing NEWLINE is load-bearing: unicode-show reports "missing newline at
+## end" and exits non-zero for ANY newline-less input, so feeding it via 'printf
+## %s' (no newline) makes this return "flagged" UNCONDITIONALLY -- a vacuous scan
+## that passes every refname row regardless of content. '%s\n' makes the verdict
+## reflect the name's actual codepoints.
 name_is_flagged() {
-   printf '%s' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
+   printf '%s\n' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
 }
+
+## Self-check the scanner DISCRIMINATES before the corpus loop trusts it: a clean
+## ASCII name must NOT flag, and a name carrying an RTL-override (U+202E, the octal
+## escape keeps this source ASCII) MUST flag. Catches a regression to the vacuous
+## always-flag behaviour (which would otherwise pass every refname row silently).
+if name_is_flagged 'plain-ascii-branch-name'; then
+   printf '%s\n' 'FATAL: corpus-lib: name_is_flagged flags a CLEAN ascii name -- the refname scan is vacuous.' >&2
+   exit 1
+fi
+if ! name_is_flagged "rtl$(printf '\342\200\256')override"; then
+   printf '%s\n' 'FATAL: corpus-lib: name_is_flagged does NOT flag an RTL-override name -- the refname scan is broken.' >&2
+   exit 1
+fi
 
 while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do
    case "${branch}" in ''|'#'*) continue ;; esac

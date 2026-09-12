@@ -122,13 +122,18 @@ run_gate_on_body() {
    gate_output="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || gate_rc=$?
 }
 
-## assert_flagged <name> <body> -- R-200 must appear.
+## assert_flagged <name> <body> -- R-200 must appear AND the gate must actually
+## FAIL (non-zero exit), not merely print the message. Checking gate_rc too (like
+## assert_spared) closes the decoupling where a refactor prints 'FAIL R-200' but
+## still exits 0 -- a push-blocking gate that no longer blocks, invisible to a
+## message-only assertion.
 assert_flagged() {
    run_gate_on_body "$1" "$2"
-   if grep --fixed-strings -- "FAIL R-200" <<< "${gate_output}" >/dev/null; then
+   if grep --fixed-strings -- "FAIL R-200" <<< "${gate_output}" >/dev/null \
+      && [ "${gate_rc}" -ne 0 ]; then
       printf '%s\n' "PASS: R-200 flagged ${1}"
    else
-      printf '%s\n' "FAIL: R-200 did NOT flag ${1}"
+      printf '%s\n' "FAIL: R-200 did NOT block ${1} (gate_rc=${gate_rc})"
       printf '%s\n' "${gate_output}" | tail -5
       fail=1
    fi

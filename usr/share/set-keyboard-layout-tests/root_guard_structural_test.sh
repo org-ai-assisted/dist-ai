@@ -46,12 +46,36 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## The console-restart block must be guarded by a root check.
-if grep --quiet --fixed-strings -- '[ "$(id --user)" != 0 ]' "${lib}" \
-   && grep --quiet --fixed-strings -- 'restart keyboard-setup.service' "${lib}"; then
-   ok "root guard present in set_console_keymap"
+## The root guard must GATE the console restart WITHIN set_console_keymap. Two
+## independent whole-file greps (the prior form) pass even when the guard text is
+## an inert comment in another function and the real restart is unguarded, so
+## extract the function body and require the guard 'if' to PRECEDE the actual
+## restart command line (a 'log_run' invocation, not a quoted "Skipping..." log
+## message that merely names it). A column-0 '}' ends the function.
+console_body="$(awk '
+   /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
+   in_fn { print }
+   in_fn && /^\}/ { if (in_fn) exit }
+' "${lib}")"
+
+## Drop whole-line comments so an inert guard string parked in a comment cannot
+## satisfy the check (the exact evasion this test exists to resist).
+console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:space:]]*#')"
+
+## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort
+## the script before the notok below could report the missing/inert guard.
+guard_line="$(printf '%s\n' "${console_code}" \
+   | grep --line-number --fixed-strings -- 'if [ "$(id --user)" != 0 ]' \
+   | head --lines 1 | cut --delimiter=: --fields=1 || true)"
+restart_line="$(printf '%s\n' "${console_code}" \
+   | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
+   | head --lines 1 | cut --delimiter=: --fields=1 || true)"
+
+if [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
+   && [ "${guard_line}" -lt "${restart_line}" ]; then
+   ok "root guard 'if' gates the console restart in set_console_keymap"
 else
-   notok "root guard for the console-restart block is missing"
+   notok "root guard does not gate the console restart (guard='${guard_line}' restart='${restart_line}')"
 fi
 
 ## The resolved TODO must be gone (an addressed marker is deleted).
