@@ -110,12 +110,18 @@ check_case 'ungated'          'flag'  'an ungated job with steps is flagged'
 ## The literal is present but ORed with a tautology, so the job still runs
 ## unconditionally -- a bare substring test misses this.
 check_case 'or-bypass'        'flag'  'a "literal || true" gate is flagged'
+## Redundant parens around the whole condition must not hide the always-true
+## arm: '(literal || true)' still runs the job unconditionally.
+check_case 'or-bypass-parens' 'flag'  'a "(literal || true)" parenthesized gate is flagged'
 ## An unexplained carve-out is itself a finding: a gate nobody had to
 ## justify turning off is how coverage quietly disappears.
 check_case 'exempt-no-reason' 'flag'  'an exemption with no reason is flagged'
 
 ## The rule does not over-reach.
 check_case 'gated'            'clean' 'a gated job passes'
+## The literal AND a parenthesized OR of non-literal terms is still gated: the
+## paren-expansion must not over-reach and flag a legitimate conjunction.
+check_case 'gated-parens'     'clean' 'literal && (a || b) is not flagged (no over-reach)'
 check_case 'exempt'           'clean' 'an exemption WITH a reason passes'
 ## A wrapper job allocates no runner of its own; the reusable it calls
 ## carries the gate.
