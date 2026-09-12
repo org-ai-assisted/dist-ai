@@ -6,17 +6,19 @@
 ## AI-Assisted
 
 ## derivative-update in --update-only mode (how dm-build-official drives EVERY
-## build) must NOT fetch from the remote. The tree is already on the signed tag,
-## git_sanity_test has just verified the whole history and every submodule
-## LOCALLY, and the --update-only path checks out nothing and merges nothing from
-## the remote -- so a fetch pulls nothing that is used.
+## build) must NOT do the explicit bulk fetch. --update-only does not move the
+## parent (its tag checkout is skipped); it only updates SUBMODULES to the
+## recorded pins via 'git submodule update', which fetches any absent pin on its
+## OWN. So the bulk 'git fetch' is redundant: the parent-side fetch is unused and
+## submodules are fetched on demand by the update.
 ##
 ## THE BUG THIS GUARDS: the fetch was unconditional
 ##     git fetch --recurse-submodules --jobs=100 || error 'Failed to fetch ...'
 ## which coupled every build to network access AND to the checkout's remote
 ## transport. A checkout whose origin is an ssh remote with no ssh/keys in the
-## build container (or an offline / air-gapped build) then died at this line for
-## no benefit, even though the fully-verified tree needed nothing from the remote.
+## build container (or an offline / air-gapped build) then died at this line even
+## though a consistent checkout (pins already present) needs no network at all,
+## and an absent pin is fetched on demand by the submodule update regardless.
 ##
 ## This is a SOURCE guard: the end-to-end path first runs git_sanity_test, which
 ## needs real OpenPGP-signed commits + keys, so it cannot be fixtured cheaply
