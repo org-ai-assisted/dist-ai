@@ -292,19 +292,25 @@ class GrepQuiet(Rule):
         pipe_reported = set()
         for pipe in bash_ast.pipe_binary_cmds(tree):
             right = pipe.get("Y")
-            cmd = right.get("Cmd") if isinstance(right, dict) else None
-            if not isinstance(cmd, dict) or cmd.get("Type") != "CallExpr":
+            raw_cmd = right.get("Cmd") if isinstance(right, dict) else None
+            if not isinstance(raw_cmd, dict) or raw_cmd.get("Type") != "CallExpr":
                 continue
-            if bash_ast.command_basename(cmd) != "grep":
+            ## Rebase past a leading exec wrapper so 'x | sudo grep -q' is read as
+            ## a quiet grep pipe consumer (else the wrapper basename bypasses it).
+            ## Dedup is keyed on the ORIGINAL node, which is what call_exprs yields.
+            cmd = h.effective_call(raw_cmd, ctx.source)
+            if cmd is None or bash_ast.command_basename(cmd) != "grep":
                 continue
             is_quiet, _ = _grep_quiet(cmd, ctx.source)
             if is_quiet:
-                pipe_reported.add(id(cmd))
+                pipe_reported.add(id(raw_cmd))
                 yield _fail(ctx, "R-161", "R-161 quiet grep consuming a pipe",
                             cmd)
-        for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_basename(call) != "grep" \
-                    or id(call) in pipe_reported:
+        for raw_call in bash_ast.call_exprs(tree):
+            if id(raw_call) in pipe_reported:
+                continue
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "grep":
                 continue
             _, is_short = _grep_quiet(call, ctx.source)
             if is_short:
@@ -312,8 +318,9 @@ class GrepQuiet(Rule):
                             "R-161 grep short quiet flag (use --quiet)", call)
 
     def fix(self, ctx):
-        for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_basename(call) != "grep":
+        for raw_call in h.editable_calls(ctx.tree):
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "grep":
                 continue
             options = _grep_option_words(call)
             if _grep_has_arg_taker(options):
@@ -368,8 +375,11 @@ class MkdirTmpMode(Rule):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_basename(call) != "mkdir":
+        for raw_call in bash_ast.call_exprs(ctx.tree):
+            ## Rebase past a leading exec wrapper so 'sudo mkdir ...' is read as
+            ## 'mkdir ...' (else the wrapper basename bypasses R-172).
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "mkdir":
                 continue
             is_temp = any(bash_ast.word_param_names(word) & TMP_PARAMS
                           for word in bash_ast.args(call)[1:])
@@ -403,8 +413,9 @@ class MkdirTmpMode(Rule):
         text = ctx.source
         data = text.encode("utf-8")
         disabled_lines: set[int] = set()
-        for call in h.editable_calls(ctx.tree):
-            if bash_ast.command_basename(call) != "mkdir":
+        for raw_call in h.editable_calls(ctx.tree):
+            call = h.effective_call(raw_call, text)
+            if call is None or bash_ast.command_basename(call) != "mkdir":
                 continue
             call_args = bash_ast.args(call)
             if not any(bash_ast.word_param_names(word) & TMP_PARAMS
@@ -521,7 +532,11 @@ def _timeout_shadowed_by_local_func(tree, call, defines):
     function (quoting/backslash suppress alias, not function, expansion; a
     'command'/'env' wrapper carries that basename, not 'timeout', so it never
     reaches here)."""
-    return defines and "/" not in (bash_ast.command_name(call) or "")
+    ## CALL is the ORIGINAL (pre-unwrap) call: only a bare, unqualified 'timeout'
+    ## command word resolves to the function. A wrapped 'sudo/command/env timeout'
+    ## execs coreutils (command word is the wrapper) and a '/usr/bin/timeout' names
+    ## the binary -- neither is shadowed, both stay subject to R-200.
+    return defines and bash_ast.command_name(call) == "timeout"
 
 
 def _timeout_cluster_has_kill(cluster):
@@ -559,10 +574,13 @@ class TimeoutKillAfter(Rule):
                         "call targets it, but a path-qualified '/usr/bin/timeout' "
                         "still bypasses it to coreutils and is checked" % ctx.path,
                         1)
-        for call in bash_ast.call_exprs(tree):
-            if bash_ast.command_basename(call) != "timeout":
+        for raw_call in bash_ast.call_exprs(tree):
+            ## Rebase past a leading exec wrapper so 'sudo timeout 5 cmd' is read
+            ## as 'timeout 5 cmd' (else the wrapper basename bypasses R-200).
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "timeout":
                 continue
-            if _timeout_shadowed_by_local_func(tree, call, defines):
+            if _timeout_shadowed_by_local_func(tree, raw_call, defines):
                 continue
             call_args = bash_ast.args(call)
             if len(call_args) < 2:
@@ -606,10 +624,11 @@ class TimeoutKillAfter(Rule):
         if ctx.has_waiver(TIMEOUT_WAIVER):
             return
         defines = bash_ast.defines_function(tree, "timeout")
-        for call in h.editable_calls(tree):
-            if bash_ast.command_basename(call) != "timeout":
+        for raw_call in h.editable_calls(tree):
+            call = h.effective_call(raw_call, ctx.source)
+            if call is None or bash_ast.command_basename(call) != "timeout":
                 continue
-            if _timeout_shadowed_by_local_func(tree, call, defines):
+            if _timeout_shadowed_by_local_func(tree, raw_call, defines):
                 continue
             if len(bash_ast.args(call)) < 3:
                 ## Need a duration and at least one wrapped command word.
@@ -749,34 +768,63 @@ def _eval_const_arith(node):
     """The int value of an ast arithmetic node built from integer literals and the
     shared '+ - * / %' operators, else None. bash truncates '/' toward zero and takes
     '%' with the dividend's sign, so both are matched rather than using Python's
-    flooring operators."""
+    flooring operators.
+
+    Evaluated with an EXPLICIT stack, not recursion: a long operator chain
+    ('1+1+1+...') parses as a deeply left-nested BinOp, and a recursive walk
+    overflows the interpreter stack (uncaught RecursionError) on the very
+    anti-evasion path R-220 relies on. Iterative, like the module's other
+    deliberately-non-recursive tree walkers."""
     if isinstance(node, ast.Expression):
-        return _eval_const_arith(node.body)
-    if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, int) and not isinstance(
-            node.value, bool) else None
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        val = _eval_const_arith(node.operand)
-        if val is None:
+        node = node.body
+    _mod_ops = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod)
+    computed = {}
+    stack = [(node, False)]
+    while stack:
+        cur, expanded = stack.pop()
+        if isinstance(cur, ast.Constant):
+            if isinstance(cur.value, int) and not isinstance(cur.value, bool):
+                computed[id(cur)] = cur.value
+                continue
             return None
-        return val if isinstance(node.op, ast.UAdd) else -val
-    if isinstance(node, ast.BinOp):
-        left = _eval_const_arith(node.left)
-        right = _eval_const_arith(node.right)
-        if left is None or right is None:
-            return None
-        op = node.op
-        if isinstance(op, ast.Add):
-            return left + right
-        if isinstance(op, ast.Sub):
-            return left - right
-        if isinstance(op, ast.Mult):
-            return left * right
-        if isinstance(op, (ast.Div, ast.FloorDiv)):
-            return None if right == 0 else _trunc_div(left, right)
-        if isinstance(op, ast.Mod):
-            return None if right == 0 else left - right * _trunc_div(left, right)
-    return None
+        if isinstance(cur, ast.UnaryOp) and isinstance(cur.op, (ast.UAdd, ast.USub)):
+            if not expanded:
+                stack.append((cur, True))
+                stack.append((cur.operand, False))
+                continue
+            val = computed.get(id(cur.operand))
+            if val is None:
+                return None
+            computed[id(cur)] = val if isinstance(cur.op, ast.UAdd) else -val
+            continue
+        if isinstance(cur, ast.BinOp) and isinstance(cur.op, _mod_ops):
+            if not expanded:
+                stack.append((cur, True))
+                stack.append((cur.left, False))
+                stack.append((cur.right, False))
+                continue
+            left = computed.get(id(cur.left))
+            right = computed.get(id(cur.right))
+            if left is None or right is None:
+                return None
+            op = cur.op
+            if isinstance(op, ast.Add):
+                computed[id(cur)] = left + right
+            elif isinstance(op, ast.Sub):
+                computed[id(cur)] = left - right
+            elif isinstance(op, ast.Mult):
+                computed[id(cur)] = left * right
+            elif isinstance(op, (ast.Div, ast.FloorDiv)):
+                if right == 0:
+                    return None
+                computed[id(cur)] = _trunc_div(left, right)
+            else:
+                if right == 0:
+                    return None
+                computed[id(cur)] = left - right * _trunc_div(left, right)
+            continue
+        return None
+    return computed.get(id(node))
 
 
 def _const_arith_exit_value(word, source):
@@ -1993,12 +2041,23 @@ class HelpFromComments(Rule):
 
         def stage_stmts(stmt):
             """Flatten a (possibly nested) pipeline STMT to its leaf stage
-            statements; a non-pipe statement is its own single stage."""
-            cmd = stmt.get("Cmd") if isinstance(stmt, dict) else None
-            if isinstance(cmd, dict) and cmd.get("Type") == "BinaryCmd" \
-                    and cmd.get("Op") in pipe_ops:
-                return stage_stmts(cmd.get("X")) + stage_stmts(cmd.get("Y"))
-            return [stmt] if isinstance(stmt, dict) else []
+            statements; a non-pipe statement is its own single stage. Uses an
+            EXPLICIT stack, not recursion: a very long pipeline ('a | b | ...')
+            nests one BinaryCmd per stage, and a recursive walk overflows the
+            interpreter stack (uncaught RecursionError) on valid input."""
+            leaves = []
+            work = [stmt]
+            while work:
+                cur = work.pop()
+                cmd = cur.get("Cmd") if isinstance(cur, dict) else None
+                if isinstance(cmd, dict) and cmd.get("Type") == "BinaryCmd" \
+                        and cmd.get("Op") in pipe_ops:
+                    ## Push Y then X so X's stages are emitted first (left to right).
+                    work.append(cmd.get("Y"))
+                    work.append(cmd.get("X"))
+                elif isinstance(cur, dict):
+                    leaves.append(cur)
+            return leaves
 
         def scrape(stmts):
             """(anchor_command, reads_self) over a group of stage statements: the

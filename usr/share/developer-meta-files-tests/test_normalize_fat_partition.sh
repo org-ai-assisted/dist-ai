@@ -64,12 +64,16 @@ work_dir="$( mktemp --directory )"
 cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
 trap cleanup EXIT
 
-## Build a 16 MiB FAT32 image with a fixed serial/label, then add the given files
+## Build a 40 MiB FAT32 image with a fixed serial/label, then add the given files
 ## in the given order (order drives cluster allocation, the source of the bug).
+## The size MUST clear the tool's own FAT32 floor: at 1 sector/cluster a 16 MiB
+## image is ~32k clusters, BELOW the 65525-cluster minimum, so the tool refuses it
+## ('not FAT32') at the first check and, under errexit, the whole suite aborts
+## before checks 2-10 ever run. 40 MiB yields ~80k clusters, a valid FAT32.
 ## $1 = output image, remaining args = relative paths under a content pool.
 make_fat() {
    local image="$1"; shift
-   truncate --size=16777216 "${image}"
+   truncate --size=41943040 "${image}"
    mkfs.fat -F 32 -S 512 -s 1 -R 32 -i cafebabe -n "ESP" "${image}" >/dev/null
    mmd -i "${image}" "::EFI"
    mmd -i "${image}" "::EFI/BOOT"
@@ -193,23 +197,26 @@ else
    fail "FAT16 handling: status=${status}, image ${fat16_state}"
 fi
 
-## --- 10. a failed root listing ABORTS, not silently drops files -------------
-## Regression: the extraction loop once fed the while via '< <( mdir ... )', a
-## process substitution whose non-zero exit errexit could not see -- an
-## unreadable device listed nothing, normalized to an EMPTY root and dropped
-## every file, yet exited 0. mdir is used ONLY for that listing, so stub it to
-## fail and confirm the tool now aborts instead of stripping the image.
+## --- 10. a failed root EXTRACTION aborts, not silently drops files ----------
+## Regression: the tool reads the whole root via 'mcopy -i ... -s "::/."'; the
+## extraction once fed a while-loop through a process substitution whose non-zero
+## exit errexit could not see -- an unreadable image extracted nothing, normalized
+## to an EMPTY root and dropped every file, yet exited 0. The REAL extraction is
+## mcopy (mdir appears ONLY in the tool's has-presence check, never executed, so
+## stubbing mdir tested nothing). Stub mcopy to fail and confirm the tool aborts
+## instead of stripping the image. make_fat above already built the fixture with
+## the real mcopy; the stub PATH applies only to the tool invocation.
 stub_dir="${work_dir}/stub-bin"
 mkdir -p -- "${stub_dir}"
-printf '%s\n' '#!/bin/sh' 'exit 1' > "${stub_dir}/mdir"
-chmod +x -- "${stub_dir}/mdir"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "${stub_dir}/mcopy"
+chmod +x -- "${stub_dir}/mcopy"
 make_fat "${work_dir}/listfail.img" EFI/BOOT/grubx64.efi
 status=0
 PATH="${stub_dir}:${PATH}" "${tool}" "${work_dir}/listfail.img" >/dev/null 2>&1 || status="$?"
 if [ "${status}" -ne 0 ]; then
-   pass 'a failed mdir listing aborts (does not silently strip the image)'
+   pass 'a failed root extraction (mcopy) aborts (does not silently strip the image)'
 else
-   fail 'the tool exited 0 despite mdir failing -- files would be silently dropped'
+   fail 'the tool exited 0 despite mcopy failing -- files would be silently dropped'
 fi
 
 printf '%s\n' "===== dm-normalize-fat-partition: ${pass_count} pass, ${fail_count} fail ====="

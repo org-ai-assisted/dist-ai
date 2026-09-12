@@ -839,6 +839,38 @@ try:
 finally:
     win._locked = _sl2
 
+# M6: clip_autostart in _apply_global is guarded against the stale dialog snapshot, like
+# clip_warn_any -- applied only when the dialog value DIFFERS from the live on-disk autostart
+# state, so an unchanged value is not re-written over a concurrent external change. (canary:
+# pre-fix applied clip_autostart unconditionally.)
+import secure_terminal.clipboard_watch as _CW6            # noqa: E402
+_o_ase6 = _CW6.autostart_enabled
+_o_sca6 = win.set_clip_autostart
+_sl6 = set(win._locked)
+_sca6_calls = []
+# Lock the render-heavy keys (the same set the working _apply_global test above uses) so
+# these two _apply_global calls do minimal per-tab work; clip_autostart is NOT lockable via
+# _locked, so its guard is still exercised. This isolates the guard from tab re-render.
+_opts6 = {'theme': 'dark', 'zoom': 100, 'mode': 'box', 'font_family': 'Hack',
+          'font_size': 20, 'colors': True, 'line_edits': True, 'tui': True,
+          'osc_notice': True, 'tui_autobox_notice': True, 'osc': {'osc_title': True},
+          'scrollback': 1000, 'paste_delay': 3, 'escape_limit': 4096, 'persist': False}
+try:
+    win._locked = {'tui', 'colors', 'osc_notice', 'unicode_mode', 'osc_title',
+                   'font_family'}
+    win.set_clip_autostart = lambda on: _sca6_calls.append(on)
+    _CW6.autostart_enabled = lambda: False               # live on-disk state = OFF
+    win._apply_global(dict(_opts6, clip_autostart=False))    # dialog value == disk -> skip
+    ok(_sca6_calls == [],
+       'M6: an unchanged clip_autostart (equals the live disk state) is not re-applied')
+    win._apply_global(dict(_opts6, clip_autostart=True))     # dialog value != disk -> apply
+    ok(_sca6_calls == [True],
+       'M6: a genuine clip_autostart change (differs from disk) is applied')
+finally:
+    win._locked = _sl6
+    _CW6.autostart_enabled = _o_ase6
+    win.set_clip_autostart = _o_sca6
+
 # --- save_transcript to an unwritable path WARNS the user (never silent) -------
 from PyQt6.QtWidgets import QFileDialog as _QFD3, QMessageBox as _QMB3   # noqa: E402
 _o_gsf = _QFD3.getSaveFileName

@@ -291,7 +291,20 @@ wl_headless_start() {
 
 wl_headless_stop() {
    if [ -n "${WL_HEADLESS_LABWC_PID:-}" ]; then
+      ## SIGTERM, then a BOUNDED wait, then SIGKILL: a wedged labwc that ignores
+      ## SIGTERM must not HANG the lane on an unbounded `wait`. Poll liveness for up
+      ## to ~5s, then force-kill, then reap (the child is already dead, so this wait
+      ## returns at once).
       kill "${WL_HEADLESS_LABWC_PID}" 2>/dev/null || true
+      local _wl_waited=0
+      while kill -0 "${WL_HEADLESS_LABWC_PID}" 2>/dev/null; do
+         if [ "${_wl_waited}" -ge 50 ]; then
+            kill -KILL "${WL_HEADLESS_LABWC_PID}" 2>/dev/null || true
+            break
+         fi
+         sleep 0.1
+         _wl_waited=$(( _wl_waited + 1 ))
+      done
       wait "${WL_HEADLESS_LABWC_PID}" 2>/dev/null || true
       WL_HEADLESS_LABWC_PID=''
    fi

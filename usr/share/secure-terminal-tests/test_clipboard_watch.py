@@ -20,6 +20,7 @@ require_wayland('secure-terminal-tests(clipboard-watch)')
 
 try:
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QThreadPool
     from secure_terminal import clipboard_watch as CW
     from secure_terminal.sanitize import (
         sanitize_clipboard, sanitize_clipboard_unicode,
@@ -45,6 +46,15 @@ def ok(cond, msg):
 
 def eq(got, want, msg):
     ok(got == want, '%s (got %r, want %r)' % (msg, got, want))
+
+
+def _settle():
+    # The deceptive / non-ASCII scan is offloaded to a worker thread (S3) and reports
+    # back via a queued signal. Wait for the pool, then pump the event loop so the queued
+    # _on_scan_done (which pops the review) runs before we assert. A no-op when _on_change
+    # took an early return (disabled / empty / feedback / dismissed) and queued no scan.
+    QThreadPool.globalInstance().waitForDone(3000)
+    APP.processEvents()
 
 
 ZWSP = '\u200b'     # zero-width space (invisible)
@@ -163,23 +173,28 @@ def _test_watcher():
     w.set_enabled(False)
     cb.setText('a' + ZWSP + 'b')
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: disabled -> no popup')
     w.set_enabled(True)
 
     cb.setText('')
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: empty clipboard -> no popup')
 
     cb.setText('hello world')
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: clean ASCII -> no popup')
 
     cb.setText('caf\u00e9')
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: honest accent in default mode -> no popup')
     w.set_any_mode(True)
     cb.setText('caf\u00e9')
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: accent in any-non-ASCII mode -> popup')
     w.resolve('caf\u00e9', 'reject')
     w.set_any_mode(False)
@@ -187,6 +202,7 @@ def _test_watcher():
     payload = 'a' + ZWSP + 'b' + RLO + 'c' + CYR_A + 'd'
     cb.setText(payload)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: deceptive text -> popup')
 
     # Drive the choice THROUGH the reused ReviewBar (covers _ClipboardReview.dispatch
@@ -200,14 +216,17 @@ def _test_watcher():
 
     cb.setText(w._last_written)
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: our own write is ignored (feedback guard)')
 
     cb.setText(payload)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: deceptive re-pops before it is dismissed')
     w.resolve(payload, 'reject')
     cb.setText(payload)
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(), 'watcher: dismissed text does not re-prompt')
 
     homo = 'p' + CYR_A + 'ypal'
@@ -220,6 +239,7 @@ def _test_watcher():
     a_text = 'x' + RLO + 'y'
     cb.setText(a_text)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: deceptive A -> popup')
     cb.setText('newer clean text')
     w.resolve(a_text, 'stripped')
@@ -238,6 +258,7 @@ def _test_watcher():
     w._dismissed = None
     cb.setText(orig)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: homoglyph -> popup (edit case)')
     w._popup.bar._editor.set_source('paypal')        # user edits to the safe spelling
     w._popup.bar._deliver_clicked()                  # Replace
@@ -252,6 +273,7 @@ def _test_watcher():
     big = 'a' * 100 + ZWSP + 'b' * (_BOX_MAX + 5000)  # hidden char early, then > the box cap
     cb.setText(big)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(), 'watcher: huge deceptive clipboard -> popup')
     _bar = w._popup.bar
     ok(len(_bar._editor.source()) <= _BOX_MAX,
@@ -285,6 +307,7 @@ def _test_watcher():
     past_cap = 'a' * 1_050_000 + ZWSP + 'b'
     cb.setText(past_cap)
     w._on_change()
+    _settle()
     ok(w._popup.isVisible(),
        'watcher: a deceptive char PAST the old 1M cap still pops the review (no blind spot)')
     w.resolve(past_cap, 'reject')
@@ -292,6 +315,7 @@ def _test_watcher():
     # full-text scan neither false-pops nor allocates a copy of it.
     cb.setText('c' * 1_050_000)
     w._on_change()
+    _settle()
     ok(not w._popup.isVisible(),
        'watcher: a clean multi-MB clipboard stays silent (full-text scan, no false pop)')
 
@@ -314,6 +338,61 @@ def _test_watcher():
     ok(w.review_is_open(), 'raise_popup: leaves the popup open')
     w.resolve('plain again', 'reject')
     ok(not w.review_is_open(), 'review_is_open: False once the review is resolved')
+
+    # --- offloaded-scan branches (S3): supersession, TOCTOU, disable-during-scan -------
+    # The scan runs on a worker thread and its result is applied on the GUI thread only
+    # after a re-check. These exercise the drop branches. (canary: pre-fix _on_change
+    # scanned synchronously and popped the review inline, so none of these branches existed
+    # and a large scan froze the GUI thread.)
+    # offload canary (deterministic, no wall-clock): the scan runs on a worker and reports
+    # back via a QUEUED cross-thread signal, so the review CANNOT pop inline in _on_change
+    # -- it appears only once the event loop is pumped (_settle). No processEvents runs
+    # between the call and the check, so the queued result is still undelivered. (canary:
+    # pre-fix _on_change scanned synchronously and popped the review inline -- freezing the
+    # GUI thread for the whole scan -- so it was visible immediately here.)
+    w._last_written = None
+    w._dismissed = None
+    _asy = 'v' + RLO + 'w'                 # deceptive -> would pop, but only after the worker
+    cb.setText(_asy)
+    w._on_change()
+    _inline = w._popup.isVisible()         # post-fix: False (offloaded); pre-fix: True (inline)
+    _settle()
+    ok(not _inline and w._popup.isVisible(),
+       'S3: _on_change offloads the scan -- the review pops only after the worker settles, '
+       'never inline (GUI thread not blocked)')
+    w.resolve(_asy, 'reject')
+
+    w._last_written = None
+    w._dismissed = None
+    _sup = 'q' + RLO + 'z'
+    cb.setText(_sup)
+    w._on_change()                         # gen N   -- superseded below
+    w._on_change()                         # gen N+1 -- the survivor
+    _settle()
+    ok(w._popup.isVisible(),
+       'watcher: a superseded scan is dropped; the latest scan still pops the review')
+    w.resolve(_sup, 'reject')
+
+    w._last_written = None
+    w._dismissed = None
+    _toc = 'r' + ZWSP + 's'
+    cb.setText(_toc)
+    w._on_change()                         # queues a scan of the deceptive _toc
+    cb.setText('clean-now')                # clipboard changes under the in-flight scan
+    _settle()                              # (dataChanged is disconnected -> no re-trigger)
+    ok(not w._popup.isVisible(),
+       'watcher: a scan whose text left the clipboard mid-scan is dropped (TOCTOU)')
+
+    w._last_written = None
+    w._dismissed = None
+    _dis = 't' + RLO + 'u'
+    cb.setText(_dis)
+    w._on_change()
+    w.set_enabled(False)                   # disabled before the scan result lands
+    _settle()
+    ok(not w._popup.isVisible(),
+       'watcher: disabling the watcher mid-scan drops the pending scan result')
+    w.set_enabled(True)
 
 
 def _test_shipped_autostart_exec():

@@ -211,11 +211,13 @@ tab=$'\t'
 declare -A verdicts
 verdict_tsv="${out}/clipboard-verdict.tsv"
 ## Build into a temp first; publish atomically at the end only after the integrity gates
-## pass, so a failed or partial run never clobbers a prior good table. The temp sits IN
-## ${out} (same filesystem as the final file) so the closing mv is a true atomic rename,
-## not a cross-filesystem copy-and-delete a reader could catch mid-write (codex P2).
-verdict_tmp="${out}/.clipboard-verdict.tsv.tmp"
-true > "${verdict_tmp}"
+## pass, so a failed or partial run never clobbers a prior good table. mktemp creates it IN
+## ${out} (same filesystem as the final file) so the closing mv is a true atomic rename, not
+## a cross-filesystem copy-and-delete a reader could catch mid-write (codex P2). mktemp's
+## O_EXCL create also refuses a pre-planted symlink: a FIXED '.clipboard-verdict.tsv.tmp' in
+## this persistent dir would be followed by the truncate/appends and clobber its target
+## (symlink TOCTOU), unlike every other scratch path here which already uses mktemp.
+verdict_tmp="$(mktemp -- "${out}/.clipboard-verdict.tsv.XXXXXX")"
 prow 'TERMINAL' 'OSC 52 clipboard write'
 prow '--------' '----------------------'
 

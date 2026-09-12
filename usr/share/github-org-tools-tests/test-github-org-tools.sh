@@ -24,6 +24,7 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 shopt -s nullglob
+export LC_ALL=C
 
 ## Refuse to run outside CI. The suite is allowed to mutate the local
 ## /tmp directory and assumes a clean container-style environment;
@@ -83,6 +84,15 @@ for test_path in "${TESTS_DIR}"/test_*.sh; do
   fi
   safe-rm --force -- "${log_file}"
 done
+
+## Zero tests run is a FAILURE, never a silent green: nullglob makes an empty (or
+## lost-its-test_*.sh) TESTS_DIR match nothing, the loop never executes, and the
+## only gate below (fail -gt 0) would then fall through to exit 0 -- a suite that
+## ran nothing reporting a clean pass. Same guard the sibling runners carry.
+if [ "$(( pass + fail ))" -eq 0 ]; then
+  printf '%s\n' "error: no test_*.sh ran under ${TESTS_DIR} -- 0 tests is not a pass." >&2
+  exit 1
+fi
 
 printf '%s\n' "=== summary: ${pass} passed, ${fail} failed ==="
 if [ "${fail}" -gt 0 ]; then

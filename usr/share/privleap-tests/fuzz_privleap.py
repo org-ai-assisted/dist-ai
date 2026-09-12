@@ -134,6 +134,14 @@ def _drive(raw: bytes, control: bool) -> None:
     cli: socket.socket
     srv: socket.socket
     cli, srv = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    ## Bound both ends so a `raw` larger than the socket buffer cannot DEADLOCK the
+    ## harness: the server reads at most one capped frame (it never drains a huge
+    ## send), so an unbounded blocking sendall would wait forever for buffer space
+    ## that never frees -- masked today only by libFuzzer's max_len, so a raised
+    ## max_len would hang the fuzzer. A send timeout surfaces as OSError (caught
+    ## below); a recv timeout as socket.timeout (a controlled rejection in get_msg).
+    cli.settimeout(5.0)
+    srv.settimeout(5.0)
     try:
         try:
             session = pl.PrivleapSession(

@@ -803,11 +803,18 @@ expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tvalias}${dq}"      
 expect_rule "R-172" "${mkd}${sp}-m${sp}700${sp}--${sp}${dq}${tv}${dq}"                                 "present"
 expect_rule "R-172" "${mkd}${sp}-m700${sp}--${sp}${dq}${tv}${dq}"                                      "present"
 expect_rule "R-172" "${mkd}${sp}-pm700${sp}--${sp}${dq}${tv}${dq}"                                     "present"
+## A wrapper (sudo/env/command) does not bypass R-172: the real mkdir is peeled.
+## CANARY: the pre-effective_call gate keyed on the wrapper basename and MISSED
+## 'sudo mkdir ... $TMPDIR' / 'env VAR=1 mkdir ... $TMPDIR'.
+expect_rule "R-172" "sudo${sp}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"                          "present"
+expect_rule "R-172" "env${sp}VAR=1${sp}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"                 "present"
 ## The compliant atomic long form is SPARED -- both '--mode=700' and
 ## '--mode 700', and the '${TMP}' brace operand.
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}"                   "absent"
 expect_rule "R-172" "${mkd}${sp}--mode${sp}700${sp}--${sp}${dq}${tv}${dq}"                             "absent"
 expect_rule "R-172" "${mkd}${sp}--mode=700${sp}--${sp}${dq}${tvbrace}${dq}"                            "absent"
+## A COMPLIANT wrapped mkdir stays spared -- the peel must not invent a false positive.
+expect_rule "R-172" "sudo${sp}${mkd}${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}"                         "absent"
 ## An UNAMBIGUOUS getopt_long abbreviation of '--mode' is atomic too, so it is
 ## SPARED just like the full spelling -- '--mod=700' and the space form
 ## '--mod 700' (whose '700' the scan must skip as the option's value, not read as

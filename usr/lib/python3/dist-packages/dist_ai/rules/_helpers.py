@@ -144,6 +144,61 @@ def effective_command(call, source):
         call = {"Args": words[rest:]}
 
 
+def effective_call(call, source):
+    """CALL rebased past any leading exec wrappers ('sudo'/'doas'/'env'/
+    'command'/'builtin'): a NEW call whose command word is the program actually
+    run and whose Args START at it, so a rule reading args POSITIONALLY sees
+    'sudo timeout 5 cmd' exactly as 'timeout 5 cmd' -- closing the wrapper bypass
+    of R-161/R-172/R-200. The returned Args are a SUBLIST of the same word nodes,
+    so each word keeps its original source span and a fixer's Edits stay correct.
+    CALL is returned unchanged when it has no wrapper; None on the same declines
+    as effective_command (a quoted/expanded/unresolved wrapped word, a
+    'command -v' describe, a non-builtin 'builtin')."""
+    wrapper_raw = bash_ast.command_name(call)
+    wrapper = _basename(wrapper_raw)
+    if wrapper not in EXEC_WRAPPERS:
+        return call
+    ## Peel ITERATIVELY (a deep 'sudo'x1500 chain must not overflow the stack);
+    ## each layer strictly shortens Args, so this terminates.
+    while True:
+        words = bash_ast.args(call)
+        value_short, value_long = _WRAPPER_VALUE_SPEC[wrapper]
+        inner = None
+        rest = 0
+        for position, (kind, word, text) in enumerate(
+                bash_ast.command_tokens(
+                    call, source, value_short, value_long), start=1):
+            if kind == "opt":
+                if wrapper == "command" and not text.startswith("--") \
+                        and ("v" in text[1:] or "V" in text[1:]):
+                    return None
+                continue
+            if kind != "operand":
+                continue
+            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
+                        bash_ast.word_source(word, source)):
+                continue
+            inner_raw = bash_ast.word_string(word)
+            inner = _basename(inner_raw)
+            rest = position
+            break
+        if inner is None:
+            return None
+        if wrapper == "builtin" and "/" not in (wrapper_raw or "") \
+                and inner not in BASH_BUILTINS:
+            return None
+        ## command_tokens enumerates Args[1:], so the operand at 'position' rest
+        ## is words[rest]; the rebased call's command word is that real command.
+        rebased = {"Args": words[rest:]}
+        if inner not in EXEC_WRAPPERS:
+            return rebased
+        ## A STACKED wrapper ('sudo sudo timeout', 'sudo env VAR=1 timeout'): peel
+        ## the next layer from the rebased call, whose command word is now 'inner'.
+        wrapper = inner
+        wrapper_raw = inner_raw
+        call = rebased
+
+
 ## Statement CONTEXT: a command in a loop/if CONDITION is not the same as one in
 ## a body. R-130 (bare ':') must fire on a filler ':' statement but NOT on the
 ## ':' condition of 'while :; do'. shfmt's JSON has no parent pointers, so we
