@@ -191,6 +191,18 @@ else
 fi
 require_result "${dry_out}" "would fast-forward" "dry-run reports a planned fast-forward"
 require_result "${dry_out}" "would re-attach"    "dry-run reports a planned re-attach"
+## Dry-run output must not read like completed work.
+require_result "${dry_out}" "dry-run complete; no changes made" "dry-run closing line says nothing changed"
+if grep --quiet "every ai-workflow submodule is on" <<< "${dry_out}"; then
+   fail "dry-run printed the real-run completion claim"
+else
+   pass "dry-run does NOT print the real-run completion claim"
+fi
+if grep --quiet --extended-regexp '^advanced \(' <<< "${dry_out}"; then
+   fail "dry-run summary bucket says 'advanced' (reads as completed)"
+else
+   pass "dry-run summary bucket is 'would advance', not 'advanced'"
+fi
 
 ## --- A / real run: behind FF'd, detached re-attached+FF'd, current untouched ----
 rc=0
@@ -498,6 +510,52 @@ if [ "$(head_of "${superF}/god")" = "${god_tip}" ] && gitq -C "${superF}/god" ca
    pass "with GIT_OBJECT_DIRECTORY set, the submodule FF'd and its HEAD object is in its OWN store"
 else
    fail "with GIT_OBJECT_DIRECTORY set, the submodule HEAD object is missing (objects went to the wrong store)"
+fi
+
+## =============================================================================
+## Superproject G: a broken gitdir and a DETACHED ai-workflow submodule (has a
+## local 'ai') with a dead remote must STOP -- never be silently skipped as
+## upstream-only; a healthy submodule ordered after them is still processed.
+## =============================================================================
+superG="${workspace}/superG"
+new_super "${superG}"
+
+## broken: a normal ai submodule whose gitlink points at a missing gitdir.
+new_fork "${workspace}/fork-broken.git" "${workspace}/drv-broken"
+add_sub "${superG}" "${workspace}/fork-broken.git" broken
+printf 'gitdir: /nonexistent/dm-sais-broken\n' > "${superG}/broken/.git"
+
+## det_ai_dead: DETACHED but has local 'ai'; org-ai-assisted points nowhere so the
+## fetch fails. An ai-workflow submodule -> STOP, not an upstream-only skip.
+new_fork "${workspace}/fork-detdead.git" "${workspace}/drv-detdead"
+add_sub "${superG}" "${workspace}/fork-detdead.git" det_ai_dead
+gitq -C "${superG}/det_ai_dead" checkout --quiet --detach ai
+gitq -C "${superG}/det_ai_dead" remote set-url org-ai-assisted "file://${workspace}/nonexistent-dead.git"
+
+## zz_ok: healthy behind sub after the anomalies -> still FF'd.
+new_fork "${workspace}/fork-gok.git" "${workspace}/drv-gok"
+add_sub "${superG}" "${workspace}/fork-gok.git" zz_ok
+advance_fork "${workspace}/drv-gok" "${workspace}/fork-gok.git"
+gok_tip="$(gitq -C "${workspace}/drv-gok" rev-parse ai)"
+
+rc=0
+g_out="$("${tool}" --dir "${superG}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "broken-gitdir + detached-ai-anomaly run exits 1"
+else
+   fail "superG run exited ${rc}; output:<<<${g_out}>>>"
+fi
+require_result "${g_out}" "unreadable submodule gitdir" "broken gitdir is surfaced as a STOP"
+require_result "${g_out}" "det_ai_dead" "detached ai-workflow submodule with a dead remote is STOPped"
+if grep --quiet "upstream-only" <<< "${g_out}"; then
+   fail "a detached ai-workflow submodule was mis-bucketed as upstream-only"
+else
+   pass "no ai-workflow submodule was mis-skipped as upstream-only"
+fi
+if [ "$(head_of "${superG}/zz_ok")" = "${gok_tip}" ]; then
+   pass "healthy submodule after broken/anomalous ones is still fast-forwarded"
+else
+   fail "healthy submodule after anomalies was skipped (loop abandoned)"
 fi
 
 ## =============================================================================

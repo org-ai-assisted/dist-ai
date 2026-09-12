@@ -173,18 +173,32 @@ for path in "${sub_paths[@]}"; do
       continue
    fi
 
-   ## Branch state (no network). Whether the submodule is ON 'ai' decides how a
-   ## "no ai workflow here" condition (no fork remote / fetch fails / no fork 'ai'
-   ## tip) is treated: ON 'ai' it is an anomaly to surface; OFF 'ai' it is just an
-   ## upstream-only submodule (pinned to an upstream commit, no 'ai' work) that the
-   ## tidy must leave exactly as found.
+   ## Readability probe: a '.git' that exists but points at a missing/broken gitdir
+   ## makes every later 'git -C' fail -- and a swallowed 'symbolic-ref' failure
+   ## would then read as "not on ai" and be mis-skipped. A genuinely uninitialised
+   ## submodule is already filtered above, so an unreadable one here is an anomaly.
+   if ! git -C "${sub}" rev-parse --git-dir >/dev/null 2>&1; then
+      stopped+=( "${path} :: unreadable submodule gitdir (broken .git)" )
+      continue
+   fi
+
+   ## Branch state (no network). This is an ai-workflow submodule if it is ON 'ai'
+   ## OR has a local 'ai' branch (detached off 'ai' is the normal post-'submodule
+   ## update' shape this tool re-attaches). If NEITHER, it is upstream-only (pinned
+   ## to an upstream commit, no 'ai' work): a "no ai here" condition (no fork remote
+   ## / fetch fails / no fork 'ai' tip) means leave it exactly as found. On an
+   ## ai-workflow submodule the same condition is an anomaly to surface.
    ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
    on_ai="false"
    [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
+   have_ai="false"
+   git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" && have_ai="true"
+   is_ai_workflow="false"
+   { [ "${on_ai}" = "true" ] || [ "${have_ai}" = "true" ]; } && is_ai_workflow="true"
 
    if ! git -C "${sub}" remote get-url -- "${FORK_REMOTE}" &>/dev/null; then
-      if [ "${on_ai}" = "true" ]; then
-         stopped+=( "${path} :: on '${AI_BRANCH}' but no '${FORK_REMOTE}' remote" )
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but no '${FORK_REMOTE}' remote" )
       else
          skipped_upstream+=( "${path}" )
       fi
@@ -194,8 +208,8 @@ for path in "${sub_paths[@]}"; do
    ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
    ## never 'submodule update'.
    if ! git -C "${sub}" fetch --quiet "${FORK_REMOTE}" 2>/dev/null; then
-      if [ "${on_ai}" = "true" ]; then
-         stopped+=( "${path} :: on '${AI_BRANCH}' but fetch from '${FORK_REMOTE}' failed" )
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but fetch from '${FORK_REMOTE}' failed" )
       else
          skipped_upstream+=( "${path}" )
       fi
@@ -204,8 +218,8 @@ for path in "${sub_paths[@]}"; do
 
    fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ -z "${fork_tip}" ]; then
-      if [ "${on_ai}" = "true" ]; then
-         stopped+=( "${path} :: on '${AI_BRANCH}' but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
       else
          skipped_upstream+=( "${path}" )
       fi
@@ -235,9 +249,6 @@ for path in "${sub_paths[@]}"; do
          continue
       fi
    fi
-
-   have_ai="false"
-   git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" && have_ai="true"
 
    ## No local 'ai' at all (and not on it): create it at the fork tip. A detached
    ## HEAD reaching here is an ancestor of the fork tip, so nothing is orphaned.
@@ -331,11 +342,20 @@ print_bucket() {
    printf '   %s\n' "$@"
 }
 
-mode_label="against"
-[ "${dry_run}" = "true" ] && mode_label="dry-run against"
+## Dry-run must never read like completed work: the action buckets become
+## "would ..." and the closing line says nothing was changed.
+if [ "${dry_run}" = "true" ]; then
+   mode_label="dry-run against"
+   adv_title="would advance"
+   reatt_title="would re-attach"
+else
+   mode_label="against"
+   adv_title="advanced"
+   reatt_title="re-attached"
+fi
 printf '%s\n' "${0##*/}: submodule '${AI_BRANCH}' sync summary (${mode_label} ${FORK_REMOTE}/${AI_BRANCH}):"
-print_bucket "advanced"    "${advanced[@]}"
-print_bucket "re-attached" "${reattached[@]}"
+print_bucket "${adv_title}"   "${advanced[@]}"
+print_bucket "${reatt_title}" "${reattached[@]}"
 print_bucket "already current" "${current[@]}"
 print_bucket "uninitialised (skipped)" "${uninit[@]}"
 ## Upstream-only submodules (no 'ai' workflow) are non-actionable; a count keeps
@@ -348,5 +368,9 @@ if [ "${#stopped[@]}" -gt 0 ]; then
    die 1 "${#stopped[@]} submodule(s) STOPPED; not safe to pin/mirror until resolved."
 fi
 
-log "every ai-workflow submodule is on '${AI_BRANCH}' at the published fork tip."
+if [ "${dry_run}" = "true" ]; then
+   log "dry-run complete; no changes made."
+else
+   log "every ai-workflow submodule is on '${AI_BRANCH}' at the published fork tip."
+fi
 exit 0
