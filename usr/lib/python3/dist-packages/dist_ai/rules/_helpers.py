@@ -572,9 +572,16 @@ def code_only_lines(source, tree):
         col = pos.get("Col")
         if not line_no or not col or not 1 <= line_no <= len(lines):
             continue
+        ## shfmt's Col is a 1-based BYTE offset; slice the line by its UTF-8
+        ## bytes and decode the code portion back. Using it directly as a Python
+        ## codepoint index overshoots once any multi-byte char precedes the '#',
+        ## leaking comment text into the "code" slice (a spurious R-170 etc. on
+        ## any ordinary non-ASCII line with a trailing comment). The '#' is
+        ## single-byte ASCII, so the cut always lands on a char boundary.
+        line_bytes = lines[line_no - 1].encode("utf-8")
         cut = col - 1
-        if 0 <= cut < len(lines[line_no - 1]):
-            lines[line_no - 1] = lines[line_no - 1][:cut]
+        if 0 <= cut < len(line_bytes):
+            lines[line_no - 1] = line_bytes[:cut].decode("utf-8")
     return lines
 
 

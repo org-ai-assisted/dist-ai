@@ -15,6 +15,13 @@ try:
     payload = json.load(sys.stdin)
 except Exception:
     raise SystemExit(0)
+## A body that parses but is not an object (a bare list or null, which an
+## intercepting proxy or an error page can produce) has no .get; treat it, and a
+## first-run entry missing its id, as "no run" -- print nothing and exit 0.
+if not isinstance(payload, dict):
+    raise SystemExit(0)
 runs = payload.get("workflow_runs") or []
-if runs:
-    print(runs[0]["id"])
+if runs and isinstance(runs[0], dict):
+    run_id = runs[0].get("id")
+    if run_id is not None:
+        print(run_id)

@@ -113,11 +113,46 @@ def effective_condition(cond):
     return match.group(1).strip() if match else text
 
 
+def strip_wrapping_parens(expr):
+    """EXPR with one or more pairs of parens that enclose the WHOLE expression
+    peeled off: '(a || b)' -> 'a || b', '((a))' -> 'a'. A group that only starts
+    at index 0 without spanning to the end ('(a) || b') is left intact -- its
+    first ')' returns the depth to 0 before the last char."""
+    text = expr.strip()
+    while len(text) >= 2 and text[0] == '(' and text[-1] == ')':
+        depth = 0
+        in_str = False
+        wraps = True
+        for index, char in enumerate(text):
+            if in_str:
+                if char == "'":
+                    in_str = False
+                continue
+            if char == "'":
+                in_str = True
+            elif char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0 and index != len(text) - 1:
+                    wraps = False
+                    break
+        if not wraps:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
 def top_level_or_parts(expr):
     """EXPR split on '||' at paren depth 0, outside single-quoted string
     literals. Used to require the CI-gate literal in EVERY top-level disjunct:
     'literal || true' has a disjunct ('true') that runs the job regardless of the
-    gate, which a bare substring test misses."""
+    gate, which a bare substring test misses. A disjunct that is itself a fully
+    parenthesized group is expanded, so '(literal || true)' does not hide its
+    always-true arm behind redundant parens (a W-008 gate bypass). A group that
+    is only PART of a disjunct ('(literal || true) && foo') is not decomposed --
+    resolving that needs a full boolean parser, out of scope here."""
+    expr = strip_wrapping_parens(expr)
     parts = []
     depth = 0
     in_str = False
@@ -142,7 +177,14 @@ def top_level_or_parts(expr):
             continue
         index += 1
     parts.append(expr[start:])
-    return [part.strip() for part in parts]
+    result = []
+    for part in parts:
+        stripped = strip_wrapping_parens(part)
+        if stripped != part.strip():
+            result.extend(top_level_or_parts(stripped))
+        else:
+            result.append(stripped)
+    return result
 
 SHA40 = re.compile(r'^[0-9a-f]{40}$')
 
