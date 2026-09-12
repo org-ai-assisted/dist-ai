@@ -228,8 +228,11 @@ eq(_reply, None, 'send_request: a non-JSON reply -> None (exchange failed)')
 # a) a deadline already in the past returns None at once, without blocking:
 _p1, _p2 = socket.socketpair()
 try:
+    _t0 = time.monotonic()
     eq(ipc._recv_exactly(_p1, 4, time.monotonic() - 1.0), None,
        '_recv_exactly: a passed deadline returns None immediately')
+    ok(time.monotonic() - _t0 < 0.5,
+       '_recv_exactly: a passed deadline returns AT ONCE (no blocking wait)')
 finally:
     _p1.close(); _p2.close()
 # b) no data before the deadline: the recv times out and returns None PROMPTLY (the
