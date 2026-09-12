@@ -1,0 +1,376 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fetch each derivative-maker submodule's fork remote and bring its local 'ai'
+## to the published fork tip -- the fetch + re-attach + fast-forward that dm-tidy
+## steps 1-2 need and no existing tool does (dm-git-sync assumes submodules are
+## already sitting on their published tips).
+##
+## Only ai-workflow submodules (those with a published '${FORK_REMOTE}/ai' tip)
+## are touched. A submodule OFF 'ai' with no fork 'ai' is upstream-only (pinned to
+## an upstream commit, no 'ai' work) and is LEFT EXACTLY AS FOUND.
+##
+## The fast-forward runs with signature verification disabled: the fork 'ai' tips
+## are bot-published and unsigned, and advancing local 'ai' to our own published
+## fork tip is a trusted ref-advance (the org account is the trust boundary; the
+## pin points there regardless).
+##
+## HAPPY-PATH ONLY. Auto-handles the two states we actually hit:
+##   - local 'ai' strictly BEHIND the fork tip  -> fast-forward.
+##   - detached / off 'ai' (clean, has fork 'ai') -> re-attach to 'ai', then
+##                                                  fast-forward if behind.
+## Everything else STOPS and is surfaced for a human -- never auto-fixed, forced,
+## reset, or published:
+##   - dirty working tree (uncommitted / a sibling session's work)
+##   - local 'ai' AHEAD of or DIVERGED from the fork tip (unpushed work)
+##   - detached HEAD not contained in the fork tip (re-attach would orphan it)
+##   - ON 'ai' but no fork remote / fetch fails / no fork 'ai' tip (anomaly)
+##   - a checkout or fast-forward that fails
+##   - a '.gitmodules' path that resolves outside -- or at -- the superproject
+## A STOP makes the tool exit 1 so the caller halts before the pin/mirror steps;
+## a human resolves the stopped submodules by hand. Do NOT extend this to
+## auto-resolve those cases.
+##
+## NEVER 'git submodule update' / 'checkout --recurse-submodules': that detaches
+## submodules off 'ai' -- the exact mess this undoes. Works per submodule via git -C.
+##
+## Usage: dm-submodule-ai-sync [--dir <derivative-maker checkout>] [--dry-run]
+##   --dry-run  still FETCHES (the only way to classify accurately) but performs
+##              no checkout, fast-forward, or branch creation.
+##
+## Exit: 0 all current/advanced | 1 one or more STOPped | 2 usage / not a checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## An inherited git-location env var (e.g. from a 'git submodule foreach' parent)
+## would redirect every 'git -C <sub>' -- repo, index, or object store -- at
+## another repo, silently fast-forwarding the wrong tree or writing objects into
+## the wrong store. Clear the whole set; this tool addresses each submodule by path.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+
+AI_BRANCH="ai"
+## The published fork that carries 'ai' work and that CI fetches (git skill).
+FORK_REMOTE="org-ai-assisted"
+
+source_dir=""
+dry_run="false"
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      -h|--help)
+         printf '%s\n' \
+            "Fetch each derivative-maker submodule's ${FORK_REMOTE} remote and bring its" \
+            "local '${AI_BRANCH}' to the published fork tip (fast-forward / re-attach only)." \
+            "" \
+            "Usage: ${0##*/} [--dir <derivative-maker checkout>] [--dry-run]" \
+            "" \
+            "  --dir      the derivative-maker checkout to operate on (default: cwd)" \
+            "  --dry-run  fetch + classify + report; make no checkout / fast-forward" \
+            "" \
+            "Happy-path only: behind -> fast-forward, detached -> re-attach. Ahead/" \
+            "diverged/dirty/unpublished/fetch-failure STOP and are surfaced for a human." \
+            "" \
+            "Exit: 0 all current/advanced | 1 one or more STOPped | 2 usage/not a checkout."
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+
+log() {
+   printf '%s\n' "${0##*/}: $*"
+}
+
+die() {
+   local code="$1" ; shift
+   printf '%s\n' "${0##*/}: $*" >&2
+   exit "${code}"
+}
+
+is_dm_superproject() {
+   [ -d "$1/build-steps.d" ] && [ -d "$1/help-steps" ]
+}
+
+top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+[ -n "${top}" ] || die 2 "'${source_dir}' is not inside a git worktree."
+is_dm_superproject "${top}" \
+   || die 2 "'${top}' is not a derivative-maker checkout (no build-steps.d + help-steps)."
+
+## Direct submodule paths from .gitmodules (relative to the superproject root).
+## Read the config, NOT 'git submodule foreach': foreach aborts at the first
+## broken/absent submodule and hides every one after it. Uninitialised paths are
+## filtered per-iteration below.
+sub_paths=()
+while IFS= read -r path; do
+   [ -n "${path}" ] && sub_paths+=( "${path}" )
+done < <( git -C "${top}" config --file "${top}/.gitmodules" \
+   --get-regexp '^submodule\..*\.path$' 2>/dev/null | sed 's/^[^ ]* //' )
+
+[ "${#sub_paths[@]}" -gt 0 ] || die 2 "'${top}' has no submodules in .gitmodules."
+
+## Result buckets. 'stopped' entries are "path :: reason".
+advanced=()
+reattached=()
+current=()
+uninit=()
+skipped_upstream=()
+stopped=()
+
+top_real="$( realpath -m -- "${top}" )"
+
+for path in "${sub_paths[@]}"; do
+   [ -n "${path}" ] || continue
+   sub="${top}/${path}"
+
+   ## Containment: a '.gitmodules' path is trusted content, but a stray '..' or '.'
+   ## (a bad edit, or a crafted entry) would point 'sub' outside -- or AT -- the
+   ## superproject and mutate the wrong repo. Require a PROPER descendant of 'top':
+   ## reject both a path that escapes 'top' and one that resolves to 'top' itself
+   ## (e.g. '.', 'help-steps/..').
+   sub_real="$( realpath -m -- "${sub}" )"
+   if [ "${sub_real}" = "${top_real}" ]; then
+      stopped+=( "${path} :: resolves to the superproject itself, not a submodule" )
+      continue
+   fi
+   case "${sub_real}/" in
+      "${top_real}"/*)
+         ;;
+      *)
+         stopped+=( "${path} :: resolves outside the superproject ('${sub_real}')" )
+         continue
+         ;;
+   esac
+
+   ## Uninitialised submodule: nothing to sync. Not a STOP (it gets no pin bump
+   ## either); note it and move on.
+   if [ ! -d "${sub}/.git" ] && [ ! -f "${sub}/.git" ]; then
+      uninit+=( "${path}" )
+      continue
+   fi
+
+   ## Readability probe: a '.git' that exists but points at a missing/broken gitdir
+   ## makes every later 'git -C' fail -- and a swallowed 'symbolic-ref' failure
+   ## would then read as "not on ai" and be mis-skipped. A genuinely uninitialised
+   ## submodule is already filtered above, so an unreadable one here is an anomaly.
+   if ! git -C "${sub}" rev-parse --git-dir >/dev/null 2>&1; then
+      stopped+=( "${path} :: unreadable submodule gitdir (broken .git)" )
+      continue
+   fi
+
+   ## Branch state (no network). This is an ai-workflow submodule if it is ON 'ai'
+   ## OR has a local 'ai' branch (detached off 'ai' is the normal post-'submodule
+   ## update' shape this tool re-attaches). If NEITHER, it is upstream-only (pinned
+   ## to an upstream commit, no 'ai' work): a "no ai here" condition (no fork remote
+   ## / fetch fails / no fork 'ai' tip) means leave it exactly as found. On an
+   ## ai-workflow submodule the same condition is an anomaly to surface.
+   ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+   on_ai="false"
+   [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
+   have_ai="false"
+   git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" && have_ai="true"
+   is_ai_workflow="false"
+   { [ "${on_ai}" = "true" ] || [ "${have_ai}" = "true" ]; } && is_ai_workflow="true"
+
+   if ! git -C "${sub}" remote get-url -- "${FORK_REMOTE}" &>/dev/null; then
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but no '${FORK_REMOTE}' remote" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
+      continue
+   fi
+
+   ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
+   ## never 'submodule update'.
+   if ! git -C "${sub}" fetch --quiet "${FORK_REMOTE}" 2>/dev/null; then
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but fetch from '${FORK_REMOTE}' failed" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
+      continue
+   fi
+
+   fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
+   if [ -z "${fork_tip}" ]; then
+      if [ "${is_ai_workflow}" = "true" ]; then
+         stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
+      continue
+   fi
+
+   ## Dirty check BEFORE any mutation. A FAILED 'git status' yields empty stdout;
+   ## a failure is NOT clean -- STOP rather than act on a repo we could not read.
+   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )"; then
+      stopped+=( "${path} :: 'git status' failed (unreadable repo)" )
+      continue
+   fi
+   if [ -n "${sub_status}" ]; then
+      stopped+=( "${path} :: dirty working tree (uncommitted / sibling work)" )
+      continue
+   fi
+
+   ## Detached HEAD: re-attaching to 'ai' would orphan any commit not already
+   ## contained in the fork tip. Refuse unless the detached commit is an ancestor
+   ## of the fork tip (then re-attach + fast-forward loses nothing). An on-another-
+   ## branch HEAD is safe -- that branch ref persists after checkout.
+   if [ -z "${ref}" ]; then
+      head_sha="$( git -C "${sub}" rev-parse --verify HEAD 2>/dev/null || true )"
+      if [ -n "${head_sha}" ] \
+         && ! git -C "${sub}" merge-base --is-ancestor "${head_sha}" "${fork_tip}" 2>/dev/null; then
+         stopped+=( "${path} :: detached HEAD ${head_sha:0:12} not contained in ${FORK_REMOTE}/${AI_BRANCH} (unpushed work)" )
+         continue
+      fi
+   fi
+
+   ## No local 'ai' at all (and not on it): create it at the fork tip. A detached
+   ## HEAD reaching here is an ancestor of the fork tip, so nothing is orphaned.
+   if [ "${have_ai}" = "false" ]; then
+      if [ "${dry_run}" = "true" ]; then
+         log "[dry-run] ${path}: would create '${AI_BRANCH}' at ${FORK_REMOTE}/${AI_BRANCH} (${fork_tip:0:12})"
+      elif ! git -C "${sub}" checkout --quiet -b "${AI_BRANCH}" "${fork_tip}"; then
+         stopped+=( "${path} :: could not create '${AI_BRANCH}' at the fork tip" )
+         continue
+      fi
+      reattached+=( "${path} (created '${AI_BRANCH}' at tip)" )
+      continue
+   fi
+
+   local_ai="$( git -C "${sub}" rev-parse --verify "refs/heads/${AI_BRANCH}" 2>/dev/null || true )"
+   if [ -z "${local_ai}" ]; then
+      stopped+=( "${path} :: cannot resolve local '${AI_BRANCH}'" )
+      continue
+   fi
+
+   ## Classify local 'ai' against the fork tip.
+   if [ "${local_ai}" = "${fork_tip}" ]; then
+      ## Already at the tip. Re-attach if detached; otherwise a no-op.
+      if [ "${on_ai}" = "true" ]; then
+         current+=( "${path}" )
+      elif [ "${dry_run}" = "true" ]; then
+         log "[dry-run] ${path}: would re-attach to '${AI_BRANCH}' (already at tip)"
+         reattached+=( "${path} (already at tip)" )
+      elif git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+         reattached+=( "${path} (already at tip)" )
+      else
+         stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}'" )
+      fi
+      continue
+   fi
+
+   if git -C "${sub}" merge-base --is-ancestor "${local_ai}" "${fork_tip}" 2>/dev/null; then
+      ## Strictly BEHIND -> fast-forward (re-attaching first if detached). Guard
+      ## the mutations: a failure (e.g. an untracked file the incoming commit also
+      ## adds) becomes a STOP for this submodule, never an errexit crash that
+      ## abandons the rest of the loop with no summary.
+      if [ "${dry_run}" = "true" ]; then
+         if [ "${on_ai}" = "true" ]; then
+            log "[dry-run] ${path}: would fast-forward '${AI_BRANCH}' ${local_ai:0:12} -> ${fork_tip:0:12}"
+         else
+            log "[dry-run] ${path}: would re-attach '${AI_BRANCH}' + fast-forward ${local_ai:0:12} -> ${fork_tip:0:12}"
+         fi
+      else
+         ## Capture HEAD before re-attaching so a later FF failure can restore it
+         ## (a STOP must leave the submodule exactly as found).
+         pre_head=""
+         if [ "${on_ai}" != "true" ]; then
+            pre_head="$( git -C "${sub}" rev-parse HEAD 2>/dev/null || true )"
+            if ! git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+               stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}' before fast-forward" )
+               continue
+            fi
+         fi
+         ## Disable signature verification for the fast-forward: the fork 'ai' tips
+         ## are bot-published and unsigned, and the operator's global
+         ## merge.verifySignatures=true would otherwise reject every FF. Advancing
+         ## local 'ai' to our own published fork tip is a trusted ref-advance (the
+         ## org account is the trust boundary; the pin points there regardless).
+         if ! git -C "${sub}" -c merge.verifySignatures=false merge --quiet --ff-only "${fork_tip}"; then
+            ## Re-attached but the FF failed -> roll back to the original detached
+            ## HEAD so nothing changed on this STOP.
+            if [ -n "${pre_head}" ]; then
+               git -C "${sub}" checkout --quiet --detach "${pre_head}" 2>/dev/null || true
+            fi
+            stopped+=( "${path} :: fast-forward to ${FORK_REMOTE}/${AI_BRANCH} failed (untracked-file collision or unreadable object)" )
+            continue
+         fi
+      fi
+      if [ "${on_ai}" = "true" ]; then
+         advanced+=( "${path} (${local_ai:0:12} -> ${fork_tip:0:12})" )
+      else
+         advanced+=( "${path} (re-attached + ${local_ai:0:12} -> ${fork_tip:0:12})" )
+      fi
+      continue
+   fi
+
+   ## Ahead of or diverged from the fork tip: unpushed work. STOP.
+   stopped+=( "${path} :: local '${AI_BRANCH}' ${local_ai:0:12} ahead of / diverged from ${FORK_REMOTE}/${AI_BRANCH} ${fork_tip:0:12} (unpushed work)" )
+done
+
+## --- Summary --------------------------------------------------------------------
+print_bucket() {
+   local title="$1" ; shift
+   [ "$#" -gt 0 ] || return 0
+   printf '%s (%d):\n' "${title}" "$#"
+   printf '   %s\n' "$@"
+}
+
+## Dry-run must never read like completed work: the action buckets become
+## "would ..." and the closing line says nothing was changed.
+if [ "${dry_run}" = "true" ]; then
+   mode_label="dry-run against"
+   adv_title="would advance"
+   reatt_title="would re-attach"
+else
+   mode_label="against"
+   adv_title="advanced"
+   reatt_title="re-attached"
+fi
+printf '%s\n' "${0##*/}: submodule '${AI_BRANCH}' sync summary (${mode_label} ${FORK_REMOTE}/${AI_BRANCH}):"
+print_bucket "${adv_title}"   "${advanced[@]}"
+print_bucket "${reatt_title}" "${reattached[@]}"
+print_bucket "already current" "${current[@]}"
+print_bucket "uninitialised (skipped)" "${uninit[@]}"
+## Upstream-only submodules (no 'ai' workflow) are non-actionable; a count keeps
+## the summary scannable.
+[ "${#skipped_upstream[@]}" -eq 0 ] || printf 'upstream-only, left alone (%d)\n' "${#skipped_upstream[@]}"
+
+if [ "${#stopped[@]}" -gt 0 ]; then
+   printf '\n%s\n' "STOPPED -- resolve by hand, then re-run:" >&2
+   printf '   %s\n' "${stopped[@]}" >&2
+   die 1 "${#stopped[@]} submodule(s) STOPPED; not safe to pin/mirror until resolved."
+fi
+
+if [ "${dry_run}" = "true" ]; then
+   log "dry-run complete; no changes made."
+else
+   log "every ai-workflow submodule is on '${AI_BRANCH}' at the published fork tip."
+fi
+exit 0
