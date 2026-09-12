@@ -188,7 +188,15 @@ wl_headless_start() {
    fi
    if [ -n "${_wl_lock_dir}" ]; then
       _wl_lock="${_wl_lock_dir}/wl-headless-bringup.lock"
-      if exec {_wl_lock_fd}<>"${_wl_lock}" 2>/dev/null; then
+      ## Group-scope the 2>/dev/null. A bare `exec {fd}<>file 2>/dev/null` is a redirection
+      ## with NO command, so bash applies BOTH redirections to the shell PERMANENTLY -- the
+      ## 2>/dev/null then silently discards every later stderr write, including each test
+      ## suite's `FAIL:` lines (a failing suite would show only "exit 1", no reason). The
+      ## { ...; } confines the suppression to the fd-open; the opened fd still persists.
+      ## exec is invisible under `set -x`, so a `true "INFO: ..."` before each exec names the
+      ## line that ran -- trace the lock path, do not guess it.
+      true "INFO: wl_headless_start: opening bringup lock fd on '${_wl_lock}'"
+      if { exec {_wl_lock_fd}<>"${_wl_lock}"; } 2>/dev/null; then
          ## Bounded wait: a bringup holds the lock through its socket-discovery polls (~15s worst
          ## case), so serialized --jobs lanes queue at ~15s each; 120s covers a realistic lane
          ## depth. A wedged holder still cannot deadlock a caller forever -- after 120s it proceeds
@@ -196,8 +204,17 @@ wl_headless_start() {
          ## very deep --jobs under load) can hand two lanes the same Xwayland socket; the
          ## orchestrator's sequential missing-shot RE-SHOOT net recovers that (a re-shoot, not a
          ## corrupt result). The single-lane common case never contends.
-         flock -w 120 "${_wl_lock_fd}" 2>/dev/null || { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+         if flock -w 120 "${_wl_lock_fd}" 2>/dev/null; then
+            true "INFO: wl_headless_start: bringup lock ACQUIRED (fd ${_wl_lock_fd})"
+         else
+            true "INFO: wl_headless_start: flock timed out; proceeding UNLOCKED, closing lock fd ${_wl_lock_fd}"
+            if ! { exec {_wl_lock_fd}>&-; } 2>/dev/null; then
+               true "INFO: wl_headless_start: lock fd close returned nonzero (ignored)"
+            fi
+            _wl_lock_fd=''
+         fi
       else
+         true "INFO: wl_headless_start: could not open bringup lock fd; proceeding UNLOCKED"
          _wl_lock_fd=''
       fi
    fi
@@ -235,7 +252,13 @@ wl_headless_start() {
    if [ -z "${socket}" ]; then
       printf '%s\n' 'wl_headless_start: labwc did not create a Wayland socket.' >&2
       cat -- "${runtime}/labwc.log" >&2 || true
-      [ -n "${_wl_lock_fd}" ] && { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+      if [ -n "${_wl_lock_fd}" ]; then
+         true "INFO: wl_headless_start: socket discovery FAILED; closing bringup lock fd ${_wl_lock_fd}"
+         if ! { exec {_wl_lock_fd}>&-; } 2>/dev/null; then
+            true "INFO: wl_headless_start: lock fd close returned nonzero (ignored)"
+         fi
+         _wl_lock_fd=''
+      fi
       wl_headless_stop
       return 1
    fi
@@ -263,7 +286,13 @@ wl_headless_start() {
    export WL_XWAYLAND_DISPLAY
    ## Bringup done: THIS compositor's sockets are discovered, so a concurrent lane can safely
    ## bring up its own now. Release the serialization lock (captures run parallel from here).
-   [ -n "${_wl_lock_fd}" ] && { exec {_wl_lock_fd}>&- 2>/dev/null || true; _wl_lock_fd=''; }
+   if [ -n "${_wl_lock_fd}" ]; then
+      true "INFO: wl_headless_start: bringup done; releasing serialization lock fd ${_wl_lock_fd}"
+      if ! { exec {_wl_lock_fd}>&-; } 2>/dev/null; then
+         true "INFO: wl_headless_start: lock fd close returned nonzero (ignored)"
+      fi
+      _wl_lock_fd=''
+   fi
 
    ## HiDPI: raise the single headless output to `output_scale`, sized to a generous logical
    ## area so any shot window fits. Native Wayland clients then render at that scale automatically
