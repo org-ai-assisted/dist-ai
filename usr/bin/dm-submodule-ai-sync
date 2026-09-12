@@ -10,18 +10,27 @@
 ## steps 1-2 need and no existing tool does (dm-git-sync assumes submodules are
 ## already sitting on their published tips).
 ##
+## Only ai-workflow submodules (those with a published '${FORK_REMOTE}/ai' tip)
+## are touched. A submodule OFF 'ai' with no fork 'ai' is upstream-only (pinned to
+## an upstream commit, no 'ai' work) and is LEFT EXACTLY AS FOUND.
+##
+## The fast-forward runs with signature verification disabled: the fork 'ai' tips
+## are bot-published and unsigned, and advancing local 'ai' to our own published
+## fork tip is a trusted ref-advance (the org account is the trust boundary; the
+## pin points there regardless).
+##
 ## HAPPY-PATH ONLY. Auto-handles the two states we actually hit:
 ##   - local 'ai' strictly BEHIND the fork tip  -> fast-forward.
-##   - detached / off 'ai' (clean)              -> re-attach to 'ai', then
-##                                                 fast-forward if behind.
+##   - detached / off 'ai' (clean, has fork 'ai') -> re-attach to 'ai', then
+##                                                  fast-forward if behind.
 ## Everything else STOPS and is surfaced for a human -- never auto-fixed, forced,
 ## reset, or published:
 ##   - dirty working tree (uncommitted / a sibling session's work)
 ##   - local 'ai' AHEAD of or DIVERGED from the fork tip (unpushed work)
 ##   - detached HEAD not contained in the fork tip (re-attach would orphan it)
-##   - no fork 'ai' tip (submodule 'ai' never published) / no fork remote
-##   - a fetch, checkout, or fast-forward that fails
-##   - a '.gitmodules' path that resolves outside the superproject
+##   - ON 'ai' but no fork remote / fetch fails / no fork 'ai' tip (anomaly)
+##   - a checkout or fast-forward that fails
+##   - a '.gitmodules' path that resolves outside -- or at -- the superproject
 ## A STOP makes the tool exit 1 so the caller halts before the pin/mirror steps;
 ## a human resolves the stopped submodules by hand. Do NOT extend this to
 ## auto-resolve those cases.
@@ -129,6 +138,7 @@ advanced=()
 reattached=()
 current=()
 uninit=()
+skipped_upstream=()
 stopped=()
 
 top_real="$( realpath -m -- "${top}" )"
@@ -163,22 +173,42 @@ for path in "${sub_paths[@]}"; do
       continue
    fi
 
-   ## Must carry the fork remote at all.
+   ## Branch state (no network). Whether the submodule is ON 'ai' decides how a
+   ## "no ai workflow here" condition (no fork remote / fetch fails / no fork 'ai'
+   ## tip) is treated: ON 'ai' it is an anomaly to surface; OFF 'ai' it is just an
+   ## upstream-only submodule (pinned to an upstream commit, no 'ai' work) that the
+   ## tidy must leave exactly as found.
+   ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+   on_ai="false"
+   [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
+
    if ! git -C "${sub}" remote get-url -- "${FORK_REMOTE}" &>/dev/null; then
-      stopped+=( "${path} :: no '${FORK_REMOTE}' remote" )
+      if [ "${on_ai}" = "true" ]; then
+         stopped+=( "${path} :: on '${AI_BRANCH}' but no '${FORK_REMOTE}' remote" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
       continue
    fi
 
    ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
    ## never 'submodule update'.
    if ! git -C "${sub}" fetch --quiet "${FORK_REMOTE}" 2>/dev/null; then
-      stopped+=( "${path} :: fetch from '${FORK_REMOTE}' failed" )
+      if [ "${on_ai}" = "true" ]; then
+         stopped+=( "${path} :: on '${AI_BRANCH}' but fetch from '${FORK_REMOTE}' failed" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
       continue
    fi
 
    fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ -z "${fork_tip}" ]; then
-      stopped+=( "${path} :: no '${FORK_REMOTE}/${AI_BRANCH}' tip ('${AI_BRANCH}' never published)" )
+      if [ "${on_ai}" = "true" ]; then
+         stopped+=( "${path} :: on '${AI_BRANCH}' but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
+      else
+         skipped_upstream+=( "${path}" )
+      fi
       continue
    fi
 
@@ -192,10 +222,6 @@ for path in "${sub_paths[@]}"; do
       stopped+=( "${path} :: dirty working tree (uncommitted / sibling work)" )
       continue
    fi
-
-   ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
-   on_ai="false"
-   [ "${ref}" = "refs/heads/${AI_BRANCH}" ] && on_ai="true"
 
    ## Detached HEAD: re-attaching to 'ai' would orphan any commit not already
    ## contained in the fork tip. Refuse unless the detached commit is an ancestor
@@ -270,13 +296,18 @@ for path in "${sub_paths[@]}"; do
                continue
             fi
          fi
-         if ! git -C "${sub}" merge --quiet --ff-only "${fork_tip}"; then
+         ## Disable signature verification for the fast-forward: the fork 'ai' tips
+         ## are bot-published and unsigned, and the operator's global
+         ## merge.verifySignatures=true would otherwise reject every FF. Advancing
+         ## local 'ai' to our own published fork tip is a trusted ref-advance (the
+         ## org account is the trust boundary; the pin points there regardless).
+         if ! git -C "${sub}" -c merge.verifySignatures=false merge --quiet --ff-only "${fork_tip}"; then
             ## Re-attached but the FF failed -> roll back to the original detached
             ## HEAD so nothing changed on this STOP.
             if [ -n "${pre_head}" ]; then
                git -C "${sub}" checkout --quiet --detach "${pre_head}" 2>/dev/null || true
             fi
-            stopped+=( "${path} :: fast-forward to ${FORK_REMOTE}/${AI_BRANCH} failed (untracked-file collision?)" )
+            stopped+=( "${path} :: fast-forward to ${FORK_REMOTE}/${AI_BRANCH} failed (untracked-file collision or unreadable object)" )
             continue
          fi
       fi
@@ -307,6 +338,9 @@ print_bucket "advanced"    "${advanced[@]}"
 print_bucket "re-attached" "${reattached[@]}"
 print_bucket "already current" "${current[@]}"
 print_bucket "uninitialised (skipped)" "${uninit[@]}"
+## Upstream-only submodules (no 'ai' workflow) are non-actionable; a count keeps
+## the summary scannable.
+[ "${#skipped_upstream[@]}" -eq 0 ] || printf 'upstream-only, left alone (%d)\n' "${#skipped_upstream[@]}"
 
 if [ "${#stopped[@]}" -gt 0 ]; then
    printf '\n%s\n' "STOPPED -- resolve by hand, then re-run:" >&2
@@ -314,5 +348,5 @@ if [ "${#stopped[@]}" -gt 0 ]; then
    die 1 "${#stopped[@]} submodule(s) STOPPED; not safe to pin/mirror until resolved."
 fi
 
-log "all submodules on '${AI_BRANCH}' at the published fork tip."
+log "every ai-workflow submodule is on '${AI_BRANCH}' at the published fork tip."
 exit 0

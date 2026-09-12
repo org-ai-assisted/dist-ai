@@ -119,10 +119,12 @@ add_sub() {
    gitq -C "${super}" submodule --quiet add -b ai "file://${fork}" "${name}"
    gitq -C "${super}/${name}" remote rename origin org-ai-assisted
    gitq -C "${super}/${name}" config protocol.file.allow always
-   ## Fixture commits are unsigned; the operator's global merge.verifySignatures
-   ## would reject the fast-forward. Real fork tips are bot-signed. Keep the
-   ## fixture hermetic (repo-local, not a production concern).
-   gitq -C "${super}/${name}" config merge.verifySignatures false
+   ## Fixture commits are unsigned and we set merge.verifySignatures=TRUE here, so a
+   ## fast-forward only succeeds if the tool overrides it ('-c merge.verifySignatures
+   ## =false') -- exactly the production case (bot-published unsigned fork 'ai' tips
+   ## under the operator's global merge.verifySignatures=true). Deterministic in any
+   ## environment, and a canary for the signature override.
+   gitq -C "${super}/${name}" config merge.verifySignatures true
    gitq -C "${super}/${name}" checkout --quiet ai
 }
 
@@ -152,6 +154,22 @@ add_sub "${superA}" "${workspace}/fork-detached.git" detached
 advance_fork "${workspace}/drv-detached" "${workspace}/fork-detached.git"
 detached_tip="$(gitq -C "${workspace}/drv-detached" rev-parse ai)"
 gitq -C "${superA}/detached" checkout --quiet --detach ai
+
+## upstream_only: NOT on ai, fork has no 'ai' (only master). An upstream-only
+## submodule (no ai workflow) must be LEFT ALONE -- skipped, never a STOP.
+gitq init --quiet --bare -- "${workspace}/fork-upstream.git"
+gitq init --quiet -- "${workspace}/drv-upstream"
+gitq -C "${workspace}/drv-upstream" checkout --quiet -b master
+printf 'm\n' > "${workspace}/drv-upstream/f"
+gitq -C "${workspace}/drv-upstream" add f
+gitq -C "${workspace}/drv-upstream" commit --quiet -m m
+gitq -C "${workspace}/drv-upstream" remote add fork "file://${workspace}/fork-upstream.git"
+gitq -C "${workspace}/drv-upstream" push --quiet fork master
+gitq -C "${superA}" submodule --quiet add "file://${workspace}/fork-upstream.git" upstream_only
+gitq -C "${superA}/upstream_only" remote rename origin org-ai-assisted
+gitq -C "${superA}/upstream_only" config protocol.file.allow always
+gitq -C "${superA}/upstream_only" checkout --quiet --detach HEAD
+upstream_only_head="$(head_of "${superA}/upstream_only")"
 
 ## --- A / dry-run FIRST: classify, report, but mutate nothing --------------------
 rc=0
@@ -197,6 +215,12 @@ if [ "$(head_of "${superA}/detached")" = "${detached_tip}" ] && [ "$(branch_of "
 else
    fail "detached submodule not re-attached/FF'd (head=$(head_of "${superA}/detached") branch=$(branch_of "${superA}/detached"))"
 fi
+if [ "$(head_of "${superA}/upstream_only")" = "${upstream_only_head}" ] && [ "$(branch_of "${superA}/upstream_only")" = "DETACHED" ]; then
+   pass "upstream-only submodule (no fork ai, off ai) left exactly as found"
+else
+   fail "upstream-only submodule was disturbed (head=$(head_of "${superA}/upstream_only") branch=$(branch_of "${superA}/upstream_only"))"
+fi
+require_result "${real_out}" "upstream-only, left alone" "summary reports upstream-only submodules left alone"
 
 ## =============================================================================
 ## Superproject B: STOP cases -> must exit 1, mutate nothing, surface reasons.
