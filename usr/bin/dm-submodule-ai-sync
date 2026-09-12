@@ -43,11 +43,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## An inherited GIT_DIR / GIT_WORK_TREE (e.g. from a 'git submodule foreach'
-## parent) would redirect every 'git -C <sub>' at the superproject instead of the
-## submodule -- silently fast-forwarding the wrong repo. Clear them; this tool
-## addresses each submodule by path.
-unset GIT_DIR GIT_WORK_TREE
+## An inherited git-location env var (e.g. from a 'git submodule foreach' parent)
+## would redirect every 'git -C <sub>' -- repo, index, or object store -- at
+## another repo, silently fast-forwarding the wrong tree or writing objects into
+## the wrong store. Clear the whole set; this tool addresses each submodule by path.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 
 AI_BRANCH="ai"
 ## The published fork that carries 'ai' work and that CI fetches (git skill).
@@ -136,11 +137,16 @@ for path in "${sub_paths[@]}"; do
    [ -n "${path}" ] || continue
    sub="${top}/${path}"
 
-   ## Containment: a '.gitmodules' path is trusted content, but a stray '..' (a
-   ## bad edit, or a crafted entry) would point 'sub' outside the superproject
-   ## and mutate an unrelated repo. Refuse anything that does not resolve under
-   ## 'top'.
+   ## Containment: a '.gitmodules' path is trusted content, but a stray '..' or '.'
+   ## (a bad edit, or a crafted entry) would point 'sub' outside -- or AT -- the
+   ## superproject and mutate the wrong repo. Require a PROPER descendant of 'top':
+   ## reject both a path that escapes 'top' and one that resolves to 'top' itself
+   ## (e.g. '.', 'help-steps/..').
    sub_real="$( realpath -m -- "${sub}" )"
+   if [ "${sub_real}" = "${top_real}" ]; then
+      stopped+=( "${path} :: resolves to the superproject itself, not a submodule" )
+      continue
+   fi
    case "${sub_real}/" in
       "${top_real}"/*)
          ;;
@@ -254,11 +260,22 @@ for path in "${sub_paths[@]}"; do
             log "[dry-run] ${path}: would re-attach '${AI_BRANCH}' + fast-forward ${local_ai:0:12} -> ${fork_tip:0:12}"
          fi
       else
-         if [ "${on_ai}" != "true" ] && ! git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
-            stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}' before fast-forward" )
-            continue
+         ## Capture HEAD before re-attaching so a later FF failure can restore it
+         ## (a STOP must leave the submodule exactly as found).
+         pre_head=""
+         if [ "${on_ai}" != "true" ]; then
+            pre_head="$( git -C "${sub}" rev-parse HEAD 2>/dev/null || true )"
+            if ! git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+               stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}' before fast-forward" )
+               continue
+            fi
          fi
          if ! git -C "${sub}" merge --quiet --ff-only "${fork_tip}"; then
+            ## Re-attached but the FF failed -> roll back to the original detached
+            ## HEAD so nothing changed on this STOP.
+            if [ -n "${pre_head}" ]; then
+               git -C "${sub}" checkout --quiet --detach "${pre_head}" 2>/dev/null || true
+            fi
             stopped+=( "${path} :: fast-forward to ${FORK_REMOTE}/${AI_BRANCH} failed (untracked-file collision?)" )
             continue
          fi

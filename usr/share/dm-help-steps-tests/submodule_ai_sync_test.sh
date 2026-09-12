@@ -330,6 +330,12 @@ detuniq_head="$(head_of "${superC}/detuniq")"
 gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evil.path ../outside
 gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evil.url "file:///unused"
 
+## evilself: a '.gitmodules' path that resolves to the superproject ITSELF
+## (path='.') -> must STOP, never fast-forward the superproject.
+gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evilself.path .
+gitq -C "${superC}" config --file "${superC}/.gitmodules" submodule.evilself.url "file:///unused"
+superC_head_before="$(gitq -C "${superC}" rev-parse HEAD)"
+
 ## zz_healthy: behind + clean, ordered AFTER the failing ones -> must still FF.
 new_fork "${workspace}/fork-healthy.git" "${workspace}/drv-healthy"
 add_sub "${superC}" "${workspace}/fork-healthy.git" zz_healthy
@@ -361,6 +367,12 @@ fi
 require_result "${c_out}" "untracked-file collision" "STOP surfaces the fast-forward-failure reason"
 require_result "${c_out}" "not contained in"          "STOP surfaces the detached-not-contained reason"
 require_result "${c_out}" "resolves outside the superproject" "STOP surfaces the out-of-tree-path reason"
+require_result "${c_out}" "resolves to the superproject itself" "STOP surfaces the path-is-superproject reason"
+if [ "$(gitq -C "${superC}" rev-parse HEAD)" = "${superC_head_before}" ]; then
+   pass "a 'path=.' entry does NOT fast-forward the superproject itself"
+else
+   fail "a 'path=.' entry fast-forwarded the superproject (containment bypass)"
+fi
 
 ## =============================================================================
 ## Superproject D: an inherited GIT_DIR/GIT_WORK_TREE must NOT redirect the tool
@@ -390,6 +402,78 @@ if [ "$(gitq -C "${superD}" rev-parse HEAD)" = "${superD_head_before}" ]; then
    pass "with GIT_DIR set, the superproject HEAD is untouched"
 else
    fail "with GIT_DIR set, the superproject was mutated"
+fi
+
+## =============================================================================
+## Superproject E: a detached HEAD that is an ancestor of the fork tip but
+## DISTINCT from a behind local 'ai', with an untracked-file collision on the FF.
+## The re-attach must ROLL BACK on the failed FF -> a STOP leaves HEAD as found.
+## =============================================================================
+superE="${workspace}/superE"
+new_super "${superE}"
+gitq init --quiet --bare -- "${workspace}/fork-detcol.git"
+gitq init --quiet -- "${workspace}/drv-detcol"
+gitq -C "${workspace}/drv-detcol" checkout --quiet -b ai
+printf 'c0\n' > "${workspace}/drv-detcol/f"
+gitq -C "${workspace}/drv-detcol" add f
+gitq -C "${workspace}/drv-detcol" commit --quiet -m c0
+gitq -C "${workspace}/drv-detcol" remote add fork "file://${workspace}/fork-detcol.git"
+gitq -C "${workspace}/drv-detcol" push --quiet fork ai
+add_sub "${superE}" "${workspace}/fork-detcol.git" detcol
+## fork advances: c1 (adds g), then c2 (adds newfile).
+printf 'g\n' > "${workspace}/drv-detcol/g"
+gitq -C "${workspace}/drv-detcol" add g
+gitq -C "${workspace}/drv-detcol" commit --quiet -m c1
+detcol_c1="$(gitq -C "${workspace}/drv-detcol" rev-parse ai)"
+gitq -C "${workspace}/drv-detcol" push --quiet fork ai
+printf 'from-fork\n' > "${workspace}/drv-detcol/newfile"
+gitq -C "${workspace}/drv-detcol" add newfile
+gitq -C "${workspace}/drv-detcol" commit --quiet -m c2
+gitq -C "${workspace}/drv-detcol" push --quiet fork ai
+## sub: fetch c1/c2 objects, detach at c1 (distinct from local ai=c0), untracked collision.
+gitq -C "${superE}/detcol" fetch --quiet org-ai-assisted
+gitq -C "${superE}/detcol" checkout --quiet --detach "${detcol_c1}"
+printf 'attacker\n' > "${superE}/detcol/newfile"
+
+rc=0
+e_out="$("${tool}" --dir "${superE}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "detached-behind + FF-collision run exits 1"
+else
+   fail "detached-behind + FF-collision run exited ${rc}; output:<<<${e_out}>>>"
+fi
+if [ "$(gitq -C "${superE}/detcol" rev-parse HEAD)" = "${detcol_c1}" ] && [ "$(branch_of "${superE}/detcol")" = "DETACHED" ]; then
+   pass "failed FF after re-attach ROLLS BACK to the original detached HEAD (no mutation on STOP)"
+else
+   fail "failed FF left the submodule moved (HEAD=$(gitq -C "${superE}/detcol" rev-parse HEAD) branch=$(branch_of "${superE}/detcol"))"
+fi
+if [ "$(cat -- "${superE}/detcol/newfile")" = "attacker" ]; then
+   pass "the untracked file is intact after the rolled-back STOP"
+else
+   fail "the untracked file was clobbered on the rolled-back STOP"
+fi
+
+## =============================================================================
+## Superproject F: an inherited GIT_OBJECT_DIRECTORY must not send fetched objects
+## to the wrong store; the fast-forwarded submodule stays self-consistent.
+## =============================================================================
+superF="${workspace}/superF"
+new_super "${superF}"
+new_fork "${workspace}/fork-god.git" "${workspace}/drv-god"
+add_sub "${superF}" "${workspace}/fork-god.git" god
+advance_fork "${workspace}/drv-god" "${workspace}/fork-god.git"
+god_tip="$(gitq -C "${workspace}/drv-god" rev-parse ai)"
+rc=0
+GIT_OBJECT_DIRECTORY="${superF}/.git/objects" "${tool}" --dir "${superF}" >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   pass "run with inherited GIT_OBJECT_DIRECTORY exits 0"
+else
+   fail "run with inherited GIT_OBJECT_DIRECTORY exited ${rc}"
+fi
+if [ "$(head_of "${superF}/god")" = "${god_tip}" ] && gitq -C "${superF}/god" cat-file -e HEAD 2>/dev/null; then
+   pass "with GIT_OBJECT_DIRECTORY set, the submodule FF'd and its HEAD object is in its OWN store"
+else
+   fail "with GIT_OBJECT_DIRECTORY set, the submodule HEAD object is missing (objects went to the wrong store)"
 fi
 
 ## =============================================================================
