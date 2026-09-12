@@ -211,7 +211,9 @@ try:
     ok(bool(_rb), 'Global settings has a Reset to defaults button')
     # perturb the per-type OSC-notice toggles so Reset has something to revert (rd#1:
     # _reset_defaults missed them, so Reset+Apply persisted a wrong mute set)
-    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC 0, 2)')
+    # match the NOTIFY row (name + "  (OSC ..."), not the OSC-features row ("OSC name ...");
+    # stop before the codes so it holds across secure_terminal versions (0,2 vs 0,1,2).
+    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC')
     _nh_reset = _dlg_field(_gs, 'Hyperlinks  (OSC 8)')
     _nt_reset.setChecked(True)       # un-mute title (non-default)
     _nh_reset.setChecked(False)      # mute hyperlink (non-default)
@@ -1110,6 +1112,15 @@ try:
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: ('', ''))
     win.save_transcript()                   # cancelled -> return
     ok(True, 'save_transcript: cancelling the dialog is a no-op')
+    # win's tab (created at module top) is a live login-shell whose prompt output
+    # arrives asynchronously -- under parallel-coverage load it can be starved
+    # indefinitely, leaving transcript_text() empty and the writers below capturing a
+    # 0-byte file (read-before-settle). Give the tab KNOWN content synchronously via
+    # the real read path, so the transcript/screen writers have something deterministic
+    # to capture regardless of shell/scheduler timing.
+    feed_output(win.current(), b'transcript capture content\r\n')
+    ok('transcript capture content' in win.current().transcript_text(),
+       'save/open transcript: the tab has content to capture')
     _tfd, _tpath = tempfile.mkstemp(suffix='.txt')
     os.close(_tfd)
     os.unlink(_tpath)                       # remove it: save_transcript must (re)create

@@ -920,7 +920,7 @@ QDialog.exec = _accept_exec
 _dialogs.clear()
 win.show_global_settings()
 _gsn = _dialogs[-1]
-_nt = _dlg_field(_gsn, 'Window / tab title  (OSC 0, 2)')
+_nt = _dlg_field(_gsn, 'Window / tab title  (OSC')
 _nh = _dlg_field(_gsn, 'Hyperlinks  (OSC 8)')
 ok(_nt is not None and not _nt.isChecked(),
    'per-type notice: a muted type (osc_title) shows unticked in Global settings')
@@ -937,7 +937,7 @@ try:
     _dialogs.clear()
     win.show_global_settings()
     _gsl = _dialogs[-1]
-    _ntl = _dlg_field(_gsl, 'Window / tab title  (OSC 0, 2)')
+    _ntl = _dlg_field(_gsl, 'Window / tab title  (OSC')
     ok(_ntl is not None and not _ntl.isEnabled(),
        'a locked osc_notice_off greys the per-type notice checkboxes in Global settings')
 finally:
