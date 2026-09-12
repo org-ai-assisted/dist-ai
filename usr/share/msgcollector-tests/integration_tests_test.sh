@@ -905,14 +905,15 @@ test_msgprogress_progress_100() {
 
 ## --------------------------------------------------------------------------
 printf '%s\n' ""
-printf '%s\n' "$0: === msgprogressbar: empty title/message must not alarm the user (#35) ==="
+printf '%s\n' "$0: === msgprogressbar: empty title/message shows the report-this-bug popup (#35) ==="
 ## --------------------------------------------------------------------------
 
 ## Drive the REAL msgprogressbar with a 'yad' stub on PATH that records the argv
 ## it is launched with. This lets us assert exactly what the user's popup would
-## show, with no display and no real yad. Regression for the alarming
+## show, with no display and no real yad. An empty title or message is a caller
+## bug and must surface the user-visible report-this-bug text:
 ##   title:   "Variable progressbartitlex is empty. Please report this bug!"
-##   message: "Progress bar message is empty, please report this msgcollector bug!"
+##   message: "Progress bar message is empty. Please report this bug!"
 ## Prints the captured yad argv (one arg per line); empty if yad never launched.
 ## SC2016: the stub body written below is LITERAL code; its $-expansions must
 ## NOT expand here -- they run when msgprogressbar launches the stub.
@@ -945,40 +946,35 @@ msgprogressbar_capture_yad() {
   safe-rm --recursive --force -- "${stub_dir}"
 }
 
-test_progressbar_empty_title_not_alarming() {
+test_progressbar_empty_title_reports_bug() {
   local argv
   argv="$(msgprogressbar_capture_yad "pbtitletest" --message "download in progress")"
   if [ -z "${argv}" ]; then
     fail "msgprogressbar: yad never launched for the empty-title case"
     return
   fi
+  ## An empty title is a caller bug: surface the report-this-bug text in the title.
   if grep --quiet --fixed-strings -- "Please report this bug" <<< "${argv}"; then
-    fail "msgprogressbar: empty title still shows the alarming 'report this bug' popup"
+    pass "msgprogressbar: empty title shows the report-this-bug popup"
   else
-    pass "msgprogressbar: empty title does not show the alarming 'report this bug' popup"
-  fi
-  ## Falls back to the identifier, matching msgdispatcher's convention.
-  if grep --quiet --fixed-strings -- "--title=pbtitletest" <<< "${argv}"; then
-    pass "msgprogressbar: empty title falls back to the identifier"
-  else
-    fail "msgprogressbar: empty title did not fall back to the identifier (--title=pbtitletest)"
+    fail "msgprogressbar: empty title did not show the report-this-bug popup"
   fi
 }
 
-test_progressbar_empty_message_not_alarming() {
+test_progressbar_empty_message_reports_bug() {
   local argv
   argv="$(msgprogressbar_capture_yad "pbmsgtest" --progressbartitlex "Real Title")"
   if [ -z "${argv}" ]; then
     fail "msgprogressbar: yad never launched for the empty-message case"
     return
   fi
-  if grep --quiet --fixed-strings -- "report this msgcollector bug" <<< "${argv}"; then
-    fail "msgprogressbar: empty message still shows the alarming 'report this msgcollector bug' text"
+  ## An empty message is a caller bug: surface the report-this-bug text.
+  if grep --quiet --fixed-strings -- "Please report this bug" <<< "${argv}"; then
+    pass "msgprogressbar: empty message shows the report-this-bug popup"
   else
-    pass "msgprogressbar: empty message does not show the alarming text"
+    fail "msgprogressbar: empty message did not show the report-this-bug popup"
   fi
-  ## A real title must still pass through verbatim; the identifier fallback must
-  ## not clobber a title the caller actually provided.
+  ## A real title must still pass through verbatim.
   if grep --quiet --fixed-strings -- "--title=Real Title" <<< "${argv}"; then
     pass "msgprogressbar: a real title is passed through to yad verbatim"
   else
@@ -1327,8 +1323,8 @@ test_msgprogress_valid_progress
 test_msgprogress_progress_zero
 test_msgprogress_progress_100
 
-test_progressbar_empty_title_not_alarming
-test_progressbar_empty_message_not_alarming
+test_progressbar_empty_title_reports_bug
+test_progressbar_empty_message_reports_bug
 
 test_messagecli_sanitizes_dangerous_input
 test_messagecli_color_conversion_preserved
