@@ -123,6 +123,20 @@ safe-rm --force -- "${rejected_tmp}"
 ## function body and every '.vars' file would still match.
 if [ -z "${first_valid_flavor}" ]; then
    printf '%s\n' "FATAL: no valid build combo found; cannot capture the function snapshot." >&2
+   ## In a correct tree only genuinely-invalid combos reject, so ALL combos
+   ## rejecting means the resolver itself cannot run (a missing build-host tool,
+   ## an unwritable path, a failed sourcing) -- not a validity-matrix change.
+   ## The per-combo capture suppresses the resolver's own output, so surface it:
+   ## the distinct reasons, then ONE full unsuppressed re-run of a known-valid
+   ## combo, whose exception-handler block names the failing command. Fatal path
+   ## only -- never runs on a healthy tree, so no effect on normal output.
+   printf '%s\n' "INFO: distinct rejection reasons (count):" >&2
+   tail -n +4 -- "${out_dir}/_rejected.txt" | cut -f2- | LC_ALL=C sort | uniq -c | LC_ALL=C sort -rn >&2 || true
+   printf '%s\n' "INFO: full resolver output for the known-valid 'kicksecure-cli --type vm --target raw' combo (unsuppressed):" >&2
+   ( cd -- "${dm}" \
+        && env "${vs_capture_env[@]}" \
+              bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
+              --flavor kicksecure-cli --type vm --target raw "${vs_fixed_args[@]}" ) >&2 2>&1 || true
    exit 1
 fi
 funcs="$(vs_capture_functions "${dm}" "${first_valid_flavor}" "${first_valid_target}")" \
