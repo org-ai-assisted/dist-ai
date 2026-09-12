@@ -609,6 +609,18 @@ for _rk in ('Ctrl+End', 'Shift+Home', 'Alt+Left',
 for _ak in ('Ctrl+Shift+T', 'Ctrl+Shift+End'):
     ok(not win._is_reserved_shortcut(_ak),
        '_is_reserved_shortcut: %s stays available (routed to a window shortcut)' % _ak)
+# M11: a Shift+printable binding still produces TYPED text ('!' from Shift+1), so a window
+# shortcut on it would eat that character app-wide (even at a password prompt) -- reserve it.
+# T7: Shift+Tab (Key_Tab+Shift) and its Key_Backtab form are the back-tab (ESC[Z) forwarded
+# in TUI mode; reserve them so a window shortcut cannot shadow vim shift-dedent / fzf.
+# (canary: pre-fix reserved only NoModifier printables + the bare/ESC[1;p nav keys, so none
+# of these Shift forms were caught.)
+for _rk2 in ('Shift+1', 'Shift+A', 'Shift+Tab', 'Shift+Backtab'):
+    ok(win._is_reserved_shortcut(_rk2),
+       '_is_reserved_shortcut: %s is reserved (typed text / back-tab)' % _rk2)
+# Ctrl+Shift+Tab still stays available (routed to the window shortcuts, like Ctrl+Shift+<nav>).
+ok(not win._is_reserved_shortcut('Ctrl+Shift+Tab'),
+   '_is_reserved_shortcut: Ctrl+Shift+Tab stays available (window shortcut)')
 _o_sig5 = _sg.signal
 try:
     _sg.signal = lambda *_a, **_k: (_ for _ in ()).throw(ValueError())
@@ -1202,6 +1214,29 @@ win._show_review(_rvterm, 'risky text', 0, 'paste')   # current tab -> bar shown
 ok(win._review_bar.reviewed_term() is _rvterm,
    '_show_review shows the review bar for the active tab')
 win._hide_paste_review(_rvterm)                        # current tab -> refocus
+# M10: _focus_current_terminal must NOT steal the caret while the paste-REVIEW bar holds a
+# review (a tab switch / re-activation would else route the held paste's Enter/Esc to the
+# PTY, not the review buttons). It already skips for the find bar; the review bar was the
+# gap. (canary: pre-fix checked only the find bar, so setFocus fired with a review open.)
+_m10 = win.current()
+_m10_focus = []
+_m10_of = _m10.setFocus
+_m10.setFocus = lambda *_a: _m10_focus.append(True)
+try:
+    win._find_bar.setVisible(False)                     # isolate: only the review bar governs
+    win._show_review(_m10, 'held paste', 0, 'paste')   # a review is now held
+    _m10_focus.clear()
+    win._focus_current_terminal()
+    ok(_m10_focus == [],
+       'M10: the terminal is not refocused while a paste review is held')
+    win._hide_paste_review(_m10)                        # review resolved
+    win._find_bar.setVisible(False)                     # and no find bar open (prior-test state)
+    _m10_focus.clear()
+    win._focus_current_terminal()
+    ok(_m10_focus == [True],
+       'M10: the terminal IS refocused once the review is resolved')
+finally:
+    _m10.setFocus = _m10_of
 # a request from a NON-current tab is ignored (its text stays held)
 _bgterm = _ST2(command='/bin/cat')
 win._show_review(_bgterm, 'held', 0, 'copy')           # not current -> return

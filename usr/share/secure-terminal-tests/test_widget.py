@@ -5891,8 +5891,8 @@ ok(not _oc5_crashed,
 _oc5_ok = []
 _oc5.cwd_changed.connect(_oc5_ok.append)
 _oc5._reported_cwd = ''
-_oc5._handle_osc(b'\x1b]7;file://host/tmp/dir\x07')           # a well-formed one still works
-ok(_oc5_ok and _oc5_ok[-1].endswith('/tmp/dir'),
+_oc5._handle_osc(b'\x1b]7;file://host/srv/dir\x07')           # a well-formed one still works
+ok(_oc5_ok and _oc5_ok[-1].endswith('/srv/dir'),
    'T5: a well-formed OSC 7 cwd still reports its path after the guard')
 _oc5.shutdown()
 

@@ -46,16 +46,19 @@ def _check(name, ok):
 ## byte column eight past the codepoint column of the following '#'.
 alphas = "\u03b1" * 8
 code_part = 'echo "%s"' % alphas
-src = "%s # /tmp/should-not-be-code\n" % code_part
+## A neutral sentinel (no '/tmp' literal, which bandit B108-flags as a temp path);
+## it stands for any comment text a byte-column overshoot would leak into "code".
+src = "%s # comment-bytes-must-not-leak\n" % code_part
 
 tree = bash_ast.parse(src)
 lines = _helpers.code_only_lines(src, tree)
 line0 = lines[0]
 
-## The whole trailing comment (its '#', and the '/tmp' the leak would expose to
-## R-170) must be gone from the code slice.
+## The whole trailing comment (its '#' and its text) must be gone from the code
+## slice -- a byte-vs-codepoint overshoot would leak part of it (e.g. exposing a
+## '/tmp' or similar to R-170) into what the rules treat as code.
 _check("trailing '#' comment fully stripped", "#" not in line0)
-_check("no '/tmp' leaked from the comment into code", "/tmp" not in line0)
+_check("no comment text leaked into code", "comment-bytes" not in line0)
 ## The code before the comment is preserved byte-for-byte (not truncated early).
 _check("code before the comment preserved intact", line0.rstrip() == code_part)
 

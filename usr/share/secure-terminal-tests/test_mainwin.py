@@ -1022,6 +1022,43 @@ finally:
     QMessageBox.question = _oq
 w3.deleteLater()
 
+# M12: closeEvent must RE-DERIVE the live terms after the confirm modal, not reuse the
+# pre-modal snapshot -- a tab whose shell exits DURING the modal is a freed C++ object, and
+# shutdown() on it raises RuntimeError, aborting closeEvent before the surviving tabs hang up
+# their PTYs. (canary: pre-fix looped over the stale snapshot and RuntimeError'd on the freed
+# victim, so the survivor was never shut down.)
+_m12w = MainWindow()
+_m12w._persist_session = False
+while len(_m12w._real_terms()) < 2:
+    _m12w.new_tab()
+_m12_victim = _m12w._real_terms()[0]                     # first tab: exits during the modal
+_m12_survivor = _m12w._real_terms()[-1]                  # last tab: must still be shut down
+for _t in _m12w._real_terms():
+    _t.has_foreground_program = lambda: True             # force the confirm modal
+_m12_shut = []
+_m12_sd_real = _m12_survivor.shutdown                    # wrap (record + call real), NOT replace
+_m12_survivor.shutdown = lambda: (_m12_shut.append(True), _m12_sd_real())[1]
+from PyQt6.QtCore import QEvent as _QEv12                 # noqa: E402
+def _m12_confirm(_title, _q, _terms):
+    _m12_victim.has_foreground_program = lambda: False   # so close_tab needs no confirm
+    _m12w.close_tab(_m12w.tabs.indexOf(_m12_victim))     # its shell "exited" mid-modal
+    # A real modal spins a nested event loop that processes the tab's deleteLater, cleanly
+    # freeing its C++ object (close_tab already stopped its timers). APP.processEvents() does
+    # NOT run DeferredDelete, so drive it explicitly to reproduce the end state the modal
+    # leaves: the pre-modal `terms` snapshot then holds a freed object.
+    APP.sendPostedEvents(None, _QEv12.Type.DeferredDelete)
+    return True
+_m12w._confirm_running_close = _m12_confirm
+_m12_crash = None
+try:
+    _m12w.closeEvent(QCloseEvent())
+except RuntimeError as _e12:
+    _m12_crash = _e12
+ok(_m12_crash is None and _m12_shut == [True],
+   'M12: closeEvent re-derives live terms after the modal -- the surviving tab is shut down, '
+   'no RuntimeError on the freed one')
+_m12w.deleteLater()
+
 # --- tab context menu (exec stubbed) ------------------------------------------
 _ome = QMenu.exec
 QMenu.exec = lambda *_a, **_k: None
