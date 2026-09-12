@@ -65,6 +65,17 @@ export LC_ALL=C
 ## whatever repository the environment names instead of --repo-root.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
+## Restrict git to the transports this check actually uses. safe.directory=*
+## (below) makes git operate on an untrusted checkout, so a fetch reads that
+## checkout's own remote URLs -- a malicious 'origin.url = ext::sh -c ...' with
+## 'protocol.ext.allow = always' would otherwise EXECUTE the helper during the
+## origin unshallow (deepen_history), which unlike the parent-upstream fetch is
+## not screened by valid_upstream_url. GIT_ALLOW_PROTOCOL is git's built-in
+## allowlist and applies to every git child, so ext/fd and other command-
+## executing transports are refused wherever a URL is dereferenced. The set
+## mirrors valid_upstream_url's accepted schemes.
+export GIT_ALLOW_PROTOCOL='file:git:http:https:ssh'
+
 ## Trust the checkout regardless of on-disk ownership. This runs in CI
 ## containers where the workspace is owned by a different uid than the process,
 ## and git's 'detected dubious ownership' then fails EVERY git command (the
@@ -1742,6 +1753,30 @@ parent_self_test() {
       fails=$(( fails + 1 ))
     fi
   done
+
+  ## Case L: the origin unshallow must not execute a remote-helper URL. A
+  ## shallow checkout whose OWN origin is an 'ext::' helper -- with the checkout
+  ## itself enabling protocol.ext.allow, as an attacker-authored repo would --
+  ## runs that helper during deepen_history unless git's transport allowlist
+  ## forbids ext. valid_upstream_url screens the parent-upstream URL but NOT
+  ## origin, so the global GIT_ALLOW_PROTOCOL is what closes this. The decoy
+  ## helper only touches a marker in the fixture tmp; its presence afterward
+  ## proves the helper ran.
+  local ext_shallow="${tmp}/ext-shallow"
+  local ext_marker="${tmp}/ext-helper-ran"
+  local ext_helper="${tmp}/ext-helper"
+  printf '#!/bin/sh\ntouch "%s"\n' "${ext_marker}" > "${ext_helper}"
+  chmod +x "${ext_helper}"
+  fixture_git clone --quiet --depth 1 "file://${tmp}/fork" "${ext_shallow}"
+  fixture_git -C "${ext_shallow}" config protocol.ext.allow always
+  fixture_git -C "${ext_shallow}" remote set-url origin "ext::${ext_helper}"
+  repo_root="${ext_shallow}"
+  deepen_history >/dev/null 2>&1 || true
+  if [ -e "${ext_marker}" ]; then
+    printf '%s\n' \
+      'parent self-test FAIL: origin ext:: helper executed during the unshallow (RCE)' >&2
+    fails=$(( fails + 1 ))
+  fi
 
   ## Case H: a detached HEAD sitting on the master commit is still master, and
   ## must not silently skip the check.
