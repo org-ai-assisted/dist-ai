@@ -92,6 +92,17 @@ try:
     ok(win._osc_notice_actions
        and all(not a.isEnabled() for a in win._osc_notice_actions.values()),
        'a locked osc_notice_off greys out the per-type OSC-notice toggles')
+    # M7: an action gated by TWO lock keys (act_title by allow_title + osc_title) gets the
+    # "locked by administrator" note appended ONCE, not concatenated back-to-back. (canary:
+    # pre-fix appended unconditionally, so two matching keys duplicated the note.)
+    _m7_tip = win.act_title.toolTip()
+    win.act_title.setToolTip('base tip')
+    win._locked = {'allow_title', 'osc_title'}
+    win._apply_locks()
+    ok(win.act_title.toolTip().count('Locked by the system administrator') == 1,
+       'M7: the admin-lock tooltip note is appended once even when two keys gate the action')
+    win.act_title.setToolTip(_m7_tip)
+    win.act_title.setEnabled(True)
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
@@ -588,6 +599,34 @@ eq(_big_tab.current_scrollback(), win._scrollback,
 win._restore_tab({'text': '', 'theme': [], 'osc': {}})
 eq(win.current().current_theme(), win._default_theme,
    '_restore_tab falls back to the default theme on an unhashable saved value')
+
+# M1: restored colors/line_edits/colored_markings on a TAMPERED (non-bool) saved value must
+# fall back to the ADMIN default, not a hard-coded True (fail OPEN). Set the unlocked admin
+# defaults to False so a fail-open (True) is distinguishable from the correct default.
+# (canary: pre-fix hard-coded the _saved_bool fallback to True, reversing an unlocked False.)
+_m1_c, _m1_le, _m1_mk = win._default_colors, win._default_line_edits, win._default_markings
+win._default_colors = False
+win._default_line_edits = False
+win._default_markings = False
+try:
+    win._restore_tab({'text': '', 'colors': 'off', 'line_edits': 'false',
+                      'markings': 'no', 'osc': {}})
+    _m1_tab = win.current()
+    ok(_m1_tab.colors_enabled() is False,
+       'M1: a non-bool saved colors falls back to the admin default (False), not fail-open True')
+    ok(_m1_tab.line_edits_enabled() is False,
+       'M1: a non-bool saved line_edits falls back to the admin default, not True')
+    ok(_m1_tab.markings_enabled() is False,
+       'M1: a non-bool saved colored_markings falls back to the admin default, not True')
+finally:
+    win._default_colors, win._default_line_edits, win._default_markings = _m1_c, _m1_le, _m1_mk
+
+# M5: a restored zoom below ZOOM_MIN must be clamped to ZOOM_MIN (25) before apply, not left
+# to apply_zoom's wider [10, 1000] floor (session.json is untrusted). (canary: pre-fix passed
+# the unclamped value straight to apply_zoom, so a saved 5 restored at 10%, below the 25% min.)
+win._restore_tab({'text': '', 'zoom': 5, 'osc': {}})
+eq(win.current().current_zoom(), 25,
+   'M5: a saved zoom below ZOOM_MIN is clamped to ZOOM_MIN (25) on restore, not 10')
 
 # a restored tab spawns its shell in the SAVED cwd (bug: pwd was not restored)
 _rcwd = tempfile.mkdtemp(prefix='st-restore-cwd-')

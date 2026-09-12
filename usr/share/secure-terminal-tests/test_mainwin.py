@@ -1226,6 +1226,11 @@ win._open_launch_tab({'command': ''})
 win._open_launch_tab({'command': []})
 win._open_launch_tab({'command': ['']})
 win._open_launch_tab({'command': ['   ']})
+# M3: a whitespace-ONLY string command names no program, exactly like the list form
+# ['   '] -- it must open no tab. (canary: pre-fix checked `_cmd == ''` literally, so a
+# spaces-only string slipped the guard, opened a tab, and mis-counted it as opened.)
+ok(win._open_launch_tab({'command': '   '}) is False,
+   'M3: a whitespace-only string IPC command opens no tab (fail closed)')
 eq(win.tabs.count(), _n4,
    'ai-review#4: an explicit-empty IPC command opens no tab (no login-shell fallback)')
 
