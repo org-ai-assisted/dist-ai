@@ -89,7 +89,7 @@ def clamp_zoom(level):
 # Board byte-generators are single-sourced in a Qt-free module (zoom_boards) so the
 # terminal-safe-corpus drift gate can regenerate them without PyQt6. Re-exported here
 # (Z.BOARDS / Z.board_spec) for the capture harness, the sweep, and the suite.
-from zoom_boards import BOARDS, board_spec   # noqa: F401  (re-export)
+from zoom_boards import BOARDS as BOARDS, board_spec as board_spec  # noqa: F401 -- redundant alias marks an intentional re-export (Z.BOARDS / Z.board_spec)
 
 
 # A board's committed copy in the corpus, RELATIVE to the corpus root (so a published

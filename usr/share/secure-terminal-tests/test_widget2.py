@@ -3444,7 +3444,7 @@ def _sleep_pids():
                 if _fh.read().strip() == 'sleep':
                     out.add(int(_d))
         except OSError:
-            pass
+            pass                                 # pid vanished mid-scan -- skip it
     return out
 
 def _pid_dead(pid):                              # gone, or a reaped-pending zombie ('Z')
@@ -3479,7 +3479,7 @@ for _p in _e2e_new:                              # never leak a live sleep, even
     try:
         os.kill(_p, 9)
     except OSError:
-        pass
+        pass                                     # already reaped/gone -- best-effort cleanup
 _e2e.shutdown()
 
 # E2E through the REAL BUTTON: act_terminate.trigger() -> MainWindow.terminate_foreground
@@ -3520,7 +3520,7 @@ for _p in _bt_new:
     try:
         os.kill(_p, 9)
     except OSError:
-        pass
+        pass                                     # already reaped/gone -- best-effort cleanup
 _bt.shutdown()
 
 # FLIPPING foreground -- the field "Terminate does nothing" bug. A shell that reclaims the
