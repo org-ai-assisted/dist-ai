@@ -1,0 +1,204 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Propagate COMMITTED derivative-maker 'ai' work everywhere it must go, in the
+## one SOUND order -- so a submodule advance, its parent gitlink, and the parent
+## master mirror never drift out of step. This is the orchestrator; it owns no
+## git-mutation logic of its own -- it calls the dedicated tools in sequence.
+##
+## THE DESYNC IT KILLS:
+##   - a submodule 'ai' pushed but the parent gitlink never bumped -> CI builds
+##     the OLD submodule commit (invisible: a fresh checkout shows the submodule
+##     AT the pin);
+##   - a gitlink bumped to a sha that was never published -> CI cannot fetch it;
+##   - a parent non-gitlink 'ai' commit that never reached master -> master
+##     lacks the fix until the PR merges, maybe for a long time.
+##
+## WHY AN ORCHESTRATOR, NOT A HOOK OR A push-time bump: bumping a gitlink is only
+## SOUND once the submodule sha is PUBLISHED (a pre-push / post-commit bump races
+## publication and can pin an unfetchable sha -- exactly the trap this replaces).
+## So the steps must be COUPLED and ORDERED by one deliberate command: publish
+## first, THEN bump. dm-push stays push-only; this calls it.
+##
+## THE CHAIN
+##   In a SUBMODULE (on 'ai', clean):
+##     1. push the submodule 'ai'            (publish -> the pin becomes fetchable)
+##     2. run the SUPERPROJECT sync on its parent (below) -- which now sees the
+##        published pin and bumps it soundly.
+##   In the derivative-maker PARENT (on 'ai', clean) -- the superproject sync:
+##     a. dm-gitlink-bump          (bump any published-ahead pins into one 'ai'
+##                                  commit; no-op if all current)
+##     b. push the parent 'ai'     (ships file commits + the bump commit)
+##     c. dm-cherry-pick-ai-nonlink (replay non-gitlink 'ai' commits onto master,
+##                                  gitlink hunks DROPPED by mode, push master)
+##   Invariant preserved: a gitlink (mode 160000) commit lands only on 'ai', the
+##   master replay carries FILE hunks only. The master cherry-pick is the
+##   derivative-maker PARENT rule only; a submodule reaches master via its PR.
+##
+## Idempotent: re-running when nothing changed is a clean no-op (each sub-tool
+## no-ops when its target is already current). Refuses off 'ai', when dirty, when
+## detached, or outside a derivative-maker checkout -- it never guesses.
+##
+## The three sub-commands are overridable (DM_GIT_SYNC_PUSH / _GITLINK_BUMP /
+## _CHERRY) so the regression test can drive the REAL orchestration against
+## recording stubs; unset, they are the production tools, byte-identical.
+##
+## Usage:
+##   dm-git-sync [--dir <checkout>] [--dry-run]
+##
+## Exit: 0 done/nothing | 1 a step failed | 2 usage / not a derivative-maker checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+AI_BRANCH="ai"
+PUSH_CMD="${DM_GIT_SYNC_PUSH:-dm-push}"
+BUMP_CMD="${DM_GIT_SYNC_GITLINK_BUMP:-dm-gitlink-bump}"
+CHERRY_CMD="${DM_GIT_SYNC_CHERRY:-dm-cherry-pick-ai-nonlink}"
+
+source_dir=""
+dry_run="false"
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      -h|--help)
+         printf '%s\n' \
+            "Propagate committed derivative-maker 'ai' work in the one sound order:" \
+            "publish -> bump gitlink -> push -> mirror non-gitlink commits to master." \
+            "" \
+            "Usage: ${0##*/} [--dir <checkout>] [--dry-run]" \
+            "" \
+            "  --dir      the submodule or parent checkout to sync (default: cwd)" \
+            "  --dry-run  report the chain; make no push/commit" \
+            "" \
+            "Exit: 0 done/nothing | 1 a step failed | 2 usage / not a derivative-maker checkout."
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+
+log() {
+   printf '%s\n' "${0##*/}: $*"
+}
+
+die() {
+   local code="$1" ; shift
+   printf '%s\n' "${0##*/}: $*" >&2
+   exit "${code}"
+}
+
+is_dm_superproject() {
+   [ -d "$1/build-steps.d" ] && [ -d "$1/help-steps" ]
+}
+
+## Full ref, not '--short' (a tag named 'ai' would make --short report 'heads/ai').
+on_ai() {
+   [ "$( git -C "$1" symbolic-ref --quiet HEAD 2>/dev/null || true )" = "refs/heads/${AI_BRANCH}" ]
+}
+
+## Clean = no uncommitted FILE changes. '--ignore-submodules=all' is load-bearing:
+## a stale submodule pin shows as ' M <sub>' in porcelain, and that is EXACTLY the
+## state this tool exists to resolve -- reading it as "dirty" would refuse the very
+## sync it was run for. A FAILED 'git status' (corrupt index, unreadable repo)
+## yields empty stdout -- do not read that as clean; treat a failure as NOT clean.
+is_clean() {
+   local out
+   out="$( git -C "$1" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null )" || return 1
+   [ -z "${out}" ]
+}
+
+push_repo() {
+   local dir="$1"
+   if [ "${dry_run}" = "true" ]; then
+      log "[dry-run] would push '${dir}' via ${PUSH_CMD}"
+      return 0
+   fi
+   log "publishing '${dir}' (${PUSH_CMD})..."
+   ( cd -- "${dir}" && "${PUSH_CMD}" ) || die 1 "push failed for '${dir}'."
+}
+
+## The derivative-maker PARENT sync: bump published-ahead pins, push 'ai', then
+## mirror non-gitlink 'ai' commits onto master. Each sub-tool is a clean no-op
+## when its target is already current, so this is safe to run unconditionally.
+sync_superproject() {
+   local top="$1"
+   on_ai "${top}" || die 2 "parent '${top}' is not on '${AI_BRANCH}'; refusing to sync."
+
+   ## a. bump any published-ahead submodule pins into one 'ai' commit (sound:
+   ##    dm-gitlink-bump only advances a pin to a PUBLISHED submodule tip).
+   if [ "${dry_run}" = "true" ]; then
+      "${BUMP_CMD}" --dir "${top}" --dry-run || die 1 "dm-gitlink-bump --dry-run failed for '${top}'."
+   else
+      log "bumping any published-ahead gitlinks (${BUMP_CMD})..."
+      "${BUMP_CMD}" --dir "${top}" || die 1 "dm-gitlink-bump failed for '${top}'."
+   fi
+
+   ## b. push the parent 'ai' (file commits + the bump commit).
+   push_repo "${top}"
+
+   ## c. replay non-gitlink 'ai' commits onto master (gitlink hunks dropped by
+   ##    mode inside the tool), and push master.
+   if [ "${dry_run}" = "true" ]; then
+      log "[dry-run] would mirror non-gitlink 'ai' commits to master via ${CHERRY_CMD} --no-push"
+      "${CHERRY_CMD}" --no-push "${top}" >/dev/null 2>&1 || true
+   else
+      log "mirroring non-gitlink 'ai' commits to master (${CHERRY_CMD})..."
+      "${CHERRY_CMD}" "${top}" || die 1 "dm-cherry-pick-ai-nonlink failed for '${top}'."
+   fi
+}
+
+## Resolve the worktree root of the given dir.
+top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+[ -n "${top}" ] || die 2 "'${source_dir}' is not inside a git worktree."
+
+on_ai "${top}" || die 2 "'${top}' is not on '${AI_BRANCH}' (HEAD detached or another branch); refusing to sync."
+is_clean "${top}" || die 2 "'${top}' has uncommitted changes; commit first, then sync."
+
+if is_dm_superproject "${top}"; then
+   ## Invoked in the derivative-maker parent: sync it directly.
+   log "syncing derivative-maker parent '${top}'."
+   sync_superproject "${top}"
+   log "done."
+   exit 0
+fi
+
+## Not a superproject: is it a derivative-maker SUBMODULE? Its parent is the
+## superproject we must keep in step.
+parent="$( git -C "${top}" rev-parse --show-superproject-working-tree 2>/dev/null || true )"
+if [ -n "${parent}" ] && is_dm_superproject "${parent}"; then
+   log "syncing submodule '${top}' of parent '${parent}'."
+   ## 1. PUBLISH the submodule 'ai' first -- this is what makes the parent bump
+   ##    sound (the pushed sha becomes a fetchable, remote-tracking 'ai' tip).
+   push_repo "${top}"
+   ## 2. now the pin is publishable: run the full parent sync (bump + push +
+   ##    master mirror).
+   sync_superproject "${parent}"
+   log "done."
+   exit 0
+fi
+
+die 2 "'${top}' is neither a derivative-maker checkout nor a derivative-maker submodule."
