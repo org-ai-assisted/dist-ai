@@ -168,6 +168,9 @@ uninit=()
 skipped_upstream=()
 upstream_fixed=()
 stopped=()
+## Paths the tool actually MUTATED (real, non-dry): re-verified clean + on 'ai' at
+## the end, so a mutation that left an unexpected state is caught, not reported OK.
+mutated_paths=()
 
 ## The superproject's OWN 'ai' upstream (the case the operator hit: parent 'ai'
 ## tracking org-ai-assisted/master). Fetch the parent fork 'ai' first so the
@@ -298,6 +301,7 @@ for path in "${sub_paths[@]}"; do
          stopped+=( "${path} :: could not create '${AI_BRANCH}' at the fork tip" )
          continue
       fi
+      [ "${dry_run}" = "true" ] || mutated_paths+=( "${path}" )
       reattached+=( "${path} (created '${AI_BRANCH}' at tip)" )
       continue
    fi
@@ -317,6 +321,7 @@ for path in "${sub_paths[@]}"; do
          log "[dry-run] ${path}: would re-attach to '${AI_BRANCH}' (already at tip)"
          reattached+=( "${path} (already at tip)" )
       elif git -C "${sub}" checkout --quiet "${AI_BRANCH}"; then
+         mutated_paths+=( "${path}" )
          reattached+=( "${path} (already at tip)" )
       else
          stopped+=( "${path} :: could not re-attach to '${AI_BRANCH}'" )
@@ -361,6 +366,7 @@ for path in "${sub_paths[@]}"; do
             continue
          fi
       fi
+      [ "${dry_run}" = "true" ] || mutated_paths+=( "${path}" )
       if [ "${on_ai}" = "true" ]; then
          advanced+=( "${path} (${local_ai:0:12} -> ${fork_tip:0:12})" )
       else
@@ -371,6 +377,24 @@ for path in "${sub_paths[@]}"; do
 
    ## Ahead of or diverged from the fork tip: unpushed work. STOP.
    stopped+=( "${path} :: local '${AI_BRANCH}' ${local_ai:0:12} ahead of / diverged from ${FORK_REMOTE}/${AI_BRANCH} ${fork_tip:0:12} (unpushed work)" )
+done
+
+## End invariant: every submodule we actually MUTATED must now be on 'ai' and
+## tracked-clean. A fast-forward / checkout cannot normally leave tracked changes,
+## so a failure here means something went wrong -- surface it as a STOP instead of
+## reporting success. 'git status' exit is checked (a failure is not "clean"), and
+## non-empty output = unexpected dirt.
+for path in "${mutated_paths[@]}"; do
+   sub="${top}/${path}"
+   post_ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+   if [ "${post_ref}" != "refs/heads/${AI_BRANCH}" ]; then
+      stopped+=( "${path} :: after sync, not on '${AI_BRANCH}' (got '${post_ref:-DETACHED}')" )
+      continue
+   fi
+   if ! post_status="$( git -C "${sub}" status --porcelain=v1 --untracked-files=no 2>/dev/null )" \
+      || [ -n "${post_status}" ]; then
+      stopped+=( "${path} :: after sync, working tree unexpectedly not clean" )
+   fi
 done
 
 ## --- Summary --------------------------------------------------------------------
