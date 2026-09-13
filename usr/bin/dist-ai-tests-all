@@ -1015,7 +1015,7 @@ run_suite() {
       77)
          if skip_is_fatal "${suite}"; then
             emit "---- ${suite}: begin captured output (${verdict}) ----"
-            while IFS= read -r log_line; do
+            while IFS= read -r log_line || [ -n "${log_line}" ]; do
                emit "${log_line}"
             done < "${log_dir}/dist-ai-tests-all.${suite}.log"
             emit "---- ${suite}: end captured output ----"
@@ -1023,7 +1023,7 @@ run_suite() {
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
-         while IFS= read -r log_line; do
+         while IFS= read -r log_line || [ -n "${log_line}" ]; do
             emit "${log_line}"
          done < "${log_dir}/dist-ai-tests-all.${suite}.log"
          emit "---- ${suite}: end captured output ----"
@@ -1060,6 +1060,13 @@ require_timeout() {
    require_value "$@"
    if ! [[ "$2" =~ ^[0-9]+(\.[0-9]+)?[smhd]?$ ]]; then
       printf '%s\n' "dist-ai-tests-all: $1 requires a timeout(1) interval (e.g. 300, 600s, 10m): got '$2'" >&2
+      exit 2
+   fi
+   ## timeout(1) treats a value of 0 as "no timeout at all". A zero interval (0, 0.0,
+   ## 0s, ...) would silently DISABLE the per-suite timeout -- exactly the wedge with
+   ## no verdict that --kill-after exists to prevent -- so reject it, not accept it.
+   if [[ "${2%[smhd]}" =~ ^0+(\.0+)?$ ]]; then
+      printf '%s\n' "dist-ai-tests-all: $1 must be a POSITIVE timeout(1) interval; 0 disables the timeout and can wedge the run: got '$2'" >&2
       exit 2
    fi
 }
@@ -1306,7 +1313,6 @@ fi
 ## documented override env var. (--list already exited above, so listing is free.)
 enforce_sandbox_only() {
    [ "${GITHUB_ACTIONS:-}" = "true" ] && return 0     # GitHub Actions runner
-   [ "${CI:-}" = "true" ] && return 0                 # generic CI (also set by GitHub)
    [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && return 0    # already routed into the sandbox
    if [ "${DIST_AI_ALLOW_HOST_TESTS:-}" = "1" ]; then
       printf '%s\n' 'dist-ai-tests-all: WARNING: DIST_AI_ALLOW_HOST_TESTS=1 -- running on the host; sandbox safety gate bypassed.' >&2
