@@ -1294,4 +1294,58 @@ finally:
     _MM.canary_marker_path = _orig_marker
 
 
+# --- unified tab tooltip: one labeled multi-line shape for EVERY tab ------------
+# Bug: one tab showed "program: ..." and another "name: ...", and OSC-7 cwd overwrote the
+# tooltip with a bare UNLABELED path. Now a single builder emits a consistent "field: value"
+# block (one per line) for every tab, enriched with lightweight debug info incl. transcript.
+import re as _re5                                              # noqa: E402
+
+# Tab A: the setup login-shell tab (command None) -> the fallback/absent branches.
+_ta = win.tabs.widget(0)
+_ta._transcript_file = None                                   # force the on-save transcript branch
+win._refresh_tab_label(_ta)
+_tipa = win.tabs.tabToolTip(0)
+_la = [seg for seg in _tipa.split('<br>') if seg]
+ok(bool(_la) and all(_re5.match(r'^[a-z][a-z ()]*: ', ln) for ln in _la),
+   'every tab-tooltip line is a labeled "field: value" (consistent shape): %r' % _tipa)
+ok('command: (login shell)' in _tipa, 'a login-shell tab labels its command as (login shell)')
+ok('mode: CLI' in _tipa, 'a CLI tab shows mode: CLI')
+ok('name:' not in _tipa and 'program:' not in _tipa,
+   'an un-renamed, no-OSC-title tab omits name/program (not a bare blob)')
+ok('transcript (on save): ' in _tipa, 'a tab with no env transcript shows the on-save path')
+ok((win._tab_pts(_ta) or '').startswith('/dev/pts/'),
+   'the pts is derived from the child stdin (not parsed out of the OSC title)')
+
+# Tab B: a launched -- PROGRAM tab, TUI, renamed, with an OSC title + an env transcript ->
+# the name/program/command-argv/TUI/live-transcript branches.
+win.new_tab(command=['/bin/cat'], tui=True)
+pump(250)
+_tb = win.tabs.widget(win.tabs.count() - 1)
+win._user_titles[_tb] = 'reviewdrain23'
+win._prog_titles[_tb] = 'user@work-claude:~ [pts/24]'
+_tb._transcript_file = '/tmp/st-tt-transcript'                # exercise the live-transcript branch
+win._refresh_tab_label(_tb)
+_ib = win.tabs.indexOf(_tb)
+_tipb = win.tabs.tabToolTip(_ib)
+ok('name: reviewdrain23' in _tipb, 'a renamed tab shows the name: line')
+ok('program: user@work-claude:~ [pts/24]' in _tipb, 'the OSC program title is shown, labeled')
+ok('command: ' in _tipb and 'mode: TUI' in _tipb, 'a -- PROGRAM TUI tab shows command + mode: TUI')
+ok('transcript: /tmp/st-tt-transcript' in _tipb, 'the live transcript path is shown when configured')
+
+# _on_cwd_changed must refresh the UNIFIED tooltip (reads the live cwd), never clobber it
+# with a bare unlabeled path. Canary: the old code set the tooltip to html.escape(path).
+win._on_cwd_changed(_ta, '/home/user/somewhere')
+_tipa2 = win.tabs.tabToolTip(0)
+ok([seg for seg in _tipa2.split('<br>') if seg]
+   and all(_re5.match(r'^[a-z][a-z ()]*: ', ln)
+           for ln in _tipa2.split('<br>') if ln),
+   '_on_cwd_changed refreshes the labeled tooltip, not a bare path: %r' % _tipa2)
+ok('cwd: ' in _tipa2, 'the cwd line is present')
+
+# _tab_pts on a term with no live child returns None (the pid-None guard).
+_prevterm = M.SecureTerminal(command=['/bin/sh'], preview=True)
+ok(win._tab_pts(_prevterm) is None, '_tab_pts is None when there is no live child')
+_prevterm.shutdown()
+
+
 finish('mainwin')

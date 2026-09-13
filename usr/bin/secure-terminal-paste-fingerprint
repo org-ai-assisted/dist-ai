@@ -1,0 +1,174 @@
+#!/usr/bin/python3 -Bsu
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+## AI-Assisted
+
+## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
+## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
+## which freezes X). Re-exec under python3; inert as a string literal in python3.
+"exec" "python3" "-Bsu" "$0" "$@"
+
+"""Reproducible bracketed-paste-bypass comparison. For each real emulator it pastes
+(via middle-click, under a nested Xvfb) a PRIMARY selection carrying a FORGED
+bracketed-paste END marker, and records whether the marker escaped the terminal's
+paste guard -- the pasted-command smuggling class (CVE-2021-31701 and kin).
+secure-terminal is measured headlessly through its real paste sanitiser. Prints a
+table and writes the aggregate JSON.
+
+    secure-terminal-paste-fingerprint [--out JSON] [--st-repo DIR]
+
+Needs: Xvfb, xdotool, xclip (or xsel), and the emulators (xterm/stterm/rxvt-unicode).
+Installs nothing. Verdicts: guard-held / bypass / no-bracketed-paste."""
+
+import os
+import sys
+import json
+import signal
+import shutil
+import tempfile
+import subprocess
+import argparse
+
+# realpath (not abspath) so a dev symlink into /usr/bin still resolves HERE to the real
+# bin dir; the bin and share dirs are siblings in both the installed and checkout layouts,
+# so `<bindir>/../share/...` is the single correct location -- no second guess needed.
+HERE = os.path.dirname(os.path.realpath(__file__))
+SHARE = os.path.join(os.path.dirname(HERE), 'share', 'secure-terminal-fingerprint')
+DRIVER = os.path.join(SHARE, 'paste-driver.py')
+PROBE_PASTE = os.path.join(SHARE, 'probe-paste.py')
+sys.path.insert(0, SHARE)
+import paste_probe_lib as lib
+
+# (label, terminal argv (up to -e), WM class for xdotool).
+# urxvt is intentionally absent: under a bare nested Xvfb (no window manager) it does
+# not act on XTEST-synthesised paste events -- neither Button2 (PRIMARY/CLIPBOARD) nor
+# Shift+Insert reaches its paste path -- so it cannot be driven headlessly here. It is
+# omitted rather than reported as a spurious "inconclusive"; xterm (sanitises) and st
+# (does not) already bracket the spectrum, and secure-terminal is measured headlessly.
+EMULATORS = [
+    ('xterm', ['xterm'], 'xterm'),
+    ('st', ['st'], 'st'),
+]
+
+VERDICT_NOTE = {
+    'guard-held': 'sanitised: forged 201~ did not escape the paste',
+    'bypass': 'VULNERABLE: forged 201~ closed the paste, bytes ran as input',
+    'no-bracketed-paste': 'no bracketed paste: whole payload arrived as keystrokes',
+    'inconclusive': 'paste not observed (probe/driver issue)',
+}
+
+
+def probe_emulator(label, launch, wclass, workdir):
+    """Paste the forged marker into `label` under its own Xvfb; return report or None."""
+    if shutil.which(launch[0]) is None or shutil.which('xvfb-run') is None:
+        return None
+    out = os.path.join(workdir, 'paste-%s.json' % label)
+    argv = ['xvfb-run', '-a', 'python3', DRIVER,
+            '--launch', json.dumps(launch), '--class', wclass,
+            '--probe', PROBE_PASTE, '--out', out, '--label', label]
+    # Own process group (start_new_session) so a timeout can kill the WHOLE tree --
+    # xvfb-run forks a nested Xvfb, the driver forks a terminal + xdotool; a bare
+    # subprocess timeout would signal only xvfb-run and orphan the rest.
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        with open(out, encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def probe_secure_terminal(st_repo):
+    """Run the forged-marker payload through secure-terminal's real paste sanitiser.
+
+    ST is a Qt app, not an X-CLI emulator you middle-click, so it is measured at its
+    own paste codepath: sanitize_paste keeps only printable ASCII, so the ESC-based
+    201~ marker cannot survive. This exercises the shipping code, not a stand-in."""
+    pkg = os.path.join(st_repo, 'usr', 'lib', 'python3', 'dist-packages')
+    if not os.path.isdir(pkg):
+        return None
+    sys.path.insert(0, pkg)
+    # Broad except (like probe_emulator's degrade-to-None): importing the real package
+    # or calling sanitize_paste can fail in ways other than ImportError (a native/Qt
+    # dependency error); a best-effort probe must not crash main() and lose the
+    # emulator reports already gathered.
+    try:
+        from secure_terminal import sanitize
+        safe = sanitize.sanitize_paste(lib.PAYLOAD.decode('latin-1'))
+    except Exception:                            # noqa: BLE001 - best-effort probe
+        return None
+    safe_bytes = safe.encode('latin-1', 'replace')
+    forged_survived = lib.END in safe_bytes
+    return {
+        'label': 'secure-terminal',
+        'term': 'secure-terminal',
+        'verdict': 'bypass' if forged_survived else 'guard-held',
+        'markers': {'begin': 0, 'end': safe_bytes.count(lib.END),
+                    'after_present': lib.SENTINEL_AFTER in safe_bytes},
+        'captured': safe,
+        'method': 'headless: sanitize_paste()',
+    }
+
+
+def render_table(reports):
+    width = max((len(r['label']) for r in reports), default=16)
+    lines = ['%s  %-20s  %s' % ('terminal'.ljust(width), 'verdict', 'meaning'),
+             '-' * (width + 2 + 20 + 2 + 48)]
+    for r in reports:
+        v = r['verdict']
+        lines.append('%s  %-20s  %s'
+                     % (r['label'].ljust(width), v, VERDICT_NOTE.get(v, '')))
+    return '\n'.join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out', help='write the aggregate JSON here')
+    parser.add_argument('--st-repo',
+                        default=os.path.expanduser('~/private-sources/secure-terminal'))
+    ns = parser.parse_args()
+    reports = []
+    work = tempfile.mkdtemp(prefix='paste-fp-')
+    try:
+        for label, launch, wclass in EMULATORS:
+            rep = probe_emulator(label, launch, wclass, work)
+            if rep is not None:
+                reports.append(rep)
+                sys.stderr.write('probed %s: %s\n' % (label, rep['verdict']))
+            else:
+                sys.stderr.write('skip %s (not installed / probe failed)\n' % label)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    st = probe_secure_terminal(ns.st_repo)
+    if st is not None:
+        reports.append(st)
+        sys.stderr.write('probed secure-terminal: %s\n' % st['verdict'])
+    if not reports:
+        sys.stderr.write('no terminals could be probed\n')
+        return 1
+    print(render_table(reports))
+    if ns.out:
+        with open(ns.out, 'w', encoding='utf-8') as handle:
+            json.dump({'reports': reports}, handle, indent=2)
+        sys.stderr.write('aggregate written to %s\n' % ns.out)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

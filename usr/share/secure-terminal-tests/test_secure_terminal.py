@@ -2469,6 +2469,35 @@ _LOW = [cp for cp in range(0x20, 0x300)
         if len(_regex_cl.findall(r'\X', 'a' + chr(cp))) == 1]
 eq(_LOW, [], 'no code point below U+0300 extends a cluster (fast-reject is sound)')
 
+# --- secure-terminal-sigreport: prints received signals, survives SIGTERM ------
+# The diagnostic target for the Terminate button: it must print each signal and keep
+# running through SIGTERM (so the 2s-later SIGKILL escalation is observable), and exit
+# cleanly on SIGQUIT.
+import os as _os5              # noqa: E402
+import signal as _sig5        # noqa: E402
+import subprocess as _sp5     # noqa: E402
+# S.__file__ is <repo>/usr/lib/python3/dist-packages/secure_terminal/sanitize.py -> up 5 to <repo>.
+_repo5 = _os5.environ.get('SECURE_TERMINAL_REPO') or _os5.path.abspath(
+    _os5.path.join(_os5.path.dirname(S.__file__), '..', '..', '..', '..', '..'))
+_sr_bin = _os5.path.join(_repo5, 'usr', 'bin', 'secure-terminal-sigreport')
+ok(_os5.access(_sr_bin, _os5.X_OK), 'secure-terminal-sigreport is installed and executable')
+_srp = _sp5.Popen([_sr_bin], stdout=_sp5.PIPE, stderr=_sp5.STDOUT, text=True)
+try:
+    ok('ready' in _srp.stdout.readline(), 'sigreport announces it is ready')
+    _srp.send_signal(_sig5.SIGTERM)
+    _sr_line = _srp.stdout.readline()
+    ok('received SIGTERM (15)' in _sr_line,
+       'sigreport prints the received SIGTERM: %r' % _sr_line)
+    ok(_srp.poll() is None,
+       'sigreport keeps running after SIGTERM (the SIGKILL escalation stays observable)')
+    _srp.send_signal(_sig5.SIGQUIT)
+    ok('SIGQUIT' in _srp.stdout.readline(), 'sigreport reports SIGQUIT')
+    ok(_srp.wait(timeout=5) == 0, 'sigreport exits 0 on SIGQUIT (clean quit)')
+finally:
+    if _srp.poll() is None:
+        _srp.kill()
+        _srp.wait(timeout=5)
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)

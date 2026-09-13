@@ -171,6 +171,18 @@ gitq -C "${superA}/upstream_only" config protocol.file.allow always
 gitq -C "${superA}/upstream_only" checkout --quiet --detach HEAD
 upstream_only_head="$(head_of "${superA}/upstream_only")"
 
+## wrongupstream: on ai at the fork tip (current), but its 'ai' upstream is
+## mis-set to master -- the dangerous case the operator hit. Tool must repoint it
+## at org-ai-assisted/ai (that fork tip exists here).
+new_fork "${workspace}/fork-wu.git" "${workspace}/drv-wu"
+add_sub "${superA}" "${workspace}/fork-wu.git" wrongupstream
+gitq -C "${superA}/wrongupstream" config branch.ai.merge refs/heads/master
+
+## Parent superA: mis-set its OWN 'ai' upstream to master. superA has no fork ai,
+## so the tool must CLEAR the upstream (not point it anywhere).
+gitq -C "${superA}" config branch.ai.remote org-ai-assisted
+gitq -C "${superA}" config branch.ai.merge refs/heads/master
+
 ## --- A / dry-run FIRST: classify, report, but mutate nothing --------------------
 rc=0
 dry_out="$("${tool}" --dir "${superA}" --dry-run 2>&1)" || rc=$?
@@ -203,6 +215,12 @@ if grep --quiet --extended-regexp '^advanced \(' <<< "${dry_out}"; then
 else
    pass "dry-run summary bucket is 'would advance', not 'advanced'"
 fi
+if [ "$(gitq -C "${superA}/wrongupstream" config branch.ai.merge)" = "refs/heads/master" ]; then
+   pass "dry-run did NOT change the mis-set ai upstream"
+else
+   fail "dry-run mutated the ai upstream"
+fi
+require_result "${dry_out}" "would correct" "dry-run reports the planned ai-upstream correction"
 
 ## --- A / real run: behind FF'd, detached re-attached+FF'd, current untouched ----
 rc=0
@@ -233,6 +251,17 @@ else
    fail "upstream-only submodule was disturbed (head=$(head_of "${superA}/upstream_only") branch=$(branch_of "${superA}/upstream_only"))"
 fi
 require_result "${real_out}" "upstream-only, left alone" "summary reports upstream-only submodules left alone"
+if [ "$(gitq -C "${superA}/wrongupstream" config branch.ai.merge)" = "refs/heads/ai" ]; then
+   pass "submodule ai upstream mis-set to master was corrected to org-ai-assisted/ai"
+else
+   fail "submodule ai upstream not corrected (still '$(gitq -C "${superA}/wrongupstream" config branch.ai.merge)')"
+fi
+if [ -z "$(gitq -C "${superA}" config branch.ai.merge 2>/dev/null || true)" ]; then
+   pass "parent ai upstream (master, no fork ai) was cleared"
+else
+   fail "parent ai upstream not cleared (still '$(gitq -C "${superA}" config branch.ai.merge 2>/dev/null || true)')"
+fi
+require_result "${real_out}" "ai upstream corrected" "summary reports the corrected ai upstream(s)"
 
 ## =============================================================================
 ## Superproject B: STOP cases -> must exit 1, mutate nothing, surface reasons.
@@ -556,6 +585,32 @@ if [ "$(head_of "${superG}/zz_ok")" = "${gok_tip}" ]; then
    pass "healthy submodule after broken/anomalous ones is still fast-forwarded"
 else
    fail "healthy submodule after anomalies was skipped (loop abandoned)"
+fi
+
+## =============================================================================
+## Superproject U: the ai-upstream correction must run AFTER the fetch. A
+## submodule whose 'ai' tracks master, with the remote-tracking ai NOT populated
+## (fresh) -- the tool must FETCH, then SET upstream to org/ai, NOT clear it.
+## Real-run only (a preceding dry-run would repopulate the ref and mask this).
+## =============================================================================
+superU="${workspace}/superU"
+new_super "${superU}"
+new_fork "${workspace}/fork-uord.git" "${workspace}/drv-uord"
+add_sub "${superU}" "${workspace}/fork-uord.git" uord
+gitq -C "${superU}/uord" config branch.ai.merge refs/heads/master
+gitq -C "${superU}/uord" update-ref -d "refs/remotes/org-ai-assisted/ai"
+
+rc=0
+u_out="$("${tool}" --dir "${superU}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   pass "ordering run exits 0"
+else
+   fail "ordering run exited ${rc}; output:<<<${u_out}>>>"
+fi
+if [ "$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)" = "refs/heads/ai" ]; then
+   pass "ai-upstream correction runs AFTER fetch (SET to org/ai, not cleared)"
+else
+   fail "upstream mis-corrected -- post-fetch ordering bug (got '$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)')"
 fi
 
 ## =============================================================================

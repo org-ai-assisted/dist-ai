@@ -646,10 +646,12 @@ ok(_bar._summary.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableB
    'the summary is selectable')
 ok(_bar._detail.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse,
    'the breakdown is selectable')
-# multi-line PASTE says it runs more than one command
+# multi-line PASTE structure row is structural only: "(multi-line)", never an
+# execution claim (contradicts the never-auto-run guarantee stated in "If accepted")
 _bar.show_review(_FakeTerm(), 'ls\necho hi\n', 0, 'paste')
-ok('runs more than one command' in _bar._detail.text(),
-   'a multi-line PASTE review says it runs more than one command')
+_dpaste = _bar._detail.text()
+ok('multi-line' in _dpaste and 'runs more than one command' not in _dpaste,
+   'a multi-line PASTE review reads (multi-line), not "runs more than one command"')
 eq(_bar._summary.text(), _rev._CLEAN_MSG, 'an ASCII-only multi-line paste is an all-clear')
 # multi-line COPY / CLIPBOARD read (multi-line), never "runs more than one command"
 _bar.show_review(_FakeTerm(), 'ls\necho hi\n', 0, 'copy')
