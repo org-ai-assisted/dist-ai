@@ -23,15 +23,17 @@ Installs nothing. Verdicts: guard-held / bypass / no-bracketed-paste."""
 import os
 import sys
 import json
+import signal
 import shutil
 import tempfile
 import subprocess
 import argparse
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# realpath (not abspath) so a dev symlink into /usr/bin still resolves HERE to the real
+# bin dir; the bin and share dirs are siblings in both the installed and checkout layouts,
+# so `<bindir>/../share/...` is the single correct location -- no second guess needed.
+HERE = os.path.dirname(os.path.realpath(__file__))
 SHARE = os.path.join(os.path.dirname(HERE), 'share', 'secure-terminal-fingerprint')
-if not os.path.isdir(SHARE):                      # source checkout layout
-    SHARE = os.path.join(HERE, '..', 'usr', 'share', 'secure-terminal-fingerprint')
 DRIVER = os.path.join(SHARE, 'paste-driver.py')
 PROBE_PASTE = os.path.join(SHARE, 'probe-paste.py')
 sys.path.insert(0, SHARE)
@@ -64,9 +66,25 @@ def probe_emulator(label, launch, wclass, workdir):
     argv = ['xvfb-run', '-a', 'python3', DRIVER,
             '--launch', json.dumps(launch), '--class', wclass,
             '--probe', PROBE_PASTE, '--out', out, '--label', label]
+    # Own process group (start_new_session) so a timeout can kill the WHOLE tree --
+    # xvfb-run forks a nested Xvfb, the driver forks a terminal + xdotool; a bare
+    # subprocess timeout would signal only xvfb-run and orphan the rest.
     try:
-        subprocess.run(argv, timeout=120, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False)
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
     except (OSError, subprocess.SubprocessError):
         return None
     try:
@@ -86,11 +104,15 @@ def probe_secure_terminal(st_repo):
     if not os.path.isdir(pkg):
         return None
     sys.path.insert(0, pkg)
+    # Broad except (like probe_emulator's degrade-to-None): importing the real package
+    # or calling sanitize_paste can fail in ways other than ImportError (a native/Qt
+    # dependency error); a best-effort probe must not crash main() and lose the
+    # emulator reports already gathered.
     try:
         from secure_terminal import sanitize
-    except ImportError:
+        safe = sanitize.sanitize_paste(lib.PAYLOAD.decode('latin-1'))
+    except Exception:                            # noqa: BLE001 - best-effort probe
         return None
-    safe = sanitize.sanitize_paste(lib.PAYLOAD.decode('latin-1'))
     safe_bytes = safe.encode('latin-1', 'replace')
     forged_survived = lib.END in safe_bytes
     return {
@@ -123,13 +145,16 @@ def main():
     ns = parser.parse_args()
     reports = []
     work = tempfile.mkdtemp(prefix='paste-fp-')
-    for label, launch, wclass in EMULATORS:
-        rep = probe_emulator(label, launch, wclass, work)
-        if rep is not None:
-            reports.append(rep)
-            sys.stderr.write('probed %s: %s\n' % (label, rep['verdict']))
-        else:
-            sys.stderr.write('skip %s (not installed / probe failed)\n' % label)
+    try:
+        for label, launch, wclass in EMULATORS:
+            rep = probe_emulator(label, launch, wclass, work)
+            if rep is not None:
+                reports.append(rep)
+                sys.stderr.write('probed %s: %s\n' % (label, rep['verdict']))
+            else:
+                sys.stderr.write('skip %s (not installed / probe failed)\n' % label)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     st = probe_secure_terminal(ns.st_repo)
     if st is not None:
         reports.append(st)

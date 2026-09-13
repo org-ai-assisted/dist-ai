@@ -91,8 +91,10 @@ def main():
                     'after_present': lib.SENTINEL_AFTER in raw},
         'captured': raw.decode('latin-1'),
     }
-    with open(ns.out, 'w', encoding='utf-8') as handle:
-        json.dump(report, handle)
+    tmp = ns.out + '.tmp'                # write then atomically rename, so a driver
+    with open(tmp, 'w', encoding='utf-8') as handle:   # polling for --out never sees a
+        json.dump(report, handle)                      # half-written / empty file
+    os.rename(tmp, ns.out)
     sys.stderr.write('paste-probe %s: %s\n' % (ns.label, report['verdict']))
 
 

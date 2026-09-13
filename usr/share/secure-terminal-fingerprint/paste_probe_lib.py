@@ -27,25 +27,34 @@ def verdict(raw):
     """Classify the captured pty byte stream.
 
     The test: does the sentinel that follows the FORGED end marker land OUTSIDE the
-    terminal's own bracketed-paste region? Strip every complete 200~..201~ region
-    (non-greedy) and look at what remains:
+    terminal's own bracketed-paste region? Work from the FIRST 200~ (pre-paste noise
+    is ignored), strip every COMPLETE 200~..201~ region (non-greedy), and look at
+    what remains:
 
     no-bracketed-paste : no 200~ wrapper at all (paste delivered as raw keystrokes)
-    bypass             : AFTER survives in the unbracketed remainder (guard escaped)
-    guard-held         : AFTER appears only inside a bracketed region
-    inconclusive       : the paste never arrived, or an unexpected shape
+    inconclusive       : no sentinel arrived; OR an unclosed 200~ remains after
+                         stripping (the closing 201~ was not captured -- an
+                         incomplete read, NOT proof the guard was escaped)
+    bypass             : AFTER survives in the remainder of a CLOSED region (escaped)
+    guard-held         : AFTER stayed inside a bracketed region
 
-    Stripping regions (not counting markers) stays correct even if the harness
-    were to deliver the paste more than once."""
+    Anchoring to the first 200~ and rejecting a dangling opener avoids two false
+    'bypass' verdicts: AFTER sitting before an intact unforged wrapper, and a
+    truncated capture of a safe terminal whose trailing 201~ has not yet arrived.
+    Stripping complete regions (not counting markers) stays correct even under an
+    accidental double paste."""
     has_after = SENTINEL_AFTER in raw
     has_before = SENTINEL_BEFORE in raw
     if not has_before and not has_after:
         return 'inconclusive'
     if BEG not in raw:
         return 'no-bracketed-paste'
-    leftover = _REGION.sub(b'', raw)
+    tail = raw[raw.index(BEG):]              # ignore any bytes before the first opener
+    leftover = _REGION.sub(b'', tail)        # remove every complete 200~..201~ region
+    if BEG in leftover:
+        return 'inconclusive'                # an unclosed opener remains -> incomplete
     if SENTINEL_AFTER in leftover:
-        return 'bypass'
+        return 'bypass'                      # AFTER escaped a closed region
     if has_after:
-        return 'guard-held'
+        return 'guard-held'                  # AFTER stayed inside a region
     return 'inconclusive'

@@ -27,10 +27,8 @@ import tempfile
 import subprocess
 import argparse
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 SHARE = os.path.join(os.path.dirname(HERE), 'share', 'secure-terminal-fingerprint')
-if not os.path.isdir(SHARE):                      # source checkout layout
-    SHARE = os.path.join(HERE, '..', 'usr', 'share', 'secure-terminal-fingerprint')
 PROBE = os.path.join(SHARE, 'probe.py')
 PROBE_ST = os.path.join(SHARE, 'probe-secure-terminal.py')
 

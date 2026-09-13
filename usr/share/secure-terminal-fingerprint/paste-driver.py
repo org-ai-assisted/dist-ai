@@ -112,19 +112,19 @@ def main():
         return 2
     launch = json.loads(ns.launch)
     work = tempfile.mkdtemp(prefix='paste-')
-    ready = os.path.join(work, 'ready')
-
-    holders = own_selections(lib.PAYLOAD, work)
-    if not holders:
-        sys.stderr.write('paste-driver: no xclip/xsel to own the selection\n')
-        return 2
-    time.sleep(0.3)                             # let the selections settle
-
-    argv = launch + [ns.exec_flag, 'python3', ns.probe,
-                     '--out', ns.out, '--ready', ready, '--label', ns.label,
-                     '--timeout', '8', '--settle', '0.6']
-    term = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    holders = []
+    term = None
     try:
+        ready = os.path.join(work, 'ready')
+        holders = own_selections(lib.PAYLOAD, work)
+        if not holders:
+            sys.stderr.write('paste-driver: no xclip/xsel to own the selection\n')
+            return 2
+        time.sleep(0.3)                         # let the selections settle
+        argv = launch + [ns.exec_flag, 'python3', ns.probe,
+                         '--out', ns.out, '--ready', ready, '--label', ns.label,
+                         '--timeout', '8', '--settle', '0.6']
+        term = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not wait_for(ready, time.time() + ns.ready_timeout):
             sys.stderr.write('paste-driver %s: probe never signalled ready\n' % ns.label)
             return 1
@@ -139,7 +139,7 @@ def main():
             return 1
         return 0
     finally:
-        for proc in [term, *holders]:
+        for proc in [p for p in [term, *holders] if p is not None]:
             try:
                 proc.terminate()
                 proc.wait(timeout=3)
@@ -148,6 +148,7 @@ def main():
                     proc.kill()
                 except OSError:
                     pass
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == '__main__':

@@ -35,6 +35,12 @@ CASES = [
      (B + SB + E + SA + E) * 2, 'bypass'),
     ('guard-held with surrounding shell/prompt noise',
      b'$ ' + B + SB + SA + E + b'\r\n', 'guard-held'),
+    # not a bypass: AFTER precedes an intact, unforged wrapper (no escape happened)
+    ('AFTER before an intact wrapper is not a bypass',
+     SA + B + SB + E, 'guard-held'),
+    # not a bypass: a safe terminal's paste captured before its closing 201~ arrived
+    ('truncated safe capture (unclosed 200~) is inconclusive, not bypass',
+     B + SB + SA, 'inconclusive'),
 ]
 
 
