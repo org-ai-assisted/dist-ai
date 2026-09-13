@@ -1112,14 +1112,15 @@ try:
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: ('', ''))
     win.save_transcript()                   # cancelled -> return
     ok(True, 'save_transcript: cancelling the dialog is a no-op')
-    # win's tab (created at module top) is a live login-shell whose prompt output
-    # arrives asynchronously -- under parallel-coverage load it can be starved
-    # indefinitely, leaving transcript_text() empty and the writers below capturing a
-    # 0-byte file (read-before-settle). Give the tab KNOWN content synchronously via
-    # the real read path, so the transcript/screen writers have something deterministic
-    # to capture regardless of shell/scheduler timing.
+    # win's tab (created at module top) is a live login-shell. Give it KNOWN content
+    # synchronously (the real read path) so the transcript/screen writers below have
+    # something deterministic to capture. The match is WRAP-TOLERANT: the shell's prompt
+    # (a long ~/sandbox/<id>/... path) plus the marker can exceed the pty width and soft-
+    # wrap, splitting the marker across a rendered newline (col-92 wrap gave "transcript
+    # c\napture content"). Join rows before matching so the check tracks CONTENT, not the
+    # width the prompt happened to wrap at.
     feed_output(win.current(), b'transcript capture content\r\n')
-    ok('transcript capture content' in win.current().transcript_text(),
+    ok('transcript capture content' in win.current().transcript_text().replace('\n', ''),
        'save/open transcript: the tab has content to capture')
     _tfd, _tpath = tempfile.mkstemp(suffix='.txt')
     os.close(_tfd)
