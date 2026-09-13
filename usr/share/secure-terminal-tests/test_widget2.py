@@ -3565,6 +3565,14 @@ _dbg_r = _dbg.terminate_debug()
 ok('foreground pgrp samples' in _dbg_r and ('killpg(%d, 0) probe' % _dbgvic_pgrp) in _dbg_r
    and 'SHOULD signal it' in _dbg_r and 'terminate_foreground()' in _dbg_r,
    'terminate_debug: samples, killpg(0) probe, would-signal verdict, and the real result')
+# Part A: the diagnostic reports the AUTHORITATIVE _foreground_target() -- the SAME pgrp the
+# real kill signals -- so the verdict can never disagree with the action (the reported bug
+# was a green "SHOULD signal it" beside terminate_foreground()=False). Canary: old code had
+# no _foreground_target() line and recomputed the verdict from a separate sample set.
+ok(('_foreground_target()' in _dbg_r
+    and ('pgrp %d' % _dbgvic_pgrp) in _dbg_r
+    and 'Terminate will signal this group' in _dbg_r),
+   'terminate_debug names the authoritative _foreground_target() the kill uses: %r' % _dbg_r)
 pump(2300)                                        # the TERM-ignoring job dies via the 2s survivor
 _dbg_killed = True
 try:
@@ -5960,6 +5968,44 @@ ok('program exited -- new shell' in _rst_banner and _rst_banner.strip() != ''
    'restart_as_shell (TUI): grid replays the banner + a working shell, not a blank frame')
 _rst.shutdown()
 
+# restart rescues a launched TUI's FINAL screen into copyable scrollback when there is no
+# prior primary scrollback (a tab launched STRAIGHT INTO a full-screen program). Otherwise
+# rmcup restarts to a bare prompt with the last screen lost. Read the doc AT restart time,
+# before pumping (a new shell's prompt could scroll the grid). Canary: old code dropped it.
+_rescue = SecureTerminal(command=['/bin/cat'], tui=True)
+_rescue.resize(600, 300)
+_rescue.show()
+pump(400)
+feed_output(_rescue,
+            b'\x1b[?1049h\x1b[H\x1b[2JCLAUDE_FINAL_SCREEN line one\r\nsecond line here\r\n')
+pump(200)
+ok(_rescue._alt_screen, 'the launched program is on the alt screen')
+ok(_rescue.restart_as_shell() is True, 'restart_as_shell: the -- PROGRAM tab respawns')
+_rescue_doc = _rescue.document().toPlainText()
+_rescue_raw = _rescue._raw
+ok('CLAUDE_FINAL_SCREEN line one' in _rescue_doc and 'second line here' in _rescue_doc,
+   'restart rescues the exited TUI final screen into copyable scrollback: %r' % _rescue_doc[:200])
+ok('CLAUDE_FINAL_SCREEN' in _rescue_raw,
+   'the rescued frame is in _raw too (survives a later CLI<->TUI re-render)')
+ok('program exited -- new shell' in _rescue_doc, 'the handover banner still follows the frame')
+_rescue.shutdown()
+
+# ...but a tab WITH real primary scrollback keeps rmcup semantics: the alt frame is NOT
+# dumped into the visible scrollback (it stays in Save Transcript only), so no duplicate/noise.
+_rescue2 = SecureTerminal(command=['/bin/cat'], tui=True)
+_rescue2.resize(600, 300)
+_rescue2.show()
+pump(400)
+feed_output(_rescue2, b'PRIMARY_LOG_LINE before the program\r\n')     # real primary scrollback
+feed_output(_rescue2, b'\x1b[?1049h\x1b[H\x1b[2JALTONLY_FRAME here\r\n')
+pump(200)
+ok(_rescue2.restart_as_shell() is True, 'restart_as_shell: respawns (primary-scrollback case)')
+_rescue2_doc = _rescue2.document().toPlainText()
+ok('PRIMARY_LOG_LINE' in _rescue2_doc, 'the real primary scrollback is preserved')
+ok('ALTONLY_FRAME' not in _rescue2_doc,
+   'with real primary scrollback the alt frame is NOT dumped (rmcup preserved, no noise)')
+_rescue2.shutdown()
+
 # SECURITY: a pending paste-review (or copy) is dropped on restart -- the reviewed text
 # targeted the exited program's shell; carrying it into the fresh shell would inject
 # unreviewed input. The review bar is dismissed (paste_review_resolved) too.
@@ -6061,6 +6107,67 @@ if tui_available():
     pump(120)
     ok(_cur_tui._cursor_visible, 'the cursor returns when the program shows it again')
     _cur_tui.shutdown()
+
+
+# --- blink survives continuous TUI output; resets solid only on a cursor MOVE -----
+# A continuously-rendering TUI (Claude Code's spinner) re-renders faster than the blink
+# half-cycle. The OLD code forced _cursor_on=True on EVERY grid render, so the OFF phase
+# never showed and the cursor looked permanently solid. Now a render resets the blink SOLID
+# only when the output cursor actually MOVES. Alt screen: a fixed full-height grid, so a
+# stationary cell keeps a stable document position (no reflow shifting it).
+if tui_available():
+    APP.setCursorFlashTime(1000)
+    _blink = SecureTerminal(command='/bin/cat', tui=True)
+    _blink.resize(500, 300)
+    _blink.show()
+    _blink.setFocus()
+    feed_output(_blink, b'\x1b[?1049h')          # alt screen: fixed full-height grid
+    feed_output(_blink, b'\x1b[3;5H')            # position the caret (no draw -> stays put)
+    pump(120)
+    _blink_p = _blink._blink_pos
+    ok(_blink_p is not None, 'the output-cursor position is tracked for the blink')
+    _blink._cursor_on = False                    # simulate the blink OFF half-cycle
+    # a redraw that leaves the caret where it was (draw elsewhere, return the caret to the
+    # SAME cell) must NOT force the cursor solid -- else a spinner pins it and it never blinks.
+    feed_output(_blink, b'\x1b[9;1Hspin\x1b[3;5H')
+    pump(120)
+    ok(_blink._cursor_on is False,
+       'a redraw that does not move the caret keeps the blink phase (does not pin solid)')
+    ok(_blink._blink_pos == _blink_p, 'a no-move redraw leaves the tracked blink position')
+    _blink._cursor_on = False
+    feed_output(_blink, b'\x1b[6;2Hx')           # move the caret to a new cell
+    pump(120)
+    ok(_blink._cursor_on is True, 'moving the output cursor resets it solid (visible while typing)')
+    ok(_blink._blink_pos != _blink_p, 'a cursor move updates the tracked blink position')
+    _blink.shutdown()
+
+
+# --- alt-screen shows NO vertical scrollbar (static slack + zoom growth) ---------
+# Alt-screen has no scrollback (the wheel is sent to the child as arrow keys), so it must
+# never expose a vertical scroll range. The grid is SIZED by fontMetrics().height() but LAID
+# OUT at lineSpacing(), so under AsNeeded a spurious range appeared -- and GREW as the font
+# was zoomed up. The policy is forced AlwaysOff in alt, AsNeeded in the primary grid.
+if tui_available():
+    _vs = SecureTerminal(command='/bin/cat', tui=True)
+    _vs.resize(500, 300)
+    _vs.show()
+    pump(50)
+    feed_output(_vs, b'\x1b[?1049h')             # enter alt screen
+    pump(120)
+    ok(_vs.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+       'alt-screen forces the vertical scrollbar OFF (no scrollback, no spurious slack)')
+    for _z in (110, 130, 150, 180):              # zoom band: the range must not grow
+        _vs.apply_zoom(_z)
+        pump(60)
+    ok(_vs.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+       'zooming an alt-screen TUI keeps the vertical scrollbar OFF (no growing scroll-up)')
+    _vs.apply_zoom(100)
+    pump(60)
+    feed_output(_vs, b'\x1b[?1049l')             # leave alt screen
+    pump(120)
+    ok(_vs.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+       'leaving alt-screen restores AsNeeded (the primary grid has real scrollback)')
+    _vs.shutdown()
 
 
 # --- winsize is stable whether the vertical scrollbar is shown ----------------
