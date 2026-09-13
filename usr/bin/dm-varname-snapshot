@@ -61,14 +61,17 @@ printf '%s\n' "INFO: output directory:          ${out_dir}"
 vs_init_baseline "${dm}"
 vs_init_func_baseline "${dm}"
 
-## Stage the regenerated set in a temp dir and swap it into out_dir only after
-## EVERY combo AND the function snapshot have been captured + validated. out_dir
-## defaults to the git-tracked varname-snapshots/ baseline; deleting it up front
-## (as this did) left it EMPTY on any mid-run fatal -- a non-deterministic combo,
-## no valid combo, or a failed function capture -- destroying the committed
-## baseline and needing a manual 'git checkout' to recover. Staging keeps the old
-## baseline untouched until a COMPLETE validated replacement exists.
-stage_dir="$(mktemp --directory)"
+## Stage the regenerated set beside out_dir and swap it in only after EVERY combo
+## AND the function snapshot have been captured + validated. out_dir defaults to
+## the git-tracked varname-snapshots/ baseline; deleting it up front (as this did)
+## left it EMPTY on any mid-run fatal -- a non-deterministic combo, no valid combo,
+## or a failed function capture -- destroying the committed baseline and needing a
+## manual 'git checkout' to recover. Staging keeps the old baseline untouched until
+## a COMPLETE validated replacement exists. The stage dir is a SIBLING of out_dir
+## (same filesystem), so the final swap is an atomic rename(2) per file rather than
+## a cross-filesystem copy that could be interrupted mid-write.
+mkdir --parents -- "${out_dir}"
+stage_dir="$(mktemp --directory -- "${out_dir%/}.stage.XXXXXX")"
 cleanup_stage() {
    [ -z "${stage_dir:-}" ] || safe-rm --recursive --force -- "${stage_dir}"
 }
@@ -160,11 +163,22 @@ fi
 printf '%s\n' "${funcs}" > "${stage_dir}/functions.snapshot"
 
 ## Everything captured + validated: now swap the staged set into out_dir. The old
-## baseline stayed intact through every fatal-exit above; it is replaced only here,
-## scoped to this tool's own output names so an unrelated file in out_dir is left
-## alone (a removed/renamed combo's stale '.vars' still cannot linger).
-mkdir --parents -- "${out_dir}"
-safe-rm --force -- "${out_dir}"/*.vars "${out_dir}/_rejected.txt" "${out_dir}/functions.snapshot"
-mv -- "${stage_dir}"/*.vars "${stage_dir}/_rejected.txt" "${stage_dir}/functions.snapshot" "${out_dir}/"
+## baseline stayed intact through every fatal-exit above, and it is replaced here
+## WITHOUT a removed-but-not-replaced window: each staged file is renamed OVER its
+## counterpart (rename(2) atomically replaces in one step -- never rm-then-mv,
+## which leaves the baseline gone if interrupted between the two). Stale '.vars'
+## for a removed/renamed combo are dropped only AFTER the new set is fully in
+## place. Scoped to this tool's own output names, so an unrelated file is left alone.
+shopt -s nullglob
+declare -A staged_names=()
+for staged in "${stage_dir}"/*.vars; do
+   staged_names["${staged##*/}"]=1
+done
+for staged in "${stage_dir}"/*.vars "${stage_dir}/_rejected.txt" "${stage_dir}/functions.snapshot"; do
+   mv --force -- "${staged}" "${out_dir}/${staged##*/}"
+done
+for existing in "${out_dir}"/*.vars; do
+   [ -n "${staged_names[${existing##*/}]:-}" ] || safe-rm --force -- "${existing}"
+done
 
 printf '%s\n' "INFO: wrote ${valid_count} snapshot file(s), ${rejected_count} rejected combo(s), 1 function snapshot."
