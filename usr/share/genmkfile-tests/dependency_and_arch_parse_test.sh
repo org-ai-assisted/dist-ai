@@ -229,6 +229,36 @@ else
    fail "last stanza dropped -> ${want_solo} not in [${make_package_debs_files_list[*]}] (deb-install would install nothing)"
 fi
 
+## --- a multi-arch stanza that excludes the current target but covers ANOTHER
+## cross-build leg must mark the source as needing a build (regression: matching
+## the whole joined 'Architecture:' list as one token against the cross-build set
+## missed e.g. 'arm64 riscv64' inside ' amd64 arm64 ', leaving
+## all_target_debs_are_arch_all wrongly true and SILENTLY skipping the arm64 leg). ---
+cat > "${test_root}/control-crossleg" <<'EOF'
+Source: fwsrc
+
+Package: fwpkg
+Architecture: arm64 riscv64
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-crossleg"
+make_source_package_name='fwsrc'
+make_pkg_version='1.0'
+make_pkg_revision='-1'
+target_architecture='amd64'
+DISTDIR="${test_root}/dist"
+make_cross_build_platform_list='amd64 arm64'
+make_package_debs_files_list=()
+make_package_list=()
+all_target_debs_are_arch_all='true'
+make_get_variables_parse_stanzas
+
+tests_total=$(( tests_total + 1 ))
+if [ "${all_target_debs_are_arch_all}" = 'false' ]; then
+   pass 'multi-arch stanza covering another cross-build leg is not treated as all-arch-all'
+else
+   fail "multi-arch cross-leg missed: all_target_debs_are_arch_all=${all_target_debs_are_arch_all} (want false); arm64 build leg would be silently skipped"
+fi
+
 ## --- a malformed debian/control must ABORT, not silently drop packages ---
 ## grep-dctrl exits non-zero and emits only the stanzas parsed so far on a syntax error; the parser
 ## must fail loud, not read the truncated output and drop the rest. Override exit_with_error (its
