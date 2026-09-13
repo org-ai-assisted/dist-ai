@@ -93,6 +93,10 @@ check() {
    # shellcheck disable=SC2030,SC2031  # subshell-local env for the isolated call
    out="$(
       export DISTDIR='.' make_use_cowbuilder='true'
+      ## Hermetic: the operator's build shell exports make_cowbuilder_dist_folder
+      ## (for boot-durable-deb / cowbuilder builds); it must not leak in and
+      ## silently satisfy the very gate under test.
+      unset make_cowbuilder_dist_folder
       [ "${enforce}" = 'UNSET' ] || export make_enforce_cowbuilder_distdir="${enforce}"
       make_get_distdir 2>&1
    )" || rc=$?

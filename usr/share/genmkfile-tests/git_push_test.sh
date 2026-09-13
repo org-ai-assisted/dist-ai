@@ -70,6 +70,11 @@ trap cleanup EXIT
 repo="${test_root}/repo"
 mkdir -p -- "${repo}"
 git -C "${repo}" init -q -b ai
+## Neutralize the operator's global hooksPath: genmkfile's internal `git push`
+## runs inside this repo and would otherwise trip a wrong-target pre-push guard
+## on the throwaway bare remotes below. This fixture tests genmkfile, not the
+## operator's hooks.
+git -C "${repo}" config core.hooksPath /dev/null
 git -C "${repo}" config user.email a@b.c
 git -C "${repo}" config user.name a
 git -C "${repo}" commit -q --allow-empty -m c1
