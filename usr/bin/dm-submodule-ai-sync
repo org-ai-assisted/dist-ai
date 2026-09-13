@@ -170,7 +170,9 @@ upstream_fixed=()
 stopped=()
 
 ## The superproject's OWN 'ai' upstream (the case the operator hit: parent 'ai'
-## tracking org-ai-assisted/master).
+## tracking org-ai-assisted/master). Fetch the parent fork 'ai' first so the
+## set-vs-clear decision reads a fresh remote-tracking ref (best-effort).
+git -C "${top}" fetch --quiet "${FORK_REMOTE}" "${AI_BRANCH}" 2>/dev/null || true
 ensure_ai_upstream "${top}" "(parent)"
 
 top_real="$( realpath -m -- "${top}" )"
@@ -214,9 +216,6 @@ for path in "${sub_paths[@]}"; do
       continue
    fi
 
-   ## Correct a dangerous 'ai' upstream (tracking master) if present (no-op otherwise).
-   ensure_ai_upstream "${sub}" "${path}"
-
    ## Branch state (no network). This is an ai-workflow submodule if it is ON 'ai'
    ## OR has a local 'ai' branch (detached off 'ai' is the normal post-'submodule
    ## update' shape this tool re-attaches). If NEITHER, it is upstream-only (pinned
@@ -250,6 +249,11 @@ for path in "${sub_paths[@]}"; do
       fi
       continue
    fi
+
+   ## Correct a dangerous 'ai' upstream (tracking master) if present. AFTER the
+   ## fetch: only now is 'refs/remotes/${FORK_REMOTE}/${AI_BRANCH}' fresh, so the
+   ## set-vs-clear decision is correct (pre-fetch it would clear when it should set).
+   ensure_ai_upstream "${sub}" "${path}"
 
    fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ -z "${fork_tip}" ]; then

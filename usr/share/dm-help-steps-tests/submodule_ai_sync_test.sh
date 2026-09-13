@@ -588,6 +588,32 @@ else
 fi
 
 ## =============================================================================
+## Superproject U: the ai-upstream correction must run AFTER the fetch. A
+## submodule whose 'ai' tracks master, with the remote-tracking ai NOT populated
+## (fresh) -- the tool must FETCH, then SET upstream to org/ai, NOT clear it.
+## Real-run only (a preceding dry-run would repopulate the ref and mask this).
+## =============================================================================
+superU="${workspace}/superU"
+new_super "${superU}"
+new_fork "${workspace}/fork-uord.git" "${workspace}/drv-uord"
+add_sub "${superU}" "${workspace}/fork-uord.git" uord
+gitq -C "${superU}/uord" config branch.ai.merge refs/heads/master
+gitq -C "${superU}/uord" update-ref -d "refs/remotes/org-ai-assisted/ai"
+
+rc=0
+u_out="$("${tool}" --dir "${superU}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   pass "ordering run exits 0"
+else
+   fail "ordering run exited ${rc}; output:<<<${u_out}>>>"
+fi
+if [ "$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)" = "refs/heads/ai" ]; then
+   pass "ai-upstream correction runs AFTER fetch (SET to org/ai, not cleared)"
+else
+   fail "upstream mis-corrected -- post-fetch ordering bug (got '$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)')"
+fi
+
+## =============================================================================
 ## Invariant: no 'git submodule update' ever ran.
 ## =============================================================================
 if [ ! -s "${SUBUPDATE_LOG}" ]; then
