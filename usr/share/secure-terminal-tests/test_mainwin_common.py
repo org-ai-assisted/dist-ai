@@ -42,6 +42,11 @@ import signal
 import atexit
 import tempfile
 
+# Deterministic terminal-output feed, shared with the widget harness (single source,
+# side-effect-free). Lets a mainwin suite give a live tab known content synchronously
+# instead of racing the async shell prompt (starved under parallel-coverage load).
+from st_term_feed import feed_output          # noqa: F401
+
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(mainwin)')
 # Pin the font DPI to 72 BEFORE any QApplication so font metrics are deterministic
@@ -267,6 +272,26 @@ def pump(ms=10):
     APP.processEvents()
 
 
+def wait_for(predicate, timeout_ms=2000, interval_ms=20):
+    """Pump the Qt event loop until PREDICATE() is true or TIMEOUT_MS elapses;
+    return its final value. Use it for an assertion that reads state produced by a
+    QUEUED signal/slot (an OSC risk-lamp recolour, a tab TUI flip, a banner
+    show/hide) instead of a single-shot check after a fixed pump(): under heavy
+    parallel-coverage load the event that lands the state can be starved past a
+    fixed delay, false-reding the gate nondeterministically. A genuinely-wrong
+    state still fails -- it just fails after the timeout, never early on a
+    not-yet-delivered event."""
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        APP.processEvents()
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return bool(predicate())
+        time.sleep(interval_ms / 1000.0)
+        APP.processEvents()
+
+
 def finish(label):
     """Report this suite's tally and exit. Qt can crash in its static teardown
     after a clean run (destroying the many widgets/pyte screens/timers a suite
@@ -301,5 +326,5 @@ __all__ = [
     '_REAL_QFONTDB', '_FontDBPresent', '_FontDBAbsent', '_REAL_APP_ICON',
     '_orig_exec', '_accept_exec', '_dialogs', '_dlg_field',
     '_FakeConn', '_FakeServer', '_Yes', '_No',
-    'PASS', 'FAIL', 'ok', 'eq', 'pump', 'finish',
+    'PASS', 'FAIL', 'ok', 'eq', 'pump', 'wait_for', 'feed_output', 'finish',
 ]

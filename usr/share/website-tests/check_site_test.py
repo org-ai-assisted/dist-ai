@@ -683,6 +683,35 @@ def run():
               any('javascript:' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
 
+    # check_toc_complete: a .cat section missing from the on-this-page TOC is flagged;
+    # a complete TOC is clean; a non-section TOC anchor does not force a false positive.
+    def _toc_failures(root):
+        failures: list[str] = []
+        check_site.check_toc_complete(root, failures)
+        return failures
+    _toc_nav = ('<nav class="toc"><ul>%s</ul></nav>')
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _toc_nav % '<li><a href="#one">One</a></li>'
+               + '<section class="cat" id="one">a</section>'
+               + '<section class="cat" id="two">b</section>')   # #two absent from TOC
+        _tf = _toc_failures(root)
+        check('toc-complete flags a section missing from the TOC',
+              any('#two' in f for f in _tf), repr(_tf))
+        check('toc-complete does not flag the listed section',
+              not any('#one' in f for f in _tf), repr(_tf))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _toc_nav % ('<li><a href="#one">One</a></li>'
+                           '<li><a href="#row-x">Row</a></li>')   # a non-section anchor
+               + '<section class="cat" id="one">a</section>')
+        check('toc-complete clean when every .cat section is listed',
+              _toc_failures(root) == [], repr(_toc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:                  # no TOC -> exempt
+        _write(root, 'index.html', '<section class="cat" id="lonely">x</section>')
+        check('toc-complete exempts a page with no on-this-page TOC',
+              _toc_failures(root) == [], repr(_toc_failures(root)))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

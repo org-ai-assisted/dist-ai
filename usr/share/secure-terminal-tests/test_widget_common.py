@@ -64,8 +64,8 @@ __all__ = [
     'QApplication', 'QInputDialog', 'QKeyEvent', 'QColor', 'QTextCursor',
     'QEvent', 'Qt', 'QTimer', 'QEventLoop', 'QMimeData', 'QPoint', 'QMessageBox',
     'SecureTerminal', 'tui_available', 'APP', 'PASS', 'FAIL',
-    'ok', 'eq', 'pump', 'key', 'spy_writes', 'feed_output', 'spawn_live', 'mark_fg', 'mark_bg',
-    'fmt_of_char', 'glyph_pt', 'finish',
+    'ok', 'eq', 'pump', 'wait_for', 'key', 'spy_writes', 'feed_output', 'spawn_live',
+    'mark_fg', 'mark_bg', 'fmt_of_char', 'glyph_pt', 'finish',
 ]
 
 
@@ -88,6 +88,20 @@ def pump(ms):
     loop.exec()
 
 
+def wait_for(predicate, timeout_ms=2000, step_ms=10):
+    """Pump the event loop until predicate() is true, or timeout; return its final value.
+    For an assert reading state that a QUEUED setter changes -- set_tui / set_osc apply
+    asynchronously (signal/event), so a synchronous read on the very next line races the
+    apply under load and flakes. `ok(wait_for(lambda: ...))` settles it deterministically."""
+    import time as _time
+    deadline = _time.monotonic() + timeout_ms / 1000.0
+    while not predicate():
+        if _time.monotonic() >= deadline:
+            return predicate()
+        pump(step_ms)
+    return True
+
+
 def key(term, qtkey, text='', mods=Qt.KeyboardModifier.NoModifier):
     term.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, qtkey, mods, text))
 
@@ -103,42 +117,9 @@ def spy_writes(term):
     return sent
 
 
-def feed_output(term, raw):
-    """Drive the real _on_readable with `raw` bytes via a pipe, as if the child had
-    printed them, so the full output path (pyte feed + _handle_osc + line render)
-    runs -- not a shortcut that skips the OSC read handlers.
-
-    Chunked at the pty read size (65536): a single os.write of MORE than the pipe
-    buffer would block forever (no concurrent reader in this synchronous helper), and
-    _read_and_render only os.read()s 65536 per call anyway -- so a large payload is fed
-    as successive reads, exactly as a real pty delivers it. An EMPTY `raw` still feeds
-    once (the child-exit / EOF path)."""
-    old = term._fd                             # pylint: disable=protected-access
-    first = True
-    try:
-        while raw or first:
-            first = False
-            chunk, raw = raw[:65536], raw[65536:]
-            r, w = os.pipe()
-            term._fd = r
-            w_open = True
-            try:
-                os.write(w, chunk)             # <= pipe buffer, so this cannot block
-                os.close(w)
-                w_open = False
-                term._on_readable()            # pylint: disable=protected-access
-            finally:
-                os.close(r)
-                if w_open:
-                    os.close(w)
-    finally:
-        term._fd = old
-    # CLI line-mode paints are debounced to ~60fps by a single-shot timer; in the
-    # live app the paint fires from the event loop shortly after the read. These
-    # synchronous tests feed then inspect at once, so flush the pending paint here
-    # (the same flush teardown and every transcript/copy getter perform) so the
-    # document reflects the just-fed bytes without pumping a real 16ms wait.
-    term._flush_paint()
+# feed_output lives in st_term_feed (side-effect-free) so the mainwin harness can share
+# the one copy; re-exported here via __all__ for the halves that do `import *`.
+from st_term_feed import feed_output          # noqa: E402,F401
 
 
 # MARKING_COLORS is theme-keyed {fg, bg} per risk class (dark gets a background

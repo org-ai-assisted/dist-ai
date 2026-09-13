@@ -211,7 +211,9 @@ try:
     ok(bool(_rb), 'Global settings has a Reset to defaults button')
     # perturb the per-type OSC-notice toggles so Reset has something to revert (rd#1:
     # _reset_defaults missed them, so Reset+Apply persisted a wrong mute set)
-    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC 0, 2)')
+    # match the NOTIFY row (name + "  (OSC ..."), not the OSC-features row ("OSC name ...");
+    # stop before the codes so it holds across secure_terminal versions (0,2 vs 0,1,2).
+    _nt_reset = _dlg_field(_gs, 'Window / tab title  (OSC')
     _nh_reset = _dlg_field(_gs, 'Hyperlinks  (OSC 8)')
     _nt_reset.setChecked(True)       # un-mute title (non-default)
     _nh_reset.setChecked(False)      # mute hyperlink (non-default)
@@ -1110,6 +1112,16 @@ try:
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: ('', ''))
     win.save_transcript()                   # cancelled -> return
     ok(True, 'save_transcript: cancelling the dialog is a no-op')
+    # win's tab (created at module top) is a live login-shell. Give it KNOWN content
+    # synchronously (the real read path) so the transcript/screen writers below have
+    # something deterministic to capture. The match is WRAP-TOLERANT: the shell's prompt
+    # (a long ~/sandbox/<id>/... path) plus the marker can exceed the pty width and soft-
+    # wrap, splitting the marker across a rendered newline (col-92 wrap gave "transcript
+    # c\napture content"). Join rows before matching so the check tracks CONTENT, not the
+    # width the prompt happened to wrap at.
+    feed_output(win.current(), b'transcript capture content\r\n')
+    ok('transcript capture content' in win.current().transcript_text().replace('\n', ''),
+       'save/open transcript: the tab has content to capture')
     _tfd, _tpath = tempfile.mkstemp(suffix='.txt')
     os.close(_tfd)
     os.unlink(_tpath)                       # remove it: save_transcript must (re)create

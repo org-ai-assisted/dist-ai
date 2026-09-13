@@ -529,7 +529,8 @@ _ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
 _ov._advisories.pop(_ovt, None)
 _ov._on_osc_used(_ovt, 'osc_hyperlink', 8)      # raise an OSC advisory (a type NOT muted by default)
 pump(50)
-ok(_ov._banner.isVisible(), 'advisory overlay: the banner is shown for the current tab')
+ok(wait_for(lambda: _ov._banner.isVisible()),
+   'advisory overlay: the banner is shown for the current tab')
 eq(_ovt._rows, _ov_rows0,
    'advisory overlay: showing the banner does NOT change the grid rows (no SIGWINCH)')
 eq(_ovt._cols, _ov_cols0,
@@ -542,7 +543,8 @@ eq(_ovt._chrome_top_inset, _ov_inset0,
    'advisory overlay: re-placing the banner at the same size is a no-op inset')
 _ov._dismiss_advisory()                       # the X button: hide + release the inset
 pump(50)
-ok(not _ov._banner.isVisible(), 'advisory overlay: dismiss hides the banner')
+ok(wait_for(lambda: not _ov._banner.isVisible()),
+   'advisory overlay: dismiss hides the banner')
 eq(_ovt._chrome_top_inset, 0,
    'advisory overlay: dismissing releases the top inset')
 eq(_ovt._rows, _ov_rows0,
@@ -559,7 +561,8 @@ _ov2.show()
 pump(50)
 _ov2._on_osc_used(_ov2.current(), 'osc_hyperlink', 8)   # a type NOT muted by default
 pump(20)
-ok(_ov2._banner.isVisible(), 'advisory overlay: banner shown before the last-tab close')
+ok(wait_for(lambda: _ov2._banner.isVisible()),
+   'advisory overlay: banner shown before the last-tab close')
 _ov2.close_tab(0)                             # empties the window with the banner still visible
 pump(20)
 ok(True, 'advisory overlay: closing the last tab with the banner up does not crash')
@@ -580,16 +583,20 @@ pump(20)
 _xfront = _xw.current()
 _xbg = next(t for t in _xw._real_terms() if t is not _xfront)
 _xw.tabs.setCurrentWidget(_xbg)               # bring tab 0 to front to flip it to TUI
+# setCurrentWidget is async: set_tui acts on current(), so the switch MUST land first
+# or set_tui misfires on the old tab under load (the root of the parallel-coverage flake).
+wait_for(lambda: _xw.current() is _xbg)
 _xw.set_tui(True)                             # tab 0: live in TUI
 _xw.tabs.setCurrentWidget(_xfront)            # tab 1 (CLI) back in front
-pump(20)
-ok(not _xfront.tui_active() and _xbg.tui_active(),
+wait_for(lambda: _xw.current() is _xfront)
+ok(wait_for(lambda: not _xfront.tui_active() and _xbg.tui_active()),
    'cross-tab OSC: front tab is CLI, background tab is in TUI')
-ok(_xw._osc_level()[0] == '#e5484d',
+ok(wait_for(lambda: _xw._osc_level()[0] == '#e5484d'),
    'cross-tab OSC: a background TUI tab with clipboard live keeps the lamp red on a CLI front tab')
 _xw.tabs.setCurrentWidget(_xbg)               # drop the live (background) tab out of TUI
+wait_for(lambda: _xw.current() is _xbg)       # switch must land before set_tui acts on current()
 _xw.set_tui(False)
-ok(_xw._osc_level()[0] == '#1f8a54',
+ok(wait_for(lambda: _xw._osc_level()[0] == '#1f8a54'),
    'cross-tab OSC: lamp returns to green once no tab is in TUI')
 # NOT closed: destroying a window that held a background-TUI tab segfaults Qt's
 # offscreen teardown mid-suite; the suite's os._exit(0) skips that teardown, as it

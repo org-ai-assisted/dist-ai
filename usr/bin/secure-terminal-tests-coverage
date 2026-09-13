@@ -276,6 +276,33 @@ suite_jobs="$(( 10#${suite_jobs} ))"
 suite_cap="$(( ncpu * 4 ))"
 [ "${suite_jobs}" -le "${suite_cap}" ] || suite_jobs="${suite_cap}"
 
+## RAM-aware ceiling. Each parallel Qt suite runs its OWN headless-Wayland compositor
+## (labwc + Xwayland) plus a coverage-traced Python process, so N suites in flight need
+## N * ~400MB. If that exceeds free memory the kernel OOM-killer SIGKILLs a suite mid-run
+## (exit 137) -- a false-red that is NOT a test verdict (the suite had passed; it died in
+## teardown). Seen at jobs=4 on a ~1.6GB-reachable balloon VM; absent at jobs<=3. So cap
+## jobs by floor(MemAvailable / per-suite footprint). This throttles ONLY where RAM is
+## tight (a small/ballooned runner) and stays at nproc on a roomy host -- no env knob to
+## recall. MemAvailable (free RIGHT NOW) is the correct input: conservative exactly when
+## memory is scarce, accurate when it is not. 512MiB per suite is deliberately above the
+## measured ~400MB so we stay clear of the OOM edge. COVERAGE_SUITE_MEM_MIB overrides the
+## footprint (tuning/tests). A floor of 1 so a very tight box still runs, serially.
+mem_per_suite_mib="${COVERAGE_SUITE_MEM_MIB:-512}"
+case "${mem_per_suite_mib}" in ''|*[!0-9]*) mem_per_suite_mib=512 ;; esac
+mem_per_suite_mib="$(( 10#${mem_per_suite_mib} ))"
+[ "${mem_per_suite_mib}" -ge 1 ] || mem_per_suite_mib=512
+mem_avail_kib="$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || printf '%s\n' 0)"
+case "${mem_avail_kib}" in ''|*[!0-9]*) mem_avail_kib=0 ;; esac
+mem_avail_kib="$(( 10#${mem_avail_kib} ))"
+if [ "${mem_avail_kib}" -gt 0 ]; then
+   mem_jobs="$(( mem_avail_kib / 1024 / mem_per_suite_mib ))"
+   [ "${mem_jobs}" -ge 1 ] || mem_jobs=1
+   if [ "${suite_jobs}" -gt "${mem_jobs}" ]; then
+      printf '%s\n' "secure-terminal-tests-coverage: RAM-aware cap: $(( mem_avail_kib / 1024 )) MiB free / ${mem_per_suite_mib} MiB per suite -> ${mem_jobs} parallel jobs (from ${suite_jobs})" >&2
+      suite_jobs="${mem_jobs}"
+   fi
+fi
+
 run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG config/state
    local suite="$1" rc=0
    local xdg="${work}/xdg-${suite}"
