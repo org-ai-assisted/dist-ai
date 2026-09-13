@@ -1015,7 +1015,7 @@ run_suite() {
       77)
          if skip_is_fatal "${suite}"; then
             emit "---- ${suite}: begin captured output (${verdict}) ----"
-            while IFS= read -r log_line; do
+            while IFS= read -r log_line || [ -n "${log_line}" ]; do
                emit "${log_line}"
             done < "${log_dir}/dist-ai-tests-all.${suite}.log"
             emit "---- ${suite}: end captured output ----"
@@ -1023,7 +1023,7 @@ run_suite() {
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
-         while IFS= read -r log_line; do
+         while IFS= read -r log_line || [ -n "${log_line}" ]; do
             emit "${log_line}"
          done < "${log_dir}/dist-ai-tests-all.${suite}.log"
          emit "---- ${suite}: end captured output ----"
@@ -1306,7 +1306,6 @@ fi
 ## documented override env var. (--list already exited above, so listing is free.)
 enforce_sandbox_only() {
    [ "${GITHUB_ACTIONS:-}" = "true" ] && return 0     # GitHub Actions runner
-   [ "${CI:-}" = "true" ] && return 0                 # generic CI (also set by GitHub)
    [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && return 0    # already routed into the sandbox
    if [ "${DIST_AI_ALLOW_HOST_TESTS:-}" = "1" ]; then
       printf '%s\n' 'dist-ai-tests-all: WARNING: DIST_AI_ALLOW_HOST_TESTS=1 -- running on the host; sandbox safety gate bypassed.' >&2
