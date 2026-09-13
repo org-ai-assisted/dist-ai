@@ -270,7 +270,10 @@ for path in "${sub_paths[@]}"; do
 
    ## Dirty check BEFORE any mutation. A FAILED 'git status' yields empty stdout;
    ## a failure is NOT clean -- STOP rather than act on a repo we could not read.
-   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )"; then
+   ## '--ignore-submodules=all': a NESTED submodule pin diff (' M nested', normal
+   ## after a non-recursive FF) is not dirt this tool cares about -- flagging it
+   ## would falsely STOP and, worse, block every re-run.
+   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null )"; then
       stopped+=( "${path} :: 'git status' failed (unreadable repo)" )
       continue
    fi
@@ -391,7 +394,7 @@ for path in "${mutated_paths[@]}"; do
       stopped+=( "${path} :: after sync, not on '${AI_BRANCH}' (got '${post_ref:-DETACHED}')" )
       continue
    fi
-   if ! post_status="$( git -C "${sub}" status --porcelain=v1 --untracked-files=no 2>/dev/null )" \
+   if ! post_status="$( git -C "${sub}" status --porcelain=v1 --untracked-files=no --ignore-submodules=all 2>/dev/null )" \
       || [ -n "${post_status}" ]; then
       stopped+=( "${path} :: after sync, working tree unexpectedly not clean" )
    fi
