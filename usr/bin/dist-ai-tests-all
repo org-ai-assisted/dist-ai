@@ -1062,6 +1062,13 @@ require_timeout() {
       printf '%s\n' "dist-ai-tests-all: $1 requires a timeout(1) interval (e.g. 300, 600s, 10m): got '$2'" >&2
       exit 2
    fi
+   ## timeout(1) treats a value of 0 as "no timeout at all". A zero interval (0, 0.0,
+   ## 0s, ...) would silently DISABLE the per-suite timeout -- exactly the wedge with
+   ## no verdict that --kill-after exists to prevent -- so reject it, not accept it.
+   if [[ "${2%[smhd]}" =~ ^0+(\.0+)?$ ]]; then
+      printf '%s\n' "dist-ai-tests-all: $1 must be a POSITIVE timeout(1) interval; 0 disables the timeout and can wedge the run: got '$2'" >&2
+      exit 2
+   fi
 }
 
 while [ "$#" -gt 0 ]; do
