@@ -13,6 +13,11 @@
 ## whole install -- exactly on the tree the excludes exist for (one that accumulated a
 ## bytecode/tooling cache). This pins that the loop SKIPS the same set it excludes.
 ##
+## The same shared exclude set also covers VCS files (.gitignore, .git): they are absent
+## from the built .deb (find_pkgfiles_args), so install + installcheck must drop them too.
+## Otherwise 'deb-icup' installcheck diffs a source .gitignore against a path the package
+## never shipped: "diff: /usr/share/<pkg>/.gitignore: No such file or directory".
+##
 ## Regression: on the pre-fix engine 'genmkfile install' exits non-zero here (the
 ## 'install exited 0' assertion fails); with the shared exclude list + loop skip it
 ## installs the real files and drops the residue.
@@ -99,7 +104,8 @@ mkdir --parents -- \
    "${pkg_dir}/usr/lib/python3/dist-packages/gmf-residue-pkg/__pycache__" \
    "${pkg_dir}/usr/share/gmf-residue-pkg/.hypothesis/examples" \
    "${pkg_dir}/usr/lib/gmf-residue-pkg/.mypy_cache" \
-   "${pkg_dir}/usr/share/gmf-residue-pkg/.pytest_cache"
+   "${pkg_dir}/usr/share/gmf-residue-pkg/.pytest_cache" \
+   "${pkg_dir}/usr/share/gmf-residue-pkg/.git"
 
 cat > "${pkg_dir}/debian/control" <<'CONTROL'
 Source: gmf-residue-pkg
@@ -141,6 +147,10 @@ printf '%s' 'cache' > "${pkg_dir}/usr/share/gmf-residue-pkg/.pytest_cache/entry"
 ## keepable, then abort on the mode-fix stat of a never-created dest.
 nl_residue=$'weird\nname.pyc'
 printf '%s' 'nl-bytecode' > "${pkg_dir}/usr/share/gmf-residue-pkg/${nl_residue}"
+## VCS files -- excluded from the built package (find_pkgfiles_args), so install must drop
+## them too (see the .gitignore installcheck symptom in the header).
+printf '%s\n' 'data-file' > "${pkg_dir}/usr/share/gmf-residue-pkg/.gitignore"
+printf '%s\n' 'ref: refs/heads/x' > "${pkg_dir}/usr/share/gmf-residue-pkg/.git/config"
 
 dest_dir="${work_dir}/dest"
 mkdir --parents -- "${dest_dir}"
@@ -190,6 +200,8 @@ absent  '.hypothesis is not installed'         "${dest_dir}/usr/share/gmf-residu
 absent  '.mypy_cache is not installed'         "${dest_dir}/usr/lib/gmf-residue-pkg/.mypy_cache"
 absent  '.pytest_cache is not installed'       "${dest_dir}/usr/share/gmf-residue-pkg/.pytest_cache"
 absent  'a .pyc with a newline in its name is not installed' "${dest_dir}/usr/share/gmf-residue-pkg/${nl_residue}"
+absent  'a nested .gitignore is not installed'  "${dest_dir}/usr/share/gmf-residue-pkg/.gitignore"
+absent  'a nested .git directory is not installed' "${dest_dir}/usr/share/gmf-residue-pkg/.git"
 
 ## CANARY: if install had silently copied nothing, every 'absent' check passes vacuously.
 ## Assert a real file really landed so the pass set is not empty.
