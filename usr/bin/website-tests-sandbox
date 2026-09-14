@@ -7,9 +7,9 @@
 
 ## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
 
-## Run the browser-dependent website lanes (check_mobile.py + check_width.py) inside
-## the review sandbox qube, CONFINED under bwrap's Playwright profile, and exit 0/1
-## on their real pass/fail. This is the forget-proof default the host publish gate
+## Run the browser-dependent website lanes (check_mobile.py + check_width.py +
+## check_footer.py) inside the review sandbox qube, CONFINED under bwrap's Playwright
+## profile, and exit 0/1 on their real pass/fail. This is the forget-proof default the host publish gate
 ## uses when no local browser is present: it runs the checks for real instead of
 ## letting website-tests emit a silent SKIP that would read as a green publish gate.
 ##
@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The sandbox Playwright venv + its chromium engine (provisioned by
 ## `sandbox provision playwright`; same path web-render / playwright-run bind).
@@ -71,8 +72,11 @@ sandbox exec -- type sandbox-confine >/dev/null 2>&1 \
 staging="$(mktemp --directory)"
 synced=0
 cleanup(){
+   # Local cleanup is best-effort too: under errexit a failing command in the EXIT
+   # trap REPLACES the real exit code (a green run reported red, or a red run's
+   # signal masked), so guard it exactly like the remote call below.
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
-   safe-rm --recursive --force -- "${staging}"
+   safe-rm --recursive --force -- "${staging}" || true
    # Remote cleanup is best-effort: it must never fail the gate (errexit + the EXIT
    # trap would otherwise turn a green run red if the sandbox is gone at exit, or a
    # minimally-provisioned sandbox lacks safe-rm).
@@ -85,24 +89,30 @@ cleanup(){
 }
 trap cleanup EXIT
 
-mkdir --parents -- "${staging}/wt"
-for runner in check_mobile.py check_width.py; do
+## Runners and site roots live in SEPARATE staging subtrees (wt/ vs roots/), so a
+## site-root basename can never collide with the runner dir -- a checkout literally
+## named 'wt' stages fine.
+mkdir --parents -- "${staging}/wt" "${staging}/roots"
+for runner in check_mobile.py check_width.py check_footer.py; do
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staging}/wt/${runner}"
 done
 
 declare -a remote_roots=()
+declare -A seen_base=()
 for root in "$@"; do
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
-   ## Canonicalize first: a relative root like '.' or '..' would basename to '.'/'..',
-   ## which always collide with the staging dir / its parent.
+   ## Canonicalize first: a relative root like '.' or '..' would basename to '.'/'..'.
    root="$(readlink --canonicalize -- "${root}")"
    base="$(basename -- "${root}")"
-   if [ -e "${staging}/${base}" ]; then
+   ## Duplicate detection over the ROOTS actually supplied (not a filesystem probe,
+   ## which conflated a real duplicate with the reserved runner dir).
+   if [ -n "${seen_base[${base}]:-}" ]; then
       die "duplicate site-root basename '${base}' -- roots must have distinct names"
    fi
-   rsync --archive --exclude='.git' -- "${root}/" "${staging}/${base}/"
-   remote_roots+=( "${base}" )
+   seen_base[${base}]=1
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "roots/${base}" )
 done
 
 sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
@@ -127,5 +137,6 @@ run_lane(){
 
 run_lane check_mobile.py || overall=1
 run_lane check_width.py  || overall=1
+run_lane check_footer.py || overall=1
 
 exit "${overall}"
