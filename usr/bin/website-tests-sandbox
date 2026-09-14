@@ -7,9 +7,9 @@
 
 ## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
 
-## Run the browser-dependent website lanes (check_mobile.py + check_width.py) inside
-## the review sandbox qube, CONFINED under bwrap's Playwright profile, and exit 0/1
-## on their real pass/fail. This is the forget-proof default the host publish gate
+## Run the browser-dependent website lanes (check_mobile.py + check_width.py +
+## check_footer.py) inside the review sandbox qube, CONFINED under bwrap's Playwright
+## profile, and exit 0/1 on their real pass/fail. This is the forget-proof default the host publish gate
 ## uses when no local browser is present: it runs the checks for real instead of
 ## letting website-tests emit a silent SKIP that would read as a green publish gate.
 ##
@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The sandbox Playwright venv + its chromium engine (provisioned by
 ## `sandbox provision playwright`; same path web-render / playwright-run bind).
@@ -86,7 +87,7 @@ cleanup(){
 trap cleanup EXIT
 
 mkdir --parents -- "${staging}/wt"
-for runner in check_mobile.py check_width.py; do
+for runner in check_mobile.py check_width.py check_footer.py; do
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staging}/wt/${runner}"
 done
@@ -127,5 +128,6 @@ run_lane(){
 
 run_lane check_mobile.py || overall=1
 run_lane check_width.py  || overall=1
+run_lane check_footer.py || overall=1
 
 exit "${overall}"

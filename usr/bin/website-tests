@@ -63,6 +63,11 @@ run_required_unit_test check_mobile_test.py
 ## without a browser; a failure is a real logic regression.
 run_required_unit_test check_width_test.py
 
+## Unit regression for check_footer's browser-free logic (the misalignment
+## predicate + gate wiring). Playwright is imported inside its main(), so this runs
+## everywhere without a browser; a failure is a real logic regression.
+run_required_unit_test check_footer_test.py
+
 ## Unit regression for check_seo's logic (host derivation, sitemap/robots
 ## renderers, the PNG size probe, the drift gate + its main() wiring). Pure
 ## stdlib, no site checkout; a failure is a real logic regression.
@@ -142,8 +147,9 @@ fi
 overall=0
 "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
-## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport") and
-## width-utilization ("no tall text section wasted in a narrow column"). Both need
+## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
+## width-utilization ("no tall text section wasted in a narrow column") and
+## footer-alignment ("every footer row shares the same gutter"). All need
 ## Playwright + chromium.
 ##
 ## Prefer a local browser (CI installs one). When none is present we do NOT skip on a
@@ -191,6 +197,7 @@ if [ "${mobile_rc}" = '77' ]; then
    else
       printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+      printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
    fi
 else
    ## Local browser present -- mobile ran here. Gate it, then run the width lane too.
@@ -207,6 +214,20 @@ else
       ## Same as check_mobile.py above: a shipped required test whose absence must FATAL,
       ## not silently skip the width lane to a green pass.
       printf '%s\n' "website-width-tests: FATAL: check_width.py not found in ${tests_dir} (required test missing)" >&2
+      overall=1
+   fi
+   if [ -f "${tests_dir}/check_footer.py" ]; then
+      footer_rc=0
+      "${tests_dir}/check_footer.py" "${roots[@]}" || footer_rc="$?"
+      if [ "${footer_rc}" = '77' ]; then
+         printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium)' >&2
+      elif [ "${footer_rc}" != '0' ]; then
+         overall=1
+      fi
+   else
+      ## Same as check_width.py above: a shipped required test whose absence must FATAL,
+      ## not silently skip the footer lane to a green pass.
+      printf '%s\n' "website-footer-tests: FATAL: check_footer.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
    fi
 fi
