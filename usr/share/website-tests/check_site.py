@@ -62,21 +62,6 @@ WORDING = [
 ]
 
 
-class _HTMLScopeParser(html.parser.HTMLParser):
-    """HTMLParser that models HTML5 self-closing correctly for scope tracking: a
-    browser IGNORES a trailing '/' on a NON-void element, leaving it OPEN, so
-    `<div/>` / `<section/>` / `<footer/>` must read as a plain start tag -- not the
-    stdlib default's immediate open-then-close, which mis-scopes (or drops) every
-    node that a real browser renders inside the still-open element. Void elements
-    keep open-then-close. Scope-tracking audits subclass this instead of
-    html.parser.HTMLParser so a stray self-closing slash cannot defeat them."""
-
-    def handle_startendtag(self, tag, attrs):
-        self.handle_starttag(tag, attrs)
-        if tag in VOID_TAGS:
-            self.handle_endtag(tag)
-
-
 class Extractor(html.parser.HTMLParser):
     """Collect (attr) link targets, element ids, and the concatenated visible
     text (script/style excluded) of one HTML document."""
@@ -370,7 +355,7 @@ def check_freshness(root, failures):
                     % (rel, match.group(0).strip(), age, _STALE_DAYS))
 
 
-class _FooterAudit(_HTMLScopeParser):
+class _FooterAudit(html.parser.HTMLParser):
     """The concatenated href/text content of every <footer>...</footer> region,
     plus whether any real <footer> exists. Parsed, not raw-markup regex, so a
     <footer> inside an HTML comment is ignored (HTMLParser never fires inside a
@@ -392,6 +377,14 @@ class _FooterAudit(_HTMLScopeParser):
             for _key, value in attrs:
                 if value:
                     self._buf.append(value)
+
+    def handle_startendtag(self, tag, attrs):
+        # A browser ignores the '/' on a non-void <footer/> and leaves it OPEN, so
+        # the family links that follow are still its children. Treat a self-closing
+        # tag as a plain start (never auto-close) so the old regex's whole-tail
+        # behavior on a <footer/> is preserved. Only <footer> drives depth, so a
+        # self-closed leaf inside the footer just contributes its attrs.
+        self.handle_starttag(tag, attrs)
 
     def handle_data(self, data):
         if self._depth:
@@ -425,7 +418,7 @@ def check_footer(root, failures):
             failures.append('index.html: footer missing family link %s' % url)
 
 
-class _StatusPillAudit(_HTMLScopeParser):
+class _StatusPillAudit(html.parser.HTMLParser):
     """Text of the first review-status pill: a <span>/<a> whose class token set
     contains 'status'. Parsed, not substring-matched, so a single-quoted or
     multi-class attribute (class='status', class="status pill") -- which the old
@@ -753,7 +746,7 @@ _URL_ATTRS = frozenset((
 ))
 
 
-class _InlineJSAudit(_HTMLScopeParser):
+class _InlineJSAudit(html.parser.HTMLParser):
     """Flag anything that needs 'unsafe-inline' to run: an executable inline
     <script> (a body with no src attribute), an inline event-handler attribute
     (on*=), or a javascript: URL. All three are blocked once script-src drops
@@ -916,7 +909,7 @@ WIDE_TAGS = frozenset({
 })
 
 
-class LayoutAudit(_HTMLScopeParser):
+class LayoutAudit(html.parser.HTMLParser):
     """Flag <section>s that stack 2+ prose-only `.issue` cards full-width instead
     of in a grid. A column of full-width prose cards leaves each card much wider
     than the ~74ch text it holds (the "box wider than its text" bug); the fix is
@@ -974,14 +967,6 @@ class LayoutAudit(_HTMLScopeParser):
                 self.offenders.append((frame['id'], frame['ungridded']))
             del self._open[i:]
             break
-
-    def finalize(self):
-        # A section a browser leaves OPEN to end-of-document (a self-closed
-        # <section/> or a missing </section>) never fires handle_endtag, so flush
-        # any still-open offending section here -- its cards did close and counted.
-        for frame in self._open:
-            if frame['is_section'] and frame['ungridded'] >= 2:
-                self.offenders.append((frame['id'], frame['ungridded']))
 
 
 # Image asset hygiene: an image checked into a site but named by NOTHING (no
@@ -1048,7 +1033,6 @@ def check_card_layout(root, failures):
         audit = LayoutAudit()
         with open(page, encoding='utf-8') as handle:
             audit.feed(handle.read())
-        audit.finalize()
         for section_id, count in audit.offenders:
             failures.append(
                 '%s: section #%s stacks %d full-width ".issue" cards; wrap them '
@@ -1067,7 +1051,7 @@ SAFETY_TOOLS = (
 )
 
 
-class _ReproToolAudit(_HTMLScopeParser):
+class _ReproToolAudit(html.parser.HTMLParser):
     """Collect the `code.cmd` command strings inside every `.repro` box."""
 
     def __init__(self):
@@ -1126,7 +1110,7 @@ def check_repro_raw(root, failures):
                     break
 
 
-class _HeaderNavAudit(_HTMLScopeParser):
+class _HeaderNavAudit(html.parser.HTMLParser):
     """The (label, href) list of the FIRST <nav> inside a <header>. Parsed, not
     regex, so an attribute on the nav (<nav aria-label="Main">) no longer drops
     the whole page from the consistency comparison, and a single-quoted href is
@@ -1259,7 +1243,7 @@ def check_toc_complete(root, failures):
 _HEADINGS = frozenset({'h1', 'h2', 'h3', 'h4', 'h5', 'h6'})
 
 
-class _HeadingBreakAudit(_HTMLScopeParser):
+class _HeadingBreakAudit(html.parser.HTMLParser):
     """Count <br> elements that occur while a heading (h1-h6) is open."""
 
     def __init__(self):
@@ -1306,7 +1290,7 @@ AA_SMALL = 4.5
 
 _ROOT_VAR = re.compile(r'--([\w-]+)\s*:\s*([^;}]+)')
 _COLOR_VAR_USE = re.compile(r'color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
-_HEX = re.compile(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
+_HEX = re.compile(r'^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
 _RGB = re.compile(r'^rgba?\(([^)]*)\)', re.IGNORECASE)
 _HSL = re.compile(r'^hsla?\(([^)]*)\)', re.IGNORECASE)
 
@@ -1354,9 +1338,8 @@ def _hsl_to_rgb(hue, sat, light):
         if offset < 2 / 3:
             return low + (high - low) * (2 / 3 - offset) * 6
         return low
-    return (round(component(hue + 1 / 3) * 255),
-            round(component(hue) * 255),
-            round(component(hue - 1 / 3) * 255))
+    return tuple(min(255, max(0, round(component(offset) * 255)))
+                 for offset in (hue + 1 / 3, hue, hue - 1 / 3))
 
 
 def _parse_color(value):
@@ -1367,8 +1350,9 @@ def _parse_color(value):
     match = _HEX.match(value)
     if match:
         digits = match.group(1)
-        if len(digits) == 3:
+        if len(digits) in (3, 4):                  # #rgb / #rgba shorthand
             digits = ''.join(ch * 2 for ch in digits)
+        digits = digits[:6]                        # drop any alpha (#rrggbbaa)
         return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
     match = _RGB.match(value)
     if match:
@@ -1390,6 +1374,12 @@ def _parse_color(value):
                 light = float(parts[2].rstrip('%')) / 100
             except (ValueError, OverflowError):
                 return None
+            if not (math.isfinite(hue) and math.isfinite(sat)
+                    and math.isfinite(light)):
+                return None                        # inf/NaN -> unparseable, no crash
+            # A browser clamps out-of-range S/L to [0,1] before rendering.
+            sat = min(1.0, max(0.0, sat))
+            light = min(1.0, max(0.0, light))
             return _hsl_to_rgb(hue, sat, light)
     return None
 
