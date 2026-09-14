@@ -260,8 +260,10 @@ def zoom_sweep_guard_canary():
     def _boom(*_a, **_k):
         raise RuntimeError('harness must not be reached for an invalid combo')
 
-    orig_harness = zoom_sweep.Z.ZoomHarness
-    zoom_sweep.Z.ZoomHarness = _boom
+    # setattr/getattr, not `zoom_sweep.Z.ZoomHarness = ...`: ZoomHarness is a type, and a
+    # direct rebind trips mypy's "cannot assign to a type" -- the dynamic form is the intent.
+    orig_harness = getattr(zoom_sweep.Z, 'ZoomHarness')
+    setattr(zoom_sweep.Z, 'ZoomHarness', _boom)
     try:
         rejected = False
         try:
@@ -272,7 +274,7 @@ def zoom_sweep_guard_canary():
             rejected = False                 # pre-fix: fell through to the (stubbed) harness
         ok(rejected, 'cmd_one rejects an invalid TUI+detail combo before the harness')
     finally:
-        zoom_sweep.Z.ZoomHarness = orig_harness
+        setattr(zoom_sweep.Z, 'ZoomHarness', orig_harness)
 
 
 # ---------------------------------------------------------------------------
