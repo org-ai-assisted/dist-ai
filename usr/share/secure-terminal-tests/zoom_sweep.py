@@ -288,7 +288,7 @@ def _main_exit_code(argv=None):
     # error, a RuntimeError from _checked_save, an OSError from os.makedirs -- would else
     # unwind normally and run Qt's static destructors, which SIGSEGV during teardown (the
     # same reason the widget suites os._exit in finish()), masking the real failure with a
-    # crash. Catch every exception here so __main__ can route it through os._exit; a genuine
+    # crash. Route every ordinary error AND a mid-run Ctrl-C through os._exit; a genuine
     # failure still fails loud (traceback + non-zero rc), just via a clean hard-exit.
     try:
         return main(argv)
@@ -297,7 +297,7 @@ def _main_exit_code(argv=None):
             sys.stderr.write(exc.code + '\n')
             return 1
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-    except BaseException:                   # noqa: intentional catch-all, see above
+    except (Exception, KeyboardInterrupt):  # pylint: disable=broad-except
         traceback.print_exc()
         return 1
 

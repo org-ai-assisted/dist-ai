@@ -228,7 +228,7 @@ def zoom_sweep_guard_canary():
         got = False
         try:
             got = zoom_sweep._main_exit_code() == 1
-        except BaseException:               # pylint: disable=broad-except
+        except Exception:               # pylint: disable=broad-except
             got = False                      # pre-fix: the exception unwound past the guard
         ok(got, '_main_exit_code returns 1 on a non-SystemExit (no teardown-SIGSEGV unwind)')
 
@@ -236,7 +236,7 @@ def zoom_sweep_guard_canary():
         preserved = False
         try:
             preserved = zoom_sweep._main_exit_code() == 2
-        except BaseException:               # pylint: disable=broad-except
+        except Exception:               # pylint: disable=broad-except
             preserved = False
         ok(preserved, '_main_exit_code preserves a SystemExit integer code')
     finally:
@@ -268,7 +268,7 @@ def zoom_sweep_guard_canary():
             zoom_sweep.cmd_one(_Args())
         except SystemExit:
             rejected = True
-        except BaseException:               # pylint: disable=broad-except
+        except Exception:               # pylint: disable=broad-except
             rejected = False                 # pre-fix: fell through to the (stubbed) harness
         ok(rejected, 'cmd_one rejects an invalid TUI+detail combo before the harness')
     finally:
