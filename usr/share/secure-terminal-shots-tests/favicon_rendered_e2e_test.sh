@@ -79,7 +79,11 @@ for tool in labwc grim compare convert wlr-randr; do
 done
 st_bin="${st_repo}/usr/bin/secure-terminal"
 st_pkg="${st_repo}/usr/lib/python3/dist-packages"
-if [ -n "${missing}" ] || [ -z "${wl_lib}" ] || [ -z "${lib_capture}" ] || [ ! -x "${st_bin}" ]; then
+## Gate on st_repo being RESOLVED, not just on st_bin executability: resolve() echoes empty when no
+## candidate exists, and an empty st_repo collapses "${st_repo}/usr/bin/secure-terminal" to the real
+## absolute "/usr/bin/secure-terminal" -- a system-installed package would then be tested (or blamed)
+## instead of the intended skip. Requiring st_repo non-empty keeps the opt-in skip honest.
+if [ -n "${missing}" ] || [ -z "${wl_lib}" ] || [ -z "${lib_capture}" ] || [ -z "${st_repo}" ] || [ ! -x "${st_bin}" ]; then
    printf '%s\n' "SKIP: rendered favicon e2e needs a compositor + ST checkout (missing:${missing:- } wl_lib=${wl_lib:-none} st_bin=${st_bin})" >&2
    ## style-ok: allow-skip: rendered favicon e2e needs a live wayland compositor (labwc+grim) + ST_REPO; absent in display-free CI, runs in temp-claude
    exit 77
@@ -106,6 +110,7 @@ source "${lib_capture}"
 
 pass=0
 fail=0
+skip=0
 check() {  ## $1=label $2=ok?(non-empty=pass)
    if [ -n "$2" ]; then
       printf '%s\n' "PASS: $1"; pass=$(( pass + 1 ))
@@ -176,16 +181,22 @@ else
 fi
 
 if [ -n "${shot}" ]; then
-   bf="$(black_fraction "${shot}")"
-   awk -v b="${bf}" -v m="${BLACK_FRAC_MAX}" 'BEGIN { exit !(b <= m) }' \
-      && check "no black margin around the window (pure-black ${bf} <= ${BLACK_FRAC_MAX})" '1' \
-      || check "no black margin around the window (pure-black ${bf} <= ${BLACK_FRAC_MAX})" ''
+   ## Guard the probe command substitutions with '|| bf=""': under errexit + inherit_errexit a
+   ## bare `bf="$(...)"` whose helper exits non-zero (corrupt PNG, missing dep, probe bug) would
+   ## ABORT the whole script -- skipping check()'s labeled FAIL and the remaining arms. An empty
+   ## value then falls through to a recorded FAIL below, the same as every other failure here.
+   bf="$(black_fraction "${shot}")" || bf=''
+   if [ -n "${bf}" ] && awk -v b="${bf}" -v m="${BLACK_FRAC_MAX}" 'BEGIN { exit !(b <= m) }'; then
+      check "no black margin around the window (pure-black ${bf} <= ${BLACK_FRAC_MAX})" '1'
+   else
+      check "no black margin around the window (pure-black ${bf:-probe-failed} <= ${BLACK_FRAC_MAX})" ''
+   fi
 
    ## Favicon: the titlebar-left corner must carry secure-terminal's OWN icon, detected by its
    ## distinctive green check badge. A fallback/python/cross-app icon lacks that signature green.
    iconbox="${work}/iconbox.png"
    convert "${shot}" -crop "${ICON_REGION}" +repage "${iconbox}"
-   green="$(signature_green_count "${iconbox}")"
+   green="$(signature_green_count "${iconbox}")" || green=''
    if [ -n "${green}" ] && [ "${green}" -ge "${FAVICON_GREEN_MIN}" ]; then
       check "titlebar carries the real secure-terminal favicon (green-check px ${green} >= ${FAVICON_GREEN_MIN})" '1'
    else
@@ -200,7 +211,9 @@ st_pid=''
 ## unicode payload. Under a regression to bare LC_ALL=C, xterm silently exits -> no window ->
 ## a degenerate/failed grab -> this fails, which is exactly the trio-empty signal.
 if [ -n "${WL_XWAYLAND_DISPLAY:-}" ] && type -P xterm >/dev/null 2>&1; then
-   env LC_ALL=C.UTF-8 --unset=WAYLAND_DISPLAY "DISPLAY=${WL_XWAYLAND_DISPLAY}" \
+   ## --unset before any NAME=VALUE (GNU env stops parsing options after the first assignment),
+   ## exactly as the generator's launch() must -- else WAYLAND_DISPLAY leaks into the child.
+   env --unset=WAYLAND_DISPLAY LC_ALL=C.UTF-8 "DISPLAY=${WL_XWAYLAND_DISPLAY}" \
       xterm -geometry 40x6 -fa 'Monospace' -fs 11 \
       -e bash -c "printf 'unicode: \xe4\xb8\xad\xe6\x96\x87 \xc3\xbc\xc3\xa9\n'; sleep 30" >/dev/null 2>&1 &
    xt_pid=$!
@@ -217,24 +230,35 @@ if [ -n "${WL_XWAYLAND_DISPLAY:-}" ] && type -P xterm >/dev/null 2>&1; then
    kill "${xt_pid}" 2>/dev/null || true
    xt_pid=''
 else
-   ## No Xwayland means the trio cannot be exercised at all -- surface it, do not silently pass.
-   printf '%s\n' 'note: WL_XWAYLAND_DISPLAY empty or xterm absent; trio LC_ALL arm not exercised' >&2
+   ## No Xwayland/xterm means the trio cannot be exercised -- count it as a SKIP (not a silent
+   ## pass), so the final banner and the OK line below do not claim an arm that never ran.
+   printf '%s\n' 'SKIP: WL_XWAYLAND_DISPLAY empty or xterm absent; trio LC_ALL arm not exercised' >&2
+   skip=$(( skip + 1 ))
 fi
 
 ## -------- ARM 3 (source guard): launch() must launch the trio under LC_ALL=C.UTF-8 -----------
 ## Cheap backstop for the exact regression, independent of rendering: the generator's x= and wl=
-## env arrays must carry C.UTF-8, never bare C.
+## env arrays must carry C.UTF-8, never bare C. The x= array may carry '--unset=WAYLAND_DISPLAY'
+## before LC_ALL (option must precede assignments), so match LC_ALL anywhere up to the ')'.
 if [ -n "${cmp_capture}" ]; then
-   if grep --extended-regexp --quiet 'x=\(env LC_ALL=C\.UTF-8' "${cmp_capture}" \
-      && grep --extended-regexp --quiet 'wl=\(env LC_ALL=C\.UTF-8' "${cmp_capture}"; then
+   if grep --extended-regexp --quiet 'x=\(env[^)]*LC_ALL=C\.UTF-8' "${cmp_capture}" \
+      && grep --extended-regexp --quiet 'wl=\(env[^)]*LC_ALL=C\.UTF-8' "${cmp_capture}"; then
       check 'comparison-capture launch() uses LC_ALL=C.UTF-8 for the trio (source guard)' '1'
    else
       check 'comparison-capture launch() uses LC_ALL=C.UTF-8 for the trio (source guard)' ''
    fi
+else
+   printf '%s\n' 'SKIP: comparison-capture.sh not resolved; launch() source guard not exercised' >&2
+   skip=$(( skip + 1 ))
 fi
 
-printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
+printf '%s\n' '' "${pass} pass, ${fail} fail, ${skip} skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi
-printf '%s\n' 'OK: rendered favicon honest, no black margin, trio maps under C.UTF-8'
+## Honest banner: name only what actually ran (do not claim a skipped arm).
+if [ "${skip}" -eq 0 ]; then
+   printf '%s\n' 'OK: rendered favicon honest, no black margin, trio maps under C.UTF-8'
+else
+   printf '%s\n' "OK: ${pass} favicon e2e check(s) passed, ${skip} arm(s) skipped (see SKIP notes above)"
+fi

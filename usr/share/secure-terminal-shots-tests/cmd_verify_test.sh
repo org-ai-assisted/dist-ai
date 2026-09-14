@@ -62,6 +62,7 @@ source "${lib}"
 
 pass=0
 fail=0
+skip=0
 eq() {  ## $1=got $2=want $3=label
    if [ "$1" = "$2" ]; then
       printf '%s\n' "PASS: $3"
@@ -85,40 +86,53 @@ tmp="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${tmp}" 2>/dev/null || true; }
 trap cleanup EXIT
 
-verdict() {  ## $1=cmdlog-contents (printf %b) -> 'ok' | 'fail'
+EXP='cat escape.payload'   ## the expected injected command for the synthetic-log cases
+verdict() {  ## $1=cmdlog-contents (printf %b)  [$2=expected-cmd, default EXP] -> 'ok' | 'fail'
    printf '%b' "$1" > "${tmp}/log"
-   if shots_cmd_ran_ok "${tmp}/log"; then printf 'ok'; else printf 'fail'; fi
+   if shots_cmd_ran_ok "${tmp}/log" "${2-${EXP}}"; then printf 'ok'; else printf 'fail'; fi
 }
 
-## --- Part A: fail-closed classifier verdicts ----------------------------------------
+## --- Part A: fail-closed classifier verdicts (log format RAN<TAB>rc<TAB>cmd) ---------
 
-## The injected `cat` ran and exited 0 -> publish.
-eq "$(verdict 'RAN\t0\n')" ok 'a clean rc-0 completion passes (publish)'
+## The injected command ran and exited 0 -> publish.
+eq "$(verdict 'RAN\t0\tcat escape.payload\n')" ok 'the exact injected command, rc 0, passes'
 
-## Dropped keystroke -> command_not_found_handle fired -> DISCARD, even though bash then reports 127.
-eq "$(verdict 'NOTFOUND\tat\nRAN\t127\n')" fail 'a not-found (dropped-keystroke) command is rejected'
+## A startup/empty-line entry before the real command does not block acceptance.
+eq "$(verdict 'RAN\t0\t\nRAN\t0\tcat escape.payload\n')" ok 'a leading empty-command entry is ignored'
+
+## Dropped keystroke -> command_not_found_handle fired -> DISCARD.
+eq "$(verdict 'NOTFOUND\tat\nRAN\t127\tat escape.payload\n')" fail 'a not-found (dropped-keystroke) command is rejected'
 
 ## A not-found sentinel wins even if a later command exits 0 (fail-closed on any NOTFOUND).
-eq "$(verdict 'NOTFOUND\tat\nRAN\t0\n')" fail 'any NOTFOUND rejects the shot regardless of later rc'
+eq "$(verdict 'NOTFOUND\tat\nRAN\t0\tcat escape.payload\n')" fail 'any NOTFOUND rejects the shot regardless of later rc'
 
-## `cat` of a missing payload exits non-zero -> DISCARD.
-eq "$(verdict 'RAN\t1\n')" fail 'a non-zero completion is rejected'
+## The injected command ran but FAILED (e.g. cat of a missing payload) -> DISCARD.
+eq "$(verdict 'RAN\t1\tcat escape.payload\n')" fail 'a non-zero completion of the injected command is rejected'
 
-## The LAST completed command decides: a stray leading rc-0 (startup prompt) cannot mask a real
-## failure that followed it.
-eq "$(verdict 'RAN\t0\nRAN\t1\n')" fail 'a trailing failure is rejected despite a leading rc-0'
+## Dropped RETURN: the command was typed but never executed, so only a startup empty-command entry
+## exists -- an rc-only check would wrongly accept this; requiring the command text rejects it.
+eq "$(verdict 'RAN\t0\t\n')" fail 'a dropped-Return (empty-command-only) log is rejected'
+
+## Empty injection (only Enter): two empty-command entries, no real command -> rejected.
+eq "$(verdict 'RAN\t0\t\nRAN\t0\t\n')" fail 'an empty injection (no command) is rejected'
+
+## A DIFFERENT command that happened to run cleanly is NOT the injected one -> rejected.
+eq "$(verdict 'RAN\t0\tls\n')" fail 'a clean run of a different command is rejected'
+
+## An unrecognized case yields an empty expected command; that must never be satisfiable.
+eq "$(verdict 'RAN\t0\t\n' '')" fail 'an empty expected command is rejected (unrecognized case)'
 
 ## An empty log (nothing recorded) is a MISS, never a pass.
 eq "$(verdict '')" fail 'an empty command-log is rejected (fail-closed)'
 
 ## A missing log file is a MISS.
-if shots_cmd_ran_ok "${tmp}/does-not-exist"; then
+if shots_cmd_ran_ok "${tmp}/does-not-exist" "${EXP}"; then
    eq ok fail 'a missing command-log file is a miss, not a pass'
 else
    eq fail fail 'a missing command-log file is a miss, not a pass'
 fi
 
-## --- Part B: the REAL .strc hooks agree with the classifier ---------------------------
+## --- Part B: the REAL .strc hooks agree with the classifier (driven through a PTY) ----
 
 ## Extract the QUOTED-heredoc hook block written into .strc by comparison-capture.sh (reads the
 ## CURRENT script text -> no drift / no synthetic copy). The unquoted PS1 heredoc (`<<RC`) is NOT
@@ -128,40 +142,52 @@ awk "/<<[[:punct:]]RC[[:punct:]]\$/{f=1;next} f&&/^RC\$/{f=0} f{print}" "${cap}"
 if ! grep --quiet 'command_not_found_handle' "${strc}" || ! grep --quiet "PROMPT_COMMAND='__shots_log'" "${strc}"; then
    printf '%s\n' 'FAIL: could not extract the .strc command-log hooks from comparison-capture.sh'
    fail=$(( fail + 1 ))
+elif ! type -P script >/dev/null 2>&1; then
+   printf '%s\n' 'SKIP: util-linux `script` not available; live-hook PTY checks not exercised' >&2
+   ## style-ok: allow-skip: Part B needs a PTY (util-linux `script`) to drive interactive bash faithfully; Part A fully covers the classifier
+   skip=$(( skip + 1 ))
 else
    home="${tmp}/home"
    mkdir --parents -- "${home}"
    printf '%s\n' 'hi' > "${home}/escape.payload"
-   ## Drive the REAL hooks through a live interactive bash, injecting one command, then classify.
+   ## Drive the REAL hooks through a live interactive bash over a PTY (as the emulator does; fc /
+   ## history behave as in production, unlike piped stdin), submitting one command line, then
+   ## return the produced cmdlog path.
    run_shell() {  ## $1=command-line to submit -> the produced cmdlog contents
-      local cmd log
-      cmd="$1"
+      local log
       log="${home}/.shots-cmdlog"
       printf '' > "${log}"
-      ( cd "${home}" && SHOTS_CMDLOG="${log}" HOME="${home}" \
-         bash --rcfile "${strc}" -i <<EOF >/dev/null 2>&1
-${cmd}
-EOF
-      ) || true
+      printf '%b' "$1\nexit\n" | script --quiet --return --command \
+         "cd '${home}'; SHOTS_CMDLOG='${log}' HOME='${home}' bash --rcfile '${strc}' -i" \
+         /dev/null >/dev/null 2>&1 || true
       printf '%s' "${log}"
    }
 
-   ## GOOD: the real `cat X.payload` runs -> the hooks log a clean rc-0 completion -> publish.
-   if shots_cmd_ran_ok "$(run_shell 'cat escape.payload')"; then
+   ## GOOD: the real `cat escape.payload` runs -> accepted for that exact command.
+   if shots_cmd_ran_ok "$(run_shell 'cat escape.payload')" 'cat escape.payload'; then
       eq ok ok 'live hooks: a real cat is accepted'
    else
       eq fail ok 'live hooks: a real cat is accepted'
    fi
 
-   ## BAD (the actual bug): the dropped-`c` `at escape.payload` fires command_not_found_handle ->
-   ## the log carries NOTFOUND -> the shot is rejected.
-   if shots_cmd_ran_ok "$(run_shell 'at escape.payload')"; then
+   ## BAD (the actual bug): the dropped-`c` `at escape.payload` is rejected for the expected cmd.
+   if shots_cmd_ran_ok "$(run_shell 'at escape.payload')" 'cat escape.payload'; then
       eq ok fail 'live hooks: a dropped-keystroke command is rejected'
    else
       eq fail fail 'live hooks: a dropped-keystroke command is rejected'
    fi
+
+   ## The command_not_found_handle WIRING itself: inject a GUARANTEED-missing command (independent
+   ## of whether a real `at` binary is on PATH -- claude F2) and assert the NOTFOUND sentinel was
+   ## actually written, not just that the aggregate verdict was reject.
+   nf_log="$(run_shell 'st-nonexistent-cmd-zzq escape.payload')"
+   if grep --quiet "^NOTFOUND$(printf '\t')" -- "${nf_log}"; then
+      eq ok ok 'live hooks: command_not_found_handle writes the NOTFOUND sentinel'
+   else
+      eq fail ok 'live hooks: command_not_found_handle writes the NOTFOUND sentinel'
+   fi
 fi
 
 printf '%s\n' ''
-printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"
+printf '%s\n' "${pass} pass, ${fail} fail, ${skip} skip"
 [ "${fail}" -eq 0 ]
