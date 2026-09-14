@@ -339,28 +339,32 @@ shots_transcript_has_content() {  ## $1=transcript-file  $2=prompt-literal
 ## NOT a not-found command). The emulator analogue of shots_transcript_has_content: a plain
 ## emulator has no ST transcript, so its shell (bash --rcfile .strc) writes two kinds of line to
 ## SHOTS_CMDLOG (see the .strc hooks in comparison-capture.sh):
-##   NOTFOUND<TAB><word> -- command_not_found_handle fired: the typed command does not exist
-##   RAN<TAB><rc>        -- a command completed with exit status <rc>
+##   NOTFOUND<TAB><word>       -- command_not_found_handle fired: the typed command does not exist
+##   RAN<TAB><rc><TAB><command> -- <command> completed with exit status <rc>
 ## A dropped keystroke turns 'cat X.payload' into 'at X.payload' -> command_not_found_handle
 ## (a NON-blank shell-error shot that capture_settled's blank check would otherwise accept and
-## publish). This is deliberately history-INDEPENDENT: it does not parse `fc`/`.bash_history`
-## (unreliable across shots and for not-found commands), so it never false-NEGATIVES a good shot.
-## FAIL-CLOSED: any NOTFOUND, or no clean rc-0 completion, returns false -> the caller re-injects
-## and, on persistent failure, DISCARDS the shot (never publishes the shell error).
-shots_cmd_ran_ok() {  ## $1=cmdlog-file
-   local file tab kind rc last_rc
-   file="$1"; tab=$'\t'
+## publish). FAIL-CLOSED: reject on any NOTFOUND, and require a RAN line whose command is EXACTLY
+## the injected one with rc 0 -- so a dropped Return / empty line / unrecognized case (which log
+## only a startup or empty-line 'RAN<TAB>0<TAB>' with no command) is rejected, not published. The
+## caller re-injects and, on persistent failure, DISCARDS the shot (never the shell error).
+shots_cmd_ran_ok() {  ## $1=cmdlog-file  $2=expected-command
+   local file expected tab kind rc cmd
+   file="$1"; expected="$2"; tab=$'\t'
    [ -r "${file}" ] || return 1
+   ## An empty expected command is itself a bug (an unrecognized case yields no payload command);
+   ## reject it so a bare/empty-line capture can never satisfy the gate.
+   [ -n "${expected}" ] || return 1
    ## Any not-found command means the injection was mangled -> reject outright.
    grep --quiet "^NOTFOUND${tab}" -- "${file}" && return 1
-   ## Require the LAST completed command (the injected one) to have exited 0. Using the last RAN
-   ## line, not "any rc-0 line", is robust to a leading startup-prompt entry: a real failure
-   ## (e.g. cat of a missing payload -> rc 1) then still fails even if a stray rc-0 precedes it.
-   last_rc=''
-   while IFS="${tab}" read -r kind rc _; do
-      [ "${kind}" = RAN ] && last_rc="${rc}"
+   ## Require POSITIVE evidence that the INJECTED command itself ran and exited 0 -- match the exact
+   ## command text, not merely "some RAN ended 0". A dropped Return, an empty injection, or an
+   ## unrecognized case leaves only a startup / empty-line "RAN<TAB>0<TAB>" (no command), which an
+   ## rc-only check would accept and publish as a bare-prompt shot; requiring the command text
+   ## closes that. Log format: "RAN<TAB><rc><TAB><command>" per completed command.
+   while IFS="${tab}" read -r kind rc cmd; do
+      [ "${kind}" = RAN ] && [ "${rc}" = 0 ] && [ "${cmd}" = "${expected}" ] && return 0
    done < "${file}"
-   [ "${last_rc}" = 0 ]
+   return 1
 }
 
 ## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no

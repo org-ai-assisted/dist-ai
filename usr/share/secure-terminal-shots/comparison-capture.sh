@@ -215,7 +215,11 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## Native Wayland for the toolkit terminals (Qt QPA + GTK backend both set; each reads its own).
    ## Xwayland (a private DISPLAY, WAYLAND_DISPLAY unset) ONLY for the X11-only trio xterm/urxvt/st.
    wl=(env LC_ALL=C.UTF-8 QT_QPA_PLATFORM=wayland GDK_BACKEND=wayland)
-   x=(env LC_ALL=C.UTF-8 --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
+   ## --unset MUST precede any NAME=VALUE: GNU env stops treating '--unset=...' as an option once
+   ## it has seen an assignment, so 'env LC_ALL=C.UTF-8 --unset=WAYLAND_DISPLAY' would set a literal
+   ## var named '--unset' and leave WAYLAND_DISPLAY in the child. The Xwayland trio is X11-only so
+   ## it uses DISPLAY regardless, but the intent (a pure-X11 env, no Wayland) must actually hold.
+   x=(env --unset=WAYLAND_DISPLAY LC_ALL=C.UTF-8 "DISPLAY=${xwl_display}")
    sh=(bash --rcfile "${HOME}/.strc" -i)
    ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
    ## the short cases use, its title bar scrolled off the top. Only that case gets the
@@ -863,8 +867,23 @@ shoot() {  ## $1=emulator  $2=case
    inj_cmd="$(shots_payload_cmd "${case}")"
    verify_tries=0
    shot_ok=''
+   ## An unrecognized case yields an EMPTY payload command; injecting nothing would type only a
+   ## bare Return and the content-verify (which requires the exact command) would correctly reject
+   ## it -- but skip the whole capture loop and fail loud rather than shoot a guaranteed-empty grab.
+   if [ -z "${inj_cmd}" ]; then
+      printf '%s\n' "warn ${e}.${case}: no payload command for this case (unrecognized) -- discarded, not published" >&2
+      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.webp" 2>/dev/null || true
+      content_verify_failed=1
+   else
    while [ "${verify_tries}" -lt 3 ]; do
       printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+      ## On a RETRY the prior failed attempt's echoed command + shell error are still on screen;
+      ## clear it (Ctrl-L redraws the prompt at the top) so a recovered grab shows ONLY the payload,
+      ## never the earlier failed line above it. Harmless on the first attempt (fresh screen).
+      if [ "${verify_tries}" -gt 0 ]; then
+         wtype -M ctrl -k l -m ctrl 2>/dev/null || true
+         sleep 0.3
+      fi
       inject "${wid}" "${inj_cmd}" || true
       sleep 3
       if ! capture_settled "${out}/${e}.${case}.png" "${wid}"; then
@@ -876,7 +895,7 @@ shoot() {  ## $1=emulator  $2=case
          fi
          break
       fi
-      if shots_cmd_ran_ok "${SHOTS_CMDLOG}"; then
+      if shots_cmd_ran_ok "${SHOTS_CMDLOG}" "${inj_cmd}"; then
          shot_ok=1
          break
       fi
@@ -893,10 +912,13 @@ shoot() {  ## $1=emulator  $2=case
       safe-rm --force -- "${out}/${e}.${case}.png" 2>/dev/null || true
    done
    if [ -z "${shot_ok}" ]; then
-      ## Never publish the shell-error shot: discard any lingering file and flag the run.
-      safe-rm --force -- "${out}/${e}.${case}.png" 2>/dev/null || true
+      ## Never publish the shell-error shot: discard any lingering PNG AND any stale prior .webp for
+      ## this shot (else the re-capture net's missing-check counts the old webp as present and the
+      ## orchestrator exits 0 with a stale artifact), then flag the run.
+      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.webp" 2>/dev/null || true
       printf '%s\n' "warn ${e}.${case}: content-verify failed after ${verify_tries} attempt(s) -- discarded, not published"
       content_verify_failed=1
+   fi
    fi
    shots_watchdog_cancel "${wdog}"
    [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
@@ -1380,6 +1402,10 @@ RC
 ## which is unreliable across shots and for not-found commands.
 cat >> "${HOME}/.strc" <<'RC'
 : "${SHOTS_CMDLOG:=${HOME}/.shots-cmdlog}"
+## No history FILE (fresh per shell, no cross-shot leak) but keep in-session history so fc can
+## report the just-run command; record ALL commands (HISTCONTROL empty) so nothing is dropped.
+HISTFILE=
+HISTCONTROL=
 ## A dropped keystroke turns the injected 'cat X.payload' into a non-existent command
 ## ('at X.payload'); record it so the content-verify DISCARDS the shot instead of publishing the
 ## shell error. Returns 127 like the default handler; prints nothing (a broken shot is discarded).
@@ -1387,9 +1413,17 @@ command_not_found_handle() {
    printf 'NOTFOUND\t%s\n' "$1" >> "${SHOTS_CMDLOG}"
    return 127
 }
-## Record each completed command's exit status ($? read FIRST, before anything clobbers it).
+## Record each completed command's exit status AND its text ($? read FIRST, before anything
+## clobbers it). The text lets the content-verify require the INJECTED command to have actually
+## run: a dropped Return / empty line / unknown case logs only a startup 'RAN<TAB>0<TAB>' with no
+## command, which an rc-only check would wrongly accept. fc gives the last command with no history
+## index; strip its leading whitespace.
 __shots_log() {
-   printf 'RAN\t%s\n' "$?" >> "${SHOTS_CMDLOG}"
+   local __rc=$?
+   local __cmd
+   __cmd="$(fc -ln -1 2>/dev/null)"
+   __cmd="${__cmd#"${__cmd%%[![:space:]]*}"}"
+   printf 'RAN\t%s\t%s\n' "${__rc}" "${__cmd}" >> "${SHOTS_CMDLOG}"
 }
 PROMPT_COMMAND='__shots_log'
 RC
