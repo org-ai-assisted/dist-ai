@@ -541,19 +541,26 @@ def _css_urls(text):
         yield next(group for group in match.groups() if group is not None)
 
 
-# @import loads a stylesheet; its bare-string form (@import "url";) is not a
-# url() so _CSS_URL misses it -- match it here for the supply-chain scan. The
-# url() form (@import url(...)) is already yielded by _css_urls, so exclude it
-# here (negative lookahead) to avoid double-reporting the same load.
+# @import loads a stylesheet in both a bare-string form (@import "url";) and a
+# url() form (@import url(...)); match both. The url() form is ALSO caught by
+# _css_urls, but only when its ')' is present -- an unclosed @import url("..." at
+# end-of-stylesheet is a parse error a browser still fetches, so keep the url(
+# branch here to catch it, and de-duplicate by value below so a well-formed
+# @import url() is reported once, not twice.
 _CSS_IMPORT = re.compile(
-    r"""@import\s+(?!url\()["']?([^"')\s;]+)""", re.IGNORECASE)
+    r"""@import\s+(?:url\(\s*)?["']?([^"')\s;]+)""", re.IGNORECASE)
 
 
 def _css_external_refs(text):
     text = _strip_css_comments(text)
-    yield from _css_urls(text)
+    seen = set()
+    for ref in _css_urls(text):
+        seen.add(ref)
+        yield ref
     for match in _CSS_IMPORT.finditer(text):
-        yield match.group(1)
+        ref = match.group(1)
+        if ref not in seen:            # already yielded as a url() by _css_urls
+            yield ref
 # Basenames a human has cleared to remain a raster (webp came out no smaller).
 # Keep this SMALL and justified; every entry is a content image that stays PNG.
 STATIC_IMAGE_ALLOWLIST: frozenset[str] = frozenset()
@@ -1236,8 +1243,6 @@ class _TocAudit(html.parser.HTMLParser):
         if tag == 'section' and 'cat' in classes and amap.get('id'):
             self.sections.append(amap['id'])
 
-    handle_startendtag = handle_starttag
-
     def handle_endtag(self, tag):
         if tag == 'nav' and self._toc:
             self._toc -= 1
@@ -1320,7 +1325,11 @@ PAPER_TEXT_TOKENS = frozenset({'accent', 'safe', 'muted', 'ink', 'danger'})
 AA_SMALL = 4.5
 
 _ROOT_VAR = re.compile(r'--([\w-]+)\s*:\s*([^;}]+)')
-_COLOR_VAR_USE = re.compile(r'color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
+# A bare `color:` text declaration only -- the (?<![\w-]) rejects the tail of
+# `background-color:` / `border-color:` / `outline-color:` etc., so a token used
+# only as a background or border is not wrongly judged for text contrast.
+_COLOR_VAR_USE = re.compile(
+    r'(?<![\w-])color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
 _HEX = re.compile(r'^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
 _RGB = re.compile(r'^rgba?\(([^)]*)\)', re.IGNORECASE)
 _HSL = re.compile(r'^hsla?\(([^)]*)\)', re.IGNORECASE)
