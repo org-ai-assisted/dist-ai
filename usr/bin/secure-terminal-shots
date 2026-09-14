@@ -112,6 +112,7 @@ fi
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] \
       || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom-live' ] || [ "$1" = 'zoom-verify' ] \
+      || [ "$1" = 'demo-shots' ] \
       || [ "$1" = 'comparison' ] \
       || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ] || [ "$1" = 'refresh' ]; }; then
    mode="$1"
@@ -193,6 +194,21 @@ if [ "${mode}" = 'zoom-verify' ]; then
    if [ "${run_rc}" = '0' ]; then
       optimize_to_webp "${shots_dir}/shots/"zoom-verify-*.png
       printf '%s\n' "secure-terminal-shots: wrote zoom-verify window-bar shots (webp) to ${shots_dir}/shots"
+   fi
+   exit "${run_rc}"
+fi
+
+if [ "${mode}" = 'demo-shots' ]; then
+   ## Feature-showcase shots for secure-terminal.github.io/screenshots/#showcase (a SITE
+   ## asset): the no-trailing-newline gutter mark (CLI + TUI) and the whitespace-anomaly dots,
+   ## each on the REAL decorated app. comparison-capture.sh brings up its own headless labwc and
+   ## writes PNGs to shots/; webp them in place (the site references .webp).
+   run_rc=0
+   "${shots_dir}/comparison-capture.sh" --demo-shots "$@" || run_rc="$?"
+   if [ "${run_rc}" = '0' ]; then
+      optimize_to_webp "${shots_dir}/shots/nonewline-cli.png" \
+         "${shots_dir}/shots/nonewline-tui.png" "${shots_dir}/shots/whitespace-cli.png"
+      printf '%s\n' "secure-terminal-shots: wrote feature-showcase shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"
 fi

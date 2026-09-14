@@ -935,6 +935,137 @@ zoom_verify_capture() {
    return 0
 }
 
+## demo-shots: the small feature-showcase shots that need the REAL decorated window (title
+## bar + shell prompt) for secure-terminal.github.io/screenshots/#showcase -- the
+## no-trailing-newline gutter mark (CLI + TUI) and the whitespace-anomaly dots. Each launches
+## the app, injects ONE command through the shell, settles, and grim-grabs the decorated
+## window into <name>.png in ${out}. Same prepared-HOME env (prompt, icon theme) as the other
+## secure-terminal lanes; boards are the drift-gated no-newline demo (regenerated into
+## ${HOME}/demos) and an inline printf of leading/trailing/multiple spaces.
+demo_shots_capture() {
+   local rc_dropin failures shots demo_dir nn_gen i n
+   local name mode display cmd st_pgf st_flagf st_transcript st_group st_win_w st_win_h
+   local st_wdog stwid st_tab_id st_tab_line
+   local -a d_names d_modes d_disp d_cmds st_mode_flags
+
+   ## Parallel spec arrays (an inject command carries spaces, so it lives in its own array,
+   ## never a whitespace-split field): "<name> <tab-mode> <display> <inject-command>".
+   d_names=(nonewline-cli nonewline-tui whitespace-cli)
+   d_modes=(cli tui cli)
+   d_disp=(show show show)
+   d_cmds=(
+      'cat demos/nonewline-safe-to-cat.txt'
+      'cat demos/nonewline-safe-to-cat.txt'
+      "printf '  leading indent line\ntrailing spaces line   \ntwo  and  three   spaces\n'"
+   )
+
+   nn_gen="${here}/nonewline-demo.py"
+   if [ ! -f "${nn_gen}" ]; then
+      printf '%s\n' "demo-shots: no-newline generator not found: ${nn_gen}" >&2
+      return 1
+   fi
+   demo_dir="${HOME}/demos"
+   mkdir -p -- "${demo_dir}"
+   ## Regenerate the no-newline demo (run it directly via its shebang) so `cat demos/...`
+   ## reproduces exactly the committed terminal-safe-corpus file.
+   if ! "${nn_gen}" > "${demo_dir}/nonewline-safe-to-cat.txt"; then
+      printf '%s\n' 'demo-shots: no-newline board generation failed' >&2
+      return 1
+   fi
+
+   failures=0
+   shots=0
+   rc_dropin="$(shots_rc_dropin_create demo-shots-rc)" || {
+      printf '%s\n' 'demo-shots: cannot create the privileged remote_control drop-in (sudo?)' >&2
+      return 1
+   }
+
+   n="${#d_names[@]}"
+   for (( i = 0; i < n; i++ )); do
+      name="${d_names[${i}]}"
+      mode="${d_modes[${i}]}"
+      display="${d_disp[${i}]}"
+      cmd="${d_cmds[${i}]}"
+      st_win_w="$(px 860)"
+      st_win_h="$(px 620)"
+
+      if ! st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"; then
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      st_flagf="${st_pgf}.timeout"
+      st_transcript="${st_pgf}.transcript"
+      st_group="demo-$(basename -- "${st_pgf}")"
+      safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+
+      st_mode_flags=(--mode "${display}")
+      [ "${mode}" = tui ] && st_mode_flags+=(--tui)
+
+      set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
+      shots_spawn_session "${st_pgf}" \
+         env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
+         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
+
+      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
+      stwid="$(find_window || true)"
+      if [ -z "${stwid}" ]; then
+         printf '%s\n' "warn demo-shots.${name}: window never appeared" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      wait_window_ready "${stwid}"
+
+      st_tab_id=''
+      for _ct in 1 2 3 4 5; do
+         st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
+            ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
+         st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
+         [ -n "${st_tab_id}" ] && break
+         sleep 0.6
+      done
+      if [ -z "${st_tab_id}" ]; then
+         printf '%s\n' "warn demo-shots.${name}: ctl ls found no tab -- skipping" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+
+      env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+         send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
+      sleep 1
+      st_wait_render_settled "${stwid}"
+      if capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
+            && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+         shots=$(( shots + 1 ))
+         printf '%s\n' "demo-shots: wrote ${name}.png"
+      else
+         safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
+         printf '%s\n' "warn demo-shots: ${name} produced no verified shot" >&2
+         failures=$(( failures + 1 ))
+      fi
+
+      shots_watchdog_cancel "${st_wdog}"
+      if [ -e "${st_flagf}" ]; then
+         printf '%s\n' "warn demo-shots.${name}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+         failures=$(( failures + 1 ))
+      fi
+      shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+      safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
+   done
+
+   printf '%s\n' "demo-shots: wrote ${shots} showcase shot(s) to ${out}"
+   if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
+      printf '%s\n' "warn demo-shots: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
 ## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
 ## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
@@ -1253,6 +1384,9 @@ zoom_live_levels=()
 ## Single-lane, secure-terminal-only; any trailing args are a board-name filter (default all).
 zoom_verify=''
 zoom_verify_boards=()
+## --demo-shots: the feature-showcase shots (no-newline gutter mark, whitespace dots). Single-
+## lane, secure-terminal-only.
+demo_shots=''
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
 ## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
 ## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
@@ -1301,6 +1435,13 @@ while [ "$#" -gt 0 ]; do
          st_only='true'
          shift
          zoom_verify_boards=("$@")
+         break
+         ;;
+      --demo-shots)
+         ## Single-lane, secure-terminal-only feature-showcase shots (see demo_shots_capture).
+         demo_shots='true'
+         st_only='true'
+         shift
          break
          ;;
       --quick)
@@ -1704,6 +1845,21 @@ if [ -n "${zoom_verify}" ]; then
    zoom_verify_rc=0
    zoom_verify_capture "${zoom_verify_boards[@]}" || zoom_verify_rc="$?"
    exit "${zoom_verify_rc}"
+fi
+
+## demo-shots: the feature-showcase window-bar shots (see demo_shots_capture). Same prepared-
+## HOME environment as zoom-verify; skips the emulator grid and the multi-spec ST loop.
+if [ -n "${demo_shots}" ]; then
+   cd "${HOME}"
+   st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
+   st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_bin}" ]; then
+      printf '%s\n' 'ERROR: demo-shots needs secure-terminal. Set ST_REPO=/path/to/checkout.' >&2
+      exit 1
+   fi
+   demo_shots_rc=0
+   demo_shots_capture || demo_shots_rc="$?"
+   exit "${demo_shots_rc}"
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
