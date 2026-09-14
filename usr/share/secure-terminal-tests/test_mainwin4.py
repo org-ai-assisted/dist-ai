@@ -582,6 +582,42 @@ finally:
     _tf0.terminate_foreground = _tf0_orig
     if _tf_spy1:
         _tf1.terminate_foreground = _tf1_orig
+
+# --- --terminate-verbose: max diagnostic on every Terminate -------------------
+# Verbose mode dumps MainWindow routing (which tab current() resolved, per-tab foreground
+# state) PLUS the per-terminal terminate_debug (which performs the real Terminate), to a
+# state-dir file AND a copyable box -- so a Terminate that does nothing is diagnosable.
+from PyQt6.QtWidgets import QWidget as _QW_tv                       # noqa: E402
+_tvwin = MainWindow()
+_tvterm = _tvwin.current()
+_tvwin._terminate_verbose = True
+_tvwin.tabs.addTab(_QW_tv(), 'placeholder')     # a non-terminal tab -> the report's else branch
+_tv_dbg = []
+_tvterm.terminate_debug = lambda: (_tv_dbg.append(True) or 'DBG _foreground_target() none')
+_tvwin.terminate_foreground()                   # verbose path: report + file + box + real terminate
+_tvfile = os.path.join(M.session._state_dir(), 'terminate-debug.txt')
+ok(bool(_tv_dbg) and os.path.exists(_tvfile),
+   'verbose Terminate runs terminate_debug (the real terminate) and writes terminate-debug.txt')
+_tvtext = open(_tvfile).read()
+ok('MainWindow routing' in _tvtext and 'current tab index' in _tvtext
+   and 'not a terminal' in _tvtext and 'DBG _foreground_target()' in _tvtext,
+   'verbose report carries routing, a non-terminal tab line, and the terminate_debug body')
+# a denied state dir must not crash Terminate (best-effort file write)
+_o_ens_tv = M.session.ensure_state_dir
+try:
+    M.session.ensure_state_dir = staticmethod(
+        lambda: (_ for _ in ()).throw(OSError('no state dir')))
+    _tvwin.terminate_foreground()
+    ok(True, 'verbose Terminate swallows a state-dir OSError (never crashes the window)')
+finally:
+    M.session.ensure_state_dir = _o_ens_tv
+# non-verbose (default) routes to the plain terminate_foreground, no report
+_tvwin._terminate_verbose = False
+_tv_plain = []
+_tvterm.terminate_foreground = lambda: _tv_plain.append(True)
+_tvwin.terminate_foreground()
+ok(_tv_plain == [True],
+   'non-verbose Terminate routes straight to terminate_foreground (no diagnostic)')
 # a 'bell' admin lock makes _update_bell_tray_action a no-op: the lock wins and it never
 # re-enables the tray channel past the admin lock (guards the admin-lock-bypass class)
 _bell_act = win._bell_actions['tray']
