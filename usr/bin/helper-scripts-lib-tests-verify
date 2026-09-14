@@ -5,14 +5,19 @@
 
 ## AI-Assisted
 
-## Formal verification of curl-prgrs' pure decision functions
-## (verify_curl_prgrs_formal.py): Z3 SMT proofs of the arithmetic/verdict
-## properties, cross-checked by enumeration against the REAL bash, with canaries.
+## Formal verification of helper-scripts' pure decision functions:
+##   verify_curl_prgrs_formal.py  -- Z3 SMT proofs of curl-prgrs' arithmetic /
+##      verdict properties, cross-checked by enumeration against the REAL bash.
+##   verify_accountctl_formal.py  -- exhaustive (get_field) and bounded,
+##      invariant-guarded enumeration of accountctl.sh's pure functions against
+##      the REAL bash (no SMT: string / finite-map shaped).
+## Both carry canaries so a green run has teeth.
 ##
-## SKIPs (77) ONLY when the curl-prgrs subject is absent (a source-tree / partial
-## run). A missing python3-z3 is a HARD FAILURE inside the harness, never a skip
-## -- a verification suite must not silently disable itself. Set
-## HELPER_SCRIPTS_REPO to a checkout. No root, no network.
+## A verify script SKIPs (77) ONLY when its subject is absent (a source-tree /
+## partial run); when nothing ran, the whole runner skips 77. A missing
+## python3-z3 (curl-prgrs) is a HARD FAILURE inside that harness, never a skip --
+## a verification suite must not silently disable itself. Set HELPER_SCRIPTS_REPO
+## to a checkout. No root, no network.
 
 set -o errexit
 set -o nounset
@@ -32,18 +37,34 @@ fi
 
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-  subject="${HELPER_SCRIPTS_REPO%/}/usr/libexec/helper-scripts/curl-prgrs"
+  libexec="${HELPER_SCRIPTS_REPO%/}/usr/libexec/helper-scripts"
 else
-  subject='/usr/libexec/helper-scripts/curl-prgrs'
-fi
-if [ ! -f "${subject}" ]; then
-  printf '%s\n' "helper-scripts-lib-tests-verify: SKIP (curl-prgrs not found at '${subject}')" >&2
-  printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
-  ## style-ok: allow-skip: curl-prgrs subject absent without a helper-scripts checkout -- set HELPER_SCRIPTS_REPO or install helper-scripts
-  exit 77
+  libexec='/usr/libexec/helper-scripts'
 fi
 
+## Each row: <subject-basename> <verify-script>.
 rc=0
-## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps (python3-z3)
-python3 -- "${tests_dir}/verify_curl_prgrs_formal.py" "$@" || rc=$?
+ran=0
+run_verify() {
+  local subject_base="$1" script="$2" subject
+  shift 2
+  subject="${libexec}/${subject_base}"
+  if [ ! -f "${subject}" ]; then
+    printf '%s\n' "helper-scripts-lib-tests-verify: SKIP ${script} (${subject_base} not found at '${subject}')" >&2
+    return 0
+  fi
+  ran=1
+  printf '%s\n' "== ${script} =="
+  ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps (python3-z3)
+  python3 -- "${tests_dir}/${script}" "$@" || rc=1
+}
+
+run_verify curl-prgrs verify_curl_prgrs_formal.py "$@"
+run_verify accountctl.sh verify_accountctl_formal.py "$@"
+
+if [ "${ran}" = "0" ]; then
+  printf '%s\n' "helper-scripts-lib-tests-verify: SKIP (no verify subject present; set HELPER_SCRIPTS_REPO)" >&2
+  ## style-ok: allow-skip: no verify subject present without a helper-scripts checkout -- set HELPER_SCRIPTS_REPO or install helper-scripts
+  exit 77
+fi
 exit "${rc}"
