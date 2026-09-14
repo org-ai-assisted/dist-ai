@@ -1215,6 +1215,23 @@ try:
            'save_current_screen: writes the current-screen capture to the chosen file')
     finally:
         QFileDialog.getSaveFileName = _ogsf2
+    # Save/Open Screen State Dump: the full-fidelity counterparts (grid + per-cell
+    # attributes via the dump_state getter), writing state-dump.txt -- the file to hand a
+    # reviewer for a render bug the attribute-less screen/transcript cannot show.
+    _opened.clear()
+    win.open_state_dump()
+    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'state-dump.txt'
+       and os.path.getsize(_opened[0]) > 0,
+       'open_state_dump: writes state-dump.txt under the state dir and opens it')
+    _sd_path = os.path.join(tempfile.mkdtemp(), 'state-save.txt')
+    _ogsf3 = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_sd_path, ''))
+    try:
+        win.save_state_dump()
+        ok(os.path.exists(_sd_path) and os.path.getsize(_sd_path) > 0,
+           'save_state_dump: writes the full grid+attributes state dump to the chosen file')
+    finally:
+        QFileDialog.getSaveFileName = _ogsf3
     # ai-review #3: session state is SENSITIVE history -- the dir must be 0o700 (enforced
     # even on a pre-existing wider dir) and the files 0o600, never world-readable.
     import stat as _stat3
@@ -1313,6 +1330,8 @@ ok('mode: CLI' in _tipa, 'a CLI tab shows mode: CLI')
 ok('name:' not in _tipa and 'program:' not in _tipa,
    'an un-renamed, no-OSC-title tab omits name/program (not a bare blob)')
 ok('transcript (on save): ' in _tipa, 'a tab with no env transcript shows the on-save path')
+ok('state dump (on save): ' in _tipa and _tipa.rstrip().endswith('state-dump.txt'),
+   'every tab tooltip surfaces the full-fidelity state-dump path to hand a reviewer')
 ok((win._tab_pts(_ta) or '').startswith('/dev/pts/'),
    'the pts is derived from the child stdin (not parsed out of the OSC title)')
 
