@@ -15,6 +15,9 @@ nothing):
  - four rows sharing one gutter -> nothing flagged;
  - one row (the .ffree shape) offset ~20px left -> that row flagged, on the left axis;
  - a row offset only on the RIGHT -> flagged, on the right axis;
+ - EXACTLY TWO rows, one broken -> only the broken row flagged (a median reference
+   would flag both; the majority-cluster reference does not);
+ - three rows, one outlier -> only the outlier flagged;
  - a deviation just within TOL -> not flagged; just over TOL -> flagged;
  - fewer than two rows -> nothing to compare -> not flagged.
 Also: constants sane, the measurement reads the content box (padding removed),
@@ -77,6 +80,22 @@ def run():
           len(offs) == 1 and offs[0]['name'] == '.fshare' and offs[0]['axis'] == 'right',
           repr(offs))
 
+    # 3b. EXACTLY TWO rows, one with the documented gutter-zeroing bug: only the
+    #     broken row must be flagged, never the aligned one. A median reference
+    #     lands halfway between the two and flags BOTH -- the majority-cluster
+    #     reference does not.
+    offs = cf.misaligned_rows([_row('.ftop', 200, 1240), _row('.ffree', 180, 1260)])
+    check('two-row footer flags only the broken row',
+          len(offs) == 1 and offs[0]['name'] == '.ffree', repr(offs))
+    # a two-row footer that is genuinely aligned stays clean
+    check('two aligned rows not flagged',
+          not cf.misaligned_rows([_row('.ftop', 200, 1240), _row('.fbot', 200, 1240)]))
+    # 3c. THREE rows, one offset -> only the outlier flagged (majority of two wins)
+    offs = cf.misaligned_rows(
+        [_row('.ftop', 200, 1240), _row('.ffree', 180, 1260), _row('.fbot', 200, 1240)])
+    check('three-row footer flags only the outlier',
+          len(offs) == 1 and offs[0]['name'] == '.ffree', repr(offs))
+
     # 4. tolerance boundary: within TOL passes, just over TOL fails.
     rows = _aligned()
     rows[0] = _row('.ftop', 200 + cf.TOL, 1240)
@@ -101,6 +120,9 @@ def run():
     check('measurement iterates footer children',
           'footer.children' in cf._MEASURE_JS)
     check('measurement skips script rows', "'SCRIPT'" in cf._MEASURE_JS)
+    # the SITE footer, not the first (possibly nested article/section) footer.
+    check('measurement targets the site footer',
+          'body > footer' in cf._MEASURE_JS)
 
     # 8. the predicate must be WIRED into main() (defined-but-unused enforces nothing).
     with open(os.path.join(_HERE, 'check_footer.py'), encoding='utf-8') as handle:

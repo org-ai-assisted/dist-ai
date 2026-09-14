@@ -33,7 +33,6 @@ Usage: check_footer.py <site-root> [<site-root> ...]
 
 import functools
 import os
-import statistics
 import sys
 from typing import Any
 
@@ -58,8 +57,13 @@ TOL = 2
 # width but zeroes its own gutter.
 _MEASURE_JS = r"""
 () => {
-  const footer = document.querySelector('footer');
-  if (!footer) return null;
+  // the SITE footer (page chrome), not an article/section footer: prefer a
+  // direct body child, else the last <footer> on the page. Measuring the first
+  // <footer> would let a nested article footer (a text node or single row) mask
+  // a misaligned site footer.
+  const footers = document.querySelectorAll('footer');
+  if (!footers.length) return null;
+  const footer = document.querySelector('body > footer') || footers[footers.length - 1];
   const out = [];
   for (const row of footer.children) {
     if (row.tagName === 'SCRIPT' || row.tagName === 'STYLE') continue;
@@ -84,22 +88,35 @@ _MEASURE_JS = r"""
 """
 
 
+def _majority_inset(vals, tol):
+    """The inset that the most rows agree on within `tol` (the aligned gutter).
+    A plain median is wrong for exactly two disagreeing rows -- it lands halfway
+    between them, flagging BOTH the good and the bad row -- so cluster instead and
+    take the value with the largest agreeing group."""
+    best_val, best_count = vals[0], 0
+    for v in vals:
+        count = sum(1 for x in vals if abs(x - v) <= tol)
+        if count > best_count:
+            best_count, best_val = count, v
+    return best_val
+
+
 def misaligned_rows(rows, tol=TOL):
     """Rows whose content-box left OR right inset deviates from the footer's
-    median inset by more than `tol` px. Pure Python over the measured row dicts,
-    so it is unit-testable without a browser. Fewer than two rows -> nothing to
-    compare -> no offenders."""
+    majority (aligned) inset by more than `tol` px. Pure Python over the measured
+    row dicts, so it is unit-testable without a browser. Fewer than two rows ->
+    nothing to compare -> no offenders."""
     if len(rows) < 2:
         return []
-    med_left = statistics.median(r['left'] for r in rows)
-    med_right = statistics.median(r['right'] for r in rows)
+    ref_left = _majority_inset([r['left'] for r in rows], tol)
+    ref_right = _majority_inset([r['right'] for r in rows], tol)
     out = []
     for r in rows:
-        dl = abs(r['left'] - med_left)
-        dr = abs(r['right'] - med_right)
+        dl = abs(r['left'] - ref_left)
+        dr = abs(r['right'] - ref_right)
         if dl > tol or dr > tol:
             out.append({'name': r['name'], 'left': r['left'], 'right': r['right'],
-                        'med_left': med_left, 'med_right': med_right,
+                        'ref_left': ref_left, 'ref_right': ref_right,
                         'axis': 'left' if dl > tol else 'right'})
     return out
 
@@ -170,12 +187,12 @@ def main():
                                 failures += 1
                                 sys.stderr.write(
                                     'FAIL %s @%dpx: footer row %s content-%s %dpx vs '
-                                    'median %dpx -- footer rows must share the same '
+                                    'the shared %dpx -- footer rows must share the same '
                                     'horizontal gutter (add the missing padding-left/'
                                     'right re-add for this row)\n'
                                     % (url, width, off['name'], off['axis'],
                                        off[off['axis']],
-                                       off['med_' + off['axis']]))
+                                       off['ref_' + off['axis']]))
                         finally:
                             page.close()
             finally:

@@ -190,6 +190,12 @@ if [ "${mobile_rc}" = '77' ]; then
    if [ -z "${driver}" ]; then
       driver="${script_dir}/website-tests-sandbox"
       [ -x "${driver}" ] || driver="$(command -v website-tests-sandbox 2>/dev/null || true)"
+   elif [ ! -x "${driver}" ]; then
+      ## Same rule as add_root / resolve_st_site: an EXPLICIT override that is not
+      ## usable must FATAL, not silently fall into the SKIP branch below -- a
+      ## false-green publish gate is exactly what this delegation exists to prevent.
+      printf '%s\n' "website-tests: FATAL: WEBSITE_TESTS_SANDBOX_DRIVER '${driver}' is not an executable driver (explicit-but-invalid; refusing to silently SKIP the browser lanes)" >&2
+      exit 1
    fi
    if [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
       && [ -n "${driver}" ] && [ -x "${driver}" ] && command -v sandbox >/dev/null 2>&1; then
