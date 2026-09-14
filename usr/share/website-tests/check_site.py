@@ -23,6 +23,7 @@ identity is inferred from its directory name (matched against the known family).
 import calendar
 import datetime
 import html.parser
+import math
 import os
 import posixpath
 import re
@@ -511,14 +512,19 @@ _RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
 # whole, and only forbid ')' in the UNQUOTED form (where it ends the url()).
 _CSS_URL = re.compile(
     r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
-# A browser strips /* */ comments before tokenizing CSS; do the same so a comment
-# between url( / @import and the value (url(/*x*/"https://evil/x.png")) cannot
-# smuggle an external load past the scan. Replace with a space so tokens never fuse.
-_CSS_COMMENT = re.compile(r'/\*.*?\*/', re.DOTALL)
+# A browser strips /* */ comments before tokenizing CSS, but a /* inside a string
+# is NOT a comment. Skip over "..." / '...' strings first (keep them verbatim) and
+# drop only real comments -- otherwise a `content:"/*"` ... `content:"*/"` pair
+# would swallow a real url()/@import between them (a false negative), and a naive
+# strip that leaves a space would break `url/* */(`. A comment is replaced by
+# nothing so `url/* */(` still reads as `url(`.
+_CSS_COMMENT_OR_STRING = re.compile(
+    r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(/\*.*?\*/)''', re.DOTALL)
 
 
 def _strip_css_comments(text):
-    return _CSS_COMMENT.sub(' ', text)
+    return _CSS_COMMENT_OR_STRING.sub(
+        lambda m: '' if m.group(1) is not None else m.group(0), text)
 
 
 def _css_urls(text):
@@ -577,12 +583,7 @@ def check_image_format(root, failures):
     # Content raster references must be webp (except the static allowlist). Covers
     # <img>/<source> src, srcset candidates, <a href> to a raster, and CSS url()
     # in a .css file or an inline/embedded style.
-    for page in html_files(root):
-        rel = os.path.relpath(page, root)
-        with open(page, encoding='utf-8') as handle:
-            markup = handle.read()
-        ext = Extractor()
-        ext.feed(markup)
+    def scan(ext, rel):
         for tag, attr, value in ext.links:
             # Only the site's OWN rasters can be converted; an external URL is a
             # supply-chain concern (gated there), not a must-be-webp target.
@@ -604,6 +605,19 @@ def check_image_format(root, failures):
             if _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: CSS url() image %r must be webp'
                                 % (rel, value))
+        # A raster inside an <iframe srcdoc> is a content image too; recurse
+        # (nested srcdoc included), consistent with supply-chain/inline-script.
+        for srcdoc in ext.srcdocs:
+            sub = Extractor()
+            sub.feed(srcdoc)
+            scan(sub, rel)
+
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        scan(ext, rel)
     for base_dir, dirs, files in os.walk(root):
         if '.git' in dirs:
             dirs.remove('.git')
@@ -620,8 +634,14 @@ def check_image_format(root, failures):
                                     % (rel, value))
 
 
-# Host-free CSP scheme-sources: they name no external host, so they are allowed.
+# Host-free CSP scheme-sources: they name no external host, so they are allowed --
+# EXCEPT in a script directive, where a code-bearing scheme (data:/blob:) permits
+# arbitrary <script src="data:..."> execution, equivalent to 'unsafe-inline'.
 _CSP_SAFE_SCHEMES = frozenset({'data:', 'blob:', 'mediastream:', 'filesystem:'})
+# Directives that govern script execution: a host-free scheme is NOT safe here.
+_CSP_SCRIPT_DIRECTIVES = frozenset({
+    'script-src', 'script-src-elem', 'script-src-attr',
+})
 # CSP directives whose value is NOT a source list -- a bare word there is a
 # report target / flag / type name, never a host, so it is not host-checked.
 _CSP_NON_SOURCE = frozenset({
@@ -676,7 +696,11 @@ def check_csp(root, failures):
             if name in _CSP_NON_SOURCE:
                 continue
             for tok in toks:
-                if tok.startswith("'") or tok in _CSP_SAFE_SCHEMES:
+                if tok.startswith("'"):
+                    continue
+                # A host-free scheme (data:/blob:/...) is allowed everywhere EXCEPT
+                # a script directive, where it re-opens arbitrary script execution.
+                if tok in _CSP_SAFE_SCHEMES and name not in _CSP_SCRIPT_DIRECTIVES:
                     continue
                 failures.append('%s: CSP %s allow-lists an external source: %s'
                                 % (rel, name, tok))
@@ -729,25 +753,30 @@ class _InlineJSAudit(html.parser.HTMLParser):
                     and _url_norm(value).startswith('javascript:')):
                 self.js_url = True
 
+    def _recurse_srcdoc(self, tag, attrs):
+        # srcdoc is a nested document the browser renders; an inline <script>, an
+        # on*= handler, or a javascript: URL inside it needs 'unsafe-inline' just
+        # the same, so audit it too (nested srcdoc recurses). Runs for both the
+        # start-tag and the self-closing <iframe/> form (text/html ignores the /).
+        if tag != 'iframe':
+            return
+        srcdoc = dict(attrs).get('srcdoc')
+        if srcdoc:
+            sub = _InlineJSAudit()
+            sub.feed(srcdoc)
+            self.inline_script = self.inline_script or sub.inline_script
+            self.handlers |= sub.handlers
+            self.js_url = self.js_url or sub.js_url
+
     def handle_startendtag(self, tag, attrs):
         # A self-closing tag (e.g. <input onfocus=..>) has no body, so it never
-        # opens an inline <script>; only its attributes matter.
+        # opens an inline <script>; only its attributes (and an iframe srcdoc) matter.
         self._scan_attrs(attrs)
+        self._recurse_srcdoc(tag, attrs)
 
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
-        if tag == 'iframe':
-            srcdoc = dict(attrs).get('srcdoc')
-            if srcdoc:
-                # srcdoc is a nested document the browser renders; an inline
-                # <script>, an on*= handler, or a javascript: URL inside it needs
-                # 'unsafe-inline' just the same, so audit it too (nested srcdoc
-                # recurses through this same handler).
-                sub = _InlineJSAudit()
-                sub.feed(srcdoc)
-                self.inline_script = self.inline_script or sub.inline_script
-                self.handlers |= sub.handlers
-                self.js_url = self.js_url or sub.js_url
+        self._recurse_srcdoc(tag, attrs)
         if tag == 'script':
             self._script_depth += 1
             amap = dict(attrs)
@@ -1267,11 +1296,28 @@ _HSL = re.compile(r'^hsla?\(([^)]*)\)', re.IGNORECASE)
 
 
 def _channel(token):
-    # An rgb() component: an integer 0-255, or a percentage of 255.
+    # An rgb() component: a number 0-255 (CSS Color 4 allows a fractional value),
+    # or a percentage of 255.
     token = token.strip()
     if token.endswith('%'):
         return min(255, max(0, round(float(token[:-1]) * 255 / 100)))
-    return min(255, max(0, int(token)))
+    return min(255, max(0, round(float(token))))
+
+
+def _hue_deg(token):
+    # An hsl() hue: a number in deg (default), grad, rad, or turn.
+    match = re.match(r'^([+-]?[0-9.]+)(deg|grad|rad|turn)?$', token.strip(),
+                     re.IGNORECASE)
+    if not match:
+        raise ValueError(token)
+    value, unit = float(match.group(1)), (match.group(2) or 'deg').lower()
+    if unit == 'grad':
+        return value * 0.9
+    if unit == 'rad':
+        return value * 180 / math.pi
+    if unit == 'turn':
+        return value * 360
+    return value
 
 
 def _hsl_to_rgb(hue, sat, light):
@@ -1321,7 +1367,7 @@ def _parse_color(value):
         parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
         if len(parts) >= 3:
             try:
-                hue = float(parts[0].lower().rstrip('deg'))
+                hue = _hue_deg(parts[0])
                 sat = float(parts[1].rstrip('%')) / 100
                 light = float(parts[2].rstrip('%')) / 100
             except ValueError:
@@ -1354,6 +1400,9 @@ def _css_sources(root):
     SEPARATE -- a subsite (git-diffs-lie/style.css) carries its own theme with its
     own --bg and --accent, so merging it into the parent's CSS would conflate two
     different color vocabularies (and pick the wrong --accent, last-wins)."""
+    # Strip CSS comments at the source: a commented-out :root palette or a `.class`
+    # rule left behind in a comment must not read as a live definition (a false
+    # contrast pairing, or an undefined class masked as defined).
     for base, dirs, files in os.walk(root):
         _prune_git(dirs)
         for name in sorted(files):
@@ -1362,7 +1411,7 @@ def _css_sources(root):
             path = os.path.join(base, name)
             try:
                 with open(path, encoding='utf-8') as handle:
-                    yield os.path.relpath(path, root), handle.read()
+                    yield os.path.relpath(path, root), _strip_css_comments(handle.read())
             except OSError:
                 continue
     for page in html_files(root):
@@ -1370,23 +1419,48 @@ def _css_sources(root):
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
         if ext.styles:
-            yield os.path.relpath(page, root), '\n'.join(ext.styles)
+            yield os.path.relpath(page, root), _strip_css_comments('\n'.join(ext.styles))
 
 
-_VAR_REF = re.compile(r'^var\(\s*--([\w-]+)\s*(?:,[^)]*)?\)$', re.IGNORECASE)
+_VAR_OPEN = re.compile(r'^var\(\s*(.*)\)\s*$', re.DOTALL | re.IGNORECASE)
+_VAR_NAME = re.compile(r'^--([\w-]+)$')
+
+
+def _split_var(value):
+    """('--name', fallback-or-None) for a var() expression, else None. Splits on
+    the FIRST top-level comma so a fallback carrying nested parens/commas
+    (var(--x, rgb(0,0,0))) is preserved intact."""
+    match = _VAR_OPEN.match(value.strip())
+    if not match:
+        return None
+    inner, depth = match.group(1), 0
+    for i, char in enumerate(inner):
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+        elif char == ',' and depth == 0:
+            return inner[:i].strip(), inner[i + 1:].strip()
+    return inner.strip(), None
 
 
 def _resolve_color(value, raw, _seen=None):
-    """Parse a color, following one or more var(--x) indirections through the
-    :root palette (a --accent defined as var(--brand)); cycle-guarded, and None if
-    the chain never lands on a concrete color."""
+    """Parse a color, following var() indirection through the :root palette (a
+    --accent defined as var(--brand)) and honoring a var() fallback when the
+    referenced token is missing, cyclic, or not a color. Cycle-guarded; None if
+    nothing in the chain lands on a concrete color."""
     _seen = _seen or set()
-    match = _VAR_REF.match(value.strip())
-    if match:
-        ref = match.group(1)
-        if ref in _seen or ref not in raw:
-            return None
-        return _resolve_color(raw[ref], raw, _seen | {ref})
+    parsed = _split_var(value)
+    if parsed is not None:
+        primary, fallback = parsed
+        name = _VAR_NAME.match(primary)
+        if name and name.group(1) not in _seen and name.group(1) in raw:
+            resolved = _resolve_color(raw[name.group(1)], raw,
+                                      _seen | {name.group(1)})
+            if resolved is not None:
+                return resolved
+        # primary unresolved -> the fallback expression (a browser uses it too)
+        return _resolve_color(fallback, raw, _seen) if fallback is not None else None
     return _parse_color(value)
 
 

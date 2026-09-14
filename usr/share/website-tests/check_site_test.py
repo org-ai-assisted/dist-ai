@@ -947,6 +947,89 @@ def run():
     # content page coincidentally named like a screenshot) has no reliable structural
     # signal to tighten on without breaking case 12, and the sites' naming avoids it.
 
+    # ---- Reconcile batch (ai-review round on the hardening) -----------------
+    # Edges in the first batch's own new code (a naive CSS-comment strip, color
+    # parsing, srcdoc recursion) plus a pre-existing CSP gap. Each FAILS on the
+    # first-batch check_site.py and passes now.
+
+    # CSS-comment stripping must be string-aware: a /* inside a "..." string is not
+    # a comment, so a url()/@import between a `content:"/*"` and `content:"*/"` pair
+    # must still be seen (a naive strip hid it -- a regression).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<link rel="stylesheet" href="s.css">')
+        _write(root, 's.css',
+               '.a{content:"/*"}.b{background:url(https://example.com/x.png)}.c{content:"*/"}')
+        check('CSS url() between string /* */ tokens is still gated',
+              any('x.png' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
+        # A comment between `url` and `(` is removed entirely (not spaced), so the
+        # load still reads as url(.
+        _write(root, 's.css', 'a{background:url/*c*/(https://example.com/y.png)}')
+        check('CSS url/* */( still reads as a load',
+              any('y.png' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
+
+    # A commented-out :root palette must not be read as a live definition -- neither
+    # a false contrast pairing nor a masked undefined class.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#c21a74}.kicker{color:var(--accent)}'
+               '/* :root{--accent:#d83933} */')      # dead low-contrast override
+        check('a commented-out :root override does not cause a false contrast failure',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % (
+            '<style>/* .eyebrow{color:red} */</style><p class="eyebrow">x</p>'))
+        check('a class defined only inside a CSS comment is still flagged undefined',
+              any('eyebrow' in f for f in _uc_failures(root)), repr(_uc_failures(root)))
+
+    # Color parsing: a fractional rgb() component, an hsl() with a non-deg unit, and
+    # a var() fallback (incl. one with nested parens) must all parse, not skip.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:rgb(216.0,57,51)}.kicker{color:var(--accent)}')
+        check('fractional rgb() component is parsed and contrast-checked',
+              any('--accent' in f for f in _ct_failures(root)), repr(_ct_failures(root)))
+    check('hsl() with a turn unit parses (not skipped)',
+          check_site._parse_color('hsl(0.5turn, 50%, 50%)') is not None)
+    check('var() fallback with nested parens resolves',
+          check_site._resolve_color('var(--undefined, rgb(0,0,0))', {}) == (0, 0, 0))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:var(--undefined,#d83933)}.kicker{color:var(--accent)}')
+        check('a var() fallback color is contrast-checked when the token is missing',
+              any('--accent' in f for f in _ct_failures(root)), repr(_ct_failures(root)))
+
+    # A self-closing <iframe srcdoc=.../> is not void in text/html; its inline JS
+    # must still be audited (recursion was only on the start-tag form).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<iframe srcdoc="&lt;script&gt;evil()&lt;/script&gt;"/>')
+        check('inline <script> in a self-closing iframe srcdoc flagged',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    # A host-free scheme (data:) is safe in most directives but NOT in a script
+    # directive, where <script src="data:..."> executes -- equivalent to unsafe-inline.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (
+            "default-src 'none'; script-src 'self' data:; img-src 'self';"
+            " base-uri 'none'; form-action 'none'", ''))
+        check('data: in script-src is flagged',
+              any('data:' in f for f in _csp_failures(root)), repr(_csp_failures(root)))
+        _write(root, 'index.html', _cpage % (
+            "default-src 'none'; script-src 'self'; img-src 'self' data:;"
+            " base-uri 'none'; form-action 'none'", ''))
+        check('data: in img-src stays allowed',
+              _csp_failures(root) == [], repr(_csp_failures(root)))
+
+    # A raster inside an <iframe srcdoc> is a content image too (image_format now
+    # recurses srcdoc like the sibling checks).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<iframe srcdoc="&lt;img src=/x.png&gt;"></iframe>')
+        check('a raster inside iframe srcdoc must be webp',
+              any('x.png' in f for f in _fmt_failures(root)), repr(_fmt_failures(root)))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
