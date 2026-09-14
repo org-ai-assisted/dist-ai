@@ -301,6 +301,11 @@ eq(sorted(_wac(list('cmd  '), flag_trailing=False)), [],
    'current line: a trailing space is NOT flagged (that is where the cursor sits)')
 eq(sorted(_wac(list('  cmd  '), flag_trailing=False)), [0, 1],
    'current line: leading still flagged, trailing suppressed')
+# flag_leading=False AND flag_trailing=False (the TUI grid): INTERIOR runs only -- a grid
+# pads every row with trailing fill and indents content with leading spaces, so both are
+# structural, not anomalies. '  a  b  ' -> only the interior '  ' (cols 3-4).
+eq(sorted(_wac(list('  a  b  '), flag_trailing=False, flag_leading=False)), [3, 4],
+   'TUI grid: only the interior >=2 run is flagged, not leading indent or trailing padding')
 
 # cells_to_runs tags an anomalous space run as (MARK_KEY, WS_ANOMALY, 0x20) while keeping
 # the run TEXT a real space -- so copy / transcript get a plain space; the widget paints the
