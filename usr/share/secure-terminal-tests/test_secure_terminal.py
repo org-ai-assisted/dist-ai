@@ -284,6 +284,57 @@ _fr, _ = S.cells_to_runs([], _flood, 'box', False, True)
 ok(len(_fr) <= 2100,
    'marking runs are capped so a flood cannot defeat run-coalescing (%d runs)' % len(_fr))
 
+# --- whitespace-anomaly marking (leading / trailing / >= 2 interior spaces) -----
+# ASCII space is benign per code point, so the risk is POSITIONAL: the classifier is a
+# pure function over a per-column character sequence, shared by the CLI cell path.
+_wac = S.whitespace_anomaly_cols
+eq(sorted(_wac(list('abc'))), [], 'plain text: no whitespace anomaly')
+eq(sorted(_wac(list('a b c'))), [], 'single interior spaces are ordinary word spacing')
+eq(sorted(_wac(list('  cmd'))), [0, 1], 'leading spaces are flagged')
+eq(sorted(_wac(list('cmd  '))), [3, 4], 'trailing spaces are flagged')
+eq(sorted(_wac(list('a  b'))), [1, 2], 'an interior run of >= 2 spaces is flagged')
+eq(sorted(_wac(list('a b  c d'))), [3, 4], 'only the >= 2 interior run, not the single gaps')
+eq(sorted(_wac(list('   '))), [0, 1, 2], 'an all-space line is fully flagged')
+# flag_trailing=False (the editable current line): keep leading + interior, drop trailing --
+# so a shell prompt "...$ " never wears a dot at the cursor.
+eq(sorted(_wac(list('cmd  '), flag_trailing=False)), [],
+   'current line: a trailing space is NOT flagged (that is where the cursor sits)')
+eq(sorted(_wac(list('  cmd  '), flag_trailing=False)), [0, 1],
+   'current line: leading still flagged, trailing suppressed')
+
+# cells_to_runs tags an anomalous space run as (MARK_KEY, WS_ANOMALY, 0x20) while keeping
+# the run TEXT a real space -- so copy / transcript get a plain space; the widget paints the
+# dot. 'a  b  ' == interior double + trailing double.
+def _cl(s):
+    return [(c, ()) for c in s]
+_wruns, _ = S.cells_to_runs([_cl('a  b  ')], [], 'detail', True, True)
+_wkeys = [k for _t, k in _wruns if isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY]
+ok(len(_wkeys) == 2 and all(k == (S.MARK_KEY, S.WS_ANOMALY, 0x20) for k in _wkeys),
+   'cells_to_runs tags the interior and trailing space runs as WS_ANOMALY')
+ok(all(set(t) == {' '} for t, k in _wruns
+       if isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY),
+   'a WS_ANOMALY run keeps its real spaces as text (copy-safe: no dot glyph in the document)')
+eq(''.join(t for t, _ in _wruns), 'a  b  \n',
+   'the safe text is unchanged -- the marking never alters what copies out')
+# gated on the markings toggle, exactly like every other marking
+_woff, _ = S.cells_to_runs([_cl('a  b  ')], [], 'detail', True, False)
+ok(not any(isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY for _t, k in _woff),
+   'markings off: no whitespace-anomaly runs')
+# the CURRENT line suppresses trailing: a prompt-like line at the cursor gets no WS run
+_wcur, _ = S.cells_to_runs([], _cl('user@host:~$ '), 'detail', True, True)
+ok(not any(isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY for _t, k in _wcur),
+   'current line: a prompt trailing space is not flagged')
+# but a leading run typed at the prompt IS flagged live on the current line
+_wlead, _ = S.cells_to_runs([], _cl('  rm -rf'), 'detail', True, True)
+ok(any(isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY for _t, k in _wlead),
+   'current line: leading spaces (a history-hidden command) are flagged live')
+# a space carrying a BACKGROUND is a visible colour block (art / a gradient row), not
+# invisible padding: it keeps its own SGR and is never flagged, even in a leading run.
+_bgst = tuple(sorted({'fg': None, 'bg': 4, 'bold': False}.items()))
+_wbg, _ = S.cells_to_runs([[(' ', _bgst), (' ', _bgst), ('X', ())]], [], 'show', True, True)
+ok(not any(isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY for _t, k in _wbg),
+   'background-coloured spaces are a visible block, never a whitespace anomaly')
+
 # --- Show mode: render the real glyph but TINT it by risk class ----------------
 # In show mode a non-ASCII glyph is shown as itself (not boxed/escaped), yet it is
 # still tagged with its risk class so colour flags a homoglyph the eye cannot catch.

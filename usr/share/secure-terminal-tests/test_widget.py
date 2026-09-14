@@ -4475,6 +4475,66 @@ _gwrap._gutter.repaint()                        # paint the wrapped-block glyph 
 APP.processEvents()
 _gwrap.shutdown()
 
+# --- whitespace-anomaly dots: leading / trailing / >= 2 interior spaces --------
+# Display-only: the cell keeps a real U+0020 (copy / transcript / toPlainText all get a
+# plain space); the widget paints a faint dot over each flagged column, driven by
+# _WS_DOT_PROP on the run's char format (which program output can never set).
+from secure_terminal.terminal import (_WS_DOT_PROP as _WSP, _WS_DOT_GLYPH as _WSG,   # noqa: E402
+                                      _CP_PROP as _WCP)
+
+_wsw = SecureTerminal(command='/bin/cat')
+_wsw.resize(500, 300)
+_wsw.show()
+APP.processEvents()
+# the WS_ANOMALY format carries ONLY the dot-paint flag: no colour (the cell is a space)
+# and no _CP_PROP (copy / hover treat it as an ordinary space).
+_wsf = _wsw._fmt_from_key((_S.MARK_KEY, _S.WS_ANOMALY, 0x20))
+ok(_wsf.property(_WSP) is True, 'ws: the WS_ANOMALY format carries the dot-paint flag')
+ok(_wsf.property(_WCP) is None, 'ws: the WS_ANOMALY format carries no source code point')
+# a completed line with an interior >= 2 run AND a trailing run: both are flagged
+feed_output(_wsw, b'a  b  \n')
+_wsw._force_current_frame()
+_wsblk = _wsw.document().begin()
+_wsruns = list(_wsw._ws_dot_runs(_wsblk))
+ok(len(_wsruns) == 2, 'ws: the interior and the trailing space runs each drive a dot run')
+ok(list(_wsw._ws_dot_rects()), 'ws: flagged cells yield paint rectangles (dots are drawn)')
+# COPY-SAFE across every export path: the document holds real spaces, so the dot glyph
+# never leaves the widget.
+_wsw.selectAll()
+_wssel = _wsw._selection_text()
+ok('a  b  ' in _wssel and _WSG not in _wssel,
+   'ws: selecting the line copies real spaces, never the dot glyph')
+ok(_WSG not in _wsw.toPlainText() and 'a  b  ' in _wsw.toPlainText(),
+   'ws: the flat toPlainText path also yields real spaces, no dot glyph')
+ok(_WSG not in _wsw.transcript_text(),
+   'ws: the transcript record carries real spaces, no dot glyph')
+_wsw.grab()                                     # paintEvent -> _paint_ws_dots (non-empty)
+APP.processEvents()
+_wsw.shutdown()
+
+# a plain widget (no anomalies) exercises the empty-rects early return
+_wsplain = SecureTerminal(command='/bin/cat')
+_wsplain.resize(500, 300)
+_wsplain.show()
+feed_output(_wsplain, b'plain output\n')
+_wsplain._force_current_frame()
+ok(not list(_wsplain._ws_dot_rects()), 'ws: ordinary output flags nothing')
+_wsplain.grab()                                 # paintEvent -> _paint_ws_dots -> early return
+APP.processEvents()
+_wsplain.shutdown()
+
+# TUI grid: whitespace dots are CLI-only (a grid pads every row with structural spaces),
+# so _ws_dot_rects returns nothing regardless of content.
+_wstui = SecureTerminal(command='/bin/cat', tui=True)
+_wstui.resize(500, 300)
+_wstui.show()
+feed_output(_wstui, b'a  b  \n')
+_wstui._force_current_frame()
+ok(not list(_wstui._ws_dot_rects()), 'ws: the TUI grid path draws no whitespace dots')
+_wstui.grab()
+APP.processEvents()
+_wstui.shutdown()
+
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
 # same rules across every display mode). With coloured markings ON (default) it
