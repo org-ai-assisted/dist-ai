@@ -68,7 +68,9 @@ alice:x:1000:1000:Alice:/home/alice:/bin/bash
 bob:x:1001:1001:Bob:/home/bob:/bin/bash
 carol:x:1002:1002:Carol:/home/carol:/bin/bash
 dave:x:1003:1003:Dave:/home/dave:/bin/bash
-svc:x:200:5000:Svc:/:/usr/sbin/nologin"
+erin:x:1004:1004:Erin:/home/erin:/bin/bash
+svc:x:200:5000:Svc:/:/usr/sbin/nologin
+legacy:x:500:0:Legacy gid-0 account:/:/usr/sbin/nologin"
 ## group: name:x:gid:members
 fixture_group="\
 root:x:0:
@@ -81,7 +83,8 @@ root:\$6\$rootsalt\$roothash:19000:0:99999:7:::
 alice:\$6\$asalt\$ahash:19000:0:99999:7:::
 bob:!\$6\$bsalt\$bhash:19000:0:99999:7:::
 carol:*:19000:0:99999:7:::
-dave::19000:0:99999:7:::"
+dave::19000:0:99999:7:::
+erin:!!:19000:0:99999:7:::"
 
 ## getent <db> [--] [key]: key matches passwd/shadow name (field 1); group key
 ## matches name (field 1) OR gid (field 3). No key -> whole db. rc 2 if no match.
@@ -193,11 +196,21 @@ if [ -z "${mutation_log}" ]; then pass "lock_pass no-ops an already-locked accou
 mutation_log=""; unlock_pass bob
 if [[ "${mutation_log}" == *'chpasswd'*'bob:$6$bsalt$bhash'* ]]; then pass "unlock_pass restores the clean password"; else fail "unlock_pass wrong: '${mutation_log}'"; fi
 
+## ---- '!!' shadow field ('passwd -l' on a never-set password): strip ALL
+##      leading markers, not one per symbol char (findings F1/F2/F3) ----
+if is_pass_empty erin; then pass "is_pass_empty detects a '!!' (never-set) account (F2)"; else fail "is_pass_empty missed the '!!' account"; fi
+mutation_log=""; unlock_pass erin
+if [[ "${mutation_log}" == *'<erin:>'* ]]; then pass "unlock_pass fully unlocks a '!!' account (F1)"; else fail "unlock_pass left a marker on '!!': '${mutation_log}'"; fi
+mutation_log=""; disable_pass erin
+if [[ "${mutation_log}" == *'<erin:!*>'* ]]; then pass "disable_pass writes a clean '!*' for a '!!' account (F3)"; else fail "disable_pass corrupted the '!!' field: '${mutation_log}'"; fi
+
 ## ---- group_has_nonroot_member (primary GID + supplementary) ----
 if group_has_nonroot_member testgrp; then pass "group_has_nonroot_member finds a primary-GID member (svc)"; else fail "group_has_nonroot_member missed the primary-GID member"; fi
 if group_has_nonroot_member suppgrp; then pass "group_has_nonroot_member finds a supplementary member (alice)"; else fail "group_has_nonroot_member missed the supplementary member"; fi
 if group_has_nonroot_member rootgrp; then fail "group_has_nonroot_member counted a root-only group"; else pass "group_has_nonroot_member ignores a root-only group"; fi
 if group_has_nonroot_member nogroup; then fail "group_has_nonroot_member matched a missing group"; else pass "group_has_nonroot_member rejects a missing group"; fi
+## F4: a numeric argument must be rejected, not reinterpreted by getent as a GID.
+if group_has_nonroot_member 0; then fail "group_has_nonroot_member did a GID lookup for '0'"; else pass "group_has_nonroot_member rejects a numeric argument (F4)"; fi
 
 ## ---- group_has_nonroot_member: real-host primary-group proof ----
 ## Restore the real getent to prove a genuine primary-group membership exists
