@@ -1089,6 +1089,50 @@ def run():
         check('a CSP with base-uri none passes', _csp_failures(root) == [],
               repr(_csp_failures(root)))
 
+    # ---- Reconcile batch 3 (fourth ai-review round) ------------------------
+    # Alpha compositing, a duplicate @import, and the last raw-regex check.
+
+    # A semi-transparent color must be SKIPPED (its rendered contrast depends on
+    # compositing over the bg), never parsed as opaque -- pre-fix #33333380 read as
+    # opaque (51,51,51) and a genuinely low-contrast muted color passed clean.
+    check('a semi-transparent hex8 color is not parsed as opaque',
+          check_site._parse_color('#33333380') is None)
+    check('a semi-transparent rgba() color is not parsed as opaque',
+          check_site._parse_color('rgba(51,51,51,0.5)') is None)
+    check('an opaque hex8 color is still parsed',
+          check_site._parse_color('#ff8080ff') == (255, 128, 128))
+
+    # @import url(...) is a single load, not two (pre-fix it matched both _css_urls
+    # and the @import scan and was double-reported).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<link rel="stylesheet" href="s.css">')
+        _write(root, 's.css', '@import url(https://example.com/x.css);')
+        check('@import url() is reported once, not twice',
+              len([f for f in _supply_failures(root) if 'x.css' in f]) == 1,
+              repr(_supply_failures(root)))
+
+    # check_toc_complete parses (quote- and comment-robust) like every other audit.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               "<nav class='toc'><a href='#one'>One</a></nav>"
+               "<section class='cat' id='one'>a</section>"
+               "<section class='cat' id='two'>b</section>")
+        check('toc-complete flags a missing section with single-quoted attrs',
+              any('#two' in f for f in _toc_failures(root)), repr(_toc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<nav class="toc"><a href=\'#one\'>One</a></nav>'
+               '<section class="cat" id="one">a</section>')
+        check('toc-complete does not false-flag a single-quoted TOC href',
+              _toc_failures(root) == [], repr(_toc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<nav class="toc"><a href="#one">One</a></nav>'
+               '<section class="cat" id="one">a</section>'
+               '<!--<section class="cat" id="draft">d</section>-->')
+        check('toc-complete ignores a .cat section inside an HTML comment',
+              _toc_failures(root) == [], repr(_toc_failures(root)))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
