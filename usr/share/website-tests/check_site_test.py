@@ -712,6 +712,69 @@ def run():
         check('toc-complete exempts a page with no on-this-page TOC',
               _toc_failures(root) == [], repr(_toc_failures(root)))
 
+    # check_repro_raw: a Reproduce box must show the raw attack in a traditional
+    # tool, never pipe the payload into a safety/neutralizer tool (that is the
+    # Mitigation box). Canaries reproduce the exact pre-change bug.
+    def _repro_failures(root):
+        failures: list[str] = []
+        check_site.check_repro_raw(root, failures)
+        return failures
+
+    _repro = ('<div class="repro"><div class="reprohd">'
+              '<a class="repro-try" href="#try">Reproduce</a></div>'
+              '<div class="copybox"><code class="cmd">%s</code>'
+              '<button class="copybtn" type="button" hidden>Copy</button></div></div>')
+    _mitig = ('<div class="mitig"><div class="mitighd">'
+              '<a class="mitig-try" href="#how">Mitigation</a></div>'
+              '<div class="copybox"><code class="cmd">%s</code>'
+              '<button class="copybtn" type="button" hidden>Copy</button></div></div>')
+
+    # A: the pre-change bug -- a Reproduce box piping the payload into stcat.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _repro % 'base64 -d poc/x/payload.b64 | stcat')
+        fails = _repro_failures(root)
+        check('repro-raw flags stcat in a Reproduce box',
+              any('stcat' in f for f in fails), repr(fails))
+
+    # B: the fixed form -- decode to a file, then bare cat -- must pass.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _repro % 'base64 -d poc/x/payload.b64 &gt; payload'
+               + _repro % 'cat payload')
+        check('repro-raw passes base64-decode + cat',
+              _repro_failures(root) == [], repr(_repro_failures(root)))
+
+    # C: the safety tool in a Mitigation box (not .repro) must NOT be flagged.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _repro % 'cat payload' + _mitig % 'stcat payload')
+        check('repro-raw ignores a safety tool in a .mitig box',
+              _repro_failures(root) == [], repr(_repro_failures(root)))
+
+    # D: unicode-show / text-safety-scan / git-diff-review are caught too, and
+    # stcatn (superstring of stcat) does not slip a bare stcat past the match.
+    for bad in ('base64 -d poc/x/payload.b64 | unicode-show /dev/stdin',
+                'text-safety-scan changelog',
+                'git -c diff.external=git-diff-review diff master..x',
+                'base64 -d poc/x/payload.b64 | stcatn'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html', _repro % bad)
+            check('repro-raw flags %r' % bad.split()[-1],
+                  _repro_failures(root) != [], bad)
+
+    # E: plain git diff and a normal paste (no neutralizer) pass.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _repro % 'git diff master..type/submodule-bump'
+               + _repro % 'wl-copy &lt; paste.payload')
+        check('repro-raw passes git diff + wl-copy',
+              _repro_failures(root) == [], repr(_repro_failures(root)))
+
+    # F: the check must be WIRED into main() -- a defined-but-uncalled check
+    # enforces nothing (the image gate shipped that way once).
+    check('check_repro_raw is invoked from main()',
+          'check_repro_raw(root, failures)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

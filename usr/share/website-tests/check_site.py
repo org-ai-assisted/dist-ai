@@ -862,6 +862,76 @@ def check_card_layout(root, failures):
                 'as its text' % (rel, section_id, count))
 
 
+# A Reproduce box (.repro) must demonstrate the ATTACK in a traditional tool
+# (bare cat, plain git diff, a normal paste), so a reader sees the lie fire.
+# Piping the payload into a safety/neutralizer tool makes "Reproduce" show the
+# DEFENSE instead -- that belongs in the parallel .mitig box. These are the
+# neutralizer/inspector tools that must never appear in a .repro command.
+SAFETY_TOOLS = (
+    'stcatn', 'stcat', 'unicode-show', 'sanitize-string',
+    'text-safety-scan-find', 'text-safety-scan', 'git-diff-review',
+)
+
+
+class _ReproToolAudit(html.parser.HTMLParser):
+    """Collect the `code.cmd` command strings inside every `.repro` box."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # open non-void tags
+        self._repro_at = None     # stack index where the current .repro opened
+        self._in_cmd = False
+        self._buf = []
+        self.commands = []        # cmd strings found inside a .repro
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID_TAGS:
+            return
+        classes = set((dict(attrs).get('class') or '').split())
+        self._stack.append(tag)
+        if self._repro_at is None and 'repro' in classes:
+            self._repro_at = len(self._stack) - 1
+        if self._repro_at is not None and tag == 'code' and 'cmd' in classes:
+            self._in_cmd = True
+            self._buf = []
+
+    def handle_data(self, data):
+        if self._in_cmd:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in VOID_TAGS:
+            return
+        if self._in_cmd and tag == 'code':
+            self.commands.append(''.join(self._buf))
+            self._in_cmd = False
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i] == tag:
+                if self._repro_at is not None and i <= self._repro_at:
+                    self._repro_at = None
+                del self._stack[i:]
+                break
+
+
+def check_repro_raw(root, failures):
+    # Reproduce shows the raw attack in a traditional tool; the neutralizer tool
+    # belongs in the sibling Mitigation (.mitig) box, never in .repro.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = _ReproToolAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        for cmd in audit.commands:
+            for tool in SAFETY_TOOLS:
+                if re.search(r'(?<![\w-])' + re.escape(tool) + r'(?![\w-])', cmd):
+                    failures.append(
+                        '%s: Reproduce box runs the safety tool %r (%s) -- '
+                        'reproduce must show the raw attack in a traditional '
+                        'tool; move the tool to a Mitigation (.mitig) box'
+                        % (rel, tool, cmd.strip()))
+                    break
+
+
 def _header_nav(markup):
     """The ordered (label, href) list of the header's <nav> links, or None if the
     page has no header nav. The home-anchor prefix is normalized so an index page's
@@ -1367,6 +1437,7 @@ def main():
         check_image_format(root, failures)
         check_assets(root, failures)
         check_card_layout(root, failures)
+        check_repro_raw(root, failures)
         check_nav(root, failures)
         check_toc_complete(root, failures)
         check_heading_breaks(root, failures)
@@ -1381,7 +1452,8 @@ def main():
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
                              'no-inline-js + '
-                             'supply-chain + assets + card-layout + nav + '
+                             'supply-chain + assets + card-layout + repro-raw + '
+                             'nav + '
                              'toc-complete + '
                              'heading-breaks + contrast + undefined-classes + '
                              'seo clean\n' % name)
