@@ -35,6 +35,11 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Shared generic-name denylist (refused as a target below). Same file used by safe-pkill and the
+## sandbox pkill/pgrep PATH shadow -- single source, no drift.
+# shellcheck source=../libexec/dist-ai/generic-proc-names.bsh
+source "${DIST_AI_LIBEXEC_DIR:-/usr/libexec/dist-ai}/generic-proc-names.bsh"
+
 usage() {
    cat -- <<'EOF'
 Usage: safe-pgrep [--name] [--full] [--list-full|-a] [--count|-c] PATTERN
@@ -134,6 +139,13 @@ fi
 ## interpolated an unset "$VAR" gets an error, not a list of every process (mirrors safe-pkill).
 if [ -z "${pattern}" ]; then
    printf 'safe-pgrep: PATTERN must not be empty (an empty pattern matches every process)\n' >&2
+   exit 2
+fi
+## Refuse a bare GENERIC process name: it matches UNRELATED processes in other sessions and the
+## system tree, so the count/list is meaningless and piping it into kill is the cross-session
+## GUI-kill trap (`pgrep -f sleep | xargs kill`). Match a specific pattern, or override.
+if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; then
+   printf 'safe-pgrep: refusing the generic process name "%s" -- it matches OTHER sessions and system processes (piping such a list into kill is the cross-session GUI-kill trap). Use a specific pattern, or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
 
