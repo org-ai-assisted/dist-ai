@@ -1132,6 +1132,31 @@ def run():
                '<!--<section class="cat" id="draft">d</section>-->')
         check('toc-complete ignores a .cat section inside an HTML comment',
               _toc_failures(root) == [], repr(_toc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A self-closed <nav/> must not leave the parser stuck in TOC scope (which
+        # would count a later body anchor as a TOC link and mask a missing section).
+        _write(root, 'index.html',
+               "<nav class='toc'/><section class='cat' id='two'>b</section>"
+               "<a href='#two'>jump</a>")
+        check('a self-closed <nav/> does not mask a missing TOC section',
+              any('#two' in f for f in _toc_failures(root)), repr(_toc_failures(root)))
+
+    # An unclosed @import url("..." at end-of-stylesheet (a parse error a browser
+    # still fetches) must still be gated -- _css_urls cannot match it (no ')').
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<link rel="stylesheet" href="s.css">')
+        _write(root, 's.css', '@import url("https://example.com/x.css"')
+        check('an unclosed @import url( at EOF is still gated',
+              any('x.css' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
+
+    # A token used only as background-color (not text color:) must not be judged
+    # for text contrast -- the regex must not match the tail of `background-color:`.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#ffffff;--danger:#d0d0d0}.warn{background-color:var(--danger)}')
+        check('a background-color-only token is not judged for text contrast',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
