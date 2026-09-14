@@ -12,15 +12,17 @@
 ## are silent when wrong: leftovers mean a later build can publish or install a stale
 ## binary, and over-deletion silently destroys another package's cached artifacts.
 ##
-## Two shapes the glob table missed, both verified against real filenames:
+## The upstream (.orig.tar.xz) tarball is named from make_pkg_version WITHOUT the
+## revision (pkg_1.0.orig.tar.xz), so it carries no hyphen. A cleanup glob requiring
+## a literal '-' missed it: the CURRENT version's tarball was removed anyway by the
+## exact-path fallback at the end of make_deb_cleanup, but every PREVIOUS version's
+## tarball accumulated in DISTDIR. This asserts both versions' tarballs are swept.
 ##
-##   orig tarball        pkg_1.0.orig.tar.xz     named from make_pkg_version WITHOUT
-##                                               the revision, so it carries no hyphen
-##   revision-less .deb  pkg_2.0_all.deb         a version with no Debian revision
-##
-## A pattern requiring a literal '-' matches neither. The current version's orig
-## tarball was removed anyway by the exact-path fallback at the end of make_deb_cleanup,
-## which is what hid the first case: every PREVIOUS version's tarball accumulated.
+## The binary/source artifacts (.deb, .buildinfo, .debian.tar.xz, .dsc, .changes)
+## DELIBERATELY keep the '-' requirement: these packages are quilt-format, so a
+## Debian revision is mandatory and a revision-less .deb (pkg_2.0_all.deb) is
+## suspicious and left untouched BY DESIGN (see the note in make_deb_cleanup). This
+## test asserts that revision-less .deb is spared, not swept.
 ##
 ## Hermetic: seeds a DISTDIR with labelled artifacts and runs the real genmkfile against
 ## a throwaway minimal source package. No root, no network, no chroot.
@@ -110,11 +112,11 @@ gmf-clean-pkg (1.0-1) unstable; urgency=medium
  -- test <test@localhost>  Thu, 01 Jan 1970 00:00:00 +0000
 CHANGELOG
 
-## Artifacts that MUST be swept: this package, any version, with or without a revision.
+## Artifacts that MUST be swept: this package's quilt-format artifacts (all with a
+## Debian revision), plus its orig tarballs of any version (which carry no revision).
 must_go=(
    'gmf-clean-pkg_1.0-1_all.deb'
    'gmf-clean-pkg_0.9-1_all.deb'
-   'gmf-clean-pkg_2.0_all.deb'
    'gmf-clean-pkg-dbgsym_1.0-1_amd64.deb'
    'gmf-clean-pkg_1.0-1_amd64.buildinfo'
    'gmf-clean-pkg_1.0-1.debian.tar.xz'
@@ -123,6 +125,14 @@ must_go=(
    'gmf-clean-pkg_1.0-1_source.changes'
    'gmf-clean-pkg_1.0.orig.tar.xz'
    'gmf-clean-pkg_0.9.orig.tar.xz'
+)
+
+## A revision-less binary artifact of THIS package. make_deb_cleanup deliberately
+## requires a Debian revision ('-') in the binary/source globs (quilt format), so a
+## revision-less .deb is "suspicious" and left untouched by design -- see the note in
+## make_deb_cleanup. Assert it is spared, not swept.
+must_stay_by_design=(
+   'gmf-clean-pkg_2.0_all.deb'
 )
 
 ## Artifacts that MUST survive: a different package, including one whose name merely
@@ -135,7 +145,7 @@ must_stay=(
    'gmf-clean-pkg-extra_1.0.orig.tar.xz'
 )
 
-for artifact in "${must_go[@]}" "${must_stay[@]}"; do
+for artifact in "${must_go[@]}" "${must_stay[@]}" "${must_stay_by_design[@]}"; do
    printf '%s\n' 'fixture artifact' > "${dist_dir}/${artifact}"
 done
 
@@ -177,6 +187,15 @@ for artifact in "${must_stay[@]}"; do
       printf '%s\n' "PASS: survived (belongs to another package): ${artifact}"
    else
       printf '%s\n' "FAIL: DELETED another package's artifact: ${artifact}" >&2
+      failures=$(( failures + 1 ))
+   fi
+done
+
+for artifact in "${must_stay_by_design[@]}"; do
+   if [ -e "${dist_dir}/${artifact}" ]; then
+      printf '%s\n' "PASS: spared by design (revision-less .deb, quilt-format rule): ${artifact}"
+   else
+      printf '%s\n' "FAIL: swept a revision-less .deb that make_deb_cleanup leaves by design: ${artifact}" >&2
       failures=$(( failures + 1 ))
    fi
 done

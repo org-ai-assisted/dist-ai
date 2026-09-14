@@ -138,16 +138,24 @@ for var in TMPDIR TMP TEMPDIR TEMP; do
    esac
 done
 
-## 2. the clearing happens AFTER sudo, or env_reset undoes it
-sudo_prefix="${invocation%%sudo *}"
-case "${sudo_prefix}" in
-   *'--unset=TMPDIR'* )
-      fail "the temp-dir clearing sits BEFORE sudo, where env_reset discards it"
-      ;;
-   * )
-      pass "the clearing is applied after sudo (survives env_reset)"
-      ;;
-esac
+## 2. the clearing happens AFTER sudo, or env_reset undoes it. The sudo step is
+##    written in the source as the ${SUDO_TO_ROOT} token (default 'sudo'), so match
+##    either spelling as the boundary before measuring what precedes it.
+sudo_prefix="${invocation}"
+sudo_prefix="${sudo_prefix%%'${SUDO_TO_ROOT}'*}"
+sudo_prefix="${sudo_prefix%%sudo *}"
+if [ "${sudo_prefix}" = "${invocation}" ]; then
+   fail "no sudo step (\${SUDO_TO_ROOT} or 'sudo') found in the cowbuilder invocation"
+else
+   case "${sudo_prefix}" in
+      *'--unset=TMPDIR'* )
+         fail "the temp-dir clearing sits BEFORE sudo, where env_reset discards it"
+         ;;
+      * )
+         pass "the clearing is applied after sudo (survives env_reset)"
+         ;;
+   esac
+fi
 
 ## 3. CANARY: the assertions above must be able to fail. A subject with the clearing
 ##    removed has to be rejected, or a future refactor that drops it reads as green.
