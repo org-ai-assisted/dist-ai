@@ -25,6 +25,16 @@ declare -gA SAFE_PROC_GENERIC_NAMES=(
 )
 
 ## safe_proc_is_generic NAME -- exit 0 if NAME is a denylisted generic process name.
+##
+## Leading/trailing WHITESPACE is trimmed first: a pattern with accidental surrounding space
+## (common from `"$VAR"` interpolation or a name read from a file) still matches the generic
+## process at the pgrep layer, so it must still be refused. SCOPE: this is an AI-ACCIDENT guard,
+## not an adversarial filter -- it deliberately does NOT try to decompile a crafted REGEX that is
+## textually distinct from a plain name but matches it (`.*sleep.*`, `sl.ep`); a session does not
+## type those by accident, and probing a regex against every name over-blocks ordinary patterns.
 safe_proc_is_generic() {
-   [ -n "${SAFE_PROC_GENERIC_NAMES[${1:-}]:-}" ]
+   local n="${1:-}"
+   n="${n#"${n%%[![:space:]]*}"}"
+   n="${n%"${n##*[![:space:]]}"}"
+   [ -n "${SAFE_PROC_GENERIC_NAMES[${n}]:-}" ]
 }

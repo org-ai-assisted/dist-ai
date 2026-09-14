@@ -70,6 +70,18 @@ else
    fail "safe-pgrep did NOT refuse 'sleep' (rc=${r_rc}; err: ${r_err})"
 fi
 
+# --- whitespace variant is still refused (accidental "$VAR" interpolation) ----
+## 'sleep ' (trailing space) still matches the generic process at the pgrep layer, so the trim
+## in safe_proc_is_generic must still refuse it. Canary: pre-trim (exact-only) this exits 1/0.
+for variant in 'sleep ' ' sleep'; do
+   run "${safe_pkill}" "${variant}"
+   if [ "${r_rc}" -eq 2 ]; then
+      pass "safe-pkill refuses whitespace variant '${variant}' (trimmed to generic)"
+   else
+      fail "safe-pkill did NOT refuse whitespace variant '${variant}' (rc=${r_rc}; err: ${r_err})"
+   fi
+done
+
 # --- a specific (non-generic) pattern is NOT refused --------------------------
 ## A pattern that matches nothing exits 1 (no match), never the generic-refusal 2. Proves the
 ## denylist does not over-block ordinary targets.
