@@ -1026,6 +1026,31 @@ _tpcopy[0].click()
 eq(APP.clipboard().text(), _tppath,
    'the Copy button puts the transcript path on the clipboard')
 
+# --- Copy Current Screen File Path + Copy/Show State Dump File Path -------------
+# Same one-click-copy builder (_copy_capture_path), for the plain screen (screen.txt) and
+# the full-fidelity grid+attributes dump (state-dump.txt). The state dump is the file to
+# hand a reviewer for a render bug the attribute-less transcript/screen cannot show.
+_dialogs.clear()
+win.copy_current_screen_path()
+_scfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()]
+ok(bool(_scfields) and _scfields[0].text().endswith('screen.txt')
+   and os.path.exists(_scfields[0].text()),
+   'Copy Current Screen File Path names a real default state-dir screen.txt')
+
+_dialogs.clear()
+win.copy_state_dump_path()
+_sdfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()]
+ok(bool(_sdfields) and _sdfields[0].text().endswith('state-dump.txt')
+   and os.path.exists(_sdfields[0].text()) and os.path.getsize(_sdfields[0].text()) > 0,
+   'Copy State Dump File Path names a real, non-empty default state-dir state-dump.txt')
+
+# the /dump-state palette command is parity with the menu action (writes + shows the path)
+_dialogs.clear()
+win.run_command('/dump-state')
+_cmdfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()] if _dialogs else []
+ok(bool(_cmdfields) and _cmdfields[0].text().endswith('state-dump.txt'),
+   '/dump-state writes the full state dump and shows its path')
+
 # --- Part B: the generated config stores ONLY non-default overrides -----------
 # A fresh-config window persists NO keys (every value == its default -> omitted),
 # which doubles as the drift guard for _PERSIST_DEFAULTS: a value here that diverges

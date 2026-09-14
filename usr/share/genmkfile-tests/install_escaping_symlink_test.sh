@@ -78,14 +78,20 @@ trap cleanup EXIT
    printf '%s\n' 'make_output_info() { :; }'
    printf '%s\n' 'make_output_warn() { :; }'
    printf '%s\n' 'in_array() { return 1; }'
-   ## make_helper calls path_is_within_any (folder_permission_skip_list check); extract the
-   ## real one so the mode-fix path runs, rather than stubbing away real behaviour.
+   ## make_helper calls path_is_within_any (folder_permission_skip_list check) and
+   ## genmkfile_install_path_excluded (build-residue skip, backed by the
+   ## genmkfile_install_exclude_patterns array); extract the real ones so the
+   ## mode-fix path runs, rather than stubbing away real behaviour.
    sed -n '/^path_is_within_any()/,/^}/p' -- "${helper_file}"
+   sed -n '/^genmkfile_install_exclude_patterns=(/,/^)/p' -- "${helper_file}"
+   sed -n '/^genmkfile_install_path_excluded()/,/^}/p' -- "${helper_file}"
    sed -n '/^make_helper()/,/^}/p' -- "${helper_file}"
 } > "${work}/fn.sh"
 if ! grep --quiet '^make_helper()' "${work}/fn.sh" \
-   || ! grep --quiet '^path_is_within_any()' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_helper + path_is_within_any.' >&2
+   || ! grep --quiet '^path_is_within_any()' "${work}/fn.sh" \
+   || ! grep --quiet '^genmkfile_install_path_excluded()' "${work}/fn.sh" \
+   || ! grep --quiet '^genmkfile_install_exclude_patterns=(' "${work}/fn.sh"; then
+   printf '%s\n' 'ERROR: could not extract make_helper + path_is_within_any + genmkfile_install_path_excluded.' >&2
    exit 1
 fi
 # shellcheck disable=SC1091

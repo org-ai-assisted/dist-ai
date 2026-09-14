@@ -28,6 +28,7 @@ from secure_terminal import state_dump as sd
 from secure_terminal.main import _fit_dump_reply
 from secure_terminal import ipc as _ipc
 from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM  # noqa: F401
+from secure_terminal.terminal import _SafeHistoryScreen, _Utf8CharsetByteStream
 
 
 def _synthetic_screen(cols=20, lines=5):
@@ -86,6 +87,25 @@ ok('mode: cli' in _ctext and 'a line' in _ctext and 'pen: fg=1 bold' in _ctext,
    'CLI-mode dump carries mode, document text and the SGR pen (int palette index kept)')
 ok('alt-screen: yes' in _ctext,
    'alt-screen flag is reported in CLI mode too')
+
+# SAFETY: a grid cell whose data carries an untrusted bidi override / line separator
+# (the widget stores such a format char COMBINED onto its cell, e.g. 'E'+U+202E) must be
+# BADGED in the human text dump, never emitted raw -- else opening the "trust this
+# full-fidelity dump" file in an editor reverses the rest of the line (bidi) or splits one
+# grid row across lines (Zl/Zp), detaching its @col annotations. Uses the REAL widget feed
+# path (_SafeHistoryScreen + the byte stream), where raw pyte would instead drop the char.
+# Canary: on the old code (raw row['text']) the raw U+202E is present and the first ok FAILS.
+_evilsc = _SafeHistoryScreen(20, 3, history=10)
+_Utf8CharsetByteStream(_evilsc).feed(('SAFE' + chr(0x202e) + 'EVIL').encode('utf-8'))
+_evilsnap = sd.collect(_evilsc, mode='tui', columns=20, alt_screen=False,
+                       saved_primary=None, mouse_modes=set(), title='')
+_eviltext = sd.dump_text(_evilsnap)
+ok(chr(0x202e) not in _eviltext,
+   'dump_text emits NO raw bidi-override codepoint in the grid text (spoof-safe)')
+ok('<U+202E RIGHT-TO-LEFT OVERRIDE>' in _eviltext,
+   'dump_text names the dangerous codepoint as a printable <U+XXXX NAME> badge (fidelity kept)')
+ok(chr(0x202e) not in sd.dump_json(_evilsnap),
+   'dump_json escapes the bidi override via ensure_ascii, never emits it raw')
 
 
 # is_baseline oracle (shared by the reset sweep, INV-7 and the T10 formal check): a fresh

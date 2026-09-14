@@ -92,32 +92,6 @@ def clamp_zoom(level):
 from zoom_boards import BOARDS as BOARDS, board_spec as board_spec  # noqa: F401 -- redundant alias marks an intentional re-export (Z.BOARDS / Z.board_spec)
 
 
-# A board's committed copy in the corpus, RELATIVE to the corpus root (so a published
-# shot's banner shows a clean `cat demos/zoom-<name>-safe-to-cat.txt`, the exact reproduce
-# path, not an absolute build-tree path).
-def corpus_board_relpath(name):
-    return os.path.join('demos', 'zoom-%s-safe-to-cat.txt' % name)
-
-
-def corpus_root():
-    """The terminal-safe-corpus checkout root that carries the zoom demos, or None if
-    the corpus is not checked out. The board bytes there ARE zoom_boards output (the
-    corpus drift-gates them), so a shot that `cat`s the file is single-sourced with the
-    harness. Env override TERMINAL_SAFE_CORPUS_REPO; else the sibling-checkout layout."""
-    roots = []
-    env = os.environ.get('TERMINAL_SAFE_CORPUS_REPO')
-    if env:
-        roots.append(env)
-    up = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(6):                 # walk up to find a sibling terminal-safe-corpus
-        up = os.path.dirname(up)
-        roots.append(os.path.join(up, 'terminal-safe-corpus'))
-    for root in roots:
-        if os.path.isfile(os.path.join(root, corpus_board_relpath('colorgrad'))):
-            return root
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Capture harness.
 # ---------------------------------------------------------------------------
@@ -224,15 +198,12 @@ class ZoomHarness:
                     pass                 # best-effort pty release; removeTab still detaches it
             self.win.tabs.removeTab(i)
 
-    def _new_tab(self, mode, display_mode, cat_file=None):
-        # cat_file (CLI publish path): launch `cat <corpus-file> -` so the tab banner
-        # honestly shows the reproduce path; the file's bytes arrive via the real pty read
-        # (same _raw/reflow path feed_output drives). The trailing `-` makes cat read stdin
-        # AFTER the file, so it does NOT exit into a shell prompt -- the shot stays clean
-        # (banner + board only), matching the bare-cat shots. Else a bare `cat` fed out of
-        # band -- required for TUI (feed AFTER the zoom, see capture) and the regression suite.
-        command = ['/bin/cat', cat_file, '-'] if cat_file else '/bin/cat'
-        term = self.win.new_tab(command=command, tui=(mode == 'tui'))
+    def _new_tab(self, mode, display_mode):
+        # The tab's child is a bare `/bin/cat`; the board bytes are fed out of band via
+        # feed_output (the real _on_readable path, setting _raw). This harness is the
+        # automated artifact GATE -- the PUBLISHED window-bar shots are captured separately
+        # against the real decorated app (secure-terminal-shots zoom-verify).
+        term = self.win.new_tab(command='/bin/cat', tui=(mode == 'tui'))
         # new_tab returns None in some builds; fall back to the current widget.
         if not isinstance(term, SecureTerminal):
             term = self.win.tabs.currentWidget()
@@ -260,42 +231,15 @@ class ZoomHarness:
         _pump(90)                  # font-debounce + reflow settle
         term._flush_paint()
 
-    def capture(self, board, mode, resolution, zoom, display_mode=PRIMARY_DISPLAY, seed=None,
-                board_name=None):
+    def capture(self, board, mode, resolution, zoom, display_mode=PRIMARY_DISPLAY, seed=None):
         """Build a tab in the given tab-mode (cli/tui) + unicode display-mode, feed the
         board, walk+pin zoom, settle, and return a result dict {term, win_image,
         viewport_image, zoom}. The tab is left open (reaped by close_term/close) so
-        callers may inspect the live document before it is retired.
-
-        board_name (the PUBLISH path): in CLI mode, `cat` the board's committed
-        terminal-safe-corpus file instead of injecting the bytes -- so the shot's banner
-        names the real reproduce path (`/bin/cat .../demos/zoom-<name>-safe-to-cat.txt`).
-        Requires the corpus checked out (fail loud if the file is absent -- a silent
-        fallback would re-ship the bare `/bin/cat` banner). TUI keeps the out-of-band feed
-        (a static cat dumped before the zoom would garble; see the feed-order note)."""
+        callers may inspect the live document before it is retired."""
         w, h = resolution
         self.win.resize(w, h)
         _pump(60)
-        cat_file = None
-        prev_cwd = None
-        if board_name is not None and mode == 'cli':
-            root = corpus_root()
-            cat_file = corpus_board_relpath(board_name)
-            if root is None or not os.path.isfile(os.path.join(root, cat_file)):
-                raise SystemExit(
-                    'zoom publish: terminal-safe-corpus board file %r not found; '
-                    'check out terminal-safe-corpus as a sibling or set '
-                    'TERMINAL_SAFE_CORPUS_REPO' % cat_file)
-            # Spawn cat from the corpus root so the banner shows the RELATIVE reproduce
-            # path (a clean `demos/...`, not an absolute build-tree path). The child's cwd
-            # is fixed at fork, so restore ours right after.
-            prev_cwd = os.getcwd()
-            os.chdir(root)
-        try:
-            term = self._new_tab(mode, display_mode, cat_file=cat_file)
-        finally:
-            if prev_cwd is not None:
-                os.chdir(prev_cwd)
+        term = self._new_tab(mode, display_mode)
         if seed is None:
             # A STABLE seed (crc32, not builtin hash() -- hash() is per-process randomized
             # by PYTHONHASHSEED, which would make the "reproducible" walk differ every run
@@ -312,17 +256,8 @@ class ZoomHarness:
         #    FINAL grid exactly as a SIGWINCH-aware program would (the same reason the
         #    zoom-live capture re-injects after each zoom).
         if mode == 'cli':
-            if cat_file is not None:
-                # cat reads the real file: its output arrives via the pty (real _on_readable,
-                # setting _raw), so wait for it to land before walking the zoom.
-                for _ in range(200):
-                    _pump(20)
-                    if term._raw:
-                        break
-                _pump(40)
-            else:
-                feed_output(term, board)
-                _pump(40)
+            feed_output(term, board)
+            _pump(40)
             self._zoom_walk(term, zoom, seed)
         else:
             self._zoom_walk(term, zoom, seed)

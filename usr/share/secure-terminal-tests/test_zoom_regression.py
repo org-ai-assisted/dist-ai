@@ -184,7 +184,7 @@ def canaries():
 # 1b. Shot-write check -- the shot driver must FAIL LOUD when a QImage.save() fails, never
 #     report a path it did not write (a missing shot read as success is a fabricated signal,
 #     the exact thing this verification tool exists to prevent). Drives the REAL _save site
-#     with stub images; the same _checked_save choke point backs cmd_publish too.
+#     with stub images; the same _checked_save choke point backs every --dump write.
 # ---------------------------------------------------------------------------
 
 def checked_save_canary():
