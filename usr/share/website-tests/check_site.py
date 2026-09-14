@@ -62,6 +62,21 @@ WORDING = [
 ]
 
 
+class _HTMLScopeParser(html.parser.HTMLParser):
+    """HTMLParser that models HTML5 self-closing correctly for scope tracking: a
+    browser IGNORES a trailing '/' on a NON-void element, leaving it OPEN, so
+    `<div/>` / `<section/>` / `<footer/>` must read as a plain start tag -- not the
+    stdlib default's immediate open-then-close, which mis-scopes (or drops) every
+    node that a real browser renders inside the still-open element. Void elements
+    keep open-then-close. Scope-tracking audits subclass this instead of
+    html.parser.HTMLParser so a stray self-closing slash cannot defeat them."""
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag in VOID_TAGS:
+            self.handle_endtag(tag)
+
+
 class Extractor(html.parser.HTMLParser):
     """Collect (attr) link targets, element ids, and the concatenated visible
     text (script/style excluded) of one HTML document."""
@@ -355,7 +370,7 @@ def check_freshness(root, failures):
                     % (rel, match.group(0).strip(), age, _STALE_DAYS))
 
 
-class _FooterAudit(html.parser.HTMLParser):
+class _FooterAudit(_HTMLScopeParser):
     """The concatenated href/text content of every <footer>...</footer> region,
     plus whether any real <footer> exists. Parsed, not raw-markup regex, so a
     <footer> inside an HTML comment is ignored (HTMLParser never fires inside a
@@ -410,7 +425,7 @@ def check_footer(root, failures):
             failures.append('index.html: footer missing family link %s' % url)
 
 
-class _StatusPillAudit(html.parser.HTMLParser):
+class _StatusPillAudit(_HTMLScopeParser):
     """Text of the first review-status pill: a <span>/<a> whose class token set
     contains 'status'. Parsed, not substring-matched, so a single-quoted or
     multi-class attribute (class='status', class="status pill") -- which the old
@@ -515,16 +530,17 @@ _CSS_URL = re.compile(
 # A browser strips /* */ comments before tokenizing CSS, but a /* inside a string
 # is NOT a comment. Skip over "..." / '...' strings first (keep them verbatim) and
 # drop only real comments -- otherwise a `content:"/*"` ... `content:"*/"` pair
-# would swallow a real url()/@import between them (a false negative), and a naive
-# strip that leaves a space would break `url/* */(`. A comment is replaced by
-# nothing so `url/* */(` still reads as `url(`.
+# would swallow a real url()/@import between them (a false negative). A comment is
+# a token SEPARATOR (CSS Syntax 3), so replace it with a space: `@import/* */"..."`
+# stays `@import "..."` (a real load), while `url/* */(` correctly does NOT become
+# a url-token (a browser does not fetch it either).
 _CSS_COMMENT_OR_STRING = re.compile(
     r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(/\*.*?\*/)''', re.DOTALL)
 
 
 def _strip_css_comments(text):
     return _CSS_COMMENT_OR_STRING.sub(
-        lambda m: '' if m.group(1) is not None else m.group(0), text)
+        lambda m: ' ' if m.group(1) is not None else m.group(0), text)
 
 
 def _css_urls(text):
@@ -684,6 +700,12 @@ def check_csp(root, failures):
         # bare-substring test false-fails). Still fails a missing/loosened value.
         if directives.get('default-src') != ["'none'"]:
             failures.append("%s: CSP default-src is not 'none'" % rel)
+        # base-uri does NOT fall back to default-src, so without it a <base href>
+        # can rehome every relative script/style/image URL to an external origin,
+        # invisible to the other checks. Require it restricted to 'none'/'self'.
+        if directives.get('base-uri') not in (["'none'"], ["'self'"]):
+            failures.append("%s: CSP base-uri is not 'none'/'self' (a <base> can "
+                            "rehome every relative URL)" % rel)
         # No external source may be allow-listed. A legitimate source token is a
         # quoted keyword / nonce / hash ("'self'", "'sha256-...'") or a host-free
         # scheme (data:/blob:/...). ANY other unquoted token names an external
@@ -731,7 +753,7 @@ _URL_ATTRS = frozenset((
 ))
 
 
-class _InlineJSAudit(html.parser.HTMLParser):
+class _InlineJSAudit(_HTMLScopeParser):
     """Flag anything that needs 'unsafe-inline' to run: an executable inline
     <script> (a body with no src attribute), an inline event-handler attribute
     (on*=), or a javascript: URL. All three are blocked once script-src drops
@@ -767,12 +789,6 @@ class _InlineJSAudit(html.parser.HTMLParser):
             self.inline_script = self.inline_script or sub.inline_script
             self.handlers |= sub.handlers
             self.js_url = self.js_url or sub.js_url
-
-    def handle_startendtag(self, tag, attrs):
-        # A self-closing tag (e.g. <input onfocus=..>) has no body, so it never
-        # opens an inline <script>; only its attributes (and an iframe srcdoc) matter.
-        self._scan_attrs(attrs)
-        self._recurse_srcdoc(tag, attrs)
 
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
@@ -900,7 +916,7 @@ WIDE_TAGS = frozenset({
 })
 
 
-class LayoutAudit(html.parser.HTMLParser):
+class LayoutAudit(_HTMLScopeParser):
     """Flag <section>s that stack 2+ prose-only `.issue` cards full-width instead
     of in a grid. A column of full-width prose cards leaves each card much wider
     than the ~74ch text it holds (the "box wider than its text" bug); the fix is
@@ -939,11 +955,6 @@ class LayoutAudit(html.parser.HTMLParser):
             'ungridded': 0,     # cards counted against a <section> land here
         })
 
-    def handle_startendtag(self, tag, attrs):
-        # A self-closed wide element (XHTML-style <img/>) still exempts its card.
-        if tag in WIDE_TAGS:
-            self._mark_wide()
-
     def handle_endtag(self, tag):
         if tag in VOID_TAGS:
             return
@@ -963,6 +974,14 @@ class LayoutAudit(html.parser.HTMLParser):
                 self.offenders.append((frame['id'], frame['ungridded']))
             del self._open[i:]
             break
+
+    def finalize(self):
+        # A section a browser leaves OPEN to end-of-document (a self-closed
+        # <section/> or a missing </section>) never fires handle_endtag, so flush
+        # any still-open offending section here -- its cards did close and counted.
+        for frame in self._open:
+            if frame['is_section'] and frame['ungridded'] >= 2:
+                self.offenders.append((frame['id'], frame['ungridded']))
 
 
 # Image asset hygiene: an image checked into a site but named by NOTHING (no
@@ -1029,6 +1048,7 @@ def check_card_layout(root, failures):
         audit = LayoutAudit()
         with open(page, encoding='utf-8') as handle:
             audit.feed(handle.read())
+        audit.finalize()
         for section_id, count in audit.offenders:
             failures.append(
                 '%s: section #%s stacks %d full-width ".issue" cards; wrap them '
@@ -1047,7 +1067,7 @@ SAFETY_TOOLS = (
 )
 
 
-class _ReproToolAudit(html.parser.HTMLParser):
+class _ReproToolAudit(_HTMLScopeParser):
     """Collect the `code.cmd` command strings inside every `.repro` box."""
 
     def __init__(self):
@@ -1106,7 +1126,7 @@ def check_repro_raw(root, failures):
                     break
 
 
-class _HeaderNavAudit(html.parser.HTMLParser):
+class _HeaderNavAudit(_HTMLScopeParser):
     """The (label, href) list of the FIRST <nav> inside a <header>. Parsed, not
     regex, so an attribute on the nav (<nav aria-label="Main">) no longer drops
     the whole page from the consistency comparison, and a single-quoted href is
@@ -1239,7 +1259,7 @@ def check_toc_complete(root, failures):
 _HEADINGS = frozenset({'h1', 'h2', 'h3', 'h4', 'h5', 'h6'})
 
 
-class _HeadingBreakAudit(html.parser.HTMLParser):
+class _HeadingBreakAudit(_HTMLScopeParser):
     """Count <br> elements that occur while a heading (h1-h6) is open."""
 
     def __init__(self):
@@ -1248,14 +1268,10 @@ class _HeadingBreakAudit(html.parser.HTMLParser):
         self.hits = 0
 
     def handle_starttag(self, tag, attrs):
+        # <br/> self-closing reaches here via the scope-parser mixin (br is void).
         if tag in _HEADINGS:
             self._depth += 1
         elif tag == 'br' and self._depth:
-            self.hits += 1
-
-    def handle_startendtag(self, tag, attrs):
-        # <br/> self-closing form still counts.
-        if tag == 'br' and self._depth:
             self.hits += 1
 
     def handle_endtag(self, tag):
@@ -1358,9 +1374,11 @@ def _parse_color(value):
     if match:
         parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
         if len(parts) >= 3:
+            # OverflowError: an overflowing literal (1e309 -> inf) is unparseable,
+            # skipped like any other bad token -- never a crash of the whole gate.
             try:
                 return (_channel(parts[0]), _channel(parts[1]), _channel(parts[2]))
-            except ValueError:
+            except (ValueError, OverflowError):
                 return None
     match = _HSL.match(value)
     if match:
@@ -1370,7 +1388,7 @@ def _parse_color(value):
                 hue = _hue_deg(parts[0])
                 sat = float(parts[1].rstrip('%')) / 100
                 light = float(parts[2].rstrip('%')) / 100
-            except ValueError:
+            except (ValueError, OverflowError):
                 return None
             return _hsl_to_rgb(hue, sat, light)
     return None
@@ -1559,6 +1577,11 @@ def check_undefined_classes(root, failures):
         audit.feed(markup)
         per_page[os.path.relpath(page, root)] = audit.sole
     js = '\n'.join(js_parts)
+    # `name in js` is a deliberately LOOSE substring test: this check is scoped to
+    # be low-noise (never false-fail a real hook), so a class name appearing
+    # anywhere in the JS clears it. Tightening to a whole-token match surfaces
+    # purely cosmetic dead hooks (an undefined download-link class), which is
+    # noise disproportionate to a cosmetic lint -- kept loose on purpose.
     for rel, classes in sorted(per_page.items()):
         for name in sorted(classes):
             if (name not in defined and name not in UNDEFINED_CLASS_ALLOWLIST
