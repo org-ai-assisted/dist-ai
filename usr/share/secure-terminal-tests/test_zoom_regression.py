@@ -47,6 +47,7 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-zoom-state-')
 try:
     from PyQt6.QtGui import QImage, QColor
     import zoom_regression_lib as Z
+    import zoom_sweep
 except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(zoom): FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
@@ -180,6 +181,33 @@ def canaries():
 
 
 # ---------------------------------------------------------------------------
+# 1b. Shot-write check -- the shot driver must FAIL LOUD when a QImage.save() fails, never
+#     report a path it did not write (a missing shot read as success is a fabricated signal,
+#     the exact thing this verification tool exists to prevent). Drives the REAL _save site
+#     with stub images; the same _checked_save choke point backs cmd_publish too.
+# ---------------------------------------------------------------------------
+
+def checked_save_canary():
+    class _FailImg:
+        def save(self, _path):
+            return False
+
+    class _OkImg:
+        def save(self, _path):
+            return True
+
+    dump = tempfile.mkdtemp(prefix='st-zoom-savecheck-')
+    raised = False
+    try:
+        zoom_sweep._save({'win_image': _FailImg(), 'viewport_image': _FailImg()}, dump, 'fail')
+    except RuntimeError:
+        raised = True
+    ok(raised, '_save raises when an image.save() returns False (no fabricated shot)')
+    wp = zoom_sweep._save({'win_image': _OkImg(), 'viewport_image': _OkImg()}, dump, 'ok')
+    ok(wp.endswith('zoom-ok-win.png'), '_save returns the window path when saves succeed')
+
+
+# ---------------------------------------------------------------------------
 # 2. Per-cell matrix -- a bounded but representative sweep; every cell must analyze clean.
 # ---------------------------------------------------------------------------
 
@@ -262,6 +290,7 @@ def stability():
 
 
 canaries()
+checked_save_canary()
 matrix()
 blank_row_report()
 stability()

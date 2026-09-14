@@ -98,12 +98,22 @@ def _display_mode(term):
     return getattr(term, '_mode', 'detail')
 
 
+def _checked_save(image, path):
+    # QImage.save() returns False on write failure (unwritable path, path is a dir, disk
+    # full) WITHOUT raising -- an ignored return turns a MISSING shot into a fabricated
+    # success. A shot tool that cannot write its shot must fail loud, never report a path
+    # it did not create.
+    if not image.save(path):
+        raise RuntimeError('zoom-sweep: failed to write image %r' % (path,))
+    return path
+
+
 def _save(result, dump_dir, tag):
     os.makedirs(dump_dir, exist_ok=True)
     wp = os.path.join(dump_dir, 'zoom-%s-win.png' % tag)
     vp = os.path.join(dump_dir, 'zoom-%s-view.png' % tag)
-    result['win_image'].save(wp)
-    result['viewport_image'].save(vp)
+    _checked_save(result['win_image'], wp)
+    _checked_save(result['viewport_image'], vp)
     return wp
 
 
@@ -213,7 +223,7 @@ def cmd_publish(args):
                                board_name=board)
             tag = _tag(board, mode, display, res, zoom)
             path = os.path.join(args.out, 'zoom-verify-%s.png' % tag)
-            result['win_image'].save(path)
+            _checked_save(result['win_image'], path)
             manifest.append((tag, board, mode, display, res, zoom, os.path.basename(path)))
             print('published %s' % os.path.basename(path))
             h.close_term(result['term'])
