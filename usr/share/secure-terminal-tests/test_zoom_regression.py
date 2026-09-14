@@ -208,6 +208,50 @@ def checked_save_canary():
 
 
 # ---------------------------------------------------------------------------
+# 1c. Exit guard + arg validation -- any exception AFTER the Qt harness exists must route
+#     through os._exit, never unwind (a normal shutdown runs Qt's static destructors ->
+#     teardown SIGSEGV, masking the failure). _main_exit_code must fold a non-SystemExit
+#     into a clean rc=1 (loud traceback, no crash) and preserve a SystemExit's own code.
+#     _parse_res must reject a resolution that would lie in the shot's tag, like _parse_zoom.
+# ---------------------------------------------------------------------------
+
+def zoom_sweep_guard_canary():
+    def _raise_runtime(argv=None):
+        raise RuntimeError('canary boom')
+
+    def _exit_two(argv=None):
+        raise SystemExit(2)
+
+    orig_main = zoom_sweep.main
+    try:
+        zoom_sweep.main = _raise_runtime
+        got = False
+        try:
+            got = zoom_sweep._main_exit_code() == 1
+        except BaseException:               # pylint: disable=broad-except
+            got = False                      # pre-fix: the exception unwound past the guard
+        ok(got, '_main_exit_code returns 1 on a non-SystemExit (no teardown-SIGSEGV unwind)')
+
+        zoom_sweep.main = _exit_two
+        preserved = False
+        try:
+            preserved = zoom_sweep._main_exit_code() == 2
+        except BaseException:               # pylint: disable=broad-except
+            preserved = False
+        ok(preserved, '_main_exit_code preserves a SystemExit integer code')
+    finally:
+        zoom_sweep.main = orig_main
+
+    raised = False
+    try:
+        zoom_sweep._parse_res('0x0')
+    except SystemExit:
+        raised = True
+    ok(raised, '_parse_res rejects 0x0 (no resolution-lying shot)')
+    ok(zoom_sweep._parse_res('1280x800') == (1280, 800), '_parse_res accepts a valid WxH')
+
+
+# ---------------------------------------------------------------------------
 # 2. Per-cell matrix -- a bounded but representative sweep; every cell must analyze clean.
 # ---------------------------------------------------------------------------
 
@@ -291,6 +335,7 @@ def stability():
 
 canaries()
 checked_save_canary()
+zoom_sweep_guard_canary()
 matrix()
 blank_row_report()
 stability()

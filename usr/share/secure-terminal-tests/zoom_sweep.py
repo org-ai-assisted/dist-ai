@@ -30,6 +30,7 @@ import faulthandler
 import os
 import signal
 import sys
+import traceback
 
 _FAULT_LOG = None
 if os.environ.get('ZOOM_FAULT_LOG'):
@@ -55,9 +56,16 @@ import zoom_regression_lib as Z
 def _parse_res(s):
     try:
         w, h = s.lower().split('x')
-        return (int(w), int(h))
+        w, h = int(w), int(h)
     except (ValueError, AttributeError):
         raise SystemExit('zoom-sweep: bad resolution %r (want WIDTHxHEIGHT, e.g. 1280x800)' % (s,))
+    # Reject non-positive dims up front, mirroring _parse_zoom's range check: 0x0 (or a
+    # negative via `-- -5x800`) would resize the window to a degenerate size Qt cannot
+    # render while the cell label / dump filename (_tag) still claimed those dims -- a shot
+    # whose own name lies about its resolution.
+    if w < 1 or h < 1:
+        raise SystemExit('zoom-sweep: resolution %r must be positive (got %dx%d)' % (s, w, h))
+    return (w, h)
 
 
 def _check_boards(names):
@@ -268,18 +276,28 @@ def main(argv=None):
     return args.fn(args)
 
 
-if __name__ == '__main__':
-    # os._exit, never sys.exit: a normal interpreter shutdown runs Qt's static
-    # destructors and SIGSEGVs (the same reason the widget suites os._exit in finish()).
-    # A SystemExit raised AFTER the harness (QApplication) exists -- e.g. a validation
-    # error in cmd_one/cmd_full -- would otherwise unwind normally and hit that teardown
-    # crash, masking the clean exit code; catch it and route it through os._exit too.
+def _main_exit_code(argv=None):
+    # Compute the process exit code, NEVER letting an exception unwind past here: any
+    # exception raised AFTER the harness (QApplication) exists -- a SystemExit validation
+    # error, a RuntimeError from _checked_save, an OSError from os.makedirs -- would else
+    # unwind normally and run Qt's static destructors, which SIGSEGV during teardown (the
+    # same reason the widget suites os._exit in finish()), masking the real failure with a
+    # crash. Catch every exception here so __main__ can route it through os._exit; a genuine
+    # failure still fails loud (traceback + non-zero rc), just via a clean hard-exit.
     try:
-        _rc = main()
-    except SystemExit as _exc:
-        _rc = _exc.code if isinstance(_exc.code, int) else (0 if _exc.code is None else 1)
-        if isinstance(_exc.code, str):
-            sys.stderr.write(_exc.code + '\n')
+        return main(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            sys.stderr.write(exc.code + '\n')
+            return 1
+        return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    except BaseException:                   # noqa: intentional catch-all, see above
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == '__main__':
+    _rc = _main_exit_code()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_rc)
