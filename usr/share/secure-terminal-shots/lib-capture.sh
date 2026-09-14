@@ -17,10 +17,11 @@
 ## Deliberately kept HERE, in dist-ai, next to its two consumers rather than
 ## reusing private-ai-config's headless-capture backends: the sandbox that runs these
 ## tools has NEITHER repo installed (code reaches it only by the whole tree being
-## copied in), so the comparison subsystem must travel self-contained. The two
-## capture pipelines above are genuinely different (host-X + import + frame-extents
-## crop vs namespace + Xvfb + grim + black-trim), so only the DATA contract below
-## -- which is the same for both -- is shared, to keep the cases from drifting.
+## copied in), so the comparison subsystem must travel self-contained. Its two
+## consumers run very differently -- comparison-capture.sh screenshots under headless
+## Wayland (labwc + grim), clipboard-verdict.sh measures an OSC 52 outcome under Xvfb
+## (no screenshot) -- so only the DATA contract below, identical for both, is shared,
+## to keep the cases from drifting.
 
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
 ## DISPLAYING hostile DATA. Every case DISPLAYS data and NEVER runs a script.
