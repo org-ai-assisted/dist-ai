@@ -245,7 +245,10 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          cmd=("${x[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
          ;;
       konsole)
-         cmd=("${wl[@]}" konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
+         ## Pin the font like every other emulator (all use Monospace 11): konsole alone took its
+         ## profile DEFAULT font, whose size drifts by version -- a fresh build renders ~2x wider
+         ## than the 11pt grid the rest share, dwarfing its comparison cell. `-p Font=...` fixes it.
+         cmd=("${wl[@]}" konsole --nofork -p 'Font=Monospace,11' -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
          ;;
       qterminal)
          ## qterminal opens MAXIMIZED and ignores geometry; shoot() pins its size via a labwc
@@ -305,19 +308,27 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
 ## and Xwayland alike -- and labwc focuses the single window we just mapped. No keymap dance
 ## (wtype sends the text directly, so the old xdotool '/'-becomes-'&' problem is gone).
 inject() {  ## $1=window-id (unused: the mapped window has focus)  $2=command
-   local run_cmd="$2"
-   sleep 0.4
-   ## wtype loses its FIRST keystroke(s) into a not-yet-ready readline (the slow
-   ## gnome-terminal-server maps its chrome, so the window is non-blank, well before the interactive
-   ## bash prints its prompt), so the injected `cat` arrives as `at` -- a corrupt shot. Erase+retype
-   ## makes the typed line deterministic regardless of startup timing: type it, Ctrl-U to kill
-   ## whatever landed (readline is active by now, having received that input), then type it AGAIN
-   ## onto the now-ready empty line and run. No visible artifact (Ctrl-U erases in place).
-   wtype -- "${run_cmd}" 2>/dev/null || true
-   wtype -M ctrl -k u -m ctrl 2>/dev/null || true
-   wtype -- "${run_cmd}" 2>/dev/null || true
-   sleep 0.3
-   wtype -k Return 2>/dev/null || true
+   local run_cmd="$2" irc=0
+   sleep 0.6
+   ## A fresh wtype virtual-keyboard connection loses its first key EVENTS until the focused
+   ## emulator has registered the keyboard AND settled its input rate -- a bare, fast type then
+   ## arrives corrupted (`cat X` -> `at X`/`t X`, command not found). st drops TWO-plus leading
+   ## chars and keeps doing so per new connection, so the old separate-invocation erase+retype
+   ## could not fix it. Do the WHOLE injection in ONE wtype process, hardened three ways:
+   ##   -s 400              settle after the keyboard grab, past the emulator's input-ignore window
+   ##   -k space x3         sacrificial leading keys: any dropped first events fall on THESE
+   ##   -M ctrl -k u -m ctrl  Ctrl-U wipes whatever survived, so the command types onto a clean line
+   ##   -d 24 "<cmd>"       type the command PACED (24ms/key) so a fast burst is not dropped
+   ##   -k Return           run it
+   ## No `--` before the command: that would make wtype treat the trailing `-k Return` as literal
+   ## text; the command (always `cat <case>.payload`) never starts with `-`, so it is safe as text.
+   ## Capture wtype's rc rather than blanket '|| true': a wtype that fails outright (binary missing
+   ## / compositor gone) leaves the line un-typed, so record+RETURN it (callers `|| true`). The
+   ## authoritative gate is the content-verify (shots_cmd_ran_ok), which re-injects on any residual
+   ## miss -- but a total injection failure is now diagnosable, not silent.
+   wtype -s 400 -k space -k space -k space -M ctrl -k u -m ctrl -d 24 "${run_cmd}" -k Return 2>/dev/null || irc=$?
+   [ "${irc}" -eq 0 ] || printf '%s\n' "warn inject: wtype failed (rc=${irc}); typed line may be incomplete" >&2
+   return "${irc}"
 }
 
 ## Screenshot the single visible window. grim grabs the whole wayland output; the pointer is
@@ -656,7 +667,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    wait_window_ready "${stwid}"
 
    ## Warm the shell/board once so the first `ctl ls` + inject run against a settled prompt.
-   inject "${stwid}" "${st_cmd}"
+   inject "${stwid}" "${st_cmd}" || true
    sleep 1
    st_wait_render_settled "${stwid}"
 
@@ -704,7 +715,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       ## scrollbar or a mid-screen white band would actually appear. skip-tighten keeps the pinned
       ## geometry (the board fills the viewport).
       sleep 0.6
-      inject "${stwid}" "${st_cmd}"
+      inject "${stwid}" "${st_cmd}" || true
       sleep 1
       st_wait_render_settled "${stwid}"
       ## Zero-pad the (validated) integer level for a stable filename; 10# forces base 10 so a
@@ -838,15 +849,54 @@ shoot() {  ## $1=emulator  $2=case
    ## external post-launch resize and grim+trim crops to whatever the window is. Wait for the
    ## first content, inject the case payload as a user would, let it render, then capture.
    wait_window_ready "${wid}"
-   inject "${wid}" "$(shots_payload_cmd "${case}")"
-   sleep 3
-   if ! capture_settled "${out}/${e}.${case}.png" "${wid}"; then
-      printf '%s\n' "warn ${e}.${case}: screenshot failed"
-      ## Surface the emulator's own stderr on ANY lost shot (a trio member that maps then dies
-      ## shows here, not on the window-never-appeared path). Empty file -> nothing printed.
-      if [ -s "${emu_err}" ]; then
-         sed "s/^/warn ${e}.${case} stderr: /" -- "${emu_err}" >&2 || true
+   ## Content-verify, FAIL-CLOSED. capture_settled rejects only a BLANK frame, but a dropped
+   ## keystroke makes the injected `cat X.payload` arrive as `at X.payload` -> `at: command not
+   ## found`, a NON-blank shot of a shell error that would publish silently (this is exactly the
+   ## bug that shipped st/alacritty/gnome/mate shots). The emulator shell logs each command + its
+   ## exit status to SHOTS_CMDLOG (.strc PROMPT_COMMAND), so require the injected command to have
+   ## RUN with rc 0 -- the emulator analogue of the ST empty-transcript check. Clear the log, inject,
+   ## capture, verify; re-inject on failure and DISCARD (leave no file) if it never verifies. A
+   ## discarded (missing) shot is chased by the re-capture net and, if still absent, fails the run
+   ## hard (missing-shot rc=1 in the orchestrator; content_verify_failed in a direct run) -- so a
+   ## broken shot can never reach the site.
+   local inj_cmd verify_tries shot_ok
+   inj_cmd="$(shots_payload_cmd "${case}")"
+   verify_tries=0
+   shot_ok=''
+   while [ "${verify_tries}" -lt 3 ]; do
+      printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+      inject "${wid}" "${inj_cmd}" || true
+      sleep 3
+      if ! capture_settled "${out}/${e}.${case}.png" "${wid}"; then
+         printf '%s\n' "warn ${e}.${case}: screenshot failed"
+         ## Surface the emulator's own stderr on ANY lost shot (a trio member that maps then dies
+         ## shows here, not on the window-never-appeared path). Empty file -> nothing printed.
+         if [ -s "${emu_err}" ]; then
+            sed "s/^/warn ${e}.${case} stderr: /" -- "${emu_err}" >&2 || true
+         fi
+         break
       fi
+      if shots_cmd_ran_ok "${SHOTS_CMDLOG}"; then
+         shot_ok=1
+         break
+      fi
+      verify_tries=$(( verify_tries + 1 ))
+      printf '%s\n' "warn ${e}.${case}: injected command did not run cleanly (attempt ${verify_tries}) -- re-injecting"
+      ## Diagnostic (opt-in): dump the command-log so a persistent failure is debuggable -- an
+      ## EMPTY log points at env/rcfile (the shell never wrote it), NOTFOUND/non-zero at a real
+      ## injection miss. SHOTS_DEBUG_VERIFY=1 turns it on.
+      if [ -n "${SHOTS_DEBUG_VERIFY:-}" ]; then
+         printf '%s\n' "debug ${e}.${case} cmdlog (attempt ${verify_tries}):" >&2
+         sed "s/^/debug ${e}.${case}   /" -- "${SHOTS_CMDLOG}" >&2 2>/dev/null || printf '%s\n' "debug ${e}.${case}   <cmdlog unreadable/empty>" >&2
+      fi
+      ## Drop the shell-error grab so a stale one cannot validate a later attempt or get published.
+      safe-rm --force -- "${out}/${e}.${case}.png" 2>/dev/null || true
+   done
+   if [ -z "${shot_ok}" ]; then
+      ## Never publish the shell-error shot: discard any lingering file and flag the run.
+      safe-rm --force -- "${out}/${e}.${case}.png" 2>/dev/null || true
+      printf '%s\n' "warn ${e}.${case}: content-verify failed after ${verify_tries} attempt(s) -- discarded, not published"
+      content_verify_failed=1
    fi
    shots_watchdog_cancel "${wdog}"
    [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
@@ -985,6 +1035,11 @@ zoom_live=''
 ## discarded, but the whole capture must then exit NON-ZERO -- a discarded-but-green run reads as
 ## success with a required shot silently missing/stale. Carried to the final exit below.
 board_wrap_failed=''
+## Set by shoot() when an emulator shot's injected command never ran cleanly (content-verify) and
+## the shot was discarded. Like board_wrap_failed, a discarded-but-green run would read as success
+## with a shot silently missing/stale, so this forces a NON-ZERO exit in a direct single-process
+## run. (In the --jobs orchestrator the discarded shot is also caught as a missing shot -> rc=1.)
+content_verify_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
@@ -1309,8 +1364,34 @@ fi
 ## (shots_transcript_has_content) strips the EXACT prompt the shell prints when
 ## deciding whether an injected payload actually rendered.
 SHOT_PROMPT='user@host:~$ '
+## Where the emulator shell logs each completed command + its exit status, so the content-verify
+## (shots_cmd_ran_ok) can tell a shot where the injected `cat` actually RAN from one showing a
+## shell error (a dropped keystroke -> `at: command not found`). Exported so every emulator's
+## `bash --rcfile .strc` inherits the same path shoot() reads. Per-process HOME (each --jobs lane
+## has its own), so no cross-lane contention; shoot() clears it per capture attempt.
+export SHOTS_CMDLOG="${HOME}/.shots-cmdlog"
 cat > "${HOME}/.strc" <<RC
 PS1='${SHOT_PROMPT}'
+RC
+## Append the command-log hooks via a QUOTED heredoc so the runtime `$?`, `$HOME`, `$1` etc. stay
+## LITERAL (resolved in the emulator's shell, not here at write time). History-INDEPENDENT by
+## design (see shots_cmd_ran_ok): the not-found handler is the definitive signal for the dropped-
+## keystroke bug, and __shots_log records exit status only -- neither parses `fc`/.bash_history,
+## which is unreliable across shots and for not-found commands.
+cat >> "${HOME}/.strc" <<'RC'
+: "${SHOTS_CMDLOG:=${HOME}/.shots-cmdlog}"
+## A dropped keystroke turns the injected 'cat X.payload' into a non-existent command
+## ('at X.payload'); record it so the content-verify DISCARDS the shot instead of publishing the
+## shell error. Returns 127 like the default handler; prints nothing (a broken shot is discarded).
+command_not_found_handle() {
+   printf 'NOTFOUND\t%s\n' "$1" >> "${SHOTS_CMDLOG}"
+   return 127
+}
+## Record each completed command's exit status ($? read FIRST, before anything clobbers it).
+__shots_log() {
+   printf 'RAN\t%s\n' "$?" >> "${SHOTS_CMDLOG}"
+}
+PROMPT_COMMAND='__shots_log'
 RC
 ## secure-terminal launches a clean `bash -i` (no ugly temp --rcfile path in its launch
 ## banner); a non-login interactive bash reads ~/.bashrc, so write the same prompt there.
@@ -1752,6 +1833,14 @@ fi
 ## missing/stale. Fail loud so the pin gets re-derived and the shots regenerated.
 if [ -n "${board_wrap_failed}" ]; then
    printf '%s\n' 'ERROR: colour board(s) WRAPPED -- pinned ST_BOARD_COLS exceeds the live secure-terminal grid; the striped shot(s) were discarded. Re-derive ST_BOARD_COLS in lib-capture.sh and re-run.' >&2
+   exit 1
+fi
+
+## A discarded content-verify shot leaves no file (never publishes the shell-error shot), so a
+## green exit would report success with a required emulator shot missing/stale. Fail loud; the
+## re-capture net + secure-terminal-shots-inventory are the deploy-time backstops.
+if [ -n "${content_verify_failed}" ]; then
+   printf '%s\n' 'ERROR: emulator shot(s) FAILED content-verify -- the injected command did not run cleanly (a dropped keystroke -> shell error) and the shot(s) were discarded, not published. Re-run; a persistent failure means the injection/verify path needs attention.' >&2
    exit 1
 fi
 

@@ -378,6 +378,14 @@ class _FooterAudit(html.parser.HTMLParser):
                 if value:
                     self._buf.append(value)
 
+    def handle_startendtag(self, tag, attrs):
+        # A browser ignores the '/' on a non-void <footer/> and leaves it OPEN, so
+        # the family links that follow are still its children. Treat a self-closing
+        # tag as a plain start (never auto-close) so the old regex's whole-tail
+        # behavior on a <footer/> is preserved. Only <footer> drives depth, so a
+        # self-closed leaf inside the footer just contributes its attrs.
+        self.handle_starttag(tag, attrs)
+
     def handle_data(self, data):
         if self._depth:
             self._buf.append(data)
@@ -515,16 +523,17 @@ _CSS_URL = re.compile(
 # A browser strips /* */ comments before tokenizing CSS, but a /* inside a string
 # is NOT a comment. Skip over "..." / '...' strings first (keep them verbatim) and
 # drop only real comments -- otherwise a `content:"/*"` ... `content:"*/"` pair
-# would swallow a real url()/@import between them (a false negative), and a naive
-# strip that leaves a space would break `url/* */(`. A comment is replaced by
-# nothing so `url/* */(` still reads as `url(`.
+# would swallow a real url()/@import between them (a false negative). A comment is
+# a token SEPARATOR (CSS Syntax 3), so replace it with a space: `@import/* */"..."`
+# stays `@import "..."` (a real load), while `url/* */(` correctly does NOT become
+# a url-token (a browser does not fetch it either).
 _CSS_COMMENT_OR_STRING = re.compile(
     r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(/\*.*?\*/)''', re.DOTALL)
 
 
 def _strip_css_comments(text):
     return _CSS_COMMENT_OR_STRING.sub(
-        lambda m: '' if m.group(1) is not None else m.group(0), text)
+        lambda m: ' ' if m.group(1) is not None else m.group(0), text)
 
 
 def _css_urls(text):
@@ -684,6 +693,12 @@ def check_csp(root, failures):
         # bare-substring test false-fails). Still fails a missing/loosened value.
         if directives.get('default-src') != ["'none'"]:
             failures.append("%s: CSP default-src is not 'none'" % rel)
+        # base-uri does NOT fall back to default-src, so without it a <base href>
+        # can rehome every relative script/style/image URL to an external origin,
+        # invisible to the other checks. Require it restricted to 'none'/'self'.
+        if directives.get('base-uri') not in (["'none'"], ["'self'"]):
+            failures.append("%s: CSP base-uri is not 'none'/'self' (a <base> can "
+                            "rehome every relative URL)" % rel)
         # No external source may be allow-listed. A legitimate source token is a
         # quoted keyword / nonce / hash ("'self'", "'sha256-...'") or a host-free
         # scheme (data:/blob:/...). ANY other unquoted token names an external
@@ -767,12 +782,6 @@ class _InlineJSAudit(html.parser.HTMLParser):
             self.inline_script = self.inline_script or sub.inline_script
             self.handlers |= sub.handlers
             self.js_url = self.js_url or sub.js_url
-
-    def handle_startendtag(self, tag, attrs):
-        # A self-closing tag (e.g. <input onfocus=..>) has no body, so it never
-        # opens an inline <script>; only its attributes (and an iframe srcdoc) matter.
-        self._scan_attrs(attrs)
-        self._recurse_srcdoc(tag, attrs)
 
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
@@ -938,11 +947,6 @@ class LayoutAudit(html.parser.HTMLParser):
             'has_wide': False,
             'ungridded': 0,     # cards counted against a <section> land here
         })
-
-    def handle_startendtag(self, tag, attrs):
-        # A self-closed wide element (XHTML-style <img/>) still exempts its card.
-        if tag in WIDE_TAGS:
-            self._mark_wide()
 
     def handle_endtag(self, tag):
         if tag in VOID_TAGS:
@@ -1248,14 +1252,10 @@ class _HeadingBreakAudit(html.parser.HTMLParser):
         self.hits = 0
 
     def handle_starttag(self, tag, attrs):
+        # <br/> self-closing reaches here via the scope-parser mixin (br is void).
         if tag in _HEADINGS:
             self._depth += 1
         elif tag == 'br' and self._depth:
-            self.hits += 1
-
-    def handle_startendtag(self, tag, attrs):
-        # <br/> self-closing form still counts.
-        if tag == 'br' and self._depth:
             self.hits += 1
 
     def handle_endtag(self, tag):
@@ -1290,7 +1290,7 @@ AA_SMALL = 4.5
 
 _ROOT_VAR = re.compile(r'--([\w-]+)\s*:\s*([^;}]+)')
 _COLOR_VAR_USE = re.compile(r'color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
-_HEX = re.compile(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
+_HEX = re.compile(r'^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
 _RGB = re.compile(r'^rgba?\(([^)]*)\)', re.IGNORECASE)
 _HSL = re.compile(r'^hsla?\(([^)]*)\)', re.IGNORECASE)
 
@@ -1338,9 +1338,8 @@ def _hsl_to_rgb(hue, sat, light):
         if offset < 2 / 3:
             return low + (high - low) * (2 / 3 - offset) * 6
         return low
-    return (round(component(hue + 1 / 3) * 255),
-            round(component(hue) * 255),
-            round(component(hue - 1 / 3) * 255))
+    return tuple(min(255, max(0, round(component(offset) * 255)))
+                 for offset in (hue + 1 / 3, hue, hue - 1 / 3))
 
 
 def _parse_color(value):
@@ -1351,16 +1350,19 @@ def _parse_color(value):
     match = _HEX.match(value)
     if match:
         digits = match.group(1)
-        if len(digits) == 3:
+        if len(digits) in (3, 4):                  # #rgb / #rgba shorthand
             digits = ''.join(ch * 2 for ch in digits)
+        digits = digits[:6]                        # drop any alpha (#rrggbbaa)
         return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
     match = _RGB.match(value)
     if match:
         parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
         if len(parts) >= 3:
+            # OverflowError: an overflowing literal (1e309 -> inf) is unparseable,
+            # skipped like any other bad token -- never a crash of the whole gate.
             try:
                 return (_channel(parts[0]), _channel(parts[1]), _channel(parts[2]))
-            except ValueError:
+            except (ValueError, OverflowError):
                 return None
     match = _HSL.match(value)
     if match:
@@ -1370,8 +1372,14 @@ def _parse_color(value):
                 hue = _hue_deg(parts[0])
                 sat = float(parts[1].rstrip('%')) / 100
                 light = float(parts[2].rstrip('%')) / 100
-            except ValueError:
+            except (ValueError, OverflowError):
                 return None
+            if not (math.isfinite(hue) and math.isfinite(sat)
+                    and math.isfinite(light)):
+                return None                        # inf/NaN -> unparseable, no crash
+            # A browser clamps out-of-range S/L to [0,1] before rendering.
+            sat = min(1.0, max(0.0, sat))
+            light = min(1.0, max(0.0, light))
             return _hsl_to_rgb(hue, sat, light)
     return None
 
@@ -1559,6 +1567,11 @@ def check_undefined_classes(root, failures):
         audit.feed(markup)
         per_page[os.path.relpath(page, root)] = audit.sole
     js = '\n'.join(js_parts)
+    # `name in js` is a deliberately LOOSE substring test: this check is scoped to
+    # be low-noise (never false-fail a real hook), so a class name appearing
+    # anywhere in the JS clears it. Tightening to a whole-token match surfaces
+    # purely cosmetic dead hooks (an undefined download-link class), which is
+    # noise disproportionate to a cosmetic lint -- kept loose on purpose.
     for rel, classes in sorted(per_page.items()):
         for name in sorted(classes):
             if (name not in defined and name not in UNDEFINED_CLASS_ALLOWLIST

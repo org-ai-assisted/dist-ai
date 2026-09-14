@@ -961,11 +961,15 @@ def run():
                '.a{content:"/*"}.b{background:url(https://example.com/x.png)}.c{content:"*/"}')
         check('CSS url() between string /* */ tokens is still gated',
               any('x.png' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
-        # A comment between `url` and `(` is removed entirely (not spaced), so the
-        # load still reads as url(.
+        # A comment is a token SEPARATOR (space): @import/* */"..." stays a real
+        # load, and url/* */( correctly does NOT become a url-token (a browser
+        # does not fetch it), so only the @import case must be flagged.
+        _write(root, 's.css', '@import/*c*/"https://example.com/imp.css";')
+        check('CSS @import past a comment separator is still a load',
+              any('imp.css' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
         _write(root, 's.css', 'a{background:url/*c*/(https://example.com/y.png)}')
-        check('CSS url/* */( still reads as a load',
-              any('y.png' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
+        check('CSS url/* */( is not a url-token (a browser does not fetch it)',
+              not any('y.png' in f for f in _supply_failures(root)), repr(_supply_failures(root)))
 
     # A commented-out :root palette must not be read as a live definition -- neither
     # a false contrast pairing nor a masked undefined class.
@@ -1029,6 +1033,61 @@ def run():
         _write(root, 'index.html', _page % '<iframe srcdoc="&lt;img src=/x.png&gt;"></iframe>')
         check('a raster inside iframe srcdoc must be webp',
               any('x.png' in f for f in _fmt_failures(root)), repr(_fmt_failures(root)))
+
+    # ---- Reconcile batch 2 (second ai-review round) ------------------------
+    # A crash on an overflowing color, the self-closing-tag class (a browser
+    # keeps a non-void <tag/> OPEN), and two pre-existing gaps.
+
+    with tempfile.TemporaryDirectory() as root:
+        # An overflowing rgb() literal (1e309 -> inf) must be unparseable, not a crash.
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:rgb(1e309,0,0)}.kicker{color:var(--accent)}')
+        check('an overflowing rgb() literal does not crash the contrast check',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # A self-closing <footer/> stays open in a browser -> its family links count.
+        # (This is the one self-closing case a NARROW _FooterAudit fix handles; the
+        # general self-closing-tag modeling is left to the stdlib parser -- a browser
+        # keeps a self-closed non-void tag open, but that is a crafted construct these
+        # hand-authored sites do not use, so the audits do not model it.)
+        _write(root, 'index.html', '<footer/>%s' % ' '.join(check_site.FAMILY.values()))
+        check('a self-closing <footer/> keeps its family links (no false miss)',
+              _footer_failures(root) == [], repr(_footer_failures(root)))
+
+    # Color parsing robustness: 4/8-digit hex-with-alpha, out-of-range hsl (a
+    # browser clamps S/L), and an overflowing hsl literal (must not crash).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        # #ff8080ff (opaque) == #ff8080 == 2.43:1 on #ffffff, below AA.
+        _write(root, 'style.css',
+               ':root{--bg:#ffffff;--accent:#ff8080ff}.kicker{color:var(--accent)}')
+        check('an 8-digit hex-with-alpha color is contrast-checked',
+              any('--accent' in f for f in _ct_failures(root)), repr(_ct_failures(root)))
+    # An out-of-range hsl() saturation must clamp to [0,1] (a browser does), so no
+    # channel goes negative -- pre-fix hsl(0,300%,10%) returned (102,-51,-51).
+    check('out-of-range hsl() saturation clamps (no negative rgb channel)',
+          all(0 <= c <= 255 for c in check_site._parse_color('hsl(0,300%,10%)')))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:hsl(0,0%,1e309%)}.kicker{color:var(--accent)}')
+        check('an overflowing hsl() literal does not crash the contrast check',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+
+    # base-uri must be restricted (it does not fall back to default-src): without
+    # it a <base href> rehomes every relative URL.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (
+            "default-src 'none'; script-src 'self'; img-src 'self'; form-action 'none'", ''))
+        check('a CSP with no base-uri is flagged',
+              any('base-uri' in f for f in _csp_failures(root)), repr(_csp_failures(root)))
+        _write(root, 'index.html', _cpage % (
+            "default-src 'none'; script-src 'self'; img-src 'self';"
+            " base-uri 'none'; form-action 'none'", ''))
+        check('a CSP with base-uri none passes', _csp_failures(root) == [],
+              repr(_csp_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
