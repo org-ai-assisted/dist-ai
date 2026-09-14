@@ -114,6 +114,14 @@ check() {  ## $1=label $2=ok?(non-empty=pass)
    fi
 }
 
+## Install secure-terminal's own icon + .desktop into the session (labwc maps app-id -> .desktop
+## Icon= -> theme) BEFORE bringing up labwc, exactly as the shots do (comparison-capture.sh sets
+## XDG_DATA_HOME + installs the theme, THEN start_labwc). labwc builds its icon search path from
+## XDG_DATA_HOME at STARTUP, so setting it afterwards is too late -- the ST icon is never found and
+## the titlebar falls back (0 signature-green), which is a TEST-ORDER bug, not a pipeline fault.
+export XDG_DATA_HOME="${work}/data"; mkdir --parents -- "${XDG_DATA_HOME}"
+shots_install_icon_theme "${XDG_DATA_HOME}"
+
 ## Bring up the SAME compositor the shots use (Papirus icon theme, 2x output scale).
 runtime_dir="${work}/rt"; mkdir --parents -- "${runtime_dir}"
 # shellcheck disable=SC2119
@@ -122,11 +130,6 @@ if ! wl_headless_start --runtime "${runtime_dir}" --icon-theme Papirus --output-
    printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1
 fi
-
-## Install secure-terminal's own icon + .desktop into the session (labwc maps app-id -> .desktop
-## Icon= -> theme), exactly as the shots do.
-export XDG_DATA_HOME="${work}/data"; mkdir --parents -- "${XDG_DATA_HOME}"
-shots_install_icon_theme "${XDG_DATA_HOME}"
 
 ## Pixel math lives in a standalone helper (dist-ai style forbids stdin-heredoc python).
 pixel_probe="${script_dir}/favicon_pixel_probe.py"

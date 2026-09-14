@@ -542,9 +542,11 @@ def _css_urls(text):
 
 
 # @import loads a stylesheet; its bare-string form (@import "url";) is not a
-# url() so _CSS_URL misses it -- match it here for the supply-chain scan.
+# url() so _CSS_URL misses it -- match it here for the supply-chain scan. The
+# url() form (@import url(...)) is already yielded by _css_urls, so exclude it
+# here (negative lookahead) to avoid double-reporting the same load.
 _CSS_IMPORT = re.compile(
-    r"""@import\s+(?:url\(\s*)?["']?([^"')\s;]+)""", re.IGNORECASE)
+    r"""@import\s+(?!url\()["']?([^"')\s;]+)""", re.IGNORECASE)
 
 
 def _css_external_refs(text):
@@ -1205,6 +1207,42 @@ def check_nav(root, failures):
                         '(%s)' % (rel, '; '.join(detail)))
 
 
+class _TocAudit(html.parser.HTMLParser):
+    """The on-this-page TOC's linked fragment ids (`href="#x"` inside a
+    <nav class="toc">) and every top-level `.cat` section id. Parsed, not raw
+    regex, so single-quoted attributes are normalized and a `.cat` section (or a
+    TOC) sitting inside an HTML comment is invisible -- matching every other audit
+    in this file, and unlike the double-quote-only regex it replaces."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._toc = 0
+        self.has_toc = False
+        self.linked = set()
+        self.sections = []        # ids of .cat sections, in document order
+
+    def handle_starttag(self, tag, attrs):
+        amap = dict(attrs)
+        classes = (amap.get('class') or '').split()
+        if tag == 'nav' and 'toc' in classes:
+            self._toc += 1
+            self.has_toc = True
+        elif tag == 'nav' and self._toc:
+            self._toc += 1            # a nested <nav> inside the TOC
+        if self._toc and tag == 'a':
+            href = amap.get('href') or ''
+            if href.startswith('#'):
+                self.linked.add(href[1:])
+        if tag == 'section' and 'cat' in classes and amap.get('id'):
+            self.sections.append(amap['id'])
+
+    handle_startendtag = handle_starttag
+
+    def handle_endtag(self, tag):
+        if tag == 'nav' and self._toc:
+            self._toc -= 1
+
+
 def check_toc_complete(root, failures):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -1215,22 +1253,15 @@ def check_toc_complete(root, failures):
     # headings); only a `.cat` section missing from the TOC is a failure.
     for page in html_files(root):
         with open(page, encoding='utf-8') as handle:
-            markup = handle.read()
-        toc = re.search(r'<nav\b[^>]*class="[^"]*\btoc\b[^"]*"[^>]*>(.*?)</nav>',
-                        markup, re.DOTALL | re.IGNORECASE)
-        if not toc:
+            audit = _TocAudit()
+            audit.feed(handle.read())
+        if not audit.has_toc:
             continue                       # a page with no on-this-page TOC is exempt
-        linked = set(re.findall(r'href="#([^"]+)"', toc.group(1)))
         rel = os.path.relpath(page, root)
-        for sect in re.finditer(r'<section\b([^>]*)>', markup, re.IGNORECASE):
-            attrs = sect.group(1)
-            cls = re.search(r'class="([^"]*)"', attrs)
-            if not cls or 'cat' not in cls.group(1).split():
-                continue
-            sid = re.search(r'id="([^"]+)"', attrs)
-            if sid and sid.group(1) not in linked:
+        for sid in audit.sections:
+            if sid not in audit.linked:
                 failures.append('%s: section #%s is missing from the on-this-page TOC'
-                                % (rel, sid.group(1)))
+                                % (rel, sid))
 
 
 # --- Forced line breaks in headings -------------------------------------------
@@ -1304,6 +1335,15 @@ def _channel(token):
     return min(255, max(0, round(float(token))))
 
 
+def _opaque_alpha(token):
+    # An rgba()/hsla() alpha component is opaque at 1 (or 100%); anything less is
+    # semi-transparent -- its rendered contrast depends on compositing over the
+    # page background, which a context-free color parse cannot model.
+    token = token.strip()
+    value = float(token[:-1]) / 100 if token.endswith('%') else float(token)
+    return value >= 1.0
+
+
 def _hue_deg(token):
     # An hsl() hue: a number in deg (default), grad, rad, or turn.
     match = re.match(r'^([+-]?[0-9.]+)(deg|grad|rad|turn)?$', token.strip(),
@@ -1352,7 +1392,8 @@ def _parse_color(value):
         digits = match.group(1)
         if len(digits) in (3, 4):                  # #rgb / #rgba shorthand
             digits = ''.join(ch * 2 for ch in digits)
-        digits = digits[:6]                        # drop any alpha (#rrggbbaa)
+        if len(digits) == 8 and digits[6:8].lower() != 'ff':
+            return None            # semi-transparent: contrast needs compositing
         return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
     match = _RGB.match(value)
     if match:
@@ -1361,6 +1402,8 @@ def _parse_color(value):
             # OverflowError: an overflowing literal (1e309 -> inf) is unparseable,
             # skipped like any other bad token -- never a crash of the whole gate.
             try:
+                if len(parts) >= 4 and not _opaque_alpha(parts[3]):
+                    return None    # semi-transparent: contrast needs compositing
                 return (_channel(parts[0]), _channel(parts[1]), _channel(parts[2]))
             except (ValueError, OverflowError):
                 return None
@@ -1369,6 +1412,8 @@ def _parse_color(value):
         parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
         if len(parts) >= 3:
             try:
+                if len(parts) >= 4 and not _opaque_alpha(parts[3]):
+                    return None    # semi-transparent: contrast needs compositing
                 hue = _hue_deg(parts[0])
                 sat = float(parts[1].rstrip('%')) / 100
                 light = float(parts[2].rstrip('%')) / 100
