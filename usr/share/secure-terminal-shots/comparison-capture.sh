@@ -751,6 +751,190 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    return 0
 }
 
+## zoom-verify: the human-verification zoom shots on secure-terminal.github.io. For each
+## (board, tab-mode, display-mode, resolution) GROUP it launches the REAL decorated app, cats
+## the board through the shell -- so the shot carries the window TITLE BAR, the user@host:~$
+## prompt, the `cat demos/...` line and the returned prompt -- then steps the font zoom via
+## `ctl zoom` and grim-grabs the decorated window at each canonical level into
+## zoom-verify-<board>-<mode>-<display>-<WxH>-z<zoom>.png in ${out}. Replaces the in-process
+## win.grab() publish path, which could not capture the window-manager frame.
+##
+## Boards are regenerated from zoom_boards.py (the drift-gated single source of truth) into
+## ${HOME}/demos, so the shell's `cat demos/zoom-<name>-safe-to-cat.txt` matches the
+## terminal-safe-corpus reproduce command with no corpus checkout needed.
+##
+## errexit is SUPPRESSED inside this function (its call site is `... || rc=$?`), so each
+## top-level step is guarded explicitly and a failure counts toward the FAILED verdict.
+## $@ = optional board-name filter (default: every group).
+zoom_verify_capture() {
+   local group board mode display w h zooms zoom_boards_gen demo_dir cat_rel
+   local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_cmd st_wdog stwid
+   local st_tab_line st_tab_id level tag rc_dropin failures shots
+   local -a groups st_mode_flags zoom_levels
+
+   ## One PUBLISH_SUBSET group per line: "board tab-mode display-mode W H z z z ...". SHOW is
+   ## primary; a few detail cells for contrast. Kept in step with zoom_sweep.PUBLISH_SUBSET.
+   groups=(
+      'tui-showcase cli show 860 620 50 100 200 400'
+      'tui-showcase tui show 1280 800 75 125 250'
+      'tui-showcase cli detail 1280 800 100 200'
+      'colorgrad cli show 1280 800 50 100 200'
+      'longline-box cli show 860 620 75 110 300'
+      'exact-grid cli show 1366 768 100 150'
+      'altscreen-short tui show 1280 800 100 200'
+      'wide-cjk cli show 1280 800 100 250'
+      'art cli show 860 620 100 300'
+   )
+
+   zoom_boards_gen="${here}/../secure-terminal-tests/zoom_boards.py"
+   if [ ! -f "${zoom_boards_gen}" ]; then
+      printf '%s\n' "zoom-verify: board generator not found: ${zoom_boards_gen}" >&2
+      return 1
+   fi
+   demo_dir="${HOME}/demos"
+   mkdir -p -- "${demo_dir}"
+
+   failures=0
+   shots=0
+   rc_dropin="$(shots_rc_dropin_create zoom-verify-rc)" || {
+      printf '%s\n' 'zoom-verify: cannot create the privileged remote_control drop-in (sudo?)' >&2
+      return 1
+   }
+
+   for group in "${groups[@]}"; do
+      read -r board mode display w h zooms <<< "${group}"
+      ## optional board filter (fast iteration): $@ names the only board(s) to shoot.
+      if [ "$#" -gt 0 ]; then
+         case " $* " in
+            *" ${board} "*)
+               ;;
+            *)
+               continue
+               ;;
+         esac
+      fi
+      ## Regenerate this board into ${HOME}/demos from the drift-gated generator (run it
+      ## directly via its shebang, so its -Bsu flags apply), so a `cat demos/...` reproduces
+      ## exactly the committed corpus file.
+      cat_rel="demos/zoom-${board}-safe-to-cat.txt"
+      if ! "${zoom_boards_gen}" "${board}" > "${demo_dir}/zoom-${board}-safe-to-cat.txt" 2>/dev/null; then
+         printf '%s\n' "zoom-verify: failed to generate board '${board}'" >&2
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      st_win_w="$(px "${w}")"
+      st_win_h="$(px "${h}")"
+      st_cmd="cat ${cat_rel}"
+
+      if ! st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"; then
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      st_flagf="${st_pgf}.timeout"
+      st_transcript="${st_pgf}.transcript"
+      st_group="zv-$(basename -- "${st_pgf}")"
+      safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+
+      st_mode_flags=(--mode "${display}")
+      [ "${mode}" = tui ] && st_mode_flags+=(--tui)
+
+      ## Size on MAP via a labwc windowRule (native Wayland has no external resize); launch as
+      ## the group PRIMARY (unique --instance-group) so `ctl` reaches THIS window. Same
+      ## deterministic 72-DPI / SHOT env as the comparison ST pass (output scale gives 2x).
+      set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
+      shots_spawn_session "${st_pgf}" \
+         env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
+         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
+
+      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
+      stwid="$(find_window || true)"
+      if [ -z "${stwid}" ]; then
+         printf '%s\n' "warn zoom-verify.${board}: window never appeared" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      wait_window_ready "${stwid}"
+
+      ## Discover the tab id (a reachable `ctl ls` also confirms remote_control on + socket claimed).
+      st_tab_id=''
+      for _ct in 1 2 3 4 5; do
+         st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
+            ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
+         st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
+         [ -n "${st_tab_id}" ] && break
+         sleep 0.6
+      done
+      if [ -z "${st_tab_id}" ]; then
+         printf '%s\n' "warn zoom-verify.${board}: ctl ls found no tab -- skipping group" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+
+      ## CLI: cat ONCE now -- the flowing document replays and reflows on each later zoom. TUI:
+      ## the grid is program-redrawn on SIGWINCH, so a static cat is RE-run AFTER each zoom below.
+      if [ "${mode}" = cli ]; then
+         env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+            send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || true
+         sleep 1
+         st_wait_render_settled "${stwid}"
+      fi
+
+      read -ra zoom_levels <<< "${zooms}"
+      for level in "${zoom_levels[@]}"; do
+         case "${level}" in
+            ''|*[!0-9]*)
+               printf '%s\n' "warn zoom-verify.${board}: skipping non-numeric zoom '${level}'" >&2
+               failures=$(( failures + 1 ))
+               continue
+               ;;
+         esac
+         env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+            zoom --tab "id:${st_tab_id}" "${level}" >/dev/null 2>&1 || true
+         if [ "${mode}" = tui ]; then
+            ## re-cat AFTER the zoom so the board fills the NEW grid, as a SIGWINCH-aware app would.
+            sleep 0.5
+            env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+               send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || true
+         fi
+         sleep 1
+         st_wait_render_settled "${stwid}"
+         tag="${board}-${mode}-${display}-${w}x${h}-z${level}"
+         if capture_settled "${out}/zoom-verify-${tag}.png" "${stwid}" skip-tighten \
+               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+            shots=$(( shots + 1 ))
+            printf '%s\n' "zoom-verify: wrote zoom-verify-${tag}.png"
+         else
+            safe-rm -f -- "${out}/zoom-verify-${tag}.png" 2>/dev/null || true
+            printf '%s\n' "warn zoom-verify: ${tag} produced no verified shot (blank grab / empty transcript)" >&2
+            failures=$(( failures + 1 ))
+         fi
+      done
+
+      shots_watchdog_cancel "${st_wdog}"
+      if [ -e "${st_flagf}" ]; then
+         printf '%s\n' "warn zoom-verify.${board}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+         failures=$(( failures + 1 ))
+      fi
+      shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+      safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
+   done
+
+   printf '%s\n' "zoom-verify: wrote ${shots} zoom shot(s) to ${out}"
+   ## A no-op sweep is not a pass: any failed group / zero shots FAILS so the driver cannot
+   ## false-green while claiming to have refreshed the window-bar zoom shots.
+   if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
+      printf '%s\n' "warn zoom-verify: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
 ## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
 ## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
@@ -1065,6 +1249,10 @@ content_verify_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
+## --zoom-verify: the human-verification window-bar zoom shots (see zoom_verify_capture).
+## Single-lane, secure-terminal-only; any trailing args are a board-name filter (default all).
+zoom_verify=''
+zoom_verify_boards=()
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
 ## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
 ## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
@@ -1104,6 +1292,15 @@ while [ "$#" -gt 0 ]; do
          st_only='true'
          shift
          zoom_live_levels=("$@")
+         break
+         ;;
+      --zoom-verify)
+         ## Single-lane, secure-terminal-only window-bar zoom shots. st_only empties the emulator
+         ## list, so only the zoom_verify_capture branch runs. Trailing args are a board filter.
+         zoom_verify='true'
+         st_only='true'
+         shift
+         zoom_verify_boards=("$@")
          break
          ;;
       --quick)
@@ -1490,6 +1687,23 @@ if [ -n "${zoom_live}" ]; then
    zoom_live_rc=0
    zoom_live_capture "${zoom_live_levels[@]}" || zoom_live_rc="$?"
    exit "${zoom_live_rc}"
+fi
+
+## zoom-verify: the window-bar human-verification zoom shots (see zoom_verify_capture). Same
+## prepared-HOME environment as zoom-live (prompt, icon theme, trap); skips the emulator grid
+## and the multi-spec ST loop. Propagates the lane's real verdict (a failed/empty sweep exits
+## nonzero, not a hardcoded 0).
+if [ -n "${zoom_verify}" ]; then
+   cd "${HOME}"
+   st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
+   st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_bin}" ]; then
+      printf '%s\n' 'ERROR: zoom-verify needs secure-terminal. Set ST_REPO=/path/to/checkout.' >&2
+      exit 1
+   fi
+   zoom_verify_rc=0
+   zoom_verify_capture "${zoom_verify_boards[@]}" || zoom_verify_rc="$?"
+   exit "${zoom_verify_rc}"
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.

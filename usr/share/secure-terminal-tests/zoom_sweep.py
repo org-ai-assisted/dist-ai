@@ -18,11 +18,13 @@ Subcommands:
   full [--dump DIR] [--boards B,B] [--res WxH,WxH] [--zooms N,N]
         The comprehensive diagnostic sweep across the full matrix; prints every
         artifact found. --dump saves a PNG per cell.
-  publish --out DIR
-        Emit the curated human-verification subset as window PNGs + a manifest.tsv.
-        The page-build step converts these to webp; this command stays PNG-only.
 
 Exit non-zero if ANY cell reports an artifact (so `full` doubles as a gate).
+
+The published human-verification zoom shots on secure-terminal.github.io are NOT emitted
+here: they are captured against the REAL decorated app (window title bar + shell prompt) by
+the dist-ai shot harness -- `secure-terminal-shots zoom-verify` (comparison-capture.sh
+--zoom-verify). This in-process harness is the automated artifact GATE only.
 """
 
 import argparse
@@ -200,58 +202,6 @@ def cmd_full(args):
     return 1 if flagged else 0
 
 
-# Curated human-verification subset: (board, tab-mode, display-mode, resolution, zoom).
-# SHOW display-mode is primary (the mode that needs the most eyeballing); a few detail
-# cells are kept for contrast. One board per artifact class, both tab-modes, a spread of
-# zoom levels + resolutions -- kept small (~24) and stable.
-PUBLISH_SUBSET = [
-    ('tui-showcase', 'cli', 'show', (860, 620), z) for z in (50, 100, 200, 400)
-] + [
-    ('tui-showcase', 'tui', 'show', (1280, 800), z) for z in (75, 125, 250)
-] + [
-    ('tui-showcase', 'cli', 'detail', (1280, 800), z) for z in (100, 200)
-] + [
-    ('colorgrad', 'cli', 'show', (1280, 800), z) for z in (50, 100, 200)
-] + [
-    ('longline-box', 'cli', 'show', (860, 620), z) for z in (75, 110, 300)
-] + [
-    ('exact-grid', 'cli', 'show', (1366, 768), z) for z in (100, 150)
-] + [
-    ('altscreen-short', 'tui', 'show', (1280, 800), z) for z in (100, 200)
-] + [
-    ('wide-cjk', 'cli', 'show', (1280, 800), z) for z in (100, 250)
-] + [
-    ('art', 'cli', 'show', (860, 620), z) for z in (100, 300)
-]
-
-
-def cmd_publish(args):
-    os.makedirs(args.out, exist_ok=True)
-    h = Z.ZoomHarness()
-    manifest = []
-    try:
-        for board, mode, display, res, zoom in PUBLISH_SUBSET:
-            # board_name -> CLI shots cat the real terminal-safe-corpus file, so the
-            # banner names the reproduce path (TUI keeps the out-of-band feed).
-            result = h.capture(Z.BOARDS[board][0], mode, res, zoom, display_mode=display,
-                               board_name=board)
-            tag = _tag(board, mode, display, res, zoom)
-            path = os.path.join(args.out, 'zoom-verify-%s.png' % tag)
-            _checked_save(result['win_image'], path)
-            manifest.append((tag, board, mode, display, res, zoom, os.path.basename(path)))
-            print('published %s' % os.path.basename(path))
-            h.close_term(result['term'])
-    finally:
-        h.close()
-    # A machine-readable manifest for the page-builder.
-    with open(os.path.join(args.out, 'manifest.tsv'), 'w', encoding='utf-8') as fh:
-        for tag, board, mode, display, res, zoom, fn in manifest:
-            fh.write('%s\t%s\t%s\t%s\t%dx%d\t%d\t%s\n'
-                     % (tag, board, mode, display, res[0], res[1], zoom, fn))
-    print('published %d shots + manifest.tsv to %s' % (len(manifest), args.out))
-    return 0
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(prog='zoom-sweep')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -273,10 +223,6 @@ def main(argv=None):
     pf.add_argument('--display', default=Z.PRIMARY_DISPLAY,
                     help='comma list of display modes (default: show)')
     pf.set_defaults(fn=cmd_full)
-
-    pp = sub.add_parser('publish')
-    pp.add_argument('--out', required=True)
-    pp.set_defaults(fn=cmd_publish)
 
     args = p.parse_args(argv)
     return args.fn(args)

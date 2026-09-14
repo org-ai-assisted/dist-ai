@@ -111,7 +111,7 @@ fi
 
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] \
-      || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom-live' ] \
+      || [ "$1" = 'tooltip' ] || [ "$1" = 'zoom-live' ] || [ "$1" = 'zoom-verify' ] \
       || [ "$1" = 'comparison' ] \
       || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ] || [ "$1" = 'refresh' ]; }; then
    mode="$1"
@@ -177,6 +177,22 @@ if [ "${mode}" = 'zoom-live' ]; then
    ## on stdout while exiting non-zero, misleading a stdout-scraping caller (false green).
    if [ "${run_rc}" = '0' ]; then
       printf '%s\n' "secure-terminal-shots: wrote real-GUI zoom-live shots to ${shots_dir}/shots"
+   fi
+   exit "${run_rc}"
+fi
+
+if [ "${mode}" = 'zoom-verify' ]; then
+   ## The window-bar human-verification zoom shots for secure-terminal.github.io/screenshots
+   ## (a SITE asset, unlike the zoom-live diagnostic): the REAL decorated app, per (board, mode,
+   ## display, resolution) group, cats the board through the shell and steps the font zoom via
+   ## `ctl zoom`, grim-grabbing the decorated window at each level. comparison-capture.sh brings
+   ## up its own headless labwc and writes PNGs to shots/; webp them in place (the site references
+   ## .webp). Trailing args are an optional board-name filter (default: all groups).
+   run_rc=0
+   "${shots_dir}/comparison-capture.sh" --zoom-verify "$@" || run_rc="$?"
+   if [ "${run_rc}" = '0' ]; then
+      optimize_to_webp "${shots_dir}/shots/"zoom-verify-*.png
+      printf '%s\n' "secure-terminal-shots: wrote zoom-verify window-bar shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"
 fi
