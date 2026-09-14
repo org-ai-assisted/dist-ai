@@ -250,6 +250,30 @@ def zoom_sweep_guard_canary():
     ok(raised, '_parse_res rejects 0x0 (no resolution-lying shot)')
     ok(zoom_sweep._parse_res('1280x800') == (1280, 800), '_parse_res accepts a valid WxH')
 
+    # cmd_one must reject an invalid mode/display combo (reveal/detail in TUI) BEFORE the
+    # harness, like cmd_full skips it -- else the shot's tag would name a display mode the
+    # window refused. Stub the harness so a missing guard is caught as "reached the harness"
+    # rather than actually building a second QApplication.
+    class _Args:
+        board, mode, res, zoom, display, dump = 'tui-showcase', 'tui', '1280x800', '100', 'detail', None
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('harness must not be reached for an invalid combo')
+
+    orig_harness = zoom_sweep.Z.ZoomHarness
+    zoom_sweep.Z.ZoomHarness = _boom
+    try:
+        rejected = False
+        try:
+            zoom_sweep.cmd_one(_Args())
+        except SystemExit:
+            rejected = True
+        except BaseException:               # pylint: disable=broad-except
+            rejected = False                 # pre-fix: fell through to the (stubbed) harness
+        ok(rejected, 'cmd_one rejects an invalid TUI+detail combo before the harness')
+    finally:
+        zoom_sweep.Z.ZoomHarness = orig_harness
+
 
 # ---------------------------------------------------------------------------
 # 2. Per-cell matrix -- a bounded but representative sweep; every cell must analyze clean.

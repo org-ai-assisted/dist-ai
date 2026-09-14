@@ -135,6 +135,12 @@ def cmd_one(args):
     # SIGSEGV path). res/zoom raise SystemExit -> routed through os._exit in __main__.
     res = _parse_res(args.res)
     zoom = _parse_zoom(args.zoom)
+    # Reject an invalid mode/display combo like cmd_full skips it: set_mode refuses
+    # reveal/detail in TUI, so the window would stay in a fallback mode while _tag still
+    # named the requested one -- a shot whose filename lies about what it rendered.
+    if not Z.valid_display_for(args.mode, args.display):
+        raise SystemExit('zoom-sweep: display %r is not valid in %s mode (reveal/detail are CLI-only)'
+                         % (args.display, args.mode))
     h = Z.ZoomHarness()
     try:
         result = h.capture(Z.BOARDS[args.board][0], args.mode, res, zoom,
