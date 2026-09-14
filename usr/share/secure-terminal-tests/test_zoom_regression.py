@@ -47,6 +47,7 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-zoom-state-')
 try:
     from PyQt6.QtGui import QImage, QColor
     import zoom_regression_lib as Z
+    import zoom_sweep
 except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(zoom): FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
@@ -180,6 +181,103 @@ def canaries():
 
 
 # ---------------------------------------------------------------------------
+# 1b. Shot-write check -- the shot driver must FAIL LOUD when a QImage.save() fails, never
+#     report a path it did not write (a missing shot read as success is a fabricated signal,
+#     the exact thing this verification tool exists to prevent). Drives the REAL _save site
+#     with stub images; the same _checked_save choke point backs cmd_publish too.
+# ---------------------------------------------------------------------------
+
+def checked_save_canary():
+    class _FailImg:
+        def save(self, _path):
+            return False
+
+    class _OkImg:
+        def save(self, _path):
+            return True
+
+    dump = tempfile.mkdtemp(prefix='st-zoom-savecheck-')
+    raised = False
+    try:
+        zoom_sweep._save({'win_image': _FailImg(), 'viewport_image': _FailImg()}, dump, 'fail')
+    except RuntimeError:
+        raised = True
+    ok(raised, '_save raises when an image.save() returns False (no fabricated shot)')
+    wp = zoom_sweep._save({'win_image': _OkImg(), 'viewport_image': _OkImg()}, dump, 'ok')
+    ok(wp.endswith('zoom-ok-win.png'), '_save returns the window path when saves succeed')
+
+
+# ---------------------------------------------------------------------------
+# 1c. Exit guard + arg validation -- any exception AFTER the Qt harness exists must route
+#     through os._exit, never unwind (a normal shutdown runs Qt's static destructors ->
+#     teardown SIGSEGV, masking the failure). _main_exit_code must fold a non-SystemExit
+#     into a clean rc=1 (loud traceback, no crash) and preserve a SystemExit's own code.
+#     _parse_res must reject a resolution that would lie in the shot's tag, like _parse_zoom.
+# ---------------------------------------------------------------------------
+
+def zoom_sweep_guard_canary():
+    def _raise_runtime(argv=None):
+        raise RuntimeError('canary boom')
+
+    def _exit_two(argv=None):
+        raise SystemExit(2)
+
+    orig_main = zoom_sweep.main
+    try:
+        zoom_sweep.main = _raise_runtime
+        got = False
+        try:
+            got = zoom_sweep._main_exit_code() == 1
+        except Exception:               # pylint: disable=broad-except
+            got = False                      # pre-fix: the exception unwound past the guard
+        ok(got, '_main_exit_code returns 1 on a non-SystemExit (no teardown-SIGSEGV unwind)')
+
+        zoom_sweep.main = _exit_two
+        preserved = False
+        try:
+            preserved = zoom_sweep._main_exit_code() == 2
+        except Exception:               # pylint: disable=broad-except
+            preserved = False
+        ok(preserved, '_main_exit_code preserves a SystemExit integer code')
+    finally:
+        zoom_sweep.main = orig_main
+
+    raised = False
+    try:
+        zoom_sweep._parse_res('0x0')
+    except SystemExit:
+        raised = True
+    ok(raised, '_parse_res rejects 0x0 (no resolution-lying shot)')
+    ok(zoom_sweep._parse_res('1280x800') == (1280, 800), '_parse_res accepts a valid WxH')
+
+    # cmd_one must reject an invalid mode/display combo (reveal/detail in TUI) BEFORE the
+    # harness, like cmd_full skips it -- else the shot's tag would name a display mode the
+    # window refused. Stub the harness so a missing guard is caught as "reached the harness"
+    # rather than actually building a second QApplication.
+    class _Args:
+        board, mode, res, zoom, display, dump = 'tui-showcase', 'tui', '1280x800', '100', 'detail', None
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('harness must not be reached for an invalid combo')
+
+    # setattr/getattr, not `zoom_sweep.Z.ZoomHarness = ...`: ZoomHarness is a type, and a
+    # direct rebind trips mypy's "cannot assign to a type" -- the dynamic form is the intent.
+    orig_harness = getattr(zoom_sweep.Z, 'ZoomHarness')
+    setattr(zoom_sweep.Z, 'ZoomHarness', _boom)
+    try:
+        rejected = False
+        try:
+            zoom_sweep.cmd_one(_Args())
+        except SystemExit:
+            rejected = True
+        except Exception:               # pylint: disable=broad-except
+            rejected = False                 # pre-fix: fell through to the (stubbed) harness
+        ok(rejected, 'cmd_one rejects an invalid TUI+detail combo before the harness')
+    finally:
+        setattr(zoom_sweep.Z, 'ZoomHarness', orig_harness)
+
+
+# ---------------------------------------------------------------------------
 # 2. Per-cell matrix -- a bounded but representative sweep; every cell must analyze clean.
 # ---------------------------------------------------------------------------
 
@@ -262,6 +360,8 @@ def stability():
 
 
 canaries()
+checked_save_canary()
+zoom_sweep_guard_canary()
 matrix()
 blank_row_report()
 stability()
