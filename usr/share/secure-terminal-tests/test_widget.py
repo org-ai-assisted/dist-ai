@@ -4529,15 +4529,33 @@ _wsplain.grab()                                 # paintEvent -> _paint_ws_dots -
 APP.processEvents()
 _wsplain.shutdown()
 
-# TUI grid: whitespace dots are CLI-only (a grid pads every row with structural spaces),
-# so _ws_dot_rects returns nothing regardless of content.
+# TUI grid: whitespace dots flag INTERIOR runs of >= 2 spaces ONLY. A grid pads every row
+# with structural trailing spaces and positions content with leading indentation, so leading
+# + trailing are suppressed there; a run of >= 2 spaces BETWEEN tokens is the real anomaly.
 _wstui = SecureTerminal(command='/bin/cat', tui=True)
 _wstui.resize(500, 300)
 _wstui.show()
-feed_output(_wstui, b'a  b  \n')
+feed_output(_wstui, b'  aa  bb\n')          # leading(2, suppressed) + interior(2) + grid pad
+
+
+def _ws_runs_all(w):
+    out = []
+    blk = w.document().begin()
+    while blk.isValid():
+        out.extend(w._ws_dot_runs(blk))
+        blk = blk.next()
+    return out
+
+
 _wstui._force_current_frame()
-ok(not list(_wstui._ws_dot_rects()), 'ws: the TUI grid path draws no whitespace dots')
-_wstui.grab()
+_wsr = _ws_runs_all(_wstui)
+ok(len(_wsr) == 1 and (_wsr[0][1] - _wsr[0][0]) == 2,
+   'ws TUI: exactly the interior 2-space run is flagged (leading + grid padding suppressed)')
+ok(list(_wstui._ws_dot_rects()),
+   'ws TUI: the interior run yields paint rects (dots drawn in the grid)')
+ok(_WSG not in _wstui.transcript_text(),
+   'ws TUI: the grid transcript carries real spaces, no dot glyph')
+_wstui.grab()                                   # paintEvent -> _paint_ws_dots (grid path)
 APP.processEvents()
 _wstui.shutdown()
 
