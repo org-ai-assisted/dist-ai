@@ -68,6 +68,8 @@ class Extractor(html.parser.HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.links = []          # (tag, attr, value) for href/src/data
+        self.loads = []          # (tag, attr, value) subresource LOADS (supply-chain)
+        self.srcdocs = []        # iframe srcdoc HTML: a nested document to recurse
         self.link_rels = []      # (rel-tokens, href) for every <link href=...>
         self.srcsets = []        # srcset attribute values (char-refs decoded)
         self.ids = set()
@@ -105,6 +107,13 @@ class Extractor(html.parser.HTMLParser):
         for key in ('href', 'src'):
             if key in amap and amap[key] is not None:
                 self.links.append((tag, key, amap[key]))
+        # Subresource loads (supply-chain surface): the RESOURCE_ATTR base plus the
+        # attrs it misses (poster, legacy background=, SVG href/xlink:href, input
+        # type=image). Kept separate from `links` so link/format checks are unchanged.
+        for load_attr, load_val in _resource_loads(tag, amap):
+            self.loads.append((tag, load_attr, load_val))
+        if tag == 'iframe' and amap.get('srcdoc'):
+            self.srcdocs.append(amap['srcdoc'])
 
     def handle_endtag(self, tag):
         if tag in ('script', 'style') and self._skip:
@@ -304,7 +313,10 @@ def check_wording(root, failures):
 _DATED_CLAIM = re.compile(
     r'(?:measured|tested|re-verified|verified|re-counted|counted|as of|updated'
     r'|last (?:checked|updated|tested))\b[^.]{0,32}?'
-    r'(\d{4})-(\d{2})(?:-(\d{2}))?', re.IGNORECASE)
+    # The year must not sit directly after an alnum: a version token ("v2023-01",
+    # "build2024-05") is not a dated claim, and flagging it false-fails CI on
+    # ordinary prose. A real claim has a separator (space/"in "/...) before the year.
+    r'(?<![A-Za-z0-9])(\d{4})-(\d{2})(?:-(\d{2}))?', re.IGNORECASE)
 _STALE_DAYS = 400
 
 
@@ -342,25 +354,94 @@ def check_freshness(root, failures):
                     % (rel, match.group(0).strip(), age, _STALE_DAYS))
 
 
+class _FooterAudit(html.parser.HTMLParser):
+    """The concatenated href/text content of every <footer>...</footer> region,
+    plus whether any real <footer> exists. Parsed, not raw-markup regex, so a
+    <footer> inside an HTML comment is ignored (HTMLParser never fires inside a
+    comment) -- a comment-only footer must read as 'no <footer>', not as a footer
+    that is missing its family links. Nested footers union, matching the site
+    footer + article/section footers the old regex also unioned."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self.saw = False
+        self._buf = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'footer':
+            self._depth += 1
+            self.saw = True
+        if self._depth:
+            for _key, value in attrs:
+                if value:
+                    self._buf.append(value)
+
+    def handle_data(self, data):
+        if self._depth:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'footer' and self._depth:
+            self._depth -= 1
+
+    def scope(self):
+        return ' '.join(self._buf).lower()
+
+
 def check_footer(root, failures):
     index = os.path.join(root, 'index.html')
     if not os.path.isfile(index):
         return
     with open(index, encoding='utf-8') as handle:
         markup = handle.read()
-    lower = markup.lower()
-    if '<footer' not in lower:
+    audit = _FooterAudit()
+    audit.feed(markup)
+    if not audit.saw:
         failures.append('index.html: no <footer>')
         return
-    # Check the family links against the union of ALL <footer>...</footer>
-    # regions: content AFTER a footer must not mask a missing link (the
-    # whole-tail bug), and an earlier <article>/<section> footer must not hide
-    # the site footer (the first-footer-only bug).
-    footers = re.findall(r'<footer\b.*?</footer>', lower, re.DOTALL)
-    scope = ' '.join(footers) if footers else lower[lower.index('<footer'):]
+    # Check the family links against the union of ALL <footer> regions: content
+    # AFTER a footer must not mask a missing link (the whole-tail bug), and an
+    # earlier <article>/<section> footer must not hide the site footer.
+    scope = audit.scope()
     for name, url in FAMILY.items():
         if url not in scope:
             failures.append('index.html: footer missing family link %s' % url)
+
+
+class _StatusPillAudit(html.parser.HTMLParser):
+    """Text of the first review-status pill: a <span>/<a> whose class token set
+    contains 'status'. Parsed, not substring-matched, so a single-quoted or
+    multi-class attribute (class='status', class="status pill") -- which the old
+    raw-markup match silently skipped -- is still checked."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._pill_tag = None
+        self._depth = 0
+        self._buf = []
+        self.text = None
+
+    def handle_starttag(self, tag, attrs):
+        if self._pill_tag is None and self.text is None:
+            if tag in ('span', 'a') and \
+                    'status' in (dict(attrs).get('class') or '').split():
+                self._pill_tag = tag
+                self._depth = 1
+                self._buf = []
+        elif self._pill_tag == tag:
+            self._depth += 1        # a nested same-name tag inside the pill
+
+    def handle_data(self, data):
+        if self._pill_tag is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if self._pill_tag is not None and tag == self._pill_tag:
+            self._depth -= 1
+            if self._depth == 0:
+                self.text = ''.join(self._buf)
+                self._pill_tag = None
 
 
 def check_banner(root, failures):
@@ -371,15 +452,11 @@ def check_banner(root, failures):
         markup = handle.read()
     # A review-status pill, WHERE PRESENT, must say review is needed -- never a
     # "working"/green claim. Not every site carries one, so absence is allowed.
-    if 'class="status"' in markup:
-        # the pill may be a <span> (static) or an <a> (links to the review-model
-        # explanation) -- accept either so a link form is still text-checked.
-        pill = re.search(
-            r'<(?:span|a)\b[^>]*\bclass="status"[^>]*>([^<]*)</(?:span|a)>',
-            markup)
-        if pill and 'review' not in pill.group(1).lower():
-            failures.append('index.html: status banner is %r; must indicate '
-                            'human review needed' % pill.group(1).strip())
+    audit = _StatusPillAudit()
+    audit.feed(markup)
+    if audit.text is not None and 'review' not in audit.text.lower():
+        failures.append('index.html: status banner is %r; must indicate '
+                        'human review needed' % audit.text.strip())
 
 
 # Elements whose named attribute FETCHES a subresource at load time (unlike an
@@ -389,6 +466,31 @@ RESOURCE_ATTR = {
     'embed': 'src', 'audio': 'src', 'video': 'src', 'track': 'src',
     'object': 'data',
 }
+
+
+def _resource_loads(tag, amap):
+    """(attr, value) pairs on this element that FETCH a subresource at load time --
+    the supply-chain surface. Beyond RESOURCE_ATTR's one-attr-per-tag base: a
+    <video poster>, the legacy background= image, an SVG <image>/<use> href or
+    xlink:href, and an <input type=image src> are all loads the base map misses."""
+    loads = []
+    base = RESOURCE_ATTR.get(tag)
+    if base and amap.get(base):
+        loads.append((base, amap[base]))
+    if tag == 'video' and amap.get('poster'):
+        loads.append(('poster', amap['poster']))
+    if amap.get('background'):
+        loads.append(('background', amap['background']))
+    if tag in ('image', 'use'):
+        for attr in ('href', 'xlink:href'):
+            if amap.get(attr):
+                loads.append((attr, amap[attr]))
+    if tag == 'input' and (amap.get('type') or '').lower() == 'image' \
+            and amap.get('src'):
+        loads.append(('src', amap['src']))
+    return loads
+
+
 # <link rel> values whose href the browser FETCHES as a subresource, so an
 # external one is a supply-chain load. Pure metadata / connection hints
 # (canonical, alternate, dns-prefetch, preconnect, prev/next/author/license/
@@ -409,8 +511,18 @@ _RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
 # whole, and only forbid ')' in the UNQUOTED form (where it ends the url()).
 _CSS_URL = re.compile(
     r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
+# A browser strips /* */ comments before tokenizing CSS; do the same so a comment
+# between url( / @import and the value (url(/*x*/"https://evil/x.png")) cannot
+# smuggle an external load past the scan. Replace with a space so tokens never fuse.
+_CSS_COMMENT = re.compile(r'/\*.*?\*/', re.DOTALL)
+
+
+def _strip_css_comments(text):
+    return _CSS_COMMENT.sub(' ', text)
+
+
 def _css_urls(text):
-    for match in _CSS_URL.finditer(text):
+    for match in _CSS_URL.finditer(_strip_css_comments(text)):
         yield next(group for group in match.groups() if group is not None)
 
 
@@ -421,6 +533,7 @@ _CSS_IMPORT = re.compile(
 
 
 def _css_external_refs(text):
+    text = _strip_css_comments(text)
     yield from _css_urls(text)
     for match in _CSS_IMPORT.finditer(text):
         yield match.group(1)
@@ -430,15 +543,20 @@ STATIC_IMAGE_ALLOWLIST: frozenset[str] = frozenset()
 
 
 _URL_STRIP = str.maketrans('', '', '\t\n\r')
+# Leading/trailing bytes a browser removes before scheme matching: any C0 control
+# (0x00-0x1f) or space (0x20). Bare str.strip() is wrong both ways -- it leaves a
+# leading \x01 (which the browser DROPS, so \x01javascript: still executes) and it
+# strips NBSP (which the browser KEEPS, so a real parser never treats it as blank).
+_URL_TRIM = ''.join(chr(code) for code in range(0x21))
 
 
 def _url_norm(url):
     # Normalize a URL reference the way a browser does before scheme matching:
-    # ASCII tab/newline/CR are removed from ANYWHERE (not just the ends), '\' is
-    # a '/' for a special scheme (WHATWG), leading/trailing space is trimmed, and
-    # the scheme compares case-insensitively -- so none of those forms can
-    # smuggle a cross-origin load or a javascript: URL past the gate.
-    return url.translate(_URL_STRIP).strip().replace('\\', '/').lower()
+    # ASCII tab/newline/CR are removed from ANYWHERE (WHATWG), leading/trailing C0
+    # controls and space are trimmed, '\' is a '/' for a special scheme, and the
+    # scheme compares case-insensitively -- so none of those forms can smuggle a
+    # cross-origin load or a javascript: URL past the gate.
+    return url.translate(_URL_STRIP).strip(_URL_TRIM).replace('\\', '/').lower()
 
 
 def _is_external(url):
@@ -540,9 +658,12 @@ def check_csp(root, failures):
             failures.append('%s: no Content-Security-Policy meta' % rel)
             continue
         csp = ext.csp.lower()
-        if "default-src 'none'" not in csp:
-            failures.append("%s: CSP default-src is not 'none'" % rel)
         directives = _csp_directives(csp)
+        # Whitespace-robust: parse the directive, don't substring-match the exact
+        # "default-src 'none'" spelling (two spaces is a valid, equivalent CSP a
+        # bare-substring test false-fails). Still fails a missing/loosened value.
+        if directives.get('default-src') != ["'none'"]:
+            failures.append("%s: CSP default-src is not 'none'" % rel)
         # No external source may be allow-listed. A legitimate source token is a
         # quoted keyword / nonce / hash ("'self'", "'sha256-...'") or a host-free
         # scheme (data:/blob:/...). ANY other unquoted token names an external
@@ -615,6 +736,18 @@ class _InlineJSAudit(html.parser.HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
+        if tag == 'iframe':
+            srcdoc = dict(attrs).get('srcdoc')
+            if srcdoc:
+                # srcdoc is a nested document the browser renders; an inline
+                # <script>, an on*= handler, or a javascript: URL inside it needs
+                # 'unsafe-inline' just the same, so audit it too (nested srcdoc
+                # recurses through this same handler).
+                sub = _InlineJSAudit()
+                sub.feed(srcdoc)
+                self.inline_script = self.inline_script or sub.inline_script
+                self.handlers |= sub.handlers
+                self.js_url = self.js_url or sub.js_url
         if tag == 'script':
             self._script_depth += 1
             amap = dict(attrs)
@@ -658,18 +791,16 @@ def check_supply_chain(root, failures):
     # from an external host or protocol-relative URL -- everything ships
     # self-hosted or inline (data:). External <a> navigation is fine; only loads
     # are flagged.
-    for page in html_files(root):
-        rel = os.path.relpath(page, root)
-        ext = Extractor()
-        with open(page, encoding='utf-8') as handle:
-            ext.feed(handle.read())
-        for tag, attr, value in ext.links:
-            if RESOURCE_ATTR.get(tag) == attr and _is_external(value):
+    def scan(ext, rel):
+        # Extractor.loads is the full subresource surface (RESOURCE_ATTR base plus
+        # poster/background/svg-href/input-image), computed HTML-aware.
+        for tag, attr, value in ext.loads:
+            if _is_external(value):
                 failures.append('%s: <%s %s> loads an external resource: %s'
                                 % (rel, tag, attr, value))
-        # srcset candidates are subresource LOADS too (the tag loop records only
-        # href/src/data); Extractor captures srcset HTML-aware (char-refs decoded,
-        # unquoted values handled, code-sample text not matched).
+        # srcset candidates are subresource LOADS too (the loads list records only
+        # single-URL attrs); Extractor captures srcset HTML-aware (char-refs
+        # decoded, unquoted values handled, code-sample text not matched).
         for srcset in ext.srcsets:
             for candidate in srcset.split(','):
                 token = candidate.strip().split()
@@ -689,6 +820,20 @@ def check_supply_chain(root, failures):
             if _is_external(value):
                 failures.append('%s: CSS url()/@import loads an external '
                                 'resource: %s' % (rel, value))
+        # An <iframe srcdoc> is a whole nested document the browser renders; its
+        # own subresource loads are otherwise invisible. Recurse (nested srcdoc
+        # included) so a load hidden inside srcdoc is gated like any other.
+        for srcdoc in ext.srcdocs:
+            sub = Extractor()
+            sub.feed(srcdoc)
+            scan(sub, rel)
+
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        scan(ext, rel)
     # External url() in a standalone .css file is a load too.
     for base_dir, dirs, files in os.walk(root):
         _prune_git(dirs)
@@ -932,32 +1077,64 @@ def check_repro_raw(root, failures):
                     break
 
 
+class _HeaderNavAudit(html.parser.HTMLParser):
+    """The (label, href) list of the FIRST <nav> inside a <header>. Parsed, not
+    regex, so an attribute on the nav (<nav aria-label="Main">) no longer drops
+    the whole page from the consistency comparison, and a single-quoted href is
+    not lost. The home-anchor prefix is normalized (/#x == #x) and class="active"
+    is ignored (class is never collected) -- only the link SET, ORDER and targets
+    matter."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._header = 0
+        self._nav = 0
+        self._seen_nav = False
+        self._in_a = False
+        self._label = []
+        self._href = ''
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'header':
+            self._header += 1
+            return
+        if tag == 'nav':
+            if self._header and not self._seen_nav:
+                self._seen_nav = True
+                self._nav = 1
+            elif self._nav:
+                self._nav += 1
+            return
+        if self._nav and tag == 'a':
+            href = dict(attrs).get('href') or ''
+            if href.startswith('/#'):      # /#install (sub-page) == #install (index)
+                href = href[1:]
+            self._in_a = True
+            self._label = []
+            self._href = href
+
+    def handle_data(self, data):
+        if self._in_a:
+            self._label.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self._in_a:
+            self.links.append((''.join(self._label).strip(), self._href))
+            self._in_a = False
+        elif tag == 'nav' and self._nav:
+            self._nav -= 1
+        elif tag == 'header' and self._header:
+            self._header -= 1
+
+    def result(self):
+        return tuple(self.links) if self._seen_nav else None
+
+
 def _header_nav(markup):
-    """The ordered (label, href) list of the header's <nav> links, or None if the
-    page has no header nav. The home-anchor prefix is normalized so an index page's
-    `#install` and a sub-page's `/#install` compare equal, and the transient
-    class="active" on the current page's own link is ignored -- only the link SET,
-    ORDER and targets matter for consistency."""
-    low = markup.lower()
-    if '<header' not in low:
-        return None
-    header = markup[low.index('<header'):]
-    end = header.lower().find('</header>')
-    if end != -1:
-        header = header[:end]
-    # The header carries one bare <nav>; the footer's is <nav class="fcols">.
-    match = re.search(r'<nav>(.*?)</nav>', header, re.DOTALL)
-    if not match:
-        return None
-    links = []
-    for anchor in re.finditer(r'<a\b([^>]*)>(.*?)</a>', match.group(1), re.DOTALL):
-        label = re.sub(r'<[^>]+>', '', anchor.group(2)).strip()
-        href_match = re.search(r'href="([^"]*)"', anchor.group(1))
-        href = href_match.group(1) if href_match else ''
-        if href.startswith('/#'):          # /#install (sub-page) == #install (index)
-            href = href[1:]
-        links.append((label, href))
-    return tuple(links)
+    audit = _HeaderNavAudit()
+    audit.feed(markup)
+    return audit.result()
 
 
 def check_nav(root, failures):
@@ -1085,11 +1262,45 @@ AA_SMALL = 4.5
 _ROOT_VAR = re.compile(r'--([\w-]+)\s*:\s*([^;}]+)')
 _COLOR_VAR_USE = re.compile(r'color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
 _HEX = re.compile(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
-_RGB = re.compile(r'^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)', re.IGNORECASE)
+_RGB = re.compile(r'^rgba?\(([^)]*)\)', re.IGNORECASE)
+_HSL = re.compile(r'^hsla?\(([^)]*)\)', re.IGNORECASE)
+
+
+def _channel(token):
+    # An rgb() component: an integer 0-255, or a percentage of 255.
+    token = token.strip()
+    if token.endswith('%'):
+        return min(255, max(0, round(float(token[:-1]) * 255 / 100)))
+    return min(255, max(0, int(token)))
+
+
+def _hsl_to_rgb(hue, sat, light):
+    # HSL (hue in degrees, sat/light as 0..1) -> (r, g, b) 0-255.
+    hue = (hue % 360) / 360
+    if sat == 0:
+        gray = round(light * 255)
+        return (gray, gray, gray)
+    high = light * (1 + sat) if light < 0.5 else light + sat - light * sat
+    low = 2 * light - high
+
+    def component(offset):
+        offset %= 1
+        if offset < 1 / 6:
+            return low + (high - low) * 6 * offset
+        if offset < 1 / 2:
+            return high
+        if offset < 2 / 3:
+            return low + (high - low) * (2 / 3 - offset) * 6
+        return low
+    return (round(component(hue + 1 / 3) * 255),
+            round(component(hue) * 255),
+            round(component(hue - 1 / 3) * 255))
 
 
 def _parse_color(value):
-    """(r, g, b) for a hex or rgb()/rgba() color, else None (var(), named, ...)."""
+    """(r, g, b) for a hex, rgb()/rgba() (integer or %), or hsl()/hsla() color;
+    else None (a named color, an unresolved var(), ...). var() indirection is
+    resolved by the caller (_resolve_color) before this sees the value."""
     value = value.strip()
     match = _HEX.match(value)
     if match:
@@ -1099,7 +1310,23 @@ def _parse_color(value):
         return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
     match = _RGB.match(value)
     if match:
-        return tuple(min(255, int(component)) for component in match.groups())
+        parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
+        if len(parts) >= 3:
+            try:
+                return (_channel(parts[0]), _channel(parts[1]), _channel(parts[2]))
+            except ValueError:
+                return None
+    match = _HSL.match(value)
+    if match:
+        parts = [p for p in re.split(r'[\s,/]+', match.group(1).strip()) if p]
+        if len(parts) >= 3:
+            try:
+                hue = float(parts[0].lower().rstrip('deg'))
+                sat = float(parts[1].rstrip('%')) / 100
+                light = float(parts[2].rstrip('%')) / 100
+            except ValueError:
+                return None
+            return _hsl_to_rgb(hue, sat, light)
     return None
 
 
@@ -1146,12 +1373,29 @@ def _css_sources(root):
             yield os.path.relpath(page, root), '\n'.join(ext.styles)
 
 
+_VAR_REF = re.compile(r'^var\(\s*--([\w-]+)\s*(?:,[^)]*)?\)$', re.IGNORECASE)
+
+
+def _resolve_color(value, raw, _seen=None):
+    """Parse a color, following one or more var(--x) indirections through the
+    :root palette (a --accent defined as var(--brand)); cycle-guarded, and None if
+    the chain never lands on a concrete color."""
+    _seen = _seen or set()
+    match = _VAR_REF.match(value.strip())
+    if match:
+        ref = match.group(1)
+        if ref in _seen or ref not in raw:
+            return None
+        return _resolve_color(raw[ref], raw, _seen | {ref})
+    return _parse_color(value)
+
+
 def check_contrast(root, failures):
     # Per stylesheet scope: parse its :root token palette and, when it defines a
     # page background (--bg), check every paper-text token it both defines and
     # uses as text (color:var(--token)) clears WCAG AA for small text.
     for label, css in _css_sources(root):
-        props = {}
+        raw = {}
         for m in _ROOT_BLOCK.finditer(css):
             # Only the TOP-LEVEL :root palette (the default color scheme). A :root nested
             # inside an at-rule -- e.g. @media (prefers-color-scheme: dark) -- must NOT be
@@ -1163,9 +1407,14 @@ def check_contrast(root, failures):
             if before.count('{') != before.count('}'):
                 continue
             for name, value in _ROOT_VAR.findall(m.group(1)):
-                rgb = _parse_color(value)
-                if rgb is not None:
-                    props[name] = rgb          # later definition wins (cascade)
+                raw[name] = value.strip()      # later definition wins (cascade)
+        # Resolve after collecting, so a token defined as var(--other) can follow
+        # the reference regardless of definition order.
+        props = {}
+        for name, value in raw.items():
+            rgb = _resolve_color(value, raw)
+            if rgb is not None:
+                props[name] = rgb
         bg = props.get('bg')
         if bg is None:
             continue                            # scope has no page bg -> cannot judge
