@@ -109,6 +109,16 @@ check "$(verdict "$(source_with_tmp "${d5}")")" ACCEPTED 'an existing owned loos
 check "$(stat --format='%a' -- "${d5}/${statedir_name}" 2>/dev/null)" 700 \
    'a loosely-permissioned owned state dir is tightened to 0700'
 
+## 6. a symlink pointing to a directory WE OWN is refused, and that directory's mode is NOT
+##    changed through the symlink -- the create-first path refuses a planted symlink before any
+##    chmod, so a redirect-to-our-own-dir cannot strip its perms (the TOCTOU class).
+d6="${work}/symlink-to-owned"; mkdir -- "${d6}"
+victim6="${d6}/victim"; mkdir --mode 0755 -- "${victim6}"
+ln --symbolic -- "${victim6}" "${d6}/${statedir_name}"
+check "$(verdict "$(source_with_tmp "${d6}")")" REFUSED 'a symlink to an owned directory is refused'
+check "$(stat --format='%a' -- "${victim6}" 2>/dev/null)" 755 \
+   'the symlink target directory mode is left unchanged (no chmod through the symlink)'
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1

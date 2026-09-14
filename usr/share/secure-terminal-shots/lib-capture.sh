@@ -483,22 +483,25 @@ else
    ## it 0700; REFUSE a symlink / non-directory / foreign-owned entry rather than reuse it.
    shots_uid="$(id --user)"
    shots_state_dir="${TMP}/secure-terminal-shots-${shots_uid}"
-   if [ -L "${shots_state_dir}" ] || { [ -e "${shots_state_dir}" ] && [ ! -d "${shots_state_dir}" ]; }; then
+   ## CREATE-FIRST, atomically: `umask 077 && mkdir` (no -p) fails EEXIST on ANYTHING already at
+   ## the path -- a planted symlink included -- so the fresh-dir case has no check-then-chmod TOCTOU
+   ## (an earlier "test -L, then chmod" let an attacker plant a symlink to one of our own dirs in
+   ## the window and redirect the chmod). Only if the path already exists do we validate + reuse it:
+   ## refuse a symlink / non-directory / foreign owner, and re-tighten an owned dir to 0700. An
+   ## already-existing owned dir in sticky /tmp cannot be deleted+replaced with a symlink by another
+   ## user, so the reuse chmod is not exposed to the same swap.
+   if ( umask 077 && mkdir -- "${shots_state_dir}" 2>/dev/null ); then
+      : ## freshly created, private (0700), ours
+   elif [ -L "${shots_state_dir}" ] || [ ! -d "${shots_state_dir}" ]; then
       printf '%s\n' "shots: refusing state dir '${shots_state_dir}': a symlink or non-directory at a world-writable temp path is a planting attack. Set XDG_RUNTIME_DIR or remove it." >&2
       exit 1
-   fi
-   if [ -d "${shots_state_dir}" ]; then
+   else
       shots_owner="$(stat --format='%u' -- "${shots_state_dir}" 2>/dev/null || true)"
       if [ "${shots_owner}" != "${shots_uid}" ]; then
          printf '%s\n' "shots: refusing state dir '${shots_state_dir}': owned by uid '${shots_owner:-unknown}', not us (${shots_uid}) -- another user planted it. Set XDG_RUNTIME_DIR or remove it." >&2
          exit 1
       fi
       chmod 0700 -- "${shots_state_dir}" 2>/dev/null || true
-   else
-      ( umask 077 && mkdir -- "${shots_state_dir}" ) || {
-         printf '%s\n' "shots: failed to create private state dir '${shots_state_dir}'" >&2
-         exit 1
-      }
    fi
 fi
 shots_run_registry="${SHOTS_RUN_REGISTRY:-${shots_state_dir}/markers}"
