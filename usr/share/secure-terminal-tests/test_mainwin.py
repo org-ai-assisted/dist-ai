@@ -1361,6 +1361,16 @@ ok('tab id: %d' % win._tab_ids[_ta] in _tipa,
    'the tab tooltip surfaces the durable tab id')
 ok((win._tab_pts(_ta) or '').startswith('/dev/pts/'),
    'the pts is derived from the child stdin (not parsed out of the OSC title)')
+# The tooltip is built in a Qt slot (the fg-poll -> _refresh_tab_label path), where an
+# uncaught exception calls PyQt6's abort() and SIGABRTs the whole process. A bar term can
+# transiently be absent from _tab_ids (mid close/swap), so the on-save path builders must
+# return None -- never a strict-index KeyError -- for an unregistered term.
+class _Unreg:
+    pass
+_unreg = _Unreg()
+ok(win._default_transcript_path(_unreg) is None
+   and win._default_state_dump_path(_unreg) is None,
+   'on-save path builders return None (never KeyError/abort) for a term with no durable id')
 
 # Tab B: a launched -- PROGRAM tab, TUI, renamed, with an OSC title + an env transcript ->
 # the name/program/command-argv/TUI/live-transcript branches.

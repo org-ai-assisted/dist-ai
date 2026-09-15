@@ -898,6 +898,11 @@ from secure_terminal import ipc as _ipc                # noqa: E402
 ## C1: Save and restore XDG_RUNTIME_DIR globally mutated in this block
 _old_xdg = os.environ.get('XDG_RUNTIME_DIR')
 os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()     # isolated socket dir
+# Isolate from host /etc: _system_dirs is hardcoded (not XDG-driven), so without this a
+# real /etc/secure-terminal.d/*.conf with remote_control=true would enable ctl and flip
+# the "refused when remote_control is off" assertion below (suite-wide convention).
+_o_sysd_c1 = settings._system_dirs
+settings._system_dirs = lambda: [tempfile.mkdtemp(prefix='st-c1sys-')]
 try:
     srvwin = MainWindow(launch=_pla([]))
     srvwin.start_instance_server('default')
@@ -936,6 +941,7 @@ try:
        'ctl: refused when remote_control is off')
     srvwin.close()
 finally:
+    settings._system_dirs = _o_sysd_c1
     if _old_xdg is None:
         os.environ.pop('XDG_RUNTIME_DIR', None)
     else:
