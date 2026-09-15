@@ -1019,6 +1019,28 @@ try:
     w3.closeEvent(_ev_fc)
     ok(_ev_fc.isAccepted() and not _asked,
        'closeEvent: _force_close accepts the close without prompting')
+    # ...and the SAME holds with the tray + background clipboard sanitizer active: a
+    # signal-driven close (_force_close, i.e. SIGTERM/SIGINT/SIGHUP at logout/shutdown)
+    # must tear down + save, never be swallowed into hide-to-tray (which lingered the
+    # process through shutdown with the session unsaved). Regression for the tray-hide
+    # guard, which formerly checked only _really_quit.
+    class _StubWatcher:
+        def stop(self):
+            pass
+    _o_sys, _o_tray, _o_cbw, _o_rq = (w3._systray, w3._tray,
+                                      w3._clip_bg_watcher, w3._really_quit)
+    w3._systray = True
+    w3._tray = object()
+    w3._clip_bg_watcher = _StubWatcher()
+    w3._really_quit = False
+    w3._force_close = True
+    _ev_tray = QCloseEvent()
+    _ev_tray.ignore()
+    w3.closeEvent(_ev_tray)
+    ok(_ev_tray.isAccepted(),
+       'closeEvent: a signal close (_force_close) tears down even with tray+sanitizer, never hides')
+    w3._systray, w3._tray, w3._clip_bg_watcher, w3._really_quit = (
+        _o_sys, _o_tray, _o_cbw, _o_rq)
     w3._force_close = False
 finally:
     QMessageBox.question = _oq
