@@ -56,7 +56,14 @@ chmod 0440 -- "/etc/sudoers.d/${build_user}"
 ## and use git (no 'dubious ownership' refusal in the resolver's git HEAD read).
 workspace="${GITHUB_WORKSPACE:-${PWD}}"
 chown --recursive "${build_user}" "${workspace}"
-## Run the suite as the build user, preserving the CI environment; only HOME is
-## repointed at the build user's own writable home.
+## Per-user runtime dir: suites write under XDG_RUNTIME_DIR (the single-instance socket, the
+## --test-canary marker, the shots state dir), and a fresh CI build user has no logind session,
+## so /run/user/<uid> does not exist -- create it 0700-owned and pass it through, or those write
+## 'cannot write ...' and fail (the poc-corpus canary positive control, the shots state dir).
+runtime_dir="/run/user/$(id --user "${build_user}")"
+install --directory --mode=0755 -- /run/user
+install --directory --mode=0700 --owner="${build_user}" -- "${runtime_dir}"
+## Run the suite as the build user, preserving the CI environment; HOME + XDG_RUNTIME_DIR are
+## repointed at the build user's own writable locations.
 exec runuser --preserve-environment -u "${build_user}" -- \
-   env HOME="/home/${build_user}" "${tests_all}" "$@"
+   env HOME="/home/${build_user}" XDG_RUNTIME_DIR="${runtime_dir}" "${tests_all}" "$@"
