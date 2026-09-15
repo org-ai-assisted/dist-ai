@@ -48,8 +48,7 @@ id "${build_user}" >/dev/null 2>&1 \
 ## dm 'sudo's internally for privileged build steps; grant that. Inert without sudo. Some runner
 ## container images ship no /etc/sudoers.d, so create it before writing the drop-in (0440, the
 ## mode sudo requires; a bare '>' would leave it group/world-readable and sudo would ignore it).
-mkdir --parents -- /etc/sudoers.d
-chmod 0755 -- /etc/sudoers.d
+install --directory --mode=0755 -- /etc/sudoers.d
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${build_user}" \
    > "/etc/sudoers.d/${build_user}"
 chmod 0440 -- "/etc/sudoers.d/${build_user}"
