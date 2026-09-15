@@ -21,7 +21,10 @@
 ##
 ## Usage: corpus-lib.sh [<dir-with-git-diff-review>]
 ##   GIT_DIFFS_LIE_DIR=<checkout> overrides corpus discovery.
-## git-diff-review + the git-diffs-lie corpus are REQUIRED: absent -> exit 1 (FATAL, R-220).
+## git-diff-review is a REQUIRED helper-scripts tool: absent -> exit 1 (FATAL, R-220).
+## The git-diffs-lie corpus is an EXTERNAL, opt-in corpus (github.com/output-lies/
+## git-diffs-lie), absent by default in CI: absent -> exit 77 (SKIP). Set
+## GIT_DIFFS_LIE_DIR to run it; the core git-meld suites gate regardless.
 
 set -o errexit
 set -o nounset
@@ -51,11 +54,20 @@ if [ -z "${corpus_src}" ]; then
    done
 fi
 
-if [ ! -x "${gdr}" ] || [ -z "${corpus_src}" ] \
-   || [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
+## git-diff-review is a required helper-scripts tool (present in CI): absent is an
+## environment bug, so FATAL.
+if [ ! -x "${gdr}" ]; then
    printf '%s\n' \
-      "FATAL: corpus-lib: git-diff-review or git-diffs-lie corpus missing." >&2
+      "FATAL: corpus-lib: git-diff-review not found at '${gdr}' (required helper-scripts tool)." >&2
    exit 1
+fi
+
+## The git-diffs-lie corpus is an external, opt-in corpus, absent by default in CI.
+if [ -z "${corpus_src}" ] || [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
+   printf '%s\n' \
+      "SKIP: corpus-lib: git-diffs-lie corpus not found (set GIT_DIFFS_LIE_DIR); core git-meld suites still gate." >&2
+   ## style-ok: allow-skip: git-diffs-lie is an external opt-in corpus, absent by default in CI; the core git-meld suites still gate
+   exit 77
 fi
 
 ## unicode-show (helper-scripts) is REQUIRED for the refname cases: the scan must
