@@ -34,26 +34,31 @@ else
    tests_dir='/usr/share/secure-terminal-tests'
 fi
 
-## Run the Qt suites under a REAL headless Wayland compositor (labwc, via wl-headless-run) so
-## they use the 'wayland' QPA platform -- the only supported platform (no offscreen). One
-## compositor serves the whole (sequential) run; a no-op when already under a compositor (a
-## real session, or our own re-exec). The compositor helper is REQUIRED tooling -> FATAL if
-## absent, never a silent skip. ST_TESTS_NO_WL_WRAP is the re-exec loop guard only.
-if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${ST_TESTS_NO_WL_WRAP:-}" != '1' ]; then
-   if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
-      wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
-   elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
-      wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
-   else
-      printf '%s\n' 'secure-terminal-tests: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
-      exit 1
-   fi
-   export ST_TESTS_NO_WL_WRAP=1
-   ## style-ok: R-103 -- deliberate re-exec of this runner under the headless wayland
-   ## compositor (nothing is set up yet, so no trap/cleanup is bypassed); the loop guard
-   ## above makes the re-run skip this block.
-   exec "${wl_headless_run}" --no-autoconfirm -- "$(readlink --canonicalize -- "$0")" "$@"
+## Each suite runs IN PARALLEL under its OWN headless-Wayland compositor (labwc, via
+## wl-headless-run) so it uses the 'wayland' QPA platform -- the only supported platform (no
+## offscreen). A single shared compositor cannot serve parallel suites (its wayland socket +
+## the single-instance socket namespace collide), so the dispatch (suite-parallel.bash) mints
+## one compositor per suite. Sequential-in-one-compositor overran the CI per-suite timeout once
+## the Qt suites moved to real software rendering. Both helpers are REQUIRED tooling -> FATAL if
+## absent, never a silent skip.
+if [ -x "${script_dir}/../share/dist-ai-tests-common/wl-headless-run" ]; then
+   wl_headless_run="${script_dir}/../share/dist-ai-tests-common/wl-headless-run"
+elif [ -x /usr/share/dist-ai-tests-common/wl-headless-run ]; then
+   wl_headless_run='/usr/share/dist-ai-tests-common/wl-headless-run'
+else
+   printf '%s\n' 'secure-terminal-tests: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
+   exit 1
 fi
+if [ -f "${script_dir}/../share/dist-ai-tests-common/suite-parallel.bash" ]; then
+   suite_parallel_lib="${script_dir}/../share/dist-ai-tests-common/suite-parallel.bash"
+elif [ -f /usr/share/dist-ai-tests-common/suite-parallel.bash ]; then
+   suite_parallel_lib='/usr/share/dist-ai-tests-common/suite-parallel.bash'
+else
+   printf '%s\n' 'secure-terminal-tests: FATAL: suite-parallel.bash not found (install dist-ai-tests-common)' >&2
+   exit 1
+fi
+# shellcheck source=../share/dist-ai-tests-common/suite-parallel.bash
+source "${suite_parallel_lib}"
 
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
@@ -94,6 +99,21 @@ export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONP
 ## run) so this is a safe default, not a lock.
 export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 
+work="$(mktemp --directory)"
+# shellcheck disable=SC2317  # invoked via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
+trap cleanup EXIT
+
+## Extra args are forwarded to every suite, unchanged from the sequential form.
+forward_args=("$@")
+
+## Run one suite under its OWN headless-Wayland compositor. suite-parallel.bash captures its
+## stdout+stderr and exit status; this fn only launches it.
+# shellcheck disable=SC2317  # invoked indirectly by run_suites_parallel via its name
+plain_run_one_suite() {  ## $1 = suite .py path
+   "${wl_headless_run}" --no-autoconfirm -- "$1" "${forward_args[@]}"
+}
+
 ## The pure, Qt-free tests always run; the Qt suites fail closed (exit 1) on a
 ## missing PyQt6/pyte rather than skipping. The suite fails if any test fails,
 ## and SKIPs only when the pure test cannot import the module at all.
@@ -102,40 +122,48 @@ export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 ## a stubbed atheris, so a harness that no longer builds or that trips its own
 ## invariant is caught HERE rather than in a nightly nothing blocks on.
 ## test_fuzz_widget drives the live-widget GUI fuzzer deterministically.
+##
+## Run them ALL in parallel, each under its own compositor (SECURE_TERMINAL_TESTS_JOBS overrides
+## the core/RAM-aware concurrency cap); the exit status of each is judged below in canonical
+## order, so the pass/skip/fail policy is exactly the sequential one.
+suites=(
+   "${tests_dir}/test_secure_terminal.py"
+   "${tests_dir}/test_fuzz.py"
+   "${tests_dir}/test_fuzz_harnesses.py"
+   "${tests_dir}/test_corpus.py"
+   "${tests_dir}/test_invariants.py"
+   "${tests_dir}/verify_formal.py"
+   "${tests_dir}/verify_formal_absint.py"
+   "${tests_dir}/test_unicode_gallery.py"
+   "${tests_dir}/test_cli.py"
+   "${tests_dir}/test_unicode_tag.py"
+   "${tests_dir}/test_sclip.py"
+   "${tests_dir}/test_clipboard_watch.py"
+   "${tests_dir}/test_modules.py"
+   "${tests_dir}/test_review.py"
+   "${tests_dir}/test_mainwin.py"
+   "${tests_dir}/test_mainwin2.py"
+   "${tests_dir}/test_mainwin3.py"
+   "${tests_dir}/test_mainwin4.py"
+   "${tests_dir}/test_mainwin5.py"
+   "${tests_dir}/test_instances.py"
+   "${tests_dir}/test_widget.py"
+   "${tests_dir}/test_widget2.py"
+   "${tests_dir}/test_state_dump.py"
+   "${tests_dir}/test_zoom_regression.py"
+   "${tests_dir}/test_fuzz_widget.py"
+)
+run_suites_parallel "${work}" "${repo}/usr/lib/python3/dist-packages/secure_terminal" \
+   "${SECURE_TERMINAL_TESTS_JOBS:-}" plain_run_one_suite "${suites[@]}"
+
 overall=0
 authorized_skip=0
-for test_file in \
-   "${tests_dir}/test_secure_terminal.py" \
-   "${tests_dir}/test_fuzz.py" \
-   "${tests_dir}/test_fuzz_harnesses.py" \
-   "${tests_dir}/test_corpus.py" \
-   "${tests_dir}/test_invariants.py" \
-   "${tests_dir}/verify_formal.py" \
-   "${tests_dir}/verify_formal_absint.py" \
-   "${tests_dir}/test_unicode_gallery.py" \
-   "${tests_dir}/test_cli.py" \
-   "${tests_dir}/test_unicode_tag.py" \
-   "${tests_dir}/test_sclip.py" \
-   "${tests_dir}/test_clipboard_watch.py" \
-   "${tests_dir}/test_modules.py" \
-   "${tests_dir}/test_review.py" \
-   "${tests_dir}/test_mainwin.py" \
-   "${tests_dir}/test_mainwin2.py" \
-   "${tests_dir}/test_mainwin3.py" \
-   "${tests_dir}/test_mainwin4.py" \
-   "${tests_dir}/test_mainwin5.py" \
-   "${tests_dir}/test_instances.py" \
-   "${tests_dir}/test_widget.py" \
-   "${tests_dir}/test_widget2.py" \
-   "${tests_dir}/test_state_dump.py" \
-   "${tests_dir}/test_zoom_regression.py" \
-   "${tests_dir}/test_fuzz_widget.py"; do
+for test_file in "${suites[@]}"; do
    [ -f "${test_file}" ] || continue
-   ## Capture the suite's real exit status. A bare `if python3 ...; then` would leave `$?` as the
-   ## `if`'s own status (0 when no branch runs), so `rc` could never see a 77 SKIP or a failure
-   ## code -- the `|| rc="$?"` reads the actual status while keeping errexit happy.
-   rc=0
-   "${test_file}" "$@" || rc="$?"
+   ## Read the suite's captured exit status. A missing rc file (a job killed before it recorded
+   ## one) is fail-closed, never a silent pass.
+   rc="$(cat -- "${work}/rc-$(basename -- "${test_file}" .py)" 2>/dev/null || true)"
+   [ -n "${rc}" ] || rc=1
    if [ "${rc}" = '0' ]; then
       continue
    fi

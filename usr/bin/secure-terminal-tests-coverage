@@ -57,6 +57,18 @@ else
    printf '%s\n' 'secure-terminal-tests-coverage: FATAL: wl-headless-run not found (install dist-ai-tests-common); cannot start a headless Wayland compositor' >&2
    exit 1
 fi
+## Shared parallel-suite dispatch (throttle + core/RAM job cap + concurrent-.pyc-write defense +
+## per-suite XDG isolation), also used by the plain secure-terminal-tests runner. REQUIRED.
+if [ -f "${script_dir}/../share/dist-ai-tests-common/suite-parallel.bash" ]; then
+   suite_parallel_lib="${script_dir}/../share/dist-ai-tests-common/suite-parallel.bash"
+elif [ -f /usr/share/dist-ai-tests-common/suite-parallel.bash ]; then
+   suite_parallel_lib='/usr/share/dist-ai-tests-common/suite-parallel.bash'
+else
+   printf '%s\n' 'secure-terminal-tests-coverage: FATAL: suite-parallel.bash not found (install dist-ai-tests-common)' >&2
+   exit 1
+fi
+# shellcheck source=../share/dist-ai-tests-common/suite-parallel.bash
+source "${suite_parallel_lib}"
 
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
@@ -220,135 +232,35 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
 }
 ## END-EXTRACT run_suite_under_coverage
 
-## Bytecode cache for the parallel suites -- kept OUT of the source checkout on purpose.
-## Two hazards it defuses:
-##  1) N concurrent `coverage run` processes racing to write the same secure_terminal
-##     __pycache__/*.pyc on a cold checkout -> a process importing a half-written .pyc
-##     gets subtly wrong bytecode (seen as test_corpus's feed_line_edits SGR cache
-##     diverging from its reference ONLY under parallel load).
-##  2) this gate runs under sudo, so any .pyc written into the checkout is ROOT-owned and
-##     the next (non-root) sandbox sync cannot purge it -- a stale .pyc then masks synced
-##     source (the same trap the hypothesis-store redirect already dodges).
-## PYTHONPYCACHEPREFIX mirrors every .pyc under the throwaway work dir instead of the
-## source tree; compileall single-process pre-populates it; PYTHONDONTWRITEBYTECODE then
-## stops the suite processes writing at all (they only read), so no write can race even
-## on an mtime edge. compileall MUST precede the DONTWRITEBYTECODE export (it would
-## otherwise honour it and skip writing the cache).
-export PYTHONPYCACHEPREFIX="${work}/pycache"
-python3 -m compileall -q "${pkg}" >/dev/null 2>&1 || true
-export PYTHONDONTWRITEBYTECODE=1
-
 python3 -m coverage erase
-## Run every suite under coverage IN PARALLEL. coverage --parallel-mode has each
-## process write its OWN data file, so `coverage combine` unions them regardless of
-## order or timing -- the same union the old sequential loop produced, just faster
-## (wall-clock drops toward the slowest single suite). Bounded to COVERAGE_SUITE_JOBS
-## concurrent jobs (default: nproc) so the Qt suites (each with its own headless-Wayland
-## compositor) do not thrash a small box. Each suite runs under its OWN compositor-minted
-## XDG_RUNTIME_DIR (isolated single-instance socket namespace) plus its own XDG_CONFIG/STATE
-## dir, so two concurrent suites can NEVER collide on the single-instance socket or a config
-## path (the suites also self-isolate via mkdtemp, but the runner guarantees it regardless).
-## Per-suite
-## output + rc are captured and replayed in canonical order after the barrier, so the
-## log stays deterministic; a failure is reported then (fail-fast ordering is moot once
-## parallel -- total time is the slowest suite either way).
+## Run every suite under coverage IN PARALLEL via the shared dispatch (run_suites_parallel):
+## each suite gets its OWN headless-Wayland compositor + XDG config/state isolation, throttled by
+## the core/RAM-aware job cap (COVERAGE_SUITE_JOBS overrides). run_suite_under_coverage is the
+## per-suite command (coverage run --parallel-mode, plus the SIGSEGV retry); --parallel-mode has
+## each process write its OWN data file, so `coverage combine` below unions them regardless of
+## finish order. Per-suite output is replayed in canonical order and the rc judged after the barrier.
 suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
         test_secure_terminal test_fuzz test_fuzz_harnesses \
         test_corpus test_invariants test_cli test_unicode_tag test_modules \
         test_review test_widget test_widget2 test_state_dump test_sclip \
         test_clipboard_watch)
-## Concurrency: auto-detect cores (nproc), overridable via COVERAGE_SUITE_JOBS.
-ncpu="$(nproc 2>/dev/null || printf '%s\n' 2)"
-case "${ncpu}" in ''|*[!0-9]*) ncpu=2 ;; esac
-ncpu="$(( 10#${ncpu} ))"
-[ "${ncpu}" -ge 1 ] || ncpu=2
-suite_jobs="${COVERAGE_SUITE_JOBS:-${ncpu}}"
-case "${suite_jobs}" in ''|*[!0-9]*) suite_jobs="${ncpu}" ;; esac
-## Base-10, same octal trap as retries above: a leading-zero COVERAGE_SUITE_JOBS (e.g. 09)
-## would otherwise error in the [ -ge ] test and, under errexit, abort the gate.
-suite_jobs="$(( 10#${suite_jobs} ))"
-[ "${suite_jobs}" -ge 1 ] || suite_jobs="${ncpu}"
-## Clamp to a sane UPPER bound: without it a pathological COVERAGE_SUITE_JOBS (e.g. a
-## 20-digit value) survives the >=1 check and, since the job count maxes at the suite
-## count, the `wait -n` throttle never fires -> every Qt suite (and its own labwc) launches at
-## once and thrashes/self-DoSes the box. Cap at 4x the core count (headroom for the I/O-bound
-## Qt suites without oversubscribing a small runner).
-suite_cap="$(( ncpu * 4 ))"
-[ "${suite_jobs}" -le "${suite_cap}" ] || suite_jobs="${suite_cap}"
-
-## RAM-aware ceiling. Each parallel Qt suite runs its OWN headless-Wayland compositor
-## (labwc + Xwayland) plus a coverage-traced Python process, so N suites in flight need
-## N * ~400MB. If that exceeds free memory the kernel OOM-killer SIGKILLs a suite mid-run
-## (exit 137) -- a false-red that is NOT a test verdict (the suite had passed; it died in
-## teardown). Seen at jobs=4 on a ~1.6GB-reachable balloon VM; absent at jobs<=3. So cap
-## jobs by floor(MemAvailable / per-suite footprint). This throttles ONLY where RAM is
-## tight (a small/ballooned runner) and stays at nproc on a roomy host -- no env knob to
-## recall. MemAvailable (free RIGHT NOW) is the correct input: conservative exactly when
-## memory is scarce, accurate when it is not. 512MiB per suite is deliberately above the
-## measured ~400MB so we stay clear of the OOM edge. COVERAGE_SUITE_MEM_MIB overrides the
-## footprint (tuning/tests). A floor of 1 so a very tight box still runs, serially.
-mem_per_suite_mib="${COVERAGE_SUITE_MEM_MIB:-512}"
-case "${mem_per_suite_mib}" in ''|*[!0-9]*) mem_per_suite_mib=512 ;; esac
-mem_per_suite_mib="$(( 10#${mem_per_suite_mib} ))"
-[ "${mem_per_suite_mib}" -ge 1 ] || mem_per_suite_mib=512
-mem_avail_kib="$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || printf '%s\n' 0)"
-case "${mem_avail_kib}" in ''|*[!0-9]*) mem_avail_kib=0 ;; esac
-mem_avail_kib="$(( 10#${mem_avail_kib} ))"
-if [ "${mem_avail_kib}" -gt 0 ]; then
-   mem_jobs="$(( mem_avail_kib / 1024 / mem_per_suite_mib ))"
-   [ "${mem_jobs}" -ge 1 ] || mem_jobs=1
-   if [ "${suite_jobs}" -gt "${mem_jobs}" ]; then
-      printf '%s\n' "secure-terminal-tests-coverage: RAM-aware cap: $(( mem_avail_kib / 1024 )) MiB free / ${mem_per_suite_mib} MiB per suite -> ${mem_jobs} parallel jobs (from ${suite_jobs})" >&2
-      suite_jobs="${mem_jobs}"
-   fi
-fi
-
-run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG config/state
-   local suite="$1" rc=0
-   local xdg="${work}/xdg-${suite}"
-   ## XDG_RUNTIME_DIR is NOT set here: run_suite_under_coverage runs the suite under its own
-   ## wl-headless-run, which mints a private XDG_RUNTIME_DIR (the wayland socket + the app's
-   ## single-instance socket namespace) and removes it on exit -- so each parallel suite is
-   ## isolated regardless. Only the config/state surfaces need isolating here so two concurrent
-   ## suites load clean defaults.
-   ## Guard the XDG setup INSIDE an if-condition (exempt from errexit): a mkdir failure must
-   ## record a FAILING rc, never errexit-abort the backgrounded job before it writes rc-<suite>
-   ## -- an abort would make the throttling `wait -n` inherit the failure and kill the whole gate
-   ## (and the EXIT trap would then wipe the shared work dir out from under the still-running
-   ## suites). So this function always reaches the printf.
-   if mkdir -p "${xdg}/config" "${xdg}/state"; then
-      ## Swallow the suite rc into a file and RETURN 0, so the backgrounded job never trips
-      ## the caller's errexit via wait; the rc is judged from the file after the barrier.
-      XDG_CONFIG_HOME="${xdg}/config" XDG_STATE_HOME="${xdg}/state" \
-         run_suite_under_coverage "${tests_dir}/${suite}.py" \
-            > "${work}/out-${suite}" 2>&1 || rc="$?"
-   else
-      rc=1   ## XDG setup failed -> the suite could not run cleanly -> fail-closed
-   fi
-   printf '%s\n' "${rc}" > "${work}/rc-${suite}"
-}
-
-running=0
+suite_paths=()
 for suite in "${suites[@]}"; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
-   run_one_suite "${suite}" &
-   running=$(( running + 1 ))
-   if [ "${running}" -ge "${suite_jobs}" ]; then
-      wait -n
-      running=$(( running - 1 ))
-   fi
+   suite_paths+=("${tests_dir}/${suite}.py")
 done
-wait
 
-## Replay each suite's captured output in canonical order, then fail on the FIRST
-## suite whose rc is not 0/77. A MISSING rc file (a job killed before it recorded one)
-## counts as FAILURE (fail-closed), never a silent green. exit 77 (SKIP, e.g. Qt absent)
-## is not a failure here; the Qt-free gated tier does not depend on those suites.
+run_suites_parallel "${work}" "${pkg}" "${COVERAGE_SUITE_JOBS:-}" \
+   run_suite_under_coverage "${suite_paths[@]}"
+
+## run_suites_parallel already replayed each suite's output in canonical order; here just fail on
+## the FIRST suite whose rc is not 0/77. A MISSING rc file (a job killed before it recorded one)
+## counts as FAILURE (fail-closed), never a silent green. exit 77 (SKIP, e.g. Qt absent) is not a
+## failure here; the Qt-free gated tier does not depend on those suites.
 gate_fail_rc=0
 gate_fail_suite=''
 for suite in "${suites[@]}"; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
-   [ -f "${work}/out-${suite}" ] && cat "${work}/out-${suite}"
    suite_rc="$(cat "${work}/rc-${suite}" 2>/dev/null || true)"
    [ -n "${suite_rc}" ] || suite_rc='1'
    if [ "${suite_rc}" != '0' ] && [ "${suite_rc}" != '77' ] \
