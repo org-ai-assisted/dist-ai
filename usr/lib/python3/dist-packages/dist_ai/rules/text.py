@@ -53,20 +53,23 @@ PYTHON_SHEBANG_BYTES = PYTHON_SHEBANG.encode("ascii")
 PYTHON_NAME_RE = re.compile(rb'^python[0-9.]*$')
 
 ## The shell-invocation guard: a no-op string-literal statement under python3, but
-## a re-exec under any shell. A python entry point run under a shell ('bash tool')
-## has its shebang ignored and its 'import' line executed as the command 'import'
-## -- ImageMagick's screen grabber, which XGrabServer()s and freezes the GUI. The
-## guard, placed before the first import, makes a shell invocation harmless.
-SHELL_GUARD_LINE = '"exec" "python3" "-Bsu" "$0" "$@"'
+## a command line under any shell. A python entry point run under a shell ('bash
+## tool') has its shebang ignored and its 'import' line executed as the command
+## 'import' -- ImageMagick's screen grabber, which XGrabServer()s and freezes the
+## GUI. The guard, placed before the first import, makes a shell print an error
+## naming the script and exit 1 -- refusing, rather than silently re-execing and
+## masking the caller bug.
+SHELL_GUARD_LINE = (
+    "\"exec\" \"bash\" \"-c\" \"printf '%s\\n' "
+    "'$0: ERROR: Do not execute this script with bash!' >&2; exit 1\""
+)
 ## The single string value python sees for the guard (adjacent literals
 ## concatenated): the guard is DETECTED as a top-level string-expression
 ## statement holding this value -- so guard text sitting in a comment or a
 ## docstring is NOT mistaken for the real statement.
 SHELL_GUARD_VALUE = ast.literal_eval(SHELL_GUARD_LINE)
 SHELL_GUARD_BLOCK = (
-    "## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`\n"
-    "## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,\n"
-    "## which freezes X). Re-exec under python3; inert as a string literal in python3.\n"
+    "## Shell-invocation guard.\n"
     + SHELL_GUARD_LINE + "\n\n"
 )
 ## A model INVOKES a usr/bin tool by name, so a 'bash <tool>' typo is the realistic
@@ -292,7 +295,7 @@ class PythonShebang(Rule):
 class PythonShellGuard(Rule):
     """A usr/bin python entry point must carry the shell-invocation guard as a
     top-level statement before its first import, so running it under a shell
-    ('bash tool') re-execs python3 instead of running its 'import' line as
+    ('bash tool') errors and exits instead of running its 'import' line as
     ImageMagick's screen grabber (XGrabServer -> whole-GUI freeze).
 
     Fires only on a file whose LINE 1 is a python shebang AND which sits directly
