@@ -583,6 +583,18 @@ finally:
     if _tf_spy1:
         _tf1.terminate_foreground = _tf1_orig
 
+# terminate_foreground with no current tab (current() -> None) returns early: a safe no-op,
+# no routing, no crash. Covers the `if term is None: return` guard in terminate_foreground.
+_tf_none = []
+_tf0.terminate_foreground = lambda: _tf_none.append(0)
+win.current = lambda: None
+try:
+    win.terminate_foreground()
+    eq(_tf_none, [], 'terminate_foreground with no current tab is a no-op (guard returns, nothing routed)')
+finally:
+    del win.current
+    _tf0.terminate_foreground = _tf0_orig
+
 # --- --terminate-verbose: max diagnostic on every Terminate -------------------
 # Verbose mode dumps MainWindow routing (which tab current() resolved, per-tab foreground
 # state) PLUS the per-terminal terminate_debug (which performs the real Terminate), to a

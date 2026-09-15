@@ -107,6 +107,20 @@ ok('<U+202E RIGHT-TO-LEFT OVERRIDE>' in _eviltext,
 ok(chr(0x202e) not in sd.dump_json(_evilsnap),
    'dump_json escapes the bidi override via ensure_ascii, never emits it raw')
 
+# The badge FALLBACK for a codepoint with NO Unicode name (an unnamed control / private-use /
+# surrogate in _UNSAFE_DUMP_CATS): the dump still emits a full-fidelity <U+XXXX UNNAMED> badge,
+# never the raw char. The bidi test above exercises only the NAMED path; this hits the
+# `except ValueError -> 'UNNAMED'` branch. U+E000 (private use, category Co) has no name.
+_unsc = pyte.HistoryScreen(20, 3, history=10)
+pyte.Stream(_unsc).feed('AB' + chr(0xe000) + 'CD')
+_unsnap = sd.collect(_unsc, mode='tui', columns=20, alt_screen=False,
+                     saved_primary=None, mouse_modes=set(), title='')
+_untext = sd.dump_text(_unsnap)
+ok(chr(0xe000) not in _untext,
+   'dump_text emits NO raw unnamed codepoint in the grid text')
+ok('<U+E000 UNNAMED>' in _untext,
+   'dump_text badges a name-less codepoint as <U+XXXX UNNAMED> (fallback fidelity kept)')
+
 
 # is_baseline oracle (shared by the reset sweep, INV-7 and the T10 formal check): a fresh
 # screen reads baseline; any single leaked dimension reads non-baseline; CLI keys only on

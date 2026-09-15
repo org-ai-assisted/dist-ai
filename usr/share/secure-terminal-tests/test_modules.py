@@ -445,27 +445,53 @@ session.save([{'uid': 0, 'name': 'd', 'text': 'DEF'}])
 session.set_instance_group('work')
 eq(session.load()[0].get('text'), 'WORK',
    'session: instance groups are isolated -- one group never reads another\'s log')
+# the state subtree keys off the SAME sanitizer as the socket (ipc.safe_group), so a
+# name that maps to the same string is the same instance; a traversal / empty name is
+# reduced to one in-tree component
+import secure_terminal.ipc as _ipc_ns                              # noqa: E402
+eq(session._dir_safe('foo/bar'), _ipc_ns.safe_group('foo/bar'),
+   'session: the state subtree name matches the socket identity (same sanitizer)')
 session.set_instance_group('../../etc')          # traversal must not escape the state dir
 _esc = session._state_dir()
 ok(os.path.dirname(_esc) == os.path.join(_ns_root, 'secure-terminal')
    and '/' not in os.path.basename(_esc),
    'session: a crafted instance group is sanitized to one in-tree component')
-session.set_instance_group(session._THROWAWAY_PREFIX + 'abc')
-session.save([{'uid': 0, 'text': 'THROW'}])
+# a throwaway gets a random isolated subtree with a marker; removing it touches only itself
+_tw = session.set_instance_throwaway()
 _tdir = session._state_dir()
+ok(os.path.isfile(os.path.join(_tdir, session._THROWAWAY_MARKER)),
+   'session: a throwaway subtree is created with a throwaway marker')
+session.save([{'uid': 0, 'text': 'THROW'}])
 session.remove_instance()
 ok(not os.path.exists(_tdir), 'session: remove_instance removes only its own subtree')
 session.set_instance_group('default')
 eq(session.load()[0].get('text'), 'DEF',
    'session: remove_instance left the other groups intact')
-session.set_instance_group(session._THROWAWAY_PREFIX + 'old')
+# gc prunes a stale MARKED throwaway; a NAMED group is never swept even if its name
+# looks like a throwaway id and it is old (identified by the marker, not the name)
+_tw2 = session.set_instance_throwaway()
 session.save([{'uid': 0, 'text': 'x'}])
 _old_dir = session._state_dir()
-os.utime(_old_dir, (0, 0))                       # age it to 1970
+session.set_instance_group('deadbeef1234')       # a NAMED group with a uuid-like name
+session.save([{'uid': 0, 'text': 'named'}])
+_named_dir = session._state_dir()
+os.utime(_old_dir, (0, 0))                        # age both to 1970
+os.utime(_named_dir, (0, 0))
 session.gc_instances(max_age_days=30)
-ok(not os.path.exists(_old_dir), 'session: gc_instances prunes a stale throwaway subtree')
-ok(os.path.isdir(os.path.join(_ns_root, 'secure-terminal', 'default')),
-   'session: gc_instances never touches a named/default subtree')
+ok(not os.path.exists(_old_dir), 'session: gc_instances prunes a stale MARKED throwaway')
+ok(os.path.isdir(_named_dir),
+   'session: gc_instances never sweeps a named group (no marker), even a uuid-like name')
+# set_instance_throwaway is best-effort: an unwritable state dir (its parent is a file)
+# must not raise -- the marker just goes unwritten
+_blk = os.path.join(_ns_root, 'blockfile')
+with open(_blk, 'w', encoding='utf-8') as _h:
+    _h.write('x')
+os.environ['XDG_STATE_HOME'] = os.path.join(_blk, 'sub')
+session.set_instance_throwaway()
+ok(True, 'session: set_instance_throwaway is best-effort when its dir cannot be created')
+session.gc_instances()                            # unreadable root (parent is a file)
+ok(True, 'session: gc_instances on an unreadable state root does not raise')
+os.environ['XDG_STATE_HOME'] = _ns_root
 session.set_instance_group('default')
 os.environ['XDG_STATE_HOME'] = _state_root
 
