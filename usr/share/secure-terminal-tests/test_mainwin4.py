@@ -335,8 +335,20 @@ _ttip._poll.stop()
 from PyQt6.QtCore import QRect as _QRect_tt               # noqa: E402
 while win.tabs.count() < 4:
     win.new_tab()
-APP.processEvents()
 _ridx = win.tabs.count() - 1
+# Settle BEFORE setting the custom tooltip, then set it with NO event-loop pump before the
+# eventFilter reads it. Two races collapse here, both only under heavy parallel-coverage load:
+#  1) QTabBar lays its tabs out on a QUEUED relayout, so tabAt(tabRect(_ridx).center()) must
+#     agree with _ridx before _rpos will hit _ridx in the eventFilter (else it anchors + labels
+#     the wrong tab -- the exact-rect assert's failure mode).
+#  2) a tab's OWN 'tab id / command' tooltip is set ASYNCHRONOUSLY when its child pty starts;
+#     if that update fires AFTER we set the custom hint it CLOBBERS it, so the eventFilter reads
+#     'tab id: N...' and the render assert's 'RIGHTTAB-hint' text check fails.
+# Pumping until the geometry is self-consistent also lets that async tab-tooltip update land;
+# THEN set the custom tooltip and read it with no further pump. The eventFilter reads
+# tabToolTip(idx) BEFORE it show_for()s, so with no pump between the set and the read nothing
+# can clobber it. A genuine layout failure still surfaces (wait_for returns after its timeout).
+wait_for(lambda: _ttbar.tabAt(_ttbar.tabRect(_ridx).center()) == _ridx)
 win.tabs.setTabToolTip(_ridx, 'RIGHTTAB-hint')
 _rrect = _ttbar.tabRect(_ridx)
 _rpos = _rrect.center()
