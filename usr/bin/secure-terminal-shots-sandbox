@@ -13,7 +13,7 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live|tooltip] [ARGS...]
+## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live|tooltip|demo-shots] [ARGS...]
 ##   (these are the lanes this driver pulls back -- the clipboard lane writes a TSV and is run
 ##   directly in the sandbox). `refresh` regenerates EVERY site gallery in one command: the
 ##   offscreen lanes on the host (review/modes/compat) THEN the comparison lane AND the tooltip
@@ -57,7 +57,7 @@ lane='comparison'
 refresh_all=0
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|compat|zoom-live|tooltip)
+      comparison|compat|zoom-live|tooltip|demo-shots)
          lane="$1"
          shift
          ;;
@@ -250,7 +250,8 @@ fi
 ## in compatibility/shots.
 if [ "${lane}" = 'compat' ]; then
    site_dest="${site}/compatibility/shots"
-elif [ "${lane}" = 'tooltip' ]; then
+elif [ "${lane}" = 'tooltip' ] || [ "${lane}" = 'demo-shots' ]; then
+   ## tooltip + the feature-showcase demo shots land in the top-level shots/ gallery.
    site_dest="${site}/shots"
 else
    site_dest="${site}/comparison/shots"

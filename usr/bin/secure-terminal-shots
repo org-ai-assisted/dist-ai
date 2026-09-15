@@ -206,8 +206,9 @@ if [ "${mode}" = 'demo-shots' ]; then
    run_rc=0
    "${shots_dir}/comparison-capture.sh" --demo-shots "$@" || run_rc="$?"
    if [ "${run_rc}" = '0' ]; then
-      optimize_to_webp "${shots_dir}/shots/nonewline-cli.png" \
-         "${shots_dir}/shots/nonewline-tui.png" "${shots_dir}/shots/whitespace-cli.png"
+      ## webp EVERY captured demo PNG (the lane clears shots/ first, so the glob is exactly
+      ## this run's output) -- never a hardcoded name list, which silently drops a new shot.
+      optimize_to_webp "${shots_dir}/shots/"*.png
       printf '%s\n' "secure-terminal-shots: wrote feature-showcase shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"

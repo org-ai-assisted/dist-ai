@@ -56,6 +56,21 @@ fi
 # shellcheck disable=SC1090
 source "${subject}"
 
+## The subject MUST define every function this suite drives. A missing one means
+## a stale/wrong accountctl.sh (e.g. an older installed copy predating a
+## function): FATAL, never a vacuous pass. Without this, a 'reject' assertion
+## (if fn; then fail; else pass) reads bash's 127 "command not found" as an
+## ordinary false and reports PASS for a function that does not exist.
+accountctl_required_functions='is_name_valid escape_name is_user is_group get_field get_entry get_pass get_clean_pass is_pass_empty is_pass_locked is_pass_disabled lock_pass unlock_pass disable_pass group_has_nonroot_member'
+accountctl_missing_functions=''
+for accountctl_fn in ${accountctl_required_functions}; do
+   declare -F "${accountctl_fn}" >/dev/null 2>&1 || accountctl_missing_functions="${accountctl_missing_functions} ${accountctl_fn}"
+done
+if [ -n "${accountctl_missing_functions}" ]; then
+   printf '%s\n' "FATAL: accountctl.sh at '${subject}' is missing required function(s):${accountctl_missing_functions}; the subject is stale or wrong (point HELPER_SCRIPTS_REPO at a current checkout)." >&2
+   exit 1
+fi
+
 test_failures=0
 pass() { printf '%s\n' "PASS: $*"; }
 fail() { printf '%s\n' "FAIL: $*" >&2; test_failures=$((test_failures + 1)); }
@@ -100,6 +115,11 @@ getent() {
          key="${arg}"
       fi
    done
+   ## Record every lookup so an F1 test can assert the is_name_valid gate
+   ## short-circuits BEFORE any getent lookup (a rejected-by-lookup miss and a
+   ## rejected-by-gate refusal both return false; only the call trace tells them
+   ## apart).
+   getent_calls="${getent_calls:-}${db}:${key} "
    case "${db}" in
       passwd)
          data="${fixture_passwd}"
@@ -159,10 +179,28 @@ if [ "$(escape_name 'a.b$c')" = 'a\.b\$c' ]; then pass "escape_name escapes . an
 ## ---- is_user / is_group (existence + F1 enforcement) ----
 if is_user alice; then pass "is_user finds existing user"; else fail "is_user missed alice"; fi
 if is_user nouser 2>/dev/null; then fail "is_user accepted nonexistent"; else pass "is_user rejects nonexistent"; fi
-if is_user '[a]lice' 2>/dev/null; then fail "is_user F1: accepted metacharacter name"; else pass "is_user rejects metacharacter name (F1)"; fi
+## F1: an invalid name must be rejected by the is_name_valid gate BEFORE any
+## lookup. A bogus name misses the lookup too, so the return value alone cannot
+## prove the gate fired -- assert getent was never reached (getent_calls stays
+## empty). Absent the '|| return 1', is_user would fall through to getent here.
+getent_calls=""
+if is_user '[a]lice' 2>/dev/null; then
+   fail "is_user F1: accepted metacharacter name"
+elif [ -n "${getent_calls}" ]; then
+   fail "is_user F1: reached getent for an invalid name (is_name_valid gate not enforced): '${getent_calls}'"
+else
+   pass "is_user rejects metacharacter name before any lookup (F1)"
+fi
 if is_group testgrp; then pass "is_group finds existing group"; else fail "is_group missed testgrp"; fi
 if is_group nogroup 2>/dev/null; then fail "is_group accepted nonexistent"; else pass "is_group rejects nonexistent"; fi
-if is_group '[t]estgrp' 2>/dev/null; then fail "is_group F1: accepted metacharacter name"; else pass "is_group rejects metacharacter name (F1)"; fi
+getent_calls=""
+if is_group '[t]estgrp' 2>/dev/null; then
+   fail "is_group F1: accepted metacharacter name"
+elif [ -n "${getent_calls}" ]; then
+   fail "is_group F1: reached getent for an invalid name (is_name_valid gate not enforced): '${getent_calls}'"
+else
+   pass "is_group rejects metacharacter name before any lookup (F1)"
+fi
 
 ## ---- get_field ----
 if [ "$(get_field passwd uid)" = "2" ]; then pass "get_field passwd uid -> 2"; else fail "get_field passwd uid wrong"; fi
@@ -209,8 +247,13 @@ if group_has_nonroot_member testgrp; then pass "group_has_nonroot_member finds a
 if group_has_nonroot_member suppgrp; then pass "group_has_nonroot_member finds a supplementary member (alice)"; else fail "group_has_nonroot_member missed the supplementary member"; fi
 if group_has_nonroot_member rootgrp; then fail "group_has_nonroot_member counted a root-only group"; else pass "group_has_nonroot_member ignores a root-only group"; fi
 if group_has_nonroot_member nogroup; then fail "group_has_nonroot_member matched a missing group"; else pass "group_has_nonroot_member rejects a missing group"; fi
-## F4: a numeric argument must be rejected, not reinterpreted by getent as a GID.
-if group_has_nonroot_member 0; then fail "group_has_nonroot_member did a GID lookup for '0'"; else pass "group_has_nonroot_member rejects a numeric argument (F4)"; fi
+## F4: a numeric argument must be rejected outright, not reinterpreted by getent
+## as a GID lookup. Probe 5100 -- the GID of suppgrp, which HAS a non-root member
+## (alice). Absent the [a-z_] guard, 'getent group -- 5100' resolves suppgrp and
+## finds alice, so the function would return true; the guard makes it reject.
+## (Probing '0' proves nothing: GID 0's group is empty, so even a guard-less
+## impl returns false for it.)
+if group_has_nonroot_member 5100; then fail "group_has_nonroot_member did a GID lookup for '5100' (F4 guard missing)"; else pass "group_has_nonroot_member rejects a numeric argument (F4)"; fi
 
 ## ---- group_has_nonroot_member: real-host primary-group proof ----
 ## Restore the real getent to prove a genuine primary-group membership exists

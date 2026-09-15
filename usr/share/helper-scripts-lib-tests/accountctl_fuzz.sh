@@ -19,6 +19,18 @@
 # shellcheck disable=SC1090
 source "${SUBJECT}"
 
+## The subject MUST define every function fuzzed below. A missing one means a
+## stale/wrong accountctl.sh: FATAL, not a silent no-op. Without this, calling an
+## absent function returns 127 ("command not found"), which the invariant checks
+## read as an ordinary false -- so the fuzz reports FUZZFAILS=0 while testing
+## nothing.
+for fn in is_name_valid escape_name get_clean_pass get_field group_has_nonroot_member; do
+   if ! declare -F "${fn}" >/dev/null 2>&1; then
+      printf '%s\n' "FATAL: subject '${SUBJECT}' is missing required function '${fn}'; stale or wrong accountctl.sh." >&2
+      exit 1
+   fi
+done
+
 ## Shim the external / root dependencies so the PURE logic runs without root or
 ## real account state. get_pass injects a fuzzed password; getent serves a small
 ## fuzzed fixture (numeric key -> GID lookup, matching real getent).

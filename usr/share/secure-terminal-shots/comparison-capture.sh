@@ -950,13 +950,19 @@ demo_shots_capture() {
 
    ## Parallel spec arrays (an inject command carries spaces, so it lives in its own array,
    ## never a whitespace-split field): "<name> <tab-mode> <display> <inject-command>".
-   d_names=(nonewline-cli nonewline-tui whitespace-cli)
-   d_modes=(cli tui cli)
-   d_disp=(show show show)
+   ## sleep-cli + nano show DETERMINISTIC terminate targets (a blocked foreground command
+   ## and a full-screen editor). Excluded deliberately: sigreport prints its own PID and
+   ## terminate --verbose lists live PIDs -- both non-deterministic, so they are never
+   ## published; sigreport is covered instead by a text unit test (test_secure_terminal.py).
+   d_names=(nonewline-cli nonewline-tui whitespace-cli sleep-cli nano-gui)
+   d_modes=(cli tui cli cli tui)
+   d_disp=(show show show show show)
    d_cmds=(
       'cat demos/nonewline-safe-to-cat.txt'
       'cat demos/nonewline-safe-to-cat.txt'
       "printf '  leading indent line\ntrailing spaces line   \ntwo  and  three   spaces\n'"
+      'sleep 100'
+      'nano'
    )
 
    nn_gen="${here}/nonewline-demo.py"
