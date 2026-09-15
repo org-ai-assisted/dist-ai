@@ -328,6 +328,28 @@ ok(_tthandled and _ttip.isVisible() and 'TABHINT-xyz' in _ttip.text(),
    'the tab bar per-tab tooltip renders through the InfoTip filter (not the native tab tooltip)')
 _ttip.hide()
 _ttip._poll.stop()
+# Regression: the tip must anchor to the HOVERED tab's rect, not the whole tab bar --
+# else _place uses the bar's left edge (far left of the window), the tip lands away from
+# the pointer, and the leave-poll dismisses it before it can be reached. Hover a RIGHT
+# tab and assert at_rect == that tab's global rect (old code passed at_rect=None).
+from PyQt6.QtCore import QRect as _QRect_tt               # noqa: E402
+while win.tabs.count() < 4:
+    win.new_tab()
+APP.processEvents()
+_ridx = win.tabs.count() - 1
+win.tabs.setTabToolTip(_ridx, 'RIGHTTAB-hint')
+_rrect = _ttbar.tabRect(_ridx)
+_rpos = _rrect.center()
+_rhandled = win._tip_filter.eventFilter(
+    _ttbar, _QHE_tt(_QEv_tt.Type.ToolTip, _rpos, _ttbar.mapToGlobal(_rpos)))
+_rtip = win._tip_filter._tip
+_expect_rect = _QRect_tt(_ttbar.mapToGlobal(_rrect.topLeft()), _rrect.size())
+ok(_rhandled and _rtip.isVisible() and 'RIGHTTAB-hint' in _rtip.text(),
+   'the right-side tab tooltip renders through the InfoTip filter')
+ok(_rtip._src_rect == _expect_rect,
+   'the tab tooltip anchors to the hovered tab rect (not the tab bar left edge)')
+_rtip.hide()
+_rtip._poll.stop()
 
 # Hover ROUTING (in-window): a codepoint hover shows the char info via the window's InfoTip
 # (selectable + zoomable, anchored at the glyph), not Qt's plain tooltip; a hover off it
