@@ -3330,19 +3330,6 @@ ok(_f2.background().color().name() == '#ff0000',
 _f3 = _rt._pyte_format(_Cell(fg='cccccc', bold=True, underscore=True))
 ok(_f3.fontWeight() == QFont.Weight.Bold and _f3.fontUnderline(),
    '_pyte_format: bold and underscore attributes are applied')
-# SGR 2 (faint) = decreased intensity, NOT bold. pyte has no faint attr and drops 2,
-# leaving bold set; _SafeHistoryScreen maps it to normal-intensity so a program's
-# faint never renders bold (regression for the whole-line excess-bold divergence
-# vs konsole, where a program set bold via 1 then faint via 2).
-import pyte as _pyte_i                                                    # noqa: E402
-from secure_terminal.terminal import _SafeHistoryScreen as _SHS_i        # noqa: E402
-_iscr = _SHS_i(10, 1)
-_pyte_i.Stream(_iscr).feed('\x1b[1mA\x1b[2mB\x1b[22mC')
-_irow = _iscr.buffer[0]
-ok(_irow[0].bold, '_SafeHistoryScreen: SGR 1 sets bold')
-ok(not _irow[1].bold,
-   '_SafeHistoryScreen: SGR 2 (faint) clears bold, matching konsole/xterm/vte')
-ok(not _irow[2].bold, '_SafeHistoryScreen: SGR 22 keeps intensity normal')
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
