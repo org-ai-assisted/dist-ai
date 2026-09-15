@@ -377,6 +377,16 @@ def run_checks(child, args, log):
         ## copies share it) -- NOT a bare exit_code '1', which would also swallow
         ## anondate-set's deliberate exit_code=1 "error" path.
         systemcheck_cmd += " --journal-ignore-fixed \"anondate-set: ### END: ### Exiting with exit_code '1' indicating 'Unexpected error (1). No exit code set yet.\""
+        ## Same no-tor condition: with no Tor reachable, anondate-get cannot read a
+        ## Tor certificate lifetime from the (absent) Tor log, so it logs two fixed
+        ## WARNING lines that check_journal greps as warnings and fails every leg.
+        ## Both the anondate and sdwdate-file-watcher journal copies share the exact
+        ## text; match the anondate-get substring so the source prefix does not
+        ## matter. Ignored on the consumer side, like the anondate-set line above --
+        ## silencing it in the shipped anondate would hide a real Tor-cert problem on
+        ## an actual Tor system.
+        systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Could not determine Tor certificate lifetime.\""
+        systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Tor certificate lifetime invalid according to Tor log.\""
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
         ## defect. Ignore only that one unit, and only for the secureboot legs.
