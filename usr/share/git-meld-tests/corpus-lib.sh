@@ -21,10 +21,10 @@
 ##
 ## Usage: corpus-lib.sh [<dir-with-git-diff-review>]
 ##   GIT_DIFFS_LIE_DIR=<checkout> overrides corpus discovery.
-## git-diff-review is a REQUIRED helper-scripts tool: absent -> exit 1 (FATAL, R-220).
-## The git-diffs-lie corpus is an EXTERNAL, opt-in corpus (github.com/output-lies/
-## git-diffs-lie), absent by default in CI: absent -> exit 77 (SKIP). Set
-## GIT_DIFFS_LIE_DIR to run it; the core git-meld suites gate regardless.
+## git-diff-review + the git-diffs-lie corpus are REQUIRED (never skipped, R-220).
+## git-diff-review absent -> FATAL. The corpus is cloned from its public repo
+## (output-lies/git-diffs-lie) when not already provided via GIT_DIFFS_LIE_DIR or a
+## local checkout, so the adversarial suite always RUNS.
 
 set -o errexit
 set -o nounset
@@ -62,12 +62,24 @@ if [ ! -x "${gdr}" ]; then
    exit 1
 fi
 
-## The git-diffs-lie corpus is an external, opt-in corpus, absent by default in CI.
+## The git-diffs-lie corpus is REQUIRED and never skipped. When it is not provided
+## (GIT_DIFFS_LIE_DIR) or checked out locally, clone the PUBLIC, pinned corpus so
+## the adversarial suite RUNS -- the same way CI provides helper-scripts (a
+## clone), and the same reason dist-ai's ci config checks out submodules itself:
+## consumers pin the reusable workflow @master, so a runtime clone here takes
+## effect immediately for every consumer. Cached under the real HOME and reused.
 if [ -z "${corpus_src}" ] || [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
-   printf '%s\n' \
-      "SKIP: corpus-lib: git-diffs-lie corpus not found (set GIT_DIFFS_LIE_DIR); core git-meld suites still gate." >&2
-   ## style-ok: allow-skip: git-diffs-lie is an external opt-in corpus, absent by default in CI; the core git-meld suites still gate
-   exit 77
+   corpus_src="${real_home}/.cache/dist-ai/git-diffs-lie"
+   if [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
+      mkdir --parents -- "$(dirname -- "${corpus_src}")"
+      safe-rm --recursive --force -- "${corpus_src}"
+      if ! git clone --quiet --depth 1 -- \
+         https://github.com/output-lies/git-diffs-lie "${corpus_src}"; then
+         printf '%s\n' \
+            "FATAL: corpus-lib: could not clone the git-diffs-lie corpus (set GIT_DIFFS_LIE_DIR to a local checkout)." >&2
+         exit 1
+      fi
+   fi
 fi
 
 ## unicode-show (helper-scripts) is REQUIRED for the refname cases: the scan must
