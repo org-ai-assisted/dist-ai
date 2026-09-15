@@ -36,9 +36,14 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 ## Shared generic-name denylist (refused as a target below). Same file used by safe-pkill and the
-## sandbox pkill/pgrep PATH shadow -- single source, no drift.
+## sandbox pkill/pgrep PATH shadow -- single source, no drift. DIST_AI_LIBEXEC_DIR overrides;
+## otherwise resolve it RELATIVE to this script (../libexec/dist-ai) so a copy invoked from a
+## checkout on PATH finds the checkout helper, not the hardcoded installed path. The installed
+## /usr/bin/safe-pgrep resolves to /usr/libexec/dist-ai, byte-identical to before.
+_safe_libexec="${DIST_AI_LIBEXEC_DIR:-$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]:-$0}")")/../libexec/dist-ai}"
 # shellcheck source=../libexec/dist-ai/generic-proc-names.bsh
-source "${DIST_AI_LIBEXEC_DIR:-/usr/libexec/dist-ai}/generic-proc-names.bsh"
+source "${_safe_libexec}/generic-proc-names.bsh"
+unset _safe_libexec
 
 usage() {
    cat -- <<'EOF'
