@@ -251,6 +251,23 @@ else
    printf '%s\n' "INFO: no real primary-group-only account found; fixtures covered the logic."
 fi
 
+## ---- property fuzz: drive the real pure functions over many random inputs ----
+fuzz_script="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/accountctl_fuzz.sh"
+if [ ! -r "${fuzz_script}" ]; then
+   fail "accountctl_fuzz.sh not found at '${fuzz_script}'"
+else
+   fuzz_seed="${ACCOUNTCTL_FUZZ_SEED:-1}"
+   fuzz_iters="${ACCOUNTCTL_FUZZ_ITERS:-500}"
+   fuzz_out="$(SUBJECT="${subject}" bash "${fuzz_script}" "${fuzz_seed}" "${fuzz_iters}" 2>&1)"
+   fuzz_fails="$(printf '%s\n' "${fuzz_out}" | sed -n 's/^FUZZFAILS=//p')"
+   if [ "${fuzz_fails:-1}" = "0" ]; then
+      pass "property fuzz: ${fuzz_iters} iterations, 0 violations (seed ${fuzz_seed})"
+   else
+      fail "property fuzz: ${fuzz_fails} violation(s)"
+      printf '%s\n' "${fuzz_out}" >&2
+   fi
+fi
+
 if [ "${test_failures}" = "0" ]; then
    printf '%s\n' "OK: all accountctl assertions passed."
    exit 0

@@ -5,17 +5,19 @@
 
 ## AI-Assisted
 
-## Runs the Atheris (libFuzzer) coverage-guided fuzz harness for curl-prgrs'
-## pure decision functions (fuzz_curl_prgrs.py). Unlike the no-dependency
-## real-bash property fuzz inside curl_prgrs_test.sh (curl_prgrs_fuzz.sh), this
-## is coverage-guided and needs Atheris (pip install atheris); without it the
-## harness reports a clean SKIP (exit 77). No root, no network.
+## Runs the Atheris (libFuzzer) coverage-guided fuzz harnesses for helper-scripts'
+## pure decision functions:
+##   fuzz_curl_prgrs.py   -- curl-prgrs' percent / verdict / arg-strip functions.
+##   fuzz_accountctl.py   -- accountctl.sh's name-validation, escaping, password
+##                           stripping, field-map and group-membership functions.
+## Unlike the no-dependency real-bash property fuzzes (curl_prgrs_fuzz.sh,
+## accountctl_fuzz.sh), these are coverage-guided and need Atheris (pip install
+## atheris); without it each harness reports a clean SKIP (exit 77), and if every
+## harness skips this runner skips. No root, no network.
 ##
-## Default time budget is 60s; override with CURL_PRGRS_FUZZ_SECONDS or by
-## passing libFuzzer flags directly. Extra arguments are forwarded to the
-## harness, so a corpus directory and flags like -max_total_time=600 or
-## -runs=1000000 work as usual:
-##   helper-scripts-lib-tests-fuzz-atheris -max_total_time=600 ~/curl-prgrs-corpus
+## Default time budget is 60s PER harness; override with CURL_PRGRS_FUZZ_SECONDS
+## or by passing libFuzzer flags directly (forwarded to every harness), e.g.
+##   helper-scripts-lib-tests-fuzz-atheris -max_total_time=600
 ## Targets the installed helper-scripts by default; set HELPER_SCRIPTS_REPO to a
 ## derivative-maker checkout instead. Works installed or from a git checkout.
 
@@ -40,10 +42,26 @@ if [ "$#" -eq 0 ]; then
 fi
 
 rc=0
-## style-ok: allow-python-interpreter -- run the harness through the python3 on
-## PATH (the active venv / user-site), NOT its '#!/usr/bin/python3 -su' shebang:
-## atheris is a 'pip install' dependency that commonly lives in a virtualenv or
-## user-site, and '-s' would hide user-site, making the harness falsely report
-## atheris missing. Same reason privleap-tests-fuzz-atheris uses 'python3 --'.
-python3 -- "${tests_dir}/fuzz_curl_prgrs.py" "$@" || rc=$?
+ran=0
+for harness in fuzz_curl_prgrs.py fuzz_accountctl.py; do
+  printf '%s\n' "== ${harness} =="
+  h_rc=0
+  ## style-ok: allow-python-interpreter -- run the harness through the python3 on
+  ## PATH (the active venv / user-site), NOT its '#!/usr/bin/python3 -su' shebang:
+  ## atheris is a 'pip install' dependency that commonly lives in a virtualenv or
+  ## user-site, and '-s' would hide user-site, making the harness falsely report
+  ## atheris missing. Same reason privleap-tests-fuzz-atheris uses 'python3 --'.
+  python3 -- "${tests_dir}/${harness}" "$@" || h_rc=$?
+  if [ "${h_rc}" = "77" ]; then
+    continue
+  fi
+  ran=1
+  [ "${h_rc}" = "0" ] || rc=1
+done
+
+if [ "${ran}" = "0" ]; then
+  printf '%s\n' "helper-scripts-lib-tests-fuzz-atheris: SKIP (atheris absent or no subject)" >&2
+  ## style-ok: allow-skip: coverage-guided harnesses need atheris (pip) and a helper-scripts subject; the no-dependency real-bash fuzzes cover the same invariants
+  exit 77
+fi
 exit "${rc}"
