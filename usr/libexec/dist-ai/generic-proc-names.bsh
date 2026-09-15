@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared denylist of GENERIC / ubiquitous process names. Many unrelated processes -- in OTHER
+## sessions and in the system's own service tree -- run a program of one of these names, so
+## signalling (or even counting) one by NAME with pkill/pgrep hits processes that are not yours.
+## A `pkill sleep` once killed the qubes-session `sleep inf` keepalive and wedged the whole VM
+## GUI; `pkill -x python3` is a documented cross-session GUI killer.
+##
+## Sourced by safe-pkill, safe-pgrep, and the sandbox pkill/pgrep PATH shadow. Source-only: it
+## defines a variable and a function and RUNS nothing, so a consumer keeps its own strict mode.
+## style-ok: no-strict -- sourced fragment; the sourcing script owns errexit/nounset/pipefail.
+
+## Associative array as a set: exact-name O(1) membership. `-g` so it lands in the global scope
+## even when the source happens inside a function.
+declare -gA SAFE_PROC_GENERIC_NAMES=(
+   [sleep]=1 [cat]=1 [sh]=1 [bash]=1 [dash]=1 [zsh]=1
+   [python]=1 [python2]=1 [python3]=1 [perl]=1 [ruby]=1 [node]=1
+   [tee]=1 [sort]=1 [grep]=1 [sed]=1 [awk]=1 [tail]=1 [head]=1
+   [less]=1 [env]=1 [xargs]=1 [tr]=1 [cut]=1 [watch]=1 [tmux]=1
+)
+
+## safe_proc_is_generic NAME -- exit 0 if NAME is a denylisted generic process name.
+##
+## Leading/trailing WHITESPACE is trimmed first: a pattern with accidental surrounding space
+## (common from `"$VAR"` interpolation or a name read from a file) still matches the generic
+## process at the pgrep layer, so it must still be refused. SCOPE: this is an AI-ACCIDENT guard,
+## not an adversarial filter -- it deliberately does NOT try to decompile a crafted REGEX that is
+## textually distinct from a plain name but matches it (`.*sleep.*`, `sl.ep`); a session does not
+## type those by accident, and probing a regex against every name over-blocks ordinary patterns.
+safe_proc_is_generic() {
+   local n="${1:-}"
+   n="${n#"${n%%[![:space:]]*}"}"
+   n="${n%"${n##*[![:space:]]}"}"
+   [ -n "${SAFE_PROC_GENERIC_NAMES[${n}]:-}" ]
+}

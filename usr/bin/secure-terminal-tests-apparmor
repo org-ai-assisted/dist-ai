@@ -217,6 +217,42 @@ fi
 safe-rm --force "${lock_probe}"
 rmdir "${lock_dir}" 2>/dev/null || true
 
+## ALLOW (signal): Terminate + tab-close must SIGNAL the unconfined child shells/programs
+## the terminal launches (the /bin/* Ux transitions). AppArmor mediates signal SENDING by
+## PROFILE, so without the `signal (send) set=(term,kill,hup) peer=unconfined` rule,
+## killpg(SIGTERM) returns EACCES and the Terminate button -- plus a tab close's hangup --
+## silently do nothing under enforcement (the live bug the operator hit). Probe: a CONFINED
+## python forks a child that execs an UNCONFINED sleep (the /bin/* Ux transition), then
+## SIGTERMs its group; passed via -c so no file read is needed (the confined interpreter
+## cannot read an arbitrary path). Canary: FAILS (EACCES) on a profile lacking the rule.
+sig_rc=0
+aa-exec -p secure-terminal -- python3 -Bsu -c '
+import os, signal, sys, time
+pid = os.fork()
+if pid == 0:
+    os.setsid()                       # child leads its own group: pgid == pid
+    os.execvp("sleep", ["sleep", "2"])
+    os._exit(127)
+time.sleep(0.6)                       # let the child exec (become unconfined)
+try:
+    os.killpg(pid, signal.SIGTERM)
+    rc = 0
+except PermissionError:
+    rc = 1                            # EACCES: AppArmor denied the send
+try:
+    os.waitpid(pid, 0)
+except OSError:
+    pass
+sys.exit(rc)
+' >/dev/null 2>&1 || sig_rc=$?
+if [ "${sig_rc}" -eq 0 ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf '%s\n' \
+      "FAIL: the profile DENIED SIGTERM to an unconfined child -- Terminate broken; add: signal (send) set=(term, kill, hup) peer=unconfined"
+fi
+
 ## ALLOW (single-instance bind): QLocalServer(UserAccessOption) does NOT bind the
 ## 0700 group socket in place -- it creates a private 0700 temp SUBDIR, binds the
 ## socket inside it, renames the socket to <group>.sock, then removes the subdir.

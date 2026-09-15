@@ -34,6 +34,11 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Shared generic-name denylist (refused as a kill target below). Same file used by safe-pgrep and
+## the sandbox pkill/pgrep PATH shadow -- single source, no drift.
+# shellcheck source=../libexec/dist-ai/generic-proc-names.bsh
+source "${DIST_AI_LIBEXEC_DIR:-/usr/libexec/dist-ai}/generic-proc-names.bsh"
+
 usage() {
    cat -- <<'EOF'
 Usage: safe-pkill [--signal SIG] [--name] [--dry-run] PATTERN
@@ -137,6 +142,14 @@ fi
 ## tool's purpose -- reject it (a caller that interpolated an unset "$VAR" hits this).
 if [ -z "${pattern}" ]; then
    printf 'safe-pkill: PATTERN must not be empty (an empty pattern matches every process)\n' >&2
+   exit 2
+fi
+## Refuse a bare GENERIC process name as the target. Ancestry exclusion does NOT help here: a
+## generic name (sleep/cat/python3/...) matches UNRELATED processes in other sessions and the
+## system tree, which are not the caller's ancestors -- a `pkill sleep` once killed the
+## qubes-session `sleep inf` keepalive and wedged the VM GUI. Kill a specific PID/PGID instead.
+if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; then
+   printf 'safe-pkill: refusing the generic process name "%s" as a target -- it matches OTHER sessions and system processes (this class once wedged the VM GUI by killing qubes-session sleep). Kill a specific process (kill PID; kill -- -PGID), or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
 ## Validate the signal up front so a typo fails as a usage error (exit 2), not later as a
