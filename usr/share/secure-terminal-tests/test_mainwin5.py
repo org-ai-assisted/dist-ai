@@ -72,9 +72,9 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-defer-')
 # written persist_session=false), otherwise the restore path is skipped entirely.
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-defer-cfg-')
 try:
-    _ds.save([{'name': 'd0', 'text': 'zero\n', 'osc': {}},
-              {'name': 'd1', 'text': 'one\n', 'osc': {}},
-              {'name': 'd2', 'text': 'two\n', 'osc': {}}])
+    _ds.save([{'uid': 0, 'name': 'd0', 'text': 'zero\n', 'osc': {}},
+              {'uid': 1, 'name': 'd1', 'text': 'one\n', 'osc': {}},
+              {'uid': 2, 'name': 'd2', 'text': 'two\n', 'osc': {}}])
     from PyQt6.QtWidgets import QWidget as _QWidget99            # noqa: E402
     _dw = MainWindow()
     # #99: the WHOLE tab bar is drawn up front (all three entries at once), but only
@@ -113,9 +113,9 @@ try:
     # #88/#92: the previously-focused tab is the one SHOWN immediately (never tab 0
     # first), and the others fill in AROUND it at their saved positions -- the active
     # widget stays visible throughout, so nothing flashes. Restore tab 2 as active.
-    _ds.save([{'name': 'a0', 'text': 'a\n', 'osc': {}},
-              {'name': 'a1', 'text': 'b\n', 'osc': {}},
-              {'name': 'a2', 'text': 'c\n', 'osc': {}}], active=2)
+    _ds.save([{'uid': 0, 'name': 'a0', 'text': 'a\n', 'osc': {}},
+              {'uid': 1, 'name': 'a1', 'text': 'b\n', 'osc': {}},
+              {'uid': 2, 'name': 'a2', 'text': 'c\n', 'osc': {}}], active=2)
     _aw = MainWindow()
     _active_w = _aw.current()                     # shown FIRST, before any deferred
     eq(_aw._user_titles.get(_active_w, ''), 'a2',
@@ -144,9 +144,9 @@ try:
     eq(_bw.tabs.currentIndex(), 0, '#88: an active index past the restored tabs falls back to tab 0')
     _bw.deleteLater()
     # closeEvent must finish a still-pending restore so no tab is dropped from save
-    _ds.save([{'name': 'e0', 'text': 'a\n', 'osc': {}},
-              {'name': 'e1', 'text': 'b\n', 'osc': {}},
-              {'name': 'e2', 'text': 'c\n', 'osc': {}}])
+    _ds.save([{'uid': 0, 'name': 'e0', 'text': 'a\n', 'osc': {}},
+              {'uid': 1, 'name': 'e1', 'text': 'b\n', 'osc': {}},
+              {'uid': 2, 'name': 'e2', 'text': 'c\n', 'osc': {}}])
     _cw = MainWindow()
     eq(len(_cw._deferred_restore), 2, 'deferred restore: two tabs pending before close')
     _cw.closeEvent(_QCE59())
@@ -157,10 +157,10 @@ try:
     # #99 (ai-review): a placeholder is labelled like its real tab (saved name, else
     # the saved cwd basename, else "shell") and is safe to select and to close before
     # its shell swaps in -- neither must call a SecureTerminal method on the QWidget.
-    _ds.save([{'name': 'i0', 'text': 'x\n', 'osc': {}},          # active, restored real
-              {'name': 'named', 'text': 'y\n', 'osc': {}},       # placeholder: user name
-              {'name': '', 'cwd': '/usr/share', 'text': 'z\n', 'osc': {}},  # cwd basename
-              {'name': '', 'text': 'w\n', 'osc': {}}], active=0)          # -> 'shell'
+    _ds.save([{'uid': 0, 'name': 'i0', 'text': 'x\n', 'osc': {}},          # active, restored real
+              {'uid': 1, 'name': 'named', 'text': 'y\n', 'osc': {}},       # placeholder: user name
+              {'uid': 2, 'name': '', 'cwd': '/usr/share', 'text': 'z\n', 'osc': {}},  # cwd basename
+              {'uid': 3, 'name': '', 'text': 'w\n', 'osc': {}}], active=0)          # -> 'shell'
     _iw = MainWindow()
     eq(_iw.tabs.count(), 4, '#99: the full bar is drawn up front')
     eq(len(_iw._deferred_restore), 3, '#99: three placeholders pending')
@@ -199,8 +199,8 @@ try:
 
     # #99 (F7): closing the LAST tab when it is a placeholder must close the window --
     # the placeholder branch has to run the count==0 -> self.close() step too.
-    _ds.save([{'name': 'l0', 'text': 'a\n', 'osc': {}},
-              {'name': 'l1', 'text': 'b\n', 'osc': {}}], active=0)
+    _ds.save([{'uid': 0, 'name': 'l0', 'text': 'a\n', 'osc': {}},
+              {'uid': 1, 'name': 'l1', 'text': 'b\n', 'osc': {}}], active=0)
     _lw = MainWindow()
     eq(_lw.tabs.count(), 2, '#99 (F7): a real active tab plus one placeholder')
     _lw.close_tab(0)                             # close the real active tab
@@ -1012,12 +1012,15 @@ eq(win.tabs.tabBar().elideMode(), _QtTB.TextElideMode.ElideMiddle,
 # that path (no SECURE_TERMINAL_TRANSCRIPT_FILE required); the Copy button copies it.
 from PyQt6.QtWidgets import QLineEdit as _QLE11, QPushButton as _QPB11   # noqa: E402
 _dialogs.clear()
+# the on-save files are keyed by the current tab's durable id, so two tabs never
+# clobber each other's capture.
+_expect_uid = win._tab_ids[win.current()]
 win.copy_transcript_path()
 _tpdlg = _dialogs[-1]
 _tpfields = [w for w in _tpdlg.findChildren(_QLE11) if w.isReadOnly()]
-ok(bool(_tpfields) and _tpfields[0].text().endswith('transcript.txt')
+ok(bool(_tpfields) and _tpfields[0].text().endswith('transcript-%d.txt' % _expect_uid)
    and os.path.exists(_tpfields[0].text()),
-   'Copy Transcript File Path names a real default state-dir file (no env var needed)')
+   'Copy Transcript File Path names a real per-id default state-dir file (no env var)')
 _tppath = _tpfields[0].text()
 _tpcopy = [b for b in _tpdlg.findChildren(_QPB11) if 'Copy' in b.text()]
 ok(bool(_tpcopy), 'the transcript-path dialog has a Copy button')
@@ -1027,28 +1030,28 @@ eq(APP.clipboard().text(), _tppath,
    'the Copy button puts the transcript path on the clipboard')
 
 # --- Copy Current Screen File Path + Copy/Show State Dump File Path -------------
-# Same one-click-copy builder (_copy_capture_path), for the plain screen (screen.txt) and
-# the full-fidelity grid+attributes dump (state-dump.txt). The state dump is the file to
-# hand a reviewer for a render bug the attribute-less transcript/screen cannot show.
+# Same one-click-copy builder (_copy_capture_path), for the plain screen (screen-<id>.txt)
+# and the full-fidelity grid+attributes dump (state-dump-<id>.txt). The state dump is the
+# file to hand a reviewer for a render bug the attribute-less transcript/screen cannot show.
 _dialogs.clear()
 win.copy_current_screen_path()
 _scfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()]
-ok(bool(_scfields) and _scfields[0].text().endswith('screen.txt')
+ok(bool(_scfields) and _scfields[0].text().endswith('screen-%d.txt' % _expect_uid)
    and os.path.exists(_scfields[0].text()),
-   'Copy Current Screen File Path names a real default state-dir screen.txt')
+   'Copy Current Screen File Path names a real per-id default state-dir screen file')
 
 _dialogs.clear()
 win.copy_state_dump_path()
 _sdfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()]
-ok(bool(_sdfields) and _sdfields[0].text().endswith('state-dump.txt')
+ok(bool(_sdfields) and _sdfields[0].text().endswith('state-dump-%d.txt' % _expect_uid)
    and os.path.exists(_sdfields[0].text()) and os.path.getsize(_sdfields[0].text()) > 0,
-   'Copy State Dump File Path names a real, non-empty default state-dir state-dump.txt')
+   'Copy State Dump File Path names a real, non-empty per-id state-dump file')
 
 # the /dump-state palette command is parity with the menu action (writes + shows the path)
 _dialogs.clear()
 win.run_command('/dump-state')
 _cmdfields = [w for w in _dialogs[-1].findChildren(_QLE11) if w.isReadOnly()] if _dialogs else []
-ok(bool(_cmdfields) and _cmdfields[0].text().endswith('state-dump.txt'),
+ok(bool(_cmdfields) and _cmdfields[0].text().endswith('state-dump-%d.txt' % _expect_uid),
    '/dump-state writes the full state dump and shows its path')
 
 # --- Part B: the generated config stores ONLY non-default overrides -----------
@@ -1082,6 +1085,178 @@ finally:
         os.environ['XDG_CONFIG_HOME'] = _o_pb
 
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)
+
+
+# ---- durable tab ids: unique-per-tab save paths, stable across restart, cleaned ----
+# a fresh, empty config so persist_session defaults True (the restore path runs)
+os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-uid-cfg-')
+
+def _drain_restore(w):
+    for _ in range(60):
+        _l = _QEL59()
+        QTimer.singleShot(20, _l.quit)
+        _l.exec()
+        if not w._deferred_restore:
+            break
+
+# two live tabs get distinct ids and distinct on-save paths
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid1-')
+_ds.clear()
+_uw = MainWindow()
+_ut0 = _uw.current()
+_uw.new_tab()
+_ut1 = _uw.tabs.widget(1)
+ok(_uw._tab_ids[_ut0] != _uw._tab_ids[_ut1], 'durable id: two live tabs get distinct ids')
+eq(_uw._default_transcript_path(_ut0), _ds.tab_file('transcript', _uw._tab_ids[_ut0]),
+   'durable id: a tab on-save transcript path is keyed by its id')
+ok(_uw._default_transcript_path(_ut0) != _uw._default_transcript_path(_ut1),
+   'durable id: two tabs never share an on-save transcript path')
+_seen_ids = set(_uw._tab_ids.values())
+# closing a tab removes ITS app-managed files (delete-on-close), and its id is not reused
+_cuid = _uw._tab_ids[_ut1]
+_ds.ensure_state_dir()
+for _stem in ('transcript', 'screen', 'state-dump'):
+    _ds._write_atomic(_ds.tab_file(_stem, _cuid), 'x')
+_ds._write_atomic(_ds._log_path(_cuid), 'log')
+_uw.close_tab(_uw.tabs.indexOf(_ut1))
+ok(not os.path.exists(_ds.tab_file('transcript', _cuid))
+   and not os.path.exists(_ds.tab_file('state-dump', _cuid))
+   and not os.path.exists(_ds._log_path(_cuid)),
+   'delete-on-close: closing a tab removes its on-save files + restore log')
+_uw.new_tab()
+ok(_uw._tab_ids[_uw.tabs.widget(_uw.tabs.count() - 1)] not in _seen_ids,
+   'durable id: a new tab after a close gets a fresh id, never a reused one')
+ok(all('uid' in _t for _t in _uw._session_tabs()),
+   'durable id: _session_tabs records a durable id per tab')
+_uw.close()
+_uw.deleteLater()
+
+# app QUIT (closeEvent) does NOT purge a tab's files -- only a single-tab close does
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid2-')
+_ds.clear()
+_qw = MainWindow()
+_quid = _qw._tab_ids[_qw.current()]
+_ds.ensure_state_dir()
+_ds._write_atomic(_ds.tab_file('transcript', _quid), 'keep-on-quit')
+_qw.closeEvent(_QCE59())
+ok(os.path.exists(_ds.tab_file('transcript', _quid)),
+   'app quit does NOT purge a tab scratch file (delete-on-close is per-tab-close only)')
+ok(os.path.exists(_ds._log_path(_quid)),
+   'app quit persists the tab restore log for a later restore')
+_qw.deleteLater()
+
+# restart stability: saved ids round-trip; the counter seeds ABOVE the highest restored id
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid3-')
+_ds.clear()
+_ds.save([{'uid': 2, 'name': 'r0', 'text': 'a\n', 'osc': {}},
+          {'uid': 5, 'name': 'r1', 'text': 'b\n', 'osc': {}}], active=0)
+_rw = MainWindow()
+_drain_restore(_rw)
+eq(sorted(_rw._tab_ids.values()), [2, 5],
+   'durable id: restored tabs keep their saved ids across a restart')
+_rw.new_tab()
+ok(max(_rw._tab_ids.values()) >= 6,
+   'durable id: the counter seeds above the highest restored id (no reuse)')
+_rw.close()
+_rw.deleteLater()
+
+# a duplicate saved id (a corrupt/hand-edited session) resolves to distinct live ids
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid4-')
+_ds.clear()
+_ds.save([{'uid': 4, 'name': 'c0', 'text': 'a\n', 'osc': {}},
+          {'uid': 4, 'name': 'c1', 'text': 'b\n', 'osc': {}}], active=0)
+_cw4 = MainWindow()
+_drain_restore(_cw4)
+eq(len(set(_cw4._tab_ids.values())), len(_cw4._tab_ids),
+   'durable id: a duplicate saved id is resolved to distinct live ids (no collision)')
+_cw4.close()
+_cw4.deleteLater()
+
+# startup orphan sweep: a state file with no live owner is removed at launch
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid5-')
+_ds.clear()
+_ds.ensure_state_dir()
+_ds._write_atomic(_ds.tab_file('transcript', 77), 'orphan')
+_ds._write_atomic(_ds._log_path(77), 'orphanlog')
+_ow = MainWindow()                       # a fresh session -> id 77 has no live owner
+ok(not os.path.exists(_ds.tab_file('transcript', 77))
+   and not os.path.exists(_ds._log_path(77)),
+   'orphan sweep: a state file with no live owner is removed at startup')
+_ow.close()
+_ow.deleteLater()
+
+
+# ---- standalone review popup launcher (review_standalone) --------------------
+import io as _io_rs                                             # noqa: E402
+import sys as _sys_rs                                          # noqa: E402
+import secure_terminal.review_standalone as _RS               # noqa: E402
+from PyQt6.QtWidgets import QApplication as _QA_rs             # noqa: E402
+
+# holder dispatch: reject prints 'rejected'; deliver prints the delivered text
+_rs_win = _RS._ReviewWindow()
+_rs_win.bar.show_review(_RS._StandaloneReview('dark'),
+                        'ls' + chr(0x200b) + ' -la', 0, kind='paste')
+_rs_buf = _io_rs.StringIO(); _rs_old = _sys_rs.stdout; _sys_rs.stdout = _rs_buf
+_rs_win.bar._choose('reject')
+_sys_rs.stdout = _rs_old
+eq(_rs_buf.getvalue(), 'rejected\n', 'review_standalone: reject prints "rejected"')
+
+_rs_w2 = _RS._ReviewWindow()
+_rs_w2.bar.show_review(_RS._StandaloneReview('light'), 'echo hello', 0, kind='clipboard')
+_rs_buf = _io_rs.StringIO(); _sys_rs.stdout = _rs_buf
+_rs_w2.bar._choose('deliver')
+_sys_rs.stdout = _rs_old
+ok('hello' in _rs_buf.getvalue(), 'review_standalone: deliver prints the delivered text')
+# the copy direction dispatches to its own method
+_rs_buf = _io_rs.StringIO(); _sys_rs.stdout = _rs_buf
+_RS._StandaloneReview('dark').dispatch_pending_copy('unicode', 'x')
+_sys_rs.stdout = _rs_old
+eq(_rs_buf.getvalue(), 'x\n', 'review_standalone: copy dispatch prints the delivered text')
+
+# _resolve_payload: --text wins; an empty/absent pipe falls back to the sample;
+# piped content is used (trailing newline stripped)
+class _NS_rs:
+    text = 'given'
+eq(_RS._resolve_payload(_NS_rs()), 'given', 'review_standalone: --text is used verbatim')
+class _NoText_rs:
+    text = None
+
+class _FakeStdin_rs:
+    def __init__(self, tty, data=''):
+        self._tty = tty
+        self._data = data
+    def isatty(self):
+        return self._tty
+    def read(self):
+        return self._data
+_o_stdin_rs = _sys_rs.stdin
+try:
+    _sys_rs.stdin = _FakeStdin_rs(True)                 # a real terminal, no pipe
+    ok(_RS._resolve_payload(_NoText_rs()) == _RS._SAMPLE,
+       'review_standalone: no --text and no pipe -> the built-in sample')
+    _sys_rs.stdin = _FakeStdin_rs(False, '   ')         # empty pipe
+    ok(_RS._resolve_payload(_NoText_rs()) == _RS._SAMPLE,
+       'review_standalone: an empty pipe falls back to the sample')
+    _sys_rs.stdin = _FakeStdin_rs(False, 'piped cmd\n')
+    eq(_RS._resolve_payload(_NoText_rs()), 'piped cmd',
+       'review_standalone: piped stdin is used (newline stripped)')
+finally:
+    _sys_rs.stdin = _o_stdin_rs
+
+ok(_RS._default_theme() in _RS.THEMES,
+   'review_standalone: _default_theme resolves to a valid theme')
+
+# main(): patch exec so it does not block; both the explicit-theme and default-theme
+# paths build the popup and return the app exit code
+_o_exec_rs = _QA_rs.exec
+_QA_rs.exec = lambda self: 0
+try:
+    eq(_RS.main(['--kind', 'copy', '--text', 'x', '--theme', 'dark', '--delay', '1']), 0,
+       'review_standalone: main() with an explicit theme builds the popup')
+    eq(_RS.main(['--text', 'y']), 0,
+       'review_standalone: main() falls back to the configured theme')
+finally:
+    _QA_rs.exec = _o_exec_rs
 
 
 finish('mainwin5')

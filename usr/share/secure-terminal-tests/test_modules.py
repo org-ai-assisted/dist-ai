@@ -262,41 +262,57 @@ finally:
 _state_root = tempfile.mkdtemp()
 os.environ['XDG_STATE_HOME'] = _state_root
 
-# a round-trip: save then load restores the tabs and their scrollback
-session.save([{'name': 'one', 'text': 'hello\nworld'},
-              {'name': 'two', 'text': 'second'}])
+# a round-trip: save then load restores the tabs and their scrollback, each log
+# keyed by the tab's durable id (not its position)
+session.save([{'uid': 0, 'name': 'one', 'text': 'hello\nworld'},
+              {'uid': 1, 'name': 'two', 'text': 'second'}])
 _loaded = session.load()
 eq([t.get('name') for t in _loaded], ['one', 'two'],
    'session: save/load restores the tab order and names')
 eq(_loaded[0].get('text'), 'hello\nworld',
    'session: a tab scrollback is restored from its own log file')
+eq(_loaded[0].get('uid'), 0,
+   'session: a tab durable id round-trips through the index')
+
+# the log file is named by the durable id, not the list position
+session.save([{'uid': 7, 'name': 'gap', 'text': 'z'}])
+ok(os.path.exists(session._log_path(7))
+   and not os.path.exists(session._log_path(0)),
+   'session: the scrollback log is keyed by the tab id (tab-7.log, not tab-0.log)')
+eq(session.load()[0].get('text'), 'z',
+   'session: a gap-id tab loads its own tab-<id>.log')
 
 # a tab's working directory round-trips through the index (so restore can cd back)
-session.save([{'name': 'w', 'cwd': '/known/work/dir', 'text': ''}])
+session.save([{'uid': 0, 'name': 'w', 'cwd': '/known/work/dir', 'text': ''}])
 eq(session.load()[0].get('cwd'), '/known/work/dir',
    'session: a tab cwd is saved and restored in the index')
-session.save([{'name': 'one', 'text': 'hello\nworld'},
-              {'name': 'two', 'text': 'second'}])   # restore the two-tab fixture
+session.save([{'uid': 0, 'name': 'one', 'text': 'hello\nworld'},
+              {'uid': 1, 'name': 'two', 'text': 'second'}])   # two-tab fixture
 
-# shrinking the session drops the stale log of the removed tab
-session.save([{'name': 'only', 'text': 'x'}])
-ok(not os.path.exists(os.path.join(session._state_dir(), 'tab-1.log')),
-   'session: a shrunk session removes the now-stale tab log')
+# closing a tab drops the stale log of the removed id
+session.save([{'uid': 0, 'name': 'only', 'text': 'x'}])
+ok(not os.path.exists(session._log_path(1)),
+   'session: a session that no longer holds an id removes its now-stale tab log')
 
 # cap_text keeps only the most recent lines
 eq(session.cap_text('a\nb\nc\nd', 2), 'c\nd', 'session: cap_text keeps the tail')
 
-# a non-dict index entry is skipped; a dict entry whose log is missing loads empty
+# a non-dict index entry is skipped; a dict entry with no uid (a pre-durable-id
+# session.json) loads empty, no crash
 session._write_atomic(session.session_path(),
                       json.dumps({'tabs': [123, {'name': 'nolog'}]}))
-_stale_log = os.path.join(session._state_dir(), 'tab-1.log')
-if os.path.exists(_stale_log):
-    os.remove(_stale_log)               # position 1 (nolog) must have no log
 _loaded = session.load()
 eq([t.get('name') for t in _loaded], ['nolog'],
    'session: a non-dict index entry is skipped')
 eq(_loaded[0].get('text'), '',
-   'session: a dict entry with no log file restores an empty scrollback')
+   'session: a dict entry with no uid restores an empty scrollback')
+
+# a dict entry WITH a valid uid but no log file on disk restores empty (the
+# missing-log branch, distinct from the no-uid branch above)
+session._write_atomic(session.session_path(),
+                      json.dumps({'tabs': [{'uid': 4242, 'name': 'gone'}]}))
+eq(session.load()[0].get('text'), '',
+   'session: a valid uid whose log file is missing restores an empty scrollback')
 
 # a corrupt session.json -> empty session, never raises
 session._write_atomic(session.session_path(), 'this is not json')
@@ -307,13 +323,13 @@ session._write_atomic(session.session_path(), json.dumps({'tabs': 'nope'}))
 eq(session.load(), [], "session: a non-list 'tabs' value loads as empty")
 
 # window geometry blob round-trips; anything not a non-empty string -> None (#77)
-session.save([{'name': 'a', 'text': ''}], 'QkxPQg==')
+session.save([{'uid': 0, 'name': 'a', 'text': ''}], 'QkxPQg==')
 eq(session.load_window(), 'QkxPQg==', 'session: the window geometry blob round-trips')
-session.save([{'name': 'a', 'text': ''}])                 # no window arg
+session.save([{'uid': 0, 'name': 'a', 'text': ''}])                 # no window arg
 eq(session.load_window(), None, 'session: no saved window -> None')
-session.save([{'name': 'a', 'text': ''}], '')             # empty string ignored
+session.save([{'uid': 0, 'name': 'a', 'text': ''}], '')             # empty string ignored
 eq(session.load_window(), None, 'session: an empty window blob is not saved')
-session.save([{'name': 'a', 'text': ''}], 123)            # non-str ignored
+session.save([{'uid': 0, 'name': 'a', 'text': ''}], 123)            # non-str ignored
 eq(session.load_window(), None, 'session: a non-string window value is not saved')
 session._write_atomic(session.session_path(), 'not json')
 eq(session.load_window(), None, 'session: load_window on corrupt json -> None')
@@ -323,11 +339,12 @@ session._write_atomic(session.session_path(), json.dumps({'tabs': [], 'window': 
 eq(session.load_window(), None, 'session: a non-string saved window loads as None')
 
 # active-tab index round-trips; out-of-range / non-int / corrupt -> None (#88)
-session.save([{'name': 'a', 'text': ''}, {'name': 'b', 'text': ''}], active=1)
+session.save([{'uid': 0, 'name': 'a', 'text': ''},
+              {'uid': 1, 'name': 'b', 'text': ''}], active=1)
 eq(session.load_active(), 1, 'session: the active-tab index round-trips')
-session.save([{'name': 'a', 'text': ''}], active=5)         # out of range -> dropped
+session.save([{'uid': 0, 'name': 'a', 'text': ''}], active=5)         # out of range -> dropped
 eq(session.load_active(), None, 'session: an out-of-range active index is not saved')
-session.save([{'name': 'a', 'text': ''}])                   # no active arg
+session.save([{'uid': 0, 'name': 'a', 'text': ''}])                   # no active arg
 eq(session.load_active(), None, 'session: no saved active -> None')
 session._write_atomic(session.session_path(), 'not json')
 eq(session.load_active(), None, 'session: load_active on corrupt json -> None')
@@ -353,8 +370,38 @@ _blocker = os.path.join(_state_root, 'blocker')
 with open(_blocker, 'w', encoding='utf-8') as _h:
     _h.write('x')
 os.environ['XDG_STATE_HOME'] = os.path.join(_blocker, 'sub')
-session.save([{'name': 'a', 'text': 'a'}])
+session.save([{'uid': 0, 'name': 'a', 'text': 'a'}])
 ok(True, 'session: save is best-effort when its directory cannot be created')
+os.environ['XDG_STATE_HOME'] = _state_root
+
+# durable-id file helpers: per-id scratch export names + closed-tab / orphan cleanup
+_purge_root = tempfile.mkdtemp()
+os.environ['XDG_STATE_HOME'] = _purge_root
+session.ensure_state_dir()
+eq(os.path.basename(session.tab_file('transcript', 3)), 'transcript-3.txt',
+   'session: tab_file names a per-id scratch export')
+# lay down a live tab (id 4) and an orphan (id 9): a log + the scratch trio for each
+for _uid in (4, 9):
+    session._write_atomic(session._log_path(_uid), 'log%d' % _uid)
+    for _stem in ('transcript', 'screen', 'state-dump'):
+        session._write_atomic(session.tab_file(_stem, _uid), 'x')
+session.purge_orphans({4})               # id 9 has no live owner
+ok(os.path.exists(session._log_path(4))
+   and os.path.exists(session.tab_file('transcript', 4)),
+   'session: purge_orphans keeps a live tab id file set')
+ok(not os.path.exists(session._log_path(9))
+   and not os.path.exists(session.tab_file('transcript', 9))
+   and not os.path.exists(session.tab_file('state-dump', 9)),
+   'session: purge_orphans removes every file of an id with no live owner')
+session.purge_tab_files(4)               # a single-tab close discards its files
+ok(not os.path.exists(session._log_path(4))
+   and not os.path.exists(session.tab_file('screen', 4)),
+   'session: purge_tab_files removes a closed tab log + scratch trio')
+session.purge_tab_files(4)               # already gone -> best-effort no-op
+ok(True, 'session: purge_tab_files on a missing id does not raise')
+os.environ['XDG_STATE_HOME'] = os.path.join(_purge_root, 'nope', 'x')
+session.purge_orphans(set())             # unreadable state dir -> swallowed
+ok(True, 'session: purge_orphans on a missing state dir does not raise')
 os.environ['XDG_STATE_HOME'] = _state_root
 
 
