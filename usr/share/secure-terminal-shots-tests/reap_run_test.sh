@@ -100,6 +100,39 @@ if safe-pgrep --full -- "${marker}" >/dev/null 2>&1; then
    check found found 'safe-pgrep finds the marked group by its unique marker'
 else
    check notfound found 'safe-pgrep finds the marked group by its unique marker'
+   ## CI-env diagnostic: this test passes in every reproducible env (sandbox user/root,
+   ## ubuntu container, runuser as a fresh build user), so a miss is a runner-specific
+   ## process-model quirk. Dump the facts needed to pin it: whether RAW pgrep sees it (vs
+   ## the safe-pgrep wrapper's is_own_descendant filter), the process state/ppid/tracer/uid/
+   ## cmdline, and the marked pid's ancestry (what is_own_descendant walks).
+   {
+      printf -- '--- reap_run_test CI diag (safe-pgrep MISS) ---\n'
+      printf 'whoami=%s uid=%s test_pid=%s procps=[%s]\n' \
+         "$(whoami 2>/dev/null || true)" "$(id -u)" "$$" "$(pgrep --version 2>&1 | head -1)"
+      printf 'marker=%s marked_pid=%s unmarked_pid=%s\n' "${marker}" "${marked_pid}" "${unmarked_pid}"
+      printf 'raw pgrep --full: [%s]\n' "$(pgrep --full -- "${marker}" 2>&1 | tr '\n' ' ' || true)"
+      printf 'raw pgrep -f: [%s]\n' "$(pgrep -f "${marker}" 2>&1 | tr '\n' ' ' || true)"
+      for _p in "${marked_pid}" "${unmarked_pid}"; do
+         if [ -r "/proc/${_p}/status" ]; then
+            printf 'pid %s: state=[%s] ppid=%s tracer=%s uid=[%s] cmd=[%s]\n' "${_p}" \
+               "$(sed -n 's/^State:[[:space:]]*//p' "/proc/${_p}/status" || true)" \
+               "$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/${_p}/status" || true)" \
+               "$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/${_p}/status" || true)" \
+               "$(sed -n 's/^Uid:[[:space:]]*//p' "/proc/${_p}/status" || true)" \
+               "$(tr '\0' ' ' < "/proc/${_p}/cmdline" 2>/dev/null || true)"
+         else
+            printf 'pid %s: /proc/%s/status unreadable\n' "${_p}" "${_p}"
+         fi
+      done
+      printf 'marked_pid ancestry (child<-...<-root): '
+      _a="${marked_pid}"
+      while [ -n "${_a}" ] && [ "${_a}" != '0' ] && [ "${_a}" != '1' ]; do
+         printf '%s<-' "${_a}"
+         _a="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/${_a}/status" 2>/dev/null || true)"
+      done
+      printf '%s\n' "${_a:-END}"
+      printf -- '--- end diag ---\n'
+   } >&2
 fi
 
 ## the reap under test.
