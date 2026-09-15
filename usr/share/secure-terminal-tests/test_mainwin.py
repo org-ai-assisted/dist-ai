@@ -1191,11 +1191,13 @@ try:
     win.open_transcript()
     ok(_opened == [], 'open_transcript: no active tab is a no-op')
     win.current = _ocur
+    # the on-save files carry the current tab's durable id (per-tab, not shared)
+    _ouid = win._tab_ids[win.current()]
     win.open_transcript()
     ok(len(_opened) == 1 and os.path.dirname(_opened[0]) == _state_tmp
-       and os.path.basename(_opened[0]) == 'transcript.txt'
+       and os.path.basename(_opened[0]) == 'transcript-%d.txt' % _ouid
        and os.path.getsize(_opened[0]) > 0,
-       'open_transcript: writes transcript.txt under the state dir and opens it')
+       'open_transcript: writes transcript-<id>.txt under the state dir and opens it')
     win.open_transcript()                        # a second open REUSES the one file (no leak)
     ok(len(_opened) == 2 and _opened[0] == _opened[1],
        'open_transcript: reuses one file rather than leaking a new temp each time')
@@ -1203,9 +1205,9 @@ try:
     # helpers with transcript_text as the getter, writing screen.txt (not transcript.txt).
     _opened.clear()
     win.open_current_screen()
-    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'screen.txt'
+    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'screen-%d.txt' % _ouid
        and os.path.getsize(_opened[0]) > 0,
-       'open_current_screen: writes screen.txt under the state dir and opens it')
+       'open_current_screen: writes screen-<id>.txt under the state dir and opens it')
     _cs_path = os.path.join(tempfile.mkdtemp(), 'screen-save.txt')
     _ogsf2 = QFileDialog.getSaveFileName
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_cs_path, ''))
@@ -1220,9 +1222,9 @@ try:
     # reviewer for a render bug the attribute-less screen/transcript cannot show.
     _opened.clear()
     win.open_state_dump()
-    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'state-dump.txt'
+    ok(len(_opened) == 1 and os.path.basename(_opened[0]) == 'state-dump-%d.txt' % _ouid
        and os.path.getsize(_opened[0]) > 0,
-       'open_state_dump: writes state-dump.txt under the state dir and opens it')
+       'open_state_dump: writes state-dump-<id>.txt under the state dir and opens it')
     _sd_path = os.path.join(tempfile.mkdtemp(), 'state-save.txt')
     _ogsf3 = QFileDialog.getSaveFileName
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_sd_path, ''))
@@ -1239,10 +1241,10 @@ try:
     win.open_transcript()                        # ensure_state_dir must chmod it back to 0o700
     ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
        'ai-review#3: ensure_state_dir enforces 0o700 on the sensitive state dir')
-    ok(_stat3.S_IMODE(os.stat(os.path.join(_state_tmp, 'transcript.txt')).st_mode) == 0o600,
+    ok(_stat3.S_IMODE(os.stat(os.path.join(_state_tmp, 'transcript-%d.txt' % _ouid)).st_mode) == 0o600,
        'ai-review#3: the transcript file is owner-only (0o600), not world-readable')
     os.chmod(_state_tmp, 0o755)  # nosec B103 -- intentional wide dir; the test asserts session.save tightens it to 0o700
-    _sess.save([{'text': 'scrollback', 'command': None}], window=None, active=0)
+    _sess.save([{'uid': 0, 'text': 'scrollback', 'command': None}], window=None, active=0)
     ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
        'ai-review#3: session.save enforces 0o700 on the state dir')
     ok(_stat3.S_IMODE(os.stat(_sess.session_path()).st_mode) == 0o600
@@ -1330,8 +1332,11 @@ ok('mode: CLI' in _tipa, 'a CLI tab shows mode: CLI')
 ok('name:' not in _tipa and 'program:' not in _tipa,
    'an un-renamed, no-OSC-title tab omits name/program (not a bare blob)')
 ok('transcript (on save): ' in _tipa, 'a tab with no env transcript shows the on-save path')
-ok('state dump (on save): ' in _tipa and _tipa.rstrip().endswith('state-dump.txt'),
-   'every tab tooltip surfaces the full-fidelity state-dump path to hand a reviewer')
+ok('state dump (on save): ' in _tipa
+   and _tipa.rstrip().endswith('state-dump-%d.txt' % win._tab_ids[_ta]),
+   'every tab tooltip surfaces the full-fidelity per-id state-dump path')
+ok('tab id: %d' % win._tab_ids[_ta] in _tipa,
+   'the tab tooltip surfaces the durable tab id')
 ok((win._tab_pts(_ta) or '').startswith('/dev/pts/'),
    'the pts is derived from the child stdin (not parsed out of the OSC title)')
 

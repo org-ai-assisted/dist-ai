@@ -1578,8 +1578,8 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-session-')
 from secure_terminal import session as SESS       # noqa: E402
 
 eq(SESS.load(), [], 'no session -> empty list')
-_tabs = [{'name': 'a', 'text': 'l1\nl2\nl3', 'zoom': 100},
-         {'name': 'b', 'text': 'x'}]
+_tabs = [{'uid': 0, 'name': 'a', 'text': 'l1\nl2\nl3', 'zoom': 100},
+         {'uid': 1, 'name': 'b', 'text': 'x'}]
 SESS.save(_tabs)
 eq(SESS.load(), _tabs, 'session round-trips')
 # each tab's scrollback is its own log file; the index json holds no bulk text
@@ -2553,6 +2553,31 @@ finally:
     if _srp.poll() is None:
         _srp.kill()
         _srp.wait(timeout=5)
+
+# --screenshot-deterministic (and the terminal's SECURE_TERMINAL_SHOT screenshot env)
+# normalize the volatile PID in the ready line to a fixed placeholder, so a regenerated
+# screenshot is byte-reproducible; the default still prints the real numeric PID.
+import re as _re5              # noqa: E402
+
+
+def _sr_ready(argv, env=None):
+    proc = _sp5.Popen([_sr_bin] + argv, stdout=_sp5.PIPE, stderr=_sp5.STDOUT,
+                      text=True, env=env)
+    try:
+        return proc.stdout.readline()
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+ok('PID [redacted] ready' in _sr_ready(['--screenshot-deterministic']),
+   'sigreport --screenshot-deterministic normalizes the PID to a placeholder')
+ok('PID [redacted] ready' in _sr_ready([], dict(_os5.environ, SECURE_TERMINAL_SHOT='1')),
+   'sigreport under SECURE_TERMINAL_SHOT normalizes the PID (no flag needed)')
+# Canary: with neither, the ready line carries the REAL numeric PID.
+ok(_re5.search(r'PID \d+ ready',
+               _sr_ready([], dict(_os5.environ, SECURE_TERMINAL_SHOT=''))) is not None,
+   'sigreport default prints the real numeric PID')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))

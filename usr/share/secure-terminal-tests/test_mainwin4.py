@@ -954,8 +954,10 @@ try:
         return ('', '')
     _QFD3.getSaveFileName = staticmethod(_gsf_capture)
     win.save_transcript()               # empty return path -> no write attempted
-    ok(bool(_start_args) and _start_args[0][2] == 'secure-terminal-transcript.txt',
-       '_save_capture opens with the bare filename when the state dir is unavailable')
+    _su = win._tab_ids[win.current()]   # the Save default carries the tab's durable id
+    ok(bool(_start_args)
+       and _start_args[0][2] == 'secure-terminal-transcript-%d.txt' % _su,
+       '_save_capture opens with the per-id bare filename when the state dir is unavailable')
 finally:
     _QFD3.getSaveFileName = _o_gsf
     M.session.ensure_state_dir = _o_ens
