@@ -43,10 +43,11 @@ fi
 ## source only them -- sourcing the whole orchestrator would run the entire registry.
 ## enforce_sandbox_only delegates the exempt set to sandbox_gate_exempt, so extract both.
 slice="$(sed -n \
+   -e '/^sandbox_isolated_context() {$/,/^}$/p' \
    -e '/^sandbox_gate_exempt() {$/,/^}$/p' \
    -e '/^enforce_sandbox_only() {$/,/^}$/p' \
    -- "${orch}")"
-if [[ "${slice}" != *'exit 3'* ]] || [[ "${slice}" != *'sandbox_gate_exempt() {'* ]]; then
+if [[ "${slice}" != *'exit 3'* ]] || [[ "${slice}" != *'sandbox_isolated_context() {'* ]]; then
    printf '%s\n' 'FATAL: could not extract the gate functions; the slice is wrong, not the code' >&2
    exit 1
 fi

@@ -463,9 +463,18 @@ wire() {
          ## nothing and the display-safety checks pass vacuously.
          wire_env=(
             "OPEN_LINK_CONFIRMATION_BIN=$( pkg_dir open-link-confirmation )/usr/libexec/open-link-confirmation/open-link-confirmation"
-            "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
-            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
+         ## sanitize-string + its library come from helper-scripts: wire them ONLY when a
+         ## helper-scripts checkout was resolved. An empty ${hs} would otherwise point these at
+         ## the host's /usr/bin/sanitize-string + system dist-packages -- silently testing the
+         ## INSTALLED tool instead of the checkout under review (false green/red). Absent, the
+         ## suite resolves no subject and skips/fails loudly, like every other component here.
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
          ;;
       sdwdate-gui)
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
@@ -1228,13 +1237,31 @@ if [ -n "${helper_scripts_root}" ] && [ ! -d "${helper_scripts_root}" ]; then
    exit 2
 fi
 
-## The sandbox-safety exempt set: the contexts where running outside the sandbox is
-## permitted -- an isolated GitHub runner, an already-in-sandbox run, or the documented
-## host override. SINGLE SOURCE, read both by the CI re-exec precondition below (so its
-## PRIVILEGED setup cannot fire on an ungated host) and by enforce_sandbox_only.
-sandbox_gate_exempt() {
+## --helper-scripts-root only feeds wire(), which no-ops without a subject (--repo-root or
+## --component-root). Passed alone it is silently discarded -- warn loudly rather than let an
+## operator believe a helper-scripts checkout was wired in when it was not.
+if [ -n "${helper_scripts_root}" ] && [ -z "${repo_root}" ] && [ -z "${component_root}" ]; then
+   printf '%s\n' 'dist-ai-tests-all: WARNING: --helper-scripts-root has no effect without --repo-root or --component-root; it was ignored.' >&2
+fi
+
+## An ISOLATED, throwaway context: a GitHub runner or the confined sandbox. This is the
+## ONLY set where the PRIVILEGED CI re-exec (useradd + NOPASSWD sudoers + chown) is
+## appropriate -- both are disposable, so creating a build user + passwordless sudoers
+## costs nothing.
+sandbox_isolated_context() {
    [ "${GITHUB_ACTIONS:-}" = "true" ] && return 0     # ephemeral GitHub runner
-   [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && return 0    # already routed into the sandbox
+   [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && return 0    # confined sandbox
+   return 1
+}
+
+## The sandbox-safety exempt set: where running the suites outside the sandbox is
+## permitted -- an isolated context OR the documented host override. Read by
+## enforce_sandbox_only. NOTE the host override is DELIBERATELY absent from
+## sandbox_isolated_context: it means "run on THIS host", where the privileged re-exec's
+## useradd/sudoers/chown would be a surprise the operator never asked for -- so the
+## re-exec keys on sandbox_isolated_context, never this wider set.
+sandbox_gate_exempt() {
+   sandbox_isolated_context && return 0
    [ "${DIST_AI_ALLOW_HOST_TESTS:-}" = "1" ] && return 0  # documented, WARNED host override
    return 1
 }
@@ -1254,15 +1281,17 @@ sandbox_gate_exempt() {
 ## once the reusable calls ci-run.sh directly for every component.
 ##
 ## SECURITY: ci-run.sh's setup is PRIVILEGED (useradd, a NOPASSWD:ALL sudoers drop-in,
-## chown -R the workspace). It must fire ONLY in a context the sandbox gate below would
-## already permit -- else root + a STRAY GITHUB_WORKSPACE on a bare workstation would
-## install passwordless sudo and chown the tree with no gate in front of it (exec runs
-## no EXIT trap, so a later refusal could not undo it). sandbox_gate_exempt() is that
-## same exempt set, so real CI (GITHUB_ACTIONS) and sandbox-as-root (DIST_AI_IN_SANDBOX)
-## still re-exec, while an ungated host does not.
+## chown -R the workspace). It fires ONLY in an ISOLATED, disposable context
+## (sandbox_isolated_context: a GitHub runner or the confined sandbox) -- NOT merely
+## anywhere the sandbox gate permits. In particular the bare-host override
+## (DIST_AI_ALLOW_HOST_TESTS) does NOT trigger it: "run on THIS host" must never silently
+## useradd + install passwordless sudo + chown the operator's tree. On a bare host the run
+## stays non-privileged; enforce_sandbox_only prints its host-override WARNING and the dm
+## resolver's own non-root refusal is the loud, harmless outcome. (exec runs no EXIT trap,
+## so a later refusal could not undo the mutation -- hence the gate must be up front.)
 should_ci_reexec() {  ## $1 = effective uid
    [ "${list_only}" != "true" ] || return 1
-   sandbox_gate_exempt || return 1
+   sandbox_isolated_context || return 1
    [ "$1" = "0" ] || return 1
    [ -n "${GITHUB_WORKSPACE:-}" ] || return 1
    [ "${component}" = "derivative-maker" ] || return 1
@@ -1271,6 +1300,9 @@ should_ci_reexec() {  ## $1 = effective uid
 if should_ci_reexec "$( id -u )"; then
    ci_run="${mydir}/../../ci/dist-ai-tests-ci-run.sh"
    if [ -x "${ci_run}" ]; then
+      ## exec does not run the EXIT trap, so drop our (still-empty) log dir first --
+      ## the re-exec'd ci-run.sh + inner orchestrator make their own.
+      cleanup_log_dir
       ## style-ok: R-103 -- deliberately replace this root process with the
       ## non-root re-run; there is nothing to do after it.
       exec "${ci_run}" "${orig_args[@]}"

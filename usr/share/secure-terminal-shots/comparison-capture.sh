@@ -725,6 +725,16 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
             continue
             ;;
       esac
+      ## Bound the MAGNITUDE too: an all-digit but huge string passes the check above, then
+      ## `$(( 10#${level} ))` overflows bash's signed 64-bit arithmetic to a negative/garbled
+      ## value that is silently accepted (bogus filename + ctl arg). The length test runs FIRST
+      ## so the arithmetic below can never see an overflowing string; a zoom percent is at most a
+      ## few digits, so [1,10000] is generous.
+      if [ "${#level}" -gt 5 ] || [ "$(( 10#${level} ))" -lt 1 ] || [ "$(( 10#${level} ))" -gt 10000 ]; then
+         printf '%s\n' "warn zoom-live: skipping out-of-range zoom level '${level}' (expected 1..10000)" >&2
+         failures=$(( failures + 1 ))
+         continue
+      fi
       ## Step the zoom LIVE on the SAME instance -- no restart -- routed to the discovered tab.
       zoom_out_file="${runtime_dir}/zoom.${level}.out"
       if env PYTHONPATH="${st_pkg}" "${st_bin}" \
@@ -1433,6 +1443,13 @@ board_wrap_failed=''
 ## with a shot silently missing/stale, so this forces a NON-ZERO exit in a direct single-process
 ## run. (In the --jobs orchestrator the discarded shot is also caught as a missing shot -> rc=1.)
 content_verify_failed=''
+## Set when a secure-terminal spec's shot could not be captured (window never appeared, injected
+## content never rendered after retries, or the privileged remote_control drop-in could not be
+## created so `ctl` never worked). The ST main-capture loop only WARNED on these, so a run that
+## captured ZERO of the ~14 ST cases -- including the homoglyph/bidi attack shots -- still exited
+## 0. Like the flags above, it forces a NON-ZERO exit so a silently-empty ST pass cannot read as
+## success.
+st_capture_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
@@ -1931,10 +1948,19 @@ else
    TERMINALS="${TERMINALS:-${DEFAULT_TERMINALS}}"
 fi
 ## read -ra splits on whitespace WITHOUT globbing, so an exported CASES='*' / TERMINALS='*'
-## (the env path, which bypasses the --case/--only membership guard) stays literal here
-## instead of glob-expanding the $HOME payload files through these unquoted loops.
+## (the env path) stays literal here instead of glob-expanding the $HOME payload files through
+## these unquoted loops.
 read -ra _terminals_arr <<< "${TERMINALS}"
 read -ra _cases_arr <<< "${CASES}"
+## The --case FLAG is membership-checked (line ~1476); the CASES ENV VAR must be too. An
+## unrecognized case is not just a typo: shoot() concatenates it straight into an output path fed
+## to `safe-rm --force` (e.g. CASES='../../../tmp/x' -> safe-rm on a path OUTSIDE shots/), so an
+## env-supplied traversal token would delete files outside the output dir. Reject any unknown
+## token up front, exactly as the flag does -- glob-safety (read -ra) alone does not stop '../'.
+for c in "${_cases_arr[@]}"; do
+   _known "${c}" "${all_cases}" \
+      || { printf '%s\n' "comparison-capture: unknown case '${c}' in CASES (known: ${all_cases})" >&2; exit 2; }
+done
 for e in "${_terminals_arr[@]}"; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
    ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
@@ -1993,7 +2019,11 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## --submit` -- a real remote-control command run, not xdotool key-injection into a possibly-
    ## unfocused window.
    shots_rc_dropin_create comparison-rc >/dev/null || {
+      ## Without the drop-in, remote_control is off, `ctl ls` finds no tab, every `ctl send-text`
+      ## is a no-op and every spec below discards its shot -- a whole zero-shot ST pass. Flag it so
+      ## the run exits NON-ZERO instead of the old warn-and-green-anyway.
       printf '%s\n' 'warn secure-terminal: cannot create the privileged remote_control drop-in (sudo?) -- ctl send-text will fail' >&2
+      st_capture_failed=1
    }
    ## Each entry is "<case> <mode> <output-suffix>". secure-terminal is captured in
    ## the display mode that matters for each case: box for the byte-stream cases,
@@ -2252,6 +2282,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
             if [ "${st_verify_tries}" -ge 3 ]; then
                safe-rm --force -- "${out}/secure-terminal.${st_suffix}.png" 2>/dev/null || true
                printf '%s\n' "warn secure-terminal.${st_suffix}: injected content never rendered (transcript empty after ${st_verify_tries} tries) -- discarded, not published"
+               st_capture_failed=1
                break
             fi
             printf '%s\n' "warn secure-terminal.${st_suffix}: transcript still empty (attempt ${st_verify_tries}); re-injecting"
@@ -2259,6 +2290,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          done
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
+         st_capture_failed=1
       fi
       shots_watchdog_cancel "${st_wdog}"
       [ -e "${st_flagf}" ] && printf '%s\n' "warn secure-terminal.${st_suffix}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
@@ -2303,6 +2335,14 @@ fi
 ## re-capture net + secure-terminal-shots-inventory are the deploy-time backstops.
 if [ -n "${content_verify_failed}" ]; then
    printf '%s\n' 'ERROR: emulator shot(s) FAILED content-verify -- the injected command did not run cleanly (a dropped keystroke -> shell error) and the shot(s) were discarded, not published. Re-run; a persistent failure means the injection/verify path needs attention.' >&2
+   exit 1
+fi
+
+## A secure-terminal spec whose window never mapped, whose injected content never rendered, or
+## whose remote_control drop-in could not be created leaves its required shot missing -- a
+## green exit would report success with ST attack-detection shots silently absent. Fail loud.
+if [ -n "${st_capture_failed}" ]; then
+   printf '%s\n' 'ERROR: secure-terminal shot(s) could not be captured (window never appeared, injected content never rendered, or remote_control unavailable) and were not published. Re-run; a persistent failure means the ST capture/ctl path needs attention.' >&2
    exit 1
 fi
 

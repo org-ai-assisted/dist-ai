@@ -284,6 +284,25 @@ check "${n}" '0' 'zoom-live does not glob a * level against the cwd (no cwd file
 n="$(printf '%s\n' "${glob_out}" | grep --count --fixed-strings -- "non-numeric zoom level '*'" || true)"
 check "${n}" '1' 'zoom-live sees the literal * level (not a glob expansion)'
 
+## (v) An all-digit but OUT-OF-RANGE level is skipped, not silently accepted: a huge digit string
+## passes the "is it numeric" guard but overflows bash's 64-bit `$(( 10#... ))` to a negative,
+## garbled value. It must be rejected (no ctl zoom for it, warned as out-of-range) while the
+## in-range levels still shoot.
+true > "${ctl_log}"
+true > "${capture_log}"
+safe-rm --recursive --force -- "${out}" 2>/dev/null || true
+mkdir --parents -- "${out}"
+huge='99999999999999999999999999'
+oor_out="$(zoom_live_capture 50 "${huge}" 100 2>&1 || true)"
+n="$(grep --count --fixed-strings -- "ctl zoom --tab id:0 ${huge}" "${ctl_log}" || true)"
+check "${n}" '0' 'zoom-live issues no ctl zoom for an out-of-range (overflowing) level'
+n="$(printf '%s\n' "${oor_out}" | grep --count --fixed-strings -- 'out-of-range zoom level' || true)"
+check "${n}" '1' 'zoom-live warns that the out-of-range level was skipped'
+for lvl in 50 100; do
+   n="$(grep --count --fixed-strings -- "ctl zoom --tab id:0 ${lvl}" "${ctl_log}" || true)"
+   check "${n}" '1' "zoom-live still zooms in-range level ${lvl} alongside the out-of-range one"
+done
+
 ## Wrapper + sandbox-driver register the zoom-live lane (load-bearing dispatch lines, not comments).
 [ -f "${wrapper}" ] || { printf '%s\n' "FATAL: wrapper not found at ${wrapper}" >&2; exit 1; }
 [ -f "${sandbox_driver}" ] || { printf '%s\n' "FATAL: sandbox driver not found at ${sandbox_driver}" >&2; exit 1; }

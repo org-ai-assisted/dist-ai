@@ -44,10 +44,11 @@ fi
 ## Extract the two function definitions (header and closing brace at column 0) and
 ## source only them -- sourcing the whole orchestrator would run the entire registry.
 slice="$(sed -n \
+   -e '/^sandbox_isolated_context() {$/,/^}$/p' \
    -e '/^sandbox_gate_exempt() {$/,/^}$/p' \
    -e '/^should_ci_reexec() {/,/^}$/p' \
    -- "${orch}")"
-if [[ "${slice}" != *'sandbox_gate_exempt() {'* ]] || [[ "${slice}" != *'should_ci_reexec() {'* ]]; then
+if [[ "${slice}" != *'sandbox_isolated_context() {'* ]] || [[ "${slice}" != *'should_ci_reexec() {'* ]]; then
    printf '%s\n' 'FATAL: could not extract the gate functions; the slice is wrong, not the code' >&2
    exit 1
 fi
@@ -94,9 +95,10 @@ check 'root + GITHUB_WORKSPACE + GITHUB_ACTIONS=true re-execs' \
    reexec "$(reexec_verdict 0 export GITHUB_WORKSPACE=/some/workspace GITHUB_ACTIONS=true)"
 check 'root + GITHUB_WORKSPACE + DIST_AI_IN_SANDBOX=1 re-execs' \
    reexec "$(reexec_verdict 0 export GITHUB_WORKSPACE=/some/workspace DIST_AI_IN_SANDBOX=1)"
-## The host override is an exempt context too (privileged, but the operator opted in explicitly).
-check 'root + GITHUB_WORKSPACE + DIST_AI_ALLOW_HOST_TESTS=1 re-execs' \
-   reexec "$(reexec_verdict 0 export GITHUB_WORKSPACE=/some/workspace DIST_AI_ALLOW_HOST_TESTS=1)"
+## The bare-host override is NOT an isolated context: the privileged re-exec must NOT fire
+## there (running on THIS host must never silently useradd + install NOPASSWD sudoers + chown).
+check 'root + GITHUB_WORKSPACE + DIST_AI_ALLOW_HOST_TESTS=1 does NOT re-exec (host override is not isolated)' \
+   no "$(reexec_verdict 0 export GITHUB_WORKSPACE=/some/workspace DIST_AI_ALLOW_HOST_TESTS=1)"
 ## Non-root never re-execs (no privileged setup needed; the resolver runs fine as the invoker).
 check 'non-root does NOT re-exec even with every signal set' \
    no "$(reexec_verdict 1000 export GITHUB_WORKSPACE=/some/workspace GITHUB_ACTIONS=true)"
