@@ -194,10 +194,19 @@ vs_capture_combo() {
    local outfile errfile rc reason
    outfile="$(mktemp)"
    errfile="$(mktemp)"
+   ## Pin dist_build_version to a fixed git-describe-form sentinel. Unset, it is
+   ## 'git describe' of the checkout: a describable tag yields X.Y.Z-N-gHASH
+   ## (normalized to @VERSION@), but a tagless / shallow checkout (as CI's
+   ## actions/checkout is) falls back to the bare 40-hex head (normalized to
+   ## @GITHEAD@) -- so the same version-bearing paths normalized differently by
+   ## machine, and a host-generated snapshot never matched CI. Pinning makes the
+   ## version deterministic -> @VERSION@ everywhere; the real head
+   ## (dist_build_current_git_head) is still @GITHEAD@.
    if (
       cd -- "${dm}" \
          && env dist_build_dump_varnames=true dist_build_unlock_dangerous_options=true \
             dist_build_allow_root=true \
+            dist_build_version='0.0.0-0-g0000000' \
             bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
             --flavor "${flavor}" --target "${target}" "${vs_fixed_args[@]}"
    ) >"${outfile}" 2>"${errfile}"; then
