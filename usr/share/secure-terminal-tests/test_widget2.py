@@ -3350,6 +3350,19 @@ _c31 = _bf_cell('\x1b[91;31mX')
 ok(_c31.fg == 'red' and not _c31.bold,
    '_SafeHistoryScreen: a later normal fg (31) overrides an earlier bright fg (91)')
 ok(_bf_cell('\x1b[1mX').bold, '_SafeHistoryScreen: plain SGR 1 still sets bold')
+# EXHAUSTIVE phantom-bold guard (formal-style: the single-SGR-code space is finite, so
+# enumeration is complete proof). pyte conflates BOTH bright fg (90-97) and bright bg
+# (100-107) with bold; the override rewrites both. Assert that across ALL single SGR codes
+# only real bold (SGR 1) sets the bold attr -- catches any future phantom-bold regression
+# (a new colour code, a pyte change) for the whole class, not just SGR 91.
+_bold_codes = [_n for _n in range(0, 108) if _bf_cell('\x1b[%dmX' % _n).bold]
+ok(_bold_codes == [1],
+   'phantom-bold guard: ONLY SGR 1 sets bold across all single SGR codes 0-107 (got %r)'
+   % (_bold_codes,))
+ok(not _bf_cell('\x1b[91;101mX').bold,
+   'phantom-bold guard: bright fg + bright bg together produce no phantom bold')
+ok(_bf_cell('\x1b[1;91;101mX').bold,
+   'phantom-bold guard: explicit SGR 1 with bright fg+bg keeps real bold')
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
