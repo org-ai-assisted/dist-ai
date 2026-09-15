@@ -222,3 +222,54 @@ class TestMountSharedJournalIgnore(SystemcheckTestBase):
                 'program, or other error.')
         self.assertNotIn(self._ignore_string(), line,
                          'a different failing mount must still be reported')
+
+
+class TestAnondateGetJournalIgnore(SystemcheckTestBase):
+    """dm-image-test ignores anondate-get's no-Tor cert-lifetime warnings.
+
+    With no Tor reachable on the CI boot, anondate-get cannot read a Tor
+    certificate lifetime and logs two fixed WARNING lines that check_journal
+    greps as warnings and fails every leg -- the same no-tor condition the
+    check_tor_* skips cover. Ignored on the consumer side, not silenced in the
+    shipped anondate (which would hide a real Tor-cert problem on a Tor system).
+    """
+
+    def _ignore_strings(self) -> list:
+        path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            '..', 'dm-image-boot-tests', 'dm-image-test'))
+        text = read(path)
+        found = re.findall(
+            r'--journal-ignore-fixed \\"(anondate-get: WARNING: [^"\\]*)\\"',
+            text)
+        self.assertEqual(
+            len(found), 2,
+            'expected two anondate-get --journal-ignore-fixed strings')
+        return found
+
+    def test_matches_the_real_journal_lines(self) -> None:
+        ## --journal-ignore-fixed is a FIXED STRING, so containment is the test;
+        ## the anondate-get substring matches regardless of the source prefix
+        ## (both the anondate and sdwdate-file-watcher journal copies carry it).
+        real = [
+            ('localhost anondate[2091]: ______ /usr/sbin/anondate-get: '
+             'WARNING: Could not determine Tor certificate lifetime.'),
+            ('localhost sdwdate-start-anondate-set-file-watcher[1845]: ______ '
+             '/usr/sbin/anondate-get: WARNING: Tor certificate lifetime '
+             'invalid according to Tor log. This information might be '
+             'outdated.'),
+        ]
+        for ignore in self._ignore_strings():
+            self.assertTrue(
+                any(ignore in line for line in real),
+                'ignore string %r must match a real journal line' % ignore)
+
+    def test_unrelated_anondate_error_still_reported(self) -> None:
+        ## The substrings name the specific no-Tor warnings, so a different
+        ## anondate failure is still surfaced by check_journal.
+        line = ('localhost anondate[2091]: /usr/sbin/anondate-get: ERROR: '
+                'unexpected internal failure.')
+        for ignore in self._ignore_strings():
+            self.assertNotIn(
+                ignore, line,
+                'an unrelated anondate error must still be reported')
