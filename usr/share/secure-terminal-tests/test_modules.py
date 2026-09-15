@@ -352,6 +352,19 @@ session._write_atomic(session.session_path(), json.dumps(['x']))
 eq(session.load_active(), None, 'session: load_active on a non-dict payload -> None')
 session._write_atomic(session.session_path(), json.dumps({'tabs': [], 'active': -1}))
 eq(session.load_active(), None, 'session: a negative saved active loads as None')
+# a non-dict tab entry (a corrupt/hand-edited file) is dropped by load(), so the active
+# index must be REMAPPED to the dict-only list load() returns -- else the wrong tab is
+# focused. raw active 1 with a leading non-dict entry -> dict index 0 (the real first tab)
+session._write_atomic(session.session_path(), json.dumps(
+    {'tabs': ['bogus', {'uid': 0, 'name': 'A'}, {'uid': 1, 'name': 'B'}], 'active': 1}))
+eq([t.get('name') for t in session.load()], ['A', 'B'],
+   'session: load() drops the non-dict entry, keeping the two real tabs')
+eq(session.load_active(), 0,
+   'session: active is remapped past a dropped non-dict entry (focuses tab A, not B)')
+session._write_atomic(session.session_path(), json.dumps(
+    {'tabs': ['bogus', {'name': 'A'}], 'active': 0}))
+eq(session.load_active(), None,
+   'session: an active index pointing AT a non-dict entry loads as None')
 
 # clear removes the index and logs; a second clear on nothing is a no-op
 session.clear()
