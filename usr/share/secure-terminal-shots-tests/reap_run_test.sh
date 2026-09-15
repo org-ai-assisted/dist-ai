@@ -131,6 +131,11 @@ else
          _a="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/${_a}/status" 2>/dev/null || true)"
       done
       printf '%s\n' "${_a:-END}"
+      ## The smoking gun: trace the wrapper so we see its protected set + why it drops the pid.
+      ## 2>&1 >/dev/null routes the -x trace (stderr) to the pipe, the wrapper's stdout to null.
+      printf 'wrapper -x trace (tail):\n'
+      bash -x -- "$(type -P safe-pgrep)" --full -- "${marker}" 2>&1 >/dev/null \
+         | sed 's/^/  x /' | tail -45 || true
       printf -- '--- end diag ---\n'
    } >&2
 fi
