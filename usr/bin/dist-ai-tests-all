@@ -355,9 +355,14 @@ wire() {
          ## helper-scripts. The behavioural lane drives the real set-grub-keymap
          ## wrapper, which sources the library via HELPER_SCRIPTS_PATH; wire both
          ## so the subject under test is the checkout, not the installed copy.
+         ## PYTHONPATH: the library's 'log' shells out to sanitize-string
+         ## (#!/usr/bin/python3 -Bsu, -s excludes user-site), which imports the
+         ## sanitize_string module. Uninstalled in CI, it must resolve from the
+         ## checkout or 'log' dies ModuleNotFoundError under errexit.
          wire_env=(
             "SET_KEYBOARD_LAYOUT_REPO=${hs}"
             "HELPER_SCRIPTS_PATH=${hs}"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
          ;;
       onion-time-pre-script)

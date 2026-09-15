@@ -49,6 +49,14 @@ if [ -z "${subject}" ]; then
    exit 1
 fi
 
+## 'git submodule foreach' sets GIT_PROTOCOL_FROM_USER=0, so git refuses every
+## file:// / local-path url inside it (protocol.file.allow defaults to "user").
+## dm-preflight's fetchability probe (ls-remote + fetch-by-sha) would then fail
+## for a reason unrelated to reachability, turning the UNFETCHABLE cases into a
+## bogus UNVERIFIED. Real remotes are https, so this is a fixture artifact only.
+GIT_ALLOW_PROTOCOL='file'
+export GIT_ALLOW_PROTOCOL
+
 git_quiet() {
    git -c core.hooksPath=/dev/null -c user.email=ci-test@example.com -c user.name=ci-test "$@"
 }

@@ -141,6 +141,17 @@ class TestExitCodeContract(PreScriptTestBase):
             stubs.append(
                 'anondate_folder() { anondate_state_folder="%s"; }' % state_dir
             )
+        else:
+            ## The real anondate_folder branches on the invoker's uid: a non-root,
+            ## non-sdwdate user reaches the "not yet implemented" path (exit 1),
+            ## but uid 0 diverts to the /run/anondate branch. CI may run the suite
+            ## as root, which would change the exit code under test. Force 'id -u'
+            ## non-root so the branch reflects the USER under test, not the
+            ## runner's uid; every other 'id' query defers to the real command.
+            stubs.append(
+                'id() { if [ "${1:-}" = "-u" ]; then printf "%s\\n" 1000;'
+                ' else command id "$@"; fi; }'
+            )
         stubs += [
             'onion_time_script_status() { onion_time_script_status_boot="%s"; }'
             % cfg['boot'],
