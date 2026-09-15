@@ -7,8 +7,8 @@
 
 ## Functional test for the python-shell-guard style rule, against the real shipped
 ## dist-ai-style CLI. The rule requires a usr/bin PYTHON ENTRY POINT to carry the
-## shell-invocation guard line before its first import (so 'bash <tool>' re-execs
-## python3 instead of running its 'import' line as ImageMagick's 'import' ->
+## shell-invocation guard line before its first import (so 'bash <tool>' errors
+## and exits instead of running its 'import' line as ImageMagick's 'import' ->
 ## XGrabServer -> whole-GUI freeze). It asserts:
 ##   * --check FLAGS a usr/bin python entry point lacking the guard (with OR without
 ##     a module docstring) and SPARES a guarded one, a waived one, a non-python
@@ -59,7 +59,7 @@ fi
 [ -x "${STYLE}" ] \
    || { printf '%s\n' "error: gate not executable at '${STYLE}'." >&2; exit 1; }
 
-guard_line='"exec" "python3" "-Bsu" "$0" "$@"'
+guard_line='"exec" "bash" "-c" "printf '\''%s\n'\'' '\''$0: ERROR: Do not execute this script with bash!'\'' >&2; exit 1"'
 
 tmp_root="$(mktemp --directory)"
 cleanup() {

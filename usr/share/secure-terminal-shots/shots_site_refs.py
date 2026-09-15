@@ -4,11 +4,8 @@
 
 ## AI-Assisted
 
-## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
-## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
-## which freezes X). Re-exec under python3; inert as a string literal in python3.
-## (This is an IMPORTED module, never run directly -- the guard is belt-and-suspenders.)
-"exec" "python3" "-Bsu" "$0" "$@"
+## Shell-invocation guard. (Imported module, never run directly; belt-and-suspenders.)
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
 
 ## Shared parsing for the secure-terminal.github.io shot-gallery guards
 ## (secure-terminal-shots-inventory: orphan/dangling; secure-terminal-shots-dims:

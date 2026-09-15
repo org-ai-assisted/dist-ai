@@ -16,9 +16,10 @@
 ## freezing every GUI client on the VM while the text CLI stays up. This
 ## actually happened (a `bash usr/bin/dist-ai-style ...` typo froze the VM).
 ## The guard, placed before the first import,
-##     "exec" "python3" "-Bsu" "$0" "$@"
-## is a no-op string literal under python3 but re-execs under any shell, so a
-## shell invocation can never reach an `import` line.
+##     "exec" "bash" "-c" "printf ... 'ERROR: Do not execute this script with bash!' >&2; exit 1"
+## is a no-op string literal under python3 but under any shell prints an error
+## naming the script and exits 1, so a shell invocation can never reach an
+## `import` line.
 ##
 ## Two layers:
 ##   STATIC   -- the real shipped entry points each carry the guard (catches a
@@ -70,7 +71,7 @@ fi
 ## The canonical guard line. The real entry points and the fixtures below must
 ## all use this exact text -- changing the idiom means changing it in one place
 ## and re-running this test.
-guard_line='"exec" "python3" "-Bsu" "$0" "$@"'
+guard_line='"exec" "bash" "-c" "printf '\''%s\n'\'' '\''$0: ERROR: Do not execute this script with bash!'\'' >&2; exit 1"'
 
 failures=0
 checks=0
@@ -148,17 +149,20 @@ write_fixture() {
 }
 
 ## Run FIXTURE under INTERP with import shadowed and DISPLAY unset; MARKER is the
-## file the python body writes. Never aborts the suite on the child's exit code.
+## file the python body writes. Captures the child exit code in fixture_rc and
+## its stderr in stderr_file; never aborts the suite on a nonzero child.
 run_fixture() {
    local interp fixture marker
    interp="$1"
    fixture="$2"
    marker="$3"
-   safe-rm --force -- "${marker}" "${sentinel}"
+   safe-rm --force -- "${marker}" "${sentinel}" "${stderr_file}"
+   fixture_rc=0
    env -u DISPLAY \
       PATH="${stub_dir}:${PATH}" \
       GUARD_TEST_SENTINEL="${sentinel}" \
-      "${interp}" "${fixture}" "${marker}" >/dev/null 2>&1 || true
+      "${interp}" "${fixture}" "${marker}" >/dev/null 2>"${stderr_file}" \
+      || fixture_rc=$?
 }
 
 marker_reads() { # marker expected
@@ -170,19 +174,28 @@ unguarded="${tmp_root}/unguarded.py"
 write_fixture "${guarded}" yes
 write_fixture "${unguarded}" no
 marker="${tmp_root}/marker"
+stderr_file="${tmp_root}/stderr"
 
-## Control: guarded fixture under python3 directly must run its body.
+## Control: guarded fixture under python3 directly must run its body (the guard
+## is an inert string literal under python3).
 checks=$(( checks + 1 ))
 run_fixture python3 "${guarded}" "${marker}"
 marker_reads "${marker}" PYTHON_RAN \
    || fail "guarded fixture under python3 did not run its body (guard broke python execution)"
 
-## Guarded under a shell: must re-exec python3 (body runs) and NEVER hit the stub.
+## Guarded under a shell: the guard must REFUSE -- error to stderr, exit nonzero,
+## the python body NEVER runs, and the import stub is NEVER reached.
 for interp in bash sh; do
    checks=$(( checks + 1 ))
    run_fixture "${interp}" "${guarded}" "${marker}"
-   if ! marker_reads "${marker}" PYTHON_RAN; then
-      fail "guarded fixture under ${interp} did not re-exec python3 (body did not run)"
+   if marker_reads "${marker}" PYTHON_RAN; then
+      fail "guarded fixture under ${interp} ran its body -- guard did not refuse the shell invocation"
+   fi
+   if [ "${fixture_rc}" -eq 0 ]; then
+      fail "guarded fixture under ${interp} exited 0 -- guard must exit nonzero when run by a shell"
+   fi
+   if ! grep --quiet --fixed-strings -- 'Do not execute this script with bash' "${stderr_file}"; then
+      fail "guarded fixture under ${interp} did not print the refusal error to stderr"
    fi
    if [ -s "${sentinel}" ]; then
       fail "guarded fixture under ${interp} executed the import stub -- guard failed to neutralize the shell"

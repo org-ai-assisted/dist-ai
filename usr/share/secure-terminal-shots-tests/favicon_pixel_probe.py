@@ -4,10 +4,8 @@
 
 ## AI-Assisted
 
-## Shell-invocation guard: under bash/sh the shebang is ignored and the `import`
-## lines below would run as shell commands (`import` is ImageMagick -> XGrabServer,
-## which freezes X). Re-exec under python3; inert as a string literal in python3.
-"exec" "python3" "-Bsu" "$0" "$@"
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
 
 ## Pixel probes for favicon_rendered_e2e_test.sh (kept out of the shell as a real file per the
 ## dist-ai style rule against stdin-heredoc python):
