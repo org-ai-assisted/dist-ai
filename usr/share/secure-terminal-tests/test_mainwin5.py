@@ -1175,18 +1175,38 @@ eq(len(set(_cw4._tab_ids.values())), len(_cw4._tab_ids),
 _cw4.close()
 _cw4.deleteLater()
 
-# startup orphan sweep: a state file with no live owner is removed at launch
+# startup orphan sweep: alongside a VALID restored session, a crash-leftover file with
+# no live owner is removed; the restored tab's own files are kept
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uid5-')
+_ds.set_instance_group('default')
 _ds.clear()
-_ds.ensure_state_dir()
-_ds._write_atomic(_ds.tab_file('transcript', 77), 'orphan')
+_ds.save([{'uid': 0, 'name': 'live', 'text': 'x\n', 'osc': {}}])   # a real restored tab
+_ds._write_atomic(_ds.tab_file('transcript', 77), 'orphan')        # a crash leftover
 _ds._write_atomic(_ds._log_path(77), 'orphanlog')
-_ow = MainWindow()                       # a fresh session -> id 77 has no live owner
+_ow = MainWindow()                       # restores uid 0; id 77 has no live owner
+_drain_restore(_ow)
 ok(not os.path.exists(_ds.tab_file('transcript', 77))
    and not os.path.exists(_ds._log_path(77)),
-   'orphan sweep: a state file with no live owner is removed at startup')
+   'orphan sweep: a crash-leftover with no live owner is removed at startup')
+ok(os.path.exists(_ds._log_path(0)),
+   'orphan sweep: the restored tab\'s own log is kept')
 _ow.close()
 _ow.deleteLater()
+
+# a CORRUPT session.json must NOT trigger the sweep -- the intact tab logs are the
+# user's recoverable scrollback, not orphans to delete
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uidcorrupt-')
+_ds.set_instance_group('default')
+_ds.ensure_state_dir()
+_ds._write_atomic(_ds._log_path(0), 'INTACT0')
+_ds._write_atomic(_ds._log_path(1), 'INTACT1')
+_ds._write_atomic(_ds.session_path(), 'not valid json {{{')
+_cor = MainWindow()
+_drain_restore(_cor)
+ok(os.path.exists(_ds._log_path(0)) and os.path.exists(_ds._log_path(1)),
+   'corrupt session.json: intact tab logs are preserved, never swept as orphans')
+_cor.close()
+_cor.deleteLater()
 
 # upgrade: a PRE-DURABLE-ID session (tabs with no uid) is not restored, but its old
 # positional logs are PRESERVED (the orphan sweep must not DELETE them -- silent loss)
@@ -1211,7 +1231,7 @@ _ds.set_instance_group('default')
 _ds.clear()
 _ds.save([{'uid': 0, 'name': 'primary', 'text': 'PRIMARY\n', 'osc': {}}])
 _nw = MainWindow(M._parse_launch_args(['--new-instance']))
-ok(_nw._throwaway and _nw._state_group.startswith(_ds._THROWAWAY_PREFIX),
+ok(_nw._throwaway and _nw._state_group not in ('default', 'work'),
    'new-instance: an unnamed --new-instance is a throwaway with its own isolated subtree')
 ok(_nw._user_titles.get(_nw.current(), '') != 'primary',
    'new-instance: a throwaway does NOT restore the primary session')
@@ -1237,6 +1257,33 @@ ok(bool(_ds.load()),
 ok(not os.path.isdir(os.path.join(_ds._instances_root(), 'default')),
    'instance-group: the named instance never wrote the default subtree')
 _gw5.deleteLater()
+
+# a SECONDARY window (lost the group socket bind -> is_primary=False) is a throwaway even
+# WITHOUT --new-instance: it must not restore or clobber the primary's session (the
+# konsole-model same-group coexistence case)
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uidsec-')
+_ds.set_instance_group('default')
+_ds.clear()
+_ds.save([{'uid': 0, 'name': 'primary', 'text': 'PRIM\n', 'osc': {}}])
+_sw = MainWindow(M._parse_launch_args([]), is_primary=False)     # a plain 2nd window
+ok(_sw._throwaway and _sw._state_group != 'default',
+   'secondary window: a non-primary plain launch is a throwaway with its own subtree')
+ok(_sw._user_titles.get(_sw.current(), '') != 'primary',
+   'secondary window: does not restore the primary session')
+_sw.closeEvent(_QCE59())
+_ds.set_instance_group('default')
+ok(bool(_ds.load()) and _ds.load()[0].get('text') == 'PRIM\n',
+   'secondary window: closing it never touched the primary session (no clobber/delete)')
+_sw.deleteLater()
+
+# a degenerate --instance-group (., .., empty -- cannot name a subtree) is a throwaway,
+# never silently sharing the default subtree
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uiddeg-')
+_dgw = MainWindow(M._parse_launch_args(['--instance-group', '.']))
+ok(_dgw._throwaway and _dgw._state_group != 'default',
+   'instance-group: a degenerate group name is a throwaway, not the default subtree')
+_dgw.closeEvent(_QCE59())
+_dgw.deleteLater()
 
 
 # ---- standalone review popup launcher (review_standalone) --------------------
