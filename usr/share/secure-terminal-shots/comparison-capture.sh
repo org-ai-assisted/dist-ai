@@ -110,10 +110,12 @@ cleanup() {
    shots_deregister_run "${run_marker}" 2>/dev/null || true
    ## Tear down the compositor (kills labwc; the runtime dir is ours, removed below).
    wl_headless_stop 2>/dev/null || true
-   ## remove the throwaway privileged remote_control drop-in (root-owned, so sudo) either lane may
-   ## have created; LOUD on failure (a leaked drop-in keeps remote_control on system-wide), but
-   ## never aborts the trap.
-   shots_rc_dropin_remove "${rc_dropin}" || true
+   ## Reap EVERY throwaway privileged remote_control drop-in THIS run created (root-owned, so
+   ## sudo), marker-scoped like shots_reap_run: the drop-in filenames embed this run's marker
+   ## tag, so the sweep removes all of them regardless of which lane wrote them -- no per-lane
+   ## path to thread and forget. LOUD per residual (a leak keeps remote_control on system-wide),
+   ## but never aborts the trap.
+   shots_rc_dropin_reap_marked "${run_marker_tag:-}" || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
@@ -566,11 +568,14 @@ st_wait_render_settled() {  ## $1=window-id
 ## comparison and zoom-live lanes (both drive a running instance via `ctl`).
 shots_rc_dropin_create() {  ## $1=filename prefix
    local rc_dir dropin
-   rc_dir='/usr/local/etc/secure-terminal.d'
+   ## Overridable so the reaper test can point create + reap at a throwaway dir (default: the
+   ## real system dir). Both this and shots_rc_dropin_reap_marked read the SAME env seam.
+   rc_dir="${SECURE_TERMINAL_SHOT_RC_DIR:-/usr/local/etc/secure-terminal.d}"
    sudo mkdir --parents -- "${rc_dir}" || return 1
    ## A UNIQUE root-owned drop-in (ending in .conf so settings.py's *.conf glob reads it); NEVER a
-   ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in.
-   dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.XXXXXX.conf")" || return 1
+   ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in. The run's
+   ## MARKER TAG is embedded so cleanup can reap every drop-in THIS run made, marker-scoped.
+   dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.${run_marker_tag:-run}.XXXXXX.conf")" || return 1
    [ -n "${dropin}" ] || return 1
    ## remote_control drives ctl; terminate_verbose=false keeps the Terminate button a plain
    ## SIGTERM->SIGKILL with NO diagnostic dialog (which carries live PIDs) popping over the
@@ -601,6 +606,23 @@ shots_rc_dropin_remove() {  ## $1=drop-in path
    return 0
 }
 
+## Reap EVERY drop-in carrying THIS run's marker tag (the filename embeds it, see
+## shots_rc_dropin_create), the same marker-scoped way shots_reap_run reaps process groups.
+## Discipline-free: no lane has to record or thread a path, so a future lane cannot leak, and a
+## concurrent run's differently-tagged drop-ins are never touched. Listing the dir needs no sudo
+## (created 0755); removal is per-file via shots_rc_dropin_remove (sudo, LOUD on residual). Empty
+## tag or absent dir -> nothing to do. Returns 1 if any residual survived.
+shots_rc_dropin_reap_marked() {  ## $1 = run marker tag
+   local tag="${1:-}" rc_dir f rc=0
+   [ -n "${tag}" ] || return 0
+   rc_dir="${SECURE_TERMINAL_SHOT_RC_DIR:-/usr/local/etc/secure-terminal.d}"
+   [ -d "${rc_dir}" ] || return 0
+   while IFS= read -r -d '' f; do
+      shots_rc_dropin_remove "${f}" || rc=1
+   done < <(find "${rc_dir}" -maxdepth 1 -type f -name "*.${tag}.*.conf" -print0 2>/dev/null || true)
+   return "${rc}"
+}
+
 ## zoom-live: the REAL-GUI white-band/scrollbar diagnostic. Launch secure-terminal ONCE as the
 ## group PRIMARY (so `secure-terminal ctl` can reach it), with a full-screen TUI board, then step
 ## the font zoom LIVE via `ctl zoom` against the SAME running instance -- NO restart between levels
@@ -622,9 +644,9 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    failures=0
    shots=0
 
-   ## Enable remote_control for the capture via a throwaway privileged drop-in (removed on exit by
-   ## cleanup()). Record the EXACT path in the shared rc_dropin so cleanup removes THIS one.
-   rc_dropin="$(shots_rc_dropin_create zoom-live-rc)" || {
+   ## Enable remote_control for the capture via a throwaway privileged drop-in. It carries this
+   ## run's marker tag, so cleanup() reaps it marker-scoped -- no path to record or thread.
+   shots_rc_dropin_create zoom-live-rc >/dev/null || {
       printf '%s\n' 'zoom-live: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -772,7 +794,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
 zoom_verify_capture() {
    local group board mode display w h zooms zoom_boards_gen demo_dir cat_rel
    local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_cmd st_wdog stwid
-   local st_tab_line st_tab_id level tag rc_dropin failures shots
+   local st_tab_line st_tab_id level tag failures shots
    local -a groups st_mode_flags zoom_levels
 
    ## One PUBLISH_SUBSET group per line: "board tab-mode display-mode W H z z z ...". SHOW is
@@ -799,7 +821,7 @@ zoom_verify_capture() {
 
    failures=0
    shots=0
-   rc_dropin="$(shots_rc_dropin_create zoom-verify-rc)" || {
+   shots_rc_dropin_create zoom-verify-rc >/dev/null || {
       printf '%s\n' 'zoom-verify: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -947,7 +969,7 @@ zoom_verify_capture() {
 ## secure-terminal lanes; boards are the drift-gated no-newline demo (regenerated into
 ## ${HOME}/demos) and an inline printf of leading/trailing/multiple spaces.
 demo_shots_capture() {
-   local rc_dropin failures shots demo_dir nn_gen i n
+   local failures shots demo_dir nn_gen i n
    local name mode display cmd terminate st_pgf st_flagf st_transcript st_group st_win_w st_win_h
    local st_wdog stwid st_tab_id st_tab_line
    local -a d_names d_modes d_disp d_cmds d_terminate st_mode_flags
@@ -996,7 +1018,7 @@ demo_shots_capture() {
 
    failures=0
    shots=0
-   rc_dropin="$(shots_rc_dropin_create demo-shots-rc)" || {
+   shots_rc_dropin_create demo-shots-rc >/dev/null || {
       printf '%s\n' 'demo-shots: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -1295,10 +1317,6 @@ was_executed "${BASH_SOURCE[0]}" || return 0
 out="${here}/shots"
 mkdir --parents -- "${out}"
 
-## the throwaway privileged remote_control drop-in path (comparison or zoom-live), removed by
-## cleanup(); empty until a lane writes one.
-rc_dropin=''
-
 
 ## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
 ## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
@@ -1325,6 +1343,10 @@ mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}"
 ## flag to secure-terminal -- it sets its own app-id (`secure-terminal`, via setDesktopFileName)
 ## idiomatically, which labwc resolves to the real icon; the shots only avoid sabotaging it.
 run_marker="${runtime_dir}"
+## Sanitized marker TAG (basename, no slashes) embedded in every throwaway remote_control
+## drop-in filename, so cleanup reaps all of THIS run's drop-ins marker-scoped (see
+## shots_rc_dropin_create / shots_rc_dropin_reap_marked) with no per-lane path to thread.
+run_marker_tag="${run_marker##*/}"
 ## Register the cleanup trap NOW -- the runtime dir + reaping marker exist and the first
 ## argument-validation `exit` is just below -- so an early exit (bad SHOT_SCALE / --jobs /
 ## --case / --only / unknown arg) removes the mktemp runtime dir instead of leaking it.
@@ -1966,10 +1988,11 @@ cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
-   ## Enable remote_control for the whole ST pass via a throwaway privileged drop-in (removed on
-   ## exit by cleanup()), so each per-case window can be driven by `ctl send-text --submit` -- a
-   ## real remote-control command run, not xdotool key-injection into a possibly-unfocused window.
-   rc_dropin="$(shots_rc_dropin_create comparison-rc)" || {
+   ## Enable remote_control for the whole ST pass via a throwaway privileged drop-in (reaped on
+   ## exit by cleanup(), marker-scoped), so each per-case window can be driven by `ctl send-text
+   ## --submit` -- a real remote-control command run, not xdotool key-injection into a possibly-
+   ## unfocused window.
+   shots_rc_dropin_create comparison-rc >/dev/null || {
       printf '%s\n' 'warn secure-terminal: cannot create the privileged remote_control drop-in (sudo?) -- ctl send-text will fail' >&2
    }
    ## Each entry is "<case> <mode> <output-suffix>". secure-terminal is captured in

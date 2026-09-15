@@ -69,7 +69,8 @@ check_nonzero() {  ## $1=rc $2=label -- passes iff rc is nonzero
 work="$(mktemp --directory)"
 ## Uniquely named: sourcing comparison-capture.sh below defines its OWN cleanup(), so a shared
 ## name would clobber THIS trap's target. zl_cleanup only removes the work dir; the sourced
-## cleanup (which reaps run_marker / rc_dropin) is never the active trap here.
+## cleanup (which reaps run_marker process groups + the marker-scoped drop-ins) is never the
+## active trap here.
 zl_cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap zl_cleanup EXIT
 
@@ -130,32 +131,16 @@ exit 0
 PY
 chmod +x "${st_bin}"
 
-## sudo: the privileged drop-in work must not need real root in the test. mkdir/other succeed as a
-## no-op; 'mktemp' makes a UNIQUE zoom-live-rc.*.conf under the test work dir (never touches the
-## real /usr/local/etc); 'tee' writes to the target file; 'safe-rm' really removes -- unless
-## ZL_SUDO_FAIL is set, which forces it to fail (drives the cleanup-warns-on-failure assertion).
+## sudo: the privileged drop-in work must not need real root in the test. A passthrough -- the
+## drop-in dir is routed at the test's OWN tree (SECURE_TERMINAL_SHOT_RC_DIR below), never the
+## real /usr/local/etc -- so shots_rc_dropin_create really writes a marker-tagged
+## zoom-live-rc.<tag>.*.conf there and shots_rc_dropin_remove really deletes it. ZL_SUDO_FAIL
+## forces the safe-rm removal to fail, driving the cleanup-warns-loudly / returns-nonzero checks.
 sudo() {
-   case "${1:-}" in
-      tee)
-         ## Faithfully consume stdin and succeed regardless of the target path -- only the drop-in
-         ## PATH is asserted, never its content, so the write never needs real /usr/local/etc access.
-         cat >> "${work}/tee.out"
-         ;;
-      mktemp)
-         mktemp -- "${work}/zoom-live-rc.XXXXXX.conf"
-         ;;
-      safe-rm)
-         if [ -n "${ZL_SUDO_FAIL:-}" ]; then
-            return 1
-         fi
-         shift
-         safe-rm "$@"
-         ;;
-      *)
-         true
-         ;;
-   esac
-   return 0
+   if [ "${1:-}" = 'safe-rm' ] && [ -n "${ZL_SUDO_FAIL:-}" ]; then
+      return 1
+   fi
+   "$@"
 }
 
 ## Stub the GUI/capture collaborators so no display / process is needed.
@@ -180,7 +165,10 @@ out="${work}/shots"; mkdir --parents -- "${out}"
 ## st_bin is the executable logging stub created above (do NOT truncate it here).
 st_pkg="${work}/pkg"
 SHOT_DEADLINE=90
-rc_dropin=''
+## Route the privileged drop-in dir at the test tree, and give this run a marker tag: create
+## embeds the tag in the filename and cleanup reaps by it (the real, discipline-free design).
+export SECURE_TERMINAL_SHOT_RC_DIR="${work}/rc.d"
+run_marker_tag="zlw-$$-${RANDOM}${RANDOM}"
 ## zoom_live_capture interpolates ${run_marker} into the ST launch (the SHOTS_RUN_MARKER env), so
 ## it must be BOUND or set -u aborts the sourced function fatally (uncaught by the `|| true` below
 ## -> a silent exit 1). Inert here: shots_spawn_session is stubbed to a no-op, so nothing runs it.
@@ -202,43 +190,26 @@ for f in zoom-live-050.png zoom-live-150.png zoom-live-400.png; do
    n="$(grep --count --fixed-strings -- "${f}" "${capture_log}" || true)"
    check "${n}" '1' "zoom-live captures one real-GUI shot ${f}"
 done
-## The privileged remote_control drop-in is a UNIQUE root-owned path, NOT a fixed name (a fixed
-## name would truncate an admin file or a concurrent run's drop-in). It matches zoom-live-rc.*.conf.
-case "${rc_dropin}" in
-   */zoom-live-rc.*.conf)
-      check '0' '0' 'zoom-live drop-in is a UNIQUE zoom-live-rc.*.conf path'
-      ;;
-   *)
-      check '1' '0' 'zoom-live drop-in is a UNIQUE zoom-live-rc.*.conf path'
-      ;;
-esac
-if [ "${rc_dropin}" = '/usr/local/etc/secure-terminal.d/99-zoom-live-rc.conf' ]; then
-   check '1' '0' 'zoom-live drop-in is NOT the old fixed 99-zoom-live-rc.conf name'
-else
-   check '0' '0' 'zoom-live drop-in is NOT the old fixed 99-zoom-live-rc.conf name'
-fi
+## zoom-live enables remote_control by CREATING a privileged drop-in. It is a UNIQUE marker-tagged
+## path (zoom-live-rc.<run-tag>.*.conf) under the routed dir -- never a fixed name (which would
+## truncate an admin file or a concurrent run's drop-in), and the tag lets cleanup reap it
+## marker-scoped. Assert exactly one such file was created by the successful capture above.
+created="$(find "${SECURE_TERMINAL_SHOT_RC_DIR}" -maxdepth 1 -type f \
+   -name "zoom-live-rc.${run_marker_tag}.*.conf" 2>/dev/null | wc -l)"
+check "${created}" '1' 'zoom-live creates a UNIQUE marker-tagged zoom-live-rc.<tag>.*.conf drop-in'
 
-## (i-a) SUCCESS-path removal is the safety-critical property (a leaked drop-in keeps
-## remote_control enabled system-wide). The drop-in from the successful capture above must
-## EXIST, then be deleted by the SUT's OWN shots_rc_dropin_remove -- NOT swept incidentally by
-## our zl_cleanup trap. A success-path removal regressed to a no-op `return 0` is caught here.
-if [ -n "${rc_dropin}" ] && [ -e "${rc_dropin}" ]; then
-   check '0' '0' 'zoom-live: the successful capture created the privileged drop-in (exists pre-removal)'
-else
-   check '1' '0' 'zoom-live: the successful capture created the privileged drop-in (exists pre-removal)'
-fi
-success_dropin="${rc_dropin}"
-shots_rc_dropin_remove "${rc_dropin}" >/dev/null 2>&1 || true
-if [ -e "${success_dropin}" ]; then
-   check '1' '0' 'zoom-live: the SUT own removal deletes the success-path drop-in (not the trap)'
-else
-   check '0' '0' 'zoom-live: the SUT own removal deletes the success-path drop-in (not the trap)'
-fi
+## (i-a) SAFETY-CRITICAL cleanup: a leaked drop-in keeps remote_control on system-wide. cleanup()
+## reaps by the run's marker tag; drive that reaper directly (cleanup's own trap is zl_cleanup
+## here) and assert the drop-in is gone. A reaper regressed to a no-op is caught here.
+shots_rc_dropin_reap_marked "${run_marker_tag}" >/dev/null 2>&1 || true
+gone="$(find "${SECURE_TERMINAL_SHOT_RC_DIR}" -maxdepth 1 -type f \
+   -name "zoom-live-rc.${run_marker_tag}.*.conf" 2>/dev/null | wc -l)"
+check "${gone}" '0' 'zoom-live: the marker-scoped reaper removes the success-path drop-in'
 
-## (ii) cleanup's drop-in removal is LOUD on failure: it NAMES the leaked path and does not swallow
-## the error (a leaked drop-in keeps remote_control enabled system-wide).
-rc_dropin="${work}/leaked-dropin.conf"
-warn_out="$(ZL_SUDO_FAIL=1 shots_rc_dropin_remove "${rc_dropin}" 2>&1 1>/dev/null || true)"
+## (ii) drop-in removal is LOUD on failure: shots_rc_dropin_remove NAMES the leaked path and does
+## not swallow the error (a leaked drop-in keeps remote_control enabled system-wide).
+leaked_dropin="${work}/leaked-dropin.conf"
+warn_out="$(ZL_SUDO_FAIL=1 shots_rc_dropin_remove "${leaked_dropin}" 2>&1 1>/dev/null || true)"
 case "${warn_out}" in
    *'could not remove privileged remote_control drop-in'*"${work}/leaked-dropin.conf"*)
       check '0' '0' 'zoom-live cleanup warns loudly and names the leaked drop-in on removal failure'
@@ -248,7 +219,7 @@ case "${warn_out}" in
       ;;
 esac
 rc=0
-ZL_SUDO_FAIL=1 shots_rc_dropin_remove "${rc_dropin}" >/dev/null 2>&1 || rc="$?"
+ZL_SUDO_FAIL=1 shots_rc_dropin_remove "${leaked_dropin}" >/dev/null 2>&1 || rc="$?"
 check_nonzero "${rc}" 'zoom-live cleanup returns nonzero when the drop-in removal fails'
 
 ## (i) A failed sweep must RETURN NONZERO -- never false-green while claiming to verify a live zoom.
