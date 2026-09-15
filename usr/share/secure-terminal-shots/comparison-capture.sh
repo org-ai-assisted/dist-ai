@@ -572,7 +572,10 @@ shots_rc_dropin_create() {  ## $1=filename prefix
    ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in.
    dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.XXXXXX.conf")" || return 1
    [ -n "${dropin}" ] || return 1
-   if ! printf 'remote_control=true\n' | sudo tee -- "${dropin}" >/dev/null; then
+   ## remote_control drives ctl; terminate_verbose=false keeps the Terminate button a plain
+   ## SIGTERM->SIGKILL with NO diagnostic dialog (which carries live PIDs) popping over the
+   ## shot -- a stale System drop-in may set it true, and this Local dir overrides System.
+   if ! printf 'remote_control=true\nterminate_verbose=false\n' | sudo tee -- "${dropin}" >/dev/null; then
       sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
       return 1
    fi
@@ -845,6 +848,7 @@ zoom_verify_capture() {
       shots_spawn_session "${st_pgf}" \
          env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
          QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "PATH=${st_bin%/*}:${PATH}" \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
 
@@ -944,9 +948,9 @@ zoom_verify_capture() {
 ## ${HOME}/demos) and an inline printf of leading/trailing/multiple spaces.
 demo_shots_capture() {
    local rc_dropin failures shots demo_dir nn_gen i n
-   local name mode display cmd st_pgf st_flagf st_transcript st_group st_win_w st_win_h
+   local name mode display cmd terminate st_pgf st_flagf st_transcript st_group st_win_w st_win_h
    local st_wdog stwid st_tab_id st_tab_line
-   local -a d_names d_modes d_disp d_cmds st_mode_flags
+   local -a d_names d_modes d_disp d_cmds d_terminate st_mode_flags
 
    ## Parallel spec arrays (an inject command carries spaces, so it lives in its own array,
    ## never a whitespace-split field): "<name> <tab-mode> <display> <inject-command>".
@@ -954,16 +958,27 @@ demo_shots_capture() {
    ## and a full-screen editor). Excluded deliberately: sigreport prints its own PID and
    ## terminate --verbose lists live PIDs -- both non-deterministic, so they are never
    ## published; sigreport is covered instead by a text unit test (test_secure_terminal.py).
-   d_names=(nonewline-cli nonewline-tui whitespace-cli sleep-cli nano-gui)
-   d_modes=(cli tui cli cli tui)
-   d_disp=(show show show show show)
+   ## terminate-* shots (d_terminate=1) launch a program, fire the real Terminate button via
+   ## its Ctrl+Shift+K shortcut, and capture the settled AFTER state: sigreport prints
+   ## `received SIGTERM (15)` (its PID normalized to [redacted] under SECURE_TERMINAL_SHOT),
+   ## sleep/nano end and the prompt returns. secure-terminal-sigreport resolves because the
+   ## ST checkout's usr/bin is prepended to PATH for these launches.
+   d_names=(nonewline-cli nonewline-tui whitespace-cli sleep-cli nano-gui \
+      terminate-sleep-cli terminate-sigreport-cli terminate-nano-tui terminate-sigreport-tui)
+   d_modes=(cli tui cli cli tui   cli cli tui tui)
+   d_disp=(show show show show show   show show show show)
    d_cmds=(
       'cat demos/nonewline-safe-to-cat.txt'
       'cat demos/nonewline-safe-to-cat.txt'
       "printf '  leading indent line\ntrailing spaces line   \ntwo  and  three   spaces\n'"
       'sleep 100'
       'nano'
+      'sleep 100'
+      'secure-terminal-sigreport'
+      'nano'
+      'secure-terminal-sigreport'
    )
+   d_terminate=(0 0 0 0 0   1 1 1 1)
 
    nn_gen="${here}/nonewline-demo.py"
    if [ ! -f "${nn_gen}" ]; then
@@ -992,6 +1007,7 @@ demo_shots_capture() {
       mode="${d_modes[${i}]}"
       display="${d_disp[${i}]}"
       cmd="${d_cmds[${i}]}"
+      terminate="${d_terminate[${i}]}"
       st_win_w="$(px 860)"
       st_win_h="$(px 620)"
 
@@ -1011,6 +1027,7 @@ demo_shots_capture() {
       shots_spawn_session "${st_pgf}" \
          env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
          QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "PATH=${st_bin%/*}:${PATH}" \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
 
@@ -1045,6 +1062,17 @@ demo_shots_capture() {
          send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
       sleep 1
       st_wait_render_settled "${stwid}"
+      if [ "${terminate}" = 1 ]; then
+         ## Fire the REAL Terminate button via its Ctrl+Shift+K shortcut -- a Qt QAction shortcut,
+         ## so it fires even while a full-screen TUI child (nano) holds the keyboard. wtype -s lets
+         ## the fresh virtual-keyboard connection bind so the chord's first event is not dropped.
+         wtype -s 400 -M ctrl -M shift -k k -m shift -m ctrl 2>/dev/null \
+            || printf '%s\n' "warn demo-shots.${name}: terminate chord (wtype) failed" >&2
+         ## The button escalates SIGTERM -> (2s) SIGKILL; wait past the SIGKILL so the shot is the
+         ## settled AFTER state (program gone / 'received SIGTERM' shown, prompt returned).
+         sleep 3
+         st_wait_render_settled "${stwid}"
+      fi
       if capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
             && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
          shots=$(( shots + 1 ))
@@ -2112,6 +2140,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       shots_spawn_session "${st_pgf}" \
          env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
          QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "PATH=${st_bin%/*}:${PATH}" \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
