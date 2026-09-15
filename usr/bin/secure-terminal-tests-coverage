@@ -361,8 +361,28 @@ if [ "${gate_fail_rc}" != '0' ]; then
    printf '%s\n' "secure-terminal-tests-coverage: suite ${gate_fail_suite} failed (exit ${gate_fail_rc})" >&2
    exit "${gate_fail_rc}"
 fi
+## Debug (opt-in, COVERAGE_DEBUG_MISSING=1): `coverage combine` CONSUMES the per-suite parallel
+## data files, so copy them aside FIRST. cov-debug-missing.py then cross-checks a MANUAL union
+## of them against combine's result -- telling a real gap (no suite recorded the line) from a
+## combine/measurement DROP (a suite recorded it, combine lost it) in a SINGLE run -- and its
+## greppable DEBUG-MISSING summary, compared across runs, tells a flaky line (varies) from a
+## constant gap. Nothing to recall and no cost on a normal run: the block is skipped when unset.
+cov_dbg_dir=''
+if [ -n "${COVERAGE_DEBUG_MISSING:-}" ]; then
+   cov_dbg_dir="${COVERAGE_DEBUG_DIR:-${work}/cov-debug}"
+   mkdir --parents -- "${cov_dbg_dir}/raw"
+   cp --preserve -- "${work}"/.coverage.* "${cov_dbg_dir}/raw/" 2>/dev/null || true
+fi
+
 python3 -m coverage combine
 
+if [ -n "${COVERAGE_DEBUG_MISSING:-}" ]; then
+   printf '%s\n' '' '== DEBUG: coverage miss attribution (COVERAGE_DEBUG_MISSING) =='
+   ## Runs BEFORE the enforcing reports below, which abort under errexit on <100% -- so the
+   ## attribution is printed even (especially) when the gate is about to fail. Best-effort.
+   python3 "$(dirname -- "${wl_headless_run}")/cov-debug-missing.py" \
+      "${COVERAGE_FILE}" "${cov_dbg_dir}/raw" "${pkg}" || true
+fi
 
 printf '%s\n' '' '== gated modules, Qt-free (must be 100%) =='
 python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
