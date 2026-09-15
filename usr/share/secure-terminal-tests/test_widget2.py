@@ -3487,17 +3487,28 @@ ok(_killed_by_survivor,
 # out, which is why the "Terminate does nothing on `sleep 10`" class was uncovered. Drives a
 # real login-shell tab (default $SHELL), types a real `sleep`, and asserts the child is gone
 # after Terminate. No mock of _foreground_pgrp / has_foreground_program.
-def _sleep_pids():
+def _sleep_pids(parent=None):
+    # Only 'sleep' processes that are DIRECT CHILDREN of `parent` (this test's own shell).
+    # The plain runner now runs suites in PARALLEL, so an unscoped name match would pick up
+    # -- and the os.kill cleanup below would KILL -- a sibling suite's sleep. Scope by PPID
+    # (/proc/PID/stat field after the last ')': state, ppid, ...) so cross-suite sleeps are
+    # never matched. parent=None keeps the unscoped scan for any non-parallel caller.
     out = set()
     for _d in os.listdir('/proc'):
         if not _d.isdigit():
             continue
         try:
             with open('/proc/%s/comm' % _d) as _fh:
-                if _fh.read().strip() == 'sleep':
-                    out.add(int(_d))
-        except OSError:
-            pass                                 # pid vanished mid-scan -- skip it
+                if _fh.read().strip() != 'sleep':
+                    continue
+            if parent is not None:
+                with open('/proc/%s/stat' % _d) as _fh:
+                    _st = _fh.read()
+                if int(_st[_st.rindex(')') + 2:].split()[1]) != parent:
+                    continue
+            out.add(int(_d))
+        except (OSError, ValueError, IndexError):
+            pass                                 # pid vanished / unparsable mid-scan -- skip
     return out
 
 def _pid_dead(pid):                              # gone, or a reaped-pending zombie ('Z')
@@ -3509,12 +3520,12 @@ def _pid_dead(pid):                              # gone, or a reaped-pending zom
         return True
 
 _e2e = spawn_live()                              # a real login shell (default $SHELL)
-_e2e_pre = _sleep_pids()
+_e2e_pre = _sleep_pids(_e2e._pid)
 _e2e._write(b'sleep 6\r')                         # CR submits the line under bash AND zsh ZLE
 _e2e_new: set = set()
 for _ in range(120):                             # up to ~6s for the child to take the foreground
     pump(50)
-    _e2e_new = _sleep_pids() - _e2e_pre
+    _e2e_new = _sleep_pids(_e2e._pid) - _e2e_pre
     if _e2e_new and _e2e.has_foreground_program():
         break
 ok(bool(_e2e_new) and _e2e.has_foreground_program(),
@@ -3549,13 +3560,13 @@ for _ in range(120):
     pump(50)
     if _bt._pid and os.path.isdir('/proc/%d' % _bt._pid):
         break
-_bt_pre = _sleep_pids()
+_bt_pre = _sleep_pids(_bt._pid)
 _bt._write(b'sleep 6\r')
 _bt_new: set = set()
 for _ in range(120):                             # up to ~6s for the child to take the foreground
     pump(50)
     _btw._update_terminate_enabled()             # the same poll that drives the toolbar/menu
-    _bt_new = _sleep_pids() - _bt_pre
+    _bt_new = _sleep_pids(_bt._pid) - _bt_pre
     if _bt_new and _btw.act_terminate.isEnabled():
         break
 ok(bool(_bt_new) and _btw.act_terminate.isEnabled(),
