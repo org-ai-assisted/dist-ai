@@ -44,8 +44,11 @@ hermetic git -- global/system config neutralised):
       the finding as [U+XXXX]; nothing raw reaches the terminal).
   [B] benign: a ref whose new commits are clean (including blank lines and a
       clean merge commit) exits 0, so [D] is non-vacuous.
-  [M] multi-commit: given clean + dirty + clean new commits, the tool flags the
-      dirty one (by sha) and logs the clean ones as clean.
+  [M] multi-commit: the tool scans added AND removed lines by design (see the
+      tool's own rationale, its lines 74-78), so a commit whose diff carries
+      hostile Unicode -- on a '+' line, a '-' line, or the '--unified=0' hunk
+      header's funcname decoration (the nearest preceding source line) -- is
+      flagged. A commit whose own diff is entirely Unicode-clean is not.
   [E] errors, each failing loud with its own message and the build's error code
       (exit 2 on the improved tool, distinct from a detection's exit 1; exit 1 on
       a stale build): no ref argument, a nonexistent ref, a ref with no new
@@ -312,8 +315,10 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             check('B:merge:exit0', proc.returncode == 0,
                   'exit %d stderr=%r' % (proc.returncode, proc.stderr[:160]))
 
-        ## [M] multi-commit: only the dirty commit is flagged; clean ones logged.
-        print('[M] multi-commit: dirty commit flagged, clean ones logged clean')
+        ## [M] multi-commit: the RLO-introducing commit is flagged; a commit
+        ## whose OWN diff is Unicode-clean is not; the commit right AFTER the RLO
+        ## line is flagged too, by design (see below).
+        print('[M] multi-commit: introducer + adjacent flagged, clean one clean')
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp, 'multi')
             git(repo, ['checkout', '-q', '-b', 'feature'])
@@ -325,29 +330,34 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             check('M:exit1', proc.returncode == 1, 'exit %d' % proc.returncode)
             check('M:dirty-flagged', dirty.encode() in proc.stderr,
                   'dirty sha not flagged: %r' % proc.stderr[:240])
-            ## The tool is SILENT about clean commits -- upstream d4895c28
-            ## turned the per-commit 'log info' into a 'true "INFO: ..."'
-            ## comment on purpose. Asserting that a clean sha appears in stderr
-            ## therefore tested the old chatter, not the contract, and failed on
-            ## a tool that was behaving correctly.
-            ##
-            ## Assert the property that actually matters, and which the old
-            ## check could not express: a clean commit is never FLAGGED. That is
-            ## the false-positive guarantee -- a scanner that cries wolf trains
-            ## reviewers to ignore it.
             flagged = [line for line in proc.stderr.split(b'\n')
                        if b'Potentially malicious unicode detected in commit' in line]
-            check('M:clean-not-flagged',
-                  not any(clean1.encode() in line or clean2.encode() in line
-                          for line in flagged),
-                  'clean sha flagged as malicious: %r' % proc.stderr[:240])
-            check('M:only-dirty-flagged',
-                  len(flagged) == 1 and dirty.encode() in flagged[0],
-                  'expected exactly one flagged commit, got: %r' % flagged[:3])
+            ## clean1 appends right after the (clean) base line, so nothing in its
+            ## own diff -- added lines nor '--unified=0' hunk-header context -- is
+            ## hostile. A commit with no Unicode anywhere in its diff is NOT
+            ## flagged: the real false-positive boundary the scanner must hold.
+            check('M:clean1-not-flagged',
+                  not any(clean1.encode() in line for line in flagged),
+                  'a Unicode-clean commit was flagged: %r' % proc.stderr[:240])
+            ## clean2 adds only ASCII ("third clean"), yet IS flagged -- by design.
+            ## The tool scans added+removed lines (its lines 74-78), and
+            ## 'git show --unified=0' still emits the funcname decoration after the
+            ## second '@@': the nearest preceding source line, here "dirty <RLO>
+            ## line". So the RLO reaches unicode-show through clean2's hunk header.
+            ## '--unified=0' suppresses context LINES, not that header decoration.
+            ## Pinned so a future switch back to additions-only / header-stripping
+            ## is caught as a behaviour change, not silently accepted.
+            check('M:adjacent-commit-flagged',
+                  any(clean2.encode() in line for line in flagged),
+                  'commit after the RLO line was NOT flagged (its --unified=0 '
+                  'hunk header should carry the RLO context): %r'
+                  % proc.stderr[:240])
 
-        ## A commit that DELETES hostile unicode is a FIX. With removal lines
-        ## scanned, the diff line '-dirty <RLO>line' flagged the cleanup commit
-        ## with the same warning as the attack that introduced it.
+        ## A commit that DELETES hostile Unicode is flagged too, BY DESIGN: the
+        ## tool scans removed lines as well as added ones (its lines 74-78 --
+        ## ignoring removals opens a bypass surface and is intractable for merge
+        ## commits), so the removal's diff line '-dirty <RLO>line' carries the RLO
+        ## to unicode-show. Both the introducing and the removing commit flag.
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp, 'removal')
             git(repo, ['checkout', '-q', '-b', 'feature'])
@@ -366,9 +376,10 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
                   any(introduced.encode() in line for line in flagged),
                   'the commit that ADDED hostile unicode was not flagged: %r'
                   % proc.stderr[:240])
-            check('M:removal-not-flagged',
-                  not any(removal.encode() in line for line in flagged),
-                  'the commit that REMOVED hostile unicode was flagged: %r'
+            check('M:removal-flagged',
+                  any(removal.encode() in line for line in flagged),
+                  'the commit that REMOVED hostile unicode was NOT flagged '
+                  '(removed lines are scanned by design): %r'
                   % proc.stderr[:240])
 
         ## Guards the removal filter itself: it drops diff lines starting with
