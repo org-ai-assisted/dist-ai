@@ -22,7 +22,9 @@
 ##   DEBUG-MISSING <module.py> <line-spec>            per module the COMBINED data misses
 ##   DEBUG-UNION-MISSING <module.py> <line-spec>      per module a MANUAL union still misses
 ##   DEBUG-COMBINE-DROP <module.py> combine=<spec> union=<spec>   combine lost data the union kept
-##   DEBUG-MISSING-SUMMARY combined=<n> union=<n> drop=<yes|no>   one line per run
+##   DEBUG-MISSING-SUMMARY combined=<n> union=<n> drop=<yes|no|unknown>   one line per run
+## drop=unknown means no pre-combine data was preserved (raw_files=0), so gap-vs-drop could
+## not be cross-checked -- never inferred as a drop from an absent union.
 ## Read-only; never fails the gate (best-effort diagnostics).
 
 import glob
@@ -84,6 +86,17 @@ def main():
 
     for module in sorted(combined):
         print("DEBUG-MISSING %s %s" % (module, combined[module]))
+
+    if n_raw == 0:
+        # No pre-combine parallel data was preserved, so the union cross-check cannot run.
+        # Do NOT infer a combine-drop from an empty union -- that would flag every real,
+        # constant coverage gap as a flake (the exact inversion this tool exists to avoid).
+        # Report the combined misses as-is and mark the drop verdict unknown.
+        print("DEBUG-MISSING-SUMMARY combined=%d union=n/a raw_files=0 "
+              "drop=unknown (no pre-combine data preserved; cross-check skipped)"
+              % len(combined))
+        return 0
+
     for module in sorted(union):
         print("DEBUG-UNION-MISSING %s %s" % (module, union[module]))
 
