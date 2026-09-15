@@ -527,6 +527,13 @@ S.parse_sgr('49', _sgr)
 eq(_sgr['bg'], None, 'SGR 49 resets the background to default')
 S.parse_sgr('101', _sgr)
 eq(_sgr['bg'], 9, 'SGR 100-107 selects a bright background colour (101 -> index 9)')
+# SGR 2 (faint) = decreased intensity, NOT bold -- a real terminal drops bold here.
+# Regression: previously 2 was unhandled, leaving bold set (excess-bold divergence).
+_intensity = {'fg': None, 'bg': None, 'bold': False}
+S.parse_sgr('1', _intensity)
+eq(_intensity['bold'], True, 'SGR 1 sets bold')
+S.parse_sgr('2', _intensity)
+eq(_intensity['bold'], False, 'SGR 2 (faint) clears bold, matching konsole/xterm/vte')
 
 # --- cursor-forward pads blanks (a right-prompt jumps to the right edge) -------
 # "\x1b[20C" from column 10 moves to column 30 (forward is RELATIVE), leaving a
