@@ -1276,14 +1276,22 @@ ok(bool(_ds.load()) and _ds.load()[0].get('text') == 'PRIM\n',
    'secondary window: closing it never touched the primary session (no clobber/delete)')
 _sw.deleteLater()
 
-# a degenerate --instance-group (., .., empty -- cannot name a subtree) is a throwaway,
-# never silently sharing the default subtree
+# a degenerate --instance-group (., .., empty) must NOT survive into the state subtree
+# as '.'/'..' -- those are traversals (remove_instance('.') would rmtree the instances
+# ROOT, deleting every group). It must map to a real isolated throwaway subtree, and
+# closing it must leave a seeded primary session intact.
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uiddeg-')
+_ds.set_instance_group('default')
+_ds.clear()
+_ds.save([{'uid': 0, 'name': 'primary', 'text': 'DEGPRIM\n', 'osc': {}}])
 _dgw = MainWindow(M._parse_launch_args(['--instance-group', '.']))
-ok(_dgw._throwaway and _dgw._state_group != 'default',
-   'instance-group: a degenerate group name is a throwaway, not the default subtree')
-_dgw.closeEvent(_QCE59())
+ok(_dgw._throwaway and _dgw._state_group not in ('.', '..', '', 'default'),
+   'instance-group: a degenerate group name maps to an isolated throwaway subtree, not . / .. / default')
+_dgw.closeEvent(_QCE59())                  # remove_instance must stay inside its subtree
 _dgw.deleteLater()
+_ds.set_instance_group('default')
+ok(bool(_ds.load()) and _ds.load()[0].get('text') == 'DEGPRIM\n',
+   'instance-group: closing a degenerate-named window left the primary session intact')
 
 
 # ---- standalone review popup launcher (review_standalone) --------------------
