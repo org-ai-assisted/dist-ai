@@ -225,6 +225,42 @@ else
    pass "dry-run performed no push"
 fi
 
+## --- Case 5: a FAILING --no-push mirror check must FAIL the dry-run, not silent-green.
+## dm-cherry-pick-ai-nonlink --no-push is a non-mutating validation that fetches the remote
+## master and aborts on a real divergence / unreachable remote; its failure means the real
+## mirror would fail. The old '|| true' + silenced streams hid that, so --dry-run printed
+## 'would mirror' and exited 0 regardless. Swap in a cherry stub that fails on --no-push.
+## CANARY: on the old swallowing code this dry-run exits 0 -> the 'exit 1' assertion FAILS.
+reset_log
+cherry_fail="${stubs}/cherry-fail"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'printf "CHERRY %s\n" "$*" >> "${SYNC_LOG}"'
+   printf '%s\n' 'printf "cherry-pick: mirror validation failed\n" >&2'
+   printf '%s\n' 'exit 1'
+} > "${cherry_fail}"
+chmod +x -- "${cherry_fail}"
+dryfail_out="${workspace}/dryfail.out"
+dryfail_rc=0
+DM_GIT_SYNC_CHERRY="${cherry_fail}" "${tool}" --dir "${super}" --dry-run \
+   > "${dryfail_out}" 2>&1 || dryfail_rc=$?
+if [ "${dryfail_rc}" -eq 1 ]; then
+   pass "dry-run FAILS (exit 1) when the --no-push mirror check fails"
+else
+   fail "dry-run did not fail on a failing mirror check; rc=${dryfail_rc}"
+fi
+if grep --quiet -- 'mirror check FAILED' "${dryfail_out}"; then
+   pass "dry-run reports the mirror-check failure (not a silent green)"
+else
+   fail "dry-run did not report the mirror-check failure; out:<<<$(cat -- "${dryfail_out}")>>>"
+fi
+## And it still invoked the check with --no-push (faithful reproduction, no push).
+if grep --quiet -- '^CHERRY --no-push ' "${SYNC_LOG}" && ! grep --quiet -- '^PUSH ' "${SYNC_LOG}"; then
+   pass "the failing dry-run ran --no-push and pushed nothing"
+else
+   fail "failing dry-run did not run --no-push cleanly; log:<<<$(log_lines)>>>"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1

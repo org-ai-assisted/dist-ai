@@ -163,8 +163,15 @@ sync_superproject() {
    ## c. replay non-gitlink 'ai' commits onto master (gitlink hunks dropped by
    ##    mode inside the tool), and push master.
    if [ "${dry_run}" = "true" ]; then
-      log "[dry-run] would mirror non-gitlink 'ai' commits to master via ${CHERRY_CMD} --no-push"
-      "${CHERRY_CMD}" --no-push "${top}" >/dev/null 2>&1 || true
+      ## --no-push is a NON-mutating validation (dm-cherry-pick-ai-nonlink works only in the
+      ## object DB -- merge-tree/commit-tree, scratch index, throwaway fetch refs -- and leaves
+      ## the checkout byte-for-byte; --dry-run is its own alias for it). It fetches the remote
+      ## master and detects a real divergence, so its FAILURE means the real mirror would fail.
+      ## Swallowing it ('|| true' + silenced streams) made --dry-run a SILENT GREEN: it printed
+      ## 'would mirror' and exited 0 even when the mirror could not run. Report it, fail loud.
+      log "[dry-run] mirror check: ${CHERRY_CMD} --no-push (validating; no push)"
+      "${CHERRY_CMD}" --no-push "${top}" >/dev/null \
+         || die 1 "dry-run: mirror check FAILED (${CHERRY_CMD} --no-push); the real mirror would fail -- fix before syncing."
    else
       log "mirroring non-gitlink 'ai' commits to master (${CHERRY_CMD})..."
       "${CHERRY_CMD}" "${top}" || die 1 "dm-cherry-pick-ai-nonlink failed for '${top}'."

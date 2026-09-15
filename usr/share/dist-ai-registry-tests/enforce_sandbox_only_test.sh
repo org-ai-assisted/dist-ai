@@ -39,11 +39,16 @@ if [ ! -r "${orch}" ]; then
    exit 1
 fi
 
-## Extract the function definition (header and closing brace both at column 0) and
-## source only it -- sourcing the whole orchestrator would run the entire registry.
-slice="$(sed -n '/^enforce_sandbox_only() {$/,/^}$/p' -- "${orch}")"
-if [[ "${slice}" != *'exit 3'* ]]; then
-   printf '%s\n' 'FATAL: could not extract enforce_sandbox_only(); the slice is wrong, not the code' >&2
+## Extract the gate function definitions (header and closing brace both at column 0) and
+## source only them -- sourcing the whole orchestrator would run the entire registry.
+## enforce_sandbox_only delegates the exempt set to sandbox_gate_exempt, so extract both.
+slice="$(sed -n \
+   -e '/^sandbox_isolated_context() {$/,/^}$/p' \
+   -e '/^sandbox_gate_exempt() {$/,/^}$/p' \
+   -e '/^enforce_sandbox_only() {$/,/^}$/p' \
+   -- "${orch}")"
+if [[ "${slice}" != *'exit 3'* ]] || [[ "${slice}" != *'sandbox_isolated_context() {'* ]]; then
+   printf '%s\n' 'FATAL: could not extract the gate functions; the slice is wrong, not the code' >&2
    exit 1
 fi
 slice_file="$(mktemp)"

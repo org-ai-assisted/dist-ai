@@ -260,13 +260,15 @@ ok(_oz.count(b'\xcc\x81') <= _ZALGO_MARK_MAX,
    'show mode caps a Zalgo flood reaching the real terminal (%d marks)'
    % _oz.count(b'\xcc\x81'))
 
-# --- child environment: dumb terminal + no-op pager ---------------------------
-# the CLI wrapper interprets no escapes, so it advertises a dumb terminal and
-# defaults PAGER to a no-op cat (compatibility page: TERM=dumb, PAGER=cat)
+# --- child environment: dumb terminal, PAGER NOT overridden -------------------
+# the CLI wrapper interprets no escapes, so it advertises a dumb terminal. It does
+# NOT force PAGER: making the terminal suitable for a non-paging (e.g. AI-agent)
+# use case belongs in that environment, not baked into secure-terminal -- a human
+# gets a normal pager. With no ambient PAGER the child inherits none.
 os.environ.pop('PAGER', None)
 _oenv, _ = run_in_pty(['--', 'sh', '-c', 'printf T=$TERM,P=$PAGER,'])
 ok(b'T=dumb,' in _oenv, 'the cli wrapper child sees TERM=dumb')
-ok(b'P=cat,' in _oenv, 'the cli wrapper child sees PAGER=cat by default')
+ok(b'P=,' in _oenv, 'the cli wrapper does NOT force PAGER (no ambient -> empty)')
 
 # --- real line tools run under the wrapper: output survives, no escape leaks ---
 # a representative slice of the compatibility programs table; the full-screen,

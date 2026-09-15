@@ -2271,11 +2271,12 @@ ok(b'\nLINES=' not in _envout,
 ok(b'\nCOLUMNS=' not in _envout, 'child does not inherit a stale COLUMNS')
 for _fv in _fp_vars + ('LINES', 'COLUMNS'):
     os.environ.pop(_fv, None)
-# PAGER defaults to cat when the parent set none; a distinct terminator (not the
-# P= prefix of the expected value) so a split read cannot break the loop early
+# PAGER is NOT forced: agent-suitability (a no-op pager) belongs in that
+# environment, not baked into secure-terminal -- a human keeps a normal pager.
+# A distinct terminator (not the P= prefix) so a split read cannot break early.
 os.environ.pop('PAGER', None)
 _pgr = _child_env_out(['sh', '-c', 'printf P=$PAGER,PGREND'], b'PGREND')
-ok(b'P=cat,' in _pgr, 'the child gets PAGER=cat by default')
+ok(b'P=,' in _pgr, 'the child does NOT get a forced PAGER (no ambient -> empty)')
 
 # --- synchronized output (DECSET 2026): hold the paint between begin/end ------
 _sy = SecureTerminal(command='/bin/cat', tui=True)
@@ -3330,6 +3331,25 @@ ok(_f2.background().color().name() == '#ff0000',
 _f3 = _rt._pyte_format(_Cell(fg='cccccc', bold=True, underscore=True))
 ok(_f3.fontWeight() == QFont.Weight.Bold and _f3.fontUnderline(),
    '_pyte_format: bold and underscore attributes are applied')
+# Bright FOREGROUND (SGR 90-97): pyte stores it as a BASE name + bold=True, which renders
+# BOLD; real terminals show bright, NOT bold (DECRQSS: xterm reports 0;91m, not 0;1m).
+# _SafeHistoryScreen rewrites it to the bright palette name (like bright bg) so no phantom
+# bold. Regression for the excess-bold report (bright-coloured ls/grep/git output rendered
+# bold). Real SGR 1 bold, and 1 combined with a bright fg, must still bold.
+import pyte as _pyte_bf                                                   # noqa: E402
+from secure_terminal.terminal import _SafeHistoryScreen as _SHS_bf       # noqa: E402
+def _bf_cell(_seq):
+    _s = _SHS_bf(10, 1); _pyte_bf.Stream(_s).feed(_seq); return _s.buffer[0][0]
+_c91 = _bf_cell('\x1b[91mX')
+ok(_c91.fg == 'brightred' and not _c91.bold,
+   '_SafeHistoryScreen: bright fg (SGR 91) renders bright, NOT bold')
+_c191 = _bf_cell('\x1b[1;91mX')
+ok(_c191.fg == 'brightred' and _c191.bold,
+   '_SafeHistoryScreen: bold (SGR 1) + bright fg keeps bold')
+_c31 = _bf_cell('\x1b[91;31mX')
+ok(_c31.fg == 'red' and not _c31.bold,
+   '_SafeHistoryScreen: a later normal fg (31) overrides an earlier bright fg (91)')
+ok(_bf_cell('\x1b[1mX').bold, '_SafeHistoryScreen: plain SGR 1 still sets bold')
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',

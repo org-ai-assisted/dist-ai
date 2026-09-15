@@ -110,10 +110,12 @@ cleanup() {
    shots_deregister_run "${run_marker}" 2>/dev/null || true
    ## Tear down the compositor (kills labwc; the runtime dir is ours, removed below).
    wl_headless_stop 2>/dev/null || true
-   ## remove the throwaway privileged remote_control drop-in (root-owned, so sudo) either lane may
-   ## have created; LOUD on failure (a leaked drop-in keeps remote_control on system-wide), but
-   ## never aborts the trap.
-   shots_rc_dropin_remove "${rc_dropin}" || true
+   ## Reap EVERY throwaway privileged remote_control drop-in THIS run created (root-owned, so
+   ## sudo), marker-scoped like shots_reap_run: the drop-in filenames embed this run's marker
+   ## tag, so the sweep removes all of them regardless of which lane wrote them -- no per-lane
+   ## path to thread and forget. LOUD per residual (a leak keeps remote_control on system-wide),
+   ## but never aborts the trap.
+   shots_rc_dropin_reap_marked "${run_marker_tag:-}" || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
@@ -566,11 +568,14 @@ st_wait_render_settled() {  ## $1=window-id
 ## comparison and zoom-live lanes (both drive a running instance via `ctl`).
 shots_rc_dropin_create() {  ## $1=filename prefix
    local rc_dir dropin
-   rc_dir='/usr/local/etc/secure-terminal.d'
+   ## Overridable so the reaper test can point create + reap at a throwaway dir (default: the
+   ## real system dir). Both this and shots_rc_dropin_reap_marked read the SAME env seam.
+   rc_dir="${SECURE_TERMINAL_SHOT_RC_DIR:-/usr/local/etc/secure-terminal.d}"
    sudo mkdir --parents -- "${rc_dir}" || return 1
    ## A UNIQUE root-owned drop-in (ending in .conf so settings.py's *.conf glob reads it); NEVER a
-   ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in.
-   dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.XXXXXX.conf")" || return 1
+   ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in. The run's
+   ## MARKER TAG is embedded so cleanup can reap every drop-in THIS run made, marker-scoped.
+   dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.${run_marker_tag:-run}.XXXXXX.conf")" || return 1
    [ -n "${dropin}" ] || return 1
    ## remote_control drives ctl; terminate_verbose=false keeps the Terminate button a plain
    ## SIGTERM->SIGKILL with NO diagnostic dialog (which carries live PIDs) popping over the
@@ -601,6 +606,23 @@ shots_rc_dropin_remove() {  ## $1=drop-in path
    return 0
 }
 
+## Reap EVERY drop-in carrying THIS run's marker tag (the filename embeds it, see
+## shots_rc_dropin_create), the same marker-scoped way shots_reap_run reaps process groups.
+## Discipline-free: no lane has to record or thread a path, so a future lane cannot leak, and a
+## concurrent run's differently-tagged drop-ins are never touched. Listing the dir needs no sudo
+## (created 0755); removal is per-file via shots_rc_dropin_remove (sudo, LOUD on residual). Empty
+## tag or absent dir -> nothing to do. Returns 1 if any residual survived.
+shots_rc_dropin_reap_marked() {  ## $1 = run marker tag
+   local tag="${1:-}" rc_dir f rc=0
+   [ -n "${tag}" ] || return 0
+   rc_dir="${SECURE_TERMINAL_SHOT_RC_DIR:-/usr/local/etc/secure-terminal.d}"
+   [ -d "${rc_dir}" ] || return 0
+   while IFS= read -r -d '' f; do
+      shots_rc_dropin_remove "${f}" || rc=1
+   done < <(find "${rc_dir}" -maxdepth 1 -type f -name "*.${tag}.*.conf" -print0 2>/dev/null || true)
+   return "${rc}"
+}
+
 ## zoom-live: the REAL-GUI white-band/scrollbar diagnostic. Launch secure-terminal ONCE as the
 ## group PRIMARY (so `secure-terminal ctl` can reach it), with a full-screen TUI board, then step
 ## the font zoom LIVE via `ctl zoom` against the SAME running instance -- NO restart between levels
@@ -622,9 +644,9 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    failures=0
    shots=0
 
-   ## Enable remote_control for the capture via a throwaway privileged drop-in (removed on exit by
-   ## cleanup()). Record the EXACT path in the shared rc_dropin so cleanup removes THIS one.
-   rc_dropin="$(shots_rc_dropin_create zoom-live-rc)" || {
+   ## Enable remote_control for the capture via a throwaway privileged drop-in. It carries this
+   ## run's marker tag, so cleanup() reaps it marker-scoped -- no path to record or thread.
+   shots_rc_dropin_create zoom-live-rc >/dev/null || {
       printf '%s\n' 'zoom-live: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -703,6 +725,16 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
             continue
             ;;
       esac
+      ## Bound the MAGNITUDE too: an all-digit but huge string passes the check above, then
+      ## `$(( 10#${level} ))` overflows bash's signed 64-bit arithmetic to a negative/garbled
+      ## value that is silently accepted (bogus filename + ctl arg). The length test runs FIRST
+      ## so the arithmetic below can never see an overflowing string; a zoom percent is at most a
+      ## few digits, so [1,10000] is generous.
+      if [ "${#level}" -gt 5 ] || [ "$(( 10#${level} ))" -lt 1 ] || [ "$(( 10#${level} ))" -gt 10000 ]; then
+         printf '%s\n' "warn zoom-live: skipping out-of-range zoom level '${level}' (expected 1..10000)" >&2
+         failures=$(( failures + 1 ))
+         continue
+      fi
       ## Step the zoom LIVE on the SAME instance -- no restart -- routed to the discovered tab.
       zoom_out_file="${runtime_dir}/zoom.${level}.out"
       if env PYTHONPATH="${st_pkg}" "${st_bin}" \
@@ -772,7 +804,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
 zoom_verify_capture() {
    local group board mode display w h zooms zoom_boards_gen demo_dir cat_rel
    local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_cmd st_wdog stwid
-   local st_tab_line st_tab_id level tag rc_dropin failures shots
+   local st_tab_line st_tab_id level tag failures shots
    local -a groups st_mode_flags zoom_levels
 
    ## One PUBLISH_SUBSET group per line: "board tab-mode display-mode W H z z z ...". SHOW is
@@ -799,7 +831,7 @@ zoom_verify_capture() {
 
    failures=0
    shots=0
-   rc_dropin="$(shots_rc_dropin_create zoom-verify-rc)" || {
+   shots_rc_dropin_create zoom-verify-rc >/dev/null || {
       printf '%s\n' 'zoom-verify: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -947,7 +979,7 @@ zoom_verify_capture() {
 ## secure-terminal lanes; boards are the drift-gated no-newline demo (regenerated into
 ## ${HOME}/demos) and an inline printf of leading/trailing/multiple spaces.
 demo_shots_capture() {
-   local rc_dropin failures shots demo_dir nn_gen i n
+   local failures shots demo_dir nn_gen i n
    local name mode display cmd terminate st_pgf st_flagf st_transcript st_group st_win_w st_win_h
    local st_wdog stwid st_tab_id st_tab_line
    local -a d_names d_modes d_disp d_cmds d_terminate st_mode_flags
@@ -996,7 +1028,7 @@ demo_shots_capture() {
 
    failures=0
    shots=0
-   rc_dropin="$(shots_rc_dropin_create demo-shots-rc)" || {
+   shots_rc_dropin_create demo-shots-rc >/dev/null || {
       printf '%s\n' 'demo-shots: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
    }
@@ -1295,10 +1327,6 @@ was_executed "${BASH_SOURCE[0]}" || return 0
 out="${here}/shots"
 mkdir --parents -- "${out}"
 
-## the throwaway privileged remote_control drop-in path (comparison or zoom-live), removed by
-## cleanup(); empty until a lane writes one.
-rc_dropin=''
-
 
 ## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
 ## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
@@ -1325,6 +1353,10 @@ mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}"
 ## flag to secure-terminal -- it sets its own app-id (`secure-terminal`, via setDesktopFileName)
 ## idiomatically, which labwc resolves to the real icon; the shots only avoid sabotaging it.
 run_marker="${runtime_dir}"
+## Sanitized marker TAG (basename, no slashes) embedded in every throwaway remote_control
+## drop-in filename, so cleanup reaps all of THIS run's drop-ins marker-scoped (see
+## shots_rc_dropin_create / shots_rc_dropin_reap_marked) with no per-lane path to thread.
+run_marker_tag="${run_marker##*/}"
 ## Register the cleanup trap NOW -- the runtime dir + reaping marker exist and the first
 ## argument-validation `exit` is just below -- so an early exit (bad SHOT_SCALE / --jobs /
 ## --case / --only / unknown arg) removes the mktemp runtime dir instead of leaking it.
@@ -1411,6 +1443,13 @@ board_wrap_failed=''
 ## with a shot silently missing/stale, so this forces a NON-ZERO exit in a direct single-process
 ## run. (In the --jobs orchestrator the discarded shot is also caught as a missing shot -> rc=1.)
 content_verify_failed=''
+## Set when a secure-terminal spec's shot could not be captured (window never appeared, injected
+## content never rendered after retries, or the privileged remote_control drop-in could not be
+## created so `ctl` never worked). The ST main-capture loop only WARNED on these, so a run that
+## captured ZERO of the ~14 ST cases -- including the homoglyph/bidi attack shots -- still exited
+## 0. Like the flags above, it forces a NON-ZERO exit so a silently-empty ST pass cannot read as
+## success.
+st_capture_failed=''
 ## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
 ## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
 zoom_live_levels=()
@@ -1909,10 +1948,19 @@ else
    TERMINALS="${TERMINALS:-${DEFAULT_TERMINALS}}"
 fi
 ## read -ra splits on whitespace WITHOUT globbing, so an exported CASES='*' / TERMINALS='*'
-## (the env path, which bypasses the --case/--only membership guard) stays literal here
-## instead of glob-expanding the $HOME payload files through these unquoted loops.
+## (the env path) stays literal here instead of glob-expanding the $HOME payload files through
+## these unquoted loops.
 read -ra _terminals_arr <<< "${TERMINALS}"
 read -ra _cases_arr <<< "${CASES}"
+## The --case FLAG is membership-checked (line ~1476); the CASES ENV VAR must be too. An
+## unrecognized case is not just a typo: shoot() concatenates it straight into an output path fed
+## to `safe-rm --force` (e.g. CASES='../../../tmp/x' -> safe-rm on a path OUTSIDE shots/), so an
+## env-supplied traversal token would delete files outside the output dir. Reject any unknown
+## token up front, exactly as the flag does -- glob-safety (read -ra) alone does not stop '../'.
+for c in "${_cases_arr[@]}"; do
+   _known "${c}" "${all_cases}" \
+      || { printf '%s\n' "comparison-capture: unknown case '${c}' in CASES (known: ${all_cases})" >&2; exit 2; }
+done
 for e in "${_terminals_arr[@]}"; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
    ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
@@ -1966,11 +2014,16 @@ cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
-   ## Enable remote_control for the whole ST pass via a throwaway privileged drop-in (removed on
-   ## exit by cleanup()), so each per-case window can be driven by `ctl send-text --submit` -- a
-   ## real remote-control command run, not xdotool key-injection into a possibly-unfocused window.
-   rc_dropin="$(shots_rc_dropin_create comparison-rc)" || {
+   ## Enable remote_control for the whole ST pass via a throwaway privileged drop-in (reaped on
+   ## exit by cleanup(), marker-scoped), so each per-case window can be driven by `ctl send-text
+   ## --submit` -- a real remote-control command run, not xdotool key-injection into a possibly-
+   ## unfocused window.
+   shots_rc_dropin_create comparison-rc >/dev/null || {
+      ## Without the drop-in, remote_control is off, `ctl ls` finds no tab, every `ctl send-text`
+      ## is a no-op and every spec below discards its shot -- a whole zero-shot ST pass. Flag it so
+      ## the run exits NON-ZERO instead of the old warn-and-green-anyway.
       printf '%s\n' 'warn secure-terminal: cannot create the privileged remote_control drop-in (sudo?) -- ctl send-text will fail' >&2
+      st_capture_failed=1
    }
    ## Each entry is "<case> <mode> <output-suffix>". secure-terminal is captured in
    ## the display mode that matters for each case: box for the byte-stream cases,
@@ -2229,6 +2282,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
             if [ "${st_verify_tries}" -ge 3 ]; then
                safe-rm --force -- "${out}/secure-terminal.${st_suffix}.png" 2>/dev/null || true
                printf '%s\n' "warn secure-terminal.${st_suffix}: injected content never rendered (transcript empty after ${st_verify_tries} tries) -- discarded, not published"
+               st_capture_failed=1
                break
             fi
             printf '%s\n' "warn secure-terminal.${st_suffix}: transcript still empty (attempt ${st_verify_tries}); re-injecting"
@@ -2236,6 +2290,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          done
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
+         st_capture_failed=1
       fi
       shots_watchdog_cancel "${st_wdog}"
       [ -e "${st_flagf}" ] && printf '%s\n' "warn secure-terminal.${st_suffix}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
@@ -2280,6 +2335,14 @@ fi
 ## re-capture net + secure-terminal-shots-inventory are the deploy-time backstops.
 if [ -n "${content_verify_failed}" ]; then
    printf '%s\n' 'ERROR: emulator shot(s) FAILED content-verify -- the injected command did not run cleanly (a dropped keystroke -> shell error) and the shot(s) were discarded, not published. Re-run; a persistent failure means the injection/verify path needs attention.' >&2
+   exit 1
+fi
+
+## A secure-terminal spec whose window never mapped, whose injected content never rendered, or
+## whose remote_control drop-in could not be created leaves its required shot missing -- a
+## green exit would report success with ST attack-detection shots silently absent. Fail loud.
+if [ -n "${st_capture_failed}" ]; then
+   printf '%s\n' 'ERROR: secure-terminal shot(s) could not be captured (window never appeared, injected content never rendered, or remote_control unavailable) and were not published. Re-run; a persistent failure means the ST capture/ctl path needs attention.' >&2
    exit 1
 fi
 
