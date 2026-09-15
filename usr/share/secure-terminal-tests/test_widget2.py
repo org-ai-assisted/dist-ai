@@ -2226,9 +2226,12 @@ ok(b'C=truecolor' in _cbuf, 'the child gets COLORTERM=truecolor')
 
 
 # --- child environment scrub (fingerprint vars, LINES/COLUMNS, PAGER default) --
-def _child_env_out(cmd, needle, secs=1.5):
+def _child_env_out(cmd, needle, secs=10):
     """Spawn a CLI child running `cmd`, read its raw output until `needle` (bytes)
-    or `secs` elapse, return the bytes -- asserts what the child actually inherits."""
+    or `secs` elapse, return the bytes -- asserts what the child actually inherits.
+    The fast path breaks on the needle (or child EOF) immediately; `secs` is only a
+    generous upper bound so a SLOW child START under heavy parallel-runner CPU
+    contention cannot return truncated output (which would flake the assertion)."""
     import select as _selce
     _t = SecureTerminal(command=cmd)
     _fcntl2.fcntl(_t._fd, _fcntl2.F_SETFL,
@@ -3350,19 +3353,30 @@ _c31 = _bf_cell('\x1b[91;31mX')
 ok(_c31.fg == 'red' and not _c31.bold,
    '_SafeHistoryScreen: a later normal fg (31) overrides an earlier bright fg (91)')
 ok(_bf_cell('\x1b[1mX').bold, '_SafeHistoryScreen: plain SGR 1 still sets bold')
-# EXHAUSTIVE phantom-bold guard (formal-style: the single-SGR-code space is finite, so
-# enumeration is complete proof). pyte conflates BOTH bright fg (90-97) and bright bg
-# (100-107) with bold; the override rewrites both. Assert that across ALL single SGR codes
-# only real bold (SGR 1) sets the bold attr -- catches any future phantom-bold regression
-# (a new colour code, a pyte change) for the whole class, not just SGR 91.
-_bold_codes = [_n for _n in range(0, 108) if _bf_cell('\x1b[%dmX' % _n).bold]
-ok(_bold_codes == [1],
-   'phantom-bold guard: ONLY SGR 1 sets bold across all single SGR codes 0-107 (got %r)'
-   % (_bold_codes,))
+# EXHAUSTIVE phantom-ATTRIBUTE guard (formal-style: the single-SGR-code space is finite, so
+# enumeration is COMPLETE proof, not a spot check). pyte conflates bright fg (90-97) AND
+# bright bg (100-107) with bold; the override rewrites both. Generalize past bold: assert
+# that for EVERY single SGR code, _SafeHistoryScreen sets EXACTLY the attribute that code
+# means and no others -- so no colour/other code can leak a phantom bold (the bug), nor a
+# phantom italics/underline/reverse/strikethrough. pyte MAY DROP faint/blink/conceal/etc.
+# (the safe direction -- shows less, never phantom-more); this proves the no-phantom-MORE
+# half, catching any future regression across the whole attribute class, not just SGR 91.
+_ATTR_OF = {1: 'bold', 3: 'italics', 4: 'underscore', 7: 'reverse', 9: 'strikethrough'}
+_ATTRS = ('bold', 'italics', 'underscore', 'strikethrough', 'reverse')
+_phantom = {}
+for _n in range(0, 120):
+    _cell = _bf_cell('\x1b[%dmX' % _n)
+    _got = tuple(_a for _a in _ATTRS if getattr(_cell, _a))
+    _want = (_ATTR_OF[_n],) if _n in _ATTR_OF else ()
+    if _got != _want:
+        _phantom[_n] = (_got, _want)
+ok(_phantom == {},
+   'phantom-attribute guard: every SGR code 0-119 sets EXACTLY its attribute, none '
+   'phantom (offenders code->(got,want): %r)' % (_phantom,))
 ok(not _bf_cell('\x1b[91;101mX').bold,
-   'phantom-bold guard: bright fg + bright bg together produce no phantom bold')
+   'phantom-attribute guard: bright fg + bright bg together produce no phantom bold')
 ok(_bf_cell('\x1b[1;91;101mX').bold,
-   'phantom-bold guard: explicit SGR 1 with bright fg+bg keeps real bold')
+   'phantom-attribute guard: explicit SGR 1 with bright fg+bg keeps real bold')
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
