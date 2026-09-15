@@ -1090,6 +1090,9 @@ _sh_mcg.rmtree(_cgbase, ignore_errors=True)
 # ---- durable tab ids: unique-per-tab save paths, stable across restart, cleaned ----
 # a fresh, empty config so persist_session defaults True (the restore path runs)
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-uid-cfg-')
+# the state group is a process-global; pin it to the default instance so the direct
+# _ds.save/_ds.clear calls below land in the same subtree a MainWindow(launch=None) uses
+_ds.set_instance_group('default')
 
 def _drain_restore(w):
     for _ in range(60):
@@ -1185,6 +1188,56 @@ ok(not os.path.exists(_ds.tab_file('transcript', 77))
 _ow.close()
 _ow.deleteLater()
 
+# upgrade: a PRE-DURABLE-ID session (tabs with no uid) is not restored, but its old
+# positional logs are PRESERVED (the orphan sweep must not DELETE them -- silent loss)
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uidmig-')
+_ds.set_instance_group('default')
+_ds.ensure_state_dir()
+_ds._write_atomic(_ds.session_path(),
+                  '{"tabs": [{"name": "old0"}, {"name": "old1"}], "active": 0}')
+_ds._write_atomic(_ds._log_path(0), 'OLD0')
+_ds._write_atomic(_ds._log_path(1), 'OLD1')
+_mig = MainWindow()
+_drain_restore(_mig)
+ok(os.path.exists(_ds._log_path(0)) and os.path.exists(_ds._log_path(1)),
+   'upgrade: a pre-durable-id session preserves (never deletes) the old scrollback logs')
+_mig.close()
+_mig.deleteLater()
+
+# --new-instance state ISOLATION: an unnamed --new-instance is a throwaway with its OWN
+# subtree -- it does not restore or touch the primary session, and self-removes on close
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uidnew-')
+_ds.set_instance_group('default')
+_ds.clear()
+_ds.save([{'uid': 0, 'name': 'primary', 'text': 'PRIMARY\n', 'osc': {}}])
+_nw = MainWindow(M._parse_launch_args(['--new-instance']))
+ok(_nw._throwaway and _nw._state_group.startswith(_ds._THROWAWAY_PREFIX),
+   'new-instance: an unnamed --new-instance is a throwaway with its own isolated subtree')
+ok(_nw._user_titles.get(_nw.current(), '') != 'primary',
+   'new-instance: a throwaway does NOT restore the primary session')
+_ndir = os.path.join(_ds._instances_root(), _nw._state_group)
+_nw.closeEvent(_QCE59())                  # -> remove_instance (self-clean)
+ok(not os.path.exists(_ndir),
+   'new-instance: a throwaway removes its own subtree on close (no orphan)')
+_nw.deleteLater()
+_ds.set_instance_group('default')
+ok(bool(_ds.load()) and _ds.load()[0].get('text') == 'PRIMARY\n',
+   'new-instance: the throwaway never touched the primary session')
+
+# a NAMED --instance-group persists + restores its OWN subtree, never the default one
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-uidgrp-')
+_gw5 = MainWindow(M._parse_launch_args(['--instance-group', 'work']))
+ok(not _gw5._throwaway and _gw5._state_group == 'work',
+   'instance-group: a named group is a first-class instance owning its own subtree')
+_gw5.new_tab()
+_gw5.closeEvent(_QCE59())
+_ds.set_instance_group('work')
+ok(bool(_ds.load()),
+   'instance-group: a named instance persists its session to its own subtree')
+ok(not os.path.isdir(os.path.join(_ds._instances_root(), 'default')),
+   'instance-group: the named instance never wrote the default subtree')
+_gw5.deleteLater()
+
 
 # ---- standalone review popup launcher (review_standalone) --------------------
 import io as _io_rs                                             # noqa: E402
@@ -1192,32 +1245,46 @@ import sys as _sys_rs                                          # noqa: E402
 import secure_terminal.review_standalone as _RS               # noqa: E402
 from PyQt6.QtWidgets import QApplication as _QA_rs             # noqa: E402
 
-# holder dispatch: reject prints 'rejected'; deliver prints the delivered text
+# holder dispatch: stdout carries ONLY the delivered payload (exact bytes, no added
+# newline); a Reject writes nothing to stdout and a note to stderr -- so delivering the
+# literal text "rejected" is never confused with a rejection.
 _rs_win = _RS._ReviewWindow()
 _rs_win.bar.show_review(_RS._StandaloneReview('dark'),
                         'ls' + chr(0x200b) + ' -la', 0, kind='paste')
-_rs_buf = _io_rs.StringIO(); _rs_old = _sys_rs.stdout; _sys_rs.stdout = _rs_buf
+_rs_out = _io_rs.StringIO(); _rs_err = _io_rs.StringIO()
+_rs_oout = _sys_rs.stdout; _rs_oerr = _sys_rs.stderr
+_sys_rs.stdout = _rs_out; _sys_rs.stderr = _rs_err
 _rs_win.bar._choose('reject')
-_sys_rs.stdout = _rs_old
-eq(_rs_buf.getvalue(), 'rejected\n', 'review_standalone: reject prints "rejected"')
+_sys_rs.stdout = _rs_oout; _sys_rs.stderr = _rs_oerr
+eq(_rs_out.getvalue(), '', 'review_standalone: reject writes nothing to stdout')
+eq(_rs_err.getvalue(), 'rejected\n', 'review_standalone: reject notes on stderr')
 
 _rs_w2 = _RS._ReviewWindow()
 _rs_w2.bar.show_review(_RS._StandaloneReview('light'), 'echo hello', 0, kind='clipboard')
-_rs_buf = _io_rs.StringIO(); _sys_rs.stdout = _rs_buf
+_rs_out = _io_rs.StringIO(); _sys_rs.stdout = _rs_out
 _rs_w2.bar._choose('deliver')
-_sys_rs.stdout = _rs_old
-ok('hello' in _rs_buf.getvalue(), 'review_standalone: deliver prints the delivered text')
-# the copy direction dispatches to its own method
-_rs_buf = _io_rs.StringIO(); _sys_rs.stdout = _rs_buf
+_sys_rs.stdout = _rs_oout
+ok('echo hello' in _rs_out.getvalue() and not _rs_out.getvalue().endswith('\n'),
+   'review_standalone: deliver writes the exact delivered bytes, no added newline')
+# the copy direction dispatches to its own method, exact bytes on stdout
+_rs_out = _io_rs.StringIO(); _sys_rs.stdout = _rs_out
 _RS._StandaloneReview('dark').dispatch_pending_copy('unicode', 'x')
-_sys_rs.stdout = _rs_old
-eq(_rs_buf.getvalue(), 'x\n', 'review_standalone: copy dispatch prints the delivered text')
+_sys_rs.stdout = _rs_oout
+eq(_rs_out.getvalue(), 'x', 'review_standalone: copy dispatch writes exact delivered bytes')
+# delivering the literal text "rejected" is NOT confused with a Reject
+_rs_out = _io_rs.StringIO(); _rs_err = _io_rs.StringIO()
+_sys_rs.stdout = _rs_out; _sys_rs.stderr = _rs_err
+_RS._StandaloneReview('dark').dispatch_pending_paste('unicode', 'rejected')
+_sys_rs.stdout = _rs_oout; _sys_rs.stderr = _rs_oerr
+eq((_rs_out.getvalue(), _rs_err.getvalue()), ('rejected', ''),
+   'review_standalone: delivering "rejected" hits stdout, not the reject stderr note')
 
-# _resolve_payload: --text wins; an empty/absent pipe falls back to the sample;
-# piped content is used (trailing newline stripped)
+# _resolve_payload: --text and piped stdin are used VERBATIM (nothing stripped); the
+# sample fills in only for truly empty stdin.
 class _NS_rs:
-    text = 'given'
-eq(_RS._resolve_payload(_NS_rs()), 'given', 'review_standalone: --text is used verbatim')
+    text = 'given\n\n'
+eq(_RS._resolve_payload(_NS_rs()), 'given\n\n',
+   'review_standalone: --text is used verbatim (trailing newlines kept)')
 class _NoText_rs:
     text = None
 
@@ -1234,12 +1301,15 @@ try:
     _sys_rs.stdin = _FakeStdin_rs(True)                 # a real terminal, no pipe
     ok(_RS._resolve_payload(_NoText_rs()) == _RS._SAMPLE,
        'review_standalone: no --text and no pipe -> the built-in sample')
-    _sys_rs.stdin = _FakeStdin_rs(False, '   ')         # empty pipe
+    _sys_rs.stdin = _FakeStdin_rs(False, '')            # truly empty pipe
     ok(_RS._resolve_payload(_NoText_rs()) == _RS._SAMPLE,
-       'review_standalone: an empty pipe falls back to the sample')
+       'review_standalone: a truly empty pipe falls back to the sample')
+    _sys_rs.stdin = _FakeStdin_rs(False, '   ')         # whitespace IS content
+    eq(_RS._resolve_payload(_NoText_rs()), '   ',
+       'review_standalone: whitespace-only piped input is used verbatim, not the sample')
     _sys_rs.stdin = _FakeStdin_rs(False, 'piped cmd\n')
-    eq(_RS._resolve_payload(_NoText_rs()), 'piped cmd',
-       'review_standalone: piped stdin is used (newline stripped)')
+    eq(_RS._resolve_payload(_NoText_rs()), 'piped cmd\n',
+       'review_standalone: piped stdin is used verbatim (trailing newline kept)')
 finally:
     _sys_rs.stdin = _o_stdin_rs
 

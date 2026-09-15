@@ -404,6 +404,71 @@ session.purge_orphans(set())             # unreadable state dir -> swallowed
 ok(True, 'session: purge_orphans on a missing state dir does not raise')
 os.environ['XDG_STATE_HOME'] = _state_root
 
+# load() is defensive against a crafted/corrupt index: a JSON bool id (True==1) must
+# not read tab-1.log (scrollback aliasing), and a DUPLICATE id must not clone one tab's
+# history onto two tabs
+_load_root = tempfile.mkdtemp()
+os.environ['XDG_STATE_HOME'] = _load_root
+session.ensure_state_dir()
+session._write_atomic(session._log_path(1), 'REAL_TAB_1')
+session._write_atomic(session.session_path(),
+                      json.dumps({'tabs': [{'uid': True, 'name': 'boolid'},
+                                           {'uid': 1, 'name': 'real'}]}))
+_bl = session.load()
+eq(_bl[0].get('text'), '',
+   'session: a JSON-bool id is rejected (no scrollback aliasing from True==1)')
+eq(_bl[1].get('text'), 'REAL_TAB_1', 'session: the real id-1 tab still loads its own log')
+session._write_atomic(session._log_path(7), 'ONLY_ONCE')
+session._write_atomic(session.session_path(),
+                      json.dumps({'tabs': [{'uid': 7, 'name': 'first'},
+                                           {'uid': 7, 'name': 'second'}]}))
+_dl = session.load()
+eq((_dl[0].get('text'), _dl[1].get('text')), ('ONLY_ONCE', ''),
+   'session: a duplicate id loads once; the clone restores empty (no history aliasing)')
+# save() keeps its "Never raises" contract for a tab dict with no uid (positional log)
+session.save([{'text': 'nouid'}])
+ok(os.path.exists(session._log_path(0)),
+   'session: save() tolerates a missing uid (never raises; falls back to the position)')
+os.environ['XDG_STATE_HOME'] = _state_root
+
+# per-instance state namespacing: each group owns an isolated subtree, a crafted group
+# is sanitized to one safe component, a throwaway self-removes, and gc prunes stale ones
+_ns_root = tempfile.mkdtemp()
+os.environ['XDG_STATE_HOME'] = _ns_root
+eq(session.instance_group(), 'default', 'session: the default instance group is "default"')
+ok(os.path.basename(session._state_dir()) == 'default',
+   'session: the default group state dir is the default/ subtree')
+session.set_instance_group('work')
+session.save([{'uid': 0, 'name': 'w', 'text': 'WORK'}])
+session.set_instance_group('default')
+session.save([{'uid': 0, 'name': 'd', 'text': 'DEF'}])
+session.set_instance_group('work')
+eq(session.load()[0].get('text'), 'WORK',
+   'session: instance groups are isolated -- one group never reads another\'s log')
+session.set_instance_group('../../etc')          # traversal must not escape the state dir
+_esc = session._state_dir()
+ok(os.path.dirname(_esc) == os.path.join(_ns_root, 'secure-terminal')
+   and '/' not in os.path.basename(_esc),
+   'session: a crafted instance group is sanitized to one in-tree component')
+session.set_instance_group(session._THROWAWAY_PREFIX + 'abc')
+session.save([{'uid': 0, 'text': 'THROW'}])
+_tdir = session._state_dir()
+session.remove_instance()
+ok(not os.path.exists(_tdir), 'session: remove_instance removes only its own subtree')
+session.set_instance_group('default')
+eq(session.load()[0].get('text'), 'DEF',
+   'session: remove_instance left the other groups intact')
+session.set_instance_group(session._THROWAWAY_PREFIX + 'old')
+session.save([{'uid': 0, 'text': 'x'}])
+_old_dir = session._state_dir()
+os.utime(_old_dir, (0, 0))                       # age it to 1970
+session.gc_instances(max_age_days=30)
+ok(not os.path.exists(_old_dir), 'session: gc_instances prunes a stale throwaway subtree')
+ok(os.path.isdir(os.path.join(_ns_root, 'secure-terminal', 'default')),
+   'session: gc_instances never touches a named/default subtree')
+session.set_instance_group('default')
+os.environ['XDG_STATE_HOME'] = _state_root
+
 
 # ============================ settings =======================================
 
@@ -414,25 +479,34 @@ os.environ['XDG_CONFIG_HOME'] = _cfg_root
 ok(settings.config_dirs()[-1].endswith('secure-terminal.d'),
    'settings: config_dirs ends with the user drop-in directory')
 
-# save then load round-trips a user value; a locked key is NOT written out
-settings.save({'font_size': '12', 'theme': 'dark', 'remote_control': 'on'},
-              locked=('remote_control',))
-_cfg = settings.load()
-eq(_cfg.get('font_size'), '12', 'settings: a saved user value is loaded back')
-ok('remote_control' not in _cfg,
-   'settings: a locked key is not persisted to the user file')
-ok(not _cfg.is_locked('font_size'),
-   'settings: an unlocked key reports is_locked False')
+# Isolate from HOST system drop-ins: _system_dirs is hardcoded (not XDG-driven), so
+# without this settings.load() merges the real /etc/secure-terminal.d + /usr/local/etc
+# admin configs -- a live remote_control=true there would make the locked-key assertion
+# below fail spuriously. The suite-wide convention (cf. test_secure_terminal/test_widget).
+_o_sysd0 = settings._system_dirs
+settings._system_dirs = lambda: [tempfile.mkdtemp(prefix='st-emptysys-')]
+try:
+    # save then load round-trips a user value; a locked key is NOT written out
+    settings.save({'font_size': '12', 'theme': 'dark', 'remote_control': 'on'},
+                  locked=('remote_control',))
+    _cfg = settings.load()
+    eq(_cfg.get('font_size'), '12', 'settings: a saved user value is loaded back')
+    ok('remote_control' not in _cfg,
+       'settings: a locked key is not persisted to the user file')
+    ok(not _cfg.is_locked('font_size'),
+       'settings: an unlocked key reports is_locked False')
 
-# save() excludes PRIVILEGED_ONLY (remote_control) INDEPENDENT of the caller's locked=:
-# a direct save with no locked= must still never persist it (defence in depth -- a future
-# caller that forgets locked= must not be able to write the admin-only key).
-settings.save({'remote_control': 'true', 'zoom': '4'})       # NB: no locked= passed
-_rcd: dict[str, str] = {}
-settings._parse_into(settings.user_config_file(), _rcd)
-ok('remote_control' not in _rcd,
-   'settings: save() never persists a PRIVILEGED_ONLY key even without locked=')
-eq(_rcd.get('zoom'), '4', 'settings: save() still writes the unlocked keys')
+    # save() excludes PRIVILEGED_ONLY (remote_control) INDEPENDENT of the caller's
+    # locked=: a direct save with no locked= must still never persist it (defence in
+    # depth -- a future caller that forgets locked= must not write the admin-only key).
+    settings.save({'remote_control': 'true', 'zoom': '4'})   # NB: no locked= passed
+    _rcd: dict[str, str] = {}
+    settings._parse_into(settings.user_config_file(), _rcd)
+    ok('remote_control' not in _rcd,
+       'settings: save() never persists a PRIVILEGED_ONLY key even without locked=')
+    eq(_rcd.get('zoom'), '4', 'settings: save() still writes the unlocked keys')
+finally:
+    settings._system_dirs = _o_sysd0
 
 # ---- set_user_key / update_user honor an admin lock -------------------------
 # The lock path is exercised by monkeypatching _system_dirs in-process (the

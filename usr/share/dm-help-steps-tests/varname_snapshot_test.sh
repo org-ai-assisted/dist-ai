@@ -32,6 +32,19 @@ export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+## Host/local-only. The committed snapshots are generated on a developer
+## checkout; CI's environment diverges in many normalization-relevant ways that
+## no dev-generated snapshot can match: the GitHub workspace path is neither
+## $HOME nor the checkout dir (so dist_parent_folder etc. do not normalize), no
+## ~/buildconfig.d (so openpgp paths resolve to @DM@ not @HOME@), CI-only vars,
+## and cowbuilder config. The snapshot is the safety net for a developer running
+## a 'variables' refactor against their OWN checkout; it is not meaningful in CI.
+if [ "${CI:-}" = "true" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+   printf '%s\n' "SKIP: varname_snapshot is host/local-only -- run it on a dev checkout to validate a 'variables' refactor; CI's environment cannot match a dev-generated snapshot." >&2
+   ## style-ok: allow-skip: host/local-only -- committed snapshots are dev-generated and CI's environment diverges (workspace paths, absent ~/buildconfig.d, CI vars); operator-authorized 2026-09-15
+   exit 77
+fi
+
 committed_dir="${test_dir}/varname-snapshots"
 if [ ! -d "${committed_dir}" ]; then
    printf '%s\n' "FATAL: committed snapshots not found at '${committed_dir}'." >&2

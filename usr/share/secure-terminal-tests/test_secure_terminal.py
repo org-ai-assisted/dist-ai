@@ -1582,11 +1582,12 @@ _tabs = [{'uid': 0, 'name': 'a', 'text': 'l1\nl2\nl3', 'zoom': 100},
          {'uid': 1, 'name': 'b', 'text': 'x'}]
 SESS.save(_tabs)
 eq(SESS.load(), _tabs, 'session round-trips')
-# each tab's scrollback is its own log file; the index json holds no bulk text
+# each tab's scrollback is its own log file; the index json holds no bulk text.
+# The state lives under the per-instance subtree (SESS._state_dir(), default group).
 import glob as _glob                                # noqa: E402
-_sdir = os.path.join(os.environ['XDG_STATE_HOME'], 'secure-terminal')
+_sdir = SESS._state_dir()
 eq(len(_glob.glob(os.path.join(_sdir, 'tab-*.log'))), 2, 'one log file per tab')
-with open(os.path.join(_sdir, 'tab-0.log'), encoding='utf-8') as _h:
+with open(SESS._log_path(0), encoding='utf-8') as _h:
     eq(_h.read(), 'l1\nl2\nl3', 'tab-0 log holds that tab scrollback')
 with open(SESS.session_path(), encoding='utf-8') as _h:
     ok('l1\nl2\nl3' not in _h.read(), 'index json holds no scrollback text')
