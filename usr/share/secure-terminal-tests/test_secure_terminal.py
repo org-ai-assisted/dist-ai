@@ -8,8 +8,10 @@
 """
 Test secure-terminal's pure sanitization core (secure_terminal.sanitize) and a
 static HTML-safety property of the widget layer. The core is GUI-free, so it is
-exercised directly with no PyQt6. Exit 0 on full pass, 1 on any failure, 77
-(SKIP) when the module cannot be imported.
+exercised directly with no PyQt6. Exit 0 on full pass, 1 on any failure --
+including an import failure, which fails CLOSED (not a SKIP): a broken import
+must not let the largest sanitization suite report success while asserting
+nothing.
 
 Source here is pure ASCII: codepoints are numbers and strings are built with
 chr()/escape sequences, never raw non-ASCII bytes.

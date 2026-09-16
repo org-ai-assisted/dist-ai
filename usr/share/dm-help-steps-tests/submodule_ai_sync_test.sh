@@ -64,12 +64,14 @@ shimbin="${workspace}/shimbin"
 mkdir --parents -- "${shimbin}"
 cat > "${shimbin}/git" <<'SHIM'
 #!/bin/bash
-prev=""
+## Detect 'submodule ... update' even with options between (git submodule --quiet
+## update): track that 'submodule' was seen, not just the immediately-prior arg.
+seen_submodule="false"
 for a in "$@"; do
-   if [ "${prev}" = "submodule" ] && [ "${a}" = "update" ]; then
+   if [ "${seen_submodule}" = "true" ] && [ "${a}" = "update" ]; then
       printf 'SUBMODULE_UPDATE %s\n' "$*" >> "${SUBUPDATE_LOG}"
    fi
-   prev="${a}"
+   [ "${a}" = "submodule" ] && seen_submodule="true"
 done
 exec "${REAL_GIT}" "$@"
 SHIM
@@ -178,6 +180,15 @@ new_fork "${workspace}/fork-wu.git" "${workspace}/drv-wu"
 add_sub "${superA}" "${workspace}/fork-wu.git" wrongupstream
 gitq -C "${superA}/wrongupstream" config branch.ai.merge refs/heads/master
 
+## wrongremote: on ai at the fork tip, upstream BRANCH is 'ai' but the tracked
+## REMOTE is a FOREIGN one -- a `git pull` would merge an untrusted remote's 'ai'
+## into ours. Tool must repoint branch.ai.remote at org-ai-assisted.
+new_fork "${workspace}/fork-wr.git" "${workspace}/drv-wr"
+add_sub "${superA}" "${workspace}/fork-wr.git" wrongremote
+gitq -C "${superA}/wrongremote" remote add foreign "file://${workspace}/fork-wr.git"
+gitq -C "${superA}/wrongremote" config branch.ai.remote foreign
+gitq -C "${superA}/wrongremote" config branch.ai.merge refs/heads/ai
+
 ## Parent superA: mis-set its OWN 'ai' upstream to master. superA has no fork ai,
 ## so the tool must CLEAR the upstream (not point it anywhere).
 gitq -C "${superA}" config branch.ai.remote org-ai-assisted
@@ -260,6 +271,11 @@ if [ -z "$(gitq -C "${superA}" config branch.ai.merge 2>/dev/null || true)" ]; t
    pass "parent ai upstream (master, no fork ai) was cleared"
 else
    fail "parent ai upstream not cleared (still '$(gitq -C "${superA}" config branch.ai.merge 2>/dev/null || true)')"
+fi
+if [ "$(gitq -C "${superA}/wrongremote" config branch.ai.remote)" = "org-ai-assisted" ]; then
+   pass "submodule ai upstream tracking a FOREIGN remote was repointed to org-ai-assisted"
+else
+   fail "submodule ai upstream remote not corrected (still '$(gitq -C "${superA}/wrongremote" config branch.ai.remote 2>/dev/null || true)')"
 fi
 require_result "${real_out}" "ai upstream corrected" "summary reports the corrected ai upstream(s)"
 
@@ -611,6 +627,43 @@ if [ "$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)" = 
    pass "ai-upstream correction runs AFTER fetch (SET to org/ai, not cleared)"
 else
    fail "upstream mis-corrected -- post-fetch ordering bug (got '$(gitq -C "${superU}/uord" config branch.ai.merge 2>/dev/null || true)')"
+fi
+
+## =============================================================================
+## prune: a fork that published 'ai', got fetched (tracking ref cached by add_sub),
+## then DELETED 'ai'. Without --prune on the tool's fetch the stale
+## refs/remotes/org-ai-assisted/ai survives and the missing-tip check treats the
+## unpublished branch as published against an obsolete tip; --prune makes it STOP.
+## =============================================================================
+superP="${workspace}/superP"
+new_super "${superP}"
+new_fork "${workspace}/fork-prune.git" "${workspace}/drv-prune"
+add_sub "${superP}" "${workspace}/fork-prune.git" pruned
+gitq -C "${workspace}/drv-prune" push --quiet fork --delete ai
+
+rc=0
+p_out="$("${tool}" --dir "${superP}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "deleted-fork-ai run STOPs (exit 1)"
+else
+   fail "deleted-fork-ai run exited ${rc}; output:<<<${p_out}>>>"
+fi
+require_result "${p_out}" "never published" \
+   "a deleted fork 'ai' is pruned and STOPs as unpublished (not a stale-tip false success)"
+
+## =============================================================================
+## --dir with an EMPTY value must ERROR, not silently fall back to cwd (which could
+## sync an unintended checkout with exit 0).
+## =============================================================================
+## Assert the PARSE-TIME rejection specifically (message), not just exit 2: the old
+## fall-back-to-cwd path also exits 2 when cwd is not a dm checkout, which would let
+## this pass vacuously while the silent-cwd bug stands.
+rc=0
+dir_err="$("${tool}" --dir "" --dry-run 2>&1)" || rc=$?
+if [ "${rc}" -eq 2 ] && [[ "${dir_err}" == *'non-empty value'* ]]; then
+   pass "--dir with an empty value is rejected at parse (no silent cwd fallback)"
+else
+   fail "--dir '' not rejected at parse (rc=${rc}): <<<${dir_err}>>>"
 fi
 
 ## =============================================================================
