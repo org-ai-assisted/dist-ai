@@ -151,7 +151,7 @@ expect_accepted 'state block unrecorded, nothing to compare against' \
    '18.2.2.0-217-gdeadbeef' \
    'unrecorded (test fixture)'
 
-## --dry-run must emit the SAME record as a real run, or the fast path proves
+## --force must emit the SAME record as a real run, or the fast path proves
 ## nothing about the slow one. It skips ONLY the image existence check.
 dry_image="${workdir}/dry-image.raw"
 printf '%s\n' 'Source-Commit: abc123def456' 'Submodule-State:' ' abc123 packages/example (v1)' \
@@ -161,12 +161,12 @@ env dist_build_version='18.2.2.0-217-gabc123def456' binary_build_folder_dist="${
    bash -- "${subject}" --image "${dry_image}" --target qcow2 \
    --output "${workdir}/real-vs-dry.real" >/dev/null 2>&1
 env dist_build_version='18.2.2.0-217-gabc123def456' binary_build_folder_dist="${workdir}" \
-   bash -- "${subject}" --dry-run --image "${dry_image}" --target qcow2 \
+   bash -- "${subject}" --force --image "${dry_image}" --target qcow2 \
    --output "${workdir}/real-vs-dry.dry" >/dev/null 2>&1
 if cmp --silent -- "${workdir}/real-vs-dry.real" "${workdir}/real-vs-dry.dry"; then
-   pass '--dry-run emits a record identical to a real run'
+   pass '--force emits a record identical to a real run'
 else
-   fail '--dry-run record DIFFERS from a real run -- the fast path does not model the slow one'
+   fail '--force record DIFFERS from a real run -- the fast path does not model the slow one'
 fi
 
 ## ... and it must still work when the image does not exist at all, which is the
@@ -174,24 +174,24 @@ fi
 safe-rm --force -- "${dry_image}"
 dry_rc=0
 env dist_build_version='18.2.2.0-217-gabc123def456' binary_build_folder_dist="${workdir}" \
-   bash -- "${subject}" --dry-run --image "${dry_image}" --target qcow2 \
+   bash -- "${subject}" --force --image "${dry_image}" --target qcow2 \
    --output "${workdir}/real-vs-dry.noimage" >/dev/null 2>&1 || dry_rc="$?"
 if [ "${dry_rc}" -eq 0 ] \
    && cmp --silent -- "${workdir}/real-vs-dry.real" "${workdir}/real-vs-dry.noimage"; then
-   pass '--dry-run works with NO image present and still matches'
+   pass '--force works with NO image present and still matches'
 else
-   fail "--dry-run failed or differed with no image present (rc=${dry_rc})"
+   fail "--force failed or differed with no image present (rc=${dry_rc})"
 fi
 
-## Without --dry-run a missing image must STILL be refused: the fast path is opt-in.
+## Without --force a missing image must STILL be refused: the fast path is opt-in.
 strict_rc=0
 env dist_build_version='18.2.2.0-217-gabc123def456' binary_build_folder_dist="${workdir}" \
    bash -- "${subject}" --image "${dry_image}" --target qcow2 \
    --output "${workdir}/real-vs-dry.strict" >/dev/null 2>&1 || strict_rc="$?"
 if [ "${strict_rc}" -ne 0 ]; then
-   pass 'without --dry-run a missing image is still refused'
+   pass 'without --force a missing image is still refused'
 else
-   fail 'a missing image was accepted WITHOUT --dry-run -- the check is gone, not opt-in'
+   fail 'a missing image was accepted WITHOUT --force -- the check is gone, not opt-in'
 fi
 
 ## An image built with --reproducible-dist-build-version is NOT what an official
@@ -203,7 +203,7 @@ printf '%s\n' 'Source-Commit: abc123def456' 'Submodule-State:' ' abc123 packages
 printf '%s' '' > "${workdir}/norm.raw"
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
    dist_build_version_reproducible='true' \
-   bash -- "${subject}" --dry-run --image "${workdir}/norm.raw" --target qcow2 \
+   bash -- "${subject}" --force --image "${workdir}/norm.raw" --target qcow2 \
    --output "${workdir}/normalized.bi" >/dev/null 2>&1
 if grep --quiet '^Version-Normalized: true' -- "${workdir}/normalized.bi"; then
    pass 'a normalized build is marked Version-Normalized in the record'
@@ -218,7 +218,7 @@ printf '%s' '' > "${workdir}/norm2.raw"
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
    dist_build_version_reproducible='true' \
    dist_build_version_unnormalized='18.2.2.0-219-gdeadbeefcafe' \
-   bash -- "${subject}" --dry-run --image "${workdir}/norm2.raw" --target qcow2 \
+   bash -- "${subject}" --force --image "${workdir}/norm2.raw" --target qcow2 \
    --output "${workdir}/normalized2.bi" >/dev/null 2>&1
 if grep --quiet '^Source-Version-Unnormalized: 18.2.2.0-219-gdeadbeefcafe' -- "${workdir}/normalized2.bi"; then
    pass 'the record keeps the UNNORMALIZED version alongside the normalized one'
@@ -234,7 +234,7 @@ fi
 ## ...and an ordinary build must be byte-unchanged, or every existing comparison
 ## breaks on a field that was not there before.
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
-   bash -- "${subject}" --dry-run --image "${workdir}/norm.raw" --target qcow2 \
+   bash -- "${subject}" --force --image "${workdir}/norm.raw" --target qcow2 \
    --output "${workdir}/plain.bi" >/dev/null 2>&1
 if grep --quiet 'Version-Normalized' -- "${workdir}/plain.bi"; then
    fail 'an ordinary build gained a Version-Normalized field it should not have'
