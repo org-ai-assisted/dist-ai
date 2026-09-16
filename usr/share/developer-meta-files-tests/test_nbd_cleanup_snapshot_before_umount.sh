@@ -70,8 +70,10 @@ fi
 
 ## The line closing the collection loop that reads /proc/mounts.
 collect_done_line="$( grep --line-number --extended-regexp -- '^done < /proc/mounts$' "${subject}" | head --lines=1 | cut --delimiter=: --fields=1 )"
-## The first umount action.
-first_umount_line="$( grep --line-number --fixed-strings -- 'umount' "${subject}" | head --lines=1 | cut --delimiter=: --fields=1 )"
+## The first umount action. Drop comment-line hits (a header mentioning 'umount'
+## would otherwise point the ordering check at prose, not code) while keeping the
+## original line numbers for the comparison below.
+first_umount_line="$( grep --line-number --fixed-strings -- 'umount' "${subject}" | grep --invert-match --extended-regexp -- '^[0-9]+:[[:space:]]*#' | head --lines=1 | cut --delimiter=: --fields=1 )"
 
 ## --- 1. the collection loop reads /proc/mounts and closes cleanly ------------
 if [ -n "${collect_done_line}" ]; then

@@ -48,9 +48,17 @@ fail() {
    test_failures=$((test_failures + 1))
 }
 
+## Match against CODE only (drop full-line comments): a structural assertion must
+## not be satisfied -- or a forbidden pattern hidden -- by prose in a comment. A
+## security check like '--max-filesize' otherwise passes on code that dropped the
+## flag as long as a comment still mentions it.
+## Code with full-line comments stripped, so a match cannot land in prose.
+code_of() {
+   grep --invert-match --extended-regexp -- '^[[:space:]]*#' "${dmf}/$1" || true
+}
 ## $1 file, $2 pattern (ERE), $3 label
 assert_has() {
-   if grep --quiet --extended-regexp -- "$2" "${dmf}/$1"; then
+   if grep --quiet --extended-regexp -- "$2" <<< "$(code_of "$1")"; then
       pass "$3"
    else
       fail "$3 (pattern '$2' absent from $1)"
@@ -58,7 +66,7 @@ assert_has() {
 }
 ## $1 file, $2 pattern (ERE), $3 label
 assert_absent() {
-   if grep --quiet --extended-regexp -- "$2" "${dmf}/$1"; then
+   if grep --quiet --extended-regexp -- "$2" <<< "$(code_of "$1")"; then
       fail "$3 (forbidden pattern '$2' present in $1)"
    else
       pass "$3"

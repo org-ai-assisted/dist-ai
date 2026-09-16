@@ -66,7 +66,11 @@ if [ -z "${subject}" ]; then
 fi
 
 ## --- STRUCTURAL -------------------------------------------------------------
-if grep --quiet --fixed-strings -- 'pkg="whonix-${whonix_role}-${whonix_virt}-${whonix_ui}"' "${subject}"; then
+## Match CODE only (drop full-line comments): a migration comment naming a retired
+## package name must not read as the name being present, nor may a comment satisfy
+## the composition / virt-axis checks.
+code="$(grep --invert-match --extended-regexp -- '^[[:space:]]*#' "${subject}" || true)"
+if grep --quiet --fixed-strings -- 'pkg="whonix-${whonix_role}-${whonix_virt}-${whonix_ui}"' <<< "${code}"; then
    pass "structural: composes the canonical whonix-<role>-<virt>-<ui> meta-package name"
 else
    fail "structural: the canonical name composition is missing"
@@ -74,7 +78,7 @@ fi
 ## The retired names must be gone (each once produced an apt 'no such package').
 for retired in 'non-qubes-whonix-gateway' 'qubes-whonix-gateway-kde' \
    'qubes-whonix-workstation' 'non-qubes-whonix-workstation-kde'; do
-   if grep --quiet --fixed-strings -- "${retired}" "${subject}"; then
+   if grep --quiet --fixed-strings -- "${retired}" <<< "${code}"; then
       fail "structural: the retired name '${retired}' is still present"
    else
       pass "structural: the retired name '${retired}' is gone"
@@ -83,8 +87,8 @@ done
 ## The virt axis derives from dist_build_qubes: 'qubes' or the current 'vm' word
 ## (the non-qubes leaf; 'nonqubes' is a shared intermediate node, not installed
 ## directly -- see https://www.kicksecure.com/wiki/Dev/Metapackages).
-if grep --quiet --fixed-strings -- 'whonix_virt="vm"' "${subject}" \
-   && grep --quiet --fixed-strings -- 'whonix_virt="qubes"' "${subject}"; then
+if grep --quiet --fixed-strings -- 'whonix_virt="vm"' <<< "${code}" \
+   && grep --quiet --fixed-strings -- 'whonix_virt="qubes"' <<< "${code}"; then
    pass "structural: qubes-ness maps to qubes / vm"
 else
    fail "structural: the qubes/vm derivation is missing"
