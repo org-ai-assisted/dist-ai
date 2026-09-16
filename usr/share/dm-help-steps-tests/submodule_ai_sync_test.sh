@@ -616,6 +616,28 @@ else
 fi
 
 ## =============================================================================
+## prune: a fork that published 'ai', got fetched (tracking ref cached by add_sub),
+## then DELETED 'ai'. Without --prune on the tool's fetch the stale
+## refs/remotes/org-ai-assisted/ai survives and the missing-tip check treats the
+## unpublished branch as published against an obsolete tip; --prune makes it STOP.
+## =============================================================================
+superP="${workspace}/superP"
+new_super "${superP}"
+new_fork "${workspace}/fork-prune.git" "${workspace}/drv-prune"
+add_sub "${superP}" "${workspace}/fork-prune.git" pruned
+gitq -C "${workspace}/drv-prune" push --quiet fork --delete ai
+
+rc=0
+p_out="$("${tool}" --dir "${superP}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "deleted-fork-ai run STOPs (exit 1)"
+else
+   fail "deleted-fork-ai run exited ${rc}; output:<<<${p_out}>>>"
+fi
+require_result "${p_out}" "never published" \
+   "a deleted fork 'ai' is pruned and STOPs as unpublished (not a stale-tip false success)"
+
+## =============================================================================
 ## Invariant: no 'git submodule update' ever ran.
 ## =============================================================================
 if [ ! -s "${SUBUPDATE_LOG}" ]; then
