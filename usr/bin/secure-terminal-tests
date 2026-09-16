@@ -174,20 +174,12 @@ for test_file in "${suites[@]}"; do
       continue
    fi
    if [ "${rc}" = '77' ]; then
-      ## a SKIP from the pure test means the module is missing -> same policy as the
-      ## top-of-file guard: FATAL unless the orchestrator authorized the skip.
-      if [ "${test_file}" = "${tests_dir}/test_secure_terminal.py" ]; then
-         if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
-            ## style-ok: allow-skip: target module absent AND the skip was authorized by the orchestrator
-            exit 77
-         fi
-         printf '%s\n' 'secure-terminal-tests: FATAL: secure_terminal module absent (unauthorized absent-target skip)' >&2
-         exit 1
-      fi
-      ## Any OTHER suite that exits 77 skipped instead of running (e.g. a Qt suite on
-      ## missing PyQt6/pyte). Those are required tooling, not an optional target, so an
-      ## unauthorized skip fails closed rather than reading green; an authorized
-      ## (--allow-skip / lenient) run may still skip. Same policy as the guard above.
+      ## A suite that exits 77 SKIPPED instead of running (a Qt suite on missing PyQt6/pyte, or
+      ## the pure canary that could not import the module). Required tooling, not an optional
+      ## target, so an unauthorized skip fails closed rather than reading green; an authorized
+      ## (--allow-skip / lenient) run may still skip. A genuinely-absent checkout is already
+      ## caught by the top-of-file guard before any suite runs. NEVER early-exit here: a LATER
+      ## suite's real failure (rc 1) must still be seen, never masked by this one's skip.
       if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
          printf '%s\n' "secure-terminal-tests: SKIP ${test_file##*/} (exit 77) [authorized]" >&2
          authorized_skip=1

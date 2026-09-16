@@ -127,6 +127,37 @@ else
    failures=$((failures + 1))
 fi
 
+## 6) FAIL-CLOSED aggregation: a LATER suite's real failure (rc 1) must NOT be masked by an
+##    EARLIER suite's authorized skip (rc 77). The result loop must evaluate every suite and
+##    exit 1, never short-circuit to 77 on the first skip. Stub python3 so test_secure_terminal.py
+##    (first in the array) skips (77) while test_fuzz.py genuinely fails (1); authorized.
+stubdir2="$(mktemp -d)"
+fakerepo2="$(mktemp -d)"
+cleanup_stub2() { safe-rm --recursive --force -- "${stubdir2}" "${fakerepo2}" || true; }
+cleanup_all() { cleanup_stub; cleanup_stub2; }
+trap cleanup_all EXIT
+mkdir -p -- "${fakerepo2}/usr/lib/python3/dist-packages/secure_terminal"
+cat > "${stubdir2}/python3" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+   case "${a}" in
+      *test_secure_terminal.py) exit 77 ;;
+      *test_fuzz.py) exit 1 ;;
+   esac
+done
+exit 0
+STUB
+chmod 0755 -- "${stubdir2}/python3"
+rc=0
+env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=${fakerepo2}" "PATH=${stubdir2}:${PATH}" \
+   "${runner}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" -eq 1 ]; then
+   printf 'PASS: a later suite failure is not masked by an earlier authorized skip (exit 1)\n'
+else
+   printf 'FAIL: fail-closed aggregation exited %s, expected 1 (a real failure was masked)\n' "${rc}" >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -gt 0 ]; then
    printf 'secure_terminal_tests_absent_target_test: %s assertion(s) FAILED.\n' "${failures}" >&2
    exit 1
