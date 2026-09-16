@@ -29,9 +29,8 @@
 ## re-implementation), sourcing them in a parent shell and again in a child, and
 ## inspecting the child's SUDO_TO_ROOT -- the exact shape of the production bug.
 ##
-## Needs the same environment as dm-varname-snapshot (sources 'variables' to its
-## dump hook / to completion, which writes the pbuilder config via sudo): the
-## suite runs it elevated. No network, no build.
+## Needs the same environment as dm-varname-snapshot (sourcing pre/variables
+## shells out to sudo): the suite runs it elevated. No network, no build.
 
 set -o errexit
 set -o nounset

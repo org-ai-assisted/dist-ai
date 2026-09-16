@@ -46,18 +46,21 @@ fail() {
 ## variables). A checkout with no buildconfig.d/ yields the loader alone, so a
 ## caller works both before and after the split.
 help_steps_variables_effective() {
-   local hsve_loader hsve_dir hsve_mod
+   local hsve_loader hsve_root hsve_mod
    hsve_loader="$1"
-   ## buildconfig.d/ is a top-level sibling of help-steps/ (source_code_folder_dist),
-   ## so it is one directory ABOVE the loader (help-steps/variables).
-   hsve_dir="$(dirname -- "$(dirname -- "${hsve_loader}")")/buildconfig.d"
+   ## The resolver modules the loader sources live one directory ABOVE it
+   ## (source_code_folder_dist). They loop-source from variables.d/ (the in-tree
+   ## LOGIC dir); buildconfig.d/ now holds only user SETTINGS *.conf. dist-ai is
+   ## shared across derivative-maker refs, so support BOTH layouts: concatenate the
+   ## loader plus every resolver module found under variables.d/ OR the older
+   ## buildconfig.d/, in filename order, so a test sees the effective resolution
+   ## logic as one stream regardless of which checkout it runs against.
+   hsve_root="$(dirname -- "$(dirname -- "${hsve_loader}")")"
    cat -- "${hsve_loader}"
-   grep -oE 'buildconfig\.d/[A-Za-z0-9._-]+\.bsh' -- "${hsve_loader}" \
-      | sed 's#buildconfig\.d/##' | awk '!seen[$0]++' \
-      | while IFS= read -r hsve_mod; do
-           [ -r "${hsve_dir}/${hsve_mod}" ] || continue
-           cat -- "${hsve_dir}/${hsve_mod}"
-        done
+   for hsve_mod in "${hsve_root}"/variables.d/*.bsh "${hsve_root}"/buildconfig.d/*.bsh; do
+      [ -e "${hsve_mod}" ] || continue
+      cat -- "${hsve_mod}"
+   done
 }
 
 ## Resolve the help-steps script named '$1' (first hit wins):

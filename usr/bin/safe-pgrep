@@ -47,10 +47,10 @@ unset _safe_libexec
 
 usage() {
    cat -- <<'EOF'
-Usage: safe-pgrep [--name] [--full] [--list-full|-a] [--count|-c] PATTERN
+Usage: safe-pgrep [--name] [--full|-f] [--list-full|-a] [--count|-c] PATTERN
 
   --name             match the process NAME (pgrep --exact) instead of the full command line
-  --full             match the full command line (default)
+  --full, -f         match the full command line (default; -f accepted for pgrep muscle-memory)
   --list-full, -a    print "PID <command line>" per match, like 'pgrep -a', not bare PIDs
   --count, -c        print only the number of matches (after exclusions)
   --help, -h         this help
@@ -91,16 +91,23 @@ is_own_descendant() {
 }
 
 match_mode='full'
+name_flag='false'
+full_flag='false'
 output='pids'
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --name)
          match_mode='name'
+         name_flag='true'
          shift
          ;;
-      --full)
+      ## -f accepted as an alias for --full: full-match is already the default, so -f is a
+      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f); accepting it keeps that
+      ## reflex from failing as an unknown-option usage error -- the trap these wrappers remove.
+      -f|--full)
          match_mode='full'
+         full_flag='true'
          shift
          ;;
       --list-full|-a)
@@ -129,6 +136,15 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
+## --name (process-name match) and --full/-f (command-line match) are mutually exclusive. Do
+## NOT silently last-wins: a caller who picked --name for its narrower, self-safe matching and
+## then reflexively appended -f (pgrep -f habit) must not be downgraded to full-match without a
+## word -- that quietly discards the safety they asked for. Fail closed on the contradiction.
+if [ "${name_flag}" = 'true' ] && [ "${full_flag}" = 'true' ]; then
+   printf 'safe-pgrep: --name and --full/-f are mutually exclusive\n' >&2
+   exit 2
+fi
+
 if [ "$#" -lt 1 ]; then
    printf 'safe-pgrep: PATTERN required\n' >&2
    usage >&2
@@ -140,16 +156,19 @@ if [ "$#" -gt 0 ]; then
    printf 'safe-pgrep: too many arguments -- exactly one PATTERN is allowed (got extra: %s)\n' "$*" >&2
    exit 2
 fi
-## An EMPTY pattern matches EVERY process ('pgrep --full -- ""'); reject it so a caller that
-## interpolated an unset "$VAR" gets an error, not a list of every process (mirrors safe-pkill).
-if [ -z "${pattern}" ]; then
-   printf 'safe-pgrep: PATTERN must not be empty (an empty pattern matches every process)\n' >&2
+## An EMPTY or WHITESPACE-ONLY pattern matches EVERY process ('pgrep --full -- ""' matches all;
+## '-- " "' matches every process whose argv contains a space, i.e. nearly all). Reject both so a
+## caller that interpolated an unset/blank "$VAR" gets an error, not a list of every process. A
+## whitespace-only pattern also trims to the empty key in the generic-name check -- caught here
+## before it can reach that lookup (mirrors safe-pkill).
+if [[ "${pattern}" =~ ^[[:space:]]*$ ]]; then
+   printf 'safe-pgrep: PATTERN must not be empty or whitespace-only (it would match every process)\n' >&2
    exit 2
 fi
 ## Refuse a bare GENERIC process name: it matches UNRELATED processes in other sessions and the
 ## system tree, so the count/list is meaningless and piping it into kill is the cross-session
 ## GUI-kill trap (`pgrep -f sleep | xargs kill`). Match a specific pattern, or override.
-if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; then
+if ! safe_proc_generic_override && safe_proc_is_generic "${pattern}"; then
    printf 'safe-pgrep: refusing the generic process name "%s" -- it matches OTHER sessions and system processes (piping such a list into kill is the cross-session GUI-kill trap). Use a specific pattern, or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
@@ -222,7 +241,12 @@ for target in "${targets[@]}"; do
       ## errexit, and an unreadable/empty cmdline prints the bare PID rather than 'PID '.
       cmdline=''
       if [ -r "/proc/${target}/cmdline" ]; then
-         cmdline="$(tr '\0' ' ' < "/proc/${target}/cmdline" 2>/dev/null || true)"
+         ## argv is NUL-separated; render separators as spaces. Also fold any LITERAL newline or
+         ## carriage return WITHIN an argv value to a space: a process can put those in its own
+         ## argv (exec -a), and left intact they split one match across multiple output lines,
+         ## breaking the documented one-line-per-match contract (a 'while read pid rest' consumer
+         ## would see a bogus second record).
+         cmdline="$(tr '\0\n\r' '   ' < "/proc/${target}/cmdline" 2>/dev/null || true)"
          cmdline="${cmdline% }"
       fi
       if [ -n "${cmdline}" ]; then

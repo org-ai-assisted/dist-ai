@@ -96,6 +96,13 @@ vs_volatile_derived_re='^(dist_build_version_described)$'
 ## build-config signal: DROPPED by name like the shell-specials.
 vs_loader_plumbing_re='^(variables_d_module)$'
 
+## The file contents that variables.d/99_effects.bsh writes are STAGED into these
+## variables by the resolver modules, then written to disk. They are effect inputs
+## (one is the whole multi-line pbuilder.conf), not part of the variable contract,
+## and the files' correctness is verified by the build steps that read them --
+## DROPPED so the snapshot tracks the variable surface, not staged file bodies.
+vs_effect_staging_re='^(dist_aptgetopt_file_content|dist_build_pbuilder_config_content)$'
+
 ## The EXPORTED-CONTRACT: the interface between 'help-steps/variables' and the rest
 ## of the build. A producer rewrite (file split, helper reuse, declaration block,
 ## effect relocation) legitimately changes internal temporaries and non-consumed
@@ -210,7 +217,8 @@ vs_filter_and_normalize() {
    local dm="$1"
    grep '^declare ' \
       | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" \
-            -v volatilere="${vs_volatile_derived_re}" -v plumbingre="${vs_loader_plumbing_re}" '
+            -v volatilere="${vs_volatile_derived_re}" -v plumbingre="${vs_loader_plumbing_re}" \
+            -v stagingre="${vs_effect_staging_re}" '
            BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
            {
               name = $0
@@ -220,6 +228,7 @@ vs_filter_and_normalize() {
               if (name ~ specialre) next
               if (name ~ volatilere) next
               if (name ~ plumbingre) next
+              if (name ~ stagingre) next
               print
            }' \
       | vs_normalize "${dm}" "${HOME}"
@@ -311,24 +320,32 @@ vs_init_func_baseline() {
 }
 
 ## Drop the baseline functions from a 'declare -f' dump, keeping only the
-## functions 'variables' introduces. Reads 'declare -f' output on stdin. Relies
-## on bash's stable pretty-print format: a definition begins with a
-## 'name () ' header line and its body closes with a '}' at column 0 (nested
-## braces are indented, so a bare '}' only ever closes a function). Then
-## normalize, so a stray checkout path in a body cannot vary the snapshot.
-##
-## Emits ONLY the lines INSIDE a kept function block. Anything outside a block is
-## dropped: leading chatter 'variables' prints while sourcing, and -- critically
-## -- the trailing 'help-steps/pre' EXIT-trap banner (its 'Execution Time: Ns'
-## varies run to run, which would otherwise trip the caller's determinism check).
-## This is the function-path analogue of the variable path's "grep '^declare '".
+## functions 'variables' introduces. Reads 'declare -f' output on stdin. bash's
+## pretty-print starts each definition with a 'name () ' header at column 0 and
+## closes it with a '}' at column 0; nested braces are INDENTED, so the closer is
+## the only bare '}' -- EXCEPT a heredoc body, which bash emits verbatim (not
+## indented), so a heredoc line that is just '}' also sits at column 0. Keying the
+## end off the FIRST bare '}' therefore truncates any function with such a
+## heredoc. Instead buffer each function's lines (header to the next header / EOF)
+## and emit through its LAST bare '}': that is the real closer, so a heredoc's '}'
+## stays in the body and the trailing 'help-steps/pre' EXIT-trap banner (its
+## varying 'Execution Time: Ns') after the closer is dropped. Then normalize, so a
+## stray checkout path in a body cannot vary the snapshot.
 vs_filter_functions() {
    local dm="$1"
    awk -v basefile="${vs_baseline_func_file}" '
+      function flush(   k, last) {
+         if (keep && nbuf > 0) {
+            last = 0
+            for (k = 1; k <= nbuf; k++) if (buf[k] == "}") last = k
+            for (k = 1; k <= last; k++) print buf[k]
+         }
+         nbuf = 0
+      }
       BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
-      /^[A-Za-z_][A-Za-z0-9_]* \(\) $/ { inblock = 1; keep = ($1 in base) ? 0 : 1 }
-      { if (inblock && keep) print }
-      /^}$/ { inblock = 0; keep = 0 }
+      /^[A-Za-z_][A-Za-z0-9_]* \(\) $/ { flush(); keep = ($1 in base) ? 0 : 1 }
+      { if (keep) buf[++nbuf] = $0 }
+      END { flush() }
    ' \
       | vs_normalize "${dm}" "${HOME}"
 }
@@ -364,16 +381,28 @@ vs_capture_functions() {
 ## Extract the bodies of the vs_consumed_funcs from a function snapshot, in the
 ## array's order, each as a 'name ()' header block. Reads a functions.snapshot
 ## file (already baseline-subtracted + normalized) named by $1; writes to stdout.
-## Same bash-pretty-print block shape as vs_filter_functions: 'name ()' header,
-## body until a '}' at column 0. A trailing space after '()' is stripped by
-## vs_normalize, so the header pattern tolerates it being present or absent.
+## Same bash-pretty-print block shape as vs_filter_functions: a 'name ()' header
+## (trailing space stripped by vs_normalize, so tolerate both) to the next header /
+## EOF, emitted through the LAST bare '}' -- the real closer -- so a heredoc body
+## line that is just '}' at column 0 does not truncate the captured body.
 vs_extract_consumed_bodies() {
    local snapshot="$1" fn
    for fn in "${vs_consumed_funcs[@]}"; do
       awk -v want="${fn}" '
-         $0 == want" ()" || $0 == want" () " { inblock = 1 }
-         { if (inblock) print }
-         /^}$/ { inblock = 0 }
+         function flush(   k, last) {
+            if (inblock && nbuf > 0) {
+               last = 0
+               for (k = 1; k <= nbuf; k++) if (buf[k] == "}") last = k
+               for (k = 1; k <= last; k++) print buf[k]
+            }
+            inblock = 0; nbuf = 0
+         }
+         /^[A-Za-z_][A-Za-z0-9_]* \(\) ?$/ {
+            if (inblock) flush()
+            if ($0 == want" ()" || $0 == want" () ") inblock = 1
+         }
+         { if (inblock) buf[++nbuf] = $0 }
+         END { flush() }
       ' "${snapshot}"
    done
 }
