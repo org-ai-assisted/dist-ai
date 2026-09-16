@@ -27,9 +27,11 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-lib="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/libexec/developer-meta-files/signing-lib.bsh"
+## Standalone dmf component checkout wins (DEVELOPER_META_FILES_DIR); else the
+## derivative-maker submodule path.
+lib="${DEVELOPER_META_FILES_DIR:-${dm_checkout}/packages/kicksecure/developer-meta-files}/usr/libexec/developer-meta-files/signing-lib.bsh"
 if [ ! -r "${lib}" ]; then
-   printf '%s\n' "FATAL: signing-lib.bsh not found at '${lib}' (set DERIVATIVE_MAKER_DIR)." >&2
+   printf '%s\n' "FATAL: signing-lib.bsh not found at '${lib}' (set DEVELOPER_META_FILES_DIR or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
 

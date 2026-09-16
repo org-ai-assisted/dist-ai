@@ -86,10 +86,10 @@ fi
 ## The guard under test: from the function head down to the 'mkdir' that follows
 ## it. Driving that slice keeps the test on the real shipped text without needing
 ## qemu-nbd, an image, or root.
-guard="$(sed -n '/^filesystem_mounts_setup()/,/mkdir --parents/p' -- "${subject}")"
+guard="$(sed -n '/^qcow2_filesystem_mounts_setup()/,/mkdir --parents/p' -- "${subject}")"
 
 if [ -z "${guard}" ]; then
-   fail "could not extract filesystem_mounts_setup from ${subject}"
+   fail "could not extract qcow2_filesystem_mounts_setup from ${subject}"
    printf '%s\n' "FAILED: 1 assertion(s)." >&2
    exit 1
 fi

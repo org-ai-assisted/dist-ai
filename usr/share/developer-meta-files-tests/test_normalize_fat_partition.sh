@@ -34,12 +34,14 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-tool="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-normalize-fat-partition"
+## Standalone dmf component checkout wins (DEVELOPER_META_FILES_DIR); else the
+## derivative-maker submodule path; else an installed copy on PATH.
+tool="${DEVELOPER_META_FILES_DIR:-${dm_checkout}/packages/kicksecure/developer-meta-files}/usr/bin/dm-normalize-fat-partition"
 if [ ! -x "${tool}" ]; then
    tool="$( type -P dm-normalize-fat-partition || true )"
 fi
 if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "FATAL: dm-normalize-fat-partition not found (set DERIVATIVE_MAKER_DIR)." >&2
+   printf '%s\n' "FATAL: dm-normalize-fat-partition not found (set DEVELOPER_META_FILES_DIR or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
 for dep in mkfs.fat mcopy mmd; do

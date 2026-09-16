@@ -54,6 +54,7 @@ fail() {
 rel='packages/kicksecure/developer-meta-files/usr/bin/dm-nbd-cleanup'
 subject=""
 for candidate in "${DM_NBD_CLEANUP:-}" \
+   "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-nbd-cleanup" \
    "${dm_checkout}/${rel}" \
    "/usr/bin/dm-nbd-cleanup"; do
    [ -n "${candidate}" ] || continue

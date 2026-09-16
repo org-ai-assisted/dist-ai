@@ -101,8 +101,8 @@ fi
 code="$(printf '%s\n' "${func_src}" | grep --invert-match --extended-regexp -- '^[[:space:]]*#')"
 
 ## --- STRUCTURAL: fast guards on the shipped pipeline ------------------------
-if grep --quiet --extended-regexp -- '[|][[:space:]]*pv[[:space:]]+-s[[:space:]]' <<< "${code}"; then
-   pass "structural: pv runs with an explicit size ('pv -s'), so the meter shows a real percentage"
+if grep --quiet --extended-regexp -- '[|][[:space:]]*pv[[:space:]]+(--size|-s)([[:space:]]|=)' <<< "${code}"; then
+   pass "structural: pv runs with an explicit size ('pv --size'/'pv -s'), so the meter shows a real percentage"
 else
    fail "structural: pv is not given a size; the meter would show throughput only (or was removed)"
 fi

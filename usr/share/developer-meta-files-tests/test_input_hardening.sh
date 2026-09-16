@@ -31,9 +31,11 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-dmf="${dm_checkout}/packages/kicksecure/developer-meta-files"
+## Standalone dmf component checkout wins (DEVELOPER_META_FILES_DIR); else the
+## derivative-maker submodule path.
+dmf="${DEVELOPER_META_FILES_DIR:-${dm_checkout}/packages/kicksecure/developer-meta-files}"
 if [ ! -d "${dmf}/usr" ]; then
-   printf '%s\n' "FATAL: developer-meta-files not found at '${dmf}' (set DERIVATIVE_MAKER_DIR)." >&2
+   printf '%s\n' "FATAL: developer-meta-files not found at '${dmf}' (set DEVELOPER_META_FILES_DIR or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
 

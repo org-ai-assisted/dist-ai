@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Drive the extracted 'filesystem_mounts_setup' guard (argv 1) against a stubbed
+## Drive the extracted 'qcow2_filesystem_mounts_setup' guard (argv 1) against a stubbed
 ## environment, so the branch under test is chosen by the caller and not by
 ## whatever nbd state this machine happens to be in.
 ##
@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 body="$1"
 
@@ -51,4 +52,4 @@ nbd_device_claim() {
 ## sed range ends at the 'mkdir' line, mid-body, on purpose.
 eval "${body}
 }"
-filesystem_mounts_setup /a /b
+qcow2_filesystem_mounts_setup /a /b
