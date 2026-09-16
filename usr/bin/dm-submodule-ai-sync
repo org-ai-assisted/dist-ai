@@ -64,6 +64,17 @@ export LC_ALL=C
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 
+## Hooks are deliberately NOT disabled here. The re-attach/create checkouts below judge
+## success by 'git checkout' rc, and a 'post-checkout' hook exiting non-zero DOES propagate
+## into that rc (git makes the hook's status the checkout's status) -- which would misread a
+## completed checkout as a re-attach failure and STOP a submodule that is in fact on 'ai'.
+## Not guarded on purpose: within scope (happy path / AI accident; no exotic-local-hooks
+## defense) the effective hooks path has no such hook -- the supported environment's global
+## core.hooksPath carries only commit/push gates and SHADOWS any per-repo post-checkout.
+## Forcing core.hooksPath=/dev/null for a condition that does not occur would be over-design
+## (and would itself trip the hooks-path guard). Revisit only if a post-checkout/post-merge
+## hook ever becomes effective for these mechanical ref ops.
+
 AI_BRANCH="ai"
 ## The published fork that carries 'ai' work and that CI fetches (git skill).
 FORK_REMOTE="org-ai-assisted"
