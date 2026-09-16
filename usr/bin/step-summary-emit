@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 tool=''
 column_header='item'
@@ -142,4 +143,10 @@ emit() {
    printf '%s\n' "${parts[@]}"
 }
 
-emit >> "${GITHUB_STEP_SUMMARY}"
+## Best-effort: the summary panel is a cosmetic nicety, so a set-but-unwritable
+## GITHUB_STEP_SUMMARY (e.g. a runner file a differently-owned step created) must
+## NOT fail the caller -- that would turn a passing test suite red on a fabricated
+## signal. Warn and continue, matching the "invoke unconditionally" contract.
+if ! { emit >> "${GITHUB_STEP_SUMMARY}"; } 2>/dev/null; then
+   printf '%s\n' "${0##*/}: WARNING: could not write GITHUB_STEP_SUMMARY (${GITHUB_STEP_SUMMARY}); step summary skipped." >&2
+fi
