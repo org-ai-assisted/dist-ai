@@ -243,8 +243,10 @@ for path in "${sub_paths[@]}"; do
    fi
 
    ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
-   ## never 'submodule update'.
-   if ! git -C "${sub}" fetch --quiet "${FORK_REMOTE}" 2>/dev/null; then
+   ## never 'submodule update'. '--prune': without it a deleted fork 'ai' leaves a
+   ## stale refs/remotes/${FORK_REMOTE}/${AI_BRANCH}, and the missing-tip check below
+   ## would then treat the unpublished branch as published against an obsolete tip.
+   if ! git -C "${sub}" fetch --quiet --prune "${FORK_REMOTE}" 2>/dev/null; then
       if [ "${is_ai_workflow}" = "true" ]; then
          stopped+=( "${path} :: ai-workflow submodule but fetch from '${FORK_REMOTE}' failed" )
       else
@@ -270,6 +272,12 @@ for path in "${sub_paths[@]}"; do
 
    ## Dirty check BEFORE any mutation. A FAILED 'git status' yields empty stdout;
    ## a failure is NOT clean -- STOP rather than act on a repo we could not read.
+   ## '--untracked-files=no' is DELIBERATE: an untracked file is non-destructive to
+   ## the only mutations here (a FF or a re-attach never deletes untracked files),
+   ## and git itself refuses a checkout/FF that WOULD overwrite one -- that collision
+   ## is caught and surfaced downstream as its own STOP. Counting untracked here
+   ## would instead STOP on every benign stray file (editor scratch, a build artifact
+   ## a sibling left) and block every re-run, for no safety gain.
    ## '--ignore-submodules=all': a NESTED submodule pin diff (' M nested', normal
    ## after a non-recursive FF) is not dirt this tool cares about -- flagging it
    ## would falsely STOP and, worse, block every re-run.

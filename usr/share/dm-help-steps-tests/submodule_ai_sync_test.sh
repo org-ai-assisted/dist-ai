@@ -64,12 +64,14 @@ shimbin="${workspace}/shimbin"
 mkdir --parents -- "${shimbin}"
 cat > "${shimbin}/git" <<'SHIM'
 #!/bin/bash
-prev=""
+## Detect 'submodule ... update' even with options between (git submodule --quiet
+## update): track that 'submodule' was seen, not just the immediately-prior arg.
+seen_submodule="false"
 for a in "$@"; do
-   if [ "${prev}" = "submodule" ] && [ "${a}" = "update" ]; then
+   if [ "${seen_submodule}" = "true" ] && [ "${a}" = "update" ]; then
       printf 'SUBMODULE_UPDATE %s\n' "$*" >> "${SUBUPDATE_LOG}"
    fi
-   prev="${a}"
+   [ "${a}" = "submodule" ] && seen_submodule="true"
 done
 exec "${REAL_GIT}" "$@"
 SHIM
