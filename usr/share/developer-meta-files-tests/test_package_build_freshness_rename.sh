@@ -47,9 +47,14 @@ dmf_libexec="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/libexec
 if [ -n "${DEVELOPER_META_FILES_DIR:-}" ]; then
    dmf_libexec="${DEVELOPER_META_FILES_DIR}/usr/libexec/developer-meta-files"
 fi
-if [ ! -r "${caller}" ] || [ ! -d "${dmf_libexec}" ]; then
-   printf '%s\n' "FATAL: derivative-maker superproject checkout not found (set DERIVATIVE_MAKER_DIR)." >&2
+if [ ! -d "${dmf_libexec}" ]; then
+   printf '%s\n' "FATAL: developer-meta-files libexec not found at '${dmf_libexec}' (set DEVELOPER_META_FILES_DIR or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
+fi
+if [ ! -r "${caller}" ]; then
+   printf '%s\n' "SKIP: derivative-maker superproject caller not available (set DERIVATIVE_MAKER_DIR to run the caller-coupling cross-check)." >&2
+   ## style-ok: allow-skip: build-steps.d/2100_create-debian-packages is a derivative-maker superproject artifact, absent in a standalone dmf component checkout
+   exit 77
 fi
 
 new_name='package-build-freshness.bsh'

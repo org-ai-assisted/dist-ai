@@ -41,8 +41,9 @@ fi
 variables_file="${dm_checkout}/help-steps/variables"
 helper_scripts_git="${dm_checkout}/packages/kicksecure/helper-scripts/.git"
 if [ ! -r "${variables_file}" ] || [ ! -e "${helper_scripts_git}" ]; then
-   printf '%s\n' "FATAL: no full derivative-maker checkout at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 1
+   printf '%s\n' "SKIP: no full derivative-maker checkout at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR); help-steps + the helper-scripts submodule are superproject artifacts." >&2
+   ## style-ok: allow-skip: help-steps/variables + the helper-scripts submodule live in the derivative-maker superproject, absent in a standalone dmf component checkout
+   exit 77
 fi
 
 pass() {

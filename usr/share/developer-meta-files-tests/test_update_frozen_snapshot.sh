@@ -6,21 +6,18 @@
 ## AI-Assisted
 
 ## Regression test for developer-meta-files 'dm-update-frozen-snapshot' after its
-## radical simplification: instead of enumerating snapshot.debian.org timestamps,
-## it pins the CURRENT time and verifies the service serves every pinned suite at
-## that instant (snapshot.debian.org resolves a pin to the newest snapshot at or
-## before it, per archive). Drives the REAL tool over a fixture source tree with a
-## STUBBED scurl (probes) + url_to_unixtime (server clock), so no network is touched; asserts:
-##   * served         -> bumps every pin file + the plain timestamp file to a fresh
-##                       well-formed timestamp, both stanzas in lockstep;
-##   * a suite absent  -> errors (mid-sync), writes nothing;
-##   * a backwards pin -> the rollback guard refuses (downgrade protection);
-##   * a transport / rate-limit code -> aborts (exit 2), never "suite absent".
-## Plus a structural guard that the enumeration machinery stayed removed.
-##
-## grep-dctrl (dctrl-tools) + date + sed are real; scurl is stubbed. Self-contained.
+## radical simplification: it pins the local build clock ('date +%s') to
+## build_sources/frozen-snapshot-timestamp and does nothing else. The prior
+## snapshot.debian.org enumeration + server-clock (url_to_unixtime over Tor) +
+## rollback/rate-limit machinery was deliberately removed, and the script carries
+## an explicit "do NOT make this any more complicated" directive. This test drives
+## the REAL tool over a fixture source tree (no network, no root, no build) and
+## asserts:
+##   * STRUCTURAL -- the enumeration / server-clock machinery stays removed and the
+##     pin target is the local 'date +%s' instant;
+##   * BEHAVIOURAL -- it writes a single whole-number Unix timestamp (the current
+##     build clock) to build_sources/frozen-snapshot-timestamp.
 ## style-ok: no-has
-## Needs no root, no network, no build.
 
 set -o errexit
 set -o nounset
@@ -64,180 +61,75 @@ if [ -z "${subject}" ]; then
    printf '%s\n' "FATAL: dm-update-frozen-snapshot not found (set DM_UPDATE_FROZEN_SNAPSHOT)." >&2
    exit 1
 fi
-for tool in grep-dctrl date sed; do
-   if ! command -v "${tool}" >/dev/null; then
-      printf '%s\n' "FATAL: '${tool}' missing; a hard requirement of the tool under test." >&2
-      exit 1
-   fi
-done
+if ! command -v date >/dev/null; then
+   printf '%s\n' "FATAL: 'date' missing; a hard requirement of the tool under test." >&2
+   exit 1
+fi
 
-## --- STRUCTURAL: the enumeration machinery stayed removed -------------------
-for gone in latest_valid_snapshot SNAPSHOT_MR SNAPSHOT_CANDIDATES 'jq '; do
+## --- STRUCTURAL: the complexity stays removed ------------------------------
+## The simplification dropped the snapshot enumeration AND the server-clock path;
+## re-adding either violates the in-script "do NOT make this more complicated".
+for gone in latest_valid_snapshot SNAPSHOT_MR SNAPSHOT_CANDIDATES 'jq ' url_to_unixtime scurl; do
    if grep --quiet --fixed-strings -- "${gone}" "${subject}"; then
-      fail "structural: '${gone}' is back; the tool should pin 'now', not enumerate snapshots"
+      fail "structural: '${gone}' is back; the tool should pin the local clock, not enumerate / probe"
    else
       pass "structural: '${gone}' stays removed"
    fi
 done
-if grep --quiet --extended-regexp -- "date .*--utc.*%Y%m%dT%H%M%SZ|current_utc_timestamp" "${subject}"; then
-   pass "structural: the pin target is the current UTC instant (date)"
+## The pin target is the local build clock via 'date +%s'.
+if grep --quiet --extended-regexp -- "date[[:space:]]+'?\+%s'?" "${subject}"; then
+   pass "structural: the pin target is the local 'date +%s' instant"
 else
-   fail "structural: no current-time pin (date --utc ...); the simplification was reverted"
-fi
-## The clock must come from sdwdate's url_to_unixtime (server time over Tor), NOT
-## the local clock: a fast local clock would pin a future, non-reproducible snapshot.
-if grep --quiet --fixed-strings -- 'url_to_unixtime' "${subject}"; then
-   pass "structural: the server clock comes from url_to_unixtime (not the local clock)"
-else
-   fail "structural: url_to_unixtime is gone; a local-clock pin is not reproducible with a fast clock"
+   fail "structural: no 'date +%s' pin; the simplification was reverted"
 fi
 
-## --- BEHAVIOURAL: drive the real tool over a fixture; scurl + url_to_unixtime stubbed --
+## --- BEHAVIOURAL: drive the real tool over a fixture source tree ------------
 workdir="$(mktemp --directory)"
 cleanup() {
    safe-rm --recursive --force -- "${workdir}"
 }
 trap cleanup EXIT
 
-stub_bin="${workdir}/bin"
-mkdir --parents -- "${stub_bin}"
-## Stub scurl (the clearnet Release probe): returns ${STUB_CODE} (default 302 =
-## served) for a '.../Release' URL, 404 otherwise. The URL is the last argument.
-cat > "${stub_bin}/scurl" <<'STUB'
-#!/bin/bash
-url="${@: -1}"
-case "${url}" in
-   */Release)
-      printf '%s' "${STUB_CODE:-302}"
-      ;;
-   *)
-      printf '%s' '404'
-      ;;
-esac
-STUB
-chmod 0755 -- "${stub_bin}/scurl"
+root="${workdir}/root"
+mkdir --parents -- "${root}/build_sources"
+ts_file="${root}/build_sources/frozen-snapshot-timestamp"
 
-## The server clock comes from sdwdate's url_to_unixtime over Tor. Stub it to a
-## FIXED 2028 unixtime, so the bump is deterministic: a 2020 pin moves forward and
-## a 2099 future pin still trips the rollback guard.
-cat > "${stub_bin}/url_to_unixtime" <<'STUB'
-#!/bin/bash
-printf '%s\n' '1836648000'
-STUB
-chmod 0755 -- "${stub_bin}/url_to_unixtime"
+before="$(date '+%s')"
+rc=0
+derivative_maker_source_code_dir="${root}" bash -- "${subject}" >/dev/null 2>&1 || rc="$?"
+after="$(date '+%s')"
 
-## Lay down a fresh fixture source tree pinned to ${1}.
-make_fixture() {
-   local pin="$1" root="${workdir}/root"
-   safe-rm --recursive --force -- "${root}"
-   mkdir --parents -- "${root}/build_sources"
-   cat > "${root}/build_sources/debian_stable_frozen_clearnet.sources" <<SRC
-## THE REPRODUCIBILITY PIN.
-Types: deb
-URIs: http://127.0.0.1:9977/debian-frozen/${pin}
-Suites: trixie trixie-updates
-Components: main contrib
-
-Types: deb
-URIs: http://127.0.0.1:9977/debian-security-frozen/${pin}
-Suites: trixie-security
-Components: main
-SRC
-   printf '%s\n' "${root}"
-}
-
-## Run the real tool with the stub on PATH; echo its exit code.
-run_tool() {
-   local code="$1" root="$2"
-   shift 2
-   local rc=0
-   PATH="${stub_bin}:${PATH}" STUB_CODE="${code}" \
-      bash -- "${subject}" --source-root "${root}" "$@" >/dev/null 2>&1 || rc="$?"
-   printf '%s' "${rc}"
-}
-
-pins_in() {
-   ## '|| true' so a file with no timestamp yields empty rather than a grep exit 1
-   ## that would trip the caller's errexit/pipefail.
-   grep --only-matching --extended-regexp '[0-9]{8}T[0-9]{6}Z' "$1" | sort --unique || true
-}
-
-old_pin='20200101T000000Z'
-
-## served -> real bump
-root="$(make_fixture "${old_pin}")"
-rc="$(run_tool 302 "${root}")"
-new_pins="$(pins_in "${root}/build_sources/debian_stable_frozen_clearnet.sources")"
 if [ "${rc}" -eq 0 ]; then
-   pass "served: exit 0 (bumped)"
+   pass "exit 0"
 else
-   fail "served: exit ${rc}, expected 0"
+   fail "exit ${rc}, expected 0"
 fi
-## Exactly one timestamp now (both stanzas rewritten in lockstep), well-formed,
-## different from and newer than the old pin.
-if [ "$(printf '%s\n' "${new_pins}" | grep --count .)" -eq 1 ] && [ "${new_pins}" != "${old_pin}" ]; then
-   pass "served: both stanzas bumped in lockstep to a single new pin (${new_pins})"
+if [ -f "${ts_file}" ]; then
+   pass "wrote build_sources/frozen-snapshot-timestamp"
 else
-   fail "served: expected one new pin != ${old_pin}, got '$(printf '%s' "${new_pins}" | tr '\n' ' ')'"
+   fail "did not write build_sources/frozen-snapshot-timestamp"
+   printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
+   exit 1
 fi
-case "${new_pins}" in
-   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
-      pass "served: the new pin is a well-formed snapshot timestamp"
+written="$(cat -- "${ts_file}")"
+case "${written}" in
+   ''|*[!0-9]*)
+      fail "the timestamp is not a whole number: '${written}'"
       ;;
    *)
-      fail "served: the new pin is not a well-formed timestamp: ${new_pins}"
+      pass "the timestamp is a whole number (${written})"
       ;;
 esac
-if [ "${new_pins//[TZ]/}" -gt "${old_pin//[TZ]/}" ]; then
-   pass "served: the new pin is newer than the old (${old_pin} -> ${new_pins})"
+## The pin is the build clock: at or after the instant just before the run, and
+## no later than just after it (a canary that it is 'now', not a fixed value).
+if [ "${written}" -ge "${before}" ] && [ "${written}" -le "${after}" ]; then
+   pass "the timestamp is the current build clock (${before} <= ${written} <= ${after})"
 else
-   fail "served: the new pin is not newer than ${old_pin}"
-fi
-if [ "$(cat -- "${root}/build_sources/frozen-snapshot-timestamp")" = "${new_pins}" ]; then
-   pass "served: the plain timestamp file matches the new pin"
-else
-   fail "served: the plain timestamp file does not match the new pin"
-fi
-
-## a suite absent (404) -> error, no write
-root="$(make_fixture "${old_pin}")"
-rc="$(run_tool 404 "${root}")"
-if [ "${rc}" -eq 1 ]; then
-   pass "suite absent: exit 1 (mid-sync error)"
-else
-   fail "suite absent: exit ${rc}, expected 1"
-fi
-if [ "$(pins_in "${root}/build_sources/debian_stable_frozen_clearnet.sources")" = "${old_pin}" ]; then
-   pass "suite absent: the pin was left unchanged"
-else
-   fail "suite absent: the pin was modified despite the error"
-fi
-
-## backwards (future pin) -> rollback guard refuses
-root="$(make_fixture '20990101T000000Z')"
-rc="$(run_tool 302 "${root}")"
-if [ "${rc}" -eq 1 ]; then
-   pass "rollback: a future pin is refused (exit 1, downgrade protection)"
-else
-   fail "rollback: exit ${rc}, expected 1 (the pin moved backwards)"
-fi
-if [ "$(pins_in "${root}/build_sources/debian_stable_frozen_clearnet.sources")" = '20990101T000000Z' ]; then
-   pass "rollback: the future pin was left unchanged"
-else
-   fail "rollback: the future pin was modified"
-fi
-
-## transport / rate-limit code -> abort (exit 2), never "suite absent"
-root="$(make_fixture "${old_pin}")"
-rc="$(run_tool 429 "${root}")"
-if [ "${rc}" -eq 2 ]; then
-   pass "transport: a 429 aborts (exit 2), not mistaken for 'suite absent'"
-else
-   fail "transport: exit ${rc}, expected 2 for a rate-limit code"
+   fail "the timestamp is not the current build clock (${before} <= ${written} <= ${after} violated)"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-update-frozen-snapshot pins 'now' + verifies (${pass_count} assertions)."
+printf '%s\n' "OK: dm-update-frozen-snapshot pins the local build clock (${pass_count} assertions)."
