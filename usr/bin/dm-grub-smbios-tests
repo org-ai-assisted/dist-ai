@@ -309,7 +309,7 @@ help_steps_variables_effective "${DERIVATIVE_MAKER_DIR}/help-steps/variables" > 
 optin_checks=(
    "cmdline fragment exports the variable to the grub.d helpers|${cmdline_file}|^[[:space:]]*export GRUB_ENABLE_DM_SMBIOS_READER\$"
    "build option --smbios-reader exists|${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd|--smbios-reader\\)"
-   "build option defaults to false|${variables_effective}|^[[:space:]]*set_default_variable[[:space:]]+dist_build_smbios_reader[[:space:]]+\"false\""
+   "build option defaults to false|${variables_effective}|^[[:space:]]*default_if_empty[[:space:]]+dist_build_smbios_reader[[:space:]]+\"false\""
 )
 
 for entry in "${optin_checks[@]}"; do

@@ -102,6 +102,25 @@ else
    fail "override did not bypass the generic refusal (rc=${r_rc}; err: ${r_err})"
 fi
 
+# --- override is TRUTHY, not just non-empty (fail-open regression) ------------
+## `=0`/`=false` (the intuitive "enforce") are NON-truthy and must NOT disable the denylist.
+## Pre-fix `[ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ]` treated any non-empty value as "override on",
+## silently re-arming the cross-session GUI-kill for a caller who set `=0` meaning "off".
+for v in 0 false no off garbage; do
+   run env SAFE_PROC_ALLOW_GENERIC="${v}" "${safe_pkill}" sleep
+   if [ "${r_rc}" -eq 2 ] && case "${r_err}" in *"generic process name"*) true;; *) false;; esac; then
+      pass "safe-pkill: SAFE_PROC_ALLOW_GENERIC='${v}' non-truthy, still refuses"
+   else
+      fail "safe-pkill: SAFE_PROC_ALLOW_GENERIC='${v}' wrongly disabled the denylist (rc=${r_rc}; err: ${r_err})"
+   fi
+done
+run env SAFE_PROC_ALLOW_GENERIC=0 "${safe_pgrep}" sleep
+if [ "${r_rc}" -eq 2 ] && case "${r_err}" in *"generic process name"*) true;; *) false;; esac; then
+   pass "safe-pgrep: SAFE_PROC_ALLOW_GENERIC=0 non-truthy, still refuses"
+else
+   fail "safe-pgrep: SAFE_PROC_ALLOW_GENERIC=0 wrongly disabled the denylist (rc=${r_rc}; err: ${r_err})"
+fi
+
 # --- shared lib membership function ------------------------------------------
 # shellcheck source=../../libexec/dist-ai/generic-proc-names.bsh
 source "${lib}"
@@ -110,6 +129,22 @@ if safe_proc_is_generic sleep && safe_proc_is_generic python3 && ! safe_proc_is_
 else
    fail "safe_proc_is_generic misclassified (sleep/python3 must be generic, '${uniq}' must not)"
 fi
+
+# --- override helper: case-insensitive truthy, everything else fails SAFE -----
+for v in 1 true TRUE yes YES on Yes; do
+   if SAFE_PROC_ALLOW_GENERIC="${v}" safe_proc_generic_override; then
+      pass "safe_proc_generic_override true for '${v}'"
+   else
+      fail "safe_proc_generic_override should be TRUE for '${v}'"
+   fi
+done
+for v in '' 0 false no off 2 garbage; do
+   if SAFE_PROC_ALLOW_GENERIC="${v}" safe_proc_generic_override; then
+      fail "safe_proc_generic_override should be FALSE for '${v}' (non-truthy keeps guard ON)"
+   else
+      pass "safe_proc_generic_override false for '${v}'"
+   fi
+done
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' '' "FAILED: ${failures} assertion(s)." >&2
