@@ -125,7 +125,7 @@ fi
 ## sites still inherits the builder's. That is the same defect, one layer up.
 ## The umask pin lives in the resolver source, which since the buildconfig.d split
 ## spans the loader PLUS its modules -- inspect the composed effective text, not the
-## loader file alone (the pin moved into buildconfig.d/00_preamble.bsh).
+## loader file alone (the pin moved into variables.d/00_preamble.bsh).
 variables_effective="$(mktemp)"
 help_steps_variables_effective "${dm_checkout}/help-steps/variables" > "${variables_effective}"
 if grep --quiet --extended-regexp '^umask 0022' -- "${variables_effective}"; then

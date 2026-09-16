@@ -89,6 +89,13 @@ vs_shell_special_re='^(BASH_REMATCH|BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_SOURCE|
 ## so it is not perpetual snapshot noise.
 vs_volatile_derived_re='^(dist_build_version_described)$'
 
+## help-steps/variables loop-sources variables.d/*.bsh with this loop variable; it
+## is 'unset' after the loop, so a real build never sees it -- but the dump hook
+## fires from the LAST module (60_*), i.e. mid-loop, before that unset runs, so a
+## snapshot would otherwise carry the last module's path. Loader plumbing, no
+## build-config signal: DROPPED by name like the shell-specials.
+vs_loader_plumbing_re='^(variables_d_module)$'
+
 ## The EXPORTED-CONTRACT: the interface between 'help-steps/variables' and the rest
 ## of the build. A producer rewrite (file split, helper reuse, declaration block,
 ## effect relocation) legitimately changes internal temporaries and non-consumed
@@ -203,7 +210,7 @@ vs_filter_and_normalize() {
    local dm="$1"
    grep '^declare ' \
       | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" \
-            -v volatilere="${vs_volatile_derived_re}" '
+            -v volatilere="${vs_volatile_derived_re}" -v plumbingre="${vs_loader_plumbing_re}" '
            BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
            {
               name = $0
@@ -212,6 +219,7 @@ vs_filter_and_normalize() {
               if (name in base) next
               if (name ~ specialre) next
               if (name ~ volatilere) next
+              if (name ~ plumbingre) next
               print
            }' \
       | vs_normalize "${dm}" "${HOME}"
