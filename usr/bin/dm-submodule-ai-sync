@@ -75,6 +75,10 @@ while [ "$#" -gt 0 ]; do
    case "$1" in
       --dir)
          [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         ## Reject an EMPTY value (e.g. '--dir "$UNSET"'): distinct from omitting
+         ## --dir (which defaults to cwd) -- silently acting on cwd would sync an
+         ## unintended checkout with exit 0.
+         [ -n "$2" ] || { printf '%s\n' "${0##*/}: --dir requires a non-empty value." >&2 ; exit 2 ; }
          source_dir="$2"
          shift 2
          ;;
@@ -121,26 +125,36 @@ is_dm_superproject() {
    [ -d "$1/build-steps.d" ] && [ -d "$1/help-steps" ]
 }
 
-## Correct a dangerous 'ai' upstream. 'ai' tracking a NON-ai branch (e.g. master)
-## is a trap: `git status` reports a misleading ai-vs-master divergence and a
-## `git pull` would merge master's file-mirror commits straight INTO ai, polluting
-## it. 'ai' must track the fork's ai (set it there if that tip exists, else clear
-## the upstream). An UNSET upstream is benign and left alone. Config-only.
+## Correct a dangerous 'ai' upstream. Dangerous = 'ai' tracking anything OTHER than
+## the fork's own 'ai': a NON-ai branch (e.g. master) is a trap (`git status` reports
+## a misleading ai-vs-master divergence and a `git pull` would merge master's
+## file-mirror commits straight INTO ai), and so is the fork's ai published by a
+## DIFFERENT remote -- a `git pull` would then merge an UNTRUSTED remote's 'ai' into
+## ours, defeating the org-account trust boundary this tool exists to hold. Both the
+## tracked REMOTE and the tracked BRANCH must match the fork. 'ai' must track the
+## fork's ai (set it there if that tip exists, else clear the upstream). An UNSET
+## upstream is benign and left alone. Config-only.
 ensure_ai_upstream() {
-   local dir="$1" name="$2" ref merge fork_ai
+   local dir="$1" name="$2" ref remote merge fork_ai was
    ref="$( git -C "${dir}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
    [ "${ref}" = "refs/heads/${AI_BRANCH}" ] || return 0
+   remote="$( git -C "${dir}" config "branch.${AI_BRANCH}.remote" 2>/dev/null || true )"
    merge="$( git -C "${dir}" config "branch.${AI_BRANCH}.merge" 2>/dev/null || true )"
-   [ -n "${merge}" ] && [ "${merge}" != "refs/heads/${AI_BRANCH}" ] || return 0
+   ## No upstream at all is benign.
+   [ -n "${remote}" ] || [ -n "${merge}" ] || return 0
+   ## Already correct: tracks the fork's own 'ai'.
+   [ "${remote}" = "${FORK_REMOTE}" ] && [ "${merge}" = "refs/heads/${AI_BRANCH}" ] \
+      && return 0
+   was="${remote:-<none>}/${merge#refs/heads/}"
    fork_ai="$( git -C "${dir}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ "${dry_run}" = "true" ]; then
-      log "[dry-run] ${name}: would correct '${AI_BRANCH}' upstream (tracks '${merge#refs/heads/}')"
+      log "[dry-run] ${name}: would correct '${AI_BRANCH}' upstream (tracks '${was}')"
    elif [ -n "${fork_ai}" ]; then
       git -C "${dir}" branch --set-upstream-to="${FORK_REMOTE}/${AI_BRANCH}" "${AI_BRANCH}" >/dev/null 2>&1 || return 0
    else
       git -C "${dir}" branch --unset-upstream "${AI_BRANCH}" >/dev/null 2>&1 || return 0
    fi
-   upstream_fixed+=( "${name} (was tracking '${merge#refs/heads/}')" )
+   upstream_fixed+=( "${name} (was tracking '${was}')" )
 }
 
 top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
