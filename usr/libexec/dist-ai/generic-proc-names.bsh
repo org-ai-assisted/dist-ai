@@ -48,11 +48,12 @@ safe_proc_is_generic() {
 ## unrecognized keeps the generic-name guard ON. A plain '[ -n ]'/'[ -z ]' test treated '=0'
 ## (and every other value) as "override enabled" -- the opposite of the near-universal shell
 ## convention -- silently disabling the cross-session-kill guard for a caller who set '=0'
-## meaning "off". Enumerate the truthy spellings so no shell option (nocasematch) leaks to the
-## sourcing script.
+## meaning "off". Lowercase via '${v,,}' (no nocasematch to leak to the sourcing script) so the
+## match stays a plain, case-insensitive set of truthy spellings.
 safe_proc_generic_override() {
-   case "${SAFE_PROC_ALLOW_GENERIC:-}" in
-      1 | true | TRUE | True | yes | YES | Yes | on | ON | On)
+   local v="${SAFE_PROC_ALLOW_GENERIC:-}"
+   case "${v,,}" in
+      1 | true | yes | on)
          return 0
          ;;
       *)
