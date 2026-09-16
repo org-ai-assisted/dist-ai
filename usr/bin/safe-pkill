@@ -89,8 +89,38 @@ is_own_descendant() {
    return 1
 }
 
+## Classify a FAILED kill so a live/hidden process is never misreported as "gone". Decide by
+## kill's OWN errno MESSAGE (stable under the LC_ALL=C set above), NOT by /proc readability: an
+## unreadable /proc/PID/stat is not proof the process exited -- under a hidepid /proc mount
+## (standard on Kicksecure/Whonix) another UID's live process is invisible AND unsignalable, so
+## treating "unreadable" as "gone" would report success while a matched, still-alive process was
+## never signalled. Echoes exactly one word:
+##   gone   -- ESRCH: the process exited between the pgrep snapshot and the kill (benign)
+##   zombie -- dead, awaiting reaping (a foreign zombie can fail kill with EPERM; benign)
+##   live   -- alive and unsignalable, OR hidden so we cannot tell -> caller MUST fail closed
+## Pure: signals nothing; reads only /proc/PID/stat for the zombie sub-case. State is the first
+## token after the LAST ')' (the comm may itself contain spaces and ')').
+classify_kill_failure() {  ## $1=kill stderr, $2=target pid
+   local kill_err="$1" pid="$2" proc_stat='' proc_state=''
+   case "${kill_err}" in
+      *'No such process'*)
+         printf 'gone\n'
+         return 0
+         ;;
+   esac
+   proc_stat="$(cat -- "/proc/${pid}/stat" 2>/dev/null)" || proc_stat=""
+   read -r proc_state _ <<<"${proc_stat##*)}"
+   if [ "${proc_state}" = 'Z' ]; then
+      printf 'zombie\n'
+   else
+      printf 'live\n'
+   fi
+}
+
 signal='TERM'
 match_mode='full'
+name_flag='false'
+full_flag='false'
 dry_run='false'
 
 while [ "$#" -gt 0 ]; do
@@ -105,6 +135,7 @@ while [ "$#" -gt 0 ]; do
          ;;
       --name)
          match_mode='name'
+         name_flag='true'
          shift
          ;;
       ## -f accepted as an alias for --full: full-match is already the default, so -f is a
@@ -112,6 +143,7 @@ while [ "$#" -gt 0 ]; do
       ## with a silent no-op rc=2 -- exactly the trap these wrappers exist to remove.
       -f|--full)
          match_mode='full'
+         full_flag='true'
          shift
          ;;
       --dry-run|-n)
@@ -136,6 +168,15 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
+## --name (process-name match) and --full/-f (command-line match) are mutually exclusive. Do
+## NOT silently last-wins: a caller who picked --name for its narrower, self-safe matching and
+## then reflexively appended -f (pkill -f habit) must not be downgraded to full-match without a
+## word -- that quietly discards the safety they asked for. Fail closed on the contradiction.
+if [ "${name_flag}" = 'true' ] && [ "${full_flag}" = 'true' ]; then
+   printf 'safe-pkill: --name and --full/-f are mutually exclusive\n' >&2
+   exit 2
+fi
+
 if [ "$#" -lt 1 ]; then
    printf 'safe-pkill: PATTERN required\n' >&2
    usage >&2
@@ -147,10 +188,13 @@ if [ "$#" -gt 0 ]; then
    printf 'safe-pkill: too many arguments -- exactly one PATTERN is allowed (got extra: %s)\n' "$*" >&2
    exit 2
 fi
-## An EMPTY pattern matches EVERY process ('pgrep --full -- ""'), the exact opposite of this
-## tool's purpose -- reject it (a caller that interpolated an unset "$VAR" hits this).
-if [ -z "${pattern}" ]; then
-   printf 'safe-pkill: PATTERN must not be empty (an empty pattern matches every process)\n' >&2
+## An EMPTY or WHITESPACE-ONLY pattern matches EVERY process ('pgrep --full -- ""' matches all;
+## '-- " "' matches every process whose argv contains a space, i.e. nearly all) -- the exact
+## opposite of this tool's purpose. Reject both (a caller that interpolated an unset/blank "$VAR"
+## hits this). A whitespace-only pattern also trims to the empty key in the generic-name check --
+## caught here before it can reach that lookup.
+if [[ "${pattern}" =~ ^[[:space:]]*$ ]]; then
+   printf 'safe-pkill: PATTERN must not be empty or whitespace-only (it would match every process)\n' >&2
    exit 2
 fi
 ## Refuse a bare GENERIC process name as the target. Ancestry exclusion does NOT help here: a
@@ -161,10 +205,14 @@ if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; t
    printf 'safe-pkill: refusing the generic process name "%s" as a target -- it matches OTHER sessions and system processes (this class once wedged the VM GUI by killing qubes-session sleep). Kill a specific process (kill PID; kill -- -PGID), or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
-## Validate the signal up front so a typo fails as a usage error (exit 2), not later as a
-## kill failure misreported as a permission problem. '--' is required: a signal starting with
-## '-' (e.g. '-9', the common SIGKILL spelling) would otherwise be read by 'kill -l' as its
-## own options -> it lists all signals and exits 0, wrongly passing the bad value.
+## Accept the 'kill -9' muscle-memory spelling: a signal is a bare NAME or NUMBER (TERM,
+## SIGKILL, 9), never dash-prefixed, so strip a single leading '-' to turn '--signal -9' into
+## the valid '9' (and '-KILL' into 'KILL'). Without this, kill rejects '-9' as an invalid
+## signal spec even though it is the most common way an operator names SIGKILL.
+signal="${signal#-}"
+## Validate the (normalised) signal up front so a typo fails as a usage error (exit 2), not
+## later as a kill failure misreported as a permission problem. '--' guards against a value
+## that still begins with '-' (e.g. an empty result) being read by 'kill -l' as its own option.
 if ! kill -l -- "${signal}" >/dev/null 2>&1; then
    printf 'safe-pkill: invalid signal: %s\n' "${signal}" >&2
    exit 2
@@ -242,24 +290,15 @@ fi
 rc=0
 signalled=()
 for target in "${targets[@]}"; do
-   if kill -s "${signal}" "${target}" 2>/dev/null; then
+   kill_err=''
+   if kill_err="$(kill -s "${signal}" "${target}" 2>&1)"; then
       signalled+=("${target}")
       continue
    fi
-   ## kill failed: distinguish "already gone" (fine -- it is dead, which is the goal) from a
-   ## real error such as EPERM (a LIVE process we may not signal -> non-zero exit). 'kill -0'
-   ## CANNOT tell these apart -- it fails with EPERM on a live process we cannot signal exactly
-   ## as it fails with ESRCH on a dead one. Read the /proc/PID/stat STATE instead: an absent
-   ## stat is ESRCH (gone); state 'Z' is a zombie (dead, awaiting reaping -- foreign zombies
-   ## fail kill with EPERM); anything else is a genuinely LIVE process we could not signal. The
-   ## state is the field AFTER the parenthesised comm, which may itself contain spaces and ')',
-   ## so split on the LAST ') '. (NOT cmdline: a live process can have an empty argv.)
-   proc_stat="$(cat -- "/proc/${target}/stat" 2>/dev/null)" || proc_stat=""
-   ## Drop everything through the LAST ')' (the comm's close; no later field contains ')'),
-   ## then the state is the first token.
-   read -r proc_state _ <<<"${proc_stat##*)}"
-   if [ -n "${proc_stat}" ] && [ "${proc_state}" != "Z" ]; then
-      printf 'safe-pkill: WARNING: could not signal live process %s (permission?)\n' "${target}" >&2
+   ## kill failed. 'gone'/'zombie' are dead (the goal); 'live' is alive-or-hidden and must fail
+   ## closed (warn + rc=1) rather than be reported as a clean success.
+   if [ "$(classify_kill_failure "${kill_err}" "${target}")" = 'live' ]; then
+      printf 'safe-pkill: WARNING: could not signal process %s (still alive, or hidden by /proc permissions)\n' "${target}" >&2
       rc=1
    fi
 done
