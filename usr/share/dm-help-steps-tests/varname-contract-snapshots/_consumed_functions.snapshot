@@ -1,0 +1,88 @@
+chroot_run ()
+{
+    ${SUDO_TO_ROOT} env ${chroot_remove_env_list} -- chroot -- "${CHROOT_FOLDER}" "$@"
+}
+dist_build_arch_to_qemu_machine ()
+{
+    case "${1}" in
+        amd64)
+            printf '%s' "x86_64"
+        ;;
+        arm64)
+            printf '%s' "aarch64"
+        ;;
+        armel)
+            printf '%s' "arm"
+        ;;
+        armhf)
+            printf '%s' "arm"
+        ;;
+        mipsel)
+            printf '%s' "mipsel"
+        ;;
+        mips64el)
+            printf '%s' "mips64el"
+        ;;
+        ppc64el)
+            printf '%s' "ppc64le"
+        ;;
+        riscv64)
+            printf '%s' "riscv64"
+        ;;
+        s390x)
+            printf '%s' "s390x"
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+repository_dist_initializer_setup ()
+{
+    [ -n "${binary_build_folder_dist}" ] || error "repository_dist_initializer_setup: variable binary_build_folder_dist missing!";
+    [ -n "${CHROOT_FOLDER}" ] || error "repository_dist_initializer_setup: variable CHROOT_FOLDER missing!";
+    true "INFO: build_remote_repo_enable: ${build_remote_repo_enable}";
+    if [ "${build_remote_repo_enable}" = 'true' ]; then
+        printf "%s\n" "${DERIVATIVE_APT_REPOSITORY_OPTS}" | sponge -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
+        true "INFO: sudo test";
+        ${SUDO_TO_ROOT} test -d /usr;
+        ${SUDO_TO_ROOT} mkdir --parents -- "${CHROOT_FOLDER}/var/lib/repository-dist/";
+        ${SUDO_TO_ROOT} cp -- "${binary_build_folder_dist}/derivative_apt_repository_opts" "${CHROOT_FOLDER}/var/lib/repository-dist/derivative_apt_repository_opts";
+    else
+        rm --force -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
+    fi
+}
+set_cowbuilder_folders ()
+{
+    cow_folder="${cowbuilder_cache_dir}/cow.cow_${dist_build_multiarch_package_item}";
+    base_folder="${cowbuilder_cache_dir}/base.cow_${dist_build_multiarch_package_item}"
+}
+set_dist_build_reprepro_folder_options ()
+{
+    local derivative_name_item valid_repository_name;
+    valid_repository_name=false;
+    if [ "${derivative_repository_name:-}" = "" ]; then
+        error "derivative_repository_name is empty!";
+    fi;
+    true "derivative_repository_name: ${derivative_repository_name}";
+    for derivative_name_item in ${derivative_name_list};
+    do
+        if [ "${derivative_repository_name:-}" = "${derivative_name_item}" ]; then
+            valid_repository_name=true;
+            break;
+        fi;
+    done;
+    if [ ! "${valid_repository_name:-}" = "true" ]; then
+        error "derivative_repository_name '${derivative_repository_name}' is invalid! (not in derivative_name_list)";
+    fi;
+    [[ -v make_reprepro_codename_item ]] || make_reprepro_codename_item="${dist_build_apt_codename}";
+    true "make_reprepro_codename_item: ${make_reprepro_codename_item}";
+    if [ ! "${make_reprepro_codename_item:-}" = "local" ]; then
+        apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
+    else
+        apt_repo_sub_folder="aptrepo_local/${derivative_repository_name}";
+    fi;
+    dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
+    export dist_apt_repository_folder;
+    dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${binary_build_folder_dist}/${apt_repo_sub_folder}" --dbdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/db" --logdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/log")
+}

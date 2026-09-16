@@ -73,12 +73,15 @@ else
 fi
 
 ## --- the caller sources the new name, never the old ------------------------
-if grep --quiet --fixed-strings -- "${new_name}" "${caller}"; then
+## Match CODE only (drop full-line comments): a comment documenting the rename
+## must not satisfy the new-name check nor trip the old-name check.
+caller_code="$(grep --invert-match --extended-regexp -- '^[[:space:]]*#' "${caller}" || true)"
+if grep --quiet --fixed-strings -- "${new_name}" <<< "${caller_code}"; then
    pass "$(basename -- "${caller}") references ${new_name}"
 else
    fail "$(basename -- "${caller}") does not reference ${new_name}; the source path is stale"
 fi
-if grep --quiet --fixed-strings -- "${old_name}" "${caller}"; then
+if grep --quiet --fixed-strings -- "${old_name}" <<< "${caller_code}"; then
    fail "$(basename -- "${caller}") still references the old ${old_name}"
 else
    pass "$(basename -- "${caller}") has no stale ${old_name} reference"

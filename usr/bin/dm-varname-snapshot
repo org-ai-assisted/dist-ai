@@ -47,7 +47,23 @@ if [ -z "${lib_found:-}" ]; then
    exit 1
 fi
 
-out_dir="${1:-${lib_found}/varname-snapshots}"
+## Optional '--contract': after regenerating the full snapshots, also (re)freeze
+## the exported-contract goldens (exported vars + consumed-function bodies + the
+## validity matrix) into 'varname-contract-snapshots/'. Run deliberately when the
+## contract is meant to change; a routine full-snapshot regen never touches them.
+want_contract="false"
+positional=()
+for arg in "$@"; do
+   case "${arg}" in
+      --contract)
+         want_contract="true"
+         ;;
+      *)
+         positional+=( "${arg}" )
+         ;;
+   esac
+done
+out_dir="${positional[0]:-${lib_found}/varname-snapshots}"
 
 dm="$(vs_resolve_dm)"
 if [ ! -r "${dm}/help-steps/variables" ]; then
@@ -182,3 +198,13 @@ for existing in "${out_dir}"/*.vars; do
 done
 
 printf '%s\n' "INFO: wrote ${valid_count} snapshot file(s), ${rejected_count} rejected combo(s), 1 function snapshot."
+
+if [ "${want_contract}" = "true" ]; then
+   contract_dir="${lib_found}/varname-contract-snapshots"
+   ## Deliberate freeze: clear stale contract goldens, then derive fresh from the
+   ## full set just written. Not the atomic swap the full set gets -- this path
+   ## only runs on an explicit '--contract' regen, never on a normal build step.
+   safe-rm --recursive --force -- "${contract_dir}"
+   vs_derive_contract "${out_dir}" "${contract_dir}"
+   printf '%s\n' "INFO: wrote exported-contract goldens to ${contract_dir}."
+fi

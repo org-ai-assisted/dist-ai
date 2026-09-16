@@ -69,15 +69,19 @@ fi
 ## --- STRUCTURAL: the complexity stays removed ------------------------------
 ## The simplification dropped the snapshot enumeration AND the server-clock path;
 ## re-adding either violates the in-script "do NOT make this more complicated".
+## Match CODE only (drop full-line comments): a comment that merely explains what
+## the tool no longer does must not read as the machinery being back, nor satisfy
+## the 'date +%s' pin check.
+code="$(grep --invert-match --extended-regexp -- '^[[:space:]]*#' "${subject}" || true)"
 for gone in latest_valid_snapshot SNAPSHOT_MR SNAPSHOT_CANDIDATES 'jq ' url_to_unixtime scurl; do
-   if grep --quiet --fixed-strings -- "${gone}" "${subject}"; then
+   if grep --quiet --fixed-strings -- "${gone}" <<< "${code}"; then
       fail "structural: '${gone}' is back; the tool should pin the local clock, not enumerate / probe"
    else
       pass "structural: '${gone}' stays removed"
    fi
 done
 ## The pin target is the local build clock via 'date +%s'.
-if grep --quiet --extended-regexp -- "date[[:space:]]+'?\+%s'?" "${subject}"; then
+if grep --quiet --extended-regexp -- "date[[:space:]]+'?\+%s'?" <<< "${code}"; then
    pass "structural: the pin target is the local 'date +%s' instant"
 else
    fail "structural: no 'date +%s' pin; the simplification was reverted"
