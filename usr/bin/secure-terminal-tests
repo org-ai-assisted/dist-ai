@@ -111,7 +111,13 @@ forward_args=("$@")
 ## stdout+stderr and exit status; this fn only launches it.
 # shellcheck disable=SC2317  # invoked indirectly by run_suites_parallel via its name
 plain_run_one_suite() {  ## $1 = suite .py path
-   "${wl_headless_run}" --no-autoconfirm -- "$1" "${forward_args[@]}"
+   ## Invoke the suite through python3 from PATH (matching its '#!/usr/bin/python3 -Bsu'
+   ## shebang), NOT by exec'ing the file. The runner already controls the suite environment
+   ## (PYTHONPATH, QT_FONT_DPI), so the interpreter must be controllable the same way: a stubbed
+   ## python3 on PATH can drive a suite's exit code (the authorized-skip aggregation test does
+   ## this), and a suite file no longer needs +x to run. The sequential runner invoked suites
+   ## via python3; the parallel split regressed to exec-by-shebang, which silently disabled both.
+   "${wl_headless_run}" --no-autoconfirm -- python3 -Bsu "$1" "${forward_args[@]}"
 }
 
 ## The pure, Qt-free tests always run; the Qt suites fail closed (exit 1) on a
