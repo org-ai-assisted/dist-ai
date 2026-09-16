@@ -1065,8 +1065,11 @@ os.environ['XDG_CONFIG_HOME'] = _pbdir
 try:
     def _pb_lines():
         _p = M.settings.user_config_file()
-        return ([_l.strip() for _l in open(_p)
-                 if _l.strip() and not _l.startswith('#')] if os.path.exists(_p) else [])
+        if not os.path.exists(_p):
+            return []
+        with open(_p) as _pbfh:
+            return [_l.strip() for _l in _pbfh
+                    if _l.strip() and not _l.startswith('#')]
     _pbw = MainWindow()
     _pbw._persist()
     ok(_pb_lines() == [],

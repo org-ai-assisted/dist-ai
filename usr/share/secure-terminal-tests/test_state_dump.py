@@ -27,7 +27,6 @@ import pyte
 from secure_terminal import state_dump as sd
 from secure_terminal.main import _fit_dump_reply
 from secure_terminal import ipc as _ipc
-from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM  # noqa: F401
 from secure_terminal.terminal import _SafeHistoryScreen, _Utf8CharsetByteStream
 
 
@@ -187,7 +186,7 @@ ok('pen: bg=#0000ff' in sd.dump_text(_bgpen),
 # (whole rows / document), never byte-sliced into an unparseable fragment.
 _big = pyte.HistoryScreen(60, 40, history=10)
 _bst = pyte.Stream(_big)
-for _y in range(40):
+for _ in range(40):
     _bst.feed('\r\n')
     for _x in range(0, 60, 3):
         _bst.feed('\x1b[3%dmXYZ' % (_x % 8))     # non-coalescing colour runs

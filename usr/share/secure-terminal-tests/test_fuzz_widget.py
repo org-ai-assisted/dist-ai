@@ -11,7 +11,6 @@ end to end under coverage and the widget's render / paste / key / mode-switch pa
 are fuzzed as part of the gated suite (the heavy randomized runs go through
 secure-terminal-tests-fuzz-gui). SKIPs (exit 77) when PyQt6/pyte are absent."""
 
-import os
 import sys
 import random
 

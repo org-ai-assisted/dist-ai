@@ -47,7 +47,6 @@ except Exception as exc:  # fail closed: a required dependency must not silently
 # dir this parent pings through ipc.send_request (parent and children must share it, both reading
 # XDG_RUNTIME_DIR from their environ). QT_QPA_PLATFORM=wayland + WAYLAND_DISPLAY pass through from
 # the compositor (the require_wayland guard above has already ensured they are set).
-_RUN = os.environ['XDG_RUNTIME_DIR']       # the compositor's dir; shared parent<->children
 _ENV = dict(os.environ,
             HOME=tempfile.mkdtemp(prefix='st-inst-home-'),
             XDG_CONFIG_HOME=tempfile.mkdtemp(prefix='st-inst-cfg-'),
@@ -115,15 +114,6 @@ def _run_suite(tag):
 
     def ping(group, timeout=1.0):
         return ipc.send_request(group, {'op': 'ping'}, timeout=timeout)
-
-    def wait_primary(group, timeout=20):
-        end = time.time() + timeout
-        while time.time() < end:
-            reply = ping(group)
-            if reply is not None:
-                return reply
-            time.sleep(0.2)
-        return None
 
     def spawn_primary(group, *args, timeout=20):
         """Spawn and wait until it owns the group socket, respawning ONLY a launch that

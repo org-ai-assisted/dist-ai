@@ -14,7 +14,7 @@ needs a live Tor control port via stem) is not exercised here.
 
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 import tcp_testlib
 

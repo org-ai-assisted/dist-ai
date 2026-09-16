@@ -16,48 +16,22 @@ from test_widget_common import *   # noqa: F401,F403  (shared harness)
 
 # Every top-level import half 1 makes; half 2 needs its own copy (all stateless).
 from PyQt6.QtWidgets import QPlainTextEdit as _QPTE
-from PyQt6.QtGui import QResizeEvent as _QRE
-from PyQt6.QtCore import Qt as _Qt
-from PyQt6.QtGui import QMouseEvent as _QME
-from PyQt6.QtCore import QPointF as _QPF
-from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM
 import re
-from PyQt6.QtGui import QWheelEvent, QMouseEvent as _QME, QFocusEvent as _QFEv
-from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF, QEvent
-from PyQt6.QtGui import QTextCursor as _QTC_hit
-from secure_terminal.sanitize import scan_mouse_modes
-import time as _tz
-from secure_terminal import sanitize as _S_zw
-import secure_terminal.terminal as _T_fg
-import secure_terminal.terminal as _T_cov
+from pathlib import Path
+from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtCore import QPoint as _QP, QEvent
 from PyQt6.QtWidgets import QPushButton as _QPushButton
 from PyQt6.QtCore import QPoint as _QPoint
-from PyQt6.QtCore import Qt as _QtIP
-from PyQt6.QtWidgets import QLabel as _QLabelIP
 from PyQt6.QtGui import QMouseEvent, QTextCursor
 from PyQt6.QtCore import QPointF
 import time as _time
 from secure_terminal import sanitize as _S
-from secure_terminal.terminal import _CP_PROP as _CPP, BOX as _BX, _GridRow as _GR
-from secure_terminal.terminal import _MARK_CACHE_MAX
-import tempfile as _tfcwd
-from secure_terminal.terminal import _CP_PROP
-from PyQt6.QtWidgets import QLabel, QPushButton
+from secure_terminal.terminal import BOX as _BX, _GridRow as _GR
+from PyQt6.QtWidgets import QLabel
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtCore import QPoint
-from PyQt6.QtCore import QMimeData as _QMimePaste
 from secure_terminal.terminal import _argv_for_command as _argv
-from secure_terminal.terminal import _argv_for_command as _afc44
-import base64 as _b64_osc
 import time as _t5
-from PyQt6.QtGui import QTextCursor as _QTC
-from secure_terminal.terminal import THEMES as _THEMES2, _rgb as _rgb4
-from secure_terminal.sanitize import too_close as _tc4
-from PyQt6.QtGui import QColor as _QC4
-from PyQt6.QtGui import QGuiApplication as _QGA3
-from PyQt6.QtCore import QPoint as _QPoint2
-from PyQt6.QtGui import QGuiApplication as _QGA_ora
-from PyQt6.QtWidgets import QToolTip
 from PyQt6.QtGui import QHelpEvent
 
 # --- window: rename, colour, settings round-trip ------------------------------
@@ -363,7 +337,6 @@ ok(_cr._pending_copy is None,
    'COR-4: Enter on a copy review dispatches the copy reject (no stale _pending_copy)')
 _cr.close()
 # --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
-from PyQt6.QtGui import QTextCursor as _QTC                  # noqa: E402
 _ft = win.current()
 _ft.document().setPlainText('')
 # Reset the LINE state with the document: the shell's prompt is still in the cell
@@ -5011,7 +4984,7 @@ try:
     ok('MARKER-TAB0' in _base25 and 'MARKER-TAB1' not in _base25,
        '#25: the base transcript path holds only the primary tab (no clobber)')
     ok(os.path.exists(_suffixed25)
-       and 'MARKER-TAB1' in open(_suffixed25, encoding='utf-8').read(),
+       and 'MARKER-TAB1' in Path(_suffixed25).read_text(encoding='utf-8'),
        '#25: the second tab writes its own suffixed transcript file')
     # a single-tab window keeps the EXACT base path (the shot-harness case / group<=1 branch).
     _w25s = MainWindow()

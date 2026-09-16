@@ -463,7 +463,7 @@ try:
 finally:
     QApplication.instance = _tt_orig
 _fc_orig = win.current
-win.current = lambda: M.QWidget()                       # a placeholder, not a SecureTerminal
+win.current = M.QWidget                                 # a placeholder, not a SecureTerminal
 try:
     win._focus_current_terminal()                       # current() not a real terminal -> no-op
     ok(True, '_focus_current_terminal is a no-op when current() is not a terminal')

@@ -534,7 +534,8 @@ def test_hardening_cmdline_check_passes_when_all_tokens_present(tmp_path):
         "slab_nomerge rd.shell=0 rd.emergency=halt mitigations=auto,nosmt\n",
         encoding="utf-8")
     cmd = m.hardening_cmdline_check(str(cmdline))
-    assert subprocess.call(["bash", "-c", cmd]) == 0
+    rc = subprocess.call(["bash", "-c", cmd])
+    assert rc == 0
 
 
 @pytest.mark.parametrize("missing", ["slab_nomerge", "rd.shell=0", "rd.emergency=halt"])
@@ -547,7 +548,8 @@ def test_hardening_cmdline_check_fails_when_a_token_missing(tmp_path, missing):
     cmdline.write_text("BOOT_IMAGE=/live/vmlinuz " + " ".join(kept) + "\n",
                        encoding="utf-8")
     cmd = m.hardening_cmdline_check(str(cmdline))
-    assert subprocess.call(["bash", "-c", cmd]) != 0
+    rc = subprocess.call(["bash", "-c", cmd])
+    assert rc != 0
 
 
 def test_iso_leg_inserts_hardening_check_and_a_failure_fails_the_verdict():
