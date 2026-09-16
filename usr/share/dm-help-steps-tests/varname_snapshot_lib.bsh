@@ -89,6 +89,38 @@ vs_shell_special_re='^(BASH_REMATCH|BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_SOURCE|
 ## so it is not perpetual snapshot noise.
 vs_volatile_derived_re='^(dist_build_version_described)$'
 
+## The EXPORTED-CONTRACT: the interface between 'help-steps/variables' and the rest
+## of the build. A producer rewrite (file split, helper reuse, declaration block,
+## effect relocation) legitimately changes internal temporaries and non-consumed
+## function bodies, so the full 'declare -p' snapshot is NOT a neutrality gate for
+## it -- only this contract is. Two parts:
+##   1. every EXPORTED variable (name + normalized value), per build command;
+##   2. the bodies of the functions build steps actually call (below).
+##
+## vs_consumed_funcs: functions 'variables' introduces that are called OUTSIDE the
+## resolution machinery (build-steps.d, other help-steps, dev-meta libexec). Their
+## bodies are part of the contract; internal-only helpers are not. Kept in sync by
+## vs_assert_consumed_complete (fails if the tree gains/loses an external caller).
+vs_consumed_funcs=(
+   chroot_run
+   dist_build_arch_to_qemu_machine
+   repository_dist_initializer_setup
+   set_cowbuilder_folders
+   set_dist_build_reprepro_folder_options
+)
+
+## Files that DEFINE the resolution machinery: a reference to a function here is its
+## definition or an internal call, not external consumption. Paths relative to the
+## derivative-maker checkout root. Extend when the resolver layout changes.
+vs_resolution_machinery_res=(
+   '^help-steps/variables$'
+   '^help-steps/parse-cmd$'
+   '^help-steps/pre$'
+   '^buildconfig\.d/'
+   '^variables\.d/'
+   'arch-to-qemu-machine\.bsh$'
+)
+
 ## Set by vs_init_baseline: a sorted file of the names to subtract.
 vs_baseline_file=""
 
@@ -319,4 +351,90 @@ vs_capture_functions() {
    fi
    vs_filter_functions "${dm}" < "${outfile}"
    safe-rm --force -- "${outfile}"
+}
+
+## Extract the bodies of the vs_consumed_funcs from a function snapshot, in the
+## array's order, each as a 'name ()' header block. Reads a functions.snapshot
+## file (already baseline-subtracted + normalized) named by $1; writes to stdout.
+## Same bash-pretty-print block shape as vs_filter_functions: 'name ()' header,
+## body until a '}' at column 0. A trailing space after '()' is stripped by
+## vs_normalize, so the header pattern tolerates it being present or absent.
+vs_extract_consumed_bodies() {
+   local snapshot="$1" fn
+   for fn in "${vs_consumed_funcs[@]}"; do
+      awk -v want="${fn}" '
+         $0 == want" ()" || $0 == want" () " { inblock = 1 }
+         { if (inblock) print }
+         /^}$/ { inblock = 0 }
+      ' "${snapshot}"
+   done
+}
+
+## Derive the exported contract from a full snapshot dir ($1) into an output dir
+## ($2): per-combo exported-only '.vars', the consumed-function bodies, and the
+## rejected-combo validity matrix. This is what the neutrality gate diffs -- NOT
+## the full 'declare -p', so an internal-temporary rename does not trip it.
+vs_derive_contract() {
+   local full_dir="$1" out_dir="$2" f base
+   mkdir --parents -- "${out_dir}"
+   shopt -s nullglob
+   for f in "${full_dir}"/*.vars; do
+      base="${f##*/}"
+      ## Exported == declare flags string contains 'x' (declare -x, -ax, -rx, ...).
+      grep -E '^declare -[a-zA-Z-]*x[a-zA-Z-]* ' -- "${f}" | LC_ALL=C sort > "${out_dir}/${base}"
+   done
+   if [ -f "${full_dir}/functions.snapshot" ]; then
+      vs_extract_consumed_bodies "${full_dir}/functions.snapshot" > "${out_dir}/_consumed_functions.snapshot"
+   fi
+   [ ! -f "${full_dir}/_rejected.txt" ] || cp -- "${full_dir}/_rejected.txt" "${out_dir}/_rejected.txt"
+}
+
+## The functions 'variables' introduces (headers of a functions.snapshot, $1),
+## sorted unique.
+vs_introduced_func_names() {
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]* \(\)' -- "$1" | sed 's/ ()$//' | LC_ALL=C sort -u
+}
+
+## Verify vs_consumed_funcs still equals the set of introduced functions called
+## OUTSIDE the resolution machinery. Args: <dm> <functions.snapshot>. Prints the
+## drift and returns 1 if the tree gained or lost an external caller (so the
+## hand-maintained list cannot silently fall out of sync); 0 when they agree.
+vs_assert_consumed_complete() {
+   local dm="$1" snapshot="$2" fn machine_grep actual_file expected_file candidate_files f
+   ## One alternation of all machinery path patterns for a single grep -vE.
+   machine_grep="$(IFS='|'; printf '%s' "${vs_resolution_machinery_res[*]}")"
+   actual_file="$(mktemp)"
+   expected_file="$(mktemp)"
+   printf '%s\n' "${vs_consumed_funcs[@]}" | LC_ALL=C sort -u > "${expected_file}"
+   while IFS= read -r fn; do
+      ## Candidate call-site FILES: the name word-bounded on a non-comment,
+      ## non-definition line, in a checkout-relative path that is NOT resolution
+      ## machinery. cut to the file, unique.
+      candidate_files="$(
+         ( cd -- "${dm}" \
+              && grep -rnE "\\b${fn}\\b" build-steps.d help-steps packages 2>/dev/null ) \
+            | grep -vE ":[0-9]+:[[:space:]]*#" \
+            | grep -vE ":[0-9]+:[[:space:]]*${fn}[[:space:]]*\\(\\)" \
+            | sed -E 's/^\.\///' \
+            | grep -vE "(${machine_grep})" \
+            | cut -d: -f1 | LC_ALL=C sort -u
+      )"
+      ## A file that DEFINES its own '${fn}()' (e.g. an installed package binary
+      ## with a same-named helper) references its own copy, not the build-time
+      ## resolver -- drop it. If any candidate remains, the function is genuinely
+      ## consumed outside the machinery.
+      while IFS= read -r f; do
+         [ -n "${f}" ] || continue
+         grep --quiet --extended-regexp "^[[:space:]]*${fn}[[:space:]]*\\(\\)" -- "${dm}/${f}" && continue
+         printf '%s\n' "${fn}"
+         break
+      done <<< "${candidate_files}"
+   done < <(vs_introduced_func_names "${snapshot}") | LC_ALL=C sort -u > "${actual_file}"
+   if diff -u "${expected_file}" "${actual_file}"; then
+      safe-rm --force -- "${actual_file}" "${expected_file}"
+      return 0
+   fi
+   printf '%s\n' "MISMATCH: vs_consumed_funcs (< expected) vs functions actually called outside the resolution machinery (> actual)." >&2
+   safe-rm --force -- "${actual_file}" "${expected_file}"
+   return 1
 }
