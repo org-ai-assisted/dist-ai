@@ -165,7 +165,15 @@ run_suites_parallel "${work}" "${repo}/usr/lib/python3/dist-packages/secure_term
 overall=0
 authorized_skip=0
 for test_file in "${suites[@]}"; do
-   [ -f "${test_file}" ] || continue
+   ## A suite listed above but MISSING from the checkout is a packaging/rename bug, never a
+   ## legitimate skip: fail closed so a dropped registered suite cannot read as a clean pass
+   ## (run_suites_parallel writes no rc file for an absent suite, so this is the only place to
+   ## catch it -- the same silent-drop class the coverage gate guards for its own globs).
+   if [ ! -f "${test_file}" ]; then
+      printf '%s\n' "secure-terminal-tests: FATAL: registered suite missing from checkout: ${test_file##*/}" >&2
+      overall=1
+      continue
+   fi
    ## Read the suite's captured exit status. A missing rc file (a job killed before it recorded
    ## one) is fail-closed, never a silent pass.
    rc="$(cat -- "${work}/rc-$(basename -- "${test_file}" .py)" 2>/dev/null || true)"

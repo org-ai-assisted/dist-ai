@@ -158,6 +158,17 @@ else
    failures=$((failures + 1))
 fi
 
+## 7) A registered suite whose .py file is MISSING from the checkout must fail closed (FATAL),
+##    never be silently skipped -- a dropped/renamed suite must not read as a clean pass
+##    (run_suites_parallel writes no rc file for an absent suite, so the result loop is the only
+##    place to catch it). Static check, mirroring test 4: the fail-closed guard must be present.
+if grep --quiet -- 'registered suite missing from checkout' "${runner}"; then
+   printf 'PASS: a missing registered suite fails closed, not a silent skip\n'
+else
+   printf 'FAIL: the runner silently skips a missing registered suite (no fail-closed guard)\n' >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -gt 0 ]; then
    printf 'secure_terminal_tests_absent_target_test: %s assertion(s) FAILED.\n' "${failures}" >&2
    exit 1
