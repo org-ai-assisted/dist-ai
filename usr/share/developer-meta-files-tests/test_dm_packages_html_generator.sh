@@ -99,10 +99,10 @@ locate_generator() {
       return 0
    fi
 
-   ## CI checks the component out standalone, so DMF_REPO is the checkout
+   ## CI checks the component out standalone, so DEVELOPER_META_FILES_DIR is the checkout
    ## root itself and no derivative-maker tree exists around it.
-   if [ -n "${DMF_REPO:-}" ]; then
-      candidate="${DMF_REPO}/usr/bin/dm-packages-html-generator"
+   if [ -n "${DEVELOPER_META_FILES_DIR:-}" ]; then
+      candidate="${DEVELOPER_META_FILES_DIR}/usr/bin/dm-packages-html-generator"
       if [ -x "${candidate}" ]; then
          printf '%s\n' "${candidate}"
          return 0

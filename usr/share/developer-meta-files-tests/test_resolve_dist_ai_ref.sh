@@ -36,12 +36,12 @@ export LC_ALL=C
 ## dist-ai-tests-all via --component developer-meta-files. Absent
 ## subject -> exit 1 (FATAL): a required subject absent is an environment
 ## bug that must fail loud, not skip (R-220).
-if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'FATAL: test_resolve_dist_ai_ref: DMF_REPO unset.' >&2
+if [ -z "${DEVELOPER_META_FILES_DIR:-}" ]; then
+   printf '%s\n' 'FATAL: test_resolve_dist_ai_ref: DEVELOPER_META_FILES_DIR unset.' >&2
    exit 1
 fi
 
-resolver="${DMF_REPO}/.github/actions/resolve-dist-ai-ref/resolve-dist-ai-ref.sh"
+resolver="${DEVELOPER_META_FILES_DIR}/.github/actions/resolve-dist-ai-ref/resolve-dist-ai-ref.sh"
 if [ ! -x "${resolver}" ]; then
    printf '%s\n' "FATAL: test_resolve_dist_ai_ref: '${resolver}' not found." >&2
    exit 1
