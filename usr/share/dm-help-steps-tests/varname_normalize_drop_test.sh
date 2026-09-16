@@ -38,6 +38,13 @@ source "${lib}"
 ## vs_filter_and_normalize subtracts names listed in vs_baseline_file; an EMPTY file
 ## means "subtract nothing", so only the shell-special + volatile-derived drops apply.
 vs_baseline_file="$(mktemp)"
+## safe-rm is a helper-scripts tool that may be absent in the minimal test image; the
+## EXIT-trap cleanup is its only use here, so without this shim the trap returns 127 on
+## such an image, masking the test's real result.
+## style-ok: R-120 -- this IS the safe-rm shim; 'command rm' is the only way to implement
+## it without recursing into itself.
+# shellcheck disable=SC2317  # reached only via the EXIT trap
+safe-rm() { command rm "$@"; }
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() { safe-rm --force -- "${vs_baseline_file}"; }
 trap cleanup EXIT
