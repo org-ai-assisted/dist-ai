@@ -17,8 +17,11 @@ Method, mirroring verify_curl_prgrs_formal.py's enumeration half:
         proof over that domain.
       * BOUNDED + INVARIANT-GUARDED elsewhere: a grid over a small alphabet plus
         structural invariants that must hold for every sampled input.
-  - CANARIES: every guard is also run against a deliberately BROKEN model and
-    must catch it, so a green run has teeth.
+  - CANARIES: two kinds, so a green run has teeth. MODEL canaries confirm the
+    reference model is discriminating; HARNESS canaries route a deliberately
+    BROKEN model through the SAME real-bash enumeration each theorem uses and
+    confirm the comparison actually FAILS -- teeth on the plumbing that turns a
+    bash/model divergence into a failure, not only on the model.
 
 No SMT here, deliberately. curl-prgrs used Z3 for ARITHMETIC (a decidable
 domain); accountctl's pure functions are string / finite-map shaped, and Z3's
@@ -87,14 +90,17 @@ def _subject_and_env():
     return subject, env
 
 
-FAIL = 0
+FAILURES = []
 CANARIES_VERIFIED = [0]
+## Suppress stderr emission for the EXPECTED failures a harness canary provokes
+## (they are discarded, not real) -- otherwise a green run prints spurious FAILs.
+_SUPPRESS_FAIL_OUTPUT = [False]
 
 
 def fail(msg):
-    global FAIL
-    FAIL += 1
-    sys.stderr.write("FAIL: " + msg + "\n")
+    FAILURES.append(msg)
+    if not _SUPPRESS_FAIL_OUTPUT[0]:
+        sys.stderr.write("FAIL: " + msg + "\n")
 
 
 def _expect_caught(label, caught):
@@ -102,6 +108,23 @@ def _expect_caught(label, caught):
         CANARIES_VERIFIED[0] += 1
     else:
         fail("canary %s: a broken model was NOT caught" % label)
+
+
+def _expect_enum_catches(label, enum_with_broken_model):
+    """Route a deliberately BROKEN model through the SAME real-bash enumeration a
+    theorem uses, and confirm the comparison actually FAILS -- teeth on the
+    harness plumbing, not only the reference model. Expected failures are
+    discarded here; the theorem's own run (with the true model) still records any
+    genuine bash/model divergence, so nothing real is masked."""
+    before = len(FAILURES)
+    _SUPPRESS_FAIL_OUTPUT[0] = True
+    try:
+        enum_with_broken_model()
+    finally:
+        _SUPPRESS_FAIL_OUTPUT[0] = False
+    caught = len(FAILURES) > before
+    del FAILURES[before:]
+    _expect_caught(label, caught)
 
 
 ## --- run the REAL bash: source accountctl.sh once, then a batch body ---
@@ -144,7 +167,7 @@ def m_get_field(db, field):
     return None if idx is None else idx - 1
 
 
-def t1_enumerate(subject, env):
+def t1_enumerate(subject, env, model=m_get_field):
     """EXHAUSTIVE over the finite (db,field) domain plus unsupported fields."""
     dbs = list(_GET_FIELD) + ["", "bogusdb"]
     fields = sorted({f for m in _GET_FIELD.values() for f in m}) + ["", "bogus", "uid "]
@@ -159,7 +182,7 @@ def t1_enumerate(subject, env):
         fail("T1 get_field: expected %d results, got %d" % (len(grid), len(got)))
         return
     for (db, f), g in zip(grid, got, strict=True):
-        want = m_get_field(db, f)
+        want = model(db, f)
         if want is None:
             if g != "err":
                 fail("T1 get_field: %r %r -> %r, expected error" % (db, f, g))
@@ -167,14 +190,19 @@ def t1_enumerate(subject, env):
             fail("T1 get_field: %r %r -> %r, model ok:%d" % (db, f, g, want))
 
 
-def t1_canaries():
+def t1_canaries(subject, env):
     def broken(db, field):
         v = m_get_field(db, field)
         return 0 if v is None else v
+    ## model teeth: the broken variant differs from the reference.
     _expect_caught("T1/unknown-field-errors",
                    broken("passwd", "bogus") != m_get_field("passwd", "bogus"))
     _expect_caught("T1/index-shift",
                    (m_get_field("passwd", "uid") + 1) != m_get_field("passwd", "uid"))
+    ## harness teeth: the broken model (unsupported fields become 'ok:0') run
+    ## through the REAL bash enumeration must be caught -- bash errors there.
+    _expect_enum_catches("T1/harness",
+                         lambda: t1_enumerate(subject, env, model=broken))
 
 
 ## ============================ T2: get_clean_pass ============================
@@ -190,7 +218,7 @@ def _no_leading_marker(result, symbol):
     return result == "" or result[0] not in symbol
 
 
-def t2_enumerate(subject, env):
+def t2_enumerate(subject, env, model=m_clean):
     """Shim get_pass to inject each candidate password, run the REAL
     get_clean_pass; assert result == model, no leading marker, and suffix."""
     alphabet = "!*$6a"
@@ -211,7 +239,7 @@ def t2_enumerate(subject, env):
         fail("T2 get_clean_pass: expected %d results, got %d" % (len(grid), len(got)))
         return
     for (p, s), g in zip(grid, got, strict=True):
-        want = m_clean(p, s)
+        want = model(p, s)
         if g != want:
             fail("T2 get_clean_pass: %r symbol %r -> bash %r, model %r" % (p, s, g, want))
         if not _no_leading_marker(g, s):
@@ -228,10 +256,14 @@ def _strip_one_per_char(pass_v, symbol):
     return pass_v
 
 
-def t2_canaries():
+def t2_canaries(subject, env):
     broken = _strip_one_per_char("!!", "!*")
     _expect_caught("T2/strip-all", broken != m_clean("!!", "!*"))
     _expect_caught("T2/no-leading-marker", not _no_leading_marker(broken, "!*"))
+    ## harness teeth: strip-one-per-char run through the REAL bash enumeration
+    ## diverges from get_clean_pass and must be caught.
+    _expect_enum_catches("T2/harness",
+                         lambda: t2_enumerate(subject, env, model=_strip_one_per_char))
 
 
 ## ============================ T3: is_name_valid ============================
@@ -247,7 +279,7 @@ def _accepted_over_safe_charset(name):
     return all(c in SAFE_CHARS for c in body)
 
 
-def t3_enumerate(subject, env):
+def t3_enumerate(subject, env, name_re=_NAME_RE):
     """Anchor real is_name_valid to the reference regex over a bounded alphabet
     (including unsafe chars), and assert every ACCEPTED name is over the safe
     charset and starts with [a-z_]."""
@@ -264,7 +296,7 @@ def t3_enumerate(subject, env):
         fail("T3 is_name_valid: expected %d results, got %d" % (len(names), len(got)))
         return
     for nm, g in zip(names, got, strict=True):
-        want = "1" if _NAME_RE.fullmatch(nm) else "0"
+        want = "1" if name_re.fullmatch(nm) else "0"
         if g != want:
             fail("T3 is_name_valid: %r -> bash %s, reference %s" % (nm, g, want))
         if g == "1":
@@ -274,7 +306,7 @@ def t3_enumerate(subject, env):
                 fail("T3 is_name_valid: accepted %r does not start with [a-z_]" % nm)
 
 
-def t3_canaries():
+def t3_canaries(subject, env):
     ## The reference must reject an unsafe-char name (else escape_name safety
     ## would not hold); and accept a single-char name (the old '+' regex did not).
     _expect_caught("T3/ref-rejects-bracket", _NAME_RE.fullmatch("a[b") is None)
@@ -283,6 +315,12 @@ def t3_canaries():
     ## The safe-charset guard must reject a name containing '[' (a live BRE
     ## metacharacter escape_name does not handle).
     _expect_caught("T3/safe-charset-guard", not _accepted_over_safe_charset("a[b"))
+    ## harness teeth: an over-permissive reference (accepts uppercase-initial)
+    ## diverges from real is_name_valid and must be caught by real bash.
+    _expect_enum_catches("T3/harness",
+                         lambda: t3_enumerate(
+                             subject, env,
+                             name_re=re.compile(r"[a-zA-Z_][-a-z0-9_.@]*\$?\Z")))
 
 
 ## ============================ T4: escape_name (+ composition) ===============
@@ -290,7 +328,7 @@ def m_escape(name):
     return name.replace(".", "\\.").replace("$", "\\$")
 
 
-def t4_enumerate(subject, env):
+def t4_enumerate(subject, env, model=m_escape):
     """(a) escape_name output equals the reference. (b) BRE safety: for a valid
     name, the escaped anchored pattern matches a line IFF the line's first field
     is the literal name."""
@@ -301,7 +339,7 @@ def t4_enumerate(subject, env):
         fail("T4 escape_name: expected %d results, got %d" % (len(names), len(got)))
         return
     for nm, g in zip(names, got, strict=True):
-        want = m_escape(nm)
+        want = model(nm)
         if g != want:
             fail("T4 escape_name: %r -> bash %r, model %r" % (nm, g, want))
 
@@ -328,11 +366,15 @@ def t4_enumerate(subject, env):
                  % (nm, real_count, literal_count))
 
 
-def t4_canaries():
+def t4_canaries(subject, env):
     _expect_caught("T4/dot-escaped", "a.b" != m_escape("a.b"))
     lines = ["a.b:x", "axb:x"]
     _expect_caught("T4/literal-only",
                    sum(1 for ln in lines if ln.split(":", 1)[0] == "a.b") == 1)
+    ## harness teeth: an identity 'escape' leaves '.' unescaped, diverging from
+    ## real escape_name; the REAL bash enumeration must catch it.
+    _expect_enum_catches("T4/harness",
+                         lambda: t4_enumerate(subject, env, model=lambda nm: nm))
 
 
 ## ==================== T5: group_has_nonroot_member ==========================
@@ -379,7 +421,7 @@ def _getent_shim(passwd, group_db):
     )
 
 
-def t5_enumerate(subject, env):
+def t5_enumerate(subject, env, model=m_group_has_nonroot):
     """Run the REAL group_has_nonroot_member over generated fixtures (getent
     shimmed) and confirm rc matches the model, including the numeric-reject."""
     base_pw = [("root", "0"), ("alice", "1000")]
@@ -399,7 +441,7 @@ def t5_enumerate(subject, env):
                        "else printf 'no\\n'; fi" % _q(query))
         got = _bash_lines(subject, env, body)
         real = got[-1] if got else ""
-        want = "yes" if m_group_has_nonroot(query, passwd, group_db) else "no"
+        want = "yes" if model(query, passwd, group_db) else "no"
         if real != want:
             fail("T5 group_has_nonroot_member: query %r db=%r -> bash %r, model %r"
                  % (query, group_db, real, want))
@@ -412,7 +454,7 @@ def _supplementary_only(group, passwd, group_db):
     return any(m and m != "root" for m in group_db[group][1])
 
 
-def t5_canaries():
+def t5_canaries(subject, env):
     gdb = {"grp": ("5000", [])}
     pw = [("root", "0"), ("svc", "5000")]
     _expect_caught("T5/primary-gid",
@@ -420,6 +462,10 @@ def t5_canaries():
     gdb0 = {"root": ("0", [])}
     pw0 = [("root", "0"), ("legacy", "0")]
     _expect_caught("T5/numeric-reject", m_group_has_nonroot("0", pw0, gdb0) is False)
+    ## harness teeth: the supplementary-only model misses a primary-GID member,
+    ## diverging from real group_has_nonroot_member; must be caught by real bash.
+    _expect_enum_catches("T5/harness",
+                         lambda: t5_enumerate(subject, env, model=_supplementary_only))
 
 
 def main():
@@ -428,29 +474,29 @@ def main():
 
     sys.stdout.write("  T1  get_field -- exhaustive enumeration vs reference map\n")
     t1_enumerate(subject, env)
-    t1_canaries()
+    t1_canaries(subject, env)
 
     sys.stdout.write("  T2  get_clean_pass -- strip invariant enumeration vs real bash\n")
     t2_enumerate(subject, env)
-    t2_canaries()
+    t2_canaries(subject, env)
 
     sys.stdout.write("  T3  is_name_valid -- reference-regex anchor + safe-charset invariant\n")
     t3_enumerate(subject, env)
-    t3_canaries()
+    t3_canaries(subject, env)
 
     sys.stdout.write("  T4  escape_name -- escaping + BRE literal-match vs real grep\n")
     t4_enumerate(subject, env)
-    t4_canaries()
+    t4_canaries(subject, env)
 
     sys.stdout.write("  T5  group_has_nonroot_member -- fixture enumeration vs real bash\n")
     t5_enumerate(subject, env)
-    t5_canaries()
+    t5_canaries(subject, env)
 
     sys.stdout.write(
         "verify_accountctl_formal: %d canaries verified, %d obligations failed\n"
-        % (CANARIES_VERIFIED[0], FAIL)
+        % (CANARIES_VERIFIED[0], len(FAILURES))
     )
-    return 0 if FAIL == 0 else 1
+    return 0 if not FAILURES else 1
 
 
 if __name__ == "__main__":
