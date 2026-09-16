@@ -81,6 +81,14 @@ vs_capture_env=(
 ## lazily, so name-subtraction alone can miss them. Dropped unconditionally.
 vs_shell_special_re='^(BASH_REMATCH|BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_SOURCE|BASH_COMMAND|BASH_SUBSHELL|BASH_EXECUTION_STRING|FUNCNAME|PIPESTATUS|LINENO|RANDOM|SECONDS|SRANDOM|EPOCHREALTIME|EPOCHSECONDS|_)$'
 
+## Variables whose VALUE is 'git describe'-derived off the PINNED dist_build_version
+## sentinel, so the snapshot value is a pin artifact carrying no build-config signal and
+## has no stable placeholder: dist_build_version_described is dist_build_version's commit
+## id (empty here, since the sentinel's short id is not 40-hex). DROPPED by name like the
+## shell-specials -- keeps the oracle insensitive to whether a given dm version defines it,
+## so it is not perpetual snapshot noise.
+vs_volatile_derived_re='^(dist_build_version_described)$'
+
 ## Set by vs_init_baseline: a sorted file of the names to subtract.
 vs_baseline_file=""
 
@@ -162,7 +170,8 @@ vs_normalize() {
 vs_filter_and_normalize() {
    local dm="$1"
    grep '^declare ' \
-      | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" '
+      | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" \
+            -v volatilere="${vs_volatile_derived_re}" '
            BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
            {
               name = $0
@@ -170,6 +179,7 @@ vs_filter_and_normalize() {
               sub(/[^A-Za-z0-9_].*/, "", name)
               if (name in base) next
               if (name ~ specialre) next
+              if (name ~ volatilere) next
               print
            }' \
       | vs_normalize "${dm}" "${HOME}"
