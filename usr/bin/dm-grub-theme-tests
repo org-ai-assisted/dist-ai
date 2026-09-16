@@ -171,9 +171,9 @@ source "${grub_theme_tests_dir}/../share/dm-help-steps-tests/help_steps_test_lib
 variables_effective="$(mktemp)"
 help_steps_variables_effective "${variables_file}" > "${variables_effective}"
 
-## The default is set via the unified set_default_variable idiom (fill-if-empty),
+## The default is set via the unified default_if_empty idiom (fill-if-empty),
 ## not a bare 'NAME="true"' assignment.
-if grep --quiet --extended-regexp -- '^[[:space:]]*set_default_variable[[:space:]]+dist_build_grub_bios_theme[[:space:]]+"true"' "${variables_effective}"; then
+if grep --quiet --extended-regexp -- '^[[:space:]]*default_if_empty[[:space:]]+dist_build_grub_bios_theme[[:space:]]+"true"' "${variables_effective}"; then
    check_pass "build flag defaults to true (4x3 is the build default)"
 else
    check_fail "build flag default true MISSING in the resolver source"
