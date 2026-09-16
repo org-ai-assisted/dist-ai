@@ -18,7 +18,7 @@
 ## geometry, volume serial and label are preserved (a changed serial breaks an
 ## fstab 'UUID=' mount of the ESP) and the files survive intact.
 ##
-## Needs mkfs.fat (dosfstools) + mcopy (mtools). No root, no network, no build:
+## Needs mkfs.fat (dosfstools) + mcopy/mmd (mtools) + xxd. No root, no network, no build:
 ## it builds plain FAT IMAGE FILES and drives them with mtools, never a mount.
 
 set -o errexit
@@ -44,9 +44,9 @@ if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
    printf '%s\n' "FATAL: dm-normalize-fat-partition not found (set DEVELOPER_META_FILES_DIR or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
-for dep in mkfs.fat mcopy mmd; do
+for dep in mkfs.fat mcopy mmd xxd; do
    if ! command -v "${dep}" >/dev/null 2>&1; then
-      printf '%s\n' "FATAL: ${dep} not installed (need dosfstools + mtools)." >&2
+      printf '%s\n' "FATAL: ${dep} not installed (need dosfstools + mtools + xxd)." >&2
       exit 1
    fi
 done

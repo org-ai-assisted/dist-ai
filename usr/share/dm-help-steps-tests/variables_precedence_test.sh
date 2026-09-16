@@ -7,14 +7,14 @@
 
 ## Regression test for help-steps/variables CONFIGURATION PRECEDENCE.
 ##
-## The model is the plain guard idiom (set_default_variable = set-if-unset),
+## The model is the plain guard idiom (default_if_empty = set-if-unset),
 ## sourced highest-priority-first: parse-cmd (CLI) sets passed options
 ## UNCONDITIONALLY first, the environment is already present, and everything
 ## after fills only what is still unset. So, with no gymnastics:
 ##
-##   command-line  >  environment  >  config-file (set_default_variable)  >  default
+##   command-line  >  environment  >  config-file (default_if_empty)  >  default
 ##
-## A config file participates in the ladder by using 'set_default_variable NAME
+## A config file participates in the ladder by using 'default_if_empty NAME
 ## value' (fill-if-empty): it OVERRIDES a built-in code default (the user config
 ## tiers are sourced in 10_core.bsh BEFORE the defaults), yet still RESPECTS an
 ## env value or a --CLI flag (both already set by then, so fill-if-empty skips).
@@ -52,7 +52,7 @@ if [ ! -r "${inner}" ]; then
    exit 1
 fi
 
-## Two config files: one that participates in the ladder (set_default_variable)
+## Two config files: one that participates in the ladder (default_if_empty)
 ## and one that forces (bare assignment).
 conf_sdv="$(mktemp --suffix=.conf)"
 conf_force="$(mktemp --suffix=.conf)"
@@ -61,7 +61,7 @@ cleanup() {
    safe-rm --force -- "${conf_sdv}" "${conf_force}"
 }
 trap cleanup EXIT
-printf '%s\n' 'set_default_variable dist_build_hostname CONFVAL' > "${conf_sdv}"
+printf '%s\n' 'default_if_empty dist_build_hostname CONFVAL' > "${conf_sdv}"
 printf '%s\n' 'dist_build_hostname=CONFVAL' > "${conf_force}"
 
 base_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false )
@@ -92,12 +92,12 @@ resolve_check "env beats default"     ENVVAL    "dist_build_hostname=ENVVAL" --
 resolve_check "CLI beats default"     CLIVAL    ""                          --hostname CLIVAL
 resolve_check "CLI beats env"         CLIVAL    "dist_build_hostname=ENVVAL" --hostname CLIVAL
 
-## --- a config file using set_default_variable OVERRIDES a code default -------
-resolve_check "config(set_default_variable) beats default" CONFVAL "" --conffile "${conf_sdv}"
+## --- a config file using default_if_empty OVERRIDES a code default -------
+resolve_check "config(default_if_empty) beats default" CONFVAL "" --conffile "${conf_sdv}"
 
 ## --- ... but still RESPECTS env and CLI --------------------------------------
-resolve_check "config(set_default_variable) yields to CLI" CLIVAL "" --hostname CLIVAL --conffile "${conf_sdv}"
-resolve_check "config(set_default_variable) yields to env" ENVVAL "dist_build_hostname=ENVVAL" --conffile "${conf_sdv}"
+resolve_check "config(default_if_empty) yields to CLI" CLIVAL "" --hostname CLIVAL --conffile "${conf_sdv}"
+resolve_check "config(default_if_empty) yields to env" ENVVAL "dist_build_hostname=ENVVAL" --conffile "${conf_sdv}"
 
 ## --- a bare assignment in a config file is a FORCED override ----------------
 resolve_check "config(bare =) forces over default" CONFVAL "" --conffile "${conf_force}"
@@ -107,4 +107,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: config precedence (CLI > env > set_default_variable config > default; bare = forces)."
+printf '%s\n' "OK: config precedence (CLI > env > default_if_empty config > default; bare = forces)."
