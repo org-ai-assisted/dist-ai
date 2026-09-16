@@ -226,6 +226,13 @@ if grep --quiet --extended-regexp '^advanced \(' <<< "${dry_out}"; then
 else
    pass "dry-run summary bucket is 'would advance', not 'advanced'"
 fi
+## The ai-upstream bucket must be dry-run-aware too (it read 'ai upstream corrected'
+## even in dry-run, falsely claiming the dangerous upstream was fixed).
+if grep --quiet --extended-regexp '^ai upstream corrected \(' <<< "${dry_out}"; then
+   fail "dry-run summary bucket says 'ai upstream corrected' (reads as completed)"
+else
+   pass "dry-run upstream bucket is 'would correct ai upstream', not 'corrected'"
+fi
 if [ "$(gitq -C "${superA}/wrongupstream" config branch.ai.merge)" = "refs/heads/master" ]; then
    pass "dry-run did NOT change the mis-set ai upstream"
 else
@@ -532,6 +539,27 @@ if [ "$(cat -- "${superE}/detcol/newfile")" = "attacker" ]; then
    pass "the untracked file is intact after the rolled-back STOP"
 else
    fail "the untracked file was clobbered on the rolled-back STOP"
+fi
+
+## nbr: on a NON-ai NAMED branch 'work' (with a local 'ai', so ai-workflow). A failed
+## re-attach+FF must roll back to 'work' -- NOT leave the sub detached (a STOP must
+## restore it exactly as found).
+new_fork "${workspace}/fork-nbr.git" "${workspace}/drv-nbr"
+add_sub "${superE}" "${workspace}/fork-nbr.git" nbr
+printf 'gg\n' > "${workspace}/drv-nbr/g"
+gitq -C "${workspace}/drv-nbr" add g
+gitq -C "${workspace}/drv-nbr" commit --quiet -m c2
+gitq -C "${workspace}/drv-nbr" push --quiet fork ai
+gitq -C "${superE}/nbr" fetch --quiet org-ai-assisted
+gitq -C "${superE}/nbr" checkout --quiet -b work      # off ai, a named branch
+printf 'collide\n' > "${superE}/nbr/g"                # untracked collision with incoming c2
+
+rc=0
+n_out="$("${tool}" --dir "${superE}" 2>&1)" || rc=$?
+if [ "$(branch_of "${superE}/nbr")" = "refs/heads/work" ]; then
+   pass "failed FF after re-attach ROLLS BACK to the original named branch (not detached)"
+else
+   fail "named-branch rollback left the sub at '$(branch_of "${superE}/nbr")' (expected refs/heads/work)"
 fi
 
 ## =============================================================================
