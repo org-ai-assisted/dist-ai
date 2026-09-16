@@ -96,6 +96,13 @@ vs_volatile_derived_re='^(dist_build_version_described)$'
 ## build-config signal: DROPPED by name like the shell-specials.
 vs_loader_plumbing_re='^(variables_d_module)$'
 
+## The file contents that variables.d/99_effects.bsh writes are STAGED into these
+## variables by the resolver modules, then written to disk. They are effect inputs
+## (one is the whole multi-line pbuilder.conf), not part of the variable contract,
+## and the files' correctness is verified by the build steps that read them --
+## DROPPED so the snapshot tracks the variable surface, not staged file bodies.
+vs_effect_staging_re='^(dist_aptgetopt_file_content|dist_build_pbuilder_config_content)$'
+
 ## The EXPORTED-CONTRACT: the interface between 'help-steps/variables' and the rest
 ## of the build. A producer rewrite (file split, helper reuse, declaration block,
 ## effect relocation) legitimately changes internal temporaries and non-consumed
@@ -210,7 +217,8 @@ vs_filter_and_normalize() {
    local dm="$1"
    grep '^declare ' \
       | awk -v basefile="${vs_baseline_file}" -v specialre="${vs_shell_special_re}" \
-            -v volatilere="${vs_volatile_derived_re}" -v plumbingre="${vs_loader_plumbing_re}" '
+            -v volatilere="${vs_volatile_derived_re}" -v plumbingre="${vs_loader_plumbing_re}" \
+            -v stagingre="${vs_effect_staging_re}" '
            BEGIN { while ((getline n < basefile) > 0) base[n] = 1 }
            {
               name = $0
@@ -220,6 +228,7 @@ vs_filter_and_normalize() {
               if (name ~ specialre) next
               if (name ~ volatilere) next
               if (name ~ plumbingre) next
+              if (name ~ stagingre) next
               print
            }' \
       | vs_normalize "${dm}" "${HOME}"
