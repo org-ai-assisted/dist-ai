@@ -47,10 +47,10 @@ unset _safe_libexec
 
 usage() {
    cat -- <<'EOF'
-Usage: safe-pgrep [--name] [--full] [--list-full|-a] [--count|-c] PATTERN
+Usage: safe-pgrep [--name] [--full|-f] [--list-full|-a] [--count|-c] PATTERN
 
   --name             match the process NAME (pgrep --exact) instead of the full command line
-  --full             match the full command line (default)
+  --full, -f         match the full command line (default; -f accepted for pgrep muscle-memory)
   --list-full, -a    print "PID <command line>" per match, like 'pgrep -a', not bare PIDs
   --count, -c        print only the number of matches (after exclusions)
   --help, -h         this help
@@ -99,7 +99,10 @@ while [ "$#" -gt 0 ]; do
          match_mode='name'
          shift
          ;;
-      --full)
+      ## -f accepted as an alias for --full: full-match is already the default, so -f is a
+      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f). Rejecting it errored
+      ## with a silent no-op rc=2 -- exactly the trap these wrappers exist to remove.
+      -f|--full)
          match_mode='full'
          shift
          ;;

@@ -50,6 +50,7 @@ Usage: safe-pkill [--signal SIG] [--name] [--dry-run] PATTERN
 
   --signal, -s SIG   signal to send (name or number, default TERM)
   --name             match the process NAME (pgrep --exact) instead of the full command line
+  --full, -f         match the full command line (default; -f accepted for pkill muscle-memory)
   --dry-run, -n      list what WOULD be signalled (and what is protected), kill nothing
   --help, -h         this help
 
@@ -106,7 +107,10 @@ while [ "$#" -gt 0 ]; do
          match_mode='name'
          shift
          ;;
-      --full)
+      ## -f accepted as an alias for --full: full-match is already the default, so -f is a
+      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f). Rejecting it errored
+      ## with a silent no-op rc=2 -- exactly the trap these wrappers exist to remove.
+      -f|--full)
          match_mode='full'
          shift
          ;;
