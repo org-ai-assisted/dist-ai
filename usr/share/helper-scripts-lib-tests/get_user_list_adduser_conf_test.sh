@@ -124,6 +124,19 @@ else
    notok "commented key not ignored: rc=${run_rc}, out: ${run_out//$'\n'/,}"
 fi
 
+## Modern adduser ships FIRST_UID/LAST_UID commented out (the defaults are built
+## into adduser), so no uncommented key exists at all. get-user-list must fall back
+## to the built-in defaults (1000-59999), not abort on the empty value -- the abort
+## broke image builds (autologinchange -> user-sysmaint-split postinst).
+run_case "all keys commented -> defaults" $'# Default: FIRST_UID=1000, LAST_UID=59999\n#FIRST_UID=1000\n#LAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "all keys commented: defaults 1000-59999 used (bob and alice listed)"
+else
+   notok "all keys commented: expected exit 0 with defaults, rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"
 [ "${fail_count}" -eq 0 ]
