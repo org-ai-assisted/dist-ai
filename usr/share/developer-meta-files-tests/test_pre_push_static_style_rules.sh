@@ -31,7 +31,7 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 ## The gate under test (pre-push-static) now ships in dist-ai itself
-## (usr/bin/pre-push-static), so this test no longer needs DMF_REPO.
+## (usr/bin/pre-push-static), so this test no longer needs DEVELOPER_META_FILES_DIR.
 
 ## Fail closed. A missing prerequisite is an environment defect: staying
 ## green where the gate cannot run reports success for a test that never

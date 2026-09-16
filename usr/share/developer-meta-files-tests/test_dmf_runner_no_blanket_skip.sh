@@ -6,12 +6,12 @@
 ## AI-Assisted
 
 ## Pins one regression in the developer-meta-files-tests entrypoint: it must NOT
-## skip the WHOLE suite just because DMF_REPO is unset.
+## skip the WHOLE suite just because DEVELOPER_META_FILES_DIR is unset.
 ##
 ## Only test_dm_review_branch.sh has its subject in the developer-meta-files
 ## checkout. The rest drive tools dist-ai ships itself -- including the
 ## pre-push-static tests that guard dist-ai's own push gate. A blanket
-## 'DMF_REPO unset -> exit 77' meant a bare run reported success while running
+## 'DEVELOPER_META_FILES_DIR unset -> exit 77' meant a bare run reported success while running
 ## nothing at all.
 ##
 ## Asserted STATICALLY, by reading the entrypoint: invoking it would re-enter
@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_script="$(readlink --canonicalize -- "${BASH_SOURCE[0]}")"
 test_dir="${test_script%/*}"
@@ -42,20 +43,20 @@ fi
 failures=0
 review_rc=0
 
-## The defect shape: a bare '-z "${DMF_REPO:-}"' test whose body exits 77.
+## The defect shape: a bare '-z "${DEVELOPER_META_FILES_DIR:-}"' test whose body exits 77.
 ## Read the guard body rather than the whole file, so an unrelated 'exit 77'
 ## elsewhere neither hides nor fakes the regression.
-guard_body="$(sed -n '/^if \[ -z "${DMF_REPO:-}" \]; then/,/^fi$/p' -- "${runner}")"
+guard_body="$(sed -n '/^if \[ -z "${DEVELOPER_META_FILES_DIR:-}" \]; then/,/^fi$/p' -- "${runner}")"
 
 if [ -z "${guard_body}" ]; then
-   printf 'PASS: entrypoint has no blanket "DMF_REPO unset" guard\n'
+   printf 'PASS: entrypoint has no blanket "DEVELOPER_META_FILES_DIR unset" guard\n'
 else
-   if printf '%s\n' "${guard_body}" | grep --quiet --extended-regexp '^[[:space:]]*exit 77[[:space:]]*$'; then
-      printf 'FAIL: entrypoint skips the whole suite when DMF_REPO is unset\n' >&2
+   if grep --quiet --extended-regexp '^[[:space:]]*exit 77[[:space:]]*$' <<< "${guard_body}"; then
+      printf 'FAIL: entrypoint skips the whole suite when DEVELOPER_META_FILES_DIR is unset\n' >&2
       printf '%s\n' "${guard_body}" >&2
       failures=$((failures + 1))
    else
-      printf 'PASS: the "DMF_REPO unset" guard does not skip the suite\n'
+      printf 'PASS: the "DEVELOPER_META_FILES_DIR unset" guard does not skip the suite\n'
    fi
 fi
 
@@ -67,15 +68,15 @@ if [ ! -r "${review_test}" ]; then
    failures=$((failures + 1))
 else
    ## Executed, not grepped: an 'exit 77' ANYWHERE in the file would satisfy a
-   ## static match without proving the DMF_REPO-unset path returns it. Running
+   ## static match without proving the DEVELOPER_META_FILES_DIR-unset path returns it. Running
    ## this ONE test does not recurse -- only invoking the entrypoint would, and
-   ## with DMF_REPO unset it returns at the top before doing any work.
+   ## with DEVELOPER_META_FILES_DIR unset it returns at the top before doing any work.
    review_rc=0
-   env --unset=DMF_REPO -- "${review_test}" >/dev/null 2>&1 || review_rc="$?"
+   env --unset=DEVELOPER_META_FILES_DIR -- "${review_test}" >/dev/null 2>&1 || review_rc="$?"
    if [ "${review_rc}" -eq 77 ]; then
       printf 'PASS: test_dm_review_branch self-skips (77) on an absent subject\n'
    else
-      printf 'FAIL: test_dm_review_branch exited %s, expected 77, with DMF_REPO unset\n' \
+      printf 'FAIL: test_dm_review_branch exited %s, expected 77, with DEVELOPER_META_FILES_DIR unset\n' \
          "${review_rc}" >&2
       failures=$((failures + 1))
    fi

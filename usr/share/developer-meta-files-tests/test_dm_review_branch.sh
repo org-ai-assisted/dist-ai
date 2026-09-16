@@ -43,13 +43,13 @@ assert_prerequisite() {
 }
 
 ## ABSENT SUBJECT, not a broken environment: dm-review-branch lives in the
-## developer-meta-files checkout, so with no DMF_REPO there is nothing to judge.
+## developer-meta-files checkout, so with no DEVELOPER_META_FILES_DIR there is nothing to judge.
 ## Self-skip (77) per the runner's absent-subject contract (and the meta-test
 ## test_dmf_runner_no_blanket_skip). Every prerequisite BELOW stays fail-closed,
 ## because those are defects in an environment whose subject IS present.
-if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'SKIP: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
-   ## style-ok: allow-skip: absent subject -- dm-review-branch lives in the DMF checkout; nothing to judge without DMF_REPO
+if [ -z "${DEVELOPER_META_FILES_DIR:-}" ]; then
+   printf '%s\n' 'SKIP: test_dm_review_branch: DEVELOPER_META_FILES_DIR unset (no developer-meta-files checkout wired).' >&2
+   ## style-ok: allow-skip: absent subject -- dm-review-branch lives in the DMF checkout; nothing to judge without DEVELOPER_META_FILES_DIR
    exit 77
 fi
 
@@ -70,8 +70,8 @@ for tool in check-ref-commits-for-unicode check-ref-names-for-unicode unicode-sh
    assert_prerequisite "'${tool}' not on PATH" has "${tool}"
 done
 assert_prerequisite \
-   "'${DMF_REPO}/usr/bin/dm-review-branch' not found" \
-   test -x "${DMF_REPO}/usr/bin/dm-review-branch"
+   "'${DEVELOPER_META_FILES_DIR}/usr/bin/dm-review-branch' not found" \
+   test -x "${DEVELOPER_META_FILES_DIR}/usr/bin/dm-review-branch"
 
 fail_count=0
 fail() {
@@ -99,7 +99,7 @@ stub() {
 stub git-meld
 stub git-kdiff3
 stub git-diff-review
-export PATH="${work}/bin:${DMF_REPO}/usr/bin:${PATH}"
+export PATH="${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}"
 
 ## Build a throwaway repo: master, and a feature branch with one clean new
 ## commit to review. --no-verify so a local commit-msg unicode hook (if any)
@@ -325,7 +325,7 @@ mirror_bins() {
 }
 mirror_bins /usr/bin
 mirror_bins /bin
-mirror_bins "${DMF_REPO}/usr/bin"
+mirror_bins "${DEVELOPER_META_FILES_DIR}/usr/bin"
 if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
    mirror_bins "${HELPER_SCRIPTS_PATH}/usr/bin"
 fi
@@ -440,7 +440,7 @@ chmod +x "${toctou_dir}/check-ref-commits-for-unicode" \
    "${toctou_dir}/check-ref-names-for-unicode" "${toctou_dir}/git-meld"
 rc=0
 ( cd -- "${repo}" \
-   && PATH="${toctou_dir}:${work}/bin:${DMF_REPO}/usr/bin:${PATH}" setsid dm-review-branch feature ) \
+   && PATH="${toctou_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch feature ) \
    </dev/null >/dev/null 2>&1 || rc="$?"
 ## Restore feature for any later use.
 git -C "${repo}" branch --force -- feature "${orig_tip}" >/dev/null 2>&1 || true
