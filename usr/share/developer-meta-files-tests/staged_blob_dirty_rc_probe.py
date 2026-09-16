@@ -16,7 +16,9 @@ import sys, os, subprocess, pathlib
 from dist_ai import context, engine, model
 D = os.path.join(sys.argv[1], "blobtree")
 os.makedirs(D)
-def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
+## '-c core.hooksPath=/dev/null': the fixture repo is not testing the operator's
+## global hooks, whose pre-commit would otherwise fire on this throwaway commit.
+def git(*a): subprocess.run(["git", "-C", D, "-c", "core.hooksPath=/dev/null"] + list(a), check=True, capture_output=True)
 git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
 pathlib.Path(D + "/prog.sh").write_text("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
 git("add", "prog.sh"); git("commit", "--quiet", "-m", "init")
