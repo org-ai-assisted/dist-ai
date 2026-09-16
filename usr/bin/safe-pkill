@@ -139,8 +139,8 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       ## -f accepted as an alias for --full: full-match is already the default, so -f is a
-      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f). Rejecting it errored
-      ## with a silent no-op rc=2 -- exactly the trap these wrappers exist to remove.
+      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f); accepting it keeps that
+      ## reflex from failing as an unknown-option usage error -- the trap these wrappers remove.
       -f|--full)
          match_mode='full'
          full_flag='true'
@@ -201,7 +201,7 @@ fi
 ## generic name (sleep/cat/python3/...) matches UNRELATED processes in other sessions and the
 ## system tree, which are not the caller's ancestors -- a `pkill sleep` once killed the
 ## qubes-session `sleep inf` keepalive and wedged the VM GUI. Kill a specific PID/PGID instead.
-if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; then
+if ! safe_proc_generic_override && safe_proc_is_generic "${pattern}"; then
    printf 'safe-pkill: refusing the generic process name "%s" as a target -- it matches OTHER sessions and system processes (this class once wedged the VM GUI by killing qubes-session sleep). Kill a specific process (kill PID; kill -- -PGID), or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
@@ -289,27 +289,34 @@ fi
 
 rc=0
 signalled=()
+unsignalled_live=()
 for target in "${targets[@]}"; do
    kill_err=''
    if kill_err="$(kill -s "${signal}" "${target}" 2>&1)"; then
       signalled+=("${target}")
       continue
    fi
-   ## kill failed. 'gone'/'zombie' are dead (the goal); 'live' is alive-or-hidden and must fail
-   ## closed (warn + rc=1) rather than be reported as a clean success.
+   ## kill failed. 'gone'/'zombie' are dead (the goal -- silent). 'live' is alive-or-hidden:
+   ## WARN so a survivor is never hidden (honesty), and remember it for the exit-code decision.
+   ## The WARNING -- not the exit code -- is what keeps a survivor from passing silently.
    if [ "$(classify_kill_failure "${kill_err}" "${target}")" = 'live' ]; then
       printf 'safe-pkill: WARNING: could not signal process %s (still alive, or hidden by /proc permissions)\n' "${target}" >&2
-      rc=1
+      unsignalled_live+=("${target}")
    fi
 done
+## Exit code follows the DOCUMENTED contract: 0 iff >= 1 process was signalled. A 'live'
+## survivor is reported through the WARNING above, NOT the exit code -- so a caller is not driven
+## to a broader fallback kill (the cross-session hazard) merely because ONE matched target was
+## unsignalable while others were killed. Only when NOTHING was signalled is this a failure.
 if [ "${#signalled[@]}" -gt 0 ]; then
    printf 'safe-pkill: sent %s to: %s\n' "${signal}" "${signalled[*]}"
 else
-   printf 'safe-pkill: no live target remained to signal (all matches had exited)\n' >&2
-   ## Contract (usage): exit 0 requires >= 1 process SIGNALLED. Nothing signalled is a
-   ## non-success -- keep a live-unsignalable rc=1 from above, else set it (matched targets
-   ## all exited before we could signal them).
-   [ "${rc}" -ne 0 ] || rc=1
+   rc=1
+   if [ "${#unsignalled_live[@]}" -gt 0 ]; then
+      printf 'safe-pkill: could not signal any matched process (still alive, or hidden): %s\n' "${unsignalled_live[*]}" >&2
+   else
+      printf 'safe-pkill: no live target remained to signal (all matches had exited)\n' >&2
+   fi
 fi
 if [ "${#skipped[@]}" -gt 0 ]; then
    printf 'safe-pkill: protected (self/ancestors), NOT killed: %s\n' "${skipped[*]}"

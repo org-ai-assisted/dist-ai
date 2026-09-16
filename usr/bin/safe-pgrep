@@ -103,8 +103,8 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       ## -f accepted as an alias for --full: full-match is already the default, so -f is a
-      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f). Rejecting it errored
-      ## with a silent no-op rc=2 -- exactly the trap these wrappers exist to remove.
+      ## no-op, but callers reach for it by reflex (pgrep -f / pkill -f); accepting it keeps that
+      ## reflex from failing as an unknown-option usage error -- the trap these wrappers remove.
       -f|--full)
          match_mode='full'
          full_flag='true'
@@ -168,7 +168,7 @@ fi
 ## Refuse a bare GENERIC process name: it matches UNRELATED processes in other sessions and the
 ## system tree, so the count/list is meaningless and piping it into kill is the cross-session
 ## GUI-kill trap (`pgrep -f sleep | xargs kill`). Match a specific pattern, or override.
-if [ -z "${SAFE_PROC_ALLOW_GENERIC:-}" ] && safe_proc_is_generic "${pattern}"; then
+if ! safe_proc_generic_override && safe_proc_is_generic "${pattern}"; then
    printf 'safe-pgrep: refusing the generic process name "%s" -- it matches OTHER sessions and system processes (piping such a list into kill is the cross-session GUI-kill trap). Use a specific pattern, or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
    exit 2
 fi
@@ -241,7 +241,12 @@ for target in "${targets[@]}"; do
       ## errexit, and an unreadable/empty cmdline prints the bare PID rather than 'PID '.
       cmdline=''
       if [ -r "/proc/${target}/cmdline" ]; then
-         cmdline="$(tr '\0' ' ' < "/proc/${target}/cmdline" 2>/dev/null || true)"
+         ## argv is NUL-separated; render separators as spaces. Also fold any LITERAL newline or
+         ## carriage return WITHIN an argv value to a space: a process can put those in its own
+         ## argv (exec -a), and left intact they split one match across multiple output lines,
+         ## breaking the documented one-line-per-match contract (a 'while read pid rest' consumer
+         ## would see a bogus second record).
+         cmdline="$(tr '\0\n\r' '   ' < "/proc/${target}/cmdline" 2>/dev/null || true)"
          cmdline="${cmdline% }"
       fi
       if [ -n "${cmdline}" ]; then

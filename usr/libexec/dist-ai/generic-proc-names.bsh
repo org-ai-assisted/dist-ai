@@ -42,3 +42,21 @@ safe_proc_is_generic() {
    [ -n "${n}" ] || return 1
    [ -n "${SAFE_PROC_GENERIC_NAMES[${n}]:-}" ]
 }
+
+## safe_proc_generic_override -- exit 0 (true) ONLY when SAFE_PROC_ALLOW_GENERIC holds a
+## recognized TRUTHY value. Fail SAFE: unset, empty, '0', 'false', 'no', 'off', or anything
+## unrecognized keeps the generic-name guard ON. A plain '[ -n ]'/'[ -z ]' test treated '=0'
+## (and every other value) as "override enabled" -- the opposite of the near-universal shell
+## convention -- silently disabling the cross-session-kill guard for a caller who set '=0'
+## meaning "off". Enumerate the truthy spellings so no shell option (nocasematch) leaks to the
+## sourcing script.
+safe_proc_generic_override() {
+   case "${SAFE_PROC_ALLOW_GENERIC:-}" in
+      1 | true | TRUE | True | yes | YES | Yes | on | ON | On)
+         return 0
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
