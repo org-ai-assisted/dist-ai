@@ -149,8 +149,14 @@ def run():
                               capture_output=True, text=True)
         sm_path = os.path.join(site, 'sitemap.xml')
         rb_path = os.path.join(site, 'robots.txt')
-        got_sm = open(sm_path).read() if os.path.isfile(sm_path) else None
-        got_rb = open(rb_path).read() if os.path.isfile(rb_path) else None
+        got_sm = None
+        if os.path.isfile(sm_path):
+            with open(sm_path) as _h:
+                got_sm = _h.read()
+        got_rb = None
+        if os.path.isfile(rb_path):
+            with open(rb_path) as _h:
+                got_rb = _h.read()
         check('symlink-invoked site-generate uses the co-located check_site',
               proc.returncode == 0 and got_sm == 'COLOCATED-SITEMAP\n'
               and got_rb == 'COLOCATED-ROBOTS\n',

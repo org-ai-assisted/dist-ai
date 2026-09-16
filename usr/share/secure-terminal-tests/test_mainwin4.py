@@ -21,6 +21,7 @@ win.new_tab()
 # Imported/aliased once in sections that now live in earlier suites.
 import io as _io                                 # noqa: E402
 import contextlib as _ctx                        # noqa: E402
+from pathlib import Path                          # noqa: E402
 from PyQt6.QtWidgets import QFileDialog, QPushButton  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint              # noqa: E402
 from PyQt6.QtCore import Qt as _QtIL             # noqa: E402
@@ -644,7 +645,7 @@ _tvwin.terminate_foreground()                   # verbose path: report + file + 
 _tvfile = os.path.join(M.session._state_dir(), 'terminate-debug.txt')
 ok(bool(_tv_dbg) and os.path.exists(_tvfile),
    'verbose Terminate runs terminate_debug (the real terminate) and writes terminate-debug.txt')
-_tvtext = open(_tvfile).read()
+_tvtext = Path(_tvfile).read_text()
 ok('MainWindow routing' in _tvtext and 'current tab index' in _tvtext
    and 'not a terminal' in _tvtext and 'DBG _foreground_target()' in _tvtext,
    'verbose report carries routing, a non-terminal tab line, and the terminate_debug body')

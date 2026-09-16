@@ -24,7 +24,7 @@ def verdict():
     all_runs = d.get("check_runs", []) if isinstance(d, dict) else []
     all_runs = [r for r in all_runs if isinstance(r, dict)]
     if not all_runs:
-        return
+        return None
 
     ## Decide over ALL build jobs, never last-one-wins. This lane has two
     ## (build (a) and build (b)); reporting the last one scanned would call the
@@ -48,7 +48,7 @@ def verdict():
     if not jobs:
         ## The newest suite has none of this job type yet -> nothing decided; keep
         ## waiting rather than reading a prior run's jobs on the same head-sha.
-        return
+        return None
 
     bad = [r for r in jobs
            if r.get("conclusion") not in (None, "success", "skipped")]

@@ -19,14 +19,13 @@
 
 import ast
 import inspect
-import os
 import sys
 
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(review)')
 
 try:
-    from PyQt6.QtWidgets import QApplication, QWidget, QMessageBox
+    from PyQt6.QtWidgets import QApplication, QWidget
     from PyQt6.QtGui import (QKeyEvent, QMouseEvent, QTextCursor, QGuiApplication,
                              QWheelEvent, QResizeEvent)
     from PyQt6.QtCore import Qt, QEvent, QMimeData, QPointF, QPoint, QSize

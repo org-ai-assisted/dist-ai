@@ -470,7 +470,7 @@ ok(os.path.dirname(_esc) == os.path.join(_ns_root, 'secure-terminal')
    and '/' not in os.path.basename(_esc),
    'session: a crafted instance group is sanitized to one in-tree component')
 # a throwaway gets a random isolated subtree with a marker; removing it touches only itself
-_tw = session.set_instance_throwaway()
+session.set_instance_throwaway()
 _tdir = session._state_dir()
 ok(os.path.isfile(os.path.join(_tdir, session._THROWAWAY_MARKER)),
    'session: a throwaway subtree is created with a throwaway marker')
@@ -482,7 +482,7 @@ eq(session.load()[0].get('text'), 'DEF',
    'session: remove_instance left the other groups intact')
 # gc prunes a stale MARKED throwaway; a NAMED group is never swept even if its name
 # looks like a throwaway id and it is old (identified by the marker, not the name)
-_tw2 = session.set_instance_throwaway()
+session.set_instance_throwaway()
 session.save([{'uid': 0, 'text': 'x'}])
 _old_dir = session._state_dir()
 session.set_instance_group('deadbeef1234')       # a NAMED group with a uuid-like name

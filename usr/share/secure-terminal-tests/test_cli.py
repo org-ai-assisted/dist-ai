@@ -359,7 +359,7 @@ cli.os.write = _raise_on_eof
 _eof_escaped = None
 try:
     try:
-        _oe2, _rce2 = run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
+        run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
     except OSError as _eof_e:
         _eof_escaped = _eof_e            # unfixed: the nudge OSError escapes cli.main
 finally:
