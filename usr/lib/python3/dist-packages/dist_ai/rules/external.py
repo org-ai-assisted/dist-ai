@@ -14,6 +14,7 @@ shfmt could not parse the file -- catching the syntax error is the whole point -
 so these do not gate on ctx.tree the way the AST rules do."""
 
 import contextlib
+import json
 import os
 import subprocess
 import tempfile
@@ -233,6 +234,42 @@ SHELLCHECK_OPTIONAL = (
     "avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,"
     "quote-safe-variables,require-variable-braces")
 
+## Repo-tree shape of a '# shellcheck source=' directive into the helper-scripts
+## sibling repo. Such a source cannot be FOLLOWED on a dev host: a local
+## helper-scripts checkout is disallowed, and the installed
+## /usr/libexec/helper-scripts is a flat runtime layout, not this tree. CI checks
+## the sibling out and follows the source, so a genuinely broken path still fails
+## there. Reproducing the sibling locally is not viable: shellcheck's
+## '--external-sources' following of the deep helper-scripts graph is exponential
+## (measured ~1s for one such source, >60s past four -- it hangs the gate). So the
+## gate accepts the verdict CI reaches: the info-level SC1091 for that ABSENT
+## sibling is dropped, while every other finding -- an SC1091 for any OTHER missing
+## source included -- stays fatal. In CI the sibling is present, following
+## succeeds, no such SC1091 arises, and this filter is inert.
+_HELPER_SCRIPTS_SOURCE_SEGMENT = "helper-scripts/usr/libexec/helper-scripts/"
+
+
+def _is_absent_helper_scripts_source(comment):
+    """True for the info-level SC1091 that a cross-repo helper-scripts 'source='
+    directive yields when the sibling checkout is absent (the local case)."""
+    if comment.get("code") != 1091:
+        return False
+    message = comment.get("message", "")
+    return (_HELPER_SCRIPTS_SOURCE_SEGMENT in message
+            and "does not exist" in message)
+
+
+def _render_shellcheck(path, comments):
+    """A readable rendering of shellcheck JSON COMMENTS, keyed on the caller-facing
+    PATH (not the temp blob path a staged check runs against)."""
+    lines = ["shellcheck: '%s'" % path]
+    for comment in comments:
+        lines.append("%s:%s:%s: %s: %s [SC%s]" % (
+            path, comment.get("line", "?"), comment.get("column", "?"),
+            comment.get("level", "?"), comment.get("message", ""),
+            comment.get("code", "?")))
+    return "\n".join(lines)
+
 
 class Shellcheck(ExternalRule):
     """'shellcheck --external-sources' with the ai-review-aligned optional
@@ -244,9 +281,12 @@ class Shellcheck(ExternalRule):
     passed via '--rcfile' so a temp-file blob is judged by the same config, not
     dropped: for a DISK file it is located on disk; for a staged/committed BLOB it
     is read from the blob's OWN git tree (see _shellcheckrc_for), never the working
-    tree -- a dirty rc must not govern the object that ships. Fail-open when
-    shellcheck is absent (a bare git-hook run without it installed must still
-    commit)."""
+    tree -- a dirty rc must not govern the object that ships. Findings are read
+    as JSON ('--format=json1') so the info-level SC1091 for a helper-scripts
+    sibling that cannot be followed locally is dropped -- see
+    _is_absent_helper_scripts_source -- while every other finding stays fatal.
+    Fail-open when shellcheck is absent (a bare git-hook run without it installed
+    must still commit)."""
 
     id = "shellcheck"
 
@@ -263,18 +303,31 @@ class Shellcheck(ExternalRule):
             with ctx.materialized() as (path, src_dir), \
                     _shellcheckrc_for(ctx, src_dir) as rc_file:
                 command = ["shellcheck", "--external-sources",
-                           "--source-path=" + src_dir]
+                           "--source-path=" + src_dir, "--format=json1"]
                 if rc_file is not None:
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
                 proc = subprocess.run(command, capture_output=True, text=True)
         except OSError:
             return
-        if proc.returncode != 0:
-            message = "shellcheck: '%s'" % ctx.path
-            if proc.stdout.strip():
-                message += "\n" + proc.stdout.rstrip("\n")
-            yield model.fail("shellcheck", message, ctx.path)
+        try:
+            comments = json.loads(proc.stdout)["comments"]
+        except (ValueError, KeyError, TypeError):
+            ## No parseable JSON (a shellcheck internal error, or a build without
+            ## --format=json1). Fall back to the raw exit status so a real failure
+            ## is never silently swallowed.
+            if proc.returncode != 0:
+                message = "shellcheck: '%s'" % ctx.path
+                raw = proc.stdout.strip() or proc.stderr.strip()
+                if raw:
+                    message += "\n" + raw.rstrip("\n")
+                yield model.fail("shellcheck", message, ctx.path)
+            return
+        remaining = [comment for comment in comments
+                     if not _is_absent_helper_scripts_source(comment)]
+        if remaining:
+            yield model.fail(
+                "shellcheck", _render_shellcheck(ctx.path, remaining), ctx.path)
 
 
 RULES = (BashParse(), Shellcheck())
