@@ -126,6 +126,87 @@ python3 "${helper}" "${work}/C/.coverage" "${raw}" "${pkg}" > "${outC}" 2>&1 || 
 if has "${outC}" 'drop=yes'; then ok 0 'C: combined missing a line the raw union covers -> drop=yes'; else ok 1 'C: combined missing a line the raw union covers -> drop=yes'; fi
 if has "${outC}" 'DEBUG-COMBINE-DROP'; then ok 0 'C: a genuine combine drop emits DEBUG-COMBINE-DROP'; else ok 1 'C: a genuine combine drop emits DEBUG-COMBINE-DROP'; fi
 
+## ---- Case D: same-named files in different subpackages keyed distinctly (basename bug) ----
+## Two 'dup.py' in different subpackages, each with an uncovered body line. The pre-fix
+## helper keyed by basename -> both collapsed to 'dup.py' -> one file's gaps silently dropped.
+pkg2="${work}/pkg2"
+mkdir --parents -- "${pkg2}/sub1" "${pkg2}/sub2"
+printf '%s\n' 'def never():' '    return 1' > "${pkg2}/sub1/dup.py"
+printf '%s\n' 'def never():' '    return 2' > "${pkg2}/sub2/dup.py"
+printf '%s\n' 'import sub1.dup' 'import sub2.dup' > "${work}/driveD.py"
+rawD="${work}/rawD"
+mkdir --parents -- "${rawD}"
+PYTHONPATH="${pkg2}" COVERAGE_FILE="${rawD}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkg2}" -- "${work}/driveD.py" >/dev/null 2>&1
+combine_into "${work}/D/.coverage" "${rawD}"/.coverage.*
+outD="${work}/outD.txt"
+python3 "${helper}" "${work}/D/.coverage" "${rawD}" "${pkg2}" > "${outD}" 2>&1 || true
+if has "${outD}" 'sub1/dup.py' && has "${outD}" 'sub2/dup.py'; then
+   ok 0 'D: same-named files in different subpackages keyed distinctly (no basename collision)'
+else
+   ok 1 'D: same-named files in different subpackages keyed distinctly (no basename collision)'
+fi
+
+## ---- Case E: a raw dir path containing a glob metachar must still be read (glob.escape) ---
+## Pre-fix: glob read '[abc]' as a character class -> no match -> raw_files=0 -> a real gap
+## FALSELY reported as drop=unknown. Post-fix: the dir is escaped and read literally.
+brk="${work}/raw[abc]"
+mkdir --parents -- "${brk}"
+cp --preserve -- "${raw_files[@]}" "${brk}/"
+outE="${work}/outE.txt"
+python3 "${helper}" "${work}/A/.coverage" "${brk}" "${pkg}" > "${outE}" 2>&1 || true
+if has "${outE}" 'raw_files=2'; then
+   ok 0 'E: raw dir path with a glob metachar is read literally (glob.escape)'
+else
+   ok 1 'E: raw dir path with a glob metachar is read literally (glob.escape)'
+fi
+
+## ---- Case F: a measured source file gone from disk -> skipped, no crash (never-fails) ----
+## The tool's docstring promises best-effort diagnostics that never fail the gate. A cleaned
+## build/tmp dir between the coverage run and this later invocation makes coverage.py raise
+## NoSource; the pre-fix helper let it propagate -> traceback + exit 1.
+pkgF="${work}/pkgF"
+mkdir --parents -- "${pkgF}"
+printf '%s\n' 'def never():' '    return 1' > "${pkgF}/gone.py"
+printf '%s\n' 'import gone' > "${work}/driveF.py"
+rawF="${work}/rawF"
+mkdir --parents -- "${rawF}"
+PYTHONPATH="${pkgF}" COVERAGE_FILE="${rawF}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkgF}" -- "${work}/driveF.py" >/dev/null 2>&1
+combine_into "${work}/F/.coverage" "${rawF}"/.coverage.*
+safe-rm --recursive --force -- "${pkgF}"   ## the measured source is gone before the debug run
+outF="${work}/outF.txt"
+rcF=0
+python3 "${helper}" "${work}/F/.coverage" "${rawF}" "${pkgF}" > "${outF}" 2>&1 || rcF=$?
+if [ "${rcF}" -eq 0 ] && ! has "${outF}" 'Traceback'; then
+   ok 0 'F: a deleted measured source is skipped, not a crash (never fails the gate)'
+else
+   ok 1 "F: deleted measured source crashed (rc=${rcF})"
+fi
+
+## ---- Case G: combined covers MORE than the raw snapshot -> NOT a drop (direction-blind) ---
+## never() is covered by a raw file folded into the combined data but NOT archived into the
+## raw dir passed in. combined misses nothing; union (raw dir) misses never(). That is an
+## incomplete raw snapshot, NOT a combine drop -- the pre-fix `combined != union` flagged it.
+printf '%s\n' 'import mod' 'mod.never()' > "${work}/driveG.py"
+rawGx="${work}/rawGx"
+mkdir --parents -- "${rawGx}"
+COVERAGE_FILE="${rawGx}/.coverage" python3 -m coverage run --parallel-mode --source="${pkg}" -- \
+   "${work}/driveG.py" >/dev/null 2>&1
+combine_into "${work}/G/.coverage" "${raw_files[@]}" "${rawGx}"/.coverage.*
+outG="${work}/outG.txt"
+python3 "${helper}" "${work}/G/.coverage" "${raw}" "${pkg}" > "${outG}" 2>&1 || true
+if has "${outG}" 'drop=no'; then
+   ok 0 'G: combined covering MORE than the raw snapshot is NOT a false drop'
+else
+   ok 1 'G: combined covering more than the raw snapshot falsely flagged as a drop'
+fi
+if has "${outG}" 'DEBUG-COMBINE-DROP'; then
+   ok 1 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
+else
+   ok 0 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
+fi
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
