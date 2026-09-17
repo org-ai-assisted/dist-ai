@@ -234,29 +234,67 @@ SHELLCHECK_OPTIONAL = (
     "avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,"
     "quote-safe-variables,require-variable-braces")
 
-## Repo-tree shape of a '# shellcheck source=' directive into the helper-scripts
-## sibling repo. Such a source cannot be FOLLOWED on a dev host: a local
-## helper-scripts checkout is disallowed, and the installed
-## /usr/libexec/helper-scripts is a flat runtime layout, not this tree. CI checks
-## the sibling out and follows the source, so a genuinely broken path still fails
-## there. Reproducing the sibling locally is not viable: shellcheck's
-## '--external-sources' following of the deep helper-scripts graph is exponential
-## (measured ~1s for one such source, >60s past four -- it hangs the gate). So the
-## gate accepts the verdict CI reaches: the info-level SC1091 for that ABSENT
-## sibling is dropped, while every other finding -- an SC1091 for any OTHER missing
-## source included -- stays fatal. In CI the sibling is present, following
-## succeeds, no such SC1091 arises, and this filter is inert.
-_HELPER_SCRIPTS_SOURCE_SEGMENT = "helper-scripts/usr/libexec/helper-scripts/"
+## A '# shellcheck source=' directive into the helper-scripts sibling repo
+## (repo-tree shape '<repo-parent>/helper-scripts/usr/libexec/helper-scripts/...')
+## cannot be FOLLOWED on a dev host: a local helper-scripts checkout is disallowed,
+## and the installed /usr/libexec/helper-scripts is a flat runtime layout, not that
+## tree. CI checks the sibling out and follows the source. Reproducing the sibling
+## locally is not viable: shellcheck's '--external-sources' following of the deep
+## helper-scripts graph is exponential (measured ~1s for one such source, >60s past
+## four -- it hangs the gate). So the gate accepts the verdict CI reaches and drops
+## the info-level SC1091 for that ABSENT sibling.
+##
+## Tolerance is decided from the FILESYSTEM, never the message text, so it is
+## EXACT: (1) the unresolved path must resolve to the well-known sibling location
+## (not merely CONTAIN that substring -- a broken '../lib/...helper-scripts/...'
+## stays fatal); (2) that sibling dir must be genuinely ABSENT -- when it is present
+## (CI), a missing file under it is a REAL broken path and its SC1091 stays fatal,
+## so a typo is caught in CI exactly as before.
+_HELPER_SCRIPTS_SIBLING_SUFFIX = os.path.join(
+    "helper-scripts", "usr", "libexec", "helper-scripts")
 
 
-def _is_absent_helper_scripts_source(comment):
-    """True for the info-level SC1091 that a cross-repo helper-scripts 'source='
-    directive yields when the sibling checkout is absent (the local case)."""
+def _absent_helper_scripts_sibling(abspath):
+    """The absolute helper-scripts sibling dir a repo-tree 'source=' resolves to
+    (<repo-parent>/helper-scripts/usr/libexec/helper-scripts) IF the file is in a
+    git repo AND that sibling is NOT checked out; else None. None when the sibling
+    is present -- a missing file under it (a typo) then stays a hard failure, as it
+    does in CI."""
+    root = _repo_root(abspath)
+    if root is None:
+        return None
+    sibling = os.path.join(os.path.dirname(root), _HELPER_SCRIPTS_SIBLING_SUFFIX)
+    if os.path.isdir(sibling):
+        return None
+    return os.path.normpath(sibling)
+
+
+def _sc1091_unfollowed_path(comment):
+    """The unresolved path from an SC1091 'Not following: <path>: ... does not
+    exist' comment, or None if this is not that comment. The path carries no ': '
+    (colon-space), so the first split field is the whole path."""
     if comment.get("code") != 1091:
-        return False
+        return None
     message = comment.get("message", "")
-    return (_HELPER_SCRIPTS_SOURCE_SEGMENT in message
-            and "does not exist" in message)
+    marker = "Not following: "
+    if marker not in message or "does not exist" not in message:
+        return None
+    return message.split(marker, 1)[1].split(": ", 1)[0]
+
+
+def _is_absent_helper_scripts_source(comment, src_dir, sibling_dir):
+    """True only for the SC1091 of a source= whose path resolves INTO the
+    genuinely absent helper-scripts sibling (sibling_dir, from
+    _absent_helper_scripts_sibling). sibling_dir None -> nothing is tolerated (no
+    repo, or the sibling is present, where a missing file is a real error)."""
+    if sibling_dir is None:
+        return False
+    path = _sc1091_unfollowed_path(comment)
+    if path is None:
+        return False
+    resolved = (os.path.normpath(path) if os.path.isabs(path)
+                else os.path.normpath(os.path.join(src_dir, path)))
+    return resolved == sibling_dir or resolved.startswith(sibling_dir + os.sep)
 
 
 def _render_shellcheck(path, comments):
@@ -323,11 +361,30 @@ class Shellcheck(ExternalRule):
                     message += "\n" + raw.rstrip("\n")
                 yield model.fail("shellcheck", message, ctx.path)
             return
-        remaining = [comment for comment in comments
-                     if not _is_absent_helper_scripts_source(comment)]
+        ## The git probe for the sibling runs only when there is an unfollowable
+        ## source to judge (rc>=1 with an SC1091 'does not exist').
+        needs_sibling = any(
+            comment.get("code") == 1091
+            and "does not exist" in comment.get("message", "")
+            for comment in comments)
+        sibling_dir = (_absent_helper_scripts_sibling(ctx.abspath)
+                       if needs_sibling else None)
+        remaining = [
+            comment for comment in comments
+            if not _is_absent_helper_scripts_source(comment, src_dir, sibling_dir)]
         if remaining:
             yield model.fail(
                 "shellcheck", _render_shellcheck(ctx.path, remaining), ctx.path)
+        elif proc.returncode >= 2:
+            ## rc 0 clean, rc 1 findings (all tolerated if we reach here); rc>=2 is a
+            ## shellcheck PROCESSING error (unreadable path, a directory) that emits
+            ## '{"comments":[]}' -- fail-closed, never a silent green.
+            message = "shellcheck: '%s' could not be processed (exit %d)" % (
+                ctx.path, proc.returncode)
+            err = proc.stderr.strip()
+            if err:
+                message += "\n" + err.rstrip("\n")
+            yield model.fail("shellcheck", message, ctx.path)
 
 
 RULES = (BashParse(), Shellcheck())
