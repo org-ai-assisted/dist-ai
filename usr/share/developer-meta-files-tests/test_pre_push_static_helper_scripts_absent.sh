@@ -180,6 +180,36 @@ printf '%s\\n' \"ok\"
 "
 assert_red_sc1091 "D: a substring-only bogus path stays fatal (anchored match)"
 
+## E -- the SAME absent-sibling source, but the file is checked through a SYMLINK
+## in its path (direct '--check FILE', not --range) -> tolerated (green). Guards
+## that the sibling and the resolved source path are compared in one namespace: git
+## 'rev-parse --show-toplevel' is physical while the checked path keeps the symlink,
+## so without realpath the tolerable source would false-fail. (--range canonicalizes
+## the path itself, so only a direct file check exercises this.)
+## The repo is NESTED (<ecase>/sub/repo) and the symlink is SHALLOWER
+## (<ecase>/link -> <ecase>/sub/repo), so the symlink's logical parent (<ecase>)
+## differs from the repo's physical parent (<ecase>/sub) -- the divergence that a
+## same-parent symlink would not expose.
+ecase="$(mktemp --directory --tmpdir="${test_dir}" ecase.XXXXXX)"
+mkdir --parents -- "${ecase}/sub/repo/bin"
+printf '%s' "${preamble}
+# shellcheck source=../../helper-scripts/usr/libexec/helper-scripts/log_run_die.sh
+source \"\${HELPER_SCRIPTS_PATH:-}\"/usr/libexec/helper-scripts/log_run_die.sh
+
+printf '%s\\n' \"ok\"
+" >"${ecase}/sub/repo/bin/caller"
+chmod 0755 -- "${ecase}/sub/repo/bin/caller"
+git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${ecase}/sub/repo"
+git -C "${ecase}/sub/repo" -c core.hooksPath=/dev/null add --all
+git -C "${ecase}/sub/repo" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "fixture"
+elink="${ecase}/link"
+ln -s "${ecase}/sub/repo" "${elink}"
+gate_rc=0
+gate_output="$( "${GATE}" --check "${elink}/bin/caller" 2>&1 )" || gate_rc=$?
+assert_green_no_sc1091 "E: symlinked-path source tolerated (one namespace)"
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
    exit 1

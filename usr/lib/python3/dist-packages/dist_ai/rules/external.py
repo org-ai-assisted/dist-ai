@@ -266,20 +266,30 @@ def _absent_helper_scripts_sibling(abspath):
     sibling = os.path.join(os.path.dirname(root), _HELPER_SCRIPTS_SIBLING_SUFFIX)
     if os.path.isdir(sibling):
         return None
-    return os.path.normpath(sibling)
+    ## realpath, so the comparison in _is_absent_helper_scripts_source is in the
+    ## SAME namespace as the resolved source path -- else a checkout reached via a
+    ## symlink (git 'rev-parse --show-toplevel' is physical, the source path is
+    ## not) would never match and a tolerable source would false-fail.
+    return os.path.realpath(sibling)
 
 
 def _sc1091_unfollowed_path(comment):
-    """The unresolved path from an SC1091 'Not following: <path>: ... does not
-    exist' comment, or None if this is not that comment. The path carries no ': '
-    (colon-space), so the first split field is the whole path."""
+    """The unresolved path from an SC1091 'Not following: <path>: openBinaryFile:
+    does not exist' comment, or None if this is not that comment. Anchor on the
+    error suffix, NOT the first ': ' -- shellcheck echoes a quoted source= value
+    verbatim, so the path itself can contain ': ' and splitting on it would
+    truncate the path (and misclassify an escaping value as the sibling)."""
     if comment.get("code") != 1091:
         return None
     message = comment.get("message", "")
     marker = "Not following: "
+    suffix = ": openBinaryFile"
     if marker not in message or "does not exist" not in message:
         return None
-    return message.split(marker, 1)[1].split(": ", 1)[0]
+    body = message.split(marker, 1)[1]
+    if suffix not in body:
+        return None
+    return body.split(suffix, 1)[0]
 
 
 def _is_absent_helper_scripts_source(comment, src_dir, sibling_dir):
@@ -292,8 +302,11 @@ def _is_absent_helper_scripts_source(comment, src_dir, sibling_dir):
     path = _sc1091_unfollowed_path(comment)
     if path is None:
         return False
-    resolved = (os.path.normpath(path) if os.path.isabs(path)
-                else os.path.normpath(os.path.join(src_dir, path)))
+    ## realpath (not normpath): resolve any symlink in src_dir so the result is in
+    ## the same namespace as sibling_dir (also realpath'd). Applied to an absolute
+    ## path too -- shellcheck rarely emits one, but it costs nothing.
+    base = path if os.path.isabs(path) else os.path.join(src_dir, path)
+    resolved = os.path.realpath(base)
     return resolved == sibling_dir or resolved.startswith(sibling_dir + os.sep)
 
 
