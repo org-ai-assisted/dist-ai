@@ -175,8 +175,10 @@ run_raw_case "malformed UID skipped cleanly" \
    "${default_conf}"
 if [ "${run_rc}" -eq 0 ] \
    && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && ! grep --quiet --line-regexp -- 'ghost' <<<"${run_out}" \
+   && ! grep --quiet --line-regexp -- 'baduid' <<<"${run_out}" \
    && ! grep --quiet -- 'integer expression' <<<"${run_err}"; then
-   ok "malformed UID: skipped cleanly, bob listed, no shell error (exit 0)"
+   ok "malformed UID: skipped cleanly, bob listed, ghost+baduid excluded, no shell error (exit 0)"
 else
    notok "malformed UID: rc=${run_rc}, err='${run_err}', out: ${run_out//$'\n'/,}"
 fi
