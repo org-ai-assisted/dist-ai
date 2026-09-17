@@ -37,21 +37,32 @@ from coverage.sqldata import CoverageData
 
 
 def _missing_by_module(data_file, pkg_dir):
-    """{module_basename: missing_formatted} for every measured package source file that has
-    at least one missing line, using coverage's own statement analysis of the combined data."""
+    """{package_relative_path: (missing_line_set, missing_formatted)} for every measured
+    package source file that has at least one missing line, using coverage's own statement
+    analysis of the combined data."""
     cov = coverage.Coverage(data_file=data_file)
     cov.load()
     pkg_real = os.path.realpath(pkg_dir)
     out = {}
     for measured in sorted(cov.get_data().measured_files()):
         if os.path.realpath(measured).startswith(pkg_real + os.sep):
-            ## analysis2 -> (filename, statements, excluded, missing, missing_formatted)
-            _, _, _, missing, missing_fmt = cov.analysis2(measured)
+            try:
+                ## analysis2 -> (filename, statements, excluded, missing, missing_formatted)
+                _, _, _, missing, missing_fmt = cov.analysis2(measured)
+            except coverage.CoverageException:
+                ## Best-effort diagnostics: a measured file gone from disk (a cleaned
+                ## build/tmp dir between the coverage run and this later invocation)
+                ## raises NoSource -- but the docstring promises this never fails the
+                ## gate, so skip the unreadable file rather than crash.
+                continue
             if missing:
                 ## Key by the path RELATIVE to the package, not basename: two files with
                 ## the same name in different subpackages (e.g. a/__init__.py and
                 ## b/__init__.py) would otherwise collide and silently drop one's gaps.
-                out[os.path.relpath(os.path.realpath(measured), pkg_real)] = missing_fmt
+                ## Store the missing-line SET (for a direction-aware drop check) plus the
+                ## formatted string (for display).
+                key = os.path.relpath(os.path.realpath(measured), pkg_real)
+                out[key] = (frozenset(missing), missing_fmt)
     return out
 
 
@@ -92,7 +103,7 @@ def main():
     union, n_raw = _manual_union_missing(raw_dir, pkg_dir)
 
     for module in sorted(combined):
-        print("DEBUG-MISSING %s %s" % (module, combined[module]))
+        print("DEBUG-MISSING %s %s" % (module, combined[module][1]))
 
     if n_raw == 0:
         # No pre-combine parallel data was preserved, so the union cross-check cannot run.
@@ -105,18 +116,20 @@ def main():
         return 0
 
     for module in sorted(union):
-        print("DEBUG-UNION-MISSING %s %s" % (module, union[module]))
+        print("DEBUG-UNION-MISSING %s %s" % (module, union[module][1]))
 
     drop = False
-    ## A combine DROP: the combined data misses a module the manual union covers, or misses
-    ## MORE of it than the union does. Union missing that is a strict subset of combined
-    ## missing means combine kept less than the raw files held -> a lost/merged-away file.
+    ## A combine DROP is combine LOSING coverage the raw union HELD: the combined data is
+    ## missing a line the union is NOT missing (combined covered less than the raw files
+    ## did). The REVERSE -- union missing MORE than combined -- just means the raw-dir
+    ## snapshot passed in was incomplete (a parallel raw file was not archived into it),
+    ## NOT a drop, so a bare `combined != union` mismatch would false-positive on it.
     for module in sorted(set(combined) | set(union)):
-        c = combined.get(module, "")
-        u = union.get(module, "")
-        if c != u:
+        c_set, c_fmt = combined.get(module, (frozenset(), ""))
+        u_set, u_fmt = union.get(module, (frozenset(), ""))
+        if c_set - u_set:
             drop = True
-            print("DEBUG-COMBINE-DROP %s combine=%r union=%r" % (module, c, u))
+            print("DEBUG-COMBINE-DROP %s combine=%r union=%r" % (module, c_fmt, u_fmt))
 
     print("DEBUG-MISSING-SUMMARY combined=%d union=%d raw_files=%d drop=%s"
           % (len(combined), len(union), n_raw, "yes" if drop else "no"))

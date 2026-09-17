@@ -161,6 +161,52 @@ else
    ok 1 'E: raw dir path with a glob metachar is read literally (glob.escape)'
 fi
 
+## ---- Case F: a measured source file gone from disk -> skipped, no crash (never-fails) ----
+## The tool's docstring promises best-effort diagnostics that never fail the gate. A cleaned
+## build/tmp dir between the coverage run and this later invocation makes coverage.py raise
+## NoSource; the pre-fix helper let it propagate -> traceback + exit 1.
+pkgF="${work}/pkgF"
+mkdir --parents -- "${pkgF}"
+printf '%s\n' 'def never():' '    return 1' > "${pkgF}/gone.py"
+printf '%s\n' 'import gone' > "${work}/driveF.py"
+rawF="${work}/rawF"
+mkdir --parents -- "${rawF}"
+PYTHONPATH="${pkgF}" COVERAGE_FILE="${rawF}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkgF}" -- "${work}/driveF.py" >/dev/null 2>&1
+combine_into "${work}/F/.coverage" "${rawF}"/.coverage.*
+safe-rm --recursive --force -- "${pkgF}"   ## the measured source is gone before the debug run
+outF="${work}/outF.txt"
+rcF=0
+python3 "${helper}" "${work}/F/.coverage" "${rawF}" "${pkgF}" > "${outF}" 2>&1 || rcF=$?
+if [ "${rcF}" -eq 0 ] && ! has "${outF}" 'Traceback'; then
+   ok 0 'F: a deleted measured source is skipped, not a crash (never fails the gate)'
+else
+   ok 1 "F: deleted measured source crashed (rc=${rcF})"
+fi
+
+## ---- Case G: combined covers MORE than the raw snapshot -> NOT a drop (direction-blind) ---
+## never() is covered by a raw file folded into the combined data but NOT archived into the
+## raw dir passed in. combined misses nothing; union (raw dir) misses never(). That is an
+## incomplete raw snapshot, NOT a combine drop -- the pre-fix `combined != union` flagged it.
+printf '%s\n' 'import mod' 'mod.never()' > "${work}/driveG.py"
+rawGx="${work}/rawGx"
+mkdir --parents -- "${rawGx}"
+COVERAGE_FILE="${rawGx}/.coverage" python3 -m coverage run --parallel-mode --source="${pkg}" -- \
+   "${work}/driveG.py" >/dev/null 2>&1
+combine_into "${work}/G/.coverage" "${raw_files[@]}" "${rawGx}"/.coverage.*
+outG="${work}/outG.txt"
+python3 "${helper}" "${work}/G/.coverage" "${raw}" "${pkg}" > "${outG}" 2>&1 || true
+if has "${outG}" 'drop=no'; then
+   ok 0 'G: combined covering MORE than the raw snapshot is NOT a false drop'
+else
+   ok 1 'G: combined covering more than the raw snapshot falsely flagged as a drop'
+fi
+if has "${outG}" 'DEBUG-COMBINE-DROP'; then
+   ok 1 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
+else
+   ok 0 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
+fi
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
