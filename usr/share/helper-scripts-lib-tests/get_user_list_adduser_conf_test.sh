@@ -124,6 +124,75 @@ else
    notok "commented key not ignored: rc=${run_rc}, out: ${run_out//$'\n'/,}"
 fi
 
+## Modern adduser ships FIRST_UID/LAST_UID commented out (the defaults are built
+## into adduser), so no uncommented key exists at all. get-user-list must fall back
+## to the built-in defaults (1000-59999), not abort on the empty value -- the abort
+## broke image builds (autologinchange -> user-sysmaint-split postinst).
+run_case "all keys commented -> defaults" $'# Default: FIRST_UID=1000, LAST_UID=59999\n#FIRST_UID=1000\n#LAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "all keys commented: defaults 1000-59999 used (bob and alice listed)"
+else
+   notok "all keys commented: expected exit 0 with defaults, rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
+## --- passwd/adduser.conf parsing robustness ---
+
+default_conf=$'#FIRST_UID=1000\n#LAST_UID=59999\n'
+
+## $1 desc, $2 passwd contents, $3 adduser.conf contents (both written as-is, no
+## trailing newline appended, so a newline-less last line can be exercised).
+run_raw_case() {
+   local conf_file pw_file
+   conf_file="${work_dir}/adduser.conf"
+   pw_file="${work_dir}/passwd_case"
+   printf '%s' "$3" >"${conf_file}"
+   printf '%s' "$2" >"${pw_file}"
+   run_rc=0
+   run_out="$(
+      GET_USER_LIST_ADDUSER_CONF="${conf_file}" \
+      GET_USER_LIST_PASSWD="${pw_file}" \
+      "${subject}" 2>"${work_dir}/stderr"
+   )" || run_rc=$?
+   run_err="$(cat -- "${work_dir}/stderr")"
+}
+
+## passwd whose last line has no trailing newline: that account must still list.
+run_raw_case "passwd no trailing newline" \
+   $'root:x:0:0:r:/root:/bin/bash\nzoe:x:2000:2000::/home/zoe:/bin/bash' \
+   "${default_conf}"
+if [ "${run_rc}" -eq 0 ] && grep --quiet --line-regexp -- 'zoe' <<<"${run_out}"; then
+   ok "passwd no trailing newline: last account (zoe) listed"
+else
+   notok "passwd no trailing newline: zoe missing, rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
+## Malformed UID (empty / non-numeric) is skipped cleanly: valid accounts remain,
+## exit 0, and no '[: integer expression expected' noise leaks to stderr.
+run_raw_case "malformed UID skipped cleanly" \
+   $'root:x:0:0:r:/root:/bin/bash\nghost:x::1000::/h/g:/sh\nbob:x:1200:1200::/home/bob:/bin/bash\nbaduid:x:abc:1::/h/b:/sh\n' \
+   "${default_conf}"
+if [ "${run_rc}" -eq 0 ] \
+   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && ! grep --quiet -- 'integer expression' <<<"${run_err}"; then
+   ok "malformed UID: skipped cleanly, bob listed, no shell error (exit 0)"
+else
+   notok "malformed UID: rc=${run_rc}, err='${run_err}', out: ${run_out//$'\n'/,}"
+fi
+
+## adduser.conf FIRST_UID on a newline-less last line must still be honored.
+run_raw_case "adduser.conf no trailing newline" \
+   $'root:x:0:0:r:/root:/bin/bash\nbob:x:1200:1200::/home/bob:/bin/bash\nalice:x:2500:2500::/home/alice:/bin/bash' \
+   $'# adduser.conf\nFIRST_UID=2000'
+if [ "${run_rc}" -eq 0 ] \
+   && ! grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "adduser.conf no trailing newline: FIRST_UID=2000 honored (bob excluded)"
+else
+   notok "adduser.conf no trailing newline: rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"
 [ "${fail_count}" -eq 0 ]

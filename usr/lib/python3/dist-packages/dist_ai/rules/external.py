@@ -14,6 +14,7 @@ shfmt could not parse the file -- catching the syntax error is the whole point -
 so these do not gate on ctx.tree the way the AST rules do."""
 
 import contextlib
+import json
 import os
 import subprocess
 import tempfile
@@ -233,6 +234,104 @@ SHELLCHECK_OPTIONAL = (
     "avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,"
     "quote-safe-variables,require-variable-braces")
 
+## A '# shellcheck source=' directive into the helper-scripts sibling repo
+## (repo-tree shape '<repo-parent>/helper-scripts/usr/libexec/helper-scripts/...')
+## cannot be FOLLOWED on a dev host: a local helper-scripts checkout is disallowed,
+## and the installed /usr/libexec/helper-scripts is a flat runtime layout, not that
+## tree. CI checks the sibling out and follows the source. Reproducing the sibling
+## locally is not viable: shellcheck's '--external-sources' following of the deep
+## helper-scripts graph is exponential (measured ~1s for one such source, >60s past
+## four -- it hangs the gate). So the gate accepts the verdict CI reaches and drops
+## the info-level SC1091 for that ABSENT sibling.
+##
+## Tolerance is decided from the FILESYSTEM, never the message text, so it is
+## EXACT: (1) the unresolved path must resolve to the well-known sibling location
+## (not merely CONTAIN that substring -- a broken '../lib/...helper-scripts/...'
+## stays fatal); (2) that sibling dir must be genuinely ABSENT -- when it is present
+## (CI), a missing file under it is a REAL broken path and its SC1091 stays fatal,
+## so a typo is caught in CI exactly as before.
+_HELPER_SCRIPTS_SIBLING_SUFFIX = os.path.join(
+    "helper-scripts", "usr", "libexec", "helper-scripts")
+
+
+def _absent_helper_scripts_sibling(abspath):
+    """The absolute helper-scripts sibling dir a repo-tree 'source=' resolves to
+    (<repo-parent>/helper-scripts/usr/libexec/helper-scripts) IF the file is in a
+    git repo AND that sibling is NOT checked out; else None. None when the sibling
+    is present -- a missing file under it (a typo) then stays a hard failure, as it
+    does in CI."""
+    root = _repo_root(abspath)
+    if root is None:
+        return None
+    sibling = os.path.join(os.path.dirname(root), _HELPER_SCRIPTS_SIBLING_SUFFIX)
+    if os.path.isdir(sibling):
+        return None
+    ## realpath, so the comparison in _is_absent_helper_scripts_source is in the
+    ## SAME namespace as the resolved source path -- else a checkout reached via a
+    ## symlink (git 'rev-parse --show-toplevel' is physical, the source path is
+    ## not) would never match and a tolerable source would false-fail.
+    return os.path.realpath(sibling)
+
+
+## shellcheck's SC1091 'does not exist' message is 'Not following: <path>:
+## openBinaryFile: does not exist (...)'. The path is everything between the
+## prefix and the LAST occurrence of this fixed error suffix. Using the LAST
+## occurrence (not the first ': ' or the first ': openBinaryFile') is what keeps a
+## quoted source= value -- which shellcheck echoes verbatim, so it can itself
+## contain ': ' or even ': openBinaryFile/...' -- from being truncated and
+## misread as the sibling. A path ending in this EXACT marker would still fool it,
+## but the real helper-scripts directives are plain unquoted paths; a value
+## crafted to embed it needs a '## style-ok: R-080' waiver to exist at all and is
+## an adversarial local-content case outside this gate's threat model (CI, sibling
+## present, and the runtime source both reject a genuinely broken path anyway).
+_SC1091_ERROR_MARKER = ": openBinaryFile: does not exist"
+
+
+def _sc1091_unfollowed_path(comment):
+    """The unresolved path from an SC1091 'does not exist' comment, or None if this
+    is not that comment."""
+    if comment.get("code") != 1091:
+        return None
+    message = comment.get("message", "")
+    marker = "Not following: "
+    if not message.startswith(marker):
+        return None
+    body = message[len(marker):]
+    index = body.rfind(_SC1091_ERROR_MARKER)
+    if index == -1:
+        return None
+    return body[:index]
+
+
+def _is_absent_helper_scripts_source(comment, src_dir, sibling_dir):
+    """True only for the SC1091 of a source= whose path resolves INTO the
+    genuinely absent helper-scripts sibling (sibling_dir, from
+    _absent_helper_scripts_sibling). sibling_dir None -> nothing is tolerated (no
+    repo, or the sibling is present, where a missing file is a real error)."""
+    if sibling_dir is None:
+        return False
+    path = _sc1091_unfollowed_path(comment)
+    if path is None:
+        return False
+    ## realpath (not normpath): resolve any symlink in src_dir so the result is in
+    ## the same namespace as sibling_dir (also realpath'd). Applied to an absolute
+    ## path too -- shellcheck rarely emits one, but it costs nothing.
+    base = path if os.path.isabs(path) else os.path.join(src_dir, path)
+    resolved = os.path.realpath(base)
+    return resolved == sibling_dir or resolved.startswith(sibling_dir + os.sep)
+
+
+def _render_shellcheck(path, comments):
+    """A readable rendering of shellcheck JSON COMMENTS, keyed on the caller-facing
+    PATH (not the temp blob path a staged check runs against)."""
+    lines = ["shellcheck: '%s'" % path]
+    for comment in comments:
+        lines.append("%s:%s:%s: %s: %s [SC%s]" % (
+            path, comment.get("line", "?"), comment.get("column", "?"),
+            comment.get("level", "?"), comment.get("message", ""),
+            comment.get("code", "?")))
+    return "\n".join(lines)
+
 
 class Shellcheck(ExternalRule):
     """'shellcheck --external-sources' with the ai-review-aligned optional
@@ -244,9 +343,12 @@ class Shellcheck(ExternalRule):
     passed via '--rcfile' so a temp-file blob is judged by the same config, not
     dropped: for a DISK file it is located on disk; for a staged/committed BLOB it
     is read from the blob's OWN git tree (see _shellcheckrc_for), never the working
-    tree -- a dirty rc must not govern the object that ships. Fail-open when
-    shellcheck is absent (a bare git-hook run without it installed must still
-    commit)."""
+    tree -- a dirty rc must not govern the object that ships. Findings are read
+    as JSON ('--format=json1') so the info-level SC1091 for a helper-scripts
+    sibling that cannot be followed locally is dropped -- see
+    _is_absent_helper_scripts_source -- while every other finding stays fatal.
+    Fail-open when shellcheck is absent (a bare git-hook run without it installed
+    must still commit)."""
 
     id = "shellcheck"
 
@@ -263,17 +365,49 @@ class Shellcheck(ExternalRule):
             with ctx.materialized() as (path, src_dir), \
                     _shellcheckrc_for(ctx, src_dir) as rc_file:
                 command = ["shellcheck", "--external-sources",
-                           "--source-path=" + src_dir]
+                           "--source-path=" + src_dir, "--format=json1"]
                 if rc_file is not None:
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
                 proc = subprocess.run(command, capture_output=True, text=True)
         except OSError:
             return
-        if proc.returncode != 0:
-            message = "shellcheck: '%s'" % ctx.path
-            if proc.stdout.strip():
-                message += "\n" + proc.stdout.rstrip("\n")
+        try:
+            comments = json.loads(proc.stdout)["comments"]
+        except (ValueError, KeyError, TypeError):
+            ## No parseable JSON (a shellcheck internal error, or a build without
+            ## --format=json1). Fall back to the raw exit status so a real failure
+            ## is never silently swallowed.
+            if proc.returncode != 0:
+                message = "shellcheck: '%s'" % ctx.path
+                raw = proc.stdout.strip() or proc.stderr.strip()
+                if raw:
+                    message += "\n" + raw.rstrip("\n")
+                yield model.fail("shellcheck", message, ctx.path)
+            return
+        ## The git probe for the sibling runs only when there is an unfollowable
+        ## source to judge (rc>=1 with an SC1091 'does not exist').
+        needs_sibling = any(
+            comment.get("code") == 1091
+            and "does not exist" in comment.get("message", "")
+            for comment in comments)
+        sibling_dir = (_absent_helper_scripts_sibling(ctx.abspath)
+                       if needs_sibling else None)
+        remaining = [
+            comment for comment in comments
+            if not _is_absent_helper_scripts_source(comment, src_dir, sibling_dir)]
+        if remaining:
+            yield model.fail(
+                "shellcheck", _render_shellcheck(ctx.path, remaining), ctx.path)
+        elif proc.returncode >= 2:
+            ## rc 0 clean, rc 1 findings (all tolerated if we reach here); rc>=2 is a
+            ## shellcheck PROCESSING error (unreadable path, a directory) that emits
+            ## '{"comments":[]}' -- fail-closed, never a silent green.
+            message = "shellcheck: '%s' could not be processed (exit %d)" % (
+                ctx.path, proc.returncode)
+            err = proc.stderr.strip()
+            if err:
+                message += "\n" + err.rstrip("\n")
             yield model.fail("shellcheck", message, ctx.path)
 
 
