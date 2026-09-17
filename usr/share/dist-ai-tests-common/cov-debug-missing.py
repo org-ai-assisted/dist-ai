@@ -48,14 +48,21 @@ def _missing_by_module(data_file, pkg_dir):
             ## analysis2 -> (filename, statements, excluded, missing, missing_formatted)
             _, _, _, missing, missing_fmt = cov.analysis2(measured)
             if missing:
-                out[os.path.basename(measured)] = missing_fmt
+                ## Key by the path RELATIVE to the package, not basename: two files with
+                ## the same name in different subpackages (e.g. a/__init__.py and
+                ## b/__init__.py) would otherwise collide and silently drop one's gaps.
+                out[os.path.relpath(os.path.realpath(measured), pkg_real)] = missing_fmt
     return out
 
 
 def _manual_union_missing(raw_dir, pkg_dir):
     """Same, but from a MANUAL union of the raw pre-combine parallel data files -- the
     independent cross-check against `coverage combine`."""
-    raw_files = sorted(glob.glob(os.path.join(raw_dir, ".coverage.*")))
+    ## glob.escape the DIRECTORY: a raw_dir path containing a glob metacharacter
+    ## ('[', '*', '?') would otherwise be mis-read (e.g. '[abc]' as a char class),
+    ## match nothing, and falsely report every gap as a combine drop. The
+    ## '.coverage.*' pattern stays a real glob.
+    raw_files = sorted(glob.glob(os.path.join(glob.escape(raw_dir), ".coverage.*")))
     if not raw_files:
         return {}, 0
     merged_fd, merged_path = tempfile.mkstemp(prefix="cov-union-", suffix=".coverage")

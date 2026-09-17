@@ -126,6 +126,41 @@ python3 "${helper}" "${work}/C/.coverage" "${raw}" "${pkg}" > "${outC}" 2>&1 || 
 if has "${outC}" 'drop=yes'; then ok 0 'C: combined missing a line the raw union covers -> drop=yes'; else ok 1 'C: combined missing a line the raw union covers -> drop=yes'; fi
 if has "${outC}" 'DEBUG-COMBINE-DROP'; then ok 0 'C: a genuine combine drop emits DEBUG-COMBINE-DROP'; else ok 1 'C: a genuine combine drop emits DEBUG-COMBINE-DROP'; fi
 
+## ---- Case D: same-named files in different subpackages keyed distinctly (basename bug) ----
+## Two 'dup.py' in different subpackages, each with an uncovered body line. The pre-fix
+## helper keyed by basename -> both collapsed to 'dup.py' -> one file's gaps silently dropped.
+pkg2="${work}/pkg2"
+mkdir --parents -- "${pkg2}/sub1" "${pkg2}/sub2"
+printf '%s\n' 'def never():' '    return 1' > "${pkg2}/sub1/dup.py"
+printf '%s\n' 'def never():' '    return 2' > "${pkg2}/sub2/dup.py"
+printf '%s\n' 'import sub1.dup' 'import sub2.dup' > "${work}/driveD.py"
+rawD="${work}/rawD"
+mkdir --parents -- "${rawD}"
+PYTHONPATH="${pkg2}" COVERAGE_FILE="${rawD}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkg2}" -- "${work}/driveD.py" >/dev/null 2>&1
+combine_into "${work}/D/.coverage" "${rawD}"/.coverage.*
+outD="${work}/outD.txt"
+python3 "${helper}" "${work}/D/.coverage" "${rawD}" "${pkg2}" > "${outD}" 2>&1 || true
+if has "${outD}" 'sub1/dup.py' && has "${outD}" 'sub2/dup.py'; then
+   ok 0 'D: same-named files in different subpackages keyed distinctly (no basename collision)'
+else
+   ok 1 'D: same-named files in different subpackages keyed distinctly (no basename collision)'
+fi
+
+## ---- Case E: a raw dir path containing a glob metachar must still be read (glob.escape) ---
+## Pre-fix: glob read '[abc]' as a character class -> no match -> raw_files=0 -> a real gap
+## FALSELY reported as drop=unknown. Post-fix: the dir is escaped and read literally.
+brk="${work}/raw[abc]"
+mkdir --parents -- "${brk}"
+cp --preserve -- "${raw_files[@]}" "${brk}/"
+outE="${work}/outE.txt"
+python3 "${helper}" "${work}/A/.coverage" "${brk}" "${pkg}" > "${outE}" 2>&1 || true
+if has "${outE}" 'raw_files=2'; then
+   ok 0 'E: raw dir path with a glob metachar is read literally (glob.escape)'
+else
+   ok 1 'E: raw dir path with a glob metachar is read literally (glob.escape)'
+fi
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
