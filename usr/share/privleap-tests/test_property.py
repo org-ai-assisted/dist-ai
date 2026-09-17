@@ -30,6 +30,8 @@ import grp
 import os
 import pwd
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -246,3 +248,38 @@ def test_check_secure_file_permissions_is_total_over_int_fds(fd: int) -> None:
     """
 
     assert isinstance(PrivleapCommon.check_secure_file_permissions(fd), bool)
+
+
+@given(st.text())
+@settings(max_examples=300)
+@example("")
+@example("[action:a]\nCommand=echo hi\nAuthorizedUsers=0\n")
+def test_parse_config_file_is_total(s: str) -> None:
+    """
+    parse_config_file must be TOTAL on config content: for ANY config text it
+    returns its ConfigData tuple or an error string, never raising -- a
+    malformed config fails closed (an error string the daemon logs), it does
+    not crash the daemon on load or reload. This is the config-content parser
+    an admin's file reaches; a parser crash would be a startup/reload DoS.
+
+    parse_config_file first gates on the file's ownership/mode (a separate
+    concern, covered by test_check_secure_file_permissions_is_total and
+    config_test.py); patch it open here so the CONTENT parser is exercised,
+    and write the text as UTF-8 so the target is the parser, not a decode.
+    """
+
+    original = PrivleapCommon.check_secure_file_permissions
+    PrivleapCommon.check_secure_file_permissions = staticmethod(
+        lambda *args, **kwargs: True
+    )
+    try:
+        handle_fd, path = tempfile.mkstemp(suffix=".conf")
+        try:
+            with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+                handle.write(s)
+            result = PrivleapCommon.parse_config_file(Path(path))
+            assert isinstance(result, (tuple, str))
+        finally:
+            os.unlink(path)
+    finally:
+        PrivleapCommon.check_secure_file_permissions = original
