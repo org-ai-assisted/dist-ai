@@ -266,6 +266,138 @@ class _FakeListenSocket:
 
 
 # ---------------------------------------------------------------------------
+# main_loop driver
+#
+# main_loop() is an infinite epoll loop. To exercise it a bounded number of
+# iterations against the REAL code, a scripted epoll replays a fixed list of
+# ready-fd batches, then raises a sentinel the loop has no handler for so the
+# driver regains control. Nothing here re-implements the daemon; it only feeds
+# main_loop scripted readiness and records what it did.
+# ---------------------------------------------------------------------------
+
+
+class _MainLoopStop(Exception):
+    """
+    Raised by the scripted epoll once its poll script is spent, to break
+    main_loop's ``while True`` and hand control back to the driver. main_loop
+    has no handler for it, so it propagates cleanly; the driver catches it.
+    """
+
+
+class _ScriptedEpoll:
+    """
+    A select.epoll stand-in for driving main_loop deterministically. poll()
+    returns the next scripted batch of ready fds (as (fd, event) pairs, the
+    shape main_loop reads), then raises _MainLoopStop. register() records every
+    fd main_loop asked to watch, so a test can assert a resync re-registered a
+    socket. before_poll, if given, runs at the start of each poll so a test can
+    mutate the socket list the way the control thread would between iterations.
+    """
+
+    def __init__(
+        self,
+        poll_batches: list[list[int]],
+        before_poll: Callable[[int], None] | None = None,
+    ) -> None:
+        self._batches: list[list[int]] = list(poll_batches)
+        self._before_poll: Callable[[int], None] | None = before_poll
+        self.registered_fds: list[int] = []
+        self.poll_count: int = 0
+
+    def register(self, fd: int, _eventmask: int) -> None:
+        """Record a descriptor main_loop registered for readiness."""
+
+        self.registered_fds.append(fd)
+
+    def poll(self, _timeout: Any = None) -> list[tuple[int, int]]:
+        """Return the next scripted ready-fd batch, or end the loop."""
+
+        index: int = self.poll_count
+        self.poll_count += 1
+        if self._before_poll is not None:
+            self._before_poll(index)
+        if not self._batches:
+            raise _MainLoopStop()
+        return [(fd, 1) for fd in self._batches.pop(0)]
+
+    def close(self) -> None:
+        """Match select.epoll's interface; there is nothing to release."""
+
+
+class _MainLoopSandbox:
+    """
+    Isolate the PrivleapdGlobal state main_loop touches -- the socket list and
+    the control-to-main notify pipe -- and give it a real, empty pipe, then
+    restore everything (and close the pipe) on exit. main_loop registers
+    ctm_read_fd and reads ctm_read_pipe, so both must be real for it to run.
+    """
+
+    _FIELDS: tuple[str, ...] = (
+        'socket_list',
+        'ctm_read_fd',
+        'ctm_write_fd',
+        'ctm_read_pipe',
+        'ctm_write_pipe',
+    )
+
+    def __init__(self, pld: ModuleType) -> None:
+        self.pld: ModuleType = pld
+        self.saved: dict[str, Any] = {}
+        self._opened: list[Any] = []
+
+    def __enter__(self) -> '_MainLoopSandbox':
+        glob: Any = self.pld.PrivleapdGlobal
+        for name in self._FIELDS:
+            self.saved[name] = getattr(glob, name)
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(read_fd, False)
+        glob.socket_list = []
+        glob.ctm_read_fd = read_fd
+        glob.ctm_write_fd = write_fd
+        glob.ctm_read_pipe = os.fdopen(read_fd, 'rb', buffering=0)
+        glob.ctm_write_pipe = os.fdopen(write_fd, 'wb', buffering=0)
+        self._opened = [glob.ctm_read_pipe, glob.ctm_write_pipe]
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        for pipe in self._opened:
+            if not pipe.closed:
+                pipe.close()
+        glob: Any = self.pld.PrivleapdGlobal
+        for name, value in self.saved.items():
+            setattr(glob, name, value)
+
+
+def _run_main_loop(
+    pld: ModuleType,
+    poll_batches: list[list[int]],
+    notifier: _RecordingNotifier,
+    before_poll: Callable[[int], None] | None = None,
+) -> _ScriptedEpoll:
+    """
+    Run the REAL privleapd.main_loop for the scripted iterations behind a fake
+    epoll and a recording sd-notify, restoring both afterward. Returns the
+    scripted epoll so a test can inspect what main_loop registered and polled.
+    A SystemExit main_loop raises (the lost-socket check) propagates to the
+    caller; the loop-ending _MainLoopStop does not.
+    """
+
+    scripted: _ScriptedEpoll = _ScriptedEpoll(poll_batches, before_poll)
+    saved_epoll: Any = pld.select.epoll
+    saved_notifier: Any = pld.PrivleapdGlobal.sdnotify_object
+    pld.select.epoll = lambda: scripted
+    pld.PrivleapdGlobal.sdnotify_object = notifier
+    try:
+        pld.main_loop()
+    except _MainLoopStop:
+        pass
+    finally:
+        pld.select.epoll = saved_epoll
+        pld.PrivleapdGlobal.sdnotify_object = saved_notifier
+    return scripted
+
+
+# ---------------------------------------------------------------------------
 # Main thread liveness
 # ---------------------------------------------------------------------------
 
@@ -393,6 +525,160 @@ def test_early_terminate_keeps_shared_term_notify_open(
             read_pipe.close()
         if not write_pipe.closed:
             write_pipe.close()
+
+
+def test_main_loop_exits_when_it_loses_track_of_a_socket(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    A ready fd that matches no socket in the socket list ends the daemon.
+
+    main_loop dispatches each ready fd by finding its PrivleapdSocketInfo. A
+    ready fd it cannot account for means its view of the socket list has
+    diverged from the kernel's, which it must never paper over: it logs and
+    exits so the divergence is loud and observable rather than a silent
+    mis-dispatch. The daemon source marks this check as one AI agents must not
+    remove, so it is exercised here directly.
+    """
+
+    print('== a ready fd with no known socket ends the daemon ==')
+    _ = pl
+    with _MainLoopSandbox(pld):
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        ## A ready fd that is neither the connection-change pipe nor any known
+        ## socket (the socket list is empty): the "lost track of a socket"
+        ## condition exactly.
+        stray_fd: int = pld.PrivleapdGlobal.ctm_read_fd + 4321
+        finished: bool
+        exc: BaseException | None
+        finished, _r, exc = call_with_deadline(
+            lambda: _run_main_loop(pld, [[stray_fd]], notifier)
+        )
+        results.check('main_loop returned rather than hanging', finished)
+        results.check(
+            'the lost-socket check raised SystemExit',
+            isinstance(exc, SystemExit),
+        )
+        results.expect_eq(
+            'the daemon exits with status 1 on a lost socket',
+            exc.code if isinstance(exc, SystemExit) else exc,
+            1,
+        )
+
+
+def test_main_loop_resyncs_on_a_connection_change_before_dispatch(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    A connection-change wakeup re-syncs the socket list and skips dispatch for
+    that iteration.
+
+    When the control thread adds or removes a socket it wakes main_loop through
+    the ctm pipe. main_loop must resync before acting on any other ready fd that
+    iteration -- otherwise it could act on a socket its view is momentarily out
+    of date about. So when the ctm fd is ready, main_loop drains it, flags a
+    resync and continues WITHOUT running the dispatch loop; the socket added
+    during the change is only registered on the next iteration's resync.
+    """
+
+    print('== a connection change re-syncs before dispatching ==')
+    with StateDirSandbox(pl), _MainLoopSandbox(pld):
+        control_socket: Any = pl.PrivleapSocket(pl.PrivleapSocketType.CONTROL)
+        ctrl_info: Any = make_socket_info(pld, control_socket)
+        pld.PrivleapdGlobal.socket_list = [ctrl_info]
+        ctrl_fd: int = control_socket.backend_socket.fileno()
+        ctm_fd: int = pld.PrivleapdGlobal.ctm_read_fd
+
+        ## A second socket the control thread adds mid-run; main_loop learns of
+        ## it only by re-syncing after the ctm wakeup.
+        added_socket: Any = pl.PrivleapSocket(
+            pl.PrivleapSocketType.COMMUNICATION, current_username()
+        )
+        added_info: Any = make_socket_info(pld, added_socket)
+        added_fd: int = added_socket.backend_socket.fileno()
+
+        dispatched: list[str] = []
+        saved_control: Any = pld.handle_control_socket_conn
+        saved_comm: Any = pld.handle_comm_socket_conn
+        pld.handle_control_socket_conn = (  # type: ignore[attr-defined]
+            lambda _s: dispatched.append('control')
+        )
+        pld.handle_comm_socket_conn = (  # type: ignore[attr-defined]
+            lambda _s: dispatched.append('comm')
+        )
+
+        def add_socket(poll_index: int) -> None:
+            if poll_index == 0:
+                pld.PrivleapdGlobal.socket_list = [ctrl_info, added_info]
+
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        try:
+            ## Batch 1 carries the connection-change fd AND a known control fd:
+            ## main_loop must take the ctm path and NOT dispatch the control fd.
+            finished: bool
+            scripted: Any
+            finished, scripted, exc = call_with_deadline(
+                lambda: _run_main_loop(
+                    pld,
+                    [[ctm_fd, ctrl_fd], []],
+                    notifier,
+                    before_poll=add_socket,
+                )
+            )
+            results.check('main_loop iterated without hanging', finished)
+            results.check(
+                'main_loop raised no unexpected exception', exc is None
+            )
+            results.expect_eq(
+                'nothing was dispatched on the connection-change iteration',
+                dispatched,
+                [],
+            )
+            results.check(
+                'the socket added during the change was registered on resync',
+                scripted is not None and added_fd in scripted.registered_fds,
+            )
+        finally:
+            pld.handle_control_socket_conn = (  # type: ignore[attr-defined]
+                saved_control
+            )
+            pld.handle_comm_socket_conn = (  # type: ignore[attr-defined]
+                saved_comm
+            )
+            close_socket_info(ctrl_info)
+            close_socket_info(added_info)
+            control_socket.close()
+            added_socket.close()
+
+
+def test_main_loop_pings_the_watchdog_every_iteration(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    The systemd watchdog is pinged once per loop iteration, unconditionally.
+
+    main_loop notifies WATCHDOG=1 right after every epoll poll, before it looks
+    at what (if anything) was ready. An idle iteration with no ready socket must
+    still ping, so a quiet daemon is never mistaken for a hung one; the ping is
+    never withheld for any reason.
+    """
+
+    print('== the watchdog is pinged every iteration, even when idle ==')
+    _ = pl
+    with _MainLoopSandbox(pld):
+        notifier: _RecordingNotifier = _RecordingNotifier()
+        ## Three idle polls: no ready fds at all, so nothing is dispatched and
+        ## the only thing each iteration does is poll and ping.
+        finished: bool
+        finished, _r, _e = call_with_deadline(
+            lambda: _run_main_loop(pld, [[], [], []], notifier)
+        )
+        results.check('main_loop iterated without hanging', finished)
+        results.expect_eq(
+            'one watchdog ping per iteration, all idle',
+            notifier.messages,
+            ['WATCHDOG=1', 'WATCHDOG=1', 'WATCHDOG=1'],
+        )
 
 
 class InProcessDaemon:
@@ -868,6 +1154,27 @@ def main() -> int:
     run_test(results, test_action_output_pump_is_not_a_busy_loop, pld)
     run_test(results, test_auth_failure_reply_is_constant_time, pld)
     run_test(results, test_access_check_reply_is_constant_time, pld)
+    ## The main_loop driver patches select.epoll and the sd-notify object
+    ## globally, so it must run before the live in-process daemon threads below
+    ## start their own real main_loop.
+    run_test(
+        results,
+        test_main_loop_exits_when_it_loses_track_of_a_socket,
+        pl,
+        pld,
+    )
+    run_test(
+        results,
+        test_main_loop_resyncs_on_a_connection_change_before_dispatch,
+        pl,
+        pld,
+    )
+    run_test(
+        results,
+        test_main_loop_pings_the_watchdog_every_iteration,
+        pl,
+        pld,
+    )
     run_test(results, test_live_daemon_answers_after_socket_recreate, pl, pld)
     ## Last: it starts the unstoppable in-process daemon threads (via the
     ## recreate test's shared daemon) and probes them while serving.

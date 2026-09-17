@@ -101,6 +101,7 @@ core_suites=(
    onion-time-pre-script-tests
    open-link-confirmation-tests
    privleap-tests
+   privleap-tests-verify
    pyte-tests
    qubes-whonix-tests
    sandbox-app-launcher-tests
