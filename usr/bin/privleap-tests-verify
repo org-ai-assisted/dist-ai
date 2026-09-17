@@ -1,0 +1,42 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Formal verification of privleap's argument-count codec -- the pure framing
+## primitive on the untrusted wire path (verify_privleap_formal.py): Z3 SMT
+## proofs of the encode/decode arithmetic, cross-checked by EXHAUSTIVE
+## enumeration over the whole domain (all 64 counts; every Unicode code point as
+## a decode input) against the REAL codec, with canaries. No root, no network,
+## no live privleapd.
+##
+## A missing python3-z3 is a HARD FAILURE inside the harness, never a skip -- a
+## verification suite must not silently disable itself. SKIPs (77) ONLY when the
+## privleap subject is genuinely absent. Targets the installed privleap by
+## default; set PRIVLEAP_REPO to a derivative-maker checkout to verify that tree
+## instead. Works installed (/usr/share/privleap-tests) or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/privleap-tests" ]; then
+  tests_dir="${script_dir}/../share/privleap-tests"
+else
+  tests_dir='/usr/share/privleap-tests'
+fi
+
+export PYTHONPATH="${tests_dir}${PYTHONPATH:+:${PYTHONPATH}}"
+
+rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for test deps (python3-z3)
+python3 -- "${tests_dir}/verify_privleap_formal.py" "$@" || rc=$?
+exit "${rc}"
