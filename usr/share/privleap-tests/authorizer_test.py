@@ -88,21 +88,54 @@ def user_group_names(user: str) -> set[str]:
     }
 
 
+## The authorization engine identifies callers by numeric UID/GID, so a test
+## working in account NAMES resolves them to ids at the call boundary. A name
+## with no account resolves to an id that belongs to nobody, so the missing-id
+## path the engine takes matches the missing-name path the reference takes.
+GHOST_UID: int = 2_000_000_000
+GHOST_GID: int = 2_000_000_000
+
+
+def user_group_gids(user: str) -> set[int]:
+    """The set of group GIDs a user currently belongs to (primary + extra)."""
+
+    info: pwd.struct_passwd = pwd.getpwnam(user)
+    return set(os.getgrouplist(user, info.pw_gid))
+
+
+def caller_uid(user: str) -> int:
+    """Resolve an account name to its UID, or a nonexistent UID if absent."""
+
+    try:
+        return pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return GHOST_UID
+
+
+def group_gid(group: str) -> int:
+    """Resolve a group name to its GID, or a nonexistent GID if absent."""
+
+    try:
+        return grp.getgrnam(group).gr_gid
+    except KeyError:
+        return GHOST_GID
+
+
 def make_action(
-    auth_users: list[str] | None,
-    auth_groups: list[str] | None,
-    target_user: str | None = None,
-    target_group: str | None = None,
+    auth_user_ids: list[str] | None,
+    auth_group_ids: list[str] | None,
+    target_user_id: str | None = None,
+    target_group_id: str | None = None,
 ) -> Any:
     """Build a real PrivleapAction with a harmless command."""
 
     return pl.PrivleapAction(
         action_name="test-act",
         action_command="echo authorized",
-        auth_users=auth_users,
-        auth_groups=auth_groups,
-        target_user=target_user,
-        target_group=target_group,
+        auth_user_ids=auth_user_ids,
+        auth_group_ids=auth_group_ids,
+        target_user_id=target_user_id,
+        target_group_id=target_group_id,
     )
 
 
@@ -127,9 +160,9 @@ def ref_authorize(action: Any, user: str) -> Any:
         return status.AUTHORIZED
     if not action.auth_restricted:
         return status.AUTHORIZED
-    if user in action.auth_users:
+    if info.pw_uid in action.auth_uids:
         return status.AUTHORIZED
-    if user_group_names(user) & set(action.auth_groups):
+    if user_group_gids(user) & set(action.auth_gids):
         return status.AUTHORIZED
     return status.UNAUTHORIZED
 
@@ -169,21 +202,21 @@ def phase_named_properties(results: Results) -> None:
     act_root_only: Any = make_action(["root"], None)
     results.expect_eq(
         "P2 root authorized for root-only action",
-        d.authorize_user(act_root_only, "root"),
+        d.authorize_user(act_root_only, caller_uid("root")),
         status.AUTHORIZED,
     )
 
     ## P1: a non-root user not named and not in any authorized group is denied.
     results.expect_eq(
         f"P1 '{target}' denied by root-only action",
-        d.authorize_user(act_root_only, target),
+        d.authorize_user(act_root_only, caller_uid(target)),
         status.UNAUTHORIZED,
     )
     if out_group is not None:
         act_outgroup: Any = make_action(None, [out_group])
         results.expect_eq(
             f"P1 '{target}' denied by group '{out_group}' they lack",
-            d.authorize_user(act_outgroup, target),
+            d.authorize_user(act_outgroup, caller_uid(target)),
             status.UNAUTHORIZED,
         )
 
@@ -193,14 +226,14 @@ def phase_named_properties(results: Results) -> None:
     bare: Any = pl.PrivleapAction.__new__(pl.PrivleapAction)
     bare.action_name = "unrestricted"
     bare.action_command = "echo x"
-    bare.auth_users = []
-    bare.auth_groups = []
-    bare.target_user = None
-    bare.target_group = None
+    bare.auth_uids = []
+    bare.auth_gids = []
+    bare.target_uid = None
+    bare.target_gid = None
     bare.auth_restricted = False
     results.expect_eq(
         f"P3 unrestricted action authorizes '{target}'",
-        d.authorize_user(bare, target),
+        d.authorize_user(bare, caller_uid(target)),
         status.AUTHORIZED,
     )
 
@@ -209,14 +242,14 @@ def phase_named_properties(results: Results) -> None:
         act_ingroup: Any = make_action(None, [in_group])
         results.expect_eq(
             f"P4 '{target}' authorized via group '{in_group}'",
-            d.authorize_user(act_ingroup, target),
+            d.authorize_user(act_ingroup, caller_uid(target)),
             status.AUTHORIZED,
         )
     ## P4b: a user named directly is authorized.
     act_named: Any = make_action([target], None)
     results.expect_eq(
         f"P4b '{target}' authorized when named directly",
-        d.authorize_user(act_named, target),
+        d.authorize_user(act_named, caller_uid(target)),
         status.AUTHORIZED,
     )
 
@@ -227,12 +260,12 @@ def phase_named_properties(results: Results) -> None:
     )
     results.expect_eq(
         "P5 nonexistent authorized user skipped, real one still works",
-        d.authorize_user(act_with_ghost, target),
+        d.authorize_user(act_with_ghost, caller_uid(target)),
         status.AUTHORIZED,
     )
     results.expect_eq(
         "P5 nonexistent caller -> USER_MISSING",
-        d.authorize_user(act_root_only, "definitely-no-such-user-zzz"),
+        d.authorize_user(act_root_only, caller_uid("definitely-no-such-user-zzz")),
         status.USER_MISSING,
     )
 
@@ -251,9 +284,11 @@ def phase_oracle_hardening(results: Results) -> None:
     try:
         d.PrivleapdGlobal.action_list = [act]
         forbidden: Any = d.auth_signal_request(
-            "test", "secret-action", target
+            "test", "secret-action", caller_uid(target)
         )
-        unknown: Any = d.auth_signal_request("test", "no-such-action", target)
+        unknown: Any = d.auth_signal_request(
+            "test", "no-such-action", caller_uid(target)
+        )
         results.check(
             "forbidden existing action returns None", forbidden is None
         )
@@ -261,7 +296,9 @@ def phase_oracle_hardening(results: Results) -> None:
             "unknown action returns None (indistinguishable)", unknown is None
         )
         ## And an authorized caller does get the action object back.
-        allowed: Any = d.auth_signal_request("test", "secret-action", "root")
+        allowed: Any = d.auth_signal_request(
+            "test", "secret-action", caller_uid("root")
+        )
         results.check(
             "authorized caller receives the action", allowed is act
         )
@@ -281,40 +318,41 @@ def phase_is_user_allowed(results: Results) -> None:
     )
     in_group: str | None = next(iter(target_groups), None)
 
-    saved_u: list[str] = d.PrivleapdGlobal.allowed_user_list
-    saved_g: list[str] = d.PrivleapdGlobal.allowed_group_list
+    target_uid: int = caller_uid(target)
+    saved_u: list[int] = d.PrivleapdGlobal.allowed_uid_list
+    saved_g: list[int] = d.PrivleapdGlobal.allowed_gid_list
     try:
-        d.PrivleapdGlobal.allowed_user_list = []
-        d.PrivleapdGlobal.allowed_group_list = []
+        d.PrivleapdGlobal.allowed_uid_list = []
+        d.PrivleapdGlobal.allowed_gid_list = []
         results.check(
-            "empty allow-lists deny target", not d.is_user_allowed(target)
+            "empty allow-lists deny target", not d.is_user_allowed(target_uid)
         )
-        d.PrivleapdGlobal.allowed_user_list = [target]
+        d.PrivleapdGlobal.allowed_uid_list = [target_uid]
         results.check(
-            "named user is allowed", d.is_user_allowed(target)
+            "named user is allowed", d.is_user_allowed(target_uid)
         )
-        d.PrivleapdGlobal.allowed_user_list = []
+        d.PrivleapdGlobal.allowed_uid_list = []
         if in_group is not None:
-            d.PrivleapdGlobal.allowed_group_list = [in_group]
+            d.PrivleapdGlobal.allowed_gid_list = [group_gid(in_group)]
             results.check(
                 f"user in allowed group '{in_group}' is allowed",
-                d.is_user_allowed(target),
+                d.is_user_allowed(target_uid),
             )
         if out_group is not None:
-            d.PrivleapdGlobal.allowed_group_list = [out_group]
+            d.PrivleapdGlobal.allowed_gid_list = [group_gid(out_group)]
             results.check(
                 f"user not in group '{out_group}' is denied",
-                not d.is_user_allowed(target),
+                not d.is_user_allowed(target_uid),
             )
         ## A configured allowed group that no longer exists must not crash.
-        d.PrivleapdGlobal.allowed_group_list = ["no-such-group-zzz"]
+        d.PrivleapdGlobal.allowed_gid_list = [GHOST_GID]
         results.check(
             "vanished allowed group handled gracefully",
-            not d.is_user_allowed(target),
+            not d.is_user_allowed(target_uid),
         )
     finally:
-        d.PrivleapdGlobal.allowed_user_list = saved_u
-        d.PrivleapdGlobal.allowed_group_list = saved_g
+        d.PrivleapdGlobal.allowed_uid_list = saved_u
+        d.PrivleapdGlobal.allowed_gid_list = saved_g
 
 
 def phase_random_equivalence(
@@ -369,7 +407,7 @@ def phase_random_equivalence(
 
         caller: str = rng.choice(caller_pool)
         try:
-            got: Any = d.authorize_user(action, caller)
+            got: Any = d.authorize_user(action, caller_uid(caller))
         except Exception as exc:  # pylint: disable=broad-exception-caught
             errors += 1
             if errors <= 10:
@@ -392,16 +430,16 @@ def phase_random_equivalence(
         if got == status.AUTHORIZED and caller != "no-such-caller-zzz":
             info_uid: int = pwd.getpwnam(caller).pw_uid
             if info_uid != 0 and action.auth_restricted:
-                named: bool = caller in action.auth_users
+                named: bool = info_uid in action.auth_uids
                 grouped: bool = bool(
-                    user_group_names(caller) & set(action.auth_groups)
+                    user_group_gids(caller) & set(action.auth_gids)
                 )
                 if not named and not grouped:
                     p1_violations += 1
                     print(
                         f"  P1 VIOLATION (privilege without grant): "
-                        f"caller={caller!r} au={action.auth_users} "
-                        f"ag={action.auth_groups}"
+                        f"caller={caller!r} au={action.auth_uids} "
+                        f"ag={action.auth_gids}"
                     )
 
     results.check(f"no authorize_user crashes over {iterations} pairs",

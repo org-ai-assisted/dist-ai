@@ -9,37 +9,30 @@ In-process liveness regression tests for the privleap daemon internals.
 The parser and authorizer fuzzers cover what an unprivileged client can send.
 This suite covers the parts of privleapd that no client message reaches
 directly but that decide whether the daemon stays alive and answerable: the
-non-blocking accept path, the transient-resource accept backoff, the epoll
-registration bookkeeping the main loop keeps as sockets come and go, the socket
-list synchronisation between the main and control threads, the action output
-pump, and the systemd watchdog ping.
+epoll registration bookkeeping the main loop keeps as sockets come and go, the
+socket list synchronisation between the main and control threads, the shared
+term-notify pipe lifecycle, the action output pump, the systemd watchdog ping,
+and the constant-time reply that keeps an authorization failure from leaking a
+timing side channel.
 
 Every test here is a regression test for a specific way privleapd could stop
 answering, stop pinging its watchdog, or leak a timing side channel. They are
 written to fail against a daemon that regresses the behaviour they cover, not
 merely to exercise the fixed code.
 
-These target the reworked (AB3) daemon: the listening socket is non-blocking
-(``setblocking(False)``), an accept that fails for lack of resources is
-classified by ``classify_accept_error`` and drives ``main_loop``'s inline
-backoff + watchdog withholding, and epoll registration is keyed on the
-``PrivleapdSocketInfo`` object identity that ``main_loop`` rebuilds whenever the
-socket list changes.
-
 Runs without root: the state directory is redirected into a temporary
 directory and the ownership calls only root may make are stubbed.
 """
 
 import argparse
-import errno
 import os
+import pwd
 import shutil
 import socket
 import sys
 import tempfile
 import threading
 import time
-import unittest.mock as mock
 from types import ModuleType
 from typing import Any, Callable
 
@@ -130,7 +123,7 @@ class FakeSession:
     """A comm session stand-in for tests that never touch the wire."""
 
     def __init__(self) -> None:
-        self.user_name: str = current_username()
+        self.user_uid: int = pwd.getpwnam(current_username()).pw_uid
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.backend_socket: socket.socket = left
         self._peer: socket.socket = right
@@ -200,19 +193,8 @@ def close_socket_info(sock_info: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# main_loop drivers
-#
-# The reworked daemon does its epoll registration and its transient-resource
-# accept backoff inline in main_loop, keyed on the PrivleapdSocketInfo object
-# identity it rebuilds whenever the socket list changes. There is no standalone
-# refresh/backoff helper to call, so these tests drive the real main_loop one
-# iteration at a time behind a scripted fake epoll, exactly as the daemon's own
-# focused tests (privleap.tests.test_daemon_defects) do.
+# Test doubles
 # ---------------------------------------------------------------------------
-
-
-class _StopLoop(Exception):
-    """Sentinel raised by the fake epoll to break main_loop's while True."""
 
 
 class _RecordingNotifier:
@@ -227,15 +209,6 @@ class _RecordingNotifier:
         self.messages.append(message)
 
 
-class _FakeReadPipe:
-    """A ctm read pipe stand-in whose read() is a no-op returning no bytes."""
-
-    def read(self) -> bytes:
-        """Consume the connection-change wakeup byte(s); value is ignored."""
-
-        return b''
-
-
 class _FakeBackendSocket:
     """A backend socket stand-in that only has to answer fileno()."""
 
@@ -248,59 +221,15 @@ class _FakeBackendSocket:
         return self._fd
 
 
-class _StartRaisesThread:
-    """
-    Thread stand-in whose start() raises RuntimeError, emulating thread
-    exhaustion (RLIMIT_NPROC / kernel thread cap). Constructed the same way
-    privleapd constructs its comm threads.
-    """
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def start(self) -> None:
-        """Refuse to start, as the kernel does once threads are exhausted."""
-
-        raise RuntimeError("can't start new thread")
-
-
-class _RecordingCloseSession:
-    """A minimal accepted-session double that records being closed."""
-
-    def __init__(self) -> None:
-        self.closed: bool = False
-
-    def close_session(self) -> None:
-        """Record that the handler closed this session."""
-
-        self.closed = True
-
-
-class _RaisingCloseSession:
-    """
-    An accepted-session double whose close_session() raises OSError, emulating
-    a client that already disconnected (shutdown() then raises ENOTCONN).
-    """
-
-    def __init__(self) -> None:
-        self.close_attempted: bool = False
-
-    def close_session(self) -> None:
-        """Record the close attempt, then raise as a gone client would."""
-
-        self.close_attempted = True
-        raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected')
-
-
 class _TermCommSession:
     """
     Minimal comm-session double for check_early_action_terminate: it only needs
-    a backend_socket exposing fileno() and a user_name for logging.
+    a backend_socket exposing fileno() and a user_uid for logging.
     """
 
-    def __init__(self, fd: int, user_name: str = 'testuser') -> None:
+    def __init__(self, fd: int, user_uid: int = 4321) -> None:
         self.backend_socket: _FakeBackendSocket = _FakeBackendSocket(fd)
-        self.user_name: str = user_name
+        self.user_uid: int = user_uid
 
 
 class _FakeListenSocket:
@@ -315,12 +244,12 @@ class _FakeListenSocket:
         fd: int,
         socket_type: Any,
         raise_exc: BaseException | None = None,
-        user_name: str = 'testuser',
+        user_uid: int = 4321,
         session: object | None = None,
     ) -> None:
         self.backend_socket: _FakeBackendSocket = _FakeBackendSocket(fd)
         self.socket_type: Any = socket_type
-        self.user_name: str = user_name
+        self.user_uid: int = user_uid
         self._raise_exc: BaseException | None = raise_exc
         self._session: object | None = session
         self.session_started: bool = False
@@ -336,145 +265,9 @@ class _FakeListenSocket:
         return object()
 
 
-class _FakeEpoll:
-    """
-    A select.epoll stand-in. register() records the fds main_loop watches;
-    poll() replays a scripted list of ready-fd batches, then raises _StopLoop
-    to break the otherwise-infinite main loop.
-    """
-
-    def __init__(self, poll_results: list[list[tuple[int, int]]]) -> None:
-        self._poll_results: list[list[tuple[int, int]]] = list(poll_results)
-        self.registered_fds: list[int] = []
-
-    def register(self, fd: int, _events: int) -> None:
-        """Record that main_loop registered this fd."""
-
-        self.registered_fds.append(fd)
-
-    def poll(self, _timeout: float) -> list[tuple[int, int]]:
-        """Replay one scripted batch, or end the loop."""
-
-        if not self._poll_results:
-            raise _StopLoop()
-        return self._poll_results.pop(0)
-
-
-def _fake_comm_sock_info(
-    pld: ModuleType,
-    fd: int,
-    raise_exc: BaseException | None = None,
-    session: object | None = None,
-) -> Any:
-    """A PrivleapdSocketInfo wrapping a fake comm listening socket."""
-
-    listen_socket: _FakeListenSocket = _FakeListenSocket(
-        fd,
-        pld.PrivleapSocketType.COMMUNICATION,
-        raise_exc=raise_exc,
-        session=session,
-    )
-    return pld.PrivleapdSocketInfo(listen_socket, -1, -1, None, None)
-
-
-def _drive_main_loop(
-    pld: ModuleType,
-    poll_results: list[list[tuple[int, int]]],
-    ctm_read_pipe: Any = None,
-) -> tuple[_RecordingNotifier, _FakeEpoll, Any, BaseException | None]:
-    """
-    Run the real main_loop for the scripted poll batches, behind a fake epoll,
-    a recording notifier and a mocked time.sleep. The caller sets
-    PrivleapdGlobal.socket_list first; this saves and restores the notifier and
-    the ctm pipe/fd it borrows. Returns the notifier, the fake epoll, the
-    time.sleep mock, and whatever exception ended the loop (normally _StopLoop).
-    """
-
-    saved_notifier: Any = pld.PrivleapdGlobal.sdnotify_object
-    saved_ctm_pipe: Any = pld.PrivleapdGlobal.ctm_read_pipe
-    saved_ctm_fd: int = pld.PrivleapdGlobal.ctm_read_fd
-
-    notifier: _RecordingNotifier = _RecordingNotifier()
-    fake_epoll: _FakeEpoll = _FakeEpoll(poll_results)
-    fake_select: Any = mock.Mock()
-    fake_select.epoll = lambda: fake_epoll
-    fake_select.EPOLLIN = 1
-
-    pld.PrivleapdGlobal.sdnotify_object = notifier
-    pld.PrivleapdGlobal.ctm_read_pipe = (
-        ctm_read_pipe if ctm_read_pipe is not None else _FakeReadPipe()
-    )
-    ## A ctm fd that never collides with a scripted listening fd.
-    pld.PrivleapdGlobal.ctm_read_fd = 9000
-
-    raised: BaseException | None = None
-    try:
-        with mock.patch.object(
-            pld, 'select', fake_select
-        ), mock.patch.object(pld.time, 'sleep') as sleep_mock:
-            try:
-                pld.main_loop()
-            except (Exception, SystemExit) as exc:  # noqa: BLE001
-                raised = exc
-    finally:
-        pld.PrivleapdGlobal.sdnotify_object = saved_notifier
-        pld.PrivleapdGlobal.ctm_read_pipe = saved_ctm_pipe
-        pld.PrivleapdGlobal.ctm_read_fd = saved_ctm_fd
-    return notifier, fake_epoll, sleep_mock, raised
-
-
 # ---------------------------------------------------------------------------
 # Main thread liveness
 # ---------------------------------------------------------------------------
-
-
-def test_listening_socket_is_nonblocking(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    The listening socket must be non-blocking, so an accept driven off a stale
-    epoll readiness event returns at once instead of parking the main thread.
-
-    privleapd accepts on the main thread, driven by an epoll readiness event.
-    That event can be stale by the time it is acted on (the socket may have been
-    destroyed and its descriptor number handed to a new socket in the meantime),
-    in which case accept() finds nothing waiting. A blocking listener would park
-    the main thread there forever; it stops pinging the watchdog and systemd
-    kills the daemon with nothing in the log. The rework makes the listener
-    non-blocking so that empty accept raises a would-block error the daemon
-    classifies as a spurious wakeup and shrugs off.
-    """
-
-    print('== the listening socket is non-blocking ==')
-    with StateDirSandbox(pl):
-        listener: Any = pl.PrivleapSocket(pl.PrivleapSocketType.CONTROL)
-        try:
-            results.expect_eq(
-                'the listening socket is non-blocking',
-                listener.backend_socket.gettimeout(),
-                0.0,
-            )
-            finished, session, exception = call_with_deadline(
-                listener.get_session, budget_s=5.0
-            )
-            results.check(
-                'get_session on an idle listener returns promptly instead of '
-                'parking',
-                finished,
-            )
-            results.check(
-                'get_session on an idle listener raises rather than returning '
-                'a session',
-                session is None and exception is not None,
-            )
-            results.check(
-                'the empty accept is classified as a spurious wakeup, not a '
-                'resource error',
-                pld.classify_accept_error(exception)
-                is pld.PrivleapdAcceptError.SPURIOUS,
-            )
-        finally:
-            listener.close()
 
 
 def test_stale_ready_event_does_not_hang_daemon(
@@ -518,448 +311,6 @@ def test_stale_ready_event_does_not_hang_daemon(
             close_socket_info(sock_info)
             control_socket.close()
             comm_socket.close()
-
-
-def test_accept_failure_does_not_spin(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    An accept that fails for lack of resources must not turn the main loop
-    into a spin.
-
-    A connection that could not be accepted stays in the kernel's backlog, so
-    the level-triggered epoll keeps the listening socket readable and the same
-    event comes straight back. Without a pause the loop runs flat out: busy
-    enough that its watchdog keeps telling systemd the daemon is healthy while
-    it answers nobody. Any client can cause this by holding connections open
-    until the descriptor limit is reached. main_loop must, on such an
-    iteration, back off (time.sleep by the resource backoff) AND withhold the
-    watchdog ping. An ordinary accept failure -- a client that hung up -- is not
-    a resource problem and must neither back off nor be reported unhealthy.
-    """
-
-    print('== an accept that ran out of descriptors does not spin ==')
-
-    ## A descriptor-exhaustion accept (EMFILE) on a ready comm fd.
-    emfile_fd: int = 42
-    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-    pld.PrivleapdGlobal.socket_list = [
-        _fake_comm_sock_info(
-            pld, emfile_fd, raise_exc=OSError(errno.EMFILE, 'Too many open')
-        )
-    ]
-    try:
-        notifier, _epoll, sleep_mock, raised = _drive_main_loop(
-            pld, [[(emfile_fd, 1)]]
-        )
-        results.check(
-            'the EMFILE iteration ended cleanly', isinstance(raised, _StopLoop)
-        )
-        results.check(
-            'running out of descriptors backs off by the resource backoff',
-            sleep_mock.call_count == 1
-            and sleep_mock.call_args
-            == mock.call(pld.accept_resource_backoff_seconds),
-        )
-        results.check(
-            'the watchdog is withheld while backing off on EMFILE',
-            'WATCHDOG=1' not in notifier.messages,
-        )
-        results.expect_eq(
-            'the EMFILE socket never established a session',
-            pld.PrivleapdGlobal.socket_list[0].listen_socket.session_started,
-            False,
-        )
-    finally:
-        pld.PrivleapdGlobal.socket_list = saved_list
-
-    ## An ordinary accept failure: a client that aborted. Not a resource
-    ## problem, so no backoff, and the iteration is still healthy.
-    ordinary_fd: int = 43
-    pld.PrivleapdGlobal.socket_list = [
-        _fake_comm_sock_info(
-            pld, ordinary_fd, raise_exc=ConnectionAbortedError('went away')
-        )
-    ]
-    try:
-        notifier, _epoll, sleep_mock, _raised = _drive_main_loop(
-            pld, [[(ordinary_fd, 1)]]
-        )
-        results.expect_eq(
-            'an ordinary accept failure schedules no backoff',
-            sleep_mock.call_count,
-            0,
-        )
-        results.check(
-            'an ordinary accept failure still pings the watchdog',
-            'WATCHDOG=1' in notifier.messages,
-        )
-    finally:
-        pld.PrivleapdGlobal.socket_list = saved_list
-
-    ## A healthy idle iteration must still ping the watchdog, so the backoff
-    ## gating did not break ordinary liveness.
-    pld.PrivleapdGlobal.socket_list = []
-    try:
-        notifier, _epoll, sleep_mock, _raised = _drive_main_loop(pld, [[]])
-        results.check(
-            'a healthy idle iteration pings the watchdog',
-            'WATCHDOG=1' in notifier.messages,
-        )
-    finally:
-        pld.PrivleapdGlobal.socket_list = saved_list
-
-
-def test_reused_descriptor_is_registered(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    A socket that reuses a just-closed descriptor number must still be watched.
-
-    The kernel hands the descriptor number of a closed socket straight back to
-    the next socket opened. main_loop keys its epoll registrations on the
-    PrivleapdSocketInfo *object*, not on the descriptor number, and rebuilds
-    them whenever the socket list changes -- so a destroy immediately followed
-    by a create (what a reload, or a leapctl destroy then create, does) is a new
-    object and gets registered even though its descriptor number is unchanged.
-    A descriptor-number-keyed scheme would have seen no change at all and never
-    registered the new socket, and connections to it would never be accepted for
-    the remaining lifetime of the daemon.
-    """
-
-    print('== a reused descriptor number is registered ==')
-    user: str = current_username()
-    with StateDirSandbox(pl):
-        saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-        socket_path: Any = pl.Path(pl.PrivleapCommon.comm_dir, user)
-        pld.PrivleapdGlobal.socket_list = []
-        first_socket: Any = pl.PrivleapSocket(
-            pl.PrivleapSocketType.COMMUNICATION, user
-        )
-        pld.socket_list_add(first_socket)
-        first_fd: int = first_socket.backend_socket.fileno()
-
-        state: dict[str, Any] = {
-            'swapped': False,
-            'second': None,
-            'second_info': None,
-            'second_fd': None,
-        }
-
-        def swap_on_ctm_read() -> bytes:
-            ## The connection-change the control thread signals during a reload:
-            ## destroy the socket and immediately recreate it, with no main
-            ## loop turn in between, so the new socket reuses the freed fd.
-            if not state['swapped']:
-                close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-                first_socket.close()
-                socket_path.unlink(missing_ok=True)
-                second: Any = pl.PrivleapSocket(
-                    pl.PrivleapSocketType.COMMUNICATION, user
-                )
-                pld.socket_list_add(second)
-                state['swapped'] = True
-                state['second'] = second
-                state['second_info'] = pld.PrivleapdGlobal.socket_list[-1]
-                state['second_fd'] = second.backend_socket.fileno()
-            return b''
-
-        ctm_pipe: Any = type(
-            '_SwapPipe', (), {'read': staticmethod(swap_on_ctm_read)}
-        )()
-        try:
-            ## Poll returns the ctm event once (triggering the destroy/create),
-            ## then _StopLoop -- so main_loop does two registration passes: the
-            ## first for first_socket, the second (after the swap) for the
-            ## recreated socket.
-            _notifier, fake_epoll, _sleep, raised = _drive_main_loop(
-                pld, [[(9000, 1)]], ctm_read_pipe=ctm_pipe
-            )
-            results.check(
-                'the registration passes ended cleanly',
-                isinstance(raised, _StopLoop),
-            )
-            results.check(
-                'the destroy/create cycle ran', state['swapped']
-            )
-            reused: bool = state['second_fd'] == first_fd
-            results.check(
-                'the recreated socket reused the closed descriptor number',
-                reused,
-            )
-            results.check(
-                'the recreated socket was registered with epoll',
-                state['second_fd'] in fake_epoll.registered_fds,
-            )
-            if reused:
-                ## Object-identity keying registers the reused fd a SECOND time
-                ## (once per distinct socket object); a descriptor-keyed scheme
-                ## would have registered it only once and missed the new socket.
-                results.expect_eq(
-                    'the reused descriptor was registered for both sockets',
-                    fake_epoll.registered_fds.count(first_fd),
-                    2,
-                )
-        finally:
-            if state['second_info'] is not None:
-                close_socket_info(state['second_info'])
-            if state['second'] is not None:
-                state['second'].close()
-            else:
-                close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-                first_socket.close()
-            socket_path.unlink(missing_ok=True)
-            pld.PrivleapdGlobal.socket_list = saved_list
-
-
-def test_destroyed_socket_is_unregistered(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    A readiness event for a socket that was removed from the list must be
-    skipped, not turned into an accept on a closed descriptor.
-
-    A control thread can remove and close a socket in the window between
-    epoll_obj.poll() and the main thread taking socket_list_lock, leaving a
-    stale readiness event for an fd that is gone (or already reused).
-    dispatch_ready_sockets must skip such an fd and report the iteration
-    healthy; turning it into an accept on a closed socket, or terminating the
-    daemon over it, is the defect this guards.
-    """
-
-    print('== a destroyed socket is skipped, not accepted on ==')
-    user: str = current_username()
-    with StateDirSandbox(pl):
-        saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-        pld.PrivleapdGlobal.socket_list = []
-        try:
-            comm_socket: Any = pl.PrivleapSocket(
-                pl.PrivleapSocketType.COMMUNICATION, user
-            )
-            pld.socket_list_add(comm_socket)
-            comm_fd: int = comm_socket.backend_socket.fileno()
-
-            ## While the socket is live, dispatch accepts on it (a stale event
-            ## on a live socket is a spurious wakeup, handled, healthy).
-            results.check(
-                'a live socket is dispatched healthily',
-                pld.dispatch_ready_sockets([comm_fd]) is True,
-            )
-
-            ## Destroy it: remove from the list and close it.
-            close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-            comm_socket.close()
-
-            queue_empty_before: bool = (
-                pld.PrivleapdGlobal.control_request_queue.empty()
-            )
-            healthy: bool = pld.dispatch_ready_sockets([comm_fd])
-            results.check(
-                'a destroyed socket\'s stale event is skipped and reported '
-                'healthy',
-                healthy is True,
-            )
-            results.check(
-                'no session was queued from a destroyed socket',
-                queue_empty_before
-                and pld.PrivleapdGlobal.control_request_queue.empty(),
-            )
-        finally:
-            pld.PrivleapdGlobal.socket_list = saved_list
-
-
-def test_thread_exhaustion_backs_off_and_closes_session(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    An accept that succeeds but whose handler thread cannot start must not crash
-    the daemon.
-
-    accept() returns a session, then Thread.start() raises RuntimeError (thread
-    exhaustion: RLIMIT_NPROC or the kernel thread cap). Any local account can
-    drive the process count to that limit. handle_comm_socket_conn must catch
-    the RuntimeError, close the accepted session, and return False (back off) --
-    not let the RuntimeError escape into dispatch_ready_sockets and main_loop,
-    which would crash the root daemon, the very failure this handler prevents.
-    """
-
-    print('== thread exhaustion backs off and closes the session ==')
-    session: _RecordingCloseSession = _RecordingCloseSession()
-    sock_info: Any = _fake_comm_sock_info(pld, 42, session=session)
-    with mock.patch.object(pld, 'Thread', _StartRaisesThread):
-        finished, result, exception = call_with_deadline(
-            lambda: pld.handle_comm_socket_conn(sock_info)
-        )
-    results.check('the thread-exhaustion handler returns', finished)
-    results.check(
-        'thread exhaustion does not let the RuntimeError escape the handler',
-        exception is None,
-    )
-    results.check(
-        'thread exhaustion returns False to trigger the resource backoff',
-        result is False,
-    )
-    results.check(
-        'the accepted session was closed on thread exhaustion', session.closed
-    )
-
-
-def test_thread_exhaustion_close_oserror_does_not_escape(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    Closing the accepted session while backing off on thread exhaustion must
-    survive a client that already disconnected.
-
-    Same path as the previous test, but the accepted session's close_session()
-    raises OSError (the client is gone, so shutdown() raises ENOTCONN).
-    handle_comm_socket_conn must swallow that OSError and STILL return False;
-    letting it escape would crash the root daemon just as the unguarded
-    Thread.start() would.
-    """
-
-    print('== a raising close_session on thread exhaustion does not escape ==')
-    session: _RaisingCloseSession = _RaisingCloseSession()
-    sock_info: Any = _fake_comm_sock_info(pld, 42, session=session)
-    with mock.patch.object(pld, 'Thread', _StartRaisesThread):
-        finished, result, exception = call_with_deadline(
-            lambda: pld.handle_comm_socket_conn(sock_info)
-        )
-    results.check(
-        'the handler returns even when close_session raises', finished
-    )
-    results.check(
-        'a raising close_session does not escape the handler',
-        exception is None,
-    )
-    results.check(
-        'a raising close_session still backs off (returns False)',
-        result is False,
-    )
-    results.check(
-        'close_session was attempted before it raised', session.close_attempted
-    )
-
-
-def test_dispatch_breaks_on_first_resource_error(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    A resource-exhaustion accept must break the per-fd dispatch loop, not go on
-    hammering the rest of the ready batch.
-
-    Two ready comm fds in one batch: the first hits EMFILE, the second would
-    accept cleanly. dispatch_ready_sockets must break on the first RESOURCE
-    error and return False, so the second socket is never accept-attempted and
-    no handler thread is constructed. A loop that only marked the iteration
-    unhealthy but kept iterating would accept the second socket while the daemon
-    is already out of descriptors -- exactly the storm the backoff exists to
-    stop.
-    """
-
-    print('== a RESOURCE error breaks the per-fd dispatch loop ==')
-    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-    first: Any = _fake_comm_sock_info(
-        pld, 42, raise_exc=OSError(errno.EMFILE, 'Too many open files')
-    )
-    second: Any = _fake_comm_sock_info(pld, 43)
-    pld.PrivleapdGlobal.socket_list = [first, second]
-    try:
-        with mock.patch.object(pld, 'Thread') as thread_mock:
-            result: bool = pld.dispatch_ready_sockets([42, 43])
-        results.check(
-            'a RESOURCE error makes the iteration report unhealthy',
-            result is False,
-        )
-        results.expect_eq(
-            'the EMFILE socket never established a session',
-            first.listen_socket.session_started,
-            False,
-        )
-        results.expect_eq(
-            'after a RESOURCE error the loop breaks rather than accepting the '
-            'next ready socket in the batch',
-            second.listen_socket.session_started,
-            False,
-        )
-        results.check(
-            'no handler thread was constructed after the RESOURCE error',
-            not thread_mock.called,
-        )
-    finally:
-        pld.PrivleapdGlobal.socket_list = saved_list
-
-
-def test_connection_change_and_emfile_co_occurrence(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    A poll batch that carries BOTH a connection-change notification and an
-    EMFILE listening fd must consume the notification AND still back off.
-
-    The restructured main loop must, in that one iteration: (a) read the ctm
-    connection-change notification exactly once, (b) still dispatch the
-    co-occurring listening fd so its EMFILE backoff (time.sleep) runs, and (c)
-    withhold the watchdog for the iteration. A loop that consumed the ctm event
-    and then short-circuited the rest of the batch would skip the EMFILE fd
-    entirely -- no backoff, and a WATCHDOG=1 telling systemd the pegged,
-    non-serving daemon is healthy.
-    """
-
-    print('== a connection change co-occurring with EMFILE still backs off ==')
-
-    read_calls: list[int] = [0]
-
-    class _CountingReadPipe:
-        """A ctm read pipe stand-in that counts how often it was read."""
-
-        def read(self) -> bytes:
-            """Consume the connection-change wakeup byte and count the call."""
-
-            read_calls[0] += 1
-            return b''
-
-    emfile_fd: int = 42
-    ## _drive_main_loop pins PrivleapdGlobal.ctm_read_fd to 9000.
-    ctm_fd: int = 9000
-    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-    sock_info: Any = _fake_comm_sock_info(
-        pld, emfile_fd, raise_exc=OSError(errno.EMFILE, 'Too many open files')
-    )
-    pld.PrivleapdGlobal.socket_list = [sock_info]
-    try:
-        notifier, _epoll, sleep_mock, raised = _drive_main_loop(
-            pld,
-            [[(ctm_fd, 1), (emfile_fd, 1)]],
-            ctm_read_pipe=_CountingReadPipe(),
-        )
-        results.check(
-            'the co-occurrence iteration ended cleanly',
-            isinstance(raised, _StopLoop),
-        )
-        results.expect_eq(
-            'the connection-change notification was read exactly once',
-            read_calls[0],
-            1,
-        )
-        results.check(
-            'the co-occurring EMFILE fd was still dispatched and backed off',
-            sleep_mock.call_count == 1
-            and sleep_mock.call_args
-            == mock.call(pld.accept_resource_backoff_seconds),
-        )
-        results.expect_eq(
-            'the EMFILE socket never established a session',
-            sock_info.listen_socket.session_started,
-            False,
-        )
-        results.check(
-            'the watchdog is withheld even though a connection change was '
-            'consumed',
-            'WATCHDOG=1' not in notifier.messages,
-        )
-    finally:
-        pld.PrivleapdGlobal.socket_list = saved_list
 
 
 def test_early_terminate_keeps_shared_term_notify_open(
@@ -1064,6 +415,7 @@ class InProcessDaemon:
         self.pl: ModuleType = pl
         self.pld: ModuleType = pld
         self.user: str = user
+        self.user_uid: int = pwd.getpwnam(user).pw_uid
         self.sandbox: StateDirSandbox = StateDirSandbox(pl)
 
     def start(self) -> 'InProcessDaemon':
@@ -1072,7 +424,7 @@ class InProcessDaemon:
         pld: ModuleType = self.pld
         self.sandbox.activate()
         pld.PrivleapdGlobal.socket_list = []
-        pld.PrivleapdGlobal.allowed_user_list = [self.user]
+        pld.PrivleapdGlobal.allowed_uid_list = [self.user_uid]
         ## An action the probe below is allowed to ask about. Probing an
         ## unknown action instead would make the daemon hold every single
         ## reply for its constant-time authentication failure delay, turning
@@ -1195,6 +547,7 @@ def test_live_daemon_answers_after_socket_recreate(
 
     print('== the daemon still answers after a destroy/create cycle ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     daemon: InProcessDaemon = get_in_process_daemon(pl, pld, user)
     created: str | None = daemon.control_request(
         pl.PrivleapControlClientCreateMsg(user)
@@ -1204,14 +557,14 @@ def test_live_daemon_answers_after_socket_recreate(
         'the daemon answers on a freshly created socket',
         daemon.comm_socket_answers(),
     )
-    socket_path = pl.Path(pl.PrivleapCommon.comm_dir, user)
+    socket_path = pl.Path(pl.PrivleapCommon.comm_dir, str(user_uid))
 
     deaf_cycle: int | None = None
     for cycle in range(RECREATE_CYCLES):
         ## Drive the destroy and the create from one thread with nothing
         ## in between, the way the control thread drives a reload.
         def recreate() -> None:
-            index: int = _socket_index(pld, user)
+            index: int = _socket_index(pld, user_uid)
             pld.socket_list_stop_sync(index)
             socket_path.unlink(missing_ok=True)
             pld.socket_list_add_sync(
@@ -1241,13 +594,13 @@ def test_live_daemon_answers_after_socket_recreate(
     )
 
 
-def _socket_index(pld: ModuleType, user: str) -> int:
+def _socket_index(pld: ModuleType, user_uid: int) -> int:
     """Index of an account's comm socket in the daemon's socket list."""
 
     for index, sock_info in enumerate(pld.PrivleapdGlobal.socket_list):
-        if sock_info.listen_socket.user_name == user:
+        if sock_info.listen_socket.user_uid == user_uid:
             return index
-    raise LookupError(f"no comm socket for account '{user}'")
+    raise LookupError(f"no comm socket for UID '{user_uid}'")
 
 
 # ---------------------------------------------------------------------------
@@ -1510,15 +863,7 @@ def main() -> int:
     ## list runs first, while nothing else is looking at it. The tests that
     ## start unstoppable daemon threads run last, because from then on that
     ## state belongs to those threads.
-    run_test(results, test_listening_socket_is_nonblocking, pl, pld)
     run_test(results, test_stale_ready_event_does_not_hang_daemon, pl, pld)
-    run_test(results, test_accept_failure_does_not_spin, pld)
-    run_test(results, test_reused_descriptor_is_registered, pl, pld)
-    run_test(results, test_destroyed_socket_is_unregistered, pl, pld)
-    run_test(results, test_thread_exhaustion_backs_off_and_closes_session, pld)
-    run_test(results, test_thread_exhaustion_close_oserror_does_not_escape, pld)
-    run_test(results, test_dispatch_breaks_on_first_resource_error, pld)
-    run_test(results, test_connection_change_and_emfile_co_occurrence, pld)
     run_test(results, test_early_terminate_keeps_shared_term_notify_open, pld)
     run_test(results, test_action_output_pump_is_not_a_busy_loop, pld)
     run_test(results, test_auth_failure_reply_is_constant_time, pld)

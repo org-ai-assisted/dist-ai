@@ -21,8 +21,10 @@ tested directly against files this account does own.
 """
 
 import argparse
+import grp
 import inspect
 import os
+import pwd
 import stat
 import sys
 import tempfile
@@ -109,6 +111,11 @@ def test_valid_config_is_parsed_exactly(
 
     print('== a valid config is parsed exactly ==')
     user: str = current_username()
+    ## The parser records accounts and groups by numeric id, so the expected
+    ## values are the resolved UIDs/GIDs, not the names the config file lists.
+    user_uid: int = pwd.getpwnam(user).pw_uid
+    root_uid: int = pwd.getpwnam('root').pw_uid
+    root_gid: int = grp.getgrnam('root').gr_gid
     with ConfigDir(pl) as conf:
         result: Any = parse(
             pl,
@@ -149,15 +156,17 @@ TargetGroup=root
             sorted(action.action_name for action in actions),
             ['act-one', 'act-two'],
         )
-        results.expect_eq('the persistent user is listed', persistent, [user])
         results.expect_eq(
-            'the allowed user is listed', allowed_users, [user]
+            'the persistent user is listed', persistent, [user_uid]
         )
         results.expect_eq(
-            'the allowed group is listed', allowed_groups, ['root']
+            'the allowed user is listed', allowed_users, [user_uid]
         )
         results.expect_eq(
-            'the expected-disallowed user is listed', disallowed, ['root']
+            'the allowed group is listed', allowed_groups, [root_gid]
+        )
+        results.expect_eq(
+            'the expected-disallowed user is listed', disallowed, [root_uid]
         )
         by_name: dict[str, Any] = {
             action.action_name: action for action in actions
@@ -169,18 +178,18 @@ TargetGroup=root
         )
         results.expect_eq(
             'a user grant is recorded',
-            by_name['act-one'].auth_users,
-            [user],
+            by_name['act-one'].auth_uids,
+            [user_uid],
         )
         results.expect_eq(
             'a group grant is recorded',
-            by_name['act-two'].auth_groups,
-            ['root'],
+            by_name['act-two'].auth_gids,
+            [root_gid],
         )
         results.expect_eq(
             'the target user is recorded',
-            by_name['act-two'].target_user,
-            'root',
+            by_name['act-two'].target_uid,
+            root_uid,
         )
         results.check(
             'an action with a grant is marked restricted',
@@ -373,6 +382,7 @@ def test_unknown_identities_are_skipped_not_fatal(
     """
 
     print('== unknown accounts in a grant are skipped, not granted ==')
+    user_uid: int = pwd.getpwnam(current_username()).pw_uid
     user: str = current_username()
     with ConfigDir(pl) as conf:
         result: Any = parse(
@@ -395,7 +405,7 @@ AuthorizedUsers={user}
             return
         _actions, _persistent, allowed_users, allowed_groups, _dis = result
         results.expect_eq(
-            'only the real account is allowed', allowed_users, [user]
+            'only the real account is allowed', allowed_users, [user_uid]
         )
         results.expect_eq(
             'no unknown group is allowed', allowed_groups, []
@@ -430,6 +440,9 @@ def test_duplicate_entries_are_collapsed(
 
     print('== repeated users and groups are collapsed ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
+    root_uid: int = pwd.getpwnam('root').pw_uid
+    root_gid: int = grp.getgrnam('root').gr_gid
     with ConfigDir(pl) as conf:
         result: Any = parse(
             pl,
@@ -456,13 +469,17 @@ User=root
         _actions, persistent, allowed_users, allowed_groups, disallowed = (
             result
         )
-        results.expect_eq('persistent users are unique', persistent, [user])
-        results.expect_eq('allowed users are unique', allowed_users, [user])
         results.expect_eq(
-            'allowed groups are unique', allowed_groups, ['root']
+            'persistent users are unique', persistent, [user_uid]
         )
         results.expect_eq(
-            'expected-disallowed users are unique', disallowed, ['root']
+            'allowed users are unique', allowed_users, [user_uid]
+        )
+        results.expect_eq(
+            'allowed groups are unique', allowed_groups, [root_gid]
+        )
+        results.expect_eq(
+            'expected-disallowed users are unique', disallowed, [root_uid]
         )
 
 
@@ -559,16 +576,17 @@ def test_daemon_config_loading(
 
     print("== the daemon's config loader merges and refuses correctly ==")
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with ConfigDir(pl) as conf:
         saved: dict[str, Any] = {
             name: getattr(pld.PrivleapdGlobal, name)
             for name in (
                 'config_dir_list',
                 'action_list',
-                'persistent_user_list',
-                'allowed_user_list',
-                'allowed_group_list',
-                'expected_disallowed_user_list',
+                'persistent_uid_list',
+                'allowed_uid_list',
+                'allowed_gid_list',
+                'expected_disallowed_uid_list',
             )
         }
         try:
@@ -609,8 +627,8 @@ def test_daemon_config_loading(
             results.expect_eq(
                 'users from every file are merged, and the file with the '
                 'rejected name contributed nothing',
-                pld.PrivleapdGlobal.allowed_user_list,
-                [user],
+                pld.PrivleapdGlobal.allowed_uid_list,
+                [user_uid],
             )
 
             good_actions: list[Any] = pld.PrivleapdGlobal.action_list
@@ -684,10 +702,10 @@ def test_insecure_config_dir_is_ignored(
         ) as handle:
             handle.write('[allowed-users]\nUser=root\n')
         saved_dirs: Any = pld.PrivleapdGlobal.config_dir_list
-        saved_allowed: Any = pld.PrivleapdGlobal.allowed_user_list
+        saved_allowed: Any = pld.PrivleapdGlobal.allowed_uid_list
         try:
             pld.PrivleapdGlobal.config_dir_list = [pl.Path(conf_path)]
-            pld.PrivleapdGlobal.allowed_user_list = []
+            pld.PrivleapdGlobal.allowed_uid_list = []
             results.expect_eq(
                 'a world-writable config directory yields no configuration',
                 pld.parse_config_files(),
@@ -698,12 +716,12 @@ def test_insecure_config_dir_is_ignored(
             ## that the planted grant never reached the allow list.
             results.expect_eq(
                 'the planted account was not granted access',
-                pld.PrivleapdGlobal.allowed_user_list,
+                pld.PrivleapdGlobal.allowed_uid_list,
                 [],
             )
         finally:
             pld.PrivleapdGlobal.config_dir_list = saved_dirs
-            pld.PrivleapdGlobal.allowed_user_list = saved_allowed
+            pld.PrivleapdGlobal.allowed_uid_list = saved_allowed
         results.expect_eq(
             'the directory permission check agrees it is unsafe',
             pl.PrivleapCommon.check_secure_file_permissions(conf_path),

@@ -21,13 +21,21 @@ directory and the ownership calls only root may make are stubbed.
 """
 
 import argparse
+import grp
 import inspect
 import io
 import os
+import pwd
 import sys
 import tempfile
 from types import ModuleType
 from typing import Any, Callable
+
+## The daemon identifies accounts and groups by numeric id; a name with no
+## account/group resolves to an id that belongs to nobody, so the "missing id"
+## paths are exercised the same way a missing name once was.
+GHOST_UID: int = 2_000_000_000
+GHOST_GID: int = 2_000_000_000
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -52,10 +60,10 @@ class DaemonSandbox:
     GLOBALS: tuple[str, ...] = (
         'socket_list',
         'action_list',
-        'persistent_user_list',
-        'allowed_user_list',
-        'allowed_group_list',
-        'expected_disallowed_user_list',
+        'persistent_uid_list',
+        'allowed_uid_list',
+        'allowed_gid_list',
+        'expected_disallowed_uid_list',
     )
 
     def __init__(
@@ -114,8 +122,8 @@ class DaemonSandbox:
 class RecordingSession:
     """A session that records the replies the daemon chose to send."""
 
-    def __init__(self, user_name: str | None = None) -> None:
-        self.user_name: str | None = user_name
+    def __init__(self, user_uid: int | None = None) -> None:
+        self.user_uid: int | None = user_uid
         self.backend_socket: Any = None
         self.sent: list[Any] = []
         self.closed: bool = False
@@ -173,10 +181,13 @@ def test_create_refuses_the_accounts_it_should(
 
     print('== a comm socket is created only for an allowed account ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
 
-        cases: list[tuple[str, str, list[str], list[str], str]] = [
+        ## The allow-list and disallow-list are keyed by UID; the CREATE target
+        ## is still passed as a name, which the daemon resolves to a UID.
+        cases: list[tuple[str, str, list[int], list[int], str]] = [
             (
                 'an account that does not exist',
                 'privleap-no-such-account',
@@ -195,14 +206,14 @@ def test_create_refuses_the_accounts_it_should(
                 'an account that is expected to be disallowed',
                 user,
                 [],
-                [user],
+                [user_uid],
                 'EXPECTED_DISALLOWED_USER',
             ),
-            ('an allowed account', user, [user], [], 'OK'),
+            ('an allowed account', user, [user_uid], [], 'OK'),
         ]
         for label, target, allowed, expected_disallowed, want in cases:
-            pld.PrivleapdGlobal.allowed_user_list = list(allowed)
-            pld.PrivleapdGlobal.expected_disallowed_user_list = list(
+            pld.PrivleapdGlobal.allowed_uid_list = list(allowed)
+            pld.PrivleapdGlobal.expected_disallowed_uid_list = list(
                 expected_disallowed
             )
             session: RecordingSession = RecordingSession()
@@ -242,9 +253,10 @@ def test_destroy_outcomes(
 
     print('== a comm socket destroy reports what actually happened ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
 
         session: RecordingSession = RecordingSession()
         pld.handle_control_destroy_msg(
@@ -275,13 +287,15 @@ def test_destroy_outcomes(
         )
         results.check(
             'the socket file is gone from the filesystem',
-            not os.path.exists(str(pl.Path(pl.PrivleapCommon.comm_dir, user))),
+            not os.path.exists(
+                str(pl.Path(pl.PrivleapCommon.comm_dir, str(user_uid)))
+            ),
         )
 
         pld.handle_control_create_msg(
             RecordingSession(), pl.PrivleapControlClientCreateMsg(user)
         )
-        pld.PrivleapdGlobal.persistent_user_list = [user]
+        pld.PrivleapdGlobal.persistent_uid_list = [user_uid]
         session = RecordingSession()
         pld.handle_control_destroy_msg(
             session, pl.PrivleapControlClientDestroyMsg(user)
@@ -309,13 +323,14 @@ def test_destroy_survives_a_missing_socket_file(
 
     print('== a destroy with the socket file already gone still succeeds ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
         pld.handle_control_create_msg(
             RecordingSession(), pl.PrivleapControlClientCreateMsg(user)
         )
-        os.unlink(str(pl.Path(pl.PrivleapCommon.comm_dir, user)))
+        os.unlink(str(pl.Path(pl.PrivleapCommon.comm_dir, str(user_uid))))
 
         real_user, result = pld.destroy_comm_socket(user)
         results.expect_eq('the account name is reported back', real_user, user)
@@ -342,9 +357,10 @@ def test_pruning_removes_no_longer_allowed_accounts(
 
     print('== a reload removes sockets for no-longer-allowed accounts ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
         pld.handle_control_create_msg(
             RecordingSession(), pl.PrivleapControlClientCreateMsg(user)
         )
@@ -354,7 +370,7 @@ def test_pruning_removes_no_longer_allowed_accounts(
             1,
         )
 
-        pld.PrivleapdGlobal.allowed_user_list = []
+        pld.PrivleapdGlobal.allowed_uid_list = []
         pld.prune_disallowed_comm_sockets()
         results.expect_eq(
             'the socket is pruned once the grant is gone',
@@ -363,7 +379,7 @@ def test_pruning_removes_no_longer_allowed_accounts(
         )
 
         ## A still-allowed account must not be pruned along with it.
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
         pld.handle_control_create_msg(
             RecordingSession(), pl.PrivleapControlClientCreateMsg(user)
         )
@@ -386,41 +402,40 @@ def test_group_membership_is_re_read_every_time(
 
     print('== group membership decides access and is re-read each time ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
-        pld.PrivleapdGlobal.allowed_group_list = []
+        pld.PrivleapdGlobal.allowed_gid_list = []
         results.expect_eq(
             'no groups allowed means no access',
-            pld.is_user_allowed(user),
+            pld.is_user_allowed(user_uid),
             False,
         )
 
-        user_group: str = pld.grp.getgrgid(
-            pld.pwd.getpwnam(user).pw_gid
-        ).gr_name
-        pld.PrivleapdGlobal.allowed_group_list = [user_group]
+        user_gid: int = pld.pwd.getpwnam(user).pw_gid
+        pld.PrivleapdGlobal.allowed_gid_list = [user_gid]
         results.expect_eq(
             "the account's own primary group grants access",
-            pld.is_user_allowed(user),
+            pld.is_user_allowed(user_uid),
             True,
         )
 
-        pld.PrivleapdGlobal.allowed_group_list = ['privleap-no-such-group']
+        pld.PrivleapdGlobal.allowed_gid_list = [GHOST_GID]
         results.expect_eq(
             'a group that does not exist grants nothing',
-            pld.is_user_allowed(user),
+            pld.is_user_allowed(user_uid),
             False,
         )
         results.expect_eq(
             'an account that does not exist is never allowed',
-            pld.is_user_allowed('privleap-no-such-account'),
+            pld.is_user_allowed(GHOST_UID),
             False,
         )
 
-        pld.PrivleapdGlobal.allowed_group_list = []
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_gid_list = []
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
         results.expect_eq(
             'an explicit user grant works without any group',
-            pld.is_user_allowed(user),
+            pld.is_user_allowed(user_uid),
             True,
         )
 
@@ -428,35 +443,34 @@ def test_group_membership_is_re_read_every_time(
         ## time. Changing the allowed-group LIST does not test that -- an
         ## implementation that cached the group database at import would pass
         ## every check above while leaving a removed account authorized until
-        ## the daemon restarted. So vary what the database itself reports.
-        pld.PrivleapdGlobal.allowed_user_list = []
-        pld.PrivleapdGlobal.allowed_group_list = ['privleap-unit-group']
-        saved_getgrnam: Any = pld.grp.getgrnam
+        ## the daemon restarted. So vary what the database itself reports:
+        ## is_user_allowed resolves membership through os.getgrouplist on every
+        ## call, so mocking it is what proves the lookup is not cached.
+        unit_gid: int = 987654
+        pld.PrivleapdGlobal.allowed_uid_list = []
+        pld.PrivleapdGlobal.allowed_gid_list = [unit_gid]
+        saved_getgrouplist: Any = pld.os.getgrouplist
         try:
-            membership: list[str] = [user]
+            membership: list[int] = [unit_gid]
 
-            def changing_getgrnam(name: str) -> Any:
-                if name != 'privleap-unit-group':
-                    return saved_getgrnam(name)
-                return pld.grp.struct_group(
-                    ('privleap-unit-group', 'x', 987654, list(membership))
-                )
+            def changing_getgrouplist(_name: str, _gid: int) -> list[int]:
+                return list(membership)
 
-            pld.grp.getgrnam = changing_getgrnam
+            pld.os.getgrouplist = changing_getgrouplist
             results.expect_eq(
                 'membership in an allowed group grants access',
-                pld.is_user_allowed(user),
+                pld.is_user_allowed(user_uid),
                 True,
             )
             membership = []
             results.expect_eq(
                 'access is withdrawn as soon as membership is, with no '
                 'restart',
-                pld.is_user_allowed(user),
+                pld.is_user_allowed(user_uid),
                 False,
             )
         finally:
-            pld.grp.getgrnam = saved_getgrnam
+            pld.os.getgrouplist = saved_getgrouplist
 
 
 # ---------------------------------------------------------------------------
@@ -480,50 +494,51 @@ def test_dangling_primary_group_does_not_lock_out(
 
     print('== a dangling primary group does not lock an account out ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         saved_getgrouplist: Any = pld.os.getgrouplist
-        saved_getgrgid: Any = pld.grp.getgrgid
-        saved_getpwnam: Any = pld.pwd.getpwnam
+        saved_getpwuid: Any = pld.pwd.getpwuid
         try:
-            ## One resolvable group, one GID with no entry at all.
-            real_gid: int = pld.pwd.getpwnam(user).pw_gid
+            ## One resolvable group, one GID with no group entry at all.
+            real_gid: int = pwd.getpwnam(user).pw_gid
+            real_group: str = grp.getgrgid(real_gid).gr_name
 
             ## The caller must look non-root. authorize_user() grants root
-            ## everything before it ever reaches the group logic, so run as
-            ## root -- which is how CI runs this suite -- the checks below
-            ## would pass on the root shortcut and test nothing.
-            real_entry: Any = saved_getpwnam(user)
-            pld.pwd.getpwnam = lambda name: pld.pwd.struct_passwd(
+            ## everything before it ever reaches the group logic, so a caller
+            ## resolving to UID 0 -- as root, which is how CI runs this suite --
+            ## would pass on the root shortcut and test nothing. authorize_user
+            ## resolves the caller with getpwuid, so a fixed non-root struct is
+            ## injected there.
+            real_entry: Any = pwd.getpwnam(user)
+            fake_uid: int = 12345
+            pld.pwd.getpwuid = lambda uid: pld.pwd.struct_passwd(
                 (
                     real_entry.pw_name,
                     real_entry.pw_passwd,
-                    12345,
+                    fake_uid,
                     real_gid,
                     real_entry.pw_gecos,
                     real_entry.pw_dir,
                     real_entry.pw_shell,
                 )
             )
+            ## Membership lists the resolvable group plus a GID that resolves to
+            ## no group at all. authorize_user compares GIDs directly and never
+            ## resolves a GID to a name, so the dangling GID must not lock the
+            ## account out of the group it really does belong to.
             pld.os.getgrouplist = lambda _n, _g: [real_gid, 987654]
 
-            def getgrgid_missing(gid: int) -> Any:
-                if gid == 987654:
-                    raise KeyError(f"getgrgid(): gid not found: {gid}")
-                return saved_getgrgid(gid)
-
-            pld.grp.getgrgid = getgrgid_missing
-            real_group: str = saved_getgrgid(real_gid).gr_name
             action: Any = pl.PrivleapAction(
                 'unit-group-action', 'true', [], [real_group], None, None
             )
             results.expect_eq(
                 'the caller does not look like root (precondition)',
-                pld.pwd.getpwnam(user).pw_uid,
-                12345,
+                pld.pwd.getpwuid(fake_uid).pw_uid,
+                fake_uid,
             )
             results.expect_eq(
                 'the account is still authorized through its resolvable group',
-                pld.authorize_user(action, user),
+                pld.authorize_user(action, fake_uid),
                 pld.PrivleapdAuthStatus.AUTHORIZED,
             )
 
@@ -532,13 +547,12 @@ def test_dangling_primary_group_does_not_lock_out(
             pld.os.getgrouplist = lambda _n, _g: [987654]
             results.expect_eq(
                 'an account with only an unresolvable group is refused',
-                pld.authorize_user(action, user),
+                pld.authorize_user(action, fake_uid),
                 pld.PrivleapdAuthStatus.UNAUTHORIZED,
             )
         finally:
             pld.os.getgrouplist = saved_getgrouplist
-            pld.grp.getgrgid = saved_getgrgid
-            pld.pwd.getpwnam = saved_getpwnam
+            pld.pwd.getpwuid = saved_getpwuid
 
 
 def test_control_session_dispatch(
@@ -552,9 +566,10 @@ def test_control_session_dispatch(
 
     print('== control messages are dispatched and the session closed ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
-        pld.PrivleapdGlobal.allowed_user_list = [user]
+        pld.PrivleapdGlobal.allowed_uid_list = [user_uid]
 
         session: RecordingSession = RecordingSession()
         session.incoming = [pl.PrivleapControlClientCreateMsg(user)]
@@ -661,11 +676,12 @@ def test_comm_session_rejects_a_revoked_account(
 
     print('== a revoked account is refused and its socket queued to go ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         while not pld.PrivleapdGlobal.control_request_queue.empty():
             pld.PrivleapdGlobal.control_request_queue.get()
-        pld.PrivleapdGlobal.allowed_user_list = []
-        session: RecordingSession = RecordingSession(user)
+        pld.PrivleapdGlobal.allowed_uid_list = []
+        session: RecordingSession = RecordingSession(user_uid)
         sock_info: Any = pld.PrivleapdSocketInfo(None, 0, 0, None, None)
         pld.handle_comm_session(session, sock_info)
         results.expect_eq(
@@ -679,8 +695,8 @@ def test_comm_session_rejects_a_revoked_account(
         request: Any = pld.PrivleapdGlobal.control_request_queue.get()
         results.expect_eq(
             'the queued request is a destroy for that account',
-            (request.get('type'), request.get('user_name')),
-            ('destroy_comm_sock', user),
+            (request.get('type'), request.get('user_uid')),
+            ('destroy_comm_sock', user_uid),
         )
 
 
@@ -695,22 +711,23 @@ def test_first_message_must_be_a_request(
 
     print('== a comm session must open with a SIGNAL or an ACCESS_CHECK ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
-        session: RecordingSession = RecordingSession(user)
+        session: RecordingSession = RecordingSession(user_uid)
         session.incoming = [pl.PrivleapCommClientSignalMsg('act')]
         results.check(
             'a SIGNAL is accepted as the first message',
             pld.get_client_initial_msg(session) is not None,
         )
 
-        session = RecordingSession(user)
+        session = RecordingSession(user_uid)
         session.incoming = [pl.PrivleapCommClientAccessCheckMsg(['act'])]
         results.check(
             'an ACCESS_CHECK is accepted as the first message',
             pld.get_client_initial_msg(session) is not None,
         )
 
-        session = RecordingSession(user)
+        session = RecordingSession(user_uid)
         session.incoming = [pl.PrivleapCommClientTerminateMsg()]
         results.expect_eq(
             'a TERMINATE is refused as the first message',
@@ -718,7 +735,7 @@ def test_first_message_must_be_a_request(
             None,
         )
 
-        session = RecordingSession(user)
+        session = RecordingSession(user_uid)
         results.expect_eq(
             'a client that sends nothing is refused',
             pld.get_client_initial_msg(session),
@@ -736,8 +753,9 @@ def test_terminate_assertion(
 
     print('== only TERMINATE is accepted while an action runs ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
-        session: RecordingSession = RecordingSession(user)
+        session: RecordingSession = RecordingSession(user_uid)
         session.incoming = [pl.PrivleapCommClientTerminateMsg()]
         pld.assert_action_terminate(session, 'act')
         results.expect_eq(
@@ -749,7 +767,7 @@ def test_terminate_assertion(
             'the TERMINATE was actually read', session.incoming, []
         )
 
-        session = RecordingSession(user)
+        session = RecordingSession(user_uid)
         session.incoming = [pl.PrivleapCommClientSignalMsg('act')]
         pld.assert_action_terminate(session, 'act')
         results.expect_eq(
@@ -759,7 +777,7 @@ def test_terminate_assertion(
             'the wrong message was actually read', session.incoming, []
         )
 
-        session = RecordingSession(user)
+        session = RecordingSession(user_uid)
         pld.assert_action_terminate(session, 'act')
         results.expect_eq(
             'a hung-up client produces no reply', session.reply_names(), []
@@ -866,20 +884,21 @@ def test_persistent_sockets_are_opened(
 
     print('== persistent accounts get sockets at startup ==')
     user: str = current_username()
+    user_uid: int = pwd.getpwnam(user).pw_uid
     with DaemonSandbox(pl, pld):
         prep_sock_notify_pipe_once(pld)
-        pld.PrivleapdGlobal.persistent_user_list = [
-            'privleap-no-such-account',
-            user,
+        pld.PrivleapdGlobal.persistent_uid_list = [
+            GHOST_UID,
+            user_uid,
         ]
         pld.open_persistent_comm_sockets(in_control_thread=False)
         results.expect_eq(
             'only the account that exists got a socket',
             [
-                info.listen_socket.user_name
+                info.listen_socket.user_uid
                 for info in pld.PrivleapdGlobal.socket_list
             ],
-            [user],
+            [user_uid],
         )
 
         ## Called again from the control thread, as a reload does: it must
