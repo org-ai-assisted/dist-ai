@@ -84,7 +84,7 @@ def _deadline(_signum, _frame):
 signal.signal(signal.SIGALRM, _deadline)
 signal.alarm(25)
 try:
-    ## A control session takes user_name=None, so the probe needs no real system user.
+    ## A control session takes user_id=None, so the probe needs no real system user.
     _drive(_BIG, control=True)
     signal.alarm(0)
     print("PASS: _drive returned on a >buffer payload (no deadlock)")

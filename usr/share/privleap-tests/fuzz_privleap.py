@@ -102,8 +102,14 @@ def _fields_ok(msg: object) -> bool:
             msg.signal_name, vt.SIGNAL_NAME  # type: ignore[attr-defined]
         )
     if name in ("CREATE", "DESTROY"):
+        ## The CREATE/DESTROY field carries a user id the message constructor
+        ## accepts as either a name or a UID; well-formed means it validates
+        ## as either.
+        user_id = msg.user_id  # type: ignore[attr-defined]
         return pl.PrivleapCommon.validate_id(
-            msg.user_name, vt.USER_GROUP_NAME  # type: ignore[attr-defined]
+            user_id, vt.USER_GROUP_NAME
+        ) or pl.PrivleapCommon.validate_id(
+            user_id, vt.USER_GROUP_UID
         )
     if name == "ACCESS_CHECK":
         names = msg.signal_name_list  # type: ignore[attr-defined]
@@ -146,7 +152,7 @@ def _drive(raw: bytes, control: bool) -> None:
         try:
             session = pl.PrivleapSession(
                 srv,
-                user_name=None if control else _server_user(),
+                user_id=None if control else _server_user(),
                 is_control_session=control,
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught

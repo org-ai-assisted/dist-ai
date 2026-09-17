@@ -109,7 +109,7 @@ def drive(raw: bytes, control: bool, watchdog_s: float = 2.0) -> Outcome:
         try:
             session: Any = pl.PrivleapSession(
                 srv,
-                user_name=None if control else current_username(),
+                user_id=None if control else current_username(),
                 is_control_session=control,
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -174,8 +174,13 @@ def _fields_well_formed(msg: Any) -> bool:
     if msg.name == "SIGNAL":
         return pl.PrivleapCommon.validate_id(msg.signal_name, vt.SIGNAL_NAME)
     if msg.name in ("CREATE", "DESTROY"):
+        ## The CREATE/DESTROY field carries a user id that the message
+        ## constructor accepts as either a name or a UID, so an accepted
+        ## message is well-formed when it validates as either.
         return pl.PrivleapCommon.validate_id(
-            msg.user_name, vt.USER_GROUP_NAME
+            msg.user_id, vt.USER_GROUP_NAME
+        ) or pl.PrivleapCommon.validate_id(
+            msg.user_id, vt.USER_GROUP_UID
         )
     if msg.name == "ACCESS_CHECK":
         names: list[str] = msg.signal_name_list

@@ -26,7 +26,9 @@ it is a declared dependency, and skipping reported the whole privleap suite
 as PASS with none of these properties having run.
 """
 
+import grp
 import os
+import pwd
 import sys
 
 import pytest
@@ -185,21 +187,22 @@ def test_accepted_uid_converts_to_a_non_negative_int(s: str) -> None:
 @settings(max_examples=200)
 def test_normalize_user_id_is_total_and_returns_a_valid_name(s: str) -> None:
     """
-    normalize_user_id takes an untrusted name-or-UID off the wire and its
-    result is used downstream as an identity. So for ANY input it must return
-    either None or something that is itself a valid user name -- never raise,
-    and never hand back the raw UID digits it was given.
+    normalize_user_id takes an untrusted name-or-UID off the wire and resolves
+    it to the matching system user. For ANY input it must return either None or
+    a pwd.struct_passwd whose name is itself a valid user name -- never raise,
+    and never invent a user that does not exist.
     """
 
     result = PrivleapCommon.normalize_user_id(s)
     if result is None:
         return
+    assert isinstance(result, pwd.struct_passwd)
     assert PrivleapCommon.validate_id(
-        result, PrivleapValidateType.USER_GROUP_NAME
+        result.pw_name, PrivleapValidateType.USER_GROUP_NAME
     )
-    ## Idempotent: normalizing an already-normalized name is a no-op, so a
+    ## Idempotent: resolving the returned name yields the same identity, so a
     ## caller cannot get a different identity by normalizing twice.
-    assert PrivleapCommon.normalize_user_id(result) == result
+    assert PrivleapCommon.normalize_user_id(result.pw_name) == result
 
 
 @given(st.text())
@@ -210,10 +213,11 @@ def test_normalize_group_id_is_total_and_returns_a_valid_name(s: str) -> None:
     result = PrivleapCommon.normalize_group_id(s)
     if result is None:
         return
+    assert isinstance(result, grp.struct_group)
     assert PrivleapCommon.validate_id(
-        result, PrivleapValidateType.USER_GROUP_NAME
+        result.gr_name, PrivleapValidateType.USER_GROUP_NAME
     )
-    assert PrivleapCommon.normalize_group_id(result) == result
+    assert PrivleapCommon.normalize_group_id(result.gr_name) == result
 
 
 @given(st.text())

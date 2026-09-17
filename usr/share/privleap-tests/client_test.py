@@ -21,6 +21,7 @@ error, never a traceback.
 import argparse
 import io
 import os
+import pwd
 import socket
 import sys
 import tempfile
@@ -515,8 +516,21 @@ def _reset_leapctl(leapctl: ModuleType) -> Callable[[], None]:
 # ---------------------------------------------------------------------------
 
 
+def _comm_socket_path(pl: ModuleType, user: str) -> str:
+    """
+    The comm socket path leaprun connects to. Each account's socket is named by
+    its UID, so the scripted server must listen on the UID path leaprun opens.
+    """
+
+    return str(
+        pl.Path(pl.PrivleapCommon.comm_dir, str(pwd.getpwnam(user).pw_uid))
+    )
+
+
 def _reset_leaprun(leaprun: ModuleType, user: str) -> Callable[[], None]:
     """Clear leaprun's module state between runs."""
+
+    user_uid: int = pwd.getpwnam(user).pw_uid
 
     def reset() -> None:
         leaprun.LeaprunGlobal.signal_name_list = []
@@ -526,7 +540,7 @@ def _reset_leaprun(leaprun: ModuleType, user: str) -> Callable[[], None]:
         leaprun.LeaprunGlobal.in_response_handler = False
         leaprun.LeaprunGlobal.terminate_session = False
         leaprun.LeaprunGlobal.comm_session = None
-        leaprun.LeaprunGlobal.user_name = user
+        leaprun.LeaprunGlobal.user_uid = user_uid
 
     return reset
 
@@ -580,7 +594,7 @@ def test_leaprun_action_run(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             server.reply_for = lambda _msg: [
@@ -636,7 +650,7 @@ def test_leaprun_refusals(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             for label, replies, want_text in cases:
@@ -667,7 +681,7 @@ def test_leaprun_access_check(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             server.reply_for = lambda _msg: [
@@ -732,7 +746,7 @@ def test_leaprun_server_failures(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             server.reply_for = lambda _msg: []
@@ -850,7 +864,7 @@ def test_leaprun_rejects_protocol_violations(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             for label, argv, replies in protocol_violation_cases(pl):
@@ -884,7 +898,7 @@ def test_leaprun_terminates_on_interrupt(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
 
@@ -1002,7 +1016,7 @@ def test_leaprun_truncated_action_output(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             ## TRIGGER and some output, then hang up with no exit code.
@@ -1041,7 +1055,7 @@ def test_leaprun_option_parsing(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             server.reply_for = lambda _msg: [
@@ -1117,7 +1131,7 @@ def test_leaprun_terminate_send_failure(
         server: ScriptedServer
         with ScriptedServer(
             pl,
-            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            _comm_socket_path(pl, user),
             is_control=False,
         ) as server:
             ## Start the action for real, so the interrupt happens with a
