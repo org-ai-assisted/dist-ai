@@ -273,23 +273,34 @@ def _absent_helper_scripts_sibling(abspath):
     return os.path.realpath(sibling)
 
 
+## shellcheck's SC1091 'does not exist' message is 'Not following: <path>:
+## openBinaryFile: does not exist (...)'. The path is everything between the
+## prefix and the LAST occurrence of this fixed error suffix. Using the LAST
+## occurrence (not the first ': ' or the first ': openBinaryFile') is what keeps a
+## quoted source= value -- which shellcheck echoes verbatim, so it can itself
+## contain ': ' or even ': openBinaryFile/...' -- from being truncated and
+## misread as the sibling. A path ending in this EXACT marker would still fool it,
+## but the real helper-scripts directives are plain unquoted paths; a value
+## crafted to embed it needs a '## style-ok: R-080' waiver to exist at all and is
+## an adversarial local-content case outside this gate's threat model (CI, sibling
+## present, and the runtime source both reject a genuinely broken path anyway).
+_SC1091_ERROR_MARKER = ": openBinaryFile: does not exist"
+
+
 def _sc1091_unfollowed_path(comment):
-    """The unresolved path from an SC1091 'Not following: <path>: openBinaryFile:
-    does not exist' comment, or None if this is not that comment. Anchor on the
-    error suffix, NOT the first ': ' -- shellcheck echoes a quoted source= value
-    verbatim, so the path itself can contain ': ' and splitting on it would
-    truncate the path (and misclassify an escaping value as the sibling)."""
+    """The unresolved path from an SC1091 'does not exist' comment, or None if this
+    is not that comment."""
     if comment.get("code") != 1091:
         return None
     message = comment.get("message", "")
     marker = "Not following: "
-    suffix = ": openBinaryFile"
-    if marker not in message or "does not exist" not in message:
+    if not message.startswith(marker):
         return None
-    body = message.split(marker, 1)[1]
-    if suffix not in body:
+    body = message[len(marker):]
+    index = body.rfind(_SC1091_ERROR_MARKER)
+    if index == -1:
         return None
-    return body.split(suffix, 1)[0]
+    return body[:index]
 
 
 def _is_absent_helper_scripts_source(comment, src_dir, sibling_dir):
