@@ -603,6 +603,15 @@ def _feed_split(chunk):
 _leak = _feed_split('\x1b]2;host:~ (cd ~) [pt') + _feed_split('s/11]\x07[u]% ')
 eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
 
+# An OUT-OF-ORDER CSI (an intermediate byte 0x20-0x2F before the parameter bytes,
+# e.g. "\x1b[ 1m") is malformed but a real VT state machine consumes it whole and
+# shows nothing. The CSI arm accepts param/intermediate bytes in ANY order, so it
+# no longer stops after "\x1b[ " and leaks the "1m" tail as literal display text.
+eq(S.ANSI_RE.sub('', '\x1b[ 1mX'), 'X',
+   'an out-of-order CSI (intermediate before param) is fully stripped, no "1m" leak')
+eq(S.render_output('\x1b[ 1mX', 'box'), 'X',
+   'render_output drops an out-of-order CSI, leaving only the trailing text')
+
 # --- DCS/SOS/PM/APC string sequences: strip the whole BODY, not just the opener -
 # ESC P (DCS), ESC X (SOS), ESC ^ (PM), ESC _ (APC) carry a string body to a
 # BEL/ST terminator. Matching only the 2-byte opener would leak the body as text,
@@ -2141,6 +2150,24 @@ eq(S.cells_display_col(_ASTRAL_CELLS, 2, 'box'), 2,
    'a neutralized astral character is one box, so one document unit')
 eq(S.cells_display_col([('e', ()), ('\u0301', ())], 2, 'show'), 2,
    'a combining mark still advances the caret by its own document position')
+# A Zalgo run (> _ZALGO_MARK_MAX combining marks on one base) collapses to ONE box in show
+# mode, so a caret parked INSIDE the run must resolve to that box, not count each mark. The
+# runs are identified from the FULL cells, so a `col` that cuts the run mid-way still
+# collapses -- the old code collapsed only cells[:col], leaving a <=cap prefix un-collapsed
+# and the caret adrift by one offset per un-collapsed mark.
+_zalgo_cells = [('a', ())] + [(chr(0x0301), ())] * 12 + [('Z', ())]   # 12 marks (> the cap of 8)
+_box_off = S.cells_display_col(_zalgo_cells, 13, 'show')            # caret past the whole run
+eq(_box_off, S.display_len(S.BOX),
+   'a >cap Zalgo run collapses to one box: the caret past it is one box-width in')
+eq(S.cells_display_col(_zalgo_cells, 5, 'show'), _box_off,
+   'a caret INSIDE a >cap Zalgo run resolves to the box edge, not one offset per mark')
+eq(S.cells_display_col(_zalgo_cells, len(_zalgo_cells), 'show'),
+   _box_off + S.display_len('Z'),
+   'text after a collapsed Zalgo run sits just past the single box')
+# a caret INSIDE an ordinary (<=cap) base+mark cluster stops at its logical column, not the
+# cluster end -- the un-collapsed run is walked cell by cell up to `col`.
+eq(S.cells_display_col([('e', ()), (chr(0x0301), ())], 1, 'show'), 1,
+   'a caret between a base and its lone combining mark sits just past the base')
 
 # --- BYPASS: encoding tricks that reconstitute after the boundary --------------
 # The live stream uses an incremental UTF-8 decoder, so a multi-byte character

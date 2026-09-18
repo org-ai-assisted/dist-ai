@@ -1692,6 +1692,7 @@ _T8_CATALOG = [
     '\x1b[?25l',                   # DEC-private CSI
     '\x1b[?2004h',                 # bracketed-paste enable
     '\x1b[>4;2m',                  # private-prefix CSI
+    '\x1b[ 1m',                    # out-of-order CSI (intermediate before param)
     '\x1b]0;title\x07',            # OSC BEL
     '\x1b]0;title\x1b\\',          # OSC ST
     '\x1bP$qm\x1b\\',              # DCS
