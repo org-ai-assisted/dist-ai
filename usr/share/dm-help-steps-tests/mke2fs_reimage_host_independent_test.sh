@@ -126,7 +126,7 @@ sha() {
 }
 
 check_size() {
-   local label size
+   local label size hash_a hash_b hash_new1 hash_new2 etc_listing bin_listing
    label="$1"
    size="$2"
 
@@ -135,20 +135,26 @@ check_size() {
    make_img "${pinned}"              "${work_dir}/new1.img" "${size}"
    make_img "${pinned}"              "${work_dir}/new2.img" "${size}"
 
-   if [ "$( sha "${work_dir}/oldA.img" )" != "$( sha "${work_dir}/oldB.img" )" ]; then
+   ## Hash each image ONCE: the 'big' images are multi-GiB and sha256sum still
+   ## reads the sparse zero holes, so re-hashing per comparison is wasteful.
+   hash_a="$( sha "${work_dir}/oldA.img" )"
+   hash_b="$( sha "${work_dir}/oldB.img" )"
+   hash_new1="$( sha "${work_dir}/new1.img" )"
+   hash_new2="$( sha "${work_dir}/new2.img" )"
+
+   if [ "${hash_a}" != "${hash_b}" ]; then
       pass "${label}: canary -- host mke2fs.conf changes the image (host-dependence is real)"
    else
       fail "${label}: canary -- two host configs produced identical images"
    fi
 
-   if [ "$( sha "${work_dir}/new1.img" )" = "$( sha "${work_dir}/new2.img" )" ]; then
+   if [ "${hash_new1}" = "${hash_new2}" ]; then
       pass "${label}: pinned config is byte-reproducible across runs"
    else
       fail "${label}: pinned config not reproducible"
    fi
 
-   if [ "$( sha "${work_dir}/new1.img" )" != "$( sha "${work_dir}/oldA.img" )" ] \
-      && [ "$( sha "${work_dir}/new1.img" )" != "$( sha "${work_dir}/oldB.img" )" ]; then
+   if [ "${hash_new1}" != "${hash_a}" ] && [ "${hash_new1}" != "${hash_b}" ]; then
       pass "${label}: pinned image is decoupled from host config"
    else
       fail "${label}: pinned image matched a host-config image"
@@ -160,14 +166,25 @@ check_size() {
       fail "${label}: e2fsck reported errors"
    fi
 
-   local listing
-   listing="$( debugfs -R 'ls -l /etc' "${work_dir}/new1.img" 2>/dev/null || true )"
-   if [[ "${listing}" == *hostname* ]]; then
+   ## BOTH input files must survive the rebuild, not just one.
+   etc_listing="$( debugfs -R 'ls -l /etc' "${work_dir}/new1.img" 2>/dev/null || true )"
+   bin_listing="$( debugfs -R 'ls -l /usr/bin' "${work_dir}/new1.img" 2>/dev/null || true )"
+   if [[ "${etc_listing}" == *hostname* ]] && [[ "${bin_listing}" == *thing* ]]; then
       pass "${label}: input files present in rebuilt fs"
    else
-      fail "${label}: expected file missing from rebuilt fs"
+      fail "${label}: an expected input file is missing from the rebuilt fs"
    fi
 }
+
+## The size checks replicate the mke2fs invocation, so they would still pass if
+## 4350 stopped driving mke2fs from the pinned config. Tie the property to the
+## production source: assert 4350 sets MKE2FS_CONFIG and names the pinned file.
+step_4350="${dm_checkout}/build-steps.d/4350_reimage-raw-reproducible"
+if grep --quiet 'MKE2FS_CONFIG' "${step_4350}" && grep --quiet --fixed-strings 'build-data/mke2fs.conf' "${step_4350}"; then
+   pass 'production 4350 drives mke2fs via MKE2FS_CONFIG + the pinned config'
+else
+   fail '4350 no longer sets MKE2FS_CONFIG to the pinned build-data/mke2fs.conf'
+fi
 
 ## Small (the mke2fs 'default' size-type) and >4 GiB (the 'big' size-type a real
 ## rootfs uses). The image files are sparse, so only metadata is written.

@@ -968,6 +968,17 @@ eq(sgr('38;2;10;20;30'), {'fg': '#0a141e', 'bg': None, 'bold': False},
    '24-bit truecolour fg')
 eq(sgr('38;5;196;1'), {'fg': '#ff0000', 'bg': None, 'bold': True},
    '256-colour then bold: both apply, params consumed correctly')
+# SGR 58 (set underline colour) shares 38/48's 5;<idx> / 2;<r>;<g>;<b> grammar but
+# has NO slot in this state (fg/bg/bold only): its sub-parameters must be CONSUMED,
+# not stored, and not leaked. Untreated, 58;2;r;g;b's channels parse as standalone
+# SGR codes and a zero channel hits the SGR-0 full-reset arm, silently clearing an
+# earlier bold. (59, default underline colour, is a bare code -- a harmless no-op.)
+eq(sgr('1;58;2;255;0;0'), {'fg': None, 'bg': None, 'bold': True},
+   'sgr 58 truecolour underline: payload consumed, bold preserved (not reset)')
+eq(sgr('1;58;5;196'), {'fg': None, 'bg': None, 'bold': True},
+   'sgr 58 256-colour underline: payload consumed, bold preserved')
+eq(sgr('58;2;1;2;3;31'), {'fg': 1, 'bg': None, 'bold': False},
+   'sgr 58 consumes exactly its four params so a trailing 31 still sets the fg')
 eq(S.color_256(231), '#ffffff', 'color_256: cube corner is white')
 eq(S.color_256(16), '#000000', 'color_256: cube start is black')
 ok(S.color_256(300) is None, 'color_256: out-of-range -> None')
