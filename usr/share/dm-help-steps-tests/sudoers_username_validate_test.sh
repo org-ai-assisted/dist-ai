@@ -5,17 +5,15 @@
 
 ## AI-Assisted
 
-## 1200_prepare-build-machine username-plain-for-sudoers gates a value that is
-## interpolated verbatim into a sudoers rule. It must:
-##   - REFUSE anything carrying a sudoers metacharacter (space, '%', '=', ',',
-##     ':') or the reserved word 'ALL' -- else the build could write a rule that
-##     grants far more than intended;
-##   - ACCEPT a plain [A-Za-z0-9_-] name AND one with a single trailing '$'
-##     (Samba machine account), which /etc/adduser.conf NAME_REGEX also permits
-##     -- else a legitimate username is wrongly rejected.
+## username-plain-for-sudoers (help-steps/build-step-helpers.bsh, used by
+## 1200_prepare-build-machine) gates a value interpolated verbatim into a sudoers
+## rule. It must REFUSE anything carrying a sudoers metacharacter or the reserved
+## word 'ALL', and ACCEPT a plain [A-Za-z0-9_-] name plus one with a single
+## trailing '$' (Samba machine account), which /etc/adduser.conf NAME_REGEX also
+## permits.
 ##
-## Needs no root, no network, no build: the function is extracted and run with
-## dm-build-step-fn.
+## The real function is SOURCED from the shared helper library; the canary
+## redefines the pre-fix form in a subshell. Needs no root, no build.
 
 set -o errexit
 set -o nounset
@@ -25,30 +23,18 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if [ -n "${DIST_AI_DIR:-}" ]; then
-   dist_ai_dir="${DIST_AI_DIR}"
-else
-   dist_ai_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../../.." && pwd )"
-fi
-tool="${dist_ai_dir}/usr/bin/dm-build-step-fn"
-if [ ! -x "${tool}" ]; then
-   tool="$( type -P dm-build-step-fn || true )"
-fi
-if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "FAIL: dm-build-step-fn not found or not executable" >&2
-   exit 1
-fi
-
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-step_file="${dm_checkout}/build-steps.d/1200_prepare-build-machine"
-if [ ! -r "${step_file}" ]; then
-   printf '%s\n' "FAIL: cannot read ${step_file}" >&2
+lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+if [ ! -r "${lib}" ]; then
+   printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
 fi
+# shellcheck disable=SC1090
+source "${lib}"
 
 pass_count=0
 fail_count=0
@@ -61,37 +47,18 @@ fail() {
    printf '%s\n' "FAIL: $*" >&2
 }
 
-work_dir="$( mktemp --directory )"
-# shellcheck disable=SC2317  # reached only via the EXIT trap
-cleanup() {
-   safe-rm --recursive --force -- "${work_dir}"
-}
-trap cleanup EXIT
-
-## Exit 0 == accepted, non-zero == refused. dm-build-step-fn --run propagates
-## the function's own exit code.
-verdict() {
-   local file candidate status
-   file="$1"
-   candidate="$2"
-   status=0
-   "${tool}" --file "${file}" --fn username-plain-for-sudoers --run "${candidate}" \
-      >/dev/null 2>&1 || status="$?"
-   printf '%s\n' "${status}"
-}
-
 check_accept() {
-   if [ "$( verdict "${step_file}" "$1" )" = "0" ]; then
+   if username-plain-for-sudoers "$1"; then
       pass "accepts '$1'"
    else
       fail "expected '$1' accepted, was refused"
    fi
 }
 check_reject() {
-   if [ "$( verdict "${step_file}" "$1" )" != "0" ]; then
-      pass "refuses '$1'"
-   else
+   if username-plain-for-sudoers "$1"; then
       fail "expected '$1' refused, was accepted"
+   else
+      pass "refuses '$1'"
    fi
 }
 
@@ -117,33 +84,44 @@ check_reject 'host$$'
 ## A lone '$' strips to empty.
 check_reject '$'
 
-## --- CANARY: the accept of a trailing '$' is the actual fix -----------------
+## --- CANARY: accepting a trailing '$' is the actual fix --------------------
 ## The pre-fix form did not strip a trailing '$', so 'host$' hit the
-## metacharacter class and was refused. Build that form and confirm it refuses
-## 'host$' (proving the accept assertion above has teeth) while still refusing a
-## real metacharacter (proving the canary form is otherwise faithful).
-buggy="${work_dir}/9997_buggy"
-cat > "${buggy}" <<'BUGGY'
-#!/bin/bash
-username-plain-for-sudoers() {
-   local candidate
-   candidate="$1"
-   case "${candidate}" in
-      ''|*[!A-Za-z0-9_-]*)
-         return 1
-         ;;
-      ALL)
-         return 1
-         ;;
-   esac
-   return 0
-}
-BUGGY
-if [ "$( verdict "${buggy}" 'host$' )" != "0" ] \
-   && [ "$( verdict "${buggy}" 'a b' )" != "0" ]; then
+## metacharacter class and was refused. Redefine that form in a subshell and
+## confirm it refuses 'host$' while still refusing a real metacharacter.
+buggy_refuses_host=no
+buggy_refuses_meta=no
+(
+   username-plain-for-sudoers() {
+      case "$1" in
+         ''|*[!A-Za-z0-9_-]*)
+            return 1
+            ;;
+         ALL)
+            return 1
+            ;;
+      esac
+      return 0
+   }
+   username-plain-for-sudoers 'host$'
+) || buggy_refuses_host=yes
+(
+   username-plain-for-sudoers() {
+      case "$1" in
+         ''|*[!A-Za-z0-9_-]*)
+            return 1
+            ;;
+         ALL)
+            return 1
+            ;;
+      esac
+      return 0
+   }
+   username-plain-for-sudoers 'a b'
+) || buggy_refuses_meta=yes
+if [ "${buggy_refuses_host}" = "yes" ] && [ "${buggy_refuses_meta}" = "yes" ]; then
    pass "canary: the pre-fix form refuses 'host\$' (and still refuses metachars)"
 else
-   fail "canary broken: pre-fix form did not refuse 'host\$' as expected"
+   fail "canary broken: host=${buggy_refuses_host} meta=${buggy_refuses_meta}"
 fi
 
 summary_line="===== username-plain-for-sudoers: ${pass_count} pass, ${fail_count} fail ====="

@@ -5,20 +5,15 @@
 
 ## AI-Assisted
 
-## 3500_install-packages resolve-partition-uuid must match the partition NAME as
-## a LITERAL whole field, never as a regex or a substring.
+## resolve-partition-uuid (help-steps/build-step-helpers.bsh, used by
+## 3500_install-packages) must match the partition NAME as a LITERAL whole field,
+## never as a regex or a substring: the UUID it returns is written into the
+## image's grub.cfg 'root='. A wrong UUID does not look like a failure -- it
+## produces a grub.cfg that fails to boot.
 ##
-## WHY THIS IS WORTH TESTING: the UUID it returns is written into the image's
-## grub.cfg 'root='. A wrong UUID does not look like a failure -- it produces a
-## grub.cfg that fails to boot. The two ways the lookup can pick the wrong
-## partition each get a case here, written to FAIL against the buggy forms:
-##   - a REGEX match: a grub-probe name like 'a.c' whose '.' matches 'abc'
-##     (this is the form the current file regressed to: 'grep -- "^NAME "').
-##   - a SUBSTRING match: 'loop0p1' also matching 'loop0p10'
-##     (the form before the anchor was added: 'grep --fixed-strings').
-##
-## Needs no root, no network, no build: the function is extracted with
-## dm-build-step-fn and 'lsblk' is stubbed on PATH.
+## The real function is SOURCED from the shared helper library (no dm-build-step-fn
+## extraction, no duplicate definition) with 'lsblk' stubbed on PATH; the canaries
+## redefine it with the buggy forms in a subshell. Needs no root, no build.
 
 set -o errexit
 set -o nounset
@@ -28,30 +23,18 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if [ -n "${DIST_AI_DIR:-}" ]; then
-   dist_ai_dir="${DIST_AI_DIR}"
-else
-   dist_ai_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../../.." && pwd )"
-fi
-tool="${dist_ai_dir}/usr/bin/dm-build-step-fn"
-if [ ! -x "${tool}" ]; then
-   tool="$( type -P dm-build-step-fn || true )"
-fi
-if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "FAIL: dm-build-step-fn not found or not executable" >&2
-   exit 1
-fi
-
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-step_file="${dm_checkout}/build-steps.d/3500_install-packages"
-if [ ! -r "${step_file}" ]; then
-   printf '%s\n' "FAIL: cannot read ${step_file}" >&2
+lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+if [ ! -r "${lib}" ]; then
+   printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
 fi
+# shellcheck disable=SC1090
+source "${lib}"
 
 pass_count=0
 fail_count=0
@@ -72,8 +55,9 @@ cleanup() {
 trap cleanup EXIT
 
 ## Stub lsblk: ignore all args, emit a fixed NAME,UUID table. 'loop0p10' is
-## listed BEFORE 'loop0p1' so a substring match ('grep --fixed-strings loop0p1'
-## + head) would take the loop0p10 row first and return the wrong UUID.
+## listed BEFORE 'loop0p1' so a substring match would take the loop0p10 row first
+## and return the wrong UUID. 'a\b' carries a literal backslash for the escape
+## case.
 stub_dir="${work_dir}/bin"
 mkdir --parents -- "${stub_dir}"
 cat > "${stub_dir}/lsblk" <<'LSBLK'
@@ -86,101 +70,62 @@ printf '%s\n' \
    'a\b UUID-BS'
 LSBLK
 chmod +x -- "${stub_dir}/lsblk"
+export PATH="${stub_dir}:${PATH}"
 
-## Call resolve-partition-uuid <name> with the stub on PATH.
-resolve() {
-   PATH="${stub_dir}:${PATH}" "${tool}" --file "$1" --fn resolve-partition-uuid --run "$2" 2>/dev/null
-}
-
-## --- 1. exact match returns that partition's UUID ---------------------------
-output="$( resolve "${step_file}" abc || true )"
-if [ "${output}" = "UUID-ABC" ]; then
+## --- 1. exact match returns that partition's UUID --------------------------
+if [ "$( resolve-partition-uuid abc )" = "UUID-ABC" ]; then
    pass 'exact name returns its UUID'
 else
-   fail "exact match: expected 'UUID-ABC', got '${output}'"
+   fail "exact match: expected 'UUID-ABC'"
 fi
 
 ## --- 2. a substring is NOT a match -----------------------------------------
-## 'loop0p1' must return UUID-ONE, never UUID-TEN, even though 'loop0p1' is a
-## substring of 'loop0p10' and 'loop0p10' is listed first.
-output="$( resolve "${step_file}" loop0p1 || true )"
-if [ "${output}" = "UUID-ONE" ]; then
+if [ "$( resolve-partition-uuid loop0p1 )" = "UUID-ONE" ]; then
    pass 'a substring of a longer name does not match the longer name'
 else
-   fail "substring safety: expected 'UUID-ONE', got '${output}'"
+   fail "substring safety: expected 'UUID-ONE'"
 fi
 
 ## --- 3. a regex metacharacter is NOT interpreted ---------------------------
-## 'a.c' has no exact row, so the result must be empty. A regex match would let
-## '.' match 'abc' and wrongly return UUID-ABC.
-output="$( resolve "${step_file}" 'a.c' || true )"
-if [ -z "${output}" ]; then
+if [ -z "$( resolve-partition-uuid 'a.c' )" ]; then
    pass 'a regex metacharacter in the name is not interpreted (no false match)'
 else
-   fail "regex safety: expected empty, got '${output}'"
+   fail 'regex safety: expected empty'
 fi
 
-## --- 3b. a backslash in the name is matched LITERALLY -----------------------
-## 'a\b' must return UUID-BS. 'awk -v' would process the '\b' into a backspace
-## and fail to match; the ENVIRON form keeps the exact bytes.
-output="$( resolve "${step_file}" 'a\b' || true )"
-if [ "${output}" = "UUID-BS" ]; then
+## --- 3b. a backslash in the name is matched LITERALLY ----------------------
+if [ "$( resolve-partition-uuid 'a\b' )" = "UUID-BS" ]; then
    pass 'a backslash escape in the name is not interpreted (literal match)'
 else
-   fail "escape safety: expected 'UUID-BS', got '${output}'"
+   fail "escape safety: expected 'UUID-BS'"
 fi
 
 ## --- 4. an absent name returns nothing -------------------------------------
-output="$( resolve "${step_file}" no-such-partition || true )"
-if [ -z "${output}" ]; then
+if [ -z "$( resolve-partition-uuid no-such-partition )" ]; then
    pass 'an absent name returns nothing'
 else
-   fail "absent name: expected empty, got '${output}'"
+   fail 'absent name: expected empty'
 fi
 
-## --- 5. CANARY: the assertions have teeth against the buggy form ------------
-## Build a fixture whose resolve-partition-uuid uses the regressed regex grep,
-## and confirm cases 2 and 3 WOULD fail against it. Without this, a lookup that
-## silently reverted to regex/substring could pass everything above.
-buggy="${work_dir}/9998_buggy"
-cat > "${buggy}" <<'BUGGY'
-#!/bin/bash
-resolve-partition-uuid() {
-   local partition_name
-   partition_name="$1"
-   lsblk --raw --noheadings --output NAME,UUID \
-      | grep -- "^${partition_name} " \
-      | head -n1 \
-      | cut -d' ' -f2
-}
-BUGGY
-## Note: the buggy form is anchored ('^NAME '), so it survives the substring
-## case; the regex case is what exposes it.
-buggy_substr="$( resolve "${buggy}" loop0p1 || true )"
-buggy_regex="$( resolve "${buggy}" 'a.c' || true )"
-if [ "${buggy_regex}" = "UUID-ABC" ] && [ "${buggy_substr}" = "UUID-ONE" ]; then
-   pass 'canary: the regex-buggy form is caught by case 3 (and only case 3)'
+## --- 5. CANARY: the buggy forms are actually caught ------------------------
+## Redefine the function with the two historical bugs in a subshell (the real one
+## is untouched) and confirm each is caught by the case that targets it.
+regex_hit="$(
+   resolve-partition-uuid() {
+      lsblk --raw --noheadings --output NAME,UUID | grep -- "^$1 " | head --lines=1 | cut -d' ' -f2
+   }
+   resolve-partition-uuid 'a.c'
+)"
+substr_hit="$(
+   resolve-partition-uuid() {
+      lsblk --raw --noheadings --output NAME,UUID | grep --fixed-strings -- "$1" | head --lines=1 | cut -d' ' -f2
+   }
+   resolve-partition-uuid loop0p1
+)"
+if [ "${regex_hit}" = "UUID-ABC" ] && [ "${substr_hit}" = "UUID-TEN" ]; then
+   pass 'canary: the regex form (case 3) and the substring form (case 2) are caught'
 else
-   fail "canary broken: buggy form gave substr='${buggy_substr}' regex='${buggy_regex}'"
-fi
-
-## --- 6. CANARY: the 'awk -v' form fails the backslash case ------------------
-## Proves case 3b has teeth: 'awk -v' processes the '\b' escape, so it does not
-## match the literal 'a\b' row, whereas the shipped ENVIRON form does.
-awkv_buggy="${work_dir}/9996_awkv"
-cat > "${awkv_buggy}" <<'AWKV'
-#!/bin/bash
-resolve-partition-uuid() {
-   local partition_name
-   partition_name="$1"
-   lsblk --raw --noheadings --output NAME,UUID \
-      | awk -v dev="${partition_name}" '$1 == dev { print $2; exit }'
-}
-AWKV
-if [ -z "$( resolve "${awkv_buggy}" 'a\b' || true )" ]; then
-   pass 'canary: the awk -v form fails the backslash case (case 3b has teeth)'
-else
-   fail 'canary broken: the awk -v form matched the backslash name'
+   fail "canary broken: regex='${regex_hit}' substr='${substr_hit}'"
 fi
 
 summary_line="===== resolve-partition-uuid: ${pass_count} pass, ${fail_count} fail ====="

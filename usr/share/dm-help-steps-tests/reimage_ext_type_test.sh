@@ -5,16 +5,16 @@
 
 ## AI-Assisted
 
-## 4350_reimage-raw-reproducible require-ext-type is the fail-closed guard before
-## the partition is blkdiscard'd and rebuilt as ext4. It must:
-##   - ACCEPT ext2/ext3/ext4 (the reimage only rebuilds ext);
-##   - REJECT any other type (xfs/btrfs/...) so a build that requested another
-##     filesystem is not SILENTLY reformatted to ext4;
-##   - REJECT an EMPTY type -- blkid prints nothing and exits non-zero when it
-##     cannot identify the filesystem; the caller's '|| true' turns that into ""
-##     which must fail closed here, NOT be treated as ext.
+## require-ext-type (help-steps/build-step-helpers.bsh, used by
+## 4350_reimage-raw-reproducible) is the fail-closed guard before the partition is
+## blkdiscard'd and rebuilt as ext4. It must ACCEPT ext2/ext3/ext4, REJECT any
+## other type so a build that requested another filesystem is not SILENTLY
+## reformatted, and REJECT an EMPTY type -- blkid prints nothing and exits
+## non-zero when it cannot identify the filesystem, and the caller's '|| true'
+## turns that into "", which must fail closed here.
 ##
-## Extracted with dm-build-step-fn; no root, no blkid, no build.
+## The real function is SOURCED and called directly; the canary redefines a
+## non-empty-only form in a subshell. Needs no root, no blkid, no build.
 
 set -o errexit
 set -o nounset
@@ -24,30 +24,18 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if [ -n "${DIST_AI_DIR:-}" ]; then
-   dist_ai_dir="${DIST_AI_DIR}"
-else
-   dist_ai_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../../.." && pwd )"
-fi
-tool="${dist_ai_dir}/usr/bin/dm-build-step-fn"
-if [ ! -x "${tool}" ]; then
-   tool="$( type -P dm-build-step-fn || true )"
-fi
-if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "FAIL: dm-build-step-fn not found or not executable" >&2
-   exit 1
-fi
-
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-step_file="${dm_checkout}/build-steps.d/4350_reimage-raw-reproducible"
-if [ ! -r "${step_file}" ]; then
-   printf '%s\n' "FAIL: cannot read ${step_file}" >&2
+lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+if [ ! -r "${lib}" ]; then
+   printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
 fi
+# shellcheck disable=SC1090
+source "${lib}"
 
 pass_count=0
 fail_count=0
@@ -60,37 +48,18 @@ fail() {
    printf '%s\n' "FAIL: $*" >&2
 }
 
-work_dir="$( mktemp --directory )"
-# shellcheck disable=SC2317  # reached only via the EXIT trap
-cleanup() {
-   safe-rm --recursive --force -- "${work_dir}"
-}
-trap cleanup EXIT
-
-## Exit 0 == accepted (ext), non-zero == refused. dm-build-step-fn --run
-## propagates the function's own exit code.
-verdict() {
-   local file fs_type status
-   file="$1"
-   fs_type="$2"
-   status=0
-   "${tool}" --file "${file}" --fn require-ext-type --run "${fs_type}" \
-      >/dev/null 2>&1 || status="$?"
-   printf '%s\n' "${status}"
-}
-
 check_accept() {
-   if [ "$( verdict "${step_file}" "$1" )" = "0" ]; then
+   if require-ext-type "$1" >/dev/null 2>&1; then
       pass "accepts ext type '$1'"
    else
       fail "expected ext type '$1' accepted, was refused"
    fi
 }
 check_reject() {
-   if [ "$( verdict "${step_file}" "$1" )" != "0" ]; then
-      pass "refuses non-ext type '$1'"
-   else
+   if require-ext-type "$1" >/dev/null 2>&1; then
       fail "expected non-ext type '$1' refused, was accepted"
+   else
+      pass "refuses non-ext type '$1'"
    fi
 }
 
@@ -107,19 +76,26 @@ check_reject ext4dev
 check_reject ''
 
 ## --- CANARY: the guard can actually reject ---------------------------------
-## A form that treated any non-empty type as ext would wrongly accept xfs; the
-## '' case proves the blkid-failure path (|| true -> empty) fails closed.
-buggy="${work_dir}/9994_buggy"
-cat > "${buggy}" <<'BUGGY'
-#!/bin/bash
-require-ext-type() {
-   [ -n "$1" ]
-}
-BUGGY
-if [ "$( verdict "${buggy}" xfs )" = "0" ] && [ "$( verdict "${buggy}" '' )" != "0" ]; then
+## A form treating any non-empty type as ext would wrongly accept xfs; the ''
+## case proves the blkid-failure path (|| true -> empty) fails closed.
+buggy_accepts_xfs=no
+buggy_refuses_empty=no
+(
+   require-ext-type() {
+      [ -n "$1" ]
+   }
+   require-ext-type xfs
+) && buggy_accepts_xfs=yes
+(
+   require-ext-type() {
+      [ -n "$1" ]
+   }
+   require-ext-type ''
+) || buggy_refuses_empty=yes
+if [ "${buggy_accepts_xfs}" = "yes" ] && [ "${buggy_refuses_empty}" = "yes" ]; then
    pass 'canary: a non-empty-only guard would accept xfs (the real guard does not)'
 else
-   fail 'canary broken: the non-empty-only buggy guard did not behave as expected'
+   fail "canary broken: accepts_xfs=${buggy_accepts_xfs} refuses_empty=${buggy_refuses_empty}"
 fi
 
 summary_line="===== require-ext-type: ${pass_count} pass, ${fail_count} fail ====="
