@@ -241,8 +241,13 @@ def main() -> int:
     os.makedirs("/etc/privleap", exist_ok=True)
     e2e_lib.mount_tmpfs("/etc/privleap")
     e2e_lib.write_config("/etc/privleap/conf.d", user, workdir)
+    ## privleapd runs the shim from a hardcoded absolute path, so a checkout run
+    ## would otherwise exercise the INSTALLED shim; bind the checkout's copy so
+    ## the post-fuzz authorized-action check tests the shim under test.
+    e2e_lib.bind_repo_shim()
 
-    sock_path: str = f"/run/privleapd/comm/{user}"
+    ## The daemon names each comm socket by the caller's UID, not username.
+    sock_path: str = f"/run/privleapd/comm/{info.pw_uid}"
     log_path: str = os.path.join(workdir, "privleapd.log")
     results: Results = Results()
 
