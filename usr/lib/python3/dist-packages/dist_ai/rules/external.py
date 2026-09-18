@@ -23,14 +23,6 @@ from dist_ai import model
 from dist_ai.model import ExternalRule
 
 
-def _have(name):
-    """True if NAME is an executable on PATH."""
-    return any(
-        os.access(os.path.join(directory, name), os.X_OK)
-        for directory in os.environ.get("PATH", "").split(os.pathsep)
-        if directory)
-
-
 def _find_shellcheckrc(start_dir):
     """The nearest '.shellcheckrc' at or above START_DIR, else None. shellcheck
     discovers its rc by walking up from the CHECKED FILE's own directory -- but a
@@ -89,9 +81,19 @@ def _tree_blob_shas(root, rev):
             continue
         meta, _tab, path = record.partition(b"\t")
         fields = meta.split()
-        if len(fields) > sha_field:
-            entries[os.fsdecode(path)] = (
-                os.fsdecode(fields[0]), os.fsdecode(fields[sha_field]))
+        if len(fields) <= sha_field:
+            continue
+        ## An UNMERGED index path emits one record per conflict stage (1=base,
+        ## 2=ours, 3=theirs) and NO stage-0 entry. Keying by path would keep
+        ## whichever stage git lists LAST (stage 3, "theirs") and silently govern
+        ## the shellcheck run with the incoming side's rc -- e.g. a conflicted
+        ## '.shellcheckrc' carrying 'disable=all'. Skip nonzero stages so a
+        ## conflicted path resolves to NO staged blob (the caller's walk then
+        ## falls back to a higher rc or none), never an arbitrary conflict side.
+        if rev == "" and len(fields) > 2 and fields[2] != b"0":
+            continue
+        entries[os.fsdecode(path)] = (
+            os.fsdecode(fields[0]), os.fsdecode(fields[sha_field]))
     return entries
 
 
@@ -356,7 +358,7 @@ class Shellcheck(ExternalRule):
         return super().applies(ctx) and ctx.is_shell
 
     def detect(self, ctx):
-        if not _have("shellcheck"):
+        if not model.have_on_path("shellcheck"):
             yield model.note(
                 "shellcheck",
                 "shellcheck not on PATH; skipping (apt-get install shellcheck)")
@@ -370,7 +372,13 @@ class Shellcheck(ExternalRule):
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
                 proc = subprocess.run(command, capture_output=True, text=True)
-        except OSError:
+        except OSError as exc:
+            ## shellcheck resolved on PATH but could not be executed. Fail OPEN so
+            ## a bare git-hook run still commits, but leave a NOTE so the skip is
+            ## VISIBLE rather than a silent no-output pass.
+            yield model.note(
+                "shellcheck",
+                "shellcheck present but could not run (%s); skipping" % exc)
             return
         try:
             comments = json.loads(proc.stdout)["comments"]

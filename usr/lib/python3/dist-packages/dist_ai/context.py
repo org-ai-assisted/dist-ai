@@ -65,13 +65,6 @@ def is_cron_table(path):
     return _matches(path, ("*/cron.d/*", "*/crontab", "crontab"))
 
 
-def _have(name):
-    return any(
-        os.access(os.path.join(directory, name), os.X_OK)
-        for directory in os.environ.get("PATH", "").split(os.pathsep)
-        if directory)
-
-
 class FileContext:
     """One file under examination.
 
@@ -260,7 +253,7 @@ class FileContext:
         base = os.path.basename(self.path)
         if base in TEXT_BASENAMES or self.path.endswith(TEXT_EXTS):
             return True
-        if not _have("file") or self.data is None:
+        if not model.have_on_path("file") or self.data is None:
             return False
         try:
             mime = subprocess.run(

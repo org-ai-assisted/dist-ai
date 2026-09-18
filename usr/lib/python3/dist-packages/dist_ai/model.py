@@ -23,10 +23,20 @@ Return types are deliberately different:
 """
 
 import collections
+import shutil
 from typing import Iterator
 
 FAIL = "FAIL"
 NOTE = "NOTE"
+
+
+def have_on_path(name):
+    """True if NAME is an executable FILE on PATH. Uses shutil.which, which
+    requires a regular file: a same-named DIRECTORY with the traverse bit set
+    passes a bare os.access(X_OK) but cannot be exec'd -- the later subprocess
+    then raises PermissionError, and a caller that swallows OSError yields no
+    NOTE and no FAIL (a silent fail-open with zero visibility)."""
+    return shutil.which(name) is not None
 
 ## severity: FAIL (fails the gate) or NOTE (advisory, never fails).
 ## rule: the R-xxx id. message/path for the human; line is 1-based or None.
