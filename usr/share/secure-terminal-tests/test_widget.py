@@ -2115,6 +2115,28 @@ ok(not (_tc3.hasSelection() and max(_tc3.anchor(), _tc3.position()) >= _docend3)
    'under mouse reporting, Shift+click starts fresh (no select-to-bottom)')
 _shc.close()
 
+# 4) The click anchor is a QTextCursor dropped on a full grid rebuild, so a Shift+click after
+#    the document is cleared/rebuilt starts fresh -- it never extends from a stale offset into
+#    the now-replaced content (CodeRabbit follow-up on PR #143).
+_shc2 = SecureTerminal(command='/bin/cat', tui=True)
+_shc2.resize(700, 300)
+_shc2.show()
+pump(40)
+for _i in range(40):
+    _shc2._feed_stream(('rline-%d\r\n' % _i).encode())
+_shc2._render_tui()
+_pc = QPointF(60, 40)
+_shc2.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _pc, _pc,
+                                  Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                  Qt.KeyboardModifier.NoModifier))
+_shc2.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, _pc, _pc,
+                                    Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                    Qt.KeyboardModifier.NoModifier))
+ok(_shc2._shift_click_anchor is not None, 'a plain click records a shift-click anchor')
+_shc2._reset_grid_view()          # buffer swap / seed / resize-rebuild clears the document
+ok(_shc2._shift_click_anchor is None, 'a full grid rebuild drops the stale shift-click anchor')
+_shc2.close()
+
 # Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
 # resumes. TUI keys go straight to the child (never Qt's editor), so without this the
 # selection would persist and _render_tui stay a no-op until a mouse click.
