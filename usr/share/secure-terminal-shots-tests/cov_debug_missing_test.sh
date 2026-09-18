@@ -366,32 +366,45 @@ else
    ok 1 'M: a whole file dropped from combined was NOT flagged'
 fi
 
-## ---- Case N: a source filename with a newline cannot forge an extra output record ---------
-## POSIX filenames may contain a newline; coverage keys measurement off co_filename, so a file
-## measured via runpy keeps that name. An unescaped key would split its DEBUG-MISSING record
-## across two lines -- a line-oriented consumer then sees a forged second record. The fix
-## escapes control chars, so the miss for the odd file collapses to ONE physical line and no
-## bare 'DEBUG-...' second line appears.
+## ---- Case N: a source filename with a line-break char cannot forge an output record -------
+## POSIX filenames may contain any byte; coverage keys measurement off co_filename, so a file
+## measured via runpy keeps that name. An unescaped key splits its DEBUG-MISSING record across
+## lines -- a line-oriented consumer then reads a forged second record. Two files: one with a
+## LF (0x0a) and one with a UNICODE LINE SEPARATOR (U+2028). The invariant is checked with
+## Python str.splitlines() (what a real consumer uses), NOT grep -- GNU grep breaks only on
+## 0x0a, so it cannot even see a U+2028 split. PYTHONUTF8=1 makes the odd bytes decode to the
+## line-break code points deterministically regardless of the C locale.
 pkgN="${work}/pkgN"
 mkdir --parents -- "${pkgN}"
-nlfile="${pkgN}/$(printf 'weird\nname').py"
+nlfile="${pkgN}/$(printf 'weird\nname').py"                 ## LF in the name
+lsfile="${pkgN}/ls$(printf '\xe2\x80\xa8')name.py"          ## U+2028 (UTF-8 e2 80 a8) in the name
 printf '%s\n' 'def never():' '    return 1' > "${nlfile}"
-## Pass the newline-bearing path via the environment (an env value carries a newline safely),
-## never embedded into python source -- coverage keys measurement off co_filename.
+printf '%s\n' 'def never():' '    return 1' > "${lsfile}"
+## Pass the odd paths via the environment (env values carry arbitrary bytes safely), never
+## embedded into python source -- coverage keys measurement off co_filename.
 printf '%s\n' 'import os, runpy' \
-   "runpy.run_path(os.environ['NLFILE'], run_name='weird_mod')" > "${work}/driveN.py"
+   "runpy.run_path(os.environ['NLFILE'], run_name='nl_mod')" \
+   "runpy.run_path(os.environ['LSFILE'], run_name='ls_mod')" > "${work}/driveN.py"
 rawN="${work}/rawN"; mkdir --parents -- "${rawN}"
-NLFILE="${nlfile}" PYTHONPATH="${pkgN}" COVERAGE_FILE="${rawN}/.coverage" python3 \
-   -m coverage run --parallel-mode -- "${work}/driveN.py" >/dev/null 2>&1
+NLFILE="${nlfile}" LSFILE="${lsfile}" PYTHONUTF8=1 PYTHONPATH="${pkgN}" \
+   COVERAGE_FILE="${rawN}/.coverage" python3 -m coverage run --parallel-mode -- \
+   "${work}/driveN.py" >/dev/null 2>&1
 combine_into "${work}/N/.coverage" "${rawN}"/.coverage.*
 outN="${work}/outN.txt"
-python3 "${helper}" "${work}/N/.coverage" "${rawN}" "${pkgN}" > "${outN}" 2>&1 || true
-## Every physical line is either blank or starts with a DEBUG- record: a split line (the tail
-## of the newline-bearing filename, e.g. 'name.py 2') would violate this.
-if [ -s "${outN}" ] && ! grep --quiet --extended-regexp --invert-match '^(DEBUG-|$)' "${outN}"; then
-   ok 0 'N: a newline in a source filename cannot forge an extra output record'
+PYTHONUTF8=1 python3 "${helper}" "${work}/N/.coverage" "${rawN}" "${pkgN}" > "${outN}" 2>&1 || true
+## Every str.splitlines() line must be blank or start with a DEBUG- record; a split filename
+## tail (e.g. 'name.py 2') would be a forgeable extra line.
+rcN=0
+PYTHONUTF8=1 python3 - "${outN}" > /dev/null 2>&1 <<'PY' || rcN=$?
+import sys
+data = open(sys.argv[1], encoding='utf-8', errors='surrogateescape').read()
+bad = [ln for ln in data.splitlines() if ln and not ln.startswith('DEBUG-')]
+sys.exit(1 if bad else 0)
+PY
+if [ -s "${outN}" ] && [ "${rcN}" -eq 0 ]; then
+   ok 0 'N: LF and U+2028 in a source filename cannot forge an extra output record'
 else
-   ok 1 'N: a control char in a filename split the output into a forgeable extra line'
+   ok 1 'N: a line-break char in a filename split the output into a forgeable extra line'
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
