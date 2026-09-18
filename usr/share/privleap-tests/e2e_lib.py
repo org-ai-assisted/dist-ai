@@ -56,10 +56,25 @@ def import_target() -> ModuleType:
     return pl
 
 
+def disposable_env() -> bool:
+    """The run is in an EPHEMERAL, disposable environment (a CI container).
+
+    The private mount namespace + tmpfs exist ONLY to keep a REAL host's
+    /run and /etc/privleap untouched. In a throwaway container there is nothing
+    to protect, so we skip the namespace -- which is the ONLY part that needs
+    CAP_SYS_ADMIN (a --privileged container). Skipping it lets the suite run in
+    an ORDINARY, non-privileged container, writing to the container's own real
+    (disposable) /run and /etc/privleap.
+    """
+
+    return os.environ.get('PRIVLEAP_TEST_DISPOSABLE_ENV') == '1'
+
+
 def reexec_under_mount_namespace(inside_env_var: str) -> None:
-    """Re-exec the calling script as root in a private mount namespace via
-    sudo + unshare, unless already inside one. ``inside_env_var`` is the marker
-    each backend uses so it does not loop. Run from a normal user account."""
+    """Re-exec the calling script as root via sudo, in a private mount namespace
+    (unless disposable_env(), where the namespace is skipped), unless already
+    inside. ``inside_env_var`` is the marker each backend uses so it does not
+    loop. Run from a normal user account."""
 
     if os.geteuid() == 0:
         ## Validate we were entered via sudo from a normal user BEFORE trusting
@@ -77,6 +92,10 @@ def reexec_under_mount_namespace(inside_env_var: str) -> None:
     env_args: list[str] = [f"{inside_env_var}=1"]
     if os.environ.get('PRIVLEAP_REPO'):
         env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
+    ## sudo reset the env, so the disposable-env marker must be handed across
+    ## explicitly -- otherwise the re-exec reverts to mounting a tmpfs.
+    if disposable_env():
+        env_args.append('PRIVLEAP_TEST_DISPOSABLE_ENV=1')
     ## sudo resets the environment, so anything the run needs on the far side
     ## has to be handed across explicitly. Without this the coverage of
     ## everything past this point -- the daemon, the shim, the actions -- is
@@ -84,8 +103,13 @@ def reexec_under_mount_namespace(inside_env_var: str) -> None:
     for coverage_var in ('COVERAGE_PROCESS_START', 'COVERAGE_RCFILE'):
         if os.environ.get(coverage_var):
             env_args.append(f"{coverage_var}={os.environ[coverage_var]}")
+    reexec_prefix: list[str] = (
+        ['sudo', '--', 'env']
+        if disposable_env()
+        else ['sudo', 'unshare', '--mount', '--propagation', 'private', '--', 'env']
+    )
     cmd: list[str] = (
-        ['sudo', 'unshare', '--mount', '--propagation', 'private', '--', 'env']
+        reexec_prefix
         + env_args
         + [sys.executable, os.path.abspath(sys.argv[0])]
         + sys.argv[1:]
@@ -141,6 +165,13 @@ def mount_tmpfs_preserving(path: str, keep: list[str]) -> None:
 
 
 def mount_tmpfs(path: str) -> None:
+    if disposable_env():
+        ## No namespace here (see disposable_env): use the container's own real,
+        ## disposable directory. The daemon owns /run/privleapd (it clears stale
+        ## state via cleanup_old_state_dir) and write_config owns conf.d, so just
+        ## make sure the mount point exists rather than laying a tmpfs.
+        os.makedirs(path, exist_ok=True)
+        return
     subprocess.run(['mount', '-t', 'tmpfs', 'tmpfs', path], check=True)
 
 
@@ -217,6 +248,15 @@ def bind_repo_shim() -> bool:
             file=sys.stderr,
         )
         raise SystemExit(2)
+    if disposable_env():
+        ## No namespace: a bind mount needs CAP_SYS_ADMIN. The container is
+        ## disposable, so overwrite the installed shim with the checkout's copy
+        ## directly (a real host would never do this; here there is nothing to
+        ## protect and the runtime setup already owns that path).
+        os.makedirs(os.path.dirname(INSTALLED_SHIM), exist_ok=True)
+        shutil.copyfile(candidate, INSTALLED_SHIM)
+        os.chmod(INSTALLED_SHIM, 0o755)
+        return True
     if not os.path.isfile(INSTALLED_SHIM):
         print(
             f"FATAL: no {INSTALLED_SHIM} to bind over; privleapd would not "

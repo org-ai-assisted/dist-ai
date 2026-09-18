@@ -48,11 +48,16 @@ export LC_ALL=C
 ##     run the browser lanes (check_mobile / check_width) confined in the review
 ##     qube; it is not a standalone suite. Registering it would run those lanes a
 ##     second time and assert nothing new (same shape as privleap-tests-coverage).
+##   privleap-tests-session-fuzz-setup  a CI runtime PROVISIONER, not a suite: it
+##     installs the privleap group / PAM policy / shim on a throwaway container so
+##     the privleap-tests-session-fuzz workflow can run the daemon; it asserts
+##     nothing itself, and needs root + a checkout arg no orchestrator lane passes.
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
    'dm-stripped-setx-audit'
    'website-tests-sandbox'
+   'privleap-tests-session-fuzz-setup'
 )
 
 ## Suite BASE names with no owning component repo, so no suite_component()
