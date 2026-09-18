@@ -163,7 +163,6 @@ e2e_suites=(
 integration_suites=(
    private-ai-config-tests-resilience
    dm-image-boot-tests
-   dm-raw-to-iso-tests
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
@@ -683,17 +682,6 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
-      dm-raw-to-iso)
-         ## The tool under test lives in the derivative-maker checkout
-         ## (help-steps/dm-raw-to-iso), so point the suite at it -- otherwise the
-         ## arg tier tests a stale /usr/bin/dm-raw-to-iso (or FATALs when none is
-         ## installed). The build+boot tier additionally reads its raw image from
-         ## DM_RAW_TO_ISO_TEST_IMAGE and boots via the sibling dm-image-boot
-         ## harness; with no image / no root it exits 77, the expected verdict in
-         ## container CI.
-         wire_env=( "DM_RAW_TO_ISO_BIN=$( pkg_dir derivative-maker )/help-steps/dm-raw-to-iso" )
-         wire_args=()
-         ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'
          ## (stubbed resolver), so there is no checkout to point at and no
@@ -827,7 +815,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot|dm-raw-to-iso)
+      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-image-boot)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

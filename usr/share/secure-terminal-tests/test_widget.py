@@ -2047,6 +2047,74 @@ _selfz.mousePressEvent(_rpress)
 ok(not _selfz._mouse_selecting, 'a non-left press does not mark a drag-selection')
 _selfz.close()
 
+# Regression (operator): Shift+click must NOT select to the document bottom. The render pins
+# the text cursor to the output cursor at the bottom, so Qt's default Shift+extend ran from the
+# click DOWN TO THE BOTTOM in every non-report mode (CLI-show + TUI-show, non-alt-screen). A
+# Shift+click now anchors on the last plain click (konsole parity), or -- with none, or under a
+# mouse-reporting child -- starts fresh at the click; never the bottom.
+_shc = SecureTerminal(command='/bin/cat', tui=True)
+_shc.resize(700, 300)
+_shc.show()
+pump(40)
+for _i in range(60):
+    _shc._feed_stream(('sline-%d\r\n' % _i).encode())
+_shc._render_tui()
+# Pin the caret at the document end, exactly as the render/output cursor does.
+_endc = _shc.textCursor()
+_endc.movePosition(QTextCursor.MoveOperation.End)
+_shc.setTextCursor(_endc)
+ok(not _shc.textCursor().hasSelection(), 'setup: caret pinned at the document end, no selection')
+_docend = _shc.document().characterCount() - 1
+# 1) Shift+click with NO prior plain click starts fresh at the click, not a select-to-bottom.
+_shpt = QPointF(60, 40)
+_shc.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _shpt, _shpt,
+                                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.ShiftModifier))
+_tc = _shc.textCursor()
+ok(not (_tc.hasSelection() and max(_tc.anchor(), _tc.position()) >= _docend),
+   'Shift+click with no prior click does not select to the document bottom')
+_shc.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, _shpt, _shpt,
+                                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                   Qt.KeyboardModifier.ShiftModifier))
+# 2) A plain click records an anchor; a later Shift+click extends FROM it (konsole parity).
+_pa = QPointF(60, 40)
+_shc.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _pa, _pa,
+                                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.NoModifier))
+_shc.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, _pa, _pa,
+                                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                   Qt.KeyboardModifier.NoModifier))
+_posA = _shc.cursorForPosition(_pa.toPoint()).position()
+_pb = QPointF(60, 120)
+_shc.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _pb, _pb,
+                                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.ShiftModifier))
+_posB = _shc.cursorForPosition(_pb.toPoint()).position()
+_tc2 = _shc.textCursor()
+ok(_tc2.hasSelection() and _tc2.anchor() == _posA and _tc2.position() == _posB,
+   'Shift+click extends from the last plain click to the click point (konsole parity), not the bottom')
+_shc.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, _pb, _pb,
+                                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                   Qt.KeyboardModifier.ShiftModifier))
+# 3) Under a mouse-reporting child (tracking + SGR, TUI), Shift+click still starts fresh at the
+#    click, never a select-to-bottom -- preserving the pre-existing local-override behaviour
+#    (plain clicks are reported to the child, so no anchor is recorded to extend from).
+feed_output(_shc, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h')   # real read path arms the scan
+_shc._render_tui()
+ok(_shc._mouse_reporting(), 'setup: mouse reporting is active (button tracking + SGR, TUI)')
+_endc3 = _shc.textCursor()
+_endc3.movePosition(QTextCursor.MoveOperation.End)
+_shc.setTextCursor(_endc3)
+_docend3 = _shc.document().characterCount() - 1
+_rp = QPointF(60, 40)
+_shc.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _rp, _rp,
+                                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.ShiftModifier))
+_tc3 = _shc.textCursor()
+ok(not (_tc3.hasSelection() and max(_tc3.anchor(), _tc3.position()) >= _docend3),
+   'under mouse reporting, Shift+click starts fresh (no select-to-bottom)')
+_shc.close()
+
 # Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
 # resumes. TUI keys go straight to the child (never Qt's editor), so without this the
 # selection would persist and _render_tui stay a no-op until a mouse click.

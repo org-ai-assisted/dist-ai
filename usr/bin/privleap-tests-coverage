@@ -92,8 +92,20 @@ run_in_process() {
    for suite in "${@}"; do
       printf '%s\n' "---- ${suite} ----"
       local rc=0
-      COVERAGE_RCFILE="${rc_file}" python3 -m coverage run \
-         -- "${tests_dir}/${suite}.py" >/dev/null 2>&1 || rc=$?
+      if [ "${suite}" = 'shim_test' ]; then
+         ## The shim runs as a SUBPROCESS of shim_test, so 'coverage run' on the
+         ## harness process alone never sees it -- shim.py would read 0% here and
+         ## depend entirely on the root e2e lane. Give the subprocess the same
+         ## bootstrap the e2e lane gives the daemon (COVERAGE_PROCESS_START plus
+         ## coverage-bootstrap on PYTHONPATH, both inherited by subprocess.run in
+         ## shim_test) so the privilege boundary is measured lane-independently.
+         COVERAGE_RCFILE="${rc_file}" COVERAGE_PROCESS_START="${rc_file}" \
+            PYTHONPATH="${tests_dir}/coverage-bootstrap${PYTHONPATH:+:${PYTHONPATH}}" \
+            python3 -- "${tests_dir}/${suite}.py" >/dev/null 2>&1 || rc=$?
+      else
+         COVERAGE_RCFILE="${rc_file}" python3 -m coverage run \
+            -- "${tests_dir}/${suite}.py" >/dev/null 2>&1 || rc=$?
+      fi
       if [ "${rc}" = '0' ]; then
          saw_pass=1
          continue
