@@ -1,0 +1,4 @@
+[action:g]
+Command=env
+AuthorizedGroups=root
+TargetUser=root

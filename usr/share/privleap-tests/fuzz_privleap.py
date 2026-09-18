@@ -41,6 +41,7 @@ fuzz_privleap.py wraps it for OSS-Fuzz's Python runtime unchanged.
 import os
 import socket
 import sys
+from typing import Any
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -54,6 +55,7 @@ if HERE not in sys.path:
 from pl_testlib import _dist_packages_dir, _skip_not_found  # noqa: E402
 
 
+## PRIVLEAP_REPO handling for the in-process lane: put the checkout on the path.
 _PARENT: str | None = _dist_packages_dir()
 if _PARENT is not None and _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
@@ -69,14 +71,29 @@ try:
 except ImportError:
     _HAVE_ATHERIS = False
 
-if _PARENT is not None:
-    if _HAVE_ATHERIS:
-        with atheris.instrument_imports():
-            from privleap import privleap as pl  # noqa: E402
-    else:
-        from privleap import privleap as pl  # noqa: E402
-else:
-    pl = None  # type: ignore
+
+def _load_privleap() -> Any:
+    """Import the privleap parser, instrumented when Atheris is present.
+
+    The import is attempted directly rather than gated on PRIVLEAP_REPO so this
+    same harness works as a ClusterFuzzLite pyinstaller onefile (where privleap
+    is bundled and importable without any env) AND in the in-process lane (where
+    _dist_packages_dir put the checkout on sys.path). A genuine "not configured"
+    in-process run raises ImportError here and main() maps it to skip-vs-FATAL.
+    """
+
+    try:
+        if _HAVE_ATHERIS:
+            with atheris.instrument_imports():
+                from privleap import privleap as _pl  # noqa: E402
+        else:
+            from privleap import privleap as _pl  # noqa: E402
+    except ImportError:
+        return None
+    return _pl
+
+
+pl: Any = _load_privleap()
 
 
 ## Message types legal to RECEIVE on each server-side socket. Anything else
@@ -217,9 +234,10 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 (Atheris contract name)
 
 
 def main() -> None:
-    if _PARENT is None:
+    if pl is None:
         ## Splits skip-vs-FATAL: exit 77 only when nothing was configured, but
         ## exit 1 when PRIVLEAP_REPO named a target that has no privleap tree.
+        ## (In a bundled onefile privleap imports directly, so pl is set.)
         _skip_not_found("privleap library")
     if not _HAVE_ATHERIS:
         print("SKIP: atheris is not installed (pip install atheris).")

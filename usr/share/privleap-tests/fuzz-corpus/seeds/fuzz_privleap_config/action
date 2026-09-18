@@ -1,0 +1,3 @@
+[action:demo]
+Command=echo hi
+AuthorizedUsers=root
