@@ -11,8 +11,8 @@
 ##   disk: packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader
 ##         (grub-mkconfig emits it into the image's grub.cfg)
 ##   iso:  iso-build-data/grub-config/smbios-reader.cfg
-##         (4310_convert-raw-to-iso appends it into the GRUB overlay's config.cfg
-##          under --smbios-reader; dm-raw-to-iso stages that overlay into the ISO)
+##         (help-steps/dm-raw-to-iso inlines it into the ISO's config.cfg when
+##          4310_convert-raw-to-iso passes --smbios-reader)
 ##
 ## They cannot be merged, so they are asserted equal instead. Drift here is not
 ## cosmetic: without the serial/timeout block a headless boot-tester injecting a
@@ -432,21 +432,33 @@ assert_inside_conditional \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
    'install --mode=0644 .*50_dm-smbios-reader\.cfg'
 
-## The reader is appended into the GRUB overlay's config.cfg, which
-## dm-raw-to-iso stages into the ISO, only inside the --smbios-reader branch.
+## The SMBIOS reader is gated at TWO levels: 4310 passes --smbios-reader to
+## help-steps/dm-raw-to-iso only when the build opts in, and dm-raw-to-iso inlines
+## the reader and the placeholder only inside its --smbios-reader branch. A
+## released ISO (build did not opt in) therefore carries neither. Verify both.
+##
+## Gate 1: 4310 passes --smbios-reader only when dist_build_smbios_reader=true.
+assert_inside_conditional \
+   "iso option gating" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   'dm_raw_to_iso_args\+=\( --smbios-reader'
+
+## Gate 2: dm-raw-to-iso inlines the reader into config.cfg only inside its
+## --smbios-reader branch.
 assert_inside_conditional \
    "iso reader inlining" \
-   "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
-   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   "${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso" \
+   '^if \[ "\$\{smbios_reader\}" = "true" \] ; then$' \
    '^cat -- .*smbios-reader\.cfg.*>>.*config\.cfg'
 
-## The ${dm_smbios_extra} placeholder is added to --bootappend only inside the
-## same branch, so a released ISO carries neither the reader nor the placeholder.
+## Gate 2: dm-raw-to-iso adds the ${dm_smbios_extra} placeholder to the live
+## kernel command line only inside the same branch.
 assert_inside_conditional \
    "iso cmdline placeholder" \
-   "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
-   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   '^bootappend=.*dm_smbios_extra'
+   "${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso" \
+   '^if \[ "\$\{smbios_reader\}" = "true" \] ; then$' \
+   '^live_append=.*dm_smbios_extra'
 
 ## POLARITY, not token presence: an inverted guard keeps every token while
 ## reversing the default, so the reader would ship in released images with all the
@@ -470,19 +482,19 @@ else
       "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${cmdline_file}" | tail -3 || true)"
 fi
 
-## The ISO placeholder must not be unconditional. 3600 builds it into the
-## 'bootappend' variable that stays empty unless the build opted in, then passes
-## that variable to dm-raw-to-iso via --bootappend. A bare '${dm_smbios_extra}'
-## inlined directly on the --bootappend argument would defeat the gate while every
-## check above still passed.
-iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
-if [ ! -r "${iso_build_file}" ]; then
-   check_fail "missing ${iso_build_file}"
-elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend[= ].*dm_smbios_extra' "${iso_build_file}"; then
-   check_fail "iso: --bootappend carries the placeholder UNCONDITIONALLY in ${iso_build_file}" \
-      "$(grep -nE -- '^[[:space:]]*--bootappend[= ]' "${iso_build_file}" || true)"
+## The placeholder must reach grub.cfg LITERAL: dm-raw-to-iso single-quotes it
+## ('${dm_smbios_extra}') so the SMBIOS reader fills it at boot. A double-quoted
+## "${dm_smbios_extra}" would expand to empty at BUILD time and silently disable
+## the injected cmdline while every gate check above still passed.
+iso_tool_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
+placeholder_literal="'"'${dm_smbios_extra}'"'"
+if [ ! -r "${iso_tool_file}" ]; then
+   check_fail "missing ${iso_tool_file}"
+elif grep --quiet --fixed-strings -- "${placeholder_literal}" "${iso_tool_file}"; then
+   check_pass "iso: the SMBIOS placeholder is single-quoted (reaches GRUB literal)"
 else
-   check_pass "iso: --bootappend placeholder is behind the build option"
+   check_fail "iso: the SMBIOS placeholder is not single-quoted in ${iso_tool_file} (would expand to empty at build time)" \
+      "$(grep -nE -- 'dm_smbios_extra' "${iso_tool_file}" || true)"
 fi
 
 ## The placeholder must trail everything grub-mkconfig emits, or an injected
