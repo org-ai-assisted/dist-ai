@@ -264,8 +264,21 @@ def main() -> int:
         return proc.poll() is None
 
     try:
-        if not e2e_lib.wait_for_socket(sock_path):
+        ## 30s (not the 10s default): a cold CI VM's first daemon start -- apt
+        ## python import, config parse, socket setup -- is slower than a warm
+        ## dev box. Dump the daemon's own log on failure so the cause is visible
+        ## rather than a bare "no socket" (mirrors e2e.py).
+        if not e2e_lib.wait_for_socket(sock_path, timeout_s=30.0):
             print("FATAL: privleapd did not create the comm socket in time.")
+            print("---- privleapd log ----")
+            try:
+                with open(
+                    log_path, "r", encoding="utf-8", errors="replace"
+                ) as log_read:
+                    print(log_read.read())
+            except OSError as exc:
+                print(f"(could not read {log_path}: {exc})")
+            print("---- end privleapd log ----")
             return 2
 
         print(
