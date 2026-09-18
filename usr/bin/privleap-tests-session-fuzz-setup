@@ -5,10 +5,18 @@
 
 ## Set up the minimal privleap runtime the live-daemon session fuzzer needs on a
 ## bare CI VM: the runtime deps, the privleap system group, the PAM policy the
-## shim authenticates against, and an installed shim path for bind_repo_shim to
-## mount the checkout's shim over. privleapd + the shim still run from the
-## CHECKOUT (PRIVLEAP_REPO), so the fuzzer tests the code under review; only
-## these few fixed-path artifacts come from the package.
+## daemon authenticates against, and a shim at the path privleapd hardcodes.
+##
+## No package is installed, so the PAM policy and shim here come from the
+## CHECKOUT itself -- they ARE part of the code under test, which is the point:
+## the fuzzer exercises this checkout's daemon, shim and PAM policy. This is
+## SAFE only because of where it runs: an EPHEMERAL, single-purpose CI VM,
+## reached only by same-repo PRs (the Fuzz workflow's fork-PR guard), never a
+## shared or persistent host. Do NOT run this on a machine you care about -- it
+## overwrites the system-wide /etc/pam.d/privleapd and /usr/libexec/privleap/
+## shim.py with unverified checkout content. (bind_repo_shim later overlays the
+## shim again inside the run's own mount namespace; the PAM policy is not
+## namespaced, so the checkout's policy is the live one for the run.)
 ##
 ## Usage: privleap-tests-session-fuzz-setup <privleap-checkout-root>
 ## Needs sudo (VM runner, not the dist-ai container).
@@ -31,8 +39,13 @@ fi
 sudo apt-get update
 sudo apt-get install --yes --no-install-recommends python3-pam python3-sdnotify
 
-## --system group, idempotent: a re-run must not fail if it already exists.
-sudo addgroup --system privleap || true
+## Create the --system group only if absent, so a re-run is idempotent WITHOUT
+## swallowing a genuine failure (e.g. a read-only /etc): a real addgroup error
+## then stops the script under errexit rather than reporting a broken runtime as
+## ready.
+if ! getent group privleap >/dev/null 2>&1; then
+  sudo addgroup --system privleap
+fi
 sudo install -D --mode=0644 "${repo}/etc/pam.d/privleapd" /etc/pam.d/privleapd
 sudo install -D --mode=0755 \
   "${repo}/usr/libexec/privleap/shim.py" /usr/libexec/privleap/shim.py

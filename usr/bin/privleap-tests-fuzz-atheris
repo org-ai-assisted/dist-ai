@@ -55,10 +55,17 @@ fi
 corpus_root="${tests_dir}/fuzz-corpus"
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+## '|| true': a failing cleanup (e.g. safe-rm absent) must not REPLACE the
+## script's real exit status with 127 and mask a pass/skip/finding.
+cleanup() { safe-rm --recursive --force -- "${work_dir}" || true; }
 trap cleanup EXIT
 
-rc=0
+## Aggregate across harnesses so a later SKIP never masks an earlier crash or a
+## real pass: a genuine failure (non-zero, non-77) from ANY harness dominates;
+## otherwise the run is a SKIP (77) only if EVERY harness skipped, else a pass.
+fail_rc=0
+saw_pass=0
+saw_skip=0
 for harness in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
   harness_path="${tests_dir}/${harness}.py"
   [ -f "${harness_path}" ] || continue
@@ -75,7 +82,23 @@ for harness in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
     extra+=("-dict=${corpus_root}/dicts/${harness}.dict")
   fi
   printf '==== %s ====\n' "${harness}"
+  hrc=0
   ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
-  python3 -- "${harness_path}" "$@" "${extra[@]}" || rc=$?
+  python3 -- "${harness_path}" "$@" "${extra[@]}" || hrc=$?
+  if [ "${hrc}" = '0' ]; then
+    saw_pass=1
+  elif [ "${hrc}" = '77' ]; then
+    saw_skip=1
+  else
+    fail_rc="${hrc}"
+  fi
 done
-exit "${rc}"
+
+if [ "${fail_rc}" != '0' ]; then
+  exit "${fail_rc}"
+fi
+if [ "${saw_pass}" = '0' ] && [ "${saw_skip}" = '1' ]; then
+  ## style-ok: allow-skip: every harness skipped (atheris optional dep absent)
+  exit 77
+fi
+exit 0

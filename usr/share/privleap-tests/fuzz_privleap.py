@@ -41,6 +41,7 @@ fuzz_privleap.py wraps it for OSS-Fuzz's Python runtime unchanged.
 import os
 import socket
 import sys
+from typing import Any
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -71,7 +72,7 @@ except ImportError:
     _HAVE_ATHERIS = False
 
 
-def _load_privleap() -> object | None:
+def _load_privleap() -> Any:
     """Import the privleap parser, instrumented when Atheris is present.
 
     The import is attempted directly rather than gated on PRIVLEAP_REPO so this
@@ -92,7 +93,7 @@ def _load_privleap() -> object | None:
     return _pl
 
 
-pl = _load_privleap()  # type: ignore
+pl: Any = _load_privleap()
 
 
 ## Message types legal to RECEIVE on each server-side socket. Anything else

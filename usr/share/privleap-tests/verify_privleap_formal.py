@@ -54,6 +54,7 @@ covered by the Hypothesis property tests and authorizer_test.py.
 """
 
 import sys
+from typing import Any
 
 sys.dont_write_bytecode = True
 
@@ -73,7 +74,7 @@ from pl_testlib import import_privleap, import_privleapd  # noqa: E402
 pl = import_privleap()
 PrivleapCommon = pl.PrivleapCommon
 PrivleapValidateType = pl.PrivleapValidateType
-privleapd = import_privleapd()
+privleapd: Any = import_privleapd()
 AuthStatus = privleapd.PrivleapdAuthStatus
 
 
@@ -633,19 +634,27 @@ def _is_forbidden_byte(cp):
     return cp == 0 or cp > 0x7F or ch.isspace() or not ch.isprintable()
 
 
-def v_enumerate():
-    ## Every code point, every validate type: an accepted single-character name
-    ## is never a forbidden byte.
+def _v_sweep(accepts, report=True):
+    """Sweep every code point, every validate type: return True if `accepts`
+    grants a forbidden byte. `report` False is the canary path (a hit is
+    EXPECTED, so it is returned rather than printed as a FAIL)."""
     for cp in range(MAX_CP + 1):
         if not _is_forbidden_byte(cp):
             continue
         for vtype in _ALL_VTYPES:
-            if _vid_accepts(cp, vtype):
-                fail(
-                    "V-enum: validate_id accepted forbidden byte U+%04X for %s"
-                    % (cp, vtype)
-                )
-                return
+            if accepts(cp, vtype):
+                if report:
+                    fail(
+                        "V-enum: validate_id accepted forbidden byte U+%04X "
+                        "for %s" % (cp, vtype)
+                    )
+                return True
+    return False
+
+
+def v_enumerate():
+    ## An accepted single-character name is never a forbidden byte.
+    _v_sweep(_vid_accepts, report=True)
 
 
 def v_length():
@@ -665,17 +674,15 @@ def v_length():
 
 
 def v_canary():
-    ## The sweep has teeth only if it would CATCH a validator that accepted a
-    ## forbidden byte: run the same check against a predicate that accepts space.
-    def _accepts_space(cp, _vtype):
-        return cp == 0x20
+    ## The sweep has teeth only if it CATCHES a validator that accepts a
+    ## forbidden byte: run the REAL sweep against the real validator widened to
+    ## also accept space, and confirm it flags it.
+    def _accepts_space(cp, vtype):
+        return _vid_accepts(cp, vtype) or cp == 0x20
 
-    caught = False
-    for cp in range(MAX_CP + 1):
-        if _is_forbidden_byte(cp) and _accepts_space(cp, None):
-            caught = True
-            break
-    _expect_caught("V-catches-space-acceptor", caught)
+    _expect_caught(
+        "V-catches-space-acceptor", _v_sweep(_accepts_space, report=False)
+    )
 
 
 def main():

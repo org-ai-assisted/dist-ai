@@ -26,7 +26,9 @@ ClusterFuzzLite pyinstaller onefile -- see the import note in fuzz_privleap.py.
 """
 
 import os
+import pwd
 import sys
+from typing import Any
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -47,29 +49,41 @@ except ImportError:
     _HAVE_ATHERIS = False
 
 
-def _load_privleap() -> tuple[object | None, object | None]:
-    """Import privleap + privleapd for both onefile and in-process runtimes."""
+def _load_privleap() -> Any:
+    """Import the privleap library; None ONLY when privleap itself is absent
+    (a genuine "not configured" run, which main() maps to skip-vs-FATAL)."""
     try:
         if _HAVE_ATHERIS:
             with atheris.instrument_imports():
                 from privleap import privleap as _pl  # noqa: E402
-                from privleap import privleapd as _d  # noqa: E402
         else:
             from privleap import privleap as _pl  # noqa: E402
-            from privleap import privleapd as _d  # noqa: E402
     except ImportError:
-        return None, None
-    return _pl, _d
+        return None
+    return _pl
 
 
-pl, privleapd = _load_privleap()  # type: ignore
+def _load_privleapd() -> Any:
+    """Import privleapd (the daemon). A failure HERE while privleap itself is
+    present is a BROKEN environment (e.g. python3-sdnotify missing), not a
+    reason to skip -- let the ImportError propagate so it surfaces as a hard
+    failure rather than a silent 77."""
+    if _HAVE_ATHERIS:
+        with atheris.instrument_imports():
+            from privleap import privleapd as _d  # noqa: E402
+    else:
+        from privleap import privleapd as _d  # noqa: E402
+    return _d
 
-import pwd  # noqa: E402  (after the instrumented imports, on purpose)
+
+pl: Any = _load_privleap()
+privleapd: Any = _load_privleapd() if pl is not None else None
 
 ## The fuzzer's own identity is the caller under test: it exists (so the
 ## decision is never a trivial USER_MISSING) and its real group membership is
 ## the ground truth the anti-ACE check compares against.
 _UID: int = os.getuid()
+_PW: pwd.struct_passwd | None
 try:
     _PW = pwd.getpwuid(_UID)
     _GROUPS = set(os.getgrouplist(_PW.pw_name, _PW.pw_gid))
@@ -88,7 +102,7 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 (Atheris contract name)
     groups = [fdp.ConsumeUnicodeNoSurrogates(32) for _ in range(n_groups)]
 
     try:
-        action = pl.PrivleapAction(  # type: ignore[union-attr]
+        action = pl.PrivleapAction(
             action_name="fuzz-authz",
             action_command="echo hi",
             auth_user_ids=users or None,
@@ -99,9 +113,9 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 (Atheris contract name)
         ## authorizer would ever see, so not an authorization finding.
         return
 
-    status = privleapd.authorize_user(action, _UID)  # type: ignore[union-attr]
+    status = privleapd.authorize_user(action, _UID)
     if (
-        status is privleapd.PrivleapdAuthStatus.AUTHORIZED  # type: ignore[union-attr]
+        status is privleapd.PrivleapdAuthStatus.AUTHORIZED
         and _UID != 0
         and action.auth_restricted
     ):
@@ -123,6 +137,16 @@ def main() -> None:
     if not _HAVE_ATHERIS:
         print("SKIP: atheris is not installed (pip install atheris).")
         ## style-ok: allow-skip: atheris optional fuzzing dep not installed
+        raise SystemExit(77)
+    if _PW is None:
+        ## Without a resolvable caller identity every input returns immediately
+        ## and the anti-ACE oracle never runs. Skip loudly rather than report a
+        ## no-op fuzz as a clean pass (a passwd-less numeric uid in a container).
+        print(
+            "SKIP: the fuzzer's own uid (%d) has no passwd entry; the "
+            "authorization oracle needs a resolvable caller." % _UID
+        )
+        ## style-ok: allow-skip: no resolvable caller identity to fuzz against
         raise SystemExit(77)
     atheris.Setup(sys.argv, TestOneInput)
     atheris.Fuzz()
