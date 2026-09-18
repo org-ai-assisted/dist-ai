@@ -1240,6 +1240,25 @@ ok(_fw._screen.buffer[0][0].data == 'A'
    'TUI full-width line + bare LF: the flag clears and the column is kept (xterm-accurate), '
    'so no blank row and the next line staircases from the last column')
 _fw.close()
+# SGR 58 (set underline colour) uses 38/48's extended-colour grammar, but pyte does
+# NOT render underline colour, so _SafeHistoryScreen.select_graphic_rendition must
+# CONSUME 58's payload and DROP it (never pass it to pyte). Emitted, 58;2;r;g;b leaks
+# its channels as standalone SGR at the pyte layer and a zero channel hits pyte's SGR-0
+# full reset, clearing an earlier bold. Canary: on the unfixed code the cell loses bold.
+_ul = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_ul, b'\x1b[1;58;2;255;0;0mX')
+ok(_ul._screen.buffer[0][0].data == 'X' and _ul._screen.buffer[0][0].bold is True
+   and _ul._screen.buffer[0][0].fg == 'default',
+   'TUI SGR 58 truecolour underline: payload consumed, bold kept, fg untouched')
+_ul.close()
+# 58 must not clear an already-selected bright fg either: its payload is consumed
+# without disturbing the bright colour (a zero-channel underline colour would, unfixed,
+# route its 0s through pyte's fg reset -- canary: the bright fg would drop to default).
+_ulb = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_ulb, b'\x1b[91;58;2;0;0;0mY')
+ok(_ulb._screen.buffer[0][0].data == 'Y' and _ulb._screen.buffer[0][0].fg == 'brightred',
+   'TUI SGR 58 after a bright fg: 58 consumes its payload without clearing the bright fg')
+_ulb.close()
 # F3: an oversized CSI parameter must not permanently freeze pyte rendering. pyte's
 # int(param) raises ValueError past sys.get_int_max_str_digits() (4300); the raised
 # parser generator is then EXHAUSTED, so without a rebuild every later feed is
