@@ -3,23 +3,24 @@
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
-## Set up the minimal privleap runtime the live-daemon session fuzzer needs on a
-## bare CI VM: the runtime deps, the privleap system group, the PAM policy the
-## daemon authenticates against, and a shim at the path privleapd hardcodes.
+## Set up the minimal privleap runtime the live-daemon session fuzzer needs in
+## its EPHEMERAL, single-purpose CI container: the runtime deps, the privleap
+## system group, the PAM policy the daemon authenticates against, and a shim at
+## the path privleapd hardcodes.
 ##
 ## No package is installed, so the PAM policy and shim here come from the
 ## CHECKOUT itself -- they ARE part of the code under test, which is the point:
 ## the fuzzer exercises this checkout's daemon, shim and PAM policy. This is
-## SAFE only because of where it runs: an EPHEMERAL, single-purpose CI VM,
-## reached only by same-repo PRs (the Fuzz workflow's fork-PR guard), never a
-## shared or persistent host. Do NOT run this on a machine you care about -- it
-## overwrites the system-wide /etc/pam.d/privleapd and /usr/libexec/privleap/
-## shim.py with unverified checkout content. (bind_repo_shim later overlays the
-## shim again inside the run's own mount namespace; the PAM policy is not
-## namespaced, so the checkout's policy is the live one for the run.)
+## SAFE only because of where it runs: an EPHEMERAL, single-purpose CI container,
+## reached only by same-repo PRs (the session-fuzz workflow's fork-PR guard),
+## never a shared or persistent host. Do NOT run this on a machine you care
+## about -- it overwrites the system-wide /etc/pam.d/privleapd and
+## /usr/libexec/privleap/shim.py with unverified checkout content (in disposable
+## mode bind_repo_shim COPIES the checkout's shim over that path directly, since
+## a throwaway container has nothing to protect and no mount namespace).
 ##
 ## Usage: privleap-tests-session-fuzz-setup <privleap-checkout-root>
-## Needs sudo (VM runner, not the dist-ai container).
+## Needs root/sudo; runs inside the session-fuzz container, not a VM.
 
 set -o errexit
 set -o nounset
