@@ -3,11 +3,14 @@
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
-## Runs the Atheris (libFuzzer) coverage-guided fuzz harness for privleap's
-## server-side wire-protocol parser. Unlike privleap-tests-fuzz (a hand-rolled
-## random generator with no extra dependencies), this is coverage-guided and
-## needs Atheris (pip install atheris); without it the harness skips. No root,
-## no network, no live privleapd.
+## Runs the Atheris (libFuzzer) coverage-guided fuzz harnesses for privleap:
+## the server-side wire-protocol parser (fuzz_privleap), the config-content
+## parser (fuzz_privleap_config), and the authorization engine
+## (fuzz_privleap_authz). Each gets its libFuzzer dictionary and seed corpus
+## from fuzz-corpus/. Unlike privleap-tests-fuzz (a hand-rolled random generator
+## with no extra dependencies), this is coverage-guided and needs Atheris
+## (pip install atheris); without it the harnesses skip. No root, no network,
+## no live privleapd. These are the SAME harnesses ClusterFuzzLite compiles.
 ##
 ## Default time budget is 60s; override with PRIVLEAP_FUZZ_SECONDS or by passing
 ## libFuzzer flags directly. Any extra arguments are forwarded to the harness,
@@ -49,7 +52,30 @@ if [ "${have_stop_condition}" -eq 0 ]; then
   set -- "$@" "-max_total_time=${PRIVLEAP_FUZZ_SECONDS:-60}"
 fi
 
+corpus_root="${tests_dir}/fuzz-corpus"
+work_dir="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+trap cleanup EXIT
+
 rc=0
-## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
-python3 -- "${tests_dir}/fuzz_privleap.py" "$@" || rc=$?
+for harness in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
+  harness_path="${tests_dir}/${harness}.py"
+  [ -f "${harness_path}" ] || continue
+  ## libFuzzer: first positional is the read-WRITE corpus (a throwaway tmp, so
+  ## the checkout's seed files are never mutated), extra positionals are
+  ## read-only seed sources, -dict supplies keyword tokens.
+  hcorpus="${work_dir}/${harness}"
+  mkdir -p -- "${hcorpus}"
+  extra=("${hcorpus}")
+  if [ -d "${corpus_root}/seeds/${harness}" ]; then
+    extra+=("${corpus_root}/seeds/${harness}")
+  fi
+  if [ -f "${corpus_root}/dicts/${harness}.dict" ]; then
+    extra+=("-dict=${corpus_root}/dicts/${harness}.dict")
+  fi
+  printf '==== %s ====\n' "${harness}"
+  ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
+  python3 -- "${harness_path}" "$@" "${extra[@]}" || rc=$?
+done
 exit "${rc}"
