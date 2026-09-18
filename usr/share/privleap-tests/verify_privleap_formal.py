@@ -72,6 +72,7 @@ from pl_testlib import import_privleap, import_privleapd  # noqa: E402
 
 pl = import_privleap()
 PrivleapCommon = pl.PrivleapCommon
+PrivleapValidateType = pl.PrivleapValidateType
 privleapd = import_privleapd()
 AuthStatus = privleapd.PrivleapdAuthStatus
 
@@ -608,6 +609,75 @@ def a_enumerate_canary():
     _expect_caught("A-enum-default-allow", caught)
 
 
+## ===========================================================================
+## validate_id alphabet (V) -- EXHAUSTIVE per-code-point verification.
+## validate_id is an anchored [class]+ regex, not integer arithmetic, so this
+## uses the file's ENUMERATION method rather than Z3: it sweeps EVERY Unicode
+## code point as a single-character name and checks the security invariant
+## directly -- nothing validate_id accepts, for ANY type, is whitespace, a
+## control byte, NUL, or non-ASCII (the bytes that would split a protocol field
+## or a config line). Because each validator anchors a single character class,
+## a per-character alphabet free of forbidden bytes extends to whole strings;
+## the length bound is checked at its boundary.
+## ===========================================================================
+
+_ALL_VTYPES = list(PrivleapValidateType)
+
+
+def _vid_accepts(cp, vtype):
+    return PrivleapCommon.validate_id(chr(cp), vtype)
+
+
+def _is_forbidden_byte(cp):
+    ch = chr(cp)
+    return cp == 0 or cp > 0x7F or ch.isspace() or not ch.isprintable()
+
+
+def v_enumerate():
+    ## Every code point, every validate type: an accepted single-character name
+    ## is never a forbidden byte.
+    for cp in range(MAX_CP + 1):
+        if not _is_forbidden_byte(cp):
+            continue
+        for vtype in _ALL_VTYPES:
+            if _vid_accepts(cp, vtype):
+                fail(
+                    "V-enum: validate_id accepted forbidden byte U+%04X for %s"
+                    % (cp, vtype)
+                )
+                return
+
+
+def v_length():
+    ## The 100-character bound holds for every type: a 101-char string built
+    ## only from that type's own accepted characters is still rejected.
+    for vtype in _ALL_VTYPES:
+        sample = None
+        for cp in range(0x80):
+            if _vid_accepts(cp, vtype):
+                sample = chr(cp)
+                break
+        if sample is None:
+            continue  ## a type that accepts no single char (e.g. CONFIG_FILE)
+        if PrivleapCommon.validate_id(sample * 101, vtype):
+            fail("V-length: 101 accepted chars not rejected for %s" % vtype)
+            return
+
+
+def v_canary():
+    ## The sweep has teeth only if it would CATCH a validator that accepted a
+    ## forbidden byte: run the same check against a predicate that accepts space.
+    def _accepts_space(cp, _vtype):
+        return cp == 0x20
+
+    caught = False
+    for cp in range(MAX_CP + 1):
+        if _is_forbidden_byte(cp) and _accepts_space(cp, None):
+            caught = True
+            break
+    _expect_caught("V-catches-space-acceptor", caught)
+
+
 def main():
     sys.stdout.write(
         "verify_privleap_formal: Z3 + full-domain enumeration of the "
@@ -640,6 +710,14 @@ def main():
     a_enumerate()
     a_canaries()
     a_enumerate_canary()
+
+    sys.stdout.write(
+        "  V  validate_id alphabet -- exhaustive per-code-point sweep: no "
+        "accepted name carries a forbidden byte\n"
+    )
+    v_enumerate()
+    v_length()
+    v_canary()
 
     sys.stdout.write(
         "verify_privleap_formal: %d canaries verified, %d obligations failed\n"
