@@ -38,11 +38,19 @@ Theorems:
   T3  Encode range -- every count 0..63 encodes to exactly one alphabet
       character, and a count outside 0..63 is rejected rather than encoded.
 
-SCOPE -- honest. This verifies the pure integer/character codec. The id
-validator (regex over whole strings) and the authorization decision (which
-resolves uids/gids via the system password database) are not pure integer
-functions and are covered by the Hypothesis property tests and the
-authorization reference-model equivalence check in authorizer_test.py.
+Also verified here (theorems A1-A5): the AUTHORIZATION decision
+(privleapd.authorize_user) -- the crown-jewel gate, since an action runs a
+root-configured command and an authorization bypass is code execution as root.
+The decision is a small TOTAL function of a handful of booleans (caller exists,
+is root, action restricted, caller named in auth_uids, caller in an auth_gid);
+Z3 proves its security properties over that whole boolean domain, and every
+combination is enumerated against the REAL authorize_user to anchor the model.
+
+SCOPE -- honest. This verifies the pure integer/character codec and the
+authorization DECISION logic. The uid/gid RESOLUTION that feeds the decision
+(reading the system password database, group membership) and the id validator
+(regex over whole strings) are not pure functions of these inputs and remain
+covered by the Hypothesis property tests and authorizer_test.py.
 """
 
 import sys
@@ -60,10 +68,12 @@ except (ImportError, OSError) as exc:  # any z3 load failure must FAIL clean
 
 ## Import privleap the way the rest of the suite does: honour PRIVLEAP_REPO,
 ## exit 77 only when privleap is genuinely absent, exit 1 on a broken target.
-from pl_testlib import import_privleap  # noqa: E402
+from pl_testlib import import_privleap, import_privleapd  # noqa: E402
 
 pl = import_privleap()
 PrivleapCommon = pl.PrivleapCommon
+privleapd = import_privleapd()
+AuthStatus = privleapd.PrivleapdAuthStatus
 
 
 ## --- alphabet code points, as literals (ASCII-only source) ---
@@ -355,6 +365,249 @@ def _in_alphabet(cp):
     )
 
 
+## ===========================================================================
+## Authorization decision (privleapd.authorize_user) -- A1..A5.
+## authorize_user (privleapd.py:748-781) is a TOTAL function of five booleans:
+##   exists  is_root  restricted  in_uids (caller named in auth_uids)
+##   in_gid  (caller is a member of a named auth_gid)
+## Z3 proves its security properties over the whole boolean domain; the
+## enumeration then drives the REAL function through every combination.
+## ===========================================================================
+
+## Symbolic result codes (distinct namespace from the codec's INVALID).
+Z_MISSING = 0
+Z_AUTHORIZED = 1
+Z_UNAUTHORIZED = 2
+
+
+def _authz_z3(exists, is_root, restricted, in_uids, in_gid, broken_allow=False):
+    """
+    Symbolic mirror of authorize_user's control flow. An empty auth set can
+    never contain the caller, so `in_uids` / `in_gid` already fold the real
+    code's `len(...) != 0` guards. `broken_allow` flips the final deny to a
+    grant -- the canary the anti-ACE proof MUST refute.
+    """
+    default = z3.IntVal(Z_AUTHORIZED if broken_allow else Z_UNAUTHORIZED)
+    return z3.If(
+        z3.Not(exists),
+        z3.IntVal(Z_MISSING),
+        z3.If(
+            is_root,
+            z3.IntVal(Z_AUTHORIZED),
+            z3.If(
+                z3.Not(restricted),
+                z3.IntVal(Z_AUTHORIZED),
+                z3.If(
+                    in_uids,
+                    z3.IntVal(Z_AUTHORIZED),
+                    z3.If(in_gid, z3.IntVal(Z_AUTHORIZED), default),
+                ),
+            ),
+        ),
+    )
+
+
+def a_z3():
+    exists, is_root, restricted, in_uids, in_gid = z3.Bools(
+        "exists is_root restricted in_uids in_gid"
+    )
+    result = _authz_z3(exists, is_root, restricted, in_uids, in_gid)
+    ## A1 anti-ACE: no grant without a matching rule.
+    z3_prove(
+        "A1-no-grant-without-rule",
+        z3.Implies(
+            result == Z_AUTHORIZED,
+            z3.Or(is_root, z3.Not(restricted), in_uids, in_gid),
+        ),
+        [exists],
+    )
+    ## A1' the exact restricted-and-unmatched case denies (not missing/allow).
+    z3_prove(
+        "A1-restricted-unmatched-denied",
+        z3.Implies(
+            z3.And(
+                exists,
+                z3.Not(is_root),
+                restricted,
+                z3.Not(in_uids),
+                z3.Not(in_gid),
+            ),
+            result == Z_UNAUTHORIZED,
+        ),
+    )
+    ## A2 root always authorized.
+    z3_prove(
+        "A2-root-authorized",
+        z3.Implies(z3.And(exists, is_root), result == Z_AUTHORIZED),
+    )
+    ## A3 an unrestricted action is authorized for any existing user.
+    z3_prove(
+        "A3-unrestricted-authorized",
+        z3.Implies(
+            z3.And(exists, z3.Not(restricted)), result == Z_AUTHORIZED
+        ),
+    )
+    ## A4 a matching uid or group grant is honoured.
+    z3_prove(
+        "A4-uid-grant",
+        z3.Implies(z3.And(exists, in_uids), result == Z_AUTHORIZED),
+    )
+    z3_prove(
+        "A4-gid-grant",
+        z3.Implies(z3.And(exists, in_gid), result == Z_AUTHORIZED),
+    )
+    ## A5 a nonexistent caller is reported missing, never authorized.
+    z3_prove(
+        "A5-missing", z3.Implies(z3.Not(exists), result == Z_MISSING)
+    )
+
+
+def a_canaries():
+    exists, is_root, restricted, in_uids, in_gid = z3.Bools(
+        "exists is_root restricted in_uids in_gid"
+    )
+    broken = _authz_z3(
+        exists, is_root, restricted, in_uids, in_gid, broken_allow=True
+    )
+    ## A model that defaults to allow must FAIL the anti-ACE property.
+    _expect_caught(
+        "A1-default-allow",
+        not z3_prove(
+            "A1-canary",
+            z3.Implies(
+                broken == Z_AUTHORIZED,
+                z3.Or(is_root, z3.Not(restricted), in_uids, in_gid),
+            ),
+            [exists],
+            report=False,
+        ),
+    )
+
+
+def _authz_model_py(exists, is_root, restricted, in_uids, in_gid):
+    if not exists:
+        return AuthStatus.USER_MISSING
+    if is_root:
+        return AuthStatus.AUTHORIZED
+    if not restricted:
+        return AuthStatus.AUTHORIZED
+    if in_uids:
+        return AuthStatus.AUTHORIZED
+    if in_gid:
+        return AuthStatus.AUTHORIZED
+    return AuthStatus.UNAUTHORIZED
+
+
+def _make_authz_action(restricted, in_uids, in_gid, uid):
+    ## The constructor mandates at least one auth user/group (every real action
+    ## is restricted); pass a placeholder to get a valid object, then set the
+    ## three decision inputs authorize_user actually reads. This exercises
+    ## authorize_user's logic directly, INCLUDING the defensively-unrestricted
+    ## branch a constructed action never reaches.
+    action = pl.PrivleapAction(
+        action_name="verify-authz",
+        action_command="echo hi",
+        auth_user_ids=["root"],
+        auth_group_ids=None,
+        target_user_id=None,
+        target_group_id=None,
+    )
+    action.auth_restricted = restricted
+    action.auth_uids = [uid] if in_uids else []
+    action.auth_gids = [7] if in_gid else []
+    return action
+
+
+def _authz_enumerate(report=True):
+    """
+    Drive the REAL authorize_user through all 32 boolean combinations and
+    compare to the model. Returns True if any mismatch was found. `report`
+    False is the canary path: a mismatch is EXPECTED, so it is returned rather
+    than printed as a FAIL.
+    """
+    import pwd as real_pwd  # pylint: disable=import-outside-toplevel
+
+    orig_getpwuid = privleapd.pwd.getpwuid
+    orig_getgrouplist = privleapd.os.getgrouplist
+    try:
+        for exists in (False, True):
+            for is_root in (False, True):
+                for restricted in (False, True):
+                    for in_uids in (False, True):
+                        for in_gid in (False, True):
+                            uid = 0 if is_root else 1000
+
+                            def fake_getpwuid(
+                                arg, _exists=exists, _uid=uid
+                            ):
+                                if not _exists:
+                                    raise KeyError(arg)
+                                return real_pwd.struct_passwd(
+                                    ("verifyuser", "x", _uid, 500, "", "", "")
+                                )
+
+                            def fake_getgrouplist(
+                                _name, _gid, _in_gid=in_gid
+                            ):
+                                return [7] if _in_gid else [99]
+
+                            privleapd.pwd.getpwuid = fake_getpwuid
+                            privleapd.os.getgrouplist = fake_getgrouplist
+                            action = _make_authz_action(
+                                restricted, in_uids, in_gid, uid
+                            )
+                            real = privleapd.authorize_user(action, uid)
+                            model = _authz_model_py(
+                                exists, is_root, restricted, in_uids, in_gid
+                            )
+                            if real != model:
+                                if report:
+                                    fail(
+                                        "A-enum: real authorize_user != model "
+                                        "at (exists=%s is_root=%s restricted=%s"
+                                        " in_uids=%s in_gid=%s): real=%s "
+                                        "model=%s"
+                                        % (
+                                            exists,
+                                            is_root,
+                                            restricted,
+                                            in_uids,
+                                            in_gid,
+                                            real,
+                                            model,
+                                        )
+                                    )
+                                return True
+    finally:
+        privleapd.pwd.getpwuid = orig_getpwuid
+        privleapd.os.getgrouplist = orig_getgrouplist
+    return False
+
+
+def a_enumerate():
+    _authz_enumerate(report=True)
+
+
+def a_enumerate_canary():
+    """The enumeration must CATCH a real function that grants by default: patch
+    authorize_user's deny path and confirm the model comparison flags it."""
+    orig = privleapd.authorize_user
+
+    def broken_authorize(action, user_uid):
+        status = orig(action, user_uid)
+        ## Turn every UNAUTHORIZED into a grant -- an anti-ACE regression.
+        if status == AuthStatus.UNAUTHORIZED:
+            return AuthStatus.AUTHORIZED
+        return status
+
+    privleapd.authorize_user = broken_authorize
+    try:
+        caught = _authz_enumerate(report=False)
+    finally:
+        privleapd.authorize_user = orig
+    _expect_caught("A-enum-default-allow", caught)
+
+
 def main():
     sys.stdout.write(
         "verify_privleap_formal: Z3 + full-domain enumeration of the "
@@ -378,6 +631,15 @@ def main():
     t3_z3()
     t3_enumerate()
     t3_canaries()
+
+    sys.stdout.write(
+        "  A1-A5  authorization decision -- Z3 security properties + real "
+        "authorize_user over all 32 input combinations\n"
+    )
+    a_z3()
+    a_enumerate()
+    a_canaries()
+    a_enumerate_canary()
 
     sys.stdout.write(
         "verify_privleap_formal: %d canaries verified, %d obligations failed\n"
