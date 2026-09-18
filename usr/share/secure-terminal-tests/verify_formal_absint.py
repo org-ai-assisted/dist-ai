@@ -549,7 +549,7 @@ def ecma48_match_len(s):
     Written from the grammar documented on ANSI_RE, not by reading the
     compiled pattern. Arms, in the same order the comment lists them:
 
-      CSI   ESC [ params(0x30-3F)* intermediates(0x20-2F)* final(0x40-7E)
+      CSI   ESC [ param/intermediate(0x20-3F, any order)* final(0x40-7E)
       OSC   ESC ] ... BEL or ST
       DCS/SOS/PM/APC  ESC P/X/^/_  body-not-ESC  optional ST
       SS2/SS3  ESC N/O graphic(0x20-7E)
@@ -561,9 +561,9 @@ def ecma48_match_len(s):
     n = len(s)
     if c1 == '[':                                 # CSI
         i = 2
-        while i < n and 0x30 <= ord(s[i]) <= 0x3F:
-            i += 1
-        while i < n and 0x20 <= ord(s[i]) <= 0x2F:
+        # param (0x30-3F) and intermediate (0x20-2F) bytes in ANY order -- the one
+        # 0x20-0x3F run a VT state machine stays in until the final dispatches.
+        while i < n and 0x20 <= ord(s[i]) <= 0x3F:
             i += 1
         if i < n and 0x40 <= ord(s[i]) <= 0x7E:
             return i + 1
@@ -604,6 +604,7 @@ def ecma48_match_len(s):
 
 _T8_SEQS = [
     '\x1b[31m', '\x1b[?25l', '\x1b[?2004h', '\x1b[>4;2m',
+    '\x1b[ 1m', '\x1b[ !p',                      # out-of-order / intermediate-first CSI
     '\x1b]0;title\x07', '\x1b]0;title\x1b\\',
     '\x1bP$qm\x1b\\', '\x1bPbody\x07secret\x1b\\',
     '\x1b_Gf=1\x1b\\', '\x1b^pm\x1b\\', '\x1bXsos\x1b\\',

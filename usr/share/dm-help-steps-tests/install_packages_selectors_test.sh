@@ -76,6 +76,14 @@ else
    fail 'newest-kernel-version no-kernel: expected empty'
 fi
 
+## Anchored to '^vmlinuz-': a higher-versioned name that merely CONTAINS vmlinuz
+## (e.g. xen-vmlinuz-*) must not outrank the real kernel.
+if [ "$( newest-kernel-version "$( printf 'xen-vmlinuz-9.9.9-amd64\nvmlinuz-6.12.0-1-amd64\n' )" )" = "6.12.0-1-amd64" ]; then
+   pass 'newest-kernel-version ignores non-kernel names that merely contain vmlinuz'
+else
+   fail 'newest-kernel-version anchor: a decoy *vmlinuz* line was picked'
+fi
+
 ## --- select-grub-probe-device ----------------------------------------------
 if [ "$( select-grub-probe-device /dev/mapper/loop0p2 /dev/mapper/loop0p2 )" = "/dev/mapper/loop0p2" ]; then
    pass 'select-grub-probe-device: equal probes return that device'

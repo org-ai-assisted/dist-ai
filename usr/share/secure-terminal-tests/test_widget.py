@@ -315,6 +315,28 @@ ok('SCROLLBACK-SENTINEL' not in _t8.toPlainText(),
    '#4: a plain _rerender still tail-caps (the intentional hot-toggle budget)')
 _t8.close()
 
+# #4 (ai-review): session RESTORE seeds the document from the CAPPED _raw, not the full
+# restored text -- so what a restore shows equals what the first mode-toggle / width reflow
+# (both rebuild from _raw) can reproduce. The save side caps by LINE count only
+# (session.cap_text), so a heavy tab can persist more than _RAW_MAX chars; appending the full
+# restored text would show more than _raw holds and the first _rerender would then SILENTLY
+# drop the excess. (canary: pre-fix _append(restored) shows more lines than a full reflow.)
+_rhist = ''.join('L%05d %s\n' % (_i, 'x' * 244) for _i in range(5000))   # ~1.25M chars > _RAW_MAX
+_rt = SecureTerminal(preview=True, history=_rhist, mode='box')
+ok(len(_rhist) > _rt._RAW_MAX and len(_rt._raw) <= _rt._RAW_MAX,
+   '#4 restore: history exceeds _RAW_MAX, so _raw is capped below the full restored text')
+_restore_text = _rt.toPlainText()
+_rt._rerender(full=True)                        # a width reflow rebuilds from the (capped) _raw
+_reflow_text = _rt.toPlainText()
+# ok(...) with a BOUNDED diagnostic, not eq() -- a mismatch here is megabytes of scrollback,
+# and dumping both whole documents would bury the rest of the suite output.
+ok(_restore_text == _reflow_text,
+   '#4 restore: the restored document matches a full reflow -- no scrollback vanishes on '
+   'rerender (restore %d chars/%d lines, reflow %d chars/%d lines)'
+   % (len(_restore_text), _restore_text.count('\n'),
+      len(_reflow_text), _reflow_text.count('\n')))
+_rt.close()
+
 # Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
 # viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
 # it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
@@ -5279,13 +5301,15 @@ if tui_available():
        'OSC 7: a malformed file://host (no path) does not report the host as the cwd')
     # #6: a long cwd path must show up to 4096 chars in the tab tooltip, not be cut to 80.
     # sanitize_title's default limit is 80, so the old trailing [:4096] slice was dead -- the
-    # bound is now passed to the sanitizer.
+    # bound is now passed to the sanitizer. Feed a path LONGER than 4096 so the assertion
+    # exercises the real 4096 ceiling (== 4096), not merely ">80": a 300-char input passed
+    # whether the cap was 4096, some other value, or removed entirely.
     _cwds.clear()
     tui._reported_cwd = ''
-    tui._handle_osc(b'\x1b]7;file://h/' + b'd' * 300 + b'\x07')
-    ok(_cwds and len(_cwds[-1]) > 80,
-       '#6: a long OSC 7 cwd path is bounded at 4096, not truncated to the sanitize_title '
-       'default of 80 (got %d)' % (len(_cwds[-1]) if _cwds else -1))
+    tui._handle_osc(b'\x1b]7;file://h/' + b'd' * 5000 + b'\x07')     # path ~5001 chars > 4096
+    ok(_cwds and len(_cwds[-1]) == 4096,
+       '#6: a long OSC 7 cwd path is bounded at exactly 4096 (not the sanitize_title default '
+       'of 80, nor uncapped): got %d' % (len(_cwds[-1]) if _cwds else -1))
     # iTerm2 OSC 1337 has NO toggle: file transfer from untrusted output is
     # indefensible, so it can never be enabled and is always neutralized
     # (recognized, dropped, never leaked). It is not even a registered feature.
