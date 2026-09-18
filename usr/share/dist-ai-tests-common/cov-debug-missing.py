@@ -165,10 +165,15 @@ def _manual_union_missing(raw_dir, pkg_dir, root):
             piece = CoverageData(basename=raw)
             try:
                 piece.read()
+                ## update() (not just read()) can raise CoverageException too: it rejects a
+                ## piece whose coverage MODE differs (branch vs statement) from what merged
+                ## already holds -- realistic when a CI matrix flips --branch on some workers.
+                ## Guard both so a corrupt OR mode-incompatible piece is skipped, never a crash.
+                merged.update(piece)
             except coverage.CoverageException:
-                ## A corrupt raw piece never fails the gate: skip it, keep the readable ones.
+                ## A corrupt/incompatible raw piece never fails the gate: skip it, keep the
+                ## readable+compatible ones so the cross-check still runs on what survived.
                 continue
-            merged.update(piece)
             n_usable += 1
         merged.write()
         missing, measured = _analysis_missing(merged_path, pkg_dir, root)

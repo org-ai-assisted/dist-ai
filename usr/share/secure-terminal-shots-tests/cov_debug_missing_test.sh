@@ -43,6 +43,9 @@
 ##   P: the key escaping is INJECTIVE -- a file literally named with the chars '\x0a' and one
 ##      with a real newline byte are DISTINCT keys, not one silently clobbering the other. The
 ##      escape char '\' must itself be escaped, else a real gap vanishes from the report.
+##   Q: a raw dir mixing branch and statement coverage pieces -> the incompatible piece is
+##      skipped, no crash. CoverageData.update() raises DataError on a branch-vs-statement
+##      mismatch; that call must be guarded like read(), or the union path crashes (exit 1).
 ##
 ## Subject: usr/share/dist-ai-tests-common/cov-debug-missing.py. Needs importable coverage;
 ## absent -> exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Pure
@@ -464,6 +467,34 @@ if has "${outP}" 'combined=2'; then
    ok 0 'P: distinct filenames escaping-collision-free (injective key, no silent clobber)'
 else
    ok 1 'P: two distinct filenames collided to one key (a real gap silently dropped)'
+fi
+
+## ---- Case Q: raw pieces mixing branch + statement coverage -> skipped, no crash -----------
+## CoverageData.update() raises DataError (a CoverageException) when merging a branch-mode
+## piece into statement-mode data (or vice versa) -- realistic when a CI matrix flips --branch
+## on some workers, or a stale differently-configured piece lingers. That call must be guarded
+## like read(); the pre-fix helper let it propagate -> traceback + exit 1 in the very
+## cross-check path meant to tolerate imperfect raw data.
+pkgQ="${work}/pkgQ"; mkdir --parents -- "${pkgQ}"
+printf '%s\n' 'def a():' '    return 1' 'def b():' '    return 2' 'def never():' '    return 3' \
+   > "${pkgQ}/mod.py"
+printf '%s\n' 'import mod' 'mod.a()' > "${work}/driveQa.py"
+printf '%s\n' 'import mod' 'mod.b()' > "${work}/driveQb.py"
+rawQ="${work}/rawQ"; mkdir --parents -- "${rawQ}"
+PYTHONPATH="${pkgQ}" COVERAGE_FILE="${rawQ}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkgQ}" -- "${work}/driveQa.py" >/dev/null 2>&1          ## statement mode
+PYTHONPATH="${pkgQ}" COVERAGE_FILE="${rawQ}/.coverage" python3 -m coverage run --branch \
+   --parallel-mode --source="${pkgQ}" -- "${work}/driveQb.py" >/dev/null 2>&1           ## branch mode
+combQ="${work}/Q"; mkdir --parents -- "${combQ}"
+cp --preserve -- "${rawQ}"/.coverage.* "${combQ}/"
+COVERAGE_FILE="${combQ}/.coverage" python3 -m coverage combine >/dev/null 2>&1 || true
+outQ="${work}/outQ.txt"
+rcQ=0
+python3 "${helper}" "${combQ}/.coverage" "${rawQ}" "${pkgQ}" > "${outQ}" 2>&1 || rcQ=$?
+if [ "${rcQ}" -eq 0 ] && ! has "${outQ}" 'Traceback' && has "${outQ}" 'DEBUG-MISSING-SUMMARY'; then
+   ok 0 'Q: mixed branch/statement raw pieces are skipped, not a crash (never fails the gate)'
+else
+   ok 1 "Q: mixed branch/statement raw pieces crashed the union path (rc=${rcQ})"
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
