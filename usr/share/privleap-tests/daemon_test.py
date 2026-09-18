@@ -639,6 +639,76 @@ def test_reload_reports_success_and_failure(
             pld.parse_config_files = saved_parse  # type: ignore[attr-defined]
 
 
+def test_parse_config_files_fails_when_none_are_found(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    A config-dir list that points only at a missing directory yields no config
+    files. parse_config_files must report that as a FAILURE rather than
+    silently proceeding with an empty ruleset (which would leave every action
+    unauthorized and, worse, read as a successful load).
+    """
+
+    print('== parse_config_files fails when no config files are found ==')
+    with DaemonSandbox(pl, pld):
+        saved_dirs: Any = pld.PrivleapdGlobal.config_dir_list
+        try:
+            pld.PrivleapdGlobal.config_dir_list = [
+                pl.Path('/nonexistent/privleap-coverage-xyz/conf.d')
+            ]
+            results.expect_eq(
+                'a missing config dir yields no configs and returns False',
+                pld.parse_config_files(),
+                False,
+            )
+        finally:
+            pld.PrivleapdGlobal.config_dir_list = saved_dirs
+
+
+def test_parse_config_files_survives_a_broken_file(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    A config file that raises while being parsed must be caught and reported as
+    a load failure, never propagated into the control thread. Otherwise one bad
+    file crashes the daemon on startup or reload.
+    """
+
+    print('== parse_config_files catches a file that fails to parse ==')
+    with DaemonSandbox(pl, pld):
+        saved_dirs: Any = pld.PrivleapdGlobal.config_dir_list
+        saved_perms: Any = pl.PrivleapCommon.check_secure_file_permissions
+        saved_parse: Any = pld.parse_config_file
+        with tempfile.TemporaryDirectory(prefix='privleap-cfg-') as tmpdir:
+            conf: str = os.path.join(tmpdir, 'coverage.conf')
+            with open(conf, 'w', encoding='utf-8') as handle:
+                handle.write(
+                    '[action:x]\nCommand=echo hi\nAuthorizedUsers=root\n'
+                )
+            try:
+                pld.PrivleapdGlobal.config_dir_list = [pl.Path(tmpdir)]
+                ## Isolate the parse-exception branch: let the dir/file clear the
+                ## permission gate (covered separately in config_test.py) so the
+                ## fuzzer-independent failure path is what is exercised.
+                pl.PrivleapCommon.check_secure_file_permissions = staticmethod(
+                    lambda *_a, **_k: True
+                )
+
+                def _boom(*_a: Any, **_k: Any) -> bool:
+                    raise RuntimeError('coverage-induced parse failure')
+
+                pld.parse_config_file = _boom  # type: ignore[attr-defined]
+                results.expect_eq(
+                    'an exception while parsing a file fails the load',
+                    pld.parse_config_files(),
+                    False,
+                )
+            finally:
+                pld.PrivleapdGlobal.config_dir_list = saved_dirs
+                pl.PrivleapCommon.check_secure_file_permissions = saved_perms
+                pld.parse_config_file = saved_parse  # type: ignore[attr-defined]
+
+
 def test_send_failures_are_survivable(
     results: Results, pl: ModuleType, pld: ModuleType
 ) -> None:
@@ -1175,6 +1245,8 @@ def main() -> int:
     run_test(results, test_dangling_primary_group_does_not_lock_out, pl, pld)
     run_test(results, test_control_session_dispatch, pl, pld)
     run_test(results, test_reload_reports_success_and_failure, pl, pld)
+    run_test(results, test_parse_config_files_fails_when_none_are_found, pl, pld)
+    run_test(results, test_parse_config_files_survives_a_broken_file, pl, pld)
     run_test(results, test_send_failures_are_survivable, pl, pld)
     run_test(results, test_comm_session_rejects_a_revoked_account, pl, pld)
     run_test(results, test_first_message_must_be_a_request, pl, pld)
