@@ -2181,6 +2181,116 @@ _shc3._rerender()                 # mode-toggle / reflow: clears + replays the d
 ok(_shc3._shift_click_anchor is None, 'CLI _rerender rebuild drops the stale shift-click anchor')
 _shc3.close()
 
+# === ai-review findings on PR #146 (reproduce + fix) ==========================================
+import os as _osX, signal as _sigX, tempfile as _tfX, shutil as _shX          # noqa: E402
+from PyQt6.QtGui import QGuiApplication as _QGA_X                              # noqa: E402
+
+# #5: _reset_vt_to_prompt_baseline must clamp the cursor after a DECCOLM (?3h) revert, or a
+# cursor left past the narrowed width leaks the program's VT state into the returning prompt.
+_dc = SecureTerminal(command='/bin/cat', tui=True)
+_dc._screen.resize(_dc._screen.lines, 132)   # DECCOLM widened to 132
+_dc._screen.saved_columns = 80               # the width the revert restores
+_dc._screen.cursor.x = 100                   # cursor left past the restored 80-col width
+_dc._reset_vt_to_prompt_baseline()
+ok(_dc._screen.columns == 80, '#5: DECCOLM revert restores the saved width')
+ok(_dc._screen.cursor.x <= _dc._screen.columns - 1,
+   '#5: _reset_vt_to_prompt_baseline clamps the cursor into the restored width (no VT leak)')
+_dc.close()
+
+# #6: the deferred SIGKILL (_kill_pgrp_survivor) must gate on IDENTITY (the group leader's
+# start-time), not mere liveness, so a pgid reused after the SIGTERM'd job exited is never killed.
+_kp = SecureTerminal(command='/bin/cat', tui=True)
+_killed6 = []
+_orig_killpg6 = _osX.killpg
+_orig_pst6 = _kp._pid_start_time
+_osX.killpg = lambda _pg, _sig: _killed6.append((_pg, _sig))
+try:
+    _kp._pid_start_time = lambda _pid: 'S1'                     # leader identity matches
+    _kp._kill_pgrp_survivor(4242, 'S1')
+    _match_killed = (4242, _sigX.SIGKILL) in _killed6
+    _killed6.clear()
+    _kp._pid_start_time = lambda _pid: 'S2'                     # pgid reused -> start-time changed
+    _kp._kill_pgrp_survivor(4242, 'S1')
+    _reuse_spared = _killed6 == []
+    _killed6.clear()
+    _kp._pid_start_time = lambda _pid: None                     # leader already gone
+    _kp._kill_pgrp_survivor(4242, 'S1')
+    _gone_spared = _killed6 == []
+finally:
+    _osX.killpg = _orig_killpg6
+    _kp._pid_start_time = _orig_pst6
+ok(_match_killed, '#6: _kill_pgrp_survivor SIGKILLs when the group leader identity still matches')
+ok(_reuse_spared, '#6: does NOT SIGKILL a pgid whose leader start-time changed (reuse race)')
+ok(_gone_spared, '#6: does NOT SIGKILL when the leader is already gone (safe direction)')
+_kp.close()
+
+# #7: _release_pty must NOT waitpid/evict a pid that is no longer OUR child (the shared reaper
+# may have freed it and the OS reused it for another tab). Force identity False; neither
+# waitpid nor the registry discard may touch it.
+_rp = SecureTerminal(command='/bin/cat', tui=True)
+_rp_pid = 999999                              # a pid another tab's LIVE child reused
+_rp._pid = _rp_pid
+SecureTerminal._LIVE_PTY_PIDS.add(_rp_pid)    # simulate: another tab registered this reused pid
+_rp._pid_is_current_child = lambda: False              # not OUR child anymore
+_rp._pid_start_time = lambda _pid: 'OTHER-LIVE'        # but a LIVE process holds it (not gone)
+_waited7 = []
+_orig_wait7 = _osX.waitpid
+_osX.waitpid = lambda _pid, _flags: (_waited7.append(_pid), (0, 0))[1]
+try:
+    _rp._release_pty(hangup=True)
+finally:
+    _osX.waitpid = _orig_wait7
+ok(_waited7 == [], '#7: _release_pty does NOT waitpid a pid that is not our current child')
+ok(_rp_pid in SecureTerminal._LIVE_PTY_PIDS,
+   '#7: _release_pty does NOT evict a reused pid from the shared registry')
+SecureTerminal._LIVE_PTY_PIDS.discard(_rp_pid)
+_rp.close()
+
+# #9: _osc_clipboard (OSC 52 WRITE) must guard clipboard() is None (as _reply_clipboard does),
+# so it cannot raise AttributeError out of the PTY read loop.
+_oc = SecureTerminal(command='/bin/cat', tui=True)
+_oc._osc['osc_clipboard'] = True             # enable the write path (off by default)
+_orig_clip9 = _QGA_X.clipboard
+_QGA_X.clipboard = staticmethod(lambda: None)
+_crashed9 = False
+try:
+    feed_output(_oc, b'\x1b]52;c;aGVsbG8=\x07')   # OSC 52 write of base64 'hello'
+except Exception:                                 # pylint: disable=broad-except
+    _crashed9 = True
+finally:
+    _QGA_X.clipboard = _orig_clip9
+ok(not _crashed9, '#9: _osc_clipboard guards a None clipboard (no AttributeError on OSC 52 write)')
+_oc.close()
+
+# #4: cli_terminfo_dir must not let `tic -o` follow a planted symlink and clobber a file.
+from secure_terminal.terminal import cli_terminfo_dir as _ctd4                # noqa: E402
+if _shX.which('tic'):
+    _cbase = _tfX.mkdtemp(prefix='st-tic-')
+    _victim = _osX.path.join(_cbase, 'VICTIM')
+    with open(_victim, 'wb') as _vf:
+        _vf.write(b'IMPORTANT')
+    _sdir = _osX.path.join(_cbase, 'secure-terminal', 'terminfo', 's')
+    _osX.makedirs(_sdir, exist_ok=True)
+    _osX.symlink(_victim, _osX.path.join(_sdir, 'secure-terminal'))   # poisoned entry
+    _old_xdg = _osX.environ.get('XDG_CACHE_HOME')
+    _osX.environ['XDG_CACHE_HOME'] = _cbase
+    try:
+        _ctd4()
+    finally:
+        if _old_xdg is None:
+            _osX.environ.pop('XDG_CACHE_HOME', None)
+        else:
+            _osX.environ['XDG_CACHE_HOME'] = _old_xdg
+    with open(_victim, 'rb') as _vf:                 # binary: a clobbered victim holds terminfo bytes
+        _victim_intact = _vf.read() == b'IMPORTANT'
+    _entry4 = _osX.path.join(_cbase, 'secure-terminal', 'terminfo', 's', 'secure-terminal')
+    ok(_victim_intact, '#4: cli_terminfo_dir does not clobber a file through a planted symlink')
+    ok(not _osX.path.islink(_entry4),
+       '#4: the planted symlink was removed; tic wrote a fresh regular entry')
+    _shX.rmtree(_cbase, ignore_errors=True)
+else:
+    ok(True, '#4: tic not installed -- symlink-clobber check skipped')
+
 # Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
 # resumes. TUI keys go straight to the child (never Qt's editor), so without this the
 # selection would persist and _render_tui stay a no-op until a mouse click.
