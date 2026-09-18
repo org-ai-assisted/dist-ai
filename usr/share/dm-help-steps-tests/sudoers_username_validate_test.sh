@@ -7,13 +7,16 @@
 
 ## username-plain-for-sudoers (help-steps/build-step-helpers.bsh, used by
 ## 1200_prepare-build-machine) gates a value interpolated verbatim into a sudoers
-## rule. It must REFUSE anything carrying a sudoers metacharacter or the reserved
-## word 'ALL', and ACCEPT a plain [A-Za-z0-9_-] name plus one with a single
-## trailing '$' (Samba machine account), which /etc/adduser.conf NAME_REGEX also
-## permits.
+## rule. It delegates the /etc/adduser.conf NAME_REGEX to the canonical
+## check_valid_linux_user_account_name (helper-scripts strings.bsh) and adds the
+## sudoers-specific rejection of the reserved word 'ALL'. So it must ACCEPT a
+## plain [A-Za-z_][A-Za-z0-9_-]* name and one with a single trailing '$' (Samba
+## machine account), and REFUSE a leading digit/dash, any sudoers metacharacter,
+## and 'ALL'.
 ##
-## The real function is SOURCED from the shared helper library; the canary
-## redefines the pre-fix form in a subshell. Needs no root, no build.
+## Both real functions are SOURCED (build-step-helpers.bsh + the strings.bsh it
+## relies on); the canary shows the NAME_REGEX check alone would let 'ALL'
+## through. Needs no root, no build.
 
 set -o errexit
 set -o nounset
@@ -28,6 +31,21 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
+
+## strings.bsh (check_valid_linux_user_account_name) is sourced the same way the
+## build does it (help-steps/variables): HELPER_SCRIPTS_PATH-relative, defaulting
+## to the dm checkout's helper-scripts submodule. It sources its own siblings via
+## HELPER_SCRIPTS_PATH, so export it before sourcing.
+: "${HELPER_SCRIPTS_PATH:=${dm_checkout}/packages/kicksecure/helper-scripts}"
+export HELPER_SCRIPTS_PATH
+strings_bsh="${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh"
+if [ ! -r "${strings_bsh}" ]; then
+   printf '%s\n' "FATAL: strings.bsh not found at '${strings_bsh}' (needed for check_valid_linux_user_account_name)." >&2
+   exit 1
+fi
+# shellcheck disable=SC1090
+source "${strings_bsh}"
+
 lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
@@ -81,47 +99,26 @@ check_reject 'a:b'
 check_reject 'a$b'
 ## Only ONE trailing '$' is tolerated.
 check_reject 'host$$'
-## A lone '$' strips to empty.
+## A lone '$' is not a valid name.
 check_reject '$'
+## NAME_REGEX requires a leading letter/underscore: a leading digit or dash is
+## refused (the pre-reuse form wrongly accepted both).
+check_reject '9x'
+check_reject '-foo'
 
-## --- CANARY: accepting a trailing '$' is the actual fix --------------------
-## The pre-fix form did not strip a trailing '$', so 'host$' hit the
-## metacharacter class and was refused. Redefine that form in a subshell and
-## confirm it refuses 'host$' while still refusing a real metacharacter.
-buggy_refuses_host=no
-buggy_refuses_meta=no
-(
-   username-plain-for-sudoers() {
-      case "$1" in
-         ''|*[!A-Za-z0-9_-]*)
-            return 1
-            ;;
-         ALL)
-            return 1
-            ;;
-      esac
-      return 0
-   }
-   username-plain-for-sudoers 'host$'
-) || buggy_refuses_host=yes
-(
-   username-plain-for-sudoers() {
-      case "$1" in
-         ''|*[!A-Za-z0-9_-]*)
-            return 1
-            ;;
-         ALL)
-            return 1
-            ;;
-      esac
-      return 0
-   }
-   username-plain-for-sudoers 'a b'
-) || buggy_refuses_meta=yes
-if [ "${buggy_refuses_host}" = "yes" ] && [ "${buggy_refuses_meta}" = "yes" ]; then
-   pass "canary: the pre-fix form refuses 'host\$' (and still refuses metachars)"
+## --- CANARY: the 'ALL' guard is load-bearing -------------------------------
+## check_valid_linux_user_account_name (the NAME_REGEX check we delegate to)
+## ACCEPTS 'ALL' -- it is a syntactically valid account name. So a form that
+## dropped the sudoers 'ALL' guard and relied on NAME_REGEX alone would wrongly
+## accept 'ALL'. Confirm NAME_REGEX accepts it while the real function refuses.
+nameregex_accepts_all=no
+if check_valid_linux_user_account_name ALL ; then
+   nameregex_accepts_all=yes
+fi
+if [ "${nameregex_accepts_all}" = "yes" ] && ! username-plain-for-sudoers ALL ; then
+   pass "canary: NAME_REGEX accepts 'ALL'; the sudoers guard is what refuses it"
 else
-   fail "canary broken: host=${buggy_refuses_host} meta=${buggy_refuses_meta}"
+   fail "canary broken: nameregex_accepts_all=${nameregex_accepts_all}"
 fi
 
 summary_line="===== username-plain-for-sudoers: ${pass_count} pass, ${fail_count} fail ====="

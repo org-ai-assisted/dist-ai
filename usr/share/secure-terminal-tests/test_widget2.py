@@ -3350,6 +3350,39 @@ ok(not _bf_cell('\x1b[91;101mX').bold,
    'phantom-attribute guard: bright fg + bright bg together produce no phantom bold')
 ok(_bf_cell('\x1b[1;91;101mX').bold,
    'phantom-attribute guard: explicit SGR 1 with bright fg+bg keeps real bold')
+# ai-review #1/#2 (PR #146 follow-up): an OUT-OF-SPEC erase selector must be IGNORED, not
+# crash the parser. Stock pyte.Screen.erase_in_{display,line} raise UnboundLocalError for a
+# `how` it does not handle (ESC[9J, ESC[3K, private ESC[?9J), which propagates out of feed()
+# and drops the rest of the PTY chunk. Guarded now: the sequence is a no-op and the tail draws.
+def _erase_tail(_seq):
+    _s = _SHS_bf(20, 3)
+    try:
+        _pyte_bf.Stream(_s).feed(_seq)
+    except Exception as _e:                                  # pylint: disable=broad-except
+        return 'CRASH:%s' % type(_e).__name__
+    return ''.join(_s.buffer[0][_x].data for _x in range(20)).strip()
+ok(_erase_tail('BEFORE\x1b[9JAFTER') == 'BEFOREAFTER',
+   '_SafeHistoryScreen: ESC[9J (bad ED) is ignored; the rest of the chunk still draws')
+ok(_erase_tail('BEFORE\x1b[3KAFTER') == 'BEFOREAFTER',
+   '_SafeHistoryScreen: ESC[3K (bad EL) is ignored; the rest of the chunk still draws')
+ok(_erase_tail('X\x1b[?9JY') == 'XY',
+   '_SafeHistoryScreen: private ESC[?9J (bad DECSED) is ignored; the tail still draws')
+# a VALID erase still works (the guard did not over-block): ESC[2J clears row 0.
+ok(_erase_tail('WIPED\x1b[2J') == '',
+   '_SafeHistoryScreen: a valid ESC[2J still erases (guard did not over-block)')
+# ai-review #3 (PR #146 follow-up): an extended-colour selector with a colour-space id other
+# than 2/5 must CONSUME its data params, not leak a component back as a top-level bright SGR.
+ok(_bf_cell('\x1b[38;3;90mX').fg == 'default',
+   '_SafeHistoryScreen: 38;<CMY>;90 consumes 90, does not leak it as a bright fg')
+ok(_bf_cell('\x1b[48;4;101mY').bg == 'default',
+   '_SafeHistoryScreen: 48;<CMYK>;101 consumes 101, does not leak it as a bright bg')
+ok(_bf_cell('\x1b[38;2;10;20;30mX').fg != 'default',
+   '_SafeHistoryScreen: a complete 38;2 truecolour is still applied (not over-consumed)')
+ok(_bf_cell('\x1b[38;5;196mX').fg != 'default',
+   '_SafeHistoryScreen: a complete 38;5 indexed colour is still applied')
+# an INCOMPLETE 38;2 must NOT clear a preceding bright fg (91;38;2;1 keeps bright red)
+ok(_bf_cell('\x1b[91;38;2;1mX').fg == 'brightred',
+   '_SafeHistoryScreen: an incomplete 38;2 selector leaves the preceding bright fg intact')
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
