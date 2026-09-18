@@ -82,6 +82,11 @@ def _load_privleap() -> Any:
     in-process run raises ImportError here and main() maps it to skip-vs-FATAL.
     """
 
+    ## PRIVLEAP_REPO set but unresolved (no privleap tree there): do NOT fall
+    ## back to an installed/bundled privleap -- that would fuzz a DIFFERENT tree
+    ## than asked. Return None so main() makes it FATAL via _skip_not_found.
+    if os.environ.get("PRIVLEAP_REPO") is not None and _PARENT is None:
+        return None
     try:
         if _HAVE_ATHERIS:
             with atheris.instrument_imports():
