@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Set up the minimal privleap runtime the live-daemon session fuzzer needs on a
+## bare CI VM: the runtime deps, the privleap system group, the PAM policy the
+## shim authenticates against, and an installed shim path for bind_repo_shim to
+## mount the checkout's shim over. privleapd + the shim still run from the
+## CHECKOUT (PRIVLEAP_REPO), so the fuzzer tests the code under review; only
+## these few fixed-path artifacts come from the package.
+##
+## Usage: privleap-tests-session-fuzz-setup <privleap-checkout-root>
+## Needs sudo (VM runner, not the dist-ai container).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+repo="${1:?privleap checkout root required}"
+
+if [ ! -f "${repo}/etc/pam.d/privleapd" ]; then
+  printf '%s\n' "FATAL: ${repo} is not a privleap checkout (no etc/pam.d/privleapd)." >&2
+  exit 1
+fi
+
+sudo apt-get update
+sudo apt-get install --yes --no-install-recommends python3-pam python3-sdnotify
+
+## --system group, idempotent: a re-run must not fail if it already exists.
+sudo addgroup --system privleap || true
+sudo install -D --mode=0644 "${repo}/etc/pam.d/privleapd" /etc/pam.d/privleapd
+sudo install -D --mode=0755 \
+  "${repo}/usr/libexec/privleap/shim.py" /usr/libexec/privleap/shim.py
+
+printf '%s\n' 'privleap-tests-session-fuzz-setup: runtime ready.'
