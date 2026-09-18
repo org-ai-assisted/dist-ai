@@ -57,14 +57,23 @@ import tempfile
 import coverage
 from coverage.sqldata import CoverageData
 
-## Escape every character a line-oriented reader treats as a break so each DEBUG-* record
-## stays ONE physical line. A POSIX filename may legally contain such bytes; without this a
-## crafted source path under pkg_dir could split its record and forge an extra line (e.g. a
-## fake "drop=no" summary) into the greppable output stream. Cover the full str.splitlines()
-## set, not just ASCII C0: the ASCII controls (NUL, LF, CR, VT, FF, FS-RS) live in
-## range(0x20); NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029) do not
-## but still break str.splitlines() (the idiomatic Python split). DEL (0x7f) escaped too.
+## Escape a source path before it becomes a record's module key, so the escaping is BOTH
+## line-break-free AND injective:
+##   - line-break-free: no output char is one a line reader breaks on, so each DEBUG-* record
+##     stays ONE physical line (a crafted path cannot forge an extra line, e.g. a fake
+##     "drop=no" summary, into the greppable stream). Cover the full str.splitlines() set, not
+##     just ASCII C0: the ASCII controls (NUL, LF, CR, VT, FF, FS-RS) live in range(0x20); NEL
+##     (U+0085), LINE SEPARATOR (U+2028), PARAGRAPH SEPARATOR (U+2029) do not but still break
+##     str.splitlines() (the idiomatic Python split). DEL (0x7f) escaped too.
+##   - injective: the escape character '\' is itself escaped ('\' -> '\\'), so a single
+##     backslash in the output always begins an escape. Without this a file literally named
+##     with the 4 chars '\x0a' and one with a real newline byte would map to the SAME key and
+##     silently clobber each other in the results dict -- a real gap vanishing, the inverse of
+##     the forge above. A POSIX filename may legally contain any of these bytes.
+## str.translate is a single per-character pass, so mixing '\' -> '\\' with the control-char
+## escapes cannot double-escape.
 _CTRL = {c: "\\x%02x" % c for c in list(range(0x20)) + [0x7f, 0x85]}
+_CTRL[0x5c] = "\\\\"
 _CTRL[0x2028] = "\\u2028"
 _CTRL[0x2029] = "\\u2029"
 

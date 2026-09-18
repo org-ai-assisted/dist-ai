@@ -40,6 +40,9 @@
 ##   O: a readable-but-IRRELEVANT raw dir (valid coverage measuring only unrelated sources,
 ##      nothing under pkg_dir) -> drop=unknown, NOT a confident drop=no. Readable is not
 ##      relevant: a stale/mismatched snapshot cannot cross-check the package.
+##   P: the key escaping is INJECTIVE -- a file literally named with the chars '\x0a' and one
+##      with a real newline byte are DISTINCT keys, not one silently clobbering the other. The
+##      escape char '\' must itself be escaped, else a real gap vanishes from the report.
 ##
 ## Subject: usr/share/dist-ai-tests-common/cov-debug-missing.py. Needs importable coverage;
 ## absent -> exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Pure
@@ -435,6 +438,32 @@ if has "${outO}" 'drop=unknown' && ! has "${outO}" 'DEBUG-COMBINE-DROP' \
    ok 0 'O: readable-but-irrelevant raw data -> drop=unknown (real gap not falsely cleared)'
 else
    ok 1 'O: irrelevant raw data misreported (expected drop=unknown, real miss still shown)'
+fi
+
+## ---- Case P: key escaping is injective -- '\x0a'-literal vs real-LF names do not collide ---
+## Two files whose REAL names differ only by "the 4 chars backslash-x-0-a" vs "one LF byte".
+## If '\' is not itself escaped, both escape to the identical key 'weird\x0aname.py' and the
+## later-sorted one silently overwrites the other in the results dict -> a real gap vanishes
+## (combined=1). With the escape char escaped they stay distinct keys (combined=2).
+pkgP="${work}/pkgP"; mkdir --parents -- "${pkgP}"
+litfile="${pkgP}/$(printf 'weird\\x0aname.py')"   ## literal chars: backslash x 0 a
+nlfile2="${pkgP}/$(printf 'weird\nname.py')"       ## a real newline byte
+printf '%s\n' 'def never():' '    return 1' > "${litfile}"
+printf '%s\n' 'def never():' '    return 1' > "${nlfile2}"
+printf '%s\n' 'import os, runpy' \
+   "runpy.run_path(os.environ['LITFILE'], run_name='lit_mod')" \
+   "runpy.run_path(os.environ['NLFILE2'], run_name='nl2_mod')" > "${work}/driveP.py"
+rawP="${work}/rawP"; mkdir --parents -- "${rawP}"
+LITFILE="${litfile}" NLFILE2="${nlfile2}" PYTHONPATH="${pkgP}" \
+   COVERAGE_FILE="${rawP}/.coverage" python3 -m coverage run --parallel-mode -- \
+   "${work}/driveP.py" >/dev/null 2>&1
+combine_into "${work}/P/.coverage" "${rawP}"/.coverage.*
+outP="${work}/outP.txt"
+python3 "${helper}" "${work}/P/.coverage" "${rawP}" "${pkgP}" > "${outP}" 2>&1 || true
+if has "${outP}" 'combined=2'; then
+   ok 0 'P: distinct filenames escaping-collision-free (injective key, no silent clobber)'
+else
+   ok 1 'P: two distinct filenames collided to one key (a real gap silently dropped)'
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
