@@ -313,10 +313,11 @@ class FileContext:
         comment ('cmd ## style-ok: X') does not waive. Restricting to comment
         lines also excludes a heredoc body or a quoted string that merely LOOKS
         like a waiver and would otherwise silently disable a rule file-wide. None
-        for a file kind with no comment parser, where the caller scans raw source:
-        a '## style-ok:' inside a quoted scalar in YAML/TOML is not disambiguated.
-        That residual is out of threat model (an AI accident, not a crafted data
-        bypass) -- see _waiver_present."""
+        for a file kind with no comment parser -- or a shell/Python source the
+        parser rejects -- where the caller scans raw source: a '## style-ok:' in a
+        quoted scalar or heredoc body is not disambiguated. That residual is out
+        of threat model (forging a waiver is adversarial, not an AI accident) --
+        see _waiver_present."""
         if not self._comment_lines_done:
             self._comment_lines_done = True
             numbers = self._comment_line_numbers()
@@ -329,12 +330,15 @@ class FileContext:
 
     def _waiver_present(self, pattern):
         """True if PATTERN matches a waiver. Where the file's comments can be
-        located (shell / Python) the match is restricted to real comment lines;
-        a parserless kind (YAML/TOML/config) has none, so it scans the raw source
-        and a line-leading '## style-ok:' sitting in DATA (a quoted or block
-        scalar) reads as a waiver. Accepted, NOT a hole to close: planting the
-        token in data to forge a waiver is ADVERSARIAL, and this gate's threat
-        model is an AI ACCIDENT, not a crafted bypass."""
+        located (a well-formed shell / Python file) the match is restricted to
+        real comment lines; with no locatable comments -- a parserless config
+        kind, OR a shell/Python file the parser rejects -- it scans the raw
+        source, so a line-leading '## style-ok:' sitting in DATA (a quoted or
+        block scalar, a heredoc body) reads as a waiver. Accepted, NOT a hole to
+        close: a plain syntax error is still caught (bash -n / the parser report
+        it), and suppressing a rule this way ALSO requires planting the waiver
+        token -- which is ADVERSARIAL. This gate's threat model is an AI
+        ACCIDENT, not a crafted bypass."""
         lines = self._comment_source_lines()
         if lines is not None:
             return any(pattern.search(line) for line in lines)
