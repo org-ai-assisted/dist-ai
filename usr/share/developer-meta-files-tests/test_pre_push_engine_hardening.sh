@@ -118,6 +118,31 @@ else
    note_fail "staged-blob shellcheck rc: a '0:dir' object-spec collision SUPPRESSED the finding (bypass)"
 fi
 
+## --- staged-blob shellcheck rc ignores an UNMERGED (conflicted) .shellcheckrc ---
+## 'git ls-files --stage' emits one record per conflict stage for an unmerged path
+## and NO stage-0 entry; the rc lookup used to keep the LAST (stage 3, "theirs").
+## Canary: leave 'sub/.shellcheckrc' conflicted with theirs='disable=all' and a
+## failing 'sub/prog.sh'; the staged blob (source_rev='') must STILL report SC2016.
+## FAILS pre-fix (theirs' 'disable=all' governs the run and suppresses the finding).
+sc_unmerged="$("${tool_test_dir}/staged_blob_unmerged_rc_probe.py" "${test_dir}")"
+if [ "${sc_unmerged}" != "0" ]; then
+   note_pass "staged-blob shellcheck rc ignores an unmerged conflict-side .shellcheckrc"
+else
+   note_fail "staged-blob shellcheck rc: an unmerged 'theirs' .shellcheckrc SUPPRESSED the finding (bypass)"
+fi
+
+## --- have_on_path() rejects a same-named DIRECTORY on PATH --------------------------
+## os.access(dir, X_OK) is True for a traversable directory, so a 'shellcheck'
+## DIRECTORY on PATH read as "tool present"; detect() then exec'd it, hit
+## PermissionError, and 'except OSError' swallowed it -- no NOTE, no FAIL (silent
+## fail-open). Canary: PATH holds only a 'shellcheck/' subdir; have_on_path False.
+have_dir="$("${tool_test_dir}/have_rejects_dir_probe.py" "${test_dir}")"
+if [ "${have_dir}" = "False" ]; then
+   note_pass "have_on_path() rejects a same-named directory on PATH (no silent fail-open)"
+else
+   note_fail "have_on_path() treated a directory on PATH as the tool (got '${have_dir}')"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-engine-hardening: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1
