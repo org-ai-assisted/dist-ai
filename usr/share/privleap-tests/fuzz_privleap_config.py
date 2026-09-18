@@ -51,6 +51,9 @@ except ImportError:
 
 def _load_privleap() -> Any:
     """Import privleap for both the onefile and in-process; see fuzz_privleap."""
+    ## A set-but-unresolved PRIVLEAP_REPO must not fall back to installed privleap.
+    if os.environ.get("PRIVLEAP_REPO") is not None and _PARENT is None:
+        return None
     try:
         if _HAVE_ATHERIS:
             with atheris.instrument_imports():

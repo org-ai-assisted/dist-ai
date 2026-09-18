@@ -52,6 +52,9 @@ except ImportError:
 def _load_privleap() -> Any:
     """Import the privleap library; None ONLY when privleap itself is absent
     (a genuine "not configured" run, which main() maps to skip-vs-FATAL)."""
+    ## A set-but-unresolved PRIVLEAP_REPO must not fall back to installed privleap.
+    if os.environ.get("PRIVLEAP_REPO") is not None and _PARENT is None:
+        return None
     try:
         if _HAVE_ATHERIS:
             with atheris.instrument_imports():
