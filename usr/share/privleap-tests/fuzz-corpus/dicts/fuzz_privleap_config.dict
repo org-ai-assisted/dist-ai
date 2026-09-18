@@ -1,0 +1,11 @@
+# privleap config section/key tokens (libFuzzer dictionary).
+"[persistent-users]"
+"[allowed-users]"
+"[action:"
+"User="
+"Group="
+"Command="
+"AuthorizedUsers="
+"AuthorizedGroups="
+"TargetUser="
+"TargetGroup="

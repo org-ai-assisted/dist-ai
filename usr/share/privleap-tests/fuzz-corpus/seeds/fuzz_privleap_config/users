@@ -1,0 +1,5 @@
+[allowed-users]
+User=root
+
+[persistent-users]
+User=root

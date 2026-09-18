@@ -1,0 +1,8 @@
+# privleap wire-protocol tokens (libFuzzer dictionary).
+"SIGNAL"
+"ACCESS_CHECK"
+"TERMINATE"
+"CREATE"
+"DESTROY"
+"RELOAD"
+" "
