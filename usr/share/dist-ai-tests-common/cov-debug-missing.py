@@ -24,9 +24,11 @@
 ##   DEBUG-COMBINE-DROP <module.py> combine=<spec> union=<spec>   combine lost data the union kept
 ##   DEBUG-MISSING-SUMMARY combined=<n> union=<n> drop=<yes|no|unknown>   one line per run
 ##
-## drop=unknown means no USABLE pre-combine data was preserved (raw dir empty, or every raw
-## piece unreadable), so gap-vs-drop could not be cross-checked -- never inferred as a drop
-## from an absent/empty union, which would flag every real, constant gap as a flake.
+## drop=unknown means the union measured no file under the package (raw dir empty, every raw
+## piece unreadable, or the pieces measured only unrelated sources -- readable is not
+## relevant), so gap-vs-drop could not be cross-checked. Never inferred as a drop from an
+## absent/empty union (which would flag every real gap as a flake), and never as a confident
+## drop=no either (which would clear a gap that was never cross-checked).
 ##
 ## A DROP is only ever inferred where the union actually MEASURED the module, symmetrically:
 ##   - union measured it, combined did NOT measure it at all -> combine lost the whole file.
@@ -188,15 +190,20 @@ def main():
     for module in sorted(combined):
         print("DEBUG-MISSING %s %s" % (module, combined[module][1]))
 
-    if n_usable == 0:
-        ## No USABLE pre-combine data (dir empty, or every piece unreadable), so the union
-        ## cross-check cannot run. Do NOT infer a combine-drop from an empty union -- that
-        ## would flag every real, constant gap as a flake (the exact inversion this tool
-        ## exists to avoid). Report the combined misses as-is; drop verdict unknown.
+    if not union_measured:
+        ## The union measured NO file under pkg_dir, so the cross-check cannot run for this
+        ## package: raw dir empty, every piece unreadable, OR the pieces measured only
+        ## unrelated sources (a stale / mismatched raw snapshot -- readable is not the same as
+        ## relevant). Do NOT infer a verdict from that -- neither a combine-drop (which would
+        ## flag every real, constant gap as a flake) NOR a confident drop=no (which would
+        ## clear a gap that was never actually cross-checked). Report the combined misses
+        ## as-is; drop verdict unknown.
         if n_raw == 0:
             reason = "no pre-combine data preserved"
-        else:
+        elif n_usable == 0:
             reason = "all %d raw piece(s) unreadable" % n_raw
+        else:
+            reason = "%d raw piece(s) measured nothing under the package" % n_raw
         print("DEBUG-MISSING-SUMMARY combined=%d union=n/a raw_files=%d "
               "drop=unknown (%s; cross-check skipped)" % (len(combined), n_raw, reason))
         return 0

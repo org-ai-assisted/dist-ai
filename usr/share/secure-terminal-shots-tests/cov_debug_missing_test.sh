@@ -37,6 +37,9 @@
 ##      (the combined-side dual of H: absent-from-combined != combined-covered-fully).
 ##   N: a source filename containing a newline cannot forge an extra output record (control
 ##      chars in a key are escaped -> every DEBUG-* record stays one physical line).
+##   O: a readable-but-IRRELEVANT raw dir (valid coverage measuring only unrelated sources,
+##      nothing under pkg_dir) -> drop=unknown, NOT a confident drop=no. Readable is not
+##      relevant: a stale/mismatched snapshot cannot cross-check the package.
 ##
 ## Subject: usr/share/dist-ai-tests-common/cov-debug-missing.py. Needs importable coverage;
 ## absent -> exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Pure
@@ -405,6 +408,33 @@ if [ -s "${outN}" ] && [ "${rcN}" -eq 0 ]; then
    ok 0 'N: LF and U+2028 in a source filename cannot forge an extra output record'
 else
    ok 1 'N: a line-break char in a filename split the output into a forgeable extra line'
+fi
+
+## ---- Case O: readable-but-irrelevant raw data -> drop=unknown, not a false drop=no --------
+## The union side is judged by RELEVANCE, not mere readability. A valid, readable raw piece
+## that measured only an UNRELATED package (a stale/mismatched snapshot) measures nothing under
+## pkg_dir -> the cross-check cannot run, same as an empty raw dir. Counting readable pieces
+## alone would skip the drop=unknown guard and print a confident, wrong drop=no for a real gap.
+pkgO="${work}/pkgO"; mkdir --parents -- "${pkgO}"
+otherO="${work}/otherO"; mkdir --parents -- "${otherO}"
+printf '%s\n' 'def a():' '    return 1' 'def never():' '    return 3' > "${pkgO}/mod.py"
+printf '%s\n' 'def foo():' '    return 42' > "${otherO}/unrelated.py"
+printf '%s\n' 'import mod' 'mod.a()' > "${work}/drivePkgO.py"
+printf '%s\n' 'import unrelated' 'unrelated.foo()' > "${work}/driveOtherO.py"
+combO="${work}/O"; mkdir --parents -- "${combO}"
+PYTHONPATH="${pkgO}" COVERAGE_FILE="${combO}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${pkgO}" -- "${work}/drivePkgO.py" >/dev/null 2>&1
+COVERAGE_FILE="${combO}/.coverage" python3 -m coverage combine >/dev/null 2>&1
+rawO="${work}/rawO_irrel"; mkdir --parents -- "${rawO}"
+PYTHONPATH="${otherO}" COVERAGE_FILE="${rawO}/.coverage" python3 -m coverage run \
+   --parallel-mode --source="${otherO}" -- "${work}/driveOtherO.py" >/dev/null 2>&1
+outO="${work}/outO.txt"
+python3 "${helper}" "${combO}/.coverage" "${rawO}" "${pkgO}" > "${outO}" 2>&1 || true
+if has "${outO}" 'drop=unknown' && ! has "${outO}" 'DEBUG-COMBINE-DROP' \
+   && has "${outO}" 'DEBUG-MISSING mod.py'; then
+   ok 0 'O: readable-but-irrelevant raw data -> drop=unknown (real gap not falsely cleared)'
+else
+   ok 1 'O: irrelevant raw data misreported (expected drop=unknown, real miss still shown)'
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
