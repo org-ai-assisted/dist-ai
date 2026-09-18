@@ -23,11 +23,20 @@
 ##   H: a module the union NEVER MEASURED (an incomplete snapshot) is NOT a drop. Pre-fix,
 ##      absent-from-union was indistinguishable from union-covered-fully -> DEBUG-COMBINE-DROP
 ##      + drop=yes falsely. Post-fix the union's MEASURED set gates the drop check.
-##   I: relative_files data (coverage's cross-machine mode) is resolved against the record
-##      root -> the real miss is reported. Pre-fix, record-root-relative paths resolved
-##      against the tool's cwd -> filtered out -> combined=0, a silent false negative.
+##   I: relative_files data (coverage's cross-machine mode), recorded with NO sibling
+##      .coveragerc, resolves against the record root -> the EXACT real miss is reported.
+##      chdir alone leaves the reporting object at relative_files=False -> analysis returns
+##      every line missing (a silent wrong answer); the fix enables relative mode explicitly.
 ##   J: a truncated/corrupt combined data file -> skipped, no crash (never fails the gate).
-##      Pre-fix, cov.load() raised DataError -> traceback + exit 1.
+##   K: a malformed sibling .coveragerc next to the data file -> NOT read (config_file=False),
+##      no crash. It raises ConfigError (not a CoverageException), which would exit 1.
+##   L: EVERY raw piece unreadable -> drop=unknown, NO false drop=no. Same "no usable
+##      cross-check data" condition as an empty raw dir; a bare glob-hit count would misreport
+##      a confident drop=no.
+##   M: combined that DROPPED a whole file the union measured -> drop=yes + DEBUG-COMBINE-DROP
+##      (the combined-side dual of H: absent-from-combined != combined-covered-fully).
+##   N: a source filename containing a newline cannot forge an extra output record (control
+##      chars in a key are escaped -> every DEBUG-* record stays one physical line).
 ##
 ## Subject: usr/share/dist-ai-tests-common/cov-debug-missing.py. Needs importable coverage;
 ## absent -> exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Pure
@@ -252,31 +261,33 @@ else
 fi
 
 ## ---- Case I: relative_files data resolved against the record root (not the tool cwd) ------
-## Recorded with relative_files=True (coverage's recommended cross-machine/container combine
-## mode) from the proj root, so measured_files() yields record-root-relative paths. Pre-fix:
-## realpath() resolved them against the TOOL's cwd -> the containment filter dropped them ->
-## combined=0, a real gap silently reported as none. Post-fix: the tool chdir's to the
-## combined data file's dir (the record root) so the paths resolve. Invoked from a NEUTRAL
-## cwd below so the pre-fix cwd-relative resolution genuinely fails.
+## Recorded with relative_files=True (coverage's cross-machine/container combine mode) via an
+## rcfile OUTSIDE the proj root, so NO sibling .coveragerc sits next to the data file -- the
+## tool must handle relative data on its own, not by accidentally auto-loading a co-located
+## config. measured_files() yields record-root-relative paths. Two failure modes this guards:
+## a plain realpath()-vs-tool-cwd drops them (combined=0), and a chdir that does not also
+## enable relative mode makes analysis report EVERY line missing (mod.py 1-4, a silent wrong
+## answer). Post-fix reports the EXACT miss (mod.py 4). Invoked from a NEUTRAL cwd.
 projI="${work}/projI"
 mkdir --parents -- "${projI}/pkg"
 printf '%s\n' 'def a():' '    return 1' 'def never():' '    return 3' > "${projI}/pkg/mod.py"
 printf '%s\n' 'import mod' 'mod.a()' > "${projI}/drive.py"
-printf '%s\n' '[run]' 'relative_files = True' > "${projI}/.coveragerc"
+rcI="${work}/relconfig.rc"   ## OUTSIDE projI -- no sibling config next to the data file
+printf '%s\n' '[run]' 'relative_files = True' > "${rcI}"
 ( cd "${projI}" && PYTHONPATH="${projI}/pkg" COVERAGE_FILE="${projI}/.coverage" python3 \
-   -m coverage run --parallel-mode --rcfile=.coveragerc --source=pkg -- drive.py >/dev/null 2>&1 )
+   -m coverage run --parallel-mode --rcfile="${rcI}" --source=pkg -- drive.py >/dev/null 2>&1 )
 rawI="${projI}/rawI"; mkdir --parents -- "${rawI}"
 cp --preserve -- "${projI}"/.coverage.* "${rawI}/"
 ( cd "${projI}" && COVERAGE_FILE="${projI}/.coverage" python3 -m coverage combine \
-   --rcfile=.coveragerc >/dev/null 2>&1 )
+   --rcfile="${rcI}" >/dev/null 2>&1 )
 outI="${work}/outI.txt"
 ## Invoke from ${work} (NOT projI): pre-fix resolves relative paths here and finds nothing.
 ( cd "${work}" && python3 "${helper}" "${projI}/.coverage" "${rawI}" "${projI}/pkg" ) \
    > "${outI}" 2>&1 || true
-if has "${outI}" 'DEBUG-MISSING mod.py' && has "${outI}" 'combined=1'; then
-   ok 0 'I: relative_files data resolved against the record root (real miss reported)'
+if has "${outI}" 'DEBUG-MISSING mod.py 4$' && ! has "${outI}" 'mod.py 1-4'; then
+   ok 0 'I: relative_files data (no sibling config) resolves to the EXACT miss, not all-missing'
 else
-   ok 1 'I: relative_files data not resolved -> real miss silently dropped'
+   ok 1 'I: relative_files data mis-resolved (dropped or reported all-missing)'
 fi
 
 ## ---- Case J: a corrupt combined data file -> skipped, no crash (never fails the gate) -----
@@ -293,6 +304,94 @@ if [ "${rcJ}" -eq 0 ] && ! has "${outJ}" 'Traceback'; then
    ok 0 'J: a corrupt combined data file is skipped, not a crash (never fails the gate)'
 else
    ok 1 "J: corrupt combined data crashed (rc=${rcJ})"
+fi
+
+## ---- Case K: a malformed sibling .coveragerc next to the data file -> not read, no crash --
+## The chdir toward relative_files support must not make coverage auto-read an on-disk config:
+## a malformed .coveragerc raises ConfigError (NOT a CoverageException), which the corrupt-data
+## guard would not catch -> traceback + exit 1. config_file=False must keep it best-effort.
+dirK="${work}/K"; mkdir --parents -- "${dirK}"
+combine_into "${dirK}/.coverage" "${raw_files[@]}"   ## a valid combined file (real gap in mod)
+printf '%s\n' '[run]' 'relative_files = not-a-bool' > "${dirK}/.coveragerc"
+rawK="${work}/rawK"; mkdir --parents -- "${rawK}"
+outK="${work}/outK.txt"
+rcK=0
+python3 "${helper}" "${dirK}/.coverage" "${rawK}" "${pkg}" > "${outK}" 2>&1 || rcK=$?
+if [ "${rcK}" -eq 0 ] && ! has "${outK}" 'Traceback' && ! has "${outK}" 'ConfigError'; then
+   ok 0 'K: a malformed sibling .coveragerc is not read (config_file=False), no crash'
+else
+   ok 1 "K: malformed sibling config crashed (rc=${rcK})"
+fi
+
+## ---- Case L: EVERY raw piece unreadable -> drop=unknown, NO false drop=no -----------------
+## A corrupt raw piece is skipped. If ALL are corrupt the union has zero usable data -- the
+## SAME "cannot cross-check" condition as an empty raw dir, which must read drop=unknown, not
+## a confident drop=no. A bare glob-hit count (raw_files>0) would misreport drop=no.
+rawL="${work}/rawL"; mkdir --parents -- "${rawL}"
+printf '%s' 'not a sqlite coverage db 1' > "${rawL}/.coverage.bad1"
+printf '%s' 'not a sqlite coverage db 2' > "${rawL}/.coverage.bad2"
+outL="${work}/outL.txt"
+python3 "${helper}" "${work}/A/.coverage" "${rawL}" "${pkg}" > "${outL}" 2>&1 || true
+if has "${outL}" 'drop=unknown' && ! has "${outL}" 'DEBUG-COMBINE-DROP'; then
+   ok 0 'L: all raw pieces unreadable -> drop=unknown (no false confident verdict)'
+else
+   ok 1 'L: all-unreadable raw pieces misreported (expected drop=unknown)'
+fi
+
+## ---- Case M: combined DROPPED a whole file the union measured -> drop=yes -----------------
+## The combined-side dual of H: a file measured by the raw union but absent from combined is a
+## combine drop of the ENTIRE file, not "combined covered it fully". Combined built from a raw
+## piece that measures ONLY modo; the union (raw dir) measures both modm and modo. Pre-fix,
+## modm absent from combined -> c_set empty -> no drop flagged.
+pkgM="${work}/pkgM"
+mkdir --parents -- "${pkgM}"
+printf '%s\n' 'def m():' '    return 1' 'def mn():' '    return 2' > "${pkgM}/modm.py"
+printf '%s\n' 'def o():' '    return 1' 'def on():' '    return 2' > "${pkgM}/modo.py"
+printf '%s\n' 'import modm' 'modm.m()' > "${work}/driveMm.py"
+printf '%s\n' 'import modo' 'modo.o()' > "${work}/driveMo.py"
+rawMm="${work}/rawMm"; mkdir --parents -- "${rawMm}"
+PYTHONPATH="${pkgM}" COVERAGE_FILE="${rawMm}/.coverage" python3 -m coverage run \
+   --parallel-mode -- "${work}/driveMm.py" >/dev/null 2>&1
+rawMo="${work}/rawMo"; mkdir --parents -- "${rawMo}"
+PYTHONPATH="${pkgM}" COVERAGE_FILE="${rawMo}/.coverage" python3 -m coverage run \
+   --parallel-mode -- "${work}/driveMo.py" >/dev/null 2>&1
+combine_into "${work}/M/.coverage" "${rawMo}"/.coverage.*   ## combined measures ONLY modo
+unionM="${work}/unionM"; mkdir --parents -- "${unionM}"
+cp --preserve -- "${rawMm}"/.coverage.* "${rawMo}"/.coverage.* "${unionM}/"  ## union measures both
+outM="${work}/outM.txt"
+python3 "${helper}" "${work}/M/.coverage" "${unionM}" "${pkgM}" > "${outM}" 2>&1 || true
+if has "${outM}" 'drop=yes' && has "${outM}" 'DEBUG-COMBINE-DROP modm.py'; then
+   ok 0 'M: a whole file dropped from combined is flagged (combined-side measured gate)'
+else
+   ok 1 'M: a whole file dropped from combined was NOT flagged'
+fi
+
+## ---- Case N: a source filename with a newline cannot forge an extra output record ---------
+## POSIX filenames may contain a newline; coverage keys measurement off co_filename, so a file
+## measured via runpy keeps that name. An unescaped key would split its DEBUG-MISSING record
+## across two lines -- a line-oriented consumer then sees a forged second record. The fix
+## escapes control chars, so the miss for the odd file collapses to ONE physical line and no
+## bare 'DEBUG-...' second line appears.
+pkgN="${work}/pkgN"
+mkdir --parents -- "${pkgN}"
+nlfile="${pkgN}/$(printf 'weird\nname').py"
+printf '%s\n' 'def never():' '    return 1' > "${nlfile}"
+## Pass the newline-bearing path via the environment (an env value carries a newline safely),
+## never embedded into python source -- coverage keys measurement off co_filename.
+printf '%s\n' 'import os, runpy' \
+   "runpy.run_path(os.environ['NLFILE'], run_name='weird_mod')" > "${work}/driveN.py"
+rawN="${work}/rawN"; mkdir --parents -- "${rawN}"
+NLFILE="${nlfile}" PYTHONPATH="${pkgN}" COVERAGE_FILE="${rawN}/.coverage" python3 \
+   -m coverage run --parallel-mode -- "${work}/driveN.py" >/dev/null 2>&1
+combine_into "${work}/N/.coverage" "${rawN}"/.coverage.*
+outN="${work}/outN.txt"
+python3 "${helper}" "${work}/N/.coverage" "${rawN}" "${pkgN}" > "${outN}" 2>&1 || true
+## Every physical line is either blank or starts with a DEBUG- record: a split line (the tail
+## of the newline-bearing filename, e.g. 'name.py 2') would violate this.
+if [ -s "${outN}" ] && ! grep --quiet --extended-regexp --invert-match '^(DEBUG-|$)' "${outN}"; then
+   ok 0 'N: a newline in a source filename cannot forge an extra output record'
+else
+   ok 1 'N: a control char in a filename split the output into a forgeable extra line'
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
