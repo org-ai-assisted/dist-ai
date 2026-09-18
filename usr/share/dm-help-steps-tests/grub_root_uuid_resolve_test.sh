@@ -82,7 +82,8 @@ printf '%s\n' \
    'loop0p10 UUID-TEN' \
    'loop0p1 UUID-ONE' \
    'loop0p2 UUID-TWO' \
-   'abc UUID-ABC'
+   'abc UUID-ABC' \
+   'a\b UUID-BS'
 LSBLK
 chmod +x -- "${stub_dir}/lsblk"
 
@@ -119,6 +120,16 @@ else
    fail "regex safety: expected empty, got '${output}'"
 fi
 
+## --- 3b. a backslash in the name is matched LITERALLY -----------------------
+## 'a\b' must return UUID-BS. 'awk -v' would process the '\b' into a backspace
+## and fail to match; the ENVIRON form keeps the exact bytes.
+output="$( resolve "${step_file}" 'a\b' || true )"
+if [ "${output}" = "UUID-BS" ]; then
+   pass 'a backslash escape in the name is not interpreted (literal match)'
+else
+   fail "escape safety: expected 'UUID-BS', got '${output}'"
+fi
+
 ## --- 4. an absent name returns nothing -------------------------------------
 output="$( resolve "${step_file}" no-such-partition || true )"
 if [ -z "${output}" ]; then
@@ -151,6 +162,25 @@ if [ "${buggy_regex}" = "UUID-ABC" ] && [ "${buggy_substr}" = "UUID-ONE" ]; then
    pass 'canary: the regex-buggy form is caught by case 3 (and only case 3)'
 else
    fail "canary broken: buggy form gave substr='${buggy_substr}' regex='${buggy_regex}'"
+fi
+
+## --- 6. CANARY: the 'awk -v' form fails the backslash case ------------------
+## Proves case 3b has teeth: 'awk -v' processes the '\b' escape, so it does not
+## match the literal 'a\b' row, whereas the shipped ENVIRON form does.
+awkv_buggy="${work_dir}/9996_awkv"
+cat > "${awkv_buggy}" <<'AWKV'
+#!/bin/bash
+resolve-partition-uuid() {
+   local partition_name
+   partition_name="$1"
+   lsblk --raw --noheadings --output NAME,UUID \
+      | awk -v dev="${partition_name}" '$1 == dev { print $2; exit }'
+}
+AWKV
+if [ -z "$( resolve "${awkv_buggy}" 'a\b' || true )" ]; then
+   pass 'canary: the awk -v form fails the backslash case (case 3b has teeth)'
+else
+   fail 'canary broken: the awk -v form matched the backslash name'
 fi
 
 summary_line="===== resolve-partition-uuid: ${pass_count} pass, ${fail_count} fail ====="
