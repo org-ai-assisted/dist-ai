@@ -8,13 +8,26 @@
 ## Regression + CANARY for cov-debug-missing.py, the coverage miss-attribution helper
 ## (COVERAGE_DEBUG_MISSING). It must distinguish a real, constant coverage gap from a
 ## combine/measurement DROP -- and it must NOT get that backwards when its own raw-data side
-## channel is empty. Three cases over a synthetic package with one never-called function:
+## channel is empty, incomplete, or the data is recorded relative. Cases over synthetic
+## packages:
 ##   A (the fixed bug): raw dir EMPTY -> the union cross-check cannot run, so drop=unknown and
 ##      NO DEBUG-COMBINE-DROP. On the pre-fix helper the empty union mismatched every real
 ##      gap -> drop=yes + DEBUG-COMBINE-DROP, i.e. a real gap FALSELY reported as a flake.
 ##   B: raw files present, combined == union -> drop=no (a correctly-classified real gap).
 ##   C: combined built from a SUBSET of the raw files (a genuine drop) -> drop=yes +
 ##      DEBUG-COMBINE-DROP (the true positive still fires).
+##   D: same-named files in different subpackages keyed distinctly (no basename collision).
+##   E: a raw dir path with a glob metachar is read literally (glob.escape).
+##   F: a measured source gone from disk -> skipped, no crash (never fails the gate).
+##   G: combined covering MORE than the raw snapshot is NOT a false drop (direction-aware).
+##   H: a module the union NEVER MEASURED (an incomplete snapshot) is NOT a drop. Pre-fix,
+##      absent-from-union was indistinguishable from union-covered-fully -> DEBUG-COMBINE-DROP
+##      + drop=yes falsely. Post-fix the union's MEASURED set gates the drop check.
+##   I: relative_files data (coverage's cross-machine mode) is resolved against the record
+##      root -> the real miss is reported. Pre-fix, record-root-relative paths resolved
+##      against the tool's cwd -> filtered out -> combined=0, a silent false negative.
+##   J: a truncated/corrupt combined data file -> skipped, no crash (never fails the gate).
+##      Pre-fix, cov.load() raised DataError -> traceback + exit 1.
 ##
 ## Subject: usr/share/dist-ai-tests-common/cov-debug-missing.py. Needs importable coverage;
 ## absent -> exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Pure
@@ -205,6 +218,81 @@ if has "${outG}" 'DEBUG-COMBINE-DROP'; then
    ok 1 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
 else
    ok 0 'G: no false DEBUG-COMBINE-DROP when the raw snapshot is merely incomplete'
+fi
+
+## ---- Case H: a module the union NEVER MEASURED is NOT a drop (absent-from-union) ---------
+## modm covered-but-incomplete by driveM, modo by driveO -- recorded WITHOUT a whole-package
+## --source, so a raw file measures ONLY the module it imports (with --source every file
+## always counts as measured on every side and the bug cannot arise). The raw snapshot passed
+## in holds only modo's file, so the union never MEASURES modm. Pre-fix: modm absent from the
+## union dict was read as union-covered-fully -> DEBUG-COMBINE-DROP modm.py + drop=yes, a real
+## gap in an unmeasured module falsely blamed on combine. Post-fix: the union's MEASURED set
+## gates the check -> no drop for modm.
+pkgH="${work}/pkgH"
+mkdir --parents -- "${pkgH}"
+printf '%s\n' 'def m():' '    return 1' 'def mn():' '    return 2' > "${pkgH}/modm.py"
+printf '%s\n' 'def o():' '    return 1' 'def on():' '    return 2' > "${pkgH}/modo.py"
+printf '%s\n' 'import modm' 'modm.m()' > "${work}/driveM.py"
+printf '%s\n' 'import modo' 'modo.o()' > "${work}/driveO.py"
+rawM="${work}/rawM"; mkdir --parents -- "${rawM}"
+PYTHONPATH="${pkgH}" COVERAGE_FILE="${rawM}/.coverage" python3 -m coverage run \
+   --parallel-mode -- "${work}/driveM.py" >/dev/null 2>&1
+rawO="${work}/rawO"; mkdir --parents -- "${rawO}"
+PYTHONPATH="${pkgH}" COVERAGE_FILE="${rawO}/.coverage" python3 -m coverage run \
+   --parallel-mode -- "${work}/driveO.py" >/dev/null 2>&1
+combine_into "${work}/H/.coverage" "${rawM}"/.coverage.* "${rawO}"/.coverage.*
+snapH="${work}/snapH"; mkdir --parents -- "${snapH}"
+cp --preserve -- "${rawO}"/.coverage.* "${snapH}/"   ## union measures ONLY modo, never modm
+outH="${work}/outH.txt"
+python3 "${helper}" "${work}/H/.coverage" "${snapH}" "${pkgH}" > "${outH}" 2>&1 || true
+if has "${outH}" 'drop=no' && ! has "${outH}" 'DEBUG-COMBINE-DROP modm.py'; then
+   ok 0 'H: a module the union never measured is NOT a false combine-drop'
+else
+   ok 1 'H: a module the union never measured falsely flagged as a combine-drop'
+fi
+
+## ---- Case I: relative_files data resolved against the record root (not the tool cwd) ------
+## Recorded with relative_files=True (coverage's recommended cross-machine/container combine
+## mode) from the proj root, so measured_files() yields record-root-relative paths. Pre-fix:
+## realpath() resolved them against the TOOL's cwd -> the containment filter dropped them ->
+## combined=0, a real gap silently reported as none. Post-fix: the tool chdir's to the
+## combined data file's dir (the record root) so the paths resolve. Invoked from a NEUTRAL
+## cwd below so the pre-fix cwd-relative resolution genuinely fails.
+projI="${work}/projI"
+mkdir --parents -- "${projI}/pkg"
+printf '%s\n' 'def a():' '    return 1' 'def never():' '    return 3' > "${projI}/pkg/mod.py"
+printf '%s\n' 'import mod' 'mod.a()' > "${projI}/drive.py"
+printf '%s\n' '[run]' 'relative_files = True' > "${projI}/.coveragerc"
+( cd "${projI}" && PYTHONPATH="${projI}/pkg" COVERAGE_FILE="${projI}/.coverage" python3 \
+   -m coverage run --parallel-mode --rcfile=.coveragerc --source=pkg -- drive.py >/dev/null 2>&1 )
+rawI="${projI}/rawI"; mkdir --parents -- "${rawI}"
+cp --preserve -- "${projI}"/.coverage.* "${rawI}/"
+( cd "${projI}" && COVERAGE_FILE="${projI}/.coverage" python3 -m coverage combine \
+   --rcfile=.coveragerc >/dev/null 2>&1 )
+outI="${work}/outI.txt"
+## Invoke from ${work} (NOT projI): pre-fix resolves relative paths here and finds nothing.
+( cd "${work}" && python3 "${helper}" "${projI}/.coverage" "${rawI}" "${projI}/pkg" ) \
+   > "${outI}" 2>&1 || true
+if has "${outI}" 'DEBUG-MISSING mod.py' && has "${outI}" 'combined=1'; then
+   ok 0 'I: relative_files data resolved against the record root (real miss reported)'
+else
+   ok 1 'I: relative_files data not resolved -> real miss silently dropped'
+fi
+
+## ---- Case J: a corrupt combined data file -> skipped, no crash (never fails the gate) -----
+## The tool's docstring promises best-effort diagnostics that never fail the gate. A
+## truncated/corrupt .coverage makes cov.load() raise DataError; the pre-fix helper let it
+## propagate -> traceback + exit 1.
+badJ="${work}/bad.coverage"
+printf '%s' 'this is not a sqlite coverage database at all' > "${badJ}"
+rawJ="${work}/rawJ"; mkdir --parents -- "${rawJ}"
+outJ="${work}/outJ.txt"
+rcJ=0
+python3 "${helper}" "${badJ}" "${rawJ}" "${pkg}" > "${outJ}" 2>&1 || rcJ=$?
+if [ "${rcJ}" -eq 0 ] && ! has "${outJ}" 'Traceback'; then
+   ok 0 'J: a corrupt combined data file is skipped, not a crash (never fails the gate)'
+else
+   ok 1 "J: corrupt combined data crashed (rc=${rcJ})"
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"

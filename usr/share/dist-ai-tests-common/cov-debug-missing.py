@@ -25,7 +25,20 @@
 ##   DEBUG-MISSING-SUMMARY combined=<n> union=<n> drop=<yes|no|unknown>   one line per run
 ## drop=unknown means no pre-combine data was preserved (raw_files=0), so gap-vs-drop could
 ## not be cross-checked -- never inferred as a drop from an absent union.
-## Read-only; never fails the gate (best-effort diagnostics).
+##
+## A DROP is only ever inferred where the union actually MEASURED the module: a module the
+## raw snapshot never measured (an incomplete snapshot) is undecidable, not a drop -- the
+## per-module analogue of the raw_files=0 guard.
+##
+## relative_files: coverage records paths relative to the record root when
+## relative_files=True (its recommended mode for combining across machines/containers -- this
+## tool's scenario), and resolves them against cwd. main() chdir's to the combined data
+## file's directory (the record root in coverage's canonical combine layout) so both the
+## containment filter and analysis2 resolve those paths; a wrong guess fails SAFE (NoSource
+## -> skip), never a silent all-missing. Absolute-path data ignores cwd -> unaffected.
+##
+## Read-only; never fails the gate (best-effort diagnostics): corrupt/unreadable data and a
+## vanished source are skipped, never a crash.
 
 import glob
 import os
@@ -37,55 +50,77 @@ from coverage.sqldata import CoverageData
 
 
 def _missing_by_module(data_file, pkg_dir):
-    """{package_relative_path: (missing_line_set, missing_formatted)} for every measured
-    package source file that has at least one missing line, using coverage's own statement
-    analysis of the combined data."""
+    """({package_relative_path: (missing_line_set, missing_formatted)}, measured_key_set)
+    for package source files, using coverage's own statement analysis. The dict holds only
+    files WITH missing lines (for display + the drop check); measured_key_set holds EVERY
+    package file coverage measured (even fully covered ones), so the drop check can tell
+    'union covered it fully' from 'union never MEASURED it'. Best-effort: corrupt data or a
+    vanished source is skipped, never a crash."""
     cov = coverage.Coverage(data_file=data_file)
-    cov.load()
+    try:
+        cov.load()
+    except coverage.CoverageException:
+        ## A truncated/corrupt .coverage data file raises DataError -- but the docstring
+        ## promises this never fails the gate, so report nothing rather than crash.
+        return {}, set()
     pkg_real = os.path.realpath(pkg_dir)
     out = {}
+    measured_keys = set()
     for measured in sorted(cov.get_data().measured_files()):
-        if os.path.realpath(measured).startswith(pkg_real + os.sep):
+        ## main() has chdir'd to the record root, so realpath resolves a relative_files
+        ## path against that root (and an absolute path is unaffected by cwd).
+        real = os.path.realpath(measured)
+        if real.startswith(pkg_real + os.sep):
             try:
-                ## analysis2 -> (filename, statements, excluded, missing, missing_formatted)
+                ## analysis2 -> (filename, statements, excluded, missing, missing_formatted).
+                ## Pass the path AS RECORDED so coverage's own data lookup matches (a
+                ## relative morf resolves against cwd == the record root).
                 _, _, _, missing, missing_fmt = cov.analysis2(measured)
             except coverage.CoverageException:
-                ## Best-effort diagnostics: a measured file gone from disk (a cleaned
-                ## build/tmp dir between the coverage run and this later invocation)
-                ## raises NoSource -- but the docstring promises this never fails the
-                ## gate, so skip the unreadable file rather than crash.
+                ## A measured file gone from disk (a cleaned build/tmp dir between the
+                ## coverage run and this later invocation), or unresolvable against the
+                ## record root, raises NoSource -- skip the unreadable file rather than
+                ## crash. Excluded from measured_keys too, so it is judged on neither side.
                 continue
+            ## Key by the path RELATIVE to the package, not basename: two files with the
+            ## same name in different subpackages (e.g. a/__init__.py and b/__init__.py)
+            ## would otherwise collide and silently drop one's gaps.
+            key = os.path.relpath(real, pkg_real)
+            measured_keys.add(key)
             if missing:
-                ## Key by the path RELATIVE to the package, not basename: two files with
-                ## the same name in different subpackages (e.g. a/__init__.py and
-                ## b/__init__.py) would otherwise collide and silently drop one's gaps.
                 ## Store the missing-line SET (for a direction-aware drop check) plus the
                 ## formatted string (for display).
-                key = os.path.relpath(os.path.realpath(measured), pkg_real)
                 out[key] = (frozenset(missing), missing_fmt)
-    return out
+    return out, measured_keys
 
 
 def _manual_union_missing(raw_dir, pkg_dir):
     """Same, but from a MANUAL union of the raw pre-combine parallel data files -- the
-    independent cross-check against `coverage combine`."""
+    independent cross-check against `coverage combine`. Returns
+    (missing_dict, measured_key_set, n_raw)."""
     ## glob.escape the DIRECTORY: a raw_dir path containing a glob metacharacter
     ## ('[', '*', '?') would otherwise be mis-read (e.g. '[abc]' as a char class),
     ## match nothing, and falsely report every gap as a combine drop. The
     ## '.coverage.*' pattern stays a real glob.
     raw_files = sorted(glob.glob(os.path.join(glob.escape(raw_dir), ".coverage.*")))
     if not raw_files:
-        return {}, 0
+        return {}, set(), 0
     merged_fd, merged_path = tempfile.mkstemp(prefix="cov-union-", suffix=".coverage")
     os.close(merged_fd)
     try:
         merged = CoverageData(basename=merged_path)
         for raw in raw_files:
             piece = CoverageData(basename=raw)
-            piece.read()
+            try:
+                piece.read()
+            except coverage.CoverageException:
+                ## A corrupt raw piece never fails the gate: skip it, keep the readable
+                ## ones so the cross-check still runs on what survived.
+                continue
             merged.update(piece)
         merged.write()
-        return _missing_by_module(merged_path, pkg_dir), len(raw_files)
+        missing, measured = _missing_by_module(merged_path, pkg_dir)
+        return missing, measured, len(raw_files)
     finally:
         try:
             os.remove(merged_path)
@@ -97,10 +132,24 @@ def main():
     if len(sys.argv) != 4:
         sys.stderr.write("cov-debug-missing.py <combined-data-file> <raw-parallel-dir> <pkg-dir>\n")
         return 2
-    combined_data, raw_dir, pkg_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+    ## Resolve to absolute BEFORE the chdir below, so relative argv paths survive it.
+    combined_data = os.path.realpath(sys.argv[1])
+    raw_dir = os.path.realpath(sys.argv[2])
+    pkg_dir = os.path.realpath(sys.argv[3])
 
-    combined = _missing_by_module(combined_data, pkg_dir)
-    union, n_raw = _manual_union_missing(raw_dir, pkg_dir)
+    ## relative_files data records paths relative to the record root and coverage resolves
+    ## them against cwd. In coverage's canonical combine layout the combined data file sits
+    ## at that root, so chdir there once: it anchors BOTH the combined-data pass and the
+    ## merged-union pass (same relative paths, same root). A wrong guess fails SAFE
+    ## (analysis2 -> NoSource -> skip), never the silent all-missing that an absolute-join
+    ## lookup would produce against relative-keyed data. Absolute-path data ignores cwd.
+    try:
+        os.chdir(os.path.dirname(combined_data))
+    except OSError:
+        pass
+
+    combined, _ = _missing_by_module(combined_data, pkg_dir)
+    union, union_measured, n_raw = _manual_union_missing(raw_dir, pkg_dir)
 
     for module in sorted(combined):
         print("DEBUG-MISSING %s %s" % (module, combined[module][1]))
@@ -119,14 +168,21 @@ def main():
         print("DEBUG-UNION-MISSING %s %s" % (module, union[module][1]))
 
     drop = False
-    ## A combine DROP is combine LOSING coverage the raw union HELD: the combined data is
-    ## missing a line the union is NOT missing (combined covered less than the raw files
-    ## did). The REVERSE -- union missing MORE than combined -- just means the raw-dir
-    ## snapshot passed in was incomplete (a parallel raw file was not archived into it),
-    ## NOT a drop, so a bare `combined != union` mismatch would false-positive on it.
     for module in sorted(set(combined) | set(union)):
+        if module not in union_measured:
+            ## The union never MEASURED this module (an incomplete raw snapshot: a parallel
+            ## raw file that measures it was not archived into the raw dir). gap-vs-drop is
+            ## undecidable for it -- never infer a drop, the per-module analogue of the
+            ## raw_files=0 guard. A module the union measured but fully covered IS in
+            ## union_measured (u_set empty), so a genuine drop against it still fires below.
+            continue
         c_set, c_fmt = combined.get(module, (frozenset(), ""))
         u_set, u_fmt = union.get(module, (frozenset(), ""))
+        ## A combine DROP is combine LOSING coverage the raw union HELD: the combined data
+        ## is missing a line the union is NOT missing (combined covered less than the raw
+        ## files did). The REVERSE -- union missing MORE than combined -- just means the raw
+        ## snapshot was incomplete, NOT a drop, so a bare `combined != union` mismatch would
+        ## false-positive on it.
         if c_set - u_set:
             drop = True
             print("DEBUG-COMBINE-DROP %s combine=%r union=%r" % (module, c_fmt, u_fmt))
