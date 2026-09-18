@@ -2159,6 +2159,28 @@ _shc2._reset_grid_view()          # buffer swap / seed / resize-rebuild clears t
 ok(_shc2._shift_click_anchor is None, 'a full grid rebuild drops the stale shift-click anchor')
 _shc2.close()
 
+# 5) The anchor is dropped on the CLI-mode (non-grid) document rebuild too: _rerender clears and
+#    replays from _raw (reached by a Box/Show mode toggle or a reflow), so without the reset a
+#    QTextCursor left by clear() drifts to the end -> the same select-to-bottom, in line mode
+#    (ai-review finding on PR #144).
+_shc3 = SecureTerminal(command='/bin/cat')          # default = CLI (non-grid) mode
+_shc3.resize(700, 300)
+_shc3.show()
+pump(40)
+feed_output(_shc3, b''.join(('cline-%d\r\n' % _i).encode() for _i in range(30)))   # sets _raw
+ok(not _shc3._grid_mode(), 'CLI: not in grid mode (exercises the _rerender clear+replay path)')
+_pc3 = QPointF(60, 40)
+_shc3.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, _pc3, _pc3,
+                                  Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                  Qt.KeyboardModifier.NoModifier))
+_shc3.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, _pc3, _pc3,
+                                    Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                    Qt.KeyboardModifier.NoModifier))
+ok(_shc3._shift_click_anchor is not None, 'CLI: a plain click records a shift-click anchor')
+_shc3._rerender()                 # mode-toggle / reflow: clears + replays the document
+ok(_shc3._shift_click_anchor is None, 'CLI _rerender rebuild drops the stale shift-click anchor')
+_shc3.close()
+
 # Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
 # resumes. TUI keys go straight to the child (never Qt's editor), so without this the
 # selection would persist and _render_tui stay a no-op until a mouse click.
