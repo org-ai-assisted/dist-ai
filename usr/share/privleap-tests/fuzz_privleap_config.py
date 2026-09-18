@@ -27,6 +27,7 @@ fuzz_privleap.py.
 import os
 import sys
 import tempfile
+from typing import Any
 from pathlib import Path
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +49,7 @@ except ImportError:
     _HAVE_ATHERIS = False
 
 
-def _load_privleap() -> object | None:
+def _load_privleap() -> Any:
     """Import privleap for both the onefile and in-process; see fuzz_privleap."""
     try:
         if _HAVE_ATHERIS:
@@ -61,11 +62,11 @@ def _load_privleap() -> object | None:
     return _pl
 
 
-pl = _load_privleap()  # type: ignore
+pl: Any = _load_privleap()
 
 if pl is not None:
     ## Focus the fuzzer on the content parser, not the ownership/mode gate.
-    pl.PrivleapCommon.check_secure_file_permissions = staticmethod(  # type: ignore[union-attr]
+    pl.PrivleapCommon.check_secure_file_permissions = staticmethod(
         lambda *args, **kwargs: True
     )
 
@@ -77,7 +78,7 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 (Atheris contract name)
     try:
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        result = pl.PrivleapCommon.parse_config_file(Path(path))  # type: ignore[union-attr]
+        result = pl.PrivleapCommon.parse_config_file(Path(path))
         ## Declared return type: a ConfigData tuple on success, or an error
         ## string. Anything else -- or an exception -- is a finding.
         if not isinstance(result, (tuple, str)):
