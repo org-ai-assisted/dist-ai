@@ -43,6 +43,7 @@ source "${lib}"
 
 ## Empty so '${SUDO_TO_ROOT} mountpoint ...' resolves the stub bash functions
 ## below rather than dispatching through 'sudo'/'env' to the real binaries.
+# shellcheck disable=SC2034  # read by the sourced unmount_if_mounted, not directly here
 SUDO_TO_ROOT=""
 
 pass_count=0
