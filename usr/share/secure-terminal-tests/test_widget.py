@@ -1678,7 +1678,6 @@ try:
     # as a user or as root (as root the created files are root-owned = uid 0, which is
     # legitimately trusted, so patching getuid would not exercise the guard).
     _foreign_uid = 0x7fffffff if os.getuid() != 0x7fffffff else 0x7ffffffe
-    _stat_orig = _T_cov.os.stat
     _ti_targets = {os.path.join(_ti_s, _n)
                    for _n in ('secure-terminal', 'secure-terminal-noedit')}
 
@@ -1687,17 +1686,29 @@ try:
             self.st_mode = real.st_mode
             self.st_uid = _foreign_uid
 
-    def _stat_foreign(_p, *_a, **_k):
-        _st = _stat_orig(_p, *_a, **_k)
-        return _ForeignStat(_st) if _p in _ti_targets else _st
+    # _owned_regular now opens O_NOFOLLOW + fstats the FD (atomic, TOCTOU-closed), so fake the
+    # ENTRY'S OWNER at the fstat, keyed on the fd os.open handed out for a terminfo target.
+    _open_orig, _fstat_orig = _T_cov.os.open, _T_cov.os.fstat
+    _foreign_fds = set()
 
-    _T_cov.os.stat = _stat_foreign
+    def _open_rec(_p, *_a, **_k):
+        _fd = _open_orig(_p, *_a, **_k)
+        if _p in _ti_targets:
+            _foreign_fds.add(_fd)
+        return _fd
+
+    def _fstat_foreign(_fd, *_a, **_k):
+        _st = _fstat_orig(_fd, *_a, **_k)
+        return _ForeignStat(_st) if _fd in _foreign_fds else _st
+
+    _T_cov.os.open, _T_cov.os.fstat = _open_rec, _fstat_foreign
     try:
         ok(_T_cov.cli_terminfo_dir() != os.path.join(_ti_root, 'secure-terminal',
                                                      'terminfo'),
            'a foreign-owned compiled terminfo entry is not trusted (poisoned-cache guard)')
     finally:
-        _T_cov.os.stat = _stat_orig
+        _T_cov.os.open, _T_cov.os.fstat = _open_orig, _fstat_orig
+        _foreign_fds.clear()
 
     # ...and an unreadable mtime is "not fresh", not a crash.
     _T_cov._terminfo_source = lambda: os.path.join(_ti_root, 'src.ti')
@@ -2247,6 +2258,112 @@ finally:
 ok(_same_alive, '_alt_owner_dead: the original alt owner (matching start-time) reads alive')
 ok(_reused_dead, '_alt_owner_dead: a reused alt-owner pgid reads dead (stale frame cleared)')
 _ao.close()
+
+# === ai-review findings on PR #148 (fix-all batch) ==========================================
+import tempfile as _tf2, shutil as _sh2                                       # noqa: E402
+from secure_terminal.terminal import _alt_transitions_bytes as _atb, _argv_for_command as _a4c  # noqa: E402
+from PyQt6.QtCore import QRect as _QRect5, QPoint as _QPoint5                 # noqa: E402
+
+# #2: combined-CSI alt-screen detection (bytes path) + a live _feed_stream snapshot.
+ok([k for _e, k in _atb(b'x\x1b[?1047;1049hy')] == ['enter'], '#2: combined alt enter (bytes)')
+ok([k for _e, k in _atb(b'x\x1b[?1049;1047ly')] == ['leave'], '#2: combined alt leave (bytes)')
+ok([k for _e, k in _atb(b'\x1b[?147h')] == [], '#2: mode 147 is not alt (bytes, no false-positive)')
+_fs = SecureTerminal(command='/bin/cat', tui=True)
+_fs._feed_stream(b'primary\x1b[?1047;1049hframe')     # a COMBINED enter mid-stream
+ok(_fs._alt_saved is not None, '#2: _feed_stream snapshots the primary on a combined alt enter')
+_fs.close()
+
+# #4: _read_exe strips ' (deleted)' ONLY when it is the kernel marker (path gone), not a real name.
+_re4 = SecureTerminal(command='/bin/cat', tui=True)
+_d4 = _tf2.mkdtemp(prefix='exe4-')
+_real4 = _osX.path.join(_d4, 'app (deleted)')        # a REAL file literally named '... (deleted)'
+open(_real4, 'w').close()
+_gone4 = _osX.path.join(_d4, 'ghost')                # base whose '<base> (deleted)' does NOT exist
+_orig_rl4 = _osX.readlink
+try:
+    _osX.readlink = lambda _p: _real4
+    _keep4 = _re4._read_exe(1234)
+    _osX.readlink = lambda _p: _gone4 + ' (deleted)'
+    _strip4 = _re4._read_exe(1234)
+finally:
+    _osX.readlink = _orig_rl4
+ok(_keep4 == _real4, '#4: a real file named "X (deleted)" keeps its path (not spoof-stripped)')
+ok(_strip4 == _gone4, '#4: the kernel (deleted) marker on a gone path is stripped')
+_re4.close(); _sh2.rmtree(_d4, ignore_errors=True)
+
+# #5: a wrapped last char is hit-tested against its true right edge, not the collapsed caret.
+_cb = SecureTerminal(command='/bin/cat')
+_cb.resize(800, 300); _cb.show(); pump(40)
+feed_output(_cb, b'x' * 40)            # doc must hold positions 23/24 for setPosition to reach them
+_orig_cr5 = _cb.cursorRect
+_orig_rca5 = _cb._run_cp_at
+_cb.cursorRect = lambda _cur: (_QRect5(184, 4, 1, 16) if _cur.position() == 23
+                               else _QRect5(4, 20, 1, 16))   # pos 24 wrapped to the next row
+_cb._run_cp_at = lambda _a: 0x202E                            # pos 23 holds a RLO override
+try:
+    _cp5 = _cb._cp_in_box(23, 24, _QPoint5(185, 10))          # inside the char's REAL cell (x>184)
+finally:
+    _cb.cursorRect = _orig_cr5; _cb._run_cp_at = _orig_rca5
+ok(_cp5 == 0x202E, '#5: a wrapped last-char cell is inspectable (hit-test uses the true right edge)')
+_cb.close()
+
+# #7: _set_winsize clamps to the unsigned-short range and stores the CLAMPED value.
+_ws = SecureTerminal(command='/bin/cat', tui=True)
+_ws._set_winsize(70000, 40)
+ok(_ws._cols == 0xFFFF and _ws._rows == 40, '#7: _set_winsize stores the clamped cols (65535)')
+_ws.close()
+
+# #8: ctl_send_text refuses (does not clobber) while a reviewed multi-line paste is mid-delivery.
+_ct = SecureTerminal(command='/bin/cat', tui=True)
+_ct._review_active = False
+_ct._staged_paste = ['cmd2', 'cmd3']
+_err8 = _ct.ctl_send_text('evil')
+ok(isinstance(_err8, str) and _ct._staged_paste == ['cmd2', 'cmd3'],
+   '#8: ctl_send_text refuses and leaves the in-flight staged paste intact')
+_ct.close()
+
+# #11: _argv_for_command rejects a whitespace-only quoted program name (mirrors the list path).
+ok(_a4c('"   "') is None, '#11: a whitespace-only quoted program name fails closed')
+ok(_a4c('ssh host') == ['ssh', 'host'], '#11: a normal command still parses')
+
+# #12: the shared gutter boundary pixel belongs to the LOWER block (half-open interval).
+_gb = SecureTerminal(command='/bin/cat', tui=True)
+_blk0, _blk1 = object(), object()
+_gb._gutter_blocks = lambda: [(_blk0, 0, 19), (_blk1, 19, 39)]   # overlap at pixel 19
+ok(_gb._block_at_gutter_y(19) is _blk1, '#12: the boundary pixel belongs to the lower block')
+ok(_gb._block_at_gutter_y(10) is _blk0, '#12: a mid-block pixel belongs to its own block')
+_gb.close()
+
+# #13: _insert_next_staged keeps a staged line when _write reports a partial/timed-out write.
+_ins = SecureTerminal(command='/bin/cat')
+_ins._staged_paste = ['held-line']
+_orig_w13 = _ins._write
+_ins.tui_active = lambda: False
+_ins.has_foreground_program = lambda: False
+_ins._write = lambda _b: False        # simulate a wedged child: partial write
+try:
+    _ins._insert_next_staged()
+finally:
+    _ins._write = _orig_w13
+ok(_ins._staged_paste == ['held-line'], '#13: a failed _write leaves the reviewed line staged, not dropped')
+_ins.close()
+
+# #14: a preview instance (tui=True but screen=None) must NOT be treated as a fixed grid in
+# detail/reveal -- overflow must wrap (WidgetWidth) and keep a scrollbar, not be clipped away.
+_pv = SecureTerminal(command='/bin/cat', preview=True, tui=True)
+ok(_pv._screen is None and _pv.tui_active(), '#14 setup: a preview tui instance has no pyte screen')
+_pv._mode = 'detail'
+_pv._sync_wrap_mode()
+ok(_pv.lineWrapMode() == _QPTE.LineWrapMode.WidgetWidth,
+   '#14: a preview in detail mode wraps to the viewport (overflow stays reachable)')
+ok(_pv.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+   '#14: a preview does not force-hide the horizontal scrollbar')
+_pv.close()
+
+# #15 (_owned_regular atomic O_NOFOLLOW): the symlink-REJECTION behavior it hardens is already
+# covered end-to-end by the cli_terminfo_dir symlink-clobber test above (a planted symlink is not
+# trusted and is not written through); the TOCTOU the atomic open+fstat closes is a filesystem
+# race with no deterministic unit repro, so no separate assertion is added here.
 
 # #7: _release_pty must NOT waitpid/evict a pid that is no longer OUR child (the shared reaper
 # may have freed it and the OS reused it for another tab). Force identity False; neither
