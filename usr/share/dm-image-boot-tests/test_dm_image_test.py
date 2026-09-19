@@ -467,11 +467,14 @@ class _FakeChild:
     ## the exact serial output the real root shell would produce, so run_checks'
     ## real read/sentinel loop drives to a verdict with no VM. read_nonblocking
     ## hands back the buffered reply, then raises pexpect.TIMEOUT (its idle poll).
-    def __init__(self, pid, systemcheck_rc, diag_rc, hardening_rc=0):
+    def __init__(self, pid, systemcheck_rc, diag_rc, hardening_rc=0,
+                 boot_match_rc=0):
         self.pid = pid
         self.systemcheck_rc = systemcheck_rc
         self.diag_rc = diag_rc
         self.hardening_rc = hardening_rc
+        ## The firmware/role boot-match sentinels; 0 = a correctly-booted guest.
+        self.boot_match_rc = boot_match_rc
         self.buf = ""
 
     def sendline(self, line):
@@ -491,6 +494,9 @@ class _FakeChild:
             sentinel = m.group(0)
             if "MISSING-HARDENING" in line:
                 rc = self.hardening_rc
+            elif ("WRONG-ROLE" in line or "WRONG-FIRMWARE" in line
+                  or "WRONG-SECUREBOOT" in line):
+                rc = self.boot_match_rc
             elif "FAILED-UNITS-BEGIN" in line:
                 rc = self.diag_rc
             else:
@@ -515,7 +521,7 @@ def test_diag_cmd_exempt_from_expect_rc():
     child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0)
     args = types.SimpleNamespace(
         timeout=30, run=None, login_user="user", expect_rc=1, firmware="",
-        iso=None)
+        iso=None, session="user")
     logs: list[str] = []
     rc = m.run_checks(child, args, logs.append)
     assert rc == m.PASS, (rc, logs)
@@ -558,7 +564,8 @@ def test_iso_leg_inserts_hardening_check_and_a_failure_fails_the_verdict():
     ## though systemcheck passed.
     pytest.importorskip('pexpect')
     m = _load_dm_image_test()
-    base = dict(timeout=30, run=None, login_user="root", expect_rc=0, firmware="")
+    base = dict(timeout=30, run=None, login_user="root", expect_rc=0, firmware="",
+                session="user")
     ## Hardened ISO: hardening check passes, systemcheck passes -> PASS.
     child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, hardening_rc=0)
     ok = m.run_checks(child, types.SimpleNamespace(iso="x.iso", **base), (lambda _: None))
@@ -578,6 +585,115 @@ def test_disk_leg_does_not_insert_hardening_check():
     ## hardening_rc=1 would fail the verdict IF the check were (wrongly) inserted.
     child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, hardening_rc=1)
     args = types.SimpleNamespace(
-        timeout=30, run=None, login_user="root", expect_rc=0, firmware="", iso=None)
+        timeout=30, run=None, login_user="root", expect_rc=0, firmware="", iso=None,
+        session="user")
     rc = m.run_checks(child, args, (lambda _: None))
     assert rc == m.PASS
+
+
+def _run_shell(cmd):
+    """Run a sentinel shell command and return its exit code."""
+    return subprocess.run(['bash', '-c', cmd]).returncode
+
+
+def test_boot_role_sentinel_verifies_the_actual_session(tmp_path):
+    """The sysmaint sentinel passes only when /proc/cmdline carries the injected
+    boot-role=sysmaint token; the user sentinel passes only when it does NOT -- so
+    a leg cannot pass on the wrong session. Runs the REAL generated command with
+    /proc/cmdline swapped for a fixture."""
+    m = _load_dm_image_test()
+    sm = tmp_path / 'cmdline_sysmaint'
+    sm.write_text('BOOT_IMAGE=/vmlinuz ro boot-role=sysmaint '
+                  'systemd.unit=sysmaint-boot.target quiet\n')
+    usr = tmp_path / 'cmdline_user'
+    usr.write_text('BOOT_IMAGE=/vmlinuz ro quiet splash boot-role=user\n')
+
+    def cmd(session, cmdline):
+        return m.boot_role_sentinel(session).replace('/proc/cmdline', str(cmdline))
+
+    assert _run_shell(cmd('sysmaint', sm)) == 0
+    assert _run_shell(cmd('sysmaint', usr)) != 0
+    assert _run_shell(cmd('user', usr)) == 0
+    assert _run_shell(cmd('user', sm)) != 0
+
+
+def test_firmware_sentinels_match_the_claimed_firmware():
+    """Each firmware yields the right assertions: bios refuses EFI presence; efi
+    and efi-secureboot require EFI and read the SecureBoot var, wanting 0 vs 1;
+    an unknown/empty firmware yields nothing."""
+    m = _load_dm_image_test()
+    bios = m.firmware_sentinels('bios')
+    assert len(bios) == 1
+    assert '/sys/firmware/efi' in bios[0]
+    assert 'WRONG-FIRMWARE' in bios[0]
+    efi = m.firmware_sentinels('efi')
+    efisb = m.firmware_sentinels('efi-secureboot')
+    for cmds in (efi, efisb):
+        assert any('WRONG-FIRMWARE:expected-efi-but-none' in c for c in cmds)
+        assert any(m.SECUREBOOT_EFIVAR in c for c in cmds)
+    assert any('"$sb" = "0"' in c for c in efi)
+    assert any('"$sb" = "1"' in c for c in efisb)
+    assert m.firmware_sentinels('') == []
+    assert m.firmware_sentinels('arm64-efi') == []
+
+
+def test_secureboot_value_read_parses_the_efivar(tmp_path):
+    """The od|awk read the firmware sentinel uses extracts 1 for an enabled
+    SecureBoot var, 0 for disabled, empty for an absent var (which the sentinel
+    then defaults to 0)."""
+    on = tmp_path / 'sb_on'
+    on.write_bytes(b'\x06\x00\x00\x00\x01')
+    off = tmp_path / 'sb_off'
+    off.write_bytes(b'\x06\x00\x00\x00\x00')
+
+    def read(path):
+        out = subprocess.run(
+            ['bash', '-c',
+             "od -An -t u1 %s 2>/dev/null | awk 'END{print $NF}'" % path],
+            capture_output=True, text=True)
+        return out.stdout.strip()
+
+    assert read(str(on)) == '1'
+    assert read(str(off)) == '0'
+    assert read(str(tmp_path / 'absent')) == ''
+
+
+def test_run_checks_inserts_boot_match_sentinels_and_a_mismatch_fails():
+    """run_checks prepends the boot-match sentinels regardless of --expect-rc, and
+    a mismatch (boot_match_rc != 0) fails the leg even when systemcheck passes --
+    while a healthy boot_match_rc=0 passes. This is what stops a leg from going
+    green on the wrong firmware/session."""
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    base = dict(timeout=30, run=None, login_user="root", expect_rc=0,
+                firmware="efi-secureboot", iso=None, session="sysmaint")
+    ## Correct boot: every sentinel returns 0 -> PASS.
+    child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, boot_match_rc=0)
+    ok = m.run_checks(child, types.SimpleNamespace(**base), (lambda _: None))
+    assert ok == m.PASS
+    ## Wrong firmware/session: a boot-match sentinel fails even though systemcheck
+    ## passed -> FAIL.
+    child = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0, boot_match_rc=1)
+    logs: list[str] = []
+    bad = m.run_checks(child, types.SimpleNamespace(**base), logs.append)
+    assert bad == m.FAIL, logs
+
+
+def test_boot_match_sentinels_require_zero_regardless_of_expect_rc():
+    """A --expect-rc 1 run (systemcheck expected to 'fail') must STILL require the
+    boot matched: a healthy boot_match_rc=0 passes despite expect_rc=1, and a
+    mismatch fails. Guards the want_rc split from the global --expect-rc."""
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    base = dict(timeout=30, run=None, login_user="root", expect_rc=1,
+                firmware="bios", iso=None, session="sysmaint")
+    ## systemcheck returns 1 (== expect_rc -> its own pass); boot-match returns 0.
+    child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0, boot_match_rc=0)
+    ok = m.run_checks(child, types.SimpleNamespace(**base), (lambda _: None))
+    assert ok == m.PASS
+    ## boot-match mismatch (returns 1) must FAIL even though 1 == expect_rc: the
+    ## sentinel's want_rc is 0, not expect_rc.
+    child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0, boot_match_rc=1)
+    logs: list[str] = []
+    bad = m.run_checks(child, types.SimpleNamespace(**base), logs.append)
+    assert bad == m.FAIL, logs

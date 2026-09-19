@@ -67,6 +67,61 @@ def hardening_cmdline_check(cmdline_path="/proc/cmdline"):
     return "; ".join(parts) + "; true"
 
 
+## The EFI global SecureBoot variable (vendor-neutral GUID). Its value byte is 1
+## when Secure Boot is enabled/enforcing, 0 otherwise.
+SECUREBOOT_EFIVAR = (
+    "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+)
+
+
+def firmware_sentinels(firmware):
+    """Shell commands (list) asserting the guest actually booted the CLAIMED
+    firmware, so a leg cannot silently pass on a different one:
+      - bios: /sys/firmware/efi ABSENT (legacy BIOS, not EFI);
+      - efi / efi-secureboot: /sys/firmware/efi PRESENT, and the SecureBoot EFI
+        variable enabled iff the leg is -secureboot (so an efi leg cannot pass on
+        SB firmware, nor an efi-secureboot leg pass without SB enforcing).
+    Reads the SecureBoot value byte with od (no mokutil dependency), mounting
+    efivarfs first if the kernel has not. Root: efivars are root-readable only.
+    An unknown/empty firmware yields no assertion (nothing to verify)."""
+    import shlex
+    if firmware == "bios":
+        return [
+            "if [ -d /sys/firmware/efi ]; then"
+            " echo WRONG-FIRMWARE:expected-bios-but-efi-present; exit 1; fi"
+        ]
+    if firmware not in ("efi", "efi-secureboot"):
+        return []
+    want = "1" if firmware == "efi-secureboot" else "0"
+    sb_var = shlex.quote(SECUREBOOT_EFIVAR)
+    return [
+        "[ -d /sys/firmware/efi ] ||"
+        " { echo WRONG-FIRMWARE:expected-efi-but-none; exit 1; }",
+        "[ -e %s ] ||"
+        " mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true;"
+        " sb=$(od -An -t u1 %s 2>/dev/null | awk 'END{print $NF}'); sb=${sb:-0};"
+        ' [ "$sb" = "%s" ] ||'
+        " { echo WRONG-SECUREBOOT:want=%s:got=${sb:-empty}; exit 1; }"
+        % (sb_var, sb_var, want, want),
+    ]
+
+
+def boot_role_sentinel(session):
+    """Shell command asserting the guest booted the CLAIMED session: the injected
+    'boot-role=sysmaint' whole-word token must be PRESENT in /proc/cmdline for the
+    sysmaint session and ABSENT for user -- proving the SMBIOS session injection
+    took effect (and, for user, did not accidentally select sysmaint)."""
+    if session == "sysmaint":
+        return (
+            "grep -q -w -- boot-role=sysmaint /proc/cmdline ||"
+            " { echo WRONG-ROLE:expected-sysmaint-absent-from-cmdline; exit 1; }"
+        )
+    return (
+        "if grep -q -w -- boot-role=sysmaint /proc/cmdline; then"
+        " echo WRONG-ROLE:expected-user-but-sysmaint-in-cmdline; exit 1; fi"
+    )
+
+
 def die_setup(message) -> NoReturn:
     print("dm-image-test: %s" % message, file=sys.stderr)
     sys.exit(SETUP)
@@ -310,13 +365,14 @@ def run_checks(child, args, log):
     ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
     ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
     ## debug shell (the automation channel) does not flag check_journal.
-    ## Each entry is (command, force_root, check_rc): systemcheck runs as the
+    ## Each entry is (command, force_root, want_rc): systemcheck runs as the
     ## session user (--login-user); the diagnostic always runs as root so its
     ## journalctl can read system-unit logs (a non-root session may be denied
-    ## them). check_rc=True enforces the --expect-rc comparison, False exempts it
-    ## (the always-passing diagnostic).
+    ## them). want_rc is the exit code the command must return, or None to exempt
+    ## it (the always-passing diagnostic); systemcheck uses --expect-rc, the
+    ## boot-integrity sentinels use 0.
     if args.run is not None:
-        commands = [(command, False, True) for command in args.run]
+        commands = [(command, False, args.expect_rc) for command in args.run]
     else:
         ## --skip matches the name passed to systemcheck_run_function. The tor
         ## connectivity tests (incl. the SocksPort "Connectivity Test") run under
@@ -421,14 +477,24 @@ def run_checks(child, args, log):
             " journalctl -b --no-pager -u \"$unit\" 2>&1 | tail -n 30 || true;"
             " echo \"UNIT-DIAG-END $unit\";"
             " done; true")
-        commands = [(systemcheck_cmd, False, True), (diag_cmd, True, False)]
+        commands = [(systemcheck_cmd, False, args.expect_rc), (diag_cmd, True, None)]
         ## On the live ISO legs, assert the Kicksecure kernel hardening reached
         ## /proc/cmdline: the live cmdline is assembled by 4310's grub-mkconfig
         ## scrape, and a regression that drops it boots unhardened. Root, rc-checked,
         ## and first so it reads near the top of the serial log. The disk legs get
         ## their hardening from the installed grub and are not asserted here.
         if args.iso:
-            commands.insert(0, (hardening_cmdline_check(), True, True))
+            commands.insert(0, (hardening_cmdline_check(), True, 0))
+
+    ## Boot-match sentinels (both check paths): prove the guest actually booted
+    ## the CLAIMED firmware and session, so a leg cannot pass on the wrong
+    ## combination -- an efi-secureboot leg that booted without SB enforcing, or a
+    ## sysmaint leg that fell back to the user session, would otherwise run
+    ## systemcheck happily and report the wrong leg green. Root, rc-checked, and
+    ## prepended so they run FIRST and fail fast, at the top of the serial log.
+    boot_match = [boot_role_sentinel(args.session)]
+    boot_match.extend(firmware_sentinels(args.firmware))
+    commands[0:0] = [(cmd, True, 0) for cmd in boot_match]
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
@@ -437,7 +503,7 @@ def run_checks(child, args, log):
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
-    for command, force_root, check_rc in commands:
+    for command, force_root, want_rc in commands:
         if not force_root and args.login_user and args.login_user != "root":
             ## shlex.quote leaves a bare '-x' unquoted, so 'su - -x -c CMD' would
             ## parse -x as an su OPTION and silently run the command as ROOT instead
@@ -461,20 +527,22 @@ def run_checks(child, args, log):
         rc = int(match.group(1))
         ## Drop consumed output so the next command's sentinel is unambiguous.
         accum[0] = accum[0][match.end():]
-        ## The diagnostic (check_rc False) always exits 0 and is exempt from the
-        ## --expect-rc compare: it only dumps failed-unit status into the serial
-        ## log, so its rc must never flip the verdict (with --expect-rc 1 the
-        ## diag's rc=0 would otherwise force FAIL even when the real check passed).
-        ## A timed-out/guest-died diag still returns FAIL above -- only the rc
-        ## COMPARISON is skipped.
-        if not check_rc:
+        ## want_rc is the exact exit code this command must return, or None to
+        ## EXEMPT it from the verdict. The diagnostic (None) always exits 0 and only
+        ## dumps failed-unit status into the log, so its rc must never flip the
+        ## verdict (with --expect-rc 1 a rc=0 diag would otherwise force FAIL even
+        ## when the real check passed). A timed-out/guest-died command still returns
+        ## FAIL above -- only the rc COMPARISON is skipped. systemcheck carries
+        ## --expect-rc; the boot-integrity sentinels (hardening, firmware, role)
+        ## carry 0 so they hold regardless of --expect-rc.
+        if want_rc is None:
             log("dm-image-test: diag (rc=%s) %s" % (rc, command))
             continue
-        if rc == args.expect_rc:
+        if rc == want_rc:
             log("dm-image-test: OK   (rc=%s) %s" % (rc, command))
         else:
             log("dm-image-test: FAIL (rc=%s, want %s) %s"
-                % (rc, args.expect_rc, command))
+                % (rc, want_rc, command))
             overall = FAIL
 
     ## 4) The verdict is decided; main's finally SIGKILLs qemu. Do NOT send a
