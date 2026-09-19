@@ -681,6 +681,20 @@ _le0, _lc0, _ld0, _ = S.feed_chunk_carry('hi\x1b', '', '', 0, cap=0)
 _le1, _lc1, _ld1, _ = S.feed_chunk_carry('[31mDANGER\x1b[0m ok', _lc0, _ld0, 0, cap=0)
 eq(S.ANSI_RE.sub('', _le0 + _le1), 'hiDANGER ok',
    'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 strips the SGR, no 31m leak')
+# an over-cap OSC INTERRUPTED by a nested string introducer: the over-cap discard state
+# must end the OSC at the interrupting ESC (ANSI_RE: OSC body is [^\x07\x1b]*) and re-parse
+# the nested APC under its own grammar (BEL is body), not misread the APC body's BEL as the
+# OSC terminator and leak the tail. chunk 1 exceeds the 4096 cap so the discard path engages.
+_osc_nest = '\x1b]0;' + 'A' * 5000 + '\x1b_' + 'SECRET' + '\x07' + 'VISIBLE'
+eq(_fcc([_osc_nest[:4600], _osc_nest[4600:]])[0], S.render_output(_osc_nest, 'box'),
+   'over-cap OSC + nested introducer matches one-shot (no BEL-misattribution leak)')
+ok('VISIBLE' not in _fcc([_osc_nest[:4600], _osc_nest[4600:]])[0],
+   'over-cap OSC + nested APC: the tail after the nested BEL is suppressed, not leaked')
+# an over-cap OUT-OF-ORDER CSI (a param byte AFTER an intermediate, valid per ANSI_RE's
+# any-order [ -?] body) is discarded whole, not leaked as "1m" text on a chunk split.
+_csi_oo = '\x1b[' + '2' * 5000 + ' 1m' + 'AFTER'
+eq(_fcc([_csi_oo[:4600], _csi_oo[4600:]])[0], 'AFTER',
+   'over-cap out-of-order CSI is stripped whole (any-order param/intermediate), not leaked')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 
 # --- OSC feature registry: single source of truth for the granular controls ---

@@ -722,6 +722,32 @@ def t8_splits():
         if 'VISIBLE' not in got:
             fail('T8 over-cap non-string: lost VISIBLE %r' % got[:60])
             bad += 1
+    # over-cap OSC INTERRUPTED by a nested string introducer: the OSC body ends at the
+    # interrupting ESC (ANSI_RE: OSC body [^\x07\x1b]*), and the nested APC re-parses under
+    # its own grammar (BEL is body). Discarding only to the OSC's own terminator class
+    # (BEL/ST) misread the APC body BEL as the OSC terminator and leaked the tail.
+    carry, drop = '', ''
+    out = []
+    for c in ['\x1b]', 'title' + 'x' * 40, '\x1b_', 'apcbody', '\x07LEAK']:
+        text, carry, drop, _ = S.feed_chunk_carry(c, carry, drop, cap=cap)
+        out.append(S.render_output(text, 'detail'))
+    got = ''.join(out)
+    if 'LEAK' in got or 'apcbody' in got or 'title' in got:
+        fail('T8 nested introducer in over-cap OSC: leaked %r' % got[:60])
+        bad += 1
+    # over-cap OUT-OF-ORDER CSI (a param byte AFTER an intermediate, valid per ANSI_RE's
+    # any-order [ -?] body) must discard whole and resume after the final, not leak the
+    # trailing " 0m" -- an ordered [0-?]*[ -/]* discard body stopped on the post-
+    # intermediate param and leaked it.
+    carry, drop = '', ''
+    out = []
+    for c in ['\x1b[0', '0' * 40, ' 0mVISIBLE']:
+        text, carry, drop, _ = S.feed_chunk_carry(c, carry, drop, cap=cap)
+        out.append(S.render_output(text, 'detail'))
+    got = ''.join(out)
+    if got != 'VISIBLE':
+        fail('T8 over-cap out-of-order CSI: leaked/mis-split %r' % got[:60])
+        bad += 1
     return bad
 
 

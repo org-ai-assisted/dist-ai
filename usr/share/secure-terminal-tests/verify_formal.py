@@ -1890,6 +1890,87 @@ def t8_discard_resume():
     if 'VISIBLE' not in got:
         fail('T8 discard-resume: APC ST lost VISIBLE: %r' % got[:60])
 
+    # An over-cap OSC INTERRUPTED by a nested string introducer: the OSC body ends at
+    # the interrupting ESC (ANSI_RE: OSC body is [^\x07\x1b]*), and the nested APC then
+    # re-parses under its OWN grammar where BEL is body. Discarding only to the OUTER
+    # OSC's terminator class (BEL/ST) sailed past the nested introducer and misread the
+    # APC body's BEL as the OSC terminator, leaking the tail as text.
+    got, drop = run(['\x1b]', 'title' + 'x' * 40, '\x1b_', 'apcbody', '\x07LEAK'])
+    if 'LEAK' in got or 'apcbody' in got or 'title' in got:
+        fail('T8 discard-resume: nested introducer in over-cap OSC leaked: %r' % got[:60])
+
+    # An over-cap OUT-OF-ORDER CSI -- a param byte AFTER an intermediate, valid per
+    # ANSI_RE's any-order [ -?] body -- must discard whole and RESUME after the final,
+    # not leak the trailing " 0m" as text. An ordered [0-?]*[ -/]* discard body stopped
+    # on the post-intermediate param and leaked it.
+    got, drop = run(['\x1b[0', '0' * 40, ' 0mVISIBLE'])
+    if got != 'VISIBLE':
+        fail('T8 discard-resume: over-cap out-of-order CSI leaked/mis-split: %r' % got[:60])
+
+
+# Small alphabets that can FORM each over-cap discard-path leak class -- kept minimal
+# so a bounded-exhaustive sweep to max_len=6 over EVERY chunking stays cheap (~7s):
+#   - out-of-order CSI: ESC, CSI intro, an intermediate (0x20), a param (0x30), a final
+#   - nested string introducer: ESC, two DIFFERENT string introducers, BEL, a renderable
+_T8_DISCARD_ALPHABETS = {
+    'out-of-order CSI': ('\x1b', '[', ' ', '0', 'm'),
+    'nested string introducer': ('\x1b', ']', '_', '\x07', 'm'),
+}
+
+
+def _t8_stream_raw(chunks, cap):
+    """feed_chunk_carry across `chunks`, returning the concatenated emitted text plus
+    the EOF-flush of any held carry (cli.py renders a leftover carry as the program's
+    final output; an over-cap DROP is intentionally discarded, so it is not flushed)."""
+    carry, drop = '', ''
+    raw = []
+    for chunk in chunks:
+        text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+        raw.append(text)
+    if carry:
+        raw.append(carry)
+    return ''.join(raw)
+
+
+def _t8_leak_chunking(s, cap):
+    """The chunking (if any) under which the RENDERED streaming output shows a printable
+    byte the one-shot reference render_output(whole) suppressed -- a real LEAK. Over-DROP
+    (the stream showing FEWER bytes) is the accepted fail-safe, so this is a printable
+    sub-multiset check against render_output, not equality."""
+    from collections import Counter
+    ref = Counter(c for c in S.render_output(s, 'detail') if 0x20 <= ord(c) <= 0x7e)
+    for chunks in _all_chunkings(s):
+        got = Counter(c for c in S.render_output(_t8_stream_raw(chunks, cap), 'detail')
+                      if 0x20 <= ord(c) <= 0x7e)
+        if any(got[c] > ref.get(c, 0) for c in got):
+            return chunks
+    return None
+
+
+def t8_discard_no_leak(max_len=6, cap=1):
+    """BOUNDED-EXHAUSTIVE no-leak oracle for the over-cap DISCARD path -- the gap the
+    plain split-invariance sweep (t8_split_invariance) missed. That sweep runs at the
+    default cap=4096 over max_len<=5 streams, so the discard state (reached only PAST
+    cap) is never exercised by it. Here cap=1 makes every 2+ byte sequence discard, and
+    each focused alphabet forms one leak class: an out-of-order CSI (a param byte after
+    an intermediate), and a nested string introducer whose body BEL was misread as the
+    outer sequence's terminator. For every stream up to max_len and EVERY chunking, the
+    rendered streaming output must not surface a printable byte the one-shot
+    render_output suppressed."""
+    import itertools
+    for label, alpha in _T8_DISCARD_ALPHABETS.items():
+        for length in range(1, max_len + 1):
+            for tup in itertools.product(alpha, repeat=length):
+                s = ''.join(tup)
+                chunks = _t8_leak_chunking(s, cap)
+                if chunks is not None:
+                    fail('T8 discard no-leak (%s): %r chunked %r rendered a byte the '
+                         'one-shot render suppressed' % (label, s, chunks))
+                    break
+            else:
+                continue
+            break
+
 
 def t8_canaries():
     # Split-invariance canary: a BROKEN pipeline that ignores the carry (renders
@@ -1915,6 +1996,15 @@ def t8_canaries():
     # a BEL in the body at every offset and confirm render_output discards the whole run.
     # It needs no separate canary here: a canary that only asserted string literals
     # ('\x07' not in '\x1b\\') would increment the verified count without driving the model.
+    # Discard-no-leak-oracle canary: the same no-carry broken pipeline renders a split OSC
+    # body as text, so the sub-multiset check against render_output must FLAG it (the
+    # rendered stream shows a printable byte the one-shot suppressed).
+    from collections import Counter
+    _ref = Counter(c for c in S.render_output('\x1b]0;title\x07', 'detail')
+                   if 0x20 <= ord(c) <= 0x7e)
+    _got = Counter(c for c in broken(['\x1b]0;ti', 'tle\x07']) if 0x20 <= ord(c) <= 0x7e)
+    _expect_caught('T8/discard-no-leak-oracle',
+                   any(_got[c] > _ref.get(c, 0) for c in _got))
 
 
 # ===========================================================================
@@ -2378,6 +2468,7 @@ def main():
     t8_bad = t8_split_invariance()
     t8_memory_bound()
     t8_discard_resume()
+    t8_discard_no_leak()
     sys.stdout.write('        split_invariance_divergences=%d\n' % t8_bad)
 
     sys.stdout.write('  T9    GUI render-path inertness: cells_to_runs alphabet over all code points ...\n')
