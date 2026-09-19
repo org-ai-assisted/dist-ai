@@ -17,6 +17,8 @@
 ##   - --vmram / --vram / --vmsize ran 'shift 2' BEFORE the empty-value check, so a
 ##     trailing bare flag died on 'shift count out of range' instead of the
 ##     actionable "you forgot to specify" error.
+##   - the same shift-before-check class in --only-packages / --file-system /
+##     --hostname / --retry-max / --retry-wait / --retry-before / --retry-after.
 ##
 ## Drives the REAL parse-cmd; only the color/error reporting layer help-steps/pre
 ## would supply is stubbed.
@@ -160,6 +162,21 @@ for flag in --vmram --vram --vmsize; do
          ;;
       *)
          fail "${flag} as last arg did not give the actionable error: ${last_out}"
+         ;;
+   esac
+done
+
+## --- the same shift-before-check class in the other value-taking options: a
+## trailing bare flag must give the actionable "requires a ..." error, not a raw
+## 'shift count out of range' crash. ---
+for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after; do
+   bare_out="$( run_out "${flag}" )"
+   case "${bare_out}" in
+      *"requires a"*)
+         pass "${flag} as last arg gives the actionable error, not a shift crash"
+         ;;
+      *)
+         fail "${flag} as last arg did not give the actionable error: ${bare_out}"
          ;;
    esac
 done
