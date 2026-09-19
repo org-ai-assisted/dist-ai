@@ -669,11 +669,32 @@ eq(_fcc(['\x1b' + '(' * 5000, 'BAFTER'])[0], 'AFTER',
 # short split escapes still round-trip through feed_chunk_carry (regression)
 eq(_fcc(['pre\x1b]2;a ti', 'tle\x07post'])[0], 'prepost', 'a short split OSC leaks nothing')
 eq(_fcc(['a\x1b[38;5', ';2mb'])[0], 'ab', 'a short split CSI leaks nothing')
-# feed_chunk_carry is robust at its parameter edges: a lone trailing ESC with cap<=0
-# (no room to carry, matched group len 1) must not index g[1] out of range -- it enters
-# the generic-ESC discard state. Shipped call sites use cap=4096; this guards the edge.
-eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '', '\x1b', 1),
-   'feed_chunk_carry: a lone trailing ESC at cap<=0 discards, never crashes')
+# feed_chunk_carry is robust at its parameter edges: a lone trailing ESC with cap<=0 (matched
+# group len 1) is HELD AS CARRY, not guessed -- one byte can never be a DoS, and its introducer
+# has not arrived, so guessing a discard TYPE now would mis-classify a real CSI/OSC as
+# generic-ESC and leak its body as literal text (ai-review, PR #150). Shipped call sites use
+# cap=4096; this guards the edge.
+eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '\x1b', '', 0),
+   'feed_chunk_carry: a lone trailing ESC at cap<=0 is held as carry, never crashes')
+# the leak the hold prevents: a CSI split as lone-ESC | body under cap=0 must NOT leak '31m'.
+_le0, _lc0, _ld0, _ = S.feed_chunk_carry('hi\x1b', '', '', 0, cap=0)
+_le1, _lc1, _ld1, _ = S.feed_chunk_carry('[31mDANGER\x1b[0m ok', _lc0, _ld0, 0, cap=0)
+eq(S.ANSI_RE.sub('', _le0 + _le1), 'hiDANGER ok',
+   'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 strips the SGR, no 31m leak')
+# an over-cap OSC INTERRUPTED by a nested string introducer: the over-cap discard state
+# must end the OSC at the interrupting ESC (ANSI_RE: OSC body is [^\x07\x1b]*) and re-parse
+# the nested APC under its own grammar (BEL is body), not misread the APC body's BEL as the
+# OSC terminator and leak the tail. chunk 1 exceeds the 4096 cap so the discard path engages.
+_osc_nest = '\x1b]0;' + 'A' * 5000 + '\x1b_' + 'SECRET' + '\x07' + 'VISIBLE'
+eq(_fcc([_osc_nest[:4600], _osc_nest[4600:]])[0], S.render_output(_osc_nest, 'box'),
+   'over-cap OSC + nested introducer matches one-shot (no BEL-misattribution leak)')
+ok('VISIBLE' not in _fcc([_osc_nest[:4600], _osc_nest[4600:]])[0],
+   'over-cap OSC + nested APC: the tail after the nested BEL is suppressed, not leaked')
+# an over-cap OUT-OF-ORDER CSI (a param byte AFTER an intermediate, valid per ANSI_RE's
+# any-order [ -?] body) is discarded whole, not leaked as "1m" text on a chunk split.
+_csi_oo = '\x1b[' + '2' * 5000 + ' 1m' + 'AFTER'
+eq(_fcc([_csi_oo[:4600], _csi_oo[4600:]])[0], 'AFTER',
+   'over-cap out-of-order CSI is stripped whole (any-order param/intermediate), not leaked')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 
 # --- OSC feature registry: single source of truth for the granular controls ---
