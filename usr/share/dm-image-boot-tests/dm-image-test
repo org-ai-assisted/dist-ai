@@ -83,7 +83,12 @@ def firmware_sentinels(firmware):
         SB firmware, nor an efi-secureboot leg pass without SB enforcing).
     Reads the SecureBoot value byte with od (no mokutil dependency), mounting
     efivarfs first if the kernel has not. Root: efivars are root-readable only.
-    An unknown/empty firmware yields no assertion (nothing to verify)."""
+    An unknown/empty firmware yields no assertion (nothing to verify).
+
+    'bios' == legacy no-EFI is x86 (SeaBIOS) semantics: only the amd64 wrappers
+    pass bios/efi/efi-secureboot, while the arm64 wrapper -- where 'bios' would
+    still be edk2 UEFI -- passes no --firmware at all (empty -> no assertion), so
+    the bios/no-EFI check is never reached on arm64."""
     import shlex
     if firmware == "bios":
         return [
@@ -106,19 +111,29 @@ def firmware_sentinels(firmware):
     ]
 
 
+## Whole-token 'boot-role=sysmaint' in /proc/cmdline. NOT 'grep -w': -w only
+## checks the chars around the MATCH, so it accepts a longer token that merely
+## starts with it ('boot-role=sysmaint-canary'), which a caller-controlled
+## --smbios-append could inject; anchor on a space or line edge on both sides.
+## 'boot-role=sysmaint' has no regex metacharacter, so -E is exact here.
+BOOT_ROLE_SYSMAINT_RE = r"(^| )boot-role=sysmaint( |$)"
+
+
 def boot_role_sentinel(session):
     """Shell command asserting the guest booted the CLAIMED session: the injected
-    'boot-role=sysmaint' whole-word token must be PRESENT in /proc/cmdline for the
+    'boot-role=sysmaint' whole token must be PRESENT in /proc/cmdline for the
     sysmaint session and ABSENT for user -- proving the SMBIOS session injection
     took effect (and, for user, did not accidentally select sysmaint)."""
     if session == "sysmaint":
         return (
-            "grep -q -w -- boot-role=sysmaint /proc/cmdline ||"
+            "grep -qE %s /proc/cmdline ||"
             " { echo WRONG-ROLE:expected-sysmaint-absent-from-cmdline; exit 1; }"
+            % shlex.quote(BOOT_ROLE_SYSMAINT_RE)
         )
     return (
-        "if grep -q -w -- boot-role=sysmaint /proc/cmdline; then"
+        "if grep -qE %s /proc/cmdline; then"
         " echo WRONG-ROLE:expected-user-but-sysmaint-in-cmdline; exit 1; fi"
+        % shlex.quote(BOOT_ROLE_SYSMAINT_RE)
     )
 
 
@@ -372,6 +387,13 @@ def run_checks(child, args, log):
     ## it (the always-passing diagnostic); systemcheck uses --expect-rc, the
     ## boot-integrity sentinels use 0.
     if args.run is not None:
+        ## A newline in a --run value would submit each line as its own statement,
+        ## so only the LAST line's exit code reaches the sentinel printf -- a failure
+        ## in any earlier line is silently dropped. Fail closed rather than mislead.
+        for command in args.run:
+            if "\n" in command:
+                die_setup("--run command must be a single line (got an embedded"
+                          " newline); pass one --run per command")
         commands = [(command, False, args.expect_rc) for command in args.run]
     else:
         ## --skip matches the name passed to systemcheck_run_function. The tor
@@ -518,7 +540,13 @@ def run_checks(child, args, log):
                                          shlex.quote(command))
         else:
             payload = command
-        child.sendline("%s; printf '%s:%%s:%s\\n' \"$?\""
+        ## Run the payload in a SUBSHELL so a command that ends with 'exit N' (the
+        ## hardening + firmware/role boot-integrity sentinels do, to fail fast on a
+        ## mismatch) exits the subshell, not this debug-shell -- otherwise the shell
+        ## dies before the sentinel printf runs, and run_checks stalls until the
+        ## timeout instead of reading the rc. The '$?' the printf reports is the
+        ## subshell's exit code.
+        child.sendline("( %s ); printf '%s:%%s:%s\\n' \"$?\""
                        % (payload, sentinel, sentinel))
         match = wait_for(rc_re, args.timeout, regex=True)
         if match is None:

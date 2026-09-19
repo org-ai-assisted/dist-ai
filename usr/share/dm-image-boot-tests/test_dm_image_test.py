@@ -591,30 +591,58 @@ def test_disk_leg_does_not_insert_hardening_check():
     assert rc == m.PASS
 
 
-def _run_shell(cmd):
-    """Run a sentinel shell command and return its exit code."""
-    return subprocess.run(['bash', '-c', cmd]).returncode
+def _run_as_harness(sentinel_cmd):
+    """Run a sentinel exactly as run_checks does -- in a SUBSHELL, with the
+    exit-code printf appended -- and return the reported rc, or None if the printf
+    never ran (the shell died: the exit-1-escapes-the-debug-shell regression)."""
+    out = subprocess.run(
+        ['bash', '-c',
+         "( %s ); printf 'RCSENT:%%s:RCSENT\\n' \"$?\"" % sentinel_cmd],
+        capture_output=True, text=True)
+    m = re.search(r'RCSENT:(-?\d+):RCSENT', out.stdout)
+    return int(m.group(1)) if m else None
 
 
 def test_boot_role_sentinel_verifies_the_actual_session(tmp_path):
     """The sysmaint sentinel passes only when /proc/cmdline carries the injected
-    boot-role=sysmaint token; the user sentinel passes only when it does NOT -- so
-    a leg cannot pass on the wrong session. Runs the REAL generated command with
-    /proc/cmdline swapped for a fixture."""
+    boot-role=sysmaint WHOLE token; the user sentinel passes only when it does NOT.
+    Runs the REAL generated command the way run_checks does (subshell + printf
+    sentinel), so a returned rc also proves the shell survived the exit."""
     m = _load_dm_image_test()
     sm = tmp_path / 'cmdline_sysmaint'
     sm.write_text('BOOT_IMAGE=/vmlinuz ro boot-role=sysmaint '
                   'systemd.unit=sysmaint-boot.target quiet\n')
     usr = tmp_path / 'cmdline_user'
     usr.write_text('BOOT_IMAGE=/vmlinuz ro quiet splash boot-role=user\n')
+    ## A longer token that merely STARTS with boot-role=sysmaint (grep -w would
+    ## wrongly accept it; the anchored match must not).
+    canary = tmp_path / 'cmdline_canary'
+    canary.write_text('BOOT_IMAGE=/vmlinuz ro quiet boot-role=sysmaint-canary splash\n')
 
     def cmd(session, cmdline):
         return m.boot_role_sentinel(session).replace('/proc/cmdline', str(cmdline))
 
-    assert _run_shell(cmd('sysmaint', sm)) == 0
-    assert _run_shell(cmd('sysmaint', usr)) != 0
-    assert _run_shell(cmd('user', usr)) == 0
-    assert _run_shell(cmd('user', sm)) != 0
+    assert _run_as_harness(cmd('sysmaint', sm)) == 0
+    assert _run_as_harness(cmd('sysmaint', usr)) == 1
+    assert _run_as_harness(cmd('user', usr)) == 0
+    assert _run_as_harness(cmd('user', sm)) == 1
+    ## Whole-token: boot-role=sysmaint-canary is NOT boot-role=sysmaint.
+    assert _run_as_harness(cmd('user', canary)) == 0      # user leg not false-failed
+    assert _run_as_harness(cmd('sysmaint', canary)) == 1  # canary != the real token
+
+
+def test_firmware_bios_sentinel_survives_and_flags_efi(tmp_path):
+    """The bios firmware sentinel passes with no EFI dir, fails (rc 1, shell alive)
+    when one is present -- run via the harness wrapper so exit-1 must not kill the
+    shell (rc None would be that regression)."""
+    m = _load_dm_image_test()
+    (bios_cmd,) = m.firmware_sentinels('bios')
+    no_efi = bios_cmd.replace('/sys/firmware/efi', str(tmp_path / 'no_such'))
+    assert _run_as_harness(no_efi) == 0
+    efi_dir = tmp_path / 'efi'
+    efi_dir.mkdir()
+    has_efi = bios_cmd.replace('/sys/firmware/efi', str(efi_dir))
+    assert _run_as_harness(has_efi) == 1
 
 
 def test_firmware_sentinels_match_the_claimed_firmware():
