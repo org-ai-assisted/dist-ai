@@ -1896,9 +1896,15 @@ ok('<U+0001' in _o and '\x01' not in _o,
 _o, _ = _run_cli(['--', 'printf', 'x\x07y'])
 ok('\x07' not in _o and 'xy' in _o.replace('\r', ''),
    'cli drops a standalone BEL (not shown, not leaked)')
-# no command -> the login shell, which exits on our stdin EOF (must not hang)
-_o, _rc = _run_cli(['--mode', 'box'], timeout=15)
-ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
+# no command -> the login shell, which exits CLEANLY (rc 0) on our stdin EOF (must not hang).
+# A bare isinstance(_rc, int) was vacuous (subprocess.run always yields an int); assert the
+# real properties: it did not hang (TimeoutExpired -> explicit FAIL, not a script-aborting
+# traceback) and it exited 0 (a startup crash would exit non-zero and be caught).
+try:
+    _o, _rc = _run_cli(['--mode', 'box'], timeout=15)
+    ok(_rc == 0, 'cli default shell exits cleanly (rc 0) on stdin EOF, not a crash')
+except subprocess.TimeoutExpired:
+    ok(False, 'cli default shell HUNG on stdin EOF (timed out)')
 
 # --- feed_line_edits: the line-mode logical-cell editor -----------------------
 def _line(raw, mode='box', prev=None, col=0, sgr=None):

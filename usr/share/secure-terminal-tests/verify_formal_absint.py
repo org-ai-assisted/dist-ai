@@ -327,15 +327,6 @@ def ref_clip_uni(ch):
     return ''
 
 
-def ref_title_char(ch):
-    cp = ord(ch)
-    if 0x20 <= cp <= 0x7E:
-        return ch
-    if ch in '\t\n\r\f\v':
-        return ' '
-    return ''
-
-
 def t_input_absint():
     """Exhaustive real==reference and lattice soundness for the input maps."""
     st = dict(paste=0, paste_uni=0, clip=0, clip_uni=0, clip_disp=0, title=0,
@@ -445,6 +436,13 @@ def t_input_strings():
                    S.sanitize_clipboard_display):
             if fn(probe) != ''.join(fn(c) for c in probe):
                 fail('hom: %s on %r' % (fn.__name__, probe[:40]))
+    # T5 word-separation: internal whitespace becomes a single space, NOT dropped -- else
+    # "a\tb" -> "ab" merges two words (a real behavioural bug the alphabet/idempotency/length
+    # checks all miss). Runs collapse to one space; edges trim. Asserted with concrete probes.
+    for _wp, _want in (('a\tb', 'a b'), ('a\nb', 'a b'), ('x  y', 'x y'), ('  a  b  ', 'a b')):
+        if S.sanitize_title(_wp) != _want:
+            fail('T5 title word-separation: %r -> %r, want %r'
+                 % (_wp, S.sanitize_title(_wp), _want))
 
 
 def t7_classify():
@@ -832,9 +830,10 @@ def canaries():
         return ''.join(S.render_output(c, 'detail') for c in chunks)
     _expect_caught('AI/ss2-split',
                    nocarr(['\x1bNa']) != nocarr(['\x1b', 'Na']))
-    # L-pred canary: a truncated DI list misses U+3164.
-    _expect_caught('AI/L-di-trunc',
-                   not any(lo <= 0x3164 <= hi for lo, hi in ((0x034F, 0x034F),)))
+    # L-pred canary: the independent DI oracle l_pred checks against (INDEP_DI) actually
+    # covers U+3164 HANGUL FILLER -- a PRINTABLE default-ignorable a truncated hand list would
+    # drop and l_pred would then flag. References the real oracle, not a hardcoded literal.
+    _expect_caught('AI/L-di-trunc', 0x3164 in INDEP_DI and chr(0x3164).isprintable())
     # paste_is_multiline teeth.
     _expect_caught('AI/multiline', S.paste_is_multiline('a\nb') is True)
     _expect_caught('AI/not-trailing-nl', S.paste_is_multiline('ab\n') is False)
