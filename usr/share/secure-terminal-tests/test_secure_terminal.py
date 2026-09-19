@@ -669,11 +669,18 @@ eq(_fcc(['\x1b' + '(' * 5000, 'BAFTER'])[0], 'AFTER',
 # short split escapes still round-trip through feed_chunk_carry (regression)
 eq(_fcc(['pre\x1b]2;a ti', 'tle\x07post'])[0], 'prepost', 'a short split OSC leaks nothing')
 eq(_fcc(['a\x1b[38;5', ';2mb'])[0], 'ab', 'a short split CSI leaks nothing')
-# feed_chunk_carry is robust at its parameter edges: a lone trailing ESC with cap<=0
-# (no room to carry, matched group len 1) must not index g[1] out of range -- it enters
-# the generic-ESC discard state. Shipped call sites use cap=4096; this guards the edge.
-eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '', '\x1b', 1),
-   'feed_chunk_carry: a lone trailing ESC at cap<=0 discards, never crashes')
+# feed_chunk_carry is robust at its parameter edges: a lone trailing ESC with cap<=0 (matched
+# group len 1) is HELD AS CARRY, not guessed -- one byte can never be a DoS, and its introducer
+# has not arrived, so guessing a discard TYPE now would mis-classify a real CSI/OSC as
+# generic-ESC and leak its body as literal text (ai-review, PR #150). Shipped call sites use
+# cap=4096; this guards the edge.
+eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '\x1b', '', 0),
+   'feed_chunk_carry: a lone trailing ESC at cap<=0 is held as carry, never crashes')
+# the leak the hold prevents: a CSI split as lone-ESC | body under cap=0 must NOT leak '31m'.
+_le0, _lc0, _ld0, _ = S.feed_chunk_carry('hi\x1b', '', '', 0, cap=0)
+_le1, _lc1, _ld1, _ = S.feed_chunk_carry('[31mDANGER\x1b[0m ok', _lc0, _ld0, 0, cap=0)
+eq(S.ANSI_RE.sub('', _le0 + _le1), 'hiDANGER ok',
+   'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 strips the SGR, no 31m leak')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 
 # --- OSC feature registry: single source of truth for the granular controls ---
