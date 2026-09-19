@@ -255,7 +255,11 @@ def bind_repo_shim() -> bool:
         ## protect and the runtime setup already owns that path).
         os.makedirs(os.path.dirname(INSTALLED_SHIM), exist_ok=True)
         shutil.copyfile(candidate, INSTALLED_SHIM)
-        os.chmod(INSTALLED_SHIM, 0o755)
+        ## Root-owned shim executed by privleapd/leaprun AS multiple unprivileged
+        ## client accounts, so it must be world readable+executable. It is not
+        ## group/other WRITABLE, so 0o755 is the correct shared-executable mode,
+        ## not a permissive-write risk.
+        os.chmod(INSTALLED_SHIM, 0o755)  # nosec B103 -- shared root-owned executable
         return True
     if not os.path.isfile(INSTALLED_SHIM):
         print(
