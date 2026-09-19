@@ -10,7 +10,7 @@
 ##
 ## THE BUG IT GUARDS: the accumulators variables builds with '+=' / append --
 ## the DIST_APTGETOPT array (+ DIST_APTGETOPT_SERIALIZED, +_WITHOUT_APT_CACHE),
-## pkg_list, SKIP_SCRIPTS, dist_build_script_build_dependency, and
+## dist_build_only_packages, SKIP_SCRIPTS, dist_build_script_build_dependency, and
 ## pbuilder_aptgetopt_block -- ran on EVERY 'source help-steps/variables'. A
 ## script (or helper) that sourced variables twice in the SAME shell therefore
 ## got each of these DOUBLED (e.g. DIST_APTGETOPT with every -o option listed
@@ -100,7 +100,7 @@ if ! grep --quiet 'DIST_APTGETOPT=' "${first}"; then
 fi
 
 ## The single assertion: re-sourcing changed nothing. On the pre-fix code the
-## DIST_APTGETOPT/pkg_list/SKIP_SCRIPTS/... lines differ (doubled) and this diff
+## DIST_APTGETOPT/dist_build_only_packages/SKIP_SCRIPTS/... lines differ (doubled) and this diff
 ## is non-empty.
 if diff --unified -- "${first}" "${second}" >/dev/null; then
    pass "re-sourcing help-steps/variables in the same shell is idempotent"

@@ -21,8 +21,8 @@
 ## mount capability -- it only has to pass the root gate and reach the unmount-tree
 ## handoff. mount-cleanup refuses a non-root EUID, so it runs under 'fakeroot'
 ## when the suite is unprivileged (EUID 0 for the '${EUID}' check; the checkout
-## stays readable, so '${MYDIR}/unmount-tree' and its 'unmount-helper' resolve
-## from the real tree). Real root is used directly when present.
+## stays readable, so '${MYDIR}/unmount-tree' resolves from the real tree).
+## Real root is used directly when present.
 ##
 ## Subject selection (first that exists):
 ##   $MOUNT_CLEANUP  ->  ./mount-cleanup next to this test (staged copy)

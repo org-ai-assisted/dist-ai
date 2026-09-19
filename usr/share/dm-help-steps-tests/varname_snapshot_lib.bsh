@@ -121,6 +121,7 @@ vs_consumed_funcs=(
    repository_dist_initializer_setup
    set_cowbuilder_folders
    set_dist_build_reprepro_folder_options
+   unmount_if_mounted
 )
 
 ## Files that DEFINE the resolution machinery: a reference to a function here is its
