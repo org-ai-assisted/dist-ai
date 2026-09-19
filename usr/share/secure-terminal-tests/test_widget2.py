@@ -5117,6 +5117,104 @@ eq(_avs_bar.value(), _avs_bar.minimum(),
    'alt-screen top-pin: the view is pinned to the top, not the tail')
 _avs.shutdown()
 
+# --- primary (non-alt) full-screen grid with NO scrollback is a FIXED CANVAS ----------
+# A full-screen program that renders in the NORMAL buffer (it never sends ?1049 -- e.g.
+# Claude Code) takes the PRIMARY grid path, not the alt-screen path above. Its live grid is
+# sized to fit the viewport and has no promoted scrollback, so it must never be vertically
+# scrollable and its row 0 must stay visible. The OLD code kept AsNeeded + followed the tail
+# here, so a spurious scroll range -- from an exact-fit fencepost, or (forced below) an
+# advisory-banner inset that shrinks the visible area while the winsize is held stable --
+# made the view scroll the program's OWN row 0 off the top (bug 2: the caret then drew a row
+# low / at the bottom) and left a clickable scrollbar that jumped to the bottom (bug 3). The
+# fix treats a no-scrollback primary grid as a fixed canvas (see _grid_fixed_canvas): bar
+# forced off, view pinned to the top. The banner inset is the deterministic canary -- it
+# forces the overflow on EVERY font (no dependence on inter-line leading, which Hack lacks).
+_pfg = SecureTerminal(command='/bin/cat', tui=True)
+_pfg.resize(700, 400)
+_pfg.show()
+pump(60)
+feed_output(_pfg, b'\x1b[2J')                # cursor-address every row: no linefeed scroll,
+_pfg_rows = _pfg._screen.lines              # so the document is ENTIRELY the live grid
+for _pfg_r in range(1, _pfg_rows + 1):
+    feed_output(_pfg, ('\x1b[%d;1Hrow%02d' % (_pfg_r, _pfg_r)).encode())
+_pfg_caret = max(1, _pfg_rows - 6)
+feed_output(_pfg, ('\x1b[%d;4H' % _pfg_caret).encode())      # caret on an input-like row
+# Force the overflow the fix must absorb: reserve two rows of top chrome (an OSC advisory
+# banner) WITHOUT changing the winsize, so the live grid no longer fits the visible area.
+_pfg.set_chrome_top_inset(_pfg.fontMetrics().lineSpacing() * 2)
+feed_output(_pfg, ('\x1b[%d;4H' % _pfg_caret).encode())      # a redraw frame applies the policy
+pump(80)
+ok(not _pfg._alt_screen and _pfg.document().blockCount() <= _pfg._grid_rows,
+   'fixed canvas: a normal-buffer full-screen grid with no promoted scrollback')
+ok(_pfg.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+   'fixed canvas (bug 3): no vertical scrollbar on a no-scrollback grid, even when it overflows')
+eq(_pfg.firstVisibleBlock().blockNumber(), 0,
+   'fixed canvas (bug 2): row 0 stays visible -- the tail-follow does not scroll it off')
+eq(_pfg._out_cursor.blockNumber(), _pfg._screen.cursor.y,
+   'fixed canvas (bug 2): the caret anchors to the model cursor row, not the document bottom')
+_pfg.shutdown()
+
+# The SAME grid, once it has REAL scrollback (output past one screen), stays scrollable so
+# history is reachable -- the fixed-canvas rule must not swallow a shell's scrollback.
+_psb = SecureTerminal(command='/bin/cat', tui=True)
+_psb.resize(700, 400)
+_psb.show()
+pump(60)
+for _psb_i in range(_psb._screen.lines * 3):
+    feed_output(_psb, ('scrollback line %03d\r\n' % _psb_i).encode())
+feed_output(_psb, b'\x1b[1;1Hlive')
+pump(80)
+_psb_bar = _psb.verticalScrollBar()
+ok(_psb.document().blockCount() > _psb._grid_rows
+   and _psb.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+   and _psb_bar.maximum() > _psb_bar.minimum(),
+   'real scrollback stays scrollable (AsNeeded, range > 0) -- the fix does not swallow history')
+_psb.shutdown()
+
+# --- SU / SD (CSI S / CSI T): pyte ships neither, so a full-screen program that scrolls
+# a region to open space -- an editor does this on a paste/insert via DECSTBM + SD -- had
+# its scroll SILENTLY DROPPED, corrupting the redraw (stale rows; the nano/Claude Code
+# "paste doubles / leaves stale text" bug). _SafeHistoryScreen adds both, cursor-independent
+# and margin-aware. FAILS on the pre-fix tree, where the SD/SU escape is a no-op.
+_scr = SecureTerminal(command='/bin/cat', tui=True)
+_scr.resize(700, 400)
+_scr.show()
+pump(60)
+
+
+def _scr_row(t, y):
+    row = t._screen.buffer[y]
+    return ''.join(row[x].data for x in range(t._screen.columns)).rstrip()
+
+
+def _scr_seed(t):
+    feed_output(t, b'\x1b[2J\x1b[1;1HAAA\x1b[2;1HBBB\x1b[3;1HCCC')
+
+# SD (CSI T), whole screen: content moves DOWN, blank rows appear at the top.
+_scr_seed(_scr)
+feed_output(_scr, b'\x1b[2T')                 # scroll down 2
+pump(40)
+ok(_scr_row(_scr, 0) == '' and _scr_row(_scr, 1) == '' and _scr_row(_scr, 2) == 'AAA'
+   and _scr_row(_scr, 3) == 'BBB' and _scr_row(_scr, 4) == 'CCC',
+   'SD (CSI T) scrolls the screen down: two blank rows at the top, content shifted down')
+
+# SU (CSI S), whole screen: content moves UP, the top rows are lost.
+_scr_seed(_scr)
+feed_output(_scr, b'\x1b[1S')                 # scroll up 1
+pump(40)
+ok(_scr_row(_scr, 0) == 'BBB' and _scr_row(_scr, 1) == 'CCC' and _scr_row(_scr, 2) == '',
+   'SU (CSI S) scrolls the screen up: top row lost, content shifted up')
+
+# SD inside a DECSTBM region leaves rows OUTSIDE the region untouched (nano's real shape).
+feed_output(_scr, b'\x1b[2J\x1b[1;1HTOP\x1b[2;1HR2\x1b[3;1HR3\x1b[4;1HR4\x1b[5;1HBOT')
+feed_output(_scr, b'\x1b[2;4r')              # scroll region = rows 2..4 (1-indexed)
+feed_output(_scr, b'\x1b[3T')                # SD by 3 within the region (clamped to its height)
+pump(40)
+ok(_scr_row(_scr, 0) == 'TOP' and _scr_row(_scr, 4) == 'BOT'
+   and _scr_row(_scr, 1) == '' and _scr_row(_scr, 2) == '' and _scr_row(_scr, 3) == '',
+   'SD honours the DECSTBM region: rows outside it are untouched, the region is cleared')
+_scr.shutdown()
+
 # --- Incremental TUI grid render: same document as a full rebuild, but linear --
 # A full-viewport 24-bit board has a DISTINCT truecolour in every cell, so the
 # same-format run coalescing never fires and each row is ~one insertText per
@@ -6229,9 +6327,10 @@ if tui_available():
 
 # --- alt-screen shows NO vertical scrollbar (static slack + zoom growth) ---------
 # Alt-screen has no scrollback (the wheel is sent to the child as arrow keys), so it must
-# never expose a vertical scroll range. The grid is SIZED by fontMetrics().height() but LAID
-# OUT at lineSpacing(), so under AsNeeded a spurious range appeared -- and GREW as the font
-# was zoomed up. The policy is forced AlwaysOff in alt, AsNeeded in the primary grid.
+# never expose a vertical scroll range. A no-scrollback grid can still raise a spurious range
+# (an exact-fit fencepost, or a banner inset), so the policy is forced AlwaysOff whenever the
+# grid is a fixed canvas (alt screen, or a primary grid with no promoted scrollback) and
+# AsNeeded only once the primary grid holds real scrollback. Zoom must not grow the range.
 if tui_available():
     _vs = SecureTerminal(command='/bin/cat', tui=True)
     _vs.resize(500, 300)
@@ -6250,8 +6349,14 @@ if tui_available():
     pump(60)
     feed_output(_vs, b'\x1b[?1049l')             # leave alt screen
     pump(120)
+    # An EMPTY primary buffer is itself a fixed canvas (no scrollback), so it stays OFF --
+    # the forced-OFF is lifted only once real scrollback exists. Feed more than a screen of
+    # output, then the primary grid must return to AsNeeded (history reachable again).
+    for _vz in range(_vs._screen.lines * 3):
+        feed_output(_vs, ('primary scrollback %03d\r\n' % _vz).encode())
+    pump(120)
     ok(_vs.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
-       'leaving alt-screen restores AsNeeded (the primary grid has real scrollback)')
+       'leaving alt-screen returns AsNeeded once the primary grid has real scrollback')
     _vs.shutdown()
 
 
