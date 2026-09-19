@@ -5213,6 +5213,19 @@ pump(40)
 ok(_scr_row(_scr, 0) == 'TOP' and _scr_row(_scr, 4) == 'BOT'
    and _scr_row(_scr, 1) == '' and _scr_row(_scr, 2) == '' and _scr_row(_scr, 3) == '',
    'SD honours the DECSTBM region: rows outside it are untouched, the region is cleared')
+
+# CSI S / CSI T are dispatched by FINAL BYTE, so sequences that merely end in S/T must NOT
+# scroll: CSI ? ... S is XTSMGRAPHICS (a sixel/ReGIS query, private) and a 5-parameter CSI T
+# is XTHIMOUSE (highlight mouse tracking). Both must leave the grid untouched.
+_scr_seed(_scr)
+feed_output(_scr, b'\x1b[?2;1;0S')           # XTSMGRAPHICS geometry query, NOT SU
+pump(40)
+ok(_scr_row(_scr, 0) == 'AAA' and _scr_row(_scr, 1) == 'BBB' and _scr_row(_scr, 2) == 'CCC',
+   'XTSMGRAPHICS (CSI ? ... S) is not treated as SU -- the grid is unchanged')
+feed_output(_scr, b'\x1b[1;2;3;4;5T')        # XTHIMOUSE highlight tracking, NOT SD
+pump(40)
+ok(_scr_row(_scr, 0) == 'AAA' and _scr_row(_scr, 1) == 'BBB' and _scr_row(_scr, 2) == 'CCC',
+   'XTHIMOUSE (5-parameter CSI T) is not treated as SD -- the grid is unchanged')
 _scr.shutdown()
 
 # --- Incremental TUI grid render: same document as a full rebuild, but linear --
