@@ -5,13 +5,18 @@
 
 ## AI-Assisted
 
-## Regression test for two parse-cmd arg-handling bugs:
+## Regression test for parse-cmd arg-handling bugs:
 ##   - --kernel / --headers / --initramfs read BUILD_*_PKGS to append to it, but
 ##     parse-cmd runs under nounset BEFORE help-steps/variables defaults those, so a
 ##     REAL value (not 'none'/empty) crashed with 'unbound variable'. Fixed with a
 ##     :- default.
-##   - --package-jobs printed its "must be a whole integer" error but did NOT exit,
-##     so a bogus value slipped through fail-fast into a much later build step.
+##   - --package-jobs printed its integer error but did NOT exit, so a bogus value
+##     slipped through fail-fast into a much later build step.
+##   - --package-jobs 0 passed the parse-time check (rejected only much later in
+##     2100); now refused at parse time as a positive integer.
+##   - --vmram / --vram / --vmsize ran 'shift 2' BEFORE the empty-value check, so a
+##     trailing bare flag died on 'shift count out of range' instead of the
+##     actionable "you forgot to specify" error.
 ##
 ## Drives the REAL parse-cmd; only the color/error reporting layer help-steps/pre
 ## would supply is stubbed.
@@ -95,7 +100,7 @@ esac
 ## depend on which mandatory-arg error a bare run would surface).
 bad_out="$( run_out --package-jobs abc --headers '' )"
 case "${bad_out}" in
-   *"must be passed a whole integer"*)
+   *"must be passed a positive integer"*)
       pass "--package-jobs abc reports the integer error"
       ;;
    *)
@@ -114,13 +119,50 @@ esac
 ## A valid value passes that check (no integer error; it stops later, elsewhere).
 good_out="$( run_out --package-jobs 4 )"
 case "${good_out}" in
-   *"must be passed a whole integer"*)
+   *"must be passed a positive integer"*)
       fail "--package-jobs 4 wrongly reported the integer error"
       ;;
    *)
       pass "--package-jobs 4 passes the integer check"
       ;;
 esac
+
+## --- --package-jobs 0 is refused at PARSE time (2100 rejected it only much later) ---
+## Same absence-of-'--headers' proof as above: the fix exits at package-jobs; the
+## pre-fix regex accepted 0 and kept parsing to reach --headers.
+zero_out="$( run_out --package-jobs 0 --headers '' )"
+case "${zero_out}" in
+   *"must be passed a positive integer"*)
+      pass "--package-jobs 0 is refused at parse time"
+      ;;
+   *)
+      fail "--package-jobs 0 was accepted at parse time (only 2100 would catch it)"
+      ;;
+esac
+case "${zero_out}" in
+   *"must not be empty"*)
+      fail "--package-jobs 0 kept parsing past the error (reached --headers)"
+      ;;
+   *)
+      pass "--package-jobs 0 stops at the error (never reached --headers)"
+      ;;
+esac
+
+## --- --vmram / --vram / --vmsize: a trailing bare flag gives the actionable error,
+## not a 'shift count out of range' crash (the empty-value check must run BEFORE
+## 'shift 2'). The pre-fix order shifted first, so shift died under errexit before
+## the message printed. ---
+for flag in --vmram --vram --vmsize; do
+   last_out="$( run_out "${flag}" )"
+   case "${last_out}" in
+      *"You forgot to specify"*)
+         pass "${flag} as last arg gives the actionable error, not a shift crash"
+         ;;
+      *)
+         fail "${flag} as last arg did not give the actionable error: ${last_out}"
+         ;;
+   esac
+done
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
