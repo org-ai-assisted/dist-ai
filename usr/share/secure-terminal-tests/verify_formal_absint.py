@@ -392,8 +392,15 @@ def t_input_absint():
 
         for mode in S.DISPLAY_MODES:
             cell = S.tui_cell(ch, mode)
-            if alpha_str(cell) == DANGEROUS:
-                note('tui', 'T6 tui absint: %s U+%04X DANGEROUS' % (mode, cp))
+            # Enforce the FULL per-mode TUI ceiling, not just "not DANGEROUS": every
+            # strict TUI mode (box, reveal, detail) substitutes the box glyph (MARKER)
+            # for a non-ASCII glyph, so a regression passing a printable non-ASCII glyph
+            # (PRINTABLE_NA, < DANGEROUS) through must fail there; only show passes it.
+            tui_ceiling = PRINTABLE_NA if mode == 'show' else MARKER
+            lab = alpha_str(cell)
+            if lab > tui_ceiling:
+                note('tui', 'T6 tui absint: %s U+%04X label %s exceeds ceiling %s'
+                     % (mode, cp, _LABEL_NAME[lab], _LABEL_NAME[tui_ceiling]))
             # TUI never emits a C0 control (even the four CLI honours): a grid
             # cell is a glyph. Space is the empty-cell stand-in.
             if any(unicodedata.category(c) == 'Cc' for c in cell):
@@ -422,6 +429,12 @@ def t_input_strings():
             fail('T5 title bound/idempotent on %r' % probe[:40])
         if alpha_str(t1) == DANGEROUS:
             fail('T5 title absint DANGEROUS on %r' % probe[:40])
+        # The documented T5 property is printable ASCII ONLY, and the whole-string path
+        # (incl. the >80 truncation on the 300-char probe) must satisfy it -- a "not
+        # DANGEROUS" check alone passes a truncation bug that appended a printable Unicode
+        # byte (e.g. an ellipsis), since PRINTABLE_NA != DANGEROUS.
+        if any(not (0x20 <= ord(c) <= 0x7E) for c in t1):
+            fail('T5 title alphabet: non-ASCII byte in %r on %r' % (t1[:40], probe[:40]))
         # CRLF pair collapses to one LF: "cmd\r\n" is one line, not multi-line.
         _ml = probe.replace('\r\n', '\n')
         want_ml = bool(probe) and (('\n' in _ml[:-1]) or ('\r' in _ml[:-1]))
@@ -638,9 +651,16 @@ def t8_grammar():
             if bad < 8:
                 fail('T8 grammar: %r ANSI_RE=%d grammar=%d' % (rest[:40], alen, glen))
             bad += 1
-    # Product of short escape-ish strings: wherever the grammar says COMPLETE,
-    # ANSI_RE must consume at least that many bytes (it may consume more only
-    # for the optional-ST string class, which we skip).
+    # Product of short escape-ish strings: wherever the grammar says COMPLETE
+    # (glen > 0), ANSI_RE must consume EXACTLY that prefix -- the safety-relevant
+    # direction (ANSI_RE UNDER-matching a complete sequence would leave escape bytes
+    # to leak). glen == 0 (grammar incomplete) is skipped for EVERY introducer, not
+    # just the optional-ST string class: ANSI_RE deliberately OVER-strips an incomplete
+    # or aborted sequence (the interrupted-CSI arm on "\x1b[9", SS2/SS3 awaiting their
+    # byte, an ESC+intermediate aborted by a following ESC), consuming more than the
+    # grammar's 0. That over-strip is safe (it removes, never leaks), so comparing
+    # alen == glen there would flag correct behavior; only under-match on a COMPLETE
+    # sequence is a real leak, and that is what the glen > 0 comparison catches.
     alphabet = ['\x1b', '[', ']', 'N', 'O', 'P', 'm', 'a', '?', '(', '0', '\\',
                 '\x07']
     for tup in itertools.product(alphabet, repeat=3):
@@ -761,16 +781,17 @@ def t9_absint():
         for mode in ('box', 'show', 'reveal', 'detail'):
             runs, _p = S.cells_to_runs([], [(ch, None)], mode, True, True, None)
             text = ''.join(t for t, _k in runs)
-            if alpha_str(text) == DANGEROUS:
+            # Enforce the FULL per-mode ceiling, not merely "not DANGEROUS": box mode's
+            # ceiling is MARKER (SAFE_ASCII + the box glyph), so a regression echoing a
+            # printable non-ASCII glyph (PRINTABLE_NA, which is < DANGEROUS) in box mode
+            # must still fail. show allows PRINTABLE_NA; reveal/detail are pure SAFE.
+            lab = alpha_str(text)
+            if lab > allowed_for_mode(mode):
                 if bad < 8:
-                    fail('T9 absint: %s U+%04X labelled DANGEROUS (%r)'
-                         % (mode, cp, text[:40]))
+                    fail('T9 absint: %s U+%04X label %s exceeds ceiling %s (%r)'
+                         % (mode, cp, _LABEL_NAME[lab],
+                            _LABEL_NAME[allowed_for_mode(mode)], text[:40]))
                 bad += 1
-            if mode in ('reveal', 'detail'):
-                if any(ord(c) not in SAFE_ASCII for c in text):
-                    if bad < 8:
-                        fail('T9 absint: %s U+%04X not SAFE_ASCII' % (mode, cp))
-                    bad += 1
     return bad
 
 
