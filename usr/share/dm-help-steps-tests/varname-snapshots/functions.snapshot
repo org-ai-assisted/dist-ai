@@ -488,8 +488,8 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --only-packages)
-                export pkg_list="${2:-}";
-                true "${cyan}INFO: --only-packages: rebuilding only '${pkg_list}', reusing the rest.${reset}";
+                export dist_build_only_packages="${2:-}";
+                true "${cyan}INFO: --only-packages: rebuilding only '${dist_build_only_packages}', reusing the rest.${reset}";
                 shift 2
             ;;
             --skip-packages)
@@ -1382,9 +1382,9 @@ pkg_list_create ()
     local derivative_name_item;
     for derivative_name_item in $derivative_name_list;
     do
-        if [ "${pkg_list:-}" = "" ] || [ "${pkg_automatic_list:-}" = "true" ]; then
+        if [ "${dist_build_only_packages:-}" = "" ] || [ "${pkg_automatic_list:-}" = "true" ]; then
             pkg_automatic_list=true;
-            pkg_list+=" $(ls "$source_code_folder_dist/packages/$derivative_name_item/")";
+            dist_build_only_packages+=" $(ls "$source_code_folder_dist/packages/$derivative_name_item/")";
         fi;
     done
 }
@@ -1436,6 +1436,27 @@ set_dist_build_reprepro_folder_options ()
     dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
     export dist_apt_repository_folder;
     dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${binary_build_folder_dist}/${apt_repo_sub_folder}" --dbdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/db" --logdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/log")
+}
+source_date_epoch_valid ()
+{
+    local value;
+    value="$1";
+    is_whole_number "${value}" || return 1;
+    [ "$(( 10#${value} ))" -ge 0 ] && [ "$(( 10#${value} ))" = "${value}" ]
+}
+unmount_if_mounted ()
+{
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
+    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+}
+value_charset_ok ()
+{
+    case "$1" in
+        '' | *[!$2]*)
+            return 1
+        ;;
+    esac;
+    return 0
 }
 variables_script_sanity_test ()
 {

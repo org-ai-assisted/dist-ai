@@ -86,3 +86,8 @@ set_dist_build_reprepro_folder_options ()
     export dist_apt_repository_folder;
     dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${binary_build_folder_dist}/${apt_repo_sub_folder}" --dbdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/db" --logdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/log")
 }
+unmount_if_mounted ()
+{
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
+    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+}
