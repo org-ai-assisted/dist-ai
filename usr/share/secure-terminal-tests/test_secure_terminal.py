@@ -743,6 +743,14 @@ ok(S.wants_full_screen('\x1b[?47h') is True, 'detects alt-screen enter (47)')
 ok(S.wants_full_screen('plain text') is False, 'no false positive on plain text')
 ok(S.leaves_full_screen('\x1b[?1049l') is True, 'detects alt-screen leave (1049)')
 ok(S.leaves_full_screen('\x1b[?1049h') is False, 'enter is not a leave')
+# ai-review #2: a COMBINED private-mode CSI (multiple modes in one sequence) must be detected,
+# and an unrelated mode whose digits merely contain an alt number must NOT false-positive.
+ok(S.wants_full_screen('\x1b[?1047;1049h') is True, 'detects a COMBINED alt-screen enter')
+ok(S.leaves_full_screen('\x1b[?1049;1047l') is True, 'detects a COMBINED alt-screen leave')
+ok(S.wants_full_screen('\x1b[?147h') is False, 'mode 147 is not alt (no substring false-positive)')
+ok(S.wants_full_screen('\x1b[?25h') is False, 'a non-alt private mode (cursor show) is not alt')
+ok([k for _s, _e, k in S.alt_screen_transitions('\x1b[?1049h\x1b[?1049l')] == ['enter', 'leave'],
+   'alt_screen_transitions yields enter then leave in order')
 
 # --- in-place repaint detection (zsh/readline menu, progress grid, no alt screen)
 # The tell line mode cannot draw: cursor-up to repaint above, or absolute row;col

@@ -3383,6 +3383,21 @@ ok(_bf_cell('\x1b[38;5;196mX').fg != 'default',
 # an INCOMPLETE 38;2 must NOT clear a preceding bright fg (91;38;2;1 keeps bright red)
 ok(_bf_cell('\x1b[91;38;2;1mX').fg == 'brightred',
    '_SafeHistoryScreen: an incomplete 38;2 selector leaves the preceding bright fg intact')
+# ai-review #1 (PR #148): a CSI carrying MORE params than the handler's arity must not TypeError
+# out of feed() and drop the rest of the chunk. ESC[1;2A (cursor_up takes one), ESC[1;2;3H,
+# ESC[1;2@, ESC[1;2;3r, and the private ESC[?1;2A must all be tolerated (excess params ignored).
+def _csi_ok(_seq):
+    _s = _SHS_bf(20, 5)
+    try:
+        _pyte_bf.Stream(_s).feed(_seq)
+    except Exception as _e:                                  # pylint: disable=broad-except
+        return 'CRASH:%s' % type(_e).__name__
+    return ''.join(_s.buffer[_y][_x].data for _y in range(5) for _x in range(20))
+for _bad in ('START\x1b[1;2AEND', 'START\x1b[1;2;3HEND', 'START\x1b[1;2@END',
+             'START\x1b[1;2;3rEND', 'START\x1b[?1;2AEND'):
+    _out = _csi_ok(_bad)
+    ok(not _out.startswith('CRASH') and 'END' in _out,
+       '_SafeHistoryScreen: over-length CSI %r is tolerated; the tail still draws' % _bad[5:12])
 # fg == bg (a program hiding text) triggers the contrast guard -> readable fg
 _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
