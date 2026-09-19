@@ -443,6 +443,15 @@ def t_input_strings():
         if S.sanitize_title(_wp) != _want:
             fail('T5 title word-separation: %r -> %r, want %r'
                  % (_wp, S.sanitize_title(_wp), _want))
+    # T5 escape-remnant: a whole escape SEQUENCE is removed, not left as literal param text --
+    # dropping only the ESC byte would keep "[8m" of ESC[8m (printable ASCII) as garbled text.
+    # sanitize_title runs on titles NOT pre-parsed by ANSI_RE (a directory basename can hold a
+    # raw ESC), so this is a real "no escape rides in" guarantee, not a display nicety.
+    for _tp, _twant in (('proj\x1b[8mhidden', 'projhidden'), ('\x1b]0;evil\x07t', 't'),
+                        ('a\x1b[31mb', 'ab')):
+        if S.sanitize_title(_tp) != _twant:
+            fail('T5 title escape-remnant: %r -> %r, want %r'
+                 % (_tp, S.sanitize_title(_tp), _twant))
 
 
 def t7_classify():
