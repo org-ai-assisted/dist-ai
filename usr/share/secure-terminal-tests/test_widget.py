@@ -2197,32 +2197,56 @@ ok(_dc._screen.cursor.x <= _dc._screen.columns - 1,
    '#5: _reset_vt_to_prompt_baseline clamps the cursor into the restored width (no VT leak)')
 _dc.close()
 
-# #6: the deferred SIGKILL (_kill_pgrp_survivor) must gate on IDENTITY (the group leader's
-# start-time), not mere liveness, so a pgid reused after the SIGTERM'd job exited is never killed.
+# #6: the deferred SIGKILL (_kill_pgrp_survivor) gates on IDENTITY -- a live leader whose
+# start-time differs (pgid reused) is spared, but a leader that merely exited while members
+# linger is still killed (the panic button must not silently weaken -- ai-review #3 regression).
 _kp = SecureTerminal(command='/bin/cat', tui=True)
-_killed6 = []
 _orig_killpg6 = _osX.killpg
 _orig_pst6 = _kp._pid_start_time
-_osX.killpg = lambda _pg, _sig: _killed6.append((_pg, _sig))
+_state6 = {'killed': [], 'alive': True}
+def _mk_killpg6(_pg, _sig):
+    if _sig == 0 and not _state6['alive']:
+        raise ProcessLookupError()          # the group is fully gone
+    _state6['killed'].append((_pg, _sig))
+_osX.killpg = _mk_killpg6
+def _run6(_startfn, _alive=True):
+    _state6['killed'] = []; _state6['alive'] = _alive
+    _kp._pid_start_time = _startfn
+    _kp._kill_pgrp_survivor(4242, 'S1')
+    return (4242, _sigX.SIGKILL) in _state6['killed']
 try:
-    _kp._pid_start_time = lambda _pid: 'S1'                     # leader identity matches
-    _kp._kill_pgrp_survivor(4242, 'S1')
-    _match_killed = (4242, _sigX.SIGKILL) in _killed6
-    _killed6.clear()
-    _kp._pid_start_time = lambda _pid: 'S2'                     # pgid reused -> start-time changed
-    _kp._kill_pgrp_survivor(4242, 'S1')
-    _reuse_spared = _killed6 == []
-    _killed6.clear()
-    _kp._pid_start_time = lambda _pid: None                     # leader already gone
-    _kp._kill_pgrp_survivor(4242, 'S1')
-    _gone_spared = _killed6 == []
+    _c1 = _run6(lambda _p: 'S1')                    # leader alive, identity matches
+    _c2 = _run6(lambda _p: 'S2')                    # a different live leader reused the pgid
+    _c3 = _run6(lambda _p: None, _alive=True)       # leader exited, members still alive
+    _c4 = _run6(lambda _p: None, _alive=False)      # group fully gone
 finally:
     _osX.killpg = _orig_killpg6
     _kp._pid_start_time = _orig_pst6
-ok(_match_killed, '#6: _kill_pgrp_survivor SIGKILLs when the group leader identity still matches')
-ok(_reuse_spared, '#6: does NOT SIGKILL a pgid whose leader start-time changed (reuse race)')
-ok(_gone_spared, '#6: does NOT SIGKILL when the leader is already gone (safe direction)')
+ok(_c1, '#6: SIGKILLs the original group when the leader start-time matches')
+ok(not _c2, '#6: spares a pgid reused by a different live leader (reuse race)')
+ok(_c3, '#6: still SIGKILLs surviving members when the leader exited (no panic-button regression)')
+ok(not _c4, '#6: no SIGKILL when the group is fully gone')
 _kp.close()
+
+# _alt_owner_dead (ai-review same-class): a reused alt-owner pgid must read DEAD (clear the
+# stale frame), not alive -- killpg(pg, 0) liveness alone would keep a stale full-screen frame.
+_ao = SecureTerminal(command='/bin/cat', tui=True)
+_ao._alt_owner_pgrp = 4243
+_orig_killpg_ao = _osX.killpg
+_orig_pst_ao = _ao._pid_start_time
+_osX.killpg = lambda _pg, _sig: None                # the pgid answers (something is alive)
+try:
+    _ao._alt_owner_start = 'A1'
+    _ao._pid_start_time = lambda _p: 'A1'           # same owner still there
+    _same_alive = _ao._alt_owner_dead() is False
+    _ao._pid_start_time = lambda _p: 'A2'           # a different process reused the pgid
+    _reused_dead = _ao._alt_owner_dead() is True
+finally:
+    _osX.killpg = _orig_killpg_ao
+    _ao._pid_start_time = _orig_pst_ao
+ok(_same_alive, '_alt_owner_dead: the original alt owner (matching start-time) reads alive')
+ok(_reused_dead, '_alt_owner_dead: a reused alt-owner pgid reads dead (stale frame cleared)')
+_ao.close()
 
 # #7: _release_pty must NOT waitpid/evict a pid that is no longer OUR child (the shared reaper
 # may have freed it and the OS reused it for another tab). Force identity False; neither

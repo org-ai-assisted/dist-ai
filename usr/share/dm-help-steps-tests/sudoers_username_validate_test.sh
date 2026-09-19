@@ -87,10 +87,19 @@ check_accept _svc
 check_accept build-user
 check_accept x9
 check_accept 'host$'
+## A name is only a sudoers alias token if it is ENTIRELY [A-Z][A-Z0-9_]*; any
+## lowercase letter makes it a real user again.
+check_accept Root
+check_accept ROOTx
 
-## --- refused: reserved word and sudoers metacharacters ---------------------
+## --- refused: sudoers uppercase-alias tokens and metacharacters -------------
 check_reject ''
+## sudoers reads a bare [A-Z][A-Z0-9_]* word as an alias reference, not a user:
+## 'ALL' grants everyone; 'BUILD'/'ROOT' are undefined-alias references.
 check_reject ALL
+check_reject BUILD
+check_reject ROOT
+check_reject A
 check_reject 'a b'
 check_reject 'a%b'
 check_reject 'a=b'
@@ -106,19 +115,20 @@ check_reject '$'
 check_reject '9x'
 check_reject '-foo'
 
-## --- CANARY: the 'ALL' guard is load-bearing -------------------------------
+## --- CANARY: the uppercase-alias guard is load-bearing ---------------------
 ## check_valid_linux_user_account_name (the NAME_REGEX check we delegate to)
-## ACCEPTS 'ALL' -- it is a syntactically valid account name. So a form that
-## dropped the sudoers 'ALL' guard and relied on NAME_REGEX alone would wrongly
-## accept 'ALL'. Confirm NAME_REGEX accepts it while the real function refuses.
-nameregex_accepts_all=no
-if check_valid_linux_user_account_name ALL ; then
-   nameregex_accepts_all=yes
+## ACCEPTS 'BUILD' -- it is a syntactically valid account name -- yet sudoers
+## reads it as an alias token. A gate relying on NAME_REGEX plus only an 'ALL'
+## reject would wrongly accept 'BUILD'. Confirm NAME_REGEX accepts it while the
+## real function refuses.
+nameregex_accepts_build=no
+if check_valid_linux_user_account_name BUILD ; then
+   nameregex_accepts_build=yes
 fi
-if [ "${nameregex_accepts_all}" = "yes" ] && ! username-plain-for-sudoers ALL ; then
-   pass "canary: NAME_REGEX accepts 'ALL'; the sudoers guard is what refuses it"
+if [ "${nameregex_accepts_build}" = "yes" ] && ! username-plain-for-sudoers BUILD ; then
+   pass "canary: NAME_REGEX accepts 'BUILD'; the sudoers-alias guard refuses it"
 else
-   fail "canary broken: nameregex_accepts_all=${nameregex_accepts_all}"
+   fail "canary broken: nameregex_accepts_build=${nameregex_accepts_build}"
 fi
 
 summary_line="===== username-plain-for-sudoers: ${pass_count} pass, ${fail_count} fail ====="

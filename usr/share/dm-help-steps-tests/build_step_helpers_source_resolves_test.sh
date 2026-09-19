@@ -5,18 +5,20 @@
 
 ## AI-Assisted
 
-## Every build step that uses build-step-helpers.bsh must source it by a
-## CWD-independent path. The step sources it AFTER `source variables`, which
-## leaves the working directory outside help-steps; a bare `source
-## build-step-helpers.bsh` then resolves via neither PATH nor CWD and the build
-## aborts (observed: both iso + qcow2 CI legs failed at 1200 with
-## "build-step-helpers.bsh: No such file or directory"). `source pre`/`variables`
-## stay bare only because they run while the CWD is still help-steps.
+## Root cause this gate exists for: `source variables` intentionally cd's into
+## source_code_folder_dist (variables.d/10_core.bsh, "by design" -- every build
+## step runs from the source root afterwards). So a script that sources a
+## help-steps sibling by BARE NAME *after* `source variables` resolves via
+## neither PATH nor CWD and the build aborts (observed: iso + qcow2 CI legs died
+## at 1200 with "build-step-helpers.bsh: No such file or directory"). The correct
+## idiom is a path anchored to the script's OWN location -- ${MYDIR}/.. or
+## $(dirname ${BASH_SOURCE[0]}) -- exactly as help-steps/pre sources retry-run.
 ##
-## Behavioral: the step's real source line is evaluated from a foreign CWD with
-## the step's real MYDIR; the lib must load (a known function becomes defined).
-## The canary proves a bare-name source would NOT resolve from that CWD, so the
-## check has teeth.
+## This gate DISCOVERS every consumer of build-step-helpers.bsh (so a new one, or
+## dm-raw-to-iso, is covered without editing this test) and asserts each sources
+## it by a self-anchored path, never a bare/CWD-relative name. A behavioral proof
+## + canary back the structural check: a self-anchored path loads from any CWD, a
+## bare name does not.
 
 set -o errexit
 set -o nounset
@@ -38,13 +40,6 @@ if [ ! -r "${lib}" ]; then
    exit 1
 fi
 
-## a directory that is NOT help-steps, to prove the source resolves independent
-## of the working directory
-foreign_cwd="$( mktemp -d )"
-# shellcheck disable=SC2317  # reached only via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${foreign_cwd}"; }
-trap cleanup EXIT
-
 pass_count=0
 fail_count=0
 pass() {
@@ -56,49 +51,60 @@ fail() {
    printf '%s\n' "FAIL: $*" >&2
 }
 
-## a function the lib defines; its presence proves the source actually loaded
-probe_fn="require-ext-type"
+## the line by which a script sources the helper library
+src_line_of() {
+   grep -E '^[[:space:]]*source[[:space:]].*build-step-helpers\.bsh' -- "$1" | head -1
+}
 
-## build steps that source the helper library
-steps=(
-   1200_prepare-build-machine
-   3500_install-packages
-   4350_reimage-raw-reproducible
-)
+## --- discover every consumer and require a self-anchored source ---------------
+## Any file under build-steps.d/ or help-steps/ that sources the library (the
+## library itself excluded). Discovery, not a hardcoded list, so a new consumer
+## cannot silently escape the check.
+mapfile -t consumers < <(
+   grep -rlE 'source[[:space:]].*build-step-helpers\.bsh' \
+      -- "${dm_checkout}/build-steps.d" "${dm_checkout}/help-steps" 2>/dev/null \
+   | grep -v '/build-step-helpers\.bsh$' | sort)
 
-for step in "${steps[@]}"; do
-   step_file="${dm_checkout}/build-steps.d/${step}"
-   if [ ! -r "${step_file}" ]; then
-      fail "cannot read build step ${step_file}"
-      continue
-   fi
+if [ "${#consumers[@]}" -eq 0 ]; then
+   fail 'discovery found no consumer of build-step-helpers.bsh (grep broken?)'
+fi
 
-   ## the exact line the step uses to source the helper library
-   src_line="$( grep -E '^[[:space:]]*source[[:space:]].*build-step-helpers\.bsh' -- "${step_file}" | head -1 )"
-   if [ -z "${src_line}" ]; then
-      fail "${step}: sources no build-step-helpers.bsh"
-      continue
-   fi
-
-   ## Evaluate ONLY that line, from a CWD that is NOT help-steps, with MYDIR set
-   ## as the real step sets it (dirname of the step = build-steps.d). The lib
-   ## must load regardless of CWD.
-   if (
-         cd "${foreign_cwd}" || exit 9
-         # shellcheck disable=SC2034
-         MYDIR="${dm_checkout}/build-steps.d"
-         eval "${src_line}" 2>/dev/null || exit 1
-         declare -F "${probe_fn}" >/dev/null 2>&1 || exit 2
-      ); then
-      pass "${step}: sources the helper library CWD-independently"
-   else
-      fail "${step}: helper source does not resolve from a foreign CWD (bare name?): ${src_line}"
-   fi
+for consumer in "${consumers[@]}"; do
+   src_line="$( src_line_of "${consumer}" )"
+   ## The source ARGUMENT must anchor to the script's own location so it resolves
+   ## regardless of CWD. ${MYDIR} (=dirname of the script) and ${BASH_SOURCE[0]}
+   ## are the two anchors in this tree; a bare or CWD-relative name has neither.
+   case "${src_line}" in
+      *'${MYDIR}'*|*'BASH_SOURCE'*)
+         pass "${consumer##*/}: sources the helper by a self-anchored path"
+         ;;
+      *)
+         fail "${consumer##*/}: helper source is not self-anchored (bare/CWD-relative): ${src_line}"
+         ;;
+   esac
 done
 
-## --- CANARY: a bare-name source would NOT resolve from a foreign CWD ---------
-## This is the exact regression the test guards; if it resolved, the behavioral
-## check above would be meaningless.
+## --- behavioral proof: a self-anchored path loads from a foreign CWD ----------
+foreign_cwd="$( mktemp -d )"
+# shellcheck disable=SC2317  # reached only via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${foreign_cwd}"; }
+trap cleanup EXIT
+
+## a function the lib defines; its presence proves the source actually loaded
+probe_fn="require-ext-type"
+if (
+      cd "${foreign_cwd}" || exit 9
+      # shellcheck disable=SC2034
+      MYDIR="${dm_checkout}/build-steps.d"
+      source "${MYDIR}/../help-steps/build-step-helpers.bsh" 2>/dev/null || exit 1
+      declare -F "${probe_fn}" >/dev/null 2>&1 || exit 2
+   ); then
+   pass 'behavioral: a ${MYDIR}-anchored source loads the lib from a foreign CWD'
+else
+   fail 'behavioral: a ${MYDIR}-anchored source failed to load from a foreign CWD'
+fi
+
+## --- CANARY: a bare-name source would NOT resolve from a foreign CWD ----------
 bare_resolves=no
 (
    cd "${foreign_cwd}" || exit 9
