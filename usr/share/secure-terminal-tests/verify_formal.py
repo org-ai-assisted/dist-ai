@@ -1356,11 +1356,17 @@ def _tui_char_ok(oc, mode):
 def _classify_family(cp):
     """The marking family classify_paste assigns a non-plain-ASCII code point, in
     classify_paste's own precedence order (bidi > control > invisible > other)."""
-    if S.is_bidi_control(cp):
+    if S.is_bidi_control(cp):                 # pinned to INDEP_BIDI by L-bidi
         return 'bidi'
     if _is_control_cp(cp):
         return 'control'
-    if S.is_invisible(chr(cp)):
+    # INDEPENDENT invisible oracle (Python's own isprintable + the independent DI set), NOT
+    # S.is_invisible: this family is the REFERENCE the T7 check compares classify_paste /
+    # marking_class against, and those consult S.is_invisible internally -- using it here too
+    # would let a regressed hand list agree with itself on a wrong answer (the circularity the
+    # file eliminated for is_bidi_control / is_default_ignorable). Mirrors is_invisible's own
+    # definition (not printable, or default-ignorable) via sources independent of S.is_*.
+    if (not chr(cp).isprintable()) or cp in INDEP_DI:
         return 'invisible'
     return 'nonascii'
 
@@ -2314,35 +2320,52 @@ def _armed_screen(feed, g0=None):
     return screen
 
 
+# The nine tracked VT-state dimensions, each an independent arming (pyte-screen feed +
+# optional G0 charset, wrapper mouse modes, wrapper palette). Each is individually
+# non-baseline, so EVERY non-empty subset is a genuine (non-vacuous) pre-state.
+_T10_DIMS = [
+    ('\x1b[?2004h', None, set(), {}),                       # bracketed paste
+    ('\x1b[?25l', None, set(), {}),                         # hidden cursor
+    ('\x1b[?6h', None, set(), {}),                          # origin mode
+    ('\x1b[?7l', None, set(), {}),                          # autowrap off
+    ('\x1b[2;3r', None, set(), {}),                         # scroll region
+    ('\x1b(0', pyte.charsets.VT100_MAP, set(), {}),         # G0 special-graphics charset
+    ('\x1b[1;31mERR', None, set(), {}),                     # SGR pen
+    ('', None, {1000, 1006}, {}),                           # mouse
+    ('', None, set(), {1: '#ff0000', 'fg': '#00ff00'}),     # palette
+]
+
+
 def t10_reset_baseline():
     """Every armed pre-state, once reset, is at the baseline (is_baseline holds); and every
     pre-state was genuinely NON-baseline first (so the reset -- not a vacuous input -- is
-    what is verified). Exhaustive over the cross-product of the tracked dimensions."""
-    # Each pre-state pairs a pyte-screen arming feed (+ optional charset) with the wrapper
-    # mouse/palette the helper also clears. Dimensions: bracketed paste, hidden cursor,
-    # origin mode, autowrap-off, scroll region, charset, SGR pen, mouse, palette.
-    prestates = [
-        ('\x1b[?2004h\x1b[?25l\x1b[?6h\x1b[2;3r', pyte.charsets.VT100_MAP,
-         {1000, 1006}, {1: '#ff0000', 'fg': '#00ff00'}),
-        ('\x1b[?7l\x1b[?1000h', None, {1002}, {}),
-        ('\x1b[1;31mERR', None, set(), {'bg': '#000080'}),
-        ('\x1b[3;5r\x1b[?25l', pyte.charsets.VT100_MAP, set(), {}),
-        ('\x1b[3g', None, set(), {}),                       # cleared tab stops
-        ('', None, {1003}, {10: '#123456'}),
-    ]
+    what is verified). EXHAUSTIVE over the full cross-product: all 2**9 - 1 non-empty subsets
+    of the tracked dimensions, so an ordering bug that only fails to clear one dimension when
+    a SPECIFIC other dimension is simultaneously live cannot hide (the gap of the old
+    hand-picked prestate list)."""
+    import itertools
     checked = 0
-    for feed, g0, mouse, palette in prestates:
-        screen = _armed_screen(feed, g0)
-        pre = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
-                         saved_primary=None, mouse_modes=mouse, palette=palette, title='x')
-        if sd.is_baseline(pre):
-            fail('T10: a pre-state armed nothing (feed=%r) -- the reset proves nothing' % feed)
-        _reset_screen_spec(screen)
-        post = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
-                          saved_primary=None, mouse_modes=set(), palette={}, title='x')
-        if not sd.is_baseline(post):
-            fail('T10: reset spec left non-baseline state from feed=%r: %r' % (feed, post))
-        checked += 1
+    n = len(_T10_DIMS)
+    for r in range(1, n + 1):
+        for combo in itertools.combinations(range(n), r):
+            feed = ''.join(_T10_DIMS[i][0] for i in combo)
+            g0 = next((_T10_DIMS[i][1] for i in combo if _T10_DIMS[i][1] is not None), None)
+            mouse = set().union(*(_T10_DIMS[i][2] for i in combo))
+            palette = {}
+            for i in combo:
+                palette.update(_T10_DIMS[i][3])
+            screen = _armed_screen(feed, g0)
+            pre = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
+                             saved_primary=None, mouse_modes=mouse, palette=palette, title='x')
+            if sd.is_baseline(pre):
+                fail('T10: a pre-state armed nothing (combo=%r) -- the reset proves nothing'
+                     % (combo,))
+            _reset_screen_spec(screen)
+            post = sd.collect(screen, mode='tui', columns=screen.columns, alt_screen=False,
+                              saved_primary=None, mouse_modes=set(), palette={}, title='x')
+            if not sd.is_baseline(post):
+                fail('T10: reset spec left non-baseline state from combo=%r: %r' % (combo, post))
+            checked += 1
     # Savepoints and the DECCOLM width are not in the dump schema, so is_baseline cannot see
     # them -- assert their clearing directly (an ESC 8 must not re-select the charset; the
     # grid width must return to the pre-DECCOLM value).

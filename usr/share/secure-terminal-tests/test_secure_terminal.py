@@ -852,8 +852,9 @@ eq(S.ascii_fold('ex' + chr(0x0430) + 'mple.com'), 'example.com',
 eq(S.ascii_fold('b' + chr(0x0430) + 'sh -c'), 'bash -c', 'ascii_fold: cyrillic homoglyph -> ascii')
 eq(S.ascii_fold('x' + BIDI + ZWSP + chr(0x0430) + 'y'), 'xay',
    'ascii_fold drops invisibles/bidi AND folds the look-alike (clean, paste-safe)')
-ok(all(c in '\r\t' or 0x20 <= ord(c) <= 0x7E
-       for c in S.ascii_fold('caf' + chr(0x00E9) + ' ' + chr(0x0430) + ' ' + chr(0x1F600))),
+_af = S.ascii_fold('caf' + chr(0x00E9) + ' ' + chr(0x0430) + ' ' + chr(0x1F600))
+eq(_af, 'caf a ', 'ascii_fold: exact fold (drop combining-e/emoji, cyrillic-a -> a), no vacuous drop')
+ok(all(c in '\r\t' or 0x20 <= ord(c) <= 0x7E for c in _af),
    'ascii_fold output is guaranteed unicode-clean + paste-safe ASCII')
 
 # ascii_fold_display: the review BOX variant -- same fold + clean, but newline-PRESERVING
@@ -863,8 +864,9 @@ eq(S.ascii_fold_display('ex' + chr(0x0430) + 'mple.com'), 'example.com',
 eq(S.ascii_fold_display('a' + chr(0x0430) + '\nb' + chr(0x0430)), 'aa\nba',
    'ascii_fold_display PRESERVES newlines (display form), unlike ascii_fold')
 eq(S.ascii_fold('a\nb'), 'a\rb', 'ascii_fold maps newline to the shell submit CR (for contrast)')
-ok(all(c in '\n\t' or 0x20 <= ord(c) <= 0x7E
-       for c in S.ascii_fold_display('caf' + chr(0x00E9) + '\n' + chr(0x0430) + chr(0x1F600))),
+_afd = S.ascii_fold_display('caf' + chr(0x00E9) + '\n' + chr(0x0430) + chr(0x1F600))
+eq(_afd, 'caf\na', 'ascii_fold_display: exact fold with newline kept, no vacuous drop')
+ok(all(c in '\n\t' or 0x20 <= ord(c) <= 0x7E for c in _afd),
    'ascii_fold_display output is clean ASCII with newlines kept')
 
 # --- crafted paste cannot smuggle HIDDEN code / escapes into the shell --------
@@ -875,15 +877,20 @@ ok(all(c in '\n\t' or 0x20 <= ord(c) <= 0x7E
 # ASCII plus CR/TAB, so nothing hidden can execute.
 def _visible_only(text):
     return all(ch in '\r\t' or 0x20 <= ord(ch) <= 0x7E for ch in text)
-for _payload, _why in (
-    ('ls\x1b]0;evil\x07 -la',          'OSC title-set (reflection bait)'),
-    ('safe\x1b[201~unsafe',            'bracketed-paste-end breakout (CSI 201~)'),
-    ('x\x1bP0;1q\x1b\\y',              'DCS sequence'),
-    ('a\x9bBc',                        'C1 CSI (0x9b)'),
-    ('cmd\x00; hidden',                'NUL as a hidden separator'),
-    ('t' + chr(0x0430) + chr(0x200B),  'homoglyph + zero-width'),
+# The EXACT expected result guards against a vacuous pass: an all()-over-empty is True, so a
+# sanitize_paste that dropped the WHOLE string (not just the dangerous bytes) would satisfy
+# _visible_only('') and 'no ESC in ""' -- reporting success while destroying legitimate paste
+# content. eq() on the expected survivor proves the safe bytes actually reach the shell.
+for _payload, _why, _expect in (
+    ('ls\x1b]0;evil\x07 -la',          'OSC title-set (reflection bait)', 'ls]0;evil -la'),
+    ('safe\x1b[201~unsafe',            'bracketed-paste-end breakout (CSI 201~)', 'safe[201~unsafe'),
+    ('x\x1bP0;1q\x1b\\y',              'DCS sequence', 'xP0;1q\\y'),
+    ('a\x9bBc',                        'C1 CSI (0x9b)', 'aBc'),
+    ('cmd\x00; hidden',                'NUL as a hidden separator', 'cmd; hidden'),
+    ('t' + chr(0x0430) + chr(0x200B),  'homoglyph + zero-width', 't'),
 ):
     _s = S.sanitize_paste(_payload)
+    eq(_s, _expect, 'crafted paste (%s) -> exact visible ASCII reaches the shell (no vacuous drop)' % _why)
     ok(_visible_only(_s), 'crafted paste (%s) -> only visible ASCII reaches the shell' % _why)
     ok('\x1b' not in _s and '\x9b' not in _s,
        'crafted paste (%s) -> no ESC / C1 survives to inject' % _why)
