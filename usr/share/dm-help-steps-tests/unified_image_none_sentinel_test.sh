@@ -117,6 +117,29 @@ case "${binary_image_raw_file_for_unified:-}" in
       ;;
 esac
 
+## --- a REAL unified build whose (misconfigured) list matches no other VM must
+## leave the vars DECLARED-but-empty, so the consumer's 'test -f' emits its
+## actionable "missing other VM" error rather than a raw nounset crash. Every
+## entry here substring-matches dist_build_type_long, so the loop skips all. ---
+vm_names_to_be_exported="Whonix-Workstation-CLI"
+dist_build_type_long="workstation"
+run_derivation
+if [ -n "${binary_image_raw_file_for_unified+x}" ]; then
+   pass "self-matching list leaves binary_image_raw_file_for_unified DECLARED (no nounset crash downstream)"
+else
+   fail "self-matching list left binary_image_raw_file_for_unified UNSET (consumer crashes under set -u)"
+fi
+if [ -z "${binary_image_raw_file_for_unified-nonempty}" ]; then
+   pass "self-matching list leaves it EMPTY (test -f '' -> actionable 'missing other VM' error)"
+else
+   fail "self-matching list set a bogus path '${binary_image_raw_file_for_unified-nonempty}'"
+fi
+if [ -n "${binary_image_qcow2_file_for_unified+x}" ]; then
+   pass "self-matching list leaves binary_image_qcow2_file_for_unified DECLARED"
+else
+   fail "self-matching list left binary_image_qcow2_file_for_unified UNSET"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
