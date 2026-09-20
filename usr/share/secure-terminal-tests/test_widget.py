@@ -1825,7 +1825,11 @@ if tui_available():
         _ft.resize(600, 400)
         _ft.show()
         _frame = ''
-        for _ in range(200):
+        # Generous readiness budget: some full-screen programs (nano) wait for a terminal
+        # reply (e.g. a DSR/CPR cursor probe this terminal does not answer) and only draw
+        # their first frame after an internal timeout -- and coverage tracing slows the whole
+        # loop, so a short budget flaked the E2E under the coverage gate while passing plain.
+        for _ in range(600):
             pump(50)
             _frame = _ft.toPlainText()
             if ready in _frame:

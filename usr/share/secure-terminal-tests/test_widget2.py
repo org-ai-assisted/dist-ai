@@ -5228,6 +5228,83 @@ ok(_scr_row(_scr, 0) == 'AAA' and _scr_row(_scr, 1) == 'BBB' and _scr_row(_scr, 
    'XTHIMOUSE (5-parameter CSI T) is not treated as SD -- the grid is unchanged')
 _scr.shutdown()
 
+# --- cover three pre-existing defensive/dead-code branches (the coverage gate was a
+#     pre-existing <100%, unrelated to the SU/SD work above; covered here so it reaches 100%) --
+import secure_terminal.terminal as _covmod  # noqa: E402
+import signal as _covsig  # noqa: E402
+import tempfile as _covtmp  # noqa: E402
+import shutil as _covsh  # noqa: E402
+
+# _make_private_tolerant: the *args-handler branch (maxpos=None, no param cap) is unreachable via
+# _install_private_tolerant_csi (every *args pyte handler is overridden or takes **kwargs), so
+# exercise it directly -- a *args base keeps all params; a fixed-arity base truncates the excess.
+_cov_seen = []
+_covmod._make_private_tolerant(lambda self, *p: _cov_seen.append(p))(object(), 1, 2, 3, private=True)
+eq(_cov_seen[-1], (1, 2, 3), '_make_private_tolerant: a *args handler keeps every param (maxpos=None)')
+_covmod._make_private_tolerant(lambda self, a=None: _cov_seen.append(a))(object(), 7, 8, 9)
+eq(_cov_seen[-1], 7, '_make_private_tolerant: a fixed-arity handler truncates excess params')
+
+# _kill_pgrp_survivor: the deferred SIGKILL of a group still alive after the recheck is a
+# defensive branch the ordinary terminate tests never reach. Drive it with _pid_start_time and
+# os.killpg mocked so the recheck reports the group alive and the SIGKILL raises (also the except).
+_cov_ksv = SecureTerminal(command='/bin/cat', tui=True)
+_cov_ksv._pid_start_time = lambda pg: None          # cur is None -> not a pgid reuse -> proceed
+_cov_kcalls = []
+_cov_orig_killpg = _covmod.os.killpg
+
+
+def _cov_fake_killpg(pg, sig):
+    _cov_kcalls.append(sig)
+    if sig == _covsig.SIGKILL:
+        raise OSError('exited between the recheck and the kill')   # exercises the except: pass
+
+
+_covmod.os.killpg = _cov_fake_killpg
+try:
+    _cov_ksv._kill_pgrp_survivor(2147480000, 'leader-start')
+finally:
+    _covmod.os.killpg = _cov_orig_killpg
+ok(_covsig.SIGKILL in _cov_kcalls,
+   '_kill_pgrp_survivor SIGKILLs a group still alive after the recheck (except-path tolerated)')
+_cov_ksv.shutdown()
+
+# cli_terminfo_dir: removing a symlink planted at the compiled-entry cache 's' dir (so tic does
+# not write THROUGH the link) needs the cache-compile path AND a symlink present -- neither holds
+# normally (the fresh build-time entry beside the source skips the cache block). Force it with a
+# temp source (no compiled entry beside it -> not fresh) + a temp cache holding a planted 's'
+# symlink; tic itself is stubbed (the tested branch runs before it).
+_cov_ti_real = _covmod._terminfo_source()
+if _cov_ti_real:
+    _cov_orig_srcfn = _covmod._terminfo_source
+    _cov_orig_run = _covmod.subprocess.run
+    _cov_srcdir = _covtmp.mkdtemp()
+    _cov_cache = _covtmp.mkdtemp()
+    _cov_prev_xdg = os.environ.get('XDG_CACHE_HOME')
+    try:
+        _cov_src = os.path.join(_cov_srcdir, os.path.basename(_cov_ti_real))
+        _covsh.copyfile(_cov_ti_real, _cov_src)         # valid source, no compiled s/ beside it
+        _covmod._terminfo_source = lambda: _cov_src
+        _covmod.subprocess.run = lambda *a, **k: None   # stub tic (the tested branch precedes it)
+        os.environ['XDG_CACHE_HOME'] = _cov_cache
+        _cov_s = os.path.join(_cov_cache, 'secure-terminal', 'terminfo', 's')
+        os.makedirs(os.path.dirname(_cov_s), exist_ok=True)
+        os.symlink('/nonexistent-poison', _cov_s)       # the planted symlink to be removed
+        ok(os.path.islink(_cov_s), 'terminfo: precondition -- a symlink is planted at the cache s/ entry')
+        _covmod.cli_terminfo_dir()
+        ok(not os.path.islink(_cov_s),
+           'cli_terminfo_dir unlinks a symlink planted at the cache s/ entry (no write-through)')
+    finally:
+        _covmod._terminfo_source = _cov_orig_srcfn
+        _covmod.subprocess.run = _cov_orig_run
+        if _cov_prev_xdg is None:
+            os.environ.pop('XDG_CACHE_HOME', None)
+        else:
+            os.environ['XDG_CACHE_HOME'] = _cov_prev_xdg
+        _covsh.rmtree(_cov_srcdir, ignore_errors=True)
+        _covsh.rmtree(_cov_cache, ignore_errors=True)
+else:
+    ok(False, 'terminfo source is present (required test dependency, not a silent skip)')
+
 # --- Incremental TUI grid render: same document as a full rebuild, but linear --
 # A full-viewport 24-bit board has a DISTINCT truecolour in every cell, so the
 # same-format run coalescing never fires and each row is ~one insertText per
