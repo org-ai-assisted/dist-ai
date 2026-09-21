@@ -2320,7 +2320,7 @@ def _armed_screen(feed, g0=None):
     return screen
 
 
-# The nine tracked VT-state dimensions, each an independent arming (pyte-screen feed +
+# The ten tracked VT-state dimensions, each an independent arming (pyte-screen feed +
 # optional G0 charset, wrapper mouse modes, wrapper palette). Each is individually
 # non-baseline, so EVERY non-empty subset is a genuine (non-vacuous) pre-state.
 _T10_DIMS = [
@@ -2333,16 +2333,19 @@ _T10_DIMS = [
     ('\x1b[1;31mERR', None, set(), {}),                     # SGR pen
     ('', None, {1000, 1006}, {}),                           # mouse
     ('', None, set(), {1: '#ff0000', 'fg': '#00ff00'}),     # palette
+    ('\x1b[3g', None, set(), {}),                           # cleared tab stops (TBC all)
 ]
 
 
 def t10_reset_baseline():
     """Every armed pre-state, once reset, is at the baseline (is_baseline holds); and every
     pre-state was genuinely NON-baseline first (so the reset -- not a vacuous input -- is
-    what is verified). EXHAUSTIVE over the full cross-product: all 2**9 - 1 non-empty subsets
+    what is verified). EXHAUSTIVE over the full cross-product: all 2**10 - 1 non-empty subsets
     of the tracked dimensions, so an ordering bug that only fails to clear one dimension when
     a SPECIFIC other dimension is simultaneously live cannot hide (the gap of the old
-    hand-picked prestate list)."""
+    hand-picked prestate list). Includes the cleared-tab-stop dimension (\\x1b[3g), so a
+    regression that stops RESTORING the default tab stops leaves a combo's post-state
+    non-baseline (empty tabstops) and is caught here -- not only by the is_baseline canary."""
     import itertools
     checked = 0
     n = len(_T10_DIMS)
@@ -2433,6 +2436,23 @@ def t10_canaries():
     leaked_tabs = sd.collect(s4, mode='tui', columns=s4.columns, alt_screen=False,
                              saved_primary=None, mouse_modes=set(), palette={}, title='')
     _expect_caught('T10-tabstop-leak', not sd.is_baseline(leaked_tabs))
+    # The reset MATRIX now carries the cleared-tab-stop dimension, so it exercises the
+    # RESTORE (not only detection). Prove that restore is load-bearing: a reset that does
+    # everything EXCEPT restore the default tab stops leaves a non-baseline post-state --
+    # so a regression dropping `screen.tabstops = ...` from _reset_screen_spec is caught by
+    # t10_reset_baseline, not silently green (the gap codex flagged).
+    s5 = _armed_screen('\x1b[3g')
+    s5.mode = set(_DEF_DEC_MODES)
+    s5.margins = None
+    s5.cursor.hidden = False
+    s5.cursor.attrs = s5.default_char
+    s5.charset = 0
+    s5.g0_charset = pyte.charsets.LAT1_MAP
+    s5.g1_charset = pyte.charsets.VT100_MAP
+    s5.savepoints.clear()                             # ...but deliberately NOT tabstops
+    broken_tabs = sd.collect(s5, mode='tui', columns=s5.columns, alt_screen=False,
+                             saved_primary=None, mouse_modes=set(), palette={}, title='')
+    _expect_caught('T10-tabstop-restore-omitted', not sd.is_baseline(broken_tabs))
 
 
 def main():
