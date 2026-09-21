@@ -1245,6 +1245,7 @@ try:
 finally:
     _set_pw(_pw0)
     _set_cw(_cw0)
+    win._unreviewed_risk = _ur0                  # restore the captured lamp state too
     win._unreviewed_risk = _ur0
 
 # --- the paste/copy review bar: _show_review / _hide_paste_review --------------
