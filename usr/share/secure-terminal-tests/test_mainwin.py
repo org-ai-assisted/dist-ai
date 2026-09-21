@@ -1379,7 +1379,7 @@ pump(250)
 _tb = win.tabs.widget(win.tabs.count() - 1)
 win._user_titles[_tb] = 'reviewdrain23'
 win._prog_titles[_tb] = 'user@work-claude:~ [pts/24]'
-_tb._transcript_file = '/tmp/st-tt-transcript'                # exercise the live-transcript branch
+_tb._transcript_file = '/tmp/st-tt-transcript'  # nosec B108 -- test-only label string, never opened; exercises the live-transcript branch
 win._refresh_tab_label(_tb)
 _ib = win.tabs.indexOf(_tb)
 _tipb = win.tabs.tabToolTip(_ib)

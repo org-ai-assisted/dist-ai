@@ -87,6 +87,19 @@ printf 'fuzzcaller ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/fuzzcaller
 chmod 0440 /etc/sudoers.d/fuzzcaller
 chmod -R a+rX -- "${repo}"
 
+## fuzzcaller must be able to ENTER the checkout. The chmod above opens the tree
+## itself but NOT its ancestor directories; a non-traversable parent (a 0700
+## /root outside CI -- the GitHub workspace is world-traversable) would otherwise
+## fail the run below with an opaque 'cd: Permission denied'. Check it up front so
+## the failure is loud and names the cause (the run's 'cd && ...' under errexit
+## already fails non-zero, but not legibly).
+if ! sudo -u fuzzcaller -- sh -c 'cd -- "$1"' sh "${repo}"; then
+  printf '%s\n' \
+    "FATAL: fuzzcaller cannot enter '${repo}' -- a parent directory is not" \
+    "traversable. Stage the checkout under a world-traversable path." >&2
+  exit 1
+fi
+
 ## Run as the caller. PRIVLEAP_TEST_DISPOSABLE_ENV skips the mount namespace
 ## (the container is throwaway), which is what keeps it non-privileged.
 sudo -u fuzzcaller \
