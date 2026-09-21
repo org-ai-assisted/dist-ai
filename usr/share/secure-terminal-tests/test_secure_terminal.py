@@ -679,8 +679,13 @@ eq(S.feed_chunk_carry('hello\x1b', '', '', 0, cap=0), ('hello', '\x1b', '', 0),
 # the leak the hold prevents: a CSI split as lone-ESC | body under cap=0 must NOT leak '31m'.
 _le0, _lc0, _ld0, _ = S.feed_chunk_carry('hi\x1b', '', '', 0, cap=0)
 _le1, _lc1, _ld1, _ = S.feed_chunk_carry('[31mDANGER\x1b[0m ok', _lc0, _ld0, 0, cap=0)
-eq(S.ANSI_RE.sub('', _le0 + _le1), 'hiDANGER ok',
-   'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 strips the SGR, no 31m leak')
+# Assert the RAW reassembled output, NOT an ANSI_RE.sub of it: feed_chunk_carry passes a
+# COMPLETE escape through for render_output to strip later, so the correct output keeps the
+# intact '\x1b[31m'. Stripping ANSI before comparing would let a genuine leak of the raw
+# escape pass; the raw compare fails on ANY leak -- a lost ESC ('[31m'/'31m' as literal text),
+# a dropped body, or extra bytes -- proving the lone-ESC carry is rejoined to its body.
+eq(_le0 + _le1, 'hi\x1b[31mDANGER\x1b[0m ok',
+   'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 rejoins the intact SGR, no 31m leak')
 # an over-cap OSC INTERRUPTED by a nested string introducer: the over-cap discard state
 # must end the OSC at the interrupting ESC (ANSI_RE: OSC body is [^\x07\x1b]*) and re-parse
 # the nested APC under its own grammar (BEL is body), not misread the APC body's BEL as the
