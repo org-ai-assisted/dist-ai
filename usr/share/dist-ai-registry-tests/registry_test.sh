@@ -97,8 +97,11 @@ if [ -z "${repo}" ]; then
 fi
 
 if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/dist-ai-tests-all" ] || [ ! -d "${repo}/debian" ]; then
-   printf '%s\n' 'FATAL: dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO).' >&2
-   exit 1
+   ## No tree to lint is a missing TARGET, not an inconsistency -- SKIP, per the
+   ## header contract and the project convention (dist-ai-tests-all maps exit 77
+   ## to SKIP).
+   printf '%s\n' 'SKIP: dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO).' >&2
+   exit 77  ## style-ok: allow-skip: no dist-ai source tree present to lint
 fi
 
 runner="${repo}/usr/bin/dist-ai-tests-all"
@@ -167,11 +170,20 @@ while read -r line; do
    ## real assignment -- not an unrelated 'VAR=' mention (a comment, another
    ## string) anywhere in the file, which the old whole-file grep accepted.
    if [ "${in_func}" = 'wire' ]; then
-      env_rest="${line}"
-      while [[ "${env_rest}" =~ \"([A-Za-z_][A-Za-z0-9_]*)= ]]; do
-         wired_env_vars+=( "${BASH_REMATCH[1]}" )
-         env_rest="${env_rest#*"${BASH_REMATCH[0]}"}"
-      done
+      case "${line}" in
+         '#'*)
+            ## A comment -- incl. a commented-out wire_env=( "VAR=..." ) -- is not
+            ## a real assignment; skip it so it cannot false-wire a *_BIN var.
+            ;;
+         *)
+            ## Also drop a trailing comment so a "VAR=" inside it does not count.
+            env_rest="${line%% #*}"
+            while [[ "${env_rest}" =~ \"([A-Za-z_][A-Za-z0-9_]*)= ]]; do
+               wired_env_vars+=( "${BASH_REMATCH[1]}" )
+               env_rest="${env_rest#*"${BASH_REMATCH[0]}"}"
+            done
+            ;;
+      esac
    fi
 
    ## A case label: ends in ')', with no '(' or '=' or whitespace, and is not
