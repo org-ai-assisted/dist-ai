@@ -238,13 +238,33 @@ def _all_functions(path: str) -> str:
     return '\n'.join(extract_bash_function(path, name) for name in dict.fromkeys(names))
 
 
+def _has_definition() -> str:
+    """The real `has` function from helper-scripts has.bsh.
+
+    Check fragments call it as a bare command (`has pw-play`, `has mokutil`).
+    The real systemcheck entrypoint SOURCES has.bsh; this harness extracts
+    individual check functions instead, so it must bring `has` in the same way
+    (dist-ai/CLAUDE.md: never REIMPLEMENT a helper-scripts function). `has` is a
+    plain `command -v` wrapper, so a test's PATH override or a function stub
+    (e.g. `mokutil() { :; }`) steers it exactly as in production."""
+    hs = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
+    path = (os.path.join(hs, 'usr/libexec/helper-scripts/has.bsh') if hs
+            else '/usr/libexec/helper-scripts/has.bsh')
+    if not os.path.isfile(path):
+        print(f"has.bsh not found at {path!r} (set HELPER_SCRIPTS_PATH); skipping.",
+              file=sys.stderr)
+        sys.exit(77)
+    return extract_bash_function(path, 'has')
+
+
 def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
                               stubs: str, prefix: str = '') -> str:
     prep = os.path.join(systemcheck_dir(), 'preparation.bsh')
     helper_defs = '\n'.join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
     check_defs = _all_functions(check_file)
     return '\n'.join([
-        _SCENARIO_PREAMBLE, prefix, stubs, env_setup, helper_defs, check_defs,
+        _SCENARIO_PREAMBLE, prefix, stubs, env_setup, helper_defs,
+        _has_definition(), check_defs,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
     ])
 

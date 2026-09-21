@@ -19,8 +19,8 @@ counterpart; this harness adds Atheris' structured input generation and
 coverage-guided exploration.
 
 Invariants (a violation raises, which Atheris reports as a finding):
-  - is_name_valid: an ACCEPTED name starts with [a-z_] and, minus an optional
-    trailing '$', is entirely over the safe charset [-a-z0-9_.@] (so escape_name
+  - is_name_valid: an ACCEPTED name starts with [a-zA-Z_] and, minus an optional
+    trailing '$', is entirely over the safe charset [-a-zA-Z0-9_.@] (so escape_name
     only ever faces '.' and '$').
   - escape_name: the result, with '\\.' and '\\$' removed, contains no bare '.'
     or '$' (every metacharacter escaped), and un-escaping recovers the input.
@@ -28,7 +28,7 @@ Invariants (a violation raises, which Atheris reports as a finding):
     and is a suffix of the input.
   - get_field: returns an int for a known field and None for an unknown one --
     never a wrong-typed value or an exception.
-  - group_has_nonroot_member: returns a bool; a name not starting [a-z_] is
+  - group_has_nonroot_member: returns a bool; a name not starting [a-zA-Z_] is
     rejected; a True result implies a real non-root member of the fixture.
 
 Run via the dist-ai entrypoint (60s default budget):
@@ -64,8 +64,8 @@ except ImportError:
 ## --- ports of accountctl.sh's pure functions (mirrors, anchored by the sibling
 ## real-bash suites) ---
 
-_NAME_RE = re.compile(r"[a-z_][-a-z0-9_.@]*\$?\Z")
-_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-_.@")
+_NAME_RE = re.compile(r"[a-zA-Z_][-a-zA-Z0-9_.@]*\$?\Z")
+_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.@")
 
 _GET_FIELD = {
     "passwd": {"pass": 2, "uid": 3, "gid": 4, "comment": 5, "home": 6, "shell": 7},
@@ -97,7 +97,7 @@ def get_field(db: str, field: str):
 
 
 def group_has_nonroot_member(group: str, passwd, group_db) -> bool:
-    if not group or not re.match(r"[a-z_]", group):
+    if not group or not re.match(r"[a-zA-Z_]", group):
         return False
     if group not in group_db:
         return False
@@ -128,8 +128,9 @@ def _check_one(data: bytes) -> None:
     name = fdp.ConsumeUnicodeNoSurrogates(12)
     if is_name_valid(name):
         body = name[:-1] if name.endswith("$") else name
-        if not name or name[0] not in ("_", *"abcdefghijklmnopqrstuvwxyz"):
-            raise RuntimeError(f"is_name_valid accepted a name not starting [a-z_]: {name!r}")
+        _NAME_START = ("_", *"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        if not name or name[0] not in _NAME_START:
+            raise RuntimeError(f"is_name_valid accepted a name not starting [a-zA-Z_]: {name!r}")
         if any(c not in _SAFE_CHARS for c in body):
             raise RuntimeError(f"is_name_valid accepted an unsafe-charset name: {name!r}")
     esc = escape_name(name)
@@ -169,7 +170,7 @@ def _check_one(data: bytes) -> None:
     result = group_has_nonroot_member(group, passwd, group_db)
     if not isinstance(result, bool):
         raise RuntimeError(f"group_has_nonroot_member non-bool: {group!r} -> {result!r}")
-    if result and (not group or not re.match(r"[a-z_]", group)):
+    if result and (not group or not re.match(r"[a-zA-Z_]", group)):
         raise RuntimeError(f"group_has_nonroot_member accepted a non-name: {group!r}")
 
 

@@ -74,6 +74,27 @@ class CanaryApparmorProfileTest(systemcheck_testlib.SystemcheckTestBase):
             "(a read-only '/usr/libexec/helper-scripts/** r,' glob is NOT "
             "enough; restore the explicit 'settings_echo rix,' rule)")
 
+    def test_network_is_the_socket_not_apache2_common(self) -> None:
+        """canary-download reaches the network only through the local Tor SOCKS
+        proxy, needing a TCP socket. That must be granted directly, NOT by
+        pulling in abstractions/apache2-common (which also grants ptrace and
+        signal (receive) peer=unconfined -- unrelated to a Tor fetcher)."""
+        profile = self._profile_path()
+        with open(profile, encoding='utf-8') as handle:
+            lines = handle.read().splitlines()
+
+        self.assertFalse(
+            any(re.match(r'^\s*include\s+<abstractions/apache2-common>', ln)
+                for ln in lines),
+            f"{profile}: includes abstractions/apache2-common, which grants "
+            "broad ptrace/signal(receive) peer=unconfined to a Tor-only "
+            "fetcher; grant 'network inet stream,' directly instead")
+        self.assertTrue(
+            any(re.match(r'^\s*network\s+inet\s+stream\s*,\s*$', ln)
+                for ln in lines),
+            f"{profile}: no 'network inet stream,' rule -- canary-download "
+            "cannot open the TCP socket to the Tor SOCKS proxy")
+
 
 if __name__ == '__main__':
     unittest.main()

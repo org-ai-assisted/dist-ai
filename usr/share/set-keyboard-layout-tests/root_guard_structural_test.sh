@@ -65,7 +65,7 @@ console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:sp
 ## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort
 ## the script before the notok below could report the missing/inert guard.
 guard_line="$(printf '%s\n' "${console_code}" \
-   | grep --line-number --fixed-strings -- 'if [ "$(id --user)" != 0 ]' \
+   | grep --line-number --fixed-strings -- '"$(id --user)" != ' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 restart_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \

@@ -706,8 +706,12 @@ ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 _osc_keys = [f[0] for f in S.OSC_FEATURES]
 ok(len(_osc_keys) == len(set(_osc_keys)), 'OSC feature keys are unique')
 ok(all(k.startswith('osc_') for k in _osc_keys), 'OSC feature keys are namespaced osc_')
-ok(all(f[3] is False for f in S.OSC_FEATURES),
-   'every OSC feature is neutralized (off) by default -- secure by construction')
+ok(all(f[3] is False for f in S.OSC_FEATURES if f[0] != 'osc_title'),
+   'every OSC feature except the title is neutralized (off) by default')
+# OSC_FEATURE_BY_KEY drops the key (value = f[1:]), so default is [2], risk is [3].
+ok(S.OSC_FEATURE_BY_KEY['osc_title'][2] is True,
+   'osc_title defaults ON: a program-set title is shown but QUARANTINED on the '
+   'untrusted tab line (ASCII-only, never able to pose as the trusted label)')
 ok(all(f[4] in ('low', 'medium', 'high') for f in S.OSC_FEATURES),
    'OSC risk levels are valid (drive the security lamp)')
 ok(all(f[2] and f[5] for f in S.OSC_FEATURES),
