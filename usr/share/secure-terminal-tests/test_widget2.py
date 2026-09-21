@@ -6450,25 +6450,71 @@ if tui_available():
     _vs.shutdown()
 
 
-# --- winsize is stable whether the vertical scrollbar is shown ----------------
-# _text_area reserves the scrollbar width UNCONDITIONALLY, so the column count does
-# not change when an AsNeeded bar toggles. Otherwise the toggle SIGWINCHes the
-# child, whose redraw toggles the bar back -- an endless flicker of a full-screen
-# app (nano). Force the bar visible then hidden and assert the text width is
-# unchanged (pre-fix it differed by a scrollbar width).
+# --- winsize: the scrollbar width is reserved across the whole primary buffer, but
+# NOT in the alt screen (a fixed canvas that can never gain a bar) --------------
+# Reserving it everywhere in the primary buffer keeps the column count STABLE across an
+# AsNeeded bar toggle AND across the no-scrollback -> scrollback transition (no SIGWINCH
+# flicker/reflow -- nano). The alt screen can never show a bar (leaving it returns to the
+# primary buffer), so reserving its width just wastes a column and the child wraps one
+# early (premature word wrap): there the reserve is dropped and the column reclaimed.
+# Pre-fix the reserve was unconditional, so the alt screen matched the primary width
+# instead of being one scrollbar wider (this asserts the reclaim + the stability).
 _fw = SecureTerminal(command='/bin/cat', tui=True)
 _fw.resize(600, 300)
 _fw.show()
 pump(40)
+_bar_w = _fw.verticalScrollBar().sizeHint().width()
+# Primary buffer, bar forced visible: Qt removes the bar from the viewport.
 _fw.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 pump(30)
 _w_on = _fw._text_area()[0]
-_fw.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+# Primary buffer, AsNeeded with the bar hidden: the reserve subtracts the bar width, so
+# the text width MATCHES the shown-bar width -- stable across the toggle (flicker guard).
+_fw.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 pump(30)
-_w_off = _fw._text_area()[0]
-ok(_w_on == _w_off,
-   'text width is the same whether the vertical scrollbar shows (no SIGWINCH flicker loop)')
+_w_primary = _fw._text_area()[0]
+ok(_w_on == _w_primary,
+   'primary buffer reserves the scrollbar width whether the bar shows (no flicker loop)')
+# Alt screen: the bar can never appear, so the reserve is dropped and the text width is
+# one scrollbar WIDER -- the reclaimed column that fixes premature wrap.
+feed_output(_fw, b'\x1b[?1049h')                 # enter the alt screen
+pump(60)
+_w_alt = _fw._text_area()[0]
+ok(_w_alt == _w_primary + _bar_w,
+   'alt screen reclaims the reserved scrollbar column (no premature wrap)')
+# Leaving the alt screen returns to the reserved-width primary column count (no jump loop).
+feed_output(_fw, b'\x1b[?1049l')
+pump(60)
+ok(_fw._text_area()[0] == _w_primary,
+   'leaving the alt screen restores the stable primary column count')
 _fw.shutdown()
+
+# --- a genuine input key re-arms tail-follow (konsole: typing snaps to bottom) --
+# In a primary-grid TUI with real scrollback, scrolling up clears _tui_follow so the
+# view stops chasing new output. A keystroke must RE-ARM it so the next redraw snaps
+# back to the bottom -- matching konsole. Pre-fix nothing re-armed it, so typing while
+# scrolled up left the view stranded at the top.
+if tui_available():
+    _kf = SecureTerminal(command='/bin/cat', tui=True)
+    _kf.resize(500, 300)
+    _kf.show()
+    pump(50)
+    for _i in range(_kf._screen.lines * 3):      # real scrollback -> AsNeeded, scrollable
+        feed_output(_kf, ('follow line %03d\r\n' % _i).encode())
+    pump(120)
+    _kbar = _kf.verticalScrollBar()
+    _kbar.setValue(_kbar.minimum())              # the user scrolls UP to the top
+    pump(30)
+    ok(not _kf._tui_follow,
+       'scrolling up clears tail-follow (the view stops chasing new output)')
+    key(_kf, Qt.Key.Key_A, text='a')             # a genuine input keystroke
+    ok(_kf._tui_follow,
+       'a genuine input key re-arms tail-follow (typing snaps back to the bottom)')
+    feed_output(_kf, b'echoed after keypress\r\n')   # the child's redraw
+    pump(120)
+    ok(_kbar.value() == _kbar.maximum(),
+       'after the keypress the next render pins the view to the bottom (konsole parity)')
+    _kf.shutdown()
 
 # TUI clean-prompt-after-no-final-newline: mirror of the CLI feed_line_edits nicety
 # (_feed_prompt_aware). When a command's output lacks a trailing newline and the

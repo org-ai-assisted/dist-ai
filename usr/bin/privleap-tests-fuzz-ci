@@ -3,29 +3,32 @@
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
-## Provision and run the WHOLE privleap fuzz category end to end inside an
-## EPHEMERAL, single-purpose CI container (running as root). Owns everything the
-## fuzz workflow needs beyond the two git checkouts, so the workflow stays a thin
-## caller and the "how to run privleap fuzz in CI" recipe lives with the suite
-## instead of being duplicated in per-repo workflow YAML:
+## Provision and run the WHOLE privleap fuzz category inside an EPHEMERAL,
+## single-purpose CI container (invoked as root). Owns everything the fuzz
+## workflow needs beyond the two git checkouts, so the workflow stays a thin
+## caller and the "how to run privleap fuzz in CI" recipe lives with the suite:
 ##   - container prerequisites (sudo, adduser, python3)
 ##   - the privleap runtime (group / PAM policy / shim) via
 ##     privleap-tests-session-fuzz-setup (which owns the pam / sdnotify deps)
-##   - an unprivileged caller: the live-daemon session fuzzer REFUSES to run as
-##     root (the daemon must attribute requests to a non-root uid, which is the
-##     whole authorization surface), so a normal user with passwordless sudo is
-##     made; the in-process parser fuzzers are root-free and run as it too
-##   - the fuzz run: dist-ai-tests-all --fuzz for the privleap component, as that
-##     caller. One lane runs every privleap fuzz suite (in-process wire/config/
-##     authz parser fuzz + live-daemon session fuzz); atheris is allow-skipped
-##     (no Debian package -- coverage-guided fuzzing runs via ClusterFuzzLite).
+##   - the run itself, delegated to the shared CI wrapper dist-ai-tests-ci-run.sh
 ##
-## SAFE ONLY in a throwaway CI container: it apt-installs packages, creates a
-## passwordless-sudo user, and (via the setup script) overwrites the system-wide
-## /etc/pam.d/privleapd and shim with unverified checkout content. Do NOT run on
-## a machine you care about. This is a CI runtime PROVISIONER + runner, not a
-## dist-ai suite (it needs root + a checkout arg no orchestrator lane passes),
-## so it is listed in dist-ai-registry-tests allowed_unregistered.
+## The wrapper is what runs EVERY dist-ai lane in CI: it drops root to the
+## dm-ci-build user (passwordless sudo -- which the live-daemon session fuzzer
+## needs to start privleapd; refusing to attribute requests to root is the whole
+## authorization surface), chowns the workspace to it, and runs dist-ai-tests-all
+## via 'runuser --preserve-environment' so the GITHUB_* CI signal survives (else
+## dist-ai-tests-all refuses as an unsafe on-host run) along with the
+## PRIVLEAP_TEST_DISPOSABLE_ENV we export. So one lane runs every privleap fuzz
+## suite -- the in-process wire/config/authz parser fuzzers AND the live-daemon
+## session fuzzer -- as one non-root user; atheris is allow-skipped (no Debian
+## package -- coverage-guided fuzzing runs via ClusterFuzzLite).
+##
+## SAFE ONLY in a throwaway CI container: it apt-installs packages and (via the
+## setup script) overwrites the system-wide /etc/pam.d/privleapd and shim with
+## unverified checkout content. Do NOT run on a machine you care about. This is a
+## CI runtime PROVISIONER + runner, not a dist-ai suite (it needs root + a
+## checkout arg no orchestrator lane passes), so it is listed in
+## dist-ai-registry-tests allowed_unregistered.
 ##
 ## Usage: privleap-tests-fuzz-ci <privleap-checkout-root> [--timeout-fuzz SECONDS]
 ## Needs root; runs inside the fuzz container, not a VM.
@@ -40,8 +43,6 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-## Canonicalize the checkout to an ABSOLUTE path: the run step cd's the caller
-## into it, after which a relative path would resolve against the wrong dir.
 repo="$(readlink --canonicalize -- "${1:?privleap checkout root required}")"
 shift
 
@@ -75,42 +76,23 @@ if [ "${timeout_fuzz}" -eq 0 ]; then
 fi
 
 ## Container prerequisites. python3-pam / python3-sdnotify (the privleap runtime
-## deps) are installed by the setup script below, which owns them; sudo must be
-## present before that script's own sudo calls run.
+## deps) are installed by the setup script below, which owns them. sudo: the
+## wrapper's dm-ci-build sudoers drop + the session fuzzer's daemon escalation.
+## adduser: the wrapper's useradd needs it on a minimal image.
 apt-get update
 apt-get install --yes --no-install-recommends sudo adduser python3
 
 ## privleap runtime: group, PAM policy, shim (installed from the checkout).
 "${script_dir}/privleap-tests-session-fuzz-setup" "${repo}"
 
-## Unprivileged caller with passwordless sudo (the daemon still needs root,
-## reached via sudo). The checkout stays root-owned but world-readable so the
-## caller can read + exec the daemon, shim, and this dist-ai checkout under it.
-useradd --create-home --shell /bin/bash fuzzcaller
-printf 'fuzzcaller ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/fuzzcaller
-chmod 0440 /etc/sudoers.d/fuzzcaller
-chmod -R a+rX -- "${repo}"
-
-## fuzzcaller must be able to ENTER the checkout. The chmod above opens the tree
-## itself but NOT its ancestor directories; a non-traversable parent (a 0700
-## /root outside CI -- the GitHub workspace is world-traversable) would otherwise
-## fail the run below with an opaque 'cd: Permission denied'. Check it up front so
-## the failure is loud and names the cause.
-if ! sudo -u fuzzcaller -- sh -c 'cd -- "$1"' sh "${repo}"; then
-  printf '%s\n' \
-    "FATAL: fuzzcaller cannot enter '${repo}' -- a parent directory is not" \
-    "traversable. Stage the checkout under a world-traversable path." >&2
-  exit 1
-fi
-
-## Run the whole privleap fuzz category as the caller. dist-ai-tests-all wires
-## PRIVLEAP_REPO from --component-root; PRIVLEAP_TEST_DISPOSABLE_ENV=1 keeps the
-## session fuzzer out of the mount namespace (no CAP_SYS_ADMIN in an ordinary
-## container). atheris is allow-skipped (not Debian-packaged).
-sudo -u fuzzcaller \
-  env PRIVLEAP_TEST_DISPOSABLE_ENV=1 \
-  "${script_dir}/dist-ai-tests-all" --fuzz \
-    --component privleap \
-    --component-root "${repo}" \
-    --timeout-fuzz "${timeout_fuzz}" \
-    --allow-skip privleap-tests-fuzz-atheris
+## Delegate the non-root drop + run to the shared CI wrapper (see the header).
+## PRIVLEAP_TEST_DISPOSABLE_ENV=1 keeps the session fuzzer out of the mount
+## namespace (no CAP_SYS_ADMIN in an ordinary container); the wrapper's
+## 'runuser --preserve-environment' carries it and the GITHUB_* CI env through.
+export PRIVLEAP_TEST_DISPOSABLE_ENV=1
+## style-ok: R-103 -- a thin CI wrapper is MEANT to replace itself with the runner.
+exec "${script_dir}/../../ci/dist-ai-tests-ci-run.sh" --fuzz \
+  --component privleap \
+  --component-root "${repo}" \
+  --timeout-fuzz "${timeout_fuzz}" \
+  --allow-skip privleap-tests-fuzz-atheris

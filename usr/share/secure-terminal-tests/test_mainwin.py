@@ -97,6 +97,44 @@ ok(APP.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
 win._base_app_palette = _saved_base
 win.set_theme('light')                       # restore the clean default for later tests
 
+# --- B3: View menu no longer shows the toggles that duplicate Global settings -----
+# Those per-tab toggles duplicated (and disagreed on scope with) the Global-settings
+# dialog, so they were removed FROM THE VIEW MENU. Their QAction objects stay as hidden
+# state-holders -- the slash-commands, toolbar chips, the admin-lock UI (_apply_locks)
+# and tab-sync (_sync_chrome_to_tab) still use them -- but are no longer shown. Zoom +
+# Full Screen (not settings) and Bell + Clipboard sanitizer (no dialog twin) stay.
+_view_menu = next((m for m in win.menuBar().findChildren(M.QMenu)
+                   if m.title() == '&View'), None)
+ok(_view_menu is not None, 'the View menu exists')
+
+
+def _menu_texts(menu):
+    out = []
+    for _a in menu.actions():
+        if _a.menu() is not None:
+            out.append(_a.text())
+            out.extend(_menu_texts(_a.menu()))
+        elif not _a.isSeparator():
+            out.append(_a.text())
+    return out
+
+
+_vt = _menu_texts(_view_menu)
+for _kept in ('Zoom &In', 'Zoom &Out', '&Reset Zoom', '&Full Screen', '&Bell'):
+    ok(_kept in _vt, 'View menu keeps %r' % _kept)
+for _gone in ('&Theme', '&Unicode', '&Colors', '&Line editing', 'Colored &markings',
+              'Fo&nt...', 'TUI mo&de', '&Scrollback', '&Paste delay', 'Paste &warning',
+              'Copy warnin&g', 'OSC f&eatures', 'Notif&y on OSC use',
+              '&Notify on TUI auto-Box', 'Always allow clipboard READ (all tabs, no prompt)'):
+    ok(_gone not in _vt, 'View menu no longer shows the duplicated %r' % _gone)
+# the removed settings survive as hidden state-holders (slash-commands / chips / locks / sync)
+ok(win.act_colors is not None and win.act_tui is not None
+   and win.act_markings is not None and win.act_line_edits is not None
+   and bool(win._theme_actions) and bool(win._mode_actions)
+   and bool(win._osc_actions) and bool(win._paste_warn_actions)
+   and bool(win._copy_warn_actions) and bool(win._scrollback_actions),
+   'removed View settings survive as hidden state-holders for slash-commands/chips/locks')
+
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 try:
     win.show_about()
@@ -252,6 +290,20 @@ try:
                                  int(APP.primaryScreen().availableGeometry().height()
                                      * 0.9))
     ok(_fits, 'settings dialog opens tall enough to show content (no default scroll)')
+    # ...and it never scrolls SIDEWAYS: the horizontal bar is forced off, and the
+    # width math opens the dialog wide enough (reserving the vertical-scrollbar width)
+    # that the content is not clipped. Pre-fix the scroll area defaulted to AsNeeded
+    # and the undersized allowance let a shown vbar push a horizontal bar in.
+    from PyQt6.QtCore import Qt as _QtHB                     # noqa: E402
+    ok(_sc.horizontalScrollBarPolicy() == _QtHB.ScrollBarPolicy.ScrollBarAlwaysOff,
+       'settings dialog never shows a horizontal scrollbar (no scroll-right)')
+    _gs2.show()
+    pump(60)
+    ok(_sc.horizontalScrollBar().maximum() == 0,
+       'settings dialog content does not overflow horizontally')
+    ok(_sc.viewport().width() >= _sc.widget().sizeHint().width(),
+       'settings dialog opens wide enough to fit its content (width reserves the vbar)')
+    _gs2.hide()
 
     win._paste_delay = 3
     # every dialog's descriptive text must be selectable so it can be copied.
