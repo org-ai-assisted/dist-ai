@@ -36,7 +36,11 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-repo="${1:?privleap checkout root required}"
+## Canonicalize the checkout to an ABSOLUTE path: it is exported as
+## PRIVLEAP_REPO and the run step below cd's into it, after which a relative
+## PRIVLEAP_REPO would resolve against the wrong directory and the fuzzer would
+## find no privleap tree.
+repo="$(readlink --canonicalize -- "${1:?privleap checkout root required}")"
 shift
 
 iterations='4000'
@@ -52,6 +56,19 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+## A non-positive / non-numeric iteration count runs zero fuzz sessions yet can
+## exit 0 -- a silent green. Reject it up front.
+case "${iterations}" in
+  '' | *[!0-9]*)
+    printf '%s\n' "FATAL: --iterations must be a positive integer: ${iterations}" >&2
+    exit 1
+    ;;
+esac
+if [ "${iterations}" -eq 0 ]; then
+  printf '%s\n' "FATAL: --iterations must be greater than 0" >&2
+  exit 1
+fi
 
 ## Container prerequisites. python3-pam / python3-sdnotify (the privleap runtime
 ## deps) are installed by the setup script below, which owns them; sudo must be
