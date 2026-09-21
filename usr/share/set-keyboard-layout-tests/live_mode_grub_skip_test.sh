@@ -164,7 +164,9 @@ run_build_all() {
    run_marker="${marker}"
 }
 
-skip_re='Live mode detected. Skipping GRUB keyboard layout setting'
+## A stable substring of the live-mode skip message (emitted only on the skip
+## path), tolerant of exact wording; the persistent path never prints it.
+skip_re='Live mode detected, cannot persistently change GRUB'
 
 printf '%s\n' "== case: live -> skip =="
 run_build_all live
