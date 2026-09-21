@@ -58,15 +58,18 @@ fail() {
 }
 
 ## --- stubs -----------------------------------------------------------------
-## Controls + recorders reset before each case.
-stub_is_mountpoint=0   ## 0 -> path IS a mountpoint; 1 -> not a mountpoint
+## Controls + recorders reset before each case. mountpoint(1) exit codes:
+## 0 = is a mountpoint, 32 = not a mountpoint, other = error.
+stub_mp_rc=0           ## exit code the mountpoint stub returns
 stub_umount_rc=0       ## exit code the umount stub returns
+mountpoint_called=0    ## times the mountpoint stub ran
 umount_called=0        ## times the umount stub ran
 umount_last_path=""    ## last path the umount stub saw
 
 reset_stubs() {
-   stub_is_mountpoint=0
+   stub_mp_rc=0
    stub_umount_rc=0
+   mountpoint_called=0
    umount_called=0
    umount_last_path=""
 }
@@ -75,7 +78,8 @@ reset_stubs() {
 ## '--quiet -- PATH' / '--verbose -- PATH').
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced unmount_if_mounted
 mountpoint() {
-   return "${stub_is_mountpoint}"
+   mountpoint_called=$(( mountpoint_called + 1 ))
+   return "${stub_mp_rc}"
 }
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced unmount_if_mounted
 umount() {
@@ -84,26 +88,35 @@ umount() {
    return "${stub_umount_rc}"
 }
 
-## --- case 1: not a mountpoint -> no-op, umount NEVER called -----------------
-## This is the guard the callers depend on.
+## A real existing target so the 'test -e' existence pre-check passes and the
+## mountpoint stub decides the outcome. (SUDO_TO_ROOT="" above, so 'test' is the
+## shell builtin against the real filesystem.)
+work_dir="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+trap cleanup EXIT
+target="${work_dir}/target"
+touch -- "${target}"
+
+## --- case 1: not a mountpoint (exit 32) -> no-op, umount NEVER called -------
 reset_stubs
-stub_is_mountpoint=1
-if unmount_if_mounted "/some/path" ; then
+stub_mp_rc=32
+if unmount_if_mounted "${target}" ; then
    if [ "${umount_called}" = "0" ]; then
-      pass "not a mountpoint: returns 0 and does not call umount"
+      pass "not a mountpoint (32): returns 0 and does not call umount"
    else
-      fail "not a mountpoint: umount was called ${umount_called} time(s)"
+      fail "not a mountpoint (32): umount was called ${umount_called} time(s)"
    fi
 else
-   fail "not a mountpoint: expected return 0, got non-zero"
+   fail "not a mountpoint (32): expected return 0, got non-zero"
 fi
 
-## --- case 2: is a mountpoint, umount succeeds ------------------------------
+## --- case 2: is a mountpoint (0), umount succeeds --------------------------
 reset_stubs
-stub_is_mountpoint=0
+stub_mp_rc=0
 stub_umount_rc=0
-if unmount_if_mounted "/mnt/target" ; then
-   if [ "${umount_called}" = "1" ] && [ "${umount_last_path}" = "/mnt/target" ]; then
+if unmount_if_mounted "${target}" ; then
+   if [ "${umount_called}" = "1" ] && [ "${umount_last_path}" = "${target}" ]; then
       pass "mounted: calls umount once on the path and returns 0"
    else
       fail "mounted: umount_called=${umount_called} path='${umount_last_path}'"
@@ -112,29 +125,45 @@ else
    fail "mounted+umount ok: expected return 0, got non-zero"
 fi
 
-## --- case 3: is a mountpoint, umount fails -> propagate non-zero -----------
+## --- case 3: mountpoint ERROR (exit 1) on an existing path -> PROPAGATE -----
+## The finding: 'mountpoint --quiet ... || return 0' swallowed a genuine error
+## (exit 1: bad invocation / system error) as "not mounted", returning success
+## and skipping umount, so a caller could delete across an undetermined mount.
 reset_stubs
-stub_is_mountpoint=0
+stub_mp_rc=1
+if unmount_if_mounted "${target}" ; then
+   fail "mountpoint error (1): swallowed as success -- must propagate the error"
+else
+   if [ "${umount_called}" = "0" ]; then
+      pass "mountpoint error (1): propagates non-zero and does not umount"
+   else
+      fail "mountpoint error (1): umount ran despite an undetermined mount state"
+   fi
+fi
+
+## --- case 4: nonexistent path -> no-op, mountpoint NEVER consulted ----------
+## A missing target is nothing to unmount, and must not be conflated with the
+## exit-1 error above (mountpoint shares exit 1 for a nonexistent path).
+reset_stubs
+stub_mp_rc=1
+if unmount_if_mounted "${work_dir}/absent" ; then
+   if [ "${mountpoint_called}" = "0" ] && [ "${umount_called}" = "0" ]; then
+      pass "absent path: no-op (return 0), mountpoint not consulted"
+   else
+      fail "absent path: mountpoint_called=${mountpoint_called} umount_called=${umount_called}"
+   fi
+else
+   fail "absent path: expected return 0, got non-zero"
+fi
+
+## --- case 5: is a mountpoint, umount fails -> propagate non-zero -----------
+reset_stubs
+stub_mp_rc=0
 stub_umount_rc=1
-if unmount_if_mounted "/mnt/stuck" ; then
+if unmount_if_mounted "${target}" ; then
    fail "mounted+umount fails: expected non-zero return, got 0"
 else
    pass "mounted+umount fails: propagates non-zero (errexit would fail the build)"
-fi
-
-## --- CANARY: the mountpoint guard is load-bearing --------------------------
-## Prove the case-1 assertion actually catches the regression it guards: a naive
-## implementation that dropped the guard and just ran 'umount "$1"' WOULD call
-## umount on a non-mountpoint. Run that naive shape against the same stubs and
-## confirm this test's own logic would flag it.
-reset_stubs
-stub_is_mountpoint=1
-naive_unmount() { umount --verbose -- "$1"; }
-naive_unmount "/some/path" || true
-if [ "${umount_called}" -ge 1 ]; then
-   pass "canary: guardless umount hits a non-mountpoint (case 1 would fail on such a regression)"
-else
-   fail "canary broken: guardless shape did not call umount, so case 1 proves nothing"
 fi
 
 summary_line="===== unmount_if_mounted: ${pass_count} pass, ${fail_count} fail ====="
