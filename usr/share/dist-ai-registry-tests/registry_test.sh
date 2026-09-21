@@ -52,17 +52,18 @@ export LC_ALL=C
 ##     installs the privleap group / PAM policy / shim on a throwaway container so
 ##     the privleap-tests-session-fuzz workflow can run the daemon; it asserts
 ##     nothing itself, and needs root + a checkout arg no orchestrator lane passes.
-##   privleap-tests-session-fuzz-ci  the CI ORCHESTRATOR wrapping the provisioner
-##     above: installs container prerequisites, sets up the runtime, creates the
-##     unprivileged caller, and runs session_fuzz as it. Same reason as the
-##     setup script: root + a checkout arg no orchestrator lane passes.
+##   privleap-tests-fuzz-ci  the CI ORCHESTRATOR wrapping the provisioner above:
+##     installs container prerequisites, sets up the runtime, creates the
+##     unprivileged caller, and runs the whole privleap --fuzz category (in-process
+##     parser fuzz + live-daemon session fuzz) as it. Same reason as the setup
+##     script: root + a checkout arg no orchestrator lane passes.
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
    'dm-stripped-setx-audit'
    'website-tests-sandbox'
    'privleap-tests-session-fuzz-setup'
-   'privleap-tests-session-fuzz-ci'
+   'privleap-tests-fuzz-ci'
 )
 
 ## Suite BASE names with no owning component repo, so no suite_component()

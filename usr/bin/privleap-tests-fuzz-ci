@@ -3,18 +3,22 @@
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
-## Provision and run the privleap live-daemon SESSION fuzzer end to end inside
-## an EPHEMERAL, single-purpose CI container (running as root). Owns everything
-## the session-fuzz workflow needs beyond the two git checkouts, so the workflow
-## stays a thin caller and the "how to run session fuzz in CI" recipe lives with
-## the suite instead of being duplicated in per-repo workflow YAML:
+## Provision and run the WHOLE privleap fuzz category end to end inside an
+## EPHEMERAL, single-purpose CI container (running as root). Owns everything the
+## fuzz workflow needs beyond the two git checkouts, so the workflow stays a thin
+## caller and the "how to run privleap fuzz in CI" recipe lives with the suite
+## instead of being duplicated in per-repo workflow YAML:
 ##   - container prerequisites (sudo, adduser, python3)
 ##   - the privleap runtime (group / PAM policy / shim) via
 ##     privleap-tests-session-fuzz-setup (which owns the pam / sdnotify deps)
-##   - an unprivileged caller: session_fuzz REFUSES to run as root (the daemon
-##     must attribute requests to a non-root uid, which is the whole
-##     authorization surface), so a normal user with passwordless sudo is made
-##   - the fuzz run itself, as that caller, in disposable mode
+##   - an unprivileged caller: the live-daemon session fuzzer REFUSES to run as
+##     root (the daemon must attribute requests to a non-root uid, which is the
+##     whole authorization surface), so a normal user with passwordless sudo is
+##     made; the in-process parser fuzzers are root-free and run as it too
+##   - the fuzz run: dist-ai-tests-all --fuzz for the privleap component, as that
+##     caller. One lane runs every privleap fuzz suite (in-process wire/config/
+##     authz parser fuzz + live-daemon session fuzz); atheris is allow-skipped
+##     (no Debian package -- coverage-guided fuzzing runs via ClusterFuzzLite).
 ##
 ## SAFE ONLY in a throwaway CI container: it apt-installs packages, creates a
 ## passwordless-sudo user, and (via the setup script) overwrites the system-wide
@@ -23,8 +27,8 @@
 ## dist-ai suite (it needs root + a checkout arg no orchestrator lane passes),
 ## so it is listed in dist-ai-registry-tests allowed_unregistered.
 ##
-## Usage: privleap-tests-session-fuzz-ci <privleap-checkout-root> [--iterations N]
-## Needs root; runs inside the session-fuzz container, not a VM.
+## Usage: privleap-tests-fuzz-ci <privleap-checkout-root> [--timeout-fuzz SECONDS]
+## Needs root; runs inside the fuzz container, not a VM.
 
 set -o errexit
 set -o nounset
@@ -36,18 +40,19 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-## Canonicalize the checkout to an ABSOLUTE path: it is exported as
-## PRIVLEAP_REPO and the run step below cd's into it, after which a relative
-## PRIVLEAP_REPO would resolve against the wrong directory and the fuzzer would
-## find no privleap tree.
+## Canonicalize the checkout to an ABSOLUTE path: the run step cd's the caller
+## into it, after which a relative path would resolve against the wrong dir.
 repo="$(readlink --canonicalize -- "${1:?privleap checkout root required}")"
 shift
 
-iterations='4000'
+## Per-fuzzer wall-clock cap handed to dist-ai-tests-all. The session fuzzer is
+## the long pole; 1200s matches its historical standalone budget so its default
+## iteration count still fits. The in-process parser fuzzers finish well within.
+timeout_fuzz='1200'
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --iterations)
-      iterations="${2:?--iterations needs a value}"
+    --timeout-fuzz)
+      timeout_fuzz="${2:?--timeout-fuzz needs a value}"
       shift 2
       ;;
     *)
@@ -57,16 +62,15 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-## A non-positive / non-numeric iteration count runs zero fuzz sessions yet can
-## exit 0 -- a silent green. Reject it up front.
-case "${iterations}" in
+## A non-positive / non-numeric timeout would silently mis-budget the run.
+case "${timeout_fuzz}" in
   '' | *[!0-9]*)
-    printf '%s\n' "FATAL: --iterations must be a positive integer: ${iterations}" >&2
+    printf '%s\n' "FATAL: --timeout-fuzz must be a positive integer: ${timeout_fuzz}" >&2
     exit 1
     ;;
 esac
-if [ "${iterations}" -eq 0 ]; then
-  printf '%s\n' "FATAL: --iterations must be greater than 0" >&2
+if [ "${timeout_fuzz}" -eq 0 ]; then
+  printf '%s\n' "FATAL: --timeout-fuzz must be greater than 0" >&2
   exit 1
 fi
 
@@ -91,8 +95,7 @@ chmod -R a+rX -- "${repo}"
 ## itself but NOT its ancestor directories; a non-traversable parent (a 0700
 ## /root outside CI -- the GitHub workspace is world-traversable) would otherwise
 ## fail the run below with an opaque 'cd: Permission denied'. Check it up front so
-## the failure is loud and names the cause (the run's 'cd && ...' under errexit
-## already fails non-zero, but not legibly).
+## the failure is loud and names the cause.
 if ! sudo -u fuzzcaller -- sh -c 'cd -- "$1"' sh "${repo}"; then
   printf '%s\n' \
     "FATAL: fuzzcaller cannot enter '${repo}' -- a parent directory is not" \
@@ -100,12 +103,14 @@ if ! sudo -u fuzzcaller -- sh -c 'cd -- "$1"' sh "${repo}"; then
   exit 1
 fi
 
-## Run as the caller. PRIVLEAP_TEST_DISPOSABLE_ENV skips the mount namespace
-## (the container is throwaway), which is what keeps it non-privileged.
+## Run the whole privleap fuzz category as the caller. dist-ai-tests-all wires
+## PRIVLEAP_REPO from --component-root; PRIVLEAP_TEST_DISPOSABLE_ENV=1 keeps the
+## session fuzzer out of the mount namespace (no CAP_SYS_ADMIN in an ordinary
+## container). atheris is allow-skipped (not Debian-packaged).
 sudo -u fuzzcaller \
-  env PRIVLEAP_REPO="${repo}" \
-      PRIVLEAP_TEST_DISPOSABLE_ENV=1 \
-      ITERATIONS="${iterations}" \
-      SESSION_FUZZ_RUNNER="${script_dir}/privleap-tests-session-fuzz" \
-  bash -c 'cd -- "${PRIVLEAP_REPO}" \
-    && "${SESSION_FUZZ_RUNNER}" --iterations "${ITERATIONS}"'
+  env PRIVLEAP_TEST_DISPOSABLE_ENV=1 \
+  "${script_dir}/dist-ai-tests-all" --fuzz \
+    --component privleap \
+    --component-root "${repo}" \
+    --timeout-fuzz "${timeout_fuzz}" \
+    --allow-skip privleap-tests-fuzz-atheris
