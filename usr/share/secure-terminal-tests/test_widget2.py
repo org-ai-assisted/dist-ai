@@ -292,13 +292,15 @@ QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
 win.set_tab_color(0, QColor('#d83933'))
-ok(not win.tabs.tabIcon(0).isNull(), 'tab colour set')
+# the tab colour is now the left accent bar painted by SecureTabBar (the old number
+# swatch icon is gone); the accent is pushed to the bar's per-tab model.
+eq(win.tabs.tabBar().tab_lines(0)['accent'], '#d83933', 'tab colour -> bar accent')
 _term0 = win.tabs.widget(0)
 ok(win._tab_colors.get(_term0) == '#d83933', 'tab colour stored')
 win.set_tab_color(0, None)
-# the numbered swatch is unconditional, so a null icon can never be the signal;
-# _tab_colors is the only state that answers the question.
-ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
+# clearing the colour clears the accent; the tab NUMBER stays (painted unconditionally),
+# and _tab_colors is the state that answers whether a colour is set.
+ok(win.tabs.tabBar().tab_lines(0)['accent'] is None, 'cleared colour -> no accent')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
 # COR-6: the Custom... colour picker returns an INVALID QColor on Cancel, which
 # set_tab_color folds into its Clear path -- so passing it straight through erased the
@@ -6580,6 +6582,127 @@ feed_output(_pw6, _PS2004 + b'p$ ')          # prompt-start while alt is active
 ok(_pw6._alt_saved is not None,
    'TUI: on the alt screen the primary-line break is skipped')
 _pw6.shutdown()
+
+
+# --- two-line trust tab bar + bell 'tab' marker channel (dev624) ---------------
+# Line 1 is app-controlled (trusted); the program-set OSC title is quarantined on
+# line 2. A per-tab bell marker rides the same bar. osc_title + the 'tab' bell
+# channel now default ON.
+from secure_terminal.main import SecureTabBar as _STB          # noqa: E402
+
+_tbw = MainWindow()
+_tbw.new_tab(command='/bin/cat')
+pump(30)
+_bar = _tbw.tabs.tabBar()
+ok(isinstance(_bar, _STB), 'the tab bar is a SecureTabBar')
+ok('tab' in SecureTerminal.BELL_CHANNELS, "'tab' is a registered bell channel")
+
+# defaults: osc_title ON (two-line band reserved) + bell 'tab' marker ON
+ok(_tbw._osc_defaults.get('osc_title') is True, 'osc_title defaults ON')
+ok(_bar.two_line() is True, 'the two-line band is reserved by default (titles on)')
+ok(_tbw._default_allow_title is True, 'the legacy allow_title aggregate is ON by default')
+eq(_tbw._default_bell, {'tab'}, "bell defaults to the 'tab' marker channel")
+ok(_tbw.current().bell_enabled('tab'), "a new tab has the 'tab' bell channel on")
+
+# line 1 = trusted (cwd/user); line 2 = the UNTRUSTED program title, quarantined
+_t0 = _tbw.current()
+_i0 = _tbw.tabs.indexOf(_t0)
+_t0.cwd_basename = lambda: 'proj'
+_tbw._prog_titles[_t0] = 'npm run build'
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['label'], 'proj', 'line 1 is the cwd basename, not the program title')
+eq(_bar.tab_lines(_i0)['ptitle'], 'npm run build', 'line 2 shows the untrusted program title')
+eq(_tbw.tabs.tabText(_i0), 'proj', 'setTabText carries only the trusted label')
+_tbw._user_titles[_t0] = 'mine'
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['label'], 'mine', 'a user rename is the trusted line-1 label')
+eq(_bar.tab_lines(_i0)['ptitle'], 'npm run build', 'the program title stays quarantined on line 2')
+
+# line 2 hidden when the tab does not allow titles
+_t0.apply_osc('osc_title', False)
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['ptitle'], '', 'line 2 is hidden when the tab disallows titles')
+_t0.apply_osc('osc_title', True)
+_tbw._refresh_tab_label(_t0)
+
+# the tab colour is the left accent bar (the number-icon swatch is gone)
+_tbw.set_tab_color(_i0, QColor('#3b82f6'))
+eq(_bar.tab_lines(_i0)['accent'], '#3b82f6', 'the tab colour is the bar accent')
+_tbw.set_tab_color(_i0, None)
+ok(_bar.tab_lines(_i0)['accent'] is None, 'clearing the colour clears the accent')
+
+# tabSizeHint grows for the second line; set_two_line no-op branch when unchanged
+_h2 = _bar.tabSizeHint(_i0).height()
+_bar.set_two_line(True)                        # already True -> no-op branch
+_bar.set_two_line(False)
+_h1 = _bar.tabSizeHint(_i0).height()
+ok(_h2 > _h1, 'a two-line tab is taller than a one-line tab')
+_bar.set_two_line(True)
+
+# bell marker: a background tab that rings is marked; the focused tab is not; focus clears
+_tbw.new_tab(command='/bin/cat')
+pump(30)
+_t1 = _tbw.current()
+_i1 = _tbw.tabs.indexOf(_t1)
+ok(_tbw.tabs.currentWidget() is _t1, 'the second tab is focused')
+_t0.apply_bell({'tab'}); _t0._last_bell = 0    # bypass the 200ms throttle for the test
+_t0._ring()
+ok(_bar.has_bell(_i0), 'a background tab that rings gets a bell marker')
+_t1.apply_bell({'tab'}); _t1._last_bell = 0
+_t1._ring()
+ok(not _bar.has_bell(_i1), 'a bell on the focused tab is not marked')
+_tbw.tabs.setCurrentIndex(_i0)
+pump(10)
+ok(not _bar.has_bell(_i0), 'focusing a marked tab clears its bell marker')
+
+# flood safety: many rings coalesce to ONE standing marker
+_tbw.tabs.setCurrentIndex(_i1)
+for _ in range(20):
+    _t0._last_bell = 0
+    _t0._ring()
+ok(_bar.has_bell(_i0), 'a BEL flood leaves exactly one standing marker')
+
+# only the 'tab' channel emits bell_tab
+_seen = []
+_t0.bell_tab.connect(lambda: _seen.append(1))
+_t0.apply_bell({'visual'}); _t0._last_bell = 0; _t0._ring()
+_n = len(_seen)
+_t0.apply_bell({'tab'}); _t0._last_bell = 0; _t0._ring()
+ok(len(_seen) == _n + 1, "only the 'tab' bell channel emits bell_tab")
+
+# (the 'tab' channel's user-facing toggle + its global off-switch live in the Global
+# Settings dialog; that surface + the default-on are covered in test_mainwin.)
+
+# the pulse decays over a bounded number of frames, then the marker holds static
+_bar.mark_bell(_i0)
+_bar._pulse.stop()                             # drive the frames deterministically
+for _ in range(_STB._PULSE_TICKS + 2):
+    _bar._tick_pulse()
+ok(_bar.has_bell(_i0), 'the marker holds static after the bounded pulse decays')
+ok(not _bar._pulse.isActive(), 'the pulse timer stops once no tab is pulsing')
+
+# paintEvent + the trusted glyphs render without error, both themes, with a marker
+# and a quarantined title present (forces the full paint path)
+_tbw._prog_titles[_t0] = 'a program title'
+_tbw._refresh_tab_label(_t0)
+_bar.mark_bell(_i0)
+_bar.set_theme(_bar._dark)                      # no-op branch (same value)
+for _dark in (False, True):
+    _bar.set_theme(_dark)
+    _pm = _bar.grab()
+    ok(not _pm.isNull(),
+       'the tab bar paints in the %s theme' % ('dark' if _dark else 'light'))
+
+# out-of-range indices are safe no-ops / defaults (guard branches)
+_bad = _bar.count() + 5
+_bar.set_accent(_bad, '#fff'); _bar.set_ptitle(_bad, 'x')
+_bar.mark_bell(_bad); _bar.clear_bell(_bad)
+ok(_bar.has_bell(_bad) is False, 'has_bell on a bad index is False')
+eq(_bar.tab_lines(_bad), {'label': '', 'ptitle': '', 'bell': False, 'accent': None},
+   'tab_lines on a bad index returns the empty default')
+
+_bar._pulse.stop()
+_tbw.close(); _tbw.deleteLater(); APP.processEvents()
 
 
 finish('widget2')
