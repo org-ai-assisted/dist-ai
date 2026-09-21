@@ -21,13 +21,14 @@ only 'r', so the exec was denied:
 and the hourly canary download failed. (The same rule had regressed the same way
 once before.)
 
-This asserts the profile carries a PLAIN allow rule that grants exec (a mode
-containing 'x') on settings_echo -- i.e. a bare 'path mode,' line, not one hidden
-behind a read-only glob, an 'owner' qualifier (canary-download runs as the
-non-root 'canary' user, so an owner-restricted rule would deny it), or a 'deny'.
-So a future glob-collapse that drops the exec bit fails here, not in the field.
-Adversarial rules crafted to defeat this check are out of scope (the profile is
-maintained by us, not attacker-supplied).
+This asserts the profile carries a PLAIN allow rule that grants exec on
+settings_echo AND that no matching 'deny ... x' rule overrides it -- AppArmor
+evaluates a matching deny BEFORE any allow, so a covering deny would silently
+break the exec while a naive allow-only check still passed. An adversarially
+CRAFTED rule (a character class like 'settings_[e]cho', a quoted path with
+embedded spaces) is out of scope -- the profile is maintained by us, not
+attacker-supplied; the realistic regressions are a glob-collapse dropping the
+exec bit or a broad deny added for hardening.
 """
 
 import os
@@ -44,6 +45,67 @@ SETTINGS_ECHO = '/usr/libexec/helper-scripts/settings_echo'
 ## with the path, so this deliberately does NOT match those.
 _ALLOW_EXEC_RE = re.compile(
     r'^\s*' + re.escape(SETTINGS_ECHO) + r'\s+[a-zA-Z]*x[a-zA-Z]*,\s*$')
+
+## A deny rule (AppArmor modifier order is 'audit deny owner'), capturing the
+## path (optionally quoted, no embedded space) and the permission mode.
+_DENY_RE = re.compile(
+    r'^\s*(?:audit\s+)?deny\s+(?:owner\s+)?"?([^"\s]+)"?\s+([a-zA-Z]+)\s*,')
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand AppArmor '{a,b}' alternations (e.g. '/{,usr/}bin/...')."""
+    match = re.search(r'\{([^{}]*)\}', pattern)
+    if not match:
+        return [pattern]
+    pre, post = pattern[:match.start()], pattern[match.end():]
+    out = []
+    for alt in match.group(1).split(','):
+        out.extend(_expand_braces(pre + alt + post))
+    return out
+
+
+def _glob_to_regex(glob: str) -> str:
+    """AppArmor path glob -> anchored regex. '**' crosses '/', '*' and '?' do
+    not. A character class is treated literally (adversarial crafting is out of
+    scope), so this never OVER-matches a real path."""
+    out = ['^']
+    i = 0
+    while i < len(glob):
+        char = glob[i]
+        if char == '*':
+            if glob[i + 1:i + 2] == '*':
+                out.append('.*')
+                i += 2
+                continue
+            out.append('[^/]*')
+            i += 1
+            continue
+        if char == '?':
+            out.append('[^/]')
+            i += 1
+            continue
+        out.append(re.escape(char))
+        i += 1
+    out.append(r'\Z')
+    return ''.join(out)
+
+
+def _path_covers(path_glob: str, target: str) -> bool:
+    return any(re.match(_glob_to_regex(expanded), target)
+               for expanded in _expand_braces(path_glob))
+
+
+def _deny_exec_covers(lines) -> bool:
+    """True if any 'deny ... x' rule's path covers settings_echo (a deny that
+    AppArmor would apply before the allow, denying the exec)."""
+    for line in lines:
+        match = _DENY_RE.match(line)
+        if not match:
+            continue
+        path_glob, mode = match.groups()
+        if 'x' in mode and _path_covers(path_glob, SETTINGS_ECHO):
+            return True
+    return False
 
 
 class CanaryApparmorProfileTest(systemcheck_testlib.SystemcheckTestBase):
@@ -65,14 +127,20 @@ class CanaryApparmorProfileTest(systemcheck_testlib.SystemcheckTestBase):
             f"canary AppArmor profile missing: {profile!r}")
 
         with open(profile, encoding='utf-8') as handle:
-            granted = any(_ALLOW_EXEC_RE.match(line) for line in handle)
+            lines = handle.read().splitlines()
 
         self.assertTrue(
-            granted,
+            any(_ALLOW_EXEC_RE.match(line) for line in lines),
             f"{profile}: no plain rule grants exec (x) on {SETTINGS_ECHO} -- "
             "canary-download's exec of settings_echo will be denied "
             "(a read-only '/usr/libexec/helper-scripts/** r,' glob is NOT "
             "enough; restore the explicit 'settings_echo rix,' rule)")
+
+        self.assertFalse(
+            _deny_exec_covers(lines),
+            f"{profile}: a 'deny ... x' rule matches {SETTINGS_ECHO} -- "
+            "AppArmor applies a matching deny BEFORE the allow, so the exec "
+            "grant is overridden and canary-download's exec is denied")
 
     def test_network_is_the_socket_not_apache2_common(self) -> None:
         """canary-download reaches the network only through the local Tor SOCKS

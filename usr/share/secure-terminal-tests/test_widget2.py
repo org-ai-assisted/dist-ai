@@ -6808,15 +6808,36 @@ _mine_w = _fbar.tabSizeHint(_ffi).width()
 eq(_mine_w - _base_w, _STB._ACCENT_W + _STB._PAD + _STB._GLYPH + 4 + _prefix_w,
    'tabSizeHint adds the number-prefix width (was omitted, causing label elision)')
 
-# B + C: with a close button present and a bell marked, paint runs and the bell is
-# reserved to the LEFT of the close button (drawn before the child close widget).
+# B + C: the bell marker actually RENDERS, and does NOT paint under the close button.
+# A no-crash grab().isNull() + a geometry-only check cannot catch a marker painted in
+# the wrong place, so verify the real pixels differentially: grab with the marker off
+# vs on (pulse drained to leave only the STATIC glyph -- the pulse tint covers the whole
+# tab, including under the close button, and would mask this), assert the render CHANGED
+# (the marker paints), and assert the close-button region is UNCHANGED (marker to its left).
 _ffw.tabs.setTabsClosable(True)
 pump(10)
-_fbar.mark_bell(_ffi)
-ok(not _fbar.grab().isNull(), 'the tab bar paints with a bell marker + close button')
 _cbtn = _fbar.tabButton(_ffi, _QTabBar.ButtonPosition.RightSide)
-ok(_cbtn is None or _cbtn.geometry().left() > _fbar.tabRect(_ffi).left(),
-   'the close button occupies the tab right edge (bell drawn to its left)')
+_fbar.clear_bell(_ffi)
+_img_off = _fbar.grab().toImage()
+_fbar.mark_bell(_ffi)
+_fbar._pulse.stop()
+for _ in range(_STB._PULSE_TICKS + 1):    # drain the pulse -> static marker only
+    _fbar._tick_pulse()
+_img_on = _fbar.grab().toImage()
+
+
+def _region_differs(_a, _b, _rect):
+    for _x in range(max(0, _rect.left()), min(_a.width(), _rect.right() + 1), 2):
+        for _y in range(max(0, _rect.top()), min(_a.height(), _rect.bottom() + 1), 2):
+            if _a.pixel(_x, _y) != _b.pixel(_x, _y):
+                return True
+    return False
+
+
+ok(_img_off != _img_on, 'the bell marker actually changes the rendered tab (it paints)')
+if _cbtn is not None and _cbtn.isVisible():
+    ok(not _region_differs(_img_off, _img_on, _cbtn.geometry()),
+       'the bell marker does not paint under the close button (reserved to its left)')
 _fbar._pulse.stop()
 _ffw.close(); _ffw.deleteLater(); APP.processEvents()
 
