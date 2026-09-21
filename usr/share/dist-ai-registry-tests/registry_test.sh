@@ -119,6 +119,7 @@ registered_suites=()
 in_array=''
 wire_labels=()
 component_labels=()
+wired_env_vars=()
 in_func=''
 
 while read -r line; do
@@ -161,6 +162,18 @@ while read -r line; do
    esac
    [ -n "${in_func}" ] || continue
 
+   ## Collect the env var names wire() actually SETS, from its
+   ## wire_env=( "VAR=..." ) elements, so the *_BIN wiring check below matches a
+   ## real assignment -- not an unrelated 'VAR=' mention (a comment, another
+   ## string) anywhere in the file, which the old whole-file grep accepted.
+   if [ "${in_func}" = 'wire' ]; then
+      env_rest="${line}"
+      while [[ "${env_rest}" =~ \"([A-Za-z_][A-Za-z0-9_]*)= ]]; do
+         wired_env_vars+=( "${BASH_REMATCH[1]}" )
+         env_rest="${env_rest#*"${BASH_REMATCH[0]}"}"
+      done
+   fi
+
    ## A case label: ends in ')', with no '(' or '=' or whitespace, and is not
    ## the catch-all. Excludes 'wire_env=( ... )' and friends.
    case "${line}" in
@@ -185,6 +198,18 @@ while read -r line; do
       fi
    done
 done < "${runner}"
+
+## Parser desync guard: every suite array and function body opened above must
+## have closed. A close line the case did not match (e.g. a ')' carrying a
+## trailing comment) would leave in_array/in_func set, and the parser would then
+## collect whatever followed -- function bodies as "suite entries", say -- into
+## the registry, silently. Turn that into a loud failure rather than a corrupt,
+## still-green parse.
+if [ -n "${in_array}" ] || [ -n "${in_func}" ]; then
+   fail 'registry parse did not close cleanly (a suite array or wire()/suite_component() body) -- the format changed and this lint would parse the wrong lines; fix the parser'
+   printf '%s\n' '' "FAILED: ${failures} registry check(s) failed" >&2
+   exit 1
+fi
 
 if [ "${#registered_suites[@]}" -eq 0 ]; then
    fail 'parsed zero registered suites -- the registry format changed and this lint is now blind'
@@ -229,6 +254,24 @@ has_label() {
 ## the entry to be followed by a space or a newline, and the last line of the
 ## last file has neither. A one-column line (valid dh_install syntax) at the end
 ## of a file therefore read as "not shipped" -- a false failure.
+## Collect the .install files by glob under nullglob, so a tree with none
+## yields an EMPTY list (a clear, loud failure below) rather than the literal
+## unexpanded 'debian/*.install' -- which cat would then try to open as a file
+## (error) or, once a stray nullglob elsewhere is in effect, drop to reading
+## stdin and hang. Restore the caller's glob setting immediately.
+install_files=()
+if shopt -q nullglob; then
+   install_files=( "${repo}"/debian/*.install )
+else
+   shopt -s nullglob
+   install_files=( "${repo}"/debian/*.install )
+   shopt -u nullglob
+fi
+if [ "${#install_files[@]}" -eq 0 ]; then
+   fail 'no debian/*.install under the tree -- cannot verify what an installed system ships; the registry format or layout changed and this lint is now blind'
+   printf '%s\n' '' "FAILED: ${failures} registry check(s) failed" >&2
+   exit 1
+fi
 installed_sources=()
 while read -r install_src _install_dest; do
    case "${install_src}" in
@@ -237,7 +280,7 @@ while read -r install_src _install_dest; do
          ;;
    esac
    installed_sources+=( "${install_src}" )
-done < <( cat -- "${repo}"/debian/*.install )
+done < <( cat -- "${install_files[@]}" )
 
 ## ---- check each registered suite ------------------------------------------
 for suite in "${registered_suites[@]}"; do
@@ -292,16 +335,24 @@ for rel in "${payload_files[@]}"; do
 done
 
 ## ---- check every *_BIN override a payload reads is wired ------------------
-## A payload that resolves its subject from an env var falls back, when the var
-## is unset, to a hardcoded developer-box path under /home/user. That path never
-## exists in CI, so the affected cases degrade to SKIPs and the run still reports
-## PASS -- exactly the silent green this lint exists for. It cost the
-## sanitize-string suite 3019 silently skipped sanitize-echo fuzz cases, because
-## wire() set SANITIZE_STRING_BIN but not SANITIZE_ECHO_BIN.
+## A PYTHON payload that resolves its subject from os.environ.get('X_BIN',
+## '/home/user/...') falls back, when the var is unset, to a hardcoded
+## developer-box path that never exists in CI -- so the affected cases degrade
+## to SKIPs and the run still reports PASS, exactly the silent green this lint
+## exists for. It cost the sanitize-string suite 3019 silently skipped
+## sanitize-echo fuzz cases, because wire() set SANITIZE_STRING_BIN but not
+## SANITIZE_ECHO_BIN.
+##
+## Python only. Shell suites read `${X_BIN:-<fallback>}` and then check the
+## resolved subject explicitly: they either fall back to a checkout-relative
+## path that DOES exist in CI, or `exit 1` FATAL when nothing resolves -- never
+## the silent-skip shape above (and a silent shell skip is caught by R-220, not
+## here). So scanning `.sh` for this Python idiom matched nothing and only
+## misled; it is intentionally not scanned.
 bin_vars=()
 mapfile -t bin_vars < <(
    grep --recursive --no-filename --only-matching --extended-regexp \
-      --include='*.py' --include='*.sh' \
+      --include='*.py' \
       "os\.environ\.get\(['\"][A-Z0-9_]+_BIN['\"]" -- "${repo}/usr/share" \
    | grep --only-matching --extended-regexp '[A-Z0-9_]+_BIN' \
    | sort --unique )
@@ -313,7 +364,9 @@ fi
 
 for bin_var in "${bin_vars[@]}"; do
    checks=$(( checks + 1 ))
-   if ! grep --quiet --fixed-strings -- "${bin_var}=" "${runner}"; then
+   ## Wired means SET by a wire_env element, not merely mentioned somewhere in
+   ## the file (a comment or an unrelated string would false-PASS the old grep).
+   if ! has_label "${bin_var}" "${wired_env_vars[@]}"; then
       fail "${bin_var}: read by a suite payload but wired by no wire() case -- the payload falls back to its hardcoded developer-box path, which never exists in CI, and silently skips every case that needs it"
    fi
 done
