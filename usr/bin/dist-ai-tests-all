@@ -571,9 +571,13 @@ wire() {
          ## excludes the user site, so from a checkout it needs its library
          ## there -- else it dies with ModuleNotFoundError and emits nothing,
          ## which the display-safety checks then pass on vacuously).
+         ## HELPER_SCRIPTS_PATH also lets the scenario harness locate has.bsh to
+         ## source the real `has` (check_audio/check_secure_boot call it); has is
+         ## a bash function, not a PATH binary, so PATH alone cannot resolve it.
          wire_env=( "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )" )
          if [ -n "${hs}" ]; then
             wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
                "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
             )
