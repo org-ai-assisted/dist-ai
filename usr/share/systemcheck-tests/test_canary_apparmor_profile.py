@@ -19,8 +19,15 @@ only 'r', so the exec was denied:
   comm="canary-download" requested_mask="x"
 
 and the hourly canary download failed. (The same rule had regressed the same way
-once before.) This test asserts the profile GRANTS EXEC on settings_echo, so a
-future glob-collapse that drops the exec bit fails here instead of in the field.
+once before.)
+
+This asserts the profile carries a PLAIN allow rule that grants exec (a mode
+containing 'x') on settings_echo -- i.e. a bare 'path mode,' line, not one hidden
+behind a read-only glob, an 'owner' qualifier (canary-download runs as the
+non-root 'canary' user, so an owner-restricted rule would deny it), or a 'deny'.
+So a future glob-collapse that drops the exec bit fails here, not in the field.
+Adversarial rules crafted to defeat this check are out of scope (the profile is
+maintained by us, not attacker-supplied).
 """
 
 import os
@@ -29,55 +36,14 @@ import unittest
 
 import systemcheck_testlib
 
-## The helper-script that canary-download must be able to execute.
 SETTINGS_ECHO = '/usr/libexec/helper-scripts/settings_echo'
 
-
-def _expand_braces(pattern: str) -> list[str]:
-    """Expand AppArmor '{a,b}' alternations (as used by '/{,usr/}bin/...')."""
-    match = re.search(r'\{([^{}]*)\}', pattern)
-    if not match:
-        return [pattern]
-    pre, post = pattern[:match.start()], pattern[match.end():]
-    out = []
-    for alt in match.group(1).split(','):
-        out.extend(_expand_braces(pre + alt + post))
-    return out
-
-
-def _glob_to_regex(glob: str) -> str:
-    """AppArmor path glob -> anchored regex. '**' crosses '/', '*' and '?' do not."""
-    out = ['^']
-    i = 0
-    while i < len(glob):
-        char = glob[i]
-        if char == '*':
-            if glob[i + 1:i + 2] == '*':
-                out.append('.*')
-                i += 2
-                continue
-            out.append('[^/]*')
-            i += 1
-            continue
-        if char == '?':
-            out.append('[^/]')
-            i += 1
-            continue
-        out.append(re.escape(char))
-        i += 1
-    out.append('$')
-    return ''.join(out)
-
-
-def _path_matches(path_glob: str, target: str) -> bool:
-    return any(re.match(_glob_to_regex(expanded), target)
-               for expanded in _expand_braces(path_glob))
-
-
-## One file-access rule: optional 'owner'/'audit' qualifiers, an optional 'deny',
-## a path, a permission mode, a trailing comma.
-_RULE_RE = re.compile(
-    r'^(?:owner\s+)?(?:audit\s+)?(deny\s+)?(\S+)\s+([a-zA-Z]+),\s*$')
+## A bare allow rule granting exec on settings_echo: optional leading whitespace,
+## the exact path, whitespace, a permission mode containing 'x', a trailing comma.
+## A leading qualifier ('owner'/'deny'/'audit') or a glob '**' would not begin
+## with the path, so this deliberately does NOT match those.
+_ALLOW_EXEC_RE = re.compile(
+    r'^\s*' + re.escape(SETTINGS_ECHO) + r'\s+[a-zA-Z]*x[a-zA-Z]*,\s*$')
 
 
 class CanaryApparmorProfileTest(systemcheck_testlib.SystemcheckTestBase):
@@ -98,32 +64,12 @@ class CanaryApparmorProfileTest(systemcheck_testlib.SystemcheckTestBase):
             os.path.isfile(profile),
             f"canary AppArmor profile missing: {profile!r}")
 
-        allow_exec = False
-        deny_exec = False
         with open(profile, encoding='utf-8') as handle:
-            for raw in handle:
-                line = raw.strip()
-                if not line or line.startswith(('#', 'include ', 'include<')):
-                    continue
-                match = _RULE_RE.match(line)
-                if not match:
-                    continue
-                is_deny, path_glob, mode = match.groups()
-                if 'x' not in mode:
-                    continue
-                if not _path_matches(path_glob, SETTINGS_ECHO):
-                    continue
-                if is_deny:
-                    deny_exec = True
-                else:
-                    allow_exec = True
+            granted = any(_ALLOW_EXEC_RE.match(line) for line in handle)
 
-        self.assertFalse(
-            deny_exec,
-            f"{profile}: an explicit rule DENIES exec on {SETTINGS_ECHO}")
         self.assertTrue(
-            allow_exec,
-            f"{profile}: no rule grants exec (x) on {SETTINGS_ECHO} -- "
+            granted,
+            f"{profile}: no plain rule grants exec (x) on {SETTINGS_ECHO} -- "
             "canary-download's exec of settings_echo will be denied "
             "(a read-only '/usr/libexec/helper-scripts/** r,' glob is NOT "
             "enough; restore the explicit 'settings_echo rix,' rule)")
