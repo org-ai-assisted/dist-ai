@@ -171,32 +171,74 @@ win._dismiss_advisory()
 # disabled globally: a fresh tab's OSC shows nothing; re-enabling re-arms it.
 win.new_tab()
 _octab2 = win.current()
-win.set_osc_notice(False)
+# F1: the MainWindow set_osc / set_osc_notice / set_osc_notice_type /
+# set_tui_autobox_notice handlers were deleted (those settings moved into the Global
+# settings dialog). These helpers reproduce their effect on the underlying state so the
+# OSC-notice / security-lamp / auto-Box display tests below still exercise the real paths.
+def _set_osc_notice(_v):
+    win._osc_notice = _v
+    win.act_osc_notice.setChecked(_v)
+    if not _v:
+        win._clear_advisories('osc')
+    win._persist()
+
+
+def _set_osc_notice_type(_k, _notify):
+    if _notify:
+        win._osc_notice_off.discard(_k)
+    else:
+        win._osc_notice_off.add(_k)
+        win._clear_advisories('osc')
+    win._persist()
+
+
+def _arm_osc(_k, _v):
+    win.current().apply_osc(_k, _v)
+    win._osc_defaults[_k] = _v
+    if _k in win._osc_actions:
+        win._osc_actions[_k].setChecked(_v)
+    win._default_allow_title = (win._osc_defaults.get('osc_title')
+                                or win._osc_defaults.get('osc_notify'))
+    if _v:
+        win._clear_advisories('osc')
+    win._update_security_indicator()
+    win._persist()
+
+
+def _set_autobox(_v):
+    win._tui_autobox_notice = _v
+    win.act_tui_autobox_notice.setChecked(_v)
+    if not _v:
+        win._clear_advisories('autobox')
+    win._persist()
+
+
+_set_osc_notice(False)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
 _octab2.osc_used.emit('osc_clipboard', 52)
 ok(win._banner.isHidden(), 'the OSC notice is suppressed when notices are all off')
 ok((_octab2, 'osc_clipboard') not in win._osc_notified,
    'a suppressed notice does not consume the per-type state')
-win.set_osc_notice(True)
+_set_osc_notice(True)
 _octab2.osc_used.emit('osc_clipboard', 52)
 ok(not win._banner.isHidden(), 're-enabling the toggle re-arms the OSC notice')
 win._dismiss_advisory()
 # per-TYPE mute: muting clipboard notices silences that type but not others.
-win.set_osc_notice_type('osc_clipboard', False)
+_set_osc_notice_type('osc_clipboard', False)
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
 _octab2.osc_used.emit('osc_clipboard', 52)
 ok(win._banner.isHidden(), 'a per-type muted OSC notice does not show')
 _octab2.osc_used.emit('osc_hyperlink', 8)     # NOT muted by default (unlike title/palette)
 ok(not win._banner.isHidden(), 'a non-muted OSC type still notifies')
-win.set_osc_notice_type('osc_clipboard', True)
+_set_osc_notice_type('osc_clipboard', True)
 win._dismiss_advisory()
 # turning notices OFF while showing dismisses the banner immediately.
 _octab2.osc_used.emit('osc_cwd', 7)
-win.set_osc_notice(False)
+_set_osc_notice(False)
 ok(win._banner.isHidden(), 'switching OSC notices off dismisses a showing banner')
-win.set_osc_notice(True)
+_set_osc_notice(True)
 # enabling "allow title / notifications" clears a stale OSC notice.
-win.set_osc_notice_type('osc_title', True)   # muted by default -> un-mute so it shows
+_set_osc_notice_type('osc_title', True)   # muted by default -> un-mute so it shows
 win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
 _octab2.osc_used.emit('osc_title', 0)
 ok(not win._banner.isHidden(), 'an OSC notice is showing again')
@@ -212,12 +254,12 @@ ok(win._osc_level()[0] == '#1f8a54', 'the OSC lamp is green when all features ar
 # OSC side-effects are honored ONLY in TUI mode, so enabling a feature in the default
 # CLI mode ARMS it (menu checked, applied to the tab) but the lamp stays GREEN -- there
 # is no live risk to signal. It reports the 'OSC idle' state.
-win.set_osc('osc_hyperlink', True)                    # medium risk, inert in CLI
+_arm_osc('osc_hyperlink', True)                    # medium risk, inert in CLI
 ok(win._osc_level()[0] == '#1f8a54' and win._osc_level()[1] == 'OSC idle'
    and win.current().osc_enabled('osc_hyperlink')
    and win._osc_actions['osc_hyperlink'].isChecked(),
    'enabling an OSC feature in CLI mode arms it (menu checked, applied) but the lamp stays green (idle)')
-win.set_osc('osc_clipboard', True)                    # high risk, still inert in CLI
+_arm_osc('osc_clipboard', True)                    # high risk, still inert in CLI
 ok(win._osc_level()[0] == '#1f8a54',
    'even a high-risk OSC feature keeps the lamp green in CLI mode (not honored until TUI)')
 if tui_available():
@@ -227,14 +269,14 @@ if tui_available():
     win.set_tui(True)
     ok(wait_for(lambda: win._osc_level()[0] == '#e5484d'),
        'in TUI mode the enabled high-risk feature turns the lamp red')
-    win.set_osc('osc_clipboard', False)
+    _arm_osc('osc_clipboard', False)
     ok(wait_for(lambda: win._osc_level()[0] == '#e5a50a'),
        'in TUI mode a remaining medium OSC feature dims the lamp to yellow, applies to the tab')
     win.set_tui(False)
     ok(wait_for(lambda: win._osc_level()[0] == '#1f8a54'),
        'back in CLI mode the lamp returns to green though osc_hyperlink is still armed')
-win.set_osc('osc_hyperlink', False)
-win.set_osc('osc_clipboard', False)
+_arm_osc('osc_hyperlink', False)
+_arm_osc('osc_clipboard', False)
 ok(wait_for(lambda: win._osc_level()[0] == '#1f8a54'),
    'the lamp is green when the features are disabled')
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
@@ -292,13 +334,15 @@ QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
 win.set_tab_color(0, QColor('#d83933'))
-ok(not win.tabs.tabIcon(0).isNull(), 'tab colour set')
+# the tab colour is now the left accent bar painted by SecureTabBar (the old number
+# swatch icon is gone); the accent is pushed to the bar's per-tab model.
+eq(win.tabs.tabBar().tab_lines(0)['accent'], '#d83933', 'tab colour -> bar accent')
 _term0 = win.tabs.widget(0)
 ok(win._tab_colors.get(_term0) == '#d83933', 'tab colour stored')
 win.set_tab_color(0, None)
-# the numbered swatch is unconditional, so a null icon can never be the signal;
-# _tab_colors is the only state that answers the question.
-ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
+# clearing the colour clears the accent; the tab NUMBER stays (painted unconditionally),
+# and _tab_colors is the state that answers whether a colour is set.
+ok(win.tabs.tabBar().tab_lines(0)['accent'] is None, 'cleared colour -> no accent')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
 # COR-6: the Custom... colour picker returns an INVALID QColor on Cancel, which
 # set_tab_color folds into its Clear path -- so passing it straight through erased the
@@ -502,7 +546,7 @@ if tui_available():
     _nt = win.current()
     win.set_tui(False)
     win._dismiss_advisory()                    # start from a clean banner
-    win.set_tui_autobox_notice(True)
+    _set_autobox(True)
     win.set_mode('detail')
     win.set_tui(True)
     eq(win._advisories.get(_nt, (None,))[0], 'autobox',
@@ -513,7 +557,7 @@ if tui_available():
        'leaving TUI clears the auto-Box notice and restores the mode')
     eq(win.current().current_mode(), 'detail', 'the prior mode (Detail) is restored')
     # notice OFF: the tab still boxes, but no banner is raised
-    win.set_tui_autobox_notice(False)
+    _set_autobox(False)
     win.set_mode('reveal')
     win.set_tui(True)
     eq(win.current().current_mode(), 'box',
@@ -521,15 +565,15 @@ if tui_available():
     ok(win._advisories.get(_nt) is None, 'the notice off raises no banner')
     win.set_tui(False)
     # a showing notice is dropped the moment the setting is switched off
-    win.set_tui_autobox_notice(True)
+    _set_autobox(True)
     win.set_mode('detail')
     win.set_tui(True)
     ok(win._advisories.get(_nt, (None,))[0] == 'autobox', 'a notice is showing')
-    win.set_tui_autobox_notice(False)
+    _set_autobox(False)
     ok(win._advisories.get(_nt) is None,
        'switching the notice off clears a showing auto-Box banner')
     win.set_tui(False)
-    win.set_tui_autobox_notice(True)
+    _set_autobox(True)
     win.set_mode('box')
 
 # the /mode slash command is refused for Reveal/Detail while the tab owns the TUI
@@ -581,7 +625,7 @@ if tui_available():
     _oc = win.current()
     win.set_tui(False)
     win._dismiss_advisory()
-    win.set_tui_autobox_notice(True)
+    _set_autobox(True)
     win.set_mode('detail')
     win._on_advise(_oc, 'An application used an OSC escape ...', 'osc')
     eq(win._advisories.get(_oc, (None,))[0], 'osc', 'an OSC notice is pending')
@@ -1472,13 +1516,13 @@ if tui_available():
     ok(True, 'an alternate-screen flood returns (bounded) rather than hanging')
     _af.close()
 
-# a legacy allow_title lock also locks the granular title/notify controls
+# a legacy allow_title lock also locks the granular title/notify controls: _osc_locked
+# reports it, so the dialog greys those checkboxes and _apply_global refuses them (the
+# per-feature set_osc menu handler that used to guard both directions is gone).
 _saved_l = win._locked
 win._locked = set(win._locked) | {'allow_title'}
-win._osc_defaults['osc_notify'] = False
-win.set_osc('osc_notify', True)
-ok(not win._osc_defaults['osc_notify'],
-   'a legacy allow_title lock refuses granular title/notify edits')
+ok(win._osc_locked('osc_notify') and win._osc_locked('osc_title'),
+   'a legacy allow_title lock locks the granular title/notify controls (dialog + _apply_global)')
 win._locked = _saved_l
 
 # session dump carries the full per-tab OSC map, not just the allow_title boolean
@@ -2753,19 +2797,6 @@ eq(SecureTerminal._parse_bell([None, 'audible', 5]), {'audible'},
    'a list with non-string elements is filtered, not fatal')
 eq(SecureTerminal._parse_bell({'visual', 'nope'}), {'visual'},
    'an unknown channel in a set is dropped')
-
-# toggling one channel preserves the current tab's OTHER channels (codex F2)
-_btw = SecureTerminal(command='/bin/cat')
-win.tabs.addTab(_btw, 'bell-preserve')
-win.tabs.setCurrentWidget(_btw)
-_btw.apply_bell({'visual'})
-win._default_bell = set()                         # make the tab differ from default
-win.set_bell_channel('tray', True)
-eq(_btw.bell_channels(), {'visual', 'tray'},
-   'toggling one channel keeps the current tab other channels')
-eq(win._default_bell, {'tray'}, 'the global default tracks the toggled channel')
-win.tabs.removeTab(win.tabs.indexOf(_btw))
-_btw.close()
 
 # a bell_sound admin lock refuses the sound setter
 _saved_l2 = win._locked
@@ -6580,6 +6611,137 @@ feed_output(_pw6, _PS2004 + b'p$ ')          # prompt-start while alt is active
 ok(_pw6._alt_saved is not None,
    'TUI: on the alt screen the primary-line break is skipped')
 _pw6.shutdown()
+
+
+# Earlier tests in this file persisted osc_title=false into the SHARED temp config
+# (set_allow_title(False), _apply_global with osc:false); the fresh MainWindow in the
+# dev624 block below reads that config, so restore the shipped osc defaults first or its
+# "osc_title / two-line / allow_title default ON" assertions read the leaked-off value.
+win._osc_defaults['osc_title'] = True
+win._osc_defaults['osc_notify'] = False
+win._default_allow_title = True
+win._persist()
+
+# --- two-line trust tab bar + bell 'tab' marker channel (dev624) ---------------
+# Line 1 is app-controlled (trusted); the program-set OSC title is quarantined on
+# line 2. A per-tab bell marker rides the same bar. osc_title + the 'tab' bell
+# channel now default ON.
+from secure_terminal.main import SecureTabBar as _STB          # noqa: E402
+
+_tbw = MainWindow()
+_tbw.new_tab(command='/bin/cat')
+pump(30)
+_bar = _tbw.tabs.tabBar()
+ok(isinstance(_bar, _STB), 'the tab bar is a SecureTabBar')
+ok('tab' in SecureTerminal.BELL_CHANNELS, "'tab' is a registered bell channel")
+
+# defaults: osc_title ON (two-line band reserved) + bell 'tab' marker ON
+ok(_tbw._osc_defaults.get('osc_title') is True, 'osc_title defaults ON')
+ok(_bar.two_line() is True, 'the two-line band is reserved by default (titles on)')
+ok(_tbw._default_allow_title is True, 'the legacy allow_title aggregate is ON by default')
+eq(_tbw._default_bell, {'tab'}, "bell defaults to the 'tab' marker channel")
+ok(_tbw.current().bell_enabled('tab'), "a new tab has the 'tab' bell channel on")
+
+# line 1 = trusted (cwd/user); line 2 = the UNTRUSTED program title, quarantined
+_t0 = _tbw.current()
+_i0 = _tbw.tabs.indexOf(_t0)
+_t0.cwd_basename = lambda: 'proj'
+_tbw._prog_titles[_t0] = 'npm run build'
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['label'], 'proj', 'line 1 is the cwd basename, not the program title')
+eq(_bar.tab_lines(_i0)['ptitle'], 'npm run build', 'line 2 shows the untrusted program title')
+eq(_tbw.tabs.tabText(_i0), 'proj', 'setTabText carries only the trusted label')
+_tbw._user_titles[_t0] = 'mine'
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['label'], 'mine', 'a user rename is the trusted line-1 label')
+eq(_bar.tab_lines(_i0)['ptitle'], 'npm run build', 'the program title stays quarantined on line 2')
+
+# line 2 hidden when the tab does not allow titles
+_t0.apply_osc('osc_title', False)
+_tbw._refresh_tab_label(_t0)
+eq(_bar.tab_lines(_i0)['ptitle'], '', 'line 2 is hidden when the tab disallows titles')
+_t0.apply_osc('osc_title', True)
+_tbw._refresh_tab_label(_t0)
+
+# the tab colour is the left accent bar (the number-icon swatch is gone)
+_tbw.set_tab_color(_i0, QColor('#3b82f6'))
+eq(_bar.tab_lines(_i0)['accent'], '#3b82f6', 'the tab colour is the bar accent')
+_tbw.set_tab_color(_i0, None)
+ok(_bar.tab_lines(_i0)['accent'] is None, 'clearing the colour clears the accent')
+
+# tabSizeHint grows for the second line; set_two_line no-op branch when unchanged
+_h2 = _bar.tabSizeHint(_i0).height()
+_bar.set_two_line(True)                        # already True -> no-op branch
+_bar.set_two_line(False)
+_h1 = _bar.tabSizeHint(_i0).height()
+ok(_h2 > _h1, 'a two-line tab is taller than a one-line tab')
+_bar.set_two_line(True)
+
+# bell marker: a background tab that rings is marked; the focused tab is not; focus clears
+_tbw.new_tab(command='/bin/cat')
+pump(30)
+_t1 = _tbw.current()
+_i1 = _tbw.tabs.indexOf(_t1)
+ok(_tbw.tabs.currentWidget() is _t1, 'the second tab is focused')
+_t0.apply_bell({'tab'}); _t0._last_bell = 0    # bypass the 200ms throttle for the test
+_t0._ring()
+ok(_bar.has_bell(_i0), 'a background tab that rings gets a bell marker')
+_t1.apply_bell({'tab'}); _t1._last_bell = 0
+_t1._ring()
+ok(not _bar.has_bell(_i1), 'a bell on the focused tab is not marked')
+_tbw.tabs.setCurrentIndex(_i0)
+pump(10)
+ok(not _bar.has_bell(_i0), 'focusing a marked tab clears its bell marker')
+
+# flood safety: many rings coalesce to ONE standing marker
+_tbw.tabs.setCurrentIndex(_i1)
+for _ in range(20):
+    _t0._last_bell = 0
+    _t0._ring()
+ok(_bar.has_bell(_i0), 'a BEL flood leaves exactly one standing marker')
+
+# only the 'tab' channel emits bell_tab
+_seen = []
+_t0.bell_tab.connect(lambda: _seen.append(1))
+_t0.apply_bell({'visual'}); _t0._last_bell = 0; _t0._ring()
+_n = len(_seen)
+_t0.apply_bell({'tab'}); _t0._last_bell = 0; _t0._ring()
+ok(len(_seen) == _n + 1, "only the 'tab' bell channel emits bell_tab")
+
+# (the 'tab' channel's user-facing toggle + its global off-switch live in the Global
+# Settings dialog; that surface + the default-on are covered in test_mainwin.)
+
+# the pulse decays over a bounded number of frames, then the marker holds static
+_bar.mark_bell(_i0)
+_bar._pulse.stop()                             # drive the frames deterministically
+for _ in range(_STB._PULSE_TICKS + 2):
+    _bar._tick_pulse()
+ok(_bar.has_bell(_i0), 'the marker holds static after the bounded pulse decays')
+ok(not _bar._pulse.isActive(), 'the pulse timer stops once no tab is pulsing')
+
+# paintEvent + the trusted glyphs render without error, both themes, with a marker
+# and a quarantined title present (forces the full paint path)
+_tbw._prog_titles[_t0] = 'a program title'
+_tbw._refresh_tab_label(_t0)
+_bar.mark_bell(_i0)
+_bar.set_theme(_bar._dark)                      # no-op branch (same value)
+_tbw.set_tab_color(_i0, QColor('#8b5cf6'))      # coloured tab -> paint hits the accent branch
+for _dark in (False, True):
+    _bar.set_theme(_dark)
+    _pm = _bar.grab()
+    ok(not _pm.isNull(),
+       'the tab bar paints in the %s theme' % ('dark' if _dark else 'light'))
+
+# out-of-range indices are safe no-ops / defaults (guard branches)
+_bad = _bar.count() + 5
+_bar.set_accent(_bad, '#fff'); _bar.set_ptitle(_bad, 'x')
+_bar.mark_bell(_bad); _bar.clear_bell(_bad)
+ok(_bar.has_bell(_bad) is False, 'has_bell on a bad index is False')
+eq(_bar.tab_lines(_bad), {'label': '', 'ptitle': '', 'bell': False, 'accent': None},
+   'tab_lines on a bad index returns the empty default')
+
+_bar._pulse.stop()
+_tbw.close(); _tbw.deleteLater(); APP.processEvents()
 
 
 finish('widget2')

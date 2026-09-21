@@ -1113,26 +1113,6 @@ finally:
 M._reap_pty_children(_sig3.SIGCHLD, None)
 ok(True, '_reap_pty_children handler runs without error')
 
-# --- set_font_family / choose_font: the per-tab font picker -------------------
-from PyQt6.QtGui import QFont as _QFont                          # noqa: E402
-from PyQt6.QtWidgets import QFontDialog as _QFontDialog          # noqa: E402
-if win.tabs.count() == 0:
-    win.new_tab()
-win.set_font_family('DejaVu Sans Mono')         # normal path: apply + persist
-eq(win._default_font_family, 'DejaVu Sans Mono',
-   'set_font_family sets the tab family and the new-tab default')
-win.set_font_family('')                          # empty -> falls back to the default
-ok(win._default_font_family, 'set_font_family: an empty family falls back to the default')
-_sfl = set(win._locked)
-try:
-    win._locked = {'font_family'}
-    _before = win._default_font_family
-    win.set_font_family('Ignored')               # admin-locked -> early return
-    eq(win._default_font_family, _before,
-       'set_font_family: an admin-locked family is not changed')
-finally:
-    win._locked = _sfl
-
 # font_size from config: a valid value is honoured; a bad one falls back to the base
 import secure_terminal.settings as _setmod_fs                     # noqa: E402
 from secure_terminal.settings import Config as _Cfg_fs            # noqa: E402
@@ -1213,77 +1193,41 @@ try:
 finally:
     win._ui_scale = _us_save
 
-_o_getfont = _QFontDialog.getFont
-try:
-    _QFontDialog.getFont = staticmethod(
-        lambda *_a, **_k: (_QFont('DejaVu Sans Mono'), True))
-    win.choose_font()                            # accepted -> set_font_family
-    ok(win._default_font_family == 'DejaVu Sans Mono',
-       'choose_font: an accepted pick applies the family')
-    _QFontDialog.getFont = staticmethod(lambda *_a, **_k: (_QFont('X'), False))
-    win.choose_font()                            # cancelled -> no change
-    ok(win._default_font_family == 'DejaVu Sans Mono',
-       'choose_font: a cancelled pick leaves the family unchanged')
-finally:
-    _QFontDialog.getFont = _o_getfont
+# Paste/copy-warn defaults reach every tab through the dialog's _apply_global loop
+# (covered in test_mainwin); the current-tab read-back for the review lamp is set below.
+_pw_setup = win.current()
+for _t in win._real_terms():
+    _t.apply_paste_warn('unicode')
+    _t.apply_copy_warn('unicode')
+win._paste_warn = win._copy_warn = 'unicode'
+ok(_pw_setup.current_paste_warn() == 'unicode'
+   and _pw_setup.current_copy_warn() == 'unicode',
+   'paste/copy warn modes reach every tab (tab-level read-back)')
 
-# choose_font with no current tab returns before the dialog
-_nf3 = MainWindow()
-while _nf3.tabs.count():
-    _nf3.tabs.removeTab(0)
-_nf3.choose_font()                               # no tab -> return
-ok(True, 'choose_font: no current tab -> returns before the dialog')
-_nf3.deleteLater()
-APP.processEvents()
 
-# choose_font: a Qt build without the MonospacedFonts option falls back to no
-# options (the defensive AttributeError branch)
-_o_qfd = M.QFontDialog
-try:
-    class _FakeFDO:
-        def __getattr__(self, _n):
-            raise AttributeError(_n)             # .MonospacedFonts -> AttributeError
+def _set_pw(_m):                                 # replaces the deleted MainWindow.set_paste_warn
+    win._paste_warn = _m
+    for _t in win._real_terms():
+        _t.apply_paste_warn(_m)
+    win._update_security_indicator()
 
-        def __call__(self, _n):
-            return 0
 
-    class _FakeFontDialog:
-        FontDialogOption = _FakeFDO()
-
-        @staticmethod
-        def getFont(*_a, **_k):
-            return (_QFont('DejaVu Sans Mono'), True)
-
-    M.QFontDialog = _FakeFontDialog
-    win.choose_font()                            # MonospacedFonts missing -> fallback opts
-    ok(True, 'choose_font: a missing MonospacedFonts option falls back to no options')
-finally:
-    M.QFontDialog = _o_qfd
-
-# --- set_paste_warn / set_copy_warn: valid modes applied to every tab ----------
-win.set_paste_warn('always')
-eq(win._paste_warn, 'always', 'set_paste_warn applies the chosen mode')
-win.set_copy_warn('always')
-eq(win._copy_warn, 'always', 'set_copy_warn applies the chosen mode')
-win.set_paste_warn('bogus')                      # invalid -> ignored
-eq(win._paste_warn, 'always', 'set_paste_warn: an invalid mode is ignored')
-win.set_copy_warn('unicode')
-win.set_paste_warn('unicode')
-_pw_term = win.current()
-ok(_pw_term.current_paste_warn() == 'unicode'
-   and _pw_term.current_copy_warn() == 'unicode',
-   'set_paste_warn / set_copy_warn push the mode to every tab (tab-level read-back)')
+def _set_cw(_m):                                 # replaces the deleted MainWindow.set_copy_warn
+    win._copy_warn = _m
+    for _t in win._real_terms():
+        _t.apply_copy_warn(_m)
+    win._update_security_indicator()
 
 # --- review risk lamp (#116): reflects the config and goes red on unreviewed risk
 from PyQt6.QtWidgets import QDialog as _QDlgSec                    # noqa: E402
 _pw0, _cw0, _ur0 = win._paste_warn, win._copy_warn, win._unreviewed_risk
 try:
-    win.set_paste_warn('unicode')
-    win.set_copy_warn('unicode')
+    _set_pw('unicode')
+    _set_cw('unicode')
     win._unreviewed_risk = False
     eq(win._review_level()[0], '#1f8a54',
        'review lamp is green when both directions are reviewed')
-    win.set_paste_warn('never')
+    _set_pw('never')
     eq(win._review_level()[0], '#e5a50a',
        "review lamp is yellow when a direction's review is off")
     win._on_unreviewed_risk()
@@ -1299,8 +1243,8 @@ try:
     ok(not win._unreviewed_risk,
        'opening the security details acknowledges and clears the red review lamp')
 finally:
-    win.set_paste_warn(_pw0)
-    win.set_copy_warn(_cw0)
+    _set_pw(_pw0)
+    _set_cw(_cw0)
     win._unreviewed_risk = _ur0
 
 # --- the paste/copy review bar: _show_review / _hide_paste_review --------------

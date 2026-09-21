@@ -46,6 +46,13 @@ if [ -z "${func_body}" ]; then
    printf '%s\n' "FATAL: could not extract variables() from '${subject}'." >&2
    exit 1
 fi
+## A truncated extraction (e.g. an in-body here-document with a bare '}' line
+## ending the awk capture early) would parse-error in the harness and could let
+## a '*unbound variable*' check pass vacuously; reject invalid bash up front.
+if ! bash -n <<<"${func_body}" 2>/dev/null; then
+   printf '%s\n' "FATAL: extracted variables() is not valid bash (truncated extraction?)." >&2
+   exit 1
+fi
 
 test_failures=0
 pass() { printf '%s\n' "PASS: $*"; }

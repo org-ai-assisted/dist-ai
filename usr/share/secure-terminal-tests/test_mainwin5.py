@@ -455,12 +455,6 @@ try:
         _call()
         if _read() != _before2:
             _setter_bad.append(_key)
-    # osc_notice_off is a set, so compare a copy
-    win._locked = {'osc_notice_off'}
-    _before_off = set(win._osc_notice_off)
-    win.set_osc_notice_type('osc_title', False)
-    if set(win._osc_notice_off) != _before_off:
-        _setter_bad.append('osc_notice_off')
 finally:
     win._locked = _lk2_prev
 eq(_setter_bad, [], 'every lock-guarded setter refuses a locked change')

@@ -97,12 +97,12 @@ ok(APP.palette().color(_TT_INACT, _TT_TEXT) == _QCol(_l_fg),
 win._base_app_palette = _saved_base
 win.set_theme('light')                       # restore the clean default for later tests
 
-# --- B3: View menu no longer shows the toggles that duplicate Global settings -----
-# Those per-tab toggles duplicated (and disagreed on scope with) the Global-settings
-# dialog, so they were removed FROM THE VIEW MENU. Their QAction objects stay as hidden
-# state-holders -- the slash-commands, toolbar chips, the admin-lock UI (_apply_locks)
-# and tab-sync (_sync_chrome_to_tab) still use them -- but are no longer shown. Zoom +
-# Full Screen (not settings) and Bell + Clipboard sanitizer (no dialog twin) stay.
+# --- B3/F2: View menu drops the Global-settings duplicates; Bell moved to the dialog --
+# The per-tab toggles duplicated (and disagreed on scope with) the Global-settings dialog,
+# so they were removed FROM THE VIEW MENU (their QAction objects stay as hidden
+# state-holders the lock UI + tab-sync still read). Bell was MOVED into the Global settings
+# dialog (F2). The View menu keeps only Zoom, Full Screen, and the Clipboard sanitizer
+# submenu (a process-control surface shared with the tray, not a settings duplicate).
 _view_menu = next((m for m in win.menuBar().findChildren(M.QMenu)
                    if m.title() == '&View'), None)
 ok(_view_menu is not None, 'the View menu exists')
@@ -120,20 +120,90 @@ def _menu_texts(menu):
 
 
 _vt = _menu_texts(_view_menu)
-for _kept in ('Zoom &In', 'Zoom &Out', '&Reset Zoom', '&Full Screen', '&Bell'):
+for _kept in ('Zoom &In', 'Zoom &Out', '&Reset Zoom', '&Full Screen'):
     ok(_kept in _vt, 'View menu keeps %r' % _kept)
 for _gone in ('&Theme', '&Unicode', '&Colors', '&Line editing', 'Colored &markings',
               'Fo&nt...', 'TUI mo&de', '&Scrollback', '&Paste delay', 'Paste &warning',
               'Copy warnin&g', 'OSC f&eatures', 'Notif&y on OSC use',
-              '&Notify on TUI auto-Box', 'Always allow clipboard READ (all tabs, no prompt)'):
-    ok(_gone not in _vt, 'View menu no longer shows the duplicated %r' % _gone)
+              '&Notify on TUI auto-Box', 'Always allow clipboard READ (all tabs, no prompt)',
+              '&Bell'):
+    ok(_gone not in _vt, 'View menu no longer shows %r (moved to Global settings)' % _gone)
 # the removed settings survive as hidden state-holders (slash-commands / chips / locks / sync)
 ok(win.act_colors is not None and win.act_tui is not None
    and win.act_markings is not None and win.act_line_edits is not None
    and bool(win._theme_actions) and bool(win._mode_actions)
    and bool(win._osc_actions) and bool(win._paste_warn_actions)
-   and bool(win._copy_warn_actions) and bool(win._scrollback_actions),
+   and bool(win._copy_warn_actions) and bool(win._scrollback_actions)
+   and bool(win._bell_actions) and win.act_bell_sound is not None,
    'removed View settings survive as hidden state-holders for slash-commands/chips/locks')
+# Bell moved into the Global settings dialog: its four channel rows are present there.
+_dialogs.clear()
+win.show_global_settings()
+_bell_dlg = _dialogs[-1]
+for _blabel in ('Audible', 'Visual', 'Tray popup', 'Tab marker'):
+    ok(_dlg_field(_bell_dlg, _blabel) is not None,
+       'Global settings dialog has the Bell %r channel' % _blabel)
+
+
+def _full_opts(**_over):                             # the keys _apply_global reads strictly
+    _o = {'theme': win._default_theme, 'zoom': win._default_zoom,
+          'mode': win._default_mode, 'colors': win._default_colors,
+          'line_edits': win._default_line_edits, 'tui': win._default_tui,
+          'scrollback': win._scrollback, 'paste_delay': win._paste_delay,
+          'escape_limit': win._escape_limit, 'persist': win._persist_session,
+          'systray': win._systray, 'auto_tab_colors': win._auto_tab_colors}
+    _o.update(_over)
+    return _o
+
+
+# F2: the dialog Bell channels become the global default + apply to every tab.
+win._apply_global(_full_opts(bell={'audible': True, 'visual': False,
+                                    'tray': True, 'tab': True}))
+ok(win._default_bell == {'audible', 'tray', 'tab'},
+   'F2: the dialog Bell channels become the global default (all four wired)')
+ok(all('audible' in t.bell_channels() and 'tab' in t.bell_channels()
+       and 'visual' not in t.bell_channels() for t in win._real_terms()),
+   'F2: the bell channels apply to every tab')
+# a 'bell' admin lock keeps the default through _apply_global (canary: drop the guard).
+_bell_prev = set(win._default_bell)
+win._locked = {'bell'}
+win._apply_global(_full_opts(bell={'audible': False, 'visual': False,
+                                    'tray': False, 'tab': False}))
+ok(win._default_bell == _bell_prev,
+   'F2: a bell admin-lock keeps the default through _apply_global')
+win._locked = set()
+# the dialog greys the Bell channels under a 'bell' lock, and the sound buttons under
+# a bell_sound lock; the sound buttons choose/clear the file (immediate).
+win._locked = {'bell'}
+_dialogs.clear()
+win.show_global_settings()
+_bl = _dialogs[-1]
+ok(not _dlg_field(_bl, 'Tab marker').isEnabled(),
+   'F2: a bell lock greys the dialog Bell channels')
+win._locked = set()
+win._bell_sound_locked = lambda: True
+_dialogs.clear()
+win.show_global_settings()
+_bslk = _dialogs[-1]
+from PyQt6.QtWidgets import QPushButton as _QPBbell   # noqa: E402
+_snd_btns = [b for b in _bslk.findChildren(_QPBbell)
+             if b.text() in ('Choose...', 'Use system beep')]
+ok(len(_snd_btns) == 2 and all(not b.isEnabled() for b in _snd_btns),
+   'F2: a bell_sound lock greys the dialog sound buttons')
+del win._bell_sound_locked                           # restore the real method
+_o_getopen = M.QFileDialog.getOpenFileName
+try:
+    M.QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    _dialogs.clear()
+    win.show_global_settings()
+    _bs2 = _dialogs[-1]
+    _btns2 = {b.text(): b for b in _bs2.findChildren(_QPBbell)}
+    _btns2['Choose...'].click()          # cancelled picker -> no change, refreshes label
+    _btns2['Use system beep'].click()    # clears the sound file
+    ok(win._default_bell_sound == '',
+       'F2: the sound "system beep" button clears the bell sound file')
+finally:
+    M.QFileDialog.getOpenFileName = _o_getopen
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 try:
@@ -255,6 +325,9 @@ try:
     _nh_reset = _dlg_field(_gs, 'Hyperlinks  (OSC 8)')
     _nt_reset.setChecked(True)       # un-mute title (non-default)
     _nh_reset.setChecked(False)      # mute hyperlink (non-default)
+    # perturb the Bell channels so Reset has something to revert (default is 'tab' only)
+    _dlg_field(_gs, 'Audible').setChecked(True)      # non-default (audible off by default)
+    _dlg_field(_gs, 'Tab marker').setChecked(False)  # non-default (tab on by default)
     _rb[0].click()
     ok(not _nt_reset.isChecked() and _nh_reset.isChecked(),
        'reset: per-type OSC-notice toggles revert to default (title muted, hyperlink notified)')
@@ -274,6 +347,11 @@ try:
     ok(_dlg_field(_gs, 'System tray').isChecked() == _def_sys, 'reset: systray -> default')
     ok(_dlg_field(_gs, 'Restore session').isChecked() == _def_persist,
        'reset: restore-session -> default')
+    ok(_dlg_field(_gs, 'Tab marker').isChecked()
+       and not _dlg_field(_gs, 'Audible').isChecked()
+       and not _dlg_field(_gs, 'Visual').isChecked()
+       and not _dlg_field(_gs, 'Tray popup').isChecked(),
+       'reset: bell channels -> default (tab marker only)')
     _dw.close()
 
     # --- Global settings opens sized to its content (no default scrollbar) -----
@@ -427,12 +505,18 @@ finally:
 _lew = MainWindow()
 _lew.new_tab()
 _lew.new_tab()                                  # two real tabs
-_lew.set_line_edits(False)
+# #10: line editing is a global setting reaching EVERY tab (the dialog's _apply_global
+# loops all tabs; here we exercise the per-tab apply that loop calls).
+for _t in _lew._real_terms():
+    _t.apply_line_edits(False)
+_lew._default_line_edits = False
 ok(all(not t.line_edits_enabled() for t in _lew._real_terms()),
-   '#10: set_line_edits(False) applies to every tab, not just the current one')
-_lew.set_line_edits(True)
+   '#10: line editing off applies to every tab, not just the current one')
+for _t in _lew._real_terms():
+    _t.apply_line_edits(True)
+_lew._default_line_edits = True
 ok(all(t.line_edits_enabled() for t in _lew._real_terms()),
-   '#10: set_line_edits(True) re-applies to every tab')
+   '#10: line editing on re-applies to every tab')
 _lew.deleteLater()
 APP.processEvents()                             # reap the tabs' shells (free ptys/fds)
 
