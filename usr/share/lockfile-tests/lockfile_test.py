@@ -174,6 +174,42 @@ def wrap_mode_tests(lockfile_sh, check):
     holder.wait(timeout=15)
 
 
+def security_tests(lockfile_sh, check):
+    """The lock directory must live under the caller's per-user runtime dir
+    (XDG_RUNTIME_DIR), never /tmp, and a symlinked lock dir must be refused --
+    the /tmp-symlink attack class the per-user /run design closes."""
+    ## 1) honors XDG_RUNTIME_DIR: the lock dir is <runtime>/flocker, not /tmp.
+    tmp = tempfile.mkdtemp(prefix='lockfile-sec-')
+    src = make_source_script(tmp, lockfile_sh)
+    runtime = os.path.join(tmp, 'xdg')
+    os.mkdir(runtime, 0o700)
+    env = dict(os.environ, XDG_RUNTIME_DIR=runtime)
+    res = subprocess.run([src, '', '0'], capture_output=True, text=True,
+                         timeout=30, env=env)
+    lockdir = os.path.join(runtime, 'flocker')
+    check('security: lock dir under XDG_RUNTIME_DIR, not /tmp',
+          'LOCKED' in res.stdout and os.path.isdir(lockdir),
+          '%r isdir=%s' % (res.stdout.strip(), os.path.isdir(lockdir)))
+
+    ## 2) a symlinked lock dir is refused (mkdir -p would otherwise follow it).
+    tmp2 = tempfile.mkdtemp(prefix='lockfile-sec2-')
+    src2 = make_source_script(tmp2, lockfile_sh)
+    runtime2 = os.path.join(tmp2, 'xdg')
+    os.mkdir(runtime2, 0o700)
+    evil = os.path.join(tmp2, 'evil')
+    os.mkdir(evil)
+    os.symlink(evil, os.path.join(runtime2, 'flocker'))
+    env2 = dict(os.environ, XDG_RUNTIME_DIR=runtime2)
+    res2 = subprocess.run([src2, '', '0'], capture_output=True, text=True,
+                          timeout=30, env=env2)
+    combined = (res2.stdout + res2.stderr).lower()
+    check('security: symlinked lock dir refused',
+          'LOCKED' not in res2.stdout and res2.returncode != 0
+          and 'symlink' in combined,
+          '%r rc=%d' % ((res2.stdout + res2.stderr).strip()[:120],
+                        res2.returncode))
+
+
 def fuzz(lockfile_sh, iterations, seed, check):
     """Hammer random keys through wrap mode: a same-key contender must skip
     while a holder runs; a distinct-key contender must run."""
@@ -232,6 +268,7 @@ def main():
     if not args.fuzz_only:
         source_mode_tests(lockfile_sh, check)
         wrap_mode_tests(lockfile_sh, check)
+        security_tests(lockfile_sh, check)
     fuzz(lockfile_sh, args.iterations, args.seed, check)
 
     print('%d passed, %d failed' % (passed, failed))
