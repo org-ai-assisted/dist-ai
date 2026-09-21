@@ -32,40 +32,22 @@ QMessageBox.information = staticmethod(lambda *_a, **_k: None)
 QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
 _sl = set(win._locked)
 try:
-    # Each admin-locked setter must REFUSE: set the OPPOSITE of the current value while
-    # locked, read the resulting state back, and assert it did NOT change. (canary: drop
-    # the `_locked` check from any of these setters and the value flips -> its read-back
-    # below fails; without the read-back the calls only proved they do not raise.)
-    win._locked = {'osc_notice'}
-    win.set_osc_notice(False)                # locked (default on) -> refused, stays on
-    _lk_osc_notice = win._osc_notice is True
-    win._locked = {'tui_autobox_notice'}
-    win.set_tui_autobox_notice(False)        # locked (default on) -> refused, stays on
-    _lk_autobox = win._tui_autobox_notice is True
+    # Each admin-locked setter that STILL EXISTS must REFUSE: set the OPPOSITE of the
+    # current value while locked, read it back, assert it did NOT change. (The settings
+    # moved into the Global dialog -- osc_notice, tui_autobox_notice, bell, osc features --
+    # are lock-gated in the dialog widgets + _apply_global; covered in test_mainwin.)
     win._locked = {'tui'}
     win.set_tui(True)                        # locked (default CLI) -> refused, stays CLI
     _lk_tui = win.current().current_tui() is False
-    win._locked = {'allow_title'}
-    win.set_allow_title(True)                # locked (default off) -> refused, stays off
-    _lk_allow_title = win.current().allow_title_enabled() is False
-    win._locked = {'bell'}
-    win.set_bell_channel('audible', True)    # locked -> refused
-    _lk_bell = 'audible' in win.current().bell_channels()
-    win._locked = {'osc_title'}
-    win.set_osc('osc_title', True)           # locked -> refused
-    _lk_osc = win.current().osc_enabled('osc_title')
-    win._locked = {'allow_title'}
-    win.set_osc('osc_title', True)           # the allow_title -> osc_* lock path -> refused
-    _lk_osc_alias = win.current().osc_enabled('osc_title')
+    # allow_title defaults ON now, so establish an OFF baseline before locking or the
+    # "locked -> stays off" read-back would pass vacuously (it was already on).
     win._locked = set()
-    win.set_bell_channel('tray', True)       # unlocked -> added
-    _add_tray = 'tray' in win.current().bell_channels()
-    win.set_bell_channel('tray', False)      # unlocked -> removed
-    _rm_tray = 'tray' not in win.current().bell_channels()
-    ok(not _lk_bell and not _lk_osc and not _lk_osc_alias and _add_tray and _rm_tray
-       and _lk_osc_notice and _lk_autobox and _lk_tui and _lk_allow_title,
-       'admin locks refuse osc_notice / tui_autobox_notice / tui / allow_title / bell / '
-       'osc_title / allow_title->osc_title; unlocked bell channels add+remove (read-back)')
+    win.set_allow_title(False)               # OFF baseline (unlocked)
+    win._locked = {'allow_title'}
+    win.set_allow_title(True)                # locked -> refused, stays off
+    _lk_allow_title = win.current().allow_title_enabled() is False
+    ok(_lk_tui and _lk_allow_title,
+       'admin locks refuse the surviving setters (tui / allow_title, read-back)')
     for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
                'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
                'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
@@ -577,7 +559,8 @@ _xw = MainWindow()
 _xw.resize(800, 500)
 _xw.show()
 pump(30)
-_xw.set_osc('osc_clipboard', True)            # arm high-risk on tab 0 (+ new-tab default)
+_xw.current().apply_osc('osc_clipboard', True)   # arm high-risk on tab 0
+_xw._osc_defaults['osc_clipboard'] = True        # + the new-tab default
 _xw.new_tab(tui=False)                         # tab 1 (CLI), created while tab 0 is also CLI
 pump(20)
 _xfront = _xw.current()

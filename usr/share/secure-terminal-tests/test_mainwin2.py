@@ -24,7 +24,8 @@ import secure_terminal.main as _MM              # noqa: E402
 # --- setting appliers: the apply path and the admin-locked early return --------
 win.set_auto_tab_colors(True)
 win.set_auto_tab_colors(False)
-win.set_markings(True)
+win.current().apply_markings(True)          # colored_markings is Global-settings now
+win._default_markings = True
 win.set_clipboard_read_always(True)
 win.set_scrollback(1000)
 win.set_paste_delay(3)
@@ -32,36 +33,33 @@ win.set_bell_sound('')                      # empty/disallowed -> cleared, appli
 ok(win._scrollback == 1000 and win._paste_delay == 3,
    'setting appliers apply the change to the window (scrollback + paste delay)')
 
-# line editing: the live per-tab setter pushes into the current tab, flips the menu
-# action and updates the default used for new tabs.
-win.set_line_edits(False)
+# line editing is a Global-settings (all-tabs) setting: the underlying per-tab apply is
+# what the dialog's _apply_global loops over.
+for _t in win._real_terms():
+    _t.apply_line_edits(False)
+win._default_line_edits = False
 eq(win.current().line_edits_enabled(), False,
-   'set_line_edits(False) reaches the current tab')
-ok(not win.act_line_edits.isChecked(), 'set_line_edits syncs the menu action')
-eq(win._default_line_edits, False, 'set_line_edits updates the new-tab default')
-win.set_line_edits(True)
-eq(win.current().line_edits_enabled(), True, 'set_line_edits(True) restores it')
+   'line editing off reaches the current tab')
+eq(win._default_line_edits, False, 'line editing updates the new-tab default')
+for _t in win._real_terms():
+    _t.apply_line_edits(True)
+win._default_line_edits = True
+eq(win.current().line_edits_enabled(), True, 'line editing on restores it')
 
 _saved_locked = set(win._locked)
 _saved_bsl = win._bell_sound_locked
 try:
+    # the surviving appliers early-return under their admin lock (the ones moved into
+    # the dialog are lock-gated there + in _apply_global, covered in test_mainwin).
+    win._auto_tab_colors = False
     win._locked = {'auto_tab_colors'}
-    win.set_auto_tab_colors(True)           # locked -> early return
-    win._locked = {'colored_markings'}
-    win.set_markings(True)
+    win.set_auto_tab_colors(True)           # locked -> early return, stays off
     win._locked = {'osc_clipboard_read_always'}
     win.set_clipboard_read_always(True)
     win._bell_sound_locked = lambda: True
     win.set_bell_sound('/etc/hostname')     # locked -> early return
-    win._locked = {'copy_warn'}
-    win.set_copy_warn('always')             # locked -> early return
-    _lk_copy = win.current().current_copy_warn()
-    win._locked = {'line_edits'}
-    win.set_line_edits(False)               # locked -> early return
-    eq(win._default_line_edits, True,
-       'a locked line_edits cannot be turned off by the user')
-    ok(win.current().current_copy_warn() == _lk_copy,
-       'an admin-locked copy_warn reads back UNCHANGED (== its original, not any other value)')
+    ok(win._auto_tab_colors is False,
+       'an admin-locked applier early-returns without applying the change')
     # a locked paste_warn / copy_warn is greyed out in the menu, not silently
     # clickable-but-ignored.
     win._locked = {'copy_warn', 'paste_warn'}
@@ -77,14 +75,13 @@ try:
     ok(not win.act_zin.isEnabled() and not win.act_zout.isEnabled()
        and not win.act_zreset.isEnabled(),
        'a locked zoom greys out its View-menu Zoom In/Out/Reset actions')
-    # a locked font_family greys the View > Font action: its setter (set_font_family)
-    # refuses a locked change, so an enabled trigger would open the picker and then
-    # silently discard the pick -- a UI that lies. Same class as the greyed zoom
-    # triggers. Fails on the pre-fix _apply_locks (act_font was never gated).
+    # a locked font_family greys the act_font state-holder. Font lives in the Global
+    # settings dialog now; _apply_locks keeps every lockable action disabled so the lock
+    # state stays consistent (fails on the pre-fix _apply_locks: act_font was never gated).
     win._locked = {'font_family'}
     win._apply_locks()
     ok(not win.act_font.isEnabled(),
-       'a locked font_family greys out the View > Font action')
+       'a locked font_family greys out the act_font state-holder')
     # a locked osc_notice_off greys the per-TYPE notice toggles: set_osc_notice_type
     # refuses a locked change, so an enabled tick would never apply -- a UI that lies.
     # Fails on the pre-fix _apply_locks (the per-type actions were never gated).
@@ -232,9 +229,10 @@ win._on_tab_move(-1)
 ok(_mv_i1 != _mv_i0 and win.tabs.indexOf(_mv_term) == _mv_i0,
    'the current tab moves left/right and returns (wrap-around)')
 
-# pwd-as-tab-title (#90): with no explicit name and no program title, the tab
-# label is the working-directory basename (kept live by the fg poll), not a static
-# "shell". A set name or program title still wins; an unreadable cwd -> "shell".
+# pwd-as-tab-title (#90): with no explicit name, the tab label (line 1) is the
+# working-directory basename (kept live by the fg poll), not a static "shell". A user
+# rename wins line 1; a program title goes to the line-2 quarantine band, never line 1;
+# an unreadable cwd -> "shell".
 _pw = win.current()
 _pw_cwd = _pw.cwd_basename
 _pw.cwd_basename = lambda: 'myproj'
@@ -301,7 +299,6 @@ w3.paste_clipboard()
 w3.zoom_in()
 w3.zoom_out()
 w3._on_zoom_step(-1)
-w3.set_markings(True)                        # current() None -> apply skipped
 w3.set_tui(True)
 w3.save_transcript()                         # current() None -> returns before any dialog
 ok(True, 'current-tab actions are harmless no-ops with no tab open')
