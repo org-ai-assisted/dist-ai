@@ -49,6 +49,13 @@ if [ -z "${func_body}" ]; then
    printf '%s\n' "FATAL: could not extract parse_cmd_options() from '${subject}'." >&2
    exit 1
 fi
+## A truncated extraction (e.g. an in-body here-document with a bare '}' line
+## ending the awk capture early) would parse-error in the harness and could let
+## a '*unbound variable*' check pass vacuously; reject invalid bash up front.
+if ! bash -n <<<"${func_body}" 2>/dev/null; then
+   printf '%s\n' "FATAL: extracted parse_cmd_options() is not valid bash (truncated extraction?)." >&2
+   exit 1
+fi
 
 work_dir="$(mktemp --directory -- "${TMP}/anondate-options-test.XXXXXX")"
 
@@ -142,6 +149,11 @@ case "${run_output}" in
       fail "no-args: did not reach dispatch -- output: ${run_output}"
       ;;
 esac
+if [ "${run_rc}" -eq 1 ]; then
+   pass "no-args: exited 1 as the 'No option chosen' branch requires"
+else
+   fail "no-args: expected rc 1, got ${run_rc} -- output: ${run_output}"
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
