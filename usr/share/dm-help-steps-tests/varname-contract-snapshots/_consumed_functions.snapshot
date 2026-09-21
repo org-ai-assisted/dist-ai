@@ -88,6 +88,18 @@ set_dist_build_reprepro_folder_options ()
 }
 unmount_if_mounted ()
 {
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
-    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+    ${SUDO_TO_ROOT} test -e "$1" || return 0;
+    local unmount_if_mounted_rc=0;
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
+    case "${unmount_if_mounted_rc}" in
+        0)
+            ${SUDO_TO_ROOT} umount --verbose -- "$1"
+        ;;
+        32)
+            return 0
+        ;;
+        *)
+            return "${unmount_if_mounted_rc}"
+        ;;
+    esac
 }

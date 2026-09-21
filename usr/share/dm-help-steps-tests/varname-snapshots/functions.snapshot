@@ -48,7 +48,9 @@ derive_unified_image_paths ()
         esac;
         default_if_empty binary_image_raw_file_for_unified "${dist_binary_build_folder}/${vm_name_item_to_be_exported}-${dist_build_version}.${target_architecture_pretty_name}.raw";
         default_if_empty binary_image_qcow2_file_for_unified "${dist_binary_build_folder}/${vm_name_item_to_be_exported}-${dist_build_version}.${target_architecture_pretty_name}.qcow2";
-    done
+    done;
+    export binary_image_raw_file_for_unified="${binary_image_raw_file_for_unified:-}";
+    export binary_image_qcow2_file_for_unified="${binary_image_qcow2_file_for_unified:-}"
 }
 dist_build_arch_to_qemu_machine ()
 {
@@ -267,28 +269,28 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --vmram)
-                export VMRAM="${2:-}";
-                shift 2;
-                if [ "${VMRAM:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vmram.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VMRAM="${2}";
+                shift 2
             ;;
             --vram)
-                export VRAM="${2:-}";
-                shift 2;
-                if [ "${VRAM:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vram.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VRAM="${2}";
+                shift 2
             ;;
             --vmsize)
-                export VMSIZE="${2:-}";
-                shift 2;
-                if [ "${VMSIZE:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much GB to use for --vmsize.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VMSIZE="${2}";
+                shift 2
             ;;
             --freshness)
                 if [ "${2:-}" = "frozen" ]; then
@@ -393,8 +395,13 @@ dist_build_one_parse_cmd ()
                         export BUILD_INITRAMFS_PKGS="none";
                         true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
                     else
-                        export BUILD_INITRAMFS_PKGS="${BUILD_INITRAMFS_PKGS:-} ${2:-}";
-                        true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
+                        if [ "${BUILD_INITRAMFS_PKGS:-}" = "none" ]; then
+                            export BUILD_INITRAMFS_PKGS="${2}";
+                            true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
+                        else
+                            export BUILD_INITRAMFS_PKGS="${BUILD_INITRAMFS_PKGS:-} ${2}";
+                            true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
+                        fi;
                     fi;
                 fi;
                 shift 2
@@ -408,8 +415,13 @@ dist_build_one_parse_cmd ()
                         export BUILD_KERNEL_PKGS="none";
                         true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
                     else
-                        export BUILD_KERNEL_PKGS="${BUILD_KERNEL_PKGS:-} ${2:-}";
-                        true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
+                        if [ "${BUILD_KERNEL_PKGS:-}" = "none" ]; then
+                            export BUILD_KERNEL_PKGS="${2}";
+                            true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
+                        else
+                            export BUILD_KERNEL_PKGS="${BUILD_KERNEL_PKGS:-} ${2}";
+                            true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
+                        fi;
                     fi;
                 fi;
                 shift 2
@@ -423,8 +435,13 @@ dist_build_one_parse_cmd ()
                         export BUILD_HEADER_PKGS="none";
                         true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
                     else
-                        export BUILD_HEADER_PKGS="${BUILD_HEADER_PKGS:-} ${2:-}";
-                        true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
+                        if [ "${BUILD_HEADER_PKGS:-}" = "none" ]; then
+                            export BUILD_HEADER_PKGS="${2}";
+                            true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
+                        else
+                            export BUILD_HEADER_PKGS="${BUILD_HEADER_PKGS:-} ${2}";
+                            true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
+                        fi;
                     fi;
                 fi;
                 shift 2
@@ -488,7 +505,11 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --only-packages)
-                export dist_build_only_packages="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --only-packages requires a package list.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_only_packages="${2}";
                 true "${cyan}INFO: --only-packages: rebuilding only '${dist_build_only_packages}', reusing the rest.${reset}";
                 shift 2
             ;;
@@ -504,8 +525,8 @@ dist_build_one_parse_cmd ()
             ;;
             --package-jobs)
                 export dist_build_package_jobs="${2:-}";
-                if ! [[ "${dist_build_package_jobs}" =~ ^(0|[1-9][0-9]*)$ ]]; then
-                    printf '%s\n' "${red}${bold}ERROR: --package-jobs must be passed a whole integer.${reset}";
+                if ! is_positive_integer "${dist_build_package_jobs}"; then
+                    printf '%s\n' "${red}${bold}ERROR: --package-jobs must be passed a positive integer.${reset}";
                     exit 1;
                 fi;
                 true "${cyan}INFO: --package-jobs: up to '${dist_build_package_jobs}' concurrent package build(s).${reset}";
@@ -565,27 +586,51 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --file-system)
-                export dist_build_file_system="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --file-system requires a filesystem type.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_file_system="${2}";
                 shift 2
             ;;
             --hostname)
-                export dist_build_hostname="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --hostname requires a hostname.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_hostname="${2}";
                 shift 2
             ;;
             --retry-max)
-                export dist_build_auto_retry="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --retry-max requires a value.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_auto_retry="${2}";
                 shift 2
             ;;
             --retry-wait)
-                export dist_build_wait_auto_retry="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --retry-wait requires a value.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_wait_auto_retry="${2}";
                 shift 2
             ;;
             --retry-before)
-                export dist_build_dispatch_before_retry="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --retry-before requires a command.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_dispatch_before_retry="${2}";
                 shift 2
             ;;
             --retry-after)
-                export dist_build_dispatch_after_retry="${2:-}";
+                if [ -z "${2:-}" ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --retry-after requires a command.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_dispatch_after_retry="${2}";
                 shift 2
             ;;
             --allow-untagged)
@@ -1380,11 +1425,11 @@ path_variable_adjustments ()
 pkg_list_create ()
 {
     local derivative_name_item;
-    for derivative_name_item in $derivative_name_list;
+    for derivative_name_item in ${derivative_name_list};
     do
         if [ "${dist_build_only_packages:-}" = "" ] || [ "${pkg_automatic_list:-}" = "true" ]; then
             pkg_automatic_list=true;
-            dist_build_only_packages+=" $(ls "$source_code_folder_dist/packages/$derivative_name_item/")";
+            dist_build_only_packages+=" $(ls "${source_code_folder_dist}/packages/${derivative_name_item}/")";
         fi;
     done
 }
@@ -1446,11 +1491,26 @@ source_date_epoch_valid ()
 }
 unmount_if_mounted ()
 {
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
-    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+    ${SUDO_TO_ROOT} test -e "$1" || return 0;
+    local unmount_if_mounted_rc=0;
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
+    case "${unmount_if_mounted_rc}" in
+        0)
+            ${SUDO_TO_ROOT} umount --verbose -- "$1"
+        ;;
+        32)
+            return 0
+        ;;
+        *)
+            return "${unmount_if_mounted_rc}"
+        ;;
+    esac
 }
 value_charset_ok ()
 {
+    if [ -z "$2" ]; then
+        return 1;
+    fi;
     case "$1" in
         '' | *[!$2]*)
             return 1
