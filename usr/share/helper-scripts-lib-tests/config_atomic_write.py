@@ -89,7 +89,7 @@ check(
 ro_dir = Path(tempfile.mkdtemp())
 ro_target = ro_dir / "c.conf"
 ro_target.write_text("orig\n")
-os.chmod(ro_dir, 0o555)
+os.chmod(ro_dir, 0o555)  # nosec B103 -- throwaway temp dir, read-only fallback probe
 try:
     cb.write_config_file({"": {"k2": "v2"}}, ro_target)
     check(
@@ -97,7 +97,7 @@ try:
         "config_builder writes in place when the target dir is read-only",
     )
 finally:
-    os.chmod(ro_dir, 0o755)
+    os.chmod(ro_dir, 0o755)  # nosec B103 -- throwaway temp dir, restore after probe
 
 
 ## --- append_shared: temp created in the TARGET directory ---------------------
