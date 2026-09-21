@@ -1,0 +1,81 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Provision and run the privleap live-daemon SESSION fuzzer end to end inside
+## an EPHEMERAL, single-purpose CI container (running as root). Owns everything
+## the session-fuzz workflow needs beyond the two git checkouts, so the workflow
+## stays a thin caller and the "how to run session fuzz in CI" recipe lives with
+## the suite instead of being duplicated in per-repo workflow YAML:
+##   - container prerequisites (sudo, adduser, python3)
+##   - the privleap runtime (group / PAM policy / shim) via
+##     privleap-tests-session-fuzz-setup (which owns the pam / sdnotify deps)
+##   - an unprivileged caller: session_fuzz REFUSES to run as root (the daemon
+##     must attribute requests to a non-root uid, which is the whole
+##     authorization surface), so a normal user with passwordless sudo is made
+##   - the fuzz run itself, as that caller, in disposable mode
+##
+## SAFE ONLY in a throwaway CI container: it apt-installs packages, creates a
+## passwordless-sudo user, and (via the setup script) overwrites the system-wide
+## /etc/pam.d/privleapd and shim with unverified checkout content. Do NOT run on
+## a machine you care about. This is a CI runtime PROVISIONER + runner, not a
+## dist-ai suite (it needs root + a checkout arg no orchestrator lane passes),
+## so it is listed in dist-ai-registry-tests allowed_unregistered.
+##
+## Usage: privleap-tests-session-fuzz-ci <privleap-checkout-root> [--iterations N]
+## Needs root; runs inside the session-fuzz container, not a VM.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+repo="${1:?privleap checkout root required}"
+shift
+
+iterations='4000'
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --iterations)
+      iterations="${2:?--iterations needs a value}"
+      shift 2
+      ;;
+    *)
+      printf '%s\n' "FATAL: unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+## Container prerequisites. python3-pam / python3-sdnotify (the privleap runtime
+## deps) are installed by the setup script below, which owns them; sudo must be
+## present before that script's own sudo calls run.
+apt-get update
+apt-get install --yes --no-install-recommends sudo adduser python3
+
+## privleap runtime: group, PAM policy, shim (installed from the checkout).
+"${script_dir}/privleap-tests-session-fuzz-setup" "${repo}"
+
+## Unprivileged caller with passwordless sudo (the daemon still needs root,
+## reached via sudo). The checkout stays root-owned but world-readable so the
+## caller can read + exec the daemon, shim, and this dist-ai checkout under it.
+useradd --create-home --shell /bin/bash fuzzcaller
+printf 'fuzzcaller ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/fuzzcaller
+chmod 0440 /etc/sudoers.d/fuzzcaller
+chmod -R a+rX -- "${repo}"
+
+## Run as the caller. PRIVLEAP_TEST_DISPOSABLE_ENV skips the mount namespace
+## (the container is throwaway), which is what keeps it non-privileged.
+sudo -u fuzzcaller \
+  env PRIVLEAP_REPO="${repo}" \
+      PRIVLEAP_TEST_DISPOSABLE_ENV=1 \
+      ITERATIONS="${iterations}" \
+      SESSION_FUZZ_RUNNER="${script_dir}/privleap-tests-session-fuzz" \
+  bash -c 'cd -- "${PRIVLEAP_REPO}" \
+    && "${SESSION_FUZZ_RUNNER}" --iterations "${ITERATIONS}"'
