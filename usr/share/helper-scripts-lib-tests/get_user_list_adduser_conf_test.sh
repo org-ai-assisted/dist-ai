@@ -137,6 +137,40 @@ else
    notok "all keys commented: expected exit 0 with defaults, rc=${run_rc}, out: ${run_out//$'\n'/,}"
 fi
 
+## adduser SHELL-SOURCES adduser.conf, so a trailing '#' comment after the value
+## is a comment, not part of the number. FIRST_UID=2000 must be honored: bob
+## (1200) is below the range and excluded, alice (2500) listed. The old code kept
+## the '# ...' in the value, failed is_whole_number, and aborted.
+run_case "inline comment stripped" $'FIRST_UID=2000 # start of the human UID range\nLAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && ! grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "inline comment stripped: FIRST_UID=2000 honored (bob excluded, alice listed)"
+else
+   notok "inline comment stripped: rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
+## adduser.conf quotes some fields, and shell-sourcing strips the quotes. A
+## double-quoted value must be unquoted before the numeric check, not rejected.
+run_case "double-quoted value" $'FIRST_UID="2000"\nLAST_UID="59999"\n'
+if [ "${run_rc}" -eq 0 ] \
+   && ! grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "double-quoted value: FIRST_UID=2000 honored (bob excluded, alice listed)"
+else
+   notok "double-quoted value: rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
+## A single-quoted value is likewise unquoted.
+run_case "single-quoted value" $'FIRST_UID=\'2000\'\nLAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && ! grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "single-quoted value: FIRST_UID=2000 honored (bob excluded, alice listed)"
+else
+   notok "single-quoted value: rc=${run_rc}, out: ${run_out//$'\n'/,}"
+fi
+
 ## --- passwd/adduser.conf parsing robustness ---
 
 default_conf=$'#FIRST_UID=1000\n#LAST_UID=59999\n'
