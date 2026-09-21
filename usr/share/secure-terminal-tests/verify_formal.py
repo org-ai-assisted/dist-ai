@@ -1924,18 +1924,25 @@ _T8_DISCARD_ALPHABETS = {
 }
 
 
-def _t8_stream_raw(chunks, cap):
-    """feed_chunk_carry across `chunks`, returning the concatenated emitted text plus
-    the EOF-flush of any held carry (cli.py renders a leftover carry as the program's
-    final output; an over-cap DROP is intentionally discarded, so it is not flushed)."""
+def _t8_stream_rendered(chunks, cap):
+    """The RENDERED streaming output the way cli.py actually produces it: feed_chunk_carry
+    across `chunks` (holding an incomplete sequence in the carry), then render_output()
+    EACH chunk's emitted text SEPARATELY as it arrives, joined -- plus the EOF-flush of any
+    held carry (cli.py renders a leftover carry as the program's final output; an over-cap
+    DROP is intentionally discarded, so it is not flushed). cli.py's read loop is
+    `text = feed_chunk_carry(...); safe = render_output(text, mode)` per read, so rendering
+    per-chunk (not concatenating the raw text and rendering ONCE) is what matches it -- a
+    control/SGR byte that a concat-then-render would heal but a per-chunk render leaks is
+    otherwise missed. Carry is still held across chunks, so this is carry-correct AND
+    render-per-chunk (distinct from the no-carry `broken` pipeline in t8_canaries)."""
     carry, drop = '', ''
-    raw = []
+    out = []
     for chunk in chunks:
         text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
-        raw.append(text)
+        out.append(S.render_output(text, 'detail'))
     if carry:
-        raw.append(carry)
-    return ''.join(raw)
+        out.append(S.render_output(carry, 'detail'))
+    return ''.join(out)
 
 
 def _t8_leak_chunking(s, cap):
@@ -1946,7 +1953,7 @@ def _t8_leak_chunking(s, cap):
     from collections import Counter
     ref = Counter(c for c in S.render_output(s, 'detail') if 0x20 <= ord(c) <= 0x7e)
     for chunks in _all_chunkings(s):
-        got = Counter(c for c in S.render_output(_t8_stream_raw(chunks, cap), 'detail')
+        got = Counter(c for c in _t8_stream_rendered(chunks, cap)
                       if 0x20 <= ord(c) <= 0x7e)
         if any(got[c] > ref.get(c, 0) for c in got):
             return chunks
@@ -2011,6 +2018,18 @@ def t8_canaries():
     _got = Counter(c for c in broken(['\x1b]0;ti', 'tle\x07']) if 0x20 <= ord(c) <= 0x7e)
     _expect_caught('T8/discard-no-leak-oracle',
                    any(_got[c] > _ref.get(c, 0) for c in _got))
+    # Per-chunk-render canary: the RENDER-PER-CHUNK of _t8_stream_rendered is load-bearing,
+    # not concat-then-render. A stand-in render that surfaces a printable for a lone boundary
+    # byte but heals it once concatenated (render('a')='X' but render('ab')='') leaks ONLY
+    # under per-chunk rendering -- a concat-then-render oracle (the pre-fix bug) would miss it.
+    # _t8_stream_rendered must surface the byte.
+    _orig_ro = S.render_output
+    S.render_output = lambda text, mode: 'X' if text == 'a' else ''
+    try:
+        _boundary = _t8_stream_rendered(['a', 'b'], cap=4096)   # per-chunk: 'X'+'' ; concat: ''
+    finally:
+        S.render_output = _orig_ro
+    _expect_caught('T8/per-chunk-render-load-bearing', 'X' in _boundary)
 
 
 # ===========================================================================

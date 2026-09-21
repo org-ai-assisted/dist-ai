@@ -192,18 +192,26 @@ ok(len(_snd_btns) == 2 and all(not b.isEnabled() for b in _snd_btns),
    'F2: a bell_sound lock greys the dialog sound buttons')
 del win._bell_sound_locked                           # restore the real method
 _o_getopen = M.QFileDialog.getOpenFileName
+_o_sfa = M.sound_file_allowed
 try:
-    M.QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    # A Choose that actually SETS a value first (sound_file_allowed is the realpath gate;
+    # accept the fixture) -- so a Choose-path regression cannot pass on the clear alone.
+    M.sound_file_allowed = staticmethod(lambda p: p)
+    M.QFileDialog.getOpenFileName = staticmethod(
+        lambda *_a, **_k: ('/usr/share/sounds/beep.wav', ''))
     _dialogs.clear()
     win.show_global_settings()
     _bs2 = _dialogs[-1]
     _btns2 = {b.text(): b for b in _bs2.findChildren(_QPBbell)}
-    _btns2['Choose...'].click()          # cancelled picker -> no change, refreshes label
+    _btns2['Choose...'].click()          # picks the fixture -> applied
+    ok(win._default_bell_sound == '/usr/share/sounds/beep.wav',
+       'F2: the sound "Choose..." button applies the picked sound file')
     _btns2['Use system beep'].click()    # clears the sound file
     ok(win._default_bell_sound == '',
        'F2: the sound "system beep" button clears the bell sound file')
 finally:
     M.QFileDialog.getOpenFileName = _o_getopen
+    M.sound_file_allowed = _o_sfa
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 try:
@@ -328,6 +336,9 @@ try:
     # perturb the Bell channels so Reset has something to revert (default is 'tab' only)
     _dlg_field(_gs, 'Audible').setChecked(True)      # non-default (audible off by default)
     _dlg_field(_gs, 'Tab marker').setChecked(False)  # non-default (tab on by default)
+    # perturb the osc_title FEATURE checkbox: it SHIPS on (rd#2 -- the reset loop reset it
+    # off, the old all-off default, so Reset+Apply silently turned title-quarantine off)
+    _dlg_field(_gs, 'OSC Window / tab title').setChecked(False)   # non-default (ships on)
     _rb[0].click()
     ok(not _nt_reset.isChecked() and _nh_reset.isChecked(),
        'reset: per-type OSC-notice toggles revert to default (title muted, hyperlink notified)')
@@ -352,6 +363,8 @@ try:
        and not _dlg_field(_gs, 'Visual').isChecked()
        and not _dlg_field(_gs, 'Tray popup').isChecked(),
        'reset: bell channels -> default (tab marker only)')
+    ok(_dlg_field(_gs, 'OSC Window / tab title').isChecked(),
+       'reset: osc_title feature -> shipped default (on, title quarantined to line 2)')
     _dw.close()
 
     # --- Global settings opens sized to its content (no default scrollbar) -----

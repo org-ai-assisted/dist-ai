@@ -31,6 +31,7 @@ _o_warn = QMessageBox.warning
 QMessageBox.information = staticmethod(lambda *_a, **_k: None)
 QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
 _sl = set(win._locked)
+_saved_at = win.current().allow_title_enabled()   # the OFF-baseline below mutates it
 try:
     # Each admin-locked setter that STILL EXISTS must REFUSE: set the OPPOSITE of the
     # current value while locked, read it back, assert it did NOT change. (The settings
@@ -120,6 +121,8 @@ try:
     eq(sorted(_mode_alts), sorted(_san.DISPLAY_MODES),
        'the /mode alternatives in the help equal sanitize.DISPLAY_MODES')
 finally:
+    win._locked = set()                          # unlock to restore the mutated allow_title
+    win.set_allow_title(_saved_at)
     win._locked = _sl
     QMessageBox.information = _o_info
     QMessageBox.warning = _o_warn

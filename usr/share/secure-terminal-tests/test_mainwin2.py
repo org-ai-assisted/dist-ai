@@ -48,6 +48,7 @@ eq(win.current().line_edits_enabled(), True, 'line editing on restores it')
 
 _saved_locked = set(win._locked)
 _saved_bsl = win._bell_sound_locked
+_saved_atc = win._auto_tab_colors
 try:
     # the surviving appliers early-return under their admin lock (the ones moved into
     # the dialog are lock-gated there + in _apply_global, covered in test_mainwin).
@@ -104,6 +105,7 @@ try:
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
+    win._auto_tab_colors = _saved_atc            # restore the shared win state
     for _a in (list(win._copy_warn_actions.values())
                + list(win._paste_warn_actions.values())
                + list(win._osc_notice_actions.values())

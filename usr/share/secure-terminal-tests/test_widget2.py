@@ -6747,4 +6747,78 @@ _bar._pulse.stop()
 _tbw.close(); _tbw.deleteLater(); APP.processEvents()
 
 
+# --- fix-forward: SecureTabBar / osc_title review findings (dev624) -------------
+from secure_terminal import settings as _settings              # noqa: E402
+from PyQt6.QtWidgets import QTabBar as _QTabBar                 # noqa: E402
+from PyQt6.QtGui import QFont as _QF, QFontMetrics as _QFM      # noqa: E402
+
+# #1 SECURITY: an explicit legacy allow_title=false must SURVIVE the osc_title
+# default-on flip -- a config predating the granular keys must not silently
+# re-enable titles/notifications. allow_title=true still seeds on; both absent ->
+# the shipped registry default (on).
+_orig_load = _settings.load
+
+
+def _win_with_cfg(_d):
+    _settings.load = lambda: _settings.Config(_d)
+    try:
+        return MainWindow(is_primary=False)
+    finally:
+        _settings.load = _orig_load
+
+
+_wff = _win_with_cfg({'allow_title': 'false'})     # legacy disable, no granular key
+ok(_wff._osc_defaults['osc_title'] is False and _wff._osc_defaults['osc_notify'] is False,
+   'an explicit legacy allow_title=false is honored despite the osc_title default flip')
+_wff.close(); _wff.deleteLater(); APP.processEvents()
+_wft = _win_with_cfg({'allow_title': 'true'})
+ok(_wft._osc_defaults['osc_title'] is True,
+   'an explicit legacy allow_title=true still seeds osc_title on')
+_wft.close(); _wft.deleteLater(); APP.processEvents()
+_wfd = _win_with_cfg({})                            # nothing set -> registry default
+ok(_wfd._osc_defaults['osc_title'] is True,
+   'a fresh config takes the shipped osc_title default (on)')
+_wfd.close(); _wfd.deleteLater(); APP.processEvents()
+
+_ffw = MainWindow(is_primary=False)
+_ffw.new_tab(command='/bin/cat')
+pump(30)
+_fft = _ffw.current()
+_ffi = _ffw.tabs.indexOf(_fft)
+_fbar = _ffw.tabs.tabBar()
+
+# #4: '/title off' (set_allow_title False) drops a still-showing program title from
+# the line-2 band AT ONCE, not at some later unrelated refresh (a stale, possibly
+# spoofed title must not linger after the user disables it).
+_fft.apply_osc('osc_title', True)
+_ffw._prog_titles[_fft] = 'ATTACK title'
+_ffw._refresh_tab_label(_fft)
+eq(_fbar.tab_lines(_ffi)['ptitle'], 'ATTACK title', 'title shows on line 2 while allowed')
+_ffw.set_allow_title(False)
+eq(_fbar.tab_lines(_ffi)['ptitle'], '', "'/title off' clears the line-2 title immediately")
+
+# A: tabSizeHint must reserve the painted number-prefix width ("N  ") -- omitting it
+# elided short labels ('shell' -> '1  s...'). Canary: the width my override adds over
+# the base must include the prefix width (fails on the pre-fix code that left it out).
+_ffw.tabs.setTabText(_ffi, 'shell')
+_f1 = _QF(_fbar.font()); _f1.setWeight(_QF.Weight.DemiBold)
+_prefix_w = _QFM(_f1).horizontalAdvance('%d  ' % (_ffi + 1))
+_base_w = _QTabBar.tabSizeHint(_fbar, _ffi).width()    # unbound base implementation
+_mine_w = _fbar.tabSizeHint(_ffi).width()
+eq(_mine_w - _base_w, _STB._ACCENT_W + _STB._PAD + _STB._GLYPH + 4 + _prefix_w,
+   'tabSizeHint adds the number-prefix width (was omitted, causing label elision)')
+
+# B + C: with a close button present and a bell marked, paint runs and the bell is
+# reserved to the LEFT of the close button (drawn before the child close widget).
+_ffw.tabs.setTabsClosable(True)
+pump(10)
+_fbar.mark_bell(_ffi)
+ok(not _fbar.grab().isNull(), 'the tab bar paints with a bell marker + close button')
+_cbtn = _fbar.tabButton(_ffi, _QTabBar.ButtonPosition.RightSide)
+ok(_cbtn is None or _cbtn.geometry().left() > _fbar.tabRect(_ffi).left(),
+   'the close button occupies the tab right edge (bell drawn to its left)')
+_fbar._pulse.stop()
+_ffw.close(); _ffw.deleteLater(); APP.processEvents()
+
+
 finish('widget2')
