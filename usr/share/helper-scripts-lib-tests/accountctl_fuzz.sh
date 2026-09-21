@@ -113,16 +113,16 @@ i=0
 while [ "${i}" -lt "${iters}" ]; do
    i=$(( i + 1 ))
 
-   ## --- is_name_valid: accepted => first char [a-z_] AND all chars safe ---
+   ## --- is_name_valid: accepted => first char [a-zA-Z_] AND all chars safe ---
    nm="$(rand_str "${name_alpha}" 6)"
    if is_name_valid "${nm}" >/dev/null 2>&1; then
-      if [[ "${nm}" != [a-z_]* ]]; then
-         note "is_name_valid accepted '${nm}' not starting [a-z_]"
+      if [[ "${nm}" != [a-zA-Z_]* ]]; then
+         note "is_name_valid accepted '${nm}' not starting [a-zA-Z_]"
       fi
       ## Strip an optional single trailing '$'; every remaining char must be in
       ## the safe class ('-' first in the bracket so it is literal, not a range).
       body="${nm%\$}"
-      if [ -n "${body//[-a-z0-9_.@]/}" ]; then
+      if [ -n "${body//[-a-zA-Z0-9_.@]/}" ]; then
          note "is_name_valid accepted '${nm}' with an unsafe character"
       fi
    fi
@@ -160,11 +160,11 @@ while [ "${i}" -lt "${iters}" ]; do
       note "get_field '${db}' bogus-field -> succeeded with '${bogus_idx}'"
    fi
 
-   ## --- group_has_nonroot_member: a name not starting [a-z_] is rejected ---
+   ## --- group_has_nonroot_member: a name not starting [a-zA-Z_] is rejected ---
    FUZZ_PASSWD="root:x:0:0:::"$'\n'"svc:x:1000:5000:::"
    FUZZ_GROUP="grp:x:5000:"$'\n'"root:x:0:"
    gnm="$(rand_str "${name_alpha}" 5)"
-   if [[ "${gnm}" != [a-z_]* ]]; then
+   if [[ "${gnm}" != [a-zA-Z_]* ]]; then
       if group_has_nonroot_member "${gnm}"; then
          note "group_has_nonroot_member accepted non-name '${gnm}'"
       fi

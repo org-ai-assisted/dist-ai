@@ -166,10 +166,10 @@ passwd() { mutation_log="${mutation_log}passwd $* "; }
 chpasswd() { local in; in="$(cat)"; mutation_log="${mutation_log}chpasswd[${*}]<${in}> "; }
 
 ## ---- is_name_valid (F2 + validation) ----
-for n in a 'a$' user _sys user.name user@host; do
+for n in a 'a$' user _sys user.name user@host Ab AdminUser _SysOp; do
    if is_name_valid "${n}"; then pass "is_name_valid accepts '${n}'"; else fail "is_name_valid rejected valid '${n}'"; fi
 done
-for n in '' '[ar]oot' 'se*' '^x' 'a b' 'Ab' '1x'; do
+for n in '' '[ar]oot' 'se*' '^x' 'a b' '1x' '.hidden'; do
    if is_name_valid "${n}"; then fail "is_name_valid accepted invalid '${n}'"; else pass "is_name_valid rejects '${n}'"; fi
 done
 
@@ -249,7 +249,7 @@ if group_has_nonroot_member rootgrp; then fail "group_has_nonroot_member counted
 if group_has_nonroot_member nogroup; then fail "group_has_nonroot_member matched a missing group"; else pass "group_has_nonroot_member rejects a missing group"; fi
 ## F4: a numeric argument must be rejected outright, not reinterpreted by getent
 ## as a GID lookup. Probe 5100 -- the GID of suppgrp, which HAS a non-root member
-## (alice). Absent the [a-z_] guard, 'getent group -- 5100' resolves suppgrp and
+## (alice). Absent the [a-zA-Z_] guard, 'getent group -- 5100' resolves suppgrp and
 ## finds alice, so the function would return true; the guard makes it reject.
 ## (Probing '0' proves nothing: GID 0's group is empty, so even a guard-less
 ## impl returns false for it.)
