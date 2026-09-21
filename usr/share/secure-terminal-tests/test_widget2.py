@@ -6700,13 +6700,16 @@ for _ in range(20):
     _t0._ring()
 ok(_bar.has_bell(_i0), 'a BEL flood leaves exactly one standing marker')
 
-# only the 'tab' channel emits bell_tab
+# only the 'tab' channel emits bell_tab. Baseline is taken BEFORE both rings: a
+# visual-only ring must leave the count UNCHANGED (else the 'tab' assertion would
+# pass vacuously even if 'visual' wrongly emitted), and the 'tab' ring must add one.
 _seen = []
 _t0.bell_tab.connect(lambda: _seen.append(1))
+_n0 = len(_seen)
 _t0.apply_bell({'visual'}); _t0._last_bell = 0; _t0._ring()
-_n = len(_seen)
+ok(len(_seen) == _n0, "a visual-only bell does NOT emit bell_tab")
 _t0.apply_bell({'tab'}); _t0._last_bell = 0; _t0._ring()
-ok(len(_seen) == _n + 1, "only the 'tab' bell channel emits bell_tab")
+ok(len(_seen) == _n0 + 1, "only the 'tab' bell channel emits bell_tab")
 
 # (the 'tab' channel's user-facing toggle + its global off-switch live in the Global
 # Settings dialog; that surface + the default-on are covered in test_mainwin.)
