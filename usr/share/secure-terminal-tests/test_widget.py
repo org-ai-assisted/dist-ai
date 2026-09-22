@@ -2272,6 +2272,22 @@ from PyQt6.QtCore import QRect as _QRect5, QPoint as _QPoint5                 # 
 ok([k for _e, k in _atb(b'x\x1b[?1047;1049hy')] == ['enter'], '#2: combined alt enter (bytes)')
 ok([k for _e, k in _atb(b'x\x1b[?1049;1047ly')] == ['leave'], '#2: combined alt leave (bytes)')
 ok([k for _e, k in _atb(b'\x1b[?147h')] == [], '#2: mode 147 is not alt (bytes, no false-positive)')
+# leading-zero: params parsed as INT, so ESC[?01049h (a redundant zero) cannot bypass the
+# snapshot boundary -- the str-compare twin let it slip past as ordinary full-screen output.
+ok([k for _e, k in _atb(b'\x1b[?01049h')] == ['enter'],
+   '#2: ESC[?01049h (leading zero) is an alt enter (bytes, int parse not str compare)')
+ok([k for _e, k in _atb(b'\x1b[?1047;01049l')] == ['leave'],
+   '#2: a COMBINED form with a leading-zero member is detected (bytes)')
+ok([k for _e, k in _atb(b'\x1b[?' + b'0' * 6000 + b'1049h')] == ['enter'],
+   '#2: a 6000-zero-padded 1049 is STILL detected in the bytes twin (leading zeros stripped '
+   'before the digit cap)')
+ok([_x for _x in _atb(b'\x1b[?' + b'0' * 6000 + b'h')] == [],
+   '#2: an all-zero param is mode 0, not alt, and does not crash the bytes int parse')
+_fs0 = SecureTerminal(command='/bin/cat', tui=True)
+_fs0._feed_stream(b'primary\x1b[?01049hframe')        # leading-zero enter mid-stream
+ok(_fs0._alt_saved is not None,
+   '#2: _feed_stream snapshots the primary on a leading-zero alt enter (no bypass)')
+_fs0.close()
 _fs = SecureTerminal(command='/bin/cat', tui=True)
 _fs._feed_stream(b'primary\x1b[?1047;1049hframe')     # a COMBINED enter mid-stream
 ok(_fs._alt_saved is not None, '#2: _feed_stream snapshots the primary on a combined alt enter')
@@ -2338,18 +2354,34 @@ ok(_gb._block_at_gutter_y(19) is _blk1, '#12: the boundary pixel belongs to the 
 ok(_gb._block_at_gutter_y(10) is _blk0, '#12: a mid-block pixel belongs to its own block')
 _gb.close()
 
-# #13: _insert_next_staged keeps a staged line when _write reports a partial/timed-out write.
+# #13: _insert_next_staged RESUMES a partially-written staged line from the byte offset --
+# it re-stages only the UNDELIVERED bytes, never re-sending (duplicating) the delivered prefix
+# and never dropping the line. Regression for the pty-write byte-duplication finding: the old
+# code re-sent the WHOLE line on a partial write, so the delivered prefix rode in twice.
 _ins = SecureTerminal(command='/bin/cat')
-_ins._staged_paste = ['held-line']
-_orig_w13 = _ins._write
 _ins.tui_active = lambda: False
 _ins.has_foreground_program = lambda: False
-_ins._write = lambda _b: False        # simulate a wedged child: partial write
+_ins._staged_paste = ['held-line']
+_ins_sent: list[bytes] = []
+_ins_accept = [3]                     # the child accepts only 3 bytes, then wedges
+def _partial_write(data, _s=_ins_sent, _a=_ins_accept):
+    n = min(_a[0], len(data))
+    if n:
+        _s.append(bytes(data[:n]))
+    return n                          # _write's contract: bytes actually written
+_orig_w13 = _ins._write
+_ins._write = _partial_write
 try:
+    _ins._insert_next_staged()        # writes b'hel', re-stages the undelivered b'd-line'
+    ok(_ins._staged_paste == [b'd-line'],
+       '#13: a partial write re-stages ONLY the undelivered bytes (resume from offset)')
+    _ins_accept[0] = 999              # child drains -> the remainder now goes
     _ins._insert_next_staged()
+    ok(_ins._staged_paste == [], '#13: the resumed remainder is delivered and the entry consumed')
+    ok(b''.join(_ins_sent) == b'held-line',
+       '#13: each byte reached the child EXACTLY once across the retry (no duplication)')
 finally:
     _ins._write = _orig_w13
-ok(_ins._staged_paste == ['held-line'], '#13: a failed _write leaves the reviewed line staged, not dropped')
 _ins.close()
 
 # #14: a preview instance (tui=True but screen=None) must NOT be treated as a fixed grid in
@@ -3826,6 +3858,32 @@ _pmt = _QMimePaste()
 _pmt.setText('ls')
 _tuipaste.insertFromMimeData(_pmt)
 ok(not _tuipaste._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
+_tuipaste.close()
+
+# #5: a PARTIAL paste write is SURFACED (advise banner), not silently dropped, at BOTH GUI
+# paste sites -- insertFromMimeData directly, and dispatch_pending_paste after a review. This
+# mirrors ctl_send_text, which already reported a partial write; the GUI paths dropped it.
+_pf = SecureTerminal(command='/bin/cat')
+_pf.tui_active = lambda: False
+_pf.has_foreground_program = lambda: False
+_pf_adv: list[str] = []
+_pf.advise_signal.connect(_pf_adv.append)
+# a slow child accepts only a NONZERO prefix, so this locks the `< len` partial check, not `== 0`
+_pf._write = lambda d: min(3, len(d))
+_pf.apply_paste_warn('never')                        # a single-line paste dispatches straight
+_pm5a = _QMimePaste(); _pm5a.setText('echo hi')
+_pf.insertFromMimeData(_pm5a)
+ok(any('partially delivered' in _m for _m in _pf_adv),
+   '#5: insertFromMimeData surfaces a partial paste write (not silently dropped)')
+_pf_adv.clear()
+_pf.apply_paste_warn('always')                       # hold for review, then resolve into the child
+_pm5b = _QMimePaste(); _pm5b.setText('echo hi')
+_pf.insertFromMimeData(_pm5b)
+ok(_pf.review_pending(), '#5 setup: the paste is held for review (warn=always)')
+_pf.dispatch_pending_paste('stripped')
+ok(any('partially delivered' in _m for _m in _pf_adv),
+   '#5: dispatch_pending_paste surfaces a partial paste write')
+_pf.close()
 # TUI handler: Ctrl+U must PRESERVE an already-dirty flag (its reach is cursor-dependent),
 # so _line_pending() keeps deferring a re-export. Ctrl+C (SIGINT) still settles the line.
 _tuictrl = Qt.KeyboardModifier.ControlModifier
@@ -4199,7 +4257,7 @@ QGuiApplication.clipboard().setText('S3CRET' * 200)
 _clpw = []
 def _trunc_write(_data):
     _clpw.append(bytes(_data))
-    return len(_clpw) != 1            # the reply (first call) truncates; the rest write
+    return len(_data) if len(_clpw) != 1 else len(_data) - 1   # first call (reply) truncates
 _clp._write = _trunc_write
 _clp._last_clip_read = 0              # bypass the 1s rate limit
 _clp._reply_clipboard()
@@ -4208,7 +4266,7 @@ ok(len(_clpw) == 2 and _clpw[0].startswith(b'\x1b]52;c;') and _clpw[1] == b'\x07
 _clpw2 = []
 def _full_write(_d):
     _clpw2.append(bytes(_d))
-    return True
+    return len(_d)
 _clp._write = _full_write   # a full write
 _clp._last_clip_read = 0
 _clp._reply_clipboard()
@@ -4225,7 +4283,7 @@ QGuiApplication.clipboard().setText('S3CRET')
 _ctcw = []
 def _ctc_write(_d):
     _ctcw.append(bytes(_d))
-    return True
+    return len(_d)
 _ctc._write = _ctc_write
 _ctc._last_clip_read = 0
 _ctc._clipboard_read = 'pending'                       # a consent dialog is open
@@ -4359,7 +4417,7 @@ ok(_cts._clipboard_read is None,
 _ctsw = []
 def _cts_write(_d):
     _ctsw.append(bytes(_d))
-    return True
+    return len(_d)
 _cts._write = _cts_write
 _cts._last_clip_read = 0
 _cts._osc_clipboard_read()                             # the next OSC-52 read query
@@ -5522,7 +5580,7 @@ if tui_available():
     ## B2: Check pty REPLY channel for DECLINED clipboard read instead of clipboard text
     _tui_spy = []
     _orig_tui_write = tui._write
-    tui._write = lambda d: _tui_spy.append(bytes(d))
+    tui._write = lambda d: (_tui_spy.append(bytes(d)), len(d))[1]
     tui._handle_osc(b'\x1b]52;c;?\x07')                     # read query
     ok(not any(b'\x1b]52;c;' in _w for _w in _tui_spy),
        'an OSC 52 read query is DECLINED (never answered -- no exfiltration)')
@@ -6306,13 +6364,16 @@ eq(_mid._select_mode, 'word',
 
 
 # --- #28: ctl_send_text(submit=True) must NOT fire a bare submit CR when the line was only
-# PARTIALLY written. _dispatch_paste now returns _write's result, so a wedged/slow child (a
-# partial/timed-out write -> _write False) suppresses the CR that would else run a half line.
+# PARTIALLY written. _dispatch_paste returns whether _write delivered EVERY byte, so a
+# wedged/slow child (a short write -> fewer bytes than sent) suppresses the CR that would
+# else run a half line.
 _p28 = spawn_live(command='/bin/cat')
 _w28: list[bytes] = []
 def _fail_write(data, _sink=_w28):
+    # a NONZERO short write: truthiness-based code treating 3 as success (and firing the CR
+    # on a truncated line) would pass a zero-byte test but fail this one
     _sink.append(bytes(data))
-    return False                            # simulate a partial / timed-out write to a wedged child
+    return min(3, len(data))
 _p28._write = _fail_write
 _err28 = _p28.ctl_send_text('echo hi', submit=True)
 ok(_err28 is not None, '#28: ctl reports a partial/timed-out write as an error, not a false ok')
@@ -6327,7 +6388,7 @@ _p28b = spawn_live(command='/bin/cat')
 _w28b: list[bytes] = []
 def _line_ok_cr_fail(data, _sink=_w28b):
     _sink.append(bytes(data))
-    return bytes(data) != b'\r'         # the line writes fully; only the submit CR fails
+    return 0 if bytes(data) == b'\r' else len(data)   # the line writes fully; only the submit CR fails
 _p28b._write = _line_ok_cr_fail
 _err28b = _p28b.ctl_send_text('echo hi', submit=True)
 ok(_err28b is not None and b'\r' in b''.join(_w28b),

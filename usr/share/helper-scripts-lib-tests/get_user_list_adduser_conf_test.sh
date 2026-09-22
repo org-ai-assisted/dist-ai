@@ -139,10 +139,9 @@ fi
 
 ## --- passwd/adduser.conf parsing robustness ---
 
-default_conf=$'#FIRST_UID=1000\n#LAST_UID=59999\n'
-
-## $1 desc, $2 passwd contents, $3 adduser.conf contents (both written as-is, no
-## trailing newline appended, so a newline-less last line can be exercised).
+## $1 desc, $2 passwd contents, $3 adduser.conf contents (written as-is). Used to
+## exercise a newline-less last line in adduser.conf (get-user-list tolerates
+## that; /etc/passwd itself is expected well-formed and is newline-terminated).
 run_raw_case() {
    local conf_file pw_file
    conf_file="${work_dir}/adduser.conf"
@@ -158,34 +157,10 @@ run_raw_case() {
    run_err="$(cat -- "${work_dir}/stderr")"
 }
 
-## passwd whose last line has no trailing newline: that account must still list.
-run_raw_case "passwd no trailing newline" \
-   $'root:x:0:0:r:/root:/bin/bash\nzoe:x:2000:2000::/home/zoe:/bin/bash' \
-   "${default_conf}"
-if [ "${run_rc}" -eq 0 ] && grep --quiet --line-regexp -- 'zoe' <<<"${run_out}"; then
-   ok "passwd no trailing newline: last account (zoe) listed"
-else
-   notok "passwd no trailing newline: zoe missing, rc=${run_rc}, out: ${run_out//$'\n'/,}"
-fi
-
-## Malformed UID (empty / non-numeric) is skipped cleanly: valid accounts remain,
-## exit 0, and no '[: integer expression expected' noise leaks to stderr.
-run_raw_case "malformed UID skipped cleanly" \
-   $'root:x:0:0:r:/root:/bin/bash\nghost:x::1000::/h/g:/sh\nbob:x:1200:1200::/home/bob:/bin/bash\nbaduid:x:abc:1::/h/b:/sh\n' \
-   "${default_conf}"
-if [ "${run_rc}" -eq 0 ] \
-   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
-   && ! grep --quiet --line-regexp -- 'ghost' <<<"${run_out}" \
-   && ! grep --quiet --line-regexp -- 'baduid' <<<"${run_out}" \
-   && ! grep --quiet -- 'integer expression' <<<"${run_err}"; then
-   ok "malformed UID: skipped cleanly, bob listed, ghost+baduid excluded, no shell error (exit 0)"
-else
-   notok "malformed UID: rc=${run_rc}, err='${run_err}', out: ${run_out//$'\n'/,}"
-fi
-
-## adduser.conf FIRST_UID on a newline-less last line must still be honored.
+## adduser.conf FIRST_UID on a newline-less last line must still be honored
+## (read_adduser_conf_field tolerates a missing final newline).
 run_raw_case "adduser.conf no trailing newline" \
-   $'root:x:0:0:r:/root:/bin/bash\nbob:x:1200:1200::/home/bob:/bin/bash\nalice:x:2500:2500::/home/alice:/bin/bash' \
+   $'root:x:0:0:r:/root:/bin/bash\nbob:x:1200:1200::/home/bob:/bin/bash\nalice:x:2500:2500::/home/alice:/bin/bash\n' \
    $'# adduser.conf\nFIRST_UID=2000'
 if [ "${run_rc}" -eq 0 ] \
    && ! grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \

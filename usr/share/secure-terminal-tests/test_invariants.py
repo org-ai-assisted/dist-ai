@@ -304,7 +304,8 @@ def _reset_paste(term, sent):
 _WL = SecureTerminal(command='/bin/cat')          # line mode (the secure default)
 _WL.apply_paste_warn('unicode')
 _WL_SENT: list[Any] = []
-_WL._write = _WL_SENT.append                       # pylint: disable=protected-access
+# _write returns bytes-written; mimic a full write so _dispatch_paste reads "delivered".
+_WL._write = lambda d, _s=_WL_SENT: _s.append(d) or len(d)   # pylint: disable=protected-access
 
 
 def _inv1_gui_predicate(term, sent, text):
@@ -398,7 +399,8 @@ def prop_inv5_multiline_held_until_dispatch(a, b):
 
 # ----- INV-2: no output reaches an earlier line -------------------------------
 _WL2 = SecureTerminal(command='/bin/cat')          # line mode
-_WL2._write = (lambda *_a, **_k: None)              # pylint: disable=protected-access
+# _write returns bytes-written; report a full write for whatever it is handed.
+_WL2._write = (lambda *_a, **_k: len(_a[0]) if _a else 0)   # pylint: disable=protected-access
 
 
 def _reset_line_widget(term):
@@ -495,7 +497,8 @@ for _feat in ('osc_clipboard_read', 'osc_clipboard', 'osc_title', 'osc_notify',
     except Exception:                               # pylint: disable=broad-except
         pass
 _WT6_SENT: list[Any] = []
-_WT6._write = _WT6_SENT.append                      # pylint: disable=protected-access
+# _write returns bytes-written; mimic a full write (the reply path checks the count).
+_WT6._write = lambda d, _s=_WT6_SENT: _s.append(d) or len(d)   # pylint: disable=protected-access
 QGuiApplication.clipboard().setText('INV6-CLIP-SECRET')   # a secret to (not) exfiltrate
 
 
