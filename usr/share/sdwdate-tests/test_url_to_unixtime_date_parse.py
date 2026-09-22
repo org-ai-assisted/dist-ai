@@ -57,6 +57,40 @@ class DateParseRejection(unittest.TestCase):
         parsed = self.u2u.http_time_to_parsed_unixtime(data, http_time)
         self.assertEqual(parsed, '1445412480')
 
+    def test_non_gmt_offset_is_honored_not_discarded(self):
+        ## A hostile server can send a non-GMT offset. The parsed unixtime must
+        ## reflect that offset (timestamp()), not the naive wall-clock in
+        ## TZ=UTC (strftime('%s')) which silently shifts the result by the
+        ## offset -- here +0500 would otherwise read 1704067200 instead of the
+        ## true 1704049200 (a 5h lie past every sanity check).
+        http_time = 'Mon, 01 Jan 2024 00:00:00 +0500'
+        data = fuzz_sdwdate._FakeResponse(http_time)
+        parsed = self.u2u.http_time_to_parsed_unixtime(data, http_time)
+        self.assertEqual(parsed, '1704049200')
+
+    def test_missing_date_header_rejected(self):
+        ## A server omitting the Date header must be rejected cleanly, not crash
+        ## with an uncaught KeyError.
+        data = fuzz_sdwdate._FakeResponse('x')
+        data.headers = {}
+        with self.assertRaises(SystemExit) as ctx:
+            self.u2u.data_to_http_time(data)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_non_numeric_port_rejected(self):
+        ## A non-numeric port must exit via the script's own error path, not an
+        ## uncaught ValueError from int(sys.argv[2]).
+        saved = self.u2u.sys.argv
+        self.u2u.sys.argv = [
+            'url_to_unixtime', '127.0.0.1', 'not_a_port',
+            'http://example.com', 'false']
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                self.u2u.parse_command_line_parameters()
+            self.assertEqual(ctx.exception.code, 7)
+        finally:
+            self.u2u.sys.argv = saved
+
 
 if __name__ == '__main__':
     unittest.main()
