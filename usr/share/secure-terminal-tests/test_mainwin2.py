@@ -287,8 +287,12 @@ _victim_tab = win.tabs.widget(win.tabs.count() - 1)
 _n_before = win.tabs.count()
 win._on_shell_exited(_victim_tab)
 ok(win.tabs.count() == _n_before - 1, '_on_shell_exited closes the tab whose shell ended')
-win._on_shell_exited(win.current())         # called again is harmless
-ok(True, '_on_shell_exited on the current tab is handled')
+# an unknown term (already-closed, or never one of our tabs) is IGNORED: indexOf == -1
+# so _on_shell_exited returns without closing another tab.
+_n_after = win.tabs.count()
+win._on_shell_exited(_victim_tab)           # closed above -> now unknown (indexOf == -1)
+eq(win.tabs.count(), _n_after,
+   '_on_shell_exited on an unknown/already-closed term is a no-op (no wrong tab closed)')
 
 # --- the current-tab actions are safe no-ops when there is no current tab -----
 w3 = MainWindow()

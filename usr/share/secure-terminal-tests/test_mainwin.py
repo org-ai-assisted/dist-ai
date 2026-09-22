@@ -310,6 +310,7 @@ try:
     _dw._paste_delay, _dw._systray, _dw._persist_session = 5, True, False
     _dw._default_mode, _dw._default_colors = 'box', False
     _dw._default_markings, _dw._osc_clipboard_read_always = False, True
+    _dw._escape_limit, _dw._paste_warn = 12345, 'always'   # non-default; Reset must revert
     _dialogs.clear()
     _dw.show_global_settings()
     _gs = _dialogs[-1]
@@ -345,6 +346,10 @@ try:
        'reset: clipboard-read-always -> default')
     ok(_dlg_field(_gs, 'TUI mode').isChecked() == _def_tui, 'reset: tui -> default')
     eq(_dlg_field(_gs, 'Paste delay').currentData(), _def_pd, 'reset: paste delay -> default')
+    eq(_dlg_field(_gs, 'Suppressed-output notice').currentData(), _def_esc,
+       'reset: escape_limit -> default')
+    eq(_dlg_field(_gs, 'Paste review').currentData(), _def_pw,
+       'reset: paste_warn -> default')
     ok(_dlg_field(_gs, 'System tray').isChecked() == _def_sys, 'reset: systray -> default')
     ok(_dlg_field(_gs, 'Restore session').isChecked() == _def_persist,
        'reset: restore-session -> default')
