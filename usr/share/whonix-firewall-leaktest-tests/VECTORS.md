@@ -12,10 +12,14 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - Forged-source IPv6 -- uRPF drop (`ipv6_forged_source_urpf_test.sh`)
 - Forged-source IPv4 -- dual-stack uRPF + kernel rp_filter (`ipv4_forged_source_urpf_test.sh`)
 - ICMPv6 echo (`icmpv6_forward_test.sh`), ICMPv4 ping (`icmpv4_forward_test.sh`)
-- Non-DNS UDP (`udp_nondns_forward_test.sh`)
+- Non-DNS UDP -- NTP 123 and QUIC 443, over BOTH IPv6 and IPv4
+  (`udp_nondns_forward_test.sh`)
+- DNS redirect POSITIVE control -- UDP/53 must be redirected to the Tor DnsPort
+  and answered; canary strips the redirect rule (`dns_redirect_positive_test.sh`)
 - Non-SYN TCP transproxy bypass -- ACK/FIN-ACK/RST-ACK, IPv6 and IPv4
   (`nonsyn_tcp_transproxy_bypass_test.sh`, `ipv4_nonsyn_tcp_test.sh`)
-- Arbitrary IP protocols -- GRE 47, ESP 50, OSPF 89, DCCP 33, SCTP 132
+- Arbitrary IP protocols -- GRE 47, ESP 50, AH 51, OSPF 89, DCCP 33, SCTP 132,
+  IP-in-IP 4, as BOTH IPv6 next-headers AND IPv4-outer protocols
   (`protocol_and_tunnel_test.sh`)
 - Tunnels -- 6to4/SIT (IPv4 proto 41), Teredo (UDP/3544) (same file)
 - IPv6 atomic fragment (`fragment_evasion_test.sh`)
@@ -34,6 +38,11 @@ extension-header vectors, which this suite adds.
 - IPv4 fragment evasion -- conntrack `nf_defrag_ipv4` reassembles before the
   forward chain: a lone fragment is held (never forwarded), a complete set is
   reassembled and handled as a normal packet. No fragment-specific forward leak.
+- IPv6 NON-atomic fragments (tiny-fragment / overlap / M=1) -- same mechanism:
+  `nf_defrag_ipv6` (loaded by conntrack, like its IPv4 sibling) reassembles before
+  the forward chain, so a lone non-first fragment is held. The ATOMIC fragment
+  (offset 0, M=0) IS tested (`fragment_evasion_test.sh`) because it is a complete
+  single-fragment datagram that forwards.
 - Multicast / broadcast egress -- IPv4 broadcast is link-scoped and IPv6 global
   multicast needs multicast routing the Gateway does not run; verified nothing
   egresses even under a permissive forward policy.
@@ -45,9 +54,46 @@ extension-header vectors, which this suite adds.
 
 ## Deferred to a real Non-Qubes-Whonix server (netns stub not faithful)
 
-- UDP/53 DnsPort established-reply to a forged source -- the userspace stub
-  sources its reply by routing, so conntrack never un-NATs it; real Tor DnsPort
-  binding may differ. Needs a real DnsPort to test.
-- accept_ra global-route-dependent timing and real Tor circuit behavior.
+- UDP/53 DnsPort established-reply to a FORGED source -- a legit UDP/53 IS
+  redirected + answered (the DNS positive control proves it), but for a forged
+  source the wildcard-bound stub's reply routes out the external interface, so its
+  source no longer matches the redirect conntrack tuple and is not un-NAT'd -- no
+  leak in the stub. Real Tor DnsPort binds a specific address and may behave
+  differently; needs a real DnsPort to settle.
+- Hostile Router-Advertisement / RA-vs-connection RACE (as opposed to the static
+  accept_ra end-state the netns already models) and real Tor circuit behavior.
 - Online leak-site / torrent checks (`doileak.com`, `ipleak.net`) -- require real
-  clearnet + a real workstation.
+  clearnet + a real workstation. Their L3 reductions (DNS, STUN UDP, torrent UDP)
+  ARE covered by the DNS + non-DNS-UDP cases above.
+
+## Reviewer-identified gaps -- future work (need new tooling or a different suite)
+
+- Rogue RA / RS / NA / NS / DHCPv6 injection FROM the Workstation toward the
+  Gateway -- `inject.py` has no ICMPv6 ND/RA builder yet; needs one to construct.
+- IPv4 source-routing options (LSRR/SSRR) -- `inject.py`'s `ip4_header` emits
+  IHL=5 (no options); the forward reject drops any forwarded packet regardless,
+  so low risk, but the vector is currently unconstructible.
+- Tor ControlPort (9051) / wildcard SocksPort reachability from the internal
+  interface -- a control-channel scoping concern, not forward egress; belongs in a
+  control-port / onion-grater test, not this suite.
+- Firewall rule-reload race under live traffic -- the serial setup/teardown model
+  structurally cannot exercise it.
+- Transparent-proxy redirect PORT-independence -- all TCP cases use dport 443;
+  nothing yet proves the redirect is not port-keyed (80, 22, ephemeral).
+
+## Known harness limitations (trust-critical -- do not silently rely on them)
+
+- The egress oracle (`LEAKTEST_EGRESS_BPF`) EXCLUDES all multicast/broadcast so
+  benign ND/MLD/RA is not miscounted. Consequence: a probe sent to a
+  multicast/broadcast destination would be invisible to the oracle. This is safe
+  ONLY because multicast/broadcast is a verified non-vector here (no multicast
+  routing); do NOT add a multicast-destined probe expecting the shared oracle to
+  catch it -- it needs its own destination-scoped capture.
+- The oracle's benign-infrastructure exclusion is keyed to the external-link
+  subnet `10.0.2.0/24` and the link IPv6 addresses. A future test that picks a
+  probe address inside that subnet would have a real leak silently excluded -- keep
+  probe addresses in RFC 5737 / RFC 3849 documentation ranges.
+- The canary rule-stripping (`grep --invert-match 'fib saddr...'`, the permissive
+  ruleset sed, the DNS-redirect strip) matches exact generated `.nft` wording; an
+  upstream wording change makes a canary no-op, which fails LOUDLY ("canary did NOT
+  reproduce"), never a false pass -- but would need re-syncing suite-wide.
