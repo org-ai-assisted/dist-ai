@@ -5093,6 +5093,7 @@ _wstui.shutdown()
 _wsrev = SecureTerminal(command='/bin/cat', tui=True)
 _wsrev.resize(500, 300)
 _wsrev.show()
+_wsrev.apply_colors(True)                       # the app default; reverse paints a solid bar
 feed_output(_wsrev, b'\x1b[7m GNU nano 8.4      New Buffer\x1b[0m\n')
 _wsrev._force_current_frame()
 ok(not _ws_runs_all(_wsrev),
@@ -5104,6 +5105,7 @@ _wsrev.shutdown()
 _wsbg = SecureTerminal(command='/bin/cat', tui=True)
 _wsbg.resize(500, 300)
 _wsbg.show()
+_wsbg.apply_colors(True)
 feed_output(_wsbg, b'\x1b[44mLEFT      RIGHT\x1b[0m\n')      # blue bg, >= 2-space gap
 _wsbg._force_current_frame()
 ok(not _ws_runs_all(_wsbg),
@@ -5122,6 +5124,36 @@ _wspc = _ws_runs_all(_wspln)
 ok(len(_wspc) == 1 and (_wspc[0][1] - _wspc[0][0]) >= 2,
    'ws TUI CANARY: the same gap with PLAIN spaces IS still flagged (detector intact)')
 _wspln.shutdown()
+
+# A styled space is exempt only when it paints a bg DISTINCT from the terminal background.
+# A bg EQUAL to the terminal bg, or ANY bg while colours are off, renders as ordinary
+# padding, so it must still be dotted -- the exemption keys off the EFFECTIVE paint, not
+# the raw cell (else a program hides spacing by matching the bg / with colours off).
+from secure_terminal.terminal import THEMES as _WTHEMES              # noqa: E402
+_wsbe = SecureTerminal(command='/bin/cat', tui=True)
+_wsbe.resize(500, 300)
+_wsbe.show()
+_wsbe.apply_colors(True)                         # colours ON: the theme-bg IS painted...
+_wsbase = QColor(_wsbe._osc_palette.get('bg',
+                 _WTHEMES.get(_wsbe._theme, _WTHEMES['dark'])[0]))
+feed_output(_wsbe, ('GNU nano 8.4\x1b[48;2;%d;%d;%dm      \x1b[0mNew Buffer\n'
+                    % (_wsbase.red(), _wsbase.green(), _wsbase.blue())).encode())
+_wsbe._force_current_frame()
+_wber = _ws_runs_all(_wsbe)
+ok(len(_wber) == 1 and (_wber[0][1] - _wber[0][0]) >= 2,
+   'ws TUI: a gap whose bg EQUALS the terminal background is still dotted (looks like padding)')
+_wsbe.shutdown()
+
+_wsco = SecureTerminal(command='/bin/cat', tui=True)
+_wsco.resize(500, 300)
+_wsco.show()
+_wsco.apply_colors(False)
+feed_output(_wsco, b'GNU nano 8.4\x1b[41m      \x1b[0mNew Buffer\n')   # red bg, colours OFF
+_wsco._force_current_frame()
+_wcor = _ws_runs_all(_wsco)
+ok(len(_wcor) == 1 and (_wcor[0][1] - _wcor[0][0]) >= 2,
+   'ws TUI: with colours off, a bg-styled gap is still dotted (the bg is stripped)')
+_wsco.shutdown()
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the

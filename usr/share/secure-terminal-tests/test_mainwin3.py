@@ -534,6 +534,31 @@ eq(_ovt._chrome_top_inset, 0,
    'advisory overlay: dismissing releases the top inset')
 eq(_ovt._rows, _ov_rows0,
    'advisory overlay: hiding the banner also leaves the grid rows unchanged')
+
+# REGRESSION: the zoom-scaled advisory must never OCCLUDE the terminal. Its font scales
+# with zoom, so on a short window at high zoom the wrapped banner grows past the viewport
+# and its reserved inset blanks the output (the reported "zoom in -> screen goes blank").
+# The inset is now clamped to <= half the content area below the tab strip.
+_ov.resize(760, 320)                              # a short window
+_ov.set_zoom(300)                                 # a huge banner font
+_ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
+_ov._advisories.pop(_ovt, None)
+_ov._on_osc_used(_ovt, 'osc_hyperlink', 8)
+pump(50)
+ok(wait_for(lambda: _ov._banner.isVisible()), 'zoom-clamp: the banner is shown for the test')
+_ov._position_banner()
+_zc_geo = _ov.tabs.geometry()
+_zc_avail = _zc_geo.bottom() - (_zc_geo.top() + _ov.tabs.tabBar().height())
+_zc_half = max(1, _zc_avail // 2)
+# load-bearing canary: at 300% on a short window the banner's NATURAL height exceeds the
+# clamp, so the assertion below is not passing vacuously on a banner that already fits.
+ok(_ov._banner.heightForWidth(_zc_geo.width()) > _zc_half,
+   'zoom-clamp: at 300%/short window the banner WOULD exceed half (clamp is load-bearing)')
+ok(_ovt._chrome_top_inset <= _zc_half,
+   'zoom-clamp: the advisory inset is clamped to <= half the content area (content never blanks)')
+_ov.set_zoom(100)
+_ov._dismiss_advisory()
+pump(50)
 _ov.close()
 
 # Smoke test: closing the LAST tab while the banner is up must not crash. The

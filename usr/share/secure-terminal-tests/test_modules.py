@@ -1198,6 +1198,33 @@ with open(_cd_blk, 'w', encoding='ascii') as _cd_bh:
 ok(crashdiag.install_best_effort(os.path.join(_cd_blk, 'sub')) is None,
    'crashdiag: install_best_effort returns None (never raises) when the log is unopenable')
 
+# A FIFO planted at the crash-log path must NOT hang the launch: O_WRONLY on a FIFO blocks
+# until a reader opens it (O_NOFOLLOW rejects only a symlink), so _open_append uses
+# O_NONBLOCK + a regular-file check and install_best_effort returns None instead of hanging.
+_cd_fifo_root = tempfile.mkdtemp()
+os.mkfifo(crashdiag.crash_log_path(_cd_fifo_root))
+ok(crashdiag.install_best_effort(_cd_fifo_root) is None,
+   'crashdiag: a FIFO at the crash-log path is refused (never blocks the launch)')
+
+# a FIFO WITH a reader: the O_NONBLOCK write open SUCCEEDS (no ENXIO), so the
+# regular-file check is what rejects it (exercises the fstat/close-and-raise path).
+_cd_fifo2 = tempfile.mkdtemp()
+os.mkfifo(crashdiag.crash_log_path(_cd_fifo2))
+_cd_rfd = os.open(crashdiag.crash_log_path(_cd_fifo2), os.O_RDONLY | os.O_NONBLOCK)
+try:
+    ok(crashdiag.install_best_effort(_cd_fifo2) is None,
+       'crashdiag: a FIFO with a reader is refused by the regular-file check')
+finally:
+    os.close(_cd_rfd)
+
+# echo_stderr swallows a broken/closed stderr (the GUI case): the durable copy is written
+# first, so a stderr failure in the Qt message handler loses nothing and never raises out.
+_cd_es = io.StringIO()
+crashdiag.echo_stderr('hello-stderr', _cd_es)
+ok('hello-stderr' in _cd_es.getvalue(), 'crashdiag: echo_stderr writes to a live stream')
+crashdiag.echo_stderr('x', _CdDeadStream())
+ok(True, 'crashdiag: echo_stderr swallows a dead/broken stderr, never raises')
+
 
 def _cd_child(body, root):
     code = ('import faulthandler\n'
@@ -1233,7 +1260,7 @@ subprocess.run([sys.executable, '-c', "raise ValueError('no-capture')\n"],
 ok(not os.path.exists(crashdiag.crash_log_path(_cd_c_root)),
    'crashdiag(canary): with no install, no crash log is written (capture is the fix)')
 
-for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root):
+for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2):
     shutil.rmtree(_cd_d, ignore_errors=True)
 
 
