@@ -30,21 +30,22 @@ trap leaktest_teardown EXIT
 
 rc=0
 
-## Representative non-TCP IPv6 protocols (GRE, ESP, OSPF): none may forward.
-for protonum in 47 50 89; do
+## Representative non-TCP IPv6 protocols (IP-in-IP 4, GRE 47, ESP 50, AH 51,
+## OSPF 89, DCCP 33, SCTP 132): none may forward.
+for protonum in 4 47 50 51 89 33 132; do
    leaktest_probe_case \
       "IPv6 protocol ${protonum} to clearnet" rawip6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
-      "ip6 and host ${PROBE_DST_IP6}" --protonum "${protonum}" || rc=$?
+      --protonum "${protonum}" || rc=$?
 done
 
 ## 6to4 / SIT: IPv4 protocol 41 carrying IPv6.
 leaktest_probe_case \
    '6to4 tunnel (IPv4 protocol 41) to clearnet' rawip4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
-   "ip and host ${PROBE_DST_IP4}" --protonum 41 || rc=$?
+   --protonum 41 || rc=$?
 
 ## Teredo: IPv6 encapsulated in UDP/3544 to a relay.
 leaktest_probe_case \
    'Teredo (UDP/3544) to clearnet' udp4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
-   "ip and host ${PROBE_DST_IP4}" --dport 3544 || rc=$?
+   --dport 3544 || rc=$?
 
 exit "${rc}"

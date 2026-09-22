@@ -29,7 +29,10 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 rc=0
-leaktest_forward_leak_case \
-   'non-DNS UDP to clearnet' udp6 "${PROBE_DST_IP6}" \
-   "ip6 and host ${PROBE_DST_IP6} and udp" --dport 123 || rc=$?
+## Representative non-53 UDP: NTP (123) and QUIC/HTTP3 (443). Tor carries no UDP
+## but DNS, so both must hit the forward reject, not leave as direct UDP.
+for dport in 123 443; do
+   leaktest_forward_leak_case \
+      "non-DNS UDP (dport ${dport}) to clearnet" udp6 "${PROBE_DST_IP6}" --dport "${dport}" || rc=$?
+done
 exit "${rc}"

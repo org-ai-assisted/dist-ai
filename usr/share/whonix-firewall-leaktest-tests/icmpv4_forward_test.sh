@@ -5,12 +5,11 @@
 
 ## AI-Assisted
 
-## Leak test: a fragmented IPv6 packet must not slip past the gateway.
+## Leak test: workstation ICMPv4 (ping) to the clearnet must not egress.
 ##
-## A packet carrying an IPv6 fragment extension header (here an atomic fragment
-## wrapping a UDP datagram) is a classic firewall-evasion shape: a stateless
-## filter that only inspects the first bytes can be tricked. The gateway must
-## drop it like any other forwarded packet. Positive control + permissive-forward
+## The Whonix wiki's canonical ping leak test: Tor carries no ICMP, so a
+## Workstation ping to a public IPv4 address must never leave the external
+## interface. Companion to the ICMPv6 case. Positive control + permissive-forward
 ## canary as in the other cases.
 
 set -o errexit
@@ -30,6 +29,5 @@ trap leaktest_teardown EXIT
 
 rc=0
 leaktest_probe_case \
-   'fragmented IPv6 (fragment header) to clearnet' frag6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
-   --dport 443 || rc=$?
+   'ICMPv4 echo (ping) to clearnet' icmp4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" || rc=$?
 exit "${rc}"

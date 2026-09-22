@@ -1,0 +1,103 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the Atheris (libFuzzer) coverage-guided fuzz harnesses for sdwdate: the
+## HTTP Date header parser in url_to_unixtime (fuzz_url_to_unixtime, the hostile
+## time-server surface) and the pool-config text parser sort_pool
+## (fuzz_sdwdate_config). Each gets its libFuzzer dictionary and seed corpus
+## from fuzz-corpus/. Unlike sdwdate-tests-fuzz (a hand-rolled random generator
+## with no extra dependencies), this is coverage-guided and needs Atheris (pip
+## install atheris); without it the harnesses skip. No root, no network. These
+## are the SAME harnesses ClusterFuzzLite compiles.
+##
+## Default time budget is 60s; override with SDWDATE_FUZZ_SECONDS or by passing
+## libFuzzer flags directly. Any extra arguments are forwarded to the harness:
+##   sdwdate-tests-fuzz-atheris -max_total_time=600 ~/private-cache/sdwdate-corpus
+## Targets the installed sdwdate by default; set SDWDATE_REPO to fuzz a
+## derivative-maker checkout instead. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-tests" ]; then
+  tests_dir="${script_dir}/../share/sdwdate-tests"
+else
+  tests_dir='/usr/share/sdwdate-tests'
+fi
+
+## Apply the default time budget unless the caller already set their own stop
+## condition (documented usage includes passing only a corpus directory, which
+## must not drop the budget and let libFuzzer run unbounded).
+have_stop_condition=0
+for arg in "$@"; do
+  case "${arg}" in
+    -max_total_time=* | -runs=*)
+      have_stop_condition=1
+      ;;
+  esac
+done
+if [ "${have_stop_condition}" -eq 0 ]; then
+  set -- "$@" "-max_total_time=${SDWDATE_FUZZ_SECONDS:-60}"
+fi
+
+corpus_root="${tests_dir}/fuzz-corpus"
+work_dir="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+## '|| true': a failing cleanup (e.g. safe-rm absent) must not REPLACE the
+## script's real exit status with 127 and mask a pass/skip/finding.
+cleanup() { safe-rm --recursive --force -- "${work_dir}" || true; }
+trap cleanup EXIT
+
+## Aggregate across harnesses so a later SKIP never masks an earlier crash or a
+## real pass: a genuine failure (non-zero, non-77) from ANY harness dominates;
+## otherwise the run is a SKIP (77) only if EVERY harness skipped, else a pass.
+fail_rc=0
+saw_pass=0
+saw_skip=0
+for harness in fuzz_url_to_unixtime fuzz_sdwdate_config; do
+  harness_path="${tests_dir}/${harness}.py"
+  [ -f "${harness_path}" ] || continue
+  ## libFuzzer: first positional is the read-WRITE corpus (a throwaway tmp, so
+  ## the checkout's seed files are never mutated), extra positionals are
+  ## read-only seed sources, -dict supplies keyword tokens.
+  hcorpus="${work_dir}/${harness}"
+  mkdir -p -- "${hcorpus}"
+  extra=("${hcorpus}")
+  if [ -d "${corpus_root}/seeds/${harness}" ]; then
+    extra+=("${corpus_root}/seeds/${harness}")
+  fi
+  if [ -f "${corpus_root}/dicts/${harness}.dict" ]; then
+    extra+=("-dict=${corpus_root}/dicts/${harness}.dict")
+  fi
+  printf '==== %s ====\n' "${harness}"
+  hrc=0
+  ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
+  python3 -- "${harness_path}" "$@" "${extra[@]}" || hrc=$?
+  if [ "${hrc}" = '0' ]; then
+    saw_pass=1
+  elif [ "${hrc}" = '77' ]; then
+    saw_skip=1
+  else
+    fail_rc="${hrc}"
+  fi
+done
+
+if [ "${fail_rc}" != '0' ]; then
+  exit "${fail_rc}"
+fi
+if [ "${saw_pass}" = '0' ] && [ "${saw_skip}" = '1' ]; then
+  ## style-ok: allow-skip: every harness skipped (atheris optional dep absent)
+  exit 77
+fi
+exit 0

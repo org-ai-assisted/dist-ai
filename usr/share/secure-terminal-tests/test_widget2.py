@@ -6831,11 +6831,44 @@ for _ in range(_STB._PULSE_TICKS + 2):
 ok(_bar.has_bell(_i0), 'the marker holds static after the bounded pulse decays')
 ok(not _bar._pulse.isActive(), 'the pulse timer stops once no tab is pulsing')
 
+# activity marker: output on a BACKGROUND tab marks it (a calm static dot); output on the
+# focused tab does not; focusing clears it. Independent of the bell marker.
+_tbw.tabs.setCurrentIndex(_i1)                  # focus tab 1 -> tab 0 is background
+pump(10)
+_bar.clear_bell(_i0); _bar.clear_activity(_i0); _bar.clear_activity(_i1)
+feed_output(_t0, b'background output\r\n')       # real read path -> activity.emit
+ok(_bar.has_activity(_i0), 'a background tab that produces output gets an activity marker')
+feed_output(_t1, b'foreground output\r\n')
+ok(not _bar.has_activity(_i1), 'output on the FOCUSED tab is not marked as activity')
+_tbw.tabs.setCurrentIndex(_i0)
+pump(10)
+ok(not _bar.has_activity(_i0), 'focusing a tab clears its activity marker')
+eq(_bar.tab_lines(_i0)['activity'], False, 'tab_lines reports the cleared activity state')
+# fired per chunk, but mark_activity is idempotent (the second mark is a no-op)
+_tbw.tabs.setCurrentIndex(_i1)
+pump(10)
+_bar.clear_activity(_i0)
+feed_output(_t0, b'chunk one\r\n')
+ok(_bar.has_activity(_i0), 'the first background chunk marks the tab')
+_bar.mark_activity(_i0)                          # already marked -> early-return no-op
+ok(_bar.has_activity(_i0) and _bar.tab_lines(_i0)['activity'] is True,
+   'a re-mark on an already-marked tab is an idempotent no-op')
+# activity and bell are INDEPENDENT states (distinct glyphs on the same tab)
+_t0.apply_bell({'tab'}); _t0._last_bell = 0; _t0._ring()
+ok(_bar.has_bell(_i0) and _bar.has_activity(_i0),
+   'a background tab can carry both a bell and an activity marker')
+# clear_activity on a not-marked tab / mark on a bad index are safe no-ops
+_bar.clear_activity(_i1)                          # not marked -> early-return
+_ai_bad = _bar.count() + 5
+_bar.mark_activity(_ai_bad); _bar.clear_activity(_ai_bad)
+ok(_bar.has_activity(_ai_bad) is False, 'has_activity on a bad index is False')
+
 # paintEvent + the trusted glyphs render without error, both themes, with a marker
 # and a quarantined title present (forces the full paint path)
 _tbw._prog_titles[_t0] = 'a program title'
 _tbw._refresh_tab_label(_t0)
 _bar.mark_bell(_i0)
+_bar.mark_activity(_i0)                          # both glyphs paint (bell + activity dot)
 _bar.set_theme(_bar._dark)                      # no-op branch (same value)
 _tbw.set_tab_color(_i0, QColor('#8b5cf6'))      # coloured tab -> paint hits the accent branch
 for _dark in (False, True):
@@ -6849,7 +6882,8 @@ _bad = _bar.count() + 5
 _bar.set_accent(_bad, '#fff'); _bar.set_ptitle(_bad, 'x')
 _bar.mark_bell(_bad); _bar.clear_bell(_bad)
 ok(_bar.has_bell(_bad) is False, 'has_bell on a bad index is False')
-eq(_bar.tab_lines(_bad), {'label': '', 'ptitle': '', 'bell': False, 'accent': None},
+eq(_bar.tab_lines(_bad),
+   {'label': '', 'ptitle': '', 'bell': False, 'accent': None, 'activity': False},
    'tab_lines on a bad index returns the empty default')
 
 _bar._pulse.stop()
