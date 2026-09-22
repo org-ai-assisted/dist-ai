@@ -40,9 +40,9 @@ Theorems:
                                     (the F1/F2/F3 invariant).
   T3  is_name_valid             -- real bash matches the reference NAME_REGEX, and
                                     every ACCEPTED name is over the safe charset
-                                    [-a-z0-9_.@] plus an optional trailing '$' (so
+                                    [-a-zA-Z0-9_.@] plus an optional trailing '$' (so
                                     the only BRE metacharacters escape_name must
-                                    handle are '.' and '$') and starts with [a-z_].
+                                    handle are '.' and '$') and starts with [a-zA-Z_].
   T4  escape_name (+ composition) -- escaping is correct ('.'->'\\.', '$'->'\\$'),
                                     and for a valid name the escaped string used as
                                     an anchored BRE matches a line IFF the line's
@@ -148,7 +148,9 @@ def _q(value):
 
 
 SENTINEL = "==ACSPLIT=="
-SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-_.@")
+SAFE_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.@"
+)
 
 
 ## ============================ T1: get_field (exhaustive) ====================
@@ -267,8 +269,9 @@ def t2_canaries(subject, env):
 
 
 ## ============================ T3: is_name_valid ============================
-## bash ERE: ^[a-z_][-a-z0-9_.@]*\$?$  (\$ = literal '$'; final $ = anchor).
-_NAME_RE = re.compile(r"[a-z_][-a-z0-9_.@]*\$?\Z")
+## bash ERE: ^[a-zA-Z_][-a-zA-Z0-9_.@]*\$?$  (\$ = literal '$'; final $ = anchor).
+## Uppercase is accepted (Debian adduser NAME_REGEX union; operator policy).
+_NAME_RE = re.compile(r"[a-zA-Z_][-a-zA-Z0-9_.@]*\$?\Z")
 
 
 def _accepted_over_safe_charset(name):
@@ -282,7 +285,7 @@ def _accepted_over_safe_charset(name):
 def t3_enumerate(subject, env, name_re=_NAME_RE):
     """Anchor real is_name_valid to the reference regex over a bounded alphabet
     (including unsafe chars), and assert every ACCEPTED name is over the safe
-    charset and starts with [a-z_]."""
+    charset and starts with [a-zA-Z_]."""
     alphabet = ["a", "z", "_", "-", "0", "9", ".", "@", "$", "A", "!", "*", "[", " "]
     names = [""]
     for n in range(1, 4):
@@ -302,25 +305,26 @@ def t3_enumerate(subject, env, name_re=_NAME_RE):
         if g == "1":
             if not _accepted_over_safe_charset(nm):
                 fail("T3 is_name_valid: accepted %r is NOT over the safe charset" % nm)
-            if not re.match(r"[a-z_]", nm):
-                fail("T3 is_name_valid: accepted %r does not start with [a-z_]" % nm)
+            if not re.match(r"[a-zA-Z_]", nm):
+                fail("T3 is_name_valid: accepted %r does not start with [a-zA-Z_]" % nm)
 
 
 def t3_canaries(subject, env):
     ## The reference must reject an unsafe-char name (else escape_name safety
     ## would not hold); and accept a single-char name (the old '+' regex did not).
     _expect_caught("T3/ref-rejects-bracket", _NAME_RE.fullmatch("a[b") is None)
-    _expect_caught("T3/ref-rejects-upper", _NAME_RE.fullmatch("Ab") is None)
+    _expect_caught("T3/ref-rejects-leading-digit", _NAME_RE.fullmatch("9a") is None)
+    _expect_caught("T3/ref-accepts-upper", _NAME_RE.fullmatch("Ab") is not None)
     _expect_caught("T3/ref-accepts-single", _NAME_RE.fullmatch("a") is not None)
     ## The safe-charset guard must reject a name containing '[' (a live BRE
     ## metacharacter escape_name does not handle).
     _expect_caught("T3/safe-charset-guard", not _accepted_over_safe_charset("a[b"))
-    ## harness teeth: an over-permissive reference (accepts uppercase-initial)
+    ## harness teeth: an over-permissive reference (accepts a LEADING DIGIT)
     ## diverges from real is_name_valid and must be caught by real bash.
     _expect_enum_catches("T3/harness",
                          lambda: t3_enumerate(
                              subject, env,
-                             name_re=re.compile(r"[a-zA-Z_][-a-z0-9_.@]*\$?\Z")))
+                             name_re=re.compile(r"[a-zA-Z0-9_][-a-zA-Z0-9_.@]*\$?\Z")))
 
 
 ## ============================ T4: escape_name (+ composition) ===============
@@ -380,9 +384,9 @@ def t4_canaries(subject, env):
 ## ==================== T5: group_has_nonroot_member ==========================
 def m_group_has_nonroot(group, passwd, group_db):
     """passwd: list of (name, gid). group_db: name -> (gid, [supp members]).
-    Mirrors the fixed function: reject non-[a-z_]-initial names; else a non-root
+    Mirrors the fixed function: reject non-[a-zA-Z_]-initial names; else a non-root
     primary-GID member OR a non-root supplementary member."""
-    if not group or not re.match(r"[a-z_]", group):
+    if not group or not re.match(r"[a-zA-Z_]", group):
         return False
     if group not in group_db:
         return False
