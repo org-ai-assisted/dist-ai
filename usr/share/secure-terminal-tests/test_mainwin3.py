@@ -556,6 +556,10 @@ ok(_ov._banner.heightForWidth(_zc_geo.width()) > _zc_half,
    'zoom-clamp: at 300%/short window the banner WOULD exceed half (clamp is load-bearing)')
 ok(_ovt._chrome_top_inset <= _zc_half,
    'zoom-clamp: the advisory inset is clamped to <= half the content area (content never blanks)')
+# the clamp can CLIP the wrapped advisory text, so the full notice must stay readable via
+# the banner tooltip (a security notice must not become inaccessible at high zoom).
+ok(_ov._banner_label.toolTip() and _ov._banner_label.toolTip() == _ov._advisories[_ovt][1],
+   'zoom-clamp: the full advisory text is on the banner tooltip when clipped')
 _ov.set_zoom(100)
 _ov._dismiss_advisory()
 pump(50)

@@ -5155,6 +5155,20 @@ ok(len(_wcor) == 1 and (_wcor[0][1] - _wcor[0][0]) >= 2,
    'ws TUI: with colours off, a bg-styled gap is still dotted (the bg is stripped)')
 _wsco.shutdown()
 
+# a bg a HAIR off the terminal background (perceptually identical to padding) is still
+# dotted -- an exact-colour-match-only test would let it evade the anomaly dot.
+_wsnm = SecureTerminal(command='/bin/cat', tui=True)
+_wsnm.resize(500, 300)
+_wsnm.show()
+_wsnm.apply_theme('light')                       # base background #ffffff
+_wsnm.apply_colors(True)
+feed_output(_wsnm, b'GNU nano 8.4\x1b[48;2;255;255;254m      \x1b[0mNew Buffer\n')  # #fffffe
+_wsnm._force_current_frame()
+_wnm = _ws_runs_all(_wsnm)
+ok(len(_wnm) == 1 and (_wnm[0][1] - _wnm[0][0]) >= 2,
+   'ws TUI: a gap whose bg is a hair off the terminal background is still dotted (perceptual)')
+_wsnm.shutdown()
+
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
 # same rules across every display mode). With coloured markings ON (default) it
