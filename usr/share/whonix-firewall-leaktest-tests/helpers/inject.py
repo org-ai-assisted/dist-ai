@@ -201,6 +201,17 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
     return ETH_P_IPV4, ip4_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum) + PROBE_PAYLOAD
 
 
+def ranged_int(low: int, high: int):
+    """argparse type: an int in [low, high], else a clean usage error (not a
+    struct.error traceback deep in packet construction)."""
+    def parse(text: str) -> int:
+        value = int(text)
+        if not low <= value <= high:
+            raise argparse.ArgumentTypeError("must be %d..%d, got %d" % (low, high, value))
+        return value
+    return parse
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -211,12 +222,12 @@ def main() -> None:
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
     parser.add_argument("--src", required=True)
     parser.add_argument("--dst", required=True)
-    parser.add_argument("--sport", type=int, default=41444)
-    parser.add_argument("--dport", type=int, default=443)
+    parser.add_argument("--sport", type=ranged_int(0, 0xFFFF), default=41444)
+    parser.add_argument("--dport", type=ranged_int(0, 0xFFFF), default=443)
     parser.add_argument("--flags", default="syn", choices=sorted(TCP_FLAGS))
-    parser.add_argument("--protonum", type=int, default=47, help="IP proto / next-header for rawip*")
+    parser.add_argument("--protonum", type=ranged_int(0, 0xFF), default=47, help="IP proto / next-header for rawip*")
     parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6), help="ext-header for exthdr6")
-    parser.add_argument("--count", type=int, default=4)
+    parser.add_argument("--count", type=ranged_int(1, 10000), default=4)
     args = parser.parse_args()
 
     ethertype, l3 = build_l3(args)
