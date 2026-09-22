@@ -11,7 +11,7 @@ tooltips (trust lock / untrusted line-2 band), and the line-2 separator/paint. S
 
 from test_widget_common import *   # noqa: F401,F403  (shared harness: APP, ok, eq, finish, Qt, QRect ...)
 
-from PyQt6.QtWidgets import QWidget, QTabBar
+from PyQt6.QtWidgets import QWidget, QTabBar, QTabWidget
 from PyQt6.QtGui import QHelpEvent
 from PyQt6.QtCore import QPoint, QEvent
 from secure_terminal.main import SecureTabBar, _ToolTipFilter, normalize_ptitle
@@ -134,6 +134,16 @@ eq(normalize_ptitle('npm run build'), 'npm run build',
 eq(normalize_ptitle(''), '', 'empty in -> empty out')
 eq(normalize_ptitle('user@host:~/deep/path'), '',
    'a path-only prompt title (no command) normalizes to empty')
+# ai-review grok#1: a leading /path is stripped ONLY inside a user@host: prompt, never
+# from a plain app title / command (else a filename or command reads as disposable cwd).
+eq(normalize_ptitle('/tmp/foo.py - VIM'), '/tmp/foo.py - VIM',
+   'a leading path in a plain title (no user@host:) is content, not stripped')
+# ai-review grok#3: only a SINGLE wrapping paren group is unwrapped, never a title that
+# merely starts "(" and ends ")".
+eq(normalize_ptitle('(gdb) backtrace (full)'), '(gdb) backtrace (full)',
+   'a title with two paren groups is not mis-unwrapped')
+eq(normalize_ptitle('(make check)'), 'make check',
+   'a single wrapping paren group is unwrapped')
 
 # tooltip branches over the band: norm==raw (Title:), norm!=raw (Shown/Full), norm empty
 _tb = SecureTabBar()
@@ -162,8 +172,41 @@ _t1 = _band_tip(_tb, 1)
 ok('Shown: vim notes.txt' in _t1 and 'Full: user@host:~ (vim notes.txt) [pts/1]' in _t1,
    'a normalized title shows BOTH the normalized (Shown) and the raw (Full) in the tooltip')
 _t2 = _band_tip(_tb, 2)
-ok('blank' in _t2 and 'Full: user@host:~ [pts/1]' in _t2,
-   'an all-noise title tooltip explains the band is blank and still shows the raw title')
+ok('Blank here' in _t2 and 'shell prompt' in _t2
+   and 'Full title: user@host:~ [pts/1]' in _t2,
+   'an all-noise title tooltip explains WHY the band is blank and shows the raw title')
 _tb.close()
+
+# --- ai-review grok#4: a current-tab switch must not drop the close button onto the band -
+# Host the bar in a QTabWidget exactly as the app does: setCurrentIndex re-lays-out the
+# old + new current tab's close button WITHOUT firing tabLayoutChange.
+_tw = QTabWidget()
+_swb = SecureTabBar()
+_tw.setTabBar(_swb)
+_tw.setTabsClosable(True)
+_swb.set_two_line(True)
+for _i in range(3):
+    _tw.addTab(QWidget(), 't%d' % _i)
+_tw.resize(600, 300)
+_tw.show()
+APP.processEvents()
+_tw.setCurrentIndex(1)
+APP.processEvents()
+for _i in (0, 1):
+    _btn = _swb.tabButton(_i, _RIGHT)
+    _r = _swb.tabRect(_i)
+    _l1b = _r.top() + (_r.height() - _swb._LINE2_H)
+    ok(_btn is not None and _btn.geometry().center().y() < _l1b,
+       'tab %d close button stays on line 1 after a current-tab switch' % _i)
+_tw.close()
+
+# --- ai-review grok#5: the band hit rect covers the TOP row of the painted band --------
+_hb = _bar()
+_r0 = _hb.tabRect(0)
+_l1h = _r0.height() - _hb._LINE2_H
+_top_of_band = QPoint(_r0.center().x(), _r0.top() + _l1h)     # first painted band row
+ok('Line 2' in (_hb.element_tooltip(_top_of_band) or ''),
+   'the line-2 band tooltip covers the top row of the painted band (no 1px gap)')
+_hb.close()
 
 finish('tabbar-polish')

@@ -24,11 +24,14 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
+[ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 
 lib_rel='usr/libexec/helper-scripts/set-keyboard-layout.sh'
 lib=""
 if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ] && [ -r "${SET_KEYBOARD_LAYOUT_REPO}/${lib_rel}" ]; then
    lib="${SET_KEYBOARD_LAYOUT_REPO}/${lib_rel}"
+elif [ -n "${HELPER_SCRIPTS_REPO}" ] && [ -r "${HELPER_SCRIPTS_REPO}/${lib_rel}" ]; then
+   lib="${HELPER_SCRIPTS_REPO}/${lib_rel}"
 elif [ -n "${HELPER_SCRIPTS_PATH:-}" ] && [ -r "${HELPER_SCRIPTS_PATH}/${lib_rel}" ]; then
    lib="${HELPER_SCRIPTS_PATH}/${lib_rel}"
 elif [ -r "/${lib_rel}" ]; then
@@ -75,11 +78,23 @@ restart_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 
+## Line order alone is not enough: a FALL-THROUGH guard (an 'if [ != 0 ]' that only
+## logs and closes, then an unconditional restart) satisfies guard < restart yet
+## restarts for every user. The shipped guard early-RETURNS for non-root, so require a
+## return/exit inside the guard's own block (up to its closing 'fi'). A flat block is
+## assumed (the shipped one is); a nested 'fi' fails closed -> a human reviews.
+guard_returns="$(printf '%s\n' "${console_code}" | awk -v g="${guard_line}" '
+   NR <= g { next }
+   /^[[:space:]]*fi([[:space:]]|;|$)/ { exit }
+   /(^|[[:space:]])(return|exit)([[:space:]]|$)/ { print "yes"; exit }
+')"
+
 if [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
-   && [ "${guard_line}" -lt "${restart_line}" ]; then
+   && [ "${guard_line}" -lt "${restart_line}" ] \
+   && [ "${guard_returns}" = "yes" ]; then
    ok "root guard 'if' gates the console restart in set_console_keymap"
 else
-   notok "root guard does not gate the console restart (guard='${guard_line}' restart='${restart_line}')"
+   notok "root guard does not gate the console restart (guard='${guard_line}' restart='${restart_line}' returns='${guard_returns:-no}')"
 fi
 
 ## The resolved TODO must be gone (an addressed marker is deleted).
