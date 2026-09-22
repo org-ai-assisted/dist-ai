@@ -62,11 +62,19 @@ PROBE_DST_IP6='2001:db8:dead::1'
 # shellcheck disable=SC2034
 PROBE_DST_IP4='198.51.100.7'
 
-## Broad egress oracle: capture ANY packet reaching the sink except the benign
-## external-link chatter (the gw<->up neighbor discovery + multicast/ARP). A leak
-## to an UNEXPECTED destination is caught too, not only the probe's dest -- a BPF
-## filtered to the known dest would miss a rewritten/redirected leak.
-LEAKTEST_EGRESS_BPF="(ip or ip6) and not (host ${EXT_UP_IP6} or host ${EXT_GW_IP6} or net 10.0.2.0/24 or ip6 multicast or ip multicast or arp)"
+## Broad egress oracle: capture ANY IP packet reaching the sink except the benign
+## control-plane chatter, EXCLUDED BY PROTOCOL not by address. A leak to (or from)
+## an UNEXPECTED address is caught too -- excluding the link addresses as hosts
+## would blind the oracle to a leak that merely touches one (e.g. a masquerade-
+## style leak sourced from the gateway's external IP).
+##   - multicast: MLD / router-advert / solicited-node ND (never a unicast leak)
+##   - icmp6 types 130-143: MLD + ND/RS/RA/NS/NA/redirect (unicast ND too), by
+##     type so it catches link-local ND; echo (128/129) is OUTSIDE the range, so
+##     an ICMPv6-echo leak is still captured. ip6[40] is the icmp6 type byte for
+##     these (no extension headers; MLD carries a HbH option but is multicast, so
+##     it is already excluded above and never reaches this term).
+## ARP is dropped by the leading "(ip or ip6)".
+LEAKTEST_EGRESS_BPF="(ip or ip6) and not (ip6 multicast or ip multicast) and not (icmp6 and ip6[40] >= 130 and ip6[40] <= 143)"
 
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
@@ -76,6 +84,10 @@ LEAKTEST_TCPDUMP_PID=''
 ## apply to it, and there is no subshell whose failure would be swallowed.
 LEAKTEST_EGRESS_COUNT=''
 LEAKTEST_CAPTURE_LIVE=''
+## Non-empty when the injector itself failed (e.g. gateway MAC unresolved): carries
+## its stderr so the assert helpers report a clear reason instead of a mute abort,
+## and so a failed inject is never mistaken for a clean "0 egress".
+LEAKTEST_PROBE_ERROR=''
 
 msg() {
    printf '%s\n' "$*"
@@ -264,14 +276,21 @@ leaktest_permissive_ruleset() {
 ## are polluted by the netns's own post-setup ND/MLD settling, so a counter delta
 ## cannot distinguish this probe from ambient traffic.
 leaktest_fire_forward_probe() {
-   local proto="$1" src="$2" dst="$3" capture_file="$4" helpers
+   local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
    shift 4
    helpers="$(leaktest_helpers_dir)"
+   inject_err="${capture_file}.inject-err"
+   LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
-   ip netns exec ws python3 "${helpers}/inject.py" \
+   ## Keep the injector's stderr (its diagnostic on e.g. an unresolved gateway MAC)
+   ## and check its exit explicitly: a failed inject is reported by the assert
+   ## helpers as a clear reason, never a mute errexit abort or a false "0 egress".
+   if ! ip netns exec ws python3 "${helpers}/inject.py" \
       --proto "${proto}" --iface eth0 --gw4 "${INT_GW_IP4}" \
-      --src "${src}" --dst "${dst}" "$@" >/dev/null 2>&1
+      --src "${src}" --dst "${dst}" "$@" >/dev/null 2>"${inject_err}"; then
+      LEAKTEST_PROBE_ERROR="inject.py failed: $(tr '\n' ' ' <"${inject_err}" 2>/dev/null)"
+   fi
    sleep 3
    leaktest_capture_wait
    LEAKTEST_CAPTURE_LIVE=0
@@ -284,6 +303,10 @@ leaktest_fire_forward_probe() {
 ## Returns 0 on pass.
 leaktest_assert_blocked() {
    local label="$1" count="$2" live="$3"
+   if [ -n "${LEAKTEST_PROBE_ERROR}" ]; then
+      fail_case "${label}: ${LEAKTEST_PROBE_ERROR}"
+      return 1
+   fi
    if [ "${live}" != '1' ]; then
       fail_case "${label}: capture did not bind -- result untrustworthy"
       return 1
@@ -299,6 +322,10 @@ leaktest_assert_blocked() {
 ## harness detects a leak when one exists (teeth). Returns 0 on pass.
 leaktest_assert_leaked() {
    local label="$1" count="$2" live="$3"
+   if [ -n "${LEAKTEST_PROBE_ERROR}" ]; then
+      fail_case "${label} canary: ${LEAKTEST_PROBE_ERROR}"
+      return 1
+   fi
    if [ "${live}" != '1' ]; then
       fail_case "${label} canary: capture did not bind -- cannot prove teeth"
       return 1
