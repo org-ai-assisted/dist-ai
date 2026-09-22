@@ -120,4 +120,18 @@ eq(_g.verticalScrollBarPolicy(), _ALWAYS_OFF,
 _g._alt_snapshotting = False
 _g.close()
 
+# --- alt-ENTER from a scrolled primary reclaims the scrollbar column (ai-review grok#1) -
+# The snapshot render hides the bar while _alt_screen is False, so the later alt paint no
+# longer toggles the bar; _alt_enter must reconcile the winsize itself, or the full-screen
+# program is left one column short (a dead strip on the right).
+_e = _new_term()
+_fill_scrollback(_e)                        # > one screen -> the vertical bar is shown
+if _e.verticalScrollBar().isVisible():      # (a taller low-DPI grid may not overflow)
+    feed_output(_e, _nano_frame(_e))
+    _e._render_tui()
+    APP.processEvents()
+    eq(_e._screen.columns, _e._tui_grid_size()[0],
+       'alt-enter reclaims the scrollbar column: child width == alt grid width, not one short')
+_e.close()
+
 finish('alt-reenter')
