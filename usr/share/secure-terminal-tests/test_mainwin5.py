@@ -1133,9 +1133,10 @@ for _stem in ('transcript', 'screen', 'state-dump'):
 _ds._write_atomic(_ds._log_path(_cuid), 'log')
 _uw.close_tab(_uw.tabs.indexOf(_ut1))
 ok(not os.path.exists(_ds.tab_file('transcript', _cuid))
+   and not os.path.exists(_ds.tab_file('screen', _cuid))
    and not os.path.exists(_ds.tab_file('state-dump', _cuid))
    and not os.path.exists(_ds._log_path(_cuid)),
-   'delete-on-close: closing a tab removes its on-save files + restore log')
+   'delete-on-close: closing a tab removes its on-save files (transcript/screen/state-dump) + restore log')
 _uw.new_tab()
 ok(_uw._tab_ids[_uw.tabs.widget(_uw.tabs.count() - 1)] not in _seen_ids,
    'durable id: a new tab after a close gets a fresh id, never a reused one')
