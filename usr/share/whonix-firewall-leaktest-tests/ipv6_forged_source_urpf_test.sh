@@ -37,30 +37,31 @@ trap leaktest_teardown EXIT
 
 helpers_dir="$(leaktest_helpers_dir)"
 capture_file="$(mktemp)"
-probe_bpf="ip6 and (host ${PROBE_SRC_IP6} or host ${PROBE_DST_IP6}) and tcp"
 rc=0
 
-## Fire the forged-source probe against the currently-loaded topology and print
-## how many probe-tagged packets reached the upstream sink.
-fire_forged_probe() {
-   leaktest_capture_up "${probe_bpf}" 6 "${capture_file}"
+## Fire a forged-source SYN from <src> against the currently-loaded topology and
+## print how many probe-tagged packets reached the upstream sink.
+## Print "<egress-count> <capture-live>" for a forged-source SYN from <src>.
+fire_probe_from() {
+   local src="$1" live=0
+   leaktest_capture_up "ip6 and (host ${src} or host ${PROBE_DST_IP6}) and tcp" 6 "${capture_file}"
    sleep 1
    ip netns exec ws python3 "${helpers_dir}/inject.py" \
       --proto tcp6 --iface eth0 --gw4 "${INT_GW_IP4}" \
-      --src "${PROBE_SRC_IP6}" --dst "${PROBE_DST_IP6}" >/dev/null 2>&1
+      --src "${src}" --dst "${PROBE_DST_IP6}" >/dev/null 2>&1
    sleep 3
    leaktest_capture_wait
-   leaktest_egress_count "${capture_file}"
+   leaktest_capture_bound "${capture_file}" && live=1
+   printf '%s %s' "$(leaktest_egress_count "${capture_file}")" "${live}"
 }
 
-## 1. Shipped ruleset (uRPF present) -> no egress.
+## 1. Shipped ruleset (uRPF present) -> no egress, for the forged source and for
+## other off-subnet spoofs (uRPF is general, not keyed to one address).
 leaktest_setup "${ruleset_file}"
-egressed="$(fire_forged_probe)"
-if [ "${egressed}" -ne 0 ]; then
-   fail_case "forged-source IPv6 egressed the gateway (${egressed} pkt(s)) with the shipped ruleset" || rc=1
-else
-   msg "PASS: forged-source IPv6 blocked (0 egress)"
-fi
+for spoof in "${PROBE_SRC_IP6}" '2001:db8:cafe::5' '::ffff:203.0.113.5'; do
+   result="$(fire_probe_from "${spoof}")"
+   leaktest_assert_blocked "spoofed source ${spoof}" "${result% *}" "${result##* }" || rc=1
+done
 
 ## 2. Positive control on the same topology.
 if leaktest_positive_control; then
@@ -73,11 +74,7 @@ fi
 stripped_ruleset="$(mktemp --suffix=.nft)"
 grep --invert-match 'fib saddr . iif oif missing' "${ruleset_file}" >"${stripped_ruleset}"
 leaktest_setup "${stripped_ruleset}"
-egressed="$(fire_forged_probe)"
-if [ "${egressed}" -gt 0 ]; then
-   msg "PASS: canary reproduced the leak without uRPF (${egressed} pkt(s)); test has teeth"
-else
-   fail_case "canary: leak did NOT reproduce without the uRPF rule -- the harness proves nothing" || rc=1
-fi
+result="$(fire_probe_from "${PROBE_SRC_IP6}")"
+leaktest_assert_leaked 'forged-source (uRPF stripped)' "${result% *}" "${result##* }" || rc=1
 
 exit "${rc}"
