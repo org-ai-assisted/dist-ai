@@ -55,8 +55,11 @@ EXT_UP_IP4='10.0.2.2'
 EXT_GW_IP6='2001:db8:aaaa::2'
 EXT_UP_IP6='2001:db8:aaaa::1'
 ## Probe tags (RFC 3849 / RFC 5737 documentation space; never routable).
+## PROBE_SRC_IP6 / PROBE_DST_IP4 are consumed by sourcing test files, not here.
+# shellcheck disable=SC2034
 PROBE_SRC_IP6='2001:db8:beef::99'
 PROBE_DST_IP6='2001:db8:dead::1'
+# shellcheck disable=SC2034
 PROBE_DST_IP4='198.51.100.7'
 
 LEAKTEST_LISTENER_PID=''
@@ -192,8 +195,11 @@ leaktest_setup() {
 ## Prints the pcap-summary lines to stdout. <bpf> is a tcpdump filter.
 leaktest_capture_up() {
    local bpf="$1" secs="$2" outfile="$3"
+   ## Keep tcpdump's stderr ("listening on ...") so a capture that never bound
+   ## (bad interface / BPF, permission failure) is distinguishable from a real
+   ## zero-packet result -- otherwise both look like "0 egress" (a false PASS).
    ip netns exec up timeout "${secs}" tcpdump --no-promiscuous-mode -nni eth0 -l "${bpf}" \
-      >"${outfile}" 2>/dev/null &
+      >"${outfile}" 2>"${outfile}.err" &
    LEAKTEST_TCPDUMP_PID="$!"
 }
 
@@ -209,8 +215,17 @@ leaktest_capture_wait() {
 ## timestamped lines -- protocol-decode independent (port 123 prints as "NTPv5",
 ## 443 as "https", etc.). The BPF filter is what scopes the capture to the probe.
 leaktest_egress_count() {
-   local outfile="$1"
-   grep --count --extended-regexp '^[0-9][0-9]:[0-9][0-9]:[0-9][0-9][.]' "${outfile}" 2>/dev/null || true
+   local outfile="$1" count
+   count="$(grep --count --extended-regexp '^[0-9][0-9]:[0-9][0-9]:[0-9][0-9][.]' "${outfile}" 2>/dev/null || true)"
+   ## Always emit a well-formed integer: an empty/absent file must read 0, never
+   ## an empty string that would break a later '[ ... -ne 0 ]' into a false PASS.
+   printf '%s' "${count:-0}"
+}
+
+## True if the capture at <outfile> actually bound and listened (tcpdump printed
+## "listening on ..."). A capture that never started must not read as "no leak".
+leaktest_capture_bound() {
+   grep --quiet 'listening on' "$1.err" 2>/dev/null
 }
 
 ## Derive a permissive-forward ruleset from a real one, so a forward-leak canary
@@ -223,9 +238,10 @@ leaktest_permissive_ruleset() {
       "${infile}" >"${outfile}"
 }
 
-## Fire a non-redirected probe (icmp6 / udp6 / non-SYN tcp6) from ws with the
-## workstation's legitimate internal source and print how many probe-tagged
-## packets reached the upstream sink. Extra inject.py args after the fixed ones.
+## Fire a non-redirected probe from ws and print "<egress-count> <capture-live>":
+## the probe-tagged packet count reaching the sink, plus 1/0 for whether the
+## capture actually bound. Callers must treat capture-live=0 as a hard failure,
+## never as "no leak". Extra inject.py args after the fixed ones.
 leaktest_fire_forward_probe() {
    local proto="$1" src="$2" dst="$3" bpf="$4" capture_file="$5"
    shift 5
@@ -236,7 +252,40 @@ leaktest_fire_forward_probe() {
       --src "${src}" --dst "${dst}" "$@" >/dev/null 2>&1
    sleep 3
    leaktest_capture_wait
-   leaktest_egress_count "${capture_file}"
+   local live=0
+   leaktest_capture_bound "${capture_file}" && live=1
+   printf '%s %s' "$(leaktest_egress_count "${capture_file}")" "${live}"
+}
+
+## Assert the primary leg BLOCKED: a live capture that saw zero probe packets.
+## <count> <live> come from leaktest_fire_forward_probe. Returns 0 on pass.
+leaktest_assert_blocked() {
+   local label="$1" count="$2" live="$3"
+   if [ "${live}" != '1' ]; then
+      fail_case "${label}: capture did not bind -- result untrustworthy"
+      return 1
+   fi
+   if [ "${count}" -ne 0 ]; then
+      fail_case "${label}: egressed the gateway (${count} pkt(s))"
+      return 1
+   fi
+   msg "PASS: ${label} blocked (0 egress)"
+}
+
+## Assert the canary leg LEAKED: a live capture that saw the probe -- proving the
+## harness detects a leak when one exists (teeth). Returns 0 on pass.
+leaktest_assert_leaked() {
+   local label="$1" count="$2" live="$3"
+   if [ "${live}" != '1' ]; then
+      fail_case "${label} canary: capture did not bind -- cannot prove teeth"
+      return 1
+   fi
+   if [ "${count}" -gt 0 ]; then
+      msg "PASS: ${label} canary egressed (${count} pkt(s)); test has teeth"
+      return 0
+   fi
+   fail_case "${label} canary: leak did NOT reproduce -- harness proves nothing"
+   return 1
 }
 
 ## Generic probe-leak case with an EXPLICIT source: a non-redirected probe must
@@ -246,16 +295,12 @@ leaktest_fire_forward_probe() {
 leaktest_probe_case() {
    local label="$1" proto="$2" src="$3" dst="$4" bpf="$5"
    shift 5
-   local capture_file permissive egressed rc=0
+   local capture_file permissive result rc=0
    capture_file="$(mktemp)"
 
    leaktest_setup "${ruleset_file}"
-   egressed="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
-   if [ "${egressed}" -ne 0 ]; then
-      fail_case "${label}: egressed the gateway (${egressed} pkt(s)) with the shipped ruleset" || rc=1
-   else
-      msg "PASS: ${label} blocked (0 egress)"
-   fi
+   result="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
+   leaktest_assert_blocked "${label}" "${result% *}" "${result##* }" || rc=1
    if leaktest_positive_control; then
       msg "PASS: positive control (legit torified TCP path works)"
    else
@@ -265,12 +310,8 @@ leaktest_probe_case() {
    permissive="$(mktemp --suffix=.nft)"
    leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
    leaktest_setup "${permissive}"
-   egressed="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
-   if [ "${egressed}" -gt 0 ]; then
-      msg "PASS: ${label} canary egressed with permissive forward (${egressed} pkt(s)); test has teeth"
-   else
-      fail_case "${label} canary: leak did NOT reproduce with permissive forward -- harness proves nothing" || rc=1
-   fi
+   result="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
+   leaktest_assert_leaked "${label} (permissive forward)" "${result% *}" "${result##* }" || rc=1
 
    return "${rc}"
 }
@@ -311,27 +352,19 @@ PY
 ## the firewall entirely so the same traffic forwards out -- proving the harness
 ## detects a fail-OPEN. Returns 0 if both hold.
 leaktest_fail_closed_case() {
-   local rc=0 capture_file empty egressed
+   local rc=0 capture_file empty result
    local bpf="ip6 and host ${PROBE_DST_IP6} and tcp"
    capture_file="$(mktemp)"
 
    leaktest_setup "${ruleset_file}" nolistener
-   egressed="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
-   if [ "${egressed}" -ne 0 ]; then
-      fail_case "fail-closed: workstation traffic egressed with Tor down (${egressed} pkt(s))" || rc=1
-   else
-      msg "PASS: fail-closed (Tor down -> workstation traffic dropped, 0 egress)"
-   fi
+   result="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
+   leaktest_assert_blocked 'fail-closed (Tor down -> workstation traffic dropped)' "${result% *}" "${result##* }" || rc=1
 
    empty="$(mktemp --suffix=.nft)"
    printf 'flush ruleset\n' >"${empty}"
    leaktest_setup "${empty}" nolistener
-   egressed="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
-   if [ "${egressed}" -gt 0 ]; then
-      msg "PASS: fail-closed canary egressed with no firewall (${egressed} pkt(s)); test has teeth"
-   else
-      fail_case "fail-closed canary: no leak with an empty ruleset -- harness proves nothing" || rc=1
-   fi
+   result="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
+   leaktest_assert_leaked 'fail-closed (no firewall)' "${result% *}" "${result##* }" || rc=1
 
    return "${rc}"
 }
