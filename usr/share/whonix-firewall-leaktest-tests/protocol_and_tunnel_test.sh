@@ -30,9 +30,9 @@ trap leaktest_teardown EXIT
 
 rc=0
 
-## Representative non-TCP IPv6 protocols (GRE 47, ESP 50, OSPF 89, DCCP 33,
-## SCTP 132): none may forward.
-for protonum in 47 50 89 33 132; do
+## Representative non-TCP IPv6 protocols (IP-in-IP 4, GRE 47, ESP 50, AH 51,
+## OSPF 89, DCCP 33, SCTP 132): none may forward.
+for protonum in 4 47 50 51 89 33 132; do
    leaktest_probe_case \
       "IPv6 protocol ${protonum} to clearnet" rawip6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
       --protonum "${protonum}" || rc=$?
