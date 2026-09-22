@@ -22,6 +22,7 @@ could never send.
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
   rawip4 IPv4 with an arbitrary protocol (--protonum), tiny payload (e.g. 41 = 6to4)
   frag6  IPv6 atomic fragment (fragment ext-header) carrying a UDP datagram
+  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) over UDP
 """
 
 import argparse
@@ -121,6 +122,25 @@ def frag6_atomic(src: str, dst: str, dport: int) -> bytes:
     return ip6_header(src, dst, len(payload), 44) + payload
 
 
+## IPv6 extension headers (8-byte minimal forms), each declaring next-header=UDP
+## so the L4 is hidden one hop down the chain -- a classic way to try to slip past
+## a stateless filter that only inspects the first next-header.
+EXTHDR6 = {
+    ## Routing header (nexthdr 43), type 0, segments-left 0 (the RH0 shape).
+    "routing": (43, struct.pack("!BBBBI", 17, 0, 0, 0, 0)),
+    ## Hop-by-Hop options (nexthdr 0) with a PadN option filling the 8 bytes.
+    "hopopts": (0, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
+    ## Destination options (nexthdr 60), same PadN filler.
+    "dstopts": (60, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
+}
+
+
+def exthdr6(src: str, dst: str, dport: int, kind: str) -> bytes:
+    next_header, header = EXTHDR6[kind]
+    payload = header + udp6(src, dst, 41600, dport)
+    return ip6_header(src, dst, len(payload), next_header) + payload
+
+
 def resolve_gw_mac(gw4: str) -> bytes:
     proc = subprocess.run(
         ["ip", "neigh", "show", gw4], capture_output=True, text=True, check=False
@@ -155,6 +175,8 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 17)[:40] + payload
     if args.proto == "frag6":
         return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport)
+    if args.proto == "exthdr6":
+        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr)
     if args.proto == "rawip6":
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum)[:40] + PROBE_PAYLOAD
     if args.proto == "tcp4":
@@ -171,7 +193,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "udp6", "frag6", "rawip6", "udp4", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "udp6", "frag6", "exthdr6", "rawip6", "udp4", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
@@ -181,6 +203,7 @@ def main() -> None:
     parser.add_argument("--dport", type=int, default=443)
     parser.add_argument("--flags", default="syn", choices=sorted(TCP_FLAGS))
     parser.add_argument("--protonum", type=int, default=47, help="IP proto / next-header for rawip*")
+    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6), help="ext-header for exthdr6")
     parser.add_argument("--count", type=int, default=4)
     args = parser.parse_args()
 
