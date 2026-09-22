@@ -299,6 +299,15 @@ wire() {
          ;;
       stcat-family|stdisplay)
          wire_env=( "STDISPLAY_REPO=${hs}" )
+         ## stcat-family-tests-fuzz defaults to 5000 iterations, whose per-tool
+         ## cost lands right at the 600s fuzz budget -- a flaky per-suite TIMEOUT
+         ## (passes some runs, times out others). Cap it to 2000 (~240s) to fit
+         ## with margin; the full sweep stays available by hand via --iterations N.
+         ## stdisplay-tests-fuzz (same default) runs well under budget, so it is
+         ## left uncapped.
+         if [ "${suite}" = 'stcat-family-tests-fuzz' ]; then
+            wire_args=( '--iterations' '2000' )
+         fi
          ;;
       strip-markup)
          wire_env=( "STRIP_MARKUP_REPO=${hs}" )
