@@ -501,7 +501,8 @@ eq((win._display_level()[1], win._display_level()[0]), ('Show', MODE_NEUTRAL),
 eq(win.act_box.text(), '&Box', 'the box display mode is user-labelled Box')
 ok('cat file | bash' in win.act_box.toolTip(),
    'the Box tooltip clarifies it is display-only, not bytes piped elsewhere')
-eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
+eq((win._mode_level()[1], win._mode_level()[0]), ('CLI', '#1f8a54'),
+   'CLI mode -> green mode lamp')
 if tui_available():
     win.set_tui(True)
     eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', MODE_NEUTRAL),
