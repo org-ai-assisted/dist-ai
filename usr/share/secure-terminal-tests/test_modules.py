@@ -1046,6 +1046,198 @@ for _d in _ri_tmp:
     shutil.rmtree(_d, ignore_errors=True)
 
 
+# ============================ crashdiag ======================================
+# A GUI-launched secure-terminal has no visible stderr, so a crash must still
+# leave a readable trace. Test the pure teeing/formatting in-process with FAKE
+# streams (so the test's own sys.excepthook / faulthandler stay untouched), and
+# the two REAL crash paths -- an unhandled Python exception and a native fatal
+# signal -- end-to-end in a subprocess.
+import io                                                             # noqa: E402
+import faulthandler                                                   # noqa: E402
+import subprocess                                                    # noqa: E402
+from secure_terminal import crashdiag                                # noqa: E402
+
+_cd_root = tempfile.mkdtemp()
+eq(crashdiag.crash_log_path(_cd_root), os.path.join(_cd_root, 'crash.log'),
+   'crashdiag: the crash log is crash.log under the state root')
+
+# session.ensure_instances_root: the crash log's home, one fixed owner-only dir at
+# the state root, independent of instance group (parent of every group subtree).
+_cd_xdg = os.environ.get('XDG_STATE_HOME')
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp()
+_cd_ir = session.ensure_instances_root()
+ok(os.path.isdir(_cd_ir) and _cd_ir == os.path.dirname(session._state_dir()),
+   'session: ensure_instances_root creates the state root (parent of the group dir)')
+eq(os.stat(_cd_ir).st_mode & 0o777, 0o700,
+   'session: the instances root is owner-only (0700)')
+session.ensure_instances_root()      # idempotent on a pre-existing dir
+ok(os.path.isdir(_cd_ir), 'session: ensure_instances_root is idempotent')
+# best-effort: a chmod failure is swallowed, the path still returned (it only backs
+# a diagnostic, so it must never abort a launch).
+_cd_real_chmod = os.chmod
+
+
+def _cd_boom_chmod(*_a, **_k):
+    raise OSError('chmod denied')
+
+
+os.chmod = _cd_boom_chmod
+try:
+    ok(session.ensure_instances_root() == _cd_ir,
+       'session: ensure_instances_root swallows a chmod failure, still returns the path')
+finally:
+    os.chmod = _cd_real_chmod
+if _cd_xdg is None:
+    del os.environ['XDG_STATE_HOME']
+else:
+    os.environ['XDG_STATE_HOME'] = _cd_xdg
+
+# make_excepthook tees a traceback to BOTH the durable log and stderr.
+_log_io, _err_io = io.StringIO(), io.StringIO()
+_cd_hook = crashdiag.make_excepthook(_log_io, _err_io)
+try:
+    raise ValueError('boom-marker-xyz')
+except ValueError:
+    _cd_hook(*sys.exc_info())
+ok('boom-marker-xyz' in _log_io.getvalue() and 'ValueError' in _log_io.getvalue(),
+   'crashdiag: excepthook writes the traceback to the durable log')
+ok('boom-marker-xyz' in _err_io.getvalue(),
+   'crashdiag: excepthook also tees the traceback to stderr (terminal launch)')
+
+
+class _CdDeadStream:
+    def write(self, _text):
+        raise OSError('sink is gone')
+
+    def flush(self):
+        raise OSError('sink is gone')
+
+
+_cd_hook_dead = crashdiag.make_excepthook(_CdDeadStream(), _CdDeadStream())
+try:
+    raise RuntimeError('unused')
+except RuntimeError:
+    _cd_hook_dead(*sys.exc_info())
+ok(True, 'crashdiag: a handler never raises even when every sink is dead')
+
+# A None sink is skipped (an install with no stderr still logs to the file).
+_cd_log_only = io.StringIO()
+_cd_hook_nostderr = crashdiag.make_excepthook(_cd_log_only, None)
+try:
+    raise ValueError('log-only-marker')
+except ValueError:
+    _cd_hook_nostderr(*sys.exc_info())
+ok('log-only-marker' in _cd_log_only.getvalue(),
+   'crashdiag: a None sink is skipped; the durable log still gets the trace')
+
+# qt_message_is_fatal: only Critical(2)/Fatal(3) persist, by enum value or bare int.
+
+
+class _CdMode:
+    def __init__(self, value):
+        self.value = value
+
+
+eq([crashdiag.qt_message_is_fatal(_CdMode(v)) for v in (0, 1, 2, 3, 4)],
+   [False, False, True, True, False],
+   'crashdiag: only Qt Critical/Fatal messages are persisted')
+eq(crashdiag.qt_message_is_fatal(3), True,
+   'crashdiag: qt_message_is_fatal accepts a bare int too')
+
+# _open_append is 0600 (owner-only: a traceback can carry paths/argv); write_note
+# appends a captured Qt fatal message.
+_cd_log = crashdiag._open_append(crashdiag.crash_log_path(_cd_root))
+eq(os.stat(crashdiag.crash_log_path(_cd_root)).st_mode & 0o777, 0o600,
+   'crashdiag: the crash log is created owner-only (0600)')
+crashdiag.write_note(_cd_log, 'qt message', 'Fatal: gone\n')
+_cd_log.close()
+_cd_text = _slurp(crashdiag.crash_log_path(_cd_root))
+ok('qt message' in _cd_text and 'Fatal: gone' in _cd_text,
+   'crashdiag: write_note persists a captured Qt fatal message')
+
+# note_qt_message: the handler calls it UNCONDITIONALLY; it persists only a fatal
+# message and only when a log exists (a no-op otherwise, so it never raises).
+_cd_note_io = io.StringIO()
+crashdiag.note_qt_message(_cd_note_io, _CdMode(3), 'boom-qfatal')
+crashdiag.note_qt_message(_cd_note_io, _CdMode(1), 'just-a-warning')
+crashdiag.note_qt_message(None, _CdMode(3), 'no-log-yet')
+_cd_note = _cd_note_io.getvalue()
+ok('boom-qfatal' in _cd_note and 'just-a-warning' not in _cd_note,
+   'crashdiag: note_qt_message persists a Fatal message but not a Warning')
+
+# O_NOFOLLOW: a planted symlink at the log path is refused (no write redirect).
+_cd_sym = tempfile.mkdtemp()
+os.symlink('/etc/passwd', crashdiag.crash_log_path(_cd_sym))
+try:
+    crashdiag._open_append(crashdiag.crash_log_path(_cd_sym))
+    ok(False, 'crashdiag: a symlinked crash log path must be refused')
+except OSError:
+    ok(True, 'crashdiag: a symlinked crash log path is refused (O_NOFOLLOW)')
+
+# install_best_effort (main()'s entry point) wires the PROCESS-GLOBAL excepthook +
+# faulthandler; exercise it in process (subprocess coverage is not measured), then
+# restore both so the rest of the suite is untouched.
+_cd_prev_hook = sys.excepthook
+_cd_fh_was = faulthandler.is_enabled()
+_cd_i_root = tempfile.mkdtemp()
+_cd_i_log = crashdiag.install_best_effort(_cd_i_root)
+ok(_cd_i_log is not None and sys.excepthook is not _cd_prev_hook,
+   'crashdiag: install_best_effort opens the log and replaces sys.excepthook')
+sys.excepthook = _cd_prev_hook
+faulthandler.disable()
+if _cd_fh_was:
+    faulthandler.enable()
+_cd_i_log.close()
+shutil.rmtree(_cd_i_root, ignore_errors=True)
+
+# install_best_effort never raises: a root whose parent is a FILE cannot hold the
+# log -> returns None, diagnostics stay at their defaults (launch proceeds).
+_cd_blk = tempfile.mktemp()
+with open(_cd_blk, 'w', encoding='ascii') as _cd_bh:
+    _cd_bh.write('x')
+ok(crashdiag.install_best_effort(os.path.join(_cd_blk, 'sub')) is None,
+   'crashdiag: install_best_effort returns None (never raises) when the log is unopenable')
+os.unlink(_cd_blk)
+
+
+def _cd_child(body, root):
+    code = ('import faulthandler\n'
+            'from secure_terminal import crashdiag\n'
+            'crashdiag.install(%r)\n' % root) + body
+    return subprocess.run([sys.executable, '-c', code],
+                          capture_output=True, text=True, check=False)
+
+
+# End-to-end: an unhandled exception (the class that aborts a Qt slot) is teed to
+# the durable log AND stderr, and the process exits nonzero.
+_cd_e_root = tempfile.mkdtemp()
+_cd_e = _cd_child("raise ValueError('slot-boom')\n", _cd_e_root)
+_cd_e_log = _slurp(crashdiag.crash_log_path(_cd_e_root))
+ok(_cd_e.returncode != 0, 'crashdiag(e2e): an unhandled exception exits nonzero')
+ok('slot-boom' in _cd_e_log and 'ValueError' in _cd_e_log,
+   'crashdiag(e2e): the traceback is persisted to the durable crash log')
+ok('slot-boom' in _cd_e.stderr, 'crashdiag(e2e): the traceback also reaches stderr')
+
+# End-to-end: a native fatal signal (the zoom-crash class) dumps the stack via
+# faulthandler to the durable log, and the process dies by signal.
+_cd_s_root = tempfile.mkdtemp()
+_cd_s = _cd_child("faulthandler._sigsegv()\n", _cd_s_root)
+ok(_cd_s.returncode < 0, 'crashdiag(e2e): a native fault terminates the process by signal')
+ok('Fatal Python error' in _slurp(crashdiag.crash_log_path(_cd_s_root)),
+   'crashdiag(e2e): faulthandler dumps the native-fault stack to the crash log')
+
+# CANARY: with NO install(), the same crash leaves no durable log -- proving the
+# capture is what crashdiag adds, not something ambient.
+_cd_c_root = tempfile.mkdtemp()
+subprocess.run([sys.executable, '-c', "raise ValueError('no-capture')\n"],
+               capture_output=True, text=True, check=False)
+ok(not os.path.exists(crashdiag.crash_log_path(_cd_c_root)),
+   'crashdiag(canary): with no install, no crash log is written (capture is the fix)')
+
+for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root):
+    shutil.rmtree(_cd_d, ignore_errors=True)
+
+
 print('secure-terminal-tests(modules): all passed' if not _failures else
       'secure-terminal-tests(modules): %d failed' % _failures)
 sys.exit(1 if _failures else 0)
