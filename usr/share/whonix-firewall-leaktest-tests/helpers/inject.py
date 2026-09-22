@@ -17,6 +17,7 @@ could never send.
   tcp6   IPv6 TCP SYN (forged-source uRPF probe; --flags to vary TCP flags)
   tcp4   IPv4 TCP SYN (forged-source rp_filter/uRPF probe; --flags to vary flags)
   icmp6  IPv6 ICMP echo request
+  icmp4  IPv4 ICMP echo request (ping)
   udp6   IPv6 UDP datagram to --dport
   udp4   IPv4 UDP datagram to --dport (e.g. Teredo UDP/3544)
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
@@ -81,6 +82,14 @@ def udp6(src: str, dst: str, sport: int, dport: int) -> bytes:
     header = struct.pack("!HHHH", sport, dport, 8 + len(PROBE_PAYLOAD), 0)
     csum = checksum16(ip6_pseudo(src, dst, len(header) + len(PROBE_PAYLOAD), 17) + header + PROBE_PAYLOAD)
     return header[:6] + struct.pack("!H", csum or 0xFFFF) + PROBE_PAYLOAD
+
+
+def icmp4_echo() -> bytes:
+    ## ICMPv4 echo request (type 8). Checksum is over the ICMP message only (no
+    ## pseudo-header, unlike ICMPv6).
+    body = struct.pack("!BBHHH", 8, 0, 0, 0x1337, 1) + PROBE_PAYLOAD
+    csum = checksum16(body)
+    return body[:2] + struct.pack("!H", csum) + body[4:]
 
 
 def tcp4_segment(src: str, dst: str, sport: int, dport: int, seq: int, flags: int) -> bytes:
@@ -170,6 +179,9 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
     if args.proto == "icmp6":
         payload = icmp6_echo(args.src, args.dst)
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 58)[:40] + payload
+    if args.proto == "icmp4":
+        payload = icmp4_echo()
+        return ETH_P_IPV4, ip4_header(args.src, args.dst, len(payload), 1) + payload
     if args.proto == "udp6":
         payload = udp6(args.src, args.dst, args.sport, args.dport)
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 17)[:40] + payload
@@ -193,7 +205,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "udp6", "frag6", "exthdr6", "rawip6", "udp4", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "exthdr6", "rawip6", "udp4", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
