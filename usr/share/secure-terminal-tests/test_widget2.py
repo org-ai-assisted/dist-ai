@@ -6615,14 +6615,24 @@ if tui_available():
 _PS2004 = b'\x1b[?2004h'
 
 
+def _prompt_lines_of(w):
+    # Preserve INTERIOR blank rows: an injected spurious blank line before the prompt
+    # is the exact bug the "no spurious blank row" assertions guard, so filtering all
+    # blanks (the old 'if ln.strip()') made them vacuous. Drop only the trailing empty
+    # rows from the grid tail / final newline, keeping any blank between content rows.
+    lines = [ln.rstrip() for ln in w.transcript_text().split('\n')]
+    while lines and lines[-1] == '':
+        lines.pop()
+    return lines
+
+
 def _tui_prompt_lines(feeds):
     w = SecureTerminal(command='/bin/cat', tui=True, mode='show')
     w.resize(700, 300)
     w.show()
     for f in feeds:
         feed_output(w, f)
-    lines = [ln.rstrip() for ln in w.transcript_text().split('\n') if ln.strip()]
-    return w, lines
+    return w, _prompt_lines_of(w)
 
 
 # bash order, mid-line: the prompt breaks onto its own row; the no-final-newline flag
@@ -6659,8 +6669,13 @@ _pw5.resize(700, 300)
 _pw5.show()
 feed_output(_pw5, b'W' * _pw5._screen.columns)
 feed_output(_pw5, _PS2004 + b'p$ ')
-ok('p$' in _pw5.transcript_text(),
-   'TUI: a width-filled line + prompt renders without an injected break (pyte wraps)')
+_pl5 = _prompt_lines_of(_pw5)
+# At the pending-wrap column an injected break would merge invisibly with the natural
+# wrap (no blank row), so the observable signal is the no_newline ROW flag the break
+# path stamps: on correct code the width guard suppresses it, so row 0 stays unflagged.
+ok(_pl5[-1:] == ['p$']
+   and not getattr(_pw5._screen.buffer[0], 'no_newline', False),
+   'TUI: a width-filled line + prompt renders with no injected break (row 0 unflagged)')
 _pw5.shutdown()
 # alt screen active: a full-screen program owns the rows -> the break never applies.
 _pw6 = SecureTerminal(command='/bin/cat', tui=True, mode='show')
@@ -6669,8 +6684,9 @@ _pw6.show()
 feed_output(_pw6, b'\x1b[?1049h')            # enter the alternate screen
 feed_output(_pw6, b'alt-tail')               # mid-line on the alt screen
 feed_output(_pw6, _PS2004 + b'p$ ')          # prompt-start while alt is active
-ok(_pw6._alt_saved is not None,
-   'TUI: on the alt screen the primary-line break is skipped')
+_pl6 = _prompt_lines_of(_pw6)
+ok(_pw6._alt_saved is not None and _pl6[-1:] == ['alt-tailp$'],
+   'TUI: on the alt screen the primary-line break is skipped (prompt stays inline, no split)')
 _pw6.shutdown()
 
 
