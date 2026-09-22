@@ -5486,6 +5486,22 @@ def _show_grid(mode_markings_theme=(None, None)):
     return _t
 
 
+# The reconcile-vs-rebuild EQUALITY tests below build two INDEPENDENT alt-screen
+# widgets and require byte-identical documents. _alt_enter reclaims the vertical-
+# scrollbar column from the LIVE (post-show) viewport width, so under load (CI
+# parallelism) the two widgets' geometry settles at different moments -> different
+# grid column counts -> a spurious document divergence unrelated to the reconcile
+# ALGORITHM under test. Pin both widgets to ONE fixed grid AFTER alt-enter so the
+# comparison is width-deterministic (the algorithm holds at any fixed size).
+_ALT_PIN_COLS, _ALT_PIN_ROWS = 40, 12
+
+
+def _pin_alt_grid(term):
+    if (term._screen.columns, term._screen.lines) != (_ALT_PIN_COLS, _ALT_PIN_ROWS):
+        term._screen.resize(_ALT_PIN_ROWS, _ALT_PIN_COLS)
+        term._set_winsize(_ALT_PIN_COLS, _ALT_PIN_ROWS)
+
+
 # 1. A fits-on-screen board drawn progressively over many reads renders to the
 # SAME document (content + formats) as one full-rebuild render of the same bytes.
 _ib = _show_grid()
@@ -5885,6 +5901,7 @@ ok(_cc_partial < _cc_lines,
 _pal = _show_grid()
 _pal._osc['osc_colors'] = True
 feed_output(_pal, b'\x1b[?1049h')
+_pin_alt_grid(_pal)
 feed_output(_pal, b'\x1b[2J\x1b[1;1H\x1b[31mPALTEXT')             # palette index 1 (red) fg
 _pal._render_tui()
 feed_output(_pal, b'\x1b]4;1;rgb:00/ff/00\x07')                  # redefine index 1 -> green
@@ -5892,6 +5909,7 @@ _pal._render_tui()
 _pal_ref = _show_grid()
 _pal_ref._osc['osc_colors'] = True
 feed_output(_pal_ref, b'\x1b[?1049h')
+_pin_alt_grid(_pal_ref)
 feed_output(_pal_ref, b'\x1b]4;1;rgb:00/ff/00\x07')              # same palette up front
 feed_output(_pal_ref, b'\x1b[2J\x1b[1;1H\x1b[31mPALTEXT')
 _pal_ref._render_tui()
@@ -5980,12 +5998,14 @@ ok('TOPX' in _ip_txt and 'bot' in _ip_txt,
 # to a fresh full build already in the final state -- no stale block survives.
 _ipa = _show_grid()
 feed_output(_ipa, b'\x1b[?1049h')
+_pin_alt_grid(_ipa)
 feed_output(_ipa, b'\x1b[2J\x1b[1;1H\x1b[31mAAA\x1b[2;1H\x1b[32mBBB\x1b[3;1H\x1b[34mCCC')
 _ipa._render_tui()
 feed_output(_ipa, b'\x1b[1;1H\x1b[33mZZZ')             # recolour + change the TOP row in place
 _ipa._render_tui()
 _ipb = _show_grid()
 feed_output(_ipb, b'\x1b[?1049h')
+_pin_alt_grid(_ipb)
 feed_output(_ipb, b'\x1b[2J\x1b[1;1H\x1b[33mZZZ\x1b[2;1H\x1b[32mBBB\x1b[3;1H\x1b[34mCCC')
 _ipb._render_tui()
 eq(_doc_cells(_ipa), _doc_cells(_ipb),
@@ -5997,12 +6017,14 @@ _ipb.shutdown()
 # suffix and rewrites only the middle (the suffix-match path): still byte-identical.
 _mb = _show_grid()
 feed_output(_mb, b'\x1b[?1049h')
+_pin_alt_grid(_mb)
 feed_output(_mb, b'\x1b[2J\x1b[1;1Hr0\x1b[2;1Hr1\x1b[3;1Hr2\x1b[4;1Hr3\x1b[5;1Hr4')
 _mb._render_tui()
 feed_output(_mb, b'\x1b[3;1HMIDDLE')                   # change only row 2 (index 2)
 _mb._render_tui()
 _mb_ref = _show_grid()
 feed_output(_mb_ref, b'\x1b[?1049h')
+_pin_alt_grid(_mb_ref)
 feed_output(_mb_ref, b'\x1b[2J\x1b[1;1Hr0\x1b[2;1Hr1\x1b[3;1HMIDDLE\x1b[4;1Hr3\x1b[5;1Hr4')
 _mb_ref._render_tui()
 eq(_doc_cells(_mb), _doc_cells(_mb_ref),
