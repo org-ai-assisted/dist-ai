@@ -5086,6 +5086,43 @@ _wstui.grab()                                   # paintEvent -> _paint_ws_dots (
 APP.processEvents()
 _wstui.shutdown()
 
+# REGRESSION (nano title bar): a run of >= 2 spaces carrying REVERSE video (or a
+# non-default background) is a program-painted bar you can SEE, not hidden padding, so it
+# renders as a SOLID bar, never dotted. nano's title row is reverse video with a wide gap
+# between "GNU nano X.Y" and "New Buffer"; that gap was being dotted (vs konsole's solid bar).
+_wsrev = SecureTerminal(command='/bin/cat', tui=True)
+_wsrev.resize(500, 300)
+_wsrev.show()
+feed_output(_wsrev, b'\x1b[7m GNU nano 8.4      New Buffer\x1b[0m\n')
+_wsrev._force_current_frame()
+ok(not _ws_runs_all(_wsrev),
+   'ws TUI: a reverse-video bar\'s interior spaces are NOT dotted (nano title bar stays solid)')
+ok(not list(_wsrev._ws_dot_rects()), 'ws TUI: a reverse-video bar yields no dot rects')
+_wsrev.shutdown()
+
+# a non-default BACKGROUND on the gap is equally a visible bar (a coloured status line)
+_wsbg = SecureTerminal(command='/bin/cat', tui=True)
+_wsbg.resize(500, 300)
+_wsbg.show()
+feed_output(_wsbg, b'\x1b[44mLEFT      RIGHT\x1b[0m\n')      # blue bg, >= 2-space gap
+_wsbg._force_current_frame()
+ok(not _ws_runs_all(_wsbg),
+   'ws TUI: a coloured-background bar\'s interior spaces are NOT dotted')
+_wsbg.shutdown()
+
+# CANARY: the SAME gap with PLAIN (default-bg, no reverse) spaces IS still flagged, so the
+# detector is intact -- only visible-styled spaces are exempt (this fails on the pre-fix code
+# too, where the reverse/bg gaps above were wrongly flagged).
+_wspln = SecureTerminal(command='/bin/cat', tui=True)
+_wspln.resize(500, 300)
+_wspln.show()
+feed_output(_wspln, b'GNU nano 8.4      New Buffer\n')
+_wspln._force_current_frame()
+_wspc = _ws_runs_all(_wspln)
+ok(len(_wspc) == 1 and (_wspc[0][1] - _wspc[0][0]) >= 2,
+   'ws TUI CANARY: the same gap with PLAIN spaces IS still flagged (detector intact)')
+_wspln.shutdown()
+
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
 # same rules across every display mode). With coloured markings ON (default) it
