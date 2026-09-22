@@ -157,6 +157,8 @@ suites=(
    "${tests_dir}/test_widget2.py"
    "${tests_dir}/test_alt_reenter.py"
    "${tests_dir}/test_tabbar_polish.py"
+   "${tests_dir}/test_core_fixes.py"
+   "${tests_dir}/test_core_fixes_win.py"
    "${tests_dir}/test_state_dump.py"
    "${tests_dir}/test_zoom_regression.py"
    "${tests_dir}/test_fuzz_widget.py"
