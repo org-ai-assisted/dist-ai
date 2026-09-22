@@ -250,6 +250,22 @@ if is_pass_locked alice; then fail "is_pass_locked false-positive alice"; else p
 if is_pass_disabled carol; then pass "is_pass_disabled carol"; else fail "is_pass_disabled missed carol"; fi
 if is_pass_disabled alice; then fail "is_pass_disabled false-positive alice"; else pass "is_pass_disabled rejects alice"; fi
 
+## ---- F5: is_user/is_group return checked at every call site (issue #84) ----
+## A valid-but-nonexistent name must make the query/state functions FAIL, not
+## fall through to getent (which yields empty output, rc 0). Pre-fix, the bare
+## 'is_user'/'is_group' (no '|| return 1') was swallowed under the library's
+## no-errexit convention, so a caller treated a nonexistent account as existing
+## with an empty password. 'nosuchuser'/'nosuchgrp' are valid names absent from
+## the fixtures.
+rc=0; out="$(get_entry nosuchuser passwd shell 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_entry fails for a nonexistent user (F5/#84)"; else fail "get_entry F5: rc 0 (out='${out}') for a nonexistent user"; fi
+rc=0; out="$(get_pass nosuchuser 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_pass fails for a nonexistent user (F5/#84)"; else fail "get_pass F5: rc 0 (out='${out}') for a nonexistent user"; fi
+if is_pass_empty nosuchuser 2>/dev/null; then fail "is_pass_empty F5: reported a nonexistent user's password empty (#84)"; else pass "is_pass_empty rejects a nonexistent user (F5/#84)"; fi
+if is_pass_locked nosuchuser 2>/dev/null; then fail "is_pass_locked F5: matched a nonexistent user (#84)"; else pass "is_pass_locked rejects a nonexistent user (F5/#84)"; fi
+rc=0; out="$(get_entry nosuchgrp group members 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_entry fails for a nonexistent group (F5/#84)"; else fail "get_entry F5: rc 0 (out='${out}') for a nonexistent group"; fi
+
 ## ---- lock_pass / unlock_pass (mutation dispatch) ----
 mutation_log=""; lock_pass alice
 if [[ "${mutation_log}" == *"passwd --quiet --lock -- alice"* ]]; then pass "lock_pass locks an unlocked account"; else fail "lock_pass did not call passwd --lock: '${mutation_log}'"; fi
