@@ -169,9 +169,18 @@ leaktest_setup() {
    ip netns exec gw sysctl --quiet --write net.ipv4.conf.all.rp_filter=1
    ip netns exec up sysctl --quiet --write net.ipv6.conf.all.forwarding=1
 
-   ip netns exec gw python3 "$(leaktest_helpers_dir)/stub_transport.py" &
-   LEAKTEST_LISTENER_PID="$!"
-   sleep 1
+   ## Disable segmentation/offload on the egress + capture path so a host capture
+   ## reflects the wire (GSO/GRO can make a capture look clean while the NIC emits
+   ## different bytes). Best-effort: veth may not support every knob.
+   ip netns exec gw ethtool --offload eth0 tso off gso off gro off tx off rx off >/dev/null 2>&1 || true
+   ip netns exec up ethtool --offload eth0 tso off gso off gro off tx off rx off >/dev/null 2>&1 || true
+
+   ## Fail-closed cases pass 'nolistener' to leave the Tor TransPort dead.
+   if [ "${2:-}" != 'nolistener' ]; then
+      ip netns exec gw python3 "$(leaktest_helpers_dir)/stub_transport.py" &
+      LEAKTEST_LISTENER_PID="$!"
+      sleep 1
+   fi
 
    if ! ip netns exec gw nft --file "${ruleset}"; then
       fail_case "could not load ruleset into gw netns: ${ruleset}"
@@ -230,19 +239,18 @@ leaktest_fire_forward_probe() {
    leaktest_egress_count "${capture_file}"
 }
 
-## Standard forward-leak case: a non-redirected probe from the workstation's
-## legitimate source must not egress under the shipped ruleset (the gateway
-## rejects forwarding), a positive control must still work, and a permissive-
-## forward canary must egress. Args: <label> <proto> <dst> <bpf> [inject args].
-## Returns 0 if all three hold, 1 otherwise.
-leaktest_forward_leak_case() {
-   local label="$1" proto="$2" dst="$3" bpf="$4"
-   shift 4
+## Generic probe-leak case with an EXPLICIT source: a non-redirected probe must
+## not egress under the shipped ruleset (the gateway rejects forwarding), a
+## positive control must still work, and a permissive-forward canary must egress.
+## Args: <label> <proto> <src> <dst> <bpf> [inject args]. Returns 0 if all hold.
+leaktest_probe_case() {
+   local label="$1" proto="$2" src="$3" dst="$4" bpf="$5"
+   shift 5
    local capture_file permissive egressed rc=0
    capture_file="$(mktemp)"
 
    leaktest_setup "${ruleset_file}"
-   egressed="$(leaktest_fire_forward_probe "${proto}" "${INT_WS_IP6}" "${dst}" "${bpf}" "${capture_file}" "$@")"
+   egressed="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
    if [ "${egressed}" -ne 0 ]; then
       fail_case "${label}: egressed the gateway (${egressed} pkt(s)) with the shipped ruleset" || rc=1
    else
@@ -257,7 +265,7 @@ leaktest_forward_leak_case() {
    permissive="$(mktemp --suffix=.nft)"
    leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
    leaktest_setup "${permissive}"
-   egressed="$(leaktest_fire_forward_probe "${proto}" "${INT_WS_IP6}" "${dst}" "${bpf}" "${capture_file}" "$@")"
+   egressed="$(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${bpf}" "${capture_file}" "$@")"
    if [ "${egressed}" -gt 0 ]; then
       msg "PASS: ${label} canary egressed with permissive forward (${egressed} pkt(s)); test has teeth"
    else
@@ -265,6 +273,14 @@ leaktest_forward_leak_case() {
    fi
 
    return "${rc}"
+}
+
+## Back-compat: forward-leak from the workstation's legitimate IPv6 source.
+## Args: <label> <proto> <dst> <bpf> [inject args].
+leaktest_forward_leak_case() {
+   local label="$1" proto="$2" dst="$3" bpf="$4"
+   shift 4
+   leaktest_probe_case "${label}" "${proto}" "${INT_WS_IP6}" "${dst}" "${bpf}" "$@"
 }
 
 ## Positive control: a legitimate-source workstation TCP connection must be
@@ -288,4 +304,34 @@ PY
    fi
    fail_case "positive control failed (legit torified path down): ${rc}"
    return 1
+}
+
+## Fail-closed case: with the Tor TransPort DEAD (nolistener), a workstation TCP
+## connection must be DROPPED, never routed to the clearnet. The canary flushes
+## the firewall entirely so the same traffic forwards out -- proving the harness
+## detects a fail-OPEN. Returns 0 if both hold.
+leaktest_fail_closed_case() {
+   local rc=0 capture_file empty egressed
+   local bpf="ip6 and host ${PROBE_DST_IP6} and tcp"
+   capture_file="$(mktemp)"
+
+   leaktest_setup "${ruleset_file}" nolistener
+   egressed="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
+   if [ "${egressed}" -ne 0 ]; then
+      fail_case "fail-closed: workstation traffic egressed with Tor down (${egressed} pkt(s))" || rc=1
+   else
+      msg "PASS: fail-closed (Tor down -> workstation traffic dropped, 0 egress)"
+   fi
+
+   empty="$(mktemp --suffix=.nft)"
+   printf 'flush ruleset\n' >"${empty}"
+   leaktest_setup "${empty}" nolistener
+   egressed="$(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${bpf}" "${capture_file}")"
+   if [ "${egressed}" -gt 0 ]; then
+      msg "PASS: fail-closed canary egressed with no firewall (${egressed} pkt(s)); test has teeth"
+   else
+      fail_case "fail-closed canary: no leak with an empty ruleset -- harness proves nothing" || rc=1
+   fi
+
+   return "${rc}"
 }

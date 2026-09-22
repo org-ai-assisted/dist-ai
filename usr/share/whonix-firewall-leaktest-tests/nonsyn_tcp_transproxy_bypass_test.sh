@@ -29,7 +29,11 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 rc=0
-leaktest_forward_leak_case \
-   'non-SYN TCP (transproxy bypass) to clearnet' tcp6 "${PROBE_DST_IP6}" \
-   "ip6 and host ${PROBE_DST_IP6} and tcp" --flags ack --dport 443 || rc=$?
+## Several non-SYN flag combinations: only a SYN is redirected to Tor, so an ACK,
+## FIN-ACK, or RST-ACK must hit the forward reject, not slip out as direct TCP.
+for flags in ack finack rstack; do
+   leaktest_forward_leak_case \
+      "non-SYN TCP (${flags}, transproxy bypass) to clearnet" tcp6 "${PROBE_DST_IP6}" \
+      "ip6 and host ${PROBE_DST_IP6} and tcp" --flags "${flags}" --dport 443 || rc=$?
+done
 exit "${rc}"
