@@ -955,6 +955,19 @@ ok(not win._osc_notice_actions['osc_colors'].isChecked()
    and win._osc_notice_actions['osc_title'].isChecked(),
    '_apply_global syncs the View-menu per-type notice actions to the dialog')
 
+# osc_notice_off is NOT in the _GLOBAL_KEYS table, so the generic lock loop above does
+# not cover it; its mutation is gated separately INSIDE _apply_global (the setter was
+# removed). A locked osc_notice_off must make the whole osc_notice_types branch a no-op,
+# so even a caller driving _apply_global directly cannot change the muted set. Canary:
+# drop the "'osc_notice_off' not in self._locked" guard in main.py and this goes red.
+win._locked = {'osc_notice_off'}
+_onoff_before = set(win._osc_notice_off)                          # {'osc_colors'} from above
+_types_all_on = {_k: True for _k, *_ in M.OSC_FEATURES}          # would UNMUTE every type
+win._apply_global(_full_opts(win, osc_notice=True, osc_notice_types=_types_all_on))
+eq(win._osc_notice_off, _onoff_before,
+   'a locked osc_notice_off refuses an osc_notice_types change through _apply_global')
+win._locked = set()
+
 # Ctrl+wheel anywhere in the Global settings dialog live-zooms, even over the scroll-area
 # viewport (or a spinbox) that would otherwise consume the wheel -- the regression where the
 # QScrollArea wrapper swallowed Ctrl+wheel so the dialog stopped zooming. Deliver the wheel
