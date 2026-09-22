@@ -178,7 +178,8 @@ def security_tests(lockfile_sh, check):
     """The lock directory must live under the caller's per-user runtime dir
     (XDG_RUNTIME_DIR), never /tmp, and a symlinked lock dir must be refused --
     the /tmp-symlink attack class the per-user /run design closes."""
-    ## 1) honors XDG_RUNTIME_DIR: the lock dir is <runtime>/lockfile, not /tmp.
+    ## 1) honors XDG_RUNTIME_DIR: the lock dir is <runtime>/flocker-temp-folder,
+    ##    not /tmp.
     tmp = tempfile.mkdtemp(prefix='lockfile-sec-')
     src = make_source_script(tmp, lockfile_sh)
     runtime = os.path.join(tmp, 'xdg')
@@ -186,7 +187,7 @@ def security_tests(lockfile_sh, check):
     env = dict(os.environ, XDG_RUNTIME_DIR=runtime)
     res = subprocess.run([src, '', '0'], capture_output=True, text=True,
                          timeout=30, env=env)
-    lockdir = os.path.join(runtime, 'lockfile')
+    lockdir = os.path.join(runtime, 'flocker-temp-folder')
     check('security: lock dir under XDG_RUNTIME_DIR, not /tmp',
           'LOCKED' in res.stdout and os.path.isdir(lockdir),
           '%r isdir=%s' % (res.stdout.strip(), os.path.isdir(lockdir)))
@@ -198,7 +199,7 @@ def security_tests(lockfile_sh, check):
     os.mkdir(runtime2, 0o700)
     evil = os.path.join(tmp2, 'evil')
     os.mkdir(evil)
-    os.symlink(evil, os.path.join(runtime2, 'lockfile'))
+    os.symlink(evil, os.path.join(runtime2, 'flocker-temp-folder'))
     env2 = dict(os.environ, XDG_RUNTIME_DIR=runtime2)
     res2 = subprocess.run([src2, '', '0'], capture_output=True, text=True,
                           timeout=30, env=env2)
