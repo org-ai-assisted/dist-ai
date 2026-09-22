@@ -172,8 +172,9 @@ _t1 = _band_tip(_tb, 1)
 ok('Shown: vim notes.txt' in _t1 and 'Full: user@host:~ (vim notes.txt) [pts/1]' in _t1,
    'a normalized title shows BOTH the normalized (Shown) and the raw (Full) in the tooltip')
 _t2 = _band_tip(_tb, 2)
-ok('nothing shown' in _t2 and 'Full: user@host:~ [pts/1]' in _t2,
-   'an all-noise title tooltip explains nothing is shown and still shows the raw title')
+ok('Blank here' in _t2 and 'shell prompt' in _t2
+   and 'Full title: user@host:~ [pts/1]' in _t2,
+   'an all-noise title tooltip explains WHY the band is blank and shows the raw title')
 _tb.close()
 
 # --- ai-review grok#4: a current-tab switch must not drop the close button onto the band -
