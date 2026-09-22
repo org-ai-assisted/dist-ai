@@ -337,6 +337,40 @@ ok(_restore_text == _reflow_text,
       len(_reflow_text), _reflow_text.count('\n')))
 _rt.close()
 
+# #7 (DoS): a width reflow in an EXPANDING mode (detail/reveal, 8-99x per char) must bound
+# the single synchronous replay by RENDER length -- replaying the whole _raw would feed up to
+# ~99M rendered chars into the document in one blocking GUI-thread call = whole-app freeze. A
+# NON-expanding mode (box/show, 1x) keeps the full replay (no scrollback dropped; the #4 tests
+# above lock that). Feed a large NON-ASCII _raw (detail badges expand it), set a tiny render
+# budget, reflow, and assert the fed source is trimmed to the render budget.
+_rb = SecureTerminal(command='/bin/cat')            # CLI line mode; detail is the default mode
+ok(_rb.current_mode() == 'detail', '#7 setup: detail is the default expanding mode')
+_rb._REFLOW_RENDER_MAX = 4000                        # tiny render budget -> deterministic bound
+_rb._raw = chr(0x0416) * 20000                  # 20000 Cyrillic; full detail render ~720k chars
+_fed = []
+_orig_fl = _rb._feed_line
+_rb._feed_line = lambda _s: (_fed.append(_s), _orig_fl(_s))[1]
+_rb._reflow()                                        # the full=True width-reflow path
+_rb._feed_line = _orig_fl
+ok(len(_fed) == 1, '#7: the reflow feeds the line document once')
+_rbsrc = _fed[0]
+# CANARY: pre-fix code fed the FULL _raw (full=True -> _src = self._raw), so _rbsrc would be
+# all 20000 chars and BOTH asserts below fail.
+ok(len(_rbsrc) < len(_rb._raw),
+   '#7: an expanding-mode reflow trims the replayed source (not the full _raw)')
+from secure_terminal import sanitize as _S7        # noqa: E402  (_S is imported later in this file)
+ok(len(_S7.render_output(_rbsrc, 'detail')) <= _rb._REFLOW_RENDER_MAX,
+   '#7: the reflow replay is bounded by RENDER length (no 99M one-shot render)')
+# a non-expanding mode still replays in full (no scrollback dropped on resize)
+_rb.apply_mode('box')
+_fed.clear()
+_rb._feed_line = lambda _s: (_fed.append(_s), _orig_fl(_s))[1]
+_rb._reflow()
+_rb._feed_line = _orig_fl
+ok(_fed and _fed[0] == _rb._raw,
+   '#7: a non-expanding (box) reflow still replays the full _raw -- no scrollback dropped')
+_rb.close()
+
 # Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
 # viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
 # it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
@@ -4481,6 +4515,33 @@ ok(_osc_notice_tui(None, b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
    'TUI: a refused clipboard-read OSC advises')
 ok(_osc_notice_tui('osc_title', b'\x1b]0;honored\x07') == [],
    'TUI: an ENABLED OSC type is honored, not advised (no false-refusal banner)')
+# #6 (telemetry/security-UX): osc_clipboard_read ENABLED but the tab chose Deny (always)
+# (_clipboard_read False) -> every read is refused at the enforcement gate, so it is NOT
+# honored and the advisory MUST fire -- unlike an enabled+granted/undecided tab. The notice
+# gate must consult the per-tab consent, not just the blanket feature toggle. (_osc_notice_tui
+# does not expose _clipboard_read, so build the two consent states inline.)
+# CANARY: line 4483 proves an ENABLED type alone suppresses; against the pre-fix gate
+# (tui_active and osc_enabled only) the DENIED case below ALSO suppresses and _dnseen is [].
+_dn = SecureTerminal(command='/bin/cat', tui=True)
+_dn.apply_osc('osc_clipboard_read', True)          # feature ON
+_dn._clipboard_read = False                        # user picked Deny (always)
+_dnseen = []
+_dn.osc_used.connect(lambda k: _dnseen.append(k))
+feed_output(_dn, b'\x1b]52;c;?\x07')               # OSC 52 clipboard READ query
+ok(_dnseen == ['osc_clipboard_read'],
+   'TUI: an ENABLED-but-DENIED clipboard-read still advises (denied != honored, #6)')
+_dn.close()
+# the other direction: an ENABLED-and-GRANTED (allow-always) tab replies, so it IS honored
+# and must stay silent -- the fix must not over-fire for a granted tab.
+_gr = SecureTerminal(command='/bin/cat', tui=True)
+_gr.apply_osc('osc_clipboard_read', True)
+_gr._clipboard_read = True                          # allow always
+_grseen = []
+_gr.osc_used.connect(lambda k: _grseen.append(k))
+feed_output(_gr, b'\x1b]52;c;?\x07')
+ok(_grseen == [],
+   'TUI: an ENABLED-and-GRANTED clipboard-read is honored, not advised (#6 no over-fire)')
+_gr.close()
 # byte parser: _notice_osc scans the RAW read bytes through the SAME _OSC_ANY matcher and
 # _osc_split carry as _handle_osc (no str view, so no str-vs-bytes divergence to exploit).
 # (1) a Unicode-digit OSC code: bytes \d matches only ASCII 0-9, so the advisory never fires
@@ -5513,6 +5574,20 @@ if tui_available():
     crash._render_tui()
     ok('ok2' in crash.toPlainText(),
        'pyte crash-bug family (A/C/D/F) contained; terminal still renders')
+    # #1/#2 (data loss): a multi-parameter Erase-in-Line (ESC[1;2;3K) and a
+    # multi-parameter Device-Attributes (ESC[1;2c) each TypeError'd inside pyte's
+    # 2-slot handler, and the broad _feed_bytes guard then dropped the REST of the
+    # read chunk. Feed each malformed CSI joined with trailing content in ONE chunk;
+    # the trailing text must still render (proof the chunk was NOT dropped).
+    # CANARY: against the pre-fix code (super().erase_in_line(how, *args); the
+    # **kwargs skip that left report_device_attributes unwrapped) each raises and
+    # 'keepK' / 'keepC' vanish, so these two assertions fail -- they have teeth.
+    crash._feed_stream(b'\x1b[1;2;3KkeepK\r\n')
+    crash._feed_stream(b'\x1b[1;2ckeepC\r\n')
+    crash._render_tui()
+    _ct = crash.toPlainText()
+    ok('keepK' in _ct, 'multi-param EL (ESC[1;2;3K) does not drop the rest of the chunk')
+    ok('keepC' in _ct, 'multi-param DA (ESC[1;2c) does not drop the rest of the chunk')
     crash.shutdown()
     # scrolling output rendered frame-by-frame (the live path) must NOT be
     # double-spaced: _delete_grid must eat the newline joining scrollback to the

@@ -2580,6 +2580,30 @@ ok(len(_QUERIES) == 387,
    'the reflection spec-surface corpus is 387 distinct query sequences (got %d)'
    % len(_QUERIES))
 
+# #2 (data loss): a MULTI-parameter Device-Attributes query (ESC[1;2c) overflowed
+# pyte's report_device_attributes(self, mode=0, **kwargs) -- **kwargs absorbs excess
+# KEYWORD args but never excess POSITIONAL -- raising TypeError that the _feed_bytes
+# guard swallowed by DROPPING the rest of the read chunk. The overflow-tolerant CSI
+# wrapper now truncates the extra params (and still answers NOTHING, private or not).
+# Kept OUT of _spec_surface_corpus so the cited 387-query count stays stable.
+# CANARY: on the pre-fix code (report_device_attributes left unwrapped by the **kwargs
+# skip) the TUI feed raises, 'tail*' is dropped, and the survival ok() below fails.
+for _lbl, _mk2 in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
+                   ('TUI', lambda: SecureTerminal(command='/bin/cat', tui=True))):
+    _da = _mk2()
+    _dasent = spy_writes(_da)
+    feed_output(_da, b'\x1b[1;2ctailC\r\n')       # multi-param primary DA + trailing text
+    feed_output(_da, b'\x1b[1;2;3ctailD\r\n')     # 3-param DA
+    feed_output(_da, b'\x1b[?1;2ctailP\r\n')      # multi-param PRIVATE DA (must do nothing)
+    if _lbl == 'TUI':
+        _da._render_tui()                          # pylint: disable=protected-access
+    _dadoc = _da.toPlainText()
+    ok(_dasent == [],
+       'multi-param DA (%s): answers nothing back to the pty (got %r)' % (_lbl, _dasent))
+    ok('tailC' in _dadoc and 'tailD' in _dadoc and 'tailP' in _dadoc,
+       'multi-param DA (%s): the rest of the chunk is not dropped' % _lbl)
+    _da.close()
+
 # --- graphics payloads (sixel DCS, kitty APC, iTerm2 1337): stripped, no reply -
 # a cat'd image is a huge DCS/APC/OSC string; CLI shows no image and answers nothing
 _gfx = SecureTerminal(command='/bin/cat')
@@ -4907,6 +4931,42 @@ _sm.selectAll()
 _sm_copy = _sm._selection_text()
 ok('_' in _sm_copy and '\u2423' not in _sm_copy,
    'reconcile#6: the synthetic non-ASCII-space marker still copies as _ (never a space)')
+
+# #5 (marker/content collision): _selection_text builds the copy text cp-aware. The STRIPPED
+# copy paths (createMimeDataFromSelection -- PRIMARY selection / drag -- and the review's
+# 'stripped' action) previously ran the cp-LESS sanitize_clipboard_display, which CLOBBERED a
+# real U+25A1/U+2423 into '_', indistinguishable from a synthetic marker. Now a synthetic BOX
+# collapses to '_' on the STRIP form (cp-aware) while a real glyph is dropped as non-ASCII, so
+# the marker channel and real content are disjoint on the ASCII copy -- and the UNICODE opt-in
+# still keeps the visible box glyph.
+# a real U+25A1 the child printed (cp IS 0x25a1): kept on the unicode form, DROPPED (not '_')
+# by the stripped copy path.
+_rbx = SecureTerminal(command='/bin/cat'); _rbx.apply_mode('show')
+feed_output(_rbx, b'A\xe2\x96\xa1B')                      # A + U+25A1 WHITE SQUARE + B
+_rbx.selectAll()
+ok('\u25a1' in _rbx._selection_text(),
+   '#5: a real printed U+25A1 is kept as its glyph in the unicode _selection_text')
+_rbx_strip = _rbx.createMimeDataFromSelection().text()
+ok(_rbx_strip == 'AB',
+   '#5: the stripped copy path DROPS a real U+25A1 (not clobbered into a marker _)')
+_rbx.close()
+# a SYNTHETIC box (a neutralized zero-width space, cp != 0x25a1): kept as its visible glyph on
+# the UNICODE form (opt-in real unicode), but collapses to '_' on the STRIP form.
+_syn = SecureTerminal(command='/bin/cat'); _syn.apply_mode('show')
+feed_output(_syn, b'A\xe2\x80\x8bB')                      # A + U+200B ZWSP (-> synthetic BOX) + B
+_syn.selectAll()
+ok('\u25a1' in _syn._selection_text(),
+   '#5: a synthetic BOX stays its visible glyph on the unicode copy (opt-in real unicode)')
+ok(_syn._selection_text(strip=True) == 'A_B',
+   '#5: the synthetic BOX collapses to _ cp-aware on the STRIP form')
+_syn_strip = _syn.createMimeDataFromSelection().text()
+ok(_syn_strip == 'A_B',
+   '#5: the synthetic marker survives the stripped copy path as _ (a real byte was neutralized)')
+_syn.close()
+# CANARY: real vs synthetic now produce DIFFERENT stripped copies (AB vs A_B). The pre-fix
+# blind rewrite made BOTH 'A_B', erasing the distinction between a real glyph and a marker.
+ok(_rbx_strip != _syn_strip,
+   '#5 canary: a real U+25A1 and a synthetic marker copy DIFFERENTLY on strip (collision closed)')
 
 # --- SECURE_TERMINAL_SHOT: deterministic screenshot mode (#51) ----------------
 # A startup capture MODE (env, not a persisted per-tab setting): the caret is

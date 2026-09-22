@@ -170,6 +170,24 @@ else
    notok "adduser.conf no trailing newline: rc=${run_rc}, out: ${run_out//$'\n'/,}"
 fi
 
+## A passwd row with a non-numeric UID is SKIPPED, not fatal: the '[' numeric test
+## prints '[: integer expression expected' to stderr for that row and the loop
+## continues (get-user-list documents this as accepted, NOT guarded -- do not add an
+## is_whole_number guard). Overall exit stays 0 and the well-formed accounts still
+## list. stderr noise is accepted, so it is not asserted. A regression that aborts
+## (exit non-zero) on a bad UID, or one that silently drops the valid rows, fails here.
+run_raw_case "malformed passwd UID skipped, not fatal" \
+   $'root:x:0:0:r:/root:/bin/bash\nbaduid:x:notanumber:1300::/home/baduid:/bin/bash\nbob:x:1200:1200::/home/bob:/bin/bash\nalice:x:2500:2500::/home/alice:/bin/bash\n' \
+   $'FIRST_UID=1000\nLAST_UID=59999\n'
+if [ "${run_rc}" -eq 0 ] \
+   && ! grep --quiet --line-regexp -- 'baduid' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'bob' <<<"${run_out}" \
+   && grep --quiet --line-regexp -- 'alice' <<<"${run_out}"; then
+   ok "malformed UID skipped cleanly: exit 0, bad row dropped, valid accounts listed"
+else
+   notok "malformed UID: rc=${run_rc}, out: ${run_out//$'\n'/,}, err: ${run_err//$'\n'/,}"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"
 [ "${fail_count}" -eq 0 ]

@@ -161,6 +161,7 @@ e2e_suites=(
    tb-updater-tests-e2e
 )
 integration_suites=(
+   whonix-firewall-leaktest-tests
    private-ai-config-tests-resilience
    dm-image-boot-tests
    dm-reproducible-build-tests
@@ -235,7 +236,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|whonix-firewall)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -426,6 +427,10 @@ wire() {
          ;;
       qubes-whonix)
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
+         ;;
+      whonix-firewall-leaktest)
+         ## netns leak suite loads the generated whonix-firewall ruleset.
+         wire_env=( "WHONIX_FIREWALL_REPO=$( pkg_dir whonix-firewall )" )
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )

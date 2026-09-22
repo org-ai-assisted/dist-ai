@@ -978,6 +978,35 @@ def t2_mark_drop_real():
             fail('T2 mark-drop: a short combining run was wrongly dropped')
 
 
+def t2_pad_budget_real():
+    """The whole-call pad/erase WORK BUDGET (a pad-then-erase flood cannot re-pad or re-blank
+    the same columns unboundedly on the GUI thread -- _LINE_WORK_BUDGET) is a per-call,
+    history-dependent path the single-op grid + Z3 model do not reach: they never accumulate
+    past the budget, so the un-budgeted transitions t2_crosscheck validates are exactly what
+    the real code runs below the budget. Prove directly on the REAL code that once the budget
+    is spent it (a) still preserves INV (0 <= col <= L, L <= M) and (b) actually CLAMPS -- a
+    following CUF on a fresh line pads nothing -- so the bound is non-vacuous. Analogous to
+    t2_mark_drop_real for the other state-dependent op."""
+    # A pad-then-del flood + a pad-then-reblank flood, each far exceeding the budget, then a
+    # fresh line (\n) and a CUF that WOULD pad 500 blanks with budget to spare.
+    flood = ('\x1b[8192C\r\x1b[0K' * 64) + ('\x1b[8192C\x1b[2K' * 64) + '\n\x1b[500Cx'
+    # INV must hold for every width, budget engaged or not.
+    for M in (0, 200, S._UNBOUNDED_MAX_COL):
+        _comp, cells, col, _sgr, _w = S.feed_line_edits([], 0, {}, flood, max_line=M)
+        if not (0 <= col <= len(cells) and (M == 0 or len(cells) <= M)):
+            fail('T2 pad-budget: INV broken (col=%d L=%d M=%d)' % (col, len(cells), M))
+    # Where the flood genuinely spends the budget (unbounded, or a large width whose per-line
+    # pad reaches _UNBOUNDED_MAX_COL), the trailing CUF on a fresh line pads NOTHING -- only
+    # 'x' lands, so (col, L) == (1, 1). Without the budget it would be 500 blanks + x.
+    # (A small width, e.g. M=200, never spends the budget -- and has no flood to bound -- so
+    # it is only INV-checked above.)
+    for M in (0, S._UNBOUNDED_MAX_COL):
+        _comp, cells, col, _sgr, _w = S.feed_line_edits([], 0, {}, flood, max_line=M)
+        if (col, len(cells)) != (1, 1):
+            fail('T2 pad-budget: the budget did not clamp the post-flood CUF '
+                 '(M=%d -> col=%d L=%d; expected (1,1))' % (M, col, len(cells)))
+
+
 def t2_line_edits_off():
     """line_edits=False: CSI C/D/G/K are consumed (no leftover '[3C' garbage)
     but MUST NOT move the cursor or change L -- they fall through to ANSI_RE
@@ -1434,18 +1463,21 @@ def t_input_enumerate():
                 note('clip_uni', 'T4 clip-uni: U+%04X left 0x%02X'
                      % (cp, ord(oc)))
 
-        # --- T4 sanitize_clipboard_display: ASCII-only out; inert display glyphs
-        #     map to an ASCII stand-in (not lost to nothing); a raw neutralized /
-        #     homoglyph code point is NEVER emitted -- including NOT decoded to
-        #     its ASCII look-alike (that output is still _CLIP_ASCII, so the
-        #     alphabet check alone would miss it). ---
+        # --- T4 sanitize_clipboard_display: ASCII-only out; inert STRUCTURAL display
+        #     glyphs (box-drawing / block) map to an ASCII stand-in (not lost to
+        #     nothing); a raw neutralized / homoglyph code point is NEVER emitted --
+        #     including NOT decoded to its ASCII look-alike (that output is still
+        #     _CLIP_ASCII, so the alphabet check alone would miss it). The SYNTHETIC
+        #     markers U+25A1/U+2423 are NOT stood-in here (a bare one is real content,
+        #     the synthetic ones being resolved upstream by the cp-aware export), so
+        #     they are DROPPED like any other non-ASCII, not given a '_'. ---
         outd = S.sanitize_clipboard_display(ch)
         for oc in outd:
             if ord(oc) not in _CLIP_ASCII:
                 note('clip_disp', 'T4 clip-disp: U+%04X left 0x%02X'
                      % (cp, ord(oc)))
-        if (cp == 0x25A1 or cp == 0x2423 or S.is_structural(cp)) and not outd:
-            note('clip_disp', 'T4 clip-disp: inert glyph U+%04X lost to nothing'
+        if S.is_structural(cp) and not outd:
+            note('clip_disp', 'T4 clip-disp: structural glyph U+%04X lost to nothing'
                  % cp)
         if S.marking_class(cp) == 'confusable' and outd:
             note('clip_disp', 'T4 clip-disp: homoglyph U+%04X decoded/emitted as %r'
@@ -2509,6 +2541,7 @@ def main():
     sys.stdout.write('        model_drift=%(mismatches)d '
                      'real_inv_violations=%(inv_violations)d\n' % t2stats)
     t2_mark_drop_real()
+    t2_pad_budget_real()
     t2_line_edits_off()
     t2_prompt_flush_real()
 
