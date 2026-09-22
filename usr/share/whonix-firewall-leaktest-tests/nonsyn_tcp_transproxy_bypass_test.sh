@@ -34,6 +34,6 @@ rc=0
 for flags in ack finack rstack; do
    leaktest_forward_leak_case \
       "non-SYN TCP (${flags}, transproxy bypass) to clearnet" tcp6 "${PROBE_DST_IP6}" \
-      "ip6 and host ${PROBE_DST_IP6} and tcp" --flags "${flags}" --dport 443 || rc=$?
+      --flags "${flags}" --dport 443 || rc=$?
 done
 exit "${rc}"

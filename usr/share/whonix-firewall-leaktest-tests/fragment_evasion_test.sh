@@ -31,5 +31,5 @@ trap leaktest_teardown EXIT
 rc=0
 leaktest_probe_case \
    'fragmented IPv6 (fragment header) to clearnet' frag6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
-   "ip6 and host ${PROBE_DST_IP6}" --dport 443 || rc=$?
+   --dport 443 || rc=$?
 exit "${rc}"

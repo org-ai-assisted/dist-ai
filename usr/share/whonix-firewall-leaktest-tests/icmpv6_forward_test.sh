@@ -30,6 +30,5 @@ trap leaktest_teardown EXIT
 
 rc=0
 leaktest_forward_leak_case \
-   'ICMPv6 echo to clearnet' icmp6 "${PROBE_DST_IP6}" \
-   "ip6 and host ${PROBE_DST_IP6} and icmp6" || rc=$?
+   'ICMPv6 echo to clearnet' icmp6 "${PROBE_DST_IP6}" || rc=$?
 exit "${rc}"

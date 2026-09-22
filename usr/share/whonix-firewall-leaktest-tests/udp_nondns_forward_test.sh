@@ -30,6 +30,5 @@ trap leaktest_teardown EXIT
 
 rc=0
 leaktest_forward_leak_case \
-   'non-DNS UDP to clearnet' udp6 "${PROBE_DST_IP6}" \
-   "ip6 and host ${PROBE_DST_IP6} and udp" --dport 123 || rc=$?
+   'non-DNS UDP to clearnet' udp6 "${PROBE_DST_IP6}" --dport 123 || rc=$?
 exit "${rc}"

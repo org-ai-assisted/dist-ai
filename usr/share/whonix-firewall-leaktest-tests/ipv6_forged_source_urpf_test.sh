@@ -35,32 +35,22 @@ source "${lib_dir}/leaktest_lib.sh"
 leaktest_preconditions
 trap leaktest_teardown EXIT
 
-helpers_dir="$(leaktest_helpers_dir)"
 capture_file="$(mktemp)"
 rc=0
 
-## Fire a forged-source SYN from <src> against the currently-loaded topology and
-## print how many probe-tagged packets reached the upstream sink.
-## Print "<egress-count> <capture-live>" for a forged-source SYN from <src>.
+## Fire a forged-source SYN from <src> against the currently-loaded topology,
+## printing "<egress-count> <capture-live>" via the shared helper (broad egress
+## oracle). Delivery is proven by the uRPF-stripped canary below.
 fire_probe_from() {
-   local src="$1" live=0
-   leaktest_capture_up "ip6 and (host ${src} or host ${PROBE_DST_IP6}) and tcp" 6 "${capture_file}"
-   sleep 1
-   ip netns exec ws python3 "${helpers_dir}/inject.py" \
-      --proto tcp6 --iface eth0 --gw4 "${INT_GW_IP4}" \
-      --src "${src}" --dst "${PROBE_DST_IP6}" >/dev/null 2>&1
-   sleep 3
-   leaktest_capture_wait
-   leaktest_capture_bound "${capture_file}" && live=1
-   printf '%s %s' "$(leaktest_egress_count "${capture_file}")" "${live}"
+   leaktest_fire_forward_probe tcp6 "$1" "${PROBE_DST_IP6}" "${capture_file}"
 }
 
 ## 1. Shipped ruleset (uRPF present) -> no egress, for the forged source and for
 ## other off-subnet spoofs (uRPF is general, not keyed to one address).
 leaktest_setup "${ruleset_file}"
 for spoof in "${PROBE_SRC_IP6}" '2001:db8:cafe::5' '::ffff:203.0.113.5'; do
-   result="$(fire_probe_from "${spoof}")"
-   leaktest_assert_blocked "spoofed source ${spoof}" "${result% *}" "${result##* }" || rc=1
+   read -r count live < <(fire_probe_from "${spoof}")
+   leaktest_assert_blocked "spoofed source ${spoof}" "${count}" "${live}" || rc=1
 done
 
 ## 2. Positive control on the same topology.
@@ -74,7 +64,7 @@ fi
 stripped_ruleset="$(mktemp --suffix=.nft)"
 grep --invert-match 'fib saddr . iif oif missing' "${ruleset_file}" >"${stripped_ruleset}"
 leaktest_setup "${stripped_ruleset}"
-result="$(fire_probe_from "${PROBE_SRC_IP6}")"
-leaktest_assert_leaked 'forged-source (uRPF stripped)' "${result% *}" "${result##* }" || rc=1
+read -r count live < <(fire_probe_from "${PROBE_SRC_IP6}")
+leaktest_assert_leaked 'forged-source (uRPF stripped)' "${count}" "${live}" || rc=1
 
 exit "${rc}"
