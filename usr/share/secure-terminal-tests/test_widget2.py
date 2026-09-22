@@ -744,8 +744,10 @@ def _reg_about_exec(self):
     return int(_QDialog.DialogCode.Rejected)
 _reg_orig_exec2 = _QDialog.exec
 _QDialog.exec = _reg_about_exec
-win.show_about()
-_QDialog.exec = _reg_orig_exec2
+try:
+    win.show_about()
+finally:
+    _QDialog.exec = _reg_orig_exec2      # restore even if show_about raises
 ok(_reg_about.get('s1', 0) > _reg_about.get('s0', 0) > 0,
    'About body text zooms with the dialog (%.1f -> %.1f pt)'
    % (_reg_about.get('s0', -1.0), _reg_about.get('s1', -1.0)))
@@ -1508,12 +1510,17 @@ _big = SecureTerminal(command='/bin/cat', history='x' * 2_000_000)
 ok(len(_big._raw) <= _big._RAW_MAX, 'restored history is capped to _RAW_MAX')
 _big.close()
 
-# an alternate-screen flood is bounded (per-read snapshot cap), does not hang
+# a pathological alternate-screen flood (2000 enter/leave in ONE read) must RETURN, not
+# hang: _feed_stream caps processed transitions at _ALT_TRANSITIONS_MAX. The empty /bin/cat
+# alt frame leaves no observable end-state to size (exit snapshots skip empty frames, the
+# restored primary screen is empty), so assert the honest properties: control returns here,
+# and the primary screen is restored (_alt_saved cleared) rather than left wedged in alt.
 if tui_available():
     _af = SecureTerminal(command='/bin/cat', tui=True)
     _af._make_screen()
-    _af._feed_stream(b'\x1b[?1049h\x1b[?1049l' * 1000)         # 2000 transitions
-    ok(True, 'an alternate-screen flood returns (bounded) rather than hanging')
+    _af._feed_stream(b'\x1b[?1049h\x1b[?1049l' * 1000)         # 2000 transitions in one read
+    ok(not _af._alt_saved,
+       'an alternate-screen flood returns rather than hanging (primary screen restored)')
     _af.close()
 
 # a legacy allow_title lock also locks the granular title/notify controls: _osc_locked
@@ -4162,8 +4169,6 @@ ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
 from PyQt6.QtGui import QColor as _QC_cur                       # noqa: E402
 ok(_oc._cursor_color() == _QC_cur('#ffff00'),
    'OSC 12 re-tints the cursor (not OSC 10 fg) -- _cursor_color reads the cursor slot')
-## A3: Close _oc instance after one-shot use to prevent pty child leak
-_oc.close()
 
 # OSC 52 clipboard-read gating: off / approved / denied / global-always / ask-once. Each
 # branch is VERIFIED to write (or NOT write) a real \x1b]52;c; reply -- asserting nothing
@@ -4201,6 +4206,10 @@ _lm._feed_stream(b'anything')
 _oc._feed_bytes(b'')
 _oc._alt_leave()                            # _alt_saved is None -> returns
 ok(True, 'feed guards: no stream, empty chunk and alt-leave-without-save are safe')
+## A3: close after last use (prevent pty child leak); _oc drove the OSC/clipboard block
+## on a LIVE instance so the negative "no exfil" replies were not masked by a closed fd.
+_oc.close()
+_lm.close()
 
 # --- more terminal branches ----------------------------------------------------
 import fcntl as _fcntl                                          # noqa: E402
