@@ -173,6 +173,30 @@ for n in '' '[ar]oot' 'se*' '^x' 'a b' '1x' '.hidden'; do
    if is_name_valid "${n}"; then fail "is_name_valid accepted invalid '${n}'"; else pass "is_name_valid rejects '${n}'"; fi
 done
 
+## A non-ASCII name must be rejected even when the CALLER runs under a UTF-8
+## locale: glibc would otherwise collate-expand [a-zA-Z] and accept it. The fix
+## is is_name_valid's own 'local LC_ALL=C'. Needs a full-collation UTF-8 locale
+## (C.UTF-8's minimal collation does not expand ranges); skip only this check,
+## not the suite, when none is installed (e.g. a minimal CI image).
+utf8_locale=""
+locale_list="$(locale -a 2>/dev/null || true)"
+for cand in en_US.UTF-8 en_US.utf8 de_DE.UTF-8; do
+   if grep --quiet --ignore-case --line-regexp -- "${cand//UTF-8/utf8}" <<<"${locale_list}"; then
+      utf8_locale="${cand}"
+      break
+   fi
+done
+non_ascii="$(printf '\xc3\x89')"   # U+00C9 (E with acute); no raw non-ASCII in source
+if [ -n "${utf8_locale}" ]; then
+   if LC_ALL="${utf8_locale}" is_name_valid "${non_ascii}"; then
+      fail "is_name_valid accepted a non-ASCII name under ${utf8_locale} (missing LC_ALL=C)"
+   else
+      pass "is_name_valid rejects a non-ASCII name under ${utf8_locale} (LC_ALL=C forces ASCII)"
+   fi
+else
+   printf '%s\n' "  INFO: no full-collation UTF-8 locale installed; skipped the non-ASCII is_name_valid check"
+fi
+
 ## ---- escape_name ----
 if [ "$(escape_name 'a.b$c')" = 'a\.b\$c' ]; then pass "escape_name escapes . and \$"; else fail "escape_name wrong: '$(escape_name 'a.b$c')'"; fi
 
