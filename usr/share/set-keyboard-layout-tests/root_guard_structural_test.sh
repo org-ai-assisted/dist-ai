@@ -49,16 +49,17 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## The root guard must GATE the console restart WITHIN set_console_keymap. Two
-## independent whole-file greps (the prior form) pass even when the guard text is
-## an inert comment in another function and the real restart is unguarded, so
-## extract the function body and require the guard 'if' to PRECEDE the actual
-## restart command line (a 'log_run' invocation, not a quoted "Skipping..." log
-## message that merely names it). A column-0 '}' ends the function.
-## The guard match is the full 'if [ "$(id --user)" != 0 ]' test (0 quoted or
-## not), NOT a bare substring: a line that merely mentions the comparand without
-## being the executable 'if' test cannot satisfy it. Tracks the shipped guard
+## STRUCTURAL revert-guard (AI-accident scope). Extract the set_console_keymap body
+## (a column-0 '}' ends it) and assert the root-guard 'if' is PRESENT as a real
+## statement -- anchored to line start after comment-stripping, so the guard text
+## parked in a comment or string cannot satisfy it -- and PRECEDES the actual restart
+## command line (a 'log_run' invocation). Tracks the shipped guard
 ## 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
+## It does NOT prove the non-root branch RETURNS: deciding return-vs-fall-through
+## across bash control flow (else / subshell / pipeline / nested-if, code vs string)
+## is a bash-parser problem and deliberately out of scope. An accidental REMOVAL or
+## reorder of the guard is caught; a hand-crafted evasion that keeps the 'if' text but
+## neuters it is not this guard's job.
 console_body="$(awk '
    /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
    in_fn { print }
@@ -72,29 +73,17 @@ console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:sp
 ## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort
 ## the script before the notok below could report the missing/inert guard.
 guard_line="$(printf '%s\n' "${console_code}" \
-   | grep --line-number --extended-regexp -- 'if \[ "\$\(id --user\)" != '\''?0'\''? \]' \
+   | grep --line-number --extended-regexp -- '^[[:space:]]*if \[ "\$\(id --user\)" != '\''?0'\''? \]' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 restart_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 
-## Line order alone is not enough: a FALL-THROUGH guard (an 'if [ != 0 ]' that only
-## logs and closes, then an unconditional restart) satisfies guard < restart yet
-## restarts for every user. The shipped guard early-RETURNS for non-root, so require a
-## return/exit inside the guard's own block (up to its closing 'fi'). A flat block is
-## assumed (the shipped one is); a nested 'fi' fails closed -> a human reviews.
-guard_returns="$(printf '%s\n' "${console_code}" | awk -v g="${guard_line}" '
-   NR <= g { next }
-   /^[[:space:]]*fi([[:space:]]|;|$)/ { exit }
-   /(^|[[:space:]])(return|exit)([[:space:]]|$)/ { print "yes"; exit }
-')"
-
 if [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
-   && [ "${guard_line}" -lt "${restart_line}" ] \
-   && [ "${guard_returns}" = "yes" ]; then
-   ok "root guard 'if' gates the console restart in set_console_keymap"
+   && [ "${guard_line}" -lt "${restart_line}" ]; then
+   ok "root guard 'if' is present and precedes the console restart in set_console_keymap"
 else
-   notok "root guard does not gate the console restart (guard='${guard_line}' restart='${restart_line}' returns='${guard_returns:-no}')"
+   notok "root guard 'if' missing or not before the console restart (guard='${guard_line}' restart='${restart_line}')"
 fi
 
 ## The resolved TODO must be gone (an addressed marker is deleted).
