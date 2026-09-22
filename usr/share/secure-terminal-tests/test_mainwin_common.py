@@ -264,6 +264,21 @@ def eq(got, want, msg):
     ok(got == want, '%s (got %r, want %r)' % (msg, got, want))
 
 
+def _full_opts(_w, **_over):
+    """The strict opts dict MainWindow._apply_global reads (the Global-settings
+    dialog's apply entry point). Built from window _W's current defaults; _OVER
+    overrides individual keys. Use it to drive the REAL aggregator instead of
+    poking per-tab state, so an aggregation regression is actually caught."""
+    _o = {'theme': _w._default_theme, 'zoom': _w._default_zoom,
+          'mode': _w._default_mode, 'colors': _w._default_colors,
+          'line_edits': _w._default_line_edits, 'tui': _w._default_tui,
+          'scrollback': _w._scrollback, 'paste_delay': _w._paste_delay,
+          'escape_limit': _w._escape_limit, 'persist': _w._persist_session,
+          'systray': _w._systray, 'auto_tab_colors': _w._auto_tab_colors}
+    _o.update(_over)
+    return _o
+
+
 def pump(ms=10):
     """Process pending Qt events, then briefly yield so a just-forked child can
     reach its chdir/exec before the next poll, without busy-spinning."""
@@ -326,5 +341,5 @@ __all__ = [
     '_REAL_QFONTDB', '_FontDBPresent', '_FontDBAbsent', '_REAL_APP_ICON',
     '_orig_exec', '_accept_exec', '_dialogs', '_dlg_field',
     '_FakeConn', '_FakeServer', '_Yes', '_No',
-    'PASS', 'FAIL', 'ok', 'eq', 'pump', 'wait_for', 'feed_output', 'finish',
+    'PASS', 'FAIL', 'ok', 'eq', '_full_opts', 'pump', 'wait_for', 'feed_output', 'finish',
 ]

@@ -145,20 +145,10 @@ for _blabel in ('Audible', 'Visual', 'Tray popup', 'Tab marker'):
        'Global settings dialog has the Bell %r channel' % _blabel)
 
 
-def _full_opts(**_over):                             # the keys _apply_global reads strictly
-    _o = {'theme': win._default_theme, 'zoom': win._default_zoom,
-          'mode': win._default_mode, 'colors': win._default_colors,
-          'line_edits': win._default_line_edits, 'tui': win._default_tui,
-          'scrollback': win._scrollback, 'paste_delay': win._paste_delay,
-          'escape_limit': win._escape_limit, 'persist': win._persist_session,
-          'systray': win._systray, 'auto_tab_colors': win._auto_tab_colors}
-    _o.update(_over)
-    return _o
-
-
 # F2: the dialog Bell channels become the global default + apply to every tab.
-win._apply_global(_full_opts(bell={'audible': True, 'visual': False,
-                                    'tray': True, 'tab': True}))
+# _full_opts (test_mainwin_common) builds the strict dict _apply_global reads.
+win._apply_global(_full_opts(
+    win, bell={'audible': True, 'visual': False, 'tray': True, 'tab': True}))
 ok(win._default_bell == {'audible', 'tray', 'tab'},
    'F2: the dialog Bell channels become the global default (all four wired)')
 ok(all('audible' in t.bell_channels() and 'tab' in t.bell_channels()
@@ -167,8 +157,8 @@ ok(all('audible' in t.bell_channels() and 'tab' in t.bell_channels()
 # a 'bell' admin lock keeps the default through _apply_global (canary: drop the guard).
 _bell_prev = set(win._default_bell)
 win._locked = {'bell'}
-win._apply_global(_full_opts(bell={'audible': False, 'visual': False,
-                                    'tray': False, 'tab': False}))
+win._apply_global(_full_opts(
+    win, bell={'audible': False, 'visual': False, 'tray': False, 'tab': False}))
 ok(win._default_bell == _bell_prev,
    'F2: a bell admin-lock keeps the default through _apply_global')
 win._locked = set()
@@ -518,16 +508,16 @@ finally:
 _lew = MainWindow()
 _lew.new_tab()
 _lew.new_tab()                                  # two real tabs
-# #10: line editing is a global setting reaching EVERY tab (the dialog's _apply_global
-# loops all tabs; here we exercise the per-tab apply that loop calls).
-for _t in _lew._real_terms():
-    _t.apply_line_edits(False)
-_lew._default_line_edits = False
+# #10: line editing is a global setting reaching EVERY tab. Drive the REAL
+# aggregator (_apply_global, the dialog's apply entry point) -- NOT a per-tab loop
+# -- so a regression back to current()-only actually fails here. Canary: change the
+# main.py _apply_global loop to touch only current() and this goes red.
+_lew._apply_global(_full_opts(_lew, line_edits=False))
 ok(all(not t.line_edits_enabled() for t in _lew._real_terms()),
    '#10: line editing off applies to every tab, not just the current one')
-for _t in _lew._real_terms():
-    _t.apply_line_edits(True)
-_lew._default_line_edits = True
+ok(_lew._default_line_edits is False,
+   '#10: line editing off updates the new-tab default too')
+_lew._apply_global(_full_opts(_lew, line_edits=True))
 ok(all(t.line_edits_enabled() for t in _lew._real_terms()),
    '#10: line editing on re-applies to every tab')
 _lew.deleteLater()

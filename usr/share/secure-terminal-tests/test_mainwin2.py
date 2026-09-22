@@ -33,18 +33,17 @@ win.set_bell_sound('')                      # empty/disallowed -> cleared, appli
 ok(win._scrollback == 1000 and win._paste_delay == 3,
    'setting appliers apply the change to the window (scrollback + paste delay)')
 
-# line editing is a Global-settings (all-tabs) setting: the underlying per-tab apply is
-# what the dialog's _apply_global loops over.
-for _t in win._real_terms():
-    _t.apply_line_edits(False)
-win._default_line_edits = False
-eq(win.current().line_edits_enabled(), False,
-   'line editing off reaches the current tab')
+# line editing is a Global-settings (all-tabs) setting: driving the REAL aggregator
+# (_apply_global, the dialog's apply entry point) must reach every open tab AND update
+# the new-tab default -- not just current(). The multi-tab regression canary lives in
+# test_mainwin's #10 block; here we confirm the aggregator wires line_edits at all.
+win._apply_global(_full_opts(win, line_edits=False))
+ok(all(not _t.line_edits_enabled() for _t in win._real_terms()),
+   'line editing off reaches every open tab via _apply_global')
 eq(win._default_line_edits, False, 'line editing updates the new-tab default')
-for _t in win._real_terms():
-    _t.apply_line_edits(True)
-win._default_line_edits = True
-eq(win.current().line_edits_enabled(), True, 'line editing on restores it')
+win._apply_global(_full_opts(win, line_edits=True))
+ok(all(_t.line_edits_enabled() for _t in win._real_terms()),
+   'line editing on restores it on every tab')
 
 _saved_locked = set(win._locked)
 _saved_bsl = win._bell_sound_locked
