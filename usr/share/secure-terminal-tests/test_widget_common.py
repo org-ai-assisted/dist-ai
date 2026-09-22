@@ -64,7 +64,7 @@ __all__ = [
     'QApplication', 'QInputDialog', 'QKeyEvent', 'QColor', 'QTextCursor',
     'QEvent', 'Qt', 'QTimer', 'QEventLoop', 'QMimeData', 'QPoint', 'QMessageBox',
     'SecureTerminal', 'tui_available', 'APP', 'PASS', 'FAIL',
-    'ok', 'eq', 'pump', 'wait_for', 'key', 'spy_writes', 'feed_output', 'spawn_live',
+    'ok', 'eq', 'pump', 'wait_for', 'key', 'spy_writes', 'sink_write', 'feed_output', 'spawn_live',
     'mark_fg', 'mark_bg', 'fmt_of_char', 'glyph_pt', 'finish',
 ]
 
@@ -111,10 +111,22 @@ def spy_writes(term):
 
     def _spy(data):
         sent.append(data)
-        return True                    # mimic _write's contract: True == every byte written
+        return len(data)               # mimic _write's contract: bytes written (a full write)
 
     term._write = _spy                 # pylint: disable=protected-access
     return sent
+
+
+def sink_write(sink):
+    """A _write stub that records each write into `sink` and returns its BYTE COUNT,
+    honouring _write's contract (bytes written; a full delivery == len(data)). A return-
+    checking path (_reply_clipboard, _dispatch_paste, _insert_next_staged, the submit CR)
+    then sees a real delivery instead of the None a bare list.append would yield -- which
+    would trip the `< len` / `== len` comparison those paths run."""
+    def _w(data):
+        sink.append(data)
+        return len(data)
+    return _w
 
 
 # feed_output lives in st_term_feed (side-effect-free) so the mainwin harness can share

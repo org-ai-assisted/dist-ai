@@ -1262,7 +1262,7 @@ def _osc_writes(seq_parts):
     _osz._last_clip_read = 0.0
     captured: list[bytes] = []
     _orig = _osz._write
-    _osz._write = captured.append      # pylint: disable=protected-access
+    _osz._write = sink_write(captured)      # pylint: disable=protected-access
     try:
         for part in seq_parts:
             _osz._handle_osc(part)
@@ -1301,7 +1301,7 @@ _osz._clipboard_read = True
 _osz._last_clip_read = 0.0
 _clipcap: list = []
 _o_wc = _osz._write
-_osz._write = _clipcap.append          # pylint: disable=protected-access
+_osz._write = sink_write(_clipcap)          # pylint: disable=protected-access
 try:
     _osz._handle_osc(b'\x1b]52;c;?\x07')     # the read query
 finally:
@@ -2357,7 +2357,7 @@ def _clip_read(feature_on, grant):
     _reqs = []
     c.clipboard_read_requested.connect(lambda: _reqs.append(1))
     _sent: list[bytes] = []
-    c._write = _sent.append                # pylint: disable=protected-access
+    c._write = sink_write(_sent)                # pylint: disable=protected-access
     if grant is not None:
         # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
         # from an earlier dialog: a later read reads _clipboard_read directly, it does
@@ -2405,7 +2405,7 @@ _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
 _cg._clipboard_read = True                 # a tab already granted allow-always
 _cgs: list[bytes] = []
-_cg._write = _cgs.append
+_cg._write = sink_write(_cgs)
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 eq(len(_cgs), 1, 'OSC 52 read: two reads in a granted tab -> one reply (rate-limited)')
@@ -2414,7 +2414,7 @@ _cg.close()
 _cpr = SecureTerminal(command='/bin/cat', tui=True)
 _cpr.apply_osc('osc_clipboard_read', True)
 _cps: list[bytes] = []
-_cpr._write = _cps.append
+_cpr._write = sink_write(_cps)
 _cpr._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
 _cpr.grant_clipboard_read(_cpr.CLIP_ALLOW_ALWAYS)  # user allows -> the pending query is answered NOW
@@ -2429,7 +2429,7 @@ def _clip_term():
     reqs: list[int] = []
     sent: list[bytes] = []
     c.clipboard_read_requested.connect(lambda: reqs.append(1))
-    c._write = sent.append                 # pylint: disable=protected-access
+    c._write = sink_write(sent)                 # pylint: disable=protected-access
     return c, reqs, sent
 
 
@@ -4444,12 +4444,12 @@ try:
 finally:
     _os.write = _o_write3
     _time.monotonic = _o_mono
-# Teeth (not a bare ok(True)): the bail returns False (distinct from True=all-written),
-# and the deadline is BOTH set and checked via monotonic, so the mock is consulted at
-# least twice. A refactor switching _write's clock source leaves _mono_calls at 0 and
-# trips the second assert instead of passing with a dead mock.
-ok(_wd_ret is False,
-   '_write returns False (deadline bail), not True (all bytes written)')
+# Teeth (not a bare ok(True)): the bail returns 0 bytes written (distinct from len(data)=1
+# for an all-written call), and the deadline is BOTH set and checked via monotonic, so the
+# mock is consulted at least twice. A refactor switching _write's clock source leaves
+# _mono_calls at 0 and trips the second assert instead of passing with a dead mock.
+ok(_wd_ret == 0 and _wd_ret != len(b'z'),
+   '_write returns 0 bytes written on a deadline bail (distinct from len(data)=all written)')
 ok(_mono_calls['n'] >= 2,
    '_write consulted the mocked monotonic clock to set AND check its 2s deadline')
 

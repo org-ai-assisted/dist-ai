@@ -632,11 +632,26 @@ eq(S.render_output('a\x1b]0;title\x07b', 'box'), 'ab', 'OSC still terminates on 
 # an unterminated DCS swallows to end-of-input (no ST ever arrives)
 eq(S.render_output('keep\x1bPneverending tail', 'box'), 'keep',
    'an unterminated DCS swallows the rest of the chunk')
+# --- ESC k: the GNU Screen / tmux window-title escape, a DCS-class string sequence.
+# reviewdrain-VERIFIED leak: ESC k was NOT a recognized introducer, so the generic
+# 2-byte-escape arm stripped only "ESC k" and the title BODY rendered as literal text
+# -- an UNMARKED, UNBOUNDED ASCII leak PAST the OSC-title guard. Its body must be
+# stripped like any DCS body (ST-terminated, BEL is body, unterminated -> swallowed).
+eq(S.render_output('a\x1bkSECRET\x1b\\b', 'detail'), 'ab',
+   'ESC k title body stripped in detail mode (the reviewed live leak: no "SECRET")')
+eq(S.render_output('a\x1bkSECRET\x1b\\b', 'box'), 'ab', 'ESC k title body stripped in box mode')
+eq(S.render_output('x\x1bkwindow name\x1b\\y', 'box'), 'xy', 'ESC k (ST-terminated) stripped')
+eq(S.render_output('\x1bksecret\x07LEAK\x1b\\after', 'box'), 'after',
+   'a BEL inside ESC k is body, not a terminator (no "LEAK") -- DCS-class')
+eq(S.render_output('keep\x1bkneverending title', 'box'), 'keep',
+   'an unterminated ESC k swallows the rest of the chunk (no unbounded leak)')
 # a DCS/APC split across two reads must carry its tail, not leak it
 eq(S.split_trailing_escape('log\x1bP$q'), ('log', '\x1bP$q'), 'an incomplete DCS tail is carried')
 eq(S.split_trailing_escape('log\x1b_Gf=1'), ('log', '\x1b_Gf=1'), 'an incomplete APC tail is carried')
 eq(S.split_trailing_escape('log\x1bP$qm\x1b\\'), ('log\x1bP$qm\x1b\\', ''),
    'a COMPLETE DCS (ST-terminated) is not held back')
+eq(S.split_trailing_escape('log\x1bkwin ti'), ('log', '\x1bkwin ti'),
+   'an incomplete ESC k title tail is carried, not leaked')
 # has_bell: a DCS/OSC-terminating BEL is not a bell; a standalone BEL is
 ok(not S.has_bell('\x1bPabc\x07'), 'a DCS-internal BEL is not a standalone bell')
 ok(not S.has_bell('\x1b]2;t\x07'), 'an OSC-terminating BEL is not a standalone bell')
@@ -657,6 +672,9 @@ eq(_fcc(['\x1b]2;' + 'x' * 5000, 'y' * 20 + '\x07TAIL'])[0], 'TAIL',
    'a >cap OSC split across reads is fully stripped (not the old bounded leak)')
 eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 10 + '\x1b', '\\DONE'])[0], 'DONE',
    'an ST terminator itself split across the boundary is still recognised')
+eq(_fcc(['\x1bk' + 'A' * 5000, 'B' * 30 + '\x1b\\AFTER'])[0], 'AFTER',
+   'a >cap ESC k title split across reads is fully stripped, its continuation not leaked')
+eq(_fcc(['a\x1bkwin ti', 'tle\x1b\\b'])[0], 'ab', 'a short split ESC k leaks nothing')
 _mc = _fcc(['\x1bP' + 'A' * 5000] + ['A' * 4000] * 3 + ['tail\x1b\\OK'])
 eq((_mc[0], _mc[2]), ('OK', ''), 'a discard spanning many chunks resumes after the ST')
 # NON-string sequences (CSI, generic ESC) past the cap must discard too, not only
@@ -781,6 +799,17 @@ ok(S.wants_full_screen('\x1b[?147h') is False, 'mode 147 is not alt (no substrin
 ok(S.wants_full_screen('\x1b[?25h') is False, 'a non-alt private mode (cursor show) is not alt')
 ok([k for _s, _e, k in S.alt_screen_transitions('\x1b[?1049h\x1b[?1049l')] == ['enter', 'leave'],
    'alt_screen_transitions yields enter then leave in order')
+# Params are parsed as INTEGERS: a numeric-equivalent form (a redundant leading zero) must
+# NOT bypass detection -- the str-compare bug let ESC[?01049h slip past as full-screen output.
+ok(S.wants_full_screen('\x1b[?01049h') is True,
+   'ESC[?01049h (leading zero) is recognized as alt-screen enter (int parse, not str compare)')
+ok(S.leaves_full_screen('\x1b[?01049l') is True, 'ESC[?01049l (leading zero) is an alt-screen leave')
+ok([k for _s, _e, k in S.alt_screen_transitions('\x1b[?1047;01049h')] == ['enter'],
+   'a COMBINED form with a leading-zero member is still detected')
+ok(S.wants_full_screen('\x1b[?147h') is False,
+   'mode 147 is still NOT alt after the int-parse fix (no false positive)')
+ok([_ for _ in S.alt_screen_transitions('\x1b[?' + '0' * 6000 + 'h')] == [],
+   'a hostile 6000-digit param does not crash the int parse (capped, fail-safe)')
 
 # --- in-place repaint detection (zsh/readline menu, progress grid, no alt screen)
 # The tell line mode cannot draw: cursor-up to repaint above, or absolute row;col
@@ -1122,6 +1151,18 @@ eq(S.marking_cp_for_cell(chr(0x0301) + BIDI), 0x202E,
 ok(S._MARKING_SEVERITY['confusable'] > S._MARKING_SEVERITY['combining']
    > S._MARKING_SEVERITY['nonascii'],
    'severity: combining ranks strictly between confusable and honest nonascii')
+# DoS bound: pyte merges a growing cell's combining runs into one data string, and this is
+# called on raw cell.data. The scan is capped at the SAME bound tui_cell applies
+# (_COMBINING_RUN_MAX + 1), so a distinct growing string cannot become an unbounded lru_cache
+# key doing O(len) work. Canary: a marking placed PAST the cap is truncated away (the pre-fix
+# code scanned the whole string and returned the RLO here) -- and the classification stays
+# consistent with what tui_cell actually displays for the same over-long cell.
+_capped = 'a' * (S._COMBINING_RUN_MAX + 1) + BIDI
+eq(S.marking_cp_for_cell(_capped), None,
+   'marking cp: a marking beyond the combining-run cap is truncated away (matches tui_cell)')
+eq(S.marking_cp_for_cell('x' + chr(0x0301) * 5000),
+   S.marking_cp_for_cell('x' + chr(0x0301) * (S._COMBINING_RUN_MAX + 1)),
+   'marking cp: a huge combining run classifies as its capped prefix (bounded key + work)')
 # tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
 # the grid colouring can classify without a None fallback (checked for every mode).
 for _mode in ('box', 'show', 'reveal', 'detail'):
@@ -2015,9 +2056,9 @@ eq(S.feed_line_edits([], 0, {}, _le_raw)[1], _le_on,
 # to print "(B" / "(0", and ESC c / ESC 7 / ESC # 8 printed their final byte.
 # Sweep the WHOLE grammar, both render paths, so a future narrowing cannot
 # reintroduce a hole one hand-picked case would miss.
-# these open a LONGER form (CSI/OSC/DCS/SOS/PM/APC, and the SS2/SS3 single
-# shifts, which take one graphic byte), so they are not two-byte escapes
-_INTRODUCERS = '[]PX^_NO'
+# these open a LONGER form (CSI/OSC/DCS/SOS/PM/APC, the ESC k Screen/tmux title, and
+# the SS2/SS3 single shifts, which take one graphic byte), so they are not two-byte escapes
+_INTRODUCERS = '[]PX^_NOk'
 _ESC_LEAK = []
 for _f in range(0x30, 0x7F):
     if chr(_f) in _INTRODUCERS:

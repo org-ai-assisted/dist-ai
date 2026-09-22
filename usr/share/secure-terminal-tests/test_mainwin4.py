@@ -105,6 +105,17 @@ win._on_cwd_changed(_bt, '/<img src=x>')  # nosec B108 -- literal handler arg, n
 _cwdtip = win.tabs.tabToolTip(win.tabs.indexOf(_bt))
 ok('<img' not in _cwdtip and '&lt;img' in _cwdtip,
    'SEC-2: an OSC-7 cwd path is html-escaped in the tab tooltip (no raw markup)')
+# SEC-2b: the cwd FALLBACK (the /proc paths shell_cwd/cwd_basename, used when NO OSC-7 cwd was
+# received) must be sanitize_title'd -- html.escape alone does NOT strip a bidi/RLO byte, so a
+# real directory name carrying one would ride into the rich-text tooltip. The sibling tab LABEL
+# already sanitizes (_refresh_tab_label); the tooltip cwd row did not.
+win._osc_cwd.pop(_bt, None)                  # force the fallback (no stored OSC-7 cwd)
+_RLO = chr(0x202E)
+_bt.shell_cwd = lambda: '/home/user/' + _RLO + 'evil'    # a real fs path carrying an RLO
+_bt.cwd_basename = lambda: _RLO + 'evil'
+_fbtip = win._tab_tooltip(_bt)
+ok(_RLO not in _fbtip,
+   'SEC-2b: a bidi/RLO byte in the /proc cwd fallback is stripped from the tab tooltip')
 
 # --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
 _ids = list(win._shortcuts)[:2]
