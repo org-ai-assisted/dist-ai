@@ -14,7 +14,7 @@ from test_widget_common import *   # noqa: F401,F403  (shared harness: APP, ok, 
 from PyQt6.QtWidgets import QWidget, QTabBar
 from PyQt6.QtGui import QHelpEvent
 from PyQt6.QtCore import QPoint, QEvent
-from secure_terminal.main import SecureTabBar, _ToolTipFilter
+from secure_terminal.main import SecureTabBar, _ToolTipFilter, normalize_ptitle
 
 
 def _bar():
@@ -119,5 +119,51 @@ _ev2 = QHelpEvent(QEvent.Type.ToolTip, _mid, _b.mapToGlobal(_mid))
 ok(_flt.eventFilter(_b, _ev2) is True,
    'off any element, the filter falls back to the tab-level tooltip')
 _b.close()
+
+# --- normalize_ptitle: strip shell-prompt noise, keep the informative residue (#6) -----
+# Real OSC-title shapes captured from bash / grml-zsh / vim.
+eq(normalize_ptitle('user@host:~ [pts/5]'), '',
+   'a bare shell prompt (user@host:path + tty tag) normalizes to empty')
+eq(normalize_ptitle('user@host:/usr/lib (cd /tmp) [pts/5]'), 'cd /tmp',
+   'the running command survives; user@host, path and tty tag are stripped and the '
+   'parens unwrapped')
+eq(normalize_ptitle('osc_sample.txt (/tmp) - VIM'), 'osc_sample.txt (/tmp) - VIM',
+   "an app title with no user@host prefix is kept verbatim")
+eq(normalize_ptitle('npm run build'), 'npm run build',
+   'a bare command with no prompt noise is unchanged')
+eq(normalize_ptitle(''), '', 'empty in -> empty out')
+eq(normalize_ptitle('user@host:~/deep/path'), '',
+   'a path-only prompt title (no command) normalizes to empty')
+
+# tooltip branches over the band: norm==raw (Title:), norm!=raw (Shown/Full), norm empty
+_tb = SecureTabBar()
+_tb.set_theme(False)
+_tb.set_two_line(True)
+_tb.setTabsClosable(True)
+for _i, _ttl in enumerate(['npm run build',                       # norm == raw
+                           'user@host:~ (vim notes.txt) [pts/1]',  # norm != raw
+                           'user@host:~ [pts/1]']):                # norm empty (noise)
+    _tb.addTab('t%d' % _i)
+    _tb.set_ptitle(_i, _ttl)
+_tb.resize(600, _tb.sizeHint().height())
+_tb.show()
+APP.processEvents()
+
+
+def _band_tip(bar, idx):
+    r = bar.tabRect(idx)
+    pt = QPoint(r.center().x(), r.top() + (r.height() - bar._LINE2_H) + 3)
+    return bar.element_tooltip(pt) or ''
+
+
+ok('Title: npm run build' in _band_tip(_tb, 0),
+   'a title with no prompt noise shows a single Title: line in the tooltip')
+_t1 = _band_tip(_tb, 1)
+ok('Shown: vim notes.txt' in _t1 and 'Full: user@host:~ (vim notes.txt) [pts/1]' in _t1,
+   'a normalized title shows BOTH the normalized (Shown) and the raw (Full) in the tooltip')
+_t2 = _band_tip(_tb, 2)
+ok('blank' in _t2 and 'Full: user@host:~ [pts/1]' in _t2,
+   'an all-noise title tooltip explains the band is blank and still shows the raw title')
+_tb.close()
 
 finish('tabbar-polish')
