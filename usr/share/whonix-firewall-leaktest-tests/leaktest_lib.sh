@@ -271,10 +271,12 @@ leaktest_forward_leak_case() {
 ## transparently redirected to the Tor port and answered. Returns 0 on success.
 leaktest_positive_control() {
    local rc
-   rc="$(ip netns exec ws python3 - <<'PY'
+   ## Pass the gateway IPv6 in (heredoc is single-quoted, so no shell interp);
+   ## avoids duplicating INT_GW_IP6 as a literal that could silently diverge.
+   rc="$(ip netns exec ws python3 - "${INT_GW_IP6}" <<'PY'
 import socket, sys
 try:
-    s = socket.create_connection(("fd19:c33d:88bc::10", 443), 4)
+    s = socket.create_connection((sys.argv[1], 443), 4)
     s.close()
     print("OK")
 except Exception as exc:  # noqa: BLE001

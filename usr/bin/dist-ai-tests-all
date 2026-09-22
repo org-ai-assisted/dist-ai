@@ -860,6 +860,9 @@ suite_component() {
       onion-grater)
          printf '%s' 'onion-grater'
          ;;
+      whonix-firewall-leaktest)
+         printf '%s' 'whonix-firewall'
+         ;;
       privleap)
          printf '%s' 'privleap'
          ;;
