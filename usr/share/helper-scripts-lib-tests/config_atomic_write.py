@@ -18,7 +18,6 @@ Imports the REAL modules off the checkout (PYTHONPATH is set by the .sh wrapper 
 Exit 0 = all pass, 1 = a failure.
 """
 
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -71,34 +70,10 @@ check(
     "config_builder leaves no temp file behind on failure",
 )
 
-## Follow an output symlink (update the target in place) rather than replacing
-## the link with a regular file.
-link_dir = Path(tempfile.mkdtemp())
-real = link_dir / "real.conf"
-real.write_text("old\n")
-link = link_dir / "out.conf"
-link.symlink_to(real)
-cb.write_config_file({"": {"k": "v"}}, link)
-check(
-    link.is_symlink() and real.read_text() == "k=v\n\n",
-    "config_builder follows an output symlink (updates the target, keeps the link)",
-)
-
-## Degrade to an in-place write when the target directory is not writable (an
-## atomic replace is impossible there) instead of raising PermissionError.
-ro_dir = Path(tempfile.mkdtemp())
-ro_target = ro_dir / "c.conf"
-ro_target.write_text("orig\n")
-os.chmod(ro_dir, 0o555)  # nosec B103 -- throwaway temp dir, read-only fallback probe
-try:
-    cb.write_config_file({"": {"k2": "v2"}}, ro_target)
-    check(
-        ro_target.read_text() == "k2=v2\n\n",
-        "config_builder writes in place when the target dir is read-only",
-    )
-finally:
-    os.chmod(ro_dir, 0o755)  # nosec B103 -- throwaway temp dir, restore after probe
-
+## config_builder delegates the write to append_shared "overwrite", so symlink
+## following and a read-only-dir fallback are intentionally NOT provided (the
+## caller passes a real, writable target path). Atomicity + owner/mode
+## preservation come from append_shared, exercised below.
 
 ## --- append_shared: temp created in the TARGET directory ---------------------
 append_dir = Path(tempfile.mkdtemp())

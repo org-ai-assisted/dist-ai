@@ -81,13 +81,14 @@ else
    fail "range_arg wrongly rejected the literal allow-list entry 'a*'"
 fi
 
-## an ordinary space-separated allow-list still works
-if run_range mode true "true false"; then
-   pass "range_arg accepts a normal value from a space-separated allow-list"
+## a normal allow-list passed as separate args (how every real caller invokes it,
+## e.g. 'range_arg log_level "${log_level}" error warn notice info debug')
+if run_range mode true true false; then
+   pass "range_arg accepts a normal value from a multi-arg allow-list"
 else
    fail "range_arg wrongly rejected 'true' from 'true false'"
 fi
-if run_range mode nope "true false"; then
+if run_range mode nope true false; then
    fail "range_arg accepted an out-of-range value"
 else
    pass "range_arg rejects an out-of-range value"

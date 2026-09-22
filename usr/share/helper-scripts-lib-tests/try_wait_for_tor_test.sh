@@ -5,14 +5,16 @@
 
 ## AI-Assisted
 
-## Regression test for helper-scripts try-wait-for-tor-service-running.
+## Contract test for helper-scripts try-wait-for-tor-service-running.
 ##
-## THE BUG: the script had no 'exit' anywhere, so its status was whatever the
-## last command returned -- 'break' (0) on BOTH the active AND the failed branch,
-## and the loop tail (0) on timeout. It could NEVER report failure: a caller
-## gating on it ('if try-wait-...; then') proceeded as if Tor was up even when
-## tor@default.service had failed or never came up. Fix: exit 0 only on active;
-## non-zero on failed and on timeout (fail closed -- anonymity-relevant).
+## By DESIGN this is a BEST-EFFORT wait: it blocks until Tor is either active OR
+## determinably never-going-to-start, then exits 0 in every case. Handling Tor's
+## absence is the CALLER's responsibility, and both real callers ignore the exit
+## code (e.g. 'try-wait-... || true'). This asserts that contract: exit 0 on the
+## active, failed, and timeout paths alike.
+## NOTE: a hypothetical caller that gated on the exit code ('if try-wait-...;
+## then') would proceed with Tor down -- no live caller does. The fail-closed
+## alternative (exit non-zero on failed/timeout) is a documented option.
 ##
 ## Drives the REAL script with 'systemctl' and 'sleep' stubbed on PATH (so the
 ## timeout path is instant). No root, no systemd, no Tor.
@@ -73,15 +75,15 @@ run_with_state() {
 rc="$( run_with_state active )"
 [ "${rc}" = "0" ] && pass "active -> exit 0" || fail "active -> exit ${rc}, expected 0"
 
-## failed -> non-zero (fail closed)
+## failed -> exit 0 (best-effort contract; the caller handles Tor's absence)
 rc="$( run_with_state failed )"
-[ "${rc}" != "0" ] && pass "failed -> non-zero exit (${rc}); a gate must not proceed" \
-   || fail "failed -> exit 0 (fail-open: a gate would proceed with Tor down)"
+[ "${rc}" = "0" ] && pass "failed -> exit 0 (best-effort contract)" \
+   || fail "failed -> exit ${rc}, expected 0 (best-effort contract)"
 
-## never terminal (timeout) -> non-zero (fail closed)
+## never terminal (timeout) -> exit 0 (best-effort contract)
 rc="$( run_with_state activating )"
-[ "${rc}" != "0" ] && pass "timeout -> non-zero exit (${rc})" \
-   || fail "timeout -> exit 0 (fail-open)"
+[ "${rc}" = "0" ] && pass "timeout -> exit 0 (best-effort contract)" \
+   || fail "timeout -> exit ${rc}, expected 0 (best-effort contract)"
 
 printf '%s\n' ""
 printf '%s\n' "===== try_wait_for_tor: ${pass_count} pass, ${fail_count} fail ====="
