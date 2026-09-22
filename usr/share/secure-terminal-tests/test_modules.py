@@ -1192,12 +1192,11 @@ shutil.rmtree(_cd_i_root, ignore_errors=True)
 
 # install_best_effort never raises: a root whose parent is a FILE cannot hold the
 # log -> returns None, diagnostics stay at their defaults (launch proceeds).
-_cd_blk = tempfile.mktemp()
+_cd_blk = os.path.join(tempfile.mkdtemp(), 'blockfile')
 with open(_cd_blk, 'w', encoding='ascii') as _cd_bh:
     _cd_bh.write('x')
 ok(crashdiag.install_best_effort(os.path.join(_cd_blk, 'sub')) is None,
    'crashdiag: install_best_effort returns None (never raises) when the log is unopenable')
-os.unlink(_cd_blk)
 
 
 def _cd_child(body, root):
