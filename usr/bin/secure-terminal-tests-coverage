@@ -246,7 +246,14 @@ suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
         test_clipboard_watch)
 suite_paths=()
 for suite in "${suites[@]}"; do
-   [ -f "${tests_dir}/${suite}.py" ] || continue
+   ## A registered suite MISSING from the checkout is a packaging/rename bug, never a
+   ## legitimate skip -- fail closed (as the plain runner does) so a dropped suite cannot
+   ## silently shrink the coverage gate and read as a clean pass (the same silent-drop
+   ## class assert_gated_globs_resolve already guards for the module globs).
+   if [ ! -f "${tests_dir}/${suite}.py" ]; then
+      printf '%s\n' "secure-terminal-tests-coverage: FATAL: registered suite missing from checkout: ${suite}.py" >&2
+      exit 1
+   fi
    suite_paths+=("${tests_dir}/${suite}.py")
 done
 
