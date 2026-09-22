@@ -808,8 +808,13 @@ ok([k for _s, _e, k in S.alt_screen_transitions('\x1b[?1047;01049h')] == ['enter
    'a COMBINED form with a leading-zero member is still detected')
 ok(S.wants_full_screen('\x1b[?147h') is False,
    'mode 147 is still NOT alt after the int-parse fix (no false positive)')
+ok(S.wants_full_screen('\x1b[?' + '0' * 6000 + '1049h') is True,
+   'a 6000-zero-padded 1049 is STILL detected (leading zeros stripped before the digit cap, '
+   'so a length-cap-reject parser that missed it would fail here)')
 ok([_ for _ in S.alt_screen_transitions('\x1b[?' + '0' * 6000 + 'h')] == [],
-   'a hostile 6000-digit param does not crash the int parse (capped, fail-safe)')
+   'an all-zero param is mode 0, not alt, and does not crash the int parse')
+ok([_ for _ in S.alt_screen_transitions('\x1b[?' + '9' * 6000 + 'h')] == [],
+   'a genuinely huge non-zero param is fail-safe (dropped, no crash), not a false alt')
 
 # --- in-place repaint detection (zsh/readline menu, progress grid, no alt screen)
 # The tell line mode cannot draw: cursor-up to repaint above, or absolute row;col
@@ -1162,7 +1167,19 @@ eq(S.marking_cp_for_cell(_capped), None,
    'marking cp: a marking beyond the combining-run cap is truncated away (matches tui_cell)')
 eq(S.marking_cp_for_cell('x' + chr(0x0301) * 5000),
    S.marking_cp_for_cell('x' + chr(0x0301) * (S._COMBINING_RUN_MAX + 1)),
-   'marking cp: a huge combining run classifies as its capped prefix (bounded key + work)')
+   'marking cp: a huge combining run classifies as its capped prefix (bounded work)')
+# The lru_cache KEY must be the CAPPED string, not the raw arg: @lru_cache hashes/retains the
+# argument BEFORE the function body runs, so an in-function cap would still keep an unbounded
+# key. Prove the cap sits OUTSIDE the cache -- a 5000-cp cell and a 40-cp sibling collapse onto
+# ONE cache entry (both cap to the same COMBINING_RUN_MAX+1 prefix).
+S._marking_cp_scan.cache_clear()
+S.marking_cp_for_cell('q' + chr(0x0301) * 5000)
+_key_n1 = S._marking_cp_scan.cache_info().currsize
+S.marking_cp_for_cell('q' + chr(0x0301) * 40)          # same capped key -> cache HIT, no new entry
+_key_n2 = S._marking_cp_scan.cache_info().currsize
+ok(_key_n1 == 1 and _key_n2 == 1,
+   'marking cp: a 5000-cp cell and its 40-cp sibling collapse to ONE bounded cache key '
+   '(the key is the capped prefix, not the raw uncapped arg)')
 # tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
 # the grid colouring can classify without a None fallback (checked for every mode).
 for _mode in ('box', 'show', 'reveal', 'detail'):

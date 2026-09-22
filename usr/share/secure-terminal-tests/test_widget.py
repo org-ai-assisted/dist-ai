@@ -2278,8 +2278,11 @@ ok([k for _e, k in _atb(b'\x1b[?01049h')] == ['enter'],
    '#2: ESC[?01049h (leading zero) is an alt enter (bytes, int parse not str compare)')
 ok([k for _e, k in _atb(b'\x1b[?1047;01049l')] == ['leave'],
    '#2: a COMBINED form with a leading-zero member is detected (bytes)')
+ok([k for _e, k in _atb(b'\x1b[?' + b'0' * 6000 + b'1049h')] == ['enter'],
+   '#2: a 6000-zero-padded 1049 is STILL detected in the bytes twin (leading zeros stripped '
+   'before the digit cap)')
 ok([_x for _x in _atb(b'\x1b[?' + b'0' * 6000 + b'h')] == [],
-   '#2: a hostile 6000-digit param does not crash the bytes int parse (fail-safe)')
+   '#2: an all-zero param is mode 0, not alt, and does not crash the bytes int parse')
 _fs0 = SecureTerminal(command='/bin/cat', tui=True)
 _fs0._feed_stream(b'primary\x1b[?01049hframe')        # leading-zero enter mid-stream
 ok(_fs0._alt_saved is not None,
@@ -3865,7 +3868,8 @@ _pf.tui_active = lambda: False
 _pf.has_foreground_program = lambda: False
 _pf_adv: list[str] = []
 _pf.advise_signal.connect(_pf_adv.append)
-_pf._write = lambda _d: 0                             # a wedged child accepts nothing
+# a slow child accepts only a NONZERO prefix, so this locks the `< len` partial check, not `== 0`
+_pf._write = lambda d: min(3, len(d))
 _pf.apply_paste_warn('never')                        # a single-line paste dispatches straight
 _pm5a = _QMimePaste(); _pm5a.setText('echo hi')
 _pf.insertFromMimeData(_pm5a)
@@ -6366,8 +6370,10 @@ eq(_mid._select_mode, 'word',
 _p28 = spawn_live(command='/bin/cat')
 _w28: list[bytes] = []
 def _fail_write(data, _sink=_w28):
+    # a NONZERO short write: truthiness-based code treating 3 as success (and firing the CR
+    # on a truncated line) would pass a zero-byte test but fail this one
     _sink.append(bytes(data))
-    return 0                                # 0 bytes written: a partial / timed-out write to a wedged child
+    return min(3, len(data))
 _p28._write = _fail_write
 _err28 = _p28.ctl_send_text('echo hi', submit=True)
 ok(_err28 is not None, '#28: ctl reports a partial/timed-out write as an error, not a false ok')

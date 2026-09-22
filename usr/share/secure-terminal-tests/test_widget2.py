@@ -4448,8 +4448,9 @@ finally:
 # for an all-written call), and the deadline is BOTH set and checked via monotonic, so the
 # mock is consulted at least twice. A refactor switching _write's clock source leaves
 # _mono_calls at 0 and trips the second assert instead of passing with a dead mock.
-ok(_wd_ret == 0 and _wd_ret != len(b'z'),
-   '_write returns 0 bytes written on a deadline bail (distinct from len(data)=all written)')
+ok(type(_wd_ret) is int and _wd_ret == 0,
+   '_write returns the INT 0 bytes-written on a deadline bail (not a bool: False==0 would '
+   'pass a bare == 0, but a bool return breaks callers comparing the count to len(data))')
 ok(_mono_calls['n'] >= 2,
    '_write consulted the mocked monotonic clock to set AND check its 2s deadline')
 
