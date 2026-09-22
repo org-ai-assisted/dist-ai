@@ -52,6 +52,10 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## extract the function body and require the guard 'if' to PRECEDE the actual
 ## restart command line (a 'log_run' invocation, not a quoted "Skipping..." log
 ## message that merely names it). A column-0 '}' ends the function.
+## The guard match is the full 'if [ "$(id --user)" != 0 ]' test (0 quoted or
+## not), NOT a bare substring: a line that merely mentions the comparand without
+## being the executable 'if' test cannot satisfy it. Tracks the shipped guard
+## 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
 console_body="$(awk '
    /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
    in_fn { print }
@@ -65,7 +69,7 @@ console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:sp
 ## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort
 ## the script before the notok below could report the missing/inert guard.
 guard_line="$(printf '%s\n' "${console_code}" \
-   | grep --line-number --fixed-strings -- '"$(id --user)" != ' \
+   | grep --line-number --extended-regexp -- 'if \[ "\$\(id --user\)" != '\''?0'\''? \]' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 restart_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
