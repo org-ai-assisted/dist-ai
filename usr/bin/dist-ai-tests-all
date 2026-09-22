@@ -146,6 +146,8 @@ fuzz_suites=(
    pyte-tests-fuzz
    sanitize-string-tests-fuzz
    sdwdate-gui-tests-fuzz
+   sdwdate-tests-fuzz
+   sdwdate-tests-fuzz-atheris
    secure-terminal-tests-fuzz
    secure-terminal-tests-fuzz-gui
    stcat-family-tests-fuzz
