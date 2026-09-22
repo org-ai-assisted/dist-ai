@@ -62,22 +62,38 @@ PROBE_DST_IP6='2001:db8:dead::1'
 # shellcheck disable=SC2034
 PROBE_DST_IP4='198.51.100.7'
 
-## Broad egress oracle: capture ANY IP packet reaching the sink except the benign
-## control-plane chatter, EXCLUDED BY PROTOCOL not by address. A leak to (or from)
-## an UNEXPECTED address is caught too -- excluding the link addresses as hosts
-## would blind the oracle to a leak that merely touches one (e.g. a masquerade-
-## style leak sourced from the gateway's external IP).
-##   - multicast: MLD / router-advert / solicited-node ND (never a unicast leak)
-##   - icmp6 types 130-143: MLD + ND/RS/RA/NS/NA/redirect (unicast ND too), by
-##     type so it catches link-local ND; echo (128/129) is OUTSIDE the range, so
-##     an ICMPv6-echo leak is still captured. ip6[40] is the icmp6 type byte for
-##     these (no extension headers; MLD carries a HbH option but is multicast, so
-##     it is already excluded above and never reaches this term).
-## ARP is dropped by the leading "(ip or ip6)".
-LEAKTEST_EGRESS_BPF="(ip or ip6) and not (ip6 multicast or ip multicast) and not (icmp6 and ip6[40] >= 130 and ip6[40] <= 143)"
+## Broad egress oracle: capture ANY IP packet reaching the sink EXCEPT the link's
+## own control plane, identified structurally as "both endpoints are gw<->up
+## infrastructure addresses" (link-local, the two external-link globals, or
+## multicast). A leak always has at least one WORKSTATION or CLEARNET endpoint, so
+## it is never excluded -- including a leak that merely TOUCHES an infrastructure
+## address (a masquerade-style reply sourced from the gateway's external IP: its
+## clearnet destination keeps it captured). Excluding by address-as-host would
+## blind the oracle to those; excluding by ICMPv6 TYPE would hide a leak that uses
+## an ND/MLD-range type (130-143, e.g. Node Information Query 139) to a real
+## address. Requiring BOTH endpoints infrastructure avoids both traps. ARP is
+## dropped by the leading "(ip or ip6)".
+## Benign = a MULTICAST/BROADCAST destination (all of DAD from ::, MLD, RA,
+## solicited-node ND -- a leak is always UNICAST to a clearnet address, and
+## multicast/broadcast is not forwarded off-link anyway), OR a UNICAST packet
+## whose BOTH endpoints are gw<->up infrastructure (link-local or the two
+## external-link globals -- e.g. a unicast Neighbor Advertisement). Everything
+## else is captured.
+LEAKTEST_EGRESS_BPF="\
+(ip or ip6) and not ( \
+  ip6 multicast or ip multicast or ip broadcast \
+  or ( (src net fe80::/10 or src host ${EXT_UP_IP6} or src host ${EXT_GW_IP6}) \
+       and (dst net fe80::/10 or dst host ${EXT_UP_IP6} or dst host ${EXT_GW_IP6}) ) \
+  or ( src net 10.0.2.0/24 and dst net 10.0.2.0/24 ) \
+)"
 
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
+## tcpdump's stderr file for the current capture -- a mktemp path (root-owned,
+## created atomically), never a name derived from another temp file, so a
+## concurrent local user cannot plant a symlink at a predictable path for the
+## root-run redirect to follow.
+LEAKTEST_TCPDUMP_ERR=''
 
 ## Results of the last leaktest_fire_forward_probe. Returned via globals (not a
 ## captured string) so the helper runs in the CURRENT shell -- errexit/pipefail
@@ -222,8 +238,9 @@ leaktest_capture_up() {
    ## Keep tcpdump's stderr ("listening on ...") so a capture that never bound
    ## (bad interface / BPF, permission failure) is distinguishable from a real
    ## zero-packet result -- otherwise both look like "0 egress" (a false PASS).
+   LEAKTEST_TCPDUMP_ERR="$(mktemp)"
    ip netns exec up timeout "${secs}" tcpdump --no-promiscuous-mode -nni eth0 -l "${bpf}" \
-      >"${outfile}" 2>"${outfile}.err" &
+      >"${outfile}" 2>"${LEAKTEST_TCPDUMP_ERR}" &
    LEAKTEST_TCPDUMP_PID="$!"
 }
 
@@ -246,10 +263,10 @@ leaktest_egress_count() {
    printf '%s' "${count:-0}"
 }
 
-## True if the capture at <outfile> actually bound and listened (tcpdump printed
+## True if the last capture actually bound and listened (tcpdump printed
 ## "listening on ..."). A capture that never started must not read as "no leak".
 leaktest_capture_bound() {
-   grep --quiet 'listening on' "$1.err" 2>/dev/null
+   grep --quiet 'listening on' "${LEAKTEST_TCPDUMP_ERR}" 2>/dev/null
 }
 
 ## Derive a permissive-forward ruleset from a real one, so a forward-leak canary
@@ -279,7 +296,10 @@ leaktest_fire_forward_probe() {
    local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
    shift 4
    helpers="$(leaktest_helpers_dir)"
-   inject_err="${capture_file}.inject-err"
+   ## mktemp (root-owned, atomic) rather than a name derived from capture_file: a
+   ## root-run redirect must not follow a symlink a local user could plant at a
+   ## predictable path during the capture window.
+   inject_err="$(mktemp)"
    LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
@@ -294,7 +314,7 @@ leaktest_fire_forward_probe() {
    sleep 3
    leaktest_capture_wait
    LEAKTEST_CAPTURE_LIVE=0
-   leaktest_capture_bound "${capture_file}" && LEAKTEST_CAPTURE_LIVE=1
+   leaktest_capture_bound && LEAKTEST_CAPTURE_LIVE=1
    LEAKTEST_EGRESS_COUNT="$(leaktest_egress_count "${capture_file}")"
 }
 
