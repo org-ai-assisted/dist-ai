@@ -59,15 +59,15 @@ rpfilter_off() {
 ## spoofs (uRPF is general, not keyed to one address).
 leaktest_setup "${ruleset_file}"
 for spoof in "${forged_srcs[@]}"; do
-   read -r count live < <(fire4 "${spoof}")
-   leaktest_assert_blocked "IPv4 spoofed source ${spoof}" "${count}" "${live}" || rc=1
+   fire4 "${spoof}"
+   leaktest_assert_blocked "IPv4 spoofed source ${spoof}" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 done
 
 ## 2. Firewall alone: rp_filter disabled, the dual-stack uRPF rule still drops it.
 leaktest_setup "${ruleset_file}"
 rpfilter_off
-read -r count live < <(fire4 "${forged_srcs[0]}")
-leaktest_assert_blocked 'IPv4 spoof, rp_filter off (uRPF rule alone)' "${count}" "${live}" || rc=1
+fire4 "${forged_srcs[0]}"
+leaktest_assert_blocked 'IPv4 spoof, rp_filter off (uRPF rule alone)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 ## 3. Positive control on the same topology.
 if leaktest_positive_control; then
@@ -81,7 +81,7 @@ stripped_ruleset="$(mktemp --suffix=.nft)"
 grep --invert-match 'fib saddr . iif oif missing' "${ruleset_file}" >"${stripped_ruleset}"
 leaktest_setup "${stripped_ruleset}"
 rpfilter_off
-read -r count live < <(fire4 "${forged_srcs[0]}")
-leaktest_assert_leaked 'IPv4 forged-source (uRPF stripped + rp_filter off)' "${count}" "${live}" || rc=1
+fire4 "${forged_srcs[0]}"
+leaktest_assert_leaked 'IPv4 forged-source (uRPF stripped + rp_filter off)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 exit "${rc}"

@@ -38,9 +38,9 @@ trap leaktest_teardown EXIT
 capture_file="$(mktemp)"
 rc=0
 
-## Fire a forged-source SYN from <src> against the currently-loaded topology,
-## printing "<egress-count> <capture-live>" via the shared helper (broad egress
-## oracle). Delivery is proven by the uRPF-stripped canary below.
+## Fire a forged-source SYN from <src> against the currently-loaded topology via
+## the shared helper (broad egress oracle; sets LEAKTEST_EGRESS_COUNT /
+## LEAKTEST_CAPTURE_LIVE). Delivery is proven by the uRPF-stripped canary below.
 fire_probe_from() {
    leaktest_fire_forward_probe tcp6 "$1" "${PROBE_DST_IP6}" "${capture_file}"
 }
@@ -49,8 +49,8 @@ fire_probe_from() {
 ## other off-subnet spoofs (uRPF is general, not keyed to one address).
 leaktest_setup "${ruleset_file}"
 for spoof in "${PROBE_SRC_IP6}" '2001:db8:cafe::5' '::ffff:203.0.113.5'; do
-   read -r count live < <(fire_probe_from "${spoof}")
-   leaktest_assert_blocked "spoofed source ${spoof}" "${count}" "${live}" || rc=1
+   fire_probe_from "${spoof}"
+   leaktest_assert_blocked "spoofed source ${spoof}" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 done
 
 ## 2. Positive control on the same topology.
@@ -64,7 +64,7 @@ fi
 stripped_ruleset="$(mktemp --suffix=.nft)"
 grep --invert-match 'fib saddr . iif oif missing' "${ruleset_file}" >"${stripped_ruleset}"
 leaktest_setup "${stripped_ruleset}"
-read -r count live < <(fire_probe_from "${PROBE_SRC_IP6}")
-leaktest_assert_leaked 'forged-source (uRPF stripped)' "${count}" "${live}" || rc=1
+fire_probe_from "${PROBE_SRC_IP6}"
+leaktest_assert_leaked 'forged-source (uRPF stripped)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 exit "${rc}"

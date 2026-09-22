@@ -71,6 +71,12 @@ LEAKTEST_EGRESS_BPF="(ip or ip6) and not (host ${EXT_UP_IP6} or host ${EXT_GW_IP
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
 
+## Results of the last leaktest_fire_forward_probe. Returned via globals (not a
+## captured string) so the helper runs in the CURRENT shell -- errexit/pipefail
+## apply to it, and there is no subshell whose failure would be swallowed.
+LEAKTEST_EGRESS_COUNT=''
+LEAKTEST_CAPTURE_LIVE=''
+
 msg() {
    printf '%s\n' "$*"
 }
@@ -244,34 +250,38 @@ leaktest_permissive_ruleset() {
       "${infile}" >"${outfile}"
 }
 
-## Fire a non-redirected probe from ws and print "<egress-count> <capture-live>":
-## the count of ANY packet reaching the sink (broad oracle: a leak to an
-## unexpected destination is caught too, not only the probe's dest) plus 1/0 for
-## whether the capture actually bound. Runs in a command substitution, so it
-## returns these by VALUE. Callers must treat capture-live=0 as a hard failure,
-## never "no leak". Extra inject.py args after the fixed ones.
+## Fire a non-redirected probe from ws and set two globals:
+##   LEAKTEST_EGRESS_COUNT  count of ANY packet reaching the sink (broad oracle:
+##                          a leak to an unexpected dest is caught too, not only
+##                          the probe's nominal dest)
+##   LEAKTEST_CAPTURE_LIVE  1/0 -- whether the capture actually bound
+## Callers must treat capture-live=0 as a hard failure, never "no leak". Extra
+## inject.py args after the fixed ones. Called directly (no subshell), so a
+## failure inside it trips the caller's errexit instead of being swallowed.
 ##
 ## Delivery is proven by the per-case permissive canary (the same inject MUST
 ## egress once the rules permit), not a firewall counter: nft drop/reject counters
 ## are polluted by the netns's own post-setup ND/MLD settling, so a counter delta
 ## cannot distinguish this probe from ambient traffic.
 leaktest_fire_forward_probe() {
-   local proto="$1" src="$2" dst="$3" capture_file="$4"
+   local proto="$1" src="$2" dst="$3" capture_file="$4" helpers
    shift 4
+   helpers="$(leaktest_helpers_dir)"
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
-   ip netns exec ws python3 "$(leaktest_helpers_dir)/inject.py" \
+   ip netns exec ws python3 "${helpers}/inject.py" \
       --proto "${proto}" --iface eth0 --gw4 "${INT_GW_IP4}" \
       --src "${src}" --dst "${dst}" "$@" >/dev/null 2>&1
    sleep 3
    leaktest_capture_wait
-   local live=0
-   leaktest_capture_bound "${capture_file}" && live=1
-   printf '%s %s\n' "$(leaktest_egress_count "${capture_file}")" "${live}"
+   LEAKTEST_CAPTURE_LIVE=0
+   leaktest_capture_bound "${capture_file}" && LEAKTEST_CAPTURE_LIVE=1
+   LEAKTEST_EGRESS_COUNT="$(leaktest_egress_count "${capture_file}")"
 }
 
 ## Assert the primary leg BLOCKED: a live capture that saw zero probe packets.
-## <count> <live> come from leaktest_fire_forward_probe. Returns 0 on pass.
+## Pass the LEAKTEST_EGRESS_COUNT / LEAKTEST_CAPTURE_LIVE that the fire helper set.
+## Returns 0 on pass.
 leaktest_assert_blocked() {
    local label="$1" count="$2" live="$3"
    if [ "${live}" != '1' ]; then
@@ -308,12 +318,12 @@ leaktest_assert_leaked() {
 leaktest_probe_case() {
    local label="$1" proto="$2" src="$3" dst="$4"
    shift 4
-   local capture_file permissive count live rc=0
+   local capture_file permissive rc=0
    capture_file="$(mktemp)"
 
    leaktest_setup "${ruleset_file}"
-   read -r count live < <(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@")
-   leaktest_assert_blocked "${label}" "${count}" "${live}" || rc=1
+   leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
+   leaktest_assert_blocked "${label}" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
    if leaktest_positive_control; then
       msg "PASS: positive control (legit torified TCP path works)"
    else
@@ -323,8 +333,8 @@ leaktest_probe_case() {
    permissive="$(mktemp --suffix=.nft)"
    leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
    leaktest_setup "${permissive}"
-   read -r count live < <(leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@")
-   leaktest_assert_leaked "${label} (permissive forward)" "${count}" "${live}" || rc=1
+   leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
+   leaktest_assert_leaked "${label} (permissive forward)" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
    return "${rc}"
 }
@@ -365,18 +375,18 @@ PY
 ## the firewall entirely so the same traffic forwards out -- proving the harness
 ## detects a fail-OPEN. Returns 0 if both hold.
 leaktest_fail_closed_case() {
-   local rc=0 capture_file empty count live
+   local rc=0 capture_file empty
    capture_file="$(mktemp)"
 
    leaktest_setup "${ruleset_file}" nolistener
-   read -r count live < <(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}")
-   leaktest_assert_blocked 'fail-closed (Tor down -> workstation traffic dropped)' "${count}" "${live}" || rc=1
+   leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}"
+   leaktest_assert_blocked 'fail-closed (Tor down -> workstation traffic dropped)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
    empty="$(mktemp --suffix=.nft)"
    printf 'flush ruleset\n' >"${empty}"
    leaktest_setup "${empty}" nolistener
-   read -r count live < <(leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}")
-   leaktest_assert_leaked 'fail-closed (no firewall)' "${count}" "${live}" || rc=1
+   leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}"
+   leaktest_assert_leaked 'fail-closed (no firewall)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
    return "${rc}"
 }
