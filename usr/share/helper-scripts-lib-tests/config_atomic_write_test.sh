@@ -5,14 +5,14 @@
 
 ## AI-Assisted
 
-## Regression test for atomic config writes in helper-scripts:
-##   - config_builder.write_config_file() wrote directly to the target with open("w"),
-##     truncating it in place; an interrupted/failed write left a truncated config.
-##   - append_shared (append/append-once/overwrite) used a default-TMPDIR temp file +
-##     shutil.move, which falls back to a NON-atomic cross-filesystem copy onto the
-##     live target when TMPDIR is on a different filesystem.
-## Both now write to a same-directory temp file and os.replace (atomic rename), so a
-## crash/failure leaves the previous file intact and a reader never sees a half-write.
+## Regression test for atomic config writes in helper-scripts. config_builder's
+## write_config_file() delegates the write to append_shared "overwrite"; append_shared
+## writes the new content to a temp file in the TARGET's own directory and shutil.move()s
+## it into place. On the same filesystem that move is an atomic rename, so an interrupted
+## or failed write leaves the previous file intact and a reader never sees a half-write.
+## shutil.move (not os.replace) is deliberate: the move must succeed even across
+## filesystems, trading strict rename atomicity for that. The pre-fix bug used a
+## default-TMPDIR temp, a non-atomic cross-filesystem move when TMPDIR is on another fs.
 ##
 ## Drives the REAL modules by importing them off the checkout (no copy). No root.
 
