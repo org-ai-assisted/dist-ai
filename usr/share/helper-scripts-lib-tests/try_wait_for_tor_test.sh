@@ -8,13 +8,15 @@
 ## Contract test for helper-scripts try-wait-for-tor-service-running.
 ##
 ## By DESIGN this is a BEST-EFFORT wait: it blocks until Tor is either active OR
-## determinably never-going-to-start, then exits 0 in every case. Handling Tor's
-## absence is the CALLER's responsibility, and both real callers ignore the exit
-## code (e.g. 'try-wait-... || true'). This asserts that contract: exit 0 on the
-## active, failed, and timeout paths alike.
-## NOTE: a hypothetical caller that gated on the exit code ('if try-wait-...;
-## then') would proceed with Tor down -- no live caller does. The fail-closed
-## alternative (exit non-zero on failed/timeout) is a documented option.
+## determinably never-going-to-start, then exits 0 in every case. The shipped
+## script documents this itself ("No 'exit 1' by design ... ALWAYS exits 0 ... A
+## caller MUST NOT gate on the exit code ... Do not add 'exit 1' on the
+## failed/timeout paths"). Handling Tor's absence is the CALLER's responsibility,
+## and the real callers do not gate on the exit code: qubes.UpdatesProxy.anondist
+## runs 'try-wait-... || true', and the uwt dnf-3.anondist path invokes it as a
+## bare statement. This asserts that contract: exit 0 on the active, failed, and
+## timeout paths alike. Restoring a fail-closed exit non-zero would diverge the
+## test from the shipped script, which explicitly prohibits it.
 ##
 ## Drives the REAL script with 'systemctl' and 'sleep' stubbed on PATH (so the
 ## timeout path is instant). No root, no systemd, no Tor.
