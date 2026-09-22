@@ -173,6 +173,30 @@ for n in '' '[ar]oot' 'se*' '^x' 'a b' '1x' '.hidden'; do
    if is_name_valid "${n}"; then fail "is_name_valid accepted invalid '${n}'"; else pass "is_name_valid rejects '${n}'"; fi
 done
 
+## A non-ASCII name must be rejected even when the CALLER runs under a UTF-8
+## locale: glibc would otherwise collate-expand [a-zA-Z] and accept it. The fix
+## is is_name_valid's own 'local LC_ALL=C'. Needs a full-collation UTF-8 locale
+## (C.UTF-8's minimal collation does not expand ranges); skip only this check,
+## not the suite, when none is installed (e.g. a minimal CI image).
+utf8_locale=""
+locale_list="$(locale -a 2>/dev/null || true)"
+for cand in en_US.UTF-8 en_US.utf8 de_DE.UTF-8; do
+   if grep --quiet --ignore-case --line-regexp -- "${cand//UTF-8/utf8}" <<<"${locale_list}"; then
+      utf8_locale="${cand}"
+      break
+   fi
+done
+non_ascii="$(printf '\xc3\x89')"   # U+00C9 (E with acute); no raw non-ASCII in source
+if [ -n "${utf8_locale}" ]; then
+   if LC_ALL="${utf8_locale}" is_name_valid "${non_ascii}"; then
+      fail "is_name_valid accepted a non-ASCII name under ${utf8_locale} (missing LC_ALL=C)"
+   else
+      pass "is_name_valid rejects a non-ASCII name under ${utf8_locale} (LC_ALL=C forces ASCII)"
+   fi
+else
+   printf '%s\n' "  INFO: no full-collation UTF-8 locale installed; skipped the non-ASCII is_name_valid check"
+fi
+
 ## ---- escape_name ----
 if [ "$(escape_name 'a.b$c')" = 'a\.b\$c' ]; then pass "escape_name escapes . and \$"; else fail "escape_name wrong: '$(escape_name 'a.b$c')'"; fi
 
@@ -225,6 +249,22 @@ if is_pass_locked bob; then pass "is_pass_locked bob"; else fail "is_pass_locked
 if is_pass_locked alice; then fail "is_pass_locked false-positive alice"; else pass "is_pass_locked rejects alice"; fi
 if is_pass_disabled carol; then pass "is_pass_disabled carol"; else fail "is_pass_disabled missed carol"; fi
 if is_pass_disabled alice; then fail "is_pass_disabled false-positive alice"; else pass "is_pass_disabled rejects alice"; fi
+
+## ---- F5: is_user/is_group return checked at every call site (issue #84) ----
+## A valid-but-nonexistent name must make the query/state functions FAIL, not
+## fall through to getent (which yields empty output, rc 0). Pre-fix, the bare
+## 'is_user'/'is_group' (no '|| return 1') was swallowed under the library's
+## no-errexit convention, so a caller treated a nonexistent account as existing
+## with an empty password. 'nosuchuser'/'nosuchgrp' are valid names absent from
+## the fixtures.
+rc=0; out="$(get_entry nosuchuser passwd shell 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_entry fails for a nonexistent user (F5/#84)"; else fail "get_entry F5: rc 0 (out='${out}') for a nonexistent user"; fi
+rc=0; out="$(get_pass nosuchuser 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_pass fails for a nonexistent user (F5/#84)"; else fail "get_pass F5: rc 0 (out='${out}') for a nonexistent user"; fi
+if is_pass_empty nosuchuser 2>/dev/null; then fail "is_pass_empty F5: reported a nonexistent user's password empty (#84)"; else pass "is_pass_empty rejects a nonexistent user (F5/#84)"; fi
+if is_pass_locked nosuchuser 2>/dev/null; then fail "is_pass_locked F5: matched a nonexistent user (#84)"; else pass "is_pass_locked rejects a nonexistent user (F5/#84)"; fi
+rc=0; out="$(get_entry nosuchgrp group members 2>/dev/null)" || rc=$?
+if [ "${rc}" != "0" ]; then pass "get_entry fails for a nonexistent group (F5/#84)"; else fail "get_entry F5: rc 0 (out='${out}') for a nonexistent group"; fi
 
 ## ---- lock_pass / unlock_pass (mutation dispatch) ----
 mutation_log=""; lock_pass alice
