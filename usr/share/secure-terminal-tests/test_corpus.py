@@ -591,6 +591,9 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
     completed = []
     wraps = []
     cells = list(cells)
+    # whole-call bulk-cell-work budget, mirroring feed_line_edits (shares S._bounded_pad and
+    # S._LINE_WORK_BUDGET so the anti-flood pad/erase bound cannot drift between the two).
+    work_left = S._LINE_WORK_BUDGET
     i, n = 0, len(raw)
     while i < n:
         ch = raw[i]
@@ -603,24 +606,30 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
                     col = col + (num or 1)
                     col = (min(col, max_line - 1) if max_line
                            else min(col, S._UNBOUNDED_MAX_COL))
-                    while len(cells) < col:
-                        cells.append((' ', tuple(sorted(sgr.items()))))
+                    col, work_left = S._bounded_pad(
+                        cells, col, (' ', tuple(sorted(sgr.items()))), work_left)
                 elif op == 'D':
                     col = max(0, col - (num or 1))
                 elif op == 'G':
                     col = max(0, (num or 1) - 1)
                     col = (min(col, max_line - 1) if max_line
                            else min(col, S._UNBOUNDED_MAX_COL))
-                    while len(cells) < col:
-                        cells.append((' ', tuple(sorted(sgr.items()))))
+                    col, work_left = S._bounded_pad(
+                        cells, col, (' ', tuple(sorted(sgr.items()))), work_left)
                 else:
                     if num in (None, 0):
-                        del cells[col:]
+                        if work_left > 0:
+                            work_left -= max(0, len(cells) - col)
+                            del cells[col:]
                     elif num == 1:
-                        for j in range(0, min(col + 1, len(cells))):
-                            cells[j] = (' ', tuple(sorted(sgr.items())))
-                    elif num == 2:                       # erase whole line;
+                        end = min(col + 1, len(cells))
+                        if work_left > 0:
+                            work_left -= end
+                            for j in range(0, end):
+                                cells[j] = (' ', tuple(sorted(sgr.items())))
+                    elif num == 2 and work_left > 0:     # erase whole line;
                         # cursor unchanged (ECMA-48): blank to col cells, keep col
+                        work_left -= col
                         cells = [(' ', tuple(sorted(sgr.items())))] * col
                 if max_line and col >= max_line:
                     col = max_line - 1

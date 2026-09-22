@@ -105,10 +105,14 @@ for _cp in _ZS:
     # marking_class stays 'invisible' (no new class), so the paste review agrees
     eq(S.marking_class(_cp), 'invisible',
        'space carve-out: U+%04X classes as invisible' % _cp)
-# the marker copies as '_', NEVER as a space (that would restore the deception)
-eq(S._display_glyph_to_ascii(S.SPACE_MARK), '_',
-   'space carve-out: SPACE_MARK copies as _, never a space')
-ok(S._display_glyph_to_ascii(S.SPACE_MARK) != ' ',
+# the marker NEVER copies as a space (that would restore the deception). The cp-LESS
+# clipboard strip DROPS a bare marker: a bare U+2423 reaching this pure path is a real glyph
+# the program printed, so it is stripped as non-ASCII. The SYNTHETIC marker is resolved to '_'
+# UPSTREAM by the cp-aware export (_export_selection_fragment; see test_widget), never here --
+# so a real U+2423 can no longer be clobbered into a marker-look-alike '_'.
+eq(S.sanitize_clipboard_display(S.SPACE_MARK), '',
+   'space carve-out: a bare SPACE_MARK is stripped by the cp-less clipboard sanitizer')
+ok(' ' not in S.sanitize_clipboard_display(S.SPACE_MARK),
    'space carve-out: SPACE_MARK never copies as a plain space')
 # U+3000 is East-Asian WIDE; the marker is a 1-column glyph -- the same width the
 # box path already gave it (a pre-existing property of the neutralized cell).
@@ -164,6 +168,31 @@ eq(S.render_cap_prefix('a' + CAFE[-1], len(_ecapb) + 1), 'a' + CAFE[-1],
 # without the source bound, render_cap_prefix returned all 50 BEL bytes.)
 eq(S.render_cap_prefix(BEL * 50, 10), BEL * 10,
    'a run of zero-width BEL is source-length bounded, not scanned to the end')
+
+# --- render_bounded_tail: the TAIL analogue of render_cap_prefix. A width reflow in an
+# expanding mode (detail/reveal, 8-99x per char) bounds its synchronous replay by RENDER
+# length, keeping the MOST RECENT scrollback (#7). Shares _detail_render_width with
+# render_cap_prefix so the two budget scanners cannot drift.
+eq(S.render_bounded_tail('', 100), '', 'tail of empty text is empty')
+eq(S.render_bounded_tail('abcdef', 0), '', 'a non-positive budget yields no tail')
+eq(S.render_bounded_tail('abcdef', 100), 'abcdef',
+   'ASCII under budget keeps the whole text (1 render char each)')
+eq(S.render_bounded_tail('abcdef', 3), 'def', 'ASCII over budget keeps the render-bounded TAIL')
+_rbt = S._detail_badge(0x0430)                   # a Cyrillic detail badge (~32 chars)
+eq(S.render_bounded_tail(chr(0x0430) + 'YZ', 2), 'YZ',
+   'the leading non-ASCII char (a full badge wide) is dropped; the recent ASCII tail stays')
+eq(S.render_bounded_tail(chr(0x0430) + 'YZ', len(_rbt) + 2), chr(0x0430) + 'YZ',
+   'the non-ASCII char is kept once the budget covers its whole badge plus the tail')
+# a standalone BEL is 0 render width, so a run must be bounded by SOURCE length (=budget),
+# else the tail scan walks the whole buffer. (canary: without keep<budget it returns all 50.)
+eq(S.render_bounded_tail(BEL * 50, 10), BEL * 10,
+   'a run of zero-width BEL is source-length bounded from the tail, not scanned to the head')
+# the cut is snapped to an escape boundary: a tail whose start would fall inside an SGR
+# sequence is moved forward past the whole sequence, so the remainder never begins with a
+# bare sequence body (the same 'cap must not leak an escape' guarantee tail_from_escape_boundary
+# gives render_cap_prefix's counterpart).
+eq(S.render_bounded_tail('\x1b[31mZZZZ', 8), 'ZZZZ',
+   'a tail cut inside the SGR body is snapped forward to the escape boundary')
 
 # --- colored markings: risk class of a neutralized/revealed character ---------
 eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')
@@ -571,6 +600,24 @@ _dgc, _dgcells, _dgcol, _dgs, _dgw = S.feed_line_edits([], 0, {}, '\x1b[999999GZ
 eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
    'unbounded CHA padding is capped at _UNBOUNDED_MAX_COL, then the char lands')
 
+# --- WHOLE-CHUNK pad/erase work budget (#3) ------------------------------------
+# The per-SEQUENCE cap above bounds ONE pad, but a pad-then-erase CYCLE
+# ("\x1b[8192C\r\x1b[0K", or "...\x1b[2K") re-pads the same columns EVERY cycle --
+# O(chunk x width) synchronous GUI-thread work (measured ~460x a plain chunk of equal
+# size). _LINE_WORK_BUDGET caps CUMULATIVE bulk cell work per call: once spent, C/G pads
+# clamp to the line length and K erases are skipped, so the flood cannot spin.
+# CANARY: on the pre-fix code the trailing CUF pads all 500 blanks -> (col, len) == (501, 501).
+_flood = ('\x1b[8192C\r\x1b[0K' * 64) + ('\x1b[8192C\x1b[2K' * 64) + '\n\x1b[500Cx'
+_fbc, _fbcells, _fbcol, _fbs, _fbw = S.feed_line_edits([], 0, {}, _flood, 0, True)
+eq((_fbcol, len(_fbcells)), (1, 1),
+   'work budget: after a pad-erase flood spends the budget, a fresh-line CUF pads nothing (#3)')
+ok(0 <= _fbcol <= len(_fbcells),
+   'work budget: the clamp keeps the trim-to-cursor invariant col <= len(cells)')
+# a NORMAL right-prompt (no flood) still pads fully -- the budget only bites a flood.
+_nb = S.feed_line_edits([], 0, {}, '\x1b[40Cx', 0, True)
+eq((_nb[2], len(_nb[1])), (41, 41),
+   'work budget: an ordinary CUF pads fully (the budget only bounds a flood, not honest output)')
+
 # --- split-across-reads escape carry (a long OSC title is the usual victim) ----
 # A whole OSC title is stripped; split across two chunks, the tail must NOT leak.
 eq(S.split_trailing_escape('X\x1b]2;a title\x07'), ('X\x1b]2;a title\x07', ''),
@@ -719,6 +766,48 @@ _csi_oo = '\x1b[' + '2' * 5000 + ' 1m' + 'AFTER'
 eq(_fcc([_csi_oo[:4600], _csi_oo[4600:]])[0], 'AFTER',
    'over-cap out-of-order CSI is stripped whole (any-order param/intermediate), not leaked')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
+
+# #4 (DoS): a held escape that only GROWS (a child byte-pacing a near-cap sequence) took
+# O(carry) per byte because feed_chunk_carry re-scanned the whole accumulated carry with
+# _TRAILING_ESCAPE every call. The fast path (_carry_still_open) decides by LENGTH when the
+# new bytes only continue the held escape body, skipping the O(len) re-match. It must be
+# BYTE-FOR-BYTE identical to the regex fallback across OSC/DCS/CSI ramps, terminators,
+# over-cap discard, and interrupters. Compare the fast path against the regex path (forced by
+# stubbing _carry_still_open to always defer).
+def _fcc4(chunks, cap=4096, fast=True):
+    _orig = S._carry_still_open
+    if not fast:
+        S._carry_still_open = lambda *_a: False
+    try:
+        _carry, _drop, _dropped, _out = '', '', 0, []
+        for _c in chunks:
+            _r, _carry, _drop, _dropped = S.feed_chunk_carry(_c, _carry, _drop, _dropped, cap)
+            _out.append(_r)
+        return (''.join(_out), _carry, _drop, _dropped)
+    finally:
+        S._carry_still_open = _orig
+for _cx, _cap in (
+        (['\x1b]0;'] + ['x'] * 20 + ['\x07'], 4096),         # OSC title byte-paced, terminated
+        (list('\x1b]0;' + 'y' * 200 + '\x07'), 64),          # OSC byte-paced OVER cap -> discard
+        (['\x1bP'] + ['q'] * 10 + ['\x1b\\'], 4096),         # DCS byte-paced + ST
+        (list('\x1b[' + '3' * 200 + 'H'), 64),               # CSI params byte-paced over cap
+        (['\x1b]0;ab', 'c\x07tail'], 4096),                  # OSC completes mid-chunk (fallback)
+        (['\x1b]0;ab', '\x1bX'], 4096),                      # interrupter ESC (fallback)
+        (['\x1b_APC', 'body', '\x07', 'more', '\x1b\\'], 4096),  # APC: BEL is body, ST ends it
+        (['plain, no escape'], 4096)):
+    eq(_fcc4(_cx, _cap, True), _fcc4(_cx, _cap, False),
+       '#4: feed_chunk_carry fast path == regex fallback for %r' % (''.join(_cx)[:26],))
+# CANARY: the predicate is NOT trivially constant -- it engages only while the new bytes stay
+# inside the held escape's body, and defers (to the exact regex path) the moment they do not.
+ok(S._carry_still_open('\x1b]0;abc', 'def'), '#4 canary: fast path engages for an open OSC ramp')
+ok(not S._carry_still_open('\x1b]0;abc', 'd\x07'),
+   '#4 canary: a BEL terminator makes the OSC yield to the regex (no wrong fast decision)')
+ok(S._carry_still_open('\x1b[12', ';3'), '#4: CSI params keep the sequence open on the fast path')
+ok(not S._carry_still_open('\x1b[12', 'H'), '#4 canary: a CSI final byte yields to the regex')
+ok(S._carry_still_open('\x1b_apc', 'body\x07still'),
+   '#4: a DCS/APC body (BEL is body) stays open on the fast path')
+ok(not S._carry_still_open('\x1bN', 'x'), '#4: an SS2/SS3 introducer defers to the regex')
+ok(not S._carry_still_open('\x1b', 'x'), '#4: a lone ESC (type unknown) defers to the regex')
 
 # --- OSC feature registry: single source of truth for the granular controls ---
 _osc_keys = [f[0] for f in S.OSC_FEATURES]
@@ -1116,8 +1205,8 @@ eq(S.tui_cell(chr(0x00A0), 'show'), S.SPACE_MARK,
    'claude prompt: the trailing U+00A0 NO-BREAK SPACE is marked in show, not boxed')
 ok(not chr(0x00A0).isprintable() and S.is_invisible(chr(0x00A0)),
    'claude prompt: U+00A0 is a blank, non-printable separator -> flagged, not shown as a space')
-eq(S._display_glyph_to_ascii(S.tui_cell(chr(0x00A0), 'show')), '_',
-   'claude prompt: the marked NBSP still copies as _, never a space')
+ok(' ' not in S.sanitize_clipboard_display(S.tui_cell(chr(0x00A0), 'show')),
+   'claude prompt: the marked NBSP never copies as a plain space (the deception the marker prevents)')
 
 # --- marking_cp_for_cell: the source code point a NEUTRALIZED grid cell is
 # --- classified/coloured/inspected by (the TUI-grid counterpart of the CLI
@@ -1452,12 +1541,16 @@ ok(S.is_default_ignorable(chr(0xFE0F)) and not S.is_default_ignorable(chr(0x0301
    'is_default_ignorable: a variation selector yes, a combining accent no')
 
 # --- sanitize_clipboard_display: the ASCII clipboard strip for text lifted from the
-# RENDERED display. Plain sanitize_clipboard drops the inert Show-mode display glyphs
-# (the U+25A1 neutralization box and the structural box-drawing / block elements) to
-# NOTHING, so a copied box collapses to the surrounding spaces (FIX A). This variant
-# maps each to an ASCII stand-in FIRST, then strips the rest of the non-ASCII.
-eq(S.sanitize_clipboard_display('x' + chr(0x25A1) + 'y'), 'x_y',
-   'display strip: the neutralization box (U+25A1) exports as ASCII _, not lost')
+# RENDERED display. Plain sanitize_clipboard drops the inert STRUCTURAL Show-mode glyphs
+# (box-drawing / block elements) to NOTHING, so a copied table collapses to spaces (FIX A);
+# this variant maps each to an ASCII stand-in FIRST, then strips the rest of the non-ASCII.
+# The SYNTHETIC markers U+25A1/U+2423 are resolved to '_' UPSTREAM by the cp-aware export, so
+# a bare one reaching this cp-LESS strip is REAL content -- dropped like any other non-ASCII,
+# never clobbered into a marker-look-alike '_' (#5 marker/content collision).
+eq(S.sanitize_clipboard_display('x' + chr(0x25A1) + 'y'), 'xy',
+   'display strip: a bare U+25A1 (real content) is dropped, not clobbered to _')
+eq(S.sanitize_clipboard_display('x' + chr(0x2423) + 'y'), 'xy',
+   'display strip: a bare U+2423 (real content) is likewise dropped, not clobbered to _')
 eq(S.sanitize_clipboard_display(chr(0x2500) + chr(0x2502) + chr(0x250C) + chr(0x2588)),
    '-|+#',
    'display strip: box-drawing horiz/vert/corner + block map to -/|/+/#')
