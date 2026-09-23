@@ -78,7 +78,10 @@ fi
 work_dir="$(mktemp --directory -- "${TMP}/set-keyboard-layout-resolver-test.XXXXXX")"
 
 test_cleanup_handler() {
-   safe-rm --recursive --force -- "${work_dir}"
+   ## '|| true': an EXIT trap whose LAST command exits nonzero overrides the script's real
+   ## pass/fail exit status (bash), so a failed cleanup (e.g. safe-rm absent) must not turn a
+   ## passing run red. It cannot mask a failing run: errexit has already set the status by then.
+   safe-rm --recursive --force -- "${work_dir}" || true
 }
 trap test_cleanup_handler EXIT
 
