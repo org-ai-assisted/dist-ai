@@ -20,6 +20,8 @@ could never send.
   icmp4  IPv4 ICMP echo request (ping)
   udp6   IPv6 UDP datagram to --dport
   udp4   IPv4 UDP datagram to --dport (e.g. Teredo UDP/3544)
+  frag4set  IPv4 UDP datagram split across two fragments (ip_defrag reassembles)
+  frag4overlap  Two overlapping IPv4 fragments (ip_defrag kills the set, RFC 5722)
   srcroute4  IPv4 UDP datagram bearing a completed (inert) LSRR option (IHL>5)
   srcroute4active  IPv4 UDP with an ACTIVE LSRR: dst=--gw4, next hop=--dst (a router
           honoring source routes rewrites dst and forwards it on)
@@ -168,6 +170,55 @@ def ip4_srcroute_option(route: list[str], pointer: int, opt_type: int = IP4_OPT_
     ## Pad to a 4-byte boundary; option type 0 (End of Option List) is the pad.
     opt += b"\x00" * ((-len(opt)) % 4)
     return opt
+
+
+## Base IPv4 fragment ids (bytes 4-5 of the IP header; a fragment's members share
+## one). The send loop adds the iteration index so successive datagrams never share
+## a reassembly id. IPv4 reassembly (ip_defrag) is a SEPARATE code path from
+## nf_defrag_ipv6, with a different overlap policy (RFC 791 predates RFC 5722's
+## drop-on-overlap mandate), so it is exercised in its own right, not by analogy to
+## the IPv6 cases.
+FRAG4_SET_ID = 0x0000BE01
+FRAG4_OVERLAP_ID = 0x0000BE02
+
+
+def ip4_header_frag(src: str, dst: str, payload_len: int, proto: int, ip_id: int, flags_offset: int) -> bytes:
+    ## IPv4 header for one fragment: flags_offset packs the 3 flag bits (MF=0x2000,
+    ## DF=0x4000) with the 13-bit fragment offset (in 8-byte units) in one field.
+    total = 20 + payload_len
+    base = struct.pack("!BBHHHBBH", 0x45, 0, total, ip_id, flags_offset, 64, proto, 0)
+    base += a4(src) + a4(dst)
+    return base[:10] + struct.pack("!H", checksum16(base)) + base[12:]
+
+
+def frag4_set(src: str, dst: str, dport: int, ip_id: int) -> list[bytes]:
+    ## Complete IPv4 UDP datagram split across two fragments (offset 0 MF=1 + offset
+    ## 16 MF=0), same id. The gw ruleset's nat/conntrack pulls in nf_defrag_ipv4, so
+    ## ip_defrag reassembles the set before the forward chain (re-fragmenting to the
+    ## original boundaries on egress via frag_max_size) -- splitting a datagram
+    ## cannot smuggle it past the forward drop. ip_id varies per iteration so a later
+    ## datagram never joins an earlier reassembly queue.
+    payload = udp4_segment(src, dst, 41600, dport)  # 8 hdr + PROBE_PAYLOAD = 22 bytes
+    first, second = payload[:16], payload[16:]  # 16 (2 units, MF=1) + 6 (last)
+    frag1 = ip4_header_frag(src, dst, len(first), 17, ip_id, 0x2000) + first    # off 0, MF=1
+    frag2 = ip4_header_frag(src, dst, len(second), 17, ip_id, 0x0002) + second  # off 16B, MF=0
+    return [frag1, frag2]
+
+
+def frag4_overlap(src: str, dst: str, dport: int, ip_id: int) -> list[bytes]:
+    ## Two GENUINELY OVERLAPPING IPv4 fragments: fragment 1 claims [0,16) MF=1,
+    ## fragment 2 claims [8,22) at offset 8 MF=0 -- it overlaps [8,16) AND extends
+    ## past fragment 1's end. That newcomer-end (22) > existing-run-end (16) is what
+    ## makes ip_defrag classify it IPFRAG_OVERLAP -> inet_frag_kill (RFC 5722, whole
+    ## datagram discarded), not the IPFRAG_DUP a mere subset [8,16) degenerates into
+    ## (new skb dropped, first fragment left in an incomplete queue -- never the
+    ## overlap-kill this case is meant to exercise). frag4_set is the valid reference
+    ## that egresses under the same permissive policy. ip_id varies per iteration.
+    payload = udp4_segment(src, dst, 41600, dport)  # 22 bytes
+    first, second = payload[:16], payload[8:22]  # [0,16) MF=1 ; [8,22) overlaps + extends MF=0
+    frag1 = ip4_header_frag(src, dst, len(first), 17, ip_id, 0x2000) + first    # off 0, MF=1
+    frag2 = ip4_header_frag(src, dst, len(second), 17, ip_id, 0x0001) + second  # off 8B, MF=0, ends at 22
+    return [frag1, frag2]
 
 
 ## The L4 hidden one hop down an ext-header / fragment chain: UDP (17) by default,
@@ -367,6 +418,10 @@ def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[
         return ETH_P_IPV6, frag6_overlap(args.src, args.dst, args.dport)
     if args.proto == "frag6tinyfirst":
         return ETH_P_IPV6, frag6_tinyfirst(args.src, args.dst, args.dport)
+    if args.proto == "frag4set":
+        return ETH_P_IPV4, frag4_set(args.src, args.dst, args.dport, FRAG4_SET_ID + index)
+    if args.proto == "frag4overlap":
+        return ETH_P_IPV4, frag4_overlap(args.src, args.dst, args.dport, FRAG4_OVERLAP_ID + index)
     ethertype, l3 = build_l3(args)
     return ethertype, [l3]
 
@@ -386,7 +441,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "frag6overlap", "frag6tinyfirst", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "frag6overlap", "frag6tinyfirst", "exthdr6", "rawip6", "udp4", "frag4set", "frag4overlap", "srcroute4", "srcroute4active", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")

@@ -507,6 +507,36 @@ ok(_tc_bg in _tipsel.styleSheet() and _tc_fg in _tipsel.styleSheet(),
 _tipsel.hide()
 _tipsel._poll.stop()
 
+# --- a tooltip over an application-MODAL dialog must stay selectable/copyable ---
+# QDialog.exec() runs the Global settings / About / ... dialogs application-modal,
+# which blocks mouse input to every top-level not in the modal's transient chain. The
+# shared InfoTip is a tool window parented (for lifetime) to the MAIN window, so over a
+# modal dialog it showed but could not be marked/copied (the reported settings-tooltip
+# bug). show_for now points the tip's TRANSIENT parent at the active modal widget so Qt
+# stops blocking it. Assert the retarget (the mechanism -- a real modal input-block
+# cannot be simulated: QTest posts events directly, bypassing platform modality).
+# Canary: without the fix the tip's transient parent stays the main window, not _mdlg.
+from PyQt6.QtWidgets import QDialog as _QDlg_modal              # noqa: E402
+win.show()
+APP.processEvents()
+_mdlg = _QDlg_modal(win)
+_mdlg.setModal(True)
+_mdlg.show()
+APP.processEvents()
+ok(QApplication.activeModalWidget() is _mdlg,
+   'modal-tip: the test dialog is the active modal widget')
+_mtip = win._tip_filter._tip
+_mtip.show_for(_mdlg, 'copyable over a modal dialog', 100, 'light')
+APP.processEvents()
+ok(_mtip.windowHandle() is not None
+   and _mtip.windowHandle().transientParent() is _mdlg.windowHandle(),
+   'modal-tip: InfoTip retargets its transient parent to the modal dialog (input unblocked)')
+_mtip.hide()
+_mtip._poll.stop()
+_mdlg.close()
+_mdlg.deleteLater()
+APP.processEvents()
+
 # --- _set_shortcuts skips an unknown ident in the apply loop ------------------
 ok(isinstance(win._set_shortcuts({'unknown-x': ''}), list),
    '_set_shortcuts: an unknown ident is skipped')
