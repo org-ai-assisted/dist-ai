@@ -117,6 +117,14 @@ _fbtip = win._tab_tooltip(_bt)
 ok(_RLO not in _fbtip,
    'SEC-2b: a bidi/RLO byte in the /proc cwd fallback is stripped from the tab tooltip')
 
+# instance-group row: hovering a tab identifies which instance group the window belongs to.
+ok('instance-group: default' in win._tab_tooltip(_bt),
+   'the tab tooltip shows the instance-group (default)')
+win._instance_group = 'projectX'
+ok('instance-group: projectX' in win._tab_tooltip(_bt),
+   'the tab tooltip reflects a non-default instance-group')
+win._instance_group = 'default'                          # restore for later assertions
+
 # --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
 _ids = list(win._shortcuts)[:2]
 _probs = win._set_shortcuts({_ids[0]: 'Ctrl+C',           # reserved terminal key
