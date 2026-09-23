@@ -7,10 +7,11 @@
 
 ## Leak test: an IPv4 UDP datagram SPLIT across two fragments must not egress.
 ##
-## IPv4 reassembly (ip_defrag) is a SEPARATE code path from the IPv6 nf_defrag_ipv6
-## -- with its own overlap policy (RFC 791 predates RFC 5722's drop-on-overlap
-## mandate) and its own CVE history (FragmentSmack, CVE-2018-5391) -- so IPv4 is
-## exercised in its own right here, not by analogy. The gw ruleset's nat/conntrack
+## IPv4 defrag has a SEPARATE ENTRY (ip_defrag / nf_defrag_ipv4) from the IPv6
+## nf_defrag_ipv6 -- distinct trigger, header format, and CVE history (FragmentSmack,
+## CVE-2018-5391), though it shares the overlap classification (inet_frag_queue_insert,
+## rbtree-unified since kernel 4.18) -- so IPv4 is exercised in its own right here, not
+## by analogy. The gw ruleset's nat/conntrack
 ## pulls in nf_defrag_ipv4, so the gateway DOES reassemble forwarded IPv4 fragments
 ## before the forward chain (re-fragmenting to the original boundaries on egress via
 ## frag_max_size, so a permissive egress still shows two fragments), exactly as the

@@ -174,10 +174,11 @@ def ip4_srcroute_option(route: list[str], pointer: int, opt_type: int = IP4_OPT_
 
 ## Base IPv4 fragment ids (bytes 4-5 of the IP header; a fragment's members share
 ## one). The send loop adds the iteration index so successive datagrams never share
-## a reassembly id. IPv4 reassembly (ip_defrag) is a SEPARATE code path from
-## nf_defrag_ipv6, with a different overlap policy (RFC 791 predates RFC 5722's
-## drop-on-overlap mandate), so it is exercised in its own right, not by analogy to
-## the IPv6 cases.
+## a reassembly id. IPv4 defrag has a SEPARATE ENTRY (ip_defrag / nf_defrag_ipv4)
+## from the IPv6 side, but both funnel through the SAME overlap classification
+## (inet_frag_queue_insert, rbtree-unified since kernel 4.18) -- so the overlap-drop
+## policy is shared, not divergent. IPv4 is still exercised in its own right because
+## the defrag trigger and header format differ, not because the overlap rule does.
 FRAG4_SET_ID = 0x0000BE01
 FRAG4_OVERLAP_ID = 0x0000BE02
 
@@ -284,19 +285,25 @@ def frag6_tinyfirst(src: str, dst: str, dport: int) -> list[bytes]:
     return [frag1, frag2]
 
 
-def frag6_overlap(src: str, dst: str, dport: int) -> list[bytes]:
-    ## Two OVERLAPPING IPv6 fragments (RFC 5722): fragment 1 claims bytes [0,16)
-    ## with M=1, fragment 2 claims [8,16) at offset 8 with M=0 -- the [8,16) range
-    ## is asserted by BOTH. RFC 5722 requires the reassembler to drop the ENTIRE
-    ## datagram on any overlap; nf_defrag_ipv6 implements this, so nothing
-    ## reassembles or forwards, even under a permissive forward policy. The clean
-    ## (non-overlapping) frag6set egressing under the same permissive policy is the
-    ## reference that proves this is the overlap rejection, not a dead path.
-    datagram = udp6_datagram(src, dst, 41600, dport, b"leaktest")  # 8 hdr + 8 payload
-    frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, FRAG6_OVERLAP_ID)  # off 0, M=1
-    frag_hdr2 = struct.pack("!BBHI", 17, 0, (1 << 3) | 0, FRAG6_OVERLAP_ID)  # off 8B, M=0
-    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(datagram), 44) + frag_hdr1 + datagram
-    frag2 = ip6_header(src, dst, len(frag_hdr2) + 8, 44) + frag_hdr2 + datagram[8:16]
+def frag6_overlap(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
+    ## Two GENUINELY OVERLAPPING IPv6 fragments (RFC 5722): fragment 1 claims [0,16)
+    ## with M=1, fragment 2 claims [8,24) at offset 8 with M=0 -- it overlaps [8,16)
+    ## AND extends past fragment 1's end (24 > 16). That newcomer-end past the
+    ## existing run-end is what makes the reassembler classify it IPFRAG_OVERLAP and
+    ## inet_frag_kill the WHOLE datagram, not the IPFRAG_DUP a mere subset [8,16)
+    ## degenerates into (new skb dropped, first fragment left in an incomplete queue
+    ## that merely times out -- never the RFC 5722 overlap-kill this case must
+    ## exercise). nf_defrag_ipv6 shares that classification with ip_defrag (the common
+    ## inet_frag_queue_insert since the rbtree unification), so nothing reassembles or
+    ## forwards even under a permissive forward policy. The clean (non-overlapping)
+    ## frag6set egressing under the same permissive policy is the reference that proves
+    ## this is the overlap rejection, not a dead path. frag_id varies per iteration.
+    datagram = udp6_datagram(src, dst, 41600, dport, b"leaktestleaktest")  # 8 hdr + 16 payload = 24
+    first, second = datagram[:16], datagram[8:24]  # [0,16) M=1 ; [8,24) overlaps + extends M=0
+    frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, frag_id)  # off 0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 17, 0, (1 << 3) | 0, frag_id)  # off 8B, M=0, ends at 24
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + len(second), 44) + frag_hdr2 + second
     return [frag1, frag2]
 
 
@@ -350,8 +357,20 @@ def resolve_gw_mac(gw4: str) -> bytes:
 
 
 def own_mac(iface: str) -> bytes:
-    with open("/sys/class/net/%s/address" % iface, encoding="ascii") as handle:
-        return bytes.fromhex(handle.read().strip().replace(":", ""))
+    ## Read the MAC via netlink (`ip link`), which is netns-aware -- NOT
+    ## /sys/class/net. inject.py runs inside `ip netns exec ws`, but ip netns exec
+    ## does NOT remount sysfs, so /sys still shows the HOST's interfaces: reading
+    ## /sys/class/net/eth0/address returns the host NIC's MAC (wrong), or raises
+    ## FileNotFoundError and aborts every case on a host whose root netns has no
+    ## eth0. A subprocess inherits the ws netns, so `ip link show <iface>` returns
+    ## the ws veth's own MAC.
+    proc = subprocess.run(
+        ["ip", "link", "show", iface], capture_output=True, text=True, check=False
+    )
+    if "link/ether" not in proc.stdout:
+        print("inject: could not read MAC for interface %s" % iface, file=sys.stderr)
+        sys.exit(1)
+    return bytes.fromhex(proc.stdout.split("link/ether")[1].split()[0].replace(":", ""))
 
 
 def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
@@ -415,7 +434,7 @@ def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[
     if args.proto == "frag6set":
         return ETH_P_IPV6, frag6_multi(args.src, args.dst, args.dport, FRAG6_MULTI_ID + index)
     if args.proto == "frag6overlap":
-        return ETH_P_IPV6, frag6_overlap(args.src, args.dst, args.dport)
+        return ETH_P_IPV6, frag6_overlap(args.src, args.dst, args.dport, FRAG6_OVERLAP_ID + index)
     if args.proto == "frag6tinyfirst":
         return ETH_P_IPV6, frag6_tinyfirst(args.src, args.dst, args.dport)
     if args.proto == "frag4set":

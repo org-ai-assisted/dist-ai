@@ -149,17 +149,41 @@ leaktest_helpers_dir() {
    printf '%s\n' "$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/helpers"
 }
 
+## Ownership marker: a distinctively-named netns created alongside the topology so a
+## teardown can tell OUR ws/gw/up (this run, or a crashed prior run of this suite)
+## from a FOREIGN pre-existing netns that merely shares the name -- which we must
+## never delete (gate-destructive-ops-on-host-state).
+LEAKTEST_NS_MARKER='leaktest_owned_ns'
+
+## True if a netns named $1 exists. Parses `ip netns list` via a read loop, NOT a
+## `grep -q` on the pipe: a quiet grep closes the pipe on its first match and
+## SIGPIPEs the producer, which aborts the caller under pipefail (and R-161 forbids
+## it). ip prints the name as the first field, optionally " (id: N)" after it.
+leaktest_netns_exists() {
+   local target="$1" name
+   while read -r name _; do
+      [ "${name}" = "${target}" ] && return 0
+   done < <(ip netns list 2>/dev/null)
+   return 1
+}
+
 leaktest_teardown() {
    if [ -n "${LEAKTEST_LISTENER_PID}" ]; then
       kill "${LEAKTEST_LISTENER_PID}" 2>/dev/null || true
       LEAKTEST_LISTENER_PID=''
    fi
-   local ns
-   for ns in ws gw up; do
-      ip netns delete "${ns}" 2>/dev/null || true
-   done
-   ip link delete gw_e0 2>/dev/null || true
-   ip link delete ws_e 2>/dev/null || true
+   ## Delete the fixed-name topology ONLY when our ownership marker is present. On a
+   ## host with a pre-existing 'gw' netns (or a link literally named gw_e0/ws_e) and
+   ## no marker, this leaves that foreign state untouched.
+   if leaktest_netns_exists "${LEAKTEST_NS_MARKER}"; then
+      local ns
+      for ns in ws gw up; do
+         ip netns delete "${ns}" 2>/dev/null || true
+      done
+      ip link delete gw_e0 2>/dev/null || true
+      ip link delete ws_e 2>/dev/null || true
+      ip netns delete "${LEAKTEST_NS_MARKER}" 2>/dev/null || true
+   fi
 }
 
 ## Build the topology and load the given ruleset into gw. Starts a stub Tor
@@ -168,7 +192,25 @@ leaktest_setup() {
    local ruleset="$1"
    leaktest_teardown
 
-   local ns
+   ## After our own (marked) leftovers are gone, any surviving fixed-name netns/link
+   ## is FOREIGN pre-existing state -- refuse to clobber it rather than delete it.
+   local ns lnk
+   for ns in ws gw up; do
+      if leaktest_netns_exists "${ns}"; then
+         printf '%s\n' "FATAL: netns '${ns}' pre-exists and is not this suite's -- refusing to clobber host state. Remove it if it is a stale leftover, then re-run." >&2
+         exit 1
+      fi
+   done
+   for lnk in gw_e0 ws_e gw_e1 up_e; do
+      if ip link show "${lnk}" >/dev/null 2>&1; then
+         printf '%s\n' "FATAL: link '${lnk}' pre-exists and is not this suite's -- refusing to clobber host state." >&2
+         exit 1
+      fi
+   done
+
+   ## Claim ownership BEFORE creating the topology, so a crash between here and the
+   ## next teardown is still recognizable as our leftover.
+   ip netns add "${LEAKTEST_NS_MARKER}"
    for ns in ws gw up; do
       ip netns add "${ns}"
    done
@@ -250,7 +292,8 @@ leaktest_setup() {
 
    ## Unconditional settle: give the freshly-built veths / addresses / ruleset (and
    ## the stub, when started) a moment to become fully operational before any inject.
-   ## The nolistener path used to skip this, which made those cases inject-race flaky.
+   ## Must run on every path -- skipping it on the nolistener path races the inject
+   ## against topology setup and makes those cases flaky.
    sleep 1
 }
 
@@ -386,26 +429,35 @@ leaktest_assert_leaked() {
 ## having walked any ext-header / fragment chain to reach it -- increments this; a
 ## SYN the firewall merely DROPPED does not. Ambient netns traffic is ICMPv6
 ## ND/MLD, never a TCP SYN, so unlike the drop counters this one is probe-specific.
+## Prints the packet count on the :9040 redirect rule, or the literal token
+## "unavailable" if the chain could not be read after retries. A failed read must
+## NOT be reported as 0: 0 is a valid count, and a bogus 0 on the BEFORE read paired
+## with a stale non-zero AFTER would make leaktest_assert_redirected pass a SYN that
+## was actually DROPPED (a false "torified"). Callers must treat a non-numeric result
+## as a test error, never as a count -- leaktest_assert_redirected does.
 leaktest_transport_redirect_count() {
-   local count="" chain="" attempt
+   local chain="" count="" attempt
    ## Read the chain, then parse -- separately, so an nft-command failure is
-   ## distinguishable from an awk no-match (awk exits 0 either way). A failed read
-   ## returning 0 would read under errexit as a real "SYN did not reach the
-   ## redirect" (after=0 < before) -- a FALSE not-torified verdict. On a live
-   ## topology the redirect rule is always present, so an empty parse means the
-   ## read flaked (netns exec under load); retry so it resolves to the true count.
-   ## Non-fatal by construction: the read is an `if` condition, never aborting the
-   ## caller under errexit.
+   ## distinguishable from an awk no-match. On a live topology the redirect rule is
+   ## always present, so an empty parse means the read flaked (netns exec under
+   ## load); retry so it resolves to the true count. Non-fatal by construction: the
+   ## read is an `if` condition, never aborting the caller under errexit.
    for attempt in 1 2 3 4; do
       if chain="$(ip netns exec gw nft list chain inet nat prerouting 2>/dev/null)"; then
+         ## No awk `exit`: closing the pipe early would SIGPIPE the printf (rc 141)
+         ## on a large chain and abort the caller under pipefail; read the whole
+         ## input and keep only the FIRST match via a seen-guard instead.
          count="$(printf '%s\n' "${chain}" \
-            | awk '/redirect to :9040/ { for (i=1;i<=NF;i++) if ($i=="packets") { print $(i+1); exit } }')"
-         [ -n "${count}" ] && break
+            | awk '/redirect to :9040/ && !seen { for (i=1;i<=NF;i++) if ($i=="packets") { print $(i+1); seen=1 } }')"
+         if [ -n "${count}" ]; then
+            printf '%s' "${count}"
+            return 0
+         fi
       fi
-      count=""
       sleep 0.2
    done
-   printf '%s' "${count:-0}"
+   ## All reads failed -- a distinct, non-numeric sentinel, never a silent 0.
+   printf 'unavailable'
 }
 
 ## Assert the transport redirect COUNTED the probe (after > before): the SYN
@@ -419,6 +471,15 @@ leaktest_assert_redirected() {
       fail_case "${label}: ${LEAKTEST_PROBE_ERROR}"
       return 1
    fi
+   ## A non-numeric before/after (the "unavailable" sentinel) means the redirect
+   ## counter could not be read -- a test ERROR, never a silent pass or fail from a
+   ## bogus 0 that would fake or hide a delta.
+   case "${before}${after}" in
+      '' | *[!0-9]*)
+         fail_case "${label}: redirect counter unreadable (before='${before}' after='${after}') -- nft read failed, cannot judge redirection"
+         return 1
+         ;;
+   esac
    if [ "${after}" -gt "${before}" ]; then
       msg "PASS: ${label} reached the Tor TransPort redirect (counter ${before} -> ${after})"
       return 0
