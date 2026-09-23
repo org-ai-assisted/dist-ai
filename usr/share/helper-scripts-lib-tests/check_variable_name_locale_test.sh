@@ -48,18 +48,38 @@ if [ ! -r "${strings_bsh}" ]; then
    exit 1
 fi
 
-helper_scripts_path="${HELPER_SCRIPTS_PATH:-${repo}}"
+## Derive HELPER_SCRIPTS_PATH from the SAME strings.bsh that passed the
+## readability check above, so the child shell sources the very file this test
+## verified exists (strip the well-known suffix -> '' when strings_bsh fell back
+## to the installed /usr/libexec tree). An explicit HELPER_SCRIPTS_PATH wins.
+## Without this, a HELPER_SCRIPTS_REPO pointing at a checkout that lacks the
+## tree passes the check via the installed fallback yet the child sources a
+## nonexistent path -> every probe returns 127 and is misreported as a locale
+## verdict.
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   helper_scripts_path="${HELPER_SCRIPTS_PATH}"
+else
+   helper_scripts_path="${strings_bsh%/usr/libexec/helper-scripts/strings.bsh}"
+fi
 
-## Locales to exercise. C.UTF-8's minimal collation does NOT expand ranges, so
-## it cannot bite the bug; a full-collation UTF-8 locale (en_US.UTF-8) is the
-## only one that would ACCEPT the accented value on pre-fix code. Include it
-## only when installed (a minimal CI image may lack it) -- the canary is a true
-## regression gate where present and a benign assertion otherwise, never a skip
-## of the whole suite.
-utf8_locales=( 'C.UTF-8' )
+## The [A-Za-z] collation bug can only manifest under a full-collation UTF-8
+## locale; C.UTF-8's minimal collation does NOT expand ranges. Find one; the
+## canary is a real regression gate ONLY when such a locale is installed.
+full_collation_locale=""
 locales_available="$(locale -a 2>/dev/null || true)"
-if grep --quiet --ignore-case -- '^en_US.utf' <<<"${locales_available}"; then
-   utf8_locales+=( 'en_US.UTF-8' )
+for cand in en_US.UTF-8 en_US.utf8 de_DE.UTF-8; do
+   if grep --quiet --ignore-case --line-regexp -- "${cand//UTF-8/utf8}" <<<"${locales_available}"; then
+      full_collation_locale="${cand}"
+      break
+   fi
+done
+
+if [ -z "${full_collation_locale}" ]; then
+   ## The bug needs a full-collation UTF-8 locale to appear at all; with none
+   ## installed there is nothing to exercise, so skip rather than pass hollowly
+   ## on C-only assertions that never reach the vulnerable code path.
+   printf '%s\n' "SKIP: no full-collation UTF-8 locale (en_US.UTF-8 / de_DE.UTF-8) installed; locale-collation canary not exercised" >&2
+   exit 77  ## style-ok: allow-skip: no full-collation UTF-8 locale; the collation bug cannot manifest
 fi
 
 pass_count=0
@@ -75,6 +95,39 @@ run_probe() {
    local full_probe='source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" >/dev/null 2>&1; '"${probe_body}"
    LC_ALL="${locale}" HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       /usr/bin/bash -c "${full_probe}" _ "${candidate}"
+}
+
+## Judge a validator's exit code. A validator returns 0 (accept) or 1 (reject);
+## ANY other code means it was never invoked (e.g. 127 = source failed / function
+## undefined), which is a HARNESS error, NOT a locale verdict -- report it as
+## such so a broken environment is never mistaken for the collation regression.
+assert_rejects() {
+   local label="$1" loc="$2" rc="$3"
+   case "${rc}" in
+      1)
+         ok "${label}: rejects a non-ASCII value under locale ${loc}"
+         ;;
+      0)
+         notok "${label}: accepted a non-ASCII value under locale ${loc}; locale-dependent gate"
+         ;;
+      *)
+         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc=${rc}); check HELPER_SCRIPTS_PATH"
+         ;;
+   esac
+}
+assert_accepts() {
+   local label="$1" loc="$2" rc="$3" input="$4"
+   case "${rc}" in
+      0)
+         ok "${label}: accepts a plain ASCII value under locale ${loc}"
+         ;;
+      1)
+         notok "${label}: rejected a plain ASCII value '${input}' under locale ${loc}"
+         ;;
+      *)
+         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc=${rc}); check HELPER_SCRIPTS_PATH"
+         ;;
+   esac
 }
 
 ## Direct-argument validators: the candidate is passed straight to the function.
@@ -95,29 +148,21 @@ validators=(
    "check_is_alpha_numeric|${probe_cian}|${ascii_name}"
 )
 
-for loc in "${utf8_locales[@]}" 'C'; do
+## The full-collation locale is the one that bites the bug; C.UTF-8 and C are
+## byte-locale sanity (accented bytes rejected, ASCII accepted) under a
+## minimal collation.
+for loc in "${full_collation_locale}" 'C.UTF-8' 'C'; do
    for entry in "${validators[@]}"; do
       label="${entry%%|*}"
       rest="${entry#*|}"
       probe="${rest%|*}"
       ascii_input="${rest##*|}"
 
-      rc="$(run_probe "${loc}" "${probe}" "${unicode_value}")"
-      if [ "${rc}" = '1' ]; then
-         ok "${label}: rejects a non-ASCII value under locale ${loc}"
-      else
-         notok "${label}: accepted a non-ASCII value under locale ${loc} (rc=${rc}); locale-dependent gate"
-      fi
-
-      rc="$(run_probe "${loc}" "${probe}" "${ascii_input}")"
-      if [ "${rc}" = '0' ]; then
-         ok "${label}: accepts a plain ASCII value under locale ${loc}"
-      else
-         notok "${label}: rejected a plain ASCII value '${ascii_input}' under locale ${loc} (rc=${rc})"
-      fi
+      assert_rejects "${label}" "${loc}" "$(run_probe "${loc}" "${probe}" "${unicode_value}")"
+      assert_accepts "${label}" "${loc}" "$(run_probe "${loc}" "${probe}" "${ascii_input}")" "${ascii_input}"
    done
 done
 
 printf '%s\n' ""
-printf '%s\n' "${pass_count} passed, ${fail_count} failed"
+printf '%s\n' "${pass_count} passed, ${fail_count} failed (full-collation locale: ${full_collation_locale})"
 [ "${fail_count}" -eq 0 ]
