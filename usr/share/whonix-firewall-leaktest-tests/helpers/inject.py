@@ -23,6 +23,8 @@ could never send.
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
   rawip4 IPv4 with an arbitrary protocol (--protonum), tiny payload (e.g. 41 = 6to4)
   frag6  IPv6 atomic fragment (fragment ext-header) hiding an L4 (--l4 udp|tcp)
+  frag6set  Two IPv6 fragments of ONE UDP datagram (offset 0 M=1 + offset 8 M=0);
+            nf_defrag_ipv6 reassembles before the forward chain
   exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
           L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
@@ -79,10 +81,14 @@ def icmp6_echo(src: str, dst: str) -> bytes:
     return body[:2] + struct.pack("!H", csum) + body[4:]
 
 
+def udp6_datagram(src: str, dst: str, sport: int, dport: int, payload: bytes) -> bytes:
+    header = struct.pack("!HHHH", sport, dport, 8 + len(payload), 0)
+    csum = checksum16(ip6_pseudo(src, dst, len(header) + len(payload), 17) + header + payload)
+    return header[:6] + struct.pack("!H", csum or 0xFFFF) + payload
+
+
 def udp6(src: str, dst: str, sport: int, dport: int) -> bytes:
-    header = struct.pack("!HHHH", sport, dport, 8 + len(PROBE_PAYLOAD), 0)
-    csum = checksum16(ip6_pseudo(src, dst, len(header) + len(PROBE_PAYLOAD), 17) + header + PROBE_PAYLOAD)
-    return header[:6] + struct.pack("!H", csum or 0xFFFF) + PROBE_PAYLOAD
+    return udp6_datagram(src, dst, sport, dport, PROBE_PAYLOAD)
 
 
 def icmp4_echo() -> bytes:
@@ -139,6 +145,28 @@ def frag6_atomic(src: str, dst: str, dport: int, l4: str = "udp") -> bytes:
     frag_hdr = struct.pack("!BBHI", next_l4, 0, 0, 0xABCD)  # nexthdr, offset0, M=0
     payload = frag_hdr + l4bytes
     return ip6_header(src, dst, len(payload), 44) + payload
+
+
+## Fragment id shared by both fragments of the multi-fragment set so
+## nf_defrag_ipv6 reassembles them into one datagram.
+FRAG6_MULTI_ID = 0x00BEEF01
+
+
+def frag6_multi(src: str, dst: str, dport: int) -> list[bytes]:
+    ## Two IPv6 fragments of ONE UDP datagram, split on an 8-byte boundary
+    ## (fragment 1: offset 0, M=1; fragment 2: offset 8 bytes, M=0), same
+    ## fragment id. nf_defrag_ipv6 (loaded by conntrack) reassembles BEFORE the
+    ## forward chain, so splitting a datagram cannot smuggle it past the forward
+    ## drop -- the ruleset sees the reassembled datagram, not the fragments. An
+    ## 8-byte UDP payload keeps the split 8-byte-aligned (fragment offsets are in
+    ## 8-byte units); only the first fragment carries the UDP header.
+    datagram = udp6_datagram(src, dst, 41600, dport, b"leaktest")  # 8 hdr + 8 payload
+    first, second = datagram[:8], datagram[8:]
+    frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, FRAG6_MULTI_ID)  # off 0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 17, 0, (1 << 3) | 0, FRAG6_MULTI_ID)  # off 8B, M=0
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + len(second), 44) + frag_hdr2 + second
+    return [frag1, frag2]
 
 
 ## IPv6 extension header TYPES; the 8-byte header itself is built with the hidden
@@ -212,6 +240,16 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
     return ETH_P_IPV4, ip4_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum) + PROBE_PAYLOAD
 
 
+def build_frames(args: argparse.Namespace) -> tuple[bytes, list[bytes]]:
+    """Return (ethertype, [L3 packet, ...]). Most protos emit ONE frame; frag6set
+    emits the two fragments of a single UDP datagram (sent as two frames of one
+    logical packet, which nf_defrag_ipv6 reassembles before the forward chain)."""
+    if args.proto == "frag6set":
+        return ETH_P_IPV6, frag6_multi(args.src, args.dst, args.dport)
+    ethertype, l3 = build_l3(args)
+    return ethertype, [l3]
+
+
 def ranged_int(low: int, high: int):
     """argparse type: an int in [low, high], else a clean usage error (not a
     struct.error traceback deep in packet construction)."""
@@ -227,7 +265,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "exthdr6", "rawip6", "udp4", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "exthdr6", "rawip6", "udp4", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
@@ -242,13 +280,17 @@ def main() -> None:
     parser.add_argument("--count", type=ranged_int(1, 10000), default=4)
     args = parser.parse_args()
 
-    ethertype, l3 = build_l3(args)
-    frame = resolve_gw_mac(args.gw4) + own_mac(args.iface) + ethertype + l3
+    ethertype, l3_list = build_frames(args)
+    l2 = resolve_gw_mac(args.gw4) + own_mac(args.iface) + ethertype
+    frames = [l2 + l3 for l3 in l3_list]
 
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
     sock.bind((args.iface, 0))
     for index in range(args.count):
-        sock.send(frame)
+        ## A multi-frame proto (frag6set) sends all its frames back-to-back so the
+        ## fragments arrive within one reassembly window before the inter-probe gap.
+        for frame in frames:
+            sock.send(frame)
         print("inject %d: %s %s -> %s" % (index + 1, args.proto, args.src, args.dst))
         time.sleep(0.4)
 

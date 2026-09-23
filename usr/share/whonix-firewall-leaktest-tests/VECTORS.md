@@ -34,6 +34,13 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   (`protocol_and_tunnel_test.sh`)
 - Tunnels -- 6to4/SIT (IPv4 proto 41), Teredo (UDP/3544) (same file)
 - IPv6 atomic fragment (`fragment_evasion_test.sh`)
+- IPv6 multi-fragment reassembly -- a UDP datagram SPLIT across two fragments
+  (offset 0 M=1 + offset 8 M=0, same id) must not slip past the forward drop by
+  fragmentation: `nf_defrag_ipv6` reassembles before the forward chain, so the
+  ruleset acts on the reassembled datagram, which hits the drop. The permissive
+  canary egresses the reassembled datagram, proving the fragments reassembled AND
+  forwarded (not merely stalled in the defrag buffer -- which would be a silent
+  false pass) (`ipv6_multi_fragment_test.sh`)
 - IPv6 extension-header chain -- Routing (RH0) / Hop-by-Hop / Destination options
   (`ipv6_exthdr_chain_test.sh`)
 - Ext-header / fragment hiding a TCP SYN -- the transparent-proxy redirect must
@@ -52,11 +59,14 @@ extension-header vectors, which this suite adds.
 - IPv4 fragment evasion -- conntrack `nf_defrag_ipv4` reassembles before the
   forward chain: a lone fragment is held (never forwarded), a complete set is
   reassembled and handled as a normal packet. No fragment-specific forward leak.
-- IPv6 NON-atomic fragments (tiny-fragment / overlap / M=1) -- same mechanism:
-  `nf_defrag_ipv6` (loaded by conntrack, like its IPv4 sibling) reassembles before
-  the forward chain, so a lone non-first fragment is held. The ATOMIC fragment
-  (offset 0, M=0) IS tested (`fragment_evasion_test.sh`) because it is a complete
-  single-fragment datagram that forwards.
+- IPv6 lone non-first fragment (tiny-fragment / overlap with the completing
+  fragments withheld) -- `nf_defrag_ipv6` (loaded by conntrack, like its IPv4
+  sibling) holds an incomplete set, so a lone non-first fragment is never
+  forwarded. The COMPLETE two-fragment set IS tested and reassembles-then-drops
+  (`ipv6_multi_fragment_test.sh`, Covered above); the ATOMIC fragment (offset 0,
+  M=0) IS tested as a complete single-fragment datagram (`fragment_evasion_test.sh`).
+  Only a deliberately-incomplete set (held indefinitely, never egresses) remains a
+  non-vector.
 - Multicast / broadcast egress -- IPv4 broadcast is link-scoped and IPv6 global
   multicast needs multicast routing the Gateway does not run; verified nothing
   egresses even under a permissive forward policy.
