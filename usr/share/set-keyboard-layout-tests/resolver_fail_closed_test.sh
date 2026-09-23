@@ -103,6 +103,12 @@ mkdir --parents -- "${missing_repo}"
 dir_lib_repo="${work_dir}/dir-lib"
 mkdir --parents -- "${dir_lib_repo}/${lib_rel}"
 
+## Same class for live_mode's wrapper: the wrapper PATH exists but is a DIRECTORY, not a
+## regular file. -r accepts it; the resolver must require -f and fail closed, else the
+## subject is later exec'd and dies with a confusing 'Permission denied' instead.
+dir_wrapper_repo="${work_dir}/dir-wrapper"
+mkdir --parents -- "${dir_wrapper_repo}/usr/bin/set-grub-keymap"
+
 pass_count=0
 fail_count=0
 
@@ -312,7 +318,7 @@ expect_live_fail_closed() {
       notok "live_mode passed an explicit-but-invalid override (silent fall-through)"
       cat -- "${live_out}" >&2 || true
    fi
-   if grep --quiet --fixed-strings -- 'is not readable' "${live_out}"; then
+   if grep --quiet --fixed-strings -- 'is not a readable file' "${live_out}"; then
       ok "live_mode emitted the fail-closed FATAL"
    else
       notok "live_mode fail-closed FATAL missing (wrong reason for the nonzero exit)"
@@ -323,6 +329,7 @@ expect_live_fail_closed() {
 expect_live_fail_closed "explicit-but-invalid SET_KEYBOARD_LAYOUT_REPO" "${missing_repo}" '' ''
 expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
 expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_PATH" '' '' "${missing_repo}"
+expect_live_fail_closed "wrapper path is a directory, not a file" "${dir_wrapper_repo}" '' ''
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"
