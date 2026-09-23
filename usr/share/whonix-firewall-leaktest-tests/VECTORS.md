@@ -64,6 +64,17 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   datagram, and the shipped forward drop catches it. The permissive canary egresses
   the fragment, proving the forward chain (not a defrag stall) is what blocks it
   (`ipv6_fragment_tinyfirst_test.sh`)
+- IPv4 fragmented UDP -- an IPv4 UDP datagram split across two fragments must not
+  egress. IPv4 (ip_defrag) is a SEPARATE code path from nf_defrag_ipv6 with its own
+  overlap policy (RFC 791 predates RFC 5722) and CVE history (FragmentSmack,
+  CVE-2018-5391), so it is tested empirically, not by analogy: the gateway does NOT
+  reassemble FORWARDED IPv4 fragments here (unlike IPv6) -- they pass through
+  individually keeping the original id -- so each fragment is a forwarded IP packet
+  the forward drop catches; the permissive canary egresses the fragments
+  (`ipv4_multi_fragment_test.sh`)
+- IPv4 overlapping fragments -- an overlapping IPv4 fragment set must not egress;
+  ip_defrag drops the set on overlap. Teeth under a permissive forward: the valid
+  sibling set forwards while the overlapping one does not (`ipv4_fragment_overlap_test.sh`)
 - IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress,
   in BOTH shapes: a COMPLETED/inert route (dst = final target, catches a rule keyed
   on IHL=5) and an ACTIVE route (dst = gateway, next hop = target -- attacker-
@@ -83,9 +94,6 @@ extension-header vectors, which this suite adds.
 
 ## Investigated, NOT a vector (no test shipped -- documented so the gap is honest)
 
-- IPv4 fragment evasion -- conntrack `nf_defrag_ipv4` reassembles before the
-  forward chain: a lone fragment is held (never forwarded), a complete set is
-  reassembled and handled as a normal packet. No fragment-specific forward leak.
 - IPv6 lone non-first fragment (incomplete set with the completing fragments
   withheld) -- `nf_defrag_ipv6` (loaded by conntrack, like its IPv4 sibling) holds
   an incomplete set, so a lone non-first fragment is never forwarded. The COMPLETE
