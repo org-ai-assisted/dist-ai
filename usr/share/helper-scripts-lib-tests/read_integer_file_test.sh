@@ -143,6 +143,14 @@ check_rejects 'a non-numeric value' 'not-a-number'
 check_rejects 'a value below the lower bound' '0'
 check_rejects 'a value above the upper bound' '4294967296'
 
+## Guard-fail-OPEN regression: the format regex accepts an arbitrarily large
+## integer, but the range comparison '[ value -gt upper ]' then ERRORS (exit 2,
+## intmax_t overflow) and the enclosing 'if' treats that as false -- so an
+## out-of-range value would fall through and be RETURNED as validated. It must
+## be REJECTED. Fails on the old code (returned -> rc 0 -> "accepted").
+check_rejects 'a value above INT64_MAX is rejected, not returned (range-check overflow)' '9223372036854775808'
+check_rejects 'an absurdly long integer is rejected' '99999999999999999999999999999999'
+
 ## An absent file must fail rather than return an empty string that a caller
 ## would then use in arithmetic.
 rc=0
