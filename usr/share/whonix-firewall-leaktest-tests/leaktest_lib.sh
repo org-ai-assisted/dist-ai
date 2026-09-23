@@ -395,19 +395,23 @@ leaktest_forward_leak_case() {
 }
 
 ## Positive control: a legitimate-source workstation TCP connection must be
-## transparently redirected to the Tor port and answered. Returns 0 on success.
+## transparently redirected to the Tor port and answered, over BOTH IPv6 and IPv4
+## (a family-scoped redirect breakage must not slip past an IPv6-only control).
+## Returns 0 only if both families connect. Heredoc is single-quoted (no interp);
+## the two gateway IPs are passed as argv so no literal can silently diverge.
 leaktest_positive_control() {
    local rc
-   ## Pass the gateway IPv6 in (heredoc is single-quoted, so no shell interp);
-   ## avoids duplicating INT_GW_IP6 as a literal that could silently diverge.
-   rc="$(ip netns exec ws python3 - "${INT_GW_IP6}" <<'PY'
+   rc="$(ip netns exec ws python3 - "${INT_GW_IP6}" "${INT_GW_IP4}" <<'PY'
 import socket, sys
-try:
-    s = socket.create_connection((sys.argv[1], 443), 4)
-    s.close()
+for target in (sys.argv[1], sys.argv[2]):
+    try:
+        conn = socket.create_connection((target, 443), 4)
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        print("FAIL:%s:%s" % (target, type(exc).__name__))
+        break
+else:
     print("OK")
-except Exception as exc:  # noqa: BLE001
-    print("FAIL:%s" % type(exc).__name__)
 PY
 )"
    if [ "${rc}" = 'OK' ]; then

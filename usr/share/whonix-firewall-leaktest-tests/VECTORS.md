@@ -11,13 +11,23 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 
 - Forged-source IPv6 -- uRPF drop (`ipv6_forged_source_urpf_test.sh`)
 - Forged-source IPv4 -- dual-stack uRPF + kernel rp_filter (`ipv4_forged_source_urpf_test.sh`)
+- Forged-source DNS -- the UDP/53 DnsPort reply to a forged source must not egress;
+  uRPF drops it (`dns_forged_source_urpf_test.sh`). The DnsPort stub replies from the
+  DNAT'd destination via IPV6_PKTINFO, as a real bound DnsPort does, so conntrack
+  un-NATs the reply and the leak actually reproduces under the canary.
+- TCP transparent-redirect port-INDEPENDENCE -- a legit clearnet TCP connection on
+  ports 80/22/ephemeral is redirected + answered (`tcp_redirect_port_independence_test.sh`)
 - ICMPv6 echo (`icmpv6_forward_test.sh`), ICMPv4 ping (`icmpv4_forward_test.sh`)
-- Non-DNS UDP -- NTP 123 and QUIC 443, over BOTH IPv6 and IPv4
-  (`udp_nondns_forward_test.sh`)
-- DNS redirect POSITIVE control -- UDP/53 must be redirected to the Tor DnsPort
-  and answered; canary strips the redirect rule (`dns_redirect_positive_test.sh`)
-- Non-SYN TCP transproxy bypass -- ACK/FIN-ACK/RST-ACK, IPv6 and IPv4
+- Non-DNS UDP -- NTP 123, QUIC 443, WireGuard 51820, OpenVPN 1194, over BOTH IPv6
+  and IPv4 (`udp_nondns_forward_test.sh`)
+- DNS redirect -- UDP/53 (BOTH families) must be redirected to the Tor DnsPort and
+  answered AND must not egress the gateway; canary strips the redirect and opens
+  forward (`dns_redirect_positive_test.sh`)
+- Non-SYN TCP transproxy bypass -- ACK/SYN-ACK/FIN-ACK/RST-ACK (only a pure SYN is
+  redirected), IPv6 and IPv4
   (`nonsyn_tcp_transproxy_bypass_test.sh`, `ipv4_nonsyn_tcp_test.sh`)
+- Positive control is dual-family (IPv6 AND IPv4 TransPort), so a family-scoped
+  redirect breakage is caught (`leaktest_lib.sh` leaktest_positive_control)
 - Arbitrary IP protocols -- GRE 47, ESP 50, AH 51, OSPF 89, DCCP 33, SCTP 132,
   IP-in-IP 4, as BOTH IPv6 next-headers AND IPv4-outer protocols
   (`protocol_and_tunnel_test.sh`)
@@ -54,12 +64,6 @@ extension-header vectors, which this suite adds.
 
 ## Deferred to a real Non-Qubes-Whonix server (netns stub not faithful)
 
-- UDP/53 DnsPort established-reply to a FORGED source -- a legit UDP/53 IS
-  redirected + answered (the DNS positive control proves it), but for a forged
-  source the wildcard-bound stub's reply routes out the external interface, so its
-  source no longer matches the redirect conntrack tuple and is not un-NAT'd -- no
-  leak in the stub. Real Tor DnsPort binds a specific address and may behave
-  differently; needs a real DnsPort to settle.
 - Hostile Router-Advertisement / RA-vs-connection RACE (as opposed to the static
   accept_ra end-state the netns already models) and real Tor circuit behavior.
 - Online leak-site / torrent checks (`doileak.com`, `ipleak.net`) -- require real
@@ -78,8 +82,13 @@ extension-header vectors, which this suite adds.
   control-port / onion-grater test, not this suite.
 - Firewall rule-reload race under live traffic -- the serial setup/teardown model
   structurally cannot exercise it.
-- Transparent-proxy redirect PORT-independence -- all TCP cases use dport 443;
-  nothing yet proves the redirect is not port-keyed (80, 22, ephemeral).
+- Wider protocol-number + destination-port sweeps (the wiki's 0-255 / 0-65535
+  batteries) -- the suite tests a representative sample, not exhaustively.
+- Extension-header / fragment probes hide only a UDP payload, not a TCP SYN, so a
+  redirect that mis-parses an ext-header chain to find the SYN is not yet exercised.
+- Rogue-RA soundness dependency: the uRPF rule keys on the live FIB, so the
+  internal-interface accept_ra / accept_redirects sysctls being off is load-bearing;
+  not yet asserted here (see the RA item above).
 
 ## Known harness limitations (trust-critical -- do not silently rely on them)
 

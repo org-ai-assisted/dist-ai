@@ -28,7 +28,7 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 rc=0
-for flags in ack finack rstack; do
+for flags in ack synack finack rstack; do
    leaktest_probe_case \
       "IPv4 non-SYN TCP (${flags}, transproxy bypass) to clearnet" tcp4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
       --flags "${flags}" --dport 443 || rc=$?

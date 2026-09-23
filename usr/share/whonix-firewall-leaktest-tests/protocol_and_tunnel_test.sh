@@ -41,7 +41,7 @@ done
 ## The same protocols carried directly in IPv4 (a separate forward-drop path from
 ## the IPv6 next-header cases above): a rule that dropped only IPv4 proto 41 but
 ## not these would pass the IPv6 cases yet still leak here.
-for protonum in 47 50 51 89 33 132; do
+for protonum in 4 47 50 51 89 33 132; do
    leaktest_probe_case \
       "IPv4 protocol ${protonum} to clearnet" rawip4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
       --protonum "${protonum}" || rc=$?
