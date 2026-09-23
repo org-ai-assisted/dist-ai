@@ -261,6 +261,18 @@ function set_console_keymap {
 }
 LIB
 )"
+inparen_repo="$(make_lib_repo two-def-inparen <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+set_console_keymap( ) {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
 
 expect_evasion_caught "two defs, split guard/restart" "${split_repo}"
 expect_evasion_caught "two defs, complete guarded decoy first" "${decoy_repo}"
@@ -268,6 +280,7 @@ expect_evasion_caught "two defs, indented first-def close" "${indented_repo}"
 expect_evasion_caught "two defs, live copy uses 'name ()' spacing" "${spaceparen_repo}"
 expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo}"
 expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
+expect_evasion_caught "two defs, live copy uses 'name( )' inner space" "${inparen_repo}"
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

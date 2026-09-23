@@ -76,19 +76,24 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ##
 ## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of a
 ## repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy
-## above an unguarded live one) makes a single extracted body unable to tell which copy
-## actually runs -- fail closed on any count != 1. The count recognizes BOTH bash
-## function-header forms, 'name ()' and 'function name' (the complete grammar; brace
-## on the same or next line), so a duplicate cannot hide behind an alternate header
-## syntax. Still a line-oriented grep, not brace parsing.
+## above an unguarded live one) would let the dead copy be verified while the live one
+## runs unguarded -- fail closed on any count != 1. The count matches a definition
+## HEADER: 'function name', or the name followed by an opening '(' (so 'name(', 'name (',
+## and whitespace-inside-parens 'name( )' all count). Matching the opening paren, not a
+## literal '()', errs toward OVER-counting -- a fail-CLOSED direction -- rather than
+## missing a duplicate. Still a line-oriented grep, deliberately NOT a bash parser.
 ##
-## Out of scope (deliberately, per never-reinvent-a-bash-parser -- would need a real
-## shell parser, a human reviews): guard text smuggled into a heredoc/string body (the
-## '#'-comment strip does not track heredocs/quotes), and a guard neutered WITHIN a
-## single definition (else / subshell / pipeline / conditional return). An accidental
-## REMOVAL, reorder, or DUPLICATION of the guard is caught; hand-crafted text-smuggling
-## or in-definition neutering is not.
-def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\(\))' "${lib}" || true)"
+## Scope, stated honestly (per never-reinvent-a-bash-parser + the AI-accident threat
+## model; anything below needs a real shell parser -> a human reviews):
+##   caught: accidental REMOVAL / reorder / DUPLICATION of the guard, and the guard
+##           verified in the shipped canonical 'name() {' form.
+##   NOT caught (out of scope, hand-crafted): guard text smuggled into a heredoc/string
+##           body (the '#'-strip does not track heredocs/quotes); a guard neutered WITHIN
+##           one definition (else / subshell / pipeline / conditional return); and a
+##           definition written in an exotic lexical form the header grep misses (e.g. a
+##           line-continuation between the name and its paren). A non-canonical single
+##           definition fails CLOSED below rather than being mis-verified.
+def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\()' "${lib}" || true)"
 if [ "${def_count}" -eq 1 ]; then
    ok "exactly one set_console_keymap definition"
 else
@@ -112,7 +117,12 @@ restart_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 
-if [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
+if [ -z "${console_body}" ]; then
+   ## The counter saw a definition (or none) but canonical extraction got nothing: the
+   ## definition is absent or in a non-canonical header form this test cannot verify.
+   ## Fail closed with an honest reason rather than mislabel it "guard missing".
+   notok "set_console_keymap not found in the verifiable 'name() {' form (reformat or human review)"
+elif [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
    && [ "${guard_line}" -lt "${restart_line}" ]; then
    ok "root guard 'if' is present and precedes the console restart in set_console_keymap"
 else
