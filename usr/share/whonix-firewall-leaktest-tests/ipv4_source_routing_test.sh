@@ -53,17 +53,27 @@ enable_source_route() {
    ip netns exec gw sysctl --quiet --write net.ipv4.conf.eth1.accept_source_route=1
 }
 
-fire_srcroute() {
-   leaktest_fire_forward_probe srcroute4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
+fire_srcroute() { # <proto>
+   leaktest_fire_forward_probe "$1" "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
       "${capture_file}" --dport 123
 }
 
-## 1. Shipped ruleset (kernel source-route ON): the firewall must drop it.
-leaktest_setup "${ruleset_file}"
-enable_source_route
-fire_srcroute
-leaktest_assert_blocked 'IPv4 LSRR source-route (IHL>5) to clearnet' \
-   "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+## Two LSRR shapes, each a fresh topology (the proven-reliable one-fire pattern):
+##   srcroute4        COMPLETED/inert route -- an IHL>5 options-bearing packet that
+##                    forwards to dst normally (catches a rule keyed on IHL=5).
+##   srcroute4active  ACTIVE route (dst=gateway, next hop=target) -- attacker-
+##                    directed source routing the gateway must not honor+forward.
+## A test of only the completed shape would pass even against a ruleset that
+## accepted active LSRR packets, so both are exercised.
+
+## 1. Shipped ruleset (kernel source-route ON): the firewall must drop both.
+for proto in srcroute4 srcroute4active; do
+   leaktest_setup "${ruleset_file}"
+   enable_source_route
+   fire_srcroute "${proto}"
+   leaktest_assert_blocked "IPv4 LSRR ${proto} (IHL>5) to clearnet" \
+      "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+done
 
 ## 2. Positive control on a fresh topology.
 leaktest_setup "${ruleset_file}"
@@ -73,15 +83,18 @@ else
    rc=1
 fi
 
-## 3. Canary: permissive forward + kernel source-route ON -> the packet egresses,
+## 3. Canary: permissive forward + kernel source-route ON -> each shape egresses,
 ## proving the harness detects a source-routed leak (and that the kernel forwarded
-## it once permitted, so the blocked case was the firewall's doing).
+## it once permitted -- for the active shape, that it processed the route and
+## rewrote the destination -- so the blocked cases were the firewall's doing).
 permissive="$(mktemp --suffix=.nft)"
 leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
-leaktest_setup "${permissive}"
-enable_source_route
-fire_srcroute
-leaktest_assert_leaked 'IPv4 LSRR source-route (permissive forward)' \
-   "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+for proto in srcroute4 srcroute4active; do
+   leaktest_setup "${permissive}"
+   enable_source_route
+   fire_srcroute "${proto}"
+   leaktest_assert_leaked "IPv4 LSRR ${proto} (permissive forward)" \
+      "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+done
 
 exit "${rc}"

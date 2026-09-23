@@ -46,11 +46,15 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - Ext-header / fragment hiding a TCP SYN -- the transparent-proxy redirect must
   walk the chain to find + redirect the SYN, not forward it un-torified
   (`ipv6_exthdr_hidden_syn_test.sh`)
-- IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress.
-  Defense-in-depth: the test flips the kernel's own source-route drop OFF
-  (accept_source_route=1) to isolate the FIREWALL, proving the forward policy-drop
-  blocks it even if the kernel ever honored source routes; the permissive canary
-  egresses it (`ipv4_source_routing_test.sh`)
+- IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress,
+  in BOTH shapes: a COMPLETED/inert route (dst = final target, catches a rule keyed
+  on IHL=5) and an ACTIVE route (dst = gateway, next hop = target -- attacker-
+  directed source routing the gateway must not honor and forward). Defense-in-depth:
+  the test flips the kernel's own source-route drop OFF (accept_source_route=1) to
+  isolate the FIREWALL, proving the forward policy-drop blocks both even if the
+  kernel ever honored source routes; the permissive canary egresses each -- for the
+  active shape, only after the kernel processed the route and rewrote the
+  destination (`ipv4_source_routing_test.sh`)
 - Fail-closed killswitch -- Tor down => drop, not leak (`fail_closed_test.sh`)
 
 This covers, and exceeds, every vector the Whonix wiki `Dev/Leak_Tests` (+ the

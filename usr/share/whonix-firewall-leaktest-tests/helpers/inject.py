@@ -20,7 +20,9 @@ could never send.
   icmp4  IPv4 ICMP echo request (ping)
   udp6   IPv6 UDP datagram to --dport
   udp4   IPv4 UDP datagram to --dport (e.g. Teredo UDP/3544)
-  srcroute4  IPv4 UDP datagram bearing a completed LSRR source-route option (IHL>5)
+  srcroute4  IPv4 UDP datagram bearing a completed (inert) LSRR option (IHL>5)
+  srcroute4active  IPv4 UDP with an ACTIVE LSRR: dst=--gw4, next hop=--dst (a router
+          honoring source routes rewrites dst and forwards it on)
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
   rawip4 IPv4 with an arbitrary protocol (--protonum), tiny payload (e.g. 41 = 6to4)
   frag6  IPv6 atomic fragment (fragment ext-header) hiding an L4 (--l4 udp|tcp)
@@ -277,6 +279,17 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         payload = udp4_segment(args.src, args.dst, args.sport, args.dport)
         option = ip4_srcroute_option([args.dst], pointer=8, opt_type=IP4_OPT_LSRR)
         return ETH_P_IPV4, ip4_header_opts(args.src, args.dst, len(payload), 17, option) + payload
+    if args.proto == "srcroute4active":
+        ## IPv4 UDP datagram bearing an ACTIVE (unexhausted) LSRR option: IP dst is
+        ## the GATEWAY itself (--gw4) and the route's first unvisited hop (pointer 4)
+        ## is the real clearnet target (--dst). A router that honors source routing
+        ## rewrites dst to the next hop and forwards it on -- the attacker-DIRECTED
+        ## source-routing case, distinct from srcroute4's inert completed route. The
+        ## L4 checksum is over the immediate (gateway) dst; a forwarding router does
+        ## not recompute it, and a leak test only cares that the packet egresses.
+        payload = udp4_segment(args.src, args.gw4, args.sport, args.dport)
+        option = ip4_srcroute_option([args.dst], pointer=4, opt_type=IP4_OPT_LSRR)
+        return ETH_P_IPV4, ip4_header_opts(args.src, args.gw4, len(payload), 17, option) + payload
     ## rawip4
     return ETH_P_IPV4, ip4_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum) + PROBE_PAYLOAD
 
@@ -307,7 +320,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "exthdr6", "rawip6", "udp4", "srcroute4", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
