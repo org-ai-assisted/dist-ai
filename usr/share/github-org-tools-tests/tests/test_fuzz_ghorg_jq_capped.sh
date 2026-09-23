@@ -34,6 +34,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -41,7 +42,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 [ -v TMP ] || TMP=/tmp
@@ -50,7 +51,9 @@ fail=0
 ## Tighten the timeout for the test so a regression hangs the
 ## suite for at most ~3 seconds (1+1+slack), not the production
 ## 2+1.
+# shellcheck disable=SC2034  # GHORG_JQ_TIMEOUT_SOFT: consumed by the sourced ghorg_jq_capped
 GHORG_JQ_TIMEOUT_SOFT=1
+# shellcheck disable=SC2034  # GHORG_JQ_TIMEOUT_HARD: consumed by the sourced ghorg_jq_capped
 GHORG_JQ_TIMEOUT_HARD=1
 
 ## ---------------------------------------------------------------
@@ -173,6 +176,7 @@ esac
 ## (the stress cases above pass even if the wrapper is broken in
 ## a way that always exits non-zero).
 ## ---------------------------------------------------------------
+# shellcheck disable=SC2034  # GHORG_JQ_MAX_BYTES: consumed by the sourced ghorg_jq_capped
 GHORG_JQ_MAX_BYTES=4194304
 out="$(printf '%s' '{"foo": [1, 2, 3]}' | ghorg_jq_capped -r -- '.foo | length' 2>&1)" || {
    printf '%s\n' "FAIL[positive]: ghorg_jq_capped returned non-zero on valid JSON" >&2

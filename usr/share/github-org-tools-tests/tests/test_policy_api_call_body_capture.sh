@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -33,9 +34,9 @@ FIXTURES_DIR="$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)"
 export GHORG_MOCK=true
 export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
-# shellcheck source=../../usr/libexec/developer-meta-files/github-policy-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-policy-lib.bsh
 
 ## policy_api_call expects these in caller scope (bash dynamic scoping).
@@ -45,6 +46,7 @@ policy_warn_seen=0
 ## Suppress the 'ok:' log notice so test output stays focused on the
 ## assertion failures below; the lib emits this at the same level as
 ## warns, not on a separate channel.
+# shellcheck disable=SC2034  # POLICY_QUIET_OK: consumed by the sourced github-policy-lib.bsh
 POLICY_QUIET_OK=1
 
 fail=0
@@ -80,6 +82,7 @@ if [ -n "${captured}" ]; then
    printf '%s\n' "FAIL: captured not cleared in dry-run; got '${captured}'" >&2
    fail=1
 fi
+# shellcheck disable=SC2034  # dry_run: consumed by the sourced policy_api_call
 dry_run=0
 
 ## (3) The 5-arg form (no body_var_name) keeps working unchanged -
