@@ -5660,6 +5660,27 @@ ok('SECRET' not in _bud.transcript_text(),
    'BUDGET-1: the CSI-K-erased SECRET does not reappear after a full-buffer replay')
 _bud.shutdown()
 
+# BUDGET-2: the chunked replay must not LEAK an unterminated / over-cap escape as visible
+# text. TUI mode stores _raw UNSTRIPPED, so a switch to CLI replays it through the line
+# renderer; the replay must carry a split escape via feed_chunk_carry's O(1) discard (NOT
+# split_trailing_escape, whose 4096 cap drops an over-cap carry so the next piece begins
+# mid-body with no ESC introducer and the body renders as text -- the over-cap bypass class).
+_lk = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_lk, b'\x1b]0;' + b'SECRETPAYLOAD' * 6000)   # ~78KB unterminated OSC (> _PTY_READ_MAX)
+_lk.apply_tui(False)                                     # -> CLI re-render replays the retained _raw
+ok('SECRETPAYLOAD' not in _lk.transcript_text(),
+   'BUDGET-2: an unterminated over-cap escape in _raw does not leak as text on a CLI re-render')
+_lk.shutdown()
+
+# BUDGET-3: a re-render whose retained _raw ENDS in a small (sub-cap) incomplete escape must
+# flush that trailing carry (feed_line_edits strips the dangling introducer) without leaking it.
+_lc = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_lc, b'hello\x1b]0;CARRYLEAK')                 # _raw ends mid-OSC (incomplete, sub-cap)
+_lc.apply_tui(False)                                       # -> CLI re-render replays _raw
+ok('CARRYLEAK' not in _lc.transcript_text() and 'hello' in _lc.transcript_text(),
+   'BUDGET-3: a trailing incomplete escape in _raw is stripped (not leaked) on a CLI re-render')
+_lc.shutdown()
+
 # 5. A row mutated AND scrolled off within a single un-rendered read is NOT
 # promoted from its now-stale block: the signature recheck fails, so the frame
 # takes the full-rebuild fallback and shows the NEW content.
