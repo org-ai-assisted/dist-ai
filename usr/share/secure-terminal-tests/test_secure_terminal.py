@@ -1276,10 +1276,10 @@ eq(S.marking_cp_for_cell('x' + chr(0x0301) * 5000),
 S._marking_cp_scan.cache_clear()
 S.marking_cp_for_cell('q' + chr(0x0301) * 5000)
 _key_n1 = S._marking_cp_scan.cache_info().currsize
-S.marking_cp_for_cell('q' + chr(0x0301) * 40)          # same capped key -> cache HIT, no new entry
+S.marking_cp_for_cell('q' + chr(0x0301) * (S._COMBINING_RUN_MAX + 1))  # same capped key -> cache HIT
 _key_n2 = S._marking_cp_scan.cache_info().currsize
 ok(_key_n1 == 1 and _key_n2 == 1,
-   'marking cp: a 5000-cp cell and its 40-cp sibling collapse to ONE bounded cache key '
+   'marking cp: a 5000-cp cell and its capped-length sibling collapse to ONE bounded cache key '
    '(the key is the capped prefix, not the raw uncapped arg)')
 # tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
 # the grid colouring can classify without a None fallback (checked for every mode).
@@ -1586,13 +1586,13 @@ _acute = chr(0x0301)                                   # combining acute
 def _mark_cells(cells):
     return sum(1 for _c, _ in cells if _c == _acute)
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * 100)
-eq(_mark_cells(_cells), 32,
-   'feed_line_edits: a 100-mark flood on one base is bounded to 32 mark-cells')
+eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
+   f'feed_line_edits: a 100-mark flood on one base is bounded to {S._COMBINING_RUN_MAX} mark-cells')
 # a stripped SGR between mark-blocks must NOT reset the cap (it leaves no cell, so
 # the marks stay adjacent to the one base) -- the escape-reset bypass
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(
     [], 0, {}, 'a' + (_acute * 20 + '\x1b[0m') * 5)
-eq(_mark_cells(_cells), 32,
+eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a stripped SGR between mark-blocks cannot reset the cap')
 # short real combining clusters (a base resets the run) are preserved in full
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'e' + _acute + 'o' + _acute)
@@ -1604,7 +1604,7 @@ eq(len(S.feed_line_edits([], 0, {}, 'x' + _acute * 30)[1]), 31,
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * 20)
 for _ in range(5):
     _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(_cells, _col, _sg, _acute * 20)
-eq(_mark_cells(_cells), 32,
+eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a flood split across chunks stays bounded (cells persist)')
 # overwrite-join: two sub-cap runs separated by a base, then a cursor move (CSI G)
 # overwrites the separator with a mark. Scanning only the LEFT would let each such
@@ -1620,21 +1620,21 @@ def _max_mark_run(cells):
     return _m
 _raw = 'a' + _acute * 20 + 'b' + _acute * 20 + '\x1b[22G' + _acute
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, _raw)
-ok(_max_mark_run(_cells) <= 32,
+ok(_max_mark_run(_cells) <= S._COMBINING_RUN_MAX,
    'feed_line_edits: overwriting a separator cannot fuse two runs past the cap')
-# writing a mark to the LEFT of an already-full (32-mark) run must also be refused
+# writing a mark to the LEFT of an already-full (cap-length) run must also be refused
 # -- exercises the right-hand scan reaching the cap
-_raw2 = 'a' + _acute * 40 + '\x1b[1G' + _acute          # 40 -> capped 32, then write at col 0
+_raw2 = 'a' + _acute * (S._COMBINING_RUN_MAX + 8) + '\x1b[1G' + _acute  # above cap, then write at col 0
 _cmp, _cells2, _c2, _s2, _w2 = S.feed_line_edits([], 0, {}, _raw2)
-ok(_max_mark_run(_cells2) <= 32 and _cells2[0][0] == 'a',
+ok(_max_mark_run(_cells2) <= S._COMBINING_RUN_MAX and _cells2[0][0] == 'a',
    'feed_line_edits: writing left of a full mark-run is refused (right-side cap)')
 # a grapheme-extending mark whose canonical combining class is 0 (U+093E, category
 # Mc) must be capped too -- detection is by mark CATEGORY, not combining class, so
 # ccc cannot be used to slip a flood past the cap
 _maa = chr(0x093E)                                     # Devanagari vowel sign AA (Mc, ccc 0)
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * 100)
-eq(sum(1 for _c, _ in _cells if _c == _maa), 32,
-   'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to 32')
+eq(sum(1 for _c, _ in _cells if _c == _maa), S._COMBINING_RUN_MAX,
+   f'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to {S._COMBINING_RUN_MAX}')
 
 # --- numeric-parameter crash guard: Python 3.11+ raises ValueError converting an
 # int string longer than 4300 digits. A terminal parameter is a few digits, so a

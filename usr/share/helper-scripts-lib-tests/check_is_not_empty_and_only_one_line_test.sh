@@ -81,8 +81,11 @@ fail_count=0
 ## is held in a local variable whose NAME is passed (indirect expansion inside
 ## the function reads it via dynamic scope).
 probe() {
-   local candidate="$1" probe_value rc=0
-   probe_value="${candidate}"
+   local candidate="$1" rc=0
+   ## probe_value is read by check_is_not_empty_and_only_one_line via indirect
+   ## expansion of the NAME passed to it; shellcheck cannot see that use.
+   # shellcheck disable=SC2034
+   local probe_value="${candidate}"
    check_is_not_empty_and_only_one_line probe_value >/dev/null 2>&1 || rc=$?
    printf '%s' "${rc}"
 }
