@@ -5681,6 +5681,15 @@ ok('CARRYLEAK' not in _lc.transcript_text() and 'hello' in _lc.transcript_text()
    'BUDGET-3: a trailing incomplete escape in _raw is stripped (not leaked) on a CLI re-render')
 _lc.shutdown()
 
+# CLOEXEC: the pty master fd must be close-on-exec, so a LATER tab's forked shell cannot
+# inherit it -- else a program in that tab could scan /proc/self/fd and read another tab's
+# output or inject keystrokes into it (a cross-tab isolation break). pty.fork()'s master is
+# inheritable by default; _start must clear it.
+_cx = SecureTerminal(command='/bin/cat')
+ok(os.get_inheritable(_cx._fd) is False,
+   'CLOEXEC: the pty master fd is close-on-exec (a later tab child cannot inherit it)')
+_cx.close()
+
 # 5. A row mutated AND scrolled off within a single un-rendered read is NOT
 # promoted from its now-stale block: the signature recheck fails, so the frame
 # takes the full-rebuild fallback and shows the NEW content.
