@@ -7,10 +7,12 @@
 
 ## Leak test: an OVERLAPPING IPv4 fragment set must not reassemble or egress.
 ##
-## IPv4 reassembly (ip_defrag) is a SEPARATE code path from nf_defrag_ipv6, and RFC
-## 791 predates RFC 5722's explicit drop-on-overlap mandate -- so IPv4 overlap
-## handling must be verified in its own right, not assumed from the IPv6 case. The
-## overlapping fragment here EXTENDS past the first fragment's end ([0,16) MF=1 then
+## IPv4 defrag has a SEPARATE ENTRY (ip_defrag / nf_defrag_ipv4) from nf_defrag_ipv6
+## but shares the overlap classification (the common inet_frag_queue_insert, rbtree-
+## unified since kernel 4.18) -- so IPv4 overlap handling is verified in its own right
+## (distinct trigger + header format), though the overlap-drop rule is the same as
+## IPv6's, not divergent. The overlapping fragment here EXTENDS past the first
+## fragment's end ([0,16) MF=1 then
 ## [8,22) MF=0), so ip_defrag classifies it IPFRAG_OVERLAP and inet_frag_kill
 ## discards the whole datagram (RFC 5722) -- the genuine overlap-kill path, not the
 ## IPFRAG_DUP a mere subset [8,16) would degenerate into (first fragment merely left

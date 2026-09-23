@@ -53,9 +53,11 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   chain (hopopts, dstopts, routing, dstopts) to probe the walk depth
   (`ipv6_exthdr_hidden_syn_test.sh`)
 - IPv6 overlapping fragments -- an RFC 5722 overlapping fragment set must not
-  reassemble or egress; nf_defrag_ipv6 drops the whole datagram on overlap. Teeth
-  under a permissive forward: the VALID sibling set egresses while the overlapping
-  one does not (`ipv6_fragment_overlap_test.sh`)
+  reassemble or egress. The overlapping fragment extends past the first fragment's
+  end, so nf_defrag_ipv6 classifies it IPFRAG_OVERLAP and inet_frag_kill discards the
+  whole datagram (the genuine overlap-kill, not the IPFRAG_DUP a mere subset
+  degenerates into). Teeth under a permissive forward: the VALID sibling set egresses
+  while the overlapping one does not (`ipv6_fragment_overlap_test.sh`)
 - IPv6 tiny-first-fragment (RFC 7112) -- a set whose first fragment is too small to
   hold the L4 header must not egress. Linux does NOT reassemble it (the truncated
   first fragment has an incomplete transport header, so nf_ct_frag6_gather does not
@@ -65,9 +67,10 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   the fragment, proving the forward chain (not a defrag stall) is what blocks it
   (`ipv6_fragment_tinyfirst_test.sh`)
 - IPv4 fragmented UDP -- an IPv4 UDP datagram split across two fragments must not
-  egress. IPv4 (ip_defrag) is a SEPARATE code path from nf_defrag_ipv6 with its own
-  overlap policy (RFC 791 predates RFC 5722) and CVE history (FragmentSmack,
-  CVE-2018-5391), so it is tested empirically, not by analogy: the gateway DOES
+  egress. IPv4 defrag has a SEPARATE ENTRY (ip_defrag / nf_defrag_ipv4) from
+  nf_defrag_ipv6 -- distinct trigger, header format, CVE history (FragmentSmack,
+  CVE-2018-5391) -- but shares the overlap classification (inet_frag_queue_insert,
+  rbtree-unified since 4.18), so it is tested empirically, not by analogy: the gateway DOES
   reassemble FORWARDED IPv4 fragments (nf_defrag_ipv4, pulled in by the ruleset's
   nat/conntrack), re-fragmenting to the original boundaries on egress -- so the
   ruleset acts on the reassembled datagram, which hits the forward drop. Confirmed

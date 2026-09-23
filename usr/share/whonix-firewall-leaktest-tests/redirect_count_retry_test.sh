@@ -72,8 +72,9 @@ else
    rc=1
 fi
 
-## A genuinely unavailable read (never succeeds) must still return 0 without
-## aborting the caller -- the non-fatal contract.
+## A genuinely unavailable read (never succeeds) must return the "unavailable"
+## sentinel -- NOT a silent 0, which would be indistinguishable from a real count
+## and could fake a redirect delta (see the assert-error case below).
 printf '0' > "${call_counter}"
 # shellcheck disable=SC2317
 ip() {
@@ -85,11 +86,22 @@ ip() {
 
 got="$(leaktest_transport_redirect_count)"
 calls="$(cat -- "${call_counter}")"
-if [ "${got}" = '0' ]; then
-   printf '%s\n' "PASS: persistent nft failure returns 0 non-fatally (attempts=${calls})"
+if [ "${got}" = 'unavailable' ]; then
+   printf '%s\n' "PASS: persistent nft failure returns 'unavailable' sentinel non-fatally (attempts=${calls})"
 else
-   printf '%s\n' "FAIL: persistent nft failure returned '${got}', expected 0"
+   printf '%s\n' "FAIL: persistent nft failure returned '${got}', expected 'unavailable'"
    rc=1
+fi
+
+## False-PASS guard: if the BEFORE read failed ("unavailable") while the AFTER read
+## returned a stale non-zero (the SYN was actually DROPPED, counter unchanged),
+## leaktest_assert_redirected must report a test ERROR -- never PASS on a bogus
+## 0->4 delta. This is the exact false-"torified" a silent 0 would have produced.
+if leaktest_assert_redirected 'false-pass guard' 'unavailable' '4' >/dev/null 2>&1; then
+   printf '%s\n' "FAIL: assert_redirected PASSED on an unreadable before-count (false torified verdict)"
+   rc=1
+else
+   printf '%s\n' "PASS: assert_redirected reports an error on an unreadable counter, not a false pass"
 fi
 
 exit "${rc}"

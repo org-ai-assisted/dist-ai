@@ -56,6 +56,22 @@ if [ "${#case_scripts[@]}" -eq 0 ]; then
    exit 1
 fi
 
+## Fail LOUD, never skip-green, when the netns environment the leak cases need is
+## absent. Every netns case shares one precondition (real root + a readable gateway
+## ruleset), so without it EVERY leak case exits 77 and the suite would report a
+## clean pass having exercised no ruleset at all -- a fabricated green (the exact
+## "unauthorized SKIP counts as FAILURE, never green" trap). The runner self-elevates
+## above; reaching here as non-root means passwordless sudo was unavailable.
+if [ "$(id -u)" != '0' ]; then
+   printf '%s\n' "FATAL: not root (passwordless sudo unavailable) -- the netns leak cases cannot run; refusing to report a clean pass. Re-run under sudo." >&2
+   exit 1
+fi
+ruleset_file="${WHONIX_FIREWALL_REPO:-}/test-output/new/gateway-default.nft"
+if [ -z "${WHONIX_FIREWALL_REPO:-}" ] || [ ! -r "${ruleset_file}" ]; then
+   printf '%s\n' "FATAL: gateway ruleset not readable (WHONIX_FIREWALL_REPO=${WHONIX_FIREWALL_REPO:-unset}) -- the netns leak cases cannot run; refusing to report a clean pass. Point WHONIX_FIREWALL_REPO at a whonix-firewall checkout holding test-output/new/gateway-default.nft." >&2
+   exit 1
+fi
+
 rc=0
 failed=0
 skipped=0
