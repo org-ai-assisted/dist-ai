@@ -387,12 +387,24 @@ leaktest_assert_leaked() {
 ## SYN the firewall merely DROPPED does not. Ambient netns traffic is ICMPv6
 ## ND/MLD, never a TCP SYN, so unlike the drop counters this one is probe-specific.
 leaktest_transport_redirect_count() {
-   local count=""
-   ## Non-fatal: a failed read (e.g. a transient nft error) must NOT silently abort
-   ## the caller under errexit -- the || keeps it going and a 0 surfaces as a clear
-   ## assertion result instead.
-   count="$(ip netns exec gw nft list chain inet nat prerouting 2>/dev/null \
-      | awk '/redirect to :9040/ { for (i=1;i<=NF;i++) if ($i=="packets") { print $(i+1); exit } }')" || count=""
+   local count="" chain="" attempt
+   ## Read the chain, then parse -- separately, so an nft-command failure is
+   ## distinguishable from an awk no-match (awk exits 0 either way). A failed read
+   ## returning 0 would read under errexit as a real "SYN did not reach the
+   ## redirect" (after=0 < before) -- a FALSE not-torified verdict. On a live
+   ## topology the redirect rule is always present, so an empty parse means the
+   ## read flaked (netns exec under load); retry so it resolves to the true count.
+   ## Non-fatal by construction: the read is an `if` condition, never aborting the
+   ## caller under errexit.
+   for attempt in 1 2 3 4; do
+      if chain="$(ip netns exec gw nft list chain inet nat prerouting 2>/dev/null)"; then
+         count="$(printf '%s\n' "${chain}" \
+            | awk '/redirect to :9040/ { for (i=1;i<=NF;i++) if ($i=="packets") { print $(i+1); exit } }')"
+         [ -n "${count}" ] && break
+      fi
+      count=""
+      sleep 0.2
+   done
    printf '%s' "${count:-0}"
 }
 
