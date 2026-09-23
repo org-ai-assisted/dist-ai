@@ -134,4 +134,48 @@ if _e.verticalScrollBar().isVisible():      # (a taller low-DPI grid may not ove
        'alt-enter reclaims the scrollbar column: child width == alt grid width, not one short')
 _e.close()
 
+# --- >cap alt-transition flood: the flag must track the snapshot machine ----------------
+# _read_and_render pre-sets _alt_screen from the LAST enter/leave in the whole read (so the
+# renders during the feed see the right mode), but _feed_stream caps the actual
+# snapshot/restore (_alt_enter/_alt_leave) at _ALT_TRANSITIONS_MAX per read and feeds the
+# remainder as ordinary bytes. Past the cap a last-wins flag and the machine (_alt_saved)
+# DISAGREE: flag True + no snapshot arms alt rendering/mouse with nothing to restore; flag
+# False + a held snapshot wedges the next genuine _alt_enter (its nesting guard skips the
+# real primary snapshot -> a stale frame is restored on exit -> corrupt scrollback) and is
+# skipped by the exited-owner cleanup. Invariant: after any read, _alt_screen must equal
+# (_alt_saved is not None). The flood is a single os.read (< 65536), so the cap applies.
+_ENTER = b'\x1b[?1049h'
+_LEAVE = b'\x1b[?1049l'
+
+
+def _alt_invariant_ok(term, label):
+    ok(term._alt_screen == (term._alt_saved is not None),
+       '%s: _alt_screen (%r) tracks the snapshot machine _alt_saved-is-set (%r)'
+       % (label, term._alt_screen, term._alt_saved is not None))
+
+
+_c = _new_term()
+_MAX = _c._ALT_TRANSITIONS_MAX
+# Both crafted floods only diverge on the old code when the MAXth processed transition and
+# the final (byte-fed) transition land on OPPOSITE states, which needs an even cap. Fail
+# loudly if that ever changes, so this canary cannot silently stop testing the desync.
+ok(_MAX % 2 == 0, '_ALT_TRANSITIONS_MAX is even (%d) -- the flood canaries assume it' % _MAX)
+
+# Case A: machine ends OUT of alt at the cap (LEAVE #MAX), last byte re-enters -> old flag
+# would read True while _alt_saved is None.
+feed_output(_c, (_ENTER + _LEAVE) * _MAX + _ENTER)
+_alt_invariant_ok(_c, 'flood ending in enter past the cap')
+_c.close()
+
+# Case B: machine ends IN alt at the cap (ENTER #MAX, a held snapshot), last byte leaves ->
+# old flag would read False while _alt_saved is set: the scrollback-wedge direction.
+_d = _new_term()
+feed_output(_d, (_LEAVE + _ENTER) * _MAX + _LEAVE)
+_alt_invariant_ok(_d, 'flood ending in leave past the cap (held-snapshot wedge)')
+# The held snapshot is not stranded: a genuine leave restores the primary cleanly.
+feed_output(_d, _LEAVE)
+ok(_d._alt_saved is None and not _d._alt_screen,
+   'a genuine leave after the flood restores the primary (no stranded snapshot)')
+_d.close()
+
 finish('alt-reenter')

@@ -150,5 +150,4 @@ Description: Comprehensive regression, fuzz and integration suites for Kicksecur
  .
  Start with 'dist-ai-tests-all --list' to see every registered suite and its
  category. A suite whose subject or tooling is absent exits 77 and is reported
- SKIP, never FAIL, so a partial install is usable: install the Suggests matching
- the suites you actually intend to run.
+ SKIP, never FAIL.

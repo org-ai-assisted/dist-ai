@@ -89,11 +89,13 @@ LEAKTEST_EGRESS_BPF="\
 
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
-## tcpdump's stderr file for the current capture -- a mktemp path (root-owned,
-## created atomically), never a name derived from another temp file, so a
-## concurrent local user cannot plant a symlink at a predictable path for the
-## root-run redirect to follow.
+## The tcpdump- and injector-stderr scratch files. Each is a mktemp path (root-
+## owned, created atomically -- never a name derived from another temp file, so a
+## concurrent local user cannot plant a symlink for the root-run redirect to
+## follow) allocated ONCE and REUSED (truncated) across every probe, so a many-
+## probe run does not accumulate one temp file per fire.
 LEAKTEST_TCPDUMP_ERR=''
+LEAKTEST_INJECT_ERR=''
 
 ## Results of the last leaktest_fire_forward_probe. Returned via globals (not a
 ## captured string) so the helper runs in the CURRENT shell -- errexit/pipefail
@@ -194,6 +196,23 @@ leaktest_setup() {
    ip netns exec ws ip -6 address add "${INT_WS_IP6}/96" dev eth0 nodad
    ip netns exec gw ip -6 address add "${INT_GW_IP6}/96" dev eth1 nodad
 
+   ## Static neighbor entries (both families) so packet injection never races ARP/ND
+   ## resolution -- the nolistener path skips the listener startup delay, which
+   ## otherwise tightens that race into intermittent "could not resolve gateway MAC".
+   local gw_eth1_mac
+   gw_eth1_mac="$(ip netns exec gw cat /sys/class/net/eth1/address)"
+   ip netns exec ws ip neigh replace "${INT_GW_IP4}" lladdr "${gw_eth1_mac}" nud permanent dev eth0
+   ip netns exec ws ip -6 neigh replace "${INT_GW_IP6}" lladdr "${gw_eth1_mac}" nud permanent dev eth0
+
+   ## Wait for the internal veth carrier to come up on both ends before any inject:
+   ## an AF_PACKET send on a link whose carrier is not yet up fails ENXIO ("No such
+   ## device or address"), which is a flaky topology race, not a real result.
+   local settle
+   for settle in 1 2 3 4 5 6 7 8 9 10; do
+      [ "$(ip netns exec ws cat /sys/class/net/eth0/carrier 2>/dev/null || printf 0)" = '1' ] && break
+      sleep 0.2
+   done
+
    ## external link (global IPv6 + default route == accept_ra end-state)
    ip netns exec gw ip link set eth0 up
    ip netns exec up ip link set eth0 up
@@ -222,13 +241,17 @@ leaktest_setup() {
    if [ "${2:-}" != 'nolistener' ]; then
       ip netns exec gw python3 "$(leaktest_helpers_dir)/stub_transport.py" &
       LEAKTEST_LISTENER_PID="$!"
-      sleep 1
    fi
 
    if ! ip netns exec gw nft --file "${ruleset}"; then
       fail_case "could not load ruleset into gw netns: ${ruleset}"
       return 1
    fi
+
+   ## Unconditional settle: give the freshly-built veths / addresses / ruleset (and
+   ## the stub, when started) a moment to become fully operational before any inject.
+   ## The nolistener path used to skip this, which made those cases inject-race flaky.
+   sleep 1
 }
 
 ## Capture probe-tagged traffic egressing gw (arrives at 'up') for <secs>.
@@ -238,7 +261,7 @@ leaktest_capture_up() {
    ## Keep tcpdump's stderr ("listening on ...") so a capture that never bound
    ## (bad interface / BPF, permission failure) is distinguishable from a real
    ## zero-packet result -- otherwise both look like "0 egress" (a false PASS).
-   LEAKTEST_TCPDUMP_ERR="$(mktemp)"
+   [ -n "${LEAKTEST_TCPDUMP_ERR}" ] || LEAKTEST_TCPDUMP_ERR="$(mktemp)"
    ip netns exec up timeout "${secs}" tcpdump --no-promiscuous-mode -nni eth0 -l "${bpf}" \
       >"${outfile}" 2>"${LEAKTEST_TCPDUMP_ERR}" &
    LEAKTEST_TCPDUMP_PID="$!"
@@ -296,10 +319,10 @@ leaktest_fire_forward_probe() {
    local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
    shift 4
    helpers="$(leaktest_helpers_dir)"
-   ## mktemp (root-owned, atomic) rather than a name derived from capture_file: a
-   ## root-run redirect must not follow a symlink a local user could plant at a
-   ## predictable path during the capture window.
-   inject_err="$(mktemp)"
+   ## A root-owned mktemp path (not one derived from capture_file, so no planted
+   ## symlink for the root-run redirect to follow), allocated once and reused.
+   [ -n "${LEAKTEST_INJECT_ERR}" ] || LEAKTEST_INJECT_ERR="$(mktemp)"
+   inject_err="${LEAKTEST_INJECT_ERR}"
    LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
@@ -395,19 +418,23 @@ leaktest_forward_leak_case() {
 }
 
 ## Positive control: a legitimate-source workstation TCP connection must be
-## transparently redirected to the Tor port and answered. Returns 0 on success.
+## transparently redirected to the Tor port and answered, over BOTH IPv6 and IPv4
+## (a family-scoped redirect breakage must not slip past an IPv6-only control).
+## Returns 0 only if both families connect. Heredoc is single-quoted (no interp);
+## the two gateway IPs are passed as argv so no literal can silently diverge.
 leaktest_positive_control() {
    local rc
-   ## Pass the gateway IPv6 in (heredoc is single-quoted, so no shell interp);
-   ## avoids duplicating INT_GW_IP6 as a literal that could silently diverge.
-   rc="$(ip netns exec ws python3 - "${INT_GW_IP6}" <<'PY'
+   rc="$(ip netns exec ws python3 - "${INT_GW_IP6}" "${INT_GW_IP4}" <<'PY'
 import socket, sys
-try:
-    s = socket.create_connection((sys.argv[1], 443), 4)
-    s.close()
+for target in (sys.argv[1], sys.argv[2]):
+    try:
+        conn = socket.create_connection((target, 443), 4)
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        print("FAIL:%s:%s" % (target, type(exc).__name__))
+        break
+else:
     print("OK")
-except Exception as exc:  # noqa: BLE001
-    print("FAIL:%s" % type(exc).__name__)
 PY
 )"
    if [ "${rc}" = 'OK' ]; then
@@ -417,23 +444,41 @@ PY
    return 1
 }
 
-## Fail-closed case: with the Tor TransPort DEAD (nolistener), a workstation TCP
-## connection must be DROPPED, never routed to the clearnet. The canary flushes
-## the firewall entirely so the same traffic forwards out -- proving the harness
-## detects a fail-OPEN. Returns 0 if both hold.
+## Fail-closed case: with the Tor TransPort AND DnsPort DEAD (nolistener),
+## workstation traffic must be DROPPED, never routed to the clearnet -- across
+## BOTH families and for DNS, not just IPv6 TCP (a family-/protocol-scoped
+## fail-OPEN must not slip past). The canary flushes the firewall so the same
+## traffic forwards out, proving the harness detects a fail-OPEN. Returns 0 if all
+## hold.
 leaktest_fail_closed_case() {
-   local rc=0 capture_file empty
+   local rc=0 capture_file empty proto src dst
    capture_file="$(mktemp)"
-
-   leaktest_setup "${ruleset_file}" nolistener
-   leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}"
-   leaktest_assert_blocked 'fail-closed (Tor down -> workstation traffic dropped)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
-
    empty="$(mktemp --suffix=.nft)"
    printf 'flush ruleset\n' >"${empty}"
-   leaktest_setup "${empty}" nolistener
-   leaktest_fire_forward_probe tcp6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" "${capture_file}"
-   leaktest_assert_leaked 'fail-closed (no firewall)' "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+
+   ## proto <ws-source> <dst> [extra inject args]. One fresh topology per fire (the
+   ## proven-reliable pattern): each probe gets a nolistener setup (blocked) and a
+   ## flushed setup (canary), never multiple injects on one topology.
+   local probe
+   for probe in \
+      "tcp6 ${INT_WS_IP6} ${PROBE_DST_IP6}" \
+      "tcp4 ${INT_WS_IP4} ${PROBE_DST_IP4}" \
+      "udp6 ${INT_WS_IP6} ${PROBE_DST_IP6} --dport 53" \
+      "udp4 ${INT_WS_IP4} ${PROBE_DST_IP4} --dport 53"; do
+      # shellcheck disable=SC2086 # deliberate re-split of the probe spec into fields
+      set -- ${probe}
+      proto="$1"; src="$2"; dst="$3"; shift 3
+
+      leaktest_setup "${ruleset_file}" nolistener
+      leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
+      leaktest_assert_blocked "fail-closed ${proto} (Tor down -> dropped)" \
+         "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+
+      leaktest_setup "${empty}" nolistener
+      leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
+      leaktest_assert_leaked "fail-closed ${proto} (no firewall)" \
+         "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+   done
 
    return "${rc}"
 }

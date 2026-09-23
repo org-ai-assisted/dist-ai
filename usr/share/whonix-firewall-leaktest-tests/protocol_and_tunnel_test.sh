@@ -30,11 +30,21 @@ trap leaktest_teardown EXIT
 
 rc=0
 
-## Representative non-TCP IPv6 protocols (IP-in-IP 4, GRE 47, ESP 50, AH 51,
-## OSPF 89, DCCP 33, SCTP 132): none may forward.
-for protonum in 4 47 50 51 89 33 132; do
+## Broad non-TCP IPv6 next-header sample (IP-in-IP 4, GRE 47, ESP 50, AH 51, OSPF
+## 89, DCCP 33, SCTP 132, IPv6-in-IPv6 41, PIM 103, VRRP 112, L2TP 115, MPLS-in-IP
+## 137): none may forward.
+for protonum in 4 47 50 51 89 33 132 41 103 112 115 137; do
    leaktest_probe_case \
       "IPv6 protocol ${protonum} to clearnet" rawip6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
+      --protonum "${protonum}" || rc=$?
+done
+
+## The same protocols carried directly in IPv4 (a separate forward-drop path from
+## the IPv6 next-header cases above): a rule that dropped only IPv4 proto 41 but
+## not these would pass the IPv6 cases yet still leak here.
+for protonum in 4 47 50 51 89 33 132 2 103 112 115 137; do
+   leaktest_probe_case \
+      "IPv4 protocol ${protonum} to clearnet" rawip4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
       --protonum "${protonum}" || rc=$?
 done
 

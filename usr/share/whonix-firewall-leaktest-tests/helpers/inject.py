@@ -20,10 +20,16 @@ could never send.
   icmp4  IPv4 ICMP echo request (ping)
   udp6   IPv6 UDP datagram to --dport
   udp4   IPv4 UDP datagram to --dport (e.g. Teredo UDP/3544)
+  srcroute4  IPv4 UDP datagram bearing a completed (inert) LSRR option (IHL>5)
+  srcroute4active  IPv4 UDP with an ACTIVE LSRR: dst=--gw4, next hop=--dst (a router
+          honoring source routes rewrites dst and forwards it on)
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
   rawip4 IPv4 with an arbitrary protocol (--protonum), tiny payload (e.g. 41 = 6to4)
-  frag6  IPv6 atomic fragment (fragment ext-header) carrying a UDP datagram
-  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) over UDP
+  frag6  IPv6 atomic fragment (fragment ext-header) hiding an L4 (--l4 udp|tcp)
+  frag6set  Two IPv6 fragments of ONE UDP datagram (offset 0 M=1 + offset 8 M=0);
+            nf_defrag_ipv6 reassembles before the forward chain
+  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
+          L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
 
 import argparse
@@ -78,10 +84,14 @@ def icmp6_echo(src: str, dst: str) -> bytes:
     return body[:2] + struct.pack("!H", csum) + body[4:]
 
 
+def udp6_datagram(src: str, dst: str, sport: int, dport: int, payload: bytes) -> bytes:
+    header = struct.pack("!HHHH", sport, dport, 8 + len(payload), 0)
+    csum = checksum16(ip6_pseudo(src, dst, len(header) + len(payload), 17) + header + payload)
+    return header[:6] + struct.pack("!H", csum or 0xFFFF) + payload
+
+
 def udp6(src: str, dst: str, sport: int, dport: int) -> bytes:
-    header = struct.pack("!HHHH", sport, dport, 8 + len(PROBE_PAYLOAD), 0)
-    csum = checksum16(ip6_pseudo(src, dst, len(header) + len(PROBE_PAYLOAD), 17) + header + PROBE_PAYLOAD)
-    return header[:6] + struct.pack("!H", csum or 0xFFFF) + PROBE_PAYLOAD
+    return udp6_datagram(src, dst, sport, dport, PROBE_PAYLOAD)
 
 
 def icmp4_echo() -> bytes:
@@ -115,39 +125,102 @@ def ip6_header(src: str, dst: str, payload_len: int, next_header: int) -> bytes:
     )
 
 
+def ip4_header_opts(src: str, dst: str, payload_len: int, proto: int, options: bytes = b"") -> bytes:
+    ## IHL counts 32-bit words, so the options blob MUST be 4-byte-aligned; the
+    ## checksum covers the whole header (base + options) with the csum field zeroed.
+    if len(options) % 4:
+        raise ValueError("IPv4 options must be 4-byte-aligned, got %d" % len(options))
+    ihl = 5 + len(options) // 4
+    total = 4 * ihl + payload_len
+    base = struct.pack("!BBHHHBBH", 0x40 | ihl, 0, total, 0x1234, 0x4000, 64, proto, 0)
+    base += a4(src) + a4(dst)
+    full = base + options
+    return full[:10] + struct.pack("!H", checksum16(full)) + full[12:]
+
+
 def ip4_header(src: str, dst: str, payload_len: int, proto: int) -> bytes:
-    total = 20 + payload_len
-    header = struct.pack("!BBHHHBBH", 0x45, 0, total, 0x1234, 0x4000, 64, proto, 0)
-    header += a4(src) + a4(dst)
-    return header[:10] + struct.pack("!H", checksum16(header)) + header[12:]
+    ## No options (IHL=5) -- the common path; ip4_header_opts with empty options is
+    ## byte-identical to a hand-built 0x45 header.
+    return ip4_header_opts(src, dst, payload_len, proto)
 
 
-def frag6_atomic(src: str, dst: str, dport: int) -> bytes:
-    ## IPv6 fragment extension header (next-header 44) carrying a UDP datagram as a
-    ## single atomic fragment (offset 0, M=0): exercises the fragment-header path.
-    udp = udp6(src, dst, 41500, dport)
-    frag_hdr = struct.pack("!BBHI", 17, 0, 0, 0xABCD)  # nexthdr=UDP, offset0, M=0
-    payload = frag_hdr + udp
+## Loose Source and Record Route (LSRR, option type 131) / Strict (SSRR, 137). The
+## `pointer` is a 1-based offset into the option; pointer > length means the source
+## route is already COMPLETE (fully traversed), so the packet forwards to its final
+## dst like a normal datagram while still carrying the option (IHL>5).
+IP4_OPT_LSRR = 131
+IP4_OPT_SSRR = 137
+
+
+def ip4_srcroute_option(route: list[str], pointer: int, opt_type: int = IP4_OPT_LSRR) -> bytes:
+    data = b"".join(a4(hop) for hop in route)
+    length = 3 + len(data)  # type + length + pointer + route entries
+    opt = struct.pack("!BBB", opt_type, length, pointer) + data
+    ## Pad to a 4-byte boundary; option type 0 (End of Option List) is the pad.
+    opt += b"\x00" * ((-len(opt)) % 4)
+    return opt
+
+
+## The L4 hidden one hop down an ext-header / fragment chain: UDP (17) by default,
+## or a TCP SYN (6) -- the transparent-proxy REDIRECT is a stateful, more attractive
+## target for "hide the real L4 down the chain" than the stateless forward drop.
+def _hidden_l4(src: str, dst: str, dport: int, l4: str) -> tuple[int, bytes]:
+    if l4 == "tcp":
+        return 6, tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["syn"])
+    return 17, udp6(src, dst, 41600, dport)
+
+
+def frag6_atomic(src: str, dst: str, dport: int, l4: str = "udp") -> bytes:
+    ## IPv6 fragment extension header (next-header 44) carrying the L4 as a single
+    ## atomic fragment (offset 0, M=0): exercises the fragment-header path.
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+    frag_hdr = struct.pack("!BBHI", next_l4, 0, 0, 0xABCD)  # nexthdr, offset0, M=0
+    payload = frag_hdr + l4bytes
     return ip6_header(src, dst, len(payload), 44) + payload
 
 
-## IPv6 extension headers (8-byte minimal forms), each declaring next-header=UDP
-## so the L4 is hidden one hop down the chain -- a classic way to try to slip past
-## a stateless filter that only inspects the first next-header.
-EXTHDR6 = {
-    ## Routing header (nexthdr 43), type 0, segments-left 0 (the RH0 shape).
-    "routing": (43, struct.pack("!BBBBI", 17, 0, 0, 0, 0)),
-    ## Hop-by-Hop options (nexthdr 0) with a PadN option filling the 8 bytes.
-    "hopopts": (0, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
-    ## Destination options (nexthdr 60), same PadN filler.
-    "dstopts": (60, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
-}
+## Base fragment id for the multi-fragment set; the send loop adds the iteration
+## index so successive datagrams never share a reassembly id (RFC 8200: recently
+## sent fragmented packets with the same src/dst need distinct ids, else a later
+## iteration's fragments could join an earlier iteration's reassembly queue).
+FRAG6_MULTI_ID = 0x00BEEF01
 
 
-def exthdr6(src: str, dst: str, dport: int, kind: str) -> bytes:
-    next_header, header = EXTHDR6[kind]
-    payload = header + udp6(src, dst, 41600, dport)
-    return ip6_header(src, dst, len(payload), next_header) + payload
+def frag6_multi(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
+    ## Two IPv6 fragments of ONE UDP datagram, split on an 8-byte boundary
+    ## (fragment 1: offset 0, M=1; fragment 2: offset 8 bytes, M=0), sharing this
+    ## datagram's fragment id. nf_defrag_ipv6 (loaded by conntrack) reassembles
+    ## BEFORE the forward chain, so splitting a datagram cannot smuggle it past the
+    ## forward drop -- the ruleset sees the reassembled datagram, not the
+    ## fragments. An 8-byte UDP payload keeps the split 8-byte-aligned (fragment
+    ## offsets are in 8-byte units); only the first fragment carries the UDP header.
+    datagram = udp6_datagram(src, dst, 41600, dport, b"leaktest")  # 8 hdr + 8 payload
+    first, second = datagram[:8], datagram[8:]
+    frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, frag_id)  # off 0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 17, 0, (1 << 3) | 0, frag_id)  # off 8B, M=0
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + len(second), 44) + frag_hdr2 + second
+    return [frag1, frag2]
+
+
+## IPv6 extension header TYPES; the 8-byte header itself is built with the hidden
+## L4's protocol as its next-header (a classic way to slip past a filter that only
+## inspects the first next-header).
+EXTHDR6_TYPE = {"routing": 43, "hopopts": 0, "dstopts": 60}
+
+
+def _exthdr6_body(kind: str, next_header: int) -> bytes:
+    if kind == "routing":
+        ## Routing header, type 0, segments-left 0 (the RH0 shape).
+        return struct.pack("!BBBBI", next_header, 0, 0, 0, 0)
+    ## Hop-by-Hop (0) / Destination (60) options: a PadN option filling the 8 bytes.
+    return struct.pack("!BBBB", next_header, 0, 1, 4) + b"\x00\x00\x00\x00"
+
+
+def exthdr6(src: str, dst: str, dport: int, kind: str, l4: str = "udp") -> bytes:
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+    payload = _exthdr6_body(kind, next_l4) + l4bytes
+    return ip6_header(src, dst, len(payload), EXTHDR6_TYPE[kind]) + payload
 
 
 def resolve_gw_mac(gw4: str) -> bytes:
@@ -186,9 +259,9 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         payload = udp6(args.src, args.dst, args.sport, args.dport)
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 17)[:40] + payload
     if args.proto == "frag6":
-        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport)
+        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport, args.l4)
     if args.proto == "exthdr6":
-        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr)
+        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr, args.l4)
     if args.proto == "rawip6":
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum)[:40] + PROBE_PAYLOAD
     if args.proto == "tcp4":
@@ -197,8 +270,42 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
     if args.proto == "udp4":
         payload = udp4_segment(args.src, args.dst, args.sport, args.dport)
         return ETH_P_IPV4, ip4_header(args.src, args.dst, len(payload), 17) + payload
+    if args.proto == "srcroute4":
+        ## IPv4 UDP datagram bearing a COMPLETED LSRR option (IHL>5): the source
+        ## route is already traversed (pointer past the last entry), so the kernel
+        ## forwards it to dst like a normal packet -- but it exercises the
+        ## options-bearing (IHL>5) forward path. A forward rule accidentally keyed
+        ## on IHL=5 would miss it; the shipped policy-drop must catch it regardless.
+        payload = udp4_segment(args.src, args.dst, args.sport, args.dport)
+        option = ip4_srcroute_option([args.dst], pointer=8, opt_type=IP4_OPT_LSRR)
+        return ETH_P_IPV4, ip4_header_opts(args.src, args.dst, len(payload), 17, option) + payload
+    if args.proto == "srcroute4active":
+        ## IPv4 UDP datagram bearing an ACTIVE (unexhausted) LSRR option: IP dst is
+        ## the GATEWAY itself (--gw4) and the route's first unvisited hop (pointer 4)
+        ## is the real clearnet target (--dst). A router that honors source routing
+        ## rewrites the IP dst to the next hop and forwards it on -- the attacker-
+        ## DIRECTED source-routing case, distinct from srcroute4's inert completed
+        ## route. The UDP checksum is over the FINAL target (--dst), not the
+        ## immediate gateway dst: a forwarding router does not recompute the L4
+        ## checksum, so covering the post-rewrite destination is what makes the
+        ## egressed packet a valid datagram the real endpoint would accept (a
+        ## faithful leak, not one the endpoint would discard on a bad checksum).
+        payload = udp4_segment(args.src, args.dst, args.sport, args.dport)
+        option = ip4_srcroute_option([args.dst], pointer=4, opt_type=IP4_OPT_LSRR)
+        return ETH_P_IPV4, ip4_header_opts(args.src, args.gw4, len(payload), 17, option) + payload
     ## rawip4
     return ETH_P_IPV4, ip4_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum) + PROBE_PAYLOAD
+
+
+def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[bytes]]:
+    """Return (ethertype, [L3 packet, ...]). Most protos emit ONE frame; frag6set
+    emits the two fragments of a single UDP datagram (sent as two frames of one
+    logical packet, which nf_defrag_ipv6 reassembles before the forward chain),
+    with a fresh fragment id per iteration so datagrams do not share one."""
+    if args.proto == "frag6set":
+        return ETH_P_IPV6, frag6_multi(args.src, args.dst, args.dport, FRAG6_MULTI_ID + index)
+    ethertype, l3 = build_l3(args)
+    return ethertype, [l3]
 
 
 def ranged_int(low: int, high: int):
@@ -216,7 +323,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "exthdr6", "rawip6", "udp4", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
@@ -226,17 +333,24 @@ def main() -> None:
     parser.add_argument("--dport", type=ranged_int(0, 0xFFFF), default=443)
     parser.add_argument("--flags", default="syn", choices=sorted(TCP_FLAGS))
     parser.add_argument("--protonum", type=ranged_int(0, 0xFF), default=47, help="IP proto / next-header for rawip*")
-    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6), help="ext-header for exthdr6")
+    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6_TYPE), help="ext-header for exthdr6")
+    parser.add_argument("--l4", default="udp", choices=["udp", "tcp"], help="L4 hidden in frag6/exthdr6")
     parser.add_argument("--count", type=ranged_int(1, 10000), default=4)
     args = parser.parse_args()
 
-    ethertype, l3 = build_l3(args)
-    frame = resolve_gw_mac(args.gw4) + own_mac(args.iface) + ethertype + l3
+    ## Resolve the L2 addresses ONCE (MAC resolution runs a subprocess); the L3
+    ## bytes are rebuilt per iteration -- cheap struct packing, and it lets a
+    ## multi-frame proto vary its fragment id per datagram.
+    l2 = resolve_gw_mac(args.gw4) + own_mac(args.iface)
 
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
     sock.bind((args.iface, 0))
     for index in range(args.count):
-        sock.send(frame)
+        ethertype, l3_list = build_frames(args, index)
+        ## A multi-frame proto (frag6set) sends all its frames back-to-back so the
+        ## fragments arrive within one reassembly window before the inter-probe gap.
+        for l3 in l3_list:
+            sock.send(l2 + ethertype + l3)
         print("inject %d: %s %s -> %s" % (index + 1, args.proto, args.src, args.dst))
         time.sleep(0.4)
 

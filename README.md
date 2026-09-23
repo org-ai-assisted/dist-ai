@@ -252,8 +252,8 @@ real display, with real click delivery:
   icon; the test asserts the icon registered via StatusNotifier.
 
 These need extra tooling (`xvfb`, `stalonetray`, `xdotool`, `x11-utils`,
-`weston`, `qtwayland5`, `dbus`, `python3-dbus`, `python3-gi`, listed in the
-package's `Suggests`). Any phase whose tooling is missing is skipped loudly
+`weston`, `qtwayland5`, `dbus`, `python3-dbus`, `python3-gi`), pulled in as
+package dependencies. Any phase whose tooling is missing is skipped loudly
 rather than failed.
 
 ### Usage

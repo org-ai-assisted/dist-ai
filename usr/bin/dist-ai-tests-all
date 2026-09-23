@@ -43,6 +43,7 @@ repo_root=""
 component=""
 component_root=""
 helper_scripts_root=""
+list_components="false"
 skip_suites=()
 allow_skip_suites=()
 requested_skip_count=0
@@ -191,11 +192,14 @@ With no category flag, only --core runs.
 (packages/<team>/<name>); without it each suite falls back to its installed
 / auto path. A suite that cannot find its target exits 77 and is reported SKIP.
 
---component NAME restricts the run to the suites owned by ONE component
-(privleap, helper-scripts, onion-grater, genmkfile, open-link-confirmation,
-sdwdate-gui, sdwdate, developer-meta-files, derivative-maker). --component-root DIR points those suites at
-a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
--- which is the per-repo CI entry point. --component-root requires --component.
+--component NAME restricts the run to the suites owned by ONE component; run
+'dist-ai-tests-all --list-components' for the full, authoritative set (derived
+from the suite registry, never a hand-kept list that drifts). --component-root
+DIR points those suites at a STANDALONE component checkout -- the repo root
+itself, not a monorepo subpath -- which is the per-repo CI entry point.
+--component-root requires --component.
+
+--list-components prints every valid --component value, one per line, and exits.
 
 --helper-scripts-root DIR supplies a helper-scripts checkout for components
 whose suites drive a helper-scripts tool (open-link-confirmation ->
@@ -426,10 +430,14 @@ wire() {
          ## with a stubbed installer; it needs the usability-misc checkout. The
          ## dry-run wiring lane sources the self-contained standalone, whose inlined
          ## log_run needs stecho / sanitize-string from helper-scripts.
-         wire_env=(
-            "USABILITY_MISC_REPO=$( pkg_dir usability-misc )"
-            "HELPER_SCRIPTS_PATH=$( pkg_dir helper-scripts )"
-         )
+         wire_env=( "USABILITY_MISC_REPO=$( pkg_dir usability-misc )" )
+         ## helper-scripts is AUXILIARY here (stecho / sanitize-string for the
+         ## inlined log_run), not the subject. Wire it ONLY when a checkout
+         ## resolved, like every other auxiliary case -- an empty ${hs} must not
+         ## be exported.
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
@@ -952,6 +960,22 @@ emit() {
    fi
 }
 
+## Single source of the component set: derive it from suite_component() over
+## every registered suite, deduped and sorted. There is deliberately NO
+## hand-kept second list -- a duplicate silently drifts (it once rejected
+## private-ai-config, and the usage text drifted from reality). --list-components
+## and the invalid-component error below both read this.
+all_components() {
+   local known_suite known_component
+   for known_suite in "${core_suites[@]}" "${fuzz_suites[@]}" \
+      "${e2e_suites[@]}" "${integration_suites[@]}"; do
+      known_component="$( suite_component "${known_suite}" )"
+      if [ -n "${known_component}" ]; then
+         printf '%s\n' "${known_component}"
+      fi
+   done | sort --unique
+}
+
 pass_count=0
 fail_count=0
 skip_count=0
@@ -1134,6 +1158,9 @@ while [ "$#" -gt 0 ]; do
          component="$2"
          shift
          ;;
+      --list-components)
+         list_components="true"
+         ;;
       --component-root)
          require_value "$@"
          component_root="$2"
@@ -1200,6 +1227,14 @@ if [ -n "${repo_root}" ] && [ ! -d "${repo_root}" ]; then
    exit 2
 fi
 
+## --list-components: print the authoritative component set (derived, never
+## hand-kept) and exit. Placed after arg parsing so the suite arrays exist; it
+## needs no --component.
+if [ "${list_components}" = 'true' ]; then
+   all_components
+   exit 0
+fi
+
 ## Validate --component against what suite_component() actually maps, rather
 ## than a hand-kept second list. A duplicated allowlist silently rejects a
 ## correctly registered component the moment the two drift, which is exactly
@@ -1214,19 +1249,7 @@ if [ -n "${component}" ]; then
       fi
    done
    if [ "${component_known}" = 'false' ]; then
-      known_list=''
-      for known_suite in "${core_suites[@]}" "${fuzz_suites[@]}" \
-         "${e2e_suites[@]}" "${integration_suites[@]}"; do
-         known_component="$( suite_component "${known_suite}" )"
-         [ -n "${known_component}" ] || continue
-         case " ${known_list}" in
-            *" ${known_component} "*)
-               ;;
-            *)
-               known_list="${known_list}${known_component} "
-               ;;
-         esac
-      done
+      known_list="$( all_components | tr '\n' ' ' )"
       printf '%s\n' "dist-ai-tests-all: unknown --component: ${component}" >&2
       printf '%s\n' "dist-ai-tests-all: known components: ${known_list}" >&2
       exit 2

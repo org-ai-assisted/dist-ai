@@ -29,10 +29,15 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 rc=0
-## Representative non-53 UDP: NTP (123) and QUIC/HTTP3 (443). Tor carries no UDP
-## but DNS, so both must hit the forward reject, not leave as direct UDP.
-for dport in 123 443; do
+## Representative non-53 UDP over BOTH IPv6 and IPv4 (separate forward-drop paths):
+## NTP (123), QUIC/HTTP3 (443), and the canonical VPN ports WireGuard (51820) and
+## OpenVPN (1194) -- so a port-keyed (not just protocol-keyed) rule bug is caught.
+## Tor carries no UDP but DNS, so each must hit the forward reject.
+for dport in 123 443 51820 1194; do
    leaktest_forward_leak_case \
-      "non-DNS UDP (dport ${dport}) to clearnet" udp6 "${PROBE_DST_IP6}" --dport "${dport}" || rc=$?
+      "non-DNS UDP6 (dport ${dport}) to clearnet" udp6 "${PROBE_DST_IP6}" --dport "${dport}" || rc=$?
+   leaktest_probe_case \
+      "non-DNS UDP4 (dport ${dport}) to clearnet" udp4 "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
+      --dport "${dport}" || rc=$?
 done
 exit "${rc}"

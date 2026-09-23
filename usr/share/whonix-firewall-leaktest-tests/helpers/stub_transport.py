@@ -39,10 +39,32 @@ def serve_udp(family: int, addr: str) -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if family == socket.AF_INET6:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        ## Reply FROM the address the query was sent to (the redirect's DNAT target),
+        ## as a real Tor DnsPort bound to a specific address does -- NOT from a
+        ## route-chosen source. Only then does conntrack recognise the reply and
+        ## un-NAT it, so a forged-source DnsPort reply egresses (the leak under test).
+        ## A wildcard bind that lets the kernel pick the source would silently mask it.
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
+        sock.bind((addr, 5300))
+        while True:
+            try:
+                _data, ancdata, _flags, peer = sock.recvmsg(4096, socket.CMSG_SPACE(64))
+                reply_anc = []
+                for level, ctype, cdata in ancdata:
+                    if level == socket.IPPROTO_IPV6 and ctype == socket.IPV6_PKTINFO:
+                        ## keep the 16-byte dst address as the reply SOURCE; zero the
+                        ## ifindex so the kernel still routes the reply normally.
+                        reply_anc = [(socket.IPPROTO_IPV6, socket.IPV6_PKTINFO,
+                                      cdata[:16] + b"\x00\x00\x00\x00")]
+                        break
+                sock.sendmsg([b""], reply_anc, 0, peer)
+            except OSError:
+                break
+        return
     sock.bind((addr, 5300))
     while True:
         try:
-            data, peer = sock.recvfrom(4096)
+            _data, peer = sock.recvfrom(4096)
             sock.sendto(b"", peer)
         except OSError:
             break

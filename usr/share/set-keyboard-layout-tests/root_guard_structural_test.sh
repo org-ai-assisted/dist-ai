@@ -25,16 +25,32 @@ export LC_ALL=C
 
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
+[ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
 
 lib_rel='usr/libexec/helper-scripts/set-keyboard-layout.sh'
 lib=""
-if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ] && [ -r "${SET_KEYBOARD_LAYOUT_REPO}/${lib_rel}" ]; then
-   lib="${SET_KEYBOARD_LAYOUT_REPO}/${lib_rel}"
-elif [ -n "${HELPER_SCRIPTS_REPO}" ] && [ -r "${HELPER_SCRIPTS_REPO}/${lib_rel}" ]; then
-   lib="${HELPER_SCRIPTS_REPO}/${lib_rel}"
-elif [ -n "${HELPER_SCRIPTS_PATH:-}" ] && [ -r "${HELPER_SCRIPTS_PATH}/${lib_rel}" ]; then
-   lib="${HELPER_SCRIPTS_PATH}/${lib_rel}"
-elif [ -r "/${lib_rel}" ]; then
+
+## Resolve the library under test, highest precedence first. An explicitly-set
+## override (SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH)
+## NAMES the subject: if it is set but its lib is unreadable, fail closed -- do NOT
+## fall through to a lower-precedence override or the installed copy. Falling through
+## would silently test a different file than the one the caller pointed at, reporting
+## green for a checkout whose library was renamed or deleted. The installed copy is
+## used ONLY when no override is set at all.
+for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
+   repo_val="${!repo_var}"
+   [ -n "${repo_val}" ] || continue
+   if [ -r "${repo_val}/${lib_rel}" ]; then
+      lib="${repo_val}/${lib_rel}"
+   else
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${lib_rel}' is not readable" >&2
+      printf '%s\n' "an explicit override must point at a readable helper-scripts checkout; refusing to silently fall back" >&2
+      exit 1
+   fi
+   break
+done
+
+if [ -z "${lib}" ] && [ -r "/${lib_rel}" ]; then
    lib="/${lib_rel}"
 fi
 

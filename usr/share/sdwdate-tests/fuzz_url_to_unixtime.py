@@ -109,6 +109,8 @@ def _reject_ok(call) -> None:
                 contextlib.redirect_stderr(_DEVNULL):
             call()
     except SystemExit:
+        ## Deliberate: the subject calls sys.exit() to REJECT bad input; that is not
+        ## a crash, so swallow it. Any other exception propagates to Atheris.
         pass
 
 

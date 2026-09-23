@@ -4264,6 +4264,64 @@ ok(_argv('bad\x00cmd') is None,
    'A: a string command with an embedded NUL fails closed (None)')
 eq(_afc44(['ls', '-l']), ['ls', '-l'], '#44: a real list command is verbatim')
 
+# _await_exec (ai-review HIGH): the child chdir()s a restored (user-editable) cwd BEFORE
+# exec; a dead-mount cwd hangs that chdir uninterruptibly, and the parent reads the exec
+# handshake on the Qt MAIN thread -> the WHOLE GUI freezes. _await_exec BOUNDS that read:
+# clean exec (EOF) -> False, exec-failure byte -> True, a wedged child -> True after a
+# timeout (killing the child), never an unbounded block. Reachability cannot be predicted
+# ahead of the chdir (stat != chdir on automounts, TOCTOU), so the WAIT is bounded instead.
+import time as _ae_time                                       # noqa: E402
+import signal as _ae_signal                                   # noqa: E402
+import secure_terminal.terminal as _ae_mod                    # noqa: E402
+_ae = SecureTerminal(command='/bin/cat')                      # real spawn exercises the ready path
+_ae._EXEC_HANDSHAKE_TIMEOUT = 0.1                             # keep the timeout tests fast
+# a successful exec closes the CLOEXEC write end -> the read sees EOF -> not a failure
+_ae_r, _ae_w = os.pipe()
+os.close(_ae_w)
+ok(_ae._await_exec(_ae_r, 999999) is False, '_await_exec: a clean exec (EOF) is not a failure')
+os.close(_ae_r)
+# an exec failure writes one byte -> failure
+_ae_r, _ae_w = os.pipe()
+os.write(_ae_w, b'x')
+os.close(_ae_w)
+ok(_ae._await_exec(_ae_r, 999999) is True, '_await_exec: an exec-failure byte is a failure')
+os.close(_ae_r)
+# CANARY: a WEDGED child (write end held open, nothing written) returns True within the
+# timeout instead of blocking forever, and SIGKILLs the wedged pid.
+_ae_r, _ae_w = os.pipe()                                      # _ae_w stays open -> never ready
+_ae_killed = []
+_ae_real_kill = _ae_mod.os.kill
+_ae_mod.os.kill = lambda _p, _s: _ae_killed.append((_p, _s))
+try:
+    _ae_t0 = _ae_time.monotonic()
+    _ae_wedged = _ae._await_exec(_ae_r, 4242)
+    _ae_dt = _ae_time.monotonic() - _ae_t0
+finally:
+    _ae_mod.os.kill = _ae_real_kill
+    os.close(_ae_w)
+    os.close(_ae_r)
+ok(_ae_wedged is True, '_await_exec: a wedged child (timeout) fails the tab closed')
+ok(_ae_dt < 1.0,
+   '_await_exec: the wedged read returns within ~timeout (%.2fs), not forever' % _ae_dt)
+ok((4242, _ae_signal.SIGKILL) in _ae_killed, '_await_exec: a wedged child is SIGKILLed')
+
+
+def _ae_kill_raises(_p, _s):                                  # child already reaped -> ESRCH
+    raise OSError('no such process')
+
+
+# a kill that raises OSError is swallowed; the tab still fails closed.
+_ae_r, _ae_w = os.pipe()
+_ae_mod.os.kill = _ae_kill_raises
+try:
+    _ae_wedged2 = _ae._await_exec(_ae_r, 4243)
+finally:
+    _ae_mod.os.kill = _ae_real_kill
+    os.close(_ae_w)
+    os.close(_ae_r)
+ok(_ae_wedged2 is True, '_await_exec: an OSError from kill is swallowed; the tab still fails closed')
+_ae.shutdown()
+
 # #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else
 # clicking Allow replies the system clipboard into the NEW unrelated shell. restart resets
 # _clipboard_read AND the allow-always grant (the new shell must re-consent). (canary: old
