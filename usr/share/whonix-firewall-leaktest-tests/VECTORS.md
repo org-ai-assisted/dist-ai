@@ -46,6 +46,11 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - Ext-header / fragment hiding a TCP SYN -- the transparent-proxy redirect must
   walk the chain to find + redirect the SYN, not forward it un-torified
   (`ipv6_exthdr_hidden_syn_test.sh`)
+- IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress.
+  Defense-in-depth: the test flips the kernel's own source-route drop OFF
+  (accept_source_route=1) to isolate the FIREWALL, proving the forward policy-drop
+  blocks it even if the kernel ever honored source routes; the permissive canary
+  egresses it (`ipv4_source_routing_test.sh`)
 - Fail-closed killswitch -- Tor down => drop, not leak (`fail_closed_test.sh`)
 
 This covers, and exceeds, every vector the Whonix wiki `Dev/Leak_Tests` (+ the
@@ -87,10 +92,20 @@ extension-header vectors, which this suite adds.
 ## Reviewer-identified gaps -- future work (need new tooling or a different suite)
 
 - Rogue RA / RS / NA / NS / DHCPv6 injection FROM the Workstation toward the
-  Gateway -- `inject.py` has no ICMPv6 ND/RA builder yet; needs one to construct.
-- IPv4 source-routing options (LSRR/SSRR) -- `inject.py`'s `ip4_header` emits
-  IHL=5 (no options); the forward reject drops any forwarded packet regardless,
-  so low risk, but the vector is currently unconstructible.
+  Gateway -- a DIFFERENT threat model (poisoning the Gateway's own FIB / neighbor
+  cache / SLAAC config), NOT the forward-egress leak this suite's oracle detects: a
+  rogue RA/ND from the Workstation creates no forwarded packet, and the forward
+  policy-drop blocks egress unconditionally regardless. A netns injection test here
+  would only re-exercise the Linux kernel's own RA acceptance logic (ignore when
+  accept_ra=0, install when accept_ra=2), proving nothing about the Whonix
+  Gateway's posture. The in-scope, meaningful assertion is that the SHIPPED gateway
+  config disables accept_ra / accept_redirects / autoconf on the internal
+  interface (so a rogue RA cannot rewrite the FIB the uRPF rule keys on) -- a
+  STATIC audit of the real package's sysctl config, which belongs in a
+  firewall-config test suite, not this netns forward-egress model that sets its own
+  sysctls. (To resume as a config audit:
+  `grep -r 'accept_ra\|accept_redirects' <whonix-firewall sysctl config>` and
+  assert `=0` on the internal interface.)
 - Tor ControlPort (9051) / wildcard SocksPort reachability from the internal
   interface -- a control-channel scoping concern, not forward egress; belongs in a
   control-port / onion-grater test, not this suite.
@@ -99,8 +114,10 @@ extension-header vectors, which this suite adds.
 - EXHAUSTIVE protocol-number / destination-port sweeps (the wiki's 0-255 / 0-65535
   batteries) -- the suite tests a broad sample, not every value.
 - Rogue-RA soundness dependency: the uRPF rule keys on the live FIB, so the
-  internal-interface accept_ra / accept_redirects sysctls being off is load-bearing;
-  not yet asserted here (see the RA item above).
+  internal-interface accept_ra / accept_redirects sysctls being off is load-bearing.
+  This netns suite CANNOT assert it faithfully -- it sets its own sysctls, so a
+  check here would test the netns, not the shipped config. Belongs with the RA
+  config audit above.
 
 ## Known harness limitations (trust-critical -- do not silently rely on them)
 
