@@ -751,6 +751,18 @@ _le1, _lc1, _ld1, _ = S.feed_chunk_carry('[31mDANGER\x1b[0m ok', _lc0, _ld0, 0, 
 # a dropped body, or extra bytes -- proving the lone-ESC carry is rejoined to its body.
 eq(_le0 + _le1, 'hi\x1b[31mDANGER\x1b[0m ok',
    'feed_chunk_carry: a lone-ESC|CSI-body split at cap=0 rejoins the intact SGR, no 31m leak')
+# offload #4: SS2/SS3 (ESC N / ESC O) awaiting their ONE shifted byte are the 2-byte twin of the
+# lone-ESC hold: at cap<=0 they must be HELD, not discarded, or the discard eats the next chunk's
+# first graphic byte as the shifted glyph. chunk 1 ends in ESC N/O; chunk 2's 'X' must survive.
+for _ss_intro, _ss_name in (('N', 'SS2'), ('O', 'SS3')):
+    _s0, _sc0, _sd0, _ = S.feed_chunk_carry('hi\x1b' + _ss_intro, '', '', 0, cap=0)
+    eq((_sc0, _sd0), ('\x1b' + _ss_intro, ''),
+       'feed_chunk_carry: a trailing %s (ESC %s) at cap<=0 is held as carry, not discarded'
+       % (_ss_name, _ss_intro))
+    _s1, _sc1, _sd1, _ = S.feed_chunk_carry('Xrest', _sc0, _sd0, 0, cap=0)
+    eq(_s0 + _s1, 'hi\x1b' + _ss_intro + 'Xrest',
+       'feed_chunk_carry: an %s|shifted-byte split at cap=0 keeps the byte (no eat/leak)'
+       % _ss_name)
 # an over-cap OSC INTERRUPTED by a nested string introducer: the over-cap discard state
 # must end the OSC at the interrupting ESC (ANSI_RE: OSC body is [^\x07\x1b]*) and re-parse
 # the nested APC under its own grammar (BEL is body), not misread the APC body's BEL as the

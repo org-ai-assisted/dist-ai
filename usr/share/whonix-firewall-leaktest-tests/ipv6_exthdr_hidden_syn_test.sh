@@ -13,9 +13,11 @@
 ## (`tcp flags ... == syn ... redirect to :9040`) is a more attractive target for
 ## the "hide the real L4 down the chain" evasion: if it failed to walk the chain to
 ## find the SYN, the SYN would be forwarded un-torified instead of redirected to
-## Tor. The gateway must redirect it regardless of the header chain. Canary strips
-## the SYN redirect AND opens forward, so the hidden SYN egresses -- proving the
-## test would catch a redirect that mis-parses the chain.
+## Tor. The gateway must redirect it regardless of the header chain -- including a
+## DEEPLY NESTED chain (hopopts/routing/dstopts stacked many levels), which probes
+## whether the redirect's header walk stops short on depth and lets the SYN slip.
+## Canary strips the SYN redirect AND opens forward, so the hidden SYN egresses --
+## proving the test would catch a redirect that mis-parses the chain.
 
 set -o errexit
 set -o nounset
@@ -54,7 +56,14 @@ fire_hidden_syn() {
 ## would collapse to one conntrack entry and only count the first shape.
 leaktest_setup "${ruleset_file}"
 hidden_sport=41600
-for shape in "frag6" "exthdr6 --exthdr routing" "exthdr6 --exthdr hopopts" "exthdr6 --exthdr dstopts"; do
+## The last shape is the deepest RFC 8200-CONFORMANT chain: Hop-by-Hop once (it must
+## come first and appear at most once), then Destination Options, Routing, and a
+## second Destination Options before the upper layer. The redirect must still walk
+## to the SYN at the bottom, not give up and forward it un-torified. (A chain that
+## repeats Hop-by-Hop is malformed and the kernel may drop it, which would test
+## undefined behavior rather than the redirect's chain walk.)
+deep_chain="hopopts,dstopts,routing,dstopts"
+for shape in "frag6" "exthdr6 --exthdr routing" "exthdr6 --exthdr hopopts" "exthdr6 --exthdr dstopts" "exthdr6 --exthdr ${deep_chain}"; do
    # shellcheck disable=SC2086 # split the shape into proto + flags on purpose
    set -- ${shape}
    redirect_before="$(leaktest_transport_redirect_count)"

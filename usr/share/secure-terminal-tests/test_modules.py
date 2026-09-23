@@ -294,6 +294,29 @@ session.save([{'uid': 0, 'name': 'only', 'text': 'x'}])
 ok(not os.path.exists(session._log_path(1)),
    'session: a session that no longer holds an id removes its now-stale tab log')
 
+# save() must not ALIAS a uid-less tab's fallback key onto a real uid's log (offload #3).
+# A tab lacking a valid uid falls back to a free key; that key must skip every real uid, else
+# its scrollback would clobber a real tab's tab-<uid>.log (load() already anti-aliases reads).
+session.save([{'uid': 1, 'name': 'real', 'text': 'REAL-ONE'},
+              {'name': 'nouid', 'text': 'NO-UID'}])   # 2nd tab: no uid, list position 1 == uid 1
+with open(session._log_path(1), encoding='utf-8') as _h:
+    eq(_h.read(), 'REAL-ONE',
+       'session: a uid-less tab does not clobber a real tab whose uid == its list position')
+# a uid-less tab whose first free key (0) is TAKEN by a real uid must skip to the next free key
+# (the free-key search), never clobbering the real tab's tab-0.log.
+session.save([{'uid': 0, 'name': 'zero', 'text': 'ZERO'},
+              {'name': 'free', 'text': 'FREE'}])
+with open(session._log_path(0), encoding='utf-8') as _h:
+    eq(_h.read(), 'ZERO', 'session: a uid-less tab skips a real uid 0 (free-key search), no clobber')
+with open(session._log_path(1), encoding='utf-8') as _h:
+    eq(_h.read(), 'FREE', 'session: the uid-less tab took the next free key (tab-1.log)')
+# a DUPLICATE valid uid keeps the FIRST occurrence's log (mirrors load() restoring the dup empty)
+session.save([{'uid': 3, 'name': 'first', 'text': 'FIRST'},
+              {'uid': 3, 'name': 'dup', 'text': 'SECOND'}])
+with open(session._log_path(3), encoding='utf-8') as _h:
+    eq(_h.read(), 'FIRST',
+       'session: a duplicate uid does not clobber the first tab holding that log')
+
 # cap_text keeps only the most recent lines
 eq(session.cap_text('a\nb\nc\nd', 2), 'c\nd', 'session: cap_text keeps the tail')
 

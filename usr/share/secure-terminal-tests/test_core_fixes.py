@@ -14,8 +14,9 @@ from test_widget_common import *   # noqa: F401,F403  (shared harness)
 
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtCore import QEvent
-from secure_terminal.terminal import (_alt_partial_tail, PROMPT_START,
-                                       _SafeHistoryScreen, _Utf8CharsetByteStream)
+from secure_terminal.terminal import (_alt_partial_tail, _alt_scan_partial_tail, PROMPT_START,
+                                       _SafeHistoryScreen, _Utf8CharsetByteStream,
+                                       sound_file_allowed)
 
 _PS = PROMPT_START.encode('ascii')      # b'\x1b[?2004h'
 
@@ -26,6 +27,20 @@ ok(_alt_partial_tail(b'done\x1b[?200') == len(b'\x1b[?200'),
 ok(_alt_partial_tail(b'text' + _PS) == 0,
    'a COMPLETE PROMPT_START at the tail is not held back (fed now)')
 ok(_alt_partial_tail(b'ordinary text') == 0, 'a non-marker tail is not held back')
+# offload #8: the byte carry now reunites a COMBINED (ESC[?47;1049h) and numeric-equivalent
+# (ESC[?01049h) alt marker split across a read boundary too, so the byte-feed path agrees with
+# the text scan (which already resolves those forms). Held while incomplete, released once whole.
+ok(_alt_partial_tail(b'x\x1b[?47;1049') == len(b'\x1b[?47;1049'),
+   '#8: a split COMBINED alt marker (ESC[?47;1049...) is held back for the next read')
+ok(_alt_partial_tail(b'x\x1b[?01049') == len(b'\x1b[?01049'),
+   '#8: a split numeric-equivalent alt marker (ESC[?01049...) is held back')
+ok(_alt_partial_tail(b'x\x1b[?47;1049h') == 0,
+   '#8: a COMPLETE combined alt marker is NOT held back (fed now for its snapshot)')
+# the str twin carries the SAME incomplete-CSI forms, so the CLI text scan and the byte feed
+# cannot disagree on a split combined/numeric marker.
+eq(_alt_scan_partial_tail('x\x1b[?47;1049'), len('\x1b[?47;1049'),
+   '#8: the str carry twin holds a split combined alt marker like the byte carry')
+eq(_alt_scan_partial_tail('plain text'), 0, '#8: the str twin does not hold a non-marker tail')
 
 
 # --- #3: a zero-width char at a mid-row gap does NOT advance the cursor ---------------
@@ -159,5 +174,62 @@ ok(_rebuilds_on(_t7, lambda: _t7.apply_theme('light' if _t7._theme == 'dark' els
 ok(_rebuilds_on(_t7, lambda: _t7.apply_markings(not _t7.markings_enabled())),
    '#7: a markings toggle in TUI rebuilds the grid view (promoted scrollback repaints)')
 _t7.close()
+
+# --- offload #5: colors=false strips PROGRAM colour on the show-mode structural / markings-off
+# ELSE branch of _grid_cell_format too (not only the plain main path in #1 above), while
+# PRESERVING the risk-class tint for unicode/control cells (gated by markings, not colours). ----
+_c5 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_c5._effective_colors = lambda: _c5._colors      # pin off the env-driven colors_allowed()
+_c5.apply_mode('show')                           # show mode -> a structural glyph shown as itself
+# a coloured BOX-DRAWING glyph (U+2500) is STRUCTURAL: the else-branch renders it in the
+# program's OWN SGR, so colours-off must strip that program colour like the main path.
+feed_output(_c5, ('\x1b[31m' + chr(0x2500) + '\x1b[0m').encode('utf-8'))
+_c5._render_tui()
+APP.processEvents()
+_box = _c5._screen.buffer[0][0]
+_box_default = _c5._grid_cell_format(
+    _box._replace(fg='default'), None).foreground().color().name()
+_c5.apply_colors(True)
+ok(_c5._grid_cell_format(_box, None).foreground().color().name() != _box_default,
+   'sanity: colors ON -- a coloured structural glyph keeps its program colour (else branch)')
+_c5.apply_colors(False)
+eq(_c5._grid_cell_format(_box, None).foreground().color().name(), _box_default,
+   '#5: colors=false strips PROGRAM colour on the structural show-mode else branch too')
+# a RISK-class cell (a confusable) keeps its marking tint even with colours OFF (markings ON):
+# risk colouring is independent of the colours setting.
+_c5.apply_markings(True)
+feed_output(_c5, ('\x1b[32m' + chr(0x0430) + '\x1b[0m').encode('utf-8'))   # Cyrillic a (confusable)
+_c5._render_tui()
+APP.processEvents()
+_risk = next((_c5._screen.buffer[0][_col] for _col in range(_c5._screen.columns)
+              if _c5._screen.buffer[0][_col].data == chr(0x0430)), None)
+ok(_risk is not None, 'sanity: the confusable risk-class cell is on the grid')
+ok(_c5._grid_cell_format(_risk, None).foreground().color().name() != _box_default,
+   '#5: a unicode/control risk-class cell keeps its marking tint even with colours OFF')
+_c5.apply_colors(True)
+_c5.close()
+
+
+# --- offload #7: sound_file_allowed returns None (system-beep fallback) on a NUL-containing path
+# instead of crashing -- os.path.realpath's lstat raises ValueError, not OSError, on an embedded
+# NUL. Distinct from the settled F5 validate-then-use symlink race; this is a plain crash guard. -
+ok(sound_file_allowed('/tmp/a\x00b') is None,
+   '#7: a NUL-containing bell_sound path returns None (system beep), never raises ValueError')
+ok(sound_file_allowed('') is None, "#7: an empty path is still disallowed (no change)")
+
+
+# --- offload #8 integration: a COMBINED alt-enter marker SPLIT across two CLI reads is reunited
+# by the str carry (_alt_scan_carry), so _alt_screen flips -- the same result the byte feed now
+# gives, so the byte and text paths agree. On the old fixed 7-char window the combined form was
+# lost (its ESC fell outside the window). ------------------------------------------------------
+_a8 = SecureTerminal(command='/bin/cat')          # CLI/line mode
+APP.processEvents()
+feed_output(_a8, b'before\x1b[?47;1049')          # read 1 ends mid combined marker
+ok(_a8._alt_scan_carry.endswith('\x1b[?47;1049'),
+   '#8: a split combined alt marker is carried across the CLI read boundary')
+feed_output(_a8, b'h')                             # read 2 completes it
+ok(_a8._alt_screen, '#8: the reunited combined alt-enter marker flips _alt_screen (paths agree)')
+_a8.close()
 
 finish('core-fixes')

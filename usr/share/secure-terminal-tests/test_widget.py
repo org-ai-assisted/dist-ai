@@ -6429,6 +6429,36 @@ _dlw._sel_anchor = None
 _dlw._extend_unit_selection(_dl_p0)
 ok(True, 'sel: extend with no anchor is a safe no-op')
 
+# offload #6: the unit-selection anchor survives scrollback EVICTION. A fast producer past
+# maximumBlockCount evicts head blocks, shifting every doc position; the anchor is a live
+# QTextCursor pair (not raw ints), so an extend-drag AFTER eviction still copies the right span.
+_evw = SecureTerminal(command='/bin/cat')
+_evw.resize(700, 400)
+_evw.show()
+APP.processEvents()
+_evw._cols = 0
+_evw.document().setMaximumBlockCount(10)             # cap so HEAD lines above the anchor evict
+# 5 head lines ABOVE the anchor word: a modest flood then evicts a few of them (shifting every
+# doc position) while the anchor word itself stays well inside the retained tail.
+feed_output(_evw, b''.join(b'HEAD%d\r\n' % i for i in range(5)) + b'ANCHORWORD tail\r\n')
+_evw._force_current_frame()
+APP.processEvents()
+_anchor_block = next(_evw.document().findBlockByNumber(_i)
+                     for _i in range(_evw.document().blockCount())
+                     if 'ANCHORWORD' in _evw.document().findBlockByNumber(_i).text())
+_sel_dbl(_evw, _selpt(_evw, _anchor_block.position()))          # double-click -> 'ANCHORWORD'
+eq(_evw.textCursor().selectedText(), 'ANCHORWORD', 'sel: eviction fixture anchor word selected')
+feed_output(_evw, b''.join(b'FLOOD-%02d\r\n' % i for i in range(6)))  # evict some HEAD blocks
+_evw._force_current_frame()
+APP.processEvents()
+ok('ANCHORWORD' in _evw.toPlainText(), 'sel: the anchor word survived (only HEAD lines evicted)')
+_end = _evw.document().characterCount() - 1
+_evw.mouseMoveEvent(_sel_ev(_QEv_sel.Type.MouseMove, _selpt(_evw, _end),
+                            buttons=_Qt_sel.MouseButton.LeftButton))   # extend to doc end
+ok('ANCHORWORD' in _evw._selection_text(),
+   '#6: after eviction an extend-drag still includes the anchor word (live QTextCursor tracks it)')
+_evw.close()
+
 # A plain single click resets to char mode (no unit drag).
 _sel_press(_selw, _QPF_sel(400, 260))
 ok(_selw._select_mode == 'char', 'sel: a single click is character selection')

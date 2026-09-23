@@ -28,6 +28,10 @@ could never send.
   frag6  IPv6 atomic fragment (fragment ext-header) hiding an L4 (--l4 udp|tcp)
   frag6set  Two IPv6 fragments of ONE UDP datagram (offset 0 M=1 + offset 8 M=0);
             nf_defrag_ipv6 reassembles before the forward chain
+  frag6overlap  Two OVERLAPPING IPv6 fragments (RFC 5722); nf_defrag_ipv6 must drop
+            the whole datagram, so nothing reassembles or forwards
+  frag6tinyfirst  First fragment too small for the L4 header (RFC 7112); the header
+            chain is split across fragments and must be dropped, not reassembled
   exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
           L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
@@ -42,7 +46,12 @@ import time
 ETH_P_IPV6 = b"\x86\xdd"
 ETH_P_IPV4 = b"\x08\x00"
 PROBE_PAYLOAD = b"leaktest-probe"
-TCP_FLAGS = {"syn": 0x02, "ack": 0x10, "synack": 0x12, "finack": 0x11, "rstack": 0x14}
+## null = no flags; fin = FIN only; xmas = FIN+PSH+URG; synfin = SYN+FIN (probes the
+## redirect's `flags & (fin|syn|rst|ack) == syn` match, which SYN+FIN must NOT satisfy).
+TCP_FLAGS = {
+    "syn": 0x02, "ack": 0x10, "synack": 0x12, "finack": 0x11, "rstack": 0x14,
+    "null": 0x00, "fin": 0x01, "xmas": 0x29, "synfin": 0x03,
+}
 
 
 def a6(addr: str) -> bytes:
@@ -203,6 +212,43 @@ def frag6_multi(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
     return [frag1, frag2]
 
 
+## Fragment id for the overlapping set (distinct from the clean multi-fragment id).
+FRAG6_OVERLAP_ID = 0x00BEEF77
+FRAG6_TINYFIRST_ID = 0x00BEEF78
+
+
+def frag6_tinyfirst(src: str, dst: str, dport: int) -> list[bytes]:
+    ## First fragment too SMALL to hold the complete L4 header (RFC 7112): a TCP
+    ## header is 20 bytes, but fragment 1 carries only its first 8, so the header is
+    ## split across fragments. A conformant reassembler drops the set (the header
+    ## chain is not complete in the first fragment). A non-SYN (ACK) flag is used so
+    ## that a reassembled datagram would be FORWARDED, not redirected -- making the
+    ## permissive-forward canary meaningful (it would egress if wrongly reassembled).
+    data = tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["ack"])  # 20-byte header, valid checksum
+    first, second = data[:8], data[8:]  # 8 (partial header, 8-byte aligned) + 12 (rest of header)
+    frag_hdr1 = struct.pack("!BBHI", 6, 0, (0 << 3) | 1, FRAG6_TINYFIRST_ID)  # nh=TCP, off0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 6, 0, (1 << 3) | 0, FRAG6_TINYFIRST_ID)  # off 8B, M=0
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + len(second), 44) + frag_hdr2 + second
+    return [frag1, frag2]
+
+
+def frag6_overlap(src: str, dst: str, dport: int) -> list[bytes]:
+    ## Two OVERLAPPING IPv6 fragments (RFC 5722): fragment 1 claims bytes [0,16)
+    ## with M=1, fragment 2 claims [8,16) at offset 8 with M=0 -- the [8,16) range
+    ## is asserted by BOTH. RFC 5722 requires the reassembler to drop the ENTIRE
+    ## datagram on any overlap; nf_defrag_ipv6 implements this, so nothing
+    ## reassembles or forwards, even under a permissive forward policy. The clean
+    ## (non-overlapping) frag6set egressing under the same permissive policy is the
+    ## reference that proves this is the overlap rejection, not a dead path.
+    datagram = udp6_datagram(src, dst, 41600, dport, b"leaktest")  # 8 hdr + 8 payload
+    frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, FRAG6_OVERLAP_ID)  # off 0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 17, 0, (1 << 3) | 0, FRAG6_OVERLAP_ID)  # off 8B, M=0
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(datagram), 44) + frag_hdr1 + datagram
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + 8, 44) + frag_hdr2 + datagram[8:16]
+    return [frag1, frag2]
+
+
 ## IPv6 extension header TYPES; the 8-byte header itself is built with the hidden
 ## L4's protocol as its next-header (a classic way to slip past a filter that only
 ## inspects the first next-header).
@@ -218,9 +264,22 @@ def _exthdr6_body(kind: str, next_header: int) -> bytes:
 
 
 def exthdr6(src: str, dst: str, dport: int, kind: str, l4: str = "udp", sport: int = 41600) -> bytes:
+    ## `kind` may be a comma-separated CHAIN (e.g. "hopopts,routing,dstopts"): the
+    ## headers nest outermost-first, each one's next-header pointing at the next in
+    ## the chain, the innermost at the hidden L4. A deep chain probes whether the
+    ## transparent-proxy redirect (and the forward path) walk far enough to still
+    ## find + torify the SYN, rather than letting it slip past on chain depth.
+    kinds = kind.split(",")
+    for one in kinds:
+        if one not in EXTHDR6_TYPE:
+            raise ValueError("unknown ext-header kind %r (want %s)" % (one, ", ".join(sorted(EXTHDR6_TYPE))))
     next_l4, l4bytes = _hidden_l4(src, dst, dport, l4, sport)
-    payload = _exthdr6_body(kind, next_l4) + l4bytes
-    return ip6_header(src, dst, len(payload), EXTHDR6_TYPE[kind]) + payload
+    payload = l4bytes
+    next_header = next_l4
+    for one in reversed(kinds):
+        payload = _exthdr6_body(one, next_header) + payload
+        next_header = EXTHDR6_TYPE[one]
+    return ip6_header(src, dst, len(payload), next_header) + payload
 
 
 def resolve_gw_mac(gw4: str) -> bytes:
@@ -304,6 +363,10 @@ def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[
     with a fresh fragment id per iteration so datagrams do not share one."""
     if args.proto == "frag6set":
         return ETH_P_IPV6, frag6_multi(args.src, args.dst, args.dport, FRAG6_MULTI_ID + index)
+    if args.proto == "frag6overlap":
+        return ETH_P_IPV6, frag6_overlap(args.src, args.dst, args.dport)
+    if args.proto == "frag6tinyfirst":
+        return ETH_P_IPV6, frag6_tinyfirst(args.src, args.dst, args.dport)
     ethertype, l3 = build_l3(args)
     return ethertype, [l3]
 
@@ -323,7 +386,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "frag6overlap", "frag6tinyfirst", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
@@ -333,7 +396,7 @@ def main() -> None:
     parser.add_argument("--dport", type=ranged_int(0, 0xFFFF), default=443)
     parser.add_argument("--flags", default="syn", choices=sorted(TCP_FLAGS))
     parser.add_argument("--protonum", type=ranged_int(0, 0xFF), default=47, help="IP proto / next-header for rawip*")
-    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6_TYPE), help="ext-header for exthdr6")
+    parser.add_argument("--exthdr", default="routing", help="ext-header(s) for exthdr6; comma-separated builds a nested chain (routing|hopopts|dstopts)")
     parser.add_argument("--l4", default="udp", choices=["udp", "tcp"], help="L4 hidden in frag6/exthdr6")
     parser.add_argument("--count", type=ranged_int(1, 10000), default=4)
     args = parser.parse_args()

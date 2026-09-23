@@ -23,8 +23,10 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - DNS redirect -- UDP/53 (BOTH families) must be redirected to the Tor DnsPort and
   answered AND must not egress the gateway; canary strips the redirect and opens
   forward (`dns_redirect_positive_test.sh`)
-- Non-SYN TCP transproxy bypass -- ACK/SYN-ACK/FIN-ACK/RST-ACK (only a pure SYN is
-  redirected), IPv6 and IPv4
+- Non-SYN TCP transproxy bypass -- ACK/SYN-ACK/FIN-ACK/RST-ACK plus the scan/evasion
+  flag combos NULL/FIN/Xmas/SYN+FIN (only a pure SYN is redirected; SYN+FIN in
+  particular must not satisfy the redirect's `flags & (fin|syn|rst|ack) == syn`
+  match), IPv6 and IPv4
   (`nonsyn_tcp_transproxy_bypass_test.sh`, `ipv4_nonsyn_tcp_test.sh`)
 - Positive control is dual-family (IPv6 AND IPv4 TransPort), so a family-scoped
   redirect breakage is caught (`leaktest_lib.sh` leaktest_positive_control)
@@ -44,8 +46,24 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - IPv6 extension-header chain -- Routing (RH0) / Hop-by-Hop / Destination options
   (`ipv6_exthdr_chain_test.sh`)
 - Ext-header / fragment hiding a TCP SYN -- the transparent-proxy redirect must
-  walk the chain to find + redirect the SYN, not forward it un-torified
+  walk the chain to find + redirect the SYN, not forward it un-torified. Verified
+  it REACHED the redirect (the :9040 redirect counter advanced), not merely that
+  nothing egressed -- a dropped SYN and a torified one both produce zero egress, so
+  the counter is what proves torification. Includes the deepest RFC 8200-conformant
+  chain (hopopts, dstopts, routing, dstopts) to probe the walk depth
   (`ipv6_exthdr_hidden_syn_test.sh`)
+- IPv6 overlapping fragments -- an RFC 5722 overlapping fragment set must not
+  reassemble or egress; nf_defrag_ipv6 drops the whole datagram on overlap. Teeth
+  under a permissive forward: the VALID sibling set egresses while the overlapping
+  one does not (`ipv6_fragment_overlap_test.sh`)
+- IPv6 tiny-first-fragment (RFC 7112) -- a set whose first fragment is too small to
+  hold the L4 header must not egress. Linux does NOT reassemble it (the truncated
+  first fragment has an incomplete transport header, so nf_ct_frag6_gather does not
+  complete; unlike a lone non-first fragment, the truncated FIRST fragment is
+  forwarded as-is), so the forward chain sees the fragment, not a reassembled
+  datagram, and the shipped forward drop catches it. The permissive canary egresses
+  the fragment, proving the forward chain (not a defrag stall) is what blocks it
+  (`ipv6_fragment_tinyfirst_test.sh`)
 - IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress,
   in BOTH shapes: a COMPLETED/inert route (dst = final target, catches a rule keyed
   on IHL=5) and an ACTIVE route (dst = gateway, next hop = target -- attacker-
@@ -68,14 +86,15 @@ extension-header vectors, which this suite adds.
 - IPv4 fragment evasion -- conntrack `nf_defrag_ipv4` reassembles before the
   forward chain: a lone fragment is held (never forwarded), a complete set is
   reassembled and handled as a normal packet. No fragment-specific forward leak.
-- IPv6 lone non-first fragment (tiny-fragment / overlap with the completing
-  fragments withheld) -- `nf_defrag_ipv6` (loaded by conntrack, like its IPv4
-  sibling) holds an incomplete set, so a lone non-first fragment is never
-  forwarded. The COMPLETE two-fragment set IS tested and reassembles-then-drops
-  (`ipv6_multi_fragment_test.sh`, Covered above); the ATOMIC fragment (offset 0,
-  M=0) IS tested as a complete single-fragment datagram (`fragment_evasion_test.sh`).
-  Only a deliberately-incomplete set (held indefinitely, never egresses) remains a
-  non-vector.
+- IPv6 lone non-first fragment (incomplete set with the completing fragments
+  withheld) -- `nf_defrag_ipv6` (loaded by conntrack, like its IPv4 sibling) holds
+  an incomplete set, so a lone non-first fragment is never forwarded. The COMPLETE
+  two-fragment set IS tested and reassembles-then-drops (`ipv6_multi_fragment_test.sh`);
+  an OVERLAPPING set IS tested and is dropped by RFC 5722 reassembly
+  (`ipv6_fragment_overlap_test.sh`); the ATOMIC fragment (offset 0, M=0) IS tested
+  as a complete single-fragment datagram (`fragment_evasion_test.sh`) -- all Covered
+  above. Only a deliberately-incomplete set (held indefinitely, never egresses)
+  remains a non-vector.
 - Multicast / broadcast egress -- IPv4 broadcast is link-scoped and IPv6 global
   multicast needs multicast routing the Gateway does not run; verified nothing
   egresses even under a permissive forward policy.
@@ -110,6 +129,19 @@ extension-header vectors, which this suite adds.
   sysctls. (To resume as a config audit:
   `grep -r 'accept_ra\|accept_redirects' <whonix-firewall sysctl config>` and
   assert `=0` on the internal interface.)
+- VPN-tunnel (INT_TIF != INT_IF) forged-source BEHAVIORAL test -- the uRPF fix that
+  covers INT_TIF (whonix-firewall firewall-common) is guarded here only at the
+  ruleset level (whonix-firewall's own `test_gateway_int_tif` dry-run assertion, the
+  core guard). A netns behavioral test would fire a forged source arriving on a
+  tun0 (INT_TIF) interface at the DnsPort/SocksPort and assert the uRPF drops it, with
+  a canary that leaks when the INT_TIF uRPF is stripped. NOT yet built: it needs (a) a
+  checked-in INT_TIF=tun0 ruleset fixture in whonix-firewall `test-output/new/`
+  (generate it from the `test_gateway_int_tif` config: `whonix-gateway-firewall
+  --dry-run` with `INT_IF="eth1" INT_TIF="tun0"`, commit the .nft), and (b) a
+  leaktest_setup variant that adds a SECOND internal veth pair ws<->tun0(gw) alongside
+  eth1, so the core setup (used by every other case) is untouched. Then a
+  `ipv6_vpn_tunnel_urpf_test.sh` loads the fixture, injects a forged-source DNS packet
+  on tun0, asserts no reply egress, and canaries by stripping the INT_TIF uRPF drop.
 - Tor ControlPort (9051) / wildcard SocksPort reachability from the internal
   interface -- a control-channel scoping concern, not forward egress; belongs in a
   control-port / onion-grater test, not this suite.
