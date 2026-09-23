@@ -89,11 +89,13 @@ LEAKTEST_EGRESS_BPF="\
 
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
-## tcpdump's stderr file for the current capture -- a mktemp path (root-owned,
-## created atomically), never a name derived from another temp file, so a
-## concurrent local user cannot plant a symlink at a predictable path for the
-## root-run redirect to follow.
+## The tcpdump- and injector-stderr scratch files. Each is a mktemp path (root-
+## owned, created atomically -- never a name derived from another temp file, so a
+## concurrent local user cannot plant a symlink for the root-run redirect to
+## follow) allocated ONCE and REUSED (truncated) across every probe, so a many-
+## probe run does not accumulate one temp file per fire.
 LEAKTEST_TCPDUMP_ERR=''
+LEAKTEST_INJECT_ERR=''
 
 ## Results of the last leaktest_fire_forward_probe. Returned via globals (not a
 ## captured string) so the helper runs in the CURRENT shell -- errexit/pipefail
@@ -259,7 +261,7 @@ leaktest_capture_up() {
    ## Keep tcpdump's stderr ("listening on ...") so a capture that never bound
    ## (bad interface / BPF, permission failure) is distinguishable from a real
    ## zero-packet result -- otherwise both look like "0 egress" (a false PASS).
-   LEAKTEST_TCPDUMP_ERR="$(mktemp)"
+   [ -n "${LEAKTEST_TCPDUMP_ERR}" ] || LEAKTEST_TCPDUMP_ERR="$(mktemp)"
    ip netns exec up timeout "${secs}" tcpdump --no-promiscuous-mode -nni eth0 -l "${bpf}" \
       >"${outfile}" 2>"${LEAKTEST_TCPDUMP_ERR}" &
    LEAKTEST_TCPDUMP_PID="$!"
@@ -317,10 +319,10 @@ leaktest_fire_forward_probe() {
    local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
    shift 4
    helpers="$(leaktest_helpers_dir)"
-   ## mktemp (root-owned, atomic) rather than a name derived from capture_file: a
-   ## root-run redirect must not follow a symlink a local user could plant at a
-   ## predictable path during the capture window.
-   inject_err="$(mktemp)"
+   ## A root-owned mktemp path (not one derived from capture_file, so no planted
+   ## symlink for the root-run redirect to follow), allocated once and reused.
+   [ -n "${LEAKTEST_INJECT_ERR}" ] || LEAKTEST_INJECT_ERR="$(mktemp)"
+   inject_err="${LEAKTEST_INJECT_ERR}"
    LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
