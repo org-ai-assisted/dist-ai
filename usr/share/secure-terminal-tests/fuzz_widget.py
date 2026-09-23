@@ -110,6 +110,29 @@ def _feed(term, raw):
     return time.monotonic() - start
 
 
+def _feed_live(term, data, read_max):
+    ## Deliver `data` through the REAL _on_readable in read_max-sized reads, exactly as the
+    ## live QSocketNotifier does -- one feed_line_edits work budget per read. Each chunk is
+    ## <= read_max (== term._PTY_READ_MAX), so a single os.read drains it; no empty read is
+    ## ever fed, so the EOF/shell-exited path is not tripped.
+    old = term._fd
+    try:
+        i = 0
+        n = len(data)
+        while i < n:
+            chunk = data[i:i + read_max]
+            i += read_max
+            r, w = os.pipe()
+            term._fd = r
+            os.write(w, chunk)
+            os.close(w)
+            term._on_readable()
+            os.close(r)
+    finally:
+        term._fd = old
+    term._flush_paint()
+
+
 def _check_document(term, seed, ctx):
     ## The visible transcript is the sanitization guarantee: only the structural
     ## newline/tab plus PRINTABLE characters may reach the document. str.isprintable()
@@ -400,6 +423,41 @@ def _fuzz_review_delivery(rnd, bar, term, seed):
         R._BOX_MAX = saved_cap
 
 
+def phase_reflow_equiv(rnd, iterations, seed):
+    ## A full-buffer reflow / mode-toggle replay (_rerender full=True) must render
+    ## IDENTICALLY to the live per-read path. The live reader feeds <=_PTY_READ_MAX per
+    ## os.read (fresh feed_line_edits work budget each); a one-shot whole-buffer replay
+    ## would else exhaust that per-CALL anti-flood budget on early CHA cursor pads and then
+    ## SKIP later CSI-K erases, resurrecting cleared text (a secret) that the live path had
+    ## erased. Shrink the budget + read size so a SHORT adversarial stream triggers the
+    ## divergence CHEAPLY -- the per-call-vs-chunked logic under test is identical at any
+    ## budget (mirrors the review phase shrinking review._BOX_MAX).
+    saved_budget = S._LINE_WORK_BUDGET
+    S._LINE_WORK_BUDGET = 200
+    try:
+        for _ in range(iterations):
+            term = SecureTerminal(command='/bin/cat')       # CLI line mode, line_edits on
+            term._PTY_READ_MAX = rnd.choice((24, 32, 40, 56))
+            parts = []
+            for _i in range(rnd.randint(40, 140)):           # total work >> the 200 budget
+                parts.append('\x1b[%dG%s' % (rnd.randint(1, 15),
+                                             rnd.choice(('#', 'x', 'AB', ''))))
+                if rnd.random() < 0.30:
+                    parts.append('\r\x1b[K')                 # erase-to-end: the divergent op
+                parts.append('\n')
+            data = ''.join(parts).encode('ascii')
+            _feed_live(term, data, term._PTY_READ_MAX)       # live: many small reads
+            live = term.toPlainText()
+            term._rerender(full=True)                        # one-shot replay over _raw
+            term._flush_paint()
+            _assert(term.toPlainText() == live,
+                    'reflow replay diverged from the live read path on {0} bytes '
+                    '(read={1})'.format(len(data), term._PTY_READ_MAX), seed)
+            term.shutdown()
+    finally:
+        S._LINE_WORK_BUDGET = saved_budget
+
+
 PHASES = (
     ('feed', phase_feed),
     ('tui', phase_tui),
@@ -407,6 +465,7 @@ PHASES = (
     ('paste', phase_paste),
     ('keys', phase_keys),
     ('review', phase_review),
+    ('reflow_equiv', phase_reflow_equiv),
 )
 
 

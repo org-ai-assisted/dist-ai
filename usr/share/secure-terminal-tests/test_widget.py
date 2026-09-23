@@ -349,7 +349,7 @@ _rb._REFLOW_RENDER_MAX = 4000                        # tiny render budget -> det
 _rb._raw = chr(0x0416) * 20000                  # 20000 Cyrillic; full detail render ~720k chars
 _fed = []
 _orig_fl = _rb._feed_line
-_rb._feed_line = lambda _s: (_fed.append(_s), _orig_fl(_s))[1]
+_rb._feed_line = lambda _s, **_k: (_fed.append(_s), _orig_fl(_s, **_k))[1]
 _rb._reflow()                                        # the full=True width-reflow path
 _rb._feed_line = _orig_fl
 ok(len(_fed) == 1, '#7: the reflow feeds the line document once')
@@ -364,7 +364,7 @@ ok(len(_S7.render_output(_rbsrc, 'detail')) <= _rb._REFLOW_RENDER_MAX,
 # a non-expanding mode still replays in full (no scrollback dropped on resize)
 _rb.apply_mode('box')
 _fed.clear()
-_rb._feed_line = lambda _s: (_fed.append(_s), _orig_fl(_s))[1]
+_rb._feed_line = lambda _s, **_k: (_fed.append(_s), _orig_fl(_s, **_k))[1]
 _rb._reflow()
 _rb._feed_line = _orig_fl
 ok(_fed and _fed[0] == _rb._raw,

@@ -380,6 +380,16 @@ key(_cr, Qt.Key.Key_Return)
 ok(_cr._pending_copy is None,
    'COR-4: Enter on a copy review dispatches the copy reject (no stale _pending_copy)')
 _cr.close()
+# BELL-1: the FIRST TUI screen's BEL must reach the tab bell policy. pyte binds the
+# screen's event handlers BY VALUE when the Stream is built, so a `.bell` set AFTER the
+# Stream (the pre-fix order in _make_screen) left the first screen's bell DEAD for its
+# whole life. Canary: a bare BEL on a fresh TUI screen must invoke _ring (via _pyte_bell).
+_bel = SecureTerminal(command='/bin/cat', tui=True)
+_bel_rung = []
+_bel._ring = lambda *a, **k: _bel_rung.append(1)
+feed_output(_bel, b'\x07')
+ok(_bel_rung, 'BELL-1: a BEL on the first TUI screen rings the bell (routed to _pyte_bell)')
+_bel.close()
 # --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
 _ft = win.current()
 _ft.document().setPlainText('')
@@ -2052,6 +2062,8 @@ _tpp.close()
 _bpm = 2004 << 5
 _bp = SecureTerminal(command=None, tui=True)
 _bp.has_foreground_program = lambda: True                 # a program owns the terminal
+_bp._foreground_pgrp = lambda: 7001                       # feed_output swaps _fd to a pipe (no tty)
+_bp._read_exe = lambda pid: '/usr/bin/prog'               # the arming program's /proc identity
 feed_output(_bp, b'\x1b[?2004h')                          # ...and turns bracketed paste on
 ok(_bpm in _bp._screen.mode and _bp._bracketed_paste_active(),
    'bracketed paste is active while a live foreground program holds DEC 2004')
@@ -2075,6 +2087,44 @@ ok(_bpm in _bp2._screen.mode,
 ok(not _bp2._bracketed_paste_active(),
    'a latched 2004 bit with no live foreground program is NOT trusted (TOCTOU closed)')
 _bp2.close()
+
+# in-place exec of a foreground program: `exec B` keeps the pgid, so has_foreground_program
+# stays True and no fg edge clears DEC 2004 -- but the pgid leader's /proc exe flips to B,
+# which never armed bracketed paste. The gate must distrust the sticky bit (force-review B's
+# multiline pastes), else the paste is 200~/201~-framed to a program that treats the embedded
+# \r as live input. A successor that CLEARS then re-arms 2004 re-owns the bit and is trusted.
+_bpx = SecureTerminal(command=None, tui=True)
+_bpx.has_foreground_program = lambda: True                # a program owns the terminal throughout
+_bpx._foreground_pgrp = lambda: 8123                      # stable fg pgid (feed_output has no tty)
+_bpxexe = ['/usr/bin/vim']                                # program A
+_bpx._read_exe = lambda pid: _bpxexe[0]
+feed_output(_bpx, b'\x1b[?2004h')                         # A arms bracketed paste
+ok(_bpx._bracket_owner == (8123, '/usr/bin/vim') and _bpx._bracketed_paste_active(),
+   'bracketed paste is trusted while the arming foreground program (A) is live')
+feed_output(_bpx, b'more output')                         # a later read while 2004 stays armed
+ok(_bpx._bracket_owner == (8123, '/usr/bin/vim'),
+   'a read while DEC 2004 stays armed keeps the original owner (no re-record)')
+_bpxexe[0] = '/usr/bin/cat'                               # A execs -> B (same pgid, 2004 sticky)
+ok(not _bpx._bracketed_paste_active(),
+   'a fg in-place exec (exe flip, no 2004 clear) is NOT trusted -- the successor never armed it')
+feed_output(_bpx, b'\x1b[?2004l')                         # B clears bracketed paste
+ok(_bpx._bracket_owner is None, 'clearing DEC 2004 drops the recorded owner')
+feed_output(_bpx, b'\x1b[?2004h')                         # B re-arms it as ITS own choice
+ok(_bpx._bracketed_paste_active(),
+   'a successor that clears then re-arms DEC 2004 re-owns it and is trusted again')
+_bpx.close()
+
+# DEC 2004 armed while the foreground pgid is unreadable (no tty / vanished mid-read): the
+# owner cannot be recorded, so the gate cannot confirm ownership and force-reviews -- the safe
+# default (never trust a bit whose owner is unknown).
+_bpu = SecureTerminal(command=None, tui=True)
+_bpu.has_foreground_program = lambda: True
+_bpu._foreground_pgrp = lambda: None                      # fg pgid unreadable at arm time
+feed_output(_bpu, b'\x1b[?2004h')
+ok(_bpm in _bpu._screen.mode and _bpu._bracket_owner is None
+   and not _bpu._bracketed_paste_active(),
+   'DEC 2004 armed with an unreadable fg owner is NOT trusted (force-review)')
+_bpu.close()
 
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
@@ -3970,6 +4020,8 @@ eq(_pts, [], 'paste: a control-only clipboard sanitizes to nothing (sends nothin
 _pt.apply_tui(True)
 _pt.has_foreground_program = lambda: True    # /bin/cat owns the foreground (pipe harness
 #                                              tcgetpgrp can't see it, so state it)
+_pt._foreground_pgrp = lambda: 9101          # ...plus a stable fg pgid and arming identity,
+_pt._read_exe = lambda pid: '/bin/cat'       #    so the DEC-2004 owner is recorded
 feed_output(_pt, b'\x1b[?2004h')            # program enables bracketed paste
 _pts.clear()
 _pmime2 = QMimeData()
@@ -4860,6 +4912,8 @@ _bp_no.dispatch_pending_paste('reject')
 # paste is exempt from the forced hold and delivered framed between 200~/201~.
 _bp_yes = SecureTerminal(command='/bin/cat', tui=True)
 _bp_yes.apply_paste_warn('never')
+_bp_yes._foreground_pgrp = lambda: 9202                    # stable fg pgid (pipe harness: no tty)
+_bp_yes._read_exe = lambda pid: '/bin/cat'                 # ...so the DEC-2004 owner is recorded
 feed_output(_bp_yes, b'\x1b[?2004h')                       # enable DEC 2004
 ok(_TERM_rc._BRACKETED_PASTE_MODE in getattr(_bp_yes._screen, 'mode', ()),
    'reconcile#1: bracketed paste is now enabled on the TUI child')
@@ -5587,6 +5641,24 @@ ok('fb-row-%02d' % (_fb._screen.lines * 2 - 1) in _fb.toPlainText(),
 ok('fb-row-00' in _fb.toPlainText(),
    'fallback full rebuild renders the scrolled-off history')
 _fb.shutdown()
+
+# BUDGET-1: a full-buffer reflow / mode-toggle replay must render IDENTICALLY to the live
+# per-read path. feed_line_edits' anti-flood work budget is per-CALL; the live reader feeds
+# <=_PTY_READ_MAX per os.read (fresh budget each), but a reflow replays the WHOLE retained
+# _raw. A single-call replay exhausted that budget on early CHA cursor pads then SKIPPED the
+# trailing CSI-K erase, so cleared text (a secret) REAPPEARED after a resize / mode-toggle.
+_bud = SecureTerminal(command='/bin/cat')            # CLI line mode, line_edits default on
+feed_output(_bud, b'\x1b[40G#\n' * 14000 + b'SECRET\r\x1b[K')   # 14000 pads > one budget
+_bud_live = _doc_cells(_bud)
+ok('SECRET' not in _bud.transcript_text(),
+   'BUDGET-1 setup: the live per-read path erases the CSI-K SECRET line')
+_bud._rerender(full=True)                             # one-shot replay over the whole retained _raw
+_bud._flush_paint()
+eq(_doc_cells(_bud), _bud_live,
+   'BUDGET-1: reflow replay renders identically to the live read path (fresh budget per piece)')
+ok('SECRET' not in _bud.transcript_text(),
+   'BUDGET-1: the CSI-K-erased SECRET does not reappear after a full-buffer replay')
+_bud.shutdown()
 
 # 5. A row mutated AND scrolled off within a single un-rendered read is NOT
 # promoted from its now-stale block: the signature recheck fails, so the frame
