@@ -282,27 +282,56 @@ expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo
 expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
 expect_evasion_caught "two defs, live copy uses 'name( )' inner space" "${inparen_repo}"
 
-## Accident (not adversarial): the restart command drifts from the tracked wording. With no
-## tracked literal present anywhere, the ordering check cannot find a restart line and fails
-## closed -- the in-scope guarantee that makes hand-crafted inert-text smuggling (which needs
-## a shell parser) an acceptable out-of-scope gap.
-drift_repo="$(make_lib_repo drift-restart <<'LIB'
+## Assert the subject rejects a library whose LIVE set_console_keymap is unguarded (a real
+## fail-open, not a syntax evasion): nonzero exit AND no false "guard present and precedes"
+## line. $1 label, $2 repo.
+expect_guard_fail() {
+   printf '%s\n' "== case: $1 -> fail closed =="
+   run_subject "$2" '' ''
+   if [ "${run_rc}" -ne 0 ]; then
+      ok "exit nonzero (${run_rc})"
+   else
+      notok "unguarded library passed (false green)"
+      cat -- "${run_out_file}" >&2 || true
+   fi
+   if grep --quiet --fixed-strings -- 'is present and precedes' "${run_out_file}"; then
+      notok "reported a satisfied root guard for an unguarded library"
+      cat -- "${run_out_file}" >&2 || true
+   else
+      ok "did not report a satisfied root guard"
+   fi
+}
+
+## A bare, unguarded restart runs BEFORE the guard (with the canonical guarded restart also
+## present later). The guard must precede the FIRST restart mention, so this must fail closed.
+early_restart_repo="$(make_lib_repo early-restart <<'LIB'
 set_console_keymap() {
+  systemctl --no-block --no-pager restart keyboard-setup.service
   if [ "$(id --user)" != '0' ]; then
     return 1
   fi
-  systemctl --no-block --no-pager restart keyboard-setup.service
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
 }
 LIB
 )"
-printf '%s\n' "== case: restart wording drift (accident) -> fail closed =="
-run_subject "${drift_repo}" '' ''
-if [ "${run_rc}" -ne 0 ]; then
-   ok "exit nonzero (${run_rc})"
-else
-   notok "drifted restart wording passed (should fail closed)"
-   cat -- "${run_out_file}" >&2 || true
-fi
+## A single, genuine set_console_keymap with an ACCIDENTALLY indented closing brace, followed
+## by an unrelated function that does have a guard+restart. Body extraction must stop at the
+## function boundary, not annex the following function's guard/restart -- else false green.
+spill_repo="$(make_lib_repo indented-close-spill <<'LIB'
+set_console_keymap() {
+  echo "no guard and no restart in the live function"
+ }
+decoy_unrelated_function() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+
+expect_guard_fail "unguarded restart before the guard" "${early_restart_repo}"
+expect_guard_fail "indented close spills into next function" "${spill_repo}"
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

@@ -82,14 +82,17 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## 'name( )' all count), erring toward OVER-counting, a fail-CLOSED direction.
 ##
 ## SCOPE, stated honestly (per never-reinvent-a-bash-parser + the AI-accident threat model):
-## this catches an ACCIDENTAL removal, reorder, or duplication of the guard in the canonical
-## shipped form, and FAILS CLOSED whenever it cannot verify -- a missing guard/restart, a
-## duplicate, or a definition/restart not in the tracked canonical form. Because it is text,
-## not code, a HAND-CRAFTED evasion that makes the live guard/restart inert or invisible to a
-## line grep is OUT OF SCOPE and needs a real shell parser (a human reviews): text smuggled
-## into a comment (whole-line OR trailing), a string, or a heredoc body; a guard neutered
-## WITHIN one definition (else / subshell / pipeline / conditional return); or a definition
-## or command in a lexical form the greps do not match (line continuations, exotic headers).
+## this catches an ACCIDENTAL removal, reorder, or duplication of the guard: exactly one
+## definition, the extraction bounded to the function (so an indented close cannot annex a
+## following function), and the guard required before the FIRST mention of restarting
+## keyboard-setup.service (so a bare unguarded restart before the guard is caught, not just
+## the canonical wording). It FAILS CLOSED when it cannot verify -- a missing guard/restart,
+## a duplicate, or a definition not in the canonical 'name() {' form. Because it is text, not
+## code, a HAND-CRAFTED evasion that makes the live guard/restart inert or invisible to a
+## line grep is OUT OF SCOPE and needs a real shell parser (a human reviews): guard text
+## smuggled into a comment (whole-line OR trailing), a string, or a heredoc body; a guard
+## neutered WITHIN one definition (else / subshell / pipeline / conditional return); or a
+## definition in a lexical form the header grep misses (line continuations, exotic headers).
 ## Telling live code from inert or aliased text is precisely what this test does not attempt.
 def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\()' "${lib}" || true)"
 if [ "${def_count}" -eq 1 ]; then
@@ -98,9 +101,14 @@ else
    notok "expected exactly one set_console_keymap definition, found '${def_count}'"
 fi
 
-## Extract the set_console_keymap() body: the function-open line through the column-0
-## '}' that closes it. '--' guards a lib path that begins with '-'.
-console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^}/p' "${lib}")"
+## Extract the set_console_keymap() body: the function-open line through the FIRST later
+## line that starts in column 0. A top-level function's body lines are indented and its
+## closing '}' sits in column 0, as does the next function's header -- so ending at the
+## first column-0 line stops at the function boundary even if the closing '}' is
+## accidentally indented (an editor/merge slip), which would otherwise let the range spill
+## into and annex the following, unrelated function's body. '--' guards a lib path that
+## begins with '-'.
+console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^[^[:space:]]/p' "${lib}")"
 
 ## Drop whole-line '#' comments so a guard string on its own comment line cannot satisfy
 ## the check. Trailing '#' comments and strings are NOT stripped (that needs shell
@@ -112,8 +120,15 @@ console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:sp
 guard_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --extended-regexp -- '^[[:space:]]*if \[ "\$\(id --user\)" != '\''?0'\''? \]' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
+## Match the KEY ACTION -- restarting keyboard-setup.service -- not the full canonical
+## 'log_run notice ...' wording, and take the FIRST such line. The guard must precede the
+## FIRST mention: otherwise a bare 'systemctl ... restart keyboard-setup.service' placed
+## before the guard (in addition to the canonical guarded one later) would run unguarded
+## yet pass an order check that only looked at the canonical line. Real-lib mentions (the
+## 'Skipping command ...' log lines and the real restart) all follow the guard, so this
+## stays green there.
 restart_line="$(printf '%s\n' "${console_code}" \
-   | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
+   | grep --line-number --fixed-strings -- 'restart keyboard-setup.service' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 
 if [ -z "${console_body}" ]; then
