@@ -167,9 +167,15 @@ extension-header vectors, which this suite adds.
   sysctls. (To resume as a config audit:
   `grep -r 'accept_ra\|accept_redirects' <whonix-firewall sysctl config>` and
   assert `=0` on the internal interface.)
-- Tor ControlPort (9051) / wildcard SocksPort reachability from the internal
-  interface -- a control-channel scoping concern, not forward egress; belongs in a
-  control-port / onion-grater test, not this suite.
+- Tor ControlPort (9051) command scoping from the internal interface -- a
+  control-channel concern, not forward egress, and ALREADY COVERED by its own suite:
+  the ControlPort is reachable from the Workstation BY DESIGN (onion-grater mediates
+  it), and which control commands a compromised Workstation may smuggle through is
+  tested exhaustively by the onion-grater profile tests (`onion-grater-tests`, also
+  run as `anon-gw-anonymizer-config-tests/onion_grater_profile_test.sh`: whitelist
+  fullmatch, argument-injection blocks, the June 2026 deanonymization fix). Not a gap
+  here -- it is the wrong layer for this forward-egress suite, and the right layer
+  already tests it.
 - Firewall rule-reload race under live traffic -- the serial setup/teardown model
   structurally cannot exercise it.
 - EXHAUSTIVE protocol-number / destination-port sweeps (the wiki's 0-255 / 0-65535
