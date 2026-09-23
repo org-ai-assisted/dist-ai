@@ -224,8 +224,8 @@ def frag6_tinyfirst(src: str, dst: str, dport: int) -> list[bytes]:
     ## chain is not complete in the first fragment). A non-SYN (ACK) flag is used so
     ## that a reassembled datagram would be FORWARDED, not redirected -- making the
     ## permissive-forward canary meaningful (it would egress if wrongly reassembled).
-    data = tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["ack"]) + b"leaktest"  # 20 + 8
-    first, second = data[:8], data[8:]  # 8 (partial TCP header, 8-byte aligned) + rest
+    data = tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["ack"])  # 20-byte header, valid checksum
+    first, second = data[:8], data[8:]  # 8 (partial header, 8-byte aligned) + 12 (rest of header)
     frag_hdr1 = struct.pack("!BBHI", 6, 0, (0 << 3) | 1, FRAG6_TINYFIRST_ID)  # nh=TCP, off0, M=1
     frag_hdr2 = struct.pack("!BBHI", 6, 0, (1 << 3) | 0, FRAG6_TINYFIRST_ID)  # off 8B, M=0
     frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first

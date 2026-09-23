@@ -5,18 +5,18 @@
 
 ## AI-Assisted
 
-## Leak test: a TINY-FIRST-FRAGMENT set (RFC 7112) must not smuggle a datagram past
-## the forward drop.
+## Leak test: a TINY-FIRST-FRAGMENT set (RFC 7112) must not egress.
 ##
 ## RFC 7112 requires the first fragment to carry the entire header chain (through
 ## the L4 header) so a stateless inspector cannot be evaded by splitting the header
-## across fragments. Linux nf_defrag_ipv6 does NOT reject such a set (verified: a
-## first fragment holding only 8 of the 20 TCP header bytes is still reassembled),
-## but that is safe here: conntrack reassembles BEFORE the forward chain, so the
-## ruleset acts on the whole reassembled datagram, not the header-split fragments.
-## The reassembled datagram (a non-SYN TCP segment -- not redirected) hits the
-## forward drop; the permissive canary egresses it, proving the fragments really
-## reassembled (so the blocked case is the forward drop, not a stalled reassembly).
+## across fragments. Linux nf_defrag_ipv6 does NOT reassemble such a set: the first
+## fragment holds only 8 of the 20-byte TCP header, so its transport header is
+## truncated and nf_ct_frag6_gather does not complete reassembly -- unlike a lone
+## NON-first fragment (which is held), the truncated FIRST fragment is forwarded
+## as-is. The forward chain therefore sees the fragment, not a reassembled
+## datagram, and the shipped forward drop catches it. The permissive canary
+## egresses that fragment, proving the forward chain (not a defrag stall) is what
+## blocks it under the shipped ruleset.
 
 set -o errexit
 set -o nounset
@@ -34,5 +34,5 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 leaktest_probe_case \
-   'IPv6 tiny-first-fragment (header split, reassembled) to clearnet' \
+   'IPv6 tiny-first-fragment (truncated header, not reassembled) to clearnet' \
    frag6tinyfirst "${INT_WS_IP6}" "${PROBE_DST_IP6}" --dport 443

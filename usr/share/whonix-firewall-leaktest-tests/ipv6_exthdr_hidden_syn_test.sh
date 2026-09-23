@@ -56,9 +56,13 @@ fire_hidden_syn() {
 ## would collapse to one conntrack entry and only count the first shape.
 leaktest_setup "${ruleset_file}"
 hidden_sport=41600
-## The last shape is a 9-level nested chain (hopopts/routing/dstopts x3): the redirect
-## must still walk to the SYN at depth, not give up and forward it un-torified.
-deep_chain="hopopts,routing,dstopts,hopopts,routing,dstopts,hopopts,routing,dstopts"
+## The last shape is the deepest RFC 8200-CONFORMANT chain: Hop-by-Hop once (it must
+## come first and appear at most once), then Destination Options, Routing, and a
+## second Destination Options before the upper layer. The redirect must still walk
+## to the SYN at the bottom, not give up and forward it un-torified. (A chain that
+## repeats Hop-by-Hop is malformed and the kernel may drop it, which would test
+## undefined behavior rather than the redirect's chain walk.)
+deep_chain="hopopts,dstopts,routing,dstopts"
 for shape in "frag6" "exthdr6 --exthdr routing" "exthdr6 --exthdr hopopts" "exthdr6 --exthdr dstopts" "exthdr6 --exthdr ${deep_chain}"; do
    # shellcheck disable=SC2086 # split the shape into proto + flags on purpose
    set -- ${shape}

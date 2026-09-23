@@ -49,18 +49,21 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   walk the chain to find + redirect the SYN, not forward it un-torified. Verified
   it REACHED the redirect (the :9040 redirect counter advanced), not merely that
   nothing egressed -- a dropped SYN and a torified one both produce zero egress, so
-  the counter is what proves torification. Includes a DEEPLY NESTED chain
-  (hopopts/routing/dstopts stacked 9 levels) to probe the walk depth
+  the counter is what proves torification. Includes the deepest RFC 8200-conformant
+  chain (hopopts, dstopts, routing, dstopts) to probe the walk depth
   (`ipv6_exthdr_hidden_syn_test.sh`)
 - IPv6 overlapping fragments -- an RFC 5722 overlapping fragment set must not
   reassemble or egress; nf_defrag_ipv6 drops the whole datagram on overlap. Teeth
   under a permissive forward: the VALID sibling set egresses while the overlapping
   one does not (`ipv6_fragment_overlap_test.sh`)
 - IPv6 tiny-first-fragment (RFC 7112) -- a set whose first fragment is too small to
-  hold the L4 header must not smuggle a datagram past the forward drop. Linux does
-  NOT reject the split (nf_defrag_ipv6 reassembles it anyway), but conntrack
-  reassembles BEFORE the forward chain, so the reassembled datagram hits the drop;
-  the permissive canary egresses it, proving the reassembly (`ipv6_fragment_tinyfirst_test.sh`)
+  hold the L4 header must not egress. Linux does NOT reassemble it (the truncated
+  first fragment has an incomplete transport header, so nf_ct_frag6_gather does not
+  complete; unlike a lone non-first fragment, the truncated FIRST fragment is
+  forwarded as-is), so the forward chain sees the fragment, not a reassembled
+  datagram, and the shipped forward drop catches it. The permissive canary egresses
+  the fragment, proving the forward chain (not a defrag stall) is what blocks it
+  (`ipv6_fragment_tinyfirst_test.sh`)
 - IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress,
   in BOTH shapes: a COMPLETED/inert route (dst = final target, catches a rule keyed
   on IHL=5) and an ACTIVE route (dst = gateway, next hop = target -- attacker-
