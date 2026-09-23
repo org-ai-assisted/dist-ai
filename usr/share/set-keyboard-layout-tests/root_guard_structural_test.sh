@@ -68,31 +68,29 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## STRUCTURAL revert-guard (AI-accident scope). Assert set_console_keymap in the
-## shipped library keeps its root guard: the guard 'if' is PRESENT (anchored to line
-## start after stripping whole-line '#' comments, so guard text in a '#' comment cannot
-## satisfy it) and PRECEDES the actual restart command line (a 'log_run' invocation).
-## Tracks the shipped guard 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
+## STRUCTURAL revert-guard (AI-accident scope). A line-oriented TEXT check -- deliberately
+## NOT a bash parser -- over the shipped library. It asserts set_console_keymap keeps its
+## root guard: exactly ONE definition, the guard 'if' PRESENT, and the guard PRECEDING the
+## restart command line. Tracks the shipped guard 'if [ "$(id --user)" != '\''0'\'' ]' and
+## the canonical 'set_console_keymap() {' form in set-keyboard-layout.sh.
 ##
 ## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of a
-## repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy
-## above an unguarded live one) would let the dead copy be verified while the live one
-## runs unguarded -- fail closed on any count != 1. The count matches a definition
-## HEADER: 'function name', or the name followed by an opening '(' (so 'name(', 'name (',
-## and whitespace-inside-parens 'name( )' all count). Matching the opening paren, not a
-## literal '()', errs toward OVER-counting -- a fail-CLOSED direction -- rather than
-## missing a duplicate. Still a line-oriented grep, deliberately NOT a bash parser.
+## repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy above
+## an unguarded live one) would let the dead copy be verified while the live one runs
+## unguarded -- fail closed on any count != 1. The count matches a definition HEADER
+## ('function name', or the name followed by an opening '(' -- so 'name(', 'name (', and
+## 'name( )' all count), erring toward OVER-counting, a fail-CLOSED direction.
 ##
-## Scope, stated honestly (per never-reinvent-a-bash-parser + the AI-accident threat
-## model; anything below needs a real shell parser -> a human reviews):
-##   caught: accidental REMOVAL / reorder / DUPLICATION of the guard, and the guard
-##           verified in the shipped canonical 'name() {' form.
-##   NOT caught (out of scope, hand-crafted): guard text smuggled into a heredoc/string
-##           body (the '#'-strip does not track heredocs/quotes); a guard neutered WITHIN
-##           one definition (else / subshell / pipeline / conditional return); and a
-##           definition written in an exotic lexical form the header grep misses (e.g. a
-##           line-continuation between the name and its paren). A non-canonical single
-##           definition fails CLOSED below rather than being mis-verified.
+## SCOPE, stated honestly (per never-reinvent-a-bash-parser + the AI-accident threat model):
+## this catches an ACCIDENTAL removal, reorder, or duplication of the guard in the canonical
+## shipped form, and FAILS CLOSED whenever it cannot verify -- a missing guard/restart, a
+## duplicate, or a definition/restart not in the tracked canonical form. Because it is text,
+## not code, a HAND-CRAFTED evasion that makes the live guard/restart inert or invisible to a
+## line grep is OUT OF SCOPE and needs a real shell parser (a human reviews): text smuggled
+## into a comment (whole-line OR trailing), a string, or a heredoc body; a guard neutered
+## WITHIN one definition (else / subshell / pipeline / conditional return); or a definition
+## or command in a lexical form the greps do not match (line continuations, exotic headers).
+## Telling live code from inert or aliased text is precisely what this test does not attempt.
 def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\()' "${lib}" || true)"
 if [ "${def_count}" -eq 1 ]; then
    ok "exactly one set_console_keymap definition"
@@ -104,8 +102,9 @@ fi
 ## '}' that closes it. '--' guards a lib path that begins with '-'.
 console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^}/p' "${lib}")"
 
-## Drop whole-line comments so an inert guard string parked in a comment cannot
-## satisfy the check (the exact evasion this test exists to resist).
+## Drop whole-line '#' comments so a guard string on its own comment line cannot satisfy
+## the check. Trailing '#' comments and strings are NOT stripped (that needs shell
+## tokenization) -- inert-text smuggling is out of scope, see the SCOPE note above.
 console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:space:]]*#')"
 
 ## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort

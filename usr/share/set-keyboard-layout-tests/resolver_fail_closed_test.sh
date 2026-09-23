@@ -282,6 +282,28 @@ expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo
 expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
 expect_evasion_caught "two defs, live copy uses 'name( )' inner space" "${inparen_repo}"
 
+## Accident (not adversarial): the restart command drifts from the tracked wording. With no
+## tracked literal present anywhere, the ordering check cannot find a restart line and fails
+## closed -- the in-scope guarantee that makes hand-crafted inert-text smuggling (which needs
+## a shell parser) an acceptable out-of-scope gap.
+drift_repo="$(make_lib_repo drift-restart <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+printf '%s\n' "== case: restart wording drift (accident) -> fail closed =="
+run_subject "${drift_repo}" '' ''
+if [ "${run_rc}" -ne 0 ]; then
+   ok "exit nonzero (${run_rc})"
+else
+   notok "drifted restart wording passed (should fail closed)"
+   cat -- "${run_out_file}" >&2 || true
+fi
+
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"
 if [ "${run_rc}" -eq 0 ]; then
