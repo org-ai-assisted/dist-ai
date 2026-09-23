@@ -32,25 +32,28 @@ lib=""
 
 ## Resolve the library under test, highest precedence first. An explicitly-set
 ## override (SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH)
-## NAMES the subject: if it is set but its lib is unreadable, fail closed -- do NOT
-## fall through to a lower-precedence override or the installed copy. Falling through
-## would silently test a different file than the one the caller pointed at, reporting
-## green for a checkout whose library was renamed or deleted. The installed copy is
-## used ONLY when no override is set at all.
+## NAMES the subject: if it is set but its lib is not a readable regular file, fail
+## closed -- do NOT fall through to a lower-precedence override or the installed copy.
+## Falling through would silently test a different file than the one the caller pointed
+## at, reporting green for a checkout whose library was renamed or deleted. Require a
+## regular file (-f), not merely a readable path (-r): a directory, FIFO, or device at
+## the lib path is -r-readable but would make the extractor below skip it (empty body)
+## or block, both false results. The installed copy is used ONLY when no override is
+## set at all.
 for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
    repo_val="${!repo_var}"
    [ -n "${repo_val}" ] || continue
-   if [ -r "${repo_val}/${lib_rel}" ]; then
+   if [ -f "${repo_val}/${lib_rel}" ] && [ -r "${repo_val}/${lib_rel}" ]; then
       lib="${repo_val}/${lib_rel}"
    else
-      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${lib_rel}' is not readable" >&2
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${lib_rel}' is not a readable file" >&2
       printf '%s\n' "an explicit override must point at a readable helper-scripts checkout; refusing to silently fall back" >&2
       exit 1
    fi
    break
 done
 
-if [ -z "${lib}" ] && [ -r "/${lib_rel}" ]; then
+if [ -z "${lib}" ] && [ -f "/${lib_rel}" ] && [ -r "/${lib_rel}" ]; then
    lib="/${lib_rel}"
 fi
 
@@ -65,25 +68,58 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## STRUCTURAL revert-guard (AI-accident scope). Extract the set_console_keymap body
-## (a column-0 '}' ends it) and assert the root-guard 'if' is PRESENT as a real
-## statement -- anchored to line start after comment-stripping, so the guard text
-## parked in a comment or string cannot satisfy it -- and PRECEDES the actual restart
-## command line (a 'log_run' invocation). Tracks the shipped guard
-## 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
-## It does NOT prove the non-root branch RETURNS: deciding return-vs-fall-through
-## across bash control flow (else / subshell / pipeline / nested-if, code vs string)
-## is a bash-parser problem and deliberately out of scope. An accidental REMOVAL or
-## reorder of the guard is caught; a hand-crafted evasion that keeps the 'if' text but
-## neuters it is not this guard's job.
-console_body="$(awk '
-   /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
-   in_fn { print }
-   in_fn && /^\}/ { if (in_fn) exit }
-' "${lib}")"
+## STRUCTURAL revert-guard (AI-accident scope). A line-oriented TEXT check -- deliberately
+## NOT a bash parser -- over the shipped library. It asserts set_console_keymap keeps its
+## root guard: exactly ONE definition, the guard 'if' PRESENT, and the guard PRECEDING the
+## restart command line. Tracks the shipped guard 'if [ "$(id --user)" != '\''0'\'' ]' and
+## the canonical 'set_console_keymap() {' form in set-keyboard-layout.sh.
+##
+## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of a
+## repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy above
+## an unguarded live one) would let the dead copy be verified while the live one runs
+## unguarded -- fail closed on any count != 1. The count matches a definition HEADER
+## ('function name', or the name followed by an opening '(' -- so 'name(', 'name (', and
+## 'name( )' all count), erring toward OVER-counting, a fail-CLOSED direction.
+##
+## SCOPE, stated honestly (per never-reinvent-a-bash-parser + the AI-accident threat model):
+## this catches an ACCIDENTAL removal, reorder, or duplication of the guard, verified in the
+## CANONICAL shipped form -- exactly one 'name() {' definition, the guard 'if' present, and
+## the guard preceding the canonical 'log_run notice ... restart keyboard-setup.service'
+## line. It FAILS CLOSED when it cannot verify: a missing guard, a canonical restart that is
+## absent or drifted in wording, a duplicate, or a definition not in the canonical form.
+##
+## Everything below is OUT OF SCOPE -- it needs a real shell parser (the check is line text,
+## not code), so a human reviews. Attempts to catch these with cleverer greps were tried and
+## REVERTED because each broke a valid library or opened a new false green:
+##   - the guard or restart made inert: text smuggled into a comment (whole-line or trailing),
+##     a string, or a heredoc body; a guard neutered WITHIN one definition (else / subshell /
+##     pipeline / conditional return).
+##   - a duplicate or the live restart written so a line grep misses it: a line continuation,
+##     an exotic header, a reworded/bare restart, or an unguarded restart placed before the
+##     guard (the canonical one still matches after it).
+##   - an accidentally INDENTED closing '}' letting extraction run into the next function
+##     (the shipped following function has no competing guard/restart, so this is latent).
+## Telling live code from inert or aliased text is precisely what this test does not attempt.
+def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\()' "${lib}" || true)"
+if [ "${def_count}" -eq 1 ]; then
+   ok "exactly one set_console_keymap definition"
+else
+   notok "expected exactly one set_console_keymap definition, found '${def_count}'"
+fi
 
-## Drop whole-line comments so an inert guard string parked in a comment cannot
-## satisfy the check (the exact evasion this test exists to resist).
+## Extract the set_console_keymap() body: the function-open line through the column-0 '}'
+## that closes it. Deliberately simple: it ends at a column-0 '}', which is correct for the
+## canonical shipped layout. It does NOT parse braces, so an accidentally INDENTED closing
+## brace would let the range run on into the following function (out of scope; see SCOPE).
+## Ending instead at any column-0 line was tried and is WRONG -- a function body legitimately
+## has column-0 lines (whole-line comments, a heredoc terminator, a multi-line string's
+## continuation), and stopping there truncates the body and fails a valid library closed.
+## '--' guards a lib path that begins with '-'.
+console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^}/p' "${lib}")"
+
+## Drop whole-line '#' comments so a guard string on its own comment line cannot satisfy
+## the check. Trailing '#' comments and strings are NOT stripped (that needs shell
+## tokenization) -- inert-text smuggling is out of scope, see the SCOPE note above.
 console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:space:]]*#')"
 
 ## '|| true': grep exits 1 on no match, which under errexit+pipefail would abort
@@ -91,11 +127,24 @@ console_code="$(printf '%s\n' "${console_body}" | grep --invert-match -- '^[[:sp
 guard_line="$(printf '%s\n' "${console_code}" \
    | grep --line-number --extended-regexp -- '^[[:space:]]*if \[ "\$\(id --user\)" != '\''?0'\''? \]' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
+## Match the canonical restart line by its distinguishing 'log_run notice ... restart
+## keyboard-setup.service' shape. The '.*' spans the '"${timeout_command[@]}" systemctl
+## --no-block --no-pager' middle without embedding a '${...}' (which would trip SC2016) and,
+## crucially, the 'log_run notice' prefix excludes the "Skipping command '...restart
+## keyboard-setup.service'" LOG lines (those are 'log notice', no '_run'), which a bare
+## 'restart keyboard-setup.service' substring would have matched first. A restart in any
+## OTHER form (reworded, split by a line continuation, or placed before the guard) is not
+## matched and is out of scope -- see SCOPE; a drift of the canonical restart fails closed.
 restart_line="$(printf '%s\n' "${console_code}" \
-   | grep --line-number --fixed-strings -- 'log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service' \
+   | grep --line-number --extended-regexp -- 'log_run notice.*restart keyboard-setup\.service' \
    | head --lines 1 | cut --delimiter=: --fields=1 || true)"
 
-if [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
+if [ -z "${console_body}" ]; then
+   ## The counter saw a definition (or none) but canonical extraction got nothing: the
+   ## definition is absent or in a non-canonical header form this test cannot verify.
+   ## Fail closed with an honest reason rather than mislabel it "guard missing".
+   notok "set_console_keymap not found in the verifiable 'name() {' form (reformat or human review)"
+elif [ -n "${guard_line}" ] && [ -n "${restart_line}" ] \
    && [ "${guard_line}" -lt "${restart_line}" ]; then
    ok "root guard 'if' is present and precedes the console restart in set_console_keymap"
 else

@@ -403,8 +403,19 @@ done
 ## Backstop: the derived list is non-empty, every entry round-trips as a valid
 ## --component (list and validator share all_components()), and --help still
 ## advertises the flag so the list cannot be re-hardcoded into the usage text.
+## Capture --list-components' exit status (not '|| true'): a crash that printed
+## partial output containing 'sdwdate' would otherwise pass the checks below.
+if list_out="$( "${runner}" --list-components 2>/dev/null )"; then
+   list_rc=0
+else
+   list_rc=$?
+fi
+checks=$(( checks + 1 ))
+if [ "${list_rc}" -ne 0 ]; then
+   fail "--list-components exited ${list_rc} -- the flag failed, its output is not trustworthy"
+fi
 components_listed=()
-mapfile -t components_listed < <( "${runner}" --list-components 2>/dev/null )
+mapfile -t components_listed < <( printf '%s' "${list_out}" )
 
 checks=$(( checks + 1 ))
 if [ "${#components_listed[@]}" -eq 0 ]; then
@@ -418,16 +429,35 @@ fi
 
 for comp in "${components_listed[@]}"; do
    checks=$(( checks + 1 ))
-   comp_err="$( "${runner}" --component "${comp}" --list 2>&1 >/dev/null || true )"
-   case "${comp_err}" in
+   ## Round-trip each listed component as a valid --component. Run with --all so
+   ## a component whose only suite is e2e/integration still matches (a bare
+   ## --list selects core only, exiting 2 'no suite matched' -- benign, not
+   ## drift). Capture the status instead of '|| true' so a runner crash cannot
+   ## pass as a false green; assert BOTH a clean exit AND no rejection.
+   if comp_out="$( "${runner}" --component "${comp}" --all --list 2>&1 )"; then
+      comp_rc=0
+   else
+      comp_rc=$?
+   fi
+   if [ "${comp_rc}" -ne 0 ]; then
+      fail "${comp}: 'dist-ai-tests-all --component ${comp} --all --list' exited ${comp_rc} (expected 0) -- listed by --list-components but not cleanly usable as --component"
+   fi
+   case "${comp_out}" in
       *'unknown --component'*)
-         fail "${comp}: listed by --list-components but rejected as --component -- the list and the validator have drifted apart"
+         fail "${comp}: listed by --list-components but rejected as unknown --component -- the list and the validator have drifted apart"
          ;;
    esac
 done
 
 checks=$(( checks + 1 ))
-help_out="$( "${runner}" --help 2>&1 || true )"
+if help_out="$( "${runner}" --help 2>&1 )"; then
+   help_rc=0
+else
+   help_rc=$?
+fi
+if [ "${help_rc}" -ne 0 ]; then
+   fail "--help exited ${help_rc} -- expected 0"
+fi
 case "${help_out}" in
    *'--list-components'*)
       ;;

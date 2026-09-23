@@ -35,39 +35,62 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-[ -v TMP ] || TMP=/tmp
+## -n, not -v: an exported-but-empty TMP is 'set' to -v, which would leave the
+## scratch dir under '/' -- treat empty as unset and fall back to /tmp.
+[ -n "${TMP:-}" ] || TMP=/tmp
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
+[ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
+[ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
 
-if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ]; then
-   repo="${SET_KEYBOARD_LAYOUT_REPO}"
-elif [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
-   repo="${HELPER_SCRIPTS_PATH}"
+wrapper_rel='usr/bin/set-grub-keymap'
+repo=""
+## Resolve the checkout under test, highest precedence first -- the SAME chain root_guard
+## uses (SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH). An explicit
+## override NAMES the subject: set but missing the wrapper -> fail closed, do NOT silently
+## fall through to the installed copy (which would run a different binary/library than the
+## checkout the caller pointed at).
+for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
+   repo_val="${!repo_var}"
+   [ -n "${repo_val}" ] || continue
+   ## The wrapper is EXEC'd as the subject, so require a regular (-f), readable (-r, bash
+   ## reads the script) AND executable (-x) file. A directory, FIFO, or a non-executable
+   ## regular file is otherwise accepted, then dies at exec with a confusing 'Permission
+   ## denied' (exit 126) instead of this clear fail-closed FATAL. (root_guard only READS its
+   ## library, so it needs -f -r but not -x.)
+   if [ -f "${repo_val}/${wrapper_rel}" ] && [ -r "${repo_val}/${wrapper_rel}" ] && [ -x "${repo_val}/${wrapper_rel}" ]; then
+      repo="${repo_val}"
+   else
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${wrapper_rel}' is not an executable file" >&2
+      printf '%s\n' "an explicit override must point at a helper-scripts checkout with the wrapper; refusing to silently fall back" >&2
+      exit 1
+   fi
+   break
+done
+
+if [ -n "${repo}" ]; then
+   subject="${repo}/${wrapper_rel}"
+elif [ -f "/${wrapper_rel}" ] && [ -r "/${wrapper_rel}" ] && [ -x "/${wrapper_rel}" ]; then
+   subject="/${wrapper_rel}"
+   repo='/'
 else
-   repo=""
-fi
-
-subject=""
-if [ -n "${repo}" ] && [ -r "${repo}/usr/bin/set-grub-keymap" ]; then
-   subject="${repo}/usr/bin/set-grub-keymap"
-elif [ -r '/usr/bin/set-grub-keymap' ]; then
-   subject='/usr/bin/set-grub-keymap'
-   repo="${repo:-/}"
-fi
-
-if [ -z "${subject}" ]; then
    printf '%s\n' "FATAL: set-grub-keymap not found" >&2
    printf '%s\n' "set SET_KEYBOARD_LAYOUT_REPO or HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install the package" >&2
    exit 1
 fi
 
-## The wrapper sources the library from HELPER_SCRIPTS_PATH; keep both pointed at
-## the same tree so the subject under test is the checkout, not the installed copy.
-helper_scripts_path="${HELPER_SCRIPTS_PATH:-${repo}}"
+## The wrapper sources its library (set-keyboard-layout.sh) from HELPER_SCRIPTS_PATH at
+## runtime; point it at the SAME resolved tree so the subject wrapper and its library can
+## never come from different checkouts (a checkout whose own library is missing/defective
+## must not pass by borrowing another tree's library).
+helper_scripts_path="${repo}"
 
 work_dir="$(mktemp --directory -- "${TMP}/set-keyboard-layout-test.XXXXXX")"
 
 test_cleanup_handler() {
-   safe-rm --recursive --force -- "${work_dir}"
+   ## '|| true': an EXIT trap whose LAST command exits nonzero overrides the script's real
+   ## pass/fail exit status (bash), so a failed cleanup (e.g. safe-rm absent) must not turn a
+   ## passing run red. It cannot mask a failing run: errexit has already set the status by then.
+   safe-rm --recursive --force -- "${work_dir}" || true
 }
 trap test_cleanup_handler EXIT
 

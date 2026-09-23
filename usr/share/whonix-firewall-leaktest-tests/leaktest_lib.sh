@@ -381,6 +381,40 @@ leaktest_assert_leaked() {
    return 1
 }
 
+## Packet count on the transparent-proxy redirect rule (TCP SYN -> Tor TransPort
+## :9040) in the gw nat prerouting chain. A SYN the redirect actually matched --
+## having walked any ext-header / fragment chain to reach it -- increments this; a
+## SYN the firewall merely DROPPED does not. Ambient netns traffic is ICMPv6
+## ND/MLD, never a TCP SYN, so unlike the drop counters this one is probe-specific.
+leaktest_transport_redirect_count() {
+   local count=""
+   ## Non-fatal: a failed read (e.g. a transient nft error) must NOT silently abort
+   ## the caller under errexit -- the || keeps it going and a 0 surfaces as a clear
+   ## assertion result instead.
+   count="$(ip netns exec gw nft list chain inet nat prerouting 2>/dev/null \
+      | awk '/redirect to :9040/ { for (i=1;i<=NF;i++) if ($i=="packets") { print $(i+1); exit } }')" || count=""
+   printf '%s' "${count:-0}"
+}
+
+## Assert the transport redirect COUNTED the probe (after > before): the SYN
+## reached and matched the redirect -- proving the ruleset walked the chain to the
+## SYN and torified it, not merely dropped it. A drop and a correct redirect both
+## produce zero clearnet egress, so leaktest_assert_blocked alone cannot tell them
+## apart; this closes that gap. Returns 0 on pass.
+leaktest_assert_redirected() {
+   local label="$1" before="$2" after="$3"
+   if [ -n "${LEAKTEST_PROBE_ERROR}" ]; then
+      fail_case "${label}: ${LEAKTEST_PROBE_ERROR}"
+      return 1
+   fi
+   if [ "${after}" -gt "${before}" ]; then
+      msg "PASS: ${label} reached the Tor TransPort redirect (counter ${before} -> ${after})"
+      return 0
+   fi
+   fail_case "${label}: SYN did NOT reach the redirect (counter ${before} -> ${after}) -- dropped, not torified"
+   return 1
+}
+
 ## Generic probe-leak case with an EXPLICIT source: a non-redirected probe must
 ## not egress under the shipped ruleset (the gateway rejects forwarding), a
 ## positive control must still work, and a permissive-forward canary must egress.

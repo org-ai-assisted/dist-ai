@@ -164,16 +164,16 @@ def ip4_srcroute_option(route: list[str], pointer: int, opt_type: int = IP4_OPT_
 ## The L4 hidden one hop down an ext-header / fragment chain: UDP (17) by default,
 ## or a TCP SYN (6) -- the transparent-proxy REDIRECT is a stateful, more attractive
 ## target for "hide the real L4 down the chain" than the stateless forward drop.
-def _hidden_l4(src: str, dst: str, dport: int, l4: str) -> tuple[int, bytes]:
+def _hidden_l4(src: str, dst: str, dport: int, l4: str, sport: int = 41600) -> tuple[int, bytes]:
     if l4 == "tcp":
-        return 6, tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["syn"])
-    return 17, udp6(src, dst, 41600, dport)
+        return 6, tcp6(src, dst, sport, dport, 601, TCP_FLAGS["syn"])
+    return 17, udp6(src, dst, sport, dport)
 
 
-def frag6_atomic(src: str, dst: str, dport: int, l4: str = "udp") -> bytes:
+def frag6_atomic(src: str, dst: str, dport: int, l4: str = "udp", sport: int = 41600) -> bytes:
     ## IPv6 fragment extension header (next-header 44) carrying the L4 as a single
     ## atomic fragment (offset 0, M=0): exercises the fragment-header path.
-    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4, sport)
     frag_hdr = struct.pack("!BBHI", next_l4, 0, 0, 0xABCD)  # nexthdr, offset0, M=0
     payload = frag_hdr + l4bytes
     return ip6_header(src, dst, len(payload), 44) + payload
@@ -217,8 +217,8 @@ def _exthdr6_body(kind: str, next_header: int) -> bytes:
     return struct.pack("!BBBB", next_header, 0, 1, 4) + b"\x00\x00\x00\x00"
 
 
-def exthdr6(src: str, dst: str, dport: int, kind: str, l4: str = "udp") -> bytes:
-    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+def exthdr6(src: str, dst: str, dport: int, kind: str, l4: str = "udp", sport: int = 41600) -> bytes:
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4, sport)
     payload = _exthdr6_body(kind, next_l4) + l4bytes
     return ip6_header(src, dst, len(payload), EXTHDR6_TYPE[kind]) + payload
 
@@ -259,9 +259,9 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         payload = udp6(args.src, args.dst, args.sport, args.dport)
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 17)[:40] + payload
     if args.proto == "frag6":
-        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport, args.l4)
+        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport, args.l4, args.sport)
     if args.proto == "exthdr6":
-        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr, args.l4)
+        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr, args.l4, args.sport)
     if args.proto == "rawip6":
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum)[:40] + PROBE_PAYLOAD
     if args.proto == "tcp4":
