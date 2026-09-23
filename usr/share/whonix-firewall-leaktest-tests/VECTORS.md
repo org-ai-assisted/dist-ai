@@ -28,13 +28,17 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   (`nonsyn_tcp_transproxy_bypass_test.sh`, `ipv4_nonsyn_tcp_test.sh`)
 - Positive control is dual-family (IPv6 AND IPv4 TransPort), so a family-scoped
   redirect breakage is caught (`leaktest_lib.sh` leaktest_positive_control)
-- Arbitrary IP protocols -- GRE 47, ESP 50, AH 51, OSPF 89, DCCP 33, SCTP 132,
-  IP-in-IP 4, as BOTH IPv6 next-headers AND IPv4-outer protocols
+- Arbitrary IP protocols -- broad sample (IP-in-IP 4, GRE 47, ESP 50, AH 51, OSPF
+  89, DCCP 33, SCTP 132, PIM 103, VRRP 112, L2TP 115, MPLS 137, IPv6-in-IPv6 41
+  for v6), as BOTH IPv6 next-headers AND IPv4-outer protocols
   (`protocol_and_tunnel_test.sh`)
 - Tunnels -- 6to4/SIT (IPv4 proto 41), Teredo (UDP/3544) (same file)
 - IPv6 atomic fragment (`fragment_evasion_test.sh`)
 - IPv6 extension-header chain -- Routing (RH0) / Hop-by-Hop / Destination options
   (`ipv6_exthdr_chain_test.sh`)
+- Ext-header / fragment hiding a TCP SYN -- the transparent-proxy redirect must
+  walk the chain to find + redirect the SYN, not forward it un-torified
+  (`ipv6_exthdr_hidden_syn_test.sh`)
 - Fail-closed killswitch -- Tor down => drop, not leak (`fail_closed_test.sh`)
 
 This covers, and exceeds, every vector the Whonix wiki `Dev/Leak_Tests` (+ the
@@ -82,10 +86,8 @@ extension-header vectors, which this suite adds.
   control-port / onion-grater test, not this suite.
 - Firewall rule-reload race under live traffic -- the serial setup/teardown model
   structurally cannot exercise it.
-- Wider protocol-number + destination-port sweeps (the wiki's 0-255 / 0-65535
-  batteries) -- the suite tests a representative sample, not exhaustively.
-- Extension-header / fragment probes hide only a UDP payload, not a TCP SYN, so a
-  redirect that mis-parses an ext-header chain to find the SYN is not yet exercised.
+- EXHAUSTIVE protocol-number / destination-port sweeps (the wiki's 0-255 / 0-65535
+  batteries) -- the suite tests a broad sample, not every value.
 - Rogue-RA soundness dependency: the uRPF rule keys on the live FIB, so the
   internal-interface accept_ra / accept_redirects sysctls being off is load-bearing;
   not yet asserted here (see the RA item above).

@@ -22,8 +22,9 @@ could never send.
   udp4   IPv4 UDP datagram to --dport (e.g. Teredo UDP/3544)
   rawip6 IPv6 with an arbitrary next-header (--protonum), tiny payload
   rawip4 IPv4 with an arbitrary protocol (--protonum), tiny payload (e.g. 41 = 6to4)
-  frag6  IPv6 atomic fragment (fragment ext-header) carrying a UDP datagram
-  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) over UDP
+  frag6  IPv6 atomic fragment (fragment ext-header) hiding an L4 (--l4 udp|tcp)
+  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
+          L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
 
 import argparse
@@ -122,32 +123,42 @@ def ip4_header(src: str, dst: str, payload_len: int, proto: int) -> bytes:
     return header[:10] + struct.pack("!H", checksum16(header)) + header[12:]
 
 
-def frag6_atomic(src: str, dst: str, dport: int) -> bytes:
-    ## IPv6 fragment extension header (next-header 44) carrying a UDP datagram as a
-    ## single atomic fragment (offset 0, M=0): exercises the fragment-header path.
-    udp = udp6(src, dst, 41500, dport)
-    frag_hdr = struct.pack("!BBHI", 17, 0, 0, 0xABCD)  # nexthdr=UDP, offset0, M=0
-    payload = frag_hdr + udp
+## The L4 hidden one hop down an ext-header / fragment chain: UDP (17) by default,
+## or a TCP SYN (6) -- the transparent-proxy REDIRECT is a stateful, more attractive
+## target for "hide the real L4 down the chain" than the stateless forward drop.
+def _hidden_l4(src: str, dst: str, dport: int, l4: str) -> tuple[int, bytes]:
+    if l4 == "tcp":
+        return 6, tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["syn"])
+    return 17, udp6(src, dst, 41600, dport)
+
+
+def frag6_atomic(src: str, dst: str, dport: int, l4: str = "udp") -> bytes:
+    ## IPv6 fragment extension header (next-header 44) carrying the L4 as a single
+    ## atomic fragment (offset 0, M=0): exercises the fragment-header path.
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+    frag_hdr = struct.pack("!BBHI", next_l4, 0, 0, 0xABCD)  # nexthdr, offset0, M=0
+    payload = frag_hdr + l4bytes
     return ip6_header(src, dst, len(payload), 44) + payload
 
 
-## IPv6 extension headers (8-byte minimal forms), each declaring next-header=UDP
-## so the L4 is hidden one hop down the chain -- a classic way to try to slip past
-## a stateless filter that only inspects the first next-header.
-EXTHDR6 = {
-    ## Routing header (nexthdr 43), type 0, segments-left 0 (the RH0 shape).
-    "routing": (43, struct.pack("!BBBBI", 17, 0, 0, 0, 0)),
-    ## Hop-by-Hop options (nexthdr 0) with a PadN option filling the 8 bytes.
-    "hopopts": (0, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
-    ## Destination options (nexthdr 60), same PadN filler.
-    "dstopts": (60, struct.pack("!BBBB", 17, 0, 1, 4) + b"\x00\x00\x00\x00"),
-}
+## IPv6 extension header TYPES; the 8-byte header itself is built with the hidden
+## L4's protocol as its next-header (a classic way to slip past a filter that only
+## inspects the first next-header).
+EXTHDR6_TYPE = {"routing": 43, "hopopts": 0, "dstopts": 60}
 
 
-def exthdr6(src: str, dst: str, dport: int, kind: str) -> bytes:
-    next_header, header = EXTHDR6[kind]
-    payload = header + udp6(src, dst, 41600, dport)
-    return ip6_header(src, dst, len(payload), next_header) + payload
+def _exthdr6_body(kind: str, next_header: int) -> bytes:
+    if kind == "routing":
+        ## Routing header, type 0, segments-left 0 (the RH0 shape).
+        return struct.pack("!BBBBI", next_header, 0, 0, 0, 0)
+    ## Hop-by-Hop (0) / Destination (60) options: a PadN option filling the 8 bytes.
+    return struct.pack("!BBBB", next_header, 0, 1, 4) + b"\x00\x00\x00\x00"
+
+
+def exthdr6(src: str, dst: str, dport: int, kind: str, l4: str = "udp") -> bytes:
+    next_l4, l4bytes = _hidden_l4(src, dst, dport, l4)
+    payload = _exthdr6_body(kind, next_l4) + l4bytes
+    return ip6_header(src, dst, len(payload), EXTHDR6_TYPE[kind]) + payload
 
 
 def resolve_gw_mac(gw4: str) -> bytes:
@@ -186,9 +197,9 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         payload = udp6(args.src, args.dst, args.sport, args.dport)
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(payload), 17)[:40] + payload
     if args.proto == "frag6":
-        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport)
+        return ETH_P_IPV6, frag6_atomic(args.src, args.dst, args.dport, args.l4)
     if args.proto == "exthdr6":
-        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr)
+        return ETH_P_IPV6, exthdr6(args.src, args.dst, args.dport, args.exthdr, args.l4)
     if args.proto == "rawip6":
         return ETH_P_IPV6, ip6_header(args.src, args.dst, len(PROBE_PAYLOAD), args.protonum)[:40] + PROBE_PAYLOAD
     if args.proto == "tcp4":
@@ -226,7 +237,8 @@ def main() -> None:
     parser.add_argument("--dport", type=ranged_int(0, 0xFFFF), default=443)
     parser.add_argument("--flags", default="syn", choices=sorted(TCP_FLAGS))
     parser.add_argument("--protonum", type=ranged_int(0, 0xFF), default=47, help="IP proto / next-header for rawip*")
-    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6), help="ext-header for exthdr6")
+    parser.add_argument("--exthdr", default="routing", choices=sorted(EXTHDR6_TYPE), help="ext-header for exthdr6")
+    parser.add_argument("--l4", default="udp", choices=["udp", "tcp"], help="L4 hidden in frag6/exthdr6")
     parser.add_argument("--count", type=ranged_int(1, 10000), default=4)
     args = parser.parse_args()
 
