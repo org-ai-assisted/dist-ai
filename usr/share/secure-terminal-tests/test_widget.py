@@ -4320,6 +4320,20 @@ finally:
     os.close(_ae_w)
     os.close(_ae_r)
 ok(_ae_wedged2 is True, '_await_exec: an OSError from kill is swallowed; the tab still fails closed')
+# CANARY: the handshake fd can exceed FD_SETSIZE (1024) with many tabs open. select() raises
+# ValueError on such an fd (after the child has forked); poll() handles it. Force a high fd.
+import resource as _ae_res                                    # noqa: E402
+_ae_soft, _ae_hard = _ae_res.getrlimit(_ae_res.RLIMIT_NOFILE)
+_ae_res.setrlimit(_ae_res.RLIMIT_NOFILE, (min(2048, _ae_hard), _ae_hard))
+_ae_r, _ae_w = os.pipe()
+os.dup2(_ae_r, 1100)                                          # a fd >= FD_SETSIZE
+os.close(_ae_r)
+os.write(_ae_w, b'x')
+os.close(_ae_w)                                               # exec-failure byte -> ready, no timeout
+ok(_ae._await_exec(1100, 999999) is True,
+   '_await_exec: a handshake fd >= FD_SETSIZE (1024) is handled (poll, not select)')
+os.close(1100)
+_ae_res.setrlimit(_ae_res.RLIMIT_NOFILE, (_ae_soft, _ae_hard))
 _ae.shutdown()
 
 # #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else

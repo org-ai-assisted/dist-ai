@@ -178,4 +178,16 @@ ok(_d._alt_saved is None and not _d._alt_screen,
    'a genuine leave after the flood restores the primary (no stranded snapshot)')
 _d.close()
 
+# The reconcile is GATED on the cap, NOT run on every read: _feed_stream reports whether it
+# hit _ALT_TRANSITIONS_MAX, and _read_and_render reconciles the flag ONLY then. A normal read
+# must leave the scan flag intact -- a combined/numeric split alt marker (ESC[?47;1049h,
+# ESC[?01049h) the text scan resolves but the byte-feed carry misses must not be clobbered
+# back to the machine state (codex/grok ai-review). Assert the gate directly.
+_g2 = _new_term()
+ok(_g2._feed_stream(_ENTER) is False,
+   'a single alt enter does NOT report capped (so the flag reconcile is skipped)')
+ok(_g2._feed_stream((_ENTER + _LEAVE) * _g2._ALT_TRANSITIONS_MAX + _ENTER) is True,
+   'a >cap alt-transition flood reports capped (gating the flag reconcile)')
+_g2.close()
+
 finish('alt-reenter')
