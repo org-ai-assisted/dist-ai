@@ -79,16 +79,9 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## is a bash-parser problem and deliberately out of scope. An accidental REMOVAL or
 ## reorder of the guard is caught; a hand-crafted evasion that keeps the 'if' text but
 ## neuters it is not this guard's job.
-## Feed the library on STDIN, not as a filename argument: gawk treats an argument
-## matching 'ident=value' as a variable assignment, so a relative lib path whose
-## first component contains '=' (e.g. a repo checkout named 'x=y') would be consumed
-## as an assignment and awk would silently read the terminal/stdin instead -- a false
-## result. Redirection removes the filename entirely, so the path shape cannot matter.
-console_body="$(awk '
-   /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
-   in_fn { print }
-   in_fn && /^\}/ { if (in_fn) exit }
-' < "${lib}")"
+## Extract the set_console_keymap() body: the function-open line through the
+## column-0 '}' that closes it. '--' guards a lib path that begins with '-'.
+console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^}/p' "${lib}")"
 
 ## Drop whole-line comments so an inert guard string parked in a comment cannot
 ## satisfy the check (the exact evasion this test exists to resist).
