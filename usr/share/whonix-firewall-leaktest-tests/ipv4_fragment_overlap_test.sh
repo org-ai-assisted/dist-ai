@@ -9,9 +9,14 @@
 ##
 ## IPv4 reassembly (ip_defrag) is a SEPARATE code path from nf_defrag_ipv6, and RFC
 ## 791 predates RFC 5722's explicit drop-on-overlap mandate -- so IPv4 overlap
-## handling must be verified in its own right, not assumed from the IPv6 case.
-## Empirically Linux ip_defrag also drops the whole datagram on overlap, so nothing
-## reassembles or forwards.
+## handling must be verified in its own right, not assumed from the IPv6 case. The
+## overlapping fragment here EXTENDS past the first fragment's end ([0,16) MF=1 then
+## [8,22) MF=0), so ip_defrag classifies it IPFRAG_OVERLAP and inet_frag_kill
+## discards the whole datagram (RFC 5722) -- the genuine overlap-kill path, not the
+## IPFRAG_DUP a mere subset [8,16) would degenerate into (first fragment merely left
+## in an incomplete queue). Empirically confirmed: the gw reassembles forwarded IPv4
+## fragments (nf_defrag_ipv4, via the ruleset's nat/conntrack), and the overlapping
+## set does not egress while the valid sibling set does.
 ##
 ## Under the shipped ruleset the forward policy-drop blocks it anyway, so the teeth
 ## are under a PERMISSIVE forward policy: the VALID sibling set (frag4set) egresses
@@ -52,17 +57,17 @@ else
    rc=1
 fi
 
-## 3. Permissive forward: the overlapping set STILL does not egress (ip_defrag drops
-## it on overlap), while the VALID set DOES -- proving the harness detects an IPv4
-## fragment leak, so the overlap's non-egress is the reassembler rejecting the
-## overlap, not a dead path.
+## 3. Permissive forward: the overlapping set STILL does not egress (ip_defrag's
+## IPFRAG_OVERLAP -> inet_frag_kill discards it), while the VALID set DOES -- proving
+## the harness detects an IPv4 fragment leak, so the overlap's non-egress is the
+## reassembler killing the overlap, not a dead path.
 permissive="$(mktemp --suffix=.nft)"
 leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
 
 leaktest_setup "${permissive}"
 leaktest_fire_forward_probe frag4overlap "${INT_WS_IP4}" "${PROBE_DST_IP4}" \
    "${capture_file}" --dport 123
-leaktest_assert_blocked 'overlapping IPv4 fragments (permissive forward -- ip_defrag drops)' \
+leaktest_assert_blocked 'overlapping IPv4 fragments (permissive forward -- inet_frag_kill)' \
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 leaktest_setup "${permissive}"
