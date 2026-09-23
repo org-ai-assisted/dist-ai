@@ -69,23 +69,26 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 ## STRUCTURAL revert-guard (AI-accident scope). Assert set_console_keymap in the
-## shipped library keeps its root guard: the guard 'if' is PRESENT as a real
-## statement (anchored to line start after comment-stripping, so guard text parked in
-## a comment or string cannot satisfy it) and PRECEDES the actual restart command line
-## (a 'log_run' invocation). Tracks the shipped guard
-## 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
+## shipped library keeps its root guard: the guard 'if' is PRESENT (anchored to line
+## start after stripping whole-line '#' comments, so guard text in a '#' comment cannot
+## satisfy it) and PRECEDES the actual restart command line (a 'log_run' invocation).
+## Tracks the shipped guard 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
 ##
-## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of
-## a repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy
+## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of a
+## repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy
 ## above an unguarded live one) makes a single extracted body unable to tell which copy
-## actually runs -- fail closed on any count != 1 (a simple grep count, not brace
-## parsing; a human reviews). This closes the multiple-definition false-green class.
+## actually runs -- fail closed on any count != 1. The count recognizes BOTH bash
+## function-header forms, 'name ()' and 'function name' (the complete grammar; brace
+## on the same or next line), so a duplicate cannot hide behind an alternate header
+## syntax. Still a line-oriented grep, not brace parsing.
 ##
-## Out of scope (deliberately, per never-reinvent-a-bash-parser): proving the non-root
-## branch RETURNS, and any guard neutered WITHIN a single definition (else / subshell /
-## pipeline / conditional return) -- that is control-flow parsing. An accidental REMOVAL,
-## reorder, or DUPLICATION of the guard is caught; neutering inside one copy is not.
-def_count="$(grep --count --extended-regexp -- '^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{' "${lib}" || true)"
+## Out of scope (deliberately, per never-reinvent-a-bash-parser -- would need a real
+## shell parser, a human reviews): guard text smuggled into a heredoc/string body (the
+## '#'-comment strip does not track heredocs/quotes), and a guard neutered WITHIN a
+## single definition (else / subshell / pipeline / conditional return). An accidental
+## REMOVAL, reorder, or DUPLICATION of the guard is caught; hand-crafted text-smuggling
+## or in-definition neutering is not.
+def_count="$(grep --count --extended-regexp -- '^[[:space:]]*(function[[:space:]]+set_console_keymap([[:space:]]|\(|$)|set_console_keymap[[:space:]]*\(\))' "${lib}" || true)"
 if [ "${def_count}" -eq 1 ]; then
    ok "exactly one set_console_keymap definition"
 else

@@ -219,10 +219,55 @@ set_console_keymap() {
 }
 LIB
 )"
+## The live copy hides behind an alternate (but legal) function-header syntax the
+## same-line-brace pattern misses: a space before '()', the brace on the next line, or
+## the 'function' keyword. The dead first copy is a COMPLETE, correctly-guarded decoy, so
+## body extraction and the guard/restart-order check pass on it -- only a count that
+## recognizes the full header grammar catches the unguarded live copy below.
+spaceparen_repo="$(make_lib_repo two-def-spaceparen <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+set_console_keymap () {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+nextbrace_repo="$(make_lib_repo two-def-nextbrace <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+set_console_keymap()
+{
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+funckw_repo="$(make_lib_repo two-def-funckw <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+function set_console_keymap {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
 
 expect_evasion_caught "two defs, split guard/restart" "${split_repo}"
 expect_evasion_caught "two defs, complete guarded decoy first" "${decoy_repo}"
 expect_evasion_caught "two defs, indented first-def close" "${indented_repo}"
+expect_evasion_caught "two defs, live copy uses 'name ()' spacing" "${spaceparen_repo}"
+expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo}"
+expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"
