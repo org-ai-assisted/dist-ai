@@ -20,9 +20,13 @@
 ##   fail-closed -> an explicit-but-broken override (missing lib, or a lib path
 ##              that is a directory not a file) exits nonzero with the fail-closed
 ##              FATAL (not the pre-existing 'not found' FATAL, so it is not vacuous).
-##   evasion  -> a library with two set_console_keymap() definitions does NOT pass
-##              (any shape): bash runs the LAST copy, so the guard requires exactly
-##              one definition and fails closed on a duplicate.
+##   evasion  -> a duplicate set_console_keymap() whose SECOND header the definition
+##              count can see (the common line-start forms: 'name()', 'name ()',
+##              'name( )', brace-on-next-line, 'function name') does NOT pass -- bash
+##              runs the LAST copy, so the count fails closed on it. A duplicate whose
+##              header a line grep cannot see (glued after '};' on one line, a line
+##              continuation, other exotic placement) is OUT OF SCOPE, per the SCOPE
+##              note in root_guard_structural_test.sh -- not "any shape".
 ##   pos      -> a VALID override still passes (the fix does not over-die).
 ##
 ## No root, no network.
