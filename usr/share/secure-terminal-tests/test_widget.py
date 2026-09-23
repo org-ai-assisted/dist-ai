@@ -4321,18 +4321,28 @@ finally:
     os.close(_ae_r)
 ok(_ae_wedged2 is True, '_await_exec: an OSError from kill is swallowed; the tab still fails closed')
 # CANARY: the handshake fd can exceed FD_SETSIZE (1024) with many tabs open. select() raises
-# ValueError on such an fd (after the child has forked); poll() handles it. Force a high fd.
+# ValueError on such an fd (after the child has forked); poll() handles it. The bug can only
+# manifest when the process can HOLD a fd >= 1024, so raise the soft limit and use F_DUPFD to
+# allocate the LOWEST FREE fd >= a floor past FD_SETSIZE -- never dup2 to a fixed number, which
+# would raise (aborting the rest of this suite -> false green) if that fd is out of range and
+# could CLOBBER a fd another object already owns.
 import resource as _ae_res                                    # noqa: E402
+import fcntl as _ae_fcntl                                     # noqa: E402
 _ae_soft, _ae_hard = _ae_res.getrlimit(_ae_res.RLIMIT_NOFILE)
-_ae_res.setrlimit(_ae_res.RLIMIT_NOFILE, (min(2048, _ae_hard), _ae_hard))
+# Every real test env (sandbox 65536, CI 524288) can host such a fd; fail LOUD, never silently
+# skip, if one somehow cannot -- a hard limit this low would also make the ValueError bug
+# unreachable, but a silent skip here would be a false green.
+ok(_ae_hard >= 2048, 'RLIMIT_NOFILE hard limit (%d) can host a fd >= FD_SETSIZE for the '
+   'poll-vs-select canary' % _ae_hard)
+_ae_res.setrlimit(_ae_res.RLIMIT_NOFILE, (min(max(_ae_soft, 2048), _ae_hard), _ae_hard))
 _ae_r, _ae_w = os.pipe()
-os.dup2(_ae_r, 1100)                                          # a fd >= FD_SETSIZE
+_ae_hi = _ae_fcntl.fcntl(_ae_r, _ae_fcntl.F_DUPFD, 1100)     # lowest free fd >= 1100 (no clobber)
 os.close(_ae_r)
 os.write(_ae_w, b'x')
 os.close(_ae_w)                                               # exec-failure byte -> ready, no timeout
-ok(_ae._await_exec(1100, 999999) is True,
-   '_await_exec: a handshake fd >= FD_SETSIZE (1024) is handled (poll, not select)')
-os.close(1100)
+ok(_ae._await_exec(_ae_hi, 999999) is True,
+   '_await_exec: a handshake fd >= FD_SETSIZE (%d) is handled (poll, not select)' % _ae_hi)
+os.close(_ae_hi)
 _ae_res.setrlimit(_ae_res.RLIMIT_NOFILE, (_ae_soft, _ae_hard))
 _ae.shutdown()
 
