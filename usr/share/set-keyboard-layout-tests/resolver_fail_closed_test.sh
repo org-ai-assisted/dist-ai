@@ -296,26 +296,33 @@ expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo
 expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
 expect_evasion_caught "two defs, live copy uses 'name( )' inner space" "${inparen_repo}"
 
-## The sibling live_mode lane resolves its own subject (the set-grub-keymap wrapper) with
-## the same precedence and must fail closed on an explicit-but-invalid override too, rather
-## than silently running the installed wrapper against the caller's broken checkout.
-printf '%s\n' "== case: live_mode explicit-but-invalid override -> fail closed =="
-live_out="${work_dir}/live_output.txt"
-live_rc=0
-env SET_KEYBOARD_LAYOUT_REPO="${missing_repo}" HELPER_SCRIPTS_REPO='' HELPER_SCRIPTS_PATH='' \
-   "${live_subject}" >"${live_out}" 2>&1 || live_rc=$?
-if [ "${live_rc}" -ne 0 ]; then
-   ok "exit nonzero (${live_rc})"
-else
-   notok "live_mode passed an explicit-but-invalid override (silent fall-through)"
-   cat -- "${live_out}" >&2 || true
-fi
-if grep --quiet --fixed-strings -- 'is not readable' "${live_out}"; then
-   ok "live_mode emitted the fail-closed FATAL"
-else
-   notok "live_mode fail-closed FATAL missing (wrong reason for the nonzero exit)"
-   cat -- "${live_out}" >&2 || true
-fi
+## The sibling live_mode lane resolves its own subject (the set-grub-keymap wrapper) over the
+## SAME precedence chain and must fail closed on an explicit-but-invalid override at EACH
+## level, rather than silently running the installed wrapper against the caller's broken
+## checkout. $1 label; $2/$3/$4 SET_KEYBOARD_LAYOUT_REPO / HELPER_SCRIPTS_REPO / HELPER_SCRIPTS_PATH.
+expect_live_fail_closed() {
+   printf '%s\n' "== case: live_mode $1 -> fail closed =="
+   local live_out="${work_dir}/live_output.txt"
+   local live_rc=0
+   env SET_KEYBOARD_LAYOUT_REPO="$2" HELPER_SCRIPTS_REPO="$3" HELPER_SCRIPTS_PATH="$4" \
+      "${live_subject}" >"${live_out}" 2>&1 || live_rc=$?
+   if [ "${live_rc}" -ne 0 ]; then
+      ok "exit nonzero (${live_rc})"
+   else
+      notok "live_mode passed an explicit-but-invalid override (silent fall-through)"
+      cat -- "${live_out}" >&2 || true
+   fi
+   if grep --quiet --fixed-strings -- 'is not readable' "${live_out}"; then
+      ok "live_mode emitted the fail-closed FATAL"
+   else
+      notok "live_mode fail-closed FATAL missing (wrong reason for the nonzero exit)"
+      cat -- "${live_out}" >&2 || true
+   fi
+}
+
+expect_live_fail_closed "explicit-but-invalid SET_KEYBOARD_LAYOUT_REPO" "${missing_repo}" '' ''
+expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
+expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_PATH" '' '' "${missing_repo}"
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

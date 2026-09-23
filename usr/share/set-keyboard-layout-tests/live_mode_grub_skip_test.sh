@@ -39,45 +39,45 @@ export LC_ALL=C
 ## scratch dir under '/' -- treat empty as unset and fall back to /tmp.
 [ -n "${TMP:-}" ] || TMP=/tmp
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
+[ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
+[ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
 
-if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ]; then
-   repo="${SET_KEYBOARD_LAYOUT_REPO}"
-   repo_var='SET_KEYBOARD_LAYOUT_REPO'
-elif [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
-   repo="${HELPER_SCRIPTS_PATH}"
-   repo_var='HELPER_SCRIPTS_PATH'
-else
-   repo=""
-   repo_var=''
-fi
-
-subject=""
-if [ -n "${repo}" ]; then
-   ## An explicit override NAMES the subject: it must contain the wrapper, else fail
-   ## closed -- do NOT silently fall through to the installed copy, which would run a
-   ## different binary (and, via helper_scripts_path below, a different library) than the
-   ## checkout the caller pointed at.
-   if [ -r "${repo}/usr/bin/set-grub-keymap" ]; then
-      subject="${repo}/usr/bin/set-grub-keymap"
+wrapper_rel='usr/bin/set-grub-keymap'
+repo=""
+## Resolve the checkout under test, highest precedence first -- the SAME chain root_guard
+## uses (SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH). An explicit
+## override NAMES the subject: set but missing the wrapper -> fail closed, do NOT silently
+## fall through to the installed copy (which would run a different binary/library than the
+## checkout the caller pointed at).
+for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
+   repo_val="${!repo_var}"
+   [ -n "${repo_val}" ] || continue
+   if [ -r "${repo_val}/${wrapper_rel}" ]; then
+      repo="${repo_val}"
    else
-      printf '%s\n' "FATAL: ${repo_var}='${repo}' set but '${repo}/usr/bin/set-grub-keymap' is not readable" >&2
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${wrapper_rel}' is not readable" >&2
       printf '%s\n' "an explicit override must point at a helper-scripts checkout with the wrapper; refusing to silently fall back" >&2
       exit 1
    fi
-elif [ -r '/usr/bin/set-grub-keymap' ]; then
-   subject='/usr/bin/set-grub-keymap'
-   repo='/'
-fi
+   break
+done
 
-if [ -z "${subject}" ]; then
+if [ -n "${repo}" ]; then
+   subject="${repo}/${wrapper_rel}"
+elif [ -r "/${wrapper_rel}" ]; then
+   subject="/${wrapper_rel}"
+   repo='/'
+else
    printf '%s\n' "FATAL: set-grub-keymap not found" >&2
    printf '%s\n' "set SET_KEYBOARD_LAYOUT_REPO or HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install the package" >&2
    exit 1
 fi
 
-## The wrapper sources the library from HELPER_SCRIPTS_PATH; keep both pointed at
-## the same tree so the subject under test is the checkout, not the installed copy.
-helper_scripts_path="${HELPER_SCRIPTS_PATH:-${repo}}"
+## The wrapper sources its library (set-keyboard-layout.sh) from HELPER_SCRIPTS_PATH at
+## runtime; point it at the SAME resolved tree so the subject wrapper and its library can
+## never come from different checkouts (a checkout whose own library is missing/defective
+## must not pass by borrowing another tree's library).
+helper_scripts_path="${repo}"
 
 work_dir="$(mktemp --directory -- "${TMP}/set-keyboard-layout-test.XXXXXX")"
 
