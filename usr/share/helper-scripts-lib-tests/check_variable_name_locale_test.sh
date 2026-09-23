@@ -33,52 +33,47 @@ export LC_ALL=C
 
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 
-if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   repo="${HELPER_SCRIPTS_REPO}"
-else
-   repo=""
-fi
-
-strings_bsh="${repo:-}/usr/libexec/helper-scripts/strings.bsh"
-[ -r "${strings_bsh}" ] || strings_bsh='/usr/libexec/helper-scripts/strings.bsh'
+## Single source of truth for the tree under test: HELPER_SCRIPTS_REPO, else
+## HELPER_SCRIPTS_PATH, else '' (the installed /usr/libexec tree). BOTH the
+## readability check and the child's source path derive from this one value, so
+## they can never diverge: a named checkout that lacks strings.bsh is a FATAL
+## misconfiguration, never a silent fallback that would test the installed copy
+## (or a second path) instead of the artifact the caller asked for.
+tree_root="${HELPER_SCRIPTS_REPO:-${HELPER_SCRIPTS_PATH:-}}"
+tree_root="${tree_root%/}"
+strings_bsh="${tree_root}/usr/libexec/helper-scripts/strings.bsh"
 
 if [ ! -r "${strings_bsh}" ]; then
    printf '%s\n' "FATAL: strings.bsh not readable at '${strings_bsh}'" >&2
-   printf '%s\n' "set HELPER_SCRIPTS_REPO to a checkout, or install helper-scripts" >&2
+   printf '%s\n' "set HELPER_SCRIPTS_REPO (or HELPER_SCRIPTS_PATH) to a helper-scripts checkout, or install helper-scripts" >&2
    exit 1
 fi
+helper_scripts_path="${tree_root}"
 
-## Derive HELPER_SCRIPTS_PATH from the SAME strings.bsh that passed the
-## readability check above, so the child shell sources the very file this test
-## verified exists (strip the well-known suffix -> '' when strings_bsh fell back
-## to the installed /usr/libexec tree). An explicit HELPER_SCRIPTS_PATH wins.
-## Without this, a HELPER_SCRIPTS_REPO pointing at a checkout that lacks the
-## tree passes the check via the installed fallback yet the child sources a
-## nonexistent path -> every probe returns 127 and is misreported as a locale
-## verdict.
-if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
-   helper_scripts_path="${HELPER_SCRIPTS_PATH}"
-else
-   helper_scripts_path="${strings_bsh%/usr/libexec/helper-scripts/strings.bsh}"
-fi
-
-## The [A-Za-z] collation bug can only manifest under a full-collation UTF-8
-## locale; C.UTF-8's minimal collation does NOT expand ranges. Find one; the
-## canary is a real regression gate ONLY when such a locale is installed.
+## A real language locale with a UTF-8 charmap has full ISO 14651 collation that
+## expands [A-Za-z] to accented letters; C / C.UTF-8 / POSIX do NOT, so they
+## cannot expose the bug. Pick the FIRST such locale by its EXACT 'locale -a'
+## name (used verbatim as LC_ALL, so glibc actually activates it -- a synthesized
+## name might not exist). Any language is fine (fr_FR, de_DE, ...), not a fixed
+## shortlist.
 full_collation_locale=""
-locales_available="$(locale -a 2>/dev/null || true)"
-for cand in en_US.UTF-8 en_US.utf8 de_DE.UTF-8; do
-   if grep --quiet --ignore-case --line-regexp -- "${cand//UTF-8/utf8}" <<<"${locales_available}"; then
-      full_collation_locale="${cand}"
-      break
-   fi
-done
+while IFS= read -r loc; do
+   case "${loc}" in
+      C|C.*|POSIX|POSIX.*)
+         continue
+         ;;
+      *.utf8|*.UTF-8|*.utf-8|*.UTF8)
+         full_collation_locale="${loc}"
+         break
+         ;;
+   esac
+done < <(locale -a 2>/dev/null || true)
 
 if [ -z "${full_collation_locale}" ]; then
    ## The bug needs a full-collation UTF-8 locale to appear at all; with none
    ## installed there is nothing to exercise, so skip rather than pass hollowly
    ## on C-only assertions that never reach the vulnerable code path.
-   printf '%s\n' "SKIP: no full-collation UTF-8 locale (en_US.UTF-8 / de_DE.UTF-8) installed; locale-collation canary not exercised" >&2
+   printf '%s\n' "SKIP: no full-collation UTF-8 locale installed; locale-collation canary not exercised" >&2
    exit 77  ## style-ok: allow-skip: no full-collation UTF-8 locale; the collation bug cannot manifest
 fi
 
@@ -89,18 +84,21 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 ## Source strings.bsh in a child shell under locale $1 and run the probe body
 ## $2 with the candidate string as its $1; echo the validator's exit code.
-## The probe reads HELPER_SCRIPTS_PATH so strings.bsh can source its siblings.
+## errexit is ON across the source (a caller sources strings.bsh under strict
+## mode, so a broken source -- e.g. a missing sibling -- must ABORT here too,
+## surfacing as a harness error rather than a silently-masked pass), then OFF
+## for the validator call so its 0/1 verdict is captured, not aborted on.
 run_probe() {
    local locale="$1" probe_body="$2" candidate="$3"
-   local full_probe='source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" >/dev/null 2>&1; '"${probe_body}"
+   local full_probe='set -e; source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" >/dev/null 2>&1; set +e; '"${probe_body}"
    LC_ALL="${locale}" HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       /usr/bin/bash -c "${full_probe}" _ "${candidate}"
 }
 
 ## Judge a validator's exit code. A validator returns 0 (accept) or 1 (reject);
-## ANY other code means it was never invoked (e.g. 127 = source failed / function
-## undefined), which is a HARNESS error, NOT a locale verdict -- report it as
-## such so a broken environment is never mistaken for the collation regression.
+## ANY other value (or empty, when the source aborted) means it was never
+## invoked -- a HARNESS error (bad tree / missing dependency), NOT a locale
+## verdict -- so a broken environment is never mistaken for the regression.
 assert_rejects() {
    local label="$1" loc="$2" rc="$3"
    case "${rc}" in
@@ -111,7 +109,7 @@ assert_rejects() {
          notok "${label}: accepted a non-ASCII value under locale ${loc}; locale-dependent gate"
          ;;
       *)
-         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc=${rc}); check HELPER_SCRIPTS_PATH"
+         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc='${rc}'); check the tree under test"
          ;;
    esac
 }
@@ -125,7 +123,7 @@ assert_accepts() {
          notok "${label}: rejected a plain ASCII value '${input}' under locale ${loc}"
          ;;
       *)
-         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc=${rc}); check HELPER_SCRIPTS_PATH"
+         notok "${label}: HARNESS ERROR under ${loc}: validator not invoked (rc='${rc}'); check the tree under test"
          ;;
    esac
 }
@@ -148,10 +146,9 @@ validators=(
    "check_is_alpha_numeric|${probe_cian}|${ascii_name}"
 )
 
-## The full-collation locale is the one that bites the bug; C.UTF-8 and C are
-## byte-locale sanity (accented bytes rejected, ASCII accepted) under a
-## minimal collation.
-for loc in "${full_collation_locale}" 'C.UTF-8' 'C'; do
+## The full-collation locale is the one that bites the bug; C is byte-locale
+## sanity (accented bytes rejected, ASCII accepted) and is always present.
+for loc in "${full_collation_locale}" 'C'; do
    for entry in "${validators[@]}"; do
       label="${entry%%|*}"
       rest="${entry#*|}"
