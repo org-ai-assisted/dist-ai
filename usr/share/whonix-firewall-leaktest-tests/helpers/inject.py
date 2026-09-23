@@ -283,11 +283,14 @@ def build_l3(args: argparse.Namespace) -> tuple[bytes, bytes]:
         ## IPv4 UDP datagram bearing an ACTIVE (unexhausted) LSRR option: IP dst is
         ## the GATEWAY itself (--gw4) and the route's first unvisited hop (pointer 4)
         ## is the real clearnet target (--dst). A router that honors source routing
-        ## rewrites dst to the next hop and forwards it on -- the attacker-DIRECTED
-        ## source-routing case, distinct from srcroute4's inert completed route. The
-        ## L4 checksum is over the immediate (gateway) dst; a forwarding router does
-        ## not recompute it, and a leak test only cares that the packet egresses.
-        payload = udp4_segment(args.src, args.gw4, args.sport, args.dport)
+        ## rewrites the IP dst to the next hop and forwards it on -- the attacker-
+        ## DIRECTED source-routing case, distinct from srcroute4's inert completed
+        ## route. The UDP checksum is over the FINAL target (--dst), not the
+        ## immediate gateway dst: a forwarding router does not recompute the L4
+        ## checksum, so covering the post-rewrite destination is what makes the
+        ## egressed packet a valid datagram the real endpoint would accept (a
+        ## faithful leak, not one the endpoint would discard on a bad checksum).
+        payload = udp4_segment(args.src, args.dst, args.sport, args.dport)
         option = ip4_srcroute_option([args.dst], pointer=4, opt_type=IP4_OPT_LSRR)
         return ETH_P_IPV4, ip4_header_opts(args.src, args.gw4, len(payload), 17, option) + payload
     ## rawip4
