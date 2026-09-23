@@ -43,14 +43,28 @@ fire_hidden_syn() {
       "${capture_file}" "$@" --l4 tcp --dport 443
 }
 
-## 1. Shipped ruleset: each hidden-SYN shape is redirected to Tor (no clearnet egress).
+## 1. Shipped ruleset: each hidden-SYN shape must be REDIRECTED to the Tor
+## TransPort (proven by the redirect counter advancing -- the ruleset walked the
+## header chain to the SYN and torified it) AND must not egress the clearnet.
+## Asserting only no-egress would pass a firewall that silently DROPPED the SYN
+## (redirect mis-parsed the chain) identically to one that correctly redirects, so
+## the redirect-reached assertion is what actually guards the redirect behavior.
+## One topology, a DISTINCT source port per shape so each is its own conntrack flow
+## and independently traverses (and increments) the redirect rule -- a shared port
+## would collapse to one conntrack entry and only count the first shape.
 leaktest_setup "${ruleset_file}"
+hidden_sport=41600
 for shape in "frag6" "exthdr6 --exthdr routing" "exthdr6 --exthdr hopopts" "exthdr6 --exthdr dstopts"; do
    # shellcheck disable=SC2086 # split the shape into proto + flags on purpose
    set -- ${shape}
-   fire_hidden_syn "$@"
+   redirect_before="$(leaktest_transport_redirect_count)"
+   fire_hidden_syn "$@" --sport "${hidden_sport}"
+   redirect_after="$(leaktest_transport_redirect_count)"
    leaktest_assert_blocked "hidden TCP SYN (${shape})" \
       "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+   leaktest_assert_redirected "hidden TCP SYN (${shape})" \
+      "${redirect_before}" "${redirect_after}" || rc=1
+   hidden_sport=$(( hidden_sport + 1 ))
 done
 
 ## 2. Positive control on the same topology.
