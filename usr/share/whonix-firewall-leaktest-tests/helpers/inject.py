@@ -34,7 +34,7 @@ could never send.
             the whole datagram, so nothing reassembles or forwards
   frag6tinyfirst  First fragment too small for the L4 header (RFC 7112); the header
             chain is split across fragments and must be dropped, not reassembled
-  exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
+  exthdr6 IPv6 extension-header chain (--exthdr routing|routing4|hopopts|dstopts) hiding an
           L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
 
@@ -192,17 +192,27 @@ def ip4_header_frag(src: str, dst: str, payload_len: int, proto: int, ip_id: int
     return base[:10] + struct.pack("!H", checksum16(base)) + base[12:]
 
 
-def frag4_set(src: str, dst: str, dport: int, ip_id: int) -> list[bytes]:
-    ## Complete IPv4 UDP datagram split across two fragments (offset 0 MF=1 + offset
-    ## 16 MF=0), same id. The gw ruleset's nat/conntrack pulls in nf_defrag_ipv4, so
-    ## ip_defrag reassembles the set before the forward chain (re-fragmenting to the
-    ## original boundaries on egress via frag_max_size) -- splitting a datagram
-    ## cannot smuggle it past the forward drop. ip_id varies per iteration so a later
-    ## datagram never joins an earlier reassembly queue.
-    payload = udp4_segment(src, dst, 41600, dport)  # 8 hdr + PROBE_PAYLOAD = 22 bytes
-    first, second = payload[:16], payload[16:]  # 16 (2 units, MF=1) + 6 (last)
-    frag1 = ip4_header_frag(src, dst, len(first), 17, ip_id, 0x2000) + first    # off 0, MF=1
-    frag2 = ip4_header_frag(src, dst, len(second), 17, ip_id, 0x0002) + second  # off 16B, MF=0
+def frag4_set(src: str, dst: str, dport: int, ip_id: int, l4: str = "udp") -> list[bytes]:
+    ## Complete IPv4 datagram split across two fragments, same id. The gw ruleset's
+    ## nat/conntrack pulls in nf_defrag_ipv4, so ip_defrag reassembles the set before
+    ## the forward chain (re-fragmenting to the original boundaries on egress via
+    ## frag_max_size) -- splitting a datagram cannot smuggle it past the forward drop.
+    ## ip_id varies per iteration so a later datagram never joins an earlier queue.
+    ##
+    ## With l4="tcp" the datagram is a bare TCP SYN and the split falls at 8 bytes so
+    ## the TCP flags byte (offset 13) lands in the SECOND fragment -- a SYN hidden by
+    ## genuine fragmentation. The reassembled SYN must be REDIRECTED to the Tor
+    ## TransPort (asserted via the redirect counter), not merely dropped: this is the
+    ## classic transparent-proxy evasion, split so no single fragment shows the flags.
+    if l4 == "tcp":
+        segment = tcp4_segment(src, dst, 41600, dport, 601, TCP_FLAGS["syn"])  # 20-byte SYN
+        split, proto = 8, 6
+    else:
+        segment = udp4_segment(src, dst, 41600, dport)  # 8 hdr + PROBE_PAYLOAD = 22 bytes
+        split, proto = 16, 17
+    first, second = segment[:split], segment[split:]  # split bytes (MF=1) + remainder (last)
+    frag1 = ip4_header_frag(src, dst, len(first), proto, ip_id, 0x2000) + first        # off 0, MF=1
+    frag2 = ip4_header_frag(src, dst, len(second), proto, ip_id, split // 8) + second  # off split, MF=0
     return [frag1, frag2]
 
 
@@ -248,13 +258,15 @@ FRAG6_MULTI_ID = 0x00BEEF01
 
 
 def frag6_multi(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
-    ## Two IPv6 fragments of ONE UDP datagram, split on an 8-byte boundary
-    ## (fragment 1: offset 0, M=1; fragment 2: offset 8 bytes, M=0), sharing this
-    ## datagram's fragment id. nf_defrag_ipv6 (loaded by conntrack) reassembles
-    ## BEFORE the forward chain, so splitting a datagram cannot smuggle it past the
-    ## forward drop -- the ruleset sees the reassembled datagram, not the
-    ## fragments. An 8-byte UDP payload keeps the split 8-byte-aligned (fragment
-    ## offsets are in 8-byte units); only the first fragment carries the UDP header.
+    ## Two IPv6 fragments of ONE UDP datagram, split on an 8-byte boundary (fragment
+    ## 1: offset 0, M=1; fragment 2: offset 8 bytes, M=0), sharing this datagram's
+    ## fragment id. nf_defrag_ipv6 (loaded by conntrack) reassembles BEFORE the
+    ## forward chain, so splitting a datagram cannot smuggle it past the forward drop
+    ## -- the ruleset sees the reassembled datagram, not the fragments. An 8-byte UDP
+    ## payload keeps the split 8-byte-aligned; only the first fragment carries the UDP
+    ## header. (A TCP-SYN variant is not offered: hiding the SYN flags would truncate
+    ## the TCP header in the first fragment, which nf_defrag_ipv6 refuses to
+    ## reassemble -- covered as the tiny-first case, ipv6_fragment_tinyfirst_test.sh.)
     datagram = udp6_datagram(src, dst, 41600, dport, b"leaktest")  # 8 hdr + 8 payload
     first, second = datagram[:8], datagram[8:]
     frag_hdr1 = struct.pack("!BBHI", 17, 0, (0 << 3) | 1, frag_id)  # off 0, M=1
@@ -310,13 +322,20 @@ def frag6_overlap(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
 ## IPv6 extension header TYPES; the 8-byte header itself is built with the hidden
 ## L4's protocol as its next-header (a classic way to slip past a filter that only
 ## inspects the first next-header).
-EXTHDR6_TYPE = {"routing": 43, "hopopts": 0, "dstopts": 60}
+## kind -> IPv6 next-header value. routing/routing4 are both the Routing header (43)
+## but differ in the routing-TYPE byte (RH0 vs SRH), built in _exthdr6_body.
+EXTHDR6_TYPE = {"routing": 43, "routing4": 43, "hopopts": 0, "dstopts": 60}
 
 
 def _exthdr6_body(kind: str, next_header: int) -> bytes:
-    if kind == "routing":
-        ## Routing header, type 0, segments-left 0 (the RH0 shape).
-        return struct.pack("!BBBBI", next_header, 0, 0, 0, 0)
+    if kind in ("routing", "routing4"):
+        ## Routing header, segments-left 0. Routing TYPE 0 (RH0, deprecated by RFC
+        ## 5095) vs TYPE 4 (Segment Routing Header, RFC 8754). Defense-in-depth: this
+        ## ruleset drops via a type-AGNOSTIC blanket forward-drop, so both are caught
+        ## the same -- but a future rule keyed on the RH0 type byte specifically would
+        ## miss type 4, and the redirect's header-walk must reach the SYN behind either.
+        rtype = 4 if kind == "routing4" else 0
+        return struct.pack("!BBBBI", next_header, 0, rtype, 0, 0)
     ## Hop-by-Hop (0) / Destination (60) options: a PadN option filling the 8 bytes.
     return struct.pack("!BBBB", next_header, 0, 1, 4) + b"\x00\x00\x00\x00"
 
@@ -438,7 +457,7 @@ def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[
     if args.proto == "frag6tinyfirst":
         return ETH_P_IPV6, frag6_tinyfirst(args.src, args.dst, args.dport)
     if args.proto == "frag4set":
-        return ETH_P_IPV4, frag4_set(args.src, args.dst, args.dport, FRAG4_SET_ID + index)
+        return ETH_P_IPV4, frag4_set(args.src, args.dst, args.dport, FRAG4_SET_ID + index, args.l4)
     if args.proto == "frag4overlap":
         return ETH_P_IPV4, frag4_overlap(args.src, args.dst, args.dport, FRAG4_OVERLAP_ID + index)
     ethertype, l3 = build_l3(args)

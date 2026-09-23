@@ -63,8 +63,12 @@ fire_srcroute() { # <proto>
 ##                    forwards to dst normally (catches a rule keyed on IHL=5).
 ##   srcroute4active  ACTIVE route (dst=gateway, next hop=target) -- attacker-
 ##                    directed source routing the gateway must not honor+forward.
-## A test of only the completed shape would pass even against a ruleset that
-## accepted active LSRR packets, so both are exercised.
+## A test of only the completed shape would pass even against a ruleset that accepted
+## active LSRR packets, so both are exercised. (SSRR / option 137 is NOT tested: the
+## kernel's strict-source-route handling drops it regardless of accept_source_route
+## -- a strict route requires each hop directly connected, which a clearnet dst is
+## not -- so no permissive-forward canary can reproduce the leak and the firewall's
+## role cannot be isolated from the kernel's. LSRR is the shape a router can forward.)
 
 ## 1. Shipped ruleset (kernel source-route ON): the firewall must drop both.
 for proto in srcroute4 srcroute4active; do
