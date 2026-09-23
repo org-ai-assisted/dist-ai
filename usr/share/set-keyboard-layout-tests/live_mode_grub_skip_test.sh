@@ -42,18 +42,31 @@ export LC_ALL=C
 
 if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ]; then
    repo="${SET_KEYBOARD_LAYOUT_REPO}"
+   repo_var='SET_KEYBOARD_LAYOUT_REPO'
 elif [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
    repo="${HELPER_SCRIPTS_PATH}"
+   repo_var='HELPER_SCRIPTS_PATH'
 else
    repo=""
+   repo_var=''
 fi
 
 subject=""
-if [ -n "${repo}" ] && [ -r "${repo}/usr/bin/set-grub-keymap" ]; then
-   subject="${repo}/usr/bin/set-grub-keymap"
+if [ -n "${repo}" ]; then
+   ## An explicit override NAMES the subject: it must contain the wrapper, else fail
+   ## closed -- do NOT silently fall through to the installed copy, which would run a
+   ## different binary (and, via helper_scripts_path below, a different library) than the
+   ## checkout the caller pointed at.
+   if [ -r "${repo}/usr/bin/set-grub-keymap" ]; then
+      subject="${repo}/usr/bin/set-grub-keymap"
+   else
+      printf '%s\n' "FATAL: ${repo_var}='${repo}' set but '${repo}/usr/bin/set-grub-keymap' is not readable" >&2
+      printf '%s\n' "an explicit override must point at a helper-scripts checkout with the wrapper; refusing to silently fall back" >&2
+      exit 1
+   fi
 elif [ -r '/usr/bin/set-grub-keymap' ]; then
    subject='/usr/bin/set-grub-keymap'
-   repo="${repo:-/}"
+   repo='/'
 fi
 
 if [ -z "${subject}" ]; then

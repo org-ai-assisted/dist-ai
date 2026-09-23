@@ -5,8 +5,9 @@
 
 ## AI-Assisted
 
-## Regression guard for root_guard_structural_test.sh's library resolver and
-## function-body extraction.
+## Regression guard for the set-keyboard-layout-tests subject resolvers:
+## root_guard_structural_test.sh's library resolver and function-body extraction, plus the
+## sibling live_mode_grub_skip_test.sh's wrapper resolver (same fail-closed precedence).
 ##
 ## The sibling structural test picks the set-keyboard-layout.sh under test from
 ## SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH > the
@@ -49,9 +50,14 @@ export LC_ALL=C
 lib_rel='usr/libexec/helper-scripts/set-keyboard-layout.sh'
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 subject="${script_dir}/root_guard_structural_test.sh"
+live_subject="${script_dir}/live_mode_grub_skip_test.sh"
 
 if [ ! -r "${subject}" ]; then
    printf '%s\n' "FATAL: subject '${subject}' not found" >&2
+   exit 1
+fi
+if [ ! -r "${live_subject}" ]; then
+   printf '%s\n' "FATAL: subject '${live_subject}' not found" >&2
    exit 1
 fi
 
@@ -156,6 +162,7 @@ expect_fail_closed() {
 
 expect_fail_closed "explicit-but-unreadable HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
 expect_fail_closed "explicit-but-unreadable SET_KEYBOARD_LAYOUT_REPO" "${missing_repo}" '' ''
+expect_fail_closed "explicit-but-unreadable HELPER_SCRIPTS_PATH" '' '' "${missing_repo}"
 expect_fail_closed "explicit lib path is a directory, not a file" "${dir_lib_repo}" '' ''
 
 ## Write a crafted set-keyboard-layout.sh (NOT a copy of the real one) from stdin into
@@ -288,6 +295,27 @@ expect_evasion_caught "two defs, live copy uses 'name ()' spacing" "${spaceparen
 expect_evasion_caught "two defs, live copy brace on next line" "${nextbrace_repo}"
 expect_evasion_caught "two defs, live copy uses 'function' keyword" "${funckw_repo}"
 expect_evasion_caught "two defs, live copy uses 'name( )' inner space" "${inparen_repo}"
+
+## The sibling live_mode lane resolves its own subject (the set-grub-keymap wrapper) with
+## the same precedence and must fail closed on an explicit-but-invalid override too, rather
+## than silently running the installed wrapper against the caller's broken checkout.
+printf '%s\n' "== case: live_mode explicit-but-invalid override -> fail closed =="
+live_out="${work_dir}/live_output.txt"
+live_rc=0
+env SET_KEYBOARD_LAYOUT_REPO="${missing_repo}" HELPER_SCRIPTS_REPO='' HELPER_SCRIPTS_PATH='' \
+   "${live_subject}" >"${live_out}" 2>&1 || live_rc=$?
+if [ "${live_rc}" -ne 0 ]; then
+   ok "exit nonzero (${live_rc})"
+else
+   notok "live_mode passed an explicit-but-invalid override (silent fall-through)"
+   cat -- "${live_out}" >&2 || true
+fi
+if grep --quiet --fixed-strings -- 'is not readable' "${live_out}"; then
+   ok "live_mode emitted the fail-closed FATAL"
+else
+   notok "live_mode fail-closed FATAL missing (wrong reason for the nonzero exit)"
+   cat -- "${live_out}" >&2 || true
+fi
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"
