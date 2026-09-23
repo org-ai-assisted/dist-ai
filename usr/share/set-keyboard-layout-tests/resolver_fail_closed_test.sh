@@ -31,7 +31,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-[ -v TMP ] || TMP=/tmp
+## -n, not -v: an exported-but-empty TMP is 'set' to -v, which would leave the
+## scratch dir under '/' -- treat empty as unset and fall back to /tmp.
+[ -n "${TMP:-}" ] || TMP=/tmp
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 [ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
@@ -51,12 +53,12 @@ fi
 ## library is a REQUIRED dependency -- its absence is FATAL, never a skip.
 good_repo=""
 for repo_val in "${SET_KEYBOARD_LAYOUT_REPO}" "${HELPER_SCRIPTS_REPO}" "${HELPER_SCRIPTS_PATH}"; do
-   if [ -n "${repo_val}" ] && [ -r "${repo_val}/${lib_rel}" ]; then
+   if [ -n "${repo_val}" ] && [ -f "${repo_val}/${lib_rel}" ] && [ -r "${repo_val}/${lib_rel}" ]; then
       good_repo="${repo_val}"
       break
    fi
 done
-if [ -z "${good_repo}" ] && [ -r "/${lib_rel}" ]; then
+if [ -z "${good_repo}" ] && [ -f "/${lib_rel}" ] && [ -r "/${lib_rel}" ]; then
    good_repo="/"
 fi
 if [ -z "${good_repo}" ]; then
@@ -76,6 +78,13 @@ trap test_cleanup_handler EXIT
 ## copy of any package script -- just an empty tree the resolver must reject.
 missing_repo="${work_dir}/no-lib"
 mkdir --parents -- "${missing_repo}"
+
+## Another broken target: the lib PATH exists but is a DIRECTORY, not a regular
+## file. It is -r-readable, so a bare -r check would accept it and the extractor
+## would read an empty body / mis-report the TODO check -- the resolver must
+## reject a non-regular-file subject.
+dir_lib_repo="${work_dir}/dir-lib"
+mkdir --parents -- "${dir_lib_repo}/${lib_rel}"
 
 pass_count=0
 fail_count=0
@@ -111,37 +120,32 @@ run_subject() {
 ## The fail-closed FATAL is distinct from the pre-existing 'not found' FATAL; match
 ## its stable wording so a subject that merely could not find ANY library cannot
 ## satisfy the negative cases.
-fail_closed_re='is not readable'
+fail_closed_re='is not a readable file'
 
-printf '%s\n' "== case: explicit-but-unreadable HELPER_SCRIPTS_REPO -> fail closed =="
-run_subject '' "${missing_repo}" ''
-if [ "${run_rc}" -ne 0 ]; then
-   ok "exit nonzero (${run_rc})"
-else
-   notok "expected nonzero exit, got 0 (silent fall-through to another copy)"
-   cat -- "${run_out_file}" >&2 || true
-fi
-if grep --quiet --fixed-strings -- "${fail_closed_re}" "${run_out_file}"; then
-   ok "emitted the fail-closed FATAL"
-else
-   notok "fail-closed FATAL missing (wrong reason for the nonzero exit)"
-   cat -- "${run_out_file}" >&2 || true
-fi
+## Assert the subject fails closed for one explicit-but-broken override: nonzero
+## exit AND the fail-closed FATAL (never the 'not found' FATAL, which would mean it
+## simply resolved nothing rather than rejecting the named-but-broken target).
+## $1 label; $2/$3/$4 SET_KEYBOARD_LAYOUT_REPO / HELPER_SCRIPTS_REPO / HELPER_SCRIPTS_PATH.
+expect_fail_closed() {
+   printf '%s\n' "== case: $1 -> fail closed =="
+   run_subject "$2" "$3" "$4"
+   if [ "${run_rc}" -ne 0 ]; then
+      ok "exit nonzero (${run_rc})"
+   else
+      notok "expected nonzero exit, got 0 (silent fall-through to another copy)"
+      cat -- "${run_out_file}" >&2 || true
+   fi
+   if grep --quiet --fixed-strings -- "${fail_closed_re}" "${run_out_file}"; then
+      ok "emitted the fail-closed FATAL"
+   else
+      notok "fail-closed FATAL missing (wrong reason for the nonzero exit)"
+      cat -- "${run_out_file}" >&2 || true
+   fi
+}
 
-printf '%s\n' "== case: explicit-but-unreadable SET_KEYBOARD_LAYOUT_REPO -> fail closed =="
-run_subject "${missing_repo}" '' ''
-if [ "${run_rc}" -ne 0 ]; then
-   ok "exit nonzero (${run_rc})"
-else
-   notok "expected nonzero exit, got 0 (silent fall-through to another copy)"
-   cat -- "${run_out_file}" >&2 || true
-fi
-if grep --quiet --fixed-strings -- "${fail_closed_re}" "${run_out_file}"; then
-   ok "emitted the fail-closed FATAL"
-else
-   notok "fail-closed FATAL missing (wrong reason for the nonzero exit)"
-   cat -- "${run_out_file}" >&2 || true
-fi
+expect_fail_closed "explicit-but-unreadable HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
+expect_fail_closed "explicit-but-unreadable SET_KEYBOARD_LAYOUT_REPO" "${missing_repo}" '' ''
+expect_fail_closed "explicit lib path is a directory, not a file" "${dir_lib_repo}" '' ''
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

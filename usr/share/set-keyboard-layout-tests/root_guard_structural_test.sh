@@ -32,25 +32,28 @@ lib=""
 
 ## Resolve the library under test, highest precedence first. An explicitly-set
 ## override (SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH)
-## NAMES the subject: if it is set but its lib is unreadable, fail closed -- do NOT
-## fall through to a lower-precedence override or the installed copy. Falling through
-## would silently test a different file than the one the caller pointed at, reporting
-## green for a checkout whose library was renamed or deleted. The installed copy is
-## used ONLY when no override is set at all.
+## NAMES the subject: if it is set but its lib is not a readable regular file, fail
+## closed -- do NOT fall through to a lower-precedence override or the installed copy.
+## Falling through would silently test a different file than the one the caller pointed
+## at, reporting green for a checkout whose library was renamed or deleted. Require a
+## regular file (-f), not merely a readable path (-r): a directory, FIFO, or device at
+## the lib path is -r-readable but would make the extractor below skip it (empty body)
+## or block, both false results. The installed copy is used ONLY when no override is
+## set at all.
 for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
    repo_val="${!repo_var}"
    [ -n "${repo_val}" ] || continue
-   if [ -r "${repo_val}/${lib_rel}" ]; then
+   if [ -f "${repo_val}/${lib_rel}" ] && [ -r "${repo_val}/${lib_rel}" ]; then
       lib="${repo_val}/${lib_rel}"
    else
-      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${lib_rel}' is not readable" >&2
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${lib_rel}' is not a readable file" >&2
       printf '%s\n' "an explicit override must point at a readable helper-scripts checkout; refusing to silently fall back" >&2
       exit 1
    fi
    break
 done
 
-if [ -z "${lib}" ] && [ -r "/${lib_rel}" ]; then
+if [ -z "${lib}" ] && [ -f "/${lib_rel}" ] && [ -r "/${lib_rel}" ]; then
    lib="/${lib_rel}"
 fi
 
@@ -76,11 +79,16 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## is a bash-parser problem and deliberately out of scope. An accidental REMOVAL or
 ## reorder of the guard is caught; a hand-crafted evasion that keeps the 'if' text but
 ## neuters it is not this guard's job.
+## Feed the library on STDIN, not as a filename argument: gawk treats an argument
+## matching 'ident=value' as a variable assignment, so a relative lib path whose
+## first component contains '=' (e.g. a repo checkout named 'x=y') would be consumed
+## as an assignment and awk would silently read the terminal/stdin instead -- a false
+## result. Redirection removes the filename entirely, so the path shape cannot matter.
 console_body="$(awk '
    /^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{/ { in_fn = 1 }
    in_fn { print }
    in_fn && /^\}/ { if (in_fn) exit }
-' "${lib}")"
+' < "${lib}")"
 
 ## Drop whole-line comments so an inert guard string parked in a comment cannot
 ## satisfy the check (the exact evasion this test exists to resist).

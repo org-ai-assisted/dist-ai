@@ -35,7 +35,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-[ -v TMP ] || TMP=/tmp
+## -n, not -v: an exported-but-empty TMP is 'set' to -v, which would leave the
+## scratch dir under '/' -- treat empty as unset and fall back to /tmp.
+[ -n "${TMP:-}" ] || TMP=/tmp
 [ -v SET_KEYBOARD_LAYOUT_REPO ] || SET_KEYBOARD_LAYOUT_REPO=""
 
 if [ -n "${SET_KEYBOARD_LAYOUT_REPO}" ]; then
