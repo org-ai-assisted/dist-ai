@@ -23,8 +23,10 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
 - DNS redirect -- UDP/53 (BOTH families) must be redirected to the Tor DnsPort and
   answered AND must not egress the gateway; canary strips the redirect and opens
   forward (`dns_redirect_positive_test.sh`)
-- Non-SYN TCP transproxy bypass -- ACK/SYN-ACK/FIN-ACK/RST-ACK (only a pure SYN is
-  redirected), IPv6 and IPv4
+- Non-SYN TCP transproxy bypass -- ACK/SYN-ACK/FIN-ACK/RST-ACK plus the scan/evasion
+  flag combos NULL/FIN/Xmas/SYN+FIN (only a pure SYN is redirected; SYN+FIN in
+  particular must not satisfy the redirect's `flags & (fin|syn|rst|ack) == syn`
+  match), IPv6 and IPv4
   (`nonsyn_tcp_transproxy_bypass_test.sh`, `ipv4_nonsyn_tcp_test.sh`)
 - Positive control is dual-family (IPv6 AND IPv4 TransPort), so a family-scoped
   redirect breakage is caught (`leaktest_lib.sh` leaktest_positive_control)
@@ -54,6 +56,11 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   reassemble or egress; nf_defrag_ipv6 drops the whole datagram on overlap. Teeth
   under a permissive forward: the VALID sibling set egresses while the overlapping
   one does not (`ipv6_fragment_overlap_test.sh`)
+- IPv6 tiny-first-fragment (RFC 7112) -- a set whose first fragment is too small to
+  hold the L4 header must not smuggle a datagram past the forward drop. Linux does
+  NOT reject the split (nf_defrag_ipv6 reassembles it anyway), but conntrack
+  reassembles BEFORE the forward chain, so the reassembled datagram hits the drop;
+  the permissive canary egresses it, proving the reassembly (`ipv6_fragment_tinyfirst_test.sh`)
 - IPv4 LSRR source-route option (IHL>5) -- a source-routed packet must not egress,
   in BOTH shapes: a COMPLETED/inert route (dst = final target, catches a rule keyed
   on IHL=5) and an ACTIVE route (dst = gateway, next hop = target -- attacker-

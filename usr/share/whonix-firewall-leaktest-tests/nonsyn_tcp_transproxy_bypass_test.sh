@@ -31,7 +31,10 @@ trap leaktest_teardown EXIT
 rc=0
 ## Several non-SYN flag combinations: only a SYN is redirected to Tor, so an ACK,
 ## FIN-ACK, or RST-ACK must hit the forward reject, not slip out as direct TCP.
-for flags in ack synack finack rstack; do
+## ack/synack/finack/rstack are the mid-connection flags; null/fin/xmas/synfin are
+## the classic scan/evasion combos. Only a PURE syn is redirected, so none of these
+## may egress. synfin specifically probes the redirect's `... == syn` match.
+for flags in ack synack finack rstack null fin xmas synfin; do
    leaktest_forward_leak_case \
       "non-SYN TCP (${flags}, transproxy bypass) to clearnet" tcp6 "${PROBE_DST_IP6}" \
       --flags "${flags}" --dport 443 || rc=$?

@@ -30,6 +30,8 @@ could never send.
             nf_defrag_ipv6 reassembles before the forward chain
   frag6overlap  Two OVERLAPPING IPv6 fragments (RFC 5722); nf_defrag_ipv6 must drop
             the whole datagram, so nothing reassembles or forwards
+  frag6tinyfirst  First fragment too small for the L4 header (RFC 7112); the header
+            chain is split across fragments and must be dropped, not reassembled
   exthdr6 IPv6 extension-header chain (--exthdr routing|hopopts|dstopts) hiding an
           L4 (--l4 udp|tcp; tcp = a SYN, to probe the redirect's chain-walking)
 """
@@ -44,7 +46,12 @@ import time
 ETH_P_IPV6 = b"\x86\xdd"
 ETH_P_IPV4 = b"\x08\x00"
 PROBE_PAYLOAD = b"leaktest-probe"
-TCP_FLAGS = {"syn": 0x02, "ack": 0x10, "synack": 0x12, "finack": 0x11, "rstack": 0x14}
+## null = no flags; fin = FIN only; xmas = FIN+PSH+URG; synfin = SYN+FIN (probes the
+## redirect's `flags & (fin|syn|rst|ack) == syn` match, which SYN+FIN must NOT satisfy).
+TCP_FLAGS = {
+    "syn": 0x02, "ack": 0x10, "synack": 0x12, "finack": 0x11, "rstack": 0x14,
+    "null": 0x00, "fin": 0x01, "xmas": 0x29, "synfin": 0x03,
+}
 
 
 def a6(addr: str) -> bytes:
@@ -207,6 +214,23 @@ def frag6_multi(src: str, dst: str, dport: int, frag_id: int) -> list[bytes]:
 
 ## Fragment id for the overlapping set (distinct from the clean multi-fragment id).
 FRAG6_OVERLAP_ID = 0x00BEEF77
+FRAG6_TINYFIRST_ID = 0x00BEEF78
+
+
+def frag6_tinyfirst(src: str, dst: str, dport: int) -> list[bytes]:
+    ## First fragment too SMALL to hold the complete L4 header (RFC 7112): a TCP
+    ## header is 20 bytes, but fragment 1 carries only its first 8, so the header is
+    ## split across fragments. A conformant reassembler drops the set (the header
+    ## chain is not complete in the first fragment). A non-SYN (ACK) flag is used so
+    ## that a reassembled datagram would be FORWARDED, not redirected -- making the
+    ## permissive-forward canary meaningful (it would egress if wrongly reassembled).
+    data = tcp6(src, dst, 41600, dport, 601, TCP_FLAGS["ack"]) + b"leaktest"  # 20 + 8
+    first, second = data[:8], data[8:]  # 8 (partial TCP header, 8-byte aligned) + rest
+    frag_hdr1 = struct.pack("!BBHI", 6, 0, (0 << 3) | 1, FRAG6_TINYFIRST_ID)  # nh=TCP, off0, M=1
+    frag_hdr2 = struct.pack("!BBHI", 6, 0, (1 << 3) | 0, FRAG6_TINYFIRST_ID)  # off 8B, M=0
+    frag1 = ip6_header(src, dst, len(frag_hdr1) + len(first), 44) + frag_hdr1 + first
+    frag2 = ip6_header(src, dst, len(frag_hdr2) + len(second), 44) + frag_hdr2 + second
+    return [frag1, frag2]
 
 
 def frag6_overlap(src: str, dst: str, dport: int) -> list[bytes]:
@@ -341,6 +365,8 @@ def build_frames(args: argparse.Namespace, index: int = 0) -> tuple[bytes, list[
         return ETH_P_IPV6, frag6_multi(args.src, args.dst, args.dport, FRAG6_MULTI_ID + index)
     if args.proto == "frag6overlap":
         return ETH_P_IPV6, frag6_overlap(args.src, args.dst, args.dport)
+    if args.proto == "frag6tinyfirst":
+        return ETH_P_IPV6, frag6_tinyfirst(args.src, args.dst, args.dport)
     ethertype, l3 = build_l3(args)
     return ethertype, [l3]
 
@@ -360,7 +386,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--proto", required=True,
-        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "frag6overlap", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
+        choices=["tcp6", "tcp4", "icmp6", "icmp4", "udp6", "frag6", "frag6set", "frag6overlap", "frag6tinyfirst", "exthdr6", "rawip6", "udp4", "srcroute4", "srcroute4active", "rawip4"],
     )
     parser.add_argument("--iface", default="eth0")
     parser.add_argument("--gw4", required=True, help="gateway IPv4 for MAC resolution")
