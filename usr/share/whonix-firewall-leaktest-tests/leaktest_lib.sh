@@ -54,6 +54,17 @@ EXT_GW_IP4='10.0.2.15'
 EXT_UP_IP4='10.0.2.2'
 EXT_GW_IP6='2001:db8:aaaa::2'
 EXT_UP_IP6='2001:db8:aaaa::1'
+## VPN-tunnel internal addressing (INT_TIF path): a SECOND internal subnet on the
+## gateway's tun0 interface, distinct from eth1's INT subnet, used only by the
+## leaktest_setup_int_tif variant. Consumed by sourcing test files.
+# shellcheck disable=SC2034
+TUN_GW_IP4='10.152.153.10'
+# shellcheck disable=SC2034
+TUN_WS_IP4='10.152.153.11'
+# shellcheck disable=SC2034
+TUN_GW_IP6='fd19:c33d:88bd::10'
+# shellcheck disable=SC2034
+TUN_WS_IP6='fd19:c33d:88bd::11'
 ## Probe tags (RFC 3849 / RFC 5737 documentation space; never routable).
 ## PROBE_SRC_IP6 / PROBE_DST_IP4 are consumed by sourcing test files, not here.
 # shellcheck disable=SC2034
@@ -297,6 +308,45 @@ leaktest_setup() {
    sleep 1
 }
 
+## Build the standard topology + load <ruleset>, THEN add a VPN-tunnel interface: a
+## second internal veth pair ws<->gw named tun0 on both ends, so a probe can arrive
+## on the gateway's INT_TIF (tun0) interface -- distinct from eth1 (INT_IF). Used by
+## the INT_TIF forged-source test against a gateway-int-tif ruleset (INT_IF=eth1,
+## INT_TIF=tun0). Layered ON TOP of leaktest_setup so the core every other case uses
+## is untouched. Fire on it with LEAKTEST_INJECT_IFACE=tun0 LEAKTEST_INJECT_GW4=<tun
+## gw ip>. The tunnel subnet is its own subnet, so gw's reverse-path for a forged
+## clearnet source arriving on tun0 is eth0 (!= tun0) and the uRPF drop fires.
+leaktest_setup_int_tif() {
+   local ruleset="$1"
+   leaktest_setup "${ruleset}"
+
+   ip link add ws_tun type veth peer name gw_tun
+   ip link set ws_tun netns ws
+   ip link set gw_tun netns gw
+   ip netns exec ws ip link set ws_tun name tun0
+   ip netns exec gw ip link set gw_tun name tun0
+   ip netns exec ws ip link set tun0 up
+   ip netns exec gw ip link set tun0 up
+   ip netns exec ws ip address add "${TUN_WS_IP4}/24" dev tun0
+   ip netns exec gw ip address add "${TUN_GW_IP4}/24" dev tun0
+   ip netns exec ws ip -6 address add "${TUN_WS_IP6}/96" dev tun0 nodad
+   ip netns exec gw ip -6 address add "${TUN_GW_IP6}/96" dev tun0 nodad
+
+   ## Static neighbors so an inject on tun0 resolves the gw tun0 MAC without racing
+   ## ND. Read the MAC via netlink (netns-aware), not /sys.
+   local gw_tun_mac
+   gw_tun_mac="$(ip netns exec gw ip link show tun0 | awk '/link\/ether/ { print $2 }')"
+   ip netns exec ws ip neigh replace "${TUN_GW_IP4}" lladdr "${gw_tun_mac}" nud permanent dev tun0
+   ip netns exec ws ip -6 neigh replace "${TUN_GW_IP6}" lladdr "${gw_tun_mac}" nud permanent dev tun0
+
+   local settle
+   for settle in 1 2 3 4 5 6 7 8 9 10; do
+      [ "$(ip netns exec ws cat /sys/class/net/tun0/carrier 2>/dev/null || printf 0)" = '1' ] && break
+      sleep 0.2
+   done
+   sleep 1
+}
+
 ## Capture probe-tagged traffic egressing gw (arrives at 'up') for <secs>.
 ## Prints the pcap-summary lines to stdout. <bpf> is a tcpdump filter.
 leaktest_capture_up() {
@@ -361,6 +411,11 @@ leaktest_permissive_ruleset() {
 leaktest_fire_forward_probe() {
    local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
    shift 4
+   ## Inject interface + gateway MAC-resolution address. Default to the eth1 internal
+   ## path (eth0 on the ws side, INT_GW_IP4); the INT_TIF variant overrides these to
+   ## the tun0 path via LEAKTEST_INJECT_IFACE / LEAKTEST_INJECT_GW4 so existing
+   ## callers are unaffected.
+   local iface="${LEAKTEST_INJECT_IFACE:-eth0}" gw4="${LEAKTEST_INJECT_GW4:-${INT_GW_IP4}}"
    helpers="$(leaktest_helpers_dir)"
    ## A root-owned mktemp path (not one derived from capture_file, so no planted
    ## symlink for the root-run redirect to follow), allocated once and reused.
@@ -373,7 +428,7 @@ leaktest_fire_forward_probe() {
    ## and check its exit explicitly: a failed inject is reported by the assert
    ## helpers as a clear reason, never a mute errexit abort or a false "0 egress".
    if ! ip netns exec ws python3 "${helpers}/inject.py" \
-      --proto "${proto}" --iface eth0 --gw4 "${INT_GW_IP4}" \
+      --proto "${proto}" --iface "${iface}" --gw4 "${gw4}" \
       --src "${src}" --dst "${dst}" "$@" >/dev/null 2>"${inject_err}"; then
       LEAKTEST_PROBE_ERROR="inject.py failed: $(tr '\n' ' ' <"${inject_err}" 2>/dev/null)"
    fi

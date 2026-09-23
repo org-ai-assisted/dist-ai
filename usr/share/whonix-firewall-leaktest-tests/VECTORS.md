@@ -102,6 +102,19 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   active shape, only after the kernel processed the route and rewrote the
   destination (`ipv4_source_routing_test.sh`)
 - Fail-closed killswitch -- Tor down => drop, not leak (`fail_closed_test.sh`)
+- VPN-tunnel INT_TIF forged-source -- when the Workstation reaches the Gateway over a
+  VPN tunnel, the Tor DnsPort/Control/Socks are accepted DIRECTLY on the tunnel
+  interface tun0 (INT_TIF), distinct from eth1 (INT_IF, the TransPort/redirect path).
+  A forged-source packet arriving on tun0 at the DnsPort must be dropped by the uRPF
+  that guards tun0 -- else it is accepted with no reverse-path check and the reply
+  leaks to the forged clearnet source. Loads the gateway-int-tif fixture (INT_IF=eth1
+  INT_TIF=tun0) and adds a second internal veth (ws<->tun0). The BEHAVIORAL companion
+  to whonix-firewall's ruleset-level test_gateway_int_tif assertion. Canary strips the
+  tun0 uRPF -> the DnsPort reply egresses (IPv6, whose tunnel source routes out; the
+  uRPF is one dual-stack `fib saddr` rule so this establishes the teeth for the IPv4
+  blocked assertions too -- a direct DnsPort reply's private IPv4 tunnel source cannot
+  egress to a clearnet dst, so IPv4 is not independently canaried here)
+  (`vpn_tunnel_int_tif_urpf_test.sh`)
 
 This covers, and exceeds, every vector the Whonix wiki `Dev/Leak_Tests` (+ the
 Scapy-based `Dev/Leak_Tests_Old`) documents: DNS, ICMP ping, direct/non-SYN TCP,
@@ -154,19 +167,6 @@ extension-header vectors, which this suite adds.
   sysctls. (To resume as a config audit:
   `grep -r 'accept_ra\|accept_redirects' <whonix-firewall sysctl config>` and
   assert `=0` on the internal interface.)
-- VPN-tunnel (INT_TIF != INT_IF) forged-source BEHAVIORAL test -- the uRPF fix that
-  covers INT_TIF (whonix-firewall firewall-common) is guarded here only at the
-  ruleset level (whonix-firewall's own `test_gateway_int_tif` dry-run assertion, the
-  core guard). A netns behavioral test would fire a forged source arriving on a
-  tun0 (INT_TIF) interface at the DnsPort/SocksPort and assert the uRPF drops it, with
-  a canary that leaks when the INT_TIF uRPF is stripped. NOT yet built: it needs (a) a
-  checked-in INT_TIF=tun0 ruleset fixture in whonix-firewall `test-output/new/`
-  (generate it from the `test_gateway_int_tif` config: `whonix-gateway-firewall
-  --dry-run` with `INT_IF="eth1" INT_TIF="tun0"`, commit the .nft), and (b) a
-  leaktest_setup variant that adds a SECOND internal veth pair ws<->tun0(gw) alongside
-  eth1, so the core setup (used by every other case) is untouched. Then a
-  `ipv6_vpn_tunnel_urpf_test.sh` loads the fixture, injects a forged-source DNS packet
-  on tun0, asserts no reply egress, and canaries by stripping the INT_TIF uRPF drop.
 - Tor ControlPort (9051) / wildcard SocksPort reachability from the internal
   interface -- a control-channel scoping concern, not forward egress; belongs in a
   control-port / onion-grater test, not this suite.
