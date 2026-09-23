@@ -4264,6 +4264,44 @@ ok(_argv('bad\x00cmd') is None,
    'A: a string command with an embedded NUL fails closed (None)')
 eq(_afc44(['ls', '-l']), ['ls', '-l'], '#44: a real list command is verbatim')
 
+# reachable_cwd (ai-review HIGH): a restored cwd (session JSON, user-editable) on a dead
+# network mount would hang the child's pre-exec os.chdir in D-state, and the parent reads
+# the exec handshake on the Qt MAIN thread -> the WHOLE GUI freezes. reachable_cwd probes
+# in a daemon thread and DROPS (returns False for) a cwd it cannot confirm within a timeout.
+import time as _rc_time                                       # noqa: E402
+from secure_terminal.terminal import reachable_cwd as _rcwd   # noqa: E402
+ok(_rcwd('/tmp') is True, 'reachable_cwd: a live directory is reachable')
+ok(_rcwd('/no-such-dir-%d' % os.getpid()) is False, 'reachable_cwd: a missing dir is not reachable')
+_rc_orig_isdir = os.path.isdir
+
+
+def _rc_raise(_p):
+    raise OSError('probe error')
+
+
+os.path.isdir = _rc_raise
+try:
+    _rc_err = _rcwd('/x', timeout=0.5)
+finally:
+    os.path.isdir = _rc_orig_isdir
+ok(_rc_err is False, 'reachable_cwd: an OSError from the probe -> not reachable')
+# CANARY: a HANGING probe returns False within the timeout, never blocking forever.
+os.path.isdir = lambda _p: _rc_time.sleep(5) or True          # blocks 5s (> timeout)
+try:
+    _rc_t0 = _rc_time.monotonic()
+    _rc_hang = _rcwd('/whatever', timeout=0.1)
+    _rc_dt = _rc_time.monotonic() - _rc_t0
+finally:
+    os.path.isdir = _rc_orig_isdir
+ok(_rc_hang is False, 'reachable_cwd: a hanging probe returns False (cwd dropped), not a hang')
+ok(_rc_dt < 1.0,
+   'reachable_cwd: the hanging probe returns within ~timeout (%.2fs), not the 5s block' % _rc_dt)
+# integration: a tab with a REACHABLE cwd spawns and starts there (exercises _start's
+# cwd_for_child probe on the real spawn path).
+_cwt = SecureTerminal(command='/bin/cat', cwd='/tmp')
+ok(_cwt._pid is not None, 'a tab with a reachable cwd spawns')
+_cwt.shutdown()
+
 # #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else
 # clicking Allow replies the system clipboard into the NEW unrelated shell. restart resets
 # _clipboard_read AND the allow-always grant (the new shell must re-consent). (canary: old
