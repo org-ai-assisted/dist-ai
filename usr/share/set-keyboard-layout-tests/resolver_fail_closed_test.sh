@@ -6,10 +6,10 @@
 ## AI-Assisted
 
 ## Regression guard for the set-keyboard-layout-tests subject resolvers:
-## root_guard_structural_test.sh's library resolver and function-body extraction, plus the
+## root_guard_behavioral_test.sh's library resolver and definition-count check, plus the
 ## sibling live_mode_grub_skip_test.sh's wrapper resolver (same fail-closed precedence).
 ##
-## The sibling structural test picks the set-keyboard-layout.sh under test from
+## The sibling behavioral test picks the set-keyboard-layout.sh under test from
 ## SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH > the
 ## installed copy. An EXPLICITLY-set override names THE subject: if it is set but
 ## its library is unreadable, the test must fail closed, NOT silently fall through
@@ -26,8 +26,8 @@
 ##              'name( )', brace-on-next-line, 'function name') does NOT pass -- bash
 ##              runs the LAST copy, so the count fails closed on it. A duplicate whose
 ##              header a line grep cannot see (glued after '};' on one line, a line
-##              continuation, other exotic placement) is OUT OF SCOPE, per the SCOPE
-##              note in root_guard_structural_test.sh -- not "any shape".
+##              continuation, other exotic placement) is OUT OF SCOPE, per the
+##              definition-count note in root_guard_behavioral_test.sh -- not "any shape".
 ##   pos      -> a VALID override still passes (the fix does not over-die).
 ##
 ## No root, no network.
@@ -49,7 +49,7 @@ export LC_ALL=C
 
 lib_rel='usr/libexec/helper-scripts/set-keyboard-layout.sh'
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-subject="${script_dir}/root_guard_structural_test.sh"
+subject="${script_dir}/root_guard_behavioral_test.sh"
 live_subject="${script_dir}/live_mode_grub_skip_test.sh"
 
 if [ ! -r "${subject}" ]; then
