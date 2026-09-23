@@ -5,7 +5,8 @@
 
 ## AI-Assisted
 
-## Regression guard for root_guard_structural_test.sh's library resolver.
+## Regression guard for root_guard_structural_test.sh's library resolver and
+## function-body extraction.
 ##
 ## The sibling structural test picks the set-keyboard-layout.sh under test from
 ## SET_KEYBOARD_LAYOUT_REPO > HELPER_SCRIPTS_REPO > HELPER_SCRIPTS_PATH > the
@@ -16,10 +17,13 @@
 ##
 ## This lane drives the real sibling test as a subprocess with a controlled
 ## environment and asserts:
-##   neg A/B -> an explicit-but-unreadable override exits nonzero with the
-##              fail-closed FATAL (not the pre-existing 'not found' FATAL, so the
-##              assertion is not vacuous).
-##   pos     -> a VALID override still passes (the fix does not over-die).
+##   fail-closed -> an explicit-but-broken override (missing lib, or a lib path
+##              that is a directory not a file) exits nonzero with the fail-closed
+##              FATAL (not the pre-existing 'not found' FATAL, so it is not vacuous).
+##   evasion  -> a library with two set_console_keymap() definitions does NOT pass
+##              (any shape): bash runs the LAST copy, so the guard requires exactly
+##              one definition and fails closed on a duplicate.
+##   pos      -> a VALID override still passes (the fix does not over-die).
 ##
 ## No root, no network.
 
@@ -146,6 +150,79 @@ expect_fail_closed() {
 expect_fail_closed "explicit-but-unreadable HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
 expect_fail_closed "explicit-but-unreadable SET_KEYBOARD_LAYOUT_REPO" "${missing_repo}" '' ''
 expect_fail_closed "explicit lib path is a directory, not a file" "${dir_lib_repo}" '' ''
+
+## Write a crafted set-keyboard-layout.sh (NOT a copy of the real one) from stdin into
+## a fresh repo under work_dir and echo the repo path.
+make_lib_repo() {
+   local repo="${work_dir}/$1"
+   mkdir --parents -- "${repo}/usr/libexec/helper-scripts"
+   cat >"${repo}/${lib_rel}"
+   printf '%s' "${repo}"
+}
+
+## Assert the subject is NOT fooled by the crafted evasion library at $2: nonzero exit
+## AND no satisfied-guard 'ok' line. $1 label, $2 repo.
+expect_evasion_caught() {
+   printf '%s\n' "== case: $1 -> guard NOT fooled =="
+   run_subject "$2" '' ''
+   if [ "${run_rc}" -ne 0 ]; then
+      ok "exit nonzero (${run_rc})"
+   else
+      notok "guard passed an evasion library (false green)"
+      cat -- "${run_out_file}" >&2 || true
+   fi
+   if grep --quiet --fixed-strings -- 'expected exactly one set_console_keymap definition' "${run_out_file}"; then
+      ok "rejected the duplicate definition"
+   else
+      notok "did not reject the duplicate definition (wrong reason for the nonzero exit)"
+      cat -- "${run_out_file}" >&2 || true
+   fi
+}
+
+## The multiple-definition class: bash runs the LAST definition, so any duplicate makes
+## a single extracted body unable to tell which copy runs. All shapes must fail closed.
+## split: guard+return in the dead copy, bare restart in the live copy.
+split_repo="$(make_lib_repo two-def-split <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+}
+set_console_keymap() {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+## decoy: a complete, correctly-guarded dead copy above a bare-restart live copy.
+decoy_repo="$(make_lib_repo two-def-decoy <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+set_console_keymap() {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+## indented: the dead copy's closing brace is indented, so a column-0 '}' end-anchor
+## would spill the extraction into the live copy.
+indented_repo="$(make_lib_repo two-def-indented <<'LIB'
+set_console_keymap() {
+  if [ "$(id --user)" != '0' ]; then
+    return 1
+  fi
+  }
+set_console_keymap() {
+  log_run notice "${timeout_command[@]}" systemctl --no-block --no-pager restart keyboard-setup.service
+}
+LIB
+)"
+
+expect_evasion_caught "two defs, split guard/restart" "${split_repo}"
+expect_evasion_caught "two defs, complete guarded decoy first" "${decoy_repo}"
+expect_evasion_caught "two defs, indented first-def close" "${indented_repo}"
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

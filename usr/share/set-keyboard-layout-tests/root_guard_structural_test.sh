@@ -68,19 +68,32 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## STRUCTURAL revert-guard (AI-accident scope). Extract the set_console_keymap body
-## (a column-0 '}' ends it) and assert the root-guard 'if' is PRESENT as a real
-## statement -- anchored to line start after comment-stripping, so the guard text
-## parked in a comment or string cannot satisfy it -- and PRECEDES the actual restart
-## command line (a 'log_run' invocation). Tracks the shipped guard
+## STRUCTURAL revert-guard (AI-accident scope). Assert set_console_keymap in the
+## shipped library keeps its root guard: the guard 'if' is PRESENT as a real
+## statement (anchored to line start after comment-stripping, so guard text parked in
+## a comment or string cannot satisfy it) and PRECEDES the actual restart command line
+## (a 'log_run' invocation). Tracks the shipped guard
 ## 'if [ "$(id --user)" != '\''0'\'' ]' in set-keyboard-layout.sh.
-## It does NOT prove the non-root branch RETURNS: deciding return-vs-fall-through
-## across bash control flow (else / subshell / pipeline / nested-if, code vs string)
-## is a bash-parser problem and deliberately out of scope. An accidental REMOVAL or
-## reorder of the guard is caught; a hand-crafted evasion that keeps the 'if' text but
-## neuters it is not this guard's job.
-## Extract the set_console_keymap() body: the function-open line through the
-## column-0 '}' that closes it. '--' guards a lib path that begins with '-'.
+##
+## Require EXACTLY ONE set_console_keymap definition. bash keeps the LAST definition of
+## a repeated name, so a duplicate (e.g. a bad merge/rebase leaving a stale guarded copy
+## above an unguarded live one) makes a single extracted body unable to tell which copy
+## actually runs -- fail closed on any count != 1 (a simple grep count, not brace
+## parsing; a human reviews). This closes the multiple-definition false-green class.
+##
+## Out of scope (deliberately, per never-reinvent-a-bash-parser): proving the non-root
+## branch RETURNS, and any guard neutered WITHIN a single definition (else / subshell /
+## pipeline / conditional return) -- that is control-flow parsing. An accidental REMOVAL,
+## reorder, or DUPLICATION of the guard is caught; neutering inside one copy is not.
+def_count="$(grep --count --extended-regexp -- '^[[:space:]]*set_console_keymap\(\)[[:space:]]*\{' "${lib}" || true)"
+if [ "${def_count}" -eq 1 ]; then
+   ok "exactly one set_console_keymap definition"
+else
+   notok "expected exactly one set_console_keymap definition, found '${def_count}'"
+fi
+
+## Extract the set_console_keymap() body: the function-open line through the column-0
+## '}' that closes it. '--' guards a lib path that begins with '-'.
 console_body="$(sed --quiet -- '/^[[:space:]]*set_console_keymap()[[:space:]]*{/,/^}/p' "${lib}")"
 
 ## Drop whole-line comments so an inert guard string parked in a comment cannot
