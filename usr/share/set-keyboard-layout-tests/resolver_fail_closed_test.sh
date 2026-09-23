@@ -109,6 +109,13 @@ mkdir --parents -- "${dir_lib_repo}/${lib_rel}"
 dir_wrapper_repo="${work_dir}/dir-wrapper"
 mkdir --parents -- "${dir_wrapper_repo}/usr/bin/set-grub-keymap"
 
+## And a regular but NON-EXECUTABLE wrapper: -f -r accept it, but exec would still die with
+## exit 126 -- the resolver must also require -x (live_mode runs the wrapper) and fail closed.
+nonexec_wrapper_repo="${work_dir}/nonexec-wrapper"
+mkdir --parents -- "${nonexec_wrapper_repo}/usr/bin"
+printf '%s\n' '#!/bin/bash' >"${nonexec_wrapper_repo}/usr/bin/set-grub-keymap"
+chmod 0644 -- "${nonexec_wrapper_repo}/usr/bin/set-grub-keymap"
+
 pass_count=0
 fail_count=0
 
@@ -318,7 +325,7 @@ expect_live_fail_closed() {
       notok "live_mode passed an explicit-but-invalid override (silent fall-through)"
       cat -- "${live_out}" >&2 || true
    fi
-   if grep --quiet --fixed-strings -- 'is not a readable file' "${live_out}"; then
+   if grep --quiet --fixed-strings -- 'is not an executable file' "${live_out}"; then
       ok "live_mode emitted the fail-closed FATAL"
    else
       notok "live_mode fail-closed FATAL missing (wrong reason for the nonzero exit)"
@@ -330,6 +337,7 @@ expect_live_fail_closed "explicit-but-invalid SET_KEYBOARD_LAYOUT_REPO" "${missi
 expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_REPO" '' "${missing_repo}" ''
 expect_live_fail_closed "explicit-but-invalid HELPER_SCRIPTS_PATH" '' '' "${missing_repo}"
 expect_live_fail_closed "wrapper path is a directory, not a file" "${dir_wrapper_repo}" '' ''
+expect_live_fail_closed "wrapper is a non-executable regular file" "${nonexec_wrapper_repo}" '' ''
 
 printf '%s\n' "== case: valid override -> still passes (no over-die) =="
 run_subject "${good_repo}" '' "${good_repo}"

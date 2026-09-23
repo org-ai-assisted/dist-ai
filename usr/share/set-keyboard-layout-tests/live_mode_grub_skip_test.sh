@@ -52,13 +52,15 @@ repo=""
 for repo_var in SET_KEYBOARD_LAYOUT_REPO HELPER_SCRIPTS_REPO HELPER_SCRIPTS_PATH; do
    repo_val="${!repo_var}"
    [ -n "${repo_val}" ] || continue
-   ## Require a regular file (-f), not merely -r: a directory (or FIFO) at the wrapper path
-   ## is -r-readable but not executable as the subject, and would surface later as a
-   ## confusing 'Permission denied' (exit 126) instead of this clear fail-closed FATAL.
-   if [ -f "${repo_val}/${wrapper_rel}" ] && [ -r "${repo_val}/${wrapper_rel}" ]; then
+   ## The wrapper is EXEC'd as the subject, so require a regular (-f), readable (-r, bash
+   ## reads the script) AND executable (-x) file. A directory, FIFO, or a non-executable
+   ## regular file is otherwise accepted, then dies at exec with a confusing 'Permission
+   ## denied' (exit 126) instead of this clear fail-closed FATAL. (root_guard only READS its
+   ## library, so it needs -f -r but not -x.)
+   if [ -f "${repo_val}/${wrapper_rel}" ] && [ -r "${repo_val}/${wrapper_rel}" ] && [ -x "${repo_val}/${wrapper_rel}" ]; then
       repo="${repo_val}"
    else
-      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${wrapper_rel}' is not a readable file" >&2
+      printf '%s\n' "FATAL: ${repo_var}='${repo_val}' set but '${repo_val}/${wrapper_rel}' is not an executable file" >&2
       printf '%s\n' "an explicit override must point at a helper-scripts checkout with the wrapper; refusing to silently fall back" >&2
       exit 1
    fi
@@ -67,7 +69,7 @@ done
 
 if [ -n "${repo}" ]; then
    subject="${repo}/${wrapper_rel}"
-elif [ -f "/${wrapper_rel}" ] && [ -r "/${wrapper_rel}" ]; then
+elif [ -f "/${wrapper_rel}" ] && [ -r "/${wrapper_rel}" ] && [ -x "/${wrapper_rel}" ]; then
    subject="/${wrapper_rel}"
    repo='/'
 else
