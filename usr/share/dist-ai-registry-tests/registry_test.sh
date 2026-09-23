@@ -396,6 +396,46 @@ for entry in "${repo}"/usr/bin/*-tests "${repo}"/usr/bin/*-tests-*; do
    fi
 done
 
+## ---- component list is single-sourced, not hand-kept ----------------------
+## The component set must come from suite_component() alone. --list-components
+## is the authoritative, derived list; usage() POINTS at it instead of a hand-
+## kept copy (which drifted -- the usage text once listed ~9 of the real ~34).
+## Backstop: the derived list is non-empty, every entry round-trips as a valid
+## --component (list and validator share all_components()), and --help still
+## advertises the flag so the list cannot be re-hardcoded into the usage text.
+components_listed=()
+mapfile -t components_listed < <( "${runner}" --list-components 2>/dev/null )
+
+checks=$(( checks + 1 ))
+if [ "${#components_listed[@]}" -eq 0 ]; then
+   fail '--list-components printed nothing -- the derived component set is empty or the flag broke'
+fi
+
+checks=$(( checks + 1 ))
+if ! has_label 'sdwdate' "${components_listed[@]}"; then
+   fail '--list-components omits a known component (sdwdate) -- the derivation is wrong'
+fi
+
+for comp in "${components_listed[@]}"; do
+   checks=$(( checks + 1 ))
+   comp_err="$( "${runner}" --component "${comp}" --list 2>&1 >/dev/null || true )"
+   case "${comp_err}" in
+      *'unknown --component'*)
+         fail "${comp}: listed by --list-components but rejected as --component -- the list and the validator have drifted apart"
+         ;;
+   esac
+done
+
+checks=$(( checks + 1 ))
+help_out="$( "${runner}" --help 2>&1 || true )"
+case "${help_out}" in
+   *'--list-components'*)
+      ;;
+   *)
+      fail '--help no longer mentions --list-components -- restore the pointer so the component set is not re-hardcoded into the usage text'
+      ;;
+esac
+
 printf '%s\n' '' "===== summary: ${checks} checks, ${failures} failure(s) ====="
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' 'FAILED: the suite registry is inconsistent' >&2
