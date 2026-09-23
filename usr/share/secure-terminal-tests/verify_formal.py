@@ -1953,6 +1953,10 @@ def t8_discard_resume():
 _T8_DISCARD_ALPHABETS = {
     'out-of-order CSI': ('\x1b', '[', ' ', '0', 'm'),
     'nested string introducer': ('\x1b', ']', '_', '\x07', 'm'),
+    # SS2/SS3 introducer (ESC N / ESC O awaiting its ONE shifted byte): at cap<=1 the 2-byte
+    # introducer is HELD, not discarded, so the shifted graphic byte is never eaten and no
+    # printable byte leaks under any chunking (offload #4).
+    'SS2/SS3 introducer': ('\x1b', 'N', 'O', 'X', 'm'),
 }
 
 
