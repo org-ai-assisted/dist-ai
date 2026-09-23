@@ -31,9 +31,12 @@ leaktest_preconditions
 trap leaktest_teardown EXIT
 
 rc=0
-## Routing header (the RH0 shape), Hop-by-Hop options, Destination options: each
-## wraps a UDP datagram, so the L4 is hidden behind the extension header.
-for kind in routing hopopts dstopts; do
+## Routing header type 0 (RH0) and type 4 (SRH), Hop-by-Hop options, Destination
+## options: each wraps a UDP datagram, so the L4 is hidden behind the extension
+## header. routing4 (SRH) guards against a future rule keyed on the RH0 type byte
+## that would overlook a different routing type; today's blanket forward-drop is
+## type-agnostic and must catch both.
+for kind in routing routing4 hopopts dstopts; do
    leaktest_probe_case \
       "IPv6 ext-header (${kind}) to clearnet" exthdr6 "${INT_WS_IP6}" "${PROBE_DST_IP6}" \
       --exthdr "${kind}" --dport 443 || rc=$?

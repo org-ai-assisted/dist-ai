@@ -52,6 +52,16 @@ DOES egress once the relevant rule is removed, proving the harness has teeth).
   the counter is what proves torification. Includes the deepest RFC 8200-conformant
   chain (hopopts, dstopts, routing, dstopts) to probe the walk depth
   (`ipv6_exthdr_hidden_syn_test.sh`)
+- TCP SYN hidden by a GENUINE two-fragment IPv4 split -- the SYN is split so the TCP
+  flags byte (offset 13) lands in the second fragment, so no single fragment shows a
+  SYN. ip_defrag must rebuild the SYN before the nat prerouting chain and the redirect
+  must torify it. Like the ext-header case, verified it REACHED the :9040 redirect
+  (counter advanced), not merely that nothing egressed -- distinct from the
+  multi-fragment UDP cases (forward drop only) and the ext-header/atomic-fragment
+  hidden SYN (no real MF=1/MF=0 split). IPv4 only: the IPv6 equivalent truncates the
+  TCP header in the first fragment, which nf_defrag_ipv6 refuses to reassemble
+  (dropped as a tiny-first fragment, covered by `ipv6_fragment_tinyfirst_test.sh`) --
+  a confirmed IPv4/IPv6 defrag asymmetry (`fragment_hidden_syn_test.sh`)
 - IPv6 overlapping fragments -- an RFC 5722 overlapping fragment set must not
   reassemble or egress. The overlapping fragment extends past the first fragment's
   end, so nf_defrag_ipv6 classifies it IPFRAG_OVERLAP and inet_frag_kill discards the

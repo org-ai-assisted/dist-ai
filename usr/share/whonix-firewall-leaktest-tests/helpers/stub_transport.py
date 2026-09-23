@@ -61,11 +61,30 @@ def serve_udp(family: int, addr: str) -> None:
             except OSError:
                 break
         return
+    ## AF_INET: the IPv4 counterpart of the IPV6_PKTINFO reply-source pinning above.
+    ## Reply FROM the address the query was sent to (the redirect's DNAT target) via
+    ## IP_PKTINFO ipi_spec_dst, as a real Tor DnsPort bound to a specific address
+    ## does. Only then does conntrack recognise and un-NAT the reply, so a
+    ## forged-source DnsPort reply egresses (the leak under test). A plain
+    ## recvfrom/sendto lets the kernel pick a route-chosen source and silently masks
+    ## it. IPv4 has its own anti-spoof layers (rp_filter + the nft uRPF rule), a
+    ## distinct path from the IPv6 case.
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
     sock.bind((addr, 5300))
     while True:
         try:
-            _data, peer = sock.recvfrom(4096)
-            sock.sendto(b"", peer)
+            _data, ancdata, _flags, peer = sock.recvmsg(4096, socket.CMSG_SPACE(64))
+            reply_anc = []
+            for level, ctype, cdata in ancdata:
+                if level == socket.IPPROTO_IP and ctype == socket.IP_PKTINFO:
+                    ## in_pktinfo = ifindex(4) + spec_dst(4) + addr(4). Reply FROM the
+                    ## header destination (bytes 8:12) by placing it in spec_dst;
+                    ## ifindex 0 so the kernel still routes the reply normally.
+                    dst_addr = cdata[8:12]
+                    reply_anc = [(socket.IPPROTO_IP, socket.IP_PKTINFO,
+                                  b"\x00\x00\x00\x00" + dst_addr + b"\x00\x00\x00\x00")]
+                    break
+            sock.sendmsg([b""], reply_anc, 0, peer)
         except OSError:
             break
 
