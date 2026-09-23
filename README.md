@@ -262,7 +262,7 @@ rather than failed.
 # offscreen unit suite (depends on the sdwdate-gui package being installed)
 sdwdate-gui-tests
 
-# end-to-end integration suite (needs the Suggests tooling)
+# end-to-end integration suite (needs the GUI tooling above)
 sdwdate-gui-tests-integration
 
 # run from a git checkout against an uninstalled sdwdate-gui tree
