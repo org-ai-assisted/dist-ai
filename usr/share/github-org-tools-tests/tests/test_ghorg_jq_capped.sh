@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -35,7 +36,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 fail=0
@@ -62,6 +63,7 @@ fi
 ## length. NB: 'unset GHORG_JQ_MAX_BYTES' would leave the lib's
 ## later 'head -c "${GHORG_JQ_MAX_BYTES}"' tripping nounset, so
 ## explicitly re-set to the lib default rather than unsetting.
+# shellcheck disable=SC2034  # GHORG_JQ_MAX_BYTES: consumed by the sourced ghorg_jq_capped
 GHORG_JQ_MAX_BYTES=4194304   ## restore default
 rc=0
 out="$(printf '%s' '[1,2,3,4,5]' | ghorg_jq_capped -- 'length' 2>&1)" || rc=$?

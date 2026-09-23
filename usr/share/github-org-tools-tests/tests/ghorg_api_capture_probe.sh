@@ -30,8 +30,9 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
-# shellcheck source=/dev/null
+# shellcheck disable=SC1091,SC2154  # DEVELOPER_META_FILES_PATH: set by the test harness/CI env
 source "${DEVELOPER_META_FILES_PATH}/usr/libexec/developer-meta-files/github-org-lib.bsh"
 
 rc=0

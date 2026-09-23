@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    printf '%s\n' \
@@ -31,7 +32,7 @@ if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if ! has python3; then

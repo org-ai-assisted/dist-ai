@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -38,7 +39,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 has sanitize-string \
@@ -46,7 +47,7 @@ has sanitize-string \
       'error: sanitize-string not found on PATH.' \
       '       Install helper-scripts (see .github/actions/install-deps/).' >&2; exit 1; }
 
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 fail=0

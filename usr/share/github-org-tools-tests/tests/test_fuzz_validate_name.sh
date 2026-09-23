@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -39,11 +40,11 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 has sanitize-string \
    || { printf '%s\n' 'error: sanitize-string not on PATH' >&2; exit 1; }
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 ## Reference oracle: returns 0 if name is valid per the rule set,
@@ -55,14 +56,17 @@ oracle_valid() {
    kind="${2:-repo}"
    case "${kind}" in
       user)
+         # shellcheck disable=SC2154  # GHORG_MAX_USER_LOGIN_LEN: set by the sourced github-org-lib.bsh
          max_len="${GHORG_MAX_USER_LOGIN_LEN}"
          allowed_re='^[A-Za-z0-9._-]+$'
          ;;
       ref)
+         # shellcheck disable=SC2154  # GHORG_MAX_BRANCH_NAME_LEN: set by the sourced github-org-lib.bsh
          max_len="${GHORG_MAX_BRANCH_NAME_LEN}"
          allowed_re='^[A-Za-z0-9._/-]+$'
          ;;
       *)
+         # shellcheck disable=SC2154  # GHORG_MAX_REPO_NAME_LEN: set by the sourced github-org-lib.bsh
          max_len="${GHORG_MAX_REPO_NAME_LEN}"
          allowed_re='^[A-Za-z0-9._-]+$'
          ;;

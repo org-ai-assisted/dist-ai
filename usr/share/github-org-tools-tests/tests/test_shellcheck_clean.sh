@@ -25,7 +25,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 has shellcheck \

@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -29,7 +30,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
-# shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
+# shellcheck disable=SC1091
 source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 ## Tighten the timeout for the test so a regression is caught fast.
