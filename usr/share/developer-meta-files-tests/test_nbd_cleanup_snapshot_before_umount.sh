@@ -13,9 +13,12 @@
 ##     mounts to unmount by the SOURCE STRING in /proc/mounts is unsafe: an
 ##     unprivileged user can mount FUSE with fsname=/dev/nbd0, so the source
 ##     string is attacker-controlled. dm-nbd-cleanup instead reads
-##     /proc/self/mountinfo and keys on the KERNEL-reported backing-device major
-##     (field 3), which is NBD_MAJOR (43) for a real nbd device and something else
-##     (0 for tmpfs/fuse) for a spoof -- unforgeable without privilege.
+##     /proc/self/mountinfo and accepts a mount as nbd-backed only when the
+##     KERNEL-set major (field 3) is NBD_MAJOR (43), OR the source is /dev/nbd*
+##     AND the kernel-set fstype is a real block filesystem (/proc/filesystems
+##     without 'nodev'). The major covers ext4/xfs directly on nbd; the block-fs
+##     fallback covers anonymous-superblock btrfs (major 0) WITHOUT trusting a
+##     forgeable fuse/tmpfs spoof (a 'nodev' type), which is rejected.
 ##
 ## (B) READ-WHILE-MUTATE SKIP. Unmounting INSIDE 'while read ... < mountinfo'
 ##     reads a file that mutates under the loop, silently skipping later entries.
@@ -118,10 +121,14 @@ trap cleanup_handler EXIT
 
 ## A /proc/self/mountinfo-shaped fixture. Fields: 1 id, 2 parent, 3 major:minor,
 ## 4 root, 5 mount point, 6 opts, ... - fstype source superopts.
-## - major 43 (NBD_MAJOR): real nbd mounts, MUST be unmounted (one \040-encoded).
-## - major 8 / major 0: ordinary device and tmpfs, must NOT be.
-## - the deputy spoof: source string '/dev/nbd0' but backing major 0 (fuse) -- a
-##   source-string filter would unmount it; keying on the major must NOT.
+## - major 43 (NBD_MAJOR): block fs directly on nbd, MUST be unmounted (one
+##   \040-encoded).
+## - nbd-backed btrfs: anonymous superblock so major is 0, but source is /dev/nbd*
+##   and fstype 'btrfs' is a real block fs -- MUST be unmounted (keying on major
+##   alone would skip it and disconnect the device under a live mount).
+## - major 8 / tmpfs: ordinary device and tmpfs, must NOT be.
+## - the deputy spoof: source string '/dev/nbd0' but fstype 'fuse.evil' (a 'nodev'
+##   type an unprivileged user can forge) -- must NOT be unmounted.
 mountinfo_fixture="${work_dir}/mountinfo"
 {
    printf '%s\n' '36 35 43:0 / /mnt/nbd-a rw,relatime shared:1 - ext4 /dev/nbd0 rw'
@@ -130,7 +137,20 @@ mountinfo_fixture="${work_dir}/mountinfo"
    printf '%s\n' '39 35 0:44 / /mnt/plain-tmpfs rw shared:4 - tmpfs tmpfs rw'
    printf '%s\n' '40 35 43:2 / /mnt/nbd-c rw,relatime shared:5 - ext4 /dev/nbd2 rw'
    printf '%s\n' '41 35 0:52 / /mnt/spoof rw shared:6 - fuse.evil /dev/nbd0 rw'
+   printf '%s\n' '42 35 0:60 / /mnt/nbd-btrfs rw,relatime shared:7 - btrfs /dev/nbd3p1 rw'
 } > "${mountinfo_fixture}"
+
+## A /proc/filesystems-shaped fixture: 'nodev'-prefixed lines are virtual /
+## userspace filesystems (forgeable source), the rest are real block filesystems.
+filesystems_fixture="${work_dir}/filesystems"
+{
+   printf 'nodev\t%s\n' 'sysfs'
+   printf 'nodev\t%s\n' 'tmpfs'
+   printf 'nodev\t%s\n' 'fuse'
+   printf '\t%s\n' 'ext4'
+   printf '\t%s\n' 'btrfs'
+   printf '\t%s\n' 'xfs'
+} > "${filesystems_fixture}"
 
 stub_path_init
 ## sudo is the only external the --release mount path invokes here (the device
@@ -139,7 +159,9 @@ stub_path_init
 stub_cmd sudo 0
 
 run_rc=0
-DM_NBD_CLEANUP_PROC_MOUNTINFO="${mountinfo_fixture}" HELPER_SCRIPTS_PATH="${hs_path}" \
+DM_NBD_CLEANUP_PROC_MOUNTINFO="${mountinfo_fixture}" \
+   DM_NBD_CLEANUP_PROC_FILESYSTEMS="${filesystems_fixture}" \
+   HELPER_SCRIPTS_PATH="${hs_path}" \
    "${subject}" --release >/dev/null 2>&1 || run_rc=$?
 if [ "${run_rc}" -eq 0 ]; then
    pass "behavioral: dm-nbd-cleanup --release ran cleanly against the fixture"
@@ -147,8 +169,9 @@ else
    fail "behavioral: dm-nbd-cleanup --release exited ${run_rc} against the fixture"
 fi
 
-## Every real-nbd mount is unmounted -- including the \040-encoded space, decoded.
-for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c'; do
+## Every real-nbd mount is unmounted -- the \040-encoded space (decoded) and the
+## anonymous-superblock btrfs whose major is 0 but is genuinely nbd-backed.
+for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs'; do
    if stub_called_with sudo umount -- "${want}"; then
       pass "behavioral: real-nbd mount '${want}' was unmounted"
    else
