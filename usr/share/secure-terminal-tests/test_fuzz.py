@@ -233,7 +233,7 @@ def prop_feed_line_edits_vt(raw, max_line):
     # feed escape-rich raw straight into the cell line editor so the cursor CSI
     # ops (forward/back/absolute + erase-in-line), the SGR fold and the
     # strip-any-other-escape paths are all reached.
-    comp, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, raw, max_line)
+    comp, cells, col, sgr, wraps, _rp6 = S.feed_line_edits([], 0, {}, raw, max_line)
     assert isinstance(comp, list) and isinstance(cells, list) and col >= 0
     # feed again from the resulting non-empty cells/cursor/sgr state
     S.feed_line_edits(cells, col, sgr, raw, max_line)
@@ -284,7 +284,7 @@ def prop_classify_paste_hostile(text):
 def prop_cells_to_runs_hostile(text, mode, colors, markings):
     # render hostile cells with markings on/off and colours on/off, so the emit
     # marking/colour/plain branches are all exercised.
-    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
+    comp, cells, col, sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, text)
     runs, prefix = S.cells_to_runs(comp, cells, mode, colors, markings=markings)
     assert isinstance(runs, list)
 
@@ -422,7 +422,7 @@ def prop_feed_line_edits(text, mode, max_line):
     # escape byte into a cell, the cursor must stay within the current line, and
     # in box mode the rendered line must be all-safe. It must not raise. max_line
     # exercises the width bound: cursor-forward blank padding and deferred autowrap.
-    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text, max_line)
+    comp, cells, col, sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, text, max_line)
     assert 0 <= col <= len(cells)
     if max_line:
         assert col <= max_line and len(cells) <= max_line   # never past the width
@@ -496,7 +496,7 @@ def prop_feed_chunk_carry(chunks):
 def prop_cells_to_runs(text, mode, colors):
     # rendering the logical cells (from feed_line_edits) to display runs must not
     # raise and must stay safe: box runs are all-safe, the caret offset is sane.
-    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
+    comp, cells, col, sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, text)
     runs, prefix = S.cells_to_runs(comp, cells, mode, colors)
     assert isinstance(runs, list) and isinstance(prefix, int) and prefix >= 0
     for run_text, _key in runs:
@@ -617,7 +617,7 @@ def prop_corpus_live_path(text):
     Live output goes feed_line_edits -> cells_to_runs and has a cursor model, so a
     payload that is safe under render_output can still misbehave here.
     """
-    completed, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
+    completed, cells, col, sgr, wraps, _rp6 = S.feed_line_edits([], 0, {}, text)
     assert all(ch != '\x1b' for ch, _ in cells)
     assert 0 <= col <= len(cells)
     runs, prefix = S.cells_to_runs(completed, cells, 'box', False)

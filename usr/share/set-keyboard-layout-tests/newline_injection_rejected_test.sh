@@ -110,7 +110,9 @@ newline_dispatch_recorder() {
 run_parse_case() {
    (
       stub_path_init
-      stub_cmd localectl-static 0 "$(printf 'us\nde')"
+      ## Report every token the cases use as valid, for layouts AND variants AND
+      ## options (the stub returns the same list for each localectl-static query).
+      stub_cmd localectl-static 0 "$(printf 'us\nde\nnodeadkeys\ncompose:ralt')"
 
       # shellcheck disable=SC2034  # consumed by the sourced parse_cmd
       function_name='newline_dispatch_recorder'
@@ -149,16 +151,30 @@ fi
 ## Teeth: an embedded newline whose lines are each individually valid layouts must
 ## be rejected before dispatch. On unfixed code it passes validation and reaches the
 ## writer (result would be 'called rc=0').
-tainted_arg="$(printf 'us\nde')"
-tainted_result="$(run_parse_case "${tainted_arg}")"
-case "${tainted_result}" in
-   'not-called rc='[1-9]*)
-      ok "embedded-newline layout arg rejected before dispatch (no config injection)"
-      ;;
-   *)
-      notok "embedded-newline layout arg was NOT rejected before dispatch (result='${tainted_result}')"
-      ;;
-esac
+## The variant (args[1]) and option (args[2]) are ALSO written verbatim into the
+## config, so an embedded newline in ANY of the three must be rejected -- not just
+## the layout. Each injected value newline-joins two INDIVIDUALLY VALID tokens, so
+## on unfixed code validation passes and the tainted value reaches the writer
+## ('called rc=0'); only the control-char guard rejects it. (localectl-static is
+## stubbed to report all of these tokens as valid.)
+assert_arg_rejected() {
+   local slot="$1"
+   shift
+   local res
+   res="$(run_parse_case "$@")"
+   case "${res}" in
+      'not-called rc='[1-9]*)
+         ok "embedded-newline ${slot} arg rejected before dispatch (no config injection)"
+         ;;
+      *)
+         notok "embedded-newline ${slot} arg was NOT rejected before dispatch (result='${res}')"
+         ;;
+   esac
+}
+
+assert_arg_rejected 'layout' "$(printf 'us\nde')" '' ''
+assert_arg_rejected 'variant' 'us' "$(printf 'nodeadkeys\nnodeadkeys')" ''
+assert_arg_rejected 'option' 'us' '' "$(printf 'compose:ralt\ncompose:ralt')"
 
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"

@@ -138,6 +138,12 @@ mountinfo_fixture="${work_dir}/mountinfo"
    printf '%s\n' '40 35 43:2 / /mnt/nbd-c rw,relatime shared:5 - ext4 /dev/nbd2 rw'
    printf '%s\n' '41 35 0:52 / /mnt/spoof rw shared:6 - fuse.evil /dev/nbd0 rw'
    printf '%s\n' '42 35 0:60 / /mnt/nbd-btrfs rw,relatime shared:7 - btrfs /dev/nbd3p1 rw'
+   printf '%s\n' '43 35 7:1 / /mnt/nbd-backup rw,relatime shared:8 - ext4 /dev/nbd-backup rw'
+   printf '%s\n' '44 35 7:2 / /mnt/nbd0-backup rw,relatime shared:9 - ext4 /dev/nbd0-backup rw'
+   ## Optional-field count varies (mountinfo allows zero or many before ' - '):
+   ## a real-nbd mount with ZERO and with MULTIPLE optional fields must still parse.
+   printf '%s\n' '45 35 43:3 / /mnt/nbd-noopt rw,relatime - ext4 /dev/nbd4 rw'
+   printf '%s\n' '46 35 43:4 / /mnt/nbd-multiopt rw,relatime shared:10 master:2 - ext4 /dev/nbd5 rw'
 } > "${mountinfo_fixture}"
 
 ## A /proc/filesystems-shaped fixture: 'nodev'-prefixed lines are virtual /
@@ -171,7 +177,7 @@ fi
 
 ## Every real-nbd mount is unmounted -- the \040-encoded space (decoded) and the
 ## anonymous-superblock btrfs whose major is 0 but is genuinely nbd-backed.
-for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs'; do
+for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs' '/mnt/nbd-noopt' '/mnt/nbd-multiopt'; do
    if stub_called_with sudo umount -- "${want}"; then
       pass "behavioral: real-nbd mount '${want}' was unmounted"
    else
@@ -179,8 +185,9 @@ for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs'; do
    fi
 done
 
-## No non-nbd mount is unmounted -- ordinary device, tmpfs, AND the deputy spoof.
-for unwanted in '/boot' '/mnt/plain-tmpfs' '/mnt/spoof'; do
+## No non-nbd mount is unmounted -- ordinary device, tmpfs, the deputy spoof, and
+## a same-prefix source name (/dev/nbd-backup, major 7) that is NOT an nbd device.
+for unwanted in '/boot' '/mnt/plain-tmpfs' '/mnt/spoof' '/mnt/nbd-backup' '/mnt/nbd0-backup'; do
    if stub_not_called_with sudo umount -- "${unwanted}"; then
       pass "behavioral: non-nbd mount '${unwanted}' was left alone"
    else

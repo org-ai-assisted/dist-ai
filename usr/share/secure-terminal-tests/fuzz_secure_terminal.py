@@ -147,7 +147,7 @@ def phase_lines(rnd, iterations, seed):
     for _ in range(iterations):
         text = _rand_text(rnd)
         max_line = rnd.choice((0, 0, rnd.randint(2, 120)))   # exercise the width bound
-        comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text, max_line)
+        comp, cells, col, sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, text, max_line)
         _assert(0 <= col <= len(cells),
                 'feed_line_edits cursor {0} out of [0,{1}] on {2!r}'
                 .format(col, len(cells), text), seed)
