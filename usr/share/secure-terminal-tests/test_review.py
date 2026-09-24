@@ -181,6 +181,10 @@ _ime = _QIME()
 _ime.setCommitString('X')
 _ed.inputMethodEvent(_ime)
 eq(_ed.source(), 'catX', 'an IME commit string is routed through _text, not the base document')
+# ALSO assert the rendered document stays a pure render of _text: a handler that commits
+# through _text but then also lets the base widget insert (super().inputMethodEvent) would
+# leave source()=='catX' while the DOCUMENT shows 'catXX'. Pure ASCII renders 1:1.
+eq(_ed.toPlainText(), 'catX', 'the document stays in sync with _text (base did not also insert)')
 _pre = _QIME('compose', [])                    # composition in progress (preedit only)
 _ed.inputMethodEvent(_pre)
 eq(_ed.source(), 'catX', 'an IME preedit is NOT committed into _text (kept off the box)')
