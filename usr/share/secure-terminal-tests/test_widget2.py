@@ -2168,6 +2168,24 @@ ok(_delivered is False,
    'E: a short bracketed-paste write is still reported as a partial delivery (False)')
 _bpsw.close()
 
+# TOCTOU: the fg pgrp can vanish (the program exits as a paste lands) between
+# has_foreground_program()'s tcgetpgrp and _bracketed_paste_active()'s own read, so
+# _foreground_pgrp() returns None. The REAL _read_exe(None) then raises TypeError
+# ('/proc/%d/exe' % None) -- so _read_exe is NOT mocked here (a mock would hide the very
+# bug). The gate must force-review (return False), never let that exception abort the paste.
+_bpn = SecureTerminal(command=None, tui=True)
+_bpn.has_foreground_program = lambda: True
+_bpn._foreground_pgrp = lambda: 2 ** 30                   # a live-looking pgrp at arm time
+feed_output(_bpn, b'\x1b[?2004h')                         # arm: owner recorded via the real _read_exe
+_bpn._foreground_pgrp = lambda: None                      # fg pgrp vanishes before the gate reads
+try:
+    _bpn_active = _bpn._bracketed_paste_active()          # old code: _read_exe(None) -> TypeError
+except TypeError:
+    _bpn_active = 'TypeError'
+ok(_bpn_active is False,
+   'a vanished fg pgrp force-reviews (no uncaught TypeError from _read_exe(None))')
+_bpn.close()
+
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
 # shell line, so it must invalidate the buffer -- keeping _line_pending() honest so
