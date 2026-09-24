@@ -492,10 +492,12 @@ def inv2_corpus():
 _WT6 = SecureTerminal(command='/bin/cat', tui=True)
 for _feat in ('osc_clipboard_read', 'osc_clipboard', 'osc_title', 'osc_notify',
               'osc_cwd', 'osc_hyperlink'):
-    try:
-        _WT6.apply_osc(_feat, True)                 # every reach-out ON
-    except Exception:                               # pylint: disable=broad-except
-        pass
+    _WT6.apply_osc(_feat, True)                     # every reach-out ON
+    # Assert it TOOK EFFECT: apply_osc silently no-ops an unknown key, so a renamed/removed
+    # feature would otherwise leave INV-6 exercising it DISABLED while still reporting PASS --
+    # the security-relevant osc_clipboard_read reply-suppression path would go untested.
+    if not _WT6.osc_enabled(_feat):
+        fail('INV-6 setup: %s did not enable (silent feature drift)' % _feat)
 _WT6_SENT: list[Any] = []
 # _write returns bytes-written; mimic a full write (the reply path checks the count).
 _WT6._write = lambda d, _s=_WT6_SENT: _s.append(d) or len(d)   # pylint: disable=protected-access

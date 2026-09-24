@@ -2017,20 +2017,24 @@ _ao.close()
 _crlf = SecureTerminal(command='/bin/cat', line_editing='append-only')
 _crlf.apply_mode('box'); _crlf.resize(700, 300); _crlf.show(); pump(50)
 feed_output(_crlf, b'one\r\ntwo\r\nthree\r\n')
-eq([l for l in _crlf.toPlainText().split('\n') if l], ['one', 'two', 'three'],
-   'append-only: \\r\\n is one plain break -- no blank line between rows')
+# rstrip the trailing newline then split with NO empty-row filter, so the pre-fix
+# double-spacing ('one\n\ntwo\n\n...') shows up as blank rows between content and FAILS
+# (a filter would hide exactly the regression this guards).
+eq(_crlf.toPlainText().rstrip('\n').split('\n'), ['one', 'two', 'three'],
+   'append-only: \\r\\n is one plain break -- no blank row between content rows')
 _crlf_doc = _crlf.document()
 ok(not any(_crlf._block_redraw(_crlf_doc.findBlockByNumber(_i))
            for _i in range(_crlf_doc.blockCount())),
    'append-only: an ordinary \\r\\n newline carries NO redraw flag')
-# boundary: a \r\n split across two reads is still one break, no false flag.
+# boundary: a \r\n split across two reads is still one break, no false flag or blank row.
 feed_output(_crlf, b'four\r')
 feed_output(_crlf, b'\nfive\r\n')
 _crlf_doc = _crlf.document()
-ok('four' in _crlf.toPlainText() and 'five' in _crlf.toPlainText()
-   and not any(_crlf._block_redraw(_crlf_doc.findBlockByNumber(_i))
-               for _i in range(_crlf_doc.blockCount())),
-   'append-only: a \\r\\n split across reads is one break, still no false flag')
+eq(_crlf.toPlainText().rstrip('\n').split('\n'), ['one', 'two', 'three', 'four', 'five'],
+   'append-only: a \\r\\n split across reads is one break -- no blank row')
+ok(not any(_crlf._block_redraw(_crlf_doc.findBlockByNumber(_i))
+           for _i in range(_crlf_doc.blockCount())),
+   'append-only: a boundary-split \\r\\n carries NO redraw flag')
 _crlf.close()
 
 # --- append-only F5: a \b split across reads still flags its line --------------

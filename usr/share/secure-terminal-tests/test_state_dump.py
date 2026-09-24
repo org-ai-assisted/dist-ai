@@ -434,12 +434,16 @@ _rsa = _arm_terminal(True)
 feed_output(_rsa, b'\x1b[?1049h')            # enter the alternate screen
 APP.processEvents()
 ok(_rsa._alt_screen, 'the armed terminal is on the alternate screen before restart')
+# Capture alt_active() AT emit time, not just that the signal fired: an implementation
+# that emits BEFORE clearing the alt screen would still fire (and pass a later state check),
+# but the connected indicator would update while alt is still active and stay stuck on
+# "TUI (alt)". Asserting the observed state is False proves the emit happens AFTER the clear.
 _rsa_fired = []
-_rsa.alt_screen_changed.connect(lambda: _rsa_fired.append(True))
+_rsa.alt_screen_changed.connect(lambda: _rsa_fired.append(_rsa.alt_active()))
 _rsa.restart_as_shell()
 ok(not _rsa._alt_screen, 'restart_as_shell drops the alternate screen')
-ok(_rsa_fired,
-   'restart_as_shell emits alt_screen_changed so the indicator is not left stale on TUI (alt)')
+eq(_rsa_fired, [False],
+   'alt_screen_changed fired exactly once, AFTER alt was cleared (indicator not left stale)')
 _rsa.close()
 
 # The ordinary-exit fg-edge (in _read_and_render) calls the same reset when the foreground
