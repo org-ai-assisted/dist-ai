@@ -51,7 +51,7 @@ fail() {
 rel='packages/kicksecure/developer-meta-files/usr/bin/dm-install-from-local-repository'
 subject=""
 for candidate in "${DM_INSTALL_FROM_LOCAL_REPOSITORY:-}" \
-   "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-install-from-local-repository" \
+   "${DEVELOPER_META_FILES_DIR:+${DEVELOPER_META_FILES_DIR}/usr/bin/dm-install-from-local-repository}" \
    "${dm_checkout}/${rel}" \
    "/usr/bin/dm-install-from-local-repository"; do
    [ -n "${candidate}" ] || continue

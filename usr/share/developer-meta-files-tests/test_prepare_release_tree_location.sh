@@ -50,7 +50,7 @@ fail() {
 
 subject=""
 for candidate in "${DM_PREPARE_RELEASE:-}" \
-   "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-prepare-release" \
+   "${DEVELOPER_META_FILES_DIR:+${DEVELOPER_META_FILES_DIR}/usr/bin/dm-prepare-release}" \
    "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-prepare-release" \
    "/usr/bin/dm-prepare-release"; do
    [ -n "${candidate}" ] || continue
@@ -68,7 +68,7 @@ fi
 ## order; each tool is checked for USING it rather than for repeating it.
 lib=""
 for candidate in "$(dirname -- "$(dirname -- "${subject}")")/libexec/developer-meta-files/source-tree-lib.bsh" \
-   "${DEVELOPER_META_FILES_DIR:-}/usr/libexec/developer-meta-files/source-tree-lib.bsh"; do
+   "${DEVELOPER_META_FILES_DIR:+${DEVELOPER_META_FILES_DIR}/usr/libexec/developer-meta-files/source-tree-lib.bsh}"; do
    if [ -r "${candidate}" ]; then
       lib="${candidate}"
       break
