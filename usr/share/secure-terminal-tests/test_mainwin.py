@@ -130,7 +130,7 @@ for _gone in ('&Theme', '&Unicode', '&Colors', '&Line editing', 'Colored &markin
     ok(_gone not in _vt, 'View menu no longer shows %r (moved to Global settings)' % _gone)
 # the removed settings survive as hidden state-holders (slash-commands / chips / locks / sync)
 ok(win.act_colors is not None and win.act_tui is not None
-   and win.act_markings is not None and win.act_line_edits is not None
+   and win.act_markings is not None
    and bool(win._theme_actions) and bool(win._mode_actions)
    and bool(win._osc_actions) and bool(win._paste_warn_actions)
    and bool(win._copy_warn_actions) and bool(win._scrollback_actions)
@@ -517,14 +517,14 @@ _lew.new_tab()                                  # two real tabs
 # aggregator (_apply_global, the dialog's apply entry point) -- NOT a per-tab loop
 # -- so a regression back to current()-only actually fails here. Canary: change the
 # main.py _apply_global loop to touch only current() and this goes red.
-_lew._apply_global(_full_opts(_lew, line_edits=False))
-ok(all(not t.line_edits_enabled() for t in _lew._real_terms()),
-   '#10: line editing off applies to every tab, not just the current one')
-ok(_lew._default_line_edits is False,
-   '#10: line editing off updates the new-tab default too')
-_lew._apply_global(_full_opts(_lew, line_edits=True))
-ok(all(t.line_edits_enabled() for t in _lew._real_terms()),
-   '#10: line editing on re-applies to every tab')
+_lew._apply_global(_full_opts(_lew, line_editing='append-only'))
+ok(all(t.line_editing() == 'append-only' for t in _lew._real_terms()),
+   '#10: line editing applies to every tab, not just the current one')
+eq(_lew._default_line_editing, 'append-only',
+   '#10: line editing updates the new-tab default too')
+_lew._apply_global(_full_opts(_lew, line_editing='full'))
+ok(all(t.line_editing() == 'full' for t in _lew._real_terms()),
+   '#10: line editing re-applies to every tab')
 _lew.deleteLater()
 APP.processEvents()                             # reap the tabs' shells (free ptys/fds)
 

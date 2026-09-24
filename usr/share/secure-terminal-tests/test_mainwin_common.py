@@ -289,7 +289,7 @@ def _full_opts(_w, **_over):
     poking per-tab state, so an aggregation regression is actually caught."""
     _o = {'theme': _w._default_theme, 'zoom': _w._default_zoom,
           'mode': _w._default_mode, 'colors': _w._default_colors,
-          'line_edits': _w._default_line_edits, 'tui': _w._default_tui,
+          'line_editing': _w._default_line_editing, 'tui': _w._default_tui,
           'scrollback': _w._scrollback, 'paste_delay': _w._paste_delay,
           'escape_limit': _w._escape_limit, 'persist': _w._persist_session,
           'systray': _w._systray, 'auto_tab_colors': _w._auto_tab_colors}

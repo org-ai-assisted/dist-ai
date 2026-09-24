@@ -504,17 +504,27 @@ _MC_TOKENS = [
 ]
 
 
+def _strip_redraw(lines):
+    """Drop the append-only _REDRAW_MARK cells from completed lines. The marker is a
+    per-CALL, suppressed cosmetic cell (a \\b split across read chunks may not carry its
+    flag to the next call), so incremental vs whole feeding may differ ONLY by it;
+    stripping normalizes that so the CONTENT (chars, cols) is compared read-chunk-invariant.
+    Containment (INV) is asserted separately and holds regardless."""
+    return [[c for c in ln if c != S._REDRAW_MARK] for ln in lines]
+
+
 def t2_modelcheck():
     """Bounded exhaustive execution of the CONCRETE feed_line_edits: every
-    token sequence up to depth 3, every small width, both line_edits modes.
+    token sequence up to depth 3, every small width, every line-editing level.
     After every prefix: INV on (col, len(cells)), and prefix-feed agreement
     (completed lines of the whole sequence equal the concatenation of
     per-token completed lines -- so a later token cannot rewrite an earlier
-    committed line)."""
+    committed line; the cosmetic redraw marker is normalized out, see
+    _strip_redraw)."""
     inv_bad = 0
     freeze_bad = 0
     for M in (0, 1, 2, 4):
-        for line_edits in (True, False):
+        for line_editing in S.LINE_EDITING_MODES:
             seqs: list[list[str]] = [[]]
             for _depth in range(3):
                 seqs = [[*s, t] for s in seqs for t in _MC_TOKENS]
@@ -525,22 +535,23 @@ def t2_modelcheck():
                 incr_comp = []
                 for t in toks:
                     comp, cells, col, sgr, _w = S.feed_line_edits(
-                        cells, col, sgr, t, max_line=M, line_edits=line_edits)
+                        cells, col, sgr, t, max_line=M, line_editing=line_editing)
                     incr_comp.extend(comp)
                     if not _inv_holds(col, cells, M):
                         if inv_bad < 8:
                             fail('T2 MC INV: M=%d le=%s toks=%r -> col=%d L=%d'
-                                 % (M, line_edits, toks, col, len(cells)))
+                                 % (M, line_editing, toks, col, len(cells)))
                         inv_bad += 1
                         break
                 else:
                     whole = S.feed_line_edits(
                         [], 0, {}, ''.join(toks), max_line=M,
-                        line_edits=line_edits)
-                    if incr_comp != whole[0] or cells != whole[1] or col != whole[2]:
+                        line_editing=line_editing)
+                    if (_strip_redraw(incr_comp) != _strip_redraw(whole[0])
+                            or cells != whole[1] or col != whole[2]):
                         if freeze_bad < 8:
                             fail('T2 MC freeze: M=%d le=%s toks=%r diverged'
-                                 % (M, line_edits, toks))
+                                 % (M, line_editing, toks))
                         freeze_bad += 1
     # Dedicated flood: 40 combining marks, INV must hold and L stays bounded.
     mark = '\u0301'

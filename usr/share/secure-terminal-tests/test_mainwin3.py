@@ -254,7 +254,7 @@ try:
         win._clip_warn_any = False                       # dialog opened with it OFF
         _st_clip.set_user_key('clip_warn_any', 'true')   # another instance turns it ON afterwards
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
-                           'colors': True, 'line_edits': True, 'scrollback': 1000,
+                           'colors': True, 'line_editing': 'full', 'scrollback': 1000,
                            'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': False})       # unchanged from win._clip_warn_any
         eq(_st_clip.load().get('clip_warn_any'), 'true',
@@ -263,7 +263,7 @@ try:
         _st_clip.set_user_key('clip_warn_any', 'false')  # reset disk so the write shows
         win._clip_warn_any = False
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
-                           'colors': True, 'line_edits': True, 'scrollback': 1000,
+                           'colors': True, 'line_editing': 'full', 'scrollback': 1000,
                            'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': True})        # toggled ON in the dialog
         ok(win._clip_warn_any is True

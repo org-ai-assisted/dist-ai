@@ -583,22 +583,25 @@ for _mode in MODES:
 # combining runs, invisibles, split escapes).
 
 
-def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
+def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_editing='full'):
     """Reference oracle: feed_line_edits WITHOUT the SGR-tuple cache -- it rebuilds
     tuple(sorted(sgr.items())) at every append/pad site, the pre-optimization form.
     All parsing internals come from the real module, so only the cache placement
-    differs; if the live cache ever goes stale, a cell tuple diverges here."""
+    differs; if the live cache ever goes stale, a cell tuple diverges here. Mirrors the
+    three line-editing levels (only 'full' honours the CSI edits; 'append-only' neutralizes
+    \\r/\\b and flags the line with S._REDRAW_MARK)."""
     completed = []
     wraps = []
     cells = list(cells)
     # whole-call bulk-cell-work budget, mirroring feed_line_edits (shares S._bounded_pad and
     # S._LINE_WORK_BUDGET so the anti-flood pad/erase bound cannot drift between the two).
     work_left = S._LINE_WORK_BUDGET
+    redraw_pending = False       # append-only: a neutralized \r/\b flags the line on completion
     i, n = 0, len(raw)
     while i < n:
         ch = raw[i]
         if ch == '\x1b':
-            m = S._LINE_CSI_RE.match(raw, i) if line_edits else None
+            m = S._LINE_CSI_RE.match(raw, i) if line_editing == 'full' else None
             if m:
                 num = S._safe_int(m.group(1), None) if m.group(1) else None
                 op = m.group(2)
@@ -644,6 +647,9 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
             if raw.startswith(S.PROMPT_START, i):
                 j = i + len(S.PROMPT_START)
                 if col != 0 and S._printable_follows(raw, j):
+                    if redraw_pending:
+                        cells.append(S._REDRAW_MARK)
+                        redraw_pending = False
                     cells.append(S._NO_NEWLINE_MARK)
                     completed.append(cells)
                     wraps.append(bool(max_line) and col >= max_line)
@@ -657,18 +663,34 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
             i += 1
             continue
         if ch == '\n':
+            if redraw_pending:
+                cells.append(S._REDRAW_MARK)
+                redraw_pending = False
             completed.append(cells)
             wraps.append(False)
             cells, col = [], 0
         elif ch == '\r':
-            col = 0
+            if line_editing == 'append-only':
+                redraw_pending = True
+                cells.append(S._REDRAW_MARK)
+                redraw_pending = False
+                completed.append(cells)
+                wraps.append(False)
+                cells, col = [], 0
+            else:
+                col = 0
         elif ch == '\x08':
-            if col > 0:
+            if line_editing == 'append-only':
+                redraw_pending = True
+            elif col > 0:
                 col -= 1
         elif ch == '\x07':
             pass
         else:
             if max_line and col >= max_line:
+                if redraw_pending:
+                    cells.append(S._REDRAW_MARK)
+                    redraw_pending = False
                 completed.append(cells)
                 wraps.append(True)
                 cells, col = [], 0
@@ -723,13 +745,20 @@ _diff_payloads.update({
     'bidi-run': 'a\u202eBODY\u202cb',
     'homoglyph-run': 'p\u0430ss\u043erd',       # Cyrillic a, o
     'invisibles-run': 'ad\u200b\u200c\ufe0fmin',
+    # exercise the append-only \r/\b paths (CR->break+mark, BS neutralized+mark) and the
+    # full/read-safe CR-overwrite path, across every mode in the loop below.
+    'cr-progress': 'load 10%\rload 55%\rload 100%\n',
+    'cr-overwrite': 'STATUS=FAIL\rSTATUS=PASS\n',
+    'backspace-edit': 'abc\b\bXY\n',
+    'cr-bs-mix': 'foo\rbar\bbaz',
+    'cr-then-prompt': 'partial\rredraw\x1b[?2004hnext',
 })
 
 _line_diff = 0
 for _name, _text in _diff_payloads.items():
     # (1) feed_line_edits cells (chars AND state tuples) byte-identical, for
-    # line_edits on/off and wrap off/on.
-    for _le in (True, False):
+    # every line-editing level and wrap off/on.
+    for _le in S.LINE_EDITING_MODES:
         for _ml in (0, 20):
             _got = S.feed_line_edits([], 0, {}, _text, _ml, _le)
             _ref = _ref_feed_line_edits([], 0, {}, _text, _ml, _le)
@@ -737,7 +766,7 @@ for _name, _text in _diff_payloads.items():
                 _line_diff += 1
             ok(_got == _ref,
                'feed_line_edits differs from the pre-cache reference (%s, '
-               'line_edits=%s, max_line=%d)' % (_name, _le, _ml))
+               'line_editing=%s, max_line=%d)' % (_name, _le, _ml))
     # (2) render_output byte-identical to the forced-strip reference, every mode.
     # render_output(pre-stripped) forces the sub the guard may skip, so an unequal
     # result would mean the guard wrongly skipped a needed strip.
@@ -762,7 +791,7 @@ for _name, _text in _diff_payloads.items():
 # state on those blanks (a stale/empty cache would leave them state ()), so this
 # differential is not vacuously green. A small max_line keeps the pad short and
 # deterministic (unbounded mode pads too, up to _UNBOUNDED_MAX_COL).
-_can = S.feed_line_edits([], 0, {}, '\x1b[31m\x1b[4Cx', 20, True)[1]
+_can = S.feed_line_edits([], 0, {}, '\x1b[31m\x1b[4Cx', 20, 'full')[1]
 ok(len(_can) == 5 and _can[0][1] == _can[4][1] and _can[0][1] != (),
    'cache canary: SGR-set blanks from a cursor pad carry the live SGR state '
    '(got %r)' % (_can[:1],))

@@ -34,7 +34,7 @@ try:
     _pw = MainWindow()
     ok(_pw._tui_autobox_notice,
        'tui_autobox_notice loads default-on from a fresh (absent) config')
-    _pw._apply_global({'theme': 'dark', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
+    _pw._apply_global({'theme': 'dark', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_editing': 'full',
                        'tui': False, 'osc': {}, 'osc_notice': False,
                        'tui_autobox_notice': False,
                        'scrollback': 7000, 'paste_delay': 5, 'escape_limit': 65536,
@@ -173,7 +173,7 @@ try:
        and not _iw.tabs.isTabEnabled(2) and not _iw.tabs.isTabEnabled(3),
        '#99 (F1): the active tab is enabled, placeholders are disabled (unselectable)')
     # a bulk "apply to all tabs" must skip placeholders, not call a setter on a QWidget
-    _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True, 'line_edits': True,
+    _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True, 'line_editing': 'full',
                        'tui': False, 'osc_notice': True, 'tui_autobox_notice': True, 'osc': {},
                        'scrollback': 1000, 'paste_delay': 0, 'escape_limit': 4096,
                        'persist': True})
@@ -256,7 +256,7 @@ try:
     try:
         _mw78 = MainWindow()
         _rr['n'] = 0
-        _mw78._restore_tab({'text': 'cafe box\n', 'mode': 'box', 'colors': True, 'line_edits': True,
+        _mw78._restore_tab({'text': 'cafe box\n', 'mode': 'box', 'colors': True, 'line_editing': 'full',
                             'markings': False, 'osc': {}})
         _t78 = _mw78.current()
         eq(_t78.current_mode(), 'box', '#78: restored tab keeps its saved mode')
@@ -410,7 +410,7 @@ try:
         win._locked = {_key}
         _opts = {'theme': win._default_theme, 'zoom': win._default_zoom,
                  'mode': win._default_mode, 'colors': win._default_colors,
-                 'line_edits': win._default_line_edits, 'tui': win._default_tui,
+                 'line_editing': win._default_line_editing, 'tui': win._default_tui,
                  'scrollback': win._scrollback, 'paste_delay': win._paste_delay,
                  'escape_limit': win._escape_limit,
                  'persist': win._persist_session, 'systray': win._systray,
@@ -944,7 +944,7 @@ win._osc_notice_off = set()
 _types = {_k: (_k != 'osc_colors') for _k, *_ in M.OSC_FEATURES}   # mute only palette
 win._apply_global({'theme': 'light', 'zoom': 100, 'mode': 'box',
                    'font_family': 'Hack', 'font_size': 11,
-                   'colors': True, 'line_edits': True, 'tui': False,
+                   'colors': True, 'line_editing': 'full', 'tui': False,
                    'osc_notice': True, 'osc_notice_types': _types,
                    'tui_autobox_notice': True, 'osc': {},
                    'scrollback': 1000, 'paste_delay': 3, 'escape_limit': 4096,

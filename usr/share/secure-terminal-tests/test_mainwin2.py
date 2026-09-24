@@ -36,14 +36,14 @@ ok(win._scrollback == 1000 and win._paste_delay == 3,
 # line editing is a Global-settings (all-tabs) setting: driving the REAL aggregator
 # (_apply_global, the dialog's apply entry point) must reach every open tab AND update
 # the new-tab default -- not just current(). The multi-tab regression canary lives in
-# test_mainwin's #10 block; here we confirm the aggregator wires line_edits at all.
-win._apply_global(_full_opts(win, line_edits=False))
-ok(all(not _t.line_edits_enabled() for _t in win._real_terms()),
-   'line editing off reaches every open tab via _apply_global')
-eq(win._default_line_edits, False, 'line editing updates the new-tab default')
-win._apply_global(_full_opts(win, line_edits=True))
-ok(all(_t.line_edits_enabled() for _t in win._real_terms()),
-   'line editing on restores it on every tab')
+# test_mainwin's #10 block; here we confirm the aggregator wires line_editing at all.
+win._apply_global(_full_opts(win, line_editing='read-safe'))
+ok(all(_t.line_editing() == 'read-safe' for _t in win._real_terms()),
+   'line editing reaches every open tab via _apply_global')
+eq(win._default_line_editing, 'read-safe', 'line editing updates the new-tab default')
+win._apply_global(_full_opts(win, line_editing='full'))
+ok(all(_t.line_editing() == 'full' for _t in win._real_terms()),
+   'line editing restores it on every tab')
 
 _saved_locked = set(win._locked)
 _saved_bsl = win._bell_sound_locked
@@ -611,26 +611,26 @@ win._restore_tab({'text': '', 'theme': [], 'osc': {}})
 eq(win.current().current_theme(), win._default_theme,
    '_restore_tab falls back to the default theme on an unhashable saved value')
 
-# M1: restored colors/line_edits/colored_markings on a TAMPERED (non-bool) saved value must
-# fall back to the ADMIN default, not a hard-coded True (fail OPEN). Set the unlocked admin
-# defaults to False so a fail-open (True) is distinguishable from the correct default.
-# (canary: pre-fix hard-coded the _saved_bool fallback to True, reversing an unlocked False.)
-_m1_c, _m1_le, _m1_mk = win._default_colors, win._default_line_edits, win._default_markings
+# M1: restored colors/line_editing/colored_markings on a TAMPERED (invalid) saved value must
+# fall back to the ADMIN default, not a hard-coded fail-open value. Set the unlocked admin
+# defaults to a NON-default value so a fail-open is distinguishable from the correct default.
+# (canary: pre-fix hard-coded the fallback, reversing an unlocked admin choice.)
+_m1_c, _m1_le, _m1_mk = win._default_colors, win._default_line_editing, win._default_markings
 win._default_colors = False
-win._default_line_edits = False
+win._default_line_editing = 'read-safe'
 win._default_markings = False
 try:
-    win._restore_tab({'text': '', 'colors': 'off', 'line_edits': 'false',
+    win._restore_tab({'text': '', 'colors': 'off', 'line_editing': 'bogus',
                       'markings': 'no', 'osc': {}})
     _m1_tab = win.current()
     ok(_m1_tab.colors_enabled() is False,
        'M1: a non-bool saved colors falls back to the admin default (False), not fail-open True')
-    ok(_m1_tab.line_edits_enabled() is False,
-       'M1: a non-bool saved line_edits falls back to the admin default, not True')
+    eq(_m1_tab.line_editing(), 'read-safe',
+       'M1: an invalid saved line_editing falls back to the admin default, not full')
     ok(_m1_tab.markings_enabled() is False,
        'M1: a non-bool saved colored_markings falls back to the admin default, not True')
 finally:
-    win._default_colors, win._default_line_edits, win._default_markings = _m1_c, _m1_le, _m1_mk
+    win._default_colors, win._default_line_editing, win._default_markings = _m1_c, _m1_le, _m1_mk
 
 # M5: a restored zoom below ZOOM_MIN must be clamped to ZOOM_MIN (25) before apply, not left
 # to apply_zoom's wider [10, 1000] floor (session.json is untrusted). (canary: pre-fix passed
@@ -663,19 +663,21 @@ ok(win.current()._pid is not None,
 
 # session restore honours admin locks: a session saved BEFORE a lock was applied
 # must not reopen bypassing it. _restore_tab applied the saved per-tab settings
-# (mode/tui/colors/line_edits/markings/zoom/theme/scrollback/font) without the
+# (mode/tui/colors/line_editing/markings/zoom/theme/scrollback/font) without the
 # _locked check it applies to OSC/bell, so a pre-lock session could reload an
 # admin-locked terminal in the wrong state. Locked -> the admin DEFAULT wins over
 # the saved value; unlocked -> the saved value is still restored. (ai-review)
 _rl_saved = set(win._locked)
 try:
     _rl_other_mode = next(_m for _m in _MM.DISPLAY_MODES if _m != win._default_mode)
+    _rl_other_le = ('append-only' if win._default_line_editing != 'append-only'
+                    else 'read-safe')
     _rl_info = {
         'text': '', 'osc': {},
         'mode': _rl_other_mode,
         'tui': not win._default_tui,
         'colors': not win._default_colors,
-        'line_edits': not win._default_line_edits,
+        'line_editing': _rl_other_le,
         'markings': not win._default_markings,
         'theme': 'light' if win._default_theme == 'dark' else 'dark',
         'zoom': win._default_zoom + 40,
@@ -683,7 +685,7 @@ try:
         'font_family': 'nondefault-probe-font',
         'font_size': win._default_font_size + 3,
     }
-    win._locked = {'unicode_mode', 'tui', 'colors', 'line_edits',
+    win._locked = {'unicode_mode', 'tui', 'colors', 'line_editing',
                    'colored_markings', 'theme', 'zoom', 'scrollback',
                    'font_family', 'font_size'}
     win._restore_tab(_rl_info, activate=True)
@@ -691,8 +693,8 @@ try:
     eq(_rt.current_mode(), win._default_mode, 'restore honours a locked unicode_mode')
     eq(_rt.current_tui(), win._default_tui, 'restore honours a locked tui')
     eq(_rt.colors_enabled(), win._default_colors, 'restore honours a locked colors')
-    eq(_rt.line_edits_enabled(), win._default_line_edits,
-       'restore honours a locked line_edits')
+    eq(_rt.line_editing(), win._default_line_editing,
+       'restore honours a locked line_editing')
     eq(_rt.markings_enabled(), win._default_markings,
        'restore honours a locked colored_markings')
     eq(_rt.current_theme(), win._default_theme, 'restore honours a locked theme')

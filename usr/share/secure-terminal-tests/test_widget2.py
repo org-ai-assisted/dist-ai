@@ -674,7 +674,7 @@ finally:
 # global settings apply to every open tab and update the defaults
 win.new_tab()
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
-                   'colors': True, 'line_edits': True, 'tui': False,
+                   'colors': True, 'line_editing': 'full', 'tui': False,
                    'tui_autobox_notice': True,
                    'osc': {'osc_title': True, 'osc_clipboard': True},
                    'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
@@ -687,7 +687,7 @@ ok(all(win.tabs.widget(i).osc_enabled('osc_title')
        and win.tabs.widget(i).osc_enabled('osc_clipboard')
        for i in range(win.tabs.count())),
    'global settings apply the granular OSC toggles to every tab')
-win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_edits': True,
+win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_editing': 'full',
                    'tui': False, 'tui_autobox_notice': True,
                    'osc': {'osc_title': False, 'osc_clipboard': False},
                    'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
@@ -826,7 +826,7 @@ finally:
 from secure_terminal.main import _parse_launch_args as _pla       # noqa: E402
 eq(_pla(['--title', 'logs', '--tui', '--mode', 'reveal']).tabs,
    [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None,
-     'colors': None, 'line_edits': None, 'bell': None, 'osc': None}],
+     'colors': None, 'line_editing': None, 'bell': None, 'osc': None}],
    'cli: single-tab options')
 # per-tab settings overrides parse into the tab spec
 _ps = _pla(['--colors', '--bell', 'audible,visual', '--osc', 'osc_clipboard_read',
@@ -836,15 +836,15 @@ eq((_ps['colors'], _ps['bell'], _ps['osc']),
    'cli: per-tab colours/bell/osc(repeatable) parse')
 eq(_pla(['--no-colors']).tabs[0]['colors'],
    False, 'cli: --no-colors turns a tab setting off')
-# the line-editing opt-out is reachable from the command line too, and a tab that
+# the line-editing level is reachable from the command line too, and a tab that
 # only carries it is NOT an empty spec (it must open a tab, not fall through to
 # the normal restore-or-default startup)
-eq(_pla(['--no-line-edits']).tabs[0]['line_edits'],
-   False, 'cli: --no-line-edits opts a tab out of line editing')
-eq(_pla(['--line-edits']).tabs[0]['line_edits'],
-   True, 'cli: --line-edits opts a tab back in')
-eq(len(_pla(['--no-line-edits']).tabs), 1,
-   'cli: a --no-line-edits-only spec still counts as a requested tab')
+eq(_pla(['--line-editing', 'append-only']).tabs[0]['line_editing'],
+   'append-only', 'cli: --line-editing sets a tab to append-only')
+eq(_pla(['--line-editing', 'read-safe']).tabs[0]['line_editing'],
+   'read-safe', 'cli: --line-editing read-safe')
+eq(len(_pla(['--line-editing', 'append-only']).tabs), 1,
+   'cli: a --line-editing-only spec still counts as a requested tab')
 eq(_pla(['--', 'htop', '--no-color']).tabs[0]['command'], ['htop', '--no-color'],
    'cli: -- gives a real argv (no shell reparse)')
 eq(_pla(['-e', 'ls -la']).tabs[0]['command'], 'ls -la',
@@ -1161,12 +1161,12 @@ _HRUN = _hset(max_examples=150, deadline=None)
 def _fuzz_tab_spec(spec):
     out = _sanitize_tab_spec(spec)
     assert set(out) == {'title', 'tui', 'mode', 'command',
-                        'colors', 'line_edits', 'bell', 'osc'}
+                        'colors', 'line_editing', 'bell', 'osc'}
     assert out['title'] is None or isinstance(out['title'], str)
     assert out['tui'] is None or isinstance(out['tui'], bool)
     assert out['mode'] is None or isinstance(out['mode'], str)
     assert out['colors'] is None or isinstance(out['colors'], bool)
-    assert out['line_edits'] is None or isinstance(out['line_edits'], bool)
+    assert out['line_editing'] is None or out['line_editing'] in _S.LINE_EDITING_MODES
     assert out['bell'] is None or isinstance(out['bell'], str)
     assert out['osc'] is None or (isinstance(out['osc'], list)
                                   and all(isinstance(f, str) for f in out['osc']))
@@ -1580,17 +1580,21 @@ _tuiterm, _d = _ttt._child_term()
 eq(_tuiterm, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
 ok(_d == _tdir, 'TERMINFO_DIRS resolves the restricted entry in both modes')
 _ttt.close()
-# line_edits=false STRIPS the four line-local ops, so the shell must not be told
+# read-safe/append-only STRIP the four line-local ops, so the shell must not be told
 # they work: CLI then advertises the -noedit entry, which cancels el/el1/cuf/cuf1/
 # cub/hpa. Advertising them would have the shell emit redraws we drop on the floor.
-_tne = SecureTerminal(command='/bin/cat', line_edits=False)
+_tne = SecureTerminal(command='/bin/cat', line_editing='read-safe')
 eq(_tne._child_term(), ('secure-terminal-noedit', _tdir),
-   'CLI mode with line editing off advertises the append-only TERM entry')
+   'CLI read-safe advertises the -noedit TERM entry')
 _tne.close()
+_tao = SecureTerminal(command='/bin/cat', line_editing='append-only')
+eq(_tao._child_term(), ('secure-terminal-noedit', _tdir),
+   'CLI append-only advertises the -noedit TERM entry too')
+_tao.close()
 # TUI is unaffected: the confined screen model interprets escapes either way.
-_tnt = SecureTerminal(command='/bin/cat', tui=True, line_edits=False)
+_tnt = SecureTerminal(command='/bin/cat', tui=True, line_editing='read-safe')
 eq(_tnt._child_term()[0], 'xterm-256color',
-   'TUI mode is unaffected by line_edits')
+   'TUI mode is unaffected by line_editing')
 _tnt.close()
 # the entry cancels every capability-query cap (no probing) + cursor-addressing +
 # alternate screen -- assert at the source of truth (the .ti)
@@ -1652,9 +1656,9 @@ def _entry_caps(entry):
     return caps
 
 
-def _renders_to(text, line_edits):
+def _renders_to(text, line_editing):
     """What the CLI cell model puts on screen for `text`."""
-    comp, cells, _col, _sgr, wraps = _fle([], 0, {}, text, 0, line_edits)
+    comp, cells, _col, _sgr, wraps = _fle([], 0, {}, text, 0, line_editing)
     runs, _p = _c2r(comp, cells, 'detail', False, wraps=wraps)
     return ''.join(t for t, _k in runs)
 
@@ -1686,8 +1690,8 @@ for _entry, _caps in (('secure-terminal', _CAPS_EDIT),
 # every real leak while allowing the honest pad.
 # k* capabilities are the INPUT side (bytes the terminal sends when a key is
 # pressed), never program output, so they are not the renderer's to consume.
-for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
-                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, 'full'),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, 'read-safe')):
     _leaky = sorted(n for n, v in _caps.items()
                     if not n.startswith('k') and '\x1b' in v
                     and _renders_to(v, _le).strip(' ') != '')
@@ -1713,8 +1717,8 @@ _CURSOR_FAMILY = {
     'el': ('\x1b[K', 'abcdef\b\b\b\x1b[K'),
     'el1': ('\x1b[1K', 'abc\x1b[1K'),
 }
-for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
-                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, 'full'),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, 'read-safe')):
     for _cap, (_esc, _probe) in _CURSOR_FAMILY.items():
         _acted = _renders_to(_probe, _le) != _renders_to(
             _probe.replace(_esc, ''), _le)
@@ -1725,11 +1729,11 @@ for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
 # cub1 is \b -- a raw control byte, honoured in BOTH settings, so it must stay
 # advertised in both. (Cancelling it would over-restrict; keeping it while the
 # renderer ignored it would be the same clash in reverse.)
-for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
-                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, 'full'),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, 'read-safe')):
     ok('cub1' in _caps, '%s advertises cub1 (backspace)' % _entry)
     eq(_renders_to('abc\bX', _le), 'abX',
-       '%s honours backspace whatever line_edits says' % _entry)
+       '%s honours backspace in full/read-safe' % _entry)
 
 # 4. The -noedit entry may only ever be a SUBSET: it exists to cancel caps, so a
 # capability it advertises that the full entry does not is drift, not intent.
@@ -1855,25 +1859,25 @@ def _child_term_env(term):
     return buf
 
 
-# The window's line_edits default must reach the CTOR, which is what forks: applied
-# afterwards via apply_line_edits it leaves the already-forked shell advertising
-# el/cuf/hpa, so the opt-out changed only the display and completion still garbled.
-_saved_dle = win._default_line_edits
+# The window's line_editing default must reach the CTOR, which is what forks: applied
+# afterwards via apply_line_editing it leaves the already-forked shell advertising
+# el/cuf/hpa, so a non-full level changed only the display and completion still garbled.
+_saved_dle = win._default_line_editing
 _probe_cmd = ['sh', '-c', 'printf T=$TERM\\n']
-win._default_line_edits = False
+win._default_line_editing = 'read-safe'
 win.new_tab(command=_probe_cmd)
 ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
-   'new_tab forks the child with the append-only terminfo entry')
-win._default_line_edits = True
+   'new_tab forks the child with the -noedit terminfo entry')
+win._default_line_editing = 'full'
 win.new_tab(command=_probe_cmd)
 _dfl_term = _child_term_env(win.current())
 ok(b'T=secure-terminal' in _dfl_term and b'-noedit' not in _dfl_term,
-   'line editing on (the default) forks with the normal CLI entry')
-win._default_line_edits = _saved_dle
-# a --no-line-edits launch spec must reach the ctor for the same reason
-win._open_launch_tab({'command': _probe_cmd, 'line_edits': False})
+   'full (the default) forks with the normal CLI entry')
+win._default_line_editing = _saved_dle
+# a --line-editing launch spec must reach the ctor for the same reason
+win._open_launch_tab({'command': _probe_cmd, 'line_editing': 'append-only'})
 ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
-   'a --no-line-edits launch spec forks the child with the append-only entry')
+   'an append-only launch spec forks the child with the -noedit entry')
 
 # CLI<->TUI toggle re-exports TERM for the new mode into the RUNNING shell (no
 # restart, state preserved), and is REFUSED with an advisory while a program owns
@@ -2242,30 +2246,39 @@ _lexadv: list[str] = []
 _lex.advise_signal.connect(_lexadv.append)
 _lexsent = spy_writes(_lex)
 _lex.has_foreground_program = lambda: False           # at a shell prompt
-_lex.apply_line_edits(False)
+_lex.apply_line_editing('read-safe')
 ok(b'export TERM=secure-terminal-noedit\r' in _lexsent,
-   'line editing off re-exports the append-only terminfo entry, CR-terminated')
+   'read-safe re-exports the -noedit terminfo entry, CR-terminated')
 _lexsent.clear()
-_lex.apply_line_edits(True)
+_lex.apply_line_editing('full')
 ok(b'export TERM=secure-terminal\r' in _lexsent,
-   'line editing back on re-exports the normal CLI terminfo entry')
+   'full re-exports the normal CLI terminfo entry')
+_lexsent.clear()
+# read-safe <-> append-only keep the SAME (-noedit) entry, so no re-export is typed --
+# it is a display-only change. Get to read-safe first (that re-export is expected), clear,
+# THEN switch to append-only and assert nothing more is written.
+_lex.apply_line_editing('read-safe')
+_lexsent.clear()
+_lex.apply_line_editing('append-only')
+ok(_lexsent == [], 'read-safe -> append-only re-exports nothing (same terminfo entry)')
+eq(_lex.line_editing(), 'append-only', 'the append-only display change still applied')
 _lexsent.clear()
 _lex.has_foreground_program = lambda: True            # a program owns the terminal
-_lex.apply_line_edits(False)
-ok(_lex.line_edits_enabled() is False,
+_lex.apply_line_editing('full')
+eq(_lex.line_editing(), 'full',
    'the display change still applies while a program is running')
 ok(_lexsent == [], 'no export is typed into a running program')
 ok(any('shell prompt' in a for a in _lexadv),
    'the unreachable re-export is advised, not silent')
 _lex.close()
 
-# TUI advertises xterm-256color either way, so a line-edits toggle there must not
+# TUI advertises xterm-256color either way, so a line-editing change there must not
 # write a pointless export into the shell.
 _lext = SecureTerminal(command=None, tui=True)
 _lextsent = spy_writes(_lext)
 _lext.has_foreground_program = lambda: False
-_lext.apply_line_edits(False)
-ok(_lextsent == [], 'a line-edits toggle in TUI mode re-exports nothing')
+_lext.apply_line_editing('read-safe')
+ok(_lextsent == [], 'a line-editing change in TUI mode re-exports nothing')
 _lext.close()
 
 
@@ -4914,8 +4927,8 @@ eq(_ac2.textCursor().position(), _ac2.document().characterCount() - 1,
    'the caret lands at the true end of the line after an astral glyph')
 _ac2.shutdown()
 
-# --- REGRESSION: full-screen detection survives line_edits=false ---------------
-# With line editing off the child runs under `secure-terminal-noedit`, which
+# --- REGRESSION: full-screen detection survives non-full line editing ----------
+# In read-safe/append-only the child runs under `secure-terminal-noedit`, which
 # cancels el/el1 on top of the base entry's cup/cuu/smcup -- so a curses program
 # emits no alternate screen, no cursor motion and no EL burst, and EVERY
 # escape-based detector is structurally dead. The terminfo-independent fallback is
@@ -4931,7 +4944,7 @@ with open(_plainsh, 'w') as _pf:
     _pf.write('#!/bin/sh\nprintf "PLAIN\\n"\nsleep 20\n')
 os.chmod(_plainsh, 0o700)
 
-_rw = SecureTerminal(command=_rawsh, line_edits=False)
+_rw = SecureTerminal(command=_rawsh, line_editing='read-safe')
 _rw_adv: list[str] = []
 _rw.advise_signal.connect(_rw_adv.append)
 _rw.resize(700, 300)
@@ -4939,10 +4952,10 @@ _rw.show()
 pump(900)
 ok(_rw._child_raw_mode(), 'the pty line discipline reports the child raw mode')
 ok(_rw._tui_hint_shown and any('TUI' in a for a in _rw_adv),
-   'line_edits off: a keyboard-owning program still raises the TUI advisory')
+   'read-safe: a keyboard-owning program still raises the TUI advisory')
 _rw.shutdown()
 
-_rw2 = SecureTerminal(command=_plainsh, line_edits=False)
+_rw2 = SecureTerminal(command=_plainsh, line_editing='read-safe')
 _rw2_adv: list[str] = []
 _rw2.advise_signal.connect(_rw2_adv.append)
 _rw2.resize(700, 300)
@@ -4950,7 +4963,7 @@ _rw2.show()
 pump(900)
 ok(not _rw2._child_raw_mode(), 'ordinary line output leaves the pty cooked')
 ok(not _rw2._tui_hint_shown,
-   'ordinary line output under line_edits off raises no advisory')
+   'ordinary line output under read-safe raises no advisory')
 _rw2.shutdown()
 
 _rw3 = SecureTerminal(command=_rawsh)             # line editing ON
@@ -4960,7 +4973,7 @@ _rw3.resize(700, 300)
 _rw3.show()
 pump(900)
 ok(not _rw3._tui_hint_shown,
-   'the raw-mode fallback is confined to the line_edits-off setting')
+   'the raw-mode fallback is confined to the non-full levels')
 _rw3.shutdown()
 
 # ==============================================================================

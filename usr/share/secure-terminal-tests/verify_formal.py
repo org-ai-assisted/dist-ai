@@ -138,8 +138,12 @@ METHOD, and what is PROVED vs ASSUMED (honest scope):
       and the over-cap DISCARD path must resume on the right terminator (DCS
       must NOT treat BEL as end -- BEL is body).
     * T2's abstract WRITE never modelled the combining-mark flood-cap drop or
-      line_edits=False (CSI becomes a no-op strip). Both are now transitions
-      in the inductive proof and the real-vs-model grid.
+      the non-full line-editing levels (read-safe: CSI becomes a no-op strip;
+      append-only: also \r->line-break and \b->drop, each flagging the line).
+      All are covered -- the flood-cap in the inductive proof + real grid, the
+      levels in the read-safe/append-only real cross-checks (CR-append-only
+      reduces to NL and BS-append-only to a cursor-neutral step, both already
+      proven inductively).
 
   SCOPE / NOT PROVED HERE: only the PURE sanitizer (sanitize.py) is verified. The
   Qt widget layer is NOT: the no-write-back property (INV-6, "output never induces
@@ -1007,10 +1011,11 @@ def t2_pad_budget_real():
                  '(M=%d -> col=%d L=%d; expected (1,1))' % (M, col, len(cells)))
 
 
-def t2_line_edits_off():
-    """line_edits=False: CSI C/D/G/K are consumed (no leftover '[3C' garbage)
-    but MUST NOT move the cursor or change L -- they fall through to ANSI_RE
-    strip. The Z3 model is of line_edits=True; this is the other mode."""
+def t2_line_editing_read_safe():
+    """read-safe: CSI C/D/G/K are consumed (no leftover '[3C' garbage) but MUST NOT
+    move the cursor or change L -- they fall through to ANSI_RE strip. \\r and \\b
+    still act (raw control bytes), so this differs from append-only only in the CSI
+    handling vs 'full'. The Z3 model is of 'full'; this covers the other CSI mode."""
     tokens = ['\x1b[C', '\x1b[12C', '\x1b[D', '\x1b[3D', '\x1b[G', '\x1b[4G',
               '\x1b[K', '\x1b[0K', '\x1b[1K', '\x1b[2K', '\x1b[3K']
     for M in (0, 3, 5):
@@ -1023,11 +1028,60 @@ def t2_line_edits_off():
                 cells = [('a', ())] * L
                 for tok in tokens:
                     _c, cells2, col2, _s, _w = S.feed_line_edits(
-                        cells, col, {}, tok, max_line=M, line_edits=False)
+                        cells, col, {}, tok, max_line=M, line_editing='read-safe')
                     if (col2, len(cells2)) != (col, L):
-                        fail('T2 line_edits=False: %r moved cursor/L at '
+                        fail('T2 read-safe: %r moved cursor/L at '
                              'col=%d L=%d M=%d -> (%d,%d)'
                              % (tok, col, L, M, col2, len(cells2)))
+
+
+def t2_line_editing_append_only():
+    """append-only: as read-safe (CSI stripped, cursor-neutral) AND \\r/\\b neutralized so
+    the current line can never be overwritten. \\r completes the line (current -> (0,0), a
+    hard break); \\b is dropped (col,L unchanged). Each neutralized redraw appends exactly
+    ONE suppressed _REDRAW_MARK to the completed/current line -- coalesced (a line with both
+    a \\b and a \\r carries one marker). INV holds throughout; these transitions reduce to
+    already-proven classes (CR-append-only == NL, BS-append-only == cursor-neutral)."""
+    csi = ['\x1b[C', '\x1b[12C', '\x1b[D', '\x1b[3D', '\x1b[G', '\x1b[4G',
+           '\x1b[K', '\x1b[1K', '\x1b[2K', '\x1b[3K']
+    for M in (0, 3, 5):
+        for L in (0, 2, 4):
+            if M > 0 and L > M:
+                continue
+            for col in (0, L):
+                if M > 0 and col > M:
+                    continue
+                cells = [('a', ())] * L
+                # CSI ops: stripped, cursor-neutral (like read-safe).
+                for tok in csi:
+                    _c, cells2, col2, _s, _w = S.feed_line_edits(
+                        cells, col, {}, tok, max_line=M, line_editing='append-only')
+                    if (col2, len(cells2)) != (col, L):
+                        fail('T2 append-only: %r moved cursor/L at col=%d L=%d M=%d '
+                             '-> (%d,%d)' % (tok, col, L, M, col2, len(cells2)))
+                # backspace: neutralized -- (col, L) unchanged, no line completed.
+                _c, cells2, col2, _s, _w = S.feed_line_edits(
+                    cells, col, {}, '\x08', max_line=M, line_editing='append-only')
+                if _c or (col2, len(cells2)) != (col, L):
+                    fail('T2 append-only: \\b moved cursor/L or completed a line at '
+                         'col=%d L=%d M=%d -> (%d,%d)' % (col, L, M, col2, len(cells2)))
+                # carriage return: completes the current line (-> 0,0) with one trailing
+                # _REDRAW_MARK; INV holds on the fresh current line.
+                comp, cells2, col2, _s, _w = S.feed_line_edits(
+                    cells, col, {}, '\r', max_line=M, line_editing='append-only')
+                if (col2, len(cells2)) != (0, 0):
+                    fail('T2 append-only: \\r did not reset the current line at '
+                         'col=%d L=%d M=%d -> (%d,%d)' % (col, L, M, col2, len(cells2)))
+                if len(comp) != 1 or comp[0][-1] != S._REDRAW_MARK:
+                    fail('T2 append-only: \\r did not flag the completed line with one '
+                         '_REDRAW_MARK (col=%d L=%d M=%d comp=%r)' % (col, L, M, comp))
+    # a \b then \r on the SAME line coalesces to exactly ONE marker (per-line flag).
+    comp, cells2, col2, _s, _w = S.feed_line_edits(
+        [('a', ())], 1, {}, '\x08\r', max_line=0, line_editing='append-only')
+    marks = sum(1 for c in comp[0] if c == S._REDRAW_MARK) if comp else -1
+    if len(comp) != 1 or marks != 1:
+        fail('T2 append-only: \\b+\\r produced %d markers, expected exactly 1 (comp=%r)'
+             % (marks, comp))
 
 
 def t2_prompt_flush_real():
@@ -2546,7 +2600,8 @@ def main():
                      'real_inv_violations=%(inv_violations)d\n' % t2stats)
     t2_mark_drop_real()
     t2_pad_budget_real()
-    t2_line_edits_off()
+    t2_line_editing_read_safe()
+    t2_line_editing_append_only()
     t2_prompt_flush_real()
 
     sys.stdout.write('  T2.C  earlier-line immutability: `completed` append-only '
