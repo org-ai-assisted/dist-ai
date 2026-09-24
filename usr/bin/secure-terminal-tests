@@ -160,6 +160,7 @@ suites=(
    "${tests_dir}/test_core_fixes.py"
    "${tests_dir}/test_core_fixes_win.py"
    "${tests_dir}/test_state_dump.py"
+   "${tests_dir}/test_startup_winsize.py"
    "${tests_dir}/test_zoom_regression.py"
    "${tests_dir}/test_fuzz_widget.py"
 )
