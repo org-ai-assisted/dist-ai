@@ -32,10 +32,14 @@ stub_path_init() {
    ## per-command symlink, it derives its name from "$0", appends its argv to that
    ## command's record, emits the command's fixed stdout (if any), and exits the
    ## command's fixed code. Off PATH; kept literal so no write-time value leaks in.
+   ## Args are recorded '%q'-quoted with a trailing space after EACH (last included),
+   ## so argument boundaries survive -- a query cannot match an arg's prefix, and a
+   ## quoted vs an unquoted-split invocation record differently.
    cat > "${STUB_PATH_ROOT}/recording-stub" <<'STUB'
 #!/bin/bash
 stub_self="$(basename -- "${0}")"
-printf '%s\n' "${*}" >> "${STUB_PATH_REC}/${stub_self}.argv"
+printf '%q ' "${@}" >> "${STUB_PATH_REC}/${stub_self}.argv"
+printf '\n' >> "${STUB_PATH_REC}/${stub_self}.argv"
 if [ -f "${STUB_PATH_REC}/${stub_self}.out" ]; then
    cat -- "${STUB_PATH_REC}/${stub_self}.out"
 fi
@@ -64,18 +68,24 @@ stub_cmd() {
    ln --symbolic --force -- "${STUB_PATH_ROOT}/recording-stub" "${STUB_PATH_BIN}/${name}"
 }
 
-## True if stub $1 recorded any invocation whose argv (space-joined) contains the
-## fixed string $2.
+## True if stub $1 recorded an invocation whose argv contains the consecutive
+## argument sequence $2, $3, ... -- matched with boundaries (each arg '%q'-quoted
+## with a trailing space, exactly as recorded), so a prefix of an arg does NOT
+## match. Usage: stub_called_with sudo umount -- /mnt/x
 stub_called_with() {
-   local rec="${STUB_PATH_REC}/$1.argv"
+   local cmd rec needle
+   cmd="$1"
+   shift
+   rec="${STUB_PATH_REC}/${cmd}.argv"
    [ -f "${rec}" ] || return 1
-   grep --quiet --fixed-strings -- "$2" "${rec}"
+   needle="$(printf '%q ' "$@")"
+   grep --quiet --fixed-strings -- "${needle}" "${rec}"
 }
 
-## True if stub $1 recorded NO invocation containing the fixed string $2 (also true
-## when the stub was never called at all).
+## True if stub $1 recorded NO invocation containing the argument sequence
+## $2, $3, ... (also true when the stub was never called at all).
 stub_not_called_with() {
-   ! stub_called_with "$1" "$2"
+   ! stub_called_with "$@"
 }
 
 ## Remove the stub tree. Safe from an EXIT trap: a failed cleanup ('|| true')

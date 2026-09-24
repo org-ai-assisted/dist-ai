@@ -107,6 +107,24 @@ class _FontDBAbsent:
 _REAL_APP_ICON = M._app_icon
 M._app_icon = lambda: M._letter_icon('S', '#336699')
 
+# --- eager spawn for the headless window tests -------------------------------
+# The production ctor DEFERS the fork+exec until the tab has real geometry (so the shell
+# is born at the final width -- the duplicate-prompt fix). These suites build MainWindows
+# but never show() them, so a deferred tab would never spawn and every child-dependent
+# assertion (ctl-send-text, restart-on-exit, _tab_pts) would fail. Give every tab the
+# test-only eager path at (cols=0, rows=0) -- the fork-time default the pre-deferral ctor
+# used, so behaviour matches production's shown tab. A test that shows a window still works
+# (the tab is already spawned; _spawn_pending is clear, so show/resize are no-ops here).
+_orig_st_init_mw = _ST_reap.__init__
+
+
+def _eager_st_init_mw(self, *args, **kwargs):
+    kwargs.setdefault('initial_grid', (0, 0))
+    _orig_st_init_mw(self, *args, **kwargs)
+
+
+_ST_reap.__init__ = _eager_st_init_mw
+
 # --- default-safe pty teardown backstop --------------------------------------
 # The app installs a SIGCHLD handler (main._reap_pty_children) that reaps ONLY our
 # pty shells (SecureTerminal._LIVE_PTY_PIDS), never a subprocess child, so a closed

@@ -243,7 +243,7 @@ suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
         test_secure_terminal test_fuzz test_fuzz_harnesses \
         test_corpus test_invariants test_cli test_unicode_tag test_modules \
         test_review test_widget test_widget2 test_alt_reenter test_tabbar_polish test_core_fixes test_core_fixes_win \
-        test_state_dump test_sclip test_clipboard_watch)
+        test_state_dump test_startup_winsize test_sclip test_clipboard_watch)
 suite_paths=()
 for suite in "${suites[@]}"; do
    ## A registered suite MISSING from the checkout is a packaging/rename bug, never a

@@ -1220,4 +1220,41 @@ finally:
         _symos.environ['XDG_RUNTIME_DIR'] = _c4_oxdg
 
 
+# --- C1: a background (hidden) tab still spawns its child ------------------------------
+# The deferred-spawn design (terminal.py) waits for a tab's first geometry, but a HIDDEN
+# QTabWidget page never receives showEvent/resizeEvent -- so main.py spawns pending tabs at
+# the shared content grid. A background -e / restored tab must therefore RUN when created,
+# not lazily on first view (the regression codex+claude flagged). initial_grid=None opts the
+# tab OUT of the harness's eager (0,0) monkeypatch so it exercises the real deferred path.
+from secure_terminal.terminal import SecureTerminal as _C1_ST   # noqa: E402
+win.new_tab()                                      # a guaranteed real, current visible tab
+win.current()._set_winsize(80, 24)                 # a real reference grid for the visible tab
+win.hide()                                         # force the deferred path (no _add_tab spawn)
+_c1bg = _C1_ST(command='/bin/cat', initial_grid=None)
+win._add_tab(_c1bg, activate=False)                # background: not switched to, window hidden
+ok(_c1bg._pid is None and _c1bg._spawn_pending,
+   'C1: a background tab added to a hidden window starts deferred (no child yet)')
+win._spawn_pending_tabs()
+ok(_c1bg._pid is not None and not _c1bg._spawn_pending,
+   'C1: main.py spawns the background tab at the shared grid (not lazily on first view)')
+
+# C1 early-out branches of _spawn_pending_tabs (stub current() to reach each deterministically):
+_c1_orig_current = win.current
+win.current = lambda: None                         # (a) current is not a terminal -> no-op
+win._spawn_pending_tabs()
+ok(True, 'C1: _spawn_pending_tabs is a no-op when current() is not a terminal')
+_c1_def = _C1_ST(command='/bin/cat', initial_grid=None)   # deferred (pending), no geometry
+win.current = lambda: _c1_def                      # (b) a pending current tab -> spawn it
+win._spawn_pending_tabs()
+ok(_c1_def._pid is not None, 'C1: _spawn_pending_tabs spawns a PENDING current tab')
+_c1_zero = _C1_ST(command='/bin/cat')              # eager (0,0): spawned, _cols == 0, not pending
+win.current = lambda: _c1_zero                     # (c) no geometry yet -> ref None early return
+win._spawn_pending_tabs()
+ok(_c1_zero._cols == 0,
+   'C1: _spawn_pending_tabs early-returns for an ungeometried current tab (ref None)')
+win.current = _c1_orig_current
+_c1_def.shutdown()
+_c1_zero.shutdown()
+
+
 finish('mainwin2')

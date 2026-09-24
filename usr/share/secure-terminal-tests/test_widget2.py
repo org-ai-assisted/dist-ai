@@ -1777,6 +1777,19 @@ eq(_sp.run(['tput', '-T', 'secure-terminal-noedit', 'cub1'],
            env=dict(os.environ, TERMINFO=_got_dir), check=False,
            capture_output=True, timeout=15).returncode, 0,
    'the refreshed compilation carries the append-only entry too')
+# D (tic write-side TOCTOU): the recompile stages into a private dir then os.replace's
+# each entry into a REAL 's/' via O_NOFOLLOW dir FDs, so a planted symlink is replaced
+# (never written through). The symlink-follow it closes is a race the old unlink-then-tic
+# only mitigated; these guard the new staging path lands real files and leaves no residue.
+ok(os.path.isdir(os.path.join(_got_dir, 's'))
+   and not os.path.islink(os.path.join(_got_dir, 's')),
+   'D: the compiled s-subdir is a real directory')
+ok(all(os.path.isfile(_p) and not os.path.islink(_p) for _p in
+       (os.path.join(_got_dir, 's', _n)
+        for _n in ('secure-terminal', 'secure-terminal-noedit'))),
+   'D: both compiled entries land as real regular files')
+ok(not [_d for _d in os.listdir(_got_dir) if _d.startswith('.tic-')],
+   'D: no tic staging residue is left in the cache dir')
 # ...and a cache NEWER than the source is served as-is (no needless recompile)
 _write_stale(+60)
 ## C5: Recompile check tests the file bytes are unchanged, not the path
@@ -2125,6 +2138,53 @@ ok(_bpm in _bpu._screen.mode and _bpu._bracket_owner is None
    and not _bpu._bracketed_paste_active(),
    'DEC 2004 armed with an unreadable fg owner is NOT trusted (force-review)')
 _bpu.close()
+
+# E: a SHORT write of a bracketed paste (a wedged / slow child that reads only a prefix)
+# leaves the child in bracketed-paste mode -- it swallows Ctrl+C and every later key into
+# the still-open paste (a stuck terminal). The 201~ closer must be emitted best-effort on
+# a short write, mirroring the OSC-52 short-write close-frame.
+_bpsw = SecureTerminal(command=None, tui=True)
+_bpsw.has_foreground_program = lambda: True               # a live fg program owns 2004
+_bpsw._foreground_pgrp = lambda: 9100
+_bpsw._read_exe = lambda pid: '/usr/bin/pager'
+feed_output(_bpsw, b'\x1b[?2004h')
+ok(_bpsw._bracketed_paste_active(),
+   'E: bracketed paste is active for the framed short-write case')
+_ew = []
+
+
+def _short_write(data):
+    _ew.append(data)
+    # Deliver one byte short ONLY on the framed payload (the 200~-opened write), so the
+    # 201~ closer is dropped -- exactly the wedged-child truncation the fix must recover.
+    return len(data) - 1 if data.startswith(b'\x1b[200~') else len(data)
+
+
+_bpsw._write = _short_write
+_delivered = _bpsw._dispatch_paste('cmd1\ncmd2', 'unicode')   # multiline bracketed paste
+ok(len(_ew) == 2 and _ew[0].startswith(b'\x1b[200~') and _ew[-1] == b'\x1b[201~',
+   'E: a short bracketed-paste write best-effort emits the 201~ closer')
+ok(_delivered is False,
+   'E: a short bracketed-paste write is still reported as a partial delivery (False)')
+_bpsw.close()
+
+# TOCTOU: the fg pgrp can vanish (the program exits as a paste lands) between
+# has_foreground_program()'s tcgetpgrp and _bracketed_paste_active()'s own read, so
+# _foreground_pgrp() returns None. The REAL _read_exe(None) then raises TypeError
+# ('/proc/%d/exe' % None) -- so _read_exe is NOT mocked here (a mock would hide the very
+# bug). The gate must force-review (return False), never let that exception abort the paste.
+_bpn = SecureTerminal(command=None, tui=True)
+_bpn.has_foreground_program = lambda: True
+_bpn._foreground_pgrp = lambda: 2 ** 30                   # a live-looking pgrp at arm time
+feed_output(_bpn, b'\x1b[?2004h')                         # arm: owner recorded via the real _read_exe
+_bpn._foreground_pgrp = lambda: None                      # fg pgrp vanishes before the gate reads
+try:
+    _bpn_active = _bpn._bracketed_paste_active()          # old code: _read_exe(None) -> TypeError
+except TypeError:
+    _bpn_active = 'TypeError'
+ok(_bpn_active is False,
+   'a vanished fg pgrp force-reviews (no uncaught TypeError from _read_exe(None))')
+_bpn.close()
 
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
@@ -3844,8 +3904,23 @@ _hold_exe, _xc._spawn_exe = _xc._spawn_exe, None
 ok(_xc._child_execd() is False, '_child_execd: no exe baseline -> False')
 _xc._spawn_exe = _hold_exe
 try:
+    # An UNREADABLE /proc/<pid>/exe on a live foreground child (the only state
+    # _child_execd is consulted in) means the child dropped dumpability by exec-ing a
+    # hardened / setuid-style program -- a bare login shell is same-uid and dumpable, so
+    # its exe always reads. Fail toward REPLACED (killable) so the panic button still
+    # terminates a stuck non-dumpable exec'd program; treating it as the bare shell (the
+    # old behaviour) let such a program escape Terminate.
     _xc._read_exe = lambda _pid: None
-    ok(_xc._child_execd() is False, '_child_execd: unreadable exe -> False')
+    ok(_xc._child_execd() is True,
+       '_child_execd: unreadable exe on a live child -> exec-replaced (killable)')
+    # End-to-end consequence: the panic button's killability gate. With the fg group ==
+    # the child's own group (a "bare prompt" reading) but an unreadable exe, the login-
+    # shell tab must still count the fg as KILLABLE (a stuck non-dumpable exec'd program),
+    # so terminate_foreground does not no-op. our != that group so the own-group guard
+    # falls through to the _child_execd check.
+    _kg = 0x3FFFFFFE
+    ok(_xc._is_killable_fg(_kg, _kg, _kg ^ 1) is True,
+       '_child_execd: unreadable exe on the fg child is killable (panic button acts)')
     _xc._read_exe = lambda _pid: _xc._spawn_exe
     ok(_xc._child_execd() is False, '_child_execd: matching exe is a bare prompt')
     _xc._read_exe = lambda _pid: _xc._spawn_exe + '-execd'
@@ -4621,6 +4696,31 @@ ok(_dg.document().blockCount() == _dg_bc - 2
    and 'l5' not in _dg.toPlainText() and 'l4' not in _dg.toPlainText()
    and _dg.toPlainText().endswith('l3'),
    '_delete_grid removes the 2 live grid rows AND the newline joining them (no blank tail)')
+
+# C: pyte's Screen.resize truncates only the LIVE buffer, never history.top, so a scrolled-
+# off row keeps its written width. A shrink THEN a full-document rebuild (a theme/mode/colour
+# toggle, apply_scrollback, an alt-screen flip, or a keep_screen restart -- all redraw
+# scrollback from pyte history via _reset_grid_view) rendered each history row at the SMALLER
+# screen.columns and silently DROPPED the off-screen-right content pyte still holds. History
+# rows must render at max(columns, their own extent).
+_cw = SecureTerminal(command='/bin/cat', tui=True)
+_cws = _cw._screen
+_cws.reset()
+_cws.resize(5, 100)                              # 5-row, 100-col screen
+_cwide = 'M' + 'x' * 86 + 'Q'                    # 88 chars, boundary-tagged (extent 88)
+for _ci in range(12):                            # scroll wide rows off the top into history
+    _cws.draw(_cwide)
+    _cws.index()
+    _cws.carriage_return()
+ok(len(_cws.history.top) > 0
+   and max(_cws.history.top[-1].keys(), default=-1) + 1 == 88,
+   'C: a scrolled-off history row keeps its 88-col written extent (pyte does not narrow history)')
+_cws.resize(5, 80)                               # SHRINK the live buffer BELOW the row width
+_cw._reset_grid_view()                           # the full-document rebuild path
+_cw._append_scrollback(_cws)
+ok(_cwide in _cw.toPlainText(),
+   'C: a history row wider than the shrunk screen renders in FULL on rebuild (no truncation)')
+_cw.close()
 
 # _fmt_from_key: a marking carrying no colour yields a plain format
 _ff = SecureTerminal(command='/bin/cat')

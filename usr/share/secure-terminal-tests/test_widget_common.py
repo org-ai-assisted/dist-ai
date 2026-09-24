@@ -166,6 +166,14 @@ _orig_st_init = SecureTerminal.__init__
 
 
 def _tracking_st_init(self, *args, **kwargs):
+    # The production ctor DEFERS the fork+exec until the widget has real geometry (so the
+    # shell is born at the final width -- the duplicate-prompt fix). These suites build most
+    # terms UNSHOWN and read a live child (_pid/_fd/foreground) immediately, so give every
+    # construction the test-only eager path at (cols=0, rows=0) -- the fork-time default the
+    # pre-deferral ctor used, so _cols stays 0 (autowrap off) and behaviour is unchanged. A
+    # test that needs a real grid still resize()+show()s (or sets _cols) as before. Preview
+    # terms never spawn, so the kwarg is harmless there.
+    kwargs.setdefault('initial_grid', (0, 0))
     _orig_st_init(self, *args, **kwargs)
     _LIVE_TERMS.append(weakref.ref(self))
 

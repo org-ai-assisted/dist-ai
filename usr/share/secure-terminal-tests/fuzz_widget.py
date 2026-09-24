@@ -43,6 +43,22 @@ except Exception as exc:                                 # pragma: no cover - de
     sys.exit(77)
 
 
+# The production ctor DEFERS the fork+exec until the widget has real geometry (so the shell
+# is born at the final width -- the duplicate-prompt fix). This fuzzer builds unshown terms
+# (including tui=True, which needs a live pyte _screen) and drives them directly, so give
+# every construction the test-only eager path at (cols=0, rows=0) -- the fork-time default
+# the pre-deferral ctor used; the fuzzer sets its own widths per phase as before.
+_orig_st_init_fz = SecureTerminal.__init__
+
+
+def _eager_st_init_fz(self, *args, **kwargs):
+    kwargs.setdefault('initial_grid', (0, 0))
+    _orig_st_init_fz(self, *args, **kwargs)
+
+
+SecureTerminal.__init__ = _eager_st_init_fz
+
+
 ## Adversarial alphabet: the dangerous primitives a terminal must neutralize, plus
 ## the text/escape scaffolding that drives a parser into its interesting branches.
 ## Combining marks are over-represented -- the Zalgo grapheme-cluster DoS class.
