@@ -122,7 +122,9 @@ run_no_persist_overwrite_failure_case() {
       # shellcheck disable=SC2034  # consumed by the sourced set_labwc_keymap
       timeout_command=()
 
-      set_labwc_keymap >/dev/null 2>&1 || true
+      skl_rc=0
+      set_labwc_keymap >/dev/null 2>&1 || skl_rc=$?
+      printf '%s\n' "rc=${skl_rc}"
 
       ## Match on the config path (a real recorded arg): a bare 'stub_called_with
       ## overwrite' with no args would build an empty-but-quoted needle and never
@@ -132,9 +134,12 @@ run_no_persist_overwrite_failure_case() {
       else
          printf '%s\n' "overwrite-not-called"
       fi
-      if [ -f "${cfg}" ]; then
-         printf '%s\n' "config-present"
-         cat -- "${cfg}"
+      ## Compare the WHOLE restored file to the original, not a substring: a
+      ## restore that corrupted or truncated the content must not pass.
+      if [ -f "${cfg}" ] && [ "$(cat -- "${cfg}")" = "${original_content}" ]; then
+         printf '%s\n' "config-exact-restored"
+      elif [ -f "${cfg}" ]; then
+         printf '%s\n' "config-present-but-changed"
       else
          printf '%s\n' "config-missing"
       fi
@@ -151,12 +156,19 @@ else
    notok "overwrite was not invoked -- the test never reached the failure branch"
 fi
 
-## Teeth: the original config survives the failed overwrite.
-if grep --quiet --fixed-strings -- 'config-present' <<< "${result}" \
-   && grep --quiet --fixed-strings -- 'XKB_DEFAULT_LAYOUT=fr' <<< "${result}"; then
-   ok "original config restored after failed overwrite (not lost)"
+## Teeth 1: the function must REPORT failure (non-zero) -- a restore that returns
+## 0 would make callers believe a keymap change succeeded when it did not.
+if grep --quiet --fixed-strings -- 'rc=0' <<< "${result}"; then
+   notok "set_labwc_keymap returned 0 despite the failed overwrite (false success)"
 else
-   notok "original config lost after failed overwrite (result below)"
+   ok "set_labwc_keymap reported failure (non-zero) after the failed overwrite"
+fi
+
+## Teeth 2: the WHOLE original config survives the failed overwrite, byte-exact.
+if grep --quiet --fixed-strings -- 'config-exact-restored' <<< "${result}"; then
+   ok "original config restored byte-exact after failed overwrite (not lost/corrupted)"
+else
+   notok "original config not restored byte-exact after failed overwrite (result below)"
    printf '%s\n' "${result}" >&2
 fi
 

@@ -140,6 +140,10 @@ mountinfo_fixture="${work_dir}/mountinfo"
    printf '%s\n' '42 35 0:60 / /mnt/nbd-btrfs rw,relatime shared:7 - btrfs /dev/nbd3p1 rw'
    printf '%s\n' '43 35 7:1 / /mnt/nbd-backup rw,relatime shared:8 - ext4 /dev/nbd-backup rw'
    printf '%s\n' '44 35 7:2 / /mnt/nbd0-backup rw,relatime shared:9 - ext4 /dev/nbd0-backup rw'
+   ## Optional-field count varies (mountinfo allows zero or many before ' - '):
+   ## a real-nbd mount with ZERO and with MULTIPLE optional fields must still parse.
+   printf '%s\n' '45 35 43:3 / /mnt/nbd-noopt rw,relatime - ext4 /dev/nbd4 rw'
+   printf '%s\n' '46 35 43:4 / /mnt/nbd-multiopt rw,relatime shared:10 master:2 - ext4 /dev/nbd5 rw'
 } > "${mountinfo_fixture}"
 
 ## A /proc/filesystems-shaped fixture: 'nodev'-prefixed lines are virtual /
@@ -173,7 +177,7 @@ fi
 
 ## Every real-nbd mount is unmounted -- the \040-encoded space (decoded) and the
 ## anonymous-superblock btrfs whose major is 0 but is genuinely nbd-backed.
-for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs'; do
+for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs' '/mnt/nbd-noopt' '/mnt/nbd-multiopt'; do
    if stub_called_with sudo umount -- "${want}"; then
       pass "behavioral: real-nbd mount '${want}' was unmounted"
    else
