@@ -289,7 +289,7 @@ def assert_all_paths(name, text):
     # terminal paint), so both the ESC and the dangerous-code-point checks must span
     # completed + [cells] in EVERY mode -- inspecting only the trailing buffer was
     # vacuous for any newline-terminated payload (see the live-path canary below).
-    completed, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
+    completed, cells, col, sgr, wraps, _rp = S.feed_line_edits([], 0, {}, text)
     all_lines = completed + [cells]
     ok(all(ch != '\x1b' for line in all_lines for ch, _ in line),
        '%s: an ESC reached a cell on the live path' % name)
@@ -494,9 +494,9 @@ ok('STATUS=FAIL' in _ansi and '\x1b' not in _ansi,
 #   - the cursor cannot escape the current line, so an EARLIER line is untouchable.
 # Asserting the stronger claim on this path would be a false assurance: the widget
 # really does display STATUS=PASS for a single-line payload.
-_prev, _cells0, _col0, _sgr0, _w0 = S.feed_line_edits(
+_prev, _cells0, _col0, _sgr0, _w0, _rp0 = S.feed_line_edits(
     [], 0, {}, 'line1: REAL\n')
-_comp, _cells, _col, _sgr, _w = S.feed_line_edits(
+_comp, _cells, _col, _sgr, _w, _rp2 = S.feed_line_edits(
     _cells0, _col0, _sgr0,
     git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'))
 ok(all(c != '\x1b' for c, _ in _cells)
@@ -521,7 +521,7 @@ ok(all(c != '\x1b' for c, _ in _cells)
 # completed-line neutralization fails it here, where the old trailing-only check saw
 # nothing.
 _cvpay = 'admin' + chr(0x202E) + 'gpj.exe\nsafe\n'   # RLO on line 1, ends in newline
-_ccomp, _ccells, _ccol, _csgr, _cw = S.feed_line_edits([], 0, {}, _cvpay)
+_ccomp, _ccells, _ccol, _csgr, _cw, _crp = S.feed_line_edits([], 0, {}, _cvpay)
 ok(_ccells == [] and any(ord(ch) in DANGEROUS_CPS
                          for _line in _ccomp for ch, _ in _line),
    'live-path canary: the override lands in a COMPLETED line while the trailing '
@@ -591,20 +591,22 @@ for _mode in MODES:
 # combining runs, invisibles, split escapes).
 
 
-def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_editing='full'):
+def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_editing='full',
+                         redraw_pending=False):
     """Reference oracle: feed_line_edits WITHOUT the SGR-tuple cache -- it rebuilds
     tuple(sorted(sgr.items())) at every append/pad site, the pre-optimization form.
     All parsing internals come from the real module, so only the cache placement
     differs; if the live cache ever goes stale, a cell tuple diverges here. Mirrors the
     three line-editing levels (only 'full' honours the CSI edits; 'append-only' neutralizes
-    \\r/\\b and flags the line with S._REDRAW_MARK)."""
+    \\r/\\b and flags the line with S._REDRAW_MARK) and threads `redraw_pending` in/out, so a
+    neutralized \\b on an in-progress line still flags it when it completes in a later call.
+    Like the real one, it does NOT collapse \\r\\n (the caller does that); a bare \\r is a redraw."""
     completed = []
     wraps = []
     cells = list(cells)
     # whole-call bulk-cell-work budget, mirroring feed_line_edits (shares S._bounded_pad and
     # S._LINE_WORK_BUDGET so the anti-flood pad/erase bound cannot drift between the two).
     work_left = S._LINE_WORK_BUDGET
-    redraw_pending = False       # append-only: a neutralized \r/\b flags the line on completion
     i, n = 0, len(raw)
     while i < n:
         ch = raw[i]
@@ -727,7 +729,7 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_editing='full'):
                 cells.append((ch, state))
             col += 1
         i += 1
-    return completed, cells, col, sgr, wraps
+    return completed, cells, col, sgr, wraps, redraw_pending
 
 
 # the differential corpus: every text fixture above, plus site-stressing payloads

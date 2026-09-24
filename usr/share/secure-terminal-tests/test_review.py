@@ -170,6 +170,25 @@ _ed.keyPressEvent(key_ev(Qt.Key.Key_Return))
 _ed.keyPressEvent(key_ev(Qt.Key.Key_B, text='b'))
 eq(_ed.source(), 'cat x\nb', 'Enter inserts a newline; the next char lands on line 2')
 
+# IME / compose input goes through inputMethodEvent, NOT keyPressEvent. Without the override
+# the base QPlainTextEdit would apply the commit AND preedit straight to the document,
+# bypassing _text (the sole authority Deliver reads) -- so composed input could deliver text
+# the review never saw. The commit must route through _text; a preedit must NOT be committed.
+from PyQt6.QtGui import QInputMethodEvent as _QIME                # noqa: E402
+_ed.set_source('cat')
+_ed._pos = 3
+_ime = _QIME()
+_ime.setCommitString('X')
+_ed.inputMethodEvent(_ime)
+eq(_ed.source(), 'catX', 'an IME commit string is routed through _text, not the base document')
+_pre = _QIME('compose', [])                    # composition in progress (preedit only)
+_ed.inputMethodEvent(_pre)
+eq(_ed.source(), 'catX', 'an IME preedit is NOT committed into _text (kept off the box)')
+_imz = _QIME()
+_imz.setCommitString(ZWSP)                      # a committed invisible is sanitized away
+_ed.inputMethodEvent(_imz)
+eq(_ed.source(), 'catX', 'an IME-committed invisible is dropped, like a typed one')
+
 # navigation: Left/Right (with the no-op edges), Home/End
 _ed.set_source('hello\nworld')
 _ed._pos = 0

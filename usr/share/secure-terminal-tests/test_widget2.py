@@ -1503,6 +1503,20 @@ _links.clear()
 _oh._handle_osc(b'\x1b]9;hello ')                 # incomplete -> held as carry
 _oh._handle_osc(b'world\x07')                     # completes it on the next read
 ok(any('hello world' in s for s in _links), 'an OSC split across PTY reads is still acted on')
+# an empty-URI OSC 8 CLOSER planted before a phishing link must NOT mask it. ESC]8;;BEL is a
+# spec-legal "close any open link" no-op; with the URI group as `*` it matched as an opener
+# (empty URI) and the lazy text group swallowed the following REAL opener, so a link whose
+# display text != target silently bypassed the anti-phishing notice. `+` cannot match the
+# empty-URI closer, so the real target is surfaced. Regression: fails on the pre-fix `*`.
+_links.clear()
+_oh2 = SecureTerminal(command='/bin/cat', tui=True)
+_oh2.apply_osc('osc_hyperlink', True)
+_oh2.apply_osc('osc_notify', True)
+_oh2.notified.connect(lambda s: _links.append(s))
+_oh2._handle_osc(b'\x1b]8;;\x07\x1b]8;;http://evil.example\x07trusted-bank.com\x1b]8;;\x07')
+ok(any('evil.example' in s for s in _links),
+   'OSC 8: an empty-URI closer prefix does not mask a following phishing link')
+_oh2.close()
 _oh.close()
 
 # OSC 7 cwd: a percent-encoded bidi/zero-width char is sanitized before the tooltip
@@ -1658,7 +1672,7 @@ def _entry_caps(entry):
 
 def _renders_to(text, line_editing):
     """What the CLI cell model puts on screen for `text`."""
-    comp, cells, _col, _sgr, wraps = _fle([], 0, {}, text, 0, line_editing)
+    comp, cells, _col, _sgr, wraps, _rp6 = _fle([], 0, {}, text, 0, line_editing)
     runs, _p = _c2r(comp, cells, 'detail', False, wraps=wraps)
     return ''.join(t for t, _k in runs)
 

@@ -247,7 +247,7 @@ from secure_terminal.sanitize import feed_line_edits as _t6fle              # no
 
 
 def _t6segs(raw, w):
-    c, _cells, _col, _sgr, wr = _t6fle([], 0, {'fg': None, 'bg': None, 'bold': False},
+    c, _cells, _col, _sgr, wr, _rp6 = _t6fle([], 0, {'fg': None, 'bg': None, 'bold': False},
                                        raw, w, True)
     c, wr = _t6trim(c, wr)
     return [''.join(x[0] for x in seg) for seg in c]
@@ -264,7 +264,7 @@ ok(_t6segs('x\n\ny\n', 40) == ['x', '', 'y'], 'task6: a genuine blank line is pr
 from secure_terminal.sanitize import (cells_to_runs as _t6c2r,               # noqa: E402
                                        PROMPT_START as _t6ps,
                                        _NO_NEWLINE_KEY as _t6nnk)
-_t6nn_c, _t6nn_cur, _c, _s, _t6nn_w = _t6fle(
+_t6nn_c, _t6nn_cur, _c, _s, _t6nn_w, _rp6 = _t6fle(
     [], 0, {'fg': None, 'bg': None, 'bold': False},
     'hello' + ' ' * 45 + _t6ps + 'user$ \n', 40, True)
 _t6nn_oc, _t6nn_ow = _t6trim(_t6nn_c, _t6nn_w)
@@ -1987,16 +1987,65 @@ pump(50)                                   # let the gutter repaint (covers the 
 from PyQt6.QtCore import QPointF as _QPF, QEvent as _QEv, Qt as _Qt   # noqa: E402
 from PyQt6.QtGui import QMouseEvent as _QMEv                          # noqa: E402
 _ao_hy = None
+_ao_redraw_blk = None
+_ao_plain_blk = None
 for _blk, _top, _bot in _ao._gutter_blocks():
     if _ao._block_redraw(_blk):
-        _ao_hy = (_top + _bot) // 2
-        break
+        if _ao_hy is None:
+            _ao_hy = (_top + _bot) // 2
+            _ao_redraw_blk = _blk
+    elif 'load 100%' in _blk.text():
+        _ao_plain_blk = _blk
 ok(_ao_hy is not None, 'append-only: a redraw-marked row is visible in the gutter')
+# The tooltip CONTENT (not just "did not crash"): a redraw row names the neutralized
+# overwrite; a plain \n-terminated row has no gutter tooltip.
+eq(_ao._gutter_tooltip(_ao_redraw_blk),
+   'Append-only: a redraw of this line was neutralized (a program tried to overwrite it)',
+   'append-only: a redraw-marked gutter row shows the neutralized-overwrite tooltip')
+ok(_ao_plain_blk is not None and _ao._gutter_tooltip(_ao_plain_blk) == '',
+   'append-only: a plain newline-terminated row has no gutter tooltip')
 _ao._gutter_hover(_QMEv(_QEv.Type.MouseMove, _QPF(3, _ao_hy), _QPF(3, _ao_hy),
                         _Qt.MouseButton.NoButton, _Qt.MouseButton.NoButton,
                         _Qt.KeyboardModifier.NoModifier))
-ok(True, 'append-only: hovering a redraw-marked gutter row shows its tooltip without crashing')
+ok(True, 'append-only: hovering a redraw-marked gutter row does not crash')
 _ao.close()
+
+# --- append-only F4: an ordinary \r\n newline is NOT an overwrite --------------
+# The pty encodes every newline as \r\n (ONLCR). append-only must treat it as one plain
+# break, never a return-to-column-0 redraw -- else routine output double-spaces and EVERY
+# line gets a false "redraw attempted" gutter mark. Regression: fails on the pre-fix code.
+_crlf = SecureTerminal(command='/bin/cat', line_editing='append-only')
+_crlf.apply_mode('box'); _crlf.resize(700, 300); _crlf.show(); pump(50)
+feed_output(_crlf, b'one\r\ntwo\r\nthree\r\n')
+eq([l for l in _crlf.toPlainText().split('\n') if l], ['one', 'two', 'three'],
+   'append-only: \\r\\n is one plain break -- no blank line between rows')
+_crlf_doc = _crlf.document()
+ok(not any(_crlf._block_redraw(_crlf_doc.findBlockByNumber(_i))
+           for _i in range(_crlf_doc.blockCount())),
+   'append-only: an ordinary \\r\\n newline carries NO redraw flag')
+# boundary: a \r\n split across two reads is still one break, no false flag.
+feed_output(_crlf, b'four\r')
+feed_output(_crlf, b'\nfive\r\n')
+_crlf_doc = _crlf.document()
+ok('four' in _crlf.toPlainText() and 'five' in _crlf.toPlainText()
+   and not any(_crlf._block_redraw(_crlf_doc.findBlockByNumber(_i))
+               for _i in range(_crlf_doc.blockCount())),
+   'append-only: a \\r\\n split across reads is one break, still no false flag')
+_crlf.close()
+
+# --- append-only F5: a \b split across reads still flags its line --------------
+# The redraw flag rides across the read boundary (redraw_pending threaded), so a
+# neutralized backspace cannot escape the gutter marker by landing at a chunk edge.
+_bs = SecureTerminal(command='/bin/cat', line_editing='append-only')
+_bs.apply_mode('box'); _bs.resize(700, 300); _bs.show(); pump(50)
+feed_output(_bs, b'abc\b')          # backspace ends this read
+feed_output(_bs, b'X\n')            # the line completes in the next read
+_bs_doc = _bs.document()
+ok(any(_bs._block_redraw(_bs_doc.findBlockByNumber(_i))
+       and 'abcX' in _bs_doc.findBlockByNumber(_i).text()
+       for _i in range(_bs_doc.blockCount())),
+   'append-only: a \\b split across reads still flags its line (marker threaded)')
+_bs.close()
 
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)
@@ -4973,14 +5022,14 @@ eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
 # mid-line so the prompt gets its own line -- and do nothing when already at
 # column 0 (e.g. output that ended in a newline, or zsh's PROMPT_SP).
 _DFLT = {'fg': None, 'bg': None, 'bold': False}
-_nc, _nk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
+_nc, _nk, _, _, _, _rp6 = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
 eq([''.join(c for c, _ in ln) for ln in _nc], ['abc '],
    'prompt newline: un-terminated output before the marker is ended into its line')
 eq(_nc[0][-1], _S._NO_NEWLINE_MARK,
    'prompt newline: the ended line carries the internal no-newline marker cell, not text')
 eq(''.join(c for c, _ in _nk), 'PS> ',
    'prompt newline: the prompt starts on a fresh line, not glued to the output')
-_znl, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
+_znl, _zk, _, _, _, _rp6 = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
 eq([''.join(c for c, _ in ln) for ln in _znl], ['abc'],
    'prompt newline: a trailing newline already ended the line -- no spurious blank')
 # zsh/zle emits the bracketed-paste marker AFTER printing the prompt (bash sends
@@ -4988,14 +5037,14 @@ eq([''.join(c for c, _ in ln) for ln in _znl], ['abc'],
 # the row, so flushing here would push it onto its own line and drop the cursor
 # below it (the reported bug). It must NOT be flushed.
 _zsh_raw = '[user ~]% ' + _S.PROMPT_START
-_zshc, _zshk, _zshcol, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), _zsh_raw)
+_zshc, _zshk, _zshcol, _, _, _rp6 = _S.feed_line_edits([], 0, dict(_DFLT), _zsh_raw)
 eq([''.join(c for c, _ in ln) for ln in _zshc], [],
    'zsh prompt: a marker AFTER the prompt does not flush the prompt onto its own line')
 eq(''.join(c for c, _ in _zshk), '[user ~]% ',
    'zsh prompt: the prompt stays on the current row with the cursor after it')
 eq(_zshcol, len('[user ~]% '), 'zsh prompt: the cursor column is at the prompt end')
 # still not flushed when only escapes (no printable text) follow the marker
-_zec, _zek, _, _, _ = _S.feed_line_edits(
+_zec, _zek, _, _, _, _rp6 = _S.feed_line_edits(
     [], 0, dict(_DFLT), '[user ~]% ' + _S.PROMPT_START + '\x1b[0m')
 eq(''.join(c for c, _ in _zek), '[user ~]% ',
    'zsh prompt: a trailing SGR after the marker still does not flush')

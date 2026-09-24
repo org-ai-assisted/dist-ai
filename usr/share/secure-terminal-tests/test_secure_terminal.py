@@ -496,30 +496,30 @@ ok(S.is_structural(0x2572) and S.marking_class(0x2572) == 'nonascii',
    'U+2572 is not a shipped confusable, so it stays structural (is_structural defers to the data)')
 
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
-_wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
+_wc, _wcells, _wcol, _ws, _ww, _rp6 = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
 eq(len(_wc), 1, 'exactly-width output + newline is one line, no spurious blank wrap')
 eq(_ww, [False], 'a newline-terminated line is not flagged a wrap')
-_wc2, _wcells2, _wcol2, _ws2, _ww2 = S.feed_line_edits([], 0, {}, 'abcde', 4)
+_wc2, _wcells2, _wcol2, _ws2, _ww2, _rp6 = S.feed_line_edits([], 0, {}, 'abcde', 4)
 eq(len(_wc2), 1, 'the 5th char on a width-4 line wraps to a fresh row')
 eq(_ww2, [True], 'the wrap is flagged so copy can join the rows')
 eq([ch for ch, _ in _wcells2], ['e'], 'the wrapping char starts the new row')
-_wc3, _wcells3, _wcol3, _ws3, _ww3 = S.feed_line_edits([], 0, {}, 'abcd\rX', 4)
+_wc3, _wcells3, _wcol3, _ws3, _ww3, _rp6 = S.feed_line_edits([], 0, {}, 'abcd\rX', 4)
 eq(len(_wc3), 0, 'a carriage return after the last column cancels the pending wrap')
 eq(_wcells3[0][0], 'X', 'the CR returns to column 0 and overwrites, no new row')
 # a cursor/erase CSI op likewise clears the pending wrap: at width 4 the erase
 # after the last column leaves the cursor there, so X overwrites (abcX), not wraps
-_wc4, _wcells4, _wcol4, _ws4, _ww4 = S.feed_line_edits([], 0, {}, 'abcd\x1b[KX', 4)
+_wc4, _wcells4, _wcol4, _ws4, _ww4, _rp6 = S.feed_line_edits([], 0, {}, 'abcd\x1b[KX', 4)
 eq(len(_wc4), 0, 'an erase op after the last column cancels the pending wrap')
 eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
    'the erase clears the pending wrap so X overwrites the last cell (abcX)')
 # a width-filled line ended by the bracketed-paste marker (bash prompt order) is
 # still a soft autowrap -- the prompt continues on the next row, so copy must
 # rejoin. Marking it a hard break inserted a '\n' the byte stream never had.
-_wc5, _wcells5, _wcol5, _ws5, _ww5 = S.feed_line_edits([], 0, {}, 'abcd\x1b[?2004h$ ', 4)
+_wc5, _wcells5, _wcol5, _ws5, _ww5, _rp6 = S.feed_line_edits([], 0, {}, 'abcd\x1b[?2004h$ ', 4)
 eq(len(_wc5), 1, 'the filled line is completed when the prompt marker follows')
 eq(_ww5, [True], 'a width-filled line + prompt marker is flagged a soft wrap (copy rejoins)')
 # but a PARTIAL line ended by the marker is a real break, not a wrap
-_wc6, _wcells6, _wcol6, _ws6, _ww6 = S.feed_line_edits([], 0, {}, 'ab\x1b[?2004h$ ', 4)
+_wc6, _wcells6, _wcol6, _ws6, _ww6, _rp6 = S.feed_line_edits([], 0, {}, 'ab\x1b[?2004h$ ', 4)
 eq(_ww6, [False], 'a partial line + prompt marker is not flagged a wrap')
 # no-final-newline marker: an un-terminated line before a bash prompt gets ONE internal
 # marker cell appended (NOT inline text -- unforgeable + copy-safe, drives the left gutter);
@@ -538,7 +538,7 @@ ok(all(_k != S._NO_NEWLINE_STATE for _c, _k in _nm2[0]),
    'a terminated line carries no marker cell')
 # CSI 1K erases from the start of the line up to (and including) the cursor: after
 # 'abcde' move the cursor to column 2 (CSI 3G) then erase-to-BOL -> "   de".
-_e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)
+_e1c, _e1cells, _e1col, _e1s, _e1w, _rp6 = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)
 eq(''.join(ch for ch, _ in _e1cells), '   de',
    'CSI 1K (erase to beginning of line) blanks cells from BOL to the cursor')
 # ECMA-48: erasure fills with the CURRENT SGR, not each cell's stale colour --
@@ -563,16 +563,16 @@ eq(_sgr['bg'], 9, 'SGR 100-107 selects a bright background colour (101 -> index 
 # "\x1b[20C" from column 10 moves to column 30 (forward is RELATIVE), leaving a
 # 20-blank GAP, not collapsing onto the last cell -- that was zsh's RPROMPT
 # ([pts/N]) rendering inline after the prompt.
-_pc, _pcells, _pcol, _ps, _pw = S.feed_line_edits([], 0, {}, '0123456789\x1b[20C[R]', 80)
+_pc, _pcells, _pcol, _ps, _pw, _rp6 = S.feed_line_edits([], 0, {}, '0123456789\x1b[20C[R]', 80)
 _pline = ''.join(ch for ch, _ in _pcells)
 eq(_pline, '0123456789' + ' ' * 20 + '[R]',
    'cursor-forward pads blanks so a right-prompt lands at its column, not inline')
 eq(_pcol, 33, 'the cursor column tracks the padded position (10 + 20 + 3)')
 # forward is still bounded by the width (no runaway padding)
-_bc, _bcells, _bcol, _bs, _bw = S.feed_line_edits([], 0, {}, 'x\x1b[999C', 20)
+_bc, _bcells, _bcol, _bs, _bw, _rp6 = S.feed_line_edits([], 0, {}, 'x\x1b[999C', 20)
 eq(len(_bcells), 19, 'cursor-forward padding is clamped to the width (max_line-1)')
 # absolute column (CSI G) pads the same way
-_gc, _gcells, _gcol, _gs, _gw = S.feed_line_edits([], 0, {}, 'ab\x1b[6GZ', 80)
+_gc, _gcells, _gcol, _gs, _gw, _rp6 = S.feed_line_edits([], 0, {}, 'ab\x1b[6GZ', 80)
 eq(''.join(ch for ch, _ in _gcells), 'ab   Z', 'CSI G pads to the absolute column')
 
 # --- UNBOUNDED mode (max_line == 0) pads the SAME way (regression) -------------
@@ -580,12 +580,12 @@ eq(''.join(ch for ch, _ in _gcells), 'ab   Z', 'CSI G pads to the absolute colum
 # not glue the text onto the preceding cells. Pre-fix the unbounded branch
 # clamped the column to len(cells), so the pad loop never ran and a right-prompt
 # (ESC[43C) or an aligned write (ESC[20G) collapsed onto the prompt.
-_uc, _ucells, _ucol, _us, _uw = S.feed_line_edits(
+_uc, _ucells, _ucol, _us, _uw, _rp6 = S.feed_line_edits(
     [], 0, {}, 'user@host:~$ \x1b[43C[pts/11]', 0, 'full')
 eq(''.join(ch for ch, _ in _ucells), 'user@host:~$ ' + ' ' * 43 + '[pts/11]',
    'CUF in unbounded mode pads blanks to the target column, not gluing (right-prompt)')
 eq(_ucol, 64, 'unbounded CUF cursor lands at the padded column (13 + 43 + 8)')
-_uga, _ugcells, _ugcol, _ugs, _ugw = S.feed_line_edits(
+_uga, _ugcells, _ugcol, _ugs, _ugw, _rp6 = S.feed_line_edits(
     [], 0, {}, 'user@host:~$ \x1b[20GXYZ', 0, 'full')
 eq(''.join(ch for ch, _ in _ugcells), 'user@host:~$ ' + ' ' * 6 + 'XYZ',
    'CHA in unbounded mode pads to the absolute column, not gluing')
@@ -593,10 +593,10 @@ eq(''.join(ch for ch, _ in _ugcells), 'user@host:~$ ' + ' ' * 6 + 'XYZ',
 # the blank run is capped at _UNBOUNDED_MAX_COL (a naive pad-to-col would allocate
 # ~1e6 cells here). ESC[999999C is 6 digits, so _safe_int accepts it; the cap, not
 # _safe_int, is what holds the line.
-_dc, _dcells, _dcol, _ds, _dw = S.feed_line_edits([], 0, {}, 'x\x1b[999999C', 0, 'full')
+_dc, _dcells, _dcol, _ds, _dw, _rp6 = S.feed_line_edits([], 0, {}, 'x\x1b[999999C', 0, 'full')
 eq(len(_dcells), S._UNBOUNDED_MAX_COL,
    'unbounded CUF padding is capped at _UNBOUNDED_MAX_COL (no memory blowup)')
-_dgc, _dgcells, _dgcol, _dgs, _dgw = S.feed_line_edits([], 0, {}, '\x1b[999999GZ', 0, 'full')
+_dgc, _dgcells, _dgcol, _dgs, _dgw, _rp6 = S.feed_line_edits([], 0, {}, '\x1b[999999GZ', 0, 'full')
 eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
    'unbounded CHA padding is capped at _UNBOUNDED_MAX_COL, then the char lands')
 
@@ -608,7 +608,7 @@ eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
 # clamp to the line length and K erases are skipped, so the flood cannot spin.
 # CANARY: on the pre-fix code the trailing CUF pads all 500 blanks -> (col, len) == (501, 501).
 _flood = ('\x1b[8192C\r\x1b[0K' * 64) + ('\x1b[8192C\x1b[2K' * 64) + '\n\x1b[500Cx'
-_fbc, _fbcells, _fbcol, _fbs, _fbw = S.feed_line_edits([], 0, {}, _flood, 0, 'full')
+_fbc, _fbcells, _fbcol, _fbs, _fbw, _rp6 = S.feed_line_edits([], 0, {}, _flood, 0, 'full')
 eq((_fbcol, len(_fbcells)), (1, 1),
    'work budget: after a pad-erase flood spends the budget, a fresh-line CUF pads nothing (#3)')
 ok(0 <= _fbcol <= len(_fbcells),
@@ -1588,25 +1588,25 @@ _acute = chr(0x0301)                                   # combining acute
 _over_cap = S._COMBINING_RUN_MAX * 3 + 4               # well above the cap
 def _mark_cells(cells):
     return sum(1 for _c, _ in cells if _c == _acute)
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * _over_cap)
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, 'a' + _acute * _over_cap)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    f'feed_line_edits: an over-cap flood on one base is bounded to {S._COMBINING_RUN_MAX} mark-cells')
 # a stripped SGR between mark-blocks must NOT reset the cap (it leaves no cell, so
 # the marks stay adjacent to the one base) -- the escape-reset bypass
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits(
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits(
     [], 0, {}, 'a' + (_acute * S._COMBINING_RUN_MAX + '\x1b[0m') * 3)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a stripped SGR between mark-blocks cannot reset the cap')
 # short real combining clusters (a base resets the run) are preserved in full
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'e' + _acute + 'o' + _acute)
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, 'e' + _acute + 'o' + _acute)
 eq([_c for _c, _ in _cells], ['e', _acute, 'o', _acute],
    'feed_line_edits: short real combining clusters are preserved')
 eq(len(S.feed_line_edits([], 0, {}, 'x' + _acute * 30)[1]), 31,
    'feed_line_edits: exactly 30 marks (stream-safe conformant) kept in full')
 # split across calls: the persisted `cells` make the cap read-boundary-proof
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * S._COMBINING_RUN_MAX)
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, 'a' + _acute * S._COMBINING_RUN_MAX)
 for _ in range(5):
-    _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(_cells, _col, _sg, _acute * S._COMBINING_RUN_MAX)
+    _cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits(_cells, _col, _sg, _acute * S._COMBINING_RUN_MAX)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a flood split across chunks stays bounded (cells persist)')
 # overwrite-join: two sub-cap runs separated by a base, then a cursor move (CSI G)
@@ -1622,20 +1622,20 @@ def _max_mark_run(cells):
             _r = 0
     return _m
 _raw = 'a' + _acute * 20 + 'b' + _acute * 20 + '\x1b[22G' + _acute
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, _raw)
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, _raw)
 ok(_max_mark_run(_cells) <= S._COMBINING_RUN_MAX,
    'feed_line_edits: overwriting a separator cannot fuse two runs past the cap')
 # writing a mark to the LEFT of an already-full (cap-length) run must also be refused
 # -- exercises the right-hand scan reaching the cap
 _raw2 = 'a' + _acute * (S._COMBINING_RUN_MAX + 8) + '\x1b[1G' + _acute  # above cap, then write at col 0
-_cmp, _cells2, _c2, _s2, _w2 = S.feed_line_edits([], 0, {}, _raw2)
+_cmp, _cells2, _c2, _s2, _w2, _rp6 = S.feed_line_edits([], 0, {}, _raw2)
 ok(_max_mark_run(_cells2) <= S._COMBINING_RUN_MAX and _cells2[0][0] == 'a',
    'feed_line_edits: writing left of a full mark-run is refused (right-side cap)')
 # a grapheme-extending mark whose canonical combining class is 0 (U+093E, category
 # Mc) must be capped too -- detection is by mark CATEGORY, not combining class, so
 # ccc cannot be used to slip a flood past the cap
 _maa = chr(0x093E)                                     # Devanagari vowel sign AA (Mc, ccc 0)
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * _over_cap)
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, 'a' + _maa * _over_cap)
 eq(sum(1 for _c, _ in _cells if _c == _maa), S._COMBINING_RUN_MAX,
    f'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to {S._COMBINING_RUN_MAX}')
 
@@ -1648,7 +1648,7 @@ eq(S._safe_int('9' * 5000), 0, '_safe_int: an over-long run is rejected (no Valu
 eq(S._safe_int('9' * 5000, None), None, '_safe_int: a rejected run returns the default')
 eq(S._safe_int(chr(0xFF11)), 0, '_safe_int: a non-ASCII digit (int() rejects) is rejected')
 # a CSI cursor op with a 5000-digit parameter must not crash feed_line_edits
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a\x1b[' + '9' * 5000 + 'Cb')
+_cmp, _cells, _col, _sg, _wr, _rp6 = S.feed_line_edits([], 0, {}, 'a\x1b[' + '9' * 5000 + 'Cb')
 ok(any(_c == 'a' for _c, _ in _cells),
    'feed_line_edits: a 5000-digit CSI parameter does not crash (the huge run is consumed)')
 # an SGR with a 5000-digit parameter must not crash parse_sgr
@@ -1688,7 +1688,7 @@ _cpo = S.render_output('A' + chr(0x202e) + '\U0001f600\x1b[31m!', 'codepoints')
 ok(all(0x20 <= ord(c) <= 0x7E or c in '\t\n' for c in _cpo) and '\x1b' not in _cpo,
    'codepoints output is inert ASCII (escapes stripped, no raw non-ASCII or surrogate)')
 # the widget line path badges ASCII too (via _cell_display), and the caret offset agrees
-_cpcomp, _cpcells, _cpcol, _cps, _cpw = S.feed_line_edits([], 0, {}, 'aZ', 0, 'full')
+_cpcomp, _cpcells, _cpcol, _cps, _cpw, _rp6 = S.feed_line_edits([], 0, {}, 'aZ', 0, 'full')
 _cpruns, _cppfx = S.cells_to_runs(_cpcomp, _cpcells, 'codepoints', False)
 eq(''.join(t for t, _k in _cpruns), '<U+0061><U+005A>',
    'the widget line path badges printable ASCII in codepoints mode')
@@ -2107,7 +2107,7 @@ def _line(raw, mode='box', prev=None, col=0, sgr=None):
     """Feed raw into a fresh (or given) line buffer; return (completed_display,
     current_display) rendered under `mode`."""
     cells = prev if prev is not None else []
-    comp, cells, col, _sgr, _w = S.feed_line_edits(cells, col, sgr or {}, raw)
+    comp, cells, col, _sgr, _w, _rp6 = S.feed_line_edits(cells, col, sgr or {}, raw)
     render = lambda cs: ''.join(S.render_output(c, mode) for c, _ in cs)
     return [render(c) for c in comp], render(cells), cells, col
 
@@ -2156,7 +2156,7 @@ def _cells_render(raw, mode='detail', line_editing='full', max_line=0):
     """Render `raw` the way the WIDGET does: through the cell model, then through
     cells_to_runs. Distinct from render_output(), which the CLI wrapper uses -- a
     leak can exist in one path and not the other, so tests must drive this one."""
-    comp, cells, _col, _sgr, wraps = S.feed_line_edits(
+    comp, cells, _col, _sgr, wraps, _rp6 = S.feed_line_edits(
         [], 0, {}, raw, max_line, line_editing)
     runs, _prefix = S.cells_to_runs(comp, cells, mode, False, wraps=wraps)
     return ''.join(text for text, _key in runs)
@@ -2191,7 +2191,7 @@ eq(''.join(c for c, _ in _cr_off), 'PASS',
 # append-only: \r and \b are ALSO neutralized. CR completes the line (frame kept on
 # its own line, flagged with the suppressed _REDRAW_MARK); BS is dropped. So the
 # current line can never be overwritten.
-_ao_comp, _ao_cur, _, _, _ = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, 'append-only')
+_ao_comp, _ao_cur, _, _, _, _rp6 = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, 'append-only')
 eq([c for c, _ in _ao_comp[0]], list('FAIL') + [' '],
    'append-only: CR keeps FAIL on its own completed line (+ redraw marker cell)')
 ok(_ao_comp[0][-1] == S._REDRAW_MARK and ''.join(c for c, _ in _ao_cur) == 'PASS',
@@ -2297,7 +2297,7 @@ for _p in _SPLIT_PAYLOADS:
         _acc_comp, _acc_wraps = [], []
         for _chunk in (_raw[:_cut], _raw[_cut:]):
             _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
-            _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+            _c, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits(
                 _cells, _col, _sgr, _text)
             _acc_comp.extend(_c)
             _acc_wraps.extend(_w)
@@ -2332,7 +2332,7 @@ for _p in ('\x1b]0;pwned\x07', '\x1b]0;pwned\x1b\\', '\x1b]52;c;cGF5\x07',
             _acc = []
             for _chunk in (_raw[:_ci], _raw[_ci:_j], _raw[_j:]):
                 _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
-                _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+                _c, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits(
                     _cells, _col, _sgr, _text)
                 _acc.extend(_c)
             _runs, _ = S.cells_to_runs(_acc, _cells, 'detail', False)
@@ -2444,7 +2444,7 @@ def _stream_render(chunks, mode='detail'):
     for i, blob in enumerate(chunks):
         text = dec.decode(blob, i == len(chunks) - 1)
         text, carry, drop, _ = S.feed_chunk_carry(text, carry, drop)
-        c, cells, col, sgr, _w = S.feed_line_edits(cells, col, sgr, text)
+        c, cells, col, sgr, _w, _rp6 = S.feed_line_edits(cells, col, sgr, text)
         comp.extend(c)
     runs, _ = S.cells_to_runs(comp, cells, mode, False)
     return ''.join(t for t, _k in runs)
@@ -2599,7 +2599,7 @@ for _inv in (0x3164, 0x115F, 0xFE0F, 0x034F, 0x180B, 0xE0100, 0x17B4, 0xFFA0):
 # intact. sanitize.py's own comment claims the cap covers both models, so this
 # also pins the comment to the code.
 _ZALGO = 'a' + chr(0x0301) * 20000
-_cmp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, _ZALGO)
+_cmp, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, _ZALGO)
 ok(len(_cells) <= S._COMBINING_RUN_MAX + 1,
    'the CLI cell model caps a combining-mark flood')
 ok(len(S.tui_cell(_ZALGO, 'show')) <= S._COMBINING_RUN_MAX + 1,
@@ -2699,18 +2699,18 @@ eq(_SPAN_BAD, [],
 # The cell buffer PERSISTS across the flip, so the two settings meet on one line.
 # Turning the setting off must make the already-honoured ops inert without
 # corrupting the state they built, and without leaking the bytes it now ignores.
-_comp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, 'hello\x1b[3G', 0, 'full')
+_comp, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, 'hello\x1b[3G', 0, 'full')
 eq((''.join(c for c, _k in _cells), _col), ('hello', 2),
    'full: CSI G moves the cursor')
 # flip to read-safe mid-line: the same op must now do nothing, and print nothing
-_c2, _cells2, _col2, _sgr2, _w2 = S.feed_line_edits(
+_c2, _cells2, _col2, _sgr2, _w2, _rp6 = S.feed_line_edits(
     _cells, _col, _sgr, '\x1b[1G\x1b[K\x1b[5C', 0, 'read-safe')
 eq((''.join(c for c, _k in _cells2), _col2), ('hello', 2),
    'read-safe mid-stream: CSI G/K/C neither move, erase nor pad')
 eq(_cells_render('\x1b[1G\x1b[K\x1b[5C', 'detail', line_editing='read-safe'), '',
    'read-safe displays nothing for the ops it stopped honouring')
 # ...and flipping back to full restores them against the SAME buffer
-_c3, _cells3, _col3, _sgr3, _w3 = S.feed_line_edits(
+_c3, _cells3, _col3, _sgr3, _w3, _rp6 = S.feed_line_edits(
     _cells2, _col2, _sgr2, '\x1b[1GH', 0, 'full')
 eq(''.join(c for c, _k in _cells3), 'Hello',
    'full again: the ops act again on the buffer built while read-safe')
@@ -2725,10 +2725,10 @@ for _cut in range(1, 5):
     _carry, _drop = '', ''
     _cells, _col, _sgr = [('x', ())], 1, {}
     _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[:_cut], _carry, _drop)
-    _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+    _c, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits(
         _cells, _col, _sgr, _text, 0, 'full')
     _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[_cut:], _carry, _drop)
-    _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+    _c, _cells, _col, _sgr, _w, _rp6 = S.feed_line_edits(
         _cells, _col, _sgr, _text, 0, 'read-safe')
     ok(all(c not in '\x1b[2K' or c == 'x' for c, _k in _cells),
        'a CSI split across a line_editing flip leaks no byte (cut %d)' % _cut)
@@ -2754,7 +2754,7 @@ def _longest_cluster(text):
 
 
 def _render_cells(raw, mode='show'):
-    _comp, _cells, _col, _sgr, _wraps = S.feed_line_edits([], 0, {}, raw)
+    _comp, _cells, _col, _sgr, _wraps, _rp6 = S.feed_line_edits([], 0, {}, raw)
     _runs, _ = S.cells_to_runs(_comp, _cells, mode, True, wraps=_wraps)
     return ''.join(t for t, _k in _runs)
 
@@ -2777,7 +2777,7 @@ eq(_CLUSTER_BAD, [],
 # boxes a > _ZALGO_MARK_MAX cluster as a Zalgo attack (a strong full-cell tint); <= the
 # threshold stays shown.
 _ok_run = 'a' + chr(0x0301) * 20
-_zc, _zcells, _zcol, _zsgr, _zw = S.feed_line_edits([], 0, {}, _ok_run)
+_zc, _zcells, _zcol, _zsgr, _zw, _rp6 = S.feed_line_edits([], 0, {}, _ok_run)
 eq(sum(1 for c, _ in _zcells if c == chr(0x0301)), 20,
    'the cell-model cap does not truncate a conformant 20-mark cluster')
 eq(_render_cells(_ok_run).count(chr(0x0301)), 0,

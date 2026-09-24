@@ -881,7 +881,7 @@ def _t2_real_step(col, L, M, cls, num):
         'K1': '\x1b[1K', 'K2': '\x1b[2K', 'K3': '\x1b[3K',
     }[cls]
     cells = [('a', ())] * L
-    _comp, cells2, col2, _sgr, _wraps = S.feed_line_edits(cells, col, {}, token,
+    _comp, cells2, col2, _sgr, _wraps, _rp6 = S.feed_line_edits(cells, col, {}, token,
                                                           max_line=M)
     return col2, len(cells2)
 
@@ -966,7 +966,7 @@ def t2_mark_drop_real():
     for M in (0, cap + 4):
         cells = [(mark, ())] * cap
         col = cap
-        _comp, cells2, col2, _sgr, _w = S.feed_line_edits(cells, col, {}, mark,
+        _comp, cells2, col2, _sgr, _w, _rp6 = S.feed_line_edits(cells, col, {}, mark,
                                                           max_line=M)
         if (col2, len(cells2)) != (col, cap):
             fail('T2 mark-drop: cap=%d M=%d: expected frozen (col,L)=(%d,%d), '
@@ -976,7 +976,7 @@ def t2_mark_drop_real():
                  % (M, col2, len(cells2)))
         # Under the cap, a mark is a WRITE (advances).
         cells_s = [(mark, ())] * 2
-        _c, cells3, col3, _s, _w = S.feed_line_edits(cells_s, 2, {}, mark,
+        _c, cells3, col3, _s, _w, _rp6 = S.feed_line_edits(cells_s, 2, {}, mark,
                                                      max_line=M if M == 0 else max(M, 4))
         if (col3, len(cells3)) == (2, 2):
             fail('T2 mark-drop: a short combining run was wrongly dropped')
@@ -996,7 +996,7 @@ def t2_pad_budget_real():
     flood = ('\x1b[8192C\r\x1b[0K' * 64) + ('\x1b[8192C\x1b[2K' * 64) + '\n\x1b[500Cx'
     # INV must hold for every width, budget engaged or not.
     for M in (0, 200, S._UNBOUNDED_MAX_COL):
-        _comp, cells, col, _sgr, _w = S.feed_line_edits([], 0, {}, flood, max_line=M)
+        _comp, cells, col, _sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, flood, max_line=M)
         if not (0 <= col <= len(cells) and (M == 0 or len(cells) <= M)):
             fail('T2 pad-budget: INV broken (col=%d L=%d M=%d)' % (col, len(cells), M))
     # Where the flood genuinely spends the budget (unbounded, or a large width whose per-line
@@ -1005,7 +1005,7 @@ def t2_pad_budget_real():
     # (A small width, e.g. M=200, never spends the budget -- and has no flood to bound -- so
     # it is only INV-checked above.)
     for M in (0, S._UNBOUNDED_MAX_COL):
-        _comp, cells, col, _sgr, _w = S.feed_line_edits([], 0, {}, flood, max_line=M)
+        _comp, cells, col, _sgr, _w, _rp6 = S.feed_line_edits([], 0, {}, flood, max_line=M)
         if (col, len(cells)) != (1, 1):
             fail('T2 pad-budget: the budget did not clamp the post-flood CUF '
                  '(M=%d -> col=%d L=%d; expected (1,1))' % (M, col, len(cells)))
@@ -1027,7 +1027,7 @@ def t2_line_editing_read_safe():
                     continue
                 cells = [('a', ())] * L
                 for tok in tokens:
-                    _c, cells2, col2, _s, _w = S.feed_line_edits(
+                    _c, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
                         cells, col, {}, tok, max_line=M, line_editing='read-safe')
                     if (col2, len(cells2)) != (col, L):
                         fail('T2 read-safe: %r moved cursor/L at '
@@ -1054,20 +1054,20 @@ def t2_line_editing_append_only():
                 cells = [('a', ())] * L
                 # CSI ops: stripped, cursor-neutral (like read-safe).
                 for tok in csi:
-                    _c, cells2, col2, _s, _w = S.feed_line_edits(
+                    _c, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
                         cells, col, {}, tok, max_line=M, line_editing='append-only')
                     if (col2, len(cells2)) != (col, L):
                         fail('T2 append-only: %r moved cursor/L at col=%d L=%d M=%d '
                              '-> (%d,%d)' % (tok, col, L, M, col2, len(cells2)))
                 # backspace: neutralized -- (col, L) unchanged, no line completed.
-                _c, cells2, col2, _s, _w = S.feed_line_edits(
+                _c, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
                     cells, col, {}, '\x08', max_line=M, line_editing='append-only')
                 if _c or (col2, len(cells2)) != (col, L):
                     fail('T2 append-only: \\b moved cursor/L or completed a line at '
                          'col=%d L=%d M=%d -> (%d,%d)' % (col, L, M, col2, len(cells2)))
                 # carriage return: completes the current line (-> 0,0) with one trailing
                 # _REDRAW_MARK; INV holds on the fresh current line.
-                comp, cells2, col2, _s, _w = S.feed_line_edits(
+                comp, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
                     cells, col, {}, '\r', max_line=M, line_editing='append-only')
                 if (col2, len(cells2)) != (0, 0):
                     fail('T2 append-only: \\r did not reset the current line at '
@@ -1076,7 +1076,7 @@ def t2_line_editing_append_only():
                     fail('T2 append-only: \\r did not flag the completed line with one '
                          '_REDRAW_MARK (col=%d L=%d M=%d comp=%r)' % (col, L, M, comp))
     # a \b then \r on the SAME line coalesces to exactly ONE marker (per-line flag).
-    comp, cells2, col2, _s, _w = S.feed_line_edits(
+    comp, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
         [('a', ())], 1, {}, '\x08\r', max_line=0, line_editing='append-only')
     marks = sum(1 for c in comp[0] if c == S._REDRAW_MARK) if comp else -1
     if len(comp) != 1 or marks != 1:
@@ -1090,7 +1090,7 @@ def t2_prompt_flush_real():
     (so (col,L) becomes (1,1), not the model's (0,0) which is the flush
     half only). INV must hold."""
     base = [('a', ())] * 3
-    comp, cells2, col2, _s, _w = S.feed_line_edits(
+    comp, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
         list(base), 3, {}, S.PROMPT_START + 'x', max_line=0)
     expected = base + [S._NO_NEWLINE_MARK]
     if len(comp) != 1 or list(comp[0]) != expected:
@@ -1100,7 +1100,7 @@ def t2_prompt_flush_real():
              'col=%d L=%d cells=%r' % (col2, len(cells2), cells2))
     # zsh order: marker with NOTHING printable following must NOT flush.
     cells = [('a', ())] * 3
-    comp, cells2, col2, _s, _w = S.feed_line_edits(
+    comp, cells2, col2, _s, _w, _rp6 = S.feed_line_edits(
         cells, 3, {}, S.PROMPT_START, max_line=0)
     if comp or (col2, len(cells2)) != (3, 3):
         fail('T2 prompt-noop: marker without following prompt flushed or moved')
@@ -1256,7 +1256,7 @@ def t2_incremental_equiv():
             sgr: dict[Any, Any] = {}
             comp_incr = []
             for t in toks:
-                comp, cells, col, sgr, _w = S.feed_line_edits(cells, col, sgr, t,
+                comp, cells, col, sgr, _w, _rp6 = S.feed_line_edits(cells, col, sgr, t,
                                                               max_line=M)
                 comp_incr.extend(comp)
             if comp_incr != comp_whole or (cells, col) != (whole[1], whole[2]):

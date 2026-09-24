@@ -1465,12 +1465,15 @@ win.new_tab(tui=True)
 _alt_tab = win.current()
 _alt_tab._alt_screen = True              # simulate a full-screen program holding the alt buffer
 ok(_alt_tab.alt_active(), 'a TUI tab with the alt buffer active reports alt_active')
-win._on_alt_screen_changed(_alt_tab)     # current tab -> refresh the indicators (covers branch)
+# Fire the REAL connected signal (not a manual _on_alt_screen_changed call), so the test
+# proves the alt_screen_changed -> indicator wiring, and a stale indicator after restart
+# (which relies on that signal) cannot slip through a hand-rolled refresh.
+_alt_tab.alt_screen_changed.emit()
 eq(win._mode_level()[1], 'TUI (alt)',
    'the mode lamp shows TUI (alt) while a full-screen program holds the alt screen')
 win._update_tui_indicator()              # covers the alt tui-dot styling
 _alt_tab._alt_screen = False
-win._on_alt_screen_changed(_alt_tab)
+_alt_tab.alt_screen_changed.emit()
 eq(win._mode_level()[1], 'TUI',
    'the mode lamp clears the alt marker when the program leaves the alt screen')
 win._update_tui_indicator()              # covers the non-alt tui-dot styling

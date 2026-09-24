@@ -427,6 +427,21 @@ ok(sd.is_baseline(_ra),
    'restart_as_shell lands the same clean baseline as the fg-exit edge')
 _rs.close()
 
+# restart_as_shell must EMIT alt_screen_changed when it drops the alt screen -- only
+# _on_readable emits on a live flip, so without this the window's security indicator would
+# stay "TUI (alt)" after a program that exited while on the alternate screen is restarted.
+_rsa = _arm_terminal(True)
+feed_output(_rsa, b'\x1b[?1049h')            # enter the alternate screen
+APP.processEvents()
+ok(_rsa._alt_screen, 'the armed terminal is on the alternate screen before restart')
+_rsa_fired = []
+_rsa.alt_screen_changed.connect(lambda: _rsa_fired.append(True))
+_rsa.restart_as_shell()
+ok(not _rsa._alt_screen, 'restart_as_shell drops the alternate screen')
+ok(_rsa_fired,
+   'restart_as_shell emits alt_screen_changed so the indicator is not left stale on TUI (alt)')
+_rsa.close()
+
 # The ordinary-exit fg-edge (in _read_and_render) calls the same reset when the foreground
 # program exits and the shell prompt returns. Drive the True->False edge deterministically.
 _fe = _arm_terminal(True)

@@ -195,7 +195,7 @@ def rendered_live(stream):
     '_' (the export mapping), so it is comparable to logical()'s '_' output.
     read-safe so only \\b \\r \\n move the cursor -- the documented set the
     reference models. No SGR key noise (colours off)."""
-    comp, cells, _col, _sgr, wraps = S.feed_line_edits([], 0, {}, stream,
+    comp, cells, _col, _sgr, wraps, _rp6 = S.feed_line_edits([], 0, {}, stream,
                                                         line_editing='read-safe')
     runs, _prefix = S.cells_to_runs(comp, cells, 'box', False, wraps=wraps)
     return ''.join(text for text, _key in runs).replace(S.BOX, '_')
@@ -222,7 +222,7 @@ def inv3_corpus():
 # INV-4: every emitted display character is inert.
 # ===========================================================================
 def _emitted(stream, mode):
-    comp, cells, _col, _sgr, wraps = S.feed_line_edits([], 0, {}, stream)
+    comp, cells, _col, _sgr, wraps, _rp6 = S.feed_line_edits([], 0, {}, stream)
     runs, _prefix = S.cells_to_runs(comp, cells, mode, False, wraps=wraps)
     return ''.join(text for text, _key in runs)
 
