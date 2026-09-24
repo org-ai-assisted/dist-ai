@@ -2063,6 +2063,24 @@ pv.render_preview('a\x1b[31mb', mode='show', markings=False)
 pv.render_preview('plain', mode='show', markings=False)
 eq(pv._sgr, {'fg': None, 'bg': None, 'bold': False},
    'render_preview resets SGR, so a prior preview\'s formatting does not leak')
+pv.close()
+
+# preview + TUI: a preview never spawns/resizes, so _screen stays None while _grid_mode() is
+# True. apply_mode / apply_theme take the GRID branch, which must not _reset_grid_view()
+# (clear the doc) and then no-op _render_tui() on the None screen -- that WIPED the seeded
+# preview permanently. Guarded on _screen, the toggle falls to the CLI replay and rebuilds
+# from _raw. Regression: fails on the pre-guard code (document goes empty).
+_ptv = SecureTerminal(preview=True, tui=True)
+_ptv.render_preview('PREVIEW_TUI_KEEP\nrow two', mode='box', markings=False)
+ok(_ptv._screen is None and _ptv._grid_mode(),
+   'preview+tui: in grid mode but the screen is not created (never spawns/resizes)')
+_ptv.apply_mode('reveal')                       # _rerender grid branch (guarded on _screen)
+ok('PREVIEW_TUI_KEEP' in _ptv.toPlainText(),
+   'preview+tui: a mode toggle preserves the seeded content (not clear-then-noop)')
+_ptv.apply_theme('dark')                        # apply_theme grid branch (guarded on _screen)
+ok('PREVIEW_TUI_KEEP' in _ptv.toPlainText(),
+   'preview+tui: a theme toggle preserves the seeded content (not clear-then-noop)')
+_ptv.close()
 # A pathological multi-MB paste must NOT be rendered whole (would hang the review
 # pane): render_preview bounds the RENDERED size, kept from the HEAD (line 1 first).
 # Delivery is unaffected -- the mirror is display-only.
