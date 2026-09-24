@@ -5497,6 +5497,35 @@ ok(_scr_row(_scr, 0) == 'AAA' and _scr_row(_scr, 1) == 'BBB' and _scr_row(_scr, 
    'XTHIMOUSE (5-parameter CSI T) is not treated as SD -- the grid is unchanged')
 _scr.shutdown()
 
+# --- SU/SD while PAGED into history must snap the view to the live bottom, else they mutate
+# the live buffer under a stale history frame (history/live divergence). scroll_up/scroll_down
+# are fork-added CSI handlers absent from pyte's Stream.events, so HistoryScreen.__getattribute__
+# never wraps them with before_event -- the fix calls before_event() explicitly. FAILS on the
+# pre-fix tree, where a SU/SD issued while paged leaves history.position < history.size.
+_suh = SecureTerminal(command='/bin/cat', tui=True)
+_suh.resize(700, 400)
+_suh.show()
+pump(60)
+for _suh_i in range(_suh._screen.lines * 3):
+    feed_output(_suh, ('history line %03d\r\n' % _suh_i).encode())
+pump(60)
+
+
+def _paged_su_sd_snaps(t, seq):
+    scr = t._screen
+    scr.prev_page()                                  # page the view UP into history
+    paged = scr.history.position < scr.history.size  # precondition: the view IS paged
+    feed_output(t, seq)                              # SU/SD arrives while paged
+    pump(40)
+    return paged and scr.history.position == scr.history.size
+
+
+ok(_paged_su_sd_snaps(_suh, b'\x1b[1S'),
+   'SU (CSI S) while paged into history snaps the view to the live bottom (no history/live divergence)')
+ok(_paged_su_sd_snaps(_suh, b'\x1b[1T'),
+   'SD (CSI T) while paged into history snaps the view to the live bottom (no history/live divergence)')
+_suh.shutdown()
+
 # --- cover three pre-existing defensive/dead-code branches (the coverage gate was a
 #     pre-existing <100%, unrelated to the SU/SD work above; covered here so it reaches 100%) --
 import secure_terminal.terminal as _covmod  # noqa: E402

@@ -1675,7 +1675,28 @@ ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
-ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail'), 'display modes')
+ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail', 'codepoints'), 'display modes')
+
+# --- codepoints mode: EVERY character (incl printable ASCII) -> its <U+XXXX> badge ----
+eq(S.render_output('aZ 9', 'codepoints'), '<U+0061><U+005A><U+0020><U+0039>',
+   'codepoints badges every character including printable ASCII and space')
+eq(S.render_output('x\ty\nz', 'codepoints'), '<U+0078>\t<U+0079>\n<U+007A>',
+   'codepoints keeps tab and newline as structure')
+eq(S.render_output('a\x07b', 'codepoints'), '<U+0061><U+0062>',
+   'codepoints drops BEL, like every mode')
+_cpo = S.render_output('A' + chr(0x202e) + '\U0001f600\x1b[31m!', 'codepoints')
+ok(all(0x20 <= ord(c) <= 0x7E or c in '\t\n' for c in _cpo) and '\x1b' not in _cpo,
+   'codepoints output is inert ASCII (escapes stripped, no raw non-ASCII or surrogate)')
+# the widget line path badges ASCII too (via _cell_display), and the caret offset agrees
+_cpcomp, _cpcells, _cpcol, _cps, _cpw = S.feed_line_edits([], 0, {}, 'aZ', 0, 'full')
+_cpruns, _cppfx = S.cells_to_runs(_cpcomp, _cpcells, 'codepoints', False)
+eq(''.join(t for t, _k in _cpruns), '<U+0061><U+005A>',
+   'the widget line path badges printable ASCII in codepoints mode')
+eq(S.cells_display_col(_cpcells, _cpcol, 'codepoints'), 16,
+   'the caret offset counts the badge width (2 chars x 8 = 16) in codepoints mode')
+# a TUI grid cell cannot fit a multi-column badge, so codepoints degrades to the box there
+eq(S.tui_cell(chr(0x202e), 'codepoints'), S.BOX,
+   'codepoints in a TUI grid cell boxes a non-ASCII char (a badge cannot fit one cell)')
 ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
 # The light theme is "black on white": the foreground must be PURE black, not a soft
 # grey. A grey foreground renders every glyph anti-aliased with no fully-black pixels --
