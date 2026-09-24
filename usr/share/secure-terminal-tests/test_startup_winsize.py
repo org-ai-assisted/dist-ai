@@ -151,10 +151,30 @@ def test_initial_grid_eager_size_before_exec():
        % (_reported_size(term),))
 
 
+def test_deferred_tui_spawns_at_geometry():
+    ## TUI also sizes the PTY before releasing the child (not just CLI), closing the raceful
+    ## 0x0 window a post-exec _make_screen would leave. A deferred TUI term shown at real
+    ## geometry spawns its child and seeds the pyte screen at the widget grid; the child sees
+    ## that same size. (The exact race window is timing-bound, so this asserts the settled
+    ## consistency -- child size == pyte-screen grid -- rather than the transient.)
+    term = _stty_term(tui=True)
+    ok(term._pid is None, 'deferred tui term: no child before geometry')
+    term.resize(900, 500)
+    term.show()
+    wait_for(lambda: term._pid is not None and term._screen is not None
+             and _reported_size(term) is not None)
+    dims = (term._screen.columns, term._screen.lines) if term._screen else None
+    ok(term._pid is not None and dims is not None
+       and _reported_size(term) == (dims[1], dims[0]),
+       'deferred tui child born at the pyte-screen grid: child=%r screen=%r'
+       % (_reported_size(term), dims))
+
+
 for _t in (test_child_born_at_widget_grid,
            test_deferred_no_child_before_geometry,
            test_spawn_fires_on_show_and_resize,
-           test_initial_grid_eager_size_before_exec):
+           test_initial_grid_eager_size_before_exec,
+           test_deferred_tui_spawns_at_geometry):
     try:
         _t()
     except Exception as exc:  # pylint: disable=broad-except

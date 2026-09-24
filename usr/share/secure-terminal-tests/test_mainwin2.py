@@ -1220,4 +1220,23 @@ finally:
         _symos.environ['XDG_RUNTIME_DIR'] = _c4_oxdg
 
 
+# --- C1: a background (hidden) tab still spawns its child ------------------------------
+# The deferred-spawn design (terminal.py) waits for a tab's first geometry, but a HIDDEN
+# QTabWidget page never receives showEvent/resizeEvent -- so main.py spawns pending tabs at
+# the shared content grid. A background -e / restored tab must therefore RUN when created,
+# not lazily on first view (the regression codex+claude flagged). initial_grid=None opts the
+# tab OUT of the harness's eager (0,0) monkeypatch so it exercises the real deferred path.
+from secure_terminal.terminal import SecureTerminal as _C1_ST   # noqa: E402
+win.new_tab()                                      # a guaranteed real, current visible tab
+win.current()._set_winsize(80, 24)                 # a real reference grid for the visible tab
+win.hide()                                         # force the deferred path (no _add_tab spawn)
+_c1bg = _C1_ST(command='/bin/cat', initial_grid=None)
+win._add_tab(_c1bg, activate=False)                # background: not switched to, window hidden
+ok(_c1bg._pid is None and _c1bg._spawn_pending,
+   'C1: a background tab added to a hidden window starts deferred (no child yet)')
+win._spawn_pending_tabs()
+ok(_c1bg._pid is not None and not _c1bg._spawn_pending,
+   'C1: main.py spawns the background tab at the shared grid (not lazily on first view)')
+
+
 finish('mainwin2')

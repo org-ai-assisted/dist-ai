@@ -232,4 +232,52 @@ feed_output(_a8, b'h')                             # read 2 completes it
 ok(_a8._alt_screen, '#8: the reunited combined alt-enter marker flips _alt_screen (paths agree)')
 _a8.close()
 
+
+# --- Cl2: the deferred grace-SIGKILL timer is cancelled on tab teardown ---------------
+# _terminate_pgrp SIGTERMs the foreground group, then SIGKILLs a survivor after a grace
+# period. A bare QTimer.singleShot survived a tab close and, ~2s later, fired its lambda
+# against the deleteLater'd widget -> RuntimeError -> WHOLE-APP abort. The timer is now
+# parented to the widget AND stopped in shutdown(), so a close during the grace cancels it.
+_cl2 = spawn_live(command=['/bin/sh', '-c', 'trap "" TERM; exec sleep 60'])
+_cl2._SURVIVOR_GRACE_MS = 5000                     # keep it pending for the assertions
+_cl2_signalled, _cl2_errno = _cl2._terminate_pgrp(os.getpgid(_cl2._pid))
+ok(_cl2_signalled and _cl2._survivor_timer is not None and _cl2._survivor_timer.isActive(),
+   'Cl2: _terminate_pgrp arms the parented grace-SIGKILL timer')
+_cl2.shutdown()
+ok(not _cl2._survivor_timer.isActive(),
+   'Cl2: shutdown() cancels the pending grace-SIGKILL timer (no fire on a closed tab)')
+
+
+# --- Cl3: Enter clears the line-pending mirror ONLY when the CR is delivered ----------
+# A dropped CR (a wedged/slow child -> short _write) must leave _line_pending() True, so a
+# later CLI<->TUI re-export is not typed onto -- and does not submit -- the unsent line.
+_cl3 = spawn_live(command='/bin/cat')
+_cl3._line_buffer = 'secret command'
+_cl3._line_dirty = True
+_cl3._write = lambda data: 0                       # wedged child: nothing accepted
+key(_cl3, Qt.Key.Key_Return)
+ok(_cl3._line_buffer == 'secret command' and _cl3._line_pending(),
+   'Cl3: a dropped Enter CR keeps the line pending (mirror NOT cleared)')
+_cl3._write = lambda data: len(data)              # child now accepts the write
+key(_cl3, Qt.Key.Key_Return)
+ok(_cl3._line_buffer == '' and not _cl3._line_dirty,
+   'Cl3: a fully-delivered Enter CR clears the line-pending mirror')
+_cl3.close()
+
+
+# --- Cl5: OSC-52 read-consent prompts are flood-bounded -------------------------------
+# Each un-granted read query opens a BLOCKING modal consent dialog; a flood would freeze
+# the UI behind thousands of them and pressure the user toward "Always". Past the per-window
+# cap the excess is auto-denied (no prompt, no reply -> no exfiltration) and advised once.
+_cl5 = spawn_live(command='/bin/cat')
+_cl5._osc['osc_clipboard_read'] = True            # feature on for this tab
+_cl5_prompts = []
+_cl5.clipboard_read_requested.connect(lambda: _cl5_prompts.append(1))
+for _ in range(20):
+    _cl5._clipboard_read = None                    # each "once" decision resets to None
+    _cl5._osc_clipboard_read()
+ok(len(_cl5_prompts) <= 5 and _cl5._clip_read_flood_advised,
+   'Cl5: a read-query flood is bounded to a few prompts, then auto-denied + advised once')
+_cl5.close()
+
 finish('core-fixes')
