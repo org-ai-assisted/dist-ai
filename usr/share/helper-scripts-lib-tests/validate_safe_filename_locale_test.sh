@@ -58,6 +58,7 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 ## Run validate_safe_filename on $2 under locale $1; echo the exit code.
+# shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
 vsf_probe='source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" >/dev/null 2>&1; candidate="$1"; validate_safe_filename candidate >/dev/null 2>&1; printf "%s" "$?"'
 vsf_rc() {
    LC_ALL="$1" HELPER_SCRIPTS_PATH="${helper_scripts_path}" /usr/bin/bash -c "${vsf_probe}" _ "$2"

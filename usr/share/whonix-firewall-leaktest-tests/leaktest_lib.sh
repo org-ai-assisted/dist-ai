@@ -340,6 +340,7 @@ leaktest_setup_int_tif() {
    ip netns exec ws ip -6 neigh replace "${TUN_GW_IP6}" lladdr "${gw_tun_mac}" nud permanent dev tun0
 
    local settle
+   # shellcheck disable=SC2034  # settle: loop-count idiom, iterates a fixed number of times
    for settle in 1 2 3 4 5 6 7 8 9 10; do
       [ "$(ip netns exec ws cat /sys/class/net/tun0/carrier 2>/dev/null || printf 0)" = '1' ] && break
       sleep 0.2
@@ -497,6 +498,7 @@ leaktest_transport_redirect_count() {
    ## always present, so an empty parse means the read flaked (netns exec under
    ## load); retry so it resolves to the true count. Non-fatal by construction: the
    ## read is an `if` condition, never aborting the caller under errexit.
+   # shellcheck disable=SC2034  # attempt: loop-count idiom, iterates a fixed number of times
    for attempt in 1 2 3 4; do
       if chain="$(ip netns exec gw nft list chain inet nat prerouting 2>/dev/null)"; then
          ## No awk `exit`: closing the pipe early would SIGPIPE the printf (rc 141)

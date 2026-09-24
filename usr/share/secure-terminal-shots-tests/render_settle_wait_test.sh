@@ -59,6 +59,7 @@ fi
 ## `compare` (ImageMagick) is REQUIRED tooling: st_wait_render_settled early-returns without it, so
 ## its absence is a dependency bug that must FAIL loud, never a silent skip.
 if ! type -P compare >/dev/null 2>&1; then
+   # shellcheck disable=SC2016  # literal FAIL message; the backticked `compare` is prose, not a substitution
    printf '%s\n' 'FAIL: ImageMagick `compare` not on PATH -- required to exercise st_wait_render_settled' >&2
    printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1

@@ -71,6 +71,7 @@ assert_contains() {
 ## The option exists and is wired to the variable 2100 reads.
 assert_contains "${parse_cmd}" '--package-jobs)' \
    "parse-cmd accepts --package-jobs"
+# shellcheck disable=SC2016
 assert_contains "${parse_cmd}" 'export dist_build_package_jobs="${2:-}"' \
    "parse-cmd exports dist_build_package_jobs from --package-jobs"
 assert_contains "${parse_cmd}" '--package-jobs N' \

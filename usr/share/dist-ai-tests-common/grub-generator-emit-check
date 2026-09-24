@@ -72,6 +72,7 @@ chmod 0755 -- "${stub_dir}/ischroot"
 for dist_script in 10_00_linux_dist 10_50_linux_dist_advanced; do
    {
       printf '%s\n' '#!/bin/sh'
+      # shellcheck disable=SC2016  # literal stub body; make_boot_entry stays literal
       printf '%s\n' 'printf "%s\n" "STUB '"${dist_script}"' ran; make_boot_entry=${make_boot_entry:-unset}"'
    } >"${grubd_dir}/${dist_script}"
    chmod 0755 -- "${grubd_dir}/${dist_script}"

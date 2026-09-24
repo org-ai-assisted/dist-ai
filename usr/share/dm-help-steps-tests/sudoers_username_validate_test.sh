@@ -105,6 +105,7 @@ check_reject 'a%b'
 check_reject 'a=b'
 check_reject 'a,b'
 check_reject 'a:b'
+# shellcheck disable=SC2016
 check_reject 'a$b'
 ## Only ONE trailing '$' is tolerated.
 check_reject 'host$$'

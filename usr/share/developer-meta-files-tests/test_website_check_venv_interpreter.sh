@@ -49,6 +49,7 @@ if [ ! -r "${mobile}" ] || [ ! -r "${width}" ]; then
 fi
 
 ## The explicit venv interpreter the fixed wrappers must use.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 venv_tok='"${venv_dir}/bin/python3"'
 
 ## <name> <wrapper-path> <check-var-token> <direct-exec-token>
@@ -81,7 +82,9 @@ assert_wrapper() {
    fi
 }
 
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 assert_wrapper "website-mobile-check.sh" "${mobile}" '"${check_mobile}"' '"${check_mobile}" "$@"'
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 assert_wrapper "website-width-check.sh"  "${width}"  '"${check_width}"'  '"${check_width}" "$@"'
 
 printf '%s\n' "" "${pass_count} passed, ${fail_count} failed"

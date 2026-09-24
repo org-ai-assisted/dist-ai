@@ -22,6 +22,7 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 declare -a pipe_status
+# shellcheck disable=SC2154  # LOG_TARGET: injected by the invoking test harness
 if "$@" 2>&1 | tee -a -- "${LOG_TARGET}" ; then
    pipe_status=( "${PIPESTATUS[@]}" )
 else

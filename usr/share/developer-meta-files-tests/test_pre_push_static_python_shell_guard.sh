@@ -42,7 +42,7 @@ assert_prerequisite() {
 assert_prerequisite \
    'helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)' \
    test -r '/usr/libexec/helper-scripts/has.bsh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'safe-rm not on PATH' has safe-rm
@@ -59,6 +59,7 @@ fi
 [ -x "${STYLE}" ] \
    || { printf '%s\n' "error: gate not executable at '${STYLE}'." >&2; exit 1; }
 
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 guard_line='"exec" "bash" "-c" "printf '\''%s\n'\'' '\''$0: ERROR: Do not execute this script with bash!'\'' >&2; exit 1"'
 
 tmp_root="$(mktemp --directory)"

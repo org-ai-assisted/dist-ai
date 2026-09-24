@@ -25,8 +25,11 @@ export LC_ALL=C
 
 if [ "${1:-}" = "--child" ]; then
    shift
+   # shellcheck disable=SC1091
    source help-steps/pre >/dev/null 2>&1
+   # shellcheck disable=SC1091
    source help-steps/variables "$@" >/dev/null 2>&1
+   # shellcheck disable=SC2154  # SUDO_TO_ROOT: set by the sourced help-steps/variables
    case "${SUDO_TO_ROOT}" in
       *--preserve-env=*)
          printf '%s\n' "CHILD_HAS_PRESERVE_ENV"
@@ -38,6 +41,8 @@ if [ "${1:-}" = "--child" ]; then
    exit 0
 fi
 
+# shellcheck disable=SC1091
 source help-steps/pre >/dev/null 2>&1
+# shellcheck disable=SC1091
 source help-steps/variables "$@" >/dev/null 2>&1
 bash "$0" --child "$@"

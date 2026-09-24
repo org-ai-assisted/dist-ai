@@ -16,7 +16,7 @@
 ## HELPER_SCRIPTS_PATH must be set so SUBJECT resolves its siblings (has.bsh,
 ## as_root.sh, log_run_die.sh); the driver (accountctl_test.sh) sets it.
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC2154  # SUBJECT: the script under test, injected by the fuzz harness
 source "${SUBJECT}"
 
 ## The subject MUST define every function fuzzed below. A missing one means a
@@ -103,7 +103,9 @@ rand_str() {
    printf '%s' "${out}"
 }
 
+# shellcheck disable=SC2016  # literal fuzz alphabet; $... is data, not an expansion
 name_alpha='abcdefghijklmnopqrstuvwxyz0123456789-_.@$ABC!*[]^ /:'
+# shellcheck disable=SC2016  # literal fuzz alphabet; $... is data, not an expansion
 pass_alpha='!*$6aZ:x'
 symbols=( '!' '!*' '*' )
 fields_known=( pass uid gid comment home shell members admins last-pass-change )

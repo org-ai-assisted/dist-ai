@@ -129,6 +129,7 @@ if [ -n "${uninitialized_submodules}" ]; then
    printf '%s\n' "${uninitialized_submodules}" | sed 's/^/          /' >&2
 fi
 dirty_rc=0
+# shellcheck disable=SC2016  # inner-shell payload: ${sm_path} is resolved by git submodule foreach at runtime
 dirty_submodules="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
    'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${sm_path}"; fi' 2>/dev/null )" || dirty_rc="$?"
 if [ "${dirty_rc}" -ne 0 ]; then
@@ -150,6 +151,7 @@ fi
 ## that matters, which is the uncommitted one above.
 stage "submodules: ahead of the pin (report only)"
 lagging_rc=0
+# shellcheck disable=SC2016  # inner-shell payload: ${toplevel}/${sm_path} resolved by git submodule foreach at runtime
 lagging_gitlinks="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
    'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
     head_sha="$(git rev-parse HEAD)"
@@ -197,6 +199,7 @@ cleanup_probe_repo() {
 trap cleanup_probe_repo EXIT
 git init --quiet --bare -- "${DM_PREFLIGHT_PROBE_REPO}"
 
+# shellcheck disable=SC2016  # inner-shell payload: ${toplevel}/${sm_path} resolved by git submodule foreach at runtime
 pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
    'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
     [ -n "${pinned}" ] || exit 0
@@ -501,6 +504,7 @@ while IFS= read -r ref; do
       continue
    fi
    ## A second, still-unexpanded variable in the tail cannot be resolved here.
+   # shellcheck disable=SC2016  # case glob pattern matches the literal '${' token, no expansion wanted
    case "${sub_path}" in
       *'${'*)
          skipped_sources=$(( skipped_sources + 1 ))

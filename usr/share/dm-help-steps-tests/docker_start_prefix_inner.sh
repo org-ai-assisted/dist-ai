@@ -20,4 +20,5 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+# shellcheck disable=SC2154  # LOG_TARGET: injected by the invoking test harness
 "$@" 2>&1 | tee -a -- "${LOG_TARGET}"

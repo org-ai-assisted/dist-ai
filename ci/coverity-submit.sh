@@ -43,6 +43,7 @@ tar -czf cov-int.tgz -- cov-int
 
 if [ "${DRY_RUN:-false}" = 'true' ]; then
   printf '%s\n' "DRY RUN: skipping scan.coverity.com submission."
+  # shellcheck disable=SC2154  # COVERITY_PROJECT: CI secret from the workflow env
   printf '%s\n' "  project: ${COVERITY_PROJECT}"
   printf '%s\n' "  version: ${GITHUB_SHA:-unknown}"
   printf '%s\n' "  description: GHA run ${GITHUB_RUN_NUMBER:-unknown} on ${GITHUB_REF_NAME:-unknown}"
@@ -51,6 +52,7 @@ if [ "${DRY_RUN:-false}" = 'true' ]; then
   exit 0
 fi
 
+# shellcheck disable=SC2154  # COVERITY_TOKEN/COVERITY_EMAIL: CI secrets from the workflow env
 curl \
   --silent \
   --show-error \

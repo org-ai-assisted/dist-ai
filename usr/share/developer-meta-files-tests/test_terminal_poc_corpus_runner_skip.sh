@@ -47,6 +47,7 @@ if ! declare -F skip_or_fatal >/dev/null; then
    exit 1
 fi
 if ! declare -F report_stage_result >/dev/null; then
+   # shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
    fail 'runner has no report_stage_result(): the all-stages-skipped false-green fix is missing (pre-fix "exit ${overall}")'
    printf '%s\n' "===== ${pass_count} passed, ${fail_count} failed =====" >&2
    exit 1
@@ -79,7 +80,11 @@ run_gate 0 1 'DIST_AI_SKIP_AUTHORIZED=0 -> FATAL (1)'
 check_stage_result() {
    local _overall="$1" _ran="$2" authval="$3" want="$4" label="$5" rc=0
    (
-      overall="${_overall}"; ran="${_ran}"
+      # shellcheck disable=SC2034  # overall: read by the extracted report_stage_result
+      overall="${_overall}"
+      # shellcheck disable=SC2034  # ran: read by the extracted report_stage_result
+      ran="${_ran}"
+      # shellcheck disable=SC2034  # DIST_AI_SKIP_AUTHORIZED: read by the extracted skip_or_fatal
       if [ -z "${authval}" ]; then unset DIST_AI_SKIP_AUTHORIZED; else DIST_AI_SKIP_AUTHORIZED="${authval}"; fi
       report_stage_result
    ) >/dev/null 2>&1 || rc=$?

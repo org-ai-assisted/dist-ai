@@ -44,7 +44,7 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
    printf '%s\n' "FATAL: python_entrypoint_shell_guard_test: helper-scripts has.bsh is not installed" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if ! has safe-rm ; then
@@ -71,6 +71,7 @@ fi
 ## The canonical guard line. The real entry points and the fixtures below must
 ## all use this exact text -- changing the idiom means changing it in one place
 ## and re-running this test.
+# shellcheck disable=SC2016  # literal fixture: the exact guard line, not an expansion
 guard_line='"exec" "bash" "-c" "printf '\''%s\n'\'' '\''$0: ERROR: Do not execute this script with bash!'\'' >&2; exit 1"'
 
 failures=0
@@ -128,6 +129,7 @@ trap cleanup EXIT
 stub_dir="${tmp_root}/stub"
 mkdir --parents -- "${stub_dir}"
 sentinel="${tmp_root}/sentinel"
+# shellcheck disable=SC2016  # literal stub body written to a file, expanded by the stub shell
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" SHELL_RAN_IMPORT >> "${GUARD_TEST_SENTINEL}"' \
    > "${stub_dir}/import"
 chmod 0755 -- "${stub_dir}/import"

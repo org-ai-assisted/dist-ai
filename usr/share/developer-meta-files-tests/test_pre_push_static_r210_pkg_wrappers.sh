@@ -39,7 +39,7 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
    printf '%s\n' "FATAL: helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if ! has safe-rm ; then
@@ -312,6 +312,7 @@ assert_fix_unchanged "apt-waived" \
 ## renaming it to 'apt-get-noninteractive'. The fixer must now leave them intact.
 assert_fix_unchanged "apt-arg-after-semi"  "FOO=a${sc}b ${ag} install"
 assert_fix_unchanged "apt-arg-after-pipe"  "FOO=bar|baz ${ag} install"
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 assert_fix_unchanged "apt-case-arm" \
    "$(printf '%s\n' 'case ${1} in' "${ag} )" '  printf x' '  ;;' 'esac')"
 ## dpkg is gate-report-only: the fixer never touches it (an action-aware

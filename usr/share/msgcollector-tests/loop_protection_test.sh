@@ -123,11 +123,13 @@ check() {
 ## The counter's base is 0: the first call establishes it, the next increments.
 ## The absolute numbers are implementation detail; what the pair proves is that
 ## a second call does not reset.
+# shellcheck disable=SC2016  # literal shell snippet passed as the check payload
 check 'first call with no counter set' 'counter=0' \
    'loop_protection; printf "%s\n" "counter=${loop_counter_protection}"'
 
 ## The second call must INCREMENT, not reset -- a version that reset on every
 ## call would also survive nounset and would otherwise look fixed.
+# shellcheck disable=SC2016  # literal shell snippet passed as the check payload
 check 'a second call increments rather than resetting' 'counter=1' \
    'loop_protection; loop_protection; printf "%s\n" "counter=${loop_counter_protection}"'
 
@@ -137,6 +139,7 @@ check 'a counter already at 60 still times out' '' \
    'loop_counter_protection=60; loop_protection; printf "%s\n" "NOT REACHED"'
 
 ## A non-numeric value is treated as a fresh start.
+# shellcheck disable=SC2016  # literal shell snippet passed as the check payload
 check 'a non-numeric counter resets to a fresh start' 'counter=0' \
    'loop_counter_protection=abc; loop_protection; printf "%s\n" "counter=${loop_counter_protection}"'
 

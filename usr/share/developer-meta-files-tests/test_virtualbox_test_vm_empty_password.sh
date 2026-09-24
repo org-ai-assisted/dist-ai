@@ -119,6 +119,7 @@ printf '%s\n' "${func_src}" > "${func_file}"
    # shellcheck disable=SC1090 # path resolved at runtime
    source "${func_file}"
    variables
+   # shellcheck disable=SC2154  # vboxmanage_sudo_wrapper: set by the sourced func_file
    "${vboxmanage_sudo_wrapper[@]}" MARKER-COMMAND
 ) > "${argv_file}"
 

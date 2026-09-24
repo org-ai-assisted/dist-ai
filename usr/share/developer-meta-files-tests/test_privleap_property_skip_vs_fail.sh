@@ -76,6 +76,7 @@ PYEOF
 ## and read the resulting overall back out.
 run_case() {
    local file="$1"
+   # shellcheck disable=SC2034  # saw_pass: read by the extracted run_pytest
    ( overall=0; saw_pass=0; run_pytest "${file}" >/dev/null 2>&1; printf '%s' "${overall}" )
 }
 

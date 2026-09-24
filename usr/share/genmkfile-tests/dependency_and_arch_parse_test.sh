@@ -123,6 +123,7 @@ check_filter() {
 check_filter 'space-less alternative does not collapse' 'foo|bar' 'foo bar'
 check_filter 'spaced alternative keeps both'            'default-mta | mail-transport-agent' 'default-mta mail-transport-agent'
 check_filter 'build-profile restriction stripped'       'foo <!nocheck>, bar' 'foo bar'
+# shellcheck disable=SC2016  # literal dependency-string fixture; the substvar is the test INPUT, not to expand
 check_filter 'any substvar stripped'                    '${perl:Depends}, python3' 'python3'
 check_filter 'version + arch qualifiers stripped'       'debhelper (>= 13), pkg [linux-any]' 'debhelper pkg'
 
@@ -242,10 +243,13 @@ Architecture: arm64 riscv64
 EOF
 make_debian_control_file_absolute_path="${test_root}/control-crossleg"
 make_source_package_name='fwsrc'
+# shellcheck disable=SC2034  # make_pkg_version: config input consumed by the function under test
 make_pkg_version='1.0'
+# shellcheck disable=SC2034  # make_pkg_revision: config input consumed by the function under test
 make_pkg_revision='-1'
 target_architecture='amd64'
 DISTDIR="${test_root}/dist"
+# shellcheck disable=SC2034  # make_cross_build_platform_list: config input consumed by the function under test
 make_cross_build_platform_list='amd64 arm64'
 make_package_debs_files_list=()
 make_package_list=()
@@ -334,8 +338,11 @@ Source: dotsrc
 Package: lib.foo..bar
 Architecture: all
 EOF
+# shellcheck disable=SC2034  # make_debian_control_file_absolute_path: config input consumed by the function under test
 make_debian_control_file_absolute_path="${test_root}/control-dots"
+# shellcheck disable=SC2034  # make_source_package_name: config input consumed by the function under test
 make_source_package_name='dotsrc'
+# shellcheck disable=SC2034  # target_architecture: config input consumed by the function under test
 target_architecture='amd64'
 make_package_debs_files_list=()
 make_package_list=()

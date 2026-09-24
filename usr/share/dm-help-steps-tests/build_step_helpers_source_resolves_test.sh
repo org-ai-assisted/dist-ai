@@ -74,6 +74,7 @@ for consumer in "${consumers[@]}"; do
    ## The source ARGUMENT must anchor to the script's own location so it resolves
    ## regardless of CWD. ${MYDIR} (=dirname of the script) and ${BASH_SOURCE[0]}
    ## are the two anchors in this tree; a bare or CWD-relative name has neither.
+   # shellcheck disable=SC2016  # literal ${MYDIR}/BASH_SOURCE tokens matched, not expanded
    case "${src_line}" in
       *'${MYDIR}'*|*'BASH_SOURCE'*)
          pass "${consumer##*/}: sources the helper by a self-anchored path"
@@ -96,11 +97,14 @@ if (
       cd "${foreign_cwd}" || exit 9
       # shellcheck disable=SC2034
       MYDIR="${dm_checkout}/build-steps.d"
+      # shellcheck disable=SC1091
       source "${MYDIR}/../help-steps/build-step-helpers.bsh" 2>/dev/null || exit 1
       declare -F "${probe_fn}" >/dev/null 2>&1 || exit 2
    ); then
+   # shellcheck disable=SC2016
    pass 'behavioral: a ${MYDIR}-anchored source loads the lib from a foreign CWD'
 else
+   # shellcheck disable=SC2016
    fail 'behavioral: a ${MYDIR}-anchored source failed to load from a foreign CWD'
 fi
 
@@ -108,6 +112,7 @@ fi
 bare_resolves=no
 (
    cd "${foreign_cwd}" || exit 9
+   # shellcheck disable=SC1091
    source build-step-helpers.bsh 2>/dev/null
 ) && bare_resolves=yes
 if [ "${bare_resolves}" = "no" ]; then

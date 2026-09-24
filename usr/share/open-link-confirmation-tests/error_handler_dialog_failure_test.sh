@@ -88,6 +88,7 @@ printf '%s\n' '#!/bin/bash' "touch -- '${work_dir}/dialog_reached'" 'kill -ABRT 
 ## NOT read stdin -- a bare 'cat' blocks the driver forever whenever stdin is not
 ## already at EOF (an interactive run, or the suite runner, which does not
 ## redirect it).
+# shellcheck disable=SC2016  # literal stub body; $1 stays literal
 printf '%s\n' '#!/bin/bash' 'printf "%s" "$1"' > "${stub_dir}/br_add.py"
 chmod 0755 -- "${stub_dir}/generic_gui_message.py" "${stub_dir}/br_add.py"
 

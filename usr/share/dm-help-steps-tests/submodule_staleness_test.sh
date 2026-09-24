@@ -375,6 +375,7 @@ main() {
       printf '%s\n' '#!/bin/bash'
       printf '%s\n' '## Forward to the real git, except make one subcommand fail with an ERROR status.'
       printf '%s\n' 'for git_arg in "$@"; do'
+      # shellcheck disable=SC2016
       printf '%s\n' '   if [ "${git_arg}" = "--is-ancestor" ]; then'
       printf '%s\n' '      exit 2'
       printf '%s\n' '   fi'

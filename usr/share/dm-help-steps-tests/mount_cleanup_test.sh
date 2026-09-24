@@ -66,6 +66,7 @@ audit_mount_cleanup_callers() {
       trimmed="${body#"${body%%[![:space:]]*}"}"          ## strip leading space
       case "${trimmed}" in '#'*) continue ;; esac         ## skip comments
       AUDIT_HITS=$(( AUDIT_HITS + 1 ))
+      # shellcheck disable=SC2016
       case "${body}" in
          *'${SUDO_TO_ROOT}'*mount-cleanup*)
             ## ${SUDO_TO_ROOT} appears before mount-cleanup, but only its being
@@ -74,6 +75,7 @@ audit_mount_cleanup_callers() {
             ## sudo applies to a DIFFERENT command and mount-cleanup runs bare.
             ## Fail closed on any separator (no bash parser -- just "is there a
             ## separator in the gap").
+            # shellcheck disable=SC2016
             between="${body##*'${SUDO_TO_ROOT}'}"   ## after the LAST SUDO_TO_ROOT
             between="${between%%mount-cleanup*}"     ## ... and before mount-cleanup
             case "${between}" in
@@ -166,6 +168,7 @@ ${AUDIT_REPORT}"
    ## silent-green case -- a call whose args wrap to the NEXT line.
    local fix="${scratch}-audit"
    mkdir --parents -- "${fix}/help-steps" "${fix}/build-steps.d"
+   # shellcheck disable=SC2016
    printf '%s\n' '      "${dist_source_help_steps_folder}/mount-cleanup" -- "${CHROOT_FOLDER}"' \
       > "${fix}/help-steps/bare-single-line"
    audit_mount_cleanup_callers "${fix}/help-steps"
@@ -181,6 +184,7 @@ ${AUDIT_REPORT}"
    ## carries no '--', which is what a wrapped call looks like to a line scan.
    ## (A trailing continuation backslash is not needed -- and would trip SC1003
    ## inside single quotes -- the audit only sees that this line lacks '--'.)
+   # shellcheck disable=SC2016
    printf '%s\n' \
       '      "${dist_source_help_steps_folder}/mount-cleanup"' \
       '         -- "${CHROOT_FOLDER}"' \
@@ -199,6 +203,7 @@ ${AUDIT_REPORT}"
    ## ${SUDO_TO_ROOT} on the line but on a DIFFERENT command (separated by ';'),
    ## with mount-cleanup bare after it: the sudo is NOT its prefix. Must be
    ## flagged, not read as privileged.
+   # shellcheck disable=SC2016
    printf '%s\n' '      ${SUDO_TO_ROOT} prep_step ; "${dist_source_help_steps_folder}/mount-cleanup" -- "${CHROOT_FOLDER}"' \
       > "${fix}/help-steps/sudo-on-other-command"
    audit_mount_cleanup_callers "${fix}/help-steps"

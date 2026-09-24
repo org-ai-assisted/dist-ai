@@ -22,6 +22,10 @@
 ## variable, never a literal -- so neither this test file nor the repository
 ## carries a ';'-chained keyword that the gate would (correctly) trip over.
 
+## Pure fixture-text suite: nearly every single-quoted $... is literal shell
+## payload fed to the tool under test, not an expansion in THIS script.
+# shellcheck disable=SC2016
+
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -51,7 +55,7 @@ assert_prerequisite() {
 assert_prerequisite \
    'helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)' \
    test -r '/usr/libexec/helper-scripts/has.bsh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'git not on PATH' has git
@@ -959,6 +963,7 @@ crlf_base="$(git -C "${crlf_repo}" rev-parse HEAD)"
 printf '%s\n' "#!/bin/bash${cr}" "true${sc}${del} -rf x" > "${crlf_repo}/deploy"
 git -C "${crlf_repo}" add deploy
 git -C "${crlf_repo}" commit --quiet --no-verify --message crlf
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" --check --range "${crlf_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- "R-120" <<< "${crlf_out}"; then
    printf '%s\n' 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)'
@@ -980,6 +985,7 @@ dq_base="$(git -C "${dq_repo}" rev-parse HEAD)"
 printf '%s\n' 'x = "double quoted"' > "${dq_repo}/probe.py"
 git -C "${dq_repo}" add --all
 git -C "${dq_repo}" commit --quiet --no-verify --message probe
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 dq_out="$( cd -- "${dq_repo}" && "${GATE}" --check --range "${dq_base}" 2>&1 || true )"
 if ! grep --quiet --extended-regexp \
       'all static checks passed|[0-9]+ check\(s\) failed' <<< "${dq_out}"; then
@@ -1012,6 +1018,7 @@ module_probe() {
    chmod 0644 -- "${repo}/${rel}"
    git -C "${repo}" add --all
    git -C "${repo}" commit --quiet --no-verify --message probe
+   # shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
    out="$( cd -- "${repo}" && "${GATE}" --check --range "${base}" 2>&1 || true )"
    printf '%s' "${out}"
 }
@@ -1060,6 +1067,7 @@ git -C "${addel_repo}" add transient.txt
 git -C "${addel_repo}" commit --quiet --no-verify --message add
 ## delete it WITHOUT committing: present at HEAD, gone from the working tree
 safe-rm --force -- "${addel_repo}/transient.txt"
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 addel_out="$( cd -- "${addel_repo}" && "${GATE}" --check --range "${addel_base}" 2>&1 || true )"
 ## Assert the real success predicate -- the gate ran to its clean verdict -- not
 ## merely the absence of one exception name: a DIFFERENT crash (any other
@@ -1092,6 +1100,7 @@ git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
 ## touch it and stage the change: present at HEAD, modified in the index.
 printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
 git -C "${bigstaged_repo}" add big.txt
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if ! grep --quiet --extended-regexp \
       'all static checks passed|[0-9]+ check\(s\) failed' <<< "${bigstaged_out}"; then
@@ -1112,6 +1121,7 @@ git -C "${bignew_repo}" config user.name 'ci-test'
 git -C "${bignew_repo}" commit --quiet --no-verify --allow-empty --message base
 head --bytes=600000 /dev/zero | tr '\0' 'y' > "${bignew_repo}/bignew.txt"
 git -C "${bignew_repo}" add bignew.txt
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bignew_out}"; then
    printf '%s\n' 'PASS: a genuinely new large staged file is still flagged'
@@ -1136,6 +1146,7 @@ true > "${py_repo}/__init__.py"
 chmod 0755 -- "${py_repo}/withshebang.py"
 git -C "${py_repo}" add --all
 git -C "${py_repo}" commit --quiet --no-verify --message py
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 py_out="$( cd -- "${py_repo}" && "${GATE}" --check --range "${py_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'R-180' <<< "${py_out}"; then
    printf '%s\n' 'PASS: R-180 flags a python file with no shebang'
@@ -1264,6 +1275,7 @@ printf '%s\n' \
 chmod 0755 -- "${inline_repo}"/*.sh
 git -C "${inline_repo}" add --all
 git -C "${inline_repo}" commit --quiet --no-verify --message inline
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 inline_out="$( cd -- "${inline_repo}" && "${GATE}" --check --range "${inline_base}" 2>&1 || true )"
 ## Scope every assertion to R-190 FAILURES. The fixtures deliberately lack a
 ## strict preamble and a copyright header, so other rules name them too.
@@ -1386,6 +1398,7 @@ printf '%s\n' \
 chmod 0644 -- "${shebang_repo}/plain.conf" "${shebang_repo}/waived.conf"
 git -C "${shebang_repo}" add --all
 git -C "${shebang_repo}" commit --quiet --no-verify --message shebang
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" --check --range "${shebang_base}" 2>&1 || true )"
 ## Anchor on the hook's own verdict line, not the filename: the gate's SKIP note
 ## names the waived file too, so a bare filename match would confirm itself.
@@ -1419,6 +1432,7 @@ git -C "${gitlink_repo}" -c protocol.file.allow=always \
    submodule add --quiet -- "${gitlink_inner}" sub >/dev/null 2>&1
 git -C "${gitlink_repo}" add --all
 git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" --check --range "${gitlink_base}" 2>&1 || true )"
 assert_gate_tag_absent "gate does not grep a submodule gitlink" \
    'Is a directory' "${gitlink_out}"
@@ -1454,6 +1468,7 @@ printf '%s\n' \
 chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
 git -C "${ascii_repo}" add --all
 git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" --check --range "${ascii_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): 'plain.py:" <<< "${ascii_out}"; then
    printf '%s\n' 'PASS: R-001 still flags non-ASCII without the waiver'
@@ -1486,6 +1501,7 @@ git -C "${untracked_repo}" commit --quiet --no-verify --message base
 untracked_base="$(git -C "${untracked_repo}" rev-parse HEAD)"
 ## Never added: that is the whole point of the case.
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/brand-new-tool"
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 untracked_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings 'brand-new-tool' <<< "${untracked_out}"; then
    printf '%s\n' 'PASS: an untracked shell file is named as NOT checked'
@@ -1511,6 +1527,7 @@ fi
 ## octal escape, so no non-UTF-8 byte lives in THIS tracked file.
 nonutf_name="$(printf 'untr8-\377-marker')"
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/${nonutf_name}"
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 nonutf_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings 'untr8-' <<< "${nonutf_out}"; then
    printf '%s\n' 'PASS: an untracked shell file with a non-UTF-8 name is still named'
@@ -1604,6 +1621,7 @@ printf '%s\n' \
    > "${unit_repo}/doc.md"
 git -C "${unit_repo}" add --all
 git -C "${unit_repo}" commit --quiet --no-verify --message unit
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 unit_out="$( cd -- "${unit_repo}" && "${GATE}" --check --range "${unit_base}" 2>&1 || true )"
 ## Scope to the R-191 FAILURE text: the gate also emits an 'R-191 skipped: ...
 ## waiver in <file>' note that names the waived file, which a bare rule-id match
@@ -1698,6 +1716,7 @@ printf '%s\n' \
    > "${pycfg_repo}/.github/workflows/py.yml"
 git -C "${pycfg_repo}" add --all
 git -C "${pycfg_repo}" commit --quiet --no-verify --message pycfg
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 pycfg_out="$( cd -- "${pycfg_repo}" && "${GATE}" --check --range "${pycfg_base}" 2>&1 || true )"
 pycfg_hits="$( printf '%s\n' "${pycfg_out}" | grep --fixed-strings -- 'R-193' || true )"
 ## Exactly the two flagged Exec directives (script + '-c'), not the direct '.py'
@@ -1860,6 +1879,7 @@ git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
 ## '--kill-after' + a bound: if the '#include' XXE neuter ever regresses, a fixture
 ## with '#include "/dev/zero"' would HANG the gate -- fail the test, do not hang it.
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 apt_out="$( cd -- "${apt_repo}" && timeout --kill-after=5s 60s "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
 ## Scope to the R-194 FAILURE text: the 'R-194 skipped: ... waiver' note names
 ## the waived file, which a bare rule-id match would misread as a violation.
@@ -2062,6 +2082,7 @@ printf '%s\n' \
    > "${cron_repo}/etc/cron.d/good-hash"
 git -C "${cron_repo}" add --all
 git -C "${cron_repo}" commit --quiet --no-verify --message cron
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 cron_out="$( cd -- "${cron_repo}" && "${GATE}" --check --range "${cron_base}" 2>&1 || true )"
 cron_hits="$( printf '%s\n' "${cron_out}" \
    | grep --fixed-strings -- 'R-195 cron entry embeds' || true )"
@@ -2204,6 +2225,7 @@ printf '%s\n' \
    > "${wf_repo}/.github/workflows/waived.yml"
 git -C "${wf_repo}" add --all
 git -C "${wf_repo}" commit --quiet --no-verify --message workflow
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 wf_out="$( cd -- "${wf_repo}" && "${GATE}" --check --range "${wf_base}" 2>&1 || true )"
 ## Scope to the R-100 FAILURE text, past the 'R-100 skipped: ... waiver' note.
 wf_hits="$( printf '%s\n' "${wf_out}" \

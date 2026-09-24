@@ -49,6 +49,7 @@ fi
 
 ## dm-preflight fails a tree whose static gate it cannot run, so these cases need
 ## dist-ai-style reachable -- present in the checkout but not on PATH in CI.
+# shellcheck disable=SC2015
 gate_bin_dir="$( cd -- "${test_dir}/../../bin" 2>/dev/null && pwd || true )"
 if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/dist-ai-style" ]; then
    PATH="${gate_bin_dir}:${PATH}"

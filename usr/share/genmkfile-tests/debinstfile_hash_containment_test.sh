@@ -73,6 +73,7 @@ trap cleanup EXIT
 
 ## Extract the real function; stub only the reporting/guard helpers it calls.
 {
+   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
@@ -93,6 +94,7 @@ mkdir --parents -- "${pkg_root}/debian"
 
 genmkfile_temp_dir="${work}/scratch"
 mkdir --parents -- "${genmkfile_temp_dir}"
+# shellcheck disable=SC2034  # make_folder_list_for_un_and_install: config input consumed by the sourced make_debinstfile_create
 make_folder_list_for_un_and_install=(x#..)
 
 tests_total=0
@@ -102,6 +104,7 @@ tests_failed=0
 escaped="$(dirname -- "${genmkfile_temp_dir}")/pwned#realpkg.install"
 
 status=0
+# shellcheck disable=SC2034  # status: errexit-guard capture; assertion is on the filesystem, exit code intentionally unused
 ( cd -- "${pkg_root}" && make_debinstfile_create ) >/dev/null 2>&1 || status=$?
 
 tests_total=$(( tests_total + 1 ))

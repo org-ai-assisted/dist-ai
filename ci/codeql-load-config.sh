@@ -23,6 +23,7 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+# shellcheck disable=SC2154  # BUILD_MODE: provided by the CI workflow env
 case "${BUILD_MODE}" in
    manual)
       required='build-command'
@@ -34,5 +35,6 @@ case "${BUILD_MODE}" in
       ;;
 esac
 
+# shellcheck disable=SC2154  # DM_SECTION: set by the CI workflow env
 "$(dirname -- "$0")/dm-consumer-load.sh" \
    "${DM_SECTION}" "${required}" "${optional}"

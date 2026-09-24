@@ -255,6 +255,7 @@ check() {
 ## Must build on BOTH architectures (the arm64 .deb has to exist). The stub emits
 ## only the arch-dependent .deb, never an arch-all one, so the secondary cleanup
 ## meets a glob that matches nothing -- which must not abort the build.
+# shellcheck disable=SC2016  # literal debian/control fixture; ${misc:Depends} is a substvar, not to expand
 write_control 'Package: gmf-sec-pkg
 Architecture: any
 Depends: ${misc:Depends}
@@ -268,6 +269,7 @@ check 'any: build survives a secondary cleanup with no arch-all .deb' '0' "${a_r
 ## --- Case B: pure 'Architecture: all' ---------------------------------------
 ## The arch-all .deb is built once, while targeting the first architecture; the
 ## secondary architecture must be skipped.
+# shellcheck disable=SC2016  # literal debian/control fixture; ${misc:Depends} is a substvar, not to expand
 write_control 'Package: gmf-sec-pkg
 Architecture: all
 Depends: ${misc:Depends}
@@ -279,6 +281,7 @@ check 'all: arch-all-only package skips the secondary architecture' '1' "$(invoc
 ## --- Case C: 'Architecture: all' plus an excluded arch-specific stanza -------
 ## The 'amd64' stanza produces nothing while targeting s390x, so it must not force
 ## a secondary build: the package still emits only an arch-all binary there.
+# shellcheck disable=SC2016  # literal debian/control fixture; ${misc:Depends} is a substvar, not to expand
 write_control 'Package: gmf-sec-pkg
 Architecture: all
 Depends: ${misc:Depends}

@@ -175,6 +175,7 @@ run_script() {
       has_src="${helper_libexec}/has.bsh"
    fi
 
+   # shellcheck disable=SC2016  # sed program: 's|"$(id -u)"|...' matches the literal text, no expansion wanted
    sed -e "s|/usr/share/doc/onion-grater-merger/examples|${examples}|g" \
        -e "s|/usr/local/etc/onion-grater-merger.d|${target_dir}|g" \
        -e 's|^\(\s*\)systemctl |\1true systemctl |' \

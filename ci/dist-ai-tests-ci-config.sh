@@ -183,6 +183,7 @@ if [ "${submodules}" = 'true' ]; then
    fi
 fi
 
+# shellcheck disable=SC2154  # GITHUB_OUTPUT: set by GitHub Actions (group redirect below)
 {
    printf '%s\n' "apt_packages=${apt_packages}"
    printf '%s\n' "helper_scripts=${helper_scripts}"
@@ -191,6 +192,7 @@ fi
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
+      # shellcheck disable=SC2154  # GITHUB_WORKSPACE: set by GitHub Actions
       printf '%s\n' "hs_arg=--helper-scripts-root ${GITHUB_WORKSPACE}/helper-scripts"
    else
       printf '%s\n' "hs_arg="

@@ -90,6 +90,7 @@ child_preserve_env_verdict() {
 ## Print the 'declare' attribute line for the guard flag from a single real
 ## sourcing of pre+variables (dump hook on: stop right after finalization).
 guard_flag_declare_line() {
+   # shellcheck disable=SC2015
    ( cd -- "${dm_checkout}" \
       && env "${capture_env[@]}" dist_build_dump_varnames=true bash -c '
             source help-steps/pre >/dev/null 2>&1

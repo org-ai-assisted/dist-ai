@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 cfg="${1:-}"
 if [ -z "${cfg}" ]; then
@@ -53,4 +54,5 @@ if [ -f "${cfg}" ] \
    helper_scripts='true'
 fi
 
+# shellcheck disable=SC2154  # GITHUB_OUTPUT: set by GitHub Actions
 printf '%s\n' "helper_scripts=${helper_scripts}" >> "${GITHUB_OUTPUT}"

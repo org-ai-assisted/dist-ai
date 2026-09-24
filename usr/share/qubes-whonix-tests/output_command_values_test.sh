@@ -107,6 +107,7 @@ else
       set +x
       eval "${print_line_src}"
       eval "${select_src}"
+      # shellcheck disable=SC2154  # output_command: set by the eval'd/sourced subject
       "${output_command}" "${marker} hello"
    )"
    case "${behavior_out}" in

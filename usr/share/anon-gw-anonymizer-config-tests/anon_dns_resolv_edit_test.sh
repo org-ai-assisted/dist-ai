@@ -60,6 +60,7 @@ trap test_cleanup_handler EXIT
 stubs="${work_dir}/helper-scripts"
 mkdir --parents -- "${stubs}"
 printf '%s\n' 'as_root() { true; }' >"${stubs}/as_root.sh"
+# shellcheck disable=SC2016  # literal stub body, expanded by the stub shell not here
 printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${stubs}/has.bsh"
 
 ## append-once is provided by helper-scripts as a COMMAND, not a function.
@@ -67,6 +68,7 @@ bin_stubs="${work_dir}/bin"
 mkdir --parents -- "${bin_stubs}"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016  # literal stub script body, expanded by the stub shell not here
    printf '%s\n' 'printf "%s\n" "$2" >>"$1"'
 } >"${bin_stubs}/append-once"
 chmod 0755 -- "${bin_stubs}/append-once"

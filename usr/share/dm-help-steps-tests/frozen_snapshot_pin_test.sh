@@ -103,7 +103,9 @@ run_pin() {
          printf 'PIN_REJECTED: %s\n' "$*"
          exit 3
       }
+      # shellcheck disable=SC2034  # dist_build_apt_freshness: consumed by the sourced pin block
       dist_build_apt_freshness=frozen
+      # shellcheck disable=SC2034  # source_code_folder_dist: consumed by the sourced pin block
       source_code_folder_dist="${root}"
       SOURCE_DATE_EPOCH=""
       # shellcheck disable=SC1090

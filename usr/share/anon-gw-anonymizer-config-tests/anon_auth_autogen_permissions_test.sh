@@ -49,7 +49,6 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
 fi
 ## Installed path: this repo is outside the dm source tree, so helper-scripts
 ## is not a relative sibling here.
-# shellcheck source=./has.bsh
 # shellcheck disable=SC1091
 source /usr/libexec/helper-scripts/has.bsh
 
@@ -108,6 +107,7 @@ make_stub() {
 }
 
 ## Root is asserted by the subject before it does anything else.
+# shellcheck disable=SC2016  # literal stub body, expanded by the stub shell not here
 make_stub id 'if [ "${1:-}" = "-u" ]; then printf "%s\n" "0"; exit 0; fi
 exit 0'
 make_stub groups 'exit 0'

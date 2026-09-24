@@ -13,6 +13,10 @@
 ## fixture line is placed so its expected finding (or absence) is asserted by
 ## rule tag + line number.
 
+## Pure fixture-text suite: nearly every single-quoted $... is literal shell
+## payload fed to the tool under test, not an expansion in THIS script.
+# shellcheck disable=SC2016
+
 set -o errexit
 set -o nounset
 set -o pipefail

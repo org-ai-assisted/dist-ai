@@ -129,6 +129,7 @@ fi
 ## EVERY gallery and none is missed. Offscreen + deterministic, so it needs no sandbox; a
 ## failure here HARD-fails before any sandbox work.
 if [ "${refresh_all}" = 1 ]; then
+   # shellcheck disable=SC2015  # guard: die runs whenever either required gallery dir is absent
    [ -d "${site}/shots" ] && [ -d "${site}/compatibility/shots" ] \
       || die "refresh: site galleries not found under '${site}' (need shots/ and compatibility/shots/; set SECURE_TERMINAL_SITE)"
    printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the offscreen site galleries on the host ..." >&2
@@ -150,10 +151,12 @@ target_arg=()
 ## exit code through, so a missing binary makes the loop exit 1 here.
 ## compat is a headless OFFSCREEN-Qt grab (no labwc / X / window tools), so it skips the
 ## heavy capture-stack preflight -- but it webp-optimizes, so it still needs optipng/jpegoptim/cwebp.
+# shellcheck disable=SC2016  # inner-shell payload: $b is resolved by the shell run inside the sandbox
 if [ "${lane}" != 'compat' ] \
    && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland wlr-randr grim wtype convert compare identify optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
    die "the comparison-shot capture stack (labwc/Xwayland/wlr-randr/grim/wtype/imagemagick/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
 fi
+# shellcheck disable=SC2016  # inner-shell payload: $b is resolved by the shell run inside the sandbox
 if [ "${lane}" = 'compat' ] \
    && ! sandbox "${target_arg[@]}" exec 'for b in optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
    die "compat webp optimization needs optipng/jpegoptim/cwebp in the sandbox -- run:  sandbox provision shots"
@@ -213,6 +216,7 @@ source "${dist_ai}/usr/share/secure-terminal-shots/phase-progress.sh"
 ## host's when dom0/host and the target qube are different users. A host-expanded path fails
 ## to exist in the sandbox. Single-quote $HOME so the remote bash expands it (same pattern as
 ## the rendered-count probe below); ${base}/${lane}/"$@" ride as positional args.
+# shellcheck disable=SC2016  # inner-shell payload: ${HOME}/$@ resolved by the bash run inside the sandbox
 sandbox "${target_arg[@]}" exec -- bash -c \
    '"${HOME}/'"${base}"'/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" "$@"' \
    bash "${base}" "${lane}" "$@" &
@@ -220,6 +224,7 @@ capture_pid=$!
 pp_begin "${lane}"
 while kill -0 "${capture_pid}" 2>/dev/null; do
    sleep 20
+   # shellcheck disable=SC2016  # inner-shell payload: $HOME resolved by the bash run inside the sandbox
    rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '?')"
    pp_capture_tick "${rendered}"
 done

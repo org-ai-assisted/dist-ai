@@ -135,6 +135,7 @@ shots_corpus_id() {  ## $1=case
 ## The benign canary the osc52-clipboard-write PoC writes to the clipboard; the
 ## clipboard-verdict lane reads it back to decide honored-vs-refused. Kept next to
 ## shots_corpus_id so the lane and the corpus id cannot drift.
+# shellcheck disable=SC2034  # shots_clipboard_token: read back by the clipboard-verdict lane
 shots_clipboard_token='POC-CORPUS-CANARY-FIRED'
 
 shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
@@ -548,6 +549,7 @@ shots_spawn_session() {  ## $1=pgid-file  $2..=command
    ## MARKER) -- stays visible to the crash-sweep's `safe-pgrep --full "${run_marker}"`. Without it,
    ## a command that then `env`-execs (secure-terminal) leaves a surviving argv with NO marker (env
    ## assignments do not persist in argv), so an orphaned GUI from a SIGKILLed run could not be swept.
+   # shellcheck disable=SC2016  # inner-shell payload: $$/$1/$@/$? resolved by the bash under setsid
    setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"; exit "$?"' bash "${pgid_file}" "$@" &
 }
 

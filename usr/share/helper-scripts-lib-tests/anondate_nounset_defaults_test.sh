@@ -63,6 +63,7 @@ fail() { printf '%s\n' "FAIL: $*" >&2; test_failures=$((test_failures + 1)); }
 ## 'unbound variable' error and rc != 0. strings.bsh is sourced (as anondate
 ## does) so variables()'s default_if_empty calls resolve.
 run_rc=0
+# shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
 run_output="$(
    env -u TOR_RC -u TOR_LOG -u TOR_DIR -u TOR_DESCRIPTORS -u NEW_TOR_DESCRIPTORS \
        -u TOR_CONSENSUS -u TOR_UNVERIFIED_CONSENSUS -u DATE_RE -u LC_TIME -u TZ \

@@ -70,6 +70,7 @@ test_cleanup_handler() {
 trap test_cleanup_handler EXIT
 
 ## Determine the run directory the same way msgcollector does.
+# shellcheck disable=SC1091
 source "${msgcollector_libexec}/msgcollector_shared"
 folder_init
 ## ${msgcollector_run_dir} is now ${XDG_RUNTIME_DIR}/msgcollector.
@@ -85,6 +86,7 @@ test_collect_messagecli() {
     --identifier "unittest" \
     --messagecli --typecli info --message "Hello CLI" 2>/dev/null || true
   local file
+  # shellcheck disable=SC2154  # msgcollector_run_dir: exported by the sourced msgcollector runtime under test
   file="${msgcollector_run_dir}/unittest_messagecli"
   if [ -f "${file}" ]; then
     local content

@@ -40,7 +40,7 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
    printf '%s\n' "FATAL: helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if ! has safe-rm ; then
@@ -438,6 +438,7 @@ assert_fix_unchanged "line-continuation" "${continuation}"
 ## file on the bare '<<' -- a blind spot the parser closes.
 arith_then_cmd="$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
 run_fix "arith-fixed" "${arith_then_cmd}"
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null \
    && grep --fixed-strings -- 'y=$((x << n))' <<< "${fix_result}" >/dev/null; then
    printf '%s\n' "PASS: AST fixer fixes a timeout after arithmetic '<<' (arith untouched)"

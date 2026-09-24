@@ -23,7 +23,7 @@
 ## probe on a benign non-zero, and the standalone's own strict preamble is inert
 ## when sourced (guarded by was_executed).
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC2154  # STANDALONE: injected by the wiring harness
 source "${STANDALONE}" >/dev/null 2>&1
 
 ## reset_variables initialises the option globals; parse_opt then applies the
@@ -31,6 +31,7 @@ source "${STANDALONE}" >/dev/null 2>&1
 reset_variables >/dev/null 2>&1
 parse_opt "$@" >/dev/null 2>&1
 
+# shellcheck disable=SC2154  # MODE: injected by the wiring harness
 case "${MODE}" in
    flag)
       printf '%s' "${dry_run_skip_commands:-UNSET}"

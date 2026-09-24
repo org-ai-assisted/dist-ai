@@ -72,6 +72,7 @@ fi
 
 ## The declaration must precede every '${#DIST_APTGETOPT[@]}' consumer, or the
 ## consumer can still run on an undeclared array.
+# shellcheck disable=SC2016
 first_consumer="$(grep -nF '${#DIST_APTGETOPT[@]}' -- "${effective_file}" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1 || true)"
 
 if [ -z "${first_consumer}" ]; then

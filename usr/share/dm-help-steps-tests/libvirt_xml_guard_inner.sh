@@ -36,7 +36,9 @@ cp() {
 }
 
 ## The step colourizes its skip messages from variables set in help-steps/pre.
+# shellcheck disable=SC2034  # green: consumed by the extracted export-libvirt-xml/main body
 green=""
+# shellcheck disable=SC2034  # reset: consumed by the extracted export-libvirt-xml/main body
 reset=""
 
 ## Extract the two functions rather than sourcing the file: its top level does a

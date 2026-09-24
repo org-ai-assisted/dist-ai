@@ -42,6 +42,7 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 ## Count how many ':'-separated fields equal 'xtrace' in shellopts_with_xtrace's
 ## output, with xtrace $1 (on|off) in the child shell.
+# shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
 probe='source "$0" >/dev/null 2>&1; [ "$1" = on ] && set -o xtrace; out="$(shellopts_with_xtrace)"; set +o xtrace; n=0; IFS=:; for f in ${out}; do [ "$f" = xtrace ] && n=$((n+1)); done; printf %s "$n"'
 
 count_xtrace() {

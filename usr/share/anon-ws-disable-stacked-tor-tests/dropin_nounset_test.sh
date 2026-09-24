@@ -124,9 +124,11 @@ check() {
 }
 
 ## Verbatim from the package's own documented template.
+# shellcheck disable=SC2016  # literal drop-in fixture text, $pre_command not expanded here
 check 'the documented [ -n "$pre_command" ] idiom' 'PRE_COMMAND_EMPTY' \
    '[ -n "$pre_command" ] || pre_command=""'
 ## Any other unset variable a user might read.
+# shellcheck disable=SC2016  # literal drop-in fixture text, ${some_user_variable} not expanded here
 check 'a drop-in reading some other unset variable' 'REACHED_END' \
    'printf "%s\n" "${some_user_variable}" >/dev/null'
 ## The ordinary cases, so the fix cannot be bought by ignoring drop-ins.

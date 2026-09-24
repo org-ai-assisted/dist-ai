@@ -87,6 +87,7 @@ assert() {  ## $1=description ; succeeds iff $2==ok
    fi
 }
 
+# shellcheck disable=SC2015  # assert always returns 0, so the no-branch runs only when the test fails
 [ -s "${payload}" ] && assert 'tui-showcase.payload produced' ok || assert 'tui-showcase.payload produced' no
 
 ## Starts with ESC (header stripped to the board's first escape).

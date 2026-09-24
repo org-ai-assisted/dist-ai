@@ -14,7 +14,7 @@
 ## Usage: curl_prgrs_probe.sh OPERATION [ARGS...]
 ## SUBJECT (the curl-prgrs path) and HELPER_SCRIPTS_PATH come from the env.
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC2154  # SUBJECT: the curl-prgrs path, from the env
 source "${SUBJECT}"
 
 operation="${1:-}"
@@ -23,6 +23,7 @@ shift || true
 ## Scaffolding the reusable functions expect. curl-prgrs draws the progress bar
 ## to the allocated ${stderr_fd} (set by initialize_terminal); allocate it here
 ## pointed at /dev/null so print_progress can draw without a real TTY.
+# shellcheck disable=SC2034  # stderr_fd: consumed by the sourced curl-prgrs (SUBJECT)
 exec {stderr_fd}>/dev/null
 probe_tmp="$(mktemp --directory)"
 ## Clean up on exit -- the suite invokes this probe dozens of times. The shutdown
@@ -59,6 +60,7 @@ case "${operation}" in
    ## remove_argument_for_header_request, then print the resulting array.
    strip)
       remove_argument_for_header_request "$@"
+      # shellcheck disable=SC2154  # header_arguments: set by the sourced curl_prgrs (SUBJECT)
       printf '%s\n' "${header_arguments[@]}"
       ;;
 
@@ -103,7 +105,9 @@ case "${operation}" in
 
    ## Run a shutdown_* trap wrapper with a clean status file of 0.
    wrapper)
+      # shellcheck disable=SC2034  # temporary_directory: consumed by the sourced curl-prgrs (SUBJECT)
       temporary_directory="${probe_tmp}"
+      # shellcheck disable=SC2034  # temp_dir_auto_generated: consumed by the sourced curl-prgrs (SUBJECT)
       temp_dir_auto_generated=true
       printf '%s' 0 > "${statusfile}"
       "${1}"
@@ -112,7 +116,9 @@ case "${operation}" in
    ## check_variables with a given CURL_OUT_FILE ($1) and max-file-size ($2). The
    ## process exits with check_variables' code (0, or 57).
    checkvars)
+      # shellcheck disable=SC2034  # expected_header_size: consumed by the sourced curl-prgrs (SUBJECT)
       expected_header_size=8000
+      # shellcheck disable=SC2034  # maximum_http_header_size: consumed by the sourced curl-prgrs (SUBJECT)
       maximum_http_header_size=32000
       CURL_OUT_FILE="${1}"
       CURL_PRGRS_MAX_FILE_SIZE_BYTES="${2}"
@@ -123,6 +129,7 @@ case "${operation}" in
    ## guards abort via curl_exit; otherwise prints the resulting percent_last.
    print_progress)
       percent_last="${3}"
+      # shellcheck disable=SC2034  # CURL_PRGRS_EXEC: consumed by the sourced curl-prgrs (SUBJECT)
       CURL_PRGRS_EXEC="${4}"
       set -o errexit
       print_progress "${1}" "${2}"
@@ -132,6 +139,7 @@ case "${operation}" in
    ## curl_download with a non-numeric content length under errexit: hits the
    ## defensive 116 re-check and aborts.
    curl_download_bad_length)
+      # shellcheck disable=SC2034  # CURL: consumed by the sourced curl-prgrs (SUBJECT)
       CURL=/bin/true
       CURL_OUT_FILE="${probe_tmp}/out"
       CURL_PRGRS_MAX_FILE_SIZE_BYTES=1000
@@ -150,6 +158,7 @@ case "${operation}" in
       curl_prgrs_content_length="${3}"
       set -o errexit
       enforce_file_size "${curl_prgrs_content_length}"
+      # shellcheck disable=SC2154  # size_file_downloaded_bytes: set by the sourced curl_prgrs (SUBJECT)
       printf '%s' "${size_file_downloaded_bytes}"
       ;;
 
@@ -169,6 +178,7 @@ case "${operation}" in
    ## enforce_file_size when the output file is absent: nothing to do, returns 0.
    enforce_nofile)
       CURL_OUT_FILE="${probe_tmp}/does-not-exist"
+      # shellcheck disable=SC2034  # CURL_PRGRS_MAX_FILE_SIZE_BYTES: consumed by the sourced curl-prgrs (SUBJECT)
       CURL_PRGRS_MAX_FILE_SIZE_BYTES=100
       curl_prgrs_content_length=100
       enforce_file_size "${curl_prgrs_content_length}"

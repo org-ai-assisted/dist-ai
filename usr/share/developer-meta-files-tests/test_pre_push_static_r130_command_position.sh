@@ -35,7 +35,7 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
    printf '%s\n' "FATAL: helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if ! has safe-rm ; then
@@ -112,6 +112,7 @@ body_of() {
 
 ## A ':' inside a string, followed by the '<' of an HTML closing tag. This is
 ## the shape that produced the wrong answer.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 html_body="$(body_of \
    "message=\"<table><tr><td>Downloaded version         ${colon}</td><td><tt> <code>x</code></tt></td></tr></table>\"" \
    'true "${message}"')"
@@ -134,6 +135,7 @@ fi
 
 ## The real truncate idiom must still be caught, or the fix above would have
 ## bought a green gate by switching the rule off.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 truncate_body="$(body_of \
    'target="$1"' \
    "${colon} > \"\${target}\"")"
@@ -148,6 +150,7 @@ fi
 
 ## And so must the form that follows a command separator, which is the one the
 ## rule's own comment names.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 separator_body="$(body_of \
    'target="$1"' \
    "if ! ${colon} > \"\${target}\"; then" \
@@ -164,6 +167,7 @@ fi
 
 ## The bare form on its own line is the other half of R-130 and is untouched by
 ## this change; pinned so a future edit to the regex cannot drop it silently.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 bare_body="$(body_of \
    'if [ -n "$1" ]; then' \
    "   ${colon}" \

@@ -52,6 +52,7 @@ fi
 
 fail=0
 for line in "${feature_args[@]}"; do
+   # shellcheck disable=SC2016  # literal '${fs_features}' matched in the mke2fs arg text
    case "${line}" in
       *'-O "none,${fs_features}"'*)
          printf '%s\n' "PASS: mke2fs clears host defaults first (${line%%:*}: -O \"none,\${fs_features}\")"

@@ -24,9 +24,12 @@ reload_first_snapshot="$1"
 reload_second_snapshot="$2"
 shift 2
 
+# shellcheck disable=SC1091
 source help-steps/pre
+# shellcheck disable=SC1091
 source help-steps/variables "$@"
 declare -p | LC_ALL=C sort > "${reload_first_snapshot}"
 
+# shellcheck disable=SC1091
 source help-steps/variables "$@"
 declare -p | LC_ALL=C sort > "${reload_second_snapshot}"

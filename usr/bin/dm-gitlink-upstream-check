@@ -530,7 +530,7 @@ enumerate_gitlinks() {
   ## a checked one. Anything that cannot be resolved to a canonical upstream is
   ## emitted WITH a problem rather than skipped, for the same reason.
   local record meta rest
-  local mode otype sha path url owner_repo owner repo problem path_safe
+  local mode sha path url owner_repo owner repo problem path_safe
   ## Capture ls-tree to a file and check its exit BEFORE the loop, rather than
   ## piping it in via process substitution: if ls-tree dies mid-stream on a
   ## corrupt/unreadable tree object it still prints the records up to that point,
@@ -555,7 +555,7 @@ enumerate_gitlinks() {
     path="${record#*"${TAB}"}"
     mode="${meta%% *}"
     rest="${meta#* }"
-    otype="${rest%% *}"
+    ## record fields: "<mode> <type> <sha>"; type is unused here
     sha="${rest##* }"
     if [ "${mode}" != '160000' ]; then
       continue
@@ -855,6 +855,7 @@ parent_deviations() {
   ## path NUL. Read them as two NUL-delimited fields, so the path is verbatim.
   while IFS= read -r -d '' meta; do
     IFS= read -r -d '' path || break
+    # shellcheck disable=SC2034  # status: positional read field, isolates trailing status from newsha
     read -r oldmode newmode oldsha newsha status <<< "${meta}"
     if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
       continue

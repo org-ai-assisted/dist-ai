@@ -184,6 +184,7 @@ mkdir --parents -- "${order_dir}" "${order_tree}"
 true > "${order_log}"
 
 ## Logs the target (the last argument) and then performs the real unmount.
+# shellcheck disable=SC2016
 printf '%s\n' \
    '#!/bin/bash' \
    'printf "%s\n" "${!#}" >> "${UNMOUNT_ORDER_LOG}"' \

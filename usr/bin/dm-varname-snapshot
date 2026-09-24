@@ -36,7 +36,7 @@ for lib_dir in \
    "${script_dir}/../share/dm-help-steps-tests" \
    "/usr/share/dm-help-steps-tests"; do
    if [ -r "${lib_dir}/varname_snapshot_lib.bsh" ]; then
-      # shellcheck source=./varname_snapshot_lib.bsh
+      # shellcheck source=../share/dm-help-steps-tests/varname_snapshot_lib.bsh
       source "${lib_dir}/varname_snapshot_lib.bsh"
       lib_found="${lib_dir}"
       break

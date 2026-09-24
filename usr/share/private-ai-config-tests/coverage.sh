@@ -63,7 +63,7 @@ fi
 
 ## Sourced after the checkout guard above, so a missing PRIVATE_AI_CONFIG_PATH
 ## still SKIPs rather than dying here.
-# shellcheck source=./has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 ## A missing DEPENDENCY is a hard FAIL, not a SKIP. Only an absent SUBJECT (the

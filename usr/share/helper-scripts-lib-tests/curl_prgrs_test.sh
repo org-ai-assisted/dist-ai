@@ -64,7 +64,7 @@ for support in "${fake_curl}" "${probe_script}" "${fuzz_script}"; do
    fi
 done
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC1091
 source "${libdir}/has.bsh"
 
 ## curl-prgrs runs helper-scripts' OWN executables (stecho, stcat). On a checkout

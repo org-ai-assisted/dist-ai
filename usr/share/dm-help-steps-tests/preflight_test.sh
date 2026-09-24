@@ -92,6 +92,7 @@ build_fixture() {
    local dmf="${super}/packages/kicksecure/developer-meta-files/usr/libexec/developer-meta-files"
    mkdir --parents -- "${dmf}"
    printf '%s\n' '## stub' > "${dmf}/package-build-freshness.bsh"
+   # shellcheck disable=SC2016
    printf '%s\n' \
       'source "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/package-build-freshness.bsh"' \
       > "${super}/build-steps.d/2100_stub"
@@ -107,6 +108,7 @@ build_fixture() {
 ## gate being reachable, and in CI it is present in the dist-ai checkout but not
 ## on PATH. Put the sibling bin/ in front rather than weakening the tool or
 ## skipping the test: the binary is right there.
+# shellcheck disable=SC2015
 gate_bin_dir="$( cd -- "${test_dir}/../../bin" 2>/dev/null && pwd || true )"
 if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/dist-ai-style" ]; then
    PATH="${gate_bin_dir}:${PATH}"
@@ -312,6 +314,7 @@ renamed="${workdir}/renamed"
 build_fixture "${renamed}"
 ## Repoint the consumer at a sibling name that does not exist -- exactly what a
 ## submodule rename leaves behind when the pin is bumped but the consumer is not.
+# shellcheck disable=SC2016
 printf '%s\n' \
    'source "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/reprepro-freshness.bsh"' \
    > "${renamed}/build-steps.d/2100_stub"
@@ -336,6 +339,7 @@ fi
 ## a skipped ref.
 twospace="${workdir}/twospace"
 build_fixture "${twospace}"
+# shellcheck disable=SC2016
 printf '%s\n' \
    'source  "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/two-space-missing.bsh"' \
    > "${twospace}/build-steps.d/2100_stub"

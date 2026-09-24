@@ -98,8 +98,11 @@ run_normalize() {
       set -o errexit
       set -o nounset
       set -o pipefail
+      ## style-ok: R-120 -- this IS the safe-rm shim; 'command rm' is the only way
+      ## to implement it without recursing into itself.
       # shellcheck disable=SC2317
       safe-rm() { command rm "$@"; }
+      # shellcheck disable=SC2034  # source_code_folder_dist: consumed by the sourced normalize functions
       source_code_folder_dist="${clone}"
       # shellcheck disable=SC1090
       source <(sed -n \
