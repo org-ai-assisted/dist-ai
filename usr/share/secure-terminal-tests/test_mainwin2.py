@@ -1238,5 +1238,23 @@ win._spawn_pending_tabs()
 ok(_c1bg._pid is not None and not _c1bg._spawn_pending,
    'C1: main.py spawns the background tab at the shared grid (not lazily on first view)')
 
+# C1 early-out branches of _spawn_pending_tabs (stub current() to reach each deterministically):
+_c1_orig_current = win.current
+win.current = lambda: None                         # (a) current is not a terminal -> no-op
+win._spawn_pending_tabs()
+ok(True, 'C1: _spawn_pending_tabs is a no-op when current() is not a terminal')
+_c1_def = _C1_ST(command='/bin/cat', initial_grid=None)   # deferred (pending), no geometry
+win.current = lambda: _c1_def                      # (b) a pending current tab -> spawn it
+win._spawn_pending_tabs()
+ok(_c1_def._pid is not None, 'C1: _spawn_pending_tabs spawns a PENDING current tab')
+_c1_zero = _C1_ST(command='/bin/cat')              # eager (0,0): spawned, _cols == 0, not pending
+win.current = lambda: _c1_zero                     # (c) no geometry yet -> ref None early return
+win._spawn_pending_tabs()
+ok(_c1_zero._cols == 0,
+   'C1: _spawn_pending_tabs early-returns for an ungeometried current tab (ref None)')
+win.current = _c1_orig_current
+_c1_def.shutdown()
+_c1_zero.shutdown()
+
 
 finish('mainwin2')
