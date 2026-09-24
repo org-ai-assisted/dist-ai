@@ -32,7 +32,7 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 locate_genmkfile() {
-   local candidate from_bin=''
+   local candidate
    if [ -n "${GENMKFILE_BIN:-}" ]; then
       printf '%s\n' "${GENMKFILE_BIN}"
       return 0
@@ -118,6 +118,7 @@ if [ -r "${installed_etc_file}" ]; then
 fi
 
 icrc=0
+# shellcheck disable=SC2034  # icrc: errexit-guard capture; test asserts on icout, exit code intentionally unused
 icout="$( cd "${pkg_dir}" && DESTDIR="${dest_dir}" "${genmkfile_bin}" installcheck 2>&1 )" || icrc=$?
 chmod 644 -- "${installed_etc_file}"
 

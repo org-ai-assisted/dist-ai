@@ -69,7 +69,7 @@ trap cleanup EXIT
 ## runner's system python is PEP668 externally-managed; --with-deps pulls the
 ## chromium apt dependencies (passwordless sudo on the runner).
 python3 -m venv "${venv_dir}"
-## shellcheck disable=SC1091
+# shellcheck disable=SC1091
 source "${venv_dir}/bin/activate"
 pip install --quiet --upgrade pip
 pip install --quiet playwright

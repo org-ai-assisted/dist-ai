@@ -126,6 +126,7 @@ else
 fi
 ## shellcheck fires on a real finding (SC2086 unquoted expansion) when present;
 ## if shellcheck is absent it self-skips with a note (fail-open), so accept both.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 printf '%s\n' '#!/bin/bash' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
    'set -o errtrace' 'shopt -s inherit_errexit' 'shopt -s shift_verbose' \
    'export LC_ALL=C' 'v="$1"' 'grep $v /dev/null || true' \

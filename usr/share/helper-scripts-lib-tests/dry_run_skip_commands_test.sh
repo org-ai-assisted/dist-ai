@@ -94,6 +94,7 @@ log_run_touch() {
    local marker
    marker="${work_dir}/marker.$$.${RANDOM}"
    safe-rm --force -- "${marker}"
+   # shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
    env "$@" \
       HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       MARKER="${marker}" \
@@ -114,6 +115,7 @@ root_cmd_touch() {
    marker="${work_dir}/marker.$$.${RANDOM}"
    record="${work_dir}/record.$$.${RANDOM}"
    safe-rm --force -- "${marker}" "${record}"
+   # shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
    env "$@" \
       HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       PATH="${stub_bin_dir}:${PATH}" \
@@ -162,6 +164,7 @@ fi
 ## Inline override forces execution even under an ambient skip (the
 ## dist-installer-cli 'dry_run_skip_commands=0 log_run/root_cmd ...' pattern).
 inline_marker="${work_dir}/marker.inline.${RANDOM}"
+# shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
 env dry_run_skip_commands=1 HELPER_SCRIPTS_PATH="${helper_scripts_path}" MARKER="${inline_marker}" \
    /usr/bin/bash -c '
       source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/log_run_die.sh"

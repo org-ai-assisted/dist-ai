@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Fail closed. A missing prerequisite is an environment defect: skipping on
 ## it reports green while the test never ran, which is worse than no test.
@@ -39,7 +40,7 @@ assert_prerequisite() {
 assert_prerequisite \
    'helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)' \
    test -r '/usr/libexec/helper-scripts/has.bsh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'safe-rm not found' has safe-rm
@@ -69,10 +70,13 @@ fail=0
 
 ## $1 = expectation (flag|spare), $2 = comment body
 check() {
-   local want="$1" comment="$2" sample got
+   local want="$1" comment="$2" sample got out
    sample="${work_dir}/sample.sh"
    printf '## %s\nx=1\n' "${comment}" > "${sample}"
-   if "${audit_bin}" --files "${sample}" 2>&1 | grep --quiet 'HISTORY'; then
+   ## Capture then grep (R-161): 'cmd | grep --quiet' SIGPIPE-kills cmd under
+   ## pipefail, which can misread a real match as no-match.
+   out="$("${audit_bin}" --files "${sample}" 2>&1)" || true
+   if grep --quiet 'HISTORY' <<< "${out}"; then
       got='flag'
    else
       got='spare'

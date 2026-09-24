@@ -26,6 +26,7 @@
 ## recorded in '_rejected.txt', not curated here (we do not reinvent dm's
 ## validity matrix). Flavor and target lists mirror parse_cmd_flavor_error and
 ## parse_cmd_target_error in help-steps/parse-cmd.
+# shellcheck disable=SC2034  # vs_flavors: consumed by the sourcing dm-varname-snapshot / varname_snapshot_test.sh
 vs_flavors=(
    whonix-gateway-lxqt
    whonix-gateway-rpi
@@ -41,6 +42,7 @@ vs_flavors=(
    dist-installer-cli
    source
 )
+# shellcheck disable=SC2034  # vs_targets: consumed by the sourcing dm-varname-snapshot / varname_snapshot_test.sh
 vs_targets=(
    virtualbox
    qcow2

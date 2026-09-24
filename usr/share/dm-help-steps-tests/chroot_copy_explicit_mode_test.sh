@@ -58,6 +58,7 @@ fail() {
 ## variables) state the intent instead.
 ## BOTH parameter forms: a step writing "$CHROOT_FOLDER/etc/x" creates the same
 ## umask-dependent mode, and matching only the braced form would report success.
+# shellcheck disable=SC2016
 chroot_folder_ref='(\$\{CHROOT_FOLDER\}|\$CHROOT_FOLDER)'
 ## Scope: the DESTINATION, i.e. the chroot ref must be the LAST argument (path
 ## suffix, an optional closing quote, then end of line). A copy that READS FROM
@@ -88,6 +89,7 @@ cleanup() {
    safe-rm --force -- "${canary_file}"
 }
 trap cleanup EXIT
+# shellcheck disable=SC2016
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
 if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    pass 'canary: the pattern does match a plain chroot cp, so a clean result means something'
@@ -96,6 +98,7 @@ else
 fi
 
 ## ...and it must NOT flag the fixed form, or the rule would be unusable.
+# shellcheck disable=SC2016
 printf '%s\n' '   ${SUDO_TO_ROOT} "${cp_reproducible[@]}" "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
 if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    fail 'the pattern flags the CORRECT cp_reproducible form; it would fire forever'
@@ -104,16 +107,20 @@ else
 fi
 
 ## UNBRACED canary: the form coderabbit flagged as bypassing the braced pattern.
+# shellcheck disable=SC2016
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "$CHROOT_FOLDER/etc/x"' > "${canary_file}"
 if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
+   # shellcheck disable=SC2016
    pass 'canary: the unbraced $CHROOT_FOLDER form is matched too'
 else
+   # shellcheck disable=SC2016
    fail 'the unbraced $CHROOT_FOLDER form is NOT matched; a build step using it would bypass this test'
 fi
 
 ## DESTINATION-SCOPE canary: a copy that READS FROM the chroot into a host path
 ## (chroot ref mid-line, another arg after) is NOT the guarded bug and must not
 ## be flagged -- otherwise 3600's kb_layouts lift would fire this rule forever.
+# shellcheck disable=SC2016
 printf '%s\n' '   ${SUDO_TO_ROOT} cp --recursive -- "${CHROOT_FOLDER}/boot/grub/kb_layouts/." "${grub_overlay}/kb_layouts/"' > "${canary_file}"
 if grep --quiet --extended-regexp "${cp_into_chroot_re}" -- "${canary_file}"; then
    fail 'a copy reading FROM the chroot is flagged; the rule is source-blind and cries wolf'

@@ -35,6 +35,7 @@ mount_a=/nonexistent/a
 mount_b=/nonexistent/b
 
 sudo() {
+   # shellcheck disable=SC2154  # GUARD_MODPROBE_RC: injected by the parent guard test
    if [ "${GUARD_MODPROBE_RC}" -ne 0 ]; then
       printf '%s\n' "sudo: modprobe: command not found" >&2
    fi
@@ -42,6 +43,7 @@ sudo() {
 }
 
 nbd_device_claim() {
+   # shellcheck disable=SC2154  # GUARD_CLAIM_RC: injected by the parent guard test
    if [ "${GUARD_CLAIM_RC}" -eq 0 ]; then
       printf '%s\n' /dev/nbd7
    fi

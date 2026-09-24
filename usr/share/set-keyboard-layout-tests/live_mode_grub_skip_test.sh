@@ -121,6 +121,7 @@ printf '%s\n' \
    '## Minimal keymap list; args (--no-pager list-x11-keymap-layouts) ignored.' \
    'printf "%s\n" us de' >"${stub_bin}/localectl-static"
 
+# shellcheck disable=SC2016  # literal stub body; $* / ${GRUB_KBDCOMP_MARKER} stay literal
 printf '%s\n' \
    '#!/bin/bash' \
    '## Record every invocation so the test can assert it did / did not run.' \

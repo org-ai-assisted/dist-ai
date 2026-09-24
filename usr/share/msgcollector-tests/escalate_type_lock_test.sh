@@ -83,6 +83,7 @@ safe-rm --force -- "${type_file}" "${type_file}.lock"
 ready_file="${work_dir}/holder_ready"
 ## Pass the ready-file path as a positional arg (not interpolated into the -c
 ## string), so a quote in TMP cannot break or inject into the held command.
+# shellcheck disable=SC2016  # literal bash -c payload for the held lock command
 flock --exclusive "${type_file}.lock" bash -c 'touch -- "$1"; sleep 30' bash "${ready_file}" &
 holder_pid=$!
 

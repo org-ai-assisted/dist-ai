@@ -70,6 +70,7 @@ fail() {
 ## Exercise the SHIPPED block, not a restatement of it. A private copy of the
 ## comparison would keep passing after the real one regressed -- which is the
 ## failure mode this whole file exists to catch.
+# shellcheck disable=SC2016
 block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^fi$/p' -- "${subject_effective}" | sed '$d' )"
 if [ -z "${block}" ]; then
    fail 'could not extract the mismatch diagnostic from help-steps/variables'
@@ -102,6 +103,7 @@ run_block() {
    local version="$1"
    ## 'true "..."' is this file's logging idiom, so the text only materialises
    ## under xtrace -- capture that, which is also how it reaches a real build log.
+   # shellcheck disable=SC2034  # git_bin/colour tokens/dist_build_version consumed by the eval'd extracted block
    (
       ## No 'set +o errexit' (R-011): the subshell's own '|| true' below already
       ## absorbs a non-zero exit, and the trace is captured either way.

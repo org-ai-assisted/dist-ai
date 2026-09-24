@@ -14,7 +14,7 @@
 ## Exit: 0 no leak and the function is defined; 1 sourcing or the call enabled
 ## errexit (leak); 3 the function is undefined.
 
-# shellcheck disable=SC1090,SC1091
+# shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the detect-software-rendering path, from the env
 source "${SUBJECT}"
 
 if ! has detect_software_rendering ; then

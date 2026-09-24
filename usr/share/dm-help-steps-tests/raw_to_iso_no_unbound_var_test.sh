@@ -33,7 +33,7 @@ if ! test -r /usr/libexec/helper-scripts/has.bsh ; then
    printf '%s\n' "FATAL: helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)" >&2
    exit 1
 fi
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
@@ -116,6 +116,7 @@ canary="${canary_dir}/canary"
 {
    printf '%s\n' '#!/bin/bash'
    printf '%s\n' 'set -o nounset'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "%s\n" "${dropped_assignment_var}"'
 } > "${canary}"
 canary_sc2154="$( count_sc2154 "${canary}" )"
@@ -136,6 +137,7 @@ badfile="${canary_dir}/parseerr"
    printf '%s\n' '#!/bin/bash'
    printf '%s\n' 'set -o nounset'
    printf '%s\n' 'echo "unterminated'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "%s\n" "${dropped_assignment_var}"'
 } > "${badfile}"
 if [ "$( count_sc2154 "${badfile}" )" = "ERROR" ]; then

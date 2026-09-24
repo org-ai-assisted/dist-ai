@@ -64,6 +64,7 @@ emit_empty_for() {
    IFS=',' read -ra keys <<< "${keys_csv}"
    for key in "${keys[@]}"; do
       out_name="${key//-/_}"
+      # shellcheck disable=SC2154  # GITHUB_OUTPUT: set by GitHub Actions
       printf '%s\n' "${out_name}=" >> "${GITHUB_OUTPUT}"
    done
 }

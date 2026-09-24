@@ -61,7 +61,7 @@ printf '' > "${dummy_image}"
 run_probe() {
    ## $1 = extra env assignment (may be empty); runs the given dm-boot-test path.
    local boot_test_bin="$1"
-   env -u HELPER_SCRIPTS_PATH timeout 30 bash "${boot_test_bin}" \
+   env -u HELPER_SCRIPTS_PATH timeout --kill-after=30 30 bash "${boot_test_bin}" \
       --image "${dummy_image}" --arch bogus --firmware bios --session user 2>&1 || true
 }
 
@@ -96,6 +96,7 @@ fi
 ## 3) CANARY: a bare 'source /usr/libexec/helper-scripts/...' (the original bug) must
 ##    be detectable -- prove the probe would catch a regression to the hardcoded path.
 canary_bin="${workdir}/dm-boot-test-canary"
+# shellcheck disable=SC2016  # literal sed program; ${helper_scripts_base} is match text
 sed 's#source "\${helper_scripts_base}/usr/libexec/helper-scripts/package_installed_check.sh"#source /usr/libexec/helper-scripts/package_installed_check.sh#' -- "${dm_boot_test}" > "${canary_bin}"
 chmod +x -- "${canary_bin}"
 if ! grep --quiet 'source /usr/libexec/helper-scripts/package_installed_check.sh' -- "${canary_bin}"; then

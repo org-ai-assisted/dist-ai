@@ -555,6 +555,7 @@ gitq -C "${superE}/nbr" checkout --quiet -b work      # off ai, a named branch
 printf 'collide\n' > "${superE}/nbr/g"                # untracked collision with incoming c2
 
 rc=0
+# shellcheck disable=SC2034  # n_out: tool stdout+stderr captured to keep test output quiet; only rc is asserted
 n_out="$("${tool}" --dir "${superE}" 2>&1)" || rc=$?
 if [ "$(branch_of "${superE}/nbr")" = "refs/heads/work" ]; then
    pass "failed FF after re-attach ROLLS BACK to the original named branch (not detached)"

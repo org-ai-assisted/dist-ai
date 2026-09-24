@@ -61,6 +61,7 @@ assert_prints() {
    desc="$1"; arg="$2"; want="$3"
    set +o xtrace
    output_cmd_set
+   # shellcheck disable=SC2154  # output_cmd: array populated by output_cmd_set (sourced subject)
    got="$("${output_cmd[@]}" "${arg}")"
    if [ "${got}" = "${want}" ]; then
       ok "${desc}"

@@ -73,6 +73,7 @@ trap cleanup EXIT
 
 ## Extract the real make_helper; stub only the reporting/guard helpers.
 {
+   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
@@ -106,9 +107,13 @@ tests_failed=0
 run_install() {
    local pkg="$1" dest="$2"
    mkdir --parents -- "${dest}"
+   # shellcheck disable=SC2034  # make_install_/make_installsim_/make_uninstall_: genmkfile config inputs consumed by make_helper
    local make_install_='true' make_installsim_='false' make_uninstall_='false'
+   # shellcheck disable=SC2034  # make_installcheck_/make_uninstallcheck_: genmkfile config inputs consumed by make_helper
    local make_installcheck_='false' make_uninstallcheck_='false'
+   # shellcheck disable=SC2034  # DESTDIR: genmkfile config input consumed by make_helper
    local DESTDIR="${dest}"
+   # shellcheck disable=SC2034  # make_folder_list_for_un_and_install: genmkfile config input consumed by make_helper
    local make_folder_list_for_un_and_install=(usr)
    ( cd -- "${pkg}" && make_helper ) 2>&1
 }

@@ -184,6 +184,7 @@ assert_gate_structure() {
    mapfile -t block < <(extract_block "${path}")
 
    for line in "${block[@]}"; do
+      # shellcheck disable=SC2016  # case patterns are literal expected shell-code fixtures, no expansion wanted
       case "${line}" in
          'smbios --type 1 --get-string 4 --set dm_smbios_vendor')
             [ "${vendor_index}" -ge 0 ] || vendor_index="${index}"
@@ -487,6 +488,7 @@ fi
 ## "${dm_smbios_extra}" would expand to empty at BUILD time and silently disable
 ## the injected cmdline while every gate check above still passed.
 iso_tool_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
+# shellcheck disable=SC2016  # builds the literal ${dm_smbios_extra} placeholder text, expansion not wanted
 placeholder_literal="'"'${dm_smbios_extra}'"'"
 if [ ! -r "${iso_tool_file}" ]; then
    check_fail "missing ${iso_tool_file}"

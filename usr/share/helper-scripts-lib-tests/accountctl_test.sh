@@ -198,6 +198,7 @@ else
 fi
 
 ## ---- escape_name ----
+# shellcheck disable=SC2016  # single-quoted literals are test input/expected output, not expansions
 if [ "$(escape_name 'a.b$c')" = 'a\.b\$c' ]; then pass "escape_name escapes . and \$"; else fail "escape_name wrong: '$(escape_name 'a.b$c')'"; fi
 
 ## ---- is_user / is_group (existence + F1 enforcement) ----
@@ -239,7 +240,9 @@ rc=0; out="$(get_entry alice passwd bogus 2>/dev/null)" || rc=$?
 if [ "${rc}" != "0" ]; then pass "get_entry errors on unsupported field (F4)"; else fail "get_entry F4: returned '${out}' rc 0 for a bad field"; fi
 
 ## ---- get_pass / get_clean_pass ----
+# shellcheck disable=SC2016  # single-quoted hash literal is expected output, not an expansion
 if [ "$(get_pass alice)" = '$6$asalt$ahash' ]; then pass "get_pass alice"; else fail "get_pass alice wrong: '$(get_pass alice)'"; fi
+# shellcheck disable=SC2016  # single-quoted hash literal is expected output, not an expansion
 if [ "$(get_clean_pass bob '!')" = '$6$bsalt$bhash' ]; then pass "get_clean_pass strips leading '!'"; else fail "get_clean_pass wrong: '$(get_clean_pass bob '!')'"; fi
 
 ## ---- is_pass_empty / is_pass_locked / is_pass_disabled ----
@@ -272,6 +275,7 @@ if [[ "${mutation_log}" == *"passwd --quiet --lock -- alice"* ]]; then pass "loc
 mutation_log=""; lock_pass bob
 if [ -z "${mutation_log}" ]; then pass "lock_pass no-ops an already-locked account"; else fail "lock_pass acted on a locked account: '${mutation_log}'"; fi
 mutation_log=""; unlock_pass bob
+# shellcheck disable=SC2016  # single-quoted hash literal is a match pattern, not an expansion
 if [[ "${mutation_log}" == *'chpasswd'*'bob:$6$bsalt$bhash'* ]]; then pass "unlock_pass restores the clean password"; else fail "unlock_pass wrong: '${mutation_log}'"; fi
 
 ## ---- '!!' shadow field ('passwd -l' on a never-set password): strip ALL

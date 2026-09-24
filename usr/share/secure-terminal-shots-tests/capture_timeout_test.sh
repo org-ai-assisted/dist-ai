@@ -63,7 +63,9 @@ pgids=()
 tmpfiles=()
 cleanup() {
    local g f
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    for g in "${pgids[@]:-}"; do [ -n "${g}" ] && kill -s KILL "-${g}" 2>/dev/null || true; done
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    for f in "${tmpfiles[@]:-}"; do [ -n "${f}" ] && safe-rm -f -- "${f}" "${f}.timeout" 2>/dev/null || true; done
 }
 trap cleanup EXIT

@@ -73,7 +73,9 @@ unmarked_pid=''
 
 cleanup() {
    ## belt-and-suspenders: reap the marked group + kill the unmarked dummy, whatever happened.
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    [ -n "${marked_pid}" ] && kill -s KILL "-${marked_pid}" 2>/dev/null || true
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    [ -n "${unmarked_pid}" ] && kill -s KILL "-${unmarked_pid}" 2>/dev/null || true
 }
 trap cleanup EXIT

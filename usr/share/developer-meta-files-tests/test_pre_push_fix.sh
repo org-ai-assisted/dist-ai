@@ -24,6 +24,10 @@
 ##   * GATE PARITY / round-trip proof: a file that FAILS pre-push-static R-001
 ##     PASSES it after the fixer runs -- the whole point of fix-then-verify
 
+## Pure fixture-text suite: nearly every single-quoted $... is literal shell
+## payload fed to the tool under test, not an expansion in THIS script.
+# shellcheck disable=SC2016
+
 set -o errexit
 set -o nounset
 set -o pipefail

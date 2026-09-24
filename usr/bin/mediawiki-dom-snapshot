@@ -120,6 +120,7 @@ cmd_normalise() {
    ## comfortable on a developer laptop and matches snapshot.py's
    ## CONCURRENCY default ballpark.
    local -i jobs="${NORMALISE_JOBS:-8}"
+   # shellcheck disable=SC2016  # inner-shell payload: $1 is the per-item arg passed to sh -c, resolved at runtime
    find "${RAW_DIR}" -mindepth 1 -maxdepth 1 -type d -print0 \
       | xargs -0 -P "${jobs}" -I {} sh -c '
             page=$(basename "$1")

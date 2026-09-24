@@ -47,6 +47,7 @@ fi
 ## Run report_result in a subshell with controlled globals; capture its exit code.
 check_exit() {
    local want="$1" _ran="$2" _failed="$3" label="$4" rc=0
+   # shellcheck disable=SC2034  # ran, failed: read by the extracted report_result
    ( ran="${_ran}"; failed="${_failed}"; report_result ) >/dev/null 2>&1 || rc=$?
    if [ "${rc}" = "${want}" ]; then
       pass "${label}: exit ${rc}"

@@ -94,9 +94,12 @@ work="$(mktemp --directory)"
 st_pid=''
 xt_pid=''
 cleanup() {
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    [ -n "${st_pid}" ] && kill "${st_pid}" 2>/dev/null || true
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the test
    [ -n "${xt_pid}" ] && kill "${xt_pid}" 2>/dev/null || true
    ## wl_headless_stop is defined once the lib is sourced; guard for an early failure.
+   # shellcheck disable=SC2015  # cleanup: trailing || true swallows any failure regardless of the guard
    declare -F wl_headless_stop >/dev/null 2>&1 && wl_headless_stop || true
    safe-rm --recursive --force -- "${work}" 2>/dev/null || true
 }

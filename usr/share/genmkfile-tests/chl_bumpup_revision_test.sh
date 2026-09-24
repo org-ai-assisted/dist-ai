@@ -101,6 +101,7 @@ run_bump() {
    local rev="$1"
    true > "${test_root}/newversion"
    true > "${test_root}/die"
+   # shellcheck disable=SC2034  # make_*/DEBEMAIL/DEBFULLNAME below: config inputs consumed by make_deb_chl_bumpup
    (
       # shellcheck disable=SC2317
       make_require() { :; }

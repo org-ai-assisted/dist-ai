@@ -70,6 +70,7 @@ cleanup() {
 trap cleanup EXIT
 workdir="$(mktemp --directory)"
 
+# shellcheck disable=SC2016
 branch_body="$(sed -n '/^if \[ "${CI:-}" = "true" \]; then$/,/^fi$/p' -- "${subject}")"
 if [ -z "${branch_body}" ]; then
    printf '%s\n' "FAILED: could not extract the CI branch from ${subject}." >&2
@@ -80,6 +81,7 @@ fi
 mkdir --parents -- "${workdir}/bin"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "%s\n" "$@" > "${ARGV_OUT}"'
 } > "${workdir}/bin/derivative-update"
 chmod 0755 -- "${workdir}/bin/derivative-update"

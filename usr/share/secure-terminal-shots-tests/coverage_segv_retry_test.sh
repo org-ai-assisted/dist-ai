@@ -103,7 +103,9 @@ if n <= threshold:
 PY
 
 ## --source needs a real path to scope measurement; the stub dir is harmless.
+# shellcheck disable=SC2034  # pkg: consumed by run_suite_under_coverage to scope --source measurement
 pkg="${work}"
+# shellcheck disable=SC2034  # hooks: consumed by run_suite_under_coverage to scope --source measurement
 hooks="${work}"
 ## run_suite_under_coverage wraps the coverage run in "${wl_headless_run}" --no-autoconfirm --
 ## (each attempt gets its own headless-Wayland compositor). This unit test drives the RETRY

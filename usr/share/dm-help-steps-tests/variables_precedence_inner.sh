@@ -24,7 +24,9 @@ export LC_ALL=C
 prec_var_name="$1"
 shift
 
+# shellcheck disable=SC1091
 source help-steps/pre
+# shellcheck disable=SC1091
 source help-steps/variables "$@"
 
 printf 'RESULT=%s\n' "${!prec_var_name:-<unset>}"

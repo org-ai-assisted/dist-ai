@@ -64,7 +64,9 @@ fi
 verify_rc() {
    local rc=0
    (
+      # shellcheck disable=SC2034  # dist_build_redistributable: consumed by the sourced sq_git_verify
       dist_build_redistributable='false'
+      # shellcheck disable=SC2034  # dist_build_ignore_unsigned: consumed by the sourced sq_git_verify
       dist_build_ignore_unsigned='true'
       eval "$1"
       sq_git_verify HEAD testlabel >/dev/null 2>&1

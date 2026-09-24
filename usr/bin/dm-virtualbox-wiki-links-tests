@@ -36,6 +36,7 @@ if [ -z "${script}" ]; then
       fi
    done
 fi
+# shellcheck disable=SC2015  # guard: error path runs whenever the script is missing or unreadable
 [ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
 
 fails=0
@@ -73,8 +74,9 @@ second line
 third line"
    ## Collaborator stubs. shellcheck cannot see they are called from the
    ## eval'd save_cached_page_to_wiki, hence SC2317.
+   # shellcheck disable=SC2034  # WIKI_URL: consumed by the eval'd save_cached_page_to_wiki
    WIKI_URL='https://example.com/w'
-   # shellcheck disable=SC2317
+   # shellcheck disable=SC2317,SC2034  # wiki_content: set here, read by the code under test
    get_wiki_page_cached() { wiki_content="${canary_content}"; }
    # shellcheck disable=SC2317
    mw-edit() { cp -- "$2" "${wiki_capture}"; }
@@ -111,11 +113,14 @@ if [ -n "${extract_url_src}" ]; then
    two="a https://download.virtualbox.org/virtualbox/7.2.2/VirtualBox-7.2.2-Win.exe a
 b https://download.virtualbox.org/virtualbox/7.2.3/VirtualBox-7.2.3-Win.exe b"
    readarray -t got < <(extract_url "${two}" "${regex}")
+   # shellcheck disable=SC2015  # assertion: pass returns 0, so fail runs only when the test fails
    [ "${#got[@]}" -eq 2 ] && pass "two matching URLs -> 2 results (ambiguity now detectable)" \
                           || fail "expected 2 results for two matches, got ${#got[@]} (multi-URL warning still dead)"
    readarray -t one < <(extract_url "x https://download.virtualbox.org/virtualbox/7.2.2/VirtualBox-7.2.2-Win.exe y" "${regex}")
+   # shellcheck disable=SC2015  # assertion: pass returns 0, so fail runs only when the test fails
    [ "${#one[@]}" -eq 1 ] && pass "one match -> 1 result" || fail "expected 1 result, got ${#one[@]}"
    readarray -t none < <(extract_url "nothing here" "${regex}")
+   # shellcheck disable=SC2015  # assertion: pass returns 0, so fail runs only when the test fails
    [ "${#none[@]}" -eq 0 ] && pass "no match -> 0 results" || fail "expected 0 results, got ${#none[@]}"
 else
    fail "could not extract extract_url() from the script"
@@ -137,16 +142,24 @@ if [ -z "${main_src}" ]; then
    fail "could not extract main() from the script"
 else
    ## Top-level vars main relies on (declared outside main in the script).
+   # shellcheck disable=SC2034  # vbox_download_page: consumed by the eval'd main
    vbox_download_page='https://www.virtualbox.org/wiki/Downloads'
+   # shellcheck disable=SC2034  # wiki_vbox_page: consumed by the eval'd main
    wiki_vbox_page='Template:VirtualBox_Host_Software_Installation'
-   vbox_win_regex='x'; vbox_macos_intel64_regex='x'; vbox_macos_arm64_regex='x'
+   # shellcheck disable=SC2034  # vbox_win_regex: consumed by the eval'd main
+   vbox_win_regex='x'
+   # shellcheck disable=SC2034  # vbox_macos_intel64_regex: consumed by the eval'd main
+   vbox_macos_intel64_regex='x'
+   # shellcheck disable=SC2034  # vbox_macos_arm64_regex: consumed by the eval'd main
+   vbox_macos_arm64_regex='x'
+   # shellcheck disable=SC2034  # wiki_url_list: consumed by the eval'd main
    wiki_url_list=('https://example.com/w')
    derivative_maker_source_code_dir="$(mktemp -d)"
    ## Collaborator stubs (SC2317: called from the eval'd main). Empty scrape ->
    ## empty 'latest' URLs, which must trip the guard.
-   # shellcheck disable=SC2317
+   # shellcheck disable=SC2317,SC2034  # func_result: set by the stub, read by the eval'd main
    get_url_from_page() { func_result=''; }
-   # shellcheck disable=SC2317
+   # shellcheck disable=SC2317,SC2034  # func_result: set by the stub, read by the eval'd main
    get_url_from_wiki() { func_result=''; }
    # shellcheck disable=SC2317
    replace_wiki_string() { return 0; }

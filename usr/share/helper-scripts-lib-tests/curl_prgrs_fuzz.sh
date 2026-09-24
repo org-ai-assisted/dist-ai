@@ -13,7 +13,7 @@
 ## seed, so CI reproduces. Usage: curl_prgrs_fuzz.sh SEED ITERATIONS. Prints one
 ## 'FUZZFAILS=N' line; N>0 also prints each violation.
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC2154  # SUBJECT: the script under test, injected by the fuzz harness
 source "${SUBJECT}"
 
 RANDOM="${1}"

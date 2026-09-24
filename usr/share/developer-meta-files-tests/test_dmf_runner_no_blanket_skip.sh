@@ -46,6 +46,7 @@ review_rc=0
 ## The defect shape: a bare '-z "${DEVELOPER_META_FILES_DIR:-}"' test whose body exits 77.
 ## Read the guard body rather than the whole file, so an unrelated 'exit 77'
 ## elsewhere neither hides nor fakes the regression.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 guard_body="$(sed -n '/^if \[ -z "${DEVELOPER_META_FILES_DIR:-}" \]; then/,/^fi$/p' -- "${runner}")"
 
 if [ -z "${guard_body}" ]; then

@@ -90,6 +90,7 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## for the validator call so its 0/1 verdict is captured, not aborted on.
 run_probe() {
    local locale="$1" probe_body="$2" candidate="$3"
+   # shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
    local full_probe='set -e; source "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/strings.bsh" >/dev/null 2>&1; set +e; '"${probe_body}"
    LC_ALL="${locale}" HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       /usr/bin/bash -c "${full_probe}" _ "${candidate}"
@@ -129,10 +130,13 @@ assert_accepts() {
 }
 
 ## Direct-argument validators: the candidate is passed straight to the function.
+# shellcheck disable=SC2016  # single-quoted probe body; $1/$? expand in the inner shell
 probe_cvn='check_variable_name "$1" >/dev/null 2>&1; printf "%s" "$?"'
+# shellcheck disable=SC2016  # single-quoted probe body; $1/$? expand in the inner shell
 probe_cvluan='check_valid_linux_user_account_name "$1" >/dev/null 2>&1; printf "%s" "$?"'
 ## check_is_alpha_numeric takes a VARIABLE NAME whose VALUE it validates, so the
 ## candidate is assigned to a variable and its name is passed.
+# shellcheck disable=SC2016  # single-quoted probe body; $1/$? expand in the inner shell
 probe_cian='probe_value="$1"; check_is_alpha_numeric probe_value >/dev/null 2>&1; printf "%s" "$?"'
 
 unicode_value=$'caf\xC3\xA9'

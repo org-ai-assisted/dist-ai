@@ -83,10 +83,14 @@ test_large_message_not_truncated() {
     ## Isolated globals dispatch_x_active reads; verbose=1 runs the renderer in
     ## the foreground so the piped recorder finishes before we assert.
     MSGCOLLECTOR_REPO="${work_dir}/repo"
+    # shellcheck disable=SC2034  # msgcollector_run_dir: isolated global consumed by the eval'd dispatch_x_active
     msgcollector_run_dir="${work_dir}/repo"
+    # shellcheck disable=SC2034  # msgdispatcher_identifier: isolated global consumed by the eval'd dispatch_x_active
     msgdispatcher_identifier="regressiontest"
     type="info"
+    # shellcheck disable=SC2034  # title: isolated global consumed by the eval'd dispatch_x_active
     title="t"
+    # shellcheck disable=SC2034  # verbose: isolated global consumed by the eval'd dispatch_x_active
     verbose="1"
     eval "${func}"
     dispatch_x_active "${type}" "${msg}"

@@ -70,6 +70,7 @@ fi
 ## package name must not read as the name being present, nor may a comment satisfy
 ## the composition / virt-axis checks.
 code="$(grep --invert-match --extended-regexp -- '^[[:space:]]*#' "${subject}" || true)"
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 if grep --quiet --fixed-strings -- 'pkg="whonix-${whonix_role}-${whonix_virt}-${whonix_ui}"' <<< "${code}"; then
    pass "structural: composes the canonical whonix-<role>-<virt>-<ui> meta-package name"
 else

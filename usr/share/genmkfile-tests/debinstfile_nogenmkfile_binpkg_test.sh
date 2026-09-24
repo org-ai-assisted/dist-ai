@@ -80,6 +80,7 @@ trap cleanup EXIT
 
 ## Extract the real functions; stub only the reporting/guard helpers they call.
 {
+   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
@@ -144,6 +145,7 @@ printf '%s\n' '#nogenmkfile#commentfp => /usr/bin/stale-destination' > "${pkg_ro
 
 genmkfile_temp_dir="${work}/scratch"
 mkdir --parents -- "${genmkfile_temp_dir}"
+# shellcheck disable=SC2034  # make_folder_list_for_un_and_install: config input consumed by the sourced make function
 make_folder_list_for_un_and_install=(usr)
 
 status=0

@@ -54,6 +54,7 @@ eval "$( sed -n '/^whitelist_pattern=/p' -- "${script}" )"
 ## allow-list rather than a specific historical entry.
 sample_entry='./live-build/manpages/po/fr/.*'
 found=no
+# shellcheck disable=SC2154  # whitelist_list: populated by the eval of the subject script above
 for entry in "${whitelist_list[@]}"; do
    if [ "${entry}" = "${sample_entry}" ]; then
       found=yes
@@ -69,6 +70,7 @@ fi
 ## must be filtered OUT; a non-whitelisted hit must survive.
 sample_hit='./live-build/manpages/po/fr/debian.po:94: emoji here'
 other_hit='./packages/kicksecure/some-package/usr/bin/some-file:1: emoji here'
+# shellcheck disable=SC2154  # whitelist_pattern: eval'd from the script under test above
 filtered="$( printf '%s\n%s\n' "${sample_hit}" "${other_hit}" \
    | grep --invert-match --extended-regexp -- "${whitelist_pattern}" || true )"
 

@@ -116,6 +116,7 @@ if grep --quiet --extended-regexp -- '(^|[[:space:]])--xz($|[[:space:]])' <<< "$
 else
    pass "structural: tar does not use its internal '--xz'"
 fi
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 if grep --quiet --fixed-strings -- '--mtime="@${SOURCE_DATE_EPOCH}"' <<< "${code}"; then
    pass "structural: member mtime pinned to SOURCE_DATE_EPOCH (not a hardcoded date)"
 else

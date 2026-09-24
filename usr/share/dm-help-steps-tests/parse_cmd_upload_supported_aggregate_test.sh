@@ -55,6 +55,7 @@ error() {
    exit 1
 }
 export -f error
+# shellcheck disable=SC2034  # architecture_all_list: consumed by the sourced parse-cmd
 architecture_all_list=( amd64 arm64 source )
 
 ## Run the REAL parser in a subshell with a full, valid argument set and print the

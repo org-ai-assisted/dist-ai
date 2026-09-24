@@ -82,6 +82,7 @@ done
 ## firmware probe (so a forced 4x3 build never reads /sys), and the probe must
 ## remain for the installed-system fallback. A revert drops the clause and this
 ## fails deterministically, host firmware irrelevant.
+# shellcheck disable=SC2016  # literal expected grub condition clause, expansion not wanted
 override_condition='if [ "${dist_build_grub_bios_theme:-}" != "true" ] && [ -d /sys/firmware/efi ]; then'
 
 for entry in "${cfgs[@]}"; do

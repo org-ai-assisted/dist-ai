@@ -143,6 +143,7 @@ if ! grep --quiet 'command_not_found_handle' "${strc}" || ! grep --quiet "PROMPT
    printf '%s\n' 'FAIL: could not extract the .strc command-log hooks from comparison-capture.sh'
    fail=$(( fail + 1 ))
 elif ! type -P script >/dev/null 2>&1; then
+   # shellcheck disable=SC2016  # literal SKIP message; the backticked `script` is prose, not a substitution
    printf '%s\n' 'SKIP: util-linux `script` not available; live-hook PTY checks not exercised' >&2
    ## style-ok: allow-skip: Part B needs a PTY (util-linux `script`) to drive interactive bash faithfully; Part A fully covers the classifier
    skip=$(( skip + 1 ))

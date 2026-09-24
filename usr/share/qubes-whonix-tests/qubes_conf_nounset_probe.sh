@@ -19,6 +19,7 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+# shellcheck disable=SC2034  # uwtwrapper_parent: consumed by the sourced "$1"
 uwtwrapper_parent="/usr/bin/nonapt-probe"
 # shellcheck disable=SC1090
 source "$1"

@@ -40,7 +40,7 @@ assert_prerequisite() {
 assert_prerequisite \
    'helper-scripts has.bsh is not installed (/usr/libexec/helper-scripts/has.bsh)' \
    test -r '/usr/libexec/helper-scripts/has.bsh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source /usr/libexec/helper-scripts/has.bsh
 
 assert_prerequisite 'safe-rm not on PATH' has safe-rm

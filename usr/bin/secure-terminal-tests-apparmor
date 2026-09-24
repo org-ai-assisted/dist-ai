@@ -51,6 +51,7 @@ if [ "$( id -u )" -ne 0 ]; then
 fi
 
 [ "$( id -u )" -eq 0 ] || skip "needs root (loads a profile system-wide)"
+# shellcheck disable=SC2015  # guard: skip runs whenever either apparmor tool is absent
 has apparmor_parser \
    && has aa-exec \
    || skip "apparmor tooling (apparmor_parser / aa-exec) not present"

@@ -75,8 +75,10 @@ fail() {
   ERRORS="${ERRORS}  FAIL: $1"$'\n'
 }
 
-## Source dependencies.
+## Source dependencies. Runtime-computed libexec paths; shellcheck cannot follow.
+# shellcheck disable=SC1091
 source "${helper_scripts_libexec}/strings.bsh"
+# shellcheck disable=SC1091
 source "${msgcollector_libexec}/check"
 
 ## --------------------------------------------------------------------------
@@ -367,6 +369,7 @@ test_safe_filename_reject_slash() {
 
 test_safe_filename_reject_leading_dash() {
   local testvar
+  # shellcheck disable=SC2034  # testvar: read indirectly by validate_safe_filename via its variable-name argument
   testvar="-rf"
   if ! validate_safe_filename "testvar" 2>/dev/null; then
     pass "validate_safe_filename rejects leading dash '-rf'"

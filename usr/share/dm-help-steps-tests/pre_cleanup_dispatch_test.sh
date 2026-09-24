@@ -46,6 +46,7 @@ source "${test_dir}/help_steps_test_lib.bsh"
 
 ## Globals the extracted function closes over.
 dist_source_help_steps_folder=""
+# shellcheck disable=SC2034  # args: consumed by the extracted pre functions
 args=()
 
 ## Extract the named functions (each body from its opening line to the
@@ -143,6 +144,7 @@ main() {
    ## not captured by the extraction above).
    exception_handler_cleanup_functions=()
 
+   # shellcheck disable=SC2034  # dist_source_help_steps_folder: consumed by the extracted pre functions
    dist_source_help_steps_folder="${stub_dir}"
 
    ## ---- each kind runs exactly its steps, in order ----
@@ -247,7 +249,9 @@ main() {
    fi
 
    ## 'tolerate-failure' (the signal / EXIT path) swallows a failing callback.
+   # shellcheck disable=SC2034  # exception_handler_cleanup_functions: consumed by the extracted exception_handler functions
    exception_handler_cleanup_functions=()
+   # shellcheck disable=SC2034  # exception_handler_cleanups_done: consumed by the extracted exception_handler functions
    exception_handler_cleanups_done=""
    true > "${log_file}"
    run_rc=0

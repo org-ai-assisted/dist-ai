@@ -52,6 +52,7 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## resulting ${red}. Non-empty means color was turned on. Runs in a child bash so
 ## each case is isolated; stderr -> /dev/null makes 'test -t 2' false.
 red_after_get_colors() {
+   # shellcheck disable=SC2016  # single-quoted bash -c payload; $... expands in the inner shell
    env "$@" \
       HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
       TERM='xterm-256color' NO_COLOR='' ANSI_COLORS_DISABLED='' \

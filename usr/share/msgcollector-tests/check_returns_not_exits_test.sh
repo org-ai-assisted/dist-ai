@@ -76,6 +76,7 @@ fi
 ## It drains stdin and exits ${RC_UNICODE:-0}.
 stub_bin="${workdir}/bin"
 mkdir --parents -- "${stub_bin}"
+# shellcheck disable=SC2016  # literal stub-script body written to a file
 printf '%s\n' '#!/bin/bash' 'cat >/dev/null 2>&1 || true' 'exit "${RC_UNICODE:-0}"' \
    > "${stub_bin}/unicode-show"
 chmod 0755 -- "${stub_bin}/unicode-show"
@@ -110,6 +111,7 @@ drive() {
 
 ## All sub-checks pass -> check returns 0; caller sees success and continues.
 got="$(drive 0 0 0)"
+# shellcheck disable=SC2015  # && pass || fail: pass returns 0, fail is the intended fallthrough
 [ "${got}" = "PASSED:CONTINUED" ] \
    && pass "all valid -> caller sees success, continues (${got})" \
    || fail "all valid: expected 'PASSED:CONTINUED', got '${got}'"
@@ -117,6 +119,7 @@ got="$(drive 0 0 0)"
 ## First sub-check (not-empty/one-line) fails. The bug: with errexit disabled in
 ## the 'if !' condition, an unguarded failure falls through and check returns 0.
 got="$(drive 1 0 0)"
+# shellcheck disable=SC2015  # && pass || fail: pass returns 0, fail is the intended fallthrough
 [ "${got}" = "CAUGHT:CONTINUED" ] \
    && pass "not-empty failure -> caught + continued (returned, not fell through)" \
    || fail "not-empty failure: expected 'CAUGHT:CONTINUED', got '${got}'"
@@ -124,12 +127,14 @@ got="$(drive 1 0 0)"
 ## unicode-show fails. The bug: the old path exit()ed here, killing the caller,
 ## so neither CAUGHT nor CONTINUED would appear.
 got="$(drive 0 0 1)"
+# shellcheck disable=SC2015  # && pass || fail: pass returns 0, fail is the intended fallthrough
 [ "${got}" = "CAUGHT:CONTINUED" ] \
    && pass "unicode failure -> caught + continued (returned, not exited)" \
    || fail "unicode failure: expected 'CAUGHT:CONTINUED', got '${got}'"
 
 ## Last sub-check (alpha-numeric) fails -> caught + continued.
 got="$(drive 0 1 0)"
+# shellcheck disable=SC2015  # && pass || fail: pass returns 0, fail is the intended fallthrough
 [ "${got}" = "CAUGHT:CONTINUED" ] \
    && pass "alpha-numeric failure -> caught + continued" \
    || fail "alpha-numeric failure: expected 'CAUGHT:CONTINUED', got '${got}'"

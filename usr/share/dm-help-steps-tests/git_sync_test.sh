@@ -62,14 +62,17 @@ stubs="${workspace}/stubs"
 mkdir --parents -- "${stubs}"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "PUSH %s\n" "$(pwd -P)" >> "${SYNC_LOG}"'
 } > "${stubs}/push"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "BUMP %s\n" "$*" >> "${SYNC_LOG}"'
 } > "${stubs}/bump"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "CHERRY %s\n" "$*" >> "${SYNC_LOG}"'
 } > "${stubs}/cherry"
 chmod +x -- "${stubs}/push" "${stubs}/bump" "${stubs}/cherry"
@@ -235,6 +238,7 @@ reset_log
 cherry_fail="${stubs}/cherry-fail"
 {
    printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
    printf '%s\n' 'printf "CHERRY %s\n" "$*" >> "${SYNC_LOG}"'
    printf '%s\n' 'printf "cherry-pick: mirror validation failed\n" >&2'
    printf '%s\n' 'exit 1'

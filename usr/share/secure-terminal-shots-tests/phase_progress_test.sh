@@ -56,7 +56,7 @@ fail() { fail=$(( fail + 1 )); printf '%s\n' "FAIL: $1"; }
 ## in_order LOG NEEDLE... -- true iff each NEEDLE appears, in the given order, as a line substring.
 in_order() {
    local log="$1"; shift
-   local rest="${log}" needle idx
+   local rest="${log}" needle
    for needle in "$@"; do
       case "${rest}" in
          *"${needle}"*)

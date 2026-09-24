@@ -37,7 +37,9 @@ export LC_ALL=C
 ## would make a genuine member miss and silently skip the gated Coverity steps.
 ## Repo names never contain whitespace -> strip it from both sides before
 ## matching (the log messages below keep the originals).
+# shellcheck disable=SC2154  # CANONICAL_REPOS: provided by the CI workflow env
 canonical_repos_compact="${CANONICAL_REPOS//[[:space:]]/}"
+# shellcheck disable=SC2154  # THIS_REPO: provided by the CI workflow env
 this_repo_compact="${THIS_REPO//[[:space:]]/}"
 
 if [ -z "${this_repo_compact}" ]; then
@@ -46,6 +48,7 @@ if [ -z "${this_repo_compact}" ]; then
    ## leading/trailing/doubled comma -- a fail-OPEN against this gate's strict intent.
    printf '%s\n' \
       "gate: THIS_REPO is empty/whitespace; not canonical (fail-closed)" >&2
+   # shellcheck disable=SC2154  # GITHUB_OUTPUT: set by GitHub Actions
    printf '%s\n' 'allowed=false' >> "${GITHUB_OUTPUT}"
 elif grep --fixed-strings --quiet -- ",${this_repo_compact}," <<< ",${canonical_repos_compact},"; then
    printf '%s\n' \

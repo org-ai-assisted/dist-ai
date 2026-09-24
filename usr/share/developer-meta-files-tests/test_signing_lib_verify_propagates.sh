@@ -54,7 +54,7 @@ verify_rc() {
       # shellcheck disable=SC1090
       source "${lib}"
       ## Force the large-file branch: real verify_cmd_signify then returns 0.
-      # shellcheck disable=SC2317
+      # shellcheck disable=SC2317,SC2034  # file_size_mb: read by the sourced signing_lib
       signing_lib_set_file_size_mb() { file_size_mb="1000"; }
       # shellcheck disable=SC2317
       verify_cmd_openpgp() { return "${pgp_rc}"; }

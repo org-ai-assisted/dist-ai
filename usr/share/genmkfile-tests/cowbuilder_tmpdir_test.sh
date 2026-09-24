@@ -142,6 +142,7 @@ done
 ##    written in the source as the ${SUDO_TO_ROOT} token (default 'sudo'), so match
 ##    either spelling as the boundary before measuring what precedes it.
 sudo_prefix="${invocation}"
+# shellcheck disable=SC2016  # literal ${SUDO_TO_ROOT} token stripped as a fixed prefix, not expanded
 sudo_prefix="${sudo_prefix%%'${SUDO_TO_ROOT}'*}"
 sudo_prefix="${sudo_prefix%%sudo *}"
 if [ "${sudo_prefix}" = "${invocation}" ]; then

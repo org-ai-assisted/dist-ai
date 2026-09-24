@@ -64,8 +64,11 @@ if [ "$(type -t derive_unified_image_paths)" != "function" ]; then
 fi
 
 ## Common inputs a real build has set by the time the derivation runs.
+# shellcheck disable=SC2034  # dist_binary_build_folder: consumed by the sourced derive_unified_image_paths
 dist_binary_build_folder=/build/out
+# shellcheck disable=SC2034  # dist_build_version: consumed by the sourced derive_unified_image_paths
 dist_build_version=1.2.3
+# shellcheck disable=SC2034  # target_architecture_pretty_name: consumed by the sourced derive_unified_image_paths
 target_architecture_pretty_name=amd64
 
 ## Run the REAL function against a fresh set of the two output variables. The
@@ -121,7 +124,9 @@ esac
 ## leave the vars DECLARED-but-empty, so the consumer's 'test -f' emits its
 ## actionable "missing other VM" error rather than a raw nounset crash. Every
 ## entry here substring-matches dist_build_type_long, so the loop skips all. ---
+# shellcheck disable=SC2034  # vm_names_to_be_exported: consumed by the sourced derive_unified_image_paths
 vm_names_to_be_exported="Whonix-Workstation-CLI"
+# shellcheck disable=SC2034  # dist_build_type_long: consumed by the sourced derive_unified_image_paths
 dist_build_type_long="workstation"
 run_derivation
 if [ -n "${binary_image_raw_file_for_unified+x}" ]; then

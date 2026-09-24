@@ -70,7 +70,9 @@ reexec_verdict() {  ## $1=euid  $2...=a command, e.g. `export GITHUB_WORKSPACE=/
    local euid="$1"; shift
    (
       unset GITHUB_ACTIONS DIST_AI_IN_SANDBOX DIST_AI_ALLOW_HOST_TESTS CI GITHUB_WORKSPACE
+      # shellcheck disable=SC2034  # list_only: read by the sourced should_ci_reexec
       list_only='false'
+      # shellcheck disable=SC2034  # component: read by the sourced should_ci_reexec
       component='derivative-maker'
       "$@"
       if should_ci_reexec "${euid}"; then printf '%s\n' reexec; else printf '%s\n' no; fi

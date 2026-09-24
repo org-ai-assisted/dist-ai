@@ -55,6 +55,7 @@ fi
 mkdir -p -- cov-analysis
 
 ## Tarball
+# shellcheck disable=SC2154  # COVERITY_TOKEN/COVERITY_PROJECT: CI secrets from the workflow env
 curl \
   --silent \
   --show-error \

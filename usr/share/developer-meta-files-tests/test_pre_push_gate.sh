@@ -211,6 +211,7 @@ assert "non-ASCII range message FAILs R-001" 1 "R-001" --check --range HEAD~1
 repo="$(new_repo)"
 mkfifo "${repo}/pipe-tool"
 hang_rc=0
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 timeout --kill-after=5 20 bash -c 'cd "$1" && "$2" --check --range HEAD' _ \
    "${repo}" "${STYLE}" > /dev/null 2>&1 || hang_rc=$?
 ## 124 = clean timeout; 137 = SIGKILL after --kill-after (child ignored SIGTERM),
@@ -229,6 +230,7 @@ repo="$(new_repo)"
 mk_clean "${repo}/tracked.sh"; git -C "${repo}" add tracked.sh
 esc_name="$(printf 'untresc-\033[31m-marker.sh')"
 printf '%s\n' '#!/bin/bash' 'true' > "${repo}/${esc_name}"
+# shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 esc_out="$( cd -- "${repo}" && "${STYLE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings 'untresc-\x1b[31m-marker.sh' <<< "${esc_out}"; then
    note_pass "a control byte in an untracked file name is escaped, not raw"

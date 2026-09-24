@@ -80,6 +80,7 @@ make_stub() {
    mkdir --parents -- "$(dirname -- "${path}")"
    {
       printf '%s\n' '#!/bin/bash'
+      # shellcheck disable=SC2016  # literal stub body, ${0} expanded by the stub shell not here
       printf '%s\n' 'printf "%s\n" "STUB ${0} ran"'
       printf '%s\n' "exit ${exit_code}"
    } >"${path}"

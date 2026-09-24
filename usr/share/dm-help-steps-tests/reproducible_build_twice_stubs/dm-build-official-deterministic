@@ -16,11 +16,13 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 raw="$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
 stripped="${raw//-developers-only/}"
 stripped="${stripped//-testers-only/}"
 stripped="${stripped//-stable/}"
+# shellcheck disable=SC2154  # binary_build_folder_dist: exported by help-steps/variables in the invoking harness
 out="${binary_build_folder_dist}/${stripped}"
 mkdir --parents -- "${out}"
 ## Deterministic content, so the two collected artifacts compare identical.

@@ -76,6 +76,7 @@ no() {
 count_f() { grep -F --count -- "$2" "$1" 2>/dev/null || true; }
 
 ## 1a. The per-run marker is NEVER ST's X11 WM_CLASS instance (--name).
+# shellcheck disable=SC2016  # literal search string counted in the subject file, not expanded here
 if [ "$(count_f "${capture_sh}" '--name "${run_marker}"')" -eq 0 ]; then
    ok 'the per-run marker is never passed as --name (X11 WM_CLASS instance)'
 else
@@ -84,6 +85,7 @@ fi
 
 ## 1b. The per-run marker is NEVER ST's Wayland app-id (--class): setDesktopFileName(--class) would
 ## make the temp path the app-id and force labwc's fallback icon -- the exact native-Wayland bug.
+# shellcheck disable=SC2016  # literal search string counted in the subject file, not expanded here
 if [ "$(count_f "${capture_sh}" '--class "${run_marker}"')" -eq 0 ]; then
    ok 'the per-run marker is never passed as --class (Wayland app-id)'
 else
@@ -100,6 +102,7 @@ fi
 
 ## 3. secure-terminal is launched DIRECTLY (its `python3 -Bsu` shebang), never wrapped in a bare
 ## `python3 "${st_bin}"` (which drops -Bsu and is a style violation).
+# shellcheck disable=SC2016  # literal search string counted in the subject file, not expanded here
 if [ "$(count_f "${capture_sh}" 'python3 "${st_bin}"')" -eq 0 ]; then
    ok 'secure-terminal is launched directly via its shebang, not wrapped in python3'
 else
@@ -115,6 +118,7 @@ else
 fi
 
 ## 5. secure-terminal's .desktop is installed into the session XDG_DATA_HOME (app-id -> .desktop).
+# shellcheck disable=SC2016  # literal search string counted in the subject file, not expanded here
 if [ "$(count_f "${lib_sh}" '${data_home}/applications/secure-terminal.desktop')" -ge 1 ]; then
    ok 'lib-capture.sh installs secure-terminal.desktop into the session XDG_DATA_HOME'
 else

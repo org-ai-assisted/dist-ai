@@ -90,6 +90,7 @@ marker_pid=$!
 cleanup() {
    local p
    for p in "${marker_pid:-}" "${nl_pid:-}" "${c1_pid:-}"; do
+      # shellcheck disable=SC2015  # guarded cleanup: || true is the intended fallthrough
       [ -n "${p}" ] && kill "${p}" 2>/dev/null || true
    done
 }

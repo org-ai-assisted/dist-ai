@@ -138,6 +138,7 @@ assert_contains() {
 
 assert_contains "${docker_start}" 'PIPESTATUS[@]' \
    "docker-start captures PIPESTATUS rather than the pipeline status"
+# shellcheck disable=SC2016
 assert_contains "${docker_start}" 'exit "${pipe_status[0]}"' \
    "docker-start exits with the BUILD's status"
 

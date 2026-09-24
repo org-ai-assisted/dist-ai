@@ -185,6 +185,7 @@ done
 fake_tree="$(mktemp --directory)"
 mkdir --parents -- "${fake_tree}/help-steps"
 printf '%s\n' '## stub' > "${fake_tree}/help-steps/pre"
+# shellcheck disable=SC2015,SC2016  # guarded capture of an inner-shell payload, not an expansion here
 resolved="$(cd -- "${fake_tree}" && env --unset=source_code_folder_dist bash -c '
    source "$1"
    derivative_maker_source_tree_resolve /usr/bin || exit 1
@@ -208,6 +209,7 @@ mkdir --parents -- "${real_root}/help-steps" "${other_tree}/help-steps" \
 printf '%s\n' '## stub' > "${real_root}/help-steps/pre"
 printf '%s\n' '## stub' > "${other_tree}/help-steps/pre"
 
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 resolved="$(env source_code_folder_dist="${other_tree}" bash -c '
    source "$1"
    derivative_maker_source_tree_resolve "$2" || exit 1
@@ -226,6 +228,7 @@ fi
 ## operator who correctly set source_code_folder_dist was still refused.
 standalone="$(mktemp --directory)"
 mkdir --parents -- "${standalone}/usr/bin"
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 resolved="$(env source_code_folder_dist="${other_tree}" bash -c '
    source "$1"
    derivative_maker_source_tree_resolve "$2" || exit 1

@@ -75,15 +75,18 @@ run_with_state() {
 
 ## active -> success (0)
 rc="$( run_with_state active )"
+# shellcheck disable=SC2015  # pass returns 0, so fail runs only on the test's failure
 [ "${rc}" = "0" ] && pass "active -> exit 0" || fail "active -> exit ${rc}, expected 0"
 
 ## failed -> exit 0 (best-effort contract; the caller handles Tor's absence)
 rc="$( run_with_state failed )"
+# shellcheck disable=SC2015  # pass returns 0, so fail runs only on the test's failure
 [ "${rc}" = "0" ] && pass "failed -> exit 0 (best-effort contract)" \
    || fail "failed -> exit ${rc}, expected 0 (best-effort contract)"
 
 ## never terminal (timeout) -> exit 0 (best-effort contract)
 rc="$( run_with_state activating )"
+# shellcheck disable=SC2015  # pass returns 0, so fail runs only on the test's failure
 [ "${rc}" = "0" ] && pass "timeout -> exit 0 (best-effort contract)" \
    || fail "timeout -> exit ${rc}, expected 0 (best-effort contract)"
 
