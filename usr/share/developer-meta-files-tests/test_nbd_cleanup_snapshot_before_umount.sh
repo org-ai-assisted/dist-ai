@@ -134,7 +134,7 @@ fi
 
 ## Every nbd mount is unmounted -- including the \040-encoded space, decoded.
 for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c'; do
-   if stub_called_with sudo "umount -- ${want}"; then
+   if stub_called_with sudo umount -- "${want}"; then
       pass "behavioral: nbd mount '${want}' was unmounted"
    else
       fail "behavioral: nbd mount '${want}' was NOT unmounted (skipped or mis-decoded)"
@@ -143,7 +143,7 @@ done
 
 ## No non-nbd mount is unmounted (device-name filtering).
 for unwanted in '/boot' '/mnt/plain-tmpfs'; do
-   if stub_not_called_with sudo "umount -- ${unwanted}"; then
+   if stub_not_called_with sudo umount -- "${unwanted}"; then
       pass "behavioral: non-nbd mount '${unwanted}' was left alone"
    else
       fail "behavioral: non-nbd mount '${unwanted}' was unmounted (filtering broken)"
@@ -153,6 +153,7 @@ done
 ## --- (2) STRUCTURAL BACKSTOP: the snapshot-array shape (read-order guard) -----
 ## Robust pattern-presence, not a line-number ordering parse: a regression to
 ## unmount-inside-the-read-loop would drop this collect-then-iterate shape.
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
 if grep --quiet --extended-regexp -- '^\s*nbd_mount_points=\(\)' "${subject}" \
    && grep --quiet --fixed-strings -- 'for mount_point in "${nbd_mount_points[@]}"' "${subject}"; then
    pass "structural: unmount iterates the collected 'nbd_mount_points' snapshot"

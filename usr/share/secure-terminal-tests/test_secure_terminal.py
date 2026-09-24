@@ -1583,15 +1583,18 @@ eq(S.sanitize_clipboard_display('plain\nok\t.'), 'plain\nok\t.',
 # 30. Capping HERE (after escapes are stripped, on persisted cells) is escape- and
 # read-boundary-proof; lossless for real decomposed text.
 _acute = chr(0x0301)                                   # combining acute
+# Flood magnitudes are cap-relative so the assertions hold for ANY _COMBINING_RUN_MAX,
+# not only the current value (a raised cap must not silently false-fail these).
+_over_cap = S._COMBINING_RUN_MAX * 3 + 4               # well above the cap
 def _mark_cells(cells):
     return sum(1 for _c, _ in cells if _c == _acute)
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * 100)
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * _over_cap)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
-   f'feed_line_edits: a 100-mark flood on one base is bounded to {S._COMBINING_RUN_MAX} mark-cells')
+   f'feed_line_edits: an over-cap flood on one base is bounded to {S._COMBINING_RUN_MAX} mark-cells')
 # a stripped SGR between mark-blocks must NOT reset the cap (it leaves no cell, so
 # the marks stay adjacent to the one base) -- the escape-reset bypass
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(
-    [], 0, {}, 'a' + (_acute * 20 + '\x1b[0m') * 5)
+    [], 0, {}, 'a' + (_acute * S._COMBINING_RUN_MAX + '\x1b[0m') * 3)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a stripped SGR between mark-blocks cannot reset the cap')
 # short real combining clusters (a base resets the run) are preserved in full
@@ -1601,9 +1604,9 @@ eq([_c for _c, _ in _cells], ['e', _acute, 'o', _acute],
 eq(len(S.feed_line_edits([], 0, {}, 'x' + _acute * 30)[1]), 31,
    'feed_line_edits: exactly 30 marks (stream-safe conformant) kept in full')
 # split across calls: the persisted `cells` make the cap read-boundary-proof
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * 20)
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _acute * S._COMBINING_RUN_MAX)
 for _ in range(5):
-    _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(_cells, _col, _sg, _acute * 20)
+    _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(_cells, _col, _sg, _acute * S._COMBINING_RUN_MAX)
 eq(_mark_cells(_cells), S._COMBINING_RUN_MAX,
    'feed_line_edits: a flood split across chunks stays bounded (cells persist)')
 # overwrite-join: two sub-cap runs separated by a base, then a cursor move (CSI G)
@@ -1632,7 +1635,7 @@ ok(_max_mark_run(_cells2) <= S._COMBINING_RUN_MAX and _cells2[0][0] == 'a',
 # Mc) must be capped too -- detection is by mark CATEGORY, not combining class, so
 # ccc cannot be used to slip a flood past the cap
 _maa = chr(0x093E)                                     # Devanagari vowel sign AA (Mc, ccc 0)
-_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * 100)
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * _over_cap)
 eq(sum(1 for _c, _ in _cells if _c == _maa), S._COMBINING_RUN_MAX,
    f'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to {S._COMBINING_RUN_MAX}')
 

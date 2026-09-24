@@ -112,7 +112,7 @@ run_keymap_case() {
 
       set_console_keymap >/dev/null 2>&1 || true
 
-      if stub_called_with systemctl 'restart keyboard-setup.service'; then
+      if stub_called_with systemctl restart keyboard-setup.service; then
          printf '%s\n' 'restart'
       else
          printf '%s\n' 'no-restart'
@@ -143,12 +143,19 @@ if [ "${def_count}" -eq 1 ]; then
    ## Globals main() would normally set; the test provides the ones set_console_keymap
    ## and its callees read. args empty -> no layout writes; timeout_command empty ->
    ## the stubbed commands run directly; do_force -> real LUKS prompt returns early.
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    args=()
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    skl_default_keyboard_var_names=( 'XKBLAYOUT' 'XKBVARIANT' 'XKBOPTIONS' )
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    do_live_changes='true'
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    timeout_command=()
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    do_force='true'
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    did_prompt_for_luks='false'
+   # shellcheck disable=SC2034  # consumed by the sourced set_console_keymap
    scriptname='set-console-keymap'
 
    nonroot_result="$(run_keymap_case 1000)"
