@@ -600,7 +600,13 @@ def prop_corpus_render(text, mode):
     # no invisible default-ignorable may survive in ANY mode: str.isprintable() is
     # true for them, which is how show leaked U+FE0F / U+3164 / U+115F.
     assert not any(S.is_default_ignorable(ch) for ch in out), repr(out[:60])
-    assert S.render_output(out, mode) == out          # idempotent
+    if mode == 'codepoints':
+        # codepoints badges EVERY character (incl its own <U+XXXX> output), so it is
+        # NOT idempotent by design -- assert inertness instead (only <U+XXXX> ASCII
+        # badges plus tab/newline reach the screen), the property that actually matters.
+        assert all(0x20 <= ord(ch) <= 0x7E or ch in '\t\n' for ch in out), repr(out[:60])
+    else:
+        assert S.render_output(out, mode) == out      # idempotent
 
 
 @RUN
