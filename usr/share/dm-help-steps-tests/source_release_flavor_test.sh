@@ -25,6 +25,10 @@
 ##    asymmetry correct, so the invariant cannot quietly stop holding.
 ##
 ## Needs no root, no network, no build.
+##
+## NOTE: a behavioral migration (drive the real Phase-4 source release) is
+## impractical -- it needs a full multi-flavor build. The structural checks on the
+## shipped orchestration are the practical maximum fidelity for a rootless suite.
 
 set -o errexit
 set -o nounset
