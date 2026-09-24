@@ -139,6 +139,7 @@ mountinfo_fixture="${work_dir}/mountinfo"
    printf '%s\n' '41 35 0:52 / /mnt/spoof rw shared:6 - fuse.evil /dev/nbd0 rw'
    printf '%s\n' '42 35 0:60 / /mnt/nbd-btrfs rw,relatime shared:7 - btrfs /dev/nbd3p1 rw'
    printf '%s\n' '43 35 7:1 / /mnt/nbd-backup rw,relatime shared:8 - ext4 /dev/nbd-backup rw'
+   printf '%s\n' '44 35 7:2 / /mnt/nbd0-backup rw,relatime shared:9 - ext4 /dev/nbd0-backup rw'
 } > "${mountinfo_fixture}"
 
 ## A /proc/filesystems-shaped fixture: 'nodev'-prefixed lines are virtual /
@@ -182,7 +183,7 @@ done
 
 ## No non-nbd mount is unmounted -- ordinary device, tmpfs, the deputy spoof, and
 ## a same-prefix source name (/dev/nbd-backup, major 7) that is NOT an nbd device.
-for unwanted in '/boot' '/mnt/plain-tmpfs' '/mnt/spoof' '/mnt/nbd-backup'; do
+for unwanted in '/boot' '/mnt/plain-tmpfs' '/mnt/spoof' '/mnt/nbd-backup' '/mnt/nbd0-backup'; do
    if stub_not_called_with sudo umount -- "${unwanted}"; then
       pass "behavioral: non-nbd mount '${unwanted}' was left alone"
    else
