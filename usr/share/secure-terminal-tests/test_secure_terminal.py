@@ -581,22 +581,22 @@ eq(''.join(ch for ch, _ in _gcells), 'ab   Z', 'CSI G pads to the absolute colum
 # clamped the column to len(cells), so the pad loop never ran and a right-prompt
 # (ESC[43C) or an aligned write (ESC[20G) collapsed onto the prompt.
 _uc, _ucells, _ucol, _us, _uw = S.feed_line_edits(
-    [], 0, {}, 'user@host:~$ \x1b[43C[pts/11]', 0, True)
+    [], 0, {}, 'user@host:~$ \x1b[43C[pts/11]', 0, 'full')
 eq(''.join(ch for ch, _ in _ucells), 'user@host:~$ ' + ' ' * 43 + '[pts/11]',
    'CUF in unbounded mode pads blanks to the target column, not gluing (right-prompt)')
 eq(_ucol, 64, 'unbounded CUF cursor lands at the padded column (13 + 43 + 8)')
 _uga, _ugcells, _ugcol, _ugs, _ugw = S.feed_line_edits(
-    [], 0, {}, 'user@host:~$ \x1b[20GXYZ', 0, True)
+    [], 0, {}, 'user@host:~$ \x1b[20GXYZ', 0, 'full')
 eq(''.join(ch for ch, _ in _ugcells), 'user@host:~$ ' + ' ' * 6 + 'XYZ',
    'CHA in unbounded mode pads to the absolute column, not gluing')
 # DoS bound: a pathological huge column jump must NOT allocate an unbounded pad --
 # the blank run is capped at _UNBOUNDED_MAX_COL (a naive pad-to-col would allocate
 # ~1e6 cells here). ESC[999999C is 6 digits, so _safe_int accepts it; the cap, not
 # _safe_int, is what holds the line.
-_dc, _dcells, _dcol, _ds, _dw = S.feed_line_edits([], 0, {}, 'x\x1b[999999C', 0, True)
+_dc, _dcells, _dcol, _ds, _dw = S.feed_line_edits([], 0, {}, 'x\x1b[999999C', 0, 'full')
 eq(len(_dcells), S._UNBOUNDED_MAX_COL,
    'unbounded CUF padding is capped at _UNBOUNDED_MAX_COL (no memory blowup)')
-_dgc, _dgcells, _dgcol, _dgs, _dgw = S.feed_line_edits([], 0, {}, '\x1b[999999GZ', 0, True)
+_dgc, _dgcells, _dgcol, _dgs, _dgw = S.feed_line_edits([], 0, {}, '\x1b[999999GZ', 0, 'full')
 eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
    'unbounded CHA padding is capped at _UNBOUNDED_MAX_COL, then the char lands')
 
@@ -608,13 +608,13 @@ eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
 # clamp to the line length and K erases are skipped, so the flood cannot spin.
 # CANARY: on the pre-fix code the trailing CUF pads all 500 blanks -> (col, len) == (501, 501).
 _flood = ('\x1b[8192C\r\x1b[0K' * 64) + ('\x1b[8192C\x1b[2K' * 64) + '\n\x1b[500Cx'
-_fbc, _fbcells, _fbcol, _fbs, _fbw = S.feed_line_edits([], 0, {}, _flood, 0, True)
+_fbc, _fbcells, _fbcol, _fbs, _fbw = S.feed_line_edits([], 0, {}, _flood, 0, 'full')
 eq((_fbcol, len(_fbcells)), (1, 1),
    'work budget: after a pad-erase flood spends the budget, a fresh-line CUF pads nothing (#3)')
 ok(0 <= _fbcol <= len(_fbcells),
    'work budget: the clamp keeps the trim-to-cursor invariant col <= len(cells)')
 # a NORMAL right-prompt (no flood) still pads fully -- the budget only bites a flood.
-_nb = S.feed_line_edits([], 0, {}, '\x1b[40Cx', 0, True)
+_nb = S.feed_line_edits([], 0, {}, '\x1b[40Cx', 0, 'full')
 eq((_nb[2], len(_nb[1])), (41, 41),
    'work budget: an ordinary CUF pads fully (the budget only bounds a flood, not honest output)')
 
@@ -2131,45 +2131,61 @@ ok('\x1b' not in cur, 'no ESC byte survives feed_line_edits')
 # BYPASSES -- a control routed AROUND rather than broken head-on.
 # ==============================================================================
 
-def _cells_render(raw, mode='detail', line_edits=True, max_line=0):
+def _cells_render(raw, mode='detail', line_editing='full', max_line=0):
     """Render `raw` the way the WIDGET does: through the cell model, then through
     cells_to_runs. Distinct from render_output(), which the CLI wrapper uses -- a
     leak can exist in one path and not the other, so tests must drive this one."""
     comp, cells, _col, _sgr, wraps = S.feed_line_edits(
-        [], 0, {}, raw, max_line, line_edits)
+        [], 0, {}, raw, max_line, line_editing)
     runs, _prefix = S.cells_to_runs(comp, cells, mode, False, wraps=wraps)
     return ''.join(text for text, _key in runs)
 
 
-# --- line_edits=False makes escape-driven editing append-only -----------------
+# --- read-safe / append-only make escape-driven editing append-only -----------
 # The four line-local CSI ops exist so a shell's line editor can redraw the line
-# you are typing. Turned off, they must be CONSUMED but inert: no cursor move, no
-# erase, and no leftover partial sequence on screen -- so a program can no longer
-# overwrite what it already printed on the current line.
+# you are typing. In read-safe (and append-only) they must be CONSUMED but inert:
+# no cursor move, no erase, and no leftover partial sequence on screen -- so a
+# program can no longer overwrite via escapes what it already printed.
 _le_raw = 'STATUS=FAIL\x1b[2KSTATUS=PASS'
-_le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, True)[1]
-_le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, False)[1]
+_le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, 'full')[1]
+_le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, 'read-safe')[1]
 eq(''.join(c for c, _ in _le_on), ' ' * 11 + 'STATUS=PASS',
-   'line_edits on: 2K blanks the line but keeps the cursor (ECMA-48), so the '
+   'full: 2K blanks the line but keeps the cursor (ECMA-48), so the '
    'redraw text lands at the held column; a shell redraw repositions with CR')
 eq(''.join(c for c, _ in _le_off), 'STATUS=FAILSTATUS=PASS',
-   'line_edits off: the erased text survives -- append-only against escapes')
+   'read-safe: the erased text survives -- append-only against escapes')
 ok(all(ch != '\x1b' for ch, _ in _le_off),
-   'line_edits off: the escape is consumed, not left on screen as [2K')
+   'read-safe: the escape is consumed, not left on screen as [2K')
 # the other three ops are equally inert, and leave no residue
 for _op, _seq in (('cursor-forward', '\x1b[4C'), ('cursor-back', '\x1b[2D'),
                   ('cursor-column', '\x1b[1G')):
-    _cells = S.feed_line_edits([], 0, {}, 'abc' + _seq + 'z', 0, False)[1]
+    _cells = S.feed_line_edits([], 0, {}, 'abc' + _seq + 'z', 0, 'read-safe')[1]
     _text = ''.join(c for c, _ in _cells)
-    eq(_text, 'abcz', 'line_edits off: %s is inert and leaves no residue' % _op)
-# \r and \b are raw control bytes, NOT escapes: still honored either way, which
-# is why this is append-only against escapes rather than against every byte.
-_cr_off = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, False)[1]
+    eq(_text, 'abcz', 'read-safe: %s is inert and leaves no residue' % _op)
+# read-safe: \r and \b are raw control bytes, NOT escapes: still honored, which is
+# why read-safe is append-only against escapes rather than against every byte.
+_cr_off = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, 'read-safe')[1]
 eq(''.join(c for c, _ in _cr_off), 'PASS',
-   'line_edits off: carriage return still overwrites (a raw byte, not an escape)')
-# the default is on, so an omitted argument keeps today's behaviour
+   'read-safe: carriage return still overwrites (a raw byte, not an escape)')
+# append-only: \r and \b are ALSO neutralized. CR completes the line (frame kept on
+# its own line, flagged with the suppressed _REDRAW_MARK); BS is dropped. So the
+# current line can never be overwritten.
+_ao_comp, _ao_cur, _, _, _ = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, 'append-only')
+eq([c for c, _ in _ao_comp[0]], list('FAIL') + [' '],
+   'append-only: CR keeps FAIL on its own completed line (+ redraw marker cell)')
+ok(_ao_comp[0][-1] == S._REDRAW_MARK and ''.join(c for c, _ in _ao_cur) == 'PASS',
+   'append-only: the completed line carries the redraw marker; PASS is a fresh line')
+_ao_bs = S.feed_line_edits([], 0, {}, 'abc\b\bX', 0, 'append-only')[1]
+eq(''.join(c for c, _ in _ao_bs), 'abcX',
+   'append-only: backspace is neutralized (no overwrite), so text only grows')
+# append-only + a bash-order prompt flush with a neutralized \b on the flushed line: the
+# line carries BOTH the redraw marker and the no-trailing-newline marker.
+_ao_pf = S.feed_line_edits([], 0, {}, 'abc\b' + S.PROMPT_START + 'X', 0, 'append-only')[0]
+ok(_ao_pf and S._REDRAW_MARK in _ao_pf[0] and S._NO_NEWLINE_MARK in _ao_pf[0],
+   'append-only: a \\b before a prompt-flush flags the flushed line redraw + no-newline')
+# the default is full, so an omitted argument keeps today's behaviour
 eq(S.feed_line_edits([], 0, {}, _le_raw)[1], _le_on,
-   'line_edits defaults to on (omitting it changes nothing)')
+   'line_editing defaults to full (omitting it changes nothing)')
 
 
 # --- BYPASS: the ECMA-48 escape grammar, not just the arms we remembered -------
@@ -2662,21 +2678,21 @@ eq(_SPAN_BAD, [],
 # The cell buffer PERSISTS across the flip, so the two settings meet on one line.
 # Turning the setting off must make the already-honoured ops inert without
 # corrupting the state they built, and without leaking the bytes it now ignores.
-_comp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, 'hello\x1b[3G', 0, True)
+_comp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, 'hello\x1b[3G', 0, 'full')
 eq((''.join(c for c, _k in _cells), _col), ('hello', 2),
-   'line_edits on: CSI G moves the cursor')
-# flip OFF mid-line: the same op must now do nothing, and print nothing
+   'full: CSI G moves the cursor')
+# flip to read-safe mid-line: the same op must now do nothing, and print nothing
 _c2, _cells2, _col2, _sgr2, _w2 = S.feed_line_edits(
-    _cells, _col, _sgr, '\x1b[1G\x1b[K\x1b[5C', 0, False)
+    _cells, _col, _sgr, '\x1b[1G\x1b[K\x1b[5C', 0, 'read-safe')
 eq((''.join(c for c, _k in _cells2), _col2), ('hello', 2),
-   'line_edits off mid-stream: CSI G/K/C neither move, erase nor pad')
-eq(_cells_render('\x1b[1G\x1b[K\x1b[5C', 'detail', line_edits=False), '',
-   'line_edits off displays nothing for the ops it stopped honouring')
-# ...and flipping back ON restores them against the SAME buffer
+   'read-safe mid-stream: CSI G/K/C neither move, erase nor pad')
+eq(_cells_render('\x1b[1G\x1b[K\x1b[5C', 'detail', line_editing='read-safe'), '',
+   'read-safe displays nothing for the ops it stopped honouring')
+# ...and flipping back to full restores them against the SAME buffer
 _c3, _cells3, _col3, _sgr3, _w3 = S.feed_line_edits(
-    _cells2, _col2, _sgr2, '\x1b[1GH', 0, True)
+    _cells2, _col2, _sgr2, '\x1b[1GH', 0, 'full')
 eq(''.join(c for c, _k in _cells3), 'Hello',
-   'line_edits back on: the ops act again on the buffer built while off')
+   'full again: the ops act again on the buffer built while read-safe')
 # the cursor must stay inside the buffer across every flip (an out-of-range col
 # would index past the cells on the next write)
 ok(0 <= _col3 <= len(_cells3), 'the cursor stays within the cell buffer across flips')
@@ -2689,12 +2705,12 @@ for _cut in range(1, 5):
     _cells, _col, _sgr = [('x', ())], 1, {}
     _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[:_cut], _carry, _drop)
     _c, _cells, _col, _sgr, _w = S.feed_line_edits(
-        _cells, _col, _sgr, _text, 0, True)
+        _cells, _col, _sgr, _text, 0, 'full')
     _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[_cut:], _carry, _drop)
     _c, _cells, _col, _sgr, _w = S.feed_line_edits(
-        _cells, _col, _sgr, _text, 0, False)
+        _cells, _col, _sgr, _text, 0, 'read-safe')
     ok(all(c not in '\x1b[2K' or c == 'x' for c, _k in _cells),
-       'a CSI split across a line_edits flip leaks no byte (cut %d)' % _cut)
+       'a CSI split across a line_editing flip leaks no byte (cut %d)' % _cut)
     eq(_carry, '', 'the carry is drained after the split CSI completes (cut %d)' % _cut)
 
 # --- BYPASS: the grapheme-cluster flood cap -----------------------------------

@@ -487,6 +487,33 @@ ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
    'and the primary-screen output that preceded the alt frame survives the restart')
 _ra.close()
 
+# --- alternate-screen indicator: alt_active() + the alt_screen_changed signal ---
+# The window surfaces "a full-screen program holds the alt screen" from this getter +
+# signal; both must track the real enter/leave, and alt_active is gated on TUI mode.
+_altw = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_alt_events = []
+_altw.alt_screen_changed.connect(lambda: _alt_events.append(_altw.alt_active()))
+ok(not _altw.alt_active(), 'alt_active is False before any alternate-screen enter')
+feed_output(_altw, b'\x1b[?1049hFULLSCREEN\r\n')      # enter the alternate screen
+_altw._render_tui()
+APP.processEvents()
+ok(_altw.alt_active(), 'alt_active is True while a program holds the alternate screen')
+feed_output(_altw, b'\x1b[?1049l')                     # leave it
+_altw._render_tui()
+APP.processEvents()
+ok(not _altw.alt_active(), 'alt_active is False again after the program leaves the alt screen')
+ok(_alt_events and _alt_events[0] is True and _alt_events[-1] is False,
+   'alt_screen_changed fired on the enter (True) and the leave (False) transition')
+_altw.close()
+# a CLI (non-TUI) tab is never alt-active: alt_active is gated on tui_active(), even though
+# the pyte alt-scan still runs in line mode (so a later flip to TUI shows the frame).
+_altc = SecureTerminal(command='/bin/cat')
+APP.processEvents()
+feed_output(_altc, b'\x1b[?1049h')
+ok(not _altc.alt_active(), 'a CLI tab is never alt-active (gated on tui_active)')
+_altc.close()
+
 # alt-screen leak on foreground-return: a `cat` of a file that enters the alt screen
 # (?1049h) but never leaves it (no ?1049l) must not strand the terminal in the alt buffer
 # -- no scrollback, vertical scrolling dead -- once the shell regains the foreground. But a
@@ -1904,26 +1931,72 @@ if tui_available():
 # strings, and toggling live must re-render the retained output under the new rule.
 _le = SecureTerminal(command='/bin/cat')
 _le.apply_mode('box')
-ok(_le.line_edits_enabled(), 'line editing is on by default')
+eq(_le.line_editing(), 'full', 'line editing is full by default')
 feed_output(_le, b'STATUS=FAIL\x1b[2KSTATUS=PASS\n')
 ok('STATUS=FAIL' not in _le.toPlainText(),
-   'line editing on: the erase redraws the line, so FAIL is gone')
-_le.apply_line_edits(False)
-ok(not _le.line_edits_enabled(), 'apply_line_edits(False) takes effect')
+   'full: the erase redraws the line, so FAIL is gone')
+_le.apply_line_editing('read-safe')
+eq(_le.line_editing(), 'read-safe', "apply_line_editing('read-safe') takes effect")
 ok('STATUS=FAIL' in _le.toPlainText() and 'STATUS=PASS' in _le.toPlainText(),
-   'turning line editing off re-renders the retained output, so FAIL is back')
+   'read-safe re-renders the retained output, so FAIL is back')
+_le.apply_line_editing('bogus-mode')          # invalid value -> clamps to 'full'
+eq(_le.line_editing(), 'full', 'apply_line_editing clamps an unknown value to full')
+_le_render_calls = []
+_le._rerender = lambda *_a, **_k: _le_render_calls.append(1)   # spy: a no-op must not re-render
+_le.apply_line_editing('full')                                 # SAME level -> early return
+eq((_le.line_editing(), _le_render_calls), ('full', []),
+   'apply_line_editing to the current level is a no-op (no re-render)')
 _le.close()
 
-_le2 = SecureTerminal(command='/bin/cat', line_edits=False)
+_le2 = SecureTerminal(command='/bin/cat', line_editing='read-safe')
 _le2.apply_mode('box')
-ok(not _le2.line_edits_enabled(), 'the ctor kwarg is honored (session restore path)')
+eq(_le2.line_editing(), 'read-safe', 'the ctor kwarg is honored (session restore path)')
 feed_output(_le2, b'STATUS=FAIL\x1b[2KSTATUS=PASS\n')
 _le2_doc = _le2.toPlainText()
 ok('STATUS=FAIL' in _le2_doc and 'STATUS=PASS' in _le2_doc,
-   'line editing off: output is append-only, both strings survive')
+   'read-safe: escape-driven editing is append-only, both strings survive')
 ok('\x1b' not in _le2_doc and '[2K' not in _le2_doc,
-   'line editing off: the escape is consumed, not shown as [2K residue')
+   'read-safe: the escape is consumed, not shown as [2K residue')
 _le2.close()
+
+# --- append-only: \r/\b neutralized, each redraw flagged in the gutter ----------
+# feed via the REAL read path (sets _raw) so a reflow cannot wipe the doc.
+_ao = SecureTerminal(command='/bin/cat', line_editing='append-only')
+_ao.apply_mode('box')
+_ao.resize(700, 300)
+_ao.show()
+pump(50)
+feed_output(_ao, b'load 10%\rload 55%\rload 100%\n')
+feed_output(_ao, b'STATUS=FAIL\rSTATUS=PASS\n')
+_ao_doc = _ao.toPlainText()
+ok('load 10%' in _ao_doc and 'load 55%' in _ao_doc and 'load 100%' in _ao_doc,
+   'append-only: a \\r progress bar keeps every frame on its own line')
+ok('STATUS=FAIL' in _ao_doc and 'STATUS=PASS' in _ao_doc,
+   'append-only: a \\r overwrite attempt keeps BOTH lines (tamper-evident)')
+# every line that a \r ended carries the redraw gutter flag; the final \n line does not.
+_ao_doc_ = _ao.document()
+_ao_marked = [_ao_doc_.findBlockByNumber(_i).text()
+              for _i in range(_ao_doc_.blockCount())
+              if _ao._block_redraw(_ao_doc_.findBlockByNumber(_i))]
+ok(any('load 10%' in t for t in _ao_marked) and any('STATUS=FAIL' in t for t in _ao_marked),
+   'append-only: the CR-broken lines carry the redraw gutter flag')
+ok(not any('load 100%' in t for t in _ao_marked),
+   'append-only: a \\n-terminated line (no redraw) carries no flag')
+pump(50)                                   # let the gutter repaint (covers the glyph paint)
+# hovering a redraw-marked gutter row shows the "redraw neutralized" tooltip.
+from PyQt6.QtCore import QPointF as _QPF, QEvent as _QEv, Qt as _Qt   # noqa: E402
+from PyQt6.QtGui import QMouseEvent as _QMEv                          # noqa: E402
+_ao_hy = None
+for _blk, _top, _bot in _ao._gutter_blocks():
+    if _ao._block_redraw(_blk):
+        _ao_hy = (_top + _bot) // 2
+        break
+ok(_ao_hy is not None, 'append-only: a redraw-marked row is visible in the gutter')
+_ao._gutter_hover(_QMEv(_QEv.Type.MouseMove, _QPF(3, _ao_hy), _QPF(3, _ao_hy),
+                        _Qt.MouseButton.NoButton, _Qt.MouseButton.NoButton,
+                        _Qt.KeyboardModifier.NoModifier))
+ok(True, 'append-only: hovering a redraw-marked gutter row shows its tooltip without crashing')
+_ao.close()
 
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)

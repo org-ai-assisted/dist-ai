@@ -981,7 +981,7 @@ try:
     win._default_font_family = 'Hack'
     win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                        'font_family': 'Attacker Font', 'font_size': 20,
-                       'colors': True, 'line_edits': True, 'tui': True, 'osc_notice': True,
+                       'colors': True, 'line_editing': 'full', 'tui': True, 'osc_notice': True,
                        'tui_autobox_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
                        'paste_delay': 3, 'escape_limit': 4096, 'persist': False})
@@ -1003,7 +1003,7 @@ _sca6_calls = []
 # these two _apply_global calls do minimal per-tab work; clip_autostart is NOT lockable via
 # _locked, so its guard is still exercised. This isolates the guard from tab re-render.
 _opts6 = {'theme': 'dark', 'zoom': 100, 'mode': 'box', 'font_family': 'Hack',
-          'font_size': 20, 'colors': True, 'line_edits': True, 'tui': True,
+          'font_size': 20, 'colors': True, 'line_editing': 'full', 'tui': True,
           'osc_notice': True, 'tui_autobox_notice': True, 'osc': {'osc_title': True},
           'scrollback': 1000, 'paste_delay': 3, 'escape_limit': 4096, 'persist': False}
 try:
@@ -1196,7 +1196,7 @@ try:
     win._apply_global({'theme': 'dark', 'zoom': 100,
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'mode': 'box',
-                       'colors': True, 'line_edits': True, 'tui': False,
+                       'colors': True, 'line_editing': 'full', 'tui': False,
                        'osc': {}, 'osc_notice': True, 'tui_autobox_notice': True,
                        'scrollback': 0, 'paste_delay': 3, 'escape_limit': 4096,
                        'paste_warn': 'always', 'copy_warn': 'never', 'persist': False})
@@ -1234,7 +1234,7 @@ try:
     win._apply_global({'theme': 'dark', 'zoom': 100,
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'ui_scale': 175,
-                       'mode': 'box', 'colors': True, 'line_edits': True, 'tui': False, 'osc': {},
+                       'mode': 'box', 'colors': True, 'line_editing': 'full', 'tui': False, 'osc': {},
                        'osc_notice': True, 'tui_autobox_notice': True,
                        'scrollback': 0, 'paste_delay': 3, 'escape_limit': 4096,
                        'persist': False})
@@ -1403,7 +1403,7 @@ _gmwin._review_bar.rerender_mirror = lambda *a: _gm_calls.append(1)
 _gmm = _QMimeRB(); _gmm.setText('rm -rf /\ncurl x\n'); _gmt.insertFromMimeData(_gmm); pump()
 _gm_calls.clear()                                      # ignore the show_review render
 _gmwin._apply_global({'theme': 'light', 'zoom': 100, 'mode': 'box', 'colors': True,
-                      'line_edits': True, 'scrollback': 1000, 'paste_delay': 3,
+                      'line_editing': 'full', 'scrollback': 1000, 'paste_delay': 3,
                       'escape_limit': 4096, 'persist': False})
 ok(bool(_gm_calls),
    'applying Global Settings refreshes an open review mirror (rerender_mirror called)')
@@ -1456,6 +1456,24 @@ APP.aboutToQuit.emit()
 ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shutdown')
 _teardown_win.deleteLater()
 APP.processEvents()
+
+
+# --- alternate-screen indicator: the mode lamp + tui dot reflect a live alt-screen ---
+from secure_terminal.main import _dot_icon as _di                    # noqa: E402
+ok(not _di('#1f9d63').isNull(), '_dot_icon builds a non-null colour-dot icon')
+win.new_tab(tui=True)
+_alt_tab = win.current()
+_alt_tab._alt_screen = True              # simulate a full-screen program holding the alt buffer
+ok(_alt_tab.alt_active(), 'a TUI tab with the alt buffer active reports alt_active')
+win._on_alt_screen_changed(_alt_tab)     # current tab -> refresh the indicators (covers branch)
+eq(win._mode_level()[1], 'TUI (alt)',
+   'the mode lamp shows TUI (alt) while a full-screen program holds the alt screen')
+win._update_tui_indicator()              # covers the alt tui-dot styling
+_alt_tab._alt_screen = False
+win._on_alt_screen_changed(_alt_tab)
+eq(win._mode_level()[1], 'TUI',
+   'the mode lamp clears the alt marker when the program leaves the alt screen')
+win._update_tui_indicator()              # covers the non-alt tui-dot styling
 
 
 finish('mainwin4')

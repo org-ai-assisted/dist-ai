@@ -193,10 +193,10 @@ def logical(stream):
 def rendered_live(stream):
     """The live path's box-mode display text, with the readable box mapped back to
     '_' (the export mapping), so it is comparable to logical()'s '_' output.
-    line_edits=False so only \\b \\r \\n move the cursor -- the documented set the
+    read-safe so only \\b \\r \\n move the cursor -- the documented set the
     reference models. No SGR key noise (colours off)."""
     comp, cells, _col, _sgr, wraps = S.feed_line_edits([], 0, {}, stream,
-                                                        line_edits=False)
+                                                        line_editing='read-safe')
     runs, _prefix = S.cells_to_runs(comp, cells, 'box', False, wraps=wraps)
     return ''.join(text for text, _key in runs).replace(S.BOX, '_')
 
