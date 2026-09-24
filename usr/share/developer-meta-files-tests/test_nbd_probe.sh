@@ -62,7 +62,7 @@ locate_subject() {
    local candidate
 
    for candidate in "${DM_COMPARE_ARTIFACTS:-}" \
-      "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-reproducible-compare-artifacts" \
+      "${DEVELOPER_META_FILES_DIR:+${DEVELOPER_META_FILES_DIR}/usr/bin/dm-reproducible-compare-artifacts}" \
       "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts" \
       "/usr/bin/dm-reproducible-compare-artifacts"; do
       case "${candidate}" in

@@ -53,7 +53,7 @@ fail() {
 
 subject=""
 for candidate in "${DM_BUILDINFO:-}" \
-   "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-reproducible-buildinfo" \
+   "${DEVELOPER_META_FILES_DIR:+${DEVELOPER_META_FILES_DIR}/usr/bin/dm-reproducible-buildinfo}" \
    "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-buildinfo" \
    "/usr/bin/dm-reproducible-buildinfo"; do
    [ -n "${candidate}" ] || continue
