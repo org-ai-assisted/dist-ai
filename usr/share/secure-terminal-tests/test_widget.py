@@ -398,8 +398,7 @@ _sbt.close()
 # advancing the model/_raw (stage 1), or a frozen frame would fill the pty and hang the
 # child. Assert both halves: the document holds while frozen, the model still grows, and
 # unfreeze catches up to the current frame.
-from secure_terminal.terminal import (EXPANDING_MODES as _EXP,   # noqa: E402
-                                       _TAB_MARK_PROP as _TABPROP)
+from secure_terminal.terminal import EXPANDING_MODES as _EXP     # noqa: E402
 # CLI: freeze holds the document while _raw grows; unfreeze rebuilds to the latest frame.
 _fz = SecureTerminal(command='/bin/cat')          # CLI, default detail
 feed_output(_fz, b'first line\r\n')
