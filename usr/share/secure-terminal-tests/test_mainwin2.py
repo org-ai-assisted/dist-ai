@@ -562,6 +562,55 @@ win._ipc_open({'tabs': [{'command': 'seeded-if-absent-canary --flag'}]})
 ok(win.tabs.count() == _before_dup + 1,
    'if_absent off: a duplicate command still opens (unchanged default)')
 
+# if_absent REUSE of a reverted session tab: a -- PROGRAM tab whose program exits reverts to a login
+# shell but KEEPS its launch_command, so a later --if-absent reopen of that command RE-RUNS it in the
+# SAME tab (relaunch_command) instead of skipping a dead shell or opening a duplicate -- what
+# claude-rc-session open-all relies on to reuse a stopped session's tab. Regression: pre-fix the key
+# was cleared, so the reopen opened a duplicate tab.
+ok(win._ipc_open({'tabs': [{'command': ['/bin/sh', '-c', 'exit 0']}]})['opened'] == 1,
+   'reuse setup: a -- PROGRAM tab opened')
+_reuse_tab = win.tabs.widget(win.tabs.count() - 1)
+for _ in range(200):                            # let the program exit + _on_shell_exited revert it
+    if getattr(_reuse_tab, '_command', 'x') is None:
+        break
+    pump(30)
+ok(getattr(_reuse_tab, '_command', 'x') is None
+   and getattr(_reuse_tab, 'launch_command', None) is not None,
+   'the reverted tab keeps its launch_command (dedup key survives the revert)')
+_cnt_reverted = win.tabs.count()
+_reverted_pid = getattr(_reuse_tab, '_pid', None)
+_rr = win._ipc_open({'tabs': [{'command': ['/bin/sh', '-c', 'exit 0']}], 'if_absent': True})
+ok(_rr.get('reattached') == 1 and _rr['opened'] == 0 and _rr['skipped'] == 0,
+   'if_absent reopen RE-RUNS the reverted tab in place (reattached, not skipped/duplicated)')
+# prove _ipc_open actually invoked relaunch_command (a new child + restored command), not just
+# returned the counter: a caller regression could report reattached==1 without relaunching.
+ok(getattr(_reuse_tab, '_command', None) == ['/bin/sh', '-c', 'exit 0']
+   and getattr(_reuse_tab, '_pid', None) not in (None, _reverted_pid),
+   'if_absent reopen starts the original program in the existing tab (new child, command restored)')
+ok(win.tabs.count() == _cnt_reverted,
+   'if_absent reopen of a reverted tab opens NO new tab (reuses the existing one)')
+
+# _live_commands prefers a RUNNING duplicate over a reverted one: if the same command runs in one
+# tab and another tab reverted to a shell, dedup must hit the LIVE tab (skip), never relaunch the
+# reverted duplicate while an instance already runs.
+win.new_tab()
+_dup_a = win.tabs.widget(win.tabs.count() - 1)
+win.new_tab()
+_dup_b = win.tabs.widget(win.tabs.count() - 1)
+_dupkey = _nc('dup-cmd-canary --x')
+_dup_a.launch_command = _dupkey
+_dup_a._command = None                        # a reverted-to-shell duplicate
+_dup_b.launch_command = _dupkey
+_dup_b._command = ['dup-cmd-canary', '--x']   # the still-running duplicate
+ok(win._live_commands().get(_dupkey) is _dup_b,
+   '_live_commands prefers the RUNNING duplicate over a reverted one (dedup hits the live tab)')
+# and an if_absent reopen of a command that is RUNNING in a tab is SKIPPED, never reattached: the
+# match resolves to the live tab (_command set), so relaunch_command is not even attempted.
+_before_run = win.tabs.count()
+_rrun = win._ipc_open({'tabs': [{'command': 'dup-cmd-canary --x'}], 'if_absent': True})
+ok(_rrun['skipped'] == 1 and _rrun.get('reattached') == 0 and win.tabs.count() == _before_run,
+   'if_absent: a command still running in a tab is skipped (not reattached, no new tab)')
+
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
                   'scrollback': 'nope', 'mode': 'box', 'osc': {},

@@ -972,10 +972,9 @@ while _rw.tabs.count() > 0:
     _rw.close_tab(0)
 _rw.deleteLater()
 
-# launch_command is the --reuse dedup key (a running program's window is reused, not
-# re-opened). When a -- PROGRAM tab restarts to a plain shell it no longer runs that
-# program, so the key MUST clear -- else a later --reuse of the same command wrongly
-# folds into this now-a-shell tab instead of opening a fresh one.
+# launch_command is the --reuse dedup key. When a -- PROGRAM tab restarts to a plain shell it KEEPS
+# the key: _command clears but _exited_command remembers the program, so a later --if-absent reopen
+# of the same command REUSES this tab (relaunch_command in _ipc_open) instead of opening a duplicate.
 _lw = MainWindow()
 _lw.new_tab(command=['/bin/sh', '-c', 'exit 0'])
 _lw_term = _lw.tabs.widget(_lw.tabs.count() - 1)
@@ -984,8 +983,9 @@ _deadline = time.time() + 5
 while time.time() < _deadline and _lw_term._command is not None:
     pump(30)
 ok(_lw_term._command is None
-   and getattr(_lw_term, 'launch_command', 'unset') is None,
-   'restart clears launch_command so a later --reuse opens a fresh tab, not this shell')
+   and getattr(_lw_term, 'launch_command', 'unset') == ('/bin/sh', '-c', 'exit 0')
+   and getattr(_lw_term, '_exited_command', None) == ['/bin/sh', '-c', 'exit 0'],
+   'restart KEEPS launch_command (+ remembers the command) so a reopen reuses this tab')
 while _lw.tabs.count() > 0:
     _lw.close_tab(0)
 _lw.deleteLater()
@@ -1138,9 +1138,11 @@ try:
     pump(200)
     eq(w3.tabs.count(), _n4,
        'close_tab: a -- PROGRAM tab whose program exits during the modal RESTARTS on Cancel')
-    ok(_ct._command is None and getattr(_ct, 'launch_command', 'unset') is None
+    ok(_ct._command is None
+       and getattr(_ct, 'launch_command', 'unset') == ('/bin/sh', '-c', 'sleep 30')
        and _ct not in w3._closing_tabs and _ct not in w3._shell_exited_pending,
-       'close_tab: the cancelled command tab is a fresh shell with its close marks cleared')
+       'close_tab: the cancelled command tab is a fresh shell (launch_command kept for reuse), '
+       'close marks cleared')
     # cleanup: _ct is now a fresh shell -- ACTUALLY close it. Reset both stubs first:
     # left as-is, the stale declining closure (has_foreground_program True + question
     # -> No) would resurrect _ct, so this close silently no-ops and leaks the tab AND
@@ -1549,6 +1551,21 @@ ok('name: reviewdrain23' in _tipb, 'a renamed tab shows the name: line')
 ok('program: user@work-claude:~ [pts/24]' in _tipb, 'the OSC program title is shown, labeled')
 ok('command: ' in _tipb and 'mode: TUI' in _tipb, 'a -- PROGRAM TUI tab shows command + mode: TUI')
 ok('transcript: /tmp/st-tt-transcript' in _tipb, 'the live transcript path is shown when configured')
+
+# Tab C: a -- PROGRAM tab whose program EXITED (reverted to a login shell) still names what it RAN,
+# as "... (exited)", rather than an anonymous "(login shell)" -- so a stopped session tab stays
+# identifiable. Regression: pre-fix a reverted tab showed "(login shell)".
+win.new_tab(command=['/bin/sh', '-c', 'exit 0'])
+_tc = win.tabs.widget(win.tabs.count() - 1)
+_deadline_c = time.time() + 5
+while time.time() < _deadline_c and _tc._command is not None:
+    pump(30)                                   # let the program exit + _on_shell_exited revert it
+_ic = win.tabs.indexOf(_tc)
+win._refresh_tab_label(_tc)
+_tipc = win.tabs.tabToolTip(_ic)
+ok(_tc._command is None and '(exited)' in _tipc and '/bin/sh' in _tipc
+   and 'command: (login shell)' not in _tipc,
+   'a reverted-to-shell tab labels its command as "... (exited)", not (login shell): %r' % _tipc)
 
 # _on_cwd_changed must refresh the UNIFIED tooltip (reads the live cwd), never clobber it
 # with a bare unlabeled path. Canary: the old code set the tooltip to html.escape(path).
