@@ -552,7 +552,29 @@ ok('\t' in _tt.toPlainText(), 'tab illustration: the real tab stays in the docum
 _tt_block = _tt.document().firstBlock()
 _tt_runs = list(_tt._tab_mark_runs(_tt_block))   # _tab_mark_runs is a generator
 ok(len(_tt_runs) == 1, 'tab illustration: _tab_mark_runs finds the tab run for the arrow overlay')
+# the actual arrow PAINT: with a visible tab, _paint_tab_marks builds the rects (spanning each
+# tab's width via cursorRect) and draws the glyph -- display-only, so it changes nothing copyable.
+_tt.resize(400, 200)
+_tt.show()
+APP.processEvents()
+_tt_before = _tt.toPlainText()
+_tt._paint_tab_marks()                              # covers _tab_mark_rects + _paint_tab_marks
+ok(_tt.toPlainText() == _tt_before,
+   'tab illustration: painting the arrow guide never alters the document text')
 _tt.close()
+
+# --- freeze/preview coverage: set_frozen is a no-op on a static preview; _render_frozen with
+# no snapshot returns cleanly (both are guards on the frozen paint path) --------------------
+_pvf = SecureTerminal(preview=True)
+_pvf.render_preview('x', mode='detail', markings=True)
+_pvf.set_frozen(True)                               # preview guard: never freezes
+ok(not _pvf.frozen(), 'freeze: set_frozen is a no-op on a preview (static render, no live view)')
+_pvf.close()
+_rf = SecureTerminal(command='/bin/cat')
+_rf._frozen_screen = None
+_rf._render_frozen()                                # None-snapshot guard: returns, no crash
+ok(True, '_render_frozen with no snapshot returns cleanly (no crash)')
+_rf.close()
 
 # Click-padding: a local press/drag must keep the horizontal scrollbar homed to the
 # left, so the base QPlainTextEdit press does not scroll the left document margin
