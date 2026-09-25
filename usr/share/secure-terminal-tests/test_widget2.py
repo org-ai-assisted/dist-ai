@@ -6698,8 +6698,9 @@ _rst_stage.shutdown()
 
 # --- relaunch_command: a reverted-to-shell tab re-runs its ORIGINAL program in place ---
 # The inverse of restart_as_shell: after a -- PROGRAM tab has dropped to a login shell, re-run the
-# remembered command IN the same widget (what a --if-absent reopen does to reuse the tab).
-_rl = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+# remembered command IN the same widget (what a --if-absent reopen does to reuse the tab). TUI here
+# so the _sync_display grid-entry branch runs (a CLI relaunch is exercised by the security case below).
+_rl = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=True)
 _rl.resize(600, 300)
 _rl.show()
 pump(400)                                  # the child exits
@@ -6731,6 +6732,19 @@ pump(300)
 ok(_rl3.relaunch_command() is False,
    'relaunch_command: a tab still running its program is a no-op')
 _rl3.shutdown()
+
+# a FOREGROUND PROGRAM running in the fallback shell blocks relaunch: re-running would SIGHUP + kill
+# it (the user's work), so relaunch refuses and the caller leaves the tab as is.
+_rlf = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rlf.resize(600, 300)
+_rlf.show()
+pump(400)
+ok(_rlf.restart_as_shell() is True, 'relaunch-guard precondition: reverted to a shell')
+_rlf.has_foreground_program = lambda: True
+ok(_rlf.relaunch_command() is False
+   and _rlf._command is None and _rlf._exited_command == ['/bin/sh', '-c', 'exit 0'],
+   'relaunch_command refuses when a foreground program runs in the fallback shell (no kill)')
+_rlf.shutdown()
 
 # SECURITY: relaunch drops a pending paste-review staged in the interim login shell, exactly as
 # restart_as_shell does -- else reviewed input for the shell would inject into the relaunched program.
