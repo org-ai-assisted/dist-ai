@@ -79,8 +79,15 @@ cleanup() {
    if [ -n "${cmd_pid}" ]; then
       ## The command is its OWN session leader (setsid below), so signal its whole
       ## process GROUP -- a wedged suite spawns child shells/ptys that would otherwise
-      ## leak and thrash the box after a `timeout` kills only this script.
+      ## leak and thrash the box after a `timeout` kills only this script. TERM first,
+      ## then a brief grace, then KILL: a child that DEFERS SIGTERM (a bash blocked in
+      ## `wait`, a program that swallows TERM) must not survive as an orphan.
       kill -TERM -- -"${cmd_pid}" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+         kill -0 -- -"${cmd_pid}" 2>/dev/null || break
+         sleep 0.2
+      done
+      kill -KILL -- -"${cmd_pid}" 2>/dev/null || true
    fi
    # shellcheck disable=SC2317
    if [ -n "${loop_pid}" ]; then

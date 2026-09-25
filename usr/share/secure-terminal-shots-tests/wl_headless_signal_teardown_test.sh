@@ -109,10 +109,18 @@ elapsed="$(( SECONDS - start ))"
 kill "${watchdog}" 2>/dev/null || true
 wait "${watchdog}" 2>/dev/null || true
 
-## Give the group-kill a moment to propagate to the grandchild.
-sleep 1
-kill -0 "${child}" 2>/dev/null && child_dead='' || child_dead='1'
-kill -0 "${grandchild}" 2>/dev/null && gc_dead='' || gc_dead='1'
+## Poll for the whole tree to die (bounded): the teardown sends SIGTERM, then after a brief
+## grace escalates to SIGKILL, so a TERM-deferring child (bash in `wait`) dies a beat later.
+## A single fixed sleep raced this on a slow CI runner; poll up to ~9s instead. A genuine
+## orphan (never reaped) still fails -- the poll times out with the pid alive.
+child_dead=''
+gc_dead=''
+for _ in $(seq 1 45); do
+   kill -0 "${child}" 2>/dev/null || child_dead='1'
+   kill -0 "${grandchild}" 2>/dev/null || gc_dead='1'
+   [ -n "${child_dead}" ] && [ -n "${gc_dead}" ] && break
+   sleep 0.2
+done
 
 check "SIGTERM reaps the command child (pid ${child})" "${child_dead}"
 check "SIGTERM reaps the GRANDCHILD too (whole process group, pid ${grandchild})" "${gc_dead}"
