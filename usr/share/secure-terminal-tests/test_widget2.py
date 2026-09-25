@@ -6696,6 +6696,58 @@ ok(_rst_stage._staged_paste == [],
    'restart_as_shell drops a held paste (no leak into the new shell)')
 _rst_stage.shutdown()
 
+# --- relaunch_command: a reverted-to-shell tab re-runs its ORIGINAL program in place ---
+# The inverse of restart_as_shell: after a -- PROGRAM tab has dropped to a login shell, re-run the
+# remembered command IN the same widget (what a --if-absent reopen does to reuse the tab).
+_rl = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rl.resize(600, 300)
+_rl.show()
+pump(400)                                  # the child exits
+ok(_rl.restart_as_shell() is True, 'relaunch precondition: the tab reverts to a shell')
+ok(_rl._command is None and _rl._exited_command == ['/bin/sh', '-c', 'exit 0'],
+   'restart_as_shell remembers the exited command in _exited_command')
+_rl_shellpid = _rl._pid
+_rl_ret = _rl.relaunch_command()
+ok(_rl_ret is True
+   and _rl._command == ['/bin/sh', '-c', 'exit 0'] and _rl._exited_command is None
+   and _rl._pid is not None and _rl._pid != _rl_shellpid and _rl._fd is not None,
+   'relaunch_command re-runs the original program in place (new child, command restored)')
+_rl.shutdown()
+
+# a plain login-shell tab (no remembered command) is a no-op
+_rl2 = SecureTerminal(command=None, tui=False)
+_rl2.resize(600, 300)
+_rl2.show()
+pump(200)
+ok(_rl2.relaunch_command() is False,
+   'relaunch_command: a plain login shell (no remembered command) is a no-op')
+_rl2.shutdown()
+
+# a tab still RUNNING its program is a no-op (only a reverted-shell tab relaunches)
+_rl3 = SecureTerminal(command=['/bin/cat'], tui=False)
+_rl3.resize(600, 300)
+_rl3.show()
+pump(300)
+ok(_rl3.relaunch_command() is False,
+   'relaunch_command: a tab still running its program is a no-op')
+_rl3.shutdown()
+
+# SECURITY: relaunch drops a pending paste-review staged in the interim login shell, exactly as
+# restart_as_shell does -- else reviewed input for the shell would inject into the relaunched program.
+_rls = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rls.resize(600, 300)
+_rls.show()
+pump(400)
+ok(_rls.restart_as_shell() is True, 'relaunch security precondition: reverted to a shell')
+_rls._review_active = True
+_rls._pending_paste = 'reviewed\ncommand'
+_rls_resolved = []
+_rls.paste_review_resolved.connect(lambda: _rls_resolved.append(1))
+ok(_rls.relaunch_command() is True, 'relaunch_command clears review: relaunch succeeds')
+ok(_rls._review_active is False and _rls._pending_paste is None and bool(_rls_resolved),
+   'relaunch_command drops a pending paste-review (no injection into the relaunched program)')
+_rls.shutdown()
+
 
 # --- our own blinking cursor keeps blinking through a selection --------------
 # The native Qt caret stops blinking whenever the text cursor holds a selection, so
