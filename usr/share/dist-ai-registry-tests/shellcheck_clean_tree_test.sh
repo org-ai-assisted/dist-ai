@@ -53,9 +53,16 @@ fi
 
 fail=0
 
+## check (1) predicate, SHARED by the live check and canary A -- so the canary
+## exercises the REAL detection, not merely that `touch` created a file. Returns
+## 0 (true) when the dir has NO .shellcheckrc (ok), non-zero when one is present.
+shellcheckrc_absent() {
+   [ ! -e "$1/.shellcheckrc" ]
+}
+
 ## (1) The project .shellcheckrc must NOT exist. Its removal is the whole point;
 ## a reappearance would blanket-silence the codes this program eliminated.
-if [ -e "${repo}/.shellcheckrc" ]; then
+if ! shellcheckrc_absent "${repo}"; then
    printf '%s\n' "FAIL: a .shellcheckrc reappeared at '${repo}/.shellcheckrc'; the removal must stay permanent" >&2
    fail=1
 fi
@@ -94,10 +101,12 @@ work_dir="$(mktemp --directory -- "${TMP}/shellcheck-clean-tree-canary.XXXXXX")"
 cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
 trap cleanup EXIT
 
-## Canary A: a reappeared .shellcheckrc must be detected by check (1).
+## Canary A: check (1)'s predicate must DETECT a planted .shellcheckrc -- prove the
+## detection actually trips, not merely that `touch` created a file (the old check
+## only asserted the fixture existed, so it exercised check (1) not at all).
 touch -- "${work_dir}/.shellcheckrc"
-if [ ! -e "${work_dir}/.shellcheckrc" ]; then
-   printf '%s\n' 'FAIL(canary A): could not stage a fixture .shellcheckrc' >&2
+if shellcheckrc_absent "${work_dir}"; then
+   printf '%s\n' 'FAIL(canary A): check (1) did NOT detect a planted .shellcheckrc -- the guard would not catch an rc reappearance' >&2
    fail=1
 fi
 
