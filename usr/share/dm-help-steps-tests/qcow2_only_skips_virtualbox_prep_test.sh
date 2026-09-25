@@ -78,7 +78,7 @@ check_case() {
    local label="$1" want="$2"
    shift 2
    local got
-   got="$(env "$@" bash "${work}/driver.bash" "${work}/block.bash")"
+   got="$(env -u dist_build_multi_target_list "$@" bash "${work}/driver.bash" "${work}/block.bash")"
    if [ "${got}" = "${want}" ]; then
       pass "${label}: ${got}"
    else
