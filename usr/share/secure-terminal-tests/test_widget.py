@@ -478,6 +478,59 @@ ok(_synced[0] >= 1, 'unfreeze: the rebuild catches the pyte screen size up')
 _fw._sync_tui_size = _orig_sync
 _fw.close()
 
+# --- freeze must never BLANK the paused view nor LEAK live content (ai-review findings) ----
+# A re-render while frozen (a setting toggle, or an expanding<->expanding mode switch) is
+# suppressed at the live-paint layer, so a naive clear-then-repaint blanks the document; and a
+# frozen badge render that reads the LIVE screen (which keeps advancing) leaks newer content into
+# the "frozen" view and desyncs dump-tab from dump-state. The fixes: re-render the SNAPSHOT, never
+# blank; snapshot BEFORE flipping _frozen so a paint-pending line is captured.
+# F1: a frozen CLI tab keeps its content when a render setting is toggled (was: blanked).
+_fzc = SecureTerminal(command='/bin/cat')
+_fzc.apply_mode('box')
+_fzc._raw = 'hello world\n'
+_fzc._feed_line('hello world\n')
+_fzc.set_frozen(True)
+_fzc.apply_colors(True)                              # a frozen re-render path
+ok('hello world' in _fzc.toPlainText(),
+   'freeze F1: a render-setting toggle on a frozen CLI tab does not blank it')
+_fzc.close()
+# F2: a frozen expanding TUI tab keeps its badges when the theme changes (was: blanked).
+_fzt = SecureTerminal(command='/bin/cat', tui=True)
+if _fzt._screen is None:
+    _fzt._make_screen()
+_fzt._feed_stream(b'hellotui\r\n')
+_fzt.apply_mode('state')                             # != default 'detail' -> real auto-freeze
+ok(_fzt.frozen() and '<U+' in _fzt.toPlainText(), 'freeze F2 setup: frozen state badges shown')
+_fzt.apply_theme('dark')
+ok('<U+' in _fzt.toPlainText() and bool(_fzt.toPlainText().strip()),
+   'freeze F2: a theme change on a frozen expanding TUI tab does not blank it')
+_fzt.close()
+# F3: switching between expanding modes while frozen shows the FROZEN frame, never leaks live
+# output, and dump-tab agrees with dump-state.
+_fzl = SecureTerminal(command='/bin/cat', tui=True)
+if _fzl._screen is None:
+    _fzl._make_screen()
+_fzl._feed_stream(b'AAAAAAAAAA\r\n')
+_fzl.apply_mode('reveal')                            # auto-freeze on the AAAA frame
+_fzl._feed_stream(b'BBBBBBBBBB\r\n')                  # live output while frozen (suppressed)
+_fzl.apply_mode('detail')                            # expanding->expanding while frozen
+_fzl_tab = _fzl.toPlainText()
+_fzl_ds = _fzl.dump_state('text')
+ok('AAAAAAAAAA' in _fzl_tab and 'BBBBBBBBBB' not in _fzl_tab,
+   'freeze F3: a mode switch while frozen keeps the frozen frame, no live leak into dump-tab')
+ok('AAAAAAAAAA' in _fzl_ds and 'BBBBBBBBBB' not in _fzl_ds,
+   'freeze F3: dump-state stays on the frozen frame, consistent with dump-tab')
+_fzl.close()
+# F4: a line already read (paint-pending) just before Freeze is captured in the snapshot.
+_fzp = SecureTerminal(command='/bin/cat')
+_fzp.apply_mode('box')
+_fzp._raw = 'SECRET-LINE\n'
+_fzp._feed_line('SECRET-LINE\n')                     # deferred: may still be paint-pending
+_fzp.set_frozen(True)
+ok('SECRET-LINE' in _fzp.dump_state('text'),
+   'freeze F4: a pre-freeze paint-pending line is captured in the frozen snapshot')
+_fzp.close()
+
 # --- _render_frozen: both state and reveal/detail badge the frozen grid snapshot -----
 # _render_frozen walks the pyte grid and badges each cell; state tints by the cell's REAL
 # SGR (via _grid_cell_format), reveal/detail by risk class (via _fmt_from_key) -- that tint
