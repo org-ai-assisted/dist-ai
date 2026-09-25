@@ -13,6 +13,7 @@ secure-terminal-tests-fuzz-gui). SKIPs (exit 77) when PyQt6/pyte are absent."""
 
 import sys
 import random
+import traceback
 
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(fuzz-widget)')
@@ -38,6 +39,11 @@ FAIL = 0
 def _fail(message):
     global FAIL
     FAIL += 1
+    ## When _fail runs inside an `except`, emit the full traceback (file:line) too --
+    ## a fuzz phase that crashes points straight at the bug instead of a bare str(exc)
+    ## that forces a manual re-run with a hand-added traceback.print_exc().
+    if sys.exc_info()[0] is not None:
+        sys.stderr.write(traceback.format_exc())
     sys.stderr.write('FAIL: {0}\n'.format(message))
 
 
