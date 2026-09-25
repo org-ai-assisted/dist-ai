@@ -237,16 +237,16 @@ def assert_safe(name, text):
         bad = [ch for ch in out if ord(ch) in DANGEROUS_CPS]
         ok(not bad, '%s/%s: a dangerous code point survived: %r'
            % (name, mode, bad[:4]))
-        # (2) idempotence -- a fixed point for the NEUTRALIZING modes. 'codepoints' is
+        # (2) idempotence -- a fixed point for the NEUTRALIZING modes. 'state' is
         # excluded: it expands EVERY character to its <U+XXXX> badge, so rendering its
         # (already all-ASCII, inert) output again re-badges the badge text. That is by
-        # design, not a leak -- for codepoints the property that matters is inertness,
+        # design, not a leak -- for state the property that matters is inertness,
         # asserted here instead: the output is only <U+XXXX> badges plus tab/newline.
-        if mode != 'codepoints':
+        if mode != 'state':
             ok(S.render_output(out, mode) == out, '%s/%s: not idempotent' % (name, mode))
         else:
             ok(all(0x20 <= ord(ch) <= 0x7E or ch in '\t\n' for ch in out),
-               '%s/codepoints: output is inert ASCII (badges + tab/newline)' % name)
+               '%s/state: output is inert ASCII (badges + tab/newline)' % name)
     strip = S.render_output(text, 'box')
     ok(all(ord(ch) in SAFE for ch in strip),
        '%s: box left a non-safe char' % name)

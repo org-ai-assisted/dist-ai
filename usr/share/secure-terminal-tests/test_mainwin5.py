@@ -530,7 +530,7 @@ eq(_mn_dupes, [], 'no two items in one menu claim the same mnemonic letter')
 # without the overflow menu. The toolbar now steps through three display tiers so
 # every control stays on the bar with labels as informative as the width allows:
 #   full    -- text-beside-icon action buttons + chip captions
-#   labeled -- icon-only action buttons + chip captions (the app's 860 default)
+#   labeled -- icon-only action buttons + chip captions (the app's default width)
 #   icons   -- icon-only action buttons, chip captions hidden (narrowest)
 # Driven WITHOUT show(): an offscreen second MainWindow shown under the coverage
 # tracer perturbs Qt teardown (see the module header). resizeEvent + an explicit

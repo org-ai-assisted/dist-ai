@@ -200,11 +200,27 @@ def fail(msg):
     sys.stderr.write('FAIL: ' + msg + '\n')
 
 
-# The safe display alphabet: printable ASCII + the four honored editing controls
+# The safe display OUTPUT alphabet: printable ASCII + the four editing controls
 # (backspace, tab, newline, carriage return). A reveal / detail <U+XXXX ...> badge
-# is itself built only from these. This is render_output's own pass-through set
-# (see the `cp in (0x08, 0x09, 0x0A, 0x0D) or 0x20 <= cp <= 0x7E` guard).
+# is itself built only from these, and box/show emit BS/CR verbatim, so this is the
+# alphabet EVERY mode's output stays within (the T1 inertness property).
+# NOT the pass-through set: box/show pass BS/CR (0x08, 0x0D) verbatim, but reveal /
+# detail BADGE them (make the cursor-control visible) -- so the per-mode pass set is
+# narrower for the badge modes. See _passes / _pass_pred_z3.
 SAFE_ASCII = frozenset((0x08, 0x09, 0x0A, 0x0D)) | frozenset(range(0x20, 0x7F))
+
+# Code points render_output emits VERBATIM under `mode` (its first `if` guard). Tab
+# and newline and printable ASCII always pass; BS/CR pass only where they are honored
+# as line edits (box/show), and badge in reveal/detail. Faithful to the guard:
+#   0x20 <= cp <= 0x7E or cp in (0x09, 0x0A) or (cp in (0x08, 0x0D) and mode not badge)
+_BADGE_MODES = ('reveal', 'detail')
+
+
+def _passes(cp, mode):
+    """True iff render_output emits code point `cp` verbatim under `mode`."""
+    if 0x20 <= cp <= 0x7E or cp in (0x09, 0x0A):
+        return True
+    return cp in (0x08, 0x0D) and mode not in _BADGE_MODES
 
 MAX_CP = 0x10FFFF                 # the whole Unicode code-point space, inclusive
 STRICT_MODES = ('box', 'reveal', 'detail')
@@ -281,9 +297,19 @@ def _hexchar_z3(v):
 
 
 def _in_safe_ascii_z3(code):
-    """Z3 predicate: `code` (an ASCII code point) is in SAFE_ASCII."""
+    """Z3 predicate: `code` (an ASCII code point) is in SAFE_ASCII (the OUTPUT
+    alphabet -- includes BS/CR, which box/show emit verbatim)."""
     return z3.Or(code == 0x08, code == 0x09, code == 0x0A, code == 0x0D,
                  z3.And(0x20 <= code, code <= 0x7E))
+
+
+def _pass_pred_z3(code, mode):
+    """Z3 predicate: render_output emits `code` verbatim under `mode` (its pass-
+    through guard). BS/CR pass in box/show, badge in reveal/detail."""
+    base = z3.Or(code == 0x09, code == 0x0A, z3.And(0x20 <= code, code <= 0x7E))
+    if mode in _BADGE_MODES:
+        return base
+    return z3.Or(base, code == 0x08, code == 0x0D)
 
 
 def z3_prove(name, claim, assumptions=(), report=True):
@@ -312,23 +338,25 @@ def z3_prove(name, claim, assumptions=(), report=True):
 # Per-character branch classifier for STRICT modes, as a Z3 function of the code
 # point. This mirrors render_output's loop body exactly for box/reveal/detail (the
 # show-only arms are never taken in a strict mode). Classes:
-#   0 PASS    -- cp is in SAFE_ASCII: emitted verbatim (a safe char).
+#   0 PASS    -- cp passes verbatim under this mode (see _pass_pred_z3).
 #   1 DROP    -- cp == 0x07 (BEL): emitted as nothing (a signal, not a glyph).
-#   2 BADGE   -- reveal/detail: emitted as the <U+XXXX ...> hex badge.
+#   2 BADGE   -- reveal/detail: emitted as the <U+XXXX ...> hex badge (this now
+#               includes BS/CR, which pass in box but badge in reveal/detail).
 #   3 BOX     -- box mode fallthrough: emitted as the single ASCII '_' (0x5F).
 _CLS_PASS, _CLS_DROP, _CLS_BADGE, _CLS_BOX = 0, 1, 2, 3
 
 
 def _classify_z3(cp, mode):
     """Z3 term giving the branch class (see above) for code point `cp` under a
-    concrete strict `mode`. Faithful to render_output's if/elif ladder."""
-    safe = _in_safe_ascii_z3(cp)
+    concrete strict `mode`. Faithful to render_output's if/elif ladder -- the PASS
+    arm is mode-dependent (BS/CR badge in reveal/detail)."""
+    passes = _pass_pred_z3(cp, mode)
     is_bel = (cp == 0x07)
     if mode == 'box':
         badge = z3.BoolVal(False)
     else:                                     # reveal or detail
-        badge = z3.BoolVal(True)              # catches every non-safe, non-BEL cp
-    return z3.If(safe, _CLS_PASS,
+        badge = z3.BoolVal(True)              # catches every non-passing, non-BEL cp
+    return z3.If(passes, _CLS_PASS,
                  z3.If(is_bel, _CLS_DROP,
                        z3.If(badge, _CLS_BADGE, _CLS_BOX)))
 
@@ -380,11 +408,23 @@ def t1_z3():
                               cp != 0x07])
         # Converses that the ITE-cover does NOT imply: a classifier that always
         # returns PASS is still "total", but these fail.
+        # PASS is exactly the per-mode pass set, and every passed char is in the
+        # SAFE_ASCII output alphabet (pass set is a subset) -- so PASS never leaks.
+        z3_prove('classifier-pass-iff-passes-%s' % mode,
+                 (cls == _CLS_PASS) == _pass_pred_z3(cp, mode),
+                 assumptions=[in_range])
         z3_prove('classifier-pass-implies-safe-%s' % mode,
                  z3.Implies(cls == _CLS_PASS, _in_safe_ascii_z3(cp)),
                  assumptions=[in_range])
-        z3_prove('classifier-unsafe-never-pass-%s' % mode,
-                 z3.Implies(z3.Not(_in_safe_ascii_z3(cp)), cls != _CLS_PASS),
+        z3_prove('classifier-nonpass-never-pass-%s' % mode,
+                 z3.Implies(z3.Not(_pass_pred_z3(cp, mode)), cls != _CLS_PASS),
+                 assumptions=[in_range])
+        # The BS/CR behavioural split: box/show emit them verbatim (PASS); reveal /
+        # detail make the cursor-control visible (BADGE). Pin the new behaviour in
+        # the proof, or the enumerator canary (t1_enumerate) is the only guard.
+        want_crbs = _CLS_BADGE if mode in _BADGE_MODES else _CLS_PASS
+        z3_prove('classifier-bs-cr-%s' % mode,
+                 z3.Implies(z3.Or(cp == 0x08, cp == 0x0D), cls == want_crbs),
                  assumptions=[in_range])
         z3_prove('classifier-bel-drops-%s' % mode,
                  z3.Implies(cp == 0x07, cls == _CLS_DROP),
@@ -460,10 +500,10 @@ def t1_enumerate():
     ignorable_leak = 0
     model_mismatch = 0
     name_non_ascii = 0
+    state_bad = 0
 
     for cp in range(0, MAX_CP + 1):
         ch = chr(cp)
-        safe = cp in SAFE_ASCII
         is_bel = (cp == 0x07)
 
         # --- strict modes: output must be pure SAFE_ASCII, and match the model ---
@@ -475,8 +515,9 @@ def t1_enumerate():
                         fail('T1 strict: %s left 0x%02X for U+%04X'
                              % (mode, ord(oc), cp))
                     strict_bad += 1
-            # model prediction vs real output class
-            if safe:
+            # model prediction vs real output class. PASS is per-mode: BS/CR pass in
+            # box/show but badge in reveal/detail (so this must NOT be cp-in-SAFE_ASCII).
+            if _passes(cp, mode):
                 predicted_ok = (out == ch)
             elif is_bel:
                 predicted_ok = (out == '')
@@ -499,13 +540,11 @@ def t1_enumerate():
                 ignorable_leak += 1
 
         # --- the name-is-SAFE_ASCII assumption, on the real Unicode database ---
-        # detail's badge embeds unicodedata.name(chr(cp)). str.isascii() is the
-        # WRONG check -- it admits ESC/BEL/C0 (0x00-0x7F). Names must be in
-        # SAFE_ASCII (Unicode names: A-Z, 0-9, space, hyphen).
-        try:
-            nm = unicodedata.name(ch)
-        except ValueError:
-            nm = ''
+        # detail's badge embeds S._cp_name(cp) -- the Unicode name, or the control
+        # alias for a C0/C1/DEL control (BS/CR now badge in detail), or 'UNNAMED'.
+        # str.isascii() is the WRONG check -- it admits ESC/BEL/C0 (0x00-0x7F). The
+        # name must be in SAFE_ASCII (names + aliases: A-Z, 0-9, space, hyphen).
+        nm = S._cp_name(cp)
         if nm and any(ord(c) not in SAFE_ASCII for c in nm):
             if name_non_ascii < 8:
                 fail('T1 name-ASCII: U+%04X name %r is not SAFE_ASCII' % (cp, nm))
@@ -524,9 +563,21 @@ def t1_enumerate():
                 fail('T1 invisible: show leaked a dangerous char for U+%04X' % cp)
             ignorable_leak += 1
 
+        # --- state mode: NOT idempotent (it badges every char, including its own
+        # badge output), so the L-hom identity does not apply; the property that
+        # holds is INERTNESS -- every character reaches the screen as SAFE_ASCII
+        # (a <U+XXXX> badge, or tab/newline), never a raw control / non-ASCII.
+        out = S.render_output(ch, 'state')
+        for oc in out:
+            if ord(oc) not in SAFE_ASCII or _indep_output_dangerous(oc):
+                if state_bad < 8:
+                    fail('T1 state: U+%04X left 0x%02X (not inert SAFE_ASCII)'
+                         % (cp, ord(oc)))
+                state_bad += 1
+
     return dict(strict_bad=strict_bad, show_bad=show_bad,
                 ignorable_leak=ignorable_leak, model_mismatch=model_mismatch,
-                name_non_ascii=name_non_ascii)
+                name_non_ascii=name_non_ascii, state_bad=state_bad)
 
 
 # ===========================================================================
@@ -2583,7 +2634,8 @@ def main():
     sys.stdout.write('        strict_bad=%(strict_bad)d show_bad=%(show_bad)d '
                      'invisible_leak=%(ignorable_leak)d '
                      'model_mismatch=%(model_mismatch)d '
-                     'name_non_ascii=%(name_non_ascii)d\n' % stats)
+                     'name_non_ascii=%(name_non_ascii)d '
+                     'state_bad=%(state_bad)d\n' % stats)
 
     sys.stdout.write('  T1.L  per-character homomorphism of the render loop '
                      '(incl. escape-bearing) ...\n')

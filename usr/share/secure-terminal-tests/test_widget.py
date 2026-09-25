@@ -393,6 +393,115 @@ eq(_sbt.horizontalScrollBarPolicy(), _OFF,
    'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
 _sbt.close()
 
+# --- Freeze/Unfreeze: paint suppression, snapshot inspection, catch-up ---------
+# The HARD INVARIANT: freeze suppresses only the PAINT (stage 2); the pty read keeps
+# advancing the model/_raw (stage 1), or a frozen frame would fill the pty and hang the
+# child. Assert both halves: the document holds while frozen, the model still grows, and
+# unfreeze catches up to the current frame.
+from secure_terminal.terminal import (EXPANDING_MODES as _EXP,   # noqa: E402
+                                       _TAB_MARK_PROP as _TABPROP)
+# CLI: freeze holds the document while _raw grows; unfreeze rebuilds to the latest frame.
+_fz = SecureTerminal(command='/bin/cat')          # CLI, default detail
+feed_output(_fz, b'first line\r\n')
+ok('first line' in _fz.toPlainText(), 'freeze CLI setup: first line painted')
+ok(not _fz.frozen(), 'freeze: a fresh CLI tab is not frozen')
+_fz.set_frozen(True)
+ok(_fz.frozen(), 'freeze: set_frozen(True) freezes')
+_raw_before = len(_fz._raw)
+feed_output(_fz, b'while frozen\r\n')
+ok('while frozen' not in _fz.toPlainText(),
+   'freeze CLI: the painted document withholds output produced while frozen')
+ok(len(_fz._raw) > _raw_before,
+   'freeze INVARIANT: the pty read keeps growing _raw while frozen (paint-only suppression)')
+_fz.set_frozen(False)
+ok('while frozen' in _fz.toPlainText(),
+   'unfreeze CLI: the document catches up to the current frame (rebuilt from _raw)')
+_fz.close()
+
+# CLI never auto-freezes -- an expanding mode renders badges inline (no grid constraint).
+_fc = SecureTerminal(command='/bin/cat')
+_fc.apply_mode('state')
+ok(not _fc.frozen(), 'freeze policy: CLI state mode is NOT auto-frozen (badges expand inline)')
+_fc.apply_mode('reveal')
+ok(not _fc.frozen(), 'freeze policy: CLI reveal mode is NOT auto-frozen')
+_fc.close()
+
+# TUI: entering an expanding mode AUTO-FREEZES (a <U+XXXX> badge cannot fit a grid cell);
+# Box/Show fit the grid and render live, clearing the auto-freeze.
+_ftu = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_ftu, b'AB\xce\xa9\r\n')              # A B Omega
+_ftu.apply_mode('box')
+ok(not _ftu.frozen(), 'freeze policy: TUI box mode renders live (not frozen)')
+for _m in _EXP:
+    _ftu.apply_mode(_m)
+    ok(_ftu.frozen(), 'freeze policy: TUI %s mode auto-freezes (badges cannot fit the grid)' % _m)
+    _doc = _ftu.toPlainText()
+    ok('<U+' in _doc, 'freeze: TUI %s renders the badge snapshot while frozen' % _m)
+_ftu.apply_mode('show')
+ok(not _ftu.frozen(), 'freeze policy: switching back to Show clears the auto-freeze (live grid)')
+_ftu.close()
+
+# Inspection contract: while frozen, dump_state returns the SNAPSHOT captured at freeze,
+# even as the live model advances underneath (the debugging payoff).
+_fi = SecureTerminal(command='/bin/cat', tui=True)
+_fi.apply_mode('box')                              # non-expanding: live until MANUALLY frozen
+feed_output(_fi, b'SNAPSHOT-ME\r\n')
+_fi._render_tui()
+_fi.set_frozen(True)
+_frozen_dump = _fi.dump_state('text')
+ok('SNAPSHOT-ME' in _frozen_dump, 'freeze inspect: dump_state captures the frozen frame')
+feed_output(_fi, b'ADVANCED-UNDERNEATH\r\n')       # live model advances (read invariant)
+ok(_fi.dump_state('text') == _frozen_dump,
+   'freeze inspect: dump_state keeps returning the frozen snapshot, not the advanced model')
+_fi.set_frozen(False)
+ok('ADVANCED-UNDERNEATH' in _fi.dump_state('text'),
+   'unfreeze inspect: dump_state returns the live model again')
+_fi.close()
+
+# winsize while frozen must NOT reshape the pyte screen (no SIGWINCH under a frozen frame):
+# resizeEvent early-returns before the size-sync while frozen. Spy on _sync_tui_size to prove
+# the guard blocks the reshape, and that unfreeze's rebuild is what catches the size up.
+from PyQt6.QtGui import QResizeEvent as _QRE          # noqa: E402
+from PyQt6.QtCore import QSize as _QSize              # noqa: E402
+_fw = SecureTerminal(command='/bin/cat', tui=True)
+_fw.apply_mode('box')                              # non-expanding: freeze is manual here
+feed_output(_fw, b'hello\r\n')
+_fw._render_tui()
+_synced = [0]
+_orig_sync = _fw._sync_tui_size
+_fw._sync_tui_size = lambda *_a, **_k: (_synced.__setitem__(0, _synced[0] + 1), _orig_sync())[1]
+_fw.set_frozen(True)
+_fw.resizeEvent(_QRE(_QSize(_fw.width() + 200, _fw.height() + 120), _fw.size()))
+ok(_synced[0] == 0, 'freeze: resizeEvent while frozen does not reshape the pyte screen')
+_fw.set_frozen(False)                                 # unfreeze rebuild syncs the size up
+ok(_synced[0] >= 1, 'unfreeze: the rebuild catches the pyte screen size up')
+_fw._sync_tui_size = _orig_sync
+_fw.close()
+
+# --- _render_frozen: both state and reveal/detail badge the frozen grid snapshot -----
+# _render_frozen walks the pyte grid and badges each cell; state tints by the cell's REAL
+# SGR (via _grid_cell_format), reveal/detail by risk class (via _fmt_from_key) -- that tint
+# SOURCE split is proved at the sanitize layer (cells_to_runs state-vs-reveal). Here confirm
+# the frozen render itself produces the badges for a coloured non-ASCII cell in each mode.
+_ft = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_ft, b'\x1b[31m' + chr(0x202E).encode('utf-8') + b'\x1b[0m\r\n')   # red bidi override
+_ft.apply_mode('state')                            # auto-freeze + _render_frozen (SGR tint)
+ok(_ft.frozen() and '<U+202E>' in _ft.toPlainText(), 'frozen render: state badges the bidi cell')
+_ft.apply_mode('reveal')                           # still frozen, risk-class tint
+ok(_ft.frozen() and '<U+202E>' in _ft.toPlainText(), 'frozen render: reveal badges the bidi cell')
+_ft.close()
+
+# --- Tab illustration: a completed-line tab carries the _TAB_MARK_PROP overlay flag -----
+# Mirrors the space-dot: the document keeps the real '\t' (copy-safe) and a fragment format
+# flags it so paintEvent draws the arrow guide. CLI (line) mode, where the '\t' survives.
+_tt = SecureTerminal(command='/bin/cat')           # CLI
+feed_output(_tt, b'a\tb\r\n')
+ok('\t' in _tt.toPlainText(), 'tab illustration: the real tab stays in the document (copy-safe)')
+_tt_block = _tt.document().firstBlock()
+_tt_runs = list(_tt._tab_mark_runs(_tt_block))   # _tab_mark_runs is a generator
+ok(len(_tt_runs) == 1, 'tab illustration: _tab_mark_runs finds the tab run for the arrow overlay')
+_tt.close()
+
 # Click-padding: a local press/drag must keep the horizontal scrollbar homed to the
 # left, so the base QPlainTextEdit press does not scroll the left document margin
 # off-screen for the press duration (all lines jumping left until release). Font-robust

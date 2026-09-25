@@ -106,10 +106,11 @@ ok('<U+202E RIGHT-TO-LEFT OVERRIDE>' in _eviltext,
 ok(chr(0x202e) not in sd.dump_json(_evilsnap),
    'dump_json escapes the bidi override via ensure_ascii, never emits it raw')
 
-# The badge FALLBACK for a codepoint with NO Unicode name (an unnamed control / private-use /
-# surrogate in _UNSAFE_DUMP_CATS): the dump still emits a full-fidelity <U+XXXX UNNAMED> badge,
-# never the raw char. The bidi test above exercises only the NAMED path; this hits the
-# `except ValueError -> 'UNNAMED'` branch. U+E000 (private use, category Co) has no name.
+# The badge FALLBACK for a codepoint with NO Unicode name and NO control alias (private-use /
+# surrogate / unassigned in _UNSAFE_DUMP_CATS): the dump still emits a full-fidelity
+# <U+XXXX UNNAMED> badge, never the raw char. The bidi test above exercises only the NAMED path;
+# this hits _cp_name's final 'UNNAMED' fallback. U+E000 (private use, category Co) has no name.
+# (A C0/C1 control instead resolves to its alias, e.g. <U+000D CARRIAGE RETURN>.)
 _unsc = pyte.HistoryScreen(20, 3, history=10)
 pyte.Stream(_unsc).feed('AB' + chr(0xe000) + 'CD')
 _unsnap = sd.collect(_unsc, mode='tui', columns=20, alt_screen=False,
@@ -119,6 +120,14 @@ ok(chr(0xe000) not in _untext,
    'dump_text emits NO raw unnamed codepoint in the grid text')
 ok('<U+E000 UNNAMED>' in _untext,
    'dump_text badges a name-less codepoint as <U+XXXX UNNAMED> (fallback fidelity kept)')
+# _safe_grid_text (the badge builder) resolves a Cc control to its Unicode ALIAS, not
+# UNNAMED -- so the dump (State mode's sibling) reads what the control IS. Asserted at the
+# unit level: pyte consumes most control chars before they reach cell data, but a defence in
+# depth badge must name any Cc/Cf that does slip through by its alias.
+eq(sd._safe_grid_text('a\rb'), 'a<U+000D CARRIAGE RETURN>b',
+   '_safe_grid_text badges a control by its Unicode alias, never the raw control')
+eq(sd._safe_grid_text('x\x85y'), 'x<U+0085 CONTROL-0085>y',
+   '_safe_grid_text names a C1 control from its alias')
 
 
 # is_baseline oracle (shared by the reset sweep, INV-7 and the T10 formal check): a fresh

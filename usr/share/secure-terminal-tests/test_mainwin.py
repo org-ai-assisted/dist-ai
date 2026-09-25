@@ -125,7 +125,7 @@ for _kept in ('Zoom &In', 'Zoom &Out', '&Reset Zoom', '&Full Screen'):
 for _gone in ('&Theme', '&Unicode', '&Colors', '&Line editing', 'Colored &markings',
               'Fo&nt...', 'TUI mo&de', '&Scrollback', '&Paste delay', 'Paste &warning',
               'Copy warnin&g', 'OSC f&eatures', 'Notif&y on OSC use',
-              '&Notify on TUI auto-Box', 'Always allow clipboard READ (all tabs, no prompt)',
+              '&Notify on freeze', 'Always allow clipboard READ (all tabs, no prompt)',
               '&Bell'):
     ok(_gone not in _vt, 'View menu no longer shows %r (moved to Global settings)' % _gone)
 # the removed settings survive as hidden state-holders (slash-commands / chips / locks / sync)
@@ -856,6 +856,24 @@ ok(win._clip_reviewer is _clip_r1,
    'clip review now: a second call re-raises the SAME reviewer, not a new one (#2)')
 _clip_r1.resolve('review me once', 'reject')  # resolve so the popup closes
 ok(not _clip_r1.review_is_open(), 'clip review now: the review resolves cleanly')
+
+# --- no two window actions share a DEFAULT shortcut ---------------------------
+# Two built-in defaults on one chord render BOTH actions dead (Qt "ambiguous shortcut")
+# AND hang the Keyboard Shortcuts dialog on the duplicate. _bind now raises at build time
+# on such a collision, so this asserts the shipped set is clean (would fail on freeze+find
+# both defaulting to Ctrl+Shift+F).
+from PyQt6.QtGui import QKeySequence as _QKS_dup          # noqa: E402
+_defs = {}
+_dups = []
+for _sid, (_sa, _sdef, _slbl) in win._shortcuts.items():
+    _n = _QKS_dup(_sdef).toString()
+    if not _n:
+        continue
+    if _n in _defs:
+        _dups.append((_n, _defs[_n], _sid))
+    else:
+        _defs[_n] = _sid
+ok(not _dups, 'no two window actions share a default shortcut (got dups: %r)' % (_dups,))
 
 # --- keyboard-shortcuts dialog: build, Reset, Save ----------------------------
 def _exec_shortcuts(self):

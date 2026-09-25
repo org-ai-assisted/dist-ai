@@ -478,13 +478,13 @@ eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
    'the freeze notice wins: _on_osc_used does not clobber an active escape advisory')
 ok((_esc_term, 'osc_other') not in win._osc_notified,
    'the skipped OSC notice stays un-marked so a later real OSC use can still notice')
-# the freeze notice also WINS over a later autobox/tui advisory: they share the
-# one-per-tab banner slot, and autobox is already conveyed by the greyed Reveal/Detail
-# controls, so a lower-priority notice must not clobber the active freeze banner (the
-# same class as the OSC case, fixed at the _on_advise root not per caller).
-win._on_advise(_esc_term, 'boxed for TUI', 'autobox')   # must NOT clobber the freeze
+# the escape notice also WINS over a later frozen/tui advisory: they share the
+# one-per-tab banner slot, and the freeze is already conveyed by the Freeze button + the
+# lamp, so a lower-priority notice must not clobber the active escape banner (the same
+# class as the OSC case, fixed at the _on_advise root not per caller).
+win._on_advise(_esc_term, 'frozen for TUI', 'frozen')   # must NOT clobber the escape
 eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
-   'the freeze notice wins: an autobox advisory does not clobber an active escape one')
+   'the escape notice wins: a frozen advisory does not clobber an active escape one')
 win._on_advise(_esc_term, 'a full-screen hint', 'tui')  # nor does a plain tui hint
 eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
    'the freeze notice wins: a tui advisory does not clobber an active escape one')

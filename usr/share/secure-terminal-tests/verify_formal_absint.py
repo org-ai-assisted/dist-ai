@@ -199,18 +199,28 @@ def l_pred():
 def ref_render_char(ch, mode):
     """Independent per-character spec of render_output's loop body, using the
     Unicode-property oracle rather than S.is_default_ignorable /
-    S.is_space_separator. Does NOT strip escapes (caller does)."""
+    S.is_space_separator. Does NOT strip escapes (caller does).
+
+    Independence here is about the DANGER lattice (alpha_char), not the cosmetic
+    badge NAME: the detail badge's name text is label data whose only security
+    property (it is SAFE_ASCII) is proved independently in verify_formal's
+    name-ASCII enumeration, so the name comes from S._cp_name (the differential
+    still matches exactly). BS/CR pass in box/show but BADGE in reveal/detail."""
     cp = ord(ch)
-    if cp in (0x08, 0x09, 0x0A, 0x0D) or 0x20 <= cp <= 0x7E:
+    if mode == 'state':
+        # state badges EVERY character; tab/newline pass as structure, BEL drops.
+        if cp in (0x09, 0x0A):
+            return ch
+        if cp == 0x07:
+            return ''
+        return '<U+%04X>' % cp
+    if (0x20 <= cp <= 0x7E or cp in (0x09, 0x0A)
+            or (cp in (0x08, 0x0D) and mode not in ('reveal', 'detail'))):
         return ch
     if cp == 0x07:
         return ''
     if mode == 'detail':
-        try:
-            name = unicodedata.name(ch)
-        except ValueError:
-            name = 'UNNAMED'
-        return '<U+%04X %s>' % (cp, name)
+        return '<U+%04X %s>' % (cp, S._cp_name(cp))
     if mode == 'reveal':
         return '<U+%04X>' % cp
     if (mode == 'show' and cp >= 0x80 and ch.isprintable()
@@ -235,7 +245,7 @@ def t1_absint_and_ref():
     ai_bad = 0
     for cp in range(0, MAX_CP + 1):
         ch = chr(cp)
-        for mode in ('box', 'reveal', 'detail', 'show'):
+        for mode in ('box', 'reveal', 'detail', 'show', 'state'):
             real = S.render_output(ch, mode)
             ref = ref_render_char(ch, mode)
             if real != ref:
@@ -246,10 +256,10 @@ def t1_absint_and_ref():
             lab = alpha_str(real)
             ceil = allowed_for_mode(mode)
             # CLI box mode emits ASCII '_' (SAFE), not the GUI BOX marker;
-            # both are <= MARKER. Reveal/detail must be <= SAFE.
+            # both are <= MARKER. Reveal/detail/state are pure SAFE_ASCII badges.
             if mode == 'box':
                 ok = lab in (BOT, SAFE, MARKER) and lab != DANGEROUS
-            elif mode in STRICT_MODES:
+            elif mode in STRICT_MODES or mode == 'state':
                 ok = lab in (BOT, SAFE)
             else:
                 ok = lab != DANGEROUS and lab <= ceil
@@ -791,7 +801,7 @@ def t9_absint():
     bad = 0
     for cp in range(0, MAX_CP + 1):
         ch = chr(cp)
-        for mode in ('box', 'show', 'reveal', 'detail'):
+        for mode in ('box', 'show', 'reveal', 'detail', 'state'):
             runs, _p = S.cells_to_runs([], [(ch, None)], mode, True, True, None)
             text = ''.join(t for t, _k in runs)
             # Enforce the FULL per-mode ceiling, not merely "not DANGEROUS": box mode's
