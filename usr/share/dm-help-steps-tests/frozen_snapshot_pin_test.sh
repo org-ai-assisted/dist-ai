@@ -80,6 +80,21 @@ if [ -z "${block}" ] || [[ "${block}" != *dist_frozen_snapshot_pin* ]]; then
    exit 1
 fi
 
+## The block validates the pin with source_date_epoch_valid(), which lives in a
+## variables.d lib module (not inline in the block). Extract its definition from
+## the SAME effective sequence so the isolated block can call it -- rather than
+## reimplementing it or sourcing the whole build config (side effects). A col-0
+## 'source_date_epoch_valid() {' opens it; the first col-0 '}' closes it.
+epoch_valid_fn="$(awk '
+   /^source_date_epoch_valid\(\)[[:space:]]*\{/ { cap = 1 }
+   cap { print }
+   cap && /^\}/ { exit }
+' < "${variables_effective}")"
+if [ -z "${epoch_valid_fn}" ]; then
+   printf '%s\n' "FATAL: could not extract source_date_epoch_valid from ${variables} (buildconfig.d modules)." >&2
+   exit 1
+fi
+
 workdir=""
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
@@ -108,6 +123,13 @@ run_pin() {
       # shellcheck disable=SC2034  # source_code_folder_dist: consumed by the sourced pin block
       source_code_folder_dist="${root}"
       SOURCE_DATE_EPOCH=""
+      ## source_date_epoch_valid validates via is_whole_number from helper-scripts
+      ## strings.bsh (a pure-def fragment, sourced by help-steps/variables before
+      ## the pin block). Source the real one -- do not reimplement it.
+      # shellcheck disable=SC1091
+      source "${HELPER_SCRIPTS_PATH:?HELPER_SCRIPTS_PATH must point at a helper-scripts checkout}/usr/libexec/helper-scripts/strings.bsh"
+      # shellcheck disable=SC1090
+      source <(printf '%s\n' "${epoch_valid_fn}")
       # shellcheck disable=SC1090
       source <(printf '%s\n' "${block}")
       printf 'PIN_ACCEPTED: SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH}"
@@ -125,7 +147,7 @@ fi
 ## The old snapshot-id format is NOT a valid epoch (consumers do 'date --date=@');
 ## it must be REJECTED as malformed.
 out="$(run_pin 20260821T022305Z 2>&1)" && rc=0 || rc=$?
-if [ "${rc}" -eq 3 ] && [[ "${out}" == *"PIN_REJECTED"*"Malformed snapshot pin"* ]]; then
+if [ "${rc}" -eq 3 ] && [[ "${out}" == *"PIN_REJECTED"*"Malformed"*"snapshot pin"* ]]; then
    pass "a non-integer pin (snapshot-id) is rejected as malformed"
 else
    fail "non-integer pin not rejected: rc=${rc} out=${out}"

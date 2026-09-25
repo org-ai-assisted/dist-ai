@@ -200,8 +200,9 @@ assert_matches "config.cfg selects the graphical terminal" \
 ## boot-leg checks in dm-image-boot-tests. Absent files -> SKIP (same contract).
 ######################################################################
 iso_step="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
+raw_to_iso_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
 parse_cmd_file="${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd"
-for f in "${iso_step}" "${parse_cmd_file}"; do
+for f in "${iso_step}" "${raw_to_iso_file}" "${parse_cmd_file}"; do
    if [ ! -r "${f}" ]; then
       printf '%s\n' "SKIP: missing source file: ${f}" >&2
       ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
@@ -209,14 +210,14 @@ for f in "${iso_step}" "${parse_cmd_file}"; do
    fi
 done
 
-## Kernel hardening: 4310 must scrape the rootfs 'linux' cmdline (grub-mkconfig) and
-## carry it into the live bootappend, or the ISO boots UNHARDENED. dm-image-boot-tests
-## asserts the runtime effect on the ISO legs; this catches a 4310 regression at the
-## fast local gate.
-assert_matches "4310 scrapes the rootfs kernel cmdline via grub-mkconfig" \
-   'chroot_run grub-mkconfig' "${iso_step}"
-assert_matches "4310 carries the scrape into the live bootappend" \
-   'bootappend=.*rootfs_kernel_hardening' "${iso_step}"
+## Kernel hardening: help-steps/dm-raw-to-iso must scrape the rootfs kernel
+## hardening cmdline (read from the rootfs via chroot) and carry it into the live
+## kernel append, or the ISO boots UNHARDENED. dm-image-boot-tests asserts the
+## runtime effect on the ISO legs; this catches the regression at the fast local gate.
+assert_matches "dm-raw-to-iso scrapes the rootfs kernel hardening cmdline" \
+   'rootfs_kernel_hardening="\$\(chroot' "${raw_to_iso_file}"
+assert_matches "dm-raw-to-iso carries the scrape into the live kernel append" \
+   'live_append=.*rootfs_kernel_hardening' "${raw_to_iso_file}"
 
 ## Cross-build: dm-raw-to-iso must source the signed EFI loaders from the TARGET
 ## rootfs (correct arch even on a cross-build), NOT the host /usr/lib -- otherwise a
