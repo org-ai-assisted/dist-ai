@@ -44,8 +44,11 @@ export LC_ALL=C
 source /usr/libexec/helper-scripts/has.bsh
 ## Single source for the labwc-headless bringup (compositor, socket + Xwayland discovery,
 ## blank cursor, teardown), shared with the shots capture and the other GUI-test harnesses.
+## WL_HEADLESS_LIB overrides the path so a regression test can stub start/stop and drive the
+## REAL signal/teardown path without a live compositor (same seam the lib's own tests use).
+_wl_lib="${WL_HEADLESS_LIB:-$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/wl-headless-lib.bash}"
 # shellcheck source=./wl-headless-lib.bash
-source "$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/wl-headless-lib.bash"
+source "${_wl_lib}"
 
 autoconfirm='true'
 case "${1:-}" in
@@ -69,8 +72,16 @@ if [ "${autoconfirm}" = 'true' ] && ! has wtype; then
 fi
 
 loop_pid=''
+cmd_pid=''
 cleanup() {
-   ## Reached only via the EXIT trap (SC2317).
+   ## Reached via the EXIT trap AND the signal traps (SC2317).
+   # shellcheck disable=SC2317
+   if [ -n "${cmd_pid}" ]; then
+      ## The command is its OWN session leader (setsid below), so signal its whole
+      ## process GROUP -- a wedged suite spawns child shells/ptys that would otherwise
+      ## leak and thrash the box after a `timeout` kills only this script.
+      kill -TERM -- -"${cmd_pid}" 2>/dev/null || true
+   fi
    # shellcheck disable=SC2317
    if [ -n "${loop_pid}" ]; then
       kill "${loop_pid}" 2>/dev/null || true
@@ -79,6 +90,11 @@ cleanup() {
    wl_headless_stop
 }
 trap cleanup EXIT
+## A `timeout` (per-suite watchdog) sends SIGTERM/SIGINT here; run cleanup then exit
+## non-zero so a wedged suite is TORN DOWN and REPORTED, never left hanging.
+# shellcheck disable=SC2317
+_on_signal() { cleanup; trap - EXIT; exit 124; }
+trap _on_signal TERM INT
 
 ## Bring up the compositor (mints XDG_RUNTIME_DIR, starts labwc, exports WAYLAND_DISPLAY +
 ## WL_XWAYLAND_DISPLAY, hides the pointer). A Qt client connects to the real 'wayland'
@@ -98,6 +114,11 @@ if [ "${autoconfirm}" = 'true' ]; then
    loop_pid="$!"
 fi
 
+## Run the command as its OWN session leader (setsid), so a watchdog TERM can kill its
+## whole process group (test + spawned shells/ptys) via cleanup, not just this script.
 rc=0
-"$@" || rc="$?"
+setsid "$@" &
+cmd_pid="$!"
+wait "${cmd_pid}" || rc="$?"
+cmd_pid=''        # reaped cleanly; do not group-kill an exited pid in the EXIT trap
 exit "${rc}"

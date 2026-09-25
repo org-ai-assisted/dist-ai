@@ -147,6 +147,28 @@ eq(S.render_output(EMOJI, 'detail'), '<U+1F600 GRINNING FACE>', 'detail names as
 ok(all(0x20 <= ord(c) <= 0x7E for c in S.render_output(CAFE + BIDI + EMOJI, 'detail')),
    'detail badge is plain ASCII (safe in every display)')
 
+# --- reveal/detail BADGE the cursor controls BS (0x08) and CR (0x0D) --------------
+# box/show relay them (the widget honors them as line-local edits); reveal/detail make
+# the cursor-control VISIBLE instead of relaying it -- "show all codepoints, also CR/BS".
+# printable ASCII, tab and newline still pass through unchanged in every mode.
+eq(S.render_output('a\x08b\rc', 'reveal'), 'a<U+0008>b<U+000D>c',
+   'reveal badges backspace and carriage-return')
+eq(S.render_output('a\x08b\rc', 'detail'),
+   'a<U+0008 BACKSPACE>b<U+000D CARRIAGE RETURN>c',
+   'detail names backspace and carriage-return from their control aliases')
+eq(S.render_output('a\x08b\rc', 'box'), 'a\x08b\rc',
+   'box passes BS/CR through (the widget honors them as line edits)')
+eq(S.render_output('a\x08b\rc', 'show'), 'a\x08b\rc',
+   'show passes BS/CR through')
+eq(S.render_output('x\ty\nz', 'reveal'), 'x\ty\nz',
+   'reveal still passes tab and newline (structure), unlike other controls')
+# state badges CR/BS like every other character (it badges ALL)
+eq(S.render_output('a\x08b\rc', 'state'),
+   '<U+0061><U+0008><U+0062><U+000D><U+0063>', 'state badges BS/CR too')
+# _cp_name resolves a control from its Unicode alias (unicodedata.name has none)
+eq(S._cp_name(0x0D), 'CARRIAGE RETURN', '_cp_name resolves a control alias')
+eq(S._cp_name(0x0378), 'UNNAMED', '_cp_name falls back to UNNAMED for a nameless cp')
+
 # --- render_cap_prefix: bound the DETAIL-rendered size (review-preview anti-DoS) ---
 # The review mirror caps its render by this so a huge unicode paste (detail badges
 # expand each char ~32x) cannot build a multi-MB document and freeze the review.
@@ -370,6 +392,22 @@ _bgst = tuple(sorted({'fg': None, 'bg': 4, 'bold': False}.items()))
 _wbg, _ = S.cells_to_runs([[(' ', _bgst), (' ', _bgst), ('X', ())]], [], 'show', True, True)
 ok(not any(isinstance(k, tuple) and len(k) == 3 and k[1] == S.WS_ANOMALY for _t, k in _wbg),
    'background-coloured spaces are a visible block, never a whitespace anomaly')
+
+# --- Tab illustration: a completed-line tab is TAB_MARK-tagged in every mode ------
+# Mirrors WS_ANOMALY: the run keeps its real '\t' (copy/transcript safe) and the widget
+# paints a faint arrow guide over it. Gated on the markings toggle, all modes. (In the
+# TUI grid pyte has already expanded tabs to cursor moves, so the mark lives on the CLI
+# completed-lines path, which is what cells_to_runs' emit_line produces.)
+def _tabkeys(runs):
+    return [k for _t, k in runs if isinstance(k, tuple) and len(k) == 3 and k[1] == S.TAB_MARK]
+for _tm in S.DISPLAY_MODES:
+    _tr, _ = S.cells_to_runs([_cl('a\tb')], [], _tm, True, True)
+    ok(_tabkeys(_tr) == [(S.MARK_KEY, S.TAB_MARK, 0x09)],
+       'a tab is tagged (MARK_KEY, TAB_MARK, 0x09) in %s mode' % _tm)
+    ok(any(t == '\t' for t, _k in _tr),
+       'the tab run keeps its real \\t (copy-safe: the guide never alters what copies out) in %s' % _tm)
+_toff, _ = S.cells_to_runs([_cl('a\tb')], [], 'detail', True, False)
+ok(not _tabkeys(_toff), 'markings off: no tab-illustration runs')
 
 # --- Show mode: render the real glyph but TINT it by risk class ----------------
 # In show mode a non-ASCII glyph is shown as itself (not boxed/escaped), yet it is
@@ -861,12 +899,23 @@ ok(S.osc_code_description('osc_clipboard_read', 52) == 'read the system clipboar
    and S.osc_code_description('osc_clipboard', 52) != S.osc_code_description(None, 52),
    'OSC 52 read and write senses read distinctly (key disambiguates the shared code)')
 
-# --- escapes are always stripped; editing controls always pass ----------------
+# --- escapes are always stripped; editing controls pass in box/show, badge in reveal/detail --
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('box', 'show', 'reveal', 'detail'):
     eq(S.render_output(ESC, mode), 'RED', 'escape stripped in %s' % mode)
+# state strips the escape too, then badges the surviving letters (it badges EVERY char)
+eq(S.render_output(ESC, 'state'), '<U+0052><U+0045><U+0044>',
+   'state strips the escape then badges the surviving text')
+# box/show honor BS/CR as line-local edits, so they pass through; tab/newline always pass.
+for mode in ('box', 'show'):
     eq(S.render_output('ab\x08\r\t\nX', mode), 'ab\x08\r\t\nX',
        'editing controls pass in %s' % mode)
+# reveal/detail make the cursor-control VISIBLE (badge it) but still pass tab/newline.
+eq(S.render_output('ab\x08\r\t\nX', 'reveal'), 'ab<U+0008><U+000D>\t\nX',
+   'reveal badges BS/CR, passes tab/newline')
+eq(S.render_output('ab\x08\r\t\nX', 'detail'),
+   'ab<U+0008 BACKSPACE><U+000D CARRIAGE RETURN>\t\nX',
+   'detail names BS/CR, passes tab/newline')
 
 # CSI with a private-parameter prefix (< = > ?) -- a capable-TERM program emits
 # these (modifyOtherKeys "\x1b[>4;2m", cursor hide "\x1b[?25l") -- must strip whole
@@ -884,7 +933,9 @@ ok('U+20AC' in _euro and 'EURO SIGN' in _euro and 'Currency Symbol' in _euro
 ok('RIGHT-TO-LEFT OVERRIDE' in S.describe_codepoint(0x202E), 'describe: bidi name')
 ok('\\U0001f600' in S.describe_codepoint(0x1F600), 'describe: astral uses \\U escape')
 ok('not a code point' in S.describe_codepoint(0x110000), 'describe: out-of-range guarded')
-ok('unnamed' in S.describe_codepoint(0x07), 'describe: unnamed control still described')
+ok('BELL' in S.describe_codepoint(0x07), 'describe: a C0 control is named from its alias')
+ok('CARRIAGE RETURN' in S.describe_codepoint(0x0D), 'describe: CR named from its alias')
+ok('UNNAMED' in S.describe_codepoint(0x0378), 'describe: a nameless cp falls back to UNNAMED')
 
 # --- full-screen (alternate screen) detection ---------------------------------
 ok(S.wants_full_screen('\x1b[?1049h') is True, 'detects alt-screen enter (1049)')
@@ -1675,28 +1726,41 @@ ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
-ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail', 'codepoints'), 'display modes')
+ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail', 'state'), 'display modes')
+ok(S.EXPANDING_MODES == ('reveal', 'detail', 'state'), 'expanding (badge) modes')
 
-# --- codepoints mode: EVERY character (incl printable ASCII) -> its <U+XXXX> badge ----
-eq(S.render_output('aZ 9', 'codepoints'), '<U+0061><U+005A><U+0020><U+0039>',
-   'codepoints badges every character including printable ASCII and space')
-eq(S.render_output('x\ty\nz', 'codepoints'), '<U+0078>\t<U+0079>\n<U+007A>',
-   'codepoints keeps tab and newline as structure')
-eq(S.render_output('a\x07b', 'codepoints'), '<U+0061><U+0062>',
-   'codepoints drops BEL, like every mode')
-_cpo = S.render_output('A' + chr(0x202e) + '\U0001f600\x1b[31m!', 'codepoints')
+# --- state mode: EVERY character (incl printable ASCII) -> its <U+XXXX> badge, ----
+# tinted by the PROGRAM'S OWN SGR attributes (codepoint + attributes), not risk class
+eq(S.render_output('aZ 9', 'state'), '<U+0061><U+005A><U+0020><U+0039>',
+   'state badges every character including printable ASCII and space')
+eq(S.render_output('x\ty\nz', 'state'), '<U+0078>\t<U+0079>\n<U+007A>',
+   'state keeps tab and newline as structure')
+eq(S.render_output('a\x07b', 'state'), '<U+0061><U+0062>',
+   'state drops BEL, like every mode')
+_cpo = S.render_output('A' + chr(0x202e) + '\U0001f600\x1b[31m!', 'state')
 ok(all(0x20 <= ord(c) <= 0x7E or c in '\t\n' for c in _cpo) and '\x1b' not in _cpo,
-   'codepoints output is inert ASCII (escapes stripped, no raw non-ASCII or surrogate)')
+   'state output is inert ASCII (escapes stripped, no raw non-ASCII or surrogate)')
 # the widget line path badges ASCII too (via _cell_display), and the caret offset agrees
 _cpcomp, _cpcells, _cpcol, _cps, _cpw, _rp6 = S.feed_line_edits([], 0, {}, 'aZ', 0, 'full')
-_cpruns, _cppfx = S.cells_to_runs(_cpcomp, _cpcells, 'codepoints', False)
+_cpruns, _cppfx = S.cells_to_runs(_cpcomp, _cpcells, 'state', False)
 eq(''.join(t for t, _k in _cpruns), '<U+0061><U+005A>',
-   'the widget line path badges printable ASCII in codepoints mode')
-eq(S.cells_display_col(_cpcells, _cpcol, 'codepoints'), 16,
-   'the caret offset counts the badge width (2 chars x 8 = 16) in codepoints mode')
-# a TUI grid cell cannot fit a multi-column badge, so codepoints degrades to the box there
-eq(S.tui_cell(chr(0x202e), 'codepoints'), S.BOX,
-   'codepoints in a TUI grid cell boxes a non-ASCII char (a badge cannot fit one cell)')
+   'the widget line path badges printable ASCII in state mode')
+# state tints each run by the cell's REAL SGR key (an items-tuple), never marking_class:
+# the badge carries the program's own attributes, not a risk colour.
+_cpsgr_runs, _ = S.cells_to_runs(_cpcomp, _cpcells, 'state', True)
+ok(all(k[0] == S.MARK_KEY and isinstance(k[1], tuple) for _t, k in _cpsgr_runs),
+   'state runs are keyed by the real SGR attributes (a tuple), not a risk class')
+# reveal, by contrast, keeps its risk-class tint (no per-cell SGR badge)
+_rvruns, _ = S.cells_to_runs(_cpcomp, _cpcells, 'reveal', True)
+ok(not any(isinstance(k[1], tuple) for _t, k in _rvruns if k),
+   'reveal does NOT tint by SGR attributes (risk class, not the program colour)')
+eq(S.cells_display_col(_cpcells, _cpcol, 'state'), 16,
+   'the caret offset counts the badge width (2 chars x 8 = 16) in state mode')
+# a TUI grid cell cannot fit a multi-column badge -- state (like reveal/detail) AUTO-FREEZES
+# the frame in TUI (terminal.py) and renders badges from the snapshot. If unfrozen, the live
+# grid cell falls back to the box for a non-ASCII cell (a badge cannot fit one cell).
+eq(S.tui_cell(chr(0x202e), 'state'), S.BOX,
+   'state in a live TUI grid cell boxes a non-ASCII char (a badge cannot fit one cell)')
 ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
 # The light theme is "black on white": the foreground must be PURE black, not a soft
 # grey. A grey foreground renders every glyph anti-aliased with no fully-black pixels --
@@ -2077,9 +2141,17 @@ ok('<U+202E>' in _o, 'cli reveal: bidi as <U+XXXX> badge')
 # the child exit code is forwarded
 _o, _rc = _run_cli(['--', 'sh', '-c', 'exit 42'])
 eq(_rc, 42, 'cli forwards the child exit code')
-# the two safe cursor controls (backspace, carriage return) pass through
-_o, _ = _run_cli(['--', 'printf', 'a\x08b\rc'])
-ok('\x08' in _o and '\r' in _o, 'cli keeps backspace and carriage return')
+# the two cursor controls (backspace, carriage return) pass through in box/show, so a
+# TUI-style program's line edits work; the default (detail) mode BADGES them (visible).
+_o, _ = _run_cli(['--mode', 'box', '--', 'printf', 'a\x08b\rc'])
+ok('\x08' in _o and '\r' in _o, 'cli box keeps backspace and carriage return')
+_o, _ = _run_cli(['--mode', 'detail', '--', 'printf', 'a\x08b\rc'])
+ok('<U+0008 BACKSPACE>' in _o and '<U+000D CARRIAGE RETURN>' in _o
+   and '\x08' not in _o and '\r' not in _o,
+   'cli detail badges backspace and carriage return (does not relay the raw control)')
+# state mode: every character (incl printable ASCII) is a <U+XXXX> badge
+_o, _ = _run_cli(['--mode', 'state', '--', 'printf', 'Hi'])
+ok('<U+0048>' in _o and '<U+0069>' in _o, 'cli state badges every character')
 # any other control character is neutralized to _ in box mode
 _o, _ = _run_cli(['--mode', 'box', '--', 'printf', 'x\x01y'])
 ok('_' in _o and '\x01' not in _o, 'cli box: a control char (SOH) becomes _')

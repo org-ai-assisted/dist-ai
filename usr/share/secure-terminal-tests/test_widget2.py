@@ -205,11 +205,13 @@ def _arm_osc(_k, _v):
     win._persist()
 
 
-def _set_autobox(_v):
+def _set_freeze_notice(_v):
+    ## The "Notify on freeze" setting (config key tui_autobox_notice kept): controls the
+    ## passive FROZEN banner raised when an expanding mode auto-freezes a TUI tab.
     win._tui_autobox_notice = _v
     win.act_tui_autobox_notice.setChecked(_v)
     if not _v:
-        win._clear_advisories('autobox')
+        win._clear_advisories('frozen')
     win._persist()
 
 
@@ -315,8 +317,8 @@ if tui_available():
        'TUI mode flags a REFUSED OSC, symmetric with CLI (dev417)')
 # turning on TUI mode auto-dismisses a "use TUI mode" (tui-kind) advisory, but NOT
 # an unrelated OSC notice on the same tab (codex P2: only TUI hints are stale).
-# Box mode so the switch raises no auto-Box notice of its own -- this asserts the
-# tui-hint/OSC-notice handling in isolation.
+# Box mode so entering TUI raises no FROZEN notice of its own (Box renders live) --
+# this asserts the tui-hint/OSC-notice handling in isolation.
 _tuitab = win.current()
 win.set_mode('box')
 win._on_advise(_tuitab, 'This program wants a full-screen interface. Turn on TUI.')
@@ -518,91 +520,92 @@ if tui_available():
     eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', MODE_NEUTRAL),
        'TUI -> neutral grey mode lamp (a chosen mode, not a saturated alarm)')
     win.set_tui(False)
-    # Box and Show already render full-screen, so entering TUI leaves them as the
-    # user set them (no auto-switch, no restore state).
+    # Box and Show render full-screen in the grid, so entering TUI leaves them LIVE
+    # (never auto-frozen) and as the user set them.
     win.set_mode('box')
     win.set_tui(True)
     eq(win.current().current_mode(), 'box', 'TUI leaves Box as Box (renders full-screen)')
-    ok(win.current() not in win._pre_tui_mode, 'a Box tab needs no restore state in TUI')
+    ok(not win.current().frozen(), 'a Box tab renders LIVE in TUI (never auto-frozen)')
     win.set_tui(False)
-    # Reveal/Detail cannot expand a codepoint in the fixed grid, so entering TUI
-    # auto-switches this TAB to Box (which still marks every byte) WITHOUT persisting
-    # Box as the global default, and disables the Reveal/Detail controls. Turning
-    # TUI off restores the prior mode and re-enables them.
+    # Reveal/Detail/State cannot expand a <U+XXXX> badge in the fixed grid, so entering
+    # TUI AUTO-FREEZES the frame (the snapshot renders as badges) instead of switching
+    # mode: the mode is PRESERVED and the controls stay selectable (they freeze, not grey).
     win.set_mode('detail')
     win.set_tui(True)
-    eq(win.current().current_mode(), 'box', 'TUI auto-switches Detail to Box')
-    eq(win._default_mode, 'detail',
-       'TUI does NOT persist the auto-Box as the global default')
-    ok(not win.act_reveal.isEnabled() and not win.act_detail.isEnabled(),
-       'Reveal/Detail controls are disabled while the tab is in TUI')
+    eq(win.current().current_mode(), 'detail',
+       'TUI keeps Detail and freezes the frame (no auto-switch to Box)')
+    ok(win.current().frozen(), 'an expanding mode (Detail) auto-freezes in TUI')
+    eq(win._default_mode, 'detail', 'the global default mode is unchanged')
+    ok(win.act_reveal.isEnabled() and win.act_detail.isEnabled(),
+       'Reveal/Detail controls stay selectable in TUI (they freeze, not grey)')
     ok(win.act_box.isEnabled() and win.act_show.isEnabled(),
        'Box and Show stay selectable in TUI')
-    ok(not win._mode_buttons['reveal'].isEnabled()
-       and not win._mode_buttons['detail'].isEnabled(),
-       'the Reveal/Detail toolbar chips are disabled in TUI too')
-    win.set_tui(False)
-    eq(win.current().current_mode(), 'detail',
-       'turning TUI off restores the prior mode (Detail)')
-    ok(win.act_reveal.isEnabled() and win.act_detail.isEnabled(),
-       'Reveal/Detail re-enabled after leaving TUI')
     ok(win._mode_buttons['reveal'].isEnabled()
        and win._mode_buttons['detail'].isEnabled(),
-       'the Reveal/Detail chips re-enabled after leaving TUI')
+       'the Reveal/Detail toolbar chips stay enabled in TUI too')
+    win.set_tui(False)
+    eq(win.current().current_mode(), 'detail',
+       'turning TUI off keeps Detail (it was never switched away)')
+    ok(not win.current().frozen(), 'leaving TUI unfreezes the tab')
     win.set_mode('box')
 
-# The passive "switched to Box" notice: fires on the auto-switch when on, clears on
-# CLI, and stays silent when the setting is off (the switch itself is unconditional).
+# The passive FROZEN notice: fires when an expanding mode auto-freezes a TUI tab (when
+# the setting is on), clears on leaving TUI (unfreeze), and stays silent when the setting
+# is off (the freeze itself is unconditional -- an expanding badge cannot fit the grid).
 if tui_available():
     _nt = win.current()
     win.set_tui(False)
     win._dismiss_advisory()                    # start from a clean banner
-    _set_autobox(True)
+    _set_freeze_notice(True)
     win.set_mode('detail')
     win.set_tui(True)
-    eq(win._advisories.get(_nt, (None,))[0], 'autobox',
-       'entering TUI raises the auto-Box notice when the setting is on')
-    ok(not win._banner.isHidden(), 'the auto-Box banner is showing')
+    eq(win._advisories.get(_nt, (None,))[0], 'frozen',
+       'entering TUI raises the FROZEN notice when the setting is on')
+    ok(not win._banner.isHidden(), 'the FROZEN banner is showing')
+    ok(_nt.frozen(), 'the tab is frozen in TUI')
     win.set_tui(False)
     ok(win._advisories.get(_nt) is None,
-       'leaving TUI clears the auto-Box notice and restores the mode')
-    eq(win.current().current_mode(), 'detail', 'the prior mode (Detail) is restored')
-    # notice OFF: the tab still boxes, but no banner is raised
-    _set_autobox(False)
+       'leaving TUI clears the FROZEN notice and unfreezes')
+    ok(not _nt.frozen(), 'the tab is unfrozen after leaving TUI')
+    eq(win.current().current_mode(), 'detail', 'the mode (Detail) is preserved')
+    # notice OFF: the tab still freezes, but no banner is raised
+    _set_freeze_notice(False)
     win.set_mode('reveal')
     win.set_tui(True)
-    eq(win.current().current_mode(), 'box',
-       'the auto-Box switch still happens with the notice off')
+    ok(win.current().frozen() and win.current().current_mode() == 'reveal',
+       'the freeze still happens (mode preserved) with the notice off')
     ok(win._advisories.get(_nt) is None, 'the notice off raises no banner')
     win.set_tui(False)
     # a showing notice is dropped the moment the setting is switched off
-    _set_autobox(True)
+    _set_freeze_notice(True)
     win.set_mode('detail')
     win.set_tui(True)
-    ok(win._advisories.get(_nt, (None,))[0] == 'autobox', 'a notice is showing')
-    _set_autobox(False)
+    ok(win._advisories.get(_nt, (None,))[0] == 'frozen', 'a notice is showing')
+    _set_freeze_notice(False)
     ok(win._advisories.get(_nt) is None,
-       'switching the notice off clears a showing auto-Box banner')
+       'switching the notice off clears a showing FROZEN banner')
     win.set_tui(False)
-    _set_autobox(True)
+    _set_freeze_notice(True)
     win.set_mode('box')
 
-# the /mode slash command is refused for Reveal/Detail while the tab owns the TUI
-# grid (it bypasses the disabled chips, so the choke point is in set_mode).
+# the /mode slash command now APPLIES Reveal/Detail/State while the tab owns the TUI
+# grid: the mode is accepted and the frame FREEZES (no longer refused/auto-boxed).
 if tui_available():
     win.set_mode('box')
     win.set_tui(True)
     win.run_command('mode reveal')
-    eq(win.current().current_mode(), 'box',
-       '/mode reveal is refused while the tab is in TUI (mode unchanged)')
+    eq(win.current().current_mode(), 'reveal',
+       '/mode reveal applies in TUI (the frame freezes)')
+    ok(win.current().frozen(), '/mode reveal in TUI freezes the frame')
     win.run_command('mode show')
     eq(win.current().current_mode(), 'show',
-       '/mode show still applies in TUI (Show renders full-screen)')
+       '/mode show applies in TUI (Show renders full-screen, live)')
+    ok(not win.current().frozen(), 'switching to Show unfreezes (renders live)')
     win.set_tui(False)
     win.set_mode('box')
 
-# an admin-locked display mode is a deliberate hardening choice: entering TUI must
-# NOT auto-switch it, and the controls are left to _apply_locks (not re-enabled).
+# an admin-locked display mode entering TUI is unchanged: freeze pauses the VIEW, never
+# switches the mode, so the locked Detail stays Detail and simply freezes.
 if tui_available():
     _lm = win.current()
     win.set_tui(False)
@@ -612,38 +615,40 @@ if tui_available():
         win._locked = {'unicode_mode'}
         win.set_tui(True)
         eq(_lm.current_mode(), 'detail',
-           'a locked mode is respected: TUI does not auto-Box it')
+           'a locked mode is unchanged by TUI (freeze pauses the view, not the mode)')
+        ok(_lm.frozen(), 'the locked expanding mode still freezes in TUI')
     finally:
         win._locked = _saved_locks
         win.set_tui(False)
     _lm.apply_mode('box')
     win.set_mode('box')
 
-# a closed auto-Boxed tab must not linger in _pre_tui_mode (else the terminal leaks)
+# a TUI tab born in an expanding mode auto-freezes; closing it leaks nothing (freeze
+# state lives on the terminal object, freed with it -- there is no window-level dict).
 if tui_available():
     win.set_mode('detail')
-    win.new_tab(tui=True)                       # a TUI tab born in Detail -> auto-Boxed
+    win.new_tab(tui=True)                       # a TUI tab born in Detail -> auto-frozen
     _leak = win.current()
-    ok(_leak in win._pre_tui_mode, 'the auto-Boxed tab recorded its pre-TUI mode')
+    ok(_leak.frozen(), 'a TUI tab born in an expanding mode is auto-frozen')
     win.close_tab(win.tabs.indexOf(_leak))
-    ok(_leak not in win._pre_tui_mode,
-       'closing an auto-Boxed tab clears its _pre_tui_mode entry (no leak)')
+    ok(win._advisories.get(_leak) is None,
+       'closing an auto-frozen tab clears its advisory (no leak)')
     win.set_mode('box')
 
-# the autobox notice must NOT clobber a pending OSC notice (security-relevant, de-duped):
-# the greyed controls convey the switch, so the OSC banner wins the one-per-tab slot.
+# the FROZEN notice must NOT clobber a pending OSC notice (security-relevant, de-duped):
+# the Freeze button + lamp convey the freeze, so the OSC banner wins the one-per-tab slot.
 if tui_available():
     _oc = win.current()
     win.set_tui(False)
     win._dismiss_advisory()
-    _set_autobox(True)
+    _set_freeze_notice(True)
     win.set_mode('detail')
     win._on_advise(_oc, 'An application used an OSC escape ...', 'osc')
     eq(win._advisories.get(_oc, (None,))[0], 'osc', 'an OSC notice is pending')
-    win.set_tui(True)                           # auto-Box fires, but must not clobber osc
-    eq(win.current().current_mode(), 'box', 'the tab still auto-switched to Box')
+    win.set_tui(True)                           # freeze fires, but must not clobber osc
+    ok(win.current().frozen(), 'the tab still froze on entering TUI')
     eq(win._advisories.get(_oc, (None,))[0], 'osc',
-       'the pending OSC notice survives the auto-Box (not clobbered)')
+       'the pending OSC notice survives the freeze (not clobbered)')
     win.set_tui(False)
     win._dismiss_advisory()
     win.set_mode('box')

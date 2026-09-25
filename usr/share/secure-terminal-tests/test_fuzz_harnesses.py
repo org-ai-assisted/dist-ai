@@ -28,6 +28,7 @@ import contextlib
 import importlib.util
 import os
 import sys
+import traceback
 import types
 
 try:
@@ -49,6 +50,11 @@ def ok(cond, msg):
         PASS += 1
     else:
         FAIL += 1
+        ## A failure raised from inside an `except` (a harness that crashed on a seed)
+        ## prints its full traceback (file:line), not just repr(exc) -- so the crash
+        ## points at the bug without a manual re-run.
+        if sys.exc_info()[0] is not None:
+            sys.stderr.write(traceback.format_exc())
         sys.stderr.write('FAIL: ' + msg + '\n')
 
 
