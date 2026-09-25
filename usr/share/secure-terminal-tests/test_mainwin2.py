@@ -578,9 +578,15 @@ ok(getattr(_reuse_tab, '_command', 'x') is None
    and getattr(_reuse_tab, 'launch_command', None) is not None,
    'the reverted tab keeps its launch_command (dedup key survives the revert)')
 _cnt_reverted = win.tabs.count()
+_reverted_pid = getattr(_reuse_tab, '_pid', None)
 _rr = win._ipc_open({'tabs': [{'command': ['/bin/sh', '-c', 'exit 0']}], 'if_absent': True})
 ok(_rr.get('reattached') == 1 and _rr['opened'] == 0 and _rr['skipped'] == 0,
    'if_absent reopen RE-RUNS the reverted tab in place (reattached, not skipped/duplicated)')
+# prove _ipc_open actually invoked relaunch_command (a new child + restored command), not just
+# returned the counter: a caller regression could report reattached==1 without relaunching.
+ok(getattr(_reuse_tab, '_command', None) == ['/bin/sh', '-c', 'exit 0']
+   and getattr(_reuse_tab, '_pid', None) not in (None, _reverted_pid),
+   'if_absent reopen starts the original program in the existing tab (new child, command restored)')
 ok(win.tabs.count() == _cnt_reverted,
    'if_absent reopen of a reverted tab opens NO new tab (reuses the existing one)')
 

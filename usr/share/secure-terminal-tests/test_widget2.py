@@ -6700,19 +6700,23 @@ _rst_stage.shutdown()
 # The inverse of restart_as_shell: after a -- PROGRAM tab has dropped to a login shell, re-run the
 # remembered command IN the same widget (what a --if-absent reopen does to reuse the tab). TUI here
 # so the _sync_display grid-entry branch runs (a CLI relaunch is exercised by the security case below).
-_rl = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=True)
+_rl_cmd = ['/bin/sh', '-c', 'echo RELAUNCH_RAN; exit 0']
+_rl = SecureTerminal(command=_rl_cmd, tui=True)
 _rl.resize(600, 300)
 _rl.show()
-pump(400)                                  # the child exits
+pump(400)                                  # the child runs (prints the sentinel) + exits
 ok(_rl.restart_as_shell() is True, 'relaunch precondition: the tab reverts to a shell')
-ok(_rl._command is None and _rl._exited_command == ['/bin/sh', '-c', 'exit 0'],
+ok(_rl._command is None and _rl._exited_command == _rl_cmd,
    'restart_as_shell remembers the exited command in _exited_command')
 _rl_shellpid = _rl._pid
 _rl_ret = _rl.relaunch_command()
 ok(_rl_ret is True
-   and _rl._command == ['/bin/sh', '-c', 'exit 0'] and _rl._exited_command is None
+   and _rl._command == _rl_cmd and _rl._exited_command is None
    and _rl._pid is not None and _rl._pid != _rl_shellpid and _rl._fd is not None,
    'relaunch_command re-runs the original program in place (new child, command restored)')
+pump(500)                                  # the relaunched program runs -> emits the sentinel again
+ok('RELAUNCH_RAN' in _rl.document().toPlainText(),
+   'relaunch_command actually executed the program (its output appears after the relaunch)')
 _rl.shutdown()
 
 # a plain login-shell tab (no remembered command) is a no-op
