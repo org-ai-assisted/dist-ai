@@ -1582,5 +1582,52 @@ _prevterm = M.SecureTerminal(command=['/bin/sh'], preview=True)
 ok(win._tab_pts(_prevterm) is None, '_tab_pts is None when there is no live child')
 _prevterm.shutdown()
 
+# --- Freeze / State window-level surface (coverage of the new debugging controls) ---------
+from PyQt6.QtGui import QAction as _QAction_cov                    # noqa: E402
+from secure_terminal.main import _TUI_MODE_NOTE as _TMN_cov        # noqa: E402
+# window set_frozen: explicit on/off and the None toggle, driving the current tab's freeze.
+win.set_frozen(True)
+ok(win.current().frozen(), 'window set_frozen(True) freezes the current tab')
+win.set_frozen(None)
+ok(not win.current().frozen(), 'window set_frozen(None) toggles the current tab back')
+# guard: set_frozen is a no-op when the current tab is not a live terminal (e.g. none).
+_sf_cur = win.current
+win.current = lambda: None
+try:
+    win.set_frozen(True)                            # hits the not-a-SecureTerminal guard
+    ok(True, 'window set_frozen is a no-op when there is no current terminal (guarded)')
+finally:
+    win.current = _sf_cur
+# the /freeze slash command: explicit on/off plus the bare toggle.
+win.run_command('freeze on')
+ok(win.current().frozen(), '/freeze on freezes')
+win.run_command('freeze off')
+ok(not win.current().frozen(), '/freeze off unfreezes')
+win.run_command('freeze')
+_fz_toggled = win.current().frozen()
+win.run_command('freeze')
+ok(_fz_toggled and not win.current().frozen(), '/freeze (bare) toggles')
+# State display lamp: _display_level reports the State tuple when the mode is state.
+win.set_mode('state')
+_dl = win._display_level()
+ok(_dl[0] == '#1f8a54' and _dl[1] == 'State', 'State mode drives the green State display lamp')
+win.set_mode('box')
+# _reconcile_tui_freeze ignores a non-terminal (the current-tab-is-not-a-SecureTerminal guard).
+win._reconcile_tui_freeze(None)
+ok(True, '_reconcile_tui_freeze on a non-terminal is a no-op (guarded)')
+# _sync_mode_availability strips a stale TUI note from an expanding-mode control's tooltip.
+_rv_ctl = win._mode_actions.get('reveal')
+_rv_ctl.setToolTip('Reveal tip.' + _TMN_cov)
+win._sync_mode_availability()
+ok(_rv_ctl.toolTip() == 'Reveal tip.' and _rv_ctl.isEnabled(),
+   '_sync_mode_availability re-enables an expanding control and strips its stale TUI note')
+# _bind FAILS LOUD on two built-in defaults sharing a chord (the dev-accident guard).
+_dup_raised = False
+try:
+    win._bind(_QAction_cov('Dupe', win), 'dupe_coverage_probe', 'Ctrl+Shift+B')  # freeze's chord
+except RuntimeError:
+    _dup_raised = True
+ok(_dup_raised, '_bind raises on a duplicate built-in default shortcut (Ctrl+Shift+B == freeze)')
+
 
 finish('mainwin')
