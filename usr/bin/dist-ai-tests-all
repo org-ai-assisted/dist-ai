@@ -670,6 +670,12 @@ wire() {
             "KICKSECURE_BASE_FILES_DIR=$( pkg_dir kicksecure-base-files )"
             "LEGACY_DIST_PREINST=$( pkg_dir legacy-dist )/debian/legacy-dist.preinst"
          )
+         ## frozen_snapshot_pin sources ${HELPER_SCRIPTS_PATH}/.../strings.bsh to
+         ## validate the extracted source_date_epoch_valid; wire it when a
+         ## helper-scripts checkout resolved (dist-ai-tests.helper-scripts: true).
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       dm-reprepro-tracking)
          wire_env=( "DM_SOURCE_DIR=$( pkg_dir derivative-maker )" )
