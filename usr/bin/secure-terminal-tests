@@ -105,10 +105,11 @@ export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 ## (wl-headless-run traps TERM and group-kills its tree) and recorded as a FAILURE. Generous
 ## default (the slowest suite under pixman software-render + parallel contention is minutes,
 ## a wedge is infinite), overridable for a deliberately long run.
+## 0 is the DELIBERATE unbounded opt-out ("a deliberately long run"), so it must survive:
+## reject only empty/non-digit garbage (-> the 600 default); a valid 0 stays 0 (watchdog off).
 suite_timeout="${DIST_AI_SUITE_TIMEOUT:-600}"
 case "${suite_timeout}" in ''|*[!0-9]*) suite_timeout=600 ;; esac
 suite_timeout="$(( 10#${suite_timeout} ))"
-[ "${suite_timeout}" -ge 1 ] || suite_timeout=600
 
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  # invoked via the EXIT trap
@@ -189,15 +190,21 @@ if [ -n "${SECURE_TERMINAL_TESTS_ONLY:-}" ]; then
    declare -A _st_by_base=()
    for _s in "${suites[@]}"; do _st_by_base["$(basename -- "${_s}" .py)"]="${_s}"; done
    _only_suites=()
+   ## noglob: the value is suite BASENAMES; without this an unquoted split undergoes
+   ## pathname expansion, so a glob metachar (test_mainwin*) matching a file in the CWD
+   ## would silently become that filename instead of the literal the operator typed.
+   set -f
    for _want in ${SECURE_TERMINAL_TESTS_ONLY//,/ }; do
       _want="${_want%.py}"
       if [ -n "${_st_by_base[${_want}]:-}" ]; then
          _only_suites+=("${_st_by_base[${_want}]}")
       else
+         set +f
          printf '%s\n' "secure-terminal-tests: FATAL: SECURE_TERMINAL_TESTS_ONLY names unknown suite '${_want}'" >&2
          exit 1
       fi
    done
+   set +f
    suites=("${_only_suites[@]}")
    printf '%s\n' "secure-terminal-tests: running ONLY: ${SECURE_TERMINAL_TESTS_ONLY}" >&2
 fi
