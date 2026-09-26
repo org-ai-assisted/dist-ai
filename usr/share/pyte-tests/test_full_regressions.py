@@ -179,3 +179,94 @@ def test_draw_after_shrink_is_visible():
     screen.resize(lines=1, columns=1)
     screen.draw('X')
     assert 'X' in ''.join(screen.display)
+
+
+# --------------------------------------------------------------------------
+# Bug H -- a bare LF after a width-filling line does not clear the DECAWM
+# deferred-wrap ("last column") flag, so the cursor advances twice and a blank
+# row is inserted (X lands two rows down at column 0). xterm clears the flag on
+# a line feed and keeps the column, so X lands at the last column of the next
+# row. Declared fixed in the fork -> plain test.
+# --------------------------------------------------------------------------
+
+@audited('H', 'bare LF after full-width line clears the last-column flag')
+def test_linefeed_after_full_width_line_no_blank_row():
+    assert feed('abc\nX', columns=3, lines=3).display == ['abc', '  X', '   ']
+
+
+# --------------------------------------------------------------------------
+# Bug I -- SU (CSI S) / SD (CSI T) are unimplemented, so a scroll-region scroll
+# is a silent no-op. Expected (ECMA-48/xterm): SD moves the region down with a
+# blank row at the top; SU moves it up with a blank row at the bottom.
+# --------------------------------------------------------------------------
+
+@audited('I', 'SD (CSI T) scrolls the region down')
+def test_sd_scrolls_region_down():
+    screen = feed('AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\x1b[T', columns=5, lines=4)
+    assert screen.display == ['     ', 'AAAAA', 'BBBBB', 'CCCCC']
+
+
+@audited('I', 'SU (CSI S) scrolls the region up')
+def test_su_scrolls_region_up():
+    screen = feed('AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\x1b[S', columns=5, lines=4)
+    assert screen.display == ['BBBBB', 'CCCCC', 'DDDDD', '     ']
+
+
+# --------------------------------------------------------------------------
+# Bug J -- resize() smaller keeps the WRONG half when a scrolling region with
+# top > 0 is active. resize() drops the top rows via delete_lines() from cursor
+# (0, 0), but (0, 0) is outside the active margins so delete_lines() is a no-op:
+# the earliest rows survive instead of the latest, silently contradicting the
+# documented "clipped at the top" contract. Not declared -> xfail(strict).
+# --------------------------------------------------------------------------
+
+@audited('J', 'resize keeps latest rows even with an active scroll region')
+def test_resize_shrink_with_margins_keeps_latest_rows():
+    screen = pyte.Screen(80, 24)
+    stream = pyte.Stream(screen)
+    for i in range(24):
+        stream.feed('row%02d\r\n' % i)
+    stream.feed('\x1b[5;20r')               # DECSTBM active, top > 0
+    screen.resize(lines=10)
+    assert screen.display[0].startswith('row15')   # latest rows kept, per docstring
+
+
+# --------------------------------------------------------------------------
+# Bug K -- resize() to fewer columns does not prune self.tabstops, so tab()
+# honours a stale stop past the new width and parks the cursor at/after
+# self.columns. The next draw() writes an off-screen cell that display() never
+# renders -- the character is silently lost. Not declared -> xfail(strict).
+# --------------------------------------------------------------------------
+
+@audited('K', 'resize prunes tabstops so tab stays on-screen')
+def test_resize_column_shrink_prunes_tabstops():
+    screen = pyte.Screen(80, 24)
+    screen.resize(lines=24, columns=20)
+    screen.cursor_position(1, 19)           # x = 18
+    screen.tab()
+    assert screen.cursor.x < screen.columns
+
+
+# --------------------------------------------------------------------------
+# Bug L -- erasing/deleting the head of a paired wide (width-2) character
+# leaves the orphan stub (data == "") with no head before it. render() gives an
+# empty-data cell zero width, so the joined row is shorter than self.columns --
+# a display row no longer represents exactly self.columns on-screen cells.
+# Not declared -> xfail(strict).
+# --------------------------------------------------------------------------
+
+@audited('L', 'erasing a wide-char head keeps the row full width')
+def test_erase_wide_char_head_keeps_row_width():
+    screen = feed('a\u30b3b\x1b[1;2H\x1b[X', columns=5, lines=2)   # \u30b3 = width-2 CJK
+    assert len(screen.display[0]) == screen.columns
+
+
+@audited('L', 'deleting a wide-char head keeps the row full width')
+def test_delete_wide_char_head_keeps_row_width():
+    screen = pyte.Screen(5, 2)
+    screen.draw('a')
+    screen.draw('\u30b3')                   # width-2 CJK char
+    screen.draw('b')
+    screen.cursor_position(1, 2)            # at the wide char's head
+    screen.delete_characters(1)
+    assert len(screen.display[0]) == screen.columns
