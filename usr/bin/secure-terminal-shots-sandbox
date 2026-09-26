@@ -16,11 +16,11 @@
 ## Usage: secure-terminal-shots-sandbox [refresh|comparison|compat|zoom-live|tooltip|demo-shots] [ARGS...]
 ##   (these are the lanes this driver pulls back -- the clipboard lane writes a TSV and is run
 ##   directly in the sandbox). `refresh` regenerates EVERY site gallery in one command: the
-##   offscreen lanes on the host (review/modes/compat) THEN the comparison lane AND the tooltip
-##   lane in the sandbox, so none is ever missed. compat regenerates the compatibility-page program
-##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. tooltip
-##   regenerates the InfoTip risk-tooltip shot (native-Wayland, tooltip-capture.sh) into the site's
-##   shots/tooltip.webp. ARGS
+##   offscreen lanes on the host (review/modes) THEN the sandbox lanes -- comparison, compat and
+##   tooltip -- so none is ever missed. compat regenerates the compatibility-page program shots as
+##   REAL secure-terminal windows (labwc + grim, deterministic against a fixed fixture) and pulls
+##   them into the site's compatibility/shots/. tooltip regenerates the InfoTip risk-tooltip shot
+##   (native-Wayland, tooltip-capture.sh) into the site's shots/tooltip.webp. ARGS
 ##   pass through: for comparison e.g. --only NAME
 ##   / --case C / --st-only; for zoom-live the zoom-level list (default 50 75 100 125 150 175 200).
 ##   zoom-live is the REAL-GUI white-band/scrollbar diagnostic (one ST launch under labwc, zoom
@@ -63,9 +63,9 @@ if [ "$#" -ge 1 ]; then
          ;;
       refresh)
          ## Regenerate EVERY site gallery in ONE command: the deterministic offscreen lanes
-         ## on the host (review/modes/compat, no display) THEN the comparison lane in the
-         ## sandbox -- so no lane is ever missed. Handled as the comparison flow plus a
-         ## host-side offscreen refresh (see below).
+         ## on the host (review/modes, no display) THEN the sandbox lanes (comparison as the
+         ## primary flow below, plus compat + tooltip re-invoked at the end) -- so no lane is
+         ## ever missed. Handled as the comparison flow plus a host-side offscreen refresh.
          lane='comparison'
          refresh_all=1
          shift
@@ -124,17 +124,17 @@ elif [ "${lane}" != 'zoom-live' ]; then
 fi
 
 ## refresh: before the sandbox comparison flow, regenerate the deterministic OFFSCREEN site
-## galleries on the host (review/modes -> shots/, compat -> compatibility/shots/) via the
-## wrapper's own `refresh` -- so one `secure-terminal-shots-sandbox refresh` regenerates
-## EVERY gallery and none is missed. Offscreen + deterministic, so it needs no sandbox; a
-## failure here HARD-fails before any sandbox work.
+## galleries on the host (review/modes -> shots/) via the wrapper's own `refresh` -- so one
+## `secure-terminal-shots-sandbox refresh` regenerates EVERY gallery and none is missed. Offscreen
+## + deterministic, so it needs no sandbox; a failure here HARD-fails before any sandbox work.
+## (compat is no longer offscreen -- it is re-invoked as a sandbox lane at the end, like tooltip.)
 if [ "${refresh_all}" = 1 ]; then
    # shellcheck disable=SC2015  # guard: die runs whenever either required gallery dir is absent
    [ -d "${site}/shots" ] && [ -d "${site}/compatibility/shots" ] \
       || die "refresh: site galleries not found under '${site}' (need shots/ and compatibility/shots/; set SECURE_TERMINAL_SITE)"
    printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the offscreen site galleries on the host ..." >&2
    SECURE_TERMINAL_REPO="${secure_terminal}" "${dist_ai}/usr/bin/secure-terminal-shots" refresh "${site}" \
-      || die "refresh: the offscreen lane (review/modes/compat) failed"
+      || die "refresh: the offscreen lane (review/modes) failed"
 fi
 
 ## Transport check AFTER the tree checks so a missing tree is reported first and the preflight
@@ -149,17 +149,13 @@ target_arg=()
 ## inside the lane with a cryptic message; check the load-bearing binaries up front
 ## and point at the one-shot provisioner instead. `sandbox exec` passes the remote
 ## exit code through, so a missing binary makes the loop exit 1 here.
-## compat is a headless OFFSCREEN-Qt grab (no labwc / X / window tools), so it skips the
-## heavy capture-stack preflight -- but it webp-optimizes, so it still needs optipng/jpegoptim/cwebp.
+## EVERY capture lane (comparison, compat, tooltip, demo-shots, zoom-*) now brings up a real
+## labwc/Xwayland compositor and grim-captures windows, then webp-optimizes -- so all need the
+## full stack. (compat used to be an offscreen-Qt grab that skipped this; it is a real-window
+## capture now.)
 # shellcheck disable=SC2016  # inner-shell payload: $b is resolved by the shell run inside the sandbox
-if [ "${lane}" != 'compat' ] \
-   && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland wlr-randr grim wtype convert compare identify optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
+if ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland wlr-randr grim wtype convert compare identify optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
    die "the comparison-shot capture stack (labwc/Xwayland/wlr-randr/grim/wtype/imagemagick/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
-fi
-# shellcheck disable=SC2016  # inner-shell payload: $b is resolved by the shell run inside the sandbox
-if [ "${lane}" = 'compat' ] \
-   && ! sandbox "${target_arg[@]}" exec 'for b in optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
-   die "compat webp optimization needs optipng/jpegoptim/cwebp in the sandbox -- run:  sandbox provision shots"
 fi
 
 base='st-shots-sandbox'
@@ -294,6 +290,12 @@ pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/ (on-page dimensions re-pi
 ## EXIT trap still cleans its pull_tmp. Env (SECURE_TERMINAL_*/SANDBOX_TARGET) is inherited, so no
 ## positional site (which would be a host path, wrong inside the sandbox).
 if [ "${refresh_all}" = 1 ]; then
+   ## compat + tooltip are their OWN native-Wayland lanes now (no longer offscreen/host), so a
+   ## refresh must re-run each in the sandbox with the trees ALREADY synced (assert-synced
+   ## verifies) -- else refresh silently skips them. Plain calls (not exec): errexit aborts
+   ## refresh if either fails, and this run's EXIT trap still cleans its pull_tmp.
+   printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the compat program shots (native-Wayland) ..." >&2
+   "${script_dir}/secure-terminal-shots-sandbox" compat --assume-synced
    printf '%s\n' "secure-terminal-shots-sandbox: refresh -- regenerating the tooltip shot (native-Wayland) ..." >&2
    "${script_dir}/secure-terminal-shots-sandbox" tooltip --assume-synced
 fi
