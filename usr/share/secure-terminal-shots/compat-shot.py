@@ -91,18 +91,23 @@ PLAIN_PROGRAMS = [
 # either breaks the tool (pv's select() dies, dd's SIGUSR1 handler is clobbered) or removes the
 # frames, and rate-limiting jitters the frame count. Live network progress (wget/curl/apt) is
 # likewise non-reproducible and stays MANUAL on the page.
+# (tool, command, modes). read-safe is shot ONLY for an emitter whose bar uses a line-editing
+# ESCAPE that read-safe drops, so full and read-safe render DIFFERENTLY: crbar uses erase-line
+# (\033[K), so read-safe leaves the wider bar's tail behind. tqdm is carriage-return-ONLY (it pads
+# with spaces, no escape to drop), so its read-safe output is byte-IDENTICAL to full -- shooting it
+# would be a duplicate figure captioned as distinct, so tqdm omits read-safe. append-only differs
+# for both (it neutralises the CR itself).
 PROGRESS_EMITTERS = [
-    ('crbar', 'bash progress-crbar.sh'),
-    ('tqdm', 'python3 progress-tqdm.py'),
+    ('crbar', 'bash progress-crbar.sh', ('full', 'read-safe', 'append-only')),
+    ('tqdm', 'python3 progress-tqdm.py', ('full', 'append-only')),
 ]
-LINE_EDITING_MODES = ('full', 'read-safe', 'append-only')
 
 
 def progress_programs():
-    """One Prog per (emitter x line-editing mode): name progress-<tool>-<mode>."""
+    """One Prog per (emitter x applicable line-editing mode): name progress-<tool>-<mode>."""
     progs = []
-    for tool, command in PROGRESS_EMITTERS:
-        for mode in LINE_EDITING_MODES:
+    for tool, command, modes in PROGRESS_EMITTERS:
+        for mode in modes:
             progs.append(Prog('progress-%s-%s' % (tool, mode), command, line_editing=mode))
     return progs
 
