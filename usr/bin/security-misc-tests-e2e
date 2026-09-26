@@ -29,6 +29,23 @@ else
    tests_dir='/usr/share/security-misc-tests-e2e'
 fi
 
+## Resolve the subject: security-misc's ssh-audit server policy + tool, from
+## the checkout (SECURITY_MISC_REPO) or the installed package. Absent both, the
+## production scan cannot run -- an OPTIONAL target, so skip cleanly rather than
+## fail, matching the registry's unresolved-target contract.
+subject_present="false"
+if [ -n "${SECURITY_MISC_REPO:-}" ] \
+   && [ -e "${SECURITY_MISC_REPO}/usr/share/security-misc/ssh-audit/server.policy#security-misc-shared" ]; then
+   subject_present="true"
+elif [ -e "/usr/share/security-misc/ssh-audit/server.policy" ]; then
+   subject_present="true"
+fi
+if [ "${subject_present}" = "false" ]; then
+   printf '%s\n' "${0##*/}: SKIP: security-misc not present (no SECURITY_MISC_REPO checkout, not installed)" >&2
+   ## style-ok: allow-skip: security-misc not checked out or installed -- optional target
+   exit 77
+fi
+
 rc=0
 python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
 if [ "${rc}" = "5" ]; then

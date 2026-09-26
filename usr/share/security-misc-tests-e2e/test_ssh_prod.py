@@ -37,8 +37,10 @@ def _resolve(installed, repo_glob):
         matches = sorted(glob.glob(os.path.join(REPO, repo_glob)))
         if matches:
             return matches[0]
-    pytest.fail(f"could not resolve {installed} (nor {repo_glob} under SECURITY_MISC_REPO)")
-    return None  ## unreachable; pytest.fail raises
+    ## security-misc neither installed nor checked out: an absent optional
+    ## subject, skip rather than fail (the runner also gates this with exit 77).
+    pytest.skip(f"security-misc not present: {installed} / {repo_glob}")
+    return None  ## unreachable; pytest.skip raises
 
 
 def test_production_ssh_matches_hardened_policy():
