@@ -1324,6 +1324,42 @@ fi
 ## the capture set-up, orchestration or main loop BELOW runs. Everything below runs on a direct run.
 was_executed "${BASH_SOURCE[0]}" || return 0
 
+## Self-heal an id-squashed /tmp/.X11-unix (Qubes 'sandbox' DEFAULT namespace) BEFORE any
+## compositor bringup: re-exec this run inside a private user+mount+net namespace with a
+## root-owned X socket dir (wl_headless_selfheal_reexec). Forward the ORIGINAL argv. SKIP the two
+## invocations that bring up NO compositor: --optimize-only (pure webp pass, exits below) and the
+## --jobs N>1 ORCHESTRATOR (it spawns single-lane children that each self-heal into their OWN
+## namespace -- healing the orchestrator would force every lane to SHARE one /tmp/.X11-unix and
+## re-introduce the cross-lane X-socket race the per-lane private dir removes). Every other mode
+## (default grid, --zoom-verify, --zoom-live, --demo-shots, a single lane) DOES start labwc and
+## is healed. No-op on CI/host (not squashed).
+_st_shots_selfheal_wanted() {  ## $@ = original argv
+   local a want_jobs=''
+   for a in "$@"; do
+      ## The token after --jobs is its count: N>1 = orchestrator (skip). A non-numeric value is
+      ## left for the real parser to reject; here it just means "not an N>1 orchestrator".
+      if [ -n "${want_jobs}" ]; then
+         want_jobs=''
+         if [ -n "${a}" ] && [ "${a}" = "${a#*[!0-9]}" ] && [ "$(( 10#${a} ))" -gt 1 ]; then
+            return 1
+         fi
+         continue
+      fi
+      if [ "${a}" = '--optimize-only' ]; then
+         return 1
+      fi
+      if [ "${a}" = '--jobs' ]; then
+         want_jobs=1
+      fi
+   done
+   return 0
+}
+## declare -F guard: a lib stub in a unit test may omit the symbol; skipping self-heal is the
+## correct no-op there (production's real lib always defines it).
+if _st_shots_selfheal_wanted "$@" && declare -F wl_headless_selfheal_reexec >/dev/null 2>&1; then
+   wl_headless_selfheal_reexec "$0" "$@"
+fi
+
 out="${here}/shots"
 mkdir --parents -- "${out}"
 

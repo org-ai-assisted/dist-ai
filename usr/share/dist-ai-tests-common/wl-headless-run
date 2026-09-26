@@ -50,6 +50,15 @@ _wl_lib="${WL_HEADLESS_LIB:-$(dirname -- "$(readlink --canonicalize -- "${BASH_S
 # shellcheck source=./wl-headless-lib.bash
 source "${_wl_lib}"
 
+## Self-heal a user-namespaced sandbox whose idmap squashes /tmp/.X11-unix's owner to nobody
+## (Qubes 'sandbox' DEFAULT): re-exec this whole run inside a private user+mount+net namespace so
+## labwc/Xwayland see a root-owned X socket dir. No-op on CI/host and when already re-exec'd.
+## Forward the ORIGINAL argv, before any parsing. Guarded so a lib STUB in a unit test (which
+## never needs a real namespace) may omit the symbol and simply skip self-heal.
+if declare -F wl_headless_selfheal_reexec >/dev/null 2>&1; then
+   wl_headless_selfheal_reexec "$0" "$@"
+fi
+
 autoconfirm='true'
 case "${1:-}" in
    --no-autoconfirm)

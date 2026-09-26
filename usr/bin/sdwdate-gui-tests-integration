@@ -41,6 +41,14 @@ fi
 # shellcheck source=../share/dist-ai-tests-common/wl-headless-lib.bash
 source "${wl_headless_lib}"
 
+## Self-heal an id-squashed /tmp/.X11-unix (Qubes 'sandbox' DEFAULT namespace): re-exec this
+## whole run inside a private user+mount+net namespace so BOTH the X11 (Xvfb) and Wayland (labwc)
+## phases see a root-owned X socket dir. No-op on CI/host and when already re-exec'd. Guarded so a
+## lib stub in a unit test may omit the symbol and skip self-heal.
+if declare -F wl_headless_selfheal_reexec >/dev/null 2>&1; then
+  wl_headless_selfheal_reexec "$0" "$@"
+fi
+
 ran=0
 failed=0
 bg_pids=()
