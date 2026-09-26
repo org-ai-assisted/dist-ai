@@ -1132,6 +1132,173 @@ demo_shots_capture() {
    return 0
 }
 
+## compat: the compatibility-page program figures, captured as REAL secure-terminal WINDOWS
+## (labwc + grim), replacing the retired offscreen widget grabs. compat-shot.py builds the
+## deterministic fixture into $HOME, runs each row's verify tools (in a throwaway copy), and
+## prints the shot table (name<TAB>line_editing<TAB>command). For each row this launches
+## secure-terminal under that line-editing mode, types the command through the shell, settles and
+## grim-grabs the decorated window to <name>.png. The progress emitters appear three times (one
+## per mode) so the page contrasts full / read-safe / append-only on the SAME redraw.
+compat_capture() {
+   local gen table failures shots name mode cmd _keep _f
+   local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_wdog stwid st_tab_id st_tab_line _ct
+   local -a st_mode_flags
+
+   gen="${here}/compat-shot.py"
+   if [ ! -f "${gen}" ]; then
+      printf '%s\n' "compat: fixture generator not found: ${gen}" >&2
+      return 1
+   fi
+   ## Build the fixture into $HOME (the shell's cwd for every shot) and get the shot table. A
+   ## broken fixture / a failing verify tool fails LOUD here rather than yielding a misleading shot.
+   table="${runtime_dir}/compat-table"
+   if ! "${gen}" --fixture-dir "${HOME}" > "${table}"; then
+      printf '%s\n' 'compat: fixture build / verify failed' >&2
+      return 1
+   fi
+
+   ## Suppress the passive notices that would otherwise clutter these figures. A CR progress bar
+   ## deliberately redraws in place, which trips the "this program is drawing in place ... turn on
+   ## TUI" auto-box notice (tui_autobox_notice) in full/read-safe mode; and an over-long escape run
+   ## would trip the escape-suppression notice (escape_limit). Both are NON-privileged settings, so
+   ## a user-config drop-in needs no sudo. escape_limit=0 = never notify (output handling unchanged).
+   mkdir --parents -- "${HOME}/.config/secure-terminal.d"
+   {
+      printf 'escape_limit=0\n'
+      printf 'tui_autobox_notice=false\n'
+   } > "${HOME}/.config/secure-terminal.d/50_shots.conf"
+
+   ## A compat-specific interactive bashrc: the real user@host prompt, with bracketed paste OFF and
+   ## no PROMPT_COMMAND. The bracketed-paste start/end escapes make readline REDRAW the input line,
+   ## and each redraw stacks as an extra gutter line in append-only (whose count also jitters
+   ## run-to-run) -- turning them off keeps the pre-command region to the single honest prompt.
+   ## Overwrites the run's default bashrc; safe, compat exits before the emulator grid reads it.
+   ## The leading sleep delays the shell's FIRST prompt until the window has finished settling to
+   ## its final size: otherwise the labwc window-rule resize arrives AFTER the prompt is first
+   ## drawn, and readline redraws it on each SIGWINCH -- redraws that collapse in full/read-safe
+   ## but STACK as extra lines in append-only. Drawing the prompt once, post-settle, keeps the
+   ## pre-command region to the single honest prompt.
+   cat > "${HOME}/.bashrc" <<'RC'
+sleep 2
+PS1='user@host:~$ '
+bind 'set enable-bracketed-paste off' 2>/dev/null
+RC
+
+   ## remote_control drives `ctl` (below), a PRIVILEGED setting -> a root-owned drop-in via sudo,
+   ## which works because the shots run under `sandbox --no-pidns` (root-owned /etc). Reaped by the
+   ## run marker in cleanup.
+   shots_rc_dropin_create compat-rc >/dev/null || {
+      printf '%s\n' 'compat: cannot create the privileged remote_control drop-in (sudo?)' >&2
+      return 1
+   }
+
+   failures=0
+   shots=0
+
+   while IFS="$(printf '\t')" read -r name mode cmd; do
+      [ -n "${name}" ] || continue
+      ## Optional name filter (fast single-figure iteration).
+      if [ "${#compat_filter[@]}" -gt 0 ]; then
+         _keep=''
+         for _f in "${compat_filter[@]}"; do
+            [ "${_f}" = "${name}" ] && _keep=1
+         done
+         [ -n "${_keep}" ] || continue
+      fi
+      st_win_w="$(px 860)"
+      st_win_h="$(px 640)"
+
+      if ! st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"; then
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      st_flagf="${st_pgf}.timeout"
+      st_transcript="${st_pgf}.transcript"
+      st_group="compat-$(basename -- "${st_pgf}")"
+      safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+
+      ## Launch under the row's line-editing mode, in SHOW display -- the "what a user sees" view
+      ## that renders real glyphs + colour. NOT detail/reveal: those expand every non-ASCII
+      ## codepoint to a <U+XXXX> badge, unreadable for a Unicode bar (tqdm). --line-editing +
+      ## --mode are per-tab flags (secure_terminal/main.py).
+      st_mode_flags=(--line-editing "${mode}" --mode show)
+
+      ## Drive an HONEST interactive shell: secure-terminal's default shell reads ~/.bashrc (so PS1
+      ## is the real user@host prompt), and the command is TYPED via `ctl send-text --submit` -- so
+      ## the shot shows the real prompt, the real command echo, its output, AND the real RETURN
+      ## prompt after the program exits. No faked/printf prompt.
+      set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
+      shots_spawn_session "${st_pgf}" \
+         env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+         "PATH=${st_bin%/*}:${PATH}" \
+         "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
+         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
+
+      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
+      stwid="$(find_window || true)"
+      if [ -z "${stwid}" ]; then
+         printf '%s\n' "warn compat.${name}: window never appeared" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+      wait_window_ready "${stwid}"
+
+      st_tab_id=''
+      for _ct in 1 2 3 4 5; do
+         st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
+            ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
+         st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
+         [ -n "${st_tab_id}" ] && break
+         sleep 0.6
+      done
+      if [ -z "${st_tab_id}" ]; then
+         printf '%s\n' "warn compat.${name}: ctl ls found no tab -- skipping" >&2
+         shots_watchdog_cancel "${st_wdog}"
+         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+         failures=$(( failures + 1 ))
+         continue
+      fi
+
+      ## Wait past the shell's startup sleep (the bashrc `sleep 2`) so the FIRST prompt is already
+      ## drawn (post window-settle) before we type -- otherwise the keystrokes queue behind the
+      ## sleeping shell and interleave with the prompt draw.
+      sleep 3
+      ## Type the command; the shell runs it and returns to a fresh prompt. Settle waits for that
+      ## RETURN prompt to finish painting before the grab (so the shot includes it).
+      env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+         send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
+      sleep 1
+      st_wait_render_settled "${stwid}"
+      if capture_settled "${out}/${name}.png" "${stwid}" \
+            && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+         shots=$(( shots + 1 ))
+         printf '%s\n' "compat: wrote ${name}.png (${mode})"
+      else
+         safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
+         printf '%s\n' "warn compat: ${name} produced no verified shot" >&2
+         failures=$(( failures + 1 ))
+      fi
+
+      shots_watchdog_cancel "${st_wdog}"
+      if [ -e "${st_flagf}" ]; then
+         printf '%s\n' "warn compat.${name}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+         failures=$(( failures + 1 ))
+      fi
+      shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+      safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
+   done < "${table}"
+
+   printf '%s\n' "compat: wrote ${shots} program shot(s) to ${out}"
+   if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
+      printf '%s\n' "warn compat: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
 ## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
 ## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
@@ -1324,41 +1491,13 @@ fi
 ## the capture set-up, orchestration or main loop BELOW runs. Everything below runs on a direct run.
 was_executed "${BASH_SOURCE[0]}" || return 0
 
-## Self-heal an id-squashed /tmp/.X11-unix (Qubes 'sandbox' DEFAULT namespace) BEFORE any
-## compositor bringup: re-exec this run inside a private user+mount+net namespace with a
-## root-owned X socket dir (wl_headless_selfheal_reexec). Forward the ORIGINAL argv. SKIP the two
-## invocations that bring up NO compositor: --optimize-only (pure webp pass, exits below) and the
-## --jobs N>1 ORCHESTRATOR (it spawns single-lane children that each self-heal into their OWN
-## namespace -- healing the orchestrator would force every lane to SHARE one /tmp/.X11-unix and
-## re-introduce the cross-lane X-socket race the per-lane private dir removes). Every other mode
-## (default grid, --zoom-verify, --zoom-live, --demo-shots, a single lane) DOES start labwc and
-## is healed. No-op on CI/host (not squashed).
-_st_shots_selfheal_wanted() {  ## $@ = original argv
-   local a want_jobs=''
-   for a in "$@"; do
-      ## The token after --jobs is its count: N>1 = orchestrator (skip). A non-numeric value is
-      ## left for the real parser to reject; here it just means "not an N>1 orchestrator".
-      if [ -n "${want_jobs}" ]; then
-         want_jobs=''
-         if [ -n "${a}" ] && [ "${a}" = "${a#*[!0-9]}" ] && [ "$(( 10#${a} ))" -gt 1 ]; then
-            return 1
-         fi
-         continue
-      fi
-      if [ "${a}" = '--optimize-only' ]; then
-         return 1
-      fi
-      if [ "${a}" = '--jobs' ]; then
-         want_jobs=1
-      fi
-   done
-   return 0
-}
-## declare -F guard: a lib stub in a unit test may omit the symbol; skipping self-heal is the
-## correct no-op there (production's real lib always defines it).
-if _st_shots_selfheal_wanted "$@" && declare -F wl_headless_selfheal_reexec >/dev/null 2>&1; then
-   wl_headless_selfheal_reexec "$0" "$@"
-fi
+## NOTE: no X11 id-squash self-heal here. The shots need a root-owned drop-in (remote_control,
+## a PRIVILEGED_ONLY setting) via sudo, and sudo cannot run under the sandbox DEFAULT namespace
+## (no_new_privs + the idmap squash) -- so the shots run under 'sandbox --no-pidns' (root-owned
+## /etc AND /tmp/.X11-unix, so both sudo and labwc work). Self-heal (nested unshare --map-root-user)
+## would fix labwc but BREAK sudo, so it is deliberately NOT applied to this capture path; it is
+## for the sudo-free Qt test suites (wl-headless-run). secure-terminal-shots-sandbox passes
+## --no-pidns for every capture lane.
 
 out="${here}/shots"
 mkdir --parents -- "${out}"
@@ -1496,6 +1635,11 @@ zoom_verify_boards=()
 ## --demo-shots: the feature-showcase shots (no-newline gutter mark, whitespace dots). Single-
 ## lane, secure-terminal-only.
 demo_shots=''
+## --compat: the compatibility-page program figures (real windows, all line-editing modes).
+## Single-lane, secure-terminal-only. Trailing args are an optional shot-name filter (fast
+## iteration on one figure without regenerating all).
+compat=''
+compat_filter=()
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
 ## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
 ## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
@@ -1551,6 +1695,16 @@ while [ "$#" -gt 0 ]; do
          demo_shots='true'
          st_only='true'
          shift
+         break
+         ;;
+      --compat)
+         ## Single-lane, secure-terminal-only compatibility-page program figures (see
+         ## compat_capture). st_only empties the emulator list so only that branch runs.
+         ## Trailing args (if any) filter the table by shot name for fast iteration.
+         compat='true'
+         st_only='true'
+         shift
+         compat_filter=("$@")
          break
          ;;
       --quick)
@@ -1822,6 +1976,12 @@ if [ -n "${prep_dir}" ]; then
    if [ -d "${prep_dir}/data" ]; then
       cp --recursive -- "${prep_dir}/data/." "${XDG_DATA_HOME}/" 2>/dev/null || true
    fi
+elif [ -n "${compat}" ]; then
+   ## compat renders its OWN deterministic fixture (compat-shot.py), NOT the hostile-byte-stream
+   ## payloads -- so skip the corpus decode entirely (it has no bearing on these figures and would
+   ## needlessly couple the compatibility lane to the terminal-poc-corpus). Still install the icon
+   ## theme so the captured window carries the real title-bar favicon.
+   shots_install_icon_theme "${XDG_DATA_HOME}"
 else
    ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded by its
    ## reproduce.py; secure-terminal's icon is rasterised into the session icon theme so labwc
@@ -1969,6 +2129,21 @@ if [ -n "${demo_shots}" ]; then
    demo_shots_rc=0
    demo_shots_capture || demo_shots_rc="$?"
    exit "${demo_shots_rc}"
+fi
+
+## compat: the compatibility-page program figures (see compat_capture). Same prepared-HOME
+## environment as demo-shots; skips the emulator grid and the multi-spec ST loop.
+if [ -n "${compat}" ]; then
+   cd "${HOME}"
+   st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
+   st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_bin}" ]; then
+      printf '%s\n' 'ERROR: compat needs secure-terminal. Set ST_REPO=/path/to/checkout.' >&2
+      exit 1
+   fi
+   compat_rc=0
+   compat_capture || compat_rc="$?"
+   exit "${compat_rc}"
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
