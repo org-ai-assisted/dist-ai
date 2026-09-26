@@ -216,8 +216,14 @@ source "${dist_ai}/usr/share/secure-terminal-shots/phase-progress.sh"
 ## host's when dom0/host and the target qube are different users. A host-expanded path fails
 ## to exist in the sandbox. Single-quote $HOME so the remote bash expands it (same pattern as
 ## the rendered-count probe below); ${base}/${lane}/"$@" ride as positional args.
+## --no-pidns: the capture needs a root-owned remote_control drop-in (a PRIVILEGED_ONLY setting)
+## via sudo, and it brings up labwc/Xwayland -- BOTH require /etc and /tmp/.X11-unix to read as
+## root-owned, which the sandbox DEFAULT namespace squashes to nobody (and no_new_privs there
+## blocks sudo outright). --no-pidns runs the lane in the shared (non-squashing) namespace where
+## sudo and the compositor both work. (The Qt test suites, which need no sudo, instead self-heal
+## under the default namespace via wl-headless-run -- see wl-headless-lib.bash.)
 # shellcheck disable=SC2016  # inner-shell payload: ${HOME}/$@ resolved by the bash run inside the sandbox
-sandbox "${target_arg[@]}" exec -- bash -c \
+sandbox "${target_arg[@]}" --no-pidns exec -- bash -c \
    '"${HOME}/'"${base}"'/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" "$@"' \
    bash "${base}" "${lane}" "$@" &
 capture_pid=$!

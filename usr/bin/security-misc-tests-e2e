@@ -1,0 +1,39 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs security-misc's dist-ai END-TO-END tests via pytest: the hard-gating
+## scan of the live production SSH servers (kicksecure.com, whonix.org) against
+## the shipped security-misc ssh-audit server policy. Network egress to port 22
+## is required; this is an --e2e-category suite, not run by the default --core
+## PR gate. The security-misc checkout is resolved by SECURITY_MISC_REPO (wired
+## by dist-ai-tests-all). Works installed (/usr/share/security-misc-tests-e2e)
+## or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/security-misc-tests-e2e" ]; then
+   tests_dir="${script_dir}/../share/security-misc-tests-e2e"
+else
+   tests_dir='/usr/share/security-misc-tests-e2e'
+fi
+
+rc=0
+python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
+if [ "${rc}" = "5" ]; then
+   printf '%s\n' 'FAIL: pytest collected no tests; the suite is not being run.' >&2
+   rc=1
+fi
+
+exit "${rc}"

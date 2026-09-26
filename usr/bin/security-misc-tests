@@ -1,0 +1,41 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs security-misc's dist-ai tests via pytest. Currently the SSH client and
+## server hardening validation (test_ssh_config.py), which drives the real
+## shipped ssh-audit-test tool and ssh-audit against a throwaway sshd / client
+## built from security-misc's actual config. The security-misc checkout is
+## resolved by SECURITY_MISC_REPO (wired by dist-ai-tests-all). Works installed
+## (/usr/share/security-misc-tests) or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/security-misc-tests" ]; then
+   tests_dir="${script_dir}/../share/security-misc-tests"
+else
+   tests_dir='/usr/share/security-misc-tests'
+fi
+
+rc=0
+python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
+## pytest exit 5 = no tests collected. python3-pytest is in this consumer's CI
+## apt list, so collecting nothing means the suite is not being run at all;
+## record it as a failure rather than a green lane testing nothing.
+if [ "${rc}" = "5" ]; then
+   printf '%s\n' 'FAIL: pytest collected no tests; the suite is not being run.' >&2
+   rc=1
+fi
+
+exit "${rc}"

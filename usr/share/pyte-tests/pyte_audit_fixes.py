@@ -23,8 +23,10 @@ import types
 MANIFEST_NAME = 'pyte-audit-fixes.txt'
 
 ## Every finding id in org-ai-assisted/pyte-audit. Constrains the manifest so a
-## typo surfaces as an error instead of as a silently undeclared fix.
-KNOWN_BUG_IDS = frozenset('ABCDEFG')
+## typo surfaces as an error instead of as a silently undeclared fix. Keep this
+## the full A..last set: a declared id missing here reads as a typo and fails
+## the suite's own sanity guard (the class of gap that left finding H unlisted).
+KNOWN_BUG_IDS = frozenset('ABCDEFGHIJKL')
 
 
 def parse_manifest(text: str) -> frozenset[str]:

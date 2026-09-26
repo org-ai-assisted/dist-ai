@@ -51,6 +51,80 @@ _wl_headless_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ## style-ok: no-tmp-hardcode -- protocol-fixed X socket directory, cannot be relocated to ${TMP}
 _wl_x11_socket_dir='/tmp/.X11-unix'
 
+## --- X11 socket-dir id-squash self-heal (default-namespace sandboxes) ---------------------
+##
+## A user-namespaced sandbox (Qubes 'sandbox run/exec' DEFAULT) idmaps the real uid to itself
+## but squashes every OTHER owner to nobody(65534). So a root-owned /tmp/.X11-unix reads as
+## nobody INSIDE the namespace; Xwayland then refuses it ("not owned by root or us") and labwc
+## never publishes its Wayland socket -- every Qt suite fails to start. The historical
+## workaround ran the whole sandbox under a shared (non-squashing) namespace ('--no-pidns'), a
+## flag every caller had to REMEMBER -> skipped. Instead self-heal: when the squash is detected,
+## re-exec the entry script inside its OWN user+mount+net namespace with root mapped to us
+## (--map-root-user) and a FRESH private tmpfs on /tmp/.X11-unix -- inside that namespace the dir
+## is genuinely root-owned (== us), Xwayland accepts it, and the compositor comes up. CI and the
+## host are NOT squashed (owner reads as root/us) -> the gate is false -> byte-for-byte no-op.
+
+## True iff /tmp/.X11-unix EXISTS and its owner is neither root(0) nor the current uid -- the
+## id-squash view. An absent dir is NOT squashed (Xwayland, or our setup, creates it owned by
+## us; nothing to heal).
+_wl_headless_x11_squashed() {
+   local owner
+   [ -d "${_wl_x11_socket_dir}" ] || return 1
+   owner="$(stat -c '%u' -- "${_wl_x11_socket_dir}" 2>/dev/null)" || return 1
+   case "${owner}" in ''|*[!0-9]*) return 1 ;; esac
+   [ "${owner}" = '0' ] && return 1
+   [ "${owner}" = "$(id -u)" ] && return 1
+   return 0
+}
+
+## Inside the re-exec'd namespace: give this lane a private, genuinely-owned X socket dir. A
+## fresh tmpfs root inode is owned by the namespace root (== us via --map-root-user), so
+## Xwayland's owner check passes; mode 1777 mirrors the real /tmp/.X11-unix (sticky, world-rwx).
+## lo up: --net gave this lane its own network namespace so its Xwayland's abstract socket
+## (@/tmp/.X11-unix/X0, a NET-namespace object) cannot collide with a parallel lane's, and any
+## X client dialing localhost still has loopback.
+_wl_headless_setup_private_x11() {
+   mkdir --parents -- "${_wl_x11_socket_dir}"
+   mount -t tmpfs -o mode=1777 tmpfs "${_wl_x11_socket_dir}"
+   ip link set lo up
+}
+
+## Call at the TOP of a compositor entry script -- `wl_headless_selfheal_reexec "$0" "$@"` --
+## BEFORE it parses args or mints any state, so the re-exec restarts the whole flow cleanly and
+## every child (labwc, Xwayland, the Qt/X clients, grim) shares the one namespace and its private
+## /tmp/.X11-unix. WL_HEADLESS_UNSHARED guards the re-exec loop. Not squashed -> returns at once,
+## nothing changes.
+wl_headless_selfheal_reexec() {
+   local self="$1"
+   shift
+   ## Second pass (already inside the namespace): finish the private-dir setup, then continue.
+   if [ -n "${WL_HEADLESS_UNSHARED:-}" ]; then
+      _wl_headless_setup_private_x11
+      return 0
+   fi
+   ## CI/host: not squashed -> the existing bringup path runs unchanged.
+   _wl_headless_x11_squashed || return 0
+   ## Squashed but no namespace tool -> warn and continue best-effort; the compositor's socket
+   ## wait will fail LOUD if bringup does not recover, which is honest, not a silent green.
+   if ! has unshare; then
+      printf '%s\n' 'wl_headless_selfheal_reexec: /tmp/.X11-unix id-squashed but unshare (Debian: util-linux) missing; cannot self-heal, compositor bringup may fail.' >&2
+      return 0
+   fi
+   local -a reexec=(env WL_HEADLESS_UNSHARED=1 unshare --user --map-root-user --mount --net -- "${self}" "$@")
+   ## Test seam: WL_HEADLESS_UNSHARE names a recorder that captures the argv instead of spawning
+   ## a real namespace (a nested userns cannot be asserted portably in a CI unit test). The
+   ## recorder just records and exits, so no loop and no real namespace.
+   if [ -n "${WL_HEADLESS_UNSHARE:-}" ]; then
+      ## style-ok: R-103 -- deliberate re-exec into the private namespace (test-seam recorder);
+      ## nothing is set up yet, so no trap/cleanup is bypassed.
+      exec "${WL_HEADLESS_UNSHARE}" "${reexec[@]}"
+   fi
+   ## style-ok: R-103 -- deliberate re-exec of this entry script into a private user+mount+net
+   ## namespace with a root-owned /tmp/.X11-unix; the WL_HEADLESS_UNSHARED guard above makes the
+   ## re-run skip straight to the private-dir setup. Nothing is set up yet, so no trap is bypassed.
+   exec "${reexec[@]}"
+}
+
 wl_headless_start() {
    local runtime='' icon_theme='' output_scale=1
    while [ "$#" -gt 0 ]; do

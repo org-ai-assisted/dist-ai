@@ -73,24 +73,42 @@ run_suites_parallel() {
    [ "${jobs}" -le "${suite_cap}" ] || jobs="${suite_cap}"
 
    ## RAM-aware ceiling. N parallel suites need N * ~400MB (labwc + Python each); above free
-   ## memory the OOM-killer SIGKILLs one mid-run (exit 137), a false red. Cap by
-   ## floor(MemAvailable / 512MiB) -- MemAvailable (free right now) is conservative exactly when
-   ## memory is scarce and accurate when it is not; 512MiB sits above the measured ~400MB.
-   ## DIST_AI_SUITE_MEM_MIB overrides the per-suite footprint (tuning/tests). Floor of 1 so a
-   ## very tight box still runs, serially.
-   local mem_per_suite_mib mem_avail_kib mem_jobs
+   ## memory the OOM-killer SIGKILLs one mid-run (exit 137) OR a starved lane paints corruption
+   ## (widget black-on-black, glyph geometry) -- a false red either way. Cap by
+   ## floor((MemAvailable - headroom) / 512MiB). The headroom subtraction is the balloon defense:
+   ## on a Qubes qube with a dynamic memory balloon, an IDLE qube's MemAvailable reflects the
+   ## ballooned-DOWN current allotment and is NOT physically backed the instant several lanes
+   ## allocate at once (qmemman's balloon-up lags the burst), so a raw MemAvailable/512 cap
+   ## OVER-COMMITS. Subtracting DIST_AI_SUITE_MEM_HEADROOM_MIB (default 768) BEFORE dividing keeps
+   ## the cap under what the balloon actually backs during the burst; a genuinely large box loses
+   ## only that fixed band and still parallelizes to the CPU cap. DIST_AI_SUITE_MEM_MIB overrides
+   ## the per-suite footprint, DIST_AI_SUITE_MEM_HEADROOM_MIB the band (0 disables it), and
+   ## DIST_AI_MEMINFO_PATH the meminfo source (tests). Floor of 1 so a very tight box still runs,
+   ## serially.
+   local mem_per_suite_mib mem_headroom_mib meminfo mem_avail_kib mem_total_kib
+   local mem_avail_mib mem_usable_mib mem_jobs
    mem_per_suite_mib="${DIST_AI_SUITE_MEM_MIB:-512}"
    case "${mem_per_suite_mib}" in ''|*[!0-9]*) mem_per_suite_mib=512 ;; esac
    mem_per_suite_mib="$(( 10#${mem_per_suite_mib} ))"
    [ "${mem_per_suite_mib}" -ge 1 ] || mem_per_suite_mib=512
-   mem_avail_kib="$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || printf '%s\n' 0)"
+   mem_headroom_mib="${DIST_AI_SUITE_MEM_HEADROOM_MIB:-768}"
+   case "${mem_headroom_mib}" in ''|*[!0-9]*) mem_headroom_mib=768 ;; esac
+   mem_headroom_mib="$(( 10#${mem_headroom_mib} ))"
+   meminfo="${DIST_AI_MEMINFO_PATH:-/proc/meminfo}"
+   mem_avail_kib="$(awk '/^MemAvailable:/ { print $2; exit }' "${meminfo}" 2>/dev/null || printf '%s\n' 0)"
    case "${mem_avail_kib}" in ''|*[!0-9]*) mem_avail_kib=0 ;; esac
    mem_avail_kib="$(( 10#${mem_avail_kib} ))"
+   mem_total_kib="$(awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || printf '%s\n' 0)"
+   case "${mem_total_kib}" in ''|*[!0-9]*) mem_total_kib=0 ;; esac
+   mem_total_kib="$(( 10#${mem_total_kib} ))"
    if [ "${mem_avail_kib}" -gt 0 ]; then
-      mem_jobs="$(( mem_avail_kib / 1024 / mem_per_suite_mib ))"
+      mem_avail_mib="$(( mem_avail_kib / 1024 ))"
+      mem_usable_mib="$(( mem_avail_mib - mem_headroom_mib ))"
+      [ "${mem_usable_mib}" -ge 0 ] || mem_usable_mib=0
+      mem_jobs="$(( mem_usable_mib / mem_per_suite_mib ))"
       [ "${mem_jobs}" -ge 1 ] || mem_jobs=1
       if [ "${jobs}" -gt "${mem_jobs}" ]; then
-         printf '%s\n' "run_suites_parallel: RAM-aware cap: $(( mem_avail_kib / 1024 )) MiB free / ${mem_per_suite_mib} MiB per suite -> ${mem_jobs} parallel jobs (from ${jobs})" >&2
+         printf '%s\n' "run_suites_parallel: RAM-aware cap: ${mem_avail_mib} MiB free - ${mem_headroom_mib} MiB headroom / ${mem_per_suite_mib} MiB per suite -> ${mem_jobs} parallel jobs (from ${jobs}; MemTotal $(( mem_total_kib / 1024 )) MiB)" >&2
          jobs="${mem_jobs}"
       fi
    fi

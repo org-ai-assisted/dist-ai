@@ -117,5 +117,12 @@ main() {
 }
 
 if was_executed "${BASH_SOURCE[0]}"; then
+   ## Self-heal an id-squashed /tmp/.X11-unix (Qubes 'sandbox' DEFAULT namespace) before the
+   ## compositor bringup inside main: re-exec inside a private user+mount+net namespace with a
+   ## root-owned X socket dir. Forward the ORIGINAL argv. No-op on CI/host / when already re-exec'd.
+   ## Guarded so a lib stub in a unit test may omit the symbol and skip self-heal.
+   if declare -F wl_headless_selfheal_reexec >/dev/null 2>&1; then
+      wl_headless_selfheal_reexec "$0" "$@"
+   fi
    main "$@"
 fi
