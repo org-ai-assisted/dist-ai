@@ -31,17 +31,17 @@
   "by_class": {
     "bidi": 12,
     "combining": 2155,
-    "confusable": 1457,
+    "confusable": 1732,
     "control": 65,
     "invisible": 445,
-    "nonascii": 145744
+    "nonascii": 145469
   },
   "display_blocks": [
     {
       "by_class": {
-        "confusable": 3,
+        "confusable": 8,
         "invisible": 2,
-        "nonascii": 91
+        "nonascii": 86
       },
       "count": 96,
       "hi": 255,
@@ -80,8 +80,8 @@
     },
     {
       "by_class": {
-        "confusable": 18,
-        "nonascii": 62
+        "confusable": 26,
+        "nonascii": 54
       },
       "count": 80,
       "hi": 767,

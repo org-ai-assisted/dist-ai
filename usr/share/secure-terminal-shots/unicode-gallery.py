@@ -81,13 +81,17 @@ def _is_default_ignorable(cp):
 
 
 def _ascii_confusables():
-    """Non-ASCII code points the shipped confusables data maps to a printable
-    ASCII glyph -- the homoglyphs. Loaded independently of secure-terminal (same
-    data file, separate code path). Empty if the package is absent (then such a
-    character just stays 'nonascii', matching secure-terminal)."""
+    """Non-ASCII code points that pose as a printable ASCII character: the homoglyphs from
+    the shipped confusables data PLUS compatibility characters whose NFKC form is a single
+    printable ASCII (SUPERSCRIPT TWO -> '2', a circled letter). Loaded independently of
+    secure-terminal (same data file, separate code path) so a divergence is the drift the
+    conformance test catches. Empty of homoglyphs if the package is absent, but the stdlib
+    NFKC compat set still survives -- matching secure-terminal's degraded path."""
     global _ASCII_CONFUSABLES
     if _ASCII_CONFUSABLES is None:
-        found = set()
+        found = set()          # single-char look-alike sources (ords) -> the confusable set
+        multi_srcs = set()     # multi-char look-alike sources (chars): the fold-only T7
+                               # boundary, kept OUT of the confusable set (stays 'nonascii')
         try:
             import os
             from confusable_homoglyphs import confusables as cf
@@ -97,13 +101,30 @@ def _ascii_confusables():
             for source, alternatives in data.items():
                 if len(source) != 1 or ord(source) <= 0x7F:
                     continue
-                for alt in alternatives:
-                    glyph = alt.get('c', '')
-                    if len(glyph) == 1 and 0x20 <= ord(glyph) <= 0x7E:
-                        found.add(ord(source))
-                        break
+                if any(len(a.get('c', '')) == 1 and 0x20 <= ord(a['c']) <= 0x7E
+                       for a in alternatives):
+                    found.add(ord(source))
+                elif any(len(a.get('c', '')) >= 2
+                         and all(0x20 <= ord(g) <= 0x7E for g in a['c'])
+                         for a in alternatives):
+                    multi_srcs.add(source)
         except Exception:      # pylint: disable=broad-except
             pass
+        # Mirror secure-terminal _build_fold_maps: a compatibility character whose NFKC form is
+        # a SINGLE printable-ASCII char poses as that ASCII and joins the confusable set -- but
+        # DEFER to the confusables data where it already places the source (its disjointness
+        # guard skips a char already in the single OR multi map, so a multi-char poser stays
+        # fold-only / 'nonascii'). unicodedata is stdlib, so this survives the package's absence.
+        for cp in range(0x80, 0x110000):
+            ch = chr(cp)
+            if cp in found or ch in multi_srcs:
+                continue
+            dec = unicodedata.decomposition(ch)
+            if not dec or dec[0] != '<':
+                continue
+            nfkc = unicodedata.normalize('NFKC', ch)
+            if len(nfkc) == 1 and 0x20 <= ord(nfkc) <= 0x7E and nfkc != ch:
+                found.add(cp)
         _ASCII_CONFUSABLES = frozenset(found)
     return _ASCII_CONFUSABLES
 
