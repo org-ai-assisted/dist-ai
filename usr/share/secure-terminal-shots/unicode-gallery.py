@@ -65,12 +65,19 @@ _DEFAULT_IGNORABLE_RANGES = (
     (0xE0100, 0xE01EF),
 )
 
+# Blank-rendering glyphs (category So, str.isprintable()==True, NOT Default_Ignorable):
+# U+2800 (empty braille cell) and U+FFFC (object replacement, no object) render as an
+# inkless blank, so sanitize treats them like a default-ignorable. Own copy of that spec,
+# for the same drift-catching reason as _DEFAULT_IGNORABLE_RANGES above.
+_BLANK_GLYPH_CPS = frozenset({0x2800, 0xFFFC})
+
 _ASCII_CONFUSABLES = None
 _CLUSTER_RE = None
 
 
 def _is_default_ignorable(cp):
-    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES)
+    return (cp in _BLANK_GLYPH_CPS
+            or any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES))
 
 
 def _ascii_confusables():

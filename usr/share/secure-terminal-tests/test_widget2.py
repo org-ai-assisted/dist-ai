@@ -5427,9 +5427,11 @@ for _pfg_r in range(1, _pfg_rows + 1):
     feed_output(_pfg, ('\x1b[%d;1Hrow%02d' % (_pfg_r, _pfg_r)).encode())
 _pfg_caret = max(1, _pfg_rows - 6)
 feed_output(_pfg, ('\x1b[%d;4H' % _pfg_caret).encode())      # caret on an input-like row
-# Force the overflow the fix must absorb: reserve two rows of top chrome (an OSC advisory
-# banner) WITHOUT changing the winsize, so the live grid no longer fits the visible area.
-_pfg.set_chrome_top_inset(_pfg.fontMetrics().lineSpacing() * 2)
+# Force the overflow the fix must absorb: reserve two rows of top viewport margin WITHOUT
+# changing the winsize, so the live grid no longer fits the visible area. (The app's advisory
+# banner is now a TRUE overlay reserving no pixels, so this drives the raw Qt margin directly --
+# the fixed-canvas policy must still absorb any viewport shrink, font-independently.)
+_pfg.setViewportMargins(0, _pfg.fontMetrics().lineSpacing() * 2, 0, 0)
 feed_output(_pfg, ('\x1b[%d;4H' % _pfg_caret).encode())      # a redraw frame applies the policy
 pump(80)
 ok(not _pfg._alt_screen and _pfg.document().blockCount() <= _pfg._grid_rows,

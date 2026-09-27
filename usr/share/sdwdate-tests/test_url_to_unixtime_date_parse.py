@@ -10,9 +10,11 @@ Regression: url_to_unixtime must reject a hostile server's HTTP Date header
 without crashing.
 
 dateutil.parser.parse raises OverflowError (not ValueError) on an
-out-of-C-int-range year, so http_time_to_parsed_unixtime must reject such a
-Date header via sys.exit(6) (SystemExit) rather than let the exception escape
-and crash the daemon. Found by fuzz_sdwdate.py.
+out-of-C-int-range year, and a decimal.DecimalException
+(InvalidOperation / DivisionImpossible) from its internal Decimal math on an
+adversarial numeric time token, so http_time_to_parsed_unixtime must reject such
+a Date header via sys.exit(6) (SystemExit) rather than let the exception escape
+and crash the daemon. Found by fuzz_sdwdate.py and fuzz_url_to_unixtime.py.
 
 The loaders are reused from fuzz_sdwdate so there is one source for resolving
 the subject.
@@ -48,6 +50,19 @@ class DateParseRejection(unittest.TestCase):
         self.assertEqual(returned, http_time)
         with self.assertRaises(SystemExit) as ctx:
             self.u2u.http_time_to_parsed_unixtime(data, returned)
+        self.assertEqual(ctx.exception.code, 6)
+
+    def test_decimal_error_is_rejected_not_crash(self):
+        ## dateutil raises decimal.InvalidOperation (a DecimalException, not a
+        ## ValueError) from its internal Decimal math on an adversarial numeric
+        ## time token, so http_time_to_parsed_unixtime must reject it via
+        ## sys.exit(6), not let it escape. 33 chars: within the 29..100 gate.
+        http_time = '0:' + '9' * 31
+        data = fuzz_sdwdate._FakeResponse(http_time)
+        self.assertEqual(
+            len(http_time), 33, 'fixture must stay within the length gate')
+        with self.assertRaises(SystemExit) as ctx:
+            self.u2u.http_time_to_parsed_unixtime(data, http_time)
         self.assertEqual(ctx.exception.code, 6)
 
     def test_valid_rfc_date_still_parses(self):

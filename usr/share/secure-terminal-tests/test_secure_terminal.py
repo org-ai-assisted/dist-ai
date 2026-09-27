@@ -221,6 +221,17 @@ eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')
 eq(S.marking_class(0x200B), 'invisible', 'ZWSP is invisible')
 eq(S.marking_class(0x07), 'control', 'BEL is control')
 eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is nonascii')
+# Blank-rendering glyphs (category So, str.isprintable()==True, NOT Unicode
+# Default_Ignorable) render as an inkless blank in essentially every font, so they are
+# neutralized as 'invisible' -- else they ride SHOW/paste/clipboard unmarked. U+2800 is
+# the EMPTY braille cell; a real braille dot (U+2801) still renders as honest nonascii.
+eq(S.marking_class(0x2800), 'invisible', 'BRAILLE PATTERN BLANK renders blank -> invisible')
+eq(S.marking_class(0xFFFC), 'invisible', 'OBJECT REPLACEMENT (no object) renders blank -> invisible')
+eq(S.marking_class(0x2801), 'nonascii', 'a real braille dot (U+2801) still renders -> nonascii')
+ok(S.render_output(chr(0x2800), 'show') != chr(0x2800),
+   'a blank braille cell is neutralized in SHOW mode, never shown as-is')
+ok(chr(0x2800) not in S.sanitize_clipboard_unicode('a' + chr(0x2800) + 'b'),
+   'a blank braille cell is dropped from clipboard text')
 # confusables: a non-ASCII code point that is a LOOK-ALIKE of a printable ASCII
 # character (a homoglyph) is its own risk class, louder than honest foreign text.
 eq(S.marking_class(0x0430), 'confusable', 'Cyrillic small a (look-alike of Latin a) is confusable')
