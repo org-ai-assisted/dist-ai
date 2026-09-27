@@ -100,13 +100,19 @@ dist_ai="$(readlink --canonicalize -- "${script_dir}/../..")"
 
 secure_terminal="${SECURE_TERMINAL_REPO:-${HOME}/private-sources/secure-terminal}"
 corpus="${CORPUS_REPO:-${HOME}/private-sources/terminal-poc-corpus}"
+safe_corpus="${SAFE_CORPUS_REPO:-${HOME}/private-sources/terminal-safe-corpus}"
 site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}"
 
 [ -d "${secure_terminal}/usr/lib/python3/dist-packages/secure_terminal" ] \
    || die "secure-terminal source not found at '${secure_terminal}' (set SECURE_TERMINAL_REPO)"
-## compat builds its own fixture (no corpus); every other lane cats corpus payloads.
-[ "${lane}" = 'compat' ] || [ -f "${corpus}/tools/reproduce.py" ] \
-   || die "terminal-poc-corpus not found at '${corpus}' (set CORPUS_REPO)"
+## compat cats the SAFE corpus's progress-bar demos; every other lane cats the POC corpus payloads.
+if [ "${lane}" = 'compat' ]; then
+   [ -f "${safe_corpus}/demos/progress-crbar-safe-to-cat.txt" ] \
+      || die "terminal-safe-corpus not found at '${safe_corpus}' (set SAFE_CORPUS_REPO)"
+else
+   [ -f "${corpus}/tools/reproduce.py" ] \
+      || die "terminal-poc-corpus not found at '${corpus}' (set CORPUS_REPO)"
+fi
 [ -f "${dist_ai}/usr/bin/secure-terminal-shots" ] \
    || die "dist-ai runner not found at '${dist_ai}/usr/bin/secure-terminal-shots'"
 ## The site is a pull target for comparison (comparison/shots) and compat
@@ -160,32 +166,30 @@ fi
 
 base='st-shots-sandbox'
 
-## compat builds its OWN fixture and reads no corpus payloads (see the presence
-## check above), so it syncs two trees, not three -- skip the corpus sync for it.
+## Three trees per lane: secure-terminal + dist-ai + a corpus. compat cats the SAFE corpus's
+## progress-bar demos; every other lane cats the POC corpus payloads -- so the corpus tree differs
+## by lane (terminal-safe-corpus vs terminal-poc-corpus).
+if [ "${lane}" = 'compat' ]; then
+   lane_corpus="${safe_corpus}"; lane_corpus_name='terminal-safe-corpus'
+else
+   lane_corpus="${corpus}"; lane_corpus_name='terminal-poc-corpus'
+fi
 if [ "${assume_synced}" = 1 ]; then
    printf '%s\n' "secure-terminal-shots-sandbox: --assume-synced: verifying the sandbox already matches (no re-sync) ..." >&2
    sandbox "${target_arg[@]}" assert-synced "${secure_terminal}" \
       || die "--assume-synced: secure-terminal not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
    sandbox "${target_arg[@]}" assert-synced "${dist_ai}" \
       || die "--assume-synced: dist-ai not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
-   if [ "${lane}" != 'compat' ]; then
-      sandbox "${target_arg[@]}" assert-synced "${corpus}" \
-         || die "--assume-synced: terminal-poc-corpus not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
-   fi
+   sandbox "${target_arg[@]}" assert-synced "${lane_corpus}" \
+      || die "--assume-synced: ${lane_corpus_name} not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
 else
-   if [ "${lane}" = 'compat' ]; then
-      printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing two trees into the sandbox (compat needs no corpus) ..." >&2
-   else
-      printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
-   fi
+   printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox (${lane_corpus_name}) ..." >&2
    sandbox "${target_arg[@]}" sync --delete "${secure_terminal}" "${base}/secure-terminal" \
       || die "sync of secure-terminal into the sandbox failed"
    sandbox "${target_arg[@]}" sync --delete "${dist_ai}" "${base}/dist-ai" \
       || die "sync of dist-ai into the sandbox failed"
-   if [ "${lane}" != 'compat' ]; then
-      sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
-         || die "sync of terminal-poc-corpus into the sandbox failed"
-   fi
+   sandbox "${target_arg[@]}" sync --delete "${lane_corpus}" "${base}/${lane_corpus_name}" \
+      || die "sync of ${lane_corpus_name} into the sandbox failed"
 fi
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2

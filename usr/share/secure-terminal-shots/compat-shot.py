@@ -98,8 +98,8 @@ PLAIN_PROGRAMS = [
 # would be a duplicate figure captioned as distinct, so tqdm omits read-safe. append-only differs
 # for both (it neutralises the CR itself).
 PROGRESS_EMITTERS = [
-    ('crbar', 'bash progress-crbar.sh', ('full', 'read-safe', 'append-only')),
-    ('tqdm', 'python3 progress-tqdm.py', ('full', 'append-only')),
+    ('crbar', 'cat progress-crbar-safe-to-cat.txt', ('full', 'read-safe', 'append-only')),
+    ('tqdm', 'cat progress-tqdm-safe-to-cat.txt', ('full', 'append-only')),
 ]
 
 
@@ -148,44 +148,30 @@ def _write(path, text):
         handle.write(text)
 
 
-# A deterministic coloured CR progress bar: a fixed step count, no clock. Uses \r
-# (return to column 0) + \033[K (erase-to-end-of-line) + SGR colour, and its final line
-# is SHORTER than the bar -- so the three line-editing modes render DISTINCTLY:
-#   full       -> \r + erase both honoured: one clean coloured "Download complete." line
-#   read-safe  -> \r acts but \033[K is stripped: the short final line overwrites from
-#                 column 0 and the wider bar's tail is NOT erased, so a remnant trails
-#   append-only-> \r neutralised: every frame kept on its own line with a gutter marker
-_CRBAR = r"""#!/bin/bash
-## Deterministic coloured CR progress bar (fixed steps, CR + erase-line, no clock).
-steps=20
-width=24
-for (( i=1; i<=steps; i++ )); do
-   filled=$(( i * width / steps ))
-   bar=''
-   for (( c=0; c<filled; c++ )); do bar+='#'; done
-   for (( c=filled; c<width; c++ )); do bar+=' '; done
-   printf '\r\033[K\033[36mFetching \033[32m[%s]\033[0m %3d%%' "${bar}" "$(( i * 100 / steps ))"
-done
-printf '\r\033[K\033[32mFetch complete.\033[0m\n'
-"""
+# The progress bars are cat-able byte streams committed in terminal-safe-corpus (demos/), the
+# SINGLE SOURCE of their bytes; their generators live in this dir (progress-crbar.sh,
+# progress-tqdm.py) and the corpus's check-drift regenerates + byte-compares. build_fixture copies
+# the demo files in so `cat progress-*-safe-to-cat.txt` finds them; reproduction on the site is
+# "cat the corpus demo".
+_SAFE_CORPUS_DEMOS = ('progress-crbar-safe-to-cat.txt', 'progress-tqdm-safe-to-cat.txt')
 
-# A tqdm bar with NO time/rate fields in the format (so it is byte-stable) and forced
-# to refresh every iteration (mininterval=0, miniters=1) so the append-only stack height
-# is a fixed 20 frames. ncols pins the width.
-_TQDM = r"""#!/usr/bin/python3 -Bsu
-from tqdm import tqdm
-for _ in tqdm(range(20), ncols=56, mininterval=0, miniters=1,
-              bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
-              desc='Indexing'):
-    pass
-"""
+
+def _resolve_safe_corpus():
+    """Locate the terminal-safe-corpus checkout whose demos/ supply the progress-bar bytes."""
+    for cand in (os.environ.get('SAFE_CORPUS_REPO'),
+                 os.path.join(os.path.expanduser('~'), 'private-sources', 'terminal-safe-corpus')):
+        if cand and os.path.isfile(os.path.join(cand, 'demos', _SAFE_CORPUS_DEMOS[0])):
+            return cand
+    raise RuntimeError(
+        'compat-shot: terminal-safe-corpus not found (set SAFE_CORPUS_REPO) -- it supplies the '
+        'progress-bar demo bytes the compatibility figures cat')
 
 
 def build_fixture(root, env):
     """Lay out the fixed inputs every program reads. Deterministic: fixed file contents,
     a pinned-mtime tar, a git repo built with the pinned identity/date env, and the
-    progress emitters' scripts + a fixed-size data file. Raises on any failure (a broken
-    fixture must not yield a misleading shot)."""
+    progress-bar demo files copied from terminal-safe-corpus. Raises on any failure (a
+    broken fixture must not yield a misleading shot)."""
     # coreutils: a directory with varied file TYPES so `ls --color -F` shows the type
     # colours the row claims (dir/, executable*, symlink@, an archive).
     demo = os.path.join(root, 'demo')
@@ -255,9 +241,11 @@ def build_fixture(root, env):
     git('commit', '-q', '-a', '-m', 'Document signature verification')
     git('tag', 'v1.0')
 
-    # progress emitters: the scripts (crbar + tqdm; both self-contained, no data file).
-    _write(os.path.join(root, 'progress-crbar.sh'), _CRBAR)
-    _write(os.path.join(root, 'progress-tqdm.py'), _TQDM)
+    # progress emitters: copy the byte-stable bar demos from terminal-safe-corpus so the fixture's
+    # `cat progress-*-safe-to-cat.txt` finds them (the corpus is their single source of truth).
+    safe_corpus = _resolve_safe_corpus()
+    for demo in _SAFE_CORPUS_DEMOS:
+        shutil.copy2(os.path.join(safe_corpus, 'demos', demo), os.path.join(root, demo))
 
 
 def _run_checked(command, cwd, env, expect_rc):

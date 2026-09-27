@@ -31,7 +31,13 @@ sandbox_base="$1"
 shift
 
 export SECURE_TERMINAL_REPO="${HOME}/${sandbox_base}/secure-terminal"
-export CORPUS_REPO="${HOME}/${sandbox_base}/terminal-poc-corpus"
+## The corpus tree differs by lane (see the driver): compat cats the SAFE corpus's progress-bar
+## demos; every other lane cats the POC corpus payloads. Point each at its synced tree.
+if [ "${1:-}" = 'compat' ]; then
+   export SAFE_CORPUS_REPO="${HOME}/${sandbox_base}/terminal-safe-corpus"
+else
+   export CORPUS_REPO="${HOME}/${sandbox_base}/terminal-poc-corpus"
+fi
 
 ## The synced dist-ai tree carries its local (gitignored) shots/ dir; clear it so this run pulls
 ## back ONLY the shots it just captured, never stale ones from an earlier local/filtered capture.
