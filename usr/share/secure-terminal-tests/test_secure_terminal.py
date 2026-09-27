@@ -242,6 +242,17 @@ eq(S.marking_class(0x24B6), 'confusable', 'CIRCLED LATIN CAPITAL LETTER A poses 
 eq(S.marking_class(0x4E2D), 'nonascii', 'a CJK ideograph is honest foreign, not a compat confusable')
 eq(S.ascii_fold(chr(0x00B2)), '2', 'the superscript folds to the ASCII 2 it imitates')
 eq(S.ascii_fold(chr(0xFB01)), 'fi', 'a ligature folds to the multi-char ASCII it imitates (fold path)')
+# A compat char must NEVER fold to a SPACE: U+3000 IDEOGRAPHIC SPACE decomposes to U+0020, but
+# folding it to ' ' would INJECT a word break, turning an inert token into a split command.
+eq(S.ascii_fold('rm' + chr(0x3000) + '-rf' + chr(0x3000) + '/'), 'rm-rf/',
+   'an ideographic space is dropped, not folded to a real space (no injected word break)')
+ok(0x3000 not in S._ascii_confusables(),
+   'a non-ASCII space is not a confusable (it is invisible, handled by is_space_separator)')
+# A compat char whose decomposition rides an authoritative look-alike component is DEFERRED, not
+# given a conflicting NFKC fold: U+FB05 (long s + t) rides U+017F (an 'f' look-alike), so NFKC
+# 'st' would disagree with the 'ft' the table implies -- leave it to the confusable machinery.
+eq(S.marking_class(0xFB05), 'nonascii',
+   'a ligature riding a look-alike component gets no conflicting NFKC fold')
 # confusables: a non-ASCII code point that is a LOOK-ALIKE of a printable ASCII
 # character (a homoglyph) is its own risk class, louder than honest foreign text.
 eq(S.marking_class(0x0430), 'confusable', 'Cyrillic small a (look-alike of Latin a) is confusable')

@@ -122,8 +122,13 @@ def _ascii_confusables():
             dec = unicodedata.decomposition(ch)
             if not dec or dec[0] != '<':
                 continue
+            # Mirror _build_fold_maps exactly: VISIBLE printable ASCII only (0x21..0x7E, never a
+            # space -- a fold to ' ' would inject a word break), and DEFER a source whose
+            # decomposition rides an authoritative look-alike component (U+FB05 on U+017F), whose
+            # fold would disagree with NFKC.
             nfkc = unicodedata.normalize('NFKC', ch)
-            if len(nfkc) == 1 and 0x20 <= ord(nfkc) <= 0x7E and nfkc != ch:
+            if len(nfkc) == 1 and 0x21 <= ord(nfkc) <= 0x7E and nfkc != ch \
+                    and not any(int(p, 16) in found for p in dec.split()[1:]):
                 found.add(cp)
         _ASCII_CONFUSABLES = frozenset(found)
     return _ASCII_CONFUSABLES
