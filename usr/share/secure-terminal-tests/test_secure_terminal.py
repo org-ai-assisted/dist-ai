@@ -232,6 +232,16 @@ ok(S.render_output(chr(0x2800), 'show') != chr(0x2800),
    'a blank braille cell is neutralized in SHOW mode, never shown as-is')
 ok(chr(0x2800) not in S.sanitize_clipboard_unicode('a' + chr(0x2800) + 'b'),
    'a blank braille cell is dropped from clipboard text')
+# Compatibility characters whose NFKC form is a SINGLE printable ASCII (a superscript, a
+# circled letter) POSE AS that ASCII, so they are confusables, not merely foreign: a
+# superscript digit in an amount or a version reads as a plain digit. They wear the louder
+# confusable tint and fold to the ASCII they imitate, unlike honest foreign text.
+eq(S.marking_class(0x00B2), 'confusable', 'SUPERSCRIPT TWO poses as 2 -> confusable')
+eq(S.marking_class(0x2460), 'confusable', 'CIRCLED DIGIT ONE poses as 1 -> confusable')
+eq(S.marking_class(0x24B6), 'confusable', 'CIRCLED LATIN CAPITAL LETTER A poses as A -> confusable')
+eq(S.marking_class(0x4E2D), 'nonascii', 'a CJK ideograph is honest foreign, not a compat confusable')
+eq(S.ascii_fold(chr(0x00B2)), '2', 'the superscript folds to the ASCII 2 it imitates')
+eq(S.ascii_fold(chr(0xFB01)), 'fi', 'a ligature folds to the multi-char ASCII it imitates (fold path)')
 # confusables: a non-ASCII code point that is a LOOK-ALIKE of a printable ASCII
 # character (a homoglyph) is its own risk class, louder than honest foreign text.
 eq(S.marking_class(0x0430), 'confusable', 'Cyrillic small a (look-alike of Latin a) is confusable')
@@ -259,9 +269,11 @@ ok(len(S._ascii_confusables()) > 500,
    'the Unicode confusables set is populated (%d code points)' % len(S._ascii_confusables()))
 ok(all(cp > 0x7F for cp in S._ascii_confusables()),
    'the confusables set holds only non-ASCII sources (ASCII is never flagged as a look-alike of itself)')
-# if the confusables data cannot be loaded the lazy loader must degrade to an
-# empty set (a look-alike then just stays generic 'nonascii'), never crash: force
-# the load to raise and confirm the defensive except yields an empty frozenset.
+# The confusables homoglyph data is a hard dep, but the load is guarded. If it cannot be read
+# the loader must NOT crash: the homoglyph look-alikes (Cyrillic a) are lost, but the
+# NFKC-compatibility posers (SUPERSCRIPT TWO, the ellipsis) come from stdlib unicodedata and
+# SURVIVE -- so the maps degrade to the compat set, never empty. Force the load to raise and
+# confirm the defensive path keeps the stdlib coverage while dropping only the homoglyphs.
 _saved_conf = S._ASCII_CONFUSABLES
 _saved_fold = S._ASCII_FOLD_MAP
 _saved_multi = S._MULTICHAR_ASCII_FOLD
@@ -276,16 +288,16 @@ try:
     def _conf_load_boom(*_a, **_k):
         raise OSError('forced confusables load failure')
 
-    S.open = _conf_load_boom             # shadow the module's open() -> load fails
+    S.open = _conf_load_boom             # shadow the module's open() -> homoglyph load fails
     _degraded = S._ascii_confusables()
-    ok(_degraded == frozenset(),
-       'the confusables loader degrades to an empty set when the data cannot be read')
-    ok(S._multichar_ascii_fold() == {},
-       'the multi-char fold map degrades to empty when the data cannot be read')
+    ok(0x00B2 in _degraded and 0x0430 not in _degraded,
+       'without the homoglyph data the confusable set keeps NFKC compat posers, drops homoglyphs')
+    ok(chr(0x2026) in S._multichar_ascii_fold(),
+       'the multi-char fold map keeps NFKC compat posers (ellipsis) without the homoglyph data')
     ok(S.ascii_fold('ex' + chr(0x0430) + 'y') == 'exy',
-       'ascii_fold degrades to a plain non-ASCII drop when the fold data is unreadable')
-    ok(S.ascii_fold('a' + chr(0x2026) + 'b') == 'ab',
-       'ascii_fold drops (not folds) a multi-char poser when the fold data is unreadable')
+       'a homoglyph (no NFKC decomposition) is dropped when the homoglyph data is unreadable')
+    ok(S.ascii_fold('a' + chr(0x2026) + 'b') == 'a...b',
+       'an NFKC compat poser (ellipsis) still folds without the homoglyph data')
 finally:
     del S.open
     S._ASCII_CONFUSABLES = _saved_conf
