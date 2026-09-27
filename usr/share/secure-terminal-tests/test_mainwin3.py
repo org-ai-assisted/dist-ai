@@ -494,11 +494,12 @@ eq(win._advisories.get(_esc_term), ('escape', 'newer freeze'),
 win._advisories.pop(_esc_term, None)
 win._esc_notified.discard(_esc_term)
 
-# The advisory banner is a top OVERLAY, not a layout item: showing it must NOT resize
-# the terminal grid. As a layout sibling it shrank the grid, SIGWINCHing the child --
-# which re-prompts the shell and reflows a full-screen program (the broken-TUI-shot
-# regression). It reserves a winsize-neutral top INSET instead, so content renders
-# below the banner. Canary: against the old (layout) code _rows shrinks here.
+# The advisory banner is a TRUE top overlay: it floats OVER the terminal content and reserves
+# NO grid pixels. Showing it must neither resize the grid (no SIGWINCH -> no re-prompt / TUI
+# reflow) NOR shrink the viewport under the grid -- the winsize-neutral INSET it used to reserve
+# kept the row count but stole viewport pixels, so a full-screen program's bottom row was
+# painted off-screen (the reported truncated status line). Canary: against the inset code the
+# viewport height SHRINKS here.
 _ov = MainWindow()
 _ov.resize(900, 640)
 _ov.show()
@@ -510,6 +511,7 @@ for _ in range(6):
     pump(50)
 _ovt = _ov.current()
 _ov_rows0, _ov_cols0 = _ovt._rows, _ovt._cols
+_ov_vph0 = _ovt.viewport().height()             # baseline viewport height, no banner
 _ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
 _ov._advisories.pop(_ovt, None)
 _ov._on_osc_used(_ovt, 'osc_hyperlink', 8)      # raise an OSC advisory (a type NOT muted by default)
@@ -520,25 +522,23 @@ eq(_ovt._rows, _ov_rows0,
    'advisory overlay: showing the banner does NOT change the grid rows (no SIGWINCH)')
 eq(_ovt._cols, _ov_cols0,
    'advisory overlay: showing the banner does NOT change the grid cols')
-ok(_ovt._chrome_top_inset > 0,
-   'advisory overlay: the terminal reserves a top inset so content sits below the banner')
-_ov_inset0 = _ovt._chrome_top_inset
+eq(_ovt.viewport().height(), _ov_vph0,
+   'advisory overlay: showing the banner does NOT shrink the viewport (a true overlay reserves '
+   'no pixels, so the grid keeps its full height and the bottom row is never clipped)')
 _ov._position_banner()                        # idempotent re-place (same width/font)
-eq(_ovt._chrome_top_inset, _ov_inset0,
-   'advisory overlay: re-placing the banner at the same size is a no-op inset')
-_ov._dismiss_advisory()                       # the X button: hide + release the inset
+eq(_ovt.viewport().height(), _ov_vph0,
+   'advisory overlay: re-placing the banner reserves no viewport pixels either')
+_ov._dismiss_advisory()                       # the X button: hide the overlay
 pump(50)
 ok(wait_for(lambda: not _ov._banner.isVisible()),
    'advisory overlay: dismiss hides the banner')
-eq(_ovt._chrome_top_inset, 0,
-   'advisory overlay: dismissing releases the top inset')
 eq(_ovt._rows, _ov_rows0,
    'advisory overlay: hiding the banner also leaves the grid rows unchanged')
 
 # REGRESSION: the zoom-scaled advisory must never OCCLUDE the terminal. Its font scales
 # with zoom, so on a short window at high zoom the wrapped banner grows past the viewport
-# and its reserved inset blanks the output (the reported "zoom in -> screen goes blank").
-# The inset is now clamped to <= half the content area below the tab strip.
+# and the overlay would cover most of the output (the reported "zoom in -> screen goes
+# blank"). The banner height is now clamped to <= half the content area below the tab strip.
 _ov.resize(760, 320)                              # a short window
 _ov.set_zoom(300)                                 # a huge banner font
 _ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
@@ -554,8 +554,8 @@ _zc_half = max(1, _zc_avail // 2)
 # clamp, so the assertion below is not passing vacuously on a banner that already fits.
 ok(_ov._banner.heightForWidth(_zc_geo.width()) > _zc_half,
    'zoom-clamp: at 300%/short window the banner WOULD exceed half (clamp is load-bearing)')
-ok(_ovt._chrome_top_inset <= _zc_half,
-   'zoom-clamp: the advisory inset is clamped to <= half the content area (content never blanks)')
+ok(_ov._banner.height() <= _zc_half,
+   'zoom-clamp: the advisory overlay is clamped to <= half the content area (content never blanks)')
 # the clamp can CLIP the wrapped advisory text, so the full notice must stay readable via
 # the banner tooltip (a security notice must not become inaccessible at high zoom).
 ok(_ov._banner_label.toolTip() and _ov._banner_label.toolTip() == _ov._advisories[_ovt][1],
