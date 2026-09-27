@@ -1,0 +1,25 @@
+#
+# security-misc hardened OpenSSH CLIENT policy (ssh-audit, client-audit mode).
+#
+# Source of truth: security-misc etc/ssh/ssh_config.d/30_security-misc.conf.
+# This policy MUST stay in sync with that file's Ciphers / MACs /
+# KexAlgorithms / HostKeyAlgorithms; the drift-guard test
+# (test_ssh_config.py::test_policy_matches_client_config) fails if they diverge.
+#
+# The client set intentionally keeps aes256-ctr (interop headroom) which the
+# server set omits; that asymmetry is deliberate, not legacy.
+#
+# allow_algorithm_subset_and_reordering = false makes this an EXACT match.
+#
+
+client policy = true
+name = "security-misc hardened OpenSSH client"
+version = 1
+
+allow_algorithm_subset_and_reordering = false
+allow_larger_keys = false
+
+host keys = sk-ssh-ed25519@openssh.com, ssh-ed25519
+key exchanges = sntrup761x25519-sha512, sntrup761x25519-sha512@openssh.com, mlkem768x25519-sha256, curve25519-sha256, curve25519-sha256@libssh.org, ext-info-c, kex-strict-c-v00@openssh.com
+ciphers = chacha20-poly1305@openssh.com, aes256-gcm@openssh.com, aes256-ctr
+macs = umac-128-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256-etm@openssh.com

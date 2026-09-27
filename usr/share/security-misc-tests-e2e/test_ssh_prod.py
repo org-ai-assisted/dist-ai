@@ -7,57 +7,56 @@
 
 """
 Hard-gating scan of the live production SSH servers against security-misc's
-shipped ssh-audit server policy, using the real shipped ssh-audit-test tool.
+hardened ssh-audit server policy (bundled in the sibling security-misc-tests
+suite; the config drift-guard there keeps it in sync with security-misc).
 
 kicksecure.com and whonix.org must present EXACTLY the security-misc hardened
 algorithm set (server.policy, exact match). This FAILS if a production server
-runs an unhardened / weaker sshd, or if it drops security-misc's SSH hardening
-in a future change.
+runs an unhardened / weaker sshd, or drops security-misc's SSH hardening in a
+future change.
 
 --e2e category: requires clearnet egress to port 22. A connection failure fails
 the gate (never a silent pass); reachability plus hardening is the contract.
 """
 
-import glob
 import os
 import shutil
 import subprocess
 
 import pytest
 
-REPO = os.environ.get("SECURITY_MISC_REPO", "")
-
 PROD_HOSTS = ("kicksecure.com", "whonix.org")
 
-
-def _resolve(installed, repo_glob):
-    if os.path.exists(installed):
-        return installed
-    if REPO:
-        matches = sorted(glob.glob(os.path.join(REPO, repo_glob)))
-        if matches:
-            return matches[0]
-    ## security-misc neither installed nor checked out: an absent optional
-    ## subject, skip rather than fail (the runner also gates this with exit 77).
-    pytest.skip(f"security-misc not present: {installed} / {repo_glob}")
-    return None  ## unreachable; pytest.skip raises
+## The server policy lives in the sibling core suite (single copy, drift-guarded
+## there against security-misc's config); both suites install under /usr/share.
+SERVER_POLICY = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "security-misc-tests",
+        "server.policy",
+    )
+)
 
 
 def test_production_ssh_matches_hardened_policy():
     """kicksecure.com and whonix.org sshd must match security-misc server.policy."""
-    if shutil.which("ssh-audit") is None:
+    ssh_audit = shutil.which("ssh-audit")
+    if ssh_audit is None:
         pytest.fail("required dependency not found on PATH: ssh-audit")
-    tool = _resolve("/usr/bin/ssh-audit-test", "usr/bin/ssh-audit-test*")
-    policy = _resolve(
-        "/usr/share/security-misc/ssh-audit/server.policy",
-        "usr/share/security-misc/ssh-audit/server.policy*",
-    )
-    result = subprocess.run(
-        ["bash", tool, "--policy", policy, "--", *PROD_HOSTS],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
+    if not os.path.exists(SERVER_POLICY):
+        pytest.fail(f"bundled server policy missing: {SERVER_POLICY}")
+    failures = []
+    for host in PROD_HOSTS:
+        result = subprocess.run(
+            [ssh_audit, "--policy", SERVER_POLICY, "--", host],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            failures.append(f"{host}:\n{result.stdout}\n{result.stderr}")
+    assert not failures, (
         "production SSH server(s) do not match the security-misc hardened "
-        f"policy:\n{result.stdout}\n{result.stderr}"
+        "policy (unhardened sshd, or unreachable on port 22):\n\n"
+        + "\n".join(failures)
     )
