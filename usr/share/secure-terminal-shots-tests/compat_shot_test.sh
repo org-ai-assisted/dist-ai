@@ -63,10 +63,23 @@ for tool in bash ls cat cp find tar grep gzip zcat sed diff cmp awk git python3;
       exit 1
    fi
 done
-if ! python3 -c 'import tqdm' 2>/dev/null; then
-   printf '%s\n' 'FATAL: python3 tqdm module not importable (the tqdm progress emitter needs it)' >&2
+## The progress-bar figures `cat` byte-stable demos committed in terminal-safe-corpus; the fixture
+## copies them in, so the corpus checkout is a REQUIRED input (R-220), never a skip.
+safe_corpus=''
+for cand in \
+   "${SAFE_CORPUS_REPO:-}" \
+   "${HOME}/private-sources/terminal-safe-corpus" \
+   "${script_dir}/../../../../terminal-safe-corpus"; do
+   if [ -n "${cand}" ] && [ -f "${cand}/demos/progress-crbar-safe-to-cat.txt" ]; then
+      safe_corpus="$(readlink --canonicalize -- "${cand}")"
+      break
+   fi
+done
+if [ -z "${safe_corpus}" ]; then
+   printf '%s\n' 'FATAL: terminal-safe-corpus not found (set SAFE_CORPUS_REPO); it supplies the progress-bar demo bytes' >&2
    exit 1
 fi
+export SAFE_CORPUS_REPO="${safe_corpus}"
 
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
