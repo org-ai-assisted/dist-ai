@@ -28,6 +28,24 @@ else
    tests_dir='/usr/share/security-misc-tests'
 fi
 
+## Resolve the subject: security-misc's shipped SSH config, from the checkout
+## (SECURITY_MISC_REPO, wired by dist-ai-tests-all) or the installed package.
+## Absent both, security-misc is not present to test -- an OPTIONAL target, so
+## skip cleanly rather than fail, matching the rest of the registry's
+## unresolved-target contract.
+subject_present="false"
+if [ -n "${SECURITY_MISC_REPO:-}" ] \
+   && [ -e "${SECURITY_MISC_REPO}/etc/ssh/sshd_config.d/30_security-misc.conf#security-misc-shared" ]; then
+   subject_present="true"
+elif [ -e "/etc/ssh/sshd_config.d/30_security-misc.conf" ]; then
+   subject_present="true"
+fi
+if [ "${subject_present}" = "false" ]; then
+   printf '%s\n' "${0##*/}: SKIP: security-misc not present (no SECURITY_MISC_REPO checkout, not installed)" >&2
+   ## style-ok: allow-skip: security-misc not checked out or installed -- optional target
+   exit 77
+fi
+
 rc=0
 python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
 ## pytest exit 5 = no tests collected. python3-pytest is in this consumer's CI
