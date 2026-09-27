@@ -33,8 +33,8 @@
     "combining": 2155,
     "confusable": 1457,
     "control": 65,
-    "invisible": 443,
-    "nonascii": 145746
+    "invisible": 445,
+    "nonascii": 145744
   },
   "display_blocks": [
     {
@@ -236,7 +236,8 @@
     },
     {
       "by_class": {
-        "nonascii": 256
+        "invisible": 1,
+        "nonascii": 255
       },
       "count": 256,
       "hi": 10495,
