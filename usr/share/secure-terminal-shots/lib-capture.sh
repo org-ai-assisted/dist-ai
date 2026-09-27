@@ -375,10 +375,12 @@ shots_cmd_ran_ok() {  ## $1=cmdlog-file  $2=expected-command
 ## attack comparison); unicode is a secure-terminal risk-tint capability demo (its raw-byte
 ## specimens behave unpredictably across emulators and add no attack comparison). The site
 ## references only secure-terminal.gradient*/art*/unicode*, so an emulator shot for these is an
-## unreferenced orphan the website-tests gate rejects. Single source of truth for "which cases
+## unreferenced orphan the website-tests gate rejects. cr-deception is likewise secure-terminal
+## only: a carriage-return DISPLAY-DECEPTION captured in all three line-editing modes
+## (lineedit_attack_capture), not an emulator comparison. Single source of truth for "which cases
 ## yield an emulator shot", shared by the capture loop's own skip and by
-## shots_missing_emulator_shots below -- keep the two in step.
-SHOTS_EMULATOR_SKIP_CASES=' notify art gradient unicode '
+## shots_missing_emulator_shots below -- keep in step.
+SHOTS_EMULATOR_SKIP_CASES=' notify art gradient unicode cr-deception '
 
 ## Print the emulator shots (one "<emulator> <case>" per line) that are EXPECTED but MISSING from
 ## the shots dir. Drives the --jobs orchestrator's sequential re-capture net: a parallel lane can

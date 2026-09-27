@@ -1139,10 +1139,141 @@ demo_shots_capture() {
 ## secure-terminal under that line-editing mode, types the command through the shell, settles and
 ## grim-grabs the decorated window to <name>.png. The progress emitters appear three times (one
 ## per mode) so the page contrasts full / read-safe / append-only on the SAME redraw.
+## Shared prep for a line-editing capture (compat programs OR the cursor-spoof attack): the
+## passive-notice suppression drop-in, the honest-prompt bashrc, and the privileged remote_control
+## drop-in `ctl` needs. $1 = a label used for the rc drop-in name + error text. Returns non-zero
+## if the rc drop-in cannot be created (ctl would be a no-op).
+lineedit_setup() {  ## $1=label
+   local label
+   label="$1"
+
+   ## Suppress the passive notices that would otherwise clutter these figures. A CR progress bar
+   ## (and the cursor-spoof overwrite) deliberately redraws in place, which trips the "this program
+   ## is drawing in place ... turn on TUI" auto-box notice (tui_autobox_notice) in full/read-safe
+   ## mode; and an over-long escape run would trip the escape-suppression notice (escape_limit).
+   ## Both are NON-privileged settings, so a user-config drop-in needs no sudo. escape_limit=0 =
+   ## never notify (output handling unchanged).
+   mkdir --parents -- "${HOME}/.config/secure-terminal.d"
+   {
+      printf 'escape_limit=0\n'
+      printf 'tui_autobox_notice=false\n'
+   } > "${HOME}/.config/secure-terminal.d/50_shots.conf"
+
+   ## An interactive bashrc: the real user@host prompt, with bracketed paste OFF and no
+   ## PROMPT_COMMAND. The bracketed-paste start/end escapes make readline REDRAW the input line, and
+   ## each redraw stacks as an extra gutter line in append-only (whose count also jitters
+   ## run-to-run) -- turning them off keeps the pre-command region to the single honest prompt.
+   ## Overwrites the run's default bashrc; safe, these captures run LAST (compat exits; the
+   ## cursor-spoof pass runs after the emulator + st_specs grid). The leading sleep delays the
+   ## shell's FIRST prompt until the window has finished settling to its final size: otherwise the
+   ## labwc window-rule resize arrives AFTER the prompt is first drawn, and readline redraws it on
+   ## each SIGWINCH -- redraws that collapse in full/read-safe but STACK as extra lines in
+   ## append-only. Drawing the prompt once, post-settle, keeps the pre-command region to the single
+   ## honest prompt.
+   cat > "${HOME}/.bashrc" <<'RC'
+sleep 2
+PS1='user@host:~$ '
+bind 'set enable-bracketed-paste off' 2>/dev/null
+RC
+
+   ## remote_control drives `ctl`, a PRIVILEGED setting -> a root-owned drop-in via sudo, which
+   ## works because the shots run under `sandbox --no-pidns` (root-owned /etc). Reaped by the run
+   ## marker in cleanup.
+   shots_rc_dropin_create "${label}-rc" >/dev/null || {
+      printf '%s\n' "${label}: cannot create the privileged remote_control drop-in (sudo?)" >&2
+      return 1
+   }
+}
+
+## Capture ONE line-editing figure: launch secure-terminal under $3's line-editing mode, type $4
+## through the honest shell (lineedit_setup's bashrc), settle and grim-grab the decorated window to
+## ${out}/$2.png. $1 = label (log text + instance-group prefix). Returns 0 iff a content-verified
+## shot was written (a missed window / no tab / blank grab / deadline-reap returns 1). The caller
+## owns the shot/failure tally.
+lineedit_capture_row() {  ## $1=label $2=name $3=mode $4=cmd
+   local label name mode cmd rc st_pgf st_flagf st_transcript st_group st_win_w st_win_h
+   local st_wdog stwid st_tab_id st_tab_line _ct
+   local -a st_mode_flags
+   label="$1"; name="$2"; mode="$3"; cmd="$4"; rc=1
+
+   st_win_w="$(px 860)"
+   st_win_h="$(px 640)"
+
+   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")" || return 1
+   st_flagf="${st_pgf}.timeout"
+   st_transcript="${st_pgf}.transcript"
+   st_group="${label}-$(basename -- "${st_pgf}")"
+   safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+
+   ## Launch under the row's line-editing mode, in SHOW display -- the "what a user sees" view that
+   ## renders real glyphs + colour. NOT detail/reveal: those expand every non-ASCII codepoint to a
+   ## <U+XXXX> badge, unreadable for a Unicode bar (tqdm). --line-editing + --mode are per-tab flags
+   ## (secure_terminal/main.py).
+   st_mode_flags=(--line-editing "${mode}" --mode show)
+
+   ## Drive an HONEST interactive shell: secure-terminal's default shell reads ~/.bashrc (so PS1 is
+   ## the real user@host prompt), and the command is TYPED via `ctl send-text --submit` -- so the
+   ## shot shows the real prompt, the real command echo, its output, AND the real RETURN prompt
+   ## after the program exits. No faked/printf prompt.
+   set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
+   shots_spawn_session "${st_pgf}" \
+      env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
+      QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+      "PATH=${st_bin%/*}:${PATH}" \
+      "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
+      PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
+
+   st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
+   stwid="$(find_window || true)"
+   if [ -z "${stwid}" ]; then
+      printf '%s\n' "warn ${label}.${name}: window never appeared" >&2
+   else
+      wait_window_ready "${stwid}"
+
+      st_tab_id=''
+      for _ct in 1 2 3 4 5; do
+         st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
+            ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
+         st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
+         [ -n "${st_tab_id}" ] && break
+         sleep 0.6
+      done
+      if [ -z "${st_tab_id}" ]; then
+         printf '%s\n' "warn ${label}.${name}: ctl ls found no tab -- skipping" >&2
+      else
+         ## Wait past the shell's startup sleep (the bashrc `sleep 2`) so the FIRST prompt is
+         ## already drawn (post window-settle) before we type -- otherwise the keystrokes queue
+         ## behind the sleeping shell and interleave with the prompt draw.
+         sleep 3
+         ## Type the command; the shell runs it and returns to a fresh prompt. Settle waits for that
+         ## RETURN prompt to finish painting before the grab (so the shot includes it).
+         env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
+            send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
+         sleep 1
+         st_wait_render_settled "${stwid}"
+         if capture_settled "${out}/${name}.png" "${stwid}" \
+               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+            printf '%s\n' "${label}: wrote ${name}.png (${mode})"
+            rc=0
+         else
+            safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
+            printf '%s\n' "warn ${label}: ${name} produced no verified shot" >&2
+         fi
+      fi
+   fi
+
+   shots_watchdog_cancel "${st_wdog}"
+   if [ -e "${st_flagf}" ]; then
+      printf '%s\n' "warn ${label}.${name}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+      rc=1
+   fi
+   shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+   safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
+   return "${rc}"
+}
+
 compat_capture() {
    local gen table failures shots name mode cmd _keep _f
-   local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_wdog stwid st_tab_id st_tab_line _ct
-   local -a st_mode_flags
 
    gen="${here}/compat-shot.py"
    if [ ! -f "${gen}" ]; then
@@ -1157,44 +1288,10 @@ compat_capture() {
       return 1
    fi
 
-   ## Suppress the passive notices that would otherwise clutter these figures. A CR progress bar
-   ## deliberately redraws in place, which trips the "this program is drawing in place ... turn on
-   ## TUI" auto-box notice (tui_autobox_notice) in full/read-safe mode; and an over-long escape run
-   ## would trip the escape-suppression notice (escape_limit). Both are NON-privileged settings, so
-   ## a user-config drop-in needs no sudo. escape_limit=0 = never notify (output handling unchanged).
-   mkdir --parents -- "${HOME}/.config/secure-terminal.d"
-   {
-      printf 'escape_limit=0\n'
-      printf 'tui_autobox_notice=false\n'
-   } > "${HOME}/.config/secure-terminal.d/50_shots.conf"
-
-   ## A compat-specific interactive bashrc: the real user@host prompt, with bracketed paste OFF and
-   ## no PROMPT_COMMAND. The bracketed-paste start/end escapes make readline REDRAW the input line,
-   ## and each redraw stacks as an extra gutter line in append-only (whose count also jitters
-   ## run-to-run) -- turning them off keeps the pre-command region to the single honest prompt.
-   ## Overwrites the run's default bashrc; safe, compat exits before the emulator grid reads it.
-   ## The leading sleep delays the shell's FIRST prompt until the window has finished settling to
-   ## its final size: otherwise the labwc window-rule resize arrives AFTER the prompt is first
-   ## drawn, and readline redraws it on each SIGWINCH -- redraws that collapse in full/read-safe
-   ## but STACK as extra lines in append-only. Drawing the prompt once, post-settle, keeps the
-   ## pre-command region to the single honest prompt.
-   cat > "${HOME}/.bashrc" <<'RC'
-sleep 2
-PS1='user@host:~$ '
-bind 'set enable-bracketed-paste off' 2>/dev/null
-RC
-
-   ## remote_control drives `ctl` (below), a PRIVILEGED setting -> a root-owned drop-in via sudo,
-   ## which works because the shots run under `sandbox --no-pidns` (root-owned /etc). Reaped by the
-   ## run marker in cleanup.
-   shots_rc_dropin_create compat-rc >/dev/null || {
-      printf '%s\n' 'compat: cannot create the privileged remote_control drop-in (sudo?)' >&2
-      return 1
-   }
+   lineedit_setup compat || return 1
 
    failures=0
    shots=0
-
    while IFS="$(printf '\t')" read -r name mode cmd; do
       [ -n "${name}" ] || continue
       ## Optional name filter (fast single-figure iteration).
@@ -1205,95 +1302,62 @@ RC
          done
          [ -n "${_keep}" ] || continue
       fi
-      st_win_w="$(px 860)"
-      st_win_h="$(px 640)"
-
-      if ! st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"; then
-         failures=$(( failures + 1 ))
-         continue
-      fi
-      st_flagf="${st_pgf}.timeout"
-      st_transcript="${st_pgf}.transcript"
-      st_group="compat-$(basename -- "${st_pgf}")"
-      safe-rm -f -- "${st_transcript}" 2>/dev/null || true
-
-      ## Launch under the row's line-editing mode, in SHOW display -- the "what a user sees" view
-      ## that renders real glyphs + colour. NOT detail/reveal: those expand every non-ASCII
-      ## codepoint to a <U+XXXX> badge, unreadable for a Unicode bar (tqdm). --line-editing +
-      ## --mode are per-tab flags (secure_terminal/main.py).
-      st_mode_flags=(--line-editing "${mode}" --mode show)
-
-      ## Drive an HONEST interactive shell: secure-terminal's default shell reads ~/.bashrc (so PS1
-      ## is the real user@host prompt), and the command is TYPED via `ctl send-text --submit` -- so
-      ## the shot shows the real prompt, the real command echo, its output, AND the real RETURN
-      ## prompt after the program exits. No faked/printf prompt.
-      set_window_rule secure-terminal "${st_win_w}" "${st_win_h}"
-      shots_spawn_session "${st_pgf}" \
-         env "SHOTS_RUN_MARKER=${run_marker}" QT_QPA_PLATFORM=wayland \
-         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
-         "PATH=${st_bin%/*}:${PATH}" \
-         "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
-         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" >/dev/null 2>&1
-
-      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
-      stwid="$(find_window || true)"
-      if [ -z "${stwid}" ]; then
-         printf '%s\n' "warn compat.${name}: window never appeared" >&2
-         shots_watchdog_cancel "${st_wdog}"
-         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
-         failures=$(( failures + 1 ))
-         continue
-      fi
-      wait_window_ready "${stwid}"
-
-      st_tab_id=''
-      for _ct in 1 2 3 4 5; do
-         st_tab_line="$(env PYTHONPATH="${st_pkg}" "${st_bin}" \
-            ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
-         st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
-         [ -n "${st_tab_id}" ] && break
-         sleep 0.6
-      done
-      if [ -z "${st_tab_id}" ]; then
-         printf '%s\n' "warn compat.${name}: ctl ls found no tab -- skipping" >&2
-         shots_watchdog_cancel "${st_wdog}"
-         shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
-         failures=$(( failures + 1 ))
-         continue
-      fi
-
-      ## Wait past the shell's startup sleep (the bashrc `sleep 2`) so the FIRST prompt is already
-      ## drawn (post window-settle) before we type -- otherwise the keystrokes queue behind the
-      ## sleeping shell and interleave with the prompt draw.
-      sleep 3
-      ## Type the command; the shell runs it and returns to a fresh prompt. Settle waits for that
-      ## RETURN prompt to finish painting before the grab (so the shot includes it).
-      env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
-         send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
-      sleep 1
-      st_wait_render_settled "${stwid}"
-      if capture_settled "${out}/${name}.png" "${stwid}" \
-            && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+      if lineedit_capture_row compat "${name}" "${mode}" "${cmd}"; then
          shots=$(( shots + 1 ))
-         printf '%s\n' "compat: wrote ${name}.png (${mode})"
       else
-         safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
-         printf '%s\n' "warn compat: ${name} produced no verified shot" >&2
          failures=$(( failures + 1 ))
       fi
-
-      shots_watchdog_cancel "${st_wdog}"
-      if [ -e "${st_flagf}" ]; then
-         printf '%s\n' "warn compat.${name}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
-         failures=$(( failures + 1 ))
-      fi
-      shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
-      safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
    done < "${table}"
 
    printf '%s\n' "compat: wrote ${shots} program shot(s) to ${out}"
    if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
       printf '%s\n' "warn compat: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
+      return 1
+   fi
+   return 0
+}
+
+## The comparison page's line-editing ATTACK figures: a carriage-return DISPLAY DECEPTION rendered
+## by secure-terminal in all three line-editing modes. A benign COVER line carriage-returns (\r) +
+## erase-to-end-of-line (\033[K) over a longer SCARY warning that SHARES cover's prefix. HONEST
+## 3-mode contrast (line-editing governs \r/\033[K, unlike a cursor-UP reposition which CLI mode
+## strips uniformly):
+##   full        -- \r AND \033[K honoured: the warning is erased, only COVER shows -> warning
+##                  HIDDEN, exactly as on a traditional terminal (the deception WORKS).
+##   read-safe   -- \r honoured, \033[K DROPPED: COVER overwrites the identical prefix, the
+##                  warning's suffix survives -> the full warning is visible (deception DEFEATED).
+##   append-only -- \r neutralised: warning and COVER land on separate lines, the redraw attempt
+##                  flagged in the gutter -> both visible (deception DEFEATED, made explicit).
+## The payload is a byte-stable fixed string synthesized INLINE, like the notify / title / zerowidth
+## page demos (a DISPLAY-only deception -- no script is ever run, per the shared threat model).
+## Writes cr-deception-<mode>.png to ${out} (the comparison lane's shots dir). Runs AFTER the
+## emulator + st_specs grid so its honest-prompt bashrc does not disturb those shots.
+lineedit_attack_capture() {
+   local payload scary cover mode failures shots
+
+   payload="${HOME}/cr-deception.payload"
+   scary='apt: signature verified -- WAIT: fingerprint MISMATCH, do not install'
+   cover='apt: signature verified'
+   if ! printf '%s\r\033[K%s\n' "${scary}" "${cover}" > "${payload}"; then
+      printf '%s\n' 'cr-deception: cannot write payload' >&2
+      return 1
+   fi
+
+   lineedit_setup cr-deception || return 1
+
+   failures=0
+   shots=0
+   for mode in full read-safe append-only; do
+      if lineedit_capture_row cr-deception "cr-deception-${mode}" "${mode}" 'cat cr-deception.payload'; then
+         shots=$(( shots + 1 ))
+      else
+         failures=$(( failures + 1 ))
+      fi
+   done
+
+   printf '%s\n' "cr-deception: wrote ${shots} line-editing shot(s) to ${out}"
+   if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
+      printf '%s\n' "warn cr-deception: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
       return 1
    fi
    return 0
@@ -1585,7 +1649,7 @@ xft_dpi="${XFT_BASE_DPI}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase hero-compare'
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen cr-deception notify art gradient unicode tui-showcase hero-compare'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -2510,6 +2574,15 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
    done
    printf '%s\n' 'captured secure-terminal (real GUI)'
+   ## cr-deception: the comparison page's line-editing ATTACK figures (secure-terminal only, 3
+   ## line-editing modes). Runs AFTER the st_specs grid so lineedit_setup's honest-prompt bashrc
+   ## does not disturb the box/detail/show shots above. Same fail-loud contract as the specs: a
+   ## missing shot must not exit green.
+   case " ${CASES} " in
+      *' cr-deception '*)
+         lineedit_attack_capture || st_capture_failed=1
+         ;;
+   esac
 elif [ -n "${ALLOW_SKIP:-}" ]; then
    printf '%s\n' 'SKIP secure-terminal (ST_REPO not set/found; ALLOW_SKIP authorized)' >&2
 else
