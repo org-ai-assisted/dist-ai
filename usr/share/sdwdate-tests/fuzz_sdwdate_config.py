@@ -38,7 +38,26 @@ except ImportError:
     _HAVE_ATHERIS = False
 
 
+def _import_config() -> Any:
+    if _HAVE_ATHERIS:
+        with atheris.instrument_imports():
+            from sdwdate import config as _config
+    else:
+        from sdwdate import config as _config
+    return _config
+
+
 def _load_config() -> Any:
+    ## ClusterFuzzLite onefile: build.sh pins sdwdate into the PyInstaller
+    ## archive via --collect-submodules=sdwdate and the run container has no
+    ## checkout on disk. There the subject is MANDATORY -- import it from the
+    ## bundle and let a failure RAISE (a broken build is a hard error, never a
+    ## silent SKIP); mirrors fuzz_url_to_unixtime's _MEIPASS handling.
+    if getattr(sys, 'frozen', False):
+        return _import_config()
+    ## In-process / dev lane only: the subject is genuinely optional (no
+    ## checkout, SDWDATE_REPO unset, sdwdate not installed) -> return None so
+    ## main() emits the authorized, waived SKIP.
     dist_packages = T.sdwdate_dist_packages()
     module_path = os.path.join(dist_packages, 'sdwdate', 'config.py')
     if not os.path.exists(module_path):
@@ -46,14 +65,9 @@ def _load_config() -> Any:
     if dist_packages not in sys.path:
         sys.path.insert(0, dist_packages)
     try:
-        if _HAVE_ATHERIS:
-            with atheris.instrument_imports():
-                from sdwdate import config as _config
-        else:
-            from sdwdate import config as _config
+        return _import_config()
     except ImportError:
         return None
-    return _config
 
 
 config: Any = _load_config()

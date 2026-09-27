@@ -6660,6 +6660,29 @@ _selw.mouseDoubleClickEvent(_QME_sel(
     _Qt_sel.KeyboardModifier.NoModifier))
 ok(True, 'sel: a right-button double-click does not raise')
 
+# State mode badges EVERY cell (plain ASCII too, e.g. 'f' -> <U+0066>), so the char format
+# carries a source code point on every cell for the hover tooltip. A double-click must still
+# arm WORD selection over that badged text, not pop the char inspector -- the reported
+# "State mode cannot select text" bug: the popup gated on "this cell has a code point", which
+# in State mode is EVERY cell, so it hijacked every double-click. The popup stays reserved for
+# genuinely inspection-worthy characters (control / non-ASCII / neutralized).
+_selst = SecureTerminal(command='/bin/cat')
+_selst.resize(700, 400)
+_selst.show()
+APP.processEvents()
+_selst._cols = 0
+_selst.apply_mode('state')
+feed_output(_selst, b'foo bar\r\n')
+_selst._force_current_frame()
+APP.processEvents()
+ok(_selst.document().firstBlock().text().startswith('<U+0066>'),
+   'sel-state: precondition -- State mode badges plain ASCII (foo -> <U+0066>...)')
+_sel_dbl(_selst, _selpt(_selst, 3))     # inside the first badge <U+0066>
+ok(_selst._select_mode == 'word',
+   'sel-state: double-click arms WORD selection in State mode (not the char popup)')
+ok(bool(_selst.textCursor().selectedText()),
+   'sel-state: double-click selects non-empty text in State mode')
+
 # Triple-click selects the logical line and trims trailing whitespace (single block).
 _tsw = SecureTerminal(command='/bin/cat')
 _tsw.resize(700, 400)
