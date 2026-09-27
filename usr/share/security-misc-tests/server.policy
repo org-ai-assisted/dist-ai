@@ -1,0 +1,24 @@
+#
+# security-misc hardened OpenSSH SERVER policy (ssh-audit).
+#
+# Source of truth: security-misc etc/ssh/sshd_config.d/30_security-misc.conf.
+# This policy MUST stay in sync with that file's Ciphers / MACs /
+# KexAlgorithms / HostKeyAlgorithms; the drift-guard test
+# (test_ssh_config.py::test_policy_matches_server_config) fails if they diverge.
+#
+# allow_algorithm_subset_and_reordering = false makes this an EXACT match:
+# any weaker, extra, or reordered algorithm fails the policy. No legacy, no
+# backwards compatibility.
+#
+
+name = "security-misc hardened OpenSSH server"
+version = 1
+
+allow_algorithm_subset_and_reordering = false
+allow_larger_keys = false
+
+host keys = ssh-ed25519
+host_key_sizes = {"ssh-ed25519": {"hostkey_size": 256}}
+key exchanges = sntrup761x25519-sha512, sntrup761x25519-sha512@openssh.com, mlkem768x25519-sha256, curve25519-sha256, curve25519-sha256@libssh.org, ext-info-s, kex-strict-s-v00@openssh.com
+ciphers = chacha20-poly1305@openssh.com, aes256-gcm@openssh.com
+macs = umac-128-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256-etm@openssh.com

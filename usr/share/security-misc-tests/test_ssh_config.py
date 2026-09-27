@@ -8,19 +8,19 @@
 """
 Validate security-misc's shipped SSH client and server hardening via ssh-audit.
 
-security-misc ships:
-  etc/ssh/sshd_config.d/30_security-misc.conf   (server crypto policy)
-  etc/ssh/ssh_config.d/30_security-misc.conf    (client crypto policy)
-  usr/share/security-misc/ssh-audit/server.policy  (ssh-audit exact-match spec)
-  usr/share/security-misc/ssh-audit/client.policy
-  usr/bin/ssh-audit-test                        (server-audit driver)
+security-misc ships (read from SECURITY_MISC_REPO, the source of truth):
+  etc/ssh/sshd_config.d/30_security-misc.conf   (server crypto directives)
+  etc/ssh/ssh_config.d/30_security-misc.conf    (client crypto directives)
 
-This suite drives the REAL shipped ssh-audit-test tool and ssh-audit against a
-throwaway sshd / client built from the ACTUAL shipped config (read at runtime,
-no synthetic copy), and asserts:
+The ssh-audit exact-match policies live HERE in the dist-ai suite
+(server.policy / client.policy), NOT in security-misc's shipped package -- they
+are test artifacts. This suite drives ssh-audit directly against a throwaway
+sshd / client built from the ACTUAL shipped config (read at runtime, no
+synthetic copy), and asserts:
   - a server carrying security-misc's crypto directives PASSES server.policy;
   - the security-misc ssh_config client PASSES client.policy;
-  - both policies still match the shipped config (drift guard);
+  - both policies still match the shipped config (drift guard, keeping the
+    dist-ai-held policy in sync with security-misc's source-of-truth config);
   - a STOCK server / client FAILS the policy (canary: the check has teeth).
 
 The sshd runs unprivileged on a high loopback port, so no root / PAM / absolute
@@ -91,6 +91,14 @@ def _resolve(relglob):
         return installed
     pytest.skip(f"security-misc not present (no checkout, not installed): {relglob}")
     return None  ## unreachable; pytest.fail/skip raises
+
+
+def _policy(name):
+    """Resolve an ssh-audit policy shipped in THIS dist-ai suite dir."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    if not os.path.exists(path):
+        pytest.fail(f"policy missing from suite dir: {path}")
+    return path
 
 
 def _parse_ssh_config_algos(path):
@@ -283,46 +291,44 @@ def _server_directives(server_config_algos):
     return directives
 
 
+def _audit_server_policy(ssh_audit, policy, port):
+    return subprocess.run(
+        [ssh_audit, "--port", str(port), "--policy", policy, "--", "127.0.0.1"],
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_server_config_passes_policy(tmp_path, server_config_algos):
     """A server carrying security-misc's crypto directives matches server.policy."""
-    _require("ssh-audit")
-    tool = _resolve("usr/bin/ssh-audit-test*")
-    policy = _resolve("usr/share/security-misc/ssh-audit/server.policy*")
+    ssh_audit = _require("ssh-audit")
+    policy = _policy("server.policy")
     proc, port = _start_sshd(str(tmp_path), _server_directives(server_config_algos))
     try:
-        result = subprocess.run(
-            ["bash", tool, "--policy", policy, "--port", str(port), "--", "127.0.0.1"],
-            capture_output=True,
-            text=True,
-        )
+        result = _audit_server_policy(ssh_audit, policy, port)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
     assert result.returncode == 0, (
-        f"ssh-audit-test rejected the security-misc server config:\n"
+        f"ssh-audit rejected the security-misc server config:\n"
         f"{result.stdout}\n{result.stderr}"
     )
 
 
 def test_stock_server_fails_policy(tmp_path):
     """Canary: a stock (default-crypto) sshd must FAIL the policy."""
-    _require("ssh-audit")
-    tool = _resolve("usr/bin/ssh-audit-test*")
-    policy = _resolve("usr/share/security-misc/ssh-audit/server.policy*")
+    ssh_audit = _require("ssh-audit")
+    policy = _policy("server.policy")
     ## No crypto directives -> OpenSSH defaults (nistp, ecdsa, rsa, sha1, ...).
     proc, port = _start_sshd(str(tmp_path), {})
     try:
-        result = subprocess.run(
-            ["bash", tool, "--policy", policy, "--port", str(port), "--", "127.0.0.1"],
-            capture_output=True,
-            text=True,
-        )
+        result = _audit_server_policy(ssh_audit, policy, port)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
     assert result.returncode != 0, (
-        "canary failed: ssh-audit-test PASSED a stock unhardened sshd; "
-        "the policy is not actually constraining anything"
+        "canary failed: ssh-audit PASSED a stock unhardened sshd against the "
+        "policy; the policy is not actually constraining anything"
     )
 
 
@@ -349,7 +355,7 @@ def test_server_config_no_weak_algorithms(tmp_path, server_config_algos):
 def test_client_config_passes_policy():
     """The security-misc ssh_config client matches client.policy (client-audit mode)."""
     client_config = _resolve("etc/ssh/ssh_config.d/30_security-misc.conf*")
-    policy = _resolve("usr/share/security-misc/ssh-audit/client.policy*")
+    policy = _policy("client.policy")
     returncode, output = _client_audit(policy, client_config)
     assert returncode == 0, (
         f"ssh-audit rejected the security-misc client config:\n{output}"
@@ -358,7 +364,7 @@ def test_client_config_passes_policy():
 
 def test_stock_client_fails_policy():
     """Canary: a stock (default-crypto) ssh client must FAIL the client policy."""
-    policy = _resolve("usr/share/security-misc/ssh-audit/client.policy*")
+    policy = _policy("client.policy")
     returncode, _output = _client_audit(policy, None)
     assert returncode != 0, (
         "canary failed: ssh-audit PASSED a stock default ssh client; "
@@ -368,9 +374,7 @@ def test_stock_client_fails_policy():
 
 def test_policy_matches_server_config(server_config_algos):
     """Drift guard: server.policy algorithm lists equal the shipped sshd config."""
-    policy = _parse_policy_algos(
-        _resolve("usr/share/security-misc/ssh-audit/server.policy*")
-    )
+    policy = _parse_policy_algos(_policy("server.policy"))
     assert [a for a in policy["key exchanges"] if a not in KEX_PSEUDO] == \
         server_config_algos["KexAlgorithms"]
     assert policy["ciphers"] == server_config_algos["Ciphers"]
@@ -380,9 +384,7 @@ def test_policy_matches_server_config(server_config_algos):
 
 def test_policy_matches_client_config(client_config_algos):
     """Drift guard: client.policy algorithm lists equal the shipped ssh config."""
-    policy = _parse_policy_algos(
-        _resolve("usr/share/security-misc/ssh-audit/client.policy*")
-    )
+    policy = _parse_policy_algos(_policy("client.policy"))
     assert [a for a in policy["key exchanges"] if a not in KEX_PSEUDO] == \
         client_config_algos["KexAlgorithms"]
     assert policy["ciphers"] == client_config_algos["Ciphers"]
