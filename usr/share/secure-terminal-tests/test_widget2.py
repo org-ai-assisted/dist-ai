@@ -2441,6 +2441,32 @@ ok(b'\nLINES=' not in _envout,
 ok(b'\nCOLUMNS=' not in _envout, 'child does not inherit a stale COLUMNS')
 for _fv in _fp_vars + ('LINES', 'COLUMNS'):
     os.environ.pop(_fv, None)
+# our OWN app-config vars (screenshot / solid-cursor / transcript modes) are read once
+# by the app at construction and are meaningless to a child shell, so they must not ride
+# into it, into a host it ssh's into, or into a NESTED secure-terminal (which would
+# silently inherit this process's modes). SHOT/SOLID_CURSOR get a non-'1' sentinel so
+# setting them cannot flip THIS test process into that mode; TRANSCRIPT_FILE gets a
+# throwaway path (the ctor may open it) that is removed afterwards.
+import tempfile as _tf_leak
+_tfd_leak, _tpath_leak = _tf_leak.mkstemp(prefix='st-transcript-leak-')
+os.close(_tfd_leak)
+_app_vars = {'SECURE_TERMINAL_SHOT': 'leak-not-one',
+             'SECURE_TERMINAL_SOLID_CURSOR': 'leak-not-one',
+             'SECURE_TERMINAL_TRANSCRIPT_FILE': _tpath_leak}
+for _k, _v in _app_vars.items():
+    os.environ[_k] = _v
+_appout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')
+ok(b'ENVEND' in _appout,
+   'child env output captured (guards the scrub asserts against a vacuous pass)')
+for _k in _app_vars:
+    ok(('\n' + _k + '=').encode() not in _appout,
+       'child does not inherit app-config var ' + _k)
+for _k in _app_vars:
+    os.environ.pop(_k, None)
+try:
+    os.unlink(_tpath_leak)
+except OSError:
+    pass
 # PAGER is NOT forced: agent-suitability (a no-op pager) belongs in that
 # environment, not baked into secure-terminal -- a human keeps a normal pager.
 # A distinct terminator (not the P= prefix) so a split read cannot break early.

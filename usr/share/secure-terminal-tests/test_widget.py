@@ -6529,6 +6529,47 @@ eq(len(_prv._screen.history.top), _prv_top0,
    '#16: a scroll-region shrink defers to pyte (no rows duplicated into scrollback)')
 _prv.shutdown()
 
+# #16 (ai-review): a full-screen alt program that sets a DECSTBM scroll region and exits
+# WITHOUT resetting it must NOT leak the region into the primary shell. pyte shares one
+# Screen, so _alt_enter/_alt_leave snapshot+restore margins; else the leaked region gates
+# off the scrollback-preserving shrink for the rest of the session (the vanish bug returns).
+_plk = SecureTerminal(command='/bin/cat', tui=True)
+_plk.resize(700, 400)
+_plk.show()
+pump(40)
+_plk_n = _plk._screen.lines
+feed_output(_plk, (('shell-line\r\n' * 5) + '$ ').encode())      # shell content + a prompt
+feed_output(_plk, b'\x1b[?1049h')                                # a full-screen program: enter alt
+feed_output(_plk, ('\x1b[2;%dr' % (_plk_n - 1)).encode())        # ...sets a DECSTBM region
+feed_output(_plk, b'\x1b[?1049l')                                # ...and leaves WITHOUT resetting it
+eq(_plk._screen.margins, None,
+   '#16: alt-leave restores primary margins (a leaked DECSTBM region is cleared)')
+_plk_top0 = len(_plk._screen.history.top)
+_plk._tui_grid_size = lambda: (_plk._screen.columns, max(3, _plk_n // 2))
+_plk._sync_tui_size()
+ok(len(_plk._screen.history.top) > _plk_top0,
+   '#16: after an alt program leaks a region and leaves, the shell shrink still preserves')
+_plk.shutdown()
+
+# #16 (ai-review): a resize DURING the alt session that shrinks the screen below the saved
+# region's bottom must NOT restore an out-of-range region on alt-leave (an out-of-range
+# margins misdirects every subsequent scroll/cursor op until the next resize). alt-leave
+# drops a saved region that no longer fits (clamp to None, as pyte's own resize does).
+_pmc = SecureTerminal(command='/bin/cat', tui=True)
+_pmc.resize(700, 400)
+_pmc.show()
+pump(40)
+_pmc_n = _pmc._screen.lines
+_pmc._stream.feed(('\x1b[3;%dr' % _pmc_n).encode())          # PRIMARY sets a scroll region
+ok(_pmc._screen.margins is not None, '#16 setup: the primary scroll region is set')
+feed_output(_pmc, b'\x1b[?1049h')                            # a full-screen program enters alt
+_pmc._tui_grid_size = lambda: (_pmc._screen.columns, 4)      # ...and the window shrinks to 4 rows
+_pmc._sync_tui_size()
+feed_output(_pmc, b'\x1b[?1049l')                            # ...then the program leaves alt
+eq(_pmc._screen.margins, None,
+   '#16: alt-leave drops a saved scroll region that no longer fits the resized screen')
+_pmc.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
