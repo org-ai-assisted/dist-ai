@@ -346,41 +346,55 @@ shots_transcript_has_content() {  ## $1=transcript-file  $2=prompt-literal
 ## A dropped keystroke turns 'cat X.payload' into 'at X.payload' -> command_not_found_handle
 ## (a NON-blank shell-error shot that capture_settled's blank check would otherwise accept and
 ## publish). FAIL-CLOSED: reject on any NOTFOUND, and require a RAN line whose command is EXACTLY
-## the injected one with rc 0 -- so a dropped Return / empty line / unrecognized case (which log
-## only a startup or empty-line 'RAN<TAB>0<TAB>' with no command) is rejected, not published. The
-## caller re-injects and, on persistent failure, DISCARDS the shot (never the shell error).
-shots_cmd_ran_ok() {  ## $1=cmdlog-file  $2=expected-command
-   local file expected tab kind rc cmd
-   file="$1"; expected="$2"; tab=$'\t'
-   [ -r "${file}" ] || return 1
+## the injected one -- so a dropped Return / empty line / unrecognized case (which log only a
+## startup or empty-line 'RAN<TAB>0<TAB>' with no command) is rejected, not published. The caller
+## re-injects and, on persistent failure, DISCARDS the shot (never the shell error).
+##
+## $3 is the required exit status: default 0 (the injected program must SUCCEED -- the emulator
+## payloads and the zoom `cat`s always do), or the EMPTY string to accept ANY rc when a nonzero
+## exit is itself the demo (the compat 'diff' row exits 1 on purpose). An empty $3 still requires
+## the exact command text, so a mangle is rejected regardless of its exit status.
+shots_cmd_ran_ok() {  ## $1=cmdlog-file  $2=expected-command  [$3=required-rc (default 0; '' = any)]
+   local file expected want_rc tab kind rc cmd
+   file="$1"; expected="$2"; want_rc="${3-0}"; tab=$'\t'
+   ## Must be a REGULAR file: a directory passes [ -r ] but the read below yields nothing (a
+   ## fail-OPEN), so require -f to fail-closed on a non-file.
+   [ -f "${file}" ] || return 1
    ## An empty expected command is itself a bug (an unrecognized case yields no payload command);
    ## reject it so a bare/empty-line capture can never satisfy the gate.
    [ -n "${expected}" ] || return 1
    ## Any not-found command means the injection was mangled -> reject outright.
    grep --quiet "^NOTFOUND${tab}" -- "${file}" && return 1
-   ## Require POSITIVE evidence that the INJECTED command itself ran and exited 0 -- match the exact
-   ## command text, not merely "some RAN ended 0". A dropped Return, an empty injection, or an
-   ## unrecognized case leaves only a startup / empty-line "RAN<TAB>0<TAB>" (no command), which an
-   ## rc-only check would accept and publish as a bare-prompt shot; requiring the command text
-   ## closes that. Log format: "RAN<TAB><rc><TAB><command>" per completed command.
+   ## Require POSITIVE evidence that the INJECTED command itself ran (exact text) with the wanted
+   ## exit status. Log format: "RAN<TAB><rc><TAB><command>" per completed command.
    while IFS="${tab}" read -r kind rc cmd; do
-      [ "${kind}" = RAN ] && [ "${rc}" = 0 ] && [ "${cmd}" = "${expected}" ] && return 0
+      [ "${kind}" = RAN ] || continue
+      [ "${cmd}" = "${expected}" ] || continue
+      if [ -z "${want_rc}" ] || [ "${rc}" = "${want_rc}" ]; then
+         return 0
+      fi
    done < "${file}"
    return 1
 }
 
-## The weaker sibling of shots_cmd_ran_ok for capture paths whose program is EXPECTED to still be
-## running or killed at grab time (a blocking sleep / editor, a Terminate demo), where a completed
-## rc-0 line cannot be required. It still closes the dropped-keystroke silent-green: a mangled
-## injection ('cat X' -> 'at X') fires command_not_found_handle -> a NOTFOUND line -> a NON-blank
-## shell-error shot that the blank-frame check would otherwise publish. Fail-closed: an unreadable
-## log (the hooks never ran) is a reject.
-shots_cmd_no_notfound() {  ## $1=cmdlog-file
-   local file tab
-   file="$1"; tab=$'\t'
-   [ -r "${file}" ] || return 1
-   ## Any not-found sentinel means the injection was mangled -> reject.
-   grep --quiet "^NOTFOUND${tab}" -- "${file}" && return 1
+## For capture paths whose program is EXPECTED to still be RUNNING at grab time (a blocking sleep /
+## editor), so a completed RAN line cannot be required. Weaker than shots_cmd_ran_ok, but still
+## closes the dropped-keystroke silent-green in BOTH its forms: a mangled COMMAND ('cat X' -> 'at
+## X') fires command_not_found_handle (a NOTFOUND line), and a mangled ARGUMENT that keeps a valid
+## command ('cat X.txt' -> 'cat X.tx') COMPLETES as a DIFFERENT command -- either is rejected. A
+## still-running program logs neither (only a startup empty-command RAN), so it passes. Reads the
+## log line by line (never `grep`, whose exit 2 on a non-file would fail OPEN). Fail-closed: an
+## unreadable log (the hooks never ran) is a reject.
+shots_cmd_not_mangled() {  ## $1=cmdlog-file  $2=expected-command
+   local file expected tab kind rc cmd
+   file="$1"; expected="$2"; tab=$'\t'
+   ## Regular file only (a directory would fail OPEN: [ -r ] true, read yields nothing).
+   [ -f "${file}" ] || return 1
+   [ -n "${expected}" ] || return 1
+   while IFS="${tab}" read -r kind rc cmd; do
+      [ "${kind}" = NOTFOUND ] && return 1
+      [ "${kind}" = RAN ] && [ -n "${cmd}" ] && [ "${cmd}" != "${expected}" ] && return 1
+   done < "${file}"
    return 0
 }
 

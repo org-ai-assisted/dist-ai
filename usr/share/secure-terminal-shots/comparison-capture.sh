@@ -1117,14 +1117,15 @@ demo_shots_capture() {
          sleep 3
          st_wait_render_settled "${stwid}"
       fi
-      ## These programs are captured mid-run (a blocking sleep/editor) or after a Terminate kill,
-      ## so a completed-exit-0 gate does NOT apply here; require that the submit succeeded, the
-      ## frame is non-blank, the transcript carries content, and no dropped keystroke turned the
-      ## command into a shell error (shots_cmd_no_notfound) -- the silent-green this closes.
+      ## These programs are captured mid-run (a blocking sleep/editor) or after a Terminate kill, so
+      ## a completed-exit-0 gate does NOT apply here; require that the submit succeeded, the frame is
+      ## non-blank, the transcript carries content, and the injection was not mangled -- neither a
+      ## not-found command NOR a DIFFERENT command that completed (a dropped keystroke in the arg,
+      ## e.g. `cat X.txt` -> `cat X.tx`). A still-running program logs neither, so it still passes.
       if [ "${send_rc}" -eq 0 ] \
             && capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
             && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
-            && shots_cmd_no_notfound "${SHOTS_CMDLOG}"; then
+            && shots_cmd_not_mangled "${SHOTS_CMDLOG}" "${cmd}"; then
          shots=$(( shots + 1 ))
          printf '%s\n' "demo-shots: wrote ${name}.png"
       else
@@ -1278,12 +1279,14 @@ lineedit_capture_row() {  ## $1=label $2=name $3=mode $4=cmd
          sleep 1
          st_wait_render_settled "${stwid}"
          ## Publish only when the submit succeeded, the frame is non-blank, the transcript carries
-         ## content, AND the injected command actually RAN cleanly (rc 0) -- so a swallowed submit
-         ## failure or a dropped-keystroke `command not found` shot can no longer read green.
+         ## content, AND the EXACT injected command actually ran -- so a swallowed submit failure or
+         ## a dropped-keystroke shot can no longer read green. ANY exit status ('' below): a compat
+         ## row can exit nonzero as its demo (`diff` exits 1 on differences), so gate on the command
+         ## having run, not on rc 0; a mangle changes the command text and is still rejected.
          if [ "${send_rc}" -eq 0 ] \
                && capture_settled "${out}/${name}.png" "${stwid}" \
                && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
-               && shots_cmd_ran_ok "${SHOTS_CMDLOG}" "${cmd}"; then
+               && shots_cmd_ran_ok "${SHOTS_CMDLOG}" "${cmd}" ''; then
             printf '%s\n' "${label}: wrote ${name}.png (${mode})"
             rc=0
          else
@@ -1572,8 +1575,8 @@ shoot() {  ## $1=emulator  $2=case
 
 ## The command-log hooks shared by the emulator (.strc) and secure-terminal (.bashrc) shells:
 ## record each command's completion (RAN<TAB>rc<TAB>cmd) and any not-found (NOTFOUND<TAB>word) to
-## SHOTS_CMDLOG, so a capture path can gate on shots_cmd_ran_ok (exact command, rc 0) or
-## shots_cmd_no_notfound (no dropped-keystroke shell error). Emitted via a QUOTED heredoc so the
+## SHOTS_CMDLOG, so a capture path can gate on shots_cmd_ran_ok (exact command, wanted rc) or
+## shots_cmd_not_mangled (no not-found / no different completed command). Emitted via a QUOTED heredoc so the
 ## runtime `$?`/`$HOME`/`$1` stay LITERAL (resolved in the shot's shell, not here at write time),
 ## and APPENDED after a PS1 line, never overwriting it. Emits NOTHING to the terminal (fc captured,
 ## printf redirected), so the rendered shot is unchanged -- the same hooks the emulator shots
@@ -1598,6 +1601,12 @@ command_not_found_handle() {
 ## run: a dropped Return / empty line / unknown case logs only a startup 'RAN<TAB>0<TAB>' with no
 ## command, which an rc-only check would wrongly accept. fc gives the last command with no history
 ## index; strip its leading whitespace.
+## NOTE (fc-in-PROMPT_COMMAND lag): `fc -ln -1` is CORRECT for the FIRST command in a fresh shell
+## but from the SECOND command on it returns the PREVIOUS command's text (the exit status stays
+## correct). Every SHOOTING path here injects ONE command per freshly-launched shell (compat /
+## demo / zoom-CLI) or re-injects the SAME command (zoom-TUI re-cat, emulator retry), so the logged
+## text always matches the injected command -- the lag is masked. It would only bite a shell that
+## ran two DIFFERENT commands in sequence, which no capture path does.
 __shots_log() {
    local __rc=$?
    local __cmd
@@ -2128,7 +2137,7 @@ fi
 ## deciding whether an injected payload actually rendered.
 SHOT_PROMPT='user@host:~$ '
 ## Where a shot shell logs each completed command + its exit status, so the content-verify
-## (shots_cmd_ran_ok / shots_cmd_no_notfound) can tell a shot where the injected `cat` actually RAN
+## (shots_cmd_ran_ok / shots_cmd_not_mangled) can tell a shot where the injected `cat` actually RAN
 ## from one showing a shell error (a dropped keystroke -> `at: command not found`). Exported so
 ## every emulator (`bash --rcfile .strc`) AND secure-terminal (`bash -i` -> ~/.bashrc) shell reads
 ## the same path the capture loop reads. Per-process HOME (each --jobs lane has its own), so no

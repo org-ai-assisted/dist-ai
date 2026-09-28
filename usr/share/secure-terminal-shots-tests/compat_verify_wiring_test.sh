@@ -108,12 +108,16 @@ if [ "${subcmd}" = send-text ]; then
          exit 1
          ;;
       notfound)
-         ## Dropped keystroke: the mangled first word is not found, then it "runs" nonzero.
+         ## Dropped keystroke in the COMMAND: the mangled first word is not found.
          printf 'NOTFOUND\t%s\n' "${cmd%% *}" >> "${SHOTS_CMDLOG}"
          printf 'RAN\t127\t%s\n' "${cmd}" >> "${SHOTS_CMDLOG}"
          ;;
-      ran-fail)
-         ## The exact command ran but exited nonzero (e.g. cat of a missing file).
+      wrong-cmd)
+         ## Dropped keystroke in the ARGUMENT: a DIFFERENT command completed (last char dropped).
+         printf 'RAN\t0\t%s\n' "${cmd%?}" >> "${SHOTS_CMDLOG}"
+         ;;
+      exit-nonzero)
+         ## The EXACT command ran but exited nonzero -- legitimate for a compat row (diff exits 1).
          printf 'RAN\t1\t%s\n' "${cmd}" >> "${SHOTS_CMDLOG}"
          ;;
       *)
@@ -172,11 +176,16 @@ check "$(run_case ok ok-shot)" 'rc:0 png:yes' 'a cleanly-run command publishes t
 got="$(run_case notfound nf-shot)"
 check "${got}" 'rc:1 png:no' 'a dropped-keystroke (command not found) shot is DISCARDED, not published'
 
-## 3. The exact command ran but FAILED (rc != 0) -> DISCARD.
-got="$(run_case ran-fail rf-shot)"
-check "${got}" 'rc:1 png:no' 'a nonzero completion of the injected command is DISCARDED'
+## 3. A dropped keystroke in the ARGUMENT completes a DIFFERENT command -> DISCARD.
+got="$(run_case wrong-cmd wc-shot)"
+check "${got}" 'rc:1 png:no' 'a mangled-argument (different completed command) shot is DISCARDED'
 
-## 4. send-text itself FAILED (was swallowed by `|| true` before) -> DISCARD.
+## 4. The EXACT command ran but exited NONZERO -> PUBLISH (a compat row like `diff` exits 1 as its
+## demo; the gate requires the command to have run, not rc 0).
+got="$(run_case exit-nonzero en-shot)"
+check "${got}" 'rc:0 png:yes' 'a nonzero exit of the exact command (diff-style) still publishes'
+
+## 5. send-text itself FAILED (was swallowed by `|| true` before) -> DISCARD.
 got="$(run_case send-fail sf-shot)"
 check "${got}" 'rc:1 png:no' 'a failed send-text (submit error) is DISCARDED, not published'
 
