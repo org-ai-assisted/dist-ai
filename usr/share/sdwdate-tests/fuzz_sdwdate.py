@@ -56,6 +56,28 @@ def _load_url_to_unixtime():
     time; a missing dep is the runner's SKIP (exit 77), matching
     sdwdate_testlib.import_sdwdate.
     """
+    ## ClusterFuzzLite onefile: the run container has no checkout; the real
+    ## url_to_unixtime is bundled as data under _MEIPASS/sdwdate_bin/ (see the
+    ## sdwdate .clusterfuzzlite/build.sh, fuzz_url_to_unixtime). The subject is
+    ## MANDATORY in a frozen build -- resolve from the bundle and let a missing
+    ## path or a failed exec RAISE (a broken build is a hard error, never a silent
+    ## SKIP). This harness is in-process-only today; the branch is defensive so it
+    ## cannot silent-skip if ever added to a compile loop.
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', '')
+        if not meipass:
+            raise RuntimeError(
+                'frozen build without sys._MEIPASS -- refusing to resolve '
+                'url_to_unixtime from a relative path in the cwd'
+            )
+        bundled = os.path.join(meipass, 'sdwdate_bin', 'url_to_unixtime')
+        loader = importlib.machinery.SourceFileLoader('url_to_unixtime', bundled)
+        spec = importlib.util.spec_from_loader('url_to_unixtime', loader)
+        if spec is None:
+            raise ImportError('cannot create module spec for %s' % bundled)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
     repo = os.environ.get('SDWDATE_REPO', '').strip()
     base = repo if repo else '/'
     path = os.path.join(base, 'usr', 'bin', 'url_to_unixtime')
@@ -69,6 +91,8 @@ def _load_url_to_unixtime():
     ## infer a loader from the path; supply one explicitly.
     loader = importlib.machinery.SourceFileLoader('url_to_unixtime', path)
     spec = importlib.util.spec_from_loader('url_to_unixtime', loader)
+    if spec is None:
+        raise ImportError('cannot create module spec for %s' % path)
     module = importlib.util.module_from_spec(spec)
     try:
         loader.exec_module(module)
@@ -83,7 +107,15 @@ def _load_url_to_unixtime():
 
 
 def _load_config():
-    """Import sdwdate.config (stdlib-only imports) via the testlib resolver."""
+    """Import sdwdate.config (stdlib-only imports) via the testlib resolver, or
+    the frozen bundle under ClusterFuzzLite."""
+    ## ClusterFuzzLite onefile: sdwdate is pinned into the PyInstaller archive and
+    ## the run container has no checkout. The subject is MANDATORY there -- import
+    ## from the bundle and let a failure RAISE, never a silent SKIP. Mirrors
+    ## fuzz_sdwdate_config.py; defensive (this harness is in-process-only today).
+    if getattr(sys, 'frozen', False):
+        from sdwdate import config
+        return config
     dist_packages = T.sdwdate_dist_packages()
     module_path = os.path.join(dist_packages, 'sdwdate', 'config.py')
     if not os.path.exists(module_path):
