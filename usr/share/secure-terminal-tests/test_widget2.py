@@ -2466,6 +2466,7 @@ for _k in _app_vars:
 try:
     os.unlink(_tpath_leak)
 except OSError:
+    # best-effort: the throwaway transcript path may already be gone -- not a failure
     pass
 # PAGER is NOT forced: agent-suitability (a no-op pager) belongs in that
 # environment, not baked into secure-terminal -- a human keeps a normal pager.
