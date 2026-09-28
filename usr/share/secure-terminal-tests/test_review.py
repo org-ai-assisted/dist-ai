@@ -474,6 +474,116 @@ eq(_ml._source_index_for_doc_pos(_ml._offset(4)), 4,
 
 
 # ======================================================================
+# RENDER PARITY: the box renders IDENTICALLY to the console
+# ======================================================================
+# The box (RevealedEditor) and the terminal (SecureTerminal) share ONE render surface
+# (_RenderedTextView): the same marking format, the whitespace-dot / tab-arrow paint
+# overlays, the 2px bar caret, the palette theme, the ligature-off font and the per-mode
+# wrap. These assertions lock that the box did not re-implement (and so cannot drift from)
+# any of it. Each WS/TAB assertion FAILS on the pre-unification box (grey-fg _format, no
+# overlay, no _WS_DOT_PROP/_TAB_MARK_PROP).
+from secure_terminal.terminal import (                                          # noqa: E402
+    _RenderedTextView, _WS_DOT_PROP as _WSP, _TAB_MARK_PROP as _TABP,
+    _WS_DOT_GLYPH as _WSG, _TAB_MARK_GLYPH as _TABG)
+from secure_terminal.sanitize import THEMES as _THEMES                          # noqa: E402
+from PyQt6.QtGui import QColor as _QColor, QPalette as _QPalette                # noqa: E402
+
+
+def _frag_props(ed, prop):
+    """Count document fragments in the box carrying `prop` (the WS-dot / tab-arrow flag)."""
+    n = 0
+    block = ed.document().begin()
+    while block.isValid():
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid() and frag.charFormat().property(prop):
+                n += 1
+            it += 1
+        block = block.next()
+    return n
+
+
+# Non-drift: the box does NOT override the shared render seam -- it inherits it, so the box
+# and the terminal cannot render a marking differently. (Canary: the old box defined its own
+# _format; re-adding any of these overrides fails this.)
+for _name in ('_marking_format', '_apply_font', 'paintEvent', '_ws_dot_rects',
+              '_tab_mark_rects', '_paint_ws_dots', '_paint_tab_marks', '_cursor_rect'):
+    ok(getattr(RevealedEditor, _name) is getattr(_RenderedTextView, _name),
+       'render parity: RevealedEditor inherits %s from the shared base (no drift copy)' % _name)
+ok('_format' not in RevealedEditor.__dict__,
+   'render parity: the box has no bespoke _format (it maps every run through _marking_format)')
+
+_pe = RevealedEditor()
+_pe.resize(400, 200)
+_pe.show()
+APP.processEvents()
+# 'x  y\tz' completes before the newline: an interior >=2 space run + a real tab.
+_pe.set_source('x  y\tz\nq')
+APP.processEvents()
+eq(_pe.source(), 'x  y\tz\nq', 'the box keeps the real spaces + tab in its source')
+ok(_frag_props(_pe, _WSP) >= 1,
+   'ws parity: an interior double-space is flagged for the dot overlay (_WS_DOT_PROP)')
+ok(_frag_props(_pe, _TABP) >= 1,
+   'tab parity: a tab is flagged for the arrow overlay (_TAB_MARK_PROP)')
+ok(list(_pe._ws_dot_rects()), 'ws parity: the flagged spaces yield paint rectangles (dots drawn)')
+ok(list(_pe._tab_mark_rects()), 'tab parity: the flagged tab yields a paint rectangle (arrow drawn)')
+# COPY-SAFE: the overlay glyphs are painted, never inserted -- source/copy hold real chars.
+ok('x  y\tz' in _pe.source() and _WSG not in _pe.source() and _TABG not in _pe.source(),
+   'ws/tab parity: source() holds real spaces + tab, never the dot/arrow glyph')
+ok(_WSG not in _pe.toPlainText() and _TABG not in _pe.toPlainText() and '\t' in _pe.toPlainText(),
+   'ws/tab parity: toPlainText() holds a real tab + spaces, never the dot/arrow glyph')
+_pe.grab()                                   # paintEvent -> dots + arrows + bar caret
+APP.processEvents()
+
+# Plain ASCII: nothing flagged (the empty-rects early return in both overlays).
+_pp = RevealedEditor()
+_pp.resize(400, 200)
+_pp.show()
+_pp.set_source('plain text here\n')
+APP.processEvents()
+ok(not list(_pp._ws_dot_rects()) and not list(_pp._tab_mark_rects()),
+   'render parity: ordinary text flags no whitespace/tab overlays')
+_pp.grab()                                   # paintEvent early-return path
+APP.processEvents()
+
+# Font: the box uses the shared ligature-off builder (already asserted by _apply_font identity
+# above); confirm it applied a fixed-pitch font at the theme size.
+ok(_pe.font().fixedPitch(), 'font parity: the box font is fixed-pitch (shared builder)')
+
+# Caret: the native caret is hidden and our own 2px bar is drawn (like the console).
+eq(_pe.cursorWidth(), 0, 'caret parity: the native caret is hidden (own bar is painted)')
+eq(_pe._cursor_rect().width(), 2, 'caret parity: the drawn caret is a 2px bar')
+
+# Palette: themed via the palette (not a stylesheet), so the overlays read the theme colours.
+_pe.apply_theme('dark')
+_dbase, _dtext = _THEMES['dark']
+eq(_pe.palette().color(_QPalette.ColorRole.Base).name(), _QColor(_dbase).name(),
+   'theme parity: the box Base palette is the dark theme background')
+eq(_pe.palette().color(_QPalette.ColorRole.Text).name(), _QColor(_dtext).name(),
+   'theme parity: the box Text palette is the dark theme foreground')
+_pe.apply_theme('nonsense-theme')
+eq(_pe._theme, 'light', 'theme parity: an unknown theme falls back to light (like the console)')
+
+# Wrap: per display mode, exactly like the console (NoWrap in box/show, wrap in detail/reveal).
+from PyQt6.QtWidgets import QPlainTextEdit as _QPTE                             # noqa: E402
+_pe.set_mode('detail')
+eq(_pe.lineWrapMode(), _QPTE.LineWrapMode.WidgetWidth,
+   'wrap parity: detail mode wraps to the width')
+_pe.set_mode('show')
+eq(_pe.lineWrapMode(), _QPTE.LineWrapMode.NoWrap,
+   'wrap parity: show mode does not wrap (column-stable badges)')
+
+# Gutter: the same left annotation strip is reserved (x-alignment parity); an ordinary review
+# line carries no provenance marker (no command output behind it), so it paints no glyph.
+ok(_pe.viewportMargins().left() > 0, 'gutter parity: the left annotation strip is reserved')
+_gblk = _pe.document().begin()
+ok(not _pe._block_no_newline(_gblk) and not _pe._block_redraw(_gblk),
+   'gutter parity: a review line carries no no-newline / redraw provenance marker')
+eq(_pe._gutter_tooltip(_gblk), '', 'gutter parity: a review line has no gutter tooltip')
+
+
+# ======================================================================
 # ReviewBar -- the bar around the box
 # ======================================================================
 
