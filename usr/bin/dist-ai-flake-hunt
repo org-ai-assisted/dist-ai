@@ -1,0 +1,198 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Flake hunter: run a command MANY times -- optionally in PARALLEL and under CPU LOAD --
+## to surface intermittent (flaky) test failures that a single green run hides, and capture
+## each failing run's output so the CAUSE is visible without a second reproduction. Packages the
+## manual "run it 130x under contention" loop that pins a rare race (e.g. a reap-timing flake).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+usage() {
+   cat <<'EOF'
+Flake hunter: run a command many times to surface intermittent test failures.
+
+Usage:
+  dist-ai-flake-hunt [OPTIONS] -- <command> [args...]
+
+Options:
+  --runs N         total invocations (default 50)
+  --parallel P     run P copies at once each round (default 1); contention is what most
+                   CI flakes need -- a serial loop often never reproduces them
+  --load           saturate the CPUs with background busy loops for the whole hunt, to
+                   mimic a loaded CI runner (scheduling / signal-delivery races)
+  --stop-on-fail   stop at the first failing run (fastest path to a repro)
+  --keep           keep the per-run output directory (its path is printed)
+  --quiet          do not echo each failing run's output tail inline (still counts them)
+  -h, --help       this help
+
+Exit: 0 if every run passed, 1 if any run failed (a flake caught), 2 on usage error.
+EOF
+}
+
+runs=50
+parallel=1
+load=''
+stop_on_fail=''
+keep=''
+quiet=''
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --runs)
+         runs="${2:-}"
+         shift 2
+         ;;
+      --parallel)
+         parallel="${2:-}"
+         shift 2
+         ;;
+      --load)
+         load='1'
+         shift
+         ;;
+      --stop-on-fail)
+         stop_on_fail='1'
+         shift
+         ;;
+      --keep)
+         keep='1'
+         shift
+         ;;
+      --quiet)
+         quiet='1'
+         shift
+         ;;
+      -h|--help)
+         usage
+         exit 0
+         ;;
+      --)
+         shift
+         break
+         ;;
+      *)
+         printf '%s\n' "dist-ai-flake-hunt: unknown option: $1 (did you forget '--' before the command?)" >&2
+         exit 2
+         ;;
+   esac
+done
+
+if [ "$#" -eq 0 ]; then
+   printf '%s\n' 'dist-ai-flake-hunt: no command given (usage: ... -- <command> [args...])' >&2
+   exit 2
+fi
+case "${runs}${parallel}" in
+   ''|*[!0-9]*)
+      printf '%s\n' 'dist-ai-flake-hunt: --runs and --parallel must be positive integers' >&2
+      exit 2
+      ;;
+esac
+if [ "${runs}" -lt 1 ] || [ "${parallel}" -lt 1 ]; then
+   printf '%s\n' 'dist-ai-flake-hunt: --runs and --parallel must be >= 1' >&2
+   exit 2
+fi
+
+cmd=( "$@" )
+work="$(mktemp --directory)"
+load_pids=''
+cleanup() {
+   ## Kill the load generators BY PID (never a pattern -- a pattern would self-match / hit
+   ## siblings; see the safe-pgrep-pkill policy). Best-effort.
+   local p
+   for p in ${load_pids}; do
+      kill "${p}" 2>/dev/null || true
+   done
+   if [ -n "${keep}" ]; then
+      printf '%s\n' "dist-ai-flake-hunt: kept per-run output in ${work}" >&2
+   else
+      safe-rm --recursive --force -- "${work}" 2>/dev/null || true
+   fi
+}
+trap cleanup EXIT
+
+if [ -n "${load}" ]; then
+   ncpu="$(nproc 2>/dev/null || printf '2')"
+   ## 2x the CPU count of busy loops -> the runnable queue always exceeds the cores, so every
+   ## process in the run-under-test contends for the scheduler (the condition CI flakes need).
+   loops=$(( ncpu * 2 ))
+   for _ in $(seq 1 "${loops}"); do
+      ( while true; do : ; done ) &
+      load_pids="${load_pids} $!"
+   done
+   printf '%s\n' "dist-ai-flake-hunt: CPU load engaged (${ncpu} cpus, ${loops} busy loops)" >&2
+fi
+
+## Run the command once; write combined output to $1 and its exit code to $1.rc .
+run_one() {
+   local out="$1"
+   local rc=0
+   "${cmd[@]}" > "${out}" 2>&1 || rc="$?"
+   printf '%s\n' "${rc}" > "${out}.rc"
+}
+
+banner="dist-ai-flake-hunt: ${runs} run(s), parallel=${parallel}"
+if [ -n "${load}" ]; then
+   banner="${banner} +load"
+fi
+printf '%s\n' "${banner} -- ${cmd[*]}" >&2
+
+total=0
+fails=0
+done_hunt=''
+while [ "${total}" -lt "${runs}" ]; do
+   ## Launch up to `parallel` copies this round, but never more than the runs remaining.
+   batch=$(( runs - total ))
+   if [ "${batch}" -gt "${parallel}" ]; then
+      batch="${parallel}"
+   fi
+   pids=''
+   idxs=''
+   for _ in $(seq 1 "${batch}"); do
+      total=$(( total + 1 ))
+      run_one "${work}/run.${total}" &
+      pids="${pids} $!"
+      idxs="${idxs} ${total}"
+   done
+   for p in ${pids}; do
+      wait "${p}" 2>/dev/null || true
+   done
+   ## Judge this round's results in order.
+   for i in ${idxs}; do
+      rc="$(cat -- "${work}/run.${i}.rc" 2>/dev/null || printf 'X')"
+      if [ "${rc}" = '0' ]; then
+         continue
+      fi
+      fails=$(( fails + 1 ))
+      printf '%s\n' "dist-ai-flake-hunt: FAIL run #${i} (rc=${rc})" >&2
+      if [ -z "${quiet}" ]; then
+         printf '%s\n' '    --- output tail ---' >&2
+         tail -n 20 -- "${work}/run.${i}" 2>/dev/null | sed 's/^/    /' >&2 || true
+         printf '%s\n' '    --- end ---' >&2
+      fi
+      if [ -n "${stop_on_fail}" ]; then
+         done_hunt='1'
+         break
+      fi
+   done
+   if [ -n "${done_hunt}" ]; then
+      break
+   fi
+done
+
+pct=0
+if [ "${total}" -gt 0 ]; then
+   pct=$(( fails * 100 / total ))
+fi
+printf '%s\n' "dist-ai-flake-hunt: ${fails}/${total} run(s) FAILED (${pct}%)" >&2
+[ "${fails}" -eq 0 ]

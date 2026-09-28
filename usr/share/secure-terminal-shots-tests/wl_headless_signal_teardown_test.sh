@@ -144,6 +144,27 @@ for _ in $(seq 1 45); do
    sleep 0.2
 done
 
+## Flake diagnostics: on a reap FAILURE, dump WHAT survived and in WHICH state, so a single
+## red CI log distinguishes a real teardown regression (a live orphan, state R/S/D) from a
+## detection/timing artifact -- no local reproduction needed. proc_dead already excludes Z
+## (zombie), so anything still counted alive here is genuinely running.
+diag_survivor() {  ## $1=label $2=pid
+   local raw rest state ppid comm
+   kill -0 "$2" 2>/dev/null || return 0
+   raw="$(cat -- "/proc/$2/stat" 2>/dev/null)" || return 0
+   ## comm (field 2) is parenthesized and may contain spaces/parens; key off the LAST ')'.
+   comm="${raw#*(}"
+   comm="${comm%)*}"
+   rest="${raw##*') '}"          # "state ppid pgrp ..." -- no parens past here
+   state="${rest%% *}"
+   rest="${rest#* }"
+   ppid="${rest%% *}"
+   printf 'DIAG: %s pid %s SURVIVED teardown: state=%s ppid=%s comm=%s\n' \
+      "$1" "$2" "${state}" "${ppid}" "${comm}" >&2
+}
+[ -z "${child_dead}" ] && diag_survivor 'child' "${child}"
+[ -z "${gc_dead}" ] && diag_survivor 'grandchild' "${grandchild}"
+
 check "SIGTERM reaps the command child (pid ${child})" "${child_dead}"
 check "SIGTERM reaps the GRANDCHILD too (whole process group, pid ${grandchild})" "${gc_dead}"
 check "wl-headless-run exits non-zero on SIGTERM (rc=${rc})" \
