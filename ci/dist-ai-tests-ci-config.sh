@@ -21,6 +21,10 @@
 ##   hs_arg          the matching '--helper-scripts-root <dir>' argument for
 ##                   dist-ai-tests-all, or empty
 ##   terminal_poc_corpus  'true' if a terminal-poc-corpus checkout is also needed
+##   terminal_safe_corpus 'true' if a terminal-safe-corpus checkout is also needed
+##                   (compat_shot_test.sh cat's its progress-bar demos); this script
+##                   PERFORMS that public clone at runtime when the flag is set, since
+##                   consumers pin the reusable @master and a yaml checkout would lag
 ##   submodules      'true' if the component's submodules must be checked out
 ##                   (the adversarial PoC corpus lives in its own repo, so a suite
 ##                   that drives it cannot resolve one in CI otherwise, and would
@@ -61,6 +65,7 @@ apt_packages_base='python3 python3-pytest python3-hypothesis safe-rm'
 apt_packages="${apt_packages_base}"
 helper_scripts='false'
 terminal_poc_corpus='false'
+terminal_safe_corpus='false'
 submodules='false'
 skip_args=''
 allow_skip_args=''
@@ -90,6 +95,11 @@ if [ -f "${cfg}" ]; then
    ## drives it can use one.
    if [ "$(yq -r '.["dist-ai-tests"]["terminal-poc-corpus"] // ""' "${cfg}")" = 'true' ]; then
       terminal_poc_corpus='true'
+   fi
+   ## Same opt-in for the SAFE corpus: compat_shot_test.sh cat's byte-stable
+   ## progress-bar demos committed there, so without it that suite FATALs (R-220).
+   if [ "$(yq -r '.["dist-ai-tests"]["terminal-safe-corpus"] // ""' "${cfg}")" = 'true' ]; then
+      terminal_safe_corpus='true'
    fi
    ## Opt-in submodule checkout for the component. Some suites assert on files
    ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
@@ -183,11 +193,39 @@ if [ "${submodules}" = 'true' ]; then
    fi
 fi
 
+## compat_shot_test.sh cat's byte-stable progress-bar demos from terminal-safe-corpus
+## (a PUBLIC sibling repo), so without it that suite FATALs (R-220) -- it cannot resolve
+## one in CI otherwise. Cloned HERE rather than in the reusable workflow yaml for the same
+## reason the submodule init is: consumers pin the reusable at '@master', so a yaml checkout
+## lags a release cycle, while dist-ai is checked out FRESH at job runtime -> the clone takes
+## effect immediately for every consumer. Public repo, no credentials. Guarded on the CI
+## layout (dist-ai checked out beside the workspace) so a LOCAL unit-test run of this resolver
+## never reaches the network -- the same way the submodule checkout is gated on .gitmodules.
+if [ "${terminal_safe_corpus}" = 'true' ] \
+   && [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "${GITHUB_WORKSPACE}/dist-ai" ]; then
+   safe_dir="${GITHUB_WORKSPACE}/terminal-safe-corpus"
+   if [ ! -f "${safe_dir}/demos/progress-crbar-safe-to-cat.txt" ]; then
+      if git clone --depth 1 --branch master --quiet \
+         https://github.com/secure-terminal/terminal-safe-corpus.git "${safe_dir}"; then
+         printf '%s\n' "dist-ai-tests-ci-config: cloned terminal-safe-corpus -> ${safe_dir}" >&2
+      else
+         printf '%s\n' 'dist-ai-tests-ci-config: terminal-safe-corpus clone FAILED; compat_shot_test will FATAL (loud, not a silent skip)' >&2
+      fi
+   fi
+   ## Export for the suite run: compat_shot_test.sh reads SAFE_CORPUS_REPO first (its
+   ## workspace-sibling fallback would also find this path). Only when the demos resolved,
+   ## so a failed clone leaves the FATAL loud rather than pointing at an empty dir.
+   if [ -f "${safe_dir}/demos/progress-crbar-safe-to-cat.txt" ] && [ -n "${GITHUB_ENV:-}" ]; then
+      printf '%s\n' "SAFE_CORPUS_REPO=${safe_dir}" >> "${GITHUB_ENV}"
+   fi
+fi
+
 # shellcheck disable=SC2154  # GITHUB_OUTPUT: set by GitHub Actions (group redirect below)
 {
    printf '%s\n' "apt_packages=${apt_packages}"
    printf '%s\n' "helper_scripts=${helper_scripts}"
    printf '%s\n' "terminal_poc_corpus=${terminal_poc_corpus}"
+   printf '%s\n' "terminal_safe_corpus=${terminal_safe_corpus}"
    printf '%s\n' "submodules=${submodules}"
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"

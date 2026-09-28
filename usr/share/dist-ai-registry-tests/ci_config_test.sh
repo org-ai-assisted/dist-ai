@@ -229,6 +229,30 @@ else
    fail "canary: an absent 'submodules' key did not resolve to false"
 fi
 
+## ---- the 'terminal-safe-corpus' opt-in reaches the workflow ---------------
+## compat_shot_test.sh cat's the progress-bar demos from terminal-safe-corpus, so it
+## FATAL-exits (R-220) without that checkout. If the resolver stopped emitting the flag
+## the clone would never happen and the whole dist-ai-tests job would go red with nothing
+## pointing here. (The resolver's guard skips the actual network clone unless a real
+## workspace with a sibling dist-ai/ is present, so this parsing check stays offline.)
+safe_corpus_cfg="${work_dir}/safe-corpus.yml"
+printf '%s\n' 'dist-ai-tests:' '  terminal-safe-corpus: true' > "${safe_corpus_cfg}"
+checks=$(( checks + 1 ))
+if [ "$(resolve_key "${safe_corpus_cfg}" terminal_safe_corpus)" = 'true' ]; then
+   printf '%s\n' "ok: 'terminal-safe-corpus: true' is emitted as terminal_safe_corpus=true"
+else
+   fail "'terminal-safe-corpus: true' did not reach the workflow as terminal_safe_corpus=true"
+fi
+
+## CANARY: default OFF. Cloning the corpus for a consumer that never asked is a cost with
+## no coverage, so an absent key must not read as 'true'.
+checks=$(( checks + 1 ))
+if [ "$(resolve_key "${default_cfg}" terminal_safe_corpus)" = 'false' ]; then
+   printf '%s\n' 'ok: canary: absent key resolves to terminal_safe_corpus=false'
+else
+   fail "canary: an absent 'terminal-safe-corpus' key did not resolve to false"
+fi
+
 printf '%s\n' "===== summary: ${checks} checks, ${failures} failure(s) ====="
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' 'FAILED: the CI apt package resolution is wrong' >&2
