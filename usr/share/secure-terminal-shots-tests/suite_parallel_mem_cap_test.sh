@@ -10,9 +10,14 @@
 ## (not physically backed the instant several lanes allocate) does not OVER-COMMIT and corrupt /
 ## OOM-kill a lane. Drives run_suites_parallel with a FAKE /proc/meminfo (DIST_AI_MEMINFO_PATH) so
 ## the verdict is independent of the real box:
-##   - idle ~1200 MiB free, default 768 headroom -> (1200-768)/512 = 0 -> floor 1 job;
+##   - ~1200 MiB free, 768 headroom pinned -> (1200-768)/512 = 0 -> floor 1 job;
 ##   - same free with headroom 0 -> 1200/512 = 2 jobs (proves the band is the lever);
-##   - a large box -> no RAM clamp at all (CPU cap binds).
+##   - a large box -> no RAM clamp at all (CPU cap binds);
+##   - the built-in defaults ARE 768 MiB headroom / 512 MiB per suite (levers unset).
+## Every case pins its levers INLINE (an inline assignment overrides any ambient value for that one
+## call) -- or, for the defaults probe, clears them in its own subshell -- so the verdict never
+## depends on an inherited DIST_AI_SUITE_MEM_HEADROOM_MIB / DIST_AI_SUITE_MEM_MIB, with nothing
+## global to unset.
 ## Canary: old code reads /proc/meminfo directly (ignores DIST_AI_MEMINFO_PATH) and has no
 ## headroom, so none of these assertions hold on it.
 ##
@@ -83,20 +88,28 @@ check() {  ## $1=label $2=ok?(non-empty=pass)
    fi
 }
 
-## 1. idle + default headroom -> 1 job.
-line="$( DIST_AI_MEMINFO_PATH="${work}/meminfo-idle" cap_line )"
-case "${line}" in *'-> 1 parallel jobs'*) ok=1 ;; *) ok='' ;; esac
-check 'idle-ballooned free (~1200 MiB) with default 768 headroom caps to 1 parallel job' "${ok}"
+## 1. A nonzero headroom band clamps: 768 subtracted from ~1200 free -> (1200-768)/512 = 0 -> 1.
+## Assert the arithmetic INPUTS in the cap line (headroom + per-suite), not just the job count.
+line="$( DIST_AI_SUITE_MEM_HEADROOM_MIB=768 DIST_AI_SUITE_MEM_MIB=512 DIST_AI_MEMINFO_PATH="${work}/meminfo-idle" cap_line )"
+case "${line}" in *'768 MiB headroom / 512 MiB per suite -> 1 parallel jobs'*) ok=1 ;; *) ok='' ;; esac
+check '768 MiB headroom clamps ~1200 MiB idle free to 1 parallel job (band subtracted before dividing)' "${ok}"
 
-## 2. idle + headroom 0 -> 2 jobs (the band is the lever).
-line="$( DIST_AI_SUITE_MEM_HEADROOM_MIB=0 DIST_AI_MEMINFO_PATH="${work}/meminfo-idle" cap_line )"
+## 2. Same free, headroom 0 -> no band -> 1200/512 = 2 jobs. The contrast with case 1 is the lever.
+line="$( DIST_AI_SUITE_MEM_HEADROOM_MIB=0 DIST_AI_SUITE_MEM_MIB=512 DIST_AI_MEMINFO_PATH="${work}/meminfo-idle" cap_line )"
 case "${line}" in *'-> 2 parallel jobs'*) ok=1 ;; *) ok='' ;; esac
-check 'same free with headroom 0 caps to 2 jobs (proves the headroom band is the lever)' "${ok}"
+check 'the same free with headroom 0 caps to 2 jobs (proves the headroom band is the lever)' "${ok}"
 
-## 3. large box -> no RAM clamp.
-line="$( DIST_AI_MEMINFO_PATH="${work}/meminfo-big" cap_line )"
+## 3. A large box is never RAM-clamped even WITH the band (the CPU cap binds instead).
+line="$( DIST_AI_SUITE_MEM_HEADROOM_MIB=768 DIST_AI_SUITE_MEM_MIB=512 DIST_AI_MEMINFO_PATH="${work}/meminfo-big" cap_line )"
 if [ -z "${line}" ]; then ok=1; else ok=''; fi
 check 'a large box (16 GiB free) is not RAM-clamped (CPU cap binds instead)' "${ok}"
+
+## 4. The BUILT-IN defaults are 768 MiB headroom / 512 MiB per suite: the one case that must run
+## with the levers ABSENT to observe the default, scoped to its own subshell so it clears nothing
+## globally (a leaked ambient value inside the subshell is unset before cap_line runs).
+line="$( unset -v DIST_AI_SUITE_MEM_HEADROOM_MIB DIST_AI_SUITE_MEM_MIB; DIST_AI_MEMINFO_PATH="${work}/meminfo-idle" cap_line )"
+case "${line}" in *'768 MiB headroom / 512 MiB per suite -> 1 parallel jobs'*) ok=1 ;; *) ok='' ;; esac
+check 'the built-in defaults are 768 MiB headroom / 512 MiB per suite (levers unset)' "${ok}"
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

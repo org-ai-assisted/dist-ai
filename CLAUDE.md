@@ -39,6 +39,11 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
 - No duplication: shared setup belongs in a sourced helper, not copy-pasted per suite.
 - Legacy-free: no dead code, no "was"/"formerly"/"used to" comments. Comment the current WHY.
 - Report `N pass, 0 fail, 0 skip`; an unauthorized skip is a failure, not green.
+- Process-liveness in a test: source `dist-ai-tests-common/proc-lib.bash` and use `proc_dead`
+  (a killed-but-unreaped ZOMBIE counts as dead) / `proc_diag`, NEVER a bare `kill -0` -- `kill -0`
+  reports a zombie as alive, so a correctly-killed orphan flakes as a false "survivor" under a
+  slow-reaping CI-container PID 1. Reproduce a suspected flake with
+  `dist-ai-flake-hunt --parallel N --load -- <test>` (reruns under contention, captures failures).
 
 ## Known follow-ups (audit, msgcollector-tests is the clean model)
 

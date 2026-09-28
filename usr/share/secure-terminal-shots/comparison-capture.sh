@@ -804,7 +804,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
 zoom_verify_capture() {
    local group board mode display w h zooms zoom_boards_gen demo_dir cat_rel
    local st_pgf st_flagf st_transcript st_group st_win_w st_win_h st_cmd st_wdog stwid
-   local st_tab_line st_tab_id level tag failures shots
+   local st_tab_line st_tab_id level tag failures shots send_rc
    local -a groups st_mode_flags zoom_levels
 
    ## One PUBLISH_SUBSET group per line: "board tab-mode display-mode W H z z z ...". SHOW is
@@ -914,9 +914,13 @@ zoom_verify_capture() {
 
       ## CLI: cat ONCE now -- the flowing document replays and reflows on each later zoom. TUI:
       ## the grid is program-redrawn on SIGWINCH, so a static cat is RE-run AFTER each zoom below.
+      ## The cmdlog records this cat's run so each zoom capture can confirm it (shots_cmd_ran_ok);
+      ## in CLI it stays valid across every zoom (ctl zoom is not a shell command).
+      send_rc=0
       if [ "${mode}" = cli ]; then
+         printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
          env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
-            send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || true
+            send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || send_rc=$?
          sleep 1
          st_wait_render_settled "${stwid}"
       fi
@@ -935,19 +939,25 @@ zoom_verify_capture() {
          if [ "${mode}" = tui ]; then
             ## re-cat AFTER the zoom so the board fills the NEW grid, as a SIGWINCH-aware app would.
             sleep 0.5
+            printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+            send_rc=0
             env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
-               send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || true
+               send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || send_rc=$?
          fi
          sleep 1
          st_wait_render_settled "${stwid}"
          tag="${board}-${mode}-${display}-${w}x${h}-z${level}"
-         if capture_settled "${out}/zoom-verify-${tag}.png" "${stwid}" skip-tighten \
-               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+         ## Publish only when the cat was submitted AND actually RAN cleanly (rc 0) -- not merely
+         ## that a non-blank frame with some transcript content rendered.
+         if [ "${send_rc}" -eq 0 ] \
+               && capture_settled "${out}/zoom-verify-${tag}.png" "${stwid}" skip-tighten \
+               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
+               && shots_cmd_ran_ok "${SHOTS_CMDLOG}" "${st_cmd}"; then
             shots=$(( shots + 1 ))
             printf '%s\n' "zoom-verify: wrote zoom-verify-${tag}.png"
          else
             safe-rm -f -- "${out}/zoom-verify-${tag}.png" 2>/dev/null || true
-            printf '%s\n' "warn zoom-verify: ${tag} produced no verified shot (blank grab / empty transcript)" >&2
+            printf '%s\n' "warn zoom-verify: ${tag} produced no verified shot (submit rc=${send_rc}; blank grab / empty transcript / cat did not run)" >&2
             failures=$(( failures + 1 ))
          fi
       done
@@ -979,7 +989,7 @@ zoom_verify_capture() {
 ## secure-terminal lanes; boards are the drift-gated no-newline demo (regenerated into
 ## ${HOME}/demos) and an inline printf of leading/trailing/multiple spaces.
 demo_shots_capture() {
-   local failures shots demo_dir nn_gen i n
+   local failures shots demo_dir nn_gen i n send_rc
    local name mode display cmd terminate st_pgf st_flagf st_transcript st_group st_win_w st_win_h
    local st_wdog stwid st_tab_id st_tab_line
    local -a d_names d_modes d_disp d_cmds d_terminate st_mode_flags
@@ -1090,8 +1100,10 @@ demo_shots_capture() {
          continue
       fi
 
+      printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+      send_rc=0
       env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
-         send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
+         send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || send_rc=$?
       sleep 1
       st_wait_render_settled "${stwid}"
       if [ "${terminate}" = 1 ]; then
@@ -1105,13 +1117,20 @@ demo_shots_capture() {
          sleep 3
          st_wait_render_settled "${stwid}"
       fi
-      if capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
-            && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+      ## These programs are captured mid-run (a blocking sleep/editor) or after a Terminate kill, so
+      ## a completed-exit-0 gate does NOT apply here; require that the submit succeeded, the frame is
+      ## non-blank, the transcript carries content, and the injection was not mangled -- neither a
+      ## not-found command NOR a DIFFERENT command that completed (a dropped keystroke in the arg,
+      ## e.g. `cat X.txt` -> `cat X.tx`). A still-running program logs neither, so it still passes.
+      if [ "${send_rc}" -eq 0 ] \
+            && capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
+            && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
+            && shots_cmd_not_mangled "${SHOTS_CMDLOG}" "${cmd}"; then
          shots=$(( shots + 1 ))
          printf '%s\n' "demo-shots: wrote ${name}.png"
       else
          safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
-         printf '%s\n' "warn demo-shots: ${name} produced no verified shot" >&2
+         printf '%s\n' "warn demo-shots: ${name} produced no verified shot (submit rc=${send_rc}; blank grab / empty transcript / dropped-keystroke shell error)" >&2
          failures=$(( failures + 1 ))
       fi
 
@@ -1159,10 +1178,11 @@ lineedit_setup() {  ## $1=label
       printf 'tui_autobox_notice=false\n'
    } > "${HOME}/.config/secure-terminal.d/50_shots.conf"
 
-   ## An interactive bashrc: the real user@host prompt, with bracketed paste OFF and no
-   ## PROMPT_COMMAND. The bracketed-paste start/end escapes make readline REDRAW the input line, and
-   ## each redraw stacks as an extra gutter line in append-only (whose count also jitters
-   ## run-to-run) -- turning them off keeps the pre-command region to the single honest prompt.
+   ## An interactive bashrc: the real user@host prompt, with bracketed paste OFF. The bracketed-
+   ## paste start/end escapes make readline REDRAW the input line, and each redraw stacks as an
+   ## extra gutter line in append-only (whose count also jitters run-to-run) -- turning them off
+   ## keeps the pre-command region to the single honest prompt. (The command-log hooks appended
+   ## below are render-silent -- see write_cmdlog_hooks -- so they do not perturb this region.)
    ## Overwrites the run's default bashrc; safe, these captures run LAST (compat exits; the
    ## cursor-spoof pass runs after the emulator + st_specs grid). The leading sleep delays the
    ## shell's FIRST prompt until the window has finished settling to its final size: otherwise the
@@ -1170,11 +1190,15 @@ lineedit_setup() {  ## $1=label
    ## each SIGWINCH -- redraws that collapse in full/read-safe but STACK as extra lines in
    ## append-only. Drawing the prompt once, post-settle, keeps the pre-command region to the single
    ## honest prompt.
-   cat > "${HOME}/.bashrc" <<'RC'
+   cat > "${HOME}/.bashrc" <<'BASHRC'
 sleep 2
 PS1='user@host:~$ '
 bind 'set enable-bracketed-paste off' 2>/dev/null
-RC
+BASHRC
+   ## Same command-log hooks as the emulator/.strc shell so the compat capture can confirm the
+   ## injected program actually RAN (shots_cmd_ran_ok), not merely that some non-prompt content
+   ## rendered (a `command not found` shell-error line would otherwise pass). Render-silent.
+   write_cmdlog_hooks "${HOME}/.bashrc"
 
    ## remote_control drives `ctl`, a PRIVILEGED setting -> a root-owned drop-in via sudo, which
    ## works because the shots run under `sandbox --no-pidns` (root-owned /etc). Reaped by the run
@@ -1191,7 +1215,7 @@ RC
 ## shot was written (a missed window / no tab / blank grab / deadline-reap returns 1). The caller
 ## owns the shot/failure tally.
 lineedit_capture_row() {  ## $1=label $2=name $3=mode $4=cmd
-   local label name mode cmd rc st_pgf st_flagf st_transcript st_group st_win_w st_win_h
+   local label name mode cmd rc send_rc st_pgf st_flagf st_transcript st_group st_win_w st_win_h
    local st_wdog stwid st_tab_id st_tab_line _ct
    local -a st_mode_flags
    label="$1"; name="$2"; mode="$3"; cmd="$4"; rc=1
@@ -1246,18 +1270,28 @@ lineedit_capture_row() {  ## $1=label $2=name $3=mode $4=cmd
          ## behind the sleeping shell and interleave with the prompt draw.
          sleep 3
          ## Type the command; the shell runs it and returns to a fresh prompt. Settle waits for that
-         ## RETURN prompt to finish painting before the grab (so the shot includes it).
+         ## RETURN prompt to finish painting before the grab (so the shot includes it). Clear the
+         ## cmdlog first so the verify sees only THIS command's run.
+         printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+         send_rc=0
          env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
-            send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || true
+            send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || send_rc=$?
          sleep 1
          st_wait_render_settled "${stwid}"
-         if capture_settled "${out}/${name}.png" "${stwid}" \
-               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+         ## Publish only when the submit succeeded, the frame is non-blank, the transcript carries
+         ## content, AND the EXACT injected command actually ran -- so a swallowed submit failure or
+         ## a dropped-keystroke shot can no longer read green. ANY exit status ('' below): a compat
+         ## row can exit nonzero as its demo (`diff` exits 1 on differences), so gate on the command
+         ## having run, not on rc 0; a mangle changes the command text and is still rejected.
+         if [ "${send_rc}" -eq 0 ] \
+               && capture_settled "${out}/${name}.png" "${stwid}" \
+               && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
+               && shots_cmd_ran_ok "${SHOTS_CMDLOG}" "${cmd}" ''; then
             printf '%s\n' "${label}: wrote ${name}.png (${mode})"
             rc=0
          else
             safe-rm -f -- "${out}/${name}.png" 2>/dev/null || true
-            printf '%s\n' "warn ${label}: ${name} produced no verified shot" >&2
+            printf '%s\n' "warn ${label}: ${name} produced no verified shot (submit rc=${send_rc}; command may not have run cleanly)" >&2
          fi
       fi
    fi
@@ -1537,6 +1571,51 @@ shoot() {  ## $1=emulator  $2=case
    epgid="$(cat "${pgf}" 2>/dev/null || true)"
    shots_reap_group "${epgid}"
    safe-rm -f -- "${pgf}" "${flagf}" "${emu_err}" 2>/dev/null || true
+}
+
+## The command-log hooks shared by the emulator (.strc) and secure-terminal (.bashrc) shells:
+## record each command's completion (RAN<TAB>rc<TAB>cmd) and any not-found (NOTFOUND<TAB>word) to
+## SHOTS_CMDLOG, so a capture path can gate on shots_cmd_ran_ok (exact command, wanted rc) or
+## shots_cmd_not_mangled (no not-found / no different completed command). Emitted via a QUOTED heredoc so the
+## runtime `$?`/`$HOME`/`$1` stay LITERAL (resolved in the shot's shell, not here at write time),
+## and APPENDED after a PS1 line, never overwriting it. Emits NOTHING to the terminal (fc captured,
+## printf redirected), so the rendered shot is unchanged -- the same hooks the emulator shots
+## already render cleanly. History-INDEPENDENT (see shots_cmd_ran_ok): the not-found handler is the
+## definitive dropped-keystroke signal, __shots_log records exit status only. $1 = rcfile to append.
+write_cmdlog_hooks() {  ## $1=rcfile
+   cat >> "$1" <<'RC'
+: "${SHOTS_CMDLOG:=${HOME}/.shots-cmdlog}"
+## No history FILE (fresh per shell, no cross-shot leak) but keep in-session history so fc can
+## report the just-run command; record ALL commands (HISTCONTROL empty) so nothing is dropped.
+HISTFILE=
+HISTCONTROL=
+## A dropped keystroke turns the injected 'cat X.payload' into a non-existent command
+## ('at X.payload'); record it so the content-verify DISCARDS the shot instead of publishing the
+## shell error. Returns 127 like the default handler; prints nothing (a broken shot is discarded).
+command_not_found_handle() {
+   printf 'NOTFOUND\t%s\n' "$1" >> "${SHOTS_CMDLOG}"
+   return 127
+}
+## Record each completed command's exit status AND its text ($? read FIRST, before anything
+## clobbers it). The text lets the content-verify require the INJECTED command to have actually
+## run: a dropped Return / empty line / unknown case logs only a startup 'RAN<TAB>0<TAB>' with no
+## command, which an rc-only check would wrongly accept. fc gives the last command with no history
+## index; strip its leading whitespace.
+## NOTE (fc-in-PROMPT_COMMAND lag): `fc -ln -1` is CORRECT for the FIRST command in a fresh shell
+## but from the SECOND command on it returns the PREVIOUS command's text (the exit status stays
+## correct). Every SHOOTING path here injects ONE command per freshly-launched shell (compat /
+## demo / zoom-CLI) or re-injects the SAME command (zoom-TUI re-cat, emulator retry), so the logged
+## text always matches the injected command -- the lag is masked. It would only bite a shell that
+## ran two DIFFERENT commands in sequence, which no capture path does.
+__shots_log() {
+   local __rc=$?
+   local __cmd
+   __cmd="$(fc -ln -1 2>/dev/null)"
+   __cmd="${__cmd#"${__cmd%%[![:space:]]*}"}"
+   printf 'RAN\t%s\t%s\n' "${__rc}" "${__cmd}" >> "${SHOTS_CMDLOG}"
+}
+PROMPT_COMMAND='__shots_log'
+RC
 }
 
 ## Strict mode ONLY when executed, so sourcing this file (a test reusing the functions above)
@@ -2057,47 +2136,17 @@ fi
 ## (shots_transcript_has_content) strips the EXACT prompt the shell prints when
 ## deciding whether an injected payload actually rendered.
 SHOT_PROMPT='user@host:~$ '
-## Where the emulator shell logs each completed command + its exit status, so the content-verify
-## (shots_cmd_ran_ok) can tell a shot where the injected `cat` actually RAN from one showing a
-## shell error (a dropped keystroke -> `at: command not found`). Exported so every emulator's
-## `bash --rcfile .strc` inherits the same path shoot() reads. Per-process HOME (each --jobs lane
-## has its own), so no cross-lane contention; shoot() clears it per capture attempt.
+## Where a shot shell logs each completed command + its exit status, so the content-verify
+## (shots_cmd_ran_ok / shots_cmd_not_mangled) can tell a shot where the injected `cat` actually RAN
+## from one showing a shell error (a dropped keystroke -> `at: command not found`). Exported so
+## every emulator (`bash --rcfile .strc`) AND secure-terminal (`bash -i` -> ~/.bashrc) shell reads
+## the same path the capture loop reads. Per-process HOME (each --jobs lane has its own), so no
+## cross-lane contention; each capture path clears it per attempt.
 export SHOTS_CMDLOG="${HOME}/.shots-cmdlog"
 cat > "${HOME}/.strc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
-## Append the command-log hooks via a QUOTED heredoc so the runtime `$?`, `$HOME`, `$1` etc. stay
-## LITERAL (resolved in the emulator's shell, not here at write time). History-INDEPENDENT by
-## design (see shots_cmd_ran_ok): the not-found handler is the definitive signal for the dropped-
-## keystroke bug, and __shots_log records exit status only -- neither parses `fc`/.bash_history,
-## which is unreliable across shots and for not-found commands.
-cat >> "${HOME}/.strc" <<'RC'
-: "${SHOTS_CMDLOG:=${HOME}/.shots-cmdlog}"
-## No history FILE (fresh per shell, no cross-shot leak) but keep in-session history so fc can
-## report the just-run command; record ALL commands (HISTCONTROL empty) so nothing is dropped.
-HISTFILE=
-HISTCONTROL=
-## A dropped keystroke turns the injected 'cat X.payload' into a non-existent command
-## ('at X.payload'); record it so the content-verify DISCARDS the shot instead of publishing the
-## shell error. Returns 127 like the default handler; prints nothing (a broken shot is discarded).
-command_not_found_handle() {
-   printf 'NOTFOUND\t%s\n' "$1" >> "${SHOTS_CMDLOG}"
-   return 127
-}
-## Record each completed command's exit status AND its text ($? read FIRST, before anything
-## clobbers it). The text lets the content-verify require the INJECTED command to have actually
-## run: a dropped Return / empty line / unknown case logs only a startup 'RAN<TAB>0<TAB>' with no
-## command, which an rc-only check would wrongly accept. fc gives the last command with no history
-## index; strip its leading whitespace.
-__shots_log() {
-   local __rc=$?
-   local __cmd
-   __cmd="$(fc -ln -1 2>/dev/null)"
-   __cmd="${__cmd#"${__cmd%%[![:space:]]*}"}"
-   printf 'RAN\t%s\t%s\n' "${__rc}" "${__cmd}" >> "${SHOTS_CMDLOG}"
-}
-PROMPT_COMMAND='__shots_log'
-RC
+write_cmdlog_hooks "${HOME}/.strc"
 ## secure-terminal launches a clean `bash -i` (no ugly temp --rcfile path in its launch
 ## banner); a non-login interactive bash reads ~/.bashrc, so write the same prompt there.
 ## The emulators keep --rcfile ${HOME}/.strc (that path is their reaping marker); ST carries the
@@ -2108,6 +2157,11 @@ RC
 cat > "${HOME}/.bashrc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
+## The zoom-verify / demo-shots ST shells read THIS ~/.bashrc; give them the same command-log hooks
+## so their capture paths can gate on the injected command actually running (no silent-green on a
+## dropped keystroke). Render-silent (see write_cmdlog_hooks). lineedit_setup overwrites ~/.bashrc
+## for the compat/attack shells and re-appends the hooks there itself.
+write_cmdlog_hooks "${HOME}/.bashrc"
 
 ## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
 cd "${HOME}"

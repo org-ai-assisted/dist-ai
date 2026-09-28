@@ -85,6 +85,10 @@ _wl_headless_x11_squashed() {
 ## X client dialing localhost still has loopback.
 _wl_headless_setup_private_x11() {
    mkdir --parents -- "${_wl_x11_socket_dir}"
+   ## Unguarded on purpose: called only from the WL_HEADLESS_UNSHARED second pass, once per freshly
+   ## created `unshare --mount` namespace (the guard short-circuits re-entry), so the target is a
+   ## pristine dir in a private mount namespace with no prior tmpfs to stack on -- a double mount
+   ## cannot occur, so no mountpoint pre-check is warranted.
    mount -t tmpfs -o mode=1777 tmpfs "${_wl_x11_socket_dir}"
    ip link set lo up
 }

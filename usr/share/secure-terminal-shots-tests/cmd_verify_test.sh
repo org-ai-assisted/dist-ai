@@ -106,8 +106,23 @@ eq "$(verdict 'NOTFOUND\tat\nRAN\t127\tat escape.payload\n')" fail 'a not-found 
 ## A not-found sentinel wins even if a later command exits 0 (fail-closed on any NOTFOUND).
 eq "$(verdict 'NOTFOUND\tat\nRAN\t0\tcat escape.payload\n')" fail 'any NOTFOUND rejects the shot regardless of later rc'
 
-## The injected command ran but FAILED (e.g. cat of a missing payload) -> DISCARD.
-eq "$(verdict 'RAN\t1\tcat escape.payload\n')" fail 'a non-zero completion of the injected command is rejected'
+## The injected command ran but FAILED (e.g. cat of a missing payload) -> DISCARD (default rc 0).
+eq "$(verdict 'RAN\t1\tcat escape.payload\n')" fail 'a non-zero completion of the injected command is rejected (default rc 0)'
+
+## With an explicit ANY-rc (''), the EXACT command that exited nonzero is accepted (the compat
+## 'diff' row exits 1 as its demo); a mangle changes the text and is still rejected.
+printf 'RAN\t1\tdiff --color=always old.txt new.txt\n' > "${tmp}/log"
+if shots_cmd_ran_ok "${tmp}/log" 'diff --color=always old.txt new.txt' ''; then
+   eq ok ok 'any-rc: the exact command with rc 1 (diff demo) is accepted'
+else
+   eq fail ok 'any-rc: the exact command with rc 1 (diff demo) is accepted'
+fi
+printf 'RAN\t1\tdiff --color=always old.txt ne.txt\n' > "${tmp}/log"
+if shots_cmd_ran_ok "${tmp}/log" 'diff --color=always old.txt new.txt' ''; then
+   eq ok fail 'any-rc: a mangled (different-text) command is still rejected'
+else
+   eq fail fail 'any-rc: a mangled (different-text) command is still rejected'
+fi
 
 ## Dropped RETURN: the command was typed but never executed, so only a startup empty-command entry
 ## exists -- an rc-only check would wrongly accept this; requiring the command text rejects it.
@@ -130,6 +145,45 @@ if shots_cmd_ran_ok "${tmp}/does-not-exist" "${EXP}"; then
    eq ok fail 'a missing command-log file is a miss, not a pass'
 else
    eq fail fail 'a missing command-log file is a miss, not a pass'
+fi
+
+## --- Part A.2: shots_cmd_not_mangled -- the gate for capture paths whose program is captured
+## mid-run or after a kill (demo-shots: sleep/nano/Terminate), where a completed line cannot be
+## required. Rejects a mangled injection (not-found OR a DIFFERENT completed command), passes a
+## still-running program. ------------
+
+if ! declare -F shots_cmd_not_mangled >/dev/null 2>&1; then
+   printf '%s\n' 'FAIL: shots_cmd_not_mangled not defined -- old harness'
+   fail=$(( fail + 1 ))
+else
+   nm_verdict() {  ## $1=cmdlog-contents (printf %b)  [$2=expected, default EXP] -> 'ok' | 'fail'
+      printf '%b' "$1" > "${tmp}/nmlog"
+      if shots_cmd_not_mangled "${tmp}/nmlog" "${2-${EXP}}"; then printf 'ok'; else printf 'fail'; fi
+   }
+   ## A blocking program still running at grab time logs only a startup empty-command entry -> passes.
+   eq "$(nm_verdict 'RAN\t0\t\n')" ok 'a startup-only log (blocking program still running) passes'
+   ## A Terminate demo kills the EXACT command (non-zero rc) -> passes.
+   eq "$(nm_verdict 'RAN\t143\tcat escape.payload\n')" ok 'a SIGTERM-killed exact command (rc 143) passes'
+   ## A dropped keystroke in the COMMAND -> not-found -> rejected.
+   eq "$(nm_verdict 'NOTFOUND\tat\nRAN\t127\tat escape.payload\n')" fail 'a not-found (dropped command) is rejected'
+   ## A dropped keystroke in the ARGUMENT keeps a valid command that COMPLETES as a DIFFERENT command
+   ## -> rejected (the case a not-found-only gate would have missed).
+   eq "$(nm_verdict 'RAN\t1\tcat escape.paylo\n')" fail 'a mangled-argument different completed command is rejected'
+   ## An empty (freshly-cleared) log has nothing mangled -> passes.
+   eq "$(nm_verdict '')" ok 'an empty (cleared) log passes (nothing mangled)'
+   ## A DIRECTORY as the log is fail-closed (read yields nothing -- must not fail open).
+   mkdir --parents -- "${tmp}/nmdir"
+   if shots_cmd_not_mangled "${tmp}/nmdir" "${EXP}"; then
+      eq ok fail 'a directory log is fail-closed'
+   else
+      eq fail fail 'a directory log is fail-closed'
+   fi
+   ## A missing log file is fail-closed (the hooks never ran).
+   if shots_cmd_not_mangled "${tmp}/nm-does-not-exist" "${EXP}"; then
+      eq ok fail 'a missing log file is fail-closed'
+   else
+      eq fail fail 'a missing log file is fail-closed'
+   fi
 fi
 
 ## --- Part B: the REAL .strc hooks agree with the classifier (driven through a PTY) ----

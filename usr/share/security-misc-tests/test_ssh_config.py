@@ -182,7 +182,10 @@ def _client_audit(policy, ssh_config):
     """Drive ssh-audit client-audit against a connecting ssh client.
 
     ssh_config is the ssh -F config to offer (the security-misc drop-in), or
-    None for a stock default client. Returns (ssh_audit_returncode, output).
+    None for a stock default client. Returns (ssh_audit_returncode, output,
+    ssh_result) -- ssh_result is the client's CompletedProcess so a caller can
+    confirm the client actually ran (and surface its stderr), rather than the
+    client's outcome being silently discarded.
     """
     ssh_audit = _require("ssh-audit")
     ssh = _require("ssh")
@@ -211,16 +214,17 @@ def _client_audit(policy, ssh_config):
             "true",
         ]
         ## The connection fails auth; that is fine, the kex exchange has already
-        ## exposed the client's algorithm offer to ssh-audit.
-        subprocess.run(ssh_cmd, capture_output=True, text=True)
+        ## exposed the client's algorithm offer to ssh-audit. Keep the client's
+        ## result (do not discard it) so a caller can confirm the client ran.
+        ssh_result = subprocess.run(ssh_cmd, capture_output=True, text=True)
         try:
             stdout, _ = auditor.communicate(timeout=20)
         except subprocess.TimeoutExpired:
             auditor.kill()
             stdout, _ = auditor.communicate()
-        return auditor.returncode, stdout
+        return auditor.returncode, stdout, ssh_result
     pytest.fail("ssh-audit client-audit listener did not come up after retries")
-    return None, None  ## unreachable; pytest.fail raises
+    return None, None, None  ## unreachable; pytest.fail raises
 
 
 def _start_sshd(tmp_path, directives):
@@ -299,6 +303,25 @@ def _audit_server_policy(ssh_audit, policy, port):
     )
 
 
+## ssh-audit's --policy exit codes (PROGRAM_RETVAL_*): 0 good, 2 warning, 3 a policy FAILURE (a
+## COMPLETED audit whose algorithms did not match), and 1 a connection/other error that never
+## reached the comparison. A canary must assert the completed-mismatch signal, not a bare nonzero:
+## a connection/banner failure exits nonzero too, so `returncode != 0` would pass without the
+## policy ever constraining anything.
+POLICY_FAIL_RETVAL = 3
+
+
+def _policy_failed(returncode, output):
+    """True iff ssh-audit COMPLETED the policy comparison and it FAILED (an explicit algorithm
+    mismatch), NOT a connection/banner error that never reached the comparison.
+
+    A completed failure exits POLICY_FAIL_RETVAL and prints a "Result: ... Failed!" verdict with
+    an "Errors:" listing; a connection error exits 1 and prints "[exception] cannot connect ..."
+    with no verdict. Require BOTH the exit code and the verdict marker so neither alone is trusted.
+    (Observed against ssh-audit v3.3.0.)"""
+    return returncode == POLICY_FAIL_RETVAL and "Failed!" in output and "Errors:" in output
+
+
 def test_server_config_passes_policy(tmp_path, server_config_algos):
     """A server carrying security-misc's crypto directives matches server.policy."""
     ssh_audit = _require("ssh-audit")
@@ -326,9 +349,12 @@ def test_stock_server_fails_policy(tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
-    assert result.returncode != 0, (
-        "canary failed: ssh-audit PASSED a stock unhardened sshd against the "
-        "policy; the policy is not actually constraining anything"
+    assert _policy_failed(result.returncode, result.stdout), (
+        "canary failed: ssh-audit did not report a COMPLETED policy mismatch for a "
+        "stock unhardened sshd (expected exit "
+        f"{POLICY_FAIL_RETVAL} + a 'Failed!' verdict). A bare nonzero would also accept a "
+        f"connection error that never ran the comparison.\nrc={result.returncode}\n"
+        f"{result.stdout}\n{result.stderr}"
     )
 
 
@@ -356,7 +382,7 @@ def test_client_config_passes_policy():
     """The security-misc ssh_config client matches client.policy (client-audit mode)."""
     client_config = _resolve("etc/ssh/ssh_config.d/30_security-misc.conf*")
     policy = _policy("client.policy")
-    returncode, output = _client_audit(policy, client_config)
+    returncode, output, _ssh_result = _client_audit(policy, client_config)
     assert returncode == 0, (
         f"ssh-audit rejected the security-misc client config:\n{output}"
     )
@@ -365,11 +391,39 @@ def test_client_config_passes_policy():
 def test_stock_client_fails_policy():
     """Canary: a stock (default-crypto) ssh client must FAIL the client policy."""
     policy = _policy("client.policy")
-    returncode, _output = _client_audit(policy, None)
-    assert returncode != 0, (
-        "canary failed: ssh-audit PASSED a stock default ssh client; "
-        "the client policy is not actually constraining anything"
+    returncode, output, ssh_result = _client_audit(policy, None)
+    ## The stock client MUST have actually run (so the failure is the policy mismatch, not the
+    ## client never connecting): the ssh process ran to completion. It exits nonzero by design
+    ## (BatchMode auth fails after the kex), so confirm it ran, not that it exited 0.
+    assert ssh_result is not None and ssh_result.returncode is not None, (
+        "canary failed: the stock ssh client never ran, so nothing was audited"
     )
+    ## A COMPLETED policy mismatch (exit 3 + a 'Failed!' verdict), not a bare nonzero -- which
+    ## would also accept a connection/banner error that exposed no client algorithms.
+    assert _policy_failed(returncode, output), (
+        "canary failed: ssh-audit did not report a COMPLETED policy mismatch for a stock "
+        f"default ssh client (expected exit {POLICY_FAIL_RETVAL} + a 'Failed!' verdict); the "
+        f"client policy is not actually constraining anything.\nrc={returncode}\n{output}\n"
+        f"ssh stderr:\n{ssh_result.stderr}"
+    )
+
+
+def test_policy_failed_distinguishes_completed_mismatch_from_connection_error():
+    """Regression: the canary signal is a COMPLETED policy mismatch, not a bare nonzero.
+
+    ssh-audit exits POLICY_FAIL_RETVAL with a 'Failed!' + 'Errors:' verdict on a real mismatch,
+    but 1 with an '[exception] cannot connect' and NO verdict on a connection error -- which the
+    old 'returncode != 0' canaries wrongly accepted as a policy failure."""
+    mismatch = (
+        "Policy: security-misc hardened OpenSSH server\n"
+        "Result: Failed!\n"
+        "Errors:\n  * Ciphers did not match."
+    )
+    connerr = "[exception] cannot connect to 127.0.0.1 port 2: [Errno 111] Connection refused"
+    assert _policy_failed(POLICY_FAIL_RETVAL, mismatch)   ## completed mismatch -> real failure
+    assert not _policy_failed(1, connerr)                 ## connection error -> NOT a policy failure
+    assert not _policy_failed(0, "Result: Passed")        ## a passing audit is not a failure
+    assert not _policy_failed(POLICY_FAIL_RETVAL, connerr)  ## exit 3 without a verdict is not trusted
 
 
 def test_policy_matches_server_config(server_config_algos):
