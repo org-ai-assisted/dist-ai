@@ -6813,6 +6813,53 @@ _cur.viewport().repaint()                        # shot mode -> paintEvent draws
 _cur._shot = False
 _cur.shutdown()
 
+# --solid-cursor / SECURE_TERMINAL_SOLID_CURSOR: an always-on, NON-blinking caret for
+# deterministic screenshots. It must never run the blink timer (no OFF half-cycle) and must
+# render even in shot mode (a fixed-position solid caret is byte-deterministic, unlike the
+# blinking one the shot path otherwise hides).
+_curs = SecureTerminal(command=['/bin/sh'], tui=False, solid_cursor=True)
+_curs.resize(600, 300)
+_curs.show()
+_curs.setFocus()
+pump(200)
+_curs._write(b'echo hi\n')
+pump(300)
+ok(_curs._solid_cursor is True, 'solid-cursor: the flag is set from the ctor arg')
+ok(not _curs._blink_timer.isActive(),
+   'solid-cursor: the blink timer never runs (always-on, non-blinking) even while focused')
+ok(_curs._cursor_on is True, 'solid-cursor: the caret stays in the ON phase')
+_curs._shot = True
+_curs.viewport().repaint()                       # shot + solid -> the caret DOES draw (no crash)
+ok(_curs._cursor_on is True and not _curs._blink_timer.isActive(),
+   'solid-cursor: shot mode neither starts blinking nor turns the caret off')
+# Pixel proof: in shot mode the SOLID caret actually paints (the blinking one would be
+# suppressed). Grab the viewport and compare the cursor bar to a blank cell a few rows below --
+# they must differ, i.e. the caret left ink on the screenshot.
+pump(50)
+_scimg = _curs.viewport().grab().toImage()
+_scr = _curs._cursor_rect()
+_at_caret = _scimg.pixelColor(_scr.x(), _scr.y() + _scr.height() // 2).name()
+_blank_y = min(_scimg.height() - 2, _scr.y() + _scr.height() * 4)
+_at_blank = _scimg.pixelColor(_scr.x(), _blank_y).name()
+ok(_at_caret != _at_blank,
+   'solid-cursor: the caret is painted in a shot (cursor bar differs from a blank cell)')
+_curs._shot = False
+_curs.shutdown()
+
+# The env path mirrors SECURE_TERMINAL_SHOT: --solid-cursor exports it, the ctor reads it when
+# no explicit arg is passed.
+os.environ['SECURE_TERMINAL_SOLID_CURSOR'] = '1'
+try:
+    _curse = SecureTerminal(command=['/bin/sh'], tui=False)
+    _curse.resize(400, 200)
+    _curse.show()
+    pump(50)
+    ok(_curse._solid_cursor is True,
+       'solid-cursor: SECURE_TERMINAL_SOLID_CURSOR=1 sets the flag with no ctor arg')
+    _curse.shutdown()
+finally:
+    del os.environ['SECURE_TERMINAL_SOLID_CURSOR']
+
 # preview surface and the _out_cursor fallback draw nothing / do not crash
 _cur_pv = SecureTerminal(command=['/bin/sh'], tui=False, preview=True)
 _cur_pv.resize(400, 200)
