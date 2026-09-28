@@ -362,6 +362,30 @@ ok('AFTER-SELECT' not in _cfrows,
 _cf._mouse_selecting = False
 _cf.close()
 
+# The last-painted snapshot must not go STALE when the document is reset with no repaint. A
+# theme/mode/markings/scrollback-cap change funnels through _rerender -> _reset_grid_view()
+# (clears the document) + _render_tui(); while a selection defers that render the document is
+# wiped but not repainted, so serving the pre-reset snapshot would be a two-frame dump again
+# (ST PR #184 ai-review). _reset_grid_view invalidates the snapshot, so the dump falls back to
+# the live grid instead of the stale frame.
+_rc = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_rc, b'PRE-RESET\r\n')
+_rc._render_tui()                                        # paint frame N -> _painted_screen set
+APP.processEvents()
+_rc._mouse_selecting = True                              # hold a selection -> renders bail
+feed_output(_rc, b'POST-RESET\r\n')                      # advance the live pyte model
+_rc._rerender()                                          # _reset_grid_view() clears; _render_tui() bails
+APP.processEvents()
+_rcrows = ''.join(r.get('text', '') for r in _json.loads(_rc.dump_state('json'))['rows'])
+# The grid view was cleared without a repaint -> no coherent painted frame, so the dump reads
+# the live pyte grid (POST-RESET present). On the un-invalidated code the stale pre-reset frame
+# (PRE-RESET only, no POST-RESET) is served -> this fails.
+ok('POST-RESET' in _rcrows,
+   'a grid-view reset during a selection drops the stale painted snapshot (falls back to live)')
+_rc._mouse_selecting = False
+_rc.close()
+
 # In the alternate screen the scrollback is the PRIMARY frozen at entry -- INCLUDING the primary
 # scrollback that scrolled ABOVE the visible grid -- not the alt grid. Feed well over one screen
 # BEFORE entering alt so PRIMARY-BEFORE-ALT scrolls off the visible primary grid: a single visible
