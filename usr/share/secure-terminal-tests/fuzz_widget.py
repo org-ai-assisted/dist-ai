@@ -474,6 +474,47 @@ def phase_reflow_equiv(rnd, iterations, seed):
         S._LINE_WORK_BUDGET = saved_budget
 
 
+def _tui_model_text(scr):
+    ## Everything the pyte MODEL still holds -- promoted scrollback (history.top) plus the
+    ## live grid -- as one string. The resize oracle searches it: a shrink that scrolled a
+    ## row into history keeps its text here; a shrink that DESTROYED it does not.
+    rows = list(scr.history.top) + [scr.buffer[y] for y in range(scr.lines)]
+    return '\n'.join(''.join(row[x].data for x in sorted(row)) for row in rows)
+
+
+def phase_tui_resize(rnd, iterations, seed):
+    ## A TUI height resize must never DESTROY shell output: a shrink scrolls the clipped top
+    ## rows into scrollback and a grow keeps them, so after ANY sequence of height resizes
+    ## with no new pty output every fed line is still in the model (scrollback + grid). Stock
+    ## pyte Screen.resize drops the top rows outright -- the vanish-on-copy (review-bar
+    ## shrink+grow) bug. A deep READ does not clear a stateful-reconcile bug, so fuzz random
+    ## resize sequences against a known-content oracle.
+    for _ in range(iterations):
+        term = SecureTerminal(command='/bin/cat', tui=True)
+        scr = term._screen
+        rows0, cols = scr.lines, scr.columns
+        # Shell shape: N unique content lines then a prompt, so the cursor sits on the last
+        # content row (bottom-anchored -- the frame the fix preserves).
+        n = rnd.randint(1, max(1, rows0 - 1))
+        toks = ['Lx%dx%dx' % (seed % 100000, i) for i in range(n)]
+        _feed(term, (''.join(t + '\r\n' for t in toks) + 'PROMPT$ ').encode())
+        # A random height-resize sequence (the review bar opening/closing, a window drag),
+        # ending back at the original height. resize_preserving_scrollback is the
+        # primary-screen path; mirror _sync_tui_size's post-resize cursor clamp.
+        for _r in range(rnd.randint(1, 6)):
+            h = rnd.randint(2, rows0 + 4)
+            scr.resize_preserving_scrollback(h, cols)
+            scr.cursor.y = min(scr.cursor.y, h - 1)
+        scr.resize_preserving_scrollback(rows0, cols)
+        scr.cursor.y = min(scr.cursor.y, rows0 - 1)
+        model = _tui_model_text(scr)
+        for t in toks:
+            _assert(t in model,
+                    'a TUI height resize destroyed shell content {0!r}'.format(t), seed)
+        _check_cells_bounded(term, seed, 'tui-resize')
+        term.shutdown()
+
+
 PHASES = (
     ('feed', phase_feed),
     ('tui', phase_tui),
@@ -482,6 +523,7 @@ PHASES = (
     ('keys', phase_keys),
     ('review', phase_review),
     ('reflow_equiv', phase_reflow_equiv),
+    ('tui_resize', phase_tui_resize),
 )
 
 

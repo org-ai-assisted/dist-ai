@@ -110,6 +110,11 @@ INDEP_DI = frozenset(cp for cp in range(0, MAX_CP + 1)
                      if _DI_PROP.fullmatch(chr(cp)))
 INDEP_BIDI = frozenset(cp for cp in range(0, MAX_CP + 1)
                        if _BIDI_PROP.fullmatch(chr(cp)))
+# Sanitizer POLICY, not a Unicode property: printable (category So) code points that
+# render as an inkless blank, so render_output neutralizes them like an invisible even
+# though they are not Default_Ignorable. Independent literal (never read from S.*); kept
+# OUT of INDEP_DI so l_pred still checks is_default_ignorable == the pure Unicode set.
+INDEP_BLANK_GLYPH = frozenset({0x2800, 0xFFFC})
 
 # Lattice labels (ints, join = max except DANGEROUS which is sticky).
 BOT, SAFE, MARKER, PRINTABLE_NA, DANGEROUS = 0, 1, 2, 3, 4
@@ -224,7 +229,7 @@ def ref_render_char(ch, mode):
     if mode == 'reveal':
         return '<U+%04X>' % cp
     if (mode == 'show' and cp >= 0x80 and ch.isprintable()
-            and cp not in INDEP_DI):
+            and cp not in INDEP_DI and cp not in INDEP_BLANK_GLYPH):
         return ch
     if mode == 'show' and cp != 0x20 and unicodedata.category(ch) == 'Zs':
         return REF_SPACE_MARK
@@ -317,7 +322,8 @@ def ref_paste_uni(ch):
         return '\r'
     if ch == '\t':
         return ch
-    if ch.isprintable() and ord(ch) not in INDEP_DI and ord(ch) not in INDEP_BIDI:
+    if (ch.isprintable() and ord(ch) not in INDEP_DI and ord(ch) not in INDEP_BIDI
+            and ord(ch) not in INDEP_BLANK_GLYPH):
         return ch
     return ''
 
@@ -332,7 +338,8 @@ def ref_clip(ch):
 def ref_clip_uni(ch):
     if ch in '\n\t':
         return ch
-    if ch.isprintable() and ord(ch) not in INDEP_DI and ord(ch) not in INDEP_BIDI:
+    if (ch.isprintable() and ord(ch) not in INDEP_DI and ord(ch) not in INDEP_BIDI
+            and ord(ch) not in INDEP_BLANK_GLYPH):
         return ch
     return ''
 
@@ -481,7 +488,7 @@ def t7_classify():
             want = 'bidirectional control'
         elif cp < 0x20 or cp == 0x7F or 0x80 <= cp <= 0x9F:
             want = 'control character'
-        elif (not ch.isprintable()) or cp in INDEP_DI:
+        elif (not ch.isprintable()) or cp in INDEP_DI or cp in INDEP_BLANK_GLYPH:
             want = 'invisible character'
         else:
             want = 'non-ASCII character'

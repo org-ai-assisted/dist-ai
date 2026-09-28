@@ -6507,6 +6507,28 @@ eq(len(_pav._screen.history.top), _pav_top0,
 _pav._alt_screen = False
 _pav.shutdown()
 
+# #16 (ai-review): a DECSTBM scroll region NOT starting at row 0 breaks pyte's clip-from-top
+# model -- pyte's resize runs delete_lines at row 0, which a region past row 0 makes a no-op
+# (delete_lines is margin-clamped), so the top rows are NOT dropped. Preserving there would
+# DUPLICATE the top rows into scrollback while the region's most recent rows vanish (an
+# ncurses/tmux app reserving a top status line, then resized). Preservation must DEFER to
+# pyte when a scroll region is set.
+_prv = SecureTerminal(command='/bin/cat', tui=True)
+_prv.resize(700, 400)
+_prv.show()
+pump(40)
+_prv_n = _prv._screen.lines
+_prv._stream.feed(('\x1b[2;%dr' % _prv_n).encode())          # scroll region rows 2..N
+for _i in range(1, _prv_n):
+    feed_output(_prv, ('reg %02d\r\n' % _i).encode())
+ok(_prv._screen.margins is not None, '#16 setup: the scroll region set pyte margins')
+_prv_top0 = len(_prv._screen.history.top)
+_prv._tui_grid_size = lambda: (_prv._screen.columns, max(3, _prv_n // 2))
+_prv._sync_tui_size()
+eq(len(_prv._screen.history.top), _prv_top0,
+   '#16: a scroll-region shrink defers to pyte (no rows duplicated into scrollback)')
+_prv.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the

@@ -245,6 +245,13 @@ _INDEP_CC_FORBIDDEN = frozenset(cp for cp in range(0, MAX_CP + 1)
 _INDEP_FORMATISH = frozenset(cp for cp in range(0, MAX_CP + 1)
                              if unicodedata.category(chr(cp)) in
                              ('Cf', 'Cs', 'Co', 'Cn', 'Zl', 'Zp'))
+# NOT a Unicode property -- a deliberate sanitizer POLICY, mirrored here as an
+# independent literal (never read from S.*): two printable (category So) code points
+# that render as an inkless blank in essentially every font, so the sanitizer classes
+# them 'invisible' even though str.isprintable() keeps them and they are not
+# Default_Ignorable. U+2800 empty braille cell; U+FFFC absent embedded object. Kept OUT
+# of INDEP_DI so lemma L-di still checks is_default_ignorable == the pure Unicode set.
+INDEP_BLANK_GLYPH = frozenset({0x2800, 0xFFFC})
 
 
 def _indep_is_di(ch):
@@ -1500,7 +1507,7 @@ def _classify_family(cp):
     # would let a regressed hand list agree with itself on a wrong answer (the circularity the
     # file eliminated for is_bidi_control / is_default_ignorable). Mirrors is_invisible's own
     # definition (not printable, or default-ignorable) via sources independent of S.is_*.
-    if (not chr(cp).isprintable()) or cp in INDEP_DI:
+    if (not chr(cp).isprintable()) or cp in INDEP_DI or cp in INDEP_BLANK_GLYPH:
         return 'invisible'
     return 'nonascii'
 
@@ -1777,6 +1784,14 @@ def t_input_canaries():
     # disagrees with the display marking (which calls it bidi).
     _expect_caught('T7/classify', _LABEL_FAMILY['non-ASCII character']
                    != _MARKING_FAMILY[S.marking_class(0x202E)])
+    # T7 blank-glyph canary: an oracle that FORGOT the printable-but-inkless set
+    # (U+2800, U+FFFC) would call them 'nonascii' while the sanitizer marks them
+    # 'invisible'; the T7 family agreement must therefore trip on the omission. Proves
+    # INDEP_BLANK_GLYPH is load-bearing, not decorative -- and that marking_class keeps
+    # treating these as invisible (the #12 output-lies fix) rather than plain non-ASCII.
+    _forgot_blank = 'invisible' if 0x2800 in INDEP_DI else 'nonascii'
+    _expect_caught('T7/blank-glyph',
+                   _forgot_blank != _MARKING_FAMILY[S.marking_class(0x2800)])
     # T4 homoglyph-decode canary: Cyrillic a emitted as ASCII 'a' is still
     # _CLIP_ASCII, so the alphabet check would MISS it; the new check must trip.
     _expect_caught('T4/homoglyph-decode',
