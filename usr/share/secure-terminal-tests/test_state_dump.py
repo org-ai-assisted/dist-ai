@@ -331,12 +331,56 @@ ok('SCROLLLINE-000' in (_sbobj.get('document') or ''),
    'the TUI json dump carries the scrollback in the document field')
 _sb.close()
 
-# In the alternate screen the scrollback is the PRIMARY frozen at entry, not the alt grid.
+# A dump taken while a text selection is active must be ONE coherent frame. _render_tui bails
+# while a selection is held (a rebuild would drag the selection), so the promoted document
+# freezes at the last-painted frame; reading the LIVE pyte grid for `rows` would stitch newer
+# grid rows onto that older scrollback -- a two-frame dump (ST PR #184, CodeRabbit). The fix
+# serves the last-painted grid snapshot, so `rows` stay on the frame the document is on.
+_cf = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_cf_rows = _cf._screen.lines
+feed_output(_cf, b'COHERENCE-MARK\r\n')
+_cf._render_tui()                                        # paint frame N: COHERENCE-MARK in the grid
+APP.processEvents()
+ok('COHERENCE-MARK' in ''.join(r.get('text', '') for r in
+                               _json.loads(_cf.dump_state('json'))['rows']),
+   'setup: COHERENCE-MARK is in the painted grid at frame N')
+_cf._mouse_selecting = True                              # hold a selection -> _render_tui bails
+# Advance the LIVE pyte model well past frame N: scroll COHERENCE-MARK off the grid and add new
+# content. The render is deferred, so the document does NOT catch up.
+feed_output(_cf, (''.join('AFTER-SELECT-%03d\r\n' % i for i in range(_cf_rows * 2))).encode())
+_cf._render_tui()
+APP.processEvents()
+_cfrows = ''.join(r.get('text', '') for r in _json.loads(_cf.dump_state('json'))['rows'])
+# Coherent: `rows` are the last-painted frame (COHERENCE-MARK still shown), NOT the live pyte grid
+# (which now shows AFTER-SELECT and has scrolled COHERENCE-MARK away). On the unpatched app `rows`
+# read the live grid -> COHERENCE-MARK absent + AFTER-SELECT present -> both asserts below fail.
+ok('COHERENCE-MARK' in _cfrows,
+   'a dump during a selection keeps the last-painted grid rows (coherent with the frozen document)')
+ok('AFTER-SELECT' not in _cfrows,
+   'a dump during a selection does not leak the live post-selection grid into rows')
+_cf._mouse_selecting = False
+_cf.close()
+
+# In the alternate screen the scrollback is the PRIMARY frozen at entry -- INCLUDING the primary
+# scrollback that scrolled ABOVE the visible grid -- not the alt grid. Feed well over one screen
+# BEFORE entering alt so PRIMARY-BEFORE-ALT scrolls off the visible primary grid: a single visible
+# line would leave the marker in the grid, so the check would pass even if the alt dump dropped
+# the frozen-primary SCROLLBACK (a vacuous pass -- this is what tests the scrolled-off path).
 _sa = SecureTerminal(command='/bin/cat', tui=True)
 APP.processEvents()
+_sa_rows = _sa._screen.lines
 feed_output(_sa, b'PRIMARY-BEFORE-ALT\r\n')
+feed_output(_sa, (''.join('ALTFILLER-%03d\r\n' % i for i in range(_sa_rows * 2))).encode())
 _sa._render_tui()
 APP.processEvents()
+# Before alt entry the marker has scrolled ABOVE the visible primary grid: absent from the grid
+# `rows`, reachable only through the promoted scrollback document.
+_sapre = _json.loads(_sa.dump_state('json'))
+ok('PRIMARY-BEFORE-ALT' not in ''.join(r.get('text', '') for r in _sapre['rows']),
+   'setup: PRIMARY-BEFORE-ALT scrolled off the visible primary grid before alt entry')
+ok('PRIMARY-BEFORE-ALT' in (_sapre.get('document') or ''),
+   'setup: PRIMARY-BEFORE-ALT is in the promoted primary scrollback, not the visible grid')
 feed_output(_sa, b'\x1b[?1049hALTONLY')
 _sa._render_tui()
 APP.processEvents()
@@ -345,7 +389,8 @@ _sadoc = _saobj.get('document') or ''
 ok(_saobj['alt_screen'] is True and 'ALTONLY' in _sa.dump_state('text'),
    'the alt dump shows the alt grid and alt-screen: yes')
 ok('PRIMARY-BEFORE-ALT' in _sadoc and 'ALTONLY' not in _sadoc,
-   'in the alternate screen the scrollback is the frozen primary, not the alt grid')
+   'in the alternate screen the scrollback is the frozen primary scrollback (incl. scrolled-off), '
+   'not the alt grid')
 _sa.close()
 
 # A frozen primary is held across a TUI->CLI switch (apply_tui does not leave the alt
