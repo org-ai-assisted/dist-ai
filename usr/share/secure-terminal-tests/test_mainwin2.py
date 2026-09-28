@@ -885,6 +885,15 @@ try:
     # --test-canary fires the headless positive control
     sys.argv = ['secure-terminal', '--new-instance', '--test-canary']
     eq(_main(), 0, 'main: --test-canary runs the headless canary before Qt')
+    # --solid-cursor EXPORTS the env the SecureTerminal ctor reads (main.py export
+    # line); pair it with --test-canary so main() returns before Qt yet still runs
+    # the export. Covers the export line + proves the flag reaches the environment.
+    os.environ.pop('SECURE_TERMINAL_SOLID_CURSOR', None)
+    sys.argv = ['secure-terminal', '--solid-cursor', '--test-canary']
+    eq(_main(), 0, 'main: --solid-cursor + --test-canary returns before Qt')
+    eq(os.environ.get('SECURE_TERMINAL_SOLID_CURSOR'), '1',
+       'main: --solid-cursor exports SECURE_TERMINAL_SOLID_CURSOR=1 for the ctor')
+    os.environ.pop('SECURE_TERMINAL_SOLID_CURSOR', None)
     # --reuse: hand off to the running primary -> exit 0 without starting Qt.
     # (Reuse is the ONLY path that hands off now; a bare launch always builds its
     # own window -- see the new-window test below and the no-handoff regression.)
