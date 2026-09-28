@@ -1122,6 +1122,10 @@ demo_shots_capture() {
       ## non-blank, the transcript carries content, and the injection was not mangled -- neither a
       ## not-found command NOR a DIFFERENT command that completed (a dropped keystroke in the arg,
       ## e.g. `cat X.txt` -> `cat X.tx`). A still-running program logs neither, so it still passes.
+      ## RESIDUAL (accepted): a mangle that leaves the program NON-completing -- a wrong sleep
+      ## duration, or a dropped quote that stalls the shell at PS2 -- logs nothing to compare, so it
+      ## is not distinguishable here. These showcase shots are visually reviewed before publishing,
+      ## which catches such a broken frame; closing it in-gate is not worth a PS2/blocking probe.
       if [ "${send_rc}" -eq 0 ] \
             && capture_settled "${out}/${name}.png" "${stwid}" skip-tighten \
             && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}" \
@@ -1603,10 +1607,15 @@ command_not_found_handle() {
 ## index; strip its leading whitespace.
 ## NOTE (fc-in-PROMPT_COMMAND lag): `fc -ln -1` is CORRECT for the FIRST command in a fresh shell
 ## but from the SECOND command on it returns the PREVIOUS command's text (the exit status stays
-## correct). Every SHOOTING path here injects ONE command per freshly-launched shell (compat /
-## demo / zoom-CLI) or re-injects the SAME command (zoom-TUI re-cat, emulator retry), so the logged
-## text always matches the injected command -- the lag is masked. It would only bite a shell that
-## ran two DIFFERENT commands in sequence, which no capture path does.
+## correct); `history 1` lags identically, and a dropped command (a bare Return) adds no history
+## entry at all, so only a DEBUG-trap preexec avoids it -- not adopted here, as BASH_COMMAND differs
+## from the typed text for quoted commands and would false-REJECT valid shots. This is why the
+## STRICT gate (shots_cmd_ran_ok, which requires the exact command text) runs only where each shell
+## sees ONE command as its FIRST command: compat / demo-completing / zoom-CLI (fresh shell per shot)
+## and the emulator first attempt. zoom-TUI re-cats the SAME command in a persistent shell across
+## zoom levels -- a SUCCESSFUL re-cat logs the same (correct) text, but a DROPPED re-cat on a later
+## level is logged as the prior level's text (a narrow false-accept); zoom-verify is a reviewed
+## verification lane, so that residual is accepted rather than closed with the risky rewrite.
 __shots_log() {
    local __rc=$?
    local __cmd
