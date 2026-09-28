@@ -109,15 +109,37 @@ elapsed="$(( SECONDS - start ))"
 kill "${watchdog}" 2>/dev/null || true
 wait "${watchdog}" 2>/dev/null || true
 
+## A process is DEAD if it is gone OR a ZOMBIE. `kill -0` alone is not enough: a killed
+## process that its parent has not yet reaped stays a zombie and `kill -0` still SUCCEEDS
+## for it. The subject group-kills correctly, but the GRANDCHILD is orphaned when its parent
+## (the command shell) dies, so it reparents to PID 1 -- and a CI-container PID 1 reaps
+## orphan zombies slowly, so a genuinely-killed grandchild can linger as a zombie past this
+## poll. Counting a zombie as alive is exactly the intermittent false-FAIL this closes; a
+## STILL-RUNNING survivor (state R/S/D, a real teardown regression) is still reported dead=no.
+proc_dead() {  ## $1=pid; dead if the pid is gone or in the zombie (Z) state
+   kill -0 "$1" 2>/dev/null || return 0
+   local stat
+   stat="$(cat -- "/proc/$1/stat" 2>/dev/null)" || return 0   # vanished between the two reads
+   ## comm (field 2, in parens) may itself contain spaces/parens, so key off the LAST ')':
+   ## everything after ") " starts with the single-char state code.
+   stat="${stat##*') '}"
+   case "${stat}" in
+      Z*)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
 ## Poll for the whole tree to die (bounded): the teardown sends SIGTERM, then after a brief
 ## grace escalates to SIGKILL, so a TERM-deferring child (bash in `wait`) dies a beat later.
 ## A single fixed sleep raced this on a slow CI runner; poll up to ~9s instead. A genuine
-## orphan (never reaped) still fails -- the poll times out with the pid alive.
+## orphan that is never killed (state R/S/D) still fails -- the poll times out with it alive.
 child_dead=''
 gc_dead=''
 for _ in $(seq 1 45); do
-   kill -0 "${child}" 2>/dev/null || child_dead='1'
-   kill -0 "${grandchild}" 2>/dev/null || gc_dead='1'
+   proc_dead "${child}" && child_dead='1'
+   proc_dead "${grandchild}" && gc_dead='1'
    [ -n "${child_dead}" ] && [ -n "${gc_dead}" ] && break
    sleep 0.2
 done
