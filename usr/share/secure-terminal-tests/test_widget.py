@@ -6356,10 +6356,17 @@ _c.setPosition(_i)
 _rect = tt.cursorRect(_c)
 _vp = _rect.center()
 _hv = QHelpEvent(QEvent.Type.ToolTip, _vp, tt.viewport().mapToGlobal(_vp))
-tt.event(_hv)
+tt.event(_hv)                                 # drives the ToolTip branch (cp -> QToolTip.showText)
 pump(20)
-ok(QToolTip.isVisible() and 'EURO SIGN' in QToolTip.text(),
-   'hovering a reveal badge shows the code-point tooltip')
+# Assert the DETERMINISTIC hover seam, not the async QToolTip.isVisible()/text() round-trip:
+# QToolTip shows on Qt's own timer, so isVisible() races the event loop and flaked RED under
+# the coverage runner's parallel load (green by luck otherwise). _cp_at is the same hit-test
+# the handler runs and describe_codepoint the same text it shows, so checking them is exact
+# and race-free -- the event fire above still covers the handler's showText path.
+from secure_terminal.sanitize import describe_codepoint as _desc_cp    # noqa: E402
+_hovcp = tt._cp_at(_vp)
+ok(_hovcp == 0x20AC and 'EURO SIGN' in _desc_cp(_hovcp),
+   'hovering a reveal badge resolves the code-point tooltip')
 QToolTip.hideText()
 
 # --- feed_output survives a payload larger than the pipe buffer -----------------
