@@ -295,6 +295,46 @@ ok('alt-screen: no' in _tui.dump_state('text'),
    'after the program leaves the alternate screen the dump reports alt-screen: no')
 _tui.close()
 
+# --- The TUI dump carries the SCROLLBACK above the grid, not just the visible grid. -------
+# claude renders in place, and a state dump that dropped scrollback in TUI (while CLI kept it
+# via `document`) hid most of the buffer. Feed well over one screen so early lines scroll off
+# the live grid into the promoted scrollback.
+_sb = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_sb_rows = _sb._screen.lines
+_sb_feed = ''.join('SCROLLLINE-%03d\r\n' % i for i in range(_sb_rows * 3))
+feed_output(_sb, _sb_feed.encode())
+_sb._render_tui()
+APP.processEvents()
+_sbtext = _sb.dump_state('text')
+_sbobj = _json.loads(_sb.dump_state('json'))
+# SCROLLLINE-000 scrolled off the visible grid, so it is reachable ONLY through the scrollback
+# section -- absent from a grid-only dump (the exact bug this guards).
+ok('SCROLLLINE-000' not in ''.join(r.get('text', '') for r in _sbobj['rows']),
+   'setup: SCROLLLINE-000 has scrolled off the visible grid')
+ok('--- scrollback' in _sbtext and 'SCROLLLINE-000' in _sbtext,
+   'the TUI text dump carries the scrollback above the grid')
+ok('SCROLLLINE-000' in (_sbobj.get('document') or ''),
+   'the TUI json dump carries the scrollback in the document field')
+_sb.close()
+
+# In the alternate screen the scrollback is the PRIMARY frozen at entry, not the alt grid.
+_sa = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_sa, b'PRIMARY-BEFORE-ALT\r\n')
+_sa._render_tui()
+APP.processEvents()
+feed_output(_sa, b'\x1b[?1049hALTONLY')
+_sa._render_tui()
+APP.processEvents()
+_saobj = _json.loads(_sa.dump_state('json'))
+_sadoc = _saobj.get('document') or ''
+ok(_saobj['alt_screen'] is True and 'ALTONLY' in _sa.dump_state('text'),
+   'the alt dump shows the alt grid and alt-screen: yes')
+ok('PRIMARY-BEFORE-ALT' in _sadoc and 'ALTONLY' not in _sadoc,
+   'in the alternate screen the scrollback is the frozen primary, not the alt grid')
+_sa.close()
+
 # A frozen primary is held across a TUI->CLI switch (apply_tui does not leave the alt
 # screen), so a CLI dump must still report saved-primary, not null. (ST ai-review #3.)
 _sw = SecureTerminal(command='/bin/cat', tui=True)
