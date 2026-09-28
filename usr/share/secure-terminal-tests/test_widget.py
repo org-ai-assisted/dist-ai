@@ -6423,6 +6423,90 @@ ok(_sw29._screen.cursor.y == _yb29 + 1 and _sw29._screen.cursor.x == 1,
    '#29: after a shrink-to-full the next byte autowraps instead of overwriting')
 _sw29.shutdown()
 
+# --- #16: a TUI height SHRINK on a SHELL (bottom-anchored) frame scrolls the clipped top
+# --- rows into SCROLLBACK instead of destroying them, so the output above the prompt
+# --- survives a transient shrink (the copy/paste review bar opening then closing, a window
+# --- drag). Stock pyte Screen.resize clips the top rows and drops them -- the reported
+# --- vanish-on-copy bug. The renderer draws the preserved history above the grid and trims
+# --- the grow's trailing blanks (Bug #64), so a shrink+grow round trip is lossless.
+_psv = SecureTerminal(command='/bin/cat', tui=True)
+_psv.resize(700, 400)
+_psv.show()
+pump(40)
+_psv_n = _psv._screen.lines
+# Fill the grid with output ending at the prompt: the cursor sits on the last content row.
+feed_output(_psv, (''.join('out %02d\r\n' % _i for _i in range(1, _psv_n))
+                   + 'prompt$ ').encode())
+_psv._render_tui()
+pump(20)
+_psv_before = [_l for _l in _psv.toPlainText().split('\n') if _l.strip()]
+_psv_top0 = len(_psv._screen.history.top)
+_psv_small = max(3, _psv_n // 2)
+_psv._tui_grid_size = lambda: (_psv._screen.columns, _psv_small)
+_psv._sync_tui_size()                              # SHRINK (the review bar opening)
+ok(len(_psv._screen.history.top) == _psv_top0 + (_psv_n - _psv_small),
+   '#16: a shell-shape TUI shrink scrolls the clipped top rows into scrollback')
+_psv._tui_grid_size = lambda: (_psv._screen.columns, _psv_n)
+_psv._sync_tui_size()                              # GROW back (the review bar closing)
+_psv._render_tui()
+pump(20)
+_psv_after = [_l for _l in _psv.toPlainText().split('\n') if _l.strip()]
+ok(_psv_after == _psv_before,
+   '#16: a shell shrink+grow round trip preserves the full display (no vanished output)')
+_psv.shutdown()
+
+# #16: a PROGRAM-managed canvas -- a full-screen app in the NORMAL buffer that draws content
+# BELOW the cursor (a status/hint line) and repaints on the SIGWINCH, e.g. Claude Code -- is
+# NOT preserved: pushing would leave stale duplicate scrollback and cost it the fixed-canvas
+# treatment (row-0 pin, no scrollbar). Only the shell shape (cursor on the last row) is kept.
+_pcv = SecureTerminal(command='/bin/cat', tui=True)
+_pcv.resize(700, 400)
+_pcv.show()
+pump(40)
+_pcv_n = _pcv._screen.lines
+_pcv._stream.feed(b'\x1b[2J')
+for _r in range(1, _pcv_n + 1):
+    _pcv._stream.feed(('\x1b[%d;1Hrow%02d' % (_r, _r)).encode())    # content on EVERY row
+_pcv._stream.feed(('\x1b[%d;1H' % max(1, _pcv_n - 4)).encode())     # caret ABOVE the last rows
+_pcv_top0 = len(_pcv._screen.history.top)
+_pcv._tui_grid_size = lambda: (_pcv._screen.columns, max(3, _pcv_n // 2))
+_pcv._sync_tui_size()
+eq(len(_pcv._screen.history.top), _pcv_top0,
+   '#16: a program canvas (content below the cursor) shrink pushes nothing to scrollback')
+_pcv.shutdown()
+
+# #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
+# resize of an unused screen adds none).
+_pbv = SecureTerminal(command='/bin/cat', tui=True)
+_pbv.resize(700, 400)
+_pbv.show()
+pump(40)
+_pbv._stream.feed(b'\x1b[2J')
+_pbv_top0 = len(_pbv._screen.history.top)
+_pbv._tui_grid_size = lambda: (_pbv._screen.columns, max(3, _pbv._screen.lines // 2))
+_pbv._sync_tui_size()
+eq(len(_pbv._screen.history.top), _pbv_top0,
+   '#16: shrinking a blank grid adds no scrollback (blank rows are not preserved)')
+_pbv.shutdown()
+
+# #16: the ALT screen never preserves to (primary) scrollback -- the full-screen program
+# repaints on the SIGWINCH, and preserving would pollute the primary history the snapshot
+# restores on exit.
+_pav = SecureTerminal(command='/bin/cat', tui=True)
+_pav.resize(700, 400)
+_pav.show()
+pump(40)
+for _i in range(1, _pav._screen.lines):
+    feed_output(_pav, ('alt %02d\r\n' % _i).encode())
+_pav._alt_screen = True
+_pav_top0 = len(_pav._screen.history.top)
+_pav._tui_grid_size = lambda: (_pav._screen.columns, max(3, _pav._screen.lines // 2))
+_pav._sync_tui_size()
+eq(len(_pav._screen.history.top), _pav_top0,
+   '#16: an alt-screen shrink does not push rows into primary scrollback')
+_pav._alt_screen = False
+_pav.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
