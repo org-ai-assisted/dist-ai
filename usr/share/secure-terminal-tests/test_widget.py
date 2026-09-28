@@ -5427,9 +5427,10 @@ APP.processEvents()
 _wsf = _wsw._fmt_from_key((_S.MARK_KEY, _S.WS_ANOMALY, 0x20))
 ok(_wsf.property(_WSP) is True, 'ws: the WS_ANOMALY format carries the dot-paint flag')
 ok(_wsf.property(_WCP) is None, 'ws: the WS_ANOMALY format carries no source code point')
-# REGRESSION: the widget paint path special-cases WS_ANOMALY, but the COLOUR-only paths
-# (revealed_editor._format, the review table) index MARKING_COLORS[theme][class] directly, so
-# the class MUST have an entry for every theme or a marked space KeyErrors there.
+# REGRESSION: the widget paint path special-cases WS_ANOMALY, but the COLOUR-only review
+# TABLE (review.py) indexes MARKING_COLORS[theme][class] directly, so the class MUST have an
+# entry for every theme or a marked space KeyErrors there. (The review BOX no longer uses the
+# colour path -- it inherits the widget's dot overlay via _RenderedTextView.)
 for _wt in ('light', 'dark'):
     ok(_S.WS_ANOMALY in SecureTerminal.MARKING_COLORS[_wt],
        'ws: MARKING_COLORS[%s] has a whitespace entry (colour-only render paths index it)' % _wt)
