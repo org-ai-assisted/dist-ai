@@ -554,6 +554,18 @@ ok(_pe.font().fixedPitch(), 'font parity: the box font is fixed-pitch (shared bu
 # Caret: the native caret is hidden and our own 2px bar is drawn (like the console).
 eq(_pe.cursorWidth(), 0, 'caret parity: the native caret is hidden (own bar is painted)')
 eq(_pe._cursor_rect().width(), 2, 'caret parity: the drawn caret is a 2px bar')
+# REGRESSION: an edit must re-show the caret SOLID. The box has no output cursor to trigger
+# the terminal's _mark_cursor_moved, so _render() restarts the blink itself; without it a
+# keystroke / click landing in the blink OFF phase leaves the caret invisible for up to
+# cursorFlashTime()/2 (a regression from the native caret the box used pre-unification).
+# FAILS on the pre-fix box (_render did not restart the blink).
+_pe.set_source('abc')
+_pe._blink_cursor()                           # force the blink OFF half-cycle
+ok(_pe._cursor_on is False, 'caret regression setup: the blink OFF phase is in effect')
+_pe._pos = 3
+_pe._insert('z')                              # an edit -> _render -> _restart_blink
+ok(_pe._cursor_on is True,
+   'caret regression: an edit re-shows the caret solid (not stuck invisible after a keystroke)')
 
 # Palette: themed via the palette (not a stylesheet), so the overlays read the theme colours.
 _pe.apply_theme('dark')
