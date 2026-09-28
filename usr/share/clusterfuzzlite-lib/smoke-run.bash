@@ -38,6 +38,12 @@
 cflite_smoke_run_fuzzers() {
   local name smoke_rc var
   local -a clean_run
+  ## No names is itself a silent skip -- the exact class this guard exists to
+  ## catch, one level up. Fail loud rather than pass vacuously.
+  if [ "$#" -eq 0 ]; then
+    printf 'FATAL: cflite_smoke_run_fuzzers called with no fuzzer names\n' >&2
+    return 1
+  fi
   for name in "$@"; do
     ## Clear the resolution env for the CHILD so ONLY the frozen bundle can
     ## satisfy the subject import: PYTHONPATH plus every *_REPO override
