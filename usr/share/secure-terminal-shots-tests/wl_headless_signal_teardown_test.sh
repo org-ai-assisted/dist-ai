@@ -44,6 +44,16 @@ if [ -z "${run}" ]; then
    exit 1
 fi
 
+## Shared, zombie-aware liveness helpers (proc_dead / proc_diag) live beside wl-headless-run --
+## a bare `kill -0` reports a killed-but-unreaped process as alive, the flake this closes.
+proc_lib="$(dirname -- "${run}")/proc-lib.bash"
+if [ ! -r "${proc_lib}" ]; then
+   printf '%s\n' "FATAL: proc-lib.bash not found beside wl-headless-run: ${proc_lib}" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/proc-lib.bash
+. "${proc_lib}"
+
 pass=0
 fail=0
 check() {  ## $1=label $2=ok?(non-empty=pass)
@@ -109,27 +119,8 @@ elapsed="$(( SECONDS - start ))"
 kill "${watchdog}" 2>/dev/null || true
 wait "${watchdog}" 2>/dev/null || true
 
-## A process is DEAD if it is gone OR a ZOMBIE. `kill -0` alone is not enough: a killed
-## process that its parent has not yet reaped stays a zombie and `kill -0` still SUCCEEDS
-## for it. The subject group-kills correctly, but the GRANDCHILD is orphaned when its parent
-## (the command shell) dies, so it reparents to PID 1 -- and a CI-container PID 1 reaps
-## orphan zombies slowly, so a genuinely-killed grandchild can linger as a zombie past this
-## poll. Counting a zombie as alive is exactly the intermittent false-FAIL this closes; a
-## STILL-RUNNING survivor (state R/S/D, a real teardown regression) is still reported dead=no.
-proc_dead() {  ## $1=pid; dead if the pid is gone or in the zombie (Z) state
-   kill -0 "$1" 2>/dev/null || return 0
-   local stat
-   stat="$(cat -- "/proc/$1/stat" 2>/dev/null)" || return 0   # vanished between the two reads
-   ## comm (field 2, in parens) may itself contain spaces/parens, so key off the LAST ')':
-   ## everything after ") " starts with the single-char state code.
-   stat="${stat##*') '}"
-   case "${stat}" in
-      Z*)
-         return 0
-         ;;
-   esac
-   return 1
-}
+## proc_dead (a process is dead if gone OR a zombie) is sourced from proc-lib.bash above --
+## `kill -0` alone counts a killed-but-unreaped orphan as alive, the intermittent false-FAIL.
 
 ## Poll for the whole tree to die (bounded): the teardown sends SIGTERM, then after a brief
 ## grace escalates to SIGKILL, so a TERM-deferring child (bash in `wait`) dies a beat later.
@@ -144,26 +135,12 @@ for _ in $(seq 1 45); do
    sleep 0.2
 done
 
-## Flake diagnostics: on a reap FAILURE, dump WHAT survived and in WHICH state, so a single
-## red CI log distinguishes a real teardown regression (a live orphan, state R/S/D) from a
-## detection/timing artifact -- no local reproduction needed. proc_dead already excludes Z
-## (zombie), so anything still counted alive here is genuinely running.
-diag_survivor() {  ## $1=label $2=pid
-   local raw rest state ppid comm
-   kill -0 "$2" 2>/dev/null || return 0
-   raw="$(cat -- "/proc/$2/stat" 2>/dev/null)" || return 0
-   ## comm (field 2) is parenthesized and may contain spaces/parens; key off the LAST ')'.
-   comm="${raw#*(}"
-   comm="${comm%)*}"
-   rest="${raw##*') '}"          # "state ppid pgrp ..." -- no parens past here
-   state="${rest%% *}"
-   rest="${rest#* }"
-   ppid="${rest%% *}"
-   printf 'DIAG: %s pid %s SURVIVED teardown: state=%s ppid=%s comm=%s\n' \
-      "$1" "$2" "${state}" "${ppid}" "${comm}" >&2
-}
-[ -z "${child_dead}" ] && diag_survivor 'child' "${child}"
-[ -z "${gc_dead}" ] && diag_survivor 'grandchild' "${grandchild}"
+## Flake diagnostics: on a reap FAILURE, proc_diag (from proc-lib.bash) dumps WHAT survived and
+## in WHICH state, so a single red CI log distinguishes a real teardown regression (a live orphan,
+## state R/S/D) from a timing artifact -- proc_dead already excludes zombies, so anything counted
+## alive here is genuinely running.
+[ -z "${child_dead}" ] && proc_diag 'child' "${child}"
+[ -z "${gc_dead}" ] && proc_diag 'grandchild' "${grandchild}"
 
 check "SIGTERM reaps the command child (pid ${child})" "${child_dead}"
 check "SIGTERM reaps the GRANDCHILD too (whole process group, pid ${grandchild})" "${gc_dead}"
