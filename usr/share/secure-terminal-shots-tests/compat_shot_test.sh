@@ -105,8 +105,27 @@ if [ "${rc}" -ne 0 ]; then
    sed 's/^/    /' "${work}/gen.log" >&2 || true
 fi
 
-## 2. One well-formed table row per listed name.
+## 2. The emitted table's name column must be EXACTLY the --list set: one row per name, no
+## duplicate and no extra/unlisted rows. The old check grepped per --list name (presence only),
+## so a duplicate row (grep stops at the first match) or an unlisted extra row (never visited)
+## slipped through. Compare the complete sorted name column against the sorted --list -- a
+## difference is a missing row, an extra/unlisted row, OR a duplicate (each changes the multiset).
 names="$("${gen}" --list)"
+# shellcheck disable=SC2086
+printf '%s\n' ${names} | sort >"${work}/list.names"
+
+## Sorted table name column vs the sorted --list; rc 0 iff they match exactly. Reused below on a
+## DOCTORED table (the canary) so a regression that weakens it back to presence-only is caught.
+table_names_match() {  ## $1=table.tsv
+   cut -f1 -- "$1" | sort >"${work}/table.names"
+   diff -- "${work}/list.names" "${work}/table.names"
+}
+
+if table_names_match "${work}/table.tsv" >"${work}/table.namediff" 2>&1; then rc=0; else rc=1; fi
+check 'table name column is exactly the --list set (no missing, extra/unlisted, or duplicate rows)' "${rc}"
+[ "${rc}" -eq 0 ] || sed 's/^/    /' "${work}/table.namediff" >&2 || true
+
+## Each row well-formed: name<TAB>{full|read-safe|append-only}<TAB>command.
 for name in ${names}; do
    if grep --quiet --extended-regexp "^${name}"$'\t'"(full|read-safe|append-only)"$'\t'. "${work}/table.tsv"; then
       rc=0
@@ -115,6 +134,17 @@ for name in ${names}; do
    fi
    check "table has a well-formed row for '${name}'" "${rc}"
 done
+
+## 2-canary (silent-green): the set check MUST reject a table carrying a duplicate row AND an
+## unlisted extra row -- exactly what the old presence-only grep accepted. Doctor a copy, assert
+## it is rejected.
+{
+   cat -- "${work}/table.tsv"
+   head --lines 1 -- "${work}/table.tsv"                ## duplicate the first row
+   printf 'zz-not-a-listed-shot\tfull\tcat x\n'         ## an unlisted extra row
+} >"${work}/table.doctored"
+if table_names_match "${work}/table.doctored" >/dev/null 2>&1; then rc=1; else rc=0; fi
+check 'table validation rejects a duplicate row + an unlisted extra row (no silent-green)' "${rc}"
 
 ## 3. DRIFT: the page references every listed shot, and no stale webp (site checkout only).
 page=''
