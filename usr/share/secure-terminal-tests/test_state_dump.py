@@ -235,6 +235,19 @@ _tailsnap = sd.collect(None, mode='cli', columns=80, alt_screen=False, saved_pri
 _tobj = _json.loads(sd.dump_json(_tailsnap, max_bytes=2000))
 ok('UNIQUE_TAIL_MARKER' in _tobj['document'],
    'CLI json truncation keeps the live tail (current screen), not the oldest prefix')
+# TUI: a huge scrollback `document` is truncated BEFORE any live grid row is dropped, so
+# `ctl dump-state --format json` never omits the current screen. Canary: dropping rows first
+# (the pre-fix order) empties `rows` while retaining scrollback. (ST ai-review finding 1.)
+_gbig = pyte.HistoryScreen(20, 3, history=5)
+pyte.Stream(_gbig).feed('LIVE-SCREEN-ROW')
+_gsnap = sd.collect(_gbig, mode='tui', columns=20, alt_screen=False, saved_primary=None,
+                    mouse_modes=set(), title='', document='S' * 600000)
+_gobj = _json.loads(sd.dump_json(_gsnap, max_bytes=524288))
+ok(_gobj.get('rows') and _gobj.get('document_truncated') is True
+   and _gobj.get('truncated_rows', 0) == 0,
+   'a huge TUI scrollback truncates before any grid row is dropped (live screen preserved)')
+ok(any('LIVE-SCREEN-ROW' in r.get('text', '') for r in _gobj['rows']),
+   'the live grid row survives an over-budget TUI json dump dominated by scrollback')
 # A field other than rows/document (a HTS-every-column tab-stop flood) must not leave the
 # JSON over budget; it collapses to a count and the bound still holds. (ST ai-review #2.)
 _floodrows = pyte.HistoryScreen(20, 3, history=5)
