@@ -239,8 +239,9 @@ def _inv4_char_ok(ch, mode):
         if S.is_structural(cp):
             return True                       # honest box-drawing / block glyph
         # Show keeps a PRINTABLE non-ASCII glyph (its documented risk), but never an
-        # invisible / default-ignorable / bidi / control one.
-        return (ch.isprintable() and not S.is_default_ignorable(ch)
+        # invisible / default-ignorable / blank-glyph / bidi / control one. is_invisible
+        # (not is_default_ignorable) so a leaked printable-but-inkless blank is caught too.
+        return (ch.isprintable() and not S.is_invisible(ch)
                 and not S.is_bidi_control(cp))
     return False                              # box / reveal / detail: nothing else
 

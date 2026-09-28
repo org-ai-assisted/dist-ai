@@ -2658,7 +2658,9 @@ for _cp in _SWEEP:
         # nothing may pass in box/reveal/detail, and nothing invisible anywhere.
         if any(m != 'show' for m in _passed):
             _MODE_BAD.append((_cp, _passed))
-        elif _passed and (not _ch.isprintable() or S.is_default_ignorable(_ch)):
+        elif _passed and S.is_invisible(_ch):
+            # is_invisible, not is_default_ignorable: also catches the printable-but-inkless
+            # blank glyphs (U+2800, U+FFFC) that show nothing yet are not Default_Ignorable.
             _MODE_BAD.append((_cp, _passed))
     for _mode in S.DISPLAY_MODES:
         _t = S.tui_cell(_ch, _mode)
