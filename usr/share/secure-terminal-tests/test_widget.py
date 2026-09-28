@@ -6529,6 +6529,28 @@ eq(len(_prv._screen.history.top), _prv_top0,
    '#16: a scroll-region shrink defers to pyte (no rows duplicated into scrollback)')
 _prv.shutdown()
 
+# #16 (ai-review): a full-screen alt program that sets a DECSTBM scroll region and exits
+# WITHOUT resetting it must NOT leak the region into the primary shell. pyte shares one
+# Screen, so _alt_enter/_alt_leave snapshot+restore margins; else the leaked region gates
+# off the scrollback-preserving shrink for the rest of the session (the vanish bug returns).
+_plk = SecureTerminal(command='/bin/cat', tui=True)
+_plk.resize(700, 400)
+_plk.show()
+pump(40)
+_plk_n = _plk._screen.lines
+feed_output(_plk, (('shell-line\r\n' * 5) + '$ ').encode())      # shell content + a prompt
+feed_output(_plk, b'\x1b[?1049h')                                # a full-screen program: enter alt
+feed_output(_plk, ('\x1b[2;%dr' % (_plk_n - 1)).encode())        # ...sets a DECSTBM region
+feed_output(_plk, b'\x1b[?1049l')                                # ...and leaves WITHOUT resetting it
+eq(_plk._screen.margins, None,
+   '#16: alt-leave restores primary margins (a leaked DECSTBM region is cleared)')
+_plk_top0 = len(_plk._screen.history.top)
+_plk._tui_grid_size = lambda: (_plk._screen.columns, max(3, _plk_n // 2))
+_plk._sync_tui_size()
+ok(len(_plk._screen.history.top) > _plk_top0,
+   '#16: after an alt program leaks a region and leaves, the shell shrink still preserves')
+_plk.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
