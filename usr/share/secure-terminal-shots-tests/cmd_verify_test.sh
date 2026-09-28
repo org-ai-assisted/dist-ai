@@ -132,6 +132,35 @@ else
    eq fail fail 'a missing command-log file is a miss, not a pass'
 fi
 
+## --- Part A.2: shots_cmd_no_notfound -- the weaker gate for capture paths whose program is
+## captured mid-run or after a kill (demo-shots: sleep/nano/Terminate), where an rc-0 completion
+## cannot be required but the dropped-keystroke silent-green must still be caught. ------------
+
+if ! declare -F shots_cmd_no_notfound >/dev/null 2>&1; then
+   printf '%s\n' 'FAIL: shots_cmd_no_notfound not defined -- old harness'
+   fail=$(( fail + 1 ))
+else
+   nf_verdict() {  ## $1=cmdlog-contents (printf %b) -> 'ok' | 'fail'
+      printf '%b' "$1" > "${tmp}/nflog"
+      if shots_cmd_no_notfound "${tmp}/nflog"; then printf 'ok'; else printf 'fail'; fi
+   }
+   ## A blocking program still running at grab time logs only a startup empty-command entry (no
+   ## completed rc-0 line) -- rc-0 cannot be required, but with no NOTFOUND it passes.
+   eq "$(nf_verdict 'RAN\t0\t\n')" ok 'a startup-only log (blocking program still running) passes'
+   ## A Terminate demo kills the program (non-zero rc, no NOTFOUND) -> still passes.
+   eq "$(nf_verdict 'RAN\t143\tsleep 100\n')" ok 'a SIGTERM-killed program (rc 143, no not-found) passes'
+   ## A dropped keystroke fires command_not_found_handle -> NOTFOUND -> rejected even here.
+   eq "$(nf_verdict 'NOTFOUND\tleep\nRAN\t127\tleep 100\n')" fail 'a dropped-keystroke (NOTFOUND) is rejected'
+   ## An empty (freshly-cleared) log carries no NOTFOUND -> passes (submit + transcript gates cover the rest).
+   eq "$(nf_verdict '')" ok 'an empty (cleared) log has no not-found and passes'
+   ## A missing log file is fail-closed (the hooks never ran).
+   if shots_cmd_no_notfound "${tmp}/nf-does-not-exist"; then
+      eq ok fail 'a missing log file is fail-closed'
+   else
+      eq fail fail 'a missing log file is fail-closed'
+   fi
+fi
+
 ## --- Part B: the REAL .strc hooks agree with the classifier (driven through a PTY) ----
 
 ## Extract the QUOTED-heredoc hook block written into .strc by comparison-capture.sh (reads the

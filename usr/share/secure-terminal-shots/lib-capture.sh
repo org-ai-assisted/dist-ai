@@ -369,6 +369,21 @@ shots_cmd_ran_ok() {  ## $1=cmdlog-file  $2=expected-command
    return 1
 }
 
+## The weaker sibling of shots_cmd_ran_ok for capture paths whose program is EXPECTED to still be
+## running or killed at grab time (a blocking sleep / editor, a Terminate demo), where a completed
+## rc-0 line cannot be required. It still closes the dropped-keystroke silent-green: a mangled
+## injection ('cat X' -> 'at X') fires command_not_found_handle -> a NOTFOUND line -> a NON-blank
+## shell-error shot that the blank-frame check would otherwise publish. Fail-closed: an unreadable
+## log (the hooks never ran) is a reject.
+shots_cmd_no_notfound() {  ## $1=cmdlog-file
+   local file tab
+   file="$1"; tab=$'\t'
+   [ -r "${file}" ] || return 1
+   ## Any not-found sentinel means the injection was mangled -> reject.
+   grep --quiet "^NOTFOUND${tab}" -- "${file}" && return 1
+   return 0
+}
+
 ## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
 ## standard emulator equivalent; art and gradient are secure-terminal truecolor-render demos
 ## (24-bit smooth ramps -- a page-facing capability shown for secure-terminal only, not an
