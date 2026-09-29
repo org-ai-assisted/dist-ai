@@ -513,6 +513,14 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
                       and b'Base ref does not exist' in bad_base.stderr,
                       'exit %d stderr=%r' % (bad_base.returncode,
                                              bad_base.stderr[:160]))
+                ## An explicitly-EMPTY base is rejected like any other bad ref
+                ## (${2-HEAD}, not ${2:-HEAD}), not silently treated as HEAD.
+                empty_base = run_tool(repo, ['feature', ''])
+                check('R:empty-base-rejected',
+                      empty_base.returncode == error_code
+                      and b'Base ref does not exist' in empty_base.stderr,
+                      'empty base should be rejected, exit %d stderr=%r'
+                      % (empty_base.returncode, empty_base.stderr[:160]))
 
     ## [F] fuzz: random commits vs an independent oracle. Each iteration puts a
     ## clean-or-suspicious payload in a random location; the tool must exit 1 iff

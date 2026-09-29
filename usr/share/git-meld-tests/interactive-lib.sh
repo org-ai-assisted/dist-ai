@@ -8,8 +8,10 @@
 ## Interactive-consent tests for the terminal-safe reviewer git-diff-review.
 ## Contract, TWO terminal prompts in order:
 ##   1. Before the per-file diffs, "proceed to the per-file diffs? [y/N]" lets
-##      the operator ack the changed-file list first. Declining SKIPS the diffs
-##      and exits 0 (clean), so a chained review still runs its GUI tools.
+##      the operator ack the changed-file list first. It fires ONLY in a genuine
+##      interactive session (flag set AND both stdin/stdout terminals). Declining
+##      ABORTS non-zero WITHOUT scanning -- never a scanned-clean-looking exit 0
+##      (the per-file dispatch is the only place content is scanned).
 ##   2. During a diff, on FATAL (undecodable / non-UTF-8) content it prompts
 ##      "continue past neutralized content? [y/N]" and must CONTINUE on 'y'
 ##      (exit 0) and FAIL CLOSED on 'n' (non-zero).
@@ -127,25 +129,27 @@ else
    fail "interactive: declining fatal content did not fail closed (exit '${n_code}')"
 fi
 
-## 3) DECLINE the proceed prompt itself -> skip the per-file diffs, exit 0
-## (clean, so a chained review still runs its GUI tools). No diff is rendered
-## (PTY_CONTINUED false: no neutralized-diff banner, no '@@' hunk), and the
-## prompt did fire (PTY_ANSWERED >= 1). Fails on the pre-gate tool, which had no
-## such prompt and dumped the diff (or, on fatal content, failed closed) instead.
+## 3) DECLINE the proceed prompt itself -> must FAIL CLOSED (non-zero) WITHOUT
+## scanning. The per-file dispatch is the only place content is scanned, so a
+## clean-looking exit 0 here would let a human wave a Trojan-Source change past
+## with a success code an automated caller trusts. No diff is rendered
+## (PTY_CONTINUED false: no neutralized-diff banner, no '@@' hunk), the prompt
+## did fire (PTY_ANSWERED >= 1), and the exit is non-zero. Fails on the exit-0
+## variant and on the pre-gate tool (no such prompt; it dumped the diff).
 skip_report="$( pty_run 'n' )"
 skip_code="$( pty_field "${skip_report}" PTY_EXITCODE )"
 skip_cont="$( pty_field "${skip_report}" PTY_CONTINUED )"
 skip_answered="$( pty_field "${skip_report}" PTY_ANSWERED )"
 if [ "${skip_code}" = timeout ]; then
    fail "interactive: declining the proceed prompt never returned (stuck)"
-elif [ "${skip_code}" != 0 ]; then
-   fail "interactive: declining the proceed prompt should exit 0 (skip), got '${skip_code}'"
 elif [ "${skip_answered:-0}" = 0 ]; then
    fail "interactive: the proceed prompt never fired (nothing to decline)"
 elif [ "${skip_cont}" != False ]; then
-   fail "interactive: declining the proceed prompt still rendered a diff (PTY_CONTINUED='${skip_cont}')"
+   fail "interactive: declining the proceed prompt still rendered/scanned a diff (PTY_CONTINUED='${skip_cont}')"
+elif [ -z "${skip_code}" ] || [ "${skip_code}" = 0 ]; then
+   fail "interactive: declining the proceed prompt must FAIL CLOSED (non-zero), got '${skip_code}'"
 else
-   pass "interactive: declining the proceed prompt skips the diffs and exits 0"
+   pass "interactive: declining the proceed prompt aborts non-zero without scanning (no false-clean exit 0)"
 fi
 
 printf '%s\n' '' "==== interactive FAILURES: ${fails} ===="

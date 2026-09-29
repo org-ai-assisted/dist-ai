@@ -167,6 +167,19 @@ def main():
        'seed corpus carries the adversarial corpora (%d corpus- seeds)'
        % len(corpus_seeds))
 
+    # REGRESSION: the OSS-Fuzz base image compiles CPython into /usr/local (python3 on PATH
+    # at /usr/local/bin/python3) with NO /usr/bin/python3. Our scripts carry the project
+    # `#!/usr/bin/python3` shebang and run DIRECTLY (style R-193 forbids `python3 <script>`),
+    # so the .clusterfuzzlite Dockerfile MUST provide /usr/bin/python3 or the whole
+    # ClusterFuzzLite build dies "bad interpreter: /usr/bin/python3: No such file or directory".
+    dockerfile = os.path.join(root, '.clusterfuzzlite', 'Dockerfile')
+    ok(os.path.isfile(dockerfile), '.clusterfuzzlite/Dockerfile present')
+    if os.path.isfile(dockerfile):
+        with open(dockerfile, encoding='ascii') as handle:
+            active = [ln for ln in handle if not ln.lstrip().startswith('#')]
+        ok(any('/usr/bin/python3' in ln for ln in active),
+           'Dockerfile provides /usr/bin/python3 so the #!/usr/bin/python3 shebang runs in-container')
+
     harnesses = sorted(n for n in os.listdir(fuzz_dir)
                        if n.startswith('fuzz_') and n.endswith('.py'))
     ok(len(harnesses) > 0, 'at least one fuzz harness present')

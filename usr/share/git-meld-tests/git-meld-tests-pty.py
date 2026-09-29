@@ -68,9 +68,12 @@ while True:
     ## Answer EVERY prompt, not just the first: the driver asks once per finding,
     ## and an unanswered later prompt would leave the child blocked on /dev/tty.
     ## Each new prompt consumes the next answer in the sequence, clamped to the
-    ## last, so a single answer still answers every prompt with it.
+    ## last, so a single answer still answers every prompt with it. Write AT MOST
+    ## one answer per read iteration (never a tight loop over the count): a burst
+    ## of 'QUESTION' substrings must not flood the pty input queue and block
+    ## os.write past the deadline. Real prompts arrive one per round-trip anyway.
     count = out.count(b'QUESTION')
-    while answered < count:
+    if count > answered:
         os.write(fd, answers[min(answered, len(answers) - 1)])
         answered += 1
 

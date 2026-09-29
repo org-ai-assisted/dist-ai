@@ -510,9 +510,12 @@ fi
 opt_dir="${work}/opt-bin"
 mkdir -p "${opt_dir}"
 opt_meld_args="${work}/opt-meld-args"
+## Record each argv element wrapped in [ ], so a single merged arg '-C ...sha'
+## is distinguishable from two separate args '-C' and '...sha' ('$*' would join
+## both to the same string and hide whether -C was forwarded as its own token).
 cat > "${opt_dir}/git-meld" <<STUB
 #!/bin/bash
-printf '%s\n' "\$*" > "${opt_meld_args}"
+for a in "\$@"; do printf '[%s]' "\${a}"; done > "${opt_meld_args}"
 exit 0
 STUB
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${opt_dir}/check-ref-commits-for-unicode"
@@ -527,10 +530,24 @@ feature_sha_opt="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
 opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
    fail "option forwarding: 'dm-review-branch -C feature' should exit 0, got ${rc}"
-elif [ "${opt_args}" != "-C ...${feature_sha_opt}" ]; then
-   fail "option forwarding: git-meld got args '${opt_args}', want '-C ...${feature_sha_opt}'"
+elif [ "${opt_args}" != "[-C][...${feature_sha_opt}]" ]; then
+   fail "option forwarding: git-meld argv '${opt_args}', want '[-C][...${feature_sha_opt}]' (-C as its own token before the range)"
 else
-   pass 'option forwarding: a git-diff option before the ref reaches the review tools with the range'
+   pass 'option forwarding: a git-diff option before the ref reaches the review tools as a separate argv token, with the range'
+fi
+
+## 16) A bare '--' among the options is rejected: forwarded to 'git diff' it
+## would become the pathspec separator, turning the ref into a pathspec and
+## producing an empty, silently-successful review. Must fail closed up front.
+dashdash_out="${work}/dashdash-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch -- feature ) </dev/null >"${dashdash_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail "a bare '--' option should be rejected, but dm-review-branch exited 0"
+elif ! grep --fixed-strings --quiet -- "'--' is not a valid option" "${dashdash_out}"; then
+   fail "a bare '--' option was not rejected with a clear message"
+else
+   pass "option forwarding: a bare '--' (pathspec separator) is rejected, not silently forwarded"
 fi
 
 if [ "${fail_count}" -gt 0 ]; then
