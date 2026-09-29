@@ -468,7 +468,12 @@ _mbar.deleteLater()
 # rebuilt frame with the program's ongoing cursor-addressed output and CORRUPT the buffer. A
 # grid resize must only re-sync the winsize -- it must NOT arm the debounced reflow.
 _re = SecureTerminal(command='/bin/cat', tui=True)
-_re.resize(600, 400); _re.show(); APP.processEvents()
+_re.show(); _re.resize(600, 400)
+# The wayland resize-configure applies ASYNCHRONOUSLY: a bare processEvents races it and, under
+# CI's loaded parallel coverage run, reads the grid BEFORE the new width lands -> an intermittent
+# false fail on the "columns changed" precondition. wait_for pumps until the size actually takes
+# effect (exactly the queued-apply race wait_for's docstring describes).
+wait_for(lambda: _re.width() >= 560)                # the 600px window resize has landed
 feed_output(_re, ('C' * 200 + '\r\n').encode())     # retained grid output
 _re._reflow_timer.stop()
 _re_cols0 = _re._screen.columns
@@ -476,7 +481,8 @@ _re_cols0 = _re._screen.columns
 _re_rebuilds = []
 _re_oms = _re._make_screen
 _re._make_screen = lambda: (_re_rebuilds.append(1), _re_oms())[1]
-_re.resize(300, 400); APP.processEvents()           # narrower -> grid width changes
+_re.resize(300, 400)                                # narrower -> grid width changes
+wait_for(lambda: _re._screen.columns != _re_cols0)  # wait out the async configure, not one pump
 _re._make_screen = _re_oms
 ok(_re._screen.columns != _re_cols0 and not _re._reflow_timer.isActive() and not _re_rebuilds,
    'a GRID resize re-syncs winsize but does NOT arm a reflow or rebuild the grid (no corruption)')
