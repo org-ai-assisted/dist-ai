@@ -1,0 +1,168 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Boot a grub-menu test ISO under a chosen firmware, drive the REAL derivative-maker
+## ISO GRUB menu over serial, enter the "Utilities..." submenu, and report whether a
+## given menuentry title renders -- the interactive menu observation the boot-test
+## harness (dm-image-boot-tests) deliberately lacks (it autoboots past the menu).
+##
+## qemu argv (incl. the correct OVMF/SeaBIOS wiring per --firmware) is obtained from
+## the REAL `dm-qemu --emit-argv`, so this composes with the existing harness rather
+## than reimplementing firmware setup. This process only adds the serial-driven menu
+## navigation on top.
+##
+## Exit: 0 the observation MATCHED --expect; 1 it did not (or the submenu never
+## rendered); 2 setup error.
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+
+def log(msg):
+    print("grub-menu-nav: %s" % msg, file=sys.stderr, flush=True)
+
+
+def die_setup(msg):
+    log(msg)
+    sys.exit(2)
+
+
+def emit_qemu_argv(dm_qemu, firmware, iso, serial_log):
+    ## dm-qemu prints qemu_bin + one arg per line to STDOUT (notes to STDERR),
+    ## then exits 0 without booting. --serial-logfile wires an explicit stdio
+    ## chardev, so THIS process (pexpect) owns the serial pty while a complete
+    ## copy still lands in the log file.
+    cmd = [
+        dm_qemu, "--emit-argv",
+        "--firmware", firmware,
+        "--iso", iso,
+        "--serial-logfile", serial_log,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        die_setup("dm-qemu --emit-argv failed (rc=%s):\n%s" % (proc.returncode, proc.stderr))
+    argv = [line for line in proc.stdout.splitlines() if line != ""]
+    if len(argv) < 2:
+        die_setup("dm-qemu --emit-argv produced no argv:\n%s" % proc.stdout)
+    ## dm-qemu reports the OVMF-vars workdir it created (caller owns cleanup) on
+    ## stderr; parse it so we can remove it after qemu exits.
+    workdir = None
+    for line in proc.stderr.splitlines():
+        marker = "emit-argv workdir (caller owns cleanup): "
+        if marker in line:
+            workdir = line.split(marker, 1)[1].strip()
+    return argv, workdir
+
+
+def main():
+    ## Lightweight dependency probe for the entrypoint's e2e gate: exit 0 iff
+    ## pexpect imports, without the other required args. Kept here (rather than an
+    ## inline `python3 -c` in the shell gate) so the check runs the same
+    ## interpreter as the real driver.
+    if "--check-deps" in sys.argv[1:]:
+        try:
+            import pexpect  # noqa: F401
+        except ImportError:
+            return 1
+        return 0
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dm-qemu", required=True)
+    parser.add_argument("--firmware", required=True, choices=["bios", "efi", "efi-secureboot"])
+    parser.add_argument("--iso", required=True)
+    parser.add_argument("--serial-log", required=True)
+    parser.add_argument("--submenu-hotkey", required=True,
+                        help="GRUB --hotkey char of the submenu to enter (e.g. 'u')")
+    parser.add_argument("--submenu-marker", required=True,
+                        help="a title that renders in the submenu (proves it opened)")
+    parser.add_argument("--entry-title", required=True,
+                        help="the menuentry title under test")
+    parser.add_argument("--expect", required=True, choices=["present", "absent"])
+    parser.add_argument("--menu-timeout", type=int, default=180,
+                        help="seconds to wait for the top menu (TCG boot is slow)")
+    parser.add_argument("--submenu-timeout", type=int, default=60,
+                        help="seconds to wait for the submenu to render")
+    parser.add_argument("--top-marker", default="Utilities",
+                        help="a title in the TOP menu (proves it rendered)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.iso):
+        die_setup("iso not found: %s" % args.iso)
+
+    try:
+        import pexpect
+    except ImportError:
+        die_setup("python3-pexpect is required")
+
+    argv, ovmf_workdir = emit_qemu_argv(args.dm_qemu, args.firmware, args.iso, args.serial_log)
+    log("firmware=%s: spawning %s" % (args.firmware, " ".join(argv)))
+
+    child = pexpect.spawn(
+        argv[0], args=argv[1:],
+        timeout=args.menu_timeout,
+        encoding="utf-8", codec_errors="replace",
+    )
+
+    rc = 2
+    try:
+        ## 1. Top menu rendered on serial.
+        try:
+            child.expect(args.top_marker, timeout=args.menu_timeout)
+        except pexpect.TIMEOUT:
+            log("FAIL: top menu (%r) never rendered within %ss"
+                % (args.top_marker, args.menu_timeout))
+            return 1
+        except pexpect.EOF:
+            log("FAIL: qemu exited before the top menu rendered")
+            return 1
+
+        ## 2. Enter the submenu via its GRUB hotkey. A keypress also cancels the
+        ## menu countdown, so the menu holds while we read.
+        child.send(args.submenu_hotkey)
+
+        ## 3. Read to the submenu marker (the LAST entry in the block); everything
+        ## rendered before it -- including the entry under test, if present -- is in
+        ## child.before. Deterministic: no reliance on match ordering of the title.
+        try:
+            child.expect(args.submenu_marker, timeout=args.submenu_timeout)
+        except pexpect.TIMEOUT:
+            log("FAIL: submenu marker (%r) never rendered after hotkey %r; the "
+                "submenu did not open (see %s)"
+                % (args.submenu_marker, args.submenu_hotkey, args.serial_log))
+            return 1
+        except pexpect.EOF:
+            log("FAIL: qemu exited before the submenu rendered")
+            return 1
+
+        submenu_text = child.before + args.submenu_marker
+        present = args.entry_title in submenu_text
+        observed = "present" if present else "absent"
+
+        if observed == args.expect:
+            log("PASS: entry %r is %s in the %s submenu (as expected)"
+                % (args.entry_title, observed, args.firmware))
+            rc = 0
+        else:
+            log("FAIL: entry %r is %s in the %s submenu; expected %s"
+                % (args.entry_title, observed, args.firmware, args.expect))
+            rc = 1
+    finally:
+        try:
+            child.terminate(force=True)
+        except Exception:
+            pass
+        if ovmf_workdir and os.path.isdir(ovmf_workdir):
+            shutil.rmtree(ovmf_workdir, ignore_errors=True)
+
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
