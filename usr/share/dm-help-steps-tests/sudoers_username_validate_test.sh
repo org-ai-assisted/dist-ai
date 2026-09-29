@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## username-plain-for-sudoers (help-steps/build-step-helpers.bsh, used by
+## username-plain-for-sudoers (help-steps/misc-helpers.bsh, used by
 ## 1200_prepare-build-machine) gates a value interpolated verbatim into a sudoers
 ## rule. It delegates the /etc/adduser.conf NAME_REGEX to the canonical
 ## check_valid_linux_user_account_name (helper-scripts strings.bsh) and adds the
@@ -14,7 +14,7 @@
 ## machine account), and REFUSE a leading digit/dash, any sudoers metacharacter,
 ## and 'ALL'.
 ##
-## Both real functions are SOURCED (build-step-helpers.bsh + the strings.bsh it
+## Both real functions are SOURCED (misc-helpers.bsh + the strings.bsh it
 ## relies on); the canary shows the NAME_REGEX check alone would let 'ALL'
 ## through. Needs no root, no build.
 
@@ -46,7 +46,7 @@ fi
 # shellcheck disable=SC1090
 source "${strings_bsh}"
 
-lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+lib="${dm_checkout}/help-steps/misc-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1

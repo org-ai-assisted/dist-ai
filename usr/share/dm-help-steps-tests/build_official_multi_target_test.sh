@@ -65,19 +65,31 @@ cleanup_handler() {
 trap cleanup_handler EXIT
 
 printf '%s\n' "${block}" > "${work}/block.bash"
+## HERMETIC driver: it sets BOTH inputs the block reads -- architecture and
+## dist_build_multi_target_list -- EXPLICITLY from its args, and UNSETS the override
+## when the case does not provide one. The build/CI environment exports
+## dist_build_multi_target_list, and an extracted block run with that ambient value
+## present skews the result (an empty exported value makes the override branch fire
+## with zero targets), so the block must never see an inherited value.
 cat > "${work}/driver.bash" <<'DRIVER'
 set -o nounset
-## architecture and (optionally) dist_build_multi_target_list arrive via the env.
-source "$1"
+block="$1"
+architecture="$2"
+if [ "$3" = "__UNSET__" ]; then
+   unset dist_build_multi_target_list 2>/dev/null || true
+else
+   dist_build_multi_target_list="$3"
+fi
+# shellcheck disable=SC1090
+source "${block}"
 printf '%s|%s\n' "${multi_target_args[*]}" "${flavor_multi_target_args[*]}"
 DRIVER
 
-## $1 label, $2 expected "prep|build", rest: env assignments for the driver.
+## $1 label, $2 expected "prep|build", $3 architecture, $4 override list (omit -> unset).
 check_case() {
-   local label="$1" want="$2"
-   shift 2
+   local label="$1" want="$2" arch="$3" mtl="${4:-__UNSET__}"
    local got
-   got="$(env -u dist_build_multi_target_list "$@" bash "${work}/driver.bash" "${work}/block.bash")"
+   got="$(bash "${work}/driver.bash" "${work}/block.bash" "${arch}" "${mtl}")"
    if [ "${got}" = "${want}" ]; then
       pass "${label}: ${got}"
    else
@@ -88,18 +100,18 @@ check_case() {
 ## amd64, no override -> arch default for BOTH prep and build.
 check_case 'amd64 default: prep and build both VirtualBox + qcow2' \
    '--target virtualbox --target qcow2|--target virtualbox --target qcow2' \
-   architecture=amd64
+   amd64
 
 ## amd64, qcow2-only override -> prep keeps the arch default; the BUILD set honors
 ## the override (qcow2 only).
 check_case 'amd64 qcow2-only override: prep arch default, build qcow2 only' \
    '--target virtualbox --target qcow2|--target qcow2' \
-   architecture=amd64 dist_build_multi_target_list=qcow2
+   amd64 qcow2
 
 ## amd64, explicit virtualbox+qcow2 override -> both sets carry both targets.
 check_case 'amd64 explicit virtualbox+qcow2: prep and build both' \
    '--target virtualbox --target qcow2|--target virtualbox --target qcow2' \
-   architecture=amd64 'dist_build_multi_target_list=virtualbox qcow2'
+   amd64 'virtualbox qcow2'
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
