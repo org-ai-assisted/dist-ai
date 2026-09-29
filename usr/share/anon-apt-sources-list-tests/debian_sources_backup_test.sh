@@ -10,29 +10,31 @@
 ## /etc/apt/sources.list.d/debian.sources aside before unpack so dpkg installs
 ## this package's conffile without the (noninteractive-fatal) conffile prompt.
 ##
-## Two bugs guarded (both were live, grok-found):
-##   #1 FAIL-OPEN ownership check. The old guard '! dpkg-query -S FILE' took the
-##      mv branch on EVERY nonzero rc, not only rc 1 (path owned by no package).
-##      A fatal dpkg-query (rc 2: corrupt admindir / DB error) then SEIZED a
-##      package-OWNED conffile, dropping the admin's local changes. The fix moves
-##      ONLY on rc 1.
-##   #2 NON-IDEMPOTENT do-once marker. The marker was touched unconditionally,
-##      even when the file was NOT moved aside, so a later retry hit the early
-##      'return 0' and the conffile prompt this function exists to avoid still
-##      fired. The fix records the marker ONLY once no copy of debian.sources
-##      remains where apt would read it, so a partial/failed run can be retried.
+## Bugs guarded (all live, ai-review-found):
+##   #1 FAIL-OPEN ownership check. '! dpkg-query -S FILE' took the mv branch on
+##      EVERY nonzero rc, not only rc 1 (owned by no package). A fatal dpkg-query
+##      (rc 2: corrupt admindir) then SEIZED an owned conffile. Fix: move on rc 1.
+##   #2 NON-IDEMPOTENT do-once marker. Written unconditionally, so a run that did
+##      NOT move the file still blocked the retry that could. Fix: mark only once
+##      no copy remains where apt would read it.
+##   #3 --no-clobber WEDGE. A pre-existing backup made 'mv --no-clobber' a no-op
+##      forever, so the file was never migrated and the fatal prompt recurred.
+##      Fix: 'mv --backup=numbered' migrates and preserves any prior backup.
+##   #4 SYMLINK treated as absent. '[ -e ]' follows links, so a dangling symlink
+##      was marked done without migrating. Fix: treat a symlink as present.
 ##
-## BEHAVIORAL: drives the REAL preinst end-to-end with dpkg-query stubbed on PATH
-## and the /etc + /var/lib bases redirected under a temp root (the preinst's
-## overridable ${debian_sources_file}/${do_once_dir} bases, unset in production).
-## Asserts filesystem effects (existence AND content, so an in-place wipe cannot
-## masquerade as "not seized"), not source text. DPKG_MAINTSCRIPT_* are unset (as
-## apt leaves them) so an unguarded nounset reference would surface. Every run's
-## exit status is asserted 0 -- a maintscript crash is a test failure.
+## BEHAVIORAL: drives the REAL preinst end-to-end, CONTAINED under bwrap with the
+## per-case temp dirs bound over the host paths it writes (/etc/apt/sources.list.d
+## and /var/lib), so its hardcoded writes land in the temp tree and can never
+## touch the host -- no production test seam. dpkg-query is stubbed on PATH.
+## DPKG_MAINTSCRIPT_* are unset (as apt leaves them) so an unguarded nounset
+## reference would surface. Every run's exit status is asserted 0 -- a maintscript
+## crash is a test failure. Assertions check CONTENT, not mere existence, so an
+## in-place wipe cannot masquerade as "not seized".
 ##
 ## Targets a checkout via ANON_APT_SOURCES_LIST_REPO; a maintscript has no
 ## installed runtime path, so without it the subject cannot be resolved -> SKIP.
-## No root, no network.
+## No root (bwrap supplies containment), no network.
 
 set -o errexit
 set -o nounset
@@ -58,19 +60,6 @@ if [ ! -f "${preinst}" ]; then
    ## rather than a false green against a subject that is not there.
    printf '%s\n' "SKIP: preinst not found at '${preinst}' (submodule not checked out?)" >&2
    exit 77  ## style-ok: allow-skip: optional target absent (submodule not checked out)
-fi
-
-## SAFETY: this test drives the REAL maintscript, which writes under
-## /etc/apt/sources.list.d and /var/lib/anon-apt-sources-list. It is safe ONLY
-## because the maintscript reads those two paths from overridable bases that we
-## redirect into a temp root. A maintscript WITHOUT that seam (e.g. an older
-## pinned revision) would ignore the overrides and touch the real host paths --
-## refuse to run it. This is a containment precondition, not an assertion, so a
-## source check is the right tool; the behavioral assertions below never trust it.
-if ! grep --quiet 'debian_sources_file:-' "${preinst}" \
-   || ! grep --quiet 'do_once_dir:-' "${preinst}"; then
-   printf '%s\n' "SKIP: preinst lacks the path-override seam; refusing to run it against real host paths" >&2
-   exit 77  ## style-ok: allow-skip: optional target lacks the test seam (would touch host)
 fi
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
@@ -127,52 +116,56 @@ check_content() {
    fi
 }
 
-## Per-case temp tree + the paths the preinst will touch, redirected under it.
+## Per-case temp tree. case_etc / case_var are bound over the maintscript's real
+## host paths; the *_file/backup/marker paths are where its writes land in the
+## temp tree (so assertions read them back after the contained run).
 setup_case() {
    case_root="${test_root}/$1"
-   sources_dir="${case_root}/etc/apt/sources.list.d"
-   sources_file="${sources_dir}/debian.sources"
+   case_etc="${case_root}/etc-apt-sld"
+   case_var="${case_root}/var-lib"
+   sources_file="${case_etc}/debian.sources"
    backup_file="${sources_file}.pre-anon-apt-sources-list.bak"
-   do_once_dir="${case_root}/var/lib/anon-apt-sources-list/do_once"
+   do_once_dir="${case_var}/anon-apt-sources-list/do_once"
    marker="${do_once_dir}/debian_sources_backup_unowned_version_1"
-   mkdir --parents -- "${sources_dir}"
+   mkdir --parents -- "${case_etc}" "${case_var}"
 }
 
-## Run the REAL preinst once with dpkg-query stubbed to exit $1. Returns the
-## preinst's own exit code (a crash is itself a failure).
+## Run the REAL preinst once with dpkg-query stubbed to exit $1, contained under
+## bwrap: the per-case temp dirs are bound OVER the host paths the maintscript
+## writes, so its writes cannot escape the temp tree. Returns the preinst's own
+## exit code (a crash is itself a failure).
 run_preinst() {
    local dpkg_rc="$1" rc=0
    stub_cmd dpkg-query "${dpkg_rc}"
-   env -u DPKG_MAINTSCRIPT_PACKAGE -u DPKG_MAINTSCRIPT_NAME \
-      debian_sources_file="${sources_file}" \
-      do_once_dir="${do_once_dir}" \
-      bash "${preinst}" install >/dev/null 2>&1 || rc=$?
+   bwrap --dev-bind / / \
+      --bind "${case_etc}" /etc/apt/sources.list.d \
+      --bind "${case_var}" /var/lib \
+      -- env -u DPKG_MAINTSCRIPT_PACKAGE -u DPKG_MAINTSCRIPT_NAME \
+         bash "${preinst}" install >/dev/null 2>&1 || rc=$?
    return "${rc}"
 }
 
 ## ---- Test #1: fail-open ownership check -----------------------------------
-## dpkg-query rc 2 (fatal: corrupt admindir). The file's ownership is UNKNOWN,
-## so it must NOT be seized. Pre-fix: '! dpkg-query' was true -> mv ran -> file
-## moved. Post-fix: no move, no marker (a retry after DB repair can finish).
+## dpkg-query rc 2 (fatal: corrupt admindir). Ownership is UNKNOWN, so the file
+## must NOT be seized. Pre-fix: '! dpkg-query' true -> mv ran -> file moved.
 setup_case fail_open
 printf '%s\n' "${sentinel}" > "${sources_file}"
 prc=0
 run_preinst 2 || prc=$?
 check "#1 preinst exited 0 on dpkg-query rc 2" "${prc}" -eq 0
-if stub_called_with dpkg-query -S "${sources_file}"; then
+if stub_called_with dpkg-query -S /etc/apt/sources.list.d/debian.sources; then
    ok "#1 preinst consulted dpkg-query (assertion is not vacuous)"
 else
-   notok "#1 preinst never called 'dpkg-query -S ${sources_file}'"
+   notok "#1 preinst never called 'dpkg-query -S /etc/apt/sources.list.d/debian.sources'"
 fi
 check_content "#1 unknown-ownership file left intact (not seized/wiped)" "${sources_file}" "${sentinel}"
 check "#1 no backup created for an unknown-ownership file" ! -e "${backup_file}"
 check "#1 marker NOT written (retry stays possible)" ! -e "${marker}"
 
 ## ---- Test #2: non-idempotent do-once marker -------------------------------
-## Run 1: dpkg-query rc 0 (owned) -> never seize, and (post-fix) leave the marker
-## unset. Run 2: the owner is purged so the path is now unowned (rc 1) -> the
-## file must STILL be migrated. Pre-fix: run 1 wrote the marker unconditionally,
-## so run 2 early-returned and never moved the now-unowned file.
+## Run 1 rc 0 (owned) -> never seize, marker unset. Run 2 rc 1 (owner purged, now
+## unowned) -> the file must STILL be migrated. Pre-fix: run 1 wrote the marker
+## unconditionally, so run 2 early-returned and never moved the now-unowned file.
 setup_case retry
 printf '%s\n' "${sentinel}" > "${sources_file}"
 
@@ -190,8 +183,6 @@ check_content "#2 retry backup holds the original bytes" "${backup_file}" "${sen
 check "#2 retry recorded the marker" -e "${marker}"
 
 ## ---- Test #3: happy path + absent file (marker-predicate branches) ---------
-## Unowned present (rc 1) on a first run -> migrate + mark. Absent file -> nothing
-## to migrate, still mark (so it is not rechecked forever). Both assert exit 0.
 setup_case happy_unowned
 printf '%s\n' "${sentinel}" > "${sources_file}"
 prc=0
@@ -208,6 +199,39 @@ check "#3 absent preinst exited 0" "${prc}" -eq 0
 check "#3 absent file: nothing moved" ! -e "${sources_file}"
 check "#3 absent file: no backup created" ! -e "${backup_file}"
 check "#3 absent file: marker recorded" -e "${marker}"
+
+## ---- Test #4: pre-existing backup must not wedge the migration -------------
+## A stale backup already sits at the .bak path. Pre-fix ('mv --no-clobber') this
+## no-ops forever: the file is never migrated and the marker never set. Fix
+## ('mv --backup=numbered') migrates the file AND preserves the old backup.
+setup_case stale_backup
+printf '%s\n' "${sentinel}" > "${sources_file}"
+printf '%s\n' 'STALE-prior-backup' > "${backup_file}"
+prc=0
+run_preinst 1 || prc=$?
+check "#4 preinst exited 0 (stale backup present)" "${prc}" -eq 0
+check "#4 unowned file migrated despite a stale backup (no-clobber wedge)" ! -e "${sources_file}"
+check_content "#4 new backup holds the migrated bytes" "${backup_file}" "${sentinel}"
+if compgen -G "${backup_file}.~[0-9]*~" >/dev/null; then
+   ok "#4 prior backup preserved as a numbered backup (no data loss)"
+else
+   notok "#4 prior backup was clobbered (no numbered backup found)"
+fi
+check "#4 marker recorded after migration" -e "${marker}"
+
+## ---- Test #5: a dangling symlink must be migrated, not marked-done ---------
+## '[ -e ]' follows links, so a dangling symlink reads as absent. Pre-fix the
+## marker was written without migrating; dpkg then follows the link on unpack.
+## Fix treats a symlink (incl. dangling) as present and moves it aside.
+setup_case dangling_symlink
+ln --symbolic -- /nonexistent/debian.sources.target "${sources_file}"
+prc=0
+run_preinst 1 || prc=$?
+check "#5 preinst exited 0 (dangling symlink)" "${prc}" -eq 0
+check "#5 nothing remains at the sources path" ! -e "${sources_file}"
+check "#5 no symlink remains at the sources path" ! -L "${sources_file}"
+check "#5 symlink moved to the backup path" -L "${backup_file}"
+check "#5 marker recorded after migrating the symlink" -e "${marker}"
 
 printf '%s\n' ""
 printf '%s\n' "${pass_count} pass, ${fail_count} fail"
