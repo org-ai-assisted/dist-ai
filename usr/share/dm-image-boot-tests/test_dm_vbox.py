@@ -20,7 +20,6 @@ SourceFileLoader, because dm-vbox is an executable with no .py extension.
 import importlib.machinery
 import importlib.util
 import subprocess
-import types
 from pathlib import Path
 
 import pytest
