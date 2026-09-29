@@ -273,10 +273,14 @@ verify_sha512() {
    sums="$2"
    image_base="$3"
 
+   ## sha512sum lines are "<digest><2 sep chars><filename>"; the filename runs
+   ## to end of line and MAY contain spaces, so strip the digest and exactly
+   ## the two separator chars rather than splitting on the last space.
    expected=""
    while IFS= read -r line; do
       digest="${line%% *}"
-      name="${line##* }"
+      name="${line#"${digest}"}"
+      name="${name:2}"
       if [ "${name}" = "${image_base}" ]; then
          expected="${digest}"
          break
@@ -442,7 +446,11 @@ main() {
    resolve_download_base
    resolve_wiki_base
 
-   work_dir="$(mktemp --directory --tmpdir "${me}.XXXXXXXX")"
+   ## Stage in a private 0700 subdir OF output_dir, not /tmp: same filesystem,
+   ## so the final rename is atomic and can never leave a truncated file under
+   ## the trusted name; sized by output_dir (not a smaller tmpfs); and a fresh
+   ## mktemp dir blocks a pre-planted symlink.
+   work_dir="$(mktemp --directory -- "${output_dir}/.iso-download.XXXXXXXX")"
    trap cleanup EXIT
 
    version="$(resolve_version)"
@@ -454,10 +462,6 @@ main() {
 
    image_url="${download_base}/iso/${version}/${image}"
    artifact_final="${output_dir}/${image}"
-   ## Download into the private work_dir (mktemp, mode 700), never into a
-   ## caller-shared output_dir where a pre-planted symlink at a predictable
-   ## name could redirect the write. The final rename replaces any symlink at
-   ## the destination rather than following it.
    image_work="${work_dir}/${image}"
    sums_file="${work_dir}/${image}.sha512sums"
    sig_file="${work_dir}/${image}.sha512sums.asc"
@@ -475,7 +479,10 @@ main() {
    verify_openpgp "${sums_file}" "${sig_file}" "${cert_path}"
    verify_sha512 "${image_work}" "${sums_file}" "${image}"
 
-   mv --force -- "${image_work}" "${artifact_final}"
+   ## --no-target-directory: replace whatever is at the final path (including a
+   ## symlink -- rename acts on the link, not its target) and fail closed if it
+   ## is a directory, rather than moving the image INSIDE it.
+   mv --force --no-target-directory -- "${image_work}" "${artifact_final}"
 
    log notice "verified OK: '${artifact_final}'"
    printf '%s\n' "${artifact_final}"

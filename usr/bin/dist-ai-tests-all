@@ -116,6 +116,8 @@ core_suites=(
    secure-terminal-tests-coverage-chunk3
    secure-terminal-tests-coverage-chunk4
    secure-terminal-tests-coverage-chunk5
+   secure-terminal-tests-coverage-chunk6
+   secure-terminal-tests-coverage-chunk7
    secure-terminal-tests-coverage-combine
    security-misc-tests
    sdwdate-gui-tests

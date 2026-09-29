@@ -909,6 +909,16 @@ expect_rule "${shopt_fail}" "${guarded_no_lcall}"              "present"
 ## errexit enabled, both shopt lines AND guarded 'export LC_ALL=C' present
 ## => SPARED.
 expect_rule "${shopt_fail}" "${guarded_full_shopt}"             "absent"
+## The set -o trio (nounset/pipefail/errtrace) inside the guarded block is
+## enforced too: errexit + full shopt + LC_ALL present but ONE trio directive
+## missing => FLAGGED. The old residual checked only the shopt half + LC_ALL and
+## spared these; this is the trio regression.
+guarded_no_nounset=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\nfi'
+guarded_no_pipefail=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\nfi'
+guarded_no_errtrace=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\nfi'
+expect_rule "${shopt_fail}" "${guarded_no_nounset}"             "present"
+expect_rule "${shopt_fail}" "${guarded_no_pipefail}"            "present"
+expect_rule "${shopt_fail}" "${guarded_no_errtrace}"            "present"
 ## A guarded script that enables NO strict-mode (just calls main) has
 ## nothing for inherit_errexit to complete => SPARED.
 expect_rule "${shopt_fail}" $'if was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi' "absent"
