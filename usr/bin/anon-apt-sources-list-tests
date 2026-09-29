@@ -1,0 +1,67 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Suite runner for anon-apt-sources-list.
+##
+## Runs every *_test.sh in usr/share/anon-apt-sources-list-tests and fails if any
+## of them does. Discovery is a glob so a new lane needs no edit here.
+##
+## The subject is a dpkg maintscript, not an installed runtime path, so there is
+## no installed fallback: set ANON_APT_SOURCES_LIST_REPO to a checkout. A lane
+## that cannot resolve its subject exits 77 and is reported as SKIPPED, never
+## folded into a pass. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/anon-apt-sources-list-tests" ]; then
+   tests_dir="${script_dir}/../share/anon-apt-sources-list-tests"
+else
+   tests_dir='/usr/share/anon-apt-sources-list-tests'
+fi
+
+shopt -s nullglob
+case_scripts=( "${tests_dir}"/*_test.sh )
+shopt -u nullglob
+
+if [ "${#case_scripts[@]}" -eq 0 ]; then
+   printf '%s\n' "FATAL: no case scripts found in '${tests_dir}'" >&2
+   exit 1
+fi
+
+failed=0
+skipped=0
+for case_script in "${case_scripts[@]}"; do
+   printf '%s\n' "== $(basename -- "${case_script}") =="
+   case_rc=0
+   "${case_script}" "$@" || case_rc=$?
+   if [ "${case_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+   elif [ "${case_rc}" -ne 0 ]; then
+      failed=$(( failed + 1 ))
+   fi
+done
+
+printf '%s\n' ""
+printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
+
+## A failure dominates. Otherwise, if EVERY case skipped, nothing actually ran:
+## propagate SKIP (77) so the orchestrator applies its authorized-skip policy,
+## rather than reading a no-op suite as a clean pass (the documented false-green).
+if [ "${failed}" -gt 0 ]; then
+   exit 1
+elif [ "${skipped}" -eq "${#case_scripts[@]}" ]; then
+   exit 77  ## style-ok: allow-skip: propagate an all-skip so the orchestrator applies its skip policy
+fi
+exit 0

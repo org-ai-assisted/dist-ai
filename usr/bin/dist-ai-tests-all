@@ -61,6 +61,7 @@ timeout_heavy=600
 ## script. mediawiki-dom-snapshot is a capture tool, not a pass/fail test, so
 ## it is deliberately excluded.
 core_suites=(
+   anon-apt-sources-list-tests
    anon-gw-anonymizer-config-tests
    anon-ws-disable-stacked-tor-tests
    desktop-config-dist-tests
@@ -416,6 +417,12 @@ wire() {
          ## nothing to point at.
          wire_env=()
          wire_args=()
+         ;;
+      anon-apt-sources-list)
+         ## The preinst regression test drives the shipped maintscript with
+         ## dpkg-query stubbed and its /etc + /var/lib bases redirected to a temp
+         ## root, so it needs only the checkout that holds debian/*.preinst.
+         wire_env=( "ANON_APT_SOURCES_LIST_REPO=$( pkg_dir anon-apt-sources-list )" )
          ;;
       anon-gw-anonymizer-config)
          ## The onion-grater-add/remove profile test drives the shipped scripts,
@@ -899,6 +906,9 @@ suite_component() {
          ;;
       dist-ai-registry|github-api|image-optimize|iso-download|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
+         ;;
+      anon-apt-sources-list)
+         printf '%s' 'anon-apt-sources-list'
          ;;
       anon-gw-anonymizer-config)
          printf '%s' 'anon-gw-anonymizer-config'

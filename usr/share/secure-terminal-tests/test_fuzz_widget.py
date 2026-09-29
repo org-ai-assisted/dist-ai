@@ -49,10 +49,16 @@ def _fail(message):
 
 # Every phase, enough iterations to reach each generator/branch of the harness
 # (a fast, deterministic smoke -- the heavy randomized run is the fuzz-gui entrypoint).
+# 20 reaches 100% self-coverage of fuzz_widget.py (measured: 10 and 20 both 100/100);
+# kept LOW on purpose -- under coverage the per-mode-switch re-render (toward
+# _RERENDER_TAIL) is costly, and 40 blew past the 600s combine budget in CI. This is a
+# coverage-only driver (not in the package-coverage suites), so the count governs only
+# fuzz_widget.py self-coverage, which the gate still asserts at 100% (fail-loud if a future
+# change needs more).
 _rnd = random.Random(SEED)
 for _name, _func in F.PHASES:
     try:
-        _func(_rnd, 40, SEED)
+        _func(_rnd, 20, SEED)
     except Exception as exc:                       # pylint: disable=broad-except
         _fail('fuzz-widget phase {0}: {1}'.format(_name, exc))
 
