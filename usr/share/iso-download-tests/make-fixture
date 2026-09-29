@@ -53,12 +53,15 @@ arch="Intel_AMD64"
 wrong_signer='false'
 bad_hash='false'
 bad_sig='false'
+sums_wrong_name='false'
+omit_wiki='false'
 
 print_usage() {
    printf '%s\n' "Usage:
   ${me} <output_dir> [--version V] [--stable-version V] [--older-version V]
         [--vmname N] [--desktop T] [--arch A]
-        [--wrong-signer] [--bad-hash] [--bad-sig]"
+        [--wrong-signer] [--bad-hash] [--bad-sig]
+        [--sums-wrong-name] [--omit-wiki]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -105,6 +108,14 @@ while [ "$#" -gt 0 ]; do
          bad_sig='true'
          shift
          ;;
+      --sums-wrong-name)
+         sums_wrong_name='true'
+         shift
+         ;;
+      --omit-wiki)
+         omit_wiki='true'
+         shift
+         ;;
       -h|--help)
          print_usage
          exit 0
@@ -141,8 +152,8 @@ mkdir --parents -- "${version_dir}"
 secret_key="${out_dir}/test-key.sec"
 public_cert="${out_dir}/test-cert.asc"
 image_path="${version_dir}/${image}"
-sig_path="${image_path}.asc"
 sums_path="${image_path}.sha512sums"
+sig_path="${sums_path}.asc"
 index_path="${out_dir}/iso-index.html"
 wiki_path="${out_dir}/wiki-versionnew.raw"
 urlmap="${out_dir}/urlmap"
@@ -164,21 +175,32 @@ fi
       "${vmname}" "${desktop}" "${version}" "${arch}"
 } > "${image_path}"
 
-## Detached OpenPGP signature over the image bytes (as the real release signs
-## <image>.asc).
-sqop sign --as=binary "${signing_key}" < "${image_path}" > "${sig_path}"
+## Basename-relative sha512sums, as dm-prepare-release publishes it. The name
+## field binds the digest to a specific filename.
+sums_name="${image}"
+if [ "${sums_wrong_name}" = 'true' ]; then
+   ## A validly-signed sums that names a DIFFERENT (older) image, to prove the
+   ## tool rejects a same-key release served under the requested name.
+   sums_name="${vmname}-${desktop}-${older_version}.${arch}.iso"
+fi
+digest="$(sha512sum -- "${image_path}" | cut --delimiter=' ' --fields=1)"
+printf '%s  %s\n' "${digest}" "${sums_name}" > "${sums_path}"
+
+## OpenPGP signature over the .sha512sums file (as dm-prepare-release's
+## sign_and_verify publishes <image>.sha512sums.asc).
+sqop sign --as=binary "${signing_key}" < "${sums_path}" > "${sig_path}"
+
 if [ "${bad_sig}" = 'true' ]; then
    printf '%s\n' "-----BEGIN PGP SIGNATURE-----" > "${sig_path}"
    printf '%s\n' "garbage-not-a-real-signature" >> "${sig_path}"
    printf '%s\n' "-----END PGP SIGNATURE-----" >> "${sig_path}"
 fi
 
-## Basename-relative sha512sums, as dm-prepare-release publishes it.
 if [ "${bad_hash}" = 'true' ]; then
-   ## A syntactically valid but wrong digest, so only the HASH check rejects it.
-   printf '%s  %s\n' "$(printf '0%.0s' $(seq 1 128))" "${image}" > "${sums_path}"
-else
-   ( cd -- "${version_dir}" && sha512sum -- "${image}" > "${sums_path}" )
+   ## Flip one byte in the image AFTER the sums were signed: the signature
+   ## stays valid but the image no longer matches the signed digest, so only
+   ## the HASH check rejects it.
+   printf '\xff' | dd of="${image_path}" bs=1 seek=1 count=1 conv=notrunc status=none
 fi
 
 ## Directory index: several version dirs plus non-version noise, so the parser
@@ -196,11 +218,13 @@ printf '%s<noinclude>[[Category:MultiWiki]]\n{{mbox}}\n</noinclude>\n' \
    "${stable_version}" > "${wiki_path}"
 
 {
-   printf '%s\t%s\n' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw" "${wiki_path}"
+   if [ "${omit_wiki}" != 'true' ]; then
+      printf '%s\t%s\n' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw" "${wiki_path}"
+   fi
    printf '%s\t%s\n' "${download_base}/iso/" "${index_path}"
    printf '%s\t%s\n' "${download_base}/iso/${version}/${image}" "${image_path}"
-   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.asc" "${sig_path}"
    printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.sha512sums" "${sums_path}"
+   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.sha512sums.asc" "${sig_path}"
 } > "${urlmap}"
 
 printf '%s\n' "${me}: done"
