@@ -422,6 +422,17 @@ try:
     _TabEditDialog.exec = lambda self: _QDlg.DialogCode.Rejected
     win.rename_tab(0)
     eq(win.tabs.tabText(0), 'reddish', 'rename_tab Cancel leaves the tab unchanged')
+    # finding 9: accepting UNCHANGED (e.g. to set only a colour) must NOT freeze the prefilled
+    # cwd default into a user title -- the tab keeps tracking the directory.
+    _fn_term = win.tabs.widget(0)
+    win._user_titles.pop(_fn_term, None)                 # no user title -> label tracks cwd
+    _TabEditDialog.exec = lambda self: (self._set(QColor('#3b82f6')),
+                                        _QDlg.DialogCode.Accepted)[1]
+    win.rename_tab(0)                                     # accept unchanged name, new colour only
+    ok(_fn_term not in win._user_titles,
+       'finding9: accepting Edit Tab unchanged does not store the cwd default as a user title')
+    ok(win._tab_colors.get(_fn_term) == '#3b82f6',
+       'finding9: the colour still applies when only the colour was chosen')
 finally:
     _TabEditDialog.exec = _ted_oexec2
 win.set_tab_color(0, None)
@@ -437,26 +448,110 @@ eq(_mbar.minimumTabSizeHint(0).width(), _mbar.tabSizeHint(0).width(),
    'short tab: min hint == natural (never squeezed, "dev725" always shows in full)')
 ok(_mbar.minimumTabSizeHint(1).width() < _mbar.tabSizeHint(1).width(),
    'long tab: min hint capped below natural (elides past the cap, keeps trailing digits)')
+# The floor is a CONSTANT "number + _MIN_LABEL_CHARS + chrome", so a longer label does NOT
+# shrink it further (the bug: measuring excess in DemiBold against a regular-font hint made
+# the floor DECREASE with length, re-squeezing long names below readability).
+_mbar.setTabText(1, 'm' * 40)
+_min40 = _mbar.minimumTabSizeHint(1).width()
+_mbar.setTabText(1, 'm' * 80)
+_min80 = _mbar.minimumTabSizeHint(1).width()
+eq(_min40, _min80,
+   'long-label min hint is a CONSTANT floor -- it does not shrink as the name gets longer')
 _mbar.deleteLater()
 
 # grid scrollback REFLOW on resize: a long line wrapped at a narrow grid must re-wrap to the
-# new width when the window widens (re-seed from _raw), not stay "wrapped in the middle".
+# new width when the window widens (rebuilt from _grid_text logical lines), not stay "wrapped
+# in the middle".
 _rf = SecureTerminal(command='/bin/cat', tui=True)
 _rf.resize(400, 300); _rf.show(); APP.processEvents()
 _rf._tui_grid_size = lambda: (20, 10)          # pin a NARROW grid
 _rf._make_screen()                              # rebuild at the narrow grid
-feed_output(_rf, (('A' * 75) + '\r\n').encode())   # real read path -> populates _raw
+feed_output(_rf, (('A' * 75) + '\r\n').encode())   # real read path -> populates the screen
 _rf._render_tui(); APP.processEvents()
 _rf_narrow = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
 ok(_rf_narrow and max(l.count('A') for l in _rf_narrow) <= 20,
    'reflow setup: the long line wraps at the narrow (20-col) grid, no row holds all 75')
 _rf._tui_grid_size = lambda: (100, 10)         # WIDEN
-_rf._reflow()                                   # re-seed from _raw at the new width
+_rf._reflow()                                   # re-wrap from _grid_text at the new width
 APP.processEvents()
 _rf_wide = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
 ok(any(l.count('A') == 75 for l in _rf_wide),
    'grid scrollback reflows on widen: the long line is rejoined onto one 100-col row')
 _rf.shutdown()
+
+# finding 1: a long line drawn at the BOTTOM row SCROLLS mid-draw; its wrap-continuation rows
+# must still be flagged (marked by linefeed BEFORE the scroll, by object), so a reflow rejoins
+# them. (Bug: a post-draw index range missed rows that scrolled into history, splitting the
+# line permanently.)
+_sc = SecureTerminal(command='/bin/cat', tui=True)
+_sc.resize(400, 300); _sc.show(); APP.processEvents()
+_sc._tui_grid_size = lambda: (10, 4)           # tiny grid so a long line scrolls while drawn
+_sc._make_screen()
+feed_output(_sc, ('Z' * 60).encode())          # 60 chars at 10x4 wraps AND scrolls off the top
+_sc._render_tui(); APP.processEvents()
+_sc._tui_grid_size = lambda: (80, 4)           # widen
+_sc._reflow(); APP.processEvents()
+ok(any(l.count('Z') >= 40 for l in _sc.toPlainText().split('\n')),
+   'finding1: a bottom-row line that scrolled while drawn still rejoins on reflow (>=40 on one row)')
+_sc.shutdown()
+
+# finding 5/6/7: reflow rebuilds from the CURRENT rendered rows (_grid_text logical lines), NOT
+# by replaying the raw byte stream -- so a \r-overwritten cell is re-wrapped as STORED, not
+# re-derived at the new width, and no embedded escape (charset / margins / DECAWM / alt) is
+# re-executed. At width 10, "0123456789ABCDEFGHIJ\rDONE" is stored as 0123456789 / DONEEFGHIJ;
+# a raw replay at width 20 would re-derive "DONE456789ABCDEFGHIJ" (the overwritten bytes
+# reappear), while a faithful re-wrap keeps "DONEEFGHIJ".
+_ff = SecureTerminal(command='/bin/cat', tui=True)
+_ff.resize(400, 300); _ff.show(); APP.processEvents()
+_ff._tui_grid_size = lambda: (10, 6)
+_ff._make_screen()
+feed_output(_ff, b'0123456789ABCDEFGHIJ\rDONE\r\n')
+_ff._render_tui(); APP.processEvents()
+_ff._tui_grid_size = lambda: (20, 6)
+_ff._reflow(); APP.processEvents()
+_ff_txt = _ff.toPlainText()
+ok('DONEEFGHIJ' in _ff_txt and 'DONE456789' not in _ff_txt,
+   'finding5: reflow re-wraps the STORED rows (DONEEFGHIJ), not a raw-byte re-derivation')
+_ff.shutdown()
+
+# codex7/grok2: a cursor-addressed overwrite of a row that is STILL a wrap continuation must
+# keep it joined -- the over-eager resting-row clear (removed) wrongly split it. abcdefghij at
+# 5 cols wraps to abcde/fghij; ESC[1;1H X -> Xbcde, still ONE logical line.
+_ov = SecureTerminal(command='/bin/cat', tui=True)
+_ov.resize(400, 300); _ov.show(); APP.processEvents()
+_ov._tui_grid_size = lambda: (5, 6)
+_ov._make_screen()
+feed_output(_ov, b'abcdefghij\x1b[1;1HX')
+_ov._render_tui(); APP.processEvents()
+ok('Xbcdefghij' in _ov._grid_text(),
+   'codex7: a cursor-overwrite of a still-wrapped row keeps the logical line joined')
+_ov.shutdown()
+
+# grok3: erasing a wrapped row (to end / whole line) drops its continuation flag, so _grid_text
+# does not glue the blanked row onto the next logical line.
+_er = SecureTerminal(command='/bin/cat', tui=True)
+_er.resize(400, 300); _er.show(); APP.processEvents()
+_er._tui_grid_size = lambda: (5, 6)
+_er._make_screen()
+feed_output(_er, b'abcdefghij')                 # row0 abcde (wrapped), row1 fghij
+feed_output(_er, b'\x1b[1;1H\x1b[2K')           # cursor to row0, erase the whole line
+_er._render_tui(); APP.processEvents()
+ok(any(l == 'fghij' for l in _er._grid_text().split('\r\n')),
+   'grok3: an erased wrapped row is not glued onto the next logical line')
+_er.shutdown()
+
+# grok4: after a WIDEN, a wrapped row still holds only its old-width cells (pyte does not
+# backfill); _grid_text reads to the WRITTEN extent, not scr.columns, so no trailing spaces
+# are injected into the MIDDLE of the joined logical line.
+_g4 = SecureTerminal(command='/bin/cat', tui=True)
+_g4.resize(400, 300); _g4.show(); APP.processEvents()
+_g4._tui_grid_size = lambda: (5, 6)
+_g4._make_screen()
+feed_output(_g4, b'abcdefghij')                 # abcde (wrapped) / fghij at width 5
+_g4._screen.resize(6, 20)                        # WIDEN the pyte screen; rows keep 5-col content
+ok('abcdefghij' in _g4._grid_text(),
+   'grok4: a widened wrapped row is read to its extent (no spaces injected mid-logical-line)')
+_g4.shutdown()
 
 # alt-screen EXCLUSION: a LIVE full-screen program owns its canvas (repaints on SIGWINCH) and
 # is NEVER reflowed from _raw -- _reflow must not rebuild the screen while alt is active.
