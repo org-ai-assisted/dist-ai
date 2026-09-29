@@ -39,6 +39,11 @@ export LC_ALL=C
 ##   privleap-tests-coverage  a measurement wrapper, not a suite: it RUNS the
 ##     registered privleap suites and reports how much of privleap they reach,
 ##     so registering it would run them a second time and assert nothing new
+##   secure-terminal-tests-coverage  the unsplit standalone/local coverage entry
+##     (ST_COV_TIER=all): the orchestrator runs the gate via the registered
+##     chunk1..chunk7 + -combine wrappers instead, so registering the base too
+##     would run the whole 24-suite gate a second time. Same shape as
+##     privleap-tests-coverage.
 ##   dm-stripped-setx-audit  a review AID with no verdict: whether removing
 ##     'set -x' from a given script was right cannot be decided mechanically,
 ##     so it reports and exits 0 and a human decides. It also compares each
@@ -60,6 +65,7 @@ export LC_ALL=C
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
+   'secure-terminal-tests-coverage'
    'dm-stripped-setx-audit'
    'website-tests-sandbox'
    'privleap-tests-session-fuzz-setup'
