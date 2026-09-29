@@ -11,11 +11,16 @@
 ## git-diff-review's interactive "continue past neutralized fatal content? [y/N]"
 ## prompt from the git-meld-tests suite.
 ##
-## usage: git-meld-tests-pty.py <answer> <cmd> [args...]   (run from the cwd the
-## command should execute in). Prints PTY_EXITCODE=<n>, PTY_ANSWERED=<count>,
-## PTY_CONTINUED=<bool> to stdout. PTY_EXITCODE=timeout means the command was
-## still running at the deadline and got killed -- always a suite failure, never
-## a verdict.
+## usage: git-meld-tests-pty.py <answer[,answer...]> <cmd> [args...]   (run from
+## the cwd the command should execute in). <answer> may be a comma-separated
+## SEQUENCE applied one per prompt in order (the last is reused for any further
+## prompts), so a tool with more than one prompt -- e.g. git-diff-review's
+## "proceed to the per-file diffs?" gate FOLLOWED by its fatal-content "continue
+## anyway?" prompt -- can be driven distinctly ('y,n' = proceed, then decline). A
+## bare single answer answers every prompt with it, unchanged. Prints
+## PTY_EXITCODE=<n>, PTY_ANSWERED=<count>, PTY_CONTINUED=<bool> to stdout.
+## PTY_EXITCODE=timeout means the command was still running at the deadline and
+## got killed -- always a suite failure, never a verdict.
 
 import os
 import pty
@@ -29,7 +34,7 @@ import time
 ## an unanswered prompt), and the suite must fail loudly rather than wedge.
 DEADLINE_SECONDS = 30
 
-answer = sys.argv[1].encode() + b'\n'
+answers = [a.encode() + b'\n' for a in sys.argv[1].split(',')]
 cmd = sys.argv[2:]
 
 pid, fd = pty.fork()
@@ -62,10 +67,12 @@ while True:
     out += data
     ## Answer EVERY prompt, not just the first: the driver asks once per finding,
     ## and an unanswered later prompt would leave the child blocked on /dev/tty.
+    ## Each new prompt consumes the next answer in the sequence, clamped to the
+    ## last, so a single answer still answers every prompt with it.
     count = out.count(b'QUESTION')
-    if count > answered:
-        os.write(fd, answer)
-        answered = count
+    while answered < count:
+        os.write(fd, answers[min(answered, len(answers) - 1)])
+        answered += 1
 
 ## Never waitpid() a live child unconditionally -- that is what turned a stuck
 ## command into an unkillable suite hang.
