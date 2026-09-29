@@ -1,0 +1,465 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""VirtualBox backend for the dm-image boot/install harness.
+
+Sibling of dm-qemu. Where dm-qemu drives a guest over a serial root-shell and
+injects the kernel cmdline via SMBIOS, VirtualBox GUI images have NO serial
+console, so this backend reads boot state from the SCREEN and injects real
+keyboard input:
+
+  - build VBoxManage argv to import/create + boot a VM (headless, no host GPU);
+  - capture the framebuffer with 'controlvm <vm> screenshotpng' (software
+    framebuffer -- honors a Wayland-only, display-server-less host);
+  - inject keys with 'controlvm <vm> keyboardputscancode', including typing a
+    LUKS passphrase at the GRUB/initramfs prompt;
+  - assert boot/desktop state from the screen with a tolerant perceptual match
+    (Pillow pixel distance, optional imagehash pHash) plus OCR text checks;
+  - drive the Calamares GUI installer for an empty-disk install and a
+    reinstall-over-existing (R7).
+
+Split like dm-qemu: the argv builders and the input/decision logic are PURE and
+unit-tested (test_dm_vbox.py). The functions that actually invoke VBoxManage or
+tesseract need a real VirtualBox host and are NOT exercised by CI -- they are
+marked below and the CLI SKIPs (77) when VBoxManage is absent.
+
+Exit codes (dist-ai-tests-all contract):
+  0   PASS
+  5   FAIL
+  2   SETUP error
+  77  SKIP (VBoxManage absent -- cannot drive VirtualBox here)
+"""
+
+import argparse
+import collections
+import subprocess
+import sys
+
+from PIL import Image, ImageChops, ImageStat
+
+PASS_RC = 0
+FAIL_RC = 5
+SETUP_RC = 2
+SKIP_RC = 77
+
+## External system dependency -- resolved on PATH, overridable for tests.
+VBOXMANAGE = 'VBoxManage'
+TESSERACT = 'tesseract'
+
+
+## --- VBoxManage argv builders (pure) ----------------------------------------
+## Each returns the argv list VirtualBox would run. A --emit-argv CLI mode
+## prints them without executing, mirroring dm-qemu --emit-argv, so the RUN
+## path stays a thin subprocess.run over a separately-tested argv.
+
+## Harness firmware name -> VBoxManage --firmware value. efi-secureboot also
+## flips --secure-boot on (VBox 7.2+; the platform key is enrolled at run time).
+_FIRMWARE = {
+    'bios': 'bios',
+    'efi': 'efi',
+    'efi-secureboot': 'efi',
+}
+
+
+def build_import_argv(ova, vmname, vboxmanage=VBOXMANAGE):
+    """Import a distributed .ova as a named VM (the what-users-run path)."""
+    return [vboxmanage, 'import', ova, '--vsys', '0', '--vmname', vmname]
+
+
+def build_createvm_argv(vmname, ostype, basefolder=None, vboxmanage=VBOXMANAGE):
+    """Register a fresh empty VM (for the ISO -> Calamares -> HDD path)."""
+    argv = [vboxmanage, 'createvm', '--name', vmname, '--ostype', ostype,
+            '--register']
+    if basefolder is not None:
+        argv += ['--basefolder', basefolder]
+    return argv
+
+
+def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
+                        intnet=None, vboxmanage=VBOXMANAGE):
+    """Set memory, firmware/SecureBoot and networking on a VM.
+
+    intnet wins over nic: a per-Linux-user-unique internal network name is how
+    the Whonix pair (GW+WS) is isolated without a host-global collision.
+    """
+    argv = [vboxmanage, 'modifyvm', vmname]
+    if memory is not None:
+        argv += ['--memory', str(memory)]
+    if firmware is not None:
+        argv += ['--firmware', _FIRMWARE[firmware]]
+        if firmware == 'efi-secureboot':
+            argv += ['--secure-boot', 'on']
+    if intnet is not None:
+        argv += ['--nic1', 'intnet', '--intnet1', intnet]
+    elif nic is not None:
+        argv += ['--nic1', nic]
+    return argv
+
+
+def build_createmedium_argv(path, size_mb, fmt='VDI', vboxmanage=VBOXMANAGE):
+    """Create an empty virtual disk to install onto."""
+    return [vboxmanage, 'createmedium', 'disk', '--filename', path,
+            '--size', str(size_mb), '--format', fmt]
+
+
+def build_storagectl_argv(vmname, name, bus, controller, vboxmanage=VBOXMANAGE):
+    """Add a storage controller (e.g. bus 'sata', controller 'IntelAhci')."""
+    return [vboxmanage, 'storagectl', vmname, '--name', name, '--add', bus,
+            '--controller', controller]
+
+
+def build_storageattach_argv(vmname, controller, port, device, medium_type,
+                             medium, vboxmanage=VBOXMANAGE):
+    """Attach a medium (medium_type 'dvddrive' for an ISO, 'hdd' for a disk)."""
+    return [vboxmanage, 'storageattach', vmname, '--storagectl', controller,
+            '--port', str(port), '--device', str(device),
+            '--type', medium_type, '--medium', medium]
+
+
+def build_startvm_argv(vmname, vboxmanage=VBOXMANAGE):
+    """Boot the VM headless -- no host display server needed."""
+    return [vboxmanage, 'startvm', vmname, '--type', 'headless']
+
+
+def build_screenshot_argv(vmname, png, vboxmanage=VBOXMANAGE):
+    """Capture the guest framebuffer to a PNG."""
+    return [vboxmanage, 'controlvm', vmname, 'screenshotpng', png]
+
+
+def build_keyboard_argv(vmname, codes, vboxmanage=VBOXMANAGE):
+    """Inject a scancode sequence (from encode_scancodes / encode_key)."""
+    return [vboxmanage, 'controlvm', vmname, 'keyboardputscancode', *codes]
+
+
+def build_poweroff_argv(vmname, vboxmanage=VBOXMANAGE):
+    """Hard power-off the VM."""
+    return [vboxmanage, 'controlvm', vmname, 'poweroff']
+
+
+## --- keyboard scancode encoding (pure) --------------------------------------
+## US layout, AT/PS-2 scancode set 1 (a.k.a. XT). Each key has a one-byte MAKE
+## code (key down); the BREAK code (key up) is make | 0x80. VirtualBox's
+## keyboardputscancode consumes these bytes as lowercase hex strings. Extended
+## keys (arrows) are prefixed with 0xe0. This is what types a LUKS passphrase.
+
+_MAKE = {
+    '`': 0x29, '1': 0x02, '2': 0x03, '3': 0x04, '4': 0x05, '5': 0x06,
+    '6': 0x07, '7': 0x08, '8': 0x09, '9': 0x0a, '0': 0x0b, '-': 0x0c,
+    '=': 0x0d,
+    'q': 0x10, 'w': 0x11, 'e': 0x12, 'r': 0x13, 't': 0x14, 'y': 0x15,
+    'u': 0x16, 'i': 0x17, 'o': 0x18, 'p': 0x19, '[': 0x1a, ']': 0x1b,
+    '\\': 0x2b,
+    'a': 0x1e, 's': 0x1f, 'd': 0x20, 'f': 0x21, 'g': 0x22, 'h': 0x23,
+    'j': 0x24, 'k': 0x25, 'l': 0x26, ';': 0x27, "'": 0x28,
+    'z': 0x2c, 'x': 0x2d, 'c': 0x2e, 'v': 0x2f, 'b': 0x30, 'n': 0x31,
+    'm': 0x32, ',': 0x33, '.': 0x34, '/': 0x35,
+    ' ': 0x39,
+}
+
+## Shifted printable -> the unshifted key whose scancode yields it with Shift.
+_SHIFTED = {
+    '~': '`', '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6',
+    '&': '7', '*': '8', '(': '9', ')': '0', '_': '-', '+': '=',
+    '{': '[', '}': ']', '|': '\\',
+    ':': ';', '"': "'",
+    '<': ',', '>': '.', '?': '/',
+}
+
+_LSHIFT = 0x2a
+
+## Named non-printable keys; _NAMED_EXT keys are E0-prefixed (extended).
+_NAMED = {
+    'enter': 0x1c, 'esc': 0x01, 'backspace': 0x0e, 'tab': 0x0f, 'space': 0x39,
+}
+_NAMED_EXT = {
+    'up': 0x48, 'down': 0x50, 'left': 0x4b, 'right': 0x4d,
+}
+
+
+def _hex(code):
+    return format(code, '02x')
+
+
+def _press(code):
+    return [_hex(code), _hex(code | 0x80)]
+
+
+def _press_shift(code):
+    ## Shift down, key down, key up, Shift up.
+    return [_hex(_LSHIFT), _hex(code), _hex(code | 0x80), _hex(_LSHIFT | 0x80)]
+
+
+def encode_char(ch):
+    """Scancode bytes (make+break) for a single printable character."""
+    if ch in _MAKE:
+        return _press(_MAKE[ch])
+    if ch.isalpha() and ch.lower() in _MAKE:
+        return _press_shift(_MAKE[ch.lower()])
+    if ch in _SHIFTED:
+        return _press_shift(_MAKE[_SHIFTED[ch]])
+    raise ValueError('no scancode for character %r' % (ch,))
+
+
+def encode_scancodes(text):
+    """Scancode bytes to type a literal string (no trailing Enter)."""
+    codes = []
+    for ch in text:
+        codes.extend(encode_char(ch))
+    return codes
+
+
+def encode_key(name):
+    """Scancode bytes for a named key (enter, esc, tab, arrows, ...)."""
+    key = name.lower()
+    if key in _NAMED:
+        return _press(_NAMED[key])
+    if key in _NAMED_EXT:
+        code = _NAMED_EXT[key]
+        return ['e0', _hex(code), 'e0', _hex(code | 0x80)]
+    raise ValueError('unknown named key %r' % (name,))
+
+
+def encode_passphrase(passphrase):
+    """Type a LUKS/login passphrase and press Enter -- the unlock-prompt step."""
+    return encode_scancodes(passphrase) + encode_key('enter')
+
+
+## --- screen matching (pure; Pillow required, imagehash optional) ------------
+
+def image_diff_ratio(path_a, path_b):
+    """Mean per-channel absolute pixel difference, normalised to [0, 1].
+
+    0.0 == identical. Candidate is resized to the baseline when the geometry
+    differs, so a resolution change alone does not force a mismatch.
+    """
+    base = Image.open(path_a).convert('RGB')
+    cand = Image.open(path_b).convert('RGB')
+    if cand.size != base.size:
+        cand = cand.resize(base.size)
+    diff = ImageChops.difference(base, cand)
+    means = ImageStat.Stat(diff).mean
+    return sum(means) / (len(means) * 255.0)
+
+
+def screen_matches(path, baseline, tol=0.05):
+    """True when the screenshot is within tol (default 5%) of the baseline.
+
+    Tolerant on purpose: font anti-aliasing and cursor blink jitter a few
+    percent between otherwise-identical desktops.
+    """
+    return image_diff_ratio(path, baseline) <= tol
+
+
+def phash_distance(path_a, path_b):
+    """Perceptual-hash (pHash) Hamming distance -- layout-shift signal.
+
+    imagehash is an opt-in/pip dependency (not apt-packaged), matching
+    mediawiki-dom-snapshot; imported lazily so this module loads without it.
+    """
+    import imagehash  ## optional dependency -- see docstring
+    return imagehash.phash(Image.open(path_a)) - imagehash.phash(
+        Image.open(path_b))
+
+
+## --- OCR decision (pure) + invocation (deferred) ----------------------------
+
+def _normalise_ocr(text):
+    return ' '.join(text.lower().split())
+
+
+def ocr_text_contains(ocr_output, expected):
+    """True when every expected marker appears in OCR output (case/space-fuzzy).
+
+    expected is a string or a list of strings. Kept separate from run_ocr so
+    the decision is unit-testable without tesseract installed.
+    """
+    haystack = _normalise_ocr(ocr_output)
+    if isinstance(expected, str):
+        expected = [expected]
+    return all(_normalise_ocr(item) in haystack for item in expected)
+
+
+def run_ocr(png, tesseract=TESSERACT):
+    ## DEFERRED (real host): needs tesseract-ocr. Not exercised by CI.
+    result = subprocess.run([tesseract, png, 'stdout'],
+                            capture_output=True, text=True, check=True)
+    return result.stdout
+
+
+## --- Calamares step sequencing (pure) ---------------------------------------
+## The installer is a fixed page order. The driver walks this sequence: at each
+## page it confirms `expect` on screen (OCR) then performs `action`. Only the
+## partition page and the optional encryption step differ between an empty-disk
+## install and a reinstall-over-existing (R7).
+
+Step = collections.namedtuple('Step', ('name', 'expect', 'action'))
+
+_INSTALL_MODES = ('erase', 'replace')
+
+
+def calamares_step_sequence(mode, encrypt=False):
+    """Ordered (name, expect, action) steps for a Calamares run.
+
+    mode='erase'   -> wipe the whole disk (empty-disk install).
+    mode='replace' -> reinstall over an existing install (R7).
+    encrypt=True   -> insert the LUKS passphrase-entry step (secure default).
+    """
+    if mode not in _INSTALL_MODES:
+        raise ValueError('install mode must be one of %r, got %r'
+                         % (_INSTALL_MODES, mode))
+    steps = [
+        Step('welcome', 'welcome', 'key:enter'),
+        Step('location', 'location', 'key:enter'),
+        Step('keyboard', 'keyboard', 'key:enter'),
+    ]
+    if mode == 'erase':
+        steps.append(Step('partition', 'erase disk', 'select:erase'))
+    else:
+        steps.append(Step('partition', 'replace a partition',
+                          'select:replace'))
+    if encrypt:
+        steps.append(Step('encrypt', 'encrypt system', 'type:passphrase'))
+    steps += [
+        Step('users', 'user', 'fill:users'),
+        Step('summary', 'summary', 'key:enter'),
+        Step('install', 'installation', 'wait:install'),
+        Step('finish', 'finished', 'key:enter'),
+    ]
+    return steps
+
+
+## --- real-host driving (DEFERRED: needs VBoxManage; not exercised by CI) -----
+
+def _run(argv):
+    subprocess.run(argv, check=True)
+
+
+def capture_screen(vmname, png, vboxmanage=VBOXMANAGE):
+    _run(build_screenshot_argv(vmname, png, vboxmanage))
+
+
+def send_text(vmname, text, vboxmanage=VBOXMANAGE):
+    _run(build_keyboard_argv(vmname, encode_scancodes(text), vboxmanage))
+
+
+def send_key(vmname, name, vboxmanage=VBOXMANAGE):
+    _run(build_keyboard_argv(vmname, encode_key(name), vboxmanage))
+
+
+def unlock_luks(vmname, passphrase, vboxmanage=VBOXMANAGE):
+    _run(build_keyboard_argv(vmname, encode_passphrase(passphrase), vboxmanage))
+
+
+## --- CLI --------------------------------------------------------------------
+
+_EMIT_OPS = (
+    'import', 'createvm', 'modifyvm', 'createmedium', 'storagectl',
+    'storageattach', 'startvm', 'screenshot', 'keyboard', 'poweroff',
+)
+
+
+def _emit_argv(args):
+    """Build the argv for one op from CLI flags and return it (no execution)."""
+    op = args.op
+    if op == 'import':
+        return build_import_argv(args.ova, args.vm)
+    if op == 'createvm':
+        return build_createvm_argv(args.vm, args.ostype,
+                                   basefolder=args.basefolder)
+    if op == 'modifyvm':
+        return build_modifyvm_argv(args.vm, memory=args.memory,
+                                   firmware=args.firmware, nic=args.nic,
+                                   intnet=args.intnet)
+    if op == 'createmedium':
+        return build_createmedium_argv(args.medium, args.size, fmt=args.format)
+    if op == 'storagectl':
+        return build_storagectl_argv(args.vm, args.controller, args.bus,
+                                     args.controller_chip)
+    if op == 'storageattach':
+        return build_storageattach_argv(args.vm, args.controller, args.port,
+                                        args.device, args.medium_type,
+                                        args.medium)
+    if op == 'startvm':
+        return build_startvm_argv(args.vm)
+    if op == 'screenshot':
+        return build_screenshot_argv(args.vm, args.png)
+    if op == 'keyboard':
+        if args.key is not None:
+            codes = encode_key(args.key)
+        else:
+            codes = encode_scancodes(args.text)
+        return build_keyboard_argv(args.vm, codes)
+    if op == 'poweroff':
+        return build_poweroff_argv(args.vm)
+    raise ValueError('unknown op %r' % (op,))
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(
+        prog='dm-vbox',
+        description='VirtualBox backend for the dm-image boot/install harness.')
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    emit = sub.add_parser(
+        'emit-argv',
+        help='print the VBoxManage argv for one op, without running it')
+    emit.add_argument('--op', required=True, choices=_EMIT_OPS)
+    emit.add_argument('--vm', default='dm-vbox-guest')
+    emit.add_argument('--ova')
+    emit.add_argument('--ostype', default='Debian_64')
+    emit.add_argument('--basefolder')
+    emit.add_argument('--memory', type=int)
+    emit.add_argument('--firmware', choices=sorted(_FIRMWARE))
+    emit.add_argument('--nic')
+    emit.add_argument('--intnet')
+    emit.add_argument('--medium')
+    emit.add_argument('--medium-type', dest='medium_type',
+                      choices=('dvddrive', 'hdd'), default='hdd')
+    emit.add_argument('--size', type=int, default=20480)
+    emit.add_argument('--format', default='VDI')
+    emit.add_argument('--controller', default='SATA')
+    emit.add_argument('--controller-chip', dest='controller_chip',
+                      default='IntelAhci')
+    emit.add_argument('--bus', default='sata')
+    emit.add_argument('--port', type=int, default=0)
+    emit.add_argument('--device', type=int, default=0)
+    emit.add_argument('--png', default='screenshot.png')
+    emit.add_argument('--text')
+    emit.add_argument('--key')
+
+    sub.add_parser(
+        'capabilities',
+        help='report which optional host tools (VBoxManage, tesseract, '
+             'imagehash) are available')
+    return parser
+
+
+def _cmd_capabilities():
+    import importlib.util
+    import shutil
+    have_vbox = shutil.which(VBOXMANAGE) is not None
+    have_tesseract = shutil.which(TESSERACT) is not None
+    have_imagehash = importlib.util.find_spec('imagehash') is not None
+    print('VBoxManage: %s' % ('yes' if have_vbox else 'no'))
+    print('tesseract:  %s' % ('yes' if have_tesseract else 'no'))
+    print('imagehash:  %s' % ('yes' if have_imagehash else 'no'))
+    return PASS_RC
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
+    if args.cmd == 'emit-argv':
+        for token in _emit_argv(args):
+            print(token)
+        return PASS_RC
+    if args.cmd == 'capabilities':
+        return _cmd_capabilities()
+    return SETUP_RC
+
+
+if __name__ == '__main__':
+    sys.exit(main())
