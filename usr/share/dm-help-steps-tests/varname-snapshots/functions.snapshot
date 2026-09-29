@@ -31,6 +31,37 @@ chroot_run ()
 {
     ${SUDO_TO_ROOT} env ${chroot_remove_env_list} -- chroot -- "${CHROOT_FOLDER}" "$@"
 }
+define_chroot_run ()
+{
+    local chroot_env_vars_var_remove_list chroot_env_vars_var_remove_item chroot_env_vars_var_remove_list;
+    chroot_env_vars_var_remove_list="
+      TEMP
+      TEMPDIR
+      TMP
+      TMPDIR
+      HELPER_SCRIPTS_PATH
+   ";
+    chroot_remove_env_list="";
+    for chroot_env_vars_var_remove_item in ${chroot_env_vars_var_remove_list};
+    do
+        if [ "${chroot_remove_env_list:-}" = "" ]; then
+            chroot_remove_env_list="--unset ${chroot_env_vars_var_remove_item}";
+        else
+            chroot_remove_env_list+=" --unset ${chroot_env_vars_var_remove_item}";
+        fi;
+    done;
+    if [ "${dist_build_install_to_root:-}" = "true" ]; then
+        function chroot_run ()
+        {
+            ${SUDO_TO_ROOT} "$@"
+        };
+    else
+        function chroot_run ()
+        {
+            ${SUDO_TO_ROOT} env ${chroot_remove_env_list} -- chroot -- "${CHROOT_FOLDER}" "$@"
+        };
+    fi
+}
 derive_unified_image_paths ()
 {
     local vm_name_item_to_be_exported vm_name_item_lower dist_build_type_long_lower;
@@ -41,16 +72,12 @@ derive_unified_image_paths ()
     do
         vm_name_item_lower="${vm_name_item_to_be_exported,,}";
         dist_build_type_long_lower="${dist_build_type_long,,}";
-        case "${vm_name_item_lower}" in
-            *"${dist_build_type_long_lower}"*)
-                continue
-            ;;
-        esac;
+        if [[ "${vm_name_item_lower}" == *"${dist_build_type_long_lower}"* ]]; then
+            continue;
+        fi;
         default_if_empty binary_image_raw_file_for_unified "${dist_binary_build_folder}/${vm_name_item_to_be_exported}-${dist_build_version}.${target_architecture_pretty_name}.raw";
         default_if_empty binary_image_qcow2_file_for_unified "${dist_binary_build_folder}/${vm_name_item_to_be_exported}-${dist_build_version}.${target_architecture_pretty_name}.qcow2";
-    done;
-    export binary_image_raw_file_for_unified="${binary_image_raw_file_for_unified:-}";
-    export binary_image_qcow2_file_for_unified="${binary_image_qcow2_file_for_unified:-}"
+    done
 }
 dist_build_arch_to_qemu_machine ()
 {
@@ -191,6 +218,7 @@ dist_build_one_parse_cmd ()
                         parse_cmd_type_error;
                     fi;
                 fi;
+                export dist_build_type;
                 shift 2
             ;;
             --target)
@@ -199,32 +227,32 @@ dist_build_one_parse_cmd ()
                     build_target_counter="$(( ${build_target_counter} + 1 ))";
                     export dist_build_virtualbox="true";
                     dist_build_image_upload_supported="true";
-                    implicit_dist_type_vm "--target ${2:-}";
+                    implicit_dist_type vm "--target ${2:-}";
                 else
                     if [ "${2:-}" = "qcow2" ]; then
                         build_target_counter="$(( ${build_target_counter} + 1 ))";
                         export dist_build_qcow2="true";
                         dist_build_image_upload_supported="true";
-                        implicit_dist_type_vm "--target ${2:-}";
+                        implicit_dist_type vm "--target ${2:-}";
                     else
                         if [ "${2:-}" = "utm" ]; then
                             build_target_counter="$(( ${build_target_counter} + 1 ))";
                             export dist_build_raw="true";
                             export dist_build_utm="true";
                             [ "${dist_build_image_upload_supported:-}" = "true" ] || dist_build_image_upload_supported="false";
-                            implicit_dist_type_vm "--target ${2:-}";
+                            implicit_dist_type vm "--target ${2:-}";
                         else
                             if [ "${2:-}" = "iso" ]; then
                                 build_target_counter="$(( ${build_target_counter} + 1 ))";
                                 export dist_build_iso="true";
                                 dist_build_image_upload_supported="true";
-                                implicit_dist_type_host "--target ${2:-}";
+                                implicit_dist_type host "--target ${2:-}";
                             else
                                 if [ "${2:-}" = "raw" ]; then
                                     build_target_counter="$(( ${build_target_counter} + 1 ))";
                                     export dist_build_raw="true";
                                     [ "${dist_build_image_upload_supported:-}" = "true" ] || dist_build_image_upload_supported="false";
-                                    implicit_dist_type_vm "--target ${2:-}";
+                                    implicit_dist_type vm "--target ${2:-}";
                                 else
                                     if [ "${2:-}" = "root" ]; then
                                         build_target_counter="$(( ${build_target_counter} + 1 ))";
@@ -235,7 +263,7 @@ dist_build_one_parse_cmd ()
                                             build_target_counter="$(( ${build_target_counter} + 1 ))";
                                             export dist_build_windows_installer="true";
                                             dist_build_image_upload_supported="true";
-                                            implicit_dist_type_vm "--target ${2:-}";
+                                            implicit_dist_type vm "--target ${2:-}";
                                         else
                                             if [ "${2:-}" = "source" ]; then
                                                 build_target_counter="$(( ${build_target_counter} + 1 ))";
@@ -269,28 +297,28 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --vmram)
-                if [ -z "${2:-}" ]; then
+                export VMRAM="${2:-}";
+                shift 2;
+                if [ "${VMRAM:-}" = "" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vmram.${reset}";
                     exit 1;
-                fi;
-                export VMRAM="${2}";
-                shift 2
+                fi
             ;;
             --vram)
-                if [ -z "${2:-}" ]; then
+                export VRAM="${2:-}";
+                shift 2;
+                if [ "${VRAM:-}" = "" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vram.${reset}";
                     exit 1;
-                fi;
-                export VRAM="${2}";
-                shift 2
+                fi
             ;;
             --vmsize)
-                if [ -z "${2:-}" ]; then
+                export VMSIZE="${2:-}";
+                shift 2;
+                if [ "${VMSIZE:-}" = "" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much GB to use for --vmsize.${reset}";
                     exit 1;
-                fi;
-                export VMSIZE="${2}";
-                shift 2
+                fi
             ;;
             --freshness)
                 if [ "${2:-}" = "frozen" ]; then
@@ -395,13 +423,8 @@ dist_build_one_parse_cmd ()
                         export BUILD_INITRAMFS_PKGS="none";
                         true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
                     else
-                        if [ "${BUILD_INITRAMFS_PKGS:-}" = "none" ]; then
-                            export BUILD_INITRAMFS_PKGS="${2}";
-                            true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
-                        else
-                            export BUILD_INITRAMFS_PKGS="${BUILD_INITRAMFS_PKGS:+${BUILD_INITRAMFS_PKGS} }${2}";
-                            true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
-                        fi;
+                        export BUILD_INITRAMFS_PKGS="${BUILD_INITRAMFS_PKGS:-} ${2:-}";
+                        true "${cyan}BUILD_INITRAMFS_PKGS set to ${BUILD_INITRAMFS_PKGS}.${reset}";
                     fi;
                 fi;
                 shift 2
@@ -415,13 +438,8 @@ dist_build_one_parse_cmd ()
                         export BUILD_KERNEL_PKGS="none";
                         true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
                     else
-                        if [ "${BUILD_KERNEL_PKGS:-}" = "none" ]; then
-                            export BUILD_KERNEL_PKGS="${2}";
-                            true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
-                        else
-                            export BUILD_KERNEL_PKGS="${BUILD_KERNEL_PKGS:+${BUILD_KERNEL_PKGS} }${2}";
-                            true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
-                        fi;
+                        export BUILD_KERNEL_PKGS="${BUILD_KERNEL_PKGS:-} ${2:-}";
+                        true "${cyan}BUILD_KERNEL_PKGS set to ${BUILD_KERNEL_PKGS}.${reset}";
                     fi;
                 fi;
                 shift 2
@@ -435,13 +453,8 @@ dist_build_one_parse_cmd ()
                         export BUILD_HEADER_PKGS="none";
                         true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
                     else
-                        if [ "${BUILD_HEADER_PKGS:-}" = "none" ]; then
-                            export BUILD_HEADER_PKGS="${2}";
-                            true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
-                        else
-                            export BUILD_HEADER_PKGS="${BUILD_HEADER_PKGS:+${BUILD_HEADER_PKGS} }${2}";
-                            true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
-                        fi;
+                        export BUILD_HEADER_PKGS="${BUILD_HEADER_PKGS:-} ${2:-}";
+                        true "${cyan}BUILD_HEADER_PKGS set to ${BUILD_HEADER_PKGS}.${reset}";
                     fi;
                 fi;
                 shift 2
@@ -480,7 +493,7 @@ dist_build_one_parse_cmd ()
                     export dist_build_grub_bios_theme="true";
                 else
                     if [ "${2:-}" = "false" ]; then
-                        true "${cyan}INFO: 4x3/BIOS grub theme override disabled; grub-mkconfig probes firmware.${reset}";
+                        true "${cyan}INFO: 4x3/BIOS grub theme override disabled.${reset}";
                         export dist_build_grub_bios_theme="false";
                     else
                         printf '%s\n' "${red}${bold}ERROR: supported options for --grub-bios-theme are 'true' or 'false'.${reset}";
@@ -505,11 +518,7 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --only-packages)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --only-packages requires a package list.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_only_packages="${2}";
+                export dist_build_only_packages="${2:-}";
                 true "${cyan}INFO: --only-packages: rebuilding only '${dist_build_only_packages}', reusing the rest.${reset}";
                 shift 2
             ;;
@@ -525,8 +534,8 @@ dist_build_one_parse_cmd ()
             ;;
             --package-jobs)
                 export dist_build_package_jobs="${2:-}";
-                if ! is_positive_integer "${dist_build_package_jobs}"; then
-                    printf '%s\n' "${red}${bold}ERROR: --package-jobs must be passed a positive integer.${reset}";
+                if ! [[ "${dist_build_package_jobs}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+                    printf '%s\n' "${red}${bold}ERROR: --package-jobs must be passed a whole integer.${reset}";
                     exit 1;
                 fi;
                 true "${cyan}INFO: --package-jobs: up to '${dist_build_package_jobs}' concurrent package build(s).${reset}";
@@ -586,51 +595,27 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --file-system)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --file-system requires a filesystem type.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_file_system="${2}";
+                export dist_build_file_system="${2:-}";
                 shift 2
             ;;
             --hostname)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --hostname requires a hostname.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_hostname="${2}";
+                export dist_build_hostname="${2:-}";
                 shift 2
             ;;
             --retry-max)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --retry-max requires a value.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_auto_retry="${2}";
+                export dist_build_auto_retry="${2:-}";
                 shift 2
             ;;
             --retry-wait)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --retry-wait requires a value.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_wait_auto_retry="${2}";
+                export dist_build_wait_auto_retry="${2:-}";
                 shift 2
             ;;
             --retry-before)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --retry-before requires a command.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_dispatch_before_retry="${2}";
+                export dist_build_dispatch_before_retry="${2:-}";
                 shift 2
             ;;
             --retry-after)
-                if [ -z "${2:-}" ]; then
-                    printf '%s\n' "${red}${bold}ERROR: --retry-after requires a command.${reset}";
-                    exit 1;
-                fi;
-                export dist_build_dispatch_after_retry="${2}";
+                export dist_build_dispatch_after_retry="${2:-}";
                 shift 2
             ;;
             --allow-untagged)
@@ -881,7 +866,7 @@ dist_build_one_parse_cmd ()
                     printf '%s\n' "${red}${bold}ERROR: --function may not be empty.${reset}";
                     exit 1;
                 else
-                    FUNCTION="${2:-}";
+                    export FUNCTION="${2:-}";
                     true "${cyan}INFO: --function set to ${FUNCTION}${reset}";
                 fi;
                 shift 2
@@ -1092,19 +1077,12 @@ ${reset}";
         fi;
     fi;
     if [ "${dist_build_iso:-}" = "true" ]; then
-        case "${dist_build_target_arch:-}" in
-            amd64 | arm64)
-
-            ;;
-            *)
-                error "${red}${bold}Architecture '${dist_build_target_arch:-}' cannot build an ISO!${reset}
+        if ! [[ "${dist_build_target_arch}" =~ ^(amd64|arm64)$ ]]; then
+            error "${red}${bold}ISOs cannot be built for architecture '${dist_build_target_arch:-}'!${reset}
 
 Supported ISO architectures: amd64, arm64.
-(i386 and armhf have no signed GRUB/shim in Debian Trixie, so no bootable ISO
-can be produced for them.)
-Build '--target iso' with a supported arch, or choose a different '--target'.${reset}"
-            ;;
-        esac;
+Build '--target iso' with a supported arch, or choose a different '--target'.${reset}";
+        fi;
         if [ "${dist_build_target_arch:-}" = "amd64" ]; then
             parse_cmd_freedom_versus_nonfreedom_firmware_choice_check;
         fi;
@@ -1218,7 +1196,7 @@ Environment Variables:
 Advanced Options:
   --report [true|false]           : Enable or disable build reports (default: false).
   --serial-console-enable [true|false] : Install serial-console-enable and enable serial console on ISO builds (default: false).
-  --grub-bios-theme [true|false]  : Force the 4x3/BIOS grub theme and resolution in the built image regardless of build-host firmware, for reproducible builds (default: true). false lets grub-mkconfig probe the build host firmware.
+  --grub-bios-theme [true|false]  : Force the 4x3/BIOS grub theme and resolution in the built image regardless of build-host firmware for reproducible builds (default: true).
   --smbios-reader [true|false]    : DANGEROUS, DO NOT USE. Allow injecting kernel parameters via the SMBIOS serial number field. This will allow attackers with physical access to inject arbitrary kernel parameters into the boot process! Only useful for CI and AI agents.
   --sanity-tests [true|false]     : Enable or disable chroot script sanity tests for faster build speed (default: false).
   --only-packages 'p1 p2'         : Rebuild only listed packages into the persistent local repo, reuse the rest from the prior build.
@@ -1294,18 +1272,20 @@ Parameters:
 }
 dist_build_source_config_dir ()
 {
-    true "${cyan}INFO: Checking if config dir $1 exists...${reset}";
-    if [ -d "$1" ]; then
-        true "${cyan}INFO: Parsing $1...${reset}";
+    local config_dir;
+    config_dir="${1:-}";
+    true "${cyan}INFO: Checking if config dir '${config_dir}' exists...${reset}";
+    if [ -d "${config_dir}" ]; then
+        true "${cyan}INFO: Parsing '${config_dir}'...${reset}";
         shopt -s nullglob;
         local dist_build_config_conf_item;
-        for dist_build_config_conf_item in "$1/"*".conf";
+        for dist_build_config_conf_item in "${config_dir}/"*".conf";
         do
             bash -n -- "${dist_build_config_conf_item}";
             source "${dist_build_config_conf_item}";
         done;
     else
-        true "${cyan}INFO: Skipping $1 because it does not exist.${reset}";
+        true "${cyan}INFO: Skipping '${config_dir}' because it does not exist.${reset}";
     fi
 }
 error_dangerous_option_maybe ()
@@ -1325,27 +1305,19 @@ To enable the use of dangerous options, export
 'dist_build_unlock_dangerous_options=true' in the environment.${reset}";
     exit 1
 }
-implicit_dist_type_host ()
+implicit_dist_type ()
 {
+    local implicit_type;
+    implicit_type="$1";
     if printf '%s\n' "${args[@]}" | grep --fixed-strings --line-regexp -- "--type" &> /dev/null; then
         return 0;
     fi;
     if [ ! "${dist_build_type:-}" = "" ]; then
         return 0;
     fi;
-    printf '%s\n' "INFO: implicitly setting '--type host' because using '${1:-}'.";
-    dist_build_type="host"
-}
-implicit_dist_type_vm ()
-{
-    if printf '%s\n' "${args[@]}" | grep --fixed-strings --line-regexp -- "--type" &> /dev/null; then
-        return 0;
-    fi;
-    if [ ! "${dist_build_type:-}" = "" ]; then
-        return 0;
-    fi;
-    printf '%s\n' "INFO: implicitly setting '--type vm' because using '${1:-}'.";
-    dist_build_type="vm"
+    printf '%s\n' "INFO: implicitly setting '--type ${implicit_type}' because using '${1:-}'.";
+    dist_build_type="${implicit_type}";
+    export dist_build_type
 }
 maybe_disable_dist_build_windows_installer ()
 {
@@ -1355,6 +1327,13 @@ maybe_disable_dist_build_windows_installer ()
         true "${BASH_SOURCE[0]} INFO: dist_build_source_run is not set to true, therefore: dist_build_windows_installer=false";
         dist_build_windows_installer=false;
     fi
+}
+newest-kernel-version ()
+{
+    local listing newest;
+    listing="$1";
+    newest="$(printf '%s\n' "${listing}" | grep '^vmlinuz-' | sort --version-sort | tail --lines=1)" || true;
+    printf '%s\n' "${newest#vmlinuz-}"
 }
 parse_cmd_flavor_error ()
 {
@@ -1445,8 +1424,20 @@ repository_dist_initializer_setup ()
         ${SUDO_TO_ROOT} mkdir --parents -- "${CHROOT_FOLDER}/var/lib/repository-dist/";
         ${SUDO_TO_ROOT} cp -- "${binary_build_folder_dist}/derivative_apt_repository_opts" "${CHROOT_FOLDER}/var/lib/repository-dist/derivative_apt_repository_opts";
     else
-        rm --force -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
+        safe-rm --force -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
     fi
+}
+resolve-partition-uuid ()
+{
+    local partition_name lsblk_output name uuid;
+    partition_name="$1";
+    lsblk_output="$(lsblk --raw --noheadings --output NAME,UUID)";
+    while read -r name uuid; do
+        if [ "${name}" = "${partition_name}" ]; then
+            printf '%s\n' "${uuid}";
+            return 0;
+        fi;
+    done <<< "${lsblk_output}"
 }
 set_cowbuilder_folders ()
 {
@@ -1473,10 +1464,10 @@ set_dist_build_reprepro_folder_options ()
     fi;
     [[ -v make_reprepro_codename_item ]] || make_reprepro_codename_item="${dist_build_apt_codename}";
     true "make_reprepro_codename_item: ${make_reprepro_codename_item}";
-    if [ ! "${make_reprepro_codename_item:-}" = "local" ]; then
-        apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
-    else
+    if [ "${make_reprepro_codename_item:-}" = "local" ]; then
         apt_repo_sub_folder="aptrepo_local/${derivative_repository_name}";
+    else
+        apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
     fi;
     dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
     export dist_apt_repository_folder;
@@ -1491,31 +1482,23 @@ source_date_epoch_valid ()
 }
 unmount_if_mounted ()
 {
-    ${SUDO_TO_ROOT} test -e "$1" || return 0;
-    local unmount_if_mounted_rc=0;
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
-    case "${unmount_if_mounted_rc}" in
-        0)
-            ${SUDO_TO_ROOT} umount --verbose -- "$1"
-        ;;
-        32)
-            return 0
-        ;;
-        *)
-            return "${unmount_if_mounted_rc}"
-        ;;
-    esac
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
+    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+}
+username-plain-for-sudoers ()
+{
+    local candidate LC_ALL=C;
+    candidate="$1";
+    if [[ "${candidate}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        return 1;
+    fi;
+    check_valid_linux_user_account_name "${candidate}"
 }
 value_charset_ok ()
 {
-    if [ -z "$2" ]; then
+    if [ -z "${1:-}" ] || [[ "${1:-}" == *[!${2:-}]* ]]; then
         return 1;
     fi;
-    case "$1" in
-        '' | *[!$2]*)
-            return 1
-        ;;
-    esac;
     return 0
 }
 variables_script_sanity_test ()
