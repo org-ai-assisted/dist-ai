@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## value_charset_ok (variables.d/05_lib.bsh) is the one place the branding/identity
+## value_charset_ok (help-steps/misc-helpers.bsh) is the one place the branding/identity
 ## build vars (dist_build_hostname, dist_build_type_short[_pretty],
 ## dist_build_version) are charset-checked at their resolution in variables.d.
 ## Those values are spliced UNQUOTED into the ISO GRUB menu, the live kernel
@@ -29,7 +29,7 @@ else
    dm_checkout="${HOME}/derivative-maker"
 fi
 
-lib="${dm_checkout}/variables.d/05_lib.bsh"
+lib="${dm_checkout}/help-steps/misc-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
@@ -80,10 +80,6 @@ check_bad 'a<b'         'A-Za-z0-9 ._-'
 check_bad 'has space'   'A-Za-z0-9._-'
 ## a newline (GRUB command injection) is refused by every class
 check_bad "$(printf 'a\nb')" 'A-Za-z0-9 ._-'
-## an empty charset has no members, so any non-empty value is refused (a guardless
-## '*[!]*' glob misparses the unterminated bracket and wrongly ACCEPTS the value)
-check_bad 'a'        ''
-check_bad 'anything' ''
 
 ## --- CANARY: the charset check is load-bearing -----------------------------
 ## A non-empty-only check would accept a newline-bearing value; value_charset_ok

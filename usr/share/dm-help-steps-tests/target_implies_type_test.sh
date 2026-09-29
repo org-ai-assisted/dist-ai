@@ -70,7 +70,7 @@ for target in virtualbox qcow2 utm raw; do
       continue
    fi
    case "${arm}" in
-      *implicit_dist_type_vm*)
+      *'implicit_dist_type vm'*|*'implicit_dist_type "vm"'*)
          pass "--target ${target} implies '--type vm'"
          ;;
       *)
@@ -84,7 +84,7 @@ done
 ## would pass the vm assertions above too.
 iso_arm="$(target_arm iso)"
 case "${iso_arm}" in
-   *implicit_dist_type_host*)
+   *'implicit_dist_type host'*|*'implicit_dist_type "host"'*)
      pass "--target iso still implies '--type host'"
       ;;
    *)
@@ -92,7 +92,7 @@ case "${iso_arm}" in
       ;;
 esac
 case "${iso_arm}" in
-   *implicit_dist_type_vm*)
+   *'implicit_dist_type vm'*|*'implicit_dist_type "vm"'*)
       fail "--target iso implies '--type vm'; the arms are being confused for one another"
       ;;
    *)
@@ -116,13 +116,13 @@ esac
 
 ## The helper must keep honouring an explicit '--type', or this change would
 ## override a caller that asked for something else.
-helper="$(sed -n '/^implicit_dist_type_vm()/,/^}/p' -- "${parse_cmd}")"
+helper="$(sed -n '/^implicit_dist_type()/,/^}/p' -- "${parse_cmd}")"
 case "${helper}" in
    *'"--type"'*)
-      pass "implicit_dist_type_vm still returns early when '--type' was passed"
+      pass "implicit_dist_type still returns early when '--type' was passed"
       ;;
    *)
-      fail "implicit_dist_type_vm no longer checks for an explicit '--type'; implying a type would override the caller"
+      fail "implicit_dist_type no longer checks for an explicit '--type'; implying a type would override the caller"
       ;;
 esac
 
@@ -132,9 +132,9 @@ esac
 ## text (e.g. '--conffile /tmp/build--type.conf') suppressed the inference, and
 ## the build then failed the later "You must add either '--type vm'" check for a
 ## reason nothing in the command line suggested.
-helper_matches="$(sed -n '/^implicit_dist_type_vm()/,/^}/p' -- "${parse_cmd}" | grep -- 'grep --fixed-strings' || true)"
+helper_matches="$(sed -n '/^implicit_dist_type()/,/^}/p' -- "${parse_cmd}" | grep -- 'grep --fixed-strings' || true)"
 if [ -z "${helper_matches}" ]; then
-   fail "implicit_dist_type_vm no longer greps the argument list; this assertion is stale"
+   fail "implicit_dist_type no longer greps the argument list; this assertion is stale"
 else
    case "${helper_matches}" in
       *--line-regexp*)

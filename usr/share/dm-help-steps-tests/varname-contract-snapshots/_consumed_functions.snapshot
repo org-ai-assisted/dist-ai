@@ -49,8 +49,20 @@ repository_dist_initializer_setup ()
         ${SUDO_TO_ROOT} mkdir --parents -- "${CHROOT_FOLDER}/var/lib/repository-dist/";
         ${SUDO_TO_ROOT} cp -- "${binary_build_folder_dist}/derivative_apt_repository_opts" "${CHROOT_FOLDER}/var/lib/repository-dist/derivative_apt_repository_opts";
     else
-        rm --force -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
+        safe-rm --force -- "${binary_build_folder_dist}/derivative_apt_repository_opts";
     fi
+}
+resolve-partition-uuid ()
+{
+    local partition_name lsblk_output name uuid;
+    partition_name="$1";
+    lsblk_output="$(lsblk --raw --noheadings --output NAME,UUID)";
+    while read -r name uuid; do
+        if [ "${name}" = "${partition_name}" ]; then
+            printf '%s\n' "${uuid}";
+            return 0;
+        fi;
+    done <<< "${lsblk_output}"
 }
 set_cowbuilder_folders ()
 {
@@ -77,10 +89,10 @@ set_dist_build_reprepro_folder_options ()
     fi;
     [[ -v make_reprepro_codename_item ]] || make_reprepro_codename_item="${dist_build_apt_codename}";
     true "make_reprepro_codename_item: ${make_reprepro_codename_item}";
-    if [ ! "${make_reprepro_codename_item:-}" = "local" ]; then
-        apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
-    else
+    if [ "${make_reprepro_codename_item:-}" = "local" ]; then
         apt_repo_sub_folder="aptrepo_local/${derivative_repository_name}";
+    else
+        apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
     fi;
     dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
     export dist_apt_repository_folder;
@@ -88,18 +100,15 @@ set_dist_build_reprepro_folder_options ()
 }
 unmount_if_mounted ()
 {
-    ${SUDO_TO_ROOT} test -e "$1" || return 0;
-    local unmount_if_mounted_rc=0;
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
-    case "${unmount_if_mounted_rc}" in
-        0)
-            ${SUDO_TO_ROOT} umount --verbose -- "$1"
-        ;;
-        32)
-            return 0
-        ;;
-        *)
-            return "${unmount_if_mounted_rc}"
-        ;;
-    esac
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
+    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+}
+username-plain-for-sudoers ()
+{
+    local candidate LC_ALL=C;
+    candidate="$1";
+    if [[ "${candidate}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        return 1;
+    fi;
+    check_valid_linux_user_account_name "${candidate}"
 }

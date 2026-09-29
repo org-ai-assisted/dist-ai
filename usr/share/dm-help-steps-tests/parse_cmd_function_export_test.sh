@@ -5,26 +5,23 @@
 
 ## AI-Assisted
 
-## Regression test: a helper that pre-sets the dist_build_one_parsed parse-skip
-## guard must NOT export it, so a child PROCESS invoked with its OWN args
-## (--function ...) re-parses and honors them.
-##
-## THE BUG: dist_build_one_parsed is a SAME-SHELL idempotency guard
+## Regression test: dist_build_one_parsed is a SAME-SHELL idempotency guard
 ## (variables.d/05_load-config.bsh skips re-parsing when it is already true in
-## THIS shell). When a helper EXPORTS it, the flag leaks into child processes:
-## dm-tor-update-repository exported it, then (via dm-get-tor-from-tpo-repo)
-## invoked `*_create-debian-packages --function download_tpo_packages` -- that
-## child inherited the export, SKIPPED parse, ignored --function, and built ALL
-## packages (tirdad included) instead of the one named. Fix: set it NON-exported,
-## like the already-correct dm-reprepro-wrapper.
+## THIS shell). It must NEVER be exported. Exporting leaks the parse-skip into
+## child build-step PROCESSES, which then skip validating their OWN argv:
+##   - an unknown flag (e.g. a typo like --rebuild-packages) is silently ignored
+##     instead of erroring;
+##   - --function is dropped, so create-debian-packages builds ALL packages
+##     instead of the one named.
+## The correct pattern is non-exported (like dm-reprepro-wrapper): every process
+## re-parses its own complete argv (the main flow forwards full args).
 ##
-## Two checks, both drive the REAL files (no reimplementation):
-##  1. dm-tor-update-repository sets dist_build_one_parsed WITHOUT export.
-##  2. No developer-meta-files helper that invokes a build-step child with
-##     --function exports dist_build_one_parsed.
-## Structural (guards a revert of the one-line fix); the behavioural proof that
-## an inherited flag makes the child ignore --function is a sandbox/root check.
-## Needs no root, no network, no build.
+## Whole-surface guard: NO file in the derivative-maker tree may export the flag
+## -- catches a revert at the config loader OR any helper (sign-and-tag,
+## sign-tag-head, dm-tor-update-repository, dm-virtualbox-guest-additions-iso-update).
+## Structural + fast: no root, no network, no build. The behavioural proof (a
+## build-step child errors on an unknown flag / honors --function) is the real
+## build.
 
 set -o errexit
 set -o nounset
@@ -39,29 +36,55 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-dmf_bin="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin"
-helper="${dmf_bin}/dm-tor-update-repository"
-if [ ! -r "${helper}" ]; then
-   printf '%s\n' "FATAL: dm-tor-update-repository not readable at '${helper}' (set DERIVATIVE_MAKER_DIR)." >&2
+if [ ! -d "${dm_checkout}" ]; then
+   printf '%s\n' "FATAL: derivative-maker checkout not found at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
+loader="${dm_checkout}/variables.d/05_load-config.bsh"
+dmf_bin="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin"
 
 pass() { printf '%s\n' "PASS: $*"; }
 test_failures=0
 fail() { printf '%s\n' "FAIL: $*" >&2; test_failures=$((test_failures + 1)); }
 
-## 1. dm-tor-update-repository must set the flag, but NOT export it.
-if grep --quiet --extended-regexp '^[[:space:]]*export[[:space:]]+dist_build_one_parsed' "${helper}"; then
-   fail "dm-tor-update-repository EXPORTS dist_build_one_parsed -- leaks the parse-skip into its --function child, which then builds ALL packages"
-elif grep --quiet --extended-regexp '^[[:space:]]*dist_build_one_parsed=true' "${helper}"; then
-   pass "dm-tor-update-repository sets dist_build_one_parsed non-exported (child re-parses + honors --function)"
+## 1. Whole-surface: nothing in the tree may `export dist_build_one_parsed`.
+##    grep -r over the tracked tree; .git is excluded.
+mapfile -t exporters < <(
+   grep -rIln --exclude-dir=.git --extended-regexp \
+      '^[[:space:]]*export[[:space:]]+dist_build_one_parsed' "${dm_checkout}" 2>/dev/null || true
+)
+if [ "${#exporters[@]}" -eq 0 ]; then
+   pass "no file exports dist_build_one_parsed (same-shell guard cannot leak into child processes)"
 else
-   fail "dm-tor-update-repository no longer sets dist_build_one_parsed as expected -- test needs review"
+   for exporter in "${exporters[@]}"; do
+      fail "exports dist_build_one_parsed -- leaks parse-skip into --function/unknown-flag children: ${exporter#"${dm_checkout}/"}"
+   done
 fi
 
-## 2. dm-get-tor-from-tpo-repo (the caller that passes --function to a build-step
-## child) still relies on the parent not exporting the flag: assert the child
-## invocation carries --function AND the caller does not itself re-export the flag.
+## 2. The config loader must STILL set the guard (non-exported) -- guards against
+##    deleting the idempotency guard while removing the export.
+if [ ! -r "${loader}" ]; then
+   fail "config loader not readable at '${loader}' -- test needs review"
+elif grep --quiet --extended-regexp '^[[:space:]]*dist_build_one_parsed="true"' "${loader}"; then
+   pass "config loader sets dist_build_one_parsed non-exported (same-shell idempotency preserved)"
+else
+   fail "config loader no longer sets dist_build_one_parsed=\"true\" -- test needs review"
+fi
+
+## 3. dm-tor-update-repository still pre-sets the guard (non-exported) before
+##    invoking its --function child, proving the leak path stays closed.
+helper="${dmf_bin}/dm-tor-update-repository"
+if [ -r "${helper}" ]; then
+   if grep --quiet --extended-regexp '^[[:space:]]*dist_build_one_parsed=true' "${helper}"; then
+      pass "dm-tor-update-repository pre-sets the guard non-exported (child re-parses + honors --function)"
+   else
+      fail "dm-tor-update-repository no longer sets dist_build_one_parsed as expected -- test needs review"
+   fi
+fi
+
+## 4. dm-get-tor-from-tpo-repo (the caller that passes --function to a build-step
+##    child) still relies on the child re-parsing: assert the invocation carries
+##    --function.
 caller="${dmf_bin}/dm-get-tor-from-tpo-repo"
 if [ -r "${caller}" ]; then
    if grep --quiet --extended-regexp '\-\-function[[:space:]]+download_tpo_packages' "${caller}"; then
@@ -69,13 +92,10 @@ if [ -r "${caller}" ]; then
    else
       fail "dm-get-tor-from-tpo-repo no longer passes --function download_tpo_packages -- test needs review"
    fi
-   if grep --quiet --extended-regexp '^[[:space:]]*export[[:space:]]+dist_build_one_parsed' "${caller}"; then
-      fail "dm-get-tor-from-tpo-repo re-exports dist_build_one_parsed -- would re-break the --function child"
-   fi
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: the parse-skip flag is not exported into the --function build-step child."
+printf '%s\n' "OK: dist_build_one_parsed is never exported; the parse-skip cannot leak into a child process."

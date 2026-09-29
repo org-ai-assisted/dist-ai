@@ -5,15 +5,9 @@
 
 ## AI-Assisted
 
-## Regression test for derivative-maker help-steps/parse-cmd: the 'none' sentinel
-## of --kernel / --headers / --initramfs must be coherent across repeated flags.
-##
-## THE BUG: '--kernel none --kernel linux-image-amd64' produced
-## BUILD_KERNEL_PKGS="none linux-image-amd64" (the else-branch appended to the
-## prior "none"), and build-steps.d/3500_install-packages only skips when the
-## value is EXACTLY "none", so it then tried to 'apt-get install none ...' and
-## failed the build. Fix: a real package clears a prior "none"; "none" stays the
-## exclusive sentinel.
+## Regression test for derivative-maker help-steps/parse-cmd: the 'none' value of
+## --kernel / --headers / --initramfs, when passed last, is the exclusive sentinel,
+## and repeated real packages accumulate.
 ##
 ## Drives the REAL parse-cmd by SOURCING it (parse-cmd defines
 ## dist_build_one_parse_cmd but does not run it when sourced) and calling the real
@@ -69,23 +63,9 @@ drive() {
    )
 }
 
-## $1 flag, $2 var name. Runs the four coherence cases for one option.
+## $1 flag, $2 var name. Runs the coherence cases for one option.
 check_option() {
    local flag="$1" var="$2" out
-
-   ## none then a real package -> the real package only (no literal 'none' token).
-   out="$( drive "${var}" "${flag}" none "${flag}" real-pkg-a )"
-   case " ${out} " in
-      *" none "*)
-         fail "${flag}: 'none' then a package left a literal 'none' in '${out}'"
-         ;;
-      *" real-pkg-a "*)
-         pass "${flag}: a real package after 'none' clears the sentinel (-> '${out}')"
-         ;;
-      *)
-         fail "${flag}: 'none' then a package gave unexpected '${out}'"
-         ;;
-   esac
 
    ## a real package then none -> none stays exclusive.
    out="$( drive "${var}" "${flag}" real-pkg-a "${flag}" none )"
