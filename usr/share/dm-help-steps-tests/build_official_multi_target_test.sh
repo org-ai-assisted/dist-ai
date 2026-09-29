@@ -6,20 +6,24 @@
 ## AI-Assisted
 
 ## Regression test for derivative-maker 'help-steps/dm-build-official-one': the
-## VM-target sets it computes.
+## per-flavor BUILD/UPLOAD VM-target set (flavor_multi_target_args) must honor
+## 'dist_build_multi_target_list'.
 ##
-## dm-build-official-one computes TWO target sets:
-##   - multi_target_args: the ARCHITECTURE default (amd64 -> VirtualBox + qcow2;
-##     arm64/other -> qcow2). Passed to the SHARED PREP steps (prepare-build-machine,
-##     cowbuilder-setup, local-dependencies) and the sanity/create-raw steps.
-##   - flavor_multi_target_args: 'dist_build_multi_target_list' when set (the
-##     override, even to empty), else the arch default. Passed to the per-flavor
-##     BUILD and UPLOAD steps.
+## dm-build-official-one derives an arch-default VM-target set (amd64 -> VirtualBox +
+## qcow2; arm64/other -> qcow2) and then applies the 'dist_build_multi_target_list'
+## override. The BUILD/UPLOAD set (flavor_multi_target_args) reflects that override:
+## a qcow2-only request builds/uploads qcow2 only; an unset request keeps the arch
+## default; an explicit list is honored verbatim. This is the user-facing contract.
 ##
-## So the override is honored for the build/upload set, while the prep set stays the
-## arch default. This guard extracts the real computation from the shipped script
-## (no drift) and evaluates it per request, so a silent drop of the override-aware
-## build set is caught. Behavioral: no root, no network, no build.
+## NOTE on scope: whether the override is ALSO authoritative for the shared PREP set
+## (multi_target_args) currently differs between derivative-maker's 'master' (prep
+## honors the override -- qcow2-only does not prep VirtualBox) and the upstream
+## 'variables.d' modularization adopted on 'ai' (prep keeps the arch default). That
+## prep divergence is a dm-side reconciliation, so this test asserts only the
+## flavor (build/upload) set, which is identical under BOTH forms.
+##
+## Behavioral: extracts the real VM-target computation from the shipped script (no
+## drift) and evaluates it per request. No root, no network, no build.
 
 set -o errexit
 set -o nounset
@@ -36,25 +40,25 @@ source "${test_dir}/help_steps_test_lib.bsh"
 subject="$(locate_help_step dm-build-official-one "${DM_BUILD_OFFICIAL_ONE:-}" "${test_dir}")" \
    || exit 1
 
-## The VM-target computation is a self-contained block: from the top-level
-## 'multi_target_args=()' (arch case) through the 'fi' that closes the
-## flavor_multi_target_args override conditional.
-block="$(sed -n '/^multi_target_args=()$/,/^fi$/p' -- "${subject}")"
-if [ -z "${block}" ]; then
-   fail "could not extract the multi_target_args block; the assertions below would prove nothing"
+## The whole VM-target computation: from the top-level 'multi_target_args=()' (the
+## arch case) through the flavor_multi_target_args derivation, up to the next
+## section separator ('####...'). Captures both the arch default and the override
+## handling regardless of which of the two dm forms is present.
+block="$(sed -n '/^multi_target_args=()$/,/^####/p' -- "${subject}")"
+if [ -z "${block}" ] || [[ "${block}" != *flavor_multi_target_args* ]]; then
+   fail "could not extract the multi_target_args computation; the assertions below would prove nothing"
    printf '%s\n' "FAILED: extraction" >&2
    exit 1
 fi
 
-## Guard the guard: the build set must remain OVERRIDE-AWARE -- it consults
-## 'dist_build_multi_target_list'. A silent revert that dropped the override (e.g.
-## hard-wiring the build set to the arch default) would remove this line.
+## Guard the guard: the computation must consult 'dist_build_multi_target_list'. A
+## silent revert that hard-wired the target set to the arch default would drop it.
 case "${block}" in
    *'dist_build_multi_target_list+x'*)
       true
       ;;
    *)
-      fail "the build set is no longer override-aware -- dm-build-official-one dropped the dist_build_multi_target_list override"
+      fail "the VM-target set is no longer override-aware -- dm-build-official-one dropped the dist_build_multi_target_list override"
       ;;
 esac
 
@@ -69,8 +73,8 @@ printf '%s\n' "${block}" > "${work}/block.bash"
 ## dist_build_multi_target_list -- EXPLICITLY from its args, and UNSETS the override
 ## when the case does not provide one. The build/CI environment exports
 ## dist_build_multi_target_list, and an extracted block run with that ambient value
-## present skews the result (an empty exported value makes the override branch fire
-## with zero targets), so the block must never see an inherited value.
+## present skews the result, so the block must never see an inherited value. Prints
+## only the BUILD/UPLOAD set (flavor_multi_target_args), the divergence-invariant.
 cat > "${work}/driver.bash" <<'DRIVER'
 set -o nounset
 block="$1"
@@ -82,10 +86,10 @@ else
 fi
 # shellcheck disable=SC1090
 source "${block}"
-printf '%s|%s\n' "${multi_target_args[*]}" "${flavor_multi_target_args[*]}"
+printf '%s\n' "${flavor_multi_target_args[*]}"
 DRIVER
 
-## $1 label, $2 expected "prep|build", $3 architecture, $4 override list (omit -> unset).
+## $1 label, $2 expected build set, $3 architecture, $4 override list (omit -> unset).
 check_case() {
    local label="$1" want="$2" arch="$3" mtl="${4:-__UNSET__}"
    local got
@@ -97,24 +101,23 @@ check_case() {
    fi
 }
 
-## amd64, no override -> arch default for BOTH prep and build.
-check_case 'amd64 default: prep and build both VirtualBox + qcow2' \
-   '--target virtualbox --target qcow2|--target virtualbox --target qcow2' \
+## amd64, no override -> arch default (VirtualBox + qcow2).
+check_case 'amd64 default: build set is VirtualBox + qcow2' \
+   '--target virtualbox --target qcow2' \
    amd64
 
-## amd64, qcow2-only override -> prep keeps the arch default; the BUILD set honors
-## the override (qcow2 only).
-check_case 'amd64 qcow2-only override: prep arch default, build qcow2 only' \
-   '--target virtualbox --target qcow2|--target qcow2' \
+## amd64, qcow2-only override -> build/upload qcow2 only.
+check_case 'amd64 qcow2-only override: build set is qcow2 only' \
+   '--target qcow2' \
    amd64 qcow2
 
-## amd64, explicit virtualbox+qcow2 override -> both sets carry both targets.
-check_case 'amd64 explicit virtualbox+qcow2: prep and build both' \
-   '--target virtualbox --target qcow2|--target virtualbox --target qcow2' \
+## amd64, explicit virtualbox+qcow2 override -> both targets.
+check_case 'amd64 explicit virtualbox+qcow2: build set carries both' \
+   '--target virtualbox --target qcow2' \
    amd64 'virtualbox qcow2'
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-build-official-one prep uses the arch default; the build set honors the multi-target override."
+printf '%s\n' "OK: dm-build-official-one build/upload set honors the multi-target override."
