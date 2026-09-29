@@ -1808,6 +1808,9 @@ _STRICT_DIRECTIVES = (
 )
 _STRICT_HEADER_LINES = 160
 _GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
+_INDENTED_NOUNSET = re.compile(r'^[ \t]+set -o nounset[ \t]*$', re.MULTILINE)
+_INDENTED_PIPEFAIL = re.compile(r'^[ \t]+set -o pipefail[ \t]*$', re.MULTILINE)
+_INDENTED_ERRTRACE = re.compile(r'^[ \t]+set -o errtrace[ \t]*$', re.MULTILINE)
 _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
                               re.MULTILINE)
 _SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
@@ -1824,10 +1827,11 @@ class StrictModeBlock(Rule):
     strict mode into the sourcing shell). Source-able DUAL-mode scripts keep zero
     column-zero strict lines and guard the block behind a was_executed()/
     was_sourced() check -- those are exempt from the all-seven rule, but when the
-    guarded block DOES enable errexit (indented 'set -o errexit'), the indented
-    shopt half + 'export LC_ALL=C' are still enforced (they are the copied-in
-    lines authors forget). A partial top-level block (1..6) is not clean and
-    stays subject to the all-seven check."""
+    guarded block DOES enable errexit (indented 'set -o errexit'), the rest of the
+    block (nounset/pipefail/errtrace, inherit_errexit, shift_verbose, export
+    LC_ALL=C) is still enforced -- the copied-in lines authors forget. A partial
+    top-level block (1..6) is not clean and stays subject to the all-seven
+    check."""
 
     id = "R-010"
     waiver_tag = "no-strict"
@@ -1849,10 +1853,21 @@ class StrictModeBlock(Rule):
             bash_ast.command_name(call) in ("was_executed", "was_sourced")
             for call in bash_ast.call_exprs(ctx.tree))
         if present == 0 and guarded:
-            ## Source-able guarded script: exempt from all-seven. Enforce the
-            ## indented shopt half + export only when the guard enables errexit.
+            ## Source-able guarded script: exempt from the all-seven column-zero
+            ## rule (a guard CALL alone exempts -- a sourced-only lib that defines
+            ## or invokes was_executed must not be forced to carry strict mode).
+            ## But when the guarded block DOES enable errexit (indented
+            ## 'set -o errexit'), enforce the REST of the block inside the guard --
+            ## the copied-in lines authors forget: nounset/pipefail/errtrace, the
+            ## shopt pair, and LC_ALL.
             if _GUARD_ERREXIT.search(source):
                 missing = []
+                if not _INDENTED_NOUNSET.search(source):
+                    missing.append("set -o nounset")
+                if not _INDENTED_PIPEFAIL.search(source):
+                    missing.append("set -o pipefail")
+                if not _INDENTED_ERRTRACE.search(source):
+                    missing.append("set -o errtrace")
                 if not _INHERIT_ERREXIT.search(source):
                     missing.append("shopt -s inherit_errexit")
                 if not _SHIFT_VERBOSE.search(source):

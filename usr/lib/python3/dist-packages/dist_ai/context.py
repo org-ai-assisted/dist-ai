@@ -28,7 +28,7 @@ import tokenize
 from dist_ai import bash_ast
 from dist_ai import model
 
-SHELL_EXTS = (".sh", ".bsh")
+SHELL_EXTS = (".sh", ".bsh", ".bash")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
 PYTHON_SHEBANG_RE = re.compile(r'#!.*(/|\s)python[0-9.]*(\s|$)')
 
