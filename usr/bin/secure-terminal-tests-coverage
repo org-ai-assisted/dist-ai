@@ -108,9 +108,69 @@ fi
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 pkg="${repo}/usr/lib/python3/dist-packages/secure_terminal"
 
-work="$(mktemp --directory)"
-cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
-trap cleanup EXIT
+## Chunk+combine split so each dist-ai-tests-all entry fits the 600s per-suite timeout while ONE
+## final assertion keeps the 100% gate. Coverage is CROSS-TIER (some Qt-free modules are covered
+## only by widget suites), so a per-tier assertion cannot hold -- instead the chunk entries COLLECT
+## coverage (coverage run --parallel-mode) into a SHARED, per-CI-run data dir that survives across
+## the sequential orchestrator entries; the 'combine' entry unions them + asserts the whole gate.
+## 'all' (standalone/local) is the unsplit path with its own throwaway dir -- behaviour unchanged.
+## chunk1..chunk5 UNION == the 24-suite set the un-split gate ran (see cov_all_suites below).
+st_cov_tier="${ST_COV_TIER:-all}"
+cov_free=(test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
+          test_cli test_unicode_tag test_modules test_sclip)
+cov_qt1=(test_mainwin test_mainwin2 test_mainwin3 test_review)
+cov_qt2=(test_mainwin4 test_mainwin5 test_invariants test_widget)
+cov_qt3=(test_widget2 test_alt_reenter test_tabbar_polish test_core_fixes)
+cov_qt4=(test_core_fixes_win test_state_dump test_startup_winsize test_clipboard_watch)
+cov_all_suites=("${cov_free[@]}" "${cov_qt1[@]}" "${cov_qt2[@]}" "${cov_qt3[@]}" "${cov_qt4[@]}")
+cov_phase=''
+suites=()
+case "${st_cov_tier}" in
+   all)
+      cov_phase='all'
+      suites=("${cov_all_suites[@]}")
+      ;;
+   chunk1)
+      cov_phase='collect'
+      suites=("${cov_free[@]}")
+      ;;
+   chunk2)
+      cov_phase='collect'
+      suites=("${cov_qt1[@]}")
+      ;;
+   chunk3)
+      cov_phase='collect'
+      suites=("${cov_qt2[@]}")
+      ;;
+   chunk4)
+      cov_phase='collect'
+      suites=("${cov_qt3[@]}")
+      ;;
+   chunk5)
+      cov_phase='collect'
+      suites=("${cov_qt4[@]}")
+      ;;
+   combine)
+      cov_phase='combine'
+      ;;
+   *)
+      printf '%s\n' "secure-terminal-tests-coverage: FATAL: unknown ST_COV_TIER '${st_cov_tier}' (all|chunk1..chunk5|combine)" >&2
+      exit 1
+      ;;
+esac
+
+if [ "${cov_phase}" = 'all' ]; then
+   work="$(mktemp --directory)"
+   cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
+   trap cleanup EXIT
+else
+   ## Chunk/combine share ONE coverage-data dir across the sequential orchestrator entries (same CI
+   ## job filesystem). Per-CI-run UNIQUE (GITHUB_RUN_ID + attempt) so a prior run's data cannot leak
+   ## and no 'erase' ordering is needed; chunk entries do NOT clean it (the next entry + the combine
+   ## need the data), and the 'combine' entry cleans it at the end. ST_COV_SHARED_DIR overrides.
+   work="${ST_COV_SHARED_DIR:-${TMP}/st-cov-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}}"
+   mkdir --parents -- "${work}"
+fi
 export COVERAGE_FILE="${work}/.coverage"
 ## Keep Hypothesis's example database OUT of the (rsync-synced, possibly root-run)
 ## checkout: as root, a `.hypothesis/` written into tests_dir is root-owned and blocks
@@ -232,77 +292,57 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
 }
 ## END-EXTRACT run_suite_under_coverage
 
-python3 -m coverage erase
-## Run every suite under coverage IN PARALLEL via the shared dispatch (run_suites_parallel):
-## each suite gets its OWN headless-Wayland compositor + XDG config/state isolation, throttled by
-## the core/RAM-aware job cap (COVERAGE_SUITE_JOBS overrides). run_suite_under_coverage is the
-## per-suite command (coverage run --parallel-mode, plus the SIGSEGV retry); --parallel-mode has
-## each process write its OWN data file, so `coverage combine` below unions them regardless of
-## finish order. Per-suite output is replayed in canonical order and the rc judged after the barrier.
-## Tier split so each orchestrator entry fits the per-suite timeout. ST_COV_TIER selects which
-## SUITES run and which gated tier is asserted; the GLOBS (gated_free/gated_qt) are UNCHANGED, so
-## their union is still the whole package (assert_every_module_gated above) -- splitting which
-## suites run per entry cannot shrink the gate. 'free' runs the pure-Python suites + asserts
-## gated_free + runs the formal proofs; 'qt' runs the headless-Wayland widget suites + asserts
-## gated_qt + the fuzz-widget self-coverage; 'all' (standalone/local) runs and asserts everything.
-## free_suites UNION qt_suites is exactly the 24-suite set the un-split gate ran.
-st_cov_tier="${ST_COV_TIER:-all}"
-free_suites=(test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
-             test_cli test_unicode_tag test_modules test_sclip)
-qt_suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
-           test_invariants test_review test_widget test_widget2 test_alt_reenter \
-           test_tabbar_polish test_core_fixes test_core_fixes_win test_state_dump \
-           test_startup_winsize test_clipboard_watch)
-case "${st_cov_tier}" in
-   free)
-      suites=("${free_suites[@]}")
-      ;;
-   qt)
-      suites=("${qt_suites[@]}")
-      ;;
-   all)
-      suites=("${free_suites[@]}" "${qt_suites[@]}")
-      ;;
-   *)
-      printf '%s\n' "secure-terminal-tests-coverage: FATAL: unknown ST_COV_TIER '${st_cov_tier}' (free|qt|all)" >&2
-      exit 1
-      ;;
-esac
-suite_paths=()
-for suite in "${suites[@]}"; do
-   ## A registered suite MISSING from the checkout is a packaging/rename bug, never a
-   ## legitimate skip -- fail closed (as the plain runner does) so a dropped suite cannot
-   ## silently shrink the coverage gate and read as a clean pass (the same silent-drop
-   ## class assert_gated_globs_resolve already guards for the module globs).
-   if [ ! -f "${tests_dir}/${suite}.py" ]; then
-      printf '%s\n' "secure-terminal-tests-coverage: FATAL: registered suite missing from checkout: ${suite}.py" >&2
-      exit 1
+## COLLECT (a chunk) and ALL run this phase's suites under coverage; COMBINE skips straight to the
+## union + gate below. Only ALL erases (fresh throwaway dir); a chunk APPENDS to the shared per-run
+## dir -- coverage run --parallel-mode writes a UNIQUE file per process, so combine unions them
+## regardless of which chunk (or finish order) wrote them. Each suite gets its OWN headless-Wayland
+## compositor + XDG isolation, throttled by the core/RAM job cap (COVERAGE_SUITE_JOBS).
+if [ "${cov_phase}" != 'combine' ]; then
+   if [ "${cov_phase}" = 'all' ]; then
+      python3 -m coverage erase
    fi
-   suite_paths+=("${tests_dir}/${suite}.py")
-done
-
-run_suites_parallel "${work}" "${pkg}" "${COVERAGE_SUITE_JOBS:-}" \
-   run_suite_under_coverage "${suite_paths[@]}"
-
-## run_suites_parallel already replayed each suite's output in canonical order; here just fail on
-## the FIRST suite whose rc is not 0/77. A MISSING rc file (a job killed before it recorded one)
-## counts as FAILURE (fail-closed), never a silent green. exit 77 (SKIP, e.g. Qt absent) is not a
-## failure here; the Qt-free gated tier does not depend on those suites.
-gate_fail_rc=0
-gate_fail_suite=''
-for suite in "${suites[@]}"; do
-   [ -f "${tests_dir}/${suite}.py" ] || continue
-   suite_rc="$(cat "${work}/rc-${suite}" 2>/dev/null || true)"
-   [ -n "${suite_rc}" ] || suite_rc='1'
-   if [ "${suite_rc}" != '0' ] && [ "${suite_rc}" != '77' ] \
-         && [ "${gate_fail_rc}" = '0' ]; then
-      gate_fail_rc="${suite_rc}"
-      gate_fail_suite="${suite}"
+   suite_paths=()
+   for suite in "${suites[@]}"; do
+      ## A registered suite MISSING from the checkout is a packaging/rename bug, never a
+      ## legitimate skip -- fail closed so a dropped suite cannot silently shrink the gate.
+      if [ ! -f "${tests_dir}/${suite}.py" ]; then
+         printf '%s\n' "secure-terminal-tests-coverage: FATAL: registered suite missing from checkout: ${suite}.py" >&2
+         exit 1
+      fi
+      suite_paths+=("${tests_dir}/${suite}.py")
+   done
+   ## Chunk wall-clock (debug): the per-suite timeout bounds THIS entry, so a chunk nearing 600s
+   ## is the signal to re-balance the chunk lists above.
+   run_start="${SECONDS}"
+   run_suites_parallel "${work}" "${pkg}" "${COVERAGE_SUITE_JOBS:-}" \
+      run_suite_under_coverage "${suite_paths[@]}"
+   printf '%s\n' "secure-terminal-tests-coverage: ${st_cov_tier} ran ${#suites[@]} suites in $(( SECONDS - run_start ))s" >&2
+   ## Fail on the FIRST suite whose rc is not 0/77. A MISSING rc file (a job killed before it
+   ## recorded one) counts as FAILURE (fail-closed), never a silent green. exit 77 (SKIP) is not
+   ## a failure here.
+   gate_fail_rc=0
+   gate_fail_suite=''
+   for suite in "${suites[@]}"; do
+      [ -f "${tests_dir}/${suite}.py" ] || continue
+      suite_rc="$(cat "${work}/rc-${suite}" 2>/dev/null || true)"
+      [ -n "${suite_rc}" ] || suite_rc='1'
+      if [ "${suite_rc}" != '0' ] && [ "${suite_rc}" != '77' ] \
+            && [ "${gate_fail_rc}" = '0' ]; then
+         gate_fail_rc="${suite_rc}"
+         gate_fail_suite="${suite}"
+      fi
+   done
+   if [ "${gate_fail_rc}" != '0' ]; then
+      printf '%s\n' "secure-terminal-tests-coverage: suite ${gate_fail_suite} failed (exit ${gate_fail_rc})" >&2
+      exit "${gate_fail_rc}"
    fi
-done
-if [ "${gate_fail_rc}" != '0' ]; then
-   printf '%s\n' "secure-terminal-tests-coverage: suite ${gate_fail_suite} failed (exit ${gate_fail_rc})" >&2
-   exit "${gate_fail_rc}"
+fi
+
+## A chunk STOPS here: its coverage data waits in the shared dir for the -combine entry to union +
+## gate. NO per-chunk assertion -- coverage is cross-tier, so only the combined data is 100%.
+if [ "${cov_phase}" = 'collect' ]; then
+   printf '%s\n' "secure-terminal-tests-coverage: chunk ${st_cov_tier} collected into ${work}; the -combine entry unions + gates" >&2
+   exit 0
 fi
 ## Debug (opt-in, COVERAGE_DEBUG_MISSING=1): `coverage combine` CONSUMES the per-suite parallel
 ## data files, so copy them aside FIRST. cov-debug-missing.py then cross-checks a MANUAL union
@@ -327,16 +367,11 @@ if [ -n "${COVERAGE_DEBUG_MISSING:-}" ]; then
       "${COVERAGE_FILE}" "${cov_dbg_dir}/raw" "${pkg}" || true
 fi
 
-if [ "${st_cov_tier}" != 'qt' ]; then
-   printf '%s\n' '' '== gated modules, Qt-free (must be 100%) =='
-   python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
-fi
+## Reached only by 'all' and 'combine' (a chunk exited above). Both assert the WHOLE gate over the
+## combined data -- there is no per-tier assertion, because coverage is cross-tier.
+printf '%s\n' '' '== gated modules, Qt-free (must be 100%) =='
+python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
 
-if [ "${st_cov_tier}" = 'free' ]; then
-   ## The 'free' entry runs only the Qt-free suites, which do not touch the Qt-widget modules,
-   ## so a whole-file gated_qt report here would be a vacuous <100% -- the 'qt' entry asserts it.
-   printf '%s\n' '' "== (Qt-widget tier asserted by the -qt entry) =="
-else
 printf '%s\n' '' '== gated modules, Qt widget (must be 100%) =='
 python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
 
@@ -363,10 +398,7 @@ if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
          --include='*fuzz_widget.py' --show-missing --fail-under=100
    fi
 fi
-fi
 
-## Formal proofs are Qt-free (Z3), so they run in the 'free' / standalone entry.
-if [ "${st_cov_tier}" != 'qt' ]; then
 ## Formal verification (Z3 + exhaustive enumeration) as MUST-PASS. The coverage
 ## suites above do NOT run it, so a feed_line_edits / sanitizer change that desyncs
 ## the coupled reference models (test_corpus oracle, verify_formal Z3 model, the
@@ -387,9 +419,15 @@ for verify_suite in verify_formal verify_formal_absint; do
       exit "${verify_rc}"
    fi
 done
-fi
 
 if [ "${st_cov_tier}" = 'all' ]; then
    printf '%s\n' '' '== whole-package coverage =='
    python3 -m coverage report || true
+fi
+
+## The 'combine' entry OWNS the shared per-run coverage dir; clean it now the gate has PASSED
+## (reached only on success -- errexit aborts earlier on any <100% or failed proof). A chunk must
+## NOT clean it (later chunks + this combine need the data); 'all' has its own EXIT-trap cleanup.
+if [ "${cov_phase}" = 'combine' ]; then
+   safe-rm --recursive --force -- "${work}" 2>/dev/null || true
 fi

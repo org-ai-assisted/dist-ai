@@ -111,8 +111,12 @@ core_suites=(
    set-keyboard-layout-tests
    secure-terminal-shots-tests
    secure-terminal-tests
-   secure-terminal-tests-coverage-free
-   secure-terminal-tests-coverage-qt
+   secure-terminal-tests-coverage-chunk1
+   secure-terminal-tests-coverage-chunk2
+   secure-terminal-tests-coverage-chunk3
+   secure-terminal-tests-coverage-chunk4
+   secure-terminal-tests-coverage-chunk5
+   secure-terminal-tests-coverage-combine
    security-misc-tests
    sdwdate-gui-tests
    sdwdate-onion-tester-tests

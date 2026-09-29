@@ -5,33 +5,31 @@
 
 ## AI-Assisted
 
-"""VirtualBox backend for the dm-image boot/install harness.
+"""VirtualBox backend helpers for the dm-image boot/install harness.
 
-Sibling of dm-qemu. Where dm-qemu drives a guest over a serial root-shell and
-injects the kernel cmdline via SMBIOS, VirtualBox GUI images have NO serial
-console, so this backend reads boot state from the SCREEN and injects real
-keyboard input:
+Sibling of dm-qemu. VirtualBox GUI images have NO serial console, so a full
+run reads boot state from the SCREEN and injects real keyboard input rather
+than driving a guest over a serial root-shell. This module holds the PURE
+logic for that, which runs anywhere and is unit-tested (test_dm_vbox.py):
 
-  - build VBoxManage argv to import/create + boot a VM (headless, no host GPU);
-  - capture the framebuffer with 'controlvm <vm> screenshotpng' (software
-    framebuffer -- honors a Wayland-only, display-server-less host);
-  - inject keys with 'controlvm <vm> keyboardputscancode', including typing a
-    LUKS passphrase at the GRUB/initramfs prompt;
-  - assert boot/desktop state from the screen with a tolerant perceptual match
-    (Pillow pixel distance, optional imagehash pHash) plus OCR text checks;
-  - drive the Calamares GUI installer for an empty-disk install and a
-    reinstall-over-existing (R7).
+  - VBoxManage argv builders (import/create/modify/boot/screenshot/keyboard/
+    poweroff);
+  - keyboard scancode encoding, including a LUKS passphrase at the boot prompt;
+  - tolerant perceptual screen matching (Pillow pixel distance, optional
+    imagehash pHash) plus OCR text decisions;
+  - Calamares step sequencing for an empty-disk install and a reinstall.
 
-Split like dm-qemu: the argv builders and the input/decision logic are PURE and
-unit-tested (test_dm_vbox.py). The functions that actually invoke VBoxManage or
-tesseract need a real VirtualBox host and are NOT exercised by CI -- they are
-marked below and the CLI SKIPs (77) when VBoxManage is absent.
+The thin wrappers that actually invoke VBoxManage / tesseract need a real
+VirtualBox host and are NOT exercised by CI.
 
-Exit codes (dist-ai-tests-all contract):
-  0   PASS
-  5   FAIL
-  2   SETUP error
-  77  SKIP (VBoxManage absent -- cannot drive VirtualBox here)
+CLI (two subcommands, no VM required):
+
+  - emit-argv --op <op> [flags]  print the VBoxManage argv for one op, without
+                                 running it (mirrors dm-qemu --emit-argv);
+  - capabilities                 report which optional host tools (VBoxManage,
+                                 tesseract, imagehash) are available.
+
+CLI exit codes: 0 PASS, 2 SETUP error (bad/missing CLI input).
 """
 
 import argparse

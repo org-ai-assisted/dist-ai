@@ -5,10 +5,10 @@
 
 ## AI-Assisted
 
-## Thin wrapper: run the Qt-FREE tier of the secure-terminal coverage gate as its OWN
-## dist-ai-tests-all entry so it fits the per-suite timeout. It runs the pure-Python suites,
-## asserts the gated_free (Qt-free) tier at 100%, and runs the Z3 formal proofs. The Qt-widget
-## tier is the -qt entry. See secure-terminal-tests-coverage (ST_COV_TIER) for the whole gate.
+## Thin wrapper: coverage CHUNK 5 of the secure-terminal gate, as its OWN dist-ai-tests-all entry
+## so it fits the 600s per-suite timeout. COLLECTS coverage for its suite subset into the shared
+## per-run data dir -- NO assertion. The -combine entry unions all chunks + gates 100%. See
+## secure-terminal-tests-coverage (ST_COV_TIER) for the whole gate + the chunk suite lists.
 ## style-ok: R-103 -- a thin wrapper is MEANT to exec the real runner unchanged.
 
 set -o errexit
@@ -19,5 +19,5 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-exec env ST_COV_TIER=free \
+exec env ST_COV_TIER=chunk5 \
    "$(dirname -- "$(readlink --canonicalize -- "$0")")/secure-terminal-tests-coverage" "$@"
