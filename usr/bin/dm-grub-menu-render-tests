@@ -54,7 +54,10 @@ fi
 
 ## Heavy-runtime gate. Any missing piece -> SKIP (this is an e2e suite; the core
 ## dist-ai job ships none of qemu/OVMF/grub-mkrescue).
+## OVMF: dm-qemu's --firmware efi path needs BOTH the code flash and a vars
+## template to copy per boot, so gate on both.
 ovmf_code='/usr/share/OVMF/OVMF_CODE_4M.fd'
+ovmf_vars='/usr/share/OVMF/OVMF_VARS_4M.fd'
 missing=''
 has grub-mkrescue      || missing="${missing} grub-mkrescue"
 has xorriso            || missing="${missing} xorriso"
@@ -62,7 +65,8 @@ has mformat            || missing="${missing} mtools(mformat)"
 has qemu-system-x86_64 || missing="${missing} qemu-system-x86_64"
 has python3            || missing="${missing} python3"
 "${driver}" --check-deps 2>/dev/null || missing="${missing} python3-pexpect"
-[ -r "${ovmf_code}" ]           || missing="${missing} ovmf"
+[ -r "${ovmf_code}" ]           || missing="${missing} ovmf(code)"
+[ -r "${ovmf_vars}" ]           || missing="${missing} ovmf(vars)"
 [ -d /usr/lib/grub/x86_64-efi ] || missing="${missing} grub-efi-amd64-bin"
 [ -d /usr/lib/grub/i386-pc ]    || missing="${missing} grub-pc-bin"
 if [ -n "${missing}" ]; then
