@@ -136,22 +136,34 @@ assert_matches() {
 xprefix_quote="[\"']"
 xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*${xprefix_quote}?[^x[:space:]\"'=]"
 
-## grep: 0 = match (a mismatch), 1 = clean, >=2 = ERROR (e.g. unreadable). A gate
-## for a silently-disabled branch must not itself go green on an unscanned file.
+## Scan line by line so the match is CONTEXT-aware: a comment documenting the bug
+## (`## ... [ "x${grub_platform}" = "efi" ] ...`), a menuentry title, or a kernel
+## cmdline must not false-fire -- only an actual `[ ... ]` / `test` conditional is a
+## comparison. An unreadable file is a loud failure, not a silent green (a lint for
+## a silently-disabled branch must not itself skip a file quietly).
 assert_no_xprefix_mismatch() {
-   local file="$1" hits grep_rc=0
-   hits="$(grep -nE -- "${xprefix_mismatch_ere}" "${file}")" || grep_rc=$?
-   case "${grep_rc}" in
-      0)
-         check_fail "x-prefix MISMATCH (always-false test) in ${file##*/}: ${hits}"
-         ;;
-      1)
-         check_pass "no x-prefix mismatch in ${file##*/}"
-         ;;
-      *)
-         check_fail "grep error (rc=${grep_rc}) scanning ${file##*/}; file not linted"
-         ;;
-   esac
+   local file="$1" line lineno=0 hits=0
+   if [ ! -r "${file}" ]; then
+      check_fail "cannot read ${file##*/}; not linted"
+      return 0
+   fi
+   while IFS= read -r line || [ -n "${line}" ]; do
+      lineno=$(( lineno + 1 ))
+      if [[ "${line}" =~ ^[[:space:]]*# ]]; then
+         continue
+      fi
+      if [[ "${line}" != *'[ '* && "${line}" != *'test '* ]]; then
+         continue
+      fi
+      if [[ "${line}" =~ ${xprefix_mismatch_ere} ]]; then
+         check_fail "x-prefix MISMATCH (always-false test) in ${file##*/}:${lineno}: ${line}"
+         hits=$(( hits + 1 ))
+      fi
+   done < "${file}"
+   if [ "${hits}" -eq 0 ]; then
+      check_pass "no x-prefix mismatch in ${file##*/}"
+   fi
+   return 0
 }
 
 ######################################################################
