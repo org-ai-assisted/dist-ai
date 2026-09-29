@@ -136,10 +136,12 @@ case "${block}" in
 esac
 
 ## --- every build-path tool must USE the resolver, not repeat the assumption -
-## These two are what dm-build-official-one's Phase 4 invokes as the INSTALLED
-## copies, so they are the ones a build actually depends on.
+## All INSTALLED copies a build invokes by bare name: dm-prepare-release +
+## dm-upload-images (dm-build-official-one Phase 4), dm-reprepro-wrapper
+## (genmkfile in 2100_create-debian-packages). Each ran against the wrong tree
+## when the checkout was not ${HOME}/derivative-maker.
 tool_dir="$(dirname -- "${subject}")"
-for tool_name in dm-prepare-release dm-upload-images; do
+for tool_name in dm-prepare-release dm-upload-images dm-reprepro-wrapper; do
    tool="${tool_dir}/${tool_name}"
    if [ ! -r "${tool}" ]; then
       fail "${tool_name} not found beside ${subject}"
@@ -163,7 +165,7 @@ done
 ## Its cwd branch is captured at source time, so a tool that cd's first offers it
 ## /usr/bin instead of the tree and the branch can never fire. dm-upload-images
 ## did exactly that, and the whole release phase failed on it.
-for tool_name in dm-prepare-release dm-upload-images; do
+for tool_name in dm-prepare-release dm-upload-images dm-reprepro-wrapper; do
    tool="${tool_dir}/${tool_name}"
    [ -r "${tool}" ] || continue
    source_at="$(grep --line-number --max-count=1 -- 'source-tree-lib.bsh' "${tool}" | cut -d: -f1 || true)"
