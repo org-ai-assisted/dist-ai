@@ -1,0 +1,379 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Scenario harness for iso-download. Drives the REAL usr/bin/iso-download in an
+## isolated temp dir with a curl stub (make-fixture builds the signed fixtures +
+## a urlmap; curl-stub serves them) -- no network, no root. Covers version
+## discovery (stable via the wiki pin; developers = highest published; the
+## dev==stable notice), the verified happy path (byte-identical, kept), and
+## fail-closed rejection of a bad sha512, a bad signature and a wrong signer.
+##
+## Canary: good paths must PASS while every rejection must FAIL with its
+## specific reason -- catching both an always-fail and an always-pass tool.
+##
+## Usage: run-tests [-v] [scenario_name ...]
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+if [ "${ISO_DOWNLOAD_TESTS:-}" != '1' ]; then
+   printf '%s\n' "$0: run via the iso-download-tests entrypoint." >&2
+   exit 1
+fi
+
+self_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
+make_fixture="${self_dir}/make-fixture"
+curl_stub="${self_dir}/curl-stub"
+
+if [ -x "${self_dir}/../../bin/iso-download" ]; then
+   tool_bin="$(cd -- "${self_dir}/../../bin" && pwd)/iso-download"
+else
+   tool_bin='/usr/bin/iso-download'
+fi
+
+## Must match make-fixture's constants.
+download_base='https://download.example.com'
+wiki_base='https://www.example.com'
+vmname='Kicksecure'
+desktop='Xfce'
+arch='Intel_AMD64'
+cert_name='test-cert.asc'
+
+verbose='false'
+scenario_filter=()
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      -v|--verbose)
+         verbose='true'
+         shift
+         ;;
+      --)
+         shift
+         scenario_filter+=( "$@" )
+         break
+         ;;
+      -*)
+         printf '%s\n' "run-tests: unknown flag '$1'" >&2
+         exit 2
+         ;;
+      *)
+         scenario_filter+=( "$1" )
+         shift
+         ;;
+   esac
+done
+
+test_root=""
+out_dir=""
+out_file=""
+stub_bin=""
+argv_log=""
+cur_map=""
+tool_rc=0
+pass_count=0
+fail_count=0
+failed_names=""
+
+die() {
+   printf '%s\n' "run-tests: ERROR: $*" >&2
+   exit 2
+}
+
+forward_scenario_ec() {
+   printf '%s' "$?" > "${test_root}/.scenario_ec"
+   exit 0
+}
+
+image_name() {
+   printf '%s-%s-%s.%s.iso' "${vmname}" "${desktop}" "$1" "${arch}"
+}
+
+assert_rc_zero() {
+   [ "$2" = '0' ] || die "[$1] expected rc 0 got '$2'"
+}
+
+assert_rc_nonzero() {
+   [ "$2" != '0' ] || die "[$1] expected non-zero rc, got 0"
+}
+
+assert_file_exists() {
+   [ -f "$2" ] || die "[$1] expected file to exist: $2"
+}
+
+assert_file_absent() {
+   [ ! -e "$2" ] || die "[$1] expected file absent: $2"
+}
+
+assert_grep() {
+   local label pattern file
+   label="$1"
+   pattern="$2"
+   file="$3"
+   grep -E -- "${pattern}" "${file}" >/dev/null \
+      || die "[${label}] expected pattern '${pattern}' in ${file}"
+}
+
+assert_no_grep() {
+   local label pattern file
+   label="$1"
+   pattern="$2"
+   file="$3"
+   if grep -E -- "${pattern}" "${file}" >/dev/null; then
+      die "[${label}] did not expect pattern '${pattern}' in ${file}"
+   fi
+}
+
+setup() {
+   test_root="$(mktemp --directory --tmpdir iso-dl-test.XXXXXXXX)"
+   out_dir="${test_root}/out"
+   out_file="${test_root}/out.log"
+   argv_log="${test_root}/curl.argv"
+   stub_bin="${test_root}/stubbin"
+   mkdir --parents -- "${out_dir}" "${stub_bin}"
+   cp -- "${curl_stub}" "${stub_bin}/curl"
+   chmod +x -- "${stub_bin}/curl"
+   true > "${argv_log}"
+   cur_map=""
+}
+
+teardown() {
+   safe-rm --recursive --force -- "${test_root}"
+   test_root=""
+}
+
+make_fixture_into() {
+   local name dir
+   name="$1"
+   shift
+   dir="${test_root}/fixtures/${name}"
+   mkdir --parents -- "${dir}"
+   "${make_fixture}" "${dir}" "$@" >/dev/null
+   printf '%s\n' "${dir}"
+}
+
+run_tool() {
+   tool_rc=0
+   PATH="${stub_bin}:${PATH}" \
+      CURL_STUB_ARGV_LOG="${argv_log}" \
+      CURL_STUB_MAP="${cur_map}" \
+      "${tool_bin}" "$@" > "${out_file}" 2>&1 || tool_rc="$?"
+}
+
+## ---------------------------------------------------------------------------
+## scenarios
+## ---------------------------------------------------------------------------
+
+scenario_good_stable_verifies() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into stable --version "${ver}")"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "stable" "${tool_rc}"
+   assert_file_exists "artifact kept" "${out_dir}/${img}"
+   assert_grep "reports verified" "verified OK" "${out_file}"
+   cmp --quiet -- "${fix}/iso/${ver}/${img}" "${out_dir}/${img}" \
+      || die "[stable] artifact not byte-identical to source"
+}
+
+scenario_developers_picks_highest() {
+   local fix ver img
+   ver='18.4.0.5'
+   ## Stable pin is LOWER, so the highest published version is the developers
+   ## build and differs from stable.
+   fix="$(make_fixture_into devhigh --version "${ver}" --stable-version 18.3.0.0)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel developers --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "developers" "${tool_rc}"
+   assert_file_exists "picked highest version" "${out_dir}/${img}"
+   assert_no_grep "not flagged as coinciding" "coincides with stable" "${out_file}"
+}
+
+scenario_developers_equals_stable_noticed() {
+   local fix ver
+   ver='18.4.0.5'
+   ## Stable pin == highest published: no newer developers build.
+   fix="$(make_fixture_into deveq --version "${ver}" --stable-version "${ver}")"
+   cur_map="${fix}/urlmap"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel developers --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "dev==stable" "${tool_rc}"
+   assert_grep "notes coincidence" "coincides with stable" "${out_file}"
+}
+
+scenario_bad_hash_rejected() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into badhash --version "${ver}" --bad-hash)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_nonzero "bad hash" "${tool_rc}"
+   assert_grep "names sha512" "sha512" "${out_file}"
+   assert_file_absent "no unverified artifact left" "${out_dir}/${img}"
+}
+
+scenario_bad_sig_rejected() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into badsig --version "${ver}" --bad-sig)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_nonzero "bad sig" "${tool_rc}"
+   assert_grep "names signature" "[Ss]ignature" "${out_file}"
+   assert_file_absent "no unverified artifact left" "${out_dir}/${img}"
+}
+
+scenario_wrong_signer_rejected() {
+   local fix ver img canary_rc
+   ver='18.4.0.5'
+   fix="$(make_fixture_into wrongsigner --version "${ver}" --wrong-signer)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_nonzero "wrong signer" "${tool_rc}"
+   assert_grep "names signature" "[Ss]ignature" "${out_file}"
+   assert_file_absent "no unverified artifact left" "${out_dir}/${img}"
+
+   ## Canary: the signature IS valid under the attacker's own cert, so the
+   ## rejection above is a genuine signer mismatch, not a malformed signature.
+   canary_rc=0
+   sqop verify "${fix}/iso/${ver}/${img}.asc" "${fix}/wrong-signer.asc" \
+      < "${fix}/iso/${ver}/${img}" >/dev/null 2>&1 || canary_rc="$?"
+   assert_rc_zero "canary: sig valid under attacker cert" "${canary_rc}"
+}
+
+scenario_socks_proxy_wired() {
+   local fix ver
+   ver='18.4.0.5'
+   fix="$(make_fixture_into socks --version "${ver}")"
+   cur_map="${fix}/urlmap"
+
+   ## With --socks-proxy: downloads verify AND the stub sees --socks5-hostname.
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}" \
+      --socks-proxy '127.0.0.1:9050'
+   assert_rc_zero "proxy run verifies" "${tool_rc}"
+   assert_grep "socks flag wired" "\-\-socks5-hostname" "${argv_log}"
+
+   ## Without --socks-proxy: no proxy flag reaches curl.
+   true > "${argv_log}"
+   safe-rm --recursive --force -- "${out_dir}"
+   mkdir --parents -- "${out_dir}"
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+   assert_rc_zero "no-proxy run verifies" "${tool_rc}"
+   assert_no_grep "no socks flag without --socks-proxy" "\-\-socks5-hostname" "${argv_log}"
+}
+
+## ---------------------------------------------------------------------------
+## runner
+## ---------------------------------------------------------------------------
+
+all_scenarios=(
+   scenario_good_stable_verifies
+   scenario_developers_picks_highest
+   scenario_developers_equals_stable_noticed
+   scenario_bad_hash_rejected
+   scenario_bad_sig_rejected
+   scenario_wrong_signer_rejected
+   scenario_socks_proxy_wired
+)
+
+should_run() {
+   local name needle
+   name="$1"
+   [ "${#scenario_filter[@]}" -eq 0 ] && return 0
+   for needle in "${scenario_filter[@]}"; do
+      [ "${needle}" = "${name}" ] && return 0
+   done
+   return 1
+}
+
+main() {
+   local scenario want found ec
+   for want in "${scenario_filter[@]}"; do
+      found='false'
+      for scenario in "${all_scenarios[@]}"; do
+         if [ "${scenario}" = "${want}" ]; then
+            found='true'
+            break
+         fi
+      done
+      [ "${found}" = 'true' ] || die "unknown scenario filter: '${want}'"
+   done
+
+   printf '%s\n' "== iso-download self-test: start =="
+   for scenario in "${all_scenarios[@]}"; do
+      if ! should_run "${scenario}"; then
+         printf '  [SKIP] %s\n' "${scenario}"
+         continue
+      fi
+      setup
+      ## Standalone errexit subshell (R-014): a failed step aborts the scenario
+      ## instead of falling through to later assertions. forward_scenario_ec
+      ## records the real status and exits 0, so the outer errexit never fires
+      ## and no toggle is needed.
+      (
+         set -o errexit
+         trap forward_scenario_ec EXIT
+         "${scenario}"
+      )
+      ec="$(cat -- "${test_root}/.scenario_ec")"
+      if [ "${ec}" = '0' ]; then
+         printf '  [PASS] %s\n' "${scenario}"
+         pass_count=$((pass_count + 1))
+         [ "${verbose}" = 'true' ] && sed 's/^/    | /' "${out_file}"
+      else
+         printf '  [FAIL] %s (exit=%s)\n' "${scenario}" "${ec}"
+         fail_count=$((fail_count + 1))
+         failed_names="${failed_names} ${scenario}"
+         sed 's/^/    | /' "${out_file}"
+      fi
+      teardown
+   done
+   printf '%s\n' "== iso-download self-test: ${pass_count} pass, ${fail_count} fail =="
+   if [ "${fail_count}" -ne 0 ]; then
+      printf '%s\n' "Failed:${failed_names}" >&2
+      exit 1
+   fi
+}
+
+main "$@"

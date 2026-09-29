@@ -1,0 +1,69 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## A stand-in for curl used by the iso-download tests. It records its full
+## argument vector (so a test can assert --socks5-hostname is wired) and serves
+## a request by copying the local fixture file that a urlmap associates with the
+## requested URL -- no network. Placed first on PATH by run-tests.
+##   CURL_STUB_ARGV_LOG  file the argv is appended to
+##   CURL_STUB_MAP       urlmap file: "<URL>\t<local-path>" per line
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+argv_log="${CURL_STUB_ARGV_LOG:?curl-stub: CURL_STUB_ARGV_LOG unset}"
+urlmap="${CURL_STUB_MAP:?curl-stub: CURL_STUB_MAP unset}"
+
+printf '%s\n' "$*" >> "${argv_log}"
+
+dest=""
+url=""
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --output)
+         dest="$2"
+         shift 2
+         ;;
+      --)
+         shift
+         url="$1"
+         shift
+         ;;
+      *)
+         shift
+         ;;
+   esac
+done
+
+if [ -z "${dest}" ] || [ -z "${url}" ]; then
+   printf '%s\n' "curl-stub: could not parse --output/URL from argv" >&2
+   exit 22
+fi
+
+src=""
+while IFS="$(printf '\t')" read -r map_url map_path; do
+   if [ "${map_url}" = "${url}" ]; then
+      src="${map_path}"
+      break
+   fi
+done < "${urlmap}"
+
+if [ -z "${src}" ]; then
+   printf '%s\n' "curl-stub: no urlmap entry for '${url}'" >&2
+   exit 22
+fi
+if [ ! -f "${src}" ]; then
+   printf '%s\n' "curl-stub: mapped file missing for '${url}': '${src}'" >&2
+   exit 22
+fi
+
+cp -- "${src}" "${dest}"

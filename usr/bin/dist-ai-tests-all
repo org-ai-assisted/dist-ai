@@ -94,6 +94,7 @@ core_suites=(
    helper-scripts-lib-tests
    helper-scripts-lib-tests-verify
    image-optimize-tests
+   iso-download-tests
    lock-screen-tests
    lockfile-tests
    mediawiki-shell-tests
@@ -766,6 +767,16 @@ wire() {
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
+      iso-download)
+         ## dist-ai's own tool, driven against local sqop-signed fixtures via a
+         ## curl stub (no network, no checkout under test). It sources
+         ## helper-scripts log_run_die.sh (validate_safe_filename, log, die),
+         ## required real.
+         wire_env=()
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       private-ai-config)
          ## The tests live in the private-ai-config checkout, not here; the suite
          ## drives them from PRIVATE_AI_CONFIG_PATH. Several exercise tools that
@@ -879,7 +890,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|github-api|image-optimize|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      dist-ai-registry|github-api|image-optimize|iso-download|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-gw-anonymizer-config)
