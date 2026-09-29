@@ -1,0 +1,45 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs iso-download's scenario suite: drives the REAL usr/bin/iso-download
+## against local sqop-signed fixtures served by a curl stub in an isolated temp
+## dir -- no network, no root. Works from a checkout (../share/iso-download-
+## tests) or installed (/usr/share/iso-download-tests).
+##
+## sqop is a hard dependency of iso-download (OpenPGP verification) and of these
+## fixtures, so its absence is a FATAL environment error (exit 1), never a SKIP:
+## a verification suite must not silently disable itself.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## style-ok: no-has -- test entrypoint; probes for sqop with 'command -v'
+## rather than helper-scripts' 'has', which is not guaranteed on PATH here.
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/iso-download-tests" ]; then
+   payload_dir="$(cd -- "${script_dir}/../share/iso-download-tests" && pwd)"
+else
+   payload_dir='/usr/share/iso-download-tests'
+fi
+
+if ! command -v sqop >/dev/null; then
+   printf '%s\n' 'iso-download-tests: sqop not installed (Debian: sqop) -- required for OpenPGP verification.' >&2
+   exit 1
+fi
+
+export ISO_DOWNLOAD_TESTS=1
+
+rc=0
+"${payload_dir}/run-tests" "$@" || rc="$?"
+exit "${rc}"

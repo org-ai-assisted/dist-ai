@@ -156,37 +156,19 @@ plain_run_one_suite() {  ## $1 = suite .py path
 ## Run them ALL in parallel, each under its own compositor (SECURE_TERMINAL_TESTS_JOBS overrides
 ## the core/RAM-aware concurrency cap); the exit status of each is judged below in canonical
 ## order, so the pass/skip/fail policy is exactly the sequential one.
+## SLIM (do NOT run the whole set TWICE): the coverage runner already executes every other suite --
+## its 24 instrumented suites PLUS verify_formal / verify_formal_absint (must-pass proofs) and
+## test_fuzz_widget (GUI-fuzz self-coverage). Running those again here uninstrumented is what pushed
+## both runners past the per-suite timeout. So the plain runner runs ONLY the suites the coverage
+## runner does NOT run at all:
+##   - test_instances       -- the real-subprocess launch E2E (coverage explicitly skips it)
+##   - test_unicode_gallery -- gallery E2E, in neither the coverage suites nor its proofs
+##   - test_zoom_regression -- zoom E2E, likewise
+## A suite in NEITHER runner is a gap: keep this in sync with the coverage runner's suite + proof set.
 suites=(
-   "${tests_dir}/test_secure_terminal.py"
-   "${tests_dir}/test_fuzz.py"
-   "${tests_dir}/test_fuzz_harnesses.py"
-   "${tests_dir}/test_corpus.py"
-   "${tests_dir}/test_invariants.py"
-   "${tests_dir}/verify_formal.py"
-   "${tests_dir}/verify_formal_absint.py"
-   "${tests_dir}/test_unicode_gallery.py"
-   "${tests_dir}/test_cli.py"
-   "${tests_dir}/test_unicode_tag.py"
-   "${tests_dir}/test_sclip.py"
-   "${tests_dir}/test_clipboard_watch.py"
-   "${tests_dir}/test_modules.py"
-   "${tests_dir}/test_review.py"
-   "${tests_dir}/test_mainwin.py"
-   "${tests_dir}/test_mainwin2.py"
-   "${tests_dir}/test_mainwin3.py"
-   "${tests_dir}/test_mainwin4.py"
-   "${tests_dir}/test_mainwin5.py"
    "${tests_dir}/test_instances.py"
-   "${tests_dir}/test_widget.py"
-   "${tests_dir}/test_widget2.py"
-   "${tests_dir}/test_alt_reenter.py"
-   "${tests_dir}/test_tabbar_polish.py"
-   "${tests_dir}/test_core_fixes.py"
-   "${tests_dir}/test_core_fixes_win.py"
-   "${tests_dir}/test_state_dump.py"
-   "${tests_dir}/test_startup_winsize.py"
+   "${tests_dir}/test_unicode_gallery.py"
    "${tests_dir}/test_zoom_regression.py"
-   "${tests_dir}/test_fuzz_widget.py"
 )
 ## Fast single-suite iteration: SECURE_TERMINAL_TESTS_ONLY selects a subset by basename
 ## (space/comma-separated, with or without .py) -- e.g. SECURE_TERMINAL_TESTS_ONLY=test_mainwin

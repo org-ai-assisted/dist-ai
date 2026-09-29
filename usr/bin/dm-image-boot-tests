@@ -59,7 +59,10 @@ if ! python3 -c 'import pytest' 2>/dev/null; then
    printf '%s\n' "dm-image-boot-tests: python3-pytest is missing; the image-free regression tests cannot run. FAIL." >&2
    exit 1
 fi
-python3 -m pytest -q "${tests_dir}/test_dm_image_test.py"
+## Run every test_*.py in tests_dir (dm-image-test AND dm-vbox, plus any future
+## peer) so a new image-free suite is picked up by placement alone -- no
+## per-file list to keep in sync here.
+python3 -m pytest -q "${tests_dir}"/test_*.py
 
 ## SKIP when no image is supplied: this suite only runs on a build host that has
 ## a freshly built image to hand, never in the generic trixie-slim CI container.

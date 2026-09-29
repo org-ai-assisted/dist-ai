@@ -126,6 +126,34 @@ assert_matches() {
    fi
 }
 
+## GRUB x-prefix comparison MISMATCH: an x-idiom variable operand ("x${VAR}" /
+## x$VAR) compared =/==/!= against a literal whose first significant char is not
+## 'x' (e.g. [ "x${grub_platform}" = "efi" ] -> "xefi" != "efi", ALWAYS false).
+## This actually shipped: the EFI 'UEFI Firmware Settings' menuentry never rendered.
+## Either operand may be single- OR double-quoted; the quote is skipped so a correct
+## single-quoted idiom is not a false positive. Reverse direction (bare var vs
+## x-literal) is intentionally not flagged (indistinguishable from a legit "xterm").
+xprefix_quote="[\"']"
+xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*${xprefix_quote}?[^x[:space:]\"'=]"
+
+## grep: 0 = match (a mismatch), 1 = clean, >=2 = ERROR (e.g. unreadable). A gate
+## for a silently-disabled branch must not itself go green on an unscanned file.
+assert_no_xprefix_mismatch() {
+   local file="$1" hits grep_rc=0
+   hits="$(grep -nE -- "${xprefix_mismatch_ere}" "${file}")" || grep_rc=$?
+   case "${grep_rc}" in
+      0)
+         check_fail "x-prefix MISMATCH (always-false test) in ${file##*/}: ${hits}"
+         ;;
+      1)
+         check_pass "no x-prefix mismatch in ${file##*/}"
+         ;;
+      *)
+         check_fail "grep error (rc=${grep_rc}) scanning ${file##*/}; file not linted"
+         ;;
+   esac
+}
+
 ######################################################################
 ## Menu skeleton.
 ######################################################################
@@ -193,6 +221,21 @@ assert_matches "config.cfg sources the theme" \
    '^source /boot/grub/theme\.cfg$' "${config_file}"
 assert_matches "config.cfg selects the graphical terminal" \
    '^terminal_output gfxterm$' "${config_file}"
+
+######################################################################
+## x-prefix comparison lint over EVERY grub template in the config dir (moved
+## here from derivative-maker ci/lint-grub so the guard lives with the tests).
+######################################################################
+shopt -s nullglob
+grub_cfgs=( "${grub_config_dir}"/*.cfg )
+shopt -u nullglob
+if (( ${#grub_cfgs[@]} == 0 )); then
+   check_fail "no *.cfg templates in ${grub_config_dir} (environment bug)"
+else
+   for grub_cfg in "${grub_cfgs[@]}"; do
+      assert_no_xprefix_mismatch "${grub_cfg}"
+   done
+fi
 
 ######################################################################
 ## ISO-build integrity the menu template cannot express: structural (source)

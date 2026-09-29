@@ -1,0 +1,466 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Downloads a published Kicksecure/Whonix ISO and verifies it BEFORE it is
+## used -- dist-installer-cli fetches the .ova/KVM VM images but NOT the ISO.
+## No manifest: the version is discovered from what the project already
+## publishes, and the image URL is derived from the naming convention.
+##
+## Version discovery (override with --version):
+##   --channel stable      -> the wiki Template:VersionNew pin.
+##   --channel developers  -> the highest version directory published under
+##                            <download-base>/iso/ (== stable when no newer
+##                            build is published yet).
+##
+## Naming convention (derivative-maker variables.d/40_version-paths.bsh):
+##   <VMNAME>-<desktop>-<version>.<arch>.iso   e.g.
+##   Kicksecure-Xfce-18.4.0.5.Intel_AMD64.iso
+## published at <download-base>/iso/<version>/ alongside <image>.asc (OpenPGP
+## detached signature over the image) and <image>.sha512sums.
+##
+## Integrity (fail-closed, both required; the artifact is never modified):
+##   SIG  -- OpenPGP verify <image>.asc over the image against --cert.
+##   HASH -- sha512 of the image == the digest in <image>.sha512sums.
+## Downloads route over a SOCKS5 (Tor) proxy with --socks-proxy.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+## log / die / has / is_whole_number / die_if_not_has. log_run_die.sh sources
+## get_colors, strings.bsh and has.bsh itself.
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/log_run_die.sh 2>/dev/null; then
+   printf '%s\n' "${me}: ERROR: cannot source helper-scripts log_run_die.sh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
+project=""
+vmname=""
+desktop=""
+arch="Intel_AMD64"
+channel="stable"
+version_override=""
+output_dir=""
+cert_path=""
+download_base=""
+wiki_base=""
+socks_proxy=""
+onion='false'
+
+## Trap state -- set before the trap is registered (R-051).
+work_dir=""
+artifact_part=""
+
+print_usage() {
+   printf '%s\n' "Usage:
+  ${me} --project kicksecure|whonix --vmname NAME --desktop TOKEN
+        --output-dir DIR --cert PATH
+        [--arch Intel_AMD64] [--channel stable|developers] [--version VER]
+        [--download-base URL] [--wiki-base URL]
+        [--socks-proxy host:port] [--onion]
+
+Discovers the version (stable = wiki Template:VersionNew; developers = highest
+published under <download-base>/iso/), derives the ISO URL from the naming
+convention, downloads the image plus its .asc and .sha512sums, and verifies
+BOTH the OpenPGP signature (against --cert) and the sha512 before keeping it.
+--socks-proxy routes downloads over SOCKS5 (Tor); --onion permits plaintext
+http (onion services carry their own encryption)."
+}
+
+cleanup() {
+   if [ -n "${work_dir}" ] && [ -d "${work_dir}" ]; then
+      safe-rm --recursive --force -- "${work_dir}"
+   fi
+   if [ -n "${artifact_part}" ] && [ -e "${artifact_part}" ]; then
+      safe-rm --force -- "${artifact_part}"
+   fi
+}
+
+curl_fetch() {
+   local url dest
+   local -a opts
+
+   url="$1"
+   dest="$2"
+   opts=( --fail --silent --show-error --location --output "${dest}" )
+   case "${url}" in
+      https://*)
+         opts+=( --proto '=https' --tlsv1.3 )
+         ;;
+   esac
+   if [ -n "${socks_proxy}" ]; then
+      opts+=( --socks5-hostname "${socks_proxy}" )
+   fi
+   curl "${opts[@]}" -- "${url}"
+}
+
+## Fetch a URL (or copy a local path/file:// location) into dest. Sources are
+## only ever READ; dest is a fresh file.
+fetch() {
+   local location dest path
+   location="$1"
+   dest="$2"
+   case "${location}" in
+      https://*)
+         curl_fetch "${location}" "${dest}"
+         ;;
+      http://*)
+         if [ "${onion}" != 'true' ]; then
+            die 2 "refusing plaintext http location without --onion: '${location}'"
+         fi
+         curl_fetch "${location}" "${dest}"
+         ;;
+      file://*)
+         path="${location#file://}"
+         cp -- "${path}" "${dest}"
+         ;;
+      /*)
+         cp -- "${location}" "${dest}"
+         ;;
+      *)
+         die 2 "unsupported location (need https/http/file URL or absolute path): '${location}'"
+         ;;
+   esac
+}
+
+## Fetch a URL to stdout (discovery reads: wiki pin, directory index).
+fetch_text() {
+   local location path
+   location="$1"
+   case "${location}" in
+      https://*|http://*)
+         local tmp
+         tmp="${work_dir}/fetch_text.tmp"
+         fetch "${location}" "${tmp}"
+         cat -- "${tmp}"
+         ;;
+      file://*)
+         path="${location#file://}"
+         cat -- "${path}"
+         ;;
+      /*)
+         cat -- "${location}"
+         ;;
+      *)
+         die 2 "unsupported location: '${location}'"
+         ;;
+   esac
+}
+
+## Reject anything that is not a bare dotted-numeric version (mirrors
+## dist-installer-cli get_version's charset + length guard).
+validate_version() {
+   local candidate
+   candidate="$1"
+   if [ -z "${candidate}" ]; then
+      die 3 "empty version"
+   fi
+   if [ -n "${candidate%%*[^0-9.]*}" ]; then
+      true "version is bare [0-9.] -- ok"
+   else
+      die 3 "version contains non [0-9.] characters: '${candidate}'"
+   fi
+   if [ "${#candidate}" -gt 12 ]; then
+      die 3 "version implausibly long (>12 chars): '${candidate}'"
+   fi
+}
+
+## Extract the pinned version from a wiki Template:VersionNew raw body:
+## first line, cut at the first '<' (drops the <noinclude> tail).
+sanitize_wiki_version() {
+   local raw first
+   raw="$1"
+   first="$(printf '%s\n' "${raw}" | head -n 1)"
+   first="$(printf '%s' "${first}" | sed 's/<.*//')"
+   printf '%s' "${first}"
+}
+
+wiki_version_url() {
+   printf '%s/w/index.php?title=Template:VersionNew&stable=0&action=raw' "${wiki_base}"
+}
+
+fetch_stable_version() {
+   local raw url clean
+   url="$(wiki_version_url)"
+   raw="$(fetch_text "${url}")"
+   clean="$(sanitize_wiki_version "${raw}")"
+   printf '%s' "${clean}"
+}
+
+## Pick the highest version directory from a directory-index HTML body.
+pick_highest_version() {
+   local html hrefs versions
+   html="$1"
+   hrefs="$(printf '%s\n' "${html}" | grep -oE 'href="[0-9][0-9.]*/"' || true)"
+   versions="$(printf '%s\n' "${hrefs}" | sed -E 's#href="([0-9.]+)/"#\1#')"
+   printf '%s\n' "${versions}" | grep -E '.' | sort --version-sort | tail -n 1
+}
+
+fetch_developers_version() {
+   local index_url html highest stable
+   index_url="${download_base}/iso/"
+   html="$(fetch_text "${index_url}")"
+   highest="$(pick_highest_version "${html}")"
+   if [ -z "${highest}" ]; then
+      die 3 "no version directories found under '${index_url}'"
+   fi
+   stable="$(fetch_stable_version)"
+   if [ "${highest}" = "${stable}" ]; then
+      log notice "developers version ${highest} coincides with stable (no newer build published)"
+   fi
+   printf '%s' "${highest}"
+}
+
+resolve_version() {
+   local resolved
+   if [ -n "${version_override}" ]; then
+      resolved="${version_override}"
+   else
+      case "${channel}" in
+         stable)
+            resolved="$(fetch_stable_version)"
+            ;;
+         developers)
+            resolved="$(fetch_developers_version)"
+            ;;
+         *)
+            die 2 "unknown --channel '${channel}' (expected stable or developers)"
+            ;;
+      esac
+   fi
+   validate_version "${resolved}"
+   printf '%s' "${resolved}"
+}
+
+verify_openpgp() {
+   local file sig cert
+   file="$1"
+   sig="$2"
+   cert="$3"
+   if ! sqop verify "${sig}" "${cert}" < "${file}" >/dev/null 2>&1; then
+      die 4 "OpenPGP signature could NOT be verified against '${cert}' -- refusing the download"
+   fi
+}
+
+## Compare the image's sha512 against the digest published in its .sha512sums
+## (basename-relative, one line per file).
+verify_sha512() {
+   local file sums image_base expected actual line digest name
+   file="$1"
+   sums="$2"
+   image_base="$3"
+
+   expected=""
+   while IFS= read -r line; do
+      digest="${line%% *}"
+      name="${line##* }"
+      if [ "${name}" = "${image_base}" ]; then
+         expected="${digest}"
+         break
+      fi
+   done < "${sums}"
+
+   if [ -z "${expected}" ]; then
+      die 4 "no sha512 entry for '${image_base}' in the published .sha512sums -- refusing the download"
+   fi
+
+   actual="$(sha512sum -- "${file}")"
+   actual="${actual%% *}"
+   expected="${expected,,}"
+   actual="${actual,,}"
+   if [ "${actual}" != "${expected}" ]; then
+      log error "sha512 mismatch for '${image_base}'"
+      log error "published: '${expected}'"
+      log error "actual:    '${actual}'"
+      die 4 "artifact sha512 does NOT match the published .sha512sums -- refusing the download"
+   fi
+}
+
+resolve_download_base() {
+   local domain
+   if [ -n "${download_base}" ]; then
+      return 0
+   fi
+   case "${project}" in
+      kicksecure)
+         domain='download.kicksecure.com'
+         ;;
+      whonix)
+         domain='download.whonix.org'
+         ;;
+      *)
+         die 2 "unknown --project '${project}' (expected kicksecure or whonix)"
+         ;;
+   esac
+   download_base="https://${domain}"
+}
+
+resolve_wiki_base() {
+   if [ -n "${wiki_base}" ]; then
+      return 0
+   fi
+   case "${project}" in
+      kicksecure)
+         wiki_base='https://www.kicksecure.com'
+         ;;
+      whonix)
+         wiki_base='https://www.whonix.org'
+         ;;
+      *)
+         die 2 "unknown --project '${project}' (expected kicksecure or whonix)"
+         ;;
+   esac
+}
+
+parse_args() {
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --project)
+            [ "$#" -ge 2 ] || die 2 "missing value for --project"
+            project="$2"
+            shift 2
+            ;;
+         --vmname)
+            [ "$#" -ge 2 ] || die 2 "missing value for --vmname"
+            vmname="$2"
+            shift 2
+            ;;
+         --desktop)
+            [ "$#" -ge 2 ] || die 2 "missing value for --desktop"
+            desktop="$2"
+            shift 2
+            ;;
+         --arch)
+            [ "$#" -ge 2 ] || die 2 "missing value for --arch"
+            arch="$2"
+            shift 2
+            ;;
+         --channel)
+            [ "$#" -ge 2 ] || die 2 "missing value for --channel"
+            channel="$2"
+            shift 2
+            ;;
+         --version)
+            [ "$#" -ge 2 ] || die 2 "missing value for --version"
+            version_override="$2"
+            shift 2
+            ;;
+         --output-dir)
+            [ "$#" -ge 2 ] || die 2 "missing value for --output-dir"
+            output_dir="$2"
+            shift 2
+            ;;
+         --cert)
+            [ "$#" -ge 2 ] || die 2 "missing value for --cert"
+            cert_path="$2"
+            shift 2
+            ;;
+         --download-base)
+            [ "$#" -ge 2 ] || die 2 "missing value for --download-base"
+            download_base="${2%/}"
+            shift 2
+            ;;
+         --wiki-base)
+            [ "$#" -ge 2 ] || die 2 "missing value for --wiki-base"
+            wiki_base="${2%/}"
+            shift 2
+            ;;
+         --socks-proxy)
+            [ "$#" -ge 2 ] || die 2 "missing value for --socks-proxy"
+            socks_proxy="$2"
+            shift 2
+            ;;
+         --onion)
+            onion='true'
+            shift
+            ;;
+         -h|--help)
+            print_usage
+            exit 0
+            ;;
+         --)
+            shift
+            break
+            ;;
+         -*)
+            print_usage >&2
+            die 2 "unknown option '$1'"
+            ;;
+         *)
+            print_usage >&2
+            die 2 "unexpected positional argument '$1'"
+            ;;
+      esac
+   done
+}
+
+main() {
+   local version image image_url artifact_final sums_file sig_file
+
+   parse_args "$@"
+
+   [ -n "${vmname}" ]     || { print_usage >&2; die 2 "--vmname is required"; }
+   [ -n "${desktop}" ]    || { print_usage >&2; die 2 "--desktop is required"; }
+   [ -n "${output_dir}" ] || { print_usage >&2; die 2 "--output-dir is required"; }
+   [ -n "${cert_path}" ]  || { print_usage >&2; die 2 "--cert is required"; }
+   if [ -z "${version_override}" ] && [ -z "${project}" ] \
+      && { [ -z "${download_base}" ] || [ -z "${wiki_base}" ]; }; then
+      print_usage >&2
+      die 2 "--project is required unless --version and both base URLs are given"
+   fi
+
+   die_if_not_has curl
+   die_if_not_has sqop
+   die_if_not_has sha512sum
+
+   [ -r "${cert_path}" ]  || die 3 "signing cert not readable: '${cert_path}'"
+   [ -d "${output_dir}" ] || die 2 "output dir does not exist: '${output_dir}'"
+
+   resolve_download_base
+   resolve_wiki_base
+
+   work_dir="$(mktemp --directory --tmpdir "${me}.XXXXXXXX")"
+   trap cleanup EXIT
+
+   version="$(resolve_version)"
+
+   image="${vmname}-${desktop}-${version}.${arch}.iso"
+   if ! validate_safe_filename image; then
+      die 2 "derived image name is not a safe filename: '${image}'"
+   fi
+
+   image_url="${download_base}/iso/${version}/${image}"
+   artifact_part="${output_dir}/${image}.part"
+   artifact_final="${output_dir}/${image}"
+   sig_file="${work_dir}/${image}.asc"
+   sums_file="${work_dir}/${image}.sha512sums"
+
+   log notice "downloading '${image}' (version ${version})"
+   fetch "${image_url}" "${artifact_part}"
+   fetch "${image_url}.asc" "${sig_file}"
+   fetch "${image_url}.sha512sums" "${sums_file}"
+
+   log notice "verifying OpenPGP signature and sha512"
+   verify_openpgp "${artifact_part}" "${sig_file}" "${cert_path}"
+   verify_sha512 "${artifact_part}" "${sums_file}" "${image}"
+
+   ## Only a fully verified artifact is exposed under its final name.
+   mv -- "${artifact_part}" "${artifact_final}"
+   artifact_part=""
+
+   log notice "verified OK: '${artifact_final}'"
+   printf '%s\n' "${artifact_final}"
+}
+
+main "$@"

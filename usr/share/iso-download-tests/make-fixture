@@ -1,0 +1,210 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Generates a self-test fixture for iso-download: a signing keypair, a fake
+## ISO published under iso/<version>/ with its OpenPGP .asc and .sha512sums, a
+## directory-index page (to exercise highest-version discovery), a wiki
+## Template:VersionNew raw body (the stable pin), and a urlmap that maps the
+## exact URLs iso-download will request to those local files -- so the curl-stub
+## can serve the whole flow with no network. Fault flags produce the negatives.
+##
+## The base URLs below MUST match what run-tests passes to iso-download.
+##
+## Key generation and signing go through sqop (Stateless OpenPGP).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## style-ok: no-has -- standalone fixture generator; probes for sqop with
+## 'command -v' rather than helper-scripts' 'has'.
+
+me="${0##*/}"
+
+if [ "${ISO_DOWNLOAD_TESTS:-}" != '1' ]; then
+   printf '%s\n' "${me}: must be run via the iso-download-tests entrypoint." >&2
+   exit 1
+fi
+
+die() {
+   printf '%s\n' "${me}: ERROR: $*" >&2
+   exit 1
+}
+
+## Shared with run-tests; RFC 2606 reserved names, unresolvable.
+download_base='https://download.example.com'
+wiki_base='https://www.example.com'
+
+out_dir=""
+version="18.4.0.5"
+stable_version=""
+older_version="18.3.0.0"
+vmname="Kicksecure"
+desktop="Xfce"
+arch="Intel_AMD64"
+wrong_signer='false'
+bad_hash='false'
+bad_sig='false'
+
+print_usage() {
+   printf '%s\n' "Usage:
+  ${me} <output_dir> [--version V] [--stable-version V] [--older-version V]
+        [--vmname N] [--desktop T] [--arch A]
+        [--wrong-signer] [--bad-hash] [--bad-sig]"
+}
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --version)
+         [ "$#" -ge 2 ] || die "missing value for --version"
+         version="$2"
+         shift 2
+         ;;
+      --stable-version)
+         [ "$#" -ge 2 ] || die "missing value for --stable-version"
+         stable_version="$2"
+         shift 2
+         ;;
+      --older-version)
+         [ "$#" -ge 2 ] || die "missing value for --older-version"
+         older_version="$2"
+         shift 2
+         ;;
+      --vmname)
+         [ "$#" -ge 2 ] || die "missing value for --vmname"
+         vmname="$2"
+         shift 2
+         ;;
+      --desktop)
+         [ "$#" -ge 2 ] || die "missing value for --desktop"
+         desktop="$2"
+         shift 2
+         ;;
+      --arch)
+         [ "$#" -ge 2 ] || die "missing value for --arch"
+         arch="$2"
+         shift 2
+         ;;
+      --wrong-signer)
+         wrong_signer='true'
+         shift
+         ;;
+      --bad-hash)
+         bad_hash='true'
+         shift
+         ;;
+      --bad-sig)
+         bad_sig='true'
+         shift
+         ;;
+      -h|--help)
+         print_usage
+         exit 0
+         ;;
+      --)
+         shift
+         break
+         ;;
+      -*)
+         die "unknown flag '$1'"
+         ;;
+      *)
+         [ -z "${out_dir}" ] || die "unexpected positional '$1'"
+         out_dir="$1"
+         shift
+         ;;
+   esac
+done
+
+[ -n "${out_dir}" ] || die "missing <output_dir> argument"
+command -v sqop >/dev/null || die "sqop not installed (Debian: sqop)"
+
+if [ -z "${stable_version}" ]; then
+   stable_version="${version}"
+fi
+
+mkdir --parents -- "${out_dir}"
+out_dir="$(cd -- "${out_dir}" && pwd)"
+
+image="${vmname}-${desktop}-${version}.${arch}.iso"
+version_dir="${out_dir}/iso/${version}"
+mkdir --parents -- "${version_dir}"
+
+secret_key="${out_dir}/test-key.sec"
+public_cert="${out_dir}/test-cert.asc"
+image_path="${version_dir}/${image}"
+sig_path="${image_path}.asc"
+sums_path="${image_path}.sha512sums"
+index_path="${out_dir}/iso-index.html"
+wiki_path="${out_dir}/wiki-versionnew.raw"
+urlmap="${out_dir}/urlmap"
+
+sqop generate-key '<iso-download-self-test-primary@example.com>' > "${secret_key}"
+sqop extract-cert < "${secret_key}" > "${public_cert}"
+
+if [ "${wrong_signer}" = 'true' ]; then
+   signing_key="${out_dir}/wrong-signer.sec"
+   sqop generate-key '<iso-download-self-test-attacker@example.com>' > "${signing_key}"
+   sqop extract-cert < "${signing_key}" > "${out_dir}/wrong-signer.asc"
+else
+   signing_key="${secret_key}"
+fi
+
+{
+   printf '%s\n' "FAKE KICKSECURE/WHONIX SELF-TEST ISO"
+   printf 'vmname=%s desktop=%s version=%s arch=%s\n' \
+      "${vmname}" "${desktop}" "${version}" "${arch}"
+} > "${image_path}"
+
+## Detached OpenPGP signature over the image bytes (as the real release signs
+## <image>.asc).
+sqop sign --as=binary "${signing_key}" < "${image_path}" > "${sig_path}"
+if [ "${bad_sig}" = 'true' ]; then
+   printf '%s\n' "-----BEGIN PGP SIGNATURE-----" > "${sig_path}"
+   printf '%s\n' "garbage-not-a-real-signature" >> "${sig_path}"
+   printf '%s\n' "-----END PGP SIGNATURE-----" >> "${sig_path}"
+fi
+
+## Basename-relative sha512sums, as dm-prepare-release publishes it.
+if [ "${bad_hash}" = 'true' ]; then
+   ## A syntactically valid but wrong digest, so only the HASH check rejects it.
+   printf '%s  %s\n' "$(printf '0%.0s' $(seq 1 128))" "${image}" > "${sums_path}"
+else
+   ( cd -- "${version_dir}" && sha512sum -- "${image}" > "${sums_path}" )
+fi
+
+## Directory index: several version dirs plus non-version noise, so the parser
+## must filter and version-sort. ${version} is the highest.
+{
+   printf '%s\n' "<html><body><pre>"
+   printf '<a href="../">../</a>\n'
+   printf '<a href="robots.txt">robots.txt</a>\n'
+   printf '<a href="%s/">%s/</a>\n' "${older_version}" "${older_version}"
+   printf '<a href="%s/">%s/</a>\n' "${version}" "${version}"
+   printf '%s\n' "</pre></body></html>"
+} > "${index_path}"
+
+printf '%s<noinclude>[[Category:MultiWiki]]\n{{mbox}}\n</noinclude>\n' \
+   "${stable_version}" > "${wiki_path}"
+
+{
+   printf '%s\t%s\n' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw" "${wiki_path}"
+   printf '%s\t%s\n' "${download_base}/iso/" "${index_path}"
+   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}" "${image_path}"
+   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.asc" "${sig_path}"
+   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.sha512sums" "${sums_path}"
+} > "${urlmap}"
+
+printf '%s\n' "${me}: done"
+printf '  image     : %s\n' "${image_path}"
+printf '  cert      : %s\n' "${public_cert}"
+printf '  urlmap    : %s\n' "${urlmap}"
+printf '  version   : %s (stable pin %s)\n' "${version}" "${stable_version}"
