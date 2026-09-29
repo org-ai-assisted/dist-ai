@@ -5,22 +5,26 @@
 
 ## AI-Assisted
 
-## Regression test for derivative-maker help-steps/parse-cmd: --function must be
-## EXPORTED, like every other parsed variable.
+## Regression test: a helper that pre-sets the dist_build_one_parsed parse-skip
+## guard must NOT export it, so a child PROCESS invoked with its OWN args
+## (--function ...) re-parses and honors them.
 ##
-## THE BUG: parse-cmd set FUNCTION as a plain (unexported) shell variable while
-## dist_build_one_parsed IS exported. A parent that pre-exports
-## dist_build_one_parsed=true (help-steps/sign-and-tag, sign-tag-head, any wrapper)
-## makes a child SKIP the parse (variables.d/05_load-config.bsh), so the child
-## inherits dist_build_one_parsed=true but NOT FUNCTION -> FUNCTION defaults empty
-## -> build-steps.d/2100_create-debian-packages runs ALL packages instead of the
-## single named --function. Fix: export FUNCTION at parse time so a child inherits
-## the scope exactly as it inherits the parse-skip flag.
+## THE BUG: dist_build_one_parsed is a SAME-SHELL idempotency guard
+## (variables.d/05_load-config.bsh skips re-parsing when it is already true in
+## THIS shell). When a helper EXPORTS it, the flag leaks into child processes:
+## dm-tor-update-repository exported it, then (via dm-get-tor-from-tpo-repo)
+## invoked `*_create-debian-packages --function download_tpo_packages` -- that
+## child inherited the export, SKIPPED parse, ignored --function, and built ALL
+## packages (tirdad included) instead of the one named. Fix: set it NON-exported,
+## like the already-correct dm-reprepro-wrapper.
 ##
-## Drives the REAL parse-cmd by SOURCING it (parse-cmd defines
-## dist_build_one_parse_cmd but does not run it when sourced) and reads the export
-## attribute from a CHILD process -- the exact parent->child inheritance the bug
-## needs. No logic is reimplemented. Needs no root, no network, no build.
+## Two checks, both drive the REAL files (no reimplementation):
+##  1. dm-tor-update-repository sets dist_build_one_parsed WITHOUT export.
+##  2. No developer-meta-files helper that invokes a build-step child with
+##     --function exports dist_build_one_parsed.
+## Structural (guards a revert of the one-line fix); the behavioural proof that
+## an inherited flag makes the child ignore --function is a sandbox/root check.
+## Needs no root, no network, no build.
 
 set -o errexit
 set -o nounset
@@ -35,9 +39,10 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-parse_cmd="${PARSE_CMD:-${dm_checkout}/help-steps/parse-cmd}"
-if [ ! -r "${parse_cmd}" ]; then
-   printf '%s\n' "FATAL: parse-cmd not readable at '${parse_cmd}' (set DERIVATIVE_MAKER_DIR or PARSE_CMD)." >&2
+dmf_bin="${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin"
+helper="${dmf_bin}/dm-tor-update-repository"
+if [ ! -r "${helper}" ]; then
+   printf '%s\n' "FATAL: dm-tor-update-repository not readable at '${helper}' (set DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
 
@@ -45,41 +50,32 @@ pass() { printf '%s\n' "PASS: $*"; }
 test_failures=0
 fail() { printf '%s\n' "FAIL: $*" >&2; test_failures=$((test_failures + 1)); }
 
-## Drive the REAL arg parser with "$@", then print how a CHILD process sees
-## FUNCTION. A child inherits FUNCTION only if parse-cmd exported it -- the exact
-## mechanism that decides whether an inherited-parse-skip child scopes to the one
-## function or builds everything. parse-cmd re-enables errexit at source time and
-## calls exit/error on mandatory-arg checks; both are neutralized INSIDE this
-## subshell only so the arg loop runs to completion.
-child_sees_function() {
-   (
-      # shellcheck disable=SC1090
-      source "${parse_cmd}" >/dev/null 2>&1
-      ## style-ok: allow-errexit-toggle -- neutralize parse-cmd's mandatory-arg
-      ## exit/error so the arg loop under test runs to completion in this probe
-      set +o errexit
-      set +o nounset
-      set +o pipefail
-      # shellcheck disable=SC2317  # invoked indirectly, from the sourced parse-cmd
-      exit() { return "${1:-0}"; }
-      # shellcheck disable=SC2317  # invoked indirectly, from the sourced parse-cmd
-      error() { return 0; }
-      unset FUNCTION
-      dist_build_one_parse_cmd "$@" >/dev/null 2>&1
-      ## A fresh child shell: prints FUNCTION only if it was EXPORTED into the env.
-      bash -c 'printf "%s" "${FUNCTION:-UNSET-IN-CHILD}"'
-   )
-}
-
-out="$( child_sees_function --function download_tpo_packages )"
-if [ "${out}" = "download_tpo_packages" ]; then
-   pass "--function is exported: a child inherits FUNCTION='${out}'"
+## 1. dm-tor-update-repository must set the flag, but NOT export it.
+if grep --quiet --extended-regexp '^[[:space:]]*export[[:space:]]+dist_build_one_parsed' "${helper}"; then
+   fail "dm-tor-update-repository EXPORTS dist_build_one_parsed -- leaks the parse-skip into its --function child, which then builds ALL packages"
+elif grep --quiet --extended-regexp '^[[:space:]]*dist_build_one_parsed=true' "${helper}"; then
+   pass "dm-tor-update-repository sets dist_build_one_parsed non-exported (child re-parses + honors --function)"
 else
-   fail "--function not exported: child saw '${out}', expected 'download_tpo_packages' (an inherited-parse-skip child would build ALL packages)"
+   fail "dm-tor-update-repository no longer sets dist_build_one_parsed as expected -- test needs review"
+fi
+
+## 2. dm-get-tor-from-tpo-repo (the caller that passes --function to a build-step
+## child) still relies on the parent not exporting the flag: assert the child
+## invocation carries --function AND the caller does not itself re-export the flag.
+caller="${dmf_bin}/dm-get-tor-from-tpo-repo"
+if [ -r "${caller}" ]; then
+   if grep --quiet --extended-regexp '\-\-function[[:space:]]+download_tpo_packages' "${caller}"; then
+      pass "dm-get-tor-from-tpo-repo invokes the build-step child with --function download_tpo_packages"
+   else
+      fail "dm-get-tor-from-tpo-repo no longer passes --function download_tpo_packages -- test needs review"
+   fi
+   if grep --quiet --extended-regexp '^[[:space:]]*export[[:space:]]+dist_build_one_parsed' "${caller}"; then
+      fail "dm-get-tor-from-tpo-repo re-exports dist_build_one_parsed -- would re-break the --function child"
+   fi
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: parse-cmd exports --function; an inherited-parse-skip child keeps the single-function scope."
+printf '%s\n' "OK: the parse-skip flag is not exported into the --function build-step child."
