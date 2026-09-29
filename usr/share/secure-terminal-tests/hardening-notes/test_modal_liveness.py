@@ -110,6 +110,9 @@ KNOWN_SAFE = {
         "returns only a bool; close_tab (its caller) owns the _closing_tabs guard + reresolve",
     ("show_locations", "dialog.exec"):
         "locations dialog captures no term; button callbacks carry path strings only",
+    ("_pick_custom", "QColorDialog.getColor"):
+        "sets the dialog-local pending tab colour; _TabEditDialog captures no term "
+        "(rename_tab re-resolves _tab_is_live after the dialog before applying)",
 }
 
 
