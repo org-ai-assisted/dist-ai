@@ -313,6 +313,23 @@ scenario_developers_survives_wiki_failure() {
    assert_file_exists "still downloaded" "${out_dir}/${img}"
 }
 
+scenario_spaced_name_verifies() {
+   local fix ver img
+   ver='18.4.0.5'
+   ## validate_safe_filename permits spaces, so the .sha512sums parser must not
+   ## split the filename on them (claude round-2).
+   fix="$(make_fixture_into spaced --version "${ver}" --desktop 'Xfce Test')"
+   cur_map="${fix}/urlmap"
+   img="${vmname}-Xfce Test-${ver}.${arch}.iso"
+
+   run_tool --vmname "${vmname}" --desktop 'Xfce Test' --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "spaced name verifies" "${tool_rc}"
+   assert_file_exists "spaced-name artifact kept" "${out_dir}/${img}"
+}
+
 scenario_socks_proxy_wired() {
    local fix ver
    ver='18.4.0.5'
@@ -351,6 +368,7 @@ all_scenarios=(
    scenario_wrong_signer_rejected
    scenario_wrong_name_rejected
    scenario_developers_survives_wiki_failure
+   scenario_spaced_name_verifies
    scenario_socks_proxy_wired
 )
 
