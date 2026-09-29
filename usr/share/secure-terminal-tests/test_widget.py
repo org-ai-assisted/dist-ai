@@ -650,10 +650,12 @@ ok(_bpm_cleared,
    'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
 _rk.close()
 
-# post-exit REFLOW: a soft-wrapped line in an exited -- PROGRAM tab is baked into _raw as ONE
-# LOGICAL line (autowrap rows joined), so a later resize / CLI replay re-wraps it at the new
-# width instead of freezing the narrow write-time wrap ("scrollback wrapped in the middle").
-# canary: old _grid_text emitted each wrapped row as its own \r\n line -> the run is split.
+# exit-bake logical lines: a soft-wrapped line left by an exited -- PROGRAM tab is baked into
+# _raw as ONE LOGICAL line (autowrap rows joined via row.wrapped), so a later CLI-mode replay
+# (_feed_line) re-wraps it at the current width instead of freezing the narrow write-time wrap.
+# (GRID mode itself is no-reflow -- see the grid-no-reflow guard in test_widget2 -- so this is
+# the CLI-after-exit benefit.) canary: old _grid_text emitted each wrapped row as its own
+# \r\n line, so the run would be split into 20-col chunks.
 _rw = SecureTerminal(command='/bin/cat', tui=True)
 _rw.resize(400, 300); _rw.show(); APP.processEvents()
 _rw._tui_grid_size = lambda: (20, 10)                # narrow grid
@@ -663,11 +665,6 @@ _rw._render_tui(); APP.processEvents()
 ok(_rw.restart_as_shell(), 'post-exit: restart a -- PROGRAM tab that left a soft-wrapped line')
 ok('B' * 75 in _rw._raw,
    'post-exit bake joins autowrapped rows into ONE reflowable logical line, not 20-col chunks')
-# and re-seeding that _raw at a WIDER width puts the whole line back on one row (true reflow)
-_rw._tui_grid_size = lambda: (100, 10)
-_rw._reflow(); APP.processEvents()
-ok(any(l.count('B') == 75 for l in _rw.toPlainText().split('\n')),
-   'post-exit + widen: the baked logical line reflows onto one 100-col row')
 _rw.close()
 
 # restart_as_shell (alt-screen ACTIVE at exit): a program still on its ALTERNATE screen
