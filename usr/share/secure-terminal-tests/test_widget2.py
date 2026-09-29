@@ -455,64 +455,45 @@ _mbar.setTabText(1, 'm' * 40)
 _min40 = _mbar.minimumTabSizeHint(1).width()
 _mbar.setTabText(1, 'm' * 80)
 _min80 = _mbar.minimumTabSizeHint(1).width()
-eq(_min40, _min80,
-   'long-label min hint is a CONSTANT floor -- it does not shrink as the name gets longer')
+# The floor is constant to within sub-pixel FONT ROUNDING (tabSizeHint's internal label measure
+# and horizontalAdvance round independently, so 40 vs 80 chars can differ by ~1px across fonts);
+# the point is it does NOT drift with length. The bug drifted 33px (160 -> 127); allow <=2px.
+ok(abs(_min40 - _min80) <= 2,
+   'long-label min hint is a CONSTANT floor (%d vs %d) -- does not shrink with name length'
+   % (_min40, _min80))
 _mbar.deleteLater()
 
-# grid scrollback REFLOW on resize: a long line wrapped at a narrow grid must re-wrap to the
-# new width when the window widens (rebuilt from _grid_text logical lines), not stay "wrapped
-# in the middle".
-_rf = SecureTerminal(command='/bin/cat', tui=True)
-_rf.resize(400, 300); _rf.show(); APP.processEvents()
-_rf._tui_grid_size = lambda: (20, 10)          # pin a NARROW grid
-_rf._make_screen()                              # rebuild at the narrow grid
-feed_output(_rf, (('A' * 75) + '\r\n').encode())   # real read path -> populates the screen
-_rf._render_tui(); APP.processEvents()
-_rf_narrow = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
-ok(_rf_narrow and max(l.count('A') for l in _rf_narrow) <= 20,
-   'reflow setup: the long line wraps at the narrow (20-col) grid, no row holds all 75')
-_rf._tui_grid_size = lambda: (100, 10)         # WIDEN
-_rf._reflow()                                   # re-wrap from _grid_text at the new width
-APP.processEvents()
-_rf_wide = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
-ok(any(l.count('A') == 75 for l in _rf_wide),
-   'grid scrollback reflows on widen: the long line is rejoined onto one 100-col row')
-_rf.shutdown()
+# GRID mode is NOT reflowed on resize (SETTLED): rebuilding a grid tab under a LIVE foreground
+# program (claude/tmux -- a full-canvas TUI that repaints on SIGWINCH) would interleave the
+# rebuilt frame with the program's ongoing cursor-addressed output and CORRUPT the buffer. A
+# grid resize must only re-sync the winsize -- it must NOT arm the debounced reflow.
+_re = SecureTerminal(command='/bin/cat', tui=True)
+_re.resize(600, 400); _re.show(); APP.processEvents()
+feed_output(_re, ('C' * 200 + '\r\n').encode())     # retained grid output
+_re._reflow_timer.stop()
+_re_cols0 = _re._screen.columns
+# count grid REBUILDS: a re-seed would call _make_screen, clobbering a live program's canvas
+_re_rebuilds = []
+_re_oms = _re._make_screen
+_re._make_screen = lambda: (_re_rebuilds.append(1), _re_oms())[1]
+_re.resize(300, 400); APP.processEvents()           # narrower -> grid width changes
+_re._make_screen = _re_oms
+ok(_re._screen.columns != _re_cols0 and not _re._reflow_timer.isActive() and not _re_rebuilds,
+   'a GRID resize re-syncs winsize but does NOT arm a reflow or rebuild the grid (no corruption)')
+_re.shutdown()
 
 # finding 1: a long line drawn at the BOTTOM row SCROLLS mid-draw; its wrap-continuation rows
-# must still be flagged (marked by linefeed BEFORE the scroll, by object), so a reflow rejoins
-# them. (Bug: a post-draw index range missed rows that scrolled into history, splitting the
-# line permanently.)
+# must still be flagged (marked by linefeed BEFORE the scroll, by row object, not a post-draw
+# index range that misses rows scrolled into history.top), so _grid_text -- used by the
+# keep-screen exit bake -- rejoins the logical line instead of splitting it permanently.
 _sc = SecureTerminal(command='/bin/cat', tui=True)
 _sc.resize(400, 300); _sc.show(); APP.processEvents()
 _sc._tui_grid_size = lambda: (10, 4)           # tiny grid so a long line scrolls while drawn
 _sc._make_screen()
 feed_output(_sc, ('Z' * 60).encode())          # 60 chars at 10x4 wraps AND scrolls off the top
-_sc._render_tui(); APP.processEvents()
-_sc._tui_grid_size = lambda: (80, 4)           # widen
-_sc._reflow(); APP.processEvents()
-ok(any(l.count('Z') >= 40 for l in _sc.toPlainText().split('\n')),
-   'finding1: a bottom-row line that scrolled while drawn still rejoins on reflow (>=40 on one row)')
+ok(any(l.count('Z') >= 40 for l in _sc._grid_text().split('\r\n')),
+   'finding1: a bottom-row line that scrolled while drawn is rejoined by _grid_text (>=40 on one line)')
 _sc.shutdown()
-
-# finding 5/6/7: reflow rebuilds from the CURRENT rendered rows (_grid_text logical lines), NOT
-# by replaying the raw byte stream -- so a \r-overwritten cell is re-wrapped as STORED, not
-# re-derived at the new width, and no embedded escape (charset / margins / DECAWM / alt) is
-# re-executed. At width 10, "0123456789ABCDEFGHIJ\rDONE" is stored as 0123456789 / DONEEFGHIJ;
-# a raw replay at width 20 would re-derive "DONE456789ABCDEFGHIJ" (the overwritten bytes
-# reappear), while a faithful re-wrap keeps "DONEEFGHIJ".
-_ff = SecureTerminal(command='/bin/cat', tui=True)
-_ff.resize(400, 300); _ff.show(); APP.processEvents()
-_ff._tui_grid_size = lambda: (10, 6)
-_ff._make_screen()
-feed_output(_ff, b'0123456789ABCDEFGHIJ\rDONE\r\n')
-_ff._render_tui(); APP.processEvents()
-_ff._tui_grid_size = lambda: (20, 6)
-_ff._reflow(); APP.processEvents()
-_ff_txt = _ff.toPlainText()
-ok('DONEEFGHIJ' in _ff_txt and 'DONE456789' not in _ff_txt,
-   'finding5: reflow re-wraps the STORED rows (DONEEFGHIJ), not a raw-byte re-derivation')
-_ff.shutdown()
 
 # codex7/grok2: a cursor-addressed overwrite of a row that is STILL a wrap continuation must
 # keep it joined -- the over-eager resting-row clear (removed) wrongly split it. abcdefghij at
@@ -552,31 +533,6 @@ _g4._screen.resize(6, 20)                        # WIDEN the pyte screen; rows k
 ok('abcdefghij' in _g4._grid_text(),
    'grok4: a widened wrapped row is read to its extent (no spaces injected mid-logical-line)')
 _g4.shutdown()
-
-# alt-screen EXCLUSION: a LIVE full-screen program owns its canvas (repaints on SIGWINCH) and
-# is NEVER reflowed from _raw -- _reflow must not rebuild the screen while alt is active.
-_rfa = SecureTerminal(command='/bin/cat', tui=True)
-_rfa.resize(400, 300); _rfa.show(); APP.processEvents()
-feed_output(_rfa, b'\x1b[?1049h')              # enter the alternate screen
-ok(_rfa._alt_screen, 'alt: entered the alternate screen')
-_reseeded = []
-_rfa_oms = _rfa._make_screen
-_rfa._make_screen = lambda: (_reseeded.append(1), _rfa_oms())[1]
-_rfa._reflow()                                  # must NOT re-seed while alt is live
-ok(not _reseeded, 'alt-screen: a live full-screen program is not reflowed from _raw')
-_rfa._make_screen = _rfa_oms
-_rfa.shutdown()
-
-# resizeEvent arms the debounced reflow when a grid tab with RETAINED output changes width.
-_re = SecureTerminal(command='/bin/cat', tui=True)
-_re.resize(600, 400); _re.show(); APP.processEvents()
-feed_output(_re, ('C' * 200 + '\r\n').encode())     # retained output -> _raw non-empty
-_re._reflow_timer.stop()
-_re_cols0 = _re._screen.columns
-_re.resize(300, 400); APP.processEvents()           # narrower -> the grid width changes
-ok(_re._screen.columns != _re_cols0 and _re._reflow_timer.isActive(),
-   'a grid resize with retained output arms the debounced reflow (resizeEvent path)')
-_re.shutdown()
 
 # slow-path (non-ASCII) autowrap is flagged too, so _grid_text joins a wrapped FOREIGN line.
 _sw = SecureTerminal(command='/bin/cat', tui=True)
