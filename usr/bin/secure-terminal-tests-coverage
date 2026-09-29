@@ -186,6 +186,10 @@ st_cov_resolve
 ## R-170: TMP is init'd HERE (self-contained) not at file scope, so a test can source this block by
 ## sentinel and prove an unset (or empty) TMP no longer aborts -- the exact bug that reddened CI,
 ## where the Linux runner leaves TMP unset (a Windows convention). Two guards: unset, then empty.
+## Inputs are TRUSTED: CI sets GITHUB_RUN_ID/ATTEMPT to numeric run IDs, TMP/ST_COV_SHARED_DIR are
+## operator-set, and this gate runs single-tenant (CI) / single-user (dev VM). It is deliberately
+## NOT hardened against a hostile env value (TMP=/, a '..' in the run id) or a pre-planted /tmp
+## symlink: that adversary is outside this test tooling's threat model (AI accident, not attacker).
 ## BEGIN-EXTRACT st_cov_shared_work_dir (the canary test sources this block by sentinel)
 st_cov_shared_work_dir() {
    [ -v TMP ] || TMP=/tmp
