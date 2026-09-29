@@ -459,7 +459,7 @@ assert_inside_conditional \
    "iso cmdline placeholder" \
    "${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso" \
    '^if \[ "\$\{smbios_reader\}" = "true" \] ; then$' \
-   '^live_append=.*dm_smbios_extra'
+   '^iso_cmdline=.*dm_smbios_extra'
 
 ## POLARITY, not token presence: an inverted guard keeps every token while
 ## reversing the default, so the reader would ship in released images with all the

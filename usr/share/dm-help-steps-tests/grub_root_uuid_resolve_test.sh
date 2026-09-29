@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## resolve-partition-uuid (help-steps/build-step-helpers.bsh, used by
+## resolve-partition-uuid (help-steps/misc-helpers.bsh, used by
 ## 3500_install-packages) must match the partition NAME as a LITERAL whole field,
 ## never as a regex or a substring: the UUID it returns is written into the
 ## image's grub.cfg 'root='. A wrong UUID does not look like a failure -- it
@@ -28,7 +28,7 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+lib="${dm_checkout}/help-steps/misc-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1

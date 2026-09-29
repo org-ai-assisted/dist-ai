@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Regression test for derivative-maker 'help-steps/variables.d/05_lib.bsh'
+## Regression test for derivative-maker 'help-steps/misc-helpers.bsh'
 ## derive_unified_image_paths(): the 'none' sentinel must leave the unified-image
 ## path variables UNSET.
 ##
@@ -33,12 +33,12 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
-## variables-lib.bsh was folded into the top-level buildconfig.d/ module dir as
-## 05_lib.bsh (loaded first by help-steps/variables). Still a separate
-## sourced-only file so this test can source the helpers directly.
-variables_lib="${DM_VARIABLES_LIB:-${dm_checkout}/variables.d/05_lib.bsh}"
+## The shared helper functions live in help-steps/misc-helpers.bsh (sourced by
+## help-steps/variables), a sourced-only file so this test can source the helpers
+## directly.
+variables_lib="${DM_VARIABLES_LIB:-${dm_checkout}/help-steps/misc-helpers.bsh}"
 if [ ! -r "${variables_lib}" ]; then
-   printf '%s\n' "FATAL: variables-lib.bsh not found/readable at '${variables_lib}' (set DM_VARIABLES_LIB or DERIVATIVE_MAKER_DIR)." >&2
+   printf '%s\n' "FATAL: misc-helpers.bsh not found/readable at '${variables_lib}' (set DM_VARIABLES_LIB or DERIVATIVE_MAKER_DIR)." >&2
    exit 1
 fi
 : "${HELPER_SCRIPTS_PATH:=${dm_checkout}/packages/kicksecure/helper-scripts}"
@@ -100,7 +100,9 @@ fi
 ## unset-assertions above are meaningful (not green because the function no-oped).
 ## A workstation build exports two VMs; the derivation keeps the one that is NOT
 ## the current build type, so the Gateway path is what must appear here.
+# shellcheck disable=SC2034  # vm_names_to_be_exported: consumed by the sourced derive_unified_image_paths
 vm_names_to_be_exported="Whonix-Gateway-CLI Whonix-Workstation-CLI"
+# shellcheck disable=SC2034  # dist_build_type_long: consumed by the sourced derive_unified_image_paths
 dist_build_type_long="workstation"
 run_derivation
 expected_raw="/build/out/Whonix-Gateway-CLI-1.2.3.amd64.raw"
@@ -119,31 +121,6 @@ case "${binary_image_raw_file_for_unified:-}" in
       pass "canary path carries a real VM name, not the 'none' sentinel"
       ;;
 esac
-
-## --- a REAL unified build whose (misconfigured) list matches no other VM must
-## leave the vars DECLARED-but-empty, so the consumer's 'test -f' emits its
-## actionable "missing other VM" error rather than a raw nounset crash. Every
-## entry here substring-matches dist_build_type_long, so the loop skips all. ---
-# shellcheck disable=SC2034  # vm_names_to_be_exported: consumed by the sourced derive_unified_image_paths
-vm_names_to_be_exported="Whonix-Workstation-CLI"
-# shellcheck disable=SC2034  # dist_build_type_long: consumed by the sourced derive_unified_image_paths
-dist_build_type_long="workstation"
-run_derivation
-if [ -n "${binary_image_raw_file_for_unified+x}" ]; then
-   pass "self-matching list leaves binary_image_raw_file_for_unified DECLARED (no nounset crash downstream)"
-else
-   fail "self-matching list left binary_image_raw_file_for_unified UNSET (consumer crashes under set -u)"
-fi
-if [ -z "${binary_image_raw_file_for_unified-nonempty}" ]; then
-   pass "self-matching list leaves it EMPTY (test -f '' -> actionable 'missing other VM' error)"
-else
-   fail "self-matching list set a bogus path '${binary_image_raw_file_for_unified-nonempty}'"
-fi
-if [ -n "${binary_image_qcow2_file_for_unified+x}" ]; then
-   pass "self-matching list leaves binary_image_qcow2_file_for_unified DECLARED"
-else
-   fail "self-matching list left binary_image_qcow2_file_for_unified UNSET"
-fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

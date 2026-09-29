@@ -17,7 +17,7 @@
 ##
 ## The fix is a package, not a probe: the tools the build and the reproducibility
 ## comparison invoke are installed by this step and declared in
-## buildconfig.d/30_dependencies.conf. So what has to hold is that each one is in
+## variables.d/60_dependencies.bsh. So what has to hold is that each one is in
 ## BOTH lists -- a probe that merely reports the gap would still leave the build
 ## unable to run.
 ##
@@ -118,9 +118,9 @@ if [ -z "${required_packages_list}" ]; then
    exit 1
 fi
 
-deps_conf="$(dirname -- "$(dirname -- "${sanity_tests}")")/buildconfig.d/30_dependencies.conf"
+deps_conf="$(dirname -- "$(dirname -- "${sanity_tests}")")/variables.d/60_dependencies.bsh"
 if [ ! -r "${deps_conf}" ]; then
-   printf '%s\n' "FAILED: buildconfig.d/30_dependencies.conf not found next to the subject." >&2
+   printf '%s\n' "FAILED: variables.d/60_dependencies.bsh not found next to the subject." >&2
    exit 1
 fi
 
@@ -140,7 +140,7 @@ for needed_package in kmod qemu-utils kpartx parted; do
    ## Installing it in 1100 alone is not enough: without the declaration the rest
    ## of the build has no claim on it.
    if grep --quiet --fixed-strings "${needed_package}" "${deps_conf}"; then
-      pass "${needed_package}: declared in buildconfig.d/30_dependencies.conf"
+      pass "${needed_package}: declared in variables.d/60_dependencies.bsh"
    else
       fail "${needed_package}: installed by 1100 but never declared as a build dependency"
    fi
@@ -159,9 +159,9 @@ case " ${required_packages_list} " in
       ;;
 esac
 if grep --quiet --fixed-strings "${canary_package}" "${deps_conf}"; then
-   fail "canary broken: 30_dependencies.conf matching reports a nonexistent package as present"
+   fail "canary broken: 60_dependencies.bsh matching reports a nonexistent package as present"
 else
-   pass "canary: 30_dependencies.conf matching can report a package as absent"
+   pass "canary: 60_dependencies.bsh matching can report a package as absent"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

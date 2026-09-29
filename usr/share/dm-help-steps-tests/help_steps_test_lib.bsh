@@ -46,7 +46,7 @@ fail() {
 ## variables). A checkout with no buildconfig.d/ yields the loader alone, so a
 ## caller works both before and after the split.
 help_steps_variables_effective() {
-   local hsve_loader hsve_root hsve_mod
+   local hsve_loader hsve_root hsve_dir hsve_mod
    hsve_loader="$1"
    ## The resolver modules the loader sources live one directory ABOVE it
    ## (source_code_folder_dist). They loop-source from variables.d/ (the in-tree
@@ -55,8 +55,15 @@ help_steps_variables_effective() {
    ## loader plus every resolver module found under variables.d/ OR the older
    ## buildconfig.d/, in filename order, so a test sees the effective resolution
    ## logic as one stream regardless of which checkout it runs against.
+   ##
+   ## The loader also sources its sibling help-steps/misc-helpers.bsh (the shared
+   ## helper library that now holds functions such as source_date_epoch_valid,
+   ## value_charset_ok, derive_unified_image_paths), so include it too -- it is part
+   ## of the effective sourced sequence.
    hsve_root="$(dirname -- "$(dirname -- "${hsve_loader}")")"
+   hsve_dir="$(dirname -- "${hsve_loader}")"
    cat -- "${hsve_loader}"
+   [ ! -e "${hsve_dir}/misc-helpers.bsh" ] || cat -- "${hsve_dir}/misc-helpers.bsh"
    for hsve_mod in "${hsve_root}"/variables.d/*.bsh "${hsve_root}"/buildconfig.d/*.bsh; do
       [ -e "${hsve_mod}" ] || continue
       cat -- "${hsve_mod}"

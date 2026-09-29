@@ -6,15 +6,15 @@
 ## AI-Assisted
 
 ## Root cause this gate exists for: `source variables` intentionally cd's into
-## source_code_folder_dist (variables.d/10_core.bsh, "by design" -- every build
-## step runs from the source root afterwards). So a script that sources a
-## help-steps sibling by BARE NAME *after* `source variables` resolves via
-## neither PATH nor CWD and the build aborts (observed: iso + qcow2 CI legs died
-## at 1200 with "build-step-helpers.bsh: No such file or directory"). The correct
-## idiom is a path anchored to the script's OWN location -- ${MYDIR}/.. or
+## source_code_folder_dist (variables.d, "by design" -- every build step runs from
+## the source root afterwards). So a script that sources a help-steps sibling by
+## BARE NAME *after* `source variables` resolves via neither PATH nor CWD and the
+## build aborts (observed: iso + qcow2 CI legs died at 1200 with a
+## "No such file or directory" on a sibling helper). The correct idiom is a path
+## anchored to the script's OWN location -- ${MYDIR}/.. or
 ## $(dirname ${BASH_SOURCE[0]}) -- exactly as help-steps/pre sources retry-run.
 ##
-## This gate DISCOVERS every consumer of build-step-helpers.bsh (so a new one, or
+## This gate DISCOVERS every consumer of misc-helpers.bsh (so a new one, or
 ## dm-raw-to-iso, is covered without editing this test) and asserts each sources
 ## it by a self-anchored path, never a bare/CWD-relative name. A behavioral proof
 ## + canary back the structural check: a self-anchored path loads from any CWD, a
@@ -34,7 +34,7 @@ else
    dm_checkout="${HOME}/derivative-maker"
 fi
 
-lib="${dm_checkout}/help-steps/build-step-helpers.bsh"
+lib="${dm_checkout}/help-steps/misc-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
@@ -53,7 +53,7 @@ fail() {
 
 ## the line by which a script sources the helper library
 src_line_of() {
-   grep -E '^[[:space:]]*source[[:space:]].*build-step-helpers\.bsh' -- "$1" | head -1
+   grep -E '^[[:space:]]*source[[:space:]].*misc-helpers\.bsh' -- "$1" | head -1
 }
 
 ## --- discover every consumer and require a self-anchored source ---------------
@@ -61,12 +61,12 @@ src_line_of() {
 ## library itself excluded). Discovery, not a hardcoded list, so a new consumer
 ## cannot silently escape the check.
 mapfile -t consumers < <(
-   grep -rlE 'source[[:space:]].*build-step-helpers\.bsh' \
+   grep -rlE 'source[[:space:]].*misc-helpers\.bsh' \
       -- "${dm_checkout}/build-steps.d" "${dm_checkout}/help-steps" 2>/dev/null \
-   | grep -v '/build-step-helpers\.bsh$' | sort)
+   | grep -v '/misc-helpers\.bsh$' | sort)
 
 if [ "${#consumers[@]}" -eq 0 ]; then
-   fail 'discovery found no consumer of build-step-helpers.bsh (grep broken?)'
+   fail 'discovery found no consumer of misc-helpers.bsh (grep broken?)'
 fi
 
 for consumer in "${consumers[@]}"; do
@@ -92,13 +92,13 @@ cleanup() { safe-rm --recursive --force -- "${foreign_cwd}"; }
 trap cleanup EXIT
 
 ## a function the lib defines; its presence proves the source actually loaded
-probe_fn="require-ext-type"
+probe_fn="resolve-partition-uuid"
 if (
       cd "${foreign_cwd}" || exit 9
       # shellcheck disable=SC2034
-      MYDIR="${dm_checkout}/build-steps.d"
+      MYDIR="${dm_checkout}/help-steps"
       # shellcheck disable=SC1091
-      source "${MYDIR}/../help-steps/build-step-helpers.bsh" 2>/dev/null || exit 1
+      source "${MYDIR}/misc-helpers.bsh" 2>/dev/null || exit 1
       declare -F "${probe_fn}" >/dev/null 2>&1 || exit 2
    ); then
    # shellcheck disable=SC2016
@@ -113,7 +113,7 @@ bare_resolves=no
 (
    cd "${foreign_cwd}" || exit 9
    # shellcheck disable=SC1091
-   source build-step-helpers.bsh 2>/dev/null
+   source misc-helpers.bsh 2>/dev/null
 ) && bare_resolves=yes
 if [ "${bare_resolves}" = "no" ]; then
    pass 'canary: a bare-name source fails from a foreign CWD (the guarded regression)'

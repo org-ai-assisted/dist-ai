@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## source_date_epoch_valid (variables.d/05_lib.bsh) is the canonical gate for the
+## source_date_epoch_valid (help-steps/misc-helpers.bsh) is the canonical gate for the
 ## build-wide SOURCE_DATE_EPOCH -- resolved in variables.d (10_core.bsh from the
 ## changelog, 40_upload.bsh from the frozen pin) and consumed by debhelper,
 ## mmdebstrap and the reproducible image steps. It must ACCEPT a non-negative
@@ -14,7 +14,7 @@
 ## a value that overflows 64-bit (arithmetic downstream silently wraps: 2^64 -> 0
 ## -> a 1970 build).
 ##
-## The real function is SOURCED (05_lib.bsh + the strings.bsh is_whole_number it
+## The real function is SOURCED (misc-helpers.bsh + the strings.bsh is_whole_number it
 ## reuses); the canary shows is_whole_number alone accepts an overflowing value.
 
 set -o errexit
@@ -43,7 +43,7 @@ fi
 # shellcheck disable=SC1090
 source "${strings_bsh}"
 
-lib="${dm_checkout}/variables.d/05_lib.bsh"
+lib="${dm_checkout}/help-steps/misc-helpers.bsh"
 if [ ! -r "${lib}" ]; then
    printf '%s\n' "FAIL: cannot read ${lib}" >&2
    exit 1
