@@ -239,11 +239,35 @@ python3 -m coverage erase
 ## per-suite command (coverage run --parallel-mode, plus the SIGSEGV retry); --parallel-mode has
 ## each process write its OWN data file, so `coverage combine` below unions them regardless of
 ## finish order. Per-suite output is replayed in canonical order and the rc judged after the barrier.
-suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
-        test_secure_terminal test_fuzz test_fuzz_harnesses \
-        test_corpus test_invariants test_cli test_unicode_tag test_modules \
-        test_review test_widget test_widget2 test_alt_reenter test_tabbar_polish test_core_fixes test_core_fixes_win \
-        test_state_dump test_startup_winsize test_sclip test_clipboard_watch)
+## Tier split so each orchestrator entry fits the per-suite timeout. ST_COV_TIER selects which
+## SUITES run and which gated tier is asserted; the GLOBS (gated_free/gated_qt) are UNCHANGED, so
+## their union is still the whole package (assert_every_module_gated above) -- splitting which
+## suites run per entry cannot shrink the gate. 'free' runs the pure-Python suites + asserts
+## gated_free + runs the formal proofs; 'qt' runs the headless-Wayland widget suites + asserts
+## gated_qt + the fuzz-widget self-coverage; 'all' (standalone/local) runs and asserts everything.
+## free_suites UNION qt_suites is exactly the 24-suite set the un-split gate ran.
+st_cov_tier="${ST_COV_TIER:-all}"
+free_suites=(test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
+             test_cli test_unicode_tag test_modules test_sclip)
+qt_suites=(test_mainwin test_mainwin2 test_mainwin3 test_mainwin4 test_mainwin5 \
+           test_invariants test_review test_widget test_widget2 test_alt_reenter \
+           test_tabbar_polish test_core_fixes test_core_fixes_win test_state_dump \
+           test_startup_winsize test_clipboard_watch)
+case "${st_cov_tier}" in
+   free)
+      suites=("${free_suites[@]}")
+      ;;
+   qt)
+      suites=("${qt_suites[@]}")
+      ;;
+   all)
+      suites=("${free_suites[@]}" "${qt_suites[@]}")
+      ;;
+   *)
+      printf '%s\n' "secure-terminal-tests-coverage: FATAL: unknown ST_COV_TIER '${st_cov_tier}' (free|qt|all)" >&2
+      exit 1
+      ;;
+esac
 suite_paths=()
 for suite in "${suites[@]}"; do
    ## A registered suite MISSING from the checkout is a packaging/rename bug, never a
@@ -303,9 +327,16 @@ if [ -n "${COVERAGE_DEBUG_MISSING:-}" ]; then
       "${COVERAGE_FILE}" "${cov_dbg_dir}/raw" "${pkg}" || true
 fi
 
-printf '%s\n' '' '== gated modules, Qt-free (must be 100%) =='
-python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
+if [ "${st_cov_tier}" != 'qt' ]; then
+   printf '%s\n' '' '== gated modules, Qt-free (must be 100%) =='
+   python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
+fi
 
+if [ "${st_cov_tier}" = 'free' ]; then
+   ## The 'free' entry runs only the Qt-free suites, which do not touch the Qt-widget modules,
+   ## so a whole-file gated_qt report here would be a vacuous <100% -- the 'qt' entry asserts it.
+   printf '%s\n' '' "== (Qt-widget tier asserted by the -qt entry) =="
+else
 printf '%s\n' '' '== gated modules, Qt widget (must be 100%) =='
 python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
 
@@ -332,7 +363,10 @@ if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
          --include='*fuzz_widget.py' --show-missing --fail-under=100
    fi
 fi
+fi
 
+## Formal proofs are Qt-free (Z3), so they run in the 'free' / standalone entry.
+if [ "${st_cov_tier}" != 'qt' ]; then
 ## Formal verification (Z3 + exhaustive enumeration) as MUST-PASS. The coverage
 ## suites above do NOT run it, so a feed_line_edits / sanitizer change that desyncs
 ## the coupled reference models (test_corpus oracle, verify_formal Z3 model, the
@@ -353,6 +387,9 @@ for verify_suite in verify_formal verify_formal_absint; do
       exit "${verify_rc}"
    fi
 done
+fi
 
-printf '%s\n' '' '== whole-package coverage =='
-python3 -m coverage report || true
+if [ "${st_cov_tier}" = 'all' ]; then
+   printf '%s\n' '' '== whole-package coverage =='
+   python3 -m coverage report || true
+fi

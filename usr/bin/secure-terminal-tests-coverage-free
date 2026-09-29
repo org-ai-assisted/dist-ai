@@ -1,0 +1,23 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Thin wrapper: run the Qt-FREE tier of the secure-terminal coverage gate as its OWN
+## dist-ai-tests-all entry so it fits the per-suite timeout. It runs the pure-Python suites,
+## asserts the gated_free (Qt-free) tier at 100%, and runs the Z3 formal proofs. The Qt-widget
+## tier is the -qt entry. See secure-terminal-tests-coverage (ST_COV_TIER) for the whole gate.
+## style-ok: R-103 -- a thin wrapper is MEANT to exec the real runner unchanged.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+exec env ST_COV_TIER=free \
+   "$(dirname -- "$(readlink --canonicalize -- "$0")")/secure-terminal-tests-coverage" "$@"
