@@ -130,12 +130,18 @@ plain_run_one_suite() {  ## $1 = suite .py path
    ## this), and a suite file no longer needs +x to run. The sequential runner invoked suites
    ## via python3; the parallel split regressed to exec-by-shebang, which silently disabled both.
    ## 0 = the caller disabled the watchdog (deliberately unbounded); else bound the suite.
+   ## Record per-suite wall-clock to dur-<key> (debug): the CI budget is the WHOLE-runner wall
+   ## clock, so which suites dominate is what to know when it overruns. The write must not change
+   ## the suite's exit status the caller reads, so capture it and return it unchanged.
+   local _st_t0="${SECONDS}" _st_rc=0
    if [ "${suite_timeout}" -eq 0 ]; then
-      "${wl_headless_run}" --no-autoconfirm -- python3 -Bsu "$1" "${forward_args[@]}"
+      "${wl_headless_run}" --no-autoconfirm -- python3 -Bsu "$1" "${forward_args[@]}" || _st_rc="$?"
    else
       timeout --signal=TERM --kill-after=30s "${suite_timeout}" \
-         "${wl_headless_run}" --no-autoconfirm -- python3 -Bsu "$1" "${forward_args[@]}"
+         "${wl_headless_run}" --no-autoconfirm -- python3 -Bsu "$1" "${forward_args[@]}" || _st_rc="$?"
    fi
+   printf '%s\n' "$(( SECONDS - _st_t0 ))" > "${work}/dur-$(basename -- "$1" .py)"
+   return "${_st_rc}"
 }
 
 ## The pure, Qt-free tests always run; the Qt suites fail closed (exit 1) on a
@@ -208,8 +214,18 @@ if [ -n "${SECURE_TERMINAL_TESTS_ONLY:-}" ]; then
    suites=("${_only_suites[@]}")
    printf '%s\n' "secure-terminal-tests: running ONLY: ${SECURE_TERMINAL_TESTS_ONLY}" >&2
 fi
+## Oversubscribe by default (2x cores): most suites are GUI/pty/compositor-bound and spend their
+## wall-clock WAITING (real wl-headless render, pty round-trips), so more parallel jobs than cores
+## cuts the whole-runner wall-clock that the orchestrator's per-suite timeout bounds -- the CI
+## overrun this addresses. run_suites_parallel STILL clamps to a RAM-aware ceiling, so this cannot
+## OOM; SECURE_TERMINAL_TESTS_JOBS overrides for a fixed count (and 1 for serial iteration).
+st_jobs="${SECURE_TERMINAL_TESTS_JOBS:-}"
+if [ -z "${st_jobs}" ]; then
+   st_jobs="$(( $(nproc 2>/dev/null || printf '%s' 2) * 2 ))"
+fi
+run_start="${SECONDS}"
 run_suites_parallel "${work}" "${repo}/usr/lib/python3/dist-packages/secure_terminal" \
-   "${SECURE_TERMINAL_TESTS_JOBS:-}" plain_run_one_suite "${suites[@]}"
+   "${st_jobs}" plain_run_one_suite "${suites[@]}"
 
 overall=0
 authorized_skip=0
@@ -227,6 +243,9 @@ for test_file in "${suites[@]}"; do
    ## one) is fail-closed, never a silent pass.
    rc="$(cat -- "${work}/rc-$(basename -- "${test_file}" .py)" 2>/dev/null || true)"
    [ -n "${rc}" ] || rc=1
+   ## Per-suite wall-clock (debug): surface which suites dominate the whole-runner wall clock.
+   dur="$(cat -- "${work}/dur-$(basename -- "${test_file}" .py)" 2>/dev/null || printf '%s' '?')"
+   printf '%s\n' "secure-terminal-tests: timing ${test_file##*/} ${dur}s (rc ${rc})" >&2
    if [ "${rc}" = '0' ]; then
       continue
    fi
@@ -258,6 +277,7 @@ for test_file in "${suites[@]}"; do
    fi
    overall=1
 done
+printf '%s\n' "secure-terminal-tests: total wall-clock $(( SECONDS - run_start ))s across ${#suites[@]} suites at ${st_jobs} jobs" >&2
 ## An authorized skip of a required suite must not read as a clean full pass: if nothing
 ## failed but a suite was authorized-skipped, exit 77 (SKIP) so the caller can tell a
 ## lenient-skipped run from a full pass -- matching the module-absent block above, which
