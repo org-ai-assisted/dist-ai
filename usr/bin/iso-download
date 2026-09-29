@@ -19,13 +19,23 @@
 ## Naming convention (derivative-maker variables.d/40_version-paths.bsh):
 ##   <VMNAME>-<desktop>-<version>.<arch>.iso   e.g.
 ##   Kicksecure-Xfce-18.4.0.5.Intel_AMD64.iso
-## published at <download-base>/iso/<version>/ alongside <image>.asc (OpenPGP
-## detached signature over the image) and <image>.sha512sums.
+## published at <download-base>/iso/<version>/ alongside <image>.sha512sums and
+## its OpenPGP signature <image>.sha512sums.asc.
 ##
 ## Integrity (fail-closed, both required; the artifact is never modified):
-##   SIG  -- OpenPGP verify <image>.asc over the image against --cert.
-##   HASH -- sha512 of the image == the digest in <image>.sha512sums.
+##   SIG  -- OpenPGP verify <image>.sha512sums.asc over the .sha512sums file
+##           against --cert (the published derivative signing key).
+##   HASH -- the authenticated .sha512sums lists an entry for exactly <image>
+##           whose sha512 matches the downloaded bytes. Binding the basename
+##           stops an older signed release being served under a newer name.
 ## Downloads route over a SOCKS5 (Tor) proxy with --socks-proxy.
+##
+## Trust boundary: the VERSION source is unsigned by design here (the signed
+## release manifest was cancelled) -- the wiki pin and directory index are
+## trusted over TLS/onion, as dist-installer-cli trusts the wiki VersionNew
+## pin. The tool guarantees a genuine key-signed release OF THE RESOLVED
+## VERSION; it cannot alone stop a controlled version source selecting an
+## older genuine release.
 
 set -o errexit
 set -o nounset
@@ -58,9 +68,10 @@ wiki_base=""
 socks_proxy=""
 onion='false'
 
-## Trap state -- set before the trap is registered (R-051).
+## Trap state -- set before the trap is registered (R-051). The image is
+## downloaded inside work_dir, so removing it also discards an unverified
+## download.
 work_dir=""
-artifact_part=""
 
 print_usage() {
    printf '%s\n' "Usage:
@@ -81,9 +92,6 @@ http (onion services carry their own encryption)."
 cleanup() {
    if [ -n "${work_dir}" ] && [ -d "${work_dir}" ]; then
       safe-rm --recursive --force -- "${work_dir}"
-   fi
-   if [ -n "${artifact_part}" ] && [ -e "${artifact_part}" ]; then
-      safe-rm --force -- "${artifact_part}"
    fi
 }
 
@@ -198,13 +206,15 @@ fetch_stable_version() {
    printf '%s' "${clean}"
 }
 
-## Pick the highest version directory from a directory-index HTML body.
+## Pick the highest version directory from a directory-index HTML body. The
+## '|| true' on the non-match keeps an empty result from tripping errexit here
+## so the caller can emit its own "no version directories" diagnostic.
 pick_highest_version() {
    local html hrefs versions
    html="$1"
    hrefs="$(printf '%s\n' "${html}" | grep -oE 'href="[0-9][0-9.]*/"' || true)"
    versions="$(printf '%s\n' "${hrefs}" | sed -E 's#href="([0-9.]+)/"#\1#')"
-   printf '%s\n' "${versions}" | grep -E '.' | sort --version-sort | tail -n 1
+   printf '%s\n' "${versions}" | { grep -E '.' || true; } | sort --version-sort | tail -n 1
 }
 
 fetch_developers_version() {
@@ -215,8 +225,10 @@ fetch_developers_version() {
    if [ -z "${highest}" ]; then
       die 3 "no version directories found under '${index_url}'"
    fi
-   stable="$(fetch_stable_version)"
-   if [ "${highest}" = "${stable}" ]; then
+   ## The stable pin is fetched only to note the coincidence; its failure must
+   ## not abort a developers download whose version is already resolved.
+   stable="$(fetch_stable_version 2>/dev/null || true)"
+   if [ -n "${stable}" ] && [ "${highest}" = "${stable}" ]; then
       log notice "developers version ${highest} coincides with stable (no newer build published)"
    fi
    printf '%s' "${highest}"
@@ -249,7 +261,7 @@ verify_openpgp() {
    sig="$2"
    cert="$3"
    if ! sqop verify "${sig}" "${cert}" < "${file}" >/dev/null 2>&1; then
-      die 4 "OpenPGP signature could NOT be verified against '${cert}' -- refusing the download"
+      die 4 "the published .sha512sums OpenPGP signature could NOT be verified against '${cert}' -- refusing the download"
    fi
 }
 
@@ -406,7 +418,7 @@ parse_args() {
 }
 
 main() {
-   local version image image_url artifact_final sums_file sig_file
+   local version image image_url artifact_final image_work sums_file sig_file
 
    parse_args "$@"
 
@@ -441,23 +453,29 @@ main() {
    fi
 
    image_url="${download_base}/iso/${version}/${image}"
-   artifact_part="${output_dir}/${image}.part"
    artifact_final="${output_dir}/${image}"
-   sig_file="${work_dir}/${image}.asc"
+   ## Download into the private work_dir (mktemp, mode 700), never into a
+   ## caller-shared output_dir where a pre-planted symlink at a predictable
+   ## name could redirect the write. The final rename replaces any symlink at
+   ## the destination rather than following it.
+   image_work="${work_dir}/${image}"
    sums_file="${work_dir}/${image}.sha512sums"
+   sig_file="${work_dir}/${image}.sha512sums.asc"
 
    log notice "downloading '${image}' (version ${version})"
-   fetch "${image_url}" "${artifact_part}"
-   fetch "${image_url}.asc" "${sig_file}"
+   fetch "${image_url}" "${image_work}"
    fetch "${image_url}.sha512sums" "${sums_file}"
+   fetch "${image_url}.sha512sums.asc" "${sig_file}"
 
-   log notice "verifying OpenPGP signature and sha512"
-   verify_openpgp "${artifact_part}" "${sig_file}" "${cert_path}"
-   verify_sha512 "${artifact_part}" "${sums_file}" "${image}"
+   ## Trust chain: the OpenPGP signature authenticates the .sha512sums file;
+   ## the authenticated sums then binds the image by BOTH its exact basename
+   ## (so an old release cannot be served under a newer version's name) and its
+   ## sha512 digest. Both gates must pass or nothing is kept.
+   log notice "verifying the published .sha512sums signature and the image digest"
+   verify_openpgp "${sums_file}" "${sig_file}" "${cert_path}"
+   verify_sha512 "${image_work}" "${sums_file}" "${image}"
 
-   ## Only a fully verified artifact is exposed under its final name.
-   mv -- "${artifact_part}" "${artifact_final}"
-   artifact_part=""
+   mv --force -- "${image_work}" "${artifact_final}"
 
    log notice "verified OK: '${artifact_final}'"
    printf '%s\n' "${artifact_final}"
