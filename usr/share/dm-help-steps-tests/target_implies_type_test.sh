@@ -70,7 +70,7 @@ for target in virtualbox qcow2 utm raw; do
       continue
    fi
    case "${arm}" in
-      *'implicit_dist_type vm'*)
+      *'implicit_dist_type vm'*|*'implicit_dist_type "vm"'*)
          pass "--target ${target} implies '--type vm'"
          ;;
       *)
@@ -84,7 +84,7 @@ done
 ## would pass the vm assertions above too.
 iso_arm="$(target_arm iso)"
 case "${iso_arm}" in
-   *'implicit_dist_type host'*)
+   *'implicit_dist_type host'*|*'implicit_dist_type "host"'*)
      pass "--target iso still implies '--type host'"
       ;;
    *)
@@ -92,7 +92,7 @@ case "${iso_arm}" in
       ;;
 esac
 case "${iso_arm}" in
-   *'implicit_dist_type vm'*)
+   *'implicit_dist_type vm'*|*'implicit_dist_type "vm"'*)
       fail "--target iso implies '--type vm'; the arms are being confused for one another"
       ;;
    *)

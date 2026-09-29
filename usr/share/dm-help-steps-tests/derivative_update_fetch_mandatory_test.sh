@@ -62,7 +62,11 @@ else
    ## explanatory comment there. (Kept to a tight window so the unrelated
    ## update_only target_tag block further above is not misread as a guard.)
    window_start=$(( fetch_line > 6 ? fetch_line - 6 : 1 ))
-   guard_window="$( sed -n "${window_start},$(( fetch_line - 1 ))p" -- "${subject}" )"
+   ## Only real CODE above the fetch can guard it; strip comment-only lines so an
+   ## explanatory maintainer note that merely MENTIONS update_only (the note the
+   ## header docstring anticipates) is not misread as a guard. '|| true': grep
+   ## returns non-zero when the window is all comments, which errexit would abort on.
+   guard_window="$( sed -n "${window_start},$(( fetch_line - 1 ))p" -- "${subject}" | grep -vE '^[[:space:]]*#' || true )"
    if [[ "${guard_window}" =~ (^|[^[:alnum:]_])else([^[:alnum:]_]|$) ]] \
       || [[ "${guard_window}" =~ update_only ]]; then
       fail "the 'git fetch --recurse-submodules' appears guarded by an update_only conditional -- the fetch is mandatory and must stay unconditional (do not re-add an offline / --update-only fetch skip):
