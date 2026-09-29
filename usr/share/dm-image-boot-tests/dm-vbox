@@ -362,9 +362,30 @@ _EMIT_OPS = (
 )
 
 
+## Per-op flags that have no default and must be supplied for a usable argv;
+## keyboard additionally needs one of --key/--text (handled below). Without
+## this a missing flag would emit a literal 'None' into the argv (or crash),
+## defeating the point of a byte-exact --emit-argv.
+_EMIT_REQUIRED = {
+    'import': ('ova',),
+    'createmedium': ('medium',),
+    'storageattach': ('medium',),
+}
+
+
+def _validate_emit_args(op, args):
+    missing = ['--' + name for name in _EMIT_REQUIRED.get(op, ())
+               if getattr(args, name) is None]
+    if op == 'keyboard' and args.key is None and args.text is None:
+        missing.append('--key or --text')
+    if missing:
+        raise ValueError('op %r needs %s' % (op, ', '.join(missing)))
+
+
 def _emit_argv(args):
     """Build the argv for one op from CLI flags and return it (no execution)."""
     op = args.op
+    _validate_emit_args(op, args)
     if op == 'import':
         return build_import_argv(args.ova, args.vm)
     if op == 'createvm':
@@ -453,7 +474,14 @@ def _cmd_capabilities():
 def main(argv=None):
     args = _build_parser().parse_args(argv)
     if args.cmd == 'emit-argv':
-        for token in _emit_argv(args):
+        try:
+            tokens = _emit_argv(args)
+        except ValueError as exc:
+            ## Bad/missing CLI input is a SETUP error, not a traceback (exit 1)
+            ## and never a silent PASS with 'None' in the argv.
+            print('dm-vbox: %s' % (exc,), file=sys.stderr)
+            return SETUP_RC
+        for token in tokens:
             print(token)
         return PASS_RC
     if args.cmd == 'capabilities':

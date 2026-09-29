@@ -295,3 +295,36 @@ def test_cli_capabilities_runs():
         [str(BACKEND), 'capabilities'],
         capture_output=True, text=True, check=True)
     assert 'VBoxManage:' in proc.stdout
+
+
+## dm-image-test's SETUP exit code -- a usage error must map here, never a
+## Python traceback (exit 1) and never a silent PASS with a bad argv.
+SETUP_RC = 2
+
+
+def test_cli_keyboard_requires_key_or_text():
+    ## CANARY: --op keyboard with neither flag previously crashed with a
+    ## TypeError (exit 1). It must be a controlled SETUP error, no traceback.
+    proc = subprocess.run(
+        [str(BACKEND), 'emit-argv', '--op', 'keyboard', '--vm', 'kick'],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode == SETUP_RC, (proc.returncode, proc.stderr)
+    assert 'Traceback' not in proc.stderr, proc.stderr
+    assert '--key' in proc.stderr and '--text' in proc.stderr
+
+
+@pytest.mark.parametrize('op,flag', [
+    ('import', '--ova'),
+    ('storageattach', '--medium'),
+    ('createmedium', '--medium'),
+])
+def test_cli_missing_required_flag_is_setup_not_none(op, flag):
+    ## CANARY: a missing required path flag previously emitted the literal
+    ## 'None' into the argv and still exited 0 (PASS) -- feeding VBoxManage a
+    ## path named 'None'. It must fail SETUP with no argv on stdout.
+    proc = subprocess.run(
+        [str(BACKEND), 'emit-argv', '--op', op, '--vm', 'kick'],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode == SETUP_RC, (proc.returncode, proc.stdout)
+    assert 'None' not in proc.stdout
+    assert flag in proc.stderr
