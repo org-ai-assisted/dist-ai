@@ -37,6 +37,7 @@ from PyQt6.QtGui import QHelpEvent
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import (                   # noqa: E402
     MainWindow, _is_font_noise, _read_version, APP_VERSION, MODE_NEUTRAL,
+    _TabEditDialog, SecureTabBar,
 )
 from secure_terminal import settings                 # noqa: E402
 
@@ -332,9 +333,19 @@ win.set_tui(True)
 ok(not win._banner.isHidden(), 'enabling TUI does NOT dismiss the OSC notice')
 win.set_tui(False)
 win._dismiss_advisory()
-QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
-win.rename_tab(0)
-eq(win.tabs.tabText(0), 'build', 'tab rename')
+from PyQt6.QtWidgets import QDialog as _QDlg                  # noqa: E402
+# rename now goes through the combined _TabEditDialog; patch its exec() to set a name and
+# accept (no real modal), like the old QInputDialog.getText patch did.
+_ted_oexec = _TabEditDialog.exec
+try:
+    def _ted_accept_build(self):
+        self._name.setText('build')
+        return _QDlg.DialogCode.Accepted
+    _TabEditDialog.exec = _ted_accept_build
+    win.rename_tab(0)
+    eq(win.tabs.tabText(0), 'build', 'tab rename')
+finally:
+    _TabEditDialog.exec = _ted_oexec
 win.set_tab_color(0, QColor('#d83933'))
 # the tab colour is now the left accent bar painted by SecureTabBar (the old number
 # swatch icon is gone); the accent is pushed to the bar's per-tab model.
@@ -367,6 +378,135 @@ if hasattr(win, '_pick_custom_tab_color'):
     finally:
         _QCD.getColor = _o_getcolor
         win.set_tab_color(0, None)
+
+# _TabEditDialog: the combined rename + tab-colour dialog reached by double-click / context
+# 'Rename...'. Drive every method + button directly (no real modal) so the 100% gate covers it.
+_ted = _TabEditDialog(win, 'name', '#3b82f6', win._TAB_COLOR_PRESETS)   # seeded WITH a colour
+eq(_ted.tab_name(), 'name', '_TabEditDialog seeds the name field')
+ok(_ted.tab_colour() is not None and _ted.tab_colour().name() == '#3b82f6',
+   '_TabEditDialog seeds the current colour')
+_ted_btns = {b.text(): b for b in _ted.findChildren(_QPushButton)}
+_ted_btns['Green'].click()                                  # preset button -> _set(QColor)
+ok(_ted.tab_colour().name() == '#1f8a54', '_TabEditDialog preset sets the pending colour')
+_ted_btns['No colour'].click()                              # clear -> _set(None)
+ok(_ted.tab_colour() is None, '_TabEditDialog "No colour" clears the selection')
+_ted._set(QColor())                                         # invalid folds to None
+ok(_ted.tab_colour() is None, '_TabEditDialog _set folds an invalid colour to None')
+_o_gc2 = _QCD.getColor
+try:
+    _QCD.getColor = staticmethod(lambda *a, **k: QColor('#e5a50a'))    # a real pick
+    _ted_btns['Custom...'].click()
+    ok(_ted.tab_colour().name() == '#e5a50a', '_TabEditDialog Custom... applies a valid pick')
+    _QCD.getColor = staticmethod(lambda *a, **k: QColor())             # Cancel = invalid
+    _ted_btns['Custom...'].click()
+    ok(_ted.tab_colour().name() == '#e5a50a', '_TabEditDialog Custom... Cancel is a no-op')
+finally:
+    _QCD.getColor = _o_gc2
+_ted.deleteLater()
+_ted2 = _TabEditDialog(win, '', None, win._TAB_COLOR_PRESETS)          # seeded WITHOUT a colour
+ok(_ted2.tab_colour() is None, '_TabEditDialog with no current colour starts cleared')
+_ted2.deleteLater()
+
+# rename_tab applies BOTH name and colour on accept, and changes nothing on cancel.
+_ted_oexec2 = _TabEditDialog.exec
+try:
+    def _ted_accept_red(self):
+        self._set(QColor('#d83933'))
+        self._name.setText('reddish')
+        return _QDlg.DialogCode.Accepted
+    _TabEditDialog.exec = _ted_accept_red
+    win.rename_tab(0)
+    eq(win.tabs.tabText(0), 'reddish', 'rename_tab applies the dialog name')
+    ok(win._tab_colors.get(win.tabs.widget(0)) == '#d83933',
+       'rename_tab applies the dialog colour (incl. via the combined dialog)')
+    _TabEditDialog.exec = lambda self: _QDlg.DialogCode.Rejected
+    win.rename_tab(0)
+    eq(win.tabs.tabText(0), 'reddish', 'rename_tab Cancel leaves the tab unchanged')
+finally:
+    _TabEditDialog.exec = _ted_oexec2
+win.set_tab_color(0, None)
+
+# tab-title elide floor: a SHORT label is never squeezed below its natural width, so a crowded
+# bar can no longer middle-elide it ("dev725" -> "1..25"); a LONG label's floor is capped below
+# natural (Qt may shrink it, where _paint_content middle-elides its ends). Test the bar in
+# isolation so it does not perturb win's index-based tests.
+_mbar = SecureTabBar()
+_mbar.addTab('dev725')                                       # short
+_mbar.addTab('x' * 40)                                       # long
+eq(_mbar.minimumTabSizeHint(0).width(), _mbar.tabSizeHint(0).width(),
+   'short tab: min hint == natural (never squeezed, "dev725" always shows in full)')
+ok(_mbar.minimumTabSizeHint(1).width() < _mbar.tabSizeHint(1).width(),
+   'long tab: min hint capped below natural (elides past the cap, keeps trailing digits)')
+_mbar.deleteLater()
+
+# grid scrollback REFLOW on resize: a long line wrapped at a narrow grid must re-wrap to the
+# new width when the window widens (re-seed from _raw), not stay "wrapped in the middle".
+_rf = SecureTerminal(command='/bin/cat', tui=True)
+_rf.resize(400, 300); _rf.show(); APP.processEvents()
+_rf._tui_grid_size = lambda: (20, 10)          # pin a NARROW grid
+_rf._make_screen()                              # rebuild at the narrow grid
+feed_output(_rf, (('A' * 75) + '\r\n').encode())   # real read path -> populates _raw
+_rf._render_tui(); APP.processEvents()
+_rf_narrow = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
+ok(_rf_narrow and max(l.count('A') for l in _rf_narrow) <= 20,
+   'reflow setup: the long line wraps at the narrow (20-col) grid, no row holds all 75')
+_rf._tui_grid_size = lambda: (100, 10)         # WIDEN
+_rf._reflow()                                   # re-seed from _raw at the new width
+APP.processEvents()
+_rf_wide = [l for l in _rf.toPlainText().split('\n') if 'A' in l]
+ok(any(l.count('A') == 75 for l in _rf_wide),
+   'grid scrollback reflows on widen: the long line is rejoined onto one 100-col row')
+_rf.shutdown()
+
+# alt-screen EXCLUSION: a LIVE full-screen program owns its canvas (repaints on SIGWINCH) and
+# is NEVER reflowed from _raw -- _reflow must not rebuild the screen while alt is active.
+_rfa = SecureTerminal(command='/bin/cat', tui=True)
+_rfa.resize(400, 300); _rfa.show(); APP.processEvents()
+feed_output(_rfa, b'\x1b[?1049h')              # enter the alternate screen
+ok(_rfa._alt_screen, 'alt: entered the alternate screen')
+_reseeded = []
+_rfa_oms = _rfa._make_screen
+_rfa._make_screen = lambda: (_reseeded.append(1), _rfa_oms())[1]
+_rfa._reflow()                                  # must NOT re-seed while alt is live
+ok(not _reseeded, 'alt-screen: a live full-screen program is not reflowed from _raw')
+_rfa._make_screen = _rfa_oms
+_rfa.shutdown()
+
+# resizeEvent arms the debounced reflow when a grid tab with RETAINED output changes width.
+_re = SecureTerminal(command='/bin/cat', tui=True)
+_re.resize(600, 400); _re.show(); APP.processEvents()
+feed_output(_re, ('C' * 200 + '\r\n').encode())     # retained output -> _raw non-empty
+_re._reflow_timer.stop()
+_re_cols0 = _re._screen.columns
+_re.resize(300, 400); APP.processEvents()           # narrower -> the grid width changes
+ok(_re._screen.columns != _re_cols0 and _re._reflow_timer.isActive(),
+   'a grid resize with retained output arms the debounced reflow (resizeEvent path)')
+_re.shutdown()
+
+# slow-path (non-ASCII) autowrap is flagged too, so _grid_text joins a wrapped FOREIGN line.
+_sw = SecureTerminal(command='/bin/cat', tui=True)
+_sw.resize(400, 300); _sw.show(); APP.processEvents()
+_sw._tui_grid_size = lambda: (10, 8)
+_sw._make_screen()
+_eacute = chr(0x00e9)                                # e-acute; chr() keeps this file ASCII-only
+feed_output(_sw, (_eacute * 30).encode('utf-8'))    # 30 e-acute wrap at 10 cols (slow path)
+_sw._render_tui(); APP.processEvents()
+ok(_eacute * 30 in _sw._grid_text(),
+   'slow-path (non-ASCII) autowrap rows join into one logical line in _grid_text')
+_sw.shutdown()
+
+# _grid_text emits a trailing STILL-WRAPPED last row (the `if buf` tail, no explicit line end).
+_tw = SecureTerminal(command='/bin/cat', tui=True)
+_tw.resize(400, 300); _tw.show(); APP.processEvents()
+_tw._tui_grid_size = lambda: (10, 4)
+_tw._make_screen()
+_tw._screen.cursor.y = _tw._screen.lines - 1
+_tw._screen.cursor.x = 0
+_tw._feed_bytes(b'EEE')                              # content on the last grid row
+_tw._screen.buffer[_tw._screen.lines - 1].wrapped = True    # force a trailing continuation
+ok(_tw._grid_text().rstrip().endswith('EEE'),
+   '_grid_text emits a trailing still-wrapped last row (the buf tail)')
+_tw.shutdown()
 
 # COR-4: a COPY review held with the terminal focused -- Enter/Esc must dispatch the COPY
 # reject, not the paste path (which would clear _pending_paste and strand _pending_copy).

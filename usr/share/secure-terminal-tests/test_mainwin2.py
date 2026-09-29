@@ -196,21 +196,27 @@ try:
     win.show_command_palette()              # -> run_command('echo hi')
     ok(_ntr_cancel == _ntr0 and win.tabs.count() > _ntr_cancel,
        'new_tab_running opens a tab for a provided command, none when cancelled')
-    # stale-term across the modal: the tab's shell can exit DURING QInputDialog.getText,
-    # whose _on_shell_exited->close_tab deleteLater()s the term; a stale
-    # _refresh_tab_label then indexOf()s the freed C++ object and crashes. The
+    # stale-term across the modal: the tab's shell can exit DURING the rename/colour dialog
+    # (_TabEditDialog.exec), whose _on_shell_exited->close_tab deleteLater()s the term; a
+    # stale _refresh_tab_label / indexOf then touches the freed C++ object and crashes. The
     # _tab_is_live re-check must skip it.
+    from PyQt6.QtWidgets import QDialog as _QDlg2                # noqa: E402
     win.new_tab()
     _rn_term = win.current()
     _rn_term.has_foreground_program = lambda: False    # close_tab needs no confirm
     _rn_term.shutdown = lambda: None                    # avoid the ipc-reaper race
     _rn_idx = win.tabs.indexOf(_rn_term)
-    def _rename_kills_tab(*_a, **_k):
+    _ted_oexec = _MM._TabEditDialog.exec
+    def _rename_kills_tab(self):
         win.close_tab(win.tabs.indexOf(_rn_term))       # shell exits mid-modal
         APP.processEvents()                             # let deleteLater free it
-        return ('newname', True)
-    QInputDialog.getText = staticmethod(_rename_kills_tab)
-    win.rename_tab(_rn_idx)                              # must NOT crash (guarded)
+        self._name.setText('newname')
+        return _QDlg2.DialogCode.Accepted
+    _MM._TabEditDialog.exec = _rename_kills_tab
+    try:
+        win.rename_tab(_rn_idx)                          # must NOT crash (guarded)
+    finally:
+        _MM._TabEditDialog.exec = _ted_oexec
     # behavioural check (a dead term does not always hard-crash offscreen): the guard
     # SKIPS the rename, so the removed term never gets a stale _user_titles entry (nor
     # a _refresh_tab_label(term) that would indexOf a freed C++ object in production).

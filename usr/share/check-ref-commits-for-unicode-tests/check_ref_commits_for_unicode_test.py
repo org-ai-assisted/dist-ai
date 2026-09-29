@@ -444,6 +444,76 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
                  'exit-code split (errors and detection both exit 1); set '
                  'CHECK_REF_COMMITS_REPO to a checkout to cover it')
 
+        ## [R] optional base argument: scan the commits the target introduces
+        ## relative to an EXPLICIT base (git log <base>..<target>), not always
+        ## HEAD, so a caller reviewing an arbitrary range (master...feature)
+        ## scans exactly that range's commits. Feature-detect first (an older
+        ## tool silently ignores a second argument), and skip -- not fail --
+        ## against a stale install, matching E:codes-distinct.
+        print('[R] base argument: <base>..<target> selects the scanned commits')
+        with tempfile.TemporaryDirectory() as tmp:
+            ## HEAD (main) carries a HOSTILE commit; feature branches AFTER it and
+            ## adds only a clean commit. So HEAD..feature is clean, but
+            ## oldbase..feature (oldbase predates the hostile commit) is not.
+            repo = new_repo(tmp, 'base')
+            git(repo, ['checkout', '-q', '-b', 'oldbase'])
+            git(repo, ['checkout', '-q', 'main'])
+            hostile = commit(repo, 'hostile %sline\n' % RLO, message='hostile')
+            git(repo, ['checkout', '-q', '-b', 'feature'])
+            ## The clean commit touches a SEPARATE file, so its '--unified=0' hunk
+            ## header cannot inherit the hostile line as funcname context (the
+            ## adjacency [M] documents) -- HEAD..feature must be genuinely clean.
+            with open(os.path.join(repo, 'g.txt'), 'w', encoding='utf-8') as gh:
+                gh.write('clean unrelated line\n')
+            git(repo, ['add', 'g.txt'])
+            git(repo, ['commit', '-q', '-m', 'clean unrelated'])
+            git(repo, ['checkout', '-q', 'main'])
+
+            probe = run_tool(repo, ['feature', 'no-such-base-probe'])
+            supports_base = b'Base ref does not exist' in probe.stderr
+            if not supports_base and not REPO:
+                ## Only a STALE INSTALLED tool may lack the base arg; skip there.
+                skip('R:base-arg',
+                     'installed check-ref-commits-for-unicode predates the '
+                     'optional base argument (a second arg is ignored); set '
+                     'CHECK_REF_COMMITS_REPO to a checkout to cover it')
+            elif not supports_base:
+                ## The checkout under test is the subject: a missing base arg is
+                ## a regression, never a skip.
+                check('R:base-arg-supported', False,
+                      'the checkout under test ignores a second argument; the '
+                      'optional base feature regressed (probe stderr=%r)'
+                      % probe.stderr[:160])
+            else:
+                ## Default base is HEAD: HEAD..feature is the clean commit only,
+                ## so the hostile commit (already in HEAD) is correctly not seen.
+                ## This makes R:base-catches non-vacuous -- it is the base arg,
+                ## not a dirty feature, that surfaces the hostile commit.
+                default_head = run_tool(repo, ['feature'])
+                check('R:default-head-clean', default_head.returncode == 0,
+                      'HEAD..feature should be clean, exit %d stderr=%r'
+                      % (default_head.returncode, default_head.stderr[:160]))
+                ## Explicit older base: oldbase..feature includes the hostile
+                ## commit, so it is caught and named.
+                with_base = run_tool(repo, ['feature', 'oldbase'])
+                check('R:base-catches',
+                      with_base.returncode == 1
+                      and hostile.encode() in with_base.stderr,
+                      'oldbase..feature must flag the hostile commit, exit %d '
+                      'stderr=%r' % (with_base.returncode,
+                                     with_base.stderr[:200]))
+                check('R:base-safe',
+                      not output_violations(with_base.stdout + with_base.stderr),
+                      'leaked: %r' % (with_base.stdout + with_base.stderr)[:96])
+                ## A nonexistent base fails loud with its own message, not a
+                ## silently-ignored argument.
+                bad_base = run_tool(repo, ['feature', 'no-such-base'])
+                check('R:bad-base',
+                      bad_base.returncode == error_code
+                      and b'Base ref does not exist' in bad_base.stderr,
+                      'exit %d stderr=%r' % (bad_base.returncode,
+                                             bad_base.stderr[:160]))
+
     ## [F] fuzz: random commits vs an independent oracle. Each iteration puts a
     ## clean-or-suspicious payload in a random location; the tool must exit 1 iff
     ## something suspicious was injected, and its output must stay ASCII.

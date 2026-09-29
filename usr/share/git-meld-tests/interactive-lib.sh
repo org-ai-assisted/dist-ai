@@ -6,12 +6,18 @@
 ## AI-Assisted
 
 ## Interactive-consent tests for the terminal-safe reviewer git-diff-review.
-## Contract: on FATAL (undecodable / non-UTF-8) content it prompts on /dev/tty
-## ("continue past neutralized content? [y/N]") and must CONTINUE on 'y' (exit
-## 0) and FAIL CLOSED on 'n' (non-zero). Only git-diff-review (which sets
-## git_review_display_fatal_content and neutralizes everything through stcat)
-## prompts; the non-interactive path is covered elsewhere. Needs a pseudo-tty,
-## so it drives the wrapper through git-meld-tests-pty.py.
+## Contract, TWO terminal prompts in order:
+##   1. Before the per-file diffs, "proceed to the per-file diffs? [y/N]" lets
+##      the operator ack the changed-file list first. Declining SKIPS the diffs
+##      and exits 0 (clean), so a chained review still runs its GUI tools.
+##   2. During a diff, on FATAL (undecodable / non-UTF-8) content it prompts
+##      "continue past neutralized content? [y/N]" and must CONTINUE on 'y'
+##      (exit 0) and FAIL CLOSED on 'n' (non-zero).
+## Only git-diff-review sets git_review_outputs_to_terminal (the proceed gate)
+## and git_review_display_fatal_content (the fatal prompt); the non-interactive
+## path is covered elsewhere. Needs a pseudo-tty, so it drives the wrapper
+## through git-meld-tests-pty.py, which takes a comma-separated answer per prompt
+## ('y,n' = proceed, then decline the fatal content).
 ##
 ## Usage: interactive-lib.sh [<dir-with-git-diff-review>]
 
@@ -81,21 +87,26 @@ chmod +x -- "${pager_stub}"
 export GIT_PAGER="${pager_stub}"
 true > "${pager_log}"
 
-pty_code() {
-   ## $1 = answer fed to the prompt; echoes git-diff-review's exit code, or
-   ## 'timeout' when the tool never exited (see git-meld-tests-pty.py).
-   local out
-   out="$( cd -- "${repo}" && "${pyhelper}" "$1" "${gdr}" HEAD~1 HEAD 2>/dev/null )"
-   printf '%s' "${out}" | sed -n 's/^PTY_EXITCODE=//p'
+pty_run() {
+   ## $1 = comma-separated answer sequence (one per prompt); echoes the full
+   ## PTY_* report from git-meld-tests-pty.py.
+   ( cd -- "${repo}" && "${pyhelper}" "$1" "${gdr}" HEAD~1 HEAD 2>/dev/null )
+}
+pty_field() {
+   ## $1 = report, $2 = field name (PTY_EXITCODE / PTY_ANSWERED / PTY_CONTINUED).
+   printf '%s' "$1" | sed -n "s/^$2=//p"
 }
 
-y_code="$( pty_code y )"
+## 1) Proceed 'y', then continue past the fatal content 'y' -> exit 0, the
+## neutralized diff IS rendered.
+y_report="$( pty_run 'y,y' )"
+y_code="$( pty_field "${y_report}" PTY_EXITCODE )"
 if [ "${y_code}" = 0 ]; then
-   pass "interactive: 'y' continues past fatal content (exit 0)"
+   pass "interactive: proceed+'y' continues past fatal content (exit 0)"
 elif [ "${y_code}" = timeout ]; then
-   fail "interactive: 'y' never returned; the tool is stuck on a prompt or a pager"
+   fail "interactive: 'y,y' never returned; the tool is stuck on a prompt or a pager"
 else
-   fail "interactive: 'y' did not continue (exit '${y_code}')"
+   fail "interactive: 'y,y' did not continue (exit '${y_code}')"
 fi
 
 if [ -s "${pager_log}" ]; then
@@ -104,13 +115,37 @@ else
    pass "no pager spawned under a tty"
 fi
 
-n_code="$( pty_code n )"
+## 2) Proceed 'y', then DECLINE the fatal content 'n' -> fail closed (non-zero).
+## The proceed 'y' is required to even reach the fatal prompt.
+n_report="$( pty_run 'y,n' )"
+n_code="$( pty_field "${n_report}" PTY_EXITCODE )"
 if [ "${n_code}" = timeout ]; then
-   fail "interactive: 'n' never returned; the tool is stuck on a prompt or a pager"
+   fail "interactive: 'y,n' never returned; the tool is stuck on a prompt or a pager"
 elif [ -n "${n_code}" ] && [ "${n_code}" != 0 ]; then
-   pass "interactive: 'n' fails closed (exit '${n_code}')"
+   pass "interactive: declining fatal content fails closed (exit '${n_code}')"
 else
-   fail "interactive: 'n' did not fail closed (exit '${n_code}')"
+   fail "interactive: declining fatal content did not fail closed (exit '${n_code}')"
+fi
+
+## 3) DECLINE the proceed prompt itself -> skip the per-file diffs, exit 0
+## (clean, so a chained review still runs its GUI tools). No diff is rendered
+## (PTY_CONTINUED false: no neutralized-diff banner, no '@@' hunk), and the
+## prompt did fire (PTY_ANSWERED >= 1). Fails on the pre-gate tool, which had no
+## such prompt and dumped the diff (or, on fatal content, failed closed) instead.
+skip_report="$( pty_run 'n' )"
+skip_code="$( pty_field "${skip_report}" PTY_EXITCODE )"
+skip_cont="$( pty_field "${skip_report}" PTY_CONTINUED )"
+skip_answered="$( pty_field "${skip_report}" PTY_ANSWERED )"
+if [ "${skip_code}" = timeout ]; then
+   fail "interactive: declining the proceed prompt never returned (stuck)"
+elif [ "${skip_code}" != 0 ]; then
+   fail "interactive: declining the proceed prompt should exit 0 (skip), got '${skip_code}'"
+elif [ "${skip_answered:-0}" = 0 ]; then
+   fail "interactive: the proceed prompt never fired (nothing to decline)"
+elif [ "${skip_cont}" != False ]; then
+   fail "interactive: declining the proceed prompt still rendered a diff (PTY_CONTINUED='${skip_cont}')"
+else
+   pass "interactive: declining the proceed prompt skips the diffs and exits 0"
 fi
 
 printf '%s\n' '' "==== interactive FAILURES: ${fails} ===="

@@ -458,6 +458,81 @@ else
    pass 'TOCTOU: scan and display both see the immutable commit resolved at invocation, not the movable ref name'
 fi
 
+## 14) Full range spec: dm-review-branch accepts base...target (not just a bare ref),
+## resolves BOTH sides to immutable commits, scans the incoming commits with the EXPLICIT
+## base, and hands the display tools the resolved base...target range. Fails on the pre-range
+## code, which rev-parsed "<spec>^{commit}" -- a range does not resolve to one commit -- and
+## always forced HEAD as the base.
+range_dir="${work}/range-bin"
+mkdir -p "${range_dir}"
+range_scan_target="${work}/range-scan-target"
+range_scan_base="${work}/range-scan-base"
+range_meld_arg="${work}/range-meld-arg"
+master_sha="$(git -C "${repo}" rev-parse --verify master'^{commit}')"
+feature_sha="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+cat > "${range_dir}/check-ref-commits-for-unicode" <<STUB
+#!/bin/bash
+printf '%s\n' "\${1}" > "${range_scan_target}"
+printf '%s\n' "\${2:-<none>}" > "${range_scan_base}"
+exit 0
+STUB
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${range_dir}/check-ref-names-for-unicode"
+cat > "${range_dir}/git-meld" <<STUB
+#!/bin/bash
+printf '%s\n' "\${1}" > "${range_meld_arg}"
+exit 0
+STUB
+chmod +x "${range_dir}/check-ref-commits-for-unicode" \
+   "${range_dir}/check-ref-names-for-unicode" "${range_dir}/git-meld"
+rc=0
+( cd -- "${repo}" \
+   && PATH="${range_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch 'master...feature' ) \
+   </dev/null >/dev/null 2>&1 || rc="$?"
+r_target="$(cat "${range_scan_target}" 2>/dev/null || printf '')"
+r_base="$(cat "${range_scan_base}" 2>/dev/null || printf '')"
+r_meld="$(cat "${range_meld_arg}" 2>/dev/null || printf '')"
+if [ "${rc}" != 0 ]; then
+   fail "range spec: a clean 'master...feature' review should exit 0, got ${rc}"
+elif [ "${r_meld}" != "${master_sha}...${feature_sha}" ]; then
+   fail "range spec: git-meld got '${r_meld}', want the resolved '${master_sha}...${feature_sha}'"
+elif [ "${r_target}" != "${feature_sha}" ]; then
+   fail "range spec: scan target '${r_target}', want the feature tip '${feature_sha}'"
+elif [ "${r_base}" != "${master_sha}" ]; then
+   fail "range spec: scan base '${r_base}', want the master tip '${master_sha}' (explicit base not forwarded to the scan)"
+else
+   pass 'range spec: base...target resolves both sides, scans against the base, displays the resolved range'
+fi
+
+## 15) Option forwarding: any argument BEFORE the final ref/range is forwarded verbatim to
+## the review tools (and thus to 'git diff'), so e.g. -C makes a rename show as a diff instead
+## of a delete plus an add. Assert git-meld receives the option and the range, in order. Fails
+## on the pre-forward code, which took exactly one argument and rejected a leading-dash option.
+opt_dir="${work}/opt-bin"
+mkdir -p "${opt_dir}"
+opt_meld_args="${work}/opt-meld-args"
+cat > "${opt_dir}/git-meld" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" > "${opt_meld_args}"
+exit 0
+STUB
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${opt_dir}/check-ref-commits-for-unicode"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${opt_dir}/check-ref-names-for-unicode"
+chmod +x "${opt_dir}/git-meld" \
+   "${opt_dir}/check-ref-commits-for-unicode" "${opt_dir}/check-ref-names-for-unicode"
+rc=0
+( cd -- "${repo}" \
+   && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch -C feature ) \
+   </dev/null >/dev/null 2>&1 || rc="$?"
+feature_sha_opt="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+if [ "${rc}" != 0 ]; then
+   fail "option forwarding: 'dm-review-branch -C feature' should exit 0, got ${rc}"
+elif [ "${opt_args}" != "-C ...${feature_sha_opt}" ]; then
+   fail "option forwarding: git-meld got args '${opt_args}', want '-C ...${feature_sha_opt}'"
+else
+   pass 'option forwarding: a git-diff option before the ref reaches the review tools with the range'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
