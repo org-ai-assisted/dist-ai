@@ -40,7 +40,6 @@ if [ "${#case_scripts[@]}" -eq 0 ]; then
    exit 1
 fi
 
-rc=0
 failed=0
 skipped=0
 for case_script in "${case_scripts[@]}"; do
@@ -51,10 +50,18 @@ for case_script in "${case_scripts[@]}"; do
       skipped=$(( skipped + 1 ))
    elif [ "${case_rc}" -ne 0 ]; then
       failed=$(( failed + 1 ))
-      rc=1
    fi
 done
 
 printf '%s\n' ""
 printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
-exit "${rc}"
+
+## A failure dominates. Otherwise, if EVERY case skipped, nothing actually ran:
+## propagate SKIP (77) so the orchestrator applies its authorized-skip policy,
+## rather than reading a no-op suite as a clean pass (the documented false-green).
+if [ "${failed}" -gt 0 ]; then
+   exit 1
+elif [ "${skipped}" -eq "${#case_scripts[@]}" ]; then
+   exit 77  ## style-ok: allow-skip: propagate an all-skip so the orchestrator applies its skip policy
+fi
+exit 0

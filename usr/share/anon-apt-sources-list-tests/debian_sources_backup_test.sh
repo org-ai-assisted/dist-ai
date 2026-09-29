@@ -25,8 +25,10 @@
 ## BEHAVIORAL: drives the REAL preinst end-to-end with dpkg-query stubbed on PATH
 ## and the /etc + /var/lib bases redirected under a temp root (the preinst's
 ## overridable ${debian_sources_file}/${do_once_dir} bases, unset in production).
-## Asserts filesystem effects, not source text. DPKG_MAINTSCRIPT_* are unset (as
-## apt leaves them) so an unguarded nounset reference would surface.
+## Asserts filesystem effects (existence AND content, so an in-place wipe cannot
+## masquerade as "not seized"), not source text. DPKG_MAINTSCRIPT_* are unset (as
+## apt leaves them) so an unguarded nounset reference would surface. Every run's
+## exit status is asserted 0 -- a maintscript crash is a test failure.
 ##
 ## Targets a checkout via ANON_APT_SOURCES_LIST_REPO; a maintscript has no
 ## installed runtime path, so without it the subject cannot be resolved -> SKIP.
@@ -58,6 +60,19 @@ if [ ! -f "${preinst}" ]; then
    exit 77  ## style-ok: allow-skip: optional target absent (submodule not checked out)
 fi
 
+## SAFETY: this test drives the REAL maintscript, which writes under
+## /etc/apt/sources.list.d and /var/lib/anon-apt-sources-list. It is safe ONLY
+## because the maintscript reads those two paths from overridable bases that we
+## redirect into a temp root. A maintscript WITHOUT that seam (e.g. an older
+## pinned revision) would ignore the overrides and touch the real host paths --
+## refuse to run it. This is a containment precondition, not an assertion, so a
+## source check is the right tool; the behavioral assertions below never trust it.
+if ! grep --quiet 'debian_sources_file:-' "${preinst}" \
+   || ! grep --quiet 'do_once_dir:-' "${preinst}"; then
+   printf '%s\n' "SKIP: preinst lacks the path-override seam; refusing to run it against real host paths" >&2
+   exit 77  ## style-ok: allow-skip: optional target lacks the test seam (would touch host)
+fi
+
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 harness="${tool_dir}/../dist-ai-tests-common/stub-path-harness.bash"
 if [ ! -r "${harness}" ]; then
@@ -70,12 +85,19 @@ source "${harness}"
 test_root="$(mktemp --directory -- "${TMP}/anon-apt-sources-list-test.XXXXXX")"
 
 test_cleanup_handler() {
+   ## '|| true': a cleanup failure (e.g. a restrictive mode left in the temp
+   ## tree) must never override the real pass/fail exit status.
    stub_path_cleanup
-   safe-rm --recursive --force -- "${test_root}"
+   safe-rm --recursive --force -- "${test_root}" || true
 }
 trap test_cleanup_handler EXIT
 
 stub_path_init
+
+## Distinctive on-disk content so a check proves the ORIGINAL bytes survived, not
+## merely that some file exists (an in-place truncate leaves an empty file that -e
+## would still accept).
+sentinel='ORIG-debian-sources-content-9f3a2b'
 
 pass_count=0
 fail_count=0
@@ -88,6 +110,17 @@ check() {
    local label="$1"
    shift
    if test "$@"; then
+      ok "${label}"
+   else
+      notok "${label}"
+   fi
+}
+
+## check_content "<label>" <path> <want>  -- the file exists AND its bytes equal
+## <want>. Guards the in-place-wipe / empty-backup false pass an -e check misses.
+check_content() {
+   local label="$1" path="$2" want="$3"
+   if [ -e "${path}" ] && [ "$(cat -- "${path}")" = "${want}" ]; then
       ok "${label}"
    else
       notok "${label}"
@@ -122,7 +155,7 @@ run_preinst() {
 ## so it must NOT be seized. Pre-fix: '! dpkg-query' was true -> mv ran -> file
 ## moved. Post-fix: no move, no marker (a retry after DB repair can finish).
 setup_case fail_open
-printf '%s\n' 'Types: deb' > "${sources_file}"
+printf '%s\n' "${sentinel}" > "${sources_file}"
 prc=0
 run_preinst 2 || prc=$?
 check "#1 preinst exited 0 on dpkg-query rc 2" "${prc}" -eq 0
@@ -131,7 +164,7 @@ if stub_called_with dpkg-query -S "${sources_file}"; then
 else
    notok "#1 preinst never called 'dpkg-query -S ${sources_file}'"
 fi
-check "#1 unknown-ownership file NOT seized (fail-open)" -e "${sources_file}"
+check_content "#1 unknown-ownership file left intact (not seized/wiped)" "${sources_file}" "${sentinel}"
 check "#1 no backup created for an unknown-ownership file" ! -e "${backup_file}"
 check "#1 marker NOT written (retry stays possible)" ! -e "${marker}"
 
@@ -141,33 +174,39 @@ check "#1 marker NOT written (retry stays possible)" ! -e "${marker}"
 ## file must STILL be migrated. Pre-fix: run 1 wrote the marker unconditionally,
 ## so run 2 early-returned and never moved the now-unowned file.
 setup_case retry
-printf '%s\n' 'Types: deb' > "${sources_file}"
+printf '%s\n' "${sentinel}" > "${sources_file}"
 
 prc=0
 run_preinst 0 || prc=$?
 check "#2 run1 preinst exited 0 (owned)" "${prc}" -eq 0
-check "#2 run1 owned file not moved" -e "${sources_file}"
+check_content "#2 run1 owned file left intact (not moved/wiped)" "${sources_file}" "${sentinel}"
 check "#2 run1 owned: marker NOT written (blocks retry otherwise)" ! -e "${marker}"
 
 prc=0
 run_preinst 1 || prc=$?
 check "#2 retry preinst exited 0 (now unowned)" "${prc}" -eq 0
 check "#2 retry moved the now-unowned file aside (early-skip bug)" ! -e "${sources_file}"
-check "#2 retry created the backup" -e "${backup_file}"
+check_content "#2 retry backup holds the original bytes" "${backup_file}" "${sentinel}"
 check "#2 retry recorded the marker" -e "${marker}"
 
 ## ---- Test #3: happy path + absent file (marker-predicate branches) ---------
 ## Unowned present (rc 1) on a first run -> migrate + mark. Absent file -> nothing
-## to migrate, still mark (so it is not rechecked forever).
+## to migrate, still mark (so it is not rechecked forever). Both assert exit 0.
 setup_case happy_unowned
-printf '%s\n' 'Types: deb' > "${sources_file}"
-run_preinst 1 || true
+printf '%s\n' "${sentinel}" > "${sources_file}"
+prc=0
+run_preinst 1 || prc=$?
+check "#3 happy preinst exited 0" "${prc}" -eq 0
 check "#3 unowned file migrated" ! -e "${sources_file}"
+check_content "#3 backup holds the original bytes" "${backup_file}" "${sentinel}"
 check "#3 marker recorded after migration" -e "${marker}"
 
 setup_case absent
-run_preinst 1 || true
+prc=0
+run_preinst 1 || prc=$?
+check "#3 absent preinst exited 0" "${prc}" -eq 0
 check "#3 absent file: nothing moved" ! -e "${sources_file}"
+check "#3 absent file: no backup created" ! -e "${backup_file}"
 check "#3 absent file: marker recorded" -e "${marker}"
 
 printf '%s\n' ""
