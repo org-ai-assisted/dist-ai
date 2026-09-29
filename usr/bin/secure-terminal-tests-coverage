@@ -33,10 +33,6 @@ export LC_ALL=C
 ## has to remember a per-call -B, and the tree stays clean.
 export PYTHONDONTWRITEBYTECODE=1
 
-## R-170: init TMP once. The chunk/combine work dir below uses "${TMP}/..."; the Linux CI
-## runner does not set TMP (a Windows convention), so under nounset a bare ${TMP} aborts.
-[ -v TMP ] || TMP=/tmp
-
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/secure-terminal-tests" ]; then
@@ -119,71 +115,90 @@ pkg="${repo}/usr/lib/python3/dist-packages/secure_terminal"
 ## the sequential orchestrator entries; the 'combine' entry unions them + asserts the whole gate.
 ## 'all' (standalone/local) is the unsplit path with its own throwaway dir -- behaviour unchanged.
 ## chunk1..chunk7 UNION == the 24-suite set the un-split gate ran (see cov_all_suites below).
-st_cov_tier="${ST_COV_TIER:-all}"
-cov_free=(test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
-          test_cli test_unicode_tag test_modules test_sclip)
-cov_qt1=(test_mainwin test_mainwin2 test_mainwin3)
-cov_qt2=(test_mainwin4 test_mainwin5 test_review)
-cov_qt3=(test_invariants test_widget)
-cov_qt4=(test_widget2 test_alt_reenter)
-cov_qt5=(test_tabbar_polish test_core_fixes test_core_fixes_win)
-cov_qt6=(test_state_dump test_startup_winsize test_clipboard_watch)
-cov_all_suites=("${cov_free[@]}" "${cov_qt1[@]}" "${cov_qt2[@]}" "${cov_qt3[@]}" \
-                "${cov_qt4[@]}" "${cov_qt5[@]}" "${cov_qt6[@]}")
-cov_phase=''
-suites=()
-case "${st_cov_tier}" in
-   all)
-      cov_phase='all'
-      suites=("${cov_all_suites[@]}")
-      ;;
-   chunk1)
-      cov_phase='collect'
-      suites=("${cov_free[@]}")
-      ;;
-   chunk2)
-      cov_phase='collect'
-      suites=("${cov_qt1[@]}")
-      ;;
-   chunk3)
-      cov_phase='collect'
-      suites=("${cov_qt2[@]}")
-      ;;
-   chunk4)
-      cov_phase='collect'
-      suites=("${cov_qt3[@]}")
-      ;;
-   chunk5)
-      cov_phase='collect'
-      suites=("${cov_qt4[@]}")
-      ;;
-   chunk6)
-      cov_phase='collect'
-      suites=("${cov_qt5[@]}")
-      ;;
-   chunk7)
-      cov_phase='collect'
-      suites=("${cov_qt6[@]}")
-      ;;
-   combine)
-      cov_phase='combine'
-      ;;
-   *)
-      printf '%s\n' "secure-terminal-tests-coverage: FATAL: unknown ST_COV_TIER '${st_cov_tier}' (all|chunk1..chunk7|combine)" >&2
-      exit 1
-      ;;
-esac
+## Tier -> suite-set dispatch. A pure function (no I/O, no work dir, no suite run) so a
+## regression test can SOURCE it by sentinel and assert the chunk split partitions the full
+## set with no suite dropped or duplicated. Sets the globals cov_phase + suites[] the rest of
+## the script consumes; an unknown tier is FATAL (exit exits the whole script, as before).
+## BEGIN-EXTRACT st_cov_resolve (the canary test sources this block by sentinel)
+st_cov_resolve() {
+   st_cov_tier="${ST_COV_TIER:-all}"
+   cov_free=(test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
+             test_cli test_unicode_tag test_modules test_sclip)
+   cov_qt1=(test_mainwin test_mainwin2 test_mainwin3)
+   cov_qt2=(test_mainwin4 test_mainwin5 test_review)
+   cov_qt3=(test_invariants test_widget)
+   cov_qt4=(test_widget2 test_alt_reenter)
+   cov_qt5=(test_tabbar_polish test_core_fixes test_core_fixes_win)
+   cov_qt6=(test_state_dump test_startup_winsize test_clipboard_watch)
+   cov_all_suites=("${cov_free[@]}" "${cov_qt1[@]}" "${cov_qt2[@]}" "${cov_qt3[@]}" \
+                   "${cov_qt4[@]}" "${cov_qt5[@]}" "${cov_qt6[@]}")
+   cov_phase=''
+   suites=()
+   case "${st_cov_tier}" in
+      all)
+         cov_phase='all'
+         suites=("${cov_all_suites[@]}")
+         ;;
+      chunk1)
+         cov_phase='collect'
+         suites=("${cov_free[@]}")
+         ;;
+      chunk2)
+         cov_phase='collect'
+         suites=("${cov_qt1[@]}")
+         ;;
+      chunk3)
+         cov_phase='collect'
+         suites=("${cov_qt2[@]}")
+         ;;
+      chunk4)
+         cov_phase='collect'
+         suites=("${cov_qt3[@]}")
+         ;;
+      chunk5)
+         cov_phase='collect'
+         suites=("${cov_qt4[@]}")
+         ;;
+      chunk6)
+         cov_phase='collect'
+         suites=("${cov_qt5[@]}")
+         ;;
+      chunk7)
+         cov_phase='collect'
+         suites=("${cov_qt6[@]}")
+         ;;
+      combine)
+         cov_phase='combine'
+         ;;
+      *)
+         printf '%s\n' "secure-terminal-tests-coverage: FATAL: unknown ST_COV_TIER '${st_cov_tier}' (all|chunk1..chunk7|combine)" >&2
+         exit 1
+         ;;
+   esac
+}
+## END-EXTRACT st_cov_resolve
+st_cov_resolve
 
+## Chunk/combine share ONE coverage-data dir across the sequential orchestrator entries (same CI
+## job filesystem). Per-CI-run UNIQUE (GITHUB_RUN_ID + attempt) so a prior run's data cannot leak
+## and no 'erase' ordering is needed; chunk entries do NOT clean it (the next entry + the combine
+## need the data), and the 'combine' entry cleans it at the end. ST_COV_SHARED_DIR overrides.
+## R-170: TMP is init'd HERE (self-contained) not at file scope, so a test can source this block by
+## sentinel and prove an unset (or empty) TMP no longer aborts -- the exact bug that reddened CI,
+## where the Linux runner leaves TMP unset (a Windows convention). Two guards: unset, then empty.
+## BEGIN-EXTRACT st_cov_shared_work_dir (the canary test sources this block by sentinel)
+st_cov_shared_work_dir() {
+   [ -v TMP ] || TMP=/tmp
+   [ -n "${TMP}" ] || TMP=/tmp
+   printf '%s' "${ST_COV_SHARED_DIR:-${TMP}/st-cov-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}}"
+}
+## END-EXTRACT st_cov_shared_work_dir
 if [ "${cov_phase}" = 'all' ]; then
    work="$(mktemp --directory)"
    cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
    trap cleanup EXIT
 else
-   ## Chunk/combine share ONE coverage-data dir across the sequential orchestrator entries (same CI
-   ## job filesystem). Per-CI-run UNIQUE (GITHUB_RUN_ID + attempt) so a prior run's data cannot leak
-   ## and no 'erase' ordering is needed; chunk entries do NOT clean it (the next entry + the combine
-   ## need the data), and the 'combine' entry cleans it at the end. ST_COV_SHARED_DIR overrides.
-   work="${ST_COV_SHARED_DIR:-${TMP}/st-cov-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}}"
+   work="$(st_cov_shared_work_dir)"
    mkdir --parents -- "${work}"
 fi
 export COVERAGE_FILE="${work}/.coverage"
@@ -250,23 +265,6 @@ assert_every_module_gated() {
 assert_gated_globs_resolve 'Qt-free' "${gated_free}" "${pkg}"
 assert_gated_globs_resolve 'Qt widget' "${gated_qt}" "${pkg}"
 assert_every_module_gated
-
-## Fast no-artifact validation path (ST_COV_DRYRUN): resolve THIS tier's suites, confirm each
-## is present in the checkout, and exit 0 WITHOUT running any suite or coverage. Exercises the
-## real tier dispatch, the TMP/work= init (R-170) and the gated-glob assertions above in
-## seconds -- the cheap wiring a regression test asserts (e.g. that an unset TMP no longer
-## aborts, and that chunkN maps to the expected suite set). The 'combine' phase has no suites
-## of its own; its empty list prints as '<none>'.
-if [ -n "${ST_COV_DRYRUN:-}" ]; then
-   for suite in "${suites[@]}"; do
-      if [ ! -f "${tests_dir}/${suite}.py" ]; then
-         printf '%s\n' "secure-terminal-tests-coverage: FATAL: registered suite missing from checkout: ${suite}.py" >&2
-         exit 1
-      fi
-   done
-   printf '%s\n' "secure-terminal-tests-coverage: DRYRUN tier=${st_cov_tier} phase=${cov_phase} suites=${suites[*]:-<none>}"
-   exit 0
-fi
 
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
 ## (and any forked child's) data in its own file, then merges them. The Qt suites run on the

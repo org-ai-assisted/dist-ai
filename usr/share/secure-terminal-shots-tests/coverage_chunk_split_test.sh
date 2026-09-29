@@ -5,27 +5,23 @@
 
 ## AI-Assisted
 
-## Regression + CANARY for the secure-terminal coverage gate's chunk split. Two guarantees:
+## Regression + CANARY for the secure-terminal coverage gate's chunk split. Two guarantees,
+## both checked by SOURCING the runner's two pure helpers via BEGIN/END-EXTRACT sentinels (reads
+## the current script text -> no drift; no suite/coverage run, no work dir, no env-var gate):
 ##
 ##   1. TMP-unbound: the chunk/combine work dir is "${TMP}/st-cov-...". TMP (a Windows
 ##      convention) is unset on the Linux CI runner, so under `set -o nounset` a bare ${TMP}
-##      aborted every chunk at startup ("line NNN: TMP: unbound variable") -- the exact bug
-##      that turned all 6 secure-terminal coverage entries red on master. A chunk must now
-##      start cleanly with TMP unset.
-##   2. Chunk membership: the 7 collect chunks (chunk1..chunk7) must partition the same suite
-##      set the un-split 'all' tier runs -- no suite dropped (silently shrinking the 100% gate)
-##      or duplicated. The two NEW arms (chunk6 -> cov_qt5, chunk7 -> cov_qt6) are pinned
-##      explicitly.
+##      aborted every chunk at startup ("TMP: unbound variable") -- the exact bug that turned
+##      all 6 secure-terminal coverage entries red on master. st_cov_shared_work_dir must now
+##      tolerate an unset AND an empty TMP, rooting under /tmp either way.
+##   2. Chunk partition: the 7 collect chunks (chunk1..chunk7) must partition the 24-suite set
+##      the unsplit 'all' tier runs -- no suite dropped (silently shrinking the 100% gate) and
+##      none duplicated (silently running a suite twice). The two NEW arms (chunk6 -> cov_qt5,
+##      chunk7 -> cov_qt6) are pinned explicitly.
 ##
-## Drives the REAL runner via its ST_COV_DRYRUN path (resolves the tier's suites, then exits 0
-## WITHOUT running any suite or coverage), so this is fast and needs no Qt/compositor.
+## FAILS on the pre-fix runner: an old/unsplit runner has neither sentinel-extracted helper.
 ##
-## FAILS on the pre-fix runner: with TMP unset the DRYRUN call aborts at the work= line (no
-## TMP init), and an old runner has neither ST_COV_DRYRUN nor the chunk6/chunk7 arms.
-##
-## Subject: usr/bin/secure-terminal-tests-coverage. Needs importable coverage + a secure_terminal
-## checkout (the DRYRUN path runs the runner's real dep/gated-glob preflight); absent -> exit 1
-## (FATAL): a required subject/dep is an environment bug (R-220), never a silent skip.
+## A pure function-extraction test (no coverage/PyQt6/checkout dependency), so it runs anywhere.
 
 set -o errexit
 set -o nounset
@@ -34,8 +30,6 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
-
-## style-ok: allow-python-interpreter -- python3 -c dep probe
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -53,10 +47,10 @@ if [ -z "${runner}" ]; then
    printf '%s\n' 'FATAL: secure-terminal-tests-coverage not found (set SECURE_TERMINAL_TESTS_COVERAGE)' >&2
    exit 1
 fi
-if ! python3 -c 'import coverage' 2>/dev/null; then
-   printf '%s\n' 'FATAL: python3 coverage not importable' >&2
-   exit 1
-fi
+
+work="$(mktemp --directory)"
+cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
+trap cleanup EXIT
 
 pass=0
 fail=0
@@ -70,67 +64,85 @@ check() {  ## $1=got $2=want $3=label
    fi
 }
 
-## Resolve a tier's suite list via the runner's DRYRUN path. Echoes the space-separated list
-## (array order preserved). Returns the runner's rc so a caller can assert startup success.
-dryrun_suites() {  ## $1=tier -> stdout: suite list; rc: runner rc
-   local out rc=0
-   out="$(ST_COV_DRYRUN=1 ST_COV_TIER="$1" "${runner}" 2>/dev/null)" || rc="$?"
-   ## The DRYRUN line ends with "suites=<list>"; strip everything up to it.
-   printf '%s' "${out##*suites=}"
+## Extract a helper by sentinel. Absent -> an old runner (pre-split / pre-refactor): FAIL, so
+## this is a genuine regression test, not a vacuous pass.
+extract_fn() {  ## $1=function name -> writes ${work}/$1.sh; rc 1 if the sentinel/function is absent
+   local name="$1" out="${work}/$1.sh"
+   sed -n "/## BEGIN-EXTRACT ${name}/,/## END-EXTRACT ${name}/p" -- "${runner}" > "${out}"
+   grep --quiet -- "${name}()" "${out}"
+}
+for fn in st_cov_resolve st_cov_shared_work_dir; do
+   if ! extract_fn "${fn}"; then
+      printf '%s\n' "FAIL: ${fn} not found in the runner -- old/unsplit runner or the fix is absent" \
+         '' '0 pass, 1 fail, 0 skip'
+      exit 1
+   fi
+done
+resolve_fn="${work}/st_cov_resolve.sh"
+workdir_fn="${work}/st_cov_shared_work_dir.sh"
+# shellcheck disable=SC1090  # a runtime-extracted temp file has no static path to follow
+source "${resolve_fn}"
+# shellcheck disable=SC1090  # a runtime-extracted temp file has no static path to follow
+source "${workdir_fn}"
+
+## Resolve a tier's suite list. A subshell isolates st_cov_resolve's global writes AND its
+## FATAL `exit` (an unknown tier must not kill this test). ST_COV_TIER is scoped to the subshell
+## on purpose (SC2030/SC2031 note the deliberate isolation).
+tier_suites() {  ## $1=tier -> stdout: space-separated suite list
+   # shellcheck disable=SC2030,SC2031  # ST_COV_TIER is deliberately scoped to this subshell
+   ( ST_COV_TIER="$1"; st_cov_resolve; printf '%s' "${suites[*]:-}" )
+}
+
+## Exit code of st_cov_resolve for a tier (subshell contains its FATAL exit).
+tier_rc() {  ## $1=tier -> rc of st_cov_resolve
+   local rc=0
+   # shellcheck disable=SC2030,SC2031,SC2034  # ST_COV_TIER is read by the sourced st_cov_resolve
+   ( ST_COV_TIER="$1"; st_cov_resolve ) >/dev/null 2>&1 || rc="$?"
    return "${rc}"
 }
 
-## Order-independent word-set normaliser (sorted, space-joined) for the union invariant.
-sort_words() {  ## $1=space-separated words -> stdout: sorted, deduped, space-joined
-   # shellcheck disable=SC2086  # deliberate word-split of the suite list (names have no glob/space)
-   printf '%s\n' ${1} | sort --unique | paste --serial --delimiters=' ' -
-}
+## ---- 1. TMP regression: unset OR empty TMP must root under /tmp, never abort or hit '/' -----
+## The expected paths hardcode /tmp because that is exactly the fallback under test.
+## style-ok: no-tmp-hardcode -- asserting the /tmp fallback literally is the point of this test.
+tmp_unset="$( unset TMP ST_COV_SHARED_DIR GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
+   st_cov_shared_work_dir )"
+check "${tmp_unset}" '/tmp/st-cov-local-0' 'an unset TMP falls back to /tmp (no nounset abort)'
+tmp_empty="$(
+   # shellcheck disable=SC2034  # TMP is consumed by the sourced st_cov_shared_work_dir
+   TMP=''
+   unset ST_COV_SHARED_DIR GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
+   st_cov_shared_work_dir )"
+check "${tmp_empty}" '/tmp/st-cov-local-0' 'an empty TMP falls back to /tmp (not the filesystem root)'
 
-## ---- preflight: the 'all' DRYRUN must succeed, or the environment (coverage / ST checkout)
-## is broken and every membership check below would be meaningless. FATAL, not a skip. --------
-all_rc=0
-all_suites="$(dryrun_suites all)" || all_rc="$?"
-if [ "${all_rc}" != '0' ]; then
-   printf '%s\n' "FATAL: coverage runner DRYRUN failed for tier 'all' (rc ${all_rc}); a secure_terminal checkout + python3-coverage are required" >&2
-   exit 1
-fi
-
-## ---- 1. TMP-unbound canary: a chunk must start cleanly with TMP unset ---------------------
-## env -u TMP -u ST_COV_SHARED_DIR forces the work= branch that expands ${TMP}. On the pre-fix
-## runner this aborts (rc != 0) at the work= line; with the fix (`[ -v TMP ] || TMP=/tmp`) the
-## DRYRUN reaches its clean exit 0.
-tmp_rc=0
-env -u TMP -u ST_COV_SHARED_DIR ST_COV_DRYRUN=1 ST_COV_TIER=chunk1 "${runner}" \
-   >/dev/null 2>&1 || tmp_rc="$?"
-check "${tmp_rc}" 0 'a chunk starts cleanly with TMP unset (no nounset abort at the work= line)'
-
-## ---- 2a. the two NEW arms map to the expected suite sets ----------------------------------
-check "$(dryrun_suites chunk6)" 'test_tabbar_polish test_core_fixes test_core_fixes_win' \
+## ---- 2a. the two NEW arms map to the expected suite sets ------------------------------------
+check "$(tier_suites chunk6)" 'test_tabbar_polish test_core_fixes test_core_fixes_win' \
    'chunk6 -> cov_qt5 (tabbar_polish, core_fixes, core_fixes_win)'
-check "$(dryrun_suites chunk7)" 'test_state_dump test_startup_winsize test_clipboard_watch' \
+check "$(tier_suites chunk7)" 'test_state_dump test_startup_winsize test_clipboard_watch' \
    'chunk7 -> cov_qt6 (state_dump, startup_winsize, clipboard_watch)'
 
-## ---- 2b. union invariant: chunk1..chunk7 partition == the 'all' tier's suite set ----------
+## ---- 2b. chunk1..chunk7 PARTITION the full set: no drop, no duplicate -----------------------
 union=''
 for tier in chunk1 chunk2 chunk3 chunk4 chunk5 chunk6 chunk7; do
-   union="${union} $(dryrun_suites "${tier}")"
+   union="${union} $(tier_suites "${tier}")"
 done
-union_sorted="$(sort_words "${union}")"
-all_sorted="$(sort_words "${all_suites}")"
-check "${union_sorted}" "${all_sorted}" \
-   'chunk1..chunk7 UNION == the unsplit "all" suite set (no suite dropped or duplicated)'
-## The un-split gate ran 24 suites; pin the count so a future edit that drops one is caught even
-## if it happens to still equal a (wrongly) shrunk 'all'.
-read -r -a all_words <<< "${all_sorted}"
-check "${#all_words[@]}" 24 'the coverage gate spans exactly 24 suites'
+read -r -a union_words <<< "${union}"
+## Raw (NON-deduped) slot count catches a DUPLICATE (25) or a DROP (23) that a dedup would hide.
+check "${#union_words[@]}" 24 'chunk1..chunk7 hold exactly 24 suite slots (no drop, no duplicate)'
+## Explicit duplicate check: a suite in two chunks would run twice with no gate failure.
+dups="$(printf '%s\n' "${union_words[@]}" | sort | uniq --repeated | paste --serial --delimiters=',' -)"
+check "${dups}" '' 'no suite appears in more than one chunk'
+## Set-equality catches a SUBSTITUTION that keeps the count (a wrong suite swapped in).
+union_set="$(printf '%s\n' "${union_words[@]}" | sort --unique | paste --serial --delimiters=' ' -)"
+all_set="$(tier_suites all | tr ' ' '\n' | sort --unique | paste --serial --delimiters=' ' -)"
+check "${union_set}" "${all_set}" 'chunk1..chunk7 UNION == the unsplit "all" suite set'
 
-## ---- 2c. an unknown tier is still FATAL (guards the case default + the range message) ------
+## ---- 2c. an unknown tier is still FATAL (guards the case default + the range message) -------
 bad_rc=0
-ST_COV_DRYRUN=1 ST_COV_TIER=chunk8 "${runner}" >/dev/null 2>&1 || bad_rc="$?"
+tier_rc chunk8 || bad_rc="$?"
 check "${bad_rc}" 1 'an unknown ST_COV_TIER (chunk8) is FATAL (exit 1)'
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi
-printf '%s\n' 'OK: coverage chunk split tolerates unset TMP and partitions the full suite set'
+printf '%s\n' 'OK: coverage work dir tolerates unset/empty TMP and chunk1..chunk7 partition the suite set'
