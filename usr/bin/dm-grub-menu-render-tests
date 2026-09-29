@@ -1,0 +1,123 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Interactive EFI/BIOS render test for the derivative-maker ISO GRUB menu.
+##
+## dm-iso-grub-menu-tests statically asserts the menu TEMPLATE carries each entry.
+## This suite proves the platform-gated entries actually RENDER on real firmware:
+## it boots a minimal grub-mkrescue image of the REAL grub-config under OVMF (efi)
+## and SeaBIOS (bios), enters the "Utilities..." submenu over serial, and checks
+## the "UEFI Firmware Settings" (fwsetup) entry -- which is gated on
+## `[ "x${grub_platform}" = "xefi" ]` and so must render on EFI and NOT on BIOS.
+##
+## This catches the exact bug the dropped-x typo caused (RHS "efi" instead of
+## "xefi" made the test always false, so the EFI firmware-setup entry never
+## rendered) -- a class the boot-test harness cannot see, because it autoboots
+## past the menu and never enters a submenu.
+##
+## Heavy e2e: needs qemu + OVMF + grub-mkrescue. Absent (e.g. the core dist-ai
+## CI job) -> SKIP 77, the dist-ai contract for an unavailable e2e runtime.
+## Checkout: DERIVATIVE_MAKER_DIR, else ~/derivative-maker (also SKIP if absent).
+
+set -o errexit
+set -o nounset
+set -o errtrace
+set -o pipefail
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
+
+[ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
+
+grub_config_dir="${DERIVATIVE_MAKER_DIR}/iso-build-data/grub-config"
+menu_file="${grub_config_dir}/grub.cfg"
+
+script_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+share_dir="${script_dir}/../share/dm-grub-menu-render-tests"
+dm_qemu="${script_dir}/../share/dm-image-boot-tests/dm-qemu"
+builder="${share_dir}/build-grub-test-image"
+driver="${share_dir}/grub-menu-nav"
+
+if [ ! -r "${menu_file}" ]; then
+   printf '%s\n' "SKIP: missing ISO GRUB menu template: ${menu_file}" >&2
+   printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere" >&2
+   ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
+   exit 77
+fi
+
+## Heavy-runtime gate. Any missing piece -> SKIP (this is an e2e suite; the core
+## dist-ai job ships none of qemu/OVMF/grub-mkrescue).
+## OVMF: dm-qemu's --firmware efi path needs BOTH the code flash and a vars
+## template to copy per boot, so gate on both.
+ovmf_code='/usr/share/OVMF/OVMF_CODE_4M.fd'
+ovmf_vars='/usr/share/OVMF/OVMF_VARS_4M.fd'
+missing=''
+has grub-mkrescue      || missing="${missing} grub-mkrescue"
+has xorriso            || missing="${missing} xorriso"
+has mformat            || missing="${missing} mtools(mformat)"
+has qemu-system-x86_64 || missing="${missing} qemu-system-x86_64"
+has python3            || missing="${missing} python3"
+"${driver}" --check-deps 2>/dev/null || missing="${missing} python3-pexpect"
+[ -r "${ovmf_code}" ]           || missing="${missing} ovmf(code)"
+[ -r "${ovmf_vars}" ]           || missing="${missing} ovmf(vars)"
+[ -d /usr/lib/grub/x86_64-efi ] || missing="${missing} grub-efi-amd64-bin"
+[ -d /usr/lib/grub/i386-pc ]    || missing="${missing} grub-pc-bin"
+if [ -n "${missing}" ]; then
+   printf '%s\n' "SKIP: missing e2e runtime:${missing}" >&2
+   ## style-ok: allow-skip: qemu/OVMF/grub-mkrescue are e2e-only; absent in the core dist-ai CI job
+   exit 77
+fi
+
+workdir="$(mktemp --directory)"
+cleanup() {
+   safe-rm --recursive --force -- "${workdir}"
+}
+trap cleanup EXIT
+
+iso="${workdir}/grub-menu-test.iso"
+"${builder}" --grub-config-dir "${grub_config_dir}" --output "${iso}" --work "${workdir}/build"
+
+failures=0
+checks=0
+
+## title under test + how to reach and bound the "Utilities..." submenu.
+entry_title='UEFI Firmware Settings'
+submenu_hotkey='u'
+submenu_marker='Verify integrity of the boot medium'
+
+run_leg() {
+   local firmware="$1" expect="$2"
+   local serial_log="${workdir}/${firmware}.serial.log"
+   checks=$(( checks + 1 ))
+   if "${driver}" \
+         --dm-qemu "${dm_qemu}" \
+         --firmware "${firmware}" \
+         --iso "${iso}" \
+         --serial-log "${serial_log}" \
+         --submenu-hotkey "${submenu_hotkey}" \
+         --submenu-marker "${submenu_marker}" \
+         --entry-title "${entry_title}" \
+         --expect "${expect}"; then
+      printf 'PASS  %s: "%s" %s\n' "${firmware}" "${entry_title}" "${expect}"
+   else
+      failures=$(( failures + 1 ))
+      printf 'FAIL  %s: "%s" expected %s\n' "${firmware}" "${entry_title}" "${expect}"
+      printf '%s\n' "----- ${firmware} serial tail -----" >&2
+      tail -n 40 -- "${serial_log}" 2>/dev/null >&2 || true
+      printf '%s\n' "-----------------------------------" >&2
+   fi
+}
+
+## fwsetup is gated on EFI: MUST render on OVMF, MUST NOT render on SeaBIOS.
+run_leg efi present
+run_leg bios absent
+
+printf '%s\n' "" "${checks} checks, ${failures} failed"
+[ "${failures}" -eq 0 ]

@@ -1,0 +1,114 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Build a MINIMAL grub-mkrescue hybrid ISO (BIOS El Torito + EFI) that renders
+## the REAL derivative-maker ISO GRUB menu (iso-build-data/grub-config) over the
+## serial console and HOLDS it, so a headless driver can navigate the menu and
+## assert which entries render on a given platform.
+##
+## Why grub-mkrescue and not the shipped ISO: menu RENDERING depends only on the
+## grub config + grub modules + theme, never on the rootfs. A grub-only rescue
+## image renders the exact same menu in seconds, under the SAME real GRUB script
+## semantics and the SAME real firmware (${grub_platform} is set by the platform:
+## OVMF -> efi, SeaBIOS -> pc), so the platform-gated menuentries resolve exactly
+## as they do on the shipped ISO -- without a ~1h rootfs build.
+##
+## The real grub.cfg is sourced VERBATIM (renamed realgrub.cfg); the only added
+## file is a thin wrapper that redirects I/O to serial and holds the menu. The
+## menu-entry gating under test runs entirely from the unmodified real config.
+
+set -o errexit
+set -o nounset
+set -o errtrace
+set -o pipefail
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+grub_config_dir=''
+output=''
+work=''
+
+while [ "$#" -ge 1 ]; do
+   case "$1" in
+      --grub-config-dir)
+         grub_config_dir="$2"
+         shift 2
+         ;;
+      --output)
+         output="$2"
+         shift 2
+         ;;
+      --work)
+         work="$2"
+         shift 2
+         ;;
+      *)
+         printf 'build-grub-test-image: unexpected argument: %s\n' "$1" >&2
+         exit 2
+         ;;
+   esac
+done
+
+for req in grub_config_dir output work; do
+   [ -n "${!req}" ] || { printf 'build-grub-test-image: --%s is required\n' "${req//_/-}" >&2; exit 2; }
+done
+
+menu_src="${grub_config_dir}/grub.cfg"
+config_src="${grub_config_dir}/config.cfg"
+theme_src="${grub_config_dir}/theme.cfg"
+[ -r "${menu_src}" ]   || { printf 'build-grub-test-image: missing %s\n' "${menu_src}" >&2; exit 2; }
+[ -r "${config_src}" ] || { printf 'build-grub-test-image: missing %s\n' "${config_src}" >&2; exit 2; }
+[ -r "${theme_src}" ]  || { printf 'build-grub-test-image: missing %s\n' "${theme_src}" >&2; exit 2; }
+
+iso_root="${work}/iso-root"
+grub_dir="${iso_root}/boot/grub"
+mkdir --parents -- "${grub_dir}"
+
+## Copy the real menu (as realgrub.cfg) + config + theme + theme assets verbatim.
+cp -- "${menu_src}"   "${grub_dir}/realgrub.cfg"
+cp -- "${config_src}" "${grub_dir}/config.cfg"
+cp -- "${theme_src}"  "${grub_dir}/theme.cfg"
+if [ -d "${grub_config_dir}/live-theme" ]; then
+   cp --recursive -- "${grub_config_dir}/live-theme" "${grub_dir}/live-theme"
+fi
+shopt -s nullglob
+for asset in "${grub_config_dir}"/splash.*; do
+   cp -- "${asset}" "${grub_dir}/"
+done
+shopt -u nullglob
+
+## Substitute the build-time placeholders to valid values so GRUB parses the
+## copies (same substitution the real build does via dm-raw-to-iso). The menu is
+## never booted here, so @APPEND_LIVE@ -> empty is inert; @TIMEOUT@ is overridden
+## by the wrapper regardless, but a valid number keeps config.cfg well-formed.
+sed -i -e 's/@APPEND_LIVE@//g' -e 's/@TIMEOUT@/300/g' -- "${grub_dir}/realgrub.cfg"
+sed -i -e 's/@TIMEOUT@/300/g' -- "${grub_dir}/config.cfg"
+
+## Thin test wrapper = the ISO's /boot/grub/grub.cfg. It ONLY redirects console
+## I/O to serial and holds the menu; the menu itself is the real config sourced
+## below. config.cfg (sourced via realgrub.cfg) re-selects gfxterm, so serial +
+## a non-zero timeout are re-forced AFTER the source, where they win for the
+## menu that renders when this script returns.
+cat > "${grub_dir}/grub.cfg" <<'EOF'
+## AI-Assisted test wrapper -- see build-grub-test-image. Not a shipped file.
+serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+terminal_input serial console
+terminal_output serial console
+source /boot/grub/realgrub.cfg
+terminal_output serial console
+set timeout=300
+EOF
+
+## grub-mkrescue builds a hybrid ISO for every grub platform installed on the
+## host (i386-pc + x86_64-efi), so ONE artifact boots under both SeaBIOS (pc) and
+## OVMF (efi). It bundles the full platform module set, so the config's runtime
+## insmod calls (serial, gfxterm, all_video, png, play, regexp, test) resolve.
+grub-mkrescue --output "${output}" "${iso_root}" >/dev/null 2>&1 \
+   || { printf 'build-grub-test-image: grub-mkrescue failed\n' >&2; exit 2; }
+
+printf 'build-grub-test-image: wrote %s\n' "${output}" >&2
