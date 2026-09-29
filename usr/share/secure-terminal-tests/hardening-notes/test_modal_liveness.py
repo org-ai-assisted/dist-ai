@@ -113,6 +113,22 @@ KNOWN_SAFE = {
     ("_pick_custom", "QColorDialog.getColor"):
         "sets the dialog-local pending tab colour; _TabEditDialog captures no term "
         "(rename_tab re-resolves _tab_is_live after the dialog before applying)",
+    ("_copy_capture_path", "QMessageBox.warning"):
+        "OSError report on the write path; returns immediately, no term touched after",
+    ("_copy_capture_path", "dlg.exec"):
+        "the copy dialog is the LAST statement (term used only before it); its Copy button "
+        "callback carries the local ASCII path string, no term",
+    ("_save_capture", "QMessageBox.warning"):
+        "terminal error report at method end; term was re-resolved live (_tab_is_live) before "
+        "the write, and nothing is touched after the warning",
+    ("_terminate_verbose_report", "box.exec"):
+        "term (a param) is read only BEFORE box.exec (the last statement); nothing after",
+    ("run_command", "box.exec"):
+        "the /terminate-debug branch reads term.terminate_debug() BEFORE box.exec (branch end); "
+        "no term is reused after the modal",
+    ("show_global_settings", "QMessageBox.warning"):
+        "apply-failed report at method end; _apply_global iterates the LIVE tabs, no single "
+        "captured term is reused after the warning",
 }
 
 
