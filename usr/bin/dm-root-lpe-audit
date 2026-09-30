@@ -371,19 +371,23 @@ LPE_WAIVER_RE = re.compile(
     r"\s*--\s*(?P<why>\S.*)")
 
 
-def lpe_waivers(source_lines, comment_lines, call_spans, finding_line):
+def lpe_waivers(comment_text_by_line, call_spans, finding_line):
     """Map rule -> reason for waivers covering the command at finding_line.
 
     A waiver is honored on the finding's own line, the owning command's first
     line, or the comment line directly above that command. The command and its
-    line span come from the shfmt AST (CALL_SPANS: (start, end) line pairs) and
-    the candidate must be a real comment (COMMENT_LINES) -- never a textual
-    '\\'-continuation scan. So a trailing backslash in a comment, or an
-    even/literal backslash, cannot mis-associate a waiver with an unrelated sink
-    below it. A rule of 'all' waives every rule for that command.
+    line span come from the shfmt AST (CALL_SPANS: (start, end) line pairs), and
+    the waiver is matched against the real COMMENT TEXT for that line
+    (COMMENT_TEXT_BY_LINE: line -> reconstructed '#...' comment), NEVER the raw
+    source line -- so a 'style-ok: lpe-...' sitting in a QUOTED STRING (even on a
+    line that also carries an unrelated real trailing comment) is data, not a
+    waiver. Statement association is AST-truthful, never a textual
+    '\\'-continuation scan, so a backslash in a comment or an even/literal
+    backslash cannot mis-attribute a waiver to an unrelated sink below it. A
+    rule of 'all' waives every rule for that command.
     """
     waivers: dict[str, str] = {}
-    if finding_line < 1 or finding_line > len(source_lines):
+    if finding_line < 1:
         return waivers
     ## Owning command: the one whose line span contains the finding, with the
     ## EARLIEST start -- so 'cmd ... \\<nl> arg || rc=1' attributes arg to cmd,
@@ -392,9 +396,10 @@ def lpe_waivers(source_lines, comment_lines, call_spans, finding_line):
                   if start <= finding_line <= end]
     stmt_start = min(containing) if containing else finding_line
     for cand in (finding_line, stmt_start, stmt_start - 1):
-        if cand not in comment_lines:
+        text = comment_text_by_line.get(cand)
+        if text is None:
             continue
-        match = LPE_WAIVER_RE.search(source_lines[cand - 1])
+        match = LPE_WAIVER_RE.search(text)
         if match is None:
             continue
         reason = match.group("why").strip()
@@ -443,10 +448,12 @@ def audit(dm_root):
                 continue
             coverage["sinks_examined"] += sum(1 for _ in bash_ast.call_exprs(tree))
             raw_findings = lpe_sinks.iter_findings(tree, source)
-            ## Waiver association is AST-truthful: real comment lines and command
-            ## line spans from shfmt, never a textual continuation scan.
-            comment_lines = {c.get("Hash", {}).get("Line")
-                             for c in bash_ast.comments(tree)}
+            ## Waiver association is AST-truthful: the waiver is matched against
+            ## the real comment TEXT (shfmt), and the statement via command line
+            ## spans -- never the raw source line, never a continuation scan.
+            comment_text_by_line = {
+                c.get("Hash", {}).get("Line"): "#" + (c.get("Text") or "")
+                for c in bash_ast.comments(tree)}
             call_spans = [((ce.get("Pos") or {}).get("Line"),
                            (ce.get("End") or {}).get("Line"))
                           for ce in bash_ast.call_exprs(tree)]
@@ -456,15 +463,16 @@ def audit(dm_root):
             coverage["python_advisory"] += 1
             source = read_text(abs_path)
             raw_findings = python_advisory(abs_path, rel_path)
-            ## Python has no shfmt AST here; a comment line is a '#'-leading line
-            ## and each advisory finding stands on its own line (no call spans).
-            comment_lines = {idx for idx, line
-                             in enumerate(source.splitlines(), start=1)
-                             if line.lstrip().startswith("#")}
+            ## Python has no shfmt AST here; a comment is a '#'-leading line (a
+            ## '#' inside a string never starts the line), and each advisory
+            ## finding stands on its own line (no call spans).
+            comment_text_by_line = {
+                idx: line.lstrip()
+                for idx, line in enumerate(source.splitlines(), start=1)
+                if line.lstrip().startswith("#")}
             call_spans = []
         else:
             continue
-        source_lines = source.splitlines()
         for finding in raw_findings:
             entry = {
                 "component": component,
@@ -483,7 +491,7 @@ def audit(dm_root):
             ## A per-line '## style-ok: lpe-<rule> -- <why>' waiver routes a
             ## reviewed by-design finding to 'suppressed' (still visible) rather
             ## than dropping it -- so a rescan no longer re-flags a settled line.
-            waived = lpe_waivers(source_lines, comment_lines, call_spans,
+            waived = lpe_waivers(comment_text_by_line, call_spans,
                                  finding["line"])
             reason = waived.get(finding["rule"]) or waived.get("all")
             if reason is not None:

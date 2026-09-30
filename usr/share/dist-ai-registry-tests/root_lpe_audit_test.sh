@@ -262,6 +262,8 @@ chown --recursive "${tu}:${tu}" \
 ## style-ok: lpe-symlink-follow -- decoy: must NOT reach the cp below (a separate statement)
 echo "harmless" # a comment that ends with a backslash \
 cp --dereference /etc/skel/.bash_logout "${home}/.bash_logout"
+echo "reminder: #style-ok: lpe-symlink-follow -- smuggled via a quoted string" # a real but unrelated trailing comment
+cp --dereference /etc/skel/.bash_history "${home}/.bash_history"
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------

@@ -135,6 +135,14 @@ def main(argv):
     checks.append((
         "that sink is NOT wrongly suppressed",
         not has(suppressed, "vuln-waived", "symlink-follow", ".bash_logout")))
+    ## A 'style-ok' sitting in a QUOTED STRING (on a line whose real comment is
+    ## unrelated) is data, not a waiver -- the sink below must stay flagged.
+    checks.append((
+        "quoted-string '#style-ok' does not waive the sink below",
+        has(findings, "vuln-waived", "symlink-follow", ".bash_history")))
+    checks.append((
+        "quoted-string smuggle sink is NOT suppressed",
+        not has(suppressed, "vuln-waived", "symlink-follow", ".bash_history")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.
