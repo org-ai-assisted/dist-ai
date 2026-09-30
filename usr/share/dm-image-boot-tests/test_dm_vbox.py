@@ -62,15 +62,20 @@ GC = _load_guestctl()
 
 
 def test_guestctl_text_scancodes():
-    ## make+break per char; break = make|0x80. Uppercase wraps in Shift make/break.
+    ## make+break per char; break = make|0x80. Uppercase + shifted symbols wrap in
+    ## Shift make/break; unshifted symbols do not.
     assert GC.text_scancodes('a') == [0x1e, 0x9e]
     assert GC.text_scancodes('B') == [0x2a, 0x30, 0xb0, 0xaa]
+    assert GC.text_scancodes(';') == [0x27, 0xa7]
+    assert GC.text_scancodes('$') == [0x2a, 0x05, 0x85, 0xaa]
+    assert GC.text_scancodes('>') == [0x2a, 0x34, 0xb4, 0xaa]
     assert GC.text_scancodes('') == []
 
 
 def test_guestctl_text_scancodes_rejects_unmapped():
+    ## a non-printable / non-US-keyboard char has no scancode.
     with pytest.raises(ValueError):
-        GC.text_scancodes('!')
+        GC.text_scancodes('\t')
 
 
 def test_guestctl_parser_validates_operands():
