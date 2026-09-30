@@ -27,6 +27,9 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
   * Benign case: no 'chown' targets a /home path at all (only the root-owned
     /var/cache/tb-binary tree is chowned). Old code chowned the home paths ->
     FAILS.
+  * Pre-existing '.cache' case: a '.cache' that already exists must be
+    ownership-fixed as root with '--no-dereference' (not aborted, not followed).
+    Old code chowned it WITHOUT '--no-dereference' -> FAILS.
 """
 
 import os
@@ -79,10 +82,11 @@ mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 """
 
 
-def _drive(tmp_path, *, planted=None, victim=None):
+def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
     """Drive the real dispvm 'main' with /home and /var/cache/tb-binary
     redirected into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
-    as a symlink to `victim` inside the fake home first.
+    as a symlink to `victim` inside the fake home first; each name in `precreate`
+    is created as a real directory under the fake home first.
 
     Returns (CompletedProcess, home_dir, rec_lines)."""
     home = tmp_path / "home"
@@ -92,8 +96,12 @@ def _drive(tmp_path, *, planted=None, victim=None):
     rec = tmp_path / "rec.log"
     rec.write_text("")
 
+    for rel in precreate:
+        (home / "user" / rel).mkdir(parents=True, exist_ok=True)
     if planted is not None:
-        (home / "user" / planted).symlink_to(victim)
+        link = home / "user" / planted
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(victim)
 
     replace = {
         "/home/${user_name}": "${TB_TEST_HOME}/${user_name}",
@@ -105,10 +113,11 @@ def _drive(tmp_path, *, planted=None, victim=None):
     return proc, home, rec.read_text().splitlines()
 
 
-@pytest.mark.parametrize("planted", [".tb", ".cache"])
+@pytest.mark.parametrize("planted", [".tb", ".cache", ".cache/tb"])
 def test_planted_symlink_is_refused(tmp_path, planted):
-    """A pre-planted symlink at a mount point must abort the run (guard trips);
-    root must never follow it into the victim."""
+    """A pre-planted symlink at ANY of the three mount points (.tb, .cache,
+    .cache/tb) must abort the run (guard trips); root must never follow it into
+    the victim."""
     victim = tmp_path / "victim"
     victim.mkdir()
     proc, _home, rec_lines = _drive(tmp_path, planted=planted, victim=victim)
@@ -139,6 +148,27 @@ def test_benign_run_never_chowns_a_home_path(tmp_path):
                  if line.startswith("CHOWN ") and home_str in line]
     assert not offending, (
         f"root chowned a user-home path (symlink-follow surface): {offending}"
+    )
+
+
+def test_preexisting_cache_is_owned_safely_not_aborted(tmp_path):
+    """A '.cache' that already exists must be ownership-fixed as root with
+    '--no-dereference' (so the unprivileged mkdir of .cache/tb can proceed), not
+    left to abort the run and not chowned in a symlink-following way."""
+    proc, home, rec_lines = _drive(tmp_path, precreate=[".cache"])
+
+    assert proc.returncode == 0, (
+        f"pre-existing .cache aborted the run; rc={proc.returncode}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
+    )
+    cache_path = str(home / "user" / ".cache")
+    cache_chowns = [line for line in rec_lines
+                    if line.startswith("CHOWN ") and line.endswith(cache_path)]
+    assert cache_chowns, (
+        f"pre-existing .cache was not ownership-fixed: {rec_lines}"
+    )
+    assert all("--no-dereference" in line for line in cache_chowns), (
+        f".cache chown did not use --no-dereference: {cache_chowns}"
     )
 
 
