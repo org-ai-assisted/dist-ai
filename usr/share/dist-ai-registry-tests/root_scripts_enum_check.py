@@ -299,6 +299,12 @@ def main(argv):
          one("systemd-unit", "forced.service") is not None
          and "/usr/bin/forced-root"
          in one("systemd-unit", "forced.service")["root_forced_exec"]),
+        ("a bare Exec reset clears only that key's forced-root list",
+         one("systemd-unit", "forced-reset.service") is not None
+         and "/usr/bin/forced-pre"
+         not in one("systemd-unit", "forced-reset.service")["root_forced_exec"]
+         and "/usr/bin/forced-main"
+         in one("systemd-unit", "forced-reset.service")["root_forced_exec"]),
 
         ## leaprun --test executes; --check is auth-only; attached -gusers
         ("leaprun --test executes the action (not a check)",

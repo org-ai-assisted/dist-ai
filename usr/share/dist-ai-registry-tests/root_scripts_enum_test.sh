@@ -259,6 +259,16 @@ ExecStartPre=+/usr/bin/forced-root
 ExecStart=/usr/bin/nonroot-worker
 EOF
 
+## a bare Exec* reset clears ONLY that key's forced-root list: forced-pre is
+## cleared by the empty ExecStartPre=; forced-main on ExecStart survives.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/forced-reset.service' <<'EOF'
+[Service]
+User=nobody
+ExecStartPre=+/usr/bin/forced-pre
+ExecStartPre=
+ExecStart=+/usr/bin/forced-main
+EOF
+
 ## DynamicUser=yes runs under a dynamic non-root UID -> MUST be excluded.
 write 'packages/kicksecure/foo/usr/lib/systemd/system/dynuser.service' <<'EOF'
 [Service]
