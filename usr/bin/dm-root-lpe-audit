@@ -1,0 +1,465 @@
+#!/usr/bin/python3 -Bsu
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Audit the root-privileged script surface of derivative-maker for Local
+Privilege Escalation (root operating on user-controlled paths, and the related
+LPE classes).
+
+This is the exploitability LAYER on top of dm-root-scripts-enum: the enum says
+WHAT runs as root; this says WHERE that root privilege meets a user-controlled
+path and could be turned into an escalation. It reuses the enum (subprocess, its
+stable JSON) and the shfmt AST (dist_ai.bash_ast, via dist_ai.lpe_sinks) -- no
+regex-guessing of shell structure.
+
+Reachability (which tree files run as root), from three sources:
+  1. enum targets -- every program the enum attributes to a root category:
+     a maintainer script or path-surface script directly; a systemd Exec*, a
+     privleap Command=, a sudoers/polkit/udev/pam/modprobe/calamares program,
+     or a privileged-call command, resolved from its INSTALLED path back to the
+     tree file that ships it (the unit and its ExecStart target routinely live
+     in different submodules; genmkfile '#pkg' suffixes are stripped).
+  2. root-guarded scripts -- a script that self-asserts it must run as root
+     (a root_check/require_root helper, or a 'must be run as root' guard). The
+     enum is reference-driven and cannot see a script invoked only by an
+     out-of-tree hook, so this catches the self-gated root helpers (e.g.
+     virusforget). HONEST SCOPE: a high-precision textual signal, NOT a parse
+     of the '[ "$(id -u)" != 0 ]' conditional (that bash-conditional parser is
+     the trap this deliberately avoids) -- so an unnamed inline gate is missed.
+  3. one hop of source/'.'/direct-exec from any reachable script into a sibling
+     script in the same tree.
+
+Exploitability is a REVIEW verdict a human makes per candidate; this tool emits
+candidates with the evidence (rule, tainted operand, why, root_reason) and
+NEVER claims a candidate is exploitable. Coverage counts are always printed so a
+zero-finding run is visibly a real scan, not a silent 'clean'.
+
+Usage:  dm-root-lpe-audit [<derivative-maker-root>]
+Output: JSON on stdout; a ranked human summary on stderr.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dist_ai import bash_ast, lpe_sinks  # noqa: E402
+from dist_ai.dm_tree import (  # noqa: E402
+    component_for,
+    install_name,
+    is_shell,
+    name_has_ext,
+    read_text,
+    submodule_paths,
+    walk_tree,
+)
+
+
+ENUM_TOOL = "dm-root-scripts-enum"
+
+## Filesystem-root dirs a package mirrors; the install path starts at the first.
+FHS_TOPS = ("usr", "etc", "bin", "sbin", "lib", "lib64", "opt", "var", "run", "srv")
+
+## Enum categories whose 'path' IS the root-run script (no target to resolve).
+DIRECT_SCRIPT_CATEGORIES = frozenset((
+    "maintainer-script", "build-chroot", "grub-script", "grub-default-config",
+    "qubes-rpc", "qubes-hook", "update-motd", "policy-rc-d",
+    "initramfs-kernel-hook",
+))
+
+## A script self-asserting it must run as root -- a root entry point the
+## reference-driven enum cannot see. Simple textual signals only (no parse of
+## the conditional): a require-root helper name, or a 'must be run as root'
+## message. The not-root direction ('must NOT be run as root', not_as_root) is
+## explicitly excluded so a refusal guard is not mistaken for a root gate.
+ROOT_REQUIRE_FUNCS = ("root_check", "require_root", "check_root", "ensure_root",
+                      "assert_root", "must_be_root")
+ROOT_REQUIRE_TEXT_RE = re.compile(
+    r"must (?:be run|run) as root|needs? (?:to be )?root|run this as root",
+    re.IGNORECASE)
+NOT_ROOT_RE = re.compile(r"must not|do not run as root|not_as_root|as user",
+                         re.IGNORECASE)
+
+## Blast-radius weight of the root category -- shifts a rule's base severity.
+CATEGORY_WEIGHT = {
+    "maintainer-script": 1, "systemd-unit": 1, "systemd-activation": 1,
+    "privleap-action": 1, "sudoers": 1, "polkit": 1, "udev-rule": 1,
+    "pam-exec": 1, "modprobe-hook": 1, "grub-script": 1,
+    "grub-default-config": 1, "qubes-rpc": 1, "qubes-hook": 1,
+    "update-motd": 1, "policy-rc-d": 1, "initramfs-kernel-hook": 1,
+    "systemd-dropin": 0, "privileged-call": 0, "calamares-job": 0,
+    "root-guarded-script": 0, "sourced": 0,
+    "build-chroot": -1,
+}
+
+SEVERITY_ORDER = ("INFO", "LOW", "MEDIUM", "HIGH")
+RULE_BASE = {
+    "symlink-follow": "HIGH",
+    "untrusted-source-eval": "HIGH",
+    "home-recursive-write": "MEDIUM",
+    "trust-sudo-user": "MEDIUM",
+    "tmp-race": "MEDIUM",
+    "world-writable-perms": "MEDIUM",
+    "path-hijack": "MEDIUM",
+    "root-write-user-path": "LOW",
+    "python-advisory": "INFO",
+}
+
+## ADVISORY (regex, mirrors the enum's nonshell-escalation): a root Python
+## script doing a privileged filesystem op near a user-controlled location.
+PYTHON_SINK_RE = re.compile(
+    r"\b(?:os\.(?:chown|chmod|lchown)|shutil\.(?:chown|copytree|rmtree|copy2?|move)"
+    r"|os\.remove|os\.unlink|pathlib\.Path)\b")
+PYTHON_TAINT_RE = re.compile(r"/home/|/tmp/|/var/tmp/|/dev/shm/|SUDO_USER|home_dir|"
+                             r"home_folder|user_name|target_user")
+
+
+def install_path_for(rel_path, submodule):
+    """The absolute install path a source file maps to under the FHS mirror, or
+    None for a source that does not install into the root filesystem (a build
+    helper, debian/ packaging). '#pkg' rename suffixes are stripped."""
+    remainder = rel_path[len(submodule) + 1:] if submodule else rel_path
+    parts = remainder.split("/")
+    for index, part in enumerate(parts):
+        if part in FHS_TOPS:
+            tail = parts[index:]
+            tail[-1] = install_name(tail[-1])
+            return "/" + "/".join(tail)
+    return None
+
+
+def build_index(tree_files, submodules):
+    """Map every source file's install path (and basename) to its abs path, so a
+    root category's installed program target resolves back to the tree file that
+    ships it -- across submodule boundaries."""
+    by_path = {}
+    by_base = {}
+    for abs_path, rel_path in tree_files:
+        _component, sub = component_for(rel_path, submodules)
+        install = install_path_for(rel_path, sub)
+        if install is not None:
+            by_path.setdefault(install, abs_path)
+            by_base.setdefault(os.path.basename(install), set()).add(abs_path)
+    return by_path, by_base
+
+
+def resolve_target(program, by_path, by_base):
+    """The tree file a root category's program target refers to, or None. Try the
+    exact install path, then a UNIQUE basename match; an external tool (apt,
+    systemctl) or an ambiguous basename stays unresolved (not our code)."""
+    if not program:
+        return None
+    token = program.strip().strip('"').strip("'").split()[0] if program.split() \
+        else ""
+    if not token:
+        return None
+    base = install_name(os.path.basename(token))
+    if token.startswith("/") and token in by_path:
+        return by_path[token]
+    matches = by_base.get(base)
+    if matches and len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
+def entry_targets(entry):
+    """Yield the installed program strings a root-category entry points at. A
+    DIRECT category yields None (its own 'path' is the script)."""
+    category = entry["category"]
+    if category in DIRECT_SCRIPT_CATEGORIES:
+        yield None
+    elif category in ("systemd-unit", "systemd-activation", "systemd-dropin"):
+        for program in entry.get("exec") or ():
+            yield program
+        for program in entry.get("root_forced_exec") or ():
+            yield program
+    elif category == "privleap-action":
+        for action in entry.get("actions") or ():
+            yield action.get("command")
+    elif category == "sudoers":
+        for command in entry.get("commands") or ():
+            yield command
+    elif category == "polkit":
+        for action in entry.get("actions") or ():
+            if action.get("exec_path"):
+                yield action["exec_path"]
+    elif category in ("udev-rule", "pam-exec", "modprobe-hook", "calamares-job"):
+        for program in entry.get("programs") or ():
+            yield program
+    elif category == "privileged-call":
+        if entry.get("command"):
+            yield entry["command"]
+    ## nonshell-escalation is handled as a direct Python file separately.
+
+
+def is_root_guarded(source):
+    if NOT_ROOT_RE.search(source) and not ROOT_REQUIRE_TEXT_RE.search(source):
+        return False
+    if ROOT_REQUIRE_TEXT_RE.search(source):
+        return True
+    for name in ROOT_REQUIRE_FUNCS:
+        if re.search(r"\b" + re.escape(name) + r"\b", source):
+            return True
+    return False
+
+
+def sourced_targets(tree, source, by_path, by_base):
+    """One hop: the tree files a reachable script sources/'.'s or directly
+    execs by an absolute path, skipping a name it defines as a function."""
+    for call in bash_ast.call_exprs(tree):
+        cmd = bash_ast.command_basename(call)
+        if cmd is None:
+            continue
+        args = bash_ast.args(call)
+        name_full = bash_ast.command_name(call)
+        if cmd in (".", "source"):
+            candidates = args[1:2]
+        elif name_full and name_full.startswith("/"):
+            ## A direct exec of an absolute-path command in the tree.
+            candidates = args[:1]
+        else:
+            continue
+        for word in candidates:
+            program = bash_ast.word_string(word)
+            if not program or not program.startswith("/"):
+                continue
+            if bash_ast.defines_function(tree, os.path.basename(program)):
+                continue
+            resolved = resolve_target(program, by_path, by_base)
+            if resolved is not None:
+                yield resolved
+
+
+def severity_of(rule, factors, weight):
+    base = RULE_BASE.get(rule, "LOW")
+    if rule == "home-recursive-write":
+        if factors.get("symlink") or factors.get("deletion") or (
+                factors.get("find_walk") and factors.get("action")):
+            base = "HIGH"
+    index = SEVERITY_ORDER.index(base) + weight
+    index = max(0, min(len(SEVERITY_ORDER) - 1, index))
+    return SEVERITY_ORDER[index]
+
+
+def python_advisory(abs_path, rel_path):
+    findings = []
+    for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
+        if raw.lstrip().startswith("#"):
+            continue
+        if PYTHON_SINK_RE.search(raw) and PYTHON_TAINT_RE.search(raw):
+            findings.append({
+                "rule": "python-advisory", "sink": "python", "line": lineno,
+                "tainted_operand": raw.strip()[:120],
+                "factors": {"taint": "regex"},
+                "why": "root Python script does a privileged fs op near a "
+                       "user-controlled location (advisory, regex)",
+            })
+    return findings
+
+
+def run_enum(dm_root, tool_dir):
+    enum = os.path.join(tool_dir, ENUM_TOOL)
+    if not os.path.isfile(enum):
+        raise SystemExit("ERROR: sibling %s not found beside this tool" % ENUM_TOOL)
+    result = subprocess.run([enum, dm_root], capture_output=True, text=True)
+    if not result.stdout.strip():
+        raise SystemExit("ERROR: %s produced no output:\n%s"
+                         % (ENUM_TOOL, result.stderr.strip()))
+    return json.loads(result.stdout)
+
+
+def collect_reachable(dm_root, enum_report, tree_files, submodules,
+                      by_path, by_base, coverage):
+    """Map abs tree file -> list of root_reason strings (why it runs as root)."""
+    reachable = {}
+
+    def add(abs_path, reason):
+        reachable.setdefault(abs_path, [])
+        if reason not in reachable[abs_path]:
+            reachable[abs_path].append(reason)
+
+    ## Source 1: enum targets.
+    for entry in enum_report.get("entries", []):
+        category = entry["category"]
+        if category == "nonshell-escalation":
+            add(os.path.join(dm_root, entry["path"]), "nonshell-escalation")
+            continue
+        for target in entry_targets(entry):
+            if target is None:
+                add(os.path.join(dm_root, entry["path"]), category)
+                continue
+            resolved = resolve_target(target, by_path, by_base)
+            if resolved is None:
+                coverage["unresolved_targets"] += 1
+                continue
+            add(resolved, "%s:%s" % (category, os.path.basename(entry["path"])))
+
+    ## Source 2: root-guarded scripts.
+    for abs_path, rel_path in tree_files:
+        if not is_shell(abs_path, rel_path):
+            continue
+        if is_root_guarded(read_text(abs_path)):
+            add(abs_path, "root-guarded-script")
+
+    ## Source 3: one hop of source/exec from each reachable shell file.
+    for abs_path in list(reachable):
+        if not is_shell(abs_path, os.path.relpath(abs_path, dm_root)):
+            continue
+        try:
+            tree = bash_ast.parse_normalized(read_text(abs_path))
+        except bash_ast.BashParseError:
+            continue
+        source = read_text(abs_path)
+        for resolved in sourced_targets(tree, source, by_path, by_base):
+            add(resolved, "sourced")
+
+    return reachable
+
+
+def weight_for(reasons):
+    """The strongest (highest) blast-radius weight among a file's root reasons."""
+    weights = [CATEGORY_WEIGHT.get(r.split(":", 1)[0], 0) for r in reasons]
+    return max(weights) if weights else 0
+
+
+def audit(dm_root):
+    tool_dir = os.path.dirname(os.path.realpath(__file__))
+    enum_report = run_enum(dm_root, tool_dir)
+    submodules = submodule_paths(dm_root)
+    walk_errors = []
+    tree_files = list(walk_tree(dm_root, walk_errors))
+    by_path, by_base = build_index(tree_files, submodules)
+
+    coverage = {
+        "root_files": 0, "shell_scanned": 0, "python_advisory": 0,
+        "sinks_examined": 0, "unresolved_targets": 0,
+        "parse_errors": [], "walk_errors": walk_errors,
+    }
+    reachable = collect_reachable(dm_root, enum_report, tree_files, submodules,
+                                  by_path, by_base, coverage)
+    coverage["root_files"] = len(reachable)
+
+    findings = []
+    for abs_path in sorted(reachable):
+        rel_path = os.path.relpath(abs_path, dm_root)
+        reasons = reachable[abs_path]
+        weight = weight_for(reasons)
+        component, submodule = component_for(rel_path, submodules)
+        root_reason = ", ".join(reasons)
+        if is_shell(abs_path, rel_path):
+            coverage["shell_scanned"] += 1
+            source = read_text(abs_path)
+            try:
+                tree = bash_ast.parse_normalized(source)
+            except bash_ast.BashParseError as exc:
+                coverage["parse_errors"].append({"path": rel_path,
+                                                 "error": str(exc)})
+                continue
+            coverage["sinks_examined"] += sum(1 for _ in bash_ast.call_exprs(tree))
+            raw_findings = lpe_sinks.iter_findings(tree, source)
+        elif name_has_ext(rel_path, ".py"):
+            coverage["python_advisory"] += 1
+            raw_findings = python_advisory(abs_path, rel_path)
+        else:
+            continue
+        for finding in raw_findings:
+            findings.append({
+                "component": component,
+                "submodule": submodule,
+                "path": rel_path,
+                "line": finding["line"],
+                "rule": finding["rule"],
+                "sink": finding["sink"],
+                "tainted_operand": finding["tainted_operand"],
+                "severity": severity_of(finding["rule"], finding["factors"],
+                                        weight),
+                "why": finding["why"],
+                "root_reason": root_reason,
+                "factors": finding["factors"],
+            })
+
+    ## Dedupe identical (path, line, rule, operand); keep the highest severity.
+    unique = {}
+    for finding in findings:
+        key = (finding["path"], finding["line"], finding["rule"],
+               finding["tainted_operand"])
+        current = unique.get(key)
+        if current is None or SEVERITY_ORDER.index(finding["severity"]) > \
+                SEVERITY_ORDER.index(current["severity"]):
+            unique[key] = finding
+    findings = list(unique.values())
+    findings.sort(key=lambda f: (
+        -SEVERITY_ORDER.index(f["severity"]), f["component"], f["path"],
+        f["line"] or 0))
+
+    return {
+        "schema": "dm-root-lpe-audit/1",
+        "dm_root": os.path.abspath(dm_root),
+        "enum_schema": enum_report.get("schema"),
+        "coverage": coverage,
+        "severity_counts": _severity_counts(findings),
+        "findings": findings,
+    }
+
+
+def _severity_counts(findings):
+    counts = {level: 0 for level in SEVERITY_ORDER}
+    for finding in findings:
+        counts[finding["severity"]] += 1
+    return counts
+
+
+def _print_report(report):
+    cov = report["coverage"]
+    print("dm-root-lpe-audit: %d root files, %d shell scanned, %d python "
+          "advisory, %d sinks examined, %d unresolved targets, %d parse errors"
+          % (cov["root_files"], cov["shell_scanned"], cov["python_advisory"],
+             cov["sinks_examined"], cov["unresolved_targets"],
+             len(cov["parse_errors"])), file=sys.stderr)
+    counts = report["severity_counts"]
+    print("findings: %d HIGH, %d MEDIUM, %d LOW, %d INFO"
+          % (counts["HIGH"], counts["MEDIUM"], counts["LOW"], counts["INFO"]),
+          file=sys.stderr)
+    for finding in report["findings"]:
+        if finding["severity"] in ("HIGH", "MEDIUM"):
+            print("  [%-6s] %s:%s  %s  %s  (%s)" % (
+                finding["severity"], finding["path"], finding["line"],
+                finding["rule"], finding["tainted_operand"],
+                finding["root_reason"]), file=sys.stderr)
+
+
+def main(argv):
+    dm_root = argv[1] if len(argv) > 1 else os.path.join(
+        os.path.expanduser("~"), "derivative-maker")
+    if not os.path.isdir(dm_root):
+        print("ERROR: not a directory: %s" % dm_root, file=sys.stderr)
+        return 1
+    if not bash_ast.shfmt_available():
+        print("ERROR: shfmt not found -- required to parse shell.",
+              file=sys.stderr)
+        return 1
+    report = audit(dm_root)
+    print(json.dumps(report, indent=2, sort_keys=False))
+    _print_report(report)
+    if report["coverage"]["root_files"] == 0:
+        print("ERROR: no root-reachable files found -- wrong root?",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
