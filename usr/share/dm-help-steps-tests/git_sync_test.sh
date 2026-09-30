@@ -62,11 +62,25 @@ SYNC_LOG="${workspace}/sync.log"
 export SYNC_LOG
 stubs="${workspace}/stubs"
 mkdir --parents -- "${stubs}"
+## The push stub records its cwd AND performs a REAL push of the current HEAD to the
+## repo's 'fork' remote -- dm-git-sync now VERIFIES (ls-remote) that the publish
+## actually reached PUBLISH_REMOTE, so a stub that only recorded would fail that check.
 {
    printf '%s\n' '#!/bin/bash'
    # shellcheck disable=SC2016
    printf '%s\n' 'printf "PUSH %s\n" "$(pwd -P)" >> "${SYNC_LOG}"'
+   # shellcheck disable=SC2016
+   printf '%s\n' 'git -c protocol.file.allow=always -c core.hooksPath="${NOHOOKS}" push --quiet fork "HEAD:refs/heads/ai"'
 } > "${stubs}/push"
+## A "silent no-op" pusher: exits 0 but publishes NOTHING (mimics git-push finding no
+## bot-writable remote). dm-git-sync must DETECT this via its post-push verify and die,
+## never proceed to bump/mirror on an unpublished pin.
+{
+   printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
+   printf '%s\n' 'printf "PUSH %s\n" "$(pwd -P)" >> "${SYNC_LOG}"'
+   printf '%s\n' 'exit 0'
+} > "${stubs}/push-noop"
 {
    printf '%s\n' '#!/bin/bash'
    # shellcheck disable=SC2016
@@ -77,7 +91,7 @@ mkdir --parents -- "${stubs}"
    # shellcheck disable=SC2016
    printf '%s\n' 'printf "CHERRY %s\n" "$*" >> "${SYNC_LOG}"'
 } > "${stubs}/cherry"
-chmod +x -- "${stubs}/push" "${stubs}/bump" "${stubs}/cherry"
+chmod +x -- "${stubs}/push" "${stubs}/push-noop" "${stubs}/bump" "${stubs}/cherry"
 
 export DM_GIT_SYNC_PUSH="${stubs}/push"
 export DM_GIT_SYNC_GITLINK_BUMP="${stubs}/bump"
@@ -114,6 +128,17 @@ gitq -C "${super}/sub" checkout --quiet ai
 printf 'v2\n' > "${super}/sub/file"
 gitq -C "${super}/sub" add file
 gitq -C "${super}/sub" commit --quiet -m "sub v2"
+
+## dm-git-sync now VERIFIES the publish landed on PUBLISH_REMOTE. Give both the parent
+## and the submodule a bot-writable 'fork' remote for the push stub to publish to, and
+## point the verify at it. NOHOOKS lets the stub push without tripping the operator's
+## pre-push gate.
+super_fork="${workspace}/super-fork.git"
+gitq init --quiet --bare -- "${super_fork}"
+gitq -C "${super}" remote add fork "file://${super_fork}"
+gitq -C "${super}/sub" remote add fork "file://${fork}"
+export DM_GIT_SYNC_PUBLISH_REMOTE="fork"
+export NOHOOKS="${workspace}/nohooks"
 
 log_lines() { cat -- "${SYNC_LOG}" 2>/dev/null || true; }
 reset_log() { printf '' > "${SYNC_LOG}"; }
@@ -281,6 +306,9 @@ mkdir --parents -- "${pathstub}"
    printf '%s\n' '#!/bin/bash'
    # shellcheck disable=SC2016
    printf '%s\n' 'printf "GITPUSH %s\n" "$(pwd -P)" >> "${SYNC_LOG}"'
+   ## Publish for real, so dm-git-sync's post-push verify (ls-remote) is satisfied.
+   # shellcheck disable=SC2016
+   printf '%s\n' 'git -c protocol.file.allow=always -c core.hooksPath="${NOHOOKS}" push --quiet fork "HEAD:refs/heads/ai"'
 } > "${pathstub}/git-push"
 chmod +x -- "${pathstub}/git-push"
 default_push_rc=0
@@ -292,8 +320,32 @@ else
    fail "default push is not git-push; rc=${default_push_rc} log:<<<$(log_lines)>>>"
 fi
 
+## --- Case 7: a push that publishes NOTHING must be caught (the silent-green) --------
+## git-push exits 0 even when it pushed nothing (no bot-writable remote resolved).
+## dm-git-sync's post-push verify must catch that the pin never reached PUBLISH_REMOTE
+## and DIE, never proceed to mirror on an unpublished pin. Advance the parent so its HEAD
+## is NOT already on the fork (else the verify would pass idempotently on a tip an
+## earlier case published), then drive a parent sync whose pusher records but publishes
+## nothing. CANARY: drop the verify from push_repo and this case FAILS (exit 0 + CHERRY).
+reset_log
+printf 'newer\n' > "${super}/help-steps/keep"
+gitq -C "${super}" add help-steps/keep
+gitq -C "${super}" commit --quiet -m "advance super"
+noop_rc=0
+DM_GIT_SYNC_PUSH="${stubs}/push-noop" "${tool}" --dir "${super}" >/dev/null 2>&1 || noop_rc=$?
+if [ "${noop_rc}" -ne 0 ]; then
+   pass "a push that published nothing makes dm-git-sync FAIL (not a silent green)"
+else
+   fail "dm-git-sync exited 0 though the push published nothing (silent green); log:<<<$(log_lines)>>>"
+fi
+if grep --quiet -- '^CHERRY ' "${SYNC_LOG}"; then
+   fail "dm-git-sync mirrored to master after an unpublished push (proceeded past the broken publish)"
+else
+   pass "dm-git-sync did NOT mirror after the unpublished push (invariant held)"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-git-sync publishes-before-bumping (via git-push), dispatches parent/submodule, refuses safely, dry-runs clean."
+printf '%s\n' "OK: dm-git-sync publishes-before-bumping (via git-push, verified), dispatches parent/submodule, refuses safely, dry-runs clean, catches a nothing-published push."
