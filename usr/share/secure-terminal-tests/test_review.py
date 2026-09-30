@@ -257,15 +257,43 @@ ok(0 < _wrap._pos < 200,
 _row2 = _wrap._pos
 _wrap.keyPressEvent(key_ev(Qt.Key.Key_Up))
 eq(_wrap._pos, 0, 'Up from the second visual row returns to the first (index 0)')
-_wrap._pos = _row2 + 1                     # somewhere on the second visual row
+_wrap._pos = _row2 + 1                     # one column into the second visual row
 _wrap.keyPressEvent(key_ev(Qt.Key.Key_Home))
-ok(0 < _wrap._pos <= _row2 + 1,
-   'Home moves to the start of the current WRAPPED row, not source index 0')
-_home2 = _wrap._pos
-_wrap._pos = _home2
+eq(_wrap._pos, _row2,
+   'Home moves to the exact start of the current WRAPPED row, not source index 0')
+_wrap._pos = _row2
 _wrap.keyPressEvent(key_ev(Qt.Key.Key_End))
-ok(_home2 < _wrap._pos < 200,
+ok(_row2 < _wrap._pos < 200,
    'End moves to the end of the current WRAPPED row, not the logical line end')
+
+# SOFT-WRAP + wide badge: a revealed invisible renders as a multi-column badge that, at a
+# narrow width, wraps across several visual rows. Vertical nav must SKIP the whole badge to
+# the next source cell -- a single Up/Down step can land back INSIDE the badge (same source
+# index), which would trap the caret on it forever. (Regression: the first _visual_nav did.)
+_badge = RevealedEditor()
+_badge.set_mode('detail')
+_badge.show()
+_badge.resize(80, 200)                     # narrow -> the <..> badge wraps to >1 visual row
+APP.processEvents()
+_badge.set_source_revealed('hello\n' + ZWSP + '\nworld line three')
+APP.processEvents()
+_bsrc = _badge.source()
+_badge._pos = 0
+_badge._render()
+for _ in range(12):                        # walk Down; must reach end-of-text, never stall
+    _badge.keyPressEvent(key_ev(Qt.Key.Key_Down))
+    if _badge._pos == len(_bsrc):
+        break
+eq(_badge._pos, len(_bsrc),
+   'Down escapes a wrapped multi-row badge and reaches end-of-text (no caret trap)')
+_badge._pos = len(_bsrc)
+_badge._render()
+for _ in range(12):                        # walk Up back to the first row, past the badge
+    _badge.keyPressEvent(key_ev(Qt.Key.Key_Up))
+    if _badge._pos == 0:
+        break
+eq(_badge._pos, 0,
+   'Up escapes the wrapped multi-row badge back to the first row (no caret trap)')
 
 # the read-only Ctrl chords (select-all, copy) fall through to the base without mutating
 _CTRL = Qt.KeyboardModifier.ControlModifier
