@@ -24,7 +24,11 @@ from pathlib import Path
 
 import pytest
 
-from PIL import Image
+## PIL (like imagehash below) is only needed for the VirtualBox screenshot
+## checks; importorskip so a host without python3-pil skips this module instead
+## of aborting pytest collection for every boot-test leg (vbox legs are
+## currently disabled, and the CI boot image installs no python3-pil).
+Image = pytest.importorskip('PIL.Image')
 
 BACKEND = Path(__file__).resolve().parent / 'dm-vbox'
 

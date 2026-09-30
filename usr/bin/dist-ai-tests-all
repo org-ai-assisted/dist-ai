@@ -65,6 +65,7 @@ core_suites=(
    anon-gw-anonymizer-config-tests
    anon-ws-disable-stacked-tor-tests
    desktop-config-dist-tests
+   legacy-dist-tests
    user-sysmaint-split-tests
    vm-config-dist-tests
    check-ref-commits-for-unicode-tests
@@ -459,6 +460,15 @@ wire() {
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
+         ;;
+      legacy-dist)
+         ## fixes_test.sh sources helper-scripts libs and runs mock helper-scripts
+         ## from a composite tree it builds; it locates the real libs via
+         ## HELPER_SCRIPTS_REPO.
+         wire_env=( "LEGACY_DIST_REPO=$( pkg_dir legacy-dist )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_REPO=${hs}" )
+         fi
          ;;
       libvirt-dist)
          wire_env=( "LIBVIRT_DIST_REPO=$( pkg_dir libvirt-dist )" )
@@ -918,6 +928,9 @@ suite_component() {
          ;;
       desktop-config-dist)
          printf '%s' 'desktop-config-dist'
+         ;;
+      legacy-dist)
+         printf '%s' 'legacy-dist'
          ;;
       libvirt-dist)
          printf '%s' 'libvirt-dist'
