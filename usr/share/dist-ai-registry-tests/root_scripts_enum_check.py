@@ -55,6 +55,7 @@ def main(argv):
 
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
+    sep = "usr/libexec/foo/sepprobe"
     priv = one("privleap-action", "conf.d/foo.conf")
     priv_actions = {a["action"]: a for a in priv["actions"]} if priv else {}
 
@@ -167,13 +168,29 @@ def main(argv):
          sudo_at(probe, 6) is not None and sudo_at(probe, 6).get("note") == "sudo-l"),
         ("sudo behind an exec wrapper is enumerated",
          sudo_at(probe, 7) is not None and sudo_at(probe, 7)["command"] == "/usr/bin/f"),
-        ("a script defining a sudo function reports no sudo calls",
-         not any("sudofn" in e["path"] for e in cat("sudo-call"))),
+        ("a real /usr/bin/sudo call is not dropped by a sudo function shadow",
+         one("sudo-call", "usr/libexec/foo/sudofn") is not None
+         and one("sudo-call", "usr/libexec/foo/sudofn")["command"] == "/usr/bin/real-root"),
         ("an extensionless shebang-less build-step file is scanned",
          one("sudo-call", "help-steps/nosheb") is not None
          and one("sudo-call", "help-steps/nosheb")["command"] == "apt-get"),
         ("a privleap TargetUser=00 (numeric UID 0) is a root action",
          "numeric-root-action" in priv_actions),
+
+        ## separate-word sudo value options (regression: value != program)
+        ("sudo -p PROMPT does not mistake the prompt for the program",
+         sudo_at(sep, 2) is not None and sudo_at(sep, 2)["command"] == "apt-get"),
+        ("sudo -g group keeps the real program",
+         sudo_at(sep, 3) is not None and sudo_at(sep, 3)["command"] == "/usr/bin/b"),
+        ("sudo -g grp -u user still sees the later -u target",
+         sudo_at(sep, 4) is not None and sudo_at(sep, 4)["command"] == "/usr/bin/c"
+         and sudo_at(sep, 4)["runs_as"] == "nobody"),
+
+        ## genmkfile '#pkg' install suffix must not hide a category
+        ("a .service with a #pkg install suffix is still enumerated",
+         one("systemd-unit", "suffixed.service#foo-shared") is not None
+         and "/usr/bin/suffixed-root"
+         in one("systemd-unit", "suffixed.service#foo-shared")["exec"]),
         ("a dm build-script sudo call is enumerated under derivative-maker",
          one("sudo-call", "help-steps/buildscript") is not None
          and one("sudo-call", "help-steps/buildscript")["component"] == "derivative-maker"),

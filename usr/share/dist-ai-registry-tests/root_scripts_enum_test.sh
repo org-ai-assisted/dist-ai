@@ -169,11 +169,30 @@ sudo -l /usr/bin/e
 exec sudo /usr/bin/f
 EOF
 
-## a script that DEFINES a 'sudo' function -> its sudo calls are unprivileged.
+## a script defining a 'sudo' function AND calling the real /usr/bin/sudo -- the
+## real call must NOT be dropped (a security inventory over-reports, not under).
 write 'packages/kicksecure/foo/usr/libexec/foo/sudofn' <<'EOF'
 #!/bin/bash
 sudo() { return 0; }
-sudo /usr/bin/should-not-appear
+/usr/bin/sudo /usr/bin/real-root
+EOF
+
+## separate-word value options: the value must NOT be mistaken for the program.
+##   2 -p PROMPT   -> cmd apt-get
+##   3 -g group    -> cmd /usr/bin/b
+##   4 -g grp -u u -> sees -u after -g's value: cmd /usr/bin/c, runs_as nobody
+write 'packages/kicksecure/foo/usr/libexec/foo/sepprobe' <<'EOF'
+#!/bin/bash
+sudo -p "Enter password: " apt-get update
+sudo -g mygroup /usr/bin/b
+sudo -g wheel -u nobody /usr/bin/c
+EOF
+
+## a systemd unit whose SOURCE name carries a genmkfile '#pkg' install suffix
+## -> must still be matched as a .service (else real root units are missed).
+write 'packages/kicksecure/foo/usr/lib/systemd/system/suffixed.service#foo-shared' <<'EOF'
+[Service]
+ExecStart=/usr/bin/suffixed-root
 EOF
 
 ## an extensionless, shebang-less build-step file -> still scanned (dm build).
