@@ -126,9 +126,10 @@ run_suites_parallel() {
    fi
    ## pytest's '.pytest_cache' and mypy's '.mypy_cache' are NOT bytecode, so the
    ## defense above does not stop them; a pytest/mypy suite would still drop them into
-   ## the subject checkout and trip the cache-dir gate. Disable pytest's cache; point
-   ## mypy's at the throwaway work dir. Unconditional -- either can run without a pkg.
-   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -p no:cacheprovider"
+   ## the subject checkout and trip the cache-dir gate. REDIRECT both into the throwaway
+   ## work dir ('-o cache_dir' keeps pytest's 'cache' fixture working, unlike '-p
+   ## no:cacheprovider'). Unconditional -- either tool can run without a pkg.
+   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir=${work}/pytest_cache"
    export MYPY_CACHE_DIR="${work}/mypy-cache"
 
    ## Run one suite: isolate its XDG config/state, capture combined output + rc to files, and

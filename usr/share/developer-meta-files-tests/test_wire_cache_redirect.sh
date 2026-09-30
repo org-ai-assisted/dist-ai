@@ -61,9 +61,9 @@ assert_exports() {
    assert_grep "${file}" 'export PYTHONDONTWRITEBYTECODE=1' \
       "${label} exports PYTHONDONTWRITEBYTECODE" \
       "${label} does not export PYTHONDONTWRITEBYTECODE"
-   assert_grep "${file}" 'export PYTEST_ADDOPTS=.*-p no:cacheprovider' \
-      "${label} disables the pytest cache (-p no:cacheprovider)" \
-      "${label} does not disable the pytest cache"
+   assert_grep "${file}" 'export PYTEST_ADDOPTS=.*-o cache_dir=' \
+      "${label} redirects the pytest cache dir (-o cache_dir)" \
+      "${label} does not redirect the pytest cache dir"
    assert_grep "${file}" 'export MYPY_CACHE_DIR=' \
       "${label} redirects MYPY_CACHE_DIR" \
       "${label} does not redirect MYPY_CACHE_DIR"
@@ -72,74 +72,93 @@ assert_exports "${tests_all}" "dist-ai-tests-all"
 assert_exports "${suite_parallel}" "suite-parallel.bash"
 
 ## --- 2. functional: those settings keep a checkout cache-free (with a CONTROL) ----
+## '|| true' on cleanup: safe-rm ships with private-ai-config and is ABSENT on a bare
+## CI runner, where an unguarded call would exit 127 under errexit and (as the EXIT
+## trap) become the whole test's status -- a green run reported red. The subject repo's
+## own dist-ai-tests-all documents this exact trap; do not reintroduce it.
 work="$(mktemp --directory)"
-cleanup() { safe-rm --recursive --force -- "${work}"; }
+cleanup() { safe-rm --recursive --force -- "${work}" || true; }
 trap cleanup EXIT
 
-co="${work}/checkout"
-mkdir --parents -- "${co}"
-cat > "${co}/sample.py" <<'PY'
+## Two SEPARATE checkouts (control vs with-redirect) so no mid-test cleanup is needed
+## -- a mid-test safe-rm would hit the same absent-on-CI trap, and leftover control
+## caches would then false-fail the with-redirect check.
+make_checkout() {
+   local dir="$1"
+   mkdir --parents -- "${dir}"
+   cat > "${dir}/sample.py" <<'PY'
 def add(a: int, b: int) -> int:
     return a + b
 PY
-cat > "${co}/test_sample.py" <<'PY'
+   cat > "${dir}/test_sample.py" <<'PY'
 from sample import add
 
 
 def test_add():
     assert add(1, 2) == 3
 PY
+}
 
-## Exercise all three cache producers in the checkout. Failures of the tools
-## themselves are irrelevant here -- we assert only on the cache dirs they leave.
+## Exercise the cache producers in ${1}. Failures of the tools themselves are
+## irrelevant -- we assert only on the cache dirs they leave. pytest imports sample.py
+## + test_sample.py, so it is the __pycache__ producer too (an implicit import HONORS
+## PYTHONDONTWRITEBYTECODE, unlike an explicit py_compile). It also produces
+## .pytest_cache; mypy produces .mypy_cache.
 run_producers() {
    (
-      cd -- "${co}" || exit 0
-      ## pytest imports sample.py + test_sample.py, so it is the __pycache__ producer
-      ## too (an implicit import HONORS PYTHONDONTWRITEBYTECODE -- unlike an explicit
-      ## py_compile, which would write bytecode even with the flag set and defeat the
-      ## with-redirect assertion). It also produces .pytest_cache; mypy produces .mypy_cache.
+      cd -- "$1" || exit 0
       pytest -q >/dev/null 2>&1 || true
       mypy sample.py >/dev/null 2>&1 || true
    )
 }
+## echo the cache dirs that exist under ${1} (empty = none)
 cache_dirs_present() {
-   ## echo the cache dirs that exist under the checkout (empty = none)
    local d found=""
    for d in __pycache__ .pytest_cache .mypy_cache; do
-      [ -e "${co}/${d}" ] && found="${found} ${d}"
+      [ -e "$1/${d}" ] && found="${found} ${d}"
    done
    printf '%s' "${found# }"
 }
 
 ## CONTROL: no redirection -> every cache dir MUST appear (proves the tools produce
-## them here, so the WITH-redirect assertion below is not vacuously true). A subshell
-## unsets the three vars (they may be set already: this test itself runs UNDER the
-## wire that exports them) so run_producers sees a pristine env.
-( unset PYTHONDONTWRITEBYTECODE PYTEST_ADDOPTS MYPY_CACHE_DIR; run_producers )
-control="$(cache_dirs_present)"
+## them here, so the WITH-redirect assertion below is not vacuously true). The subshell
+## unsets EVERY redirect var, incl. PYTHONPYCACHEPREFIX (this test itself runs UNDER the
+## wire that exports these) so a pre-set bytecode redirect cannot rob the control of its
+## __pycache__ and false-fail it.
+co_control="${work}/checkout-control"
+make_checkout "${co_control}"
+( unset PYTHONDONTWRITEBYTECODE PYTHONPYCACHEPREFIX PYTEST_ADDOPTS MYPY_CACHE_DIR
+  run_producers "${co_control}" )
+control="$(cache_dirs_present "${co_control}")"
 if [ "${control}" = "__pycache__ .pytest_cache .mypy_cache" ]; then
    ok "control (no redirection) produces all three cache dirs (assertion has teeth)"
 else
    bad "control did not produce all three cache dirs (got '${control}'); test would be vacuous"
 fi
-safe-rm --recursive --force -- "${co}/__pycache__" "${co}/.pytest_cache" "${co}/.mypy_cache"
 
 ## WITH the wire's redirection -> NO cache dir may appear in the checkout.
+co_redir="${work}/checkout-redir"
+make_checkout "${co_redir}"
+pcache="${work}/pytest-cache"
 mcache="${work}/mypy-cache"
 (
    export PYTHONDONTWRITEBYTECODE=1
-   export PYTEST_ADDOPTS='-p no:cacheprovider'
+   export PYTEST_ADDOPTS="-o cache_dir=${pcache}"
    export MYPY_CACHE_DIR="${mcache}"
-   run_producers
+   run_producers "${co_redir}"
 )
-withredir="$(cache_dirs_present)"
+withredir="$(cache_dirs_present "${co_redir}")"
 if [ -z "${withredir}" ]; then
    ok "the wire's redirect env leaves the checkout cache-free"
 else
    bad "redirect env still left cache dir(s) in the checkout: '${withredir}'"
 fi
-## Positive: mypy's cache landed at the redirected location, not nowhere.
+## Positive: pytest's + mypy's caches landed at the redirected locations, not nowhere.
+if [ -e "${pcache}" ]; then
+   ok "pytest cache went to the redirected -o cache_dir"
+else
+   bad "pytest cache_dir redirect produced no cache (pytest may not have run)"
+fi
 if [ -e "${mcache}" ]; then
    ok "mypy cache went to the redirected MYPY_CACHE_DIR"
 else
