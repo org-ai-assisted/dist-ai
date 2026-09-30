@@ -23,6 +23,12 @@ privileges, in these categories:
                      (.../systemd/user/...) and units pinned to a non-root User=
                      are EXCLUDED. Lists the Exec* program targets.
 
+  systemd-dropin     A '<unit>.service.d/*.conf' drop-in that adds Exec*
+                     programs. Its effective identity is the BASE unit's (not
+                     resolved across packages), so it reports the programs +
+                     any User= override; a '+'-prefixed Exec runs as root
+                     regardless, captured in root_forced_exec.
+
   privleap-action    A privleap '[action:...]' in usr/lib/privleap/conf.d/*.conf
                      whose Command= runs as root. privleap defaults to root; an
                      action with a non-root TargetUser= is EXCLUDED (it runs as
@@ -79,8 +85,13 @@ from dist_ai import bash_ast  # noqa: E402
 MAINTAINER_HOOKS = ("preinst", "postinst", "prerm", "postrm", "config")
 MAINTAINER_RE = re.compile(r"(?:^|\.)(" + "|".join(MAINTAINER_HOOKS) + r")$")
 
-EXEC_KEYS = ("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStop", "ExecReload")
+## Every [Service] directive that names a program run under the unit's identity.
+EXEC_KEYS = (
+    "ExecStartPre", "ExecCondition", "ExecStart", "ExecStartPost",
+    "ExecStop", "ExecStopPost", "ExecReload",
+)
 EXEC_PREFIX = "+-!@:"
+TRUTHY = ("yes", "true", "1", "on")
 
 SHELL_EXT = (".sh", ".bash", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r"\b(bash|sh|dash)\b")
@@ -144,9 +155,12 @@ def component_for(rel_path, submodules):
     return "derivative-maker", ""
 
 
-def walk_files(dm_root):
+def walk_files(dm_root, walk_errors):
+    ## An unreadable directory must be LOUD, not silently skipped -- a security
+    ## inventory that quietly omits a subtree reads as clean while blind to it.
     skip_dirs = {".git", ".pytest_cache", "__pycache__"}
-    for dirpath, dirnames, filenames in os.walk(dm_root):
+    for dirpath, dirnames, filenames in os.walk(
+            dm_root, onerror=lambda exc: walk_errors.append(str(exc))):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for name in filenames:
             abs_path = os.path.join(dirpath, name)
@@ -172,8 +186,16 @@ def scan_maintainer(abs_path, rel_path):
 
 
 def parse_service(text):
+    """(runs_as_root, user_value, exec_targets) for a .service file.
+
+    A bare 'Key=' resets ONLY that key's list (systemd semantics), so each Exec*
+    key is tracked separately and merged at the end. DynamicUser= runs the unit
+    under a dynamically allocated non-root UID, so it is excluded like a non-root
+    User=. Exec prefixes ('+' root, '!'/'-'/'@'/':') are stripped from the path.
+    """
     user_value = None
-    exec_targets = []
+    dynamic_user = False
+    exec_by_key = {key: [] for key in EXEC_KEYS}
     section = None
     for raw in text.splitlines():
         line = raw.strip()
@@ -189,27 +211,81 @@ def parse_service(text):
         value = value.strip()
         if key == "User":
             user_value = value if value else None
+        elif key == "DynamicUser":
+            dynamic_user = value.lower() in TRUTHY
         elif key in EXEC_KEYS:
             if not value:
-                if key == "ExecStart":
-                    exec_targets = []
+                exec_by_key[key] = []  ## bare reset clears only this key
                 continue
             program = value.split()[0].lstrip(EXEC_PREFIX)
             if program:
-                exec_targets.append(program)
-    runs_as_root = user_value is None or user_value in ("root", "0")
+                exec_by_key[key].append(program)
+    exec_targets = [prog for key in EXEC_KEYS for prog in exec_by_key[key]]
+    user_is_root = user_value is None or user_value in ("root", "0")
+    runs_as_root = user_is_root and not dynamic_user
     return runs_as_root, user_value, exec_targets
 
 
 def scan_systemd(abs_path, rel_path):
     if not rel_path.endswith(".service"):
         return None
-    if "/systemd/user/" in ("/" + rel_path):
+    ## User-scope units run as the user, never root: both the install path and
+    ## the debhelper '<pkg>.user.service' source-name convention.
+    if "/systemd/user/" in ("/" + rel_path) or rel_path.endswith(".user.service"):
         return None
     runs_as_root, user_value, exec_targets = parse_service(read_text(abs_path))
     if not runs_as_root:
         return None
     return {"scope": "system", "user": user_value or "root", "exec": exec_targets}
+
+
+def scan_systemd_dropin(abs_path, rel_path):
+    """A '<unit>.service.d/*.conf' drop-in that adds Exec* programs.
+
+    HONEST SCOPE: a drop-in's effective identity is the BASE unit's (root unless
+    the base or this drop-in sets a non-root User=), which lives in another
+    package or in systemd itself and is not resolved here. So this reports the
+    programs and any User= override for review, not a decided root verdict --
+    except that an Exec* with a '+' prefix runs as root regardless of the base
+    user, captured in root_forced_exec.
+    """
+    if "/systemd/user/" in ("/" + rel_path):
+        return None
+    if ".service.d/" not in rel_path or not rel_path.endswith(".conf"):
+        return None
+    text = read_text(abs_path)
+    _runs_root, user_value, exec_targets = parse_service(text)
+    forced = parse_service_forced_root(text)
+    if not exec_targets:
+        return None
+    parent = os.path.basename(os.path.dirname(rel_path))
+    base_unit = parent[:-2] if parent.endswith(".d") else parent
+    return {
+        "scope": "dropin",
+        "base_unit": base_unit,
+        "user_override": user_value,
+        "exec": exec_targets,
+        "root_forced_exec": forced,
+    }
+
+
+def parse_service_forced_root(text):
+    """Exec* programs carrying a '+' prefix (run as root ignoring User=)."""
+    forced = []
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section != "service" or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() in EXEC_KEYS and value.strip().startswith("+"):
+            program = value.strip().lstrip(EXEC_PREFIX)
+            if program:
+                forced.append(program)
+    return forced
 
 
 ## --- privleap ---------------------------------------------------------------
@@ -263,41 +339,81 @@ def scan_privleap(abs_path, rel_path):
 ## --- sudoers ----------------------------------------------------------------
 
 
+SUDOERS_ALIAS = ("Cmnd_Alias", "User_Alias", "Host_Alias", "Runas_Alias")
+SUDOERS_RUNAS_RE = re.compile(r"=\s*\(([^)]*)\)")
+## A ' # ' comment on a rule line (a lone '#' uid like '#0' has no surrounding
+## spaces, so this does not strip it).
+SUDOERS_INLINE_COMMENT_RE = re.compile(r"\s#\s.*$")
+
+
+def sudoers_rule_runs_as_root(rule):
+    """True if a sudoers rule grants execution as root: no Runas spec (default
+    root), or a spec naming root or ALL. '(sdwdate)' / '(debian-tor)' -> False."""
+    match = SUDOERS_RUNAS_RE.search(rule)
+    if not match:
+        return True
+    members = [m.strip() for m in match.group(1).split(":")[0].split(",")]
+    return any(m in ("root", "ALL") for m in members)
+
+
+def sudoers_commands(rule):
+    """The command PATHS a rule authorizes, without their arguments. The command
+    spec is the comma-separated tail; the first '/'-token of each part is the
+    program, the rest are arguments."""
+    _, _, tail = rule.partition("=")
+    ## Drop the Runas '(...)' and the PASSWD/NOPASSWD/SETENV tags.
+    tail = SUDOERS_RUNAS_RE.sub("", "=" + tail)
+    tail = re.sub(r"\b(NO)?(PASSWD|SETENV|EXEC|FOLLOW|LOG_INPUT|LOG_OUTPUT):", "", tail)
+    commands = []
+    for part in tail.split(","):
+        for tok in part.split():
+            if tok.startswith("/"):
+                commands.append(tok)
+                break
+    return commands
+
+
 def scan_sudoers(abs_path, rel_path):
     if "/sudoers.d/" not in ("/" + rel_path):
         return None
-    active = []
+    rules = []
     defaults = []
+    grants_root = False
     nopasswd = False
+    commands = set()
     for raw in read_text(abs_path).splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        line = SUDOERS_INLINE_COMMENT_RE.sub("", line).strip()
+        if not line:
+            continue
         if line.startswith("Defaults"):
             defaults.append(line)
             continue
-        active.append(line)
-        if "NOPASSWD" in line:
-            nopasswd = True
-    commands = sorted({
-        tok.rstrip(",")
-        for line in active
-        for tok in line.split()
-        if tok.startswith("/")
-    })
+        if line.startswith(SUDOERS_ALIAS):
+            ## An alias definition is not itself a grant.
+            continue
+        rules.append(line)
+        if sudoers_rule_runs_as_root(line):
+            grants_root = True
+            if "NOPASSWD" in line:
+                nopasswd = True
+        commands.update(sudoers_commands(line))
     return {
-        "grants_root": bool(active),
+        "grants_root": grants_root,
         "nopasswd": nopasswd,
-        "active_rules": active,
+        "active_rules": rules,
         "defaults": defaults,
-        "commands": commands,
+        "commands": sorted(commands),
     }
 
 
 ## --- polkit -----------------------------------------------------------------
 
 
-POLKIT_ACTION_RE = re.compile(r'<action\s+id="([^"]+)"')
+## id may be single- or double-quoted XML.
+POLKIT_ACTION_SPLIT_RE = re.compile(r"""<action\s+id=["']([^"']+)["']""")
 POLKIT_ALLOW_RE = re.compile(r"<(allow_[a-z]+)>([^<]+)</allow_[a-z]+>")
 
 
@@ -307,10 +423,17 @@ def scan_polkit(abs_path, rel_path):
     if "/polkit-1/actions/" not in ("/" + rel_path):
         return None
     text = read_text(abs_path)
-    return {
-        "actions": POLKIT_ACTION_RE.findall(text),
-        "defaults": {m.group(1): m.group(2) for m in POLKIT_ALLOW_RE.finditer(text)},
-    }
+    ## Per-action defaults: split on each <action> so one action's <defaults>
+    ## are not collapsed into a file-level dict that hides another's.
+    actions = []
+    matches = list(POLKIT_ACTION_SPLIT_RE.finditer(text))
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[start:end]
+        defaults = {m.group(1): m.group(2) for m in POLKIT_ALLOW_RE.finditer(block)}
+        actions.append({"id": match.group(1), "defaults": defaults})
+    return {"actions": actions}
 
 
 ## --- sudo calls (shfmt AST) -------------------------------------------------
@@ -391,6 +514,7 @@ def scan_build_chroot(rel_path, component):
 FILE_SCANNERS = (
     ("maintainer-script", scan_maintainer),
     ("systemd-unit", scan_systemd),
+    ("systemd-dropin", scan_systemd_dropin),
     ("privleap-action", scan_privleap),
     ("sudoers", scan_sudoers),
     ("polkit", scan_polkit),
@@ -401,9 +525,10 @@ def enumerate_root_scripts(dm_root):
     submodules = submodule_paths(dm_root)
     entries = []
     parse_errors = []
+    walk_errors = []
     examined = {"files": 0, "shell_files": 0}
 
-    for abs_path, rel_path in walk_files(dm_root):
+    for abs_path, rel_path in walk_files(dm_root, walk_errors):
         examined["files"] += 1
         component, sub_path = component_for(rel_path, submodules)
         base = {"component": component, "submodule": sub_path, "path": rel_path}
@@ -446,6 +571,7 @@ def enumerate_root_scripts(dm_root):
         "examined": examined,
         "summary": summary,
         "parse_errors": parse_errors,
+        "walk_errors": walk_errors,
         "entries": entries,
     }
 

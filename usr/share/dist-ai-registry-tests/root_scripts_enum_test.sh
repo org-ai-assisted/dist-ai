@@ -167,9 +167,53 @@ User=someuser
 ExecStart=/usr/bin/x
 EOF
 
-## sudoers with an ACTIVE NOPASSWD rule -> grants_root true.
+## DynamicUser=yes runs under a dynamic non-root UID -> MUST be excluded.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/dynuser.service' <<'EOF'
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/dynprog
+EOF
+
+## debhelper user-unit SOURCE name -> a user unit -> MUST be excluded.
+write 'packages/kicksecure/foo/debian/foo.user.service' <<'EOF'
+[Service]
+ExecStart=/usr/bin/foouser
+EOF
+
+## every Exec* directive that runs as root is captured; a bare ExecStartPre=
+## resets ONLY that key (root-pre must NOT survive; cond + cleanup MUST).
+write 'packages/kicksecure/foo/usr/lib/systemd/system/execkeys.service' <<'EOF'
+[Service]
+ExecStartPre=/usr/bin/root-pre
+ExecStartPre=
+ExecCondition=/usr/bin/root-cond
+ExecStart=/usr/bin/root-main
+ExecStopPost=/usr/bin/root-cleanup
+EOF
+
+## a systemd drop-in that adds Exec programs, with a '+'-prefixed (forced-root)
+## ExecStartPre and an ExecStart reset -> enumerated as systemd-dropin.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/svc.service.d/30_override.conf' <<'EOF'
+[Service]
+ExecStartPre=+/usr/lib/root-merger
+ExecStart=
+ExecStart=/usr/lib/svc --opt
+EOF
+
+## a USER-scope drop-in -> excluded.
+write 'packages/kicksecure/foo/usr/lib/systemd/user/u.service.d/30_x.conf' <<'EOF'
+[Service]
+ExecStart=/usr/bin/userdrop
+EOF
+
+## sudoers: ACTIVE NOPASSWD root rule; commands exclude the arguments.
 write 'packages/kicksecure/foo/etc/sudoers.d/active-sudo' <<'EOF'
-%sudo ALL=NOPASSWD: /usr/bin/foo
+%sudo ALL=NOPASSWD: /usr/bin/foo --flag /etc/target
+EOF
+
+## sudoers granting only a NON-root runas -> grants_root false.
+write 'packages/kicksecure/foo/etc/sudoers.d/nonroot-sudo' <<'EOF'
+user ALL=(debian-tor) NOPASSWD: /usr/bin/tor --verify-config
 EOF
 
 ## sudoers whose only directive is commented out -> grants nothing.
@@ -178,12 +222,16 @@ write 'packages/kicksecure/foo/etc/sudoers.d/commented-sudo' <<'EOF'
 #Defaults env_keep += "X"
 EOF
 
-## polkit action definition -> found.
+## polkit: TWO actions with DIFFERENT defaults (must not collapse), one id
+## single-quoted (valid XML) -> both parsed with their own defaults.
 write 'packages/kicksecure/foo/usr/share/polkit-1/actions/com.example.test.policy' <<'EOF'
 <?xml version="1.0"?>
 <policyconfig>
   <action id="com.example.test.do">
     <defaults><allow_active>yes</allow_active></defaults>
+  </action>
+  <action id='com.example.test.other'>
+    <defaults><allow_active>no</allow_active></defaults>
   </action>
 </policyconfig>
 EOF

@@ -47,6 +47,12 @@ def main(argv):
     def sudo_lines(needle):
         return {e["line"] for e in cat("sudo-call") if needle in e["path"]}
 
+    def _polkit_default(entry, action_id, key):
+        for action in entry["actions"]:
+            if action["id"] == action_id:
+                return action["defaults"].get(key)
+        return None
+
     helper = "usr/libexec/foo/helper"
     priv = one("privleap-action", "conf.d/foo.conf")
     priv_actions = {a["action"]: a for a in priv["actions"]} if priv else {}
@@ -73,6 +79,31 @@ def main(argv):
         ("a user-scope unit is excluded", one("systemd-unit", "usersvc.service") is None),
         ("a non-root User= unit is excluded",
          one("systemd-unit", "nonrootsvc.service") is None),
+        ("a DynamicUser=yes unit is excluded (dynamic non-root UID)",
+         one("systemd-unit", "dynuser.service") is None),
+        ("a debhelper .user.service source is excluded",
+         one("systemd-unit", "foo.user.service") is None),
+        ("ExecCondition and ExecStopPost root programs are captured",
+         one("systemd-unit", "execkeys.service") is not None
+         and "/usr/bin/root-cond" in one("systemd-unit", "execkeys.service")["exec"]
+         and "/usr/bin/root-cleanup" in one("systemd-unit", "execkeys.service")["exec"]),
+        ("a bare ExecStartPre= reset clears only that key",
+         one("systemd-unit", "execkeys.service") is not None
+         and "/usr/bin/root-pre" not in one("systemd-unit", "execkeys.service")["exec"]
+         and "/usr/bin/root-main" in one("systemd-unit", "execkeys.service")["exec"]),
+
+        ## systemd drop-ins
+        ("a service.d drop-in that adds Exec programs is enumerated",
+         one("systemd-dropin", "svc.service.d/30_override.conf") is not None
+         and one("systemd-dropin", "svc.service.d/30_override.conf")["base_unit"]
+         == "svc.service"
+         and "/usr/lib/svc" in one("systemd-dropin", "svc.service.d/30_override.conf")["exec"]),
+        ("a '+'-prefixed drop-in Exec is captured as forced-root",
+         one("systemd-dropin", "svc.service.d/30_override.conf") is not None
+         and "/usr/lib/root-merger"
+         in one("systemd-dropin", "svc.service.d/30_override.conf")["root_forced_exec"]),
+        ("a user-scope drop-in is excluded",
+         one("systemd-dropin", "u.service.d/30_x.conf") is None),
 
         ## privleap
         ("a root privleap action is enumerated with its command",
@@ -84,19 +115,25 @@ def main(argv):
          "persistent-users" not in priv_actions and None not in priv_actions),
 
         ## sudoers
-        ("an active NOPASSWD sudoers rule is captured",
+        ("an active NOPASSWD root sudoers rule is captured, args stripped",
          one("sudoers", "active-sudo") is not None
          and one("sudoers", "active-sudo")["grants_root"]
          and one("sudoers", "active-sudo")["nopasswd"]
-         and "/usr/bin/foo" in one("sudoers", "active-sudo")["commands"]),
+         and one("sudoers", "active-sudo")["commands"] == ["/usr/bin/foo"]),
+        ("a sudoers rule granting only a non-root runas does not grant root",
+         one("sudoers", "nonroot-sudo") is not None
+         and one("sudoers", "nonroot-sudo")["grants_root"] is False),
         ("an all-commented sudoers file grants nothing",
          one("sudoers", "commented-sudo") is not None
          and one("sudoers", "commented-sudo")["grants_root"] is False),
 
-        ## polkit
-        ("a polkit action id is enumerated",
+        ## polkit -- per-action defaults, single- or double-quoted ids
+        ("both polkit actions are enumerated with their own defaults",
          one("polkit", "com.example.test") is not None
-         and "com.example.test.do" in one("polkit", "com.example.test")["actions"]),
+         and _polkit_default(one("polkit", "com.example.test"),
+                             "com.example.test.do", "allow_active") == "yes"
+         and _polkit_default(one("polkit", "com.example.test"),
+                             "com.example.test.other", "allow_active") == "no"),
 
         ## sudo-call: all components (a SUBMODULE runtime script, not just dm)
         ("a sudo call in a submodule script is enumerated",
@@ -125,6 +162,7 @@ def main(argv):
 
         ## summary + parse sanity
         ("shfmt parsed the shell with no errors", report["parse_errors"] == []),
+        ("the walk reported no unreadable directories", report["walk_errors"] == []),
         ("the report carries examined counts and a category summary",
          report["examined"]["files"] > 0 and report["examined"]["shell_files"] > 0
          and report["summary"].get("sudo-call", 0) >= 1),
