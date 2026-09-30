@@ -17,6 +17,11 @@ Architecture: all
 ## exists to close. So the package must GUARANTEE the tooling is there rather
 ## than degrade around it. Only an absent SUBJECT (the component checkout under
 ## test) earns 77 SKIP.
+## openssh-server is in Depends for the sshd binary the security-misc core suite
+## drives (a throwaway unprivileged loopback sshd). Its install also starts the
+## system ssh.service; accepted -- dist-ai is CI/sandbox test tooling, never a
+## production package, and Recommends would NOT avoid the start (apt installs
+## Recommends by default) while breaking the core suite under --no-install-recommends.
 Depends: ${misc:Depends},
  bash (>= 4),
  python3,

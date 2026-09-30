@@ -96,8 +96,8 @@ class SystemdUnit(Rule):
             if not programs:
                 continue
             multi = spanned or any(
-                h.embeds_multi_statement(h.unquote(program_text), strict=True)
-                for _call, program_text, _lc in programs)
+                h.embeds_multi_statement(program_value, strict=True)
+                for _call, program_value, _lc in programs)
             if multi:
                 yield model.fail(
                     "R-191",

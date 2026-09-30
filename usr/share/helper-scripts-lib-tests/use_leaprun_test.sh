@@ -45,17 +45,25 @@ fail_count=0
 ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
-## Run the probe with leaprun unresolvable (PATH without it) so use_leaprun.sh
-## hits its first "Cannot use privleap" branch. Capture the two streams apart.
-probe_stdout="$(env PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" \
-   /usr/bin/bash "${probe}" 2>/dev/null)"
-probe_stderr="$( { env PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" \
-   /usr/bin/bash "${probe}" >/dev/null; } 2>&1 )"
+## Value of the probe's own 'use_leaprun=' line (exact line, not a substring --
+## a substring match false-passes on 'notreally' and can be steered by warning text).
+verdict_of() { printf '%s\n' "$1" | sed -n 's/^use_leaprun=//p'; }
+result_len_of() { printf '%s\n' "$1" | sed -n 's/^result_len=//p'; }
 
-if [[ "${probe_stdout}" != *'Cannot use privleap'* ]]; then
-   ok "privleap-unusable warning does not go to stdout"
+## Run the probe with leaprun unresolvable (PATH without it) so use_leaprun.sh
+## hits its first "Cannot use privleap" branch. Clear the fake-mode toggles so an
+## inherited one cannot divert the probe. Capture the two streams apart.
+probe_stdout="$(env --unset=LEAPRUN_FAKE_USABLE --unset=LEAPRUN_FAKE_EMPTY_PID \
+   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" 2>/dev/null)"
+probe_stderr="$( { env --unset=LEAPRUN_FAKE_USABLE --unset=LEAPRUN_FAKE_EMPTY_PID \
+   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" >/dev/null; } 2>&1 )"
+
+## stdout must carry ONLY the probe's own two lines -- no warning of any kind.
+stdout_lines="$(printf '%s\n' "${probe_stdout}" | wc -l)"
+if [ "${stdout_lines}" = '2' ] && [[ "${probe_stdout}" != *'Cannot use privleap'* ]]; then
+   ok "no warning on stdout (only the probe's own 2 lines)"
 else
-   notok "warning leaked to stdout: '${probe_stdout}'"
+   notok "unexpected stdout (${stdout_lines} line(s)): '${probe_stdout}'"
 fi
 
 if [[ "${probe_stderr}" == *'Cannot use privleap'* ]]; then
@@ -64,13 +72,13 @@ else
    notok "warning not found on stderr: '${probe_stderr}'"
 fi
 
-if [[ "${probe_stdout}" == *'use_leaprun=no'* ]]; then
+if [ "$(verdict_of "${probe_stdout}")" = 'no' ]; then
    ok "use_leaprun set to 'no' when privleap unusable"
 else
-   notok "expected use_leaprun=no in probe output: '${probe_stdout}'"
+   notok "expected use_leaprun=no, got '$(verdict_of "${probe_stdout}")'"
 fi
 
-result_len="${probe_stdout##*result_len=}"
+result_len="$(result_len_of "${probe_stdout}")"
 if [ -n "${result_len}" ] && [ "${result_len}" != '0' ]; then
    ok "leaprun_useable_result is populated (length ${result_len})"
 else

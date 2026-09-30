@@ -5,17 +5,15 @@
 
 ## AI-Assisted
 
-## use_leaprun.sh must look up the per-user comm socket by UID, matching how
-## privleapd names it: /run/privleapd/comm/<uid> (privleap leaprun.py builds
-## comm_dir/str(user_uid)). A regression used `id --name --user` (the username),
-## so the socket was never found and use_leaprun was wrongly set to 'no' even
-## when privleap was fully usable -- the always-reproducible "Cannot use privleap".
+## use_leaprun.sh reads the privleapd pid from /run/privleapd/pid and then checks
+## /proc/<pid>. An EMPTY pid file makes that check '[ -d /proc/ ]', which is always
+## true -- so a not-running privleapd would wrongly read as usable. The probe must
+## reject an empty (or non-numeric) pid and report use_leaprun='no'.
 ##
-## Fakes a USABLE privleap inside an unprivileged bwrap mount namespace (tmpfs
-## /run/privleapd with a live pid + a UID-named comm socket + a stub leaprun, all
-## set up by the executed use_leaprun_probe.bash fixture) and asserts
-## use_leaprun='yes'. On the old (username) code the socket path does not match
-## and it reads 'no'. No root, no network.
+## Fakes /run/privleapd with an EMPTY pid file (but a valid UID comm socket and a
+## stub leaprun, so ONLY the pid guard can make the difference) under an
+## unprivileged bwrap, via the executed use_leaprun_probe.bash fixture. No root,
+## no network.
 
 set -o errexit
 set -o nounset
@@ -53,16 +51,15 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 probe_stdout="$(bwrap --bind / / --dev /dev --proc /proc --tmpfs /run/privleapd \
-   env LEAPRUN_FAKE_USABLE=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
+   env LEAPRUN_FAKE_EMPTY_PID=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
    /usr/bin/bash "${probe}" 2>/dev/null)" || probe_stdout='bwrap-run-failed'
 
-## Exact 'use_leaprun=' line, not a substring (a substring false-passes on
-## 'yesplease' and can be steered by warning text that echoes the value).
+## Exact 'use_leaprun=' line, not a substring.
 verdict="$(printf '%s\n' "${probe_stdout}" | sed -n 's/^use_leaprun=//p')"
-if [ "${verdict}" = 'yes' ]; then
-   ok "use_leaprun='yes' when the UID-named comm socket exists (looked up by UID)"
+if [ "${verdict}" = 'no' ]; then
+   ok "use_leaprun='no' when the pid file is empty (not treated as /proc/ = running)"
 else
-   notok "expected use_leaprun=yes (UID socket present); got verdict='${verdict}' from '${probe_stdout}' -- looked up by name, not UID?"
+   notok "expected use_leaprun=no (empty pid); got verdict='${verdict}' from '${probe_stdout}' -- empty pid read as running?"
 fi
 
 printf '%s\n' ""

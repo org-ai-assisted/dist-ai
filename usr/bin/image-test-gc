@@ -29,7 +29,8 @@ die() {
 }
 
 main() {
-   local user home vmname
+   local user home vmname vms_raw
+   local -a vmnames=()
    user="${1:-}"
    [ -n "${user}" ] || die 2 "usage: ${me} EPHEMERAL_USER (eph-*)"
    [ "${user}" != 'root' ] || die 2 "refusing root"
@@ -49,14 +50,21 @@ main() {
 
    home="$(getent passwd "${user}" | cut -d: -f6)"
    printf '%s\n' "${me}: wiping VirtualBox state for ${user}"
+   ## Capture the VM list with an rc-checked command substitution (separate from
+   ## `local`, which would mask the rc) -- NOT process substitution, whose failure
+   ## never reaches errexit and would let a broken `list vms` fall through to the
+   ## folder wipe while registrations survive, then print a false "done".
+   vms_raw="$(sudo -u "${user}" "${VBOXMANAGE}" list vms)"
+   mapfile -t vmnames < <(printf '%s\n' "${vms_raw}" | sed -n 's/^"\(.*\)" .*/\1/p')
    ## poweroff + unregister --delete every VM the user has registered.
-   while read -r vmname; do
+   for vmname in "${vmnames[@]}"; do
       [ -n "${vmname}" ] || continue
       sudo -u "${user}" "${VBOXMANAGE}" controlvm "${vmname}" poweroff 2>/dev/null || true
       sleep 1
-      sudo -u "${user}" "${VBOXMANAGE}" unregistervm "${vmname}" --delete 2>/dev/null || true
-   done < <(sudo -u "${user}" "${VBOXMANAGE}" list vms 2>/dev/null \
-            | sed -n 's/^"\(.*\)" .*/\1/p')
+      ## unregister --delete MUST succeed: safe-rm does not unregister, so a
+      ## swallowed failure here strands a registration pointing at a wiped folder.
+      sudo -u "${user}" "${VBOXMANAGE}" unregistervm "${vmname}" --delete
+   done
    ## drop any leftover VM/disk folder.
    safe-rm --recursive --force -- "${home}/VirtualBox VMs"
    printf '%s\n' "${me}: done"

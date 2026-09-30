@@ -612,6 +612,22 @@ def unquote(text):
     return text
 
 
+def _shell_c_value(program, source):
+    """The VALUE a shell '-c' receives for the PROGRAM word -- what the inner
+    shell actually runs. word_string joins the word's parts and unwraps EACH,
+    so a value built by concatenating quoted spans ('a'"; b" -> 'a; b', or the
+    '...'"'"'...' single-quote idiom) is resolved, not left half-quoted. A word
+    carrying an expansion (word_string None, value not statically known) falls
+    back to the raw source with only its OUTER quotes stripped -- same as before,
+    the safe direction. A bare 'text[0]==text[-1]' strip alone MISSES a
+    mismatched-outer-quote concatenation ('a'"; b" starts "'" ends '"'), so a
+    multi-statement payload written that way would slip the -c gates."""
+    value = bash_ast.word_string(program)
+    if value is not None:
+        return value
+    return unquote(bash_ast.word_source(program, source))
+
+
 def code_only_lines(source, tree):
     """SOURCE's lines with any trailing '#'-comment stripped, located via the
     AST's OWN comment nodes. A '#' inside a '${var#pat}' expansion or a quoted
@@ -667,11 +683,13 @@ def _c_in_command(call, source):
             if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
                 program = tokens[index + 1][1]
                 span = program["End"]["Line"] - program["Pos"]["Line"] + 1
-                yield (call, bash_ast.word_source(program, source), span)
+                yield (call, _shell_c_value(program, source), span)
         else:
             ## Attached form ('-c"prog"'): the program is the rest of this word.
+            ## No standalone word node here (it is a slice of the option word), so
+            ## a concatenated value stays a documented follow-up, like 'su -c'.
             span = word["End"]["Line"] - word["Pos"]["Line"] + 1
-            yield (call, text[cluster.index("c") + 2:], span)
+            yield (call, unquote(text[cluster.index("c") + 2:]), span)
         return
 
 
@@ -695,18 +713,22 @@ def _c_behind_wrapper(call, words, start, source):
             if index + 1 < len(words):
                 program = words[index + 1]
                 span = program["End"]["Line"] - program["Pos"]["Line"] + 1
-                yield (call, bash_ast.word_source(program, source), span)
+                yield (call, _shell_c_value(program, source), span)
             return
 
 
 def shell_c_programs(tree, source):
-    """Yield (call, program_text, line_count) for each 'sh -c <program>' /
+    """Yield (call, program_value, line_count) for each 'sh -c <program>' /
     'bash -c' / 'dash -c' in TREE -- whether the shell is the command itself or
-    an operand of a wrapper ('ssh host -- bash -lc PROG'). Handles the separate
-    ('-c "prog"') and attached ('-c"prog"') forms; the command may be a path
-    (basename decides). Only an EXPLICIT shell operand is caught behind a
-    wrapper; an implicit-shell form ('su -c PROG', 'ssh host PROG') is a
-    documented follow-up (the wrapper runs the login shell, no shell token)."""
+    an operand of a wrapper ('ssh host -- bash -lc PROG'). program_value is the
+    VALUE the inner shell receives (quotes unwrapped and concatenated spans
+    joined via _shell_c_value; an expansion-bearing value falls back to the raw
+    source with its outer quotes stripped), so a caller feeds it straight to a
+    parser -- do NOT unquote it again. Handles the separate ('-c "prog"') and
+    attached ('-c"prog"') forms; the command may be a path (basename decides).
+    Only an EXPLICIT shell operand is caught behind a wrapper; an implicit-shell
+    form ('su -c PROG', 'ssh host PROG') is a documented follow-up (the wrapper
+    runs the login shell, no shell token)."""
     for call in bash_ast.call_exprs(tree):
         name = bash_ast.command_name(call)
         if name is None:

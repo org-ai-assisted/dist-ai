@@ -359,6 +359,18 @@ run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "touch /run/x"')"
 assert_not_at "R-192 spares a single-command 'bash -c' (glue)"       "R-192" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c "foo bar"')"
 assert_not_at "R-192 spares a wrapped single-command 'bash -c' (glue)" "R-192" 2
+## CONCATENATED-quote value: 'echo AA'"; echo BB" is TWO statements (bash joins
+## the adjacent spans into 'echo AA; echo BB'). Stripping only ONE outer quote
+## pair misses it (the mismatched outer quotes '.."'); the value extractor
+## (word_string) resolves it. Canary: FAILS on the pre-fix gate.
+concat_multi="bash -c 'echo AA'\"; echo BB\""
+run_det "$(printf '%s\n' '#!/bin/bash' "${concat_multi}")"
+assert_at "R-192 flags a concatenated-quote multi-statement bash -c" "R-192" 2
+## The '...'\"'\"'...' single-quote-escape idiom is ONE command (a literal
+## apostrophe), so it stays SPARED -- no false positive from the value join.
+concat_single="bash -c 'it'\"'\"'s one'"
+run_det "$(printf '%s\n' '#!/bin/bash' "${concat_single}")"
+assert_not_at "R-192 spares the quote-escape idiom (single command)" "R-192" 2
 
 run_det_at "etc/systemd/system/x.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"
@@ -366,6 +378,11 @@ assert_at "R-191 flags a multi-statement systemd Exec" "R-191" 2
 run_det_at "etc/systemd/system/glue.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/echo done')"
 assert_not_at "R-191 spares a single-command Exec" "R-191" 2
+## R-191 shares the same -c value extractor, so a concatenated-quote
+## multi-statement Exec must be caught too (was missed pre-fix). Canary.
+run_det_at "etc/systemd/system/concat.service" \
+   "$(printf '%s\n' '[Service]' "ExecStart=/bin/bash -c 'a'\"; b\"")"
+assert_at "R-191 flags a concatenated-quote multi-statement Exec" "R-191" 2
 
 run_det_at "etc/apt/apt.conf.d/99x" \
    'DPkg::Post-Invoke {"if [ -x /x ]; then /x; fi"};'
