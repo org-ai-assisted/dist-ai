@@ -705,41 +705,45 @@ PATH_ROOT_SURFACES = (
 
 def load_install_links(dm_root):
     """Map a tree source file (rel path) to its debian/*.links install
-    destination, so a root surface shipped from a renamed source path (a
+    destinations, so a root surface shipped from a renamed source path (a
     grub.d/qubes script under usr/share/.../conf/) is attributed to where it
-    actually installs. A .links line is 'source dest', both absolute."""
+    actually installs. A .links line is 'source dest', both absolute. One source
+    may be linked to SEVERAL destinations (each a distinct symlink)."""
     links = {}
     for dirpath, dirnames, filenames in os.walk(dm_root):
-        if ".git" in dirpath.split(os.sep):
-            continue
+        dirnames[:] = [d for d in dirnames if d != ".git"]
         if os.path.basename(dirpath) != "debian":
             continue
         pkgdir = os.path.relpath(os.path.dirname(dirpath), dm_root)
         for name in filenames:
-            if not name.endswith(".links"):
+            path = os.path.join(dirpath, name)
+            ## Skip symlinks, like walk_files -- a .links pointing at /dev/zero
+            ## would otherwise read forever.
+            if not name.endswith(".links") or os.path.islink(path):
                 continue
-            for raw in read_text(os.path.join(dirpath, name)).splitlines():
+            for raw in read_text(path).splitlines():
                 parts = raw.split()
                 if len(parts) != 2:
                     continue
                 source, dest = parts
                 src_rel = os.path.normpath(os.path.join(pkgdir, source.lstrip("/")))
-                links[src_rel] = "/" + dest.lstrip("/")
+                links.setdefault(src_rel, []).append("/" + dest.lstrip("/"))
     return links
 
 
-def scan_path_surface(abs_path, rel_path, install_dest=None):
+def scan_path_surface(abs_path, rel_path, install_dests=None):
     ## Test the source path AND, when installed elsewhere via debian/*.links,
-    ## its real destination. (slashed_path, probe_name) per candidate.
-    candidates = [("/" + rel_path, install_name(rel_path))]
-    if install_dest is not None:
-        candidates.append((install_dest, os.path.basename(install_dest)))
+    ## EVERY real destination (one source may link to several). A later
+    ## non-privileged dest must not hide an earlier root one.
+    candidates = [("/" + rel_path, install_name(rel_path), None)]
+    for dest in install_dests or ():
+        candidates.append((dest, os.path.basename(dest), dest))
     for category, predicate in PATH_ROOT_SURFACES:
-        for slashed, probe_name in candidates:
+        for slashed, probe_name, dest in candidates:
             if predicate(slashed, probe_name):
                 details = {"interpreter": shebang(abs_path)}
-                if install_dest is not None:
-                    details["installs_to"] = install_dest
+                if dest is not None:
+                    details["installs_to"] = dest
                 return category, details
     return None
 
@@ -771,7 +775,9 @@ def scan_calamares(abs_path, rel_path):
     in_script = False
     for raw in read_text(abs_path).splitlines():
         stripped = raw.strip()
-        if stripped.startswith("#"):
+        ## A blank or comment line inside a 'script:' block is not a key, so it
+        ## must NOT end the block (else later list items are dropped).
+        if not stripped or stripped.startswith("#"):
             continue
         item = CALAMARES_SCRIPT_ITEM_RE.match(raw) if in_script else None
         if item:

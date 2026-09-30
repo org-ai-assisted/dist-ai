@@ -482,6 +482,8 @@ write 'packages/kicksecure/foo/etc/calamares/modules/shellprocess_foo.conf' <<'E
 dontChroot: true
 script:
     - /usr/libexec/foo/cala-script ${ROOT}
+
+    - /usr/libexec/foo/cala-script2
 EOF
 write 'packages/kicksecure/foo/calamares-modules/foo-job/module.desc' <<'EOF'
 ---

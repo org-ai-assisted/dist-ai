@@ -321,9 +321,11 @@ def main(argv):
          one("qubes-hook", "conf/qubes_post-install.d_50-foo.sh") is not None),
         ("an /etc/default/grub.d/*.cfg sourced-as-root file is enumerated",
          one("grub-default-config", "default/grub.d/50_foo.cfg") is not None),
-        ("a Calamares shellprocess script program is enumerated",
+        ("a Calamares shellprocess script program is enumerated, blank line ok",
          one("calamares-job", "shellprocess_foo.conf") is not None
          and "/usr/libexec/foo/cala-script"
+         in one("calamares-job", "shellprocess_foo.conf")["programs"]
+         and "/usr/libexec/foo/cala-script2"
          in one("calamares-job", "shellprocess_foo.conf")["programs"]),
         ("a Calamares process-job command is enumerated",
          one("calamares-job", "foo-job/module.desc") is not None
