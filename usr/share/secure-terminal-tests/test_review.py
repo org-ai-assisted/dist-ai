@@ -119,6 +119,13 @@ _bar = ReviewBar(_win)
 # RevealedEditor -- the widget, in isolation
 # ======================================================================
 _ed = RevealedEditor()
+# Shown + laid out WIDE so short hard-newline lines never soft-wrap: the caret
+# navigation (Home/End/Up/Down) reads its target off the rendered layout, so a
+# real viewport width is needed for visual rows to equal the logical lines these
+# assertions expect (the soft-wrap case is exercised separately below).
+_ed.show()
+_ed.resize(800, 400)
+APP.processEvents()
 
 # set_source: keep printable look-alikes, drop invisibles, preserve newlines
 _ed.set_source('ex' + CYR_A + 'mple' + ZWSP + '.com\nsecond')
@@ -230,6 +237,35 @@ _ed.set_source('ab\ncdef')
 _ed._pos = 2                              # end of line 1 (col 2)
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Down))
 eq(_ed._pos, 5, 'Down into a longer line keeps the column (index 5)')
+
+# SOFT-WRAP visual-row navigation: in detail/reveal the box wraps to the width with NO
+# document newline, so Up/Down and Home/End must follow the WRAPPED rows the user sees,
+# not the logical '\n' line. A narrow box loaded with one long, newline-free line has many
+# visual rows in one logical line. (Regression: the old caret math walked logical newlines,
+# so Down from col 0 jumped to the logical end and Home/End acted on the whole line.)
+_wrap = RevealedEditor()
+_wrap.set_mode('detail')
+_wrap.show()
+_wrap.resize(200, 200)                    # narrow -> 'a'*200 wraps to many visual rows
+APP.processEvents()
+_wrap.set_source('a' * 200)               # one logical line (ASCII -> font-env-robust wrap)
+APP.processEvents()
+_wrap._pos = 0
+_wrap.keyPressEvent(key_ev(Qt.Key.Key_Down))
+ok(0 < _wrap._pos < 200,
+   'Down from the first visual row lands on the next WRAPPED row, not the logical end')
+_row2 = _wrap._pos
+_wrap.keyPressEvent(key_ev(Qt.Key.Key_Up))
+eq(_wrap._pos, 0, 'Up from the second visual row returns to the first (index 0)')
+_wrap._pos = _row2 + 1                     # somewhere on the second visual row
+_wrap.keyPressEvent(key_ev(Qt.Key.Key_Home))
+ok(0 < _wrap._pos <= _row2 + 1,
+   'Home moves to the start of the current WRAPPED row, not source index 0')
+_home2 = _wrap._pos
+_wrap._pos = _home2
+_wrap.keyPressEvent(key_ev(Qt.Key.Key_End))
+ok(_home2 < _wrap._pos < 200,
+   'End moves to the end of the current WRAPPED row, not the logical line end')
 
 # the read-only Ctrl chords (select-all, copy) fall through to the base without mutating
 _CTRL = Qt.KeyboardModifier.ControlModifier
