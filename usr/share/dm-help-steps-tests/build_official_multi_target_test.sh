@@ -15,12 +15,9 @@
 ## a qcow2-only request builds/uploads qcow2 only; an unset request keeps the arch
 ## default; an explicit list is honored verbatim. This is the user-facing contract.
 ##
-## NOTE on scope: whether the override is ALSO authoritative for the shared PREP set
-## (multi_target_args) currently differs between derivative-maker's 'master' (prep
-## honors the override -- qcow2-only does not prep VirtualBox) and the upstream
-## 'variables.d' modularization adopted on 'ai' (prep keeps the arch default). That
-## prep divergence is a dm-side reconciliation, so this test asserts only the
-## flavor (build/upload) set, which is identical under BOTH forms.
+## dm now derives a single multi_target_args array (the earlier separate
+## flavor_multi_target_args set was removed); the expected sets below hold under
+## both the master and variables.d 'ai' forms of the override handling.
 ##
 ## Behavioral: extracts the real VM-target computation from the shipped script (no
 ## drift) and evaluates it per request. No root, no network, no build.
@@ -41,11 +38,11 @@ subject="$(locate_help_step dm-build-official-one "${DM_BUILD_OFFICIAL_ONE:-}" "
    || exit 1
 
 ## The whole VM-target computation: from the top-level 'multi_target_args=()' (the
-## arch case) through the flavor_multi_target_args derivation, up to the next
+## arch case) through the multi_target_args derivation, up to the next
 ## section separator ('####...'). Captures both the arch default and the override
 ## handling regardless of which of the two dm forms is present.
 block="$(sed -n '/^multi_target_args=()$/,/^####/p' -- "${subject}")"
-if [ -z "${block}" ] || [[ "${block}" != *flavor_multi_target_args* ]]; then
+if [ -z "${block}" ] || [[ "${block}" != *dist_build_multi_target_list* ]]; then
    fail "could not extract the multi_target_args computation; the assertions below would prove nothing"
    printf '%s\n' "FAILED: extraction" >&2
    exit 1
@@ -86,7 +83,7 @@ else
 fi
 # shellcheck disable=SC1090
 source "${block}"
-printf '%s\n' "${flavor_multi_target_args[*]}"
+printf '%s\n' "${multi_target_args[*]}"
 DRIVER
 
 ## $1 label, $2 expected build set, $3 architecture, $4 override list (omit -> unset).
