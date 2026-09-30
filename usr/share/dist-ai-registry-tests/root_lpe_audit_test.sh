@@ -264,6 +264,8 @@ echo "harmless" # a comment that ends with a backslash \
 cp --dereference /etc/skel/.bash_logout "${home}/.bash_logout"
 echo "reminder: #style-ok: lpe-symlink-follow -- smuggled via a quoted string" # a real but unrelated trailing comment
 cp --dereference /etc/skel/.bash_history "${home}/.bash_history"
+home_var=1 ## style-ok: lpe-symlink-follow -- TRAILING waiver for home_var only, must NOT reach the cp below
+cp --dereference /etc/skel/.inputrc "${home}/.inputrc"
 EOF
 
 ## VULN + WAIVER (python path): the python-advisory scanner must ALSO reject a
@@ -278,6 +280,8 @@ subprocess.run(["sudo", "systemctl", "restart", "unit"])
 _DOC = """documentation line
 # style-ok: lpe-python-advisory -- smuggled inside a multi-line string, not a waiver"""
 os.chown("/home/user/.config", 0, 0)
+marker_py = 1  # style-ok: lpe-python-advisory -- TRAILING waiver for marker_py only, must NOT reach the os.chown below
+os.chown("/home/user/.ssh", 0, 0)
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------

@@ -388,20 +388,21 @@ def _py_comment_text_by_line(source):
     return comments
 
 
-def lpe_waivers(comment_text_by_line, call_spans, finding_line):
+def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line):
     """Map rule -> reason for waivers covering the command at finding_line.
 
-    A waiver is honored on the finding's own line, the owning command's first
-    line, or the comment line directly above that command. The command and its
-    line span come from the shfmt AST (CALL_SPANS: (start, end) line pairs), and
-    the waiver is matched against the real COMMENT TEXT for that line
-    (COMMENT_TEXT_BY_LINE: line -> reconstructed '#...' comment), NEVER the raw
-    source line -- so a 'style-ok: lpe-...' sitting in a QUOTED STRING (even on a
-    line that also carries an unrelated real trailing comment) is data, not a
-    waiver. Statement association is AST-truthful, never a textual
-    '\\'-continuation scan, so a backslash in a comment or an even/literal
-    backslash cannot mis-attribute a waiver to an unrelated sink below it. A
-    rule of 'all' waives every rule for that command.
+    A waiver is honored (a) on the finding's own line or the owning command's
+    first line -- as a trailing OR standalone comment, since it sits ON that
+    statement -- or (b) as a STANDALONE comment on the line directly above the
+    command. The 'directly above' line must be standalone (STANDALONE_LINES): a
+    TRAILING comment there belongs to the preceding statement, so honoring it
+    would let 'x=1  # style-ok: ...' silently suppress the finding on the next
+    line. The owning command + its line span come from the shfmt AST (CALL_SPANS:
+    (start, end) line pairs); the waiver is matched against the real COMMENT TEXT
+    (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a
+    'style-ok: lpe-...' in a QUOTED STRING is data, not a waiver. Association is
+    AST-truthful, never a textual '\\'-continuation scan. A rule of 'all' waives
+    every rule for that command.
     """
     waivers: dict[str, str] = {}
     if finding_line < 1:
@@ -412,9 +413,14 @@ def lpe_waivers(comment_text_by_line, call_spans, finding_line):
     containing = [start for start, end in call_spans
                   if start <= finding_line <= end]
     stmt_start = min(containing) if containing else finding_line
-    for cand in (finding_line, stmt_start, stmt_start - 1):
+    ## (candidate line, must-be-standalone).
+    candidates = [(finding_line, False), (stmt_start, False),
+                  (stmt_start - 1, True)]
+    for cand, require_standalone in candidates:
         text = comment_text_by_line.get(cand)
         if text is None:
+            continue
+        if require_standalone and cand not in standalone_lines:
             continue
         match = LPE_WAIVER_RE.search(text)
         if match is None:
@@ -490,6 +496,14 @@ def audit(dm_root):
             call_spans = []
         else:
             continue
+        ## A comment line is STANDALONE when only whitespace precedes its '#'
+        ## (language-agnostic): such a comment belongs to the statement below it,
+        ## whereas a trailing comment belongs to its own code line.
+        source_lines = source.splitlines()
+        standalone_lines = {
+            ln for ln in comment_text_by_line
+            if ln and 1 <= ln <= len(source_lines)
+            and source_lines[ln - 1].lstrip().startswith("#")}
         for finding in raw_findings:
             entry = {
                 "component": component,
@@ -508,8 +522,8 @@ def audit(dm_root):
             ## A per-line '## style-ok: lpe-<rule> -- <why>' waiver routes a
             ## reviewed by-design finding to 'suppressed' (still visible) rather
             ## than dropping it -- so a rescan no longer re-flags a settled line.
-            waived = lpe_waivers(comment_text_by_line, call_spans,
-                                 finding["line"])
+            waived = lpe_waivers(comment_text_by_line, standalone_lines,
+                                 call_spans, finding["line"])
             reason = waived.get(finding["rule"]) or waived.get("all")
             if reason is not None:
                 entry["waiver_reason"] = reason

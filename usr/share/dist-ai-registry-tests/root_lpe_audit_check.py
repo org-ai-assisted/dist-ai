@@ -143,16 +143,27 @@ def main(argv):
     checks.append((
         "quoted-string smuggle sink is NOT suppressed",
         not has(suppressed, "vuln-waived", "symlink-follow", ".bash_history")))
+    ## A TRAILING waiver on the code line directly above a finding belongs to
+    ## THAT line's statement, not the finding below -- only a STANDALONE comment
+    ## above a statement waives it. Guards both the shell and Python paths.
+    checks.append((
+        "trailing waiver on the line above a shell sink does not suppress it",
+        has(findings, "vuln-waived", "symlink-follow", ".inputrc")
+        and not has(suppressed, "vuln-waived", "symlink-follow", ".inputrc")))
     ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
     ## not a comment, so it must not waive the advisory finding below it. The
     ## 'in findings' half also proves the python-advisory path is exercised (no
     ## vacuous pass).
     checks.append((
         "python-advisory finding emitted for the py fixture",
-        has(findings, "vuln_py_waived", "python-advisory")))
+        has(findings, "vuln_py_waived", "python-advisory", ".config")))
     checks.append((
         "python multi-line-string '#style-ok' does not waive the advisory",
-        not has(suppressed, "vuln_py_waived", "python-advisory")))
+        not has(suppressed, "vuln_py_waived", "python-advisory", ".config")))
+    checks.append((
+        "python trailing waiver above an advisory does not suppress it",
+        has(findings, "vuln_py_waived", "python-advisory", ".ssh")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".ssh")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.
