@@ -371,6 +371,14 @@ assert_at "R-192 flags a concatenated-quote multi-statement bash -c" "R-192" 2
 concat_single="bash -c 'it'\"'\"'s one'"
 run_det "$(printf '%s\n' '#!/bin/bash' "${concat_single}")"
 assert_not_at "R-192 spares the quote-escape idiom (single command)" "R-192" 2
+## A backslash-escaped separator inside a DOUBLE-quoted span is ONE command to
+## bash ('"echo foo\\;"' plus ' echo bar' -> echo foo\; echo bar, a literal ';').
+## word_string does NOT decode double-quote escapes, so the value join is trusted
+## only when backslash-free; else it falls back to the conservative source strip.
+## '${bs}' is a single backslash (defined above); two make the '\\' bash sees.
+concat_bs="bash -c \"echo foo${bs}${bs};\"' echo bar'"
+run_det "$(printf '%s\n' '#!/bin/bash' "${concat_bs}")"
+assert_not_at "R-192 spares a backslash-escaped ';' in a double-quoted concat" "R-192" 2
 
 run_det_at "etc/systemd/system/x.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"
