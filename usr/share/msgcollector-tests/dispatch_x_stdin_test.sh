@@ -66,7 +66,7 @@ test_large_message_not_truncated() {
   fi
 
   ## Recorder stub in place of the PyQt renderer: save exactly the stdin body
-  ## the renderer would receive, under a fake MSGCOLLECTOR_REPO layout.
+  ## the renderer would receive, under a fake checkout layout.
   stub_py="${work_dir}/repo/usr/libexec/msgcollector/msgdispatcher_dispatch_x.py"
   mkdir --parents -- "$(dirname -- "${stub_py}")"
   record="${work_dir}/record"
@@ -83,6 +83,10 @@ test_large_message_not_truncated() {
     ## Isolated globals dispatch_x_active reads; verbose=1 runs the renderer in
     ## the foreground so the piped recorder finishes before we assert.
     MSGCOLLECTOR_REPO="${work_dir}/repo"
+    ## dispatch_x_active resolves msgdispatcher_dispatch_x.py via MSGCOLLECTOR_PATH,
+    ## so point that at the stub layout too (else it runs the real PyQt renderer).
+    # shellcheck disable=SC2034  # MSGCOLLECTOR_PATH: consumed by the eval'd dispatch_x_active
+    MSGCOLLECTOR_PATH="${work_dir}/repo"
     # shellcheck disable=SC2034  # msgcollector_run_dir: isolated global consumed by the eval'd dispatch_x_active
     msgcollector_run_dir="${work_dir}/repo"
     # shellcheck disable=SC2034  # msgdispatcher_identifier: isolated global consumed by the eval'd dispatch_x_active
