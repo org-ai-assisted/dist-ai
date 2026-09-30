@@ -92,6 +92,41 @@ def test_guestctl_never_echoes_typed_text():
     assert 'type %r' not in src
 
 
+def test_guestctl_parser_has_type_stdin():
+    ## CWE-214: a secret is typed via stdin (type-stdin), never on argv.
+    ns = GC._build_parser().parse_args(['v', 'type-stdin'])
+    assert ns.cmd == 'type-stdin'
+
+
+def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):
+    ## a missing VBoxManage raises FileNotFoundError in the finally; cleanup must
+    ## swallow it, not crash over the real exit status.
+    def boom(_argv):
+        raise FileNotFoundError('VBoxManage')
+    monkeypatch.setattr(M, '_run', boom)
+    M._poweroff_quietly('kick')
+
+
+ORCH = Path(__file__).resolve().parents[2] / 'bin' / 'dm-calamares-install'
+
+
+def test_calamares_install_passphrase_not_on_argv():
+    ## CWE-214: the LUKS passphrase is read from a file + piped to type-stdin, never
+    ## passed on argv (readable in /proc/PID/cmdline).
+    src = ORCH.read_text(encoding='utf-8')
+    assert '--passphrase-file' in src
+    assert 'type-stdin' in src
+    assert 'type "${passphrase}"' not in src
+
+
+def test_calamares_install_powers_off_only_started_vm():
+    ## regression: the exit trap must power off only a VM THIS run started, and both
+    ## runners guard poweroff behind the started flag.
+    src = ORCH.read_text(encoding='utf-8')
+    assert 'vm_started="true"' in src
+    assert 'trap on_exit EXIT' in src
+
+
 def test_backend_present():
     assert BACKEND.is_file(), f"backend not found: {BACKEND}"
 

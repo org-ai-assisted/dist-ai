@@ -87,6 +87,8 @@ def _build_parser():
                            help='bitmask 1=left 2=right 4=middle (click only)')
     typ = sub.add_parser('type', help='type a literal string')
     typ.add_argument('text')
+    sub.add_parser('type-stdin',
+                   help='type text read from stdin (keeps secrets out of argv/proc)')
     key = sub.add_parser('key', help='inject raw hex scancodes')
     key.add_argument('codes', nargs='+', metavar='HEX')
     return parser
@@ -126,6 +128,14 @@ def main(argv=None):
             ## NEVER echo the typed text -- it may be a LUKS passphrase (CWE-532);
             ## report only the length.
             print('type: %d char(s)' % (len(args.text),))
+        elif args.cmd == 'type-stdin':
+            ## secret text (LUKS passphrase) read from stdin so it never lands in
+            ## argv/proc (CWE-214); strip one trailing newline a shell may add.
+            text = sys.stdin.read()
+            if text.endswith('\n'):
+                text = text[:-1]
+            send_scancodes(console.keyboard, text_scancodes(text))
+            print('type-stdin: %d char(s)' % (len(text),))
         elif args.cmd == 'key':
             send_scancodes(console.keyboard, [int(code, 16) for code in args.codes])
             print('key %s' % (' '.join(args.codes),))
