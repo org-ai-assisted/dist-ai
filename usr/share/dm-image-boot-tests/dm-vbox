@@ -861,6 +861,19 @@ def _build_parser():
     inst.add_argument('--interval', type=int, default=15)
     inst.add_argument('--shot', help='write the final screenshot to this path')
     inst.add_argument('--no-poweroff', dest='no_poweroff', action='store_true')
+
+    verify = sub.add_parser(
+        'verify',
+        help='compare a screenshot against a committed render baseline (tolerant '
+             'perceptual pixel diff, resize-normalised) and optionally OCR-assert '
+             'expected text; exit 0 MATCH / 5 MISMATCH')
+    verify.add_argument('--shot', required=True, help='screenshot PNG to check')
+    verify.add_argument('--baseline', required=True, help='committed baseline PNG')
+    verify.add_argument('--tol', type=float, default=0.05,
+                        help='max mean per-channel pixel diff in [0,1] (default 0.05)')
+    verify.add_argument('--expect', action='append', default=[], metavar='TEXT',
+                        help='text that must also appear on the shot (repeatable, '
+                             'ALL required; needs tesseract)')
     return parser
 
 
@@ -873,6 +886,28 @@ def _cmd_capabilities():
     print('VBoxManage: %s' % ('yes' if have_vbox else 'no'))
     print('tesseract:  %s' % ('yes' if have_tesseract else 'no'))
     print('imagehash:  %s' % ('yes' if have_imagehash else 'no'))
+    return PASS_RC
+
+
+def _cmd_verify(args):
+    from pathlib import Path
+    for label, path in (('baseline', args.baseline), ('screenshot', args.shot)):
+        if not Path(path).is_file():
+            print('dm-vbox: %s not found: %s' % (label, path), file=sys.stderr)
+            return SETUP_RC
+    ratio = image_diff_ratio(args.baseline, args.shot)
+    matched = ratio <= args.tol
+    print('dm-vbox: render diff %.4f (tol %.4f) vs %s: %s'
+          % (ratio, args.tol, Path(args.baseline).name,
+             'MATCH' if matched else 'MISMATCH'))
+    if not matched:
+        return FAIL_RC
+    if args.expect:
+        text = run_ocr(args.shot)
+        if not ocr_text_contains(text, args.expect):
+            print('dm-vbox: expected text missing from shot: %s'
+                  % (args.expect,), file=sys.stderr)
+            return FAIL_RC
     return PASS_RC
 
 
@@ -897,6 +932,8 @@ def main(argv=None):
         return run_boot_test(args)
     if args.cmd == 'install':
         return run_install_test(args)
+    if args.cmd == 'verify':
+        return _cmd_verify(args)
     return SETUP_RC
 
 
