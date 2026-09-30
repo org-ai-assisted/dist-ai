@@ -136,7 +136,15 @@ rc="${QUBESDB_RC:-0}"
 printf '%s\n' "${QUBESDB_NAME:-host}"
 EOF
 
-chmod +x -- "${mockbin}/sudo" "${mockbin}/locale-gen" "${mockbin}/qubesdb-read"
+cat > "${mockbin}/id" <<'EOF'
+#!/bin/bash
+## mock id: the expected account always "exists". Decouples the success cases
+## from host accounts (CI may run with no 'user' account); the failbin variant
+## (exit 1) drives the "missing user" cases.
+exit 0
+EOF
+
+chmod +x -- "${mockbin}/sudo" "${mockbin}/locale-gen" "${mockbin}/qubesdb-read" "${mockbin}/id"
 ## mockbin shadows the root/non-deterministic commands; real_hs_bindir supplies
 ## str_replace from the helper-scripts checkout.
 export PATH="${mockbin}:${real_hs_bindir}:${PATH}"
@@ -160,19 +168,6 @@ export CIBM_RC=0
 export QUBESDB_NAME='host'
 export QUBESDB_RC=0
 unset MOK_PUB MOK_KEY LOCALEGEN_MARKER 2>/dev/null || true
-
-# shellcheck disable=SC1090
-source "${subject}"
-
-## Required REAL tools (the mocked sudo/locale-gen/qubesdb-read are provided by
-## mockbin). Absent means a broken test environment -> FATAL, never a skip.
-## 'has' comes from the just-sourced has.bsh.
-for tool in sed grep cat stat str_replace sponge safe-rm ; do
-   if ! has "${tool}" ; then
-      printf '%s\n' "FATAL: required tool '${tool}' not on PATH" >&2
-      exit 1
-   fi
-done
 
 ## --------------------------------------------------------------------------
 pass=0
@@ -222,9 +217,13 @@ do_once() {
    printf '%s' "${1}/var/lib/whonix/do_once/${2}"
 }
 
-## ============================ source-ability ============================
-## $0 is a placeholder, NOT the subject: was_executed compares BASH_SOURCE[0] to
-## $0, so passing the subject as $0 would make it think it was executed.
+## ================= source-ability (BEFORE the in-process source) =================
+## These run in an ISOLATED subprocess and MUST precede the in-process source
+## below. They verify the subject is inert when sourced (no strict-mode leak, no
+## auto-run). If the subject regressed to run at file scope, sourcing it into THIS
+## shell would exit or side-effect before any check -- and, run as root, bypass the
+## seams onto the host -- so the in-process source is GATED on these passing.
+## $0 is a placeholder, NOT the subject: was_executed compares BASH_SOURCE[0] to $0.
 leak_rc=0
 HELPER_SCRIPTS_PATH="${hs_tree}" bash -c 'source "$1"; false; true' placeholder "${subject}" >/dev/null 2>&1 \
    || leak_rc=$?
@@ -232,6 +231,24 @@ check "sourcing does not leak strict-mode" "${leak_rc}" "0"
 
 src_out="$(HELPER_SCRIPTS_PATH="${hs_tree}" bash -c 'source "$1"' placeholder "${subject}" 2>&1)" || true
 check "sourcing does not auto-run" "${src_out}" ""
+
+if [ "${leak_rc}" -ne 0 ] || [ -n "${src_out}" ]; then
+   printf '%s\n' "FATAL: subject is not safe to source in-process (see checks above)" >&2
+   exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${subject}"
+
+## Required REAL tools (the mocked sudo/locale-gen/qubesdb-read/id are provided by
+## mockbin). Absent means a broken test environment -> FATAL, never a skip.
+## 'has' comes from the just-sourced has.bsh.
+for tool in sed grep cat stat str_replace sponge safe-rm ; do
+   if ! has "${tool}" ; then
+      printf '%s\n' "FATAL: required tool '${tool}' not on PATH" >&2
+      exit 1
+   fi
+done
 
 check "run_as_user is defined"     "$(type -t run_as_user)"     "function"
 check "load_user_list is defined"  "$(type -t load_user_list)"  "function"
