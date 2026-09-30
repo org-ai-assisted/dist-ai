@@ -718,21 +718,31 @@ class PythonInterpreter(Rule):
 
 
 class ShellInlineShellC(Rule):
-    """R-192: a substantial inline shell program (>5 lines) passed to a shell
-    '-c' from a shell script belongs in its own file."""
+    """R-192: an inline shell program passed to a shell '-c' from a shell script
+    belongs in its own file when it is multi-statement (strict: ';', a pipe,
+    '&&'/'||', a control keyword, or a >1-statement group) OR substantial (>5
+    lines). The shell-script sibling of R-191 (systemd units): the '-c' body is
+    hidden from shellcheck, has no importable home a test can reach, and no
+    coverage tool sees it. A single-command wrapper ('bash -c "touch /run/x"') is
+    glue, not a program, and is spared."""
 
     id = "R-192"
-    waiver_tag = "allow-inline-interpreter"
+    waiver_tag = "allow-embedded-script"
 
     def detect(self, ctx):
-        ## Command-position shell '-c' only. Catching a shell behind a wrapper
-        ## ('ssh host -- bash -lc PROG', 'su - u -c PROG') needs a wrapper
-        ## allowlist + effective-command + value-option handling done right; a
-        ## bare "any shell-name operand + -c" heuristic both false-positives
-        ## ('echo bash -c "<6 lines>"') and misses 'su -c'. Left as a follow-up.
-        for call, _program, line_count in h.shell_c_programs(
+        ## An explicit 'sh'/'bash'/'dash -c PROG', directly or behind an
+        ## allowlisted wrapper ('ssh host -- bash -lc PROG', 'timeout bash -c
+        ## PROG'). An implicit-shell form ('su -c PROG', 'ssh host PROG') carries
+        ## no shell token and is a documented follow-up in shell_c_programs.
+        for call, program, line_count in h.shell_c_programs(
                 ctx.tree, ctx.source):
-            if line_count > 5:
+            if h.embeds_multi_statement(h.unquote(program), strict=True):
+                yield _fail(
+                    ctx, "R-192",
+                    "R-192 inline shell program passed to a shell '-c' embeds a "
+                    "multi-statement script; move the logic to a dedicated "
+                    "script (shebang) and call it", call)
+            elif line_count > 5:
                 yield _fail(
                     ctx, "R-192",
                     "R-192 inline shell program (%d lines) passed to a shell "

@@ -1689,6 +1689,31 @@ assert_gate_tag_absent 'R-191 honours the allow-embedded-script waiver' \
 assert_gate_tag_absent 'R-191 spares a markdown doc carrying an example Exec= line' \
    'doc.md' "${unit_hits}" "${unit_out}"
 
+## R-192: an inline 'sh'/'bash'/'dash -c' program in a shell SCRIPT that is
+## multi-statement (strict: ';', a pipe, '&&'/'||', a control keyword) OR
+## substantial (>5 lines) is flagged -- the shell-script sibling of R-191. A
+## SHORT multi-statement payload is the gap the >5-line-ONLY predicate left open
+## (a dist-ai test shipped exactly this; a human, not the gate, caught it). A
+## single-command wrapper, direct or behind an allowlisted wrapper, is glue and is
+## SPARED. Each 'bash -c' body below is an expect_rule string ARGUMENT (data), not
+## command position, so the gate never reads THIS file as an inline program.
+expect_rule "R-192" "bash -c 'a && b'"            present
+expect_rule "R-192" "bash -c 'a ; b'"             present
+expect_rule "R-192" "bash -c 'a | b'"             present
+expect_rule "R-192" "bash -c 'if x; then y; fi'"  present
+## Wrapped: a shell '-c' reached through an allowlisted wrapper is still inline.
+expect_rule "R-192" "timeout 5 bash -c 'a && b'"  present
+## The long-form (>5-line) program is still caught (kept from the original
+## predicate); the body carries embedded newlines.
+expect_rule "R-192" "$(printf 'bash -c "a\nb\nc\nd\ne\nf\ng"')" present
+## Glue is SPARED: a single-command '-c' (direct AND behind a wrapper) -- the
+## false-positive the inject warned about ('bwrap/timeout bash -c <single>').
+expect_rule "R-192" "bash -c 'touch /run/x'"      absent
+expect_rule "R-192" "timeout 5 bash -c 'foo bar'" absent
+## The file-wide named waiver and the id override each exempt the script.
+expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: allow-embedded-script' "bash -c 'a && b'")" absent
+expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: R-192' "bash -c 'a && b'")" absent
+
 ## R-193 (config hosts): an explicit python interpreter in a systemd 'Exec*='
 ## directive or a workflow 'run:' step. A script run through the interpreter and
 ## an embedded '-c' are FLAGGED; a DIRECT +x '.py' Exec and an unpinned
@@ -2447,4 +2472,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
