@@ -69,15 +69,38 @@ def _console(name):
     return mgr, session, session.console
 
 
-def main():
-    name, cmd, args = sys.argv[1], sys.argv[2], sys.argv[3:]
-    mgr, session, console = _console(name)
+def _build_parser():
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog='vbox-guestctl',
+        description='host-side VBox guest I/O via vboxapi (mouse/keyboard/screenshot)')
+    parser.add_argument('vm')
+    sub = parser.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('res', help='print the guest screen resolution')
+    shot = sub.add_parser('shot', help='write a screenshot PNG')
+    shot.add_argument('path')
+    for name in ('click', 'move'):
+        mouse = sub.add_parser(name, help='%s the pointer (screenshot pixel coords)' % name)
+        mouse.add_argument('x', type=int)
+        mouse.add_argument('y', type=int)
+        mouse.add_argument('button', type=int, nargs='?', default=1,
+                           help='bitmask 1=left 2=right 4=middle (click only)')
+    typ = sub.add_parser('type', help='type a literal string')
+    typ.add_argument('text')
+    key = sub.add_parser('key', help='inject raw hex scancodes')
+    key.add_argument('codes', nargs='+', metavar='HEX')
+    return parser
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
+    mgr, session, console = _console(args.vm)
     try:
         disp = console.display
         width, height = disp.getScreenResolution(0)[:2]
-        if cmd == 'res':
+        if args.cmd == 'res':
             print('%d %d' % (width, height))
-        elif cmd == 'shot':
+        elif args.cmd == 'shot':
             if not width or not height:
                 ## early boot (pre-EFI-framebuffer) reports 0x0; a clean error, not
                 ## an XPCOM traceback, so a caller polling for readiness can retry.
@@ -85,27 +108,27 @@ def main():
                 return 3
             data = disp.takeScreenShotToArray(
                 0, width, height, mgr.constants.BitmapFormat_PNG)
-            with open(args[0], 'wb') as handle:
+            with open(args.path, 'wb') as handle:
                 handle.write(bytes(data))
-            print('shot %dx%d -> %s' % (width, height, args[0]))
-        elif cmd in ('click', 'move'):
-            x, y = int(args[0]), int(args[1])
-            button = int(args[2]) if len(args) > 2 else 1
-            ## absolute pixel coords (same space as the screenshot); press+release.
-            console.mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
-            if cmd == 'click':
-                console.mouse.putMouseEventAbsolute(x, y, 0, 0, button)
-                console.mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
-            print('%s %d %d' % (cmd, x, y))
-        elif cmd == 'type':
-            send_scancodes(console.keyboard, text_scancodes(args[0]))
-            print('type %r' % (args[0],))
-        elif cmd == 'key':
-            send_scancodes(console.keyboard, [int(a, 16) for a in args])
-            print('key %s' % (' '.join(args),))
-        else:
-            print('unknown cmd %r' % (cmd,), file=sys.stderr)
-            return 2
+            print('shot %dx%d -> %s' % (width, height, args.path))
+        elif args.cmd in ('click', 'move'):
+            ## CLI coords are 0-based screenshot pixels; VBox absolute coords are
+            ## 1-based [1..width], so map with +1 (screenshot (0,0) -> guest top-left,
+            ## and a 0 edge coord is never pushed out of the valid range).
+            gx, gy = args.x + 1, args.y + 1
+            console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, 0)
+            if args.cmd == 'click':
+                console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, args.button)
+                console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, 0)
+            print('%s %d %d' % (args.cmd, args.x, args.y))
+        elif args.cmd == 'type':
+            send_scancodes(console.keyboard, text_scancodes(args.text))
+            ## NEVER echo the typed text -- it may be a LUKS passphrase (CWE-532);
+            ## report only the length.
+            print('type: %d char(s)' % (len(args.text),))
+        elif args.cmd == 'key':
+            send_scancodes(console.keyboard, [int(code, 16) for code in args.codes])
+            print('key %s' % (' '.join(args.codes),))
         return 0
     finally:
         session.unlockMachine()

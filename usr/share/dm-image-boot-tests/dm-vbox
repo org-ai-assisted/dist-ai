@@ -267,6 +267,7 @@ def parse_module_refcounts(proc_modules_text):
             try:
                 refcounts[fields[0]] = int(fields[2])
             except ValueError:
+                ## a non-numeric refcount field is a malformed/header line -- skip it.
                 continue
     return refcounts
 
@@ -603,6 +604,7 @@ def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
         try:
             capture_screen(vmname, png, vboxmanage)
         except subprocess.CalledProcessError:
+            ## the display can be briefly uncapturable early in boot -- retry next tick.
             continue
         ocr = run_ocr(png, tesseract)
         if all(ocr_text_contains(ocr, item) for item in expect):
@@ -610,28 +612,44 @@ def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
     return False, png, ocr
 
 
+def _poweroff_quietly(vmname):
+    """Best-effort cleanup in a finally."""
+    try:
+        _run(build_poweroff_argv(vmname))
+    except subprocess.CalledProcessError:
+        ## the VM may already be off or gone -- a non-zero poweroff is not a failure.
+        pass
+
+
 def run_boot_test(args):
-    """Real-host: optional import, boot, OCR-verify expected screen text, power off."""
+    """Real-host: optional import, boot, OCR-verify expected screen text, power off.
+
+    The boot + OCR verify is wrapped so a tooling failure (e.g. tesseract missing)
+    is a clean FAIL, and the VM is ALWAYS powered off (unless --no-poweroff) rather
+    than left running after an exception."""
     if args.ova is not None:
         _run(build_import_argv(args.ova, args.vm))
-    ok, png, ocr = boot_and_verify(
-        args.vm, args.expect, timeout=args.timeout, interval=args.interval,
-        shot=args.shot)
-    print('dm-vbox: screenshot %s' % (png,))
-    if ok:
-        print('dm-vbox: PASS -- all expected text found: %s'
-              % (', '.join(args.expect),))
-    else:
-        missing = [item for item in args.expect
-                   if not ocr_text_contains(ocr, item)]
-        print('dm-vbox: FAIL -- missing after %ds: %s'
-              % (args.timeout, ', '.join(missing)), file=sys.stderr)
-    if not args.no_poweroff:
-        try:
-            _run(build_poweroff_argv(args.vm))
-        except subprocess.CalledProcessError:
-            pass
-    return PASS_RC if ok else FAIL_RC
+    rc = FAIL_RC
+    try:
+        ok, png, ocr = boot_and_verify(
+            args.vm, args.expect, timeout=args.timeout, interval=args.interval,
+            shot=args.shot)
+        print('dm-vbox: screenshot %s' % (png,))
+        if ok:
+            print('dm-vbox: PASS -- all expected text found: %s'
+                  % (', '.join(args.expect),))
+            rc = PASS_RC
+        else:
+            missing = [item for item in args.expect
+                       if not ocr_text_contains(ocr, item)]
+            print('dm-vbox: FAIL -- missing after %ds: %s'
+                  % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
+    finally:
+        if not args.no_poweroff:
+            _poweroff_quietly(args.vm)
+    return rc
 
 
 def create_install_vm(vmname, iso, disk_path, *, firmware, memory, disk_mb,
@@ -661,24 +679,27 @@ def run_install_test(args):
         print('dm-vbox: install VM build failed: %s' % (' '.join(exc.cmd),),
               file=sys.stderr)
         return SETUP_RC
-    ok, png, ocr = boot_and_verify(
-        args.vm, args.expect, timeout=args.timeout, interval=args.interval,
-        shot=args.shot)
-    print('dm-vbox: screenshot %s' % (png,))
-    if ok:
-        print('dm-vbox: PASS -- ISO booted to live/installer; found: %s'
-              % (', '.join(args.expect),))
-    else:
-        missing = [item for item in args.expect
-                   if not ocr_text_contains(ocr, item)]
-        print('dm-vbox: FAIL -- missing after %ds: %s'
-              % (args.timeout, ', '.join(missing)), file=sys.stderr)
-    if not args.no_poweroff:
-        try:
-            _run(build_poweroff_argv(args.vm))
-        except subprocess.CalledProcessError:
-            pass
-    return PASS_RC if ok else FAIL_RC
+    rc = FAIL_RC
+    try:
+        ok, png, ocr = boot_and_verify(
+            args.vm, args.expect, timeout=args.timeout, interval=args.interval,
+            shot=args.shot)
+        print('dm-vbox: screenshot %s' % (png,))
+        if ok:
+            print('dm-vbox: PASS -- ISO booted to live/installer; found: %s'
+                  % (', '.join(args.expect),))
+            rc = PASS_RC
+        else:
+            missing = [item for item in args.expect
+                       if not ocr_text_contains(ocr, item)]
+            print('dm-vbox: FAIL -- missing after %ds: %s'
+                  % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
+    finally:
+        if not args.no_poweroff:
+            _poweroff_quietly(args.vm)
+    return rc
 
 
 ## --- CLI --------------------------------------------------------------------
