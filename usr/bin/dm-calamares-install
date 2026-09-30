@@ -38,6 +38,7 @@ passphrase=""
 passphrase_file=""
 firmware="efi"
 reinstall="false"
+checks="false"
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
 
@@ -65,7 +66,9 @@ usage() {
 --firmware   VM boot firmware (default efi; efi-secureboot enrolls PK+MS keys).
 --reinstall  reuse the existing VM + disk (do not recreate) and install OVER it,
              switching to --firmware -- the R7 chain (BIOS install, then
-             EFI+SB reinstall-over-LUKS: run once plain, once --reinstall)."
+             EFI+SB reinstall-over-LUKS: run once plain, once --reinstall).
+--checks     after the installed boot, run the release-critical check battery
+             in-guest (check 8: systemcheck --leak-tests) and fail on a non-pass."
 }
 
 ## Screenshot the guest and return its OCR text on stdout.
@@ -162,6 +165,31 @@ open_terminal() {
    die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
 }
 
+## Run one release-critical check in-guest via the terminal and classify by an
+## OCR-friendly marker (letters+digit only, no chars OCR mangles): the command
+## runs, rc 0 -> DMCHKPASS<n>, non-zero -> DMCHKFAIL<n>. 0 PASS / 1 FAIL.
+run_check() {
+   local num="$1" cmd="$2" timeout="$3" deadline text
+   printf '%s' "${cmd} && echo DMCHKPASS${num} || echo DMCHKFAIL${num}" \
+      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   scan 1c 9c
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      scan 2a aa
+      text="$(ocr)"
+      if [[ "${text,,}" =~ dmchkpass${num} ]]; then
+         printf '%s\n' "${me}: check ${num} PASS"
+         return 0
+      fi
+      if [[ "${text,,}" =~ dmchkfail${num} ]]; then
+         printf '%s\n' "${me}: check ${num} FAIL"
+         return 1
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}
+
 parse_args() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -187,6 +215,10 @@ parse_args() {
             ;;
          --reinstall)
             reinstall="true"
+            shift
+            ;;
+         --checks)
+            checks="true"
             shift
             ;;
          -h|--help)
@@ -347,6 +379,16 @@ main() {
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
+
+   if [ "${checks}" = 'true' ]; then
+      printf '%s\n' "${me}: release-critical checks on the installed system"
+      wait_ready 300
+      open_terminal
+      ## check 8: systemcheck --leak-tests -- the core catastrophic-regression gate
+      ## (exit 0 Success / 1 Error / 2 Warning; only a clean 0 passes).
+      run_check 8 'systemcheck --cli --leak-tests --verbose' 600 \
+         || die "${FAIL_RC}" "check 8 (systemcheck --leak-tests) FAILED"
+   fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"
    return "${PASS_RC}"
