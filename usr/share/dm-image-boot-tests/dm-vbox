@@ -62,8 +62,10 @@ TESSERACT = 'tesseract'
 ## prints them without executing, mirroring dm-qemu --emit-argv, so the RUN
 ## path stays a thin subprocess.run over a separately-tested argv.
 
-## Harness firmware name -> VBoxManage --firmware value. efi-secureboot also
-## flips --secure-boot on (VBox 7.2+; the platform key is enrolled at run time).
+## Harness firmware name -> VBoxManage --firmware value. SecureBoot is NOT a
+## --firmware/modifyvm setting in VBox 7.x (modifyvm has no --secure-boot option);
+## it is enabled per-VM through the NVRAM UEFI variable store -- see
+## build_secureboot_plan, spliced into build_install_vm_plan for efi-secureboot.
 _FIRMWARE = {
     'bios': 'bios',
     'efi': 'efi',
@@ -97,8 +99,6 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
         argv += ['--memory', str(memory)]
     if firmware is not None:
         argv += ['--firmware', _FIRMWARE[firmware]]
-        if firmware == 'efi-secureboot':
-            argv += ['--secure-boot', 'on']
     if intnet is not None:
         argv += ['--nic1', 'intnet', '--intnet1', intnet]
     elif nic is not None:
@@ -144,6 +144,58 @@ def build_keyboard_argv(vmname, codes, vboxmanage=VBOXMANAGE):
 def build_poweroff_argv(vmname, vboxmanage=VBOXMANAGE):
     """Hard power-off the VM."""
     return [vboxmanage, 'controlvm', vmname, 'poweroff']
+
+
+def build_secureboot_plan(vmname, vboxmanage=VBOXMANAGE):
+    """Ordered VBoxManage argv to turn SecureBoot ON for an EFI VM (VBox 7.x).
+
+    modifyvm has NO --secure-boot in 7.x; SecureBoot lives in the per-VM NVRAM
+    UEFI variable store. Sequence: initialise the var store, enroll the Oracle
+    platform key (PK) and the Microsoft KEK+db signatures (a distro's MS-signed
+    shim needs the MS db), then enable SecureBoot. The VM must already exist with
+    --firmware efi (build_install_vm_plan runs createvm+modifyvm first)."""
+    nvram = [vboxmanage, 'modifynvram', vmname]
+    return [
+        nvram + ['inituefivarstore'],
+        nvram + ['enrollorclpk'],
+        nvram + ['enrollmssignatures'],
+        nvram + ['secureboot', '--enable'],
+    ]
+
+
+def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
+                          memory=4096, disk_mb=25600, ostype='Debian_64',
+                          vboxmanage=VBOXMANAGE):
+    """Ordered VBoxManage argv to build a fresh VM that boots an ISO against an
+    EMPTY target disk -- the ISO -> Calamares -> HDD path (R3/R4/R7).
+
+    Layout: the target disk on a SATA (AHCI) controller at port 0; the ISO as a
+    dvddrive on a separate IDE controller. EFI (optionally SecureBoot) is the
+    ISO gate firmware; with an empty target disk the EFI firmware falls through
+    to the El Torito DVD, so no explicit boot-order flag is needed. NAT gives the
+    live session / installer the network the checks (4: networking) require.
+
+    For firmware='efi-secureboot' the NVRAM SecureBoot-enrollment steps are
+    spliced in after the VM exists with EFI firmware but before it boots."""
+    plan = [
+        build_createvm_argv(vmname, ostype, vboxmanage=vboxmanage),
+        build_modifyvm_argv(vmname, memory=memory, firmware=firmware,
+                            nic='nat', vboxmanage=vboxmanage),
+    ]
+    if firmware == 'efi-secureboot':
+        plan += build_secureboot_plan(vmname, vboxmanage=vboxmanage)
+    plan += [
+        build_createmedium_argv(disk_path, disk_mb, vboxmanage=vboxmanage),
+        build_storagectl_argv(vmname, 'SATA', 'sata', 'IntelAhci',
+                              vboxmanage=vboxmanage),
+        build_storagectl_argv(vmname, 'IDE', 'ide', 'PIIX4',
+                              vboxmanage=vboxmanage),
+        build_storageattach_argv(vmname, 'SATA', 0, 0, 'hdd', disk_path,
+                                 vboxmanage=vboxmanage),
+        build_storageattach_argv(vmname, 'IDE', 0, 0, 'dvddrive', iso,
+                                 vboxmanage=vboxmanage),
+    ]
+    return plan
 
 
 ## --- AMD-V availability for VirtualBox (pure decision) -----------------------
@@ -560,6 +612,53 @@ def run_boot_test(args):
     return PASS_RC if ok else FAIL_RC
 
 
+def create_install_vm(vmname, iso, disk_path, *, firmware, memory, disk_mb,
+                      vboxmanage=VBOXMANAGE):
+    """Run the build_install_vm_plan argv sequence to register a fresh install VM."""
+    for argv in build_install_vm_plan(vmname, iso, disk_path, firmware=firmware,
+                                      memory=memory, disk_mb=disk_mb,
+                                      vboxmanage=vboxmanage):
+        _run(argv)
+
+
+def run_install_test(args):
+    """Real-host: build a fresh EFI VM booting the ISO against an empty target
+    disk, then OCR-verify it reaches its live/installer screen. This is the
+    runnable R3 precursor -- the unattended Calamares walk-through (drive_calamares
+    below) builds on the booted live session it leaves behind."""
+    import os
+    import tempfile
+    disk = args.disk or os.path.join(tempfile.gettempdir(), '%s.vdi' % (args.vm,))
+    try:
+        create_install_vm(args.vm, args.iso, disk, firmware=args.firmware,
+                          memory=args.memory, disk_mb=args.disk_mb)
+    except subprocess.CalledProcessError as exc:
+        ## A VBoxManage build step failed (bad option, unsupported firmware, disk
+        ## already exists) -- a SETUP error, reported cleanly, never a traceback
+        ## and never a silent PASS.
+        print('dm-vbox: install VM build failed: %s' % (' '.join(exc.cmd),),
+              file=sys.stderr)
+        return SETUP_RC
+    ok, png, ocr = boot_and_verify(
+        args.vm, args.expect, timeout=args.timeout, interval=args.interval,
+        shot=args.shot)
+    print('dm-vbox: screenshot %s' % (png,))
+    if ok:
+        print('dm-vbox: PASS -- ISO booted to live/installer; found: %s'
+              % (', '.join(args.expect),))
+    else:
+        missing = [item for item in args.expect
+                   if not ocr_text_contains(ocr, item)]
+        print('dm-vbox: FAIL -- missing after %ds: %s'
+              % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    if not args.no_poweroff:
+        try:
+            _run(build_poweroff_argv(args.vm))
+        except subprocess.CalledProcessError:
+            pass
+    return PASS_RC if ok else FAIL_RC
+
+
 ## --- CLI --------------------------------------------------------------------
 
 _EMIT_OPS = (
@@ -681,6 +780,28 @@ def _build_parser():
     run.add_argument('--interval', type=int, default=15)
     run.add_argument('--shot', help='write the final screenshot to this path')
     run.add_argument('--no-poweroff', dest='no_poweroff', action='store_true')
+
+    inst = sub.add_parser(
+        'install',
+        help='real-host: build a fresh EFI VM booting an ISO against an empty '
+             'target disk, OCR-verify it reaches the live/installer screen (the '
+             'R3 precursor); exit 0 PASS / 5 FAIL')
+    inst.add_argument('--vm', required=True)
+    inst.add_argument('--iso', required=True, help='bootable ISO to install from')
+    inst.add_argument('--disk', help='target disk image path (default TMP/<vm>.vdi)')
+    inst.add_argument('--disk-mb', dest='disk_mb', type=int, default=25600,
+                      help='target disk size in MiB (default 25600)')
+    inst.add_argument('--memory', type=int, default=4096)
+    inst.add_argument('--firmware', choices=sorted(_FIRMWARE),
+                      default='efi-secureboot',
+                      help='ISO gate firmware (default efi-secureboot)')
+    inst.add_argument('--expect', action='append', default=[], required=True,
+                      metavar='TEXT',
+                      help='text that must appear on screen (repeatable; ALL required)')
+    inst.add_argument('--timeout', type=int, default=300)
+    inst.add_argument('--interval', type=int, default=15)
+    inst.add_argument('--shot', help='write the final screenshot to this path')
+    inst.add_argument('--no-poweroff', dest='no_poweroff', action='store_true')
     return parser
 
 
@@ -715,6 +836,8 @@ def main(argv=None):
         return ensure_amd_v_available()
     if args.cmd == 'run':
         return run_boot_test(args)
+    if args.cmd == 'install':
+        return run_install_test(args)
     return SETUP_RC
 
 

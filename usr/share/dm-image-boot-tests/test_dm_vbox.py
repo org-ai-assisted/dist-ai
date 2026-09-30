@@ -81,18 +81,49 @@ def test_createvm_argv_basefolder_optional():
         'kick', 'Debian_64', basefolder='/vms')
 
 
-@pytest.mark.parametrize('firmware,expect_value,secure_boot', [
-    ('bios', 'bios', False),
-    ('efi', 'efi', False),
-    ('efi-secureboot', 'efi', True),
+@pytest.mark.parametrize('firmware,expect_value', [
+    ('bios', 'bios'),
+    ('efi', 'efi'),
+    ('efi-secureboot', 'efi'),
 ])
-def test_modifyvm_firmware_mapping(firmware, expect_value, secure_boot):
-    ## Harness firmware name -> VBoxManage --firmware value; efi-secureboot also
-    ## flips --secure-boot on. A wrong map silently boots the wrong firmware.
+def test_modifyvm_firmware_mapping(firmware, expect_value):
+    ## Harness firmware name -> VBoxManage --firmware value. A wrong map silently
+    ## boots the wrong firmware. modifyvm has NO --secure-boot in VBox 7.x (that
+    ## lives in the NVRAM store, build_secureboot_plan), so it must NEVER appear.
     argv = M.build_modifyvm_argv('kick', firmware=firmware)
     idx = argv.index('--firmware')
     assert argv[idx + 1] == expect_value
-    assert ('--secure-boot' in argv) is secure_boot
+    assert '--secure-boot' not in argv
+
+
+def test_secureboot_plan_is_nvram_enroll_then_enable():
+    ## VBox 7.x SecureBoot = NVRAM var-store enrollment, in order: init store,
+    ## enroll the platform key + MS signatures, THEN enable. A wrong order (enable
+    ## before the db is enrolled) leaves an EFI VM that cannot boot a signed shim.
+    plan = M.build_secureboot_plan('kick')
+    tails = [argv[3:] for argv in plan]
+    assert tails == [
+        ['inituefivarstore'],
+        ['enrollorclpk'],
+        ['enrollmssignatures'],
+        ['secureboot', '--enable'],
+    ]
+    assert all(argv[:3] == ['VBoxManage', 'modifynvram', 'kick'] for argv in plan)
+
+
+def test_install_plan_enrolls_secureboot_only_for_efi_secureboot():
+    with_sb = M.build_install_vm_plan('k', '/i.iso', '/d.vdi',
+                                      firmware='efi-secureboot')
+    without = M.build_install_vm_plan('k', '/i.iso', '/d.vdi', firmware='efi')
+    flat_sb = [tok for argv in with_sb for tok in argv]
+    flat_no = [tok for argv in without for tok in argv]
+    assert 'secureboot' in flat_sb and 'inituefivarstore' in flat_sb
+    assert 'secureboot' not in flat_no and 'modifynvram' not in flat_no
+    ## Enrollment is spliced AFTER modifyvm (VM exists, firmware efi) and BEFORE
+    ## the disk/ISO attach (boot).
+    names = [argv[1] for argv in with_sb]
+    assert names.index('modifynvram') > names.index('modifyvm')
+    assert names.index('modifynvram') < names.index('storageattach')
 
 
 def test_modifyvm_intnet_wins_over_nic():
@@ -118,6 +149,36 @@ def test_storage_and_medium_argv():
         '--controller', 'IntelAhci']
     assert M.build_poweroff_argv('kick') == [
         'VBoxManage', 'controlvm', 'kick', 'poweroff']
+
+
+def test_install_vm_plan_composes_efi_iso_and_empty_disk():
+    plan = M.build_install_vm_plan(
+        'inst', '/img/live.iso', '/vms/inst.vdi',
+        firmware='efi-secureboot', memory=4096, disk_mb=25600)
+    ## The plan is the exact create->modify->medium->controllers->attach order,
+    ## each entry the SAME argv the individual builders emit (no drift).
+    assert plan[0] == M.build_createvm_argv('inst', 'Debian_64')
+    ## EFI firmware, NAT for the live/installer network. SecureBoot enrollment is
+    ## its own NVRAM step-group (test_install_plan_enrolls_secureboot_*), never a
+    ## modifyvm flag.
+    modify = plan[1]
+    assert '--firmware' in modify and 'efi' in modify
+    assert '--secure-boot' not in modify
+    assert modify[modify.index('--nic1') + 1] == 'nat'
+    ## Empty target disk sized as requested (after the SecureBoot enroll steps).
+    medium = M.build_createmedium_argv('/vms/inst.vdi', 25600)
+    assert medium in plan
+    ## Target disk on SATA port 0; the ISO as a dvddrive on IDE.
+    assert plan[-2] == M.build_storageattach_argv(
+        'inst', 'SATA', 0, 0, 'hdd', '/vms/inst.vdi')
+    assert plan[-1] == M.build_storageattach_argv(
+        'inst', 'IDE', 0, 0, 'dvddrive', '/img/live.iso')
+
+
+def test_install_vm_plan_threads_vboxmanage_override():
+    plan = M.build_install_vm_plan(
+        'inst', '/img/live.iso', '/vms/inst.vdi', vboxmanage='/opt/vbm')
+    assert all(argv[0] == '/opt/vbm' for argv in plan)
 
 
 def test_vboxmanage_binary_is_overridable():
