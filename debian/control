@@ -78,7 +78,6 @@ Depends: ${misc:Depends},
  curl,
  openssl,
  openssh-client,
- openssh-server,
  ssh-audit,
  sqop,
  kcov,
@@ -112,10 +111,15 @@ Depends: ${misc:Depends},
 ## arm64 boot testing, and the services only the e2e suites drive. Recommends,
 ## not Depends, so an x86-only or offline install stays possible; the suites that
 ## need them are opt-in (--e2e / --integration) and fail loudly when run without.
+## openssh-server is a SERVICE too: its postinst starts ssh.service on :22, so a
+## hard Depends would open a network sshd merely by installing this test package.
+## The security-misc core suite drives only a throwaway unprivileged loopback sshd
+## and fails loud (pytest.fail) if /usr/sbin/sshd is absent, so Recommends fits.
 Recommends: qemu-system-arm,
  qemu-efi-aarch64,
  chromium,
  tor,
+ openssh-server,
  netcat-openbsd,
  socat,
  iproute2,
