@@ -20,6 +20,7 @@ file, or miss it -- so they live here once and both tools import them.
 
 import os
 import re
+import stat
 
 
 SHELL_EXT = (".sh", ".bash", ".bsh")
@@ -100,6 +101,14 @@ def walk_tree(dm_root, walk_errors):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for name in filenames:
             abs_path = os.path.join(dirpath, name)
-            if os.path.islink(abs_path):
+            ## Only REGULAR files. A symlink's versioned content is a target
+            ## path, not source; and opening a FIFO/device/socket left in the
+            ## tree would BLOCK forever -- a walk must never hang on one.
+            try:
+                info = os.lstat(abs_path)
+            except OSError as exc:
+                walk_errors.append(str(exc))
+                continue
+            if not stat.S_ISREG(info.st_mode):
                 continue
             yield abs_path, os.path.relpath(abs_path, dm_root)

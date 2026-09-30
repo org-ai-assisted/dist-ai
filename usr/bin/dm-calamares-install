@@ -35,14 +35,40 @@ vm=""
 iso=""
 disk=""
 passphrase=""
+passphrase_file=""
+firmware="efi"
+reinstall="false"
+checks="false"
+## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
+vm_started="false"
 
 die() {
    printf '%s: ERROR: %s\n' "${me}" "$2" >&2
    exit "$1"
 }
 
+## Power off the VM this run started, on ANY exit (incl. a die/timeout), so a
+## failure never leaks a running headless VM. Preserves the exit status.
+on_exit() {
+   local rc=$?
+   if [ "${vm_started}" = 'true' ]; then
+      "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+   fi
+   exit "${rc}"
+}
+
 usage() {
-   printf '%s\n' "usage: ${me} --vm NAME --iso PATH --passphrase PASS [--disk PATH]"
+   printf '%s\n' "usage: ${me} --vm NAME --iso PATH --passphrase-file PATH [--disk PATH]
+       [--firmware bios|efi|efi-secureboot] [--reinstall]
+
+--passphrase-file  0600 file holding the LUKS passphrase (read via the shell, never
+                   passed on argv -- keeps it out of /proc/PID/cmdline; CWE-214).
+--firmware   VM boot firmware (default efi; efi-secureboot enrolls PK+MS keys).
+--reinstall  reuse the existing VM + disk (do not recreate) and install OVER it,
+             switching to --firmware -- the R7 chain (BIOS install, then
+             EFI+SB reinstall-over-LUKS: run once plain, once --reinstall).
+--checks     after the installed boot, run the release-critical check battery
+             in-guest (check 8: systemcheck --leak-tests) and fail on a non-pass."
 }
 
 ## Screenshot the guest and return its OCR text on stdout.
@@ -139,6 +165,31 @@ open_terminal() {
    die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
 }
 
+## Run one release-critical check in-guest via the terminal and classify by an
+## OCR-friendly marker (letters+digit only, no chars OCR mangles): the command
+## runs, rc 0 -> DMCHKPASS<n>, non-zero -> DMCHKFAIL<n>. 0 PASS / 1 FAIL.
+run_check() {
+   local num="$1" cmd="$2" timeout="$3" deadline text
+   printf '%s' "${cmd} && echo DMCHKPASS${num} || echo DMCHKFAIL${num}" \
+      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   scan 1c 9c
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      scan 2a aa
+      text="$(ocr)"
+      if [[ "${text,,}" =~ dmchkpass${num} ]]; then
+         printf '%s\n' "${me}: check ${num} PASS"
+         return 0
+      fi
+      if [[ "${text,,}" =~ dmchkfail${num} ]]; then
+         printf '%s\n' "${me}: check ${num} FAIL"
+         return 1
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}
+
 parse_args() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -154,9 +205,21 @@ parse_args() {
             disk="$2"
             shift 2
             ;;
-         --passphrase)
-            passphrase="$2"
+         --passphrase-file)
+            passphrase_file="$2"
             shift 2
+            ;;
+         --firmware)
+            firmware="$2"
+            shift 2
+            ;;
+         --reinstall)
+            reinstall="true"
+            shift
+            ;;
+         --checks)
+            checks="true"
+            shift
             ;;
          -h|--help)
             usage
@@ -170,21 +233,67 @@ parse_args() {
    done
    [ -n "${vm}" ]         || { usage >&2; die "${SETUP_RC}" "--vm required"; }
    [ -n "${iso}" ]        || { usage >&2; die "${SETUP_RC}" "--iso required"; }
-   [ -n "${passphrase}" ] || { usage >&2; die "${SETUP_RC}" "--passphrase required"; }
-   [ -n "${disk}" ] || disk="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.vdi")"
+   [ -n "${passphrase_file}" ] || { usage >&2; die "${SETUP_RC}" "--passphrase-file required"; }
+   [ -r "${passphrase_file}" ] || die "${SETUP_RC}" "passphrase file not readable: '${passphrase_file}'"
+   ## read via the shell (no process argv exposure); command-subst strips trailing newlines.
+   passphrase="$(< "${passphrase_file}")"
+   [ -n "${passphrase}" ] || die "${SETUP_RC}" "passphrase file is empty: '${passphrase_file}'"
+   case "${firmware}" in
+      bios|efi|efi-secureboot)
+         true
+         ;;
+      *)
+         usage >&2
+         die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '${firmware}'"
+         ;;
+   esac
+   ## --reinstall reuses an existing VM+disk; a fresh install needs a disk path.
+   [ -n "${disk}" ] || [ "${reinstall}" = 'true' ] \
+      || disk="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.vdi")"
+}
+
+## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the
+## NVRAM store (VBox 7.x has no modifyvm --secure-boot). Done while powered off.
+apply_firmware() {
+   local fw
+   case "${firmware}" in
+      bios)
+         fw='bios'
+         ;;
+      *)
+         fw='efi'
+         ;;
+   esac
+   "${VBOXMANAGE}" modifyvm "${vm}" --firmware "${fw}" >/dev/null
+   if [ "${firmware}" = 'efi-secureboot' ]; then
+      "${VBOXMANAGE}" modifynvram "${vm}" inituefivarstore >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" enrollorclpk >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" enrollmssignatures >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+   fi
 }
 
 build_vm() {
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
-   sleep 1
+   sleep 2
+   if [ "${reinstall}" = 'true' ]; then
+      ## R7 reinstall-over: keep the existing VM + its installed disk, switch
+      ## firmware, and re-attach the ISO (the prior run detached it) so Calamares
+      ## erase-reinstalls over the disk under the new firmware.
+      apply_firmware
+      "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
+         --type dvddrive --medium "${iso}" >/dev/null
+      return 0
+   fi
    "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
    safe-rm --force -- "${disk}"
    "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
    ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
    ## an absolute pointer so vbox-guestctl clicks land pre-Guest-Additions.
-   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 --firmware efi \
+   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 \
       --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
       --nic1 nat >/dev/null
+   apply_firmware
    "${VBOXMANAGE}" createmedium disk --filename "${disk}" --size 25600 \
       --format VDI >/dev/null 2>&1
    "${VBOXMANAGE}" storagectl "${vm}" --name SATA --add sata \
@@ -199,10 +308,12 @@ build_vm() {
 
 main() {
    parse_args "$@"
+   trap on_exit EXIT
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   vm_started="true"
    ## Select the install boot entry once GRUB is actually on screen (poll, not a
    ## fixed sleep that races the autoboot into the wrong session).
    select_install_boot_entry
@@ -241,10 +352,10 @@ main() {
    ## Erase disk auto-enables Encrypt system (Kicksecure default); fill both fields.
    click 206 105
    click 492 590
-   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    sleep 1
    click 793 590
-   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    sleep 1
    click 1135 781
    wait_for 'overview|start the install|erase disk /dev' 60 'Summary page'
@@ -263,11 +374,21 @@ main() {
 
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
    wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
-   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    scan 1c 9c
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
+
+   if [ "${checks}" = 'true' ]; then
+      printf '%s\n' "${me}: release-critical checks on the installed system"
+      wait_ready 300
+      open_terminal
+      ## check 8: systemcheck --leak-tests -- the core catastrophic-regression gate
+      ## (exit 0 Success / 1 Error / 2 Warning; only a clean 0 passes).
+      run_check 8 'systemcheck --cli --leak-tests --verbose' 600 \
+         || die "${FAIL_RC}" "check 8 (systemcheck --leak-tests) FAILED"
+   fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"
    return "${PASS_RC}"

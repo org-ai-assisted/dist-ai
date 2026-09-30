@@ -587,15 +587,14 @@ def start_vm(vmname, vboxmanage=VBOXMANAGE):
     _run(build_startvm_argv(vmname, vboxmanage))
 
 
-def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
+def poll_screen_for(vmname, expect, *, timeout=240, interval=15, shot=None,
                     vboxmanage=VBOXMANAGE, tesseract=TESSERACT):
-    """Real-host end-to-end: boot headless, then poll the screen via OCR until EVERY
-    expected string appears (PASS) or the timeout elapses (FAIL). GUI images have no
-    serial, so the screen is the only readable boot signal. Returns (ok, png, ocr)."""
+    """Poll the guest screen via OCR until EVERY expected string appears (PASS) or the
+    timeout elapses (FAIL). The VM must ALREADY be running. GUI images have no serial,
+    so the screen is the only readable boot signal. Returns (ok, png, ocr)."""
     import os
     import tempfile
     import time
-    start_vm(vmname, vboxmanage)
     png = shot or os.path.join(tempfile.gettempdir(), 'dm-vbox-%s.png' % (vmname,))
     deadline = time.monotonic() + timeout
     ocr = ''
@@ -612,12 +611,20 @@ def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
     return False, png, ocr
 
 
+def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
+                    vboxmanage=VBOXMANAGE, tesseract=TESSERACT):
+    """Real-host end-to-end: start the VM headless, then poll_screen_for the text."""
+    start_vm(vmname, vboxmanage)
+    return poll_screen_for(vmname, expect, timeout=timeout, interval=interval,
+                           shot=shot, vboxmanage=vboxmanage, tesseract=tesseract)
+
+
 def _poweroff_quietly(vmname):
     """Best-effort cleanup in a finally."""
     try:
         _run(build_poweroff_argv(vmname))
-    except subprocess.CalledProcessError:
-        ## the VM may already be off or gone -- a non-zero poweroff is not a failure.
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        ## the VM may already be off/gone, or VBoxManage missing -- not a failure.
         pass
 
 
@@ -630,8 +637,11 @@ def run_boot_test(args):
     if args.ova is not None:
         _run(build_import_argv(args.ova, args.vm))
     rc = FAIL_RC
+    started = False
     try:
-        ok, png, ocr = boot_and_verify(
+        start_vm(args.vm)
+        started = True
+        ok, png, ocr = poll_screen_for(
             args.vm, args.expect, timeout=args.timeout, interval=args.interval,
             shot=args.shot)
         print('dm-vbox: screenshot %s' % (png,))
@@ -644,10 +654,12 @@ def run_boot_test(args):
                        if not ocr_text_contains(ocr, item)]
             print('dm-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+    except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
         print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
-        if not args.no_poweroff:
+        ## power off ONLY the VM this run actually started, so a failed start of an
+        ## already-running VM never hard-stops a VM this invocation did not create.
+        if started and not args.no_poweroff:
             _poweroff_quietly(args.vm)
     return rc
 
@@ -680,8 +692,11 @@ def run_install_test(args):
               file=sys.stderr)
         return SETUP_RC
     rc = FAIL_RC
+    started = False
     try:
-        ok, png, ocr = boot_and_verify(
+        start_vm(args.vm)
+        started = True
+        ok, png, ocr = poll_screen_for(
             args.vm, args.expect, timeout=args.timeout, interval=args.interval,
             shot=args.shot)
         print('dm-vbox: screenshot %s' % (png,))
@@ -694,10 +709,11 @@ def run_install_test(args):
                        if not ocr_text_contains(ocr, item)]
             print('dm-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+    except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
         print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
-        if not args.no_poweroff:
+        ## power off ONLY the VM this run actually started (see run_boot_test).
+        if started and not args.no_poweroff:
             _poweroff_quietly(args.vm)
     return rc
 

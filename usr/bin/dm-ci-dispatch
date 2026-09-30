@@ -168,7 +168,7 @@ if [ "${run_preflight}" = "true" ]; then
    ## dispatch the run that would show you the failure.
    ##
    ## It is also the difference between a usable gate and an unusable one: some
-   ## suites require root (umount_kill drives a real mount namespace), so a
+   ## suites require root (mount-cleanup drives a real mount namespace), so a
    ## developer at a terminal would be blocked every time for a reason that says
    ## nothing about the tree. Run 'dm-preflight' without --quick, as root, when
    ## you want the suites too.

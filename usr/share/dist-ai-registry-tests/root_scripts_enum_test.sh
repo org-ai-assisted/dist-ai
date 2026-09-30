@@ -269,6 +269,16 @@ ExecStartPre=
 ExecStart=+/usr/bin/forced-main
 EOF
 
+## systemd prefixes ('@','-',':' + one of '+'/'!') combine in ANY order, so a
+## '+' behind another prefix ('-+', '@+') is still forced-root and MUST be
+## captured (the whole unit would otherwise vanish from the audit).
+write 'packages/kicksecure/foo/usr/lib/systemd/system/forced-combo.service' <<'EOF'
+[Service]
+User=nobody
+ExecStartPre=-+/usr/bin/forced-combo-pre
+ExecStart=@+/usr/bin/forced-combo-main argv0
+EOF
+
 ## DynamicUser=yes runs under a dynamic non-root UID -> MUST be excluded.
 write 'packages/kicksecure/foo/usr/lib/systemd/system/dynuser.service' <<'EOF'
 [Service]

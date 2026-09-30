@@ -49,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import Any
 
 _LIB = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -87,10 +88,15 @@ DIRECT_SCRIPT_CATEGORIES = frozenset((
 ## explicitly excluded so a refusal guard is not mistaken for a root gate.
 ROOT_REQUIRE_FUNCS = ("root_check", "require_root", "check_root", "ensure_root",
                       "assert_root", "must_be_root")
+## '\broot\b' so 'needs rootless mode' does not read as 'needs root'.
 ROOT_REQUIRE_TEXT_RE = re.compile(
-    r"must (?:be run|run) as root|needs? (?:to be )?root|run this as root",
+    r"must (?:be run|run) as \broot\b|needs? (?:to be )?\broot\b"
+    r"|run this as \broot\b",
     re.IGNORECASE)
-NOT_ROOT_RE = re.compile(r"must not|do not run as root|not_as_root|as user",
+## The refusal direction only; kept NARROW (an over-broad phrase like 'as user'
+## would wrongly cancel a real root gate). It suppresses a TEXT signal, never a
+## root-require FUNCTION call (see is_root_guarded).
+NOT_ROOT_RE = re.compile(r"must not be run as root|do not run as root|not_as_root",
                          re.IGNORECASE)
 
 ## Blast-radius weight of the root category -- shifts a rule's base severity.
@@ -122,57 +128,62 @@ RULE_BASE = {
 ## script doing a privileged filesystem op near a user-controlled location.
 PYTHON_SINK_RE = re.compile(
     r"\b(?:os\.(?:chown|chmod|lchown)|shutil\.(?:chown|copytree|rmtree|copy2?|move)"
-    r"|os\.remove|os\.unlink|pathlib\.Path)\b")
+    r"|os\.remove|os\.unlink)\b")
 PYTHON_TAINT_RE = re.compile(r"/home/|/tmp/|/var/tmp/|/dev/shm/|SUDO_USER|home_dir|"
                              r"home_folder|user_name|target_user")
 
 
 def install_path_for(rel_path, submodule):
     """The absolute install path a source file maps to under the FHS mirror, or
-    None for a source that does not install into the root filesystem (a build
-    helper, debian/ packaging). '#pkg' rename suffixes are stripped."""
+    None for a source that does not install into the root filesystem. A package
+    mirrors '/' at its OWN root, so the FHS top must be the FIRST component after
+    the submodule -- a 'tests/usr/bin/foo' or 'debian/...' is NOT installed.
+    '#pkg' rename suffixes are stripped."""
     remainder = rel_path[len(submodule) + 1:] if submodule else rel_path
     parts = remainder.split("/")
-    for index, part in enumerate(parts):
-        if part in FHS_TOPS:
-            tail = parts[index:]
-            tail[-1] = install_name(tail[-1])
-            return "/" + "/".join(tail)
-    return None
+    if not parts or parts[0] not in FHS_TOPS:
+        return None
+    parts[-1] = install_name(parts[-1])
+    return "/" + "/".join(parts)
 
 
 def build_index(tree_files, submodules):
-    """Map every source file's install path (and basename) to its abs path, so a
-    root category's installed program target resolves back to the tree file that
-    ships it -- across submodule boundaries."""
-    by_path = {}
-    by_base = {}
+    """Map every source file's install path (and basename) to the tree file(s)
+    that ship it, so a root category's installed program target resolves back
+    across submodule boundaries. A path maps to a LIST: two packages CAN ship
+    the same install path (e.g. '#pkgA'/'#pkgB' variants), and dropping the
+    later one would skip a real root target."""
+    by_path: dict[str, list[str]] = {}
+    by_base: dict[str, set[str]] = {}
     for abs_path, rel_path in tree_files:
         _component, sub = component_for(rel_path, submodules)
         install = install_path_for(rel_path, sub)
         if install is not None:
-            by_path.setdefault(install, abs_path)
+            by_path.setdefault(install, []).append(abs_path)
             by_base.setdefault(os.path.basename(install), set()).add(abs_path)
     return by_path, by_base
 
 
-def resolve_target(program, by_path, by_base):
-    """The tree file a root category's program target refers to, or None. Try the
-    exact install path, then a UNIQUE basename match; an external tool (apt,
-    systemctl) or an ambiguous basename stays unresolved (not our code)."""
+def resolve_targets(program, by_path, by_base):
+    """The tree file(s) a root category's program target refers to (a list, maybe
+    empty). Try the exact install path, then a UNIQUE basename match; an external
+    tool (apt, systemctl) or an ambiguous basename stays unresolved (not our
+    code). The FIRST whitespace token is the program; a surrounding quote on that
+    token is stripped AFTER the split, so '"/usr/bin/foo" arg' resolves."""
     if not program:
-        return None
-    token = program.strip().strip('"').strip("'").split()[0] if program.split() \
-        else ""
+        return []
+    tokens = program.strip().split()
+    if not tokens:
+        return []
+    token = tokens[0].strip('"').strip("'")
     if not token:
-        return None
-    base = install_name(os.path.basename(token))
+        return []
     if token.startswith("/") and token in by_path:
-        return by_path[token]
-    matches = by_base.get(base)
+        return list(by_path[token])
+    matches = by_base.get(install_name(os.path.basename(token)))
     if matches and len(matches) == 1:
-        return next(iter(matches))
-    return None
+        return list(matches)
+    return []
 
 
 def entry_targets(entry):
@@ -206,19 +217,19 @@ def entry_targets(entry):
 
 
 def is_root_guarded(source):
-    if NOT_ROOT_RE.search(source) and not ROOT_REQUIRE_TEXT_RE.search(source):
-        return False
-    if ROOT_REQUIRE_TEXT_RE.search(source):
-        return True
+    ## A root-require FUNCTION call is authoritative -- a script that calls
+    ## root_check IS a root entry point even if it elsewhere mentions a refusal
+    ## phrase. Only the weaker TEXT signal is cancelled by an explicit refusal.
     for name in ROOT_REQUIRE_FUNCS:
         if re.search(r"\b" + re.escape(name) + r"\b", source):
             return True
-    return False
+    return bool(ROOT_REQUIRE_TEXT_RE.search(source)) and not NOT_ROOT_RE.search(source)
 
 
 def sourced_targets(tree, source, by_path, by_base):
-    """One hop: the tree files a reachable script sources/'.'s or directly
-    execs by an absolute path, skipping a name it defines as a function."""
+    """One hop: the tree files a reachable script sources/'.'s or directly execs
+    by an ABSOLUTE path. A '/'-path is never a shell function, so no
+    function-shadow check applies; a leading '--' after source is skipped."""
     for call in bash_ast.call_exprs(tree):
         cmd = bash_ast.command_basename(call)
         if cmd is None:
@@ -226,9 +237,11 @@ def sourced_targets(tree, source, by_path, by_base):
         args = bash_ast.args(call)
         name_full = bash_ast.command_name(call)
         if cmd in (".", "source"):
-            candidates = args[1:2]
+            rest = args[1:]
+            if rest and bash_ast.word_string(rest[0]) == "--":
+                rest = rest[1:]
+            candidates = rest[:1]
         elif name_full and name_full.startswith("/"):
-            ## A direct exec of an absolute-path command in the tree.
             candidates = args[:1]
         else:
             continue
@@ -236,10 +249,7 @@ def sourced_targets(tree, source, by_path, by_base):
             program = bash_ast.word_string(word)
             if not program or not program.startswith("/"):
                 continue
-            if bash_ast.defines_function(tree, os.path.basename(program)):
-                continue
-            resolved = resolve_target(program, by_path, by_base)
-            if resolved is not None:
+            for resolved in resolve_targets(program, by_path, by_base):
                 yield resolved
 
 
@@ -249,6 +259,11 @@ def severity_of(rule, factors, weight):
         if factors.get("symlink") or factors.get("deletion") or (
                 factors.get("find_walk") and factors.get("action")):
             base = "HIGH"
+    elif rule == "symlink-follow" and not factors.get("symlink_explicit", True):
+        ## An IMPLICIT default-follow (chown/chmod of a named symlink, no
+        ## explicit -L) is a real but lower-confidence vector than a deliberate
+        ## --dereference; rank it MEDIUM so explicit -L stands out as HIGH.
+        base = "MEDIUM"
     index = SEVERITY_ORDER.index(base) + weight
     index = max(0, min(len(SEVERITY_ORDER) - 1, index))
     return SEVERITY_ORDER[index]
@@ -284,7 +299,7 @@ def run_enum(dm_root, tool_dir):
 def collect_reachable(dm_root, enum_report, tree_files, submodules,
                       by_path, by_base, coverage):
     """Map abs tree file -> list of root_reason strings (why it runs as root)."""
-    reachable = {}
+    reachable: dict[str, list[str]] = {}
 
     def add(abs_path, reason):
         reachable.setdefault(abs_path, [])
@@ -301,15 +316,21 @@ def collect_reachable(dm_root, enum_report, tree_files, submodules,
             if target is None:
                 add(os.path.join(dm_root, entry["path"]), category)
                 continue
-            resolved = resolve_target(target, by_path, by_base)
-            if resolved is None:
+            resolved = resolve_targets(target, by_path, by_base)
+            if not resolved:
                 coverage["unresolved_targets"] += 1
                 continue
-            add(resolved, "%s:%s" % (category, os.path.basename(entry["path"])))
+            for tree_file in resolved:
+                add(tree_file, "%s:%s" % (category, os.path.basename(entry["path"])))
 
-    ## Source 2: root-guarded scripts.
+    ## Source 2: root-guarded scripts that SHIP into the filesystem. A self-gated
+    ## script under ci/ or a test/build dir (no FHS install path) is not a root
+    ## entry point on a user system, so it is not part of the root surface.
     for abs_path, rel_path in tree_files:
         if not is_shell(abs_path, rel_path):
+            continue
+        _component, sub = component_for(rel_path, submodules)
+        if install_path_for(rel_path, sub) is None:
             continue
         if is_root_guarded(read_text(abs_path)):
             add(abs_path, "root-guarded-script")
@@ -339,11 +360,11 @@ def audit(dm_root):
     tool_dir = os.path.dirname(os.path.realpath(__file__))
     enum_report = run_enum(dm_root, tool_dir)
     submodules = submodule_paths(dm_root)
-    walk_errors = []
+    walk_errors: list[str] = []
     tree_files = list(walk_tree(dm_root, walk_errors))
     by_path, by_base = build_index(tree_files, submodules)
 
-    coverage = {
+    coverage: dict[str, Any] = {
         "root_files": 0, "shell_scanned": 0, "python_advisory": 0,
         "sinks_examined": 0, "unresolved_targets": 0,
         "parse_errors": [], "walk_errors": walk_errors,
@@ -392,7 +413,7 @@ def audit(dm_root):
             })
 
     ## Dedupe identical (path, line, rule, operand); keep the highest severity.
-    unique = {}
+    unique: dict[tuple, dict] = {}
     for finding in findings:
         key = (finding["path"], finding["line"], finding["rule"],
                finding["tainted_operand"])

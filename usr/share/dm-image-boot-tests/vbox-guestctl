@@ -17,7 +17,7 @@ import sys
 ## vboxapi is imported lazily inside _console so the pure scancode helper stays
 ## importable (and unit-testable) on a host without the VirtualBox bindings.
 
-## US set-1 scancodes (make); break = make | 0x80. Shift wraps an uppercase char.
+## US set-1 make scancodes for every UNSHIFTED printable key; break = make | 0x80.
 _MAKE = {
     'a': 0x1e, 'b': 0x30, 'c': 0x2e, 'd': 0x20, 'e': 0x12, 'f': 0x21, 'g': 0x22,
     'h': 0x23, 'i': 0x17, 'j': 0x24, 'k': 0x25, 'l': 0x26, 'm': 0x32, 'n': 0x31,
@@ -25,7 +25,16 @@ _MAKE = {
     'v': 0x2f, 'w': 0x11, 'x': 0x2d, 'y': 0x15, 'z': 0x2c,
     '0': 0x0b, '1': 0x02, '2': 0x03, '3': 0x04, '4': 0x05, '5': 0x06, '6': 0x07,
     '7': 0x08, '8': 0x09, '9': 0x0a,
-    ' ': 0x39, '-': 0x0c, '=': 0x0d, '.': 0x34, '/': 0x35, ',': 0x33,
+    ' ': 0x39, '-': 0x0c, '=': 0x0d, '[': 0x1a, ']': 0x1b, '\\': 0x2b,
+    ';': 0x27, "'": 0x28, '`': 0x29, ',': 0x33, '.': 0x34, '/': 0x35,
+}
+## Shifted printable -> the unshifted key that yields it with Shift held (so the
+## full ASCII command set -- $ > | ; ( ) etc. -- can be typed, needed to drive a
+## shell in-guest, not just simple words).
+_SHIFTED = {
+    '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7',
+    '*': '8', '(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']',
+    '|': '\\', ':': ';', '"': "'", '~': '`', '<': ',', '>': '.', '?': '/',
 }
 _SHIFT_MAKE = 0x2a
 _SHIFT_BREAK = 0xaa
@@ -33,13 +42,19 @@ _BREAK_BIT = 0x80
 
 
 def text_scancodes(text):
-    """Set-1 make/break scancode ints to type a literal string (no trailing Enter)."""
+    """Set-1 make/break scancode ints to type a literal string (no trailing Enter).
+    Covers the full US printable set incl. uppercase and shifted symbols."""
     codes = []
     for char in text:
-        make = _MAKE.get(char.lower())
+        if char in _SHIFTED:
+            base, shift = _SHIFTED[char], True
+        elif char.isupper():
+            base, shift = char.lower(), True
+        else:
+            base, shift = char, False
+        make = _MAKE.get(base)
         if make is None:
             raise ValueError('no scancode for %r' % (char,))
-        shift = char.isupper()
         if shift:
             codes.append(_SHIFT_MAKE)
         codes.append(make)
@@ -87,6 +102,8 @@ def _build_parser():
                            help='bitmask 1=left 2=right 4=middle (click only)')
     typ = sub.add_parser('type', help='type a literal string')
     typ.add_argument('text')
+    sub.add_parser('type-stdin',
+                   help='type text read from stdin (keeps secrets out of argv/proc)')
     key = sub.add_parser('key', help='inject raw hex scancodes')
     key.add_argument('codes', nargs='+', metavar='HEX')
     return parser
@@ -126,6 +143,14 @@ def main(argv=None):
             ## NEVER echo the typed text -- it may be a LUKS passphrase (CWE-532);
             ## report only the length.
             print('type: %d char(s)' % (len(args.text),))
+        elif args.cmd == 'type-stdin':
+            ## secret text (LUKS passphrase) read from stdin so it never lands in
+            ## argv/proc (CWE-214); strip one trailing newline a shell may add.
+            text = sys.stdin.read()
+            if text.endswith('\n'):
+                text = text[:-1]
+            send_scancodes(console.keyboard, text_scancodes(text))
+            print('type-stdin: %d char(s)' % (len(text),))
         elif args.cmd == 'key':
             send_scancodes(console.keyboard, [int(code, 16) for code in args.codes])
             print('key %s' % (' '.join(args.codes),))

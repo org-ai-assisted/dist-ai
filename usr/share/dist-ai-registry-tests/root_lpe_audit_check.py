@@ -30,10 +30,17 @@ EXPECTED = [
     ("vuln-guarded", "untrusted-source-eval", "HIGH"),     ## . "$home/..."
     ("postinst", "home-recursive-write", "HIGH"),          ## chown -R $SUDO_USER
     ("postinst", "trust-sudo-user", "HIGH"),               ## $SUDO_USER unvalidated
+    ("vuln-wrappers", "home-recursive-write", "MEDIUM"),   ## command-peel + --target-directory + declare
+    ("vuln-wrappers", "world-writable-perms", "MEDIUM"),   ## chmod --recursive 777
+    ("vuln-round2", "home-recursive-write", "HIGH"),       ## find -L ... -delete
+    ("vuln-round2", "symlink-follow", "HIGH"),             ## dd of= home
+    ("vuln-round2", "world-writable-perms", "MEDIUM"),     ## chmod a=w
 ]
 
-## Paths that must have ZERO findings.
-SAFE_PATHS = ("safe-boot", "safe-guarded")
+## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
+## home-write vuln under ci/ that must never enter the root surface (no FHS
+## install path -> not a shipped root entry point).
+SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci")
 
 
 def _sev_ok(actual, minimum):
