@@ -219,22 +219,28 @@ eq(_ed._pos, 6, 'Home moves to the start of the current line')
 _ed.keyPressEvent(key_ev(Qt.Key.Key_End))
 eq(_ed._pos, 11, 'End moves to the end of the current line')
 
-# vertical motion, keeping the column, with clamps + edges
+# vertical motion, keeping the column, with clamps + edges. A manual `_pos =` here settles
+# the caret with `_render()` (as any real caret placement does) so the vertical goal column is
+# fresh -- otherwise a directly-poked _pos would inherit the goal column of the previous move.
 _ed.set_source('abcdef\ngh')
 _ed._pos = 4                              # 'e' on line 1
+_ed._render()
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Down))
 eq(_ed._pos, 9, 'Down clamps the column to the shorter target line (end of gh)')
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Down))
 eq(_ed._pos, len(_ed.source()), 'Down on the last line goes to the very end')
 _ed._pos = 8                              # 'h' on line 2 (col 1)
+_ed._render()
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Up))
 eq(_ed._pos, 1, 'Up keeps the column onto the previous line')
 _ed._pos = 2                              # line 1 -> Up with no previous line
+_ed._render()
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Up))
 eq(_ed._pos, 0, 'Up on the first line goes to the very start')
 # Down into a LONGER next line keeps the column exactly (no clamp)
 _ed.set_source('ab\ncdef')
 _ed._pos = 2                              # end of line 1 (col 2)
+_ed._render()
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Down))
 eq(_ed._pos, 5, 'Down into a longer line keeps the column (index 5)')
 
@@ -294,6 +300,47 @@ for _ in range(12):                        # walk Up back to the first row, past
         break
 eq(_badge._pos, 0,
    'Up escapes the wrapped multi-row badge back to the first row (no caret trap)')
+
+# Vertical motion keeps its GOAL COLUMN across a run: Down onto a shorter row then Up must
+# return to the original column, like a native editor. (Regression: recreating the cursor per
+# press dropped Qt's remembered x, so Down-then-Up drifted to the wrong column.)
+_gc = RevealedEditor()
+_gc.set_mode('detail')
+_gc.show()
+_gc.resize(180, 300)
+APP.processEvents()
+_gc.set_source('abcdefghijklmnopqrstuv')   # wraps at 180px; index 15 sits on the first row
+APP.processEvents()
+_gc._pos = 15
+_gc._render()
+_gc.keyPressEvent(key_ev(Qt.Key.Key_Down))
+_gc.keyPressEvent(key_ev(Qt.Key.Key_Up))
+eq(_gc._pos, 15, 'Down then Up returns to the original goal column (visual-row navigation)')
+
+# A wrapped ATOMIC badge spans several visual rows at ONE source index. Down must land PAST it
+# (a different cell on a lower row), not on its start (still the same visual row); Home on a row
+# that BEGINS mid-badge must stay on that row (the first boundary after the badge), not jump back
+# to the badge's start on the row above. (Regression: nearest-snap put the caret on the wrong row.)
+_EMOJI = chr(0x1F600)                       # detail mode renders it as a wide ASCII badge
+_bx = RevealedEditor()
+_bx.set_mode('detail')
+_bx.show()
+_bx.resize(180, 300)
+APP.processEvents()
+_bx.set_source_revealed('a' + _EMOJI)      # 'a' + badge wraps onto a second row at 180px
+APP.processEvents()
+_bx._pos = 0
+_bx._render()
+_bx.keyPressEvent(key_ev(Qt.Key.Key_Down))
+eq(_bx._pos, len(_bx.source()),
+   'Down past a wrapped atomic badge lands after it, not on its same-row start index')
+_bx.set_source_revealed('a' + _EMOJI + 'b')
+APP.processEvents()
+_bx._pos = len(_bx.source())               # after 'b', on the last visual row
+_bx._render()
+_bx.keyPressEvent(key_ev(Qt.Key.Key_Home))
+eq(_bx._pos, 2,
+   'Home on a row that begins mid-badge stays on that row (after the badge), not the row above')
 
 # the read-only Ctrl chords (select-all, copy) fall through to the base without mutating
 _CTRL = Qt.KeyboardModifier.ControlModifier
