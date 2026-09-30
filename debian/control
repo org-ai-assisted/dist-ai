@@ -77,6 +77,9 @@ Depends: ${misc:Depends},
  file,
  curl,
  openssl,
+ openssh-client,
+ openssh-server,
+ ssh-audit,
  sqop,
  kcov,
  labwc,
@@ -149,5 +152,6 @@ Description: Comprehensive regression, fuzz and integration suites for Kicksecur
  via --component / --component-root, which is also how per-repo CI invokes them.
  .
  Start with 'dist-ai-tests-all --list' to see every registered suite and its
- category. A suite whose subject or tooling is absent exits 77 and is reported
- SKIP, never FAIL.
+ category. A suite whose subject (the component under test) is absent exits 77
+ and is reported SKIP; its required tooling is guaranteed by Depends, so a
+ missing tool is a hard FAIL, never a SKIP.
