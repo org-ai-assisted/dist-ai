@@ -305,6 +305,12 @@ def main(argv):
          not in one("systemd-unit", "forced-reset.service")["root_forced_exec"]
          and "/usr/bin/forced-main"
          in one("systemd-unit", "forced-reset.service")["root_forced_exec"]),
+        ("a '+' combined with another prefix (-+, @+) is still forced-root",
+         one("systemd-unit", "forced-combo.service") is not None
+         and "/usr/bin/forced-combo-pre"
+         in one("systemd-unit", "forced-combo.service")["root_forced_exec"]
+         and "/usr/bin/forced-combo-main"
+         in one("systemd-unit", "forced-combo.service")["root_forced_exec"]),
 
         ## leaprun --test executes; --check is auth-only; attached -gusers
         ("leaprun --test executes the action (not a check)",
