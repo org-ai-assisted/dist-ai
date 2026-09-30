@@ -116,6 +116,7 @@ core_suites=(
    qubes-whonix-tests
    sandbox-app-launcher-tests
    sanitize-string-tests
+   serial-console-enable-tests
    set-keyboard-layout-tests
    secure-terminal-shots-tests
    secure-terminal-tests
@@ -565,6 +566,11 @@ wire() {
             "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages"
          )
          ;;
+      serial-console-enable)
+         ## The suite sources etc/default/grub.d/30_serial_console.cfg from the
+         ## component checkout.
+         wire_env=( "SERIAL_CONSOLE_ENABLE_REPO=$( pkg_dir serial-console-enable )" )
+         ;;
       sdwdate-onion-tester)
          ## The onion-tester CI wrappers are dist-ai's own usr/bin tools, invoked
          ## by sdwdate's workflow from its dist-ai checkout, so the subject is
@@ -1003,6 +1009,9 @@ suite_component() {
          ;;
       open-link-confirmation)
          printf '%s' 'open-link-confirmation'
+         ;;
+      serial-console-enable)
+         printf '%s' 'serial-console-enable'
          ;;
       sdwdate-gui)
          printf '%s' 'sdwdate-gui'

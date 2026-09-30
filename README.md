@@ -31,6 +31,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `dm-help-steps-tests`    | shipping | `usr/share/dm-help-steps-tests/` |
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
+| `serial-console-enable-tests` | shipping | `usr/share/serial-console-enable-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `stdisplay-tests`        | shipping | `usr/share/stdisplay-tests/` |
 | `systemcheck-tests`      | shipping | `usr/share/systemcheck-tests/` |

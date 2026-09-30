@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the serial-console-enable regression suite: sources the shipped
+## etc/default/grub.d/30_serial_console.cfg the way grub-mkconfig does and
+## asserts the serial-console GRUB settings it must produce (serial-only
+## terminal, the console= kernel parameters, and append-vs-set semantics). The
+## subject defaults to the installed /etc tree; set SERIAL_CONSOLE_ENABLE_REPO
+## to a serial-console-enable checkout. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/serial-console-enable-tests" ]; then
+   tests_dir="${script_dir}/../share/serial-console-enable-tests"
+else
+   tests_dir='/usr/share/serial-console-enable-tests'
+fi
+
+rc=0
+bash "${tests_dir}/grub_config_test.sh" "$@" || rc=$?
+exit "${rc}"

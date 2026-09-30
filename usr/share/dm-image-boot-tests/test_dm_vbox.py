@@ -169,6 +169,10 @@ def test_install_vm_plan_composes_efi_iso_and_empty_disk():
     ## Calamares never draw in the software framebuffer (blank wallpaper only).
     assert modify[modify.index('--graphicscontroller') + 1] == 'vmsvga'
     assert modify[modify.index('--vram') + 1] == '128'
+    ## Absolute pointer for the host-side IMouse (vboxapi) coordinate-click drive:
+    ## usbtablet + a USB controller, so putMouseEventAbsolute works pre-Guest-Additions.
+    assert modify[modify.index('--mouse') + 1] == 'usbtablet'
+    assert modify[modify.index('--usb-ohci') + 1] == 'on'
     ## Empty target disk sized as requested (after the SecureBoot enroll steps).
     medium = M.build_createmedium_argv('/vms/inst.vdi', 25600)
     assert medium in plan

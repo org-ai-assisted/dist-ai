@@ -89,8 +89,8 @@ def build_createvm_argv(vmname, ostype, basefolder=None, vboxmanage=VBOXMANAGE):
 
 def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
                         intnet=None, graphicscontroller=None, vram=None,
-                        vboxmanage=VBOXMANAGE):
-    """Set memory, firmware/SecureBoot, networking and graphics on a VM.
+                        mouse=None, usb=None, vboxmanage=VBOXMANAGE):
+    """Set memory, firmware/SecureBoot, networking, graphics and pointer on a VM.
 
     intnet wins over nic: a per-Linux-user-unique internal network name is how
     the Whonix pair (GW+WS) is isolated without a host-global collision.
@@ -99,6 +99,12 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
     controller + tiny default VRAM starve a desktop session, so it renders only
     a blank wallpaper (no panel, no installer) in the software framebuffer --
     vmsvga + 128 MiB lets the LXQt desktop and Calamares actually draw.
+
+    mouse='usbtablet' + a USB controller (usb='ohci'/'xhci') give the guest an
+    ABSOLUTE pointer, which is what the host-side IMouse.putMouseEventAbsolute
+    (vboxapi) drive needs to click GUI widgets by screenshot pixel coordinate
+    WITHOUT Guest Additions -- the low-mental-load alternative to blind Tab-key
+    navigation for form pages (Calamares LUKS passphrase, user creation).
     """
     argv = [vboxmanage, 'modifyvm', vmname]
     if memory is not None:
@@ -109,6 +115,10 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
         argv += ['--graphicscontroller', graphicscontroller]
     if vram is not None:
         argv += ['--vram', str(vram)]
+    if mouse is not None:
+        argv += ['--mouse', mouse]
+    if usb is not None:
+        argv += ['--usb-' + usb, 'on']
     if intnet is not None:
         argv += ['--nic1', 'intnet', '--intnet1', intnet]
     elif nic is not None:
@@ -191,6 +201,7 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
         build_createvm_argv(vmname, ostype, vboxmanage=vboxmanage),
         build_modifyvm_argv(vmname, memory=memory, firmware=firmware,
                             nic='nat', graphicscontroller='vmsvga', vram=128,
+                            mouse='usbtablet', usb='ohci',
                             vboxmanage=vboxmanage),
     ]
     if firmware == 'efi-secureboot':
