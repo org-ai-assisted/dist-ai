@@ -41,13 +41,13 @@ privileges, in these categories:
   polkit             polkit action definitions (a pkexec/helper they authorize
                      runs as root). Action ids and <defaults> are listed.
 
-  sudo-call          Every 'sudo' invocation in a shell script anywhere in the
-                     tree (all components), found via a REAL bash parser (shfmt
-                     AST, dist_ai.bash_ast) -- never a regex. Reports the program
-                     sudo runs and its run-as target (root unless -u sets
-                     another user). HONEST SCOPE: shell scripts only; a sudo
-                     called from Python/other via a library is not in the
-                     bash-AST surface.
+  privileged-call    Every privilege-escalator invocation (sudo, pkexec, doas,
+                     run0, su, runuser, leaprun) in a shell script anywhere in
+                     the tree, found via a REAL bash parser (shfmt AST) -- never
+                     a regex. Reports the tool, the program it runs, and the
+                     run-as target (root unless an option sets another user).
+                     HONEST SCOPE: shell scripts only; an escalator called from
+                     Python/other via a library is not in the bash-AST surface.
 
   build-chroot       derivative-maker's own chroot/pbuilder help-steps, which
                      run as root inside the build chroot.
@@ -112,8 +112,41 @@ SUDO_LONG_OPTS = SUDO_VALUE_LONG | SUDO_NOEXEC_LONG | frozenset((
     "reset-timestamp", "non-interactive", "preserve-groups", "preserve-env",
     "stdin", "shell",
 ))
-## Shell wrappers that exec their operand unchanged; peel to find a real sudo.
+## Shell wrappers that exec their operand unchanged; peel to find the escalator.
 SUDO_WRAPPERS = frozenset(("exec", "command", "nohup", "setsid", "nice", "ionice"))
+
+## Privilege escalators recognized as command words in shell scripts. The
+## sudo-like ones share one getopt-shaped analyzer (program = first operand,
+## -u/--user sets the run-as target); su/runuser/leaprun have their own shapes.
+ESCALATOR_SUDOLIKE = {
+    "sudo": {
+        "value_short": SUDO_VALUE_SHORT, "value_long": SUDO_VALUE_LONG,
+        "long_opts": SUDO_LONG_OPTS, "user_short": "u", "user_long": "user",
+        "noexec_short": SUDO_NOEXEC_SHORT, "noexec_long": SUDO_NOEXEC_LONG,
+    },
+    "pkexec": {
+        "value_short": frozenset(), "value_long": frozenset(("user",)),
+        "long_opts": frozenset(("user", "help", "version",
+                                "disable-internal-agent", "keep-cwd")),
+        "user_short": None, "user_long": "user",
+        "noexec_short": frozenset(), "noexec_long": frozenset(),
+    },
+    "doas": {
+        "value_short": frozenset("uCa"), "value_long": frozenset(),
+        "long_opts": frozenset(), "user_short": "u", "user_long": None,
+        "noexec_short": frozenset(), "noexec_long": frozenset(),
+    },
+    "run0": {
+        "value_short": frozenset(), "value_long": frozenset((
+            "user", "group", "unit", "property", "description", "slice")),
+        "long_opts": frozenset((
+            "user", "group", "unit", "property", "description", "slice",
+            "help", "version", "pty", "pipe", "shell-prompt-prefix")),
+        "user_short": None, "user_long": "user",
+        "noexec_short": frozenset(), "noexec_long": frozenset(),
+    },
+}
+ESCALATORS = frozenset(ESCALATOR_SUDOLIKE) | frozenset(("su", "runuser", "leaprun"))
 
 CHROOT_SCRIPT_RE = re.compile(r"(chroot|pbuilder)", re.IGNORECASE)
 
@@ -456,6 +489,8 @@ def scan_sudoers(abs_path, rel_path):
 ## id may be single- or double-quoted XML.
 POLKIT_ACTION_SPLIT_RE = re.compile(r"""<action\s+id=["']([^"']+)["']""")
 POLKIT_ALLOW_RE = re.compile(r"<(allow_[a-z]+)>([^<]+)</allow_[a-z]+>")
+POLKIT_EXEC_PATH_RE = re.compile(
+    r'org\.freedesktop\.policykit\.exec\.path"\s*>\s*([^<]+)')
 
 
 def scan_polkit(abs_path, rel_path):
@@ -465,7 +500,8 @@ def scan_polkit(abs_path, rel_path):
         return None
     text = read_text(abs_path)
     ## Per-action defaults: split on each <action> so one action's <defaults>
-    ## are not collapsed into a file-level dict that hides another's.
+    ## are not collapsed into a file-level dict that hides another's. Also pull
+    ## the pkexec helper the action authorizes (exec.path), which runs as root.
     actions = []
     matches = list(POLKIT_ACTION_SPLIT_RE.finditer(text))
     for index, match in enumerate(matches):
@@ -473,7 +509,12 @@ def scan_polkit(abs_path, rel_path):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         block = text[start:end]
         defaults = {m.group(1): m.group(2) for m in POLKIT_ALLOW_RE.finditer(block)}
-        actions.append({"id": match.group(1), "defaults": defaults})
+        exec_match = POLKIT_EXEC_PATH_RE.search(block)
+        actions.append({
+            "id": match.group(1),
+            "defaults": defaults,
+            "exec_path": exec_match.group(1) if exec_match else None,
+        })
     return {"actions": actions}
 
 
@@ -486,14 +527,13 @@ def word_text(word, source):
     return literal if literal is not None else bash_ast.word_source(word, source)
 
 
-def sudo_arg_words(call, source):
-    """The Arg words from the 'sudo' word onward, peeling exec/command wrappers
-    (exec sudo ...), or None if this call does not invoke the sudo PROGRAM.
+def escalator_words(call, source):
+    """(tool, words-from-the-escalator) for a call that invokes a privilege
+    escalator (sudo/pkexec/doas/run0/su/runuser/leaprun), peeling exec/command
+    wrappers, or None. 'command -v/-V <tool>' is a lookup, not an invocation.
 
-    Only leading no-value wrappers are peeled; a wrapper that consumes operands
-    ('timeout 5 sudo', 'nice -n 5 sudo') is not, so it is simply not matched. A
-    'command -v/-V sudo' is a lookup, not an invocation, so it returns None.
-    """
+    A wrapper that consumes operands ('timeout 5 sudo', 'nice -n 5 sudo') is not
+    peeled, so it is simply not matched (a documented shell-wrapper gap)."""
     words = bash_ast.args(call)
     index = 0
     while index < len(words):
@@ -505,8 +545,8 @@ def sudo_arg_words(call, source):
                 text = word_text(words[index], source)
                 if text.startswith("-") and text != "-":
                     if base == "command" and set(text[1:]) & set("vV"):
-                        return None  ## 'command -v sudo' only prints a path
-                    index += 1  ## skip the wrapper's own option
+                        return None  ## 'command -v <tool>' only prints a path
+                    index += 1
                 else:
                     break
             continue
@@ -515,85 +555,156 @@ def sudo_arg_words(call, source):
         return None
     name = bash_ast.word_string(words[index])
     base = name.rsplit("/", 1)[-1] if name else None
-    return words[index:] if base == "sudo" else None
+    return (base, words[index:]) if base in ESCALATORS else None
 
 
-def analyze_sudo(sudo_words, source):
-    """(program, runs_as, mode) for a sudo invocation.
-
-    The OPERAND (the program sudo runs) and each option's VALUE are classified
-    by bash_ast.command_tokens -- the same battle-tested classifier the style
-    tooling uses -- so a value in separate-word form ('sudo -p PROMPT cmd', '-g
-    group cmd') is never mistaken for the program. Only sudo's -u run-as target
-    and the non-executing modes (-l/-v/-e/...) are read on top of it here.
-
-    program is None for an expansion/absent program (-> notify); runs_as is
-    'root' unless -u/--user names another user ('?' when it is an expansion).
-    """
-    ## A synthetic CallExpr whose command word is 'sudo', so command_tokens
-    ## classifies sudo's own args even when peeled from behind a wrapper.
-    call = {"Args": sudo_words}
+def analyze_sudolike(config, words, source):
+    """(program, runs_as, mode) for a sudo-shaped escalator (sudo/pkexec/doas/
+    run0). The OPERAND and each option VALUE are classified by command_tokens,
+    so a separate-word value ('-p PROMPT', '-g group') is never mistaken for the
+    program; only the run-as target (-u/--user) and non-exec modes are read on
+    top. program is None for an expansion/absent program (-> notify)."""
+    call = {"Args": words}
     runs_as = "root"
     mode = None
     pending_user = False
     tokens = bash_ast.command_tokens(
-        call, source, value_short=SUDO_VALUE_SHORT, value_long=SUDO_VALUE_LONG)
+        call, source,
+        value_short=config["value_short"], value_long=config["value_long"])
     for kind, word, text in tokens:
         if kind == "opt":
             if text.startswith("--"):
                 name = text[2:].split("=", 1)[0]
-                resolved = bash_ast.resolve_long(name, SUDO_LONG_OPTS)
-                if resolved in SUDO_NOEXEC_LONG:
+                resolved = bash_ast.resolve_long(name, config["long_opts"])
+                if resolved in config["noexec_long"]:
                     mode = resolved
-                if resolved == "user":
+                if resolved is not None and resolved == config["user_long"]:
                     if "=" in text:
                         value = text.split("=", 1)[1]
                         runs_as = "?" if EXPANSION_RE.search(value) else value
                     else:
                         pending_user = True
             elif text.startswith("-"):
-                cluster = text[1:]
-                for position, letter in enumerate(cluster):
-                    if letter in SUDO_NOEXEC_SHORT:
+                for position, letter in enumerate(text[1:]):
+                    if letter in config["noexec_short"]:
                         mode = letter
-                    if letter in SUDO_VALUE_SHORT:
-                        rest = cluster[position + 1:]
-                        if letter == "u":
+                    if letter in config["value_short"]:
+                        rest = text[1:][position + 1:]
+                        if letter == config["user_short"]:
                             if rest:
                                 runs_as = "?" if EXPANSION_RE.search(rest) else rest
                             else:
                                 pending_user = True
-                        break  ## the value-taker owns the rest of the cluster
+                        break
         elif kind == "value":
             if pending_user:
                 value = bash_ast.word_string(word)
                 runs_as = value if value is not None else "?"
                 pending_user = False
         elif kind == "operand":
-            ## Skip sudo's own leading 'VAR=value' env settings (text is the raw
-            ## source for an expansion value, so 'FOO="$x"' is still recognized).
             if SUDO_ENV_ASSIGN_RE.match(text):
-                continue
+                continue  ## sudo's own 'VAR=value' env setting
             return bash_ast.word_string(word), runs_as, mode
     return None, runs_as, mode
 
 
-def scan_sudo_calls(source, tree):
-    """Yield (line, program, runs_as, mode) for every sudo invocation in TREE.
+## su/runuser value-taking options; -c/-s carry a command/shell, -u (runuser)
+## sets the target user.
+SU_VALUE_SHORT = frozenset("csgGu")
 
-    A script may shadow 'sudo' with a function, but a security inventory must
-    over-report, not under-report: dropping every 'sudo' in such a file would
-    also drop a real '/usr/bin/sudo' or 'command sudo' the function does not
-    intercept, so those calls are kept.
-    """
-    for call in bash_ast.call_exprs(tree):
-        sudo_words = sudo_arg_words(call, source)
-        if sudo_words is None:
+
+def analyze_su(words, source):
+    """(command, runs_as, mode) for su/runuser. The target user is a bare
+    operand (default root), or runuser's -u value; the command is -c's value if
+    present, else None (an interactive shell), noted 'shell'."""
+    runs_as = "root"
+    command = None
+    mode = "shell"
+    index = 1
+    total = len(words)
+    while index < total:
+        text = word_text(words[index], source)
+        if text == "--":
+            index += 1
+            break
+        if text == "-":
+            index += 1  ## login-shell marker, not a user
             continue
-        word = sudo_words[0]
-        line = word.get("Pos", {}).get("Line") if word else None
-        program, runs_as, mode = analyze_sudo(sudo_words, source)
-        yield line, program, runs_as, mode
+        if text.startswith("--"):
+            name = text[2:].split("=", 1)[0]
+            if name in ("command", "session-command"):
+                if "=" in text:
+                    command, mode = text.split("=", 1)[1], None
+                elif index + 1 < total:
+                    index += 1
+                    command, mode = bash_ast.word_string(words[index]), None
+            elif name == "user" and index + 1 < total:
+                index += 1
+                value = bash_ast.word_string(words[index])
+                runs_as = value if value is not None else "?"
+            index += 1
+            continue
+        if text.startswith("-"):
+            for position, letter in enumerate(text[1:]):
+                if letter in SU_VALUE_SHORT:
+                    rest = text[1:][position + 1:]
+                    value = rest if rest else None
+                    if value is None and index + 1 < total:
+                        index += 1
+                        value = bash_ast.word_string(words[index])
+                    if letter == "c":
+                        command, mode = value, None
+                    elif letter == "u":
+                        runs_as = value if value is not None else "?"
+                    break
+            index += 1
+            continue
+        ## first bare operand is the target user
+        value = bash_ast.word_string(words[index])
+        runs_as = value if value is not None else "?"
+        index += 1
+    ## A command after '--' (or after the user) overrides the interactive shell.
+    if command is None and index < total:
+        command, mode = bash_ast.word_string(words[index]), None
+    return command, runs_as, mode
+
+
+def analyze_leaprun(words, source):
+    """(action, runs_as, mode) for the privleap client. The first operand is the
+    action name; its true target is the matching conf.d action's TargetUser (a
+    privleap-action row), so runs_as here is left 'root' with mode 'privleap'."""
+    for index in range(1, len(words)):
+        text = word_text(words[index], source)
+        if text == "--":
+            continue
+        if text.startswith("-"):
+            continue
+        return bash_ast.word_string(words[index]), "root", "privleap"
+    return None, "root", "privleap"
+
+
+def scan_privileged_calls(source, tree):
+    """Yield (line, tool, command, runs_as, mode) for every privilege-escalator
+    invocation in TREE.
+
+    A script may shadow an escalator with a shell function, but a security
+    inventory over-reports rather than under-reports: dropping every call in
+    such a file would also drop a real '/usr/bin/sudo' the function does not
+    intercept, so those calls are kept."""
+    for call in bash_ast.call_exprs(tree):
+        found = escalator_words(call, source)
+        if found is None:
+            continue
+        tool, words = found
+        line = words[0].get("Pos", {}).get("Line") if words else None
+        if tool in ESCALATOR_SUDOLIKE:
+            command, runs_as, mode = analyze_sudolike(
+                ESCALATOR_SUDOLIKE[tool], words, source)
+        elif tool in ("su", "runuser"):
+            command, runs_as, mode = analyze_su(words, source)
+        else:
+            command, runs_as, mode = analyze_leaprun(words, source)
+        yield line, tool, command, runs_as, mode
 
 
 ## --- build-time chroot ------------------------------------------------------
@@ -651,15 +762,17 @@ def enumerate_root_scripts(dm_root):
             except bash_ast.BashParseError as exc:
                 parse_errors.append({"path": rel_path, "error": str(exc)})
                 continue
-            for line, program, runs_as, mode in scan_sudo_calls(source, tree):
+            for line, tool, program, runs_as, mode in \
+                    scan_privileged_calls(source, tree):
                 entry = {
-                    "category": "sudo-call", **base,
+                    "category": "privileged-call", **base, "tool": tool,
                     "line": line, "command": program, "runs_as": runs_as,
                 }
                 if mode is not None:
-                    ## Non-executing sudo mode: the operand is listed/edited, not
-                    ## run as a plain root command.
-                    entry["note"] = "sudo-%s" % mode
+                    ## Non-executing/indirect mode: the operand is listed/edited
+                    ## (sudo -l), a shell (su), or an action name (leaprun) --
+                    ## not a plain program run directly.
+                    entry["note"] = "%s-%s" % (tool, mode)
                 elif program is None:
                     entry["note"] = "notify"
                 entries.append(entry)

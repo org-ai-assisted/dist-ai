@@ -39,19 +39,28 @@ def main(argv):
         return matches[0] if matches else None
 
     def sudo_at(needle, line):
-        for e in cat("sudo-call"):
+        for e in cat("privileged-call"):
             if needle in e["path"] and e.get("line") == line:
                 return e
         return None
 
     def sudo_lines(needle):
-        return {e["line"] for e in cat("sudo-call") if needle in e["path"]}
+        return {e["line"] for e in cat("privileged-call") if needle in e["path"]}
 
     def _polkit_default(entry, action_id, key):
         for action in entry["actions"]:
             if action["id"] == action_id:
                 return action["defaults"].get(key)
         return None
+
+    def _polkit_exec(entry, action_id):
+        for action in entry["actions"]:
+            if action["id"] == action_id:
+                return action.get("exec_path")
+        return None
+
+    def esc(line):
+        return sudo_at("usr/libexec/foo/escprobe", line)
 
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
@@ -152,7 +161,7 @@ def main(argv):
          sudo_at(helper, 7) is not None and sudo_at(helper, 7)["command"] is None
          and sudo_at(helper, 7).get("note") == "notify"),
         ("sudo in a NON-shell file is not scanned",
-         one("sudo-call", "etc/foo.conf") is None),
+         one("privileged-call", "etc/foo.conf") is None),
 
         ## sudo getopt semantics (optprobe)
         ("an abbreviated --us=nobody resolves the run-as target",
@@ -169,11 +178,11 @@ def main(argv):
         ("sudo behind an exec wrapper is enumerated",
          sudo_at(probe, 7) is not None and sudo_at(probe, 7)["command"] == "/usr/bin/f"),
         ("a real /usr/bin/sudo call is not dropped by a sudo function shadow",
-         one("sudo-call", "usr/libexec/foo/sudofn") is not None
-         and one("sudo-call", "usr/libexec/foo/sudofn")["command"] == "/usr/bin/real-root"),
+         one("privileged-call", "usr/libexec/foo/sudofn") is not None
+         and one("privileged-call", "usr/libexec/foo/sudofn")["command"] == "/usr/bin/real-root"),
         ("an extensionless shebang-less build-step file is scanned",
-         one("sudo-call", "help-steps/nosheb") is not None
-         and one("sudo-call", "help-steps/nosheb")["command"] == "apt-get"),
+         one("privileged-call", "help-steps/nosheb") is not None
+         and one("privileged-call", "help-steps/nosheb")["command"] == "apt-get"),
         ("a privleap TargetUser=00 (numeric UID 0) is a root action",
          "numeric-root-action" in priv_actions),
 
@@ -191,9 +200,25 @@ def main(argv):
          one("systemd-unit", "suffixed.service#foo-shared") is not None
          and "/usr/bin/suffixed-root"
          in one("systemd-unit", "suffixed.service#foo-shared")["exec"]),
+
+        ## other privilege escalators (escprobe)
+        ("pkexec is enumerated as a privileged call",
+         esc(2) is not None and esc(2)["tool"] == "pkexec"
+         and esc(2)["command"] == "/usr/bin/pk" and esc(2)["runs_as"] == "root"),
+        ("pkexec --user sets the run-as target",
+         esc(3) is not None and esc(3)["runs_as"] == "nobody"),
+        ("su - user -c cmd records the user and command",
+         esc(4) is not None and esc(4)["tool"] == "su"
+         and esc(4)["runs_as"] == "postgres" and esc(4)["command"] == "psql"),
+        ("leaprun records the privleap action name",
+         esc(5) is not None and esc(5)["tool"] == "leaprun"
+         and esc(5)["command"] == "grub-password-status-check"),
+        ("a polkit action's pkexec exec.path (root helper) is captured",
+         _polkit_exec(one("polkit", "com.example.test"), "com.example.test.do")
+         == "/usr/libexec/foo/pkexec-helper"),
         ("a dm build-script sudo call is enumerated under derivative-maker",
-         one("sudo-call", "help-steps/buildscript") is not None
-         and one("sudo-call", "help-steps/buildscript")["component"] == "derivative-maker"),
+         one("privileged-call", "help-steps/buildscript") is not None
+         and one("privileged-call", "help-steps/buildscript")["component"] == "derivative-maker"),
 
         ## build-chroot
         ("a chroot helper is enumerated as build-chroot",
@@ -205,7 +230,7 @@ def main(argv):
         ("the walk reported no unreadable directories", report["walk_errors"] == []),
         ("the report carries examined counts and a category summary",
          report["examined"]["files"] > 0 and report["examined"]["shell_files"] > 0
-         and report["summary"].get("sudo-call", 0) >= 1),
+         and report["summary"].get("privileged-call", 0) >= 1),
     ]
 
     passed = 0

@@ -276,17 +276,32 @@ write 'packages/kicksecure/foo/etc/sudoers.d/commented-sudo' <<'EOF'
 EOF
 
 ## polkit: TWO actions with DIFFERENT defaults (must not collapse), one id
-## single-quoted (valid XML) -> both parsed with their own defaults.
+## single-quoted (valid XML), the first annotating a pkexec helper (exec.path)
+## -> both parsed with their own defaults; the root helper path is captured.
 write 'packages/kicksecure/foo/usr/share/polkit-1/actions/com.example.test.policy' <<'EOF'
 <?xml version="1.0"?>
 <policyconfig>
   <action id="com.example.test.do">
     <defaults><allow_active>yes</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/foo/pkexec-helper</annotate>
   </action>
   <action id='com.example.test.other'>
     <defaults><allow_active>no</allow_active></defaults>
   </action>
 </policyconfig>
+EOF
+
+## privilege escalators OTHER than sudo, as shell command words. Lines:
+##   2 pkexec prog        -> tool pkexec, root
+##   3 pkexec --user u    -> runs_as nobody
+##   4 su - user -c cmd   -> tool su, runs_as postgres, command psql
+##   5 leaprun action     -> tool leaprun, command is the action name
+write 'packages/kicksecure/foo/usr/libexec/foo/escprobe' <<'EOF'
+#!/bin/bash
+pkexec /usr/bin/pk
+pkexec --user nobody /usr/bin/pk2
+su - postgres -c "psql"
+leaprun grub-password-status-check
 EOF
 
 ## dm's OWN build script that calls sudo -> a sudo-call under derivative-maker.
