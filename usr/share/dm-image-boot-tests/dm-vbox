@@ -88,17 +88,27 @@ def build_createvm_argv(vmname, ostype, basefolder=None, vboxmanage=VBOXMANAGE):
 
 
 def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
-                        intnet=None, vboxmanage=VBOXMANAGE):
-    """Set memory, firmware/SecureBoot and networking on a VM.
+                        intnet=None, graphicscontroller=None, vram=None,
+                        vboxmanage=VBOXMANAGE):
+    """Set memory, firmware/SecureBoot, networking and graphics on a VM.
 
     intnet wins over nic: a per-Linux-user-unique internal network name is how
     the Whonix pair (GW+WS) is isolated without a host-global collision.
+
+    graphicscontroller/vram matter for a GUI guest read headlessly: the stock
+    controller + tiny default VRAM starve a desktop session, so it renders only
+    a blank wallpaper (no panel, no installer) in the software framebuffer --
+    vmsvga + 128 MiB lets the LXQt desktop and Calamares actually draw.
     """
     argv = [vboxmanage, 'modifyvm', vmname]
     if memory is not None:
         argv += ['--memory', str(memory)]
     if firmware is not None:
         argv += ['--firmware', _FIRMWARE[firmware]]
+    if graphicscontroller is not None:
+        argv += ['--graphicscontroller', graphicscontroller]
+    if vram is not None:
+        argv += ['--vram', str(vram)]
     if intnet is not None:
         argv += ['--nic1', 'intnet', '--intnet1', intnet]
     elif nic is not None:
@@ -180,7 +190,8 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
     plan = [
         build_createvm_argv(vmname, ostype, vboxmanage=vboxmanage),
         build_modifyvm_argv(vmname, memory=memory, firmware=firmware,
-                            nic='nat', vboxmanage=vboxmanage),
+                            nic='nat', graphicscontroller='vmsvga', vram=128,
+                            vboxmanage=vboxmanage),
     ]
     if firmware == 'efi-secureboot':
         plan += build_secureboot_plan(vmname, vboxmanage=vboxmanage)

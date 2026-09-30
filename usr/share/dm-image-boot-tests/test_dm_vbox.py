@@ -165,6 +165,10 @@ def test_install_vm_plan_composes_efi_iso_and_empty_disk():
     assert '--firmware' in modify and 'efi' in modify
     assert '--secure-boot' not in modify
     assert modify[modify.index('--nic1') + 1] == 'nat'
+    ## Headless GUI rendering: vmsvga + 128 MiB VRAM, else the LXQt desktop /
+    ## Calamares never draw in the software framebuffer (blank wallpaper only).
+    assert modify[modify.index('--graphicscontroller') + 1] == 'vmsvga'
+    assert modify[modify.index('--vram') + 1] == '128'
     ## Empty target disk sized as requested (after the SecureBoot enroll steps).
     medium = M.build_createmedium_argv('/vms/inst.vdi', 25600)
     assert medium in plan
