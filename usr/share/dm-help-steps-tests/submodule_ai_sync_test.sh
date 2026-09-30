@@ -338,6 +338,34 @@ gitq -C "${superB}/noremote" config protocol.file.allow always
 gitq -C "${superB}/noremote" checkout --quiet ai
 noremote_head="$(head_of "${superB}/noremote")"
 
+## mirrorai: on ai, org-ai-assisted has NO 'ai' (only master), but a bot MIRROR
+## (gitlab-adrelanos) DOES publish 'ai'.'ai' IS published, just not on the CI
+## remote -- so the STOP must NAME the mirror and point at git-push, NEVER read as
+## the false "never published" (which the old code emitted here). Guards the
+## fork-mirror-detection fix.
+gitq init --quiet --bare -- "${workspace}/fork-mirrorai-org.git"
+gitq init --quiet --bare -- "${workspace}/fork-mirrorai-gl.git"
+gitq init --quiet -- "${workspace}/drv-mirrorai"
+gitq -C "${workspace}/drv-mirrorai" checkout --quiet -b master
+printf 'm\n' > "${workspace}/drv-mirrorai/f"
+gitq -C "${workspace}/drv-mirrorai" add f
+gitq -C "${workspace}/drv-mirrorai" commit --quiet -m m
+gitq -C "${workspace}/drv-mirrorai" remote add org "file://${workspace}/fork-mirrorai-org.git"
+gitq -C "${workspace}/drv-mirrorai" push --quiet org master
+## publish 'ai' ONLY to the gitlab mirror (org fork gets master only).
+gitq -C "${workspace}/drv-mirrorai" checkout --quiet -b ai
+printf 'a\n' >> "${workspace}/drv-mirrorai/f"
+gitq -C "${workspace}/drv-mirrorai" add f
+gitq -C "${workspace}/drv-mirrorai" commit --quiet -m a
+gitq -C "${workspace}/drv-mirrorai" remote add gl "file://${workspace}/fork-mirrorai-gl.git"
+gitq -C "${workspace}/drv-mirrorai" push --quiet gl ai
+gitq -C "${superB}" submodule --quiet add "file://${workspace}/fork-mirrorai-org.git" mirrorai
+gitq -C "${superB}/mirrorai" remote rename origin org-ai-assisted
+gitq -C "${superB}/mirrorai" remote add gitlab-adrelanos "file://${workspace}/fork-mirrorai-gl.git"
+gitq -C "${superB}/mirrorai" config protocol.file.allow always
+gitq -C "${superB}/mirrorai" checkout --quiet -b ai
+mirrorai_head="$(head_of "${superB}/mirrorai")"
+
 rc=0
 stop_out="$("${tool}" --dir "${superB}" 2>&1)" || rc=$?
 if [ "${rc}" -eq 1 ]; then
@@ -371,11 +399,21 @@ if [ "$(head_of "${superB}/noremote")" = "${noremote_head}" ]; then
 else
    fail "noremote submodule was mutated"
 fi
+if [ "$(head_of "${superB}/mirrorai")" = "${mirrorai_head}" ]; then
+   pass "mirror-ai submodule left untouched"
+else
+   fail "mirror-ai submodule was mutated"
+fi
 ## Reasons surfaced.
 require_result "${stop_out}" "ahead of / diverged" "STOP surfaces the ahead/diverged reason"
 require_result "${stop_out}" "dirty working tree"  "STOP surfaces the dirty reason"
 require_result "${stop_out}" "never published"     "STOP surfaces the unpublished-ai reason"
 require_result "${stop_out}" "no 'org-ai-assisted' remote" "STOP surfaces the missing-remote reason"
+## The mirror-published 'ai' must be reported TRUTHFULLY: name the mirror + point at
+## git-push, NOT the false "never published". FAILS on the pre-fix code (which had no
+## mirror probe and emitted "never published" for this submodule).
+require_result "${stop_out}" "published on mirror(s) gitlab-adrelanos" "STOP names the mirror where ai IS published"
+require_result "${stop_out}" "git-push --repo mirrorai" "STOP points at git-push to publish ai to the CI remote"
 
 ## =============================================================================
 ## Superproject C: mutation-failure and containment STOPs must not crash the loop

@@ -78,6 +78,14 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
 AI_BRANCH="ai"
 ## The published fork that carries 'ai' work and that CI fetches (git skill).
 FORK_REMOTE="org-ai-assisted"
+## Bot-writable fork MIRRORS that 'git push' fans 'ai' out to besides FORK_REMOTE
+## (git skill: git-push resolves push targets by URL owner). Consulted ONLY to make
+## the "no ${FORK_REMOTE}/ai tip" STOP truthful: an 'ai' that reached only a mirror
+## IS published (just not on the CI remote), so the STOP must say "publish it to
+## ${FORK_REMOTE}" -- never the false "never published", which reads as "this repo
+## has no 'ai' at all" and is the exact confusion this avoids. Trusted set only (our
+## own bot remotes), so a foreign remote's coincidental 'ai' is never mistaken for ours.
+MIRROR_REMOTES=( "assisted-by-ai" "gitlab-adrelanos" )
 
 source_dir=""
 dry_run="false"
@@ -288,7 +296,24 @@ for path in "${sub_paths[@]}"; do
    fork_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${FORK_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ -z "${fork_tip}" ]; then
       if [ "${is_ai_workflow}" = "true" ]; then
-         stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
+         ## FORK_REMOTE/ai (the CI remote) is absent. But 'ai' may already be
+         ## published on a bot MIRROR -- git-push fans 'ai' out to all of them, and a
+         ## repo whose 'ai' reached only a mirror reads as unpublished HERE though it
+         ## is not. ls-remote the trusted mirrors (STOP path only, so the network cost
+         ## is rare) to make the STOP truthful and actionable ("publish it to
+         ## FORK_REMOTE") instead of the false "never published".
+         mirror_hit=""
+         for mirror in "${MIRROR_REMOTES[@]}"; do
+            git -C "${sub}" remote get-url -- "${mirror}" &>/dev/null || continue
+            mtip="$( git -C "${sub}" ls-remote --heads -- "${mirror}" "${AI_BRANCH}" 2>/dev/null \
+               | awk 'NR==1 { print $1 }' || true )"
+            [ -n "${mtip}" ] && mirror_hit="${mirror_hit} ${mirror}(${mtip:0:12})"
+         done
+         if [ -n "${mirror_hit}" ]; then
+            stopped+=( "${path} :: '${AI_BRANCH}' is published on mirror(s)${mirror_hit} but NOT on '${FORK_REMOTE}' (the CI remote); publish it with 'git-push --repo ${path}', then re-run" )
+         else
+            stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
+         fi
       else
          skipped_upstream+=( "${path}" )
       fi
