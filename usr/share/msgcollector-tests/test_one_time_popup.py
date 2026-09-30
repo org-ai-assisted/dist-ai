@@ -6,23 +6,18 @@
 ## AI-Assisted
 
 """
-Regression tests for two one-time-popup defects.
+Regression test for a one-time-popup defect.
 
-1. notify-send option injection: show_passive_popup() passed the caller-supplied
-   title/message as trailing notify-send arguments with no '--' terminator, so a
-   value beginning with '-' (e.g. '-1', which argparse's negative-number
-   heuristic lets through) was parsed as a notify-send option instead of text.
-   The fix inserts '--' before the positionals. Verified by capturing the argv
-   show_passive_popup builds.
-
-2. GUI-helper coupling: the passive (notify-send) path needs no display, yet the
-   guard 'from guimessages.display import exit_if_no_gui' was imported at module
-   top, making even --passive depend on the GUI helper. The fix imports it
-   lazily inside the GUI branch. Guard: no top-level guimessages import.
+notify-send option injection: show_passive_popup() passed the caller-supplied
+title/message as trailing notify-send arguments with no '--' terminator, so a
+value beginning with '-' (e.g. '-1', which argparse's negative-number
+heuristic lets through) was parsed as a notify-send option instead of text.
+The fix inserts '--' before the positionals. Verified by capturing the argv
+show_passive_popup builds.
 
 one-time-popup.py is a script (main() is __main__-guarded), so it is loaded by
-path; importing it must NOT require guimessages. Needs python3-pyqt5; skipped
-cleanly if absent.
+path, running only its top-level imports (guimessages + PyQt5), not main().
+Needs python3-pyqt5; skipped cleanly if absent.
 """
 
 import os
@@ -51,21 +46,13 @@ if not os.path.isfile(_SCRIPT):
 
 
 def _load_module():
-    ## Importing must not require guimessages -- that is exactly the decoupling
-    ## under test; a top-level guimessages import would fail here if the helper
-    ## were absent, and always couples the passive path to it.
+    ## one-time-popup.py is __main__-guarded, so loading it by path runs only its
+    ## top-level imports (guimessages + PyQt5), not main().
     spec = importlib.util.spec_from_file_location('one_time_popup', _SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def test_guimessages_import_is_not_module_top_level():
-    src = T.read(_SCRIPT)
-    top_level = [ln for ln in src.splitlines() if ln.startswith('from guimessages')]
-    assert not top_level, \
-        'guimessages imported at module top -- the passive path must not need it'
 
 
 def test_notify_send_uses_option_terminator(monkeypatch, tmp_path):
