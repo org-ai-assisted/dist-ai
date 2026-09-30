@@ -366,6 +366,28 @@ gitq -C "${superB}/mirrorai" config protocol.file.allow always
 gitq -C "${superB}/mirrorai" checkout --quiet -b ai
 mirrorai_head="$(head_of "${superB}/mirrorai")"
 
+## mirrorunreach: on ai, org-ai-assisted has NO 'ai' (only master), and a MIRROR
+## remote (gitlab-adrelanos) EXISTS but is UNREACHABLE (URL points at a nonexistent
+## bare repo, so ls-remote fails fast + non-zero, no network wait). The STOP must
+## say the mirror PROBE FAILED -- never the false "never published", which the failed
+## probe never established. Guards the failed-vs-absent distinction. FAILS on pre-fix
+## code (which swallowed the probe error and emitted "never published" here).
+gitq init --quiet --bare -- "${workspace}/fork-mirrorunreach-org.git"
+gitq init --quiet -- "${workspace}/drv-mirrorunreach"
+gitq -C "${workspace}/drv-mirrorunreach" checkout --quiet -b master
+printf 'm\n' > "${workspace}/drv-mirrorunreach/f"
+gitq -C "${workspace}/drv-mirrorunreach" add f
+gitq -C "${workspace}/drv-mirrorunreach" commit --quiet -m m
+gitq -C "${workspace}/drv-mirrorunreach" remote add org "file://${workspace}/fork-mirrorunreach-org.git"
+gitq -C "${workspace}/drv-mirrorunreach" push --quiet org master
+gitq -C "${superB}" submodule --quiet add "file://${workspace}/fork-mirrorunreach-org.git" mirrorunreach
+gitq -C "${superB}/mirrorunreach" remote rename origin org-ai-assisted
+## Dead mirror: a path that does not exist -> ls-remote exits non-zero immediately.
+gitq -C "${superB}/mirrorunreach" remote add gitlab-adrelanos "file://${workspace}/nonexistent-mirror.git"
+gitq -C "${superB}/mirrorunreach" config protocol.file.allow always
+gitq -C "${superB}/mirrorunreach" checkout --quiet -b ai
+mirrorunreach_head="$(head_of "${superB}/mirrorunreach")"
+
 rc=0
 stop_out="$("${tool}" --dir "${superB}" 2>&1)" || rc=$?
 if [ "${rc}" -eq 1 ]; then
@@ -404,6 +426,11 @@ if [ "$(head_of "${superB}/mirrorai")" = "${mirrorai_head}" ]; then
 else
    fail "mirror-ai submodule was mutated"
 fi
+if [ "$(head_of "${superB}/mirrorunreach")" = "${mirrorunreach_head}" ]; then
+   pass "mirror-unreachable submodule left untouched"
+else
+   fail "mirror-unreachable submodule was mutated"
+fi
 ## Reasons surfaced.
 require_result "${stop_out}" "ahead of / diverged" "STOP surfaces the ahead/diverged reason"
 require_result "${stop_out}" "dirty working tree"  "STOP surfaces the dirty reason"
@@ -417,6 +444,23 @@ require_result "${stop_out}" "published on mirror(s) gitlab-adrelanos" "STOP nam
 ## the STOP can fire with HEAD on master/detached (is_ai_workflow only needs a local
 ## ai branch to exist), so a bare 'git-push' could push the wrong branch.
 require_result "${stop_out}" "checkout ai && git-push --repo mirrorai" "STOP tells the human to check out ai before git-push"
+## An UNREACHABLE mirror must be reported as a PROBE FAILURE, not "never published":
+## the failed probe is no evidence 'ai' is absent. The two assertions are per-PATH (the
+## STOP line for 'mirrorunreach'), since superB legitimately has a "never published" line
+## for 'noforkai'. FAILS on pre-fix code (probe error swallowed -> "never published").
+mirrorunreach_line="$(grep -- 'mirrorunreach ::' <<< "${stop_out}" || true)"
+if [ -n "${mirrorunreach_line}" ] \
+   && grep --quiet --fixed-strings -- 'mirror probe failed' <<< "${mirrorunreach_line}" \
+   && grep --quiet --fixed-strings -- 'gitlab-adrelanos' <<< "${mirrorunreach_line}"; then
+   pass "unreachable-mirror STOP reports the probe failure and names the mirror"
+else
+   fail "unreachable-mirror STOP missing probe-failed hint; line:<<<${mirrorunreach_line}>>>"
+fi
+if grep --quiet --fixed-strings -- 'never published' <<< "${mirrorunreach_line}"; then
+   fail "unreachable-mirror STOP falsely reads 'never published' (probe failure != absent)"
+else
+   pass "unreachable-mirror STOP does NOT read the false 'never published'"
+fi
 
 ## =============================================================================
 ## Superproject C: mutation-failure and containment STOPs must not crash the loop
