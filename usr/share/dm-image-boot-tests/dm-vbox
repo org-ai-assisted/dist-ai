@@ -512,6 +512,54 @@ def start_vm(vmname, vboxmanage=VBOXMANAGE):
     _run(build_startvm_argv(vmname, vboxmanage))
 
 
+def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
+                    vboxmanage=VBOXMANAGE, tesseract=TESSERACT):
+    """Real-host end-to-end: boot headless, then poll the screen via OCR until EVERY
+    expected string appears (PASS) or the timeout elapses (FAIL). GUI images have no
+    serial, so the screen is the only readable boot signal. Returns (ok, png, ocr)."""
+    import os
+    import tempfile
+    import time
+    start_vm(vmname, vboxmanage)
+    png = shot or os.path.join(tempfile.gettempdir(), 'dm-vbox-%s.png' % (vmname,))
+    deadline = time.monotonic() + timeout
+    ocr = ''
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        try:
+            capture_screen(vmname, png, vboxmanage)
+        except subprocess.CalledProcessError:
+            continue
+        ocr = run_ocr(png, tesseract)
+        if all(ocr_text_contains(ocr, item) for item in expect):
+            return True, png, ocr
+    return False, png, ocr
+
+
+def run_boot_test(args):
+    """Real-host: optional import, boot, OCR-verify expected screen text, power off."""
+    if args.ova is not None:
+        _run(build_import_argv(args.ova, args.vm))
+    ok, png, ocr = boot_and_verify(
+        args.vm, args.expect, timeout=args.timeout, interval=args.interval,
+        shot=args.shot)
+    print('dm-vbox: screenshot %s' % (png,))
+    if ok:
+        print('dm-vbox: PASS -- all expected text found: %s'
+              % (', '.join(args.expect),))
+    else:
+        missing = [item for item in args.expect
+                   if not ocr_text_contains(ocr, item)]
+        print('dm-vbox: FAIL -- missing after %ds: %s'
+              % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    if not args.no_poweroff:
+        try:
+            _run(build_poweroff_argv(args.vm))
+        except subprocess.CalledProcessError:
+            pass
+    return PASS_RC if ok else FAIL_RC
+
+
 ## --- CLI --------------------------------------------------------------------
 
 _EMIT_OPS = (
@@ -619,6 +667,20 @@ def _build_parser():
         'ensure-amd-v',
         help='free AMD-V for VirtualBox: unload + blacklist KVM unless a KVM '
              'VM is running (the VBox boot prerequisite)')
+
+    run = sub.add_parser(
+        'run',
+        help='real-host end-to-end: [import], boot headless, OCR-verify expected '
+             'screen text, power off (exit 0 PASS / 5 FAIL)')
+    run.add_argument('--vm', required=True)
+    run.add_argument('--ova', help='import this .ova as --vm before booting')
+    run.add_argument('--expect', action='append', default=[], required=True,
+                     metavar='TEXT',
+                     help='text that must appear on screen (repeatable; ALL required)')
+    run.add_argument('--timeout', type=int, default=240)
+    run.add_argument('--interval', type=int, default=15)
+    run.add_argument('--shot', help='write the final screenshot to this path')
+    run.add_argument('--no-poweroff', dest='no_poweroff', action='store_true')
     return parser
 
 
@@ -651,6 +713,8 @@ def main(argv=None):
         return _cmd_capabilities()
     if args.cmd == 'ensure-amd-v':
         return ensure_amd_v_available()
+    if args.cmd == 'run':
+        return run_boot_test(args)
     return SETUP_RC
 
 
