@@ -235,6 +235,32 @@ fi
 install -m 0700 -o root -g root /dev/null /var/lib/targetpkg/state
 EOF
 
+## VULN + WAIVER: pins the per-line by-design waiver. Every sink is a real
+## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
+## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule
+## on the same statement, an identical UN-waived sink, and a reason-less waiver.
+## The continuation sink pins the walk-up past a '\' line continuation.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-waived#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+}
+root_check
+tu="$1"
+home="/home/${tu}"
+## style-ok: lpe-symlink-follow -- reviewed by-design, single-line waiver
+cp --dereference /etc/skel/.bashrc "${home}/.bashrc"
+cp --dereference /etc/skel/.profile "${home}/.profile"
+## style-ok: lpe-world-writable-perms
+chmod 777 "${home}/pub"
+## style-ok: lpe-home-recursive-write -- reviewed, continuation form
+chown --recursive "${tu}:${tu}" \
+   "${home}/.config"
+EOF
+
 ## --- run the real tool + delegate assertions --------------------------------
 
 json="${work_dir}/out.json"

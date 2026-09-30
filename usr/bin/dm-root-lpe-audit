@@ -356,6 +356,53 @@ def weight_for(reasons):
     return max(weights) if weights else 0
 
 
+## Per-line by-design waiver for the LPE rules. Shape:
+##   ## style-ok: lpe-<rule>[,lpe-<rule>...] -- <why>
+## 'lpe-all' waives every rule for that statement. A non-empty reason after
+## '--' is REQUIRED so a waiver is self-documenting; a reason-less waiver is
+## ignored and the finding still fires. HONEST SCOPE: a line-level comment
+## match, NOT a bash-token parse -- a 'style-ok: lpe-...' inside a heredoc body
+## or a quoted string would read as a waiver. That is the deliberate 'do not
+## build a bash parser here' tradeoff; waived findings stay VISIBLE (counted and
+## listed under 'suppressed'), so a mis-waiver is auditable, never a silent drop.
+LPE_WAIVER_RE = re.compile(
+    r"#+\s*style-ok:\s*"
+    r"(?P<rules>lpe-[a-z][a-z-]*(?:\s*,\s*lpe-[a-z][a-z-]*)*)"
+    r"\s*--\s*(?P<why>\S.*)")
+
+
+def lpe_waivers(source_lines, finding_line):
+    """Map rule -> reason for waivers covering the statement at finding_line.
+
+    Walks up over '\\'-continuation lines to the statement's first physical
+    line, then reads a waiver on the finding's own line, the statement's first
+    line, or the comment line directly above it. A rule of 'all' waives every
+    rule for that statement.
+    """
+    waivers: dict[str, str] = {}
+    if finding_line < 1 or finding_line > len(source_lines):
+        return waivers
+    idx = finding_line - 1
+    first = idx
+    while first > 0 and source_lines[first - 1].rstrip().endswith("\\"):
+        first -= 1
+    candidates = {idx, first}
+    if first - 1 >= 0:
+        candidates.add(first - 1)
+    for cand in candidates:
+        match = LPE_WAIVER_RE.search(source_lines[cand])
+        if match is None:
+            continue
+        reason = match.group("why").strip()
+        if not reason:
+            continue
+        for token in match.group("rules").split(","):
+            token = token.strip()
+            rule = "all" if token == "lpe-all" else token[len("lpe-"):]
+            waivers[rule] = reason
+    return waivers
+
+
 def audit(dm_root):
     tool_dir = os.path.dirname(os.path.realpath(__file__))
     enum_report = run_enum(dm_root, tool_dir)
@@ -366,7 +413,7 @@ def audit(dm_root):
 
     coverage: dict[str, Any] = {
         "root_files": 0, "shell_scanned": 0, "python_advisory": 0,
-        "sinks_examined": 0, "unresolved_targets": 0,
+        "sinks_examined": 0, "unresolved_targets": 0, "suppressed": 0,
         "parse_errors": [], "walk_errors": walk_errors,
     }
     reachable = collect_reachable(dm_root, enum_report, tree_files, submodules,
@@ -374,6 +421,7 @@ def audit(dm_root):
     coverage["root_files"] = len(reachable)
 
     findings = []
+    suppressed = []
     for abs_path in sorted(reachable):
         rel_path = os.path.relpath(abs_path, dm_root)
         reasons = reachable[abs_path]
@@ -393,11 +441,13 @@ def audit(dm_root):
             raw_findings = lpe_sinks.iter_findings(tree, source)
         elif name_has_ext(rel_path, ".py"):
             coverage["python_advisory"] += 1
+            source = read_text(abs_path)
             raw_findings = python_advisory(abs_path, rel_path)
         else:
             continue
+        source_lines = source.splitlines()
         for finding in raw_findings:
-            findings.append({
+            entry = {
                 "component": component,
                 "submodule": submodule,
                 "path": rel_path,
@@ -410,21 +460,22 @@ def audit(dm_root):
                 "why": finding["why"],
                 "root_reason": root_reason,
                 "factors": finding["factors"],
-            })
+            }
+            ## A per-line '## style-ok: lpe-<rule> -- <why>' waiver routes a
+            ## reviewed by-design finding to 'suppressed' (still visible) rather
+            ## than dropping it -- so a rescan no longer re-flags a settled line.
+            waived = lpe_waivers(source_lines, finding["line"])
+            reason = waived.get(finding["rule"]) or waived.get("all")
+            if reason is not None:
+                entry["waiver_reason"] = reason
+                suppressed.append(entry)
+            else:
+                findings.append(entry)
 
     ## Dedupe identical (path, line, rule, operand); keep the highest severity.
-    unique: dict[tuple, dict] = {}
-    for finding in findings:
-        key = (finding["path"], finding["line"], finding["rule"],
-               finding["tainted_operand"])
-        current = unique.get(key)
-        if current is None or SEVERITY_ORDER.index(finding["severity"]) > \
-                SEVERITY_ORDER.index(current["severity"]):
-            unique[key] = finding
-    findings = list(unique.values())
-    findings.sort(key=lambda f: (
-        -SEVERITY_ORDER.index(f["severity"]), f["component"], f["path"],
-        f["line"] or 0))
+    findings = _dedupe(findings)
+    suppressed = _dedupe(suppressed)
+    coverage["suppressed"] = len(suppressed)
 
     return {
         "schema": "dm-root-lpe-audit/1",
@@ -433,7 +484,26 @@ def audit(dm_root):
         "coverage": coverage,
         "severity_counts": _severity_counts(findings),
         "findings": findings,
+        "suppressed": suppressed,
     }
+
+
+def _dedupe(items):
+    """Dedupe identical (path, line, rule, operand); keep the highest severity,
+    then sort HIGH-first by component/path/line."""
+    unique: dict[tuple, dict] = {}
+    for item in items:
+        key = (item["path"], item["line"], item["rule"],
+               item["tainted_operand"])
+        current = unique.get(key)
+        if current is None or SEVERITY_ORDER.index(item["severity"]) > \
+                SEVERITY_ORDER.index(current["severity"]):
+            unique[key] = item
+    ordered = list(unique.values())
+    ordered.sort(key=lambda f: (
+        -SEVERITY_ORDER.index(f["severity"]), f["component"], f["path"],
+        f["line"] or 0))
+    return ordered
 
 
 def _severity_counts(findings):
@@ -460,6 +530,17 @@ def _print_report(report):
                 finding["severity"], finding["path"], finding["line"],
                 finding["rule"], finding["tainted_operand"],
                 finding["root_reason"]), file=sys.stderr)
+
+    ## Suppressed findings stay VISIBLE (count + list): a by-design waiver is a
+    ## reviewed exclusion, never a silent clean.
+    suppressed = report.get("suppressed", [])
+    print("suppressed: %d (waived by-design)" % len(suppressed), file=sys.stderr)
+    for finding in suppressed:
+        if finding["severity"] in ("HIGH", "MEDIUM"):
+            print("  [WAIVED %-6s] %s:%s  %s  %s  -- %s" % (
+                finding["severity"], finding["path"], finding["line"],
+                finding["rule"], finding["tainted_operand"],
+                finding.get("waiver_reason", "")), file=sys.stderr)
 
 
 def main(argv):

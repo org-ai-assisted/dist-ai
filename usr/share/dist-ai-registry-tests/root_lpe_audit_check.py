@@ -54,7 +54,19 @@ def main(argv):
     with open(argv[1], "r", encoding="utf-8") as handle:
         report = json.load(handle)
     findings = report.get("findings", [])
+    suppressed = report.get("suppressed", [])
     coverage = report.get("coverage", {})
+
+    def has(items, path_sub, rule, op_sub=None, need_reason=False):
+        for f in items:
+            if path_sub not in f["path"] or f["rule"] != rule:
+                continue
+            if op_sub is not None and op_sub not in f["tainted_operand"]:
+                continue
+            if need_reason and not f.get("waiver_reason", "").strip():
+                continue
+            return True
+        return False
 
     checks = []
 
@@ -87,6 +99,34 @@ def main(argv):
         "vuln-guarded" in f["path"] and "root-guarded-script" in f["root_reason"]
         for f in findings)
     checks.append(("root-guarded self-gated script is reached", guarded))
+
+    ## Per-line by-design waiver: routes ONLY the named rule to 'suppressed'
+    ## (still visible), surgically, without over- or under-suppressing.
+    checks.append(("report carries a 'suppressed' list", "suppressed" in report))
+    checks.append((
+        "waived symlink-follow routed to suppressed with a reason",
+        has(suppressed, "vuln-waived", "symlink-follow", ".bashrc",
+            need_reason=True)))
+    checks.append((
+        "waived symlink-follow removed from findings",
+        not has(findings, "vuln-waived", "symlink-follow", ".bashrc")))
+    checks.append((
+        "continuation waiver (line above a '\\' split) suppresses the sink",
+        has(suppressed, "vuln-waived", "home-recursive-write", ".config",
+            need_reason=True)))
+    checks.append((
+        "continuation-waived home-recursive-write removed from findings",
+        not has(findings, "vuln-waived", "home-recursive-write", ".config")))
+    checks.append((
+        "per-rule: other rule on the waived line stays flagged",
+        has(findings, "vuln-waived", "root-write-user-path", ".bashrc")))
+    checks.append((
+        "un-waived identical-rule sink stays flagged",
+        has(findings, "vuln-waived", "symlink-follow", ".profile")))
+    checks.append((
+        "reason-less waiver is NOT honored (finding still fires)",
+        has(findings, "vuln-waived", "world-writable-perms")))
+    checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.
     checks.append(("root_files coverage >= 5", coverage.get("root_files", 0) >= 5))
