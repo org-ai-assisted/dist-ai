@@ -121,6 +121,11 @@ AuthorizedUsers=user
 Command=/usr/bin/torcmd
 AuthorizedUsers=user
 TargetUser=debian-tor
+
+[action:numeric-root-action]
+Command=/usr/bin/numroot
+AuthorizedUsers=user
+TargetUser=00
 EOF
 
 ## a SUBMODULE runtime shell script (not dm's build) that calls sudo -- proves
@@ -145,6 +150,35 @@ EOF
 write 'packages/kicksecure/foo/etc/foo.conf' <<'EOF'
 # config mentioning sudo foo in prose
 sudo foo
+EOF
+
+## sudo getopt-semantics probe (shfmt AST + sudo option rules). Lines:
+##   2 --us=nobody   -> abbreviated --user, runs_as nobody
+##   3 -puser        -> -p takes 'user', so cmd is /usr/bin/b, runs_as root
+##   4 -u"$x"        -> attached expansion target -> runs_as ?
+##   5 FOO="$y" prog -> env setting with an expansion -> cmd is the program
+##   6 -l cmd        -> non-executing list mode -> note sudo-l
+##   7 exec sudo ... -> wrapper peeled -> cmd /usr/bin/f
+write 'packages/kicksecure/foo/usr/libexec/foo/optprobe' <<'EOF'
+#!/bin/bash
+sudo --us=nobody /usr/bin/a
+sudo -puser /usr/bin/b
+sudo -u"$x" /usr/bin/c
+sudo FOO="$y" /usr/bin/realp
+sudo -l /usr/bin/e
+exec sudo /usr/bin/f
+EOF
+
+## a script that DEFINES a 'sudo' function -> its sudo calls are unprivileged.
+write 'packages/kicksecure/foo/usr/libexec/foo/sudofn' <<'EOF'
+#!/bin/bash
+sudo() { return 0; }
+sudo /usr/bin/should-not-appear
+EOF
+
+## an extensionless, shebang-less build-step file -> still scanned (dm build).
+write 'help-steps/nosheb' <<'EOF'
+sudo apt-get update
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.

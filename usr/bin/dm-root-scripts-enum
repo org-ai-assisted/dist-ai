@@ -96,14 +96,35 @@ TRUTHY = ("yes", "true", "1", "on")
 SHELL_EXT = (".sh", ".bash", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r"\b(bash|sh|dash)\b")
 
-## sudo short/long options that take a value; -u/--user sets the run-as target.
-SUDO_VALUE_SHORT = frozenset("CDghpRrtTUu")
+## sudo short options that take a value; -u/--user sets the run-as target.
+SUDO_VALUE_SHORT = frozenset("CDgprRtTUu")
+## sudo modes that do NOT execute their operand as root (or edit, not run).
+SUDO_NOEXEC_SHORT = frozenset("lveVh")
 SUDO_VALUE_LONG = frozenset((
     "close-from", "chdir", "group", "host", "prompt", "chroot",
     "role", "type", "command-timeout", "other-user", "user",
 ))
+SUDO_NOEXEC_LONG = frozenset(("list", "validate", "edit", "version", "help"))
+## The full sudo long-option set, so an abbreviation ('--us' -> '--user') is
+## resolved by getopt_long's unambiguous-prefix rule, not mistaken.
+SUDO_LONG_OPTS = SUDO_VALUE_LONG | SUDO_NOEXEC_LONG | frozenset((
+    "askpass", "background", "set-home", "login", "remove-timestamp",
+    "reset-timestamp", "non-interactive", "preserve-groups", "preserve-env",
+    "stdin", "shell",
+))
+## Shell wrappers that exec their operand unchanged; peel to find a real sudo.
+SUDO_WRAPPERS = frozenset(("exec", "command", "nohup", "setsid", "nice", "ionice"))
 
 CHROOT_SCRIPT_RE = re.compile(r"(chroot|pbuilder)", re.IGNORECASE)
+
+
+def is_root_identity(name):
+    """True if NAME denotes root: 'root', or any all-digit spelling of UID 0."""
+    if name is None:
+        return True
+    if name in ("root", "0"):
+        return True
+    return name.isdigit() and int(name) == 0
 
 ## sudo's OWN 'VAR=value' env-setting syntax before the command; skip these to
 ## reach the real program. An expansion (contains '$' or a quote) is unresolvable.
@@ -128,6 +149,10 @@ def shebang(path):
 
 
 def is_shell(abs_path, rel_path):
+    ## dm's build-step dirs hold only shell, some extensionless and without a
+    ## shebang (sourced, not executed) -- scan them regardless.
+    if rel_path.startswith(("help-steps/", "build-steps.d/")):
+        return True
     if rel_path.endswith(SHELL_EXT):
         return True
     line = shebang(abs_path)
@@ -221,8 +246,7 @@ def parse_service(text):
             if program:
                 exec_by_key[key].append(program)
     exec_targets = [prog for key in EXEC_KEYS for prog in exec_by_key[key]]
-    user_is_root = user_value is None or user_value in ("root", "0")
-    runs_as_root = user_is_root and not dynamic_user
+    runs_as_root = is_root_identity(user_value) and not dynamic_user
     return runs_as_root, user_value, exec_targets
 
 
@@ -303,7 +327,7 @@ def scan_privleap(abs_path, rel_path):
     def flush():
         if section == "action" and command is not None:
             ## No TargetUser (or root) -> the Command runs as root.
-            if target_user is None or target_user in ("root", "0"):
+            if is_root_identity(target_user):
                 actions.append({"action": action_name, "command": command})
 
     for raw in read_text(abs_path).splitlines():
@@ -353,7 +377,7 @@ def sudoers_rule_runs_as_root(rule):
     if not match:
         return True
     members = [m.strip() for m in match.group(1).split(":")[0].split(",")]
-    return any(m in ("root", "ALL") for m in members)
+    return any(m == "ALL" or is_root_identity(m.lstrip("#")) for m in members)
 
 
 def sudoers_commands(rule):
@@ -439,60 +463,121 @@ def scan_polkit(abs_path, rel_path):
 ## --- sudo calls (shfmt AST) -------------------------------------------------
 
 
-def analyze_sudo(call, source):
-    """(program, runs_as) for a sudo CallExpr, over shfmt-parsed tokens.
+def word_text(word, source):
+    """A word's literal value, else its raw source (for an expansion)."""
+    literal = bash_ast.word_string(word)
+    return literal if literal is not None else bash_ast.word_source(word, source)
 
-    program is the command sudo runs, or None when it is an expansion/absent
-    (reported as notify). runs_as is 'root' unless -u/--user names another user
-    ('?' when that user is itself an expansion). This reads sudo's OWN option
-    semantics; bash parsing (position, quoting) is already done by shfmt.
+
+def sudo_arg_words(call, source):
+    """The Arg words from the 'sudo' word onward, peeling exec/command wrappers
+    (exec sudo ...), or None if this call does not invoke the sudo PROGRAM.
+
+    Only leading no-value wrappers are peeled; a wrapper that consumes operands
+    ('timeout 5 sudo', 'xargs sudo') is not, so it is simply not matched.
+    """
+    words = bash_ast.args(call)
+    index = 0
+    while index < len(words):
+        name = bash_ast.word_string(words[index])
+        base = name.rsplit("/", 1)[-1] if name else None
+        if base in SUDO_WRAPPERS:
+            index += 1
+            while index < len(words):
+                text = word_text(words[index], source)
+                if text.startswith("-") and text != "-":
+                    index += 1  ## skip the wrapper's own options
+                else:
+                    break
+            continue
+        break
+    if index >= len(words):
+        return None
+    name = bash_ast.word_string(words[index])
+    base = name.rsplit("/", 1)[-1] if name else None
+    return words[index:] if base == "sudo" else None
+
+
+def analyze_sudo(sudo_words, source):
+    """(program, runs_as, mode) for a sudo invocation, over shfmt-parsed words.
+
+    program is the command sudo runs, or None (an expansion/absent -> notify).
+    runs_as is 'root' unless -u/--user names another user ('?' if that user is
+    an expansion). mode is set for a non-executing sudo (-l/--list, -v, -e/edit,
+    ...), where the operand is inspected/edited, not run as a root command.
+
+    Sudo's OWN getopt semantics (a value-taking short option consumes the rest
+    of its cluster; a long option is resolved by unambiguous prefix); bash
+    parsing (position, quoting) is shfmt's job.
     """
     runs_as = "root"
-    pending_user_value = False
-    tokens = bash_ast.command_tokens(
-        call, source,
-        value_short=SUDO_VALUE_SHORT, value_long=SUDO_VALUE_LONG,
-    )
-    for kind, word, text in tokens:
-        if kind == "opt":
-            if text.startswith("--user="):
-                value = text.split("=", 1)[1]
-                runs_as = "?" if EXPANSION_RE.search(value) else value
-            elif text.startswith("--") and "=" not in text \
-                    and bash_ast.resolve_long(text[2:], SUDO_VALUE_LONG) == "user":
-                pending_user_value = True
-            elif text.startswith("-") and not text.startswith("--"):
-                cluster = text[1:]
-                if "u" in cluster:
-                    index = cluster.index("u")
-                    if index == len(cluster) - 1:
-                        pending_user_value = True
-                    else:
-                        runs_as = cluster[index + 1:]
-        elif kind == "value":
-            if pending_user_value:
-                value = bash_ast.word_string(word)
-                runs_as = value if value is not None else "?"
-                pending_user_value = False
-        elif kind == "operand":
-            ## Skip sudo's own leading 'VAR=value' env settings to reach the
-            ## real program; an unresolved expansion program yields notify.
-            program = bash_ast.word_string(word)
-            if program is not None and SUDO_ENV_ASSIGN_RE.match(program):
-                continue
-            return program, runs_as
-    return None, runs_as
+    mode = None
+    index = 1
+    total = len(sudo_words)
+    while index < total:
+        word = sudo_words[index]
+        text = word_text(word, source)
+        if text == "--":
+            index += 1
+            break
+        if text.startswith("--"):
+            name = text[2:].split("=", 1)[0]
+            resolved = bash_ast.resolve_long(name, SUDO_LONG_OPTS)
+            if resolved in SUDO_NOEXEC_LONG:
+                mode = resolved
+            if "=" in text:
+                if resolved == "user":
+                    value = text.split("=", 1)[1]
+                    runs_as = "?" if EXPANSION_RE.search(value) else value
+            elif resolved in SUDO_VALUE_LONG:
+                index += 1
+                if resolved == "user" and index < total:
+                    value = bash_ast.word_string(sudo_words[index])
+                    runs_as = value if value is not None else "?"
+            index += 1
+            continue
+        if text.startswith("-") and text != "-":
+            cluster = text[1:]
+            for position, letter in enumerate(cluster):
+                if letter in SUDO_NOEXEC_SHORT:
+                    mode = letter
+                if letter in SUDO_VALUE_SHORT:
+                    ## A value-taking option consumes the REST of the cluster,
+                    ## else the next word. Only -u sets the run-as target.
+                    rest = cluster[position + 1:]
+                    if rest:
+                        if letter == "u":
+                            runs_as = "?" if EXPANSION_RE.search(rest) else rest
+                    elif letter == "u" and index + 1 < total:
+                        value = bash_ast.word_string(sudo_words[index + 1])
+                        runs_as = value if value is not None else "?"
+                        index += 1
+                    break  ## rest of cluster belonged to this option's value
+            index += 1
+            continue
+        if SUDO_ENV_ASSIGN_RE.match(text):
+            index += 1  ## sudo's own 'VAR=value' env setting (value may expand)
+            continue
+        return bash_ast.word_string(word), runs_as, mode
+    if index < total:
+        return bash_ast.word_string(sudo_words[index]), runs_as, mode
+    return None, runs_as, mode
 
 
 def scan_sudo_calls(source, tree):
-    """Yield (line, program, runs_as) for every sudo invocation in TREE."""
+    """Yield (line, program, runs_as, mode) for every sudo invocation in TREE."""
+    ## A function named 'sudo' shadows the program for the whole script, so its
+    ## calls are unprivileged -- do not report them.
+    if bash_ast.defines_function(tree, "sudo"):
+        return
     for call in bash_ast.call_exprs(tree):
-        if bash_ast.command_basename(call) != "sudo":
+        sudo_words = sudo_arg_words(call, source)
+        if sudo_words is None:
             continue
-        word = bash_ast.command_word(call)
+        word = sudo_words[0]
         line = word.get("Pos", {}).get("Line") if word else None
-        program, runs_as = analyze_sudo(call, source)
-        yield line, program, runs_as
+        program, runs_as, mode = analyze_sudo(sudo_words, source)
+        yield line, program, runs_as, mode
 
 
 ## --- build-time chroot ------------------------------------------------------
@@ -550,12 +635,16 @@ def enumerate_root_scripts(dm_root):
             except bash_ast.BashParseError as exc:
                 parse_errors.append({"path": rel_path, "error": str(exc)})
                 continue
-            for line, program, runs_as in scan_sudo_calls(source, tree):
+            for line, program, runs_as, mode in scan_sudo_calls(source, tree):
                 entry = {
                     "category": "sudo-call", **base,
                     "line": line, "command": program, "runs_as": runs_as,
                 }
-                if program is None:
+                if mode is not None:
+                    ## Non-executing sudo mode: the operand is listed/edited, not
+                    ## run as a plain root command.
+                    entry["note"] = "sudo-%s" % mode
+                elif program is None:
                     entry["note"] = "notify"
                 entries.append(entry)
 

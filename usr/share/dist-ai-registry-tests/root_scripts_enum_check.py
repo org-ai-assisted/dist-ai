@@ -54,6 +54,7 @@ def main(argv):
         return None
 
     helper = "usr/libexec/foo/helper"
+    probe = "usr/libexec/foo/optprobe"
     priv = one("privleap-action", "conf.d/foo.conf")
     priv_actions = {a["action"]: a for a in priv["actions"]} if priv else {}
 
@@ -151,6 +152,28 @@ def main(argv):
          and sudo_at(helper, 7).get("note") == "notify"),
         ("sudo in a NON-shell file is not scanned",
          one("sudo-call", "etc/foo.conf") is None),
+
+        ## sudo getopt semantics (optprobe)
+        ("an abbreviated --us=nobody resolves the run-as target",
+         sudo_at(probe, 2) is not None and sudo_at(probe, 2)["runs_as"] == "nobody"),
+        ("a value-taking -p cluster is not misread as -u",
+         sudo_at(probe, 3) is not None and sudo_at(probe, 3)["command"] == "/usr/bin/b"
+         and sudo_at(probe, 3)["runs_as"] == "root"),
+        ("an attached -u expansion target is unresolved (?)",
+         sudo_at(probe, 4) is not None and sudo_at(probe, 4)["runs_as"] == "?"),
+        ("a sudo env setting with an expansion value still finds the program",
+         sudo_at(probe, 5) is not None and sudo_at(probe, 5)["command"] == "/usr/bin/realp"),
+        ("a non-executing sudo -l is noted, not a plain root exec",
+         sudo_at(probe, 6) is not None and sudo_at(probe, 6).get("note") == "sudo-l"),
+        ("sudo behind an exec wrapper is enumerated",
+         sudo_at(probe, 7) is not None and sudo_at(probe, 7)["command"] == "/usr/bin/f"),
+        ("a script defining a sudo function reports no sudo calls",
+         not any("sudofn" in e["path"] for e in cat("sudo-call"))),
+        ("an extensionless shebang-less build-step file is scanned",
+         one("sudo-call", "help-steps/nosheb") is not None
+         and one("sudo-call", "help-steps/nosheb")["command"] == "apt-get"),
+        ("a privleap TargetUser=00 (numeric UID 0) is a root action",
+         "numeric-root-action" in priv_actions),
         ("a dm build-script sudo call is enumerated under derivative-maker",
          one("sudo-call", "help-steps/buildscript") is not None
          and one("sudo-call", "help-steps/buildscript")["component"] == "derivative-maker"),
