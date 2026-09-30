@@ -327,10 +327,19 @@ def scan_systemd(abs_path, rel_path):
     if "/systemd/user/" in ("/" + rel_path) \
             or name_has_ext(rel_path, ".user.service"):
         return None
-    runs_as_root, user_value, exec_targets = parse_service(read_text(abs_path))
+    text = read_text(abs_path)
+    runs_as_root, user_value, exec_targets = parse_service(text)
+    ## systemd IGNORES User= for a '+'-prefixed command -- it runs as root even
+    ## under a non-root User=. Capture those so a non-root unit's forced-root
+    ## commands are not lost.
+    forced = parse_service_forced_root(text)
     if not runs_as_root:
-        return None
-    return {"scope": "system", "user": user_value or "root", "exec": exec_targets}
+        if not forced:
+            return None
+        return {"scope": "system", "user": user_value,
+                "exec": [], "root_forced_exec": forced}
+    return {"scope": "system", "user": user_value or "root",
+            "exec": exec_targets, "root_forced_exec": forced}
 
 
 ACTIVATION_EXT = (".socket", ".timer", ".path", ".mount", ".automount")
@@ -641,10 +650,12 @@ def scan_modprobe(abs_path, rel_path):
     if "/modprobe.d/" not in ("/" + rel_path):
         return None
     programs = []
-    for raw in read_text(abs_path).splitlines():
-        if raw.lstrip().startswith("#"):
+    ## Join backslash-newline continuations: 'install mod \\\n  /usr/bin/x'.
+    joined = re.sub(r"\\\n", " ", read_text(abs_path))
+    for line in joined.splitlines():
+        if line.lstrip().startswith("#"):
             continue
-        match = MODPROBE_HOOK_RE.match(raw)
+        match = MODPROBE_HOOK_RE.match(line)
         if match:
             programs.append(match.group(1).strip())
     return {"programs": programs} if programs else None
@@ -829,6 +840,7 @@ PYTHON_ESCALATOR_RE = re.compile(
 ## plain allow-list or test-parametrize literal (["sudo", ...]) is not flagged.
 PYTHON_SUBPROCESS_RE = re.compile(
     r"\b(?:subprocess\.\w+|Popen|check_output|check_call|getoutput|call|run|"
+    r"create_subprocess_exec|create_subprocess_shell|"
     r"os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\s*\(")
 
 
@@ -1044,7 +1056,7 @@ def analyze_leaprun(words, source):
             seen_ddash = True
             continue
         if not seen_ddash and text.startswith("-"):
-            if text in ("--check", "--test"):
+            if text in ("-c", "--check"):
                 mode = "privleap-check"
             continue
         return bash_ast.word_string(words[index]), "?", mode
