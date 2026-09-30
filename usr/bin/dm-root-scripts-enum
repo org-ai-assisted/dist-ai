@@ -656,6 +656,11 @@ def _is_grub_d(slashed, name):
     return "/etc/grub.d/" in slashed and "/default/grub.d/" not in slashed
 
 
+def _is_grub_default(slashed, name):
+    ## Sourced (not executed) as root by update-grub; low, but a real surface.
+    return "/etc/default/grub.d/" in slashed and name.endswith(".cfg")
+
+
 def _is_qubes_rpc(slashed, name):
     return "/etc/qubes-rpc/" in slashed
 
@@ -689,6 +694,7 @@ def _is_initramfs_kernel(slashed, name):
 
 PATH_ROOT_SURFACES = (
     ("grub-script", _is_grub_d),
+    ("grub-default-config", _is_grub_default),
     ("qubes-rpc", _is_qubes_rpc),
     ("qubes-hook", _is_qubes_hook),
     ("update-motd", _is_update_motd),
@@ -697,13 +703,109 @@ PATH_ROOT_SURFACES = (
 )
 
 
-def scan_path_surface(abs_path, rel_path):
+def load_install_links(dm_root):
+    """Map a tree source file (rel path) to its debian/*.links install
+    destination, so a root surface shipped from a renamed source path (a
+    grub.d/qubes script under usr/share/.../conf/) is attributed to where it
+    actually installs. A .links line is 'source dest', both absolute."""
+    links = {}
+    for dirpath, dirnames, filenames in os.walk(dm_root):
+        if ".git" in dirpath.split(os.sep):
+            continue
+        if os.path.basename(dirpath) != "debian":
+            continue
+        pkgdir = os.path.relpath(os.path.dirname(dirpath), dm_root)
+        for name in filenames:
+            if not name.endswith(".links"):
+                continue
+            for raw in read_text(os.path.join(dirpath, name)).splitlines():
+                parts = raw.split()
+                if len(parts) != 2:
+                    continue
+                source, dest = parts
+                src_rel = os.path.normpath(os.path.join(pkgdir, source.lstrip("/")))
+                links[src_rel] = "/" + dest.lstrip("/")
+    return links
+
+
+def scan_path_surface(abs_path, rel_path, install_dest=None):
+    ## Test the source path AND, when installed elsewhere via debian/*.links,
+    ## its real destination. (slashed_path, probe_name) per candidate.
+    candidates = [("/" + rel_path, install_name(rel_path))]
+    if install_dest is not None:
+        candidates.append((install_dest, os.path.basename(install_dest)))
+    for category, predicate in PATH_ROOT_SURFACES:
+        for slashed, probe_name in candidates:
+            if predicate(slashed, probe_name):
+                details = {"interpreter": shebang(abs_path)}
+                if install_dest is not None:
+                    details["installs_to"] = install_dest
+                return category, details
+    return None
+
+
+## --- calamares installer jobs -----------------------------------------------
+
+## Calamares runs these as root during install: a shellprocess module's
+## 'script:' program(s), and a 'job'/'process' module.desc 'command:'.
+CALAMARES_SCRIPT_ITEM_RE = re.compile(r"^\s*-\s*(\S+)")
+CALAMARES_KV_RE = re.compile(r'^\s*(command|script|interface|type)\s*:\s*(.*?)\s*$')
+
+
+def _calamares_program(value):
+    """The program of a calamares command string, stripping a quote and a
+    leading ${ROOT}/-style placeholder argument is left to the reader."""
+    value = value.strip().strip('"').strip("'")
+    return value.split()[0] if value else None
+
+
+def scan_calamares(abs_path, rel_path):
     slashed = "/" + rel_path
     name = install_name(rel_path)
-    for category, predicate in PATH_ROOT_SURFACES:
-        if predicate(slashed, name):
-            return category, {"interpreter": shebang(abs_path)}
-    return None
+    is_shellprocess = "/calamares/modules/" in slashed and name.startswith("shellprocess")
+    is_module_desc = name == "module.desc"
+    if not (is_shellprocess and name.endswith(".conf")) and not is_module_desc:
+        return None
+    programs = []
+    interface = None
+    in_script = False
+    for raw in read_text(abs_path).splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        item = CALAMARES_SCRIPT_ITEM_RE.match(raw) if in_script else None
+        if item:
+            program = _calamares_program(item.group(1))
+            if program:
+                programs.append(program)
+            continue
+        in_script = False
+        kv = CALAMARES_KV_RE.match(raw)
+        if not kv:
+            continue
+        key, value = kv.group(1), kv.group(2)
+        if key == "interface":
+            interface = value.strip().strip('"').strip("'")
+        elif key == "command":
+            program = _calamares_program(value)
+            if program:
+                programs.append(program)
+        elif key == "script":
+            if value in ("|", ">", "") or value.startswith("-"):
+                in_script = True
+                item = CALAMARES_SCRIPT_ITEM_RE.match(raw)
+                if item:
+                    program = _calamares_program(item.group(1))
+                    if program:
+                        programs.append(program)
+            else:
+                program = _calamares_program(value)
+                if program:
+                    programs.append(program)
+    ## A module.desc only runs a root command when it is a process job.
+    if is_module_desc and interface != "process":
+        return None
+    return {"programs": programs} if programs else None
 
 
 ## --- non-shell escalation (Python) ------------------------------------------
@@ -1014,12 +1116,14 @@ FILE_SCANNERS = (
     ("udev-rule", scan_udev),
     ("pam-exec", scan_pam),
     ("modprobe-hook", scan_modprobe),
+    ("calamares-job", scan_calamares),
     ("nonshell-escalation", scan_python_escalation),
 )
 
 
 def enumerate_root_scripts(dm_root):
     submodules = submodule_paths(dm_root)
+    install_links = load_install_links(dm_root)
     entries = []
     parse_errors = []
     walk_errors = []
@@ -1039,7 +1143,7 @@ def enumerate_root_scripts(dm_root):
         if chroot is not None:
             entries.append({"category": "build-chroot", **base, **chroot})
 
-        surface = scan_path_surface(abs_path, rel_path)
+        surface = scan_path_surface(abs_path, rel_path, install_links.get(rel_path))
         if surface is not None:
             category, details = surface
             entries.append({"category": category, **base, **details})

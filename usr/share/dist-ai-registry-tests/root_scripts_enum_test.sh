@@ -456,6 +456,47 @@ ${SUDO_TO_ROOT} losetup --detach /dev/loop0
 chroot_run apt-get update
 EOF
 
+## a grub.d script SHIPPED from a renamed source and installed via debian/*.links
+## into /etc/grub.d/ -> attributed to its install destination.
+write 'packages/kicksecure/foo/debian/foo.links' <<'EOF'
+/usr/share/foo/conf/grub.d_10_linked /etc/grub.d/10_linked
+/usr/share/foo/conf/qubes_post-install.d_50-foo.sh /etc/qubes/post-install.d/50-foo.sh
+EOF
+write 'packages/kicksecure/foo/usr/share/foo/conf/grub.d_10_linked' <<'EOF'
+#!/bin/bash
+echo menuentry
+EOF
+write 'packages/kicksecure/foo/usr/share/foo/conf/qubes_post-install.d_50-foo.sh' <<'EOF'
+#!/bin/bash
+qvm-features-request foo
+EOF
+
+## /etc/default/grub.d/*.cfg -> sourced as root by update-grub.
+write 'packages/kicksecure/foo/etc/default/grub.d/50_foo.cfg' <<'EOF'
+GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX rd.emergency=halt"
+EOF
+
+## Calamares installer jobs run as root: a shellprocess script + a process job.
+write 'packages/kicksecure/foo/etc/calamares/modules/shellprocess_foo.conf' <<'EOF'
+---
+dontChroot: true
+script:
+    - /usr/libexec/foo/cala-script ${ROOT}
+EOF
+write 'packages/kicksecure/foo/calamares-modules/foo-job/module.desc' <<'EOF'
+---
+type: "job"
+name: "foo-job"
+interface: "process"
+command: "/usr/share/calamares/helpers/foo-helper"
+EOF
+## a module.desc that is NOT a process job -> excluded.
+write 'packages/kicksecure/foo/calamares-modules/qml-job/module.desc' <<'EOF'
+---
+type: "view"
+interface: "qtplugin"
+EOF
+
 ## a data file that merely MENTIONS sudo in prose -> not shell, not scanned.
 write 'changelog.upstream' <<'EOF'
 * some entry describing how the build must run as root (sudo).

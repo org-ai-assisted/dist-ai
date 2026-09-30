@@ -312,6 +312,26 @@ def main(argv):
         ("an update-motd.d script is enumerated",
          one("update-motd", "update-motd.d/30-foo") is not None),
 
+        ## debian/*.links-relocated root surfaces + default/grub.d + calamares
+        ("a grub.d script installed via debian/*.links is attributed to its dest",
+         one("grub-script", "conf/grub.d_10_linked") is not None
+         and one("grub-script", "conf/grub.d_10_linked")["installs_to"]
+         == "/etc/grub.d/10_linked"),
+        ("a qubes hook installed via debian/*.links is enumerated",
+         one("qubes-hook", "conf/qubes_post-install.d_50-foo.sh") is not None),
+        ("an /etc/default/grub.d/*.cfg sourced-as-root file is enumerated",
+         one("grub-default-config", "default/grub.d/50_foo.cfg") is not None),
+        ("a Calamares shellprocess script program is enumerated",
+         one("calamares-job", "shellprocess_foo.conf") is not None
+         and "/usr/libexec/foo/cala-script"
+         in one("calamares-job", "shellprocess_foo.conf")["programs"]),
+        ("a Calamares process-job command is enumerated",
+         one("calamares-job", "foo-job/module.desc") is not None
+         and "/usr/share/calamares/helpers/foo-helper"
+         in one("calamares-job", "foo-job/module.desc")["programs"]),
+        ("a non-process Calamares module.desc is excluded",
+         one("calamares-job", "qml-job/module.desc") is None),
+
         ## Python advisory precision + coverage
         ("a Python allow-list literal is NOT flagged (precision)",
          one("nonshell-escalation", "foo/data.py") is None),
