@@ -365,6 +365,14 @@ def parse_service_forced_root(text):
     (systemd semantics), so each Exec* key's forced-root programs are tracked
     separately and merged at the end -- mirroring parse_service() so the two
     parsers agree.
+
+    SCOPE: reads the program token the way parse_service() does and flags '+'
+    (full privileges). It does NOT reimplement systemd's full, version-dependent
+    prefix grammar -- quote removal, the v258 '|' shell prefix, the
+    single-occurrence / mutual-exclusivity rules, or bare '!'/'!!' credential
+    elevation. Those never appear in our hand-authored unit files, and whether a
+    given elevation counts as root surface is the consumer's (dm-root-lpe-audit)
+    precision/recall call, not this token extractor's.
     """
     forced_by_key: dict[str, list[str]] = {key: [] for key in EXEC_KEYS}
     section = None
