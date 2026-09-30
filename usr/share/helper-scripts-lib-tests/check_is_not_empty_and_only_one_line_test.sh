@@ -9,11 +9,11 @@
 ## is exactly one non-empty line and rejects empty / whitespace-only / carriage-
 ## return / multi-line values.
 ##
-## THE BUG: it counts lines with 'mapfile -t <<<"${value}"'. The '<<<' here-
-## string appends a newline of its OWN, so a legitimate single line that already
-## ends in a newline becomes two mapfile elements and is FALSE-REJECTED as
-## "more than one line". The fix strips one trailing newline before mapfile; a
-## genuine multi-line value still counts as >1 line.
+## An in-memory value that ends in a trailing newline is DELIBERATELY rejected: it is
+## a two-line value whose second line is empty. Bash command substitution already
+## strips a genuine single line's trailing newline, so a real single line never carries
+## one in memory -- only a two-line value does. The validator therefore does not strip
+## before 'mapfile -t <<<"${value}"'.
 ##
 ## The function takes a VARIABLE NAME whose VALUE it validates (it calls
 ## check_variable_name then reads the value by indirect expansion), so each
@@ -133,9 +133,9 @@ assert_rejects() {
 
 assert_accepts 'a plain single line' 'Hello, World!'
 assert_accepts 'a single line with surrounding spaces' '  Hello  '
-## The regression: a single line that already ends in a newline. Fails on the
-## old code (the here-string's own newline inflates the mapfile count to 2).
-assert_accepts 'a single line with a trailing newline' $'Hello, World!\n'
+## An in-memory trailing newline makes this a two-line value (second line empty); it
+## is deliberately rejected (see the header).
+assert_rejects 'a single line with a trailing newline' $'Hello, World!\n'
 
 assert_rejects 'a genuine two-line value' $'Hello\nWorld'
 assert_rejects 'a two-line value with a trailing newline' $'Hello\nWorld\n'

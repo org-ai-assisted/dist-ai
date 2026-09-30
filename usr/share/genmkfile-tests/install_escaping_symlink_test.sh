@@ -9,7 +9,8 @@
 ## symlink pointing outside the copied tree (absolute, or via '..'). The install loop then
 ## 'stat's every source entry at its destination; for a dropped symlink the destination does
 ## not exist, so 'stat' aborts under 'set -o errexit' with a cryptic error. make_helper must
-## instead FAIL LOUD with a clear packaging-bug message, and SKIP a legitimately dangling
+## instead emit a NON-FATAL warning (Kicksecure/Whonix package repos carry no raw symlinks,
+## and a fatal error could damage the installed system) and SKIP a legitimately dangling
 ## in-tree symlink rather than stat-crash on it. This drives the REAL make_helper.
 
 set -o errexit
@@ -77,7 +78,8 @@ trap cleanup EXIT
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
-   printf '%s\n' 'make_output_warn() { :; }'
+   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
+   printf '%s\n' 'make_output_warn() { printf "WARN: %s\n" "$1" >&2; }'
    printf '%s\n' 'in_array() { return 1; }'
    ## make_helper calls path_is_within_any (folder_permission_skip_list check) and
    ## genmkfile_install_path_excluded (build-residue skip, backed by the
@@ -118,9 +120,9 @@ run_install() {
    ( cd -- "${pkg}" && make_helper ) 2>&1
 }
 
-## Case 1: an ABSOLUTE (escaping) symlink -> --safe-links drops it -> must die with the
-## clear "refusing to install: symlink ... A symlink pointing outside the copied tree" message,
-## NOT a raw 'stat' error.
+## Case 1: an ABSOLUTE (escaping) symlink -> --safe-links drops it -> make_helper must emit
+## the non-fatal "symlink ... was not installed" warning and continue (rc 0), NOT crash on a
+## raw 'stat' of the missing destination.
 pkg1="${work}/pkg1"
 mkdir --parents -- "${pkg1}/usr/bin"
 printf 'x\n' > "${pkg1}/usr/bin/realfile"
@@ -129,8 +131,8 @@ out1=''
 rc1=0
 out1="$(run_install "${pkg1}" "${work}/dest1")" || rc1=$?
 tests_total=$(( tests_total + 1 ))
-if [ "${rc1}" -ne 0 ] && [[ "${out1}" == *'refusing to install: symlink'* ]]; then
-   printf '%s\n' "PASS  escaping symlink -> clear die (not a stat crash)"
+if [ "${rc1}" -eq 0 ] && [[ "${out1}" == *'was not installed'* ]]; then
+   printf '%s\n' "PASS  escaping symlink -> non-fatal warn (not a stat crash)"
 else
    tests_failed=$(( tests_failed + 1 ))
    printf '%s\n' "FAIL  escaping symlink: rc=${rc1} out=[${out1}]" >&2

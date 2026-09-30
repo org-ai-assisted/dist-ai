@@ -420,6 +420,9 @@ mkdir -p "${toctou_dir}"
 scan_arg_file="${work}/toctou-scan-arg"
 meld_arg_file="${work}/toctou-meld-arg"
 orig_tip="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+## dm-review-branch resolves a bare ref against HEAD's merge-base and hands the tools a
+## two-dot base..tip range; compute the same base to assert the immutable range.
+toctou_base="$(git -C "${repo}" merge-base HEAD "${orig_tip}")"
 ## Stubbed content scanner: record the arg it was handed, then MOVE feature to master (a
 ## DIFFERENT commit) -- the concurrent-fetch simulation -- and report clean.
 cat > "${toctou_dir}/check-ref-commits-for-unicode" <<STUB
@@ -448,10 +451,10 @@ meld_arg="$(cat "${meld_arg_file}" 2>/dev/null || printf '')"
 scan_arg="$(cat "${scan_arg_file}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
    fail "TOCTOU canary: a clean review should exit 0, got ${rc}"
-elif [ "${meld_arg}" = "...feature" ]; then
+elif [[ "${meld_arg}" == *feature* ]]; then
    fail 'TOCTOU: git-meld got the ref NAME, which re-resolves to the moved tip (content never scanned)'
-elif [ "${meld_arg}" != "...${orig_tip}" ]; then
-   fail "TOCTOU: git-meld range '${meld_arg}' is not the immutable tip resolved at invocation '...${orig_tip}'"
+elif [ "${meld_arg}" != "${toctou_base}..${orig_tip}" ]; then
+   fail "TOCTOU: git-meld range '${meld_arg}' is not the immutable base..tip resolved at invocation '${toctou_base}..${orig_tip}'"
 elif [ "${scan_arg}" != "${orig_tip}" ]; then
    fail "TOCTOU: the scan saw '${scan_arg}', not the immutable tip '${orig_tip}' the display uses"
 else
@@ -460,7 +463,7 @@ fi
 
 ## 14) Full range spec: dm-review-branch accepts base...target (not just a bare ref),
 ## resolves BOTH sides to immutable commits, scans the incoming commits with the EXPLICIT
-## base, and hands the display tools the resolved base...target range. Fails on the pre-range
+## base, and hands the display tools the resolved merge-base..target range. Fails on the pre-range
 ## code, which rev-parsed "<spec>^{commit}" -- a range does not resolve to one commit -- and
 ## always forced HEAD as the base.
 range_dir="${work}/range-bin"
@@ -470,6 +473,9 @@ range_scan_base="${work}/range-scan-base"
 range_meld_arg="${work}/range-meld-arg"
 master_sha="$(git -C "${repo}" rev-parse --verify master'^{commit}')"
 feature_sha="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+## An explicit '...' spec resolves to the merge-base of both sides, handed to the tools
+## as a two-dot merge-base..target range.
+range_base_mb="$(git -C "${repo}" merge-base master feature)"
 cat > "${range_dir}/check-ref-commits-for-unicode" <<STUB
 #!/bin/bash
 printf '%s\n' "\${1}" > "${range_scan_target}"
@@ -493,8 +499,8 @@ r_base="$(cat "${range_scan_base}" 2>/dev/null || printf '')"
 r_meld="$(cat "${range_meld_arg}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
    fail "range spec: a clean 'master...feature' review should exit 0, got ${rc}"
-elif [ "${r_meld}" != "${master_sha}...${feature_sha}" ]; then
-   fail "range spec: git-meld got '${r_meld}', want the resolved '${master_sha}...${feature_sha}'"
+elif [ "${r_meld}" != "${range_base_mb}..${feature_sha}" ]; then
+   fail "range spec: git-meld got '${r_meld}', want the resolved '${range_base_mb}..${feature_sha}'"
 elif [ "${r_target}" != "${feature_sha}" ]; then
    fail "range spec: scan target '${r_target}', want the feature tip '${feature_sha}'"
 elif [ "${r_base}" != "${master_sha}" ]; then
@@ -527,11 +533,12 @@ rc=0
    && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch -C feature ) \
    </dev/null >/dev/null 2>&1 || rc="$?"
 feature_sha_opt="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
+opt_base="$(git -C "${repo}" merge-base HEAD feature)"
 opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
    fail "option forwarding: 'dm-review-branch -C feature' should exit 0, got ${rc}"
-elif [ "${opt_args}" != "[-C][...${feature_sha_opt}]" ]; then
-   fail "option forwarding: git-meld argv '${opt_args}', want '[-C][...${feature_sha_opt}]' (-C as its own token before the range)"
+elif [ "${opt_args}" != "[-C][${opt_base}..${feature_sha_opt}]" ]; then
+   fail "option forwarding: git-meld argv '${opt_args}', want '[-C][${opt_base}..${feature_sha_opt}]' (-C as its own token before the range)"
 else
    pass 'option forwarding: a git-diff option before the ref reaches the review tools as a separate argv token, with the range'
 fi
