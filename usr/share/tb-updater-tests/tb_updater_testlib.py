@@ -70,6 +70,13 @@ def postinst_script() -> str:
                     "tb-updater.postinst")
 
 
+def sandbox_update_torbrowser_script() -> str:
+    """Absolute path of the sandbox-update-torbrowser entry point under test."""
+    return _resolve("usr/libexec/tb-updater/sandbox-update-torbrowser",
+                    "/usr/libexec/tb-updater/sandbox-update-torbrowser",
+                    "sandbox-update-torbrowser")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()

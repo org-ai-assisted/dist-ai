@@ -227,6 +227,7 @@ import os, subprocess
 subprocess.run(["/usr/bin/leaprun", "some-action"])
 subprocess.call(["su", "root", "-c", "id"])
 os.system(f"sudo id")
+asyncio.create_subprocess_exec("pkexec", "id")
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.
@@ -247,6 +248,15 @@ write 'packages/kicksecure/foo/usr/lib/systemd/system/nonrootsvc.service' <<'EOF
 [Service]
 User=someuser
 ExecStart=/usr/bin/x
+EOF
+
+## a non-root unit with a '+'-prefixed Exec (runs as root despite User=)
+## -> the forced-root command MUST be captured.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/forced.service' <<'EOF'
+[Service]
+User=nobody
+ExecStartPre=+/usr/bin/forced-root
+ExecStart=/usr/bin/nonroot-worker
 EOF
 
 ## DynamicUser=yes runs under a dynamic non-root UID -> MUST be excluded.
@@ -414,6 +424,18 @@ write 'packages/kicksecure/foo/usr/share/initramfs-tools/hooks/foo' <<'EOF'
 true
 EOF
 
+## leaprun --test EXECUTES (not a check); --check is auth-only; and an
+## attached short cluster -gusers must not read 'u' as the -u flag.
+##   2 --test  -> note leaprun-privleap (executes)
+##   3 --check -> note leaprun-privleap-check
+##   4 -gusers -> cmd /usr/bin/gcmd, runs_as root (g consumes 'users')
+write 'packages/kicksecure/foo/usr/libexec/foo/leapprobe' <<'EOF'
+#!/bin/bash
+leaprun --test act-test
+leaprun --check act-check
+sudo -gusers /usr/bin/gcmd
+EOF
+
 ## a Python allow-list literal (no subprocess call) -> MUST NOT be flagged.
 write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/data.py' <<'EOF'
 ALLOWED = ["sudo", "doas", "pkexec"]
@@ -424,6 +446,8 @@ EOF
 ## modprobe.d install directive -> runs a command as root on module load.
 write 'packages/kicksecure/foo/etc/modprobe.d/30_foo.conf' <<'EOF'
 install firewire-core /usr/bin/disabled-firewire-by-foo
+install thunderbolt \
+  /usr/bin/disabled-thunderbolt-by-foo
 blacklist pcspkr
 EOF
 
@@ -482,6 +506,8 @@ write 'packages/kicksecure/foo/etc/calamares/modules/shellprocess_foo.conf' <<'E
 dontChroot: true
 script:
     - /usr/libexec/foo/cala-script ${ROOT}
+
+    - /usr/libexec/foo/cala-script2
 EOF
 write 'packages/kicksecure/foo/calamares-modules/foo-job/module.desc' <<'EOF'
 ---

@@ -73,6 +73,25 @@ def test_guestctl_text_scancodes_rejects_unmapped():
         GC.text_scancodes('!')
 
 
+def test_guestctl_parser_validates_operands():
+    ## argparse gives clean usage/SystemExit, not a raw IndexError/ValueError, on
+    ## missing or non-numeric operands.
+    parser = GC._build_parser()
+    ns = parser.parse_args(['v', 'click', '10', '20'])
+    assert (ns.vm, ns.cmd, ns.x, ns.y, ns.button) == ('v', 'click', 10, 20, 1)
+    with pytest.raises(SystemExit):
+        parser.parse_args(['v'])
+    with pytest.raises(SystemExit):
+        parser.parse_args(['v', 'click', 'x', 'y'])
+
+
+def test_guestctl_never_echoes_typed_text():
+    ## CWE-532: the typed string may be a LUKS passphrase, so `type` must never
+    ## print it back (recoverable from captured output).
+    src = GUESTCTL.read_text(encoding='utf-8')
+    assert 'type %r' not in src
+
+
 def test_backend_present():
     assert BACKEND.is_file(), f"backend not found: {BACKEND}"
 

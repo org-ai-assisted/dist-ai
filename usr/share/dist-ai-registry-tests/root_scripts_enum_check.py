@@ -28,7 +28,8 @@ def main(argv):
     populated_rc = int(argv[2])
     empty_rc = int(argv[3])
     independent_maint = int(argv[4])
-    report = json.load(open(report_path, encoding="utf-8"))
+    with open(report_path, encoding="utf-8") as handle:
+        report = json.load(handle)
     entries = report["entries"]
 
     def cat(name):
@@ -70,6 +71,9 @@ def main(argv):
 
     def besc(line):
         return sudo_at("help-steps/build-escalate", line)
+
+    def lp(line):
+        return sudo_at("usr/libexec/foo/leapprobe", line)
 
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
@@ -290,6 +294,21 @@ def main(argv):
          one("build-chroot", "foo-chroot-raw") is not None
          and one("build-chroot", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
 
+        ## a '+'-prefixed Exec under a non-root User runs as root (forced)
+        ("a forced-root (+) Exec under a non-root User is captured",
+         one("systemd-unit", "forced.service") is not None
+         and "/usr/bin/forced-root"
+         in one("systemd-unit", "forced.service")["root_forced_exec"]),
+
+        ## leaprun --test executes; --check is auth-only; attached -gusers
+        ("leaprun --test executes the action (not a check)",
+         lp(2) is not None and lp(2)["note"] == "leaprun-privleap"),
+        ("leaprun --check is the auth-only check",
+         lp(3) is not None and lp(3)["note"] == "leaprun-privleap-check"),
+        ("an attached -gusers cluster does not read 'u' as -u",
+         lp(4) is not None and lp(4)["command"] == "/usr/bin/gcmd"
+         and lp(4)["runs_as"] == "root"),
+
         ## build escalation without the word 'sudo' (build-escalate)
         ("a ${SUDO_TO_ROOT} call is enumerated as a sudo escalation",
          besc(2) is not None and besc(2)["tool"] == "sudo"
@@ -305,6 +324,14 @@ def main(argv):
          one("modprobe-hook", "30_foo.conf") is not None
          and "/usr/bin/disabled-firewire-by-foo"
          in one("modprobe-hook", "30_foo.conf")["programs"]),
+        ("a backslash-continued modprobe install command is joined",
+         one("modprobe-hook", "30_foo.conf") is not None
+         and "/usr/bin/disabled-thunderbolt-by-foo"
+         in one("modprobe-hook", "30_foo.conf")["programs"]),
+        ("an asyncio.create_subprocess_exec escalator call is flagged",
+         one("nonshell-escalation", "foo/esc.py") is not None
+         and "pkexec" in {c["tool"]
+                          for c in one("nonshell-escalation", "foo/esc.py")["calls"]}),
         ("a Qubes post-install hook is enumerated",
          one("qubes-hook", "post-install.d/30-foo.sh") is not None),
         ("a Qubes suspend hook is enumerated",
@@ -321,9 +348,11 @@ def main(argv):
          one("qubes-hook", "conf/qubes_post-install.d_50-foo.sh") is not None),
         ("an /etc/default/grub.d/*.cfg sourced-as-root file is enumerated",
          one("grub-default-config", "default/grub.d/50_foo.cfg") is not None),
-        ("a Calamares shellprocess script program is enumerated",
+        ("a Calamares shellprocess script program is enumerated, blank line ok",
          one("calamares-job", "shellprocess_foo.conf") is not None
          and "/usr/libexec/foo/cala-script"
+         in one("calamares-job", "shellprocess_foo.conf")["programs"]
+         and "/usr/libexec/foo/cala-script2"
          in one("calamares-job", "shellprocess_foo.conf")["programs"]),
         ("a Calamares process-job command is enumerated",
          one("calamares-job", "foo-job/module.desc") is not None

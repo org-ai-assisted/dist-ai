@@ -303,15 +303,23 @@ for path in "${sub_paths[@]}"; do
          ## is rare) to make the STOP truthful and actionable ("publish it to
          ## FORK_REMOTE") instead of the false "never published".
          mirror_hit=""
+         mirror_probe_failed=""
          for mirror in "${MIRROR_REMOTES[@]}"; do
             git -C "${sub}" remote get-url -- "${mirror}" &>/dev/null || continue
-            ## 'timeout' bounds the probe: these mirrors are backups that may be
+            ## Distinguish a reachable-but-absent mirror (ls-remote exit 0, no ref ->
+            ## real evidence 'ai' is not on it) from a probe FAILURE (unreachable /
+            ## timed out, non-zero -> NO evidence, must never read as "never
+            ## published"). The if-condition captures ls-remote's OWN status (no pipe
+            ## to mask it, and it is exempt from errexit); awk runs only on success.
+            ## 'timeout' still bounds the probe: these mirrors are backups that may be
             ## down/firewalled, and a bare ls-remote would block the single-threaded
-            ## loop on the TCP/SSH connect for minutes. On timeout mtip is empty and
-            ## the mirror is simply not reported -- fail-safe, never a hang.
-            mtip="$( timeout --kill-after=30 30 git -C "${sub}" ls-remote --heads -- "${mirror}" "${AI_BRANCH}" 2>/dev/null \
-               | awk 'NR==1 { print $1 }' || true )"
-            [ -n "${mtip}" ] && mirror_hit="${mirror_hit} ${mirror}(${mtip:0:12})"
+            ## loop on the TCP/SSH connect for minutes.
+            if mtip="$( timeout --kill-after=30 30 git -C "${sub}" ls-remote --heads -- "${mirror}" "${AI_BRANCH}" 2>/dev/null )"; then
+               mtip="$( printf '%s\n' "${mtip}" | awk 'NR==1 { print $1 }' )"
+               [ -n "${mtip}" ] && mirror_hit="${mirror_hit} ${mirror}(${mtip:0:12})"
+            else
+               mirror_probe_failed="${mirror_probe_failed} ${mirror}"
+            fi
          done
          if [ -n "${mirror_hit}" ]; then
             ## Remediation checks out 'ai' FIRST: is_ai_workflow is true even when HEAD
@@ -320,6 +328,11 @@ for path in "${sub_paths[@]}"; do
             ## 'git-push' here could publish 'master' (or abort on a detached HEAD)
             ## instead of 'ai'. Checking out 'ai' first makes the hint always publish 'ai'.
             stopped+=( "${path} :: '${AI_BRANCH}' is published on mirror(s)${mirror_hit} but NOT on '${FORK_REMOTE}' (the CI remote); publish it: 'git -C ${path} checkout ${AI_BRANCH} && git-push --repo ${path}', then re-run" )
+         elif [ -n "${mirror_probe_failed}" ]; then
+            ## No FORK_REMOTE tip AND every mirror probe FAILED (unreachable): we could
+            ## not confirm whether 'ai' exists. Say so -- never the false "never
+            ## published", which the probe did not establish.
+            stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip; could NOT confirm on mirror(s) (mirror probe failed:${mirror_probe_failed}) -- may be published there but unreachable; re-run when reachable, or publish: 'git -C ${path} checkout ${AI_BRANCH} && git-push --repo ${path}'" )
          else
             stopped+=( "${path} :: ai-workflow submodule but '${FORK_REMOTE}/${AI_BRANCH}' has no tip ('${AI_BRANCH}' never published)" )
          fi

@@ -1,0 +1,276 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Unattended Calamares LUKS install of a Kicksecure ISO, driven HOST-SIDE via
+## vbox-guestctl (vboxapi IMouse/IKeyboard/IDisplay -- real mouse + screenshot in
+## one pixel space, no guest agent). Boots the ISO in the UNRESTRICTED install
+## session, drives Calamares to a full encrypted (LUKS) erase-disk install, boots
+## the installed disk, unlocks LUKS, and verifies the installed system booted.
+## Exit 0 = R3 (install completes + LUKS unlock) and R4 (boot installed) PASS; 5 = FAIL.
+##
+## Run as the per-VM test user (VBox state is per-$HOME): the account IS the
+## isolation boundary. Coordinates below are for the 1280x800 guest framebuffer.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+GUESTCTL="${GUESTCTL:-vbox-guestctl}"
+TESSERACT="${TESSERACT:-tesseract}"
+PASS_RC=0
+FAIL_RC=5
+SETUP_RC=2
+
+vm=""
+iso=""
+disk=""
+passphrase=""
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+usage() {
+   printf '%s\n' "usage: ${me} --vm NAME --iso PATH --passphrase PASS [--disk PATH]"
+}
+
+## Screenshot the guest and return its OCR text on stdout.
+ocr() {
+   local shot
+   shot="$(mktemp --tmpdir "${me}.XXXXXX.png")"
+   ## a shot can fail while the display is not ready (0x0 early boot) -- tolerate
+   ## it and return no text so the caller keeps polling.
+   if "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1; then
+      "${TESSERACT}" "${shot}" stdout 2>/dev/null || true
+   fi
+   safe-rm --force -- "${shot}"
+}
+
+## Poll the screen until REGEX appears (PASS) or TIMEOUT elapses (die FAIL).
+wait_for() {
+   local regex="$1" timeout="$2" what="$3" deadline text
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      ## Shift tap keeps a DPMS-blanked display awake so a long wait cannot read a
+      ## black screen; harmless on any page. Then capture + match with bash ERE (no
+      ## quiet-grep-on-a-pipe SIGPIPE trap); regexes are lowercase so fold to lower.
+      "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode 2a aa >/dev/null
+      text="$(ocr)"
+      if [[ "${text,,}" =~ ${regex} ]]; then
+         return 0
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "timed out after ${timeout}s waiting for: ${what}"
+}
+
+scan() { "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode "$@" >/dev/null; }
+click() { "${GUESTCTL}" "${vm}" click "$1" "$2" >/dev/null; sleep 2; }
+
+## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"
+## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
+## lands on the default USER session, where install-host refuses (wrong boot role).
+select_install_boot_entry() {
+   local deadline text
+   deadline=$(( SECONDS + 40 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      text="$(ocr)"
+      if [[ "${text,,}" =~ unrestricted|"live iso"|"kicksecure live" ]]; then
+         scan e0 50 e0 d0
+         scan e0 50 e0 d0
+         sleep 1
+         scan 1c 9c
+         return 0
+      fi
+      sleep 2
+   done
+   die "${FAIL_RC}" "GRUB menu not detected"
+}
+
+## Poll until the LXQt desktop is up at its full 1280x800 (the coords below assume
+## it). A Shift tap each round wakes a DPMS-blanked display (idle during the long
+## boot leaves it black at 800x600, on which a blind sleep + clicks would miss).
+wait_ready() {
+   local timeout="$1" deadline res
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      scan 2a aa
+      res="$("${GUESTCTL}" "${vm}" res 2>/dev/null || true)"
+      if [ "${res}" = '1280 800' ]; then
+         return 0
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "desktop not ready (res != 1280x800) after ${timeout}s"
+}
+
+## Open a terminal via the Ctrl+Alt+T global shortcut, RETRYING: the shortcut
+## daemon (and the updatecheck popup) settle a few seconds after the desktop hits
+## full resolution, so a single early keypress opens nothing.
+open_terminal() {
+   local deadline text last_fire=0
+   ## The global-shortcut daemon settles ~20-30s AFTER the desktop hits full
+   ## resolution, so a lone early Ctrl+Alt+T opens nothing; re-fire on a long
+   ## interval (not every poll -- that spawns a stack of terminals).
+   deadline=$(( SECONDS + 150 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if [ "$(( SECONDS - last_fire ))" -ge 20 ]; then
+         scan 2a aa
+         scan 1d 38 14 94 b8 9d
+         last_fire="${SECONDS}"
+      fi
+      sleep 5
+      text="$(ocr)"
+      if [[ "${text,,}" =~ localhost|pts/|'[user' ]]; then
+         return 0
+      fi
+   done
+   die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
+}
+
+parse_args() {
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --vm)
+            vm="$2"
+            shift 2
+            ;;
+         --iso)
+            iso="$2"
+            shift 2
+            ;;
+         --disk)
+            disk="$2"
+            shift 2
+            ;;
+         --passphrase)
+            passphrase="$2"
+            shift 2
+            ;;
+         -h|--help)
+            usage
+            exit 0
+            ;;
+         *)
+            usage >&2
+            die "${SETUP_RC}" "unexpected argument '$1'"
+            ;;
+      esac
+   done
+   [ -n "${vm}" ]         || { usage >&2; die "${SETUP_RC}" "--vm required"; }
+   [ -n "${iso}" ]        || { usage >&2; die "${SETUP_RC}" "--iso required"; }
+   [ -n "${passphrase}" ] || { usage >&2; die "${SETUP_RC}" "--passphrase required"; }
+   [ -n "${disk}" ] || disk="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.vdi")"
+}
+
+build_vm() {
+   "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
+   sleep 1
+   "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
+   safe-rm --force -- "${disk}"
+   "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
+   ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
+   ## an absolute pointer so vbox-guestctl clicks land pre-Guest-Additions.
+   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 --firmware efi \
+      --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
+      --nic1 nat >/dev/null
+   "${VBOXMANAGE}" createmedium disk --filename "${disk}" --size 25600 \
+      --format VDI >/dev/null 2>&1
+   "${VBOXMANAGE}" storagectl "${vm}" --name SATA --add sata \
+      --controller IntelAhci >/dev/null
+   "${VBOXMANAGE}" storagectl "${vm}" --name IDE --add ide \
+      --controller PIIX4 >/dev/null
+   "${VBOXMANAGE}" storageattach "${vm}" --storagectl SATA --port 0 --device 0 \
+      --type hdd --medium "${disk}" >/dev/null
+   "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
+      --type dvddrive --medium "${iso}" >/dev/null
+}
+
+main() {
+   parse_args "$@"
+
+   printf '%s\n' "${me}: build + boot install session"
+   build_vm
+   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   ## Select the install boot entry once GRUB is actually on screen (poll, not a
+   ## fixed sleep that races the autoboot into the wrong session).
+   select_install_boot_entry
+
+   printf '%s\n' "${me}: wait for the live desktop, then launch Calamares"
+   ## Poll for the desktop instead of a blind sleep (keeps the display awake too).
+   wait_ready 480
+   open_terminal
+   ## The terminal is not input-ready the instant it is drawn: type the launch
+   ## command (paced -- keyboardputstring drops keys on long strings; this has no
+   ## chars outside the type map), VERIFY it landed on the command line, retype if a
+   ## race dropped it, then run it. Ctrl+U first clears any partial line.
+   local tries=0
+   while [ "${tries}" -lt 6 ]; do
+      sleep 6
+      scan 1d 16 96 9d
+      "${GUESTCTL}" "${vm}" type 'install-host' >/dev/null
+      sleep 2
+      if [[ "$(ocr)" =~ install-host ]]; then
+         break
+      fi
+      tries=$(( tries + 1 ))
+   done
+   [ "${tries}" -lt 6 ] || die "${FAIL_RC}" "could not type the installer launch command"
+   ## foreground: install-host holds the terminal, Calamares opens as its own window.
+   scan 1c 9c
+   wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
+
+   printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install"
+   click 1135 781
+   wait_for 'region|zone|location' 60 'Location page'
+   click 1135 781
+   wait_for 'keyboard model|keyboard layout|keyboard' 60 'Keyboard page'
+   click 1135 781
+   wait_for 'erase disk|storage device' 60 'Partitions page'
+   ## Erase disk auto-enables Encrypt system (Kicksecure default); fill both fields.
+   click 206 105
+   click 492 590
+   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   sleep 1
+   click 793 590
+   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   sleep 1
+   click 1135 781
+   wait_for 'overview|start the install|erase disk /dev' 60 'Summary page'
+   click 1135 781
+   printf '%s\n' "${me}: installing (encrypted) -- polling for completion"
+   wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)'
+
+   printf '%s\n' "${me}: reboot into the installed disk (detach ISO)"
+   click 1135 781
+   sleep 12
+   "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
+   sleep 3
+   "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
+      --type dvddrive --medium none >/dev/null
+   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+
+   printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
+   wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
+   "${GUESTCTL}" "${vm}" type "${passphrase}" >/dev/null
+   scan 1c 9c
+
+   printf '%s\n' "${me}: verify the installed system booted (R4)"
+   wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
+
+   printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"
+   return "${PASS_RC}"
+}
+
+main "$@"
