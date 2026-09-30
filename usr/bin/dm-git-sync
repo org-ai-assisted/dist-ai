@@ -22,7 +22,10 @@
 ## SOUND once the submodule sha is PUBLISHED (a pre-push / post-commit bump races
 ## publication and can pin an unfetchable sha -- exactly the trap this replaces).
 ## So the steps must be COUPLED and ORDERED by one deliberate command: publish
-## first, THEN bump. dm-push stays push-only; this calls it.
+## first, THEN bump. git-push (publish the CURRENT branch to the fork remotes)
+## stays push-only; this calls it. NOT dm-push -- dm-push is the MASTER-only push
+## (its pkg_git_check_current_branch refuses any branch != master), so it can
+## never publish 'ai'; git-push pushes whatever branch is checked out.
 ##
 ## THE CHAIN
 ##   In a SUBMODULE (on 'ai', clean):
@@ -61,7 +64,10 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 AI_BRANCH="ai"
-PUSH_CMD="${DM_GIT_SYNC_PUSH:-dm-push}"
+## git-push publishes the CURRENT branch ('ai') to every bot-writable fork remote.
+## NOT dm-push: that is the master-only atomic push (refuses a non-master branch),
+## so it cannot publish 'ai'.
+PUSH_CMD="${DM_GIT_SYNC_PUSH:-git-push}"
 BUMP_CMD="${DM_GIT_SYNC_GITLINK_BUMP:-dm-gitlink-bump}"
 CHERRY_CMD="${DM_GIT_SYNC_CHERRY:-dm-cherry-pick-ai-nonlink}"
 

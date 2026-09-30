@@ -36,7 +36,9 @@ test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${test_dir}/help_steps_test_lib.bsh"
 
 dist_ai_bin="$(cd -- "${test_dir}/../../bin" && pwd)"
-tool="${dist_ai_bin}/dm-git-sync"
+## DM_GIT_SYNC_BIN is a test-only seam so the canary can point the suite at a
+## deliberately-broken dm-git-sync and confirm the assertions FAIL on it.
+tool="${DM_GIT_SYNC_BIN:-${dist_ai_bin}/dm-git-sync}"
 if [ ! -x "${tool}" ]; then
    printf '%s\n' "FATAL: dm-git-sync not found/executable at '${tool}'." >&2
    exit 1
@@ -265,8 +267,33 @@ else
    fail "failing dry-run did not run --no-push cleanly; log:<<<$(log_lines)>>>"
 fi
 
+## --- Case 6: the DEFAULT push command is git-push, NOT dm-push -------------------
+## dm-push refuses any branch != master (its pkg_git_check_current_branch), so it can
+## never publish 'ai'; the sound tool is git-push (publishes the current branch). Every
+## case above OVERRIDES DM_GIT_SYNC_PUSH, so none exercises the default. UNSET it and put
+## a recording 'git-push' stub first on PATH: it must be the one dm-git-sync invokes.
+## CANARY: revert the default to dm-push and this case FAILS (git-push stub never called;
+## with a real dm-push on PATH the parent-on-'ai' run dies "expected master").
+reset_log
+pathstub="${workspace}/pathstub"
+mkdir --parents -- "${pathstub}"
+{
+   printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016
+   printf '%s\n' 'printf "GITPUSH %s\n" "$(pwd -P)" >> "${SYNC_LOG}"'
+} > "${pathstub}/git-push"
+chmod +x -- "${pathstub}/git-push"
+default_push_rc=0
+env --unset=DM_GIT_SYNC_PUSH PATH="${pathstub}:${PATH}" "${tool}" --dir "${super}" \
+   >/dev/null 2>&1 || default_push_rc=$?
+if [ "${default_push_rc}" -eq 0 ] && grep --quiet -- "^GITPUSH ${super}\$" "${SYNC_LOG}"; then
+   pass "the DEFAULT push command is git-push (publishes 'ai'), not dm-push"
+else
+   fail "default push is not git-push; rc=${default_push_rc} log:<<<$(log_lines)>>>"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-git-sync publishes-before-bumping, dispatches parent/submodule, refuses safely, dry-runs clean."
+printf '%s\n' "OK: dm-git-sync publishes-before-bumping (via git-push), dispatches parent/submodule, refuses safely, dry-runs clean."
