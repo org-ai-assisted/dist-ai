@@ -17,6 +17,8 @@
 ## /run/privleapd), first fake a USABLE privleap: a live pid file, a UID-named
 ## comm socket, and a stub leaprun on PATH -- so the probe must resolve the comm
 ## socket by UID (as privleapd names it) to report 'yes'.
+## LEAPRUN_FAKE_EMPTY_PID=1 is the same, except the pid file is EMPTY -- the probe
+## must report 'no' (an empty pid must not read as '/proc/ exists' = running).
 
 set -o errexit
 set -o nounset
@@ -28,14 +30,21 @@ export LC_ALL=C
 
 [ -v USE_LEAPRUN_SH ] || { printf '%s\n' "FATAL: USE_LEAPRUN_SH unset" >&2; exit 1; }
 
-if [ "${LEAPRUN_FAKE_USABLE:-}" = '1' ]; then
+if [ "${LEAPRUN_FAKE_USABLE:-}" = '1' ] || [ "${LEAPRUN_FAKE_EMPTY_PID:-}" = '1' ]; then
    mkdir -p /run/privleapd/comm
-   ## This shell is alive, so /proc/$$ exists -> the pid check passes.
-   printf '%s\n' "$$" > /run/privleapd/pid
+   if [ "${LEAPRUN_FAKE_EMPTY_PID:-}" = '1' ]; then
+      ## Empty pid file: the guard must reject it.
+      printf '' > /run/privleapd/pid
+   else
+      ## This shell is alive, so /proc/$$ exists -> the pid check passes.
+      printf '%s\n' "$$" > /run/privleapd/pid
+   fi
    ## privleapd names the comm socket by UID; create that path.
    touch -- "/run/privleapd/comm/$(id --user)"
    ## Stub leaprun so the PATH existence check passes without installing privleap.
-   stubdir="$(mktemp --directory)"
+   ## Place it in the tmpfs so it vanishes with the bwrap namespace (no /tmp leak).
+   stubdir='/run/privleapd/stub'
+   mkdir -p "${stubdir}"
    printf '%s\n' '#!/bin/sh' 'exit 0' > "${stubdir}/leaprun"
    chmod +x "${stubdir}/leaprun"
    PATH="${stubdir}:${PATH}"
