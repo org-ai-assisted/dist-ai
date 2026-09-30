@@ -1,0 +1,23 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Run one dm-vbox image test and publish its artifacts to the results plane.
+## Instance name = the config basename under /etc/image-test (e.g.
+## image-test@kicksecure-iso-efi -> /etc/image-test/kicksecure-iso-efi.conf).
+## oneshot: fired on demand (or by a future .timer -- scheduling is deferred).
+## Runs as root; image-test-run drops to the config's TEST_USER for the VM and
+## republishes artifacts as the nginx owner.
+
+[Unit]
+Description=dm-vbox image test (%i)
+After=vboxdrv.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/image-test-run /etc/image-test/%i.conf
+## A boot/install VM step can legitimately take minutes; give it headroom but do
+## not hang a wedged run forever.
+TimeoutStartSec=1800

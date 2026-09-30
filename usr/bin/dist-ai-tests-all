@@ -627,7 +627,13 @@ wire() {
          ## checkout they need helper-scripts on PATH and its dist-packages on
          ## PYTHONPATH, else they die with ModuleNotFoundError, emit nothing, and
          ## cli_translate silently EMPTIES the message (a false-fail / false-green).
-         wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" )
+         ## MSGCOLLECTOR_REPO locates the subject binary; MSGCOLLECTOR_PATH is the
+         ## overridable base the binary itself reads to source its siblings from the
+         ## checkout (unset -> the uninstalled absolute /usr/libexec path).
+         wire_env=(
+            "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )"
+            "MSGCOLLECTOR_PATH=$( pkg_dir msgcollector )"
+         )
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"

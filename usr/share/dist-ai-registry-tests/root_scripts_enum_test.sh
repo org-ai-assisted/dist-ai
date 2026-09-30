@@ -5,25 +5,28 @@
 
 ## AI-Assisted
 
-## dm-root-scripts-enum: the four root-privileged categories are enumerated
-## correctly, and -- the part that must never regress -- the build-time sudo
-## reader stays a SIMPLE match, not a bash parser:
+## dm-root-scripts-enum: every root-privileged category is enumerated across
+## derivative-maker + ALL submodules, and -- the part that must never regress --
+## sudo detection is done by a REAL bash parser (shfmt AST), never a hand-rolled
+## match. The AST handles, structurally and for free:
 ##
 ##   - 'sudo' as an ARGUMENT (adduser user sudo) is not an invocation.
-##   - 'sudo' inside prose ("... run as root (sudo)!") is not an invocation.
-##   - 'sudo -u root cmd' resolves to cmd, not to the -u argument 'root'.
-##   - a program hidden in a variable/subshell/continuation is NOT guessed;
-##     it is reported as note=notify for a human.
+##   - 'sudo' inside prose ("... run as root (sudo)") is not an invocation.
+##   - a program hidden in a variable is not guessed -> note=notify.
+##   - 'sudo VAR=val prog' skips sudo's env setting; 'sudo -u <user>' records
+##     the run-as target.
 ##
-## A refactor that "improves" the reader into parsing quoted strings would flip
-## these, so they are pinned. Also pinned: the exclusions (user-scope and
-## non-root systemd units, non-debian .config files, all-commented sudoers) and
-## the empty-tree-fails-loudly property every audit in this repo carries.
+## Also pinned: sudo calls are found in ALL components (a submodule runtime
+## script, not just dm's build), NON-shell files are not scanned, the
+## exclusions (user-scope/non-root systemd, non-root privleap TargetUser,
+## all-commented sudoers, non-debian .config), maintainer scripts are caught
+## regardless of the +x bit with an independent recount, and the empty tree
+## fails loudly.
 ##
 ## This builds a fixture TREE (controlled input for the enumerator, like the
 ## sibling stripped_setx_audit_test.sh) and drives the REAL tool from the
 ## checkout; the per-entry assertions live in the standalone checker beside it.
-## No git, no root, no network.
+## No root, no network.
 
 set -o errexit
 set -o nounset
@@ -85,8 +88,15 @@ write '.gitmodules' <<'EOF'
 	url = https://example.invalid/foo.git
 EOF
 
-## maintainer script (root via dpkg) -- MUST be found.
+## maintainer script (root via dpkg), NON-executable -- caught by path+name,
+## not the +x bit. write() leaves it non-executable, which is the point.
 write 'packages/kicksecure/foo/debian/foo.postinst' <<'EOF'
+#!/bin/bash
+true
+EOF
+
+## a bare-name maintainer script (no '<pkg>.' prefix) -- also caught.
+write 'packages/kicksecure/foo/debian/preinst' <<'EOF'
 #!/bin/bash
 true
 EOF
@@ -94,6 +104,113 @@ EOF
 ## a .config that is NOT a maintainer script -- MUST be excluded.
 write 'packages/kicksecure/foo/etc/skel/.config' <<'EOF'
 not a maintainer script
+EOF
+
+## privleap actions. Root by default; a non-root TargetUser is excluded, and
+## [persistent-users] is not an action.
+write 'packages/kicksecure/foo/usr/lib/privleap/conf.d/foo.conf' <<'EOF'
+[persistent-users]
+User=foo
+
+[action:root-action]
+Command=/usr/bin/rootcmd --flag
+AuthorizedGroups=sudo,privleap
+AuthorizedUsers=user
+
+[action:tor-action]
+Command=/usr/bin/torcmd
+AuthorizedUsers=user
+TargetUser=debian-tor
+
+[action:numeric-root-action]
+Command=/usr/bin/numroot
+AuthorizedUsers=user
+TargetUser=00
+EOF
+
+## a SUBMODULE runtime shell script (not dm's build) that calls sudo -- proves
+## all-components coverage. Line numbers are asserted:
+##   2 plain    -> apt-get, root
+##   3 -u user  -> id, runs_as nobody
+##   4 VAR=val  -> realprog (env setting skipped)
+##   5 prose    -> not an invocation
+##   6 argument -> not an invocation
+##   7 variable -> notify
+write 'packages/kicksecure/foo/usr/libexec/foo/helper' <<'EOF'
+#!/bin/bash
+sudo apt-get update
+sudo -u nobody id
+sudo FOO=bar realprog
+echo "this must run as root (sudo)"
+adduser tempuser sudo
+sudo "${opts[@]}" test -d /usr
+EOF
+
+## a NON-shell file that mentions sudo -- MUST NOT be scanned as a sudo call.
+write 'packages/kicksecure/foo/etc/foo.conf' <<'EOF'
+# config mentioning sudo foo in prose
+sudo foo
+EOF
+
+## sudo getopt-semantics probe (shfmt AST + sudo option rules). Lines:
+##   2 --us=nobody   -> abbreviated --user, runs_as nobody
+##   3 -puser        -> -p takes 'user', so cmd is /usr/bin/b, runs_as root
+##   4 -u"$x"        -> attached expansion target -> runs_as ?
+##   5 FOO="$y" prog -> env setting with an expansion -> cmd is the program
+##   6 -l cmd        -> non-executing list mode -> note sudo-l
+##   7 exec sudo ... -> wrapper peeled -> cmd /usr/bin/f
+write 'packages/kicksecure/foo/usr/libexec/foo/optprobe' <<'EOF'
+#!/bin/bash
+sudo --us=nobody /usr/bin/a
+sudo -puser /usr/bin/b
+sudo -u"$x" /usr/bin/c
+sudo FOO="$y" /usr/bin/realp
+sudo -l /usr/bin/e
+exec sudo /usr/bin/f
+EOF
+
+## a script defining a 'sudo' function AND calling the real /usr/bin/sudo -- the
+## real call must NOT be dropped (a security inventory over-reports, not under).
+write 'packages/kicksecure/foo/usr/libexec/foo/sudofn' <<'EOF'
+#!/bin/bash
+sudo() { return 0; }
+/usr/bin/sudo /usr/bin/real-root
+EOF
+
+## separate-word value options: the value must NOT be mistaken for the program.
+##   2 -p PROMPT   -> cmd apt-get
+##   3 -g group    -> cmd /usr/bin/b
+##   4 -g grp -u u -> sees -u after -g's value: cmd /usr/bin/c, runs_as nobody
+write 'packages/kicksecure/foo/usr/libexec/foo/sepprobe' <<'EOF'
+#!/bin/bash
+sudo -p "Enter password: " apt-get update
+sudo -g mygroup /usr/bin/b
+sudo -g wheel -u nobody /usr/bin/c
+EOF
+
+## a systemd unit whose SOURCE name carries a genmkfile '#pkg' install suffix
+## -> must still be matched as a .service (else real root units are missed).
+write 'packages/kicksecure/foo/usr/lib/systemd/system/suffixed.service#foo-shared' <<'EOF'
+[Service]
+ExecStart=/usr/bin/suffixed-root
+EOF
+
+## an extensionless, shebang-less build-step file -> still scanned (dm build).
+write 'help-steps/nosheb' <<'EOF'
+sudo apt-get update
+EOF
+
+## wrapper-invoked escalation: timeout peels to the sudo; root_cmd escalates.
+write 'packages/kicksecure/foo/usr/libexec/foo/wrapprobe' <<'EOF'
+#!/bin/bash
+timeout --kill-after 5 5 sudo -- /usr/bin/tprog
+root_cmd /usr/bin/rprog
+EOF
+
+## a Python file invoking an escalator via subprocess -> nonshell-escalation.
+write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/esc.py' <<'EOF'
+import subprocess
+subprocess.run(["/usr/bin/leaprun", "some-action"])
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.
@@ -116,9 +233,66 @@ User=someuser
 ExecStart=/usr/bin/x
 EOF
 
-## sudoers with an ACTIVE NOPASSWD rule -> grants_root true.
+## DynamicUser=yes runs under a dynamic non-root UID -> MUST be excluded.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/dynuser.service' <<'EOF'
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/dynprog
+EOF
+
+## debhelper user-unit SOURCE name -> a user unit -> MUST be excluded.
+write 'packages/kicksecure/foo/debian/foo.user.service' <<'EOF'
+[Service]
+ExecStart=/usr/bin/foouser
+EOF
+
+## every Exec* directive that runs as root is captured; a bare ExecStartPre=
+## resets ONLY that key (root-pre must NOT survive; cond + cleanup MUST).
+write 'packages/kicksecure/foo/usr/lib/systemd/system/execkeys.service' <<'EOF'
+[Service]
+ExecStartPre=/usr/bin/root-pre
+ExecStartPre=
+ExecCondition=/usr/bin/root-cond
+ExecStart=/usr/bin/root-main
+ExecStopPost=/usr/bin/root-cleanup
+EOF
+
+## a systemd drop-in that adds Exec programs, with a '+'-prefixed (forced-root)
+## ExecStartPre and an ExecStart reset -> enumerated as systemd-dropin.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/svc.service.d/30_override.conf' <<'EOF'
+[Service]
+ExecStartPre=+/usr/lib/root-merger
+ExecStart=
+ExecStart=/usr/lib/svc --opt
+EOF
+
+## a USER-scope drop-in -> excluded.
+write 'packages/kicksecure/foo/usr/lib/systemd/user/u.service.d/30_x.conf' <<'EOF'
+[Service]
+ExecStart=/usr/bin/userdrop
+EOF
+
+## a .socket with its own root ExecStartPre + a .timer -> systemd-activation.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.socket' <<'EOF'
+[Socket]
+ListenStream=/run/foo.sock
+ExecStartPre=/usr/bin/socket-root-pre
+Service=foo-worker.service
+EOF
+write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.timer' <<'EOF'
+[Timer]
+OnCalendar=daily
+Unit=foo-daily.service
+EOF
+
+## sudoers: ACTIVE NOPASSWD root rule; commands exclude the arguments.
 write 'packages/kicksecure/foo/etc/sudoers.d/active-sudo' <<'EOF'
-%sudo ALL=NOPASSWD: /usr/bin/foo
+%sudo ALL=NOPASSWD: /usr/bin/foo --flag /etc/target
+EOF
+
+## sudoers granting only a NON-root runas -> grants_root false.
+write 'packages/kicksecure/foo/etc/sudoers.d/nonroot-sudo' <<'EOF'
+user ALL=(debian-tor) NOPASSWD: /usr/bin/tor --verify-config
 EOF
 
 ## sudoers whose only directive is commented out -> grants nothing.
@@ -127,38 +301,82 @@ write 'packages/kicksecure/foo/etc/sudoers.d/commented-sudo' <<'EOF'
 #Defaults env_keep += "X"
 EOF
 
-## polkit action definition -> found.
+## polkit: TWO actions with DIFFERENT defaults (must not collapse), one id
+## single-quoted (valid XML), the first annotating a pkexec helper (exec.path)
+## -> both parsed with their own defaults; the root helper path is captured.
 write 'packages/kicksecure/foo/usr/share/polkit-1/actions/com.example.test.policy' <<'EOF'
 <?xml version="1.0"?>
 <policyconfig>
   <action id="com.example.test.do">
     <defaults><allow_active>yes</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/foo/pkexec-helper</annotate>
+  </action>
+  <action id='com.example.test.other'>
+    <defaults><allow_active>no</allow_active></defaults>
   </action>
 </policyconfig>
 EOF
 
-## dm's OWN build script -- the sudo-reader torture test. Line numbers matter:
-##   2 real     -> apt-get
-##   3 -u root  -> chown (not 'root')
-##   4 prose    -> dropped
-##   5 argument -> dropped
-##   6 variable -> notify
+## privilege escalators OTHER than sudo, as shell command words. Lines:
+##   2 pkexec prog        -> tool pkexec, root
+##   3 pkexec --user u    -> runs_as nobody
+##   4 su - user -c cmd   -> tool su, runs_as postgres, command psql
+##   5 leaprun action     -> tool leaprun, command is the action name
+write 'packages/kicksecure/foo/usr/libexec/foo/escprobe' <<'EOF'
+#!/bin/bash
+pkexec /usr/bin/pk
+pkexec --user nobody /usr/bin/pk2
+su - postgres -c "psql"
+leaprun grub-password-status-check
+EOF
+
+## dm's OWN build script that calls sudo -> a sudo-call under derivative-maker.
 write 'help-steps/buildscript' <<'EOF'
 #!/bin/bash
 sudo apt-get update
-sudo -u root chown root:root /some/path
-true "This must run as root (sudo)!"
-adduser tempuser sudo
-sudo "${opts[@]}" test -d /usr
 EOF
 
-## a chroot helper -> flagged runs_in_chroot_as_root.
+## a chroot helper -> enumerated as build-chroot.
 write 'help-steps/foo-chroot-raw' <<'EOF'
 #!/bin/bash
 sudo mount --bind /a /b
 EOF
 
-## a big data file that merely MENTIONS sudo in prose -> never build orchestration.
+## config-file root hooks (run as root at their trigger).
+write 'packages/kicksecure/foo/usr/lib/udev/rules.d/90-foo.rules' <<'EOF'
+ACTION=="add", SUBSYSTEM=="input", RUN+="/usr/bin/udev-root-prog --flag"
+EOF
+write 'packages/kicksecure/foo/usr/share/pam-configs/foo' <<'EOF'
+Name: foo
+Auth-Type: Primary
+Auth: requisite pam_exec.so seteuid quiet /usr/libexec/foo/pam-root-prog
+EOF
+write 'packages/kicksecure/foo/etc/grub.d/10_foo' <<'EOF'
+#!/bin/sh
+echo menuentry
+EOF
+## a default/grub.d SNIPPET is config, not a run-as-root script -> excluded.
+write 'packages/kicksecure/foo/etc/default/grub.d/foo.cfg' <<'EOF'
+GRUB_CMDLINE_LINUX="quiet"
+EOF
+write 'packages/kicksecure/foo/etc/qubes-rpc/qubes.Foo' <<'EOF'
+#!/bin/bash
+true
+EOF
+write 'packages/kicksecure/foo/usr/libexec/foo/policy-rc.d' <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+write 'packages/kicksecure/foo/etc/kernel/postinst.d/10_foo' <<'EOF'
+#!/bin/sh
+true
+EOF
+write 'packages/kicksecure/foo/usr/share/initramfs-tools/hooks/foo' <<'EOF'
+#!/bin/sh
+true
+EOF
+
+## a data file that merely MENTIONS sudo in prose -> not shell, not scanned.
 write 'changelog.upstream' <<'EOF'
 * some entry describing how the build must run as root (sudo).
 EOF
@@ -178,4 +396,13 @@ if [ "${populated_rc}" -ne 0 ]; then
    cat -- "${work_dir}/err" >&2 || true
 fi
 
-"${checker}" "${json}" "${populated_rc}" "${empty_rc}"
+## Independent maintainer recount: enumerate the fixture's debian maintainer
+## scripts by a DIFFERENT method (find over debian/ dirs) so a drift in the
+## tool's matcher is caught, not masked by re-using the tool's own logic.
+maint_count="$(find "${work_dir}" -type f -path '*/debian/*' \
+   \( -name '*.preinst' -o -name '*.postinst' -o -name '*.prerm' \
+      -o -name '*.postrm' -o -name '*.config' \
+      -o -name preinst -o -name postinst -o -name prerm \
+      -o -name postrm -o -name config \) | wc -l)"
+
+"${checker}" "${json}" "${populated_rc}" "${empty_rc}" "${maint_count}"

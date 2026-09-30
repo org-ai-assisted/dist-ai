@@ -11,11 +11,12 @@
 """Assertion checker for root_scripts_enum_test.sh.
 
 Standalone (R-193: not read from stdin) and eval-free. Takes the tool's JSON
-report plus the two run exit codes the shell captured, checks every category
-and every build-time sudo-reader pin, prints PASS/FAIL per case, and exits
-non-zero if any failed.
+report, the two run exit codes, and an INDEPENDENT maintainer-script count the
+shell derived by a different method (the recount sanity), checks every category
+and every sudo-reader pin, prints PASS/FAIL per case, and exits non-zero if any
+failed.
 
-Usage: root_scripts_enum_check.py <report.json> <populated_rc> <empty_rc>
+Usage: root_scripts_enum_check.py <report.json> <populated_rc> <empty_rc> <maint_count>
 """
 
 import json
@@ -23,7 +24,10 @@ import sys
 
 
 def main(argv):
-    report_path, populated_rc, empty_rc = argv[1], int(argv[2]), int(argv[3])
+    report_path = argv[1]
+    populated_rc = int(argv[2])
+    empty_rc = int(argv[3])
+    independent_maint = int(argv[4])
     report = json.load(open(report_path, encoding="utf-8"))
     entries = report["entries"]
 
@@ -34,78 +38,246 @@ def main(argv):
         matches = [e for e in cat(name) if needle in e["path"]]
         return matches[0] if matches else None
 
-    def sudo_lines(entry):
-        return {s["line"]: s for s in entry["sudo_invocations"]}
+    def sudo_at(needle, line):
+        for e in cat("privileged-call"):
+            if needle in e["path"] and e.get("line") == line:
+                return e
+        return None
 
-    build = one("build-time", "help-steps/buildscript")
-    lines = sudo_lines(build) if build else {}
+    def sudo_lines(needle):
+        return {e["line"] for e in cat("privileged-call") if needle in e["path"]}
+
+    def _polkit_default(entry, action_id, key):
+        for action in entry["actions"]:
+            if action["id"] == action_id:
+                return action["defaults"].get(key)
+        return None
+
+    def _polkit_exec(entry, action_id):
+        for action in entry["actions"]:
+            if action["id"] == action_id:
+                return action.get("exec_path")
+        return None
+
+    def esc(line):
+        return sudo_at("usr/libexec/foo/escprobe", line)
+
+    def wrap(line):
+        return sudo_at("usr/libexec/foo/wrapprobe", line)
+
+    helper = "usr/libexec/foo/helper"
+    probe = "usr/libexec/foo/optprobe"
+    sep = "usr/libexec/foo/sepprobe"
+    priv = one("privleap-action", "conf.d/foo.conf")
+    priv_actions = {a["action"]: a for a in priv["actions"]} if priv else {}
 
     checks = [
-        ("a populated tree exits 0",
-         populated_rc == 0),
-        ("an empty tree fails loudly instead of reporting clean",
-         empty_rc != 0),
+        ("a populated tree exits 0", populated_rc == 0),
+        ("an empty tree fails loudly instead of reporting clean", empty_rc != 0),
 
-        ## maintainer scripts
-        ("maintainer script is enumerated",
+        ## maintainer scripts (caught regardless of the +x bit) + recount
+        ("a non-executable maintainer script is enumerated",
          one("maintainer-script", "debian/foo.postinst") is not None),
-        ("maintainer script attributes to the submodule component",
-         one("maintainer-script", "debian/foo.postinst") is not None
-         and one("maintainer-script", "debian/foo.postinst")["component"] == "foo"),
+        ("a bare-name maintainer script (debian/preinst) is enumerated",
+         one("maintainer-script", "debian/preinst") is not None),
         ("a non-debian .config file is NOT a maintainer script",
          one("maintainer-script", "etc/skel/.config") is None),
+        ("maintainer count matches the independent recount",
+         report["summary"].get("maintainer-script", 0) == independent_maint
+         and independent_maint >= 2),
 
         ## systemd units
         ("root system unit is enumerated with its exec target",
          one("systemd-unit", "rootsvc.service") is not None
          and "/usr/bin/rootprog" in one("systemd-unit", "rootsvc.service")["exec"]),
-        ("a user-scope unit is excluded (runs as the user, not root)",
-         one("systemd-unit", "usersvc.service") is None),
-        ("a unit pinned to a non-root User= is excluded",
+        ("a user-scope unit is excluded", one("systemd-unit", "usersvc.service") is None),
+        ("a non-root User= unit is excluded",
          one("systemd-unit", "nonrootsvc.service") is None),
+        ("a DynamicUser=yes unit is excluded (dynamic non-root UID)",
+         one("systemd-unit", "dynuser.service") is None),
+        ("a debhelper .user.service source is excluded",
+         one("systemd-unit", "foo.user.service") is None),
+        ("ExecCondition and ExecStopPost root programs are captured",
+         one("systemd-unit", "execkeys.service") is not None
+         and "/usr/bin/root-cond" in one("systemd-unit", "execkeys.service")["exec"]
+         and "/usr/bin/root-cleanup" in one("systemd-unit", "execkeys.service")["exec"]),
+        ("a bare ExecStartPre= reset clears only that key",
+         one("systemd-unit", "execkeys.service") is not None
+         and "/usr/bin/root-pre" not in one("systemd-unit", "execkeys.service")["exec"]
+         and "/usr/bin/root-main" in one("systemd-unit", "execkeys.service")["exec"]),
+
+        ## systemd activation units (.socket/.timer)
+        ("a .socket unit is enumerated with its Exec and activated service",
+         one("systemd-activation", "foo.socket") is not None
+         and one("systemd-activation", "foo.socket")["unit_type"] == "socket"
+         and "/usr/bin/socket-root-pre" in one("systemd-activation", "foo.socket")["exec"]
+         and one("systemd-activation", "foo.socket")["activates"] == "foo-worker.service"),
+        ("a .timer unit records the service it activates",
+         one("systemd-activation", "foo.timer") is not None
+         and one("systemd-activation", "foo.timer")["activates"] == "foo-daily.service"),
+
+        ## systemd drop-ins
+        ("a service.d drop-in that adds Exec programs is enumerated",
+         one("systemd-dropin", "svc.service.d/30_override.conf") is not None
+         and one("systemd-dropin", "svc.service.d/30_override.conf")["base_unit"]
+         == "svc.service"
+         and "/usr/lib/svc" in one("systemd-dropin", "svc.service.d/30_override.conf")["exec"]),
+        ("a '+'-prefixed drop-in Exec is captured as forced-root",
+         one("systemd-dropin", "svc.service.d/30_override.conf") is not None
+         and "/usr/lib/root-merger"
+         in one("systemd-dropin", "svc.service.d/30_override.conf")["root_forced_exec"]),
+        ("a user-scope drop-in is excluded",
+         one("systemd-dropin", "u.service.d/30_x.conf") is None),
+
+        ## privleap
+        ("a root privleap action is enumerated with its command",
+         "root-action" in priv_actions
+         and priv_actions["root-action"]["command"] == "/usr/bin/rootcmd --flag"),
+        ("a privleap action with a non-root TargetUser is excluded",
+         "tor-action" not in priv_actions),
+        ("the privleap [persistent-users] section is not an action",
+         "persistent-users" not in priv_actions and None not in priv_actions),
 
         ## sudoers
-        ("an active NOPASSWD sudoers rule is captured",
+        ("an active NOPASSWD root sudoers rule is captured, args stripped",
          one("sudoers", "active-sudo") is not None
          and one("sudoers", "active-sudo")["grants_root"]
          and one("sudoers", "active-sudo")["nopasswd"]
-         and "/usr/bin/foo" in one("sudoers", "active-sudo")["commands"]),
+         and one("sudoers", "active-sudo")["commands"] == ["/usr/bin/foo"]),
+        ("a sudoers rule granting only a non-root runas does not grant root",
+         one("sudoers", "nonroot-sudo") is not None
+         and one("sudoers", "nonroot-sudo")["grants_root"] is False),
         ("an all-commented sudoers file grants nothing",
          one("sudoers", "commented-sudo") is not None
          and one("sudoers", "commented-sudo")["grants_root"] is False),
 
-        ## polkit
-        ("a polkit action id is enumerated",
+        ## polkit -- per-action defaults, single- or double-quoted ids
+        ("both polkit actions are enumerated with their own defaults",
          one("polkit", "com.example.test") is not None
-         and "com.example.test.do" in one("polkit", "com.example.test")["actions"]),
+         and _polkit_default(one("polkit", "com.example.test"),
+                             "com.example.test.do", "allow_active") == "yes"
+         and _polkit_default(one("polkit", "com.example.test"),
+                             "com.example.test.other", "allow_active") == "no"),
 
-        ## build-time sudo reader -- the parser-creep pins
-        ("a plain sudo invocation captures the program",
-         2 in lines and lines[2]["command"] == "apt-get"),
-        ("sudo -u root chown resolves to chown, not the -u argument",
-         3 in lines and lines[3]["command"] == "chown"),
-        ("sudo inside prose is not treated as an invocation",
-         4 not in lines),
-        ("sudo as a bare argument is not an invocation",
-         5 not in lines),
-        ("a program hidden in a variable is reported notify, never guessed",
-         6 in lines and lines[6]["command"] is None
-         and lines[6].get("note") == "notify"),
+        ## sudo-call: all components (a SUBMODULE runtime script, not just dm)
+        ("a sudo call in a submodule script is enumerated",
+         sudo_at(helper, 2) is not None
+         and sudo_at(helper, 2)["command"] == "apt-get"
+         and sudo_at(helper, 2)["component"] == "foo"),
+        ("sudo -u <nonroot> records the run-as target",
+         sudo_at(helper, 3) is not None and sudo_at(helper, 3)["runs_as"] == "nobody"),
+        ("sudo VAR=val prog skips the env setting and reports the program",
+         sudo_at(helper, 4) is not None and sudo_at(helper, 4)["command"] == "realprog"),
+        ("sudo inside prose is not an invocation (AST)", 5 not in sudo_lines(helper)),
+        ("sudo as a bare argument is not an invocation (AST)", 6 not in sudo_lines(helper)),
+        ("a sudo program hidden in a variable is notify, never guessed",
+         sudo_at(helper, 7) is not None and sudo_at(helper, 7)["command"] is None
+         and sudo_at(helper, 7).get("note") == "notify"),
+        ("sudo in a NON-shell file is not scanned",
+         one("privileged-call", "etc/foo.conf") is None),
 
-        ## build-time -- chroot flag, data-file exclusion, component
-        ("a chroot helper is flagged runs_in_chroot_as_root",
-         one("build-time", "foo-chroot-raw") is not None
-         and one("build-time", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
-        ("a data file that merely mentions sudo is not build orchestration",
-         one("build-time", "changelog.upstream") is None),
-        ("dm build script attributes to derivative-maker",
-         build is not None and build["component"] == "derivative-maker"),
+        ## sudo getopt semantics (optprobe)
+        ("an abbreviated --us=nobody resolves the run-as target",
+         sudo_at(probe, 2) is not None and sudo_at(probe, 2)["runs_as"] == "nobody"),
+        ("a value-taking -p cluster is not misread as -u",
+         sudo_at(probe, 3) is not None and sudo_at(probe, 3)["command"] == "/usr/bin/b"
+         and sudo_at(probe, 3)["runs_as"] == "root"),
+        ("an attached -u expansion target is unresolved (?)",
+         sudo_at(probe, 4) is not None and sudo_at(probe, 4)["runs_as"] == "?"),
+        ("a sudo env setting with an expansion value still finds the program",
+         sudo_at(probe, 5) is not None and sudo_at(probe, 5)["command"] == "/usr/bin/realp"),
+        ("a non-executing sudo -l is noted, not a plain root exec",
+         sudo_at(probe, 6) is not None and sudo_at(probe, 6).get("note") == "sudo-l"),
+        ("sudo behind an exec wrapper is enumerated",
+         sudo_at(probe, 7) is not None and sudo_at(probe, 7)["command"] == "/usr/bin/f"),
+        ("a real /usr/bin/sudo call is not dropped by a sudo function shadow",
+         one("privileged-call", "usr/libexec/foo/sudofn") is not None
+         and one("privileged-call", "usr/libexec/foo/sudofn")["command"] == "/usr/bin/real-root"),
+        ("an extensionless shebang-less build-step file is scanned",
+         one("privileged-call", "help-steps/nosheb") is not None
+         and one("privileged-call", "help-steps/nosheb")["command"] == "apt-get"),
+        ("a privleap TargetUser=00 (numeric UID 0) is a root action",
+         "numeric-root-action" in priv_actions),
 
-        ## summary + examined sanity
+        ## separate-word sudo value options (regression: value != program)
+        ("sudo -p PROMPT does not mistake the prompt for the program",
+         sudo_at(sep, 2) is not None and sudo_at(sep, 2)["command"] == "apt-get"),
+        ("sudo -g group keeps the real program",
+         sudo_at(sep, 3) is not None and sudo_at(sep, 3)["command"] == "/usr/bin/b"),
+        ("sudo -g grp -u user still sees the later -u target",
+         sudo_at(sep, 4) is not None and sudo_at(sep, 4)["command"] == "/usr/bin/c"
+         and sudo_at(sep, 4)["runs_as"] == "nobody"),
+
+        ## genmkfile '#pkg' install suffix must not hide a category
+        ("a .service with a #pkg install suffix is still enumerated",
+         one("systemd-unit", "suffixed.service#foo-shared") is not None
+         and "/usr/bin/suffixed-root"
+         in one("systemd-unit", "suffixed.service#foo-shared")["exec"]),
+
+        ## other privilege escalators (escprobe)
+        ("pkexec is enumerated as a privileged call",
+         esc(2) is not None and esc(2)["tool"] == "pkexec"
+         and esc(2)["command"] == "/usr/bin/pk" and esc(2)["runs_as"] == "root"),
+        ("pkexec --user sets the run-as target",
+         esc(3) is not None and esc(3)["runs_as"] == "nobody"),
+        ("su - user -c cmd records the user and command",
+         esc(4) is not None and esc(4)["tool"] == "su"
+         and esc(4)["runs_as"] == "postgres" and esc(4)["command"] == "psql"),
+        ("leaprun records the privleap action name",
+         esc(5) is not None and esc(5)["tool"] == "leaprun"
+         and esc(5)["command"] == "grub-password-status-check"),
+        ("a polkit action's pkexec exec.path (root helper) is captured",
+         _polkit_exec(one("polkit", "com.example.test"), "com.example.test.do")
+         == "/usr/libexec/foo/pkexec-helper"),
+
+        ## wrapper + non-shell escalation
+        ("timeout is peeled to reach the sudo behind it",
+         wrap(2) is not None and wrap(2)["tool"] == "sudo"
+         and wrap(2)["command"] == "/usr/bin/tprog"),
+        ("a root_cmd helper call is enumerated as escalation",
+         wrap(3) is not None and wrap(3)["tool"] == "root_cmd"
+         and wrap(3)["command"] == "/usr/bin/rprog"),
+        ("a Python subprocess escalator call is flagged (advisory)",
+         one("nonshell-escalation", "foo/esc.py") is not None
+         and any(c["tool"] == "leaprun"
+                 for c in one("nonshell-escalation", "foo/esc.py")["calls"])),
+        ("a dm build-script sudo call is enumerated under derivative-maker",
+         one("privileged-call", "help-steps/buildscript") is not None
+         and one("privileged-call", "help-steps/buildscript")["component"] == "derivative-maker"),
+
+        ## build-chroot
+        ("a chroot helper is enumerated as build-chroot",
+         one("build-chroot", "foo-chroot-raw") is not None
+         and one("build-chroot", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
+
+        ## config-file root hooks
+        ("a udev RUN+= program is enumerated",
+         one("udev-rule", "90-foo.rules") is not None
+         and "/usr/bin/udev-root-prog --flag"
+         in one("udev-rule", "90-foo.rules")["programs"]),
+        ("a PAM pam_exec program is enumerated",
+         one("pam-exec", "pam-configs/foo") is not None
+         and "/usr/libexec/foo/pam-root-prog"
+         in one("pam-exec", "pam-configs/foo")["programs"]),
+        ("an /etc/grub.d script is enumerated",
+         one("grub-script", "etc/grub.d/10_foo") is not None),
+        ("a /etc/default/grub.d config snippet is NOT a grub script",
+         one("grub-script", "default/grub.d/foo.cfg") is None),
+        ("a qubes-rpc handler is enumerated",
+         one("qubes-rpc", "etc/qubes-rpc/qubes.Foo") is not None),
+        ("a policy-rc.d is enumerated",
+         one("policy-rc-d", "foo/policy-rc.d") is not None),
+        ("a kernel postinst.d hook is enumerated",
+         one("initramfs-kernel-hook", "etc/kernel/postinst.d/10_foo") is not None),
+        ("an initramfs-tools hook is enumerated",
+         one("initramfs-kernel-hook", "initramfs-tools/hooks/foo") is not None),
+
+        ## summary + parse sanity
+        ("shfmt parsed the shell with no errors", report["parse_errors"] == []),
+        ("the walk reported no unreadable directories", report["walk_errors"] == []),
         ("the report carries examined counts and a category summary",
-         report["examined"]["files"] > 0
-         and report["summary"].get("maintainer-script", 0) >= 1
-         and report["summary"].get("systemd-unit", 0) >= 1),
+         report["examined"]["files"] > 0 and report["examined"]["shell_files"] > 0
+         and report["summary"].get("privileged-call", 0) >= 1),
     ]
 
     passed = 0
