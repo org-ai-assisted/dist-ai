@@ -143,6 +143,7 @@ source "${subject}"
 ## this test; they are called directly and fail loud if absent (no preflight).
 check "should_skip is defined"                 "$(type -t should_skip)"                 "function"
 check "check_debconf_passwords is defined"      "$(type -t check_debconf_passwords)"      "function"
+check "report_answered_question_names is defined" "$(type -t report_answered_question_names)" "function"
 check "reset_debconf_grub_devices is defined"   "$(type -t reset_debconf_grub_devices)"   "function"
 check "check_debconf_device_leak is defined"    "$(type -t check_debconf_device_leak)"    "function"
 check "clean_dhcp is defined"                   "$(type -t clean_dhcp)"                   "function"
@@ -187,6 +188,19 @@ check "passwords: mid-line file deleted"         "$(exists "${pw}")" "no"
 ## Missing file -> return 0, no error.
 check "passwords: missing file -> return 0" \
    "$(call_fn check_debconf_passwords "${test_dir}/absent.dat")" "0"
+
+## Only the question(s) that actually carry a Value: are reported, not every
+## question in the file. Records are blank-line separated (822-style): the first
+## record owns a question with no answer, the second holds a captured answer, so
+## only the second name is reported. (Old behaviour printed every Name:.)
+pw="${test_dir}/pw_multi.dat"
+printf '%s\n' \
+   'Name: unanswered/prompt' 'Template: unanswered/prompt' 'Owners: pkg-a' \
+   '' \
+   'Name: captured/password' 'Template: captured/password' 'Value: s3cr3t' 'Owners: pkg-b' > "${pw}"
+reported="$(check_debconf_passwords "${pw}" 2>&1 1>/dev/null | grep -- '^Name:')" || true
+check "passwords: reports only the answered question name" "${reported}" "Name: captured/password"
+check "passwords: multi-record refused file kept" "$(exists "${pw}")" "yes"
 
 ## ===================== reset_debconf_grub_devices =====================
 ## Both grub install_devices variants present -> exactly those names RESET,
