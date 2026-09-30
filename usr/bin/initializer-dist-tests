@@ -56,4 +56,12 @@ done
 
 printf '%s\n' ""
 printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
+
+## Propagate an all-skipped suite as a SKIP (exit 77), never a silent PASS: the
+## orchestrator maps a suite exit of 77 to SKIP but 0 to PASS, so an exit 0 here
+## when every case skipped would fold the skip into a pass.
+if [ "${failed}" -eq 0 ] && [ "${skipped}" -gt 0 ] && [ "${skipped}" -eq "${#case_scripts[@]}" ]; then
+   ## style-ok: allow-skip: every case skipped -- propagate the suite SKIP rather than a silent PASS
+   exit 77
+fi
 exit "${rc}"

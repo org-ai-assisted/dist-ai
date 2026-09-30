@@ -117,12 +117,29 @@ call_fn() {
 }
 
 ## ================= source-ability (BEFORE the in-process source) =================
-## Run in an ISOLATED subprocess and MUST precede the in-process source below.
-## They verify the subject is inert when sourced (no strict-mode leak, no
-## auto-run). If it regressed to run at file scope, sourcing it into THIS shell
-## would exit or delete host paths before any check -- so the in-process source
-## is GATED on these passing. $0 is a placeholder, NOT the subject: was_executed
-## compares BASH_SOURCE[0] to $0.
+## The subject is a REAL, destructive host-cleanup script. SOURCING an unguarded
+## copy runs its body (killall / apt-get --purge / safe-rm -r /tmp / truncate
+## /var/log / wipe histories) against the LIVE host -- and a `bash -c 'source ...'`
+## subprocess isolates only shell state, not the filesystem, so it is no shield.
+## The behavioural probes below cannot be the safety mechanism either: a SILENT
+## file-scope body runs in full before they can judge it.
+##
+## So the real gate is STATIC and comes FIRST: refuse to source at all unless the
+## subject carries the was_executed guard. A stale/installed pre-refactor 80_cleanup
+## (the default subject when INITIALIZER_DIST_REPO is unset) has no such guard, so it
+## is rejected here and never sourced. (A guard that is present but deliberately
+## subverted is out of scope -- an AI accident removes the guard, it does not re-add
+## the destructive body outside a still-present guard.)
+if ! grep --quiet -- 'was_executed' "${subject}"; then
+   printf '%s\n' "FATAL: subject '${subject}' carries no was_executed guard." >&2
+   printf '%s\n' "Refusing to source a script that would execute its cleanup body at file scope." >&2
+   printf '%s\n' "set INITIALIZER_DIST_REPO to a source-able 80_cleanup checkout." >&2
+   exit 1
+fi
+
+## With the guard confirmed present the subject is inert when sourced; these probes
+## then catch a guard that is present but leaks strict-mode or prints at file scope.
+## $0 is a placeholder, NOT the subject: was_executed compares BASH_SOURCE[0] to $0.
 leak_rc=0
 HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" bash -c 'source "$1"; false; true' placeholder "${subject}" >/dev/null 2>&1 \
    || leak_rc=$?
@@ -135,6 +152,18 @@ if [ "${leak_rc}" -ne 0 ] || [ -n "${src_out}" ]; then
    printf '%s\n' "FATAL: subject is not safe to source in-process (see checks above)" >&2
    exit 1
 fi
+
+## The subject must fail LOUD (non-zero) when its helper-scripts source cannot be
+## resolved, not silently exit 0: a missing lib leaves was_executed undefined, so
+## both guards' conditions fail and main() never runs -- a false success that ships
+## an uncleaned image. Run it EXECUTED with an unresolvable HELPER_SCRIPTS_PATH; the
+## source fails before main() in either the fixed or the regressed form, so no
+## cleanup runs and this is safe on the host.
+exec_rc=0
+HELPER_SCRIPTS_PATH="${test_dir}/nonexistent" "${subject}" >/dev/null 2>&1 || exec_rc=$?
+exec_loud="no"
+[ "${exec_rc}" -ne 0 ] && exec_loud="yes"
+check "executed with unresolvable helper-scripts fails loud (non-zero)" "${exec_loud}" "yes"
 
 # shellcheck disable=SC1090
 source "${subject}"
@@ -250,6 +279,16 @@ cfg="${test_dir}/leak_nvme.dat"
 printf '%s\n' 'Name: grub-pc/install_devices' 'X: y' 'Value: /dev/nvme0n1' > "${cfg}"
 check "device_leak: /dev/nvme0n1 remains -> return 1" \
    "$(call_fn check_debconf_device_leak "${cfg}")" "1"
+
+## The diagnostic reaches STDERR (the offending line), and NOTHING leaks to stdout.
+## (The pre-fix form redirected grep inside the $() capture, so the variable was
+## empty and a stray blank line went to stdout instead of the matched lines.)
+cfg="${test_dir}/leak_diag.dat"
+printf '%s\n' 'Name: grub-pc/install_devices' 'Template: grub-pc/install_devices' 'Value: /dev/loop0' > "${cfg}"
+diag_stdout="${test_dir}/leak_diag.stdout"
+diag_err="$(check_debconf_device_leak "${cfg}" 2>&1 1>"${diag_stdout}" | grep -- '/dev/loop0')" || true
+check "device_leak: offending line reported on stderr" "${diag_err}" "Value: /dev/loop0"
+check "device_leak: no stray stdout output" "$(wc -c < "${diag_stdout}")" "0"
 
 ## ================================ summary ================================
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
