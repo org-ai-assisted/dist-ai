@@ -77,6 +77,12 @@ def sandbox_update_torbrowser_script() -> str:
                     "sandbox-update-torbrowser")
 
 
+def dispvm_script() -> str:
+    """Absolute path of the Qubes DispVM mount-point helper under test."""
+    return _resolve("usr/libexec/tb-updater/dispvm",
+                    "/usr/libexec/tb-updater/dispvm", "dispvm")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
