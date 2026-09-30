@@ -11,11 +11,12 @@
 """Assertion checker for root_scripts_enum_test.sh.
 
 Standalone (R-193: not read from stdin) and eval-free. Takes the tool's JSON
-report plus the two run exit codes the shell captured, checks every category
-and every build-time sudo-reader pin, prints PASS/FAIL per case, and exits
-non-zero if any failed.
+report, the two run exit codes, and an INDEPENDENT maintainer-script count the
+shell derived by a different method (the recount sanity), checks every category
+and every sudo-reader pin, prints PASS/FAIL per case, and exits non-zero if any
+failed.
 
-Usage: root_scripts_enum_check.py <report.json> <populated_rc> <empty_rc>
+Usage: root_scripts_enum_check.py <report.json> <populated_rc> <empty_rc> <maint_count>
 """
 
 import json
@@ -23,7 +24,10 @@ import sys
 
 
 def main(argv):
-    report_path, populated_rc, empty_rc = argv[1], int(argv[2]), int(argv[3])
+    report_path = argv[1]
+    populated_rc = int(argv[2])
+    empty_rc = int(argv[3])
+    independent_maint = int(argv[4])
     report = json.load(open(report_path, encoding="utf-8"))
     entries = report["entries"]
 
@@ -34,35 +38,50 @@ def main(argv):
         matches = [e for e in cat(name) if needle in e["path"]]
         return matches[0] if matches else None
 
-    def sudo_lines(entry):
-        return {s["line"]: s for s in entry["sudo_invocations"]}
+    def sudo_at(needle, line):
+        for e in cat("sudo-call"):
+            if needle in e["path"] and e.get("line") == line:
+                return e
+        return None
 
-    build = one("build-time", "help-steps/buildscript")
-    lines = sudo_lines(build) if build else {}
+    def sudo_lines(needle):
+        return {e["line"] for e in cat("sudo-call") if needle in e["path"]}
+
+    helper = "usr/libexec/foo/helper"
+    priv = one("privleap-action", "conf.d/foo.conf")
+    priv_actions = {a["action"]: a for a in priv["actions"]} if priv else {}
 
     checks = [
-        ("a populated tree exits 0",
-         populated_rc == 0),
-        ("an empty tree fails loudly instead of reporting clean",
-         empty_rc != 0),
+        ("a populated tree exits 0", populated_rc == 0),
+        ("an empty tree fails loudly instead of reporting clean", empty_rc != 0),
 
-        ## maintainer scripts
-        ("maintainer script is enumerated",
+        ## maintainer scripts (caught regardless of the +x bit) + recount
+        ("a non-executable maintainer script is enumerated",
          one("maintainer-script", "debian/foo.postinst") is not None),
-        ("maintainer script attributes to the submodule component",
-         one("maintainer-script", "debian/foo.postinst") is not None
-         and one("maintainer-script", "debian/foo.postinst")["component"] == "foo"),
+        ("a bare-name maintainer script (debian/preinst) is enumerated",
+         one("maintainer-script", "debian/preinst") is not None),
         ("a non-debian .config file is NOT a maintainer script",
          one("maintainer-script", "etc/skel/.config") is None),
+        ("maintainer count matches the independent recount",
+         report["summary"].get("maintainer-script", 0) == independent_maint
+         and independent_maint >= 2),
 
         ## systemd units
         ("root system unit is enumerated with its exec target",
          one("systemd-unit", "rootsvc.service") is not None
          and "/usr/bin/rootprog" in one("systemd-unit", "rootsvc.service")["exec"]),
-        ("a user-scope unit is excluded (runs as the user, not root)",
-         one("systemd-unit", "usersvc.service") is None),
-        ("a unit pinned to a non-root User= is excluded",
+        ("a user-scope unit is excluded", one("systemd-unit", "usersvc.service") is None),
+        ("a non-root User= unit is excluded",
          one("systemd-unit", "nonrootsvc.service") is None),
+
+        ## privleap
+        ("a root privleap action is enumerated with its command",
+         "root-action" in priv_actions
+         and priv_actions["root-action"]["command"] == "/usr/bin/rootcmd --flag"),
+        ("a privleap action with a non-root TargetUser is excluded",
+         "tor-action" not in priv_actions),
+        ("the privleap [persistent-users] section is not an action",
+         "persistent-users" not in priv_actions and None not in priv_actions),
 
         ## sudoers
         ("an active NOPASSWD sudoers rule is captured",
@@ -79,33 +98,36 @@ def main(argv):
          one("polkit", "com.example.test") is not None
          and "com.example.test.do" in one("polkit", "com.example.test")["actions"]),
 
-        ## build-time sudo reader -- the parser-creep pins
-        ("a plain sudo invocation captures the program",
-         2 in lines and lines[2]["command"] == "apt-get"),
-        ("sudo -u root chown resolves to chown, not the -u argument",
-         3 in lines and lines[3]["command"] == "chown"),
-        ("sudo inside prose is not treated as an invocation",
-         4 not in lines),
-        ("sudo as a bare argument is not an invocation",
-         5 not in lines),
-        ("a program hidden in a variable is reported notify, never guessed",
-         6 in lines and lines[6]["command"] is None
-         and lines[6].get("note") == "notify"),
+        ## sudo-call: all components (a SUBMODULE runtime script, not just dm)
+        ("a sudo call in a submodule script is enumerated",
+         sudo_at(helper, 2) is not None
+         and sudo_at(helper, 2)["command"] == "apt-get"
+         and sudo_at(helper, 2)["component"] == "foo"),
+        ("sudo -u <nonroot> records the run-as target",
+         sudo_at(helper, 3) is not None and sudo_at(helper, 3)["runs_as"] == "nobody"),
+        ("sudo VAR=val prog skips the env setting and reports the program",
+         sudo_at(helper, 4) is not None and sudo_at(helper, 4)["command"] == "realprog"),
+        ("sudo inside prose is not an invocation (AST)", 5 not in sudo_lines(helper)),
+        ("sudo as a bare argument is not an invocation (AST)", 6 not in sudo_lines(helper)),
+        ("a sudo program hidden in a variable is notify, never guessed",
+         sudo_at(helper, 7) is not None and sudo_at(helper, 7)["command"] is None
+         and sudo_at(helper, 7).get("note") == "notify"),
+        ("sudo in a NON-shell file is not scanned",
+         one("sudo-call", "etc/foo.conf") is None),
+        ("a dm build-script sudo call is enumerated under derivative-maker",
+         one("sudo-call", "help-steps/buildscript") is not None
+         and one("sudo-call", "help-steps/buildscript")["component"] == "derivative-maker"),
 
-        ## build-time -- chroot flag, data-file exclusion, component
-        ("a chroot helper is flagged runs_in_chroot_as_root",
-         one("build-time", "foo-chroot-raw") is not None
-         and one("build-time", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
-        ("a data file that merely mentions sudo is not build orchestration",
-         one("build-time", "changelog.upstream") is None),
-        ("dm build script attributes to derivative-maker",
-         build is not None and build["component"] == "derivative-maker"),
+        ## build-chroot
+        ("a chroot helper is enumerated as build-chroot",
+         one("build-chroot", "foo-chroot-raw") is not None
+         and one("build-chroot", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
 
-        ## summary + examined sanity
+        ## summary + parse sanity
+        ("shfmt parsed the shell with no errors", report["parse_errors"] == []),
         ("the report carries examined counts and a category summary",
-         report["examined"]["files"] > 0
-         and report["summary"].get("maintainer-script", 0) >= 1
-         and report["summary"].get("systemd-unit", 0) >= 1),
+         report["examined"]["files"] > 0 and report["examined"]["shell_files"] > 0
+         and report["summary"].get("sudo-call", 0) >= 1),
     ]
 
     passed = 0

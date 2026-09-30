@@ -5,25 +5,28 @@
 
 ## AI-Assisted
 
-## dm-root-scripts-enum: the four root-privileged categories are enumerated
-## correctly, and -- the part that must never regress -- the build-time sudo
-## reader stays a SIMPLE match, not a bash parser:
+## dm-root-scripts-enum: every root-privileged category is enumerated across
+## derivative-maker + ALL submodules, and -- the part that must never regress --
+## sudo detection is done by a REAL bash parser (shfmt AST), never a hand-rolled
+## match. The AST handles, structurally and for free:
 ##
 ##   - 'sudo' as an ARGUMENT (adduser user sudo) is not an invocation.
-##   - 'sudo' inside prose ("... run as root (sudo)!") is not an invocation.
-##   - 'sudo -u root cmd' resolves to cmd, not to the -u argument 'root'.
-##   - a program hidden in a variable/subshell/continuation is NOT guessed;
-##     it is reported as note=notify for a human.
+##   - 'sudo' inside prose ("... run as root (sudo)") is not an invocation.
+##   - a program hidden in a variable is not guessed -> note=notify.
+##   - 'sudo VAR=val prog' skips sudo's env setting; 'sudo -u <user>' records
+##     the run-as target.
 ##
-## A refactor that "improves" the reader into parsing quoted strings would flip
-## these, so they are pinned. Also pinned: the exclusions (user-scope and
-## non-root systemd units, non-debian .config files, all-commented sudoers) and
-## the empty-tree-fails-loudly property every audit in this repo carries.
+## Also pinned: sudo calls are found in ALL components (a submodule runtime
+## script, not just dm's build), NON-shell files are not scanned, the
+## exclusions (user-scope/non-root systemd, non-root privleap TargetUser,
+## all-commented sudoers, non-debian .config), maintainer scripts are caught
+## regardless of the +x bit with an independent recount, and the empty tree
+## fails loudly.
 ##
 ## This builds a fixture TREE (controlled input for the enumerator, like the
 ## sibling stripped_setx_audit_test.sh) and drives the REAL tool from the
 ## checkout; the per-entry assertions live in the standalone checker beside it.
-## No git, no root, no network.
+## No root, no network.
 
 set -o errexit
 set -o nounset
@@ -85,8 +88,15 @@ write '.gitmodules' <<'EOF'
 	url = https://example.invalid/foo.git
 EOF
 
-## maintainer script (root via dpkg) -- MUST be found.
+## maintainer script (root via dpkg), NON-executable -- caught by path+name,
+## not the +x bit. write() leaves it non-executable, which is the point.
 write 'packages/kicksecure/foo/debian/foo.postinst' <<'EOF'
+#!/bin/bash
+true
+EOF
+
+## a bare-name maintainer script (no '<pkg>.' prefix) -- also caught.
+write 'packages/kicksecure/foo/debian/preinst' <<'EOF'
 #!/bin/bash
 true
 EOF
@@ -94,6 +104,47 @@ EOF
 ## a .config that is NOT a maintainer script -- MUST be excluded.
 write 'packages/kicksecure/foo/etc/skel/.config' <<'EOF'
 not a maintainer script
+EOF
+
+## privleap actions. Root by default; a non-root TargetUser is excluded, and
+## [persistent-users] is not an action.
+write 'packages/kicksecure/foo/usr/lib/privleap/conf.d/foo.conf' <<'EOF'
+[persistent-users]
+User=foo
+
+[action:root-action]
+Command=/usr/bin/rootcmd --flag
+AuthorizedGroups=sudo,privleap
+AuthorizedUsers=user
+
+[action:tor-action]
+Command=/usr/bin/torcmd
+AuthorizedUsers=user
+TargetUser=debian-tor
+EOF
+
+## a SUBMODULE runtime shell script (not dm's build) that calls sudo -- proves
+## all-components coverage. Line numbers are asserted:
+##   2 plain    -> apt-get, root
+##   3 -u user  -> id, runs_as nobody
+##   4 VAR=val  -> realprog (env setting skipped)
+##   5 prose    -> not an invocation
+##   6 argument -> not an invocation
+##   7 variable -> notify
+write 'packages/kicksecure/foo/usr/libexec/foo/helper' <<'EOF'
+#!/bin/bash
+sudo apt-get update
+sudo -u nobody id
+sudo FOO=bar realprog
+echo "this must run as root (sudo)"
+adduser tempuser sudo
+sudo "${opts[@]}" test -d /usr
+EOF
+
+## a NON-shell file that mentions sudo -- MUST NOT be scanned as a sudo call.
+write 'packages/kicksecure/foo/etc/foo.conf' <<'EOF'
+# config mentioning sudo foo in prose
+sudo foo
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.
@@ -137,28 +188,19 @@ write 'packages/kicksecure/foo/usr/share/polkit-1/actions/com.example.test.polic
 </policyconfig>
 EOF
 
-## dm's OWN build script -- the sudo-reader torture test. Line numbers matter:
-##   2 real     -> apt-get
-##   3 -u root  -> chown (not 'root')
-##   4 prose    -> dropped
-##   5 argument -> dropped
-##   6 variable -> notify
+## dm's OWN build script that calls sudo -> a sudo-call under derivative-maker.
 write 'help-steps/buildscript' <<'EOF'
 #!/bin/bash
 sudo apt-get update
-sudo -u root chown root:root /some/path
-true "This must run as root (sudo)!"
-adduser tempuser sudo
-sudo "${opts[@]}" test -d /usr
 EOF
 
-## a chroot helper -> flagged runs_in_chroot_as_root.
+## a chroot helper -> enumerated as build-chroot.
 write 'help-steps/foo-chroot-raw' <<'EOF'
 #!/bin/bash
 sudo mount --bind /a /b
 EOF
 
-## a big data file that merely MENTIONS sudo in prose -> never build orchestration.
+## a data file that merely MENTIONS sudo in prose -> not shell, not scanned.
 write 'changelog.upstream' <<'EOF'
 * some entry describing how the build must run as root (sudo).
 EOF
@@ -178,4 +220,13 @@ if [ "${populated_rc}" -ne 0 ]; then
    cat -- "${work_dir}/err" >&2 || true
 fi
 
-"${checker}" "${json}" "${populated_rc}" "${empty_rc}"
+## Independent maintainer recount: enumerate the fixture's debian maintainer
+## scripts by a DIFFERENT method (find over debian/ dirs) so a drift in the
+## tool's matcher is caught, not masked by re-using the tool's own logic.
+maint_count="$(find "${work_dir}" -type f -path '*/debian/*' \
+   \( -name '*.preinst' -o -name '*.postinst' -o -name '*.prerm' \
+      -o -name '*.postrm' -o -name '*.config' \
+      -o -name preinst -o -name postinst -o -name prerm \
+      -o -name postrm -o -name config \) | wc -l)"
+
+"${checker}" "${json}" "${populated_rc}" "${empty_rc}" "${maint_count}"
