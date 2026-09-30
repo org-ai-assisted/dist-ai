@@ -143,6 +143,16 @@ def main(argv):
     checks.append((
         "quoted-string smuggle sink is NOT suppressed",
         not has(suppressed, "vuln-waived", "symlink-follow", ".bash_history")))
+    ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
+    ## not a comment, so it must not waive the advisory finding below it. The
+    ## 'in findings' half also proves the python-advisory path is exercised (no
+    ## vacuous pass).
+    checks.append((
+        "python-advisory finding emitted for the py fixture",
+        has(findings, "vuln_py_waived", "python-advisory")))
+    checks.append((
+        "python multi-line-string '#style-ok' does not waive the advisory",
+        not has(suppressed, "vuln_py_waived", "python-advisory")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.

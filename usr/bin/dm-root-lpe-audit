@@ -44,11 +44,13 @@ Usage:  dm-root-lpe-audit [<derivative-maker-root>]
 Output: JSON on stdout; a ranked human summary on stderr.
 """
 
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tokenize
 from typing import Any
 
 _LIB = os.path.join(
@@ -371,6 +373,21 @@ LPE_WAIVER_RE = re.compile(
     r"\s*--\s*(?P<why>\S.*)")
 
 
+def _py_comment_text_by_line(source):
+    """Map line -> comment text ('#...') for every real Python comment in SOURCE,
+    via tokenize -- a '#' inside a string (including a multi-line triple-quoted
+    one) is a STRING token, never a COMMENT, so it cannot pose as a waiver. Fails
+    SAFE: a tokenize error yields {} (nothing waived, so findings stay)."""
+    comments: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                comments[tok.start[0]] = tok.string
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return {}
+    return comments
+
+
 def lpe_waivers(comment_text_by_line, call_spans, finding_line):
     """Map rule -> reason for waivers covering the command at finding_line.
 
@@ -463,13 +480,13 @@ def audit(dm_root):
             coverage["python_advisory"] += 1
             source = read_text(abs_path)
             raw_findings = python_advisory(abs_path, rel_path)
-            ## Python has no shfmt AST here; a comment is a '#'-leading line (a
-            ## '#' inside a string never starts the line), and each advisory
-            ## finding stands on its own line (no call spans).
-            comment_text_by_line = {
-                idx: line.lstrip()
-                for idx, line in enumerate(source.splitlines(), start=1)
-                if line.lstrip().startswith("#")}
+            ## Python comment lines via tokenize: a '#' inside a string (even a
+            ## MULTI-LINE triple-quoted one) is a STRING token, not a COMMENT, so
+            ## it cannot masquerade as a waiver -- the same robustness the shfmt
+            ## path gets. Fail SAFE on a parse error (empty -> nothing waived ->
+            ## findings stay). Each advisory finding stands on its own line (no
+            ## multi-line command spans), so call_spans is empty.
+            comment_text_by_line = _py_comment_text_by_line(source)
             call_spans = []
         else:
             continue

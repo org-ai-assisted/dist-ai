@@ -266,6 +266,20 @@ echo "reminder: #style-ok: lpe-symlink-follow -- smuggled via a quoted string" #
 cp --dereference /etc/skel/.bash_history "${home}/.bash_history"
 EOF
 
+## VULN + WAIVER (python path): the python-advisory scanner must ALSO reject a
+## 'style-ok' smuggled inside a multi-line string. The subprocess+escalator line
+## makes the enum flag the file root-reachable; the os.chown on a /home path is
+## the advisory finding that MUST stay flagged despite the string-embedded text.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_waived.py' <<'EOF'
+#!/usr/bin/python3
+import os
+import subprocess
+subprocess.run(["sudo", "systemctl", "restart", "unit"])
+_DOC = """documentation line
+# style-ok: lpe-python-advisory -- smuggled inside a multi-line string, not a waiver"""
+os.chown("/home/user/.config", 0, 0)
+EOF
+
 ## --- run the real tool + delegate assertions --------------------------------
 
 json="${work_dir}/out.json"
