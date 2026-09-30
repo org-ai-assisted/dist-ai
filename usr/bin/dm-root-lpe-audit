@@ -373,6 +373,18 @@ LPE_WAIVER_RE = re.compile(
     r"\s*--\s*(?P<why>\S.*)")
 
 
+def _continues(line):
+    """True if LINE ends in a line-continuation: an ODD run of trailing
+    backslashes escapes the newline (an even run is literal backslashes). A CRLF
+    '\\r' is stripped first. This is the exact parity test shfmt/bash use (see
+    bash_ast.parse_normalized), applied to ONE physical line -- not a multi-line
+    scan -- so the line below a continuation is known to belong to the statement
+    above it, not to be a standalone comment."""
+    body = line[:-1] if line.endswith("\r") else line
+    trailing = len(body) - len(body.rstrip("\\"))
+    return trailing % 2 == 1
+
+
 def _py_comment_text_by_line(source):
     """Map line -> comment text ('#...') for every real Python comment in SOURCE,
     via tokenize -- a '#' inside a string (including a multi-line triple-quoted
@@ -497,13 +509,17 @@ def audit(dm_root):
         else:
             continue
         ## A comment line is STANDALONE when only whitespace precedes its '#'
-        ## (language-agnostic): such a comment belongs to the statement below it,
-        ## whereas a trailing comment belongs to its own code line.
-        source_lines = source.splitlines()
+        ## (language-agnostic) AND the physical line before it is not a '\\' line
+        ## continuation (else this line belongs to the statement above it, not a
+        ## standalone comment). Split on '\\n' ONLY -- str.splitlines() also
+        ## breaks on vertical tab / form feed / etc., which shfmt does not count
+        ## as newlines, desyncing these indices from the AST line numbers.
+        source_lines = source.split("\n")
         standalone_lines = {
             ln for ln in comment_text_by_line
             if ln and 1 <= ln <= len(source_lines)
-            and source_lines[ln - 1].lstrip().startswith("#")}
+            and source_lines[ln - 1].lstrip().startswith("#")
+            and (ln < 2 or not _continues(source_lines[ln - 2]))}
         for finding in raw_findings:
             entry = {
                 "component": component,

@@ -150,6 +150,12 @@ def main(argv):
         "trailing waiver on the line above a shell sink does not suppress it",
         has(findings, "vuln-waived", "symlink-follow", ".inputrc")
         and not has(suppressed, "vuln-waived", "symlink-follow", ".inputrc")))
+    ## A comment that is a '\\' line-continuation of the statement ABOVE it is not
+    ## a standalone waiver, so it must not suppress the sink below.
+    checks.append((
+        "continuation-comment above a sink does not suppress it",
+        has(findings, "vuln-waived", "symlink-follow", ".dircolors")
+        and not has(suppressed, "vuln-waived", "symlink-follow", ".dircolors")))
     ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
     ## not a comment, so it must not waive the advisory finding below it. The
     ## 'in findings' half also proves the python-advisory path is exercised (no
