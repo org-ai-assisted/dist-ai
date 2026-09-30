@@ -1,0 +1,65 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Reset an EPHEMERAL test user's VirtualBox state between image-test runs: power
+## off + delete every VM it has registered and remove its VM/disk folder, so
+## ephemeral runs never accumulate state (disk exhaustion) or cross-contaminate.
+## REFUSES a persistent golden-fleet user (persist-*) and root -- those are never
+## wiped. VBox internal networks are per-VM and vanish with the VMs, so deleting
+## the VMs is enough; no separate intnet cleanup.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+main() {
+   local user home vmname
+   user="${1:-}"
+   [ -n "${user}" ] || die 2 "usage: ${me} EPHEMERAL_USER (eph-*)"
+   [ "${user}" != 'root' ] || die 2 "refusing root"
+   id "${user}" >/dev/null 2>&1 || die 2 "no such user: '${user}'"
+   ## Guard: only an ephemeral pool user is wipeable; the golden fleet never is.
+   case "${user}" in
+      persist-*)
+         die 2 "refusing persistent-fleet user '${user}' (never wiped)"
+         ;;
+      eph-*)
+         true
+         ;;
+      *)
+         die 2 "'${user}' is not an ephemeral pool user (eph-*); refusing"
+         ;;
+   esac
+
+   home="$(getent passwd "${user}" | cut -d: -f6)"
+   printf '%s\n' "${me}: wiping VirtualBox state for ${user}"
+   ## poweroff + unregister --delete every VM the user has registered.
+   while read -r vmname; do
+      [ -n "${vmname}" ] || continue
+      sudo -u "${user}" "${VBOXMANAGE}" controlvm "${vmname}" poweroff 2>/dev/null || true
+      sleep 1
+      sudo -u "${user}" "${VBOXMANAGE}" unregistervm "${vmname}" --delete 2>/dev/null || true
+   done < <(sudo -u "${user}" "${VBOXMANAGE}" list vms 2>/dev/null \
+            | sed -n 's/^"\(.*\)" .*/\1/p')
+   ## drop any leftover VM/disk folder.
+   safe-rm --recursive --force -- "${home}/VirtualBox VMs"
+   printf '%s\n' "${me}: done"
+}
+
+main "$@"
