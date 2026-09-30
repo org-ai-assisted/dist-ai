@@ -131,8 +131,10 @@ out1=''
 rc1=0
 out1="$(run_install "${pkg1}" "${work}/dest1")" || rc1=$?
 tests_total=$(( tests_total + 1 ))
-if [ "${rc1}" -eq 0 ] && [[ "${out1}" == *'was not installed'* ]]; then
-   printf '%s\n' "PASS  escaping symlink -> non-fatal warn (not a stat crash)"
+if [ "${rc1}" -eq 0 ] \
+   && [[ "${out1}" == *'was not installed'* ]] \
+   && [ ! -L "${work}/dest1/usr/bin/escaping" ]; then
+   printf '%s\n' "PASS  escaping symlink -> non-fatal warn, left uninstalled (no stat crash)"
 else
    tests_failed=$(( tests_failed + 1 ))
    printf '%s\n' "FAIL  escaping symlink: rc=${rc1} out=[${out1}]" >&2
