@@ -124,6 +124,12 @@ run_suites_parallel() {
       python3 -m compileall -q "${pkg}" >/dev/null 2>&1 || true
       export PYTHONDONTWRITEBYTECODE=1
    fi
+   ## pytest's '.pytest_cache' and mypy's '.mypy_cache' are NOT bytecode, so the
+   ## defense above does not stop them; a pytest/mypy suite would still drop them into
+   ## the subject checkout and trip the cache-dir gate. Disable pytest's cache; point
+   ## mypy's at the throwaway work dir. Unconditional -- either can run without a pkg.
+   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -p no:cacheprovider"
+   export MYPY_CACHE_DIR="${work}/mypy-cache"
 
    ## Run one suite: isolate its XDG config/state, capture combined output + rc to files, and
    ## always RETURN 0 so the backgrounded job never trips the caller's errexit via wait -- the
