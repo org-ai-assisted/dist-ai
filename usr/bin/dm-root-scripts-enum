@@ -23,6 +23,10 @@ privileges, in these categories:
                      (.../systemd/user/...) and units pinned to a non-root User=
                      are EXCLUDED. Lists the Exec* program targets.
 
+  systemd-activation A .socket/.timer/.path/.mount unit that triggers a root
+                     service. Reports its type, any [Socket] root Exec*, and the
+                     .service it activates.
+
   systemd-dropin     A '<unit>.service.d/*.conf' drop-in that adds Exec*
                      programs. Its effective identity is the BASE unit's (not
                      resolved across packages), so it reports the programs +
@@ -310,6 +314,39 @@ def scan_systemd(abs_path, rel_path):
     if not runs_as_root:
         return None
     return {"scope": "system", "user": user_value or "root", "exec": exec_targets}
+
+
+ACTIVATION_EXT = (".socket", ".timer", ".path", ".mount")
+
+
+def scan_systemd_activation(abs_path, rel_path):
+    """A .socket/.timer/.path/.mount unit. It activates a .service (caught
+    separately), but a [Socket] carries its own root Exec* and every such unit
+    is a root-triggered surface, so report its type, Exec* programs, and the
+    unit it activates (Service=/Unit=, else the same-named .service)."""
+    if "/systemd/user/" in ("/" + rel_path):
+        return None
+    ext = next((e for e in ACTIVATION_EXT if name_has_ext(rel_path, e)), None)
+    if ext is None:
+        return None
+    exec_targets = []
+    activates = None
+    for raw in read_text(abs_path).splitlines():
+        line = raw.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key in EXEC_KEYS and value:
+            fields = value.lstrip(EXEC_PREFIX).split()
+            if fields:
+                exec_targets.append(fields[0])
+        elif key in ("Service", "Unit") and value:
+            activates = value
+    if activates is None:
+        activates = install_name(rel_path).rsplit(".", 1)[0] + ".service"
+    return {"unit_type": ext[1:], "exec": exec_targets, "activates": activates}
 
 
 def scan_systemd_dropin(abs_path, rel_path):
@@ -809,6 +846,7 @@ def scan_build_chroot(rel_path, component):
 FILE_SCANNERS = (
     ("maintainer-script", scan_maintainer),
     ("systemd-unit", scan_systemd),
+    ("systemd-activation", scan_systemd_activation),
     ("systemd-dropin", scan_systemd_dropin),
     ("privleap-action", scan_privleap),
     ("sudoers", scan_sudoers),

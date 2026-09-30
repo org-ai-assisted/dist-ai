@@ -259,6 +259,19 @@ write 'packages/kicksecure/foo/usr/lib/systemd/user/u.service.d/30_x.conf' <<'EO
 ExecStart=/usr/bin/userdrop
 EOF
 
+## a .socket with its own root ExecStartPre + a .timer -> systemd-activation.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.socket' <<'EOF'
+[Socket]
+ListenStream=/run/foo.sock
+ExecStartPre=/usr/bin/socket-root-pre
+Service=foo-worker.service
+EOF
+write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.timer' <<'EOF'
+[Timer]
+OnCalendar=daily
+Unit=foo-daily.service
+EOF
+
 ## sudoers: ACTIVE NOPASSWD root rule; commands exclude the arguments.
 write 'packages/kicksecure/foo/etc/sudoers.d/active-sudo' <<'EOF'
 %sudo ALL=NOPASSWD: /usr/bin/foo --flag /etc/target

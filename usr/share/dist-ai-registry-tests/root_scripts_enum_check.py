@@ -103,6 +103,16 @@ def main(argv):
          and "/usr/bin/root-pre" not in one("systemd-unit", "execkeys.service")["exec"]
          and "/usr/bin/root-main" in one("systemd-unit", "execkeys.service")["exec"]),
 
+        ## systemd activation units (.socket/.timer)
+        ("a .socket unit is enumerated with its Exec and activated service",
+         one("systemd-activation", "foo.socket") is not None
+         and one("systemd-activation", "foo.socket")["unit_type"] == "socket"
+         and "/usr/bin/socket-root-pre" in one("systemd-activation", "foo.socket")["exec"]
+         and one("systemd-activation", "foo.socket")["activates"] == "foo-worker.service"),
+        ("a .timer unit records the service it activates",
+         one("systemd-activation", "foo.timer") is not None
+         and one("systemd-activation", "foo.timer")["activates"] == "foo-daily.service"),
+
         ## systemd drop-ins
         ("a service.d drop-in that adds Exec programs is enumerated",
          one("systemd-dropin", "svc.service.d/30_override.conf") is not None
