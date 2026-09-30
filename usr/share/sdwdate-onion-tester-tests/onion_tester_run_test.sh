@@ -393,14 +393,15 @@ case_warmup_disabled() {
 ## override the probe verdict. Under errexit a failed `>> "${GITHUB_OUTPUT}"` (the CI
 ## runner drops to a non-root user while the step's output file is root-owned) would abort
 ## main() before `exit "${rc}"` and flip a green probe (rc 0) into a false-red rc 1. A
-## chmod-000 file forces that write failure so the guard is exercised deterministically.
+## DIRECTORY as GITHUB_OUTPUT makes the append fail (EISDIR) for ANY user -- including root
+## with CAP_DAC_OVERRIDE, which bypasses permission bits -- so the guard is exercised
+## deterministically however the suite is run.
 case_github_output_unwritable() {
    local rc=0 blocked_output
 
    reset_state
    blocked_output="${work_dir}/blocked-github-output"
-   touch -- "${blocked_output}"
-   chmod 000 -- "${blocked_output}"
+   mkdir -- "${blocked_output}"
 
    MOCK_STATE="${work_dir}/state" \
    MOCK_RESULTS="0" \
@@ -417,7 +418,6 @@ case_github_output_unwritable() {
    ONION_TESTER_WARMUP_MAX=0 \
       "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
 
-   chmod 700 -- "${blocked_output}"
    check "github-output unwritable: returns the probe verdict, not a write-failure rc" \
       "0" "${rc}"
    check_contains "github-output unwritable: warns about the failed bookkeeping write" \
