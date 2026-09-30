@@ -115,7 +115,7 @@ root_check
 target_user="$1"
 home_folder="/home/${target_user}"
 find "${home_folder}" -name '*.tmp' -delete
-cp -L "${home_folder}/.bashrc" /root/backup
+cp --dereference /etc/skel/.bashrc "${home_folder}/.bashrc"
 chmod 777 "${home_folder}/pub"
 : > /dev/shm/vuln-guarded.lock
 PATH=.:${PATH}
