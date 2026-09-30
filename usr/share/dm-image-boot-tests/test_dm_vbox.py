@@ -331,3 +331,84 @@ def test_cli_missing_required_flag_is_setup_not_none(op, flag):
     assert proc.returncode == SETUP_RC, (proc.returncode, proc.stdout)
     assert 'None' not in proc.stdout
     assert flag in proc.stderr
+
+
+## --- AMD-V availability (pure decision; the deferred host action is not run) --
+
+_CPUINFO_AMD = 'processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel\t\t: 1\n'
+_CPUINFO_INTEL = 'processor\t: 0\nvendor_id\t: GenuineIntel\nmodel\t\t: 1\n'
+
+## AMD host, KVM loaded but IDLE (kvm_amd refcount 0 -- no VM holding AMD-V).
+_MODULES_KVM_IDLE = (
+    'kvm_amd 176128 0 - Live 0x0000000000000000\n'
+    'kvm 1146880 1 kvm_amd, Live 0x0000000000000000\n'
+    'ccp 126976 1 kvm_amd, Live 0x0000000000000000\n')
+## AMD host, a VM is RUNNING (kvm_amd refcount 3).
+_MODULES_KVM_BUSY = (
+    'kvm_amd 176128 3 - Live 0x0000000000000000\n'
+    'kvm 1146880 1 kvm_amd, Live 0x0000000000000000\n')
+## No KVM loaded at all.
+_MODULES_NO_KVM = 'ext4 1048576 1 - Live 0x0000000000000000\n'
+
+
+def test_cpu_is_amd():
+    assert M.cpu_is_amd(_CPUINFO_AMD) is True
+    assert M.cpu_is_amd(_CPUINFO_INTEL) is False
+    assert M.cpu_is_amd('') is False
+
+
+def test_parse_module_refcounts():
+    refs = M.parse_module_refcounts(_MODULES_KVM_IDLE)
+    assert refs['kvm_amd'] == 0
+    assert refs['kvm'] == 1
+    assert 'ccp' in refs
+
+
+def test_kvm_vm_running_from_vendor_refcount():
+    assert M.kvm_vm_running(M.parse_module_refcounts(_MODULES_KVM_IDLE)) is False
+    assert M.kvm_vm_running(M.parse_module_refcounts(_MODULES_KVM_BUSY)) is True
+
+
+def test_amd_v_plan_non_amd_is_noop():
+    outcome, _msg = M.amd_v_plan(False, M.parse_module_refcounts(
+        _MODULES_KVM_IDLE))
+    assert outcome == M.AMD_V_NOOP
+
+
+def test_amd_v_plan_no_kvm_is_noop():
+    outcome, _msg = M.amd_v_plan(True, M.parse_module_refcounts(
+        _MODULES_NO_KVM))
+    assert outcome == M.AMD_V_NOOP
+
+
+def test_amd_v_plan_idle_kvm_unloads():
+    outcome, _msg = M.amd_v_plan(True, M.parse_module_refcounts(
+        _MODULES_KVM_IDLE))
+    assert outcome == M.AMD_V_UNLOAD
+
+
+def test_amd_v_plan_running_vm_refuses():
+    ## Safety-critical: a live VM must never have AMD-V yanked from under it.
+    outcome, _msg = M.amd_v_plan(True, M.parse_module_refcounts(
+        _MODULES_KVM_BUSY))
+    assert outcome == M.AMD_V_REFUSE
+
+
+def test_sudo_prefix_root_vs_unprivileged():
+    assert M.sudo_prefix(0) == []
+    assert M.sudo_prefix(1000) == ['sudo', '--non-interactive']
+
+
+def test_build_modprobe_remove_argv_vendor_first():
+    refs = M.parse_module_refcounts(_MODULES_KVM_IDLE)
+    assert M.build_modprobe_remove_argv(refs, 0) == [
+        'modprobe', '--remove', '--', 'kvm_amd', 'kvm']
+    assert M.build_modprobe_remove_argv(refs, 1000) == [
+        'sudo', '--non-interactive', 'modprobe', '--remove', '--',
+        'kvm_amd', 'kvm']
+
+
+def test_cli_parser_accepts_ensure_amd_v():
+    ## Parse only -- do NOT dispatch: the real action touches host modules.
+    args = M._build_parser().parse_args(['ensure-amd-v'])
+    assert args.cmd == 'ensure-amd-v'

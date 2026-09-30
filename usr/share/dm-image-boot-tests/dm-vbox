@@ -20,20 +20,28 @@ logic for that, which runs anywhere and is unit-tested (test_dm_vbox.py):
   - Calamares step sequencing for an empty-disk install and a reinstall.
 
 The thin wrappers that actually invoke VBoxManage / tesseract need a real
-VirtualBox host and are NOT exercised by CI.
+VirtualBox host and are NOT exercised by CI. start_vm() runs the AMD-V
+prerequisite (ensure_amd_v_available) before power-on, so a loaded KVM never
+blocks VirtualBox with VERR_SVM_IN_USE.
 
-CLI (two subcommands, no VM required):
+CLI (three subcommands; only ensure-amd-v touches the host):
 
   - emit-argv --op <op> [flags]  print the VBoxManage argv for one op, without
                                  running it (mirrors dm-qemu --emit-argv);
   - capabilities                 report which optional host tools (VBoxManage,
-                                 tesseract, imagehash) are available.
+                                 tesseract, imagehash) are available;
+  - ensure-amd-v                 free AMD-V for VirtualBox by unloading and
+                                 blacklisting KVM, unless a KVM VM is running
+                                 (then refuse) or the host is non-AMD / KVM is
+                                 absent (then no-op). The VBox boot prerequisite.
 
-CLI exit codes: 0 PASS, 2 SETUP error (bad/missing CLI input).
+CLI exit codes: 0 PASS, 2 SETUP error (bad/missing CLI input, or ensure-amd-v
+refused because a KVM VM is running), 5 FAIL (ensure-amd-v could not unload KVM).
 """
 
 import argparse
 import collections
+import os
 import subprocess
 import sys
 
@@ -136,6 +144,96 @@ def build_keyboard_argv(vmname, codes, vboxmanage=VBOXMANAGE):
 def build_poweroff_argv(vmname, vboxmanage=VBOXMANAGE):
     """Hard power-off the VM."""
     return [vboxmanage, 'controlvm', vmname, 'poweroff']
+
+
+## --- AMD-V availability for VirtualBox (pure decision) -----------------------
+## On an AMD host the KVM modules (kvm_amd + kvm) own AMD-V (SVM) exclusively,
+## so VirtualBox cannot power on a VM while they are loaded -- power-on fails
+## with VERR_SVM_IN_USE. Freeing AMD-V means unloading + blacklisting KVM, but
+## NEVER while a KVM VM is still running. These pure helpers decide the action
+## from /proc state; the privileged step is deferred to ensure_amd_v_available.
+
+## Blacklist so KVM stays out across reboots (VirtualBox owns AMD-V here).
+BLACKLIST_PATH = '/etc/modprobe.d/blacklist-kvm-for-vbox.conf'
+BLACKLIST_CONTENT = (
+    '## VirtualBox is the image-test hypervisor here; KVM must not hold AMD-V.\n'
+    'blacklist kvm_amd\n'
+    'blacklist kvm\n')
+
+## Unload order is vendor-first: kvm_amd depends on kvm.
+KVM_MODULES = ('kvm_amd', 'kvm')
+## A running VM holds a nonzero refcount on the loaded vendor module.
+_VENDOR_MODULES = ('kvm_amd', 'kvm_intel')
+
+## amd_v_plan outcomes.
+AMD_V_NOOP = 'noop'
+AMD_V_REFUSE = 'refuse'
+AMD_V_UNLOAD = 'unload'
+
+
+def cpu_is_amd(cpuinfo_text):
+    """True when /proc/cpuinfo reports an AMD CPU (AMD-V/SVM territory)."""
+    for line in cpuinfo_text.splitlines():
+        if line.startswith('vendor_id') and 'AuthenticAMD' in line:
+            return True
+    return False
+
+
+def parse_module_refcounts(proc_modules_text):
+    """Map module name -> reference count from /proc/modules text.
+
+    The third field is the use count -- the same value as
+    /sys/module/NAME/refcnt. A nonzero count on a vendor module (kvm_amd) means
+    a VM is holding it.
+    """
+    refcounts = {}
+    for line in proc_modules_text.splitlines():
+        fields = line.split()
+        if len(fields) >= 3:
+            try:
+                refcounts[fields[0]] = int(fields[2])
+            except ValueError:
+                continue
+    return refcounts
+
+
+def kvm_vm_running(refcounts):
+    """True when a KVM VM is in use -- refuse to yank AMD-V from under it."""
+    vendor = [name for name in _VENDOR_MODULES if name in refcounts]
+    if vendor:
+        return any(refcounts[name] > 0 for name in vendor)
+    return refcounts.get('kvm', 0) > 0
+
+
+def amd_v_plan(is_amd, refcounts):
+    """Decide the AMD-V action from host state. Returns (outcome, message)."""
+    if not is_amd:
+        return (AMD_V_NOOP,
+                'host is not AMD; the KVM/VirtualBox AMD-V conflict does not '
+                'apply')
+    loaded = [name for name in KVM_MODULES if name in refcounts]
+    if not loaded:
+        return (AMD_V_NOOP,
+                'no KVM module loaded; AMD-V is already free for VirtualBox')
+    if kvm_vm_running(refcounts):
+        return (AMD_V_REFUSE,
+                'a KVM VM is running (nonzero module refcount); refusing to '
+                'unload KVM and take AMD-V from it')
+    return (AMD_V_UNLOAD,
+            'unloading KVM and blacklisting it so VirtualBox owns AMD-V')
+
+
+def sudo_prefix(euid):
+    """Privileged-run prefix: empty when already root, sudo otherwise."""
+    if euid == 0:
+        return []
+    return ['sudo', '--non-interactive']
+
+
+def build_modprobe_remove_argv(loaded, euid):
+    """Privileged argv to remove the loaded KVM modules (vendor first)."""
+    modules = [name for name in KVM_MODULES if name in loaded]
+    return sudo_prefix(euid) + ['modprobe', '--remove', '--', *modules]
 
 
 ## --- keyboard scancode encoding (pure) --------------------------------------
@@ -352,6 +450,68 @@ def unlock_luks(vmname, passphrase, vboxmanage=VBOXMANAGE):
     _run(build_keyboard_argv(vmname, encode_passphrase(passphrase), vboxmanage))
 
 
+## --- AMD-V availability (DEFERRED: reads /proc, unloads modules, needs root) --
+
+def _read_text(path):
+    with open(path, encoding='utf-8') as handle:
+        return handle.read()
+
+
+def _write_blacklist(euid):
+    if euid == 0:
+        with open(BLACKLIST_PATH, 'w', encoding='ascii') as handle:
+            handle.write(BLACKLIST_CONTENT)
+        return
+    subprocess.run(sudo_prefix(euid) + ['tee', '--', BLACKLIST_PATH],
+                   input=BLACKLIST_CONTENT, text=True, check=True,
+                   stdout=subprocess.DEVNULL)
+
+
+def ensure_amd_v_available():
+    """Ensure AMD-V is free for VirtualBox. Idempotent, safe, root-aware.
+
+    - non-AMD host or no KVM loaded -> no-op success;
+    - a KVM VM is running -> refuse (never yank AMD-V from a live VM);
+    - otherwise unload KVM and blacklist it so it stays out.
+
+    Returns PASS_RC (ensured / no-op), SETUP_RC (refused: VM running) or
+    FAIL_RC (unload failed).
+    """
+    is_amd = cpu_is_amd(_read_text('/proc/cpuinfo'))
+    refcounts = parse_module_refcounts(_read_text('/proc/modules'))
+    outcome, message = amd_v_plan(is_amd, refcounts)
+    if outcome == AMD_V_NOOP:
+        print('dm-vbox: %s' % (message,))
+        return PASS_RC
+    if outcome == AMD_V_REFUSE:
+        print('dm-vbox: %s' % (message,), file=sys.stderr)
+        return SETUP_RC
+    euid = os.geteuid()
+    try:
+        _run(build_modprobe_remove_argv(refcounts, euid))
+    except subprocess.CalledProcessError:
+        print('dm-vbox: could not unload KVM; AMD-V not freed for VirtualBox',
+              file=sys.stderr)
+        return FAIL_RC
+    _write_blacklist(euid)
+    print('dm-vbox: %s' % (message,))
+    return PASS_RC
+
+
+def start_vm(vmname, vboxmanage=VBOXMANAGE):
+    """Real-host: free AMD-V for VirtualBox, then boot the VM headless.
+
+    The AMD-V prerequisite runs first so a loaded KVM never blocks power-on
+    (VERR_SVM_IN_USE); a refused or failed prerequisite aborts the boot.
+    """
+    prereq_rc = ensure_amd_v_available()
+    if prereq_rc != PASS_RC:
+        raise RuntimeError(
+            'AMD-V prerequisite for VirtualBox not satisfied (rc=%d)'
+            % (prereq_rc,))
+    _run(build_startvm_argv(vmname, vboxmanage))
+
+
 ## --- CLI --------------------------------------------------------------------
 
 _EMIT_OPS = (
@@ -454,6 +614,11 @@ def _build_parser():
         'capabilities',
         help='report which optional host tools (VBoxManage, tesseract, '
              'imagehash) are available')
+
+    sub.add_parser(
+        'ensure-amd-v',
+        help='free AMD-V for VirtualBox: unload + blacklist KVM unless a KVM '
+             'VM is running (the VBox boot prerequisite)')
     return parser
 
 
@@ -484,6 +649,8 @@ def main(argv=None):
         return PASS_RC
     if args.cmd == 'capabilities':
         return _cmd_capabilities()
+    if args.cmd == 'ensure-amd-v':
+        return ensure_amd_v_available()
     return SETUP_RC
 
 
