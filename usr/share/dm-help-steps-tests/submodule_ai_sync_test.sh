@@ -413,7 +413,10 @@ require_result "${stop_out}" "no 'org-ai-assisted' remote" "STOP surfaces the mi
 ## git-push, NOT the false "never published". FAILS on the pre-fix code (which had no
 ## mirror probe and emitted "never published" for this submodule).
 require_result "${stop_out}" "published on mirror(s) gitlab-adrelanos" "STOP names the mirror where ai IS published"
-require_result "${stop_out}" "git-push --repo mirrorai" "STOP points at git-push to publish ai to the CI remote"
+## Remediation must check out ai FIRST -- git-push publishes the CURRENT branch, and
+## the STOP can fire with HEAD on master/detached (is_ai_workflow only needs a local
+## ai branch to exist), so a bare 'git-push' could push the wrong branch.
+require_result "${stop_out}" "checkout ai && git-push --repo mirrorai" "STOP tells the human to check out ai before git-push"
 
 ## =============================================================================
 ## Superproject C: mutation-failure and containment STOPs must not crash the loop
