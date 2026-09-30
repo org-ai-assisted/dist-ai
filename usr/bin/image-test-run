@@ -1,0 +1,168 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Run ONE dm-vbox image test as an unprivileged test user and PUBLISH its
+## artifacts (screenshot + a JSON result) into the read-only results plane
+## (nginx over an onion). The systemd unit image-test@.service invokes this with
+## a per-instance config; scheduling (timers) is deliberately out of scope here.
+##
+## Config file (sourced; a plain key=value + one array): defines
+##   NAME       -- results-plane subtree + instance label (safe path segment).
+##   TEST_USER  -- the Linux user the VM runs as (VBox state is per-$HOME, so the
+##                 user IS the isolation boundary; never root).
+##   MODE       -- dm-vbox subcommand: run (boot an .ova/existing VM) or install
+##                 (build an EFI VM booting an ISO vs an empty disk).
+##   DM_ARGS    -- bash array of the remaining dm-vbox args (--vm/--iso/--ova/
+##                 --expect/--firmware/...); --shot is appended by this runner.
+##
+## The runner itself must be root (the unit runs as root): it drops to TEST_USER
+## for the VM via sudo, then republishes the artifacts as the nginx owner. The
+## test user needs NO sudo -- KVM is blacklisted on this host so dm-vbox's AMD-V
+## prerequisite is already satisfied and never shells out to modprobe.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+## Overridable so the suite can point them at a scratch tree; production values
+## match the results-plane provisioning (results_plane.sh).
+RESULTS_ROOT="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
+RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
+DM_VBOX="${DM_VBOX:-dm-vbox}"
+
+die() {
+   local code="$1"
+   shift
+   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   exit "${code}"
+}
+
+## Reject anything that is not a single safe path segment: NAME becomes a
+## directory under the web root, so '/', '..', empty or leading-dash are refused
+## before any mkdir.
+validate_name() {
+   local value="$1"
+   case "${value}" in
+      ''|*/*|.|..|-*)
+         die 2 "unsafe NAME '${value}' -- must be a single safe path segment"
+         ;;
+   esac
+}
+
+## Emit the result JSON. Values are our own controlled tokens (NAME/USER/MODE)
+## plus rc/pass/expect; expect is rendered as a JSON array. printf keeps it a
+## zero-dependency write (no jq).
+write_result_json() {
+   local dest="$1" rc="$2" pass="$3" ts="$4"
+   shift 4
+   local expect_json="" item first='true'
+   for item in "$@"; do
+      ## escape backslash and double-quote for JSON string safety.
+      item="${item//\\/\\\\}"
+      item="${item//\"/\\\"}"
+      if [ "${first}" = 'true' ]; then
+         expect_json="\"${item}\""
+         first='false'
+      else
+         expect_json="${expect_json}, \"${item}\""
+      fi
+   done
+   {
+      printf '{\n'
+      printf '  "name": "%s",\n' "${NAME}"
+      printf '  "test_user": "%s",\n' "${TEST_USER}"
+      printf '  "mode": "%s",\n' "${MODE}"
+      printf '  "timestamp": "%s",\n' "${ts}"
+      printf '  "rc": %s,\n' "${rc}"
+      printf '  "pass": %s,\n' "${pass}"
+      printf '  "expect": [%s]\n' "${expect_json}"
+      printf '}\n'
+   } > "${dest}"
+}
+
+main() {
+   local config="${1:-}"
+   [ -n "${config}" ] || die 2 "usage: ${me} CONFIG_FILE"
+   [ -r "${config}" ] || die 2 "config not readable: '${config}'"
+
+   ## Config-provided; declared here so nounset gives a clear error if omitted.
+   NAME=""
+   TEST_USER=""
+   MODE=""
+   local -a DM_ARGS=()
+   # shellcheck disable=SC1090  # config path is runtime-provided, not constant
+   source "${config}"
+
+   validate_name "${NAME}"
+   [ -n "${TEST_USER}" ] || die 2 "config '${config}': TEST_USER is required"
+   [ "${TEST_USER}" != 'root' ] || die 2 "TEST_USER must not be root (VBox state per-user is the isolation boundary)"
+   id "${TEST_USER}" >/dev/null 2>&1 || die 2 "TEST_USER '${TEST_USER}' does not exist"
+   case "${MODE}" in
+      run|install)
+         true
+         ;;
+      *)
+         die 2 "config '${config}': MODE must be run or install, got '${MODE}'"
+         ;;
+   esac
+
+   ## Collect the --expect values (for the JSON summary) from DM_ARGS.
+   local -a expect=()
+   local i
+   for (( i = 0; i < ${#DM_ARGS[@]}; i++ )); do
+      if [ "${DM_ARGS[i]}" = '--expect' ] && [ $(( i + 1 )) -lt ${#DM_ARGS[@]} ]; then
+         expect+=( "${DM_ARGS[i + 1]}" )
+      fi
+   done
+
+   local ts outdir shot_user shot_final rc pass
+   ts="$(date -u +%Y%m%dT%H%M%SZ)"
+   outdir="${RESULTS_ROOT}/${NAME}/${ts}"
+   mkdir -p -- "${outdir}"
+
+   ## dm-vbox runs as TEST_USER and writes the screenshot to a path the test user
+   ## owns (the web root is not user-writable); the runner (root) then republishes
+   ## it -- root reads the test user's file directly, no sudo needed for that.
+   shot_user="$(sudo -u "${TEST_USER}" -- mktemp --tmpdir "image-test-${NAME}.XXXXXX.png")"
+   shot_final="${outdir}/screenshot.png"
+
+   ## The VM step may FAIL (that is the signal we publish) -- capture rc, never
+   ## let it abort the publish.
+   rc=0
+   sudo -u "${TEST_USER}" -- "${DM_VBOX}" "${MODE}" "${DM_ARGS[@]}" \
+      --shot "${shot_user}" || rc=$?
+   if [ "${rc}" -eq 0 ]; then
+      pass='true'
+   else
+      pass='false'
+   fi
+
+   ## Republish artifacts (as root, later chowned to the nginx owner); a missing
+   ## screenshot (VM never powered on) is not fatal to the report.
+   if [ -f "${shot_user}" ]; then
+      cp -- "${shot_user}" "${shot_final}"
+      safe-rm --force -- "${shot_user}"
+   fi
+   write_result_json "${outdir}/result.json" "${rc}" "${pass}" "${ts}" "${expect[@]}"
+
+   ## Point <NAME>/latest at this run and hand the whole subtree to nginx.
+   ln -sfn -- "${ts}" "${RESULTS_ROOT}/${NAME}/latest"
+   chown -R -- "${RESULTS_OWNER}:${RESULTS_OWNER}" "${RESULTS_ROOT}/${NAME}"
+
+   printf '%s: %s -- %s (rc=%s) -> %s\n' \
+      "${me}" "${NAME}" "$( [ "${pass}" = 'true' ] && printf PASS || printf FAIL )" \
+      "${rc}" "${outdir}"
+   return "${rc}"
+}
+
+main "$@"

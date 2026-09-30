@@ -1,0 +1,20 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Example image-test-run config. Install as /etc/image-test/<NAME>.conf and fire
+## with:  systemctl start image-test@<NAME>
+## Sourced as bash: NAME/TEST_USER/MODE are scalars, DM_ARGS is an array of the
+## dm-vbox args (--shot is appended by the runner).
+
+NAME="kicksecure-iso-efi"
+TEST_USER="persist-stable-kicksecure"
+MODE="install"
+DM_ARGS=(
+   --vm "Kicksecure-ISO-EFI"
+   --iso "/var/lib/image-tests/iso/Kicksecure-LXQt-18.2.1.9.Intel_AMD64.iso"
+   --firmware efi-secureboot
+   --expect Kicksecure
+   --timeout 300
+)
