@@ -73,6 +73,67 @@ class TestRedactCredentials(unittest.TestCase):
         self.assertIn('DisableNetwork 0', redacted)
         self.assertNotIn('[REDACTED]', redacted)
 
+    def test_unusual_whitespace_separators_redacted(self):
+        ## Tor's config tokenizer treats vertical tab (0x0b) and form feed
+        ## (0x0c) as whitespace, so a credential written with one of them is a
+        ## valid directive whose value must still be redacted -- '[ \t]+' alone
+        ## would let it slip through.
+        for sep in ('\x0b', '\x0c'):
+            redacted = tor_status.redact_credentials(
+                f'HTTPSProxyAuthenticator{sep}alice:{secret}\n')
+            self.assertNotIn(secret, redacted)
+            self.assertIn('HTTPSProxyAuthenticator [REDACTED]', redacted)
+
+    def test_append_line_prefix_redacted(self):
+        ## Tor accepts a leading '+' (append to a list option); the credential
+        ## after it must still be redacted, and the '+' preserved.
+        redacted = tor_status.redact_credentials(
+            f'+Socks5ProxyPassword {secret}\n')
+        self.assertNotIn(secret, redacted)
+        self.assertIn('+Socks5ProxyPassword [REDACTED]', redacted)
+
+    def test_additional_credential_options_redacted(self):
+        ## The legacy HTTP proxy authenticator and Tor's internal hashed control
+        ## session password are credential directives too.
+        for option in ('HTTPProxyAuthenticator', '__HashedControlSessionPassword'):
+            redacted = tor_status.redact_credentials(f'{option} 16:{secret}\n')
+            self.assertNotIn(secret, redacted)
+            self.assertIn(f'{option} [REDACTED]', redacted)
+
+    def test_commented_credential_redacted(self):
+        ## A commented-out credential still holds the secret in the file, so it
+        ## must not survive into troubleshooting output either.
+        for line in (f'#Socks5ProxyPassword {secret}\n',
+                     f'# Socks5ProxyPassword {secret}\n'):
+            redacted = tor_status.redact_credentials(line)
+            self.assertNotIn(secret, redacted)
+            self.assertIn('Socks5ProxyPassword [REDACTED]', redacted)
+
+    def test_write_to_temp_then_move_redacts_debug_output(self):
+        ## write_to_temp_then_move() prints the staged content for debugging;
+        ## that print is a second troubleshooting-output path and must redact
+        ## too (only the privileged plumbing is stubbed, so the REAL function
+        ## runs).
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_torrc = tor_status.torrc_file_path
+            saved_comm = tor_status.acw_comm_file_path
+            saved_check_call = tor_status.subprocess.check_call
+            tor_status.torrc_file_path = os.path.join(tmp, '40_tcp.conf')
+            tor_status.acw_comm_file_path = os.path.join(tmp, 'tor.conf')
+            tor_status.subprocess.check_call = lambda *a, **k: 0
+            try:
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    tor_status.write_to_temp_then_move(
+                        f'DisableNetwork 0\nSocks5ProxyPassword {secret}\n')
+                out = captured.getvalue()
+            finally:
+                tor_status.torrc_file_path = saved_torrc
+                tor_status.acw_comm_file_path = saved_comm
+                tor_status.subprocess.check_call = saved_check_call
+        self.assertNotIn(secret, out)
+        self.assertIn('Socks5ProxyPassword [REDACTED]', out)
+
     def test_cat_output_redacted(self):
         ## Integration: the real cat() is one of the two functions that print
         ## torrc content, so it is exercised rather than only the helper.

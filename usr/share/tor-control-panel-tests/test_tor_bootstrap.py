@@ -104,6 +104,40 @@ class ControllerLeakTest(unittest.TestCase):
             closed['count'], 1,
             'controller left unclosed on auth failure (fd/thread leak)')
 
+    def test_controller_closed_before_cookie_failure_signal(self):
+        ## The UnreadableCookieFile branch emits 'cookie_authentication_failed',
+        ## which the GUI handles by terminate()-ing this thread during the sleep
+        ## that follows -- so close() must run BEFORE that emit, or the fd and
+        ## stem reader thread leak when the thread is aborted mid-sleep.
+        parent = QObject()
+        thread = tor_bootstrap.TorBootstrap(parent)
+        events = []
+        thread.signal.connect(lambda phase, _pct: events.append(('emit', phase)))
+
+        class _FakeController:
+            def authenticate(self, *args, **kwargs):
+                raise stem.connection.UnreadableCookieFile(
+                    'unreadable cookie', 'cookie-path', False)
+
+            def close(self):
+                events.append('close')
+
+        with tempfile.NamedTemporaryFile() as socket_file:
+            thread.control_socket_path = socket_file.name
+            thread.control_cookie_path = socket_file.name
+            with mock.patch.object(stem.control.Controller, 'from_socket_file',
+                                   return_value=_FakeController()), \
+                    mock.patch.object(tor_bootstrap.time, 'sleep'):
+                result = thread.connect_to_control_port()
+
+        self.assertIsNone(result)
+        self.assertIn('close', events)
+        self.assertLess(
+            events.index('close'),
+            events.index(('emit', 'cookie_authentication_failed')),
+            'controller must close before the cookie-failure signal (the GUI '
+            'terminates the thread during the following sleep)')
+
 
 if __name__ == '__main__':
     unittest.main()
