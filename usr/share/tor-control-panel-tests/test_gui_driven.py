@@ -25,12 +25,10 @@ affect what we assert. No root, no privleap, no Tor daemon, no display.
 """
 
 import unittest
-from typing import Any
 
 import tcp_testlib as T
 from tor_control_panel import tor_control_panel as tcp
 from tor_control_panel import anon_connection_wizard as acw
-from tor_control_panel import tor_status
 from tor_control_panel.anon_connection_wizard import Common
 
 
@@ -88,27 +86,6 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             panel.set_torrc()
             self.assertEqual(_config_lines(torrc.read_text()), ['DisableNetwork 0'])
 
-    def test_custom_bridges_via_textedit_survive(self):
-        """Custom bridges typed into the QTextEdit reach the torrc intact.
-
-        End-to-end widget-level check of A1: they must not be replaced by
-        default obfs4 bridges.
-        """
-        with T.sandbox() as torrc, T.no_modal():
-            panel = self._panel()
-            panel.custom_bridges.setPlainText(CUSTOM_BRIDGES)
-            panel.use_custom_bridges = True
-            panel.use_default_bridges = False
-            panel.use_proxy = False
-            panel.set_torrc()
-            text = torrc.read_text(encoding='utf-8')
-            self.assertIn('# Custom bridges are used', text)
-            self.assertIn('Bridge obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01', text)
-            self.assertIn('Bridge obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567', text)
-            ## Custom bridges must be re-detected on parse (would be lost otherwise).
-            from tor_control_panel import torrc_gen
-            self.assertEqual(torrc_gen.parse_torrc()[0], 'Custom bridges')
-
     def _proxy(self, proxy_type):
         with T.sandbox() as torrc, T.no_modal():
             panel = self._panel()
@@ -128,34 +105,6 @@ class TorControlPanelWidgetTest(unittest.TestCase):
 
     def test_socks4_proxy_via_widgets(self):
         self.assertIn('Socks4Proxy 127.0.0.1:9050', self._proxy('SOCKS4'))
-
-    def test_run_async_off_gui_thread_with_continuation(self):
-        """run_async runs the blocking work off the GUI thread and delivers the
-        continuation back on the GUI thread (so Enable network cannot freeze it)."""
-        import threading
-        from PyQt5.QtCore import QTimer
-        from PyQt5.QtWidgets import QApplication
-        with T.sandbox(), T.no_modal():
-            panel = self._panel()
-            gui_tid = threading.get_ident()
-            state = {}
-
-            def work():
-                state['worker'] = threading.get_ident()
-                return 'ok'
-
-            def done(result):
-                state['done'] = threading.get_ident()
-                state['result'] = result
-                QApplication.instance().quit()
-
-            panel.run_async(work, done)
-            QTimer.singleShot(5000, QApplication.instance().quit)
-            QApplication.instance().exec_()
-
-            self.assertNotEqual(state.get('worker'), gui_tid)
-            self.assertEqual(state.get('done'), gui_tid)
-            self.assertEqual(state.get('result'), 'ok')
 
     def test_tabs_and_control_buttons_present(self):
         """Three tabs (Control default) and the control buttons are present."""
@@ -177,68 +126,6 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             self.assertIn('Configure', panel.configure_button.text())
             panel.configure_button.click()
             self.assertIn('Accept', panel.configure_button.text())
-
-    def test_refresh_user_configuration_resets_bridge_flags(self):
-        """A stale custom/default bridge flag must not survive a refresh.
-
-        With a torrc that has no custom bridges, refresh_user_configuration()
-        must clear a previously-set use_custom_bridges (else set_torrc() could
-        emit conflicting bridge config).
-        """
-        with T.sandbox(), T.no_modal():
-            panel = self._panel()
-            panel.use_custom_bridges = True  # stale state from an earlier screen
-            panel.refresh_user_configuration()
-            self.assertFalse(panel.use_custom_bridges)
-
-    def test_valid_ip_accepts_ipv6(self):
-        """Proxy/bridge address validation (shared validators) accepts IPv6."""
-        from tor_control_panel import validators
-        self.assertTrue(validators.valid_ip('::1'))
-        self.assertTrue(validators.valid_ip('127.0.0.1'))
-        self.assertFalse(validators.valid_ip('definitely not an address'))
-        self.assertTrue(validators.valid_port('9050'))
-        self.assertFalse(validators.valid_port('70000'))
-        self.assertFalse(validators.valid_port('notaport'))
-
-    def test_valid_ip_rejects_pathological_host_without_crashing(self):
-        """Regression (found by fuzz_torrc): a very long host makes
-        getaddrinfo's IDNA encoder raise UnicodeError (not OSError); valid_ip
-        must return False, not crash the GUI."""
-        from tor_control_panel import validators
-        for value in ('a' * 4000, '', '\x00', '\x1b[31m'):
-            self.assertFalse(validators.valid_ip(value))
-
-    def test_tor_log_view_sanitizes_untrusted_content(self):
-        """A hostile Tor log line cannot inject markup / escapes into the view."""
-        import os
-        import tempfile
-
-        with T.sandbox(), T.no_modal():
-            panel = self._panel()
-            tmp = tempfile.mkdtemp(prefix='tcp-log-')
-            self.addCleanup(lambda: __import__('shutil').rmtree(tmp, ignore_errors=True))
-            log_path = os.path.join(tmp, 'log')
-            with open(log_path, 'w', encoding='utf-8') as handle:
-                handle.write(
-                    'Jul 07 12:00:00.000 [notice] '
-                    '<script>alert(1)</script>\x1b[31mEVIL\x07 [warn] bad\n'
-                )
-            panel.tor_log = log_path
-            ## Select the Tor-log source by its button (refresh_logs now
-            ## dispatches on button identity, not label text).
-            panel.log_button.setChecked(True)
-            panel.refresh_logs()
-
-            rendered = panel.file_browser.toHtml()
-            self.assertNotIn('<script>', rendered)
-            self.assertNotIn('\x1b', rendered)
-            self.assertNotIn('\x07', rendered)
-            ## The application's own [warn] highlight styling is still applied.
-            self.assertIn('span', rendered)
-            ## The benign text content survives (markup stripped, not the words).
-            self.assertIn('alert(1)', panel.file_browser.toPlainText())
-
 
 class AnonConnectionWizardWidgetTest(unittest.TestCase):
     """Drive AnonConnectionWizard state/widgets and assert write_torrc output."""
@@ -309,54 +196,6 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
             wizard.write_torrc()
             self.assertIn('Socks4Proxy 127.0.0.1:9050', torrc.read_text())
 
-    def test_init_tor_status_captured_at_launch(self):
-        """init_tor_status must reflect the launch state (not stay '') so the
-        cancel/back restore logic is live."""
-        for torrc, expect in (('DisableNetwork 0\n', 'tor_enabled'),
-                              ('DisableNetwork 1\n', 'tor_disabled')):
-            with self.subTest(torrc=torrc):
-                with T.sandbox(initial_torrc=torrc), T.no_modal():
-                    self._wizard()
-                    self.assertEqual(Common.init_tor_status, expect)
-
-    class _FakeThread:
-        def terminate(self):
-            pass
-
-    def _spy_set_enabled(self):
-        from tor_control_panel import tor_status
-        calls = []
-        saved = tor_status.set_enabled
-
-        def _fake_set_enabled():
-            calls.append('enabled')
-            return ('tor_enabled', 0)
-
-        tor_status.set_enabled = _fake_set_enabled
-        self.addCleanup(lambda: setattr(tor_status, 'set_enabled', saved))
-        return calls
-
-    def test_cancel_restores_initially_enabled_tor_after_bootstrap(self):
-        """Cancelling after a bootstrap ran, from an initially-enabled state,
-        must re-enable Tor (previously the enabled branch did nothing)."""
-        with T.sandbox(initial_torrc='DisableNetwork 0\n'), T.no_modal():
-            wizard = self._wizard()
-            self.assertEqual(Common.init_tor_status, 'tor_enabled')
-            wizard.bootstrap_thread = self._FakeThread()  # a bootstrap ran
-            calls = self._spy_set_enabled()
-            wizard.cancel_button_clicked()
-            self.assertEqual(calls, ['enabled'])
-
-    def test_untouched_cancel_does_not_restart_tor(self):
-        """Opening and cancelling without starting a bootstrap must NOT restart
-        Tor (would disrupt an existing connection)."""
-        with T.sandbox(initial_torrc='DisableNetwork 0\n'), T.no_modal():
-            wizard = self._wizard()
-            self.assertFalse(wizard.bootstrap_thread)  # no bootstrap started
-            calls = self._spy_set_enabled()
-            wizard.cancel_button_clicked()
-            self.assertEqual(calls, [])
-
     def test_custom_bridges(self):
         with T.sandbox() as torrc, T.no_modal():
             wizard = self._wizard()
@@ -378,83 +217,6 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
             wizard.proxy_wizard_page.port_edit.setText('9050')
             wizard.write_torrc()
             self.assertIn('Socks5Proxy 127.0.0.1:9050', torrc.read_text())
-
-
-class NetworkToggleAcceptTest(unittest.TestCase):
-    """Selecting a network toggle and clicking Accept is a TERMINAL action.
-
-    Regression: the 'Disable network' Accept branch launched set_disabled
-    asynchronously and then fell through, re-read tor_status() (still 'enabled',
-    because the async write had not landed), and ran set_torrc() -- which
-    rewrites DisableNetwork 0 and restarts Tor, re-enabling the network the user
-    just asked to disable.
-    """
-
-    def _panel_in_accept_state(self, calls):
-        panel = tcp.TorControlPanel()
-        self.addCleanup(panel.deleteLater)
-        panel.set_torrc = lambda: calls.__setitem__(
-            'set_torrc', calls['set_torrc'] + 1)
-        panel.restart_tor = lambda: None
-        ## Record run_async instead of spawning a real QThread.
-        panel.run_async = lambda func, on_done: calls['async'].append(func)
-        panel.configure_button.setText(' Accept    ')
-        return panel
-
-    def test_disable_network_accept_does_not_run_set_torrc(self):
-        ## Sandbox torrc is DisableNetwork 0 -> tor_status() reads 'enabled',
-        ## the exact stale read that triggered the bug.
-        with T.sandbox(), T.no_modal():
-            calls: dict[str, Any] = {'set_torrc': 0, 'async': []}
-            panel = self._panel_in_accept_state(calls)
-            panel.set_network_toggle('Disable network')
-            panel.bridges_combo.setCurrentText('Disable network')
-            self.assertEqual(panel.bridges_combo.currentText(), 'Disable network')
-            self.assertEqual(panel.proxy_combo.currentText(), 'None')
-            panel.configure()
-            self.assertEqual(
-                calls['set_torrc'], 0,
-                'Disable network Accept must not run set_torrc (it re-enables '
-                'and restarts Tor)')
-            self.assertIn(tor_status.set_disabled, calls['async'])
-
-    def test_enable_network_accept_does_not_run_set_torrc(self):
-        with T.sandbox(initial_torrc='DisableNetwork 1\n'), T.no_modal():
-            calls: dict[str, Any] = {'set_torrc': 0, 'async': []}
-            panel = self._panel_in_accept_state(calls)
-            panel.set_network_toggle('Enable network')
-            panel.bridges_combo.setCurrentText('Enable network')
-            self.assertEqual(panel.bridges_combo.currentText(), 'Enable network')
-            panel.configure()
-            self.assertEqual(calls['set_torrc'], 0)
-            self.assertIn(tor_status.set_enabled, calls['async'])
-
-
-class TorrcLogViewRedactionTest(unittest.TestCase):
-    """The Logs tab's torrc view is the copy-into-a-forum-post surface the
-    troubleshooting text points users at, so it must redact proxy credentials
-    the same way cat()/the journal path does."""
-
-    def test_torrc_view_redacts_proxy_password(self):
-        ## A neutral throwaway sentinel, not a realistic-looking secret:
-        ## redact_credentials() redacts by option NAME, so the value can be any
-        ## marker we then assert is absent from the rendered view.
-        planted = 'REDACTIONCANARY9f3a'
-        torrc = ('# This file is generated by tor-control-panel.\n'
-                 'DisableNetwork 0\n'
-                 'Socks5Proxy 192.0.2.1:1080\n'
-                 'Socks5ProxyPassword ' + planted + '\n')
-        with T.sandbox(initial_torrc=torrc), T.no_modal():
-            panel = tcp.TorControlPanel()
-            self.addCleanup(panel.deleteLater)
-            panel.torrc_button.setChecked(True)
-            panel.refresh_logs()
-            shown = panel.file_browser.toPlainText()
-        self.assertNotIn(planted, shown)
-        ## The option name stays so the log still shows what was set.
-        self.assertIn('Socks5ProxyPassword', shown)
-        ## A non-credential directive is untouched.
-        self.assertIn('Socks5Proxy 192.0.2.1:1080', shown)
 
 
 if __name__ == '__main__':

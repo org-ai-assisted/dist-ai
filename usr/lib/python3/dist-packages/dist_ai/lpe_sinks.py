@@ -41,12 +41,13 @@ from dist_ai import bash_ast
 ## class, not this one.
 _HOME_DIRS = ("/home",)
 ## These are DETECTION PATTERNS the audit scans for, not temp files this tool
-## creates -- bandit B108 is a false positive here.
-_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # nosec B108
+## creates -- bandit B108 is a false positive here. (Bare '# nosec' so an older
+## bandit that does not parse a per-test-id suffix still honors it.)
+_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # nosec
 ## A path boundary. '-' and '+' admit a parameter-expansion default value
 ## ('"${VAR:-/home/x}"', '"${VAR:+/home/x}"'), a realistic idiom.
-_BOUNDARY = r"""(?:^|[\s"'`(=:><|&+-])"""
-_PATH_END = r"""(?:/|["'\s`)=:><|&]|$)"""
+_BOUNDARY = r"""(?:^|[\s"'`({=:><|&+-])"""
+_PATH_END = r"""(?:/|["'`)}=:><|&\s]|$)"""
 
 
 def _dir_regex(dirs):
@@ -87,10 +88,17 @@ WRAPPER_VALUE_SHORT = {
     "nice": frozenset("n"), "ionice": frozenset("cnp"),
     "stdbuf": frozenset("ioe"), "exec": frozenset("a"), "env": frozenset("uS"),
 }
+## Only MANDATORY-argument long options belong here. An OPTIONAL-argument option
+## ('env --block-signal[=SIG]') takes its value only via '=', so in bare space
+## form the next word is the wrapped COMMAND -- consuming it would swallow the
+## sink. So block-signal is deliberately absent.
 WRAPPER_VALUE_LONG = {
-    "env": frozenset(("unset", "block-signal")),
+    "env": frozenset(("unset",)),
     "nice": frozenset(("adjustment",)),
 }
+## Wrappers whose presence of a given short option means 'do not execute a
+## command' (a query/lookup mode), so nothing after is a sink.
+WRAPPER_NOEXEC_SHORT = {"ionice": frozenset("p")}
 
 ## Recursive-write sinks.
 RECURSIVE_WRITE_CMDS = frozenset((
@@ -119,11 +127,14 @@ SINK_VALUE_SHORT = {
     "install": frozenset("mog"), "cp": frozenset("tS"), "mv": frozenset("St"),
     "rsync": frozenset("e"), "tar": frozenset("fCT"),
 }
+## MANDATORY-argument options only. '--backup[=CONTROL]' is OPTIONAL-argument
+## (space form does not consume the next word), so it is NOT here -- listing it
+## would eat the following operand.
 SINK_VALUE_LONG = {
     "install": frozenset(("mode", "owner", "group", "target-directory",
-                          "suffix", "backup")),
-    "cp": frozenset(("target-directory", "suffix", "backup", "reference")),
-    "mv": frozenset(("target-directory", "suffix", "backup")),
+                          "suffix")),
+    "cp": frozenset(("target-directory", "suffix", "reference")),
+    "mv": frozenset(("target-directory", "suffix")),
     "chown": frozenset(("from", "reference")),
     "chgrp": frozenset(("reference",)), "chmod": frozenset(("reference",)),
     "rsync": frozenset(("rsh", "chown", "chmod", "suffix", "backup-dir")),
@@ -139,6 +150,7 @@ PATH_VALUE_LONG = {
     "cp": frozenset(("target-directory",)),
     "mv": frozenset(("target-directory",)),
     "tar": frozenset(("file", "directory")),
+    "rsync": frozenset(("backup-dir",)),
 }
 
 SOURCE_CMDS = frozenset((".", "source"))
@@ -275,6 +287,7 @@ def _peel_wrappers(call, source):
             break
         vshort = WRAPPER_VALUE_SHORT.get(base, frozenset())
         vlong = WRAPPER_VALUE_LONG.get(base, frozenset())
+        noexec_short = WRAPPER_NOEXEC_SHORT.get(base, frozenset())
         index += 1
         ## Skip the wrapper's own options (and their space-separated VALUES, else
         ## the value is mistaken for the wrapped command), plus env VAR=val.
@@ -287,15 +300,27 @@ def _peel_wrappers(call, source):
                 index += 1
                 break
             if text.startswith("-") and text != "-":
-                ## 'command -v/-V NAME' only DESCRIBES a command, never runs it.
+                ## A query/lookup option runs no command ('command -v/-V NAME',
+                ## 'ionice -p PID'): nothing after it is a sink.
                 if base == "command" and set(text[1:]) & set("vV"):
+                    return None, None
+                if not text.startswith("--") and set(text[1:]) & noexec_short:
                     return None, None
                 if text.startswith("--"):
                     lname = text[2:].split("=", 1)[0]
                     if "=" not in text and bash_ast.resolve_long(lname, vlong):
                         index += 1
-                elif text[1:] and text[-1] in vshort:
-                    index += 1
+                else:
+                    ## Mirror getopt cluster semantics: a value-taking letter
+                    ## consumes the REST of the cluster as its value; only when
+                    ## it is the LAST char does it take the next WORD. So
+                    ## '-uPASS' (u not last) does NOT eat the following command.
+                    cluster = text[1:]
+                    for position, letter in enumerate(cluster):
+                        if letter in vshort:
+                            if position == len(cluster) - 1:
+                                index += 1
+                            break
                 index += 1
                 continue
             break
@@ -307,15 +332,17 @@ def _peel_wrappers(call, source):
 
 
 def _sink_operands(call, source, cmd):
-    """(opt_texts, path_operand_words) for CALL. A value-taking option's value
-    is skipped UNLESS the option supplies a path write-target (cp -t DIR,
-    tar -f FILE), in which case the value is a path operand."""
+    """(opt_texts, positional_words, opt_path_words) for CALL. opt_path_words are
+    the values of path-write-target options (cp -t DIR, tar -f FILE, rsync
+    --backup-dir DIR), whether inline or a separate word; positional_words are
+    the bare operands. Non-path option values are skipped."""
     value_short = SINK_VALUE_SHORT.get(cmd, frozenset())
     value_long = SINK_VALUE_LONG.get(cmd, frozenset())
     path_short = PATH_VALUE_SHORT.get(cmd, frozenset())
     path_long = PATH_VALUE_LONG.get(cmd, frozenset())
     opts = []
-    operands = []
+    positionals = []
+    opt_paths = []
     last_opt = None
     for kind, word, text in bash_ast.command_tokens(
             call, source, value_short=value_short, value_long=value_long):
@@ -323,15 +350,19 @@ def _sink_operands(call, source, cmd):
             opts.append(text)
             last_opt = text
             ## An inline path value ('--target-directory=DIR', '-tDIR') is
-            ## carried in the option WORD itself; its raw text holds the path,
-            ## so taint_kind on the word sees it.
+            ## carried in the option WORD itself; its raw text holds the path.
             if _opt_has_inline_path(text, path_short, path_long):
-                operands.append(word)
+                opt_paths.append(word)
         elif kind == "operand":
-            operands.append(word)
+            positionals.append(word)
         elif kind == "value" and _opt_is_path(last_opt, path_short, path_long):
-            operands.append(word)
-    return opts, operands
+            opt_paths.append(word)
+    return opts, positionals, opt_paths
+
+
+## Copy-style sinks whose WRITE target is the LAST positional (plus any
+## path-option value); earlier positionals are READ sources, not an LPE.
+COPY_DEST_LAST = frozenset(("cp", "mv", "install", "rsync"))
 
 
 def _opt_is_path(opt_text, path_short, path_long):
@@ -389,6 +420,10 @@ def _finding(rule, sink, line, operand, kind, factors, why):
 def _is_recursive(cmd, opts):
     if _has_short(opts, RECURSIVE_SHORT) or _has_long(opts, RECURSIVE_LONG):
         return True
+    ## tar processes a whole archive TREE (create/extract recurse into
+    ## directories by default), so a tar write into a user path is recursive.
+    if cmd == "tar":
+        return True
     return cmd in ARCHIVE_SHORT_CMDS and _has_short(opts, frozenset("a"))
 
 
@@ -408,12 +443,23 @@ def _symlink_follow(cmd, recursive, opts):
 
 
 def _recursive_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
-    opts, operands = _sink_operands(call, source, cmd)
+    opts, positionals, opt_paths = _sink_operands(call, source, cmd)
     recursive = _is_recursive(cmd, opts)
     follows, explicit = _symlink_follow(cmd, recursive, opts)
     ref = _has_long(opts, REF_LONG)
-    path_operands = operands[1:] if (cmd in NONPATH_FIRST_OPERAND and not ref) \
-        else operands
+    if cmd in NONPATH_FIRST_OPERAND and not ref:
+        ## operand[0] is the mode/owner spec, not a path.
+        positionals = positionals[1:]
+    if cmd == "tar":
+        ## tar's positionals are archive MEMBERS; the write target is -f/-C.
+        path_operands = list(opt_paths)
+    elif cmd in COPY_DEST_LAST:
+        ## Destination = a path-option value, else the LAST positional; earlier
+        ## positionals are read SOURCES (a tainted source is not a write-LPE).
+        path_operands = list(opt_paths) + (positionals[-1:] if positionals else [])
+    else:
+        ## chown/chgrp/chmod/rm: every path operand is a modify target.
+        path_operands = positionals + opt_paths
     ## Check EVERY path operand, not just the first: 'cp -r /tmp/src /home/dst'
     ## must report the home destination even though a temp SOURCE comes first.
     for word in path_operands:
@@ -451,6 +497,11 @@ def _find_walk_finding(call, source, tainted):
     index = 1
     while index < len(words):
         text = _word_raw(words[index], source)
+        if text == "-D":
+            ## '-D debugopts' takes a SEPARATE value; skip it too, else the
+            ## value reads as a walk root.
+            index += 2
+            continue
         if text in FIND_GLOBAL_OPTS or text.startswith("-O") or text.startswith("-D"):
             index += 1
             continue
@@ -492,7 +543,7 @@ def _source_eval_finding(call, source, cmd, tainted):
         targets = words[1:]
         why = "root 'eval's user-controlled text"
     elif cmd in SHELL_INTERPRETERS:
-        targets = _shell_script_operand(call, source)
+        targets = _shell_script_operand(call, source, cmd)
         why = "root runs a user-controlled script"
     else:
         return
@@ -505,22 +556,27 @@ def _source_eval_finding(call, source, cmd, tainted):
 
 
 RC_LONG = frozenset(("rcfile", "init-file"))
+## Shells that source --rcfile/--init-file. Only bash/ksh; dash has no such opt.
+RC_INTERPRETERS = frozenset(("bash", "ksh"))
 
 
-def _shell_script_operand(call, source):
-    """The file(s) a shell interpreter runs as root: a --rcfile/--init-file value
-    (sourced by an interactive shell), the -c inline script, else the first
-    operand after options."""
+def _shell_script_operand(call, source, cmd):
+    """The file(s) a shell interpreter runs as root: the -c inline script, else
+    the first operand after options, PLUS a --rcfile/--init-file value but ONLY
+    for an INTERACTIVE ('-i') bash/ksh -- a non-interactive shell ignores it (so
+    flagging it there is a false positive), and dash has no such option."""
     inline = None
     operands = []
     rc_files = []
+    interactive = False
     expect = None
     for kind, word, text in bash_ast.command_tokens(
             call, source, value_short=SHELL_VALUE_SHORT | frozenset("c"),
             value_long=SHELL_VALUE_LONG):
         if kind == "opt":
             expect = text
-            ## Inline '--rcfile=/path' carries its value in the option word.
+            if not text.startswith("--") and "i" in text[1:]:
+                interactive = True
             if text.startswith("--") and "=" in text \
                     and bash_ast.resolve_long(text[2:].split("=", 1)[0], RC_LONG):
                 rc_files.append(word)
@@ -533,7 +589,9 @@ def _shell_script_operand(call, source):
             expect = None
         elif kind == "operand":
             operands.append(word)
-    targets = list(rc_files)
+    targets = []
+    if interactive and cmd in RC_INTERPRETERS:
+        targets.extend(rc_files)
     if inline is not None:
         targets.append(inline)
     elif operands:
@@ -547,11 +605,14 @@ def _world_writable_finding(call, source, cmd):
     ## '--mode 777'), attached ('-m777') or '=' ('--mode=777') form.
     modes = []
     if cmd == "chmod":
-        _opts, operands = _sink_operands(call, source, cmd)
-        for word in operands[:1]:
-            literal = bash_ast.word_string(word)
-            if literal is not None:
-                modes.append((literal, _line_of(word)))
+        opts, positionals, _opt_paths = _sink_operands(call, source, cmd)
+        ## With --reference the mode comes from a FILE, so operand[0] is a path,
+        ## not a literal mode -- do not read it as one.
+        if not _has_long(opts, REF_LONG):
+            for word in positionals[:1]:
+                literal = bash_ast.word_string(word)
+                if literal is not None:
+                    modes.append((literal, _line_of(word)))
     else:
         for kind, word, text in bash_ast.command_tokens(
                 call, source, value_short=frozenset("m"),
@@ -611,7 +672,8 @@ def _plain_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
     """tee/touch/dd: a named WRITE target that is a user path (root follows the
     symlink) or a predictable temp path. For dd only 'of=' is a write target --
     'if=' is the READ source, so flagging it would be a false positive."""
-    _opts, operands = _sink_operands(call, source, cmd)
+    _opts, positionals, opt_paths = _sink_operands(call, source, cmd)
+    operands = positionals + opt_paths
     if cmd == "dd":
         operands = [w for w in operands
                     if _word_raw(w, source).lstrip("\"'").startswith("of=")]

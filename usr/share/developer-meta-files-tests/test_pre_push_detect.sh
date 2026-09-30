@@ -338,6 +338,27 @@ assert_at "R-192 flags a wrapped 'ssh -- bash -lc' program" "R-192" 2
 ## data, not the effective command (the documented false-positive to avoid).
 run_det "$(printf '%s\n' '#!/bin/bash' 'echo bash -c "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
 assert_not_at "R-192 spares 'echo bash -c' (echo is not a wrapper)" "R-192" 2
+## MULTI-STATEMENT, not just long: a SHORT (<=5 line) inline bash -c that chains
+## statements is the exact gap the >5-line-ONLY predicate left open -- the shape a
+## dist-ai test shipped and a HUMAN, not the gate, caught. R-192 now mirrors R-191's
+## strict criterion (';', a pipe, '&&'/'||', a control keyword).
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a && b"')"
+assert_at "R-192 flags a short '&&'-chained bash -c"        "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a ; b"')"
+assert_at "R-192 flags a short ';'-separated bash -c"       "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a | b"')"
+assert_at "R-192 flags a short piped bash -c"               "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "if x; then y; fi"')"
+assert_at "R-192 flags an inline control keyword in bash -c" "R-192" 2
+## Wrapped AND multi-statement is still an inline program.
+run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c "a && b"')"
+assert_at "R-192 flags a wrapped multi-statement 'timeout bash -c'" "R-192" 2
+## Glue is spared: a SINGLE-command '-c' is not a program (direct AND wrapped) --
+## the false-positive the inject warned about ('bwrap/timeout bash -c <single>').
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "touch /run/x"')"
+assert_not_at "R-192 spares a single-command 'bash -c' (glue)"       "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c "foo bar"')"
+assert_not_at "R-192 spares a wrapped single-command 'bash -c' (glue)" "R-192" 2
 
 run_det_at "etc/systemd/system/x.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"

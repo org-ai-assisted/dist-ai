@@ -92,7 +92,7 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## msgcollector_check() returned (did not exit the subshell). RC_NOTEMPTY /
 ## RC_ALNUM / RC_UNICODE select which sub-check fails.
 drive() {
-   ## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+   ## style-ok: allow-embedded-script -- fresh isolation shell must inherit
    ## errexit ONLY from the sourced subject; a strict-mode preamble or an
    ## extracted script would pre-set it and defeat the test.
    RC_NOTEMPTY="$1" RC_ALNUM="$2" RC_UNICODE="$3" \

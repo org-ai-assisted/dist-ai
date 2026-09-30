@@ -117,16 +117,23 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         are replaced with a stub that writes ``content`` straight to the fake
         torrc file -- the same net effect the real privileged 'acw-write-torrc'
         helper would produce;
-      * tor_status.subprocess.call / .check_call are stubbed to succeed, so the
-        'leaprun ...' invocations become no-ops.
+      * every privileged 'leaprun ...' call site is neutralised: tor_status's
+        subprocess.call / .check_call return success, and the subprocess.Popen
+        used by restart_tor_gui / tor_control_panel / repair_torrc is redirected
+        to run /bin/true -- so those shell-outs become harmless no-ops with a
+        real Popen interface (communicate / returncode / wait), no leaprun,
+        pkexec, or Tor daemon required.
 
     Yields the pathlib.Path of the fake torrc file.
     """
     ## Common.torrc_file_path is a class attribute bound at import time to the
     ## real installed path; redirect it too, else AnonConnectionWizard.__init__
     ## regenerates the torrc over the seeded one.
+    import subprocess as _subprocess
     from tor_control_panel import anon_connection_wizard as _acw
-    from tor_control_panel import privilege as _privilege
+    from tor_control_panel import repair_torrc as _repair_torrc  # noqa: F401
+    from tor_control_panel import restart_tor_gui as _restart_tor_gui
+    from tor_control_panel import tor_control_panel as _tcp
 
     saved = {
         'gen_torrc_path': torrc_gen.torrc_file_path,
@@ -137,9 +144,15 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         'status_write': tor_status.write_to_temp_then_move,
         'resolv_add': torrc_gen.edit_etc_resolv_conf_add,
         'bridges_default': torrc_gen.bridges_default_path,
-        'priv_run': _privilege.run,
-        'priv_check_run': _privilege.check_run,
-        'priv_command': _privilege.command,
+        ## subprocess.call / .check_call are module-qualified in tor_status and
+        ## subprocess.Popen is module-qualified in repair_torrc, so patching the
+        ## shared subprocess module covers all three. restart_tor_gui and
+        ## tor_control_panel imported Popen by name, so patch those separately.
+        'sub_call': _subprocess.call,
+        'sub_check_call': _subprocess.check_call,
+        'sub_popen': _subprocess.Popen,
+        'restart_popen': _restart_tor_gui.Popen,
+        'tcp_popen': _tcp.Popen,
         'acw_common_torrc': _acw.Common.torrc_file_path,
     }
 
@@ -157,6 +170,19 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         def _stub_ok(*_args, **_kwargs) -> int:
             return 0
 
+        def _stub_popen(command, *args, **kwargs):
+            ## Neutralise ONLY the privileged 'leaprun ...' shell-outs: replace
+            ## them with /bin/true so the call site still gets a real Popen whose
+            ## communicate()/returncode/wait() succeed. Benign commands (e.g. the
+            ## 'tail -n ... <torrc>' that the Tor-log view runs via os.popen,
+            ## which is itself built on subprocess.Popen) pass straight through,
+            ## so the suite exercises the real read path.
+            flat = command if isinstance(command, str) else ' '.join(map(str, command))
+            if 'leaprun' in flat:
+                kwargs.pop('shell', None)
+                return saved['sub_popen'](['true'], *args, **kwargs)
+            return saved['sub_popen'](command, *args, **kwargs)
+
         torrc_gen.torrc_file_path = str(torrc_path)
         torrc_gen.torrc_user_file_path = str(user_path)
         torrc_gen.bridges_default_path = _bridges_default_path()
@@ -166,14 +192,17 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         torrc_gen.write_to_temp_then_move = _stub_write
         torrc_gen.edit_etc_resolv_conf_add = lambda *a, **k: None
         tor_status.write_to_temp_then_move = _stub_write
-        ## The privileged leaprun/pkexec runner is stubbed so set_enabled /
-        ## set_disabled do not shell out during tests. command() (used by the
-        ## Popen call sites: restart/stop/log-read) returns a harmless argv so a
-        ## real Popen(['true']) succeeds everywhere, including CI where neither
-        ## leaprun nor pkexec exists.
-        _privilege.run = _stub_ok
-        _privilege.check_run = lambda *a, **k: None
-        _privilege.command = lambda action, *a: ['true']
+        ## Neutralise every privileged leaprun shell-out so set_enabled /
+        ## set_disabled / restart / stop / log-read / tor-config-sane do not
+        ## touch the system during tests, on CI where neither leaprun nor pkexec
+        ## exists. subprocess.call / .check_call succeed; subprocess.Popen (and
+        ## the by-name Popen in restart_tor_gui / tor_control_panel) run
+        ## /bin/true so the callers still get a working Popen.
+        _subprocess.call = _stub_ok
+        _subprocess.check_call = _stub_ok
+        _subprocess.Popen = _stub_popen
+        _restart_tor_gui.Popen = _stub_popen
+        _tcp.Popen = _stub_popen
         _acw.Common.torrc_file_path = str(torrc_path)
 
         try:
@@ -188,9 +217,11 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
             torrc_gen.write_to_temp_then_move = saved['gen_write']
             torrc_gen.edit_etc_resolv_conf_add = saved['resolv_add']
             tor_status.write_to_temp_then_move = saved['status_write']
-            _privilege.run = saved['priv_run']
-            _privilege.check_run = saved['priv_check_run']
-            _privilege.command = saved['priv_command']
+            _subprocess.call = saved['sub_call']
+            _subprocess.check_call = saved['sub_check_call']
+            _subprocess.Popen = saved['sub_popen']
+            _restart_tor_gui.Popen = saved['restart_popen']
+            _tcp.Popen = saved['tcp_popen']
 
 
 @contextlib.contextmanager

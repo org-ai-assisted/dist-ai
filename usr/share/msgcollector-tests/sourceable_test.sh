@@ -57,7 +57,7 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## facts: did sourcing return cleanly, is main() defined, did main run (detected
 ## by msgcollector_run_dir, which only folder_init -- called inside main --
 ## sets).
-## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+## style-ok: allow-embedded-script -- fresh isolation shell must inherit
 ## errexit ONLY from the sourced subject; a strict-mode preamble or an extracted
 ## script would pre-set it and defeat the test.
 report="$(

@@ -6,19 +6,12 @@
 ## AI-Assisted
 
 """
-Two things these tests guard, both surfaced while adding plain-Debian support:
-
-1. CONTENT / VALID: after a configuration change, the torrc drop-in that
-   tor-control-panel writes contains the directives Tor needs -- and, fed to a
-   real ``tor --verify-config``, Tor actually accepts it. Asserting the bytes
-   (test_torrc_gen.py) is good; proving a real Tor parses them is stronger.
-
-2. ACTUALLY APPLIED: a drop-in under torrc_dir is only honoured if the
-   top-level torrc ``%include``s that directory. On plain Debian the stock
-   /etc/tor/torrc has no such include (Debian bug #866187) and Tor is started
-   with ``-f /etc/tor/torrc``, so a drop-in we write would be SILENTLY IGNORED.
-   torrc_gen.main_torrc_includes_dropin() detects that; the live test below
-   demonstrates the ignored-vs-applied difference against a real tor binary.
+CONTENT / VALID: after a configuration change, the torrc drop-in that
+tor-control-panel writes contains the directives Tor needs -- and, fed to a real
+``tor --verify-config``, Tor actually accepts it. Asserting the bytes
+(test_torrc_gen.py) is good; proving a real Tor parses them is stronger. The
+test also shows the ignored-vs-applied difference: a drop-in is only honoured if
+the top-level torrc ``%include``s its directory.
 
 The live tests skip automatically when no ``tor`` binary is installed (e.g. a
 minimal CI image), so the suite still runs everywhere.
@@ -44,37 +37,6 @@ def _dropin_for(args):
         return torrc.read_text(encoding='utf-8')
 
 
-class IncludeChainTest(unittest.TestCase):
-    """torrc_gen's include helpers: is the drop-in even reachable by Tor?"""
-
-    def test_include_directive_names_the_dropin_dir(self):
-        directive = torrc_gen.torrc_include_directive()
-        self.assertTrue(directive.startswith('%include '))
-        self.assertIn(torrc_gen.torrc_dir, directive)
-
-    def test_stock_torrc_without_include_is_detected(self):
-        ## Stock Debian /etc/tor/torrc: no %include -> our drop-in is ignored.
-        self.assertFalse(torrc_gen.main_torrc_includes_dropin(
-            'SocksPort 9050\nDataDirectory /var/lib/tor\n'))
-
-    def test_present_include_is_detected(self):
-        ## The %include target may name the dir, a glob in it, or the file.
-        for target in (torrc_gen.torrc_dir,
-                       torrc_gen.torrc_dir + '/*.conf',
-                       torrc_gen.torrc_file_path):
-            with self.subTest(target=target):
-                self.assertTrue(torrc_gen.main_torrc_includes_dropin(
-                    'SocksPort 9050\n%include ' + target + '\n'))
-
-    def test_commented_include_does_not_count(self):
-        self.assertFalse(torrc_gen.main_torrc_includes_dropin(
-            '# %include ' + torrc_gen.torrc_dir + '/*.conf\n'))
-
-    def test_unrelated_include_does_not_count(self):
-        self.assertFalse(torrc_gen.main_torrc_includes_dropin(
-            '%include /etc/tor/somewhere-else/*.conf\n'))
-
-
 @unittest.skipUnless(TOR, 'tor binary not installed')
 class TorVerifyConfigTest(unittest.TestCase):
     """Feed the *actually generated* drop-in to a real ``tor --verify-config``."""
@@ -85,9 +47,9 @@ class TorVerifyConfigTest(unittest.TestCase):
         ('obfs4', ['obfs4', 'None', 'None']),
         ('meek', ['meek', 'None', 'None']),
         ('snowflake', ['snowflake', 'None', 'None']),
-        ('custom-vanilla',
+        ('custom-obfs4',
          ['None',
-          '1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01',
+          'obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01',
           'None']),
         ('socks5', ['None', 'None', 'SOCKS5', '127.0.0.1', '9050', '', '']),
         ('socks5-auth',

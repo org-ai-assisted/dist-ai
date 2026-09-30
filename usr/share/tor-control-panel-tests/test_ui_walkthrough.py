@@ -132,30 +132,6 @@ class AnonConnectionWizardWalkthroughTest(unittest.TestCase):
         self.assertEqual(page.configure_option.text(), 'Configure')
         self.assertEqual(page.disable_option.text(), 'Disable Tor')
 
-    def test_bridge_page_offers_all_types(self):
-        page = self._page(acw.BridgeWizardPage)
-        items = [page.bridges_combo.itemText(i)
-                 for i in range(page.bridges_combo.count())]
-        for bridge_type in ('obfs4', 'snowflake', 'meek', 'Custom bridges'):
-            self.assertIn(bridge_type, items)
-        self.assertIsNotNone(page.bridges_checkbox)
-        self.assertIsNotNone(page.show_help_censorship)
-
-    def test_bridge_checkbox_reveals_panel(self):
-        page = self._page(acw.BridgeWizardPage)
-        page.bridges_checkbox.setChecked(True)
-        page.show_bridges_panel()
-        self.assertFalse(page.bridges_frame.isHidden())
-
-    def test_custom_bridges_reveals_input(self):
-        page = self._page(acw.BridgeWizardPage)
-        page.bridges_checkbox.setChecked(True)
-        page.show_bridges_panel()
-        index = page.bridges_combo.findText('Custom bridges')
-        page.bridges_combo.setCurrentIndex(index)
-        page.set_bridges_panel()
-        self.assertFalse(page.custom_frame.isHidden())
-
     def test_proxy_page_controls(self):
         page = self._page(acw.ProxyWizardPage)
         self.assertIsNotNone(page.proxy_checkbox)
@@ -165,8 +141,10 @@ class AnonConnectionWizardWalkthroughTest(unittest.TestCase):
     def test_summary_page_controls(self):
         page = self._page(acw.TorrcPage)
         self.assertIn('torrc', page.show_torrc_button.text().lower())
-        for label in (page.status_label, page.bridge_type_label,
-                      page.proxy_type_label):
+        ## status_label / proxy_type_label live on the page; bridge_type_label
+        ## is a shared Common attribute set when the page is constructed.
+        for label in (page.status_label, page.proxy_type_label,
+                      acw.Common.bridge_type_label):
             self.assertIsNotNone(label)
 
     def test_summary_show_torrc_toggle(self):

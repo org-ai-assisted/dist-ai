@@ -1,0 +1,288 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Bring derivative-maker (parent + every submodule) to the clean ideal state in
+## ONE command -- the whole dm-tidy happy path, so the sequence is not a set of
+## steps a human must remember to run in the right order. This is the OUTER
+## orchestrator; it owns no git-mutation logic -- it calls the dedicated tools in
+## the one sound order and aggregates their verdicts into a single report + exit
+## code.
+##
+## THE CHAIN (each sub-tool is independently safe: it refuses / skips anything not
+## on its happy path, so the pipeline never forces a wrong action):
+##   1. dm-submodule-ai-sync   fetch + re-attach + fast-forward every submodule
+##                             'ai' to its published fork tip (steps 1-2).
+##   2. dm-remaster-all --apply  fast-forward each submodule master from upstream,
+##                             real sync-merge the parent master, merge master->ai
+##                             everywhere, and PUBLISH (step 3).
+##   3. dm-git-sync (parent)   bump every published-ahead gitlink into one 'ai'
+##                             commit, push 'ai', mirror non-gitlink 'ai' commits
+##                             onto master, push master (steps 4-6).
+##   4. git fsck --full        verify the local object store is intact (step 7).
+##
+## WHY THE ORDER IS LOAD-BEARING: dm-git-sync's gitlink bump is only sound once the
+## submodule tips are PUBLISHED, and dm-remaster-all --apply is what publishes the
+## fresh (master-merged) 'ai' tips. So remaster MUST run (and push) before the pin.
+## Running the two as one sequential command gets that coupling for free -- the trap
+## a human hits when pinning against tips an earlier step never pushed.
+##
+## HAPPY PATH vs STOP. A per-repo condition a human must reconcile (a dirty /
+## diverged submodule, a real merge conflict) is reported BLOCKED and does not stop
+## the sweep: the safe sub-tools simply skip that repo, so the other ~80 still tidy.
+## dm-tidy then exits 3 so the caller knows a human is needed, WITHOUT losing the
+## work it did. A STRUCTURAL failure (a tool usage/parse error, a mutation step that
+## outright failed) aborts the remaining MUTATING steps and exits 1 -- never push
+## more on top of a half-done state.
+##
+## Idempotent: re-running on an already-tidy tree is a clean no-op (every sub-tool
+## no-ops when its target is current).
+##
+## The four sub-commands are overridable (DM_TIDY_SUBMODULE_SYNC / _REMASTER_ALL /
+## _GIT_SYNC / _FSCK) so the regression test can drive the REAL orchestration
+## against recording stubs; unset, they are the production tools, byte-identical.
+##
+## Usage:
+##   dm-tidy [--dir <checkout>] [--dry-run]
+##
+## Exit: 0 tidy/nothing | 3 done but some repo needs a human (blocked) |
+##       1 a mutating step failed | 2 usage / not a derivative-maker checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## An inherited git-location env var (e.g. from a 'git submodule foreach' parent)
+## would redirect every 'git -C' at another repo. dm-tidy addresses each repo by
+## path; clear the whole set so no sub-tool inherits a hijacked location.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+
+AI_BRANCH="ai"
+SUBMODULE_SYNC_CMD="${DM_TIDY_SUBMODULE_SYNC:-dm-submodule-ai-sync}"
+REMASTER_ALL_CMD="${DM_TIDY_REMASTER_ALL:-dm-remaster-all}"
+GIT_SYNC_CMD="${DM_TIDY_GIT_SYNC:-dm-git-sync}"
+## Empty by default = run the built-in 'git fsck'. A stub path here lets the test
+## drive a clean/corrupt verdict without a real object store.
+FSCK_CMD="${DM_TIDY_FSCK:-}"
+
+source_dir=""
+dry_run="false"
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         ## Reject an EMPTY value (e.g. '--dir "$UNSET"'): distinct from omitting
+         ## --dir (which defaults to cwd) -- silently tidying cwd would act on an
+         ## unintended checkout.
+         [ -n "$2" ] || { printf '%s\n' "${0##*/}: --dir requires a non-empty value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      -h|--help)
+         printf '%s\n' \
+            "Bring derivative-maker (parent + every submodule) to the clean ideal state:" \
+            "sync submodule 'ai' -> remaster+merge master -> pin gitlinks + mirror to" \
+            "master + push -> verify the object store, in the one sound order." \
+            "" \
+            "Usage: ${0##*/} [--dir <checkout>] [--dry-run]" \
+            "" \
+            "  --dir      the derivative-maker parent (or a submodule of it); default: cwd" \
+            "  --dry-run  run every phase in its own dry-run mode; make no push/commit" \
+            "" \
+            "Exit: 0 tidy/nothing | 3 done but a repo needs a human (blocked) |" \
+            "      1 a mutating step failed | 2 usage / not a derivative-maker checkout."
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+
+log() {
+   printf '%s\n' "${0##*/}: $*"
+}
+
+die() {
+   local code="$1" ; shift
+   printf '%s\n' "${0##*/}: $*" >&2
+   exit "${code}"
+}
+
+is_dm_superproject() {
+   [ -d "$1/build-steps.d" ] && [ -d "$1/help-steps" ]
+}
+
+## Resolve the derivative-maker PARENT from the given dir: the worktree root if it
+## IS the superproject, else its superproject (so pointing dm-tidy at a submodule
+## still tidies the whole tree). Never guess -- refuse anything else.
+top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+[ -n "${top}" ] || die 2 "'${source_dir}' is not inside a git worktree."
+if ! is_dm_superproject "${top}"; then
+   parent="$( git -C "${top}" rev-parse --show-superproject-working-tree 2>/dev/null || true )"
+   if [ -n "${parent}" ] && is_dm_superproject "${parent}"; then
+      top="${parent}"
+   else
+      die 2 "'${top}' is neither a derivative-maker checkout nor a derivative-maker submodule."
+   fi
+fi
+
+## The parent must be on 'ai': every downstream step (remaster's parent merge, the
+## gitlink bump, the master mirror) assumes it. Refuse early -- touch nothing.
+head_ref="$( git -C "${top}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
+[ "${head_ref}" = "refs/heads/${AI_BRANCH}" ] \
+   || die 2 "parent '${top}' is not on '${AI_BRANCH}' (HEAD '${head_ref:-DETACHED}'); refusing to tidy."
+
+## --- The pipeline ----------------------------------------------------------------
+## Each step streams its own detailed output; dm-tidy records only a one-line
+## verdict per step and whether it BLOCKED (human needed) or ABORTED (structural).
+## On an abort the remaining MUTATING steps are skipped -- never push on a half-done
+## tree -- but the read-only fsck still runs so the store is still verified.
+step_results=()   ## "<label>\t<verdict>"
+any_blocked="false"
+any_error="false"
+aborted="false"
+
+record() {
+   step_results+=( "$(printf '%s\t%s' "$1" "$2")" )
+}
+
+## Phase 1: submodule 'ai' sync (dm-submodule-ai-sync). 0 ok | 1 some stopped
+## (human, continue) | anything else structural (abort).
+## Idiom throughout: 'cmd || rc="$?"' -- errexit-safe (the '||' keeps -e from
+## firing on a non-zero child) AND captures the child's real exit code.
+phase_submodule_sync() {
+   local flag=() rc=0
+   [ "${dry_run}" = "true" ] && flag=( --dry-run )
+   log ">>> [1/4] submodule 'ai' sync (${SUBMODULE_SYNC_CMD})"
+   "${SUBMODULE_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
+   case "${rc}" in
+      0)
+         record "1 submodule-ai-sync" "ok"
+         ;;
+      1)
+         record "1 submodule-ai-sync" "BLOCKED (some submodules need a human; see above)"
+         any_blocked="true"
+         ;;
+      *)
+         record "1 submodule-ai-sync" "ERROR (exit ${rc})"
+         any_error="true" ; aborted="true"
+         ;;
+   esac
+}
+
+## Phase 2: remaster + merge master->ai + publish (dm-remaster-all). 0 clean |
+## 3 blocked (human, continue) | anything else structural (abort). Positional
+## parent_dir; --apply/--dry-run is REQUIRED by the tool. Skips itself (recording
+## why) if an earlier step already aborted -- never push on a half-done tree.
+phase_remaster() {
+   local mode_flag="--apply" rc=0
+   if [ "${aborted}" = "true" ]; then
+      record "2 remaster-all" "skipped (earlier step aborted)"
+      return 0
+   fi
+   [ "${dry_run}" = "true" ] && mode_flag="--dry-run"
+   log ">>> [2/4] remaster masters + merge master->ai (${REMASTER_ALL_CMD} ${mode_flag})"
+   "${REMASTER_ALL_CMD}" "${mode_flag}" "${top}" || rc="$?"
+   case "${rc}" in
+      0)
+         record "2 remaster-all" "ok"
+         ;;
+      3)
+         record "2 remaster-all" "BLOCKED (some repos need a human; see above)"
+         any_blocked="true"
+         ;;
+      *)
+         record "2 remaster-all" "ERROR (exit ${rc})"
+         any_error="true" ; aborted="true"
+         ;;
+   esac
+}
+
+## Phase 3: pin gitlinks + push 'ai' + mirror non-gitlink to master + push master
+## (dm-git-sync on the parent). 0 ok | anything else a failed mutation (abort).
+phase_parent_sync() {
+   local flag=() rc=0
+   if [ "${aborted}" = "true" ]; then
+      record "3 parent-sync" "skipped (earlier step aborted)"
+      return 0
+   fi
+   [ "${dry_run}" = "true" ] && flag=( --dry-run )
+   log ">>> [3/4] pin gitlinks + mirror to master + push (${GIT_SYNC_CMD})"
+   "${GIT_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
+   case "${rc}" in
+      0)
+         record "3 parent-sync" "ok"
+         ;;
+      *)
+         record "3 parent-sync" "ERROR (exit ${rc})"
+         any_error="true" ; aborted="true"
+         ;;
+   esac
+}
+
+## Phase 4: verify the local object store (git fsck). Read-only, so it runs even
+## after an abort. '--no-dangling': dangling (unreferenced-but-valid) objects are
+## normal after merges/rebases and are NOT corruption -- reporting them would make
+## every run look failed. A gitlink-target commit that lives only in a submodule's
+## own store is submodule-absence, not superproject corruption (dm-tidy invariant);
+## git fsck already treats a gitlink as a leaf and does not flag it. A genuine
+## non-zero fsck IS corruption -> report it, but never abort a push that already
+## happened.
+phase_fsck() {
+   local rc=0
+   log ">>> [4/4] verify object store (git fsck --full)"
+   if [ -n "${FSCK_CMD}" ]; then
+      "${FSCK_CMD}" "${top}" || rc="$?"
+   else
+      git -C "${top}" fsck --full --no-dangling --no-progress || rc="$?"
+   fi
+   if [ "${rc}" -eq 0 ]; then
+      record "4 fsck" "clean"
+   else
+      record "4 fsck" "CORRUPT? (fsck exit ${rc}) -- if only gitlink-target commits, that is submodule-absence, not corruption"
+      any_error="true"
+   fi
+}
+
+phase_submodule_sync
+phase_remaster
+phase_parent_sync
+## fsck is read-only: always verify the store, even after an abort.
+phase_fsck
+
+## --- Summary ---------------------------------------------------------------------
+mode_label="apply"
+[ "${dry_run}" = "true" ] && mode_label="dry-run"
+printf '\n%s\n' "${0##*/}: summary (${mode_label} run on '${top}'):"
+printf '%s\n' "${step_results[@]}" | awk -F '\t' '{printf "  %-22s %s\n", $1, $2}'
+
+if [ "${any_error}" = "true" ]; then
+   die 1 "dm-tidy did NOT complete cleanly -- a step failed (see the table). Resolve, then re-run."
+fi
+if [ "${any_blocked}" = "true" ]; then
+   printf '%s\n' "${0##*/}: everything else is tidy; the BLOCKED repo(s) above need a human. Resolve them, then re-run." >&2
+   exit 3
+fi
+if [ "${dry_run}" = "true" ]; then
+   log "dry-run complete; no changes made."
+else
+   log "derivative-maker is tidy: submodules synced, masters remastered, gitlinks pinned, master mirrored, store clean."
+fi
+exit 0

@@ -80,7 +80,7 @@ exit 0
 STUB_EOF
    chmod +x -- "${tmpdir}/curl"
 
-   ## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+   ## style-ok: allow-embedded-script -- fresh isolation shell must inherit
    ## errexit ONLY from the sourced subject; a strict-mode preamble or an
    ## extracted script would pre-set it and defeat the test.
    PATH="${tmpdir}:${PATH}" bash -c '
