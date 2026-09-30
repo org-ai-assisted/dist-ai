@@ -315,16 +315,16 @@ onion-grater-tests-e2e
 
 Functional tests for the helper scripts under derivative-maker
 `help-steps/`, currently the `/proc`-based process reaper
-`umount_kill.sh`. Victims covering every detection channel (cwd, open fd,
+`mount-cleanup`. Victims covering every detection channel (cwd, open fd,
 mmap-only, exe image, chrooted process, SIGTERM-ignoring) must die;
 bystanders (unrelated processes, a sibling tree whose name is a
 string-prefix collision of the target) must survive; the guards
 (nonexistent path, `/`, skip-list basenames) are asserted. Requires root
 (SKIPs otherwise) -- run inside a throwaway container or a sandbox VM,
-e.g. `sandbox-run --dir <staged-dir> -- sudo bash ./umount_kill_test.sh`
-with a copy of `umount_kill.sh` staged next to the test. Subject
-selection: `UMOUNT_KILL_SH`, then a staged sibling copy, then
-`~/derivative-maker/help-steps/umount_kill.sh`.
+e.g. `sandbox-run --dir <staged-dir> -- sudo bash ./mount_cleanup_test.sh`
+with a copy of `mount-cleanup` staged next to the test. Subject
+selection: `MOUNT_CLEANUP`, then a staged sibling copy, then
+`~/derivative-maker/help-steps/mount-cleanup`.
 
 ## dist-installer-cli-tests
 

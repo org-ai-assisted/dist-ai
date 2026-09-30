@@ -7,14 +7,14 @@
 
 ## Runs the derivative-maker help-steps suite: functional tests for the
 ## helper scripts under derivative-maker 'help-steps/' (currently
-## umount_kill.sh, the /proc-based process reaper). The reaper test spawns
+## mount-cleanup, the /proc-based process reaper). The reaper test spawns
 ## victim and bystander processes in fresh mktemp trees and asserts the
 ## reaper kills exactly the tree's users; it requires ROOT and therefore
 ## runs inside CI's throwaway container or a sandbox VM. Invoked unprivileged,
 ## this runner re-execs itself under passwordless sudo where that is available,
 ## and warns rather than pretending otherwise where it is not. Works installed (tests
 ## under /usr/share/dm-help-steps-tests) or from a git checkout. Set
-## UMOUNT_KILL_SH to pick the script under test; otherwise the suite uses a
+## MOUNT_CLEANUP to pick the script under test; otherwise the suite uses a
 ## copy staged next to the test, then a derivative-maker checkout under
 ## ~/derivative-maker.
 
@@ -24,13 +24,14 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-## umount_kill_test.sh needs root and treats a non-root run as a HARD ERROR, not
+## mount_cleanup_test.sh needs root and treats a non-root run as a HARD ERROR, not
 ## a skip -- correctly, since a test that cannot run has verified nothing. But
 ## the runner never elevated, so any unprivileged invocation reported
-## "FAILED (1): umount_kill_test.sh" for a test that passes 16/16 as root. A
+## "FAILED (1): mount_cleanup_test.sh" for a test that passes 16/16 as root. A
 ## false red is as misleading as a false green, and it trained the failure to be
 ## ignored.
 ##
@@ -40,15 +41,15 @@ script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 ## could not when we cannot -- never silently continue into a guaranteed failure.
 if [ ! "${EUID}" = "0" ] && [ ! "${DM_HELP_STEPS_TESTS_NO_ELEVATE:-}" = "true" ]; then
    if sudo --non-interactive true >/dev/null 2>&1; then
-      printf '%s\n' "${0##*/}: re-running as root (umount_kill.sh requires it)." >&2
+      printf '%s\n' "${0##*/}: re-running as root (mount-cleanup requires it)." >&2
       ## --preserve-env: the suite is configured entirely through environment
-      ## (UMOUNT_KILL_SH, DERIVATIVE_MAKER_DIR, ...), so dropping it would point
+      ## (MOUNT_CLEANUP, DERIVATIVE_MAKER_DIR, ...), so dropping it would point
       ## the tests at different subjects than the caller chose.
       sudo --non-interactive --preserve-env -- "$0" "$@"
       exit "$?"
    fi
    printf '%s\n' "${0##*/}: WARNING: not root and passwordless sudo is unavailable;" \
-      "  umount_kill_test.sh will report a hard error rather than run." \
+      "  mount_cleanup_test.sh will report a hard error rather than run." \
       "  Run this suite as root (CI does), or in the sandbox VM." >&2
 fi
 
@@ -115,6 +116,7 @@ fi
 ## where nothing actually ran.
 if [ "${skipped}" -eq "${ran}" ]; then
   printf '\nSKIP: all %s dm-help-steps test script(s) skipped\n' "${skipped}"
+  ## style-ok: allow-skip: every test script skipped (no root / no target); SKIP beats a false-green PASS
   exit 77
 fi
 printf '\nOK: all dm-help-steps test scripts passed\n'
