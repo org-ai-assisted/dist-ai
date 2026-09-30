@@ -200,6 +200,19 @@ write 'help-steps/nosheb' <<'EOF'
 sudo apt-get update
 EOF
 
+## wrapper-invoked escalation: timeout peels to the sudo; root_cmd escalates.
+write 'packages/kicksecure/foo/usr/libexec/foo/wrapprobe' <<'EOF'
+#!/bin/bash
+timeout --kill-after 5 5 sudo -- /usr/bin/tprog
+root_cmd /usr/bin/rprog
+EOF
+
+## a Python file invoking an escalator via subprocess -> nonshell-escalation.
+write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/esc.py' <<'EOF'
+import subprocess
+subprocess.run(["/usr/bin/leaprun", "some-action"])
+EOF
+
 ## system-scope service, no User= -> root. MUST be found with its exec target.
 write 'packages/kicksecure/foo/usr/lib/systemd/system/rootsvc.service' <<'EOF'
 [Service]

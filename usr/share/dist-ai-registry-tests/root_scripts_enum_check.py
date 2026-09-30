@@ -62,6 +62,9 @@ def main(argv):
     def esc(line):
         return sudo_at("usr/libexec/foo/escprobe", line)
 
+    def wrap(line):
+        return sudo_at("usr/libexec/foo/wrapprobe", line)
+
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
     sep = "usr/libexec/foo/sepprobe"
@@ -226,6 +229,18 @@ def main(argv):
         ("a polkit action's pkexec exec.path (root helper) is captured",
          _polkit_exec(one("polkit", "com.example.test"), "com.example.test.do")
          == "/usr/libexec/foo/pkexec-helper"),
+
+        ## wrapper + non-shell escalation
+        ("timeout is peeled to reach the sudo behind it",
+         wrap(2) is not None and wrap(2)["tool"] == "sudo"
+         and wrap(2)["command"] == "/usr/bin/tprog"),
+        ("a root_cmd helper call is enumerated as escalation",
+         wrap(3) is not None and wrap(3)["tool"] == "root_cmd"
+         and wrap(3)["command"] == "/usr/bin/rprog"),
+        ("a Python subprocess escalator call is flagged (advisory)",
+         one("nonshell-escalation", "foo/esc.py") is not None
+         and any(c["tool"] == "leaprun"
+                 for c in one("nonshell-escalation", "foo/esc.py")["calls"])),
         ("a dm build-script sudo call is enumerated under derivative-maker",
          one("privileged-call", "help-steps/buildscript") is not None
          and one("privileged-call", "help-steps/buildscript")["component"] == "derivative-maker"),

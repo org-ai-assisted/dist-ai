@@ -53,8 +53,15 @@ privileges, in these categories:
                      HONEST SCOPE: shell scripts only; an escalator called from
                      Python/other via a library is not in the bash-AST surface.
 
+  nonshell-escalation  ADVISORY (regex, not an AST): a Python file invoking an
+                     escalator via subprocess -- the bash-AST scan cannot see
+                     these, so they are flagged for review.
+
   build-chroot       derivative-maker's own chroot/pbuilder help-steps, which
                      run as root inside the build chroot.
+
+The privileged-call scan also peels a 'timeout' wrapper to the escalator behind
+it and reports a helper-scripts 'root_cmd' call (which escalates internally).
 
 The bash parsing is delegated whole to shfmt (dist_ai.bash_ast): command
 position, quoting, here-docs and strings are the parser's job, so 'sudo' inside
@@ -151,6 +158,13 @@ ESCALATOR_SUDOLIKE = {
     },
 }
 ESCALATORS = frozenset(ESCALATOR_SUDOLIKE) | frozenset(("su", "runuser", "leaprun"))
+
+## Project helper functions that escalate internally (helper-scripts root_cmd
+## runs its argument as root via sudo/doas/su/pkexec).
+HELPER_ESCALATORS = frozenset(("root_cmd",))
+## 'timeout' runs its operand after a duration; skip its options (some take a
+## value) and the one duration positional to reach a possible escalator.
+TIMEOUT_VALUE_OPTS = frozenset(("-k", "--kill-after", "-s", "--signal"))
 
 CHROOT_SCRIPT_RE = re.compile(r"(chroot|pbuilder)", re.IGNORECASE)
 
@@ -638,6 +652,33 @@ def scan_path_surface(abs_path, rel_path):
     return None
 
 
+## --- non-shell escalation (Python) ------------------------------------------
+
+## ADVISORY, regex-based (not an AST): a Python file invoking an escalator via
+## subprocess. The bash-AST 'privileged-call' scan cannot see these, so flag
+## them for review rather than leave the surface invisible.
+PYTHON_ESCALATOR_RE = re.compile(
+    r"""['"](?:/usr/bin/|/bin/)?(sudo|pkexec|doas|run0|leaprun|runuser)['"]""")
+PYTHON_SUBPROCESS_RE = re.compile(
+    r"\b(?:subprocess\.\w+|Popen|check_output|check_call|getoutput|os\.system|"
+    r"os\.exec\w*|os\.spawn\w*)\b")
+
+
+def scan_python_escalation(abs_path, rel_path):
+    if not name_has_ext(rel_path, ".py"):
+        return None
+    calls = []
+    for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
+        if raw.lstrip().startswith("#"):
+            continue
+        if not PYTHON_SUBPROCESS_RE.search(raw):
+            continue
+        match = PYTHON_ESCALATOR_RE.search(raw)
+        if match:
+            calls.append({"line": lineno, "tool": match.group(1)})
+    return {"calls": calls} if calls else None
+
+
 ## --- sudo calls (shfmt AST) -------------------------------------------------
 
 
@@ -669,6 +710,19 @@ def escalator_words(call, source):
                     index += 1
                 else:
                     break
+            continue
+        if base == "timeout":
+            index += 1
+            while index < len(words):
+                text = word_text(words[index], source)
+                if text.startswith("-") and text != "-":
+                    if text in TIMEOUT_VALUE_OPTS:
+                        index += 2  ## the option and its separate value
+                    else:
+                        index += 1
+                else:
+                    break
+            index += 1  ## the mandatory DURATION positional
             continue
         break
     if index >= len(words):
@@ -814,6 +868,15 @@ def scan_privileged_calls(source, tree):
     for call in bash_ast.call_exprs(tree):
         found = escalator_words(call, source)
         if found is None:
+            command_base = bash_ast.command_basename(call)
+            if command_base in HELPER_ESCALATORS:
+                ## A project helper that escalates internally; its first operand
+                ## is the command it runs as root.
+                word = bash_ast.command_word(call)
+                line = word.get("Pos", {}).get("Line") if word else None
+                call_args = bash_ast.args(call)
+                program = bash_ast.word_string(call_args[1]) if len(call_args) > 1 else None
+                yield line, command_base, program, "root", "helper"
             continue
         tool, words = found
         line = words[0].get("Pos", {}).get("Line") if words else None
@@ -853,6 +916,7 @@ FILE_SCANNERS = (
     ("polkit", scan_polkit),
     ("udev-rule", scan_udev),
     ("pam-exec", scan_pam),
+    ("nonshell-escalation", scan_python_escalation),
 )
 
 
