@@ -9,30 +9,29 @@
 ##
 ## TWO bugs it guards:
 ##
-## (A) CONFUSED-DEPUTY (security). dm-nbd-cleanup runs sudo umount. Selecting the
-##     mounts to unmount by the SOURCE STRING in /proc/mounts is unsafe: an
-##     unprivileged user can mount FUSE with fsname=/dev/nbd0, so the source
-##     string is attacker-controlled. dm-nbd-cleanup instead reads
-##     /proc/self/mountinfo and accepts a mount as nbd-backed only when the
-##     KERNEL-set major (field 3) is NBD_MAJOR (43), OR the source is /dev/nbd*
-##     AND the kernel-set fstype is a real block filesystem (/proc/filesystems
-##     without 'nodev'). The major covers ext4/xfs directly on nbd; the block-fs
-##     fallback covers anonymous-superblock btrfs (major 0) WITHOUT trusting a
-##     forgeable fuse/tmpfs spoof (a 'nodev' type), which is rejected.
+## (A) CONFUSED-DEPUTY (security). dm-nbd-cleanup runs sudo umount. An unprivileged
+##     user can mount FUSE with fsname=/dev/nbd0, so the /proc/mounts source string
+##     is attacker-controlled. dm-nbd-cleanup accepts a mount as nbd-backed only
+##     when the source is an EXACT nbd device name (/dev/nbd<N>[p<M>], NOT a
+##     same-prefix name such as /dev/nbd-backup) AND the kernel-set fstype is a
+##     real block filesystem (/proc/filesystems without 'nodev'). The fstype-nodev
+##     check rejects a forgeable fuse/tmpfs spoof; the exact-name check rejects a
+##     same-prefix source. No device numbers are used -- a deliberate design
+##     decision in dm-nbd-cleanup.
 ##
-## (B) READ-WHILE-MUTATE SKIP. Unmounting INSIDE 'while read ... < mountinfo'
+## (B) READ-WHILE-MUTATE SKIP. Unmounting INSIDE 'while read ... < /proc/mounts'
 ##     reads a file that mutates under the loop, silently skipping later entries.
 ##     The fix collects ALL nbd mount points first, THEN unmounts from that
 ##     snapshot.
 ##
 ## This test is TWO layers:
-##  (1) BEHAVIORAL -- drive the REAL tool (--release) against a mountinfo FIXTURE
-##      (DM_NBD_CLEANUP_PROC_MOUNTINFO) with sudo stubbed on PATH, asserting on the
-##      RECORDED umount invocations: every real-nbd mount (major 43, including a
-##      \040-encoded mount point) is unmounted; and NO non-nbd mount is -- neither
-##      an ordinary device (major 8), a tmpfs (major 0), NOR a deputy spoof whose
-##      source string is '/dev/nbd0' but whose backing major is 0. The spoof is
-##      the security teeth: source-string selection would unmount it.
+##  (1) BEHAVIORAL -- drive the REAL tool (--release) against a /proc/mounts FIXTURE
+##      (DM_NBD_CLEANUP_PROC_MOUNTS) with sudo stubbed on PATH, asserting on the
+##      RECORDED umount invocations: every nbd-backed mount (including a
+##      \040-encoded mount point and an anonymous-superblock btrfs) is unmounted;
+##      and NO non-nbd mount is -- neither an ordinary device, a tmpfs, a deputy
+##      spoof (source '/dev/nbd0' but fstype fuse.evil), nor a same-prefix source
+##      (/dev/nbd-backup). The spoof and same-prefix source are the security teeth.
 ##  (2) STRUCTURAL BACKSTOP -- the read-while-mutate SKIP (B) is a /proc-specific
 ##      artifact that only reproduces under real mount namespaces (a regular-file
 ##      fixture cannot: an open fd pins the inode). Guard the fix by its stable
@@ -111,7 +110,7 @@ fi
 # shellcheck source=../dist-ai-tests-common/stub-path-harness.bash
 source "${harness}"
 
-## --- (1) BEHAVIORAL: drive the real tool against a mountinfo fixture ----------
+## --- (1) BEHAVIORAL: drive the real tool against a /proc/mounts fixture --------
 work_dir="$(mktemp --directory)"
 cleanup_handler() {
    stub_path_cleanup
@@ -119,32 +118,28 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## A /proc/self/mountinfo-shaped fixture. Fields: 1 id, 2 parent, 3 major:minor,
-## 4 root, 5 mount point, 6 opts, ... - fstype source superopts.
-## - major 43 (NBD_MAJOR): block fs directly on nbd, MUST be unmounted (one
-##   \040-encoded).
-## - nbd-backed btrfs: anonymous superblock so major is 0, but source is /dev/nbd*
-##   and fstype 'btrfs' is a real block fs -- MUST be unmounted (keying on major
-##   alone would skip it and disconnect the device under a live mount).
-## - major 8 / tmpfs: ordinary device and tmpfs, must NOT be.
+## A /proc/mounts-shaped fixture. Fields: device mountpoint fstype opts dump pass.
+## - nbd-backed block fs (ext4) directly on an nbd device, MUST be unmounted (one
+##   has a \040-encoded space in its mount point; several exercise the snapshot).
+## - nbd-backed btrfs: anonymous superblock (no major needed), but the source is
+##   an exact nbd device and 'btrfs' is a real block fs -- MUST be unmounted.
+## - an ordinary device (/dev/sda1) and a tmpfs: must NOT be.
 ## - the deputy spoof: source string '/dev/nbd0' but fstype 'fuse.evil' (a 'nodev'
 ##   type an unprivileged user can forge) -- must NOT be unmounted.
-mountinfo_fixture="${work_dir}/mountinfo"
+## - same-prefix sources (/dev/nbd-backup, /dev/nbd0-backup): NOT nbd devices --
+##   must NOT be unmounted.
+mounts_fixture="${work_dir}/mounts"
 {
-   printf '%s\n' '36 35 43:0 / /mnt/nbd-a rw,relatime shared:1 - ext4 /dev/nbd0 rw'
-   printf '%s\n' '37 35 8:1 / /boot rw,relatime shared:2 - ext4 /dev/sda1 rw'
-   printf '%s\n' '38 35 43:1 / /mnt/nbd\040b rw,relatime shared:3 - ext4 /dev/nbd1 rw'
-   printf '%s\n' '39 35 0:44 / /mnt/plain-tmpfs rw shared:4 - tmpfs tmpfs rw'
-   printf '%s\n' '40 35 43:2 / /mnt/nbd-c rw,relatime shared:5 - ext4 /dev/nbd2 rw'
-   printf '%s\n' '41 35 0:52 / /mnt/spoof rw shared:6 - fuse.evil /dev/nbd0 rw'
-   printf '%s\n' '42 35 0:60 / /mnt/nbd-btrfs rw,relatime shared:7 - btrfs /dev/nbd3p1 rw'
-   printf '%s\n' '43 35 7:1 / /mnt/nbd-backup rw,relatime shared:8 - ext4 /dev/nbd-backup rw'
-   printf '%s\n' '44 35 7:2 / /mnt/nbd0-backup rw,relatime shared:9 - ext4 /dev/nbd0-backup rw'
-   ## Optional-field count varies (mountinfo allows zero or many before ' - '):
-   ## a real-nbd mount with ZERO and with MULTIPLE optional fields must still parse.
-   printf '%s\n' '45 35 43:3 / /mnt/nbd-noopt rw,relatime - ext4 /dev/nbd4 rw'
-   printf '%s\n' '46 35 43:4 / /mnt/nbd-multiopt rw,relatime shared:10 master:2 - ext4 /dev/nbd5 rw'
-} > "${mountinfo_fixture}"
+   printf '%s\n' '/dev/nbd0 /mnt/nbd-a ext4 rw,relatime 0 0'
+   printf '%s\n' '/dev/sda1 /boot ext4 rw,relatime 0 0'
+   printf '%s\n' '/dev/nbd1 /mnt/nbd\040b ext4 rw,relatime 0 0'
+   printf '%s\n' 'tmpfs /mnt/plain-tmpfs tmpfs rw 0 0'
+   printf '%s\n' '/dev/nbd2 /mnt/nbd-c ext4 rw,relatime 0 0'
+   printf '%s\n' '/dev/nbd0 /mnt/spoof fuse.evil rw 0 0'
+   printf '%s\n' '/dev/nbd3p1 /mnt/nbd-btrfs btrfs rw,relatime 0 0'
+   printf '%s\n' '/dev/nbd-backup /mnt/nbd-backup ext4 rw,relatime 0 0'
+   printf '%s\n' '/dev/nbd0-backup /mnt/nbd0-backup ext4 rw,relatime 0 0'
+} > "${mounts_fixture}"
 
 ## A /proc/filesystems-shaped fixture: 'nodev'-prefixed lines are virtual /
 ## userspace filesystems (forgeable source), the rest are real block filesystems.
@@ -165,7 +160,7 @@ stub_path_init
 stub_cmd sudo 0
 
 run_rc=0
-DM_NBD_CLEANUP_PROC_MOUNTINFO="${mountinfo_fixture}" \
+DM_NBD_CLEANUP_PROC_MOUNTS="${mounts_fixture}" \
    DM_NBD_CLEANUP_PROC_FILESYSTEMS="${filesystems_fixture}" \
    HELPER_SCRIPTS_PATH="${hs_path}" \
    "${subject}" --release >/dev/null 2>&1 || run_rc=$?
@@ -175,23 +170,23 @@ else
    fail "behavioral: dm-nbd-cleanup --release exited ${run_rc} against the fixture"
 fi
 
-## Every real-nbd mount is unmounted -- the \040-encoded space (decoded) and the
-## anonymous-superblock btrfs whose major is 0 but is genuinely nbd-backed.
-for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs' '/mnt/nbd-noopt' '/mnt/nbd-multiopt'; do
+## Every nbd-backed mount is unmounted -- the \040-encoded space (decoded) and the
+## anonymous-superblock btrfs, accepted by exact nbd device name + block fstype.
+for want in '/mnt/nbd-a' '/mnt/nbd b' '/mnt/nbd-c' '/mnt/nbd-btrfs'; do
    if stub_called_with sudo umount -- "${want}"; then
-      pass "behavioral: real-nbd mount '${want}' was unmounted"
+      pass "behavioral: nbd-backed mount '${want}' was unmounted"
    else
-      fail "behavioral: real-nbd mount '${want}' was NOT unmounted (skipped or mis-decoded)"
+      fail "behavioral: nbd-backed mount '${want}' was NOT unmounted (skipped or mis-decoded)"
    fi
 done
 
 ## No non-nbd mount is unmounted -- ordinary device, tmpfs, the deputy spoof, and
-## a same-prefix source name (/dev/nbd-backup, major 7) that is NOT an nbd device.
+## same-prefix source names (/dev/nbd-backup, /dev/nbd0-backup) that are NOT nbd devices.
 for unwanted in '/boot' '/mnt/plain-tmpfs' '/mnt/spoof' '/mnt/nbd-backup' '/mnt/nbd0-backup'; do
    if stub_not_called_with sudo umount -- "${unwanted}"; then
       pass "behavioral: non-nbd mount '${unwanted}' was left alone"
    else
-      fail "behavioral: non-nbd mount '${unwanted}' was unmounted (major-key filtering broken)"
+      fail "behavioral: non-nbd mount '${unwanted}' was unmounted (exact-name/fstype filtering broken)"
    fi
 done
 
@@ -210,4 +205,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-nbd-cleanup keys on the nbd major and snapshots before unmounting (${pass_count} assertions)."
+printf '%s\n' "OK: dm-nbd-cleanup accepts only exact nbd device names with a block fstype and snapshots before unmounting (${pass_count} assertions)."
