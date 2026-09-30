@@ -552,7 +552,13 @@ wire() {
          fi
          ;;
       sdwdate-gui)
-         wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
+         ## SDWDATE_GUI_REPO points the log-viewer test at the component checkout
+         ## (CI checks out dist-ai and the component as SIBLINGS, so the test cannot
+         ## find usr/libexec/sdwdate-gui/log-viewer by walking up from its own path).
+         wire_env=(
+            "SDWDATE_GUI_REPO=$( pkg_dir sdwdate-gui )"
+            "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages"
+         )
          ;;
       sdwdate-onion-tester)
          ## The onion-tester CI wrappers are dist-ai's own usr/bin tools, invoked
