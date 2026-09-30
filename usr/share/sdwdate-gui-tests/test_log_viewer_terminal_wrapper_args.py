@@ -35,16 +35,20 @@ def _locate_log_viewer() -> str:
     if repo:
         return os.path.join(repo, rel)
 
-    try:
-        from sdwdate_gui import sdwdate_gui_client as client
-        directory = os.path.dirname(os.path.realpath(client.__file__))
-        while directory != '/':
-            candidate = os.path.join(directory, rel)
-            if os.path.isfile(candidate):
-                return candidate
-            directory = os.path.dirname(directory)
-    except ModuleNotFoundError:
-        pass
+    # This test ships inside the sdwdate-gui checkout (CI: dist-ai/ nested under the
+    # consumer repo) and beside the installed tree, so an ancestor of __file__ always
+    # holds usr/libexec/sdwdate-gui/log-viewer. Resolve from __file__ -- no sdwdate_gui
+    # import, which pulls in pyinotify (absent in the CI core suite) and would drop this
+    # to the uninstalled fallback path, failing the test on a missing dependency.
+    directory = os.path.dirname(os.path.realpath(__file__))
+    while True:
+        candidate = os.path.join(directory, rel)
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
 
     return '/' + rel
 
