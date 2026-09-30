@@ -26,29 +26,14 @@ import unittest
 
 
 def _locate_log_viewer() -> str:
-    """Resolve usr/libexec/sdwdate-gui/log-viewer from an explicit repo
-    override, then from the importable sdwdate_gui module's checkout, then the
+    """Resolve usr/libexec/sdwdate-gui/log-viewer from the SDWDATE_GUI_REPO
+    override (dist-ai-tests-all wires it from the component checkout), else the
     installed path."""
     rel = 'usr/libexec/sdwdate-gui/log-viewer'
 
     repo = os.environ.get('SDWDATE_GUI_REPO', '').strip()
     if repo:
         return os.path.join(repo, rel)
-
-    # This test ships inside the sdwdate-gui checkout (CI: dist-ai/ nested under the
-    # consumer repo) and beside the installed tree, so an ancestor of __file__ always
-    # holds usr/libexec/sdwdate-gui/log-viewer. Resolve from __file__ -- no sdwdate_gui
-    # import, which pulls in pyinotify (absent in the CI core suite) and would drop this
-    # to the uninstalled fallback path, failing the test on a missing dependency.
-    directory = os.path.dirname(os.path.realpath(__file__))
-    while True:
-        candidate = os.path.join(directory, rel)
-        if os.path.isfile(candidate):
-            return candidate
-        parent = os.path.dirname(directory)
-        if parent == directory:
-            break
-        directory = parent
 
     return '/' + rel
 
