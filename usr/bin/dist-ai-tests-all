@@ -65,6 +65,7 @@ core_suites=(
    anon-gw-anonymizer-config-tests
    anon-ws-disable-stacked-tor-tests
    desktop-config-dist-tests
+   initializer-dist-tests
    legacy-dist-tests
    user-sysmaint-split-tests
    vm-config-dist-tests
@@ -460,6 +461,15 @@ wire() {
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
+         ;;
+      initializer-dist)
+         ## cleanup_test.sh sources the 80_cleanup script (was_executed guard) and
+         ## calls its pure functions; it locates check_runtime.bsh + real safe-rm
+         ## via HELPER_SCRIPTS_REPO.
+         wire_env=( "INITIALIZER_DIST_REPO=$( pkg_dir initializer-dist )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_REPO=${hs}" )
+         fi
          ;;
       legacy-dist)
          ## fixes_test.sh sources helper-scripts libs and runs mock helper-scripts
@@ -928,6 +938,9 @@ suite_component() {
          ;;
       desktop-config-dist)
          printf '%s' 'desktop-config-dist'
+         ;;
+      initializer-dist)
+         printf '%s' 'initializer-dist'
          ;;
       legacy-dist)
          printf '%s' 'legacy-dist'
