@@ -1706,6 +1706,12 @@ expect_rule "R-192" "timeout 5 bash -c 'a && b'"  present
 ## The long-form (>5-line) program is still caught (kept from the original
 ## predicate); the body carries embedded newlines.
 expect_rule "R-192" "$(printf 'bash -c "a\nb\nc\nd\ne\nf\ng"')" present
+## Concatenated-quote value ('echo AA'"; echo BB" joins to 'echo AA; echo BB',
+## two statements) -- the single-outer-quote strip missed it; the value
+## extractor (word_string) catches it. The '..'"'"'..' quote-escape idiom is one
+## command and stays spared.
+expect_rule "R-192" "bash -c 'echo AA'\"; echo BB\"" present
+expect_rule "R-192" "bash -c 'it'\"'\"'s one'"        absent
 ## Glue is SPARED: a single-command '-c' (direct AND behind a wrapper) -- the
 ## false-positive the inject warned about ('bwrap/timeout bash -c <single>').
 expect_rule "R-192" "bash -c 'touch /run/x'"      absent

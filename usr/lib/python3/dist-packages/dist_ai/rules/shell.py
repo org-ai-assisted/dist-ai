@@ -736,7 +736,7 @@ class ShellInlineShellC(Rule):
         ## no shell token and is a documented follow-up in shell_c_programs.
         for call, program, line_count in h.shell_c_programs(
                 ctx.tree, ctx.source):
-            if h.embeds_multi_statement(h.unquote(program), strict=True):
+            if h.embeds_multi_statement(program, strict=True):
                 yield _fail(
                     ctx, "R-192",
                     "R-192 inline shell program passed to a shell '-c' embeds a "
