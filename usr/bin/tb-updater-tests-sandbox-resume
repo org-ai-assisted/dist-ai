@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -33,19 +34,39 @@ fi
 
 if [ "$(id -u)" != '0' ]; then
    printf '%s\n' 'tb-updater-tests-sandbox-resume: must run as root (sandbox-update-torbrowser is the postinst entry point); skipping.' >&2
+   ## style-ok: allow-skip: root-only opt-in suite -- sandbox-update-torbrowser is the postinst entry point; a non-root run cannot exercise it
    exit 77
 fi
 if [ ! -x '/usr/libexec/tb-updater/sandbox-update-torbrowser' ]; then
    printf '%s\n' 'tb-updater-tests-sandbox-resume: /usr/libexec/tb-updater/sandbox-update-torbrowser not installed; skipping.' >&2
+   ## style-ok: allow-skip: installed-only -- drives the installed sandbox-update-torbrowser; nothing to judge from a bare checkout
    exit 77
 fi
 if [ ! -x '/usr/bin/update-torbrowser' ]; then
    printf '%s\n' 'tb-updater-tests-sandbox-resume: /usr/bin/update-torbrowser not installed; skipping.' >&2
+   ## style-ok: allow-skip: installed-only -- drives the installed update-torbrowser; nothing to judge from a bare checkout
    exit 77
 fi
 if ! getent passwd 'tb-updater' >/dev/null; then
    printf '%s\n' "tb-updater-tests-sandbox-resume: 'tb-updater' system account missing; skipping." >&2
+   ## style-ok: allow-skip: installed-only -- the 'tb-updater' system account exists only once the package is installed
    exit 77
+fi
+
+# shellcheck disable=SC2317  ## reached via the EXIT trap
+sandbox_resume_cleanup() {
+   safe-rm --recursive --force -- "${sandbox_resume_runtime_dir}"
+}
+
+## sandbox-update-torbrowser self-locks via helper-scripts lockfile.sh, which needs a
+## per-user runtime dir and by design refuses any /tmp fallback (TOCTOU). The GitHub
+## Actions root context has no XDG_RUNTIME_DIR / /run/user/0, so provide a private 0700
+## one for the lock the script takes as root before it setpriv's to the 'tb-updater'
+## account. A real runtime dir (interactive / e2e) is left untouched.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR}" ]; then
+   sandbox_resume_runtime_dir="$(mktemp --directory)"
+   trap sandbox_resume_cleanup EXIT
+   export XDG_RUNTIME_DIR="${sandbox_resume_runtime_dir}"
 fi
 
 ## Gate the harness so it cannot be mis-invoked directly on a real system;
