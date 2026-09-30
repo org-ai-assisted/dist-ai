@@ -46,6 +46,19 @@ if [ -z "${block}" ]; then
    exit 1
 fi
 
+## Guard against sed over-reading past the block's closing 'fi' (the '^fi$' end
+## anchor only matches a column-0 'fi', so an indented one would extend the range
+## to the next column-0 'fi' and pull in later code the driver would then source).
+## The 'flavor_built' helper is the construct immediately after the block, so its
+## presence means the extraction over-read.
+case "${block}" in
+   *flavor_built*)
+      fail "extraction over-read past the flavors_list block (indented 'fi'?); tighten the sed range"
+      printf '%s\n' "FAILED: over-read" >&2
+      exit 1
+      ;;
+esac
+
 ## Guard the guard: a silent revert that dropped the split would restore the
 ## '[ -n ] ||' one-liner and lose the 'read -r -a'. The behavioral case below
 ## catches it too, but pin it structurally so the intent is explicit.
@@ -86,7 +99,10 @@ DRIVER
 check_case() {
    local label="$1" want_count="$2" want_values="$3" input="${4:-__UNSET__}"
    local out got_count got_values
-   out="$(bash "${work}/driver.bash" "${work}/block.bash" "${input}")"
+   ## stdin from /dev/null: a malformed subject whose then-branch did a BARE
+   ## 'read -r -a flavors_list' (no here-string) would otherwise consume the
+   ## test's stdin instead of splitting the scalar, masking the bug.
+   out="$(bash "${work}/driver.bash" "${work}/block.bash" "${input}" < /dev/null)"
    got_count="$(printf '%s\n' "${out}" | sed -n '1p')"
    got_values="$(printf '%s\n' "${out}" | sed -n '2p')"
    if [ "${got_count}" = "${want_count}" ] && [ "${got_values}" = "${want_values}" ]; then
