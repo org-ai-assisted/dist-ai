@@ -357,8 +357,13 @@ def scan_systemd_dropin(abs_path, rel_path):
 
 
 def parse_service_forced_root(text):
-    """Exec* programs carrying a '+' prefix (run as root ignoring User=)."""
-    forced = []
+    """Exec* programs carrying a '+' prefix (run as root ignoring User=).
+
+    A bare 'Key=' resets ONLY that key's list (systemd semantics), so each Exec*
+    key's forced-root programs are tracked separately and merged at the end --
+    mirroring parse_service() so the two parsers agree.
+    """
+    forced_by_key = {key: [] for key in EXEC_KEYS}
     section = None
     for raw in text.splitlines():
         line = raw.strip()
@@ -368,11 +373,19 @@ def parse_service_forced_root(text):
         if section != "service" or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        if key.strip() in EXEC_KEYS and value.strip().startswith("+"):
-            fields = value.strip().lstrip(EXEC_PREFIX).split()
-            if fields:
-                forced.append(fields[0])
-    return forced
+        key = key.strip()
+        value = value.strip()
+        if key not in EXEC_KEYS:
+            continue
+        if not value:
+            forced_by_key[key] = []  ## bare reset clears only this key
+            continue
+        if not value.startswith("+"):
+            continue
+        fields = value.lstrip(EXEC_PREFIX).split()
+        if fields:
+            forced_by_key[key].append(fields[0])
+    return [prog for key in EXEC_KEYS for prog in forced_by_key[key]]
 
 
 ## --- privleap ---------------------------------------------------------------
