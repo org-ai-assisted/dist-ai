@@ -23,6 +23,11 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+## 'python3 -m pytest' below imports the subject modules from the checkout on
+## PYTHONPATH; without this its python (no -B) writes __pycache__ into the source
+## tree (dm-preflight / dm-check-unicode then flag the cruft). Covers a standalone
+## run too (dist-ai-tests-all also exports this for the orchestrated path).
+export PYTHONDONTWRITEBYTECODE=1
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 

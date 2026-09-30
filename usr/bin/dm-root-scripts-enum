@@ -140,7 +140,7 @@ ESCALATOR_SUDOLIKE = {
         "long_opts": frozenset(("user", "help", "version",
                                 "disable-internal-agent", "keep-cwd")),
         "user_short": None, "user_long": "user",
-        "noexec_short": frozenset(), "noexec_long": frozenset(),
+        "noexec_short": frozenset(), "noexec_long": frozenset(("help", "version")),
     },
     "doas": {
         "value_short": frozenset("uCa"), "value_long": frozenset(),
@@ -330,21 +330,28 @@ def scan_systemd(abs_path, rel_path):
     return {"scope": "system", "user": user_value or "root", "exec": exec_targets}
 
 
-ACTIVATION_EXT = (".socket", ".timer", ".path", ".mount")
+ACTIVATION_EXT = (".socket", ".timer", ".path", ".mount", ".automount")
+## Only these activate a same-named .service by default; a .mount/.automount
+## performs the mount directly, it does not imply a .service.
+ACTIVATION_DEFAULTS_SERVICE = (".socket", ".timer", ".path")
+## [Socket] also carries ExecStopPre, which .service does not.
+ACTIVATION_EXEC_KEYS = EXEC_KEYS + ("ExecStopPre",)
 
 
 def scan_systemd_activation(abs_path, rel_path):
-    """A .socket/.timer/.path/.mount unit. It activates a .service (caught
-    separately), but a [Socket] carries its own root Exec* and every such unit
-    is a root-triggered surface, so report its type, Exec* programs, and the
-    unit it activates (Service=/Unit=, else the same-named .service)."""
+    """A .socket/.timer/.path/.mount/.automount unit. It activates a .service
+    (caught separately), but a [Socket] carries its own Exec* and every such
+    unit is a root-triggered surface, so report its type, its Exec* programs and
+    their run-as identity, and the unit it activates."""
     if "/systemd/user/" in ("/" + rel_path):
         return None
     ext = next((e for e in ACTIVATION_EXT if name_has_ext(rel_path, e)), None)
-    if ext is None:
+    if ext is None or name_has_ext(rel_path, ".user" + ext):
         return None
     exec_targets = []
     activates = None
+    user_value = None
+    accept = False
     for raw in read_text(abs_path).splitlines():
         line = raw.strip()
         if line.startswith("#") or "=" not in line:
@@ -352,15 +359,29 @@ def scan_systemd_activation(abs_path, rel_path):
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
-        if key in EXEC_KEYS and value:
+        if key in ACTIVATION_EXEC_KEYS and value:
             fields = value.lstrip(EXEC_PREFIX).split()
             if fields:
                 exec_targets.append(fields[0])
         elif key in ("Service", "Unit") and value:
             activates = value
-    if activates is None:
-        activates = install_name(rel_path).rsplit(".", 1)[0] + ".service"
-    return {"unit_type": ext[1:], "exec": exec_targets, "activates": activates}
+        elif key == "User":
+            user_value = value or None
+        elif key == "Accept" and value.lower() in TRUTHY:
+            accept = True
+    if activates is None and ext in ACTIVATION_DEFAULTS_SERVICE:
+        stem = install_name(rel_path).rsplit(".", 1)[0]
+        ## An Accept=yes socket instantiates a template unit; a name that is
+        ## already a template ('foo@') keeps its single '@'.
+        if accept and not stem.endswith("@"):
+            stem += "@"
+        activates = stem + ".service"
+    return {
+        "unit_type": ext[1:],
+        "exec": exec_targets,
+        "exec_user": user_value or "root",
+        "activates": activates,
+    }
 
 
 def scan_systemd_dropin(abs_path, rel_path):
@@ -541,7 +562,7 @@ def scan_sudoers(abs_path, rel_path):
 POLKIT_ACTION_SPLIT_RE = re.compile(r"""<action\s+id=["']([^"']+)["']""")
 POLKIT_ALLOW_RE = re.compile(r"<(allow_[a-z]+)>([^<]+)</allow_[a-z]+>")
 POLKIT_EXEC_PATH_RE = re.compile(
-    r'org\.freedesktop\.policykit\.exec\.path"\s*>\s*([^<]+)')
+    r'org\.freedesktop\.policykit\.exec\.path["\']\s*>\s*([^<]+)')
 
 
 def scan_polkit(abs_path, rel_path):
@@ -573,7 +594,7 @@ def scan_polkit(abs_path, rel_path):
 
 ## udev runs RUN+= / IMPORT{program} as root (udevd is root).
 UDEV_PROG_RE = re.compile(
-    r'(?:RUN(?:\{program\})?|IMPORT\{program\})\s*\+?=\s*"([^"]*)"')
+    r'(?:RUN(?:\{program\})?|IMPORT\{program\}|PROGRAM)\s*[+:]?=\s*"([^"]*)"')
 
 
 def scan_udev(abs_path, rel_path):
@@ -602,13 +623,9 @@ def scan_pam(abs_path, rel_path):
         if line.startswith("#") or "pam_exec.so" not in line:
             continue
         after = line.split("pam_exec.so", 1)[1].split()
-        for token in after:
-            key = token.split("=", 1)[0]
-            if key in PAM_EXEC_FLAGS or "=" in token:
-                continue
-            if token.startswith("/"):
-                programs.append(token)
-            break
+        program = next((tok for tok in after if tok.startswith("/")), None)
+        if program:
+            programs.append(program)
     return {"programs": programs} if programs else None
 
 
@@ -657,21 +674,22 @@ def scan_path_surface(abs_path, rel_path):
 ## ADVISORY, regex-based (not an AST): a Python file invoking an escalator via
 ## subprocess. The bash-AST 'privileged-call' scan cannot see these, so flag
 ## them for review rather than leave the surface invisible.
+## The escalator as the first element of a call/list literal: covers
+## subprocess.run(["sudo", ...]), Popen(['leaprun', ...]), run(["su", ...]),
+## os.system("sudo ...") -- regardless of how the subprocess fn was imported.
 PYTHON_ESCALATOR_RE = re.compile(
-    r"""['"](?:/usr/bin/|/bin/)?(sudo|pkexec|doas|run0|leaprun|runuser)['"]""")
-PYTHON_SUBPROCESS_RE = re.compile(
-    r"\b(?:subprocess\.\w+|Popen|check_output|check_call|getoutput|os\.system|"
-    r"os\.exec\w*|os\.spawn\w*)\b")
+    r"""[(\[]\s*['"](?:/usr/s?bin/|/s?bin/)?"""
+    r"""(sudo|pkexec|doas|run0|leaprun|runuser|su)(?:['" ])""")
 
 
 def scan_python_escalation(abs_path, rel_path):
+    ## ADVISORY, line-based: a call whose escalator and opening bracket are on
+    ## the same line. A multiline list split across lines is a known miss.
     if not name_has_ext(rel_path, ".py"):
         return None
     calls = []
     for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
         if raw.lstrip().startswith("#"):
-            continue
-        if not PYTHON_SUBPROCESS_RE.search(raw):
             continue
         match = PYTHON_ESCALATOR_RE.search(raw)
         if match:
@@ -729,7 +747,9 @@ def escalator_words(call, source):
         return None
     name = bash_ast.word_string(words[index])
     base = name.rsplit("/", 1)[-1] if name else None
-    return (base, words[index:]) if base in ESCALATORS else None
+    if base in ESCALATORS or base in HELPER_ESCALATORS:
+        return base, words[index:]
+    return None
 
 
 def analyze_sudolike(config, words, source):
@@ -794,6 +814,7 @@ def analyze_su(words, source):
     runs_as = "root"
     command = None
     mode = "shell"
+    user_set = False
     index = 1
     total = len(words)
     while index < total:
@@ -812,10 +833,15 @@ def analyze_su(words, source):
                 elif index + 1 < total:
                     index += 1
                     command, mode = bash_ast.word_string(words[index]), None
-            elif name == "user" and index + 1 < total:
-                index += 1
-                value = bash_ast.word_string(words[index])
-                runs_as = value if value is not None else "?"
+            elif name == "user":
+                if "=" in text:
+                    value = text.split("=", 1)[1]
+                    runs_as = "?" if EXPANSION_RE.search(value) else value
+                elif index + 1 < total:
+                    index += 1
+                    value = bash_ast.word_string(words[index])
+                    runs_as = value if value is not None else "?"
+                user_set = True
             index += 1
             continue
         if text.startswith("-"):
@@ -830,13 +856,19 @@ def analyze_su(words, source):
                         command, mode = value, None
                     elif letter == "u":
                         runs_as = value if value is not None else "?"
+                        user_set = True
                     break
             index += 1
             continue
-        ## first bare operand is the target user
-        value = bash_ast.word_string(words[index])
-        runs_as = value if value is not None else "?"
-        index += 1
+        ## The FIRST bare operand is the target user; anything after it is an
+        ## argument to the command, not another user.
+        if not user_set:
+            value = bash_ast.word_string(words[index])
+            runs_as = value if value is not None else "?"
+            user_set = True
+            index += 1
+            continue
+        break
     ## A command after '--' (or after the user) overrides the interactive shell.
     if command is None and index < total:
         command, mode = bash_ast.word_string(words[index]), None
@@ -845,16 +877,23 @@ def analyze_su(words, source):
 
 def analyze_leaprun(words, source):
     """(action, runs_as, mode) for the privleap client. The first operand is the
-    action name; its true target is the matching conf.d action's TargetUser (a
-    privleap-action row), so runs_as here is left 'root' with mode 'privleap'."""
+    action name. Its true run-as identity is the matching conf.d action's
+    TargetUser, resolved in a separate category, so runs_as is left unknown
+    ('?') rather than falsely 'root'. '--check'/'--test' only test authorization
+    (no execution), noted 'privleap-check'."""
+    mode = "privleap"
+    seen_ddash = False
     for index in range(1, len(words)):
         text = word_text(words[index], source)
         if text == "--":
+            seen_ddash = True
             continue
-        if text.startswith("-"):
+        if not seen_ddash and text.startswith("-"):
+            if text in ("--check", "--test"):
+                mode = "privleap-check"
             continue
-        return bash_ast.word_string(words[index]), "root", "privleap"
-    return None, "root", "privleap"
+        return bash_ast.word_string(words[index]), "?", mode
+    return None, "?", mode
 
 
 def scan_privileged_calls(source, tree):
@@ -868,19 +907,15 @@ def scan_privileged_calls(source, tree):
     for call in bash_ast.call_exprs(tree):
         found = escalator_words(call, source)
         if found is None:
-            command_base = bash_ast.command_basename(call)
-            if command_base in HELPER_ESCALATORS:
-                ## A project helper that escalates internally; its first operand
-                ## is the command it runs as root.
-                word = bash_ast.command_word(call)
-                line = word.get("Pos", {}).get("Line") if word else None
-                call_args = bash_ast.args(call)
-                program = bash_ast.word_string(call_args[1]) if len(call_args) > 1 else None
-                yield line, command_base, program, "root", "helper"
             continue
         tool, words = found
         line = words[0].get("Pos", {}).get("Line") if words else None
-        if tool in ESCALATOR_SUDOLIKE:
+        if tool in HELPER_ESCALATORS:
+            ## A project helper that escalates internally (root_cmd); its first
+            ## operand is the command it runs as root. Peeled from any wrapper.
+            program = bash_ast.word_string(words[1]) if len(words) > 1 else None
+            command, runs_as, mode = program, "root", "helper"
+        elif tool in ESCALATOR_SUDOLIKE:
             command, runs_as, mode = analyze_sudolike(
                 ESCALATOR_SUDOLIKE[tool], words, source)
         elif tool in ("su", "runuser"):

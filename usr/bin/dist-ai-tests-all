@@ -15,6 +15,11 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+## Never write .pyc into a subject CHECKOUT: suites import package modules from
+## the checkout (on PYTHONPATH), and a pytest/import lane whose python lacks -B
+## would drop __pycache__ into the source tree, which then trips dm-preflight /
+## dm-check-unicode. Inherited by every suite + subprocess launched below.
+export PYTHONDONTWRITEBYTECODE=1
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 

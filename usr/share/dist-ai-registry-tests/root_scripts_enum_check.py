@@ -65,6 +65,9 @@ def main(argv):
     def wrap(line):
         return sudo_at("usr/libexec/foo/wrapprobe", line)
 
+    def optesc(line):
+        return sudo_at("usr/libexec/foo/optesc", line)
+
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
     sep = "usr/libexec/foo/sepprobe"
@@ -111,10 +114,19 @@ def main(argv):
          one("systemd-activation", "foo.socket") is not None
          and one("systemd-activation", "foo.socket")["unit_type"] == "socket"
          and "/usr/bin/socket-root-pre" in one("systemd-activation", "foo.socket")["exec"]
+         and "/usr/bin/socket-root-stop" in one("systemd-activation", "foo.socket")["exec"]
          and one("systemd-activation", "foo.socket")["activates"] == "foo-worker.service"),
         ("a .timer unit records the service it activates",
          one("systemd-activation", "foo.timer") is not None
          and one("systemd-activation", "foo.timer")["activates"] == "foo-daily.service"),
+        ("an Accept=yes template socket keeps a single '@' in its service",
+         one("systemd-activation", "tmpl@.socket") is not None
+         and one("systemd-activation", "tmpl@.socket")["activates"] == "tmpl@.service"),
+        ("a .mount does not claim to activate a same-named service",
+         one("systemd-activation", "data.mount") is not None
+         and one("systemd-activation", "data.mount")["activates"] is None),
+        ("a debhelper .user.timer source is excluded",
+         one("systemd-activation", "foo.user.timer") is None),
 
         ## systemd drop-ins
         ("a service.d drop-in that adds Exec programs is enumerated",
@@ -237,10 +249,35 @@ def main(argv):
         ("a root_cmd helper call is enumerated as escalation",
          wrap(3) is not None and wrap(3)["tool"] == "root_cmd"
          and wrap(3)["command"] == "/usr/bin/rprog"),
+        ("a root_cmd behind a timeout wrapper is still enumerated",
+         wrap(4) is not None and wrap(4)["tool"] == "root_cmd"
+         and wrap(4)["command"] == "/usr/bin/wrapped-root"),
         ("a Python subprocess escalator call is flagged (advisory)",
          one("nonshell-escalation", "foo/esc.py") is not None
-         and any(c["tool"] == "leaprun"
-                 for c in one("nonshell-escalation", "foo/esc.py")["calls"])),
+         and {"leaprun", "su"} <=
+         {c["tool"] for c in one("nonshell-escalation", "foo/esc.py")["calls"]}),
+
+        ## escalator option edge cases (optesc)
+        ("runuser --user=VALUE resolves the target",
+         optesc(2) is not None and optesc(2)["runs_as"] == "nobody"
+         and optesc(2)["command"] == "/usr/bin/ru"),
+        ("su user -c cmd: a trailing argv0 does not overwrite the user",
+         optesc(3) is not None and optesc(3)["runs_as"] == "postgres"
+         and optesc(3)["command"] == "id"),
+        ("leaprun --check is noted as a non-executing check",
+         optesc(4) is not None
+         and optesc(4).get("note") == "leaprun-privleap-check"),
+        ("leaprun run-as is left unresolved, not falsely root",
+         optesc(4) is not None and optesc(4)["runs_as"] == "?"),
+        ("pkexec --help is a non-executing mode, not a notify",
+         optesc(5) is not None and optesc(5).get("note") == "pkexec-help"),
+        ("udev PROGRAM and a := final assignment are enumerated",
+         one("udev-rule", "90-foo.rules") is not None
+         and "/usr/bin/udev-probe" in one("udev-rule", "90-foo.rules")["programs"]
+         and "/usr/bin/udev-final" in one("udev-rule", "90-foo.rules")["programs"]),
+        ("a single-quoted polkit exec.path key is captured",
+         _polkit_exec(one("polkit", "com.example.test"), "com.example.test.do")
+         == "/usr/libexec/foo/pkexec-helper"),
         ("a dm build-script sudo call is enumerated under derivative-maker",
          one("privileged-call", "help-steps/buildscript") is not None
          and one("privileged-call", "help-steps/buildscript")["component"] == "derivative-maker"),
