@@ -205,12 +205,27 @@ write 'packages/kicksecure/foo/usr/libexec/foo/wrapprobe' <<'EOF'
 #!/bin/bash
 timeout --kill-after 5 5 sudo -- /usr/bin/tprog
 root_cmd /usr/bin/rprog
+timeout 5 root_cmd /usr/bin/wrapped-root
+EOF
+
+## escalator option edge cases.
+##   2 runuser --user=u -- prog -> runs_as nobody, command /usr/bin/ru
+##   3 su user -c cmd argv       -> runs_as postgres (argv does not overwrite)
+##   4 leaprun --check action    -> note leaprun-privleap-check
+##   5 pkexec --help             -> note pkexec-help (non-executing)
+write 'packages/kicksecure/foo/usr/libexec/foo/optesc' <<'EOF'
+#!/bin/bash
+runuser --user=nobody -- /usr/bin/ru
+su postgres -c id extra-argv0
+leaprun --check some-check-action
+pkexec --help
 EOF
 
 ## a Python file invoking an escalator via subprocess -> nonshell-escalation.
 write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/esc.py' <<'EOF'
-import subprocess
+from subprocess import run
 subprocess.run(["/usr/bin/leaprun", "some-action"])
+run(["su", "root", "-c", "id"])
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.
@@ -277,12 +292,33 @@ write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.socket' <<'EOF'
 [Socket]
 ListenStream=/run/foo.sock
 ExecStartPre=/usr/bin/socket-root-pre
+ExecStopPre=/usr/bin/socket-root-stop
 Service=foo-worker.service
 EOF
 write 'packages/kicksecure/foo/usr/lib/systemd/system/foo.timer' <<'EOF'
 [Timer]
 OnCalendar=daily
 Unit=foo-daily.service
+EOF
+
+## a template Accept=yes socket -> instantiates <stem>.service (single '@').
+write 'packages/kicksecure/foo/usr/lib/systemd/system/tmpl@.socket' <<'EOF'
+[Socket]
+ListenStream=1234
+Accept=yes
+EOF
+
+## a .mount does not implicitly activate a same-named service.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/data.mount' <<'EOF'
+[Mount]
+What=/dev/sda1
+Where=/data
+EOF
+
+## a debhelper .user.timer source name -> user scope -> excluded.
+write 'packages/kicksecure/foo/debian/foo.user.timer' <<'EOF'
+[Timer]
+OnCalendar=daily
 EOF
 
 ## sudoers: ACTIVE NOPASSWD root rule; commands exclude the arguments.
@@ -309,7 +345,7 @@ write 'packages/kicksecure/foo/usr/share/polkit-1/actions/com.example.test.polic
 <policyconfig>
   <action id="com.example.test.do">
     <defaults><allow_active>yes</allow_active></defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/foo/pkexec-helper</annotate>
+    <annotate key='org.freedesktop.policykit.exec.path'>/usr/libexec/foo/pkexec-helper</annotate>
   </action>
   <action id='com.example.test.other'>
     <defaults><allow_active>no</allow_active></defaults>
@@ -345,11 +381,12 @@ EOF
 ## config-file root hooks (run as root at their trigger).
 write 'packages/kicksecure/foo/usr/lib/udev/rules.d/90-foo.rules' <<'EOF'
 ACTION=="add", SUBSYSTEM=="input", RUN+="/usr/bin/udev-root-prog --flag"
+ACTION=="add", PROGRAM="/usr/bin/udev-probe", RUN:="/usr/bin/udev-final"
 EOF
 write 'packages/kicksecure/foo/usr/share/pam-configs/foo' <<'EOF'
 Name: foo
 Auth-Type: Primary
-Auth: requisite pam_exec.so seteuid quiet /usr/libexec/foo/pam-root-prog
+Auth: requisite pam_exec.so seteuid quiet_log /usr/libexec/foo/pam-root-prog
 EOF
 write 'packages/kicksecure/foo/etc/grub.d/10_foo' <<'EOF'
 #!/bin/sh
