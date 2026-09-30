@@ -1,0 +1,465 @@
+#!/usr/bin/python3 -Bsu
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Enumerate the root-privileged script surface of derivative-maker + submodules.
+
+Machine-readable inventory (JSON) of every script/config that executes with
+root privileges, split into four categories:
+
+  maintainer-script  Debian preinst/postinst/prerm/postrm/config. dpkg runs
+                     these as root on install/upgrade/removal.
+
+  systemd-unit       .service units that run as root: system-scope units with
+                     no User= (root by default) or User=root/User=0. User-scope
+                     units (.../systemd/user/...) and units pinned to a non-root
+                     User= are EXCLUDED -- they do not run as root. Each entry
+                     lists the ExecStart/ExecStartPre/ExecStartPost/ExecStop
+                     program targets, which are the scripts that actually run.
+
+  sudoers            etc/sudoers.d drop-ins that GRANT a command as root. Only
+                     ACTIVE rules count: a file whose directives are all
+                     commented out (e.g. uwt) grants nothing and is reported
+                     with grants_root=false. NOPASSWD rules are flagged.
+
+  polkit             polkit action definitions (privileged operations a caller
+                     can request; the pkexec/helper they authorize runs as
+                     root). Action ids and their <defaults> are listed.
+
+  build-time         derivative-maker's OWN build orchestration that escalates
+                     via sudo (help-steps/, build-steps.d/, top-level scripts),
+                     plus the chroot/pbuilder scripts that run as root inside
+                     the build chroot. Submodule package scripts are NOT counted
+                     here -- their root surface is the four categories above.
+
+Per the "never reinvent a bash parser" rule, sudo-command extraction is a
+SIMPLE match: it captures sudo's options and the first program token. A line
+too tangled to read simply (pipes into sudo, sudo of a shell variable,
+here-doc, etc.) is emitted with command=null and note="notify" for human eyes,
+never mis-parsed into a confident wrong answer.
+
+The tool REPORTS; it has no pass/fail verdict on the inventory. It exits
+non-zero only if it examined nothing (a zero-finding "clean" report is the
+failure mode an empty audit hides).
+
+Usage:  dm-root-scripts-enum [<derivative-maker-root>]
+Output: JSON on stdout.
+Exit:   0 normally; 1 if the root does not exist or nothing was examined.
+"""
+
+import json
+import os
+import re
+import sys
+
+
+MAINTAINER_HOOKS = ("preinst", "postinst", "prerm", "postrm", "config")
+
+## Match e.g.  security-misc-shared.postinst  or  postinst
+MAINTAINER_RE = re.compile(
+    r"(?:^|\.)(" + "|".join(MAINTAINER_HOOKS) + r")$"
+)
+
+## Directives inside a [Service] section that name a program run as root.
+EXEC_KEYS = ("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStop", "ExecReload")
+
+## Leading special chars systemd allows before the executable path.
+EXEC_PREFIX = "+-!@:"
+
+
+def read_text(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def submodule_paths(dm_root):
+    """Relative submodule dir paths from .gitmodules, longest first."""
+    gitmodules = os.path.join(dm_root, ".gitmodules")
+    paths = []
+    if os.path.isfile(gitmodules):
+        for line in read_text(gitmodules).splitlines():
+            line = line.strip()
+            if line.startswith("path"):
+                _, _, value = line.partition("=")
+                value = value.strip()
+                if value:
+                    paths.append(value.rstrip("/"))
+    ## Longest first so the deepest matching submodule wins.
+    return sorted(set(paths), key=len, reverse=True)
+
+
+def component_for(rel_path, submodules):
+    """Map a repo-relative path to its owning component.
+
+    Returns (component_name, submodule_path). A file under a submodule is
+    attributed to that submodule (name = its last path segment); anything else
+    belongs to the derivative-maker superproject itself.
+    """
+    for sub in submodules:
+        if rel_path == sub or rel_path.startswith(sub + "/"):
+            return os.path.basename(sub), sub
+    return "derivative-maker", ""
+
+
+def shebang(path):
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(256)
+    except OSError:
+        return None
+    if first.startswith(b"#!"):
+        return first[2:].decode("utf-8", "replace").strip()
+    return None
+
+
+def walk_files(dm_root):
+    """Yield (abs_path, rel_path) for every file, skipping VCS/build dirs."""
+    skip_dirs = {".git", ".pytest_cache", "__pycache__"}
+    for dirpath, dirnames, filenames in os.walk(dm_root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for name in filenames:
+            abs_path = os.path.join(dirpath, name)
+            if os.path.islink(abs_path):
+                continue
+            rel_path = os.path.relpath(abs_path, dm_root)
+            yield abs_path, rel_path
+
+
+def scan_maintainer(abs_path, rel_path):
+    name = os.path.basename(rel_path)
+    match = MAINTAINER_RE.search(name)
+    if not match:
+        return None
+    ## Must live in a debian/ packaging dir to be a maintainer script.
+    if "/debian/" not in ("/" + rel_path) and not rel_path.startswith("debian/"):
+        return None
+    return {"hook": match.group(1), "interpreter": shebang(abs_path)}
+
+
+def parse_service(text):
+    """Return (runs_as_root, user_value, exec_targets) for a .service file.
+
+    runs_as_root is False when a non-root User= is pinned; the [Install]/[Unit]
+    sections are ignored -- only [Service] User=/Exec* matter.
+    """
+    user_value = None
+    exec_targets = []
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section != "service":
+            continue
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key == "User":
+            ## Last assignment wins (a drop-in may reset then set).
+            user_value = value if value else None
+        elif key in EXEC_KEYS:
+            if not value:
+                ## Bare 'ExecStart=' resets the list; drop what we captured.
+                if key == "ExecStart":
+                    exec_targets = []
+                continue
+            program = value.split()[0].lstrip(EXEC_PREFIX)
+            if program:
+                exec_targets.append(program)
+    runs_as_root = user_value is None or user_value in ("root", "0")
+    return runs_as_root, user_value, exec_targets
+
+
+def scan_systemd(abs_path, rel_path):
+    if not rel_path.endswith(".service"):
+        return None
+    ## User-scope units run as the logged-in user, never root.
+    if "/systemd/user/" in ("/" + rel_path):
+        return None
+    text = read_text(abs_path)
+    runs_as_root, user_value, exec_targets = parse_service(text)
+    if not runs_as_root:
+        return None
+    return {
+        "scope": "system",
+        "user": user_value or "root",
+        "exec": exec_targets,
+    }
+
+
+def scan_sudoers(abs_path, rel_path):
+    ## sudoers.d drop-ins; the filename may carry a '#' (dpkg-divert marker).
+    if "/sudoers.d/" not in ("/" + rel_path):
+        return None
+    active = []
+    defaults = []
+    nopasswd = False
+    for raw in read_text(abs_path).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("Defaults"):
+            defaults.append(line)
+            continue
+        active.append(line)
+        if "NOPASSWD" in line:
+            nopasswd = True
+    ## Command paths referenced by active rules.
+    commands = sorted({
+        tok.rstrip(",")
+        for line in active
+        for tok in line.split()
+        if tok.startswith("/")
+    })
+    return {
+        "grants_root": bool(active),
+        "nopasswd": nopasswd,
+        "active_rules": active,
+        "defaults": defaults,
+        "commands": commands,
+    }
+
+
+POLKIT_ACTION_RE = re.compile(r'<action\s+id="([^"]+)"')
+POLKIT_ALLOW_RE = re.compile(r"<(allow_[a-z]+)>([^<]+)</allow_[a-z]+>")
+
+
+def scan_polkit(abs_path, rel_path):
+    if not rel_path.endswith(".policy"):
+        return None
+    if "/polkit-1/actions/" not in ("/" + rel_path):
+        return None
+    text = read_text(abs_path)
+    actions = POLKIT_ACTION_RE.findall(text)
+    defaults = {m.group(1): m.group(2) for m in POLKIT_ALLOW_RE.finditer(text)}
+    return {"actions": actions, "defaults": defaults}
+
+
+## Capture: sudo [options...] <program>. Options are -x, --long, --long=val.
+## The program is the first token that is not an option and not an assignment.
+SUDO_RE = re.compile(r"(?<![\w/-])sudo\b(?P<rest>.*)")
+SUDO_OPT_RE = re.compile(r"^-{1,2}[A-Za-z][\w-]*(=\S+)?$")
+ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+## sudo short/long options that take a SEPARATE argument (sudo -u root cmd);
+## the argument must be skipped or it is mistaken for the program.
+SUDO_ARG_OPTS = frozenset((
+    "-u", "-g", "-U", "-C", "-h", "-p", "-r", "-t", "-D", "-R", "-T",
+    "--user", "--group", "--other-user", "--close-from", "--host",
+    "--prompt", "--role", "--type", "--chdir", "--command-timeout",
+))
+
+## Shell tokens that put the following word in COMMAND position, so a 'sudo'
+## right after one is a real invocation (not an argument like 'adduser x sudo').
+CMD_POSITION_KEYWORDS = frozenset((
+    "if", "then", "else", "elif", "do", "while", "until", "!",
+    "time", "exec", "command", "eval", "and", "or",
+))
+
+CHROOT_SCRIPT_RE = re.compile(r"(chroot|pbuilder)", re.IGNORECASE)
+
+
+def in_command_position(before):
+    """True if 'sudo' at this point starts a command rather than being an arg.
+
+    Honest partial check, not a shell parser: real invocations follow line
+    start, a separator (; | & ( { `), a leading keyword (if/then/...), or a run
+    of env assignments. Anything else (a bareword/quote before it, e.g.
+    'adduser "x" sudo') is treated as an argument and skipped.
+    """
+    before = before.rstrip()
+    if before == "":
+        return True
+    if before[-1] in ";|&({`":
+        return True
+    if ASSIGN_RE.match(before) and re.fullmatch(r"(\s*[A-Za-z_]\w*=\S*\s+)+", before + " "):
+        return True
+    last_word = before.split()[-1]
+    return last_word in CMD_POSITION_KEYWORDS
+
+
+## extract_sudo_command's third outcome: the match is prose, not a real
+## invocation (e.g. the word 'sudo' inside "run as root (sudo)!") -> drop it,
+## don't even notify. Distinct from None, which means a REAL sudo call whose
+## program a simple match cannot read (variable/subshell/continuation).
+SKIP = object()
+
+## A program token starts like a command name or path.
+COMMAND_LEAD_RE = re.compile(r"[A-Za-z0-9_/.~]")
+
+
+def extract_sudo_command(rest):
+    """Program run by a sudo call: a string, or None (notify), or SKIP (prose).
+
+    Simple by design: options (incl. those taking a separate arg) and leading
+    env-assignments are skipped. A variable/subshell/quoted program or a line
+    continuation yields None (real call, unreadable). A token that cannot be a
+    command name (leading ')', '!', ',', ...) means the 'sudo' was prose -> SKIP.
+    """
+    tokens = rest.strip().split()
+    index = 0
+    while index < len(tokens):
+        tok = tokens[index]
+        if tok == "--":
+            index += 1
+            continue
+        if tok in SUDO_ARG_OPTS:
+            index += 2  ## skip the option AND its separate argument
+            continue
+        if SUDO_OPT_RE.match(tok):
+            index += 1
+            continue
+        if ASSIGN_RE.match(tok):
+            index += 1  ## sudo VAR=val prog ...
+            continue
+        if tok == "\\":
+            return None  ## line continuation: program is on the next line
+        if tok.startswith(("$", "`", "(", "{", "|", "&", '"', "'")):
+            return None  ## real call, program is an expansion/subshell
+        ## Trailing shell punctuation from a subshell/list: (sudo foo) -> foo
+        tok = tok.rstrip(");|&")
+        if tok == "":
+            return SKIP  ## bare ')' etc.: 'sudo' was prose, e.g. '(sudo)'
+        if COMMAND_LEAD_RE.match(tok):
+            return tok
+        return SKIP  ## leading punctuation: the 'sudo' was inside prose
+    return None
+
+
+## dm build orchestration lives here; everything in these dirs is a script.
+BUILD_STEP_DIRS = ("help-steps/", "build-steps.d/")
+
+
+def is_build_script(abs_path, rel_path):
+    """True only for actual dm build scripts, not data files.
+
+    changelog.upstream, COPYING, *.md and the like mention 'sudo' in prose and
+    must never be read as build orchestration. A build script is one that lives
+    in a step dir or carries a script shebang.
+    """
+    if rel_path.startswith(BUILD_STEP_DIRS):
+        return True
+    return shebang(abs_path) is not None
+
+
+def scan_build_time(abs_path, rel_path, component):
+    ## Only derivative-maker's OWN orchestration; submodules are covered above.
+    if component != "derivative-maker":
+        return None
+    if not is_build_script(abs_path, rel_path):
+        return None
+    name = os.path.basename(rel_path)
+    is_chroot = bool(CHROOT_SCRIPT_RE.search(name)) and \
+        rel_path.startswith("help-steps/")
+    ## Read as text; skip binaries.
+    try:
+        text = read_text(abs_path)
+    except OSError:
+        return None
+    if "\x00" in text[:4096]:
+        return None
+    sudo_lines = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.lstrip()
+        if stripped.startswith("#"):
+            continue
+        match = SUDO_RE.search(raw)
+        if not match:
+            continue
+        if not in_command_position(raw[:match.start()]):
+            ## 'sudo' here is an argument (e.g. 'adduser user sudo'), not a call.
+            continue
+        command = extract_sudo_command(match.group("rest"))
+        if command is SKIP:
+            continue  ## 'sudo' was prose, not an invocation
+        entry = {"line": lineno, "command": command}
+        if command is None:
+            entry["note"] = "notify"
+        sudo_lines.append(entry)
+    if not sudo_lines and not is_chroot:
+        return None
+    return {
+        "sudo_invocations": sudo_lines,
+        "runs_in_chroot_as_root": is_chroot,
+    }
+
+
+SCANNERS = (
+    ("maintainer-script", scan_maintainer),
+    ("systemd-unit", scan_systemd),
+    ("sudoers", scan_sudoers),
+    ("polkit", scan_polkit),
+)
+
+
+def enumerate_root_scripts(dm_root):
+    submodules = submodule_paths(dm_root)
+    entries = []
+    examined = {"files": 0}
+    for abs_path, rel_path in walk_files(dm_root):
+        examined["files"] += 1
+        component, sub_path = component_for(rel_path, submodules)
+        for category, scanner in SCANNERS:
+            details = scanner(abs_path, rel_path)
+            if details is None:
+                continue
+            entries.append({
+                "category": category,
+                "component": component,
+                "submodule": sub_path,
+                "path": rel_path,
+                **details,
+            })
+        build = scan_build_time(abs_path, rel_path, component)
+        if build is not None:
+            entries.append({
+                "category": "build-time",
+                "component": component,
+                "submodule": sub_path,
+                "path": rel_path,
+                **build,
+            })
+    entries.sort(key=lambda e: (e["category"], e["component"], e["path"]))
+    summary = {}
+    for entry in entries:
+        summary[entry["category"]] = summary.get(entry["category"], 0) + 1
+    return {
+        "schema": "dm-root-scripts-enum/1",
+        "dm_root": os.path.abspath(dm_root),
+        "submodule_count": len(submodules),
+        "examined": examined,
+        "summary": summary,
+        "entries": entries,
+    }
+
+
+def main(argv):
+    dm_root = argv[1] if len(argv) > 1 else os.path.join(
+        os.path.expanduser("~"), "derivative-maker"
+    )
+    if not os.path.isdir(dm_root):
+        print(f"ERROR: not a directory: {dm_root}", file=sys.stderr)
+        return 1
+    report = enumerate_root_scripts(dm_root)
+    print(json.dumps(report, indent=2, sort_keys=False))
+    if report["examined"]["files"] == 0:
+        print("ERROR: examined zero files -- wrong root?", file=sys.stderr)
+        return 1
+    if not report["entries"]:
+        print("ERROR: found zero root-privileged scripts -- wrong root?",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
