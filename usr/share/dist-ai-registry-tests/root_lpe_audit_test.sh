@@ -148,6 +148,42 @@ tmp="$(mktemp --directory)"
 cp --recursive /usr/share/skel/. "${tmp}/"
 chown --recursive root:root /var/lib/targetpkg
 install -m 0755 /usr/share/targetpkg/x /usr/local/bin/x
+chmod --recursive ugo-w /var/lib/targetpkg/images
+EOF
+
+## VULN: exercises the AST-precision classes an earlier version missed --
+## a 'command'/'env' wrapper in front of the sink, a path-valued option
+## (--target-directory), a 'declare' assignment feeding taint, and a find whose
+## tainted token is a -name PATTERN (NOT the walk root, must not false-fire).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-wrappers' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+target_user="$1"
+command chown --recursive root:root "/home/${target_user}/wrapdir"
+cp --recursive --target-directory="/home/${target_user}/tdir" /etc/skel/a
+declare decldir="/home/${target_user}/.ssh"
+chmod --recursive 777 "${decldir}"
+find /var/log -name "${target_user}.log"
+EOF
+
+## NOT-SHIPPED: a self-gated root helper under ci/ (no FHS install path). Even
+## with a real home-write vuln it is NOT a root entry point on a user system, so
+## it must NOT enter the root surface (regression: root-guard reachability was
+## once tree-wide and flagged CI/test scripts).
+write 'packages/kicksecure/targetpkg/ci/vuln-ci.sh' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+}
+root_check
+target_user="$1"
+chown --recursive "${target_user}:${target_user}" "/home/${target_user}"
 EOF
 
 ## SAFE self-gated helper: validated user (getent), absolute non-home, safe mode.

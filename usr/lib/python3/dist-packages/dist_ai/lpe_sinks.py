@@ -15,17 +15,17 @@ validation.
 
 SCOPE, stated honestly (this is a candidate generator, not a verdict):
   - TAINT is a heuristic over/under-approximation: a path word is 'tainted'
-    when it names a user-controlled location by LITERAL prefix (/home, /tmp,
-    ...) or expands a user-controlled PARAMETER (HOME, SUDO_USER, user_name,
-    home_dir, ...), propagated by a LIGHT in-file dataflow. Cross-file and
-    read-from-pipe flows are not tracked -- so a real sink can be missed, and a
-    tainted-looking constant can over-report. Exploitability is a REVIEW
-    judgement a human makes on each candidate; the tool never claims it.
+    when it names a user-controlled location by LITERAL prefix (/home, ...) or
+    expands a user-controlled PARAMETER (HOME, SUDO_USER, user_name, home_dir,
+    ...), propagated by a LIGHT in-file dataflow. Cross-file and read-from-pipe
+    flows are not tracked -- so a real sink can be missed. Exploitability is a
+    REVIEW judgement a human makes on each candidate; the tool never claims it.
   - Shell only. A Python root script gets an advisory regex pass elsewhere.
 
-The bash structure (command position, option-vs-operand, quoting, expansions)
-is answered by dist_ai.bash_ast (shfmt), never a regex -- so 'chown' inside a
-string, or a flag that eats the next word, is handled by the parser.
+The bash structure (command position, option-vs-operand, quoting, expansions,
+wrapper commands, assignments) is answered by dist_ai.bash_ast (shfmt), never a
+regex -- so 'chown' inside a string, a flag that eats the next word, a
+'command'/'env' wrapper, or a 'declare' assignment is handled by the parser.
 """
 
 import re
@@ -33,17 +33,27 @@ import re
 from dist_ai import bash_ast
 
 
-## A path naming a location an unprivileged user OWNS by literal prefix -- the
-## symlink-in-my-home class. Kept DISJOINT from the temp prefixes below: a
-## shared temp path is the predictable-name (tmp-race) class, not this one, so
-## the two never double-classify the same operand.
-TAINT_LITERAL_PREFIXES = ("/home/",)
-## Predictable (non-mktemp) temp locations -- the TOCTOU / symlink-in-/tmp class.
-TMP_LITERAL_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/")
+## A path naming a location an unprivileged user OWNS. Matched at a path
+## BOUNDARY (start, quote, space, '(', '=', ':'), NOT as a bare substring, so
+## '/opt/not/home/user' does not read as a home path. '/root' is root's OWN
+## home (an unprivileged user cannot plant a symlink there), so it is NOT here.
+## Kept DISJOINT from the temp prefixes: a shared temp path is the tmp-race
+## class, not this one.
+_HOME_DIRS = ("/home",)
+_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")
+_BOUNDARY = r"""(?:^|[\s"'`(=:><|&])"""
+_PATH_END = r"""(?:/|["'\s`)=:><|&]|$)"""
 
-## Parameters whose value an unprivileged user influences. HOME/USER/LOGNAME and
-## the sudo-set SUDO_* come from the invoking (unprivileged) side; the project
-## names are derivative-maker's own idioms for "the target user / their home".
+
+def _dir_regex(dirs):
+    alt = "|".join(re.escape(d) for d in dirs)
+    return re.compile(_BOUNDARY + "(?:" + alt + ")" + _PATH_END)
+
+
+TAINT_LITERAL_RE = _dir_regex(_HOME_DIRS)
+TMP_LITERAL_RE = _dir_regex(_TMP_DIRS)
+
+## Parameters whose value an unprivileged user influences.
 BASE_TAINT_PARAMS = frozenset((
     "HOME", "USER", "LOGNAME",
     "SUDO_USER", "SUDO_UID", "SUDO_GID", "SUDO_COMMAND",
@@ -52,76 +62,82 @@ PROJECT_TAINT_PARAMS = frozenset((
     "user_name", "target_user", "home_dir", "home_folder",
     "user_entry", "user_home", "USERHOME", "USERNAME",
 ))
-## The subset whose trust is an environment/argv decision a reviewer must ratify
-## (is this user name validated before it selects a home?).
+## The subset whose trust is an environment/argv decision a reviewer must ratify.
 TRUST_BOUNDARY_PARAMS = frozenset(("SUDO_USER", "SUDO_UID", "SUDO_GID"))
-## A call to any of these in the file is evidence the user name/path IS
-## validated, so a $SUDO_USER-derived path is not blindly trusted.
-VALIDATOR_NAMES = frozenset((
-    "is_name_valid", "validate_safe_filename", "is_whole_number", "getent",
-))
+## A call to one of these is evidence the user name IS validated, so a
+## $SUDO_USER-derived path is not blindly trusted. Narrow on purpose (an
+## over-broad list silently suppresses real findings).
+VALIDATOR_NAMES = frozenset(("is_name_valid", "validate_safe_filename"))
 
-## argv positional expansions are caller-controlled input.
 ARGV_PARAM_RE = re.compile(r"^(?:[1-9][0-9]*|[@*])$")
+## A value produced by mktemp (safe, unpredictable) -- an actual command
+## substitution calling mktemp, NOT merely a string containing 'mktemp'.
+MKTEMP_RE = re.compile(r"(?:\$\(|`)\s*(?:/usr/bin/|/bin/)?mktemp\b")
 
-## Recursive-write sinks and the flags that make each one recurse.
+## Command wrappers that exec their operand unchanged; peeled to the real sink.
+WRAPPERS = frozenset(("command", "exec", "nohup", "setsid", "nice", "ionice",
+                      "env", "stdbuf"))
+
+## Recursive-write sinks.
 RECURSIVE_WRITE_CMDS = frozenset((
     "chown", "chgrp", "chmod", "cp", "rm", "mv", "rsync", "tar", "install",
 ))
-## Commands where operand[0] is a MODE/OWNER spec, not a path.
 NONPATH_FIRST_OPERAND = frozenset(("chown", "chgrp", "chmod"))
+## Options that supply the mode/owner, so the first operand IS a path.
+REF_LONG = frozenset(("reference", "from"))
 RECURSIVE_SHORT = frozenset("rR")
 RECURSIVE_LONG = frozenset(("recursive", "archive"))
-## Flags that make a sink FOLLOW a symlink (the user-planted-symlink escalation).
+## '-a' is archive (recursive) for these copy tools only (not chown's -a etc.).
+ARCHIVE_SHORT_CMDS = frozenset(("cp", "rsync", "tar"))
 SYMLINK_SHORT = frozenset("LH")
 SYMLINK_LONG = frozenset(("dereference",))
-## Value-taking options per sink, so 'install -m 700 <path>' does not read 700
-## as a path operand and '--mode' consumes its value.
+NODEREF_SHORT = frozenset("hP")
+NODEREF_LONG = frozenset(("no-dereference",))
+
+## Value-taking options per sink (so a value is not read as a path operand).
 SINK_VALUE_SHORT = {
-    "install": frozenset("mogtT"),
-    "cp": frozenset("tS"),
-    "mv": frozenset("t"),
-    "rsync": frozenset("e"),
-    "tar": frozenset("fCT"),
-    "chown": frozenset(),
-    "chgrp": frozenset(),
-    "chmod": frozenset(),
-    "rm": frozenset(),
+    "install": frozenset("mog"), "cp": frozenset("t"), "mv": frozenset("t"),
+    "rsync": frozenset("e"), "tar": frozenset("fCT"),
 }
 SINK_VALUE_LONG = {
     "install": frozenset(("mode", "owner", "group", "target-directory",
                           "suffix", "backup")),
-    "cp": frozenset(("target-directory", "suffix", "backup")),
+    "cp": frozenset(("target-directory", "suffix", "backup", "reference")),
     "mv": frozenset(("target-directory", "suffix", "backup")),
     "chown": frozenset(("from", "reference")),
-    "chgrp": frozenset(("reference",)),
-    "chmod": frozenset(("reference",)),
-    "rsync": frozenset(("rsh", "chmod", "chown")),
+    "chgrp": frozenset(("reference",)), "chmod": frozenset(("reference",)),
+    "rsync": frozenset(("rsh",)), "tar": frozenset(("file", "directory")),
+}
+## Of those, the options whose VALUE is itself a path write-target.
+PATH_VALUE_SHORT = {
+    "install": frozenset("t"), "cp": frozenset("t"), "mv": frozenset("t"),
+    "tar": frozenset("fC"),
+}
+PATH_VALUE_LONG = {
+    "install": frozenset(("target-directory",)),
+    "cp": frozenset(("target-directory",)),
+    "mv": frozenset(("target-directory",)),
     "tar": frozenset(("file", "directory")),
-    "rm": frozenset(),
 }
 
 SOURCE_CMDS = frozenset((".", "source"))
 SHELL_INTERPRETERS = frozenset(("bash", "sh", "dash", "ksh"))
-WRITE_TARGET_CMDS = frozenset(("tee", "touch", "dd", "install", "cp", "mv"))
+## Interpreter options that consume a value (so the script operand is not lost).
+SHELL_VALUE_SHORT = frozenset("oO")
+SHELL_VALUE_LONG = frozenset(("rcfile", "init-file"))
+## Plain write-target commands not covered by the recursive-write rule.
+PLAIN_WRITE_CMDS = frozenset(("tee", "touch", "dd"))
 
-## A mode that grants write to 'other' (world-writable): octal whose last (other)
-## digit has the 2 bit, or a symbolic 'o+w'/'a+w'/'o=...w'.
 WORLD_WRITE_OCTAL_RE = re.compile(r"^0?[0-7]{0,3}([0-7])$")
-WORLD_WRITE_SYMBOLIC_RE = re.compile(r"(?:^|,)(?:[uga]*o|a)[-+=][^,]*w")
+WORLD_WRITE_CLAUSE_RE = re.compile(r"^([ugoa]*)([-+=])(.*)$")
 
 
 def _word_raw(word, source):
-    """A word's spelling: its literal value if fully literal, else raw source
-    (so an expansion like '"${home_dir}/x"' keeps its text)."""
     literal = bash_ast.word_string(word)
     return literal if literal is not None else bash_ast.word_source(word, source)
 
 
 def _op_text(redirect, source):
-    """The redirection operator's source text ('>', '>>', '2>', '&>'). shfmt's
-    numeric Op code is version-specific, so read the operator from the source
-    span instead of pinning the integer."""
     data = source.encode("utf-8")
     start = redirect.get("OpPos", {}).get("Offset")
     word = redirect.get("Word") or {}
@@ -131,44 +147,50 @@ def _op_text(redirect, source):
     return data[start:end].decode("utf-8", "replace").strip()
 
 
-def mktemp_vars(tree, source):
-    """Names of variables assigned from a mktemp command substitution, e.g.
-    'tmp="$(mktemp -d)"'. A temp path built from one of these is NOT a
-    predictable-name race, so it is excluded from tmp-race."""
-    names = set()
+def all_assignments(tree):
+    """Yield (name, value_word) for every variable assignment: a bare or
+    env-prefix 'X=y' (CallExpr.Assigns) AND a 'declare/local/export/readonly/
+    typeset X=y' (DeclClause.Args), which shfmt models as a separate node."""
     for call in bash_ast.call_exprs(tree):
         for assign in bash_ast.assigns(call):
-            value = bash_ast.assign_value(assign)
-            if value is None:
-                continue
-            if "mktemp" in bash_ast.word_source(value, source):
-                name = bash_ast.assign_name(assign)
-                if name:
-                    names.add(name)
+            name = bash_ast.assign_name(assign)
+            if name:
+                yield name, bash_ast.assign_value(assign)
+    for decl in bash_ast.nodes_of_type(tree, "DeclClause"):
+        for assign in decl.get("Args") or []:
+            name = (assign.get("Name") or {}).get("Value")
+            if name:
+                yield name, assign.get("Value")
+
+
+def mktemp_vars(tree, source):
+    names = set()
+    for name, value in all_assignments(tree):
+        if value is not None and MKTEMP_RE.search(bash_ast.word_source(value, source)):
+            names.add(name)
+    return names
+
+
+def tmp_literal_vars(tree, source, mktemp_safe):
+    """Variables assigned a LITERAL predictable temp path ('tmp=/tmp/x'), so a
+    later use of the variable is still a predictable-name race -- a substring
+    'mktemp' in the name does not make it safe (only a mktemp command sub does)."""
+    names = set()
+    for name, value in all_assignments(tree):
+        if value is None or name in mktemp_safe:
+            continue
+        if TMP_LITERAL_RE.search(bash_ast.word_source(value, source)):
+            names.add(name)
     return names
 
 
 def tainted_params(tree, source):
-    """The set of parameter names that are user-controlled in TREE: the seed set
-    plus a light in-file dataflow -- a variable assigned a value that expands an
-    already-tainted parameter, names a tainted literal prefix, or reads argv,
-    becomes tainted; 'for v in <tainted...>' taints v. Iterated to a fixpoint.
-
-    HONEST SCOPE: intra-file only. A value read from a pipe ('find ... | while
-    read v') or another file is not propagated -- that under-approximation is
-    why the find-walk rule flags the tainted WALK directly, not only its reads.
-    """
+    """User-controlled parameter names: the seed set plus a light in-file
+    dataflow to a fixpoint. Intra-file only (a pipe-read value is not tracked --
+    the find-walk rule flags the tainted WALK directly to cover that)."""
     tainted = set(BASE_TAINT_PARAMS) | set(PROJECT_TAINT_PARAMS)
-    assignments = []
-    for call in bash_ast.call_exprs(tree):
-        for assign in bash_ast.assigns(call):
-            name = bash_ast.assign_name(assign)
-            value = bash_ast.assign_value(assign)
-            if name:
-                assignments.append((name, value))
-    ## 'for NAME in WORDS' -- the loop variable takes each word's taint.
-    loop_vars = list(_for_loop_taint_pairs(tree, source))
-
+    assignments = list(all_assignments(tree))
+    loop_vars = list(_for_loop_taint_pairs(tree))
     changed = True
     while changed:
         changed = False
@@ -187,7 +209,7 @@ def tainted_params(tree, source):
     return tainted
 
 
-def _for_loop_taint_pairs(tree, source):
+def _for_loop_taint_pairs(tree):
     for node in bash_ast.nodes_of_type(tree, "ForClause"):
         loop = node.get("Loop") or {}
         name = (loop.get("Name") or {}).get("Value")
@@ -198,22 +220,18 @@ def _for_loop_taint_pairs(tree, source):
 
 def _value_is_tainted(word, source, tainted):
     names = bash_ast.word_param_names(word)
-    if names & tainted:
+    if names & tainted or any(ARGV_PARAM_RE.match(n) for n in names):
         return True
-    if any(ARGV_PARAM_RE.match(n) for n in names):
-        return True
-    raw = _word_raw(word, source)
-    return any(prefix in raw for prefix in TAINT_LITERAL_PREFIXES)
+    return bool(TAINT_LITERAL_RE.search(_word_raw(word, source)))
 
 
 def taint_kind(word, source, tainted):
-    """How WORD is tainted, or None. Order: a validated-trust-boundary param, a
-    literal prefix, then an ordinary tainted parameter / argv."""
+    """How WORD is tainted, or None."""
     names = bash_ast.word_param_names(word)
     raw = _word_raw(word, source)
     if names & TRUST_BOUNDARY_PARAMS:
         return "trust-boundary"
-    if any(prefix in raw for prefix in TAINT_LITERAL_PREFIXES):
+    if TAINT_LITERAL_RE.search(raw):
         return "literal"
     if names & tainted:
         return "param"
@@ -222,27 +240,93 @@ def taint_kind(word, source, tainted):
     return None
 
 
-def _classify(call, source, cmd):
-    """(opt_texts, operand_words) for CALL, using the sink's own value-option
-    sets so a value is never mistaken for a path operand."""
+def _peel_wrappers(call, source):
+    """(effective_cmd_basename, synthetic_call) after peeling leading wrapper
+    commands ('command chown', 'env A=1 cp', 'exec install'). The synthetic call
+    exposes the real command in Args[0] so the option/operand scan reads the
+    right positions. None when there is no command word left."""
+    words = bash_ast.args(call)
+    index = 0
+    while index < len(words):
+        name = bash_ast.word_string(words[index])
+        base = name.rsplit("/", 1)[-1] if name else None
+        if base not in WRAPPERS:
+            break
+        index += 1
+        ## Skip the wrapper's own options, and (for env) leading VAR=val words.
+        while index < len(words):
+            text = _word_raw(words[index], source)
+            if text.startswith("-") and text != "-":
+                index += 1
+                continue
+            if base == "env" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", text):
+                index += 1
+                continue
+            break
+    effective = words[index:]
+    if not effective:
+        return None, None
+    cmd = bash_ast.command_basename({"Args": effective})
+    return cmd, {"Args": effective}
+
+
+def _sink_operands(call, source, cmd):
+    """(opt_texts, path_operand_words) for CALL. A value-taking option's value
+    is skipped UNLESS the option supplies a path write-target (cp -t DIR,
+    tar -f FILE), in which case the value is a path operand."""
+    value_short = SINK_VALUE_SHORT.get(cmd, frozenset())
+    value_long = SINK_VALUE_LONG.get(cmd, frozenset())
+    path_short = PATH_VALUE_SHORT.get(cmd, frozenset())
+    path_long = PATH_VALUE_LONG.get(cmd, frozenset())
     opts = []
     operands = []
+    last_opt = None
     for kind, word, text in bash_ast.command_tokens(
-            call, source,
-            value_short=SINK_VALUE_SHORT.get(cmd, frozenset()),
-            value_long=SINK_VALUE_LONG.get(cmd, frozenset())):
+            call, source, value_short=value_short, value_long=value_long):
         if kind == "opt":
             opts.append(text)
+            last_opt = text
+            ## An inline path value ('--target-directory=DIR', '-tDIR') is
+            ## carried in the option WORD itself; its raw text holds the path,
+            ## so taint_kind on the word sees it.
+            if _opt_has_inline_path(text, path_short, path_long):
+                operands.append(word)
         elif kind == "operand":
+            operands.append(word)
+        elif kind == "value" and _opt_is_path(last_opt, path_short, path_long):
             operands.append(word)
     return opts, operands
 
 
+def _opt_is_path(opt_text, path_short, path_long):
+    """A separate next word is this option's path value (space form '-t DIR')."""
+    if not opt_text:
+        return False
+    if opt_text.startswith("--"):
+        name = opt_text[2:].split("=", 1)[0]
+        return bash_ast.resolve_long(name, path_long) is not None
+    return bool(opt_text[1:]) and opt_text[-1] in path_short
+
+
+def _opt_has_inline_path(opt_text, path_short, path_long):
+    """This option carries its path value inline ('--target-directory=DIR',
+    '-tDIR'), not as a separate word."""
+    if opt_text.startswith("--"):
+        if "=" not in opt_text:
+            return False
+        name = opt_text[2:].split("=", 1)[0]
+        return bash_ast.resolve_long(name, path_long) is not None
+    cluster = opt_text[1:]
+    for position, letter in enumerate(cluster):
+        if letter in path_short and position < len(cluster) - 1:
+            return True
+    return False
+
+
 def _has_short(opts, letters):
     for text in opts:
-        if text.startswith("-") and not text.startswith("--"):
-            if set(text[1:]) & letters:
-                return True
+        if text.startswith("-") and not text.startswith("--") and set(text[1:]) & letters:
+            return True
     return False
 
 
@@ -262,39 +346,59 @@ def _line_of(word):
 def _finding(rule, sink, line, operand, kind, factors, why):
     factors = dict(factors)
     factors["taint"] = kind
-    return {
-        "rule": rule,
-        "sink": sink,
-        "line": line,
-        "tainted_operand": operand,
-        "factors": factors,
-        "why": why,
-    }
+    return {"rule": rule, "sink": sink, "line": line,
+            "tainted_operand": operand, "factors": factors, "why": why}
 
 
-def _recursive_write_finding(call, source, cmd, tainted):
-    opts, operands = _classify(call, source, cmd)
-    recursive = _has_short(opts, RECURSIVE_SHORT) or _has_long(opts, RECURSIVE_LONG)
-    symlink = _has_short(opts, SYMLINK_SHORT) or _has_long(opts, SYMLINK_LONG)
-    path_operands = operands[1:] if cmd in NONPATH_FIRST_OPERAND else operands
+def _is_recursive(cmd, opts):
+    if _has_short(opts, RECURSIVE_SHORT) or _has_long(opts, RECURSIVE_LONG):
+        return True
+    return cmd in ARCHIVE_SHORT_CMDS and _has_short(opts, frozenset("a"))
+
+
+def _symlink_follow(cmd, recursive, opts):
+    """(follows, explicit): does the sink follow a symlink in its target, and
+    was it requested explicitly (-L/--dereference, higher confidence) vs a
+    coreutils default (chown/chmod of a named symlink follows it)."""
+    if _has_short(opts, SYMLINK_SHORT) or _has_long(opts, SYMLINK_LONG):
+        return True, True
+    if cmd in ("chown", "chgrp"):
+        follows = (not recursive) and not _has_short(opts, NODEREF_SHORT) \
+            and not _has_long(opts, NODEREF_LONG)
+        return follows, False
+    if cmd == "chmod":
+        return (not recursive), False
+    return False, False
+
+
+def _recursive_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
+    opts, operands = _sink_operands(call, source, cmd)
+    recursive = _is_recursive(cmd, opts)
+    follows, explicit = _symlink_follow(cmd, recursive, opts)
+    ref = _has_long(opts, REF_LONG)
+    path_operands = operands[1:] if (cmd in NONPATH_FIRST_OPERAND and not ref) \
+        else operands
     for word in path_operands:
         kind = taint_kind(word, source, tainted)
         if kind is None:
+            if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
+                yield _finding("tmp-race", cmd, _line_of(word),
+                               _word_raw(word, source), "literal", {},
+                               "root %s a predictable temp path" % cmd)
+                return
             continue
         deletion = cmd == "rm"
-        factors = {
-            "recursive": recursive, "symlink": symlink, "deletion": deletion,
-            "find_walk": False,
-        }
         rule = "home-recursive-write" if (recursive or deletion) else "root-write-user-path"
-        why = ("root %s%s a user-controlled path" % (
-            cmd, " --recursive" if recursive else ""))
-        yield _finding(rule, cmd, _line_of(word), _word_raw(word, source),
-                       kind, factors, why)
-        if symlink:
+        yield _finding(rule, cmd, _line_of(word), _word_raw(word, source), kind,
+                       {"recursive": recursive, "symlink": follows,
+                        "deletion": deletion, "find_walk": False},
+                       "root %s%s a user-controlled path"
+                       % (cmd, " --recursive" if recursive else ""))
+        if follows:
             yield _finding("symlink-follow", cmd, _line_of(word),
                            _word_raw(word, source), kind,
-                           {"recursive": recursive, "symlink": True},
+                           {"recursive": recursive, "symlink": True,
+                            "symlink_explicit": explicit},
                            "root %s follows a symlink into a user-controlled path"
                            % cmd)
         return
@@ -302,17 +406,17 @@ def _recursive_write_finding(call, source, cmd, tainted):
 
 def _find_walk_finding(call, source, tainted):
     words = bash_ast.args(call)
-    ## find PATHS... EXPRESSION : paths precede the first '-'/'('/'!' token.
+    ## Paths precede the expression: collect leading non-option words, STOP at
+    ## the first option/'('/'!' (a '-name PATTERN' value is not a walk root).
     path_words = []
-    has_action = False
     for word in words[1:]:
         text = _word_raw(word, source)
-        if text.startswith("-") or text in ("(", "!"):
-            if text in ("-exec", "-execdir", "-delete", "-ok", "-okdir"):
-                has_action = True
-            continue
-        if not path_words or not has_action:
-            path_words.append(word)
+        if text.startswith("-") or text in ("(", "!", ")"):
+            break
+        path_words.append(word)
+    has_action = any(
+        _word_raw(w, source) in ("-exec", "-execdir", "-delete", "-ok", "-okdir")
+        for w in words[1:])
     for word in path_words:
         kind = taint_kind(word, source, tainted)
         if kind is None:
@@ -330,50 +434,83 @@ def _find_walk_finding(call, source, tainted):
 def _source_eval_finding(call, source, cmd, tainted):
     words = bash_ast.args(call)
     if cmd in SOURCE_CMDS:
-        targets = words[1:2]
-        rule, why = "untrusted-source-eval", "root sources a user-controlled file"
+        targets = _after_ddash(words[1:])[:1]
+        why = "root sources a user-controlled file"
     elif cmd == "eval":
         targets = words[1:]
-        rule, why = "untrusted-source-eval", "root 'eval's user-controlled text"
+        why = "root 'eval's user-controlled text"
     elif cmd in SHELL_INTERPRETERS:
-        ## bash <script>: first non-option operand is the script.
-        _opts, operands = _classify(call, source, cmd)
-        targets = operands[:1]
-        rule, why = "untrusted-source-eval", "root runs a user-controlled script"
+        targets = _shell_script_operand(call, source)
+        why = "root runs a user-controlled script"
     else:
         return
     for word in targets:
         kind = taint_kind(word, source, tainted)
         if kind is not None:
-            yield _finding(rule, cmd, _line_of(word), _word_raw(word, source),
-                           kind, {}, why)
+            yield _finding("untrusted-source-eval", cmd, _line_of(word),
+                           _word_raw(word, source), kind, {}, why)
             return
 
 
+def _after_ddash(words):
+    for index, word in enumerate(words):
+        if bash_ast.word_string(word) == "--":
+            return words[index + 1:]
+    return words
+
+
+def _shell_script_operand(call, source):
+    """The script a shell interpreter runs: the value of -c (inline script) if
+    present, else the first operand after options (skipping -o/-O/--rcfile
+    values, past '--')."""
+    inline = None
+    operands = []
+    expect = None
+    for kind, word, text in bash_ast.command_tokens(
+            call, source, value_short=SHELL_VALUE_SHORT | frozenset("c"),
+            value_long=SHELL_VALUE_LONG):
+        if kind == "opt":
+            expect = text
+        elif kind == "value":
+            if expect and (expect == "-c" or expect.endswith("c")):
+                inline = word
+            expect = None
+        elif kind == "operand":
+            operands.append(word)
+    if inline is not None:
+        return [inline]
+    return operands[:1]
+
+
 def _world_writable_finding(call, source, cmd):
-    if cmd not in ("chmod", "install", "mkdir"):
-        return
+    ## Collect (mode_string, line) candidates, then flag the first world-writable
+    ## grant. install/mkdir modes come from -m/--mode in either spaced ('-m 777',
+    ## '--mode 777'), attached ('-m777') or '=' ('--mode=777') form.
+    modes = []
     if cmd == "chmod":
-        _opts, operands = _classify(call, source, cmd)
-        modes = operands[:1]
+        _opts, operands = _sink_operands(call, source, cmd)
+        for word in operands[:1]:
+            literal = bash_ast.word_string(word)
+            if literal is not None:
+                modes.append((literal, _line_of(word)))
     else:
-        modes = []
         for kind, word, text in bash_ast.command_tokens(
-                call, source,
-                value_short=frozenset("m"),
+                call, source, value_short=frozenset("m"),
                 value_long=frozenset(("mode",))):
             if kind == "value":
-                modes.append(word)
+                literal = bash_ast.word_string(word)
+                if literal is not None:
+                    modes.append((literal, _line_of(word)))
             elif kind == "opt" and text.startswith("--mode="):
-                modes.append(word)
-    for word in modes:
-        mode = bash_ast.word_string(word)
-        if mode is None:
-            continue
+                modes.append((text.split("=", 1)[1], _line_of(word)))
+            elif kind == "opt" and re.match(r"^-[a-zA-Z]*m.", text):
+                ## Attached short mode: '-m777' (m not last in the cluster).
+                modes.append((text.split("m", 1)[1], _line_of(word)))
+    for mode, line in modes:
         mode = mode.split("=", 1)[-1]
         if _is_world_writable(mode):
-            yield _finding("world-writable-perms", cmd, _line_of(word), mode,
-                           "literal", {"mode": mode},
+            yield _finding("world-writable-perms", cmd, line, mode, "literal",
+                           {"mode": mode},
                            "root grants world-writable permissions (%s)" % mode)
             return
 
@@ -382,50 +519,93 @@ def _is_world_writable(mode):
     octal = WORLD_WRITE_OCTAL_RE.match(mode)
     if octal:
         return bool(int(octal.group(1)) & 2)
-    return bool(WORLD_WRITE_SYMBOLIC_RE.search(mode))
+    for clause in mode.split(","):
+        match = WORLD_WRITE_CLAUSE_RE.match(clause)
+        if not match:
+            continue
+        who, op, perms = match.groups()
+        if op == "-" or "w" not in perms:
+            continue
+        if who == "" or "o" in who or "a" in who:
+            return True
+    return False
 
 
 def _trust_sudo_user_finding(call, source, cmd, tainted, validated):
-    if validated:
-        return
-    if cmd not in RECURSIVE_WRITE_CMDS and cmd not in WRITE_TARGET_CMDS \
-            and cmd not in SOURCE_CMDS:
+    if validated or cmd not in (
+            RECURSIVE_WRITE_CMDS | PLAIN_WRITE_CMDS | SOURCE_CMDS):
         return
     for word in bash_ast.args(call)[1:]:
         if bash_ast.word_param_names(word) & TRUST_BOUNDARY_PARAMS:
             yield _finding(
-                "trust-sudo-user", cmd, _line_of(word),
-                _word_raw(word, source), "trust-boundary",
-                {"trust_boundary": True},
+                "trust-sudo-user", cmd, _line_of(word), _word_raw(word, source),
+                "trust-boundary", {"trust_boundary": True},
                 "root uses $SUDO_USER to pick a target without validating it")
             return
 
 
-def iter_findings(tree, source):
-    """Yield every LPE candidate finding in TREE (a root-run script)."""
-    tainted = tainted_params(tree, source)
-    validated = _file_validates(tree)
-    tmp_safe = mktemp_vars(tree, source)
+def _plain_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
+    """tee/touch/dd: a named write target that is a user path (root follows the
+    symlink) or a predictable temp path."""
+    _opts, operands = _sink_operands(call, source, cmd)
+    for word in operands:
+        kind = taint_kind(word, source, tainted)
+        if kind is not None:
+            yield _finding("symlink-follow", cmd, _line_of(word),
+                           _word_raw(word, source), kind, {"symlink": True},
+                           "root %s writes into a user-controlled path" % cmd)
+            return
+        if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
+            yield _finding("tmp-race", cmd, _line_of(word),
+                           _word_raw(word, source), "literal", {},
+                           "root %s a predictable temp path" % cmd)
+            return
 
-    for call in bash_ast.call_exprs(tree):
-        ## A 'PATH=...' statement has no command word, so run the assignment
-        ## rule before the command-word guard skips it.
-        yield from _path_assignment_finding(call, source, tainted)
-        cmd = bash_ast.command_basename(call)
-        if cmd is None:
-            continue
-        if cmd in RECURSIVE_WRITE_CMDS:
-            yield from _recursive_write_finding(call, source, cmd, tainted)
-        if cmd == "find":
-            yield from _find_walk_finding(call, source, tainted)
-        if cmd in SOURCE_CMDS or cmd == "eval" or cmd in SHELL_INTERPRETERS:
-            yield from _source_eval_finding(call, source, cmd, tainted)
-        if cmd in ("chmod", "install", "mkdir"):
-            yield from _world_writable_finding(call, source, cmd)
-        yield from _trust_sudo_user_finding(call, source, cmd, tainted, validated)
 
-    yield from _redirect_findings(tree, source, tainted, tmp_safe)
-    yield from _tmp_operand_findings(tree, source, tmp_safe)
+def _path_assignment_finding(name, value, source, tainted):
+    if name != "PATH" or value is None:
+        return
+    raw = _word_raw(value, source)
+    risky = False
+    for element in raw.split(":"):
+        stripped = element.strip().strip('"').strip("'")
+        if stripped in ("", ".") or not stripped.startswith(("/", "$")):
+            risky = True
+    if bash_ast.word_param_names(value) & tainted:
+        risky = True
+    if risky:
+        yield _finding("path-hijack", "PATH=", _line_of(value), raw, "literal",
+                       {}, "root sets PATH with a relative or user-influenced "
+                       "element")
+
+
+def _redirect_findings(tree, source, tainted, tmp_safe, tmp_vars):
+    for stmt in bash_ast.iter_stmts(tree):
+        for redirect in stmt.get("Redirs") or []:
+            if ">" not in _op_text(redirect, source):
+                continue
+            word = redirect.get("Word")
+            if not word:
+                continue
+            if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
+                yield _finding("tmp-race", "redirect", _line_of(word),
+                               _word_raw(word, source), "literal", {},
+                               "root writes (redirect) to a predictable temp path")
+                continue
+            kind = taint_kind(word, source, tainted)
+            if kind is not None:
+                yield _finding("symlink-follow", "redirect", _line_of(word),
+                               _word_raw(word, source), kind, {},
+                               "root writes (redirect) into a user-controlled path")
+
+
+def _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
+    names = bash_ast.word_param_names(word)
+    if names & tmp_safe:
+        return False
+    if names & tmp_vars:
+        return True
+    return bool(TMP_LITERAL_RE.search(_word_raw(word, source)))
 
 
 def _file_validates(tree):
@@ -435,72 +615,32 @@ def _file_validates(tree):
     return False
 
 
-def _path_assignment_finding(call, source, tainted):
-    for assign in bash_ast.assigns(call):
-        if bash_ast.assign_name(assign) != "PATH":
+def iter_findings(tree, source):
+    """Yield every LPE candidate finding in TREE (a root-run script)."""
+    tainted = tainted_params(tree, source)
+    validated = _file_validates(tree)
+    tmp_safe = mktemp_vars(tree, source)
+    tmp_vars = tmp_literal_vars(tree, source, tmp_safe)
+
+    for name, value in all_assignments(tree):
+        yield from _path_assignment_finding(name, value, source, tainted)
+
+    for raw_call in bash_ast.call_exprs(tree):
+        cmd, call = _peel_wrappers(raw_call, source)
+        if cmd is None:
             continue
-        value = bash_ast.assign_value(assign)
-        if value is None:
-            continue
-        raw = _word_raw(value, source)
-        elements = raw.split(":")
-        risky = False
-        for element in elements:
-            stripped = element.strip().strip('"').strip("'")
-            if stripped == "" or stripped == ".":
-                risky = True
-            elif not stripped.startswith(("/", "$")):
-                risky = True
-        if bash_ast.word_param_names(value) & tainted:
-            risky = True
-        if risky:
-            yield _finding("path-hijack", "PATH=", _line_of(value), raw,
-                           "literal", {},
-                           "root sets PATH with a relative or user-influenced "
-                           "element")
+        if cmd in RECURSIVE_WRITE_CMDS:
+            yield from _recursive_write_finding(
+                call, source, cmd, tainted, tmp_safe, tmp_vars)
+        if cmd == "find":
+            yield from _find_walk_finding(call, source, tainted)
+        if cmd in SOURCE_CMDS or cmd == "eval" or cmd in SHELL_INTERPRETERS:
+            yield from _source_eval_finding(call, source, cmd, tainted)
+        if cmd in ("chmod", "install", "mkdir"):
+            yield from _world_writable_finding(call, source, cmd)
+        if cmd in PLAIN_WRITE_CMDS:
+            yield from _plain_write_finding(
+                call, source, cmd, tainted, tmp_safe, tmp_vars)
+        yield from _trust_sudo_user_finding(call, source, cmd, tainted, validated)
 
-
-def _redirect_findings(tree, source, tainted, tmp_safe):
-    for stmt in bash_ast.iter_stmts(tree):
-        for redirect in stmt.get("Redirs") or []:
-            op = _op_text(redirect, source)
-            if ">" not in op:
-                continue
-            word = redirect.get("Word")
-            if not word:
-                continue
-            ## A predictable temp target is the tmp-race class; a home/param
-            ## target is the symlink class. Disjoint prefixes, tmp checked first.
-            if _is_predictable_tmp(word, source, tmp_safe):
-                yield _finding(
-                    "tmp-race", "redirect", _line_of(word),
-                    _word_raw(word, source), "literal", {"redirect": op},
-                    "root writes (redirect %s) to a predictable temp path" % op)
-                continue
-            kind = taint_kind(word, source, tainted)
-            if kind is not None:
-                yield _finding(
-                    "symlink-follow", "redirect", _line_of(word),
-                    _word_raw(word, source), kind, {"redirect": op},
-                    "root writes (redirect %s) into a user-controlled path" % op)
-
-
-def _tmp_operand_findings(tree, source, tmp_safe):
-    for call in bash_ast.call_exprs(tree):
-        cmd = bash_ast.command_basename(call)
-        if cmd not in WRITE_TARGET_CMDS:
-            continue
-        _opts, operands = _classify(call, source, cmd)
-        for word in operands:
-            if _is_predictable_tmp(word, source, tmp_safe):
-                yield _finding(
-                    "tmp-race", cmd, _line_of(word), _word_raw(word, source),
-                    "literal", {}, "root %s a predictable temp path" % cmd)
-                break
-
-
-def _is_predictable_tmp(word, source, tmp_safe):
-    if bash_ast.word_param_names(word) & tmp_safe:
-        return False
-    raw = _word_raw(word, source)
-    return any(prefix in raw for prefix in TMP_LITERAL_PREFIXES)
+    yield from _redirect_findings(tree, source, tainted, tmp_safe, tmp_vars)
