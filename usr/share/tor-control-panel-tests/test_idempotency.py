@@ -30,17 +30,17 @@ from tor_control_panel import torrc_gen, tor_status
 
 CUSTOM_OBFS4 = ('obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01\n'
                 'obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567')
-CUSTOM_MEEK = ('meek_lite 192.0.2.20:80 '
-               'ABCDEF0123456789ABCDEF0123456789ABCDEF01 url=https://example.com')
 
-## A representative spread of every config gen_torrc() supports.
+## A representative spread of the configs gen_torrc() supports. Custom bridges
+## must lead with a transport name present in torrc_gen.bridges_type (obfs4 /
+## snowflake / meek); a 'meek_lite'-prefixed custom line is not a gen_torrc
+## input on master, so it is not exercised here.
 CONFIGS = {
     'none': ['None', 'None', 'None'],
     'obfs4': ['obfs4', 'None', 'None'],
     'snowflake': ['snowflake', 'None', 'None'],
     'meek': ['meek', 'None', 'None'],
     'custom_obfs4': ['None', CUSTOM_OBFS4, 'None'],
-    'custom_meek': ['None', CUSTOM_MEEK, 'None'],
     'socks5': ['None', 'None', 'SOCKS5', '127.0.0.1', '9050', '', ''],
     'obfs4_proxy': ['obfs4', 'None', 'SOCKS5', '127.0.0.1', '9050', '', ''],
 }

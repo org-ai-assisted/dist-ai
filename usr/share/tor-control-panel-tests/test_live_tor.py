@@ -256,6 +256,19 @@ def setUpModule():
     if not HAVE_STEM:
         LIVE_REASON = 'python3-stem not installed'
         return
+    ## These tests drive the application's OWN tor_bootstrap.TorBootstrap
+    ## (a QThread) in-process. That is only safe when the source holds the
+    ## running thread in a module-level set (so it is not garbage-collected
+    ## mid-run -- otherwise Qt aborts with "QThread: Destroyed while thread is
+    ## still running") AND run() returns rather than calling sys.exit() inside
+    ## the thread. `_active_bootstrap_threads` is exactly that hold; its absence
+    ## marks a source where driving TorBootstrap live would crash the process,
+    ## so skip rather than abort the whole suite when a live tor is present.
+    if not hasattr(tor_bootstrap, '_active_bootstrap_threads'):
+        LIVE_REASON = ('app TorBootstrap is not safe to drive in-process here '
+                       '(no _active_bootstrap_threads hold); live integration '
+                       'tests need that fix')
+        return
     inst = _TorInstance()
     if not os.path.exists(inst.control_socket):
         inst.stop()
@@ -334,9 +347,13 @@ class _BootstrapAtSharedInstance:
     widgets that internally start a bootstrap can be driven headlessly."""
 
     def __enter__(self):
-        from tor_control_panel import privilege
-        self._priv = privilege
-        self._saved_command = privilege.command
+        import subprocess
+        from tor_control_panel import restart_tor_gui
+        from tor_control_panel import tor_control_panel as tcp_mod
+        self._restart_mod = restart_tor_gui
+        self._tcp_mod = tcp_mod
+        self._saved_restart_popen = restart_tor_gui.Popen
+        self._saved_tcp_popen = tcp_mod.Popen
         self._saved_init = tor_bootstrap.TorBootstrap.__init__
         ## only entered from tests whose setUp skips unless LIVE (-> _SHARED set)
         assert _SHARED is not None
@@ -348,13 +365,22 @@ class _BootstrapAtSharedInstance:
             inner_self.control_cookie_path = shared.cookie
 
         tor_bootstrap.TorBootstrap.__init__ = patched_init
-        ## The widget's privileged 'restart tor' becomes a no-op success.
-        privilege.command = lambda action, *args: ['true']
+
+        def _true_popen(_command, *args, **kwargs):
+            ## The widget's privileged 'leaprun acw-tor-control-restart' becomes
+            ## a no-op success by running /bin/true, so the live bootstrap can be
+            ## driven without an actual Tor restart.
+            kwargs.pop('shell', None)
+            return subprocess.Popen(['true'], *args, **kwargs)
+
+        restart_tor_gui.Popen = _true_popen
+        tcp_mod.Popen = _true_popen
         return self
 
     def __exit__(self, *exc):
         tor_bootstrap.TorBootstrap.__init__ = self._saved_init
-        self._priv.command = self._saved_command
+        self._restart_mod.Popen = self._saved_restart_popen
+        self._tcp_mod.Popen = self._saved_tcp_popen
         return False
 
 
