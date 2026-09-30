@@ -49,6 +49,16 @@ def text_scancodes(text):
     return codes
 
 
+def send_scancodes(keyboard, codes):
+    """Inject scancodes PACED in small chunks: one big putScancodes overruns the
+    guest input buffer and silently DROPS keys (e.g. 'calamares' -> 'calaares'),
+    which corrupts a typed command or passphrase."""
+    import time
+    for start in range(0, len(codes), 6):
+        keyboard.putScancodes(codes[start:start + 6])
+        time.sleep(0.05)
+
+
 def _console(name):
     import vboxapi
     mgr = vboxapi.VirtualBoxManager(None, None)
@@ -68,6 +78,11 @@ def main():
         if cmd == 'res':
             print('%d %d' % (width, height))
         elif cmd == 'shot':
+            if not width or not height:
+                ## early boot (pre-EFI-framebuffer) reports 0x0; a clean error, not
+                ## an XPCOM traceback, so a caller polling for readiness can retry.
+                print('display not ready (%dx%d)' % (width, height), file=sys.stderr)
+                return 3
             data = disp.takeScreenShotToArray(
                 0, width, height, mgr.constants.BitmapFormat_PNG)
             with open(args[0], 'wb') as handle:
@@ -83,10 +98,10 @@ def main():
                 console.mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
             print('%s %d %d' % (cmd, x, y))
         elif cmd == 'type':
-            console.keyboard.putScancodes(text_scancodes(args[0]))
+            send_scancodes(console.keyboard, text_scancodes(args[0]))
             print('type %r' % (args[0],))
         elif cmd == 'key':
-            console.keyboard.putScancodes([int(a, 16) for a in args])
+            send_scancodes(console.keyboard, [int(a, 16) for a in args])
             print('key %s' % (' '.join(args),))
         else:
             print('unknown cmd %r' % (cmd,), file=sys.stderr)
