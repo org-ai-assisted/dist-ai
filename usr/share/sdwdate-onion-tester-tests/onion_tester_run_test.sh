@@ -389,6 +389,41 @@ case_warmup_disabled() {
    check "warm-up disabled: warm-up helper never ran" "0" "$(warmup_calls)"
 }
 
+## The end-of-run bookkeeping append to GITHUB_OUTPUT is a side channel; it must never
+## override the probe verdict. Under errexit a failed `>> "${GITHUB_OUTPUT}"` (the CI
+## runner drops to a non-root user while the step's output file is root-owned) would abort
+## main() before `exit "${rc}"` and flip a green probe (rc 0) into a false-red rc 1. A
+## DIRECTORY as GITHUB_OUTPUT makes the append fail (EISDIR) for ANY user -- including root
+## with CAP_DAC_OVERRIDE, which bypasses permission bits -- so the guard is exercised
+## deterministically however the suite is run.
+case_github_output_unwritable() {
+   local rc=0 blocked_output
+
+   reset_state
+   blocked_output="${work_dir}/blocked-github-output"
+   mkdir -- "${blocked_output}"
+
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_RESULTS="0" \
+   MOCK_SLEEP=0 \
+   MOCK_NEWNYM_RC=0 \
+   ALLOW_LOCAL=true \
+   GITHUB_OUTPUT="${blocked_output}" \
+   ONION_TESTER_BIN="${work_dir}/mock-probe" \
+   ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
+   ONION_TESTER_ATTEMPTS=3 \
+   ONION_TESTER_RETRY_SLEEP=0 \
+   ONION_TESTER_DEADLINE=600 \
+   ONION_TESTER_MIN_ATTEMPT=5 \
+   ONION_TESTER_WARMUP_MAX=0 \
+      "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "github-output unwritable: returns the probe verdict, not a write-failure rc" \
+      "0" "${rc}"
+   check_contains "github-output unwritable: warns about the failed bookkeeping write" \
+      "could not write step outputs" "${work_dir}/out.log"
+}
+
 main() {
    if [ ! -x "${runner}" ]; then
       printf '%s\n' \
@@ -410,6 +445,7 @@ main() {
    case_warmup_failure_ignored
    case_warmup_never_starves_attempts
    case_warmup_disabled
+   case_github_output_unwritable
 
    total=$((passed + failed))
    printf '%s\n' "onion-tester-run-test: ${total} checks, ${passed} pass, ${failed} fail, 0 skip"

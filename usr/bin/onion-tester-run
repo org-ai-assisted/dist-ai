@@ -228,7 +228,7 @@ main() {
          printf '%s\n' "attempts=${final_attempt}"
          printf '%s\n' "final_rc=${rc}"
          printf '%s\n' "final_rc_legend=$(rc_legend "${rc}")"
-      } >> "${GITHUB_OUTPUT}"
+      } >> "${GITHUB_OUTPUT}" || printf '%s\n' "onion-tester: warning: could not write step outputs to GITHUB_OUTPUT" >&2
    fi
 
    exit "${rc}"
