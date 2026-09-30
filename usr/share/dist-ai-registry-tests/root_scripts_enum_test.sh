@@ -223,9 +223,10 @@ EOF
 
 ## a Python file invoking an escalator via subprocess -> nonshell-escalation.
 write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/esc.py' <<'EOF'
-from subprocess import run
+import os, subprocess
 subprocess.run(["/usr/bin/leaprun", "some-action"])
-run(["su", "root", "-c", "id"])
+subprocess.call(["su", "root", "-c", "id"])
+os.system(f"sudo id")
 EOF
 
 ## system-scope service, no User= -> root. MUST be found with its exec target.
@@ -381,7 +382,7 @@ EOF
 ## config-file root hooks (run as root at their trigger).
 write 'packages/kicksecure/foo/usr/lib/udev/rules.d/90-foo.rules' <<'EOF'
 ACTION=="add", SUBSYSTEM=="input", RUN+="/usr/bin/udev-root-prog --flag"
-ACTION=="add", PROGRAM="/usr/bin/udev-probe", RUN:="/usr/bin/udev-final"
+ACTION=="add", PROGRAM=="/usr/bin/udev-probe", RUN:="/usr/bin/udev-final"
 EOF
 write 'packages/kicksecure/foo/usr/share/pam-configs/foo' <<'EOF'
 Name: foo
@@ -411,6 +412,48 @@ EOF
 write 'packages/kicksecure/foo/usr/share/initramfs-tools/hooks/foo' <<'EOF'
 #!/bin/sh
 true
+EOF
+
+## a Python allow-list literal (no subprocess call) -> MUST NOT be flagged.
+write 'packages/kicksecure/foo/usr/lib/python3/dist-packages/foo/data.py' <<'EOF'
+ALLOWED = ["sudo", "doas", "pkexec"]
+def ok(name):
+    return name in ALLOWED
+EOF
+
+## modprobe.d install directive -> runs a command as root on module load.
+write 'packages/kicksecure/foo/etc/modprobe.d/30_foo.conf' <<'EOF'
+install firewire-core /usr/bin/disabled-firewire-by-foo
+blacklist pcspkr
+EOF
+
+## Qubes post-install + suspend hooks (run as root by qrexec).
+write 'packages/kicksecure/foo/etc/qubes/post-install.d/30-foo.sh' <<'EOF'
+#!/bin/bash
+qvm-features-request foo
+EOF
+write 'packages/kicksecure/foo/etc/qubes/suspend-pre.d/30-foo.sh' <<'EOF'
+#!/bin/bash
+/usr/libexec/foo/suspend-pre
+EOF
+
+## /etc/update-motd.d script (run as root at every console login via pam_motd).
+write 'packages/kicksecure/foo/etc/update-motd.d/30-foo' <<'EOF'
+#!/bin/bash
+echo motd
+EOF
+
+## a run-parts chroot-scripts-post.d script (run as root in the build chroot).
+write 'packages/kicksecure/foo/usr/libexec/foo/chroot-scripts-post.d/80_cleanup' <<'EOF'
+#!/bin/bash
+apt-get clean
+EOF
+
+## build escalation without the word 'sudo': ${SUDO_TO_ROOT} + chroot_run.
+write 'help-steps/build-escalate' <<'EOF'
+#!/bin/bash
+${SUDO_TO_ROOT} losetup --detach /dev/loop0
+chroot_run apt-get update
 EOF
 
 ## a data file that merely MENTIONS sudo in prose -> not shell, not scanned.

@@ -68,6 +68,9 @@ def main(argv):
     def optesc(line):
         return sudo_at("usr/libexec/foo/optesc", line)
 
+    def besc(line):
+        return sudo_at("help-steps/build-escalate", line)
+
     helper = "usr/libexec/foo/helper"
     probe = "usr/libexec/foo/optprobe"
     sep = "usr/libexec/foo/sepprobe"
@@ -286,6 +289,36 @@ def main(argv):
         ("a chroot helper is enumerated as build-chroot",
          one("build-chroot", "foo-chroot-raw") is not None
          and one("build-chroot", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
+
+        ## build escalation without the word 'sudo' (build-escalate)
+        ("a ${SUDO_TO_ROOT} call is enumerated as a sudo escalation",
+         besc(2) is not None and besc(2)["tool"] == "sudo"
+         and besc(2)["command"] == "losetup"),
+        ("a chroot_run helper call is enumerated",
+         besc(3) is not None and besc(3)["tool"] == "chroot_run"
+         and besc(3)["command"] == "apt-get"),
+        ("a run-parts chroot-scripts-post.d script is build-chroot",
+         one("build-chroot", "chroot-scripts-post.d/80_cleanup") is not None),
+
+        ## config-file root hooks
+        ("a modprobe install directive command is enumerated",
+         one("modprobe-hook", "30_foo.conf") is not None
+         and "/usr/bin/disabled-firewire-by-foo"
+         in one("modprobe-hook", "30_foo.conf")["programs"]),
+        ("a Qubes post-install hook is enumerated",
+         one("qubes-hook", "post-install.d/30-foo.sh") is not None),
+        ("a Qubes suspend hook is enumerated",
+         one("qubes-hook", "suspend-pre.d/30-foo.sh") is not None),
+        ("an update-motd.d script is enumerated",
+         one("update-motd", "update-motd.d/30-foo") is not None),
+
+        ## Python advisory precision + coverage
+        ("a Python allow-list literal is NOT flagged (precision)",
+         one("nonshell-escalation", "foo/data.py") is None),
+        ("an os.system(f\"sudo ...\") f-string call is flagged",
+         one("nonshell-escalation", "foo/esc.py") is not None
+         and "sudo" in {c["tool"]
+                        for c in one("nonshell-escalation", "foo/esc.py")["calls"]}),
 
         ## config-file root hooks
         ("a udev RUN+= program is enumerated",

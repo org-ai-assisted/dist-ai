@@ -160,8 +160,11 @@ ESCALATOR_SUDOLIKE = {
 ESCALATORS = frozenset(ESCALATOR_SUDOLIKE) | frozenset(("su", "runuser", "leaprun"))
 
 ## Project helper functions that escalate internally (helper-scripts root_cmd
-## runs its argument as root via sudo/doas/su/pkexec).
-HELPER_ESCALATORS = frozenset(("root_cmd",))
+## runs its argument as root; dm's chroot_run is '${SUDO_TO_ROOT} env ... chroot').
+HELPER_ESCALATORS = frozenset(("root_cmd", "chroot_run"))
+## Shell variables that expand to a sudo-style escalation ('sudo --non-interactive'
+## in dm's variables.d) -- the build's actual root path, not the word 'sudo'.
+ROOT_ESCALATION_VARS = frozenset(("SUDO_TO_ROOT",))
 ## 'timeout' runs its operand after a duration; skip its options (some take a
 ## value) and the one duration positional to reach a possible escalator.
 TIMEOUT_VALUE_OPTS = frozenset(("-k", "--kill-after", "-s", "--signal"))
@@ -594,7 +597,7 @@ def scan_polkit(abs_path, rel_path):
 
 ## udev runs RUN+= / IMPORT{program} as root (udevd is root).
 UDEV_PROG_RE = re.compile(
-    r'(?:RUN(?:\{program\})?|IMPORT\{program\}|PROGRAM)\s*[+:]?=\s*"([^"]*)"')
+    r'(?:RUN(?:\{program\})?|IMPORT\{program\}|PROGRAM)\s*[+:=]?=\s*"([^"]*)"')
 
 
 def scan_udev(abs_path, rel_path):
@@ -629,6 +632,24 @@ def scan_pam(abs_path, rel_path):
     return {"programs": programs} if programs else None
 
 
+## modprobe runs an 'install'/'remove' directive's COMMAND as root instead of
+## (un)loading the module (security-misc disables modules this way).
+MODPROBE_HOOK_RE = re.compile(r"^\s*(?:install|remove)\s+\S+\s+(.+)$")
+
+
+def scan_modprobe(abs_path, rel_path):
+    if "/modprobe.d/" not in ("/" + rel_path):
+        return None
+    programs = []
+    for raw in read_text(abs_path).splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        match = MODPROBE_HOOK_RE.match(raw)
+        if match:
+            programs.append(match.group(1).strip())
+    return {"programs": programs} if programs else None
+
+
 ## Pure path-based root surfaces: the FILE itself runs as root at its trigger.
 ## (category, predicate over the slashed rel_path / install name).
 def _is_grub_d(slashed, name):
@@ -637,6 +658,20 @@ def _is_grub_d(slashed, name):
 
 def _is_qubes_rpc(slashed, name):
     return "/etc/qubes-rpc/" in slashed
+
+
+def _is_qubes_hook(slashed, name):
+    ## Qubes runs these as root: post-install after template update, and the
+    ## sdwdate-style suspend hooks.
+    return (
+        "/etc/qubes/post-install.d/" in slashed
+        or "/etc/qubes/suspend-pre.d/" in slashed
+        or "/etc/qubes/suspend-post.d/" in slashed
+    )
+
+
+def _is_update_motd(slashed, name):
+    return "/etc/update-motd.d/" in slashed
 
 
 def _is_policy_rc(slashed, name):
@@ -655,6 +690,8 @@ def _is_initramfs_kernel(slashed, name):
 PATH_ROOT_SURFACES = (
     ("grub-script", _is_grub_d),
     ("qubes-rpc", _is_qubes_rpc),
+    ("qubes-hook", _is_qubes_hook),
+    ("update-motd", _is_update_motd),
     ("policy-rc-d", _is_policy_rc),
     ("initramfs-kernel-hook", _is_initramfs_kernel),
 )
@@ -674,22 +711,28 @@ def scan_path_surface(abs_path, rel_path):
 ## ADVISORY, regex-based (not an AST): a Python file invoking an escalator via
 ## subprocess. The bash-AST 'privileged-call' scan cannot see these, so flag
 ## them for review rather than leave the surface invisible.
-## The escalator as the first element of a call/list literal: covers
-## subprocess.run(["sudo", ...]), Popen(['leaprun', ...]), run(["su", ...]),
-## os.system("sudo ...") -- regardless of how the subprocess fn was imported.
+## The escalator as the first element of a call/list literal (an optional
+## f/r/b string prefix allowed): subprocess.run(["sudo", ...]), Popen(['leaprun',
+## ...]), os.system(f"sudo ...").
 PYTHON_ESCALATOR_RE = re.compile(
-    r"""[(\[]\s*['"](?:/usr/s?bin/|/s?bin/)?"""
+    r"""[(\[]\s*[rbfRBF]*['"](?:/usr/s?bin/|/s?bin/)?"""
     r"""(sudo|pkexec|doas|run0|leaprun|runuser|su)(?:['" ])""")
+## A subprocess-invoking context on the SAME line -- required for PRECISION, so a
+## plain allow-list or test-parametrize literal (["sudo", ...]) is not flagged.
+PYTHON_SUBPROCESS_RE = re.compile(
+    r"\b(?:subprocess\.\w+|Popen|check_output|check_call|getoutput|call|run|"
+    r"os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\s*\(")
 
 
 def scan_python_escalation(abs_path, rel_path):
-    ## ADVISORY, line-based: a call whose escalator and opening bracket are on
-    ## the same line. A multiline list split across lines is a known miss.
+    ## ADVISORY, line-based: an escalator as the first arg of a subprocess call
+    ## on one line. A multiline split call is a known miss (precision over
+    ## recall: a human reviews every entry).
     if not name_has_ext(rel_path, ".py"):
         return None
     calls = []
     for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
-        if raw.lstrip().startswith("#"):
+        if raw.lstrip().startswith("#") or not PYTHON_SUBPROCESS_RE.search(raw):
             continue
         match = PYTHON_ESCALATOR_RE.search(raw)
         if match:
@@ -749,6 +792,10 @@ def escalator_words(call, source):
     base = name.rsplit("/", 1)[-1] if name else None
     if base in ESCALATORS or base in HELPER_ESCALATORS:
         return base, words[index:]
+    ## A command word that is an expansion of a known escalation variable
+    ## (${SUDO_TO_ROOT}) is sudo underneath -- analyze it as sudo.
+    if name is None and bash_ast.word_param_names(words[index]) & ROOT_ESCALATION_VARS:
+        return "sudo", words[index:]
     return None
 
 
@@ -928,14 +975,29 @@ def scan_privileged_calls(source, tree):
 ## --- build-time chroot ------------------------------------------------------
 
 
+## Build scripts that run as UID 0 without a 'sudo' word: run-parts'd chroot
+## scripts, and dm's own debootstrap/pbuilder entry points.
+CHROOT_SCRIPTS_DIR_RE = re.compile(r"/chroot-scripts-(?:pre|post)\.d/")
+DM_BUILD_ROOT_BASENAMES = frozenset(("mmdebstrap",))
+
+
 def scan_build_chroot(rel_path, component):
+    slashed = "/" + rel_path
+    ## run-parts executes these inside the build chroot as root (initializer-dist
+    ## chroot-scripts-pre.d/post.d), in any component.
+    if CHROOT_SCRIPTS_DIR_RE.search(slashed):
+        return {"runs_in_chroot_as_root": True}
     if component != "derivative-maker":
         return None
+    name = os.path.basename(rel_path)
     if not rel_path.startswith("help-steps/"):
         return None
-    if not CHROOT_SCRIPT_RE.search(os.path.basename(rel_path)):
-        return None
-    return {"runs_in_chroot_as_root": True}
+    ## chroot/pbuilder entry points, the pbuilder hooks, and mmdebstrap.
+    if (CHROOT_SCRIPT_RE.search(name)
+            or "/pbuilder-hooks/" in slashed
+            or name in DM_BUILD_ROOT_BASENAMES):
+        return {"runs_in_chroot_as_root": True}
+    return None
 
 
 ## --- driver -----------------------------------------------------------------
@@ -951,6 +1013,7 @@ FILE_SCANNERS = (
     ("polkit", scan_polkit),
     ("udev-rule", scan_udev),
     ("pam-exec", scan_pam),
+    ("modprobe-hook", scan_modprobe),
     ("nonshell-escalation", scan_python_escalation),
 )
 
