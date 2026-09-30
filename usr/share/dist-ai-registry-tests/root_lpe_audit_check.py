@@ -126,6 +126,15 @@ def main(argv):
     checks.append((
         "reason-less waiver is NOT honored (finding still fires)",
         has(findings, "vuln-waived", "world-writable-perms")))
+    ## Mis-association guard: a waiver above a DIFFERENT statement must not leak
+    ## onto a sink below it via a comment/'\\' line (the AST-truthful boundary,
+    ## not a textual continuation scan).
+    checks.append((
+        "sink below a comment-'\\' line stays flagged (no mis-association)",
+        has(findings, "vuln-waived", "symlink-follow", ".bash_logout")))
+    checks.append((
+        "that sink is NOT wrongly suppressed",
+        not has(suppressed, "vuln-waived", "symlink-follow", ".bash_logout")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.

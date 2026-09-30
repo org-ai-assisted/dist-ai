@@ -259,6 +259,9 @@ chmod 777 "${home}/pub"
 ## style-ok: lpe-home-recursive-write -- reviewed, continuation form
 chown --recursive "${tu}:${tu}" \
    "${home}/.config"
+## style-ok: lpe-symlink-follow -- decoy: must NOT reach the cp below (a separate statement)
+echo "harmless" # a comment that ends with a backslash \
+cp --dereference /etc/skel/.bash_logout "${home}/.bash_logout"
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------
