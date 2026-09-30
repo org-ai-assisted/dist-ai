@@ -169,6 +169,38 @@ chmod --recursive 777 "${decldir}"
 find /var/log -name "${target_user}.log"
 EOF
 
+## VULN: the round-2 AST-precision classes -- a wrapper option that takes a
+## VALUE (nice -n), find GLOBAL options before the path (-L), dd's of= write
+## target, and a symbolic world-write with '=' (a=w).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-round2' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+nice -n 10 chown --recursive root:root "/home/${tu}/wrap"
+find -L "/home/${tu}/logs" -delete
+dd if=/etc/shadow of="/home/${tu}/shadow"
+chmod a=w "/home/${tu}/pub"
+EOF
+
+## SAFE round-2 counterparts that must stay clean: 'command -V' only DESCRIBES,
+## dd 'if=' is a READ (only 'of=' writes), 'chmod +w' is umask-filtered, and a
+## 'source FILE -- args' sources FILE (safe path), not the '--' argument.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/safe-round2' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+command -V chown
+dd if="/home/${tu}/data" of=/var/lib/targetpkg/out
+chmod +w /etc/targetpkg.conf
+source /usr/lib/targetpkg/safe.sh -- "/home/${tu}/evil"
+EOF
+
 ## NOT-SHIPPED: a self-gated root helper under ci/ (no FHS install path). Even
 ## with a real home-write vuln it is NOT a root entry point on a user system, so
 ## it must NOT enter the root surface (regression: root-guard reachability was

@@ -40,8 +40,12 @@ from dist_ai import bash_ast
 ## Kept DISJOINT from the temp prefixes: a shared temp path is the tmp-race
 ## class, not this one.
 _HOME_DIRS = ("/home",)
-_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")
-_BOUNDARY = r"""(?:^|[\s"'`(=:><|&])"""
+## These are DETECTION PATTERNS the audit scans for, not temp files this tool
+## creates -- bandit B108 is a false positive here.
+_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # nosec B108
+## A path boundary. '-' and '+' admit a parameter-expansion default value
+## ('"${VAR:-/home/x}"', '"${VAR:+/home/x}"'), a realistic idiom.
+_BOUNDARY = r"""(?:^|[\s"'`(=:><|&+-])"""
 _PATH_END = r"""(?:/|["'\s`)=:><|&]|$)"""
 
 
@@ -77,26 +81,42 @@ MKTEMP_RE = re.compile(r"(?:\$\(|`)\s*(?:/usr/bin/|/bin/)?mktemp\b")
 ## Command wrappers that exec their operand unchanged; peeled to the real sink.
 WRAPPERS = frozenset(("command", "exec", "nohup", "setsid", "nice", "ionice",
                       "env", "stdbuf"))
+## A wrapper's OWN options that take a separate value word -- so the value is
+## not mistaken for the wrapped command ('nice -n 10 chown' -> chown, not '10').
+WRAPPER_VALUE_SHORT = {
+    "nice": frozenset("n"), "ionice": frozenset("cnp"),
+    "stdbuf": frozenset("ioe"), "exec": frozenset("a"), "env": frozenset("uS"),
+}
+WRAPPER_VALUE_LONG = {
+    "env": frozenset(("unset", "block-signal")),
+    "nice": frozenset(("adjustment",)),
+}
 
 ## Recursive-write sinks.
 RECURSIVE_WRITE_CMDS = frozenset((
     "chown", "chgrp", "chmod", "cp", "rm", "mv", "rsync", "tar", "install",
 ))
 NONPATH_FIRST_OPERAND = frozenset(("chown", "chgrp", "chmod"))
-## Options that supply the mode/owner, so the first operand IS a path.
-REF_LONG = frozenset(("reference", "from"))
+## Options that REPLACE the mode/owner argument, so the first operand IS a path.
+## '--from' is NOT one: it only FILTERS (chown --from=OLD NEW-OWNER FILE still
+## needs the owner operand), so including it mislabels the owner word as a path.
+REF_LONG = frozenset(("reference",))
 RECURSIVE_SHORT = frozenset("rR")
 RECURSIVE_LONG = frozenset(("recursive", "archive"))
-## '-a' is archive (recursive) for these copy tools only (not chown's -a etc.).
-ARCHIVE_SHORT_CMDS = frozenset(("cp", "rsync", "tar"))
+## '-a' is archive (recursive) for cp/rsync only. For tar '-a' is
+## --auto-compress (tar recurses directories by default anyway), NOT recursion.
+ARCHIVE_SHORT_CMDS = frozenset(("cp", "rsync"))
 SYMLINK_SHORT = frozenset("LH")
 SYMLINK_LONG = frozenset(("dereference",))
-NODEREF_SHORT = frozenset("hP")
+## '-h'/--no-dereference is what stops chown following a NAMED symlink. '-P'/'-H'
+## are recursion-traversal flags that only apply with '-R', so they do NOT stop
+## the non-recursive named-symlink follow.
+NODEREF_SHORT = frozenset("h")
 NODEREF_LONG = frozenset(("no-dereference",))
 
 ## Value-taking options per sink (so a value is not read as a path operand).
 SINK_VALUE_SHORT = {
-    "install": frozenset("mog"), "cp": frozenset("t"), "mv": frozenset("t"),
+    "install": frozenset("mog"), "cp": frozenset("tS"), "mv": frozenset("St"),
     "rsync": frozenset("e"), "tar": frozenset("fCT"),
 }
 SINK_VALUE_LONG = {
@@ -106,7 +126,8 @@ SINK_VALUE_LONG = {
     "mv": frozenset(("target-directory", "suffix", "backup")),
     "chown": frozenset(("from", "reference")),
     "chgrp": frozenset(("reference",)), "chmod": frozenset(("reference",)),
-    "rsync": frozenset(("rsh",)), "tar": frozenset(("file", "directory")),
+    "rsync": frozenset(("rsh", "chown", "chmod", "suffix", "backup-dir")),
+    "tar": frozenset(("file", "directory")),
 }
 ## Of those, the options whose VALUE is itself a path write-target.
 PATH_VALUE_SHORT = {
@@ -252,14 +273,29 @@ def _peel_wrappers(call, source):
         base = name.rsplit("/", 1)[-1] if name else None
         if base not in WRAPPERS:
             break
+        vshort = WRAPPER_VALUE_SHORT.get(base, frozenset())
+        vlong = WRAPPER_VALUE_LONG.get(base, frozenset())
         index += 1
-        ## Skip the wrapper's own options, and (for env) leading VAR=val words.
+        ## Skip the wrapper's own options (and their space-separated VALUES, else
+        ## the value is mistaken for the wrapped command), plus env VAR=val.
         while index < len(words):
             text = _word_raw(words[index], source)
-            if text.startswith("-") and text != "-":
+            if base == "env" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", text):
                 index += 1
                 continue
-            if base == "env" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", text):
+            if text == "--":
+                index += 1
+                break
+            if text.startswith("-") and text != "-":
+                ## 'command -v/-V NAME' only DESCRIBES a command, never runs it.
+                if base == "command" and set(text[1:]) & set("vV"):
+                    return None, None
+                if text.startswith("--"):
+                    lname = text[2:].split("=", 1)[0]
+                    if "=" not in text and bash_ast.resolve_long(lname, vlong):
+                        index += 1
+                elif text[1:] and text[-1] in vshort:
+                    index += 1
                 index += 1
                 continue
             break
@@ -378,6 +414,8 @@ def _recursive_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
     ref = _has_long(opts, REF_LONG)
     path_operands = operands[1:] if (cmd in NONPATH_FIRST_OPERAND and not ref) \
         else operands
+    ## Check EVERY path operand, not just the first: 'cp -r /tmp/src /home/dst'
+    ## must report the home destination even though a temp SOURCE comes first.
     for word in path_operands:
         kind = taint_kind(word, source, tainted)
         if kind is None:
@@ -385,7 +423,6 @@ def _recursive_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
                 yield _finding("tmp-race", cmd, _line_of(word),
                                _word_raw(word, source), "literal", {},
                                "root %s a predictable temp path" % cmd)
-                return
             continue
         deletion = cmd == "rm"
         rule = "home-recursive-write" if (recursive or deletion) else "root-write-user-path"
@@ -401,15 +438,25 @@ def _recursive_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
                             "symlink_explicit": explicit},
                            "root %s follows a symlink into a user-controlled path"
                            % cmd)
-        return
+
+
+FIND_GLOBAL_OPTS = frozenset(("-L", "-H", "-P"))
 
 
 def _find_walk_finding(call, source, tainted):
     words = bash_ast.args(call)
-    ## Paths precede the expression: collect leading non-option words, STOP at
-    ## the first option/'('/'!' (a '-name PATTERN' value is not a walk root).
+    ## Skip find's GLOBAL options (-L/-H/-P/-O*/-D*), which legitimately precede
+    ## the walk paths, THEN collect the leading path words, stopping at the first
+    ## expression primary (a '-name PATTERN' value is not a walk root).
+    index = 1
+    while index < len(words):
+        text = _word_raw(words[index], source)
+        if text in FIND_GLOBAL_OPTS or text.startswith("-O") or text.startswith("-D"):
+            index += 1
+            continue
+        break
     path_words = []
-    for word in words[1:]:
+    for word in words[index:]:
         text = _word_raw(word, source)
         if text.startswith("-") or text in ("(", "!", ")"):
             break
@@ -434,7 +481,12 @@ def _find_walk_finding(call, source, tainted):
 def _source_eval_finding(call, source, cmd, tainted):
     words = bash_ast.args(call)
     if cmd in SOURCE_CMDS:
-        targets = _after_ddash(words[1:])[:1]
+        ## 'source FILE [args]': FILE is the FIRST operand; a LEADING '--' (only)
+        ## is an end-of-options marker. A later '--' is an argument TO the file.
+        rest = words[1:]
+        if rest and bash_ast.word_string(rest[0]) == "--":
+            rest = rest[1:]
+        targets = rest[:1]
         why = "root sources a user-controlled file"
     elif cmd == "eval":
         targets = words[1:]
@@ -452,34 +504,41 @@ def _source_eval_finding(call, source, cmd, tainted):
             return
 
 
-def _after_ddash(words):
-    for index, word in enumerate(words):
-        if bash_ast.word_string(word) == "--":
-            return words[index + 1:]
-    return words
+RC_LONG = frozenset(("rcfile", "init-file"))
 
 
 def _shell_script_operand(call, source):
-    """The script a shell interpreter runs: the value of -c (inline script) if
-    present, else the first operand after options (skipping -o/-O/--rcfile
-    values, past '--')."""
+    """The file(s) a shell interpreter runs as root: a --rcfile/--init-file value
+    (sourced by an interactive shell), the -c inline script, else the first
+    operand after options."""
     inline = None
     operands = []
+    rc_files = []
     expect = None
     for kind, word, text in bash_ast.command_tokens(
             call, source, value_short=SHELL_VALUE_SHORT | frozenset("c"),
             value_long=SHELL_VALUE_LONG):
         if kind == "opt":
             expect = text
+            ## Inline '--rcfile=/path' carries its value in the option word.
+            if text.startswith("--") and "=" in text \
+                    and bash_ast.resolve_long(text[2:].split("=", 1)[0], RC_LONG):
+                rc_files.append(word)
         elif kind == "value":
-            if expect and (expect == "-c" or expect.endswith("c")):
+            if expect and expect.startswith("--") \
+                    and bash_ast.resolve_long(expect[2:].split("=", 1)[0], RC_LONG):
+                rc_files.append(word)
+            elif expect and not expect.startswith("--") and expect.endswith("c"):
                 inline = word
             expect = None
         elif kind == "operand":
             operands.append(word)
+    targets = list(rc_files)
     if inline is not None:
-        return [inline]
-    return operands[:1]
+        targets.append(inline)
+    elif operands:
+        targets.append(operands[0])
+    return targets
 
 
 def _world_writable_finding(call, source, cmd):
@@ -507,7 +566,8 @@ def _world_writable_finding(call, source, cmd):
                 ## Attached short mode: '-m777' (m not last in the cluster).
                 modes.append((text.split("m", 1)[1], _line_of(word)))
     for mode, line in modes:
-        mode = mode.split("=", 1)[-1]
+        ## NOTE: do NOT split on '=' here -- a symbolic mode ('a=w') USES '=' as
+        ## its operator; the '--mode=' prefix was already stripped above.
         if _is_world_writable(mode):
             yield _finding("world-writable-perms", cmd, line, mode, "literal",
                            {"mode": mode},
@@ -526,7 +586,10 @@ def _is_world_writable(mode):
         who, op, perms = match.groups()
         if op == "-" or "w" not in perms:
             continue
-        if who == "" or "o" in who or "a" in who:
+        ## Require an EXPLICIT 'o' or 'a' subject. An omitted 'who' ('+w', '=w')
+        ## is umask-filtered -- root's default umask 022 drops the other-write
+        ## bit -- so it does not reliably grant world-write.
+        if "o" in who or "a" in who:
             return True
     return False
 
@@ -545,21 +608,25 @@ def _trust_sudo_user_finding(call, source, cmd, tainted, validated):
 
 
 def _plain_write_finding(call, source, cmd, tainted, tmp_safe, tmp_vars):
-    """tee/touch/dd: a named write target that is a user path (root follows the
-    symlink) or a predictable temp path."""
+    """tee/touch/dd: a named WRITE target that is a user path (root follows the
+    symlink) or a predictable temp path. For dd only 'of=' is a write target --
+    'if=' is the READ source, so flagging it would be a false positive."""
     _opts, operands = _sink_operands(call, source, cmd)
+    if cmd == "dd":
+        operands = [w for w in operands
+                    if _word_raw(w, source).lstrip("\"'").startswith("of=")]
     for word in operands:
         kind = taint_kind(word, source, tainted)
         if kind is not None:
             yield _finding("symlink-follow", cmd, _line_of(word),
                            _word_raw(word, source), kind, {"symlink": True},
                            "root %s writes into a user-controlled path" % cmd)
-            return
+            continue
         if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
             yield _finding("tmp-race", cmd, _line_of(word),
                            _word_raw(word, source), "literal", {},
                            "root %s a predictable temp path" % cmd)
-            return
+            continue
 
 
 def _path_assignment_finding(name, value, source, tainted):
