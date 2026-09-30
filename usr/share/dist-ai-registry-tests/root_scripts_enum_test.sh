@@ -316,6 +316,40 @@ write 'help-steps/foo-chroot-raw' <<'EOF'
 sudo mount --bind /a /b
 EOF
 
+## config-file root hooks (run as root at their trigger).
+write 'packages/kicksecure/foo/usr/lib/udev/rules.d/90-foo.rules' <<'EOF'
+ACTION=="add", SUBSYSTEM=="input", RUN+="/usr/bin/udev-root-prog --flag"
+EOF
+write 'packages/kicksecure/foo/usr/share/pam-configs/foo' <<'EOF'
+Name: foo
+Auth-Type: Primary
+Auth: requisite pam_exec.so seteuid quiet /usr/libexec/foo/pam-root-prog
+EOF
+write 'packages/kicksecure/foo/etc/grub.d/10_foo' <<'EOF'
+#!/bin/sh
+echo menuentry
+EOF
+## a default/grub.d SNIPPET is config, not a run-as-root script -> excluded.
+write 'packages/kicksecure/foo/etc/default/grub.d/foo.cfg' <<'EOF'
+GRUB_CMDLINE_LINUX="quiet"
+EOF
+write 'packages/kicksecure/foo/etc/qubes-rpc/qubes.Foo' <<'EOF'
+#!/bin/bash
+true
+EOF
+write 'packages/kicksecure/foo/usr/libexec/foo/policy-rc.d' <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+write 'packages/kicksecure/foo/etc/kernel/postinst.d/10_foo' <<'EOF'
+#!/bin/sh
+true
+EOF
+write 'packages/kicksecure/foo/usr/share/initramfs-tools/hooks/foo' <<'EOF'
+#!/bin/sh
+true
+EOF
+
 ## a data file that merely MENTIONS sudo in prose -> not shell, not scanned.
 write 'changelog.upstream' <<'EOF'
 * some entry describing how the build must run as root (sudo).

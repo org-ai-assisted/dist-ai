@@ -225,6 +225,28 @@ def main(argv):
          one("build-chroot", "foo-chroot-raw") is not None
          and one("build-chroot", "foo-chroot-raw")["runs_in_chroot_as_root"] is True),
 
+        ## config-file root hooks
+        ("a udev RUN+= program is enumerated",
+         one("udev-rule", "90-foo.rules") is not None
+         and "/usr/bin/udev-root-prog --flag"
+         in one("udev-rule", "90-foo.rules")["programs"]),
+        ("a PAM pam_exec program is enumerated",
+         one("pam-exec", "pam-configs/foo") is not None
+         and "/usr/libexec/foo/pam-root-prog"
+         in one("pam-exec", "pam-configs/foo")["programs"]),
+        ("an /etc/grub.d script is enumerated",
+         one("grub-script", "etc/grub.d/10_foo") is not None),
+        ("a /etc/default/grub.d config snippet is NOT a grub script",
+         one("grub-script", "default/grub.d/foo.cfg") is None),
+        ("a qubes-rpc handler is enumerated",
+         one("qubes-rpc", "etc/qubes-rpc/qubes.Foo") is not None),
+        ("a policy-rc.d is enumerated",
+         one("policy-rc-d", "foo/policy-rc.d") is not None),
+        ("a kernel postinst.d hook is enumerated",
+         one("initramfs-kernel-hook", "etc/kernel/postinst.d/10_foo") is not None),
+        ("an initramfs-tools hook is enumerated",
+         one("initramfs-kernel-hook", "initramfs-tools/hooks/foo") is not None),
+
         ## summary + parse sanity
         ("shfmt parsed the shell with no errors", report["parse_errors"] == []),
         ("the walk reported no unreadable directories", report["walk_errors"] == []),

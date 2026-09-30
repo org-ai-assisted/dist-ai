@@ -518,6 +518,89 @@ def scan_polkit(abs_path, rel_path):
     return {"actions": actions}
 
 
+## --- config-file root hooks -------------------------------------------------
+
+## udev runs RUN+= / IMPORT{program} as root (udevd is root).
+UDEV_PROG_RE = re.compile(
+    r'(?:RUN(?:\{program\})?|IMPORT\{program\})\s*\+?=\s*"([^"]*)"')
+
+
+def scan_udev(abs_path, rel_path):
+    if "/udev/rules.d/" not in ("/" + rel_path) or not name_has_ext(rel_path, ".rules"):
+        return None
+    programs = [m.group(1).strip() for m in UDEV_PROG_RE.finditer(read_text(abs_path))]
+    programs = [p for p in programs if p]
+    return {"programs": programs} if programs else None
+
+
+## PAM runs pam_exec.so's program as root during auth. The program is the first
+## non-flag argument after the module (flags: seteuid, quiet, expose_authtok...).
+PAM_EXEC_FLAGS = frozenset((
+    "seteuid", "quiet", "expose_authtok", "use_first_pass", "debug",
+    "stdout", "log", "type",
+))
+
+
+def scan_pam(abs_path, rel_path):
+    slashed = "/" + rel_path
+    if "/pam.d/" not in slashed and "/pam-configs/" not in slashed:
+        return None
+    programs = []
+    for raw in read_text(abs_path).splitlines():
+        line = raw.strip()
+        if line.startswith("#") or "pam_exec.so" not in line:
+            continue
+        after = line.split("pam_exec.so", 1)[1].split()
+        for token in after:
+            key = token.split("=", 1)[0]
+            if key in PAM_EXEC_FLAGS or "=" in token:
+                continue
+            if token.startswith("/"):
+                programs.append(token)
+            break
+    return {"programs": programs} if programs else None
+
+
+## Pure path-based root surfaces: the FILE itself runs as root at its trigger.
+## (category, predicate over the slashed rel_path / install name).
+def _is_grub_d(slashed, name):
+    return "/etc/grub.d/" in slashed and "/default/grub.d/" not in slashed
+
+
+def _is_qubes_rpc(slashed, name):
+    return "/etc/qubes-rpc/" in slashed
+
+
+def _is_policy_rc(slashed, name):
+    return name == "policy-rc.d"
+
+
+def _is_initramfs_kernel(slashed, name):
+    return (
+        "/etc/kernel/" in slashed and ".d/" in slashed
+        or "/dracut/modules.d/" in slashed
+        or "/initramfs-tools/hooks/" in slashed
+        or "/initramfs-tools/scripts/" in slashed
+    )
+
+
+PATH_ROOT_SURFACES = (
+    ("grub-script", _is_grub_d),
+    ("qubes-rpc", _is_qubes_rpc),
+    ("policy-rc-d", _is_policy_rc),
+    ("initramfs-kernel-hook", _is_initramfs_kernel),
+)
+
+
+def scan_path_surface(abs_path, rel_path):
+    slashed = "/" + rel_path
+    name = install_name(rel_path)
+    for category, predicate in PATH_ROOT_SURFACES:
+        if predicate(slashed, name):
+            return category, {"interpreter": shebang(abs_path)}
+    return None
+
+
 ## --- sudo calls (shfmt AST) -------------------------------------------------
 
 
@@ -730,6 +813,8 @@ FILE_SCANNERS = (
     ("privleap-action", scan_privleap),
     ("sudoers", scan_sudoers),
     ("polkit", scan_polkit),
+    ("udev-rule", scan_udev),
+    ("pam-exec", scan_pam),
 )
 
 
@@ -753,6 +838,11 @@ def enumerate_root_scripts(dm_root):
         chroot = scan_build_chroot(rel_path, component)
         if chroot is not None:
             entries.append({"category": "build-chroot", **base, **chroot})
+
+        surface = scan_path_surface(abs_path, rel_path)
+        if surface is not None:
+            category, details = surface
+            entries.append({"category": category, **base, **details})
 
         if is_shell(abs_path, rel_path):
             examined["shell_files"] += 1
