@@ -1,0 +1,100 @@
+#!/usr/bin/python3 -Bsu
+"""Host-side VBox guest input/output via the vboxapi Main API (in-process XPCOM).
+
+Gives real mouse (absolute), keyboard and screenshot for a RUNNING VM without
+Guest Additions -- the low-mental-load GUI drive (mouse + screenshot share ONE
+pixel space, so you click where the screenshot shows something). It is the
+host-side counterpart to VBoxManage keyboardputscancode, adding the mouse that
+the CLI lacks. Needs the VM defined with --mouse usbtablet + a USB controller
+(build_install_vm_plan does this) so putMouseEventAbsolute works pre-Guest-Additions.
+
+Usage: vbox-guestctl <vm> <res | shot PATH | click X Y [button] | move X Y
+                             | type TEXT | key HEXSCANCODE...>
+button bitmask: 1=left 2=right 4=middle (0 = release).
+"""
+import sys
+
+## vboxapi is imported lazily inside _console so the pure scancode helper stays
+## importable (and unit-testable) on a host without the VirtualBox bindings.
+
+## US set-1 scancodes (make); break = make | 0x80. Shift wraps an uppercase char.
+_MAKE = {
+    'a': 0x1e, 'b': 0x30, 'c': 0x2e, 'd': 0x20, 'e': 0x12, 'f': 0x21, 'g': 0x22,
+    'h': 0x23, 'i': 0x17, 'j': 0x24, 'k': 0x25, 'l': 0x26, 'm': 0x32, 'n': 0x31,
+    'o': 0x18, 'p': 0x19, 'q': 0x10, 'r': 0x13, 's': 0x1f, 't': 0x14, 'u': 0x16,
+    'v': 0x2f, 'w': 0x11, 'x': 0x2d, 'y': 0x15, 'z': 0x2c,
+    '0': 0x0b, '1': 0x02, '2': 0x03, '3': 0x04, '4': 0x05, '5': 0x06, '6': 0x07,
+    '7': 0x08, '8': 0x09, '9': 0x0a,
+    ' ': 0x39, '-': 0x0c, '=': 0x0d, '.': 0x34, '/': 0x35, ',': 0x33,
+}
+_SHIFT_MAKE = 0x2a
+_SHIFT_BREAK = 0xaa
+_BREAK_BIT = 0x80
+
+
+def text_scancodes(text):
+    """Set-1 make/break scancode ints to type a literal string (no trailing Enter)."""
+    codes = []
+    for char in text:
+        make = _MAKE.get(char.lower())
+        if make is None:
+            raise ValueError('no scancode for %r' % (char,))
+        shift = char.isupper()
+        if shift:
+            codes.append(_SHIFT_MAKE)
+        codes.append(make)
+        codes.append(make | _BREAK_BIT)
+        if shift:
+            codes.append(_SHIFT_BREAK)
+    return codes
+
+
+def _console(name):
+    import vboxapi
+    mgr = vboxapi.VirtualBoxManager(None, None)
+    vbox = mgr.getVirtualBox()
+    machine = vbox.findMachine(name)
+    session = mgr.getSessionObject(vbox)
+    machine.lockMachine(session, mgr.constants.LockType_Shared)
+    return mgr, session, session.console
+
+
+def main():
+    name, cmd, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+    mgr, session, console = _console(name)
+    try:
+        disp = console.display
+        width, height = disp.getScreenResolution(0)[:2]
+        if cmd == 'res':
+            print('%d %d' % (width, height))
+        elif cmd == 'shot':
+            data = disp.takeScreenShotToArray(
+                0, width, height, mgr.constants.BitmapFormat_PNG)
+            with open(args[0], 'wb') as handle:
+                handle.write(bytes(data))
+            print('shot %dx%d -> %s' % (width, height, args[0]))
+        elif cmd in ('click', 'move'):
+            x, y = int(args[0]), int(args[1])
+            button = int(args[2]) if len(args) > 2 else 1
+            ## absolute pixel coords (same space as the screenshot); press+release.
+            console.mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
+            if cmd == 'click':
+                console.mouse.putMouseEventAbsolute(x, y, 0, 0, button)
+                console.mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
+            print('%s %d %d' % (cmd, x, y))
+        elif cmd == 'type':
+            console.keyboard.putScancodes(text_scancodes(args[0]))
+            print('type %r' % (args[0],))
+        elif cmd == 'key':
+            console.keyboard.putScancodes([int(a, 16) for a in args])
+            print('key %s' % (' '.join(args),))
+        else:
+            print('unknown cmd %r' % (cmd,), file=sys.stderr)
+            return 2
+        return 0
+    finally:
+        session.unlockMachine()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

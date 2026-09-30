@@ -45,6 +45,33 @@ def _load():
 
 M = _load()
 
+GUESTCTL = Path(__file__).resolve().parent / 'vbox-guestctl'
+
+
+def _load_guestctl():
+    loader = importlib.machinery.SourceFileLoader(
+        'vbox_guestctl_under_test', str(GUESTCTL))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+GC = _load_guestctl()
+
+
+def test_guestctl_text_scancodes():
+    ## make+break per char; break = make|0x80. Uppercase wraps in Shift make/break.
+    assert GC.text_scancodes('a') == [0x1e, 0x9e]
+    assert GC.text_scancodes('B') == [0x2a, 0x30, 0xb0, 0xaa]
+    assert GC.text_scancodes('') == []
+
+
+def test_guestctl_text_scancodes_rejects_unmapped():
+    with pytest.raises(ValueError):
+        GC.text_scancodes('!')
+
 
 def test_backend_present():
     assert BACKEND.is_file(), f"backend not found: {BACKEND}"
