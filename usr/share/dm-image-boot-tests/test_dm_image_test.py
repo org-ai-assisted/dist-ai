@@ -468,13 +468,15 @@ class _FakeChild:
     ## real read/sentinel loop drives to a verdict with no VM. read_nonblocking
     ## hands back the buffered reply, then raises pexpect.TIMEOUT (its idle poll).
     def __init__(self, pid, systemcheck_rc, diag_rc, hardening_rc=0,
-                 boot_match_rc=0):
+                 boot_match_rc=0, cli_login_rc=0):
         self.pid = pid
         self.systemcheck_rc = systemcheck_rc
         self.diag_rc = diag_rc
         self.hardening_rc = hardening_rc
         ## The firmware/role boot-match sentinels; 0 = a correctly-booted guest.
         self.boot_match_rc = boot_match_rc
+        ## check 5 CLI-login ('id -un' identity assertion); 0 = login yields the user.
+        self.cli_login_rc = cli_login_rc
         self.buf = ""
 
     def sendline(self, line):
@@ -497,6 +499,9 @@ class _FakeChild:
             elif ("WRONG-ROLE" in line or "WRONG-FIRMWARE" in line
                   or "WRONG-SECUREBOOT" in line):
                 rc = self.boot_match_rc
+            elif "id -un" in line:
+                ## check 5 (CLI login): 'test "$(id -un)" = <user>'.
+                rc = self.cli_login_rc
             elif "FAILED-UNITS-BEGIN" in line:
                 rc = self.diag_rc
             else:
@@ -725,3 +730,154 @@ def test_boot_match_sentinels_require_zero_regardless_of_expect_rc():
     logs: list[str] = []
     bad = m.run_checks(child, types.SimpleNamespace(**base), logs.append)
     assert bad == m.FAIL, logs
+
+
+## --- numbered release-critical checks (1/2/5/8) --------------------------------
+## The serial leg formalizes the checks it CAN assert (headless, no network) as
+## numbered release-critical PASS/FAIL, matching dm-calamares-install's vocabulary.
+## These lock the numbering, the per-leg selection, the verdict wiring, and the
+## honest "what this leg does NOT cover" summary.
+
+def _plan_args(**kw):
+    base = dict(disk='/x.qcow2', iso=None, arch='', firmware='bios', session='user',
+                login_user='user', login_pass='', run=None, expect_rc=0,
+                timeout=1800, smbios_append='', serial_log='', dm_qemu='dm-qemu',
+                dm_qemu_args=[])
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_release_checks_catalog_numbers():
+    ## The single source of truth lists exactly the checks a serial leg can assert.
+    m = _load_dm_image_test()
+    assert set(m.RELEASE_CHECKS) == {1, 2, 5, 8}, m.RELEASE_CHECKS
+    ## The delegated set must not overlap -- a number is either asserted here or
+    ## delegated, never both (else a reader can't tell who owns it).
+    delegated = {num for num, _ in m.DELEGATED_CHECKS}
+    assert delegated.isdisjoint(m.RELEASE_CHECKS), (delegated, set(m.RELEASE_CHECKS))
+    assert delegated == {0, 3, 4, 6, 7}, delegated
+
+
+def test_build_check_plan_user_leg_numbers_check_1_not_2():
+    m = _load_dm_image_test()
+    plan = m.build_check_plan(_plan_args(session='user'))
+    nums = [num for *_rest, num in plan if num is not None]
+    assert nums == [1, 5, 8], nums  ## order: session-boot, CLI login, systemcheck
+
+
+def test_build_check_plan_sysmaint_leg_numbers_check_2_not_1():
+    m = _load_dm_image_test()
+    plan = m.build_check_plan(_plan_args(session='sysmaint'))
+    nums = [num for *_rest, num in plan if num is not None]
+    assert nums == [2, 5, 8], nums
+
+
+def test_build_check_plan_integrity_and_diag_are_unnumbered():
+    ## firmware sentinels, the ISO hardening guard and the diagnostic are NOT
+    ## release-critical checks -- they must carry num None so they never appear as a
+    ## numbered check in the summary.
+    m = _load_dm_image_test()
+    plan = m.build_check_plan(_plan_args(iso='/x.iso', disk=None,
+                                         firmware='efi-secureboot', session='user'))
+    ## The diagnostic is the only want_rc=None (exempt) entry, and it is unnumbered.
+    diag = [e for e in plan if e[2] is None]
+    assert len(diag) == 1 and diag[0][3] is None, plan
+    ## Every firmware/hardening guard (force_root True, want_rc 0) that is not the
+    ## role check is unnumbered.
+    role_cmd = m.boot_role_sentinel('user')
+    guards = [e for e in plan if e[1] and e[2] == 0 and e[0] != role_cmd]
+    assert guards, plan
+    assert all(e[3] is None for e in guards), guards
+
+
+def test_build_check_plan_run_override_keeps_role_check_only():
+    ## --run replaces the functional checks but the session-boot check (1/2) still
+    ## guards the leg; no check 5/8 are injected into a custom run.
+    m = _load_dm_image_test()
+    plan = m.build_check_plan(_plan_args(run=['echo hi'], session='sysmaint'))
+    nums = [num for *_rest, num in plan if num is not None]
+    assert nums == [2], nums
+
+
+def test_check_5_cli_login_failure_fails_the_verdict():
+    ## Canary: a login that yields the WRONG identity (check 5 rc != 0) FAILS the
+    ## leg, and the failure is reported as numbered 'check 5'. The all-pass inverse
+    ## (cli_login_rc=0) must stay PASS, proving the assertion is not inert.
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    args = _plan_args(timeout=30, session='user', login_user='user')
+    ok_logs: list[str] = []
+    ok = m.run_checks(_FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0,
+                                 cli_login_rc=0), args, ok_logs.append)
+    assert ok == m.PASS, ok_logs
+    bad_logs: list[str] = []
+    bad = m.run_checks(_FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0,
+                                  cli_login_rc=1), args, bad_logs.append)
+    assert bad == m.FAIL, bad_logs
+    assert any('check 5' in line and 'FAIL' in line for line in bad_logs), bad_logs
+
+
+def test_check_8_systemcheck_failure_reported_by_number():
+    ## A systemcheck failure must surface as numbered 'check 8', not a bare command.
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    args = _plan_args(timeout=30, session='user', login_user='user')
+    logs: list[str] = []
+    bad = m.run_checks(_FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0),
+                       args, logs.append)
+    assert bad == m.FAIL, logs
+    assert any('check 8' in line and 'FAIL' in line for line in logs), logs
+
+
+def test_summary_reports_verdicts_and_delegated_checks():
+    ## The leg must log each numbered verdict AND an honest line naming the checks it
+    ## does NOT run, so a green serial leg is never read as "all release checks pass".
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    args = _plan_args(timeout=30, session='user', login_user='user')
+    logs: list[str] = []
+    rc = m.run_checks(_FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0),
+                      args, logs.append)
+    assert rc == m.PASS, logs
+    blob = "\n".join(logs)
+    assert 'release-critical check summary' in blob, logs
+    assert 'check 1 (user session boots): PASS' in blob, logs
+    assert 'check 5 (CLI login works): PASS' in blob, logs
+    assert 'check 8 (systemcheck --leak-tests passes): PASS' in blob, logs
+    ## the delegation line names every check this serial leg does not cover.
+    for token in ('0 (install)', '3 (upgrade-nonroot)', '4 (networking)',
+                  '6 (GUI login)', '7 (LUKS)'):
+        assert token in blob, (token, logs)
+    assert 'dm-calamares-install' in blob, logs
+
+
+## --- cross-file numbering contract --------------------------------------------
+## The serial RELEASE_CHECKS numbers MUST mean the same thing as dm-calamares-install's
+## numbered run_check battery; a drift (someone renumbering one side) would make the
+## two halves of the gate disagree on what "check N" asserts. This locks them together.
+
+DM_CALAMARES = Path(__file__).resolve().parents[2] / 'bin' / 'dm-calamares-install'
+
+
+def _calamares_run_checks():
+    ## Map check number -> the command string of its run_check in dm-calamares-install.
+    text = DM_CALAMARES.read_text(encoding='utf-8')
+    return {int(num): cmd
+            for num, cmd in re.findall(r"run_check\s+(\d+)\s+'([^']*)'", text)}
+
+
+def test_cross_file_numbering_contract():
+    assert DM_CALAMARES.is_file(), f"VBox-path battery not found: {DM_CALAMARES}"
+    m = _load_dm_image_test()
+    cal = _calamares_run_checks()
+    ## Every serial release-check number must exist in the VBox battery with the same
+    ## meaning (so the number is not reused for a different guarantee across files).
+    for num in m.RELEASE_CHECKS:
+        assert num in cal, (
+            f"RELEASE_CHECKS[{num}] has no run_check {num} in dm-calamares-install; "
+            "the two halves disagree on check numbering")
+    ## Polarity + intent of the shared numbers:
+    assert 'boot-role=sysmaint' in cal[1] and cal[1].lstrip().startswith('!'), cal[1]
+    assert 'boot-role=sysmaint' in cal[2] and not cal[2].lstrip().startswith('!'), cal[2]
+    assert 'whoami' in cal[5] or 'id -un' in cal[5], cal[5]  ## both assert CLI identity
+    assert 'systemcheck' in cal[8], cal[8]
