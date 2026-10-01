@@ -251,11 +251,7 @@ def test_home_binds_go_through_toctou_safe_helper():
     """The user-home bind mounts must use dispvm-bind-mount (O_NOFOLLOW + pinned
     fd), never a raw 'mount --bind <home path>' that follows a symlinked mount
     point. Reads the shipped dispvm."""
-    try:
-        dispvm = T.dispvm_script()
-    except SystemExit:
-        pytest.skip("dispvm not available (TB_UPDATER_REPO)")
-    with open(dispvm, encoding="utf-8") as handle:
+    with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
 
     ## Both persistent-cache binds route through the helper.
@@ -263,7 +259,7 @@ def test_home_binds_go_through_toctou_safe_helper():
         assert re.search(
             rf'dispvm-bind-mount"?\s+"/var/cache/tb-binary/{re.escape(target)}"'
             rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"', text), (
-            f"the {target} bind must go through dispvm-bind-mount: {dispvm}"
+            f"the {target} bind must go through dispvm-bind-mount: {DISPVM}"
         )
     ## No raw 'mount --bind' onto a user-home path remains (the racy form).
     racy = [line for line in text.splitlines()

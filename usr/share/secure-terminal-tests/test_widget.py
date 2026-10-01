@@ -543,6 +543,57 @@ _ft.apply_mode('reveal')                           # still frozen, risk-class ti
 ok(_ft.frozen() and '<U+202E>' in _ft.toPlainText(), 'frozen render: reveal badges the bidi cell')
 _ft.close()
 
+# --- frozen STATE-mode cells name their source code point on hover/click (agy) --------
+# State's _render_frozen used _grid_cell_format's plain-cell return (program SGR, no
+# _CP_PROP), so hover over a state badge named NOTHING -- unlike the frozen reveal/detail
+# view (whose _fmt_from_key marking carries the cp) and unlike the CLI state path
+# (cells_to_runs tags every badge with its source code point, printable ASCII included).
+# Feed 'A' + RLO + 'B': pyte merges the RLO (a zero-width format char) into the preceding
+# cell, so cell0 is the multi-cp 'A<U+202E>' (worst-hazard cp via marking_cp_for_cell) and
+# cell1 is the pure-ASCII 'B' (cp via ord) -- the two code-point sources _state_cp_format
+# must cover. Assert the shared hover/copy/save seam (_run_cp_at, font-independent) names
+# each, the fragment carries the tag for copy/save, and one end-to-end point hover.
+from secure_terminal.terminal import _CP_PROP as _SCP          # noqa: E402
+_fs = SecureTerminal(command='/bin/cat', tui=True)
+_fs.resize(600, 300)
+_fs.show()
+APP.processEvents()
+feed_output(_fs, b'A' + chr(0x202E).encode() + b'B\r\n')
+_fs.apply_mode('state')                            # auto-freeze + _render_frozen
+APP.processEvents()
+ok(_fs.frozen(), 'frozen state hover setup: state mode auto-froze the grid')
+_sdoc = _fs.toPlainText()
+
+
+def _state_badge_cp(term, badge):
+    _i = term.toPlainText().find(badge)
+    return term._run_cp_at(_i + 2) if _i >= 0 else 'NO_BADGE'
+
+
+eq(_state_badge_cp(_fs, '<U+0042'), 0x42,
+   'frozen state: the pure-ASCII "B" badge names U+0042 (CLI-state parity: even ASCII)')
+eq(_state_badge_cp(_fs, '<U+202E'), 0x202E,
+   'frozen state: the merged A+RLO cell names its worst hazard U+202E (multi-cp source)')
+# the 'A' half of the merged cell resolves to the SAME hazard (the whole neutralized cell
+# names its real danger, exactly as the CLI path tags a multi-cp cell)
+eq(_state_badge_cp(_fs, '<U+0041'), 0x202E,
+   'frozen state: hovering the A-half of the merged cell still names the U+202E hazard')
+_sc = QTextCursor(_fs.document())
+_si = _sdoc.find('<U+202E')
+_sc.setPosition(_si)
+_sc.setPosition(_si + 1, QTextCursor.MoveMode.KeepAnchor)
+eq(_sc.charFormat().property(_SCP), 0x202E,
+   'frozen state: the badge fragment carries _CP_PROP (copy/save see the real character)')
+# end-to-end point hover: the full-width state doc soft-wraps far past the viewport, so
+# scroll the first row into view before the real hit-test (otherwise cursorRect is off-screen).
+_fs.verticalScrollBar().setValue(_fs.verticalScrollBar().minimum())
+APP.processEvents()
+_pcur = QTextCursor(_fs.document())
+_pcur.setPosition(_fs.toPlainText().find('<U+0042') + 2)
+eq(_fs._cp_at(_fs.cursorRect(_pcur).center()), 0x42,
+   'frozen state: the real point hover resolves the ASCII "B" badge end-to-end')
+_fs.close()
+
 # --- frozen expanding doc gets its OWN scroll policy so wide badges are reachable (coderabbit) --
 # The live grid is NoWrap + horizontal-bar-off, and _apply_vscroll_policy forces the vertical bar
 # OFF on a fixed canvas. In an expanding mode every cell becomes a wide <U+XXXX> badge, so a

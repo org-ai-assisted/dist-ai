@@ -193,6 +193,14 @@ if [ -n "${SECURE_TERMINAL_TESTS_ONLY:-}" ]; then
       fi
    done
    set +f
+   ## A selector that is ONLY separators (e.g. SECURE_TERMINAL_TESTS_ONLY=',') word-splits to
+   ## ZERO items, so the per-item unknown-suite FATAL above never fires, _only_suites stays
+   ## empty, and the run would execute ZERO suites yet exit GREEN -- the exact silent-green a
+   ## typo must never produce. A non-empty selector matching nothing is a FATAL mis-selection.
+   if [ "${#_only_suites[@]}" -eq 0 ]; then
+      printf '%s\n' "secure-terminal-tests: FATAL: SECURE_TERMINAL_TESTS_ONLY='${SECURE_TERMINAL_TESTS_ONLY}' matched no suite (separators only?)" >&2
+      exit 1
+   fi
    suites=("${_only_suites[@]}")
    printf '%s\n' "secure-terminal-tests: running ONLY: ${SECURE_TERMINAL_TESTS_ONLY}" >&2
 fi
