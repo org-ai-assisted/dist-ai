@@ -332,6 +332,19 @@ OnCalendar=daily
 Unit=foo-daily.service
 EOF
 
+## a .socket under a non-root User= with a '+'-prefixed ExecStartPre: systemd
+## IGNORES User= for a '+' command, so it runs as root -> it MUST land in
+## root_forced_exec, NOT in exec (where exec_user=nobody would mislabel it as
+## non-root); the non-forced ExecStartPre stays in exec under that User=.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/forced.socket' <<'EOF'
+[Socket]
+ListenStream=/run/forced.sock
+User=nobody
+ExecStartPre=+/usr/bin/socket-forced-root
+ExecStartPre=/usr/bin/socket-userdrop
+Service=forced-worker.service
+EOF
+
 ## a template Accept=yes socket -> instantiates <stem>.service (single '@').
 write 'packages/kicksecure/foo/usr/lib/systemd/system/tmpl@.socket' <<'EOF'
 [Socket]
