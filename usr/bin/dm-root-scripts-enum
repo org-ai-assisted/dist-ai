@@ -291,8 +291,10 @@ def scan_systemd_activation(abs_path, rel_path):
     ext = next((e for e in ACTIVATION_EXT if name_has_ext(rel_path, e)), None)
     if ext is None or name_has_ext(rel_path, ".user" + ext):
         return None
-    exec_targets = []
-    root_forced_exec = []
+    ## Per-key, so a bare 'Key=' resets ONLY that key (systemd semantics),
+    ## mirroring parse_service()/parse_service_forced_root().
+    exec_by_key = {key: [] for key in ACTIVATION_EXEC_KEYS}
+    forced_by_key = {key: [] for key in ACTIVATION_EXEC_KEYS}
     activates = None
     user_value = None
     accept = False
@@ -303,7 +305,12 @@ def scan_systemd_activation(abs_path, rel_path):
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
-        if key in ACTIVATION_EXEC_KEYS and value:
+        if key in ACTIVATION_EXEC_KEYS:
+            if not value:
+                ## bare reset clears ONLY this key's prior commands
+                exec_by_key[key] = []
+                forced_by_key[key] = []
+                continue
             stripped = value.lstrip(EXEC_PREFIX)
             prefix = value[: len(value) - len(stripped)]
             fields = stripped.split()
@@ -313,15 +320,18 @@ def scan_systemd_activation(abs_path, rel_path):
                 ## command must not be reported under exec_user. Mirror the
                 ## service path -- route it to root_forced_exec instead of exec.
                 if "+" in prefix:
-                    root_forced_exec.append(fields[0])
+                    forced_by_key[key].append(fields[0])
                 else:
-                    exec_targets.append(fields[0])
+                    exec_by_key[key].append(fields[0])
         elif key in ("Service", "Unit") and value:
             activates = value
         elif key == "User":
             user_value = value or None
         elif key == "Accept" and value.lower() in TRUTHY:
             accept = True
+    exec_targets = [prog for key in ACTIVATION_EXEC_KEYS for prog in exec_by_key[key]]
+    root_forced_exec = [prog for key in ACTIVATION_EXEC_KEYS
+                        for prog in forced_by_key[key]]
     if activates is None and ext in ACTIVATION_DEFAULTS_SERVICE:
         stem = install_name(rel_path).rsplit(".", 1)[0]
         ## An Accept=yes socket instantiates a template unit; a name that is

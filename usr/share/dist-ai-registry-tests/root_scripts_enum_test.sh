@@ -335,11 +335,15 @@ EOF
 ## a .socket under a non-root User= with a '+'-prefixed ExecStartPre: systemd
 ## IGNORES User= for a '+' command, so it runs as root -> it MUST land in
 ## root_forced_exec, NOT in exec (where exec_user=nobody would mislabel it as
-## non-root); the non-forced ExecStartPre stays in exec under that User=.
+## non-root); the non-forced ExecStartPre stays in exec under that User=. A bare
+## 'ExecStartPre=' resets that key, so a '+' command BEFORE the reset is cleared
+## and must NOT be reported as forced-root.
 write 'packages/kicksecure/foo/usr/lib/systemd/system/forced.socket' <<'EOF'
 [Socket]
 ListenStream=/run/forced.sock
 User=nobody
+ExecStartPre=+/usr/bin/socket-obsolete-root
+ExecStartPre=
 ExecStartPre=+/usr/bin/socket-forced-root
 ExecStartPre=/usr/bin/socket-userdrop
 Service=forced-worker.service
