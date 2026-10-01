@@ -395,7 +395,11 @@ def word_string(word, decode_dquote=False):
             out.append(sgl)
         elif kind == "DblQuoted":
             ## Join the inner Lit values first, THEN decode, so an escape split across
-            ## two Lit parts is still handled as one unit.
+            ## two Lit parts is still handled as one unit. A gettext $"..." word arrives
+            ## here with Dollar=True; it is treated as its UNTRANSLATED message id, which
+            ## is exactly what bash runs when no catalog translates it (the realistic
+            ## case). A catalog that remaps the message to a different statement structure
+            ## is a crafted form, out of scope per accident-not-adversary (see docstring).
             inner_parts = []
             for inner in part.get("Parts") or []:
                 if inner.get("Type") != "Lit":
