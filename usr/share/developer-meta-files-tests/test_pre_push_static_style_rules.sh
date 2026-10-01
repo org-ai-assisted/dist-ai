@@ -1727,6 +1727,13 @@ expect_rule "R-192" "bash -c 'it'\"'\"'s one'"        absent
 expect_rule "R-192" "bash -c ${sq}printf ${dq}%s${nl}${dq} foo${sq}${dq}${sc} echo bar${dq}" present
 expect_rule "R-192" "bash -c ${sq}printf ${dq}%s${nl}${dq} foo${sq}"                          absent
 expect_rule "R-192" "bash -c ${dq}a${bs}${bs}${sc}b${dq}"                                     absent
+## ANSI-C $'...' is NOT decoded (out of scope), so a $'...' carrying a backslash
+## escape is declined (raw-source fallback keeps it one word) rather than
+## re-parsed with a spurious separator -- a false positive. A $'...' WITHOUT a
+## backslash is already byte-identical, so a real concatenated 2nd statement is
+## still flagged.
+expect_rule "R-192" "bash -c ${dollar}${sq}echo ${bs}${bs}${sc} foo${sq}"       absent
+expect_rule "R-192" "bash -c ${dollar}${sq}echo a${sq}${dq}${sc} echo b${dq}"   present
 ## Glue is SPARED: a single-command '-c' (direct AND behind a wrapper) -- the
 ## false-positive the inject warned about ('bwrap/timeout bash -c <single>').
 expect_rule "R-192" "bash -c 'touch /run/x'"      absent

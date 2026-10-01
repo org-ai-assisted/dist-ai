@@ -383,7 +383,16 @@ def word_string(word, decode_dquote=False):
             ## Normal '...' carries no escapes. An ANSI-C $'...' word also arrives here
             ## with its Value UNDECODED ($'\x72m' -> raw '\x72m'); decoding it is a
             ## crafted-form concern, dropped per accident-not-adversary (see docstring).
-            out.append(part.get("Value") or "")
+            sgl = part.get("Value") or ""
+            if decode_dquote and part.get("Dollar") and "\\" in sgl:
+                ## A $'...' with a backslash-escape cannot be made byte-identical to what
+                ## the inner shell runs without ANSI-C decoding (out of scope): its raw
+                ## escape would mis-reparse (a spurious operator). Decline, so a re-parsing
+                ## caller falls back to the raw source (the $'...' stays one word). A
+                ## $'...' WITHOUT a backslash is byte-identical already, so it resolves
+                ## normally; an escaped separator inside $'...' is a documented follow-up.
+                return None
+            out.append(sgl)
         elif kind == "DblQuoted":
             ## Join the inner Lit values first, THEN decode, so an escape split across
             ## two Lit parts is still handled as one unit.
