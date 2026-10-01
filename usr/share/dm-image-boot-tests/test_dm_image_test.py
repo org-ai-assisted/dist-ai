@@ -908,11 +908,14 @@ def test_release_check8_ignore_flags_efi_secureboot_only():
     base = _release_check_cmds()[8]
     efisb = _release_check_cmd(8, 'efi-secureboot')
     assert efisb.startswith(base), efisb
-    for unit in ('vboxadd.service', 'vboxadd-service.service',
-                 'systemd-modules-load.service'):
+    for unit in ('vboxadd.service', 'vboxadd-service.service'):
         assert f'--ignore-failed-unit {unit}' in efisb, (unit, efisb)
-    ## exactly three ignore flags -- never a blanket 'degraded' tolerance.
-    assert efisb.count('--ignore-failed-unit') == 3, efisb
+    ## exactly two ignore flags -- never a blanket 'degraded' tolerance.
+    assert efisb.count('--ignore-failed-unit') == 2, efisb
+    ## systemd-modules-load.service MUST NOT be ignored: it loads SHIPPED hardened
+    ## modules (jitterentropy_rng), so a unit-wide ignore would mask a real
+    ## shipped-module regression under efi-secureboot.
+    assert 'systemd-modules-load.service' not in efisb, efisb
     ## bios / plain-efi / unset get NO ignore flag, so a real vboxadd degradation
     ## still fails check 8 there (the GA modules load fine when not under SecureBoot).
     for firmware in ('bios', 'efi', ''):

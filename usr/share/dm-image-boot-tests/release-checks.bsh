@@ -79,17 +79,23 @@ declare -A RELEASE_CHECK_CMD=(
    [3]='upgrade-nonroot'
 )
 
-## VBox Guest-Additions kernel-module units that SecureBoot REJECTS (unsigned,
-## out-of-tree) in an EFI+SecureBoot test VM, leaving systemd 'degraded'. They are
-## TEST-INFRA ONLY (not shipped in the image), so check 8 (systemcheck) tolerates
-## EXACTLY these -- and ONLY under efi-secureboot -- via systemcheck's
-## --ignore-failed-unit. Any OTHER failed unit, or any other firmware (bios /
-## plain-efi, where the modules load fine), still fails check 8. Mirrors the
-## tirdad-dkms-under-SB scoping.
+## VBox Guest-Additions service units that SecureBoot REJECTS (unsigned, out-of-tree
+## modules) in an EFI+SecureBoot test VM, leaving systemd 'degraded'. These units are
+## TEST-INFRA ONLY (the GA is injected for the VBox test; nothing ships them, and no
+## shipped modules-load.d references them), so check 8 (systemcheck) tolerates EXACTLY
+## these -- and ONLY under efi-secureboot -- via systemcheck's --ignore-failed-unit.
+## Any OTHER failed unit, or any other firmware (bios / plain-efi, where the modules
+## load fine), still fails check 8.
+##
+## DELIBERATELY NOT here: systemd-modules-load.service. It also loads SHIPPED hardened
+## modules (e.g. jitterentropy_rng via security-misc's 30_security-misc.conf), so a
+## unit-wide ignore would MASK a real shipped-module load regression under the most
+## security-critical config -- the exact "stable users bricked" guarantee this gate
+## protects. If it fails under SB for a test-only module, fix that at the specific
+## module/injection, never by ignoring the whole unit.
 RELEASE_CHECK8_SB_IGNORED_UNITS=(
    vboxadd.service
    vboxadd-service.service
-   systemd-modules-load.service
 )
 
 ## The in-guest command for a check, with firmware-specific adjustments applied.
