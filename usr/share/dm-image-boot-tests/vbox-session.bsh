@@ -1,0 +1,130 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Sourceable VBox boot-role + in-guest-exec helpers for the upgrade-regression
+## recipe (dm-upgrade-regression). Reaching a boot role (GRUB menu) and unlocking
+## LUKS are pre-OS, so they are unavoidably screenshot+scancode (gui-drive.bsh);
+## once the guest is up, commands run via VBoxManage guestcontrol (a shipped VM
+## image has Guest Additions / VBoxService -- a Calamares-installed disk does not,
+## which is why the Calamares gate uses the OCR terminal instead).
+##
+## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
+## Caller globals: vm, VBOXMANAGE, GUESTCTL, FAIL_RC, me, and (optional) passphrase.
+##
+## select_installed_sysmaint is a VERBATIM copy of the function in
+## usr/bin/dm-calamares-install; the drift-guard test keeps the two byte-identical
+## until that gate is migrated to source this lib.
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
+# shellcheck disable=SC2154  ## vm/VBOXMANAGE/GUESTCTL/FAIL_RC/me/passphrase are set by the sourcing tool
+
+## In-guest guestcontrol password. Both `user` and `sysmaint` are passwordless
+## (pam_unix nullok), so the empty string is the working channel (task #83). NOT a
+## secret -- the real secret (LUKS passphrase) is typed off-argv via gui-drive.
+GC_PASSWORD="${GC_PASSWORD:-}"
+
+## Map a boot ROLE to the guest account that may authenticate in it. In a sysmaint
+## boot security-misc block-unsafe-logins rejects `user` (and vice versa), so the
+## account MUST match the boot role (task #83).
+gc_account_for_role() {
+   case "$1" in
+      sysmaint)
+         printf '%s' 'sysmaint'
+         ;;
+      *)
+         printf '%s' 'user'
+         ;;
+   esac
+}
+
+## Run a shell snippet in-guest as USERNAME via guestcontrol; the guest process's
+## exit code is this function's exit code (run waits and propagates it). Optional
+## TIMEOUT_S bounds the guest process (guestcontrol --timeout is milliseconds).
+## VBOXMANAGE is overridable, so a test can assert the exact argv with a capturing
+## stub.
+gc_run() {
+   local username="$1" snippet="$2" timeout_s="${3:-}"
+   local -a argv=(
+      "${VBOXMANAGE}" guestcontrol "${vm}" run
+      --username "${username}" --password "${GC_PASSWORD}"
+   )
+   if [ -n "${timeout_s}" ]; then
+      argv+=( --timeout "$(( timeout_s * 1000 ))" )
+   fi
+   argv+=( --wait-stdout --wait-stderr --exe /bin/bash -- bash -lc "${snippet}" )
+   "${argv[@]}"
+}
+
+## Poll until guestcontrol as USERNAME can run `true` (VBoxService up + account
+## loginable in this boot role), or TIMEOUT. 0 ready / die on timeout.
+wait_guestcontrol_ready() {
+   local username="$1" timeout="$2" deadline
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if gc_run "${username}" 'true' >/dev/null 2>&1; then
+         return 0
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "guestcontrol not ready as '${username}' after ${timeout}s"
+}
+
+## Echo the guest display WIDTH in pixels (0 if unavailable). The desktop-up visual
+## signal: a real graphical mode is >=1024 wide, past the 800x600 early framebuffer.
+guest_width() {
+   local res
+   res="$("${GUESTCTL}" "${vm}" res 2>/dev/null || true)"
+   res="${res%% *}"
+   [[ "${res}" =~ ^[0-9]+$ ]] && printf '%s' "${res}" || printf '%s' '0'
+}
+
+## Enter the LUKS passphrase at the boot prompt IF one is set (shipped VM images
+## ship unencrypted -> no prompt -> skip). LABEL is for the message only.
+unlock_luks() {
+   local label="${1:-}"
+   [ -n "${passphrase:-}" ] || return 0
+   gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock${label:+ (${label})}"
+   printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   gui_scan 1c 9c
+}
+
+## Wait for the INSTALLED system's GRUB "Choose boot mode" menu, then select entry 2
+## (PERSISTENT Mode | SYSMAINT Session): 1x Down + Enter before the ~5s autoboot into
+## the default USER entry. Sets boot-role=sysmaint for checks 2 + 3.
+## DRIFT-GUARDED verbatim copy of dm-calamares-install:select_installed_sysmaint.
+select_installed_sysmaint() {
+   local deadline text
+   deadline=$(( SECONDS + 60 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session ]]; then
+         gui_scan e0 50 e0 d0
+         sleep 1
+         gui_scan 1c 9c
+         return 0
+      fi
+      sleep 2
+   done
+   die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
+}
+
+## Power-cycle the installed disk into ROLE (user = default GRUB entry; sysmaint =
+## entry 2), unlock LUKS if encrypted, and wait until guestcontrol is reachable as
+## the role's account. No terminal is opened (guestcontrol needs none).
+boot_installed() {
+   local role="$1" account
+   account="$(gc_account_for_role "${role}")"
+   "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+   sleep 3
+   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   if [ "${role}" = 'sysmaint' ]; then
+      select_installed_sysmaint
+   fi
+   unlock_luks "${role}"
+   wait_guestcontrol_ready "${account}" 300
+}

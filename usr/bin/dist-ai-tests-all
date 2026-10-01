@@ -104,6 +104,7 @@ core_suites=(
    dm-gitlink-upstream-check-tests
    github-api-tests
    dm-boot-test-tests
+   dm-upgrade-regression-tests
    dm-ci-job-watch-tests
    dm-grub-smbios-tests
    dm-grub-theme-tests
@@ -812,6 +813,13 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      dm-upgrade-regression)
+         ## Self-contained no-VM unit tests: drive the real dm-upgrade-regression
+         ## and its shared libs from this dist-ai checkout with a capturing
+         ## VBoxManage stub; no external checkout, no VM, no network.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'
          ## (stubbed resolver), so there is no checkout to point at and no
@@ -955,7 +963,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-image-boot)
+      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-image-boot|dm-upgrade-regression)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

@@ -852,30 +852,38 @@ def test_summary_reports_verdicts_and_delegated_checks():
 
 
 ## --- cross-file numbering contract --------------------------------------------
-## The serial RELEASE_CHECKS numbers MUST mean the same thing as dm-calamares-install's
-## numbered run_check battery; a drift (someone renumbering one side) would make the
-## two halves of the gate disagree on what "check N" asserts. This locks them together.
+## The serial RELEASE_CHECKS numbers MUST mean the same thing as the VBox-path
+## gate's numbered checks; a drift (someone renumbering one side) would make the two
+## halves of the gate disagree on what "check N" asserts. The VBox numbered checks
+## now live in ONE place -- release-checks.bsh's RELEASE_CHECK_CMD table, which both
+## dm-calamares-install (install gate) and dm-upgrade-regression (R6 upgrade gate)
+## iterate -- so this contract reads that single source, not a per-file run_check grep.
 
-DM_CALAMARES = Path(__file__).resolve().parents[2] / 'bin' / 'dm-calamares-install'
+RELEASE_CHECKS_BSH = Path(__file__).resolve().parent / 'release-checks.bsh'
 
 
-def _calamares_run_checks():
-    ## Map check number -> the command string of its run_check in dm-calamares-install.
-    text = DM_CALAMARES.read_text(encoding='utf-8')
+def _release_check_cmds():
+    ## Map check number -> command string from release-checks.bsh RELEASE_CHECK_CMD
+    ## (the single source of truth for the VBox-path numbered checks). Scoped to that
+    ## table so the sibling [N]=... arrays (session/timeout/...) cannot match.
+    text = RELEASE_CHECKS_BSH.read_text(encoding='utf-8')
+    block = re.search(r'declare -A RELEASE_CHECK_CMD=\((.*?)\n\)', text, re.DOTALL)
+    assert block, 'RELEASE_CHECK_CMD table not found in release-checks.bsh'
     return {int(num): cmd
-            for num, cmd in re.findall(r"run_check\s+(\d+)\s+'([^']*)'", text)}
+            for num, cmd in re.findall(r"\[(\d+)\]='([^']*)'", block.group(1))}
 
 
 def test_cross_file_numbering_contract():
-    assert DM_CALAMARES.is_file(), f"VBox-path battery not found: {DM_CALAMARES}"
+    assert RELEASE_CHECKS_BSH.is_file(), f"VBox check table not found: {RELEASE_CHECKS_BSH}"
     m = _load_dm_image_test()
-    cal = _calamares_run_checks()
-    ## Every serial release-check number must exist in the VBox battery with the same
+    cal = _release_check_cmds()
+    assert cal, 'RELEASE_CHECK_CMD parsed empty -- the contract would be vacuous'
+    ## Every serial release-check number must exist in the VBox table with the same
     ## meaning (so the number is not reused for a different guarantee across files).
     for num in m.RELEASE_CHECKS:
         assert num in cal, (
-            f"RELEASE_CHECKS[{num}] has no run_check {num} in dm-calamares-install; "
-            "the two halves disagree on check numbering")
+            f"RELEASE_CHECKS[{num}] has no [{num}] in release-checks.bsh "
+            "RELEASE_CHECK_CMD; the two halves disagree on check numbering")
     ## Polarity + intent of the shared numbers:
     assert 'boot-role=sysmaint' in cal[1] and cal[1].lstrip().startswith('!'), cal[1]
     assert 'boot-role=sysmaint' in cal[2] and not cal[2].lstrip().startswith('!'), cal[2]
