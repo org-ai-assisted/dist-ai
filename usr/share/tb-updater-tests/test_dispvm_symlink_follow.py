@@ -30,6 +30,10 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
   * Pre-existing '.cache' case: a '.cache' that already exists must be
     ownership-fixed with '--no-dereference' (not aborted, not followed). Old
     code chowned it WITHOUT '--no-dereference' -> FAILS.
+  * Session-active case: once the user session (qubes-gui-agent.service) is up
+    -- e.g. an upgrade restart -- the mount setup must be skipped entirely, so a
+    logged-in attacker cannot win a check-to-use race against 'mount --bind'.
+    Old code did no such check and chowned/mounted anyway -> FAILS.
 """
 
 import os
@@ -65,12 +69,13 @@ qubesdb-read() {
    esac
 }
 check_valid_linux_user_account_name() { return 0; }
+systemctl() { return "${STUB_SYSTEMCTL_RC:-1}"; }
 chown() { printf 'CHOWN %s\n' "$*" >> "${REC}"; return 0; }
 mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 """
 
 
-def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
+def _drive(tmp_path, *, planted=None, victim=None, precreate=(), extra_env=None):
     """Drive the real dispvm 'main' with /home and /var/cache/tb-binary
     redirected into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
     as a symlink to `victim` inside the fake home first; each name in `precreate`
@@ -96,6 +101,8 @@ def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
         "/var/cache/tb-binary": str(cache_src),
     }
     env = {"TB_TEST_HOME": str(home), "REC": str(rec)}
+    if extra_env:
+        env.update(extra_env)
     proc = T.drive_bash_function(DISPVM, "main", preamble=PREAMBLE,
                                  replace=replace, env=env)
     return proc, home, rec.read_text().splitlines()
@@ -161,6 +168,25 @@ def test_preexisting_cache_is_owned_safely_not_aborted(tmp_path):
     )
     assert all("--no-dereference" in line for line in cache_chowns), (
         f".cache chown did not use --no-dereference: {cache_chowns}"
+    )
+
+
+def test_skips_setup_when_user_session_active(tmp_path):
+    """Once the user session is up (a restart during login, e.g. an upgrade),
+    the mount setup is skipped entirely -- no chown, no mount -- removing the
+    check-to-use race a logged-in attacker could otherwise exploit."""
+    proc, home, rec_lines = _drive(tmp_path, extra_env={"STUB_SYSTEMCTL_RC": "0"})
+
+    assert proc.returncode == 0, (
+        f"session-active run failed; rc={proc.returncode}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
+    )
+    home_str = str(home)
+    touched = [line for line in rec_lines
+               if home_str in line and
+               (line.startswith("CHOWN ") or line.startswith("MOUNT "))]
+    assert not touched, (
+        f"mount setup ran despite an active user session (race window): {touched}"
     )
 
 
