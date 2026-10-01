@@ -245,8 +245,9 @@ ok(b'x_y' in _o3, 'box mode maps the neutralised byte to _')
 # wrapper writes render_output() straight to the terminal, which emits only inert badge
 # TEXT (no SGR), so the --mode help must NOT claim the badges are SGR-tinted (coderabbit).
 _os, _ = run_in_pty(['--mode', 'state', '--', 'printf', 'xy'])
-ok(b'<U+0078>' in _os and b'<U+0079>' in _os,
-   'state mode badges every character (printable ASCII included) as <U+XXXX>')
+ok(b'<U+0078>' in _os and b'<U+0079>' in _os and b'xy' not in _os,
+   'state mode badges every character (printable ASCII included) as <U+XXXX> and leaves no '
+   'raw char unbadged (got %r)' % (_os,))
 # The --help text must be honest: no SGR-tint claim for state (cli._run cannot tint a plain
 # pipe). Capture argparse's help (it prints to stdout then raises SystemExit(0)).
 import io as _io                               # noqa: E402
@@ -260,8 +261,10 @@ except SystemExit:
 _help_txt = ' '.join(_help_buf.getvalue().split())   # collapse argparse line-wrapping
 ok('SGR' not in _help_txt and 'tinted' not in _help_txt,
    'cli --help no longer claims state badges are SGR-tinted (the wrapper cannot tint)')
-ok('state' in _help_txt and '<U+XXXX> badge' in _help_txt,
-   'cli --help still documents state as a badge-every-character mode')
+# Tie 'state' to its OWN description, not just the bare choice token plus reveal's badge
+# phrase: the help must explain state as a badge-every-character mode.
+ok('state (EVERY character' in _help_txt and '<U+XXXX> badge' in _help_txt,
+   'cli --help documents state itself as a badge-every-character mode (got %r)' % (_help_txt,))
 
 # F2: SHOW-mode Zalgo cap. render_output keeps every combining mark (it is a per-char
 # homomorphism -- the T1 proof), so a flood of them would reach the real terminal via
