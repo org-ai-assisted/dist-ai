@@ -24,12 +24,12 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
   * Symlink case: a pre-planted symlink at a mount point makes the run exit
     nonzero (the reject-guard trips), and no root operation follows it into the
     victim. Old code continued (rc 0) and chowned the victim -> FAILS.
-  * Benign case: no 'chown' targets a /home path at all (only the root-owned
-    /var/cache/tb-binary tree is chowned). Old code chowned the home paths ->
-    FAILS.
+  * Benign case: every root 'chown' of a /home path uses '--no-dereference'
+    (so a symlink there could never be followed). Old code chowned the home
+    paths WITHOUT '--no-dereference' -> FAILS.
   * Pre-existing '.cache' case: a '.cache' that already exists must be
-    ownership-fixed as root with '--no-dereference' (not aborted, not followed).
-    Old code chowned it WITHOUT '--no-dereference' -> FAILS.
+    ownership-fixed with '--no-dereference' (not aborted, not followed). Old
+    code chowned it WITHOUT '--no-dereference' -> FAILS.
 """
 
 import os
@@ -51,9 +51,8 @@ except SystemExit:
 
 ## Stub only the root/Qubes externals so 'main' flows past its early-exit gates
 ## into the mount-point provisioning. 'mkdir'/'test' stay real so the guard sees
-## the real filesystem objects; 'setpriv' is a pass-through that runs the command
-## after '--' as the test user (a real privilege drop is neither possible nor
-## needed here); 'chown'/'mount' record their argv instead of acting.
+## the real filesystem objects; 'chown'/'mount' record their argv instead of
+## acting (no root needed; the symlink-safety is observable from the argv).
 PREAMBLE = r"""
 ischroot() { return 1; }
 has() { return 0; }
@@ -66,17 +65,6 @@ qubesdb-read() {
    esac
 }
 check_valid_linux_user_account_name() { return 0; }
-id() {
-   case "$1" in
-      -u) printf '%s\n' "1000" ;;
-      -g) printf '%s\n' "1000" ;;
-   esac
-}
-setpriv() {
-   while [ "$1" != "--" ]; do shift; done
-   shift
-   "$@"
-}
 chown() { printf 'CHOWN %s\n' "$*" >> "${REC}"; return 0; }
 mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 """
@@ -134,9 +122,9 @@ def test_planted_symlink_is_refused(tmp_path, planted):
     )
 
 
-def test_benign_run_never_chowns_a_home_path(tmp_path):
-    """With no symlink planted, no 'chown' may target a /home path: the fix
-    creates them as the user, chowning only the root-owned tb-binary tree."""
+def test_home_chowns_use_no_dereference(tmp_path):
+    """Every root 'chown' of a user-home path must use '--no-dereference', so a
+    pre-planted symlink at that path can never be followed."""
     proc, home, rec_lines = _drive(tmp_path)
 
     assert proc.returncode == 0, (
@@ -144,10 +132,14 @@ def test_benign_run_never_chowns_a_home_path(tmp_path):
         f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
     )
     home_str = str(home)
-    offending = [line for line in rec_lines
-                 if line.startswith("CHOWN ") and home_str in line]
-    assert not offending, (
-        f"root chowned a user-home path (symlink-follow surface): {offending}"
+    home_chowns = [line for line in rec_lines
+                   if line.startswith("CHOWN ") and home_str in line]
+    ## Guard against a vacuous pass: the fix does chown the home mount points.
+    assert home_chowns, f"expected the mount points to be chowned: {rec_lines}"
+    unsafe = [line for line in home_chowns if "--no-dereference" not in line]
+    assert not unsafe, (
+        f"root chowned a user-home path without --no-dereference "
+        f"(symlink-follow surface): {unsafe}"
     )
 
 

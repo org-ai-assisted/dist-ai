@@ -268,22 +268,28 @@ def run_verify(root, env):
     named tool, without a verify side effect (cp adding a file, gzip writing one)
     perturbing the pristine fixture the window shots are taken against."""
     scratch = os.path.join(root, '.verify')
-    # Copy every fixture entry except the scratch dir itself.
+    # Clear a stale scratch from a prior interrupted run, then always remove our own in the
+    # finally -- a verify failure raised below must not leave .verify behind to break the next
+    # run_verify against this fixture dir with FileExistsError.
+    shutil.rmtree(scratch, ignore_errors=True)
     os.mkdir(scratch)
-    for entry in os.listdir(root):
-        if entry == '.verify':
-            continue
-        src = os.path.join(root, entry)
-        dst = os.path.join(scratch, entry)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, symlinks=True)
-        else:
-            shutil.copy2(src, dst)
-    for prog in all_programs():
-        _run_checked(prog.command, scratch, env, prog.expect_rc)
-        for command in prog.verify:
-            _run_checked(command, scratch, env, 0)
-    shutil.rmtree(scratch)
+    try:
+        # Copy every fixture entry except the scratch dir itself.
+        for entry in os.listdir(root):
+            if entry == '.verify':
+                continue
+            src = os.path.join(root, entry)
+            dst = os.path.join(scratch, entry)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, symlinks=True)
+            else:
+                shutil.copy2(src, dst)
+        for prog in all_programs():
+            _run_checked(prog.command, scratch, env, prog.expect_rc)
+            for command in prog.verify:
+                _run_checked(command, scratch, env, 0)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def print_table():
