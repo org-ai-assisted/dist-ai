@@ -259,7 +259,7 @@ def test_home_binds_go_through_toctou_safe_helper():
         assert re.search(
             rf'dispvm-bind-mount"?\s+"/var/cache/tb-binary/{re.escape(target)}"'
             rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"', text), (
-            f"the {target} bind must go through dispvm-bind-mount: {dispvm}"
+            f"the {target} bind must go through dispvm-bind-mount: {DISPVM}"
         )
     ## No raw 'mount --bind' onto a user-home path remains (the racy form).
     racy = [line for line in text.splitlines()
