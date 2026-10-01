@@ -9,24 +9,24 @@
 ## VirtualBox SHARED FOLDER (no network -- no NAT, no Whonix-Gateway relay, no Tor;
 ## a Whonix-Workstation on an internal-only net gets the .debs just the same).
 ##
-## Reuses the derivative-maker + Kicksecure toolchains wholesale, reinventing nothing:
-##   - REPO CREATION is dm's reprepro repo, NOT dpkg-scanpackages. Packages are
-##     loaded with `genmkfile reprepro-add` (-> dm-reprepro-wrapper-<derivative>
-##     include) into ~/derivative-binary/aptrepo_local/<derivative> at codename
-##     `local`. `add` here just shells to that same dm wrapper for an arbitrary deb.
-##   - DELIVERY is Kicksecure's own shared folder: the share is named exactly
-##     `shared`; vm-config-dist's mnt-shared-vbox.service auto-mounts it to
-##     /mnt/shared on every boot. So this tool does NOT pass VBox --automount (that
-##     double-mounts to /media/sf_shared) -- Kicksecure's service owns the mount.
-##   - The guest sources stanza is dm's create-local-temp-apt-repo deb822 form
-##     verbatim (Suites: local, Components: main contrib non-free, Trusted: yes).
+## This tool only DELIVERS. derivative-maker owns repo creation -- do not run
+## reprepro / dm-reprepro-wrapper by hand:
 ##
-## HOST side only. In the guest, run /mnt/shared/add-local-test-repo (it rides the
-## share -- no copy-in). Subcommands:
-##   add <kicksecure|whonix> <changes-or-deb>...   load package(s) via dm reprepro
-##   prepare <kicksecure|whonix>                   make the repo _apt-readable (o+rx)
-##   attach <vm> [--transient]                     attach the `shared` folder to a VM
-##   status [vm]                                   show repo + (optional) VM mapping
+##   POPULATE (cache-fast, only changed packages rebuild -- no package list needed):
+##     derivative-maker --skip-published-packages ...
+##   dm builds into ~/derivative-binary/aptrepo_local/<derivative> (codename local)
+##   via its own genmkfile reprepro-remove + reprepro-add -- a same-version rebuild
+##   replaces content, nothing stale.
+##
+## Then this tool:
+##   prepare <kicksecure|whonix>   make the repo _apt-readable + stage the guest helper
+##   attach <vm> [--transient]     attach the `shared` folder to a VM
+##   status [vm]                   show repo + (optional) VM mapping
+##
+## Delivery reuses Kicksecure vm-config-dist: the share is named exactly `shared`;
+## mnt-shared-vbox.service auto-mounts it to /mnt/shared on every boot. So this tool
+## does NOT pass VBox --automount (that double-mounts to /media/sf_shared). In the
+## guest, run /mnt/shared/add-local-test-repo (it rides the share -- no copy-in).
 ##
 ## SECURITY: the guest trusts this repo [trusted=yes] (installs as root, no sig check)
 ## over a READ-ONLY vboxsf mount. Trust anchor = the host build user who owns
@@ -58,11 +58,11 @@ die() {
 }
 
 usage() {
-   printf '%s\n' "usage: ${me} add <kicksecure|whonix> <changes-or-deb>...
-       ${me} prepare <kicksecure|whonix>
+   printf '%s\n' "usage: ${me} prepare <kicksecure|whonix>
        ${me} attach <vm> [--transient]
        ${me} status [vm]
 
+Populate the repo first with: derivative-maker --skip-published-packages ...
 Share host path: ${repo_parent}   (shared read-only as '${share_name}' -> ${guest_mount})
 Repo per derivative: ${repo_parent}/aptrepo_local/<derivative>  (codename ${codename})"
 }
@@ -84,52 +84,23 @@ stage_helper() {
    return 0
 }
 
-do_add() {
-   local d="$1"; shift
-   check_derivative "${d}"
-   [ "$#" -ge 1 ] || die 1 "add needs at least one .changes or .deb path"
-   ## Call dm's wrapper directly; a missing dep fails loud (no has/command-v preflight).
-   local wrapper="dm-reprepro-wrapper-${d}"
-   local item pkg
-   for item in "$@"; do
-      [ -e "${item}" ] || die 1 "no such file: ${item}"
-      case "${item}" in
-         *.changes)
-            ## Remove the .changes' binaries first, then include -- matching
-            ## genmkfile's reprepro-remove + reprepro-add, so re-adding the SAME
-            ## version with a changed checksum (the fast-fix loop) replaces it
-            ## instead of hitting reprepro's "already registered" fatal.
-            for pkg in $(sed --quiet 's/^Binary:[[:space:]]*//p' "${item}" | tr ',' ' '); do
-               "${wrapper}" remove "${codename}" "${pkg}" >/dev/null 2>&1 || true
-            done
-            "${wrapper}" --ignore=wrongdistribution --ignore=surprisingarch include "${codename}" "${item}"
-            ;;
-         *.deb)
-            pkg="$(dpkg-deb --field "${item}" Package)"
-            "${wrapper}" remove "${codename}" "${pkg}" >/dev/null 2>&1 || true
-            "${wrapper}" --ignore=wrongdistribution --ignore=surprisingarch includedeb "${codename}" "${item}"
-            ;;
-         *)
-            die 1 "unsupported file (want .changes or .deb): ${item}"
-            ;;
-      esac
-   done
-   do_prepare "${d}"
-   printf '%s: loaded %d item(s) into %s (codename %s)\n' "${me}" "$#" "$(repo_dir_for "${d}")" "${codename}"
-}
-
 do_prepare() {
    local d="$1" rd
    check_derivative "${d}"
    rd="$(repo_dir_for "${d}")"
-   [ -d "${rd}" ] || die 1 "repo not found: ${rd} (build a package with 'genmkfile reprepro-add', or use '${me} add')"
+   [ -d "${rd}" ] || die 1 "repo not found: ${rd} (populate it with: derivative-maker --only-packages '<pkgs>')"
    ## dm's create-local-temp-apt-repo perms fix: a user-owned repo under umask 027
    ## is unreadable by the unprivileged _apt user. (Over the read-only vboxsf mount
    ## the guest also falls back to root for file: + [trusted=yes]; this keeps host
    ## parity and works for any mount options.)
    chmod --recursive o+r -- "${rd}"
-   find "${rd}" -type d -exec chmod o+rx -- {} +
+   ## Run find from INSIDE the repo so it never needs to restore an inaccessible
+   ## caller CWD (e.g. invoked from another user's home) -- that failure is
+   ## non-zero and would abort under errexit before stage_helper.
+   ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
    stage_helper
+   printf '%s: prepared %s (codename %s); guest: run %s/add-local-test-repo\n' \
+      "${me}" "${rd}" "${codename}" "${guest_mount}"
 }
 
 vm_state() {
@@ -188,9 +159,6 @@ do_status() {
 [ "$#" -ge 1 ] || { usage; exit 1; }
 cmd="$1"; shift
 case "${cmd}" in
-   add)
-      do_add "${1:-}" "${@:2}"
-      ;;
    prepare)
       do_prepare "${1:-}"
       ;;
