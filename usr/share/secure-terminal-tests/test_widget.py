@@ -599,6 +599,27 @@ ok('size' in _order and 'vpol' in _order and _order.index('vpol') < _order.index
    'bar never narrows the grid sizing); call order was %r' % (_order,))
 _fsr.close()
 
+# --- a CLI tab with a LINGERING alt-screen must not inherit the GRID vscroll pin (codex) -
+# Toggling TUI off while the child holds the alt screen leaves _alt_screen True in a CLI tab,
+# so set_frozen's unfreeze takes the (_alt_screen and _screen) branch even though _grid_mode()
+# is False. The policy-restore is grid-only: running _apply_vscroll_policy here would see
+# _alt_screen and pin the bar AlwaysOff, which the CLI _rerender never undoes -> a CLI overflow
+# could not scroll. (Also covers the grid-only gate's False arm.)
+_fal = SecureTerminal(command='/bin/cat', tui=True)
+_fal.resize(400, 200)
+_fal.show()
+APP.processEvents()
+feed_output(_fal, b'\x1b[?1049h' + b''.join(b'line-%03d\r\n' % i for i in range(200)))
+ok(_fal._alt_screen, 'alt-lingering setup: the child holds the alt screen')
+_fal.set_frozen(True)
+_fal.apply_tui(False)                              # TUI off -> CLI; _alt_screen lingers; auto-unfreeze
+ok(not _fal.tui_active() and _fal._alt_screen and not _fal._grid_mode(),
+   'alt-lingering setup: a CLI tab with a lingering alt-screen (grid_mode False)')
+ok(_fal.verticalScrollBar().maximum() > 0, 'alt-lingering setup: the CLI document overflows')
+eq(_fal.verticalScrollBarPolicy(), _ASN,
+   'CLI-with-lingering-alt unfreeze keeps the vscroll AsNeeded (grid-only restore skipped)')
+_fal.close()
+
 # --- Tab illustration: a completed-line tab carries the _TAB_MARK_PROP overlay flag -----
 # Mirrors the space-dot: the document keeps the real '\t' (copy-safe) and a fragment format
 # flags it so paintEvent draws the arrow guide. CLI (line) mode, where the '\t' survives.
