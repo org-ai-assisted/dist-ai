@@ -54,7 +54,11 @@ gc_run() {
    if [ -n "${timeout_s}" ]; then
       argv+=( --timeout "$(( timeout_s * 1000 ))" )
    fi
-   argv+=( --wait-stdout --wait-stderr --exe /bin/bash -- bash -lc "${snippet}" )
+   ## guestcontrol auto-sets argv[0] from --exe, so the args after -- are
+   ## argv[1..]: pass -lc directly. A leading 'bash' would become argv[1], get
+   ## run as a script, and fail "cannot execute binary file" on VBox 7.2.
+   ## (--arg0 could override argv[0]; unneeded here.)
+   argv+=( --wait-stdout --wait-stderr --exe /bin/bash -- -lc "${snippet}" )
    "${argv[@]}"
 }
 

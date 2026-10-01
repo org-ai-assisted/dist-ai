@@ -7,7 +7,9 @@
 
 ## Assert the exact VBoxManage guestcontrol argv built by gc_run (vbox-session.bsh),
 ## with a capturing VBOXMANAGE stub -- no VM. Covers the empty-password channel
-## (task #83), the shell-snippet wrapping (/bin/bash -- bash -lc), and the optional
+## (task #83), the shell-snippet wrapping (/bin/bash then -- -lc; argv[0] is
+## auto-set from --exe, so NO duplicate program-name arg -- see gc_run), and
+## the optional
 ## --timeout (seconds -> ms).
 
 set -o errexit
@@ -61,11 +63,11 @@ assert_eq() {
 
 got_timed="$(gc_run user 'whoami' 60)"
 assert_eq 'gc_run with timeout' "${got_timed}" \
-   'guestcontrol|testvm|run|--username|user|--password||--timeout|60000|--wait-stdout|--wait-stderr|--exe|/bin/bash|--|bash|-lc|whoami'
+   'guestcontrol|testvm|run|--username|user|--password||--timeout|60000|--wait-stdout|--wait-stderr|--exe|/bin/bash|--|-lc|whoami'
 
 got_plain="$(gc_run sysmaint 'true')"
 assert_eq 'gc_run without timeout' "${got_plain}" \
-   'guestcontrol|testvm|run|--username|sysmaint|--password||--wait-stdout|--wait-stderr|--exe|/bin/bash|--|bash|-lc|true'
+   'guestcontrol|testvm|run|--username|sysmaint|--password||--wait-stdout|--wait-stderr|--exe|/bin/bash|--|-lc|true'
 
 ## gc_account_for_role maps boot role -> the account that may authenticate in it.
 assert_eq 'account for sysmaint' "$(gc_account_for_role sysmaint)" 'sysmaint'
