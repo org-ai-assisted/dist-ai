@@ -298,9 +298,19 @@ def scan_systemd_activation(abs_path, rel_path):
     activates = None
     user_value = None
     accept = False
+    ## Keys are honored ONLY in the unit's own section ('socket'/'timer'/...);
+    ## a stray Exec* in [Install]/[Unit] is ignored by systemd, so a bare one
+    ## there must not reset the real section's commands.
+    primary = ext[1:]
+    section = None
     for raw in read_text(abs_path).splitlines():
         line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
         if line.startswith("#") or "=" not in line:
+            continue
+        if section != primary:
             continue
         key, _, value = line.partition("=")
         key = key.strip()

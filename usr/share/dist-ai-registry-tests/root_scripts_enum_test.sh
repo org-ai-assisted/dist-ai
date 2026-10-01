@@ -336,8 +336,9 @@ EOF
 ## IGNORES User= for a '+' command, so it runs as root -> it MUST land in
 ## root_forced_exec, NOT in exec (where exec_user=nobody would mislabel it as
 ## non-root); the non-forced ExecStartPre stays in exec under that User=. A bare
-## 'ExecStartPre=' resets that key, so a '+' command BEFORE the reset is cleared
-## and must NOT be reported as forced-root.
+## 'ExecStartPre=' IN [Socket] resets that key, so a '+' before it is cleared; a
+## bare 'ExecStartPre=' in [Install] is NOT a valid directive -- systemd ignores
+## it, so it must NOT reset the real [Socket] command.
 write 'packages/kicksecure/foo/usr/lib/systemd/system/forced.socket' <<'EOF'
 [Socket]
 ListenStream=/run/forced.sock
@@ -347,6 +348,10 @@ ExecStartPre=
 ExecStartPre=+/usr/bin/socket-forced-root
 ExecStartPre=/usr/bin/socket-userdrop
 Service=forced-worker.service
+
+[Install]
+WantedBy=sockets.target
+ExecStartPre=
 EOF
 
 ## a template Accept=yes socket -> instantiates <stem>.service (single '@').
