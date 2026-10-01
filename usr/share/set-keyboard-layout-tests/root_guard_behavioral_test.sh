@@ -110,7 +110,10 @@ run_keymap_case() {
       stub_cmd stcat 0
       stub_cmd dpkg-reconfigure 0
 
-      set_console_keymap >/dev/null 2>&1 || true
+      ## Inner subshell: set_console_keymap is a SOURCED function, so an 'exit' from
+      ## it would terminate this isolation subshell before the recording check and
+      ## stub_path_cleanup below (leaking the stub tree). The subshell confines it.
+      ( set_console_keymap ) >/dev/null 2>&1 || true
 
       if stub_called_with systemctl restart keyboard-setup.service; then
          printf '%s\n' 'restart'

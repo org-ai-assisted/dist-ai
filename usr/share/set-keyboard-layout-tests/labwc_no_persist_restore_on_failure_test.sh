@@ -122,8 +122,13 @@ run_no_persist_overwrite_failure_case() {
       # shellcheck disable=SC2034  # consumed by the sourced set_labwc_keymap
       timeout_command=()
 
+      ## Inner subshell: set_labwc_keymap is a SOURCED function, so an 'exit' from
+      ## it would otherwise terminate this isolation subshell outright -- before the
+      ## result-capture and stub_path_cleanup below -- leaking the stub tree and
+      ## emptying the result. The subshell confines any exit; '|| skl_rc=$?' then
+      ## captures the code whether the function returned or exited.
       skl_rc=0
-      set_labwc_keymap >/dev/null 2>&1 || skl_rc=$?
+      ( set_labwc_keymap ) >/dev/null 2>&1 || skl_rc=$?
       printf '%s\n' "rc=${skl_rc}"
 
       ## Match on the config path (a real recorded arg): a bare 'stub_called_with
