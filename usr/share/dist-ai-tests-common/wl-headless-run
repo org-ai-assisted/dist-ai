@@ -132,8 +132,11 @@ fi
 
 ## Run the command as its OWN session leader (setsid), so a watchdog TERM can kill its
 ## whole process group (test + spawned shells/ptys) via cleanup, not just this script.
+## `<&0` keeps the caller's stdin: a `&` async command with no explicit redirection has its
+## stdin pointed at /dev/null (job control is off in a script), and setsid drops the tty too,
+## so a stdin-reading command would otherwise get immediate EOF. Inherit this script's fd 0.
 rc=0
-setsid "$@" &
+setsid "$@" <&0 &
 cmd_pid="$!"
 wait "${cmd_pid}" || rc="$?"
 cmd_pid=''        # reaped cleanly; do not group-kill an exited pid in the EXIT trap
