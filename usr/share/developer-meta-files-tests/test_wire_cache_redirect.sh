@@ -139,16 +139,17 @@ fi
 ## WITH the wire's redirection -> NO cache dir may appear in the checkout.
 co_redir="${work}/checkout-redir"
 make_checkout "${co_redir}"
-## The pytest cache dir deliberately contains a SPACE: pytest re-parses PYTEST_ADDOPTS
-## with shlex, so the cache_dir value MUST be single-quoted or the space splits the path
-## into bogus test args ("no tests ran") and no cache is written. This doubles as the
-## regression + canary for that finding -- drop the single-quotes below and the
-## "pytest cache went to the redirected -o cache_dir" assertion FAILS.
-pcache="${work}/pytest cache"
+## The pytest cache dir deliberately contains BOTH a SPACE and an APOSTROPHE: pytest
+## re-parses PYTEST_ADDOPTS with shlex, so the cache_dir value must be shlex-quoted -- a
+## space splits the path into bogus args ("no tests ran"), and a bare single-quote wrap
+## breaks on the apostrophe. The expansion renders each ' as the escape '\'' . This
+## doubles as the regression + canary: revert to a bare '${pcache}' (or drop quoting) and
+## the "pytest cache went to the redirected -o cache_dir" assertion FAILS.
+pcache="${work}/pytest ca'che"
 mcache="${work}/mypy-cache"
 (
    export PYTHONDONTWRITEBYTECODE=1
-   export PYTEST_ADDOPTS="-o cache_dir='${pcache}'"
+   export PYTEST_ADDOPTS="-o cache_dir='${pcache//\'/\'\\\'\'}'"
    export MYPY_CACHE_DIR="${mcache}"
    run_producers "${co_redir}"
 )

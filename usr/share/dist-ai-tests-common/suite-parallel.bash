@@ -129,9 +129,10 @@ run_suites_parallel() {
    ## the subject checkout and trip the cache-dir gate. REDIRECT both into the throwaway
    ## work dir ('-o cache_dir' keeps pytest's 'cache' fixture working, unlike '-p
    ## no:cacheprovider'). Unconditional -- either tool can run without a pkg. The
-   ## cache_dir value is SINGLE-QUOTED: pytest re-parses PYTEST_ADDOPTS with shlex, so an
-   ## unquoted ${work} containing a SPACE would split the path into bogus test args.
-   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir='${work}/pytest_cache'"
+   ## cache_dir value is shlex-QUOTED: pytest re-parses PYTEST_ADDOPTS with shlex, so an
+   ## unquoted ${work} with a SPACE splits the path into bogus test args; single quotes
+   ## alone break on an APOSTROPHE, so each embedded ' is rendered as the escape '\'' .
+   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir='${work//\'/\'\\\'\'}/pytest_cache'"
    export MYPY_CACHE_DIR="${work}/mypy-cache"
 
    ## Run one suite: isolate its XDG config/state, capture combined output + rc to files, and

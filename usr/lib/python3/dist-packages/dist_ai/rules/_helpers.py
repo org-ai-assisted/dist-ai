@@ -615,21 +615,21 @@ def unquote(text):
 def _shell_c_value(program, source):
     """The VALUE a shell '-c' receives for the PROGRAM word -- what the inner
     shell actually runs, for feeding to a multi-statement parser. word_string
-    joins the word's parts and unwraps EACH, so a value built by concatenating
-    quoted spans ('a'"; b" -> 'a; b') is resolved, not left half-quoted -- a bare
-    'text[0]==text[-1]' strip MISSES that (mismatched outer quotes), letting a
-    multi-statement payload slip the -c gates.
+    (decode_dquote) joins the word's parts, unwraps EACH, AND decodes the
+    double-quote backslash-escapes, so the result is byte-identical to the string
+    the inner shell runs: a value built by concatenating quoted spans ('a'"; b" ->
+    'a; b') is resolved (a bare 'text[0]==text[-1]' strip MISSES that, mismatched
+    outer quotes, letting a multi-statement payload slip the gates); a
+    single-quoted literal backslash ('printf "%s\\n" foo'"; echo bar") is kept, so
+    its real 2nd statement is seen; and a double-quote escape ("a\\;b" -> 'a\\;b',
+    one word) is decoded, so it is NOT misread as a ';' separator.
 
-    A BACKSLASH in the joined value is the exception: word_string does NOT decode
-    double-quote escapes ('"a\\;"' keeps the '\\'), so re-parsing the join would
-    read a spurious ';'/'&&'/pipe the inner shell never sees (a false positive).
-    A value with a backslash, or one carrying an expansion (word_string None),
-    falls back to the raw source with only its OUTER quotes stripped -- the
-    conservative pre-value behavior; a backslash-bearing concatenated
-    multi-statement value stays a documented follow-up (accident, not
-    adversary)."""
-    value = bash_ast.word_string(program)
-    if value is not None and "\\" not in value:
+    An expansion-bearing word (word_string None) cannot be resolved statically, so
+    it falls back to the raw source with only its OUTER quotes stripped -- the
+    best-effort for an unknowable value (an expansion concatenated with mismatched
+    outer quotes stays a documented follow-up, accident not adversary)."""
+    value = bash_ast.word_string(program, decode_dquote=True)
+    if value is not None:
         return value
     return unquote(bash_ast.word_source(program, source))
 
