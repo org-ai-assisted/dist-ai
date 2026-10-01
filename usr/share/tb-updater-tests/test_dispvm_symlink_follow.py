@@ -39,6 +39,10 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
     skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
     covering a manual restart (incl. retry of a failed first run) that
     --no-start does not. Old code/unit had neither -> FAILS.
+  * Bind via the TOCTOU-safe helper: the user-home bind mounts go through
+    dispvm-bind-mount (O_NOFOLLOW + mount against a pinned fd), never a raw
+    'mount --bind <home path>'. Old code used the raw racy form -> FAILS.
+    (The helper's own resolver is unit-tested in test_dispvm_bind_mount.py.)
 """
 
 import os
@@ -241,6 +245,30 @@ def test_dispvm_unit_skips_on_sentinel():
         f"tb-updater-dispvm.service must carry "
         f"'ConditionPathExists=!{SENTINEL}' for run-once-per-boot"
     )
+
+
+def test_home_binds_go_through_toctou_safe_helper():
+    """The user-home bind mounts must use dispvm-bind-mount (O_NOFOLLOW + pinned
+    fd), never a raw 'mount --bind <home path>' that follows a symlinked mount
+    point. Reads the shipped dispvm."""
+    try:
+        dispvm = T.dispvm_script()
+    except SystemExit:
+        pytest.skip("dispvm not available (TB_UPDATER_REPO)")
+    with open(dispvm, encoding="utf-8") as handle:
+        text = handle.read()
+
+    ## Both persistent-cache binds route through the helper.
+    for target in (".tb", ".cache/tb"):
+        assert re.search(
+            rf'dispvm-bind-mount"?\s+"/var/cache/tb-binary/{re.escape(target)}"'
+            rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"', text), (
+            f"the {target} bind must go through dispvm-bind-mount: {dispvm}"
+        )
+    ## No raw 'mount --bind' onto a user-home path remains (the racy form).
+    racy = [line for line in text.splitlines()
+            if "mount --bind" in line and "/home/${user_name}" in line]
+    assert not racy, f"raw 'mount --bind' onto a home path (racy): {racy}"
 
 
 if __name__ == "__main__":
