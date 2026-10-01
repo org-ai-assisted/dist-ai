@@ -200,6 +200,49 @@ sys.exit(1)
 PY
 check '_run_checked fails loud on a command that did not run cleanly (no silent-green)' "${canary_rc}"
 
+## 5. CANARY (idempotent cleanup): run_verify must clear a stale .verify from a prior interrupted
+## run, and must ALWAYS remove its own scratch -- even when a verify command raises mid-run -- so a
+## leftover .verify can never break the next run_verify against the same fixture dir.
+scratch_rc=0
+python3 - "${gen}" <<'PY' || scratch_rc=$?
+import importlib.util, os, sys, tempfile, types
+gen = sys.argv[1]
+spec = importlib.util.spec_from_file_location('compat_shot', gen)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+# A -- a stale .verify from a prior run is cleared, not fatal. No program runs (all_programs=[]),
+# so the only thing under test is the mkdir/cleanup contract. PRE-FIX: os.mkdir -> FileExistsError.
+mod.all_programs = lambda: []
+root = tempfile.mkdtemp()
+open(os.path.join(root, 'dummy'), 'w').close()
+stale = os.path.join(root, '.verify')
+os.mkdir(stale)
+open(os.path.join(stale, 'leftover'), 'w').close()   # non-empty stale dir from a prior run
+mod.run_verify(root, mod._fixture_env(root))
+if os.path.exists(stale):
+    sys.stderr.write('canary A: run_verify left .verify behind on success\n')
+    sys.exit(1)
+
+# B -- a verify command raising mid-run still cleans up. PRE-FIX (no finally): .verify lingers.
+mod.all_programs = lambda: [types.SimpleNamespace(command='false', expect_rc=0, verify=[])]
+root = tempfile.mkdtemp()
+open(os.path.join(root, 'dummy'), 'w').close()
+scratch = os.path.join(root, '.verify')
+try:
+    mod.run_verify(root, mod._fixture_env(root))
+except RuntimeError:
+    pass
+else:
+    sys.stderr.write('canary B: run_verify did NOT raise on a failing verify command\n')
+    sys.exit(1)
+if os.path.exists(scratch):
+    sys.stderr.write('canary B: run_verify left .verify behind after a mid-run failure\n')
+    sys.exit(1)
+sys.exit(0)
+PY
+check 'run_verify clears a stale scratch and always cleans up its own (no lingering .verify)' "${scratch_rc}"
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
