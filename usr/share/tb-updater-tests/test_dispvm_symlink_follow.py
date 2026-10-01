@@ -34,6 +34,10 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
     at boot -- debian/rules pins 'dh_installsystemd --no-start' for
     tb-updater-dispvm.service so dpkg never starts/restarts it during a live
     session. Old rules had no such override -> FAILS.
+  * Run-once (defense in depth): a successful setup stamps a tamper-proof
+    sentinel in root-owned tmpfs /run, and the unit skips on that
+    (ConditionPathExists), so ANY re-run this boot is a no-op -- covering a
+    manual restart that --no-start does not. Old code/unit had neither -> FAILS.
 """
 
 import os
@@ -72,6 +76,7 @@ qubesdb-read() {
 check_valid_linux_user_account_name() { return 0; }
 chown() { printf 'CHOWN %s\n' "$*" >> "${REC}"; return 0; }
 mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
+touch() { printf 'TOUCH %s\n' "$*" >> "${REC}"; return 0; }
 """
 
 
@@ -193,6 +198,41 @@ def test_dispvm_service_not_started_by_dpkg():
         "debian/rules must pin 'dh_installsystemd --no-start "
         "tb-updater-dispvm.service' so dpkg never starts/restarts the unit "
         "during a live session (mount --bind check-to-use race, CWE-59)"
+    )
+
+
+SENTINEL = "/run/tb-updater-dispvm.done"
+
+
+def test_marks_run_once_sentinel(tmp_path):
+    """A successful DispVM setup stamps the /run sentinel, so a re-run this boot
+    is a no-op (defense in depth against a restart re-entering the mount race)."""
+    proc, _home, rec_lines = _drive(tmp_path)
+
+    assert proc.returncode == 0, (
+        f"benign run failed; rc={proc.returncode}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
+    )
+    touched = [line for line in rec_lines
+               if line.startswith("TOUCH ") and line.endswith(SENTINEL)]
+    assert touched, f"run-once sentinel {SENTINEL} was not stamped: {rec_lines}"
+
+
+def test_dispvm_unit_skips_on_sentinel():
+    """The unit must refuse to re-run once the sentinel exists
+    (ConditionPathExists), so a restart cannot re-enter the mount setup."""
+    repo = os.environ.get("TB_UPDATER_REPO", "").strip()
+    if not repo:
+        pytest.skip("unit file only available from a checkout (TB_UPDATER_REPO)")
+    unit = os.path.join(repo, "usr/lib/systemd/system/tb-updater-dispvm.service")
+    if not os.path.isfile(unit):
+        pytest.skip(f"unit file not found ({unit})")
+    with open(unit, encoding="utf-8") as handle:
+        text = handle.read()
+    assert re.search(rf"^ConditionPathExists=!{re.escape(SENTINEL)}\s*$",
+                     text, re.MULTILINE), (
+        f"tb-updater-dispvm.service must carry "
+        f"'ConditionPathExists=!{SENTINEL}' for run-once-per-boot"
     )
 
 
