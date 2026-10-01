@@ -1,0 +1,180 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fast-iteration local apt repo for the VBox image-test fleet, delivered over a
+## VirtualBox SHARED FOLDER (no network -- no NAT, no Whonix-Gateway relay, no Tor;
+## a Whonix-Workstation on an internal-only net gets the .debs just the same).
+##
+## This tool only DELIVERS. derivative-maker owns repo creation -- do not run
+## reprepro / dm-reprepro-wrapper by hand:
+##
+##   POPULATE (cache-fast, only changed packages rebuild -- no package list needed):
+##     derivative-maker --skip-published-packages ...
+##   dm builds into ~/derivative-binary/aptrepo_local/<derivative> (codename local)
+##   via its own genmkfile reprepro-remove + reprepro-add -- a same-version rebuild
+##   replaces content, nothing stale.
+##
+## Then this tool:
+##   prepare <kicksecure|whonix>   make the repo _apt-readable + stage the guest helper
+##   attach <vm> [--transient]     attach the `shared` folder to a VM
+##   status [vm]                   show repo + (optional) VM mapping
+##
+## Delivery reuses Kicksecure vm-config-dist: the share is named exactly `shared`;
+## mnt-shared-vbox.service auto-mounts it to /mnt/shared on every boot. So this tool
+## does NOT pass VBox --automount (that double-mounts to /media/sf_shared). In the
+## guest, run /mnt/shared/add-local-test-repo (it rides the share -- no copy-in).
+##
+## SECURITY: the guest trusts this repo [trusted=yes] (installs as root, no sig check)
+## over a READ-ONLY vboxsf mount. Trust anchor = the host build user who owns
+## ~/derivative-binary -- exactly the freshly-built .debs under test.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+
+## dm's binary build dir (binary_build_folder_dist) is the share host path; the
+## reprepro repos live in its aptrepo_local/<derivative> subdirs, codename `local`.
+repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary}"
+codename="local"
+
+share_name="shared"
+guest_mount="/mnt/shared"
+helper_src="/usr/share/dm-image-boot-tests/add-local-test-repo"
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+usage() {
+   printf '%s\n' "usage: ${me} prepare <kicksecure|whonix>
+       ${me} attach <vm> [--transient]
+       ${me} status [vm]
+
+Populate the repo first with: derivative-maker --skip-published-packages ...
+Share host path: ${repo_parent}   (shared read-only as '${share_name}' -> ${guest_mount})
+Repo per derivative: ${repo_parent}/aptrepo_local/<derivative>  (codename ${codename})"
+}
+
+check_derivative() {
+   if [ "$1" != "kicksecure" ] && [ "$1" != "whonix" ]; then
+      die 1 "derivative must be 'kicksecure' or 'whonix', got: ${1:-<none>}"
+   fi
+}
+
+repo_dir_for() { printf '%s/aptrepo_local/%s' "${repo_parent}" "$1"; }
+
+## Stage the guest helper into the share root so it rides the share into the guest
+## (/mnt/shared/add-local-test-repo). Skipped when running from a checkout where the
+## shipped helper is absent -- the guest apt stanza can then be added by hand.
+stage_helper() {
+   [ -d "${repo_parent}" ] || return 0
+   [ -f "${helper_src}" ] && install --mode=0755 -- "${helper_src}" "${repo_parent}/add-local-test-repo"
+   return 0
+}
+
+do_prepare() {
+   local d="$1" rd
+   check_derivative "${d}"
+   rd="$(repo_dir_for "${d}")"
+   [ -d "${rd}" ] || die 1 "repo not found: ${rd} (populate it with: derivative-maker --only-packages '<pkgs>')"
+   ## dm's create-local-temp-apt-repo perms fix: a user-owned repo under umask 027
+   ## is unreadable by the unprivileged _apt user. (Over the read-only vboxsf mount
+   ## the guest also falls back to root for file: + [trusted=yes]; this keeps host
+   ## parity and works for any mount options.)
+   chmod --recursive o+r -- "${rd}"
+   ## Run find from INSIDE the repo so it never needs to restore an inaccessible
+   ## caller CWD (e.g. invoked from another user's home) -- that failure is
+   ## non-zero and would abort under errexit before stage_helper.
+   ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
+   stage_helper
+   printf '%s: prepared %s (codename %s); guest: run %s/add-local-test-repo\n' \
+      "${me}" "${rd}" "${codename}" "${guest_mount}"
+}
+
+vm_state() {
+   "${VBOXMANAGE}" showvminfo "$1" --machinereadable 2>/dev/null \
+      | sed --quiet 's/^VMState="\([^"]*\)"/\1/p'
+}
+
+do_attach() {
+   local vm="$1" transient="$2" state add_args=() rm_args=()
+   [ -n "${vm}" ] || { usage; exit 1; }
+   [ -d "${repo_parent}" ] || die 1 "share host path not found: ${repo_parent}"
+
+   state="$(vm_state "${vm}")"
+   [ -n "${state}" ] || die 1 "no such VM: ${vm}"
+
+   if [ "${transient}" = "true" ]; then
+      [ "${state}" = "running" ] || die 1 "--transient needs a RUNNING vm (state=${state})"
+      add_args=(--transient); rm_args=(--transient)
+   else
+      [ "${state}" = "poweroff" ] || die 1 "vm must be powered off to attach permanently (state=${state}); power it off, or use --transient"
+   fi
+
+   ## Idempotent: drop any prior `shared` mapping (e.g. an old host path) first.
+   "${VBOXMANAGE}" sharedfolder remove "${vm}" --name "${share_name}" "${rm_args[@]}" >/dev/null 2>&1 || true
+   "${VBOXMANAGE}" sharedfolder add "${vm}" --name "${share_name}" \
+      --hostpath "${repo_parent}" --readonly "${add_args[@]}"
+   stage_helper
+
+   printf '%s: attached %s -> %s on %s%s\n' "${me}" "${share_name}" "${repo_parent}" "${vm}" \
+      "$([ "${transient}" = "true" ] && printf ' (transient)')"
+   if [ "${transient}" = "true" ]; then
+      printf '%s: running vm -- in the guest: systemctl restart mnt-shared-vbox.service\n' "${me}"
+   else
+      printf '%s: mounts at %s on the next boot (mnt-shared-vbox.service)\n' "${me}" "${guest_mount}"
+   fi
+}
+
+do_status() {
+   local vm="${1:-}" d rd
+   printf 'share host path: %s\n' "${repo_parent}"
+   for d in kicksecure whonix; do
+      rd="$(repo_dir_for "${d}")"
+      if [ -d "${rd}/dists/${codename}" ]; then
+         printf '  %-10s : repo present (%s)\n' "${d}" "${rd}"
+      else
+         printf '  %-10s : no repo yet (%s)\n' "${d}" "${rd}"
+      fi
+   done
+   if [ -n "${vm}" ]; then
+      printf -- '--- %s ---\n' "${vm}"
+      "${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
+         | grep --ignore-case --extended-regexp 'SharedFolder' || printf 'no shared folders mapped\n'
+   fi
+}
+
+[ "$#" -ge 1 ] || { usage; exit 1; }
+cmd="$1"; shift
+case "${cmd}" in
+   prepare)
+      do_prepare "${1:-}"
+      ;;
+   attach)
+      vm="${1:-}"; shift || true
+      transient="false"
+      [ "${1:-}" = "--transient" ] && transient="true"
+      do_attach "${vm}" "${transient}"
+      ;;
+   status)
+      do_status "${1:-}"
+      ;;
+   -h|--help|help)
+      usage
+      ;;
+   *)
+      die 1 "unknown subcommand: ${cmd}"
+      ;;
+esac

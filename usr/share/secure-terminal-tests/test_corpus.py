@@ -809,6 +809,38 @@ ok(len(_can) == 5 and _can[0][1] == _can[4][1] and _can[0][1] != (),
 ok(_line_diff == 0, 'feed_line_edits matched the reference on every payload '
    '(%d mismatches)' % _line_diff)
 
+# --- state mode badges flagged whitespace WITH its SGR (coderabbit) -----------
+# A leading / trailing / >=2-interior space is a whitespace anomaly: the neutralizing modes
+# keep its real U+0020 under a WS_ANOMALY dot (display-only, no SGR). But STATE mode badges
+# EVERY char as its <U+XXXX> tinted by the program's own SGR ("codepoint + attributes"), so a
+# flagged space must render as a <U+0020> badge carrying its SGR, NOT a dot that drops the
+# attributes (and is redundant -- the badge already makes every space explicit). Build a BOLD
+# line (bold has no bg, so every space stays "invisible" = flagged) with leading(2) / interior(3)
+# / trailing(2) spaces; the \r\n completes it so the trailing run is flagged too.
+_wscompleted, _wscells, _wc, _wsgr, _ww, _wrp = \
+    S.feed_line_edits([], 0, {}, '\x1b[1m  x   y  \x1b[0m\r\n')
+# the actual SGR state carried on the space cells (bold must be non-empty, or the fixture is
+# wrong -- an empty () key would make the badge-key check vacuous).
+_ws_sgr = next(k for c, k in _wscompleted[0] if c == ' ')
+ok(_ws_sgr and _ws_sgr != (),
+   'state+markings setup: the flagged spaces actually carry a non-empty (bold) SGR (got %r)' % (_ws_sgr,))
+_ws_state = S.cells_to_runs(_wscompleted, _wscells, 'state', True, True)[0]
+ok(not any(k == (S.MARK_KEY, S.WS_ANOMALY, 0x20) for _t, k in _ws_state),
+   'state+markings: a flagged space is NOT emitted as an SGR-less WS_ANOMALY dot run')
+# adjacent same-SGR space badges coalesce into one run ('<U+0020><U+0020>'), so match by substring.
+_ws_badges = [(t, k) for t, k in _ws_state if '<U+0020>' in t]
+ok(_ws_badges and all(k == (S.MARK_KEY, _ws_sgr, 0x20) for _t, k in _ws_badges),
+   'state+markings: each flagged space is a <U+0020> badge keyed by its REAL (bold) SGR, not '
+   'a dropped-attribute () -- got %r, expected sgr %r' % (_ws_badges[:2], _ws_sgr))
+# Control: the exclusion is state-ONLY. Both other EXPANDING modes (detail, reveal) and the
+# plain modes still emit the WS_ANOMALY dot on the SAME line -- an impl that wrongly dropped
+# the dot in reveal too (not just state) would be caught here.
+for _ctl_mode in ('detail', 'reveal'):
+    _ws_ctl = S.cells_to_runs(_wscompleted, _wscells, _ctl_mode, True, True)[0]
+    ok(any(k == (S.MARK_KEY, S.WS_ANOMALY, 0x20) for _t, k in _ws_ctl),
+       '%s+markings: a flagged space still emits the WS_ANOMALY dot (exclusion is state-only)'
+       % _ctl_mode)
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(corpus): %d passed, %d failed\n'
                  % (PASS, FAIL))

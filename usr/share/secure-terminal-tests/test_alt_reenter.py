@@ -190,4 +190,40 @@ ok(_g2._feed_stream((_ENTER + _LEAVE) * _g2._ALT_TRANSITIONS_MAX + _ENTER) is Tr
    'a >cap alt-transition flood reports capped (gating the flag reconcile)')
 _g2.close()
 
+# --- _alt_leave while FROZEN must NOT blank the paused frame (coderabbit) ---------------
+# Freeze suppresses only the PAINT; the pty read keeps running, so an alt program EXITING
+# while the view is frozen still drives _alt_leave. The old code called _reset_grid_view()
+# there unconditionally -- clearing the QTextDocument with the frozen paint suppressed, so
+# nothing repainted it and the frozen terminal went BLANK. _alt_leave must skip the document
+# rebuild (and the forced render / exit-snapshot) while frozen; the MODEL is still restored,
+# and unfreeze rebuilds to the live primary frame.
+_fz = _new_term()
+feed_output(_fz, b'PRIMARY-MARKER\r\n')     # primary-buffer content, restored on alt leave
+feed_output(_fz, _nano_frame(_fz))         # a full-screen program takes the alt screen (clears it)
+_fz._render_tui()
+APP.processEvents()
+ok(_fz._alt_saved is not None, 'alt-leave/frozen setup: the alt screen is held')
+ok('PRIMARY-MARKER' not in _fz.toPlainText(),
+   'alt-leave/frozen setup: the alt frame (not the primary) is shown before freeze')
+_fz.set_frozen(True)                        # default 'detail' is expanding -> frozen badge frame
+ok(_fz.frozen(), 'alt-leave/frozen setup: the view is frozen')
+_frozen_doc = _fz.toPlainText()
+ok('GNU nano' in _frozen_doc, 'alt-leave/frozen setup: the frozen frame shows the alt program')
+feed_output(_fz, _LEAVE)                     # the program exits while the view is frozen
+APP.processEvents()
+ok(_fz.frozen(), 'alt-leave/frozen: still frozen after the alt program exits')
+eq(_fz.toPlainText(), _frozen_doc,
+   'alt-leave/frozen: the paused frame is preserved (not blanked by _reset_grid_view)')
+ok(_fz._alt_saved is None,
+   'alt-leave/frozen: the primary MODEL is still restored under the freeze')
+_fz.set_frozen(False)                        # unfreeze catches up to the live primary frame
+APP.processEvents()
+_unfrozen_doc = _fz.toPlainText()
+ok('PRIMARY-MARKER' in _unfrozen_doc and 'GNU nano' not in _unfrozen_doc,
+   'alt-leave/frozen: unfreeze actually RESTORES + shows the primary buffer, not the alt frame '
+   '(got %r)' % (_unfrozen_doc[:120],))
+ok(_fz._alt_saved is None and not _fz._alt_screen,
+   'alt-leave/frozen: unfreeze resumes the live primary view (no stranded alt state)')
+_fz.close()
+
 finish('alt-reenter')

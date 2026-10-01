@@ -17,6 +17,7 @@
 
 import io
 import os
+import stat
 import contextlib
 import tempfile
 import unittest
@@ -133,6 +134,54 @@ class TestRedactCredentials(unittest.TestCase):
                 tor_status.subprocess.check_call = saved_check_call
         self.assertNotIn(secret, out)
         self.assertIn('Socks5ProxyPassword [REDACTED]', out)
+
+    def test_multi_hash_prefix_redacted(self):
+        ## A commented-out credential may carry more than one leading '#' (or a
+        ## '# #' mix). A single-'#'-only prefix let '##Socks5ProxyPassword ...'
+        ## slip into the troubleshooting output unredacted.
+        for line in (f'##Socks5ProxyPassword {secret}\n',
+                     f'# #Socks5ProxyPassword {secret}\n'):
+            redacted = tor_status.redact_credentials(line)
+            self.assertNotIn(secret, redacted)
+            self.assertIn('Socks5ProxyPassword [REDACTED]', redacted)
+
+    def test_bridge_descriptor_redacted(self):
+        ## A custom Bridge line is a private descriptor (address, fingerprint,
+        ## cert) meant to stay unlisted, so its value must not reach the
+        ## troubleshooting output either.
+        redacted = tor_status.redact_credentials(
+            f'Bridge obfs4 192.0.2.1:443 ABCDEF cert={secret} iat-mode=0\n')
+        self.assertNotIn(secret, redacted)
+        self.assertIn('Bridge [REDACTED]', redacted)
+
+    def test_bridge_prefixed_options_untouched(self):
+        ## The 'Bridge' anchor requires inline whitespace after the keyword, so
+        ## it must not swallow 'UseBridges'/'BridgeRelay', which are not private.
+        for line in ('UseBridges 1\n', 'BridgeRelay 1\n'):
+            self.assertEqual(line, tor_status.redact_credentials(line))
+
+    def test_staging_file_created_owner_only(self):
+        ## write_to_temp_then_move() stages the cleartext credential in a file the
+        ## privileged helper consumes; it must be created 0600 (owner only), not
+        ## the umask default, so no other local account can read it.
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_torrc = tor_status.torrc_file_path
+            saved_comm = tor_status.acw_comm_file_path
+            saved_check_call = tor_status.subprocess.check_call
+            tor_status.torrc_file_path = os.path.join(tmp, '40_tcp.conf')
+            tor_status.acw_comm_file_path = os.path.join(tmp, 'tor.conf')
+            ## Stub the privileged helper so the staging file is not consumed.
+            tor_status.subprocess.check_call = lambda *a, **k: 0
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    tor_status.write_to_temp_then_move(
+                        f'Socks5ProxyPassword {secret}\n')
+                mode = stat.S_IMODE(os.stat(tor_status.acw_comm_file_path).st_mode)
+            finally:
+                tor_status.torrc_file_path = saved_torrc
+                tor_status.acw_comm_file_path = saved_comm
+                tor_status.subprocess.check_call = saved_check_call
+        self.assertEqual(0o600, mode)
 
     def test_cat_output_redacted(self):
         ## Integration: the real cat() is one of the two functions that print

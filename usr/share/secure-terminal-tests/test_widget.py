@@ -543,6 +543,62 @@ _ft.apply_mode('reveal')                           # still frozen, risk-class ti
 ok(_ft.frozen() and '<U+202E>' in _ft.toPlainText(), 'frozen render: reveal badges the bidi cell')
 _ft.close()
 
+# --- frozen expanding doc gets its OWN scroll policy so wide badges are reachable (coderabbit) --
+# The live grid is NoWrap + horizontal-bar-off, and _apply_vscroll_policy forces the vertical bar
+# OFF on a fixed canvas. In an expanding mode every cell becomes a wide <U+XXXX> badge, so a
+# screen-width row runs far past the viewport -- under the live-grid policy most badges were
+# unreachable (no wrap, no scrollbar). _render_frozen must set a frozen-doc policy: SOFT-wrap +
+# an allowed vertical scrollbar. Assert the POLICY (font-independent), not a pixel width.
+_fsp = SecureTerminal(command='/bin/cat', tui=True)
+_fsp.resize(400, 200)
+_fsp.show()
+APP.processEvents()
+feed_output(_fsp, b'hi\r\n')                        # short frame -> the live grid is a FIXED canvas
+_fsp.apply_mode('state')                           # auto-freeze + _render_frozen
+ok(_fsp.frozen(), 'freeze scroll setup: state mode auto-froze the grid')
+eq(_fsp.lineWrapMode(), _WW,
+   'frozen scroll: the expanding doc SOFT-wraps so badges stay reachable (not clipped at NoWrap)')
+eq(_fsp.verticalScrollBarPolicy(), _ASN,
+   'frozen scroll: the expanding doc allows a vertical scrollbar (not forced off like a live canvas)')
+_fsp.apply_mode('box')                             # non-expanding -> unfreeze to the live grid
+ok(not _fsp.frozen(), 'frozen scroll: leaving the expanding mode unfreezes')
+eq(_fsp.lineWrapMode(), _NW,
+   'frozen scroll: unfreeze restores the live-grid NoWrap policy')
+# unfreeze must ALSO restore the vertical policy: a short frame is a fixed canvas, so the live
+# grid forces the bar OFF -- leaving the frozen AsNeeded would wrongly expose a scrollable live
+# canvas. (Font-independent: policy value, and the fixed-canvas precondition is asserted.)
+ok(_fsp._grid_fixed_canvas(), 'frozen scroll: the live box grid of a short frame is a fixed canvas')
+eq(_fsp.verticalScrollBarPolicy(), _OFF,
+   'frozen scroll: unfreeze restores the fixed-canvas vertical policy (bar OFF), not the frozen AsNeeded')
+_fsp.close()
+
+# --- unfreeze restores the scroll policy BEFORE sizing the grid (codex) -----------------
+# The frozen vertical scrollbar narrows the viewport; _sync_tui_size (called on unfreeze)
+# reads the viewport to size the pyte grid, so if the frozen bar is still shown when it
+# runs, the grid is sized a scrollbar-column short -> a needless resize that clears the alt
+# screen and blanks a SIGWINCH-ignoring program. The fix restores the scroll policy before
+# the size reconcile; assert that ORDER directly (policy value alone cannot distinguish --
+# a primary grid with scrollback legitimately keeps AsNeeded live too). Spy on both calls.
+_fsr = SecureTerminal(command='/bin/cat', tui=True)
+_fsr.resize(400, 200)
+_fsr.show()
+APP.processEvents()
+feed_output(_fsr, b'M' * 400 + b'\r\n')
+_fsr.apply_mode('state')                           # auto-freeze; _render_frozen sets v-AsNeeded
+eq(_fsr.verticalScrollBarPolicy(), _ASN, 'unfreeze-order setup: frozen expanding doc allows v-scroll')
+_order = []
+_orig_sts = _fsr._sync_tui_size
+_orig_avp = _fsr._apply_vscroll_policy
+_fsr._sync_tui_size = lambda *a, **k: (_order.append('size'), _orig_sts(*a, **k))[1]
+_fsr._apply_vscroll_policy = lambda *a, **k: (_order.append('vpol'), _orig_avp(*a, **k))[1]
+_fsr.apply_mode('box')                             # unfreeze -> set_frozen(False)
+_fsr._sync_tui_size = _orig_sts
+_fsr._apply_vscroll_policy = _orig_avp
+ok('size' in _order and 'vpol' in _order and _order.index('vpol') < _order.index('size'),
+   'unfreeze: the vscroll policy is restored BEFORE the first _sync_tui_size (so the frozen '
+   'bar never narrows the grid sizing); call order was %r' % (_order,))
+_fsr.close()
+
 # --- Tab illustration: a completed-line tab carries the _TAB_MARK_PROP overlay flag -----
 # Mirrors the space-dot: the document keeps the real '\t' (copy-safe) and a fragment format
 # flags it so paintEvent draws the arrow guide. CLI (line) mode, where the '\t' survives.
