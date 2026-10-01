@@ -429,9 +429,21 @@ main() {
       ## (pipe-free: a typed '|' proved unreliable through the guest keyboard).
       run_check 5 'whoami' 60 \
          || die "${FAIL_RC}" "check 5 (CLI login) FAILED"
-      ## check 6: GUI login works -- the wlroots (labwc) compositor is running.
+      ## check 6: GUI login works -- screenshot-VERIFIED, two independent signals:
+      ##  6b (host-side) the graphical session is actually PAINTING readable UI: a
+      ##     fresh screenshot OCRs the rendered terminal/desktop. A black, frozen or
+      ##     crashed-compositor framebuffer fails HERE where a process probe alone
+      ##     would still pass. The OCR tokens are exactly those open_terminal already
+      ##     proved render on this image (prompt '[user@...', localhost, pts/), so
+      ##     6b is a real render assertion, not a guess. NB: a bracket-expression
+      ##     '[[]user' (literal '[') -- a bare '[user' is an invalid ERE in the
+      ##     [[ =~ ]] gui_wait_for uses, which would never match and falsely fail.
+      ##  6a (in-guest) the wlroots (labwc) compositor process is running.
+      ## 6b runs FIRST so the single 'check 6 PASS' line (emitted by run_check) is
+      ## printed only once BOTH signals hold -- never a premature green before 6b.
+      gui_wait_for 'localhost|pts/|[[]user' 60 'check 6 GUI render (desktop painted)'
       run_check 6 'pgrep labwc' 60 \
-         || die "${FAIL_RC}" "check 6 (GUI login) FAILED"
+         || die "${FAIL_RC}" "check 6 (GUI login: compositor) FAILED"
       ## check 4: networking -- reach the Debian mirror over the system route.
       run_check 4 'curl --silent --fail --max-time 30 --output /dev/null https://deb.debian.org' 90 \
          || die "${FAIL_RC}" "check 4 (networking) FAILED"
