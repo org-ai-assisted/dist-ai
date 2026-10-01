@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Regression (functional): wl-headless-run must PASS THE CALLER'S STDIN through to the
-## command it runs. The command is launched as `setsid "$@" <&0 &`; without the `<&0` a `&`
+## command it runs. The command is launched as `setsid -- "$@" <&0 &`; without the `<&0` a `&`
 ## async command inherits /dev/null for stdin (job control is off in a script) and setsid
 ## also drops the controlling terminal, so any stdin-reading command would get immediate EOF.
 ## All current suites run --no-autoconfirm and read no stdin, so none break today -- this
@@ -17,7 +17,7 @@
 ## the FOREGROUND, so the runner's own fd 0 is the pipe); a reader command reads one line and
 ## records it. Pre-fix (no `<&0`) the read hits EOF and the record is empty.
 ##
-## Subject: usr/share/dist-ai-tests-common/wl-headless-run (setsid "$@" <&0 & stdin passthrough).
+## Subject: usr/share/dist-ai-tests-common/wl-headless-run (setsid -- "$@" <&0 & stdin passthrough).
 
 set -o errexit
 set -o nounset
