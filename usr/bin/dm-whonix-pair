@@ -180,22 +180,31 @@ open_terminal() {
    die "${FAIL_RC}" "${vm}: terminal did not open (Ctrl+Alt+T)"
 }
 
-## Run CMD in the guest terminal and classify by an OCR-friendly marker: rc 0 ->
-## <PASS_MARKER>, non-zero -> <FAIL_MARKER>. Polls OCR up to TIMEOUT. 0 PASS / 1 FAIL.
+## Run CMD in the guest terminal and classify by an OCR result marker. 0 PASS / 1 FAIL.
+## SILENT-GREEN SAFE (this gates a LEAK test, so a false PASS = an undetected leak):
+##  - the markers are assembled IN-GUEST from a shell var (WHONIX${M}PASS), so the
+##    typed command ECHO does NOT contain the literal marker -- otherwise the OCR poll
+##    matches the echoed command before curl even finishes and returns a false PASS.
+##  - `clear` first, so a PRIOR attempt's marker in scrollback cannot cross-match.
+##  - FAIL is checked BEFORE PASS, so a displayed failure is never masked.
+##  - all-letter markers (tesseract misreads terminal digits).
 run_marker_check() {
-   local cmd="$1" pass_marker="$2" fail_marker="$3" timeout="$4" deadline text
-   printf '%s' "${cmd} && echo ${pass_marker} || echo ${fail_marker}" \
+   local cmd="$1" timeout="$2" deadline text
+   printf '%s' "clear; M=LEAK; ${cmd} && echo WHONIX\${M}PASS || echo WHONIX\${M}FAIL" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
+   ## let `clear` + the (slow) curl run before the first OCR, so the command echo
+   ## (which holds the literal-var marker) is gone and only the real result shows.
+   sleep 3
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       gui_scan 2a aa
       text="$(gui_ocr)"
-      if [[ "${text}" =~ ${pass_marker} ]]; then
-         return 0
-      fi
-      if [[ "${text}" =~ ${fail_marker} ]]; then
+      if [[ "${text}" =~ WHONIXLEAKFAIL ]]; then
          return 1
+      fi
+      if [[ "${text}" =~ WHONIXLEAKPASS ]]; then
+         return 0
       fi
       sleep 8
    done
@@ -231,7 +240,7 @@ main() {
    for attempt in 1 2 3 4 5 6; do
       if run_marker_check \
          "curl --silent --max-time 60 https://check.torproject.org/api/ip | grep -qi 'istor.*true'" \
-         'WHONIXLEAKPASS' 'WHONIXLEAKFAIL' 90; then
+         90; then
          rc=0
          break
       fi
