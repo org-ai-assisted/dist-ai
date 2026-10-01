@@ -104,6 +104,18 @@ newline_dispatch_recorder() {
    printf 'CALLED\n' >> "${STUB_PATH_REC}/dispatch.marker"
 }
 
+## A dispatch target that EXITs (the real keymap writers run as "${function_name}",
+## and parse_cmd itself exits on --help / bad args). It still writes the marker, so
+## a correct harness must capture 'called' and clean up despite the exit.
+exiting_dispatch_recorder() {
+   printf 'CALLED\n' >> "${STUB_PATH_REC}/dispatch.marker"
+   exit 7
+}
+
+## Which recorder run_parse_case dispatches to. Default records-and-returns; a case
+## re-points it to drive parse_cmd down an exiting-dispatch path (see below).
+dispatch_target='newline_dispatch_recorder'
+
 ## Drive the real parse_cmd with "$@" under a fresh stub PATH. localectl-static
 ## reports 'us' and 'de' as valid so a tainted 'us<newline>de' would otherwise pass
 ## validation. Echoes 'called'/'not-called' plus parse_cmd's exit code.
@@ -115,7 +127,7 @@ run_parse_case() {
       stub_cmd localectl-static 0 "$(printf 'us\nde\nnodeadkeys\ncompose:ralt')"
 
       # shellcheck disable=SC2034  # consumed by the sourced parse_cmd
-      function_name='newline_dispatch_recorder'
+      function_name="${dispatch_target}"
       # shellcheck disable=SC2034  # populated by the sourced parse_cmd from "$@"
       args=()
       # shellcheck disable=SC2034  # consumed by the sourced parse_cmd
@@ -127,8 +139,14 @@ run_parse_case() {
       # shellcheck disable=SC2034  # consumed by the sourced parse_cmd/callees
       scriptname='set-console-keymap'
 
+      ## Inner subshell: parse_cmd is a SOURCED function that legitimately 'exit's
+      ## (--help, bad args) and dispatches to "${function_name}", which may itself
+      ## exit. An exit would otherwise terminate this isolation subshell before the
+      ## result-capture and stub_path_cleanup below -- leaking the stub tree and
+      ## emptying the result. The subshell confines it; '|| parse_rc=$?' captures the
+      ## code whether parse_cmd returned or exited.
       parse_rc=0
-      parse_cmd "$@" >/dev/null 2>&1 || parse_rc=$?
+      ( parse_cmd "$@" ) >/dev/null 2>&1 || parse_rc=$?
 
       if [ -f "${STUB_PATH_REC}/dispatch.marker" ]; then
          printf '%s\n' "called rc=${parse_rc}"
@@ -175,6 +193,19 @@ assert_arg_rejected() {
 assert_arg_rejected 'layout' "$(printf 'us\nde')" '' ''
 assert_arg_rejected 'variant' 'us' "$(printf 'nodeadkeys\nnodeadkeys')" ''
 assert_arg_rejected 'option' 'us' '' "$(printf 'compose:ralt\ncompose:ralt')"
+
+## Regression (harness exit-containment): drive the REAL parse_cmd to dispatch with a
+## target that EXITs. The exit must stay contained in run_parse_case's isolation
+## subshell so the result is still captured and the stub tree cleaned up. On the
+## unfixed harness (a bare 'parse_cmd "$@"') the subshell dies at the exit, so the
+## result is EMPTY and the assertion fails spuriously (and STUB_PATH_ROOT leaks).
+dispatch_target='exiting_dispatch_recorder'
+exit_result="$(run_parse_case 'us')"
+if [ "${exit_result}" = 'called rc=7' ]; then
+   ok "an exiting dispatch target stays contained (result captured, not a spurious fail)"
+else
+   notok "exiting dispatch target aborted the isolation subshell (result='${exit_result}')"
+fi
 
 printf '%s\n' ""
 printf '%s\n' "${pass_count} passed, ${fail_count} failed"
