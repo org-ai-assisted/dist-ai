@@ -889,3 +889,33 @@ def test_cross_file_numbering_contract():
     assert 'boot-role=sysmaint' in cal[2] and not cal[2].lstrip().startswith('!'), cal[2]
     assert 'whoami' in cal[5] or 'id -un' in cal[5], cal[5]  ## both assert CLI identity
     assert 'systemcheck' in cal[8], cal[8]
+
+
+def _release_check_cmd(num, firmware):
+    ## Exercise the REAL bash command-builder (release_check_cmd) by sourcing
+    ## release-checks.bsh, so the test tracks the single source, not a reimplementation.
+    script = f'source "{RELEASE_CHECKS_BSH}"; release_check_cmd {int(num)}'
+    env = {**os.environ, 'RELEASE_CHECK_FIRMWARE': firmware}
+    out = subprocess.run(['bash', '-c', script],
+                         capture_output=True, text=True, check=True, env=env)
+    return out.stdout
+
+
+def test_release_check8_ignore_flags_efi_secureboot_only():
+    ## check 8 (systemcheck) tolerates the VBox Guest-Additions units SecureBoot
+    ## rejects -- EXACTLY those, and ONLY under efi-secureboot. Canary: reverting the
+    ## EFI+SB gate, widening the unit set, or blanket-tolerating any firmware fails here.
+    base = _release_check_cmds()[8]
+    efisb = _release_check_cmd(8, 'efi-secureboot')
+    assert efisb.startswith(base), efisb
+    for unit in ('vboxadd.service', 'vboxadd-service.service',
+                 'systemd-modules-load.service'):
+        assert f'--ignore-failed-unit {unit}' in efisb, (unit, efisb)
+    ## exactly three ignore flags -- never a blanket 'degraded' tolerance.
+    assert efisb.count('--ignore-failed-unit') == 3, efisb
+    ## bios / plain-efi / unset get NO ignore flag, so a real vboxadd degradation
+    ## still fails check 8 there (the GA modules load fine when not under SecureBoot).
+    for firmware in ('bios', 'efi', ''):
+        assert _release_check_cmd(8, firmware) == base, firmware
+    ## a non-8 check is never adjusted, even under efi-secureboot.
+    assert _release_check_cmd(1, 'efi-secureboot') == _release_check_cmds()[1]

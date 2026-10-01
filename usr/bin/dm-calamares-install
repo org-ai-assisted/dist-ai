@@ -478,6 +478,10 @@ main() {
       ## reaches the sysmaint session for checks 2, 3. check-8 retry + check-1/2
       ## polarity + run order all come from the table, so the install gate and the
       ## R6 upgrade gate can never diverge about what a check is.
+      ## Tell the shared check table which firmware booted, so check 8 tolerates
+      ## the SecureBoot-only VBox Guest-Additions module failures (release-checks.bsh).
+      ## shellcheck disable=SC2034  ## consumed by the sourced release-checks.bsh, not here
+      RELEASE_CHECK_FIRMWARE="${firmware}"
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
    fi

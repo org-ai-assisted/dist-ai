@@ -14,7 +14,8 @@
 ## The TABLE is transport-agnostic; HOW a check runs in-guest is the caller's
 ## executor callback (OCR terminal markers for a Guest-Additions-less Calamares
 ## disk; VBoxManage guestcontrol for a shipped VM image). The caller sets `me`
-## (program name, for messages).
+## (program name, for messages) and, when it matters, RELEASE_CHECK_FIRMWARE
+## (bios|efi|efi-secureboot) so check 8 can tolerate the SecureBoot-only GA failures.
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
@@ -78,6 +79,34 @@ declare -A RELEASE_CHECK_CMD=(
    [3]='upgrade-nonroot'
 )
 
+## VBox Guest-Additions kernel-module units that SecureBoot REJECTS (unsigned,
+## out-of-tree) in an EFI+SecureBoot test VM, leaving systemd 'degraded'. They are
+## TEST-INFRA ONLY (not shipped in the image), so check 8 (systemcheck) tolerates
+## EXACTLY these -- and ONLY under efi-secureboot -- via systemcheck's
+## --ignore-failed-unit. Any OTHER failed unit, or any other firmware (bios /
+## plain-efi, where the modules load fine), still fails check 8. Mirrors the
+## tirdad-dkms-under-SB scoping.
+RELEASE_CHECK8_SB_IGNORED_UNITS=(
+   vboxadd.service
+   vboxadd-service.service
+   systemd-modules-load.service
+)
+
+## The in-guest command for a check, with firmware-specific adjustments applied.
+## RELEASE_CHECK_FIRMWARE (caller-set; empty = none) gates the check-8 SecureBoot
+## tolerance above -- so bios / plain-efi and other callers (dm-upgrade-regression)
+## are byte-for-byte unchanged. Pure (no side effects), hence unit-testable.
+release_check_cmd() {
+   local num="$1" unit
+   local cmd="${RELEASE_CHECK_CMD[${num}]}"
+   if [ "${num}" = '8' ] && [ "${RELEASE_CHECK_FIRMWARE:-}" = 'efi-secureboot' ]; then
+      for unit in "${RELEASE_CHECK8_SB_IGNORED_UNITS[@]}"; do
+         cmd+=" --ignore-failed-unit ${unit}"
+      done
+   fi
+   printf '%s' "${cmd}"
+}
+
 ## Set by the driver on a failed check; READ by the sourcing tool for its message.
 RELEASE_CHECK_FAILED_NUM=''
 RELEASE_CHECK_FAILED_REASON=''
@@ -94,7 +123,7 @@ RELEASE_CHECK_FAILED_REASON=''
 release_check_one() {
    local exec_fn="$1" verify_fn="$2" num="$3"
    local session="${RELEASE_CHECK_SESSION[${num}]}"
-   local cmd="${RELEASE_CHECK_CMD[${num}]}"
+   local cmd; cmd="$(release_check_cmd "${num}")"
    local timeout="${RELEASE_CHECK_TIMEOUT[${num}]}"
    local retries="${RELEASE_CHECK_RETRIES[${num}]}"
    local retry_sleep="${RELEASE_CHECK_RETRY_SLEEP[${num}]:-0}"
