@@ -1,0 +1,123 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Sourceable helpers for driving a headless VirtualBox GUI guest via the host-side
+## vboxapi (vbox-guestctl) + tesseract OCR, with NO Guest Additions. Shared by the
+## Calamares installer driver and the Whonix pair orchestrator so the (subtle) OCR
+## + scancode + resolution-independent click logic lives in ONE place.
+##
+## The caller sets these globals before sourcing / calling:
+##   vm         -- the target VM name (reassign to retarget, e.g. GW then WS)
+##   me         -- program name (for messages / stuck-shot filenames)
+##   GUESTCTL   -- vbox-guestctl path
+##   VBOXMANAGE -- VBoxManage path
+##   TESSERACT  -- tesseract path
+##   FAIL_RC    -- exit code used by die() on a GUI timeout
+## and must define die() (printf to stderr + exit).
+##
+## Guests come up at different resolutions (a plain-EFI / EFI+SB session at the EFI
+## GOP's ~1920x1080, which Calamares/Xwayland latches and no videomode hint reliably
+## overrides; a BIOS one at 1280x800) and the widgets are NOT linearly scalable, so
+## every click target is located by its on-screen TEXT rather than fixed coords.
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
+## The caller-provided globals below are intentionally not assigned here.
+# shellcheck disable=SC2154  ## vm/me/GUESTCTL/VBOXMANAGE/TESSERACT/FAIL_RC are set by the sourcing tool
+
+## Raw keyboard scancodes (make/break pairs), e.g. `gui_scan 1c 9c` = Enter.
+gui_scan() {
+   "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode "$@" >/dev/null
+}
+
+## Screenshot the guest and return its OCR text (plain) on stdout. A shot can fail
+## while the display is 0x0 early in boot -- tolerate it and return nothing so the
+## caller keeps polling.
+gui_ocr() {
+   local shot text
+   shot="$(mktemp --tmpdir "${me}.XXXXXX.png")"
+   if "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1; then
+      text="$("${TESSERACT}" "${shot}" stdout 2>/dev/null || true)"
+      printf '%s' "${text}"
+   fi
+   safe-rm --force -- "${shot}"
+}
+
+## Poll until REGEX (lowercase ERE) appears on screen (PASS) or TIMEOUT elapses
+## (die FAIL, saving the stuck screen). A Shift tap each round keeps a DPMS-blanked
+## display awake.
+gui_wait_for() {
+   local regex="$1" timeout="$2" what="$3" deadline text
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode 2a aa >/dev/null
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ ${regex} ]]; then
+         return 0
+      fi
+      sleep 10
+   done
+   "${GUESTCTL}" "${vm}" shot "${HOME}/${me}-stuck.png" >/dev/null 2>&1 || true
+   die "${FAIL_RC}" "timed out after ${timeout}s waiting for: ${what} (screen -> ~/${me}-stuck.png)"
+}
+
+## Emit "CX CY" (screen pixels) for a case-insensitive whole-word match of WORD on
+## the current screen, else return 1. SELECT (default 1) is either the 1-based Nth
+## match in reading order, or the literal 'bottom' = the LOWEST match on screen.
+## 'bottom' is essential for a button caption that ALSO names a left-sidebar step
+## (Install, Finish): the button lives in the bottom bar, far below the sidebar
+## label, so the lowest match is the real button. Tesseract TSV columns:
+## 7,8 = left,top; 9,10 = width,height; 11 = confidence; 12 = text.
+gui_locate_word() {
+   local word="$1" select="${2:-1}" shot base out
+   shot="$(mktemp --tmpdir "${me}.XXXXXX.png")"
+   base="${shot%.png}"
+   if ! "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1; then
+      safe-rm --force -- "${shot}"
+      return 1
+   fi
+   "${TESSERACT}" "${shot}" "${base}" tsv >/dev/null 2>&1 || true
+   out="$(awk -F'\t' -v w="${word,,}" -v sel="${select}" '
+      NR > 1 && $11 + 0 > 40 {
+         t = tolower($12); gsub(/[^a-z0-9]/, "", t)
+         if (t != w) next
+         if (sel == "bottom") {
+            if ($8 + 0 >= maxtop) { maxtop = $8 + 0; bx = $7 + $9 / 2; by = $8 + $10 / 2; found = 1 }
+         } else {
+            c++; if (c == sel) { printf "%d %d", $7 + $9 / 2, $8 + $10 / 2; exit }
+         }
+      }
+      END { if (sel == "bottom" && found) printf "%d %d", bx, by }' \
+      "${base}.tsv" 2>/dev/null || true)"
+   safe-rm --force -- "${shot}" "${base}.tsv"
+   [ -n "${out}" ] || return 1
+   printf '%s' "${out}"
+}
+
+## Poll until WORD appears (Nth match), then click its centre; die on TIMEOUT.
+gui_click_word() {
+   local word="$1"
+   local timeout="$2" nth="${3:-1}" what="${4:-${word}}" deadline coords cx cy
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode 2a aa >/dev/null
+      if coords="$(gui_locate_word "${word}" "${nth}")"; then
+         read -r cx cy <<< "${coords}"
+         "${GUESTCTL}" "${vm}" click "${cx}" "${cy}" >/dev/null
+         sleep 2
+         return 0
+      fi
+      sleep 3
+   done
+   "${GUESTCTL}" "${vm}" shot "${HOME}/${me}-stuck.png" >/dev/null 2>&1 || true
+   die "${FAIL_RC}" "timed out after ${timeout}s locating clickable: ${what} (screen -> ~/${me}-stuck.png)"
+}
+
+## Type a string via the guest keyboard (paced, secrets-safe when fed on stdin).
+gui_type() {
+   "${GUESTCTL}" "${vm}" type "$1" >/dev/null
+}

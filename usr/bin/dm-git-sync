@@ -22,7 +22,10 @@
 ## SOUND once the submodule sha is PUBLISHED (a pre-push / post-commit bump races
 ## publication and can pin an unfetchable sha -- exactly the trap this replaces).
 ## So the steps must be COUPLED and ORDERED by one deliberate command: publish
-## first, THEN bump. dm-push stays push-only; this calls it.
+## first, THEN bump. git-push (publish the CURRENT branch to the fork remotes)
+## stays push-only; this calls it. NOT dm-push -- dm-push is the MASTER-only push
+## (its pkg_git_check_current_branch refuses any branch != master), so it can
+## never publish 'ai'; git-push pushes whatever branch is checked out.
 ##
 ## THE CHAIN
 ##   In a SUBMODULE (on 'ai', clean):
@@ -61,9 +64,17 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 AI_BRANCH="ai"
-PUSH_CMD="${DM_GIT_SYNC_PUSH:-dm-push}"
+## git-push publishes the CURRENT branch ('ai') to every bot-writable fork remote.
+## NOT dm-push: that is the master-only atomic push (refuses a non-master branch),
+## so it cannot publish 'ai'.
+PUSH_CMD="${DM_GIT_SYNC_PUSH:-git-push}"
 BUMP_CMD="${DM_GIT_SYNC_GITLINK_BUMP:-dm-gitlink-bump}"
 CHERRY_CMD="${DM_GIT_SYNC_CHERRY:-dm-cherry-pick-ai-nonlink}"
+## The CI-fetchable fork remote the publish must reach. push_repo VERIFIES the pushed
+## 'ai' tip actually landed here -- git-push RETURNS 0 even when it pushed NOTHING (no
+## remote resolved to a bot-writable host), so the exit status alone cannot confirm a
+## publish, and a false 'pushed' would silently break publish-before-bump/mirror.
+PUBLISH_REMOTE="${DM_GIT_SYNC_PUBLISH_REMOTE:-org-ai-assisted}"
 
 source_dir=""
 dry_run="false"
@@ -139,6 +150,16 @@ push_repo() {
    fi
    log "publishing '${dir}' (${PUSH_CMD})..."
    ( cd -- "${dir}" && "${PUSH_CMD}" ) || die 1 "push failed for '${dir}'."
+   ## VERIFY the publish reached the CI-fetchable remote -- the pusher exiting 0 does
+   ## NOT prove it pushed anything (git-push returns 0 when no bot-writable remote
+   ## resolved: "nothing to push"). Confirm the live ${PUBLISH_REMOTE} 'ai' tip now
+   ## equals local HEAD; this passes idempotently when the tip was already published,
+   ## and fails LOUD (never a silent no-op) when the push published nothing.
+   local head remote_tip
+   head="$( git -C "${dir}" rev-parse HEAD )"
+   remote_tip="$( git -C "${dir}" ls-remote "${PUBLISH_REMOTE}" "refs/heads/${AI_BRANCH}" 2>/dev/null | awk 'NR==1 { print $1 }' )"
+   [ "${remote_tip}" = "${head}" ] \
+      || die 1 "publish of '${dir}' did NOT reach ${PUBLISH_REMOTE}/${AI_BRANCH} (local HEAD ${head:0:12}, remote '${remote_tip:-<none>}') -- the push published nothing (no bot-writable remote?); refusing to bump/mirror on an unpublished pin."
 }
 
 ## The derivative-maker PARENT sync: bump published-ahead pins, push 'ai', then

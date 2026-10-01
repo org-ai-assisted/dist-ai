@@ -20,6 +20,12 @@ export LC_ALL=C
 ## would drop __pycache__ into the source tree, which then trips dm-preflight /
 ## dm-check-unicode. Inherited by every suite + subprocess launched below.
 export PYTHONDONTWRITEBYTECODE=1
+## Same hazard, different caches: pytest's '.pytest_cache' and mypy's '.mypy_cache'
+## are NOT bytecode, so PYTHONDONTWRITEBYTECODE does not touch them -- a pytest/mypy
+## suite still drops them into the subject CHECKOUT and trips the SAME cache-dir gate
+## (dm-packaging-helper-script / dm-check-unicode). Both are REDIRECTED (not disabled)
+## to a throwaway dir once log_dir exists (below), so the pytest 'cache' fixture and
+## mypy incremental cache keep working -- they just live outside the checkout.
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -30,6 +36,12 @@ mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 ## and have it truncated and overwritten by suite output -- and the suites are
 ## documented as possibly needing root.
 log_dir="$( mktemp --directory -- "${TMP}/dist-ai-tests-all.XXXXXX" )"
+## Redirect pytest's and mypy's caches into the private log dir (removed with it), so
+## neither '.pytest_cache' nor '.mypy_cache' lands in the subject checkout. '-o
+## cache_dir' RELOCATES pytest's cache (the 'cache' fixture still works), unlike '-p
+## no:cacheprovider' which would disable it; MYPY_CACHE_DIR relocates mypy's likewise.
+export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir=${log_dir}/pytest_cache"
+export MYPY_CACHE_DIR="${log_dir}/mypy-cache"
 cleanup_log_dir() {
    if [ -n "${log_dir:-}" ] && [ -d "${log_dir}" ]; then
       ## safe-rm ships with private-ai-config and is absent on a CI runner, where

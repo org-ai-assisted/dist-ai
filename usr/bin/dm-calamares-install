@@ -13,7 +13,9 @@
 ## Exit 0 = R3 (install completes + LUKS unlock) and R4 (boot installed) PASS; 5 = FAIL.
 ##
 ## Run as the per-VM test user (VBox state is per-$HOME): the account IS the
-## isolation boundary. Coordinates below are for the 1280x800 guest framebuffer.
+## isolation boundary. The GUI is driven by OCR text location (gui-drive.bsh), so it
+## is resolution-independent -- a BIOS session at 1280x800 and an EFI/EFI+SB one at
+## the GOP's 1920x1080 are both handled without fixed coordinates.
 
 set -o errexit
 set -o nounset
@@ -71,38 +73,17 @@ usage() {
              in-guest (check 8: systemcheck --leak-tests) and fail on a non-pass."
 }
 
-## Screenshot the guest and return its OCR text on stdout.
-ocr() {
-   local shot
-   shot="$(mktemp --tmpdir "${me}.XXXXXX.png")"
-   ## a shot can fail while the display is not ready (0x0 early boot) -- tolerate
-   ## it and return no text so the caller keeps polling.
-   if "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1; then
-      "${TESSERACT}" "${shot}" stdout 2>/dev/null || true
-   fi
-   safe-rm --force -- "${shot}"
-}
-
-## Poll the screen until REGEX appears (PASS) or TIMEOUT elapses (die FAIL).
-wait_for() {
-   local regex="$1" timeout="$2" what="$3" deadline text
-   deadline=$(( SECONDS + timeout ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      ## Shift tap keeps a DPMS-blanked display awake so a long wait cannot read a
-      ## black screen; harmless on any page. Then capture + match with bash ERE (no
-      ## quiet-grep-on-a-pipe SIGPIPE trap); regexes are lowercase so fold to lower.
-      "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode 2a aa >/dev/null
-      text="$(ocr)"
-      if [[ "${text,,}" =~ ${regex} ]]; then
-         return 0
-      fi
-      sleep 10
-   done
-   die "${FAIL_RC}" "timed out after ${timeout}s waiting for: ${what}"
-}
-
-scan() { "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode "$@" >/dev/null; }
-click() { "${GUESTCTL}" "${vm}" click "$1" "$2" >/dev/null; sleep 2; }
+## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
+## same gui_scan/gui_ocr/gui_wait_for/gui_locate_word/gui_click_word used by the
+## Whonix pair orchestrator, so the subtle OCR logic lives in ONE place.
+lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -f "${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh" ]; then
+   gui_drive_lib="${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh"
+else
+   gui_drive_lib='/usr/share/dm-image-boot-tests/gui-drive.bsh'
+fi
+# shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
+source "${gui_drive_lib}"
 
 ## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
@@ -111,12 +92,12 @@ select_install_boot_entry() {
    local deadline text
    deadline=$(( SECONDS + 40 ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
-      text="$(ocr)"
+      text="$(gui_ocr)"
       if [[ "${text,,}" =~ unrestricted|"live iso"|"kicksecure live" ]]; then
-         scan e0 50 e0 d0
-         scan e0 50 e0 d0
+         gui_scan e0 50 e0 d0
+         gui_scan e0 50 e0 d0
          sleep 1
-         scan 1c 9c
+         gui_scan 1c 9c
          return 0
       fi
       sleep 2
@@ -124,21 +105,42 @@ select_install_boot_entry() {
    die "${FAIL_RC}" "GRUB menu not detected"
 }
 
-## Poll until the LXQt desktop is up at its full 1280x800 (the coords below assume
-## it). A Shift tap each round wakes a DPMS-blanked display (idle during the long
-## boot leaves it black at 800x600, on which a blind sleep + clicks would miss).
+## Wait for the INSTALLED system's GRUB "Choose boot mode" menu, then select entry 2
+## (PERSISTENT Mode | SYSMAINT Session): 1x Down + Enter before the ~5s autoboot into
+## the default USER entry. Sets boot-role=sysmaint for checks 2 + 3.
+select_installed_sysmaint() {
+   local deadline text
+   deadline=$(( SECONDS + 60 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session ]]; then
+         gui_scan e0 50 e0 d0
+         sleep 1
+         gui_scan 1c 9c
+         return 0
+      fi
+      sleep 2
+   done
+   die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
+}
+
+## Poll until the LXQt desktop is up at a full resolution (>=1024 wide), i.e. past
+## the 800x600 early-boot framebuffer. The exact mode does not matter -- the GUI is
+## driven by OCR text location, not fixed coords. A Shift tap each round wakes a
+## DPMS-blanked display (a long idle boot leaves it black at 800x600).
 wait_ready() {
-   local timeout="$1" deadline res
+   local timeout="$1" deadline res width
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
-      scan 2a aa
+      gui_scan 2a aa
       res="$("${GUESTCTL}" "${vm}" res 2>/dev/null || true)"
-      if [ "${res}" = '1280 800' ]; then
+      width="${res% *}"
+      if [[ "${width}" =~ ^[0-9]+$ ]] && [ "${width}" -ge 1024 ]; then
          return 0
       fi
       sleep 10
    done
-   die "${FAIL_RC}" "desktop not ready (res != 1280x800) after ${timeout}s"
+   die "${FAIL_RC}" "desktop not ready (no full-resolution mode) after ${timeout}s"
 }
 
 ## Open a terminal via the Ctrl+Alt+T global shortcut, RETRYING: the shortcut
@@ -152,12 +154,12 @@ open_terminal() {
    deadline=$(( SECONDS + 150 ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       if [ "$(( SECONDS - last_fire ))" -ge 20 ]; then
-         scan 2a aa
-         scan 1d 38 14 94 b8 9d
+         gui_scan 2a aa
+         gui_scan 1d 38 14 94 b8 9d
          last_fire="${SECONDS}"
       fi
       sleep 5
-      text="$(ocr)"
+      text="$(gui_ocr)"
       if [[ "${text,,}" =~ localhost|pts/|'[user' ]]; then
          return 0
       fi
@@ -166,22 +168,29 @@ open_terminal() {
 }
 
 ## Run one release-critical check in-guest via the terminal and classify by an
-## OCR-friendly marker (letters+digit only, no chars OCR mangles): the command
-## runs, rc 0 -> DMCHKPASS<n>, non-zero -> DMCHKFAIL<n>. 0 PASS / 1 FAIL.
+## OCR marker. 0 PASS / 1 FAIL. Marker design (learned the hard way):
+##  - ALL LETTERS, no digit: tesseract flakily misreads digits in the terminal font
+##    (a '5' reads as 'S'), so a per-number marker like DMCHKPASS5 never matches.
+##  - built from a shell var (DM${M}...) so the typed command ECHO does not itself
+##    contain the literal marker -- else a poll matches before the command even runs.
+##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
 run_check() {
    local num="$1" cmd="$2" timeout="$3" deadline text
-   printf '%s' "${cmd} && echo DMCHKPASS${num} || echo DMCHKFAIL${num}" \
+   printf '%s' "clear; M=CHK; ${cmd} && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
-   scan 1c 9c
+   gui_scan 1c 9c
+   ## let `clear` + the command run before the first OCR (so the command echo, which
+   ## holds the literal-var marker, is gone and only real output is on screen).
+   sleep 3
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
-      scan 2a aa
-      text="$(ocr)"
-      if [[ "${text,,}" =~ dmchkpass${num} ]]; then
+      gui_scan 2a aa
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ dmchkpassmark ]]; then
          printf '%s\n' "${me}: check ${num} PASS"
          return 0
       fi
-      if [[ "${text,,}" =~ dmchkfail${num} ]]; then
+      if [[ "${text,,}" =~ dmchkfailmark ]]; then
          printf '%s\n' "${me}: check ${num} FAIL"
          return 1
       fi
@@ -270,6 +279,12 @@ apply_firmware() {
       "${VBOXMANAGE}" modifynvram "${vm}" enrollorclpk >/dev/null
       "${VBOXMANAGE}" modifynvram "${vm}" enrollmssignatures >/dev/null
       "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+   elif [ "${firmware}" = 'efi' ]; then
+      ## A plain-EFI --reinstall over a VM that was previously efi-secureboot would
+      ## otherwise inherit Secure Boot ENABLED (firmware mode != VM state); disable
+      ## it so plain EFI really is plain. Preserves the other NVRAM boot variables.
+      ## Tolerated on a fresh VM whose varstore is not yet initialized (no-op there).
+      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
    fi
 }
 
@@ -322,50 +337,55 @@ main() {
    ## Poll for the desktop instead of a blind sleep (keeps the display awake too).
    wait_ready 480
    open_terminal
-   ## The terminal is not input-ready the instant it is drawn: type the launch
-   ## command (paced -- keyboardputstring drops keys on long strings; this has no
-   ## chars outside the type map), VERIFY it landed on the command line, retype if a
-   ## race dropped it, then run it. Ctrl+U first clears any partial line.
-   local tries=0
-   while [ "${tries}" -lt 6 ]; do
-      sleep 6
-      scan 1d 16 96 9d
-      "${GUESTCTL}" "${vm}" type 'install-host' >/dev/null
-      sleep 2
-      if [[ "$(ocr)" =~ install-host ]]; then
-         break
-      fi
-      tries=$(( tries + 1 ))
-   done
-   [ "${tries}" -lt 6 ] || die "${FAIL_RC}" "could not type the installer launch command"
+   ## open_terminal already confirmed a terminal is up + focused; give it a moment
+   ## to accept input, clear any partial line, type the launch command (paced ->
+   ## reliable) and run it. No OCR-verify of the typed line: a fullscreen terminal
+   ## (green-on-black, one line atop a large black screen) OCRs unreliably, which
+   ## caused false "could not type" failures; the paced type is proven reliable.
+   sleep 6
+   gui_scan 1d 16 96 9d
+   "${GUESTCTL}" "${vm}" type 'install-host' >/dev/null
+   sleep 1
    ## foreground: install-host holds the terminal, Calamares opens as its own window.
-   scan 1c 9c
-   wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
+   gui_scan 1c 9c
+   gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
 
-   printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install"
-   click 1135 781
-   wait_for 'region|zone|location' 60 'Location page'
-   click 1135 781
-   wait_for 'keyboard model|keyboard layout|keyboard' 60 'Keyboard page'
-   click 1135 781
-   wait_for 'erase disk|storage device' 60 'Partitions page'
-   ## Erase disk auto-enables Encrypt system (Kicksecure default); fill both fields.
-   click 206 105
-   click 492 590
+   printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
+   ## Each page is confirmed by its own CONTENT text (never a sidebar label -- those
+   ## are always visible, so a sidebar match would falsely "pass" a page we never
+   ## reached), then advanced by clicking the OCR-located Next/Install button. Every
+   ## click target is found by text, so the whole drive is resolution-independent.
+   gui_click_word 'next' 45 bottom 'Welcome Next'
+   gui_wait_for 'region|system language' 60 'Location page'
+   gui_click_word 'next' 45 bottom 'Location Next'
+   gui_wait_for 'keyboard model|physical keyboard|default keyboard' 60 'Keyboard page'
+   gui_click_word 'next' 45 bottom 'Keyboard Next'
+   gui_wait_for 'erase disk' 60 'Partitions page'
+   ## Erase disk is a clickable card; selecting it auto-enables Encrypt system
+   ## (Kicksecure default), revealing the two LUKS fields. Locate each field by its
+   ## placeholder text ("Passphrase" = 1st, "Confirm passphrase" = the Confirm one).
+   gui_click_word 'erase' 30 1 'Erase disk option'
+   ## The empty first "Passphrase" field is grey placeholder text that OCRs as
+   ## garbage (conf 0), but the "Confirm passphrase" caption reads cleanly. So
+   ## focus Confirm, then Shift+Tab to the adjacent Passphrase field (reliable tab
+   ## order: Passphrase immediately precedes Confirm) -- no pixel coords, keeping
+   ## the field entry resolution-independent like the rest of the drive.
+   gui_click_word 'confirm' 45 1 'Confirm passphrase field'
+   gui_scan 2a 0f 8f aa
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    sleep 1
-   click 793 590
+   gui_scan 0f 8f
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    sleep 1
-   click 1135 781
-   wait_for 'overview|start the install|erase disk /dev' 60 'Summary page'
-   click 1135 781
+   gui_click_word 'next' 45 bottom 'Partitions Next'
+   gui_wait_for 'overview|erase disk /dev|the following changes' 60 'Summary page'
+   gui_click_word 'install' 45 bottom 'Summary Install'
    printf '%s\n' "${me}: installing (encrypted) -- polling for completion"
-   wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)'
+   gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)'
 
    printf '%s\n' "${me}: reboot into the installed disk (detach ISO)"
-   click 1135 781
-   sleep 12
+   ## Install is finished at the "all done" page; we power off + detach the ISO +
+   ## reboot ourselves, so no need to click the Finish/Done button first.
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
    "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
@@ -373,21 +393,67 @@ main() {
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
 
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
-   wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
+   gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
-   scan 1c 9c
+   gui_scan 1c 9c
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
-   wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
+   gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
 
    if [ "${checks}" = 'true' ]; then
-      printf '%s\n' "${me}: release-critical checks on the installed system"
+      printf '%s\n' "${me}: release-critical checks on the installed system (USER session)"
       wait_ready 300
       open_terminal
+      ## check 1: the USER session booted -- past GRUB's default entry, so the sysmaint
+      ## boot-role is ABSENT (the sysmaint reboot below asserts the positive case).
+      run_check 1 '! grep -q boot-role=sysmaint /proc/cmdline' 60 \
+         || die "${FAIL_RC}" "check 1 (user session boot) FAILED"
+      ## check 5: CLI login works -- a shell responds with the logged-in account
+      ## (pipe-free: a typed '|' proved unreliable through the guest keyboard).
+      run_check 5 'whoami' 60 \
+         || die "${FAIL_RC}" "check 5 (CLI login) FAILED"
+      ## check 6: GUI login works -- the wlroots (labwc) compositor is running.
+      run_check 6 'pgrep labwc' 60 \
+         || die "${FAIL_RC}" "check 6 (GUI login) FAILED"
+      ## check 4: networking -- reach the Debian mirror over the system route.
+      run_check 4 'curl --silent --fail --max-time 30 --output /dev/null https://deb.debian.org' 90 \
+         || die "${FAIL_RC}" "check 4 (networking) FAILED"
       ## check 8: systemcheck --leak-tests -- the core catastrophic-regression gate
-      ## (exit 0 Success / 1 Error / 2 Warning; only a clean 0 passes).
-      run_check 8 'systemcheck --cli --leak-tests --verbose' 600 \
-         || die "${FAIL_RC}" "check 8 (systemcheck --leak-tests) FAILED"
+      ## (exit 0 Success / 1 Error / 2 Warning; only a clean 0 passes). RETRY: on a
+      ## fresh first boot sdwdate has not synced yet ("system-ready-check degraded"),
+      ## a transient state systemcheck reports non-zero; let it settle. A persistent
+      ## failure still dies loudly after the retries.
+      local sc_ok='false' sc_try
+      for sc_try in 1 2 3 4 5 6; do
+         if run_check 8 'systemcheck --cli --leak-tests --verbose' 300; then
+            sc_ok='true'
+            break
+         fi
+         printf '%s\n' "${me}: check 8 not clean yet (attempt ${sc_try}); waiting for system-ready"
+         sleep 60
+      done
+      [ "${sc_ok}" = 'true' ] \
+         || die "${FAIL_RC}" "check 8 (systemcheck --leak-tests) FAILED after retries"
+
+      ## checks 2 + 3 need the SYSMAINT session -- reboot + pick GRUB entry 2.
+      printf '%s\n' "${me}: reboot into SYSMAINT session (checks 2, 3)"
+      "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
+      sleep 3
+      "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+      select_installed_sysmaint
+      gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock (sysmaint)'
+      printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+      gui_scan 1c 9c
+      gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck|sysmaint' 180 'sysmaint session boot'
+      wait_ready 300
+      open_terminal
+      ## check 2: the SYSMAINT session booted (boot-role=sysmaint present in cmdline).
+      run_check 2 'grep -q boot-role=sysmaint /proc/cmdline' 60 \
+         || die "${FAIL_RC}" "check 2 (sysmaint session boot) FAILED"
+      ## check 3: upgrade-nonroot works -- a broken updater = permanent stranding, so
+      ## this is the second catastrophic-regression gate after check 8.
+      run_check 3 'upgrade-nonroot' 1200 \
+         || die "${FAIL_RC}" "check 3 (upgrade-nonroot) FAILED"
    fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"

@@ -614,16 +614,22 @@ def unquote(text):
 
 def _shell_c_value(program, source):
     """The VALUE a shell '-c' receives for the PROGRAM word -- what the inner
-    shell actually runs. word_string joins the word's parts and unwraps EACH,
-    so a value built by concatenating quoted spans ('a'"; b" -> 'a; b', or the
-    '...'"'"'...' single-quote idiom) is resolved, not left half-quoted. A word
-    carrying an expansion (word_string None, value not statically known) falls
-    back to the raw source with only its OUTER quotes stripped -- same as before,
-    the safe direction. A bare 'text[0]==text[-1]' strip alone MISSES a
-    mismatched-outer-quote concatenation ('a'"; b" starts "'" ends '"'), so a
-    multi-statement payload written that way would slip the -c gates."""
+    shell actually runs, for feeding to a multi-statement parser. word_string
+    joins the word's parts and unwraps EACH, so a value built by concatenating
+    quoted spans ('a'"; b" -> 'a; b') is resolved, not left half-quoted -- a bare
+    'text[0]==text[-1]' strip MISSES that (mismatched outer quotes), letting a
+    multi-statement payload slip the -c gates.
+
+    A BACKSLASH in the joined value is the exception: word_string does NOT decode
+    double-quote escapes ('"a\\;"' keeps the '\\'), so re-parsing the join would
+    read a spurious ';'/'&&'/pipe the inner shell never sees (a false positive).
+    A value with a backslash, or one carrying an expansion (word_string None),
+    falls back to the raw source with only its OUTER quotes stripped -- the
+    conservative pre-value behavior; a backslash-bearing concatenated
+    multi-statement value stays a documented follow-up (accident, not
+    adversary)."""
     value = bash_ast.word_string(program)
-    if value is not None:
+    if value is not None and "\\" not in value:
         return value
     return unquote(bash_ast.word_source(program, source))
 

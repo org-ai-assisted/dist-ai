@@ -1,0 +1,247 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Boot an imported Whonix Gateway + Workstation pair headless on their VirtualBox
+## internal network and assert the Workstation egresses to the internet ONLY via the
+## Gateway's Tor (the core Whonix guarantee), then tear down. Drives the guests via
+## host-side vboxapi + OCR (no Guest Additions), reusing gui-drive.bash.
+##
+## The WS has a single internal-network NIC (no direct route), so its only path to
+## the internet is WS -> GW -> Tor by construction; the leak test PROVES that path
+## is live and really Tor by querying check.torproject.org from the WS and requiring
+## IsTor:true. Tor bootstrap on the GW is gated implicitly by retrying that query.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+GUESTCTL="${GUESTCTL:-vbox-guestctl}"
+TESSERACT="${TESSERACT:-tesseract}"
+
+PASS_RC=0
+FAIL_RC=5
+SETUP_RC=2
+
+gw='Whonix-Gateway-LXQt'
+ws='Whonix-Workstation-LXQt'
+## committed clean-desktop snapshot each VM is restored to before a run.
+SNAPSHOT="${SNAPSHOT:-clean-live}"
+gw_started='false'
+ws_started='false'
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -f "${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh" ]; then
+   gui_drive_lib="${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh"
+else
+   gui_drive_lib='/usr/share/dm-image-boot-tests/gui-drive.bsh'
+fi
+# shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
+source "${gui_drive_lib}"
+
+usage() {
+   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME]
+
+--gw   Whonix Gateway VM name (default: ${gw})
+--ws   Whonix Workstation VM name (default: ${ws})
+
+Boots both headless, dismisses each first-boot setup wizard, and asserts the
+Workstation reaches the internet ONLY through the Gateway's Tor. Exit 0 = PASS."
+}
+
+parse_args() {
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --gw)
+            gw="$2"
+            shift 2
+            ;;
+         --ws)
+            ws="$2"
+            shift 2
+            ;;
+         -h|--help)
+            usage
+            exit 0
+            ;;
+         *)
+            usage >&2
+            die "${SETUP_RC}" "unknown argument: $1"
+            ;;
+      esac
+   done
+}
+
+on_exit() {
+   if [ "${gw_started}" = 'true' ]; then
+      "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
+   fi
+   if [ "${ws_started}" = 'true' ]; then
+      "${VBOXMANAGE}" controlvm "${ws}" poweroff >/dev/null 2>&1 || true
+   fi
+}
+
+## Poll until the guest desktop is up at a full resolution (>=1024 wide), past the
+## 800x600 early-boot framebuffer.
+## Restore the persistent VM to its committed clean-live snapshot before starting.
+## The Whonix Gateway IGNORES the ACPI power button, so the host cannot shut it down
+## cleanly; a hard poweroff + immediate restart then boots into the 720x400 recovery
+## console. Instead we hard-poweroff (fast) and DISCARD that dirty state by restoring
+## a live snapshot taken at a healthy 1280x800 desktop -- deterministic + immune to
+## dirty poweroffs. Take/refresh the snapshot with: VBoxManage snapshot <vm> take
+## clean-live --live (see snapshot_live.sh / the vbox-image-testing skill).
+restore_clean() {
+   local target="$1" state
+   "${VBOXMANAGE}" controlvm "${target}" poweroff >/dev/null 2>&1 || true
+   for _ in $(seq 1 20); do
+      state="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null \
+         | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
+      case "${state}" in
+         poweroff|aborted|'')
+            break
+            ;;
+      esac
+      sleep 2
+   done
+   "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
+      || die "${FAIL_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}' (take it with: VBoxManage snapshot ${target} take ${SNAPSHOT} --live)"
+}
+
+wait_desktop() {
+   local timeout="$1" deadline res width
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      gui_scan 2a aa
+      res="$("${GUESTCTL}" "${vm}" res 2>&1 || true)"
+      width="${res%% *}"
+      if [[ "${width}" =~ ^[0-9]+$ ]] && [ "${width}" -ge 1024 ]; then
+         return 0
+      fi
+      printf '%s: %s res=[%s] (waiting for a full-resolution desktop)\n' \
+         "${me}" "${vm}" "${res}" >&2
+      sleep 10
+   done
+   die "${FAIL_RC}" "${vm}: desktop not ready after ${timeout}s"
+}
+
+## Dismiss the first-boot setup-wizard-dist: click its Finish/Next button until the
+## wizard text is gone. Non-fatal if no wizard is shown (already dismissed).
+dismiss_setup_wizard() {
+   local deadline text word
+   deadline=$(( SECONDS + 60 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      text="$(gui_ocr)"
+      if [[ ! "${text,,}" =~ setup[[:space:]]?wizard|setup-wizard|successfully[[:space:]]completed ]]; then
+         return 0
+      fi
+      ## click the first button the wizard page offers -- Finish, else Next, else Close.
+      for word in finish next close; do
+         if gui_locate_word "${word}" >/dev/null 2>&1; then
+            gui_click_word "${word}" 10 1 "wizard ${word}"
+            break
+         fi
+      done
+      sleep 3
+   done
+   ## non-fatal: a wizard that never clears is diagnosed downstream by the leak test.
+   return 0
+}
+
+## Open a terminal via Ctrl+Alt+T, retrying until a shell prompt is on screen.
+open_terminal() {
+   local deadline text last_fire=0
+   deadline=$(( SECONDS + 150 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if [ "$(( SECONDS - last_fire ))" -ge 20 ]; then
+         gui_scan 2a aa
+         gui_scan 1d 38 14 94 b8 9d
+         last_fire="${SECONDS}"
+      fi
+      sleep 5
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ localhost|pts/|'~$'|'[user' ]]; then
+         return 0
+      fi
+   done
+   die "${FAIL_RC}" "${vm}: terminal did not open (Ctrl+Alt+T)"
+}
+
+## Run CMD in the guest terminal and classify by an OCR-friendly marker: rc 0 ->
+## <PASS_MARKER>, non-zero -> <FAIL_MARKER>. Polls OCR up to TIMEOUT. 0 PASS / 1 FAIL.
+run_marker_check() {
+   local cmd="$1" pass_marker="$2" fail_marker="$3" timeout="$4" deadline text
+   printf '%s' "${cmd} && echo ${pass_marker} || echo ${fail_marker}" \
+      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   gui_scan 1c 9c
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      gui_scan 2a aa
+      text="$(gui_ocr)"
+      if [[ "${text}" =~ ${pass_marker} ]]; then
+         return 0
+      fi
+      if [[ "${text}" =~ ${fail_marker} ]]; then
+         return 1
+      fi
+      sleep 8
+   done
+   return 1
+}
+
+main() {
+   parse_args "$@"
+   trap on_exit EXIT
+
+   printf '%s\n' "${me}: boot Whonix Gateway (${gw})"
+   ## Clean-off before start so the graphical session comes up (not the 720x400 console).
+   restore_clean "${gw}"
+   "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
+   gw_started='true'
+   vm="${gw}"
+   wait_desktop 480
+   dismiss_setup_wizard
+
+   printf '%s\n' "${me}: boot Whonix Workstation (${ws})"
+   restore_clean "${ws}"
+   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+   ws_started='true'
+   vm="${ws}"
+   wait_desktop 480
+   dismiss_setup_wizard
+   open_terminal
+
+   printf '%s\n' "${me}: leak test -- Workstation must egress ONLY via Tor"
+   ## Retry to also gate on the Gateway's Tor bootstrap (which may still be coming
+   ## up); the WS has no non-Tor route, so IsTor:true proves the WS->GW->Tor path.
+   local attempt rc=1
+   for attempt in 1 2 3 4 5 6; do
+      if run_marker_check \
+         "curl --silent --max-time 60 https://check.torproject.org/api/ip | grep -qi 'istor.*true'" \
+         'WHONIXLEAKPASS' 'WHONIXLEAKFAIL' 90; then
+         rc=0
+         break
+      fi
+      printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
+      sleep 20
+   done
+   [ "${rc}" -eq 0 ] || die "${FAIL_RC}" "leak test FAILED: Workstation did not confirm Tor egress"
+
+   printf '%s\n' "${me}: PASS -- Whonix pair up; Workstation egresses via Gateway Tor"
+   return "${PASS_RC}"
+}
+
+main "$@"
