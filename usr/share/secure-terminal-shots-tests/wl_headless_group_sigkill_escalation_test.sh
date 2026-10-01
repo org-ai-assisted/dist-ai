@@ -105,14 +105,20 @@ stub_lib="${work}/wl-headless-lib.bash"
 ## likewise-TERM-ignoring grandchild, signals readiness, then becomes an unkillable-by-TERM
 ## sleep itself. If cleanup escalates to the group SIGKILL, BOTH die; if it stops at TERM +
 ## an unescalated wait, BOTH leak.
+##
+## Overall readiness (the gate for the test's TERM) is signaled ONLY after the grandchild has
+## installed its OWN trap (gc-ready handshake). Signaling it right after the fork would leave a
+## window where the grandchild still has the DEFAULT TERM disposition, so a broken runner's plain
+## group-TERM could kill it before escalation -- and the test would FALSE-PASS the escalation check.
 ready="${work}/ready"
 victim="${work}/victim.sh"
 cat > "${victim}" <<EOF
 #!/bin/bash
 trap '' TERM
 echo "\$\$" > "${work}/child.pid"
-bash -c 'trap "" TERM; exec sleep 300' &
+bash -c 'trap "" TERM; : > "${work}/gc-ready"; exec sleep 300' &
 echo "\$!" > "${work}/grandchild.pid"
+for _ in \$(seq 1 50); do [ -e "${work}/gc-ready" ] && break; sleep 0.1; done
 : > "${ready}"
 exec sleep 300
 EOF
