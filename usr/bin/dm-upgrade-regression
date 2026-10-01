@@ -40,7 +40,7 @@ SETUP_RC=2
 vm=""
 repository=""
 persist_mode=""          ## 'persist' | 'revert' (REQUIRED; no default)
-blocking="true"          ## developer persona passes --non-blocking
+blocking=""              ## derived from --repository (R6 blocks; persona warns)
 passphrase=""
 passphrase_file=""
 snapshot_name=""
@@ -64,8 +64,11 @@ die() {
 # shellcheck disable=SC2317  ## runs via the EXIT trap, not a direct call
 on_exit() {
    local rc=$?
+   ## Clean (ACPI) shutdown, not a hard poweroff: --persist keeps the on-disk upgrade,
+   ## so the guest FS/apt state must flush. clean_poweroff falls back to hard only if
+   ## the guest ignores ACPI. Only ever our own, just-started VM.
    if [ "${vm_started}" = 'true' ]; then
-      "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+      clean_poweroff
    fi
    exit "${rc}"
 }
@@ -75,11 +78,11 @@ usage() {
    printf '%s\n' "usage: ${me} --vm NAME --repository SUITE (--persist|--revert) [options]
 
 --vm NAME        the existing stable Kicksecure VM (shipped image; Guest Additions).
---repository     stable-proposed-updates (R6, blocking) | developers (persona).
+--repository     stable-proposed-updates (R6: BLOCKING gate) | developers (persona:
+                 non-blocking early warning). Blocking is DERIVED from this, not a flag.
 --persist        keep the applied upgrade on disk (golden-fleet longitudinal lane).
 --revert         restore the pre-upgrade snapshot after verify (RESERVED -- not yet
                  implemented; use --persist).
---non-blocking   a failed check/upgrade is a WARNING (exit 0), not a gate failure.
 --passphrase-file PATH  0600 file with the LUKS passphrase (only if the VM is
                  encrypted; read via the shell, never on argv -- CWE-214).
 --snapshot-name NAME    pre-upgrade snapshot name (default pre-upgrade-SUITE-UTC).
@@ -107,37 +110,48 @@ source "${share_dir}/release-checks.bsh"
 DM_VBOX="${share_dir}/dm-vbox"
 
 parse_args() {
+   ## A value-taking option needs a following argument; without this guard a
+   ## trailing `--vm` dereferences an unset $2 (nounset -> exit 1, not SETUP_RC).
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --vm)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "option $1 requires a value"
             vm="$2"
             shift 2
             ;;
          --repository)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "option $1 requires a value"
             repository="$2"
             shift 2
             ;;
          --persist)
+            ## Detect the conflict HERE (not by scanning raw args, which would also
+            ## catch an option VALUE like `--snapshot-name --revert`).
+            if [ "${persist_mode}" = 'revert' ]; then
+               die "${SETUP_RC}" "--persist and --revert are mutually exclusive"
+            fi
             persist_mode="persist"
             shift
             ;;
          --revert)
+            if [ "${persist_mode}" = 'persist' ]; then
+               die "${SETUP_RC}" "--persist and --revert are mutually exclusive"
+            fi
             persist_mode="revert"
             shift
             ;;
-         --non-blocking)
-            blocking="false"
-            shift
-            ;;
          --passphrase-file)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "option $1 requires a value"
             passphrase_file="$2"
             shift 2
             ;;
          --snapshot-name)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "option $1 requires a value"
             snapshot_name="$2"
             shift 2
             ;;
          --report-dir)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "option $1 requires a value"
             report_dir="$2"
             shift 2
             ;;
@@ -162,9 +176,15 @@ validate_args() {
    [ -n "${repository}" ] || { usage >&2; die "${SETUP_RC}" "--repository required"; }
    [[ "${valid_repositories}" == *" ${repository} "* ]] \
       || die "${SETUP_RC}" "--repository must be one of:${valid_repositories%% }"
-   ## Only the update SOURCES are meaningful personas for this gate.
+   ## Only the update SOURCES are meaningful personas, and BLOCKING is a property of
+   ## the persona -- NOT a separate flag -- so stable-proposed-updates (R6) can never
+   ## be downgraded to non-blocking and let a broken stable release through the gate.
    case "${repository}" in
-      stable-proposed-updates|developers)
+      stable-proposed-updates)
+         blocking="true"
+         ;;
+      developers)
+         blocking="false"
          ;;
       *)
          die "${SETUP_RC}" "--repository ${repository} is not an upgrade source; use stable-proposed-updates (R6) or developers"
@@ -178,6 +198,12 @@ validate_args() {
    fi
    if [ -n "${passphrase_file}" ]; then
       [ -r "${passphrase_file}" ] || die "${SETUP_RC}" "passphrase file not readable: '${passphrase_file}'"
+      ## A LUKS passphrase file must not be group/other-readable (documented 0600).
+      local mode
+      mode="$(stat -c '%a' -- "${passphrase_file}" 2>/dev/null || true)"
+      if [ -z "${mode}" ] || [ "$(( 0${mode} & 077 ))" -ne 0 ]; then
+         die "${SETUP_RC}" "passphrase file must be mode 0600 (not group/other-readable): '${passphrase_file}' is ${mode:-unknown}"
+      fi
       passphrase="$(< "${passphrase_file}")"
       [ -n "${passphrase}" ] || die "${SETUP_RC}" "passphrase file is empty: '${passphrase_file}'"
    fi
@@ -185,17 +211,12 @@ validate_args() {
    [ -n "${report_dir}" ] || report_dir="${HOME}/${me}-${vm}-$(date -u +%Y%m%dT%H%M%SZ)"
 }
 
-## Both --persist and --revert being passed is ambiguous -- the second just wins in
-## parse_args, so catch the contradiction explicitly for a clear error.
-check_mode_conflict() {
-   local seen_persist="$1" seen_revert="$2"
-   if [ "${seen_persist}" = 'true' ] && [ "${seen_revert}" = 'true' ]; then
-      die "${SETUP_RC}" "--persist and --revert are mutually exclusive"
-   fi
-}
-
 ## --- VM lifecycle -----------------------------------------------------------
 
+## The recipe must boot the VM fresh THROUGH GRUB (to select a role). Accept only a
+## fully powered-down state: a 'saved' VM would RESUME on startvm (no GRUB menu), so
+## select_installed_sysmaint would never find the menu -- reject it (discard the
+## saved state first). A 'running'/'paused' VM may be another session's -- refuse.
 require_vm_idle() {
    local state
    "${VBOXMANAGE}" showvminfo "${vm}" >/dev/null 2>&1 \
@@ -203,10 +224,13 @@ require_vm_idle() {
    state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
       | sed -n 's/^VMState="\(.*\)"$/\1/p')"
    case "${state}" in
-      poweroff|saved|aborted|'')
+      poweroff|aborted)
+         ;;
+      saved)
+         die "${SETUP_RC}" "VM '${vm}' is 'saved' -- it would RESUME (no GRUB boot); discard the saved state first"
          ;;
       *)
-         die "${SETUP_RC}" "VM '${vm}' is '${state}' -- another session may own it; refusing (coordination)"
+         die "${SETUP_RC}" "VM '${vm}' is '${state:-unknown}' -- another session may own it; refusing (coordination)"
          ;;
    esac
 }
@@ -240,32 +264,53 @@ r6_reboot_sysmaint() {
    boot_installed sysmaint
 }
 
-## verify_fn (render-first): the VISUAL cross-check, run BEFORE the functional probe.
-## A screenshot is saved as evidence, then: a catastrophic screen (panic/emergency/
-## rescue/LUKS-stuck) fails ANY check; a desktop-expected check additionally requires
-## a real graphical mode (>=1024 wide) -- proving the session PAINTED readable UI, not
-## a blank/black framebuffer. (Like the Calamares check 6, this does NOT catch a
-## compositor that FROZE after a valid frame already rendered.) A check is green only
-## when this agrees with the guestcontrol functional PASS.
+## A catastrophic screen (panic / emergency / rescue / stuck-LUKS) on the lowercased
+## OCR text. Returns 0 if one is present.
+# shellcheck disable=SC2317  ## reached only via r6_verify, which is dispatched indirectly
+visual_catastrophe() {
+   [[ "$1" =~ kernel[[:space:]]panic|emergency[[:space:]]mode|rescue[[:space:]]shell|give[[:space:]]root[[:space:]]password|cannot[[:space:]]unlock ]]
+}
+
+## verify_fn (render-first): the VISUAL cross-check, run BEFORE the functional probe,
+## so a check is green only when the screen AGREES with the guestcontrol PASS.
+## A catastrophic screen fails ANY check immediately. A desktop-expected check then
+## POLLS (the compositor may still be bringing up the full mode when guestcontrol
+## first answers -- single-shot would false-FAIL) until the desktop has actually
+## PAINTED: resolution >=1024 AND non-empty rendered text. A blank/black framebuffer
+## OCRs to nothing, so it fails HERE even though VBoxService + the process are alive
+## (the false-PASS a width-only check would give). Does NOT catch a compositor that
+## FROZE after a valid frame already rendered (the stale frame still OCRs). Each poll
+## saves the screenshot as evidence.
 # shellcheck disable=SC2317  ## dispatched indirectly by run_release_check_battery
 r6_verify() {
-   local num="$1" desktop="$2" shot text width
+   local num="$1" desktop="$2" shot text width deadline
    shot="${report_dir}/check-${num}.png"
-   "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
-   text="$(gui_ocr)"
-   text="${text,,}"
-   if [[ "${text}" =~ kernel[[:space:]]panic|emergency[[:space:]]mode|rescue[[:space:]]shell|give[[:space:]]root[[:space:]]password|cannot[[:space:]]unlock ]]; then
-      printf '%s\n' "${me}: check ${num} VISUAL FAIL -- catastrophic screen (${shot})" >&2
-      return 1
-   fi
-   if [ "${desktop}" = 'true' ]; then
-      width="$(guest_width)"
-      if [ "${width}" -lt 1024 ]; then
-         printf '%s\n' "${me}: check ${num} VISUAL FAIL -- no graphical desktop (width=${width}; ${shot})" >&2
+   if [ "${desktop}" != 'true' ]; then
+      "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
+      if visual_catastrophe "$(gui_ocr | tr '[:upper:]' '[:lower:]')"; then
+         printf '%s\n' "${me}: check ${num} VISUAL FAIL -- catastrophic screen (${shot})" >&2
          return 1
       fi
+      return 0
    fi
-   return 0
+   width=0
+   deadline=$(( SECONDS + 120 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
+      text="$(gui_ocr | tr '[:upper:]' '[:lower:]')"
+      if visual_catastrophe "${text}"; then
+         printf '%s\n' "${me}: check ${num} VISUAL FAIL -- catastrophic screen (${shot})" >&2
+         return 1
+      fi
+      width="$(guest_width)"
+      ## non-empty once whitespace is stripped == the desktop actually drew something.
+      if [ "${width}" -ge 1024 ] && [ -n "${text//[[:space:]]/}" ]; then
+         return 0
+      fi
+      sleep 10
+   done
+   printf '%s\n' "${me}: check ${num} VISUAL FAIL -- desktop never painted (width=${width}, screen empty/black after 120s; ${shot})" >&2
+   return 1
 }
 
 capture_shot() {
@@ -296,11 +341,20 @@ switch_and_upgrade() {
 
 run_regression() {
    printf '%s\n' "${me}: boot into SYSMAINT to switch suite + upgrade"
-   boot_installed sysmaint
+   if ! boot_installed sysmaint; then
+      REASON="guest did not become reachable in the SYSMAINT session (pre-upgrade boot)"
+      return 1
+   fi
    switch_and_upgrade || return 1
    capture_shot post-upgrade
    printf '%s\n' "${me}: reboot into USER session to re-verify the release-critical checks"
-   boot_installed user
+   ## A guest that does not come back here is the key signal: the upgrade may have
+   ## bricked boot. It must flow to the gate result (degraded for the persona), not a
+   ## hard crash -- so catch it rather than let a boot timeout die past write_report.
+   if ! boot_installed user; then
+      REASON="guest did not come back in the USER session after the ${repository} upgrade (upgrade may have bricked boot)"
+      return 1
+   fi
    if ! run_release_check_battery r6_exec r6_reboot_sysmaint r6_verify; then
       REASON="release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON})"
       return 1
@@ -308,31 +362,37 @@ run_regression() {
    return 0
 }
 
+## Minimal JSON string escaping so a VM name / snapshot / reason with a quote,
+## backslash or control char cannot corrupt report.json.
+json_escape() {
+   local s="$1"
+   s="${s//\\/\\\\}"
+   s="${s//\"/\\\"}"
+   s="${s//$'\n'/\\n}"
+   s="${s//$'\t'/\\t}"
+   s="${s//$'\r'/\\r}"
+   printf '%s' "${s}"
+}
+
 write_report() {
    local report="${report_dir}/report.json"
    printf '%s\n' \
       "{" \
-      "  \"tool\": \"${me}\"," \
-      "  \"vm\": \"${vm}\"," \
-      "  \"repository\": \"${repository}\"," \
-      "  \"persist_mode\": \"${persist_mode}\"," \
+      "  \"tool\": \"$(json_escape "${me}")\"," \
+      "  \"vm\": \"$(json_escape "${vm}")\"," \
+      "  \"repository\": \"$(json_escape "${repository}")\"," \
+      "  \"persist_mode\": \"$(json_escape "${persist_mode}")\"," \
       "  \"blocking\": ${blocking}," \
-      "  \"snapshot\": \"${snapshot_name}\"," \
-      "  \"status\": \"${status}\"," \
-      "  \"reason\": \"${REASON//\"/\'}\"," \
+      "  \"snapshot\": \"$(json_escape "${snapshot_name}")\"," \
+      "  \"status\": \"$(json_escape "${status}")\"," \
+      "  \"reason\": \"$(json_escape "${REASON}")\"," \
       "  \"finished\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
       "}" > "${report}"
    printf '%s\n' "${me}: report -> ${report}"
 }
 
 main() {
-   local seen_persist='false' seen_revert='false' arg
-   for arg in "$@"; do
-      [ "${arg}" = '--persist' ] && seen_persist='true'
-      [ "${arg}" = '--revert' ] && seen_revert='true'
-   done
    parse_args "$@"
-   check_mode_conflict "${seen_persist}" "${seen_revert}"
    validate_args
    if [ "${validate_only}" = 'true' ]; then
       printf '%s\n' "${me}: arguments valid (vm=${vm} repository=${repository} mode=${persist_mode} blocking=${blocking})"

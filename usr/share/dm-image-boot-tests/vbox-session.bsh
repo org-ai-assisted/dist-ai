@@ -23,11 +23,6 @@
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
 # shellcheck disable=SC2154  ## vm/VBOXMANAGE/GUESTCTL/FAIL_RC/me/passphrase are set by the sourcing tool
 
-## In-guest guestcontrol password. Both `user` and `sysmaint` are passwordless
-## (pam_unix nullok), so the empty string is the working channel (task #83). NOT a
-## secret -- the real secret (LUKS passphrase) is typed off-argv via gui-drive.
-GC_PASSWORD="${GC_PASSWORD:-}"
-
 ## Map a boot ROLE to the guest account that may authenticate in it. In a sysmaint
 ## boot security-misc block-unsafe-logins rejects `user` (and vice versa), so the
 ## account MUST match the boot role (task #83).
@@ -45,13 +40,16 @@ gc_account_for_role() {
 ## Run a shell snippet in-guest as USERNAME via guestcontrol; the guest process's
 ## exit code is this function's exit code (run waits and propagates it). Optional
 ## TIMEOUT_S bounds the guest process (guestcontrol --timeout is milliseconds).
-## VBOXMANAGE is overridable, so a test can assert the exact argv with a capturing
-## stub.
+## The password is the empty string: both `user` and `sysmaint` are passwordless
+## (pam_unix nullok, task #83), and an empty literal keeps the argv-exposure (CWE-214)
+## policy -- no overridable GC_PASSWORD that could put a real secret on argv. A guest
+## that ever needed a real password would use guestcontrol --password-file, not this.
+## VBOXMANAGE is overridable, so a test can assert the exact argv with a capturing stub.
 gc_run() {
    local username="$1" snippet="$2" timeout_s="${3:-}"
    local -a argv=(
       "${VBOXMANAGE}" guestcontrol "${vm}" run
-      --username "${username}" --password "${GC_PASSWORD}"
+      --username "${username}" --password ''
    )
    if [ -n "${timeout_s}" ]; then
       argv+=( --timeout "$(( timeout_s * 1000 ))" )
@@ -61,7 +59,9 @@ gc_run() {
 }
 
 ## Poll until guestcontrol as USERNAME can run `true` (VBoxService up + account
-## loginable in this boot role), or TIMEOUT. 0 ready / die on timeout.
+## loginable in this boot role), or TIMEOUT. 0 ready / 1 timeout (NOT die: a guest
+## that never comes back after an upgrade is the gate's signal, not a harness crash --
+## the caller routes it to a degraded/blocking result).
 wait_guestcontrol_ready() {
    local username="$1" timeout="$2" deadline
    deadline=$(( SECONDS + timeout ))
@@ -71,7 +71,29 @@ wait_guestcontrol_ready() {
       fi
       sleep 10
    done
-   die "${FAIL_RC}" "guestcontrol not ready as '${username}' after ${timeout}s"
+   printf '%s\n' "${me}: guestcontrol not ready as '${username}' after ${timeout}s" >&2
+   return 1
+}
+
+## Shut the guest down CLEANLY (ACPI power button) and wait for it to power off, so a
+## just-applied upgrade's filesystem/apt state is flushed -- a hard `controlvm
+## poweroff` right after upgrade-nonroot can corrupt the persisted disk. Falls back to
+## a hard poweroff only if the guest ignores ACPI within the timeout.
+clean_poweroff() {
+   local deadline state
+   "${VBOXMANAGE}" controlvm "${vm}" acpipowerbutton >/dev/null 2>&1 || true
+   deadline=$(( SECONDS + 120 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
+         | sed -n 's/^VMState="\(.*\)"$/\1/p')"
+      case "${state}" in
+         poweroff|aborted|'')
+            return 0
+            ;;
+      esac
+      sleep 3
+   done
+   "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
 }
 
 ## Echo the guest display WIDTH in pixels (0 if unavailable). The desktop-up visual
@@ -115,12 +137,13 @@ select_installed_sysmaint() {
 
 ## Power-cycle the installed disk into ROLE (user = default GRUB entry; sysmaint =
 ## entry 2), unlock LUKS if encrypted, and wait until guestcontrol is reachable as
-## the role's account. No terminal is opened (guestcontrol needs none).
+## the role's account. Returns nonzero (NOT die) if the guest never comes back, so a
+## bricked-by-upgrade boot flows to the gate result. No terminal is opened. The
+## shutdown is CLEAN (clean_poweroff) to protect the persisted on-disk state.
 boot_installed() {
    local role="$1" account
    account="$(gc_account_for_role "${role}")"
-   "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
-   sleep 3
+   clean_poweroff
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    if [ "${role}" = 'sysmaint' ]; then
       select_installed_sysmaint

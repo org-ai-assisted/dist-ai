@@ -9,6 +9,11 @@
 ## executor/reboot/verify callbacks -- no VM. Asserts: run order (user checks, then
 ## one reboot, then sysmaint checks), fail-fast, the check-8 retry, and that a visual
 ## cross-check mismatch fails a check whose functional signal PASSED (dual-signal).
+##
+## SC2034/SC2154: this test SETS caller globals for, and READS result globals from,
+## the sourced release-checks.bsh -- cross-file, so shellcheck sees them as
+## unused/unassigned here.
+# shellcheck disable=SC2034,SC2154
 
 set -o errexit
 set -o nounset

@@ -38,10 +38,11 @@ IFS='|'; printf '%s\n' "$*"
 STUB
 chmod +x "${stub}"
 
-## Caller globals gc_run needs.
+## Caller globals gc_run needs (consumed by the sourced vbox-session.bsh).
+# shellcheck disable=SC2034
 vm='testvm'
+# shellcheck disable=SC2034
 VBOXMANAGE="${stub}"
-GC_PASSWORD=''
 # shellcheck source=../dm-image-boot-tests/vbox-session.bsh
 source "${lib}"
 

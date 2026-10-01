@@ -12,6 +12,9 @@
 ## copy); no literal `run_check N '<cmd>'` battery lines remain; the shared table is
 ## non-vacuous; and the one still-duplicated helper (select_installed_sysmaint) stays
 ## byte-identical between dm-calamares-install and vbox-session.bsh. No VM, no network.
+##
+## SC2154: RELEASE_CHECK_CMD et al. are read from the sourced release-checks.bsh.
+# shellcheck disable=SC2154
 
 set -o errexit
 set -o nounset

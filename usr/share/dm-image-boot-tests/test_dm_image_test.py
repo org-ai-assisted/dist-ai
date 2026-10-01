@@ -739,7 +739,7 @@ def test_boot_match_sentinels_require_zero_regardless_of_expect_rc():
 ## honest "what this leg does NOT cover" summary.
 
 def _plan_args(**kw):
-    base = dict(disk='/x.qcow2', iso=None, arch='', firmware='bios', session='user',
+    base: dict[str, object] = dict(disk='/x.qcow2', iso=None, arch='', firmware='bios', session='user',
                 login_user='user', login_pass='', run=None, expect_rc=0,
                 timeout=1800, smbios_append='', serial_log='', dm_qemu='dm-qemu',
                 dm_qemu_args=[])
