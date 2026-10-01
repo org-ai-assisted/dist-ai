@@ -543,6 +543,29 @@ _ft.apply_mode('reveal')                           # still frozen, risk-class ti
 ok(_ft.frozen() and '<U+202E>' in _ft.toPlainText(), 'frozen render: reveal badges the bidi cell')
 _ft.close()
 
+# --- frozen expanding doc gets its OWN scroll policy so wide badges are reachable (coderabbit) --
+# The live grid is NoWrap + horizontal-bar-off, and _apply_vscroll_policy forces the vertical bar
+# OFF on a fixed canvas. In an expanding mode every cell becomes a wide <U+XXXX> badge, so a
+# screen-width row runs far past the viewport -- under the live-grid policy most badges were
+# unreachable (no wrap, no scrollbar). _render_frozen must set a frozen-doc policy: SOFT-wrap +
+# an allowed vertical scrollbar. Assert the POLICY (font-independent), not a pixel width.
+_fsp = SecureTerminal(command='/bin/cat', tui=True)
+_fsp.resize(400, 200)
+_fsp.show()
+APP.processEvents()
+feed_output(_fsp, b'M' * 200 + b'\r\n')            # a wide ASCII row -> badges overflow the grid
+_fsp.apply_mode('state')                           # auto-freeze + _render_frozen
+ok(_fsp.frozen(), 'freeze scroll setup: state mode auto-froze the grid')
+eq(_fsp.lineWrapMode(), _WW,
+   'frozen scroll: the expanding doc SOFT-wraps so badges stay reachable (not clipped at NoWrap)')
+eq(_fsp.verticalScrollBarPolicy(), _ASN,
+   'frozen scroll: the expanding doc allows a vertical scrollbar (not forced off like a live canvas)')
+_fsp.apply_mode('box')                             # non-expanding -> unfreeze to the live grid
+ok(not _fsp.frozen(), 'frozen scroll: leaving the expanding mode unfreezes')
+eq(_fsp.lineWrapMode(), _NW,
+   'frozen scroll: unfreeze restores the live-grid NoWrap policy')
+_fsp.close()
+
 # --- Tab illustration: a completed-line tab carries the _TAB_MARK_PROP overlay flag -----
 # Mirrors the space-dot: the document keeps the real '\t' (copy-safe) and a fragment format
 # flags it so paintEvent draws the arrow guide. CLI (line) mode, where the '\t' survives.

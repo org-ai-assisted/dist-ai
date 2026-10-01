@@ -809,6 +809,31 @@ ok(len(_can) == 5 and _can[0][1] == _can[4][1] and _can[0][1] != (),
 ok(_line_diff == 0, 'feed_line_edits matched the reference on every payload '
    '(%d mismatches)' % _line_diff)
 
+# --- state mode badges flagged whitespace WITH its SGR (coderabbit) -----------
+# A leading / trailing / >=2-interior space is a whitespace anomaly: the neutralizing modes
+# keep its real U+0020 under a WS_ANOMALY dot (display-only, no SGR). But STATE mode badges
+# EVERY char as its <U+XXXX> tinted by the program's own SGR ("codepoint + attributes"), so a
+# flagged space must render as a <U+0020> badge carrying its SGR, NOT a dot that drops the
+# attributes (and is redundant -- the badge already makes every space explicit). Build a BOLD
+# line (bold has no bg, so every space stays "invisible" = flagged) with leading(2) / interior(3)
+# / trailing(2) spaces; the \r\n completes it so the trailing run is flagged too.
+_wscompleted, _wscells, _wc, _wsgr, _ww, _wrp = \
+    S.feed_line_edits([], 0, {}, '\x1b[1m  x   y  \x1b[0m\r\n')
+_ws_state = S.cells_to_runs(_wscompleted, _wscells, 'state', True, True)[0]
+ok(not any(k == (S.MARK_KEY, S.WS_ANOMALY, 0x20) for _t, k in _ws_state),
+   'state+markings: a flagged space is NOT emitted as an SGR-less WS_ANOMALY dot run')
+# adjacent same-SGR space badges coalesce into one run ('<U+0020><U+0020>'), so match by substring.
+_ws_badges = [(t, k) for t, k in _ws_state if '<U+0020>' in t]
+ok(_ws_badges and all(k[0] == S.MARK_KEY and k[2] == 0x20
+                      and k[1] not in (None, S.WS_ANOMALY) for _t, k in _ws_badges),
+   'state+markings: each flagged space is a <U+0020> badge keyed by its real SGR (got %r)'
+   % (_ws_badges[:2],))
+# Control: a NON-state mode on the SAME line still shows the WS_ANOMALY dot -- the exclusion
+# is state-only, so the anomaly signal is intact everywhere else.
+_ws_detail = S.cells_to_runs(_wscompleted, _wscells, 'detail', True, True)[0]
+ok(any(k == (S.MARK_KEY, S.WS_ANOMALY, 0x20) for _t, k in _ws_detail),
+   'detail+markings: a flagged space still emits the WS_ANOMALY dot (exclusion is state-only)')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(corpus): %d passed, %d failed\n'
                  % (PASS, FAIL))
