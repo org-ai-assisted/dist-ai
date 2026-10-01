@@ -103,9 +103,12 @@ do_prepare() {
       "${me}" "${rd}" "${codename}" "${guest_mount}"
 }
 
+## Print the VM's VMState (empty if unknown). Must never return non-zero: a
+## failing showvminfo under errexit+pipefail would otherwise abort the caller's
+## `state="$(vm_state ...)"` assignment before its `[ -n ... ] || die` can report.
 vm_state() {
    "${VBOXMANAGE}" showvminfo "$1" --machinereadable 2>/dev/null \
-      | sed --quiet 's/^VMState="\([^"]*\)"/\1/p'
+      | sed --quiet 's/^VMState="\([^"]*\)"/\1/p' || true
 }
 
 do_attach() {
