@@ -40,7 +40,10 @@ log_dir="$( mktemp --directory -- "${TMP}/dist-ai-tests-all.XXXXXX" )"
 ## neither '.pytest_cache' nor '.mypy_cache' lands in the subject checkout. '-o
 ## cache_dir' RELOCATES pytest's cache (the 'cache' fixture still works), unlike '-p
 ## no:cacheprovider' which would disable it; MYPY_CACHE_DIR relocates mypy's likewise.
-export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir=${log_dir}/pytest_cache"
+## The cache_dir value is SINGLE-QUOTED: pytest re-parses PYTEST_ADDOPTS with shlex, so
+## an unquoted ${log_dir} containing a SPACE would split the path into bogus test args
+## (pytest "no tests ran"). MYPY_CACHE_DIR is read verbatim, so it needs no quoting.
+export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir='${log_dir}/pytest_cache'"
 export MYPY_CACHE_DIR="${log_dir}/mypy-cache"
 cleanup_log_dir() {
    if [ -n "${log_dir:-}" ] && [ -d "${log_dir}" ]; then
