@@ -1,0 +1,86 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Guest side of the shared-folder local apt repo (host side: dm-shared-apt-repo).
+## Rides the VBox share itself (/mnt/shared/add-local-test-repo), so delivering it
+## needs no copy-in. Uniform on Kicksecure, Whonix-Gateway and Whonix-Workstation --
+## a shared folder is host<->guest, not network, so the WS reaches it with no
+## Gateway relay and no Tor.
+##
+## The repo is dm's reprepro repo under the share (aptrepo_local/<derivative>,
+## codename `local`). The sources stanza is dm's create-local-temp-apt-repo deb822
+## form verbatim. The mount is Kicksecure's job: vm-config-dist's
+## mnt-shared-vbox.service mounts `shared` to /mnt/shared every boot; if it is not
+## mounted yet we restart that service -- never reimplementing its mount logic.
+##
+## Run as root in the guest:  sudo /mnt/shared/add-local-test-repo [kicksecure|whonix]
+## (derivative auto-detected from the running system when not given.)
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+guest_mount="/mnt/shared"
+codename="local"
+## deb822 stanza MUST live in a .sources file (apt ignores the stanza in a .list).
+list_file="/etc/apt/sources.list.d/local-test-repo.sources"
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$1" >&2
+   exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || die "run as root (writes ${list_file} and runs apt-get)"
+
+## Which dm repo: explicit arg, else detect Whonix (it ships anon-* / a whonix
+## os-release); default kicksecure.
+derivative="${1:-}"
+if [ -z "${derivative}" ]; then
+   if grep --quiet --ignore-case 'whonix' /etc/os-release 2>/dev/null || [ -d /usr/share/whonix ]; then
+      derivative="whonix"
+   else
+      derivative="kicksecure"
+   fi
+fi
+if [ "${derivative}" != "kicksecure" ] && [ "${derivative}" != "whonix" ]; then
+   die "derivative must be 'kicksecure' or 'whonix', got: ${derivative}"
+fi
+
+repo_dir="${guest_mount}/aptrepo_local/${derivative}"
+
+## Ensure the share is mounted, delegating to Kicksecure's own service if not.
+if ! mountpoint -q "${guest_mount}"; then
+   printf '%s: %s not mounted; restarting mnt-shared-vbox.service\n' "${me}" "${guest_mount}"
+   systemctl restart mnt-shared-vbox.service || true
+   mountpoint -q "${guest_mount}" \
+      || die "${guest_mount} still not mounted -- is the 'shared' folder attached? (host: dm-shared-apt-repo attach <vm>)"
+fi
+
+[ -d "${repo_dir}/dists/${codename}" ] \
+   || die "no '${codename}' repo at ${repo_dir} (host: dm-shared-apt-repo add ${derivative} <changes>)"
+
+## dm's create-local-temp-apt-repo deb822 stanza. Trusted: yes because apt 3.0
+## refuses an unsigned repo fatally; file: over the read-only vboxsf mount
+## (root:vboxsf, group-only) is unreadable by _apt, so apt reads it as root with a
+## benign "unsandboxed as root" N: note -- expected, not an error.
+printf '%s\n' "Types: deb
+URIs: file:${repo_dir}
+Suites: ${codename}
+Components: main contrib non-free
+Enabled: yes
+Trusted: yes" > "${list_file}"
+printf '%s: wrote %s:\n' "${me}" "${list_file}"
+cat -- "${list_file}"
+
+## style-ok: allow-apt-get -- plain `update` only, no package action to make noninteractive
+apt-get update
+printf '%s: ready -- e.g. apt-get install --only-upgrade <pkg>\n' "${me}"
