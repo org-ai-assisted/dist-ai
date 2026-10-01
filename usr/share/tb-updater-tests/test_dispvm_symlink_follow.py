@@ -34,10 +34,11 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
     at boot -- debian/rules pins 'dh_installsystemd --no-start' for
     tb-updater-dispvm.service so dpkg never starts/restarts it during a live
     session. Old rules had no such override -> FAILS.
-  * Run-once (defense in depth): a successful setup stamps a tamper-proof
-    sentinel in root-owned tmpfs /run, and the unit skips on that
-    (ConditionPathExists), so ANY re-run this boot is a no-op -- covering a
-    manual restart that --no-start does not. Old code/unit had neither -> FAILS.
+  * Run-once (defense in depth): every attempt (success OR a guard-rejected
+    run) stamps a tamper-proof sentinel in root-owned tmpfs /run, and the unit
+    skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
+    covering a manual restart (incl. retry of a failed first run) that
+    --no-start does not. Old code/unit had neither -> FAILS.
 """
 
 import os
@@ -204,18 +205,24 @@ def test_dispvm_service_not_started_by_dpkg():
 SENTINEL = "/run/tb-updater-dispvm.done"
 
 
-def test_marks_run_once_sentinel(tmp_path):
-    """A successful DispVM setup stamps the /run sentinel, so a re-run this boot
-    is a no-op (defense in depth against a restart re-entering the mount race)."""
-    proc, _home, rec_lines = _drive(tmp_path)
+@pytest.mark.parametrize("planted", [None, ".tb"])
+def test_stamps_run_once_sentinel_even_when_rejected(tmp_path, planted):
+    """The /run sentinel is stamped on ANY attempt -- a clean run AND a run the
+    symlink guard rejects -- so a failed first attempt cannot be retried into
+    the mount race by a manual restart. (Stamping only on success left that
+    hole.) Here the rejected case is the one that fails on the old code."""
+    victim = None
+    if planted is not None:
+        victim = tmp_path / "victim"
+        victim.mkdir()
+    _proc, _home, rec_lines = _drive(tmp_path, planted=planted, victim=victim)
 
-    assert proc.returncode == 0, (
-        f"benign run failed; rc={proc.returncode}\n"
-        f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
-    )
     touched = [line for line in rec_lines
                if line.startswith("TOUCH ") and line.endswith(SENTINEL)]
-    assert touched, f"run-once sentinel {SENTINEL} was not stamped: {rec_lines}"
+    assert touched, (
+        f"run-once sentinel {SENTINEL} was not stamped (planted={planted!r}): "
+        f"{rec_lines}"
+    )
 
 
 def test_dispvm_unit_skips_on_sentinel():
