@@ -257,7 +257,7 @@ try:
     with _contextlib.redirect_stdout(_help_buf):
         cli.main(['--help'])
 except SystemExit:
-    pass
+    pass            # argparse prints --help then raises SystemExit(0); we only want the text
 _help_txt = ' '.join(_help_buf.getvalue().split())   # collapse argparse line-wrapping
 ok('SGR' not in _help_txt and 'tinted' not in _help_txt,
    'cli --help no longer claims state badges are SGR-tinted (the wrapper cannot tint)')
