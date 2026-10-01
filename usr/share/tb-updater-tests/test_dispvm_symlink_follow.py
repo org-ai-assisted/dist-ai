@@ -30,13 +30,14 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
   * Pre-existing '.cache' case: a '.cache' that already exists must be
     ownership-fixed with '--no-dereference' (not aborted, not followed). Old
     code chowned it WITHOUT '--no-dereference' -> FAILS.
-  * Session-active case: once the user session (qubes-gui-agent.service) is up
-    -- e.g. an upgrade restart -- the mount setup must be skipped entirely, so a
-    logged-in attacker cannot win a check-to-use race against 'mount --bind'.
-    Old code did no such check and chowned/mounted anyway -> FAILS.
+  * Packaging contract: the mount TOCTOU is closed by running the service ONLY
+    at boot -- debian/rules pins 'dh_installsystemd --no-start' for
+    tb-updater-dispvm.service so dpkg never starts/restarts it during a live
+    session. Old rules had no such override -> FAILS.
 """
 
 import os
+import re
 import sys
 
 import pytest
@@ -69,7 +70,6 @@ qubesdb-read() {
    esac
 }
 check_valid_linux_user_account_name() { return 0; }
-systemctl() { return "${STUB_SYSTEMCTL_RC:-1}"; }
 chown() { printf 'CHOWN %s\n' "$*" >> "${REC}"; return 0; }
 mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 """
@@ -171,22 +171,28 @@ def test_preexisting_cache_is_owned_safely_not_aborted(tmp_path):
     )
 
 
-def test_skips_setup_when_user_session_active(tmp_path):
-    """Once the user session is up (a restart during login, e.g. an upgrade),
-    the mount setup is skipped entirely -- no chown, no mount -- removing the
-    check-to-use race a logged-in attacker could otherwise exploit."""
-    proc, home, rec_lines = _drive(tmp_path, extra_env={"STUB_SYSTEMCTL_RC": "0"})
-
-    assert proc.returncode == 0, (
-        f"session-active run failed; rc={proc.returncode}\n"
-        f"stdout={proc.stdout}\nstderr={proc.stderr}\nrec={rec_lines}"
+def test_dispvm_service_not_started_by_dpkg():
+    """The mount TOCTOU is closed by running the service ONLY at boot (before any
+    user/qrexec process). debian/rules must pin 'dh_installsystemd --no-start'
+    for tb-updater-dispvm.service so dpkg never starts/restarts it mid-session."""
+    repo = os.environ.get("TB_UPDATER_REPO", "").strip()
+    if not repo:
+        pytest.skip("debian/rules is only available from a checkout (TB_UPDATER_REPO)")
+    rules = os.path.join(repo, "debian", "rules")
+    if not os.path.isfile(rules):
+        pytest.skip(f"debian/rules not found ({rules})")
+    with open(rules, encoding="utf-8") as handle:
+        text = handle.read()
+    ## A dh_installsystemd invocation carrying both --no-start and the dispvm
+    ## unit, in either order.
+    pat = re.compile(
+        r"dh_installsystemd\b(?=[^\n]*--no-start)"
+        r"(?=[^\n]*tb-updater-dispvm\.service)[^\n]*"
     )
-    home_str = str(home)
-    touched = [line for line in rec_lines
-               if home_str in line and
-               (line.startswith("CHOWN ") or line.startswith("MOUNT "))]
-    assert not touched, (
-        f"mount setup ran despite an active user session (race window): {touched}"
+    assert pat.search(text), (
+        "debian/rules must pin 'dh_installsystemd --no-start "
+        "tb-updater-dispvm.service' so dpkg never starts/restarts the unit "
+        "during a live session (mount --bind check-to-use race, CWE-59)"
     )
 
 
