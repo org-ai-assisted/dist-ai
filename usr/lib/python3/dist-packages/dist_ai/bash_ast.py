@@ -329,11 +329,42 @@ def _deescape_unquoted_lit(value):
     return re.sub(r'\\(.)', r'\1', value)
 
 
-def word_string(word):
+_DQ_ESCAPABLE = "$`\"\\\n"
+
+
+def _decode_dquote_escapes(value):
+    """Decode the backslash-escapes bash removes inside DOUBLE quotes: '\\\\'->'\\',
+    '\\"'->'"', '\\`'->'`', '\\$'->'$', and a backslash-newline line-continuation is
+    dropped. A backslash before any OTHER char is NOT special in double quotes and
+    stays literal. shfmt leaves these undecoded in a DblQuoted Lit.Value, so a
+    consumer that RE-PARSES the value (an inline '-c' program) must decode them first
+    or it reads a spurious operator the inner shell never sees."""
+    out = []
+    i = 0
+    n = len(value)
+    while i < n:
+        c = value[i]
+        if c == "\\" and i + 1 < n and value[i + 1] in _DQ_ESCAPABLE:
+            nxt = value[i + 1]
+            ## backslash-newline is a line-continuation: both chars removed.
+            if nxt != "\n":
+                out.append(nxt)
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def word_string(word, decode_dquote=False):
     """WORD's fully-literal string value, or None if any part is a
     parameter/command/arithmetic expansion (its value is not statically known).
     Unwraps normal single-/double-quotes AND unquoted backslash-escapes, so 'false',
     "false", 'false', and \\false all yield 'false' -- the value bash actually runs.
+    With decode_dquote, also decodes the double-quote backslash-escapes
+    (_decode_dquote_escapes), so the result is byte-identical to the string the inner
+    shell runs -- for a consumer that re-parses the value (shell '-c' program); the
+    default leaves DblQuoted Lit values raw, as every other caller expects.
     SCOPE (accident, not adversary): this normalizes ACCIDENTAL quoting/escaping; it
     does NOT decode an ANSI-C $'...' word -- $'\\x72m' stays '\\x72m', not 'rm' -- so a
     hex/octal-encoded command word can still slip a name-based rule. That is a crafted
@@ -354,10 +385,15 @@ def word_string(word):
             ## crafted-form concern, dropped per accident-not-adversary (see docstring).
             out.append(part.get("Value") or "")
         elif kind == "DblQuoted":
+            ## Join the inner Lit values first, THEN decode, so an escape split across
+            ## two Lit parts is still handled as one unit.
+            inner_parts = []
             for inner in part.get("Parts") or []:
                 if inner.get("Type") != "Lit":
                     return None
-                out.append(inner.get("Value") or "")
+                inner_parts.append(inner.get("Value") or "")
+            joined = "".join(inner_parts)
+            out.append(_decode_dquote_escapes(joined) if decode_dquote else joined)
         else:
             return None
     return "".join(out)

@@ -235,6 +235,10 @@ fi
 ## ';' and ';;' assembled here so the literals never appear in tracked source.
 sc=';'
 dsemi=';;'
+## A literal backslash, for the R-192 '-c' value-extraction fixtures (a
+## single-quoted literal '\n', a double-quoted '\\' escape). ANSI-C quoted so the
+## lone backslash does not read as a quote-escape attempt (SC1003).
+bs=$'\\'
 
 ## Fragments for the printf-newline assertions, assembled the same way so a
 ## literal bad-form printf never appears in this tracked file (which the gate
@@ -1712,6 +1716,17 @@ expect_rule "R-192" "$(printf 'bash -c "a\nb\nc\nd\ne\nf\ng"')" present
 ## command and stays spared.
 expect_rule "R-192" "bash -c 'echo AA'\"; echo BB\"" present
 expect_rule "R-192" "bash -c 'it'\"'\"'s one'"        absent
+## Value extraction decodes the double-quote escapes, so the resolved program is
+## byte-identical to what the inner shell runs (bodies assembled from fragments so
+## no literal bad-form printf lives in this tracked file):
+##  - A single-quoted literal backslash ('printf "%s\n" foo') is kept, so a
+##    concatenated 2nd statement IS seen -- the false negative this closes.
+##  - The same program alone stays ONE statement -- plain printf is NOT false-flagged.
+##  - A double-quoted '\\' escape ("a\\;b" -> inner 'a\;b', one word) is decoded,
+##    so its ';' is NOT misread as a separator -- the false positive this closes.
+expect_rule "R-192" "bash -c ${sq}printf ${dq}%s${nl}${dq} foo${sq}${dq}${sc} echo bar${dq}" present
+expect_rule "R-192" "bash -c ${sq}printf ${dq}%s${nl}${dq} foo${sq}"                          absent
+expect_rule "R-192" "bash -c ${dq}a${bs}${bs}${sc}b${dq}"                                     absent
 ## Glue is SPARED: a single-command '-c' (direct AND behind a wrapper) -- the
 ## false-positive the inject warned about ('bwrap/timeout bash -c <single>').
 expect_rule "R-192" "bash -c 'touch /run/x'"      absent
