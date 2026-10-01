@@ -12,7 +12,9 @@ Usage: vbox-guestctl <vm> <res | shot PATH | click X Y [button] | move X Y
                              | type TEXT | key HEXSCANCODE...>
 button bitmask: 1=left 2=right 4=middle (0 = release).
 """
+import os
 import sys
+import time
 
 ## vboxapi is imported lazily inside _console so the pure scancode helper stays
 ## importable (and unit-testable) on a host without the VirtualBox bindings.
@@ -39,6 +41,30 @@ _SHIFTED = {
 _SHIFT_MAKE = 0x2a
 _SHIFT_BREAK = 0xaa
 _BREAK_BIT = 0x80
+
+## A button press fired with ZERO delay after the absolute move is DROPPED by the
+## guest at higher resolutions (a plain-EFI / EFI+SB Calamares at the GOP's
+## 1920x1080, rendered by the slow headless llvmpipe): the pointer motion / focus-
+## enter has not propagated when the button goes down, so the FIRST click is
+## silently lost and the page never advances. Dwell after the move, then hold
+## before release, so the press lands on the widget under the pointer. Resolution-
+## independent: at the BIOS 1280x800 it is just a harmless sub-second pause.
+CLICK_SETTLE = float(os.environ.get('VBOX_GUESTCTL_CLICK_SETTLE', '0.3'))
+CLICK_HOLD = float(os.environ.get('VBOX_GUESTCTL_CLICK_HOLD', '0.08'))
+
+
+def perform_pointer(mouse, x, y, do_click, button, *,
+                    settle=CLICK_SETTLE, hold=CLICK_HOLD, sleep=time.sleep):
+    """Move the absolute pointer to (x, y); for a click, dwell after the move so the
+    guest processes the motion BEFORE the press (else the first click is lost at high
+    resolutions), then hold briefly before release. Takes the IMouse + sleep so the
+    sequence is unit-testable without a VM."""
+    mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
+    if do_click:
+        sleep(settle)
+        mouse.putMouseEventAbsolute(x, y, 0, 0, button)
+        sleep(hold)
+        mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
 
 
 def text_scancodes(text):
@@ -133,10 +159,8 @@ def main(argv=None):
             ## 1-based [1..width], so map with +1 (screenshot (0,0) -> guest top-left,
             ## and a 0 edge coord is never pushed out of the valid range).
             gx, gy = args.x + 1, args.y + 1
-            console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, 0)
-            if args.cmd == 'click':
-                console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, args.button)
-                console.mouse.putMouseEventAbsolute(gx, gy, 0, 0, 0)
+            perform_pointer(console.mouse, gx, gy, args.cmd == 'click',
+                            args.button)
             print('%s %d %d' % (args.cmd, args.x, args.y))
         elif args.cmd == 'type':
             send_scancodes(console.keyboard, text_scancodes(args.text))
