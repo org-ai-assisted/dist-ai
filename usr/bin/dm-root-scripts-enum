@@ -301,6 +301,12 @@ def scan_systemd_activation(abs_path, rel_path):
     ## Keys are honored ONLY in the unit's own section ('socket'/'timer'/...);
     ## a stray Exec* in [Install]/[Unit] is ignored by systemd, so a bare one
     ## there must not reset the real section's commands.
+    ## SCOPE (as parse_service_forced_root): a simple case-folded name compare,
+    ## NOT systemd's exact grammar -- a BOM-prefixed or wrong-case header
+    ## ([socket]) is not special-cased. Those never occur in our hand-authored
+    ## units (systemd rejects them too); a crafted unit evading the audit is an
+    ## adversary, outside this tool's AI-accident threat model. Do NOT reimplement
+    ## systemd's section/prefix grammar to chase them.
     primary = ext[1:]
     section = None
     for raw in read_text(abs_path).splitlines():
