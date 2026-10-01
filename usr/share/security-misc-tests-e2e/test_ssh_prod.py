@@ -46,6 +46,16 @@ SERVER_POLICY = os.path.normpath(
 SSH_AUDIT_TIMEOUT = 60
 
 
+def _as_text(data):
+    """Partial output captured on TimeoutExpired is bytes even under text=True, so
+    decode it; render None as empty, keep an already-decoded str as-is."""
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    return data
+
+
 def _scan_host(ssh_audit, host, timeout=SSH_AUDIT_TIMEOUT):
     """Scan one host against the hardened policy. Return a failure description, or
     None on an exact policy match. A timeout (stalled host) is a FAILURE, not a hang."""
@@ -59,7 +69,7 @@ def _scan_host(ssh_audit, host, timeout=SSH_AUDIT_TIMEOUT):
     except subprocess.TimeoutExpired as exc:
         return (
             f"{host}: ssh-audit did not finish within {timeout}s (host stalled):\n"
-            f"{exc.stdout or ''}\n{exc.stderr or ''}"
+            f"{_as_text(exc.stdout)}\n{_as_text(exc.stderr)}"
         )
     if result.returncode != 0:
         return f"{host}:\n{result.stdout}\n{result.stderr}"
@@ -91,7 +101,9 @@ def test_stalled_host_fails_not_hangs(tmp_path):
     outlives a short timeout; asserts a timeout-failure AND bounded wall-clock. No egress
     (the stub ignores its arguments)."""
     stub = tmp_path / "ssh-audit-stub"
-    stub.write_text("#!/bin/sh\nsleep 5\n")
+    ## exec so the sleep REPLACES the shell: run()'s SIGKILL on timeout then reaps the
+    ## sleep directly, leaving no orphaned child behind.
+    stub.write_text("#!/bin/sh\nexec sleep 5\n")
     stub.chmod(0o755)
     start = time.monotonic()
     failure = _scan_host(str(stub), "stalled.example", timeout=1)

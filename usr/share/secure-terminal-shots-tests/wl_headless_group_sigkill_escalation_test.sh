@@ -68,14 +68,22 @@ check() {  ## $1=label $2=ok?(non-empty=pass)
 work="$(mktemp --directory)"
 cleanup() {
    ## Reap anything left: the SUBJECT is what should have reaped the tree, but a pre-fix
-   ## (unescalated) run leaks the TERM-ignoring group, so KILL both the recorded pids AND
-   ## the whole process group so this test never leaks. Never fail the test on cleanup.
+   ## (unescalated) run leaks the TERM-ignoring group, so reap it here too. Never fail on
+   ## cleanup. The CHILD is the setsid group leader, so a group-kill on ITS pid reaps the
+   ## whole group (child + grandchild). The grandchild is NOT a group leader -- a group-kill
+   ## on its pid would hit an unrelated group on PID reuse, so reap it DIRECTLY by pid.
+   if [ -f "${work}/child.pid" ]; then
+      cpid="$(cat -- "${work}/child.pid" 2>/dev/null || true)"
+      if [ -n "${cpid}" ]; then
+         kill -KILL -- -"${cpid}" 2>/dev/null || true
+      fi
+   fi
    for f in "${work}/child.pid" "${work}/grandchild.pid"; do
       if [ -f "${f}" ]; then
          pid="$(cat -- "${f}" 2>/dev/null || true)"
-         [ -n "${pid}" ] || continue
-         kill -KILL -- -"${pid}" 2>/dev/null || true
-         kill -KILL "${pid}" 2>/dev/null || true
+         if [ -n "${pid}" ]; then
+            kill -KILL "${pid}" 2>/dev/null || true
+         fi
       fi
    done
    safe-rm --recursive --force -- "${work}" 2>/dev/null || true
