@@ -109,7 +109,7 @@ def test_guestctl_click_dwells_between_move_and_press():
     ## down), so the page never advances. A click MUST dwell after the move and
     ## hold before release. Canary: the old no-sleep sequence emits no sleep
     ## between move and press and fails the order assertion below.
-    events = []
+    events: list[tuple] = []
 
     class FakeMouse:
         def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
@@ -131,7 +131,7 @@ def test_guestctl_click_dwells_between_move_and_press():
 def test_guestctl_move_does_not_click_or_dwell():
     ## a bare move just positions the absolute pointer: one event, no button,
     ## no dwell (the dwell only matters when a press follows).
-    events = []
+    events: list[tuple] = []
 
     class FakeMouse:
         def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
@@ -142,6 +142,18 @@ def test_guestctl_move_does_not_click_or_dwell():
 
     GC.perform_pointer(FakeMouse(), 5, 6, False, 1, sleep=fake_sleep)
     assert events == [(5, 6, 0)]
+
+
+def test_guestctl_env_float_falls_back_on_bad_value(monkeypatch):
+    ## a malformed tuning knob must NOT crash the tool (res/shot never dwell);
+    ## fall back to the safe default instead of a raw ValueError traceback.
+    ## Canary: a reverted fallback raises here instead of returning the default.
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_SETTLE', 'notanumber')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.3
+    monkeypatch.delenv('VBOX_GUESTCTL_CLICK_SETTLE', raising=False)
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.3
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_SETTLE', '0.5')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.5
 
 
 def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):

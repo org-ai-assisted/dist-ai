@@ -49,8 +49,18 @@ _BREAK_BIT = 0x80
 ## silently lost and the page never advances. Dwell after the move, then hold
 ## before release, so the press lands on the widget under the pointer. Resolution-
 ## independent: at the BIOS 1280x800 it is just a harmless sub-second pause.
-CLICK_SETTLE = float(os.environ.get('VBOX_GUESTCTL_CLICK_SETTLE', '0.3'))
-CLICK_HOLD = float(os.environ.get('VBOX_GUESTCTL_CLICK_HOLD', '0.08'))
+def _env_float(name, default):
+    """A float tuning knob from the environment, falling back to the safe default
+    on a MISSING or MALFORMED value -- a bad VBOX_GUESTCTL_CLICK_* must not crash
+    unrelated subcommands (res/shot never dwell) with a ValueError traceback."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+CLICK_SETTLE = _env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3)
+CLICK_HOLD = _env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08)
 
 
 def perform_pointer(mouse, x, y, do_click, button, *,
@@ -94,7 +104,6 @@ def send_scancodes(keyboard, codes):
     """Inject scancodes PACED in small chunks: one big putScancodes overruns the
     guest input buffer and silently DROPS keys (e.g. 'calamares' -> 'calaares'),
     which corrupts a typed command or passphrase."""
-    import time
     for start in range(0, len(codes), 6):
         keyboard.putScancodes(codes[start:start + 6])
         time.sleep(0.05)
