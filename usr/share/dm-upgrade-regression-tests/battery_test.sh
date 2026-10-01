@@ -46,10 +46,10 @@ assert_eq() {
 
 ## --- configurable stubs -----------------------------------------------------
 EXEC_LOG=''; EXEC_FAIL_NUM=''; EXEC_FLAKY_NUM=''; EXEC_FLAKY_FAILS=0; EXEC_FLAKY_SEEN=0
-REBOOT_COUNT=0; REBOOT_AT=''; VERIFY_FAIL_NUM=''
+REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
 reset() {
    EXEC_LOG=''; EXEC_FAIL_NUM=''; EXEC_FLAKY_NUM=''; EXEC_FLAKY_FAILS=0; EXEC_FLAKY_SEEN=0
-   REBOOT_COUNT=0; REBOOT_AT=''; VERIFY_FAIL_NUM=''
+   REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
 }
 # shellcheck disable=SC2317  ## passed by name to run_release_check_battery
 stub_exec() {   ## NUM SESSION CMD TIMEOUT
@@ -63,7 +63,11 @@ stub_exec() {   ## NUM SESSION CMD TIMEOUT
    return 0
 }
 # shellcheck disable=SC2317  ## passed by name to run_release_check_battery
-stub_reboot() { REBOOT_COUNT=$(( REBOOT_COUNT + 1 )); REBOOT_AT="${EXEC_LOG}"; }
+stub_reboot() {
+   REBOOT_COUNT=$(( REBOOT_COUNT + 1 ))
+   REBOOT_AT="${EXEC_LOG}"
+   return "${REBOOT_RC}"
+}
 # shellcheck disable=SC2317  ## passed by name to run_release_check_battery
 stub_verify() {
    if [ "$1" = "${VERIFY_FAIL_NUM}" ]; then
@@ -109,6 +113,14 @@ rc=0; run_release_check_battery stub_exec stub_reboot stub_verify || rc=$?
 assert_eq 'T4 battery rc'      "${rc}"          '1'
 assert_eq 'T4 failed num'      "${RELEASE_CHECK_FAILED_NUM}" '6'
 assert_eq 'T4 check 6 exec skipped (visual failed first)' "${EXEC_LOG}" '1:user 5:user'
+
+## T5: a failed SYSMAINT reboot fails the battery (not silently discarded) -- the
+## sysmaint checks never run and the failure is attributed to the next check.
+reset; REBOOT_RC=1
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify || rc=$?
+assert_eq 'T5 battery rc'            "${rc}"                       '1'
+assert_eq 'T5 failed at check 2'     "${RELEASE_CHECK_FAILED_NUM}" '2'
+assert_eq 'T5 no sysmaint check ran' "$(count_tok "${EXEC_LOG}" '2:sysmaint')" '0'
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1

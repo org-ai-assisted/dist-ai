@@ -81,6 +81,9 @@ expect_rc "${SETUP_RC}" 'missing --vm is a setup error'              --repositor
 expect_rc "${SETUP_RC}" 'trailing --vm with no value is setup, not a crash' --repository developers --persist --vm
 ## CANARY: a world-readable (0644) passphrase file is refused.
 expect_rc "${SETUP_RC}" 'a 0644 passphrase-file is refused'          --vm v --repository developers --persist --passphrase-file "${pass_bad}"
+## CANARY: a control character in a free-form field is refused (would corrupt JSON).
+expect_rc "${SETUP_RC}" 'control char in --snapshot-name is refused' --vm v --repository developers --persist --snapshot-name "$(printf 'bad\x01name')"
+expect_rc "${SETUP_RC}" 'control char in --vm is refused'           --vm "$(printf 'bad\x01vm')" --repository developers --persist
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1

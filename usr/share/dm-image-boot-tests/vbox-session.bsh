@@ -86,8 +86,11 @@ clean_poweroff() {
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
          | sed -n 's/^VMState="\(.*\)"$/\1/p')"
+      ## Only a REPORTED off-state counts. An empty result means showvminfo failed
+      ## transiently (e.g. lock contention) -- keep polling, never assume "off", so
+      ## the hard-poweroff fallback still fires if the guest really is stuck running.
       case "${state}" in
-         poweroff|aborted|'')
+         poweroff|aborted)
             return 0
             ;;
       esac

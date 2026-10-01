@@ -146,7 +146,13 @@ run_release_check_battery() {
          ## The table only ever steps user -> sysmaint once.
          if [ "${cur_session}" = 'user' ] && [ "${session}" = 'sysmaint' ]; then
             printf '%s\n' "${me}: reboot into the SYSMAINT session for checks 2, 3"
-            "${reboot_sysmaint_fn}"
+            ## A failed reboot (guest never comes back) must fail the battery, not be
+            ## discarded -- else a later reachable probe could mask the reboot failure.
+            if ! "${reboot_sysmaint_fn}"; then
+               RELEASE_CHECK_FAILED_NUM="${num}"
+               RELEASE_CHECK_FAILED_REASON="could not reach the SYSMAINT session (reboot failed) before check ${num}"
+               return 1
+            fi
             cur_session='sysmaint'
          else
             RELEASE_CHECK_FAILED_NUM="${num}"

@@ -190,6 +190,16 @@ validate_args() {
          die "${SETUP_RC}" "--repository ${repository} is not an upgrade source; use stable-proposed-updates (R6) or developers"
          ;;
    esac
+   ## Reject control characters in the operator-supplied free-form fields: a raw
+   ## control byte would corrupt report.json (json_escape handles quote/backslash/
+   ## newline/tab/CR, not the full U+0000-U+001F range), and no real VM / snapshot
+   ## name contains one.
+   if [[ "${vm}" =~ [[:cntrl:]] ]]; then
+      die "${SETUP_RC}" "--vm contains a control character"
+   fi
+   if [ -n "${snapshot_name}" ] && [[ "${snapshot_name}" =~ [[:cntrl:]] ]]; then
+      die "${SETUP_RC}" "--snapshot-name contains a control character"
+   fi
    ## The persist/revert choice is MANDATORY -- no silent default.
    [ -n "${persist_mode}" ] \
       || { usage >&2; die "${SETUP_RC}" "exactly one of --persist or --revert is required"; }
@@ -339,6 +349,16 @@ switch_and_upgrade() {
    return 0
 }
 
+## Accepted boundaries (point-in-time regression gate, not a TOCTOU-hardened release
+## pipeline): (1) the battery's check 3 re-runs upgrade-nonroot to prove the updater
+## still works post-upgrade -- normally a no-op; if upstream publishes NEW packages
+## between switch_and_upgrade and check 3, check 3 applies them and the final state is
+## not independently re-booted (narrow race, out of scope). (2) A GUI/GRUB-OCR driving
+## failure (e.g. select_installed_sysmaint cannot OCR the menu) hard-fails via die --
+## that is a HARNESS/OCR failure, not a false-green; the primary upgrade-bricked-boot
+## signal (guest never returns == wait_guestcontrol_ready) DOES flow to the degraded
+## result below. (3) VM exclusivity is coordinated out-of-band (one VM per session),
+## so require_vm_idle is a courtesy check, not a cross-process lock.
 run_regression() {
    printf '%s\n' "${me}: boot into SYSMAINT to switch suite + upgrade"
    if ! boot_installed sysmaint; then
