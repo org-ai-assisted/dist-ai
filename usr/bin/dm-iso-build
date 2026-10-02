@@ -66,14 +66,20 @@ fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
 
+## Caller's extra args go FIRST so the flags below always win: derivative-maker's
+## parse_cmd is last-flag-wins, so a passed-through --allow-uncommitted true or
+## --sign-and-tag false cannot defeat the hygiene defaults. --allow-unsigned stays
+## refused by derivative-maker itself for AI sessions.
 rc=0
 user_name="${build_user}" \
 dist_build_unlock_dangerous_options=true \
    ./derivative-maker \
+      "$@" \
       --flavor "${flavor}" --arch "${arch}" --target "${target}" \
       --freshness "${freshness}" --type vm --freedom "${freedom}" \
+      --allow-uncommitted false \
       --sign-and-tag true \
-      "${speed[@]}" "$@" || rc="$?"
+      "${speed[@]}" || rc="$?"
 
 if [ "${rc}" = "0" ]; then
    mkdir --parents -- "$(dirname -- "${marker}")"
