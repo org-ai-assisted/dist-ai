@@ -142,6 +142,41 @@ git -C "${repo}" commit -q -m 'hand-edit changelog'
 assert "range catches changelog hand-edit" 1 "changelog" \
    --check --range HEAD~1
 
+## --- 9. --changelog-only --range catches the hand-edit (pre-push hook path) --
+repo="$(new_repo)"
+mkdir -p "${repo}/debian"
+printf 'pkg (1.0) unstable; urgency=low\n' > "${repo}/debian/changelog"
+git -C "${repo}" add debian/changelog
+git -C "${repo}" commit -q -m 'hand-edit changelog'
+assert "changelog-only --range catches hand-edit" 1 "changelog" \
+   --check --range HEAD~1 --changelog-only
+
+## --- 10. --changelog-only passes a range with NO changelog edit -------------
+repo="$(new_repo)"
+mk_clean "${repo}/c.sh"
+git -C "${repo}" add c.sh
+git -C "${repo}" commit -q -m 'add c.sh'
+assert "changelog-only passes a no-changelog range" 0 "" \
+   --check --range HEAD~1 --changelog-only
+
+## --- 11. --changelog-only SKIPS per-file rules -------------------------------
+## A commit adding a style-violating shell file (no strict-mode preamble) FAILs the
+## FULL gate, but --changelog-only must PASS it: only the changelog check runs, so a
+## normal push is never gated on an unrelated file's debt (the whole point of the
+## targeted flag).
+repo="$(new_repo)"
+printf '%s\n' '#!/bin/bash' 'echo hi' > "${repo}/dirty.sh"
+chmod +x "${repo}/dirty.sh"
+git -C "${repo}" add dirty.sh
+git -C "${repo}" commit -q -m 'add dirty.sh'
+assert "full range FAILs on the dirty shell file" 1 "" --check --range HEAD~1
+assert "changelog-only SKIPS per-file rules" 0 "" \
+   --check --range HEAD~1 --changelog-only
+
+## --- 12. --changelog-only without a git mode is a usage error (exit 2) ------
+repo="$(new_repo)"
+assert "changelog-only requires --range/--staged" 2 "" --check --changelog-only
+
 ## --- 9. --paths restricts the staged set ------------------------------------
 ## A bad file and a clean file are both staged; --paths naming only the clean
 ## one must pass, naming the bad one must fail. Guards the narrow-to-nothing
@@ -211,9 +246,8 @@ assert "non-ASCII range message FAILs R-001" 1 "R-001" --check --range HEAD~1
 repo="$(new_repo)"
 mkfifo "${repo}/pipe-tool"
 hang_rc=0
-# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
-timeout --kill-after=5 20 bash -c 'cd "$1" && "$2" --check --range HEAD' _ \
-   "${repo}" "${STYLE}" > /dev/null 2>&1 || hang_rc=$?
+timeout --kill-after=5 20 env --chdir="${repo}" "${STYLE}" --check --range HEAD \
+   > /dev/null 2>&1 || hang_rc=$?
 ## 124 = clean timeout; 137 = SIGKILL after --kill-after (child ignored SIGTERM),
 ## the really-wedged case -- both are a hang, as the .gitattributes tests below.
 if [ "${hang_rc}" -eq 124 ] || [ "${hang_rc}" -eq 137 ]; then
