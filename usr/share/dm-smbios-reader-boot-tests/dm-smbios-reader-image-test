@@ -111,6 +111,20 @@ def firmware_sentinels(firmware):
     ]
 
 
+def resolve_effective_firmware(backend, arch, firmware):
+    """The firmware a leg ACTUALLY boots -- the SINGLE source both the boot arg and
+    the firmware sentinel read, so they cannot disagree. An explicit --firmware wins.
+    Otherwise: vbox is x86-only, so an omitted --firmware always boots legacy BIOS
+    (assertable). qemu boots BIOS only when the arch is EXPLICITLY amd64; an EMPTY
+    arch may be an arm64 host (qemu defaults to the host arch -> edk2 UEFI), so it is
+    left UNASSERTED rather than wrongly claiming bios and failing a valid EFI boot."""
+    if firmware:
+        return firmware
+    if backend == "vbox":
+        return "bios"
+    return "bios" if arch == "amd64" else ""
+
+
 ## Whole-token 'boot-role=sysmaint' in /proc/cmdline. NOT 'grep -w': -w only
 ## checks the chars around the MATCH, so it accepts a longer token that merely
 ## starts with it ('boot-role=sysmaint-canary'), which a caller-controlled
@@ -875,11 +889,11 @@ def start_vbox_backend(args, log):
     sock = os.path.join(tempfile.gettempdir(), "%s.serial.sock" % (vm,))
     up = [vbox, "serial-up", "--vm", vm, "--uart-socket", sock,
           "--smbios-serial", "dm-cmdline=" + payload,
-          ## Default to bios when --firmware is unset, matching dm-smbios-reader-qemu's
-          ## own default so the SAME input boots the SAME firmware on both backends --
-          ## and bios uses the pcbios DMI keys that are known to feed the GRUB reader
-          ## (EFI DMI is a live-server-verify item).
-          "--firmware", args.firmware or "bios"]
+          ## args.firmware is already resolved in main() (amd64 omitted -> bios, the
+          ## single source the firmware sentinel also reads), and vbox is amd64-only,
+          ## so it is always set here -- no second default that could disagree with
+          ## the sentinel.
+          "--firmware", args.firmware]
     up += (["--disk", args.disk] if args.disk else ["--iso", args.iso])
     try:
         rc = subprocess.run(up).returncode
@@ -970,6 +984,12 @@ def main():
         die_setup("python3-pexpect is required (apt-get install python3-pexpect)")
 
     backend = resolve_backend(args, log)
+
+    ## Resolve the EFFECTIVE firmware ONCE (before the boot AND build_check_plan's
+    ## firmware sentinel read it), closing the silent-green where an omitted --firmware
+    ## booted bios on vbox yet skipped the bios sentinel.
+    args.firmware = resolve_effective_firmware(backend, args.arch, args.firmware)
+
     if backend == "vbox":
         child, cleanup = start_vbox_backend(args, log)
     else:
