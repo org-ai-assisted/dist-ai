@@ -84,11 +84,16 @@ make_stub() {
    chmod +x -- "${path}"
 }
 
+make_stub REMOTES  REMOTES_RC
 make_stub SYNC     SYNC_RC
 make_stub REMASTER REMASTER_RC
 make_stub GITSYNC  GITSYNC_RC
 make_stub FSCK     FSCK_RC
 
+## REMOTES is the phase-0 ensure (dm-packaging-helper-script); stubbed so the suite
+## never runs the real remote-add. It only RECORDS its call -- it does NOT add
+## remotes -- so phase 0's VALIDATION runs against the fixture's real remotes below.
+export DM_TIDY_REMOTES_ENSURE="${stubs}/REMOTES"
 export DM_TIDY_SUBMODULE_SYNC="${stubs}/SYNC"
 export DM_TIDY_REMASTER_ALL="${stubs}/REMASTER"
 export DM_TIDY_GIT_SYNC="${stubs}/GITSYNC"
@@ -119,6 +124,15 @@ gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" submodule --quiet add -b ai "file://${fork}" sub
 gitq -C "${super}" commit --quiet -m "add sub"
 gitq -C "${super}/sub" checkout --quiet ai
+
+## Phase-0 validation requires the dm-tidy-critical remotes (org-ai-assisted,
+## ArrayBolt3) on every ai-workflow repo. Add them (URLs are never contacted -- the
+## validation is a local 'git remote get-url' presence check). A case below removes
+## one to prove the phase-0 early-abort fires.
+for repo in "${super}" "${super}/sub"; do
+   gitq -C "${repo}" remote add org-ai-assisted "file://${fork}"
+   gitq -C "${repo}" remote add ArrayBolt3 "file://${fork}"
+done
 
 ## The exact 'top' dm-tidy resolves (so expected log lines match byte-for-byte).
 super_top="$(gitq -C "${super}" rev-parse --show-toplevel)"
@@ -158,8 +172,8 @@ if [ "${tidy_rc}" -eq 0 ]; then
 else
    fail "all-ok run exited ${tidy_rc}; log:<<<$(log_lines)>>>"
 fi
-if [ "$(labels_seen)" = "SYNC,REMASTER,GITSYNC,FSCK" ]; then
-   pass "phases run in order sync -> remaster -> parent-sync -> fsck"
+if [ "$(labels_seen)" = "REMOTES,SYNC,REMASTER,GITSYNC,FSCK" ]; then
+   pass "phases run in order remotes -> sync -> remaster -> parent-sync -> fsck"
 else
    fail "phase order wrong: $(labels_seen)"
 fi
@@ -182,7 +196,7 @@ if [ "${tidy_rc}" -eq 3 ]; then
 else
    fail "blocked sync did not exit 3; got ${tidy_rc}"
 fi
-if [ "$(labels_seen)" = "SYNC,REMASTER,GITSYNC,FSCK" ]; then
+if [ "$(labels_seen)" = "REMOTES,SYNC,REMASTER,GITSYNC,FSCK" ]; then
    pass "a blocked sync does NOT stop the sweep (remaster/parent-sync/fsck still run)"
 else
    fail "blocked sync stopped the sweep: $(labels_seen)"
@@ -195,7 +209,7 @@ if [ "${tidy_rc}" -eq 3 ]; then
 else
    fail "blocked remaster did not exit 3; got ${tidy_rc}"
 fi
-if [ "$(labels_seen)" = "SYNC,REMASTER,GITSYNC,FSCK" ]; then
+if [ "$(labels_seen)" = "REMOTES,SYNC,REMASTER,GITSYNC,FSCK" ]; then
    pass "a blocked remaster does not stop the parent-sync/fsck phases"
 else
    fail "blocked remaster stopped the sweep: $(labels_seen)"
@@ -208,7 +222,7 @@ if [ "${tidy_rc}" -eq 1 ]; then
 else
    fail "errored remaster did not exit 1; got ${tidy_rc}"
 fi
-if [ "$(labels_seen)" = "SYNC,REMASTER,FSCK" ]; then
+if [ "$(labels_seen)" = "REMOTES,SYNC,REMASTER,FSCK" ]; then
    pass "a remaster error ABORTS parent-sync (never pushes on a half-done tree) but still fscks"
 else
    fail "remaster error did not abort parent-sync correctly: $(labels_seen)"
@@ -221,7 +235,7 @@ if [ "${tidy_rc}" -eq 1 ]; then
 else
    fail "structural sync error did not exit 1; got ${tidy_rc}"
 fi
-if [ "$(labels_seen)" = "SYNC,FSCK" ]; then
+if [ "$(labels_seen)" = "REMOTES,SYNC,FSCK" ]; then
    pass "a structural sync error aborts BOTH mutating phases, still fscks"
 else
    fail "structural sync error did not abort correctly: $(labels_seen)"
@@ -257,6 +271,11 @@ if grep --quiet -- "^SYNC --dir ${super_top} --dry-run\$" <<< "${got}" \
    pass "dry-run passes the dry flag to sync/remaster/parent-sync (remaster --dry-run, not --apply)"
 else
    fail "dry-run flags wrong; log:<<<${got}>>>"
+fi
+if grep --quiet -- "^REMOTES --dry-run --batch pkg_git_remotes_add\$" <<< "${got}"; then
+   pass "dry-run passes --dry-run to the phase-0 remote ensure (reports, adds nothing)"
+else
+   fail "dry-run remote-ensure flag wrong; log:<<<${got}>>>"
 fi
 if grep --quiet -- '^REMASTER --apply' <<< "${got}"; then
    fail "dry-run still called remaster with --apply; log:<<<${got}>>>"
@@ -317,8 +336,36 @@ refuse_touches_nothing "non-derivative-maker repo" --dir "${plain}"
 ## 11c. an empty --dir value is a usage error, not a silent cwd run.
 refuse_touches_nothing "empty --dir value" --dir ""
 
+## --- Case 12 (CANARY): phase 0 refuses early on a MISSING expected remote --------
+## Remove a dm-tidy-critical remote from the submodule; phase 0's validation must
+## ABORT before any mutating phase, so a missing remote cannot SILENTLY skip
+## downstream work (e.g. the arraybolt3/trixie merge is gated on the ArrayBolt3
+## remote). On OLD dm-tidy (no phase 0) the mutating phases would run -> this case
+## fails, as a canary must. Only the read-only fsck still runs after the abort.
+gitq -C "${super}/sub" remote remove ArrayBolt3
+run_tidy --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ]; then
+   pass "a missing expected remote makes dm-tidy exit 1"
+else
+   fail "missing remote did not exit 1; got ${tidy_rc}; log:<<<$(log_lines)>>>"
+fi
+if [ "$(labels_seen)" = "REMOTES,FSCK" ]; then
+   pass "a missing remote ABORTS sync/remaster/parent-sync at phase 0 (only read-only fsck runs)"
+else
+   fail "missing remote did not abort the mutating phases: $(labels_seen)"
+fi
+## 12b. the SAME early-abort fires under --dry-run: surface it before any run (the
+## ensure is --dry-run so it adds nothing, leaving the remote genuinely missing).
+run_tidy --dir "${super}" --dry-run
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "REMOTES,FSCK" ]; then
+   pass "dry-run errors early on a missing expected remote (no sync/remaster/parent-sync)"
+else
+   fail "dry-run did not fail early on missing remote; rc=${tidy_rc} labels=$(labels_seen)"
+fi
+gitq -C "${super}/sub" remote add ArrayBolt3 "file://${fork}"
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-tidy orders the phases, exits nonzero on block/error, aborts safely, dry-runs clean, refuses off-ai."
+printf '%s\n' "OK: dm-tidy ensures+validates remotes, orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai."
