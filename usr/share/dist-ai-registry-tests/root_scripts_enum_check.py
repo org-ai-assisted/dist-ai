@@ -126,6 +126,16 @@ def main(argv):
         ("a .timer unit records the service it activates",
          one("systemd-activation", "foo.timer") is not None
          and one("systemd-activation", "foo.timer")["activates"] == "foo-daily.service"),
+        ("a '+'-prefixed socket Exec runs as root -> root_forced_exec, not exec; a bare Exec= reset clears a prior '+'",
+         one("systemd-activation", "forced.socket") is not None
+         and "/usr/bin/socket-forced-root"
+             in one("systemd-activation", "forced.socket")["root_forced_exec"]
+         and "/usr/bin/socket-obsolete-root"
+             not in one("systemd-activation", "forced.socket")["root_forced_exec"]
+         and "/usr/bin/socket-forced-root"
+             not in one("systemd-activation", "forced.socket")["exec"]
+         and "/usr/bin/socket-userdrop"
+             in one("systemd-activation", "forced.socket")["exec"]),
         ("an Accept=yes template socket keeps a single '@' in its service",
          one("systemd-activation", "tmpl@.socket") is not None
          and one("systemd-activation", "tmpl@.socket")["activates"] == "tmpl@.service"),

@@ -137,6 +137,41 @@ def boot_role_sentinel(session):
     )
 
 
+## Release-critical checks (the catastrophic-regression gate; see the parent plan
+## "release-critical checks"). SINGLE SOURCE OF TRUTH for the numbers + names this
+## serial leg can assert; the numbers MUST match dm-calamares-install's numbered
+## run_check battery (a contract test in test_dm_image_test.py enforces no drift).
+## A headless, no-network serial leg covers only these; checks 3 (upgrade-nonroot),
+## 4 (networking) and 6 (GUI login) -- and 0 (install), 7 (LUKS) -- need network, a
+## display or an installer, so they are covered by the VBox path (dm-calamares-install),
+## not here. report_release_summary() states that explicitly so a green serial leg is
+## never read as "all release checks passed".
+RELEASE_CHECKS = {
+    1: "user session boots",
+    2: "sysmaint session boots",
+    5: "CLI login works",
+    8: "systemcheck --leak-tests passes",
+}
+
+## checks this serial leg does NOT run (delegated to dm-calamares-install).
+DELEGATED_CHECKS = (
+    (0, "install"),
+    (3, "upgrade-nonroot"),
+    (4, "networking"),
+    (6, "GUI login"),
+    (7, "LUKS"),
+)
+
+
+def cli_login_check(login_user):
+    """check 5 command: exit 0 iff the session's CLI login yields the EXPECTED
+    identity. Run as the login user (force_root False) through the same
+    non-interactive 'su - <user>' path systemcheck uses, so a login that silently
+    dropped to the wrong account fails. On a headless image this proxies "CLI login
+    works" -- the console is a login-free root debug-shell with no getty to drive."""
+    return 'test "$(id -un)" = %s' % shlex.quote(login_user)
+
+
 def die_setup(message) -> NoReturn:
     print("dm-image-test: %s" % message, file=sys.stderr)
     sys.exit(SETUP)
@@ -294,6 +329,195 @@ def safe_rmtree_workdir(path, log):
     return False
 
 
+def build_check_plan(args):
+    """Build the ordered list of checks to run over the serial shell. PURE: no I/O,
+    so it is unit-testable without qemu (mirrors build_qemu_argv / the sentinel
+    helpers the tests already exercise).
+
+    Returns a list of (command, force_root, want_rc, num) entries:
+      - command: the shell command run on the guest's root serial shell.
+      - force_root: run as root even when --login-user is set (integrity guards +
+        the diagnostic need root; the release-critical functional checks run as the
+        login user).
+      - want_rc: the exit code the command must return, or None to EXEMPT it from
+        the verdict (the always-passing diagnostic).
+      - num: a RELEASE_CHECKS key for a numbered release-critical check, or None for
+        a boot-integrity guard (firmware/hardening) or the diagnostic.
+
+    Order (both paths): the integrity prefix runs FIRST and fails fast, at the top of
+    the serial log -- a leg that booted the wrong session/firmware cannot pass on the
+    wrong combination. 'boot-role' doubles as release check 1 (user) / 2 (sysmaint):
+    the claimed session actually booted.
+    """
+    plan = []
+    ## check 1 (user leg) / check 2 (sysmaint leg): the CLAIMED session booted
+    ## (the injected boot-role whole-token present for sysmaint, absent for user).
+    role_num = 2 if args.session == "sysmaint" else 1
+    plan.append((boot_role_sentinel(args.session), True, 0, role_num))
+    ## firmware actually in effect -- a leg-validity guard, not a release check.
+    for cmd in firmware_sentinels(args.firmware):
+        plan.append((cmd, True, 0, None))
+
+    if args.run is not None:
+        ## A newline in a --run value would submit each line as its own statement,
+        ## so only the LAST line's exit code reaches the sentinel printf -- a failure
+        ## in any earlier line is silently dropped. Fail closed rather than mislead.
+        for command in args.run:
+            if "\n" in command:
+                die_setup("--run command must be a single line (got an embedded"
+                          " newline); pass one --run per command")
+            plan.append((command, False, args.expect_rc, None))
+        return plan
+
+    ## On the live ISO legs, assert the Kicksecure kernel hardening reached
+    ## /proc/cmdline: the live cmdline is assembled by 4310's grub-mkconfig scrape,
+    ## and a regression that drops it boots unhardened. Leg-validity guard (root,
+    ## rc-checked). The disk legs inherit hardening from the installed grub.
+    if args.iso:
+        plan.append((hardening_cmdline_check(), True, 0, None))
+
+    ## check 5 (CLI login): run as the login user; the login must yield the expected
+    ## identity. Placed before systemcheck so a broken login path is isolated from a
+    ## systemcheck failure (both run as the login user).
+    plan.append((cli_login_check(args.login_user), False, 0, 5))
+
+    ## check 8 (systemcheck): the core catastrophic-regression gate. Environment /
+    ## timing checks are skipped via systemcheck's own --skip (NOT an image edit --
+    ## the image and real-user systemcheck are untouched), so a healthy image passes
+    ## DETERMINISTICALLY. None of the skipped checks is an image-integrity property:
+    ##  - check_operating_system: a snapshot-pinned image always has apt updates
+    ##    pending ("packages can be updated") -- freshness, not a boot failure.
+    ##  - check_tor_bootstrap / check_tor_connectivity / check_stream_isolation:
+    ##    live Tor connectivity races Tor's async bootstrap over the CI network and
+    ##    is non-deterministic; Tor's CONFIG is still validated (check_tor_config,
+    ##    check_tor_enabled). Live connectivity belongs in a dedicated network test.
+    ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
+    ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
+    ## debug shell (the automation channel) does not flag check_journal.
+    ## --skip matches the name passed to systemcheck_run_function. The tor
+    ## connectivity tests (incl. the SocksPort "Connectivity Test") run under
+    ## check_tor_connectivity, so THAT is the effective skip token, not
+    ## check_tor_socks_or_trans_port (which matches no run-function). A minimal
+    ## kicksecure-debug ships no tor and no meta package, so those checks and
+    ## check_meta_packages do not apply here.
+    systemcheck_cmd = (
+        "systemcheck --cli --leak-tests --verbose"
+        " --skip check_operating_system"
+        " --skip check_tor_bootstrap"
+        " --skip check_tor_connectivity"
+        " --skip check_tor_socks_port_reachability"
+        " --skip check_stream_isolation"
+        " --skip check_meta_packages"
+        ## check_privilege_escalation_tools runs 'privleapd --check-config',
+        ## which systemcheck fails on ANY output. On a no-tor image privleapd
+        ## prints benign warnings for tor actions whose 'debian-tor' TargetUser
+        ## is absent (exit 0, valid config), so the check reports a
+        ## misconfiguration and systemcheck returns 1 -- failing every boot leg.
+        ## Making privleapd --check-config silent on a valid config was proposed
+        ## (org-ai-assisted privleap PR #5) and REJECTED: the accepted approach
+        ## is to ignore the expected output on the consumer side instead. So
+        ## skip the whole check here (this also drops the leaprun check-privleap
+        ## / check-privleap-environment-variables / check-sudo sub-checks; a
+        ## no-tor boot test accepts that tradeoff).
+        " --skip check_privilege_escalation_tools"
+    )
+    ## Whitelist the expected privleapd journal warnings on a no-tor image:
+    ## upstream privleap (Kicksecure 5af499b) logs a WARNING when it ignores a
+    ## tor action whose 'debian-tor' TargetUser is absent, which otherwise trips
+    ## check_journal (log-checker greps the journal for 'warn'). "' of action '"
+    ## matches only privleap's "'TargetUser'/'TargetGroup' of action '...'"
+    ## target-missing messages.
+    ## This covers check_journal; the separate 'privleapd --check-config'
+    ## systemcheck check is handled by the check_privilege_escalation_tools
+    ## skip above. The privleap-side fix (silent --check-config) was proposed
+    ## and rejected (PR #5), so ignoring the expected privleap output on the
+    ## consumer side -- here and in the skip above -- is the accepted approach.
+    systemcheck_cmd += " --journal-ignore-fixed \"' of action '\""
+    ## No shared folder is attached to the qemu invocation, so vm-config-dist's
+    ## mount-shared cannot mount /mnt/shared and mount logs "wrong fs type, bad
+    ## option, bad superblock". The script already tolerates the failure
+    ## ('|| true'); only the stderr reaches the journal, where check_journal
+    ## reports it and fails every qcow2 leg (the ISO legs do not attempt it).
+    ## Ignored HERE rather than silenced in vm-config-dist: suppressing it in
+    ## the shipped script would also hide a real mount failure on a VM that
+    ## does have a shared folder configured (org-ai-assisted vm-config-dist
+    ## PR #5, closed for that reason). The string names the mount point, so a
+    ## different failing mount is still reported.
+    systemcheck_cmd += " --journal-ignore-fixed \"mount: /mnt/shared: wrong fs type\""
+    ## sdwdate cannot reach Tor on a no-network CI boot, so anondate-get returns
+    ## no time; anondate-set then dies at its empty-result check (before set_date)
+    ## and its errexit trap logs the fixed "Unexpected error (1). No exit code set
+    ## yet" text, which check_journal greps as an error and fails every leg. Same
+    ## no-tor condition the check_tor_* skips above cover. Match that exact
+    ## unset-exit-code text (both the anondate and sdwdate-file-watcher journal
+    ## copies share it) -- NOT a bare exit_code '1', which would also swallow
+    ## anondate-set's deliberate exit_code=1 "error" path.
+    systemcheck_cmd += " --journal-ignore-fixed \"anondate-set: ### END: ### Exiting with exit_code '1' indicating 'Unexpected error (1). No exit code set yet.\""
+    ## Same no-tor condition: with no Tor reachable, anondate-get cannot read a
+    ## Tor certificate lifetime from the (absent) Tor log, so it logs two fixed
+    ## WARNING lines that check_journal greps as warnings and fails every leg.
+    ## Both the anondate and sdwdate-file-watcher journal copies share the exact
+    ## text; match the anondate-get substring so the source prefix does not
+    ## matter. Ignored on the consumer side, like the anondate-set line above --
+    ## silencing it in the shipped anondate would hide a real Tor-cert problem on
+    ## an actual Tor system.
+    systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Could not determine Tor certificate lifetime.\""
+    systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Tor certificate lifetime invalid according to Tor log.\""
+    ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
+    ## so systemd-modules-load.service fails -- expected there, not an image
+    ## defect. Ignore only that one unit, and only for the secureboot legs.
+    if args.firmware == "efi-secureboot":
+        systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
+        ## --ignore-failed-unit filters the failed-units list and the
+        ## system-ready 'degraded' check, but NOT check_journal, which greps
+        ## the journal for 'fail'/'error'. The same unsigned-tirdad failure
+        ## emits journal lines ("Failed to start systemd-modules-load.service",
+        ## systemd-modules-load "Failed to insert module 'tirdad'", modprobe
+        ## "Key was rejected by service") that trip check_journal under
+        ## --verbose. Whitelist just those two literal substrings, and only on
+        ## the secureboot legs, mirroring the --ignore-failed-unit gating.
+        systemcheck_cmd += " --journal-ignore-fixed systemd-modules-load"
+        systemcheck_cmd += " --journal-ignore-fixed \"Key was rejected by service\""
+    plan.append((systemcheck_cmd, False, args.expect_rc, 8))
+
+    ## Diagnostic (exempt from the verdict, num None): name every failed system unit
+    ## AND dump each one's status + boot journal, so a 'degraded' system-ready
+    ## failure shows the culprit AND why it failed, in the serial log. Runs AFTER
+    ## systemcheck so it reads at the end of the log next to the verdict; every
+    ## command runs even after one fails. (Full output is captured regardless:
+    ## qemu's chardev logfile writes a complete, never-truncated serial log.)
+    diag_cmd = (
+        "echo FAILED-UNITS-BEGIN;"
+        " systemctl --no-pager --plain --no-legend --failed || true;"
+        " echo FAILED-UNITS-END;"
+        " systemctl list-units --state=failed --plain --no-legend --no-pager"
+        " | while read -r unit _; do"
+        " [ -n \"$unit\" ] || continue;"
+        " echo \"UNIT-DIAG-BEGIN $unit\";"
+        " systemctl status --no-pager --full \"$unit\" 2>&1 | tail -n 20 || true;"
+        " journalctl -b --no-pager -u \"$unit\" 2>&1 | tail -n 30 || true;"
+        " echo \"UNIT-DIAG-END $unit\";"
+        " done; true")
+    plan.append((diag_cmd, True, None, None))
+    return plan
+
+
+def report_release_summary(args, results, log):
+    """Log the release-critical check verdicts for this leg, then an HONEST line
+    naming the checks a headless no-network serial leg does NOT run (so a green
+    serial summary is never read as "all release-critical checks passed"). `results`
+    maps a RELEASE_CHECKS number to True (PASS) / False (FAIL)."""
+    leg = "%s session, %s" % (args.session, args.firmware or "default firmware")
+    log("dm-image-test: release-critical check summary (%s):" % leg)
+    for num in sorted(results):
+        log("dm-image-test:   check %s (%s): %s"
+            % (num, RELEASE_CHECKS.get(num, "?"),
+               "PASS" if results[num] else "FAIL"))
+    delegated = ", ".join("%s (%s)" % (num, name) for num, name in DELEGATED_CHECKS)
+    log("dm-image-test:   checks %s are covered by dm-calamares-install (VBox path),"
+        " not this headless no-network serial leg" % delegated)
+
+
 def run_checks(child, args, log):
     """Run the checks over the login-free ROOT serial shell that dm-qemu
     --test-console binds to the console (systemd debug-shell, login getty masked).
@@ -367,156 +591,13 @@ def run_checks(child, args, log):
                    % boot_done)
     wait_for(boot_done, args.timeout)
 
-    ## Default check: systemcheck with the environment/timing checks skipped via
-    ## systemcheck's own --skip flag (NOT an image edit -- the image and real-user
-    ## systemcheck are untouched), so a healthy image passes DETERMINISTICALLY.
-    ## None of the skipped checks is an image-integrity property:
-    ##  - check_operating_system: a snapshot-pinned image always has apt updates
-    ##    pending ("packages can be updated") -- freshness, not a boot failure.
-    ##  - check_tor_bootstrap / check_tor_socks_or_trans_port / check_stream_isolation:
-    ##    live Tor connectivity races Tor's async bootstrap over the CI network and
-    ##    is non-deterministic; Tor's CONFIG is still validated (check_tor_config,
-    ##    check_tor_enabled). Live connectivity belongs in a dedicated network test.
-    ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
-    ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
-    ## debug shell (the automation channel) does not flag check_journal.
-    ## Each entry is (command, force_root, want_rc): systemcheck runs as the
-    ## session user (--login-user); the diagnostic always runs as root so its
-    ## journalctl can read system-unit logs (a non-root session may be denied
-    ## them). want_rc is the exit code the command must return, or None to exempt
-    ## it (the always-passing diagnostic); systemcheck uses --expect-rc, the
-    ## boot-integrity sentinels use 0.
-    if args.run is not None:
-        ## A newline in a --run value would submit each line as its own statement,
-        ## so only the LAST line's exit code reaches the sentinel printf -- a failure
-        ## in any earlier line is silently dropped. Fail closed rather than mislead.
-        for command in args.run:
-            if "\n" in command:
-                die_setup("--run command must be a single line (got an embedded"
-                          " newline); pass one --run per command")
-        commands = [(command, False, args.expect_rc) for command in args.run]
-    else:
-        ## --skip matches the name passed to systemcheck_run_function. The tor
-        ## connectivity tests (incl. the SocksPort "Connectivity Test") run under
-        ## check_tor_connectivity, so THAT is the effective skip token, not
-        ## check_tor_socks_or_trans_port (which matches no run-function). A minimal
-        ## kicksecure-debug ships no tor and no meta package, so those checks and
-        ## check_meta_packages do not apply here.
-        systemcheck_cmd = (
-            "systemcheck --cli --leak-tests --verbose"
-            " --skip check_operating_system"
-            " --skip check_tor_bootstrap"
-            " --skip check_tor_connectivity"
-            " --skip check_tor_socks_port_reachability"
-            " --skip check_stream_isolation"
-            " --skip check_meta_packages"
-            ## check_privilege_escalation_tools runs 'privleapd --check-config',
-            ## which systemcheck fails on ANY output. On a no-tor image privleapd
-            ## prints benign warnings for tor actions whose 'debian-tor' TargetUser
-            ## is absent (exit 0, valid config), so the check reports a
-            ## misconfiguration and systemcheck returns 1 -- failing every boot leg.
-            ## Making privleapd --check-config silent on a valid config was proposed
-            ## (org-ai-assisted privleap PR #5) and REJECTED: the accepted approach
-            ## is to ignore the expected output on the consumer side instead. So
-            ## skip the whole check here (this also drops the leaprun check-privleap
-            ## / check-privleap-environment-variables / check-sudo sub-checks; a
-            ## no-tor boot test accepts that tradeoff).
-            " --skip check_privilege_escalation_tools"
-        )
-        ## Whitelist the expected privleapd journal warnings on a no-tor image:
-        ## upstream privleap (Kicksecure 5af499b) logs a WARNING when it ignores a
-        ## tor action whose 'debian-tor' TargetUser is absent, which otherwise trips
-        ## check_journal (log-checker greps the journal for 'warn'). "' of action '"
-        ## matches only privleap's "'TargetUser'/'TargetGroup' of action '...'"
-        ## target-missing messages.
-        ## This covers check_journal; the separate 'privleapd --check-config'
-        ## systemcheck check is handled by the check_privilege_escalation_tools
-        ## skip above. The privleap-side fix (silent --check-config) was proposed
-        ## and rejected (PR #5), so ignoring the expected privleap output on the
-        ## consumer side -- here and in the skip above -- is the accepted approach.
-        systemcheck_cmd += " --journal-ignore-fixed \"' of action '\""
-        ## No shared folder is attached to the qemu invocation, so vm-config-dist's
-        ## mount-shared cannot mount /mnt/shared and mount logs "wrong fs type, bad
-        ## option, bad superblock". The script already tolerates the failure
-        ## ('|| true'); only the stderr reaches the journal, where check_journal
-        ## reports it and fails every qcow2 leg (the ISO legs do not attempt it).
-        ## Ignored HERE rather than silenced in vm-config-dist: suppressing it in
-        ## the shipped script would also hide a real mount failure on a VM that
-        ## does have a shared folder configured (org-ai-assisted vm-config-dist
-        ## PR #5, closed for that reason). The string names the mount point, so a
-        ## different failing mount is still reported.
-        systemcheck_cmd += " --journal-ignore-fixed \"mount: /mnt/shared: wrong fs type\""
-        ## sdwdate cannot reach Tor on a no-network CI boot, so anondate-get returns
-        ## no time; anondate-set then dies at its empty-result check (before set_date)
-        ## and its errexit trap logs the fixed "Unexpected error (1). No exit code set
-        ## yet" text, which check_journal greps as an error and fails every leg. Same
-        ## no-tor condition the check_tor_* skips above cover. Match that exact
-        ## unset-exit-code text (both the anondate and sdwdate-file-watcher journal
-        ## copies share it) -- NOT a bare exit_code '1', which would also swallow
-        ## anondate-set's deliberate exit_code=1 "error" path.
-        systemcheck_cmd += " --journal-ignore-fixed \"anondate-set: ### END: ### Exiting with exit_code '1' indicating 'Unexpected error (1). No exit code set yet.\""
-        ## Same no-tor condition: with no Tor reachable, anondate-get cannot read a
-        ## Tor certificate lifetime from the (absent) Tor log, so it logs two fixed
-        ## WARNING lines that check_journal greps as warnings and fails every leg.
-        ## Both the anondate and sdwdate-file-watcher journal copies share the exact
-        ## text; match the anondate-get substring so the source prefix does not
-        ## matter. Ignored on the consumer side, like the anondate-set line above --
-        ## silencing it in the shipped anondate would hide a real Tor-cert problem on
-        ## an actual Tor system.
-        systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Could not determine Tor certificate lifetime.\""
-        systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Tor certificate lifetime invalid according to Tor log.\""
-        ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
-        ## so systemd-modules-load.service fails -- expected there, not an image
-        ## defect. Ignore only that one unit, and only for the secureboot legs.
-        if args.firmware == "efi-secureboot":
-            systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
-            ## --ignore-failed-unit filters the failed-units list and the
-            ## system-ready 'degraded' check, but NOT check_journal, which greps
-            ## the journal for 'fail'/'error'. The same unsigned-tirdad failure
-            ## emits journal lines ("Failed to start systemd-modules-load.service",
-            ## systemd-modules-load "Failed to insert module 'tirdad'", modprobe
-            ## "Key was rejected by service") that trip check_journal under
-            ## --verbose. Whitelist just those two literal substrings, and only on
-            ## the secureboot legs, mirroring the --ignore-failed-unit gating.
-            systemcheck_cmd += " --journal-ignore-fixed systemd-modules-load"
-            systemcheck_cmd += " --journal-ignore-fixed \"Key was rejected by service\""
-        ## Diagnostic (always passes; exempt from --expect-rc, see the run loop):
-        ## name every failed system unit AND dump each
-        ## one's status + boot journal, so a 'degraded' system-ready failure shows
-        ## the culprit AND why it failed, in the serial log. Runs AFTER systemcheck
-        ## so it reads at the end of the log next to the verdict; dm-image-test runs
-        ## every command even after one fails. (Full output is captured regardless:
-        ## qemu's chardev logfile writes a complete, never-truncated serial log.)
-        diag_cmd = (
-            "echo FAILED-UNITS-BEGIN;"
-            " systemctl --no-pager --plain --no-legend --failed || true;"
-            " echo FAILED-UNITS-END;"
-            " systemctl list-units --state=failed --plain --no-legend --no-pager"
-            " | while read -r unit _; do"
-            " [ -n \"$unit\" ] || continue;"
-            " echo \"UNIT-DIAG-BEGIN $unit\";"
-            " systemctl status --no-pager --full \"$unit\" 2>&1 | tail -n 20 || true;"
-            " journalctl -b --no-pager -u \"$unit\" 2>&1 | tail -n 30 || true;"
-            " echo \"UNIT-DIAG-END $unit\";"
-            " done; true")
-        commands = [(systemcheck_cmd, False, args.expect_rc), (diag_cmd, True, None)]
-        ## On the live ISO legs, assert the Kicksecure kernel hardening reached
-        ## /proc/cmdline: the live cmdline is assembled by 4310's grub-mkconfig
-        ## scrape, and a regression that drops it boots unhardened. Root, rc-checked,
-        ## and first so it reads near the top of the serial log. The disk legs get
-        ## their hardening from the installed grub and are not asserted here.
-        if args.iso:
-            commands.insert(0, (hardening_cmdline_check(), True, 0))
-
-    ## Boot-match sentinels (both check paths): prove the guest actually booted
-    ## the CLAIMED firmware and session, so a leg cannot pass on the wrong
-    ## combination -- an efi-secureboot leg that booted without SB enforcing, or a
-    ## sysmaint leg that fell back to the user session, would otherwise run
-    ## systemcheck happily and report the wrong leg green. Root, rc-checked, and
-    ## prepended so they run FIRST and fail fast, at the top of the serial log.
-    boot_match = [boot_role_sentinel(args.session)]
-    boot_match.extend(firmware_sentinels(args.firmware))
-    commands[0:0] = [(cmd, True, 0) for cmd in boot_match]
+    ## The ordered checks to run (pure; see build_check_plan). Each entry is
+    ## (command, force_root, want_rc, num): systemcheck + the CLI-login check run as
+    ## the login user (--login-user); the integrity guards + the diagnostic run as
+    ## root. want_rc is the exit code the command must return, or None to exempt it
+    ## (the diagnostic). num is a RELEASE_CHECKS key for a numbered release-critical
+    ## check, or None for a boot-integrity guard / the diagnostic.
+    plan = build_check_plan(args)
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
@@ -525,7 +606,9 @@ def run_checks(child, args, log):
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
-    for command, force_root, want_rc in commands:
+    ## num -> PASS(True)/FAIL(False), for the release-critical summary.
+    results = {}
+    for command, force_root, want_rc, num in plan:
         if not force_root and args.login_user and args.login_user != "root":
             ## shlex.quote leaves a bare '-x' unquoted, so 'su - -x -c CMD' would
             ## parse -x as an su OPTION and silently run the command as ROOT instead
@@ -535,6 +618,8 @@ def run_checks(child, args, log):
             if args.login_user.startswith("-"):
                 log("dm-image-test: refusing --login-user %r: a leading '-' would be"
                     " parsed as an su option" % args.login_user)
+                if num is not None:
+                    results[num] = False
                 return FAIL
             payload = "su - %s -c %s" % (shlex.quote(args.login_user),
                                          shlex.quote(command))
@@ -551,7 +636,11 @@ def run_checks(child, args, log):
         match = wait_for(rc_re, args.timeout, regex=True)
         if match is None:
             log("dm-image-test: command timed out or guest died: %s" % command)
-            return FAIL
+            if num is not None:
+                results[num] = False
+            overall = FAIL
+            ## Stop driving a dead/stuck guest; still print the summary below.
+            break
         rc = int(match.group(1))
         ## Drop consumed output so the next command's sentinel is unambiguous.
         accum[0] = accum[0][match.end():]
@@ -559,26 +648,39 @@ def run_checks(child, args, log):
         ## EXEMPT it from the verdict. The diagnostic (None) always exits 0 and only
         ## dumps failed-unit status into the log, so its rc must never flip the
         ## verdict (with --expect-rc 1 a rc=0 diag would otherwise force FAIL even
-        ## when the real check passed). A timed-out/guest-died command still returns
-        ## FAIL above -- only the rc COMPARISON is skipped. systemcheck carries
+        ## when the real check passed). A timed-out/guest-died command still fails
+        ## above -- only the rc COMPARISON is skipped. systemcheck carries
         ## --expect-rc; the boot-integrity sentinels (hardening, firmware, role)
         ## carry 0 so they hold regardless of --expect-rc.
         if want_rc is None:
             log("dm-image-test: diag (rc=%s) %s" % (rc, command))
             continue
-        if rc == want_rc:
+        passed = rc == want_rc
+        if num is not None:
+            ## A numbered release-critical check: report it by number + name so a red
+            ## gate names exactly which guarantee broke (and matches the VBox path's
+            ## 'check N PASS|FAIL' vocabulary).
+            results[num] = passed
+            log("dm-image-test: check %s (%s) %s (rc=%s%s)"
+                % (num, RELEASE_CHECKS.get(num, "?"),
+                   "PASS" if passed else "FAIL", rc,
+                   "" if passed else ", want %s" % want_rc))
+        elif passed:
             log("dm-image-test: OK   (rc=%s) %s" % (rc, command))
         else:
             log("dm-image-test: FAIL (rc=%s, want %s) %s"
                 % (rc, want_rc, command))
+        if not passed:
             overall = FAIL
 
-    ## 4) The verdict is decided; main's finally SIGKILLs qemu. Do NOT send a
-    ##    graceful 'poweroff' first: the live image runs a slow RAM-wipe on
-    ##    shutdown (dracut wipe-ram.sh), and SIGKILLing a qemu that is mid-wipe
-    ##    leaves it terminating for the container init to force-reap on teardown,
-    ##    which surfaces as a spurious non-zero STEP exit even though every check
-    ##    passed. The image is booted with -snapshot, so a hard kill loses nothing.
+    ## 4) Report the release-critical verdicts + the honest coverage line, then the
+    ##    verdict is decided; main's finally SIGKILLs qemu. Do NOT send a graceful
+    ##    'poweroff' first: the live image runs a slow RAM-wipe on shutdown (dracut
+    ##    wipe-ram.sh), and SIGKILLing a qemu that is mid-wipe leaves it terminating
+    ##    for the container init to force-reap on teardown, which surfaces as a
+    ##    spurious non-zero STEP exit even though every check passed. The image is
+    ##    booted with -snapshot, so a hard kill loses nothing.
+    report_release_summary(args, results, log)
     return overall
 
 

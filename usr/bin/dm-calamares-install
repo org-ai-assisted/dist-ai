@@ -85,6 +85,18 @@ fi
 # shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
 source "${gui_drive_lib}"
 
+## The SINGLE source of truth for the numbered release-critical checks, shared with
+## dm-upgrade-regression's R6 upgrade gate. The --checks battery iterates this table
+## with run_check as the OCR executor, so the install gate and the upgrade gate can
+## never disagree about what a release-critical check IS.
+if [ -f "${lib_dir}/../share/dm-image-boot-tests/release-checks.bsh" ]; then
+   release_checks_lib="${lib_dir}/../share/dm-image-boot-tests/release-checks.bsh"
+else
+   release_checks_lib='/usr/share/dm-image-boot-tests/release-checks.bsh'
+fi
+# shellcheck source=./usr/share/dm-image-boot-tests/release-checks.bsh
+source "${release_checks_lib}"
+
 ## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
 ## lands on the default USER session, where install-host refuses (wrong boot role).
@@ -214,6 +226,45 @@ run_check() {
       sleep 10
    done
    die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}
+
+## --- callbacks for the shared release-check battery (release-checks.bsh) ---------
+
+## verify_fn (render-first). Only check 6 has a host-side visual pre-check on this
+## Guest-Additions-less Calamares disk; the other checks are OCR-functional via
+## run_check. check 6 (GUI login works -- screenshot-verified), two signals:
+##  6b (host-side): a screenshot OCRs the rendered desktop/terminal, proving the
+##     graphical session actually PAINTED readable UI. Catches a blank/black screen
+##     or a desktop that never drew (login failed to render), where the 6a process
+##     probe alone would still pass. Does NOT catch a compositor that FROZE after a
+##     valid frame already rendered (the stale frame still OCRs); a true compositor
+##     CRASH is caught by 6a. Tokens are open_terminal's proven set ('[user@...',
+##     localhost, pts/); '[[]user' matches a literal '[' (bare '[user' is an invalid
+##     ERE for the [[ =~ ]] gui_wait_for uses).
+##  6a (in-guest): the labwc compositor process running (run_check 6 'pgrep labwc').
+## 6b runs FIRST so the single 'check 6 PASS' (emitted by run_check) prints only
+## after BOTH hold -- never a premature green.
+# shellcheck disable=SC2317  ## dispatched indirectly by run_release_check_battery
+cal_verify() {
+   case "$1" in
+      6)
+         gui_wait_for 'localhost|pts/|[[]user' 60 'check 6 GUI render (desktop painted)'
+         ;;
+   esac
+}
+
+## exec_fn: run_check is the OCR executor (types the command, polls an OCR marker)
+## and emits the single 'check N PASS'. The boot role implies the session, so the
+## battery's SESSION argument ($2) is not needed here.
+# shellcheck disable=SC2317  ## dispatched indirectly by run_release_check_battery
+cal_exec() {
+   run_check "$1" "$3" "$4"
+}
+
+## reboot callback: into a ready sysmaint session (desktop + terminal) for checks 2, 3.
+# shellcheck disable=SC2317  ## dispatched indirectly by run_release_check_battery
+cal_reboot_sysmaint() {
+   reboot_installed sysmaint
 }
 
 parse_args() {
@@ -418,50 +469,21 @@ main() {
    gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
 
    if [ "${checks}" = 'true' ]; then
-      printf '%s\n' "${me}: release-critical checks on the installed system (USER session)"
+      printf '%s\n' "${me}: release-critical checks on the installed system"
       wait_ready 300
       open_terminal
-      ## check 1: the USER session booted -- past GRUB's default entry, so the sysmaint
-      ## boot-role is ABSENT (the sysmaint reboot below asserts the positive case).
-      run_check 1 '! grep -q boot-role=sysmaint /proc/cmdline' 60 \
-         || die "${FAIL_RC}" "check 1 (user session boot) FAILED"
-      ## check 5: CLI login works -- a shell responds with the logged-in account
-      ## (pipe-free: a typed '|' proved unreliable through the guest keyboard).
-      run_check 5 'whoami' 60 \
-         || die "${FAIL_RC}" "check 5 (CLI login) FAILED"
-      ## check 6: GUI login works -- the wlroots (labwc) compositor is running.
-      run_check 6 'pgrep labwc' 60 \
-         || die "${FAIL_RC}" "check 6 (GUI login) FAILED"
-      ## check 4: networking -- reach the Debian mirror over the system route.
-      run_check 4 'curl --silent --fail --max-time 30 --output /dev/null https://deb.debian.org' 90 \
-         || die "${FAIL_RC}" "check 4 (networking) FAILED"
-      ## check 8: systemcheck -- the core catastrophic-regression gate. --ci tolerates
-      ## the WARNING-class findings expected on a fresh, not-yet-upgraded install
-      ## (pending apt updates); a real ERROR still fails. Short retry covers
-      ## check_system_ready's transient window just after boot.
-      local sc_ok='false' sc_try
-      for sc_try in 1 2 3; do
-         if run_check 8 'systemcheck --cli --leak-tests --ci' 300; then
-            sc_ok='true'
-            break
-         fi
-         printf '%s\n' "${me}: check 8 not clean yet (attempt ${sc_try}); retrying"
-         sleep 45
-      done
-      [ "${sc_ok}" = 'true' ] \
-         || die "${FAIL_RC}" "check 8 (systemcheck) FAILED after retries"
-
-      ## checks 2 + 3 in the SYSMAINT session: the maintenance session boots, and the
-      ## non-root updater works (a broken updater = permanent stranding). Also exercises
-      ## the real upgrade path (R6 precursor).
-      printf '%s\n' "${me}: reboot into SYSMAINT session (checks 2, 3)"
-      reboot_installed sysmaint
-      ## check 2: the SYSMAINT session booted (boot-role=sysmaint present in cmdline).
-      run_check 2 'grep -q boot-role=sysmaint /proc/cmdline' 60 \
-         || die "${FAIL_RC}" "check 2 (sysmaint session boot) FAILED"
-      ## check 3: upgrade-nonroot works.
-      run_check 3 'upgrade-nonroot' 1800 \
-         || die "${FAIL_RC}" "check 3 (upgrade-nonroot) FAILED"
+      ## Iterate the SINGLE shared check table (release-checks.bsh): cal_exec runs
+      ## each check via run_check (OCR, and the sole emitter of 'check N PASS'),
+      ## cal_verify does the render-first check-6 assertion, cal_reboot_sysmaint
+      ## reaches the sysmaint session for checks 2, 3. check-8 retry + check-1/2
+      ## polarity + run order all come from the table, so the install gate and the
+      ## R6 upgrade gate can never diverge about what a check is.
+      ## Tell the shared check table which firmware booted, so check 8 tolerates
+      ## the SecureBoot-only VBox Guest-Additions module failures (release-checks.bsh).
+      ## shellcheck disable=SC2034  ## consumed by the sourced release-checks.bsh, not here
+      RELEASE_CHECK_FIRMWARE="${firmware}"
+      run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
+         || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
    fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"

@@ -103,6 +103,59 @@ def test_guestctl_parser_has_type_stdin():
     assert ns.cmd == 'type-stdin'
 
 
+def test_guestctl_click_dwells_between_move_and_press():
+    ## Regression: a ZERO-delay move->press->release loses the first click at
+    ## 1920x1080 (motion/focus-enter not yet propagated when the button goes
+    ## down), so the page never advances. A click MUST dwell after the move and
+    ## hold before release. Canary: the old no-sleep sequence emits no sleep
+    ## between move and press and fails the order assertion below.
+    events: list[tuple] = []
+
+    class FakeMouse:
+        def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
+            events.append(('mouse', x, y, buttons))
+
+    def fake_sleep(secs):
+        assert secs > 0
+        events.append(('sleep', secs))
+
+    GC.perform_pointer(FakeMouse(), 10, 20, True, 1, sleep=fake_sleep)
+    kinds = [event[0] for event in events]
+    ## move(button 0) -> dwell -> press(button 1) -> hold -> release(button 0)
+    assert kinds == ['mouse', 'sleep', 'mouse', 'sleep', 'mouse']
+    assert events[0] == ('mouse', 10, 20, 0)   # move, no button held
+    assert events[2] == ('mouse', 10, 20, 1)   # press, after the dwell
+    assert events[4] == ('mouse', 10, 20, 0)   # release, after the hold
+
+
+def test_guestctl_move_does_not_click_or_dwell():
+    ## a bare move just positions the absolute pointer: one event, no button,
+    ## no dwell (the dwell only matters when a press follows).
+    events: list[tuple] = []
+
+    class FakeMouse:
+        def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
+            events.append((x, y, buttons))
+
+    def fake_sleep(secs):
+        events.append(('sleep', secs))
+
+    GC.perform_pointer(FakeMouse(), 5, 6, False, 1, sleep=fake_sleep)
+    assert events == [(5, 6, 0)]
+
+
+def test_guestctl_env_float_falls_back_on_bad_value(monkeypatch):
+    ## a malformed tuning knob must NOT crash the tool (res/shot never dwell);
+    ## fall back to the safe default instead of a raw ValueError traceback.
+    ## Canary: a reverted fallback raises here instead of returning the default.
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_SETTLE', 'notanumber')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.3
+    monkeypatch.delenv('VBOX_GUESTCTL_CLICK_SETTLE', raising=False)
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.3
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_SETTLE', '0.5')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.5
+
+
 def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):
     ## a missing VBoxManage raises FileNotFoundError in the finally; cleanup must
     ## swallow it, not crash over the real exit status.

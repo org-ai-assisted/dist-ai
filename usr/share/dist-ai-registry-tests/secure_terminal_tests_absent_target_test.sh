@@ -98,63 +98,112 @@ else
    failures=$((failures + 1))
 fi
 
-## 5) An AUTHORIZED skip of a required (non-pure) suite must make the runner exit 77
-##    (SKIP), not 0 (PASS) -- else a lenient-skipped run is indistinguishable from a
-##    clean full pass by exit code. Force that branch with a stub python3 that skips
-##    only test_fuzz_widget.py (exit 77) and passes every other suite (exit 0), against a
-##    stub checkout so the top guard passes.
-stubdir="$(mktemp -d)"
-fakerepo="$(mktemp -d)"
-## An absent safe-rm is tolerated rather than failing cleanup.
-cleanup_stub() { safe-rm --recursive --force -- "${stubdir}" "${fakerepo}" || true; }
-trap cleanup_stub EXIT
-mkdir -p -- "${fakerepo}/usr/lib/python3/dist-packages/secure_terminal"
-cat > "${stubdir}/python3" <<'STUB'
-#!/bin/sh
-for a in "$@"; do
-   case "${a}" in *test_fuzz_widget.py) exit 77 ;; esac
-done
-exit 0
-STUB
-chmod 0755 -- "${stubdir}/python3"
-rc=0
-env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=${fakerepo}" "PATH=${stubdir}:${PATH}" \
-   "${runner}" >/dev/null 2>&1 || rc="$?"
-if [ "${rc}" -eq 77 ]; then
-   printf 'PASS: an authorized non-pure skip makes the runner exit 77, not a silent 0\n'
-else
-   printf 'FAIL: authorized non-pure skip exited %s, expected 77 (lenient skip hidden as PASS)\n' "${rc}" >&2
-   failures=$((failures + 1))
-fi
+## 5-6) Dynamic skip + fail-closed aggregation, driven through the runner with a stub
+##    python3 on PATH. The suites forced here are DERIVED from the runner's own suites=()
+##    array, NEVER hardcoded: a hardcoded basename silently goes inert the moment the
+##    runner's suite list changes (the exact drift this file must resist). Mirror
+##    registry_test.sh's array scan -- the entries have the fixed quoted form
+##    "${tests_dir}/<name>.py", so matching the literal 'tests_dir}/<name>.py' yields their
+##    basenames in the runner's canonical judging order, skipping the
+##    suites=("${_only_suites[@]}") reassignment and the prose names in comments (which lack
+##    that form). The pattern stays '$'-free on purpose: a literal '${tests_dir}' inside a
+##    single-quoted pattern trips SC2016, which the shellcheck-clean-tree gate fails on.
+runner_suites=()
+while IFS= read -r _entry; do
+   _entry="${_entry##*/}"      ## drop through the last '/': leaves '<name>.py'
+   runner_suites+=("${_entry%.py}")
+done < <(grep -oE 'tests_dir}/[A-Za-z0-9_]+\.py' -- "${runner}")
 
-## 6) FAIL-CLOSED aggregation: a LATER suite's real failure (rc 1) must NOT be masked by an
-##    EARLIER suite's authorized skip (rc 77). The result loop must evaluate every suite and
-##    exit 1, never short-circuit to 77 on the first skip. Stub python3 so test_secure_terminal.py
-##    (first in the array) skips (77) while test_fuzz.py genuinely fails (1); authorized.
-stubdir2="$(mktemp -d)"
-fakerepo2="$(mktemp -d)"
-cleanup_stub2() { safe-rm --recursive --force -- "${stubdir2}" "${fakerepo2}" || true; }
-cleanup_all() { cleanup_stub; cleanup_stub2; }
-trap cleanup_all EXIT
-mkdir -p -- "${fakerepo2}/usr/lib/python3/dist-packages/secure_terminal"
-cat > "${stubdir2}/python3" <<'STUB'
+## Write a stub python3 to $1 that exits a forced code for each named suite and 0 for the
+## rest. Remaining args are <basename>:<code> pairs; the runner invokes a suite as
+## 'python3 -Bsu .../<basename>.py', so each arm anchors on '/<basename>.py'. Values come
+## from the runner's own array (basenames [A-Za-z0-9_], integer codes), safe to embed.
+## Quoted-delimiter heredocs emit the fixed skeleton literally (no SC2016); only the
+## per-suite case arms are interpolated.
+write_stub_python3() {
+   local dest="$1" ; shift
+   {
+      cat <<'STUB'
 #!/bin/sh
 for a in "$@"; do
    case "${a}" in
-      *test_secure_terminal.py) exit 77 ;;
-      *test_fuzz.py) exit 1 ;;
+STUB
+      local pair
+      for pair in "$@"; do
+         printf '      */%s.py) exit %s ;;\n' "${pair%%:*}" "${pair##*:}"
+      done
+      cat <<'STUB'
    esac
 done
 exit 0
 STUB
-chmod 0755 -- "${stubdir2}/python3"
-rc=0
-env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=${fakerepo2}" "PATH=${stubdir2}:${PATH}" \
-   "${runner}" >/dev/null 2>&1 || rc="$?"
-if [ "${rc}" -eq 1 ]; then
-   printf 'PASS: a later suite failure is not masked by an earlier authorized skip (exit 1)\n'
+   } > "${dest}"
+   chmod 0755 -- "${dest}"
+}
+
+## Run the runner authorized against a stub checkout (so the top guard passes) with the
+## stub python3 on PATH; echo its exit code. $1 = stub python3 path, $2 = fake repo root.
+run_with_stub() {
+   local _rc=0
+   env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=$2" "PATH=${1%/*}:${PATH}" \
+      "${runner}" >/dev/null 2>&1 || _rc="$?"
+   printf '%s\n' "${_rc}"
+}
+
+## One cleanup for every temp dir the dynamic tests mint.
+_st_tmpdirs=()
+# shellcheck disable=SC2317  # invoked via the EXIT trap
+_st_cleanup() {
+   [ "${#_st_tmpdirs[@]}" -gt 0 ] || return 0
+   ## An absent safe-rm is tolerated rather than failing cleanup.
+   safe-rm --recursive --force -- "${_st_tmpdirs[@]}" || true
+}
+trap _st_cleanup EXIT
+
+if [ "${#runner_suites[@]}" -eq 0 ]; then
+   ## Anti-drift backstop: the scan matched ZERO suites, so the dynamic assertions below
+   ## would test nothing. Either the array moved to a form this anchor no longer matches,
+   ## or the runner lists none -- either way FATAL, never a silent green.
+   printf 'FAIL: could not read the plain runner suites=() array (format changed? update this test)\n' >&2
+   failures=$((failures + 1))
+fi
+
+## 5) An AUTHORIZED skip of a required (non-pure) suite must make the runner exit 77 (SKIP),
+##    not 0 (PASS) -- else a lenient-skipped run is indistinguishable from a clean full pass
+##    by exit code. Force the FIRST real suite to skip (77) and the rest to pass (0).
+if [ "${#runner_suites[@]}" -ge 1 ]; then
+   stubdir="$(mktemp -d)" ; _st_tmpdirs+=("${stubdir}")
+   fakerepo="$(mktemp -d)" ; _st_tmpdirs+=("${fakerepo}")
+   mkdir -p -- "${fakerepo}/usr/lib/python3/dist-packages/secure_terminal"
+   write_stub_python3 "${stubdir}/python3" "${runner_suites[0]}:77"
+   rc="$(run_with_stub "${stubdir}/python3" "${fakerepo}")"
+   if [ "${rc}" -eq 77 ]; then
+      printf 'PASS: an authorized non-pure skip makes the runner exit 77, not a silent 0\n'
+   else
+      printf 'FAIL: authorized non-pure skip exited %s, expected 77 (lenient skip hidden as PASS)\n' "${rc}" >&2
+      failures=$((failures + 1))
+   fi
+fi
+
+## 6) FAIL-CLOSED aggregation: a LATER suite's real failure (rc 1) must NOT be masked by an
+##    EARLIER suite's authorized skip (rc 77). The result loop must evaluate every suite and
+##    exit 1, never short-circuit to 77 on the first skip. Force the FIRST suite to skip (77)
+##    and the LAST to fail (1), so the skip is judged BEFORE the failure in canonical order.
+##    Needs >=2 suites to express; fewer is a FATAL "cannot prove", never a silent skip.
+if [ "${#runner_suites[@]}" -ge 2 ]; then
+   stubdir="$(mktemp -d)" ; _st_tmpdirs+=("${stubdir}")
+   fakerepo="$(mktemp -d)" ; _st_tmpdirs+=("${fakerepo}")
+   mkdir -p -- "${fakerepo}/usr/lib/python3/dist-packages/secure_terminal"
+   write_stub_python3 "${stubdir}/python3" "${runner_suites[0]}:77" "${runner_suites[-1]}:1"
+   rc="$(run_with_stub "${stubdir}/python3" "${fakerepo}")"
+   if [ "${rc}" -eq 1 ]; then
+      printf 'PASS: a later suite failure is not masked by an earlier authorized skip (exit 1)\n'
+   else
+      printf 'FAIL: fail-closed aggregation exited %s, expected 1 (a real failure was masked)\n' "${rc}" >&2
+      failures=$((failures + 1))
+   fi
 else
-   printf 'FAIL: fail-closed aggregation exited %s, expected 1 (a real failure was masked)\n' "${rc}" >&2
+   printf 'FAIL: fail-closed aggregation needs >=2 runner suites to prove it; runner lists %s (revisit this test)\n' "${#runner_suites[@]}" >&2
    failures=$((failures + 1))
 fi
 

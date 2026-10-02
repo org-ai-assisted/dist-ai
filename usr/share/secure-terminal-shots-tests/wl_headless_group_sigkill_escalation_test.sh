@@ -65,8 +65,27 @@ check() {  ## $1=label $2=ok?(non-empty=pass)
    fi
 }
 
+watchdog=''
+cancel_watchdog() {
+   ## Cancel the bounded-run watchdog. Killing the subshell alone orphans its `sleep` child
+   ## (reparented to init), and the orphan keeps the test's inherited stdout/stderr open until
+   ## it expires -- a caller reading to EOF would then block for the full sleep. So reap the
+   ## sleep child first (while the subshell still parents it), then the subshell. Idempotent.
+   [ -n "${watchdog:-}" ] || return 0
+   wd_kids=()
+   read -r -a wd_kids <<< "$(pgrep -P "${watchdog}" 2>/dev/null || true)" || true
+   for wd_kid in "${wd_kids[@]}"; do
+      kill "${wd_kid}" 2>/dev/null || true
+   done
+   kill "${watchdog}" 2>/dev/null || true
+   wait "${watchdog}" 2>/dev/null || true
+   watchdog=''
+}
+
 work="$(mktemp --directory)"
 cleanup() {
+   ## Reap the bounded-run watchdog (and its sleep child) on any exit path.
+   cancel_watchdog
    ## Reap anything left: the SUBJECT is what should have reaped the tree, but a pre-fix
    ## (unescalated) run leaks the TERM-ignoring group, so reap it here too. Never fail on
    ## cleanup. The CHILD is the setsid group leader, so a group-kill on ITS pid reaps the
@@ -150,8 +169,7 @@ kill -TERM "${runner}" 2>/dev/null || true
 wait "${runner}" 2>/dev/null && rc=0 || rc="$?"
 elapsed="$(( SECONDS - start ))"
 
-kill "${watchdog}" 2>/dev/null || true
-wait "${watchdog}" 2>/dev/null || true
+cancel_watchdog
 
 ## Poll for the whole TERM-ignoring group to die (bounded): cleanup sends group TERM (ignored),
 ## waits a brief grace, then escalates to group SIGKILL. proc_dead (from proc-lib.bash) counts a

@@ -866,7 +866,7 @@ dist_build_one_parse_cmd ()
                     printf '%s\n' "${red}${bold}ERROR: --function may not be empty.${reset}";
                     exit 1;
                 else
-                    export FUNCTION="${2:-}";
+                    FUNCTION="${2:-}";
                     true "${cyan}INFO: --function set to ${FUNCTION}${reset}";
                 fi;
                 shift 2

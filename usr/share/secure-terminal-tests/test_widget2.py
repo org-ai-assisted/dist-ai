@@ -463,6 +463,28 @@ ok(abs(_min40 - _min80) <= 2,
    % (_min40, _min80))
 _mbar.deleteLater()
 
+# A SHORT label must stay FULL even when its tab ALSO shows the bell + activity markers (a busy
+# session tab): _paint_content draws those markers left of the close button, shrinking the
+# label's draw area, so without reserving them a short name middle-elides ('dev778' -> 'dev...').
+# Assert the reservation behaviourally on a bare bar (no close button -- super()'s close-button
+# reservation and _paint_content's close-button subtraction cancel, so this is representative of
+# the closable tab too): the label area left after the left chrome + pad + BOTH markers still
+# fits the full DemiBold "N  label". Mirrors _paint_content's avail math. Canary: drop markers_w
+# from tabSizeHint and avail no longer fits the label.
+from PyQt6.QtGui import QFont as _QFb, QFontMetrics as _QFMb   # noqa: E402
+_eb = SecureTabBar()
+_eb.addTab('dev778')
+_ef = _QFb(_eb.font()); _ef.setWeight(_QFb.Weight.DemiBold)
+_efm = _QFMb(_ef)
+_etext = '%d  %s' % (1, 'dev778')
+_eleft = 2 + _eb._ACCENT_W + _eb._PAD + _eb._GLYPH + 5          # _paint_content left chrome (x)
+_eright = _eb._PAD + 2 * (_eb._GLYPH + 4)                      # pad + bell + activity markers
+_eavail = _eb.tabSizeHint(0).width() - _eleft - _eright
+ok(_eavail >= _efm.horizontalAdvance(_etext),
+   'short tab reserves room for the DemiBold label even with the bell + activity markers '
+   '(avail %d >= label %d), so "dev778" never elides' % (_eavail, _efm.horizontalAdvance(_etext)))
+_eb.deleteLater()
+
 # GRID mode is NOT reflowed on resize (SETTLED): rebuilding a grid tab under a LIVE foreground
 # program (claude/tmux -- a full-canvas TUI that repaints on SIGWINCH) would interleave the
 # rebuilt frame with the program's ongoing cursor-addressed output and CORRUPT the buffer. A
@@ -3651,6 +3673,14 @@ _ittip.show_for(win, 'x', 100, 'dark')
 ok(_TIPC['dark'][0] in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
 _ittip.show_for(win, 'x', 100, 'light')
 ok(_TIPC['light'][0] in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
+# The tip is override-redirect (BypassWindowManagerHint) so the window manager cannot
+# RE-PLACE it: a WM that positions a managed Tool window under the pointer would drop the
+# tip ONTO the hovered widget (the close button / review-bar Paste button) and cover it,
+# overriding _place's computed clear position. Only the X11 flag keeps the WM out of the
+# way; the placement MATH is verified separately below. Canary: drop
+# BypassWindowManagerHint from InfoTip.__init__ and this fails.
+ok(bool(_ittip.windowFlags() & Qt.WindowType.BypassWindowManagerHint),
+   'InfoTip: override-redirect so the WM cannot re-place it over the source it describes')
 # Placement (below-by-preference / flip-above / clamp) is tested via the PURE _placement
 # helper with synthetic source + screen rects. A headless Wayland compositor cannot position
 # or query the absolute geometry of a standalone top-level, so the old real-window placement
@@ -7546,16 +7576,24 @@ eq(_fbar.tab_lines(_ffi)['ptitle'], 'ATTACK title', 'title shows on line 2 while
 _ffw.set_allow_title(False)
 eq(_fbar.tab_lines(_ffi)['ptitle'], '', "'/title off' clears the line-2 title immediately")
 
-# A: tabSizeHint must reserve the painted number-prefix width ("N  ") -- omitting it
-# elided short labels ('shell' -> '1  s...'). Canary: the width my override adds over
-# the base must include the prefix width (fails on the pre-fix code that left it out).
+# A: tabSizeHint must reserve everything _paint_content draws around the label, or a short
+# label elides ('shell' -> '1  s...'): the number prefix ("N  ") + accent + lock glyph, the
+# label's DemiBold width (super() measured the bare tabText in REGULAR; the label paints in
+# DemiBold, wider), AND -- left of the close button -- the bell + activity markers (so a busy
+# session tab's short name is not squeezed). Canary: drop any term from tabSizeHint and the
+# delta no longer matches (the pre-fix code omitted the markers + DemiBold excess -> elision).
 _ffw.tabs.setTabText(_ffi, 'shell')
 _f1 = _QF(_fbar.font()); _f1.setWeight(_QF.Weight.DemiBold)
 _prefix_w = _QFM(_f1).horizontalAdvance('%d  ' % (_ffi + 1))
+_label_ff = _fbar.tabText(_ffi)
+_demibold_excess = max(0, _QFM(_f1).horizontalAdvance(_label_ff)
+                       - _QFM(_fbar.font()).horizontalAdvance(_label_ff))
+_markers_w = 2 * (_STB._GLYPH + 4)
 _base_w = _QTabBar.tabSizeHint(_fbar, _ffi).width()    # unbound base implementation
 _mine_w = _fbar.tabSizeHint(_ffi).width()
-eq(_mine_w - _base_w, _STB._ACCENT_W + _STB._PAD + _STB._GLYPH + 4 + _prefix_w,
-   'tabSizeHint adds the number-prefix width (was omitted, causing label elision)')
+eq(_mine_w - _base_w,
+   _STB._ACCENT_W + _STB._PAD + _STB._GLYPH + 4 + _prefix_w + _demibold_excess + _markers_w,
+   'tabSizeHint reserves prefix + DemiBold label + bell/activity markers (no short-label elide)')
 
 # B + C: the bell marker actually RENDERS, and does NOT paint under the close button.
 # A no-crash grab().isNull() + a geometry-only check cannot catch a marker painted in
