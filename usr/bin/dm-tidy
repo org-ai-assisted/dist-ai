@@ -73,13 +73,24 @@ GIT_SYNC_CMD="${DM_TIDY_GIT_SYNC:-dm-git-sync}"
 ## drive a clean/corrupt verdict without a real object store.
 FSCK_CMD="${DM_TIDY_FSCK:-}"
 
-## Phase 0 ensures the canonical git remotes exist (dm-packaging-helper-script owns
-## the per-repo remote URLs; its pkg_git_remotes_add is idempotent and local-only)
-## then validates the dm-tidy-critical ones. A MISSING remote otherwise SILENTLY
-## skips downstream work -- e.g. the mandatory arraybolt3/trixie merge is gated on
-## the ArrayBolt3 remote, so without it a trusted-contributor fix is never absorbed
-## and the run still reports clean.
+## Phase 0 validates that the dm-tidy-critical git remotes exist (a MISSING remote
+## otherwise SILENTLY skips downstream work -- e.g. the mandatory arraybolt3/trixie
+## merge is gated on the ArrayBolt3 remote, so without it a trusted-contributor fix
+## is never absorbed and the run still reports clean), and ENSURES them via
+## REMOTES_ENSURE_CMD when -- and only when -- that can be done safely.
+##
+## CAUTION: the ensure is NOT the idempotent, local-only add it looks like.
+## pkg_git_remotes_add runs 'git remote rm origin' then re-adds the canonical
+## remotes across every repo (a destructive rewrite), and it takes NO target dir --
+## it ONLY ever acts on its own hardcoded tree (REMOTES_TARGET_TREE). So it is
+## invoked ONLY when 'top' IS that tree; pointed at any other checkout it would
+## destructively rewrite REMOTES_TARGET_TREE (NOT 'top') while we validate 'top' --
+## wrong-tree mutation plus a false green. For any other 'top', phase 0 validates only.
 REMOTES_ENSURE_CMD="${DM_TIDY_REMOTES_ENSURE:-dm-packaging-helper-script}"
+## The tree REMOTES_ENSURE_CMD hardcodes as its root (dm-packaging-helper-script's
+## own '## XXX: hardcoded path'). Coupled to that helper -- keep in sync. HOME is the
+## seam the regression test overrides to point this at a throwaway checkout.
+REMOTES_TARGET_TREE="${HOME}/derivative-maker"
 FORK_REMOTE="org-ai-assisted"
 ## Named remotes whose ABSENCE breaks a downstream phase. The FULL canonical set is
 ## ensured by REMOTES_ENSURE_CMD; these are the ones dm-tidy validates directly.
@@ -183,17 +194,30 @@ record() {
    step_results+=( "$(printf '%s\t%s' "$1" "$2")" )
 }
 
-## Submodule paths from the parent's .gitmodules (declaration order). Read the
-## config, NOT 'git submodule foreach' (which aborts at the first broken submodule
-## and hides the rest).
-submodule_paths() {
-   ## '-z': NUL-separated records, each "<key>\n<value>"; print the value. A lone
-   ## 'sed' split on the first space garbles any submodule whose name/path contains
-   ## whitespace -- which would then fail the on-disk check and be SILENTLY skipped
-   ## from validation, the exact silent-skip phase 0 exists to prevent.
-   local record
-   git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null \
-      | while IFS= read -r -d '' record; do printf '%s\n' "${record#*$'\n'}" ; done
+## Submodule paths from the parent's .gitmodules (declaration order), into the global
+## array submodule_path_list -- NUL-safe END TO END so a path containing whitespace OR
+## a newline survives intact (splitting on a space or newline garbles such a path,
+## which then fails the on-disk check and is SILENTLY skipped -- the exact silent-skip
+## phase 0 exists to prevent). Read the config, NOT 'git submodule foreach' (which
+## aborts at the first broken submodule and hides the rest).
+##
+## Returns nonzero ONLY on a genuine .gitmodules parse/access error -- that MUST abort,
+## never be swallowed as "no submodules" (which would validate ZERO submodules and then
+## report clean). A MISSING .gitmodules is the legitimate no-submodule case (empty, ok).
+submodule_path_list=()
+read_submodule_paths() {
+   submodule_path_list=()
+   [ -f "${top}/.gitmodules" ] || return 0
+   ## Probe parseability first: 'git config --list' exits 0 on a valid file (even an
+   ## empty one) and fatal (>1) on a malformed one, so a real error is told apart from
+   ## the no-matching-keys case the read below ignores safely.
+   local probe_rc=0 record
+   git -C "${top}" config -z -f "${top}/.gitmodules" --list >/dev/null 2>&1 || probe_rc="$?"
+   [ "${probe_rc}" -le 1 ] || return "${probe_rc}"
+   ## '-z': NUL-separated records, each "<key>\n<value>"; keep the value (the path).
+   while IFS= read -r -d '' record; do
+      submodule_path_list+=( "${record#*$'\n'}" )
+   done < <( git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null )
 }
 
 ## Append a line to the nameref array for every EXPECTED_REMOTE missing from <repo>,
@@ -211,32 +235,49 @@ validate_repo_remotes() {
    done
 }
 
-## Phase 0: ensure + validate git remotes. ENSURE (idempotent, local-only) adds the
-## canonical remotes via REMOTES_ENSURE_CMD, which owns the URLs. VALIDATE then
-## refuses early if a dm-tidy-critical remote is absent from the parent or any
-## ai-workflow submodule. On --dry-run the ensure only REPORTS, so a still-missing
-## remote makes validation ABORT here -- surfacing it before any mutation instead of
-## letting a downstream phase silently skip (e.g. the gated arraybolt3/trixie merge).
+## Phase 0: ensure + validate git remotes. ENSURE (a DESTRUCTIVE canonical-remote
+## rewrite -- see the CAUTION at REMOTES_ENSURE_CMD) runs ONLY when 'top' is the tree
+## REMOTES_ENSURE_CMD acts on; otherwise it is SKIPPED so a 'top' pointed elsewhere is
+## never mutated. VALIDATE then refuses early if a dm-tidy-critical remote is absent
+## from the parent or any ai-workflow submodule. On --dry-run the ensure (when run)
+## only REPORTS, so a still-missing remote makes validation ABORT here -- surfacing it
+## before any mutation instead of letting a downstream phase silently skip (e.g. the
+## gated arraybolt3/trixie merge).
 phase_remotes() {
-   local flag=() rc=0 path
-   [ "${dry_run}" = "true" ] && flag=( --dry-run )
+   local flag=() rc=0 path top_real tree_real
    log ">>> [1/5] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
-   "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
-   if [ "${rc}" -ne 0 ]; then
-      record "1 remotes" "ERROR (ensure exit ${rc})"
+   ## Run the DESTRUCTIVE ensure only when 'top' IS the tree REMOTES_ENSURE_CMD acts
+   ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree.
+   top_real="$( realpath --canonicalize-missing -- "${top}" 2>/dev/null || printf '%s' "${top}" )"
+   tree_real="$( realpath --canonicalize-missing -- "${REMOTES_TARGET_TREE}" 2>/dev/null || printf '%s' "${REMOTES_TARGET_TREE}" )"
+   if [ "${top_real}" = "${tree_real}" ]; then
+      [ "${dry_run}" = "true" ] && flag=( --dry-run )
+      "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
+      if [ "${rc}" -ne 0 ]; then
+         record "1 remotes" "ERROR (ensure exit ${rc})"
+         any_error="true" ; aborted="true"
+         return 0
+      fi
+   else
+      log "remote ensure SKIPPED: '${top}' is not the tree ${REMOTES_ENSURE_CMD##*/} operates on (${REMOTES_TARGET_TREE}); validating only, mutating nothing."
+   fi
+   local missing=() sub_rc=0
+   read_submodule_paths || sub_rc="$?"
+   if [ "${sub_rc}" -ne 0 ]; then
+      record "1 remotes" "ERROR (cannot parse '${top}/.gitmodules')"
       any_error="true" ; aborted="true"
+      printf '%s\n' "${0##*/}: failed to parse '${top}/.gitmodules' -- refusing to validate remotes against an incomplete submodule list." >&2
       return 0
    fi
-   local missing=()
    validate_repo_remotes "${top}" "(parent)" missing
-   while IFS= read -r path; do
+   for path in "${submodule_path_list[@]}"; do
       [ -n "${path}" ] || continue
       validate_repo_remotes "${top}/${path}" "${path}" missing
-   done < <(submodule_paths)
+   done
    if [ "${#missing[@]}" -gt 0 ]; then
       record "1 remotes" "ERROR (missing expected remotes)"
       any_error="true" ; aborted="true"
-      printf '%s\n' "${0##*/}: missing expected git remotes (run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' to add them):" >&2
+      printf '%s\n' "${0##*/}: missing expected git remotes (add them on the repo(s) below, or run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' from '${REMOTES_TARGET_TREE}'):" >&2
       printf '  %s\n' "${missing[@]}" >&2
       return 0
    fi

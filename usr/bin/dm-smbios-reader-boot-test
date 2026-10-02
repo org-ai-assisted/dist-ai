@@ -38,6 +38,7 @@ session="user"
 login_user=""
 login_pass=""
 serial_log=""
+backend="auto"
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --image)
@@ -73,6 +74,11 @@ while [ "$#" -gt 0 ]; do
       --serial-log)
          [ "$#" -ge 2 ] || { printf '%s\n' "${BASH_SOURCE[0]}: --serial-log requires a value" >&2 ; exit 2 ; }
          serial_log="$2"
+         shift 2
+         ;;
+      --backend)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${BASH_SOURCE[0]}: --backend requires a value" >&2 ; exit 2 ; }
+         backend="$2"
          shift 2
          ;;
       *)
@@ -115,22 +121,35 @@ source "${helper_scripts_base}/usr/libexec/helper-scripts/package_installed_chec
 ## firmware for an architecture it never touches. On a host without them that
 ## forced an apt round-trip (and, where apt cannot verify a repository, an
 ## outright failure) to install packages the run would not use.
-boot_test_packages=( qemu-utils python3-pexpect python3-pytest xorriso imagemagick )
-case "${arch}" in
-   amd64)
-      ## SeaBIOS ships with qemu-system-x86; ovmf provides both the plain and the
-      ## Secure-Boot OVMF firmware.
-      boot_test_packages+=( qemu-system-x86 ovmf )
-      ;;
-   arm64)
-      ## arm64 already boots edk2 UEFI; qemu-efi-aarch64 provides it.
-      boot_test_packages+=( qemu-system-arm qemu-efi-aarch64 )
-      ;;
-   *)
-      printf '%s\n' "${BASH_SOURCE[0]}: unsupported --arch '${arch}'" >&2
+## python3-pexpect drives the serial login conversation (BOTH backends); python3-pytest
+## runs the image-free regression suites the wrapper always executes.
+boot_test_packages=( python3-pexpect python3-pytest )
+if [ "${arch}" != 'amd64' ] && [ "${arch}" != 'arm64' ]; then
+   printf '%s\n' "${BASH_SOURCE[0]}: unsupported --arch '${arch}'" >&2
+   exit 2
+fi
+if [ "${backend}" = 'vbox' ]; then
+   ## VBox is pre-provisioned on the image-test server (see the vbox-image-testing
+   ## skill), never apt-installed here -- require it LOUDLY (hard dependency, not a
+   ## skip) and install no qemu runtime.
+   if ! type -P VBoxManage >/dev/null 2>&1; then
+      printf '%s\n' "${BASH_SOURCE[0]}: --backend vbox needs VBoxManage (install VirtualBox; see the vbox-image-testing skill); a hard dependency, not a skip." >&2
       exit 2
-      ;;
-esac
+   fi
+else
+   ## qemu / auto: the qemu runtime. SeaBIOS ships with qemu-system-x86; ovmf gives
+   ## the plain + Secure-Boot OVMF firmware; qemu-efi-aarch64 gives arm64 edk2;
+   ## xorriso + imagemagick handle ISO/media. Only what THIS --arch needs.
+   boot_test_packages+=( qemu-utils xorriso imagemagick )
+   case "${arch}" in
+      amd64)
+         boot_test_packages+=( qemu-system-x86 ovmf )
+         ;;
+      arm64)
+         boot_test_packages+=( qemu-system-arm qemu-efi-aarch64 )
+         ;;
+   esac
+fi
 boot_test_missing=()
 for boot_test_package in "${boot_test_packages[@]}"; do
    pkg_installed "${boot_test_package}" || boot_test_missing+=( "${boot_test_package}" )
@@ -143,7 +162,9 @@ else
    ## Plain apt-get, not the helper-scripts apt-get-noninteractive wrapper: this
    ## runs in the derivative-maker build container where that wrapper is not on
    ## sudo's PATH (and would itself source helper-scripts libs absent there).
+   ## style-ok: allow-apt-get -- deliberate plain apt-get (wrapper unavailable here)
    sudo --non-interactive -- env DEBIAN_FRONTEND=noninteractive apt-get update
+   ## style-ok: allow-apt-get -- deliberate plain apt-get (wrapper unavailable here)
    sudo --non-interactive -- env DEBIAN_FRONTEND=noninteractive apt-get install \
       --yes --no-install-recommends -- "${boot_test_missing[@]}"
 fi
@@ -211,6 +232,7 @@ esac
 [ -n "${login_user}" ] || login_user="${session}"
 test_args+=(
    --arch "${arch}"
+   --backend "${backend}"
    --session "${session}"
    --login-user "${login_user}"
 )

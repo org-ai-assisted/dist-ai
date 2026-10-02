@@ -69,10 +69,9 @@ if ! type -P systemd-analyze >/dev/null; then
    exit 1
 fi
 
-install_file="${repo}/debian/tirdad-dkms.install"
 service_file="${repo}/debian/tirdad-dkms.tirdad-load.service"
+rules_file="${repo}/debian/rules"
 modprobe_conf="${repo}/debian/30-tirdad.conf"
-modules_load_conf="${repo}/debian/30_tirdad.conf"
 
 pass_count=0
 fail_count=0
@@ -85,18 +84,72 @@ fail() {
    printf '%s\n' "FAIL: $1"
 }
 
-## --- 1. The strict modules-load.d mechanism is GONE ---
-## This is the exact packaging that degrades systemd under Secure Boot.
-if [ -e "${modules_load_conf}" ]; then
-   fail "debian/30_tirdad.conf still present -- the strict modules-load.d entry degrades systemd-modules-load under Secure Boot"
+## --- helpers -----------------------------------------------------------------
+
+## Non-comment, non-blank install lines across ALL binary packages' .install
+## files (tirdad AND tirdad-dkms): debhelper's filedoublearray drops lines whose
+## first non-space char is '#', so a comment mentioning a path installs nothing.
+## Scanning every *.install closes the "other binary re-ships the strict loader"
+## gap.
+install_lines() {
+   local f
+   for f in "${repo}"/debian/*.install; do
+      [ -f "${f}" ] || continue
+      sed -e 's/^[[:space:]]*//' -e '/^#/d' -e '/^[[:space:]]*$/d' "${f}"
+   done
+}
+
+## Body of a single [Section] in a unit file (lines until the next [Header]).
+section_body() {
+   awk -v want="$2" '
+      /^[[:space:]]*\[/ {
+         h=$0; sub(/^[[:space:]]*\[/,"",h); sub(/\][[:space:]]*$/,"",h)
+         insec=(h==want); next
+      }
+      insec { print }
+   ' "$1"
+}
+
+## True iff, within <section>, some <key>= line lists <token> as a whole
+## whitespace-separated value (systemd allows several units per directive).
+## Literal compare, so 'sysinit.target' never matches 'sysinit-target' and the
+## directive must sit in the RIGHT section (a 'Before=' in [Install] is ignored
+## by systemd and must not satisfy the check).
+directive_has_token() {
+   local file="$1" section="$2" key="$3" token="$4"
+   section_body "${file}" "${section}" | awk -v key="${key}" -v tok="${token}" '
+      { line=$0; sub(/^[[:space:]]+/,"",line)
+        eq=index(line,"="); if(eq==0) next
+        k=substr(line,1,eq-1); sub(/[[:space:]]+$/,"",k); if(k!=key) next
+        v=substr(line,eq+1); n=split(v,a,/[[:space:]]+/)
+        for(i=1;i<=n;i++) if(a[i]==tok) found=1 }
+      END{ exit found?0:1 }'
+}
+
+## Collected once; here-strings below avoid a quiet grep on a pipe (R-161).
+install_out="$(install_lines)"
+
+## --- 1. The strict modules-load.d mechanism is GONE (all binary packages) ---
+## Both the source config and any install INTO modules-load.d, across every
+## binary, are the exact packaging that degrades systemd-modules-load under SB.
+## nullglob drops a non-matching WILDCARD, but a literal path with no wildcard
+## (30_tirdad.conf) survives even when absent -- so test each candidate with -e.
+shopt -s nullglob
+stale_modules_load=()
+for cand in "${repo}"/debian/*modules-load*.conf "${repo}"/debian/30_tirdad.conf; do
+   [ -e "${cand}" ] && stale_modules_load+=( "${cand}" )
+done
+shopt -u nullglob
+if [ "${#stale_modules_load[@]}" -ne 0 ]; then
+   fail "a strict modules-load.d source config is still present (${stale_modules_load[*]##*/}) -- it degrades systemd-modules-load under Secure Boot"
 else
-   pass 'no debian/30_tirdad.conf (strict modules-load.d config removed)'
+   pass 'no strict modules-load.d source config in debian/'
 fi
 
-if grep --quiet --fixed-strings -- 'modules-load.d' "${install_file}"; then
-   fail "debian/tirdad-dkms.install still installs into modules-load.d -- the strict loader must be gone"
+if grep --quiet --fixed-strings -- 'modules-load.d' <<< "${install_out}"; then
+   fail "a debian/*.install still ships into modules-load.d -- the strict loader must be gone from every binary package"
 else
-   pass 'debian/tirdad-dkms.install installs nothing into modules-load.d'
+   pass 'no debian/*.install ships anything into modules-load.d'
 fi
 
 ## --- 2. The tolerant load service is shipped ---
@@ -110,54 +163,123 @@ else
    exit
 fi
 
-## --- 3. The modprobe is failure-TOLERANT (leading "-") ---
-## Match an ExecStart that runs modprobe for tirdad with the "-" prefix. A plain
-## "ExecStart=/sbin/modprobe tirdad" (no "-") would fail the unit on Secure Boot
-## rejection -- the regression this guards against.
-exec_line="$(grep -E '^\s*ExecStart=' "${service_file}" || true)"
-if grep --extended-regexp --quiet '^\s*ExecStart=-[^[:space:]]*modprobe[[:space:]]+tirdad' <<< "${exec_line}"; then
-   pass 'ExecStart uses the failure-tolerant "-" prefix on modprobe tirdad'
+## --- 2b. The packaging actually INSTALLS the unit ---
+## The unit is named debian/<binpkg>.<name>.service. dh_installsystemd ignores
+## that form unless invoked with --name <name>: without it, it only looks for
+## debian/<binpkg>.service and ships NOTHING, silently leaving no boot-time load
+## mechanism. So shipping the file in debian/ is NOT enough -- the install
+## mechanism must reference it. Accept either the dh_installsystemd --name hook
+## (derived from the unit's own filename) or an explicit .install entry.
+## Matches the standard single-line forms 'dh_installsystemd ... --name<sep>NAME'
+## (space or '=' separator, any other options between) in a NON-comment rules
+## line, or an explicit .install entry shipping NAME.service into a SYSTEM unit
+## dir (systemd/system, not systemd/user). Comments are stripped on both sides so
+## a '# dh_installsystemd --name ...' does not count. (A line-continuation recipe
+## or a dh-exec rename would need a test update -- out of scope here.)
+service_basename="$(basename -- "${service_file}")"           # <binpkg>.<name>.service
+unit_name="${service_basename%.service}"                      # <binpkg>.<name>
+unit_name="${unit_name##*.}"                                  # <name>
+unit_name_re="${unit_name//./\\.}"
+rules_noncomment="$(sed -e 's/^[[:space:]]*//' -e '/^#/d' "${rules_file}")"
+if grep --extended-regexp --quiet "dh_installsystemd.*--name(=|[[:space:]]+)${unit_name_re}([[:space:]]|=|\$)" <<< "${rules_noncomment}" \
+   || grep --extended-regexp --quiet "(^|/)${unit_name_re}\.service[[:space:]].*/systemd/system(/|[[:space:]]|\$)" <<< "${install_out}"; then
+   pass "the packaging installs ${unit_name}.service (dh_installsystemd --name or .install)"
 else
-   fail "ExecStart is not a failure-tolerant modprobe of tirdad (got: '${exec_line}') -- Secure Boot rejection would fail the unit"
+   fail "nothing installs ${unit_name}.service: debian/rules lacks 'dh_installsystemd --name ${unit_name}' and no .install ships it into a system unit dir -- dh would ignore debian/${service_basename} and the unit would be absent"
 fi
 
-## --- 4. Ordering: load AFTER modules-load, BEFORE the module-loading lockdown ---
+## --- 3. The tirdad load is failure-TOLERANT, and nothing loads it strictly ---
+## Every ExecStart=/ExecStartPre= that loads tirdad must carry systemd's "-"
+## tolerance prefix. A single strict one (no "-") fails the oneshot on Secure
+## Boot rejection -- the regression this guards. The module name is anchored so
+## a typo'd 'modprobe tirdad_other' (loads the wrong module) is NOT accepted, and
+## an explicit 'modprobe -- tirdad' IS.
+exec_verdict="$(section_body "${service_file}" Service | awk '
+   function loads_tirdad(cmd,   n,a,i,j,seen,base) {
+      n=split(cmd,a,/[[:space:]]+/); seen=0
+      for(i=1;i<=n;i++){
+         if(a[i] ~ /(^|\/)modprobe$/){ seen=1; continue }
+         if(a[i] ~ /(^|\/)insmod$/){            # insmod takes a .ko PATH
+            for(j=i+1;j<=n;j++){ if(a[j] ~ /^-/) continue
+                                 base=a[j]; sub(/.*\//,"",base)
+                                 return (base=="tirdad.ko")?1:0 }
+            return 0
+         }
+         if(seen){ if(a[i]=="--") continue
+                   if(a[i]=="tirdad") return 1
+                   if(a[i] !~ /^-/) return 0 }      # a different module name
+      }
+      return 0
+   }
+   { line=$0; sub(/^[[:space:]]+/,"",line)
+     eq=index(line,"="); if(eq==0) next
+     k=substr(line,1,eq-1); sub(/[[:space:]]+$/,"",k)
+     if(k!="ExecStart" && k!="ExecStartPre") next
+     v=substr(line,eq+1); sub(/^[[:space:]]+/,"",v)
+     tol=0
+     while(match(v,/^[-@+!:]/)){ if(substr(v,1,1)=="-") tol=1; v=substr(v,2) }
+     if(loads_tirdad(v)){ total++; if(tol) tolerant++; else strict++ } }
+   END{ printf "%d %d %d", total+0, tolerant+0, strict+0 }')"
+read -r ev_total ev_tol ev_strict <<< "${exec_verdict}"
+if [ "${ev_total}" -ge 1 ] && [ "${ev_strict}" -eq 0 ] && [ "${ev_tol}" -ge 1 ]; then
+   pass 'every ExecStart/ExecStartPre that loads tirdad uses the failure-tolerant "-" prefix'
+else
+   fail "tirdad load is not uniformly failure-tolerant (loaders=${ev_total} tolerant=${ev_tol} strict=${ev_strict}) -- a strict one degrades on Secure Boot rejection"
+fi
+
+## --- 4. Ordering (section-aware): AFTER modules-load, BEFORE the lockdown ---
 check_directive() {
-   local directive="$1" why="$2"
-   if grep --extended-regexp --quiet "^\s*${directive}\s*\$" "${service_file}"; then
-      pass "${directive} (${why})"
+   local section="$1" key="$2" token="$3" why="$4"
+   if directive_has_token "${service_file}" "${section}" "${key}" "${token}"; then
+      pass "[${section}] ${key}=...${token}... (${why})"
    else
-      fail "missing '${directive}' -- ${why}"
+      fail "missing '${key}=${token}' in [${section}] -- ${why}"
    fi
 }
-check_directive 'After=systemd-modules-load.service' 'run after the strict modules-load has settled'
-check_directive 'Before=harden-module-loading.service' 'load tirdad BEFORE security-misc sets kernel.modules_disabled=1'
-check_directive 'Before=sysinit.target' 'load during early boot'
-check_directive 'WantedBy=sysinit.target' 'the unit is actually pulled into the boot transaction'
+check_directive Unit After systemd-modules-load.service 'run after the strict modules-load has settled'
+check_directive Unit Before systemd-sysctl.service 'load before the network stack (net units are After=systemd-sysctl.service)'
+check_directive Unit Before harden-module-loading.service 'load tirdad BEFORE security-misc sets kernel.modules_disabled=1'
+check_directive Unit Before lkrg.service 'load before LKRG baselines the kernel, or LKRG panics on the livepatch'
+check_directive Unit Before sysinit.target 'load during early boot'
+check_directive Install WantedBy sysinit.target 'the unit is actually pulled into the boot transaction'
 
-## --- 5. The LKRG softdep is left intact (unchanged behavior) ---
+## --- 5. The modprobe.d softdep drop-in is still shipped ---
+## LKRG load-order is primarily guaranteed by Before=lkrg.service above; this
+## pre-existing softdep is the secondary (modprobe-path) guarantee. Assert the
+## drop-in still ships a 'softdep <module> pre: ... tirdad' (tirdad as a
+## pre-dependency) and is installed to /etc/modprobe.d.
+## Only PRE-deps order the dep BEFORE the module; a 'post:' token would load
+## tirdad AFTER lkrg (the wrong order), so bound the scan at 'post:'.
+softdep_ok() {
+   awk '/^[[:space:]]*softdep[[:space:]]+[^[:space:]]+[[:space:]]+pre:/ {
+           p=index($0,"pre:"); rest=substr($0,p+4)
+           q=index(rest,"post:"); if(q) rest=substr(rest,1,q-1)
+           n=split(rest,a,/[[:space:]]+/)
+           for(i=1;i<=n;i++) if(a[i]=="tirdad") ok=1 }
+        END{ exit ok?0:1 }' "$1"
+}
 if [ -f "${modprobe_conf}" ] \
-   && grep --quiet --fixed-strings -- 'softdep' "${modprobe_conf}" \
-   && grep --quiet --fixed-strings -- 'etc/modprobe.d/' "${install_file}"; then
-   pass 'the /etc/modprobe.d LKRG softdep is still shipped (unchanged)'
+   && softdep_ok "${modprobe_conf}" \
+   && grep --quiet --fixed-strings -- 'etc/modprobe.d/' <<< "${install_out}"; then
+   pass 'the modprobe.d softdep pre-loading tirdad is shipped to /etc/modprobe.d'
 else
-   fail 'the /etc/modprobe.d/30-tirdad.conf LKRG softdep is no longer shipped'
+   fail 'the /etc/modprobe.d softdep pre-loading tirdad is no longer shipped'
 fi
 
-## --- 6. systemd accepts the unit ---
-## systemd-analyze verify loads the unit and reports directive errors. Ordering
-## deps on units absent from the search path (harden-module-loading.service,
-## shipped by the separate security-misc package) are NOT errors, so a clean
-## verify here is a genuine signal. Run on a COPY in an isolated dir so the
-## filename is the unit name and no sibling units are pulled in.
+## --- 6. systemd accepts the unit (own-unit errors are fatal) ---
+## --recursive-errors=no makes systemd-analyze return non-zero on THIS unit's own
+## problems (e.g. a directive in the wrong section -> "Unknown key ... ignoring")
+## while not failing on warnings from unrelated pulled-in dependency units. The
+## default (no flag) returns 0 even when the unit has such warnings -- a false
+## PASS. Run on a COPY in an isolated dir so the filename is the unit name.
 verify_dir="$(mktemp --directory)"
 cleanup_verify_dir() {
    safe-rm --recursive --force -- "${verify_dir}" || true
 }
 trap cleanup_verify_dir EXIT
 cp -- "${service_file}" "${verify_dir}/tirdad-load.service"
-if systemd-analyze verify "${verify_dir}/tirdad-load.service" 2>"${verify_dir}/verify.err"; then
-   pass 'systemd-analyze verify accepts tirdad-load.service'
+if systemd-analyze verify --recursive-errors=no "${verify_dir}/tirdad-load.service" 2>"${verify_dir}/verify.err"; then
+   pass 'systemd-analyze verify (--recursive-errors=no) accepts tirdad-load.service'
 else
    fail "systemd-analyze verify rejects tirdad-load.service: $(cat "${verify_dir}/verify.err")"
 fi

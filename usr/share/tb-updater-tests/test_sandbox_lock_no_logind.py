@@ -5,13 +5,15 @@
 
 ## AI-Assisted
 
-## Regression: sandbox-update-torbrowser must acquire its self-lock even with no
-## systemd-logind (a package-build chroot), i.e. when root has neither an
-## XDG_RUNTIME_DIR nor a /run/user/0. It used to die at helper-scripts'
-## lockfile.sh with "no per-user runtime dir, cannot create a lock directory!",
-## failing the Whonix Workstation image build at 3500_install-packages
-## (tb-updater's postinst bundles Tor Browser). The fix provisions root's own
-## 0700 /run/user/0 before the lock in that case only.
+## Regression: sandbox-update-torbrowser must acquire its self-lock whenever root
+## has no usable per-user runtime dir. It used to die at helper-scripts'
+## lockfile.sh with "no per-user runtime dir, cannot create a lock directory!" in
+## two shapes: XDG_RUNTIME_DIR UNSET with no /run/user/0 (a package-build chroot,
+## which failed the Whonix Workstation image build at 3500_install-packages), and
+## XDG_RUNTIME_DIR SET to a directory logind never created -- what `sudo`/
+## pam_systemd and the apt postinst produce on a real upgrade and in a Qubes
+## TemplateVM. The fix provisions root's own 0700 /run/user/0 before the lock in
+## every such case (guard mirrors lockfile.sh's own usable-dir predicate).
 ##
 ## Faithful: runs the REAL sandbox-update-torbrowser as root (the postinst entry
 ## point) with /run/user/0 absent. Positive control: the fix must CREATE
@@ -65,26 +67,39 @@ if os.path.isdir("/run/user/0"):
 
 LOCK_ERROR = "no per-user runtime dir"
 
+## The runtime-dir conditions root hits with no usable logind runtime dir. All
+## must get past the self-lock; a bare `[ -z "$XDG_RUNTIME_DIR" ]` guard handled
+## only the first.
+##   ""                  build chroot / template postinst: var UNSET.
+##   "/run/user/0"       `sudo`/pam_systemd exports root's own dir but logind
+##                       never created it -- the real upgrade/TemplateVM failure.
+##   "/run/user/<n>"     a foreign runtime dir inherited into root's env, absent.
+BROKEN_XDG = ["", "/run/user/0", "/run/user/nonexistent-tb-lock-test"]
 
-def test_self_lock_without_logind():
-    """The real script must get past its self-lock with no /run/user/0."""
+
+@pytest.mark.parametrize("xdg", BROKEN_XDG)
+def test_self_lock_without_logind(xdg):
+    """The real script must get past its self-lock with no usable runtime dir,
+    whether XDG_RUNTIME_DIR is unset or set to a directory that does not exist."""
     try:
         proc = subprocess.run(
             [SANDBOX_BIN, "--postinst"],
             capture_output=True,
             text=True,
             check=False,
-            env=dict(os.environ, XDG_RUNTIME_DIR=""),
+            env=dict(os.environ, XDG_RUNTIME_DIR=xdg),
         )
         output = proc.stdout + proc.stderr
         ## Positive control: the fix must have created root's runtime dir, which
         ## proves execution reached the lock (not an earlier source failure).
         assert os.path.isdir("/run/user/0"), (
             "sandbox-update-torbrowser did not provision /run/user/0 before its "
-            f"self-lock; it likely died earlier. Output:\n{output}")
+            f"self-lock (XDG_RUNTIME_DIR={xdg!r}); it likely died earlier. "
+            f"Output:\n{output}")
         ## The regression itself: the lock must not have failed.
         assert LOCK_ERROR not in output, (
-            "sandbox-update-torbrowser still fails its self-lock without logind "
-            f"({LOCK_ERROR!r} present):\n{output}")
+            "sandbox-update-torbrowser still fails its self-lock without a usable "
+            f"runtime dir (XDG_RUNTIME_DIR={xdg!r}, {LOCK_ERROR!r} present):"
+            f"\n{output}")
     finally:
         shutil.rmtree("/run/user/0", ignore_errors=True)

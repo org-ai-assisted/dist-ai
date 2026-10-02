@@ -81,13 +81,58 @@ if [ "${image_given}" != 'true' ]; then
    exit "${SKIP}"
 fi
 
-## SKIP when no qemu: a boot test is impossible, not a failure.
-if ! type -P qemu-system-x86_64 >/dev/null 2>&1 \
-   && ! type -P qemu-system-aarch64 >/dev/null 2>&1; then
-   printf '%s\n' "dm-smbios-reader-boot-tests: no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
-   ## style-ok: allow-skip: no qemu-system-* on PATH -- boot test needs an emulator
-   exit "${SKIP}"
+## Backend availability. dm-smbios-reader-image-test resolves auto -> qemu/vbox itself;
+## here we only decide whether a boot test is POSSIBLE on this host. --backend vbox
+## REQUIRES VBoxManage (hard dependency -> loud FAIL, never a skip); --backend qemu
+## keeps the historical no-qemu SKIP; auto skips only when NEITHER emulator is present.
+backend='auto'
+backend_prev=''
+for arg in "$@"; do
+   case "${backend_prev}" in
+      --backend)
+         backend="${arg}"
+         ;;
+   esac
+   case "${arg}" in
+      --backend=*)
+         backend="${arg#--backend=}"
+         ;;
+   esac
+   backend_prev="${arg}"
+done
+
+have_qemu='false'
+if type -P qemu-system-x86_64 >/dev/null 2>&1 \
+   || type -P qemu-system-aarch64 >/dev/null 2>&1; then
+   have_qemu='true'
 fi
+have_vbox='false'
+if type -P VBoxManage >/dev/null 2>&1; then
+   have_vbox='true'
+fi
+
+case "${backend}" in
+   vbox)
+      if [ "${have_vbox}" != 'true' ]; then
+         printf '%s\n' "dm-smbios-reader-boot-tests: --backend vbox needs VBoxManage (install VirtualBox); a hard dependency, not a skip. FAIL." >&2
+         exit 1
+      fi
+      ;;
+   qemu)
+      if [ "${have_qemu}" != 'true' ]; then
+         printf '%s\n' "dm-smbios-reader-boot-tests: --backend qemu but no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
+         ## style-ok: allow-skip: no qemu-system-* on PATH -- boot test needs an emulator
+         exit "${SKIP}"
+      fi
+      ;;
+   *)
+      if [ "${have_qemu}" != 'true' ] && [ "${have_vbox}" != 'true' ]; then
+         printf '%s\n' "dm-smbios-reader-boot-tests: no qemu-system-* and no VBoxManage on PATH; cannot boot-test here. SKIP." >&2
+         ## style-ok: allow-skip: no emulator (qemu or VirtualBox) available to boot-test
+         exit "${SKIP}"
+      fi
+      ;;
+esac
 
 ## Drive dm-smbios-reader-image-test, pointing it at the bundled dm-smbios-reader-qemu (both live in tests_dir).
 ## dm-smbios-reader-image-test returns 0 (PASS) / 5 (FAIL) / 2 (setup); all non-zero propagate
