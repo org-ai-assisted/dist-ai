@@ -627,6 +627,8 @@ def test_cli_parser_accepts_ensure_amd_v():
 
 _DMI_VENDOR_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor'
 _DMI_SERIAL_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial'
+_DMI_VENDOR_KEY_EFI = 'VBoxInternal/Devices/efi/0/Config/DmiSystemVendor'
+_DMI_SERIAL_KEY_EFI = 'VBoxInternal/Devices/efi/0/Config/DmiSystemSerial'
 
 
 def test_uart_server_argv():
@@ -637,12 +639,24 @@ def test_uart_server_argv():
 
 def test_dmi_argv_vendor_qemu_and_serial_verbatim():
     serial = 'dm-cmdline=console=ttyS0,115200n8 loglevel=3'
-    argvs = M.build_dmi_argv('kick', 'QEMU', serial)
+    argvs = M.build_dmi_argv('kick', 'QEMU', serial)  # default firmware=bios
     assert argvs == [
         ['VBoxManage', 'setextradata', 'kick', _DMI_VENDOR_KEY, 'QEMU'],
         ['VBoxManage', 'setextradata', 'kick', _DMI_SERIAL_KEY, serial]]
     ## single commas preserved -- VBox DMI takes the value verbatim (no qemu doubling).
     assert ',,' not in argvs[1][-1]
+
+
+def test_dmi_argv_firmware_selects_device():
+    ## Regression (server integration): EFI/efi-secureboot DMI must go on the 'efi'
+    ## device, NOT 'pcbios'. pcbios keys on an EFI VM force-instantiate pcbios, whose
+    ## init fails querying BootDevice0 (VERR_CFGM_VALUE_NOT_FOUND) -> power-on dies
+    ## before DMI reaches the guest. VERIFIED on VBox 7.2.
+    bios = M.build_dmi_argv('kick', 'QEMU', 's', firmware='bios')
+    assert bios[0][-2] == _DMI_VENDOR_KEY and bios[1][-2] == _DMI_SERIAL_KEY
+    for fw in ('efi', 'efi-secureboot'):
+        efi = M.build_dmi_argv('kick', 'QEMU', 's', firmware=fw)
+        assert efi[0][-2] == _DMI_VENDOR_KEY_EFI and efi[1][-2] == _DMI_SERIAL_KEY_EFI
 
 
 def test_storageattach_multiattach_appends_mtype():
@@ -660,7 +674,8 @@ def test_serial_vm_plan_disk_is_multiattach_hdd_no_createmedium():
     flat = [' '.join(a) for a in plan]
     assert flat[0] == 'VBoxManage createvm --name kick --ostype Debian_64 --register'
     assert 'VBoxManage modifyvm kick --memory 3072 --firmware efi' in flat
-    assert ('VBoxManage setextradata kick %s QEMU' % _DMI_VENDOR_KEY) in flat
+    ## firmware='efi' -> DMI on the efi device (not pcbios).
+    assert ('VBoxManage setextradata kick %s QEMU' % _DMI_VENDOR_KEY_EFI) in flat
     assert any('--uart1 0x3f8 4 --uartmode1 server /s.sock' in f for f in flat)
     assert any('--type hdd --medium /d.vdi --mtype multiattach' in f for f in flat)
     ## a disk boots the EXISTING image -- never create an empty target medium.
@@ -743,6 +758,16 @@ def test_hwaccel_in_use_known_answers():
         'HM: HMR3Init: Falling back to NEM (Hyper-V active)\n') is False
     assert M.hwaccel_in_use('HM: ... raw-mode ...\n') is False
     assert M.hwaccel_in_use('') is False
+    ## Regression (server integration): a REAL VBox 7.2 AMD-V boot log carries the
+    ## benign "No raw-mode support in this build!" line AND "Using AMD-V". The old
+    ## bare 'raw-mode' fallback marker substring-matched the benign line and refused
+    ## a hardware-accelerated run (HwAccelError). Must be True.
+    vbox72_amdv = (
+        '00:00:00.018331 fHMForced=true - No raw-mode support in this build!\n'
+        '00:00:00.029629 HM: HMR3Init: AMD-V w/ nested paging\n'
+        '00:00:00.101863 HM: Using AMD-V implementation 2.0\n'
+    )
+    assert M.hwaccel_in_use(vbox72_amdv) is True
 
 
 def test_assert_hwaccel_raises_setup_on_no_amdv(monkeypatch):
