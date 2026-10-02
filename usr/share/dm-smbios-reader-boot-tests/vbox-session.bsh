@@ -15,9 +15,9 @@
 ## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
 ## Caller globals: vm, VBOXMANAGE, GUESTCTL, FAIL_RC, me, and (optional) passphrase.
 ##
-## select_installed_sysmaint is a VERBATIM copy of the function in
-## usr/bin/dm-calamares-install; the drift-guard test keeps the two byte-identical
-## until that gate is migrated to source this lib.
+## select_installed_sysmaint lives in grub-boot-select.bsh -- the single source shared
+## with dm-calamares-install -- which the sourcing tool loads before this fragment.
+## boot_installed wraps that call so its die() cannot escape (return-nonzero contract).
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
@@ -122,26 +122,6 @@ unlock_luks() {
    gui_scan 1c 9c
 }
 
-## Wait for the INSTALLED system's GRUB "Choose boot mode" menu, then select entry 2
-## (PERSISTENT Mode | SYSMAINT Session): 1x Down + Enter before the ~5s autoboot into
-## the default USER entry. Sets boot-role=sysmaint for checks 2 + 3.
-## DRIFT-GUARDED verbatim copy of dm-calamares-install:select_installed_sysmaint.
-select_installed_sysmaint() {
-   local deadline text
-   deadline=$(( SECONDS + 60 ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      text="$(gui_ocr)"
-      if [[ "${text,,}" =~ choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session ]]; then
-         gui_scan e0 50 e0 d0
-         sleep 1
-         gui_scan 1c 9c
-         return 0
-      fi
-      sleep 2
-   done
-   die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
-}
-
 ## Power-cycle the installed disk into ROLE (user = default GRUB entry; sysmaint =
 ## entry 2), unlock LUKS if encrypted, and wait until guestcontrol is reachable as
 ## the role's account. Returns nonzero (NOT die) if the guest never comes back, so a
@@ -153,7 +133,12 @@ boot_installed() {
    clean_poweroff
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    if [ "${role}" = 'sysmaint' ]; then
-      select_installed_sysmaint
+      ## select_installed_sysmaint die()s if the GRUB menu never OCRs; a subshell keeps
+      ## that exit from escaping boot_installed, honoring the return-nonzero contract (a
+      ## GRUB-bricked upgrade flows to the degraded gate result, not a hard exit past
+      ## write_report). It only sends scancodes -- no shell-var side effects the rest of
+      ## boot_installed reads -- so the subshell is semantically free.
+      ( select_installed_sysmaint ) || return 1
    fi
    unlock_luks "${role}"
    wait_guestcontrol_ready "${account}" 300

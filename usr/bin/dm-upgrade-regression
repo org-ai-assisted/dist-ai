@@ -103,6 +103,8 @@ else
 fi
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
 source "${share_dir}/gui-drive.bsh"
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/grub-boot-select.bsh
+source "${share_dir}/grub-boot-select.bsh"
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh
 source "${share_dir}/vbox-session.bsh"
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/release-checks.bsh
@@ -353,11 +355,13 @@ switch_and_upgrade() {
 ## pipeline): (1) the battery's check 3 re-runs upgrade-nonroot to prove the updater
 ## still works post-upgrade -- normally a no-op; if upstream publishes NEW packages
 ## between switch_and_upgrade and check 3, check 3 applies them and the final state is
-## not independently re-booted (narrow race, out of scope). (2) A GUI/GRUB-OCR driving
-## failure (e.g. select_installed_sysmaint cannot OCR the menu) hard-fails via die --
-## that is a HARNESS/OCR failure, not a false-green; the primary upgrade-bricked-boot
-## signal (guest never returns == wait_guestcontrol_ready) DOES flow to the degraded
-## result below. (3) VM exclusivity is coordinated out-of-band (one VM per session),
+## not independently re-booted (narrow race, out of scope). (2) A GRUB-OCR failure in the
+## sysmaint boot (select_installed_sysmaint cannot OCR the "Choose boot mode" menu) returns
+## nonzero from boot_installed -- its die is subshell-wrapped there -- so it flows to the
+## DEGRADED result with REASON set, the same path as a guest that never returns
+## (wait_guestcontrol_ready). A GRUB-bricked upgrade thus reaches write_report, not a hard
+## exit past it; no accepted hard-die path remains here. (3) VM exclusivity is coordinated
+## out-of-band (one VM per session),
 ## so require_vm_idle is a courtesy check, not a cross-process lock.
 run_regression() {
    printf '%s\n' "${me}: boot into SYSMAINT to switch suite + upgrade"

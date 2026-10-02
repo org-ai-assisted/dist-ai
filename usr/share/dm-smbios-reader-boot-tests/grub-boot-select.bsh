@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Sourceable GRUB boot-menu selection shared by dm-calamares-install (install gate)
+## and vbox-session.bsh (dm-upgrade-regression). The SINGLE source of truth for
+## select_installed_sysmaint -- both gates drive the installed system's "Choose boot
+## mode" menu identically, so the OCR+scancode logic lives in ONE place (no vendored
+## copy, no drift guard).
+##
+## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
+## Caller globals: FAIL_RC (plus gui-drive.bsh's vm/GUESTCTL/VBOXMANAGE/TESSERACT/me).
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
+# shellcheck disable=SC2154  ## FAIL_RC (+ gui-drive.bsh globals) are set by the sourcing tool
+
+## Wait for the INSTALLED system's GRUB "Choose boot mode" menu, then select entry 2
+## (PERSISTENT Mode | SYSMAINT Session): 1x Down + Enter before the ~5s autoboot into
+## the default USER entry. Sets boot-role=sysmaint for checks 2 + 3. die()s if the menu
+## never OCRs -- a caller with a return-nonzero contract (boot_installed) wraps the call
+## in a subshell so that die cannot escape it.
+select_installed_sysmaint() {
+   local deadline text
+   deadline=$(( SECONDS + 60 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session ]]; then
+         gui_scan e0 50 e0 d0
+         sleep 1
+         gui_scan 1c 9c
+         return 0
+      fi
+      sleep 2
+   done
+   die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
+}
