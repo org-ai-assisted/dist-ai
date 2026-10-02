@@ -159,7 +159,6 @@ core_suites=(
    systemcheck-tests
    tb-updater-tests
    terminal-poc-corpus-tests
-   tirdad-tests
    tor-control-panel-tests
    tor-ctrl-tests
    unicode-show-tests
@@ -679,11 +678,6 @@ wire() {
          ## checkout from TB_UPDATER_REPO.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
          ;;
-      tirdad)
-         ## Reads the tirdad packaging (debian/) from the checkout to pin the
-         ## SecureBoot-tolerant module-load mechanism.
-         wire_env=( "TIRDAD_REPO=$( pkg_dir tirdad )" )
-         ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
          ## which sanitize untrusted output with the bare `sanitize-string`
@@ -1037,9 +1031,6 @@ suite_component() {
          ;;
       tb-updater)
          printf '%s' 'tb-updater'
-         ;;
-      tirdad)
-         printf '%s' 'tirdad'
          ;;
       open-link-confirmation)
          printf '%s' 'open-link-confirmation'

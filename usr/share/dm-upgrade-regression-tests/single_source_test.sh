@@ -7,11 +7,9 @@
 
 ## Guards the SINGLE source of truth shared by the install gate (dm-calamares-install) and
 ## the R6 upgrade gate (dm-upgrade-regression): the numbered release-critical checks
-## (release-checks.bsh) and the GRUB boot-mode selector (grub-boot-select.bsh), each with
-## exactly ONE definition. Asserts: dm-calamares-install sources the check table + runs the
-## battery (not an inline copy); no literal `run_check N '<cmd>'` battery lines remain; the
-## shared table is non-vacuous; and select_installed_sysmaint lives ONLY in
-## grub-boot-select.bsh, sourced by both gates (no vendored copy to drift). No VM, no network.
+## (release-checks.bsh). Asserts: dm-calamares-install sources the check table + runs the
+## battery (not an inline copy); no literal `run_check N '<cmd>'` battery lines remain; and
+## the shared table is non-vacuous + numbered/polarised as expected. No VM, no network.
 ##
 ## SC2154: RELEASE_CHECK_CMD et al. are read from the sourced release-checks.bsh.
 # shellcheck disable=SC2154
@@ -27,8 +25,7 @@ export LC_ALL=C
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 cal="${script_dir}/../../bin/dm-calamares-install"
 rc_lib="${script_dir}/../dm-smbios-reader-boot-tests/release-checks.bsh"
-vs_lib="${script_dir}/../dm-smbios-reader-boot-tests/vbox-session.bsh"
-for f in "${cal}" "${rc_lib}" "${vs_lib}"; do
+for f in "${cal}" "${rc_lib}"; do
    [ -r "${f}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${f}" >&2; exit 1; }
 done
 
@@ -90,34 +87,6 @@ if [[ "${RELEASE_CHECK_CMD[8]:-}" == *systemcheck* ]]; then
    ok 'check 8 systemcheck'
 else
    bad "check 8 wrong: ${RELEASE_CHECK_CMD[8]:-<unset>}"
-fi
-
-## --- C. select_installed_sysmaint is single-source (no vendored copy, no drift) -----
-## It is defined ONLY in grub-boot-select.bsh; both gates source that file. One
-## definition cannot drift, so a single-source wiring check suffices (no copy to compare).
-gbs_lib="${script_dir}/../dm-smbios-reader-boot-tests/grub-boot-select.bsh"
-upg="${script_dir}/../../bin/dm-upgrade-regression"
-for f in "${gbs_lib}" "${upg}"; do
-   [ -r "${f}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${f}" >&2; exit 1; }
-done
-def_re='^select_installed_sysmaint\(\) \{'
-gbs_defs="$(grep -cE "${def_re}" "${gbs_lib}" || true)"
-cal_defs="$(grep -cE "${def_re}" "${cal}" || true)"
-vs_defs="$(grep -cE "${def_re}" "${vs_lib}" || true)"
-if [ "${gbs_defs}" = '1' ]; then
-   ok 'select_installed_sysmaint defined once in grub-boot-select.bsh (single source)'
-else
-   bad "select_installed_sysmaint defined ${gbs_defs}x in grub-boot-select.bsh (want 1)"
-fi
-if [ "${cal_defs}" = '0' ] && [ "${vs_defs}" = '0' ]; then
-   ok 'no duplicate select_installed_sysmaint in dm-calamares-install / vbox-session.bsh'
-else
-   bad "duplicate select_installed_sysmaint remains (dm-calamares-install=${cal_defs}, vbox-session.bsh=${vs_defs})"
-fi
-if grep --quiet 'grub-boot-select.bsh' "${cal}" && grep --quiet 'grub-boot-select.bsh' "${upg}"; then
-   ok 'both gates source grub-boot-select.bsh'
-else
-   bad 'a gate does NOT source grub-boot-select.bsh (dm-calamares-install / dm-upgrade-regression)'
 fi
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"

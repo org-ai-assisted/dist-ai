@@ -416,6 +416,11 @@ def build_check_plan(args):
     ## check_meta_packages do not apply here.
     systemcheck_cmd = (
         "systemcheck --cli --leak-tests --verbose"
+        ## --ci turns on systemcheck's module-specific tolerance for a tirdad
+        ## Secure Boot rejection: systemd-modules-load degraded SOLELY because
+        ## tirdad could not load is tolerated (failed-units, system-ready AND
+        ## journal), while a jitterentropy_rng / other module failure still fails.
+        " --ci"
         " --skip check_operating_system"
         " --skip check_tor_bootstrap"
         " --skip check_tor_connectivity"
@@ -477,21 +482,12 @@ def build_check_plan(args):
     ## an actual Tor system.
     systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Could not determine Tor certificate lifetime.\""
     systemcheck_cmd += " --journal-ignore-fixed \"anondate-get: WARNING: Tor certificate lifetime invalid according to Tor log.\""
-    ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
-    ## so systemd-modules-load.service fails -- expected there, not an image
-    ## defect. Ignore only that one unit, and only for the secureboot legs.
-    if args.firmware == "efi-secureboot":
-        systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
-        ## --ignore-failed-unit filters the failed-units list and the
-        ## system-ready 'degraded' check, but NOT check_journal, which greps
-        ## the journal for 'fail'/'error'. The same unsigned-tirdad failure
-        ## emits journal lines ("Failed to start systemd-modules-load.service",
-        ## systemd-modules-load "Failed to insert module 'tirdad'", modprobe
-        ## "Key was rejected by service") that trip check_journal under
-        ## --verbose. Whitelist just those two literal substrings, and only on
-        ## the secureboot legs, mirroring the --ignore-failed-unit gating.
-        systemcheck_cmd += " --journal-ignore-fixed systemd-modules-load"
-        systemcheck_cmd += " --journal-ignore-fixed \"Key was rejected by service\""
+    ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load, so
+    ## systemd-modules-load.service fails -- expected there, not an image defect.
+    ## This is handled by systemcheck's --ci tolerance (above), which is
+    ## module-specific (tirdad only) and covers the failed-units, system-ready and
+    ## journal checks -- so no blunt --ignore-failed-unit / --journal-ignore-fixed
+    ## is needed here, and a non-tirdad module failure under SB still fails.
     plan.append((systemcheck_cmd, False, args.expect_rc, 8))
 
     ## Diagnostic (exempt from the verdict, num None): name every failed system unit
