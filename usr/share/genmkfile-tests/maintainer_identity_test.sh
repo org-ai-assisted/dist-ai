@@ -256,6 +256,44 @@ else
    fail "parse error NOT surfaced: die=[${die_msg}] email=[${got_email}]"
 fi
 
+## 8. A Maintainer in a binary stanza must NOT leak in: only the SOURCE stanza's
+## Maintainer is used (no multi-line value, no cross-stanza blend).
+{
+   printf '%s\n' 'Source: testpkg'
+   printf '%s\n' 'Maintainer: Canary Name <canary@kicksecure.com>'
+   printf '%s\n' 'Priority: optional'
+   printf '%s\n' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' 'Architecture: all'
+   printf '%s\n' 'Maintainer: Bob Binary <bob@example.com>'
+   printf '%s\n' 'Description: test package'
+   printf '%s\n' ' long description'
+} > "${test_root}/control"
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+got_email="$(read_out DEBEMAIL)"
+got_name="$(read_out DEBFULLNAME)"
+if [ "${got_email}" = 'canary@kicksecure.com' ] && [ "${got_name}" = 'Canary Name' ]; then
+   pass "binary-stanza Maintainer ignored; only the source Maintainer is derived"
+else
+   fail "cross-stanza leak: email=[${got_email}] name=[${got_name}] (want canary@kicksecure.com / Canary Name)"
+fi
+
+## 9. An unclosed final '<' (no closing '>') leaves no real address -> fail loud,
+## never derive garbage that lacks an '@'.
+write_control 'Real Name (see also <a@b.com>) <oops'
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_email="$(read_out DEBEMAIL)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "unclosed final bracket aborts loud (no non-address derived)"
+else
+   fail "garbage email NOT rejected: die=[${die_msg}] email=[${got_email}]"
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "maintainer_identity_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
