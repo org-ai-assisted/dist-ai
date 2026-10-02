@@ -61,9 +61,13 @@ printf '%s\n' '#!/bin/sh' 'exit 0' >"${stub_dir}/ischroot"
 chmod 0755 -- "${stub_dir}/ischroot"
 
 ## A two-device btrfs: grub-probe emits one device per line, so these two
-## GRUB_* values carry an embedded newline.
-multi_device="$(printf '%s\n%s' '/dev/nvme1n1p2' '/dev/nvme0n1p2')"
+## GRUB_* values carry an embedded newline. The SECOND device is what a leaked
+## newline strands on its own line, so it is the value the assertions key on.
+device_one='/dev/nvme1n1p2'
+device_two='/dev/nvme0n1p2'
+multi_device="$(printf '%s\n%s' "${device_one}" "${device_two}")"
 
+generator_rc=0
 output="$(env --ignore-environment \
    PATH="${stub_dir}:/usr/bin:/bin" \
    GRUB_DEVICE="${multi_device}" \
@@ -73,13 +77,24 @@ output="$(env --ignore-environment \
    GRUB_DEVICE_BOOT_UUID="11111111-2222-3333-4444-555555555555" \
    GRUB_DISABLE_LINUX_UUID="" \
    GRUB_DISABLE_LINUX_PARTUUID="" \
-   sh "${generator}" 2>/dev/null)" || true
+   sh "${generator}" 2>/dev/null)" || generator_rc=$?
 
 fail=0
 
-## The chroot path must have run, else this asserts nothing.
-if [[ "${output}" != *'information START'* ]]; then
-   printf '%s\n' "FATAL: 45_debugging emitted no debug block; chroot path not exercised" >&2
+## A debug generator that ABORTS mid-run is itself a regression; not asserting
+## its exit status would let a broken generator that printed the header and then
+## died still read as a clean emit.
+if [ "${generator_rc}" -ne 0 ]; then
+   printf '%s\n' "FAIL: 45_debugging exited non-zero (${generator_rc}); it must not abort"
+   fail=1
+fi
+
+## The chroot path must have run AND the multi-device value must have reached the
+## output, else the test passes VACUOUSLY without ever exercising the newline.
+## device_two appears only once the embedded newline is processed -- as a bare
+## line on the old code (caught below) or a comment on the fixed code.
+if [[ "${output}" != *'information START'* ]] || [[ "${output}" != *"${device_two}"* ]]; then
+   printf '%s\n' "FATAL: multi-device GRUB_DEVICE not emitted; newline path not exercised" >&2
    exit 1
 fi
 
