@@ -24,14 +24,14 @@
 ##   --skip-published-packages  rebuild only packages whose source changed
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
 ##
-## derivative-maker's --reuse-cowbuilder-base shares ONE base chroot keyed by arch, NOT by
-## snapshot, so reusing it is safe only within a single freshness. The default frozen build
-## reuses it (fast); a non-frozen DM_FRESHNESS -- or DM_CLEAN=1 -- builds FROM SCRATCH, so a
-## different snapshot never reuses the frozen base. No marker/state: the reuse decision is a
-## pure function of DM_FRESHNESS and DM_CLEAN.
+## This wrapper builds ONLY the frozen snapshot -- freshness is hardcoded, NOT overridable.
+## derivative-maker shares one cowbuilder base chroot, one local package repo, and one
+## source-hash manifest keyed by ARCH, not snapshot, so mixing snapshots cross-contaminates
+## in BOTH directions (a later frozen build reusing a current-populated base, or vice versa).
+## Building a single snapshot makes reuse unconditionally safe: no marker, no per-snapshot
+## dirs, no switch logic. DM_CLEAN=1 forces a from-scratch build to discard reused work.
 ##
-## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FRESHNESS DM_FREEDOM
-##                DM_USER DM_CLEAN
+## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FREEDOM DM_USER DM_CLEAN
 
 set -o errexit
 set -o nounset
@@ -45,20 +45,19 @@ dm_repo="${DM_REPO:-${HOME}/derivative-maker}"
 flavor="${DM_FLAVOR:-kicksecure-lxqt}"
 arch="${DM_ARCH:-amd64}"
 target="${DM_TARGET:-iso}"
-freshness="${DM_FRESHNESS:-frozen}"
+freshness="frozen"   ## hardcoded, not overridable -- see header (single-snapshot safety)
 freedom="${DM_FREEDOM:-false}"
 build_user="${DM_USER:-$(id -un)}"
 
 cd -- "${dm_repo}"
 
-## Reuse the prior build's work (far short of a ~1h cold build) for the default frozen
-## snapshot. A non-frozen freshness or DM_CLEAN builds from scratch: dropping the reuse
-## knobs makes derivative-maker build a fresh base, so a different snapshot cannot reuse the
-## frozen base (which --reuse-cowbuilder-base shares by arch, not by snapshot).
+## Reuse the prior build's work (far short of a ~1h cold build). Always safe: this wrapper
+## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build -- dropping
+## both knobs makes derivative-maker rebuild the base and all packages.
 speed=(--skip-published-packages --reuse-cowbuilder-base)
-if [ "${DM_CLEAN:-0}" = "1" ] || [ "${freshness}" != "frozen" ]; then
+if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()
-   printf '%s\n' "${BASH_SOURCE[0]}: from-scratch build (no package reuse, fresh cowbuilder base) -- DM_CLEAN or non-frozen freshness='${freshness}'"
+   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (no package reuse, fresh cowbuilder base)"
 fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
