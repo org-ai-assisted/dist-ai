@@ -72,59 +72,75 @@ fail() {
 }
 
 ## --- stubs -----------------------------------------------------------------
-## State controlling what the stubbed 'losetup --associated' reports and how the
-## stubbed 'losetup --detach' / re-poll change it. Reset before each case.
+## Stub state lives in FILES, not shell variables. loop_teardown_verify reads
+## 'losetup --associated' inside a command substitution '$(...)' (a subshell), and
+## a correct implementation may iterate the device list in a subshell too -- a
+## here-string 'while read' loop does not fork, but a 'printf ... | while read'
+## pipe does. A shell-variable stub would lose its mutations across that boundary
+## and FALSELY fail a correct pipe-based implementation, so the test would mislead.
+## File-backed state survives any subshell, so this asserts on OBSERVABLE behavior
+## (was a detach issued, for which device, did the device get released), never on
+## the function's internal iteration construct.
 ##
-## loop_teardown_verify reads 'losetup --associated' inside a command
-## substitution '$(...)', which runs in a SUBSHELL -- so that stub's in-memory
-## mutations would be lost. The poll counter is therefore FILE-backed (survives
-## the subshell), and the clear-on-Nth-poll decision is made from it. The
-## 'losetup --detach' / kpartx stubs run in the function's here-string loop (no
-## subshell), so their parent-shell counters persist normally.
-stub_assoc=""            ## device 'losetup --associated' reports ("" = none)
-stub_detach_releases=0   ## 1: a 'losetup --detach' call clears stub_assoc (benign)
+## stub_detach_releases / stub_clear_after_polls are read-only in the stub, so they
+## are safely inherited into any subshell the function spawns.
+stub_detach_releases=0   ## 1: a 'losetup -d'/'--detach' call clears the association (benign)
 stub_clear_after_polls=0 ## >0: report empty once --associated has been polled N times
-detach_called=0          ## times 'losetup --detach' ran
-detach_last=""           ## last device 'losetup --detach' saw
-kpartx_called=0          ## times the kpartx stub ran
+stub_assoc_rc=0          ## exit code 'losetup --associated' returns (non-zero = command itself failed)
 
-poll_file="$(mktemp)"
+state_dir="$(mktemp --directory)"
+assoc_file="${state_dir}/assoc"               ## device 'losetup --associated' reports ("" = none)
+detach_count_file="${state_dir}/detach_count" ## times a detach was issued
+detach_last_file="${state_dir}/detach_last"   ## last device a detach saw
+poll_file="${state_dir}/poll"                 ## times --associated was polled
 # shellcheck disable=SC2317  # reached via the EXIT trap
-cleanup() { safe-rm --force -- "${poll_file}"; }
+cleanup() { safe-rm --recursive --force -- "${state_dir}"; }
 trap cleanup EXIT
 
 reset_stubs() {
-   stub_assoc=""
    stub_detach_releases=0
    stub_clear_after_polls=0
-   detach_called=0
-   detach_last=""
-   kpartx_called=0
+   stub_assoc_rc=0
+   printf '%s' ""  > "${assoc_file}"
+   printf '%s' "0" > "${detach_count_file}"
+   printf '%s' ""  > "${detach_last_file}"
    printf '%s' "0" > "${poll_file}"
 }
 
+set_assoc()     { printf '%s' "$1" > "${assoc_file}"; }
+detach_count()  { cat -- "${detach_count_file}"; }
+detach_last()   { cat -- "${detach_last_file}"; }
+
 ## losetup stub. Dispatches on the first word:
-##   --associated <img> --noheadings --output NAME  -> print stub_assoc (if any)
-##   --detach <dev>                                 -> record + maybe release
+##   --associated <img> --noheadings --output NAME  -> print the association (if any)
+##   -d|--detach <dev>                              -> record + maybe release
+## Both detach spellings are honored: util-linux accepts '-d' and '--detach'
+## interchangeably, so the stub is not coupled to the one the function happens to use.
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 losetup() {
-   local poll_now
+   local poll_now assoc_now
    case "${1:-}" in
       --associated)
-         poll_now="$(cat -- "${poll_file}" 2>/dev/null || printf '%s' 0)"
+         poll_now="$(cat -- "${poll_file}")"
          poll_now=$(( poll_now + 1 ))
          printf '%s' "${poll_now}" > "${poll_file}"
+         if [ "${stub_assoc_rc}" != "0" ]; then
+            ## Simulate the COMMAND itself failing (sudo needs a password, losetup
+            ## missing, permission denied) -- distinct from "nothing associated".
+            return "${stub_assoc_rc}"
+         fi
+         assoc_now="$(cat -- "${assoc_file}")"
          if [ "${stub_clear_after_polls}" -gt 0 ] && [ "${poll_now}" -ge "${stub_clear_after_polls}" ]; then
             true "released by the time of this re-poll, report nothing"
-         elif [ -n "${stub_assoc}" ]; then
-            printf '%s\n' "${stub_assoc}"
+         elif [ -n "${assoc_now}" ]; then
+            printf '%s\n' "${assoc_now}"
          fi
          ;;
-      --detach)
-         detach_called=$(( detach_called + 1 ))
-         detach_last="${2:-}"
+      -d|--detach)
+         printf '%s' "$(( $(cat -- "${detach_count_file}") + 1 ))" > "${detach_count_file}"
+         printf '%s' "${2:-}" > "${detach_last_file}"
          if [ "${stub_detach_releases}" = "1" ]; then
-            stub_assoc=""
+            printf '%s' "" > "${assoc_file}"
          fi
          ;;
       *)
@@ -135,7 +151,7 @@ losetup() {
 
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 kpartx() {
-   kpartx_called=$(( kpartx_called + 1 ))
+   true
 }
 
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
@@ -154,27 +170,27 @@ img="/path/to/image.raw"
 
 ## --- case 1: already clean -> return 0, no detach attempted -----------------
 reset_stubs
-stub_assoc=""
+set_assoc ""
 if loop_teardown_verify "${img}" ; then
-   if [ "${detach_called}" = "0" ]; then
+   if [ "$(detach_count)" = "0" ]; then
       pass "already clean: returns 0 without attempting a detach"
    else
-      fail "already clean: detach attempted ${detach_called} time(s)"
+      fail "already clean: detach attempted $(detach_count) time(s)"
    fi
 else
    fail "already clean: expected return 0, got non-zero"
 fi
 
-## --- case 2: benign -- explicit 'losetup --detach' releases the loop --------
+## --- case 2: benign -- an explicit detach releases the loop -----------------
 ## (the Qubes/docker false positive: kpartx -d left it attached, losetup -d frees it)
 reset_stubs
-stub_assoc="/dev/loop7"
+set_assoc "/dev/loop7"
 stub_detach_releases=1
 if loop_teardown_verify "${img}" ; then
-   if [ "${detach_called}" -ge "1" ] && [ "${detach_last}" = "/dev/loop7" ]; then
-      pass "benign (detach frees it): returns 0 after an explicit losetup --detach"
+   if [ "$(detach_count)" -ge "1" ] && [ "$(detach_last)" = "/dev/loop7" ]; then
+      pass "benign (detach frees it): returns 0 after an explicit losetup detach"
    else
-      fail "benign: detach_called=${detach_called} detach_last='${detach_last}'"
+      fail "benign: detach_count=$(detach_count) detach_last='$(detach_last)'"
    fi
 else
    fail "benign (detach frees it): expected return 0, got non-zero (one-shot regression)"
@@ -184,7 +200,7 @@ fi
 ## Proves the bounded re-poll absorbs a transient reference without relying on
 ## udev firing (detach itself does NOT clear it here).
 reset_stubs
-stub_assoc="/dev/loop7"
+set_assoc "/dev/loop7"
 stub_detach_releases=0
 stub_clear_after_polls=2
 if loop_teardown_verify "${img}" ; then
@@ -196,13 +212,13 @@ fi
 ## --- case 4: genuinely stuck -> return NON-ZERO, no masking -----------------
 ## The loop stays associated no matter how many times it is detached/re-polled.
 reset_stubs
-stub_assoc="/dev/loop7"
+set_assoc "/dev/loop7"
 stub_detach_releases=0
 stub_clear_after_polls=0
 if loop_teardown_verify "${img}" ; then
    fail "genuine stuck: expected non-zero return, got 0 (fix would MASK a real failure)"
 else
-   if [ "${detach_called}" -ge "1" ]; then
+   if [ "$(detach_count)" -ge "1" ]; then
       pass "genuine stuck: returns non-zero after attempting explicit detach (no mask)"
    else
       fail "genuine stuck: returned non-zero but never attempted a detach"
@@ -215,6 +231,20 @@ if loop_teardown_verify "" ; then
    fail "empty image: expected non-zero return, got 0"
 else
    pass "empty image: returns non-zero"
+fi
+
+## --- case 6: 'losetup --associated' COMMAND fails -> return non-zero ---------
+## A failure of the verification command itself (sudo needs a password, losetup
+## missing, permission denied) is NOT "nothing associated" and must NOT be
+## swallowed into a false "clean". The old one-shot code did
+## 'out="$(... || true)"; [ -z "$out" ]', which returned 0 (success) here.
+reset_stubs
+set_assoc ""
+stub_assoc_rc=1
+if loop_teardown_verify "${img}" ; then
+   fail "losetup --associated fails: expected non-zero return, got 0 (fail-open regression)"
+else
+   pass "losetup --associated fails: returns non-zero (no false clean)"
 fi
 
 summary_line="===== loop_teardown_verify: ${pass_count} pass, ${fail_count} fail ====="
