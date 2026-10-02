@@ -86,17 +86,21 @@ FSCK_CMD="${DM_TIDY_FSCK:-}"
 ## invoked ONLY when 'top' IS that tree; pointed at any other checkout it would
 ## destructively rewrite REMOTES_TARGET_TREE (NOT 'top') while we validate 'top' --
 ## wrong-tree mutation plus a false green. For any other 'top', phase 0 validates only.
-REMOTES_ENSURE_CMD="${DM_TIDY_REMOTES_ENSURE:-dm-packaging-helper-script}"
-## The tree REMOTES_ENSURE_CMD hardcodes as its root. This holds for the INSTALLED
-## helper (dm-packaging-helper-script at /usr/bin, whose '## XXX: hardcoded path' branch
-## IS ${HOME}/derivative-maker) -- run dm-tidy with that installed helper. A source-tree
-## copy resolved via PATH would instead target its OWN checkout, so this gate's premise
-## only holds for the installed copy; coupled to that helper -- keep in sync. The ':+'
-## form yields EMPTY when HOME is unset/empty -- a sentinel that can NEVER match a real
-## 'top' (so the ensure is skipped), NOT the real path '/derivative-maker' that '${HOME:-}'
-## would produce -- and it avoids aborting --help under 'set -o nounset'. HOME is also the
-## seam the regression test overrides to point this at a throwaway checkout.
+## REMOTES_TARGET_TREE: the derivative-maker checkout the phase-0 remote ensure operates
+## on. The ':+' form yields EMPTY when HOME is unset/empty -- a sentinel that can NEVER
+## match a real 'top' (so the ensure is skipped), NOT the real path '/derivative-maker'
+## that '${HOME:-}' would produce -- and it avoids aborting --help under 'set -o nounset'.
+## HOME is also the seam the regression test overrides to point this at a throwaway checkout.
 REMOTES_TARGET_TREE="${HOME:+${HOME}/derivative-maker}"
+## Remote-ensure helper, defaulted to the copy that ships INSIDE the target checkout (an
+## ABSOLUTE in-tree path). An absolute path is never PATH-resolved, so a source-tree copy
+## earlier on PATH can never be selected to rewrite a DIFFERENT fork tree; and the in-tree
+## copy's own root resolves to REMOTES_TARGET_TREE, so it acts on the tree being tidied.
+## Asserted executable before the destructive ensure runs (see phase_remotes).
+## Out of scope (not the single-canonical-checkout workflow): a contrived HOME with a
+## symlinked component followed by '..' can still make the physical realpath gate below and
+## the helper's lexical 'cd' disagree. DM_TIDY_REMOTES_ENSURE overrides (tests / operator).
+REMOTES_ENSURE_CMD="${DM_TIDY_REMOTES_ENSURE:-${REMOTES_TARGET_TREE}/packages/kicksecure/developer-meta-files/usr/bin/dm-packaging-helper-script}"
 FORK_REMOTE="org-ai-assisted"
 ## Named remotes whose ABSENCE breaks a downstream phase. The FULL canonical set is
 ## ensured by REMOTES_ENSURE_CMD; these are the ones dm-tidy validates directly.
@@ -261,6 +265,14 @@ phase_remotes() {
       [ "${top_real}" = "${tree_real}" ] && on_target="true"
    fi
    if [ "${on_target}" = "true" ]; then
+      ## The destructive ensure is about to run on this tree -- the helper ships inside the
+      ## checkout and is a hard dependency; assert it is present and fail loud if not.
+      if [ ! -x "${REMOTES_ENSURE_CMD}" ]; then
+         record "1 remotes" "ERROR (ensure helper missing)"
+         any_error="true" ; aborted="true"
+         printf '%s\n' "${0##*/}: remote-ensure helper not found or not executable at '${REMOTES_ENSURE_CMD}' -- expected it inside the checkout '${REMOTES_TARGET_TREE}'." >&2
+         return 0
+      fi
       [ "${dry_run}" = "true" ] && flag=( --dry-run )
       "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
       if [ "${rc}" -ne 0 ]; then
