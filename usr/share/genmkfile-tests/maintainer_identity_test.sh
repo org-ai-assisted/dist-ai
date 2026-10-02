@@ -208,6 +208,54 @@ else
    fail "malformed NOT rejected: die=[${die_msg}] email=[${got_email}]"
 fi
 
+## 5. A Maintainer with an earlier bracketed note -> the LAST '<email>' (the real
+## addr-spec) wins, never an earlier stale/parenthetical address.
+write_control 'Jane Doe (formerly <jane@old.com>) <jane@new.com>'
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+got_email="$(read_out DEBEMAIL)"
+got_name="$(read_out DEBFULLNAME)"
+if [ "${got_email}" = 'jane@new.com' ] && [ "${got_name}" = 'Jane Doe (formerly <jane@old.com>)' ]; then
+   pass "multi-bracket Maintainer derives the LAST address (not the stale earlier one)"
+else
+   fail "multi-bracket wrong: email=[${got_email}] name=[${got_name}] (want jane@new.com)"
+fi
+
+## 6. A trailing space inside the brackets is trimmed from the derived email.
+write_control 'Foo Bar <foo@example.com >'
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+got_email="$(read_out DEBEMAIL)"
+got_name="$(read_out DEBFULLNAME)"
+if [ "${got_email}" = 'foo@example.com' ] && [ "${got_name}" = 'Foo Bar' ]; then
+   pass "whitespace inside the Maintainer brackets is trimmed from the email"
+else
+   fail "untrimmed derived email: email=[${got_email}] name=[${got_name}] (want foo@example.com / Foo Bar)"
+fi
+
+## 7. A debian/control grep-dctrl cannot fully parse (malformed later stanza) must
+## fail loud, not derive from the partial value grep-dctrl still prints.
+{
+   printf '%s\n' 'Source: testpkg'
+   printf '%s\n' 'Maintainer: Foo Bar <foo@example.com>'
+   printf '%s\n' 'Priority: optional'
+   printf '%s\n' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' 'Architecture any'
+} > "${test_root}/control"
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_email="$(read_out DEBEMAIL)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "a grep-dctrl parse error aborts loud (no derive from a partial parse)"
+else
+   fail "parse error NOT surfaced: die=[${die_msg}] email=[${got_email}]"
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "maintainer_identity_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
