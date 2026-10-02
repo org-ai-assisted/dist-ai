@@ -759,15 +759,18 @@ def test_release_checks_catalog_numbers():
 
 
 def test_resolve_effective_firmware_single_source():
-    ## grok #4: an omitted --firmware must resolve to an ASSERTABLE firmware so the
-    ## boot arg and the firmware sentinel agree. amd64 (and vbox, amd64-only) boots
-    ## bios; arm64 'bios' is edk2 UEFI so stays empty (no assertion). Old seam: vbox
-    ## booted bios via 'or "bios"' yet the sentinel saw "" -> bios never asserted.
+    ## grok #4/#5: single source for the boot arg + the firmware sentinel. An explicit
+    ## --firmware wins. vbox is x86-only, so an omitted --firmware ALWAYS boots bios
+    ## (closes the old 'or "bios"' vs empty-sentinel silent-green). qemu boots bios
+    ## ONLY for an explicit amd64; an EMPTY arch may be an arm64 host (qemu defaults to
+    ## the host arch -> edk2 UEFI), so it is left unasserted, not wrongly 'bios'.
     m = _load_dm_image_test()
-    assert m.resolve_effective_firmware("amd64", "") == "bios"
-    assert m.resolve_effective_firmware("", "") == "bios"
-    assert m.resolve_effective_firmware("arm64", "") == ""
-    assert m.resolve_effective_firmware("amd64", "efi-secureboot") == "efi-secureboot"
+    assert m.resolve_effective_firmware("qemu", "arm64", "efi-secureboot") == "efi-secureboot"
+    assert m.resolve_effective_firmware("vbox", "amd64", "") == "bios"
+    assert m.resolve_effective_firmware("vbox", "", "") == "bios"
+    assert m.resolve_effective_firmware("qemu", "amd64", "") == "bios"
+    assert m.resolve_effective_firmware("qemu", "", "") == ""     # arm64 host unknown
+    assert m.resolve_effective_firmware("qemu", "arm64", "") == ""
     ## the resolved 'bios' DOES drive the no-EFI sentinel; empty would skip it.
     assert m.firmware_sentinels("bios") and not m.firmware_sentinels("")
 

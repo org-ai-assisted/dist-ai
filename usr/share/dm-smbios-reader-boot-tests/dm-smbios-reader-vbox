@@ -287,25 +287,55 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
 _DISK_NATIVE_EXTS = ('.vdi', '.vmdk', '.vhd')
 
 
-def converted_disk_path(vmname):
-    """Deterministic path of a serial VM's converted throwaway VDI, so serial-down (a
-    SEPARATE invocation) can remove it knowing only the VM name."""
+def _converted_vdi_dir():
+    """Path of the owner-only directory for converted throwaway VDIs (PURE -- no side
+    effect, so --emit-argv and serial-down stay side-effect-free). The create+verify
+    is _ensure_converted_vdi_dir, called only on the convert run path."""
     import tempfile
-    return os.path.join(tempfile.gettempdir(), '%s.dm-converted.vdi' % (vmname,))
+    return os.path.join(tempfile.gettempdir(),
+                        'dm-smbios-reader-vbox-%d' % (os.getuid(),))
+
+
+def _ensure_converted_vdi_dir():
+    """Create the converted-VDI dir 0700 and REQUIRE it to be our own owner-only
+    directory: NOT world-readable (a converted copy can hold sensitive image data),
+    and no other local user can pre-plant a symlink at the predictable per-VM path
+    inside it. Side effect -- call on the convert run path, never from the pure plan."""
+    import stat
+    path = _converted_vdi_dir()
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    info = os.lstat(path)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise SetupError('converted-VDI dir %r is not an owner-only directory'
+                         % (path,))
+    return path
+
+
+def converted_disk_path(vmname):
+    """Per-VM converted-VDI path inside the owner-only dir (PURE). basename(vmname) so
+    an absolute or traversing --vm (e.g. serial-down --vm /home/x/important) cannot
+    make os.path.join escape the dir and delete a caller-named file."""
+    return os.path.join(_converted_vdi_dir(),
+                        '%s.dm-converted.vdi' % (os.path.basename(vmname),))
 
 
 def disk_conversion(disk, vmname, vboxmanage=VBOXMANAGE):
     """(attach_path, convert_argv) for attaching DISK to a serial VM. Native
     VDI/VMDK/VHD -> (disk, None). RAW/qcow2 -> (per-VM VDI, the convert command run at
-    serial-up time, NOT part of the pure plan). Unknown extension -> SetupError."""
+    serial-up time, NOT part of the pure plan). Unknown extension -> SetupError.
+
+    The source path is made ABSOLUTE so a legitimate name beginning with '-'
+    (e.g. './-n.qcow2') cannot be parsed as a qemu-img / VBoxManage option."""
     ext = os.path.splitext(disk)[1].lower()
     if ext in _DISK_NATIVE_EXTS:
-        return disk, None
+        return os.path.abspath(disk), None
+    src = os.path.abspath(disk)
     dst = converted_disk_path(vmname)
     if ext in ('.raw', '.img'):
-        return dst, [vboxmanage, 'convertfromraw', disk, dst, '--format', 'VDI']
+        return dst, [vboxmanage, 'convertfromraw', src, dst, '--format', 'VDI']
     if ext == '.qcow2':
-        return dst, ['qemu-img', 'convert', '-O', 'vdi', disk, dst]
+        return dst, ['qemu-img', 'convert', '-O', 'vdi', src, dst]
     raise SetupError(
         'unsupported --disk format %r for the VBox backend: pass VDI/VMDK/VHD, or'
         ' .raw/.img/.qcow2 (auto-converted to VDI)' % (ext or disk,))
@@ -999,6 +1029,13 @@ def _teardown_serial_vm(vmname, uart_socket):
             os.unlink(uart_socket)
         except OSError:
             pass
+    ## Remove a converted throwaway VDI serial-up may have made for a raw/qcow2 --disk.
+    ## Done HERE (not only in serial-down) so a serial-up that fails AFTER converting
+    ## but before/at the plan does not leak the copied disk image. basename-safe path.
+    try:
+        os.unlink(converted_disk_path(vmname))
+    except OSError:
+        pass
 
 
 def run_serial_up(args):
@@ -1037,6 +1074,7 @@ def run_serial_up(args):
     try:
         if convert_argv:
             ## convert BEFORE the plan runs -- storageattach references the VDI path.
+            _ensure_converted_vdi_dir()  # owner-only 0700 dir (side effect; run path)
             try:
                 _run(convert_argv)
             except FileNotFoundError:
@@ -1078,13 +1116,8 @@ def run_serial_down(args):
     except SetupError as exc:
         print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
         return SETUP_RC
+    ## _teardown_serial_vm also removes any converted throwaway VDI.
     _teardown_serial_vm(args.vm, args.uart_socket)
-    ## Remove a converted throwaway VDI serial-up may have made for a raw/qcow2 --disk
-    ## (unregistervm --delete handles the VM's own diff; the converted base is ours).
-    try:
-        os.unlink(converted_disk_path(args.vm))
-    except OSError:
-        pass
     return PASS_RC
 
 

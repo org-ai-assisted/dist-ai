@@ -19,6 +19,7 @@ SourceFileLoader, because dm-smbios-reader-vbox is an executable with no .py ext
 
 import importlib.machinery
 import importlib.util
+import os
 import subprocess
 import types
 from pathlib import Path
@@ -740,6 +741,16 @@ def test_disk_conversion_classifies_and_rejects():
         vdi, ['qemu-img', 'convert', '-O', 'vdi', '/img.qcow2', vdi])
     with pytest.raises(M.SetupError):
         M.disk_conversion('/img.bogus', 'kick')
+    ## #6: a dash-leading relative path is made absolute so it is never read as a flag.
+    _attach, conv = M.disk_conversion('-n.qcow2', 'kick')
+    assert conv[-2].startswith('/') and not conv[-2].startswith('-')
+    ## #4: an absolute/traversing --vm stays inside the owner-only dir (basename), so
+    ## serial-down cannot be steered to delete an arbitrary caller-named file.
+    evil = M.converted_disk_path('/etc/evil')
+    assert evil.endswith('/evil.dm-converted.vdi')
+    assert os.path.dirname(evil) == os.path.dirname(vdi)
+    ## #1/#2: converted VDIs live in an owner-only per-uid dir, not bare /tmp.
+    assert os.path.dirname(vdi).endswith('dm-smbios-reader-vbox-%d' % os.getuid())
 
 
 def test_cli_serial_up_emit_argv_converts_raw_disk(tmp_path):

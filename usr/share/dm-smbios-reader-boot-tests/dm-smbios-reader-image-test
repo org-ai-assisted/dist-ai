@@ -111,15 +111,18 @@ def firmware_sentinels(firmware):
     ]
 
 
-def resolve_effective_firmware(arch, firmware):
+def resolve_effective_firmware(backend, arch, firmware):
     """The firmware a leg ACTUALLY boots -- the SINGLE source both the boot arg and
-    the firmware sentinel read, so they cannot disagree. An omitted --firmware boots
-    legacy BIOS on amd64 (qemu SeaBIOS default; vbox default), which IS assertable,
-    so resolve it to 'bios'. On arm64 'bios' would still be edk2 UEFI, so leave it
-    empty (no assertion), matching the arm64 wrapper that passes no --firmware."""
+    the firmware sentinel read, so they cannot disagree. An explicit --firmware wins.
+    Otherwise: vbox is x86-only, so an omitted --firmware always boots legacy BIOS
+    (assertable). qemu boots BIOS only when the arch is EXPLICITLY amd64; an EMPTY
+    arch may be an arm64 host (qemu defaults to the host arch -> edk2 UEFI), so it is
+    left UNASSERTED rather than wrongly claiming bios and failing a valid EFI boot."""
     if firmware:
         return firmware
-    return "bios" if arch in ("", "amd64") else ""
+    if backend == "vbox":
+        return "bios"
+    return "bios" if arch == "amd64" else ""
 
 
 ## Whole-token 'boot-role=sysmaint' in /proc/cmdline. NOT 'grep -w': -w only
@@ -985,7 +988,7 @@ def main():
     ## Resolve the EFFECTIVE firmware ONCE (before the boot AND build_check_plan's
     ## firmware sentinel read it), closing the silent-green where an omitted --firmware
     ## booted bios on vbox yet skipped the bios sentinel.
-    args.firmware = resolve_effective_firmware(args.arch, args.firmware)
+    args.firmware = resolve_effective_firmware(backend, args.arch, args.firmware)
 
     if backend == "vbox":
         child, cleanup = start_vbox_backend(args, log)
