@@ -357,7 +357,9 @@ MKDIR_LONG = frozenset({
 MKDIR_M_JAMMED = re.compile(r'^-([a-ln-zA-Z]*)m([0-7]{3,4})$')
 
 ## The atomic 'mkdir --parents ... --mode=' form trips shellcheck SC2174 by
-## design; insert the disable so R-172's mandated form stays shellcheck-clean.
+## design; insert the disable so the preferred atomic form stays
+## shellcheck-clean -- for R-172's mandated temp-dir mkdir AND any other mkdir
+## that chooses the atomic spelling (e.g. '/run/user/0' for a lock dir).
 SC2174_DISABLE = re.compile(
     r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174(?![0-9])')
 SC2174_DIRECTIVE = "# shellcheck disable=SC2174"
@@ -418,9 +420,14 @@ class MkdirTmpMode(Rule):
             if call is None or bash_ast.command_basename(call) != "mkdir":
                 continue
             call_args = bash_ast.args(call)
-            if not any(bash_ast.word_param_names(word) & TMP_PARAMS
-                       for word in call_args[1:]):
-                continue
+            ## The short '-m' -> long '--mode' upgrade is R-172's TOCTOU fix,
+            ## scoped to the temp-dir mkdir the rule governs. The SC2174-disable
+            ## insertion below is NOT so scoped: the atomic '--parents --mode='
+            ## form trips SC2174 on ANY mkdir, so pair the disable with it
+            ## wherever it appears -- the preferred atomic spelling must never be
+            ## blocked, and no one should hand-type the directive.
+            is_temp = any(bash_ast.word_param_names(word) & TMP_PARAMS
+                          for word in call_args[1:])
             has_parents = False
             has_mode = False
             tokens = list(bash_ast.command_tokens(
@@ -443,6 +450,10 @@ class MkdirTmpMode(Rule):
                     cluster = lit[1:]
                     if "p" in cluster:
                         has_parents = True
+                    if not is_temp:
+                        ## Only the atomic long form is auto-disabled off-temp;
+                        ## a short '-m' is upgraded only for the temp-dir rule.
+                        continue
                     jammed = MKDIR_M_JAMMED.match(lit)
                     if jammed:
                         prefix, mode = jammed.group(1), jammed.group(2)

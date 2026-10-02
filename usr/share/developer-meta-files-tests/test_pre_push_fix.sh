@@ -334,6 +334,38 @@ else
    note_fail "R-172 wrongly counted '--parents=invalid' as --parents (inserted SC2174)"
 fi
 
+## --- 7h-bis: the atomic --parents/--mode pair gets SC2174 on ANY operand ----
+## Not only temp dirs: a lock-dir mkdir (e.g. '/run/user/0') that chooses the
+## atomic form must also get the directive, so the preferred spelling is never
+## blocked by SC2174 and no one hand-types it. CANARY: before the off-temp
+## generalization the fixer skipped a non-TMP operand and left SC2174 unpaired.
+f="${test_dir}/mkdirnontmp.sh"
+printf '%b' '#!/bin/bash\nmkdir --parents --mode=0700 -- /run/user/0\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 adds SC2174 to an atomic non-temp mkdir (--mode allowed anywhere)"
+else
+   note_fail "R-172 did not add SC2174 to an atomic non-temp mkdir"
+fi
+nontmp="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${nontmp}" ] ; then
+   note_pass "R-172 non-temp SC2174 insertion is idempotent"
+else
+   note_fail "R-172 non-temp SC2174 insertion not idempotent"
+fi
+## The MODE requirement stays temp-scoped: a non-temp mkdir without --mode must
+## be left byte-identical (the fixer must not fabricate a mode off-temp).
+f="${test_dir}/mkdirnontmpnomode.sh"
+printf '%b' '#!/bin/bash\nmkdir --parents -- /run/user/0\n' >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves a non-temp mkdir without --mode untouched"
+else
+   note_fail "R-172 altered a non-temp mkdir that has no --mode"
+fi
+
 ## --- 7i: a non-shell file with the pattern is untouched -------------------
 f="${test_dir}/doc-mkdir.md"
 ## 'mkdir' at line start (after the '\n' escape), so this test SOURCE carries
