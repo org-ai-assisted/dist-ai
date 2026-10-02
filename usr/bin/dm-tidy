@@ -194,17 +194,30 @@ record() {
    step_results+=( "$(printf '%s\t%s' "$1" "$2")" )
 }
 
-## Submodule paths from the parent's .gitmodules (declaration order). Read the
-## config, NOT 'git submodule foreach' (which aborts at the first broken submodule
-## and hides the rest).
-submodule_paths() {
-   ## '-z': NUL-separated records, each "<key>\n<value>"; print the value. A lone
-   ## 'sed' split on the first space garbles any submodule whose name/path contains
-   ## whitespace -- which would then fail the on-disk check and be SILENTLY skipped
-   ## from validation, the exact silent-skip phase 0 exists to prevent.
-   local record
-   git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null \
-      | while IFS= read -r -d '' record; do printf '%s\n' "${record#*$'\n'}" ; done
+## Submodule paths from the parent's .gitmodules (declaration order), into the global
+## array submodule_path_list -- NUL-safe END TO END so a path containing whitespace OR
+## a newline survives intact (splitting on a space or newline garbles such a path,
+## which then fails the on-disk check and is SILENTLY skipped -- the exact silent-skip
+## phase 0 exists to prevent). Read the config, NOT 'git submodule foreach' (which
+## aborts at the first broken submodule and hides the rest).
+##
+## Returns nonzero ONLY on a genuine .gitmodules parse/access error -- that MUST abort,
+## never be swallowed as "no submodules" (which would validate ZERO submodules and then
+## report clean). A MISSING .gitmodules is the legitimate no-submodule case (empty, ok).
+submodule_path_list=()
+read_submodule_paths() {
+   submodule_path_list=()
+   [ -f "${top}/.gitmodules" ] || return 0
+   ## Probe parseability first: 'git config --list' exits 0 on a valid file (even an
+   ## empty one) and fatal (>1) on a malformed one, so a real error is told apart from
+   ## the no-matching-keys case the read below ignores safely.
+   local probe_rc=0 record
+   git -C "${top}" config -z -f "${top}/.gitmodules" --list >/dev/null 2>&1 || probe_rc="$?"
+   [ "${probe_rc}" -le 1 ] || return "${probe_rc}"
+   ## '-z': NUL-separated records, each "<key>\n<value>"; keep the value (the path).
+   while IFS= read -r -d '' record; do
+      submodule_path_list+=( "${record#*$'\n'}" )
+   done < <( git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null )
 }
 
 ## Append a line to the nameref array for every EXPECTED_REMOTE missing from <repo>,
@@ -248,12 +261,19 @@ phase_remotes() {
    else
       log "remote ensure SKIPPED: '${top}' is not the tree ${REMOTES_ENSURE_CMD##*/} operates on (${REMOTES_TARGET_TREE}); validating only, mutating nothing."
    fi
-   local missing=()
+   local missing=() sub_rc=0
+   read_submodule_paths || sub_rc="$?"
+   if [ "${sub_rc}" -ne 0 ]; then
+      record "1 remotes" "ERROR (cannot parse '${top}/.gitmodules')"
+      any_error="true" ; aborted="true"
+      printf '%s\n' "${0##*/}: failed to parse '${top}/.gitmodules' -- refusing to validate remotes against an incomplete submodule list." >&2
+      return 0
+   fi
    validate_repo_remotes "${top}" "(parent)" missing
-   while IFS= read -r path; do
+   for path in "${submodule_path_list[@]}"; do
       [ -n "${path}" ] || continue
       validate_repo_remotes "${top}/${path}" "${path}" missing
-   done < <(submodule_paths)
+   done
    if [ "${#missing[@]}" -gt 0 ]; then
       record "1 remotes" "ERROR (missing expected remotes)"
       any_error="true" ; aborted="true"

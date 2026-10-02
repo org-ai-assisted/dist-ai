@@ -436,6 +436,21 @@ else
 fi
 gitq -C "${other}" remote add ArrayBolt3 "file://${fork}"
 
+## --- Case 16 (CANARY): a MALFORMED .gitmodules ERRORS, never silent-skips -----------
+## A .gitmodules parse failure must NOT be swallowed as "zero submodules" (which would
+## validate nothing and report clean -- the silent-skip phase 0 exists to prevent).
+## Corrupt the superproject's .gitmodules and require the early abort. On OLD dm-tidy
+## the failure was 2>/dev/null-swallowed to an empty list, so it validated only the
+## parent and PROCEEDED (exit 0) -- this case fails on it. 'super' IS the helper's tree,
+## so the ensure runs first (REMOTES), then the parse error aborts before the rest.
+printf 'this is not valid config\n[unterminated\n' > "${super}/.gitmodules"
+run_tidy --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "REMOTES,FSCK" ]; then
+   pass "a malformed .gitmodules ERRORS (exit 1, only fsck after) instead of silently validating zero submodules"
+else
+   fail "malformed .gitmodules not caught; rc=${tidy_rc} labels=$(labels_seen) log:<<<$(log_lines)>>>"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
