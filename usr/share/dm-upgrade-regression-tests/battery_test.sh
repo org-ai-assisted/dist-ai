@@ -50,6 +50,8 @@ REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
 reset() {
    EXEC_LOG=''; EXEC_FAIL_NUM=''; EXEC_FLAKY_NUM=''; EXEC_FLAKY_FAILS=0; EXEC_FLAKY_SEEN=0
    REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
+   ## Per-consumer check-skip map is a battery input; clear it so each test is isolated.
+   RELEASE_CHECK_SKIP_REASON=()
 }
 # shellcheck disable=SC2317  ## passed by name to run_release_check_battery
 stub_exec() {   ## NUM SESSION CMD TIMEOUT
@@ -121,6 +123,33 @@ rc=0; run_release_check_battery stub_exec stub_reboot stub_verify || rc=$?
 assert_eq 'T5 battery rc'            "${rc}"                       '1'
 assert_eq 'T5 failed at check 2'     "${RELEASE_CHECK_FAILED_NUM}" '2'
 assert_eq 'T5 no sysmaint check ran' "$(count_tok "${EXEC_LOG}" '2:sysmaint')" '0'
+
+## T6: RELEASE_CHECK_SKIP_REASON routes a check elsewhere -- it is NOT executed here,
+## but the battery still passes the checks it DOES run (the fast-path routes check 8 to
+## the authoritative GUI-OCR gate). Canary: on code without skip support, check 8 runs
+## and '8:user' appears -> T6 fails.
+## Side-effect run (NOT in a subshell, so EXEC_LOG / REBOOT_COUNT survive).
+reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify >/dev/null || rc=$?
+assert_eq 'T6 battery rc (skip not a failure)' "${rc}" '0'
+assert_eq 'T6 check 8 not executed'   "$(count_tok "${EXEC_LOG}" '8:user')" '0'
+assert_eq 'T6 other checks still ran'  "${EXEC_LOG}" '1:user 5:user 6:user 4:user 2:sysmaint 3:sysmaint'
+assert_eq 'T6 one reboot still happens' "${REBOOT_COUNT}" '1'
+## The skip must be LOUD on stdout (reads as routed, never a silent green PASS); a
+## capturing subshell run is fine here since only its stdout is asserted.
+reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'
+skip_out="$(run_release_check_battery stub_exec stub_reboot stub_verify)" || true
+if grep --quiet 'check 8 .* SKIPPED in this gate' <<< "${skip_out}"; then
+   assert_eq 'T6 skip notice printed to stdout' 'yes' 'yes'
+else
+   assert_eq 'T6 skip notice printed to stdout' "${skip_out}" 'a line matching: check 8 ... SKIPPED in this gate'
+fi
+
+## T6b: a skipped FUNCTIONAL check does not suppress the real failure of another check.
+reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'; EXEC_FAIL_NUM=4
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify || rc=$?
+assert_eq 'T6b still fails at 4 despite skip' "${RELEASE_CHECK_FAILED_NUM}" '4'
+assert_eq 'T6b battery rc'                    "${rc}" '1'
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1

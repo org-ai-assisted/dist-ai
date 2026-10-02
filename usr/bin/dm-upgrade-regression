@@ -379,6 +379,13 @@ run_regression() {
       REASON="guest did not come back in the USER session after the ${repository} upgrade (upgrade may have bricked boot)"
       return 1
    fi
+   ## Route check 8 (systemcheck) to the authoritative GUI-OCR gate (dm-calamares-install).
+   ## The guestcontrol transport spawns the in-guest process via VBoxService with NO logind
+   ## user session (no XDG_RUNTIME_DIR / user D-Bus / privleap user context), so systemcheck's
+   ## check_system_ready `systemctl --user is-system-running` has no user manager to query.
+   ## A crippled check 8 here would emit a FALSE signal in a non-authoritative gate; the GUI-OCR
+   ## gate runs the identical `systemcheck --cli --leak-tests --ci` inside the real LXQt login.
+   RELEASE_CHECK_SKIP_REASON[8]="guestcontrol fast-path has no logind user session (no user D-Bus/XDG_RUNTIME_DIR/privleap); check 8 (systemcheck) is owned by the authoritative GUI-OCR gate dm-calamares-install"
    if ! run_release_check_battery r6_exec r6_reboot_sysmaint r6_verify; then
       REASON="release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON})"
       return 1
