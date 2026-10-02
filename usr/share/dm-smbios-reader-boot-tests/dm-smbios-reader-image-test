@@ -220,12 +220,25 @@ def parse_args():
     )
     parser.add_argument("--serial-log", default="", help="write the serial log here")
     parser.add_argument(
+        "--backend", choices=("auto", "qemu", "vbox"), default="auto",
+        help="VM backend: auto (vbox when VBoxManage + AMD-V + no /dev/kvm, else"
+             " qemu), qemu, or vbox (forces VBox/AMD-V; requires VBoxManage)",
+    )
+    parser.add_argument(
         "--dm-smbios-reader-qemu", default="dm-smbios-reader-qemu",
         help="path to the dm-smbios-reader-qemu executable (default: PATH lookup)",
     )
     ## Any tokens after '--' are passed straight to dm-smbios-reader-qemu (e.g. --memory, --smp).
     parser.add_argument("dm_smbios_reader_qemu_args", nargs=argparse.REMAINDER)
     return parser.parse_args()
+
+
+def merged_smbios_append(args):
+    """Merge the --session cmdline with any caller --smbios-append (extra kernel
+    cmdline injected via SMBIOS). Shared by the qemu argv and the vbox DMI serial so
+    both backends inject the same session selection + append."""
+    parts = [p for p in (SESSION_CMDLINE[args.session], args.smbios_append) if p]
+    return " ".join(parts)
 
 
 def build_qemu_argv(args):
@@ -254,15 +267,11 @@ def build_qemu_argv(args):
     if args.serial_log:
         cmd += ["--serial-logfile", args.serial_log]
 
-    ## Merge the session cmdline with any caller-supplied --smbios-append.
-    append_parts = []
-    session_cmdline = SESSION_CMDLINE[args.session]
-    if session_cmdline:
-        append_parts.append(session_cmdline)
-    if args.smbios_append:
-        append_parts.append(args.smbios_append)
-    if append_parts:
-        cmd += ["--smbios-append", " ".join(append_parts)]
+    ## Merge the session cmdline with any caller-supplied --smbios-append (shared with
+    ## the vbox backend via merged_smbios_append).
+    merged = merged_smbios_append(args)
+    if merged:
+        cmd += ["--smbios-append", merged]
 
     ## Drop the leading '--' argparse leaves in REMAINDER.
     extra = args.dm_smbios_reader_qemu_args
@@ -684,90 +693,280 @@ def run_checks(child, args, log):
     return overall
 
 
+def resolve_backend(args, log):
+    """Return 'qemu' or 'vbox'. 'auto' picks vbox when VBoxManage is present AND there
+    is no usable /dev/kvm AND the host is AMD (the OVH image-test box, where qemu would
+    fall back to slow TCG), else qemu -- the safe default, overridable, no flag to
+    recall. Explicit --backend vbox REQUIRES VBoxManage (loud SETUP, never a skip)."""
+    import shutil
+    if args.backend == "qemu":
+        return "qemu"
+    have_vbox = shutil.which("VBoxManage") is not None
+    if args.backend == "vbox":
+        if not have_vbox:
+            die_setup("--backend vbox requires VBoxManage (install VirtualBox);"
+                      " this is a hard dependency, not a skip")
+        return "vbox"
+    has_kvm = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    is_amd = False
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as handle:
+            is_amd = any("AuthenticAMD" in line for line in handle
+                         if line.startswith("vendor_id"))
+    except OSError:
+        pass
+    if have_vbox and not has_kvm and is_amd:
+        log("dm-smbios-reader-image-test: backend auto -> vbox (AMD-V, no /dev/kvm)")
+        return "vbox"
+    log("dm-smbios-reader-image-test: backend auto -> qemu")
+    return "qemu"
+
+
+def start_qemu_backend(args, log):
+    """Spawn qemu under pexpect; return (child, cleanup). cleanup SIGKILLs+reaps qemu
+    and removes the per-boot workdir dm-smbios-reader-qemu left for us (OVMF_VARS copy
+    or kernel/initrd extraction) so nothing leaks under /tmp."""
+    import pexpect
+    qemu_argv, qemu_workdir = build_qemu_argv(args)
+
+    def drop_workdir():
+        if qemu_workdir:
+            safe_rmtree_workdir(qemu_workdir, log)
+
+    ## qemu owns the serial log (its chardev 'logfile='): a blocking regular-file copy
+    ## of every serial byte that never drops, so a verbose systemcheck burst is captured
+    ## in full even though the pexpect reader may fall behind and lose bytes to a full
+    ## pty. Truncate it up front so the artifact exists and an unwritable path fails
+    ## early. Do NOT also log the pexpect stream here -- two writers would race.
+    if args.serial_log:
+        try:
+            with open(args.serial_log, "wb"):
+                pass
+        except OSError as exc:
+            drop_workdir()
+            die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
+
+    print("dm-smbios-reader-image-test: spawning: %s"
+          % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
+    ## codec_errors="replace": read_nonblocking chops the stream at a byte count, so a
+    ## multi-byte char straddling the boundary (or outright non-UTF-8 framing noise) is
+    ## routine; strict decoding would raise inside wait_for() and escape as a traceback.
+    try:
+        child = pexpect.spawn(
+            qemu_argv[0], qemu_argv[1:], timeout=args.timeout,
+            encoding="utf-8", codec_errors="replace")
+    except pexpect.ExceptionPexpect as exc:
+        drop_workdir()
+        die_setup("cannot spawn qemu %s: %s" % (qemu_argv[0], exc))
+    ## Pace input: the guest zsh line editor mangles rapidly-sent lines; a small
+    ## pre-send delay lets each line run before the next.
+    child.delaybeforesend = 0.4
+
+    def cleanup():
+        ## Deterministically kill+reap qemu (close(force=True) SIGKILLs + waits) so
+        ## nothing lingers for the container init to force-reap as a spurious non-zero
+        ## step exit; the image boots with -snapshot, so a hard kill loses nothing.
+        try:
+            child.close(force=True)
+        except Exception:
+            pass
+        drop_workdir()
+
+    return child, cleanup
+
+
+def _acquire_amd_v_lock(timeout, log):
+    """Hold an exclusive flock serialising concurrent BOOT-TEST runs. VBox SHARES AMD-V
+    across its own VMs (the fleet runs many concurrently), so this guards VM-name / RAM
+    contention between boot-test runs, NOT the fleet; ensure-amd-v (in serial-up) still
+    guards the KVM<->VBox boundary. Bounded by --timeout."""
+    import fcntl
+    import tempfile
+    import time
+    fh = None
+    path = None
+    ## DM_SMBIOS_READER_VBOX_LOCK is a test seam (point the lock at a tmp path so
+    ## parallel test runs do not collide on the shared /run/lock file); unset in
+    ## production, which uses /run/lock then a tmp fallback.
+    override = os.environ.get("DM_SMBIOS_READER_VBOX_LOCK")
+    candidates = ([override] if override else
+                  ["/run/lock/dm-smbios-reader-vbox-amd-v.lock",
+                   os.path.join(tempfile.gettempdir(),
+                                "dm-smbios-reader-vbox-amd-v.lock")])
+    for candidate in candidates:
+        try:
+            fh = open(candidate, "w")
+            path = candidate
+            break
+        except OSError:
+            continue
+    if fh is None:
+        die_setup("cannot open the AMD-V boot-test lock file")
+    deadline = time.monotonic() + max(timeout, 1)
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            log("dm-smbios-reader-image-test: holding AMD-V boot-test lock %s" % (path,))
+            return fh
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                die_setup("timed out waiting for the AMD-V boot-test lock %s" % (path,))
+            time.sleep(2)
+
+
+def _release_lock(fh):
+    import fcntl
+    try:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+    except OSError:
+        pass
+
+
+def _serial_down(vbox, vm, sock, log):
+    try:
+        subprocess.run([vbox, "serial-down", "--vm", vm, "--uart-socket", sock],
+                       check=False)
+    except OSError as exc:
+        log("dm-smbios-reader-image-test: serial-down failed: %s" % (exc,))
+
+
+def start_vbox_backend(args, log):
+    """Build + boot a VBox VM wired for serial driving via dm-smbios-reader-vbox, connect
+    its UART host socket and return (child, cleanup). The cmdline payload comes from
+    dm-smbios-reader-qemu --emit-cmdline (single source), injected via VBox DMI; an
+    AMD-V run-mutex serialises concurrent boot-test runs. run_checks drives it unchanged.
+    """
+    import socket
+    import tempfile
+    import time
+    import pexpect
+    import pexpect.fdpexpect
+
+    self_dir = os.path.dirname(os.path.realpath(__file__))
+    vbox = os.path.join(self_dir, "dm-smbios-reader-vbox")
+
+    ## The SAME cmdline the qemu backend injects, from the shared --emit-cmdline source
+    ## (single commas; VBox DMI takes the value verbatim, no qemu comma-doubling).
+    emit = [args.dm_smbios_reader_qemu, "--emit-cmdline", "--test-console"]
+    if args.arch:
+        emit += ["--arch", args.arch]
+    merged = merged_smbios_append(args)
+    if merged:
+        emit += ["--smbios-append", merged]
+    emit += (["--disk", args.disk] if args.disk else ["--iso", args.iso])
+    try:
+        payload = subprocess.run(
+            emit, check=True, capture_output=True, text=True).stdout.strip("\n")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        die_setup("dm-smbios-reader-qemu --emit-cmdline failed: %s" % (exc,))
+
+    lock_fh = _acquire_amd_v_lock(args.timeout, log)
+    vm = "dm-smbios-reader-boot-%d" % os.getpid()
+    sock = os.path.join(tempfile.gettempdir(), "%s.serial.sock" % (vm,))
+    up = [vbox, "serial-up", "--vm", vm, "--uart-socket", sock,
+          "--smbios-serial", "dm-cmdline=" + payload,
+          "--firmware", args.firmware or "efi"]
+    up += (["--disk", args.disk] if args.disk else ["--iso", args.iso])
+    rc = subprocess.run(up).returncode
+    if rc != 0:
+        ## serial-up printed its own reason and its rc is already our contract
+        ## (2 setup / 5 fail); tear the half-built VM down and propagate it.
+        _serial_down(vbox, vm, sock, log)
+        _release_lock(lock_fh)
+        sys.exit(rc)
+
+    ## Connect the UART socket VBox now listens on (it appears shortly after power-on).
+    sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            sk.connect(sock)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                sk.close()
+                _serial_down(vbox, vm, sock, log)
+                _release_lock(lock_fh)
+                die_setup("VBox serial socket never appeared: %s" % (sock,))
+            time.sleep(0.5)
+
+    child = pexpect.fdpexpect.fdspawn(
+        sk, timeout=args.timeout, encoding="utf-8", codec_errors="replace")
+    child.delaybeforesend = 0.4
+    ## No qemu writer here, so Python owns the serial log: the lossy-pty concern does
+    ## not apply to a socket (a slow reader backpressures the UART rather than dropping).
+    log_fh = None
+    if args.serial_log:
+        try:
+            log_fh = open(args.serial_log, "w", encoding="utf-8")
+        except OSError as exc:
+            try:
+                child.close()
+            except Exception:
+                pass
+            sk.close()
+            _serial_down(vbox, vm, sock, log)
+            _release_lock(lock_fh)
+            die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
+        child.logfile_read = log_fh
+
+    def cleanup():
+        try:
+            child.close()
+        except Exception:
+            pass
+        try:
+            sk.close()
+        except Exception:
+            pass
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        _serial_down(vbox, vm, sock, log)
+        _release_lock(lock_fh)
+
+    return child, cleanup
+
+
 def main():
     args = parse_args()
-
-    try:
-        import pexpect
-    except ImportError:
-        die_setup("python3-pexpect is required (apt-get install python3-pexpect)")
-
-    qemu_argv, qemu_workdir = build_qemu_argv(args)
 
     def log(message):
         print(message, file=sys.stderr)
 
-    ## Wrap ALL post-build setup so the caller-owned workdir dm-smbios-reader-qemu left for us
-    ## (EFI OVMF_VARS copy or kernel/initrd extraction) is removed even if the
-    ## serial-log open or pexpect.spawn raises -- else it leaks under /tmp.
-    child = None
     try:
-        ## The serial log is written by qemu (its chardev 'logfile='), not from Python.
-        ## Truncate/create it up front anyway so the artifact always exists (even if qemu
-        ## never starts) and an unwritable path fails early with a clear message instead
-        ## of a cryptic qemu error. qemu reopens it with logappend=off (truncates again).
-        if args.serial_log:
-            try:
-                with open(args.serial_log, "wb"):
-                    pass
-            except OSError as exc:
-                die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
+        import pexpect  # noqa: F401  (both backends need it; fail early + clean)
+    except ImportError:
+        die_setup("python3-pexpect is required (apt-get install python3-pexpect)")
 
-        print("dm-smbios-reader-image-test: spawning: %s"
-              % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
-        ## codec_errors="replace", not pexpect's strict default: read_nonblocking
-        ## chops the serial stream at a fixed byte count, so a multi-byte
-        ## character straddling a 4096-byte boundary is routine -- and a guest
-        ## can emit outright non-UTF-8 bytes (framing noise, a binary splash).
-        ## Strict decoding raises UnicodeDecodeError inside wait_for(), which
-        ## catches only TIMEOUT/EOF, so the run would die with a traceback
-        ## instead of one of the documented FAIL/SETUP exit codes.
-        try:
-            child = pexpect.spawn(
-                qemu_argv[0],
-                qemu_argv[1:],
-                timeout=args.timeout,
-                encoding="utf-8",
-                codec_errors="replace",
-            )
-        except pexpect.ExceptionPexpect as exc:
-            ## qemu_argv[0] is chosen by dm-smbios-reader-qemu; if that qemu binary is missing or
-            ## not executable, pexpect raises here. That is a setup/environment
-            ## error -- map to SETUP(2) instead of letting it escape as exit 1. The
-            ## enclosing finally still runs, so the dm-smbios-reader-qemu workdir is cleaned up.
-            die_setup("cannot spawn qemu %s: %s" % (qemu_argv[0], exc))
-        ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
-        ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec'
-        ## never submits). A small pre-send delay lets each line be read and run
-        ## before the next, so 'exec bash' actually takes and metacharacters survive.
-        child.delaybeforesend = 0.4
-        ## The serial log is written by qemu itself (the chardev 'logfile=' wired via
-        ## dm-smbios-reader-qemu --serial-logfile): a blocking regular-file copy of every serial byte
-        ## that never drops, so a verbose burst is captured in full even though this
-        ## pexpect reader (used only to drive the conversation) may fall behind and lose
-        ## bytes to a full pty. Do NOT also log the pexpect stream to the same file --
-        ## qemu owns it, and a second writer would race/interleave with qemu's copy.
+    backend = resolve_backend(args, log)
+    if backend == "vbox":
+        child, cleanup = start_vbox_backend(args, log)
+    else:
+        child, cleanup = start_qemu_backend(args, log)
 
+    try:
         verdict = run_checks(child, args, log)
     finally:
-        if child is not None:
-            ## Deterministically kill AND reap qemu so nothing lingers for the
-            ## container init to SIGKILL on teardown. A live image can shut down
-            ## by 'Exiting container' (its systemd mis-detects a container) rather
-            ## than ACPI-powering-off qemu, so qemu keeps running after the checks;
-            ## the container init's cleanup of that leftover then surfaces as a
-            ## spurious non-zero step exit even though the checks passed.
-            ## close(force=True) SIGKILLs, closes the pty and waits/reaps.
-            try:
-                child.close(force=True)
-            except Exception:
-                ## Best-effort teardown of an already-dying child. The verdict is
-                ## decided by then, so a failure to reap must not replace it with
-                ## a traceback -- that is exactly the spurious non-zero exit the
-                ## comment above describes.
-                pass
-        if qemu_workdir:
-            safe_rmtree_workdir(qemu_workdir, log)
+        cleanup()
+
+    ## A ~0-byte serial log on FAIL almost always means the image lacks the
+    ## --smbios-reader (or, under vbox, the DMI vendor is not QEMU): the SMBIOS cmdline
+    ## injection was a no-op, so the login-free serial shell never bound. Flag it so a
+    ## mis-built image is distinguishable from a real boot failure (still FAIL).
+    if verdict == FAIL and args.serial_log:
+        try:
+            empty = os.path.getsize(args.serial_log) == 0
+        except OSError:
+            empty = False
+        if empty:
+            log("dm-smbios-reader-image-test: serial log is empty -- the image likely"
+                " lacks the --smbios-reader (build with --smbios-reader true), or the"
+                " DMI vendor is not QEMU under --backend vbox")
 
     log("dm-smbios-reader-image-test: exiting (verdict rc=%s)" % verdict)
     sys.exit(verdict)

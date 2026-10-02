@@ -922,3 +922,172 @@ def test_release_check8_ignore_flags_efi_secureboot_only():
         assert _release_check_cmd(8, firmware) == base, firmware
     ## a non-8 check is never adjusted, even under efi-secureboot.
     assert _release_check_cmd(1, 'efi-secureboot') == _release_check_cmds()[1]
+
+
+## --- backend selection (--backend {auto,qemu,vbox}) ---------------------------
+
+def test_resolve_backend_explicit_qemu():
+    m = _load_dm_image_test()
+    assert m.resolve_backend(types.SimpleNamespace(backend="qemu"),
+                             lambda _: None) == "qemu"
+
+
+def test_resolve_backend_explicit_vbox_without_vboxmanage_is_setup(monkeypatch):
+    import shutil
+    m = _load_dm_image_test()
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit) as exc:
+        m.resolve_backend(types.SimpleNamespace(backend="vbox"), lambda _: None)
+    assert exc.value.code == SETUP_RC
+
+
+def test_resolve_backend_auto_qemu_when_kvm_usable(monkeypatch):
+    import shutil
+    m = _load_dm_image_test()
+    ## VBoxManage present but /dev/kvm usable -> qemu (KVM accelerates, no need for vbox).
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
+    monkeypatch.setattr(m.os, "access", lambda path, mode: True)
+    assert m.resolve_backend(types.SimpleNamespace(backend="auto"),
+                             lambda _: None) == "qemu"
+
+
+def test_resolve_backend_auto_vbox_on_amd_without_kvm(monkeypatch, tmp_path):
+    import shutil
+    m = _load_dm_image_test()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
+    monkeypatch.setattr(m.os, "access", lambda path, mode: False)  # no usable /dev/kvm
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text("vendor_id\t: AuthenticAMD\n", encoding="utf-8")
+    real_open = open
+
+    def fake_open(path, *a, **k):
+        return real_open(str(cpuinfo) if path == "/proc/cpuinfo" else path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    assert m.resolve_backend(types.SimpleNamespace(backend="auto"),
+                             lambda _: None) == "vbox"
+
+
+## --- vbox serial seam: fdspawn-over-socket, lock, backend error mapping --------
+
+def test_fdspawn_over_unix_socket_drives_run_checks():
+    """The vbox backend drives run_checks over a UNIX-socket UART via pexpect fdspawn,
+    not a spawned child. Prove that works: a server thread scripts the serial
+    conversation (reusing _FakeChild's logic) over a real AF_UNIX socketpair, and
+    run_checks(fdspawn(client)) -> PASS -- the core vbox mechanism, no VBox needed."""
+    pytest.importorskip('pexpect')
+    import pexpect.fdpexpect
+    m = _load_dm_image_test()
+    guest, driver = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def serve():
+        fake = _FakeChild(os.getpid(), systemcheck_rc=0, diag_rc=0)
+        guest.settimeout(15)
+        buf = b""
+        try:
+            while True:
+                try:
+                    data = guest.recv(4096)
+                except socket.timeout:
+                    break
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    fake.sendline(line.decode("utf-8", "replace"))
+                    if fake.buf:
+                        guest.sendall(fake.buf.encode("utf-8"))
+                        fake.buf = ""
+        finally:
+            guest.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    child = pexpect.fdpexpect.fdspawn(driver, timeout=20, encoding="utf-8",
+                                      codec_errors="replace")
+    child.delaybeforesend = 0.0
+    args = types.SimpleNamespace(
+        timeout=20, run=None, login_user="root", expect_rc=0, firmware="",
+        iso=None, session="user")
+    logs: list[str] = []
+    try:
+        rc = m.run_checks(child, args, logs.append)
+    finally:
+        ## fdspawn.close() closes the underlying fd, so driver.close() double-closes
+        ## (EBADF) -- tolerate it, exactly as the production cleanup() does.
+        try:
+            child.close()
+        except Exception:
+            pass
+        try:
+            driver.close()
+        except OSError:
+            pass
+        thread.join(timeout=5)
+    assert rc == m.PASS, logs
+
+
+def test_amd_v_lock_serialises_boot_test_runs(monkeypatch, tmp_path):
+    m = _load_dm_image_test()
+    monkeypatch.setenv("DM_SMBIOS_READER_VBOX_LOCK", str(tmp_path / "amd-v.lock"))
+    held = m._acquire_amd_v_lock(5, lambda _: None)
+    try:
+        ## a second acquire while the first is held must time out -> SETUP.
+        with pytest.raises(SystemExit) as exc:
+            m._acquire_amd_v_lock(1, lambda _: None)
+        assert exc.value.code == SETUP_RC
+    finally:
+        m._release_lock(held)
+    ## released -> acquirable again.
+    again = m._acquire_amd_v_lock(5, lambda _: None)
+    m._release_lock(again)
+
+
+def _vbox_args(**over):
+    base = dict(dm_smbios_reader_qemu="dm-smbios-reader-qemu", arch="amd64",
+                session="user", smbios_append="", disk="/d.vdi", iso=None,
+                firmware="efi", timeout=30, serial_log="")
+    base.update(over)
+    return types.SimpleNamespace(**base)
+
+
+def test_start_vbox_backend_emit_cmdline_failure_is_setup(monkeypatch):
+    m = _load_dm_image_test()
+
+    def fake_run(cmd, *a, **k):
+        raise FileNotFoundError("dm-smbios-reader-qemu missing")
+
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        m.start_vbox_backend(_vbox_args(), lambda _: None)
+    assert exc.value.code == SETUP_RC
+
+
+def test_start_vbox_backend_propagates_serial_up_rc_and_tears_down(monkeypatch,
+                                                                   tmp_path):
+    m = _load_dm_image_test()
+    monkeypatch.setenv("DM_SMBIOS_READER_VBOX_LOCK", str(tmp_path / "l.lock"))
+    calls = []
+
+    class _R:
+        def __init__(self, rc, out=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = ""
+
+    def fake_run(cmd, *a, **k):
+        calls.append(cmd)
+        if "--emit-cmdline" in cmd:
+            return _R(0, "console=ttyS0,115200n8 loglevel=3")
+        if "serial-up" in cmd:
+            return _R(m.FAIL)          # serial-up FAIL (5)
+        return _R(0)                   # serial-down etc.
+
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        m.start_vbox_backend(_vbox_args(), lambda _: None)
+    ## serial-up's rc is already our contract (5 FAIL) -- propagated verbatim.
+    assert exc.value.code == m.FAIL
+    ## the half-built VM was torn down (serial-down ran).
+    assert any("serial-down" in c for c in calls), calls
