@@ -20,6 +20,7 @@ SourceFileLoader, because dm-smbios-reader-vbox is an executable with no .py ext
 import importlib.machinery
 import importlib.util
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
@@ -620,3 +621,141 @@ def test_cli_parser_accepts_ensure_amd_v():
     ## Parse only -- do NOT dispatch: the real action touches host modules.
     args = M._build_parser().parse_args(['ensure-amd-v'])
     assert args.cmd == 'ensure-amd-v'
+
+
+## --- serial backend (for dm-smbios-reader-image-test --backend vbox) -----------
+
+_DMI_VENDOR_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor'
+_DMI_SERIAL_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial'
+
+
+def test_uart_server_argv():
+    assert M.build_uart_server_argv('kick', '/run/x.sock') == [
+        'VBoxManage', 'modifyvm', 'kick',
+        '--uart1', '0x3f8', '4', '--uartmode1', 'server', '/run/x.sock']
+
+
+def test_dmi_argv_vendor_qemu_and_serial_verbatim():
+    serial = 'dm-cmdline=console=ttyS0,115200n8 loglevel=3'
+    argvs = M.build_dmi_argv('kick', 'QEMU', serial)
+    assert argvs == [
+        ['VBoxManage', 'setextradata', 'kick', _DMI_VENDOR_KEY, 'QEMU'],
+        ['VBoxManage', 'setextradata', 'kick', _DMI_SERIAL_KEY, serial]]
+    ## single commas preserved -- VBox DMI takes the value verbatim (no qemu doubling).
+    assert ',,' not in argvs[1][-1]
+
+
+def test_storageattach_multiattach_appends_mtype():
+    base = M.build_storageattach_argv('kick', 'SATA', 0, 0, 'hdd', '/d.vdi')
+    assert '--mtype' not in base  # backward compatible: no mtype by default
+    ma = M.build_storageattach_argv('kick', 'SATA', 0, 0, 'hdd', '/d.vdi',
+                                    mtype='multiattach')
+    assert ma[-2:] == ['--mtype', 'multiattach']
+
+
+def test_serial_vm_plan_disk_is_multiattach_hdd_no_createmedium():
+    plan = M.build_serial_vm_plan(
+        'kick', disk='/d.vdi', firmware='efi', uart_socket='/s.sock',
+        dmi_vendor='QEMU', dmi_serial='dm-cmdline=x')
+    flat = [' '.join(a) for a in plan]
+    assert flat[0] == 'VBoxManage createvm --name kick --ostype Debian_64 --register'
+    assert 'VBoxManage modifyvm kick --memory 3072 --firmware efi' in flat
+    assert ('VBoxManage setextradata kick %s QEMU' % _DMI_VENDOR_KEY) in flat
+    assert any('--uart1 0x3f8 4 --uartmode1 server /s.sock' in f for f in flat)
+    assert any('--type hdd --medium /d.vdi --mtype multiattach' in f for f in flat)
+    ## a disk boots the EXISTING image -- never create an empty target medium.
+    assert not any('createmedium' in f for f in flat)
+    ## plain efi -> no SecureBoot enrollment.
+    assert not any('modifynvram' in f for f in flat)
+
+
+def test_serial_vm_plan_iso_is_dvddrive():
+    plan = M.build_serial_vm_plan(
+        'kick', iso='/live.iso', firmware='efi', uart_socket='/s.sock',
+        dmi_vendor='QEMU', dmi_serial='dm-cmdline=x')
+    flat = [' '.join(a) for a in plan]
+    assert any('--type dvddrive --medium /live.iso' in f for f in flat)
+    assert any('storagectl kick --name IDE --add ide' in f for f in flat)
+    assert not any('multiattach' in f for f in flat)
+
+
+def test_serial_vm_plan_secureboot_spliced_for_efi_secureboot():
+    plan = M.build_serial_vm_plan(
+        'kick', disk='/d.vdi', firmware='efi-secureboot', uart_socket='/s.sock',
+        dmi_vendor='QEMU', dmi_serial='dm-cmdline=x')
+    flat = [' '.join(a) for a in plan]
+    for step in ('inituefivarstore', 'enrollorclpk', 'enrollmssignatures',
+                 'secureboot --enable'):
+        assert any(step in f for f in flat), step
+
+
+def test_serial_vm_plan_requires_exactly_one_medium():
+    with pytest.raises(ValueError):
+        M.build_serial_vm_plan('kick', uart_socket='/s', dmi_vendor='QEMU',
+                               dmi_serial='x')
+    with pytest.raises(ValueError):
+        M.build_serial_vm_plan('kick', iso='/i', disk='/d', uart_socket='/s',
+                               dmi_vendor='QEMU', dmi_serial='x')
+
+
+def test_cli_serial_up_emit_argv_vendor_qemu_and_media(tmp_path):
+    proc = subprocess.run(
+        [str(BACKEND), 'serial-up', '--emit-argv', '--vm', 'kick',
+         '--disk', '/d.vdi', '--uart-socket', str(tmp_path / 's.sock'),
+         '--smbios-serial', 'dm-cmdline=console=ttyS0,115200n8'],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, (proc.returncode, proc.stderr)
+    out = proc.stdout
+    assert 'DmiSystemVendor QEMU' in out          # default vendor fires the reader
+    assert '--uart1 0x3f8 4 --uartmode1 server' in out
+    assert '--type hdd --medium /d.vdi --mtype multiattach' in out
+    assert 'dm-cmdline=console=ttyS0,115200n8' in out  # single commas, verbatim
+
+
+def test_cli_serial_up_requires_media_is_setup():
+    proc = subprocess.run(
+        [str(BACKEND), 'serial-up', '--vm', 'kick', '--uart-socket', '/s',
+         '--smbios-serial', 'x'],
+        capture_output=True, text=True)
+    ## argparse mutually-exclusive-required group rejects (exit 2 == SETUP_RC).
+    assert proc.returncode == SETUP_RC, (proc.returncode, proc.stderr)
+
+
+def test_require_vboxmanage_absent_raises_setup(monkeypatch):
+    monkeypatch.setattr(M, 'VBOXMANAGE', 'nonexistent-vboxmanage-xyz')
+    with pytest.raises(M.SetupError):
+        M.require_vboxmanage()
+
+
+def test_serial_up_without_vboxmanage_returns_setup(monkeypatch):
+    monkeypatch.setattr(M, 'VBOXMANAGE', 'nonexistent-vboxmanage-xyz')
+    args = types.SimpleNamespace(
+        vm='kick', iso=None, disk='/d.vdi', firmware='efi', memory=3072,
+        uart_socket='/s.sock', smbios_serial='dm-cmdline=x', dmi_vendor='QEMU',
+        emit_argv=False)
+    assert M.run_serial_up(args) == SETUP_RC
+
+
+def test_hwaccel_in_use_known_answers():
+    assert M.hwaccel_in_use('HM: Using AMD-V\nHM: Enabled nested paging\n') is True
+    assert M.hwaccel_in_use('00:00:01.1 HM: Using VT-x\n') is True
+    assert M.hwaccel_in_use(
+        'HM: HMR3Init: Falling back to NEM (Hyper-V active)\n') is False
+    assert M.hwaccel_in_use('HM: ... raw-mode ...\n') is False
+    assert M.hwaccel_in_use('') is False
+
+
+def test_assert_hwaccel_raises_setup_on_no_amdv(monkeypatch):
+    monkeypatch.setattr(M, '_vm_log_text',
+                        lambda vm, vboxmanage=M.VBOXMANAGE:
+                        'HM: HMR3Init: Falling back to NEM\n')
+    with pytest.raises(M.HwAccelError):
+        M.assert_hwaccel('kick', timeout=0, interval=0)
+    ## HwAccelError maps to SETUP (it is a SetupError), never FAIL.
+    assert issubclass(M.HwAccelError, M.SetupError)
+
+
+def test_assert_hwaccel_passes_on_amdv(monkeypatch):
+    monkeypatch.setattr(M, '_vm_log_text',
+                        lambda vm, vboxmanage=M.VBOXMANAGE: 'HM: Using AMD-V\n')
+    M.assert_hwaccel('kick', timeout=0, interval=0)  # must not raise

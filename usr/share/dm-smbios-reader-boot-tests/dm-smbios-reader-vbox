@@ -50,7 +50,6 @@ from PIL import Image, ImageChops, ImageStat
 PASS_RC = 0
 FAIL_RC = 5
 SETUP_RC = 2
-SKIP_RC = 77
 
 ## External system dependency -- resolved on PATH, overridable for tests.
 VBOXMANAGE = 'VBoxManage'
@@ -139,11 +138,18 @@ def build_storagectl_argv(vmname, name, bus, controller, vboxmanage=VBOXMANAGE):
 
 
 def build_storageattach_argv(vmname, controller, port, device, medium_type,
-                             medium, vboxmanage=VBOXMANAGE):
-    """Attach a medium (medium_type 'dvddrive' for an ISO, 'hdd' for a disk)."""
-    return [vboxmanage, 'storageattach', vmname, '--storagectl', controller,
+                             medium, mtype=None, vboxmanage=VBOXMANAGE):
+    """Attach a medium (medium_type 'dvddrive' for an ISO, 'hdd' for a disk).
+
+    mtype='multiattach' boots a disk NON-destructively: VBox keeps the base disk
+    read-only and writes to a per-VM differencing image -- the VBox equivalent of
+    qemu's -snapshot -- so a serial boot test never mutates the source image."""
+    argv = [vboxmanage, 'storageattach', vmname, '--storagectl', controller,
             '--port', str(port), '--device', str(device),
             '--type', medium_type, '--medium', medium]
+    if mtype is not None:
+        argv += ['--mtype', mtype]
+    return argv
 
 
 def build_startvm_argv(vmname, vboxmanage=VBOXMANAGE):
@@ -164,6 +170,42 @@ def build_keyboard_argv(vmname, codes, vboxmanage=VBOXMANAGE):
 def build_poweroff_argv(vmname, vboxmanage=VBOXMANAGE):
     """Hard power-off the VM."""
     return [vboxmanage, 'controlvm', vmname, 'poweroff']
+
+
+def build_unregister_argv(vmname, vboxmanage=VBOXMANAGE):
+    """Unregister the VM and DELETE its settings + created media (serial-down)."""
+    return [vboxmanage, 'unregistervm', vmname, '--delete']
+
+
+## COM1 at the standard ttyS0 I/O base + IRQ; 'server <path>' makes VBox listen on
+## a host UNIX domain socket (Linux) the driver connects to as a client. This is the
+## serial console the dm-smbios-reader-image-test serial battery drives, the VBox
+## analogue of qemu's -serial -- GUI images have no console, but a UART does.
+def build_uart_server_argv(vmname, sock, vboxmanage=VBOXMANAGE):
+    """modifyvm argv wiring COM1 to a host UNIX-socket server for serial driving."""
+    return [vboxmanage, 'modifyvm', vmname,
+            '--uart1', '0x3f8', '4', '--uartmode1', 'server', sock]
+
+
+## DMI (SMBIOS) overrides via the pcbios extradata keys. The in-image GRUB reader
+## appends the Type-1 system serial's 'dm-cmdline=' remainder to the kernel line,
+## but ONLY when the Type-1 manufacturer reads 'QEMU' -- so a VBox guest must
+## advertise vendor=QEMU for the reader to fire (same cmdline-injection chain the
+## qemu backend uses; dm-smbios-reader-qemu --emit-cmdline is the shared payload).
+_DMI_VENDOR_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor'
+_DMI_SERIAL_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial'
+
+
+def build_dmi_argv(vmname, vendor, serial, vboxmanage=VBOXMANAGE):
+    """Ordered setextradata argv pair setting the Type-1 DMI vendor + serial.
+
+    Unlike qemu's -smbios, setextradata takes the value verbatim, so the serial
+    carries SINGLE commas (no doubling) -- pass dm-smbios-reader-qemu
+    --emit-cmdline output as-is."""
+    return [
+        [vboxmanage, 'setextradata', vmname, _DMI_VENDOR_KEY, vendor],
+        [vboxmanage, 'setextradata', vmname, _DMI_SERIAL_KEY, serial],
+    ]
 
 
 def build_secureboot_plan(vmname, vboxmanage=VBOXMANAGE):
@@ -217,6 +259,46 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
         build_storageattach_argv(vmname, 'IDE', 0, 0, 'dvddrive', iso,
                                  vboxmanage=vboxmanage),
     ]
+    return plan
+
+
+def build_serial_vm_plan(vmname, *, iso=None, disk=None, firmware='efi',
+                         memory=3072, uart_socket, dmi_vendor, dmi_serial,
+                         ostype='Debian_64', vboxmanage=VBOXMANAGE):
+    """Ordered VBoxManage argv to build a fresh VM that boots media over a SERIAL
+    console for the dm-smbios-reader-image-test battery -- headless + no network,
+    like the qemu backend's serial leg (GUI/graphics/NIC are deliberately omitted).
+
+    Exactly one of iso/disk: an ISO boots live off a dvddrive; a disk image boots
+    through firmware off a SATA hdd attached --mtype multiattach (non-destructive,
+    the -snapshot analogue). DMI advertises vendor=QEMU + the dm-cmdline serial so
+    the in-image GRUB reader injects the kernel cmdline, and COM1 is wired to a host
+    UNIX socket the driver connects to. SecureBoot is enrolled for efi-secureboot."""
+    if (iso is None) == (disk is None):
+        raise ValueError('build_serial_vm_plan needs exactly one of iso/disk')
+    plan = [
+        build_createvm_argv(vmname, ostype, vboxmanage=vboxmanage),
+        build_modifyvm_argv(vmname, memory=memory, firmware=firmware,
+                            vboxmanage=vboxmanage),
+    ]
+    if firmware == 'efi-secureboot':
+        plan += build_secureboot_plan(vmname, vboxmanage=vboxmanage)
+    plan += build_dmi_argv(vmname, dmi_vendor, dmi_serial, vboxmanage=vboxmanage)
+    plan.append(build_uart_server_argv(vmname, uart_socket, vboxmanage=vboxmanage))
+    if disk is not None:
+        plan += [
+            build_storagectl_argv(vmname, 'SATA', 'sata', 'IntelAhci',
+                                  vboxmanage=vboxmanage),
+            build_storageattach_argv(vmname, 'SATA', 0, 0, 'hdd', disk,
+                                     mtype='multiattach', vboxmanage=vboxmanage),
+        ]
+    else:
+        plan += [
+            build_storagectl_argv(vmname, 'IDE', 'ide', 'PIIX4',
+                                  vboxmanage=vboxmanage),
+            build_storageattach_argv(vmname, 'IDE', 0, 0, 'dvddrive', iso,
+                                     vboxmanage=vboxmanage),
+        ]
     return plan
 
 
@@ -573,11 +655,92 @@ def ensure_amd_v_available():
     return PASS_RC
 
 
+## --- Setup faults: VBoxManage absence + no hardware acceleration (both SETUP) ---
+## Distinct from a FAIL (the image/boot is bad): these are ENVIRONMENT faults, so
+## they map to SETUP_RC, never FAIL and never a skip (there is no VBox backend
+## without VBoxManage, and AMD-V is the whole point -- a degraded run is worse than
+## a loud stop). The run paths catch SetupError first, before the FAIL-mapped errors.
+class SetupError(RuntimeError):
+    """A VBox-backend environment/setup fault -> SETUP_RC (never FAIL, never skip)."""
+
+
+class HwAccelError(SetupError):
+    """The VM booted WITHOUT AMD-V/VT-x hardware acceleration."""
+
+
+def require_vboxmanage():
+    """VBoxManage is a HARD dependency of every real run path -- loud SETUP if absent."""
+    import shutil
+    if shutil.which(VBOXMANAGE) is None:
+        raise SetupError(
+            'VBoxManage not found on PATH -- the VBox backend requires VirtualBox'
+            ' (install it); this is a hard dependency, not a skip')
+
+
+## Positive hardware-virt markers / fallback markers in a VM's VBox.log (HM subsystem).
+## VBox >= 6.1 has NO software VMM: without hardware virt a VM cannot power on at all,
+## so a booted-but-unaccelerated VM means AMD-V was lost to KVM or nested virt is off.
+_HWACCEL_MARKERS = (
+    'using amd-v', 'using vt-x', 'enabled amd-v', 'enabled vt-x', 'amd-v (svm',
+    'hardware virtualization: enabled',
+)
+_HWACCEL_FALLBACK = (
+    'falling back to nem', 'using nem', 'raw-mode', 'software virtualization',
+    'hardware virtualization: disabled', 'verr_svm', 'verr_vmx',
+)
+
+
+def hwaccel_in_use(log_text):
+    """True iff a VM's VBox.log shows HM using AMD-V/VT-x AND no NEM/raw-mode/
+    software fallback. Pure; the markers may need tuning against the server's real
+    VBox 7.x phrasing (verified in the server integration test)."""
+    low = log_text.lower()
+    if any(bad in low for bad in _HWACCEL_FALLBACK):
+        return False
+    return any(good in low for good in _HWACCEL_MARKERS)
+
+
+def _vm_log_text(vmname, vboxmanage=VBOXMANAGE):
+    """Current VBox.log of a running VM via 'showvminfo --log 0' ('' if unreadable)."""
+    try:
+        result = subprocess.run(
+            [vboxmanage, 'showvminfo', vmname, '--log', '0'],
+            check=False, capture_output=True, text=True)
+    except (OSError, ValueError):
+        return ''
+    return result.stdout or ''
+
+
+def assert_hwaccel(vmname, vboxmanage=VBOXMANAGE, timeout=30, interval=3):
+    """After power-on, poll the VM log until HM reports its virtualization mode, then
+    REQUIRE hardware acceleration -- raise HwAccelError (-> SETUP) if it is not AMD-V/
+    VT-x, so a run that silently lost AMD-V can never masquerade as the fast path."""
+    import time
+    deadline = time.monotonic() + timeout
+    log_text = ''
+    while True:
+        log_text = _vm_log_text(vmname, vboxmanage)
+        low = log_text.lower()
+        if any(k in low for k in ('hm:', 'nem:', 'hardware virtualization')):
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(interval)
+    if not hwaccel_in_use(log_text):
+        raise HwAccelError(
+            'VBox did not use AMD-V/VT-x hardware acceleration for %r'
+            ' (KVM holding AMD-V, or nested virt off) -- refusing a degraded run'
+            % (vmname,))
+
+
 def start_vm(vmname, vboxmanage=VBOXMANAGE):
-    """Real-host: free AMD-V for VirtualBox, then boot the VM headless.
+    """Real-host: free AMD-V for VirtualBox, boot the VM headless, then PROVE the
+    boot is hardware-accelerated.
 
     The AMD-V prerequisite runs first so a loaded KVM never blocks power-on
-    (VERR_SVM_IN_USE); a refused or failed prerequisite aborts the boot.
+    (VERR_SVM_IN_USE); a refused or failed prerequisite aborts the boot. After
+    power-on assert_hwaccel confirms AMD-V/VT-x is actually in use (HwAccelError
+    -> SETUP otherwise).
     """
     prereq_rc = ensure_amd_v_available()
     if prereq_rc != PASS_RC:
@@ -585,6 +748,7 @@ def start_vm(vmname, vboxmanage=VBOXMANAGE):
             'AMD-V prerequisite for VirtualBox not satisfied (rc=%d)'
             % (prereq_rc,))
     _run(build_startvm_argv(vmname, vboxmanage))
+    assert_hwaccel(vmname, vboxmanage)
 
 
 def poll_screen_for(vmname, expect, *, timeout=240, interval=15, shot=None,
@@ -634,6 +798,11 @@ def run_boot_test(args):
     The boot + OCR verify is wrapped so a tooling failure (e.g. tesseract missing)
     is a clean FAIL, and the VM is ALWAYS powered off (unless --no-poweroff) rather
     than left running after an exception."""
+    try:
+        require_vboxmanage()
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+        return SETUP_RC
     if args.ova is not None:
         _run(build_import_argv(args.ova, args.vm))
     rc = FAIL_RC
@@ -654,6 +823,9 @@ def run_boot_test(args):
                        if not ocr_text_contains(ocr, item)]
             print('dm-smbios-reader-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: SETUP -- %s' % (exc,), file=sys.stderr)
+        rc = SETUP_RC
     except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
         print('dm-smbios-reader-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
@@ -680,6 +852,11 @@ def run_install_test(args):
     below) builds on the booted live session it leaves behind."""
     import os
     import tempfile
+    try:
+        require_vboxmanage()
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+        return SETUP_RC
     disk = args.disk or os.path.join(tempfile.gettempdir(), '%s.vdi' % (args.vm,))
     try:
         create_install_vm(args.vm, args.iso, disk, firmware=args.firmware,
@@ -709,6 +886,9 @@ def run_install_test(args):
                        if not ocr_text_contains(ocr, item)]
             print('dm-smbios-reader-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: SETUP -- %s' % (exc,), file=sys.stderr)
+        rc = SETUP_RC
     except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
         print('dm-smbios-reader-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
@@ -716,6 +896,73 @@ def run_install_test(args):
         if started and not args.no_poweroff:
             _poweroff_quietly(args.vm)
     return rc
+
+
+def run_serial_up(args):
+    """Real-host: build a VM wired for SERIAL driving, free AMD-V, boot headless and
+    PROVE hardware acceleration, leaving it running with COM1 on a host UNIX socket
+    for the dm-smbios-reader-image-test battery. exit 0 up / 2 setup / 5 fail.
+
+    --emit-argv prints the VBoxManage build sequence (one command per line) without
+    running it, so the plan is unit-testable without a VBox host."""
+    plan = build_serial_vm_plan(
+        args.vm, iso=args.iso, disk=args.disk, firmware=args.firmware,
+        memory=args.memory, uart_socket=args.uart_socket,
+        dmi_vendor=args.dmi_vendor, dmi_serial=args.smbios_serial)
+    if args.emit_argv:
+        for argv in plan:
+            print(' '.join(argv))
+        return PASS_RC
+    try:
+        require_vboxmanage()
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+        return SETUP_RC
+    try:
+        for argv in plan:
+            _run(argv)
+    except subprocess.CalledProcessError as exc:
+        print('dm-smbios-reader-vbox: serial VM build failed: %s'
+              % (' '.join(exc.cmd),), file=sys.stderr)
+        return SETUP_RC
+    try:
+        start_vm(args.vm)
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: SETUP -- %s' % (exc,), file=sys.stderr)
+        _poweroff_quietly(args.vm)
+        return SETUP_RC
+    except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
+        print('dm-smbios-reader-vbox: FAIL -- serial boot failed: %s'
+              % (exc,), file=sys.stderr)
+        _poweroff_quietly(args.vm)
+        return FAIL_RC
+    ## Leave the VM RUNNING -- the caller drives the serial socket, then serial-down.
+    print('dm-smbios-reader-vbox: serial-up %s listening on %s'
+          % (args.vm, args.uart_socket))
+    return PASS_RC
+
+
+def run_serial_down(args):
+    """Tear a serial VM down: hard power-off, unregister+delete (drops the per-VM
+    differencing image a multiattach disk created), and remove the UART socket.
+    Best-effort + idempotent -- a VM already gone is not an error."""
+    try:
+        require_vboxmanage()
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+        return SETUP_RC
+    _poweroff_quietly(args.vm)
+    try:
+        _run(build_unregister_argv(args.vm))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        ## already unregistered / never created / VBoxManage gone mid-teardown.
+        pass
+    if args.uart_socket:
+        try:
+            os.unlink(args.uart_socket)
+        except OSError:
+            pass
+    return PASS_RC
 
 
 ## --- CLI --------------------------------------------------------------------
@@ -862,6 +1109,37 @@ def _build_parser():
     inst.add_argument('--shot', help='write the final screenshot to this path')
     inst.add_argument('--no-poweroff', dest='no_poweroff', action='store_true')
 
+    serial_up = sub.add_parser(
+        'serial-up',
+        help='build + boot a VM wired for SERIAL driving (headless, no network): '
+             'COM1 -> host UNIX socket, DMI vendor=QEMU + dm-cmdline serial so the '
+             'in-image GRUB reader injects the kernel cmdline. For '
+             'dm-smbios-reader-image-test --backend vbox. exit 0 up / 2 setup / 5 fail')
+    su_media = serial_up.add_mutually_exclusive_group(required=True)
+    su_media.add_argument('--iso', help='boot this ISO live (dvddrive)')
+    su_media.add_argument('--disk',
+                          help='boot this disk image (SATA hdd, multiattach)')
+    serial_up.add_argument('--vm', required=True)
+    serial_up.add_argument('--uart-socket', dest='uart_socket', required=True,
+                           help='host UNIX socket path VBox listens on for COM1')
+    serial_up.add_argument('--smbios-serial', dest='smbios_serial', required=True,
+                           help='DMI system serial (dm-cmdline=<payload> from '
+                                'dm-smbios-reader-qemu --emit-cmdline)')
+    serial_up.add_argument('--dmi-vendor', dest='dmi_vendor', default='QEMU',
+                           help='DMI system vendor; must be QEMU so the in-image '
+                                'reader fires (default QEMU)')
+    serial_up.add_argument('--firmware', choices=sorted(_FIRMWARE), default='efi')
+    serial_up.add_argument('--memory', type=int, default=3072)
+    serial_up.add_argument('--emit-argv', dest='emit_argv', action='store_true',
+                           help='print the VBoxManage build sequence, do not run it')
+
+    serial_down = sub.add_parser(
+        'serial-down',
+        help='power off + unregister (delete) a serial VM and remove its socket')
+    serial_down.add_argument('--vm', required=True)
+    serial_down.add_argument('--uart-socket', dest='uart_socket',
+                             help='UART socket path to remove')
+
     verify = sub.add_parser(
         'verify',
         help='compare a screenshot against a committed render baseline (tolerant '
@@ -932,6 +1210,10 @@ def main(argv=None):
         return run_boot_test(args)
     if args.cmd == 'install':
         return run_install_test(args)
+    if args.cmd == 'serial-up':
+        return run_serial_up(args)
+    if args.cmd == 'serial-down':
+        return run_serial_down(args)
     if args.cmd == 'verify':
         return _cmd_verify(args)
     return SETUP_RC
