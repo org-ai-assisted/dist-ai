@@ -30,6 +30,7 @@ import unittest
 
 from systemcheck_testlib import (
     ScenarioTestBase,
+    extract_bash_function,
     run_check_scenario,
     run_check_scenario_isolated,
 )
@@ -220,6 +221,21 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')
+
+    def test_guard_is_wired_before_tor_query(self) -> None:
+        ## A correct guard that is never CALLED would still pass the two tests
+        ## above while the runtime re-enters the wait->timeout. Assert the public
+        ## check_tor_bootstrap loop invokes check_tor_bootstrap_require_leaprun,
+        ## and does so BEFORE check_tor_bootstrap_init (which sources the leaprun
+        ## helper and begins the Tor-query/wait path) -- so a privleap-unusable
+        ## session fails fast rather than looping. Pre-fix, the guard name is
+        ## absent from the loop body and assertIn fails (canary).
+        body = extract_bash_function(self.check(self.FILE), 'check_tor_bootstrap')
+        self.assertIn('check_tor_bootstrap_require_leaprun', body)
+        self.assertLess(
+            body.index('check_tor_bootstrap_require_leaprun'),
+            body.index('check_tor_bootstrap_init'),
+            'the leaprun guard must run before check_tor_bootstrap_init')
 
 
 if __name__ == '__main__':
