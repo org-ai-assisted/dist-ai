@@ -28,11 +28,15 @@ un-skipped):
 
 import os
 import re
+import shlex
+import subprocess
+import tempfile
 import unittest
 
 from systemcheck_testlib import (
     SystemcheckTestBase,
     ScenarioTestBase,
+    extract_bash_function,
     read,
     run_check_scenario,
 )
@@ -177,6 +181,79 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
                 'Error getting active session: No data available')
         self.assertIsNotNone(re.search(pat, line, re.IGNORECASE),
                              'ignore pattern must match the real journal line')
+
+
+class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
+    """check_critical_logs demotes a userspace self-declared 'Non-fatal assertion'
+    line OUT of the always-shown CRITICAL tier (Tor 0.4.9.11's non-fatal microdesc
+    'Bug:' must not be classed a kernel catastrophe), while a real kernel ' BUG:'
+    (and Bad RAM / CPU-stall) STAYS critical. Drives the REAL function so the two-grep
+    pipeline -- not a reimplementation -- is exercised; canaries on the old single-grep
+    code (where the Tor line WOULD still be emitted as critical)."""
+
+    ## The matched token Tor logs via tor_bug_occurred_(): a leading-space ' Bug:'
+    ## (caught by critical_pattern ' BUG:', case-insensitive) AND the self-declared
+    ## 'Non-fatal assertion' survivable token.
+    TOR_LINE = ('host Tor[1234]: [warn] tor_bug_occurred_(): Bug: '
+                'src/feature/nodelist/microdesc.c:123: microdescs_add_to_cache: '
+                'Non-fatal assertion failed. (on Tor 0.4.9.11)')
+    KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
+    BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
+    CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
+
+    def _run_check_critical(self, lines: list) -> str:
+        """Run the REAL check_critical_logs against a crafted matched-journal file.
+        Mirrors log-checker's own shell options (errexit + nounset, NO pipefail --
+        the grep pipeline legitimately exits non-zero on no-match)."""
+        func = extract_bash_function(
+            os.path.join(self.dir, 'log-checker'), 'check_critical_logs')
+        with tempfile.TemporaryDirectory() as td:
+            br = os.path.join(td, 'journalctl_match_filtered.txt_br')
+            with open(br, 'w', encoding='utf-8') as handle:
+                handle.write('\n'.join(lines) + '\n')
+            script = (
+                'set -o errexit\n'
+                'set -o nounset\n'
+                f'TMPDIR={shlex.quote(td)}\n'
+                ## stcatn (ANSI strip) and safe-rm are irrelevant to the ASCII
+                ## classification under test; stub them so the test needs neither.
+                'stcatn() { cat; }\n'
+                'safe-rm() { :; }\n'
+                f'{func}\n'
+                'check_critical_logs\n'
+            )
+            proc = subprocess.run(['bash', '-c', script], capture_output=True,
+                                  text=True, timeout=30)
+            self.assertEqual(proc.returncode, 0,
+                             f'check_critical_logs crashed: {proc.stderr}')
+            return proc.stdout
+
+    def test_tor_nonfatal_microdesc_not_critical(self) -> None:
+        out = self._run_check_critical([self.TOR_LINE])
+        self.assertNotIn('microdesc.c', out,
+                         'a Tor non-fatal "Bug:" line must NOT be classed critical')
+        self.assertEqual(out.strip(), '',
+                         'no critical output expected for a lone non-fatal line')
+
+    def test_kernel_bug_still_critical(self) -> None:
+        out = self._run_check_critical([self.KERNEL_BUG])
+        self.assertIn('NULL pointer dereference', out,
+                      'a real kernel BUG: must stay critical')
+
+    def test_bad_ram_still_critical(self) -> None:
+        out = self._run_check_critical([self.BAD_RAM])
+        self.assertIn('Bad RAM detected', out)
+
+    def test_cpu_stall_still_critical(self) -> None:
+        out = self._run_check_critical([self.CPU_STALL])
+        self.assertIn('self-detected stall on CPU', out)
+
+    def test_mixed_keeps_kernel_drops_tor(self) -> None:
+        ## A real kernel BUG alongside the Tor non-fatal line: the narrowing must
+        ## keep the kernel one and drop ONLY the self-declared non-fatal one.
+        out = self._run_check_critical([self.TOR_LINE, self.KERNEL_BUG])
+        self.assertIn('NULL pointer dereference', out)
+        self.assertNotIn('microdesc.c', out)
 
 
 if __name__ == '__main__':
