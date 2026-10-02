@@ -315,11 +315,19 @@ def style_main(argv, prog="dist-ai-style"):
     parser.add_argument("--message-file",
                         help="the pending commit message, for the R-001 / "
                              "changelog-trailer checks")
+    parser.add_argument("--changelog-only", action="store_true",
+                        help="run ONLY the debian/changelog-edit convention check "
+                             "(no per-file rules, no other batch checks); for the "
+                             "local pre-push hook. Requires --range or --staged.")
     parser.add_argument("files", nargs="*")
     args = parser.parse_args(argv[1:])
 
     if args.staged and args.range is not None:
         print("%s: --staged and --range are mutually exclusive" % prog,
+              file=sys.stderr)
+        return 2
+    if args.changelog_only and args.staged is False and args.range is None:
+        print("%s: --changelog-only requires --range or --staged" % prog,
               file=sys.stderr)
         return 2
     if args.all and not args.staged:
@@ -363,6 +371,24 @@ def style_main(argv, prog="dist-ai-style"):
     if hostile is not None:
         return _refuse_hostile(prog, hostile)
     git_mode = args.staged or args.range is not None
+    if args.changelog_only:
+        ## Local pre-push hook path: run ONLY the debian/changelog-edit convention
+        ## (hand-edit forbidden unless a genmkfile auto-bump or a Changelog-manual-ok
+        ## trailer), with NO per-file rules and NO other batch checks -- so a push is
+        ## gated on changelog hygiene WITHOUT surfacing every touched file's debt.
+        fail_count = 0
+        changelog = (gate.check_changelog_staged(names, args.message_file, base_cwd)
+                     if staged_mode
+                     else gate.check_changelog_range(base_ref, base_cwd))
+        for finding in changelog:
+            if finding.severity == model.FAIL:
+                fail_count += 1
+            _print_finding(prog, finding)
+        if fail_count:
+            print("%s: %d check(s) failed" % (prog, fail_count), file=sys.stderr)
+        else:
+            print("%s: all static checks passed" % prog, file=sys.stderr)
+        return 1 if fail_count else 0
     ## Gate the git OBJECT that ships, not the working tree that may have diverged
     ## since: bare / --paths --staged judge the INDEX blob (git ':path'); --range
     ## judges the HEAD blob (the pushed tip). --staged --all records the working
