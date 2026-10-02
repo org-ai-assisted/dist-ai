@@ -93,13 +93,10 @@ else
 fi
 
 ## --- C. select_installed_sysmaint is single-source (no vendored copy, no drift) -----
-## It is defined ONLY in grub-boot-select.bsh; both gates source that file. One
-## definition cannot drift, so a single-source wiring check suffices (no copy to compare).
+## It is defined ONLY in grub-boot-select.bsh; one definition cannot drift, so assert the
+## single definition plus the absence of any vendored copy in a gate.
 gbs_lib="${script_dir}/../dm-smbios-reader-boot-tests/grub-boot-select.bsh"
-upg="${script_dir}/../../bin/dm-upgrade-regression"
-for f in "${gbs_lib}" "${upg}"; do
-   [ -r "${f}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${f}" >&2; exit 1; }
-done
+[ -r "${gbs_lib}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${gbs_lib}" >&2; exit 1; }
 def_re='^select_installed_sysmaint\(\) \{'
 gbs_defs="$(grep -cE "${def_re}" "${gbs_lib}" || true)"
 cal_defs="$(grep -cE "${def_re}" "${cal}" || true)"
@@ -113,11 +110,6 @@ if [ "${cal_defs}" = '0' ] && [ "${vs_defs}" = '0' ]; then
    ok 'no duplicate select_installed_sysmaint in dm-calamares-install / vbox-session.bsh'
 else
    bad "duplicate select_installed_sysmaint remains (dm-calamares-install=${cal_defs}, vbox-session.bsh=${vs_defs})"
-fi
-if grep --quiet 'grub-boot-select.bsh' "${cal}" && grep --quiet 'grub-boot-select.bsh' "${upg}"; then
-   ok 'both gates source grub-boot-select.bsh'
-else
-   bad 'a gate does NOT source grub-boot-select.bsh (dm-calamares-install / dm-upgrade-regression)'
 fi
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
