@@ -30,6 +30,7 @@ import unittest
 
 from systemcheck_testlib import (
     ScenarioTestBase,
+    run_check_scenario,
     run_check_scenario_isolated,
 )
 
@@ -162,6 +163,60 @@ class TestTorEnabledIsolatedScenarios(ScenarioTestBase):
             self.check(self.FILE), 'check_tor_enabled', env_setup='verbose=0',
             stubs='check_tor_enabled_do() { TOR_ENABLED=1; }\n' + CLEANUP,
             hide_dirs=HIDE_USR_SHARE, place=[GATEWAY, TEMPLATEVM])
+        self.assertCleanRun(r)
+        self.assertEqual(r.records, [])
+        self.assertEqual(r.exit_code, '0')
+
+
+class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
+    """check_tor_bootstrap_require_leaprun: the #100 fail-fast guard.
+
+    systemcheck reads Tor's bootstrap percentage and circuit status via privleap
+    (leaprun). When privleapd is unreachable for the account running systemcheck
+    (e.g. a session with no /run/privleapd/comm/<user> socket), those reads fail
+    and, without this guard, are indistinguishable from "Tor not established
+    yet": the check_tor_bootstrap loop then waits out the whole budget and
+    systemcheck is SIGTERMed with an ambiguous CI_EXIT=124 that hides the real
+    cause (exactly the mis-diagnosis #100 chased for multiple sessions). The
+    guard must instead FAIL FAST with the specific privleapd-unavailable message.
+
+    These drive the RESOLVED `use_leaprun` global directly -- the same variable
+    the real use_leaprun.sh sets -- so no bubblewrap/absolute-path fixture is
+    needed (the guard only sources use_leaprun.sh when the global is unset).
+    """
+
+    FILE = 'check_tor_bootstrap.bsh'
+    ## cleanup() (-> ex_funct -> exit) is a bare-name call; a no-op stub lets the
+    ## function return so the scenario can record EXIT_CODE instead of exiting.
+    CLEANUP = 'cleanup() { :; }'
+
+    def test_privleap_unusable_fails_fast_with_diagnosis(self) -> None:
+        ## use_leaprun=no -> error emitted, the specific privleapd diagnosis is
+        ## surfaced (not swallowed), EXIT_CODE 1. On pre-fix code the function is
+        ## absent, so assertCleanRun catches the "command not found" (canary).
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun',
+            env_setup=(
+                'use_leaprun=no\n'
+                "leaprun_useable_result=\"WARNING: Cannot communicate with "
+                "privleapd. File '/run/privleapd/comm/1001' does not exist. "
+                'Cannot use privleap."'),
+            stubs=self.CLEANUP)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('error'))
+        self.assertFalse(r.has_severity('info'))
+        self.assertIn('Cannot query', r.joined())
+        self.assertIn('privleap', r.joined())
+        self.assertIn('/run/privleapd/comm/1001', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_privleap_usable_is_noop(self) -> None:
+        ## use_leaprun=yes -> guard returns 0, emits nothing, EXIT_CODE stays 0
+        ## (the normal-session path: the real Tor bootstrap/circuit checks then
+        ## run exactly as before).
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun',
+            env_setup='use_leaprun=yes', stubs=self.CLEANUP)
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')
