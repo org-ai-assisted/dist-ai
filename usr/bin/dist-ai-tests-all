@@ -111,6 +111,7 @@ core_suites=(
    dm-iso-grub-menu-tests
    dm-help-steps-tests
    dm-package-depends-tests
+   dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-virtualbox-wiki-links-tests
    dist-installer-cli-tests
@@ -793,6 +794,10 @@ wire() {
          ## and the sources under each package, so it needs the checkout root.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-approx-curlrc)
+         ## Reads approx/curlrc + approx/curlrc-tor at the checkout root.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
       dm-smbios-reader-boot-test)
          ## The resolution test drives the real dm-smbios-reader-boot-test and reads
          ## helper-scripts from the derivative-maker checkout; point it there.
@@ -963,7 +968,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
