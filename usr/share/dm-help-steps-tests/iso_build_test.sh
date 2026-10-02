@@ -24,6 +24,9 @@
 ##   - the official path produces a repo-ENABLED build ('--repo true' in the dry-plan);
 ##   - a caller cannot fiddle --repo (always repo-enabled) -- --repo is REFUSED;
 ##   - uploads are forced to simulate (rsync_cmd) -- a test/gate builder never publishes;
+##   - CI=true is set -- help-steps/sign-and-tag refuses a redistributable sign+tag unless
+##     CI=true, so without it --sign-and-tag true cannot run on the official (redistributable)
+##     path; uploads stay simulated regardless;
 ##   - the build is ALWAYS the frozen snapshot: freshness is hardcoded, so DM_FRESHNESS
 ##     cannot leak a non-frozen snapshot into the arch-keyed shared base/package repo;
 ##   - the single flavor + arch + VM-target set reach dm-build-official-one via the
@@ -79,7 +82,7 @@ run_out="${workspace}/dm-run.out"
    # shellcheck disable=SC2016
    printf '%s\n' 'printf "%s\n" "$*" >> "${DM_ARGS_LOG}"'
    # shellcheck disable=SC2016
-   printf '%s\n' '{ printf "rsync_cmd=%s\n" "${rsync_cmd-<unset>}"; printf "flavors_list=%s\n" "${flavors_list-<unset>}"; printf "dist_build_target_arch=%s\n" "${dist_build_target_arch-<unset>}"; printf "dist_build_multi_target_list=%s\n" "${dist_build_multi_target_list-<unset>}"; } >> "${DM_ENV_LOG}"'
+   printf '%s\n' '{ printf "rsync_cmd=%s\n" "${rsync_cmd-<unset>}"; printf "flavors_list=%s\n" "${flavors_list-<unset>}"; printf "dist_build_target_arch=%s\n" "${dist_build_target_arch-<unset>}"; printf "dist_build_multi_target_list=%s\n" "${dist_build_multi_target_list-<unset>}"; printf "CI=%s\n" "${CI-<unset>}"; } >> "${DM_ENV_LOG}"'
    # shellcheck disable=SC2016
    printf '%s\n' 'exit "${STUB_RC:-0}"'
 } > "${repo}/help-steps/dm-build-official-one"
@@ -120,8 +123,9 @@ if [ "${iso_rc}" -eq 0 ] \
    && has_env 'rsync_cmd=true simulate-only' \
    && has_env 'flavors_list=kicksecure-lxqt' \
    && has_env 'dist_build_target_arch=amd64' \
-   && has_env 'dist_build_multi_target_list='; then
-   pass "a normal build drives dm-build-official-one repo-enabled (no --repo), upload-simulated, flavor/arch/iso via env"
+   && has_env 'dist_build_multi_target_list=' \
+   && has_env 'CI=true'; then
+   pass "a normal build drives dm-build-official-one repo-enabled (no --repo), upload-simulated, CI=true (redistributable sign+tag gate), flavor/arch/iso via env"
 else
    fail "normal build contract wrong; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>> env=<<<$(cat -- "${env_log}")>>>"
 fi

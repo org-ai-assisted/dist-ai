@@ -27,8 +27,8 @@
 ## NEVER UPLOADS: this is a test/gate builder, not a publisher. Uploads are forced
 ## to simulate unconditionally (rsync_cmd), so a test image can never reach the
 ## release server -- publishing an untested image as a release would be an incident.
-## The value equals what dm-build-official-one itself uses under CI, so a stray
-## CI=true cannot turn real uploads back on.
+## This holds even though CI=true is set (below): rsync_cmd pins uploads to simulate
+## regardless, so CI build mode cannot turn real uploads back on.
 ##
 ## Build hygiene -- deliberately NOT overridable, so the safe path is the default
 ## and there is nothing to remember:
@@ -37,6 +37,13 @@
 ##   - the tree must be fully committed: --allow-uncommitted false, so
 ##     derivative-maker's own git_sanity_test refuses a dirty tree.
 ##   - --sign-and-tag true (allow-unsigned is forbidden for AI sessions).
+##   - CI=true: help-steps/sign-and-tag REFUSES a redistributable sign+tag
+##     (dist_build_redistributable=true) unless CI=true -- its only allow-path, so the
+##     --sign-and-tag true above cannot run without it. CI=true also makes
+##     dm-build-official-one build derivative packages from source
+##     (--remote-derivative-packages false): slower but release-grade. Uploads stay off
+##     (rsync_cmd simulate). On native amd64 this is a real build; parse-cmd's CI
+##     dry-run triggers only on a CROSS build.
 ##
 ## Speed (default ON -- reuse the prior build's work, far short of a ~1h cold build):
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
@@ -132,6 +139,7 @@ printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target}
 ## refused by derivative-maker itself for AI sessions. NO --repo is passed: the repo
 ## is enabled by the official path's dist_build_redistributable default (see header).
 rc=0
+CI=true \
 flavors_list="${flavor}" \
 dist_build_target_arch="${arch}" \
 dist_build_multi_target_list="${multi_target_list}" \
