@@ -56,6 +56,7 @@ marker="${HOME}/.cache/dm-iso-build.last-freshness"
 repo="${workspace}/repo"
 mkdir --parents -- "${repo}"
 args_log="${workspace}/dm-args.log"
+run_out="${workspace}/dm-run.out"
 {
    printf '%s\n' '#!/bin/bash'
    # shellcheck disable=SC2016
@@ -87,7 +88,7 @@ run_iso() {
    done
    printf '' > "${args_log}"
    iso_rc=0
-   env "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" "${tool}" "$@" >/dev/null 2>&1 || iso_rc="$?"
+   env "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" "${tool}" "$@" > "${run_out}" 2>&1 || iso_rc="$?"
 }
 
 has_knob() { grep --quiet -- "$1" "${args_log}" 2>/dev/null ; }
@@ -154,25 +155,48 @@ else
    fail "failed build altered the marker; got '$(marker_value)'"
 fi
 
-## --- Case 6 (CANARY): successful build + UNWRITABLE marker -> rc 0, stale dropped -
-## Two bugs in one scenario. OLD dm-iso-build (no best-effort guard) aborted under
-## errexit on the failed marker write and exited NONZERO -- masking a SUCCESSFUL build
-## as a failure. And leaving the stale marker behind let the next run reuse a
-## wrong-snapshot base. Both assertions fail on the pre-fix code.
-clear_marker
-set_marker frozen
-chmod 400 -- "${marker}"
-run_iso DM_FRESHNESS=current STUB_RC=0
+## --- Case 6 (CANARY): a failed marker write -> rc 0 + drop branch (uid-independent) -
+## OLD dm-iso-build (no best-effort guard) aborted under errexit on the failed marker
+## write and exited NONZERO -- masking a SUCCESSFUL build as a failure. Force the write
+## failure with a non-directory marker PARENT ('.cache' is a FILE), which blocks the
+## mkdir+write for ANY uid -- 'chmod 400' would NOT, since the suite re-execs under root
+## and root bypasses file permissions. The drop branch is confirmed by its warning.
+home6="${workspace}/home6"
+mkdir --parents -- "${home6}"
+printf '' > "${home6}/.cache"
+run_iso HOME="${home6}" DM_FRESHNESS=current STUB_RC=0
 if [ "${iso_rc}" -eq 0 ]; then
    pass "an unwritable marker on a successful build still exits 0 (success not masked as failure)"
 else
-   fail "unwritable marker masked a successful build as failure; rc=${iso_rc}"
+   fail "unwritable marker masked a successful build as failure; rc=${iso_rc} out=<<<$(cat -- "${run_out}")>>>"
 fi
-chmod u+w -- "${marker}" 2>/dev/null || true
-if [ -e "${marker}" ]; then
-   fail "a failed marker write left the stale marker (next build could reuse a wrong-snapshot base)"
+if grep --quiet -- 'could not persist the freshness marker' "${run_out}"; then
+   pass "a failed marker write takes the drop branch (warns)"
 else
-   pass "a failed marker write drops the stale marker (next build rebuilds the base)"
+   fail "a failed marker write did not take the drop branch; out=<<<$(cat -- "${run_out}")>>>"
+fi
+
+## --- Case 6b (CANARY): the DROP removes an EXISTING stale marker --------------------
+## Observable only when a real marker FILE exists AND the write fails -- which, for a
+## plain unwritable file, is a NON-ROOT scenario (root bypasses file permissions, so the
+## write just succeeds and no drop is needed; there is no stale-marker-with-failed-write
+## case for root). Under non-root, prove the stale marker is removed; a dm-iso-build that
+## omits the 'safe-rm' drop leaves it behind and fails here.
+if [ "$(id -u)" -ne 0 ]; then
+   home6b="${workspace}/home6b"
+   mkdir --parents -- "${home6b}/.cache"
+   marker6b="${home6b}/.cache/dm-iso-build.last-freshness"
+   printf 'frozen\n' > "${marker6b}"
+   chmod 400 -- "${marker6b}"
+   run_iso HOME="${home6b}" DM_FRESHNESS=current STUB_RC=0
+   chmod u+w -- "${marker6b}" 2>/dev/null || true
+   if [ "${iso_rc}" -eq 0 ] && [ ! -e "${marker6b}" ]; then
+      pass "non-root: a failed write to an existing marker DROPS it (no wrong-snapshot reuse)"
+   else
+      fail "non-root: stale marker not dropped on a failed write; rc=${iso_rc} marker='$(cat -- "${marker6b}" 2>/dev/null)'"
+   fi
+else
+   printf '%s\n' "note: Case 6b (stale-marker drop) is non-root-only; root bypasses file perms, so no stale-marker-with-failed-write scenario exists to exercise."
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

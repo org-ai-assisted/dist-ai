@@ -76,6 +76,8 @@ mkdir --parents -- "${workspace}/nohooks"
 ## case sets e.g. SYNC_RC=1 inline on the dm-tidy invocation to simulate a verdict.
 TIDY_LOG="${workspace}/tidy.log"
 export TIDY_LOG
+## dm-tidy's own stderr (diagnostics/remedies), captured so cases can assert on them.
+tidy_err="${workspace}/tidy.err"
 stubs="${workspace}/stubs"
 mkdir --parents -- "${stubs}"
 
@@ -169,7 +171,7 @@ run_tidy() {
    done
    reset_log
    tidy_rc=0
-   env "${env_pairs[@]}" "${tool}" "$@" >/dev/null 2>&1 || tidy_rc="$?"
+   env "${env_pairs[@]}" "${tool}" "$@" >/dev/null 2>"${tidy_err}" || tidy_rc="$?"
 }
 
 ## Assert the ordered list of phase LABELS actually invoked (ignores args).
@@ -433,6 +435,14 @@ if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
    pass "off-tree missing remote: dm-tidy exits 1 and runs ONLY fsck (ensure skipped, no false green)"
 else
    fail "off-tree missing remote wrong; rc=${tidy_rc} labels=$(labels_seen) log:<<<$(log_lines)>>>"
+fi
+## The remedy must NOT tell the user to run the ensure helper off-tree: that would
+## rewrite remotes in the helper's OWN tree (the wrong one) and still not fix 'top'.
+if grep --quiet -- 'not this checkout' "${tidy_err}" \
+   && ! grep --quiet -- 'pkg_git_remotes_add' "${tidy_err}"; then
+   pass "off-tree missing-remote remedy says add them here, NOT via the wrong-tree ensure helper"
+else
+   fail "off-tree remedy pointed at the ensure helper (wrong tree); err:<<<$(cat -- "${tidy_err}")>>>"
 fi
 gitq -C "${other}" remote add ArrayBolt3 "file://${fork}"
 

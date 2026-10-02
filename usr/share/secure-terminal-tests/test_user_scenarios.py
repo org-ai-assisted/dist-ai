@@ -36,7 +36,7 @@ import os
 import tempfile
 
 from test_widget_common import (          # noqa: F401  (harness hub re-exports)
-    spawn_live, key, pump, ok, eq, finish, Qt,
+    spawn_live, key, pump, ok, eq, finish, Qt, feed_output,
 )
 
 SENTINEL = 'READY> '
@@ -193,11 +193,47 @@ def scenarios(tui, line_editing):
             pass
 
 
+def scenario_prompt_sp_marker():
+    """zsh's PROMPT_SP end-of-line marker in CLI mode: a frame that fills the line to the
+    full width -- the '%'/'#' PROMPT_EOL_MARK char + pad, or (after its erase step) all
+    spaces -- then CRs to overwrite in place. When a following Enter's newline flushes it
+    before the prompt redraws over it, the full-width whitespace row is left behind; mashing
+    Enter fills the CLI buffer with them (the real user report). A real terminal overwrites
+    it in place and it carries no info secure-terminal does not already show, so the renderer
+    drops it. This is driven at the BYTE level through the real read path (feed_output), which
+    is exactly what the earlier bash + clean-PS1 + paced-Enter harness never exercised -- bash
+    emits no PROMPT_EOL_MARK, so the marker frame never appeared. Deterministic: no live shell."""
+    width = 80
+    prompt = 'u@h# '
+    marker_hash = b'#' + b' ' * (width - 1) + b'\r\n'            # '#'+pad, flushed standalone
+    marker_space = b'#' + b' ' * (width - 1) + b'\r \r\n'        # erased -> all-space frame
+    cycle = marker_hash + prompt.encode() + b'\r\n' + marker_space + prompt.encode() + b'\r\n'
+    term = spawn_live(command=['/bin/cat'], tui=False, mode='show', line_editing='full')
+    term._set_winsize(width, 24)          # zsh pads to COLUMNS == width; match it, as the app does
+    for _ in range(20):
+        pump(10)
+    feed_output(term, cycle * 5)          # 10 marker frames + 10 prompts
+    for _ in range(10):
+        pump(10)
+    lines = doc_lines(term)
+    ws = sum(1 for ln in lines if ln.strip() == '')
+    kept = sum(1 for ln in lines if ln.startswith(prompt))
+    ok(ws == 0,
+       'prompt-sp CLI show: %d full-width whitespace marker row(s) survived (want 0)' % ws)
+    ok(kept == 10,
+       'prompt-sp CLI show: expected 10 prompt rows kept, got %d' % kept)
+    try:
+        term.shutdown()
+    except Exception:                     # pylint: disable=broad-except
+        pass
+
+
 if __name__ == '__main__':
     for _tui in (False, True):
         for _le in ('full', 'read-safe', 'append-only'):
             if _tui and _le != 'full':
                 continue                  # line_editing is a CLI-mode setting
             scenarios(_tui, _le)
+    scenario_prompt_sp_marker()
     os.unlink(_RC.name)
     finish('user-scenarios')
