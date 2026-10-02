@@ -1,17 +1,69 @@
 # dm-smbios-reader-boot-tests: boot + functional test harness
 
-Boots a built derivative-maker image in qemu, drives a login-free root serial
-shell, runs `systemcheck --leak-tests`, and reports one pass/fail exit code.
-The CI front-end `dm-smbios-reader-boot-test` (installs the qemu/OVMF runtime, discovers the
-boot media by image kind, forwards to `dm-smbios-reader-boot-tests`) and the whole
-harness live here (test-only tooling), not in derivative-maker; derivative-maker
-CI calls `dist-ai/usr/bin/dm-smbios-reader-boot-test`.
+Boots a built derivative-maker image, drives a login-free root serial shell, runs
+`systemcheck --leak-tests`, and reports one pass/fail exit code. The CI front-end
+`dm-smbios-reader-boot-test` (installs the runtime, discovers the boot media by image
+kind, forwards to `dm-smbios-reader-boot-tests`) and the whole harness live here
+(test-only tooling), not in derivative-maker; derivative-maker CI calls
+`dist-ai/usr/bin/dm-smbios-reader-boot-test`.
 
-- `dm-smbios-reader-image-test` -- orchestrator: gets qemu argv from `dm-smbios-reader-qemu --emit-argv`,
-  spawns it under pexpect, drives the conversation over serial.
+The name says the hard prerequisite: the harness is functional ONLY on an image
+built with derivative-maker `--smbios-reader true`. The login-free serial shell AND
+`--session` selection are delivered entirely by a kernel cmdline injected through the
+SMBIOS Type-1 serial -> in-image GRUB reader -> kernel chain (see below); a released
+image carries no reader, so the injection is a silent no-op and every leg times out
+with a ~0-byte serial log (flagged by the image-test 0-byte-log diagnostic).
+
+- `dm-smbios-reader-image-test` -- orchestrator: picks a backend (`--backend
+  {auto,qemu,vbox}`), obtains a pexpect child, drives the SAME serial conversation,
+  reports 0 PASS / 5 FAIL / 2 SETUP.
 - `dm-smbios-reader-qemu` -- builds the qemu argv (does not boot). `--test-console`,
-  `--smbios-append`, `--screendump`, `--iso`/`--disk`.
+  `--smbios-append`, `--screendump`, `--iso`/`--disk`, `--emit-argv`, `--emit-cmdline`.
+- `dm-smbios-reader-vbox` -- the VBox/AMD-V backend. `serial-up`/`serial-down` build
+  + boot a VM wired for serial driving; also the OCR run/install lanes + `emit-argv`.
 - `debug/` -- boot-once/poke-many dev tooling (`dmserial.py`); not gated.
+
+## Backends: QEMU (default) and VBox/AMD-V (`--backend vbox`)
+
+Both run the identical `systemcheck` serial battery; they differ only in how the VM
+is booted and how the serial console is reached.
+
+- **qemu** -- `dm-smbios-reader-image-test` gets qemu argv from `dm-smbios-reader-qemu
+  --emit-argv`, spawns it under pexpect, reads the serial pty.
+- **vbox** -- for the AMD OVH image-test server, which has AMD-V (svm) but no
+  `/dev/kvm`, so qemu falls back to slow software TCG (~10-15 min) while VirtualBox
+  uses AMD-V natively (~2-3 min). `dm-smbios-reader-image-test` gets the RAW cmdline
+  payload from `dm-smbios-reader-qemu --emit-cmdline` (the SINGLE source both backends
+  inject), calls `dm-smbios-reader-vbox serial-up` to build + boot a headless VM with
+  COM1 wired to a host UNIX socket + the payload injected via VBox DMI, connects the
+  socket with `pexpect.fdpexpect.fdspawn`, and drives `run_checks` unchanged.
+  `--backend auto` picks vbox when VBoxManage is present AND `/dev/kvm` is absent AND
+  the CPU is AMD, else qemu. VBoxManage is a HARD dependency of the vbox lane -- its
+  absence is a loud SETUP error, never a skip.
+- **DMI vendor must be QEMU.** The in-image GRUB reader fires only when SMBIOS Type-1
+  Manufacturer reads `QEMU`, so the vbox backend sets DMI vendor=QEMU; under VBox DMI
+  the serial carries SINGLE commas (qemu's `-smbios` doubles them, VBox takes the
+  value verbatim).
+- **AMD-V serialisation.** VBox shares AMD-V across its own VMs (the fleet runs many
+  concurrently), so an `fcntl` run-mutex serialises concurrent BOOT-TEST runs only
+  (VM-name / RAM contention), NOT the fleet; `dm-smbios-reader-vbox ensure-amd-v`
+  still guards the KVM<->VBox boundary (it refuses to yank AMD-V from a running KVM
+  VM). Each run asserts, from the VM's `VBox.log`, that AMD-V/VT-x is actually in use
+  (SETUP if not) so a silently-degraded run cannot pass as the fast path.
+
+### VBox lane: items to confirm in the live server integration test
+
+The pure logic + argv builders are unit-tested without a VBox host; these need the
+real VirtualBox 7.x server (see the `vbox-image-testing` skill) to confirm:
+
+- **EFI DMI.** The `pcbios` DMI extradata keys supply SeaBIOS; whether an EFI /
+  efi-secureboot guest reads the SAME keys is VBox-version-dependent. If it does not,
+  the EFI cmdline injection is a no-op -> the serial shell never binds (0-byte log).
+  Confirm `dmidecode` in an EFI guest shows vendor=QEMU + the `dm-cmdline` serial; if
+  not, add the EFI device's DMI key path in `dm-smbios-reader-vbox` `build_dmi_argv`.
+- **Disk format.** `--mtype multiattach` (the non-destructive `-snapshot` analogue)
+  needs a differencing-capable format (VDI/VMDK/VHD); a RAW disk is rejected. dm
+  images are often qcow2/raw, so confirm the format works (convert raw->vdi if not).
 
 ## Kernel cmdline injection: firmware -> GRUB -> kernel (no image edit)
 
