@@ -278,6 +278,39 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
     return plan
 
 
+## VBox storageattach --type hdd accepts only VBox-native disk formats (VDI/VMDK/VHD);
+## a RAW or qcow2 image is rejected (VERR_VD_RAW_INVALID_TYPE / unsupported format).
+## derivative-maker builds qcow2/raw, so the serial-disk path CONVERTS to a throwaway
+## per-VM VDI first: raw via VBoxManage convertfromraw (native), qcow2 via qemu-img (a
+## hard dep for THAT format -- fail loud if absent). The converted VDI is removed on
+## serial-down. A native VDI/VMDK/VHD is attached as-is (multiattach, non-destructive).
+_DISK_NATIVE_EXTS = ('.vdi', '.vmdk', '.vhd')
+
+
+def converted_disk_path(vmname):
+    """Deterministic path of a serial VM's converted throwaway VDI, so serial-down (a
+    SEPARATE invocation) can remove it knowing only the VM name."""
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), '%s.dm-converted.vdi' % (vmname,))
+
+
+def disk_conversion(disk, vmname, vboxmanage=VBOXMANAGE):
+    """(attach_path, convert_argv) for attaching DISK to a serial VM. Native
+    VDI/VMDK/VHD -> (disk, None). RAW/qcow2 -> (per-VM VDI, the convert command run at
+    serial-up time, NOT part of the pure plan). Unknown extension -> SetupError."""
+    ext = os.path.splitext(disk)[1].lower()
+    if ext in _DISK_NATIVE_EXTS:
+        return disk, None
+    dst = converted_disk_path(vmname)
+    if ext in ('.raw', '.img'):
+        return dst, [vboxmanage, 'convertfromraw', disk, dst, '--format', 'VDI']
+    if ext == '.qcow2':
+        return dst, ['qemu-img', 'convert', '-O', 'vdi', disk, dst]
+    raise SetupError(
+        'unsupported --disk format %r for the VBox backend: pass VDI/VMDK/VHD, or'
+        ' .raw/.img/.qcow2 (auto-converted to VDI)' % (ext or disk,))
+
+
 def build_serial_vm_plan(vmname, *, iso=None, disk=None, firmware='efi',
                          memory=3072, uart_socket, dmi_vendor, dmi_serial,
                          ostype='Debian_64', vboxmanage=VBOXMANAGE):
@@ -291,11 +324,11 @@ def build_serial_vm_plan(vmname, *, iso=None, disk=None, firmware='efi',
     the in-image GRUB reader injects the kernel cmdline, and COM1 is wired to a host
     UNIX socket the driver connects to. SecureBoot is enrolled for efi-secureboot.
 
-    SERVER-VERIFY: --mtype multiattach needs a DIFFERENCING-capable format (VDI /
-    VMDK / VHD). A RAW disk is rejected (VERR_VD_RAW_INVALID_TYPE); serial-up then
-    tears the half-built VM down and returns SETUP. derivative-maker disk images are
-    commonly qcow2/raw, so the server integration test must confirm the format works
-    (convert raw -> vdi first, or clone, if it does not)."""
+    DISK is expected to be a VBox-native format here (VDI/VMDK/VHD) -- storageattach
+    --type hdd rejects RAW/qcow2 (VERR_VD_RAW_INVALID_TYPE). run_serial_up converts a
+    raw/qcow2 --disk to a throwaway VDI (disk_conversion) BEFORE building this plan and
+    passes the VDI path, so a derivative-maker qcow2/raw image is accepted; multiattach
+    then keeps that VDI non-destructive."""
     if (iso is None) == (disk is None):
         raise ValueError('build_serial_vm_plan needs exactly one of iso/disk')
     plan = [
@@ -976,11 +1009,23 @@ def run_serial_up(args):
     --emit-argv prints the VBoxManage build sequence (one command per line) without
     running it, so the plan is unit-testable without a VBox host. On ANY failure the
     half-built VM is torn down so a registered leftover cannot block the next run."""
+    convert_argv = None
+    attach_disk = args.disk
+    if args.disk:
+        try:
+            attach_disk, convert_argv = disk_conversion(args.disk, args.vm)
+        except SetupError as exc:
+            print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+            return SETUP_RC
     plan = build_serial_vm_plan(
-        args.vm, iso=args.iso, disk=args.disk, firmware=args.firmware,
+        args.vm, iso=args.iso, disk=attach_disk, firmware=args.firmware,
         memory=args.memory, uart_socket=args.uart_socket,
         dmi_vendor=args.dmi_vendor, dmi_serial=args.smbios_serial)
     if args.emit_argv:
+        ## the raw/qcow2 -> VDI conversion is a serial-up-time pre-step, not a pure
+        ## VBoxManage plan step; show it first so the emitted sequence is complete.
+        if convert_argv:
+            print(' '.join(convert_argv))
         for argv in plan:
             print(' '.join(argv))
         return PASS_RC
@@ -990,6 +1035,15 @@ def run_serial_up(args):
         print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
         return SETUP_RC
     try:
+        if convert_argv:
+            ## convert BEFORE the plan runs -- storageattach references the VDI path.
+            try:
+                _run(convert_argv)
+            except FileNotFoundError:
+                raise SetupError(
+                    '%s not found -- needed to convert %s to a VBox VDI; install it'
+                    ' or pass a VDI/VMDK/VHD --disk'
+                    % (convert_argv[0], args.disk))
         for argv in plan:
             _run(argv)
         start_vm(args.vm)
@@ -1025,6 +1079,12 @@ def run_serial_down(args):
         print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
         return SETUP_RC
     _teardown_serial_vm(args.vm, args.uart_socket)
+    ## Remove a converted throwaway VDI serial-up may have made for a raw/qcow2 --disk
+    ## (unregistervm --delete handles the VM's own diff; the converted base is ours).
+    try:
+        os.unlink(converted_disk_path(args.vm))
+    except OSError:
+        pass
     return PASS_RC
 
 
@@ -1181,7 +1241,8 @@ def _build_parser():
     su_media = serial_up.add_mutually_exclusive_group(required=True)
     su_media.add_argument('--iso', help='boot this ISO live (dvddrive)')
     su_media.add_argument('--disk',
-                          help='boot this disk image (SATA hdd, multiattach)')
+                          help='boot this disk image (SATA hdd, multiattach); '
+                               'VDI/VMDK/VHD direct, raw/qcow2 auto-converted to VDI')
     serial_up.add_argument('--vm', required=True)
     serial_up.add_argument('--uart-socket', dest='uart_socket', required=True,
                            help='host UNIX socket path VBox listens on for COM1')

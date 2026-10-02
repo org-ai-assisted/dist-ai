@@ -758,6 +758,20 @@ def test_release_checks_catalog_numbers():
     assert delegated == {0, 3, 4, 6, 7}, delegated
 
 
+def test_resolve_effective_firmware_single_source():
+    ## grok #4: an omitted --firmware must resolve to an ASSERTABLE firmware so the
+    ## boot arg and the firmware sentinel agree. amd64 (and vbox, amd64-only) boots
+    ## bios; arm64 'bios' is edk2 UEFI so stays empty (no assertion). Old seam: vbox
+    ## booted bios via 'or "bios"' yet the sentinel saw "" -> bios never asserted.
+    m = _load_dm_image_test()
+    assert m.resolve_effective_firmware("amd64", "") == "bios"
+    assert m.resolve_effective_firmware("", "") == "bios"
+    assert m.resolve_effective_firmware("arm64", "") == ""
+    assert m.resolve_effective_firmware("amd64", "efi-secureboot") == "efi-secureboot"
+    ## the resolved 'bios' DOES drive the no-EFI sentinel; empty would skip it.
+    assert m.firmware_sentinels("bios") and not m.firmware_sentinels("")
+
+
 def test_build_check_plan_user_leg_numbers_check_1_not_2():
     m = _load_dm_image_test()
     plan = m.build_check_plan(_plan_args(session='user'))

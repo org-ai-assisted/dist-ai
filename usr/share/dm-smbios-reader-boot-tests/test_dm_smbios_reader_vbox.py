@@ -727,6 +727,36 @@ def test_cli_serial_up_emit_argv_vendor_qemu_and_media(tmp_path):
     assert 'dm-cmdline=console=ttyS0,115200n8' in out  # single commas, verbatim
 
 
+def test_disk_conversion_classifies_and_rejects():
+    ## grok #5: VBox hdd takes only VDI/VMDK/VHD. Native -> direct; raw/qcow2 (what dm
+    ## builds) -> a per-VM throwaway VDI + convert command; unknown -> clean SetupError
+    ## (not a raw VBoxManage VERR_VD_RAW_INVALID_TYPE at storageattach time).
+    for ext in ('.vdi', '.vmdk', '.vhd'):
+        assert M.disk_conversion('/img' + ext, 'kick') == ('/img' + ext, None)
+    vdi = M.converted_disk_path('kick')
+    assert M.disk_conversion('/img.raw', 'kick') == (
+        vdi, ['VBoxManage', 'convertfromraw', '/img.raw', vdi, '--format', 'VDI'])
+    assert M.disk_conversion('/img.qcow2', 'kick') == (
+        vdi, ['qemu-img', 'convert', '-O', 'vdi', '/img.qcow2', vdi])
+    with pytest.raises(M.SetupError):
+        M.disk_conversion('/img.bogus', 'kick')
+
+
+def test_cli_serial_up_emit_argv_converts_raw_disk(tmp_path):
+    ## a raw --disk emits a convertfromraw pre-step and attaches the CONVERTED VDI,
+    ## never the raw path (which VBox hdd would reject).
+    proc = subprocess.run(
+        [str(BACKEND), 'serial-up', '--emit-argv', '--vm', 'kick',
+         '--disk', '/d.raw', '--uart-socket', str(tmp_path / 's.sock'),
+         '--smbios-serial', 'dm-cmdline=x'],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, (proc.returncode, proc.stderr)
+    out = proc.stdout
+    assert 'convertfromraw /d.raw ' in out and '--format VDI' in out
+    assert 'kick.dm-converted.vdi --mtype multiattach' in out
+    assert '--medium /d.raw' not in out
+
+
 def test_cli_serial_up_requires_media_is_setup():
     proc = subprocess.run(
         [str(BACKEND), 'serial-up', '--vm', 'kick', '--uart-socket', '/s',
