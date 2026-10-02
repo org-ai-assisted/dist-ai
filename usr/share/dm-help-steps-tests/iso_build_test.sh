@@ -155,18 +155,15 @@ else
    fail "failed build altered the marker; got '$(marker_value)'"
 fi
 
-## --- Case 6 (CANARY): successful build + an unwritable marker -> rc 0, drop branch -
-## Two bugs in one scenario. OLD dm-iso-build (no best-effort guard) aborted under
-## errexit on the failed marker write and exited NONZERO -- masking a SUCCESSFUL build
-## as a failure. The 0191de91 interim ('|| true') fixed the rc but left a stale marker,
-## so the next run could reuse a wrong-snapshot base. Force the write failure with a
-## non-directory marker PARENT ('.cache' is a FILE), which blocks the mkdir+write for
-## ANY uid -- 'chmod 400' would NOT, since the suite re-execs under root and root bypasses
-## file permissions. The drop branch is confirmed by its warning on stderr.
+## --- Case 6 (CANARY): a failed marker write -> rc 0 + drop branch (uid-independent) -
+## OLD dm-iso-build (no best-effort guard) aborted under errexit on the failed marker
+## write and exited NONZERO -- masking a SUCCESSFUL build as a failure. Force the write
+## failure with a non-directory marker PARENT ('.cache' is a FILE), which blocks the
+## mkdir+write for ANY uid -- 'chmod 400' would NOT, since the suite re-execs under root
+## and root bypasses file permissions. The drop branch is confirmed by its warning.
 home6="${workspace}/home6"
 mkdir --parents -- "${home6}"
 printf '' > "${home6}/.cache"
-marker6="${home6}/.cache/dm-iso-build.last-freshness"
 run_iso HOME="${home6}" DM_FRESHNESS=current STUB_RC=0
 if [ "${iso_rc}" -eq 0 ]; then
    pass "an unwritable marker on a successful build still exits 0 (success not masked as failure)"
@@ -174,14 +171,32 @@ else
    fail "unwritable marker masked a successful build as failure; rc=${iso_rc} out=<<<$(cat -- "${run_out}")>>>"
 fi
 if grep --quiet -- 'could not persist the freshness marker' "${run_out}"; then
-   pass "a failed marker write takes the drop branch (warns + drops the stale marker)"
+   pass "a failed marker write takes the drop branch (warns)"
 else
    fail "a failed marker write did not take the drop branch; out=<<<$(cat -- "${run_out}")>>>"
 fi
-if [ -e "${marker6}" ]; then
-   fail "a failed marker write left a marker behind (next build could reuse a wrong-snapshot base)"
+
+## --- Case 6b (CANARY): the DROP removes an EXISTING stale marker --------------------
+## Observable only when a real marker FILE exists AND the write fails -- which, for a
+## plain unwritable file, is a NON-ROOT scenario (root bypasses file permissions, so the
+## write just succeeds and no drop is needed; there is no stale-marker-with-failed-write
+## case for root). Under non-root, prove the stale marker is removed; a dm-iso-build that
+## omits the 'safe-rm' drop leaves it behind and fails here.
+if [ "$(id -u)" -ne 0 ]; then
+   home6b="${workspace}/home6b"
+   mkdir --parents -- "${home6b}/.cache"
+   marker6b="${home6b}/.cache/dm-iso-build.last-freshness"
+   printf 'frozen\n' > "${marker6b}"
+   chmod 400 -- "${marker6b}"
+   run_iso HOME="${home6b}" DM_FRESHNESS=current STUB_RC=0
+   chmod u+w -- "${marker6b}" 2>/dev/null || true
+   if [ "${iso_rc}" -eq 0 ] && [ ! -e "${marker6b}" ]; then
+      pass "non-root: a failed write to an existing marker DROPS it (no wrong-snapshot reuse)"
+   else
+      fail "non-root: stale marker not dropped on a failed write; rc=${iso_rc} marker='$(cat -- "${marker6b}" 2>/dev/null)'"
+   fi
 else
-   pass "no stale marker remains after a failed write (next build rebuilds the base)"
+   printf '%s\n' "note: Case 6b (stale-marker drop) is non-root-only; root bypasses file perms, so no stale-marker-with-failed-write scenario exists to exercise."
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
