@@ -121,7 +121,9 @@ directive_has_token() {
       { line=$0; sub(/^[[:space:]]+/,"",line)
         eq=index(line,"="); if(eq==0) next
         k=substr(line,1,eq-1); sub(/[[:space:]]+$/,"",k); if(k!=key) next
-        v=substr(line,eq+1); n=split(v,a,/[[:space:]]+/)
+        v=substr(line,eq+1); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+        if(v==""){ found=0; next }          # empty assignment RESETS the systemd list
+        n=split(v,a,/[[:space:]]+/)
         for(i=1;i<=n;i++) if(a[i]==tok) found=1 }
       END{ exit found?0:1 }'
 }
@@ -189,7 +191,7 @@ else
 fi
 
 ## --- 3. The tirdad load is failure-TOLERANT, and nothing loads it strictly ---
-## Every ExecStart=/ExecStartPre= that loads tirdad must carry systemd's "-"
+## Every ExecStart=/ExecStartPre=/ExecStartPost= that loads tirdad must carry systemd's "-"
 ## tolerance prefix. A single strict one (no "-") fails the oneshot on Secure
 ## Boot rejection -- the regression this guards. The module name is anchored so
 ## a typo'd 'modprobe tirdad_other' (loads the wrong module) is NOT accepted, and
@@ -216,7 +218,7 @@ exec_verdict="$(section_body "${service_file}" Service | awk '
    { line=$0; sub(/^[[:space:]]+/,"",line)
      eq=index(line,"="); if(eq==0) next
      k=substr(line,1,eq-1); sub(/[[:space:]]+$/,"",k)
-     if(k!="ExecStart" && k!="ExecStartPre") next
+     if(k!="ExecStart" && k!="ExecStartPre" && k!="ExecStartPost") next
      v=substr(line,eq+1); sub(/^[[:space:]]+/,"",v)
      tol=0
      while(match(v,/^[-@+!:]/)){ if(substr(v,1,1)=="-") tol=1; v=substr(v,2) }
@@ -224,7 +226,7 @@ exec_verdict="$(section_body "${service_file}" Service | awk '
    END{ printf "%d %d %d", total+0, tolerant+0, strict+0 }')"
 read -r ev_total ev_tol ev_strict <<< "${exec_verdict}"
 if [ "${ev_total}" -ge 1 ] && [ "${ev_strict}" -eq 0 ] && [ "${ev_tol}" -ge 1 ]; then
-   pass 'every ExecStart/ExecStartPre that loads tirdad uses the failure-tolerant "-" prefix'
+   pass 'every ExecStart/ExecStartPre/ExecStartPost that loads tirdad uses the failure-tolerant "-" prefix'
 else
    fail "tirdad load is not uniformly failure-tolerant (loaders=${ev_total} tolerant=${ev_tol} strict=${ev_strict}) -- a strict one degrades on Secure Boot rejection"
 fi
