@@ -252,7 +252,7 @@ fi
 ######################################################################
 ## ISO-build integrity the menu template cannot express: structural (source)
 ## guards on build-steps.d/4310 and help-steps/parse-cmd, complementing the runtime
-## boot-leg checks in dm-image-boot-tests. Absent files -> SKIP (same contract).
+## boot-leg checks in dm-smbios-reader-boot-tests. Absent files -> SKIP (same contract).
 ######################################################################
 iso_step="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
 raw_to_iso_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
@@ -267,7 +267,7 @@ done
 
 ## Kernel hardening: help-steps/dm-raw-to-iso must scrape the rootfs kernel
 ## hardening cmdline (from the rootfs boot/grub/grub.cfg) and carry it into the live
-## kernel append, or the ISO boots UNHARDENED. dm-image-boot-tests asserts the
+## kernel append, or the ISO boots UNHARDENED. dm-smbios-reader-boot-tests asserts the
 ## runtime effect on the ISO legs; this catches the regression at the fast local gate.
 assert_matches "dm-raw-to-iso scrapes the rootfs kernel hardening cmdline" \
    'rootfs_kernel_hardening="\$\(grep' "${raw_to_iso_file}"

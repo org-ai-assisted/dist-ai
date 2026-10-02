@@ -8,10 +8,10 @@
 ## Boot a grub-menu test ISO under a chosen firmware, drive the REAL derivative-maker
 ## ISO GRUB menu over serial, enter the "Utilities..." submenu, and report whether a
 ## given menuentry title renders -- the interactive menu observation the boot-test
-## harness (dm-image-boot-tests) deliberately lacks (it autoboots past the menu).
+## harness (dm-smbios-reader-boot-tests) deliberately lacks (it autoboots past the menu).
 ##
 ## qemu argv (incl. the correct OVMF/SeaBIOS wiring per --firmware) is obtained from
-## the REAL `dm-qemu --emit-argv`, so this composes with the existing harness rather
+## the REAL `dm-smbios-reader-qemu --emit-argv`, so this composes with the existing harness rather
 ## than reimplementing firmware setup. This process only adds the serial-driven menu
 ## navigation on top.
 ##
@@ -36,14 +36,14 @@ def die_setup(msg):
 
 
 def emit_qemu_argv(dm_qemu, firmware, iso, serial_log, tmpdir):
-    ## dm-qemu prints qemu_bin + one arg per line to STDOUT (notes to STDERR),
+    ## dm-smbios-reader-qemu prints qemu_bin + one arg per line to STDOUT (notes to STDERR),
     ## then exits 0 without booting. --serial-logfile wires an explicit stdio
     ## chardev, so THIS process (pexpect) owns the serial pty while a complete
     ## copy still lands in the log file.
     ##
-    ## dm-qemu's OVMF-vars copy (efi/efi-secureboot) is created with `mktemp`,
+    ## dm-smbios-reader-qemu's OVMF-vars copy (efi/efi-secureboot) is created with `mktemp`,
     ## which honours TMPDIR -- so point it at OUR private dir and remove that,
-    ## rather than parsing a workdir path out of dm-qemu's stderr (a stream that
+    ## rather than parsing a workdir path out of dm-smbios-reader-qemu's stderr (a stream that
     ## also echoes the caller-controlled --iso value, so a crafted path could
     ## steer an rmtree).
     cmd = [
@@ -56,12 +56,12 @@ def emit_qemu_argv(dm_qemu, firmware, iso, serial_log, tmpdir):
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except OSError as exc:
-        die_setup("cannot run dm-qemu (%s): %s" % (dm_qemu, exc))
+        die_setup("cannot run dm-smbios-reader-qemu (%s): %s" % (dm_qemu, exc))
     if proc.returncode != 0:
-        die_setup("dm-qemu --emit-argv failed (rc=%s):\n%s" % (proc.returncode, proc.stderr))
+        die_setup("dm-smbios-reader-qemu --emit-argv failed (rc=%s):\n%s" % (proc.returncode, proc.stderr))
     argv = [line for line in proc.stdout.splitlines() if line != ""]
     if len(argv) < 2:
-        die_setup("dm-qemu --emit-argv produced no argv:\n%s" % proc.stdout)
+        die_setup("dm-smbios-reader-qemu --emit-argv produced no argv:\n%s" % proc.stdout)
     return argv
 
 
@@ -78,7 +78,7 @@ def main():
         return 0
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dm-qemu", required=True)
+    parser.add_argument("--dm-smbios-reader-qemu", required=True)
     parser.add_argument("--firmware", required=True, choices=["bios", "efi", "efi-secureboot"])
     parser.add_argument("--iso", required=True)
     parser.add_argument("--serial-log", required=True)
@@ -105,13 +105,13 @@ def main():
     except ImportError:
         die_setup("python3-pexpect is required")
 
-    ## Private scratch dir for dm-qemu's OVMF-vars copy (via TMPDIR); removed
+    ## Private scratch dir for dm-smbios-reader-qemu's OVMF-vars copy (via TMPDIR); removed
     ## wholesale below -- no path is parsed from any output.
     nav_tmp = tempfile.mkdtemp(prefix="grub-menu-nav.")
     child = None
     rc = 2
     try:
-        argv = emit_qemu_argv(args.dm_qemu, args.firmware, args.iso, args.serial_log, nav_tmp)
+        argv = emit_qemu_argv(args.dm_smbios_reader_qemu, args.firmware, args.iso, args.serial_log, nav_tmp)
         log("firmware=%s: spawning %s" % (args.firmware, " ".join(argv)))
 
         child = pexpect.spawn(

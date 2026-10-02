@@ -3,7 +3,7 @@
 ## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
-## dm-qemu screendump boot-watcher.
+## dm-smbios-reader-qemu screendump boot-watcher.
 ##
 ## Drives a running qemu instance over its QMP socket to capture periodic PNG
 ## screendumps of the GUEST FRAMEBUFFER, and decides whether the guest reached a
@@ -20,7 +20,7 @@
 ## is not mistaken for a booted desktop). Two consecutive rich+settled frames past that
 ## minimum => "up". The heuristic is imperfect by nature (a stuck colorful screen can pass,
 ## an animated greeter may never "settle"); EVERY frame + its metrics are saved so the
-## operator can eyeball the result, and dm-qemu ALSO corroborates against the serial log when
+## operator can eyeball the result, and dm-smbios-reader-qemu ALSO corroborates against the serial log when
 ## the image exposes one. Tune --colors-min / --diff-max / --min-up from the logged numbers.
 ##
 ## Exit: 0 guest reached a greeter/desktop; 5 timed out without one; 2 setup error
@@ -37,14 +37,14 @@ import time
 
 
 def log(message):
-    sys.stderr.write("dm-qemu-screendump-watch: " + message + "\n")
+    sys.stderr.write("dm-smbios-reader-qemu-screendump-watch: " + message + "\n")
     sys.stderr.flush()
 
 
 class Qmp:
     ## Minimal QMP client: connect (WITH RETRY, since qemu may still be binding the socket, or a
     ## stale socket from a prior run lingers a moment -- a one-shot connect would spuriously fail
-    ## and make dm-qemu kill a healthy qemu), read the greeting, negotiate capabilities, then
+    ## and make dm-smbios-reader-qemu kill a healthy qemu), read the greeting, negotiate capabilities, then
     ## issue synchronous commands (screendump returns only after qemu has written the file).
     def __init__(self, path, deadline):
         self.sock = None
@@ -190,7 +190,7 @@ def main():
         parser.error("--interval must be a positive integer (got %d)" % args.interval)
 
     ## Preflight ImageMagick: without it the heuristic cannot run -- a setup error (2), not a
-    ## traceback (dm-qemu also checks, but stay self-contained).
+    ## traceback (dm-smbios-reader-qemu also checks, but stay self-contained).
     for tool in ("identify", "compare"):
         if shutil.which(tool) is None:
             log("ImageMagick '%s' not found -- screendump detection needs it" % tool)

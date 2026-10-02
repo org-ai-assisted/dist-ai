@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Run ONE dm-vbox image test as an unprivileged test user and PUBLISH its
+## Run ONE dm-smbios-reader-vbox image test as an unprivileged test user and PUBLISH its
 ## artifacts (screenshot + a JSON result) into the read-only results plane
 ## (nginx over an onion). The systemd unit image-test@.service invokes this with
 ## a per-instance config; scheduling (timers) is deliberately out of scope here.
@@ -14,14 +14,14 @@
 ##   NAME       -- results-plane subtree + instance label (safe path segment).
 ##   TEST_USER  -- the Linux user the VM runs as (VBox state is per-$HOME, so the
 ##                 user IS the isolation boundary; never root).
-##   MODE       -- dm-vbox subcommand: run (boot an .ova/existing VM) or install
+##   MODE       -- dm-smbios-reader-vbox subcommand: run (boot an .ova/existing VM) or install
 ##                 (build an EFI VM booting an ISO vs an empty disk).
-##   DM_ARGS    -- bash array of the remaining dm-vbox args (--vm/--iso/--ova/
+##   DM_ARGS    -- bash array of the remaining dm-smbios-reader-vbox args (--vm/--iso/--ova/
 ##                 --expect/--firmware/...); --shot is appended by this runner.
 ##
 ## The runner itself must be root (the unit runs as root): it drops to TEST_USER
 ## for the VM via sudo, then republishes the artifacts as the nginx owner. The
-## test user needs NO sudo -- KVM is blacklisted on this host so dm-vbox's AMD-V
+## test user needs NO sudo -- KVM is blacklisted on this host so dm-smbios-reader-vbox's AMD-V
 ## prerequisite is already satisfied and never shells out to modprobe.
 
 set -o errexit
@@ -38,7 +38,7 @@ me="${0##*/}"
 ## match the results-plane provisioning (results_plane.sh).
 RESULTS_ROOT="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
 RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
-DM_VBOX="${DM_VBOX:-dm-vbox}"
+DM_VBOX="${DM_VBOX:-dm-smbios-reader-vbox}"
 
 die() {
    local code="$1"
@@ -130,7 +130,7 @@ main() {
    outdir="${RESULTS_ROOT}/${NAME}/${ts}"
    mkdir -p -- "${outdir}"
 
-   ## dm-vbox runs as TEST_USER and writes the screenshot to a path the test user
+   ## dm-smbios-reader-vbox runs as TEST_USER and writes the screenshot to a path the test user
    ## owns (the web root is not user-writable); the runner (root) then republishes
    ## it -- root reads the test user's file directly, no sudo needed for that.
    shot_user="$(sudo -u "${TEST_USER}" -- mktemp --tmpdir "image-test-${NAME}.XXXXXX.png")"

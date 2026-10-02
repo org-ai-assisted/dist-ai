@@ -1,16 +1,16 @@
-# dm-image-boot-tests: serial-console debug harness
+# dm-smbios-reader-boot-tests: serial-console debug harness
 
 Fast-iteration tooling for developing/debugging the boot checks that
-`dm-image-test` runs, WITHOUT rebooting on every change.
+`dm-smbios-reader-image-test` runs, WITHOUT rebooting on every change.
 
 ## The channel
 
-`dm-qemu --test-console` boots the guest with
+`dm-smbios-reader-qemu --test-console` boots the guest with
 `systemd.debug_shell=<ttyS> systemd.mask=serial-getty@<ttyS>.service`, so a
 login-free ROOT bash is bound straight to the serial line. That sidesteps the
 image's interactive user zsh, whose line editor (ZLE, auto-suggest, bracketed
 paste) corrupts programmatically-sent input (mangles `"$?"`, swallows queued
-`exec`). Drive this plain root bash instead -- the same reason `dm-image-test`
+`exec`). Drive this plain root bash instead -- the same reason `dm-smbios-reader-image-test`
 uses it in CI.
 
 ## Why boot once, poke many
@@ -29,7 +29,7 @@ dmserial.py raw                                        # dump current console
 dmserial.py kill                                       # stop qemu
 ```
 
-- dm-qemu is resolved from `$DM_QEMU`, else the sibling `../dm-qemu` in this
+- dm-smbios-reader-qemu is resolved from `$DM_QEMU`, else the sibling `../dm-smbios-reader-qemu` in this
   suite, else `PATH`.
 - State (socket, pidfile, boot log, recorded image path) lives under
   `$DMSERIAL_WORK`, else `${XDG_RUNTIME_DIR:-/tmp}/dmserial`.
@@ -40,7 +40,7 @@ dmserial.py kill                                       # stop qemu
 ## Example probe
 
 A probe waits for the root shell, crosses the boot barrier, then runs checks --
-the pattern `dm-image-test` productionizes. Read output between a split token so
+the pattern `dm-smbios-reader-image-test` productionizes. Read output between a split token so
 only the shell's real OUTPUT matches, never the command echo:
 
 ```python
@@ -61,4 +61,4 @@ print(run("su - user -c 'systemcheck --cli --leak-tests --verbose'", wait=400))
 ```
 
 This is DEV tooling, not a gated test: it is not registered in
-`dist-ai-tests-all`. The productionized path is `dm-image-boot-tests`.
+`dist-ai-tests-all`. The productionized path is `dm-smbios-reader-boot-tests`.

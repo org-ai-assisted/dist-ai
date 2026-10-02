@@ -8,20 +8,20 @@
 """Boot an image in qemu, log in over the serial console, run functional checks
 (by default 'systemcheck --leak-tests') and report a single pass/fail exit code.
 
-This is the functional layer on top of dm-qemu: dm-qemu owns qemu, firmware,
-Secure Boot and the SMBIOS kernel-cmdline injection; dm-image-test only drives
+This is the functional layer on top of dm-smbios-reader-qemu: dm-smbios-reader-qemu owns qemu, firmware,
+Secure Boot and the SMBIOS kernel-cmdline injection; dm-smbios-reader-image-test only drives
 the login conversation and aggregates the checks' exit codes. It obtains the
-exact qemu argv from 'dm-qemu --emit-argv' (which builds but does not boot), then
+exact qemu argv from 'dm-smbios-reader-qemu --emit-argv' (which builds but does not boot), then
 spawns it under pexpect so it can interact with the guest.
 
-Session selection (user vs sysmaint) is done through dm-qemu's --smbios-append,
+Session selection (user vs sysmaint) is done through dm-smbios-reader-qemu's --smbios-append,
 which injects a kernel cmdline the in-image GRUB SMBIOS reader appends -- no image
 edit, works on BIOS, EFI and EFI+Secure Boot alike.
 
-Exit codes mirror dm-qemu's triad so CI reads one consistent signal:
+Exit codes mirror dm-smbios-reader-qemu's triad so CI reads one consistent signal:
   0  every check returned its expected exit code (PASS)
   5  booted but a check failed, or the login prompt was never reached (FAIL)
-  2  setup / usage error (bad flag, dm-qemu missing, qemu argv error)
+  2  setup / usage error (bad flag, dm-smbios-reader-qemu missing, qemu argv error)
 """
 
 import argparse
@@ -173,13 +173,13 @@ def cli_login_check(login_user):
 
 
 def die_setup(message) -> NoReturn:
-    print("dm-image-test: %s" % message, file=sys.stderr)
+    print("dm-smbios-reader-image-test: %s" % message, file=sys.stderr)
     sys.exit(SETUP)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        prog="dm-image-test",
+        prog="dm-smbios-reader-image-test",
         description="Boot an image, log in and run functional checks.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
@@ -188,14 +188,14 @@ def parse_args():
     parser.add_argument("--arch", default="", help="amd64|arm64 (default: host)")
     parser.add_argument(
         "--firmware", default="",
-        help="bios|efi|efi-secureboot (x86; forwarded to dm-qemu)",
+        help="bios|efi|efi-secureboot (x86; forwarded to dm-smbios-reader-qemu)",
     )
     parser.add_argument(
         "--session", choices=sorted(SESSION_CMDLINE), default="user",
         help="which session to boot into (default: user)",
     )
     parser.add_argument("--login-user", default="user", help="serial login account")
-    ## TODO(dm-image-boot-tests): --login-pass is accepted but NEVER read -- the serial
+    ## TODO(dm-smbios-reader-boot-tests): --login-pass is accepted but NEVER read -- the serial
     ## login flow assumes a passwordless console and never sends a password at the prompt.
     ## Either wire it into the pexpect login (send it when a Password: prompt appears) or
     ## drop the flag. Verifying a real password prompt needs an actual image boot +
@@ -220,17 +220,17 @@ def parse_args():
     )
     parser.add_argument("--serial-log", default="", help="write the serial log here")
     parser.add_argument(
-        "--dm-qemu", default="dm-qemu",
-        help="path to the dm-qemu executable (default: PATH lookup)",
+        "--dm-smbios-reader-qemu", default="dm-smbios-reader-qemu",
+        help="path to the dm-smbios-reader-qemu executable (default: PATH lookup)",
     )
-    ## Any tokens after '--' are passed straight to dm-qemu (e.g. --memory, --smp).
-    parser.add_argument("dm_qemu_args", nargs=argparse.REMAINDER)
+    ## Any tokens after '--' are passed straight to dm-smbios-reader-qemu (e.g. --memory, --smp).
+    parser.add_argument("dm_smbios_reader_qemu_args", nargs=argparse.REMAINDER)
     return parser.parse_args()
 
 
 def build_qemu_argv(args):
-    """Return the qemu argv by asking dm-qemu to emit it (build-only, no boot)."""
-    cmd = [args.dm_qemu]
+    """Return the qemu argv by asking dm-smbios-reader-qemu to emit it (build-only, no boot)."""
+    cmd = [args.dm_smbios_reader_qemu]
     if args.disk:
         cmd += ["--disk", args.disk]
     else:
@@ -265,7 +265,7 @@ def build_qemu_argv(args):
         cmd += ["--smbios-append", " ".join(append_parts)]
 
     ## Drop the leading '--' argparse leaves in REMAINDER.
-    extra = args.dm_qemu_args
+    extra = args.dm_smbios_reader_qemu_args
     if extra and extra[0] == "--":
         extra = extra[1:]
     cmd += extra
@@ -276,21 +276,21 @@ def build_qemu_argv(args):
             cmd, check=True, capture_output=True, text=True
         )
     except FileNotFoundError:
-        die_setup("dm-qemu not found: %s" % args.dm_qemu)
+        die_setup("dm-smbios-reader-qemu not found: %s" % args.dm_smbios_reader_qemu)
     except OSError as exc:
-        ## dm-qemu exists but cannot be executed (not +x, bad interpreter, ...):
+        ## dm-smbios-reader-qemu exists but cannot be executed (not +x, bad interpreter, ...):
         ## an environment/setup problem, not a harness bug -- map to SETUP(2)
         ## instead of letting the raw OSError escape as an uncaught exit 1.
-        die_setup("cannot execute dm-qemu %s: %s" % (args.dm_qemu, exc))
+        die_setup("cannot execute dm-smbios-reader-qemu %s: %s" % (args.dm_smbios_reader_qemu, exc))
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(exc.stderr or "")
-        die_setup("dm-qemu --emit-argv failed (exit %s)" % exc.returncode)
+        die_setup("dm-smbios-reader-qemu --emit-argv failed (exit %s)" % exc.returncode)
 
-    ## dm-qemu --emit-argv prints one token per line, each '\n'-terminated and
-    ## containing no newline (dm-qemu guarantees this), so splitting on '\n'
+    ## dm-smbios-reader-qemu --emit-argv prints one token per line, each '\n'-terminated and
+    ## containing no newline (dm-smbios-reader-qemu guarantees this), so splitting on '\n'
     ## yields the tokens plus a trailing '' after the final newline -- the line
     ## terminator, not a token. Drop ONLY that trailing empty: an EMPTY argv token
-    ## is legitimate (e.g. an empty '-append' value, and --dm-qemu is
+    ## is legitimate (e.g. an empty '-append' value, and --dm-smbios-reader-qemu is
     ## user-overridable), and dropping interior empties would shift every later
     ## token. split('\n'), not splitlines(), which would also break a token on an
     ## embedded '\r' / other line boundary.
@@ -298,13 +298,13 @@ def build_qemu_argv(args):
     if argv and argv[-1] == "":
         argv.pop()
     if not argv:
-        die_setup("dm-qemu --emit-argv produced no qemu argv")
+        die_setup("dm-smbios-reader-qemu --emit-argv produced no qemu argv")
 
-    ## dm-qemu leaves any per-boot workdir (kernel/initrd extraction or the EFI
+    ## dm-smbios-reader-qemu leaves any per-boot workdir (kernel/initrd extraction or the EFI
     ## OVMF_VARS copy) for us to remove once qemu has exited; it reports the path
     ## on stderr. Capture it so we clean up instead of leaking under /tmp.
     workdir = None
-    marker = "dm-qemu: emit-argv workdir (caller owns cleanup): "
+    marker = "dm-smbios-reader-qemu: emit-argv workdir (caller owns cleanup): "
     for line in (result.stderr or "").splitlines():
         if line.startswith(marker):
             workdir = line[len(marker):].strip()
@@ -312,9 +312,9 @@ def build_qemu_argv(args):
 
 
 def safe_rmtree_workdir(path, log):
-    """Recursively delete a dm-qemu per-boot workdir, but only when it is safe.
+    """Recursively delete a dm-smbios-reader-qemu per-boot workdir, but only when it is safe.
 
-    `path` is parsed from dm-qemu's stderr marker, so a marker-format change or a bug
+    `path` is parsed from dm-smbios-reader-qemu's stderr marker, so a marker-format change or a bug
     could aim rmtree at an arbitrary location. Remove ONLY an absolute, real
     (non-symlink) directory strictly UNDER the temp root -- never a symlink, never the
     temp root or '/' itself. Returns True iff it removed the tree.
@@ -325,7 +325,7 @@ def safe_rmtree_workdir(path, log):
             and real != tmp_root and (real + os.sep).startswith(tmp_root + os.sep)):
         shutil.rmtree(real, ignore_errors=True)
         return True
-    log("dm-image-test: refusing to rmtree suspicious qemu workdir %r" % path)
+    log("dm-smbios-reader-image-test: refusing to rmtree suspicious qemu workdir %r" % path)
     return False
 
 
@@ -508,18 +508,18 @@ def report_release_summary(args, results, log):
     serial summary is never read as "all release-critical checks passed"). `results`
     maps a RELEASE_CHECKS number to True (PASS) / False (FAIL)."""
     leg = "%s session, %s" % (args.session, args.firmware or "default firmware")
-    log("dm-image-test: release-critical check summary (%s):" % leg)
+    log("dm-smbios-reader-image-test: release-critical check summary (%s):" % leg)
     for num in sorted(results):
-        log("dm-image-test:   check %s (%s): %s"
+        log("dm-smbios-reader-image-test:   check %s (%s): %s"
             % (num, RELEASE_CHECKS.get(num, "?"),
                "PASS" if results[num] else "FAIL"))
     delegated = ", ".join("%s (%s)" % (num, name) for num, name in DELEGATED_CHECKS)
-    log("dm-image-test:   checks %s are covered by dm-calamares-install (VBox path),"
+    log("dm-smbios-reader-image-test:   checks %s are covered by dm-calamares-install (VBox path),"
         " not this headless no-network serial leg" % delegated)
 
 
 def run_checks(child, args, log):
-    """Run the checks over the login-free ROOT serial shell that dm-qemu
+    """Run the checks over the login-free ROOT serial shell that dm-smbios-reader-qemu
     --test-console binds to the console (systemd debug-shell, login getty masked).
 
     This deliberately bypasses the image's interactive user zsh, whose line editor
@@ -580,7 +580,7 @@ def run_checks(child, args, log):
             shell_live = True
             break
     if not shell_live:
-        log("dm-image-test: root serial shell (--test-console) never came up")
+        log("dm-smbios-reader-image-test: root serial shell (--test-console) never came up")
         return FAIL
 
     ## 2) Boot barrier: wait until the system finishes coming up so checks see a
@@ -616,7 +616,7 @@ def run_checks(child, args, log):
             ## matrix sets a real name ('user'/'sysmaint'), so this only fail-closes
             ## a malformed override rather than passing it to su.
             if args.login_user.startswith("-"):
-                log("dm-image-test: refusing --login-user %r: a leading '-' would be"
+                log("dm-smbios-reader-image-test: refusing --login-user %r: a leading '-' would be"
                     " parsed as an su option" % args.login_user)
                 if num is not None:
                     results[num] = False
@@ -635,7 +635,7 @@ def run_checks(child, args, log):
                        % (payload, sentinel, sentinel))
         match = wait_for(rc_re, args.timeout, regex=True)
         if match is None:
-            log("dm-image-test: command timed out or guest died: %s" % command)
+            log("dm-smbios-reader-image-test: command timed out or guest died: %s" % command)
             if num is not None:
                 results[num] = False
             overall = FAIL
@@ -653,7 +653,7 @@ def run_checks(child, args, log):
         ## --expect-rc; the boot-integrity sentinels (hardening, firmware, role)
         ## carry 0 so they hold regardless of --expect-rc.
         if want_rc is None:
-            log("dm-image-test: diag (rc=%s) %s" % (rc, command))
+            log("dm-smbios-reader-image-test: diag (rc=%s) %s" % (rc, command))
             continue
         passed = rc == want_rc
         if num is not None:
@@ -661,14 +661,14 @@ def run_checks(child, args, log):
             ## gate names exactly which guarantee broke (and matches the VBox path's
             ## 'check N PASS|FAIL' vocabulary).
             results[num] = passed
-            log("dm-image-test: check %s (%s) %s (rc=%s%s)"
+            log("dm-smbios-reader-image-test: check %s (%s) %s (rc=%s%s)"
                 % (num, RELEASE_CHECKS.get(num, "?"),
                    "PASS" if passed else "FAIL", rc,
                    "" if passed else ", want %s" % want_rc))
         elif passed:
-            log("dm-image-test: OK   (rc=%s) %s" % (rc, command))
+            log("dm-smbios-reader-image-test: OK   (rc=%s) %s" % (rc, command))
         else:
-            log("dm-image-test: FAIL (rc=%s, want %s) %s"
+            log("dm-smbios-reader-image-test: FAIL (rc=%s, want %s) %s"
                 % (rc, want_rc, command))
         if not passed:
             overall = FAIL
@@ -697,7 +697,7 @@ def main():
     def log(message):
         print(message, file=sys.stderr)
 
-    ## Wrap ALL post-build setup so the caller-owned workdir dm-qemu left for us
+    ## Wrap ALL post-build setup so the caller-owned workdir dm-smbios-reader-qemu left for us
     ## (EFI OVMF_VARS copy or kernel/initrd extraction) is removed even if the
     ## serial-log open or pexpect.spawn raises -- else it leaks under /tmp.
     child = None
@@ -713,7 +713,7 @@ def main():
             except OSError as exc:
                 die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
 
-        print("dm-image-test: spawning: %s"
+        print("dm-smbios-reader-image-test: spawning: %s"
               % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
         ## codec_errors="replace", not pexpect's strict default: read_nonblocking
         ## chops the serial stream at a fixed byte count, so a multi-byte
@@ -731,10 +731,10 @@ def main():
                 codec_errors="replace",
             )
         except pexpect.ExceptionPexpect as exc:
-            ## qemu_argv[0] is chosen by dm-qemu; if that qemu binary is missing or
+            ## qemu_argv[0] is chosen by dm-smbios-reader-qemu; if that qemu binary is missing or
             ## not executable, pexpect raises here. That is a setup/environment
             ## error -- map to SETUP(2) instead of letting it escape as exit 1. The
-            ## enclosing finally still runs, so the dm-qemu workdir is cleaned up.
+            ## enclosing finally still runs, so the dm-smbios-reader-qemu workdir is cleaned up.
             die_setup("cannot spawn qemu %s: %s" % (qemu_argv[0], exc))
         ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
         ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec'
@@ -742,7 +742,7 @@ def main():
         ## before the next, so 'exec bash' actually takes and metacharacters survive.
         child.delaybeforesend = 0.4
         ## The serial log is written by qemu itself (the chardev 'logfile=' wired via
-        ## dm-qemu --serial-logfile): a blocking regular-file copy of every serial byte
+        ## dm-smbios-reader-qemu --serial-logfile): a blocking regular-file copy of every serial byte
         ## that never drops, so a verbose burst is captured in full even though this
         ## pexpect reader (used only to drive the conversation) may fall behind and lose
         ## bytes to a full pty. Do NOT also log the pexpect stream to the same file --
@@ -769,7 +769,7 @@ def main():
         if qemu_workdir:
             safe_rmtree_workdir(qemu_workdir, log)
 
-    log("dm-image-test: exiting (verdict rc=%s)" % verdict)
+    log("dm-smbios-reader-image-test: exiting (verdict rc=%s)" % verdict)
     sys.exit(verdict)
 
 

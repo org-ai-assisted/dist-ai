@@ -1,15 +1,15 @@
-# dm-image-boot-tests: boot + functional test harness
+# dm-smbios-reader-boot-tests: boot + functional test harness
 
 Boots a built derivative-maker image in qemu, drives a login-free root serial
 shell, runs `systemcheck --leak-tests`, and reports one pass/fail exit code.
-The CI front-end `dm-boot-test` (installs the qemu/OVMF runtime, discovers the
-boot media by image kind, forwards to `dm-image-boot-tests`) and the whole
+The CI front-end `dm-smbios-reader-boot-test` (installs the qemu/OVMF runtime, discovers the
+boot media by image kind, forwards to `dm-smbios-reader-boot-tests`) and the whole
 harness live here (test-only tooling), not in derivative-maker; derivative-maker
-CI calls `dist-ai/usr/bin/dm-boot-test`.
+CI calls `dist-ai/usr/bin/dm-smbios-reader-boot-test`.
 
-- `dm-image-test` -- orchestrator: gets qemu argv from `dm-qemu --emit-argv`,
+- `dm-smbios-reader-image-test` -- orchestrator: gets qemu argv from `dm-smbios-reader-qemu --emit-argv`,
   spawns it under pexpect, drives the conversation over serial.
-- `dm-qemu` -- builds the qemu argv (does not boot). `--test-console`,
+- `dm-smbios-reader-qemu` -- builds the qemu argv (does not boot). `--test-console`,
   `--smbios-append`, `--screendump`, `--iso`/`--disk`.
 - `debug/` -- boot-once/poke-many dev tooling (`dmserial.py`); not gated.
 
@@ -20,7 +20,7 @@ The tester injects kernel cmdline (session selection, `console=ttyS0`,
 so all three firmware paths (BIOS, EFI, EFI-secureboot) are exercised and the
 image is never modified:
 
-- `dm-qemu` passes `-smbios type=1,serial=dm-cmdline=<cmdline>`. Commas in the
+- `dm-smbios-reader-qemu` passes `-smbios type=1,serial=dm-cmdline=<cmdline>`. Commas in the
   value MUST be doubled (`console=ttyS0,,115200n8`) or qemu's `-smbios` parser
   splits on them.
 - A GRUB reader (near the top of grub.cfg) reads SMBIOS Type-1 field 7 (system
@@ -99,12 +99,12 @@ fragment remains available if a stronger boundary is ever needed.
   `${dm_smbios_extra}`, runs `serial --unit=0 ...; terminal_output serial console;
   set timeout=0`. `timeout=0` is essential: a headless tester cannot dismiss the
   GRUB menu, so any countdown hangs the boot. Normal boot keeps `gfxterm`.
-- **The serial log is written by qemu, NOT by the pexpect reader.** `dm-image-test`
+- **The serial log is written by qemu, NOT by the pexpect reader.** `dm-smbios-reader-image-test`
   reads the console through a pexpect pty only to DRIVE the conversation. A verbose
   guest burst (`systemcheck`'s ~40 checks) emits faster than the Python reader
   drains the pty; qemu then DROPS the bytes it cannot hand to the full pty, so the
   reader sees only the tail (early checks, e.g. the `check_services` failed-unit
-  list, are lost). Fix: `dm-image-test` passes `dm-qemu --serial-logfile <log>`,
+  list, are lost). Fix: `dm-smbios-reader-image-test` passes `dm-smbios-reader-qemu --serial-logfile <log>`,
   which wires an explicit `-chardev stdio,...,logfile=<log> -serial chardev:...`
   instead of `-serial mon:stdio`. qemu copies every serial byte to that regular
   file with a blocking write BEFORE the lossy pty write, so the log is COMPLETE

@@ -5,9 +5,9 @@
 
 ## AI-Assisted
 
-"""Regression tests for dm-image-test that need no VM image.
+"""Regression tests for dm-smbios-reader-image-test that need no VM image.
 
-dm-image-boot-tests proper needs a built image and qemu, so it cannot guard
+dm-smbios-reader-boot-tests proper needs a built image and qemu, so it cannot guard
 the decode path that killed runs before this file existed: pexpect's default
 strict UTF-8 decoding raised UnicodeDecodeError inside wait_for(), which
 catches only TIMEOUT/EOF, so a boot run died with a traceback instead of one
@@ -31,10 +31,10 @@ from pathlib import Path
 
 import pytest
 
-HARNESS = Path(__file__).resolve().parent / 'dm-image-test'
+HARNESS = Path(__file__).resolve().parent / 'dm-smbios-reader-image-test'
 DMSERIAL = Path(__file__).resolve().parent / 'debug' / 'dmserial.py'
 
-## dm-image-test's documented exit codes (PASS = 0, FAIL = 5, SETUP = 2). The
+## dm-smbios-reader-image-test's documented exit codes (PASS = 0, FAIL = 5, SETUP = 2). The
 ## contract is EXACTLY these three: an uncaught exception (exit 1) breaks it.
 FAIL_RC = 5
 SETUP_RC = 2
@@ -48,7 +48,7 @@ def test_spawn_asks_for_lenient_decoding():
     """The fix itself: the spawn call must not use pexpect's strict default."""
     source = HARNESS.read_text(encoding='utf-8')
     match = re.search(r'child = pexpect\.spawn\((.*?)\)\n', source, re.DOTALL)
-    assert match, 'could not find the pexpect.spawn call in dm-image-test'
+    assert match, 'could not find the pexpect.spawn call in dm-smbios-reader-image-test'
     call = match.group(1)
     assert 'encoding="utf-8"' in call, 'spawn should still decode to str'
     assert 'codec_errors="replace"' in call, (
@@ -96,12 +96,12 @@ def test_lenient_decoding_survives_invalid_utf8():
 
 
 def test_dm_image_test_survives_split_multibyte(tmp_path):
-    """End-to-end on the REAL harness: dm-image-test's own read loop must survive
+    """End-to-end on the REAL harness: dm-smbios-reader-image-test's own read loop must survive
     non-UTF-8 / split multibyte serial bytes and exit with a DOCUMENTED code, not
     a decode traceback.
 
     Where the two tests above check pexpect's kwargs (the source text, and the
-    kwargs on a generic /bin/sh), this drives dm-image-test itself: a stub dm-qemu
+    kwargs on a generic /bin/sh), this drives dm-smbios-reader-image-test itself: a stub dm-smbios-reader-qemu
     whose emitted 'serial' process prints a truncated two-byte sequence (0303) and
     an invalid byte (0377) then hangs, so the login prompt never appears. With the
     fix the run reads those bytes leniently and ends in FAIL on the deadline; drop
@@ -109,14 +109,14 @@ def test_dm_image_test_survives_split_multibyte(tmp_path):
     wait_for() (which catches only TIMEOUT/EOF), turning the run into a traceback."""
     pytest.importorskip('pexpect')
     if not HARNESS.is_file():
-        pytest.skip('dm-image-test harness absent')
+        pytest.skip('dm-smbios-reader-image-test harness absent')
 
-    ## Stub dm-qemu: ignores every argument and, on the --emit-argv call
-    ## dm-image-test makes, prints (one token per line) the argv of a fake serial
+    ## Stub dm-smbios-reader-qemu: ignores every argument and, on the --emit-argv call
+    ## dm-smbios-reader-image-test makes, prints (one token per line) the argv of a fake serial
     ## source. 0377 is never valid UTF-8; 0303 alone is a truncated two-byte
     ## sequence -- the exact shape a read-size boundary cut produces. dash printf
     ## implements the POSIX octal form, so these become real bytes on the pty.
-    stub = tmp_path / 'dm-qemu'
+    stub = tmp_path / 'dm-smbios-reader-qemu'
     stub.write_text(
         "#!/bin/bash\n"
         + r'''printf '%s\n' '/bin/sh' '-c' "printf 'start\377\303 end\n'; sleep 30"'''
@@ -127,15 +127,15 @@ def test_dm_image_test_survives_split_multibyte(tmp_path):
     disk.write_bytes(b'')
 
     proc = subprocess.run(
-        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(stub),
+        [str(HARNESS), '--disk', str(disk), '--dm-smbios-reader-qemu', str(stub),
          '--timeout', '8'],
         capture_output=True, text=True, timeout=90, check=False,
     )
     tail = proc.stderr[-2000:]
     assert 'UnicodeDecodeError' not in proc.stderr, (
-        'dm-image-test died decoding serial bytes (strict decode):\n' + tail)
+        'dm-smbios-reader-image-test died decoding serial bytes (strict decode):\n' + tail)
     assert 'Traceback' not in proc.stderr, (
-        'dm-image-test crashed instead of a documented exit:\n' + tail)
+        'dm-smbios-reader-image-test crashed instead of a documented exit:\n' + tail)
     assert proc.returncode == FAIL_RC, (
         'expected documented FAIL=%d (login prompt never appeared), got rc=%d\n'
         'stderr tail:\n%s' % (FAIL_RC, proc.returncode, tail))
@@ -161,10 +161,10 @@ def test_dmserial_boot_log_survives_the_parent_closing_its_handle(tmp_path,
     qemu emits after do_boot returns, and dmserial.py has no other capture.
     """
     work = tmp_path / 'work'
-    ## A stub dm-qemu: dmserial only asks it to --emit-argv, then runs the
+    ## A stub dm-smbios-reader-qemu: dmserial only asks it to --emit-argv, then runs the
     ## printed argv itself. Sleep first, so EVERY byte of the log is written
     ## after do_boot has returned and the parent's handle is long closed.
-    stub = tmp_path / 'dm-qemu-stub'
+    stub = tmp_path / 'dm-smbios-reader-qemu-stub'
     stub.write_text(
         '#!/bin/sh\n'
         "printf '%s\\n' /bin/sh -c 'sleep 1; printf AFTER-RETURN'\n",
@@ -201,13 +201,13 @@ def test_dmserial_boot_log_survives_the_parent_closing_its_handle(tmp_path,
             pass
 
 
-## --- Qmp reply-id correlation (dm-qemu-screendump-watch) --------------------
+## --- Qmp reply-id correlation (dm-smbios-reader-qemu-screendump-watch) --------------------
 ## A screendump whose recv times out leaves its reply pending; without id
 ## correlation the NEXT command reads that late reply and every subsequent
 ## command is off-by-one -> a silently WRONG boot verdict. The client now tags
 ## each command with a monotonic id and correlates the reply.
 
-SCREENDUMP_WATCH = Path(__file__).resolve().parent / 'dm-qemu-screendump-watch'
+SCREENDUMP_WATCH = Path(__file__).resolve().parent / 'dm-smbios-reader-qemu-screendump-watch'
 
 
 def _load_qmp():
@@ -314,7 +314,7 @@ def test_qmp_rejects_mismatched_id(tmp_path, bad):
         server.close()
 
 
-## --- dm-qemu-screendump-watch --interval lower bound ------------------------
+## --- dm-smbios-reader-qemu-screendump-watch --interval lower bound ------------------------
 
 def test_interval_must_be_positive(tmp_path):
     ## --interval feeds time.sleep(); < 1 would ValueError-crash (exit 1) and break the
@@ -345,7 +345,7 @@ def test_bad_outdir_maps_to_setup(tmp_path):
     assert 'cannot create --outdir' in proc.stderr, proc.stderr
 
 
-## --- dm-image-test safe_rmtree_workdir (unvalidated-path teardown) ----------
+## --- dm-smbios-reader-image-test safe_rmtree_workdir (unvalidated-path teardown) ----------
 
 def _load_dm_image_test():
     loader = importlib.machinery.SourceFileLoader(
@@ -358,7 +358,7 @@ def _load_dm_image_test():
 
 
 def test_safe_rmtree_workdir(tmp_path, monkeypatch):
-    ## qemu_workdir is parsed from dm-qemu stderr; the teardown must only rmtree a real,
+    ## qemu_workdir is parsed from dm-smbios-reader-qemu stderr; the teardown must only rmtree a real,
     ## non-symlink dir strictly UNDER the temp root -- never a symlink, the temp root, or
     ## an out-of-tree path, so a bad marker cannot aim the recursive delete elsewhere.
     m = _load_dm_image_test()
@@ -399,11 +399,11 @@ def test_safe_rmtree_workdir(tmp_path, monkeypatch):
 ## surfacing as exit 1. These lock the environment/IO paths to SETUP(2).
 
 def test_missing_qemu_binary_maps_to_setup(tmp_path):
-    ## A stub dm-qemu emits an argv whose qemu binary (argv[0]) does not exist, so
+    ## A stub dm-smbios-reader-qemu emits an argv whose qemu binary (argv[0]) does not exist, so
     ## pexpect.spawn raises pexpect.ExceptionPexpect. That is a setup error -- the
     ## harness must exit SETUP(2), not let the exception escape as exit 1.
     pytest.importorskip('pexpect')
-    stub = tmp_path / 'dm-qemu'
+    stub = tmp_path / 'dm-smbios-reader-qemu'
     stub.write_text(
         "#!/bin/sh\n"
         "printf '%s\\n' /nonexistent/qemu-system-x86_64 -m 512\n",
@@ -412,7 +412,7 @@ def test_missing_qemu_binary_maps_to_setup(tmp_path):
     disk = tmp_path / 'dummy.qcow2'
     disk.write_bytes(b'')
     proc = subprocess.run(
-        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(stub),
+        [str(HARNESS), '--disk', str(disk), '--dm-smbios-reader-qemu', str(stub),
          '--timeout', '8'],
         capture_output=True, text=True, timeout=90, check=False)
     assert 'Traceback' not in proc.stderr, proc.stderr[-2000:]
@@ -423,32 +423,32 @@ def test_missing_qemu_binary_maps_to_setup(tmp_path):
 
 
 def test_nonexecutable_dm_qemu_maps_to_setup(tmp_path):
-    ## --dm-qemu points at a file that exists but is not executable, so
+    ## --dm-smbios-reader-qemu points at a file that exists but is not executable, so
     ## subprocess.run raises PermissionError (an OSError, NOT FileNotFoundError).
     ## That must map to SETUP(2), not escape as an uncaught exit 1.
-    dmqemu = tmp_path / 'dm-qemu'
+    dmqemu = tmp_path / 'dm-smbios-reader-qemu'
     dmqemu.write_text("#!/bin/sh\ntrue\n", encoding='ascii')
     dmqemu.chmod(0o644)  # readable but not +x
     disk = tmp_path / 'dummy.qcow2'
     disk.write_bytes(b'')
     proc = subprocess.run(
-        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(dmqemu),
+        [str(HARNESS), '--disk', str(disk), '--dm-smbios-reader-qemu', str(dmqemu),
          '--timeout', '8'],
         capture_output=True, text=True, timeout=90, check=False)
     assert 'Traceback' not in proc.stderr, proc.stderr[-2000:]
     assert proc.returncode == SETUP_RC, (
-        'a non-executable --dm-qemu must map to SETUP=%d, got rc=%d\n%s'
+        'a non-executable --dm-smbios-reader-qemu must map to SETUP=%d, got rc=%d\n%s'
         % (SETUP_RC, proc.returncode, proc.stderr[-2000:]))
-    assert 'cannot execute dm-qemu' in proc.stderr, proc.stderr[-2000:]
+    assert 'cannot execute dm-smbios-reader-qemu' in proc.stderr, proc.stderr[-2000:]
 
 
 def test_emit_argv_preserves_empty_token(tmp_path):
-    ## dm-qemu emits one argv token per line; an EMPTY token is legitimate (e.g. an
+    ## dm-smbios-reader-qemu emits one argv token per line; an EMPTY token is legitimate (e.g. an
     ## empty '-append' value). The old parse filtered every empty line, shifting all
     ## later tokens. build_qemu_argv must keep interior empties and drop only the
     ## trailing terminator.
     m = _load_dm_image_test()
-    stub = tmp_path / 'dm-qemu'
+    stub = tmp_path / 'dm-smbios-reader-qemu'
     stub.write_text(
         "#!/bin/sh\nprintf '%s\\n' qemu-system-x86_64 '' -m 512\n",
         encoding='ascii')
@@ -456,8 +456,8 @@ def test_emit_argv_preserves_empty_token(tmp_path):
     disk = tmp_path / 'dummy.qcow2'
     disk.write_bytes(b'')
     args = types.SimpleNamespace(
-        dm_qemu=str(stub), disk=str(disk), iso=None, arch="", firmware="",
-        serial_log="", session="user", smbios_append="", dm_qemu_args=[])
+        dm_smbios_reader_qemu=str(stub), disk=str(disk), iso=None, arch="", firmware="",
+        serial_log="", session="user", smbios_append="", dm_smbios_reader_qemu_args=[])
     argv, _workdir = m.build_qemu_argv(args)
     assert argv == ['qemu-system-x86_64', '', '-m', '512'], argv
 
@@ -741,8 +741,8 @@ def test_boot_match_sentinels_require_zero_regardless_of_expect_rc():
 def _plan_args(**kw):
     base: dict[str, object] = dict(disk='/x.qcow2', iso=None, arch='', firmware='bios', session='user',
                 login_user='user', login_pass='', run=None, expect_rc=0,
-                timeout=1800, smbios_append='', serial_log='', dm_qemu='dm-qemu',
-                dm_qemu_args=[])
+                timeout=1800, smbios_append='', serial_log='', dm_smbios_reader_qemu='dm-smbios-reader-qemu',
+                dm_smbios_reader_qemu_args=[])
     base.update(kw)
     return types.SimpleNamespace(**base)
 

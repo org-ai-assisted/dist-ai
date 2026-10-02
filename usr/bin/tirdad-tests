@@ -1,0 +1,63 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the tirdad packaging regression suite. Works both when installed (tests
+## under /usr/share/tirdad-tests) and when run straight from a git checkout
+## (tests under usr/share/tirdad-tests relative to this script). Any extra
+## arguments are forwarded to each payload.
+##
+## The tirdad sources under test are resolved by each payload:
+##   * TIRDAD_REPO=/path/to/tirdad -> that checkout, OR
+##   * unset                       -> the tirdad checkout this script lives in.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/tirdad-tests" ]; then
+   share="${script_dir}/../share/tirdad-tests"
+else
+   share='/usr/share/tirdad-tests'
+fi
+
+## Every *_test.sh payload runs, and all of them run: a payload that fails must
+## not hide the ones after it, and a payload added to the directory must not need
+## a second edit here to be executed (an unrun test is a silent green).
+rc=0
+ran=0
+skipped=0
+shopt -s nullglob
+for payload in "${share}"/*_test.sh; do
+   ran=$(( ran + 1 ))
+   payload_rc=0
+   bash -- "${payload}" "$@" || payload_rc=$?
+   if [ "${payload_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+   if [ "${payload_rc}" -ne 0 ]; then
+      rc="${payload_rc}"
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf '%s\n' "FAIL: tirdad-tests: no *_test.sh payload found in '${share}'; the suite ran nothing." >&2
+   exit 1
+fi
+
+## All payloads skipped means no source tree, i.e. the suite itself is a SKIP.
+if [ "${rc}" -eq 0 ] && [ "${skipped}" -eq "${ran}" ]; then
+   rc=77
+fi
+
+exit "${rc}"

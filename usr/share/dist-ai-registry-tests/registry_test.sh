@@ -21,7 +21,7 @@
 ##   - a suite with no suite_component() mapping silently drops out of every
 ##     --component run, i.e. out of per-repo CI, while looking registered;
 ##   - an entrypoint in no *_suites array never runs at all, not even under
-##     --all (dm-image-boot-tests, dm-reproducible-build-tests).
+##     --all (dm-smbios-reader-boot-tests, dm-reproducible-build-tests).
 ##
 ## This is a source-tree lint: it needs the repo, and exits 77 without one.
 
@@ -79,14 +79,14 @@ allowed_unregistered=(
 ##   web-analyzer     analyzer.js lives in output-lies.github.io
 ##   website          the Pages sites live in their own repos
 ##   iso-boot         the QMP parser is dist-ai's own payload
-##   dm-image-boot    self-contained; takes a built image as an argument
+##   dm-smbios-reader-boot    self-contained; takes a built image as an argument
 ##   dm-gitlink-upstream-check  self-contained; offline --self-test of dist-ai's
 ##                    own tool, no component checkout under test
 allowed_no_component=(
    'web-analyzer'
    'website'
    'iso-boot'
-   'dm-image-boot'
+   'dm-smbios-reader-boot'
    'dm-gitlink-upstream-check'
 )
 

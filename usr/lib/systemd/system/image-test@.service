@@ -3,7 +3,7 @@
 
 ## AI-Assisted
 
-## Run one dm-vbox image test and publish its artifacts to the results plane.
+## Run one dm-smbios-reader-vbox image test and publish its artifacts to the results plane.
 ## Instance name = the config basename under /etc/image-test (e.g.
 ## image-test@kicksecure-iso-efi -> /etc/image-test/kicksecure-iso-efi.conf).
 ## oneshot: fired on demand (or by a future .timer -- scheduling is deferred).
@@ -11,7 +11,7 @@
 ## republishes artifacts as the nginx owner.
 
 [Unit]
-Description=dm-vbox image test (%i)
+Description=dm-smbios-reader-vbox image test (%i)
 After=vboxdrv.service network-online.target
 Wants=network-online.target
 

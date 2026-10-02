@@ -25,9 +25,9 @@ export LC_ALL=C
 
 me='battery-test'
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-lib="${script_dir}/../dm-image-boot-tests/release-checks.bsh"
+lib="${script_dir}/../dm-smbios-reader-boot-tests/release-checks.bsh"
 [ -r "${lib}" ] || { printf 'ERROR: release-checks.bsh not found: %s\n' "${lib}" >&2; exit 1; }
-# shellcheck source=../dm-image-boot-tests/release-checks.bsh
+# shellcheck source=../dm-smbios-reader-boot-tests/release-checks.bsh
 source "${lib}"
 ## No real sleeps in the retry path.
 RELEASE_CHECK_RETRY_SLEEP[8]=0

@@ -5,14 +5,14 @@
 
 ## AI-Assisted
 
-## dm-boot-test sources helper-scripts' package_installed_check.sh to decide whether
+## dm-smbios-reader-boot-test sources helper-scripts' package_installed_check.sh to decide whether
 ## qemu dependencies need installing. It must locate that library in the CI boot-test
-## job, where dm-boot-test runs from dist-ai/usr/bin nested in the derivative-maker
+## job, where dm-smbios-reader-boot-test runs from dist-ai/usr/bin nested in the derivative-maker
 ## workspace (dist-ai mounted at ./dist-ai) alongside packages/kicksecure/helper-scripts
 ## -- which is CHECKED OUT, not installed at /usr/libexec, and HELPER_SCRIPTS_PATH is
 ## not set. A hardcoded 'source /usr/libexec/helper-scripts/...' aborted every boot-test
 ## leg before qemu started ("package_installed_check.sh: No such file or directory").
-## This drives the REAL dm-boot-test and asserts the source resolves in that layout.
+## This drives the REAL dm-smbios-reader-boot-test and asserts the source resolves in that layout.
 
 set -o errexit
 set -o nounset
@@ -23,9 +23,9 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
-## dist-ai repo root: this file is at usr/share/dm-boot-test-tests/<f>.
+## dist-ai repo root: this file is at usr/share/dm-smbios-reader-boot-test-tests/<f>.
 repo_root="$(dirname -- "$(dirname -- "$(dirname -- "${script_dir}")")")"
-dm_boot_test="${repo_root}/usr/bin/dm-boot-test"
+dm_boot_test="${repo_root}/usr/bin/dm-smbios-reader-boot-test"
 ## Honour DERIVATIVE_MAKER_DIR (dist-ai-tests-all wires it; CI checks out
 ## derivative-maker at $GITHUB_WORKSPACE, not under $HOME) before falling back.
 dm_dir="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
@@ -54,12 +54,12 @@ trap cleanup EXIT
 dummy_image="${workdir}/dummy.qcow2"
 printf '' > "${dummy_image}"
 
-## dm-boot-test validates --arch AFTER sourcing package_installed_check.sh, so an
+## dm-smbios-reader-boot-test validates --arch AFTER sourcing package_installed_check.sh, so an
 ## invalid --arch makes it exit right after the source -- reaching "unsupported
 ## --arch" proves the source resolved; "No such file" proves it did not. This
 ## avoids launching qemu.
 run_probe() {
-   ## $1 = extra env assignment (may be empty); runs the given dm-boot-test path.
+   ## $1 = extra env assignment (may be empty); runs the given dm-smbios-reader-boot-test path.
    local boot_test_bin="$1"
    env -u HELPER_SCRIPTS_PATH timeout --kill-after=30 30 bash "${boot_test_bin}" \
       --image "${dummy_image}" --arch bogus --firmware bios --session user 2>&1 || true
@@ -70,14 +70,14 @@ run_probe() {
 ci_ws="${workdir}/ws"
 mkdir --parents -- "${ci_ws}/packages/kicksecure" "${ci_ws}/dist-ai/usr/bin"
 ln --symbolic -- "${hs}" "${ci_ws}/packages/kicksecure/helper-scripts"
-## Copy dm-boot-test into the nested layout (a symlink would resolve readlink -f back
+## Copy dm-smbios-reader-boot-test into the nested layout (a symlink would resolve readlink -f back
 ## to the real repo and defeat the layout probe).
-cp -- "${dm_boot_test}" "${ci_ws}/dist-ai/usr/bin/dm-boot-test"
-chmod +x -- "${ci_ws}/dist-ai/usr/bin/dm-boot-test"
+cp -- "${dm_boot_test}" "${ci_ws}/dist-ai/usr/bin/dm-smbios-reader-boot-test"
+chmod +x -- "${ci_ws}/dist-ai/usr/bin/dm-smbios-reader-boot-test"
 
-out="$(run_probe "${ci_ws}/dist-ai/usr/bin/dm-boot-test")"
+out="$(run_probe "${ci_ws}/dist-ai/usr/bin/dm-smbios-reader-boot-test")"
 if grep --quiet 'No such file' <<< "${out}"; then
-   fail "CI-nested layout: dm-boot-test cannot source package_installed_check.sh:\n$(printf '%s' "${out}" | grep 'No such file' | head -n1)"
+   fail "CI-nested layout: dm-smbios-reader-boot-test cannot source package_installed_check.sh:\n$(printf '%s' "${out}" | grep 'No such file' | head -n1)"
 elif grep --quiet "unsupported --arch" <<< "${out}"; then
    pass "CI-nested layout (HELPER_SCRIPTS_PATH unset): package_installed_check.sh source resolves"
 else
@@ -95,12 +95,12 @@ fi
 
 ## 3) CANARY: a bare 'source /usr/libexec/helper-scripts/...' (the original bug) must
 ##    be detectable -- prove the probe would catch a regression to the hardcoded path.
-canary_bin="${workdir}/dm-boot-test-canary"
+canary_bin="${workdir}/dm-smbios-reader-boot-test-canary"
 # shellcheck disable=SC2016  # literal sed program; ${helper_scripts_base} is match text
 sed 's#source "\${helper_scripts_base}/usr/libexec/helper-scripts/package_installed_check.sh"#source /usr/libexec/helper-scripts/package_installed_check.sh#' -- "${dm_boot_test}" > "${canary_bin}"
 chmod +x -- "${canary_bin}"
 if ! grep --quiet 'source /usr/libexec/helper-scripts/package_installed_check.sh' -- "${canary_bin}"; then
-   fail "canary setup failed: could not produce a hardcoded-path variant of dm-boot-test"
+   fail "canary setup failed: could not produce a hardcoded-path variant of dm-smbios-reader-boot-test"
 else
    out="$(run_probe "${canary_bin}")"
    ## The hardcoded variant fails ONLY when /usr/libexec lacks the file (the CI case).

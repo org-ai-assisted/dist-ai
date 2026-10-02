@@ -41,7 +41,7 @@ menu_file="${grub_config_dir}/grub.cfg"
 
 script_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 share_dir="${script_dir}/../share/dm-grub-menu-render-tests"
-dm_qemu="${script_dir}/../share/dm-image-boot-tests/dm-qemu"
+dm_qemu="${script_dir}/../share/dm-smbios-reader-boot-tests/dm-smbios-reader-qemu"
 builder="${share_dir}/build-grub-test-image"
 driver="${share_dir}/grub-menu-nav"
 
@@ -54,7 +54,7 @@ fi
 
 ## Heavy-runtime gate. Any missing piece -> SKIP (this is an e2e suite; the core
 ## dist-ai job ships none of qemu/OVMF/grub-mkrescue).
-## OVMF: dm-qemu's --firmware efi path needs BOTH the code flash and a vars
+## OVMF: dm-smbios-reader-qemu's --firmware efi path needs BOTH the code flash and a vars
 ## template to copy per boot, so gate on both.
 ovmf_code='/usr/share/OVMF/OVMF_CODE_4M.fd'
 ovmf_vars='/usr/share/OVMF/OVMF_VARS_4M.fd'
@@ -97,7 +97,7 @@ run_leg() {
    local serial_log="${workdir}/${firmware}.serial.log"
    checks=$(( checks + 1 ))
    if "${driver}" \
-         --dm-qemu "${dm_qemu}" \
+         --dm-smbios-reader-qemu "${dm_qemu}" \
          --firmware "${firmware}" \
          --iso "${iso}" \
          --serial-log "${serial_log}" \

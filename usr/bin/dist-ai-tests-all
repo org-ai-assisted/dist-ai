@@ -103,7 +103,7 @@ core_suites=(
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
    github-api-tests
-   dm-boot-test-tests
+   dm-smbios-reader-boot-test-tests
    dm-upgrade-regression-tests
    dm-ci-job-watch-tests
    dm-grub-smbios-tests
@@ -159,6 +159,7 @@ core_suites=(
    systemcheck-tests
    tb-updater-tests
    terminal-poc-corpus-tests
+   tirdad-tests
    tor-control-panel-tests
    tor-ctrl-tests
    unicode-show-tests
@@ -203,7 +204,7 @@ e2e_suites=(
 integration_suites=(
    whonix-firewall-leaktest-tests
    private-ai-config-tests-resilience
-   dm-image-boot-tests
+   dm-smbios-reader-boot-tests
    dm-grub-menu-render-tests
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
@@ -678,6 +679,11 @@ wire() {
          ## checkout from TB_UPDATER_REPO.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
          ;;
+      tirdad)
+         ## Reads the tirdad packaging (debian/) from the checkout to pin the
+         ## SecureBoot-tolerant module-load mechanism.
+         wire_env=( "TIRDAD_REPO=$( pkg_dir tirdad )" )
+         ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
          ## which sanitize untrusted output with the bare `sanitize-string`
@@ -793,8 +799,8 @@ wire() {
          ## and the sources under each package, so it needs the checkout root.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
-      dm-boot-test)
-         ## The resolution test drives the real dm-boot-test and reads
+      dm-smbios-reader-boot-test)
+         ## The resolution test drives the real dm-smbios-reader-boot-test and reads
          ## helper-scripts from the derivative-maker checkout; point it there.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          wire_args=()
@@ -805,9 +811,9 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
-      dm-image-boot)
-         ## Self-contained: it bundles dm-qemu + dm-image-test under
-         ## usr/share/dm-image-boot-tests and takes the image to boot as an
+      dm-smbios-reader-boot)
+         ## Self-contained: it bundles dm-smbios-reader-qemu + dm-smbios-reader-image-test under
+         ## usr/share/dm-smbios-reader-boot-tests and takes the image to boot as an
          ## argument, so there is no checkout to point at. With no --disk/--iso
          ## it exits 77, which is the expected verdict in container CI.
          wire_env=()
@@ -963,7 +969,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-image-boot|dm-upgrade-regression)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
@@ -1031,6 +1037,9 @@ suite_component() {
          ;;
       tb-updater)
          printf '%s' 'tb-updater'
+         ;;
+      tirdad)
+         printf '%s' 'tirdad'
          ;;
       open-link-confirmation)
          printf '%s' 'open-link-confirmation'

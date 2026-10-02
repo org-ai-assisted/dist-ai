@@ -95,19 +95,19 @@ if [ -n "${DM_IMAGE_BOOT_TESTS_DIR:-}" ]; then
    share_dir="${DM_IMAGE_BOOT_TESTS_DIR}"
 else
    lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-   if [ -d "${lib_dir}/../share/dm-image-boot-tests" ]; then
-      share_dir="${lib_dir}/../share/dm-image-boot-tests"
+   if [ -d "${lib_dir}/../share/dm-smbios-reader-boot-tests" ]; then
+      share_dir="${lib_dir}/../share/dm-smbios-reader-boot-tests"
    else
-      share_dir='/usr/share/dm-image-boot-tests'
+      share_dir='/usr/share/dm-smbios-reader-boot-tests'
    fi
 fi
-# shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
 source "${share_dir}/gui-drive.bsh"
-# shellcheck source=./usr/share/dm-image-boot-tests/vbox-session.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh
 source "${share_dir}/vbox-session.bsh"
-# shellcheck source=./usr/share/dm-image-boot-tests/release-checks.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/release-checks.bsh
 source "${share_dir}/release-checks.bsh"
-DM_VBOX="${share_dir}/dm-vbox"
+DM_VBOX="${share_dir}/dm-smbios-reader-vbox"
 
 parse_args() {
    ## A value-taking option needs a following argument; without this guard a

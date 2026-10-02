@@ -7,7 +7,7 @@
 
 """VirtualBox backend helpers for the dm-image boot/install harness.
 
-Sibling of dm-qemu. VirtualBox GUI images have NO serial console, so a full
+Sibling of dm-smbios-reader-qemu. VirtualBox GUI images have NO serial console, so a full
 run reads boot state from the SCREEN and injects real keyboard input rather
 than driving a guest over a serial root-shell. This module holds the PURE
 logic for that, which runs anywhere and is unit-tested (test_dm_vbox.py):
@@ -27,7 +27,7 @@ blocks VirtualBox with VERR_SVM_IN_USE.
 CLI (three subcommands; only ensure-amd-v touches the host):
 
   - emit-argv --op <op> [flags]  print the VBoxManage argv for one op, without
-                                 running it (mirrors dm-qemu --emit-argv);
+                                 running it (mirrors dm-smbios-reader-qemu --emit-argv);
   - capabilities                 report which optional host tools (VBoxManage,
                                  tesseract, imagehash) are available;
   - ensure-amd-v                 free AMD-V for VirtualBox by unloading and
@@ -59,7 +59,7 @@ TESSERACT = 'tesseract'
 
 ## --- VBoxManage argv builders (pure) ----------------------------------------
 ## Each returns the argv list VirtualBox would run. A --emit-argv CLI mode
-## prints them without executing, mirroring dm-qemu --emit-argv, so the RUN
+## prints them without executing, mirroring dm-smbios-reader-qemu --emit-argv, so the RUN
 ## path stays a thin subprocess.run over a separately-tested argv.
 
 ## Harness firmware name -> VBoxManage --firmware value. SecureBoot is NOT a
@@ -556,20 +556,20 @@ def ensure_amd_v_available():
     refcounts = parse_module_refcounts(_read_text('/proc/modules'))
     outcome, message = amd_v_plan(is_amd, refcounts)
     if outcome == AMD_V_NOOP:
-        print('dm-vbox: %s' % (message,))
+        print('dm-smbios-reader-vbox: %s' % (message,))
         return PASS_RC
     if outcome == AMD_V_REFUSE:
-        print('dm-vbox: %s' % (message,), file=sys.stderr)
+        print('dm-smbios-reader-vbox: %s' % (message,), file=sys.stderr)
         return SETUP_RC
     euid = os.geteuid()
     try:
         _run(build_modprobe_remove_argv(refcounts, euid))
     except subprocess.CalledProcessError:
-        print('dm-vbox: could not unload KVM; AMD-V not freed for VirtualBox',
+        print('dm-smbios-reader-vbox: could not unload KVM; AMD-V not freed for VirtualBox',
               file=sys.stderr)
         return FAIL_RC
     _write_blacklist(euid)
-    print('dm-vbox: %s' % (message,))
+    print('dm-smbios-reader-vbox: %s' % (message,))
     return PASS_RC
 
 
@@ -595,7 +595,7 @@ def poll_screen_for(vmname, expect, *, timeout=240, interval=15, shot=None,
     import os
     import tempfile
     import time
-    png = shot or os.path.join(tempfile.gettempdir(), 'dm-vbox-%s.png' % (vmname,))
+    png = shot or os.path.join(tempfile.gettempdir(), 'dm-smbios-reader-vbox-%s.png' % (vmname,))
     deadline = time.monotonic() + timeout
     ocr = ''
     while time.monotonic() < deadline:
@@ -644,18 +644,18 @@ def run_boot_test(args):
         ok, png, ocr = poll_screen_for(
             args.vm, args.expect, timeout=args.timeout, interval=args.interval,
             shot=args.shot)
-        print('dm-vbox: screenshot %s' % (png,))
+        print('dm-smbios-reader-vbox: screenshot %s' % (png,))
         if ok:
-            print('dm-vbox: PASS -- all expected text found: %s'
+            print('dm-smbios-reader-vbox: PASS -- all expected text found: %s'
                   % (', '.join(args.expect),))
             rc = PASS_RC
         else:
             missing = [item for item in args.expect
                        if not ocr_text_contains(ocr, item)]
-            print('dm-vbox: FAIL -- missing after %ds: %s'
+            print('dm-smbios-reader-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
     except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
-        print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
+        print('dm-smbios-reader-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
         ## power off ONLY the VM this run actually started, so a failed start of an
         ## already-running VM never hard-stops a VM this invocation did not create.
@@ -688,7 +688,7 @@ def run_install_test(args):
         ## A VBoxManage build step failed (bad option, unsupported firmware, disk
         ## already exists) -- a SETUP error, reported cleanly, never a traceback
         ## and never a silent PASS.
-        print('dm-vbox: install VM build failed: %s' % (' '.join(exc.cmd),),
+        print('dm-smbios-reader-vbox: install VM build failed: %s' % (' '.join(exc.cmd),),
               file=sys.stderr)
         return SETUP_RC
     rc = FAIL_RC
@@ -699,18 +699,18 @@ def run_install_test(args):
         ok, png, ocr = poll_screen_for(
             args.vm, args.expect, timeout=args.timeout, interval=args.interval,
             shot=args.shot)
-        print('dm-vbox: screenshot %s' % (png,))
+        print('dm-smbios-reader-vbox: screenshot %s' % (png,))
         if ok:
-            print('dm-vbox: PASS -- ISO booted to live/installer; found: %s'
+            print('dm-smbios-reader-vbox: PASS -- ISO booted to live/installer; found: %s'
                   % (', '.join(args.expect),))
             rc = PASS_RC
         else:
             missing = [item for item in args.expect
                        if not ocr_text_contains(ocr, item)]
-            print('dm-vbox: FAIL -- missing after %ds: %s'
+            print('dm-smbios-reader-vbox: FAIL -- missing after %ds: %s'
                   % (args.timeout, ', '.join(missing)), file=sys.stderr)
     except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError) as exc:
-        print('dm-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
+        print('dm-smbios-reader-vbox: FAIL -- boot/verify error: %s' % (exc,), file=sys.stderr)
     finally:
         ## power off ONLY the VM this run actually started (see run_boot_test).
         if started and not args.no_poweroff:
@@ -785,7 +785,7 @@ def _emit_argv(args):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        prog='dm-vbox',
+        prog='dm-smbios-reader-vbox',
         description='VirtualBox backend for the dm-image boot/install harness.')
     sub = parser.add_subparsers(dest='cmd', required=True)
 
@@ -793,7 +793,7 @@ def _build_parser():
         'emit-argv',
         help='print the VBoxManage argv for one op, without running it')
     emit.add_argument('--op', required=True, choices=_EMIT_OPS)
-    emit.add_argument('--vm', default='dm-vbox-guest')
+    emit.add_argument('--vm', default='dm-smbios-reader-vbox-guest')
     emit.add_argument('--ova')
     emit.add_argument('--ostype', default='Debian_64')
     emit.add_argument('--basefolder')
@@ -893,11 +893,11 @@ def _cmd_verify(args):
     from pathlib import Path
     for label, path in (('baseline', args.baseline), ('screenshot', args.shot)):
         if not Path(path).is_file():
-            print('dm-vbox: %s not found: %s' % (label, path), file=sys.stderr)
+            print('dm-smbios-reader-vbox: %s not found: %s' % (label, path), file=sys.stderr)
             return SETUP_RC
     ratio = image_diff_ratio(args.baseline, args.shot)
     matched = ratio <= args.tol
-    print('dm-vbox: render diff %.4f (tol %.4f) vs %s: %s'
+    print('dm-smbios-reader-vbox: render diff %.4f (tol %.4f) vs %s: %s'
           % (ratio, args.tol, Path(args.baseline).name,
              'MATCH' if matched else 'MISMATCH'))
     if not matched:
@@ -905,7 +905,7 @@ def _cmd_verify(args):
     if args.expect:
         text = run_ocr(args.shot)
         if not ocr_text_contains(text, args.expect):
-            print('dm-vbox: expected text missing from shot: %s'
+            print('dm-smbios-reader-vbox: expected text missing from shot: %s'
                   % (args.expect,), file=sys.stderr)
             return FAIL_RC
     return PASS_RC
@@ -919,7 +919,7 @@ def main(argv=None):
         except ValueError as exc:
             ## Bad/missing CLI input is a SETUP error, not a traceback (exit 1)
             ## and never a silent PASS with 'None' in the argv.
-            print('dm-vbox: %s' % (exc,), file=sys.stderr)
+            print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
             return SETUP_RC
         for token in tokens:
             print(token)

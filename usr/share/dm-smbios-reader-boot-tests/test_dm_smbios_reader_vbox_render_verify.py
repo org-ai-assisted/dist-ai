@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-"""Regression tests for dm-vbox's render-verification against committed baselines.
+"""Regression tests for dm-smbios-reader-vbox's render-verification against committed baselines.
 
 Exercises the pure image-comparison logic + the `verify` subcommand handler using
 the real per-image baselines under render-baselines/, with no VM and no tesseract:
@@ -23,7 +23,7 @@ import pytest
 
 pytest.importorskip('PIL.Image')
 
-BACKEND = Path(__file__).resolve().parent / 'dm-vbox'
+BACKEND = Path(__file__).resolve().parent / 'dm-smbios-reader-vbox'
 BASELINES = Path(__file__).resolve().parent / 'render-baselines' \
     / 'kicksecure-calamares-1280x800'
 

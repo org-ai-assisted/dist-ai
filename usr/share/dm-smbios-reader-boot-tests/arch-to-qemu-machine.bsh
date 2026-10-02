@@ -6,10 +6,10 @@
 ## Single source of truth for the Debian-architecture -> qemu machine-name map.
 ##
 ## Sourced by BOTH help-steps/variables (build-time cross emulation / binfmt
-## handler names) and dm-qemu (headless ISO boot-testing), so the
+## handler names) and dm-smbios-reader-qemu (headless ISO boot-testing), so the
 ## mapping is defined exactly once. This fragment defines ONLY a function and
 ## must stay free of side effects and of any dependency on help-steps/pre, so a
-## standalone tool (dm-qemu) can source it without dragging in the whole build
+## standalone tool (dm-smbios-reader-qemu) can source it without dragging in the whole build
 ## context. Do not add a 'set'/'shopt' preamble here -- a sourced fragment must
 ## not change the caller's shell options.
 ##
@@ -20,7 +20,7 @@
 ## values in make_cross_build_platform_list / dist_build_target_arch) to the
 ## matching qemu-user / kernel machine name (uname -m style). Used for
 ## binfmt_misc handler names ('qemu-<machine>'), cross-build emulation, and the
-## 'qemu-system-<machine>' binary that dm-qemu boots. Prints the machine name on
+## 'qemu-system-<machine>' binary that dm-smbios-reader-qemu boots. Prints the machine name on
 ## stdout. A non-zero exit status signals an unmapped architecture.
 dist_build_arch_to_qemu_machine() {
    case "${1}" in
@@ -59,7 +59,7 @@ dist_build_arch_to_qemu_machine() {
    esac
 }
 
-## Translate a Debian architecture to the qemu '-machine' board TYPE dm-qemu boots it on.
+## Translate a Debian architecture to the qemu '-machine' board TYPE dm-smbios-reader-qemu boots it on.
 ## Board choice is a qemu specific (not a uname/binfmt concern), kept next to the machine-name
 ## map so all arch->qemu data lives in one help-steps fragment. Only the arches wired for
 ## headless boot-testing are mapped; prints the machine type on stdout, non-zero if unmapped.

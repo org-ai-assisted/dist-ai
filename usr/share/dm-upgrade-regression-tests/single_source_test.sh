@@ -26,8 +26,8 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 cal="${script_dir}/../../bin/dm-calamares-install"
-rc_lib="${script_dir}/../dm-image-boot-tests/release-checks.bsh"
-vs_lib="${script_dir}/../dm-image-boot-tests/vbox-session.bsh"
+rc_lib="${script_dir}/../dm-smbios-reader-boot-tests/release-checks.bsh"
+vs_lib="${script_dir}/../dm-smbios-reader-boot-tests/vbox-session.bsh"
 for f in "${cal}" "${rc_lib}" "${vs_lib}"; do
    [ -r "${f}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${f}" >&2; exit 1; }
 done
@@ -60,7 +60,7 @@ else
 fi
 
 ## --- B. the shared table is non-vacuous + numbered as expected ------------------
-# shellcheck source=../dm-image-boot-tests/release-checks.bsh
+# shellcheck source=../dm-smbios-reader-boot-tests/release-checks.bsh
 source "${rc_lib}"
 want_nums='1 2 3 4 5 6 8'
 got_nums="$(printf '%s\n' "${!RELEASE_CHECK_CMD[@]}" | sort -n | tr '\n' ' ')"

@@ -73,6 +73,18 @@ GIT_SYNC_CMD="${DM_TIDY_GIT_SYNC:-dm-git-sync}"
 ## drive a clean/corrupt verdict without a real object store.
 FSCK_CMD="${DM_TIDY_FSCK:-}"
 
+## Phase 0 ensures the canonical git remotes exist (dm-packaging-helper-script owns
+## the per-repo remote URLs; its pkg_git_remotes_add is idempotent and local-only)
+## then validates the dm-tidy-critical ones. A MISSING remote otherwise SILENTLY
+## skips downstream work -- e.g. the mandatory arraybolt3/trixie merge is gated on
+## the ArrayBolt3 remote, so without it a trusted-contributor fix is never absorbed
+## and the run still reports clean.
+REMOTES_ENSURE_CMD="${DM_TIDY_REMOTES_ENSURE:-dm-packaging-helper-script}"
+FORK_REMOTE="org-ai-assisted"
+## Named remotes whose ABSENCE breaks a downstream phase. The FULL canonical set is
+## ensured by REMOTES_ENSURE_CMD; these are the ones dm-tidy validates directly.
+EXPECTED_REMOTES=( "${FORK_REMOTE}" "ArrayBolt3" )
+
 source_dir=""
 dry_run="false"
 
@@ -94,8 +106,9 @@ while [ "$#" -gt 0 ]; do
       -h|--help)
          printf '%s\n' \
             "Bring derivative-maker (parent + every submodule) to the clean ideal state:" \
-            "sync submodule 'ai' -> remaster+merge master -> pin gitlinks + mirror to" \
-            "master + push -> verify the object store, in the one sound order." \
+            "ensure+validate git remotes -> sync submodule 'ai' -> remaster+merge master" \
+            "-> pin gitlinks + mirror to master + push -> verify the object store, in the" \
+            "one sound order." \
             "" \
             "Usage: ${0##*/} [--dir <checkout>] [--dry-run]" \
             "" \
@@ -170,25 +183,89 @@ record() {
    step_results+=( "$(printf '%s\t%s' "$1" "$2")" )
 }
 
+## Submodule paths from the parent's .gitmodules (declaration order). Read the
+## config, NOT 'git submodule foreach' (which aborts at the first broken submodule
+## and hides the rest).
+submodule_paths() {
+   ## '-z': NUL-separated records, each "<key>\n<value>"; print the value. A lone
+   ## 'sed' split on the first space garbles any submodule whose name/path contains
+   ## whitespace -- which would then fail the on-disk check and be SILENTLY skipped
+   ## from validation, the exact silent-skip phase 0 exists to prevent.
+   local record
+   git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null \
+      | while IFS= read -r -d '' record; do printf '%s\n' "${record#*$'\n'}" ; done
+}
+
+## Append a line to the nameref array for every EXPECTED_REMOTE missing from <repo>,
+## and for a missing local 'ai' branch. Only ai-workflow repos (on 'ai' or carrying
+## a local 'ai') are checked; an uninitialised or upstream-only submodule has no 'ai'
+## work and needs none of these, so it is skipped (not flagged).
+validate_repo_remotes() {
+   local repo="$1" label="$2" ; local -n _miss="$3"
+   local r
+   git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 || return 0
+   git -C "${repo}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" || return 0
+   for r in "${EXPECTED_REMOTES[@]}"; do
+      git -C "${repo}" remote get-url "${r}" >/dev/null 2>&1 \
+         || _miss+=( "${label}: remote '${r}' missing" )
+   done
+}
+
+## Phase 0: ensure + validate git remotes. ENSURE (idempotent, local-only) adds the
+## canonical remotes via REMOTES_ENSURE_CMD, which owns the URLs. VALIDATE then
+## refuses early if a dm-tidy-critical remote is absent from the parent or any
+## ai-workflow submodule. On --dry-run the ensure only REPORTS, so a still-missing
+## remote makes validation ABORT here -- surfacing it before any mutation instead of
+## letting a downstream phase silently skip (e.g. the gated arraybolt3/trixie merge).
+phase_remotes() {
+   local flag=() rc=0 path
+   [ "${dry_run}" = "true" ] && flag=( --dry-run )
+   log ">>> [1/5] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
+   "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
+   if [ "${rc}" -ne 0 ]; then
+      record "1 remotes" "ERROR (ensure exit ${rc})"
+      any_error="true" ; aborted="true"
+      return 0
+   fi
+   local missing=()
+   validate_repo_remotes "${top}" "(parent)" missing
+   while IFS= read -r path; do
+      [ -n "${path}" ] || continue
+      validate_repo_remotes "${top}/${path}" "${path}" missing
+   done < <(submodule_paths)
+   if [ "${#missing[@]}" -gt 0 ]; then
+      record "1 remotes" "ERROR (missing expected remotes)"
+      any_error="true" ; aborted="true"
+      printf '%s\n' "${0##*/}: missing expected git remotes (run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' to add them):" >&2
+      printf '  %s\n' "${missing[@]}" >&2
+      return 0
+   fi
+   record "1 remotes" "ok"
+}
+
 ## Phase 1: submodule 'ai' sync (dm-submodule-ai-sync). 0 ok | 1 some stopped
 ## (human, continue) | anything else structural (abort).
 ## Idiom throughout: 'cmd || rc="$?"' -- errexit-safe (the '||' keeps -e from
 ## firing on a non-zero child) AND captures the child's real exit code.
 phase_submodule_sync() {
    local flag=() rc=0
+   if [ "${aborted}" = "true" ]; then
+      record "2 submodule-ai-sync" "skipped (earlier step aborted)"
+      return 0
+   fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
-   log ">>> [1/4] submodule 'ai' sync (${SUBMODULE_SYNC_CMD})"
+   log ">>> [2/5] submodule 'ai' sync (${SUBMODULE_SYNC_CMD})"
    "${SUBMODULE_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
-         record "1 submodule-ai-sync" "ok"
+         record "2 submodule-ai-sync" "ok"
          ;;
       1)
-         record "1 submodule-ai-sync" "BLOCKED (some submodules need a human; see above)"
+         record "2 submodule-ai-sync" "BLOCKED (some submodules need a human; see above)"
          any_blocked="true"
          ;;
       *)
-         record "1 submodule-ai-sync" "ERROR (exit ${rc})"
+         record "2 submodule-ai-sync" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -201,22 +278,22 @@ phase_submodule_sync() {
 phase_remaster() {
    local mode_flag="--apply" rc=0
    if [ "${aborted}" = "true" ]; then
-      record "2 remaster-all" "skipped (earlier step aborted)"
+      record "3 remaster-all" "skipped (earlier step aborted)"
       return 0
    fi
    [ "${dry_run}" = "true" ] && mode_flag="--dry-run"
-   log ">>> [2/4] remaster masters + merge master->ai (${REMASTER_ALL_CMD} ${mode_flag})"
+   log ">>> [3/5] remaster masters + merge master->ai (${REMASTER_ALL_CMD} ${mode_flag})"
    "${REMASTER_ALL_CMD}" "${mode_flag}" "${top}" || rc="$?"
    case "${rc}" in
       0)
-         record "2 remaster-all" "ok"
+         record "3 remaster-all" "ok"
          ;;
       3)
-         record "2 remaster-all" "BLOCKED (some repos need a human; see above)"
+         record "3 remaster-all" "BLOCKED (some repos need a human; see above)"
          any_blocked="true"
          ;;
       *)
-         record "2 remaster-all" "ERROR (exit ${rc})"
+         record "3 remaster-all" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -227,18 +304,18 @@ phase_remaster() {
 phase_parent_sync() {
    local flag=() rc=0
    if [ "${aborted}" = "true" ]; then
-      record "3 parent-sync" "skipped (earlier step aborted)"
+      record "4 parent-sync" "skipped (earlier step aborted)"
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
-   log ">>> [3/4] pin gitlinks + mirror to master + push (${GIT_SYNC_CMD})"
+   log ">>> [4/5] pin gitlinks + mirror to master + push (${GIT_SYNC_CMD})"
    "${GIT_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
-         record "3 parent-sync" "ok"
+         record "4 parent-sync" "ok"
          ;;
       *)
-         record "3 parent-sync" "ERROR (exit ${rc})"
+         record "4 parent-sync" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -254,20 +331,21 @@ phase_parent_sync() {
 ## happened.
 phase_fsck() {
    local rc=0
-   log ">>> [4/4] verify object store (git fsck --full)"
+   log ">>> [5/5] verify object store (git fsck --full)"
    if [ -n "${FSCK_CMD}" ]; then
       "${FSCK_CMD}" "${top}" || rc="$?"
    else
       git -C "${top}" fsck --full --no-dangling --no-progress || rc="$?"
    fi
    if [ "${rc}" -eq 0 ]; then
-      record "4 fsck" "clean"
+      record "5 fsck" "clean"
    else
-      record "4 fsck" "CORRUPT? (fsck exit ${rc}) -- if only gitlink-target commits, that is submodule-absence, not corruption"
+      record "5 fsck" "CORRUPT? (fsck exit ${rc}) -- if only gitlink-target commits, that is submodule-absence, not corruption"
       any_error="true"
    fi
 }
 
+phase_remotes
 phase_submodule_sync
 phase_remaster
 phase_parent_sync

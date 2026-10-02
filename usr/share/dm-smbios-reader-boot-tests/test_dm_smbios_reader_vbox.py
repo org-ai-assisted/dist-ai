@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-"""Regression tests for the dm-vbox VirtualBox backend that need no VM.
+"""Regression tests for the dm-smbios-reader-vbox VirtualBox backend that need no VM.
 
 The real VirtualBox host is not up yet, so these guard the PURE logic that can
 be exercised anywhere: VBoxManage argv building, keyboard scancode encoding,
@@ -13,8 +13,8 @@ tolerant screen matching + OCR decisions on synthesized PNGs, and Calamares
 step sequencing. The functions that actually invoke VBoxManage / tesseract are
 deferred to the real host and are not called here.
 
-Loaded the same way dm-image-test's tests load their harness: via
-SourceFileLoader, because dm-vbox is an executable with no .py extension.
+Loaded the same way dm-smbios-reader-image-test's tests load their harness: via
+SourceFileLoader, because dm-smbios-reader-vbox is an executable with no .py extension.
 """
 
 import importlib.machinery
@@ -30,7 +30,7 @@ import pytest
 ## currently disabled, and the CI boot image installs no python3-pil).
 Image = pytest.importorskip('PIL.Image')
 
-BACKEND = Path(__file__).resolve().parent / 'dm-vbox'
+BACKEND = Path(__file__).resolve().parent / 'dm-smbios-reader-vbox'
 
 
 def _load():
@@ -508,7 +508,7 @@ def test_cli_capabilities_runs():
     assert 'VBoxManage:' in proc.stdout
 
 
-## dm-image-test's SETUP exit code -- a usage error must map here, never a
+## dm-smbios-reader-image-test's SETUP exit code -- a usage error must map here, never a
 ## Python traceback (exit 1) and never a silent PASS with a bad argv.
 SETUP_RC = 2
 
