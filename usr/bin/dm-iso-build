@@ -47,8 +47,8 @@
 ##
 ## Speed (default ON -- reuse the prior build's work, far short of a ~1h cold build):
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
-## (dm-build-official-one ALWAYS rebuilds only changed packages via its own
-## --skip-published-packages, so this wrapper does not pass that flag itself.)
+## (Package-level reuse is the derivative-maker default -- --skip-published-packages=true --
+## so this wrapper does not pass that flag itself for a normal build.)
 ##
 ## This wrapper builds ONLY the frozen snapshot -- freshness is hardcoded, NOT overridable.
 ## derivative-maker shares one cowbuilder base chroot, one local package repo, and one
@@ -57,10 +57,9 @@
 ## Building a single snapshot makes reuse unconditionally safe: no marker, no per-snapshot
 ## dirs, no switch logic.
 ##
-## DM_CLEAN=1 drops --reuse-cowbuilder-base so the cowbuilder base chroot is rebuilt
-## from scratch. It does NOT disable package-level reuse: the official path always passes
-## --skip-published-packages (a bare flag with no opt-out), so unchanged packages are still
-## reused from ~/derivative-binary. For a full package reset, remove ~/derivative-binary.
+## DM_CLEAN=1 forces a from-scratch build: it drops --reuse-cowbuilder-base (fresh base
+## chroot) and passes '--skip-published-packages false' so every package is rebuilt rather
+## than reused from ~/derivative-binary.
 ##
 ## Scope: this locks only the --freshness it passes. It does NOT police derivative-maker's
 ## OWN snapshot knobs (a buildconfig.d setting, or an env override such as
@@ -123,12 +122,15 @@ if [ "${target}" != "iso" ]; then
 fi
 
 ## Reuse the prior build's work (far short of a ~1h cold build). Always safe: this wrapper
-## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build -- dropping
-## both knobs makes derivative-maker rebuild the base and all packages.
+## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build: it drops
+## --reuse-cowbuilder-base (fresh base chroot) AND passes '--skip-published-packages false'
+## so every package is rebuilt instead of reusing unchanged ones from ~/derivative-binary.
 speed=(--reuse-cowbuilder-base)
+clean_args=()
 if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()
-   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- fresh cowbuilder base (package reuse still applies via the official path; rm ~/derivative-binary for a full reset)"
+   clean_args=(--skip-published-packages false)
+   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (fresh cowbuilder base + rebuild all packages)"
 fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
@@ -151,7 +153,7 @@ rsync_cmd="true simulate-only" \
       --freshness "${freshness}" --freedom "${freedom}" \
       --allow-uncommitted false \
       --sign-and-tag true \
-      "${speed[@]}" || rc="$?"
+      "${speed[@]}" "${clean_args[@]}" || rc="$?"
 
 printf '%s\n' "${BASH_SOURCE[0]}: dm-build-official-one exit code: ${rc}"
 exit "${rc}"

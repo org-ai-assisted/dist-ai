@@ -31,8 +31,9 @@
 ##     cannot leak a non-frozen snapshot into the arch-keyed shared base/package repo;
 ##   - the single flavor + arch + VM-target set reach dm-build-official-one via the
 ##     environment (flavors_list / dist_build_target_arch / dist_build_multi_target_list);
-##   - the wrapper does NOT pass --skip-published-packages itself (the official path owns
-##     it); it passes --reuse-cowbuilder-base, which DM_CLEAN drops for a fresh base;
+##   - a normal build passes --reuse-cowbuilder-base and no --skip-published-packages
+##     (package reuse is the derivative-maker default); DM_CLEAN forces from-scratch by
+##     dropping --reuse-cowbuilder-base and passing --skip-published-packages false;
 ##   - NO freshness marker/state file is ever written (the reuse decision is stateless);
 ##   - a build FAILURE propagates (nonzero).
 
@@ -152,14 +153,14 @@ else
    fail "a marker/state file was written; rc=${iso_rc} marker='$(cat -- "${marker}" 2>/dev/null)'"
 fi
 
-## --- Case 4: DM_CLEAN drops the wrapper's reuse knob (fresh cowbuilder base) ------------
-## dm-iso-build's only reuse knob is --reuse-cowbuilder-base; --skip-published-packages is
-## owned by dm-build-official-one, so the wrapper never passes it either way.
+## --- Case 4: DM_CLEAN forces a from-scratch build --------------------------------------
+## DM_CLEAN drops --reuse-cowbuilder-base (fresh base chroot) AND passes
+## '--skip-published-packages false' so every package is rebuilt instead of reused.
 run_iso DM_CLEAN=1
-if [ "${iso_rc}" -eq 0 ] && ! has_arg '--reuse-cowbuilder-base' && ! has_arg '--skip-published-packages'; then
-   pass "DM_CLEAN drops --reuse-cowbuilder-base (fresh cowbuilder base)"
+if [ "${iso_rc}" -eq 0 ] && ! has_arg '--reuse-cowbuilder-base' && has_arg '--skip-published-packages false'; then
+   pass "DM_CLEAN forces from-scratch (no --reuse-cowbuilder-base, --skip-published-packages false)"
 else
-   fail "DM_CLEAN still passed a reuse knob; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>>"
+   fail "DM_CLEAN did not force a from-scratch build; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>>"
 fi
 
 ## --- Case 5: a non-iso DM_TARGET selects a VM image via the multi-target env ------------
@@ -228,4 +229,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-iso-build drives dm-build-official-one repo-enabled (refuses caller --repo, real path emits --repo true), upload-simulated, frozen-only, stateless, drops its reuse knob under DM_CLEAN, and propagates a build failure."
+printf '%s\n' "OK: dm-iso-build drives dm-build-official-one repo-enabled (refuses caller --repo, real path emits --repo true), upload-simulated, frozen-only, stateless, forces from-scratch under DM_CLEAN, and propagates a build failure."
