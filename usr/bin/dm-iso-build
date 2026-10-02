@@ -31,6 +31,12 @@
 ## Building a single snapshot makes reuse unconditionally safe: no marker, no per-snapshot
 ## dirs, no switch logic. DM_CLEAN=1 forces a from-scratch build to discard reused work.
 ##
+## Scope: this locks only the --freshness it passes. It does NOT police derivative-maker's
+## OWN snapshot knobs (a buildconfig.d setting, or an env override such as
+## dist_build_sources_list_primary) -- keep those frozen too. DM_CLEAN rebuilds the current
+## run but does not delete the persistent reuse base (~/derivative-binary/pbuilder); remove
+## that dir to fully reset. Signing is enforced by derivative-maker itself, not this wrapper.
+##
 ## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FREEDOM DM_USER DM_CLEAN
 
 set -o errexit
