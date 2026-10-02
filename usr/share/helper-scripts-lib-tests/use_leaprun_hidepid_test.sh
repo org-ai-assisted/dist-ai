@@ -5,14 +5,18 @@
 
 ## AI-Assisted
 
-## use_leaprun.sh reads the privleapd pid from /run/privleapd/pid and then checks
-## /proc/<pid>. An EMPTY pid file makes that check '[ -d /proc/ ]', which is always
-## true -- so a not-running privleapd would wrongly read as usable. The probe must
-## reject an empty (or non-numeric) pid and report use_leaprun='no'.
+## Regression: use_leaprun.sh must report privleap usable when the daemon is
+## reachable even if its '/proc/<pid>' is invisible. A pidfile + '/proc/<pid>'
+## heuristic false-NEGATIVES under 'proc' 'hidepid=2': privleapd runs as root, so
+## an unprivileged caller cannot see '/proc/<pid>' and wrongly concludes the
+## daemon is down -- although its comm socket connects fine. Only a real connect()
+## reaches the right verdict.
 ##
-## Fakes /run/privleapd with an EMPTY pid file (but a valid UID comm socket and a
-## stub leaprun, so ONLY the pid guard can make the difference) under an
-## unprivileged bwrap, via the executed use_leaprun_probe.bash fixture. No root,
+## Fakes that state inside an unprivileged bwrap mount namespace via the executed
+## use_leaprun_probe.bash fixture: a live AF_UNIX listener at the UID-named comm
+## socket, but a pid file whose '/proc/<pid>' never exists (pid_max, which no
+## process can own) -- the deterministic stand-in for a hidepid-hidden daemon pid.
+## The old heuristic reads 'no'; the connect-probe code must read 'yes'. No root,
 ## no network.
 
 set -o errexit
@@ -51,15 +55,15 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 probe_stdout="$(bwrap --bind / / --dev /dev --proc /proc --tmpfs /run/privleapd \
-   env LEAPRUN_FAKE_EMPTY_PID=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
+   env LEAPRUN_FAKE_HIDEPID=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
    /usr/bin/bash "${probe}" 2>/dev/null)" || probe_stdout='bwrap-run-failed'
 
 ## Exact 'use_leaprun=' line, not a substring.
 verdict="$(printf '%s\n' "${probe_stdout}" | sed -n 's/^use_leaprun=//p')"
-if [ "${verdict}" = 'no' ]; then
-   ok "use_leaprun='no' when the pid file is empty (not treated as /proc/ = running)"
+if [ "${verdict}" = 'yes' ]; then
+   ok "use_leaprun='yes' when reachable but '/proc/<pid>' is hidden (connect, not proc)"
 else
-   notok "expected use_leaprun=no (empty pid); got verdict='${verdict}' from '${probe_stdout}' -- empty pid read as running?"
+   notok "expected use_leaprun=yes (reachable, proc hidden); got verdict='${verdict}' from '${probe_stdout}' -- relying on '/proc/<pid>' instead of a real connect?"
 fi
 
 printf '%s\n' ""

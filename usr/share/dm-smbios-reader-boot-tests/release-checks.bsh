@@ -98,6 +98,20 @@ RELEASE_CHECK8_SB_IGNORED_UNITS=(
    vboxadd-service.service
 )
 
+## Per-consumer check exclusions. A check that a SPECIFIC gate's transport cannot run
+## FAITHFULLY is skipped HERE with a loud, named reason, and stays owned by the gate
+## that CAN run it. The caller populates this AFTER sourcing this fragment (like `me` /
+## RELEASE_CHECK_FIRMWARE); default empty -> every gate runs every check, so GUI-OCR,
+## the serial harness, and the existing tests are byte-for-byte unchanged. This is NOT
+## a silent skip: run_release_check_battery prints the reason to stdout, so a skipped
+## check reads as ROUTED-ELSEWHERE, never as a green PASS.
+##   Used by the guestcontrol fast-path (dm-upgrade-regression): VBoxService spawns the
+##   in-guest process with no logind user session (no XDG_RUNTIME_DIR / user D-Bus /
+##   privleap user context), so check 8's `systemctl --user is-system-running` has no
+##   user manager to query. It routes check 8 to the authoritative GUI-OCR gate
+##   (dm-calamares-install), which runs the identical command inside the real LXQt login.
+declare -A RELEASE_CHECK_SKIP_REASON
+
 ## The in-guest command for a check, with firmware-specific adjustments applied.
 ## RELEASE_CHECK_FIRMWARE (caller-set; empty = none) gates the check-8 SecureBoot
 ## tolerance above -- so bios / plain-efi and other callers (dm-upgrade-regression)
@@ -176,6 +190,14 @@ run_release_check_battery() {
    RELEASE_CHECK_FAILED_NUM=''
    RELEASE_CHECK_FAILED_REASON=''
    for num in "${RELEASE_CHECK_ORDER[@]}"; do
+      ## A check this gate cannot run faithfully is routed elsewhere, not run here.
+      ## Printed to stdout (the report log) so it reads as ROUTED, never a green PASS;
+      ## skipped BEFORE the session-transition check so it never triggers a reboot.
+      local skip_reason="${RELEASE_CHECK_SKIP_REASON[${num}]:-}"
+      if [ -n "${skip_reason}" ]; then
+         printf '%s\n' "${me}: check ${num} (${RELEASE_CHECK_DESC[${num}]}) SKIPPED in this gate -- ${skip_reason}"
+         continue
+      fi
       session="${RELEASE_CHECK_SESSION[${num}]}"
       if [ "${session}" != "${cur_session}" ]; then
          ## The table only ever steps user -> sysmaint once.

@@ -5,18 +5,17 @@
 
 ## AI-Assisted
 
-## use_leaprun.sh must look up the per-user comm socket by UID, matching how
-## privleapd names it: /run/privleapd/comm/<uid> (privleap leaprun.py builds
-## comm_dir/str(user_uid)). A regression used `id --name --user` (the username),
-## so the socket was never found and use_leaprun was wrongly set to 'no' even
-## when privleap was fully usable -- the always-reproducible "Cannot use privleap".
+## Regression: use_leaprun.sh must NOT report privleap usable on a STALE socket.
+## A pidfile + '/proc/<pid>' heuristic false-POSITIVES when privleapd has crashed
+## but its pid got reused (so '/proc/<pid>' exists) and its comm socket inode
+## lingers (so '[ -e socket ]' passes) -- yet no connection is possible. Only a
+## real connect() catches this.
 ##
-## Fakes a USABLE privleap inside an unprivileged bwrap mount namespace (tmpfs
-## /run/privleapd with a live AF_UNIX listener at the UID-named comm socket plus
-## a stub leaprun, all set up by the executed use_leaprun_probe.bash fixture) and
-## asserts use_leaprun='yes'. use_leaprun.sh's real connect() only reaches the
-## listener if it resolves the socket by UID; on the old (username) code the path
-## does not match, the connect fails, and it reads 'no'. No root, no network.
+## Fakes exactly that state inside an unprivileged bwrap mount namespace via the
+## executed use_leaprun_probe.bash fixture: a live pid (so the old '/proc/<pid>'
+## check passes) plus a dead socket inode (bound then closed, nothing listening).
+## The old heuristic reads 'yes'; the connect-probe code must read 'no'. No root,
+## no network.
 
 set -o errexit
 set -o nounset
@@ -54,16 +53,15 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "  ok: $1"; }
 notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 
 probe_stdout="$(bwrap --bind / / --dev /dev --proc /proc --tmpfs /run/privleapd \
-   env LEAPRUN_FAKE_USABLE=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
+   env LEAPRUN_FAKE_STALE=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
    /usr/bin/bash "${probe}" 2>/dev/null)" || probe_stdout='bwrap-run-failed'
 
-## Exact 'use_leaprun=' line, not a substring (a substring false-passes on
-## 'yesplease' and can be steered by warning text that echoes the value).
+## Exact 'use_leaprun=' line, not a substring.
 verdict="$(printf '%s\n' "${probe_stdout}" | sed -n 's/^use_leaprun=//p')"
-if [ "${verdict}" = 'yes' ]; then
-   ok "use_leaprun='yes' when the UID-named comm socket exists (looked up by UID)"
+if [ "${verdict}" = 'no' ]; then
+   ok "use_leaprun='no' on a stale socket (connect refused, not just '[ -e socket ]')"
 else
-   notok "expected use_leaprun=yes (UID socket present); got verdict='${verdict}' from '${probe_stdout}' -- looked up by name, not UID?"
+   notok "expected use_leaprun=no (stale socket); got verdict='${verdict}' from '${probe_stdout}' -- socket existence trusted without a real connect?"
 fi
 
 printf '%s\n' ""

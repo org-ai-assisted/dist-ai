@@ -496,8 +496,36 @@ else
    fail "malformed .gitmodules not caught; rc=${tidy_rc} labels=$(labels_seen) log:<<<$(log_lines)>>>"
 fi
 
+## --- Case 17 (CANARY): dm-tidy survives an UNSET HOME --------------------------------
+## REMOTES_TARGET_TREE is evaluated at top level, BEFORE arg-parse, under set -o nounset.
+## A bare ${HOME} there crashes 'HOME: unbound variable' (exit 127) in ANY HOME-less env
+## -- a minimal cron/systemd unit, an 'env -u HOME' invocation -- before --help or any
+## validation can run. The sentinel form ${HOME:+...} must instead yield empty, leaving
+## the whole tool (including --help) functional with HOME unset. On OLD dm-tidy (bare
+## ${HOME}) BOTH runs below exit 127 with the unbound-variable message -> they FAIL, as a
+## canary must. These are the ONLY cases that run with HOME unset, so they are isolated
+## from the fixtures (which the global HOME anchors).
+nohome_help_rc=0
+env -u HOME "${tool}" --help >/dev/null 2>"${tidy_err}" || nohome_help_rc="$?"
+if [ "${nohome_help_rc}" -eq 0 ] && ! grep --quiet -- 'unbound variable' "${tidy_err}"; then
+   pass "dm-tidy --help runs with HOME unset (no 'HOME: unbound variable' crash before arg-parse)"
+else
+   fail "dm-tidy --help crashed with HOME unset; rc=${nohome_help_rc} err:<<<$(cat -- "${tidy_err}")>>>"
+fi
+## The real HOME-less scenario (cron/systemd running the actual tidy) must also not
+## dereference the unset var: an off-tree checkout with all remotes present reaches
+## validation and exits 0 (empty-sentinel REMOTES_TARGET_TREE skips the ensure, like
+## case 14). 'other' still has all its remotes here.
+nohome_run_rc=0
+env -u HOME "${tool}" --dir "${other}" >/dev/null 2>"${tidy_err}" || nohome_run_rc="$?"
+if [ "${nohome_run_rc}" -eq 0 ] && ! grep --quiet -- 'unbound variable' "${tidy_err}"; then
+   pass "dm-tidy --dir <off-tree> runs with HOME unset (empty sentinel, no unbound-var crash)"
+else
+   fail "HOME-unset off-tree run crashed; rc=${nohome_run_rc} err:<<<$(cat -- "${tidy_err}")>>>"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-tidy ensures+validates remotes (only on the helper's own tree, never the wrong one), orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai."
+printf '%s\n' "OK: dm-tidy ensures+validates remotes (only on the helper's own tree, never the wrong one), orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai, survives an unset HOME."
