@@ -190,19 +190,22 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
     ## cleanup() (-> ex_funct -> exit) is a bare-name call; a no-op stub lets the
     ## function return so the scenario can record EXIT_CODE instead of exiting.
     CLEANUP = 'cleanup() { :; }'
+    ## The guard RE-PROBES via leaprun_useable_test every call (never trusting a
+    ## stale use_leaprun global), so drive that function -- the same seam the real
+    ## use_leaprun.sh defines -- rather than presetting the variable.
+    PROBE_NO = (
+        'leaprun_useable_test() { use_leaprun=no; '
+        "leaprun_useable_result=\"WARNING: Cannot communicate with privleapd. "
+        "File '/run/privleapd/comm/1001' does not exist. Cannot use privleap.\"; }")
+    PROBE_YES = 'leaprun_useable_test() { use_leaprun=yes; }'
 
     def test_privleap_unusable_fails_fast_with_diagnosis(self) -> None:
-        ## use_leaprun=no -> error emitted, the specific privleapd diagnosis is
-        ## surfaced (not swallowed), EXIT_CODE 1. On pre-fix code the function is
+        ## privleap unusable -> error emitted, the specific privleapd diagnosis is
+        ## surfaced (not swallowed), EXIT_CODE 1. On pre-fix code the guard is
         ## absent, so assertCleanRun catches the "command not found" (canary).
         r = run_check_scenario(
             self.check(self.FILE), 'check_tor_bootstrap_require_leaprun',
-            env_setup=(
-                'use_leaprun=no\n'
-                "leaprun_useable_result=\"WARNING: Cannot communicate with "
-                "privleapd. File '/run/privleapd/comm/1001' does not exist. "
-                'Cannot use privleap."'),
-            stubs=self.CLEANUP)
+            stubs=self.CLEANUP + '\n' + self.PROBE_NO)
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('error'))
         self.assertFalse(r.has_severity('info'))
@@ -212,15 +215,27 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
     def test_privleap_usable_is_noop(self) -> None:
-        ## use_leaprun=yes -> guard returns 0, emits nothing, EXIT_CODE stays 0
+        ## privleap usable -> guard returns 0, emits nothing, EXIT_CODE stays 0
         ## (the normal-session path: the real Tor bootstrap/circuit checks then
         ## run exactly as before).
         r = run_check_scenario(
             self.check(self.FILE), 'check_tor_bootstrap_require_leaprun',
-            env_setup='use_leaprun=yes', stubs=self.CLEANUP)
+            stubs=self.CLEANUP + '\n' + self.PROBE_YES)
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')
+
+    def test_reprobes_not_trusting_stale_use_leaprun(self) -> None:
+        ## Regression for the stale-global bug: even if use_leaprun is already
+        ## 'yes' in the environment (as it is at systemcheck runtime, set once at
+        ## startup), a fresh probe reporting privleap now unusable must still fail
+        ## fast. A guard that trusted the cached 'yes' would wrongly return 0 here.
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun',
+            env_setup='use_leaprun=yes', stubs=self.CLEANUP + '\n' + self.PROBE_NO)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('error'))
+        self.assertEqual(r.exit_code, '1')
 
     def test_guard_is_wired_before_tor_query(self) -> None:
         ## A correct guard that is never CALLED would still pass the two tests
