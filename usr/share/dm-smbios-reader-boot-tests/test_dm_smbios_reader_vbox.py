@@ -768,6 +768,14 @@ def test_hwaccel_in_use_known_answers():
         '00:00:00.101863 HM: Using AMD-V implementation 2.0\n'
     )
     assert M.hwaccel_in_use(vbox72_amdv) is True
+    ## Regression: a non-accelerated boot whose log merely MENTIONS "HMR3Init: AMD-V"
+    ## while saying it is unavailable must be False (a bare 'hmr3init: amd-v' positive
+    ## marker false-POSITIVEd these). No "using/enabled" verb -> no positive; the
+    ## software-fallback phrasing is also a negative marker.
+    assert M.hwaccel_in_use(
+        'HM: HMR3Init: AMD-V is not available, falling back to software virtualization\n') is False
+    assert M.hwaccel_in_use(
+        'HM: HMR3Init: AMD-V is not supported by the host CPU\n') is False
 
 
 def test_assert_hwaccel_raises_setup_on_no_amdv(monkeypatch):

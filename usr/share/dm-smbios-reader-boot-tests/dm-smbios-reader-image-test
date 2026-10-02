@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import NoReturn
+from typing import Any, NoReturn
 
 PASS = 0
 FAIL = 5
@@ -363,7 +363,9 @@ def build_check_plan(args):
     wrong combination. 'boot-role' doubles as release check 1 (user) / 2 (sysmaint):
     the claimed session actually booted.
     """
-    plan = []
+    ## (command, force_root, want_rc, num): want_rc is None for the exempt diagnostic,
+    ## num is None for unnumbered leg-validity guards (firmware/hardening sentinels).
+    plan: list[tuple[Any, bool, int | None, int | None]] = []
     ## check 1 (user leg) / check 2 (sysmaint leg): the CLAIMED session booted
     ## (the injected boot-role whole-token present for sysmaint, absent for user).
     role_num = 2 if args.session == "sysmaint" else 1
@@ -440,15 +442,11 @@ def build_check_plan(args):
         ## no-tor boot test accepts that tradeoff).
         " --skip check_privilege_escalation_tools"
     )
-    ## Live-ISO ONLY: the Kicksecure APT repository is DISABLED on the live ISO by
-    ## design (it enables on install), so check_apt_repository reports "Disabled" and
-    ## systemcheck returns 1 on every live leg. --ci does NOT cover this -- it is
-    ## scoped to the tirdad/systemd-modules-load tolerance by design, since extending
-    ## it would mask a real apt misconfiguration on an INSTALLED system. So skip the
-    ## check for --iso legs ONLY; on a --disk (installed) image apt-repo-enabled MUST
-    ## stay enforced (its being disabled there is a real regression).
-    if args.iso:
-        systemcheck_cmd += " --skip check_apt_repository"
+    ## NOTE: check_apt_repository is deliberately NOT skipped. A DISABLED Kicksecure
+    ## APT repository on the live ISO is a REAL image defect (the live ISO must ship
+    ## the repo ENABLED), so its check-8 failure is a true finding -- masking it with a
+    ## --skip would be a forbidden silent-green. Fix the ISO apt-repo-enable at root,
+    ## never tolerate it here.
     ## Whitelist the expected privleapd journal warnings on a no-tor image:
     ## upstream privleap (Kicksecure 5af499b) logs a WARNING when it ignores a
     ## tor action whose 'debian-tor' TargetUser is absent, which otherwise trips
