@@ -71,6 +71,7 @@ fi
 
 install_file="${repo}/debian/tirdad-dkms.install"
 service_file="${repo}/debian/tirdad-dkms.tirdad-load.service"
+rules_file="${repo}/debian/rules"
 modprobe_conf="${repo}/debian/30-tirdad.conf"
 modules_load_conf="${repo}/debian/30_tirdad.conf"
 
@@ -108,6 +109,23 @@ else
    printf '%s\n' "Result: ${pass_count} pass, ${fail_count} fail, 0 skip"
    [ "${fail_count}" -eq 0 ]
    exit
+fi
+
+## --- 2b. The packaging actually INSTALLS the unit ---
+## The unit is named debian/<binpkg>.<name>.service. dh_installsystemd ignores
+## that form unless invoked with --name <name>: without it, it only looks for
+## debian/<binpkg>.service and ships NOTHING, silently leaving no boot-time load
+## mechanism. So shipping the file in debian/ is NOT enough -- the install
+## mechanism must reference it. Accept either the dh_installsystemd --name hook
+## (derived from the unit's own filename) or an explicit .install entry.
+service_basename="$(basename -- "${service_file}")"           # <binpkg>.<name>.service
+unit_name="${service_basename%.service}"                      # <binpkg>.<name>
+unit_name="${unit_name##*.}"                                  # <name>
+if grep --extended-regexp --quiet "dh_installsystemd[^\n]*--name[[:space:]]+${unit_name}([[:space:]]|\$)" "${rules_file}" \
+   || grep --extended-regexp --quiet "(^|/)${unit_name}\.service[[:space:]]+.*systemd" "${install_file}"; then
+   pass "the packaging installs ${unit_name}.service (dh_installsystemd --name or .install)"
+else
+   fail "nothing installs ${unit_name}.service: debian/rules lacks 'dh_installsystemd --name ${unit_name}' and .install does not ship it -- dh would ignore debian/${service_basename} and the unit would be absent from the package"
 fi
 
 ## --- 3. The modprobe is failure-TOLERANT (leading "-") ---
