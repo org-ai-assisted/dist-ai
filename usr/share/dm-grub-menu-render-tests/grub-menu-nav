@@ -111,7 +111,7 @@ def main():
     child = None
     rc = 2
     try:
-        argv = emit_qemu_argv(args.dm_qemu, args.firmware, args.iso, args.serial_log, nav_tmp)
+        argv = emit_qemu_argv(args.dm_smbios_reader_qemu, args.firmware, args.iso, args.serial_log, nav_tmp)
         log("firmware=%s: spawning %s" % (args.firmware, " ".join(argv)))
 
         child = pexpect.spawn(
