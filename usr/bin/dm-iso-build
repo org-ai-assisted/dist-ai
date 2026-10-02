@@ -5,18 +5,36 @@
 
 ## AI-Assisted
 
-## Fast derivative-maker image/ISO build wrapper with build-hygiene defaults
-## baked in, invoked as:
+## Fast single-flavor derivative-maker ISO/image builder that drives the OFFICIAL
+## build orchestration (help-steps/dm-build-official-one), invoked as:
 ##
 ##   dm-iso-build [extra derivative-maker args...]
 ##
 ## Defaults (override via env): kicksecure-lxqt / amd64 / iso / frozen.
 ##
-## Build hygiene -- deliberately NOT overridable here, so the safe path is the
-## default and there is nothing to remember:
-##   - lintian fails CLOSED (the make_lintian_fail_open_versus_closed var is left
-##     unset; any lintian warning fails the build -- fix it, do not paper over it).
-##   - the tree must be fully committed: --allow-uncommitted is NOT passed, so
+## WHY the official path (not a bare ./derivative-maker):
+##   A test/gate image must be as close to a RELEASE image as possible. Most
+##   importantly the derivative APT repository must ship ENABLED. dm-build-official-one
+##   sets dist_build_redistributable=true, which is what enables the repo (+ --tb
+##   closed + --freedom false) and writes /var/lib/repository-dist/derivative_apt_repository_opts
+##   into the image so the first-boot repository-dist-initializer.service can create
+##   /etc/apt/sources.list.d/derivative.sources. A plain `./derivative-maker` build
+##   leaves build_remote_repo_enable at its false default, the opts file is never
+##   written, and the ISO ships the repo DISABLED (systemcheck check_apt_repository
+##   == Disabled). repo=ENABLED is therefore the official path's IMPLICIT DEFAULT --
+##   do NOT pass --repo (true or false) here; dm-build-official-one owns it.
+##
+## NEVER UPLOADS: this is a test/gate builder, not a publisher. Uploads are forced
+## to simulate unconditionally (rsync_cmd), so a test image can never reach the
+## release server -- publishing an untested image as a release would be an incident.
+## The value equals what dm-build-official-one itself uses under CI, so a stray
+## CI=true cannot turn real uploads back on.
+##
+## Build hygiene -- deliberately NOT overridable, so the safe path is the default
+## and there is nothing to remember:
+##   - lintian fails CLOSED (make_lintian_fail_open_versus_closed left unset; any
+##     lintian warning fails the build -- fix it, do not paper over it).
+##   - the tree must be fully committed: --allow-uncommitted false, so
 ##     derivative-maker's own git_sanity_test refuses a dirty tree.
 ##   - --sign-and-tag true (allow-unsigned is forbidden for AI sessions).
 ##
@@ -36,6 +54,12 @@
 ## dist_build_sources_list_primary) -- keep those frozen too. DM_CLEAN rebuilds the current
 ## run but does not delete the persistent reuse base (~/derivative-binary/pbuilder); remove
 ## that dir to fully reset. Signing is enforced by derivative-maker itself, not this wrapper.
+##
+## The ISO is intrinsic to a kicksecure flavor build in the official path. VM images
+## are selected via DM_TARGET (mapped to dist_build_multi_target_list): DM_TARGET=iso
+## builds the ISO only; any other value also builds that VM image. The ISO is produced
+## only for the kicksecure-lxqt / kicksecure-ci-tiny-do-not-use flavors, exactly as
+## dm-build-official-one does for a release.
 ##
 ## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FREEDOM DM_USER DM_CLEAN
 
@@ -57,6 +81,14 @@ build_user="${DM_USER:-$(id -un)}"
 
 cd -- "${dm_repo}"
 
+## dm-build-official-one consumes the flavor, arch and VM-target set from the
+## environment (NOT from --flavor/--arch/--target on its own argv). An empty
+## multi-target list == ISO-only; a non-iso DM_TARGET requests that VM image too.
+multi_target_list=""
+if [ "${target}" != "iso" ]; then
+   multi_target_list="${target}"
+fi
+
 ## Reuse the prior build's work (far short of a ~1h cold build). Always safe: this wrapper
 ## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build -- dropping
 ## both knobs makes derivative-maker rebuild the base and all packages.
@@ -71,17 +103,21 @@ printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target}
 ## Caller's extra args go FIRST so the flags below always win: derivative-maker's
 ## parse_cmd is last-flag-wins, so a passed-through --allow-uncommitted true or
 ## --sign-and-tag false cannot defeat the hygiene defaults. --allow-unsigned stays
-## refused by derivative-maker itself for AI sessions.
+## refused by derivative-maker itself for AI sessions. NO --repo is passed: the repo
+## is enabled by the official path's dist_build_redistributable default (see header).
 rc=0
+flavors_list="${flavor}" \
+dist_build_target_arch="${arch}" \
+dist_build_multi_target_list="${multi_target_list}" \
 user_name="${build_user}" \
 dist_build_unlock_dangerous_options=true \
-   ./derivative-maker \
+rsync_cmd="true simulate-only" \
+   ./help-steps/dm-build-official-one \
       "$@" \
-      --flavor "${flavor}" --arch "${arch}" --target "${target}" \
-      --freshness "${freshness}" --type vm --freedom "${freedom}" \
+      --freshness "${freshness}" --freedom "${freedom}" \
       --allow-uncommitted false \
       --sign-and-tag true \
       "${speed[@]}" || rc="$?"
 
-printf '%s\n' "${BASH_SOURCE[0]}: derivative-maker exit code: ${rc}"
+printf '%s\n' "${BASH_SOURCE[0]}: dm-build-official-one exit code: ${rc}"
 exit "${rc}"
