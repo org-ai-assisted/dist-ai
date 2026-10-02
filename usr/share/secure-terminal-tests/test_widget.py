@@ -288,6 +288,33 @@ _t6w._cols = 80
 _t6w._rerender()
 ok('swordfish' not in _t6w.toPlainText(),
    'task6: a \\r-overwrite-wiped password is not resurrected by a reflow')
+
+# --- CLI PROMPT_SP marker-frame trim (zsh whitespace-on-Enter fix) --------------------
+# zsh's PROMPT_SP marker frame (a full-width '%'/'#'+pad row an Enter's newline can flush
+# standalone) is redundant noise -- secure-terminal shows its own no-final-newline glyph --
+# so a COMPLETED line exactly the terminal width holding only spaces, or one leading '%'/'#'
+# then spaces, is dropped. A genuine blank line (EMPTY, width 0) and real content are kept.
+from secure_terminal.terminal import _drop_prompt_sp_frames as _psp              # noqa: E402
+
+
+def _psp_texts(lines, width):
+    c = [[(ch, ()) for ch in t] for t in lines]
+    oc, _ow = _psp(c, [False] * len(c), width)
+    return [''.join(x[0] for x in seg) for seg in oc]
+
+
+eq(_psp_texts([' ' * 40], 0), [' ' * 40], 'prompt-sp: width 0 (pre-winsize) disables the trim')
+eq(_psp_texts([' ' * 40, 'u@h# '], 40), ['u@h# '],
+   'prompt-sp: a full-width all-space marker frame is dropped, the prompt kept')
+eq(_psp_texts(['#' + ' ' * 39], 40), [], 'prompt-sp: a #-marker frame (root) is dropped')
+eq(_psp_texts(['%' + ' ' * 39], 40), [], 'prompt-sp: a %-marker frame (user) is dropped')
+eq(_psp_texts(['x' * 40], 40), ['x' * 40], 'prompt-sp: a full-width line of real content is kept')
+eq(_psp_texts(['# cmd output' + ' ' * 28], 40), ['# cmd output' + ' ' * 28],
+   'prompt-sp: a #-led full-width line with real text is kept')
+eq(_psp_texts(['x', '', 'y'], 40), ['x', '', 'y'],
+   'prompt-sp: a genuine blank line (width 0) is kept')
+eq(_psp_texts(['   '], 40), ['   '],
+   'prompt-sp: a short space run (not full width) is kept')
 _t6w.close()
 
 # feed_line_edits must be LINEAR in a long safe-char run, not quadratic: the fast path
