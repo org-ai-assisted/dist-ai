@@ -209,4 +209,26 @@ ok('Line 2' in (_hb.element_tooltip(_top_of_band) or ''),
    'the line-2 band tooltip covers the top row of the painted band (no 1px gap)')
 _hb.close()
 
+# --- tab width: reserve ONE marker slot + low floor so more tabs fit (#7) -------------
+_wb = SecureTabBar()
+_wb.set_theme(False)
+_wb.set_two_line(True)
+_wb.setTabsClosable(True)
+_wb.addTab('dev829')
+_wb.show()
+APP.processEvents()
+ok(SecureTabBar._RESERVED_MARKERS == 1,
+   'the tab reserves ONE marker slot; reserving both made every tab ~17px wider so far '
+   'fewer fit before the bar scrolls (#7)')
+ok(SecureTabBar._MIN_LABEL_CHARS <= 12,
+   'the squeeze floor stays low so crowded tabs fit before Qt falls back to scroll buttons')
+_w0 = _wb.tabSizeHint(0).width()
+_wb.mark_bell(0)
+_wb.mark_activity(0)
+APP.processEvents()
+ok(_wb.tabSizeHint(0).width() == _w0,
+   'tab width is independent of bell/activity state (the marker slot stays reserved '
+   'unconditionally -> no width jitter as streaming output toggles a marker)')
+_wb.close()
+
 finish('tabbar-polish')
