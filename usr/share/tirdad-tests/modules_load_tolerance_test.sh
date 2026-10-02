@@ -205,7 +205,9 @@ exec_verdict="$(section_body "${service_file}" Service | awk '
                                  return (base=="tirdad.ko")?1:0 }
             return 0
          }
-         if(seen){ if(a[i]=="--") continue
+         if(seen){ ## -r/--remove removes, -n/--dry-run does not insert: not a loader
+                   if(a[i] ~ /^-[^-]*[rn]/ || a[i]=="--remove" || a[i]=="--dry-run") return 0
+                   if(a[i]=="--") continue
                    if(a[i]=="tirdad") return 1
                    if(a[i] !~ /^-/) return 0 }      # a different module name
       }
@@ -258,9 +260,12 @@ softdep_ok() {
            for(i=1;i<=n;i++) if(a[i]=="tirdad") ok=1 }
         END{ exit ok?0:1 }' "$1"
 }
+## Tie the source to the destination in ONE install entry: an unrelated file
+## shipped into etc/modprobe.d must not satisfy this while 30-tirdad.conf is absent.
+modprobe_conf_re="$(basename -- "${modprobe_conf}")"; modprobe_conf_re="${modprobe_conf_re//./\\.}"
 if [ -f "${modprobe_conf}" ] \
    && softdep_ok "${modprobe_conf}" \
-   && grep --quiet --fixed-strings -- 'etc/modprobe.d/' <<< "${install_out}"; then
+   && grep --extended-regexp --quiet "(^|/)${modprobe_conf_re}[[:space:]].*etc/modprobe\.d" <<< "${install_out}"; then
    pass 'the modprobe.d softdep pre-loading tirdad is shipped to /etc/modprobe.d'
 else
    fail 'the /etc/modprobe.d softdep pre-loading tirdad is no longer shipped'

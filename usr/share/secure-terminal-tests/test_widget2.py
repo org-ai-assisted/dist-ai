@@ -463,14 +463,16 @@ ok(abs(_min40 - _min80) <= 2,
    % (_min40, _min80))
 _mbar.deleteLater()
 
-# A SHORT label must stay FULL even when its tab ALSO shows the bell + activity markers (a busy
-# session tab): _paint_content draws those markers left of the close button, shrinking the
-# label's draw area, so without reserving them a short name middle-elides ('dev778' -> 'dev...').
-# Assert the reservation behaviourally on a bare bar (no close button -- super()'s close-button
-# reservation and _paint_content's close-button subtraction cancel, so this is representative of
-# the closable tab too): the label area left after the left chrome + pad + BOTH markers still
-# fits the full DemiBold "N  label". Mirrors _paint_content's avail math. Canary: drop markers_w
-# from tabSizeHint and avail no longer fits the label.
+# A SHORT label must stay FULL when its tab shows the RESERVED marker slot (a busy session tab's
+# activity glyph, or a bell): _paint_content draws a marker left of the close button, shrinking the
+# label's draw area, so without reserving it a short name middle-elides ('dev778' -> 'dev...').
+# _RESERVED_MARKERS slots are reserved (ONE -- the common single-marker case; the rare bell+activity
+# at once briefly elides, width prioritised, see SecureTabBar._RESERVED_MARKERS). Assert the
+# reservation behaviourally on a bare bar (no close button -- super()'s close-button reservation and
+# _paint_content's close-button subtraction cancel, so this is representative of the closable tab
+# too): the label area left after the left chrome + pad + the reserved marker(s) still fits the full
+# DemiBold "N  label". Mirrors _paint_content's avail math. Canary: drop markers_w from tabSizeHint
+# and avail no longer fits the label.
 from PyQt6.QtGui import QFont as _QFb, QFontMetrics as _QFMb   # noqa: E402
 _eb = SecureTabBar()
 _eb.addTab('dev778')
@@ -478,10 +480,10 @@ _ef = _QFb(_eb.font()); _ef.setWeight(_QFb.Weight.DemiBold)
 _efm = _QFMb(_ef)
 _etext = '%d  %s' % (1, 'dev778')
 _eleft = 2 + _eb._ACCENT_W + _eb._PAD + _eb._GLYPH + 5          # _paint_content left chrome (x)
-_eright = _eb._PAD + 2 * (_eb._GLYPH + 4)                      # pad + bell + activity markers
+_eright = _eb._PAD + _eb._RESERVED_MARKERS * (_eb._GLYPH + 4)   # pad + reserved marker slot(s)
 _eavail = _eb.tabSizeHint(0).width() - _eleft - _eright
 ok(_eavail >= _efm.horizontalAdvance(_etext),
-   'short tab reserves room for the DemiBold label even with the bell + activity markers '
+   'short tab reserves room for the DemiBold label even with the reserved marker slot '
    '(avail %d >= label %d), so "dev778" never elides' % (_eavail, _efm.horizontalAdvance(_etext)))
 _eb.deleteLater()
 
@@ -1673,6 +1675,13 @@ eq(win.act_copy.shortcut().toString(), 'Ctrl+Shift+C',
 ok(bool(win._set_shortcuts({'new_tab': 'Ctrl+U'})),
    'binding a window action to a terminal control key is rejected')
 eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the reserved rebind applied nothing')
+# Close Tab is Ctrl+Shift+W by design; bare Ctrl+W stays the shell's word-erase
+# (readline backward-kill-word, 0x17), so it is reserved and cannot be bound to a window
+# action -- i.e. Ctrl+W deliberately does NOT close the tab (gnome-terminal/konsole convention).
+eq(win.act_close.shortcut().toString(), 'Ctrl+Shift+W', 'Close Tab defaults to Ctrl+Shift+W')
+ok(bool(win._set_shortcuts({'close_tab': 'Ctrl+W'})),
+   'bare Ctrl+W is reserved for the shell (word-erase) and cannot be bound to close the tab')
+eq(win.act_close.shortcut().toString(), 'Ctrl+Shift+W', 'the reserved Ctrl+W rebind applied nothing')
 ok(bool(win._set_shortcuts({'new_tab': 'A'})),
    'binding to a bare printable key (which would eat typing) is rejected')
 # a built-in default that happens to be Ctrl+<letter> is grandfathered in, so
@@ -7579,8 +7588,8 @@ eq(_fbar.tab_lines(_ffi)['ptitle'], '', "'/title off' clears the line-2 title im
 # A: tabSizeHint must reserve everything _paint_content draws around the label, or a short
 # label elides ('shell' -> '1  s...'): the number prefix ("N  ") + accent + lock glyph, the
 # label's DemiBold width (super() measured the bare tabText in REGULAR; the label paints in
-# DemiBold, wider), AND -- left of the close button -- the bell + activity markers (so a busy
-# session tab's short name is not squeezed). Canary: drop any term from tabSizeHint and the
+# DemiBold, wider), AND -- left of the close button -- _RESERVED_MARKERS marker slot(s) (so a
+# busy session tab's short name is not squeezed). Canary: drop any term from tabSizeHint and the
 # delta no longer matches (the pre-fix code omitted the markers + DemiBold excess -> elision).
 _ffw.tabs.setTabText(_ffi, 'shell')
 _f1 = _QF(_fbar.font()); _f1.setWeight(_QF.Weight.DemiBold)
@@ -7588,12 +7597,12 @@ _prefix_w = _QFM(_f1).horizontalAdvance('%d  ' % (_ffi + 1))
 _label_ff = _fbar.tabText(_ffi)
 _demibold_excess = max(0, _QFM(_f1).horizontalAdvance(_label_ff)
                        - _QFM(_fbar.font()).horizontalAdvance(_label_ff))
-_markers_w = 2 * (_STB._GLYPH + 4)
+_markers_w = _STB._RESERVED_MARKERS * (_STB._GLYPH + 4)
 _base_w = _QTabBar.tabSizeHint(_fbar, _ffi).width()    # unbound base implementation
 _mine_w = _fbar.tabSizeHint(_ffi).width()
 eq(_mine_w - _base_w,
    _STB._ACCENT_W + _STB._PAD + _STB._GLYPH + 4 + _prefix_w + _demibold_excess + _markers_w,
-   'tabSizeHint reserves prefix + DemiBold label + bell/activity markers (no short-label elide)')
+   'tabSizeHint reserves prefix + DemiBold label + the reserved marker slot (no short-label elide)')
 
 # B + C: the bell marker actually RENDERS, and does NOT paint under the close button.
 # A no-crash grab().isNull() + a geometry-only check cannot catch a marker painted in
