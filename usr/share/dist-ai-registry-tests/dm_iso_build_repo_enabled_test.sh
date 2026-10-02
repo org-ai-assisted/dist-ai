@@ -61,22 +61,43 @@ if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/dm-iso-build" ]; then
 fi
 dm_iso_build="${repo}/usr/bin/dm-iso-build"
 
+failures=0
+fail() {
+   printf '%s\n' "FAIL: $1" >&2
+   failures=$(( failures + 1 ))
+}
+
+## ---- a caller-passed --repo must be REFUSED ------------------------------------
+## This builder always builds repo-ENABLED via the official path; a caller must not
+## be able to pass --repo (true duplicates the default, false would otherwise ride
+## through to a late redistributable-incompatibility error). The refusal happens
+## before any derivative-maker work, so this runs even without that checkout.
+## Assert the refusal MESSAGE, not merely a non-zero exit: the OLD code also exits
+## non-zero here (cd to a bogus DM_REPO, or ./derivative-maker rejecting --show-steps),
+## so an exit-code check would false-pass it. The refusal fires before any cd, so a
+## bogus DM_REPO is fine.
+for repo_flag_arg in '--repo true' '--repo false' '--repo=false'; do
+   # shellcheck disable=SC2086  ## deliberate word-split of the test arg pair
+   refuse_out="$(DM_REPO=/nonexistent/dm bash -- "${dm_iso_build}" ${repo_flag_arg} --show-steps 2>&1 || true)"
+   if ! grep --quiet -- "refusing '--repo'" <<< "${refuse_out}"; then
+      fail "dm-iso-build did not refuse a caller-passed '${repo_flag_arg}' -- it must refuse --repo so the image is always repo-enabled"
+   fi
+done
+
 ## Resolve the derivative-maker checkout dm-iso-build drives.
 dm_repo="${DERIVATIVE_MAKER_DIR:-}"
 if [ -z "${dm_repo}" ] && [ -n "${HOME:-}" ]; then
    dm_repo="${HOME}/derivative-maker"
 fi
 if [ -z "${dm_repo}" ] || [ ! -f "${dm_repo}/help-steps/dm-build-official-one" ]; then
-   printf '%s\n' "dm-iso-build-repo-enabled-test: no derivative-maker checkout at '${dm_repo}' (set DERIVATIVE_MAKER_DIR). SKIP." >&2
-   ## style-ok: allow-skip: dm-iso-build cannot be dry-planned without a derivative-maker checkout (optional sibling).
+   if [ "${failures}" -ne 0 ]; then
+      printf '%s\n' "dm-iso-build-repo-enabled-test: ${failures} check(s) failed" >&2
+      exit 1
+   fi
+   printf '%s\n' "dm-iso-build-repo-enabled-test: no derivative-maker checkout at '${dm_repo}' (set DERIVATIVE_MAKER_DIR); ran --repo-refusal checks only. SKIP the build-plan checks." >&2
+   ## style-ok: allow-skip: the dry-plan checks cannot run without a derivative-maker checkout (optional sibling).
    exit 77
 fi
-
-failures=0
-fail() {
-   printf '%s\n' "FAIL: $1" >&2
-   failures=$(( failures + 1 ))
-}
 
 ## ---- behavioral: the dry-planned ISO build enables the repo --------------------
 ## --show-steps makes dm-build-official-one PRINT the build plan without running it,

@@ -39,21 +39,26 @@
 ##   - --sign-and-tag true (allow-unsigned is forbidden for AI sessions).
 ##
 ## Speed (default ON -- reuse the prior build's work, far short of a ~1h cold build):
-##   --skip-published-packages  rebuild only packages whose source changed
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
+## (dm-build-official-one ALWAYS rebuilds only changed packages via its own
+## --skip-published-packages, so this wrapper does not pass that flag itself.)
 ##
 ## This wrapper builds ONLY the frozen snapshot -- freshness is hardcoded, NOT overridable.
 ## derivative-maker shares one cowbuilder base chroot, one local package repo, and one
 ## source-hash manifest keyed by ARCH, not snapshot, so mixing snapshots cross-contaminates
 ## in BOTH directions (a later frozen build reusing a current-populated base, or vice versa).
 ## Building a single snapshot makes reuse unconditionally safe: no marker, no per-snapshot
-## dirs, no switch logic. DM_CLEAN=1 forces a from-scratch build to discard reused work.
+## dirs, no switch logic.
+##
+## DM_CLEAN=1 drops --reuse-cowbuilder-base so the cowbuilder base chroot is rebuilt
+## from scratch. It does NOT disable package-level reuse: the official path always passes
+## --skip-published-packages (a bare flag with no opt-out), so unchanged packages are still
+## reused from ~/derivative-binary. For a full package reset, remove ~/derivative-binary.
 ##
 ## Scope: this locks only the --freshness it passes. It does NOT police derivative-maker's
 ## OWN snapshot knobs (a buildconfig.d setting, or an env override such as
-## dist_build_sources_list_primary) -- keep those frozen too. DM_CLEAN rebuilds the current
-## run but does not delete the persistent reuse base (~/derivative-binary/pbuilder); remove
-## that dir to fully reset. Signing is enforced by derivative-maker itself, not this wrapper.
+## dist_build_sources_list_primary) -- keep those frozen too. Signing is enforced by
+## derivative-maker itself, not this wrapper.
 ##
 ## The ISO is intrinsic to a kicksecure flavor build in the official path. VM images
 ## are selected via DM_TARGET (mapped to dist_build_multi_target_list): DM_TARGET=iso
@@ -79,7 +84,28 @@ freshness="frozen"   ## hardcoded, not overridable -- see header (single-snapsho
 freedom="${DM_FREEDOM:-false}"
 build_user="${DM_USER:-$(id -un)}"
 
+## This builder ALWAYS produces a repo-ENABLED, release-faithful image; --repo is the
+## official path's implicit default and must not be fiddled per-caller. Refuse any --repo
+## arg early and clearly, rather than letting it ride through to a late, cryptic
+## redistributable-incompatibility error (--repo false) or silently duplicate the default
+## (--repo true). See the WHY-the-official-path note above.
+for dm_iso_build_arg in "$@"; do
+   case "${dm_iso_build_arg}" in
+      --repo|--repo=*)
+         printf '%s\n' "${BASH_SOURCE[0]}: refusing '--repo': this builder always builds the derivative repository ENABLED via the official path; do not pass --repo." >&2
+         exit 1
+         ;;
+   esac
+done
+unset dm_iso_build_arg
+
 cd -- "${dm_repo}"
+
+## dm-build-official-one gates a non-CI, non-dry-run build on an existing ~/.ssh (its
+## upload-readiness check). This builder simulates uploads unconditionally and never uses
+## ssh keys, so that guard is spurious here -- create the dir (mode 0700) when absent so a
+## fresh build machine does not fail the check; leave an existing dir's mode untouched.
+[ -d "${HOME}/.ssh" ] || mkdir --mode=0700 -- "${HOME}/.ssh"
 
 ## dm-build-official-one consumes the flavor, arch and VM-target set from the
 ## environment (NOT from --flavor/--arch/--target on its own argv). An empty
@@ -92,10 +118,10 @@ fi
 ## Reuse the prior build's work (far short of a ~1h cold build). Always safe: this wrapper
 ## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build -- dropping
 ## both knobs makes derivative-maker rebuild the base and all packages.
-speed=(--skip-published-packages --reuse-cowbuilder-base)
+speed=(--reuse-cowbuilder-base)
 if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()
-   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (no package reuse, fresh cowbuilder base)"
+   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- fresh cowbuilder base (package reuse still applies via the official path; rm ~/derivative-binary for a full reset)"
 fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
