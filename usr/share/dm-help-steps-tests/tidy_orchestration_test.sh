@@ -201,6 +201,41 @@ else
    pass "apply run passes no --dry-run to any phase"
 fi
 
+## --- Case 1b (CANARY): the default ensure uses the IN-TREE helper, never a PATH copy -
+## With no DM_TIDY_REMOTES_ENSURE override, dm-tidy must run the helper that ships INSIDE
+## the checkout (an absolute in-tree path), NOT a 'dm-packaging-helper-script' earlier on
+## PATH -- a PATH copy would rewrite remotes in its OWN checkout, the WRONG tree. Drop a
+## recorder at the in-tree path AND a different decoy on PATH: the in-tree one must run, the
+## decoy must not. On OLD dm-tidy the default was the bare PATH name, so the decoy runs and
+## the in-tree recorder does not -- this FAILS, as a canary must.
+intree_dir="${super}/packages/kicksecure/developer-meta-files/usr/bin"
+mkdir --parents -- "${intree_dir}"
+intree_log="${workspace}/intree.log"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf 'printf "INTREE %%s\\n" "$*" >> "%s"\n' "${intree_log}"
+   printf '%s\n' 'exit 0'
+} > "${intree_dir}/dm-packaging-helper-script"
+chmod +x -- "${intree_dir}/dm-packaging-helper-script"
+decoy_dir="${workspace}/decoybin"
+mkdir --parents -- "${decoy_dir}"
+decoy_log="${workspace}/decoy.log"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf 'printf "DECOY %%s\\n" "$*" >> "%s"\n' "${decoy_log}"
+   printf '%s\n' 'exit 0'
+} > "${decoy_dir}/dm-packaging-helper-script"
+chmod +x -- "${decoy_dir}/dm-packaging-helper-script"
+printf '' > "${intree_log}" ; printf '' > "${decoy_log}"
+run_tidy DM_TIDY_REMOTES_ENSURE= PATH="${decoy_dir}:${PATH}" --dir "${super}"
+if [ "${tidy_rc}" -eq 0 ] && [ -s "${intree_log}" ] && [ ! -s "${decoy_log}" ]; then
+   pass "the default ensure runs the in-tree helper (absolute), never a PATH copy"
+else
+   fail "default ensure did not use the in-tree helper; rc=${tidy_rc} intree='$(cat -- "${intree_log}")' decoy='$(cat -- "${decoy_log}")'"
+fi
+## Restore the pristine fixture for the later cases.
+safe-rm --recursive --force -- "${super}/packages"
+
 ## --- Case 2 (CANARY): sync BLOCKED (exit 1) -> exit 3, sweep CONTINUES ----------
 run_tidy SYNC_RC=1 --dir "${super}"
 if [ "${tidy_rc}" -eq 3 ]; then

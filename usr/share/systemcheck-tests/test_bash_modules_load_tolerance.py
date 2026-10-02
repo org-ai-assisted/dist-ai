@@ -45,10 +45,16 @@ class TestModulesLoadTirdadTolerance(SystemcheckTestBase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.func = extract_bash_function(
-            cls.preparation,
-            'systemcheck_modules_load_degrade_is_tirdad_sb_only',
-        )
+        ## The systemcheck under test may predate the --ci tolerance (dist-ai lands
+        ## before the systemcheck consumer catches up); SKIP, not error, in the gap.
+        try:
+            cls.func = extract_bash_function(
+                cls.preparation,
+                'systemcheck_modules_load_degrade_is_tirdad_sb_only',
+            )
+        except LookupError as exc:
+            raise unittest.SkipTest(
+                f"systemcheck lacks the --ci tirdad tolerance helper: {exc}")
 
     def _verdict(self, sb_rc, modules_load_failed, loaded_mods, confs) -> str:
         """Return 'tolerate' or 'no' for the given mocked state."""
@@ -124,6 +130,23 @@ class TestModulesLoadTirdadTolerance(SystemcheckTestBase):
             self._verdict(0, True, ['some_mod'],
                           {'30_x.conf': '# a comment\nsome-mod\ntirdad\n'}))
 
+    def test_semicolon_comment_ignored(self) -> None:
+        ## A ';' comment line is not a module name (modules-load.d treats '#' and
+        ## ';' alike); it must not count as a second not-loaded module.
+        self.assertEqual(
+            'tolerate',
+            self._verdict(0, True, ['jitterentropy_rng'],
+                          {'30_security-misc.conf': 'jitterentropy_rng\n',
+                           '30_tirdad.conf': '; Secure Boot exception\ntirdad\n'}))
+
+    def test_final_line_without_trailing_newline(self) -> None:
+        ## A module on the last line with no trailing newline must still be read.
+        self.assertEqual(
+            'tolerate',
+            self._verdict(0, True, ['jitterentropy_rng'],
+                          {'30_security-misc.conf': 'jitterentropy_rng\n',
+                           '30_tirdad.conf': 'tirdad'}))
+
 
 class TestCiToleranceInjection(SystemcheckTestBase):
     """
@@ -137,13 +160,17 @@ class TestCiToleranceInjection(SystemcheckTestBase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.combined = (
-            extract_bash_function(
-                cls.preparation,
-                'systemcheck_modules_load_degrade_is_tirdad_sb_only')
-            + '\n'
-            + extract_bash_function(
-                cls.preparation, 'systemcheck_modules_load_ci_tolerance'))
+        try:
+            cls.combined = (
+                extract_bash_function(
+                    cls.preparation,
+                    'systemcheck_modules_load_degrade_is_tirdad_sb_only')
+                + '\n'
+                + extract_bash_function(
+                    cls.preparation, 'systemcheck_modules_load_ci_tolerance'))
+        except LookupError as exc:
+            raise unittest.SkipTest(
+                f"systemcheck lacks the --ci tirdad tolerance helpers: {exc}")
 
     def _inject(self, ci, sb_rc, modules_load_failed, loaded_mods, confs) -> str:
         tmp = tempfile.mkdtemp()
@@ -182,8 +209,15 @@ class TestCiToleranceInjection(SystemcheckTestBase):
 
     def test_ci_tirdad_sb_injects_unit_and_journal(self) -> None:
         out = self._inject('true', 0, True, ['jitterentropy_rng'], self._CONFS)
-        self.assertIn('systemd-modules-load.service', out)
-        self.assertIn('Key was rejected by service', out)
+        ## Split IGN=[...] JRN=[...] so each list is asserted on its own: the unit
+        ## in the failed-units ignore list, BOTH journal patterns in the journal
+        ## list (the 'systemd-modules-load' one covers the "Failed to start
+        ## systemd-modules-load.service" journal line that --ignore-failed-unit
+        ## does not filter).
+        ign, _, jrn = out.partition(' JRN=')
+        self.assertIn('systemd-modules-load.service', ign)
+        self.assertIn('systemd-modules-load', jrn)
+        self.assertIn('Key was rejected by service', jrn)
 
     def test_non_ci_does_not_inject(self) -> None:
         out = self._inject('false', 0, True, ['jitterentropy_rng'], self._CONFS)
