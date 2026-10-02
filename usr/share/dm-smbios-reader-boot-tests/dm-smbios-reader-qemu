@@ -157,6 +157,7 @@ memory='3072'
 smp='4'
 extra_append=''
 emit_argv='false'
+emit_cmdline='false'
 arch=''
 accel='auto'
 qmp=''
@@ -234,6 +235,10 @@ while [ "$#" -gt 0 ]; do
          ;;
       --emit-argv)
          emit_argv='true'
+         shift
+         ;;
+      --emit-cmdline)
+         emit_cmdline='true'
          shift
          ;;
       --fast)
@@ -526,6 +531,45 @@ case "${serial_console}" in
 esac
 serial_verbose_params="console=${serial_console} ${early_console} printk.time=1 initcall_debug"
 
+## The RAW SMBIOS 'dm-cmdline=' payload (SINGLE commas). Single source for BOTH backends:
+## the qemu serial path doubles the commas for qemu's -smbios value parser; --emit-cmdline
+## prints it verbatim so dm-smbios-reader-vbox injects the SAME string through VBox DMI
+## (which takes the value as-is). The in-image GRUB SMBIOS reader appends it to the kernel
+## line identically whichever backend supplies it.
+##   --test-console: a login-free ROOT shell on the serial console via systemd's debug-shell,
+##   with the login getty MASKED so it -- not an interactive user zsh whose line editor
+##   corrupts programmatic input -- owns the tty; loglevel=3 keeps command output clean.
+##   Consumed by dm-smbios-reader-image-test. Under --screendump the payload is only
+##   --smbios-append (the framebuffer test wants the image's normal graphical boot).
+smbios_cmdline_payload() {
+   local payload serial_tty
+   if [ -n "${screendump}" ]; then
+      payload="${smbios_append}"
+   else
+      if [ "${test_console}" = 'true' ]; then
+         serial_tty="${serial_console%%,*}"
+         payload="console=${serial_console} loglevel=3 systemd.debug_shell=${serial_tty} systemd.mask=serial-getty@${serial_tty}.service"
+      else
+         payload="${serial_verbose_params} systemd.log_level=info"
+      fi
+      if [ "${fast}" = 'true' ]; then
+         payload="${payload} mitigations=off"
+      fi
+      if [ -n "${smbios_append}" ]; then
+         payload="${payload} ${smbios_append}"
+      fi
+   fi
+   printf '%s' "${payload}"
+}
+
+if [ "${emit_cmdline}" = 'true' ]; then
+   ## Build-only, mirrors --emit-argv: print the raw payload and exit. Requires the same
+   ## --iso/--disk as --emit-argv (validated above) for interface consistency, though the
+   ## payload itself does not depend on the media.
+   printf '%s\n' "$(smbios_cmdline_payload)"
+   exit 0
+fi
+
 if [ "${direct_kernel}" = 'true' ]; then
    ## Extract the kernel, initrd and grub.cfg from the ISO, derive the chosen entry's cmdline,
    ## strip the silencers, and direct-boot. The ISO stays attached (USB stick) as the live medium.
@@ -652,27 +696,9 @@ else
    ## payload is the verbose+serial params (+ --smbios-append); under --screendump it is only
    ## --smbios-append (the framebuffer test wants the image's normal graphical boot). Only
    ## meaningful on this full-chain path, not --direct-kernel (direct boot).
-   if [ -n "${screendump}" ]; then
-      smbios_payload="${smbios_append}"
-   else
-      if [ "${test_console}" = 'true' ]; then
-         ## Reliable automation channel: bind a login-free ROOT shell to the serial
-         ## console via systemd's debug-shell, and MASK the login getty so it -- not
-         ## an interactive user zsh whose line editor (ZLE) corrupts programmatic
-         ## input -- owns the tty. Quiet the kernel console (loglevel=3) so command
-         ## output reads cleanly. Consumed by dm-smbios-reader-image-test.
-         serial_tty="${serial_console%%,*}"
-         smbios_payload="console=${serial_console} loglevel=3 systemd.debug_shell=${serial_tty} systemd.mask=serial-getty@${serial_tty}.service"
-      else
-         smbios_payload="${serial_verbose_params} systemd.log_level=info"
-      fi
-      if [ "${fast}" = 'true' ]; then
-         smbios_payload="${smbios_payload} mitigations=off"
-      fi
-      if [ -n "${smbios_append}" ]; then
-         smbios_payload="${smbios_payload} ${smbios_append}"
-      fi
-   fi
+   ## Single source (see smbios_cmdline_payload above). Double the commas here for qemu's
+   ## -smbios value parser; the raw payload is what --emit-cmdline / the VBox DMI path inject.
+   smbios_payload="$(smbios_cmdline_payload)"
    if [ -n "${smbios_payload}" ]; then
       qemu_opts+=(-smbios "type=1,serial=dm-cmdline=${smbios_payload//,/,,}")
    fi
