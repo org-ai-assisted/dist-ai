@@ -91,9 +91,12 @@ fi
 
 ## The chroot path must have run AND the multi-device value must have reached the
 ## output, else the test passes VACUOUSLY without ever exercising the newline.
-## device_two appears only once the embedded newline is processed -- as a bare
+## Anchor on device_two FOLLOWED BY the closing quote: 45_debugging wraps the
+## value as "GRUB_DEVICE: '<value>'", so "${device_two}'" appears only once the
+## embedded newline is processed -- and NOT from the header's $0, which would
+## carry device_two as a path component (no trailing quote). It shows as a bare
 ## line on the old code (caught below) or a comment on the fixed code.
-if [[ "${output}" != *'information START'* ]] || [[ "${output}" != *"${device_two}"* ]]; then
+if [[ "${output}" != *'information START'* ]] || [[ "${output}" != *"${device_two}'"* ]]; then
    printf '%s\n' "FATAL: multi-device GRUB_DEVICE not emitted; newline path not exercised" >&2
    exit 1
 fi
