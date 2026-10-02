@@ -799,18 +799,14 @@ def test_build_check_plan_run_override_keeps_role_check_only():
     assert nums == [2], nums
 
 
-def test_build_check_plan_apt_repo_skip_iso_leg_only():
-    ## #119: the live ISO disables the Kicksecure APT repo by design, so
-    ## check_apt_repository fails systemcheck on every live leg -- skip it for --iso
-    ## ONLY. A --disk (installed) image must KEEP enforcing apt-repo-enabled (a real
-    ## regression if disabled there), so the skip must NOT leak onto disk legs.
+def test_build_check_plan_never_skips_apt_repository():
+    ## A DISABLED apt repo on the live ISO is a REAL defect, never tolerated: the
+    ## systemcheck command must NOT carry --skip check_apt_repository on ANY leg
+    ## (masking it would be a forbidden silent-green). Guards against re-adding it.
     m = _load_dm_image_test()
-    iso_cmd = next(e[0] for e in m.build_check_plan(_plan_args(iso='/x.iso', disk=None))
-                   if e[3] == 8)
-    assert '--skip check_apt_repository' in iso_cmd, iso_cmd
-    disk_cmd = next(e[0] for e in m.build_check_plan(_plan_args(disk='/x.qcow2', iso=None))
-                    if e[3] == 8)
-    assert '--skip check_apt_repository' not in disk_cmd, disk_cmd
+    for a in (_plan_args(iso='/x.iso', disk=None), _plan_args(disk='/x.qcow2', iso=None)):
+        cmd = next(e[0] for e in m.build_check_plan(a) if e[3] == 8)
+        assert '--skip check_apt_repository' not in cmd, cmd
 
 
 def test_check_5_cli_login_failure_fails_the_verdict():
