@@ -27,8 +27,7 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-LC_ALL=C
-export LC_ALL
+export LC_ALL=C
 
 ## Gated so it cannot be mis-invoked directly on a real system: it mutates
 ## /var/lib/tb-updater as root. The dist-ai entrypoint
@@ -54,7 +53,6 @@ tarball_name='tor-browser-linux-x86_64-test.tar.xz'
 signature_name="${tarball_name}.asc"
 cache_subpath='.cache/tb/files'
 cache_dir="${work_dir}/${cache_subpath}"
-result_file="${TMP}/test-sandbox-resume-result"
 updater_backup="$(mktemp --tmpdir test-sandbox-resume.update-torbrowser.XXXXXX)"
 backup_made='false'
 
@@ -64,6 +62,21 @@ backup_made='false'
   || { printf '%s\n' "${0}: '${updater_bin}' not found." >&2; exit 1; }
 id tb-updater >/dev/null 2>&1 \
   || { printf '%s\n' "${0}: 'tb-updater' user missing." >&2; exit 1; }
+
+## The observer stub runs via setpriv as the 'tb-updater' user and writes
+## result_file; this harness reads it back as root. It must therefore live in a
+## directory tb-updater can write AND traverse into -- NOT the per-uid TMPDIR
+## (e.g. /tmp/user/0, mode 0700 root-only), where the stub gets 'Permission
+## denied' and the read-back wrongly reports "sandbox aborted". Create a
+## tb-updater-owned dir under world-traversable /tmp (explicit, independent of
+## ${TMP}, which may be the root-only per-uid dir). After the id check above so a
+## missing user gives the clean message, not a chown error.
+## style-ok: R-170 -- /tmp is deliberate here: ${TMP} may be the root-only
+## per-uid dir (e.g. /tmp/user/0, 0700) that the tb-updater stub cannot write,
+## which is the exact bug this fixes; /tmp (1777) is world-traversable.
+result_dir="$(mktemp --directory --tmpdir=/tmp test-sandbox-resume.XXXXXX)"
+chown tb-updater:tb-updater -- "${result_dir}"
+result_file="${result_dir}/result"
 
 die() {
   printf '%s\n' "${0}: ERROR: ${*}" >&2
@@ -83,7 +96,8 @@ cleanup_test() {
     install --mode=0755 --owner=root --group=root \
       -- "${updater_backup}" "${updater_bin}"
   fi
-  safe-rm --force -- "${updater_backup}" "${result_file}"
+  safe-rm --force -- "${updater_backup}"
+  safe-rm --recursive --force -- "${result_dir}"
 }
 
 trap cleanup_test EXIT
