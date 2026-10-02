@@ -24,14 +24,20 @@
 ##   --skip-published-packages  rebuild only packages whose source changed
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
 ##
-## The cowbuilder base is reused UNCONDITIONALLY -- this wrapper builds a single
-## snapshot (frozen) and reuses derivative-maker's snapshot-specific base every run, so
-## there is no snapshot switch to track and no state to remember. DM_CLEAN=1 is the one
-## escape: a from-scratch build with a fresh base (use it if you ever deliberately build a
-## different snapshot, so the base is not reused across snapshots).
+## This wrapper builds ONLY the frozen snapshot -- freshness is hardcoded, NOT overridable.
+## derivative-maker shares one cowbuilder base chroot, one local package repo, and one
+## source-hash manifest keyed by ARCH, not snapshot, so mixing snapshots cross-contaminates
+## in BOTH directions (a later frozen build reusing a current-populated base, or vice versa).
+## Building a single snapshot makes reuse unconditionally safe: no marker, no per-snapshot
+## dirs, no switch logic. DM_CLEAN=1 forces a from-scratch build to discard reused work.
 ##
-## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FRESHNESS DM_FREEDOM
-##                DM_USER DM_CLEAN
+## Scope: this locks only the --freshness it passes. It does NOT police derivative-maker's
+## OWN snapshot knobs (a buildconfig.d setting, or an env override such as
+## dist_build_sources_list_primary) -- keep those frozen too. DM_CLEAN rebuilds the current
+## run but does not delete the persistent reuse base (~/derivative-binary/pbuilder); remove
+## that dir to fully reset. Signing is enforced by derivative-maker itself, not this wrapper.
+##
+## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FREEDOM DM_USER DM_CLEAN
 
 set -o errexit
 set -o nounset
@@ -45,14 +51,15 @@ dm_repo="${DM_REPO:-${HOME}/derivative-maker}"
 flavor="${DM_FLAVOR:-kicksecure-lxqt}"
 arch="${DM_ARCH:-amd64}"
 target="${DM_TARGET:-iso}"
-freshness="${DM_FRESHNESS:-frozen}"
+freshness="frozen"   ## hardcoded, not overridable -- see header (single-snapshot safety)
 freedom="${DM_FREEDOM:-false}"
 build_user="${DM_USER:-$(id -un)}"
 
 cd -- "${dm_repo}"
 
-## Always reuse the prior build's work (far short of a ~1h cold build). DM_CLEAN=1 is the
-## single from-scratch escape: drop both reuse knobs so derivative-maker rebuilds the base.
+## Reuse the prior build's work (far short of a ~1h cold build). Always safe: this wrapper
+## only ever builds the frozen snapshot. DM_CLEAN=1 forces a from-scratch build -- dropping
+## both knobs makes derivative-maker rebuild the base and all packages.
 speed=(--skip-published-packages --reuse-cowbuilder-base)
 if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()

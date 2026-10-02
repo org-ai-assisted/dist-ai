@@ -96,7 +96,7 @@ REMOTES_TARGET_TREE="${HOME:+${HOME}/derivative-maker}"
 ## ABSOLUTE in-tree path). An absolute path is never PATH-resolved, so a source-tree copy
 ## earlier on PATH can never be selected to rewrite a DIFFERENT fork tree; and the in-tree
 ## copy's own root resolves to REMOTES_TARGET_TREE, so it acts on the tree being tidied.
-## Asserted executable before the destructive ensure runs (see phase_remotes).
+## A missing helper fails loud when invoked (ensure exit 127 -> phase-0 ERROR).
 ## Out of scope (not the single-canonical-checkout workflow): a contrived HOME with a
 ## symlinked component followed by '..' can still make the physical realpath gate below and
 ## the helper's lexical 'cd' disagree. DM_TIDY_REMOTES_ENSURE overrides (tests / operator).
@@ -265,15 +265,9 @@ phase_remotes() {
       [ "${top_real}" = "${tree_real}" ] && on_target="true"
    fi
    if [ "${on_target}" = "true" ]; then
-      ## The destructive ensure is about to run on this tree -- the helper ships inside the
-      ## checkout and is a hard dependency; assert it is present and fail loud if not.
-      if [ ! -x "${REMOTES_ENSURE_CMD}" ]; then
-         record "1 remotes" "ERROR (ensure helper missing)"
-         any_error="true" ; aborted="true"
-         printf '%s\n' "${0##*/}: remote-ensure helper not found or not executable at '${REMOTES_ENSURE_CMD}' -- expected it inside the checkout '${REMOTES_TARGET_TREE}'." >&2
-         return 0
-      fi
       [ "${dry_run}" = "true" ] && flag=( --dry-run )
+      ## A missing helper fails loud here (ensure exit 127 -> ERROR below), so no preflight
+      ## -x check -- that would also wrongly reject a PATH-resolved bare-name override.
       "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
       if [ "${rc}" -ne 0 ]; then
          record "1 remotes" "ERROR (ensure exit ${rc})"

@@ -799,6 +799,20 @@ def test_build_check_plan_run_override_keeps_role_check_only():
     assert nums == [2], nums
 
 
+def test_build_check_plan_apt_repo_skip_iso_leg_only():
+    ## #119: the live ISO disables the Kicksecure APT repo by design, so
+    ## check_apt_repository fails systemcheck on every live leg -- skip it for --iso
+    ## ONLY. A --disk (installed) image must KEEP enforcing apt-repo-enabled (a real
+    ## regression if disabled there), so the skip must NOT leak onto disk legs.
+    m = _load_dm_image_test()
+    iso_cmd = next(e[0] for e in m.build_check_plan(_plan_args(iso='/x.iso', disk=None))
+                   if e[3] == 8)
+    assert '--skip check_apt_repository' in iso_cmd, iso_cmd
+    disk_cmd = next(e[0] for e in m.build_check_plan(_plan_args(disk='/x.qcow2', iso=None))
+                    if e[3] == 8)
+    assert '--skip check_apt_repository' not in disk_cmd, disk_cmd
+
+
 def test_check_5_cli_login_failure_fails_the_verdict():
     ## Canary: a login that yields the WRONG identity (check 5 rc != 0) FAILS the
     ## leg, and the failure is reported as numbered 'check 5'. The all-pass inverse

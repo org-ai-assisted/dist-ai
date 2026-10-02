@@ -10,10 +10,11 @@
 ## args, exits with a controllable code), so nothing is actually built.
 ##
 ## WHAT IT GUARDS:
-##   - the cowbuilder base is reused UNCONDITIONALLY: every normal run passes BOTH
-##     --skip-published-packages and --reuse-cowbuilder-base, regardless of DM_FRESHNESS
-##     -- there is no snapshot-switch dance and no reuse-dropping;
-##   - NO freshness marker/state file is ever written (the wrapper keeps no state);
+##   - the build is ALWAYS the frozen snapshot: freshness is hardcoded, so DM_FRESHNESS
+##     cannot leak a non-frozen snapshot into the arch-keyed shared base/package repo;
+##   - every build reuses the cowbuilder base (BOTH --skip-published-packages and
+##     --reuse-cowbuilder-base), safe because there is only one snapshot;
+##   - NO freshness marker/state file is ever written (the reuse decision is stateless);
 ##   - DM_CLEAN forces a from-scratch build (neither reuse knob);
 ##   - a build FAILURE propagates (nonzero).
 
@@ -95,16 +96,16 @@ else
    fail "a normal build did not pass both reuse knobs; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>>"
 fi
 
-## --- Case 2 (CANARY): reuse is UNCONDITIONAL -- any freshness, no marker ---------
-## OLD dm-iso-build dropped --reuse-cowbuilder-base on a freshness switch / unknown
-## marker (no marker file present here), to "rebuild the base". This case fails on that
-## code: with no marker and DM_FRESHNESS=current it would omit --reuse-cowbuilder-base.
-safe-rm --force -- "${marker}"
+## --- Case 2 (CANARY): DM_FRESHNESS is IGNORED -- always the frozen snapshot -----------
+## Freshness is hardcoded, so a non-frozen DM_FRESHNESS must NOT leak a non-frozen snapshot
+## into the build (which would cross-contaminate the arch-keyed shared base/package repo in
+## either direction). The run must still pass '--freshness frozen' and reuse the base. On a
+## wrapper that honors DM_FRESHNESS this FAILS (it would pass '--freshness current').
 run_iso DM_FRESHNESS=current
-if [ "${iso_rc}" -eq 0 ] && has_knob '--reuse-cowbuilder-base'; then
-   pass "the base is reused unconditionally (any freshness, no marker)"
+if [ "${iso_rc}" -eq 0 ] && has_knob '--freshness frozen' && ! has_knob '--freshness current' && has_knob '--reuse-cowbuilder-base'; then
+   pass "DM_FRESHNESS is ignored -- the build is always the frozen snapshot"
 else
-   fail "reuse was dropped for a different freshness; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>>"
+   fail "DM_FRESHNESS leaked a non-frozen snapshot; rc=${iso_rc} args=<<<$(cat -- "${args_log}")>>>"
 fi
 
 ## --- Case 3 (CANARY): the wrapper writes NO marker/state file --------------------
@@ -138,4 +139,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-iso-build reuses the cowbuilder base unconditionally (both knobs on every normal run, any freshness), writes no marker/state, drops both knobs only under DM_CLEAN, and propagates a build failure."
+printf '%s\n' "OK: dm-iso-build always builds the frozen snapshot (DM_FRESHNESS ignored), reuses the cowbuilder base, writes no marker/state, drops both knobs only under DM_CLEAN, and propagates a build failure."

@@ -193,27 +193,34 @@ def build_uart_server_argv(vmname, sock, vboxmanage=VBOXMANAGE):
 ## advertise vendor=QEMU for the reader to fire (same cmdline-injection chain the
 ## qemu backend uses; dm-smbios-reader-qemu --emit-cmdline is the shared payload).
 ##
-## SERVER-VERIFY (the #1 live integration item): the 'pcbios' device supplies the
-## DMI tables for the SeaBIOS/BIOS firmware path. Whether a VBox EFI / efi-secureboot
-## guest reads these SAME pcbios DMI keys is VBox-version-dependent and UNVERIFIED
-## here (no VBox host). If EFI does NOT read them, the cmdline injection is a no-op
-## for EFI images and the login-free serial shell never binds -- which surfaces as
-## the dm-smbios-reader-image-test 0-byte-serial-log FAIL diagnostic. The server
-## integration test MUST confirm dmidecode in an EFI guest shows vendor=QEMU + the
-## dm-cmdline serial; if not, add the EFI device's DMI key path here.
-_DMI_VENDOR_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor'
-_DMI_SERIAL_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial'
+## The DMI override DEVICE differs by firmware: the BIOS path builds its SMBIOS via
+## the 'pcbios' device, the EFI path via the 'efi' device. This is NOT cosmetic --
+## setting pcbios keys on an EFI VM force-instantiates the pcbios device, whose init
+## then FAILS querying BootDevice0 (VERR_CFGM_VALUE_NOT_FOUND), so power-on dies
+## before DMI ever reaches the guest.
+## VERIFIED on VBox 7.2 (server integration): efi-device keys power an EFI/efi-secureboot
+## VM on cleanly; pcbios keys refuse it. A wrong/no-op device path surfaces as the
+## dm-smbios-reader-image-test 0-byte-serial-log FAIL (reader never fired).
+_DMI_DEVICE = {'bios': 'pcbios', 'efi': 'efi', 'efi-secureboot': 'efi'}
 
 
-def build_dmi_argv(vmname, vendor, serial, vboxmanage=VBOXMANAGE):
-    """Ordered setextradata argv pair setting the Type-1 DMI vendor + serial.
+def _dmi_keys(firmware):
+    """(vendor_key, serial_key) for the DMI override device of FIRMWARE."""
+    base = 'VBoxInternal/Devices/%s/0/Config/' % _DMI_DEVICE[firmware]
+    return base + 'DmiSystemVendor', base + 'DmiSystemSerial'
+
+
+def build_dmi_argv(vmname, vendor, serial, firmware='bios', vboxmanage=VBOXMANAGE):
+    """Ordered setextradata argv pair setting the Type-1 DMI vendor + serial on the
+    firmware-appropriate device (pcbios for BIOS, efi for EFI / efi-secureboot).
 
     Unlike qemu's -smbios, setextradata takes the value verbatim, so the serial
     carries SINGLE commas (no doubling) -- pass dm-smbios-reader-qemu
     --emit-cmdline output as-is."""
+    vendor_key, serial_key = _dmi_keys(firmware)
     return [
-        [vboxmanage, 'setextradata', vmname, _DMI_VENDOR_KEY, vendor],
-        [vboxmanage, 'setextradata', vmname, _DMI_SERIAL_KEY, serial],
+        [vboxmanage, 'setextradata', vmname, vendor_key, vendor],
+        [vboxmanage, 'setextradata', vmname, serial_key, serial],
     ]
 
 
@@ -298,7 +305,8 @@ def build_serial_vm_plan(vmname, *, iso=None, disk=None, firmware='efi',
     ]
     if firmware == 'efi-secureboot':
         plan += build_secureboot_plan(vmname, vboxmanage=vboxmanage)
-    plan += build_dmi_argv(vmname, dmi_vendor, dmi_serial, vboxmanage=vboxmanage)
+    plan += build_dmi_argv(vmname, dmi_vendor, dmi_serial, firmware=firmware,
+                           vboxmanage=vboxmanage)
     plan.append(build_uart_server_argv(vmname, uart_socket, vboxmanage=vboxmanage))
     if disk is not None:
         plan += [
@@ -697,10 +705,16 @@ def require_vboxmanage():
 ## so a booted-but-unaccelerated VM means AMD-V was lost to KVM or nested virt is off.
 _HWACCEL_MARKERS = (
     'using amd-v', 'using vt-x', 'enabled amd-v', 'enabled vt-x', 'amd-v (svm',
-    'hardware virtualization: enabled',
+    'hmr3init: amd-v', 'hmr3init: vt-x', 'hardware virtualization: enabled',
 )
+## VBox >= 6.1 has NO raw-mode / software VMM, so the only real non-accelerated
+## path on a Linux host is NEM, plus an explicit SVM/VMX init error (a VM that hit
+## one never powers on). The bare tokens 'raw-mode' / 'software virtualization' are
+## NOT fallback markers: VBox logs the benign "No raw-mode support in this build!"
+## on EVERY hardware-accelerated boot, so matching them false-negatives a real
+## AMD-V run (observed: VBox 7.2 "Using AMD-V implementation 2.0" refused).
 _HWACCEL_FALLBACK = (
-    'falling back to nem', 'using nem', 'raw-mode', 'software virtualization',
+    'falling back to nem', 'using nem', 'nem: using',
     'hardware virtualization: disabled', 'verr_svm', 'verr_vmx',
 )
 
