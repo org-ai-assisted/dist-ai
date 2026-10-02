@@ -3651,6 +3651,14 @@ _ittip.show_for(win, 'x', 100, 'dark')
 ok(_TIPC['dark'][0] in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
 _ittip.show_for(win, 'x', 100, 'light')
 ok(_TIPC['light'][0] in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
+# The tip is override-redirect (BypassWindowManagerHint) so the window manager cannot
+# RE-PLACE it: a WM that positions a managed Tool window under the pointer would drop the
+# tip ONTO the hovered widget (the close button / review-bar Paste button) and cover it,
+# overriding _place's computed clear position. Only the X11 flag keeps the WM out of the
+# way; the placement MATH is verified separately below. Canary: drop
+# BypassWindowManagerHint from InfoTip.__init__ and this fails.
+ok(bool(_ittip.windowFlags() & Qt.WindowType.BypassWindowManagerHint),
+   'InfoTip: override-redirect so the WM cannot re-place it over the source it describes')
 # Placement (below-by-preference / flip-above / clamp) is tested via the PURE _placement
 # helper with synthetic source + screen rects. A headless Wayland compositor cannot position
 # or query the absolute geometry of a standalone top-level, so the old real-window placement
