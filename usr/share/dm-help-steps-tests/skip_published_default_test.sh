@@ -53,11 +53,17 @@ resolve_skip() {
      set -- ${extra_args}
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
      source pre >/dev/null 2>&1
+     ## variables' own output must reach out_file (not /dev/null) so a rejected typo's
+     ## error message is visible to the grep below; a satisfied run reaches printf.
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
-     source variables >/dev/null 2>&1
+     source variables
      printf 'skip=%s\n' "${dist_build_skip_published_packages:-<unset>}"
    ) > "${out_file}" 2>&1 || true
-   grep -- '^skip=' "${out_file}" | tail -n1 || printf 'skip=<none>\n'
+   if grep --quiet -- 'supported options for --skip-published-packages' "${out_file}"; then
+      printf 'rejected\n'
+   else
+      grep -- '^skip=' "${out_file}" | tail -n1 || printf 'skip=<none>\n'
+   fi
 }
 
 ## '--repo true' keeps the mandatory repository choice from aborting the run.
@@ -89,8 +95,18 @@ else
    fail "a bare --skip-published-packages did not resolve true; got '${r}'"
 fi
 
+## --- Case 4 (CANARY): a typo'd value is REJECTED, not silently treated as bare -------
+## '--skip-published-packages False' (or 'no') must error, not quietly become true and
+## leak the token to the parser -- otherwise a from-scratch request silently reuses.
+r="$(resolve_skip "--skip-published-packages False ${base_args}")"
+if [ "${r}" = 'rejected' ]; then
+   pass "a typo'd --skip-published-packages value is rejected"
+else
+   fail "a typo'd --skip-published-packages value was not rejected; got '${r}'"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: --skip-published-packages defaults to true, '--skip-published-packages false' opts out, and a bare flag stays true."
+printf '%s\n' "OK: --skip-published-packages defaults to true, '--skip-published-packages false' opts out, a bare flag stays true, and a typo'd value is rejected."

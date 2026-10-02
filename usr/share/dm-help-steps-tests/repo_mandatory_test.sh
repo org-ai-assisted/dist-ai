@@ -120,6 +120,17 @@ else
    fail "official path did not resolve repo=true; got '${r}'"
 fi
 
+## --- Case 6 (CANARY): source-run/utility help-steps are EXEMPT from the choice -------
+## sign-and-tag, git_sanity_test, signing-key-* etc. set dist_build_source_run=true and
+## build no image, so they must NOT abort on the mandatory check -- they default off.
+## Without the source-run exemption this resolves MANDATORY (the step would abort).
+r="$(resolve_repo 'export dist_build_source_run=true' "${base_args}")"
+if [ "${r}" = 'repo=false' ]; then
+   pass "a source-run/utility help-step (dist_build_source_run=true) is exempt, defaults repo off"
+else
+   fail "source-run was not exempt from the mandatory choice; got '${r}'"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
