@@ -703,23 +703,24 @@ def require_vboxmanage():
 ## Positive hardware-virt markers / fallback markers in a VM's VBox.log (HM subsystem).
 ## VBox >= 6.1 has NO software VMM: without hardware virt a VM cannot power on at all,
 ## so a booted-but-unaccelerated VM means AMD-V was lost to KVM or nested virt is off.
-## Positive markers are VERB-anchored ('using'/'enabled' AMD-V/VT-x). A bare
-## 'hmr3init: amd-v' must NOT be positive: it also substring-matches "HM: HMR3Init:
-## AMD-V is not available, falling back to software virtualization" -- a
-## NON-accelerated boot -- so it would false-POSITIVE an unaccelerated run.
+## Software fallback is UNSUPPORTED by design: the server provides AMD-V, and VBox
+## >= 6.1 has no software VMM, so a VM that powers on IS hardware-accelerated -- a
+## boot that cannot get AMD-V must HARD-FAIL (SETUP), never silently drop to
+## software. So the test is simply: a VERB-anchored positive marker ('using' /
+## 'enabled' AMD-V/VT-x) must be present, else fail. A bare 'hmr3init: amd-v' is NOT
+## positive -- it also substring-matches "HM: HMR3Init: AMD-V is not available" -- so
+## its absence of the verb correctly yields a fail.
 _HWACCEL_MARKERS = (
     'using amd-v', 'using vt-x', 'enabled amd-v', 'enabled vt-x', 'amd-v (svm',
     'hardware virtualization: enabled',
 )
-## Fallback markers flag an explicitly non-accelerated boot. 'raw-mode' is NOT one:
-## VBox logs the benign "No raw-mode support in this build!" on EVERY hardware-
-## accelerated boot (that false-negative refused a real VBox 7.2 "Using AMD-V" run).
-## 'software virtualization' / 'falling back to software' ARE genuine fallback
-## phrasing and never appear on an accelerated boot, so they stay (a software or NEM
-## fallback, or a SVM/VMX init error, is the only non-accelerated outcome).
+## Explicit non-AMD-V markers (a power-on that somehow logged a positive AND one of
+## these is contradictory -> fail). NOT 'raw-mode': VBox logs the benign "No raw-mode
+## support in this build!" on EVERY accelerated boot (that false-negative refused a
+## real VBox 7.2 "Using AMD-V" run). No software-fallback markers: that state cannot
+## occur here (a non-accelerated VM fails to power on), and modelling it is needless.
 _HWACCEL_FALLBACK = (
     'falling back to nem', 'using nem', 'nem: using',
-    'falling back to software', 'software virtualization',
     'hardware virtualization: disabled', 'verr_svm', 'verr_vmx',
 )
 
