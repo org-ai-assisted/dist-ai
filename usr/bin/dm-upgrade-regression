@@ -405,8 +405,19 @@ json_escape() {
    printf '%s' "${s}"
 }
 
+## Checks this gate ROUTED ELSEWHERE (did NOT run here), newline-sorted. Reflects
+## RELEASE_CHECK_SKIP_REASON so a PASS never reads as "all checks green" when a check
+## was skipped: the fast-path routes check 8 to the GUI-OCR gate (no logind user session).
+routed_checks_sorted() {
+   local nums=("${!RELEASE_CHECK_SKIP_REASON[@]}")
+   [ "${#nums[@]}" -eq 0 ] && return 0
+   printf '%s\n' "${nums[@]}" | sort -n
+}
+
 write_report() {
-   local report="${report_dir}/report.json"
+   local report="${report_dir}/report.json" routed_json
+   ## JSON int array of routed-away checks, e.g. [8] or [] (unquoted ints).
+   routed_json="$(routed_checks_sorted | paste -sd, -)"
    printf '%s\n' \
       "{" \
       "  \"tool\": \"$(json_escape "${me}")\"," \
@@ -417,6 +428,7 @@ write_report() {
       "  \"snapshot\": \"$(json_escape "${snapshot_name}")\"," \
       "  \"status\": \"$(json_escape "${status}")\"," \
       "  \"reason\": \"$(json_escape "${REASON}")\"," \
+      "  \"routed_checks\": [${routed_json}]," \
       "  \"finished\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
       "}" > "${report}"
    printf '%s\n' "${me}: report -> ${report}"
@@ -444,7 +456,14 @@ main() {
    write_report
 
    if [ "${status}" = 'pass' ]; then
-      printf '%s\n' "${me}: PASS -- ${repository} upgrade-regression: all release-critical checks green (functional + visual)"
+      local routed
+      routed="$(routed_checks_sorted | tr '\n' ' ')"
+      routed="${routed% }"
+      if [ -n "${routed}" ]; then
+         printf '%s\n' "${me}: PASS -- ${repository} upgrade-regression: all RUN release-critical checks green (functional + visual); check(s) ${routed} routed to the authoritative GUI-OCR gate, NOT run here"
+      else
+         printf '%s\n' "${me}: PASS -- ${repository} upgrade-regression: all release-critical checks green (functional + visual)"
+      fi
       exit "${PASS_RC}"
    fi
    if [ "${blocking}" = 'true' ]; then
