@@ -185,11 +185,14 @@ is_dm_superproject "${top}" \
 ## Read the config, NOT 'git submodule foreach': foreach aborts at the first
 ## broken/absent submodule and hides every one after it. Uninitialised paths are
 ## filtered per-iteration below.
+## '-z': NUL-separated records, each "<key>\n<value>"; take the value. A lone 'sed'
+## split on the first space garbles any submodule whose name/path contains whitespace.
 sub_paths=()
-while IFS= read -r path; do
+while IFS= read -r -d '' record; do
+   path="${record#*$'\n'}"
    [ -n "${path}" ] && sub_paths+=( "${path}" )
-done < <( git -C "${top}" config --file "${top}/.gitmodules" \
-   --get-regexp '^submodule\..*\.path$' 2>/dev/null | sed 's/^[^ ]* //' )
+done < <( git -C "${top}" config -z --file "${top}/.gitmodules" \
+   --get-regexp '^submodule\..*\.path$' 2>/dev/null )
 
 [ "${#sub_paths[@]}" -gt 0 ] || die 2 "'${top}' has no submodules in .gitmodules."
 

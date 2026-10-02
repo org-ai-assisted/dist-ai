@@ -187,8 +187,13 @@ record() {
 ## config, NOT 'git submodule foreach' (which aborts at the first broken submodule
 ## and hides the rest).
 submodule_paths() {
-   git -C "${top}" config -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null \
-      | sed 's/^[^ ]* //'
+   ## '-z': NUL-separated records, each "<key>\n<value>"; print the value. A lone
+   ## 'sed' split on the first space garbles any submodule whose name/path contains
+   ## whitespace -- which would then fail the on-disk check and be SILENTLY skipped
+   ## from validation, the exact silent-skip phase 0 exists to prevent.
+   local record
+   git -C "${top}" config -z -f "${top}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null \
+      | while IFS= read -r -d '' record; do printf '%s\n' "${record#*$'\n'}" ; done
 }
 
 ## Append a line to the nameref array for every EXPECTED_REMOTE missing from <repo>,
@@ -218,7 +223,7 @@ phase_remotes() {
    log ">>> [1/5] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
    "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
    if [ "${rc}" -ne 0 ]; then
-      record "0 remotes" "ERROR (ensure exit ${rc})"
+      record "1 remotes" "ERROR (ensure exit ${rc})"
       any_error="true" ; aborted="true"
       return 0
    fi
@@ -229,13 +234,13 @@ phase_remotes() {
       validate_repo_remotes "${top}/${path}" "${path}" missing
    done < <(submodule_paths)
    if [ "${#missing[@]}" -gt 0 ]; then
-      record "0 remotes" "ERROR (missing expected remotes)"
+      record "1 remotes" "ERROR (missing expected remotes)"
       any_error="true" ; aborted="true"
       printf '%s\n' "${0##*/}: missing expected git remotes (run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' to add them):" >&2
       printf '  %s\n' "${missing[@]}" >&2
       return 0
    fi
-   record "0 remotes" "ok"
+   record "1 remotes" "ok"
 }
 
 ## Phase 1: submodule 'ai' sync (dm-submodule-ai-sync). 0 ok | 1 some stopped
@@ -245,7 +250,7 @@ phase_remotes() {
 phase_submodule_sync() {
    local flag=() rc=0
    if [ "${aborted}" = "true" ]; then
-      record "1 submodule-ai-sync" "skipped (earlier step aborted)"
+      record "2 submodule-ai-sync" "skipped (earlier step aborted)"
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
@@ -253,14 +258,14 @@ phase_submodule_sync() {
    "${SUBMODULE_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
-         record "1 submodule-ai-sync" "ok"
+         record "2 submodule-ai-sync" "ok"
          ;;
       1)
-         record "1 submodule-ai-sync" "BLOCKED (some submodules need a human; see above)"
+         record "2 submodule-ai-sync" "BLOCKED (some submodules need a human; see above)"
          any_blocked="true"
          ;;
       *)
-         record "1 submodule-ai-sync" "ERROR (exit ${rc})"
+         record "2 submodule-ai-sync" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -273,7 +278,7 @@ phase_submodule_sync() {
 phase_remaster() {
    local mode_flag="--apply" rc=0
    if [ "${aborted}" = "true" ]; then
-      record "2 remaster-all" "skipped (earlier step aborted)"
+      record "3 remaster-all" "skipped (earlier step aborted)"
       return 0
    fi
    [ "${dry_run}" = "true" ] && mode_flag="--dry-run"
@@ -281,14 +286,14 @@ phase_remaster() {
    "${REMASTER_ALL_CMD}" "${mode_flag}" "${top}" || rc="$?"
    case "${rc}" in
       0)
-         record "2 remaster-all" "ok"
+         record "3 remaster-all" "ok"
          ;;
       3)
-         record "2 remaster-all" "BLOCKED (some repos need a human; see above)"
+         record "3 remaster-all" "BLOCKED (some repos need a human; see above)"
          any_blocked="true"
          ;;
       *)
-         record "2 remaster-all" "ERROR (exit ${rc})"
+         record "3 remaster-all" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -299,7 +304,7 @@ phase_remaster() {
 phase_parent_sync() {
    local flag=() rc=0
    if [ "${aborted}" = "true" ]; then
-      record "3 parent-sync" "skipped (earlier step aborted)"
+      record "4 parent-sync" "skipped (earlier step aborted)"
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
@@ -307,10 +312,10 @@ phase_parent_sync() {
    "${GIT_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
-         record "3 parent-sync" "ok"
+         record "4 parent-sync" "ok"
          ;;
       *)
-         record "3 parent-sync" "ERROR (exit ${rc})"
+         record "4 parent-sync" "ERROR (exit ${rc})"
          any_error="true" ; aborted="true"
          ;;
    esac
@@ -333,9 +338,9 @@ phase_fsck() {
       git -C "${top}" fsck --full --no-dangling --no-progress || rc="$?"
    fi
    if [ "${rc}" -eq 0 ]; then
-      record "4 fsck" "clean"
+      record "5 fsck" "clean"
    else
-      record "4 fsck" "CORRUPT? (fsck exit ${rc}) -- if only gitlink-target commits, that is submodule-absence, not corruption"
+      record "5 fsck" "CORRUPT? (fsck exit ${rc}) -- if only gitlink-target commits, that is submodule-absence, not corruption"
       any_error="true"
    fi
 }

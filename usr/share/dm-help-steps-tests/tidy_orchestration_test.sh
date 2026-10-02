@@ -364,6 +364,24 @@ else
 fi
 gitq -C "${super}/sub" remote add ArrayBolt3 "file://${fork}"
 
+## --- Case 13 (CANARY): a submodule path WITH A SPACE is still validated ----------
+## submodule_paths() must parse a whitespace-containing path (NUL-delimited config
+## records), or that submodule is SILENTLY skipped from phase 0 -- the bug a lone
+## 'sed' split on the first space has. Add one, omit a critical remote from it, and
+## require the early abort. On the old sed-split code the spaced path garbles to a
+## non-existent dir, is skipped, and dm-tidy wrongly proceeds -- so this case fails.
+gitq -C "${super}" submodule --quiet add -b ai "file://${fork}" "my sub"
+gitq -C "${super}" commit --quiet -m "add spaced submodule"
+gitq -C "${super}/my sub" checkout --quiet ai
+gitq -C "${super}/my sub" remote add org-ai-assisted "file://${fork}"
+## deliberately NO ArrayBolt3 on "my sub"
+run_tidy --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "REMOTES,FSCK" ]; then
+   pass "a submodule path with a space is parsed + validated (its missing remote aborts phase 0)"
+else
+   fail "spaced submodule path was not validated; rc=${tidy_rc} labels=$(labels_seen)"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
