@@ -164,11 +164,14 @@ plain_run_one_suite() {  ## $1 = suite .py path
 ##   - test_instances       -- the real-subprocess launch E2E (coverage explicitly skips it)
 ##   - test_unicode_gallery -- gallery E2E, in neither the coverage suites nor its proofs
 ##   - test_zoom_regression -- zoom E2E, likewise
+##   - test_user_scenarios  -- deterministic "normal user behaviour" E2E (forks real shell
+##                             children, like test_instances; not a coverage-gated suite)
 ## A suite in NEITHER runner is a gap: keep this in sync with the coverage runner's suite + proof set.
 suites=(
    "${tests_dir}/test_instances.py"
    "${tests_dir}/test_unicode_gallery.py"
    "${tests_dir}/test_zoom_regression.py"
+   "${tests_dir}/test_user_scenarios.py"
 )
 ## Fast single-suite iteration: SECURE_TERMINAL_TESTS_ONLY selects a subset by basename
 ## (space/comma-separated, with or without .py) -- e.g. SECURE_TERMINAL_TESTS_ONLY=test_mainwin
