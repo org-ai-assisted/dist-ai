@@ -107,7 +107,14 @@ while [ "$#" -gt 0 ]; do
          exit 0
          ;;
       *)
-         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         ## No positional checkout on purpose. When the stray arg IS a
+         ## directory, point at the one right form instead of a bare reject,
+         ## so the fix is in the message, not in the caller's memory.
+         if [ -d "$1" ]; then
+            printf '%s\n' "${0##*/}: unknown argument: '$1' -- pass it as --dir '$1', or cd into the checkout and run with no args." >&2
+         else
+            printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         fi
          exit 2
          ;;
    esac
