@@ -59,6 +59,14 @@ workspace="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${workspace}"; }
 trap cleanup EXIT
 
+## dm-tidy's phase 0 runs its DESTRUCTIVE remote ensure ONLY on the tree the ensure
+## helper hardcodes, REMOTES_TARGET_TREE="${HOME}/derivative-maker". Point HOME into
+## the throwaway workspace so that tree is a FIXTURE, never the operator's real
+## ~/derivative-maker. HOME is a subdir (not the workspace root) so the EXIT cleanup
+## can still safe-rm the workspace without targeting $HOME itself.
+export HOME="${workspace}/home"
+mkdir --parents -- "${HOME}"
+
 ## Fixture git ops run with hooks OFF (they are fixtures, not the tested behaviour).
 gitq() { git -c core.hooksPath="${workspace}/nohooks" -c protocol.file.allow=always "$@"; }
 mkdir --parents -- "${workspace}/nohooks"
@@ -101,7 +109,9 @@ export DM_TIDY_FSCK="${stubs}/FSCK"
 
 ## --- Fixture: derivative-maker-shaped superproject on 'ai' + one submodule ------
 fork="${workspace}/fork.git"
-super="${workspace}/super"
+## The superproject IS the helper's hardcoded tree (${HOME}/derivative-maker), so the
+## phase-0 ensure runs here -- the right-tree path these cases exercise.
+super="${HOME}/derivative-maker"
 
 gitq init --quiet --bare -- "${fork}"
 ## Seed the fork with an 'ai' branch from a scratch repo.
@@ -382,8 +392,52 @@ else
    fail "spaced submodule path was not validated; rc=${tidy_rc} labels=$(labels_seen)"
 fi
 
+## --- Case 14 (CANARY): phase 0's DESTRUCTIVE ensure is SKIPPED off the helper's tree
+## The ensure (dm-packaging-helper-script pkg_git_remotes_add) takes no target dir and
+## only ever rewrites remotes on its hardcoded ${HOME}/derivative-maker tree. So when
+## 'top' is a DIFFERENT valid derivative-maker checkout, dm-tidy must NOT invoke it --
+## else it silently mutates ${HOME}/derivative-maker (NOT 'top') and reports tidy, a
+## destructive false green. Build a second superproject OUTSIDE the helper's tree and
+## prove the ensure is skipped. On OLD dm-tidy (unconditional ensure) REMOTES IS
+## invoked here, so these assertions FAIL -- as a canary must.
+other="${workspace}/other"
+gitq init --quiet -- "${other}"
+gitq -C "${other}" checkout --quiet -b ai
+mkdir --parents -- "${other}/build-steps.d" "${other}/help-steps"
+printf 'x\n' > "${other}/build-steps.d/keep"
+printf 'x\n' > "${other}/help-steps/keep"
+gitq -C "${other}" add build-steps.d help-steps
+gitq -C "${other}" commit --quiet -m "other base"
+gitq -C "${other}" remote add org-ai-assisted "file://${fork}"
+gitq -C "${other}" remote add ArrayBolt3 "file://${fork}"
+
+run_tidy --dir "${other}"
+if [ "${tidy_rc}" -eq 0 ]; then
+   pass "off the helper's tree with all remotes present: dm-tidy exits 0"
+else
+   fail "off-tree all-present did not exit 0; got ${tidy_rc}; log:<<<$(log_lines)>>>"
+fi
+if grep --quiet -- '^REMOTES' <<< "$(log_lines)"; then
+   fail "off-tree run INVOKED the destructive remote ensure (would mutate the wrong tree): <<<$(log_lines)>>>"
+else
+   pass "off-tree run does NOT invoke the remote ensure (no wrong-tree mutation, no false green)"
+fi
+
+## --- Case 15 (CANARY): off-tree + a missing remote -> ERROR, still no ensure --------
+## Validation still runs on 'top', so a genuinely missing remote aborts (no false
+## green) -- but the ensure stays skipped, so only the read-only fsck runs after the
+## abort. OLD dm-tidy records REMOTES,FSCK here -> the labels check FAILS on it.
+gitq -C "${other}" remote remove ArrayBolt3
+run_tidy --dir "${other}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
+   pass "off-tree missing remote: dm-tidy exits 1 and runs ONLY fsck (ensure skipped, no false green)"
+else
+   fail "off-tree missing remote wrong; rc=${tidy_rc} labels=$(labels_seen) log:<<<$(log_lines)>>>"
+fi
+gitq -C "${other}" remote add ArrayBolt3 "file://${fork}"
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-tidy ensures+validates remotes, orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai."
+printf '%s\n' "OK: dm-tidy ensures+validates remotes (only on the helper's own tree, never the wrong one), orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai."
