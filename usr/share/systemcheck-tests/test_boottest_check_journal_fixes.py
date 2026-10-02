@@ -255,6 +255,17 @@ class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
         self.assertIn('NULL pointer dereference', out)
         self.assertNotIn('microdesc.c', out)
 
+    def test_hard_critical_line_with_nonfatal_phrase_stays_critical(self) -> None:
+        ## The demotion is scoped to the ' BUG:' token: a HARD kernel token (Bad RAM /
+        ## CPU-stall / nouveau) on a line that ALSO contains "Non-fatal assertion" must
+        ## NOT be demoted -- else an attacker-/noise-appended phrase could hide a real
+        ## catastrophe. (Over-broadening caught in ai-review.)
+        line = ('host kernel: EDAC MC0: Bad RAM detected -- '
+                'Non-fatal assertion failed')
+        out = self._run_check_critical([line])
+        self.assertIn('Bad RAM detected', out,
+                      'a hard-critical token must survive the phrase on the same line')
+
 
 if __name__ == '__main__':
     unittest.main()
