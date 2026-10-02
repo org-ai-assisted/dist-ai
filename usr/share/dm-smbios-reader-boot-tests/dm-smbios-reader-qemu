@@ -128,6 +128,10 @@ Usage: dm-smbios-reader-qemu --iso PATH [options]
                       extracted-kernel workdir in place (its path is printed to stderr; the
                       caller owns cleanup). '-serial mon:stdio' is NOT added -- the caller adds
                       whatever serial wiring it needs. Composes with --direct-kernel/--entry/--fast.
+  --emit-cmdline      build-only: print JUST the raw SMBIOS 'dm-cmdline=' kernel-cmdline payload
+                      (SINGLE commas) and exit, for the VirtualBox DMI path (dm-smbios-reader-vbox
+                      injects it verbatim; the qemu -smbios path doubles the commas). Honors
+                      --test-console/--smbios-append/--arch; needs --iso/--disk like --emit-argv.
   --help, -h          this help
 
 Exit: 0 if the serial log reached a login prompt / systemd; 5 if it booted but did not reach

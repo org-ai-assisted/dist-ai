@@ -931,9 +931,16 @@ def _teardown_serial_vm(vmname, uart_socket):
     _poweroff_quietly(vmname)
     try:
         _run(build_unregister_argv(vmname))
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        ## already unregistered / never created / VBoxManage gone mid-teardown.
+    except FileNotFoundError:
+        ## VBoxManage gone mid-teardown -- nothing more we can do.
         pass
+    except subprocess.CalledProcessError as exc:
+        ## An already-absent VM is idempotent success; any OTHER unregister failure
+        ## means the VM (and its created media) may STILL be registered -- do not mask
+        ## it silently (a lingering VM blocks the next createvm). Report it to stderr.
+        print('dm-smbios-reader-vbox: WARNING -- unregister of %r may have failed'
+              ' (rc=%s); a leftover VM can block the next run'
+              % (vmname, exc.returncode), file=sys.stderr)
     if uart_socket:
         try:
             os.unlink(uart_socket)

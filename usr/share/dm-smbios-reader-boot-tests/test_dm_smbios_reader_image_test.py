@@ -947,25 +947,39 @@ def test_resolve_backend_auto_qemu_when_kvm_usable(monkeypatch):
     ## VBoxManage present but /dev/kvm usable -> qemu (KVM accelerates, no need for vbox).
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
     monkeypatch.setattr(m.os, "access", lambda path, mode: True)
-    assert m.resolve_backend(types.SimpleNamespace(backend="auto"),
+    assert m.resolve_backend(types.SimpleNamespace(backend="auto", arch="amd64"),
                              lambda _: None) == "qemu"
 
 
-def test_resolve_backend_auto_vbox_on_amd_without_kvm(monkeypatch, tmp_path):
+def test_resolve_backend_auto_vbox_amd64_without_kvm(monkeypatch):
+    import shutil
+    m = _load_dm_image_test()
+    ## VBoxManage present, no usable /dev/kvm, amd64 target -> vbox (qemu = slow TCG).
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
+    monkeypatch.setattr(m.os, "access", lambda path, mode: False)
+    assert m.resolve_backend(types.SimpleNamespace(backend="auto", arch="amd64"),
+                             lambda _: None) == "vbox"
+
+
+def test_resolve_backend_auto_arm64_stays_qemu(monkeypatch):
+    import shutil
+    m = _load_dm_image_test()
+    ## Even with VBox + no /dev/kvm, an arm64 target MUST stay on qemu -- VBox is x86-only
+    ## and cannot run a foreign-ISA guest (qemu cross-emulates via TCG).
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
+    monkeypatch.setattr(m.os, "access", lambda path, mode: False)
+    assert m.resolve_backend(types.SimpleNamespace(backend="auto", arch="arm64"),
+                             lambda _: None) == "qemu"
+
+
+def test_resolve_backend_explicit_vbox_rejects_arm64(monkeypatch):
     import shutil
     m = _load_dm_image_test()
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/VBoxManage")
-    monkeypatch.setattr(m.os, "access", lambda path, mode: False)  # no usable /dev/kvm
-    cpuinfo = tmp_path / "cpuinfo"
-    cpuinfo.write_text("vendor_id\t: AuthenticAMD\n", encoding="utf-8")
-    real_open = open
-
-    def fake_open(path, *a, **k):
-        return real_open(str(cpuinfo) if path == "/proc/cpuinfo" else path, *a, **k)
-
-    monkeypatch.setattr("builtins.open", fake_open)
-    assert m.resolve_backend(types.SimpleNamespace(backend="auto"),
-                             lambda _: None) == "vbox"
+    with pytest.raises(SystemExit) as exc:
+        m.resolve_backend(types.SimpleNamespace(backend="vbox", arch="arm64"),
+                          lambda _: None)
+    assert exc.value.code == SETUP_RC
 
 
 ## --- vbox serial seam: fdspawn-over-socket, lock, backend error mapping --------
