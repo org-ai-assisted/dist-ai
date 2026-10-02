@@ -759,3 +759,47 @@ def test_assert_hwaccel_passes_on_amdv(monkeypatch):
     monkeypatch.setattr(M, '_vm_log_text',
                         lambda vm, vboxmanage=M.VBOXMANAGE: 'HM: Using AMD-V\n')
     M.assert_hwaccel('kick', timeout=0, interval=0)  # must not raise
+
+
+def test_start_vm_amd_v_refusal_is_setup_not_fail(monkeypatch):
+    ## AMD-V refused (KVM VM running) is SETUP, not a boot FAIL: start_vm must raise
+    ## SetupError so the caller maps it to SETUP_RC (2), not FAIL_RC (5).
+    monkeypatch.setattr(M, 'ensure_amd_v_available', lambda: M.SETUP_RC)
+    with pytest.raises(M.SetupError):
+        M.start_vm('kick')
+
+
+def test_start_vm_powers_off_when_not_hardware_accelerated(monkeypatch):
+    ## The hwaccel check runs AFTER power-on; a non-AMD-V boot must be powered back
+    ## off (not left running) before start_vm raises HwAccelError.
+    monkeypatch.setattr(M, 'ensure_amd_v_available', lambda: M.PASS_RC)
+    monkeypatch.setattr(M, '_run', lambda argv: None)
+    monkeypatch.setattr(M, '_vm_log_text',
+                        lambda vm, vboxmanage=M.VBOXMANAGE:
+                        'HM: HMR3Init: Falling back to NEM\n')
+    offs = []
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: offs.append(vm))
+    with pytest.raises(M.HwAccelError):
+        M.start_vm('kick')
+    assert offs == ['kick']  # powered off before raising
+
+
+def test_serial_up_tears_down_half_built_vm_on_build_failure(monkeypatch):
+    ## A build step failing (e.g. RAW disk rejected for multiattach) must unregister
+    ## the half-built VM, else the next serial-up fails at createvm (name in use).
+    monkeypatch.setattr(M, 'require_vboxmanage', lambda: None)
+    ran = []
+
+    def fake_run(argv):
+        ran.append(argv)
+        if 'storageattach' in argv:
+            raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(M, '_run', fake_run)
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: None)
+    args = types.SimpleNamespace(
+        vm='kick', iso=None, disk='/d.raw', firmware='efi', memory=3072,
+        uart_socket='/s.sock', smbios_serial='dm-cmdline=x', dmi_vendor='QEMU',
+        emit_argv=False)
+    assert M.run_serial_up(args) == M.SETUP_RC
+    assert any('unregistervm' in a for a in ran), ran  # teardown unregistered it
