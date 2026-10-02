@@ -1,0 +1,83 @@
+#!/bin/bash
+
+## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fast derivative-maker image/ISO build wrapper with build-hygiene defaults
+## baked in, invoked as:
+##
+##   dm-iso-build [extra derivative-maker args...]
+##
+## Defaults (override via env): kicksecure-lxqt / amd64 / iso / frozen.
+##
+## Build hygiene -- deliberately NOT overridable here, so the safe path is the
+## default and there is nothing to remember:
+##   - lintian fails CLOSED (the make_lintian_fail_open_versus_closed var is left
+##     unset; any lintian warning fails the build -- fix it, do not paper over it).
+##   - the tree must be fully committed: --allow-uncommitted is NOT passed, so
+##     derivative-maker's own git_sanity_test refuses a dirty tree.
+##   - --sign-and-tag true (allow-unsigned is forbidden for AI sessions).
+##
+## Speed (default ON -- reuse the prior build's work, far short of a ~1h cold build):
+##   --skip-published-packages  rebuild only packages whose source changed
+##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
+##
+## Freshness-switch safety: the cowbuilder base is snapshot-specific, so on a
+## frozen<->current switch --reuse-cowbuilder-base is dropped for that one run
+## (marker-tracked -- no flag to remember). DM_CLEAN=1 forces a from-scratch build.
+##
+## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FRESHNESS DM_FREEDOM
+##                DM_USER DM_CLEAN
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+dm_repo="${DM_REPO:-${HOME}/derivative-maker}"
+flavor="${DM_FLAVOR:-kicksecure-lxqt}"
+arch="${DM_ARCH:-amd64}"
+target="${DM_TARGET:-iso}"
+freshness="${DM_FRESHNESS:-frozen}"
+freedom="${DM_FREEDOM:-false}"
+build_user="${DM_USER:-$(id -un)}"
+
+cd -- "${dm_repo}"
+
+marker="${HOME}/.cache/dm-iso-build.last-freshness"
+last_freshness=""
+if [ -r "${marker}" ]; then
+   last_freshness="$(cat -- "${marker}")"
+fi
+
+speed=(--skip-published-packages --reuse-cowbuilder-base)
+if [ "${DM_CLEAN:-0}" = "1" ]; then
+   speed=()
+   printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (no package reuse, fresh cowbuilder base)"
+elif [ -n "${last_freshness}" ] && [ "${last_freshness}" != "${freshness}" ]; then
+   speed=(--skip-published-packages)
+   printf '%s\n' "${BASH_SOURCE[0]}: freshness switch '${last_freshness}' -> '${freshness}' -- rebuilding cowbuilder base (snapshot-specific)"
+fi
+
+printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
+
+rc=0
+user_name="${build_user}" \
+dist_build_unlock_dangerous_options=true \
+   ./derivative-maker \
+      --flavor "${flavor}" --arch "${arch}" --target "${target}" \
+      --freshness "${freshness}" --type vm --freedom "${freedom}" \
+      --sign-and-tag true \
+      "${speed[@]}" "$@" || rc="$?"
+
+if [ "${rc}" = "0" ]; then
+   mkdir --parents -- "$(dirname -- "${marker}")"
+   printf '%s\n' "${freshness}" > "${marker}"
+fi
+printf '%s\n' "${BASH_SOURCE[0]}: derivative-maker exit code: ${rc}"
+exit "${rc}"
