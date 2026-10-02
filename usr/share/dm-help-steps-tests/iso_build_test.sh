@@ -18,9 +18,9 @@
 ## because '--repo true' is dm-build-official-one's OWN internal default.
 ##
 ## WHAT IT GUARDS:
-##   - the wrapper drives dm-build-official-one, NOT a bare ./derivative-maker (the bug
-##     that shipped a repo-DISABLED ISO: build_remote_repo_enable stayed false, the opts
-##     file was never written, systemcheck check_apt_repository == Disabled);
+##   - the wrapper drives dm-build-official-one, NOT a bare ./derivative-maker: a bare
+##     call leaves build_remote_repo_enable false, so the opts file is not written and
+##     the ISO ships repo-DISABLED (systemcheck check_apt_repository == Disabled);
 ##   - the official path produces a repo-ENABLED build ('--repo true' in the dry-plan);
 ##   - a caller cannot fiddle --repo (always repo-enabled) -- --repo is REFUSED;
 ##   - uploads are forced to simulate (rsync_cmd) -- a test/gate builder never publishes;
@@ -59,10 +59,10 @@ workspace="$(mktemp --directory)"
 cleanup() { chmod --recursive u+w -- "${workspace}" 2>/dev/null || true ; safe-rm --recursive --force -- "${workspace}"; }
 trap cleanup EXIT
 
-## HOME is where a pre-fix dm-iso-build wrote its freshness marker
-## (${HOME}/.cache/dm-iso-build.last-freshness); keep it inside the throwaway workspace so
-## the absence check below never depends on the operator's real ~/.cache. The wrapper also
-## creates ${HOME}/.ssh (the official path's upload-readiness guard); confine that here too.
+## ${HOME}/.cache/dm-iso-build.last-freshness is the marker path the stateless-check
+## below asserts is absent; keep HOME inside the throwaway workspace so that check never
+## depends on the operator's real ~/.cache. The wrapper also creates ${HOME}/.ssh (the
+## official path's upload-readiness guard); confine that here too.
 export HOME="${workspace}/home"
 mkdir --parents -- "${HOME}/.cache"
 marker="${HOME}/.cache/dm-iso-build.last-freshness"
@@ -138,8 +138,8 @@ else
 fi
 
 ## --- Case 3 (CANARY): the wrapper writes NO marker/state file --------------------
-## OLD dm-iso-build recorded the freshness in ${HOME}/.cache/dm-iso-build.last-freshness
-## on a successful build. The stateless wrapper writes nothing; this fails on the old one.
+## The wrapper is stateless: a successful build must write no freshness marker at
+## ${HOME}/.cache/dm-iso-build.last-freshness. A wrapper that records one fails this.
 safe-rm --force -- "${marker}"
 run_iso
 if [ "${iso_rc}" -eq 0 ] && [ ! -e "${marker}" ]; then
