@@ -56,6 +56,7 @@ marker="${HOME}/.cache/dm-iso-build.last-freshness"
 repo="${workspace}/repo"
 mkdir --parents -- "${repo}"
 args_log="${workspace}/dm-args.log"
+run_out="${workspace}/dm-run.out"
 {
    printf '%s\n' '#!/bin/bash'
    # shellcheck disable=SC2016
@@ -87,7 +88,7 @@ run_iso() {
    done
    printf '' > "${args_log}"
    iso_rc=0
-   env "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" "${tool}" "$@" >/dev/null 2>&1 || iso_rc="$?"
+   env "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" "${tool}" "$@" > "${run_out}" 2>&1 || iso_rc="$?"
 }
 
 has_knob() { grep --quiet -- "$1" "${args_log}" 2>/dev/null ; }
@@ -154,25 +155,33 @@ else
    fail "failed build altered the marker; got '$(marker_value)'"
 fi
 
-## --- Case 6 (CANARY): successful build + UNWRITABLE marker -> rc 0, stale dropped -
+## --- Case 6 (CANARY): successful build + an unwritable marker -> rc 0, drop branch -
 ## Two bugs in one scenario. OLD dm-iso-build (no best-effort guard) aborted under
 ## errexit on the failed marker write and exited NONZERO -- masking a SUCCESSFUL build
-## as a failure. And leaving the stale marker behind let the next run reuse a
-## wrong-snapshot base. Both assertions fail on the pre-fix code.
-clear_marker
-set_marker frozen
-chmod 400 -- "${marker}"
-run_iso DM_FRESHNESS=current STUB_RC=0
+## as a failure. The 0191de91 interim ('|| true') fixed the rc but left a stale marker,
+## so the next run could reuse a wrong-snapshot base. Force the write failure with a
+## non-directory marker PARENT ('.cache' is a FILE), which blocks the mkdir+write for
+## ANY uid -- 'chmod 400' would NOT, since the suite re-execs under root and root bypasses
+## file permissions. The drop branch is confirmed by its warning on stderr.
+home6="${workspace}/home6"
+mkdir --parents -- "${home6}"
+printf '' > "${home6}/.cache"
+marker6="${home6}/.cache/dm-iso-build.last-freshness"
+run_iso HOME="${home6}" DM_FRESHNESS=current STUB_RC=0
 if [ "${iso_rc}" -eq 0 ]; then
    pass "an unwritable marker on a successful build still exits 0 (success not masked as failure)"
 else
-   fail "unwritable marker masked a successful build as failure; rc=${iso_rc}"
+   fail "unwritable marker masked a successful build as failure; rc=${iso_rc} out=<<<$(cat -- "${run_out}")>>>"
 fi
-chmod u+w -- "${marker}" 2>/dev/null || true
-if [ -e "${marker}" ]; then
-   fail "a failed marker write left the stale marker (next build could reuse a wrong-snapshot base)"
+if grep --quiet -- 'could not persist the freshness marker' "${run_out}"; then
+   pass "a failed marker write takes the drop branch (warns + drops the stale marker)"
 else
-   pass "a failed marker write drops the stale marker (next build rebuilds the base)"
+   fail "a failed marker write did not take the drop branch; out=<<<$(cat -- "${run_out}")>>>"
+fi
+if [ -e "${marker6}" ]; then
+   fail "a failed marker write left a marker behind (next build could reuse a wrong-snapshot base)"
+else
+   pass "no stale marker remains after a failed write (next build rebuilds the base)"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

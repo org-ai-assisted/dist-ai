@@ -91,11 +91,12 @@ REMOTES_ENSURE_CMD="${DM_TIDY_REMOTES_ENSURE:-dm-packaging-helper-script}"
 ## helper (dm-packaging-helper-script at /usr/bin, whose '## XXX: hardcoded path' branch
 ## IS ${HOME}/derivative-maker) -- run dm-tidy with that installed helper. A source-tree
 ## copy resolved via PATH would instead target its OWN checkout, so this gate's premise
-## only holds for the installed copy; coupled to that helper -- keep in sync. '${HOME:-}'
-## so an unset HOME degrades to a non-matching path (ensure skipped) rather than aborting
-## at this line under 'set -o nounset'. HOME is also the seam the regression test
-## overrides to point this at a throwaway checkout.
-REMOTES_TARGET_TREE="${HOME:-}/derivative-maker"
+## only holds for the installed copy; coupled to that helper -- keep in sync. The ':+'
+## form yields EMPTY when HOME is unset/empty -- a sentinel that can NEVER match a real
+## 'top' (so the ensure is skipped), NOT the real path '/derivative-maker' that '${HOME:-}'
+## would produce -- and it avoids aborting --help under 'set -o nounset'. HOME is also the
+## seam the regression test overrides to point this at a throwaway checkout.
+REMOTES_TARGET_TREE="${HOME:+${HOME}/derivative-maker}"
 FORK_REMOTE="org-ai-assisted"
 ## Named remotes whose ABSENCE breaks a downstream phase. The FULL canonical set is
 ## ensured by REMOTES_ENSURE_CMD; these are the ones dm-tidy validates directly.
@@ -249,13 +250,17 @@ validate_repo_remotes() {
 ## before any mutation instead of letting a downstream phase silently skip (e.g. the
 ## gated arraybolt3/trixie merge).
 phase_remotes() {
-   local flag=() rc=0 path top_real tree_real
+   local flag=() rc=0 path top_real tree_real on_target="false"
    log ">>> [1/5] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
    ## Run the DESTRUCTIVE ensure only when 'top' IS the tree REMOTES_ENSURE_CMD acts
-   ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree.
+   ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree. An
+   ## empty REMOTES_TARGET_TREE (unset HOME) is a non-matching sentinel -> always skip.
    top_real="$( realpath --canonicalize-missing -- "${top}" 2>/dev/null || printf '%s' "${top}" )"
-   tree_real="$( realpath --canonicalize-missing -- "${REMOTES_TARGET_TREE}" 2>/dev/null || printf '%s' "${REMOTES_TARGET_TREE}" )"
-   if [ "${top_real}" = "${tree_real}" ]; then
+   if [ -n "${REMOTES_TARGET_TREE}" ]; then
+      tree_real="$( realpath --canonicalize-missing -- "${REMOTES_TARGET_TREE}" 2>/dev/null || printf '%s' "${REMOTES_TARGET_TREE}" )"
+      [ "${top_real}" = "${tree_real}" ] && on_target="true"
+   fi
+   if [ "${on_target}" = "true" ]; then
       [ "${dry_run}" = "true" ] && flag=( --dry-run )
       "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
       if [ "${rc}" -ne 0 ]; then
@@ -264,7 +269,7 @@ phase_remotes() {
          return 0
       fi
    else
-      log "remote ensure SKIPPED: '${top}' is not the tree ${REMOTES_ENSURE_CMD##*/} operates on (${REMOTES_TARGET_TREE}); validating only, mutating nothing."
+      log "remote ensure SKIPPED: '${top}' is not the tree ${REMOTES_ENSURE_CMD##*/} operates on (${REMOTES_TARGET_TREE:-unset HOME}); validating only, mutating nothing."
    fi
    local missing=() sub_rc=0
    read_submodule_paths || sub_rc="$?"
@@ -282,7 +287,14 @@ phase_remotes() {
    if [ "${#missing[@]}" -gt 0 ]; then
       record "1 remotes" "ERROR (missing expected remotes)"
       any_error="true" ; aborted="true"
-      printf '%s\n' "${0##*/}: missing expected git remotes (add them on the repo(s) below, or run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' from '${REMOTES_TARGET_TREE}'):" >&2
+      if [ "${on_target}" = "true" ]; then
+         printf '%s\n' "${0##*/}: missing expected git remotes (add them on the repo(s) below, or run '${REMOTES_ENSURE_CMD##*/} --batch pkg_git_remotes_add' from '${REMOTES_TARGET_TREE}'):" >&2
+      else
+         ## Off the helper's tree: it can only rewrite its OWN tree, never this checkout,
+         ## so pointing the user at it would mutate the WRONG tree and still not add these
+         ## remotes. Tell them to add them here instead.
+         printf '%s\n' "${0##*/}: missing expected git remotes -- add them on the repo(s) below (the automatic ensure runs only on the helper's own tree, not this checkout):" >&2
+      fi
       printf '  %s\n' "${missing[@]}" >&2
       return 0
    fi
