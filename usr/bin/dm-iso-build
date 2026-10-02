@@ -24,9 +24,11 @@
 ##   --skip-published-packages  rebuild only packages whose source changed
 ##   --reuse-cowbuilder-base    reuse the cowbuilder base chroot
 ##
-## Freshness-switch safety: the cowbuilder base is snapshot-specific, so on a
-## frozen<->current switch --reuse-cowbuilder-base is dropped for that one run
-## (marker-tracked -- no flag to remember). DM_CLEAN=1 forces a from-scratch build.
+## The cowbuilder base is reused UNCONDITIONALLY -- this wrapper builds a single
+## snapshot (frozen) and reuses derivative-maker's snapshot-specific base every run, so
+## there is no snapshot switch to track and no state to remember. DM_CLEAN=1 is the one
+## escape: a from-scratch build with a fresh base (use it if you ever deliberately build a
+## different snapshot, so the base is not reused across snapshots).
 ##
 ## Env overrides: DM_REPO DM_FLAVOR DM_ARCH DM_TARGET DM_FRESHNESS DM_FREEDOM
 ##                DM_USER DM_CLEAN
@@ -49,23 +51,12 @@ build_user="${DM_USER:-$(id -un)}"
 
 cd -- "${dm_repo}"
 
-marker="${HOME}/.cache/dm-iso-build.last-freshness"
-last_freshness=""
-if [ -r "${marker}" ]; then
-   last_freshness="$(cat -- "${marker}")"
-fi
-
+## Always reuse the prior build's work (far short of a ~1h cold build). DM_CLEAN=1 is the
+## single from-scratch escape: drop both reuse knobs so derivative-maker rebuilds the base.
 speed=(--skip-published-packages --reuse-cowbuilder-base)
 if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()
    printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (no package reuse, fresh cowbuilder base)"
-elif [ "${last_freshness}" != "${freshness}" ]; then
-   ## Reuse the snapshot-specific cowbuilder base ONLY when the marker confirms the
-   ## last build used this freshness. An UNKNOWN freshness (no readable marker -- incl.
-   ## after a failed marker write below) is treated as a switch: rebuild the base rather
-   ## than risk reusing one built for a different snapshot.
-   speed=(--skip-published-packages)
-   printf '%s\n' "${BASH_SOURCE[0]}: freshness '${last_freshness:-unknown}' -> '${freshness}' -- rebuilding cowbuilder base (snapshot-specific)"
 fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
@@ -85,16 +76,5 @@ dist_build_unlock_dangerous_options=true \
       --sign-and-tag true \
       "${speed[@]}" || rc="$?"
 
-if [ "${rc}" = "0" ]; then
-   ## Record the freshness for the next run's reuse decision. Best-effort: under errexit
-   ## an unwritable ~/.cache must NOT abort before 'exit ${rc}' and mask a SUCCESSFUL
-   ## build as a failure. If it cannot be recorded, DROP any stale marker so the next run
-   ## sees freshness as unknown and rebuilds the base -- never reuses a wrong-snapshot one
-   ## off a stale value.
-   if ! { mkdir --parents -- "$(dirname -- "${marker}")" && printf '%s\n' "${freshness}" > "${marker}" ; }; then
-      safe-rm --force -- "${marker}" || true
-      printf '%s\n' "${BASH_SOURCE[0]}: warning: could not persist the freshness marker; next build will rebuild the cowbuilder base." >&2
-   fi
-fi
 printf '%s\n' "${BASH_SOURCE[0]}: derivative-maker exit code: ${rc}"
 exit "${rc}"
