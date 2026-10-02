@@ -59,9 +59,13 @@ speed=(--skip-published-packages --reuse-cowbuilder-base)
 if [ "${DM_CLEAN:-0}" = "1" ]; then
    speed=()
    printf '%s\n' "${BASH_SOURCE[0]}: DM_CLEAN -- from-scratch build (no package reuse, fresh cowbuilder base)"
-elif [ -n "${last_freshness}" ] && [ "${last_freshness}" != "${freshness}" ]; then
+elif [ "${last_freshness}" != "${freshness}" ]; then
+   ## Reuse the snapshot-specific cowbuilder base ONLY when the marker confirms the
+   ## last build used this freshness. An UNKNOWN freshness (no readable marker -- incl.
+   ## after a failed marker write below) is treated as a switch: rebuild the base rather
+   ## than risk reusing one built for a different snapshot.
    speed=(--skip-published-packages)
-   printf '%s\n' "${BASH_SOURCE[0]}: freshness switch '${last_freshness}' -> '${freshness}' -- rebuilding cowbuilder base (snapshot-specific)"
+   printf '%s\n' "${BASH_SOURCE[0]}: freshness '${last_freshness:-unknown}' -> '${freshness}' -- rebuilding cowbuilder base (snapshot-specific)"
 fi
 
 printf '%s\n' "${BASH_SOURCE[0]}: flavor=${flavor} arch=${arch} target=${target} freshness=${freshness} freedom=${freedom} user=${build_user} knobs=[${speed[*]:-none}]"
@@ -82,10 +86,15 @@ dist_build_unlock_dangerous_options=true \
       "${speed[@]}" || rc="$?"
 
 if [ "${rc}" = "0" ]; then
-   ## Marker persistence is best-effort: under errexit an unwritable ~/.cache must NOT
-   ## abort before 'exit ${rc}' and mask a SUCCESSFUL build as a failure.
-   mkdir --parents -- "$(dirname -- "${marker}")" || true
-   printf '%s\n' "${freshness}" > "${marker}" || true
+   ## Record the freshness for the next run's reuse decision. Best-effort: under errexit
+   ## an unwritable ~/.cache must NOT abort before 'exit ${rc}' and mask a SUCCESSFUL
+   ## build as a failure. If it cannot be recorded, DROP any stale marker so the next run
+   ## sees freshness as unknown and rebuilds the base -- never reuses a wrong-snapshot one
+   ## off a stale value.
+   if ! { mkdir --parents -- "$(dirname -- "${marker}")" && printf '%s\n' "${freshness}" > "${marker}" ; }; then
+      safe-rm --force -- "${marker}" || true
+      printf '%s\n' "${BASH_SOURCE[0]}: warning: could not persist the freshness marker; next build will rebuild the cowbuilder base." >&2
+   fi
 fi
 printf '%s\n' "${BASH_SOURCE[0]}: derivative-maker exit code: ${rc}"
 exit "${rc}"

@@ -126,7 +126,18 @@ case "${backend}" in
       fi
       ;;
    *)
-      if [ "${have_qemu}" != 'true' ] && [ "${have_vbox}" != 'true' ]; then
+      ## auto: ask the resolver which backend it will actually use (SINGLE source --
+      ## no duplicated auto-logic that could drift from dm-smbios-reader-image-test),
+      ## then gate on THAT tool, so we never SKIP a host the resolver can use nor let a
+      ## resolved-qemu-but-no-qemu host fall through to a spurious FAIL.
+      resolved_backend="$("${tests_dir}/dm-smbios-reader-image-test" --resolve-backend "$@" 2>/dev/null || true)"
+      if [ "${resolved_backend}" = 'qemu' ] && [ "${have_qemu}" != 'true' ]; then
+         printf '%s\n' "dm-smbios-reader-boot-tests: backend auto resolved to qemu but no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
+         ## style-ok: allow-skip: auto-resolved qemu backend has no emulator on PATH
+         exit "${SKIP}"
+      fi
+      if [ -z "${resolved_backend}" ] \
+         && [ "${have_qemu}" != 'true' ] && [ "${have_vbox}" != 'true' ]; then
          printf '%s\n' "dm-smbios-reader-boot-tests: no qemu-system-* and no VBoxManage on PATH; cannot boot-test here. SKIP." >&2
          ## style-ok: allow-skip: no emulator (qemu or VirtualBox) available to boot-test
          exit "${SKIP}"

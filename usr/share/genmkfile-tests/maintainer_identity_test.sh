@@ -183,18 +183,33 @@ else
    fail "override-both wrong: email=[${got_email}] name=[${got_name}] (want explicit@uploader.org / Explicit Uploader)"
 fi
 
-## 3. Only DEBEMAIL set -> email preserved, name derived from control (per-var independent).
+## 3. A half-set identity (only DEBEMAIL) is all-or-nothing: control does NOT complete
+## it (no incoherent operator-email + control-name mailbox) -> fail loud.
 export DEBEMAIL='explicit@uploader.org'
 unset DEBFULLNAME
 run_check
 tests_total=$(( tests_total + 1 ))
-got_email="$(read_out DEBEMAIL)"
+die_msg="$(cat -- "${test_root}/die")"
 got_name="$(read_out DEBFULLNAME)"
-if [ "${got_email}" = 'explicit@uploader.org' ] && [ "${got_name}" = 'Canary Name' ]; then
-   pass "partial: set email kept, unset name derived from control"
+if [ -n "${die_msg}" ] && [ -z "${got_name}" ]; then
+   pass "half-set identity (only email) aborts loud (no mixed name from control)"
 else
-   fail "partial wrong: email=[${got_email}] name=[${got_name}] (want explicit@uploader.org / Canary Name)"
+   fail "half-set (email) NOT rejected: die=[${die_msg}] name=[${got_name}]"
 fi
+
+## 3b. Symmetric half-set (only DEBFULLNAME) -> also fail loud, no mixed email.
+unset DEBEMAIL
+export DEBFULLNAME='Explicit Uploader'
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_email="$(read_out DEBEMAIL)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "half-set identity (only name) aborts loud (no mixed email from control)"
+else
+   fail "half-set (name) NOT rejected: die=[${die_msg}] email=[${got_email}]"
+fi
+unset DEBFULLNAME
 
 ## 4. Maintainer has no '<email>' and env unset -> fail loud (nothing silently wrong).
 write_control 'Malformed Maintainer No Brackets'
