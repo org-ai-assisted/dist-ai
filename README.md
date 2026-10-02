@@ -43,7 +43,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests` (fuzz)  | shipping | `usr/share/iso-boot-tests/` |
-| `dm-image-boot-tests`    | shipping | `usr/share/dm-image-boot-tests/` |
+| `dm-smbios-reader-boot-tests`    | shipping | `usr/share/dm-smbios-reader-boot-tests/` |
 | `dm-raw-to-iso` (docs)   | shipping | `usr/share/dm-raw-to-iso/` (tool lives in derivative-maker) |
 | `dm-raw-to-iso-tests`    | shipping | `usr/share/dm-raw-to-iso-tests/` |
 | `dm-reproducible-build-tests` | shipping | `usr/share/dm-reproducible-build-tests/` |
@@ -631,7 +631,7 @@ The exact command sequence and the reasoning for each step are in
 `usr/share/dm-raw-to-iso/README.md`. The companion suite `dm-raw-to-iso-tests`
 resolves the tool via `DM_RAW_TO_ISO_BIN` (else `DERIVATIVE_MAKER_DIR`), asserts the
 ISO's boot structure, and boots it across `bios | efi | efi-secureboot` via the
-`dm-image-boot-tests` harness.
+`dm-smbios-reader-boot-tests` harness.
 
 ## Related
 

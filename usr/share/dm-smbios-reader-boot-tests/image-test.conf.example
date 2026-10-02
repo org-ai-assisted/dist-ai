@@ -6,7 +6,7 @@
 ## Example image-test-run config. Install as /etc/image-test/<NAME>.conf and fire
 ## with:  systemctl start image-test@<NAME>
 ## Sourced as bash: NAME/TEST_USER/MODE are scalars, DM_ARGS is an array of the
-## dm-vbox args (--shot is appended by the runner).
+## dm-smbios-reader-vbox args (--shot is appended by the runner).
 
 NAME="kicksecure-iso-efi"
 TEST_USER="persist-stable-kicksecure"

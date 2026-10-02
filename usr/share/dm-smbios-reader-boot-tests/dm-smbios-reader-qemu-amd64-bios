@@ -5,9 +5,9 @@
 
 ## AI-Assisted
 
-## Thin wrapper: headless boot-test an amd64 VM disk image through OVMF (UEFI) via dm-qemu.
+## Thin wrapper: headless boot-test an amd64 VM disk image through SeaBIOS via dm-smbios-reader-qemu.
 ## First argument is the disk image (qcow2/raw/vdi/vmdk); any further arguments are forwarded
-## to dm-qemu unchanged (e.g. --timeout, --screendump, --disk-format). Needs the 'ovmf' package.
+## to dm-smbios-reader-qemu unchanged (e.g. --timeout, --screendump, --disk-format).
 
 set -o errexit
 set -o nounset
@@ -15,11 +15,12 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
-[ "$#" -ge 1 ] || { printf '%s\n' "Usage: dm-qemu-amd64-efi DISK_IMAGE [dm-qemu options...]" >&2; exit 2; }
+[ "$#" -ge 1 ] || { printf '%s\n' "Usage: dm-smbios-reader-qemu-amd64-bios DISK_IMAGE [dm-smbios-reader-qemu options...]" >&2; exit 2; }
 
 dm_qemu_wrapper_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 disk_image="${1}"
 shift
 
-"${dm_qemu_wrapper_dir}/dm-qemu" --disk "${disk_image}" --arch amd64 --firmware efi "$@"
+"${dm_qemu_wrapper_dir}/dm-smbios-reader-qemu" --disk "${disk_image}" --arch amd64 --firmware bios "$@"

@@ -11,7 +11,7 @@
 ## needs a rebuild -- this loop is for iterating the BOOT side, or for re-testing an
 ## image whose contents you have edited in place.
 
-## Needs the temp-claude sandbox provisioned (it runs dm-boot-test there, which
+## Needs the temp-claude sandbox provisioned (it runs dm-smbios-reader-boot-test there, which
 ## installs qemu/OVMF); a broken apt state in the sandbox surfaces as rc=100.
 
 [ -v TMP ] || TMP=/tmp
@@ -146,7 +146,7 @@ for leg in ${legs}; do
    ## Separate argv entries, NOT one quoted string: sandbox-run execs what it is
    ## given, so a single string is looked up as one executable PATH and dies 127.
    sandbox-run --dir "${stage}" -- \
-      dist-ai/usr/bin/dm-boot-test \
+      dist-ai/usr/bin/dm-smbios-reader-boot-test \
       --image "${image_base}" \
       --arch amd64 \
       --firmware "${firmware}" \

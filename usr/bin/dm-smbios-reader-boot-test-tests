@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-## Runs the dm-boot-test regression suite: asserts the CI boot harness front-end
-## (dm-boot-test) locates helper-scripts' package_installed_check.sh in the layout
+## Runs the dm-smbios-reader-boot-test regression suite: asserts the CI boot harness front-end
+## (dm-smbios-reader-boot-test) locates helper-scripts' package_installed_check.sh in the layout
 ## the boot-test job uses (dist-ai checked out beside a helper-scripts checkout, not
 ## installed), so a leg is not aborted before qemu starts. No network, no root.
 
@@ -20,10 +20,10 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d "${script_dir}/../share/dm-boot-test-tests" ]; then
-   tests_dir="${script_dir}/../share/dm-boot-test-tests"
+if [ -d "${script_dir}/../share/dm-smbios-reader-boot-test-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-smbios-reader-boot-test-tests"
 else
-   tests_dir='/usr/share/dm-boot-test-tests'
+   tests_dir='/usr/share/dm-smbios-reader-boot-test-tests'
 fi
 
 shopt -s nullglob
@@ -49,15 +49,15 @@ if [ "${ran}" -eq 0 ]; then
   exit 1
 fi
 if [ "${failures}" -ne 0 ]; then
-  printf '\nFAILED: %s dm-boot-test test script(s) failed\n' "${failures}" >&2
+  printf '\nFAILED: %s dm-smbios-reader-boot-test test script(s) failed\n' "${failures}" >&2
   exit 1
 fi
 ## Propagate a whole-suite skip: if EVERY script skipped (77) and none ran, exit
 ## 77 so the orchestrator records SKIP -- and skip_is_fatal fails an unauthorized
 ## one -- instead of a green PASS that hides that nothing actually ran.
 if [ "${skips}" -eq "${ran}" ]; then
-  printf '\nSKIP: all %s dm-boot-test test script(s) skipped\n' "${ran}" >&2
+  printf '\nSKIP: all %s dm-smbios-reader-boot-test test script(s) skipped\n' "${ran}" >&2
   exit 77  ## style-ok: allow-skip: whole-suite skip propagated so the orchestrator records SKIP, not a false green
 fi
-printf '\nOK: all dm-boot-test test scripts passed (%s skipped)\n' "${skips}"
+printf '\nOK: all dm-smbios-reader-boot-test test scripts passed (%s skipped)\n' "${skips}"
 exit 0

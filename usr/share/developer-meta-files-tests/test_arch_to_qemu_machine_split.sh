@@ -10,8 +10,8 @@
 ##     machine-name map (dist_build_arch_to_qemu_machine), sourced by
 ##     help-steps/variables. The boot-test-only board TYPE and serial-console
 ##     maps must NOT live here -- they are dead weight in the build.
-##   * dist-ai's dm-image-boot-tests bundles its own copy of the fragment WITH
-##     all three functions, because only its dm-qemu consumes the extra two.
+##   * dist-ai's dm-smbios-reader-boot-tests bundles its own copy of the fragment WITH
+##     all three functions, because only its dm-smbios-reader-qemu consumes the extra two.
 ## A regression either way (re-adding the two to the build copy, or dropping any
 ## of the three from the boot-test copy) breaks the intent, so assert both.
 ##
@@ -69,8 +69,8 @@ fi
 ## The boot-test copy bundled in dist-ai, beside this test's share tree.
 boot_copy=""
 for candidate in \
-   "${script_dir}/../dm-image-boot-tests/arch-to-qemu-machine.bsh" \
-   "/usr/share/dm-image-boot-tests/arch-to-qemu-machine.bsh"; do
+   "${script_dir}/../dm-smbios-reader-boot-tests/arch-to-qemu-machine.bsh" \
+   "/usr/share/dm-smbios-reader-boot-tests/arch-to-qemu-machine.bsh"; do
    if [ -r "${candidate}" ]; then
       boot_copy="${candidate}"
       break
@@ -139,13 +139,13 @@ fi
 
 ## --- boot-test copy: all three ---------------------------------------------
 if [ -z "${boot_copy}" ]; then
-   fail "dist-ai boot-test copy arch-to-qemu-machine.bsh not found; dm-qemu depends on it"
+   fail "dist-ai boot-test copy arch-to-qemu-machine.bsh not found; dm-smbios-reader-qemu depends on it"
 else
    for fn in "${base_fn}" "${type_fn}" "${console_fn}"; do
       if defines "${boot_copy}" "${fn}"; then
          pass "boot-test copy defines ${fn}()"
       else
-         fail "boot-test copy is missing ${fn}(); dm-qemu sources all three"
+         fail "boot-test copy is missing ${fn}(); dm-smbios-reader-qemu sources all three"
       fi
    done
 fi

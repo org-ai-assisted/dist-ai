@@ -22,7 +22,7 @@ un-skipped):
     real kernel "BUG:".
   * 30_default.conf journal-ignore covers the benign spice-vdagentd
     "Error getting active session" line seen on headless / sysmaint boots.
-  * dm-image-test --journal-ignore-fixed covers the mount-shared failure that
+  * dm-smbios-reader-image-test --journal-ignore-fixed covers the mount-shared failure that
     every qcow2 leg hits, because no shared folder is attached to qemu.
 """
 
@@ -184,7 +184,7 @@ if __name__ == '__main__':
 
 
 class TestMountSharedJournalIgnore(SystemcheckTestBase):
-    """dm-image-test ignores the mount-shared failure qemu guarantees.
+    """dm-smbios-reader-image-test ignores the mount-shared failure qemu guarantees.
 
     No shared folder is attached to the boot-test qemu invocation, so
     vm-config-dist's mount-shared cannot mount /mnt/shared. The script tolerates
@@ -193,12 +193,12 @@ class TestMountSharedJournalIgnore(SystemcheckTestBase):
     """
 
     def _ignore_string(self) -> str:
-        ## dm-image-test ships in this same repo, so resolve it relative to this
+        ## dm-smbios-reader-image-test ships in this same repo, so resolve it relative to this
         ## test file rather than self.dir (which points into the systemcheck
         ## checkout).
         path = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            '..', 'dm-image-boot-tests', 'dm-image-test'))
+            '..', 'dm-smbios-reader-boot-tests', 'dm-smbios-reader-image-test'))
         text = read(path)
         m = re.search(
             r'--journal-ignore-fixed \\"(mount: [^"\\]*)\\"', text)
@@ -225,7 +225,7 @@ class TestMountSharedJournalIgnore(SystemcheckTestBase):
 
 
 class TestAnondateGetJournalIgnore(SystemcheckTestBase):
-    """dm-image-test ignores anondate-get's no-Tor cert-lifetime warnings.
+    """dm-smbios-reader-image-test ignores anondate-get's no-Tor cert-lifetime warnings.
 
     With no Tor reachable on the CI boot, anondate-get cannot read a Tor
     certificate lifetime and logs two fixed WARNING lines that check_journal
@@ -237,7 +237,7 @@ class TestAnondateGetJournalIgnore(SystemcheckTestBase):
     def _ignore_strings(self) -> list:
         path = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            '..', 'dm-image-boot-tests', 'dm-image-test'))
+            '..', 'dm-smbios-reader-boot-tests', 'dm-smbios-reader-image-test'))
         text = read(path)
         found = re.findall(
             r'--journal-ignore-fixed \\"(anondate-get: WARNING: [^"\\]*)\\"',

@@ -45,12 +45,12 @@ die() {
 }
 
 lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-if [ -f "${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh" ]; then
-   gui_drive_lib="${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh"
+if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh" ]; then
+   gui_drive_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh"
 else
-   gui_drive_lib='/usr/share/dm-image-boot-tests/gui-drive.bsh'
+   gui_drive_lib='/usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh'
 fi
-# shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
 source "${gui_drive_lib}"
 
 usage() {

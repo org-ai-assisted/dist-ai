@@ -77,24 +77,24 @@ usage() {
 ## same gui_scan/gui_ocr/gui_wait_for/gui_locate_word/gui_click_word used by the
 ## Whonix pair orchestrator, so the subtle OCR logic lives in ONE place.
 lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-if [ -f "${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh" ]; then
-   gui_drive_lib="${lib_dir}/../share/dm-image-boot-tests/gui-drive.bsh"
+if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh" ]; then
+   gui_drive_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh"
 else
-   gui_drive_lib='/usr/share/dm-image-boot-tests/gui-drive.bsh'
+   gui_drive_lib='/usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh'
 fi
-# shellcheck source=./usr/share/dm-image-boot-tests/gui-drive.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
 source "${gui_drive_lib}"
 
 ## The SINGLE source of truth for the numbered release-critical checks, shared with
 ## dm-upgrade-regression's R6 upgrade gate. The --checks battery iterates this table
 ## with run_check as the OCR executor, so the install gate and the upgrade gate can
 ## never disagree about what a release-critical check IS.
-if [ -f "${lib_dir}/../share/dm-image-boot-tests/release-checks.bsh" ]; then
-   release_checks_lib="${lib_dir}/../share/dm-image-boot-tests/release-checks.bsh"
+if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/release-checks.bsh" ]; then
+   release_checks_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/release-checks.bsh"
 else
-   release_checks_lib='/usr/share/dm-image-boot-tests/release-checks.bsh'
+   release_checks_lib='/usr/share/dm-smbios-reader-boot-tests/release-checks.bsh'
 fi
-# shellcheck source=./usr/share/dm-image-boot-tests/release-checks.bsh
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/release-checks.bsh
 source "${release_checks_lib}"
 
 ## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"

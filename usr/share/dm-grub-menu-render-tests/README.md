@@ -2,7 +2,7 @@
 
 Proves the platform-gated entries of the derivative-maker ISO GRUB menu
 (`iso-build-data/grub-config/grub.cfg`) actually RENDER on real firmware -- the
-observation the boot-test harness (`dm-image-boot-tests`) cannot make, because it
+observation the boot-test harness (`dm-smbios-reader-boot-tests`) cannot make, because it
 injects `set timeout=0` to autoboot past the menu and never enters a submenu.
 
 ## What it checks
@@ -19,7 +19,7 @@ false and the entry never renders on EFI -- the exact bug this suite guards agai
   that redirects console I/O to serial and holds the menu. Menu rendering depends
   only on the grub config + modules + theme, never the rootfs, so this needs no
   ~1h image build and `${grub_platform}` is still set by the real platform.
-- `grub-menu-nav` -- gets qemu argv from the REAL `dm-qemu --emit-argv` (correct
+- `grub-menu-nav` -- gets qemu argv from the REAL `dm-smbios-reader-qemu --emit-argv` (correct
   OVMF/SeaBIOS wiring per `--firmware`), spawns it under pexpect, enters the submenu
   via its GRUB hotkey, and reads to the submenu's last entry so the entry under test
   is deterministically in `child.before`.

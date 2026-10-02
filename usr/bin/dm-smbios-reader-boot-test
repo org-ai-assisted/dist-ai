@@ -7,18 +7,18 @@
 
 ## Generic boot + functional test entrypoint (CI front-end), invoked as:
 ##
-##   dm-boot-test --image <path> --arch <amd64|arm64> \
+##   dm-smbios-reader-boot-test --image <path> --arch <amd64|arm64> \
 ##       --firmware <bios|efi|efi-secureboot> --session <user|sysmaint>
 ##
 ## It installs the qemu/OVMF/pexpect runtime, discovers the boot media by image
-## kind, then hands the image to the sibling dm-image-boot-tests (which bundles
-## dm-qemu + dm-image-test: boots the image, drives a login-free root serial shell
+## kind, then hands the image to the sibling dm-smbios-reader-boot-tests (which bundles
+## dm-smbios-reader-qemu + dm-smbios-reader-image-test: boots the image, drives a login-free root serial shell
 ## and runs 'systemcheck --leak-tests'). The exit code IS the pass/fail signal:
 ##   0 pass, non-zero booted-but-a-check-failed / no login / setup, 77 SKIP.
 ##
 ## All boot tooling lives here in dist-ai; this front-end owns only dependency
 ## setup, image discovery and dispatch. derivative-maker's CI calls it as
-## dist-ai/usr/bin/dm-boot-test (dist-ai is checked out beside the workspace).
+## dist-ai/usr/bin/dm-smbios-reader-boot-test (dist-ai is checked out beside the workspace).
 
 set -o errexit
 set -o nounset
@@ -149,15 +149,15 @@ else
 fi
 
 script_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-## dm-image-boot-tests is a sibling in the same bin dir (shipped together); fall
+## dm-smbios-reader-boot-tests is a sibling in the same bin dir (shipped together); fall
 ## back to PATH when run from an installed dist-ai package.
-boot_tests_bin="${script_dir}/dm-image-boot-tests"
-[ -x "${boot_tests_bin}" ] || boot_tests_bin="dm-image-boot-tests"
+boot_tests_bin="${script_dir}/dm-smbios-reader-boot-tests"
+[ -x "${boot_tests_bin}" ] || boot_tests_bin="dm-smbios-reader-boot-tests"
 
 ## Boot media by kind. Session selection (user/sysmaint) works either way via
-## dm-qemu's SMBIOS kernel-cmdline injection.
+## dm-smbios-reader-qemu's SMBIOS kernel-cmdline injection.
 ##   .iso          -> live image (--iso)
-##   .ova          -> a tar container dm-qemu does not accept; extract its .vmdk
+##   .ova          -> a tar container dm-smbios-reader-qemu does not accept; extract its .vmdk
 ##                    and boot that (--disk)
 ##   *.libvirt.xz  -> a qcow2/raw disk packed as tar.xz (dm-prepare-release
 ##                    xz-packs the image and removes the bare disk file); extract
@@ -219,7 +219,7 @@ test_args+=(
 [ -n "${serial_log}" ] && test_args+=(--serial-log "${serial_log}")
 
 printf '%s\n' "${BASH_SOURCE[0]}: boot-testing ${image} (arch=${arch} firmware=${firmware:-default} session=${session})"
-## Run dm-image-boot-tests and forward its exit code; avoid 'exec' so any future
+## Run dm-smbios-reader-boot-tests and forward its exit code; avoid 'exec' so any future
 ## cleanup after this line still runs.
 boot_tests_rc=0
 "${boot_tests_bin}" "${test_args[@]}" || boot_tests_rc="$?"

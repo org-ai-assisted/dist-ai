@@ -50,7 +50,7 @@ codename="local"
 
 share_name="shared"
 guest_mount="/mnt/shared"
-helper_src="/usr/share/dm-image-boot-tests/add-local-test-repo"
+helper_src="/usr/share/dm-smbios-reader-boot-tests/add-local-test-repo"
 
 die() {
    printf '%s: ERROR: %s\n' "${me}" "$2" >&2

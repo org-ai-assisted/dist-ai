@@ -21,7 +21,7 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-lib="${script_dir}/../dm-image-boot-tests/vbox-session.bsh"
+lib="${script_dir}/../dm-smbios-reader-boot-tests/vbox-session.bsh"
 [ -r "${lib}" ] || { printf 'ERROR: vbox-session.bsh not found: %s\n' "${lib}" >&2; exit 1; }
 
 tmp="$(mktemp --directory)"
@@ -45,7 +45,7 @@ chmod +x "${stub}"
 vm='testvm'
 # shellcheck disable=SC2034
 VBOXMANAGE="${stub}"
-# shellcheck source=../dm-image-boot-tests/vbox-session.bsh
+# shellcheck source=../dm-smbios-reader-boot-tests/vbox-session.bsh
 source "${lib}"
 
 pass=0

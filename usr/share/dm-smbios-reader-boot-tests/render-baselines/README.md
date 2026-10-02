@@ -1,6 +1,6 @@
 # Render baselines
 
-Committed reference screenshots for tolerant render verification (`dm-vbox verify`
+Committed reference screenshots for tolerant render verification (`dm-smbios-reader-vbox verify`
 + `test_dm_render_verify.py`). Each captures a known-good page so a gate run can
 assert the guest rendered approximately right (not black / garbled / wrong theme)
 and, with `--expect`, that the expected text is present.
@@ -21,7 +21,7 @@ To add: `kicksecure-calamares-1920x1080/` for the EFI/EFI+SB path (capture from 
 
 ## Matching
 
-`dm-vbox verify --shot S --baseline B [--tol 0.05] [--expect TEXT ...]` -- tolerant
+`dm-smbios-reader-vbox verify --shot S --baseline B [--tol 0.05] [--expect TEXT ...]` -- tolerant
 mean per-channel pixel diff (0 = identical). The whole-screen diff is coarse (pages
 sharing the sidebar + chrome differ only ~0.05-0.09), so `--expect` OCR text is the
 content-level assertion; the pixel diff catches gross failures (black screen, broken

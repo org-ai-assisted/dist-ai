@@ -5,12 +5,12 @@
 
 ## AI-Assisted
 
-"""Fast serial-console iteration harness for developing dm-image-test checks.
+"""Fast serial-console iteration harness for developing dm-smbios-reader-image-test checks.
 
 Boot an image ONCE with the serial redirected to a UNIX socket, leave qemu
 running, and CONNECT repeatedly to experiment with login/command logic WITHOUT
 rebooting (each boot is minutes under pure-TCG). The image is booted with
-dm-qemu --test-console, so systemd's debug-shell binds a login-free ROOT bash to
+dm-smbios-reader-qemu --test-console, so systemd's debug-shell binds a login-free ROOT bash to
 the serial line: a fresh connection always finds a usable shell, and no
 interactive user zsh is in the way.
 
@@ -19,8 +19,8 @@ interactive user zsh is in the way.
     dmserial.py raw                        # dump what the console shows now
     dmserial.py kill                       # stop qemu
 
-dm-qemu is resolved from $DM_QEMU, else the sibling copy next to this script
-(the dm-image-boot-tests suite), else PATH. State (socket, pidfile, boot log,
+dm-smbios-reader-qemu is resolved from $DM_QEMU, else the sibling copy next to this script
+(the dm-smbios-reader-boot-tests suite), else PATH. State (socket, pidfile, boot log,
 the recorded image path) lives under $DMSERIAL_WORK, else
 ${XDG_RUNTIME_DIR:-/tmp}/dmserial.
 """
@@ -41,12 +41,12 @@ IMAGEFILE = os.path.join(WORK, "image")
 
 
 def dm_qemu():
-    """dm-qemu: $DM_QEMU, else the sibling in the suite (../dm-qemu), else PATH."""
+    """dm-smbios-reader-qemu: $DM_QEMU, else the sibling in the suite (../dm-smbios-reader-qemu), else PATH."""
     env = os.environ.get("DM_QEMU")
     if env:
         return env
-    sibling = os.path.join(os.path.dirname(SCRIPT_DIR), "dm-qemu")
-    return sibling if os.path.isfile(sibling) else "dm-qemu"
+    sibling = os.path.join(os.path.dirname(SCRIPT_DIR), "dm-smbios-reader-qemu")
+    return sibling if os.path.isfile(sibling) else "dm-smbios-reader-qemu"
 
 
 def emit_argv(image, smbios_extra):
