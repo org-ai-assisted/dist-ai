@@ -336,6 +336,46 @@ else
    fail "non-address NOT rejected: die=[${die_msg}] email=[${got_email}]"
 fi
 
+## 12. A folded (RFC822 continuation-line) Maintainer must NOT leak an embedded newline
+## into the identity -> fail loud (an embedded newline would split the changelog trailer).
+{
+   printf '%s\n' 'Source: testpkg'
+   printf '%s\n' 'Maintainer: John'
+   printf '%s\n' ' Doe <john@example.com>'
+   printf '%s\n' 'Priority: optional'
+   printf '%s\n' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' 'Architecture: all'
+   printf '%s\n' 'Description: test package'
+   printf '%s\n' ' long description'
+} > "${test_root}/control"
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_name="$(read_out DEBFULLNAME)"
+if [ -n "${die_msg}" ] && [ -z "${got_name}" ]; then
+   pass "folded multi-line Maintainer aborts loud (no embedded newline in identity)"
+else
+   fail "folded Maintainer NOT rejected: die=[${die_msg}] name=[${got_name}]"
+fi
+
+## 13. A bracketed value that is not a valid address (bare '@', internal whitespace,
+## or more than one '@') -> fail loud, never written to the changelog.
+for bad in '@' 'jane @ example.com' 'a@@b'; do
+   write_control "Jane Doe <${bad}>"
+   unset DEBEMAIL DEBFULLNAME
+   run_check
+   tests_total=$(( tests_total + 1 ))
+   die_msg="$(cat -- "${test_root}/die")"
+   got_email="$(read_out DEBEMAIL)"
+   if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+      pass "malformed address '<${bad}>' aborts loud"
+   else
+      fail "malformed address '<${bad}>' NOT rejected: die=[${die_msg}] email=[${got_email}]"
+   fi
+done
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "maintainer_identity_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
