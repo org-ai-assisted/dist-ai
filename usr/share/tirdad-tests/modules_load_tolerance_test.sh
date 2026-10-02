@@ -231,16 +231,19 @@ check_directive() {
    fi
 }
 check_directive Unit After systemd-modules-load.service 'run after the strict modules-load has settled'
+check_directive Unit Before systemd-sysctl.service 'load before the network stack (net units are After=systemd-sysctl.service)'
 check_directive Unit Before harden-module-loading.service 'load tirdad BEFORE security-misc sets kernel.modules_disabled=1'
+check_directive Unit Before lkrg.service 'load before LKRG baselines the kernel, or LKRG panics on the livepatch'
 check_directive Unit Before sysinit.target 'load during early boot'
 check_directive Install WantedBy sysinit.target 'the unit is actually pulled into the boot transaction'
 
-## --- 5. The LKRG softdep orders tirdad BEFORE lkrg ---
-## tirdad must livepatch the kernel before LKRG baselines it, or LKRG panics.
-## Require a 'softdep lkrg pre: ... tirdad' (modern module name) naming tirdad as
-## a pre-dependency, and that the modprobe.d drop-in is actually shipped.
+## --- 5. The modprobe.d softdep drop-in is still shipped ---
+## LKRG load-order is primarily guaranteed by Before=lkrg.service above; this
+## pre-existing softdep is the secondary (modprobe-path) guarantee. Assert the
+## drop-in still ships a 'softdep <module> pre: ... tirdad' (tirdad as a
+## pre-dependency) and is installed to /etc/modprobe.d.
 softdep_ok() {
-   awk '/^[[:space:]]*softdep[[:space:]]+lkrg[[:space:]]+pre:/ {
+   awk '/^[[:space:]]*softdep[[:space:]]+[^[:space:]]+[[:space:]]+pre:/ {
            p=index($0,"pre:"); rest=substr($0,p+4); n=split(rest,a,/[[:space:]]+/)
            for(i=1;i<=n;i++) if(a[i]=="tirdad") ok=1 }
         END{ exit ok?0:1 }' "$1"
@@ -248,9 +251,9 @@ softdep_ok() {
 if [ -f "${modprobe_conf}" ] \
    && softdep_ok "${modprobe_conf}" \
    && grep --quiet --fixed-strings -- 'etc/modprobe.d/' <<< "${install_out}"; then
-   pass 'softdep orders tirdad before lkrg, and 30-tirdad.conf is shipped to /etc/modprobe.d'
+   pass 'the modprobe.d softdep pre-loading tirdad is shipped to /etc/modprobe.d'
 else
-   fail 'no shipped softdep ordering tirdad before the lkrg module -- LKRG would baseline before tirdad patches and panic'
+   fail 'the /etc/modprobe.d softdep pre-loading tirdad is no longer shipped'
 fi
 
 ## --- 6. systemd accepts the unit (own-unit errors are fatal) ---
