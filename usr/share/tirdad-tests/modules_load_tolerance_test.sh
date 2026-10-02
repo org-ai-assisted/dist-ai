@@ -195,10 +195,16 @@ fi
 ## a typo'd 'modprobe tirdad_other' (loads the wrong module) is NOT accepted, and
 ## an explicit 'modprobe -- tirdad' IS.
 exec_verdict="$(section_body "${service_file}" Service | awk '
-   function loads_tirdad(cmd,   n,a,i,seen) {
+   function loads_tirdad(cmd,   n,a,i,j,seen,base) {
       n=split(cmd,a,/[[:space:]]+/); seen=0
       for(i=1;i<=n;i++){
          if(a[i] ~ /(^|\/)modprobe$/){ seen=1; continue }
+         if(a[i] ~ /(^|\/)insmod$/){            # insmod takes a .ko PATH
+            for(j=i+1;j<=n;j++){ if(a[j] ~ /^-/) continue
+                                 base=a[j]; sub(/.*\//,"",base)
+                                 return (base=="tirdad.ko")?1:0 }
+            return 0
+         }
          if(seen){ if(a[i]=="--") continue
                    if(a[i]=="tirdad") return 1
                    if(a[i] !~ /^-/) return 0 }      # a different module name
@@ -242,9 +248,13 @@ check_directive Install WantedBy sysinit.target 'the unit is actually pulled int
 ## pre-existing softdep is the secondary (modprobe-path) guarantee. Assert the
 ## drop-in still ships a 'softdep <module> pre: ... tirdad' (tirdad as a
 ## pre-dependency) and is installed to /etc/modprobe.d.
+## Only PRE-deps order the dep BEFORE the module; a 'post:' token would load
+## tirdad AFTER lkrg (the wrong order), so bound the scan at 'post:'.
 softdep_ok() {
    awk '/^[[:space:]]*softdep[[:space:]]+[^[:space:]]+[[:space:]]+pre:/ {
-           p=index($0,"pre:"); rest=substr($0,p+4); n=split(rest,a,/[[:space:]]+/)
+           p=index($0,"pre:"); rest=substr($0,p+4)
+           q=index(rest,"post:"); if(q) rest=substr(rest,1,q-1)
+           n=split(rest,a,/[[:space:]]+/)
            for(i=1;i<=n;i++) if(a[i]=="tirdad") ok=1 }
         END{ exit ok?0:1 }' "$1"
 }
