@@ -13,8 +13,9 @@
 ## uploader). This drives the REAL deb_variables_check (sourced; the helper's main
 ## is was_executed-guarded) against a debian/control fixture whose Maintainer email
 ## differs from the override email, and asserts: unset -> derived from control;
-## explicit -> preserved; per-var independent; a Maintainer with no '<email>' and
-## no env fails loud.
+## explicit -> preserved; per-var independent; a Maintainer that is not exactly one
+## 'Full Name <email>' mailbox (missing, ambiguous, unclosed, or a non-address) fails
+## loud rather than guessing.
 
 set -o errexit
 set -o nounset
@@ -208,18 +209,18 @@ else
    fail "malformed NOT rejected: die=[${die_msg}] email=[${got_email}]"
 fi
 
-## 5. A Maintainer with an earlier bracketed note -> the LAST '<email>' (the real
-## addr-spec) wins, never an earlier stale/parenthetical address.
+## 5. A Maintainer carrying more than one address is ambiguous -> fail loud, never
+## guess which bracket is the real one.
 write_control 'Jane Doe (formerly <jane@old.com>) <jane@new.com>'
 unset DEBEMAIL DEBFULLNAME
 run_check
 tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
 got_email="$(read_out DEBEMAIL)"
-got_name="$(read_out DEBFULLNAME)"
-if [ "${got_email}" = 'jane@new.com' ] && [ "${got_name}" = 'Jane Doe (formerly <jane@old.com>)' ]; then
-   pass "multi-bracket Maintainer derives the LAST address (not the stale earlier one)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "multi-address Maintainer aborts loud (no guessing which bracket)"
 else
-   fail "multi-bracket wrong: email=[${got_email}] name=[${got_name}] (want jane@new.com)"
+   fail "ambiguous Maintainer NOT rejected: die=[${die_msg}] email=[${got_email}]"
 fi
 
 ## 6. A trailing space inside the brackets is trimmed from the derived email.
@@ -280,18 +281,44 @@ else
    fail "cross-stanza leak: email=[${got_email}] name=[${got_name}] (want canary@kicksecure.com / Canary Name)"
 fi
 
-## 9. An unclosed final '<' (no closing '>') leaves no real address -> fail loud,
-## never derive garbage that lacks an '@'.
-write_control 'Real Name (see also <a@b.com>) <oops'
+## 9. A single unclosed '<' (no closing '>') is not a mailbox -> fail loud.
+write_control 'Real Name <oops'
 unset DEBEMAIL DEBFULLNAME
 run_check
 tests_total=$(( tests_total + 1 ))
 die_msg="$(cat -- "${test_root}/die")"
 got_email="$(read_out DEBEMAIL)"
 if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
-   pass "unclosed final bracket aborts loud (no non-address derived)"
+   pass "unclosed bracket aborts loud (not a mailbox)"
 else
-   fail "garbage email NOT rejected: die=[${die_msg}] email=[${got_email}]"
+   fail "unclosed bracket NOT rejected: die=[${die_msg}] email=[${got_email}]"
+fi
+
+## 10. A parenthetical note AFTER the address that carries its own '<...>' is still
+## more than one address -> ambiguous, fail loud (no stale-address leak).
+write_control 'John Doe <john@example.com> (previously Jane Roe <jane@old.example>)'
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_email="$(read_out DEBEMAIL)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "trailing parenthetical address is ambiguous -> abort (no stale-address leak)"
+else
+   fail "trailing-address Maintainer NOT rejected: die=[${die_msg}] email=[${got_email}]"
+fi
+
+## 11. A single bracketed value that is not an address (no '@') -> fail loud.
+write_control 'Plain Name <notanemail>'
+unset DEBEMAIL DEBFULLNAME
+run_check
+tests_total=$(( tests_total + 1 ))
+die_msg="$(cat -- "${test_root}/die")"
+got_email="$(read_out DEBEMAIL)"
+if [ -n "${die_msg}" ] && [ -z "${got_email}" ]; then
+   pass "non-address bracketed value aborts loud (must be a real addr-spec)"
+else
+   fail "non-address NOT rejected: die=[${die_msg}] email=[${got_email}]"
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then
