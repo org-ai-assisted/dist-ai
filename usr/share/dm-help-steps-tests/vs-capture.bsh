@@ -1,0 +1,25 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Capture helper for the derivative-maker variable snapshots. Run with the current
+## directory ALREADY inside the derivative-maker checkout: sources the required
+## help-steps/pre bootstrap, then runs the capture command passed as arguments:
+##   - 'declare -p' / 'declare -F'                       (the bare-pre baseline), or
+##   - 'source help-steps/variables <build-args>'        (a full build-command capture;
+##     the dist_build_dump_varnames / dist_build_dump_funcnames env hook prints the dump).
+##
+## Split out of an inline 'bash -c "source ...; source ..."' so each capture is a single
+## command invocation, not a multi-statement inline '-c' (R-192). The caller supplies the
+## deterministic env (dist_build_* pins) via 'env ...' before this script.
+## style-ok: no-strict -- the sourced help-steps/pre + variables manage their own strict mode;
+## adding it here would change what the snapshot captures.
+
+## help-steps/pre is in the derivative-maker checkout (the current directory at call time),
+## not resolvable from this file's location.
+# shellcheck disable=SC1091
+source help-steps/pre
+"$@"
