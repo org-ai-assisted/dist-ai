@@ -85,6 +85,23 @@ else
    fail "the launched build does not set dist_build_slot (output would not be laned)"
 fi
 
+## Structural: the lane is EXPORTED before signing, so signing-key-create / sign-and-tag write
+## under the same lane dm-build-official reads (else the buildinfo records the post-amend HEAD).
+export_ln="$(grep -n 'export dist_build_slot' -- "${subject}" | head -1 | cut -d: -f1)"
+signtag_ln="$(grep -n 'help-steps/sign-and-tag' -- "${subject}" | head -1 | cut -d: -f1)"
+if [ -n "${export_ln}" ] && [ -n "${signtag_ln}" ] && [ "${export_ln}" -lt "${signtag_ln}" ]; then
+   pass "dist_build_slot is exported before sign-and-tag (all container steps laned)"
+else
+   fail "dist_build_slot is not exported before sign-and-tag -> signing writes the un-laned tree"
+fi
+
+## Structural: the rejected slot is printed via string_quote_safe (no terminal-escape injection).
+if grep -E 'invalid build lane .*string_quote_safe' -- "${subject}" >/dev/null; then
+   pass "invalid-lane error quotes the slot with string_quote_safe"
+else
+   fail "invalid-lane error prints the slot raw (terminal-escape injection)"
+fi
+
 ## Structural: the slot is VALIDATED (reused check_is_alpha_numeric) before it is spliced
 ## into the heredoc / find roots. CANARY: fails on the pre-validation version.
 if grep -E 'check_is_alpha_numeric[[:space:]]+build_slot' -- "${subject}" >/dev/null; then

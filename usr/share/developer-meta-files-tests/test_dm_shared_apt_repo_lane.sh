@@ -11,8 +11,9 @@
 ## outright. The real repo_parent line is extracted + eval'd. Canary: fails on the pre-lane default.
 
 ## File-wide: repo_parent is assigned by `eval` of the extracted line; dist_build_slot /
-## DERIVATIVE_BINARY are read by it. shellcheck cannot follow the eval.
-# shellcheck disable=SC2034,SC2154
+## DERIVATIVE_BINARY are read by it (SC2034/SC2154); the grep patterns match the subject's
+## literal '${...}' text, so single quotes are intentional (SC2016).
+# shellcheck disable=SC2016,SC2034,SC2154
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -64,6 +65,23 @@ if grep -E 'check_is_alpha_numeric[[:space:]]+dist_build_slot' -- "${subject}" >
    pass "dist_build_slot is validated with check_is_alpha_numeric when the lane is followed"
 else
    fail "dist_build_slot is NOT validated -- '..' would share a dir outside derivative-binary"
+fi
+
+## Structural: helper-scripts is sourced LAZILY (inside the lane-followed branch), so the common
+## flat / DERIVATIVE_BINARY path needs no helper-scripts dependency. CANARY.
+src_ln="$(grep -n 'helper-scripts/strings.bsh' -- "${subject}" | head -1 | cut -d: -f1)"
+branch_ln="$(grep -n 'DERIVATIVE_BINARY:-}" \] && \[ -n "\${dist_build_slot' -- "${subject}" | head -1 | cut -d: -f1)"
+if [ -n "${src_ln}" ] && [ -n "${branch_ln}" ] && [ "${src_ln}" -gt "${branch_ln}" ]; then
+   pass "strings.bsh sourced lazily inside the lane-followed branch (flat path needs no dep)"
+else
+   fail "strings.bsh sourced unconditionally (regresses the flat / override path)"
+fi
+
+## Structural: the rejected slot is printed via string_quote_safe (no terminal-escape injection).
+if grep -E 'string_quote_safe' -- "${subject}" >/dev/null; then
+   pass "invalid-lane error quotes the slot with string_quote_safe"
+else
+   fail "invalid-lane error prints the slot raw (terminal-escape injection)"
 fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
