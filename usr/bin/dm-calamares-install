@@ -165,17 +165,20 @@ reboot_installed() {
 
 ## --mok-enroll: lift the installed system's MOK public cert out to the host and
 ## enroll it, so Secure Boot trusts the DKMS-signed modules (tirdad) on the next
-## boot. Runs in the SYSMAINT session (root via sudo -- the user-sysmaint-split
-## admin context, same session the battery's privileged checks use). GA-less
-## transfer: write the DER (base64, delimited) to the mailbox block device, then
-## read it back host-side after power-off. The write marker is all-letters
-## (OCR-safe) and built from a shell var so the typed command echo cannot pre-match.
+## boot. Runs in the SYSMAINT session (the user-sysmaint-split admin account:
+## empty password + pam_unix nullok, so 'sudo -S' with an empty password
+## authenticates -- 'sudo -n' would refuse, as there is no blanket NOPASSWD).
+## GA-less transfer: root writes the DER (base64, delimited) straight to the
+## mailbox block device, read back host-side after power-off. The write marker is
+## all-letters (OCR-safe) and built from a shell var so the command echo cannot
+## pre-match. One sudo invocation (base64 + device write in a single root bash -c)
+## so the empty-password stdin is not consumed by the data pipe.
 mok_extract_and_enroll() {
    printf '%s\n' "${me}: --mok-enroll: extract MOK cert (sysmaint) + host-side enroll"
    reboot_installed sysmaint
    local extract_cmd
    extract_cmd="$(cat <<'EOF'
-clear; X=MOK; D=/dev/$(lsblk -bdno NAME,SIZE,TYPE | awk '$3=="disk"{print $1, $2}' | sort -k2 -n | head -n1 | awk '{print $1}'); { echo ===MOKB===; sudo -n base64 /var/lib/dkms/mok.pub; echo ===MOKE===; } | sudo -n dd of="$D" bs=512 conv=notrunc status=none && sync && echo MK${X}OK || echo MK${X}ERR
+clear; X=MOK; D=/dev/$(lsblk -bdno NAME,SIZE,TYPE | awk '$3=="disk"{print $1, $2}' | sort -k2 -n | head -n1 | awk '{print $1}'); printf '\n' | sudo -S -p '' bash -c "{ echo ===MOKB===; base64 /var/lib/dkms/mok.pub; echo ===MOKE===; } > $D" && sync && echo MK${X}OK || echo MK${X}ERR
 EOF
 )"
    printf '%s' "${extract_cmd}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
