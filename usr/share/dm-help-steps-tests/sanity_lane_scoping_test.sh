@@ -205,6 +205,28 @@ safe-rm --recursive --force -- "${sym_root}"
 sym_root=""
 trap - EXIT
 
+## /proc/mounts OCTAL-ESCAPES space (\040) and backslash (\134) in the mount point; the check must
+## unescape before comparing or it fails OPEN on a chroot path with a space (VMNAME is not
+## whitespace-checked) or a backslash. Canary: without unescape the verbatim compare never matches.
+saved_chroot="${CHROOT_FOLDER}"
+CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/Foo\040Bar_image ext4 rw 0 0'
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: unescapes \\040 (space) in /proc/mounts before matching"
+else
+   fail "check-stray-mounts: missed a space-containing chroot mount (\\040 not unescaped, rc=${CAP_RC})"
+fi
+CHROOT_FOLDER='/home/user/derivative-binary/mylane/back\slash_image'
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/back\134slash_image ext4 rw 0 0'
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: unescapes \\134 (backslash) in /proc/mounts before matching"
+else
+   fail "check-stray-mounts: missed a backslash-containing chroot mount (\\134 not unescaped, rc=${CAP_RC})"
+fi
+CHROOT_FOLDER="${saved_chroot}"
+
 ## ---- check-stray-loop-devices: lane-only, robust BACK-FILE parse ----------------------------
 LOOP_BACKFILES="/var/swapfile
 ${other_chroot%/*}/otherlane.raw
@@ -278,38 +300,45 @@ else
    fail "mount-test: false stale-dm error with no mappings present"
 fi
 
-## An ORPHANED loopNpM whose backing /dev/loopN is gone (empty BACK-FILE) belongs to no lane and is
-## unconditionally stale -> abort regardless of lane. Canary: the pre-F5 lane-prefix match skipped an
-## empty backing file, so the orphan slipped past this precheck to the stubbed image step.
+## An ORPHANED loopNpM whose backing /dev/loopN is gone (empty BACK-FILE) cannot be attributed to a
+## lane, so it is WARNED about but is NOT fatal -- a fatal abort here would defeat lane isolation and
+## over-abort when the losetup query merely failed transiently or the loop lives in another mount
+## namespace (BACK-FILE reads empty in all three). mount-test proceeds and fails later at the stubbed
+## image step. Canary (vs pre-orphan code): the orphan was silently skipped, so NO warning appeared.
 DMSETUP_LS="loop7p1 (254:2)"
 LOOP_BACK=()
 run_fn mount-test
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'orphaned: no backing loop device' <<< "${CAP}"; then
-   pass "mount-test: aborts on an orphaned loopNpM with no backing loop device"
+if grep --quiet 'no backing loop device' <<< "${CAP}" \
+   && ! grep --quiet 'in this build lane' <<< "${CAP}" \
+   && grep --quiet 'could not size the test image' <<< "${CAP}"; then
+   pass "mount-test: WARNS (non-fatally) about an orphaned loopNpM with no backing loop device"
 else
-   fail "mount-test: did not flag an orphaned (backing-less) loopNpM (rc=${CAP_RC}): ${CAP}"
+   fail "mount-test: orphan not warned non-fatally (rc=${CAP_RC}): ${CAP}"
 fi
 
 ## A whitespace-only BACK-FILE (losetup column padding on a vanished device) is treated as empty ->
-## still flagged as an orphan, not silently skipped.
+## warned as an orphan, not silently skipped.
 DMSETUP_LS="loop8p1 (254:3)"
 LOOP_BACK=(["/dev/loop8"]="   ")
 run_fn mount-test
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'orphaned: no backing loop device' <<< "${CAP}"; then
-   pass "mount-test: treats a whitespace-only BACK-FILE as an orphan"
+if grep --quiet 'no backing loop device' <<< "${CAP}" \
+   && ! grep --quiet 'in this build lane' <<< "${CAP}" \
+   && grep --quiet 'could not size the test image' <<< "${CAP}"; then
+   pass "mount-test: treats a whitespace-only BACK-FILE as an orphan (warned, not fatal)"
 else
-   fail "mount-test: whitespace-only BACK-FILE not flagged as orphan (rc=${CAP_RC}): ${CAP}"
+   fail "mount-test: whitespace-only BACK-FILE not warned as orphan (rc=${CAP_RC}): ${CAP}"
 fi
 
-## An orphan AND a concurrent lane's live mapping together: flag only the orphan, leave the foreign
-## backed mapping alone.
+## An orphan AND a concurrent lane's live mapping together: warn the orphan, leave the foreign backed
+## mapping alone, and do NOT fatally abort.
 DMSETUP_LS="loop7p1 (254:2)
 loop6p1 (254:1)"
 LOOP_BACK=(["/dev/loop6"]="${other_chroot%/*}/otherlane.raw")
 run_fn mount-test
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'loop7p1 (orphaned' <<< "${CAP}" \
+if grep --quiet 'loop7p1 (no backing loop device' <<< "${CAP}" \
+   && ! grep --quiet 'in this build lane' <<< "${CAP}" \
    && ! grep --quiet 'loop6p1' <<< "${CAP}"; then
-   pass "mount-test: flags the orphan but not a concurrent lane's live mapping"
+   pass "mount-test: warns the orphan, ignores a concurrent lane's live mapping, no fatal abort"
 else
    fail "mount-test: mixed orphan + foreign-lane mapping mis-handled (rc=${CAP_RC}): ${CAP}"
 fi
