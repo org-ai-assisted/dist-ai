@@ -213,7 +213,7 @@ saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
 MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
    pass "check-stray-mounts: fails closed on a whitespace CHROOT_FOLDER (verbatim-match precondition)"
 else
    fail "check-stray-mounts: did not reject a whitespace CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
@@ -221,7 +221,7 @@ fi
 CHROOT_FOLDER='/home/user/derivative-binary/mylane/back\slash_image'
 MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
    pass "check-stray-mounts: fails closed on a backslash CHROOT_FOLDER (verbatim-match precondition)"
 else
    fail "check-stray-mounts: did not reject a backslash CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
@@ -241,7 +241,7 @@ saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="${sym_sp_root}/clean/Kicksecure-CLI_image"
 MOUNTS_FIXTURE="/dev/mapper/x ${sym_sp_root}/sp ace/Kicksecure-CLI_image ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
    pass "check-stray-mounts: rejects on the CANONICAL path when a clean symlink resolves to a space"
 else
    fail "check-stray-mounts: did not reject a symlink-to-spaced-path CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
@@ -328,7 +328,7 @@ fi
 ## lane, so it is WARNED about but is NOT fatal -- a fatal abort here would defeat lane isolation and
 ## over-abort when the losetup query merely failed transiently or the loop lives in another mount
 ## namespace (BACK-FILE reads empty in all three). mount-test proceeds and fails later at the stubbed
-## image step. Canary (vs pre-orphan code): the orphan was silently skipped, so NO warning appeared.
+## image step. Canary: a lane-only check that ignores an empty backing emits no warning and this fails.
 DMSETUP_LS="loop7p1 (254:2)"
 LOOP_BACK=()
 run_fn mount-test
