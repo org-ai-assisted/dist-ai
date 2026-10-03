@@ -255,6 +255,40 @@ run_check() {
    die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
 }
 
+## Wait for the per-user privleap socket to be ready before the check battery.
+## check 8 (systemcheck) hard-fails via check_tor_bootstrap's deliberate fail-fast
+## leaprun guard when the uid-keyed socket /run/privleapd/comm/<uid> is not yet up.
+## leapctl@<uid> creates that socket ASYNCHRONOUSLY at login (WantedBy=user@.service,
+## Restart=on-failure/RestartSec=20), so an eager systemcheck races it and reports a
+## transient "cannot query Tor's status". Gate on steady state so check 8 measures the
+## installed system's real health, not a login-time readiness window. A persistent
+## privleap breakage still surfaces: the in-guest wait times out and check 8 FAILs as
+## before. Marker is all-letters (digits OCR-misread) and built from a shell var so the
+## typed command echo does not self-match before the probe runs (see run_check).
+wait_privleap_ready() {
+   local deadline text
+   printf '%s\n' "${me}: wait for per-user privleap socket readiness (pre check battery)"
+   printf '%s' "clear; M=PRV; for i in \$(seq 1 60); do leaprun check-privleap >/dev/null 2>&1 && break; sleep 2; done; leaprun check-privleap >/dev/null 2>&1 && echo DM\${M}READYMARK || echo DM\${M}TIMEOUTMARK; sync" \
+      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   gui_scan 1c 9c
+   sleep 3
+   deadline=$(( SECONDS + 180 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      gui_scan 2a aa
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ dmprvreadymark ]]; then
+         printf '%s\n' "${me}: privleap socket ready"
+         return 0
+      fi
+      if [[ "${text,,}" =~ dmprvtimeoutmark ]]; then
+         printf '%s\n' "${me}: WARNING privleap socket not ready within in-guest wait; check 8 may flake"
+         return 0
+      fi
+      sleep 5
+   done
+   printf '%s\n' "${me}: WARNING privleap readiness marker not observed; proceeding"
+}
+
 ## --- callbacks for the shared release-check battery (release-checks.bsh) ---------
 
 ## verify_fn (render-first). Only check 6 has a host-side visual pre-check on this
@@ -524,6 +558,8 @@ main() {
       printf '%s\n' "${me}: release-critical checks on the installed system"
       wait_ready 300
       open_terminal
+      ## Gate on privleap readiness so check 8 does not race the async per-user socket.
+      wait_privleap_ready
       ## Iterate the SINGLE shared check table (release-checks.bsh): cal_exec runs
       ## each check via run_check (OCR, and the sole emitter of 'check N PASS'),
       ## cal_verify does the render-first check-6 assertion, cal_reboot_sysmaint
