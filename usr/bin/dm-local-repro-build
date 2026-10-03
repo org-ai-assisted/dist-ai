@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 progress="$1"
 ## The commit under test. Passed explicitly because sign-and-tag AMENDS the
@@ -94,6 +95,15 @@ case "${submodule_overrides}" in
       exit 2
       ;;
 esac
+
+## Build lane. derivative-maker scopes a build's whole scratch tree + output by
+## dist_build_slot, so laning this build (a) lets a concurrent build in another
+## session run without colliding, and (b) confines the artifact finds below to
+## THIS build's lane -- without it those finds, rooted at the shared binary_mnt,
+## would match a FOREIGN lane's fresh image and compare the wrong sha512. Honor an
+## explicit/forwarded dist_build_slot; else key on the session (sandbox-session-slug).
+build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
+binary_lane="/home/user/binary_mnt/${build_slot}"
 
 note() {
    local stamp
@@ -257,7 +267,7 @@ truncate --size=0 -- "${remote_log}"
 ## none, so docker refuses with "the input device is not a TTY" and the build
 ## never starts -- while the log still grows, which is exactly the shape that
 ## looks like progress. CI sets this itself; a local mirror must too.
-setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
+setsid nohup env CI=true dist_build_slot='${build_slot}' ./docker/derivative-maker-docker-run -- \
    bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
    export dist_build_sign_and_tag=true && \
    ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
@@ -318,7 +328,7 @@ fi
 ## reliable positive signal -- and its hash is exactly what the CI comparison
 ## needs. Without this an ISO build that fully succeeded reported "no artifact".
 image_count="$(sandbox exec - <<COUNT
-find /home/user/binary_mnt -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' 2>/dev/null | wc -l
+find ${binary_lane} -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' 2>/dev/null | wc -l
 COUNT
 )"
 image_count="${image_count//[!0-9]/}"
@@ -334,10 +344,10 @@ note "=== DONE: build finished, ${image_count} fresh image(s)"
 ## job -- the verdict said DONE while the supervisor said failed. A report step
 ## must never be able to overturn a verdict already reached.
 sandbox exec - <<LIST >> "${progress}" 2>&1 || true
-find /home/user/binary_mnt -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' -print
+find ${binary_lane} -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' -print
 ## Surface the image's sha512 from the build's own checksum file: it is the
 ## CI-vs-local comparison key, and for the ISO it is all that remains after
 ## dm-prepare-release consumes the '.iso'.
-find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}.sha512sums' -newermt '-3 hours' -exec cat {} +
+find ${binary_lane} -maxdepth 3 -type f -name '${artifact_glob}.sha512sums' -newermt '-3 hours' -exec cat {} +
 LIST
 exit 0

@@ -45,7 +45,11 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 
 ## dm's binary build dir (binary_build_folder_dist) is the share host path; the
 ## reprepro repos live in its aptrepo_local/<derivative> subdirs, codename `local`.
-repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary}"
+## A laned build (dist_build_slot set) writes under derivative-binary/<slot>, so
+## follow the lane when it is set in the env; DERIVATIVE_BINARY overrides outright.
+## This reads an EXISTING build's repo, so it does NOT invent a slot (that could
+## miss a flat build) -- it matches whatever lane the build itself used.
+repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary${dist_build_slot:+/${dist_build_slot}}}"
 codename="local"
 
 share_name="shared"
