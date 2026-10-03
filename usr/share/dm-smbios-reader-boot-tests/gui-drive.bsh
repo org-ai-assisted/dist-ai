@@ -6,14 +6,14 @@
 ## AI-Assisted
 
 ## Sourceable helpers for driving a headless VirtualBox GUI guest via the host-side
-## vboxapi (vbox-guestctl) + tesseract OCR, with NO Guest Additions. Shared by the
+## vboxapi (vbox-ctl-local) + tesseract OCR, with NO Guest Additions. Shared by the
 ## Calamares installer driver and the Whonix pair orchestrator so the (subtle) OCR
 ## + scancode + resolution-independent click logic lives in ONE place.
 ##
 ## The caller sets these globals before sourcing / calling:
 ##   vm         -- the target VM name (reassign to retarget, e.g. GW then WS)
 ##   me         -- program name (for messages / stuck-shot filenames)
-##   GUESTCTL   -- vbox-guestctl path
+##   GUESTCTL   -- vbox-ctl-local path
 ##   VBOXMANAGE -- VBoxManage path
 ##   TESSERACT  -- tesseract path
 ##   FAIL_RC    -- exit code used by die() on a GUI timeout
