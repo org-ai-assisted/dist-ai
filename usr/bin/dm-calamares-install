@@ -229,7 +229,10 @@ open_terminal() {
 ##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
 run_check() {
    local num="$1" cmd="$2" timeout="$3" deadline text
-   printf '%s' "clear; M=CHK; ${cmd} && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK" \
+   ## Redirect the check command's own output to a persistent file so a failure can
+   ## be audited off the disk afterwards (the login session's scrollback is lost on
+   ## power-off); only the PASS/FAIL marker reaches the screen for the OCR.
+   printf '%s' "clear; M=CHK; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1 && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK; sync" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
    ## let `clear` + the command run before the first OCR (so the command echo, which
