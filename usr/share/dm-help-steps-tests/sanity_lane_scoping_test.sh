@@ -213,7 +213,7 @@ saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
 MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
    pass "check-stray-mounts: fails closed on a whitespace CHROOT_FOLDER (verbatim-match precondition)"
 else
    fail "check-stray-mounts: did not reject a whitespace CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
@@ -221,12 +221,35 @@ fi
 CHROOT_FOLDER='/home/user/derivative-binary/mylane/back\slash_image'
 MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
    pass "check-stray-mounts: fails closed on a backslash CHROOT_FOLDER (verbatim-match precondition)"
 else
    fail "check-stray-mounts: did not reject a backslash CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER="${saved_chroot}"
+
+## The reject must apply to the CANONICAL path: a CLEAN-spelled CHROOT_FOLDER whose symlink resolves
+## to a spaced path would otherwise slip past and then fail-open on the verbatim compare. Build a real
+## symlink to a spaced directory and point CHROOT_FOLDER (clean) through it; expect a fail-closed reject.
+sym_sp_root="$(mktemp --directory)"
+mkdir --parents -- "${sym_sp_root}/sp ace/Kicksecure-CLI_image"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup_sym_sp() { [ -z "${sym_sp_root:-}" ] || safe-rm --recursive --force -- "${sym_sp_root}"; }
+trap cleanup_sym_sp EXIT
+ln --symbolic -- "${sym_sp_root}/sp ace" "${sym_sp_root}/clean"
+saved_chroot="${CHROOT_FOLDER}"
+CHROOT_FOLDER="${sym_sp_root}/clean/Kicksecure-CLI_image"
+MOUNTS_FIXTURE="/dev/mapper/x ${sym_sp_root}/sp ace/Kicksecure-CLI_image ext4 rw 0 0"
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
+   pass "check-stray-mounts: rejects on the CANONICAL path when a clean symlink resolves to a space"
+else
+   fail "check-stray-mounts: did not reject a symlink-to-spaced-path CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
+fi
+CHROOT_FOLDER="${saved_chroot}"
+safe-rm --recursive --force -- "${sym_sp_root}"
+sym_sp_root=""
+trap - EXIT
 
 ## ---- check-stray-loop-devices: lane-only, robust BACK-FILE parse ----------------------------
 LOOP_BACKFILES="/var/swapfile
