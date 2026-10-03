@@ -1077,6 +1077,7 @@ for _d in _ri_tmp:
 # signal -- end-to-end in a subprocess.
 import io                                                             # noqa: E402
 import faulthandler                                                   # noqa: E402
+import signal                                                        # noqa: E402
 import subprocess                                                    # noqa: E402
 from secure_terminal import crashdiag                                # noqa: E402
 
@@ -1198,16 +1199,23 @@ except OSError:
     ok(True, 'crashdiag: a symlinked crash log path is refused (O_NOFOLLOW)')
 
 # install_best_effort (main()'s entry point) wires the PROCESS-GLOBAL excepthook +
-# faulthandler; exercise it in process (subprocess coverage is not measured), then
-# restore both so the rest of the suite is untouched.
+# faulthandler + the SIGUSR1 hang dumper; exercise it in process (subprocess coverage is
+# not measured), then restore all three so the rest of the suite is untouched.
 _cd_prev_hook = sys.excepthook
 _cd_fh_was = faulthandler.is_enabled()
 _cd_i_root = tempfile.mkdtemp()
 _cd_i_log = crashdiag.install_best_effort(_cd_i_root)
 ok(_cd_i_log is not None and sys.excepthook is not _cd_prev_hook,
    'crashdiag: install_best_effort opens the log and replaces sys.excepthook')
+# install also registers an on-demand SIGUSR1 dumper for a live HANG: delivering it appends
+# an all-thread Python stack to the durable log and the process SURVIVES (chain=False), so a
+# frozen GUI is introspectable with `kill -USR1 <pid>` on a ptrace-restricted VM.
+os.kill(os.getpid(), signal.SIGUSR1)
+ok('most recent call first' in _slurp(crashdiag.crash_log_path(_cd_i_root)),
+   'crashdiag: install registers a SIGUSR1 all-thread dumper (live-hang introspection)')
 sys.excepthook = _cd_prev_hook
 faulthandler.disable()
+faulthandler.unregister(signal.SIGUSR1)
 if _cd_fh_was:
     faulthandler.enable()
 _cd_i_log.close()
@@ -1282,6 +1290,15 @@ subprocess.run([sys.executable, '-c', "raise ValueError('no-capture')\n"],
                capture_output=True, text=True, check=False)
 ok(not os.path.exists(crashdiag.crash_log_path(_cd_c_root)),
    'crashdiag(canary): with no install, no crash log is written (capture is the fix)')
+
+# CANARY: SIGUSR1's DEFAULT action terminates the process -- so install()'s register() is
+# what makes a live-hang probe both safe to send and introspectable. Without it, kill -USR1
+# would KILL the frozen GUI instead of dumping its stacks.
+_cd_u = subprocess.run(
+    [sys.executable, '-c', 'import os, signal\nos.kill(os.getpid(), signal.SIGUSR1)\n'],
+    capture_output=True, text=True, check=False)
+ok(_cd_u.returncode == -signal.SIGUSR1,
+   'crashdiag(canary): unhandled SIGUSR1 terminates by default (register() is the fix)')
 
 for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2):
     shutil.rmtree(_cd_d, ignore_errors=True)
