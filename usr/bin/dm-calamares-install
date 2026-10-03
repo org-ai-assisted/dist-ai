@@ -266,10 +266,16 @@ run_check() {
 ## before. Marker is all-letters (digits OCR-misread) and built from a shell var so the
 ## typed command echo does not self-match before the probe runs (see run_check).
 wait_privleap_ready() {
-   local deadline text
+   local deadline text probe_cmd
    printf '%s\n' "${me}: wait for per-user privleap socket readiness (pre check battery)"
-   printf '%s' "clear; M=PRV; for i in \$(seq 1 60); do leaprun check-privleap >/dev/null 2>&1 && break; sleep 2; done; leaprun check-privleap >/dev/null 2>&1 && echo DM\${M}READYMARK || echo DM\${M}TIMEOUTMARK; sync" \
-      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   ## One typed line (guest-side newlines would draw continuation prompts and foul the
+   ## OCR), assembled multi-line here for readability. `\$`/`\${M}` stay literal so the
+   ## loop and the var-built marker expand IN the guest, not in this shell.
+   probe_cmd="clear; M=PRV; "
+   probe_cmd+="for i in \$(seq 1 60); do leaprun check-privleap >/dev/null 2>&1 && break; sleep 2; done; "
+   probe_cmd+="leaprun check-privleap >/dev/null 2>&1 && echo DM\${M}READYMARK || echo DM\${M}TIMEOUTMARK; "
+   probe_cmd+="sync"
+   printf '%s' "${probe_cmd}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
    sleep 3
    deadline=$(( SECONDS + 180 ))
