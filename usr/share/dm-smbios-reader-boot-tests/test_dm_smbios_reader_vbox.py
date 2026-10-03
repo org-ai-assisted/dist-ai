@@ -47,7 +47,7 @@ def _load():
 
 M = _load()
 
-GUESTCTL = Path(__file__).resolve().parent / 'vbox-guestctl'
+GUESTCTL = Path(__file__).resolve().parent / 'vbox-ctl-local'
 
 
 def _load_guestctl():

@@ -37,28 +37,17 @@ gc_account_for_role() {
    esac
 }
 
-## Run a shell snippet in-guest as USERNAME via guestcontrol; the guest process's
-## exit code is this function's exit code (run waits and propagates it). Optional
-## TIMEOUT_S bounds the guest process (guestcontrol --timeout is milliseconds).
-## The password is the empty string: both `user` and `sysmaint` are passwordless
-## (pam_unix nullok, task #83), and an empty literal keeps the argv-exposure (CWE-214)
-## policy -- no overridable GC_PASSWORD that could put a real secret on argv. A guest
-## that ever needed a real password would use guestcontrol --password-file, not this.
-## VBOXMANAGE is overridable, so a test can assert the exact argv with a capturing stub.
+## Run a shell snippet in-guest as USERNAME (= boot role), delegating to vbox-exec-local --
+## the ONE place that builds the guestcontrol argv (empty-password channel task #83, and the
+## VBox-7.2 `--exe /bin/bash -- -lc` fix). The guest process exit code propagates. Optional
+## TIMEOUT_S bounds the guest process. No argv is rebuilt here, so the two can never drift.
+## VBOX_EXEC_LOCAL is overridable so a test can assert the delegated invocation with a stub.
 gc_run() {
    local username="$1" snippet="$2" timeout_s="${3:-}"
-   local -a argv=(
-      "${VBOXMANAGE}" guestcontrol "${vm}" run
-      --username "${username}" --password ''
-   )
+   local -a argv=( "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" --role "${username}" --cmd "${snippet}" )
    if [ -n "${timeout_s}" ]; then
-      argv+=( --timeout "$(( timeout_s * 1000 ))" )
+      argv+=( --timeout "${timeout_s}" )
    fi
-   ## guestcontrol auto-sets argv[0] from --exe, so the args after -- are
-   ## argv[1..]: pass -lc directly. A leading 'bash' would become argv[1], get
-   ## run as a script, and fail "cannot execute binary file" on VBox 7.2.
-   ## (--arg0 could override argv[0]; unneeded here.)
-   argv+=( --wait-stdout --wait-stderr --exe /bin/bash -- -lc "${snippet}" )
    "${argv[@]}"
 }
 

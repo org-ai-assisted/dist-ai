@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Unattended Calamares LUKS install of a Kicksecure ISO, driven HOST-SIDE via
-## vbox-guestctl (vboxapi IMouse/IKeyboard/IDisplay -- real mouse + screenshot in
+## vbox-ctl-local (vboxapi IMouse/IKeyboard/IDisplay -- real mouse + screenshot in
 ## one pixel space, no guest agent). Boots the ISO in the UNRESTRICTED install
 ## session, drives Calamares to a full encrypted (LUKS) erase-disk install, boots
 ## the installed disk, unlocks LUKS, and verifies the installed system booted.
@@ -27,7 +27,7 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
-GUESTCTL="${GUESTCTL:-vbox-guestctl}"
+GUESTCTL="${GUESTCTL:-vbox-ctl-local}"
 TESSERACT="${TESSERACT:-tesseract}"
 PASS_RC=0
 FAIL_RC=5
@@ -478,7 +478,7 @@ build_vm() {
    safe-rm --force -- "${disk}"
    "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
    ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
-   ## an absolute pointer so vbox-guestctl clicks land pre-Guest-Additions.
+   ## an absolute pointer so vbox-ctl-local clicks land pre-Guest-Additions.
    "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 \
       --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
       --nic1 nat >/dev/null
