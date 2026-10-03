@@ -798,6 +798,16 @@ def hwaccel_in_use(log_text):
     return any(good in low for good in _HWACCEL_MARKERS)
 
 
+def _hwaccel_decided(log_text):
+    """True once the HM log is CONCLUSIVE -- a positive AMD-V/VT-x marker OR an explicit
+    fallback/negative marker is present. A bare 'hm:'/'nem:' line (HM still initialising:
+    VBox 7.2 logs 'HM: HMR3Init: AMD-V w/ nested paging' ~70ms before 'HM: Using AMD-V
+    implementation') is NOT conclusive -- breaking the poll on it reads an accelerated boot
+    as degraded, so the poll must keep waiting."""
+    low = log_text.lower()
+    return hwaccel_in_use(log_text) or any(bad in low for bad in _HWACCEL_FALLBACK)
+
+
 def _vm_log_text(vmname, vboxmanage=VBOXMANAGE):
     """Current VBox.log of a running VM via 'showvminfo --log 0' ('' if unreadable)."""
     try:
@@ -818,10 +828,9 @@ def assert_hwaccel(vmname, vboxmanage=VBOXMANAGE, timeout=30, interval=3):
     log_text = ''
     while True:
         log_text = _vm_log_text(vmname, vboxmanage)
-        low = log_text.lower()
-        if any(k in low for k in ('hm:', 'nem:', 'hardware virtualization')):
-            break
-        if time.monotonic() >= deadline:
+        ## Break only on a CONCLUSIVE log -- never on a bare 'hm:'/'nem:' that may be a
+        ## still-initialising HM line logged before the positive 'Using AMD-V' marker.
+        if _hwaccel_decided(log_text) or time.monotonic() >= deadline:
             break
         time.sleep(interval)
     if not hwaccel_in_use(log_text):

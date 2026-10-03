@@ -33,13 +33,6 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## strings.bsh: reuse check_is_alpha_numeric to validate the build lane (see below).
-# shellcheck disable=SC1091
-if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
-   printf '%s\n' "dm-local-repro-build: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
-   exit 3
-fi
-
 progress="$1"
 ## The commit under test. Passed explicitly because sign-and-tag AMENDS the
 ## parent HEAD, so after any attempt the tree no longer sits on it -- a second
@@ -103,19 +96,35 @@ case "${submodule_overrides}" in
       ;;
 esac
 
+## strings.bsh: reuse check_is_alpha_numeric to validate the build lane, and
+## string_quote_safe to print an untrusted slot without terminal-escape injection.
+## Sourced here (after the arg/target checks above) so a usage error fires first.
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
+   printf '%s\n' "dm-local-repro-build: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
 ## Build lane. derivative-maker scopes a build's whole scratch tree + output by
 ## dist_build_slot, so laning this build (a) lets a concurrent build in another
 ## session run without colliding, and (b) confines the artifact finds below to
 ## THIS build's lane -- without it those finds, rooted at the shared binary_mnt,
 ## would match a FOREIGN lane's fresh image and compare the wrong sha512. Honor an
-## explicit/forwarded dist_build_slot; else key on the session (sandbox-session-slug).
-build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
+## explicit/forwarded dist_build_slot; else key on the session. '|| true' keeps a
+## missing sandbox-session-slug (private-ai-config, same package as the required
+## sandbox) from aborting errexit with a bare command-not-found; the empty-check
+## below then reports WHY instead of failing with no context.
+build_slot="${dist_build_slot:-$(sandbox-session-slug 2>/dev/null || true)}"
+if [ -z "${build_slot}" ]; then
+   printf '%s\n' "dm-local-repro-build: cannot derive the build lane via sandbox-session-slug (private-ai-config required, or pass dist_build_slot)" >&2
+   exit 3
+fi
 ## Validate before the slot is spliced into the build command and the find roots
 ## below: check_is_alpha_numeric enforces [A-Za-z0-9_-] (what sandbox-session-slug
 ## emits), rejecting empty and a '..' / '/' / ';' / quote that would break out of the
 ## heredoc or the lane. Empty would also collapse binary_lane to the flat root.
 if ! check_is_alpha_numeric build_slot; then
-   printf '%s\n' "dm-local-repro-build: invalid build lane '${build_slot}' (need [A-Za-z0-9_-])" >&2
+   printf '%s\n' "dm-local-repro-build: invalid build lane $(string_quote_safe "${build_slot}") (need [A-Za-z0-9_-])" >&2
    exit 2
 fi
 binary_lane="/home/user/binary_mnt/${build_slot}"
@@ -286,13 +295,17 @@ truncate --size=0 -- "${remote_log}"
 ## the docker-run host process: derivative-maker-docker-run forwards only an explicit
 ## allowlist into the container, so a host-side lane would be dropped and the build
 ## would write flat while the finds look in the (empty) lane -> a false "no artifact".
+## dist_build_slot is EXPORTED at the top of the container command so EVERY step is
+## laned -- signing-key-create / sign-and-tag write dm-source-state under the same
+## lane dm-build-official later reads; setting it only on dm-build-official made
+## sign-and-tag write the flat tree, so the buildinfo recorded the post-amend HEAD.
 setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
    bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
+   export dist_build_slot='${build_slot}' && \
    export dist_build_sign_and_tag=true && \
    ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
    env dist_build_target_arch='amd64' flavors_list='kicksecure-debug' \
    dist_build_multi_target_list='${multi_target_list}' \
-   dist_build_slot='${build_slot}' \
    ./help-steps/dm-build-official --freshness frozen --package-jobs 2" \
    > "${remote_log}" 2>&1 < /dev/null &
 disown
