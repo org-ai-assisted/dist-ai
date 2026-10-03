@@ -7,13 +7,30 @@
 
 ## Boot an imported Whonix Gateway + Workstation pair headless on their VirtualBox
 ## internal network and assert the Workstation egresses to the internet ONLY via the
-## Gateway's Tor (the core Whonix guarantee), then tear down. Drives the guests via
-## host-side vboxapi + OCR (no Guest Additions), reusing gui-drive.bash.
+## Gateway's Tor (the core Whonix guarantee), then tear down.
 ##
-## The WS has a single internal-network NIC (no direct route), so its only path to
-## the internet is WS -> GW -> Tor by construction; the leak test PROVES that path
-## is live and really Tor by querying check.torproject.org from the WS and requiring
-## IsTor:true. Tor bootstrap on the GW is gated implicitly by retrying that query.
+## WS has a single internal-net NIC (no direct route), so its only path out is
+## WS -> GW -> Tor by construction. The leak test PROVES that path is live and really
+## Tor by running the authoritative anon-leak-test BATTERY inside the WS -- the full
+## probe set (enumerate / icmp / udp-123 / ipv6 / tor-confirm / gateway-craft), fail-
+## closed, with tor-confirm as the live positive control -- NOT a single IsTor grep.
+##
+## Shipped Whonix images carry VBoxService, so the battery is RUN via guestcontrol
+## (vbox-exec-local), NOT OCR. It is DELIVERED via a VBox shared folder (name 'shared',
+## pre-attached before boot -> the guest's mnt-shared-vbox.service auto-mounts it at
+## /mnt/shared as root, exec bit preserved). The share is the clean channel: guestcontrol
+## copyto drops modes + is finicky, and guestcontrol has no host->guest stdin. The battery
+## needs root (icmp + gateway-craft), so the WS boots SYSMAINT (user session blocks sudo);
+## the GW routes in its default user session.
+##
+## CANARY (no silent green): the WS gateway-craft probe EMITS deliberate direct-egress
+## packets at tagged clearnet IPs while the GW's external NIC is traced to a host pcap
+## (VBoxManage --nictrace -- a diagnostic tap, no network/routing change, and the only
+## host observation the non-root VM-owner can make). The tagged destinations MUST NOT
+## appear leaving the GW (Tor carries no such destination), while the pcap being
+## non-empty + tor-confirm passing prove the observation is not blind.
+##
+## Runs AS the VM-owner fleet user (per-$HOME VBox state); never needs host root.
 
 set -o errexit
 set -o nounset
@@ -25,8 +42,10 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
-GUESTCTL="${GUESTCTL:-vbox-guestctl}"
+GUESTCTL="${GUESTCTL:-vbox-ctl-local}"
 TESSERACT="${TESSERACT:-tesseract}"
+VBOX_EXEC_LOCAL="${VBOX_EXEC_LOCAL:-vbox-exec-local}"
+TCPDUMP="${TCPDUMP:-tcpdump}"
 
 PASS_RC=0
 FAIL_RC=5
@@ -36,22 +55,44 @@ gw='Whonix-Gateway-LXQt'
 ws='Whonix-Workstation-LXQt'
 ## committed clean-desktop snapshot each VM is restored to before a run.
 SNAPSHOT="${SNAPSHOT:-clean-live}"
+## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
+## battery -- no re-embedded copy). Provisioned location; overridable.
+ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}"
+## The battery needs root (icmp + gateway-craft). The sysmaint session has passwordless sudo by
+## default, so run it under a plain `sudo`. Under guestcontrol there is no tty, so an image that
+## ever required a password makes sudo FAIL (non-zero) rather than hang or pass vacuously --
+## fail-closed, never a silent green.
+## Where the guest auto-mounts the 'shared' folder that carries the battery (fixed by the
+## guest's mnt-shared-vbox.service). The host staging dir is made in main.
+GUEST_SHARE_MOUNT='/mnt/shared'
+share_dir=''
+
+## Clearnet targets the battery aims its direct-egress probes at (anon-leak-test's fixed
+## defaults, so the GW-pcap watch list is exactly these). On a CORRECT Whonix the GW drops/
+## torifies everything, so nothing reaches them; only a LEAK would send a handful of packets
+## to these PUBLIC services (1.1.1.1 welcomes connectivity tests; Cloudflare NTP is public).
+CLEARNET_ICMP='1.1.1.1'
+CLEARNET_NTP='162.159.200.123'
+## gateway-craft's forged SOURCE is RFC 5737 TEST-NET-2 (reserved; routes nowhere).
+CRAFT_SRC='198.51.100.99'
+
 gw_started='false'
 ws_started='false'
+nictrace_pcap=''
 
 die() {
    printf '%s: ERROR: %s\n' "${me}" "$2" >&2
    exit "$1"
 }
 
-lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh" ]; then
-   gui_drive_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh"
-else
-   gui_drive_lib='/usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh'
-fi
+lib_base="$(dirname -- "$(readlink --canonicalize -- "$0")")/../share/dm-smbios-reader-boot-tests"
+[ -d "${lib_base}" ] || lib_base='/usr/share/dm-smbios-reader-boot-tests'
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
-source "${gui_drive_lib}"
+source "${lib_base}/gui-drive.bsh"
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/grub-boot-select.bsh
+source "${lib_base}/grub-boot-select.bsh"
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh
+source "${lib_base}/vbox-session.bsh"
 
 usage() {
    printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME]
@@ -59,8 +100,8 @@ usage() {
 --gw   Whonix Gateway VM name (default: ${gw})
 --ws   Whonix Workstation VM name (default: ${ws})
 
-Boots both headless, dismisses each first-boot setup wizard, and asserts the
-Workstation reaches the internet ONLY through the Gateway's Tor. Exit 0 = PASS."
+Boots both headless, runs the anon-leak-test battery in the Workstation (sysmaint),
+and asserts it egresses ONLY through the Gateway's Tor. Exit 0 = PASS."
 }
 
 parse_args() {
@@ -87,170 +128,145 @@ parse_args() {
 }
 
 on_exit() {
-   if [ "${gw_started}" = 'true' ]; then
-      "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
-   fi
    if [ "${ws_started}" = 'true' ]; then
       "${VBOXMANAGE}" controlvm "${ws}" poweroff >/dev/null 2>&1 || true
    fi
+   if [ "${gw_started}" = 'true' ]; then
+      "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
+   fi
+   ## Leave the NIC trace off so a later run / other use is not silently captured.
+   "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 off >/dev/null 2>&1 || true
+   if [ -n "${nictrace_pcap}" ]; then
+      safe-rm -f -- "${nictrace_pcap}" 2>/dev/null || true
+   fi
+   ## Drop the battery share (reverted by the next snapshot restore anyway) + its host dir.
+   "${VBOXMANAGE}" sharedfolder remove "${ws}" --name shared >/dev/null 2>&1 || true
+   if [ -n "${share_dir}" ]; then
+      safe-rm --recursive --force -- "${share_dir}" 2>/dev/null || true
+   fi
 }
 
-## Poll until the guest desktop is up at a full resolution (>=1024 wide), past the
-## 800x600 early-boot framebuffer.
-## Restore the persistent VM to its committed clean-live snapshot before starting.
-## The Whonix Gateway IGNORES the ACPI power button, so the host cannot shut it down
-## cleanly; a hard poweroff + immediate restart then boots into the 720x400 recovery
-## console. Instead we hard-poweroff (fast) and DISCARD that dirty state by restoring
-## a live snapshot taken at a healthy 1280x800 desktop -- deterministic + immune to
-## dirty poweroffs. Take/refresh the snapshot with: VBoxManage snapshot <vm> take
-## clean-live --live (see snapshot_live.sh / the vbox-image-testing skill).
-restore_clean() {
+## Power off, restore the clean snapshot, then discardstate so the next start is a FRESH
+## boot (reaches GRUB) rather than a live-snapshot RESUME -- required to pick a boot role
+## and to (re)apply a NIC trace the snapshot would otherwise revert.
+restore_fresh() {
    local target="$1" state
    "${VBOXMANAGE}" controlvm "${target}" poweroff >/dev/null 2>&1 || true
    for _ in $(seq 1 20); do
       state="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null \
          | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
-      case "${state}" in
-         poweroff|aborted|'')
-            break
-            ;;
-      esac
+      case "${state}" in poweroff|aborted|'') break ;; esac
       sleep 2
    done
    "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
-      || die "${FAIL_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}' (take it with: VBoxManage snapshot ${target} take ${SNAPSHOT} --live)"
+      || die "${FAIL_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}'"
+   "${VBOXMANAGE}" discardstate "${target}" >/dev/null 2>&1 || true
 }
 
-wait_desktop() {
-   local timeout="$1" deadline res width
-   deadline=$(( SECONDS + timeout ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      gui_scan 2a aa
-      res="$("${GUESTCTL}" "${vm}" res 2>&1 || true)"
-      width="${res%% *}"
-      if [[ "${width}" =~ ^[0-9]+$ ]] && [ "${width}" -ge 1024 ]; then
-         return 0
-      fi
-      printf '%s: %s res=[%s] (waiting for a full-resolution desktop)\n' \
-         "${me}" "${vm}" "${res}" >&2
-      sleep 10
-   done
-   die "${FAIL_RC}" "${vm}: desktop not ready after ${timeout}s"
+## Boot the Gateway fresh in its default (user) role, with its EXTERNAL NIC traced to a
+## host pcap (the canary observation point). The GW only routes; no in-guest commands.
+boot_gateway() {
+   vm="${gw}"
+   restore_fresh "${gw}"
+   ## -u: just a name (not created), so VBox creates the pcap itself; no pre-create to remove.
+   nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
+   "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
+      || die "${SETUP_RC}" "${gw}: cannot enable --nictrace1"
+   "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
+   gw_started='true'
 }
 
-## Dismiss the first-boot setup-wizard-dist: click its Finish/Next button until the
-## wizard text is gone. Non-fatal if no wizard is shown (already dismissed).
-dismiss_setup_wizard() {
-   local deadline text word
-   deadline=$(( SECONDS + 60 ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      text="$(gui_ocr)"
-      if [[ ! "${text,,}" =~ setup[[:space:]]?wizard|setup-wizard|successfully[[:space:]]completed ]]; then
-         return 0
-      fi
-      ## click the first button the wizard page offers -- Finish, else Next, else Close.
-      for word in finish next close; do
-         if gui_locate_word "${word}" >/dev/null 2>&1; then
-            gui_click_word "${word}" 10 1 "wizard ${word}"
-            break
-         fi
-      done
-      sleep 3
-   done
-   ## non-fatal: a wizard that never clears is diagnosed downstream by the leak test.
-   return 0
+## Boot the Workstation fresh into SYSMAINT (root available for the full battery), then
+## wait until guestcontrol answers as sysmaint.
+boot_workstation_sysmaint() {
+   vm="${ws}"
+   restore_fresh "${ws}"
+   ## Attach the battery share BEFORE boot (name 'shared', read-only) so the guest's
+   ## mnt-shared-vbox.service auto-mounts it at /mnt/shared as root. Snapshot restore reverts
+   ## it, so (re)attach every run.
+   "${VBOXMANAGE}" sharedfolder add "${ws}" --name shared --hostpath "${share_dir}" --readonly \
+      || die "${SETUP_RC}" "${ws}: cannot attach the battery shared folder"
+   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+   ws_started='true'
+   ## Select "PERSISTENT Mode | SYSMAINT Session" at the GRUB "Choose boot mode" menu
+   ## before its ~5s autoboot into USER (single-source selector, shared with the gates).
+   select_installed_sysmaint
+   wait_guestcontrol_ready sysmaint 300 \
+      || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint"
 }
 
-## Open a terminal via Ctrl+Alt+T, retrying until a shell prompt is on screen.
-open_terminal() {
-   local deadline text last_fire=0
-   deadline=$(( SECONDS + 150 ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      if [ "$(( SECONDS - last_fire ))" -ge 20 ]; then
-         gui_scan 2a aa
-         gui_scan 1d 38 14 94 b8 9d
-         last_fire="${SECONDS}"
-      fi
-      sleep 5
-      text="$(gui_ocr)"
-      if [[ "${text,,}" =~ localhost|pts/|'~$'|'[user' ]]; then
-         return 0
-      fi
-   done
-   die "${FAIL_RC}" "${vm}: terminal did not open (Ctrl+Alt+T)"
+## Run the battery in the WS as sysmaint via guestcontrol; its exit code is the verdict
+## (0 clear / 1 leak / 2 inconclusive). PROBES selects the probe set.
+ws_battery() {
+   local probes="$1"
+   ## Run the battery (on the /mnt/shared mount) as root via plain sudo (sysmaint = passwordless
+   ## sudo). The guest exit code IS the verdict; one short command, no inline script.
+   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+      --cmd "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
 }
 
-## Run CMD in the guest terminal and classify by an OCR result marker. 0 PASS / 1 FAIL.
-## SILENT-GREEN SAFE (this gates a LEAK test, so a false PASS = an undetected leak):
-##  - the markers are assembled IN-GUEST from a shell var (WHONIX${M}PASS), so the
-##    typed command ECHO does NOT contain the literal marker -- otherwise the OCR poll
-##    matches the echoed command before curl even finishes and returns a false PASS.
-##  - `clear` first, so a PRIOR attempt's marker in scrollback cannot cross-match.
-##  - FAIL is checked BEFORE PASS, so a displayed failure is never masked.
-##  - all-letter markers (tesseract misreads terminal digits).
-run_marker_check() {
-   local cmd="$1" timeout="$2" deadline text
-   printf '%s' "clear; M=LEAK; ${cmd} && echo WHONIX\${M}PASS || echo WHONIX\${M}FAIL" \
-      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
-   gui_scan 1c 9c
-   ## let `clear` + the (slow) curl run before the first OCR, so the command echo
-   ## (which holds the literal-var marker) is gone and only the real result shows.
-   sleep 3
-   deadline=$(( SECONDS + timeout ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      gui_scan 2a aa
-      text="$(gui_ocr)"
-      if [[ "${text}" =~ WHONIXLEAKFAIL ]]; then
-         return 1
-      fi
-      if [[ "${text}" =~ WHONIXLEAKPASS ]]; then
-         return 0
-      fi
-      sleep 8
-   done
-   return 1
+## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's
+## external NIC (Tor carries no such destination), AND the trace actually captured
+## traffic (non-blind). tcpdump -r reads the pcap -- no root. Fail-closed: a missing /
+## unreadable pcap is treated as a blind capture, never a pass.
+canary_gateway_pcap() {
+   local hits total
+   [ -s "${nictrace_pcap}" ] || die "${FAIL_RC}" "canary: GW nictrace pcap empty/missing (blind capture)"
+   total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
+   [ "${total}" -gt 0 ] || die "${FAIL_RC}" "canary: GW emitted nothing on its external NIC (blind -- not a no-leak)"
+   hits="$("${TCPDUMP}" -nr "${nictrace_pcap}" \
+      "dst host ${CLEARNET_ICMP} or dst host ${CLEARNET_NTP} or dst host ${CRAFT_SRC}" 2>/dev/null | wc -l)"
+   [ "${hits}" -eq 0 ] \
+      || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
+   printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s), 0 to any probe target)"
 }
 
 main() {
    parse_args "$@"
+   [ -x "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" ] \
+      || die "${SETUP_RC}" "anon-leak-test checkout not found at ${ANON_LEAK_TEST_REPO} (set ANON_LEAK_TEST_REPO)"
    trap on_exit EXIT
+   ## Stage the REAL battery (read live, no drift) in a host dir shared read-only into the WS.
+   share_dir="$(mktemp -d -t whonix-battery.XXXXXX)"
+   cp -- "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" "${share_dir}/anon-leak-test"
 
-   printf '%s\n' "${me}: boot Whonix Gateway (${gw})"
-   ## Clean-off before start so the graphical session comes up (not the 720x400 console).
-   restore_clean "${gw}"
-   "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
-   gw_started='true'
-   vm="${gw}"
-   wait_desktop 480
-   dismiss_setup_wizard
+   printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"
+   boot_gateway
 
-   printf '%s\n' "${me}: boot Whonix Workstation (${ws})"
-   restore_clean "${ws}"
-   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
-   ws_started='true'
-   vm="${ws}"
-   wait_desktop 480
-   dismiss_setup_wizard
-   open_terminal
+   printf '%s\n' "${me}: boot Workstation (${ws}) into sysmaint (battery on /mnt/shared)"
+   boot_workstation_sysmaint
 
-   printf '%s\n' "${me}: leak test -- Workstation must egress ONLY via Tor"
-   ## Retry to also gate on the Gateway's Tor bootstrap (which may still be coming
-   ## up); the WS has no non-Tor route, so IsTor:true proves the WS->GW->Tor path.
-   local attempt rc=1
-   for attempt in 1 2 3 4 5 6; do
-      if run_marker_check \
-         "curl --silent --max-time 60 https://check.torproject.org/api/ip | grep -qi 'istor.*true'" \
-         90; then
-         rc=0
+   ## Phase 1: gate on the GW's Tor bootstrap -- retry tor-confirm (the live positive
+   ## control) until it passes, so a clean battery later is meaningful, not a dead link.
+   printf '%s\n' "${me}: wait for Tor egress (tor-confirm) to come up"
+   local attempt tor_ok='false'
+   for attempt in $(seq 1 15); do
+      if ws_battery "--probe tor-confirm"; then
+         tor_ok='true'
          break
       fi
       printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
       sleep 20
    done
-   [ "${rc}" -eq 0 ] || die "${FAIL_RC}" "leak test FAILED: Workstation did not confirm Tor egress"
+   [ "${tor_ok}" = 'true' ] || die "${FAIL_RC}" "Tor egress never confirmed (GW Tor did not bootstrap, or a leak)"
 
-   printf '%s\n' "${me}: PASS -- Whonix pair up; Workstation egresses via Gateway Tor"
+   ## Phase 2: the FULL battery incl gateway-craft (the deliberate direct-egress emits
+   ## the canary watches for). Exit 0 = Tor-only; anything else = leak/inconclusive.
+   printf '%s\n' "${me}: run the full leak-test battery in the Workstation (sysmaint)"
+   ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe ipv6-clearnet --probe tor-confirm --probe gateway-craft" \
+      || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
+
+   ## Canary: stop the GW so its nictrace pcap is flushed, then assert no probe target
+   ## reached clearnet through it.
+   "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
+   sleep 3
+   canary_gateway_pcap
+
+   printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + GW-trace canary)"
    return "${PASS_RC}"
 }
 
-main "$@"
+## Sourced (dm-whonix-pair-tests) -> expose the functions without running; executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi

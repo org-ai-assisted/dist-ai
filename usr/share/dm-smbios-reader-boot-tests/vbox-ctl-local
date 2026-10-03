@@ -8,7 +8,7 @@ host-side counterpart to VBoxManage keyboardputscancode, adding the mouse that
 the CLI lacks. Needs the VM defined with --mouse usbtablet + a USB controller
 (build_install_vm_plan does this) so putMouseEventAbsolute works pre-Guest-Additions.
 
-Usage: vbox-guestctl <vm> <res | shot PATH | click X Y [button] | move X Y
+Usage: vbox-ctl-local <vm> <res | shot PATH | click X Y [button] | move X Y
                              | type TEXT | key HEXSCANCODE...>
 button bitmask: 1=left 2=right 4=middle (0 = release).
 """
@@ -122,7 +122,7 @@ def _console(name):
 def _build_parser():
     import argparse
     parser = argparse.ArgumentParser(
-        prog='vbox-guestctl',
+        prog='vbox-ctl-local',
         description='host-side VBox guest I/O via vboxapi (mouse/keyboard/screenshot)')
     parser.add_argument('vm')
     sub = parser.add_subparsers(dest='cmd', required=True)

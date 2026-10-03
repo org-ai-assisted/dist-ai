@@ -268,7 +268,11 @@ phase_remotes() {
       [ "${dry_run}" = "true" ] && flag=( --dry-run )
       ## A missing helper fails loud here (ensure exit 127 -> ERROR below), so no preflight
       ## -x check -- that would also wrongly reject a PATH-resolved bare-name override.
-      "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
+      ## pkg_git_branch_agnostic: remote-ensure touches only 'git remote' config, which is
+      ## branch-independent, so tell the helper to skip its on-master guard -- otherwise it
+      ## aborts on an 'ai' or detached submodule. The guard still protects a human running
+      ## the helper directly (they do not set this), catching an accidental 'ai' checkout.
+      pkg_git_branch_agnostic="true" "${REMOTES_ENSURE_CMD}" "${flag[@]}" --batch pkg_git_remotes_add || rc="$?"
       if [ "${rc}" -ne 0 ]; then
          record "1 remotes" "ERROR (ensure exit ${rc})"
          any_error="true" ; aborted="true"

@@ -1,0 +1,231 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Read one file out of a VirtualBox disk image on the HOST, read-only, without
+## booting the VM. Optionally unlocks a single LUKS volume on the disk (the harness
+## already holds the install passphrase). Handles a plain filesystem or an LVM
+## layout inside LUKS by probing the candidate filesystems for the requested path.
+##
+## Reusable host-side inspection tool: e.g. dm-calamares-install --mok-enroll lifts
+## the installed system's /var/lib/dkms/mok.pub for host-side 'VBoxManage modifynvram
+## enrollmok', and it is equally useful to pull any file out of an installed image
+## for debugging.
+##
+## Non-destructive: qemu-nbd, the LUKS mapping, and every mount are READ-ONLY. Must
+## run as root (qemu-nbd / cryptsetup / mount); callers invoke it via sudo.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+disk=""
+passphrase_file=""
+source_path=""
+dest_path=""
+
+usage() {
+   printf '%s\n' "usage: ${me} --disk PATH --source IN-DISK-PATH --dest HOST-PATH [--passphrase-file PATH]
+
+--disk             VirtualBox disk image (anything qemu-nbd reads, e.g. a .vdi).
+--source           absolute path of the file to read, inside the disk's filesystem.
+--dest             host path to write the extracted file to.
+--passphrase-file  0600 file with the LUKS passphrase; given -> the disk's single
+                   LUKS volume is opened read-only before the filesystem search.
+
+Read-only throughout. Run as root (via sudo)." >&2
+}
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$1" >&2
+   exit 1
+}
+
+## Cleanup state, torn down in reverse by the EXIT trap regardless of outcome.
+nbd_dev=""
+luks_name=""
+vg_activated=""
+mnt_dir=""
+
+cleanup() {
+   if [ -n "${mnt_dir}" ] && mountpoint --quiet -- "${mnt_dir}"; then
+      umount -- "${mnt_dir}" || true
+   fi
+   if [ -n "${mnt_dir}" ]; then
+      rmdir -- "${mnt_dir}" 2>/dev/null || true
+   fi
+   if [ -n "${vg_activated}" ]; then
+      vgchange --activate n -- "${vg_activated}" >/dev/null 2>&1 || true
+   fi
+   if [ -n "${luks_name}" ] && [ -e "/dev/mapper/${luks_name}" ]; then
+      cryptsetup close -- "${luks_name}" || true
+   fi
+   if [ -n "${nbd_dev}" ]; then
+      qemu-nbd --disconnect "${nbd_dev}" >/dev/null 2>&1 || true
+   fi
+}
+trap cleanup EXIT
+
+parse_args() {
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --disk)
+            disk="$2"
+            shift 2
+            ;;
+         --source)
+            source_path="$2"
+            shift 2
+            ;;
+         --dest)
+            dest_path="$2"
+            shift 2
+            ;;
+         --passphrase-file)
+            passphrase_file="$2"
+            shift 2
+            ;;
+         -h|--help)
+            usage
+            exit 0
+            ;;
+         *)
+            usage
+            die "unexpected argument '$1'"
+            ;;
+      esac
+   done
+   [ -n "${disk}" ]        || { usage; die "--disk required"; }
+   [ -n "${source_path}" ] || { usage; die "--source required"; }
+   [ -n "${dest_path}" ]   || { usage; die "--dest required"; }
+   [ -r "${disk}" ]        || die "disk not readable: '${disk}'"
+   [ -z "${passphrase_file}" ] || [ -r "${passphrase_file}" ] \
+      || die "passphrase file not readable: '${passphrase_file}'"
+   [ "$(id -u)" = '0' ]    || die "must run as root (invoke via sudo)"
+}
+
+## Block until the kernel has published the connected disk's partition nodes (the
+## partprobe uevents are async). A whole-disk image legitimately has no partitions,
+## so a device-level signature counts as settled too. Bounded, so a blank disk still
+## returns rather than hanging.
+settle_partitions() {
+   local dev="$1" i
+   partprobe "${dev}" 2>/dev/null || true
+   for ((i = 0; i < 40; i++)); do
+      udevadm settle 2>/dev/null || true
+      if [ -b "${dev}p1" ]; then
+         return 0
+      fi
+      if blkid -- "${dev}" >/dev/null 2>&1; then
+         return 0
+      fi
+      sleep 0.25
+   done
+}
+
+## First unused /dev/nbdN (size 0 = not connected).
+free_nbd() {
+   local d
+   for d in /sys/class/block/nbd*; do
+      if [ "$(cat "${d}/size")" = '0' ]; then
+         printf '/dev/%s' "${d##*/}"
+         return 0
+      fi
+   done
+   die "no free /dev/nbd device"
+}
+
+## Echo the candidate block devices that may hold a filesystem: the LUKS mapping and
+## any LVs it exposes, else the disk's own partitions.
+candidate_filesystems() {
+   if [ -n "${luks_name}" ]; then
+      local mapped="/dev/mapper/${luks_name}"
+      ## LVM inside LUKS: activate the VG and list its LVs; otherwise the mapping
+      ## itself is the filesystem.
+      ## pvs exits non-zero when the mapping is a plain filesystem (not an LVM PV);
+      ## that is expected, so tolerate it rather than letting errexit abort.
+      local vg
+      vg="$(pvs --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ' || true)"
+      if [ -n "${vg}" ]; then
+         vgchange --activate y -- "${vg}" >/dev/null
+         vg_activated="${vg}"
+         lvs --noheadings --options lv_path -- "${vg}" 2>/dev/null | tr -d ' '
+      else
+         printf '%s\n' "${mapped}"
+      fi
+   else
+      ## Plain disk: its partitions, or the whole device for an unpartitioned image.
+      local p printed='false'
+      for p in "${nbd_dev}"p*; do
+         if [ -b "${p}" ]; then
+            printf '%s\n' "${p}"
+            printed='true'
+         fi
+      done
+      if [ "${printed}" = 'false' ]; then
+         printf '%s\n' "${nbd_dev}"
+      fi
+   fi
+}
+
+main() {
+   parse_args "$@"
+
+   modprobe nbd max_part=16 2>/dev/null || true
+   nbd_dev="$(free_nbd)"
+   qemu-nbd --read-only --connect="${nbd_dev}" -- "${disk}"
+   settle_partitions "${nbd_dev}"
+
+   if [ -n "${passphrase_file}" ]; then
+      ## The LUKS volume is a partition, or the whole disk for an unpartitioned image.
+      local target luks_target=""
+      for target in "${nbd_dev}" "${nbd_dev}"p*; do
+         [ -b "${target}" ] || continue
+         if cryptsetup isLuks -- "${target}" 2>/dev/null; then
+            luks_target="${target}"
+            break
+         fi
+      done
+      [ -n "${luks_target}" ] || die "no LUKS volume found on '${disk}'"
+      luks_name="vde-$$-luks"
+      cryptsetup --readonly open --key-file "${passphrase_file}" \
+         -- "${luks_target}" "${luks_name}"
+   fi
+
+   mnt_dir="$(mktemp --directory)"
+   local fs found='false'
+   while read -r fs; do
+      [ -n "${fs}" ] || continue
+      ## A hard-powered-off VM leaves an unclean ext journal; ext* cannot replay it
+      ## on a read-only device and refuses a plain '-o ro' mount, so fall back to
+      ## 'noload' (skip journal replay -- safe for a read-only inspection).
+      if ! mount --read-only -- "${fs}" "${mnt_dir}" 2>/dev/null \
+         && ! mount --read-only --options noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+         continue
+      fi
+      if [ -e "${mnt_dir}/${source_path#/}" ]; then
+         install --mode=0644 -- "${mnt_dir}/${source_path#/}" "${dest_path}"
+         ## Hand the file back to the invoking (sudo) user, not root.
+         if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+            chown -- "${SUDO_UID}:${SUDO_GID}" "${dest_path}"
+         fi
+         found='true'
+      fi
+      umount -- "${mnt_dir}"
+      [ "${found}" = 'true' ] && break
+   done < <(candidate_filesystems)
+
+   [ "${found}" = 'true' ] || die "'${source_path}' not found in any filesystem on '${disk}'"
+   printf '%s: extracted %s -> %s\n' "${me}" "${source_path}" "${dest_path}"
+}
+
+main "$@"

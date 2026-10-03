@@ -731,6 +731,30 @@ ok(len(_hc.written) == _hw, 'IPC: a trailing readyRead after finish is ignored')
 # a disconnected delivered after finish is idempotent (the `finished` latch)
 _hc.disconnected.emit()
 ok(True, 'IPC: a post-reply disconnected is idempotent')
+# REGRESSION (re-entrant teardown UAF): if a CONCURRENT client's disconnected tears THIS socket
+# down WHILE _dispatch_request runs -- the open-all --reuse burst that SIGSEGV'd the primary in
+# on_ready (QAbstractSocketPrivate::canReadNotification, the crash.log traceback) -- on_ready
+# must NOT write its reply to the freed socket. The `finished` latch gates the post-dispatch
+# write. Deterministic via a dispatch that fires disconnected mid-call; the old on_ready (no
+# gate) wrote to the torn-down conn, so this asserts no write survives the teardown.
+_hre = _FakeConn()
+_hsrv._server = _FakeServer(_hre)
+_hsrv._on_instance_connection()
+_o_disp3 = _hsrv._dispatch_request
+
+
+def _disp_teardown_midway(_payload):
+    _hre.disconnected.emit()           # a sibling socket's teardown, delivered during dispatch
+    return {'ok': True}
+
+
+_hsrv._dispatch_request = _disp_teardown_midway
+try:
+    _hre.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))
+finally:
+    _hsrv._dispatch_request = _o_disp3
+ok(_hre.written == b'' and _hre.disconnected_from_server,
+   'IPC: a teardown DURING dispatch stops the reply write (no use-after-free on the freed socket)')
 # a partial (sub-header) frame buffers, no reply yet
 _hc2 = _FakeConn()
 _hsrv._server = _FakeServer(_hc2)

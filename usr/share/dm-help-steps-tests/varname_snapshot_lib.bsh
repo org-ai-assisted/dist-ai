@@ -21,6 +21,10 @@
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset' would leak into (and could kill) the sourcing shell.
 
+## This lib's own directory (absolute), so the capture helper beside it resolves even
+## after the capture subshells 'cd' into the derivative-maker checkout.
+vs_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 ## The build commands to snapshot: every flavor x every target. Invalid combos
 ## are rejected by derivative-maker's own parse-cmd/variables validation and
 ## recorded in '_rejected.txt', not curated here (we do not reinvent dm's
@@ -61,7 +65,11 @@ vs_targets=(
 ##                        a frozen pin file
 ##   --freedom false   satisfies the mandatory firmware choice (required for the
 ##                     '--target iso' combos; harmless for the rest)
-vs_fixed_args=( --freshness current --arch amd64 --freedom false )
+##   --repo false      satisfies the mandatory derivative-APT-repository choice (made
+##                     mandatory for image builds); false matches the prior implicit
+##                     default, so the captured variable set is unchanged. Without it
+##                     every image target rejects ("repository setting MANDATORY").
+vs_fixed_args=( --freshness current --arch amd64 --freedom false --repo false )
 
 ## Environment shared by BOTH the baseline sourcing and the combo capture. It
 ## MUST be identical for the two, or a variable set here leaks: these names are
@@ -166,7 +174,7 @@ vs_declare_name() {
 ## 'variables' itself introduced. Printed sorted, one per line.
 vs_baseline_names() {
    local dm="$1"
-   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash -c 'source help-steps/pre; declare -p' ) 2>/dev/null \
+   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash "${vs_lib_dir}/vs-capture.bsh" declare -p ) 2>/dev/null \
       | grep '^declare ' | vs_declare_name | LC_ALL=C sort -u
 }
 
@@ -210,6 +218,7 @@ vs_normalize() {
       s/(SOURCE_DATE_EPOCH=")[0-9]+/\1@EPOCH@/g
       s/(host_architecture=")[^"]*/\1@ARCH@/g
       s/(user_name=")[^"]*/\1@USER@/g
+      s/(own_filename=")[^"]*/\1@OWN_FILENAME@/g
       s/[[:space:]]+$//
    '
 }
@@ -269,7 +278,7 @@ vs_capture_combo() {
          && env dist_build_dump_varnames=true dist_build_unlock_dangerous_options=true \
             dist_build_allow_root=true \
             dist_build_version='0.0.0-0-g0000000' \
-            bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
+            bash "${vs_lib_dir}/vs-capture.bsh" source help-steps/variables \
             --flavor "${flavor}" --target "${target}" "${vs_fixed_args[@]}"
    ) >"${outfile}" 2>"${errfile}"; then
       rc=0
@@ -303,7 +312,7 @@ vs_capture_combo() {
 ## Printed sorted, one per line.
 vs_baseline_func_names() {
    local dm="$1"
-   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash -c 'source help-steps/pre; declare -F' ) 2>/dev/null \
+   ( cd -- "${dm}" && env "${vs_capture_env[@]}" bash "${vs_lib_dir}/vs-capture.bsh" declare -F ) 2>/dev/null \
       | awk '{ print $3 }' | LC_ALL=C sort -u
 }
 
@@ -366,7 +375,7 @@ vs_capture_functions() {
       cd -- "${dm}" \
          && env dist_build_dump_funcnames=true dist_build_unlock_dangerous_options=true \
             dist_build_allow_root=true \
-            bash -c 'source help-steps/pre; source help-steps/variables "$@"' _ \
+            bash "${vs_lib_dir}/vs-capture.bsh" source help-steps/variables \
             --flavor "${flavor}" --target "${target}" "${vs_fixed_args[@]}"
    ) >"${outfile}" 2>/dev/null; then
       rc=0
