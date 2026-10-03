@@ -66,6 +66,7 @@ apt_packages="${apt_packages_base}"
 helper_scripts='false'
 terminal_poc_corpus='false'
 terminal_safe_corpus='false'
+secure_terminal='false'
 submodules='false'
 skip_args=''
 allow_skip_args=''
@@ -100,6 +101,14 @@ if [ -f "${cfg}" ]; then
    ## progress-bar demos committed there, so without it that suite FATALs (R-220).
    if [ "$(yq -r '.["dist-ai-tests"]["terminal-safe-corpus"] // ""' "${cfg}")" = 'true' ]; then
       terminal_safe_corpus='true'
+   fi
+   ## Opt-in checkout of the secure-terminal APP repo: a suite needing its
+   ## unicode-tag-stdin / secure_terminal package (codepoint-neutralizer-test)
+   ## resolves it from SECURE_TERMINAL_REPO; absent, the test FATALs (the tool is
+   ## REQUIRED, not optional). secure-terminal ships no apt package, so a checkout
+   ## is the only way to provide it in the CI container.
+   if [ "$(yq -r '.["dist-ai-tests"]["secure-terminal"] // ""' "${cfg}")" = 'true' ]; then
+      secure_terminal='true'
    fi
    ## Opt-in submodule checkout for the component. Some suites assert on files
    ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
@@ -226,6 +235,7 @@ fi
    printf '%s\n' "helper_scripts=${helper_scripts}"
    printf '%s\n' "terminal_poc_corpus=${terminal_poc_corpus}"
    printf '%s\n' "terminal_safe_corpus=${terminal_safe_corpus}"
+   printf '%s\n' "secure_terminal=${secure_terminal}"
    printf '%s\n' "submodules=${submodules}"
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"

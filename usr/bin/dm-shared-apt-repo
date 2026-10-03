@@ -40,12 +40,30 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## strings.bsh: reuse check_is_alpha_numeric to validate the build lane (below).
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
+   printf '%s\n' "${0##*/}: ERROR: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 
 ## dm's binary build dir (binary_build_folder_dist) is the share host path; the
 ## reprepro repos live in its aptrepo_local/<derivative> subdirs, codename `local`.
-repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary}"
+## A laned build (dist_build_slot set) writes under derivative-binary/<slot>, so
+## follow the lane when it is set in the env; DERIVATIVE_BINARY overrides outright.
+## This reads an EXISTING build's repo, so it does NOT invent a slot (that could
+## miss a flat build) -- it matches whatever lane the build itself used. Validate the
+## lane when it is actually used (no override): it becomes a path segment, so an
+## unchecked '..' / '/' would point the read-only share OUTSIDE derivative-binary
+## (the guest trusts that dir as an apt repo). die() is not defined yet here.
+if [ -z "${DERIVATIVE_BINARY:-}" ] && [ -n "${dist_build_slot:-}" ] && ! check_is_alpha_numeric dist_build_slot; then
+   printf '%s\n' "${0##*/}: ERROR: dist_build_slot must contain only [A-Za-z0-9_-] (got: '${dist_build_slot}')" >&2
+   exit 2
+fi
+repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary${dist_build_slot:+/${dist_build_slot}}}"
 codename="local"
 
 share_name="shared"
