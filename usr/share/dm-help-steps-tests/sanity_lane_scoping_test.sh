@@ -205,25 +205,26 @@ safe-rm --recursive --force -- "${sym_root}"
 sym_root=""
 trap - EXIT
 
-## /proc/mounts OCTAL-ESCAPES space (\040) and backslash (\134) in the mount point; the check must
-## unescape before comparing or it fails OPEN on a chroot path with a space (VMNAME is not
-## whitespace-checked) or a backslash. Canary: without unescape the verbatim compare never matches.
+## /proc/mounts OCTAL-ESCAPES space/tab/newline/backslash in the mount point. Rather than unescape,
+## check-stray-mounts FAILS CLOSED on a CHROOT_FOLDER containing any of those, so field 2 can be
+## compared verbatim without silently missing an escaped mount. Canary: a verbatim compare with no
+## such guard would just not match and return 0 (fail-open) instead of aborting.
 saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
-MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/Foo\040Bar_image ext4 rw 0 0'
+MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
-   pass "check-stray-mounts: unescapes \\040 (space) in /proc/mounts before matching"
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
+   pass "check-stray-mounts: fails closed on a whitespace CHROOT_FOLDER (verbatim-match precondition)"
 else
-   fail "check-stray-mounts: missed a space-containing chroot mount (\\040 not unescaped, rc=${CAP_RC})"
+   fail "check-stray-mounts: did not reject a whitespace CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER='/home/user/derivative-binary/mylane/back\slash_image'
-MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/back\134slash_image ext4 rw 0 0'
+MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
-   pass "check-stray-mounts: unescapes \\134 (backslash) in /proc/mounts before matching"
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain whitespace or a backslash' <<< "${CAP}"; then
+   pass "check-stray-mounts: fails closed on a backslash CHROOT_FOLDER (verbatim-match precondition)"
 else
-   fail "check-stray-mounts: missed a backslash-containing chroot mount (\\134 not unescaped, rc=${CAP_RC})"
+   fail "check-stray-mounts: did not reject a backslash CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER="${saved_chroot}"
 
