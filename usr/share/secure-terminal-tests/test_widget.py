@@ -1322,53 +1322,67 @@ _alt.wheelEvent(_wheel_ev(-120, pos=(-1000, -1000)))
 _c = _parse_sgr(_asent)
 ok(_c[1] == 1 and _c[2] == 1, 'a point above/left of the grid clamps to cell 1;1')
 
-# _event_cell reports the row of the glyph ACTUALLY under the pointer, edge to edge --
-# not just near the cell centre. Regression: the row math subtracted the document margin
-# a SECOND time (contentOffset().y() already carries the top margin), shifting every cell
-# down by margin px. A click in a cell's top band then reported the row ABOVE, so a click
-# on the top of a control (e.g. Claude Code's "jump to bottom" pill under tmux) missed --
-# "sometimes works" (a lower-in-the-cell click still landed). Drive a full alt-screen
-# frame through the REAL render path and click ONE PIXEL below each row's top edge; the
-# report must name that row. Pre-fix this misreported ~every row's top edge.
+# _event_cell reports the row of the glyph ACTUALLY under the pointer, edge to edge AND
+# across zoom levels -- not just near the cell centre at the default size. Two regressions
+# this guards, both surfacing as Claude Code's "jump to bottom" pill mis-clicking:
+#  1. The row math subtracted the document margin a SECOND time (contentOffset().y() already
+#     carries the top margin), shifting cells down by margin px so a TOP-band click reported
+#     the row ABOVE.
+#  2. The row used a fixed char_h = fontMetrics().height() step, but the painted line PITCH is
+#     height+1 at some zooms (a 23px row vs a 22px height at zoom 170), so the step DRIFTED and
+#     a BOTTOM-edge click in a lower row reported the row BELOW.
+# The row must come from the layout hit-test so it matches what was painted. Drive a full
+# alt-screen frame through the REAL render path and click 1px inside BOTH edges of every row,
+# at several zooms; the report must name that row. Pre-fix: (1) failed top edges everywhere,
+# (2) failed bottom edges of lower rows at zoom 170/200.
 from PyQt6.QtGui import QTextCursor as _QTC_hit          # noqa: E402
 _hit = SecureTerminal(command='/bin/cat', tui=True)
 _hit.show()
 _hit.resize(800, 400)
 pump(40)
+
+
+def _hit_cell_pt(term, idx, edge):
+    _a = _QTC_hit(term.document())
+    _a.setPosition(idx)
+    _b = _QTC_hit(term.document())
+    _b.setPosition(idx + 1)
+    _ra, _rb = term.cursorRect(_a), term.cursorRect(_b)
+    _x = (_ra.x() + _rb.x()) // 2 if _rb.x() > _ra.x() else _ra.x() + 3
+    _y = _ra.top() + 1 if edge == 'top' else _ra.bottom() - 1
+    return (_x, _y)
+
+
 if _hit.current_tui():
-    _hrows = _hit._rows
-    _hcols = _hit._cols
-    _hframe = b'\x1b[?1000h\x1b[?1006h\x1b[2J'          # arm tracking + SGR, clear
-    for _hr in range(1, _hrows + 1):
-        _hframe += ('\x1b[%d;1H' % _hr).encode() + (('R%02d' % _hr).ljust(_hcols, '.')).encode()
-    feed_output(_hit, _hframe)
-    pump(60)                                            # let the debounced grid render fire
-    ok(_hit._mouse_report_on(), 'hit-test frame: tracking + SGR is armed')
     _hsent = spy_writes(_hit)
-    _hbc = _hit.document().blockCount()
-
-    def _cell_top_pt(term, idx):
-        _a = _QTC_hit(term.document())
-        _a.setPosition(idx)
-        _b = _QTC_hit(term.document())
-        _b.setPosition(idx + 1)
-        _ra, _rb = term.cursorRect(_a), term.cursorRect(_b)
-        _x = (_ra.x() + _rb.x()) // 2 if _rb.x() > _ra.x() else _ra.x() + 3
-        return (_x, _ra.top() + 1)                      # 1px INTO the cell from its top edge
-
     _hbad = []
-    for _gr in range(1, _hrows + 1):
-        _blk = _hit.document().findBlockByNumber(_hbc - _hrows + _gr - 1)
-        _hsent.clear()
-        _hit.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
-                                  pos=_cell_top_pt(_hit, _blk.position())))
-        _rep = _parse_sgr(_hsent)
-        if _rep is None or _rep[2] != _gr:
-            _hbad.append((_gr, None if _rep is None else _rep[2]))
-        _hit.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+    for _hz in (100, 170, 200):                         # zoom pitches where height != painted pitch
+        if hasattr(_hit, 'apply_zoom'):
+            _hit.apply_zoom(_hz)
+        pump(40)
+        _hrows, _hcols = _hit._rows, _hit._cols
+        _hframe = b'\x1b[?1000h\x1b[?1006h\x1b[2J'       # arm tracking + SGR, clear
+        for _hr in range(1, _hrows + 1):
+            _hframe += ('\x1b[%d;1H' % _hr).encode() + (('R%02d' % _hr).ljust(_hcols, '.')).encode()
+        feed_output(_hit, _hframe)
+        pump(60)                                        # let the debounced grid render fire
+        if _hz == 100:
+            ok(_hit._mouse_report_on(), 'hit-test frame: tracking + SGR is armed')
+        _hbc = _hit.document().blockCount()
+        for _edge in ('top', 'bottom'):
+            for _gr in range(1, _hrows + 1):
+                _blk = _hit.document().findBlockByNumber(_hbc - _hrows + _gr - 1)
+                _hsent.clear()
+                _hit.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                                          pos=_hit_cell_pt(_hit, _blk.position(), _edge)))
+                _rep = _parse_sgr(_hsent)
+                if _rep is None or _rep[2] != _gr:
+                    _hbad.append((_hz, _edge, _gr, None if _rep is None else _rep[2]))
+                _hit.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease,
+                                            Qt.MouseButton.LeftButton))
     ok(not _hbad,
-       'a top-edge click reports its OWN row for every grid row (no double-margin skew): '
-       'mismatches %r' % _hbad)
+       'a click 1px inside either edge reports its OWN row, every row, across zooms (layout '
+       'hit-test, no double-margin skew and no char_h pitch drift): mismatches %r' % _hbad)
 _hit.close()
 
 # a button not in the SGR table (e.g. a mouse back-button) is NOT reported; it falls
