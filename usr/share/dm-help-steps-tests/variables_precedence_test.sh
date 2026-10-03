@@ -64,7 +64,9 @@ trap cleanup EXIT
 printf '%s\n' 'default_if_empty dist_build_hostname CONFVAL' > "${conf_sdv}"
 printf '%s\n' 'dist_build_hostname=CONFVAL' > "${conf_force}"
 
-base_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false )
+## '--repo false': derivative-maker makes the APT-repo choice MANDATORY (variables.d/15_redistributable.bsh);
+## an unset choice fails loudly. This test does not care which way, so pick a value to clear the gate.
+base_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false --repo false )
 
 ## Resolve dist_build_hostname under one layer combination.
 ##   $1 description  $2 expected  $3 env assignment ('' none)  rest = extra args

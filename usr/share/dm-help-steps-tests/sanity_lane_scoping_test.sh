@@ -8,12 +8,16 @@
 ## The three globally-scoped sanity checks in build-steps.d/1100_sanity-tests must be scoped to
 ## THIS build's lane (binary_build_folder_dist / CHROOT_FOLDER) so a CONCURRENT build in another
 ## --build-slot does not false-trip them:
-##   - check-stray-mounts     : match the full lane CHROOT_FOLDER in /proc/mounts, not the
-##                              shared basename (basename match = fatal abort on a sibling lane)
+##   - check-stray-mounts     : match /proc/mounts against the CANONICAL lane CHROOT_FOLDER with an
+##                              ANCHORED (exact-or-below) match, never a substring: not the shared
+##                              basename (basename match = fatal abort on a sibling lane), not a
+##                              prefix-sibling ("..._image_extra"), and after resolving a trailing
+##                              slash / symlink so the spelling does not matter
 ##   - check-stray-loop-devices: warn only for a loop backing a file inside this lane; read the
 ##                              structured losetup BACK-FILE column (robust to '(deleted)' etc.)
-##   - mount-test             : the stale device-mapper precheck errors only for a loopNpM whose
-##                              backing loop is inside this lane, not any global loopNpM
+##   - mount-test             : the stale device-mapper precheck errors for a loopNpM whose backing
+##                              loop is inside THIS lane, AND for an ORPHAN loopNpM with no backing
+##                              loop at all (empty BACK-FILE), but NOT for another lane's live mapping
 ##
 ## The REAL functions are SOURCED (1100 is source-able: was_executed gates its main()). All
 ## privileged calls route through ${SUDO_TO_ROOT}, so a single dispatcher stub feeds fixtures
@@ -143,6 +147,57 @@ else
    fail "check-stray-mounts: false-aborted on another lane's mount (basename match regressed, rc=${CAP_RC})"
 fi
 
+## A submount strictly BELOW the lane chroot (a build bind-mount) -> abort.
+MOUNTS_FIXTURE="devpts ${CHROOT_FOLDER}/dev/pts devpts rw 0 0"
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: aborts on a submount below this lane's CHROOT_FOLDER"
+else
+   fail "check-stray-mounts: missed a submount below CHROOT_FOLDER (rc=${CAP_RC})"
+fi
+
+## A sibling whose path merely STARTS with the chroot path ("..._image_extra") is NOT at or below
+## it and must NOT trip -- anchored match, not substring. Canary: the old 'grep -F' substring aborts.
+MOUNTS_FIXTURE="/dev/mapper/z ${CHROOT_FOLDER}_extra ext4 rw 0 0"
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 0 ]; then
+   pass "check-stray-mounts: ignores a prefix-sibling path (anchored, not substring)"
+else
+   fail "check-stray-mounts: false-aborted on a prefix-sibling (substring match regressed, rc=${CAP_RC})"
+fi
+
+## A trailing slash on CHROOT_FOLDER must still match the kernel-canonical (slash-stripped) mount
+## point. Canary: the old literal grep for 'CHROOT_FOLDER' with a trailing slash never matches the
+## slash-less /proc/mounts line.
+saved_chroot="${CHROOT_FOLDER}"
+CHROOT_FOLDER="${saved_chroot}/"
+MOUNTS_FIXTURE="/dev/mapper/x ${saved_chroot} ext4 rw 0 0"
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: canonicalizes a trailing-slash CHROOT_FOLDER before matching"
+else
+   fail "check-stray-mounts: trailing-slash CHROOT_FOLDER missed its own mount (rc=${CAP_RC})"
+fi
+CHROOT_FOLDER="${saved_chroot}"
+
+## A symlinked CHROOT_FOLDER must resolve to the real path /proc/mounts reports. Build a REAL
+## symlink (realpath consults the live FS) and point CHROOT_FOLDER through it. Canary: the old
+## substring grep compares the unresolved symlink path and never matches the resolved mount line.
+sym_root="$(mktemp --directory)"
+mkdir --parents -- "${sym_root}/real/Kicksecure-CLI_image"
+ln --symbolic -- "${sym_root}/real" "${sym_root}/link"
+saved_chroot="${CHROOT_FOLDER}"
+CHROOT_FOLDER="${sym_root}/link/Kicksecure-CLI_image"
+MOUNTS_FIXTURE="/dev/mapper/x ${sym_root}/real/Kicksecure-CLI_image ext4 rw 0 0"
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: resolves a symlinked CHROOT_FOLDER to the real mount path"
+else
+   fail "check-stray-mounts: symlinked CHROOT_FOLDER did not match its real mount (rc=${CAP_RC})"
+fi
+CHROOT_FOLDER="${saved_chroot}"
+safe-rm --recursive --force -- "${sym_root}"
+
 ## ---- check-stray-loop-devices: lane-only, robust BACK-FILE parse ----------------------------
 LOOP_BACKFILES="/var/swapfile
 ${other_chroot%/*}/otherlane.raw
@@ -184,10 +239,20 @@ fi
 DMSETUP_LS="loop5p1 (254:0)"
 LOOP_BACK=(["/dev/loop5"]="${binary_build_folder_dist}/Kicksecure-CLI.raw")
 run_fn mount-test
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'stale device-mapper .* in this build lane' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'stale device-mapper' <<< "${CAP}" \
+   && grep --quiet "${binary_build_folder_dist}/Kicksecure-CLI.raw" <<< "${CAP}"; then
    pass "mount-test: aborts on a stale loopNpM backing THIS lane"
 else
    fail "mount-test: did not abort on this lane's stale dm mapping (rc=${CAP_RC})"
+fi
+
+## The 'loop' in the device name must NOT be mis-stripped: 'loop5p1' -> /dev/loop5 (not /dev/loo).
+## The backing query is keyed on /dev/loop5, so a wrong strip would read the wrong (empty) device
+## and mis-flag it as an orphan instead of matching this lane's backing file above.
+if grep --quiet '/dev/loop5' <<< "${CAP}" || grep --quiet "${binary_build_folder_dist}/Kicksecure-CLI.raw" <<< "${CAP}"; then
+   pass "mount-test: strips only the trailing partition suffix (loop5p1 -> loop5)"
+else
+   fail "mount-test: mis-stripped the loop device name (greedy %%p*): ${CAP}"
 fi
 
 ## A loopNpM for ANOTHER lane -> NOT the stale error; mount-test proceeds and fails later at the
@@ -210,6 +275,42 @@ if ! grep --quiet 'stale device-mapper' <<< "${CAP}"; then
    pass "mount-test: clean dm state passes the stale precheck"
 else
    fail "mount-test: false stale-dm error with no mappings present"
+fi
+
+## An ORPHANED loopNpM whose backing /dev/loopN is gone (empty BACK-FILE) belongs to no lane and is
+## unconditionally stale -> abort regardless of lane. Canary: the pre-F5 lane-prefix match skipped an
+## empty backing file, so the orphan slipped past this precheck to the stubbed image step.
+DMSETUP_LS="loop7p1 (254:2)"
+LOOP_BACK=()
+run_fn mount-test
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'orphaned: no backing loop device' <<< "${CAP}"; then
+   pass "mount-test: aborts on an orphaned loopNpM with no backing loop device"
+else
+   fail "mount-test: did not flag an orphaned (backing-less) loopNpM (rc=${CAP_RC}): ${CAP}"
+fi
+
+## A whitespace-only BACK-FILE (losetup column padding on a vanished device) is treated as empty ->
+## still flagged as an orphan, not silently skipped.
+DMSETUP_LS="loop8p1 (254:3)"
+LOOP_BACK=(["/dev/loop8"]="   ")
+run_fn mount-test
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'orphaned: no backing loop device' <<< "${CAP}"; then
+   pass "mount-test: treats a whitespace-only BACK-FILE as an orphan"
+else
+   fail "mount-test: whitespace-only BACK-FILE not flagged as orphan (rc=${CAP_RC}): ${CAP}"
+fi
+
+## An orphan AND a concurrent lane's live mapping together: flag only the orphan, leave the foreign
+## backed mapping alone.
+DMSETUP_LS="loop7p1 (254:2)
+loop6p1 (254:1)"
+LOOP_BACK=(["/dev/loop6"]="${other_chroot%/*}/otherlane.raw")
+run_fn mount-test
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'loop7p1 (orphaned' <<< "${CAP}" \
+   && ! grep --quiet 'loop6p1' <<< "${CAP}"; then
+   pass "mount-test: flags the orphan but not a concurrent lane's live mapping"
+else
+   fail "mount-test: mixed orphan + foreign-lane mapping mis-handled (rc=${CAP_RC}): ${CAP}"
 fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
