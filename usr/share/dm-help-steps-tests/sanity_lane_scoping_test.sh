@@ -184,6 +184,11 @@ CHROOT_FOLDER="${saved_chroot}"
 ## symlink (realpath consults the live FS) and point CHROOT_FOLDER through it. Canary: the old
 ## substring grep compares the unresolved symlink path and never matches the resolved mount line.
 sym_root="$(mktemp --directory)"
+## Trap-based cleanup so the temp dir is removed even if a step aborts under errexit before the
+## explicit safe-rm below (e.g. mkdir/ln failing on a broken FS).
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup_sym_root() { [ -z "${sym_root:-}" ] || safe-rm --recursive --force -- "${sym_root}"; }
+trap cleanup_sym_root EXIT
 mkdir --parents -- "${sym_root}/real/Kicksecure-CLI_image"
 ln --symbolic -- "${sym_root}/real" "${sym_root}/link"
 saved_chroot="${CHROOT_FOLDER}"
@@ -197,6 +202,8 @@ else
 fi
 CHROOT_FOLDER="${saved_chroot}"
 safe-rm --recursive --force -- "${sym_root}"
+sym_root=""
+trap - EXIT
 
 ## ---- check-stray-loop-devices: lane-only, robust BACK-FILE parse ----------------------------
 LOOP_BACKFILES="/var/swapfile
@@ -239,20 +246,14 @@ fi
 DMSETUP_LS="loop5p1 (254:0)"
 LOOP_BACK=(["/dev/loop5"]="${binary_build_folder_dist}/Kicksecure-CLI.raw")
 run_fn mount-test
+## This case ALSO guards the loop-name strip: a greedy '%%p*' ("loop5p1" -> "loo") would key the
+## backing lookup on /dev/loo (empty) and send this down the orphan path, so CAP would carry
+## "orphaned: no backing loop device" instead of the lane backing file -- failing the grep below.
 if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'stale device-mapper' <<< "${CAP}" \
    && grep --quiet "${binary_build_folder_dist}/Kicksecure-CLI.raw" <<< "${CAP}"; then
-   pass "mount-test: aborts on a stale loopNpM backing THIS lane"
+   pass "mount-test: aborts on a stale loopNpM backing THIS lane (and strips loop5p1 -> loop5)"
 else
    fail "mount-test: did not abort on this lane's stale dm mapping (rc=${CAP_RC})"
-fi
-
-## The 'loop' in the device name must NOT be mis-stripped: 'loop5p1' -> /dev/loop5 (not /dev/loo).
-## The backing query is keyed on /dev/loop5, so a wrong strip would read the wrong (empty) device
-## and mis-flag it as an orphan instead of matching this lane's backing file above.
-if grep --quiet '/dev/loop5' <<< "${CAP}" || grep --quiet "${binary_build_folder_dist}/Kicksecure-CLI.raw" <<< "${CAP}"; then
-   pass "mount-test: strips only the trailing partition suffix (loop5p1 -> loop5)"
-else
-   fail "mount-test: mis-stripped the loop device name (greedy %%p*): ${CAP}"
 fi
 
 ## A loopNpM for ANOTHER lane -> NOT the stale error; mount-test proceeds and fails later at the
