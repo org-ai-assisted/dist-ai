@@ -835,6 +835,36 @@ def test_assert_hwaccel_passes_on_amdv(monkeypatch):
     M.assert_hwaccel('kick', timeout=0, interval=0)  # must not raise
 
 
+def test_assert_hwaccel_keeps_polling_through_hm_init(monkeypatch):
+    ## Regression: VBox 7.2 logs 'HM: HMR3Init: AMD-V w/ nested paging' (~0.029s) BEFORE
+    ## the positive 'HM: Using AMD-V implementation' (~0.101s). A poll that samples the log
+    ## in that ~70ms window sees a bare 'hm:' with no positive marker yet. The loop must NOT
+    ## break on it (and misread the accelerated boot as degraded -> false HwAccelError ->
+    ## SETUP) -- it must keep polling until the log is conclusive.
+    mid_init = '00:00:00.029629 HM: HMR3Init: AMD-V w/ nested paging\n'
+    full = mid_init + '00:00:00.101863 HM: Using AMD-V implementation 2.0\n'
+    calls = []
+
+    def fake_log(vm, vboxmanage=M.VBOXMANAGE):
+        calls.append(vm)
+        return mid_init if len(calls) == 1 else full
+
+    monkeypatch.setattr(M, '_vm_log_text', fake_log)
+    M.assert_hwaccel('kick', timeout=30, interval=0)  # must not raise
+    assert len(calls) >= 2  # kept polling past the mid-init snapshot
+
+
+def test_assert_hwaccel_times_out_when_never_conclusive(monkeypatch):
+    ## Fail-closed safety net: if the log never becomes conclusive (only a bare 'hm:' line,
+    ## no positive/fallback marker), the poll breaks at the deadline and still raises -- a
+    ## genuinely stuck/degraded boot must never pass as accelerated.
+    monkeypatch.setattr(M, '_vm_log_text',
+                        lambda vm, vboxmanage=M.VBOXMANAGE:
+                        '00:00:00.029629 HM: HMR3Init: AMD-V w/ nested paging\n')
+    with pytest.raises(M.HwAccelError):
+        M.assert_hwaccel('kick', timeout=0, interval=0)
+
+
 def test_start_vm_amd_v_refusal_is_setup_not_fail(monkeypatch):
     ## AMD-V refused (KVM VM running) is SETUP, not a boot FAIL: start_vm must raise
     ## SetupError so the caller maps it to SETUP_RC (2), not FAIL_RC (5).
