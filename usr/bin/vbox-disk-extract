@@ -113,6 +113,25 @@ parse_args() {
    [ "$(id -u)" = '0' ]    || die "must run as root (invoke via sudo)"
 }
 
+## Block until the kernel has published the connected disk's partition nodes (the
+## partprobe uevents are async). A whole-disk image legitimately has no partitions,
+## so a device-level signature counts as settled too. Bounded, so a blank disk still
+## returns rather than hanging.
+settle_partitions() {
+   local dev="$1" i
+   partprobe "${dev}" 2>/dev/null || true
+   for ((i = 0; i < 40; i++)); do
+      udevadm settle 2>/dev/null || true
+      if [ -b "${dev}p1" ]; then
+         return 0
+      fi
+      if blkid -- "${dev}" >/dev/null 2>&1; then
+         return 0
+      fi
+      sleep 0.25
+   done
+}
+
 ## First unused /dev/nbdN (size 0 = not connected).
 free_nbd() {
    local d
@@ -132,8 +151,10 @@ candidate_filesystems() {
       local mapped="/dev/mapper/${luks_name}"
       ## LVM inside LUKS: activate the VG and list its LVs; otherwise the mapping
       ## itself is the filesystem.
+      ## pvs exits non-zero when the mapping is a plain filesystem (not an LVM PV);
+      ## that is expected, so tolerate it rather than letting errexit abort.
       local vg
-      vg="$(pvs --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ')"
+      vg="$(pvs --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ' || true)"
       if [ -n "${vg}" ]; then
          vgchange --activate y -- "${vg}" >/dev/null
          vg_activated="${vg}"
@@ -142,10 +163,17 @@ candidate_filesystems() {
          printf '%s\n' "${mapped}"
       fi
    else
-      local p
+      ## Plain disk: its partitions, or the whole device for an unpartitioned image.
+      local p printed='false'
       for p in "${nbd_dev}"p*; do
-         [ -b "${p}" ] && printf '%s\n' "${p}"
+         if [ -b "${p}" ]; then
+            printf '%s\n' "${p}"
+            printed='true'
+         fi
       done
+      if [ "${printed}" = 'false' ]; then
+         printf '%s\n' "${nbd_dev}"
+      fi
    fi
 }
 
@@ -155,29 +183,33 @@ main() {
    modprobe nbd max_part=16 2>/dev/null || true
    nbd_dev="$(free_nbd)"
    qemu-nbd --read-only --connect="${nbd_dev}" -- "${disk}"
-   partprobe "${nbd_dev}" 2>/dev/null || true
-   udevadm settle 2>/dev/null || true
+   settle_partitions "${nbd_dev}"
 
    if [ -n "${passphrase_file}" ]; then
-      local part luks_part=""
-      for part in "${nbd_dev}"p*; do
-         [ -b "${part}" ] || continue
-         if cryptsetup isLuks -- "${part}" 2>/dev/null; then
-            luks_part="${part}"
+      ## The LUKS volume is a partition, or the whole disk for an unpartitioned image.
+      local target luks_target=""
+      for target in "${nbd_dev}" "${nbd_dev}"p*; do
+         [ -b "${target}" ] || continue
+         if cryptsetup isLuks -- "${target}" 2>/dev/null; then
+            luks_target="${target}"
             break
          fi
       done
-      [ -n "${luks_part}" ] || die "no LUKS partition found on '${disk}'"
+      [ -n "${luks_target}" ] || die "no LUKS volume found on '${disk}'"
       luks_name="vde-$$-luks"
       cryptsetup --readonly open --key-file "${passphrase_file}" \
-         -- "${luks_part}" "${luks_name}"
+         -- "${luks_target}" "${luks_name}"
    fi
 
    mnt_dir="$(mktemp --directory)"
    local fs found='false'
    while read -r fs; do
       [ -n "${fs}" ] || continue
-      if ! mount --read-only -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+      ## A hard-powered-off VM leaves an unclean ext journal; ext* cannot replay it
+      ## on a read-only device and refuses a plain '-o ro' mount, so fall back to
+      ## 'noload' (skip journal replay -- safe for a read-only inspection).
+      if ! mount --read-only -- "${fs}" "${mnt_dir}" 2>/dev/null \
+         && ! mount --read-only --options noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          continue
       fi
       if [ -e "${mnt_dir}/${source_path#/}" ]; then
