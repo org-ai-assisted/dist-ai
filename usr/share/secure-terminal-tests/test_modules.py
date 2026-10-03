@@ -1247,6 +1247,10 @@ try:
        'crashdiag: a FIFO with a reader is refused by the regular-file check')
 finally:
     os.close(_cd_rfd)
+# The failure-path install_best_effort calls above each registered the SIGUSR1 dumper against
+# this process's stderr (install() registers it BEFORE the log open that then failed); reset
+# it so the rest of the suite runs with the default SIGUSR1 disposition.
+faulthandler.unregister(signal.SIGUSR1)
 
 # echo_stderr swallows a broken/closed stderr (the GUI case): the durable copy is written
 # first, so a stderr failure in the Qt message handler loses nothing and never raises out.
@@ -1300,7 +1304,27 @@ _cd_u = subprocess.run(
 ok(_cd_u.returncode == -signal.SIGUSR1,
    'crashdiag(canary): unhandled SIGUSR1 terminates by default (register() is the fix)')
 
-for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2):
+# REGRESSION (codex + claude): SIGUSR1 must stay NON-FATAL even when the durable crash log
+# cannot be opened. install() registers the dumper against stderr BEFORE opening the log, so a
+# planted FIFO (unopenable log -> install_best_effort returns None) still leaves kill -USR1
+# dumping to stderr rather than KILLING the app. Old code registered only AFTER the log opened,
+# so this subprocess died by SIGUSR1 instead of surviving.
+_cd_nolog_root = tempfile.mkdtemp()
+os.mkfifo(crashdiag.crash_log_path(_cd_nolog_root))
+_cd_nolog = subprocess.run(
+    [sys.executable, '-c',
+     'import os, signal, time\n'
+     'from secure_terminal import crashdiag\n'
+     'assert crashdiag.install_best_effort(%r) is None\n'
+     'os.kill(os.getpid(), signal.SIGUSR1)\n'
+     'time.sleep(0.3)\n'
+     'print("survived-no-log")\n' % _cd_nolog_root],
+    capture_output=True, text=True, check=False)
+ok(_cd_nolog.returncode == 0 and 'survived-no-log' in _cd_nolog.stdout,
+   'crashdiag: SIGUSR1 stays non-fatal when the crash log cannot be opened (dumps to stderr)')
+
+for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2,
+              _cd_nolog_root):
     shutil.rmtree(_cd_d, ignore_errors=True)
 
 
