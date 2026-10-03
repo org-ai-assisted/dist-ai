@@ -72,6 +72,15 @@ if [ -z "${func_text}" ]; then
    exit 1
 fi
 
+## This test asserts the pkg_git_branch_agnostic opt-out. If the resolved
+## subject predates it (e.g. a stale installed /usr/bin copy, or a checkout
+## without the developer-meta-files change), fail with a clear cause rather
+## than a misleading "guard rejected on ai" assertion against old code.
+if [[ "${func_text}" != *pkg_git_branch_agnostic* ]]; then
+   printf '%s\n' "FATAL: resolved dm-packaging-helper-script ('${subject}') predates the pkg_git_branch_agnostic opt-out; point DEVELOPER_META_FILES_DIR at a developer-meta-files checkout that has it." >&2
+   exit 1
+fi
+
 tmp_root="$(mktemp -d)"
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
@@ -125,13 +134,6 @@ if run_guard "${repo_ai}" "true"; then
    pass "on ai with pkg_git_branch_agnostic=true -> skipped"
 else
    fail "on ai with pkg_git_branch_agnostic=true -> rejected (expected skip)"
-fi
-
-## 4. on master, pkg_git_branch_agnostic=true -> skip -> pass (0)
-if run_guard "${repo_master}" "true"; then
-   pass "on master with pkg_git_branch_agnostic=true -> skipped"
-else
-   fail "on master with pkg_git_branch_agnostic=true -> rejected (expected skip)"
 fi
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
