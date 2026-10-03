@@ -58,5 +58,13 @@ unset dist_build_slot
 eval "${line}"
 if [ "${repo_parent}" = "/home/user/derivative-binary" ]; then pass "no slot -> flat derivative-binary (flat build matched)"; else fail "invented a slot / wrong flat default (got '${repo_parent}')"; fi
 
+## Structural: a followed lane is VALIDATED before it becomes a share host path (a '..'
+## would point the read-only guest share outside derivative-binary). CANARY.
+if grep -E 'check_is_alpha_numeric[[:space:]]+dist_build_slot' -- "${subject}" >/dev/null; then
+   pass "dist_build_slot is validated with check_is_alpha_numeric when the lane is followed"
+else
+   fail "dist_build_slot is NOT validated -- '..' would share a dir outside derivative-binary"
+fi
+
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

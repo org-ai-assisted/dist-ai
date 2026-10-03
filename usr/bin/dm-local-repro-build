@@ -33,6 +33,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## strings.bsh: reuse check_is_alpha_numeric to validate the build lane (see below).
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
+   printf '%s\n' "dm-local-repro-build: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
 progress="$1"
 ## The commit under test. Passed explicitly because sign-and-tag AMENDS the
 ## parent HEAD, so after any attempt the tree no longer sits on it -- a second
@@ -103,6 +110,14 @@ esac
 ## would match a FOREIGN lane's fresh image and compare the wrong sha512. Honor an
 ## explicit/forwarded dist_build_slot; else key on the session (sandbox-session-slug).
 build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
+## Validate before the slot is spliced into the build command and the find roots
+## below: check_is_alpha_numeric enforces [A-Za-z0-9_-] (what sandbox-session-slug
+## emits), rejecting empty and a '..' / '/' / ';' / quote that would break out of the
+## heredoc or the lane. Empty would also collapse binary_lane to the flat root.
+if ! check_is_alpha_numeric build_slot; then
+   printf '%s\n' "dm-local-repro-build: invalid build lane '${build_slot}' (need [A-Za-z0-9_-])" >&2
+   exit 2
+fi
 binary_lane="/home/user/binary_mnt/${build_slot}"
 
 note() {
@@ -267,12 +282,17 @@ truncate --size=0 -- "${remote_log}"
 ## none, so docker refuses with "the input device is not a TTY" and the build
 ## never starts -- while the log still grows, which is exactly the shape that
 ## looks like progress. CI sets this itself; a local mirror must too.
-setsid nohup env CI=true dist_build_slot='${build_slot}' ./docker/derivative-maker-docker-run -- \
+## dist_build_slot is set on the IN-CONTAINER dm-build-official env (below), not on
+## the docker-run host process: derivative-maker-docker-run forwards only an explicit
+## allowlist into the container, so a host-side lane would be dropped and the build
+## would write flat while the finds look in the (empty) lane -> a false "no artifact".
+setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
    bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
    export dist_build_sign_and_tag=true && \
    ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
    env dist_build_target_arch='amd64' flavors_list='kicksecure-debug' \
    dist_build_multi_target_list='${multi_target_list}' \
+   dist_build_slot='${build_slot}' \
    ./help-steps/dm-build-official --freshness frozen --package-jobs 2" \
    > "${remote_log}" 2>&1 < /dev/null &
 disown

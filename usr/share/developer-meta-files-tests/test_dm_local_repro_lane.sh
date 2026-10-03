@@ -85,5 +85,31 @@ else
    fail "the launched build does not set dist_build_slot (output would not be laned)"
 fi
 
+## Structural: the slot is VALIDATED (reused check_is_alpha_numeric) before it is spliced
+## into the heredoc / find roots. CANARY: fails on the pre-validation version.
+if grep -E 'check_is_alpha_numeric[[:space:]]+build_slot' -- "${subject}" >/dev/null; then
+   pass "build_slot is validated with check_is_alpha_numeric before use"
+else
+   fail "build_slot is NOT validated -- a '..'/quote/space slot would break out of the heredoc or lane"
+fi
+
+## Behavioral: the chosen validator rejects exactly the dangerous inputs the finding named
+## (injection, path traversal, glob, empty) and accepts a real session slug (UUID has '-').
+# shellcheck disable=SC1091
+if source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
+   v_ok=0
+   for bad in "x'; echo pwn; echo '" 'a;b' 'a b' '..' '../x' 'a/b' '*' ''; do
+      probe="${bad}"
+      if check_is_alpha_numeric probe 2>/dev/null; then v_ok=1; printf '%s\n' "  rejected-expected but ACCEPTED: '${bad}'"; fi
+   done
+   for good in 277f00ff-57c2-47bf-ac87-5e120a5fe030 stub-slug lane_1; do
+      probe="${good}"
+      if ! check_is_alpha_numeric probe 2>/dev/null; then v_ok=1; printf '%s\n' "  accepted-expected but REJECTED: '${good}'"; fi
+   done
+   if [ "${v_ok}" -eq 0 ]; then pass "check_is_alpha_numeric rejects injection/traversal/glob/empty, accepts a UUID slug"; else fail "check_is_alpha_numeric verdict unexpected (see above)"; fi
+else
+   fail "cannot source helper-scripts strings.bsh to verify the validator (set HELPER_SCRIPTS_PATH)"
+fi
+
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

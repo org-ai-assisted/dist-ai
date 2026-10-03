@@ -81,6 +81,16 @@ else
    pass "ignores another lane's loop and the swapfile"
 fi
 
+## Case A2: a DELETED backing file in our lane (the typical aborted-build leftover).
+## The ' (deleted)' suffix must not defeat the parse (greedy ##*( took the wrong paren).
+out="$(run_check "/dev/loop3: [64769]:444 (/home/user/derivative-binary/mylane/Kicksecure-CLI_image (deleted))")"
+if grep --quiet 'Stray loop devices detected' <<< "${out}" \
+   && grep --quiet 'mylane/Kicksecure-CLI_image' <<< "${out}"; then
+   pass "detects a DELETED backing file in this lane (greedy-paren parse bug fixed)"
+else
+   fail "missed a '(deleted)' stray loop in this lane"
+fi
+
 ## Case B: only a decoy lane + swapfile -> no stray in OUR lane.
 out="$(run_check "/dev/loop0: [64769]:111 (/var/swapfile)
 /dev/loop1: [64769]:222 (/home/user/derivative-binary/otherlane/Kicksecure-CLI_image)")"
