@@ -96,37 +96,15 @@ case "${submodule_overrides}" in
       ;;
 esac
 
-## strings.bsh: reuse check_is_alpha_numeric to validate the build lane, and
-## string_quote_safe to print an untrusted slot without terminal-escape injection.
-## Sourced here (after the arg/target checks above) so a usage error fires first.
-# shellcheck disable=SC1091
-if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
-   printf '%s\n' "dm-local-repro-build: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
-   exit 3
-fi
-
 ## Build lane. derivative-maker scopes a build's whole scratch tree + output by
 ## dist_build_slot, so laning this build (a) lets a concurrent build in another
-## session run without colliding, and (b) confines the artifact finds below to
-## THIS build's lane -- without it those finds, rooted at the shared binary_mnt,
-## would match a FOREIGN lane's fresh image and compare the wrong sha512. Honor an
-## explicit/forwarded dist_build_slot; else key on the session. '|| true' keeps a
-## missing sandbox-session-slug (private-ai-config, same package as the required
-## sandbox) from aborting errexit with a bare command-not-found; the empty-check
-## below then reports WHY instead of failing with no context.
-build_slot="${dist_build_slot:-$(sandbox-session-slug 2>/dev/null || true)}"
-if [ -z "${build_slot}" ]; then
-   printf '%s\n' "dm-local-repro-build: cannot derive the build lane via sandbox-session-slug (private-ai-config required, or pass dist_build_slot)" >&2
-   exit 3
-fi
-## Validate before the slot is spliced into the build command and the find roots
-## below: check_is_alpha_numeric enforces [A-Za-z0-9_-] (what sandbox-session-slug
-## emits), rejecting empty and a '..' / '/' / ';' / quote that would break out of the
-## heredoc or the lane. Empty would also collapse binary_lane to the flat root.
-if ! check_is_alpha_numeric build_slot; then
-   printf '%s\n' "dm-local-repro-build: invalid build lane $(string_quote_safe "${build_slot}") (need [A-Za-z0-9_-])" >&2
-   exit 2
-fi
+## session run without colliding, and (b) confines the artifact finds below to THIS
+## build's lane -- without it those finds, rooted at the shared binary_mnt, would
+## match a FOREIGN lane's fresh image and compare the wrong sha512. Honor an
+## explicit/forwarded dist_build_slot; else key on the session (sandbox-session-slug,
+## a hard dependency alongside the required sandbox, emits a path-safe [A-Za-z0-9_-]
+## slug). The slot is trusted (env / command line), so it is used as-is.
+build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
 binary_lane="/home/user/binary_mnt/${build_slot}"
 
 note() {
