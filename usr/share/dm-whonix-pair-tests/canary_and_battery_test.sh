@@ -90,10 +90,10 @@ nictrace_pcap="${work}/pcap"
 
 ## --- ws_battery: one short command on /mnt/shared, no inline script -------------------------
 out="$(ws_battery '--probe tor-confirm')"
-rc=0; has "sudo -S -p '' python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
-check 'ws_battery: runs the battery on /mnt/shared under sudo -S (no copyto, no inline script)' "${rc}"
-rc=0; has '| sudo -S' "${out}" || rc=$?
-check 'ws_battery: pipes the password to sudo -S' "${rc}"
+rc=0; has "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
+check 'ws_battery: runs the battery on /mnt/shared under plain sudo (no copyto, no inline script)' "${rc}"
+rc=0; has "printf " "${out}" && rc=1 || rc=0
+check 'ws_battery: no piped password (sysmaint passwordless sudo; no hardcoded secret)' "${rc}"
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1

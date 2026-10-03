@@ -58,11 +58,10 @@ SNAPSHOT="${SNAPSHOT:-clean-live}"
 ## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
 ## battery -- no re-embedded copy). Provisioned location; overridable.
 ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}"
-## The battery needs root (icmp + gateway-craft). sysmaint sudo is NOT passwordless in the
-## shipped image (the %sudo NOPASSWD rule in /etc/sudoers.d/user-passwordless is commented),
-## so drive sudo with the image's default password (public, not a secret -- overridable). A
-## piped password is ignored if passwordless is ever enabled, so this works either way.
-SYSMAINT_PASSWORD="${SYSMAINT_PASSWORD:-changeme}"
+## The battery needs root (icmp + gateway-craft). The sysmaint session has passwordless sudo by
+## default, so run it under a plain `sudo`. Under guestcontrol there is no tty, so an image that
+## ever required a password makes sudo FAIL (non-zero) rather than hang or pass vacuously --
+## fail-closed, never a silent green.
 ## Where the guest auto-mounts the 'shared' folder that carries the battery (fixed by the
 ## guest's mnt-shared-vbox.service). The host staging dir is made in main.
 GUEST_SHARE_MOUNT='/mnt/shared'
@@ -200,10 +199,10 @@ boot_workstation_sysmaint() {
 ## (0 clear / 1 leak / 2 inconclusive). PROBES selects the probe set.
 ws_battery() {
    local probes="$1"
-   ## Run the battery (on the /mnt/shared mount) as root via sudo -S (password piped on stdin;
-   ## the battery reads no stdin, so there is no collision). One short command, no inline script.
+   ## Run the battery (on the /mnt/shared mount) as root via plain sudo (sysmaint = passwordless
+   ## sudo). The guest exit code IS the verdict; one short command, no inline script.
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "printf '%s\n' '${SYSMAINT_PASSWORD}' | sudo -S -p '' python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+      --cmd "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
 }
 
 ## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's
