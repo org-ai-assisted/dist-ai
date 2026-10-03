@@ -75,11 +75,6 @@ if ! has safe-rm; then
    printf '%s\n' "FATAL: safe-rm not on PATH" >&2
    exit 1
 fi
-## The absent-path test needs 'rcvboxadd' genuinely NOT on the base PATH.
-if has rcvboxadd; then
-   printf '%s\n' "FATAL: 'rcvboxadd' unexpectedly on PATH; cannot test the GA-absent path" >&2
-   exit 1
-fi
 ## Not root in the test: the root check is stubbed to a no-op.
 as_root() { :; }
 
@@ -89,8 +84,13 @@ cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 bindir="${work}/bin"
+## A controlled EMPTY bindir is the ONLY PATH entry for the GA-absent case, so
+## 'has rcvboxadd' is false regardless of whether the host has the real tool -- the
+## suite must run on a VirtualBox guest too. log/log_run resolve stecho via
+## HELPER_SCRIPTS_PATH (absolute), not PATH, so an empty PATH is fine here.
+empty_bin="${work}/empty-bin"
 setup_sentinel="${work}/rcvboxadd.setup.invoked"
-mkdir --parents -- "${bindir}"
+mkdir --parents -- "${bindir}" "${empty_bin}"
 
 cat > "${bindir}/rcvboxadd" <<'STUB'
 #!/bin/bash
@@ -135,7 +135,7 @@ run_vbox() {
    if [ "$1" = 'present' ]; then
       path="${bindir}:${base_path}"
    else
-      path="${base_path}"
+      path="${empty_bin}"
    fi
    out="$(PATH="${path}" rebuild_vbox_ga_modules 2>&1)" || rc=$?
    printf '%s\n%s' "${rc}" "${out}"

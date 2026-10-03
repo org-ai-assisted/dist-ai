@@ -71,8 +71,9 @@ build_sentinel="${work}/dkms.build.invoked"
 install_sentinel="${work}/dkms.install.invoked"
 mkdir --parents -- "${bindir}"
 
-## dkms stub: 'status' prints a controlled listing; 'build'/'install' record that
-## they ran. The real script parses 'name, version, kernel, arch: status' lines.
+## dkms stub: 'status' prints a controlled listing; 'build'/'install' RECORD THEIR
+## FULL ARGV so a test can assert the subject parsed the right module + kernel. The
+## real script parses dkms 3.x 'name/version, kernel, arch: status' lines.
 cat > "${bindir}/dkms" <<'STUB'
 #!/bin/bash
 case "${1:-}" in
@@ -81,8 +82,8 @@ case "${1:-}" in
          printf '%s\n' "${DKMS_STATUS_OUTPUT}"
       fi
       ;;
-   build)   printf '%s\n' invoked > "${DKMS_BUILD_SENTINEL:-/dev/null}" 2>/dev/null || true ;;
-   install) printf '%s\n' invoked > "${DKMS_INSTALL_SENTINEL:-/dev/null}" 2>/dev/null || true ;;
+   build)   printf '%s\n' "$*" > "${DKMS_BUILD_SENTINEL:-/dev/null}" 2>/dev/null || true ;;
+   install) printf '%s\n' "$*" > "${DKMS_INSTALL_SENTINEL:-/dev/null}" 2>/dev/null || true ;;
 esac
 exit 0
 STUB
@@ -119,20 +120,24 @@ reset_state() {
 }
 
 ## --- an 'installed' module is rebuilt + reinstalled -------------------------
+## Realistic dkms 3.x status line ('name/version, kernel, arch: status').
 reset_state
-export DKMS_STATUS_OUTPUT='tirdad, 1.0, 6.1.0-18-amd64, x86_64: installed'
+export DKMS_STATUS_OUTPUT='tirdad/1.0, 6.1.0-18-amd64, x86_64: installed'
 out="$(rebuild_dkms_modules 2>&1)"
 built='no'
 [ -e "${build_sentinel}" ] && built='yes'
 installed='no'
 [ -e "${install_sentinel}" ] && installed='yes'
+build_cmd=''
+[ -e "${build_sentinel}" ] && build_cmd="$(cat -- "${build_sentinel}")"
 check "installed module -> dkms build invoked"   "${built}"     "yes"
 check "installed module -> dkms install invoked" "${installed}" "yes"
+check "installed module -> build targets the real kernel" "$(contains "${build_cmd}" '-k 6.1.0-18-amd64')" "yes"
 check "installed module -> 'Done rebuilding'"    "$(contains "${out}" 'Done rebuilding DKMS modules.')" "yes"
 
 ## --- a non-'installed' module is skipped (canary: no build) -----------------
 reset_state
-export DKMS_STATUS_OUTPUT='tirdad, 1.0, 6.1.0-18-amd64, x86_64: added'
+export DKMS_STATUS_OUTPUT='tirdad/1.0, 6.1.0-18-amd64, x86_64: added'
 out="$(rebuild_dkms_modules 2>&1)"
 built='no'
 [ -e "${build_sentinel}" ] && built='yes'
