@@ -68,10 +68,13 @@ SYSMAINT_PASSWORD="${SYSMAINT_PASSWORD:-changeme}"
 GUEST_SHARE_MOUNT='/mnt/shared'
 share_dir=''
 
-## Clearnet targets the battery aims its direct-egress probes at; a per-run nonce is NOT
-## used (anon-leak-test fixes these), so the GW-pcap watch list is exactly these.
+## Clearnet targets the battery aims its direct-egress probes at (anon-leak-test's fixed
+## defaults, so the GW-pcap watch list is exactly these). On a CORRECT Whonix the GW drops/
+## torifies everything, so nothing reaches them; only a LEAK would send a handful of packets
+## to these PUBLIC services (1.1.1.1 welcomes connectivity tests; Cloudflare NTP is public).
 CLEARNET_ICMP='1.1.1.1'
 CLEARNET_NTP='162.159.200.123'
+## gateway-craft's forged SOURCE is RFC 5737 TEST-NET-2 (reserved; routes nowhere).
 CRAFT_SRC='198.51.100.99'
 
 gw_started='false'
