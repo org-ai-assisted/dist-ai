@@ -213,6 +213,9 @@ rt_account_is_leak() {
 ## shared primary breaks per-account isolation. The allowlist is keyed on the account
 ## name, NOT blind-trusting the primary, so a privileged group (root/sudo/docker/disk)
 ## anywhere is rejected. $1=account $2=uid $3=primary-group (id -gn) $4=`id -nG` output.
+## Precondition: callers pass a NAMESPACED account (eph-run-/persist-leak-/persist-stable-
+## <...>), never a bare group name -- so an account that IS itself a privileged/shared
+## group name (docker, sudo, users) cannot occur and is not special-cased.
 ## Scope: rejects every privilege-granting GROUP + a shared primary. A NON-group
 ## PASSWORDLESS-sudo grant (a NOPASSWD sudoers entry) is invisible here -- the companion
 ## rt_account_can_sudo EXERCISES sudo to catch it. A command-specific sudoers entry, a
