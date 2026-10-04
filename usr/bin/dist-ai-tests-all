@@ -525,8 +525,13 @@ wire() {
          ## pkg_dir yields its path only when known, else the suite inherits
          ## ANON_LEAK_TEST_REPO from the environment.
          wire_env=( "WHONIX_FIREWALL_REPO=$( pkg_dir whonix-firewall )" )
+         local anon_repo
          anon_repo="$( pkg_dir anon-leak-test )"
-         [ -n "${anon_repo}" ] && wire_env+=( "ANON_LEAK_TEST_REPO=${anon_repo}" )
+         ## if/then/fi, not `&&`: a bare `[ ] && ...` as the branch's last command would
+         ## return 1 when anon_repo is empty, and wire() is called under errexit -> abort.
+         if [ -n "${anon_repo}" ]; then
+            wire_env+=( "ANON_LEAK_TEST_REPO=${anon_repo}" )
+         fi
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )

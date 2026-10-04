@@ -124,6 +124,8 @@ out="$(gw_stop_tor 2>&1)"; rc=$?
 check 'gw_stop_tor succeeds when guestcontrol does' "${rc}"
 rc=0; has 'leaprun sudo && sudo --non-interactive systemctl stop tor@default.service' "${out}" || rc=1
 check 'gw_stop_tor stops Tor via leaprun sudo (so the GW stays in its user session, forwarding intact)' "${rc}"
+rc=0; has '! sudo --non-interactive systemctl is-active --quiet tor@default.service' "${out}" || rc=1
+check 'gw_stop_tor POSITIVELY confirms Tor is inactive (fail-closed, not a probe-exit guess)' "${rc}"
 rc=0; has '--role user' "${out}" || rc=1
 check 'gw_stop_tor runs in the GW USER session (not sysmaint)' "${rc}"
 

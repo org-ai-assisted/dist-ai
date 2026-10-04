@@ -159,8 +159,11 @@ leaktest_preconditions() {
    if [ -z "${ANON_LEAK_TEST_REPO:-}" ]; then
       skip_case 'ANON_LEAK_TEST_REPO is unset (no anon-leak-inject checkout to drive)'
    fi
-   if [ ! -x "$(leaktest_injector)" ]; then
-      printf '%s\n' "FATAL: injector not found/executable: $(leaktest_injector) (bad ANON_LEAK_TEST_REPO checkout)" >&2
+   ## Readable suffices: the injector is invoked via `python3 <path>`, not direct exec,
+   ## so a checkout that lost the +x mode bit still works. Missing/unreadable is an
+   ## environment bug -> FATAL, never skip-green.
+   if [ ! -r "$(leaktest_injector)" ]; then
+      printf '%s\n' "FATAL: injector not readable: $(leaktest_injector) (bad ANON_LEAK_TEST_REPO checkout)" >&2
       exit 1
    fi
 }
