@@ -31,6 +31,7 @@ import unittest
 from systemcheck_testlib import (
     ScenarioTestBase,
     extract_bash_function,
+    run_bash_function,
     run_check_scenario,
     run_check_scenario_isolated,
 )
@@ -251,6 +252,40 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
             body.index('check_tor_bootstrap_require_leaprun'),
             body.index('check_tor_bootstrap_init'),
             'the leaprun guard must run before check_tor_bootstrap_init')
+
+    def test_privleap_usable_guard_returns_zero(self) -> None:
+        ## run_check_scenario discards the guard's own $? (it runs under `set +e`),
+        ## so test_privleap_usable_is_noop cannot see it. Source the extracted guard
+        ## and call it: a `return 1` usable-branch -- which would make
+        ## `check_tor_bootstrap_require_leaprun || break` wrongly skip the whole Tor
+        ## check -- is caught here. The usable path returns before any emit/cleanup,
+        ## so only the probe stub is needed. The `if` suspends errexit for the guard
+        ## body so a non-zero return is captured rather than aborting the run.
+        guard = extract_bash_function(
+            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun')
+        status = run_bash_function(
+            self.PROBE_YES + '\n' + guard,
+            'if check_tor_bootstrap_require_leaprun; then echo "RET:0";'
+            ' else echo "RET:nonzero"; fi')
+        self.assertEqual(status, 'RET:0')
+
+    def test_privleap_unusable_guard_returns_nonzero(self) -> None:
+        ## The fail-fast guarantee needs the guard to RETURN non-zero so the loop's
+        ## `|| break` fires; the wiring test proves it is CALLED before init but not
+        ## that it breaks. An unusable branch that set EXIT_CODE=1 yet `return 0`
+        ## would pass test_privleap_unusable_fails_fast_with_diagnosis (which checks
+        ## the EXIT_CODE global) while the loop kept waiting -- the exact #100 hang.
+        ## emit_message is the REAL preparation.bsh helper; only its output channel
+        ## is redirected via the production output_x/output_cli command-name seam.
+        guard = extract_bash_function(
+            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun')
+        emit = extract_bash_function(self.preparation, 'emit_message')
+        status = run_bash_function(
+            self.CLEANUP + '\n' + self.PROBE_NO + '\n' + emit + '\n' + guard,
+            'if check_tor_bootstrap_require_leaprun; then echo "RET:0";'
+            ' else echo "RET:nonzero"; fi',
+            env_setup='output_x=true\noutput_cli=true\noutput_opts=()')
+        self.assertEqual(status, 'RET:nonzero')
 
 
 if __name__ == '__main__':

@@ -129,11 +129,9 @@ main() {
       safe-rm --force -- "${shot_user}"
    fi
 
-   if [ "${pass}" = 'true' ]; then
-      verdict='PASS'
-   else
-      verdict='FAIL'
-   fi
+   ## Verdict from the SAME shared helper the publisher uses for result.json, so the
+   ## console line and the JSON never disagree (rc 2 = INCONCLUSIVE, not FAIL).
+   verdict="$(image_test_verdict_from_rc "${rc}")"
    printf '%s: %s -- %s (rc=%s) -> %s\n' \
       "${me}" "${NAME}" "${verdict}" "${rc}" "${outdir}"
    return "${rc}"
