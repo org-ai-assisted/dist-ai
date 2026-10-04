@@ -71,7 +71,13 @@ resolve_repo() {
    elif grep --quiet -- '^repo=' "${out_file}"; then
       grep -- '^repo=' "${out_file}" | tail -n1
    else
+      ## Neither outcome: pre/variables aborted for an unexpected reason. Surface
+      ## the captured diagnostic to stderr so the failure names its cause instead
+      ## of an opaque 'other' (the subshell's output is otherwise swallowed).
       printf 'other\n'
+      printf '%s\n' "DIAG(resolve_repo other): ---8<--- ${out_file} ---" >&2
+      cat -- "${out_file}" >&2 || true
+      printf '%s\n' "--->8--- end DIAG" >&2
    fi
 }
 
