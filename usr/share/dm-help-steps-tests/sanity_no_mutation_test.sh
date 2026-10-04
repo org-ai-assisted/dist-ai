@@ -74,19 +74,32 @@ prepare_machine="$(require_file build-steps.d/1200_prepare-build-machine "${DM_P
 signing_key_create="$(require_file help-steps/signing-key-create "${DM_SIGNING_KEY_CREATE:-}")"
 signing_key_test="$(require_file help-steps/signing-key-test "${DM_SIGNING_KEY_TEST:-}")"
 
-## absent EXPR FILE DESC: PASS when FILE has no line matching the ERE EXPR.
+## Full-line '#' comments are stripped before every match below, so a prose
+## mention (e.g. a comment saying "apt-get install moved to 1050") neither
+## false-fails an 'absent' nor false-satisfies a 'present'.
+noncomment() {
+   grep --invert-match --extended-regexp '^[[:space:]]*#' -- "$1" || true
+}
+
+## absent EXPR FILE DESC: PASS when FILE has no non-comment line matching ERE EXPR.
+## Capture to a variable first so the quiet grep reads a here-string, not a pipe
+## (R-161: grep --quiet on the right of a pipe SIGPIPEs the writer under pipefail).
 absent() {
-   if grep --quiet --extended-regexp -- "$1" "$2"; then
+   local body
+   body="$(noncomment "$2")"
+   if grep --quiet --extended-regexp -- "$1" <<< "${body}"; then
       fail "$3"
    else
       pass "$3"
    fi
 }
 
-## present EXPR FILE DESC: PASS when FILE has a line matching the ERE EXPR.
+## present EXPR FILE DESC: PASS when FILE has a non-comment line matching ERE EXPR.
 ## Used as the positive control for each 'absent' matcher.
 present() {
-   if grep --quiet --extended-regexp -- "$1" "$2"; then
+   local body
+   body="$(noncomment "$2")"
+   if grep --quiet --extended-regexp -- "$1" <<< "${body}"; then
       pass "$3"
    else
       fail "$3"
@@ -115,8 +128,8 @@ present 'check-build-primitives'               "${sanity_tests}" "1100 still run
 
 present 'check-hostname\(\)'                    "${prepare_machine}" "1200 defines check-hostname"
 present 'check-mailname\(\)'                    "${prepare_machine}" "1200 defines check-mailname"
-if grep --quiet --extended-regexp 'check-hostname|check-mailname' \
-   <<< "$(sed -n '/^main()/,/^}/p' -- "${prepare_machine}")"; then
+prepare_main="$(sed -n '/^main()/,/^}/p' -- "${prepare_machine}" | grep --invert-match --extended-regexp '^[[:space:]]*#' || true)"
+if grep --quiet --extended-regexp 'check-hostname|check-mailname' <<< "${prepare_main}"; then
    pass "1200 calls hostname/mailname prep from main"
 else
    fail "1200 defines hostname/mailname prep but never calls it from main"
@@ -134,11 +147,13 @@ gnupg_before_sq() {
    file="$1"
    label="$2"
 
-   mkdir_line="$(first_match 'mkdir .*[.]gnupg' "${file}")"
+   ## '^[^#]*' excludes comment lines (a comment mentioning the mkdir or an sq op
+   ## must not set the line number); line numbers stay those of the real file.
+   mkdir_line="$(first_match '^[^#]*mkdir .*[.]gnupg' "${file}")"
    ## The stateful keystore/signing operations (not 'has sq', not a comment's
    ## bare 'sq'): these route through gpg-agent under split-gpg-2 and need
    ## ~/.gnupg to exist first.
-   sqop_line="$(first_match 'sq (cert|key|sign|inspect|verify)' "${file}")"
+   sqop_line="$(first_match '^[^#]*sq (cert|key|sign|inspect|verify)' "${file}")"
 
    if [ -z "${mkdir_line}" ]; then
       fail "${label}: no 'mkdir ~/.gnupg'"

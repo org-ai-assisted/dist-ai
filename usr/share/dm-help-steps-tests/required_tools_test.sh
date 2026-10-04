@@ -84,14 +84,29 @@ fi
 
 ## --- 1050 INSTALLS, from the single-source list ---
 
+## Drop full-line '#' comments from stdin, so a commented-out call or a prose
+## mention cannot satisfy a presence check below.
+noncomment() {
+   grep --invert-match --extended-regexp '^[[:space:]]*#' || true
+}
+
 if grep --quiet --fixed-strings 'install_required_packages()' "${early_setup}"; then
    pass "1050_early-build-setup defines install_required_packages"
 else
    fail "1050_early-build-setup does not define install_required_packages"
 fi
 
-if grep --quiet --fixed-strings 'install_required_packages' \
-   <<< "$(sed -n '/^main()/,/^}/p' -- "${early_setup}")"; then
+## Code (comments dropped) of each subject and its main() body, captured ONCE so
+## the presence checks read a here-string, not a pipe a quiet grep would break
+## (R-161: grep --quiet/-m on the right of a pipe SIGPIPEs the writer under
+## pipefail). 'noncomment' (grep --invert-match) reads to EOF, so piping INTO it
+## is safe.
+early_setup_code="$(noncomment < "${early_setup}")"
+early_setup_main="$(sed -n '/^main()/,/^}/p' -- "${early_setup}" | noncomment)"
+sanity_code="$(noncomment < "${sanity_tests}")"
+sanity_main="$(sed -n '/^main()/,/^}/p' -- "${sanity_tests}" | noncomment)"
+
+if grep --quiet --fixed-strings 'install_required_packages' <<< "${early_setup_main}"; then
    pass "install_required_packages is called from 1050 main"
 else
    fail "install_required_packages is defined but never called from 1050 main"
@@ -99,7 +114,7 @@ fi
 
 ## Installs the single-source variable, not a hand-maintained copy: a hardcoded
 ## list in 1050 would drift from the declaration the rest of the build reads.
-if grep --quiet --fixed-strings 'dist_build_early_dependencies' "${early_setup}"; then
+if grep --quiet --fixed-strings 'dist_build_early_dependencies' <<< "${early_setup_code}"; then
    pass "1050 installs from \$dist_build_early_dependencies (single source)"
 else
    fail "1050 does not reference \$dist_build_early_dependencies; a hardcoded list drifts"
@@ -113,8 +128,7 @@ else
    fail "1100_sanity-tests does not define check-required-packages-present"
 fi
 
-if grep --quiet --fixed-strings 'check-required-packages-present' \
-   <<< "$(sed -n '/^main()/,/^}/p' -- "${sanity_tests}")"; then
+if grep --quiet --fixed-strings 'check-required-packages-present' <<< "${sanity_main}"; then
    pass "check-required-packages-present is called from 1100 main"
 else
    fail "check-required-packages-present is defined but never called from 1100 main"
@@ -122,7 +136,7 @@ fi
 
 ## The presence check iterates the same single source, so it cannot drift from
 ## what 1050 installs.
-if grep --quiet --fixed-strings 'dist_build_early_dependencies' "${sanity_tests}"; then
+if grep --quiet --fixed-strings 'dist_build_early_dependencies' <<< "${sanity_code}"; then
    pass "1100 checks \$dist_build_early_dependencies (single source)"
 else
    fail "1100 does not reference \$dist_build_early_dependencies"
@@ -130,12 +144,13 @@ fi
 
 ## Read-only: 1100 must neither define the installer nor run apt-get. A mutation
 ## here is exactly the 'sanity test that changes the machine' this split removes.
-if grep --quiet --fixed-strings 'install_required_packages' "${sanity_tests}"; then
+## Comments are stripped first, so a prose mention of either does not false-fail.
+if grep --quiet --fixed-strings 'install_required_packages' <<< "${sanity_code}"; then
    fail "1100 still references install_required_packages; the install belongs in 1050"
 else
    pass "1100 does not install (no install_required_packages)"
 fi
-if grep --quiet --extended-regexp '(^|[^[:alnum:]_-])apt-get([^[:alnum:]_-]|$)' "${sanity_tests}"; then
+if grep --quiet --extended-regexp '(^|[^[:alnum:]_-])apt-get([^[:alnum:]_-]|$)' <<< "${sanity_code}"; then
    fail "1100 still runs apt-get; the sanity step must be read-only"
 else
    pass "1100 runs no apt-get (read-only)"
@@ -152,38 +167,35 @@ fi
 
 ## --- parse the two lists, not 'eval' them ---
 
-## The early list: a single '$dist_build_early_dependencies=' assignment line.
-early_deps=""
-early_deps_line="$(grep --max-count=1 -- '^ *dist_build_early_dependencies=' "${deps_conf}" || true)"
-if [ -z "${early_deps_line}" ]; then
-   printf '%s\n' "FAILED: no dist_build_early_dependencies assignment in ${deps_conf}." >&2
-   exit 1
-fi
-## Everything after the first '=', with one layer of surrounding quotes removed.
-early_deps="${early_deps_line#*=}"
-case "${early_deps}" in
-   '"'*'"')
-      early_deps="${early_deps#\"}"
-      early_deps="${early_deps%\"}"
-      ;;
-   "'"*"'")
-      early_deps="${early_deps#\'}"
-      early_deps="${early_deps%\'}"
-      ;;
-esac
-if [ -z "${early_deps}" ]; then
-   printf '%s\n' "FAILED: dist_build_early_dependencies parsed as empty from '${early_deps_line}'." >&2
+## Extract a dependency variable's declared tokens WITHOUT eval (the suite runs
+## against forks; sourcing would execute arbitrary tree code). For each '=' or
+## '+=' assignment line of the named variable, take the text between the FIRST
+## double-quote pair -- so a trailing '# comment' and the =/+= distinction cannot
+## leak in -- and join every line's tokens with single spaces.
+##
+## Scope (parse, not eval): this cannot model a later reassignment that resets the
+## variable, a conditional guard around an append, or whether a token is the
+## install ARGUMENT vs a mention elsewhere. Our lists use none of those shapes for
+## the checked packages (declared unconditionally, never reset); modelling them
+## would require evaluating the tree, which the fork-safety rule forbids.
+extract_dep_tokens() {
+   local var_name="$1" file="$2"
+   grep --extended-regexp "^ *${var_name}\+?=" -- "${file}" \
+      | sed --quiet --regexp-extended 's/^[^=]*=[^"]*"([^"]*)".*/\1/p' \
+      | tr '\n' ' '
+}
+
+early_deps="$(extract_dep_tokens dist_build_early_dependencies "${deps_conf}")"
+if [ -z "${early_deps// /}" ]; then
+   printf '%s\n' "FAILED: no dist_build_early_dependencies tokens parsed from ${deps_conf}." >&2
    exit 1
 fi
 
-## The full declaration: every 'dist_build_script_build_dependency(+)=' line, with
-## quotes stripped and joined -- the tokens the build actually declares. Matched
-## separately from the early list so a tool that is ONLY in the early list (and
-## never declared as a build dependency) is still caught.
-full_decl="$(grep --extended-regexp '^ *dist_build_script_build_dependency\+?=' -- "${deps_conf}" \
-   | sed -e 's/^[^=]*=//' -e 's/"//g' -e "s/'//g" || true)"
-if [ -z "${full_decl}" ]; then
-   printf '%s\n' "FAILED: no dist_build_script_build_dependency declaration in ${deps_conf}." >&2
+## Matched separately from the early list so a tool that is ONLY in the early list
+## (and never declared as a build dependency) is still caught.
+full_decl="$(extract_dep_tokens dist_build_script_build_dependency "${deps_conf}")"
+if [ -z "${full_decl// /}" ]; then
+   printf '%s\n' "FAILED: no dist_build_script_build_dependency tokens parsed from ${deps_conf}." >&2
    exit 1
 fi
 
