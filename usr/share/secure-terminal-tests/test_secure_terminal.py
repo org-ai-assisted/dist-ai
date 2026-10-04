@@ -1891,14 +1891,13 @@ if os.path.isdir(fuzz_dir):
                    'fuzz/%s: name %s.%s exists' % (name, submodule, alias.name))
 
 # --- the coverage gate must select a thread-safe core ------------------------
-# test_mainwin drives a REAL single-instance ipc handoff with the client in a
-# background thread while the server side (on_ready) runs on the main thread in
-# the Qt event loop. Under coverage's default C tracer (per-thread sys.settrace)
-# the two traced threads race Qt native code and the SIGCHLD that reaps the
-# windows' pty children -> an intermittent SIGSEGV (exit 139) mid-gate. The gate
-# must select sys.monitoring (PEP 669), which does not use sys.settrace. This
-# guards the selection so it cannot be silently dropped (which would return the
-# flake). Runner lives in the dist-ai repo, two levels up from this suite dir.
+# The mainwin suites run the Qt GUI + the SIGCHLD that reaps pty children under coverage.
+# Under coverage's default C tracer (per-thread sys.settrace) the traced threads race Qt
+# native code -> an intermittent SIGSEGV (exit 139) mid-gate (coveragepy#1316). The gate
+# must select sys.monitoring (PEP 669), which does not use sys.settrace, to make that crash
+# RARE; the runner's crash-signal retry backstops any residual. This guards the selection so
+# it cannot be silently dropped (which would return the flake). Runner lives in the dist-ai
+# repo, two levels up from this suite dir.
 _cov_runner = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     '..', '..', 'bin', 'secure-terminal-tests-coverage'))
