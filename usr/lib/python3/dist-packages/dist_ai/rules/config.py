@@ -275,6 +275,59 @@ class WorkflowInlineShell(Rule):
                     key_node.start_mark.line + 1)
 
 
+class WorkflowShellCSplice(Rule):
+    """R-101: a workflow 'run:' step must not splice a shell variable or command
+    substitution INTO a 'bash -c' (/'sh -c'/'dash -c') program string. The outer
+    shell expands the value, then the inner shell RE-PARSES it as code -- so an
+    attacker-influenced value reintroduces the exact '${{ }}' injection class even
+    when it reached the step through an 'env:' indirection. Validating the string
+    up front is NOT a fix (a fragile char denylist that must enumerate every
+    metacharacter); the fix is to move the 'bash -c' body to a dedicated ci/
+    script and sanitize each value there with 'printf -v safe %q "${orig}"' before
+    using '${safe}' in the program.
+
+    Spared: a program that is EXACTLY one expansion used whole ('bash -c
+    "${build_command}"', the deliberate run-a-command form), and a fully-literal
+    or single-quoted program (no expansion -> no injection). The shell may be the
+    command, an operand of a known wrapper, or named after a 'runner --' marker
+    (the docker-run convention). A literal GitHub '${{ }}' expression spliced into
+    the body makes it unparsable as bash (declined here) -- zizmor/actionlint own
+    that case."""
+
+    id = "R-101"
+
+    def detect(self, ctx):
+        if not ctxmod.is_workflow_yaml(ctx.path):
+            return
+        if ctx.has_config_waiver("allow-shell-c-interpolation"):
+            yield _note(ctx, "R-101",
+                        "R-101 skipped: 'style-ok: allow-shell-c-interpolation' "
+                        "waiver in '%s'" % ctx.path)
+            return
+        import yaml  # type: ignore[import-untyped]
+        try:
+            root = yaml.compose(ctx.source)
+        except (yaml.YAMLError, RecursionError):
+            return
+        if root is None:
+            return
+        for key_node, value_node in _yaml_run_scalars(root):
+            try:
+                tree = bash_ast.parse_normalized(value_node.value or "")
+            except bash_ast.BashParseError:
+                continue
+            for _call, program in h.shell_c_program_words(tree):
+                if h.word_splices_expansion(program):
+                    yield model.fail(
+                        "R-101",
+                        "R-101 workflow 'run:' splices a variable/command "
+                        "expansion into a shell '-c' program (injection risk); "
+                        "move the body to a ci/ script and sanitize values with "
+                        "printf -v safe %q", ctx.path,
+                        key_node.start_mark.line + 1)
+                    break
+
+
 def _yaml_run_scalars(node):
     """Yield (key_node, value_node) for every 'run:' mapping entry whose value
     is a scalar, anywhere in the composed YAML NODE."""
@@ -371,6 +424,7 @@ RULES = (
     AptHook(),
     CronTable(),
     WorkflowInlineShell(),
+    WorkflowShellCSplice(),
     EmbeddedPythonInterpreter(),
     PythonShebang(),
 )

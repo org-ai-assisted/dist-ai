@@ -752,6 +752,93 @@ def shell_c_programs(tree, source):
                     break
 
 
+def shell_c_program_words(tree):
+    """Yield (call, program_word) for each 'sh -c' / 'bash -c' / 'dash -c' in
+    TREE, where program_word is the Word NODE of the SEPARATE '-c' program (the
+    next word after the option). Unlike shell_c_programs, which yields the
+    resolved VALUE for a multi-statement parse, this hands back the word so a
+    caller can inspect its PARTS -- whether a variable/command expansion is
+    spliced into surrounding literal code (R-101). The shell may be:
+      - the command itself ('bash -c PROG'),
+      - an operand of a known wrapper ('sudo bash -c PROG', the first explicit
+        shell operand -- SHELL_C_WRAPPERS, same as shell_c_programs), or
+      - named right after a '--' end-of-options marker ('runner -- bash -c PROG',
+        the docker-run convention), so an arbitrary launcher is handled without
+        growing the wrapper allowlist with every container runner.
+    SEPARATE '-c' form only: an attached '-c"prog"' is a slice of the option word
+    with no standalone node to walk, a documented follow-up (as in _c_in_command).
+    Only the FIRST shell invocation per call is taken; command_basename does not
+    peel wrappers, so the wrapper/'--' scans see the real argument positions."""
+    for call in bash_ast.call_exprs(tree):
+        words = bash_ast.args(call)
+        if not words:
+            continue
+        base0 = bash_ast.command_basename(call)
+        start = None
+        if base0 in SHELL_C_CMDS:
+            start = 0
+        elif base0 in SHELL_C_WRAPPERS:
+            for i in range(1, len(words)):
+                lit = bash_ast.word_string(words[i])
+                if lit is not None and lit.rsplit("/", 1)[-1] in SHELL_C_CMDS:
+                    start = i
+                    break
+        else:
+            ## 'runner -- bash -c PROG': the shell is named immediately after the
+            ## end-of-options marker. Only that position qualifies -- a bare shell
+            ## name elsewhere in an unknown command's operands ('grep bash -c f')
+            ## is data, not an invocation.
+            for i in range(1, len(words) - 1):
+                if bash_ast.word_string(words[i]) == "--":
+                    lit = bash_ast.word_string(words[i + 1])
+                    if lit is not None \
+                            and lit.rsplit("/", 1)[-1] in SHELL_C_CMDS:
+                        start = i + 1
+                    break
+        if start is None:
+            continue
+        for j in range(start + 1, len(words)):
+            if _is_separate_c_opt(bash_ast.word_string(words[j])):
+                if j + 1 < len(words):
+                    yield (call, words[j + 1])
+                break
+
+
+_C_EXPANSIONS = frozenset(("ParamExp", "CmdSubst", "ArithmExp", "ArithmCmd"))
+
+
+def word_splices_expansion(word):
+    """True if WORD both EXPANDS something (a parameter / command / arithmetic
+    expansion) AND carries literal non-whitespace text around it -- a value
+    spliced INTO a surrounding program string. The injection class R-101 forbids
+    in a workflow 'bash -c': the outer shell expands the value, then the inner
+    shell re-parses it as code.
+
+    A word that is PURELY expansions with only whitespace literals ('"${cmd}"',
+    '"  ${cmd}  "') is NOT a splice -- the value is used whole, the deliberate
+    'run this command variable' form. A word with NO expansion (fully literal, or
+    single-quoted so '$x' stays literal) is not a splice either. A DblQuoted part
+    is descended (its inner Lit/expansion parts are what the shell sees); a
+    SglQuoted part is a literal leaf (single quotes suppress expansion). Any other
+    part shape counts as literal content, the fail-closed direction."""
+    has_exp = False
+    has_lit = False
+    stack = list(word.get("Parts") or [])
+    while stack:
+        part = stack.pop()
+        kind = part.get("Type")
+        if kind == "DblQuoted":
+            stack.extend(part.get("Parts") or [])
+        elif kind in _C_EXPANSIONS:
+            has_exp = True
+        elif kind in ("Lit", "SglQuoted"):
+            if (part.get("Value") or "").strip():
+                has_lit = True
+        else:
+            has_lit = True
+    return has_exp and has_lit
+
+
 def embeds_multi_statement(value, strict):
     """True if VALUE (a shell command string) embeds multi-statement logic.
     Non-strict (apt/cron): more than one top-level statement or a pipe;
