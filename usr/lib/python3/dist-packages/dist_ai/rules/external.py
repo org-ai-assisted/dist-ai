@@ -254,18 +254,29 @@ SHELLCHECK_OPTIONAL = (
 ## Default 10 + 5 = 15 < 20. Overridable for tests via DIST_AI_SHELLCHECK_TIMEOUT.
 
 
+## Ceiling on the per-run cap, and the default when unset. DIST_AI_SHELLCHECK_TIMEOUT
+## may only LOWER it (tests, fail-fast), never raise it: primary + fallback + the
+## other rules + process startup must stay under the smallest OUTER hook cap
+## (shell-style-check.py's 20s) or the outer fail-open re-opens the silent-pass hole.
+## A larger finite value -- including one big enough to overflow subprocess.run's C
+## timeout (OverflowError) -- is clamped DOWN to this, never crashes.
+_SHELLCHECK_TIMEOUT_MAX = 10.0
+
+
 def _read_shellcheck_timeout():
-    """Validated DIST_AI_SHELLCHECK_TIMEOUT (default 10). A non-numeric, non-finite
-    (nan/inf) or non-positive value falls back to the default -- never passed on to
-    crash subprocess.run (OverflowError on inf, ValueError on nan) or to expire every
-    file at 0/negative."""
+    """Validated DIST_AI_SHELLCHECK_TIMEOUT. A non-numeric, non-finite (nan/inf) or
+    non-positive value falls back to the ceiling; a larger finite value is clamped
+    DOWN to it -- never passed on to crash subprocess.run (OverflowError on inf/huge,
+    ValueError on nan) nor to expire every file at 0/negative nor to breach the outer
+    hook budget."""
     try:
-        value = float(os.environ.get("DIST_AI_SHELLCHECK_TIMEOUT", "10"))
+        value = float(os.environ.get(
+            "DIST_AI_SHELLCHECK_TIMEOUT", str(_SHELLCHECK_TIMEOUT_MAX)))
     except ValueError:
-        return 10.0
+        return _SHELLCHECK_TIMEOUT_MAX
     if not math.isfinite(value) or value <= 0:
-        return 10.0
-    return value
+        return _SHELLCHECK_TIMEOUT_MAX
+    return min(value, _SHELLCHECK_TIMEOUT_MAX)
 
 
 SHELLCHECK_TIMEOUT = _read_shellcheck_timeout()
@@ -291,8 +302,8 @@ def _forced_no_follow_rcfile(rc_file):
     body = "external-sources=false\n"
     if rc_file is not None:
         try:
-            with open(rc_file, "r", encoding="utf-8", errors="replace") as handle:
-                body += handle.read()
+            with open(rc_file, "r", encoding="utf-8", errors="replace") as src:
+                body += src.read()
         except OSError:
             pass
     handle = tempfile.NamedTemporaryFile(

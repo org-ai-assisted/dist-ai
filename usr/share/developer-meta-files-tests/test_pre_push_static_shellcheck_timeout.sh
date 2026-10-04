@@ -183,9 +183,10 @@ printf 'external-sources=true\n' >"${rc_dir}/.shellcheckrc"
 run_gate "${rc_dir}" "${INNER_TIMEOUT}"
 assert_graceful_degrade "rcfile-external-sources-true"
 
-## Case 3: a bad DIST_AI_SHELLCHECK_TIMEOUT must fall back to the default -- never
-## crash the rule (nan/inf -> ValueError/OverflowError in subprocess.run) nor expire
-## every file (0/negative). Subject: a trivial, shellcheck-clean script.
+## Case 3: a bad DIST_AI_SHELLCHECK_TIMEOUT must be validated/clamped -- never crash
+## the rule (nan/inf, and a huge finite value, all raise in subprocess.run) nor expire
+## every file (0/negative). A value above the ceiling is clamped down (overrides may
+## only LOWER the cap). Subject: a trivial, shellcheck-clean script.
 clean_dir="$(mktemp --directory --tmpdir="${test_dir}" clean.XXXXXX)"
 cat >"${clean_dir}/caller" <<'CLEAN'
 #!/bin/bash
@@ -201,11 +202,13 @@ export LC_ALL=C
 printf '%s\n' "ok"
 CLEAN
 chmod 0755 -- "${clean_dir}/caller"
-for bad in nan inf 0 -1; do
+## nan/inf: non-finite. 0/-1: non-positive. 2147483648/1e20: finite but too large
+## for subprocess.run's C timeout (OverflowError) and above the outer-cap budget.
+for bad in nan inf 0 -1 2147483648 1e20; do
    run_gate "${clean_dir}" "${bad}"
    if [ "${gate_rc}" -eq 0 ] \
       && ! grep --quiet --extended-regexp 'crashed|Traceback|timed out' <<< "${gate_output}"; then
-      printf '%s\n' "PASS: bad-timeout '${bad}': clean file stays green (fell back to the default)"
+      printf '%s\n' "PASS: bad-timeout '${bad}': clean file stays green (validated/clamped)"
    else
       printf '%s\n' "FAIL: bad-timeout '${bad}': clean file not green (rc=${gate_rc}) -- bad value not validated"
       printf '%s\n' "${gate_output}" | tail -6; fail=1
