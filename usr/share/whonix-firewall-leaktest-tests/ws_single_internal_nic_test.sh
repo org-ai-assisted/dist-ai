@@ -28,9 +28,13 @@ export LC_ALL=C
 ## ifupdown directives that are uninterpreted escape hatches on this static-only
 ## internal interface: command hooks (up/*-up/*-down, run arbitrary commands incl.
 ## dhclient / route injection), a `mapping` script, and `source`/`source-directory`
-## includes (pull in unaudited NIC-adding stanzas). The `([[:space:]]|\|$)` terminator
-## also catches a `up\` line-continuation.
-unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|\\|$)'
+## includes (pull in unaudited NIC-adding stanzas). Backslash line-continuations are
+## rejected separately (continuation_re), so a hook split across lines (`u\`+`p ...`)
+## cannot hide here.
+unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|$)'
+## ifupdown joins a line ending in `\` with the next; any continuation in this static
+## file is uncommon and can splice a hook across lines, so reject them all.
+continuation_re='\\$'
 
 ## Audit one interfaces file: exactly one non-lo iface, named eth0, configured
 ## STATIC on the internal network. Returns 0 on pass, 1 on any violation. Reused
@@ -52,12 +56,17 @@ audit_ws_nic() {
       return 1
    fi
    ## Reject the whole class of uninterpreted escape hatches (command hooks, a
-   ## `mapping` script, `source`/`source-directory` includes) -- any can re-enable DHCP,
-   ## inject a non-Tor route, or pull in an unaudited NIC-adding stanza this single-file
-   ## audit cannot see. See unsafe_directive_re.
+   ## `mapping` script, `source`/`source-directory` includes, and any backslash
+   ## line-continuation) -- each can re-enable DHCP, inject a non-Tor route, or pull in
+   ## an unaudited NIC-adding stanza this single-file audit cannot see.
    if grep --quiet --extended-regexp "${unsafe_directive_re}" "${file}"; then
       printf 'FAIL: interfaces file uses an unsafe directive (hook/mapping/source): %s\n' \
          "$(grep --extended-regexp "${unsafe_directive_re}" "${file}" | tr '\n' ' ')" >&2
+      return 1
+   fi
+   if grep --quiet --extended-regexp "${continuation_re}" "${file}"; then
+      printf 'FAIL: interfaces file has a line-continuation (can splice a hook): %s\n' \
+         "$(grep --extended-regexp "${continuation_re}" "${file}" | tr '\n' ' ')" >&2
       return 1
    fi
    ## eth0 must be STATIC, never a DYNAMIC method (dhcp/bootp/ppp) -- any of those
@@ -168,5 +177,17 @@ for bad_line in \
       printf 'PASS: canary (unsafe directive "%s" rejected); audit has teeth\n' "${bad_line}"
    fi
 done
+
+## Canary 5: a hook SPLIT across a backslash continuation (ifupdown joins `u\`+`p ...`
+## into `up dhclient eth0`) must FAIL -- the continuation line ends in `\`.
+canary_split="$(mktemp)"
+cp -- "${iface_file}" "${canary_split}"
+printf '%s\n' $'u\\' 'p dhclient eth0' >>"${canary_split}"
+if audit_ws_nic "${canary_split}" 2>/dev/null; then
+   printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
+fi
 
 exit "${rc}"
