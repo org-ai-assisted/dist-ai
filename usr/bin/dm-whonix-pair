@@ -343,42 +343,47 @@ main() {
    ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
       || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
 
-   ## Phase 3: KILLSWITCH. Stop Tor on the GW (user session + leaprun sudo, forwarding
-   ## intact). gw_stop_tor POSITIVELY confirms tor@default is inactive on the GW -- the
-   ## fail-closed proof Tor is down, independent of any WS probe exit code (a WS probe
-   ## failing non-zero could mean leak, inconclusive, OR broken guestcontrol, so it is
-   ## NOT a sound "Tor is down" signal). Then re-emit the craft matrix: with Tor down the
-   ## firewall must DROP, so the final canary must still show zero target hits across the
-   ## WHOLE capture (both the Tor-up and Tor-down windows).
-   printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
-   gw_stop_tor
-   ws_battery "--probe gateway-craft ${craft_flags}" \
-      || die "${FAIL_RC}" "killswitch: craft emit could not run with Tor down"
+   ## Phase 3+4: KILLSWITCH -- OPT-IN only (DM_WHONIX_PAIR_KILLSWITCH=1). Stopping Tor on
+   ## the GW needs root there, and the only no-sysmaint route (dev-root -> leaprun sudo)
+   ## MUTATES the Gateway, which can falsify the very leak result this harness measures.
+   ## So the DEFAULT run is the pure leak test (Phase 1+2 + canary, GW untouched); the
+   ## fail-closed/killswitch behavior is covered by the netns fail_closed_test. Enable this
+   ## phase only in a DEDICATED leak-test lane where mutating the GW is acceptable.
+   if [ "${DM_WHONIX_PAIR_KILLSWITCH:-0}" = '1' ]; then
+      ## gw_stop_tor POSITIVELY confirms tor@default is inactive on the GW -- the fail-closed
+      ## proof Tor is down, independent of any WS probe exit code. Then re-emit the craft
+      ## matrix: with Tor down the firewall must DROP, so the final canary must still show
+      ## zero target hits across the WHOLE capture (both Tor-up and Tor-down windows).
+      printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
+      gw_stop_tor
+      ws_battery "--probe gateway-craft ${craft_flags}" \
+         || die "${FAIL_RC}" "killswitch: craft emit could not run with Tor down"
 
-   ## Phase 4: RECOVERY. Restart Tor and prove egress is restored -- so the killswitch
-   ## STOP was a bracketed, reversible operation (the GW is not wedged) and a dead Tor
-   ## can never silently carry into anything added after this phase.
-   printf '%s\n' "${me}: killswitch recovery -- restart Tor, confirm egress restored"
-   gw_start_tor
-   local attempt2 restored='false'
-   for attempt2 in $(seq 1 15); do
-      if ws_battery "--probe tor-confirm"; then
-         restored='true'
-         break
-      fi
-      printf '%s\n' "${me}: Tor egress not back yet (attempt ${attempt2}); retrying"
-      sleep 20
-   done
-   [ "${restored}" = 'true' ] \
-      || die "${FAIL_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible)"
+      ## RECOVERY. Restart Tor and prove egress is restored -- so the killswitch STOP was a
+      ## bracketed, reversible operation (the GW is not wedged) and a dead Tor can never
+      ## silently carry into anything added after this phase.
+      printf '%s\n' "${me}: killswitch recovery -- restart Tor, confirm egress restored"
+      gw_start_tor
+      local attempt2 restored='false'
+      for attempt2 in $(seq 1 15); do
+         if ws_battery "--probe tor-confirm"; then
+            restored='true'
+            break
+         fi
+         printf '%s\n' "${me}: Tor egress not back yet (attempt ${attempt2}); retrying"
+         sleep 20
+      done
+      [ "${restored}" = 'true' ] \
+         || die "${FAIL_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible)"
+   fi
 
    ## Canary: stop the GW so its nictrace pcap is flushed, then assert NO probe target
-   ## reached clearnet through it -- in EITHER the Tor-up or the Tor-down window.
+   ## reached clearnet through it -- across every capture window.
    "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
    sleep 3
    canary_gateway_pcap
 
-   printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + killswitch + GW-trace canary)"
+   printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + GW-trace canary)"
    return "${PASS_RC}"
 }
 
