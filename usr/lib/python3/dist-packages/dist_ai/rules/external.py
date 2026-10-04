@@ -15,6 +15,7 @@ so these do not gate on ctx.tree the way the AST rules do."""
 
 import contextlib
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -241,24 +242,71 @@ SHELLCHECK_OPTIONAL = (
 ## EXPONENTIAL on the deep helper-scripts graph (see the comment above
 ## _absent_helper_scripts_sibling): a resolvable sibling tree makes shellcheck hang
 ## for minutes. Without a cap the hang reaches the OUTER hook timeout, which fails
-## OPEN -- the gate silently stops gating. On expiry the run is retried once without
-## following (bounded; see Shellcheck.detect), so a hanging file degrades loudly
-## instead of vanishing.
+## OPEN -- the gate silently stops gating. On expiry the run is retried once with
+## following FORCED off (_forced_no_follow_rcfile), so it cannot explode and returns
+## fast, and the file degrades loudly instead of vanishing.
 ##
-## INVARIANT: this inner cap MUST stay strictly below the smallest OUTER hook cap
-## (shell-style-check.py SHELL_STYLE_GATE_TIMEOUT = 20s; pre-commit
-## STYLE_GATE_TIMEOUT_SECONDS = 120s). If it ever exceeds the outer cap the outer
-## fail-open re-opens the silent-pass hole this closes. Overridable for tests via
-## DIST_AI_SHELLCHECK_TIMEOUT.
-try:
-    SHELLCHECK_TIMEOUT = float(os.environ.get("DIST_AI_SHELLCHECK_TIMEOUT", "10"))
-except ValueError:
-    SHELLCHECK_TIMEOUT = 10.0
+## INVARIANT: primary cap + fallback cap MUST stay strictly below the smallest OUTER
+## hook cap (shell-style-check.py SHELL_STYLE_GATE_TIMEOUT = 20s; pre-commit
+## STYLE_GATE_TIMEOUT_SECONDS = 120s), or the outer fail-open re-opens the
+## silent-pass hole this closes. The fallback cannot follow, so it returns in well
+## under its (smaller) cap; the two caps only ever stack on one pathological file.
+## Default 10 + 5 = 15 < 20. Overridable for tests via DIST_AI_SHELLCHECK_TIMEOUT.
 
 
-def _run_shellcheck(command, timeout):
+def _read_shellcheck_timeout():
+    """Validated DIST_AI_SHELLCHECK_TIMEOUT (default 10). A non-numeric, non-finite
+    (nan/inf) or non-positive value falls back to the default -- never passed on to
+    crash subprocess.run (OverflowError on inf, ValueError on nan) or to expire every
+    file at 0/negative."""
+    try:
+        value = float(os.environ.get("DIST_AI_SHELLCHECK_TIMEOUT", "10"))
+    except ValueError:
+        return 10.0
+    if not math.isfinite(value) or value <= 0:
+        return 10.0
+    return value
+
+
+SHELLCHECK_TIMEOUT = _read_shellcheck_timeout()
+## The fallback is forced-no-follow, so it returns fast; this smaller ceiling only
+## bounds a pathological huge file body and keeps primary+fallback under the outer cap.
+SHELLCHECK_FALLBACK_TIMEOUT = min(SHELLCHECK_TIMEOUT, 5.0)
+
+
+def _run_shellcheck(command, timeout, env=None):
     return subprocess.run(
-        command, capture_output=True, text=True, timeout=timeout)
+        command, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+@contextlib.contextmanager
+def _forced_no_follow_rcfile(rc_file):
+    """A temp rcfile whose FIRST 'external-sources' directive is false, yielded as a
+    path. shellcheck honors the FIRST such directive, and an rcfile 'external-sources
+    =false' overrides SHELLCHECK_OPTS=-x, so this forces following OFF no matter what
+    the project rcfile (which here CAN carry 'external-sources=true') or the
+    environment asks -- the fallback therefore cannot re-enter the exponential follow.
+    The project rcfile's OTHER directives (disable/enable lists) are preserved after
+    it, so the file body is judged by the same config."""
+    body = "external-sources=false\n"
+    if rc_file is not None:
+        try:
+            with open(rc_file, "r", encoding="utf-8", errors="replace") as handle:
+                body += handle.read()
+        except OSError:
+            pass
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", prefix="dist-ai-nofollow-", suffix=".shellcheckrc",
+        delete=False, encoding="utf-8")
+    try:
+        handle.write(body)
+        handle.close()
+        yield handle.name
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
 
 ## A '# shellcheck source=' directive into the helper-scripts sibling repo
 ## (repo-tree shape '<repo-parent>/helper-scripts/usr/libexec/helper-scripts/...')
@@ -424,8 +472,9 @@ class Shellcheck(ExternalRule):
     _is_absent_helper_scripts_source -- while every other finding stays fatal.
     Fail-open when shellcheck is absent (a bare git-hook run without it installed
     must still commit). Each run is bounded by SHELLCHECK_TIMEOUT: if
-    '--external-sources' following explodes it is retried once without following and
-    a NOTE marks the degrade, so a hanging file never reaches the outer fail-open."""
+    '--external-sources' following explodes it is retried once with following FORCED
+    off and a NOTE marks the degrade, so a hanging file never reaches the outer
+    fail-open."""
 
     id = "shellcheck"
 
@@ -451,21 +500,31 @@ class Shellcheck(ExternalRule):
                     degraded = False
                 except subprocess.TimeoutExpired:
                     ## '--external-sources' following exploded (exponential on the
-                    ## deep helper-scripts graph). Re-run ONCE without following: it
-                    ## cannot follow, so it cannot explode, and shellcheck still
-                    ## fully analyzes the file BODY. Bound it too -- no unbounded
-                    ## subprocess remains.
-                    fallback = [arg for arg in command
-                                if arg != "--external-sources"]
-                    proc = _run_shellcheck(fallback, SHELLCHECK_TIMEOUT)
+                    ## deep helper-scripts graph). Re-run ONCE with following FORCED
+                    ## off via the rcfile (dropping '--external-sources' from argv is
+                    ## NOT enough -- the project rcfile may set external-sources=true,
+                    ## or SHELLCHECK_OPTS=-x, either of which re-enables the follow and
+                    ## re-explodes). shellcheck still fully analyzes the file BODY.
+                    ## SHELLCHECK_OPTS is cleared belt-and-suspenders. The fallback
+                    ## cannot follow, so it returns fast under its smaller cap.
+                    with _forced_no_follow_rcfile(rc_file) as nofollow_rc:
+                        fallback = ["shellcheck",
+                                    "--source-path=" + src_dir, "--format=json1",
+                                    "--rcfile=" + nofollow_rc,
+                                    "--enable=" + SHELLCHECK_OPTIONAL, "--", path]
+                        env = dict(os.environ)
+                        env.pop("SHELLCHECK_OPTS", None)
+                        proc = _run_shellcheck(
+                            fallback, SHELLCHECK_FALLBACK_TIMEOUT, env=env)
                     degraded = True
         except subprocess.TimeoutExpired:
-            ## The no-following fallback itself hung (pathological: not a following
-            ## explosion). Fail CLOSED and loud -- never a silent green.
+            ## The forced-no-follow fallback itself hung (pathological: a huge file
+            ## body, NOT a following explosion). Fail CLOSED and loud -- never a
+            ## silent green.
             yield model.fail(
                 "shellcheck",
-                "shellcheck: '%s' timed out after %gs even without "
-                "--external-sources following" % (ctx.path, SHELLCHECK_TIMEOUT),
+                "shellcheck: '%s' timed out after %gs with following forced off"
+                % (ctx.path, SHELLCHECK_FALLBACK_TIMEOUT),
                 ctx.path)
             return
         except OSError as exc:
@@ -477,12 +536,18 @@ class Shellcheck(ExternalRule):
                 "shellcheck present but could not run (%s); skipping" % exc)
             return
         if degraded:
-            ## Always VISIBLE -- the degrade is never a silent pass.
+            ## Always VISIBLE -- the degrade is never a silent pass. Honest about the
+            ## COVERAGE lost: without following, shellcheck cannot resolve cross-file
+            ## sources NOR distinguish a missing/typo'd 'source=' from a real one (it
+            ## emits the same SC1091 for both), so BOTH are dropped. The same cap
+            ## applies in CI, so this file's cross-file checks are not recovered there
+            ## either; the file BODY is still fully checked.
             yield model.note(
                 "shellcheck",
                 "shellcheck '--external-sources' following exceeded %gs on '%s'; "
-                "re-checked without following (SC1091 cross-file source resolution "
-                "deferred to CI)" % (SHELLCHECK_TIMEOUT, ctx.path))
+                "re-checked with following forced off -- cross-file source resolution "
+                "and missing-source detection skipped for this file (body still "
+                "checked)" % (SHELLCHECK_TIMEOUT, ctx.path))
         yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 
 
