@@ -61,8 +61,16 @@ resolve_skip() {
    ) > "${out_file}" 2>&1 || true
    if grep --quiet -- 'supported options for --skip-published-packages' "${out_file}"; then
       printf 'rejected\n'
+   elif grep --quiet -- '^skip=' "${out_file}"; then
+      grep -- '^skip=' "${out_file}" | tail -n1
    else
-      grep -- '^skip=' "${out_file}" | tail -n1 || printf 'skip=<none>\n'
+      ## No 'skip=' line: pre/variables aborted for an unexpected reason. Surface
+      ## the captured diagnostic to stderr so the failure names its cause instead
+      ## of an opaque 'skip=<none>' (the subshell's output is otherwise swallowed).
+      printf 'skip=<none>\n'
+      printf '%s\n' "DIAG(resolve_skip none): ---8<--- ${out_file} ---" >&2
+      cat -- "${out_file}" >&2 || true
+      printf '%s\n' "--->8--- end DIAG" >&2
    fi
 }
 
