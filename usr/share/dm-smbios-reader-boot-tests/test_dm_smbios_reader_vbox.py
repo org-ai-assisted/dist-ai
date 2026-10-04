@@ -738,7 +738,7 @@ def test_disk_conversion_classifies_and_rejects():
     assert M.disk_conversion('/img.raw', 'kick') == (
         vdi, ['VBoxManage', 'convertfromraw', '/img.raw', vdi, '--format', 'VDI'])
     assert M.disk_conversion('/img.qcow2', 'kick') == (
-        vdi, ['qemu-img', 'convert', '-O', 'vdi', '/img.qcow2', vdi])
+        vdi, ['qemu-img', 'convert', '-f', 'qcow2', '-O', 'vdi', '/img.qcow2', vdi])
     with pytest.raises(M.SetupError):
         M.disk_conversion('/img.bogus', 'kick')
     ## #6: a dash-leading relative path is made absolute so it is never read as a flag.
@@ -751,6 +751,26 @@ def test_disk_conversion_classifies_and_rejects():
     assert os.path.dirname(evil) == os.path.dirname(vdi)
     ## #1/#2: converted VDIs live in an owner-only per-uid dir, not bare /tmp.
     assert os.path.dirname(vdi).endswith('dm-smbios-reader-vbox-%d' % os.getuid())
+
+
+def test_assert_no_external_backing_rejects_backing_chain(tmp_path):
+    ## grok #4: qemu-img convert FLATTENS a qcow2 backing chain into the output, so an
+    ## overlay whose backing points at an operator-only file would copy that file's bytes
+    ## into the (owner-only) converted VDI. _assert_no_external_backing refuses any backing
+    ## reference BEFORE the convert runs; a standalone dm image (no backing) is accepted.
+    backing = tmp_path / 'secret.raw'
+    backing.write_bytes(b'SECRET-SHADOW-BYTES\n' + b'\0' * 4096)
+    os.chmod(backing, 0o600)
+    overlay = tmp_path / 'overlay.qcow2'
+    subprocess.run(['qemu-img', 'create', '-f', 'qcow2', '-b', str(backing),
+                    '-F', 'raw', str(overlay)], check=True, capture_output=True)
+    with pytest.raises(M.SetupError):
+        M._assert_no_external_backing(str(overlay))
+    ## a standalone qcow2 (what derivative-maker builds) is NOT rejected.
+    plain = tmp_path / 'plain.qcow2'
+    subprocess.run(['qemu-img', 'create', '-f', 'qcow2', str(plain), '10M'],
+                   check=True, capture_output=True)
+    M._assert_no_external_backing(str(plain))  # must not raise
 
 
 def test_cli_serial_up_emit_argv_converts_raw_disk(tmp_path):

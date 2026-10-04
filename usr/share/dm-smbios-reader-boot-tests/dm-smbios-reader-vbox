@@ -54,6 +54,7 @@ SETUP_RC = 2
 ## External system dependency -- resolved on PATH, overridable for tests.
 VBOXMANAGE = 'VBoxManage'
 TESSERACT = 'tesseract'
+QEMU_IMG = 'qemu-img'
 
 
 ## --- VBoxManage argv builders (pure) ----------------------------------------
@@ -282,8 +283,11 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
 ## a RAW or qcow2 image is rejected (VERR_VD_RAW_INVALID_TYPE / unsupported format).
 ## derivative-maker builds qcow2/raw, so the serial-disk path CONVERTS to a throwaway
 ## per-VM VDI first: raw via VBoxManage convertfromraw (native), qcow2 via qemu-img (a
-## hard dep for THAT format -- fail loud if absent). The converted VDI is removed on
-## serial-down. A native VDI/VMDK/VHD is attached as-is (multiattach, non-destructive).
+## hard dep for THAT format -- fail loud if absent). The qcow2 convert pins an explicit
+## input format (no qemu-img format probe) and the run path REFUSES a qcow2 with a backing
+## chain (qemu-img convert would flatten an operator-only backing file into the output).
+## The converted VDI is removed on serial-down. A native VDI/VMDK/VHD is attached as-is
+## (multiattach, non-destructive).
 _DISK_NATIVE_EXTS = ('.vdi', '.vmdk', '.vhd')
 
 
@@ -320,6 +324,29 @@ def converted_disk_path(vmname):
                         '%s.dm-converted.vdi' % (os.path.basename(vmname),))
 
 
+def _assert_no_external_backing(src):
+    """Refuse a qcow2 that references a backing file. qemu-img convert FLATTENS the
+    backing chain into the output VDI, so a supplied overlay pointing at an operator-only
+    file would copy that file's bytes into the converted image. A dm-built image is a
+    standalone qcow2 (no backing), so this never rejects a legitimate disk. Reads the
+    header with an explicit -f (no format probe); a backing reference OR any failure to
+    read the header is fail-closed -> SetupError. Side effect: reads src. Run path only."""
+    import json
+    try:
+        out = subprocess.check_output(
+            [QEMU_IMG, 'info', '--output=json', '-f', 'qcow2', src],
+            stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as exc:
+        raise SetupError('cannot read qcow2 header of %r (refusing to convert): %s'
+                         % (src, exc))
+    info = json.loads(out)
+    backing = info.get('backing-filename') or info.get('full-backing-filename')
+    if backing:
+        raise SetupError(
+            'refusing to convert %r: it references backing file %r; qemu-img convert'
+            ' would merge that file into the output VDI' % (src, backing))
+
+
 def disk_conversion(disk, vmname, vboxmanage=VBOXMANAGE):
     """(attach_path, convert_argv) for attaching DISK to a serial VM. Native
     VDI/VMDK/VHD -> (disk, None). RAW/qcow2 -> (per-VM VDI, the convert command run at
@@ -335,7 +362,7 @@ def disk_conversion(disk, vmname, vboxmanage=VBOXMANAGE):
     if ext in ('.raw', '.img'):
         return dst, [vboxmanage, 'convertfromraw', src, dst, '--format', 'VDI']
     if ext == '.qcow2':
-        return dst, ['qemu-img', 'convert', '-O', 'vdi', src, dst]
+        return dst, [QEMU_IMG, 'convert', '-f', 'qcow2', '-O', 'vdi', src, dst]
     raise SetupError(
         'unsupported --disk format %r for the VBox backend: pass VDI/VMDK/VHD, or'
         ' .raw/.img/.qcow2 (auto-converted to VDI)' % (ext or disk,))
@@ -1085,6 +1112,10 @@ def run_serial_up(args):
             ## convert BEFORE the plan runs -- storageattach references the VDI path.
             _ensure_converted_vdi_dir()  # owner-only 0700 dir (side effect; run path)
             try:
+                ## qcow2 only (raw/img use VBoxManage convertfromraw -- no backing chain);
+                ## validate the ABSOLUTE path qemu-img will read (convert_argv[-2]).
+                if convert_argv[0] == QEMU_IMG:
+                    _assert_no_external_backing(convert_argv[-2])
                 _run(convert_argv)
             except FileNotFoundError:
                 raise SetupError(
