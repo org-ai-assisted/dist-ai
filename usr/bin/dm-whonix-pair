@@ -92,6 +92,29 @@ die() {
    exit "$1"
 }
 
+## Current VBox run-state of a VM ('running', 'poweroff', 'aborted', ...); empty if
+## showvminfo failed. Single source for the VMState parse used across the harness.
+vm_state() {
+   "${VBOXMANAGE}" showvminfo "$1" --machinereadable 2>/dev/null \
+      | sed -n 's/^VMState="\(.*\)"$/\1/p' || true
+}
+
+## Fast-fail guard: a VM that is no longer running (crashed/aborted/powered off) will
+## never make progress, so detect it in ONE check instead of waiting out a whole retry
+## budget. Call in any wait loop that depends on the VM being up.
+assert_vm_running() {
+   local vm="$1" label="$2" state
+   state="$(vm_state "${vm}")"
+   case "${state}" in
+      running|paused)
+         return 0
+         ;;
+      *)
+         die "${FAIL_RC}" "${label}: VM '${vm}' is not running (state=${state:-unknown}) -- boot crashed/aborted; failing fast instead of retrying"
+         ;;
+   esac
+}
+
 lib_base="$(dirname -- "$(readlink --canonicalize -- "$0")")/../share/dm-smbios-reader-boot-tests"
 [ -d "${lib_base}" ] || lib_base='/usr/share/dm-smbios-reader-boot-tests'
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
@@ -143,11 +166,9 @@ on_exit() {
       "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
       ## Poweroff is async and the nictrace pcap is not flushed until the GW settles;
       ## wait (bounded) so a preserved capture is complete, not truncated mid-write.
-      local _i _state
+      local _i
       for _i in $(seq 1 15); do
-         _state="$("${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
-            | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
-         case "${_state}" in poweroff|aborted|'') break ;; esac
+         case "$(vm_state "${gw}")" in poweroff|aborted|'') break ;; esac
          sleep 1
       done
    fi
@@ -185,12 +206,10 @@ on_exit() {
 ## boot (reaches GRUB) rather than a live-snapshot RESUME -- required to pick a boot role
 ## and to (re)apply a NIC trace the snapshot would otherwise revert.
 restore_fresh() {
-   local target="$1" state
+   local target="$1"
    "${VBOXMANAGE}" controlvm "${target}" poweroff >/dev/null 2>&1 || true
    for _ in $(seq 1 20); do
-      state="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null \
-         | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
-      case "${state}" in poweroff|aborted|'') break ;; esac
+      case "$(vm_state "${target}")" in poweroff|aborted|'') break ;; esac
       sleep 2
    done
    "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
@@ -315,8 +334,14 @@ main() {
    ## Phase 1: gate on the GW's Tor bootstrap -- retry tor-confirm (the live positive
    ## control) until it passes, so a clean battery later is meaningful, not a dead link.
    printf '%s\n' "${me}: wait for Tor egress (tor-confirm) to come up"
+   ## NOTE: clean-live must be a WARMED snapshot (booted once so first-boot provisioning
+   ## ran and Tor cached its consensus on disk); a never-booted import does a cold Tor
+   ## bootstrap that can exceed this budget (seen on a fresh dev-version import).
    local attempt tor_ok='false'
    for attempt in $(seq 1 15); do
+      ## Fast-fail: a crashed/aborted GW will never bootstrap -- do not burn the whole
+      ## retry budget on a dead VM.
+      assert_vm_running "${gw}" 'phase 1 (wait Tor)'
       if ws_battery "--probe tor-confirm"; then
          tor_ok='true'
          break
@@ -366,6 +391,7 @@ main() {
       gw_start_tor
       local attempt2 restored='false'
       for attempt2 in $(seq 1 15); do
+         assert_vm_running "${gw}" 'killswitch recovery'
          if ws_battery "--probe tor-confirm"; then
             restored='true'
             break
