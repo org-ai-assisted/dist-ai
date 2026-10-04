@@ -89,8 +89,12 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-dkms_base="${work}/dkms"
-shim_base="${work}/shim/mok"
+## shim-signed-mok-setup's dkms_mok_variables_set derives its dirs from the
+## SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR prefix (exported below): <prefix>/var/lib/dkms
+## and <prefix>/var/lib/shim-signed/mok. Mirror that layout so the dkms stub and the
+## path assertions line up.
+dkms_base="${work}/var/lib/dkms"
+shim_base="${work}/var/lib/shim-signed/mok"
 bindir="${work}/bin"
 gen_sentinel="${work}/dkms.generate_mok.invoked"
 mkdir --parents -- "${bindir}"
@@ -115,6 +119,9 @@ chmod +x -- "${bindir}/dkms"
 export PATH="${bindir}:${PATH}"
 export DKMS_GENMOK_SENTINEL="${gen_sentinel}"
 export DKMS_STUB_MOK_DIR="${dkms_base}"
+## Drive the subject's dkms_mok_variables_set via its env-var prefix so the derived
+## dkms_mok_dir/shim_mok_dir resolve to dkms_base/shim_base above.
+export SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR="${work}"
 
 pass=0
 fail=0
@@ -143,8 +150,6 @@ run_setup() {
 
 ## --- (1) dkms_mok_variables_set derives the six paths from the base dirs -----
 reset_state
-dkms_mok_dir="${dkms_base}"
-shim_mok_dir="${shim_base}"
 dkms_mok_variables_set
 check "dkms_mok_public_file"  "${dkms_mok_public_file}"  "${dkms_base}/mok.pub"
 check "dkms_mok_private_file" "${dkms_mok_private_file}" "${dkms_base}/mok.key"
@@ -153,8 +158,6 @@ check "shim_mok_private_file" "${shim_mok_private_file}" "${shim_base}/MOK.priv"
 
 ## --- (2) keys already present -> short-circuit, generate_mok NOT invoked -----
 reset_state
-dkms_mok_dir="${dkms_base}"
-shim_mok_dir="${shim_base}"
 touch -- "${dkms_base}/mok.pub" "${dkms_base}/mok.key"
 rc="$(run_setup)"
 gen='no'
@@ -171,8 +174,6 @@ check "keys present -> shim MOK symlinks created" "${link}" "yes"
 
 ## --- (3) no keys -> 'dkms generate_mok' creates them, shim links made --------
 reset_state
-dkms_mok_dir="${dkms_base}"
-shim_mok_dir="${shim_base}"
 rc="$(run_setup)"
 gen='no'
 if [ -e "${gen_sentinel}" ]; then
@@ -195,8 +196,6 @@ check "no keys -> shim MOK symlinks created" "${link}" "yes"
 ## If the generate branch did not check the result, this would be 0 -- so rc 1
 ## proves the failure path is live.
 reset_state
-dkms_mok_dir="${dkms_base}"
-shim_mok_dir="${shim_base}"
 export DKMS_GENMOK_MODE='fail'
 check "canary: dkms generate_mok fails -> rc 1" "$(run_setup)" "1"
 

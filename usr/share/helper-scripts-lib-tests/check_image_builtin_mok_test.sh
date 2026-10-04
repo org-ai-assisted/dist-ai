@@ -13,8 +13,8 @@
 ## globals to a temp tree and stubs mokutil to force each branch.
 ##
 ## Return-code contract (exit-code doc in the script):
-##   0 = no vulnerable keys, or could not detect (and the legit mok-ok marker /
-##       the version_1 do_once short-circuits here);
+##   0 = no vulnerable keys, or could not detect (the version_1 do_once marker
+##       short-circuits here);
 ##   1 = vulnerable keys present, safe for legacy-dist to delete;
 ##   2 = vulnerable keys enrolled, user intervention required.
 ##
@@ -51,7 +51,6 @@ fi
 ## drifted -- a hard error, not a silent pass.
 for sentinel in \
    ' is already enrolled' \
-   'mok-ok' \
    '_version_1'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
@@ -79,7 +78,7 @@ cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 do_once="${work}/legacy-dist/do_once"
-dkms="${work}/dkms"
+dkms="${work}/var/lib/dkms"
 efi="${work}/efi"
 bindir="${work}/bin"
 sentinel_file="${work}/mokutil.invoked"
@@ -101,12 +100,13 @@ esac
 STUB
 chmod +x -- "${bindir}/mokutil"
 
-## Point the REAL script's path globals at the temp tree. dkms_mok_dir feeds
-## dkms_mok_variables_set (sourced from shim-signed-mok-setup), which the subject
-## calls internally to derive dkms_mok_public_file / dkms_mok_private_file.
+## Point the REAL script's path globals at the temp tree. The dkms key dir comes
+## from dkms_mok_variables_set (sourced from shim-signed-mok-setup), which honors
+## the SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR prefix -> keys land under
+## <prefix>/var/lib/dkms, i.e. exactly "${dkms}" above.
 legacy_dist_do_once_dir="${do_once}"
 efi_sysfs_dir="${efi}"
-dkms_mok_dir="${dkms}"
+export SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR="${work}"
 export PATH="${bindir}:${PATH}"
 export MOKUTIL_SENTINEL="${sentinel_file}"
 
@@ -143,17 +143,6 @@ run_mok() {
    fi
    printf '%s:%s' "${rc}" "${invoked}"
 }
-
-## --- mok-ok early return 0 (the NEW legit-MOK marker) -----------------------
-## Set up UEFI + a present+enrolled key so that WITHOUT the guard the function
-## would reach mokutil and return 2. The mok-ok marker must short-circuit to 0
-## BEFORE any key inspection -> rc 0 AND mokutil never invoked.
-reset_state uefi
-touch -- "${dkms}/mok.pub"
-export MOKUTIL_MODE='enrolled'
-mkdir --parents -- "${do_once}"
-touch -- "${do_once}/mok-ok"
-check "mok-ok marker -> 0, mokutil not invoked" "$(run_mok)" "0:no"
 
 ## --- check_image_builtin_mok_version_1 do_once gate -> 0 --------------------
 ## Same enrolled setup; the version_1 marker (no mok-ok) must also short-circuit.

@@ -9,19 +9,20 @@
 ## default, gated on MOK_ENROLL + an EFI install). Drives the REAL source-able
 ## script (the `sourceable` skill): sourcing defines mok_enroll_opt_in WITHOUT
 ## running it, then the test redirects its path globals to a temp tree and stubs
-## the three external signing commands.
+## the two external signing commands.
 ##
-## Covered: MOK_ENROLL unset -> skip (rc 0, no externals, no mok-ok marker);
-## MOK_ENROLL set but not EFI -> skip; MOK_ENROLL set + EFI -> runs
-## shim-signed-mok-setup + rebuild-dkms-modules + rebuild-vbox-ga-modules, writes
-## the legit mok-ok marker, and logs. Each skip is a canary: the externals must
-## NOT run and the marker must NOT appear.
+## Covered: MOK_ENROLL unset -> skip (rc 0, no externals); MOK_ENROLL set but not
+## EFI -> skip; MOK_ENROLL set + EFI -> runs shim-signed-mok-setup +
+## rebuild-dkms-modules and logs. Each skip is a canary: the externals must NOT run.
+## (Oracle GA modules are signed by vbox-guest-installer / boot-time vboxadd, not
+## here, so there is no GA step; the legacy-mok-ok blessing was dropped with the
+## arraybolt3 remaster that no longer honors it.)
 ##
 ## A missing subject/dep is an ENVIRONMENT BUG -> exit 1 (FATAL), never a skip.
 
 ## The path globals this test reassigns (mok_enroll_log_file, efi_sysfs_dir,
-## legacy_dist_do_once_dir, dkms_mok_public_file) are CONSUMED inside the sourced
-## subject, across a boundary shellcheck does not follow -- its warnings are false.
+## dkms_mok_public_file) are CONSUMED inside the sourced subject, across a boundary
+## shellcheck does not follow -- its warnings are false.
 # shellcheck disable=SC2034
 set -o errexit
 set -o nounset
@@ -67,14 +68,12 @@ if [ ! -r "${HELPER_SCRIPTS_PATH}/usr/libexec/helper-scripts/check_runtime.bsh" 
    exit 1
 fi
 
-## Drift-guard: the log markers and the mok-ok filename this test keys on.
+## Drift-guard: the log markers this test keys on.
 for sentinel in \
    'skip: MOK_ENROLL unset' \
    'skip: not EFI' \
-   'run: creating MOK + signing DKMS and VirtualBox GA modules' \
-   'done: mok.pub' \
-   'skip mok-ok' \
-   'mok-ok'; do
+   'run: creating MOK + signing DKMS modules' \
+   'done: mok.pub'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
       exit 1
@@ -100,15 +99,13 @@ cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 logfile="${work}/mok-enroll-opt-in.log"
-do_once="${work}/legacy-dist/do_once"
 efi="${work}/efi"
 dkms_pub="${work}/dkms/mok.pub"
-dkms_key="${work}/dkms/mok.key"
 bindir="${work}/bin"
 mkdir --parents -- "${bindir}" "${work}/dkms"
 
-## Stubs for the three external signing commands; each records that it ran.
-for tool in shim-signed-mok-setup rebuild-dkms-modules rebuild-vbox-ga-modules; do
+## Stubs for the two external signing commands; each records that it ran.
+for tool in shim-signed-mok-setup rebuild-dkms-modules; do
    cat > "${bindir}/${tool}" <<STUB
 #!/bin/bash
 printf '%s\n' invoked > "${work}/${tool}.invoked" 2>/dev/null || true
@@ -120,9 +117,7 @@ done
 ## Point the REAL script's path globals at the temp tree.
 mok_enroll_log_file="${logfile}"
 efi_sysfs_dir="${efi}"
-legacy_dist_do_once_dir="${do_once}"
 dkms_mok_public_file="${dkms_pub}"
-dkms_mok_private_file="${dkms_key}"
 
 pass=0
 fail=0
@@ -139,7 +134,7 @@ check() {
 
 externals_invoked() {
    local any='no' tool
-   for tool in shim-signed-mok-setup rebuild-dkms-modules rebuild-vbox-ga-modules; do
+   for tool in shim-signed-mok-setup rebuild-dkms-modules; do
       if [ -e "${work}/${tool}.invoked" ]; then
          any='yes'
       fi
@@ -148,7 +143,7 @@ externals_invoked() {
 }
 all_externals_invoked() {
    local all='yes' tool
-   for tool in shim-signed-mok-setup rebuild-dkms-modules rebuild-vbox-ga-modules; do
+   for tool in shim-signed-mok-setup rebuild-dkms-modules; do
       if [ ! -e "${work}/${tool}.invoked" ]; then
          all='no'
       fi
@@ -163,12 +158,12 @@ log_has() {
    fi
 }
 
-## $1 = 'uefi' creates the efi dir. Resets externals, marker and log first.
+## $1 = 'uefi' creates the efi dir. Resets externals and log first.
 reset_state() {
-   safe-rm --recursive --force -- "${do_once}" "${efi}" "${logfile}"
+   safe-rm --recursive --force -- "${efi}" "${logfile}"
    safe-rm --force -- "${work}"/shim-signed-mok-setup.invoked \
-      "${work}"/rebuild-dkms-modules.invoked "${work}"/rebuild-vbox-ga-modules.invoked
-   safe-rm --force -- "${dkms_pub}" "${dkms_key}"
+      "${work}"/rebuild-dkms-modules.invoked
+   safe-rm --force -- "${dkms_pub}"
    if [ "${1:-}" = 'uefi' ]; then
       mkdir --parents -- "${efi}"
    fi
@@ -180,58 +175,30 @@ run_enroll() {
    printf '%s' "${rc}"
 }
 
-## --- MOK_ENROLL unset -> skip (no externals, no marker) ---------------------
+## --- MOK_ENROLL unset -> skip (no externals) --------------------------------
 reset_state uefi
 unset MOK_ENROLL
 rc="$(run_enroll)"
-marker='absent'
-[ -e "${do_once}/mok-ok" ] && marker='present'
 check "MOK_ENROLL unset -> rc 0"                "${rc}"                 "0"
 check "MOK_ENROLL unset -> no externals invoked" "$(externals_invoked)" "no"
-check "MOK_ENROLL unset -> no mok-ok marker"     "${marker}"            "absent"
 check "MOK_ENROLL unset -> logs 'skip: MOK_ENROLL unset'" "$(log_has 'skip: MOK_ENROLL unset')" "yes"
 
 ## --- MOK_ENROLL set but NOT EFI -> skip -------------------------------------
 reset_state
 export MOK_ENROLL=1
 rc="$(run_enroll)"
-marker='absent'
-[ -e "${do_once}/mok-ok" ] && marker='present'
 check "set + not-EFI -> rc 0"                "${rc}"                 "0"
 check "set + not-EFI -> no externals invoked" "$(externals_invoked)" "no"
-check "set + not-EFI -> no mok-ok marker"     "${marker}"            "absent"
 check "set + not-EFI -> logs 'skip: not EFI'" "$(log_has 'skip: not EFI')" "yes"
 
-## --- MOK_ENROLL set + EFI + freshly GENERATED key -> run all three, bless ----
-## No pre-existing keypair, so shim-signed-mok-setup generates a fresh per-machine
-## key and it IS blessed with mok-ok.
+## --- MOK_ENROLL set + EFI -> run both externals -----------------------------
 reset_state uefi
 export MOK_ENROLL=1
 rc="$(run_enroll)"
-marker='absent'
-[ -e "${do_once}/mok-ok" ] && marker='present'
-check "set + EFI, generated -> rc 0"                     "${rc}"                     "0"
-check "set + EFI, generated -> all three externals invoked" "$(all_externals_invoked)"  "yes"
-check "set + EFI, generated -> mok-ok marker written"    "${marker}"                 "present"
-check "set + EFI, generated -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing DKMS and VirtualBox GA modules')" "yes"
-check "set + EFI, generated -> logs 'done: mok.pub'"     "$(log_has 'done: mok.pub')" "yes"
-
-## --- MOK_ENROLL set + EFI + REUSED pre-existing key -> run but do NOT bless ---
-## REGRESSION (dev868 security finding): a pre-existing DKMS keypair on a fresh
-## install is the image-builtin/untrusted shared key. shim-signed-mok-setup reuses
-## it, and blessing it with mok-ok would make legacy-dist's scrub and
-## check-image-builtin-mok skip a shared key. The externals still run; only the
-## marker is withheld. RED on pre-fix code (which touched mok-ok unconditionally).
-reset_state uefi
-export MOK_ENROLL=1
-touch -- "${dkms_pub}" "${dkms_key}"
-rc="$(run_enroll)"
-marker='absent'
-[ -e "${do_once}/mok-ok" ] && marker='present'
-check "reused key -> rc 0"                        "${rc}"                    "0"
-check "reused key -> externals still invoked"      "$(all_externals_invoked)" "yes"
-check "reused key -> mok-ok marker NOT written"    "${marker}"                "absent"
-check "reused key -> logs 'skip mok-ok'"           "$(log_has 'skip mok-ok')" "yes"
+check "set + EFI -> rc 0"                     "${rc}"                     "0"
+check "set + EFI -> both externals invoked"   "$(all_externals_invoked)"  "yes"
+check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing DKMS modules')" "yes"
+check "set + EFI -> logs 'done: mok.pub'"     "$(log_has 'done: mok.pub')" "yes"
 
 printf '%s\n' ""
 printf '%s\n' "===== mok_enroll_opt_in: ${pass} pass, ${fail} fail, 0 skip ====="
