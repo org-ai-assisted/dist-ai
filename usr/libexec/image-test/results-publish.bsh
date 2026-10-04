@@ -18,8 +18,27 @@
 ## Emit the result JSON. All values are caller-controlled tokens plus rc/pass/
 ## expect; expect is rendered as a JSON array. printf keeps it zero-dependency
 ## (no jq).
+## Map a lane rc to a verdict. 0 = PASS; the reserved SETUP/inconclusive code 2 =
+## INCONCLUSIVE (a provisioning/infra gap or an inconclusive probe -- NOT a product
+## failure, so neither green nor a leak); any other non-zero = FAIL. Single source so
+## the console summary and result.json never drift (dist-ai harness convention: a lane
+## exits 2 for setup/inconclusive -- see dm-release-test SETUP_RC / dm-whonix-pair).
+image_test_verdict_from_rc() {
+   case "$1" in
+      0)
+         printf 'PASS\n'
+         ;;
+      2)
+         printf 'INCONCLUSIVE\n'
+         ;;
+      *)
+         printf 'FAIL\n'
+         ;;
+   esac
+}
+
 image_test_write_result_json() {
-   local dest name test_user mode ts rc pass
+   local dest name test_user mode ts rc pass verdict
    dest="$1"
    name="$2"
    test_user="$3"
@@ -28,6 +47,8 @@ image_test_write_result_json() {
    rc="$6"
    pass="$7"
    shift 7
+
+   verdict="$(image_test_verdict_from_rc "${rc}")"
 
    local expect_json item first
    expect_json=""
@@ -51,6 +72,7 @@ image_test_write_result_json() {
       printf '  "timestamp": "%s",\n' "${ts}"
       printf '  "rc": %s,\n' "${rc}"
       printf '  "pass": %s,\n' "${pass}"
+      printf '  "verdict": "%s",\n' "${verdict}"
       printf '  "expect": [%s]\n' "${expect_json}"
       printf '}\n'
    } > "${dest}"

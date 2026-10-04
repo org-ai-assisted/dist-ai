@@ -212,6 +212,11 @@ rt_account_is_leak() {
 ## ALLOWLIST with NO blind trust of the primary: a privileged primary (root/sudo/docker)
 ## has a group name != the account, so it is rejected. $1=account-name $2=uid
 ## $3=`id -nG` output (space-separated).
+## Scope: this rejects every privilege-granting GROUP (sudo/wheel/docker/disk/...), the
+## realistic provisioning accident. It does NOT read sudoers.d / privleap / polkit /
+## file-caps (not group-based; `sudo -l` exit status is 0 for everyone so it cannot
+## gate). A non-group root grant on this persistent account is prevented at PROVISIONING
+## time (create it with only vboxusers, no sudoers.d), not by a fragile runtime parser.
 rt_account_unprivileged() {
    local account uid grp
    account="$1"
@@ -336,12 +341,15 @@ rt_publish_result() {
    rc="$5"
    shift 5
 
-   if [ "${rc}" -eq 0 ]; then
+   ## rc 0 = PASS; the reserved SETUP/inconclusive code 2 = INCONCLUSIVE (a provisioning
+   ## gap or inconclusive probe -- pass=false but NOT a leak); any other non-zero (incl
+   ## dm-whonix-pair FAIL_RC=5) = FAIL. Shared helper so result.json agrees (see
+   ## results-publish.bsh); this is what keeps a SETUP gap from reading as a leak.
+   verdict="$(image_test_verdict_from_rc "${rc}")"
+   if [ "${verdict}" = 'PASS' ]; then
       pass='true'
-      verdict='PASS'
    else
       pass='false'
-      verdict='FAIL'
    fi
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
       "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \

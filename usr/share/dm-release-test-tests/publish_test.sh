@@ -74,12 +74,27 @@ check "json has test_user" "$(grep --quiet '"test_user": "eph-run-kicksecure-18-
 check "json has mode" "$(grep --quiet '"mode": "calamares-install"' -- "${json}" && printf true || printf false)"
 check "json has rc" "$(grep --quiet '"rc": 0' -- "${json}" && printf true || printf false)"
 check "json has pass" "$(grep --quiet '"pass": true' -- "${json}" && printf true || printf false)"
+check "json has verdict PASS" "$(grep --quiet '"verdict": "PASS"' -- "${json}" && printf true || printf false)"
 check "json has expect" "$(grep --quiet '"expect": \["Kicksecure"\]' -- "${json}" && printf true || printf false)"
 
 ## latest must point at the run's timestamp dir (basename of outdir).
 latest="${results_root}/kicksecure-18-2-3-5/latest"
 link_target="$(readlink -- "${latest}" 2>/dev/null || true)"
 check "latest symlink points at run" "$([ "${link_target}" = "$(basename -- "${outdir}")" ] && printf true || printf false)"
+
+## verdict mapping (canary: the old binary pass/fail schema published rc 2 as FAIL).
+## SETUP_RC(2) -> INCONCLUSIVE (pass=false but NOT a leak); any other non-zero -> FAIL.
+inc_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "whonix-18-2-3-5" "persist-leak-whonix" "whonix-pair" \
+   2 "false" "" "tor-confirm")"
+inc_json="${inc_out}/result.json"
+check "rc 2 verdict INCONCLUSIVE" "$(grep --quiet '"verdict": "INCONCLUSIVE"' -- "${inc_json}" && printf true || printf false)"
+check "rc 2 pass false" "$(grep --quiet '"pass": false' -- "${inc_json}" && printf true || printf false)"
+
+fail_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "whonix-18-2-3-6" "persist-leak-whonix" "whonix-pair" \
+   5 "false" "" "tor-confirm")"
+check "rc 5 verdict FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${fail_out}/result.json" && printf true || printf false)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s publish assertion(s) failed\n' "${failures}" >&2
