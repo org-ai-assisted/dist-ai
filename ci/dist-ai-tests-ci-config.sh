@@ -67,6 +67,7 @@ helper_scripts='false'
 terminal_poc_corpus='false'
 terminal_safe_corpus='false'
 secure_terminal='false'
+static_analysis_tools='false'
 submodules='false'
 skip_args=''
 allow_skip_args=''
@@ -109,6 +110,17 @@ if [ -f "${cfg}" ]; then
    ## is the only way to provide it in the CI container.
    if [ "$(yq -r '.["dist-ai-tests"]["secure-terminal"] // ""' "${cfg}")" = 'true' ]; then
       secure_terminal='true'
+   fi
+   ## Opt-in: install the static-analysis CLIs (zizmor, actionlint) a suite like
+   ## static-review-untrusted-config-isolation drives. Neither is Debian-packaged,
+   ## so the apt list cannot carry them; the reusable step installs them from the
+   ## component's own pinned static-cli-install, which verifies each download
+   ## against a sha256 computed locally from the asset. A consumer that sets this
+   ## MUST also set helper-scripts: true (the installer sources it). Absent, the
+   ## suite FATALs rather than skipping -- a static analyzer that cannot run must
+   ## not report the same green as one that ran.
+   if [ "$(yq -r '.["dist-ai-tests"]["static-analysis-tools"] // ""' "${cfg}")" = 'true' ]; then
+      static_analysis_tools='true'
    fi
    ## Opt-in submodule checkout for the component. Some suites assert on files
    ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
@@ -236,6 +248,7 @@ fi
    printf '%s\n' "terminal_poc_corpus=${terminal_poc_corpus}"
    printf '%s\n' "terminal_safe_corpus=${terminal_safe_corpus}"
    printf '%s\n' "secure_terminal=${secure_terminal}"
+   printf '%s\n' "static_analysis_tools=${static_analysis_tools}"
    printf '%s\n' "submodules=${submodules}"
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"
