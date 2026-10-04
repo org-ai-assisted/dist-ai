@@ -40,11 +40,16 @@ def bind_socket(family: int, kind: int, addr: str, port: int) -> socket.socket:
     if family == socket.AF_INET6:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.bind((addr, port))
+    ## listen() HERE, in the main thread, before readiness is signalled -- not in the
+    ## serve thread. A TCP connect landing after bind but before the thread reaches
+    ## listen() would get ECONNREFUSED (a false 'blocked'); doing it up front makes
+    ## readiness mean bound-AND-listening.
+    if kind == socket.SOCK_STREAM:
+        sock.listen(64)
     return sock
 
 
 def serve_tcp(sock: socket.socket) -> None:
-    sock.listen(64)
     while True:
         try:
             conn, _peer = sock.accept()
@@ -81,8 +86,8 @@ def main() -> None:
             served.append((serve_udp, bind_socket(family, socket.SOCK_DGRAM, addr, port)))
     for serve, sock in served:
         threading.Thread(target=serve, args=(sock,), daemon=True).start()
-    ## Every socket is bound and serving: signal readiness so the launcher stops
-    ## waiting and the first probe cannot race an unbound port.
+    ## Every socket is bound and (for TCP) listening before this point, so signalling
+    ## readiness here cannot race a probe against an unbound / not-yet-listening port.
     if ready_file is not None:
         open(ready_file, 'w').close()
     while True:
