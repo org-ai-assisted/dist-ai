@@ -28,15 +28,26 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-## Stub tcpdump: a "dst host" filter arg -> emit as many lines as STUB_DIR/hits; else (full
-## read) STUB_DIR/total. Counts come from FILES (not subshell env) so canary can run in a
-## die-catching subshell with no lost-subshell-var warning.
+## Stub tcpdump, three filter kinds (canary runs the denylist AND the allowlist read):
+##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow
+##     lines, capture to last_filter_allow.
+##   - DENYLIST (watched targets) -> has "dst host", no 169.254 -> emit STUB_DIR/hits, capture to
+##     last_filter (so the denylist assertions still see their own filter, not the allowlist one).
+##   - full read (no filter) -> emit STUB_DIR/total.
+## A missing count file reads as 0 (so set_counts needs only total+hits; allow defaults 0). Counts
+## come from FILES (not subshell env) so canary can run in a die-catching subshell cleanly.
 cat > "${work}/tcpdump" <<'STUB'
 #!/bin/bash
-has_filter=0
-for a in "$@"; do case "$a" in *"dst host"*) has_filter=1; printf '%s' "$a" > "${STUB_DIR}/last_filter" ;; esac; done
-f="${STUB_DIR}/total"
-[ "${has_filter}" = 1 ] && f="${STUB_DIR}/hits"
+mode=full
+for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow" ;; esac; done
+if [ "${mode}" = full ]; then
+   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter" ;; esac; done
+fi
+case "${mode}" in
+   allow) f="${STUB_DIR}/allow" ;;
+   deny)  f="${STUB_DIR}/hits" ;;
+   *)     f="${STUB_DIR}/total" ;;
+esac
 n="$(cat -- "${f}" 2>/dev/null || printf 0)"
 i=0
 while [ "${i}" -lt "${n}" ]; do

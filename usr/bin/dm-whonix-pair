@@ -84,6 +84,25 @@ CRAFT_SRC='198.51.100.99'
 CLEARNET_IPV6='2606:4700:4700::1111'
 CRAFT_SRC6='2001:db8:beef::99'
 
+## Pinned Tor entry guards: a small fixed set of high-uptime / high-capacity relays. gw_pin_guards
+## forces the GW onto ONLY these (EntryNodes + StrictNodes 1), so the GW's ONLY clearnet egress is
+## these IPs -- the SAME set canary_gateway_pcap allowlists (single source; --print-guards exposes
+## it to the host-wire oracle). Expect Tor-only by DEFAULT: ANY other clearnet dst -- incl. a
+## NON_TOR_GATEWAY host-DNS/LAN exception -- is a LEAK, never allowlisted. Refresh from the live
+## consensus if a relay churns; fail-closed -- a pin Tor cannot bootstrap on never passes (SETUP).
+## Source: onionoo top-consensus-weight Guard relays, 2026-10-04 (nickname / fingerprint / addr):
+##   F3Netze       9454F82D47EBA0CB0C2A4BFE7966181DBF108147  185.220.100.242, 2a0b:f4c0:16c:14::1
+##   magic848relay 616C915B1EA788FA1177EF6194608C0E13B28A96  148.251.33.107
+##   0x90          D95A2DF17815BA92E4EA49D2D46EBAEB1DCEBABC  88.99.7.87
+##   doraemon      4DD822C2CF4542CDF2EDA22480C4EB0331E7B6DB  185.107.57.64
+##   setsun        FB54F9C8AE5A3A89FDAFF834DFA9637F22D70C38  94.130.133.51
+## IPv4 pins the EntryNodes (VBox NAT uplink is v4-only); v6 is allowlisted too in case Tor ever
+## reaches a pinned guard over v6 -- a harmless no-op on a v4 uplink.
+GUARD_PIN_IPS4=( '185.220.100.242' '148.251.33.107' '88.99.7.87' '185.107.57.64' '94.130.133.51' )
+GUARD_PIN_IPS6=( '2a0b:f4c0:16c:14::1' )
+## Whonix %includes /usr/local/etc/torrc.d/*.conf; a drop-in there is picked up at Tor start.
+GW_TORRC_PIN='/usr/local/etc/torrc.d/50_dm-whonix-pair-pin.conf'
+
 gw_started='false'
 ws_started='false'
 nictrace_pcap=''
@@ -147,6 +166,20 @@ parse_args() {
          --ws)
             ws="$2"
             shift 2
+            ;;
+         --print-guards)
+            ## Single source of the pinned-guard allowlist IPs, consumed by the host-wire
+            ## oracle (host-wire-leak-capture) so the two never drift. One IP per line.
+            printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"
+            exit 0
+            ;;
+         --print-allow-filter)
+            ## Emit the exact deny-by-default allowlist BPF so the host-wire oracle applies the
+            ## SAME semantics as the in-VM canary (single source; never a re-derived copy).
+            [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
+               || die "${SETUP_RC}" "no pinned guards configured -- cannot emit the allowlist filter"
+            printf '%s\n' "$(allowlist_bpf)"
+            exit 0
             ;;
          -h|--help)
             usage
@@ -220,17 +253,30 @@ restore_fresh() {
    "${VBOXMANAGE}" discardstate "${target}" >/dev/null 2>&1 || true
 }
 
-## Boot the Gateway fresh in its default (user) role, with its EXTERNAL NIC traced to a
-## host pcap (the canary observation point). The GW only routes; no in-guest commands.
+## Boot the Gateway fresh in its default (user) role. TWO boots: the first UNtraced, only to PIN
+## the entry guards; then -- after a CLEAN poweroff that flushes the torrc write -- re-boot with
+## the EXTERNAL NIC traced to a host pcap (the canary observation point). Pinning BEFORE the trace
+## means the capture holds ONLY pinned-guard traffic; the warmed snapshot's own persisted guards
+## never pollute the allowlist. (The cost of pinning at runtime rather than in the snapshot.) The
+## GW only routes; the sole in-guest command is the one-shot guard pin.
 boot_gateway() {
    vm="${gw}"
    restore_fresh "${gw}"
-   ## -u: just a name (not created), so VBox creates the pcap itself; no pre-create to remove.
+   ## Boot 1 (UNtraced): bring the GW up just far enough to write the guard pin.
+   "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
+   gw_started='true'
+   wait_guestcontrol_ready user 300 \
+      || die "${SETUP_RC}" "${gw}: guestcontrol not ready as user to pin guards -- a provisioning failure, not a WS leak"
+   gw_pin_guards
+   ## CLEAN poweroff (ACPI) so the torrc write is flushed; a hard poweroff could lose it. NOT
+   ## restore_fresh -- that reverts the pin; a plain power-cycle keeps the on-disk drop-in.
+   clean_poweroff
+   ## Boot 2 (TRACED): enable the NIC trace offline (-u: just a name, VBox creates the pcap), then
+   ## start. Tor autostarts and StrictNodes forces it onto the pinned guards only.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
    "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
       || die "${SETUP_RC}" "${gw}: cannot enable --nictrace1"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
-   gw_started='true'
 }
 
 ## Boot the Workstation fresh into SYSMAINT (root available for the full battery), then
@@ -311,6 +357,37 @@ gw_start_tor() {
       || die "${SETUP_RC}" "killswitch recovery: could not restart Tor on the GW"
 }
 
+## Pin the GW's Tor to the fixed entry guards (EntryNodes + StrictNodes 1) so its ONLY clearnet
+## egress is GUARD_PIN_IPS4 -- the set the canary (and the host-wire oracle) allowlists. Written
+## as a torrc.d drop-in (Whonix %includes /usr/local/etc/torrc.d/*.conf) via leaprun sudo in the
+## GW USER session (forwarding intact), then read back + synced so a clean poweroff flushes it.
+## Done on the UNtraced first boot; boot_gateway then power-cycles into the TRACED boot where Tor
+## connects to ONLY these guards. Fail-closed: any failure -> SETUP, never a silent pass (a GW
+## that cannot be pinned must not be measured against this allowlist).
+gw_pin_guards() {
+   local csv
+   csv="$(IFS=','; printf '%s' "${GUARD_PIN_IPS4[*]}")"
+   "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 120 \
+      --cmd "leaprun sudo && printf 'EntryNodes %s\nStrictNodes 1\n' '${csv}' | sudo --non-interactive tee ${GW_TORRC_PIN} >/dev/null && sudo --non-interactive grep -q '^StrictNodes 1' ${GW_TORRC_PIN} && sudo --non-interactive sync" \
+      || die "${SETUP_RC}" "could not pin entry guards on the GW (torrc.d writable? leaprun sudo available?)"
+}
+
+## Deny-by-default allowlist BPF: permit ONLY the pinned guards (EITHER direction -- a nictrace
+## tap sees the guard's replies too, dst = the GW's own NAT IP, so a dst-only match would flag
+## every legit return packet) plus structural link infra (DHCP, link-local, multicast, limited
+## broadcast). Any other clearnet packet is a leak. SINGLE source of the allowlist semantics:
+## canary_gateway_pcap uses it, and --print-allow-filter emits it verbatim for the host-wire
+## oracle (host-wire-leak-capture), so the in-VM and on-the-wire oracles never drift.
+allowlist_bpf() {
+   local infra allow guard
+   infra='(udp port 67 or udp port 68) or ip multicast or ip6 multicast or host 255.255.255.255 or net 169.254.0.0/16 or (ip6 and net fe80::/10)'
+   allow=''
+   for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do
+      allow="${allow:+${allow} or }host ${guard}"
+   done
+   printf '%s' "(ip or ip6) and not ( ${infra} ) and not ( ${allow} )"
+}
+
 ## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's
 ## external NIC (Tor carries no such destination), AND the trace actually captured
 ## traffic (non-blind). tcpdump -r reads the pcap -- no root. Fail-closed: a missing /
@@ -329,7 +406,17 @@ canary_gateway_pcap() {
        or host ${CRAFT_SRC} or host ${CRAFT_SRC6}" 2>/dev/null | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
-   printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s), 0 to any probe target)"
+   ## Allowlist (deny-by-default): permit ONLY the pinned entry guards (either direction) + link
+   ## infra; EVERY other clearnet packet is a LEAK -- Tor-only by default, NO carve-out for
+   ## host-DNS / a NON_TOR_GATEWAY exception. Catches a GW-originated non-Tor egress the fixed
+   ## denylist above never names. Fail-closed: an empty guard set cannot form an allowlist.
+   [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
+      || die "${SETUP_RC}" "canary: no pinned guards configured -- cannot build the allowlist (inconclusive, not a leak)"
+   local leaks
+   leaks="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null | wc -l)"
+   [ "${leaks}" -eq 0 ] \
+      || die "${FAIL_RC}" "LEAK: ${leaks} non-guard clearnet pkt(s) on the GW NIC -- NOT Tor-only (allowlist; see preserved pcap decode)"
+   printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); 0 to any probe target, 0 non-guard clearnet)"
 }
 
 main() {
