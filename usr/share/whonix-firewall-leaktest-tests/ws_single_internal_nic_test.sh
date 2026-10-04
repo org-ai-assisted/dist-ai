@@ -56,10 +56,18 @@ audit_ws_nic() {
       printf 'FAIL: eth0 uses a dynamic inet method (must be static)\n' >&2
       return 1
    fi
+   ## No ifupdown command hooks ship on this interface. ANY of them is an
+   ## uninterpreted escape hatch -- `up dhclient eth0` re-enables DHCP,
+   ## `post-up ip route add default ...` injects a non-Tor default route -- so reject
+   ## them all rather than chase individual commands.
+   if grep --quiet --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${file}"; then
+      printf 'FAIL: WS interfaces file has ifupdown command hooks (unaudited bypass): %s\n' \
+         "$(grep --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${file}" | tr '\n' ' ')" >&2
+      return 1
+   fi
    ## Extract ONLY the `iface eth0 inet static` stanza (up to the next stanza
    ## keyword) and require the internal address + gateway WITHIN it -- so address /
    ## gateway lines parked under another stanza (e.g. lo) cannot satisfy the check.
-   ## Scope: ifupdown up/post-up command hooks are not interpreted (not shipped).
    stanza="$(awk '
       /^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+static([[:space:]]|$)/ { inblk = 1; print; next }
       inblk && /^[[:space:]]*(iface|mapping|auto|allow-|source|source-directory)/ { inblk = 0 }
@@ -124,5 +132,36 @@ if audit_ws_nic "${canary_dhcp}" 2>/dev/null; then
 else
    printf 'PASS: canary (eth0 dhcp rejected); audit has teeth\n'
 fi
+
+## Canary 3: a second `iface eth0 inet bootp` stanza beside the valid static one
+## must FAIL -- bootp is a dynamic method too. Keeping the static stanza isolates the
+## method-list teeth (the static-stanza check still passes), locking in that the
+## check is not narrowed back to dhcp-only.
+canary_bootp="$(mktemp)"
+cp -- "${iface_file}" "${canary_bootp}"
+printf '%s\n' 'iface eth0 inet bootp' >>"${canary_bootp}"
+if audit_ws_nic "${canary_bootp}" 2>/dev/null; then
+   printf 'FAIL: canary -- audit PASSED a second eth0 inet bootp stanza (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (eth0 bootp rejected); audit has teeth\n'
+fi
+
+## Canary 4: a command hook hidden in the static stanza must FAIL -- `up dhclient`
+## re-enables DHCP and `post-up ip route add default` injects a non-Tor route, both
+## bypassing Tor despite the stanza looking static.
+for hook_line in \
+   'up dhclient eth0' \
+   'post-up ip route add default via 10.0.2.2'; do
+   canary_hook="$(mktemp)"
+   cp -- "${iface_file}" "${canary_hook}"
+   printf '%s\n' "${hook_line}" >>"${canary_hook}"
+   if audit_ws_nic "${canary_hook}" 2>/dev/null; then
+      printf 'FAIL: canary -- audit PASSED command hook "%s" (no teeth)\n' "${hook_line}" >&2
+      rc=1
+   else
+      printf 'PASS: canary (command hook "%s" rejected); audit has teeth\n' "${hook_line}"
+   fi
+done
 
 exit "${rc}"
