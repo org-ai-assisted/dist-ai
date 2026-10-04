@@ -44,9 +44,30 @@ if [ ! -r "${subject}" ]; then
 fi
 
 ## An empty directory has no help-steps/dm-build-official-one, so iso_build_test.sh's
-## e2e case skips -- giving both assertions a deterministic skipped-e2e run.
+## e2e case skips -- giving the first two assertions a deterministic skipped-e2e run.
 empty_checkout="$(mktemp --directory)"
-cleanup() { safe-rm --recursive --force -- "${empty_checkout}"; }
+
+## A fake derivative-maker checkout whose dm-build-official-one stub dry-plans like the
+## real official path -- but mirrors ONE real behaviour the e2e leak depends on: a
+## non-empty dist_build_multi_target_list (what an ambient DM_TARGET sets) re-plans the
+## build off ISO, dropping the '--target iso' line the e2e greps for. Present (not empty),
+## so iso_build_test.sh's e2e case RUNS against it.
+fake_checkout="$(mktemp --directory)"
+mkdir --parents -- "${fake_checkout}/help-steps"
+{
+   printf '%s\n' '#!/bin/bash'
+   # shellcheck disable=SC2016  ## literal stub body: expand in the stub, not here
+   printf '%s\n' 'if [ -n "${dist_build_multi_target_list:-}" ]; then'
+   # shellcheck disable=SC2016
+   printf '%s\n' '   printf "%s\n" "./derivative-maker --arch ${dist_build_target_arch:-amd64} --repo true --target ${dist_build_multi_target_list} --flavor ${flavors_list:-kicksecure-lxqt} --freshness frozen"'
+   printf '%s\n' 'else'
+   # shellcheck disable=SC2016
+   printf '%s\n' '   printf "%s\n" "./derivative-maker --arch ${dist_build_target_arch:-amd64} --repo true --target iso --flavor ${flavors_list:-kicksecure-lxqt} --freshness frozen"'
+   printf '%s\n' 'fi'
+} > "${fake_checkout}/help-steps/dm-build-official-one"
+chmod +x -- "${fake_checkout}/help-steps/dm-build-official-one"
+
+cleanup() { safe-rm --recursive --force -- "${empty_checkout}" "${fake_checkout}"; }
 trap cleanup EXIT
 
 ## --- Case 1 (finding 1): a skipped e2e is never summarised as verified -----------
@@ -74,8 +95,21 @@ else
    fail "ambient DM_ARCH leaked into the suite and falsely failed it; rc=${rc2} out=<<<${out2}>>>"
 fi
 
+## --- Case 3 (finding 2, e2e invocation): ambient DM_* cannot contaminate case 8 -------
+## DM_TARGET=qcow2 in the environment must not reach the e2e official-path invocation; if
+## it did, dm-iso-build would re-plan off ISO and the '--target iso' grep would false-fail.
+## With the fake checkout present, case 8 RUNS and must still verify '--repo true' (exit 0).
+rc3=0
+out3="$(DM_TARGET=qcow2 DERIVATIVE_MAKER_DIR="${fake_checkout}" bash -- "${subject}" 2>&1)" || rc3="$?"
+if [ "${rc3}" -eq 0 ] \
+   && grep --quiet --fixed-strings -- 'PASS: the real official path dry-plans the ISO build with --repo true' <<< "${out3}"; then
+   pass "ambient DM_TARGET does not contaminate the e2e official-path assertion"
+else
+   fail "ambient DM_TARGET leaked into the e2e assertion; rc=${rc3} out=<<<${out3}>>>"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: iso_build_test.sh reports a skipped e2e honestly and isolates ambient DM_* from its default-value assertions."
+printf '%s\n' "OK: iso_build_test.sh reports a skipped e2e honestly and isolates ambient DM_* from its default-value and e2e assertions."

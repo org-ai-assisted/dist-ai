@@ -224,7 +224,13 @@ fi
 ## passed, so a skipped e2e is never reported as a verified '--repo true' property.
 e2e_verified=0
 if [ -f "${dm_checkout}/help-steps/dm-build-official-one" ]; then
-   plan="$(DM_REPO="${dm_checkout}" DM_FLAVOR=kicksecure-lxqt DM_ARCH=amd64 \
+   ## Same ambient-DM_* isolation as run_iso. dm-iso-build echoes a status line that
+   ## interpolates DM_USER/DM_FREEDOM/DM_TARGET, and an ambient DM_TARGET also RE-PLANS the
+   ## build (iso -> VM image) -- either can steer the grep below (a status line matching the
+   ## selectors is picked by head -n1 and read as proof; a re-planned target drops the ISO
+   ## line and false-fails). Strip them; the three vars the case sets explicitly still win.
+   plan="$(env -u DM_FLAVOR -u DM_ARCH -u DM_TARGET -u DM_FREEDOM -u DM_USER -u DM_CLEAN \
+      DM_REPO="${dm_checkout}" DM_FLAVOR=kicksecure-lxqt DM_ARCH=amd64 \
       "${tool}" --show-steps 2>/dev/null || true)"
    iso_line="$(printf '%s\n' "${plan}" \
       | grep -- './derivative-maker' | grep -- '--target iso' | grep -- '--flavor kicksecure-lxqt' \
