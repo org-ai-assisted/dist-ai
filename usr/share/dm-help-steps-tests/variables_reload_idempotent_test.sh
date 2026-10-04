@@ -50,9 +50,9 @@ if [ ! -r "${dm_checkout}/help-steps/variables" ]; then
 fi
 
 ## A representative, always-valid build command (mirrors the snapshot suite's
-## fixed axis): a real flavor/target with the mandatory freshness/arch/freedom
+## fixed axis): a real flavor/target with the mandatory freshness/arch/freedom/repo
 ## choices, so variables resolves fully and builds every accumulator.
-fixed_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false )
+fixed_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false --repo false )
 
 first="$(mktemp)"
 second="$(mktemp)"

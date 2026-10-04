@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Unattended Calamares LUKS install of a Kicksecure ISO, driven HOST-SIDE via
-## vbox-guestctl (vboxapi IMouse/IKeyboard/IDisplay -- real mouse + screenshot in
+## vbox-ctl-local (vboxapi IMouse/IKeyboard/IDisplay -- real mouse + screenshot in
 ## one pixel space, no guest agent). Boots the ISO in the UNRESTRICTED install
 ## session, drives Calamares to a full encrypted (LUKS) erase-disk install, boots
 ## the installed disk, unlocks LUKS, and verifies the installed system booted.
@@ -27,7 +27,7 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
-GUESTCTL="${GUESTCTL:-vbox-guestctl}"
+GUESTCTL="${GUESTCTL:-vbox-ctl-local}"
 TESSERACT="${TESSERACT:-tesseract}"
 PASS_RC=0
 FAIL_RC=5
@@ -42,10 +42,6 @@ firmware="efi"
 reinstall="false"
 checks="false"
 mok_enroll="false"
-## Mailbox disk (host path) used to carry the guest-generated MOK DER cert out to
-## the host for enrollment; set only under --mok-enroll. The VM has no Guest
-## Additions, so a plain block device is the GA-less transfer channel.
-mailbox=""
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
 
@@ -60,14 +56,6 @@ on_exit() {
    local rc=$?
    if [ "${vm_started}" = 'true' ]; then
       "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
-   fi
-   ## Drop the MOK mailbox disk so it does not linger in the VBox registry or on
-   ## disk (power-off above frees it for detach).
-   if [ -n "${mailbox}" ]; then
-      "${VBOXMANAGE}" storageattach "${vm}" --storagectl SATA --port 1 --device 0 \
-         --type hdd --medium none >/dev/null 2>&1 || true
-      "${VBOXMANAGE}" closemedium disk "${mailbox}" --delete >/dev/null 2>&1 || true
-      safe-rm --force -- "${mailbox}" 2>/dev/null || true
    fi
    exit "${rc}"
 }
@@ -84,9 +72,10 @@ usage() {
              EFI+SB reinstall-over-LUKS: run once plain, once --reinstall).
 --mok-enroll run the Calamares opt-in Secure Boot MOK setup (MOK_ENROLL=1): the
              installed system generates a per-machine MOK and DKMS-signs tirdad;
-             after first boot the harness carries the public cert out via a mailbox
-             disk and enrolls it host-side ('VBoxManage modifynvram enrollmok'),
-             then reboots so tirdad loads under Secure Boot. Requires EFI firmware.
+             the harness then reads the public cert off the installed disk on the
+             HOST (vbox-disk-extract, read-only) and enrolls it ('VBoxManage
+             modifynvram enrollmok'), then reboots so tirdad loads under Secure
+             Boot. Requires EFI firmware, and a sudo-capable user (host disk mount).
 --checks     after the installed boot, run the release-critical check battery
              in-guest (check 8: systemcheck --leak-tests) and fail on a non-pass."
 }
@@ -163,65 +152,29 @@ reboot_installed() {
    open_terminal
 }
 
-## --mok-enroll: lift the installed system's MOK public cert out to the host and
-## enroll it, so Secure Boot trusts the DKMS-signed modules (tirdad) on the next
-## boot. Runs in the SYSMAINT session (root via sudo -- the user-sysmaint-split
-## admin context, same session the battery's privileged checks use). GA-less
-## transfer: write the DER (base64, delimited) to the mailbox block device, then
-## read it back host-side after power-off. The write marker is all-letters
-## (OCR-safe) and built from a shell var so the typed command echo cannot pre-match.
-mok_extract_and_enroll() {
-   printf '%s\n' "${me}: --mok-enroll: extract MOK cert (sysmaint) + host-side enroll"
-   reboot_installed sysmaint
-   local extract_cmd
-   extract_cmd="$(cat <<'EOF'
-clear; X=MOK; D=/dev/$(lsblk -bdno NAME,SIZE,TYPE | awk '$3=="disk"{print $1, $2}' | sort -k2 -n | head -n1 | awk '{print $1}'); { echo ===MOKB===; sudo -n base64 /var/lib/dkms/mok.pub; echo ===MOKE===; } | sudo -n dd of="$D" bs=512 conv=notrunc status=none && sync && echo MK${X}OK || echo MK${X}ERR
-EOF
-)"
-   printf '%s' "${extract_cmd}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
-   gui_scan 1c 9c
-   sleep 3
-   local deadline text=''
-   deadline=$(( SECONDS + 120 ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      gui_scan 2a aa
-      text="$(gui_ocr)"
-      if [[ "${text,,}" =~ mkmokok ]]; then
-         break
-      fi
-      if [[ "${text,,}" =~ mkmokerr ]]; then
-         die "${FAIL_RC}" "MOK cert extraction failed in guest (sysmaint sudo denied or mok.pub missing)"
-      fi
-      sleep 5
-   done
-   [[ "${text,,}" =~ mkmokok ]] || die "${FAIL_RC}" "MOK cert write marker not seen within 120s"
+## --mok-enroll: read the installed system's per-machine MOK public cert off the
+## disk ON THE HOST and enroll it into the VM's UEFI varstore, so Secure Boot trusts
+## the DKMS-signed modules (tirdad) on the next boot. The VM is powered off, so
+## vbox-disk-extract mounts the (LUKS) disk read-only with the install passphrase --
+## no guest cooperation, no Guest Additions, no in-guest scripting. Needs root for
+## the host mount, hence a sudo-capable user. enrollmok only adds a key, so Secure
+## Boot stays enabled; the final reboot lands a correctly-booted system for checks.
+mok_host_enroll() {
+   printf '%s\n' "${me}: --mok-enroll: read MOK cert off the installed disk (host) + enroll"
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
-   mok_enroll_host
-   ## Boot back into the user session with the MOK now trusted; the checks battery
-   ## then runs on a system where tirdad actually loads under Secure Boot.
-   reboot_installed user
-}
-
-## Host side: pull the DER cert out of the mailbox disk and enroll it into the VM's
-## UEFI varstore. clonemedium -> RAW (the mailbox is VDI); slice the base64 between
-## the delimiters; decode; then 'modifynvram enrollmok' (needs --owner-uuid). SB
-## stays enabled (enrollmok only adds a key), so the next boot trusts the MOK.
-mok_enroll_host() {
-   local raw der uuid
-   raw="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.mokraw")"
+   local der uuid
    der="$(mktemp --tmpdir "${vm}.XXXXXX.der")"
-   "${VBOXMANAGE}" clonemedium "${mailbox}" "${raw}" --format RAW >/dev/null 2>&1 \
-      || die "${FAIL_RC}" "clonemedium of the MOK mailbox failed"
-   tr -d '\000' < "${raw}" | sed -n '/===MOKB===/,/===MOKE===/p' | sed '1d;$d' \
-      | base64 -d > "${der}" 2>/dev/null || true
-   "${VBOXMANAGE}" closemedium disk "${raw}" --delete >/dev/null 2>&1 || true
-   [ -s "${der}" ] || die "${FAIL_RC}" "no MOK DER recovered from the mailbox disk"
+   sudo vbox-disk-extract --disk "${disk}" --passphrase-file "${passphrase_file}" \
+      --source /var/lib/dkms/mok.pub --dest "${der}" \
+      || die "${FAIL_RC}" "could not read /var/lib/dkms/mok.pub off the installed disk (did the MOK module run?)"
    uuid="$(uuidgen)"
    "${VBOXMANAGE}" modifynvram "${vm}" enrollmok --mok="${der}" --owner-uuid="${uuid}" >/dev/null \
       || die "${FAIL_RC}" "VBoxManage modifynvram enrollmok failed"
    safe-rm --force -- "${der}"
    printf '%s\n' "${me}: MOK enrolled into the UEFI varstore (owner-uuid=${uuid})"
+   ## Boot with the MOK now trusted so tirdad loads under Secure Boot.
+   reboot_installed user
 }
 
 ## Poll until the LXQt desktop is up at a full resolution (>=1024 wide), i.e. past
@@ -276,7 +229,10 @@ open_terminal() {
 ##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
 run_check() {
    local num="$1" cmd="$2" timeout="$3" deadline text
-   printf '%s' "clear; M=CHK; ${cmd} && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK" \
+   ## Redirect the check command's own output to a persistent file so a failure can
+   ## be audited off the disk afterwards (the login session's scrollback is lost on
+   ## power-off); only the PASS/FAIL marker reaches the screen for the OCR.
+   printf '%s' "clear; M=CHK; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1 && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK; sync" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
    ## let `clear` + the command run before the first OCR (so the command echo, which
@@ -409,11 +365,6 @@ parse_args() {
    ## --reinstall reuses an existing VM+disk; a fresh install needs a disk path.
    [ -n "${disk}" ] || [ "${reinstall}" = 'true' ] \
       || disk="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.vdi")"
-   ## Mailbox disk alongside the main disk (same basename, .mok.vdi) so a MOK run
-   ## has a GA-less channel to lift the public cert out to the host.
-   if [ "${mok_enroll}" = 'true' ]; then
-      mailbox="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.mok.vdi")"
-   fi
 }
 
 ## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the
@@ -443,21 +394,6 @@ apply_firmware() {
    fi
 }
 
-## Create + attach the MOK mailbox as a second SATA disk (port 1). GA-less: the
-## installed system writes the public cert to this plain block device, and the host
-## reads it back after power-off. No-op unless --mok-enroll.
-attach_mailbox() {
-   [ "${mok_enroll}" = 'true' ] || return 0
-   ## Detach any stale mailbox (reinstall path) before recreating it.
-   "${VBOXMANAGE}" storageattach "${vm}" --storagectl SATA --port 1 --device 0 \
-      --type hdd --medium none >/dev/null 2>&1 || true
-   safe-rm --force -- "${mailbox}"
-   "${VBOXMANAGE}" createmedium disk --filename "${mailbox}" --size 16 \
-      --format VDI >/dev/null 2>&1
-   "${VBOXMANAGE}" storageattach "${vm}" --storagectl SATA --port 1 --device 0 \
-      --type hdd --medium "${mailbox}" >/dev/null
-}
-
 build_vm() {
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 2
@@ -468,14 +404,13 @@ build_vm() {
       apply_firmware
       "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
          --type dvddrive --medium "${iso}" >/dev/null
-      attach_mailbox
       return 0
    fi
    "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
    safe-rm --force -- "${disk}"
    "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
    ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
-   ## an absolute pointer so vbox-guestctl clicks land pre-Guest-Additions.
+   ## an absolute pointer so vbox-ctl-local clicks land pre-Guest-Additions.
    "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 \
       --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
       --nic1 nat >/dev/null
@@ -490,7 +425,6 @@ build_vm() {
       --type hdd --medium "${disk}" >/dev/null
    "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
       --type dvddrive --medium "${iso}" >/dev/null
-   attach_mailbox
 }
 
 main() {
@@ -579,11 +513,11 @@ main() {
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
 
-   ## --mok-enroll: before the checks, carry the per-machine MOK cert out and enroll
-   ## it, then reboot, so tirdad loads under Secure Boot and check 8 is GREEN for the
-   ## real reason (module loaded), not merely tolerated.
+   ## --mok-enroll: before the checks, read the per-machine MOK cert off the disk on
+   ## the host and enroll it, then reboot, so tirdad loads under Secure Boot and
+   ## check 8 is GREEN for the real reason (module loaded), not merely tolerated.
    if [ "${mok_enroll}" = 'true' ]; then
-      mok_extract_and_enroll
+      mok_host_enroll
    fi
 
    if [ "${checks}" = 'true' ]; then

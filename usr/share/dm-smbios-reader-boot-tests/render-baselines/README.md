@@ -29,6 +29,6 @@ theme). Keep `--tol` near 0.05.
 
 ## Regenerating
 
-Capture with `vbox-guestctl <vm> shot <out.png>` at the checkpoint, or wire capture
+Capture with `vbox-ctl-local <vm> shot <out.png>` at the checkpoint, or wire capture
 into the driver (dm-calamares-install) at each `wait_for`. Commit the PNG here.
 Re-baseline deliberately when the installer's appearance legitimately changes.

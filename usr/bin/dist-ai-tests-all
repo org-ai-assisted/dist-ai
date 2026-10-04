@@ -205,6 +205,7 @@ integration_suites=(
    whonix-firewall-leaktest-tests
    private-ai-config-tests-resilience
    dm-smbios-reader-boot-tests
+   dm-whonix-pair-tests
    dm-grub-menu-render-tests
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
@@ -825,6 +826,13 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      dm-whonix-pair)
+         ## Self-contained no-VM unit tests: source the real dm-whonix-pair + its
+         ## shared libs from this dist-ai checkout with stubbed tcpdump/vbox-exec-local;
+         ## no external checkout, no VM, no network.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'
          ## (stubbed resolver), so there is no checkout to point at and no
@@ -968,7 +976,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

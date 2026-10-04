@@ -56,15 +56,39 @@ fi
 ## and one that forces (bare assignment).
 conf_sdv="$(mktemp --suffix=.conf)"
 conf_force="$(mktemp --suffix=.conf)"
+conf_ref="$(mktemp --suffix=.conf)"
+## Capture the inner build's stdout here so its EXIT STATUS is checked directly (not swallowed by a
+## pipe inside a command substitution) -- a build that aborts is then reported as a failure, not a
+## silent empty result.
+inner_out="$(mktemp)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() {
-   safe-rm --force -- "${conf_sdv}" "${conf_force}"
+   safe-rm --force -- "${conf_sdv}" "${conf_force}" "${conf_ref}" "${inner_out}"
 }
 trap cleanup EXIT
 printf '%s\n' 'default_if_empty dist_build_hostname CONFVAL' > "${conf_sdv}"
 printf '%s\n' 'dist_build_hostname=CONFVAL' > "${conf_force}"
+# shellcheck disable=SC2016  # literal ${binary_build_folder_dist} is intended: expanded when the config is SOURCED, not here
+printf '%s\n' 'default_if_empty my_ref_path "${binary_build_folder_dist}/sub"' > "${conf_ref}"
 
-base_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false )
+## '--repo false': derivative-maker makes the APT-repo choice MANDATORY (variables.d/15_redistributable.bsh);
+## an unset choice fails loudly. This test does not care which way, so pick a value to clear the gate.
+base_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --arch amd64 --freedom false --repo false )
+
+## Run the inner build and report RESULT for ${report_var} into inner_out. Sets run_rc.
+##   run_inner <report_var> <envassign-or-empty> <build args...>
+## The build runs in '( cd ...; exec ... ) >inner_out' whose exit status the caller's 'if' checks
+## directly, so an aborted build is caught (run_rc != 0) instead of being masked by a pipe + '|| true'.
+run_inner() {
+   local report_var="$1" envassign="$2"
+   shift 2
+   # shellcheck disable=SC2086  # envassign is a controlled NAME=VALUE token or empty, split intentionally
+   if ( cd -- "${dm_checkout}" && env dist_build_allow_root=true dist_build_unlock_dangerous_options=true ${envassign} bash "${inner}" "${report_var}" "$@" ) >"${inner_out}" 2>/dev/null; then
+      run_rc=0
+   else
+      run_rc=$?
+   fi
+}
 
 ## Resolve dist_build_hostname under one layer combination.
 ##   $1 description  $2 expected  $3 env assignment ('' none)  rest = extra args
@@ -72,13 +96,12 @@ resolve_check() {
    local desc="$1" expected="$2" envassign="$3"
    shift 3
    local got
-   # shellcheck disable=SC2086  # envassign is controlled test input, split intentionally
-   got="$(
-      cd -- "${dm_checkout}" \
-         && env dist_build_allow_root=true dist_build_unlock_dangerous_options=true ${envassign} \
-            bash "${inner}" dist_build_hostname "${base_args[@]}" "$@" 2>/dev/null \
-         | grep '^RESULT=' | head -1 | cut -d= -f2-
-   )" || true
+   run_inner dist_build_hostname "${envassign}" "${base_args[@]}" "$@"
+   if [ "${run_rc}" -ne 0 ]; then
+      fail "${desc}: inner build exited ${run_rc} (expected a clean resolve)"
+      return
+   fi
+   got="$(grep '^RESULT=' "${inner_out}" | head -1 | cut -d= -f2-)" || true
    if [ "${got}" = "${expected}" ]; then
       pass "${desc}: dist_build_hostname='${got}'"
    else
@@ -102,6 +125,25 @@ resolve_check "config(default_if_empty) yields to env" ENVVAL "dist_build_hostna
 ## --- a bare assignment in a config file is a FORCED override ----------------
 resolve_check "config(bare =) forces over default" CONFVAL "" --conffile "${conf_force}"
 resolve_check "config(bare =) forces over CLI"     CONFVAL "" --hostname CLIVAL --conffile "${conf_force}"
+
+## --- a config file may REFERENCE binary_build_folder_dist (regression) -------
+## binary_build_folder_dist / dist_aptgetopt_file are derived BEFORE configs are sourced, so a config
+## reading one does not hit 'unbound variable' under nounset. Canary: deriving them AFTER the config
+## loop aborts this build.
+run_inner my_ref_path "" "${base_args[@]}" --conffile "${conf_ref}"
+if [ "${run_rc}" -ne 0 ]; then
+   fail "config referencing binary_build_folder_dist aborted the build (rc=${run_rc}; nounset regression)"
+else
+   ref_got="$(grep '^RESULT=' "${inner_out}" | head -1 | cut -d= -f2-)" || true
+   case "${ref_got}" in
+      */derivative-binary*/sub)
+         pass "config may reference binary_build_folder_dist (resolved '${ref_got}')"
+         ;;
+      *)
+         fail "config reference to binary_build_folder_dist resolved unexpectedly: '${ref_got}'"
+         ;;
+   esac
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

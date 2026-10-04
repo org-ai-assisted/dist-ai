@@ -5,12 +5,11 @@
 
 ## AI-Assisted
 
-## Assert the exact VBoxManage guestcontrol argv built by gc_run (vbox-session.bsh),
-## with a capturing VBOXMANAGE stub -- no VM. Covers the empty-password channel
-## (task #83), the shell-snippet wrapping (/bin/bash then -- -lc; argv[0] is
-## auto-set from --exe, so NO duplicate program-name arg -- see gc_run), and
-## the optional
-## --timeout (seconds -> ms).
+## gc_run (vbox-session.bsh) is now a THIN wrapper over vbox-exec-local -- the single source
+## of the guestcontrol argv. Assert gc_run delegates correctly (vm, --role=account, --cmd, the
+## optional --timeout in SECONDS) with a capturing vbox-exec-local stub -- NO raw guestcontrol
+## argv here (that lives in vbox-exec-local-test.sh, so the argv has exactly one test). Also
+## cover gc_account_for_role. No VM.
 
 set -o errexit
 set -o nounset
@@ -31,20 +30,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Stub VBoxManage: print its args joined by '|' (an empty arg -> '||'), so the
-## full argv including the empty --password value is asserted exactly.
-stub="${tmp}/vboxmanage-stub"
+## Stub vbox-exec-local: print its args joined by '|', so gc_run's delegated invocation is
+## asserted exactly (an empty arg would show as '||').
+stub="${tmp}/vbox-exec-local-stub"
 cat > "${stub}" <<'STUB'
 #!/bin/bash
 IFS='|'; printf '%s\n' "$*"
 STUB
 chmod +x "${stub}"
 
-## Caller globals gc_run needs (consumed by the sourced vbox-session.bsh).
+## Caller globals the sourced vbox-session.bsh consumes.
 # shellcheck disable=SC2034
 vm='testvm'
-# shellcheck disable=SC2034
-VBOXMANAGE="${stub}"
+export VBOX_EXEC_LOCAL="${stub}"
 # shellcheck source=../dm-smbios-reader-boot-tests/vbox-session.bsh
 source "${lib}"
 
@@ -62,12 +60,12 @@ assert_eq() {
 }
 
 got_timed="$(gc_run user 'whoami' 60)"
-assert_eq 'gc_run with timeout' "${got_timed}" \
-   'guestcontrol|testvm|run|--username|user|--password||--timeout|60000|--wait-stdout|--wait-stderr|--exe|/bin/bash|--|-lc|whoami'
+assert_eq 'gc_run delegates with timeout (SECONDS, not ms)' "${got_timed}" \
+   'testvm|--role|user|--cmd|whoami|--timeout|60'
 
 got_plain="$(gc_run sysmaint 'true')"
-assert_eq 'gc_run without timeout' "${got_plain}" \
-   'guestcontrol|testvm|run|--username|sysmaint|--password||--wait-stdout|--wait-stderr|--exe|/bin/bash|--|-lc|true'
+assert_eq 'gc_run delegates without timeout' "${got_plain}" \
+   'testvm|--role|sysmaint|--cmd|true'
 
 ## gc_account_for_role maps boot role -> the account that may authenticate in it.
 assert_eq 'account for sysmaint' "$(gc_account_for_role sysmaint)" 'sysmaint'

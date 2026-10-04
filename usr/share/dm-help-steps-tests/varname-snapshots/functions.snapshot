@@ -528,9 +528,22 @@ dist_build_one_parse_cmd ()
                 shift
             ;;
             --skip-published-packages)
-                export dist_build_skip_published_packages="true";
-                true "${cyan}INFO: --skip-published-packages: rebuilding only changed packages.${reset}";
-                shift
+                case "${2:-}" in
+                    true | false)
+                        export dist_build_skip_published_packages="${2}";
+                        true "${cyan}INFO: --skip-published-packages ${2}.${reset}";
+                        shift 2
+                    ;;
+                    '' | --*)
+                        export dist_build_skip_published_packages="true";
+                        true "${cyan}INFO: --skip-published-packages: rebuilding only changed packages.${reset}";
+                        shift
+                    ;;
+                    *)
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-published-packages are 'true' or 'false'.${reset}";
+                        exit 1
+                    ;;
+                esac
             ;;
             --package-jobs)
                 export dist_build_package_jobs="${2:-}";
@@ -637,6 +650,9 @@ dist_build_one_parse_cmd ()
                     true "${cyan}INFO: Would stop if uncommitted changes detected.${reset}";
                 else
                     if [ "${2:-}" = "true" ]; then
+                        if [ "${CLAUDECODE:-}" = "1" ] || [ "${dist_build_forbid_allow_uncommitted:-}" = "true" ]; then
+                            error "${bold}${red}ERROR: building with uncommitted changes (--allow-uncommitted true) is forbidden for AI sessions or under dist_build_forbid_allow_uncommitted=true. AI models should commit their changes (e.g. bump the submodule gitlink) so the working tree is clean.${reset}";
+                        fi;
                         true "${cyan}INFO: Would ignore if uncommitted changes detected.${reset}";
                         export dist_build_ignore_uncommitted="true";
                     else
@@ -1164,7 +1180,7 @@ Optional Parameters:
   --build-slot [name]      : Build under derivative-binary/<name> so multiple builds can run
                              concurrently. Name chars: [A-Za-z0-9_-]. Default: unset.
   --connection [option]    : Select 'clearnet' for clearnet apt sources or 'onion' for onion apt sources.
-  --repo [true|false]      : Enable or disable derivative remote repository (default: false).
+  --repo [true|false]      : Enable or disable the derivative remote repository. MANDATORY for an image build (no default): choose true or false, or set build_remote_repo_enable in the environment. help-steps/dm-build-official-one passes true for release builds.
 
 Environment Variables:
   - flavor_meta_packages_to_install: Define meta packages to be installed.
@@ -1201,7 +1217,7 @@ Advanced Options:
   --sanity-tests [true|false]     : Enable or disable chroot script sanity tests for faster build speed (default: false).
   --only-packages 'p1 p2'         : Rebuild only listed packages into the persistent local repo, reuse the rest from the prior build.
   --skip-packages                 : Skip package building entirely and reuse the whole local package repo from the prior build.
-  --skip-published-packages       : Rebuild only packages that changed since the last build, reuse unchanged packages from the prior build.
+  --skip-published-packages [true|false] : Rebuild only packages that changed since the last build, reusing unchanged packages from the prior build. Default: true. Pass 'false' for a from-scratch rebuild of all packages.
   --package-jobs N                : Build up to N derivative packages concurrently. Default: 1.
   --skip-prepare-build-machine    : Skip build-steps.d/*_prepare-build-machine. Only safe when the build machine was already prepared by an earlier run in the same session.
   --skip-cowbuilder-setup         : Skip build-steps.d/*_cowbuilder-setup. Only safe when the cowbuilder chroot was already created by an earlier run in the same session.
@@ -1213,7 +1229,7 @@ Advanced Options:
   --retry-wait [seconds]          : Set wait time between retry attempts.
   --retry-before [script]         : Specify a script to run before retry. [default: none)
   --retry-after [script]          : Specify a script to run after retry. [default: none)
-  --allow-uncommitted [true|false]: Permit builds with uncommitted changes (default: false).
+  --allow-uncommitted [true|false]: Permit builds with uncommitted changes (default: false). Forbidden for AI sessions.
   --allow-untagged [true|false]   : Permit builds from non-tagged sources (default: false).
   --allow-unsigned [true|false]   : Skip git_sanity_test commit-signature verification (default: false).
   --sign-and-tag [true|false]     : DANGEROUS, DO NOT USE. Amend, sign, and tag HEAD and submodules. This may sign code you did not intend to sign! It may break your ability to pull from git! Only useful for AI agents to test signing verification without access to sensitive keys. Humans should either use --allow-unsigned or set up a GPG key properly. (default: false).
@@ -1318,6 +1334,40 @@ implicit_dist_type ()
     printf '%s\n' "INFO: implicitly setting '--type ${implicit_type}' because using '${1:-}'.";
     dist_build_type="${implicit_type}";
     export dist_build_type
+}
+loop_teardown_verify ()
+{
+    local image loop_devices_output loop_devices_item attempt losetup_rc;
+    image="$1";
+    if [ "${image:-}" = "" ]; then
+        return 1;
+    fi;
+    for ((attempt = 0; attempt < 5; attempt++ ))
+    do
+        losetup_rc=0;
+        loop_devices_output="$(${SUDO_TO_ROOT} losetup --associated "${image}" --noheadings --output NAME)" || losetup_rc="$?";
+        if [ "${losetup_rc}" != "0" ]; then
+            return 1;
+        fi;
+        if [ "${loop_devices_output:-}" = "" ]; then
+            return 0;
+        fi;
+        while read -r loop_devices_item; do
+            if [ "${loop_devices_item:-}" = "" ]; then
+                continue;
+            fi;
+            ${SUDO_TO_ROOT} kpartx -d -s -v -- "${loop_devices_item}" || true "INFO: kpartx non-zero exit code.";
+            ${SUDO_TO_ROOT} losetup --detach "${loop_devices_item}" || true "INFO: losetup non-zero exit code.";
+        done <<< "${loop_devices_output}";
+        ${SUDO_TO_ROOT} udevadm settle --timeout 5 || true;
+        sleep 1;
+    done;
+    losetup_rc=0;
+    loop_devices_output="$(${SUDO_TO_ROOT} losetup --associated "${image}" --noheadings --output NAME)" || losetup_rc="$?";
+    if [ "${losetup_rc}" != "0" ]; then
+        return 1;
+    fi;
+    [ "${loop_devices_output:-}" = "" ]
 }
 maybe_disable_dist_build_windows_installer ()
 {

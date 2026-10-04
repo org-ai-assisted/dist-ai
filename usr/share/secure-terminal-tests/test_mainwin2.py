@@ -486,6 +486,15 @@ finally:
 # open (the server side of a --reuse handoff)
 ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'box'}]})['ok'],
    'ipc: open creates the requested tabs')
+# _ipc_open DEFERS the window raise/activate off the IPC readyRead slot (via singleShot), so
+# an activation pump cannot re-enter a live QLocalSocket -- the on_ready use-after-free an
+# open-all --reuse burst hit (the end-to-end regression is in test_instances case I). The
+# reply is returned synchronously; _raise_activate runs on the next event-loop turn. Pump it
+# and confirm it ran cleanly (and the window is shown, which _ipc_open does synchronously).
+win._ipc_open({'tabs': [{'title': 'deferred-raise'}]})
+pump(50)                                        # run the queued singleShot(_raise_activate)
+ok(win.isVisible(),
+   'ipc: open shows the window; the raise/activate is deferred and runs without error')
 # --reuse always asks for a new tab, so a bare reuse (no specs) opens a fresh
 # default tab -- it never leaves the running instance unchanged (the old
 # behaviour, which only added a tab when the window had none, was the bug: a
