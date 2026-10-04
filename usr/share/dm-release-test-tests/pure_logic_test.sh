@@ -116,6 +116,22 @@ assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-
 assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
 assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
 
+## pair-version marker parse: VBoxManage prints "Value: <v>" for a set key and
+## "No value set!" for an unset one. Canary: a naive impl that echoed the whole line
+## would pass "No value set!" through as a value instead of rejecting it.
+assert_out "parse extradata value" "18.2.3.5" rt_parse_extradata "Value: 18.2.3.5"
+assert_reject "parse extradata unset" rt_parse_extradata "No value set!"
+assert_reject "parse extradata empty" rt_parse_extradata ""
+
+## pair-version gate: both VMs must carry the REQUESTED version. Canaries: an impl that
+## checked only the GW would pass a stale WS; one that skipped the empty-requested guard
+## would pass a markerless pair ("" == "" == "").
+assert_out "pair version both match" "" rt_pair_version_ok 18.2.3.5 18.2.3.5 18.2.3.5
+assert_reject "pair version gw mismatch" rt_pair_version_ok 18.2.3.5 18.2.3.3 18.2.3.5
+assert_reject "pair version ws mismatch" rt_pair_version_ok 18.2.3.5 18.2.3.5 18.2.3.3
+assert_reject "pair version gw unset" rt_pair_version_ok 18.2.3.5 "" 18.2.3.5
+assert_reject "pair version requested empty" rt_pair_version_ok "" "" ""
+
 ## host-privilege gate: uid != 0, PRIMARY group == the account's own private group, and
 ## every group is that private group or vboxusers. Canaries: a group denylist would pass
 ## docker/disk; blind-trusting the primary would pass a privileged primary; and a SHARED

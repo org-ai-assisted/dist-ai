@@ -54,6 +54,11 @@ DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
 DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
 IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
+## VBox extradata key pinning the imported leak pair's version. Set on BOTH VMs at
+## provision time (rt_provision_leak) and read back by rt_lane_whonix, which REFUSES to
+## attribute a verdict to a version the pair was not provisioned with.
+PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
 ## Best-effort host-firewall fleet-set refresh so a freshly-created eph account's
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
@@ -76,10 +81,14 @@ version_override=""
 firmware="efi-secureboot"
 run_checks='false'
 dry_run='false'
+provision_leak='false'
 
 ## Trap state: the ephemeral account to remove on exit (set once created), so an
 ## abort between creation and the normal cleanup never leaks it. Empty => nothing.
 eph_account=""
+
+## fd holding the shared-account lock (rt_lock_account); held until this process exits.
+rt_lock_fd=""
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 if [ -d "${script_dir}/../libexec/image-test" ]; then
@@ -102,6 +111,7 @@ print_usage() {
    printf '%s\n' "Usage:
   ${me} GUEST INTERFACE [--channel stable|developers] [--version VER]
         [--firmware bios|efi|efi-secureboot] [--checks] [--dry-run]
+        [--provision-leak]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | xfce | cli (the published desktop flavor)
@@ -109,7 +119,10 @@ print_usage() {
 A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-stable-GUEST.
 The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account.
---dry-run prints the resolved plan and runs nothing."
+--dry-run prints the resolved plan and runs nothing.
+--provision-leak (whonix only) is the one-time setup of the leak pair: create the clean
+persist-leak-GUEST account, import the GW+WS pair under it, and pin the version marker
+each run then verifies; it prints the remaining one-time dev-root bake + snapshot step."
 }
 
 ## ---------------------------------------------------------------------------
@@ -221,8 +234,9 @@ rt_account_is_leak() {
 ## rt_account_can_sudo EXERCISES sudo to catch it. A command-specific sudoers entry, a
 ## privleap/leaprun grant, polkit, file-caps, or a private group given an extra member
 ## are adversarial pre-provisioning (out of the accident model), prevented by creating
-## the account clean. rt_ensure_eph_account forces the private primary with
-## `useradd --user-group`; a pre-provisioned account must be created the same way.
+## the account clean. rt_create_clean_account forces the private primary with
+## `useradd --user-group` and grants only vboxusers; the leak account is provisioned the
+## same way (rt_provision_leak), so it is clean by construction.
 rt_account_unprivileged() {
    local account uid primary grp
    account="$1"
@@ -253,6 +267,28 @@ rt_account_unprivileged() {
 rt_account_can_sudo() {
    has runuser && has sudo || return 0
    runuser -u "$1" -- sudo --non-interactive /usr/bin/true >/dev/null 2>&1
+}
+
+## Extract the value from `VBoxManage getextradata` output. A set key prints
+## "Value: <v>"; an unset key prints "No value set!". Returns 1 (empty) for unset or
+## any other shape, so an unset marker is a MISS, never a spurious value. Pure.
+rt_parse_extradata() {
+   case "$1" in
+      'Value: '*)
+         printf '%s\n' "${1#Value: }"
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## True only when BOTH VMs carry the REQUESTED version marker. Rejects an empty
+## requested version and any GW/WS marker that is empty or differs -- so an
+## unprovisioned (markerless) or wrong-version pair can never be attributed a verdict.
+## Pure. $1=requested $2=gw-marker $3=ws-marker.
+rt_pair_version_ok() {
+   [ -n "$1" ] && [ "$2" = "$1" ] && [ "$3" = "$1" ]
 }
 
 ## "blessed" when the resolved version equals the stable pin, else "prebless".
@@ -317,13 +353,33 @@ rt_refresh_fleet() {
    fi
 }
 
-rt_ensure_eph_account() {
+## Create ACCOUNT as a clean, unprivileged fleet member if absent (idempotent), and
+## assert it is clean whether freshly created or pre-existing. Used for the ephemeral
+## install account AND to PROVISION the persistent leak account, so both are clean by
+## construction -- not merely rejected at run time. Needs root.
+## Serialize operations on a shared PERSISTENT account (the leak pair is one account +
+## fixed VM names, so two runs would corrupt each other's snapshot restore). Acquires a
+## per-account flock held until THIS process exits; fail-fast (nonblock) so a second
+## concurrent run errors clearly instead of racing. Covers both a provision and a run, so
+## a reimport can never race a run. Needs a writable lock dir (root has /run/lock).
+## Test seam: DM_RELEASE_TEST_LOCK_DIR.
+rt_lock_account() {
+   local lockfile
+   lockfile="${DM_RELEASE_TEST_LOCK_DIR:-/run/lock}/dm-release-test-$1.lock"
+   exec {rt_lock_fd}>"${lockfile}" \
+      || die "${SETUP_RC}" "cannot open lock '${lockfile}'"
+   flock --nonblock "${rt_lock_fd}" \
+      || die "${SETUP_RC}" "another dm-release-test run holds '${lockfile}' -- serialize runs on the shared '$1' account"
+}
+
+rt_create_clean_account() {
    local account
    account="$1"
    if ! id "${account}" >/dev/null 2>&1; then
       ## --user-group forces a private primary group (name == account) regardless of the
       ## host's USERGROUPS_ENAB, so the isolation invariant holds and rt_account_unprivileged
-      ## never rejects a freshly-created, otherwise-clean account.
+      ## never rejects a freshly-created, otherwise-clean account. No sudoers.d / privleap
+      ## grant is created -- the account gets vboxusers and nothing else.
       useradd --create-home --user-group --shell /bin/bash -- "${account}"
    fi
    getent group vboxusers >/dev/null || groupadd --system vboxusers
@@ -338,6 +394,44 @@ rt_ensure_eph_account() {
    ! rt_account_can_sudo "${account}" \
       || die "${SETUP_RC}" "refusing test account '${account}': has passwordless sudo (NOPASSWD root)"
    rt_refresh_fleet
+}
+
+## Read the leak pair's version marker off VM (as ACCOUNT -- VBox state is per-$HOME).
+## Prints the pinned version, or returns 1 when the key is unset. Needs root.
+rt_pair_version() {
+   local out
+   out="$(sudo -u "$1" -- "${VBOXMANAGE}" getextradata "$2" "${PAIR_VERSION_KEY}" 2>/dev/null)" || return 1
+   rt_parse_extradata "${out}"
+}
+
+## Pin VERSION onto VM's leak-pair marker (as ACCOUNT). Needs root.
+rt_set_pair_version() {
+   sudo -u "$1" -- "${VBOXMANAGE}" setextradata "$2" "${PAIR_VERSION_KEY}" "$3" \
+      || die "${SETUP_RC}" "failed to set ${PAIR_VERSION_KEY} on '$2'"
+}
+
+## Provision the persistent leak pair end to end: create the clean leak account, import
+## the GW+WS pair under it via dist-installer-cli (which self-locks against concurrent
+## runs), and pin the version marker on both VMs. The one-time dev-root bake + 'clean-live'
+## snapshot still runs on the live guests (printed as the next step) -- it needs a booted
+## sysmaint session, not scriptable headless from here. Needs root.
+rt_provision_leak() {
+   local account version gw ws
+   account="$1"
+   version="$2"
+   gw="Whonix-Gateway-${desktop}"
+   ws="Whonix-Workstation-${desktop}"
+   rt_lock_account "${account}"
+   rt_create_clean_account "${account}"
+   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI}"
+   "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
+      --interface="${interface}" --non-interactive --user="${account}" \
+      --no-boot --import-only=both --destroy-existing-guest \
+      || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
+   rt_set_pair_version "${account}" "${gw}" "${version}"
+   rt_set_pair_version "${account}" "${ws}" "${version}"
+   log info "leak pair ${version} imported + version-pinned under ${account}"
+   log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force', power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
@@ -436,16 +530,26 @@ rt_lane_whonix() {
    gw="Whonix-Gateway-${desktop}"
    ws="Whonix-Workstation-${desktop}"
 
-   ## The pair must already be imported under ${account} with a dev-root-baked
-   ## 'clean-live' snapshot on each VM. Building that one-time state (OVA acquire
-   ## + import + sysmaint dev-root bake + snapshot) is finalized on the live
-   ## server; dm-whonix-pair fails closed with a clear message if it is absent.
+   ## Serialize concurrent whonix runs: they share this one persistent account + fixed VM
+   ## names, so two runs would corrupt each other's snapshot restore. Fail-fast if another
+   ## run (or a provision) holds the lock.
+   rt_lock_account "${account}"
+
+   ## The pair must already be imported under ${account} (rt_provision_leak) with a
+   ## dev-root-baked 'clean-live' snapshot on each VM; dm-whonix-pair fails closed with a
+   ## clear message if the snapshot is absent.
    ##
-   ## LIMITATION of the persistent persist-leak- account: the imported pair is NOT
-   ## version-tied, so ${version} here is the REQUESTED version, not an independently
-   ## verified pair version. Run the leak lane only for the version the pair was
-   ## provisioned with, and serialize concurrent whonix runs -- they share this one
-   ## account + fixed VM names. Pair-version pinning + a run lock are tracked follow-ups.
+   ## Verify the imported pair IS ${version} before running: the lane attributes the leak
+   ## verdict to ${version}, so a stale/wrong-version or unprovisioned (markerless) pair
+   ## must not silently mislabel a PASS or a leak. Fail CLOSED -- a missing/mismatched
+   ## marker is a provisioning gap (SETUP_RC), NEVER a leak FAIL. Read both VMs (a half-
+   ## reprovisioned pair with one stale VM is caught too).
+   local gw_ver ws_ver
+   gw_ver="$(rt_pair_version "${account}" "${gw}")" || gw_ver=""
+   ws_ver="$(rt_pair_version "${account}" "${ws}")" || ws_ver=""
+   rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
+      || die "${SETUP_RC}" "leak pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with 'dm-release-test whonix ${interface} --version ${version} --provision-leak' or pass the matching --version"
+
    rc=0
    sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
@@ -482,6 +586,10 @@ parse_args() {
             ;;
          --dry-run)
             dry_run='true'
+            shift
+            ;;
+         --provision-leak)
+            provision_leak='true'
             shift
             ;;
          -h|--help)
@@ -546,23 +654,36 @@ main() {
       account_kind="${bless_state}"
    fi
 
+   ## --provision-leak is a one-time setup of the dedicated leak pair, not a test run;
+   ## only the leak lane has a pre-provisioned persistent account to build.
+   if [ "${provision_leak}" = 'true' ]; then
+      rt_lane_is_leak "${guest}" \
+         || die "${SETUP_RC}" "--provision-leak is only for the whonix leak lane"
+   fi
+
    if [ "${dry_run}" = 'true' ]; then
       printf '%s\n' "plan:" \
          "  guest=${guest} interface=${interface} desktop=${desktop}" \
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
+         "  mode=$([ "${provision_leak}" = 'true' ] && printf 'provision-leak' || printf 'test')" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
    fi
 
    [ "$(id -u)" -eq 0 ] || die "${SETUP_RC}" "must run as root (creates the test account, publishes to the web root)"
 
+   if [ "${provision_leak}" = 'true' ]; then
+      rt_provision_leak "${account}" "${version}"
+      return 0
+   fi
+
    ## Arm the single cleanup path BEFORE creating the account, so an abort during
    ## creation or the run still reclaims the ephemeral account on exit.
    trap rt_eph_cleanup EXIT
    if [ "${account_kind}" = 'prebless' ]; then
       eph_account="${account}"
-      rt_ensure_eph_account "${account}"
+      rt_create_clean_account "${account}"
    fi
 
    ## The leak + blessed accounts are PRE-PROVISIONED (persistent); never created or
