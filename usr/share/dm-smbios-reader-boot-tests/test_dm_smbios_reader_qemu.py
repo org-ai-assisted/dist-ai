@@ -25,6 +25,11 @@ from pathlib import Path
 QEMU = Path(__file__).resolve().parent / 'dm-smbios-reader-qemu'
 SMBIOS_MARKER = 'type=1,serial=dm-cmdline='
 
+## Every call below drives a pure --emit-* print path that must NEVER launch qemu;
+## bound it so a regression into a blocking path fails the test loudly instead of
+## hanging the run (a fired timeout raises + fails, so no explicit handler needed).
+_EMIT_TIMEOUT = 30
+
 ## The pinned --test-console payload (see test_emit_cmdline_test_console_payload).
 TEST_CONSOLE_PAYLOAD = (
     'console=ttyS0,115200n8 loglevel=3 systemd.debug_shell=ttyS0'
@@ -35,7 +40,7 @@ def _emit_cmdline(*extra):
     result = subprocess.run(
         [str(QEMU), '--emit-cmdline', '--iso', '/dev/null', '--arch', 'amd64',
          '--test-console', *extra],
-        check=True, capture_output=True, text=True)
+        check=True, capture_output=True, text=True, timeout=_EMIT_TIMEOUT)
     return result.stdout.strip('\n')
 
 
@@ -69,7 +74,7 @@ def _emit_argv_smbios(*extra):
     result = subprocess.run(
         [str(QEMU), '--emit-argv', '--iso', '/dev/null', '--arch', 'amd64',
          '--test-console', *extra],
-        check=True, capture_output=True, text=True)
+        check=True, capture_output=True, text=True, timeout=_EMIT_TIMEOUT)
     tokens = result.stdout.split('\n')
     ## one token per line; the token AFTER '-smbios' carries the dm-cmdline value.
     value = tokens[tokens.index('-smbios') + 1]
@@ -115,7 +120,7 @@ def test_emit_cmdline_without_qemu_binary(tmp_path):
     result = subprocess.run(
         [str(QEMU), '--emit-cmdline', '--iso', '/dev/null', '--arch', 'amd64',
          '--test-console'],
-        env=env, capture_output=True, text=True)
+        env=env, capture_output=True, text=True, timeout=_EMIT_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip('\n') == TEST_CONSOLE_PAYLOAD
 
@@ -128,7 +133,7 @@ def test_emit_cmdline_disk_without_qemu_img(tmp_path):
     result = subprocess.run(
         [str(QEMU), '--emit-cmdline', '--disk', '/dev/null', '--arch', 'amd64',
          '--test-console'],
-        env=env, capture_output=True, text=True)
+        env=env, capture_output=True, text=True, timeout=_EMIT_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip('\n') == TEST_CONSOLE_PAYLOAD
 
@@ -140,5 +145,5 @@ def test_emit_cmdline_still_validates_enum_flags():
         result = subprocess.run(
             [str(QEMU), '--emit-cmdline', '--iso', '/dev/null', '--arch', 'amd64',
              '--test-console', *bad],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=_EMIT_TIMEOUT)
         assert result.returncode == 2, (bad, result.returncode, result.stdout)

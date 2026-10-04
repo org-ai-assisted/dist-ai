@@ -104,7 +104,14 @@ esac
 ## explicit/forwarded dist_build_slot; else key on the session (sandbox-session-slug,
 ## a hard dependency alongside the required sandbox, emits a path-safe [A-Za-z0-9_-]
 ## slug). The slot is trusted (env / command line), so it is used as-is.
-build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
+## Catch a NONZERO sandbox-session-slug exit here: under errexit a bare assignment
+## would abort the whole script AT this line (the command-substitution status is the
+## assignment's), silently, before the empty-slot diagnostic below. The `if !` makes
+## the failure explicit with this script's own message + exit 2.
+if ! build_slot="${dist_build_slot:-$(sandbox-session-slug)}"; then
+   printf '%s\n' "${0##*/}: ERROR: sandbox-session-slug failed (nonzero exit)" >&2
+   exit 2
+fi
 ## sandbox-session-slug is a hard dependency; an EMPTY result (it failed but exited 0)
 ## would make binary_lane the SHARED binary_mnt root, so the artifact finds below would
 ## match a FOREIGN lane's image and compare the wrong sha512. Assert it loud instead.
