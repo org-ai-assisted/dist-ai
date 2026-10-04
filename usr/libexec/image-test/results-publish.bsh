@@ -1,0 +1,93 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared results-plane publisher for the image-test tools (image-test-run,
+## dm-release-test). A pure library: defines functions only, no top-level
+## strict-mode block (which would leak into the sourcing script). The caller
+## produces a screenshot (or not) and the test verdict; this writes the JSON
+## result + screenshot into the read-only results plane and republishes the
+## subtree to the nginx owner.
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
+
+## Emit the result JSON. All values are caller-controlled tokens plus rc/pass/
+## expect; expect is rendered as a JSON array. printf keeps it zero-dependency
+## (no jq).
+image_test_write_result_json() {
+   local dest name test_user mode ts rc pass
+   dest="$1"
+   name="$2"
+   test_user="$3"
+   mode="$4"
+   ts="$5"
+   rc="$6"
+   pass="$7"
+   shift 7
+
+   local expect_json item first
+   expect_json=""
+   first='true'
+   for item in "$@"; do
+      item="${item//\\/\\\\}"
+      item="${item//\"/\\\"}"
+      if [ "${first}" = 'true' ]; then
+         expect_json="\"${item}\""
+         first='false'
+      else
+         expect_json="${expect_json}, \"${item}\""
+      fi
+   done
+
+   {
+      printf '{\n'
+      printf '  "name": "%s",\n' "${name}"
+      printf '  "test_user": "%s",\n' "${test_user}"
+      printf '  "mode": "%s",\n' "${mode}"
+      printf '  "timestamp": "%s",\n' "${ts}"
+      printf '  "rc": %s,\n' "${rc}"
+      printf '  "pass": %s,\n' "${pass}"
+      printf '  "expect": [%s]\n' "${expect_json}"
+      printf '}\n'
+   } > "${dest}"
+}
+
+## Publish one run's artifacts. Args:
+##   results_root owner name test_user mode rc pass shot_src expect...
+## shot_src may be empty or a missing file (a run that never powered on is still
+## reported); the caller owns and cleans its own screenshot temp. Must run as
+## root: it writes under the web root and chowns the subtree to the nginx owner.
+image_test_results_publish() {
+   local results_root owner name test_user mode rc pass shot_src
+   results_root="$1"
+   owner="$2"
+   name="$3"
+   test_user="$4"
+   mode="$5"
+   rc="$6"
+   pass="$7"
+   shot_src="$8"
+   shift 8
+
+   local ts outdir
+   ts="$(date -u +%Y%m%dT%H%M%SZ)"
+   outdir="${results_root}/${name}/${ts}"
+   mkdir --parents -- "${outdir}"
+
+   if [ -n "${shot_src}" ] && [ -f "${shot_src}" ]; then
+      cp -- "${shot_src}" "${outdir}/screenshot.png"
+   fi
+   image_test_write_result_json \
+      "${outdir}/result.json" "${name}" "${test_user}" "${mode}" "${ts}" \
+      "${rc}" "${pass}" "$@"
+
+   ## Point <name>/latest at this run and hand the whole subtree to nginx.
+   ln --symbolic --force --no-dereference -- "${ts}" "${results_root}/${name}/latest"
+   chown --recursive -- "${owner}:${owner}" "${results_root}/${name}"
+
+   printf '%s\n' "${outdir}"
+}

@@ -67,6 +67,8 @@ download_base=""
 wiki_base=""
 socks_proxy=""
 onion='false'
+print_version_only='false'
+resume='false'
 
 ## Trap state -- set before the trap is registered (R-051). The image is
 ## downloaded inside work_dir, so removing it also discards an unverified
@@ -79,7 +81,14 @@ print_usage() {
         --output-dir DIR --cert PATH
         [--arch Intel_AMD64] [--channel stable|developers] [--version VER]
         [--download-base URL] [--wiki-base URL]
-        [--socks-proxy host:port] [--onion]
+        [--socks-proxy host:port] [--onion] [--print-version] [--resume]
+
+--print-version resolves the version for the channel and prints it, then exits
+WITHOUT downloading (needs only --project, or --version plus both base URLs).
+--resume stages the image in a predictable <output-dir>/.iso-download-resume dir
+and continues an interrupted download (curl --continue-at); the OpenPGP + sha512
+verification still gates before the atomic rename, and a resumed image whose
+sha512 does not match is dropped so a re-run restarts clean.
 
 Discovers the version (stable = wiki Template:VersionNew; developers = highest
 published under <download-base>/iso/), derives the ISO URL from the naming
@@ -90,18 +99,34 @@ http (onion services carry their own encryption)."
 }
 
 cleanup() {
+   ## Resume keeps its predictable staging dir (and any partial) on purpose, so a
+   ## re-run continues; a verification-failed partial is dropped at the check.
+   if [ "${resume}" = 'true' ]; then
+      return 0
+   fi
    if [ -n "${work_dir}" ] && [ -d "${work_dir}" ]; then
       safe-rm --recursive --force -- "${work_dir}"
    fi
 }
 
+guard_not_symlink() {
+   if [ -L "$1" ]; then
+      die 2 "refusing to write through a symlink: '$1'"
+   fi
+}
+
 curl_fetch() {
-   local url dest
+   local url dest resume_this
    local -a opts
 
    url="$1"
    dest="$2"
+   resume_this="${3:-false}"
    opts=( --fail --silent --show-error --location --output "${dest}" )
+   if [ "${resume_this}" = 'true' ]; then
+      ## Continue a partial transfer from where it stopped (new file -> from 0).
+      opts+=( --continue-at - )
+   fi
    case "${url}" in
       https://*)
          opts+=( --proto '=https' --tlsv1.3 )
@@ -116,18 +141,19 @@ curl_fetch() {
 ## Fetch a URL (or copy a local path/file:// location) into dest. Sources are
 ## only ever READ; dest is a fresh file.
 fetch() {
-   local location dest path
+   local location dest resume_this path
    location="$1"
    dest="$2"
+   resume_this="${3:-false}"
    case "${location}" in
       https://*)
-         curl_fetch "${location}" "${dest}"
+         curl_fetch "${location}" "${dest}" "${resume_this}"
          ;;
       http://*)
          if [ "${onion}" != 'true' ]; then
             die 2 "refusing plaintext http location without --onion: '${location}'"
          fi
-         curl_fetch "${location}" "${dest}"
+         curl_fetch "${location}" "${dest}" "${resume_this}"
          ;;
       file://*)
          path="${location#file://}"
@@ -299,6 +325,11 @@ verify_sha512() {
       log error "sha512 mismatch for '${image_base}'"
       log error "published: '${expected}'"
       log error "actual:    '${actual}'"
+      ## Complete bytes that do not verify are poison for a resume: drop them so
+      ## a re-run restarts from zero instead of re-continuing the bad partial.
+      if [ "${resume}" = 'true' ]; then
+         safe-rm --force -- "${file}"
+      fi
       die 4 "artifact sha512 does NOT match the published .sha512sums -- refusing the download"
    fi
 }
@@ -401,6 +432,14 @@ parse_args() {
             onion='true'
             shift
             ;;
+         --print-version)
+            print_version_only='true'
+            shift
+            ;;
+         --resume)
+            resume='true'
+            shift
+            ;;
          -h|--help)
             print_usage
             exit 0
@@ -426,15 +465,31 @@ main() {
 
    parse_args "$@"
 
-   [ -n "${vmname}" ]     || { print_usage >&2; die 2 "--vmname is required"; }
-   [ -n "${desktop}" ]    || { print_usage >&2; die 2 "--desktop is required"; }
-   [ -n "${output_dir}" ] || { print_usage >&2; die 2 "--output-dir is required"; }
-   [ -n "${cert_path}" ]  || { print_usage >&2; die 2 "--cert is required"; }
+   ## Version resolution needs only the project (or an explicit version plus
+   ## both base URLs); vmname/desktop/output-dir/cert are download-only inputs.
    if [ -z "${version_override}" ] && [ -z "${project}" ] \
       && { [ -z "${download_base}" ] || [ -z "${wiki_base}" ]; }; then
       print_usage >&2
       die 2 "--project is required unless --version and both base URLs are given"
    fi
+
+   if [ "${print_version_only}" = 'true' ]; then
+      die_if_not_has curl
+      resolve_download_base
+      resolve_wiki_base
+      ## Discovery reads (wiki pin / directory index) stage through work_dir; no
+      ## output-dir is required for a version-only query, so use a temp dir.
+      work_dir="$(mktemp --directory --tmpdir iso-download.XXXXXXXX)"
+      trap cleanup EXIT
+      version="$(resolve_version)"
+      printf '%s\n' "${version}"
+      return 0
+   fi
+
+   [ -n "${vmname}" ]     || { print_usage >&2; die 2 "--vmname is required"; }
+   [ -n "${desktop}" ]    || { print_usage >&2; die 2 "--desktop is required"; }
+   [ -n "${output_dir}" ] || { print_usage >&2; die 2 "--output-dir is required"; }
+   [ -n "${cert_path}" ]  || { print_usage >&2; die 2 "--cert is required"; }
 
    die_if_not_has curl
    die_if_not_has sqop
@@ -448,9 +503,17 @@ main() {
 
    ## Stage in a private 0700 subdir OF output_dir, not /tmp: same filesystem,
    ## so the final rename is atomic and can never leave a truncated file under
-   ## the trusted name; sized by output_dir (not a smaller tmpfs); and a fresh
-   ## mktemp dir blocks a pre-planted symlink.
-   work_dir="$(mktemp --directory -- "${output_dir}/.iso-download.XXXXXXXX")"
+   ## the trusted name; sized by output_dir (not a smaller tmpfs). A fresh mktemp
+   ## dir blocks a pre-planted symlink; --resume instead uses a predictable,
+   ## persistent 0700 dir (guarded against being a symlink) to continue a partial.
+   if [ "${resume}" = 'true' ]; then
+      work_dir="${output_dir}/.iso-download-resume"
+      guard_not_symlink "${work_dir}"
+      mkdir --parents -- "${work_dir}"
+      chmod 0700 -- "${work_dir}"
+   else
+      work_dir="$(mktemp --directory -- "${output_dir}/.iso-download.XXXXXXXX")"
+   fi
    trap cleanup EXIT
 
    version="$(resolve_version)"
@@ -467,7 +530,15 @@ main() {
    sig_file="${work_dir}/${image}.sha512sums.asc"
 
    log notice "downloading '${image}' (version ${version})"
-   fetch "${image_url}" "${image_work}"
+   if [ "${resume}" = 'true' ]; then
+      guard_not_symlink "${image_work}"
+      ## sums/sig are tiny; re-fetch fresh each run so --continue-at applies only
+      ## to the image (a complete small file would 416 under -C -).
+      safe-rm --force -- "${sums_file}" "${sig_file}"
+      fetch "${image_url}" "${image_work}" true
+   else
+      fetch "${image_url}" "${image_work}"
+   fi
    fetch "${image_url}.sha512sums" "${sums_file}"
    fetch "${image_url}.sha512sums.asc" "${sig_file}"
 

@@ -1,0 +1,445 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Orchestrate an end-to-end image test of a published Kicksecure/Whonix release:
+## resolve the version, pick the test account by bless-state, acquire + install
+## (or import) the image, run the matching test, and publish the verdict to the
+## results plane. The glue over iso-download / dm-calamares-install /
+## dm-whonix-pair / the results publisher; manual-invoke (no scheduler).
+##
+## Account model (VBox state is per-$HOME, so the Linux user IS the isolation
+## boundary):
+##   - pre-bless candidate (resolved version != the wiki stable pin): a
+##     disposable, version-named ephemeral account eph-run-<guest>-<version>,
+##     created on demand and removed after (image-test-gc wipes eph-*; the host
+##     nftables leak-drop covers eph-run-* by name).
+##   - blessed (resolved == stable pin): the longitudinal golden account
+##     persist-stable-<guest>; a non-blessed version is REFUSED there.
+##
+## Runs as root on the server (creates users, publishes to the web root); drops
+## to the test account for every VM operation. Sourced by dm-release-test-tests
+## to unit-test the pure-logic helpers.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+## log / die / has / die_if_not_has (log_run_die.sh sources get_colors, strings
+## and has.bsh itself).
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/log_run_die.sh 2>/dev/null; then
+   printf '%s\n' "${me}: ERROR: cannot source helper-scripts log_run_die.sh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
+ISO_DOWNLOAD="${ISO_DOWNLOAD:-iso-download}"
+DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
+DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
+IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+## Best-effort host-firewall fleet-set refresh so a freshly-created eph account's
+## leak-probe egress is dropped; the tool is a private-ai-config server script,
+## not on PATH by default -- warn (do not fail) when absent.
+NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
+
+ISO_DIR="${DM_RELEASE_TEST_ISO_DIR:-/var/lib/image-tests/iso}"
+CERT_PATH="${DM_RELEASE_TEST_CERT:-/usr/share/keyrings/derivative.asc}"
+RESULTS_ROOT="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
+RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
+
+SETUP_RC=2
+
+guest=""
+interface=""
+desktop=""
+channel="developers"
+version_override=""
+firmware="efi-secureboot"
+run_checks='false'
+dry_run='false'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+if [ -d "${script_dir}/../libexec/image-test" ]; then
+   image_test_libexec="${script_dir}/../libexec/image-test"
+else
+   image_test_libexec='/usr/libexec/image-test'
+fi
+# shellcheck source=../libexec/image-test/results-publish.bsh
+source "${image_test_libexec}/results-publish.bsh"
+
+die() {
+   local code
+   code="$1"
+   shift
+   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   exit "${code}"
+}
+
+print_usage() {
+   printf '%s\n' "Usage:
+  ${me} GUEST INTERFACE [--channel stable|developers] [--version VER]
+        [--firmware bios|efi|efi-secureboot] [--checks] [--dry-run]
+
+  GUEST      kicksecure | whonix
+  INTERFACE  lxqt | xfce | cli (the published desktop flavor)
+
+A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
+account; a blessed release (version == stable pin) uses persist-stable-GUEST.
+--dry-run prints the resolved plan and runs nothing."
+}
+
+## ---------------------------------------------------------------------------
+## pure logic (unit-tested by dm-release-test-tests; no VM, no network, no root)
+## ---------------------------------------------------------------------------
+
+## True for a supported guest.
+rt_guest_valid() {
+   case "$1" in
+      kicksecure|whonix)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+## Map a lowercase interface to the published desktop token used in the image
+## filename. Unknown -> fail (a wrong token silently 404s the download).
+rt_desktop_token() {
+   case "$1" in
+      lxqt)
+         printf '%s\n' "LXQt"
+         ;;
+      xfce)
+         printf '%s\n' "Xfce"
+         ;;
+      cli)
+         printf '%s\n' "CLI"
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## Map a dotted version to a Linux-username-safe token: dots (and any char
+## outside [a-z0-9-]) become '-'. Rejects a version that is not [0-9.].
+rt_version_token() {
+   local version token
+   version="$1"
+   case "${version}" in
+      ''|*[!0-9.]*)
+         return 1
+         ;;
+   esac
+   token="${version//./-}"
+   printf '%s\n' "${token}"
+}
+
+## Compose + validate the ephemeral account name. Keeping the eph-run- prefix is
+## load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
+## resolves the fleet by persist-stable-*|eph-run-* name pattern. useradd's
+## NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
+rt_eph_account() {
+   local guest_name token account
+   guest_name="$1"
+   token="$2"
+   account="eph-run-${guest_name}-${token}"
+   case "${account}" in
+      [a-z]*)
+         true
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+   case "${account}" in
+      *[!a-z0-9-]*)
+         return 1
+         ;;
+   esac
+   [ "${#account}" -le 32 ] || return 1
+   printf '%s\n' "${account}"
+}
+
+## "blessed" when the resolved version equals the stable pin, else "prebless".
+rt_bless_state() {
+   if [ "$1" = "$2" ]; then
+      printf '%s\n' "blessed"
+   else
+      printf '%s\n' "prebless"
+   fi
+}
+
+## Pick the account from bless-state. A non-blessed version is never allowed into
+## the golden account.
+rt_select_account() {
+   local guest_name bless_state token
+   guest_name="$1"
+   bless_state="$2"
+   token="$3"
+   case "${bless_state}" in
+      blessed)
+         printf '%s\n' "persist-stable-${guest_name}"
+         ;;
+      prebless)
+         rt_eph_account "${guest_name}" "${token}" || return 1
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## ---------------------------------------------------------------------------
+## version discovery (iso-download --print-version, single source)
+## ---------------------------------------------------------------------------
+
+## Resolve the version for a channel without downloading. Whonix publishes OVAs,
+## not ISOs, so iso-download's developers index (<base>/iso/) does not apply --
+## a Whonix developers build must be named with --version.
+rt_resolve_version() {
+   local want_channel
+   want_channel="$1"
+   if [ -n "${version_override}" ]; then
+      printf '%s\n' "${version_override}"
+      return 0
+   fi
+   if [ "${guest}" = 'whonix' ] && [ "${want_channel}" = 'developers' ]; then
+      die "${SETUP_RC}" "whonix developers-version auto-discovery is OVA-based and not wired; pass --version"
+   fi
+   "${ISO_DOWNLOAD}" --project "${guest}" --channel "${want_channel}" --print-version
+}
+
+## ---------------------------------------------------------------------------
+## account lifecycle (root)
+## ---------------------------------------------------------------------------
+
+rt_refresh_fleet() {
+   if has "${NFT_FLEET_TOOL}"; then
+      "${NFT_FLEET_TOOL}" --refresh-fleet-set \
+         || printf '%s: WARN: fleet-set refresh failed; run %s --refresh-fleet-set\n' "${me}" "${NFT_FLEET_TOOL}" >&2
+   else
+      printf '%s: NOTE: %s not on PATH; run it --refresh-fleet-set so the host firewall covers new fleet users\n' "${me}" "${NFT_FLEET_TOOL}" >&2
+   fi
+}
+
+rt_ensure_eph_account() {
+   local account
+   account="$1"
+   if ! id "${account}" >/dev/null 2>&1; then
+      useradd --create-home --shell /bin/bash -- "${account}"
+   fi
+   getent group vboxusers >/dev/null || groupadd --system vboxusers
+   usermod --append --groups vboxusers -- "${account}"
+   rt_refresh_fleet
+}
+
+rt_cleanup_eph_account() {
+   local account
+   account="$1"
+   "${IMAGE_TEST_GC}" "${account}" || true
+   userdel --remove -- "${account}" || true
+   rt_refresh_fleet
+}
+
+## ---------------------------------------------------------------------------
+## lanes
+## ---------------------------------------------------------------------------
+
+rt_lane_kicksecure() {
+   local account version iso pass_file vmname rc pass outdir
+   local -a version_arg=() checks_arg=()
+
+   account="$1"
+   version="$2"
+   if [ -n "${version_override}" ]; then
+      version_arg=( --version "${version_override}" )
+   fi
+
+   iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
+      --desktop "${desktop}" --channel "${channel}" "${version_arg[@]}" \
+      --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")"
+
+   ## Disposable LUKS passphrase for the install, readable only by the account.
+   pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"
+   printf '%s\n' "release-test-${version}" | sudo -u "${account}" -- tee -- "${pass_file}" >/dev/null
+
+   vmname="Kicksecure-release-${version//./-}"
+   if [ "${run_checks}" = 'true' ]; then
+      checks_arg=( --checks )
+   fi
+
+   rc=0
+   sudo -u "${account}" -- "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
+      --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
+      "${checks_arg[@]}" || rc=$?
+   sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
+
+   if [ "${rc}" -eq 0 ]; then
+      pass='true'
+   else
+      pass='false'
+   fi
+   outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
+      "kicksecure-${version//./-}" "${account}" "calamares-install" \
+      "${rc}" "${pass}" "" "Kicksecure")"
+   printf '%s: kicksecure %s -- %s (rc=%s) -> %s\n' "${me}" "${version}" \
+      "$([ "${pass}" = 'true' ] && printf PASS || printf FAIL)" "${rc}" "${outdir}"
+   return "${rc}"
+}
+
+rt_lane_whonix() {
+   local account version gw ws rc pass outdir
+   account="$1"
+   version="$2"
+   gw="Whonix-Gateway-${desktop}"
+   ws="Whonix-Workstation-${desktop}"
+
+   ## The pair must already be imported under ${account} with a dev-root-baked
+   ## 'clean-live' snapshot on each VM. Building that one-time state (OVA acquire
+   ## + import + sysmaint dev-root bake + snapshot) is finalized on the live
+   ## server; dm-whonix-pair fails closed with a clear message if it is absent.
+   rc=0
+   sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
+
+   if [ "${rc}" -eq 0 ]; then
+      pass='true'
+   else
+      pass='false'
+   fi
+   outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
+      "whonix-${version//./-}" "${account}" "whonix-pair" \
+      "${rc}" "${pass}" "" "tor-confirm")"
+   printf '%s: whonix %s -- %s (rc=%s) -> %s\n' "${me}" "${version}" \
+      "$([ "${pass}" = 'true' ] && printf PASS || printf FAIL)" "${rc}" "${outdir}"
+   return "${rc}"
+}
+
+## ---------------------------------------------------------------------------
+## arg parsing + main
+## ---------------------------------------------------------------------------
+
+parse_args() {
+   local -a positional=()
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --channel)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --channel"
+            channel="$2"
+            shift 2
+            ;;
+         --version)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --version"
+            version_override="$2"
+            shift 2
+            ;;
+         --firmware)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --firmware"
+            firmware="$2"
+            shift 2
+            ;;
+         --checks)
+            run_checks='true'
+            shift
+            ;;
+         --dry-run)
+            dry_run='true'
+            shift
+            ;;
+         -h|--help)
+            print_usage
+            exit 0
+            ;;
+         --)
+            shift
+            break
+            ;;
+         -*)
+            print_usage >&2
+            die "${SETUP_RC}" "unknown option '$1'"
+            ;;
+         *)
+            positional+=( "$1" )
+            shift
+            ;;
+      esac
+   done
+   positional+=( "$@" )
+   [ "${#positional[@]}" -eq 2 ] || { print_usage >&2; die "${SETUP_RC}" "GUEST and INTERFACE are required"; }
+   guest="${positional[0]}"
+   interface="${positional[1]}"
+}
+
+main() {
+   local version stable bless_state account token
+
+   parse_args "$@"
+
+   rt_guest_valid "${guest}" || { print_usage >&2; die "${SETUP_RC}" "unsupported GUEST '${guest}'"; }
+   desktop="$(rt_desktop_token "${interface}")" || die "${SETUP_RC}" "unsupported INTERFACE '${interface}'"
+   case "${channel}" in
+      stable|developers)
+         true
+         ;;
+      *)
+         die "${SETUP_RC}" "unknown --channel '${channel}' (stable|developers)"
+         ;;
+   esac
+
+   has "${ISO_DOWNLOAD}" || die "${SETUP_RC}" "'${ISO_DOWNLOAD}' not on PATH"
+
+   version="$(rt_resolve_version "${channel}")"
+   [ -n "${version}" ] || die "${SETUP_RC}" "could not resolve version"
+   token="$(rt_version_token "${version}")" || die "${SETUP_RC}" "resolved version '${version}' is not a safe token"
+   stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
+   bless_state="$(rt_bless_state "${version}" "${stable}")"
+   account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
+      || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+
+   if [ "${dry_run}" = 'true' ]; then
+      printf '%s\n' "plan:" \
+         "  guest=${guest} interface=${interface} desktop=${desktop}" \
+         "  channel=${channel} resolved=${version} stable=${stable} state=${bless_state}" \
+         "  account=${account} firmware=${firmware} checks=${run_checks}" \
+         "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
+      return 0
+   fi
+
+   [ "$(id -u)" -eq 0 ] || die "${SETUP_RC}" "must run as root (creates the test account, publishes to the web root)"
+
+   if [ "${bless_state}" = 'prebless' ]; then
+      rt_ensure_eph_account "${account}"
+   fi
+
+   local rc
+   rc=0
+   case "${guest}" in
+      kicksecure)
+         rt_lane_kicksecure "${account}" "${version}" || rc=$?
+         ;;
+      whonix)
+         rt_lane_whonix "${account}" "${version}" || rc=$?
+         ;;
+   esac
+
+   if [ "${bless_state}" = 'prebless' ]; then
+      rt_cleanup_eph_account "${account}"
+   fi
+   return "${rc}"
+}
+
+## Sourced (dm-release-test-tests) -> expose the functions without running;
+## executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi
