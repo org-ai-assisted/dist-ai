@@ -292,6 +292,40 @@ def _run_suite(tag):
             _hrc = None
         ok(_hrc == 1,
            'H: --tray with no system tray available exits 1 (no hidden iconless session)')
+
+        # I: a SUSTAINED concurrent --reuse OPEN burst. Each racer opens a REAL tab, so the
+        # primary does genuine per-open work (fork + show + the deferred raise/activate) while
+        # siblings connect and tear their sockets down around it. This is the claude-rc-session
+        # open-all burst that SIGSEGV'd the primary inside Qt's QLocalSocket readyRead dispatch
+        # (the on_ready use-after-free, crash.log 2026-10-02): a sibling's socket teardown
+        # delivered mid-dispatch freed the socket Qt was still reading. The fix (601b5f6) moves
+        # the only event-loop pump (raise/activate) OFF the readyRead slot and gates the
+        # post-dispatch write on a `finished` latch, so a mid-dispatch teardown can no longer
+        # touch a freed socket. A UAF SIGSEGV kills the primary, so the alive/ping assertions
+        # are the detector. CANARY: revert 601b5f6 and this primary crashes under the burst.
+        # (Bounded under _MAX_OPEN_TABS=64: _burst_rounds * _burst_width stays below it.)
+        _ig = 'burst-' + tag
+        _ip, _ir = spawn_primary(_ig, '--instance-group', _ig)
+        ok(_ir is not None, 'I: the burst-group primary is up')
+        _burst_rounds = 5
+        _burst_width = 8
+        for _bround in range(_burst_rounds):
+            if not alive(_ip):
+                break                       # primary already down -> stop hammering, report below
+            _bracers = [spawn('--reuse', '--instance-group', _ig, '-e', '/bin/true')
+                        for _ in range(_burst_width)]
+            for _br in _bracers:
+                try:
+                    _brc = _br.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    _brc = None             # a stuck handoff -> the ping assertion fails loud
+                if _brc == 0 and _br in kids:
+                    kids.remove(_br)        # clean handoff: drop so the finally never killpg's a freed pid
+        ok(alive(_ip),
+           'I: the primary survives a sustained concurrent --reuse open burst (no on_ready UAF)')
+        _iping = ping(_ig) if alive(_ip) else None
+        ok(_iping is not None and _iping.get('pid') == _ip.pid,
+           'I: the primary still answers ping after the burst (its socket server is intact)')
     finally:
         # Note a Qt-startup crash BEFORE the reap rewrites returncodes to -SIGTERM/-SIGKILL.
         # A child SIGKILL'd on purpose (G's _g1) exits -SIGKILL, which is not in the set.

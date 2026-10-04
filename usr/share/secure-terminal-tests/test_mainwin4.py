@@ -605,31 +605,33 @@ finally:
     win._bell_sound_locked = _o_bsl
 
 # --- the IPC server read path: malformed / partial / valid frames -------------
-# Driven with fake conns (see the handoff note): the server-side Framer + on_ready branches
-# (over-long -> abort, partial -> buffered, valid -> framed reply, spurious -> no-op) run
-# with no live socket dispatch. The same sequence over a REAL cross-recv socket -- the
-# server surviving a malformed+partial frame and still serving a valid one without desync --
-# is covered by the subprocess test_instances.
+# Driven with fake conns: the synchronous server serve branches (over-long -> dropped+closed,
+# partial-with-no-more -> no reply + closed, valid -> framed reply, spurious -> no-op) run with
+# no live socket dispatch. Each frame is PRE-FED before _on_instance_connection, which reads it
+# synchronously (readAll + bounded waitForReadyRead). The same sequence over a REAL cross-recv
+# socket -- the server surviving a malformed+partial frame and still serving a valid one without
+# desync -- is covered by the subprocess test_instances.
 import struct as _struct                                        # noqa: E402
 _frwin = MainWindow()
-# an over-long length makes the server-side Framer raise -> the connection aborts
+# an over-long length makes the server-side Framer raise -> the connection is dropped + closed
 _fr_bad = _FakeConn()
+_fr_bad.feed(_struct.pack('<I', (1 << 20) + 5) + b'xxxxx')
 _frwin._server = _FakeServer(_fr_bad)
 _frwin._on_instance_connection()
-_fr_bad.feed(_struct.pack('<I', (1 << 20) + 5) + b'xxxxx')
-ok(_fr_bad.aborted, 'IPC server: an over-long frame aborts the connection')
-# a header promising more than it sends leaves the frame incomplete (payload None)
+ok(_fr_bad.aborted and _fr_bad.written == b'',
+   'IPC server: an over-long frame is rejected and the connection closed')
+# a header promising more than it sends, with nothing more coming -> no reply, socket closed
 _fr_part = _FakeConn()
+_fr_part.feed(_struct.pack('<I', 100) + b'short')
 _frwin._server = _FakeServer(_fr_part)
 _frwin._on_instance_connection()
-_fr_part.feed(_struct.pack('<I', 100) + b'short')
-ok(_fr_part.written == b'' and not _fr_part.aborted,
-   'IPC server: a partial frame is buffered, not answered or aborted')
+ok(_fr_part.written == b'' and _fr_part.aborted,
+   'IPC server: a partial frame with no more data yields no reply and is closed')
 # a VALID request still gets a framed reply (no desync from the malformed / partial ones)
 _fr_ok = _FakeConn()
+_fr_ok.feed(M.ipc.frame(b'{"op": "ping"}'))
 _frwin._server = _FakeServer(_fr_ok)
 _frwin._on_instance_connection()
-_fr_ok.feed(M.ipc.frame(b'{"op": "ping"}'))
 ok(len(_fr_ok.written) > 4 and b'"ok"' in _fr_ok.written,
    'IPC server: after a malformed + partial frame, a valid request still gets a framed reply')
 _frwin._server = _FakeServer(None)
