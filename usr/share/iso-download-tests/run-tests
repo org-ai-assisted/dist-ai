@@ -355,6 +355,75 @@ scenario_socks_proxy_wired() {
    assert_no_grep "no socks flag without --socks-proxy" "\-\-socks5-hostname" "${argv_log}"
 }
 
+scenario_print_version_stable_no_download() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into pvstable --version "${ver}")"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   ## --print-version resolves the stable pin and prints it, taking neither
+   ## --output-dir nor --cert, and MUST NOT fetch the image.
+   run_tool --channel stable --download-base "${download_base}" \
+      --wiki-base "${wiki_base}" --print-version
+
+   assert_rc_zero "print-version stable" "${tool_rc}"
+   assert_grep "prints resolved version" "^${ver}$" "${out_file}"
+   assert_no_grep "did not download the image" "${img}" "${argv_log}"
+   assert_file_absent "nothing written to out dir" "${out_dir}/${img}"
+}
+
+scenario_print_version_developers_highest() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into pvdev --version "${ver}" --stable-version 18.3.0.0)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --channel developers --download-base "${download_base}" \
+      --wiki-base "${wiki_base}" --print-version
+
+   assert_rc_zero "print-version developers" "${tool_rc}"
+   assert_grep "prints highest published version" "^${ver}$" "${out_file}"
+   assert_no_grep "did not download the image" "${img}" "${argv_log}"
+}
+
+scenario_resume_verifies_and_persists_dir() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into resumeok --version "${ver}")"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}" --resume
+
+   assert_rc_zero "resume verifies" "${tool_rc}"
+   assert_file_exists "resume artifact kept" "${out_dir}/${img}"
+   ## The predictable staging dir persists (sums left behind), unlike the ephemeral
+   ## mktemp dir which is removed on exit.
+   assert_file_exists "resume staging dir persists" "${out_dir}/.iso-download-resume/${img}.sha512sums"
+}
+
+scenario_resume_drops_bad_partial() {
+   local fix ver img
+   ver='18.4.0.5'
+   fix="$(make_fixture_into resumebad --version "${ver}" --bad-hash)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}" --resume
+
+   assert_rc_nonzero "resume bad hash rejected" "${tool_rc}"
+   assert_file_absent "no unverified artifact kept" "${out_dir}/${img}"
+   ## Canary: a sha512-failed complete partial must be dropped from the resume
+   ## dir so a re-run restarts clean (not re-continue the poison bytes).
+   assert_file_absent "bad partial dropped from resume dir" "${out_dir}/.iso-download-resume/${img}"
+}
+
 ## ---------------------------------------------------------------------------
 ## runner
 ## ---------------------------------------------------------------------------
@@ -370,6 +439,10 @@ all_scenarios=(
    scenario_developers_survives_wiki_failure
    scenario_spaced_name_verifies
    scenario_socks_proxy_wired
+   scenario_print_version_stable_no_download
+   scenario_print_version_developers_highest
+   scenario_resume_verifies_and_persists_dir
+   scenario_resume_drops_bad_partial
 )
 
 should_run() {

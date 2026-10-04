@@ -40,6 +40,17 @@ RESULTS_ROOT="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
 RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
 DM_VBOX="${DM_VBOX:-dm-smbios-reader-vbox}"
 
+## Resolve the shared results-plane publisher from the checkout (sibling
+## ../libexec) or the installed path; same source either way.
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../libexec/image-test" ]; then
+   image_test_libexec="${script_dir}/../libexec/image-test"
+else
+   image_test_libexec='/usr/libexec/image-test'
+fi
+# shellcheck source=../libexec/image-test/results-publish.bsh
+source "${image_test_libexec}/results-publish.bsh"
+
 die() {
    local code="$1"
    shift
@@ -57,37 +68,6 @@ validate_name() {
          die 2 "unsafe NAME '${value}' -- must be a single safe path segment"
          ;;
    esac
-}
-
-## Emit the result JSON. Values are our own controlled tokens (NAME/USER/MODE)
-## plus rc/pass/expect; expect is rendered as a JSON array. printf keeps it a
-## zero-dependency write (no jq).
-write_result_json() {
-   local dest="$1" rc="$2" pass="$3" ts="$4"
-   shift 4
-   local expect_json="" item first='true'
-   for item in "$@"; do
-      ## escape backslash and double-quote for JSON string safety.
-      item="${item//\\/\\\\}"
-      item="${item//\"/\\\"}"
-      if [ "${first}" = 'true' ]; then
-         expect_json="\"${item}\""
-         first='false'
-      else
-         expect_json="${expect_json}, \"${item}\""
-      fi
-   done
-   {
-      printf '{\n'
-      printf '  "name": "%s",\n' "${NAME}"
-      printf '  "test_user": "%s",\n' "${TEST_USER}"
-      printf '  "mode": "%s",\n' "${MODE}"
-      printf '  "timestamp": "%s",\n' "${ts}"
-      printf '  "rc": %s,\n' "${rc}"
-      printf '  "pass": %s,\n' "${pass}"
-      printf '  "expect": [%s]\n' "${expect_json}"
-      printf '}\n'
-   } > "${dest}"
 }
 
 main() {
@@ -125,16 +105,11 @@ main() {
       fi
    done
 
-   local ts outdir shot_user shot_final rc pass
-   ts="$(date -u +%Y%m%dT%H%M%SZ)"
-   outdir="${RESULTS_ROOT}/${NAME}/${ts}"
-   mkdir -p -- "${outdir}"
-
    ## dm-smbios-reader-vbox runs as TEST_USER and writes the screenshot to a path the test user
    ## owns (the web root is not user-writable); the runner (root) then republishes
-   ## it -- root reads the test user's file directly, no sudo needed for that.
+   ## it via the shared publisher -- root reads the test user's file directly.
+   local shot_user rc pass outdir verdict
    shot_user="$(sudo -u "${TEST_USER}" -- mktemp --tmpdir "image-test-${NAME}.XXXXXX.png")"
-   shot_final="${outdir}/screenshot.png"
 
    ## The VM step may FAIL (that is the signal we publish) -- capture rc, never
    ## let it abort the publish.
@@ -147,21 +122,20 @@ main() {
       pass='false'
    fi
 
-   ## Republish artifacts (as root, later chowned to the nginx owner); a missing
-   ## screenshot (VM never powered on) is not fatal to the report.
+   outdir="$(image_test_results_publish \
+      "${RESULTS_ROOT}" "${RESULTS_OWNER}" "${NAME}" "${TEST_USER}" "${MODE}" \
+      "${rc}" "${pass}" "${shot_user}" "${expect[@]}")"
    if [ -f "${shot_user}" ]; then
-      cp -- "${shot_user}" "${shot_final}"
       safe-rm --force -- "${shot_user}"
    fi
-   write_result_json "${outdir}/result.json" "${rc}" "${pass}" "${ts}" "${expect[@]}"
 
-   ## Point <NAME>/latest at this run and hand the whole subtree to nginx.
-   ln -sfn -- "${ts}" "${RESULTS_ROOT}/${NAME}/latest"
-   chown -R -- "${RESULTS_OWNER}:${RESULTS_OWNER}" "${RESULTS_ROOT}/${NAME}"
-
+   if [ "${pass}" = 'true' ]; then
+      verdict='PASS'
+   else
+      verdict='FAIL'
+   fi
    printf '%s: %s -- %s (rc=%s) -> %s\n' \
-      "${me}" "${NAME}" "$( [ "${pass}" = 'true' ] && printf PASS || printf FAIL )" \
-      "${rc}" "${outdir}"
+      "${me}" "${NAME}" "${verdict}" "${rc}" "${outdir}"
    return "${rc}"
 }
 

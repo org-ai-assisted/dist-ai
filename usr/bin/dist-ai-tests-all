@@ -113,6 +113,7 @@ core_suites=(
    dm-package-depends-tests
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
+   dm-release-test-tests
    dm-virtualbox-wiki-links-tests
    dist-installer-cli-tests
    genmkfile-tests
@@ -838,6 +839,15 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      dm-release-test)
+         ## dist-ai's own orchestrator: the suite sources the real dm-release-test
+         ## (which sources helper-scripts log_run_die.sh) and the shared
+         ## results-publish lib, required real. No VM, no network.
+         wire_env=()
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'
          ## (stubbed resolver), so there is no checkout to point at and no
@@ -990,7 +1000,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|github-api|image-optimize|iso-download|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
