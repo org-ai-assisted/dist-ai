@@ -32,6 +32,9 @@ nonqubes_lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}"
 # shellcheck source=./leaktest_lib.sh
 source "${nonqubes_lib_dir}/leaktest_lib.sh"
 
+## Reused scratch file for leaktest_fire_gw_origin's stderr (allocated once).
+LEAKTEST_GW_SEND_ERR=''
+
 ## leaktest_setup + static neighbors so a REAL gw-originated socket can egress to
 ## the external sink without racing ARP/ND. The kernel does its own next-hop
 ## resolution for a real socket (unlike the injector's pre-resolved L2), so pin
@@ -59,8 +62,10 @@ leaktest_setup_gw_origin() {
 ## Args: <family 4|6> <dst> <dport> <sport> <capture_file>  (sport 0 = ephemeral)
 leaktest_fire_gw_origin() {
    local family="$1" dst="$2" dport="$3" sport="$4" capture_file="$5"
-   local send_err
-   send_err="$(mktemp)"
+   ## One reused scratch file (root-owned mktemp), not one per fire -- a many-probe
+   ## run must not accumulate temp files.
+   [ -n "${LEAKTEST_GW_SEND_ERR}" ] || LEAKTEST_GW_SEND_ERR="$(mktemp)"
+   local send_err="${LEAKTEST_GW_SEND_ERR}"
    LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1

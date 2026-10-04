@@ -54,20 +54,32 @@ audit_torrc_binds() {
             addr="${bind%:*}"
             ;;
          *)
-            ## A bare token. A valid bare PORT is all-digits; anything else (e.g. a
-            ## `\` line-continuation) is unparsable -> FAIL, never a silent pass.
+            ## A bare token (no explicit address). Valid Tor forms: a port number,
+            ## `auto` (auto-select), or `0` (disable). Anything else (e.g. a `\`
+            ## line-continuation -- multi-line directives are out of scope) is
+            ## unparsable -> FAIL, never a silent pass.
             case "${bind}" in
+               0)
+                  ## port 0 disables the listener -- binds nothing, safe.
+                  continue
+                  ;;
+               auto)
+                  ## auto-select: localhost for client listeners, wildcard for the
+                  ## public ones -- classified by directive below (empty arm).
+                  ;;
                '' | *[!0-9]*)
                   printf 'FAIL: unparsable Tor bind token %s (line: %s)\n' "${bind:-<empty>}" "${line}" >&2
                   rc=1
                   continue
                   ;;
             esac
-            ## A bare port binds localhost for the client listeners, but 0.0.0.0 /
-            ## [::] for the PUBLIC listeners ORPort/DirPort -- FAIL those.
+            ## A bare port / `auto` binds localhost for the client listeners, but a
+            ## WILDCARD (0.0.0.0 / [::]) for the PUBLIC listeners ORPort/DirPort --
+            ## FAIL those. ExtORPort/MetricsPort bare bind localhost (verified), so
+            ## they are NOT in this set.
             case "${kw}" in
                orport | dirport)
-                  printf 'FAIL: %s bare port binds a wildcard (public listener): %s\n' "${kw}" "${line}" >&2
+                  printf 'FAIL: %s bare %s binds a wildcard (public listener): %s\n' "${kw}" "${bind}" "${line}" >&2
                   rc=1
                   ;;
             esac
@@ -114,6 +126,11 @@ if audit_torrc_binds "${base_file}" "${torrc_dir}"/*.conf; then
 else
    rc=1
 fi
+
+## Scope note: the shipped torrc %include's /usr/local/etc/torrc.d (admin
+## overrides) and the generated defaults -- files outside this package. Following
+## them is out of scope (same boundary as runtime sysctl.d drop-ins); this audit
+## covers the listeners the PACKAGE ships.
 
 ## Canary: a 0.0.0.0-bound SocksPort must FAIL the audit, proving it has teeth.
 ## Lowercased on purpose, so the canary also exercises the case-insensitive match.

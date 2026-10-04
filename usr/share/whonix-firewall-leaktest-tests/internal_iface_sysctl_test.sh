@@ -55,20 +55,24 @@ audit_sysctl() {
    ## assignment (a wildcard flip or a per-interface override like
    ## net.ipv6.conf.eth1.accept_ra=1) WINS. Reject ANY assignment of these keys to
    ## an insecure value, on any scope (*, all, default, or a specific interface).
-   local bad
+   ## Tolerate the whitespace sysctl.conf allows around `=` and an optional leading
+   ## `-` (systemd ignore-errors prefix), so a spaced/prefixed override cannot slip
+   ## an insecure value past. Scope: dotted keys in the canonical form our file
+   ## uses -- `/`-separator and VLAN-dotted (eth1.100) key spellings are not modelled.
+   local bad sep='[[:space:]]*=[[:space:]]*'
    local bad_values=(
-      'net\.ipv6\.conf\.[^.]+\.accept_ra=[^0[:space:]]'
-      'net\.ipv4\.conf\.[^.]+\.accept_redirects=[^0[:space:]]'
-      'net\.ipv6\.conf\.[^.]+\.accept_redirects=[^0[:space:]]'
-      'net\.ipv4\.conf\.[^.]+\.arp_filter=[^1[:space:]]'
-      'net\.ipv4\.conf\.[^.]+\.arp_ignore=0'
-      'net\.ipv4\.conf\.[^.]+\.accept_source_route=[^0[:space:]]'
-      'net\.ipv6\.conf\.[^.]+\.accept_source_route=[^0[:space:]]'
+      "net\\.ipv6\\.conf\\.[^.]+\\.accept_ra${sep}[^0[:space:]]"
+      "net\\.ipv4\\.conf\\.[^.]+\\.accept_redirects${sep}[^0[:space:]]"
+      "net\\.ipv6\\.conf\\.[^.]+\\.accept_redirects${sep}[^0[:space:]]"
+      "net\\.ipv4\\.conf\\.[^.]+\\.arp_filter${sep}[^1[:space:]]"
+      "net\\.ipv4\\.conf\\.[^.]+\\.arp_ignore${sep}0"
+      "net\\.ipv4\\.conf\\.[^.]+\\.accept_source_route${sep}[^0[:space:]]"
+      "net\\.ipv6\\.conf\\.[^.]+\\.accept_source_route${sep}[^0[:space:]]"
    )
    for bad in "${bad_values[@]}"; do
-      if grep --quiet --extended-regexp "^[[:space:]]*${bad}" "${file}"; then
+      if grep --quiet --extended-regexp "^[[:space:]]*-?${bad}" "${file}"; then
          printf 'FAIL: sysctl sets a hardened key to an insecure value: %s\n' \
-            "$(grep --extended-regexp "^[[:space:]]*${bad}" "${file}" | tr '\n' ' ')" >&2
+            "$(grep --extended-regexp "^[[:space:]]*-?${bad}" "${file}" | tr '\n' ' ')" >&2
          rc=1
       fi
    done
@@ -97,6 +101,16 @@ audit_internal_inet6_static() {
       printf 'FAIL: WS internal iface eth0 has a conflicting inet6 auto/dhcp stanza\n' >&2
       rc=1
    fi
+   ## An ifupdown stanza OPTION `accept_ra`/`autoconf` set non-zero re-enables RA /
+   ## SLAAC at ifup, overriding the sysctl hardening -- reject it in either file.
+   local f
+   for f in "${gw_file}" "${ws_file}"; do
+      if grep --quiet --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}"; then
+         printf 'FAIL: interfaces stanza re-enables RA/autoconf: %s\n' \
+            "$(grep --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}" | tr '\n' ' ')" >&2
+         rc=1
+      fi
+   done
    return "${rc}"
 }
 

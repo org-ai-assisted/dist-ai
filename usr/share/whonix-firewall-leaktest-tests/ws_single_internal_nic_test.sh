@@ -50,15 +50,16 @@ audit_ws_nic() {
       printf 'FAIL: interfaces file pulls in others via source/source-directory (unaudited NICs)\n' >&2
       return 1
    fi
-   ## eth0 must be STATIC, never dhcp (a DHCP lease on a NAT/bridged eth0 installs a
-   ## non-Tor default route).
-   if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+dhcp([[:space:]]|$)' "${file}"; then
-      printf 'FAIL: eth0 is configured inet dhcp (must be static)\n' >&2
+   ## eth0 must be STATIC, never a DYNAMIC method (dhcp/bootp/ppp) -- any of those
+   ## on a NAT/bridged eth0 installs a non-Tor default route.
+   if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+(dhcp|bootp|ppp)([[:space:]]|$)' "${file}"; then
+      printf 'FAIL: eth0 uses a dynamic inet method (must be static)\n' >&2
       return 1
    fi
    ## Extract ONLY the `iface eth0 inet static` stanza (up to the next stanza
    ## keyword) and require the internal address + gateway WITHIN it -- so address /
    ## gateway lines parked under another stanza (e.g. lo) cannot satisfy the check.
+   ## Scope: ifupdown up/post-up command hooks are not interpreted (not shipped).
    stanza="$(awk '
       /^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+static([[:space:]]|$)/ { inblk = 1; print; next }
       inblk && /^[[:space:]]*(iface|mapping|auto|allow-|source|source-directory)/ { inblk = 0 }
@@ -68,12 +69,17 @@ audit_ws_nic() {
       printf 'FAIL: no "iface eth0 inet static" stanza\n' >&2
       return 1
    fi
-   if ! grep --quiet --extended-regexp '^[[:space:]]*address[[:space:]]+10\.152\.152\.11([[:space:]]|$)' <<< "${stanza}"; then
-      printf 'FAIL: eth0 static stanza is not on the internal network (no address 10.152.152.11)\n' >&2
+   ## Exactly ONE address + ONE gateway in the stanza, each the internal value --
+   ## a second (conflicting) address/gateway would otherwise ride through. The
+   ## optional /CIDR suffix is accepted (the shipped form uses a separate netmask).
+   if [ "$(grep --count --extended-regexp '^[[:space:]]*address[[:space:]]' <<< "${stanza}")" != '1' ] \
+      || ! grep --quiet --extended-regexp '^[[:space:]]*address[[:space:]]+10\.152\.152\.11(/[0-9]+)?([[:space:]]|$)' <<< "${stanza}"; then
+      printf 'FAIL: eth0 static stanza needs exactly one internal address 10.152.152.11\n' >&2
       return 1
    fi
-   if ! grep --quiet --extended-regexp '^[[:space:]]*gateway[[:space:]]+10\.152\.152\.10([[:space:]]|$)' <<< "${stanza}"; then
-      printf 'FAIL: eth0 static stanza does not route via the Whonix-Gateway (no gateway 10.152.152.10)\n' >&2
+   if [ "$(grep --count --extended-regexp '^[[:space:]]*gateway[[:space:]]' <<< "${stanza}")" != '1' ] \
+      || ! grep --quiet --extended-regexp '^[[:space:]]*gateway[[:space:]]+10\.152\.152\.10([[:space:]]|$)' <<< "${stanza}"; then
+      printf 'FAIL: eth0 static stanza needs exactly one gateway 10.152.152.10\n' >&2
       return 1
    fi
    return 0
