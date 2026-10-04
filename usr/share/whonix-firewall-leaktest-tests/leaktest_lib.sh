@@ -90,12 +90,20 @@ PROBE_DST_IP4='198.51.100.7'
 ## whose BOTH endpoints are gw<->up infrastructure (link-local or the two
 ## external-link globals -- e.g. a unicast Neighbor Advertisement). Everything
 ## else is captured.
+## The IPv4 external-link exclusion is DHCP ONLY (ports 67/68), NOT all
+## 10.0.2.0/24 unicast: the external link rides 10.0.2.0/24 (gw .15, up .2), so a
+## bare both-endpoints-in-/24 rule would also hide a GATEWAY-ORIGINATED unicast to
+## a host in that subnet -- the host DNS proxy 10.0.2.3 (the "Deactivate Host DNS"
+## leak) -- invisible by construction. Scoping it to DHCP keeps the only legit v4
+## link control-plane excluded while leaving every gw-originated /24 unicast
+## visible. ARP is non-ip (dropped by the leading `(ip or ip6)`); IPv6 ND is
+## covered by the fe80::/10 + multicast clauses above.
 LEAKTEST_EGRESS_BPF="\
 (ip or ip6) and not ( \
   ip6 multicast or ip multicast or ip broadcast \
   or ( (src net fe80::/10 or src host ${EXT_UP_IP6} or src host ${EXT_GW_IP6}) \
        and (dst net fe80::/10 or dst host ${EXT_UP_IP6} or dst host ${EXT_GW_IP6}) ) \
-  or ( src net 10.0.2.0/24 and dst net 10.0.2.0/24 ) \
+  or ( src net 10.0.2.0/24 and dst net 10.0.2.0/24 and udp and (port 67 or port 68) ) \
 )"
 
 LEAKTEST_LISTENER_PID=''

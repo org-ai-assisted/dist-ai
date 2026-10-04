@@ -110,6 +110,38 @@ leaktest_setup_ext_input() {
    leaktest_ext_listener_start
 }
 
+LEAKTEST_UP_SINK_PID=''
+
+## Start a UDP absorber in the up namespace on <port>, so a gw-originated DHCP
+## probe to that port is received (not port-closed) and provokes NO ICMP
+## port-unreachable reply -- which the oracle, correctly, would count (it is ICMP,
+## not the excluded DHCP). A real network has a DHCP server/relay here; this stands
+## in for it, so the DHCP-exclusion precision leg measures the BPF, not an artifact.
+leaktest_up_udp_sink_start() {
+   local port="$1"
+   leaktest_up_udp_sink_stop
+   ip netns exec up python3 - "${port}" <<'PY' &
+import socket, sys
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('0.0.0.0', int(sys.argv[1])))
+while True:
+    try:
+        sock.recvfrom(4096)
+    except OSError:
+        break
+PY
+   LEAKTEST_UP_SINK_PID="$!"
+   sleep 1
+}
+
+leaktest_up_udp_sink_stop() {
+   if [ -n "${LEAKTEST_UP_SINK_PID}" ]; then
+      kill "${LEAKTEST_UP_SINK_PID}" 2>/dev/null || true
+      LEAKTEST_UP_SINK_PID=''
+   fi
+}
+
 LEAKTEST_EXT_LISTENER_PID=''
 
 ## Start the external-side port listener in gw, bound WIDE (0.0.0.0 / ::) so a

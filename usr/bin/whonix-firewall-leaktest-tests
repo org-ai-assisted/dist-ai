@@ -8,12 +8,19 @@
 ## Runner for the whonix-firewall LEAK-TEST suite: netns models of a
 ## Non-Qubes-Whonix gateway that load the REAL generated ruleset and prove no
 ## non-Tor egress across leak vectors (forged-source IPv6, and more as added),
-## each with a positive control and a canary.
+## each with a positive control and a canary. The suite also carries static
+## Non-Qubes invariant audits (WS single NIC, internal-iface sysctls, Tor bind
+## addresses) that read the shipped config directly -- no netns, but they run
+## under the same root re-exec.
 ##
 ## Needs REAL root (netns + nf_nat); run under sudo. A non-root run reports every
-## case SKIPPED (exit 77), never a false pass. Point WHONIX_FIREWALL_REPO at a
-## whonix-firewall checkout so the cases can load its generated ruleset:
-##   sudo WHONIX_FIREWALL_REPO=/path/to/whonix-firewall whonix-firewall-leaktest-tests
+## netns case SKIPPED (exit 77), never a false pass. Point WHONIX_FIREWALL_REPO at
+## a whonix-firewall checkout so the cases can load its generated ruleset, and the
+## four config-source repos the static audits REQUIRE (absent -> FATAL, no skip):
+##   sudo WHONIX_FIREWALL_REPO=/path/to/whonix-firewall \
+##        WHONIX_WS_NETWORK_CONF_REPO=... WHONIX_GW_NETWORK_CONF_REPO=... \
+##        SECURITY_MISC_REPO=... ANON_GW_ANONYMIZER_CONFIG_REPO=... \
+##        whonix-firewall-leaktest-tests
 ##
 ## Runs every *_test.sh in usr/share/whonix-firewall-leaktest-tests and fails if
 ## any of them does. Discovery is a glob so a new case needs no edit here.
@@ -35,6 +42,10 @@ if [ "$(id -u)" != '0' ]; then
       sudo --non-interactive -- \
          env "WHONIX_FIREWALL_REPO=${WHONIX_FIREWALL_REPO:-}" \
              "ANON_LEAK_TEST_REPO=${ANON_LEAK_TEST_REPO:-}" \
+             "WHONIX_WS_NETWORK_CONF_REPO=${WHONIX_WS_NETWORK_CONF_REPO:-}" \
+             "WHONIX_GW_NETWORK_CONF_REPO=${WHONIX_GW_NETWORK_CONF_REPO:-}" \
+             "SECURITY_MISC_REPO=${SECURITY_MISC_REPO:-}" \
+             "ANON_GW_ANONYMIZER_CONFIG_REPO=${ANON_GW_ANONYMIZER_CONFIG_REPO:-}" \
          bash "$(readlink --canonicalize -- "$0")" "$@"
       exit "$?"
    fi

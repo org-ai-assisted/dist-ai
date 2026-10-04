@@ -73,11 +73,15 @@ leaktest_assert_leaked 'GW-originated LAN 192.168.1.5:53 (NON_TOR exception, vis
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 ## 3. Oracle precision: DHCP between the link endpoints stays excluded (the
-## tightening is DHCP-scoped, not blanket-/24). Must read ZERO egress.
+## tightening is DHCP-scoped, not blanket-/24). An absorber on up:67 stands in for
+## the DHCP server so the probe is received, not port-closed (a closed port would
+## emit an ICMP unreachable the oracle counts). Must read ZERO egress.
 leaktest_setup_gw_origin "${ruleset_file}"
+leaktest_up_udp_sink_start 67
 leaktest_fire_gw_origin 4 "${EXT_UP_IP4}" 67 68 "${capture_file}"
 leaktest_assert_blocked 'GW-originated DHCP (udp 68->67) stays oracle-excluded' \
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+leaktest_up_udp_sink_stop
 
 ## 4. Positive control on a fresh topology.
 leaktest_setup_gw_origin "${ruleset_file}"
