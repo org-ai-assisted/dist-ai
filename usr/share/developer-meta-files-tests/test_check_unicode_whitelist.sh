@@ -46,6 +46,11 @@ fail() {
 
 ## Materialize the production allow-list + pattern EXACTLY as the script builds them.
 ## Reads the current script text, so the test cannot drift from the code it guards.
+## Pre-init both so a script that no longer defines them (renamed/refactored, the sed
+## matching nothing) leaves an EMPTY list/pattern -- a clean structural fail below --
+## rather than tripping 'set -o nounset' with an 'unbound variable' crash.
+whitelist_list=()
+whitelist_pattern=''
 eval "$( sed -n '/^whitelist_list=(/,/^)/p' -- "${script}" )"
 eval "$( sed -n '/^whitelist_pattern=/p' -- "${script}" )"
 
@@ -54,44 +59,63 @@ eval "$( sed -n '/^whitelist_pattern=/p' -- "${script}" )"
 ## WHICH paths are whitelisted is dm-check-unicode's call; the test tracks the LIVE
 ## list (see the behavioral check) rather than mandating a historical entry, so a
 ## legitimate allow-list edit never false-fails it.
-# shellcheck disable=SC2154  # whitelist_list: populated by the eval of the subject script above
 if [ "${#whitelist_list[@]}" -ge 1 ]; then
    pass "whitelist_list is non-empty (${#whitelist_list[@]} entries)"
 else
    fail "whitelist_list is empty -- the Unicode allow-list would blanket-pass"
 fi
 
-## Behavioral: run the SAME invert-match filter production uses, against a hit built
-## from a LIVE allow-list entry, so the test cannot drift from the script's actual
-## list. A whitelisted hit must be filtered OUT; a non-whitelisted hit must survive.
-## Entries are path patterns, so a line that BEGINS with an entry's text is matched
-## by that entry's ERE (a literal path matches itself; a '.*'-tailed one matches any
-## suffix) -- true for every historical and current entry.
+## Behavioral: run the SAME invert-match filter production uses. A non-whitelisted
+## hit must SURVIVE the filter; a whitelisted hit must be EXCLUDED. Uses the LIVE
+## pattern so the test cannot drift from the script's actual list.
 if [ "${#whitelist_list[@]}" -ge 1 ]; then
-   sample_hit="${whitelist_list[0]}:94: emoji here"
-   ## A path no whitelist entry names. The canary below fails loudly if some entry
-   ## ever does match it, so an accidental collision cannot pass silently.
+   ## Re-index densely so the first element is [0] even if the source array was
+   ## sparse (a '[0]' read on a sparse/empty array crashes under nounset).
+   dense=("${whitelist_list[@]}")
+   entry="${dense[0]}"
+   ## A path no legitimate allow-list entry names.
    other_hit='./not-whitelisted/unicode-check-canary:1: emoji here'
-   # shellcheck disable=SC2154  # whitelist_pattern: eval'd from the script under test above
-   filtered="$( printf '%s\n%s\n' "${sample_hit}" "${other_hit}" \
-      | grep --invert-match --extended-regexp -- "${whitelist_pattern}" || true )"
 
-   case "${filtered}" in
-      *"${sample_hit}"*)
-         fail "whitelisted hit was NOT excluded by the whitelist"
-         ;;
-      *)
-         pass "whitelisted hit is excluded by the whitelist"
-         ;;
-   esac
-   case "${filtered}" in
+   ## CANARY -- runs UNCONDITIONALLY. A non-whitelisted hit MUST survive the filter.
+   ## This is the load-bearing assertion: it fails on a blanket pattern (matches
+   ## everything), an over-broad '^./.*', AND a malformed ERE (grep errors -> empty
+   ## invert output -> the hit is dropped), each of which makes production's
+   ## 'grep -v -E ... || true' silently drop every Unicode hit. It must NOT be gated
+   ## behind the positive check below, or those cases slip through as a SKIP.
+   canary_filtered="$( printf '%s\n' "${other_hit}" \
+      | grep --invert-match --extended-regexp -- "${whitelist_pattern}" 2>/dev/null \
+      || true )"
+   case "${canary_filtered}" in
       *"${other_hit}"*)
-         pass "a non-whitelisted unicode hit still survives the filter (check not blanket-disabled)"
+         pass "a non-whitelisted unicode hit survives the filter (not blanket/over-matching)"
          ;;
       *)
-         fail "canary broken: a non-whitelisted hit was also filtered -- the pattern over-matches"
+         fail "a non-whitelisted hit was filtered out -- the pattern is blanket, over-broad, or a malformed ERE"
          ;;
    esac
+
+   ## POSITIVE (best-effort) -- a path the first entry's ERE matches MUST be excluded.
+   ## Synthesize by dropping a trailing '.*' (the ':94:' suffix then satisfies it) and
+   ## keeping a literal path as-is; CONFIRM the live pattern matches it, else skip (an
+   ## unusual ERE form this cannot synthesize is not a false fail -- the canary above
+   ## already enforces the dangerous direction).
+   sample_hit="${entry%.\*}:94: emoji here"
+   if grep --quiet --extended-regexp -- "${whitelist_pattern}" <<< "${sample_hit}" \
+      2>/dev/null; then
+      pos_filtered="$( printf '%s\n' "${sample_hit}" \
+         | grep --invert-match --extended-regexp -- "${whitelist_pattern}" 2>/dev/null \
+         || true )"
+      case "${pos_filtered}" in
+         *"${sample_hit}"*)
+            fail "whitelisted hit was NOT excluded by the whitelist"
+            ;;
+         *)
+            pass "whitelisted hit is excluded by the whitelist"
+            ;;
+      esac
+   else
+      printf '%s\n' "SKIP: could not synthesize a positive sample for entry '${entry}' (unusual ERE form); negative canary still enforced"
+   fi
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

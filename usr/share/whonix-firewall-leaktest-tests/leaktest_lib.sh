@@ -153,11 +153,27 @@ leaktest_preconditions() {
    if [ ! -r "${ruleset_file}" ]; then
       skip_case "gateway ruleset not readable: ${ruleset_file}"
    fi
+   ## The shared L2 injector comes from the anon-leak-test checkout (same source the
+   ## live dm-whonix-pair drives). Required, like the ruleset: unset -> skip (optional
+   ## target absent); wired-but-broken -> FATAL (environment bug), never skip-green.
+   if [ -z "${ANON_LEAK_TEST_REPO:-}" ]; then
+      skip_case 'ANON_LEAK_TEST_REPO is unset (no anon-leak-inject checkout to drive)'
+   fi
+   if [ ! -x "$(leaktest_injector)" ]; then
+      printf '%s\n' "FATAL: injector not found/executable: $(leaktest_injector) (bad ANON_LEAK_TEST_REPO checkout)" >&2
+      exit 1
+   fi
 }
 
 ## helpers dir (ships beside this library)
 leaktest_helpers_dir() {
    printf '%s\n' "$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/helpers"
+}
+
+## The L2 packet injector -- the single shared crafter, from the anon-leak-test checkout
+## (ANON_LEAK_TEST_REPO, the same source the live dm-whonix-pair drives).
+leaktest_injector() {
+   printf '%s\n' "${ANON_LEAK_TEST_REPO:-}/usr/bin/anon-leak-inject"
 }
 
 ## Ownership marker: a distinctively-named netns created alongside the topology so a
@@ -402,7 +418,7 @@ leaktest_permissive_ruleset() {
 ##                          the probe's nominal dest)
 ##   LEAKTEST_CAPTURE_LIVE  1/0 -- whether the capture actually bound
 ## Callers must treat capture-live=0 as a hard failure, never "no leak". Extra
-## inject.py args after the fixed ones. Called directly (no subshell), so a
+## anon-leak-inject args after the fixed ones. Called directly (no subshell), so a
 ## failure inside it trips the caller's errexit instead of being swallowed.
 ##
 ## Delivery is proven by the per-case permissive canary (the same inject MUST
@@ -410,14 +426,14 @@ leaktest_permissive_ruleset() {
 ## are polluted by the netns's own post-setup ND/MLD settling, so a counter delta
 ## cannot distinguish this probe from ambient traffic.
 leaktest_fire_forward_probe() {
-   local proto="$1" src="$2" dst="$3" capture_file="$4" helpers inject_err
+   local proto="$1" src="$2" dst="$3" capture_file="$4" injector inject_err
    shift 4
    ## Inject interface + gateway MAC-resolution address. Default to the eth1 internal
    ## path (eth0 on the ws side, INT_GW_IP4); the INT_TIF variant overrides these to
    ## the tun0 path via LEAKTEST_INJECT_IFACE / LEAKTEST_INJECT_GW4 so existing
    ## callers are unaffected.
    local iface="${LEAKTEST_INJECT_IFACE:-eth0}" gw4="${LEAKTEST_INJECT_GW4:-${INT_GW_IP4}}"
-   helpers="$(leaktest_helpers_dir)"
+   injector="$(leaktest_injector)"
    ## A root-owned mktemp path (not one derived from capture_file, so no planted
    ## symlink for the root-run redirect to follow), allocated once and reused.
    [ -n "${LEAKTEST_INJECT_ERR}" ] || LEAKTEST_INJECT_ERR="$(mktemp)"
@@ -428,10 +444,10 @@ leaktest_fire_forward_probe() {
    ## Keep the injector's stderr (its diagnostic on e.g. an unresolved gateway MAC)
    ## and check its exit explicitly: a failed inject is reported by the assert
    ## helpers as a clear reason, never a mute errexit abort or a false "0 egress".
-   if ! ip netns exec ws python3 "${helpers}/inject.py" \
+   if ! ip netns exec ws python3 "${injector}" \
       --proto "${proto}" --iface "${iface}" --gw4 "${gw4}" \
       --src "${src}" --dst "${dst}" "$@" >/dev/null 2>"${inject_err}"; then
-      LEAKTEST_PROBE_ERROR="inject.py failed: $(tr '\n' ' ' <"${inject_err}" 2>/dev/null)"
+      LEAKTEST_PROBE_ERROR="anon-leak-inject failed: $(tr '\n' ' ' <"${inject_err}" 2>/dev/null)"
    fi
    sleep 3
    leaktest_capture_wait
