@@ -50,6 +50,7 @@ Map of what the suite exercises and where the gaps are. Run everything with:
 | check_qubes_network_interface | yes | yes | yes | isolated: 6 branches (ok / daemon-fail / invalid-ip / netvm-unset / netvm-ok / templatevm skip) |
 | check_qubes_vm_type         | yes | yes | -   | isolated: gateway/workstation ok + wrong-type + machine no-op |
 | check_kernel_hardening_cmdline | yes | yes | -   | isolated: all-present / all-missing / each-token-individually-missing / substring-collision / qubes-info / empty-cmdline-info / verbose gating |
+| check_apt_repository        | yes | yes | -   | isolated: Enabled / Disabled / Legacy; Disabled fails even under --ci (security-update channel off is never masked) |
 
 ## Coverage gaps (ranked)
 
@@ -80,6 +81,12 @@ stages. Currently covered only by the live `systemcheck --cli` integration run.
 the cheapest coverage wins to add next: check_timezone (zoneinfo/localtime
 files under a temp HOME), check_nonfree (vrms), check_spectre_meltdown,
 check_virtualizer, check_entropy.
+
+**G5. Mode-dependent branches.** check_apt_repository's unreadable-file branch
+(derivative.sources present but `test -r` false -> permission warning, exit 1)
+needs a 0000-mode file; neither `place=` nor `bind_files=` can set an arbitrary
+mode, so this one branch is uncovered (its sibling Enabled/Disabled/Legacy
+branches are covered).
 
 ## Adding a scenario test
 
