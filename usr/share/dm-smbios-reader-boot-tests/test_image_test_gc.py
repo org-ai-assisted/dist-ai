@@ -102,19 +102,14 @@ def test_happy_path_wipes_and_reports_done(env):
     assert env['marker'].exists(), 'safe-rm was not invoked on the happy path'
 
 
-def test_eph_leak_accepted(env):
-    ## The leak namespace (eph-leak-) must be wipeable like any eph-* account --
-    ## canary against a future narrowing of the eph-* allow-arm to eph-run- only,
-    ## which would silently strand leak-account VBox state.
-    _write_exec(env['bin'] / 'VBoxManage',
-                'case "$1" in\n'
-                '  list) echo \'"vm1" {00000000-0000-0000-0000-000000000001}\' ;;\n'
-                '  *) exit 0 ;;\n'
-                'esac\n')
-    res = _run(env, 'eph-leak-whonix-18-2-3-5')
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert 'done' in res.stdout
-    assert env['marker'].exists(), 'safe-rm was not invoked for an eph-leak- account'
+def test_persist_leak_refused(env):
+    ## The dedicated leak account (persist-leak-) is PERSISTENT -- gc must refuse it
+    ## exactly like the golden fleet (persist-*), never wiping the pre-imported
+    ## clean-live Whonix pair that restore_fresh depends on each run.
+    _write_exec(env['bin'] / 'VBoxManage', 'exit 0\n')
+    res = _run(env, 'persist-leak-whonix')
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert not env['marker'].exists(), 'safe-rm ran on a persist-leak- account'
 
 
 def test_persist_refused(env):
