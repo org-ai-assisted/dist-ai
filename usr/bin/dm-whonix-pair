@@ -369,10 +369,11 @@ main() {
       printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
       sleep 20
    done
-   ## Budget exhausted = the positive control never confirmed Tor. This is INCONCLUSIVE
-   ## (GW Tor did not bootstrap, or a provisioning gap) -- NOT a leak: systemcheck's exit is
-   ## binary, so it cannot distinguish "not up" from "IsTor=false", and a real leak is caught
-   ## authoritatively by Phase 2's battery + GW-NIC canary. SETUP, never a false leak verdict.
+   ## Budget exhausted = the positive control never confirmed Tor. INCONCLUSIVE (GW Tor did
+   ## not bootstrap, a provisioning gap, or a persistent leak that systemcheck's binary exit
+   ## cannot tell apart from "not up") -> SETUP: fail-closed, never a PASS and never a false
+   ## leak verdict. The authoritative leak oracle (Phase 2 battery + GW-NIC canary) runs ONLY
+   ## after Tor is confirmed here; if it never is, the run is reported inconclusive, not clean.
    [ "${tor_ok}" = 'true' ] || die "${SETUP_RC}" "Tor egress never confirmed (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a leak"
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
@@ -414,8 +415,16 @@ main() {
       ## zero target hits across the WHOLE capture (both Tor-up and Tor-down windows).
       printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
       gw_stop_tor
-      ws_battery "--probe gateway-craft ${craft_flags}" \
-         || die "${SETUP_RC}" "killswitch: craft emit could not run with Tor down -- an infra failure, not a WS leak"
+      ## Same battery-exit contract as Phase 2: 1 = a probe proved non-Tor egress (LEAK),
+      ## any other non-zero = the emit could not run (inconclusive/infra). Classify identically
+      ## so a proven leak with Tor down is never downgraded to SETUP.
+      local ks_rc=0
+      ws_battery "--probe gateway-craft ${craft_flags}" || ks_rc=$?
+      if [ "${ks_rc}" = '1' ]; then
+         die "${FAIL_RC}" "killswitch LEAK: a crafted probe proved non-Tor egress with Tor down"
+      elif [ "${ks_rc}" != '0' ]; then
+         die "${SETUP_RC}" "killswitch: craft emit could not run with Tor down (battery rc=${ks_rc}) -- an infra failure, not a WS leak"
+      fi
 
       ## RECOVERY. Restart Tor and prove egress is restored -- so the killswitch STOP was a
       ## bracketed, reversible operation (the GW is not wedged) and a dead Tor can never
