@@ -309,11 +309,13 @@ def _run_suite(tag):
         ok(_ir is not None, 'I: the burst-group primary is up')
         _burst_rounds = 5
         _burst_width = 8
+        _ball = []
         for _bround in range(_burst_rounds):
             if not alive(_ip):
                 break                       # primary already down -> stop hammering, report below
             _bracers = [spawn('--reuse', '--instance-group', _ig, '-e', '/bin/true')
                         for _ in range(_burst_width)]
+            _ball.extend(_bracers)
             for _br in _bracers:
                 try:
                     _brc = _br.wait(timeout=15)
@@ -321,6 +323,13 @@ def _run_suite(tag):
                     _brc = None             # a stuck handoff -> the ping assertion fails loud
                 if _brc == 0 and _br in kids:
                     kids.remove(_br)        # clean handoff: drop so the finally never killpg's a freed pid
+        ## Every burst client that EXITED must have handed off cleanly (exit 0); a silent
+        ## non-zero would otherwise pass as long as the primary survived. Tolerate the
+        ## Qt-startup-crash flake exactly as case F does; a still-running (timed-out)
+        ## client is left to the primary-ping assertion below.
+        ok(all(_b.returncode == 0 for _b in _ball
+               if not alive(_b) and _b.returncode not in _QT_STARTUP_CRASH),
+           'I: every exited --reuse burst client handed off cleanly (exit 0)')
         ok(alive(_ip),
            'I: the primary survives a sustained concurrent --reuse open burst (no on_ready UAF)')
         _iping = ping(_ig) if alive(_ip) else None

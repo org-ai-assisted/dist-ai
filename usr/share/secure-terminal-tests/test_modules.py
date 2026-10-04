@@ -1340,7 +1340,8 @@ _cd_nolog = subprocess.run(
      'time.sleep(0.3)\n'
      'print("survived-no-log")\n' % _cd_nolog_root],
     capture_output=True, text=True, check=False)
-ok(_cd_nolog.returncode == 0 and 'survived-no-log' in _cd_nolog.stdout,
+ok(_cd_nolog.returncode == 0 and 'survived-no-log' in _cd_nolog.stdout
+   and _cd_nolog.stderr.strip() != '',
    'crashdiag: SIGUSR1 stays non-fatal when the crash log cannot be opened (dumps to stderr)')
 
 # ALWAYS-ON hang watchdog: unlike the SIGUSR1 dumper above (needs a human to send the
@@ -1426,8 +1427,12 @@ ok(not os.path.exists(_wd_c_path) or 'hang detected' not in _wd_read(_wd_c_path)
 
 # _dump swallows a broken log (both the banner write and the faulthandler dump), so the
 # watchdog thread never dies on a diagnostic failure.
-crashdiag._HangWatchdog(_WdBadLog(), threshold=0.3)._dump(1.0)
-ok(True, 'crashdiag: the watchdog swallows a broken log in _dump (never raises)')
+_wd_dump_raised = False
+try:
+    crashdiag._HangWatchdog(_WdBadLog(), threshold=0.3)._dump(1.0)
+except Exception:
+    _wd_dump_raised = True
+ok(not _wd_dump_raised, 'crashdiag: the watchdog swallows a broken log in _dump (never raises)')
 
 # hang_threshold_from_env: default / explicit / floored / malformed-falls-back.
 _wd_env_prev = os.environ.pop(crashdiag.HANG_WATCHDOG_ENV, None)
@@ -1472,8 +1477,12 @@ _wd_al = io.StringIO()
 crashdiag.append_line(_wd_al, 'ipc-trace-line')
 ok(_wd_al.getvalue() == 'ipc-trace-line\n',
    'crashdiag: append_line writes exactly one banner-less line')
-crashdiag.append_line(None, 'dropped')
-ok(True, 'crashdiag: append_line is a no-op when there is no log')
+_al_noop_raised = False
+try:
+    crashdiag.append_line(None, 'dropped')
+except Exception:
+    _al_noop_raised = True
+ok(not _al_noop_raised, 'crashdiag: append_line is a no-op when there is no log')
 
 for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2,
               _cd_nolog_root, _wd_dir, _wd2_dir, _wd_c_dir, _wd_s_dir):
