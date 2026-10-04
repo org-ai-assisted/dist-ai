@@ -283,7 +283,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|whonix-firewall)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -532,6 +532,17 @@ wire() {
          if [ -n "${anon_repo}" ]; then
             wire_env+=( "ANON_LEAK_TEST_REPO=${anon_repo}" )
          fi
+         ## The static Non-Qubes invariant audits (ws-single-NIC, internal-iface
+         ## sysctls, Tor bind) read these monorepo packages directly. Exported
+         ## unconditionally (pkg_dir yields real packages/<team>/<name> paths, not
+         ## empty as a standalone sibling does); the audits assert each folder
+         ## exists and FATAL if absent -- no skips.
+         wire_env+=(
+            "WHONIX_WS_NETWORK_CONF_REPO=$( pkg_dir whonix-ws-network-conf )"
+            "WHONIX_GW_NETWORK_CONF_REPO=$( pkg_dir whonix-gw-network-conf )"
+            "SECURITY_MISC_REPO=$( pkg_dir security-misc )"
+            "ANON_GW_ANONYMIZER_CONFIG_REPO=$( pkg_dir anon-gw-anonymizer-config )"
+         )
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )

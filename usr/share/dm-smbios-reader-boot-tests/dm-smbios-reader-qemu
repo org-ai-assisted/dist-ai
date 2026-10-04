@@ -355,6 +355,69 @@ machine="$(dist_build_arch_to_qemu_machine_type "${arch}")" \
 serial_console="$(dist_build_arch_to_serial_console "${arch}")" \
    || { printf 'dm-smbios-reader-qemu: boot-testing not wired for arch %s (no serial console)\n' "${arch}" >&2; exit 2; }
 
+## Serial + verbose kernel parameters, shared by the SMBIOS-injected default boot and the
+## --direct-kernel '-append'. Surface the EARLY boot on serial: without this the kernel
+## self-decompressor and early init -- before the real 8250/PL011 tty driver registers -- are
+## silent, which under TCG (no KVM) is minutes of silence that looks like a hang. earlyprintk
+## (x86: the decompressor stub drives the UART directly) covers the decompression gap; earlycon
+## covers early init until the real driver takes over; keep_bootcon makes the handoff seamless;
+## ignore_loglevel + rd.info keep the kernel and the dracut initramfs chatty (and ignore_loglevel
+## overrides the image's production 'quiet loglevel=0' when these params are APPENDED via SMBIOS).
+## Arch-gated: the x86 'earlyprintk=serial,ttyS0' form is invalid on arm64 (PL011). printk.time=1
+## timestamps every line so a long gap is attributable to its phase; initcall_debug names a
+## stalled initcall. Both arch-independent.
+case "${serial_console}" in
+   ttyS0*)
+      early_console='earlyprintk=serial,ttyS0,115200 earlycon=ttyS0,115200 keep_bootcon ignore_loglevel rd.info'
+      ;;
+   *)
+      early_console='earlycon keep_bootcon ignore_loglevel rd.info'
+      ;;
+esac
+serial_verbose_params="console=${serial_console} ${early_console} printk.time=1 initcall_debug"
+
+## The RAW SMBIOS 'dm-cmdline=' payload (SINGLE commas). Single source for BOTH backends:
+## the qemu serial path doubles the commas for qemu's -smbios value parser; --emit-cmdline
+## prints it verbatim so dm-smbios-reader-vbox injects the SAME string through VBox DMI
+## (which takes the value as-is). The in-image GRUB SMBIOS reader appends it to the kernel
+## line identically whichever backend supplies it.
+##   --test-console: a login-free ROOT shell on the serial console via systemd's debug-shell,
+##   with the login getty MASKED so it -- not an interactive user zsh whose line editor
+##   corrupts programmatic input -- owns the tty; loglevel=3 keeps command output clean.
+##   Consumed by dm-smbios-reader-image-test. Under --screendump the payload is only
+##   --smbios-append (the framebuffer test wants the image's normal graphical boot).
+smbios_cmdline_payload() {
+   local payload serial_tty
+   if [ -n "${screendump}" ]; then
+      payload="${smbios_append}"
+   else
+      if [ "${test_console}" = 'true' ]; then
+         serial_tty="${serial_console%%,*}"
+         payload="console=${serial_console} loglevel=3 systemd.debug_shell=${serial_tty} systemd.mask=serial-getty@${serial_tty}.service"
+      else
+         payload="${serial_verbose_params} systemd.log_level=info"
+      fi
+      if [ "${fast}" = 'true' ]; then
+         payload="${payload} mitigations=off"
+      fi
+      if [ -n "${smbios_append}" ]; then
+         payload="${payload} ${smbios_append}"
+      fi
+   fi
+   printf '%s' "${payload}"
+}
+
+## --emit-cmdline is a PURE payload-print path: emit the raw SMBIOS 'dm-cmdline=' kernel
+## cmdline and exit, for dm-smbios-reader-vbox to inject verbatim through VBox DMI. It MUST
+## return before the qemu/qemu-img preflight below, because --backend vbox installs no qemu
+## -- requiring either binary would make the vbox image-test unable to read the cmdline.
+## --iso/--disk is validated above for interface parity with --emit-argv, though the payload
+## itself does not depend on the media.
+if [ "${emit_cmdline}" = 'true' ]; then
+   printf '%s\n' "$(smbios_cmdline_payload)"
+   exit 0
+fi
+
 command -v "${qemu_bin}" >/dev/null || { printf 'dm-smbios-reader-qemu: %s not installed (needed for --arch %s)\n' "${qemu_bin}" "${arch}" >&2; exit 2; }
 
 ## --firmware: bios (SeaBIOS on x86 / edk2 on arm64, the default), efi (OVMF), or efi-secureboot
@@ -512,66 +575,6 @@ fi
 ## after start. 'nowait' so qemu does not block on a QMP client before booting.
 if [ -n "${qmp}" ]; then
    qemu_opts+=(-qmp "unix:${qmp},server,nowait")
-fi
-
-## Serial + verbose kernel parameters, shared by the SMBIOS-injected default boot and the
-## --direct-kernel '-append'. Surface the EARLY boot on serial: without this the kernel
-## self-decompressor and early init -- before the real 8250/PL011 tty driver registers -- are
-## silent, which under TCG (no KVM) is minutes of silence that looks like a hang. earlyprintk
-## (x86: the decompressor stub drives the UART directly) covers the decompression gap; earlycon
-## covers early init until the real driver takes over; keep_bootcon makes the handoff seamless;
-## ignore_loglevel + rd.info keep the kernel and the dracut initramfs chatty (and ignore_loglevel
-## overrides the image's production 'quiet loglevel=0' when these params are APPENDED via SMBIOS).
-## Arch-gated: the x86 'earlyprintk=serial,ttyS0' form is invalid on arm64 (PL011). printk.time=1
-## timestamps every line so a long gap is attributable to its phase; initcall_debug names a
-## stalled initcall. Both arch-independent.
-case "${serial_console}" in
-   ttyS0*)
-      early_console='earlyprintk=serial,ttyS0,115200 earlycon=ttyS0,115200 keep_bootcon ignore_loglevel rd.info'
-      ;;
-   *)
-      early_console='earlycon keep_bootcon ignore_loglevel rd.info'
-      ;;
-esac
-serial_verbose_params="console=${serial_console} ${early_console} printk.time=1 initcall_debug"
-
-## The RAW SMBIOS 'dm-cmdline=' payload (SINGLE commas). Single source for BOTH backends:
-## the qemu serial path doubles the commas for qemu's -smbios value parser; --emit-cmdline
-## prints it verbatim so dm-smbios-reader-vbox injects the SAME string through VBox DMI
-## (which takes the value as-is). The in-image GRUB SMBIOS reader appends it to the kernel
-## line identically whichever backend supplies it.
-##   --test-console: a login-free ROOT shell on the serial console via systemd's debug-shell,
-##   with the login getty MASKED so it -- not an interactive user zsh whose line editor
-##   corrupts programmatic input -- owns the tty; loglevel=3 keeps command output clean.
-##   Consumed by dm-smbios-reader-image-test. Under --screendump the payload is only
-##   --smbios-append (the framebuffer test wants the image's normal graphical boot).
-smbios_cmdline_payload() {
-   local payload serial_tty
-   if [ -n "${screendump}" ]; then
-      payload="${smbios_append}"
-   else
-      if [ "${test_console}" = 'true' ]; then
-         serial_tty="${serial_console%%,*}"
-         payload="console=${serial_console} loglevel=3 systemd.debug_shell=${serial_tty} systemd.mask=serial-getty@${serial_tty}.service"
-      else
-         payload="${serial_verbose_params} systemd.log_level=info"
-      fi
-      if [ "${fast}" = 'true' ]; then
-         payload="${payload} mitigations=off"
-      fi
-      if [ -n "${smbios_append}" ]; then
-         payload="${payload} ${smbios_append}"
-      fi
-   fi
-   printf '%s' "${payload}"
-}
-
-if [ "${emit_cmdline}" = 'true' ]; then
-   ## Build-only, mirrors --emit-argv: print the raw payload and exit. Requires the same
-   ## --iso/--disk as --emit-argv (validated above) for interface consistency, though the
-   ## payload itself does not depend on the media.
-   printf '%s\n' "$(smbios_cmdline_payload)"
-   exit 0
 fi
 
 if [ "${direct_kernel}" = 'true' ]; then

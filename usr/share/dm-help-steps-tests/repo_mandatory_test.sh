@@ -58,6 +58,12 @@ resolve_repo() {
      ## "must NOT be run as root" unless this sanctioned CI/container override is
      ## set. Harmless when non-root (root_check only consults it under EUID=0).
      export CI=true dist_build_unlock_dangerous_options=true dist_build_allow_root=true
+     ## user_name: the real dm-ci build runs via docker/derivative-maker-docker-run as a
+     ## NON-root user AND passes user_name=<user>; variables.d/00_preamble.bsh deliberately
+     ## will NOT derive user_name at EUID=0 (SUDO_USER unset + a container where logname
+     ## fails -> "Variable user_name is empty" abort). This suite re-execs as root, so mirror
+     ## the real invocation; else variables aborts before the choice logic under test runs.
+     export user_name="${SUDO_USER:-user}"
      eval "${extra_env:-true}"
      # shellcheck disable=SC2086  ## deliberate word-split of the arg string
      set -- ${extra_args}

@@ -195,45 +195,58 @@ extension-header vectors, which this suite adds.
   ONLY because multicast/broadcast is a verified non-vector here (no multicast
   routing); do NOT add a multicast-destined probe expecting the shared oracle to
   catch it -- it needs its own destination-scoped capture.
-- The oracle's benign-infrastructure exclusion is keyed to the external-link
-  subnet `10.0.2.0/24` and the link IPv6 addresses. A future test that picks a
-  probe address inside that subnet would have a real leak silently excluded -- keep
-  probe addresses in RFC 5737 / RFC 3849 documentation ranges.
+- The oracle's benign-infrastructure exclusion is the link IPv6 addresses plus, on
+  IPv4, DHCP ONLY (ports 67/68) within `10.0.2.0/24` -- NOT all `/24` unicast, so a
+  gw-originated unicast to a host in that subnet (e.g. the host DNS proxy `10.0.2.3`)
+  is visible (see `gw_originated_nontor_egress_test.sh`). A FORWARD probe whose BOTH
+  endpoints sit in `10.0.2.0/24` on udp 67/68 would still be excluded -- keep probe
+  addresses in RFC 5737 / RFC 3849 documentation ranges.
 - The canary rule-stripping (`grep --invert-match 'fib saddr...'`, the permissive
   ruleset sed, the DNS-redirect strip) matches exact generated `.nft` wording; an
   upstream wording change makes a canary no-op, which fails LOUDLY ("canary did NOT
   reproduce"), never a false pass -- but would need re-syncing suite-wide.
 
-## Non-Qubes-Whonix gaps (reviewer-identified 2026-10-04 -- open, not yet covered)
+## Non-Qubes-Whonix gaps (reviewer-identified 2026-10-04)
 
 This suite + catalog grew from the Qubes-oriented forward-egress model. A focused
 ai-review (agy/grok/claude) confirmed it is comprehensive for L3 FORWARD egress but NOT
 for the full Non-Qubes-Whonix threat model (two VMs on a VirtualBox INTERNAL network + a
-host OS). Open, in-scope gaps and the layer each belongs to:
+host OS). The gateway-origination, external-input and static-invariant gaps are now
+CLOSED; only the two LIVE `dm-whonix-pair` layers remain open.
+
+CLOSED:
 
 - GW-ORIGINATED / host-DNS leaks (the Non-Qubes `NON_TOR_GATEWAY` exceptions): the shipped
   Gateway OUTPUT accepts + skips Tor-redirect for `10.0.2.0/24` (VBox NAT: .2 router, .3
   host DNS proxy), `192.168.0.0/24`, `192.168.1.0/24` -- EMPTY on Qubes. A Gateway process
   reaching the host DNS proxy (`10.0.2.3`) or the LAN is a real non-Tor leak (the wiki
-  "Deactivate Host DNS" leak). The netns egress oracle EXCLUDES all `10.0.2.0/24` unicast
-  (not just DHCP/ND), so it is invisible by construction; the live canary watches only the
-  probe targets, so it misses it too. Layer: (a) tighten the netns oracle to exclude only
-  DHCP(67/68)/ND, not all `/24` unicast, + add gw-namespace egress probes to `10.0.2.3` /
-  `192.168.x`; (b) make the LIVE `dm-whonix-pair` canary an ALLOWLIST (only Tor-guard + DHCP
-  permitted on the GW external NIC), not a watchlist of specific targets.
+  "Deactivate Host DNS" leak), and the netns oracle used to EXCLUDE all `10.0.2.0/24`
+  unicast, so it was invisible by construction. CLOSED: the oracle (`leaktest_lib.sh`
+  `LEAKTEST_EGRESS_BPF`) now excludes only DHCP(67/68) on that link, and
+  `gw_originated_nontor_egress_test.sh` fires REAL gw-namespace sockets (the OUTPUT chain,
+  which the AF_PACKET injector bypasses): clearnet is rejected, `10.0.2.3` / `192.168.x`
+  egress and are now SEEN (teeth), DHCP stays excluded (precision).
 - GW external-side INPUT exposure / port reachability: SocksPort/TransPort/DnsPort/
   ControlPort or ssh reachable from the VBox-NAT side or a non-INT_IF address (bound
-  `0.0.0.0`). In scope (open-proxy / inbound deanonymisation). Layer: netns input-chain
-  probes + a static ruleset/torrc bind audit (SocksPort is `10.152.152.10` / `127.0.0.1` /
-  the ULA, never `0.0.0.0`).
+  `0.0.0.0`). CLOSED by `gw_external_input_reachability_test.sh` (netns INPUT-chain probes
+  from the upstream namespace, listener bound wide to model the 0.0.0.0 worst case) and the
+  static bind audit `tor_socksport_bind_test.sh` (every Tor listener binds `10.152.152.10` /
+  `127.0.0.1` / the ULA / a unix socket, never a wildcard).
 - WS adapter-config invariant: a Workstation second NIC on NAT/Bridged bypasses the Gateway
-  entirely. Layer: static VM-config audit (exactly one NIC, internal-network, correct name).
-- Application / browser layer: WebRTC/STUN local-IP exposure, DNS prefetch, non-torified WS
-  apps (apt/ping launched without proxy), doileak/ipleak. In scope for the WS torification
-  guarantee. Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser).
+  entirely. CLOSED by the static audit `ws_single_internal_nic_test.sh` (exactly one
+  internal-network NIC, eth0, via gateway 10.152.152.10).
 - GW/WS sysctl + neighbor config: `accept_ra` / `accept_redirects` / autoconf off on the
-  internal interface, `arp_ignore`/`arp_filter` -- load-bearing for the uRPF FIB. Layer:
-  static sysctl audit (merges with the rogue-RA config-audit above).
+  internal interface, `arp_ignore`/`arp_filter` -- load-bearing for the uRPF FIB. CLOSED by
+  the static audit `internal_iface_sysctl_test.sh` (security-misc wildcard sysctls +
+  internal iface is inet6 static; there is no explicit autoconf sysctl).
+
+OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
+
+- GW-originated ALLOWLIST canary: make the LIVE `dm-whonix-pair` GW external-NIC canary an
+  ALLOWLIST (only Tor-guard + DHCP permitted), not a watchlist of specific targets.
+- Application / browser layer: WebRTC/STUN local-IP exposure, DNS prefetch, non-torified WS
+  apps (apt/ping launched without proxy), doileak/ipleak -- the WS torification guarantee.
+  Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser).
 
 OUT of scope (reviewer-confirmed): a second compromised Workstation SNIFFING a peer on the
 shared VBox internal LAN -- Whonix does not promise WS<->WS isolation and the traffic is

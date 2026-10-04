@@ -116,6 +116,22 @@ assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-
 assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
 assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
 
+## pair-version marker parse: VBoxManage prints "Value: <v>" for a set key and
+## "No value set!" for an unset one. Canary: a naive impl that echoed the whole line
+## would pass "No value set!" through as a value instead of rejecting it.
+assert_out "parse extradata value" "18.2.3.5" rt_parse_extradata "Value: 18.2.3.5"
+assert_reject "parse extradata unset" rt_parse_extradata "No value set!"
+assert_reject "parse extradata empty" rt_parse_extradata ""
+
+## pair-version gate: both VMs must carry the REQUESTED version. Canaries: an impl that
+## checked only the GW would pass a stale WS; one that skipped the empty-requested guard
+## would pass a markerless pair ("" == "" == "").
+assert_out "pair version both match" "" rt_pair_version_ok 18.2.3.5 18.2.3.5 18.2.3.5
+assert_reject "pair version gw mismatch" rt_pair_version_ok 18.2.3.5 18.2.3.3 18.2.3.5
+assert_reject "pair version ws mismatch" rt_pair_version_ok 18.2.3.5 18.2.3.5 18.2.3.3
+assert_reject "pair version gw unset" rt_pair_version_ok 18.2.3.5 "" 18.2.3.5
+assert_reject "pair version requested empty" rt_pair_version_ok "" "" ""
+
 ## host-privilege gate: uid != 0, PRIMARY group == the account's own private group, and
 ## every group is that private group or vboxusers. Canaries: a group denylist would pass
 ## docker/disk; blind-trusting the primary would pass a privileged primary; and a SHARED
@@ -133,21 +149,37 @@ assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 u "u vboxuser
 
 ## rt_account_can_sudo reports the EXERCISED sudo's rc (0 => passwordless root granted),
 ## NOT a listing (`sudo -l` exits 0 for everyone). Real passwordless-root semantics are
-## verified live in the sandbox; here a runuser+sudo PATH stub pins the rc wiring.
+## verified live in the sandbox; here a runuser+sudo PATH stub pins the rc wiring + the
+## fail-CLOSED behaviour. Subshell PATH overrides (a `VAR=val funcname` prefix persists
+## in bash, which would leak the stub PATH into later assertions).
 cansudo_stub="$(mktemp --directory)"
 printf '%s\n' '#!/bin/bash' 'shift 2' 'exec "$@"' > "${cansudo_stub}/runuser"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${cansudo_stub}/sudo"
 chmod +x -- "${cansudo_stub}/runuser" "${cansudo_stub}/sudo"
-if PATH="${cansudo_stub}:${PATH}" rt_account_can_sudo acct; then
+## Probe rt_account_can_sudo with a chosen PATH in a subshell -- overriding PATH is the
+## point (command resolution), and the subshell keeps it from leaking into later tests.
+## Capture the real PATH under another name so the call sites never read PATH directly.
+cansudo_origpath="${PATH}"
+# shellcheck disable=SC2030,SC2031,SC2123
+cansudo_probe() { ( PATH="$1"; rt_account_can_sudo acct ); }
+if cansudo_probe "${cansudo_stub}:${cansudo_origpath}"; then
    printf 'ok: rt_account_can_sudo true when the exercised sudo succeeds\n'
 else
    printf 'FAIL: rt_account_can_sudo false though sudo exited 0\n' >&2; failures=$((failures + 1))
 fi
 printf '%s\n' '#!/bin/bash' 'exit 1' > "${cansudo_stub}/sudo"
-if PATH="${cansudo_stub}:${PATH}" rt_account_can_sudo acct; then
+if cansudo_probe "${cansudo_stub}:${cansudo_origpath}"; then
    printf 'FAIL: rt_account_can_sudo true though sudo exited 1\n' >&2; failures=$((failures + 1))
 else
    printf 'ok: rt_account_can_sudo false when the exercised sudo fails\n'
+fi
+## fail-CLOSED: probe tools absent => report "can sudo" so the caller REJECTS (a missing
+## runuser must never read as "account is clean"). Canary: the old no-guard body exited
+## 127 -> `! rt_account_can_sudo` true -> a privileged account wrongly accepted.
+if cansudo_probe "${cansudo_stub}/none"; then
+   printf 'ok: rt_account_can_sudo fails closed when probe tools are absent\n'
+else
+   printf 'FAIL: rt_account_can_sudo failed OPEN with runuser/sudo absent\n' >&2; failures=$((failures + 1))
 fi
 safe-rm --recursive --force -- "${cansudo_stub}"
 

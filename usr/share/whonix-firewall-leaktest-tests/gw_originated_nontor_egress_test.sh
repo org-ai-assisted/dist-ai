@@ -47,7 +47,7 @@ lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 source "${lib_dir}/leaktest_lib_nonqubes.sh"
 
 leaktest_preconditions
-trap leaktest_teardown EXIT
+trap leaktest_nonqubes_cleanup EXIT
 
 capture_file="$(mktemp)"
 rc=0
@@ -73,11 +73,15 @@ leaktest_assert_leaked 'GW-originated LAN 192.168.1.5:53 (NON_TOR exception, vis
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 ## 3. Oracle precision: DHCP between the link endpoints stays excluded (the
-## tightening is DHCP-scoped, not blanket-/24). Must read ZERO egress.
+## tightening is DHCP-scoped, not blanket-/24). An absorber on up:67 stands in for
+## the DHCP server so the probe is received, not port-closed (a closed port would
+## emit an ICMP unreachable the oracle counts). Must read ZERO egress.
 leaktest_setup_gw_origin "${ruleset_file}"
+leaktest_up_udp_sink_start 67
 leaktest_fire_gw_origin 4 "${EXT_UP_IP4}" 67 68 "${capture_file}"
 leaktest_assert_blocked 'GW-originated DHCP (udp 68->67) stays oracle-excluded' \
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+leaktest_up_udp_sink_stop
 
 ## 4. Positive control on a fresh topology.
 leaktest_setup_gw_origin "${ruleset_file}"
@@ -87,12 +91,17 @@ else
    rc=1
 fi
 
-## 5. Canary: OUTPUT made permissive -> the same clearnet datagram now egresses.
+## 5. Canary: OUTPUT made permissive -> the same clearnet datagram now egresses,
+## BOTH families -- so a silently broken IPv6 harness (e.g. a swallowed routing
+## error) cannot leave the v6 blocked leg above untested.
 output_permissive="$(mktemp --suffix=.nft)"
 leaktest_output_permissive_ruleset "${ruleset_file}" "${output_permissive}"
 leaktest_setup_gw_origin "${output_permissive}"
 leaktest_fire_gw_origin 4 "${PROBE_DST_IP4}" 443 0 "${capture_file}"
-leaktest_assert_leaked 'GW-originated clearnet (OUTPUT permissive)' \
+leaktest_assert_leaked 'GW-originated IPv4 clearnet (OUTPUT permissive)' \
+   "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+leaktest_fire_gw_origin 6 "${PROBE_DST_IP6}" 443 0 "${capture_file}"
+leaktest_assert_leaked 'GW-originated IPv6 clearnet (OUTPUT permissive)' \
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 exit "${rc}"

@@ -41,7 +41,7 @@ lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 source "${lib_dir}/leaktest_lib_nonqubes.sh"
 
 leaktest_preconditions
-trap leaktest_teardown EXIT
+trap leaktest_nonqubes_cleanup EXIT
 
 rc=0
 ## <proto> <port> <name> -- every port the gateway must not expose externally.

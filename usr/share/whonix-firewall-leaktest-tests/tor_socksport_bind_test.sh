@@ -27,10 +27,19 @@ export LC_ALL=C
 
 ## Audit every uncommented *Port directive in the given torrc file(s). Returns 0
 ## if all binds are allowed, 1 on any disallowed bind. Reused by the canary.
+## Tor option names are case-INSENSITIVE and may carry a leading + (append) or /
+## (remove); match accordingly so a lowercase `socksport` / `+SocksPort` cannot
+## evade. Scope: this is a bind-ADDRESS audit of the shipped one-line directives,
+## NOT a full torrc parser -- a backslash line-continuation is not joined (its
+## token is non-numeric, so it FAILS loudly rather than passing silently), and the
+## PT-grammar ServerTransportListenAddr is out of scope (not shipped on a client
+## gateway).
 audit_torrc_binds() {
-   local rc=0 line bind addr
+   local rc=0 line kw bind addr inspected=0
    while IFS= read -r line; do
+      kw="$(printf '%s\n' "${line}" | awk '{ sub(/^[+\/]/, "", $1); print tolower($1) }')"
       bind="$(printf '%s\n' "${line}" | awk '{ print $2 }')"
+      inspected=$(( inspected + 1 ))
       case "${bind}" in
          unix:*)
             ## a unix-domain socket, not a TCP bind -- allowed.
@@ -45,7 +54,35 @@ audit_torrc_binds() {
             addr="${bind%:*}"
             ;;
          *)
-            ## a bare port (no address) -> Tor binds localhost -- allowed.
+            ## A bare token (no explicit address). Valid Tor forms: a port number,
+            ## `auto` (auto-select), or `0` (disable). Anything else (e.g. a `\`
+            ## line-continuation -- multi-line directives are out of scope) is
+            ## unparsable -> FAIL, never a silent pass.
+            case "${bind}" in
+               0)
+                  ## port 0 disables the listener -- binds nothing, safe.
+                  continue
+                  ;;
+               auto)
+                  ## auto-select: localhost for client listeners, wildcard for the
+                  ## public ones -- classified by directive below (empty arm).
+                  ;;
+               '' | *[!0-9]*)
+                  printf 'FAIL: unparsable Tor bind token %s (line: %s)\n' "${bind:-<empty>}" "${line}" >&2
+                  rc=1
+                  continue
+                  ;;
+            esac
+            ## A bare port / `auto` binds localhost for the client listeners, but a
+            ## WILDCARD (0.0.0.0 / [::]) for the PUBLIC listeners ORPort/DirPort --
+            ## FAIL those. ExtORPort/MetricsPort bare bind localhost (verified), so
+            ## they are NOT in this set.
+            case "${kw}" in
+               orport | dirport)
+                  printf 'FAIL: %s bare %s binds a wildcard (public listener): %s\n' "${kw}" "${bind}" "${line}" >&2
+                  rc=1
+                  ;;
+            esac
             continue
             ;;
       esac
@@ -57,7 +94,13 @@ audit_torrc_binds() {
             rc=1
             ;;
       esac
-   done < <(grep --no-filename --extended-regexp '^[[:space:]]*(SocksPort|TransPort|DnsPort|HTTPTunnelPort|ControlPort|NATDPort|ORPort|DirPort)[[:space:]]' "$@")
+   done < <(grep --no-filename --ignore-case --extended-regexp '^[[:space:]]*[+/]?(SocksPort|TransPort|DnsPort|HTTPTunnelPort|ControlPort|NATDPort|ORPort|DirPort|ExtORPort|MetricsPort)[[:space:]]' "$@")
+   ## Vacuous-pass guard: the shipped gateway torrc defines dozens of listeners, so
+   ## inspecting zero means the scan matched nothing (empty / all-evaded) -- FAIL.
+   if [ "${inspected}" -eq 0 ]; then
+      printf 'FAIL: no Tor listener directives inspected -- scan matched nothing (vacuous pass)\n' >&2
+      rc=1
+   fi
    return "${rc}"
 }
 
@@ -84,10 +127,16 @@ else
    rc=1
 fi
 
+## Scope note: the shipped torrc %include's /usr/local/etc/torrc.d (admin
+## overrides) and the generated defaults -- files outside this package. Following
+## them is out of scope (same boundary as runtime sysctl.d drop-ins); this audit
+## covers the listeners the PACKAGE ships.
+
 ## Canary: a 0.0.0.0-bound SocksPort must FAIL the audit, proving it has teeth.
+## Lowercased on purpose, so the canary also exercises the case-insensitive match.
 canary="$(mktemp)"
 cp -- "${base_file}" "${canary}"
-printf '%s\n' 'SocksPort 0.0.0.0:9050' >>"${canary}"
+printf '%s\n' 'socksport 0.0.0.0:9050' >>"${canary}"
 if audit_torrc_binds "${canary}" 2>/dev/null; then
    printf 'FAIL: canary -- bind audit PASSED a 0.0.0.0 SocksPort (no teeth)\n' >&2
    rc=1
