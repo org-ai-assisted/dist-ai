@@ -2658,12 +2658,14 @@ _fp_vars = tuple(_v for _v in _S.CHILD_ENV_SCRUB
                  if not _v.startswith('SECURE_TERMINAL_'))
 for _fv in _fp_vars:
     os.environ[_fv] = 'leak-' + _fv
-# leading newline so a first-line var is matched by the "\nNAME=" test too
-_envout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')
+# env -0 (NUL-delimited): an env VALUE may contain a newline, so a "\nNAME=" test over
+# plain `env` could be forged by another var's value and false-fail a correct scrub; a
+# value can never contain NUL, so a leading-\0 + "\0NAME=" test is exact.
+_envout = b'\0' + _child_env_out(['sh', '-c', 'env -0; printf ENVEND'], b'ENVEND')
 ok(b'ENVEND' in _envout,
    'child env output captured (guards the fingerprint-scrub asserts against a vacuous pass)')
 for _fv in _fp_vars:
-    ok(('\n' + _fv + '=').encode() not in _envout,
+    ok((b'\0' + _fv.encode() + b'=') not in _envout,
        'child does not inherit scrubbed var ' + _fv)
 for _fv in _fp_vars:
     os.environ.pop(_fv, None)
@@ -2681,11 +2683,11 @@ _app_vars = {_k: (_tpath_leak if _k == 'SECURE_TERMINAL_TRANSCRIPT_FILE'
              for _k in _S.CHILD_ENV_SCRUB if _k.startswith('SECURE_TERMINAL_')}
 for _k, _v in _app_vars.items():
     os.environ[_k] = _v
-_appout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')
+_appout = b'\0' + _child_env_out(['sh', '-c', 'env -0; printf ENVEND'], b'ENVEND')
 ok(b'ENVEND' in _appout,
    'child env output captured (guards the scrub asserts against a vacuous pass)')
 for _k in _app_vars:
-    ok(('\n' + _k + '=').encode() not in _appout,
+    ok((b'\0' + _k.encode() + b'=') not in _appout,
        'child does not inherit app-config var ' + _k)
 for _k in _app_vars:
     os.environ.pop(_k, None)

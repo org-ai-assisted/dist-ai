@@ -304,20 +304,24 @@ ok(b'P=,' in _oenv, 'the cli wrapper does NOT force PAGER (no ambient -> empty)'
 # paths and this assertion from drifting. Canary: drop cli.py's scrub_child_env() -> fail.
 from secure_terminal.sanitize import CHILD_ENV_SCRUB          # noqa: E402
 _fp_saved = {_k: os.environ.get(_k) for _k in CHILD_ENV_SCRUB}
-for _k in CHILD_ENV_SCRUB:
-    os.environ[_k] = 'leak-not-one'
-# leading newline so a first-line var is caught by the "\nNAME=" test too
-_fpout = b'\n' + run_in_pty(['--', 'sh', '-c', 'env; printf ENVEND'])[0]
-ok(b'ENVEND' in _fpout,
-   'cli child env captured (guards the scrub asserts against a vacuous pass)')
-for _k in CHILD_ENV_SCRUB:
-    ok(('\n' + _k + '=').encode() not in _fpout,
-       'the cli wrapper child does not inherit ' + _k)
-for _k, _v in _fp_saved.items():                              # restore the test env
-    if _v is None:
-        os.environ.pop(_k, None)
-    else:
-        os.environ[_k] = _v
+try:
+    for _k in CHILD_ENV_SCRUB:
+        os.environ[_k] = 'leak-not-one'
+    # env -0 (NUL-delimited): an env VALUE can contain a newline, so a "\nNAME=" substring
+    # test over plain `env` output could be forged by another var's value and false-fail a
+    # correct scrub; a value can never contain NUL, so a leading-\0 + "\0NAME=" test is exact.
+    _fpout = b'\0' + run_in_pty(['--', 'sh', '-c', 'env -0; printf ENVEND'])[0]
+    ok(b'ENVEND' in _fpout,
+       'cli child env captured (guards the scrub asserts against a vacuous pass)')
+    for _k in CHILD_ENV_SCRUB:
+        ok((b'\0' + _k.encode() + b'=') not in _fpout,
+           'the cli wrapper child does not inherit ' + _k)
+finally:
+    for _k, _v in _fp_saved.items():                          # restore the test env
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
 
 # --- real line tools run under the wrapper: output survives, no escape leaks ---
 # a representative slice of the compatibility programs table; the full-screen,

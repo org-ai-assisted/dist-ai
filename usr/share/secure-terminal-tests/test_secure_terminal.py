@@ -1635,6 +1635,25 @@ _missing_sc = sorted(_t for _t in _st_env_tokens if _t not in S.CHILD_ENV_SCRUB)
 ok(not _missing_sc,
    'scrub: every SECURE_TERMINAL_* in the package is on CHILD_ENV_SCRUB (missing: %r)'
    % (_missing_sc,))
+# Independent floor: the e2e suites derive their fixtures FROM CHILD_ENV_SCRUB, so they
+# cannot catch a var being REMOVED from it (the leak would silently return). This hardcoded
+# spec of known-required vars fails if any is dropped. New vars may be added to the impl
+# without listing here -- the e2e suites iterate CHILD_ENV_SCRUB and verify those.
+_EXPECTED_SCRUBBED = (
+    'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'TERM_SESSION_ID',
+    'LC_TERMINAL', 'LC_TERMINAL_VERSION', 'VTE_VERSION',
+    'KONSOLE_VERSION', 'KONSOLE_DBUS_SERVICE', 'KONSOLE_DBUS_SESSION',
+    'GNOME_TERMINAL_SCREEN', 'GNOME_TERMINAL_SERVICE', 'TILIX_ID', 'XTERM_VERSION',
+    'WT_SESSION', 'WT_PROFILE_ID', 'ITERM_SESSION_ID', 'ITERM_PROFILE',
+    'KITTY_WINDOW_ID', 'KITTY_PID', 'KITTY_LISTEN_ON',
+    'ALACRITTY_WINDOW_ID', 'ALACRITTY_SOCKET', 'WEZTERM_UNIX_SOCKET', 'WEZTERM_PANE',
+    'LINES', 'COLUMNS',
+    'SECURE_TERMINAL_SHOT', 'SECURE_TERMINAL_SOLID_CURSOR',
+    'SECURE_TERMINAL_TRANSCRIPT_FILE', 'SECURE_TERMINAL_IPC_DEBUG',
+    'SECURE_TERMINAL_HANG_WATCHDOG_SECS')
+_removed_sc = sorted(set(_EXPECTED_SCRUBBED) - set(S.CHILD_ENV_SCRUB))
+ok(not _removed_sc,
+   'scrub: no known-required var dropped from CHILD_ENV_SCRUB (missing: %r)' % (_removed_sc,))
 
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
