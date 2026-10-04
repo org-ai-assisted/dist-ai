@@ -115,12 +115,13 @@ if [ -f "${cfg}" ]; then
    ## static-review-untrusted-config-isolation drives. Neither is Debian-packaged,
    ## so the apt list cannot carry them; the reusable step installs them from the
    ## component's own pinned static-cli-install, which verifies each download
-   ## against a sha256 computed locally from the asset. A consumer that sets this
-   ## MUST also set helper-scripts: true (the installer sources it). Absent, the
-   ## suite FATALs rather than skipping -- a static analyzer that cannot run must
-   ## not report the same green as one that ran.
+   ## against a sha256 computed locally from the asset. The installer sources
+   ## helper-scripts, so this opt-in IMPLIES helper-scripts (set here, not left for
+   ## a consumer to remember -- a forgotten 'helper-scripts: true' would otherwise
+   ## fail the install step with a confusing 'cannot source helper-scripts').
    if [ "$(yq -r '.["dist-ai-tests"]["static-analysis-tools"] // ""' "${cfg}")" = 'true' ]; then
       static_analysis_tools='true'
+      helper_scripts='true'
    fi
    ## Opt-in submodule checkout for the component. Some suites assert on files
    ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
