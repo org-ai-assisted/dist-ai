@@ -46,6 +46,14 @@ fi
 ## An empty directory has no help-steps/dm-build-official-one, so iso_build_test.sh's
 ## e2e case skips -- giving the first two assertions a deterministic skipped-e2e run.
 empty_checkout="$(mktemp --directory)"
+## Register cleanup BEFORE allocating the second temp dir: a failure in its
+## mktemp/mkdir/write would otherwise exit under errexit and leak empty_checkout.
+fake_checkout=""
+cleanup() {
+   safe-rm --recursive --force -- "${empty_checkout}"
+   [ -z "${fake_checkout}" ] || safe-rm --recursive --force -- "${fake_checkout}"
+}
+trap cleanup EXIT
 
 ## A fake derivative-maker checkout whose dm-build-official-one stub dry-plans like the
 ## real official path -- but mirrors ONE real behaviour the e2e leak depends on: a
@@ -66,9 +74,6 @@ mkdir --parents -- "${fake_checkout}/help-steps"
    printf '%s\n' 'fi'
 } > "${fake_checkout}/help-steps/dm-build-official-one"
 chmod +x -- "${fake_checkout}/help-steps/dm-build-official-one"
-
-cleanup() { safe-rm --recursive --force -- "${empty_checkout}" "${fake_checkout}"; }
-trap cleanup EXIT
 
 ## --- Case 1 (finding 1): a skipped e2e is never summarised as verified -----------
 ## Run with no derivative-maker checkout; the suite must still pass its stub cases
