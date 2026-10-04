@@ -284,8 +284,9 @@ def build_install_vm_plan(vmname, iso, disk_path, *, firmware='efi-secureboot',
 ## derivative-maker builds qcow2/raw, so the serial-disk path CONVERTS to a throwaway
 ## per-VM VDI first: raw via VBoxManage convertfromraw (native), qcow2 via qemu-img (a
 ## hard dep for THAT format -- fail loud if absent). The qcow2 convert pins an explicit
-## input format (no qemu-img format probe) and the run path REFUSES a qcow2 with a backing
-## chain (qemu-img convert would flatten an operator-only backing file into the output).
+## input format (no qemu-img format probe) and the run path REFUSES a qcow2 that points at
+## an external file -- a backing chain or a qcow2v3 external data file -- which qemu-img
+## convert would otherwise flatten (an operator-only file's bytes) into the output VDI.
 ## The converted VDI is removed on serial-down. A native VDI/VMDK/VHD is attached as-is
 ## (multiattach, non-destructive).
 _DISK_NATIVE_EXTS = ('.vdi', '.vmdk', '.vhd')
@@ -324,13 +325,18 @@ def converted_disk_path(vmname):
                         '%s.dm-converted.vdi' % (os.path.basename(vmname),))
 
 
-def _assert_no_external_backing(src):
-    """Refuse a qcow2 that references a backing file. qemu-img convert FLATTENS the
-    backing chain into the output VDI, so a supplied overlay pointing at an operator-only
-    file would copy that file's bytes into the converted image. A dm-built image is a
-    standalone qcow2 (no backing), so this never rejects a legitimate disk. Reads the
-    header with an explicit -f (no format probe); a backing reference OR any failure to
-    read the header is fail-closed -> SetupError. Side effect: reads src. Run path only."""
+def _assert_no_external_refs(src):
+    """Refuse a qcow2 that points at ANY external file -- a backing chain OR a qcow2v3
+    external data file. qemu-img convert reads both INTO the output VDI, so a supplied
+    image referencing an operator-only file would copy that file's bytes into the
+    converted image. A dm-built image is a self-contained qcow2 (no backing, no external
+    data file), so this never rejects a legitimate disk. Reads the header with an explicit
+    -f (no format probe); any external reference OR a failure to read the header is
+    fail-closed -> SetupError. Side effect: reads src. Run path only.
+
+    An attacker who could atomically swap `src` between this read and the convert is OUT
+    of scope (trusted-operator --disk path; the boundary is untrusted image CONTENT, not a
+    concurrent local file-swap race)."""
     import json
     try:
         out = subprocess.check_output(
@@ -340,11 +346,12 @@ def _assert_no_external_backing(src):
         raise SetupError('cannot read qcow2 header of %r (refusing to convert): %s'
                          % (src, exc))
     info = json.loads(out)
-    backing = info.get('backing-filename') or info.get('full-backing-filename')
-    if backing:
+    ref = (info.get('backing-filename') or info.get('full-backing-filename')
+           or info.get('format-specific', {}).get('data', {}).get('data-file'))
+    if ref:
         raise SetupError(
-            'refusing to convert %r: it references backing file %r; qemu-img convert'
-            ' would merge that file into the output VDI' % (src, backing))
+            'refusing to convert %r: it references external file %r; qemu-img convert'
+            ' would merge that file into the output VDI' % (src, ref))
 
 
 def disk_conversion(disk, vmname, vboxmanage=VBOXMANAGE):
@@ -1112,10 +1119,10 @@ def run_serial_up(args):
             ## convert BEFORE the plan runs -- storageattach references the VDI path.
             _ensure_converted_vdi_dir()  # owner-only 0700 dir (side effect; run path)
             try:
-                ## qcow2 only (raw/img use VBoxManage convertfromraw -- no backing chain);
+                ## qcow2 only (raw/img use VBoxManage convertfromraw -- no external refs);
                 ## validate the ABSOLUTE path qemu-img will read (convert_argv[-2]).
                 if convert_argv[0] == QEMU_IMG:
-                    _assert_no_external_backing(convert_argv[-2])
+                    _assert_no_external_refs(convert_argv[-2])
                 _run(convert_argv)
             except FileNotFoundError:
                 raise SetupError(

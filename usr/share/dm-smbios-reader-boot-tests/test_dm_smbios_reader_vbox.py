@@ -753,24 +753,32 @@ def test_disk_conversion_classifies_and_rejects():
     assert os.path.dirname(vdi).endswith('dm-smbios-reader-vbox-%d' % os.getuid())
 
 
-def test_assert_no_external_backing_rejects_backing_chain(tmp_path):
-    ## grok #4: qemu-img convert FLATTENS a qcow2 backing chain into the output, so an
-    ## overlay whose backing points at an operator-only file would copy that file's bytes
-    ## into the (owner-only) converted VDI. _assert_no_external_backing refuses any backing
-    ## reference BEFORE the convert runs; a standalone dm image (no backing) is accepted.
-    backing = tmp_path / 'secret.raw'
-    backing.write_bytes(b'SECRET-SHADOW-BYTES\n' + b'\0' * 4096)
-    os.chmod(backing, 0o600)
+def test_assert_no_external_refs_rejects_external_files(tmp_path):
+    ## grok #4 + codex: qemu-img convert FLATTENS both a qcow2 backing chain AND a qcow2v3
+    ## external data file into the output, so an image pointing at an operator-only file
+    ## would copy that file's bytes into the (owner-only) converted VDI. _assert_no_external_refs
+    ## refuses either reference BEFORE the convert runs; a self-contained dm image is accepted.
+    secret = tmp_path / 'secret.raw'
+    secret.write_bytes(b'SECRET-SHADOW-BYTES\n' + b'\0' * 4096)
+    os.chmod(secret, 0o600)
+    ## (a) backing chain
     overlay = tmp_path / 'overlay.qcow2'
-    subprocess.run(['qemu-img', 'create', '-f', 'qcow2', '-b', str(backing),
+    subprocess.run(['qemu-img', 'create', '-f', 'qcow2', '-b', str(secret),
                     '-F', 'raw', str(overlay)], check=True, capture_output=True)
     with pytest.raises(M.SetupError):
-        M._assert_no_external_backing(str(overlay))
-    ## a standalone qcow2 (what derivative-maker builds) is NOT rejected.
+        M._assert_no_external_refs(str(overlay))
+    ## (b) qcow2v3 external data file (reports no backing-filename, but convert reads it)
+    datafile = tmp_path / 'datafile.qcow2'
+    subprocess.run(['qemu-img', 'create', '-f', 'qcow2',
+                    '-o', 'data_file=%s,data_file_raw=on' % (secret,),
+                    str(datafile), '1M'], check=True, capture_output=True)
+    with pytest.raises(M.SetupError):
+        M._assert_no_external_refs(str(datafile))
+    ## a self-contained qcow2 (what derivative-maker builds) is NOT rejected.
     plain = tmp_path / 'plain.qcow2'
     subprocess.run(['qemu-img', 'create', '-f', 'qcow2', str(plain), '10M'],
                    check=True, capture_output=True)
-    M._assert_no_external_backing(str(plain))  # must not raise
+    M._assert_no_external_refs(str(plain))  # must not raise
 
 
 def test_cli_serial_up_emit_argv_converts_raw_disk(tmp_path):
