@@ -34,12 +34,16 @@ TCP_PORTS = (22, 9040, 9050, 9051)
 UDP_PORTS = (5300,)
 
 
-def serve_tcp(family: int, addr: str, port: int) -> None:
-    sock = socket.socket(family, socket.SOCK_STREAM)
+def bind_socket(family: int, kind: int, addr: str, port: int) -> socket.socket:
+    sock = socket.socket(family, kind)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if family == socket.AF_INET6:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.bind((addr, port))
+    return sock
+
+
+def serve_tcp(sock: socket.socket) -> None:
     sock.listen(64)
     while True:
         try:
@@ -49,12 +53,7 @@ def serve_tcp(family: int, addr: str, port: int) -> None:
             break
 
 
-def serve_udp(family: int, addr: str, port: int) -> None:
-    sock = socket.socket(family, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if family == socket.AF_INET6:
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-    sock.bind((addr, port))
+def serve_udp(sock: socket.socket) -> None:
     while True:
         try:
             data, peer = sock.recvfrom(4096)
@@ -64,15 +63,28 @@ def serve_udp(family: int, addr: str, port: int) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print("ext_listener: usage: ext_listener.py <ipv4-bind> <ipv6-bind>", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("ext_listener: usage: ext_listener.py <ipv4-bind> <ipv6-bind> [ready-file]",
+              file=sys.stderr)
         sys.exit(1)
     addr4, addr6 = sys.argv[1], sys.argv[2]
+    ready_file = sys.argv[3] if len(sys.argv) == 4 else None
+    ## Bind EVERY socket up front, before serving: a bind failure then raises here
+    ## and exits the process non-zero (the launcher's readiness wait sees it die),
+    ## never a half-bound set where a probe reads 'blocked' for the wrong reason --
+    ## a transient first-start miss the old 'start threads, sleep 1' could hide.
+    served = []
     for family, addr in ((socket.AF_INET, addr4), (socket.AF_INET6, addr6)):
         for port in TCP_PORTS:
-            threading.Thread(target=serve_tcp, args=(family, addr, port), daemon=True).start()
+            served.append((serve_tcp, bind_socket(family, socket.SOCK_STREAM, addr, port)))
         for port in UDP_PORTS:
-            threading.Thread(target=serve_udp, args=(family, addr, port), daemon=True).start()
+            served.append((serve_udp, bind_socket(family, socket.SOCK_DGRAM, addr, port)))
+    for serve, sock in served:
+        threading.Thread(target=serve, args=(sock,), daemon=True).start()
+    ## Every socket is bound and serving: signal readiness so the launcher stops
+    ## waiting and the first probe cannot race an unbound port.
+    if ready_file is not None:
+        open(ready_file, 'w').close()
     while True:
         time.sleep(1)
 
