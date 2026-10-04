@@ -778,22 +778,30 @@ finally:
 
 # --- clipboard-read (OSC 52) request dialog: countdown + a choice -------------
 from PyQt6.QtWidgets import QPushButton                         # noqa: E402
-from PyQt6.QtCore import QEventLoop, QTimer                     # noqa: E402
+from PyQt6.QtCore import QEventLoop                             # noqa: E402
 
 term = win.tabs.currentWidget()
 win._paste_delay = 2                       # secs=2 so the countdown _tick loops
 
 
 def _exec_clip(self):
-    # let the 1s countdown _tick fire a couple of times (covers both branches),
-    # then click "Allow once" to drive _choose.
-    loop = QEventLoop()
-    QTimer.singleShot(2300, loop.quit)
-    loop.exec()
-    for _b in self.findChildren(QPushButton):
-        if _b.text().startswith('Allow once'):
-            _b.click()
+    # Drive the real countdown to completion, then click "Allow once". Wait until the
+    # button is ACTUALLY enabled (poll the live state), NOT a fixed wall-clock sleep: under
+    # coverage + CPU load the two 1s _tick timers drift past a thin fixed margin, so a timed
+    # wait clicked a still-disabled button and recorded no decision -- the intermittent
+    # coverage-gate flake. Polling to the enabled edge still runs both _tick branches
+    # (left>0, then the left<=0 enable), so coverage is unchanged.
+    _btn = None
+    _deadline = time.monotonic() + 15.0
+    while time.monotonic() < _deadline:
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        _btn = next((_b for _b in self.findChildren(QPushButton)
+                     if _b.text().startswith('Allow once')), None)
+        if _btn is not None and _btn.isEnabled():
             break
+        time.sleep(0.02)
+    if _btn is not None and _btn.isEnabled():
+        _btn.click()
     return int(QDialog.DialogCode.Accepted)
 
 

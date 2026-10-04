@@ -211,30 +211,45 @@ def _dlg_field(dlg, label_text):
 # Recording stand-ins for the accepted QLocalSocket + its server, used by the
 # single-instance IPC read-path tests in more than one split suite, so they live
 # here rather than being copied.
-from PyQt6.QtCore import QObject as _QObject, pyqtSignal as _pyqtSignal
+from PyQt6.QtCore import QObject as _QObject
 
 
 class _FakeConn(_QObject):
-    """Recording stand-in for the accepted QLocalSocket: drives the REAL server slots
-    (on_ready / _finish) through real Qt signals, without a live socket dispatch."""
-
-    readyRead = _pyqtSignal()
-    disconnected = _pyqtSignal()
+    """Recording stand-in for the accepted QLocalSocket. The real server now services each
+    connection SYNCHRONOUSLY (_serve_instance_request: readAll + a bounded waitForReadyRead,
+    then write + waitForBytesWritten), with NO readyRead signal -- that avoids the Qt
+    canReadNotification use-after-free a concurrent --reuse burst hit. So this fake feeds bytes
+    for readAll(), delivers queued chunks across waitForReadyRead() (to exercise the split-frame
+    wait loop), and records write()s + abort(). (It stays a QObject for deleteLater().)"""
 
     def __init__(self):
         super().__init__()
         self._inbuf = b''
+        self._deferred = []          # one chunk delivered per waitForReadyRead()
         self.written = b''
         self.aborted = False
-        self.disconnected_from_server = False
+        self.wait_reads = 0
+        self.bytes_written_waits = 0
 
     def feed(self, data):
+        """Bytes available at the next readAll() (as if already in the socket buffer)."""
         self._inbuf += data
-        self.readyRead.emit()
+
+    def feed_deferred(self, *chunks):
+        """Bytes that arrive on later waitForReadyRead() calls, one chunk each -- drives the
+        bounded split-frame read loop."""
+        self._deferred.extend(chunks)
 
     def readAll(self):
         data, self._inbuf = self._inbuf, b''
         return data
+
+    def waitForReadyRead(self, _timeout_ms):
+        self.wait_reads += 1
+        if self._deferred:
+            self._inbuf += self._deferred.pop(0)
+            return True
+        return False                 # no more data -> timeout/peer-closed
 
     def write(self, data):
         self.written += bytes(data)
@@ -243,8 +258,9 @@ class _FakeConn(_QObject):
     def flush(self):
         return True
 
-    def disconnectFromServer(self):
-        self.disconnected_from_server = True
+    def waitForBytesWritten(self, _timeout_ms):
+        self.bytes_written_waits += 1
+        return True
 
     def abort(self):
         self.aborted = True

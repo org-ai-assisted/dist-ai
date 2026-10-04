@@ -2291,8 +2291,25 @@ if tui_available():
     # the user's LOGIN SHELL, so tmux names the window after it and the readiness
     # token becomes environment-dependent -- 'bash' in the CI container, 'zsh' on
     # a box whose default shell differs, where this asserted on the wrong string.
-    _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session', '/bin/bash'],
-                      'bash', b'\x02:kill-server\r', 'tmux', expect_exit=False)
+    #
+    # Private TMUX_TMPDIR: tmux's default socket dir is the SHARED /tmp/tmux-<uid>.
+    # In a shared test host (the sandbox) a stale /tmp/tmux-<uid> left by another
+    # session -- with an owner/permission mismatch (e.g. a userns run's nobody-owned
+    # dir) -- makes tmux refuse to start ("directory ... has unsafe permissions") and
+    # this E2E then sees no frame. A per-run private dir is immune to that cross-session
+    # pollution; tmux creates its socket dir fresh with the right perms.
+    _tmux_tmp = tempfile.mkdtemp(prefix='st-tmux-e2e-')
+    _tmux_env_prev = os.environ.get('TMUX_TMPDIR')
+    os.environ['TMUX_TMPDIR'] = _tmux_tmp
+    try:
+        _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session', '/bin/bash'],
+                          'bash', b'\x02:kill-server\r', 'tmux', expect_exit=False)
+    finally:
+        if _tmux_env_prev is None:
+            os.environ.pop('TMUX_TMPDIR', None)
+        else:
+            os.environ['TMUX_TMPDIR'] = _tmux_env_prev
+        _e2e_which.rmtree(_tmux_tmp, ignore_errors=True)
 
 # --- line editing can be turned off, making the widget append-only ------------
 # The setting exists because honouring erase-in-line means a program CAN overwrite

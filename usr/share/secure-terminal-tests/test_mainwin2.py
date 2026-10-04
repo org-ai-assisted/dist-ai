@@ -357,8 +357,8 @@ def _disp(req):
 ok(not win._dispatch_request(b'not json at all')['ok'],
    'ipc: unparseable request bytes are rejected')
 # #2: json.loads raises RecursionError (not ValueError) on deeply-nested input; uncaught it
-# escapes the Qt readyRead slot and aborts the whole instance -- a same-UID control-socket
-# DoS. _dispatch_request must catch it and return a malformed reply, not raise.
+# escapes the single-instance dispatch and aborts the whole instance -- a same-UID
+# control-socket DoS. _dispatch_request must catch it and return a malformed reply, not raise.
 _deep_raised = None
 try:
     _deep = win._dispatch_request(b'[' * 100000)
@@ -486,9 +486,9 @@ finally:
 # open (the server side of a --reuse handoff)
 ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'box'}]})['ok'],
    'ipc: open creates the requested tabs')
-# _ipc_open DEFERS the window raise/activate off the IPC readyRead slot (via singleShot), so
-# an activation pump cannot re-enter a live QLocalSocket -- the on_ready use-after-free an
-# open-all --reuse burst hit (the end-to-end regression is in test_instances case I). The
+# _ipc_open DEFERS the window raise/activate off the synchronous IPC dispatch (via singleShot),
+# so an activation pump cannot re-enter connection handling mid-serve (the on_ready
+# use-after-free class; the end-to-end regression is in test_instances case I). The
 # reply is returned synchronously; _raise_activate runs on the next event-loop turn. Pump it
 # and confirm it ran cleanly (and the window is shown, which _ipc_open does synchronously).
 win._ipc_open({'tabs': [{'title': 'deferred-raise'}]})

@@ -1323,8 +1323,140 @@ _cd_nolog = subprocess.run(
 ok(_cd_nolog.returncode == 0 and 'survived-no-log' in _cd_nolog.stdout,
    'crashdiag: SIGUSR1 stays non-fatal when the crash log cannot be opened (dumps to stderr)')
 
+# ALWAYS-ON hang watchdog: unlike the SIGUSR1 dumper above (needs a human to send the
+# signal), a daemon thread auto-dumps every thread's stack when the main-thread heartbeat
+# stalls -- so an UNATTENDED freeze on a ptrace-restricted VM is still captured. In-process
+# (subprocess coverage is not measured): drive _HangWatchdog directly.
+def _wd_read(path):
+    with open(path, encoding='utf-8', errors='replace') as _h:
+        return _h.read()
+
+
+def _wd_wait(path, want, timeout=5.0):
+    """Poll the log until it holds `want` hang dumps (or timeout). Polling, not a
+    fixed sleep, so a CPU-starved CI thread cannot flake it."""
+    _end = time.monotonic() + timeout
+    while time.monotonic() < _end:
+        _txt = _wd_read(path)
+        if _txt.count('hang detected') >= want:
+            return _txt
+        time.sleep(0.05)
+    return _wd_read(path)
+
+
+class _WdBadLog:
+    """A log whose writes raise: proves _dump swallows a broken log (diagnostic first,
+    never raises out of the watchdog thread)."""
+
+    def write(self, *_a):
+        raise OSError('wd-write-boom')
+
+    def flush(self):
+        raise OSError('wd-flush-boom')
+
+
+_wd_dir = tempfile.mkdtemp()
+_wd_path = os.path.join(_wd_dir, 'wd.log')
+# A separate 'a' handle for the watchdog (as crashdiag.install opens it); the test reads via
+# its own open(), so writer and reader never share a file position.
+_wd_log = open(_wd_path, 'a', encoding='utf-8')
+_wd = crashdiag._HangWatchdog(_wd_log, threshold=0.3)
+_wd.start()
+_wd_txt = _wd_wait(_wd_path, 1)
+ok('hang detected' in _wd_txt and 'event loop stalled' in _wd_txt
+   and ('Thread' in _wd_txt or 'File "' in _wd_txt),
+   'crashdiag: the hang watchdog auto-dumps all-thread stacks on a stall (no human needed)')
+# One dump per wedge: it does not keep re-dumping while still stalled.
+time.sleep(0.6)
+ok(_wd_read(_wd_path).count('hang detected') == 1,
+   'crashdiag: the watchdog dumps once per wedge, not on every poll')
+# Re-arm after recovery: beat (recover) then stall again -> a SECOND dump.
+_wd.beat()
+_wd_txt2 = _wd_wait(_wd_path, 2)
+ok(_wd_txt2.count('hang detected') == 2,
+   'crashdiag: the watchdog re-arms after a recovery (a recover-then-hang is captured too)')
+_wd.stop()
+_wd_log.close()
+
+# A live heartbeat suppresses the dump (a busy app is never mis-flagged).
+_wd2_dir = tempfile.mkdtemp()
+_wd2_path = os.path.join(_wd2_dir, 'wd.log')
+_wd2_log = open(_wd2_path, 'a', encoding='utf-8')
+_wd2 = crashdiag._HangWatchdog(_wd2_log, threshold=0.4)
+_wd2.start()
+_wd2_end = time.monotonic() + 1.2
+while time.monotonic() < _wd2_end:
+    _wd2.beat()
+    time.sleep(0.05)
+_wd2.stop()
+_wd2_log.close()
+ok('hang detected' not in _wd_read(_wd2_path),
+   'crashdiag: a beating heartbeat suppresses the dump (no false positive)')
+
+# CANARY: an un-STARTED watchdog never dumps, even left un-beaten -- proving the running
+# thread is the detector, not something ambient (drop _wd.start() above and CHECK 1 fails).
+_wd_c_dir = tempfile.mkdtemp()
+_wd_c_path = os.path.join(_wd_c_dir, 'wd.log')
+_wd_c_log = open(_wd_c_path, 'a', encoding='utf-8')
+crashdiag._HangWatchdog(_wd_c_log, threshold=0.3)    # constructed, NOT started
+time.sleep(0.8)
+_wd_c_log.close()
+ok(not os.path.exists(_wd_c_path) or 'hang detected' not in _wd_read(_wd_c_path),
+   'crashdiag(canary): an un-started watchdog never dumps (the thread is the detector)')
+
+# _dump swallows a broken log (both the banner write and the faulthandler dump), so the
+# watchdog thread never dies on a diagnostic failure.
+crashdiag._HangWatchdog(_WdBadLog(), threshold=0.3)._dump(1.0)
+ok(True, 'crashdiag: the watchdog swallows a broken log in _dump (never raises)')
+
+# hang_threshold_from_env: default / explicit / floored / malformed-falls-back.
+_wd_env_prev = os.environ.pop(crashdiag.HANG_WATCHDOG_ENV, None)
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
+   'crashdiag: hang threshold defaults when the env var is unset')
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = '7.5'
+ok(crashdiag.hang_threshold_from_env() == 7.5,
+   'crashdiag: hang threshold honours an explicit env override')
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = '0.01'
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_MIN_SECS,
+   'crashdiag: hang threshold is floored at the minimum')
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = 'not-a-number'
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
+   'crashdiag: a malformed hang threshold falls back to the default (never disables it)')
+if _wd_env_prev is None:
+    os.environ.pop(crashdiag.HANG_WATCHDOG_ENV, None)
+else:
+    os.environ[crashdiag.HANG_WATCHDOG_ENV] = _wd_env_prev
+
+# start_hang_watchdog / heartbeat wiring: heartbeat() is a no-op before one is started, then
+# drives the live one. (The module-global _watchdog starts None at import.)
+ok(crashdiag._watchdog is None, 'crashdiag: no hang watchdog is running until started')
+crashdiag.heartbeat()                                    # no-op, _watchdog is None
+ok(crashdiag.start_hang_watchdog(None) is None,
+   'crashdiag: start_hang_watchdog with no log returns None (nothing to dump to)')
+_wd_s_dir = tempfile.mkdtemp()
+_wd_s_log = open(os.path.join(_wd_s_dir, 'wd.log'), 'a', encoding='utf-8')
+_wd_s = crashdiag.start_hang_watchdog(_wd_s_log)         # default (12s) threshold
+ok(_wd_s is not None and crashdiag._watchdog is _wd_s,
+   'crashdiag: start_hang_watchdog starts the watchdog and heartbeat() can find it')
+crashdiag.heartbeat()                                    # drives the live one
+crashdiag.stop_hang_watchdog()                           # stops + clears the live one
+ok(crashdiag._watchdog is None,
+   'crashdiag: stop_hang_watchdog stops and clears the live watchdog')
+crashdiag.stop_hang_watchdog()                           # idempotent: no watchdog -> no-op
+ok(crashdiag._watchdog is None,
+   'crashdiag: stop_hang_watchdog is idempotent when none is running')
+_wd_s_log.close()
+
+# append_line writes one banner-less line (the dense IPC-trace path) and no-ops with no log.
+_wd_al = io.StringIO()
+crashdiag.append_line(_wd_al, 'ipc-trace-line')
+ok(_wd_al.getvalue() == 'ipc-trace-line\n',
+   'crashdiag: append_line writes exactly one banner-less line')
+crashdiag.append_line(None, 'dropped')
+ok(True, 'crashdiag: append_line is a no-op when there is no log')
+
 for _cd_d in (_cd_root, _cd_sym, _cd_e_root, _cd_s_root, _cd_c_root, _cd_fifo_root, _cd_fifo2,
-              _cd_nolog_root):
+              _cd_nolog_root, _wd_dir, _wd2_dir, _wd_c_dir, _wd_s_dir):
     shutil.rmtree(_cd_d, ignore_errors=True)
 
 

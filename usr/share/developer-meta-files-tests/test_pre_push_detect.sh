@@ -424,6 +424,49 @@ run_det_at ".github/workflows/cont.yml" \
       "            --c \\" "            --d \\" '            --e')"
 assert_not_at "R-100 spares a single backslash-continued command" "R-100" 4
 
+## R-101: a variable/command expansion spliced INTO a workflow 'bash -c' program
+## (the '${{ }}' injection class, reached through an env var) is forbidden -- the
+## inner shell re-parses the expanded value as code. The fix is a ci/ script with
+## 'printf -v %q', so the rule fires whatever launches the shell.
+run_det_at ".github/workflows/splice-direct.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: bash -c "echo ${FOO} bar"')"
+assert_at "R-101 flags a var spliced into a workflow bash -c" "R-101" 4
+## Reached through a 'runner -- bash -c PROG' launcher (docker-run convention),
+## not only command-position bash -- the real local-boot-test.yml shape.
+run_det_at ".github/workflows/splice-runner.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: ./docker/run -- bash -c "./build ${FLAVOR} extra"')"
+assert_at "R-101 flags a splice behind a '-- bash -c' runner" "R-101" 4
+## A command substitution spliced into the program is the same hazard.
+run_det_at ".github/workflows/splice-cmdsub.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: bash -c "echo $(date) now"')"
+assert_at "R-101 flags a command-substitution splice" "R-101" 4
+## SPARED: the whole program is ONE expansion used as the command (the deliberate
+## run-a-command form the reusable coverity/cppcheck/codeql workflows rely on).
+run_det_at ".github/workflows/run-cmd.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: bash -c "${BUILD_COMMAND}"')"
+assert_not_at "R-101 spares a whole-command variable (bash -c \"\${CMD}\")" "R-101" 4
+## SPARED: a fully-literal program has no expansion to splice.
+run_det_at ".github/workflows/run-literal.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: bash -c "make all"')"
+assert_not_at "R-101 spares a fully-literal bash -c program" "R-101" 4
+## SPARED: a SINGLE-quoted program suppresses expansion -- '$FOO' stays literal,
+## so the inner shell never re-parses an outer value (no injection).
+run_det_at ".github/workflows/run-sglquote.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      "      - run: bash -c 'echo \$FOO literal'")"
+assert_not_at "R-101 spares a single-quoted bash -c program" "R-101" 4
+## A bare 'bash' that is DATA, not an invocation ('grep bash -c file' counts
+## matches of the pattern 'bash'), must not be mistaken for a shell '-c'.
+run_det_at ".github/workflows/not-a-shell.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' \
+      '      - run: grep bash -c "x${FOO}y"')"
+assert_not_at "R-101 spares 'grep bash -c' (bash is the pattern)" "R-101" 4
+
 ## --- R-220 unauthorized skip -------------------------------------------------
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \

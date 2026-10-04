@@ -696,18 +696,16 @@ finally:
     M.session.load_window = _o_loadwin
     win._persist_session = _o_persist
 
-# Exercise the single-instance server path (_on_instance_connection + on_ready +
-# _dispatch_request + the reply framing/teardown) DETERMINISTICALLY, via a recording fake
-# QLocalSocket. Servicing a REAL accepted socket in-process from this long-lived suite
-# intermittently SIGSEGVs inside Qt's QLocalSocket readyRead DISPATCH (the server accepts
-# the connection, but the crash is in Qt C++ before the Python slot body runs) -- a
-# Qt-level race, platform-independent (offscreen AND wayland alike) and reproducible only
-# under the suite's accumulated state, NOT a fault in our code. A fake socket drives the
-# same server slots with no Qt socket dispatch, so the coverage is deterministic. The real
-# end-to-end socket handoff between separate processes is covered by test_instances.
-# _FakeConn / _FakeServer (the recording QLocalSocket + server stand-ins) live in
-# test_mainwin_common -- they are shared with the IPC read-path tests in a later
-# split suite -- and arrive via `from test_mainwin_common import *`.
+# Exercise the single-instance server path (_on_instance_connection + _serve_instance_request
+# + _dispatch_request + the reply framing/teardown) DETERMINISTICALLY, via a recording fake
+# QLocalSocket. The server reads each connection SYNCHRONOUSLY (readAll + a bounded
+# waitForReadyRead, then write + waitForBytesWritten) and NEVER connects the readyRead signal:
+# Qt delivering readyRead on a socket torn down under a concurrent --reuse burst segfaults in
+# Qt C++ (QAbstractSocketPrivate::canReadNotification) BEFORE any Python slot runs -- the
+# crash.log 2026-10-02 UAF, reproduced then fixed, guarded end to end by test_instances case I.
+# A fake socket drives the same synchronous path with no live Qt dispatch, so coverage is
+# deterministic. _FakeConn / _FakeServer live in test_mainwin_common (shared across split
+# suites) and arrive via `from test_mainwin_common import *`.
 
 
 def _unframe(buf):
@@ -715,65 +713,100 @@ def _unframe(buf):
     return _json.loads(buf[4:4 + length].decode('utf-8'))
 
 
+# REGRESSION (on_ready use-after-free): a pre-fed frame is served with the readyRead SIGNAL
+# never emitted (the fake has none) -- proving the server reads synchronously and cannot be
+# re-entered by Qt's readyRead dispatch on a torn-down socket. The socket is aborted (closed)
+# after the reply, not left live.
 _hsrv = MainWindow()
 _hc = _FakeConn()
+_hc.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))   # available at readAll
 _hsrv._server = _FakeServer(_hc)
 _hsrv._on_instance_connection()
-_hc.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))
 _hrep = _unframe(_hc.written) if _hc.written else None
 ok(isinstance(_hrep, dict) and _hrep.get('ok') and _hrep.get('pid') == os.getpid(),
-   'IPC: a framed single-instance ping is dispatched and answered')
-ok(_hc.disconnected_from_server, 'IPC: the server disconnects the socket after replying')
-# a trailing readyRead after the reply is a guarded no-op (no second dispatch, no UAF)
-_hw = len(_hc.written)
-_hc.feed(b'trailing')
-ok(len(_hc.written) == _hw, 'IPC: a trailing readyRead after finish is ignored')
-# a disconnected delivered after finish is idempotent (the `finished` latch)
-_hc.disconnected.emit()
-ok(True, 'IPC: a post-reply disconnected is idempotent')
-# REGRESSION (re-entrant teardown UAF): if a CONCURRENT client's disconnected tears THIS socket
-# down WHILE _dispatch_request runs -- the open-all --reuse burst that SIGSEGV'd the primary in
-# on_ready (QAbstractSocketPrivate::canReadNotification, the crash.log traceback) -- on_ready
-# must NOT write its reply to the freed socket. The `finished` latch gates the post-dispatch
-# write. Deterministic via a dispatch that fires disconnected mid-call; the old on_ready (no
-# gate) wrote to the torn-down conn, so this asserts no write survives the teardown.
-_hre = _FakeConn()
-_hsrv._server = _FakeServer(_hre)
+   'IPC: a framed single-instance ping is dispatched and answered (synchronous read)')
+ok(_hc.aborted, 'IPC: the server closes (aborts) the socket after replying')
+
+# a frame SPLIT across reads is reassembled via the bounded waitForReadyRead loop, then answered
+_hsplit = _FakeConn()
+_frame = M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8'))
+_hsplit.feed(_frame[:2])                 # a partial header at the first readAll
+_hsplit.feed_deferred(_frame[2:])        # the remainder arrives on waitForReadyRead
+_hsrv._server = _FakeServer(_hsplit)
 _hsrv._on_instance_connection()
-_o_disp3 = _hsrv._dispatch_request
+ok(_hsplit.written != b'' and _hsplit.wait_reads >= 1 and _hsplit.aborted,
+   'IPC: a frame split across reads is reassembled via a bounded wait, then answered')
 
 
-def _disp_teardown_midway(_payload):
-    _hre.disconnected.emit()           # a sibling socket's teardown, delivered during dispatch
-    return {'ok': True}
+class _IpcTraceLog:
+    """A minimal crash-log stand-in for the IPC trace: records appended lines."""
+
+    def __init__(self):
+        self.text = ''
+
+    def write(self, chunk):
+        self.text += chunk
+
+    def flush(self):
+        pass
 
 
-_hsrv._dispatch_request = _disp_teardown_midway
+# IPC lifecycle tracing (SECURE_TERMINAL_IPC_DEBUG=1): each connection's
+# accept/wait-read/dispatch/reply/finish is appended to the crash log, so a reproduced
+# concurrent --reuse burst is visible for diagnosis. Off by default; drive one SPLIT-fed
+# connection with tracing forced ON (so wait-read is emitted too) and assert the full
+# lifecycle is recorded, then restore the module state.
+_ipc_dbg_prev = M._IPC_DEBUG
+_ipc_log_prev = list(M._CRASH_LOG)
+_ipc_buf = _IpcTraceLog()
+M._IPC_DEBUG = True
+M._CRASH_LOG[:] = [_ipc_buf]
 try:
-    _hre.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))
+    _hdbg = _FakeConn()
+    _fd = M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8'))
+    _hdbg.feed(_fd[:2])
+    _hdbg.feed_deferred(_fd[2:])
+    _hsrv._server = _FakeServer(_hdbg)
+    _hsrv._on_instance_connection()
 finally:
-    _hsrv._dispatch_request = _o_disp3
-ok(_hre.written == b'' and _hre.disconnected_from_server,
-   'IPC: a teardown DURING dispatch stops the reply write (no use-after-free on the freed socket)')
-# a partial (sub-header) frame buffers, no reply yet
+    M._IPC_DEBUG = _ipc_dbg_prev
+    M._CRASH_LOG[:] = _ipc_log_prev
+ok(all(_ev in _ipc_buf.text for _ev in
+       ('accept', 'wait-read', 'dispatch-start', 'dispatch-end', 'replied', 'finish')),
+   'IPC(debug): SECURE_TERMINAL_IPC_DEBUG traces the full connection lifecycle to the log')
+# a partial frame with nothing more coming: no reply, socket closed (the waitForReadyRead-False drop)
 _hc2 = _FakeConn()
+_hc2.feed(b'\x02\x00')
 _hsrv._server = _FakeServer(_hc2)
 _hsrv._on_instance_connection()
-_hc2.feed(b'\x02\x00')
-ok(_hc2.written == b'' and not _hc2.disconnected_from_server,
-   'IPC: a partial frame is buffered, not answered')
-# an over-long frame is rejected (abort), never dispatched
+ok(_hc2.written == b'' and _hc2.aborted,
+   'IPC: a partial frame with no more data yields no reply and the socket is closed')
+# the serve budget expiring while a frame is still incomplete drops the connection (the
+# remaining<=0 branch) -- a stuck client cannot hang the main thread. Force the deadline past.
+_ipc_to_prev = M._IPC_SERVE_TIMEOUT
+M._IPC_SERVE_TIMEOUT = -1
+try:
+    _hc2b = _FakeConn()
+    _hc2b.feed(b'\x02\x00')              # partial, never completes
+    _hsrv._server = _FakeServer(_hc2b)
+    _hsrv._on_instance_connection()
+finally:
+    M._IPC_SERVE_TIMEOUT = _ipc_to_prev
+ok(_hc2b.written == b'' and _hc2b.aborted,
+   'IPC: the serve budget expiring drops an incomplete frame (no main-thread hang)')
+# an over-long frame is rejected (ValueError -> drop), never dispatched
 _hc3 = _FakeConn()
+_hc3.feed((0xFFFFFFFF).to_bytes(4, 'little'))
 _hsrv._server = _FakeServer(_hc3)
 _hsrv._on_instance_connection()
-_hc3.feed((0xFFFFFFFF).to_bytes(4, 'little'))
-ok(_hc3.aborted, 'IPC: an over-long frame aborts the connection')
-# a bare connect (no framed request) is reaped via disconnected
+ok(_hc3.aborted and _hc3.written == b'',
+   'IPC: an over-long frame is rejected and the connection closed')
+# a bare connect (no framed request at all) yields no reply and is closed
 _hc4 = _FakeConn()
 _hsrv._server = _FakeServer(_hc4)
 _hsrv._on_instance_connection()
-_hc4.disconnected.emit()
-ok(_hc4.disconnected_from_server, 'IPC: a bare connect is reaped on disconnect')
+ok(_hc4.written == b'' and _hc4.aborted,
+   'IPC: a bare connect (no request) yields no reply and is closed')
 # a spurious newConnection with nothing pending is a no-op (nextPendingConnection None)
 _hsrv._server = _FakeServer(None)
 _hsrv._on_instance_connection()
@@ -890,14 +923,16 @@ class _FakePendingServer(_QObject):
 
 
 _ad_conn = _FakeConn()
+# Pre-feed the framed ping BEFORE the drain: adopt_instance_server drains pending connections
+# by calling _on_instance_connection, which now reads + serves each SYNCHRONOUSLY.
+_ad_conn.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))
 _ad_srv = _FakePendingServer(_ad_conn)
 _ad_win = MainWindow()
 _ad_win.adopt_instance_server(_ad_srv, 'adopt-drain')
 ok(_ad_win._server is _ad_srv and not _ad_srv.hasPendingConnections(),
    'adopt_instance_server: adopts the server and drains the pre-queued connection')
-_ad_conn.feed(M.ipc.frame(_json.dumps({'op': 'ping'}).encode('utf-8')))
-ok(_ad_conn.written != b'' and _unframe(_ad_conn.written).get('ok'),
-   'adopt_instance_server: the drained connection was wired and is served')
+ok(_ad_conn.written != b'' and _unframe(_ad_conn.written).get('ok') and _ad_conn.aborted,
+   'adopt_instance_server: the drained connection was served synchronously')
 _ad_win.deleteLater()
 APP.processEvents()
 

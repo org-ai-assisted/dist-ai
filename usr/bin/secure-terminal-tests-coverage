@@ -319,8 +319,22 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
       "${wl_headless_run}" --no-autoconfirm -- \
          python3 -m coverage run --parallel-mode --source="${pkg}" -- \
             "${suite_path}" || rc="$?"
-      [ "${rc}" = '139' ] || return "${rc}"
-      printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${retries}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
+      ## Retry only a CRASH SIGNAL -- the known Qt/C-tracer teardown race under coverage
+      ## (the C tracer SIGSEGVs, 139; a Qt static-teardown abort that beats the suite's
+      ## os._exit raises SIGABRT, 134; the sibling SIGBUS/SIGFPE/SIGILL complete the set).
+      ## A clean exit is FINAL and never retried: 0 (pass), 77 (skip), and above all 1 (a
+      ## real test FAILURE) -- retrying that would mask a genuine regression as a flake, the
+      ## exact silent-green this gate exists to prevent. So is any other non-crash code.
+      case "${rc}" in
+         132|134|135|136|139)
+            : # a fatal crash signal (SIGILL/SIGABRT/SIGBUS/SIGFPE/SIGSEGV) -> retry
+            ;;
+         *)
+            # pass (0), skip (77), a real test FAILURE (1), or any other code -> final verdict
+            return "${rc}"
+            ;;
+      esac
+      printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) crashed with signal (exit ${rc}, attempt ${attempt}/${retries}); known Qt/C-tracer teardown race under coverage, retrying" >&2
    done
    return "${rc}"
 }

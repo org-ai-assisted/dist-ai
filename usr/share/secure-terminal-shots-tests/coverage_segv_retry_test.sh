@@ -5,18 +5,20 @@
 
 ## AI-Assisted
 
-## Regression + CANARY: the coverage runner RETRIES a suite that SIGSEGVs (exit 139) and
-## only fails if it crashes on EVERY attempt. test_mainwin's real single-instance IPC
-## handoff (background client thread + main-thread Qt event loop + SIGCHLD pty reaping)
-## intermittently segfaults under coverage even on the thread-safe sysmon core -- a CRASH
-## artifact, not a test verdict -- so a single 139 must NOT fail the gate.
+## Regression + CANARY: the coverage runner RETRIES a suite that dies of a CRASH SIGNAL and
+## only fails if it crashes on EVERY attempt -- but NEVER retries a clean exit (a real test
+## FAILURE, exit 1, must fail loud, not be masked as a flake). The crash class is the Qt /
+## C-tracer teardown race under coverage: the C tracer SIGSEGVs (139) and a Qt static-teardown
+## abort that beats a suite's os._exit raises SIGABRT (134); both are artifacts, not verdicts.
 ##
 ## Extracts run_suite_under_coverage from the REAL runner by BEGIN/END sentinel (reads the
-## current script text -> no drift) and drives it with a stub suite that segfaults
-## deterministically while a per-run counter is <= a threshold. Two cases:
-##   recovery: 2 crashes then a clean run -> final rc 0, exactly 3 attempts.
-##   bounded : always crashes, retries=3 -> final rc 139, exactly 3 attempts (no infinite
+## current script text -> no drift) and drives it with a stub suite that crashes (segv or
+## abort) or exits 1, deterministically, while a per-run counter is <= a threshold. Cases:
+##   recovery: 2 SIGSEGVs then a clean run -> final rc 0, exactly 3 attempts.
+##   bounded : always SIGSEGVs, retries=3 -> final rc 139, exactly 3 attempts (no infinite
 ##             loop, no false green).
+##   abort   : 2 SIGABRTs then clean -> rc 0 (134 is retried too, not only 139).
+##   failure : exits 1 every time -> rc 1 after ONE attempt (a real failure is never retried).
 ##
 ## FAILS on a runner WITHOUT the retry loop (the sentinel/function is absent -> the
 ## extraction tripwire fires), so it is a genuine regression test.
@@ -87,8 +89,10 @@ fi
 stub="${work}/segv_stub.py"
 cat > "${stub}" <<'PY'
 import os
+import sys
 counter = os.environ['SEGV_COUNTER']
 threshold = int(os.environ['SEGV_THRESHOLD'])
+mode = os.environ.get('SEGV_MODE', 'segv')
 try:
     with open(counter) as fh:
         n = int(fh.read().strip() or '0')
@@ -98,8 +102,12 @@ n += 1
 with open(counter, 'w') as fh:
     fh.write(str(n))
 if n <= threshold:
+    if mode == 'abort':
+        os.abort()            # SIGABRT -> exit 134 (the Qt static-teardown crash class)
+    if mode == 'fail':
+        sys.exit(1)           # a real test FAILURE -> must NOT be retried
     import ctypes
-    ctypes.string_at(0)   # NULL dereference -> SIGSEGV (exit 139)
+    ctypes.string_at(0)       # NULL dereference -> SIGSEGV (exit 139)
 PY
 
 ## --source needs a real path to scope measurement; the stub dir is harmless.
@@ -122,11 +130,11 @@ chmod +x -- "${wl_headless_run}"
 # shellcheck disable=SC1090  # a runtime-extracted temp file has no static path to follow
 source "${fn}"
 
-drive() {  ## $1=threshold $2=retries $3=counter-file (fresh path) -> echoes the final rc
+drive() {  ## $1=threshold $2=retries $3=counter-file (fresh) $4=mode(default segv) -> echoes rc
    local rc=0
    ## no pre-truncate: $3 is a fresh path and the stub treats a missing file as count 0.
    SEGV_COUNTER="$3" SEGV_THRESHOLD="$1" COVERAGE_SEGV_RETRIES="$2" \
-      QT_QPA_PLATFORM=offscreen \
+      SEGV_MODE="${4:-segv}" QT_QPA_PLATFORM=offscreen \
       run_suite_under_coverage "${stub}" >/dev/null 2>&1 || rc="$?"
    printf '%s' "${rc}"
 }
@@ -174,8 +182,25 @@ rc6="$(drive 99 999 "${c6}")"
 check "${rc6}" 139 'a persistent crash with a huge retry count still FAILS (139)'
 check "$(cat "${c6}" 2>/dev/null)" 20 'COVERAGE_SEGV_RETRIES is clamped to 20 (no unbounded retry spin)'
 
+## ---- SIGABRT (134) is retried too: a Qt static-teardown abort that beats the suite's
+## os._exit is the SAME crash class as the C-tracer SIGSEGV, so the broadened retry must
+## cover it (old code retried ONLY 139 -> a 134 flake failed the gate). 2 aborts then a
+## clean run -> rc 0 after exactly 3 attempts.
+cA="${work}/counterA"
+rcA="$(drive 2 5 "${cA}" abort)"
+check "${rcA}" 0 'a suite that SIGABRTs twice then succeeds ends GREEN (134 is a retried crash too)'
+check "$(cat "${cA}")" 3 'the SIGABRT retry recovered after exactly 3 attempts'
+
+## ---- CANARY: a real test FAILURE (exit 1) is NEVER retried -- retrying it would mask a
+## genuine regression as a flake, the exact silent-green this gate prevents. A stub that
+## exits 1 every time, retries=5, must stop after exactly ONE attempt and return 1.
+cF="${work}/counterF"
+rcF="$(drive 99 5 "${cF}" fail)"
+check "${rcF}" 1 'a real test FAILURE (exit 1) is returned, never retried away'
+check "$(cat "${cF}")" 1 'a real FAILURE runs exactly once (no retry masks a regression)'
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi
-printf '%s\n' 'OK: coverage runner retries a SIGSEGV suite and bounds a persistent crash'
+printf '%s\n' 'OK: coverage runner retries a crash-signal suite (SIGSEGV/SIGABRT), bounds a persistent crash, and never retries a real failure'
