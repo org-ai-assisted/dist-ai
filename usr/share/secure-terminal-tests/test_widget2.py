@@ -2649,25 +2649,23 @@ def _child_env_out(cmd, needle, secs=10):
     return _b
 
 
-# preload every fingerprint var terminal.py drops + a stale LINES/COLUMNS, so any
-# leak is visible in the child's `env`
-_fp_vars = ('TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'VTE_VERSION',
-            'KONSOLE_VERSION', 'KONSOLE_DBUS_SERVICE', 'KONSOLE_DBUS_SESSION',
-            'WT_SESSION', 'WT_PROFILE_ID', 'ITERM_SESSION_ID', 'ITERM_PROFILE',
-            'KITTY_WINDOW_ID', 'KITTY_PID', 'ALACRITTY_WINDOW_ID')
+# the fingerprint + stale LINES/COLUMNS group of the shared CHILD_ENV_SCRUB denylist (our
+# OWN SECURE_TERMINAL_* vars are handled separately below -- TRANSCRIPT_FILE needs a real
+# path). Deriving both groups from CHILD_ENV_SCRUB keeps this in lockstep with the shipped
+# list, so a newly scrubbed var is asserted here with no test edit. Preload each with a
+# sentinel so any leak is visible in the child's `env`.
+_fp_vars = tuple(_v for _v in _S.CHILD_ENV_SCRUB
+                 if not _v.startswith('SECURE_TERMINAL_'))
 for _fv in _fp_vars:
     os.environ[_fv] = 'leak-' + _fv
-os.environ['LINES'] = '99'
-os.environ['COLUMNS'] = '222'
 # leading newline so a first-line var is matched by the "\nNAME=" test too
 _envout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')
+ok(b'ENVEND' in _envout,
+   'child env output captured (guards the fingerprint-scrub asserts against a vacuous pass)')
 for _fv in _fp_vars:
     ok(('\n' + _fv + '=').encode() not in _envout,
-       'child does not inherit fingerprint var ' + _fv)
-ok(b'\nLINES=' not in _envout,
-   'child does not inherit a stale LINES (real size comes from TIOCSWINSZ)')
-ok(b'\nCOLUMNS=' not in _envout, 'child does not inherit a stale COLUMNS')
-for _fv in _fp_vars + ('LINES', 'COLUMNS'):
+       'child does not inherit scrubbed var ' + _fv)
+for _fv in _fp_vars:
     os.environ.pop(_fv, None)
 # our OWN app-config vars (screenshot / solid-cursor / transcript modes) are read once
 # by the app at construction and are meaningless to a child shell, so they must not ride
@@ -2678,9 +2676,9 @@ for _fv in _fp_vars + ('LINES', 'COLUMNS'):
 import tempfile as _tf_leak
 _tfd_leak, _tpath_leak = _tf_leak.mkstemp(prefix='st-transcript-leak-')
 os.close(_tfd_leak)
-_app_vars = {'SECURE_TERMINAL_SHOT': 'leak-not-one',
-             'SECURE_TERMINAL_SOLID_CURSOR': 'leak-not-one',
-             'SECURE_TERMINAL_TRANSCRIPT_FILE': _tpath_leak}
+_app_vars = {_k: (_tpath_leak if _k == 'SECURE_TERMINAL_TRANSCRIPT_FILE'
+                  else 'leak-not-one')
+             for _k in _S.CHILD_ENV_SCRUB if _k.startswith('SECURE_TERMINAL_')}
 for _k, _v in _app_vars.items():
     os.environ[_k] = _v
 _appout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')

@@ -1601,6 +1601,28 @@ S.ensure_utf8_ctype(_le)
 eq(_le['LC_ALL'], 'C.UTF-8',
    'locale: a non-UTF-8 LC_ALL (which would override LC_CTYPE) is retargeted to C.UTF-8')
 
+# scrub_child_env: the one anti-fingerprinting denylist both pty spawn paths
+# (terminal.py GUI + cli.py CLI wrapper) apply to the child before exec. Iterating the
+# package's own CHILD_ENV_SCRUB keeps this assertion in lockstep with the shipped list --
+# a newly added var is scrubbed AND auto-asserted, so the two cannot drift. Covers the
+# function directly (the call sites live in `# pragma: no cover` fork children).
+ok(len(S.CHILD_ENV_SCRUB) == len(set(S.CHILD_ENV_SCRUB)),
+   'scrub: CHILD_ENV_SCRUB has no duplicate entries')
+ok('SECURE_TERMINAL_SOLID_CURSOR' in S.CHILD_ENV_SCRUB
+   and 'SECURE_TERMINAL_SHOT' in S.CHILD_ENV_SCRUB
+   and 'TERM_PROGRAM' in S.CHILD_ENV_SCRUB,
+   'scrub: the app-config + fingerprint vars are on the denylist')
+_se = {_v: 'leak-' + _v for _v in S.CHILD_ENV_SCRUB}
+_se.update(PATH='/usr/bin', HOME='/home/x', TERM='xterm-256color')
+S.scrub_child_env(_se)
+for _v in S.CHILD_ENV_SCRUB:
+    ok(_v not in _se, 'scrub: child env drops ' + _v)
+eq(_se, {'PATH': '/usr/bin', 'HOME': '/home/x', 'TERM': 'xterm-256color'},
+   'scrub: unrelated vars (incl. TERM) are kept exactly')
+S.scrub_child_env(_se)   # idempotent: a second pass over an already-clean env is a no-op
+eq(_se, {'PATH': '/usr/bin', 'HOME': '/home/x', 'TERM': 'xterm-256color'},
+   'scrub: idempotent -- re-running changes nothing')
+
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
    'unicode paste keeps printable non-ASCII')
