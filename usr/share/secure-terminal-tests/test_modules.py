@@ -1221,6 +1221,26 @@ if _cd_fh_was:
 _cd_i_log.close()
 shutil.rmtree(_cd_i_root, ignore_errors=True)
 
+# REGRESSION (coderabbit): an UNUSABLE stderr (no fileno -- a GUI launch may have a closed
+# one) makes the first register_hang_dumper raise, which must NOT abort the whole install and
+# lose the durable log. install tolerates it and still opens the log + registers SIGUSR1 on
+# it. Canary: drop the try/except around the stderr registration -> install_best_effort
+# returns None here (StringIO.fileno() raises).
+_cd_bse_root = tempfile.mkdtemp()
+_cd_bse_log = crashdiag.install_best_effort(_cd_bse_root, stderr=io.StringIO())
+ok(_cd_bse_log is not None and os.path.exists(crashdiag.crash_log_path(_cd_bse_root)),
+   'crashdiag: an unusable stderr (no fileno) does not abort install (durable log still opens)')
+os.kill(os.getpid(), signal.SIGUSR1)
+ok('most recent call first' in _slurp(crashdiag.crash_log_path(_cd_bse_root)),
+   'crashdiag: SIGUSR1 still dumps to the log when stderr is unusable')
+sys.excepthook = _cd_prev_hook
+faulthandler.disable()
+faulthandler.unregister(signal.SIGUSR1)
+if _cd_fh_was:
+    faulthandler.enable()
+_cd_bse_log.close()
+shutil.rmtree(_cd_bse_root, ignore_errors=True)
+
 # install_best_effort never raises: a root whose parent is a FILE cannot hold the
 # log -> returns None, diagnostics stay at their defaults (launch proceeds).
 _cd_blk = os.path.join(tempfile.mkdtemp(), 'blockfile')
