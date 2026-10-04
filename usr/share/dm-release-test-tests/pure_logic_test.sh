@@ -104,6 +104,33 @@ assert_out "select blessed golden" "persist-stable-kicksecure" rt_select_account
 assert_out "select prebless eph" "eph-run-whonix-18-2-3-5" rt_select_account whonix prebless 18-2-3-5
 assert_reject "select unknown state" rt_select_account kicksecure bogus 18-2-3-5
 
+## leak-lane account namespace: a dedicated eph-leak- prefix the install/golden
+## lanes never share, so dev-root/leaprun baked into those accounts' VMs cannot
+## mutate the GW/WS a leak verdict depends on. Same charset + 32-char rule.
+assert_out "leak account whonix" "eph-leak-whonix-18-2-3-5" rt_leak_account whonix 18-2-3-5
+assert_out "leak account short token" "eph-leak-whonix-18-2" rt_leak_account whonix 18-2
+assert_reject "leak account bad charset" rt_leak_account whonix "18_2"
+## 32-char ceiling: eph-leak-kicksecure- is 20 chars, so a 13+ char token overflows.
+assert_reject "leak account over 32 chars" rt_leak_account kicksecure "1-2-3-4-5-6-7-8"
+
+## leak-lane + leak-account predicates (the whonix lane IS the leak test)
+assert_out "whonix is leak lane" "" rt_lane_is_leak whonix
+assert_reject "kicksecure not leak lane" rt_lane_is_leak kicksecure
+assert_out "eph-leak- is a leak account" "" rt_account_is_leak eph-leak-whonix-18-2-3-5
+assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
+assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
+
+## distinctness canary: the leak and install namespaces MUST differ for the same
+## (guest, token), or a shared account could contaminate the verdict.
+leak_name="$(rt_leak_account whonix 18-2-3-5)"
+eph_name="$(rt_eph_account whonix 18-2-3-5)"
+if [ "${leak_name}" = "${eph_name}" ]; then
+   printf 'FAIL: leak account equals eph-run account (%s) -- namespaces not distinct\n' "${leak_name}" >&2
+   failures=$((failures + 1))
+else
+   printf 'ok: leak namespace distinct from install namespace (%s vs %s)\n' "${leak_name}" "${eph_name}"
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s assertion(s) failed\n' "${failures}" >&2
    exit 1

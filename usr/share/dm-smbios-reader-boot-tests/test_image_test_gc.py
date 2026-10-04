@@ -58,9 +58,9 @@ def env(tmp_path):
     return {'bin': binp, 'home': home, 'marker': marker, 'environ': environ}
 
 
-def _run(env):
+def _run(env, user='eph-test'):
     return subprocess.run(
-        [str(GC), 'eph-test'], env=env['environ'],
+        [str(GC), user], env=env['environ'],
         capture_output=True, text=True, timeout=60)
 
 
@@ -100,3 +100,34 @@ def test_happy_path_wipes_and_reports_done(env):
     assert res.returncode == 0, res.stdout + res.stderr
     assert 'done' in res.stdout
     assert env['marker'].exists(), 'safe-rm was not invoked on the happy path'
+
+
+def test_eph_leak_accepted(env):
+    ## The leak namespace (eph-leak-) must be wipeable like any eph-* account --
+    ## canary against a future narrowing of the eph-* allow-arm to eph-run- only,
+    ## which would silently strand leak-account VBox state.
+    _write_exec(env['bin'] / 'VBoxManage',
+                'case "$1" in\n'
+                '  list) echo \'"vm1" {00000000-0000-0000-0000-000000000001}\' ;;\n'
+                '  *) exit 0 ;;\n'
+                'esac\n')
+    res = _run(env, 'eph-leak-whonix-18-2-3-5')
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert 'done' in res.stdout
+    assert env['marker'].exists(), 'safe-rm was not invoked for an eph-leak- account'
+
+
+def test_persist_refused(env):
+    ## persist-* is the golden fleet: refused BEFORE any VBox call or folder wipe.
+    _write_exec(env['bin'] / 'VBoxManage', 'exit 0\n')
+    res = _run(env, 'persist-stable-whonix')
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert not env['marker'].exists(), 'safe-rm ran on a persist- account'
+
+
+def test_unknown_prefix_refused(env):
+    ## default-deny: a name in neither the install nor the leak namespace is refused.
+    _write_exec(env['bin'] / 'VBoxManage', 'exit 0\n')
+    res = _run(env, 'random-user')
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert not env['marker'].exists(), 'safe-rm ran on an unknown-prefix account'

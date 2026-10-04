@@ -9,8 +9,10 @@
 ## off + delete every VM it has registered and remove its VM/disk folder, so
 ## ephemeral runs never accumulate state (disk exhaustion) or cross-contaminate.
 ## REFUSES a persistent golden-fleet user (persist-*) and root -- those are never
-## wiped. VBox internal networks are per-VM and vanish with the VMs, so deleting
-## the VMs is enough; no separate intnet cleanup.
+## wiped. The eph-* allow spans BOTH ephemeral namespaces -- install (eph-run-) and
+## leak (eph-leak-) -- so a future narrowing of it is a conscious, tested choice.
+## VBox internal networks are per-VM and vanish with the VMs, so deleting the VMs is
+## enough; no separate intnet cleanup.
 
 set -o errexit
 set -o nounset

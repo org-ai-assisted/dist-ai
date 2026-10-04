@@ -19,6 +19,11 @@
 ##     nftables leak-drop covers eph-run-* by name).
 ##   - blessed (resolved == stable pin): the longitudinal golden account
 ##     persist-stable-<guest>; a non-blessed version is REFUSED there.
+##   - leak lane (the Whonix pair + anon-leak-test battery): ALWAYS a dedicated,
+##     disposable eph-leak-<guest>-<version>, never the shared persist-stable- or
+##     eph-run- namespace -- a non-leak lane's dev-root/leaprun mutation of a shared
+##     account's GW/WS would falsify the leak verdict. Ephemeral (gc'd + removed),
+##     never host-sudo/leaprun-enabled, and covered by the host nftables leak-drop.
 ##
 ## Runs as root on the server (creates users, publishes to the web root); drops
 ## to the test account for every VM operation. Sourced by dm-release-test-tests
@@ -99,6 +104,7 @@ print_usage() {
 
 A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-stable-GUEST.
+The whonix leak lane ALWAYS uses a dedicated eph-leak-GUEST-VERSION account.
 --dry-run prints the resolved plan and runs nothing."
 }
 
@@ -149,15 +155,16 @@ rt_version_token() {
    printf '%s\n' "${token}"
 }
 
-## Compose + validate the ephemeral account name. Keeping the eph-run- prefix is
-## load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
-## resolves the fleet by persist-stable-*|eph-run-* name pattern. useradd's
-## NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
-rt_eph_account() {
-   local guest_name token account
-   guest_name="$1"
-   token="$2"
-   account="eph-run-${guest_name}-${token}"
+## Compose + validate a fleet account name "<prefix><guest>-<token>". The prefixes
+## are load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
+## resolves the fleet by persist-stable-*|eph-run-*|eph-leak-* name pattern.
+## useradd's NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
+rt_compose_account() {
+   local prefix guest_name token account
+   prefix="$1"
+   guest_name="$2"
+   token="$3"
+   account="${prefix}${guest_name}-${token}"
    case "${account}" in
       [a-z]*)
          true
@@ -173,6 +180,34 @@ rt_eph_account() {
    esac
    [ "${#account}" -le 32 ] || return 1
    printf '%s\n' "${account}"
+}
+
+## Install-lane ephemeral account (eph-run-) vs leak-lane ephemeral account
+## (eph-leak-). The leak lane gets its OWN namespace so dev-root/leaprun baked into
+## a shared account's VMs can never mutate the GW/WS a leak verdict depends on.
+rt_eph_account() {
+   rt_compose_account "eph-run-" "$1" "$2"
+}
+
+rt_leak_account() {
+   rt_compose_account "eph-leak-" "$1" "$2"
+}
+
+## True when GUEST runs the leak lane (the Whonix GW/WS pair + anon-leak-test); the
+## leak lane ALWAYS uses the dedicated eph-leak- namespace, regardless of bless-state.
+rt_lane_is_leak() {
+   [ "$1" = 'whonix' ]
+}
+
+## True only for a leak-namespace account name. Guards the invariant that the leak
+## lane is never handed a shared persist-stable-/eph-run- account.
+rt_account_is_leak() {
+   case "$1" in
+      eph-leak-*)
+         return 0
+         ;;
+   esac
+   return 1
 }
 
 ## "blessed" when the resolved version equals the stable pin, else "prebless".
@@ -238,13 +273,22 @@ rt_refresh_fleet() {
 }
 
 rt_ensure_eph_account() {
-   local account
+   local account groups
    account="$1"
    if ! id "${account}" >/dev/null 2>&1; then
       useradd --create-home --shell /bin/bash -- "${account}"
    fi
    getent group vboxusers >/dev/null || groupadd --system vboxusers
    usermod --append --groups vboxusers -- "${account}"
+   ## INVARIANT: a test account (above all a leak account) is never host-privileged.
+   ## A sudo/root-capable account could tamper with the nft leak-drop or the results
+   ## plane and void the verdict; vboxusers is the ONLY group it may hold.
+   groups=" $(id -nG "${account}") "
+   case "${groups}" in
+      *' sudo '*|*' root '*)
+         die "${SETUP_RC}" "refusing test account '${account}': host-privileged (sudo/root group)"
+         ;;
+   esac
    rt_refresh_fleet
 }
 
@@ -401,7 +445,7 @@ parse_args() {
 }
 
 main() {
-   local version stable bless_state account token
+   local version stable bless_state account account_kind token
 
    parse_args "$@"
 
@@ -423,13 +467,26 @@ main() {
    token="$(rt_version_token "${version}")" || die "${SETUP_RC}" "resolved version '${version}' is not a safe token"
    stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
    bless_state="$(rt_bless_state "${version}" "${stable}")"
-   account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
-      || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+   ## The leak lane ALWAYS runs in its own ephemeral eph-leak- account (never the
+   ## shared persist-stable-/eph-run- namespace); every other lane selects by
+   ## bless-state. account_kind in {blessed, prebless, leak}; the latter two are
+   ## ephemeral (created + gc'd + removed on exit).
+   if rt_lane_is_leak "${guest}"; then
+      account="$(rt_leak_account "${guest}" "${token}")" \
+         || die "${SETUP_RC}" "could not derive leak account for ${guest} ${version}"
+      rt_account_is_leak "${account}" \
+         || die "${SETUP_RC}" "leak account '${account}' is not in the eph-leak- namespace"
+      account_kind='leak'
+   else
+      account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
+         || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+      account_kind="${bless_state}"
+   fi
 
    if [ "${dry_run}" = 'true' ]; then
       printf '%s\n' "plan:" \
          "  guest=${guest} interface=${interface} desktop=${desktop}" \
-         "  channel=${channel} resolved=${version} stable=${stable} state=${bless_state}" \
+         "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
@@ -440,10 +497,12 @@ main() {
    ## Arm the single cleanup path BEFORE creating the account, so an abort during
    ## creation or the run still reclaims the ephemeral account on exit.
    trap rt_eph_cleanup EXIT
-   if [ "${bless_state}" = 'prebless' ]; then
-      eph_account="${account}"
-      rt_ensure_eph_account "${account}"
-   fi
+   case "${account_kind}" in
+      prebless|leak)
+         eph_account="${account}"
+         rt_ensure_eph_account "${account}"
+         ;;
+   esac
 
    local rc
    rc=0
