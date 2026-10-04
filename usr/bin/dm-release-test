@@ -213,10 +213,12 @@ rt_account_is_leak() {
 ## shared primary breaks per-account isolation. The allowlist is keyed on the account
 ## name, NOT blind-trusting the primary, so a privileged group (root/sudo/docker/disk)
 ## anywhere is rejected. $1=account $2=uid $3=primary-group (id -gn) $4=`id -nG` output.
-## Scope: rejects every privilege-granting GROUP + a shared primary. A NON-group root
-## grant (sudoers.d / privleap-leaprun / dev-root) is invisible here -- the companion
-## rt_account_can_sudo EXERCISES sudo to catch it. polkit / file-caps remain
-## provisioning-time guarantees. rt_ensure_eph_account forces the private primary with
+## Scope: rejects every privilege-granting GROUP + a shared primary. A NON-group
+## PASSWORDLESS-sudo grant (a NOPASSWD sudoers entry) is invisible here -- the companion
+## rt_account_can_sudo EXERCISES sudo to catch it. A command-specific sudoers entry, a
+## privleap/leaprun grant, polkit, file-caps, or a private group given an extra member
+## are adversarial pre-provisioning (out of the accident model), prevented by creating
+## the account clean. rt_ensure_eph_account forces the private primary with
 ## `useradd --user-group`; a pre-provisioned account must be created the same way.
 rt_account_unprivileged() {
    local account uid primary grp
@@ -237,11 +239,16 @@ rt_account_unprivileged() {
    return 0
 }
 
-## True if ACCOUNT can obtain PASSWORDLESS root. Unlike `sudo -l` (a listing that exits
-## 0 for everyone), this EXERCISES sudo AS the account: rc 0 only when passwordless root
-## genuinely works -- catching a sudoers.d / privleap(leaprun) / dev-root grant that is
-## NOT group-based and so invisible to rt_account_unprivileged. Needs root (runuser).
+## True if ACCOUNT can obtain PASSWORDLESS root via sudo. Unlike `sudo -l` (a listing
+## that exits 0 for everyone), this EXERCISES sudo AS the account: rc 0 only when a
+## passwordless sudo grant covering a plain command genuinely works -- catching a
+## NOPASSWD sudoers entry / sudo-group membership that the group allowlist alone would
+## miss. FAILS CLOSED: if the probe tools are absent it returns "can sudo" so the caller
+## REJECTS (a missing runuser must never read as "account is clean"). Needs root.
+## Does NOT catch a command-SPECIFIC NOPASSWD entry or a privleap/leaprun grant (privleap
+## is not sudo) -- those are adversarial pre-provisioning, out of the accident model.
 rt_account_can_sudo() {
+   has runuser && has sudo || return 0
    runuser -u "$1" -- sudo --non-interactive /usr/bin/true >/dev/null 2>&1
 }
 
@@ -320,13 +327,13 @@ rt_ensure_eph_account() {
    usermod --append --groups vboxusers -- "${account}"
    ## INVARIANT: a test account (above all a leak account) is never host-privileged.
    ## A privileged account could tamper with the nft leak-drop or the results plane and
-   ## void the verdict. Enforced by group/uid allowlist AND a sudo-exercise check (a
-   ## sudoers.d/privleap grant is not group-based); the dedicated namespace + fresh
+   ## void the verdict. Enforced by group/uid allowlist AND a passwordless-sudo exercise
+   ## check (a NOPASSWD sudoers entry is not group-based); the dedicated namespace + clean
    ## creation is the primary guarantee.
    rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
       || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    ! rt_account_can_sudo "${account}" \
-      || die "${SETUP_RC}" "refusing test account '${account}': has passwordless root (sudoers.d/privleap/dev-root)"
+      || die "${SETUP_RC}" "refusing test account '${account}': has passwordless sudo (NOPASSWD root)"
    rt_refresh_fleet
 }
 
@@ -566,7 +573,7 @@ main() {
       rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
          || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
       ! rt_account_can_sudo "${account}" \
-         || die "${SETUP_RC}" "leak account '${account}' has passwordless root (sudoers.d/privleap/dev-root) -- forbidden for a leak account"
+         || die "${SETUP_RC}" "leak account '${account}' has passwordless sudo (NOPASSWD root) -- forbidden for a leak account"
       rt_refresh_fleet
    fi
 
