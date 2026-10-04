@@ -210,6 +210,27 @@ rt_account_is_leak() {
    return 1
 }
 
+## Pure host-privilege gate (unit-tested): a test account must not be uid 0, and
+## beyond its own primary group may hold ONLY vboxusers. An ALLOWLIST, not a group
+## denylist -- a denylist silently passes docker/disk/wheel/any future escalation
+## group. $1=uid $2=primary-group-name $3=`id -nG` output (space-separated).
+rt_account_unprivileged() {
+   local uid primary grp
+   uid="$1"
+   primary="$2"
+   [ "${uid}" -ne 0 ] || return 1
+   for grp in $3; do
+      case "${grp}" in
+         "${primary}"|vboxusers)
+            ;;
+         *)
+            return 1
+            ;;
+      esac
+   done
+   return 0
+}
+
 ## "blessed" when the resolved version equals the stable pin, else "prebless".
 rt_bless_state() {
    if [ "$1" = "$2" ]; then
@@ -273,7 +294,7 @@ rt_refresh_fleet() {
 }
 
 rt_ensure_eph_account() {
-   local account groups
+   local account
    account="$1"
    if ! id "${account}" >/dev/null 2>&1; then
       useradd --create-home --shell /bin/bash -- "${account}"
@@ -281,14 +302,11 @@ rt_ensure_eph_account() {
    getent group vboxusers >/dev/null || groupadd --system vboxusers
    usermod --append --groups vboxusers -- "${account}"
    ## INVARIANT: a test account (above all a leak account) is never host-privileged.
-   ## A sudo/root-capable account could tamper with the nft leak-drop or the results
-   ## plane and void the verdict; vboxusers is the ONLY group it may hold.
-   groups=" $(id -nG "${account}") "
-   case "${groups}" in
-      *' sudo '*|*' root '*)
-         die "${SETUP_RC}" "refusing test account '${account}': host-privileged (sudo/root group)"
-         ;;
-   esac
+   ## A privileged account could tamper with the nft leak-drop or the results plane and
+   ## void the verdict. Enforced by group/uid allowlist (see rt_account_unprivileged);
+   ## the dedicated namespace + fresh creation is the primary guarantee.
+   rt_account_unprivileged "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+      || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    rt_refresh_fleet
 }
 

@@ -120,6 +120,16 @@ assert_out "eph-leak- is a leak account" "" rt_account_is_leak eph-leak-whonix-1
 assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
 assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
 
+## host-privilege gate: allowlist (groups subset of {primary, vboxusers}, uid != 0).
+## Canary: a group denylist would pass docker/disk; this allowlist rejects them.
+assert_out "unpriv: primary+vboxusers only" "" rt_account_unprivileged 5001 eph-leak-whonix-18-2-3-5 "eph-leak-whonix-18-2-3-5 vboxusers"
+assert_out "unpriv: primary alone" "" rt_account_unprivileged 5001 u "u"
+assert_reject "unpriv: docker rejected" rt_account_unprivileged 5001 u "u docker vboxusers"
+assert_reject "unpriv: disk rejected" rt_account_unprivileged 5001 u "u disk vboxusers"
+assert_reject "unpriv: sudo rejected" rt_account_unprivileged 5001 u "u sudo"
+assert_reject "unpriv: wheel rejected" rt_account_unprivileged 5001 u "u wheel vboxusers"
+assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged 0 u "u vboxusers"
+
 ## distinctness canary: the leak and install namespaces MUST differ for the same
 ## (guest, token), or a shared account could contaminate the verdict.
 leak_name="$(rt_leak_account whonix 18-2-3-5)"
