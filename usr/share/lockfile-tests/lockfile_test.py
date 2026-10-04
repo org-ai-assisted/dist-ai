@@ -224,15 +224,19 @@ def inline_safety_tests(lockfile_sh, check):
                         first.returncode))
 
     ## 2) the inlined self-lock still mutually excludes: a 2nd instance skips
-    ##    (non-zero, no LOCKED) while the 1st holds the lock.
+    ##    while the 1st holds the lock. Assert the flock failure message, not just
+    ##    a non-zero exit -- a wrap-mode mis-fire also exits non-zero with no
+    ##    LOCKED, so a bare rc check would pass for the wrong reason.
     holder = subprocess.Popen([host, 'installer-flag', '2'],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, env=env)
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, env=env)
     time.sleep(0.6)
     second = hrun(['installer-flag', '0'])
     check('inline: 2nd inlined instance skips while 1st holds',
-          'LOCKED' not in second.stdout and second.returncode != 0,
-          '%r rc=%d' % (second.stdout.strip(), second.returncode))
+          'LOCKED' not in second.stdout and second.returncode != 0
+          and 'failed to get lock' in (second.stdout + second.stderr),
+          '%r rc=%d' % ((second.stdout + second.stderr).strip(),
+                        second.returncode))
     holder.wait(timeout=15)
 
 
