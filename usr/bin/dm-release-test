@@ -361,11 +361,24 @@ rt_refresh_fleet() {
 ## fixed VM names, so two runs would corrupt each other's snapshot restore). Acquires a
 ## per-account flock held until THIS process exits; fail-fast (nonblock) so a second
 ## concurrent run errors clearly instead of racing. Covers both a provision and a run, so
-## a reimport can never race a run. Needs a writable lock dir (root has /run/lock).
-## Test seam: DM_RELEASE_TEST_LOCK_DIR.
+## a reimport can never race a run.
+##
+## The lock dir is ROOT-ONLY (0700 under /run, which is itself root-writable only): a
+## world-writable dir like /run/lock would let any local user pre-create the lock file and
+## hold LOCK_EX on it, wedging every future run with a bogus "another run holds the lock".
+## Child VM processes are spawned via sudo / run_as_target_user (closefrom 3), so they do
+## not inherit this fd and cannot carry the lock past our exit. Test seam:
+## DM_RELEASE_TEST_LOCK_DIR.
 rt_lock_account() {
-   local lockfile
-   lockfile="${DM_RELEASE_TEST_LOCK_DIR:-/run/lock}/dm-release-test-$1.lock"
+   local lockdir lockfile
+   lockdir="${DM_RELEASE_TEST_LOCK_DIR:-/run/dm-release-test}"
+   mkdir --parents -- "${lockdir}" \
+      || die "${SETUP_RC}" "cannot create lock dir '${lockdir}'"
+   ## Enforce 0700 even on a pre-existing dir (mkdir -m would skip that, and would only
+   ## set the deepest path with -p); /run is root-only so no unprivileged pre-create races.
+   chmod 0700 -- "${lockdir}" \
+      || die "${SETUP_RC}" "cannot secure lock dir '${lockdir}'"
+   lockfile="${lockdir}/dm-release-test-$1.lock"
    exec {rt_lock_fd}>"${lockfile}" \
       || die "${SETUP_RC}" "cannot open lock '${lockfile}'"
    flock --nonblock "${rt_lock_fd}" \

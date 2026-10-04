@@ -133,8 +133,11 @@ export DM_WHONIX_PAIR="${stubbin}/dm-whonix-pair"
 export DIST_INSTALLER_CLI="${stubbin}/dist-installer-cli"
 ## NFT fleet tool absent => rt_refresh_fleet only NOTEs (no fail).
 export NFT_FLEET_TOOL="${stubbin}/nft-fleet-absent"
-## Lock dir this user can write (root uses /run/lock in production).
-export DM_RELEASE_TEST_LOCK_DIR="${work}"
+## Lock dir this user can write (root uses a 0700 dir under /run in production).
+## Pre-create it world-writable so the chmod-to-0700 hardening is a real canary.
+export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
+mkdir --parents -- "${DM_RELEASE_TEST_LOCK_DIR}"
+chmod 0777 -- "${DM_RELEASE_TEST_LOCK_DIR}"
 export interface='cli'
 export desktop='CLI'
 export RESULTS_ROOT="${work}/results"
@@ -197,6 +200,11 @@ check "provision: GW marker set to the version" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
 check "provision: WS marker set to the version" \
    "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
+
+## Lock dir hardened to 0700 (a world-writable lock dir lets any local user hold the
+## lock and wedge every run). Canary: pre-created 0777 above; the chmod must tighten it.
+check "lock dir hardened to 0700" \
+   "$([ "$(stat --format='%a' -- "${DM_RELEASE_TEST_LOCK_DIR}")" = '700' ] && printf true || printf false)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s whonix-lane assertion(s) failed\n' "${failures}" >&2
