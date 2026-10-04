@@ -48,6 +48,7 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
     orchestrator: str
     canary: str
     empty_hs: str
+    _tmp: "tempfile.TemporaryDirectory[str]"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -56,9 +57,14 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
         cls.updatecheck = os.path.join(usr, 'bin', 'updatecheck')
         cls.orchestrator = os.path.join(sc_dir, 'systemcheck')
         cls.canary = os.path.join(sc_dir, 'canary')
+        ## systemcheck_dir() already exit-77s when the sources are genuinely
+        ## absent; reaching here means they resolved, so all three scripts are
+        ## REQUIRED. A missing one is a corrupt checkout / incomplete install --
+        ## an environment bug that must fail LOUD, never a silent skip-to-green.
         for path in (cls.updatecheck, cls.orchestrator, cls.canary):
             if not os.path.isfile(path):
-                raise unittest.SkipTest(f"script not found at {path!r}")
+                raise FileNotFoundError(
+                    f"required systemcheck script absent: {path!r}")
         ## A real but empty directory: ${HELPER_SCRIPTS_PATH}/usr/libexec/
         ## helper-scripts/check_runtime.bsh resolves under it and is absent, so
         ## the source fails deterministically on any host.
@@ -71,6 +77,11 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
 
     def _assert_guard_fails_loud(self, script: str) -> None:
         env = dict(os.environ)
+        ## `bash <script>` reads $BASH_ENV first; a startup file there could fake
+        ## the marker + exit 1 + empty stdout and make this very anti-silent-green
+        ## test pass without the guard running. Strip it so the script's own
+        ## guard is the ONLY thing that can satisfy the assertions.
+        env.pop('BASH_ENV', None)
         ## Point at the empty dir so check_runtime.bsh cannot be sourced. The
         ## script is run as `bash <script>` so its '#!/bin/bash -e' shebang is
         ## NOT honoured -- only the explicit guard can catch the failure.

@@ -92,7 +92,9 @@ git -C "${work}" init -q
 ## disable set for a standalone component checkout that ships no .shellcheckrc.
 work_shellcheckrc="${work}/.shellcheckrc"
 governing_shellcheckrc=""
-rc_search_dir="$( dirname -- "${committed}" )"
+## Absolute start so the walk terminates at '/' even when USABILITY_MISC_REPO is
+## relative (dirname of a relative path converges to '.', never '/').
+rc_search_dir="$( cd -- "$( dirname -- "${committed}" )" && pwd )"
 while [ "${rc_search_dir}" != "/" ]; do
    if [ -f "${rc_search_dir}/.shellcheckrc" ]; then
       governing_shellcheckrc="${rc_search_dir}/.shellcheckrc"
