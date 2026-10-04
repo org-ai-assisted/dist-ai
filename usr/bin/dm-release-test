@@ -68,6 +68,10 @@ firmware="efi-secureboot"
 run_checks='false'
 dry_run='false'
 
+## Trap state: the ephemeral account to remove on exit (set once created), so an
+## abort between creation and the normal cleanup never leaks it. Empty => nothing.
+eph_account=""
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 if [ -d "${script_dir}/../libexec/image-test" ]; then
    image_test_libexec="${script_dir}/../libexec/image-test"
@@ -244,12 +248,39 @@ rt_ensure_eph_account() {
    rt_refresh_fleet
 }
 
-rt_cleanup_eph_account() {
-   local account
-   account="$1"
-   "${IMAGE_TEST_GC}" "${account}" || true
-   userdel --remove -- "${account}" || true
+## EXIT-trap handler: remove the ephemeral account if one was created. Single
+## cleanup path, so an abort anywhere after creation still reclaims it.
+rt_eph_cleanup() {
+   [ -n "${eph_account}" ] || return 0
+   "${IMAGE_TEST_GC}" "${eph_account}" || true
+   userdel --remove -- "${eph_account}" || true
    rt_refresh_fleet
+}
+
+## Publish one lane's verdict to the results plane and print a summary line. The
+## results subtree carries guest, interface AND version so lxqt and cli (or two
+## versions) never collide on one path.
+rt_publish_result() {
+   local guest_name version account mode rc pass outdir verdict
+   guest_name="$1"
+   version="$2"
+   account="$3"
+   mode="$4"
+   rc="$5"
+   shift 5
+
+   if [ "${rc}" -eq 0 ]; then
+      pass='true'
+      verdict='PASS'
+   else
+      pass='false'
+      verdict='FAIL'
+   fi
+   outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
+      "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
+      "${rc}" "${pass}" "" "$@")"
+   printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
+      "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
 }
 
 ## ---------------------------------------------------------------------------
@@ -257,18 +288,25 @@ rt_cleanup_eph_account() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc pass outdir
-   local -a version_arg=() checks_arg=()
+   local account version iso pass_file vmname rc
+   local -a checks_arg=()
 
    account="$1"
    version="$2"
-   if [ -n "${version_override}" ]; then
-      version_arg=( --version "${version_override}" )
-   fi
 
+   ## Acquire the EXACT resolved version (pin it; never re-resolve in the lane),
+   ## and FAIL the lane if the download/verification fails -- never fall through
+   ## to an install with an empty --iso and publish a false PASS (errexit is off
+   ## inside a function called as `... || rc=$?`, so check explicitly).
+   rc=0
    iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
-      --desktop "${desktop}" --channel "${channel}" "${version_arg[@]}" \
-      --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")"
+      --desktop "${desktop}" --channel "${channel}" --version "${version}" \
+      --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")" || rc=$?
+   if [ "${rc}" -ne 0 ]; then
+      log error "iso-download failed (rc=${rc}) for kicksecure '${version}' -- not installing"
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" Kicksecure
+      return "${rc}"
+   fi
 
    ## Disposable LUKS passphrase for the install, readable only by the account.
    pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"
@@ -285,21 +323,12 @@ rt_lane_kicksecure() {
       "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
-   if [ "${rc}" -eq 0 ]; then
-      pass='true'
-   else
-      pass='false'
-   fi
-   outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
-      "kicksecure-${version//./-}" "${account}" "calamares-install" \
-      "${rc}" "${pass}" "" "Kicksecure")"
-   printf '%s: kicksecure %s -- %s (rc=%s) -> %s\n' "${me}" "${version}" \
-      "$([ "${pass}" = 'true' ] && printf PASS || printf FAIL)" "${rc}" "${outdir}"
+   rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" Kicksecure
    return "${rc}"
 }
 
 rt_lane_whonix() {
-   local account version gw ws rc pass outdir
+   local account version gw ws rc
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
@@ -312,16 +341,7 @@ rt_lane_whonix() {
    rc=0
    sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
-   if [ "${rc}" -eq 0 ]; then
-      pass='true'
-   else
-      pass='false'
-   fi
-   outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
-      "whonix-${version//./-}" "${account}" "whonix-pair" \
-      "${rc}" "${pass}" "" "tor-confirm")"
-   printf '%s: whonix %s -- %s (rc=%s) -> %s\n' "${me}" "${version}" \
-      "$([ "${pass}" = 'true' ] && printf PASS || printf FAIL)" "${rc}" "${outdir}"
+   rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" tor-confirm
    return "${rc}"
 }
 
@@ -417,7 +437,11 @@ main() {
 
    [ "$(id -u)" -eq 0 ] || die "${SETUP_RC}" "must run as root (creates the test account, publishes to the web root)"
 
+   ## Arm the single cleanup path BEFORE creating the account, so an abort during
+   ## creation or the run still reclaims the ephemeral account on exit.
+   trap rt_eph_cleanup EXIT
    if [ "${bless_state}" = 'prebless' ]; then
+      eph_account="${account}"
       rt_ensure_eph_account "${account}"
    fi
 
@@ -431,10 +455,6 @@ main() {
          rt_lane_whonix "${account}" "${version}" || rc=$?
          ;;
    esac
-
-   if [ "${bless_state}" = 'prebless' ]; then
-      rt_cleanup_eph_account "${account}"
-   fi
    return "${rc}"
 }
 
