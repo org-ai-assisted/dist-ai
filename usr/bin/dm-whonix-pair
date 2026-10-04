@@ -47,7 +47,7 @@ TESSERACT="${TESSERACT:-tesseract}"
 VBOX_EXEC_LOCAL="${VBOX_EXEC_LOCAL:-vbox-exec-local}"
 TCPDUMP="${TCPDUMP:-tcpdump}"
 ## Where a leak's GW-NIC capture is preserved for forensics (see on_exit).
-LEAK_ARTIFACT_DIR="${LEAK_ARTIFACT_DIR:-${HOME:-${TMP}}}"
+LEAK_ARTIFACT_DIR="${LEAK_ARTIFACT_DIR:-${HOME:-${TMP:-}}}"
 
 PASS_RC=0
 FAIL_RC=5
@@ -141,23 +141,38 @@ on_exit() {
    fi
    if [ "${gw_started}" = 'true' ]; then
       "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
+      ## Poweroff is async and the nictrace pcap is not flushed until the GW settles;
+      ## wait (bounded) so a preserved capture is complete, not truncated mid-write.
+      local _i _state
+      for _i in $(seq 1 15); do
+         _state="$("${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
+            | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
+         case "${_state}" in poweroff|aborted|'') break ;; esac
+         sleep 1
+      done
    fi
    ## Leave the NIC trace off so a later run / other use is not silently captured.
    "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 off >/dev/null 2>&1 || true
    ## The GW-NIC pcap is the leak oracle's evidence. On a clean PASS it is noise -> drop it.
    ## On ANY non-clean exit (a leak, or an inconclusive abort) PRESERVE it plus a tcpdump
    ## decode as a durable artifact: deleting the one capture that matters would make a real
-   ## leak unauditable.
+   ## leak unauditable. If the copy FAILS, keep the original in place (never delete the only
+   ## evidence on a failure path) and warn.
    if [ -n "${nictrace_pcap}" ] && [ -e "${nictrace_pcap}" ]; then
       if [ "${rc}" -ne "${PASS_RC}" ]; then
+         mkdir -p -- "${LEAK_ARTIFACT_DIR}" 2>/dev/null || true
          local keep
-         keep="${LEAK_ARTIFACT_DIR}/whonix-pair-leak-$(date +%Y%m%d-%H%M%S).pcap"
+         keep="${LEAK_ARTIFACT_DIR}/whonix-pair-leak-$(date +%Y%m%d-%H%M%S)-$$.pcap"
          if cp -- "${nictrace_pcap}" "${keep}" 2>/dev/null; then
             "${TCPDUMP}" -nr "${keep}" >"${keep%.pcap}.txt" 2>/dev/null || true
             printf '%s\n' "${me}: non-clean exit (rc=${rc}); GW capture PRESERVED: ${keep} (decode: ${keep%.pcap}.txt)" >&2
+            safe-rm -f -- "${nictrace_pcap}" 2>/dev/null || true
+         else
+            printf '%s\n' "${me}: WARNING: could not preserve GW capture to ${LEAK_ARTIFACT_DIR}; leaving the only copy at ${nictrace_pcap}" >&2
          fi
+      else
+         safe-rm -f -- "${nictrace_pcap}" 2>/dev/null || true
       fi
-      safe-rm -f -- "${nictrace_pcap}" 2>/dev/null || true
    fi
    ## Drop the battery share (reverted by the next snapshot restore anyway) + its host dir.
    "${VBOXMANAGE}" sharedfolder remove "${ws}" --name shared >/dev/null 2>&1 || true
@@ -234,9 +249,12 @@ ws_battery() {
 gw_stop_tor() {
    local attempt
    for attempt in $(seq 1 3); do
+      ## Positively CONFIRM Tor is down in the same call: stop it, then negate
+      ## `is-active --quiet` so the remote command succeeds ONLY when tor@default is no
+      ## longer active. This is the fail-closed proof Tor is actually stopped -- it does
+      ## not rely on interpreting a later probe's ambiguous exit code.
       if "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 120 \
-         --cmd "leaprun sudo && sudo --non-interactive systemctl stop tor@default.service"; then
-         sleep 5   ## let Tor fully stop before tor-confirm re-checks
+         --cmd "leaprun sudo && sudo --non-interactive systemctl stop tor@default.service && sleep 5 && ! sudo --non-interactive systemctl is-active --quiet tor@default.service"; then
          return 0
       fi
       printf '%s\n' "${me}: GW Tor-stop attempt ${attempt} failed; retrying" >&2
@@ -262,9 +280,13 @@ canary_gateway_pcap() {
    [ -s "${nictrace_pcap}" ] || die "${FAIL_RC}" "canary: GW nictrace pcap empty/missing (blind capture)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
    [ "${total}" -gt 0 ] || die "${FAIL_RC}" "canary: GW emitted nothing on its external NIC (blind -- not a no-leak)"
+   ## Watch the clearnet targets as DESTINATION and the forged sources as SOURCE: a
+   ## forged-source leak egresses with CRAFT_SRC/CRAFT_SRC6 as its SOURCE (to any dst),
+   ## which a dst-only filter would miss. The un-NAT'd redirect reply (dst=CRAFT_SRC) is
+   ## still caught by the dst match on the same addresses.
    hits="$("${TCPDUMP}" -nr "${nictrace_pcap}" \
-      "dst host ${CLEARNET_ICMP} or dst host ${CLEARNET_NTP} or dst host ${CRAFT_SRC} \
-       or dst host ${CLEARNET_IPV6} or dst host ${CRAFT_SRC6}" 2>/dev/null | wc -l)"
+      "dst host ${CLEARNET_ICMP} or dst host ${CLEARNET_NTP} or dst host ${CLEARNET_IPV6} \
+       or host ${CRAFT_SRC} or host ${CRAFT_SRC6}" 2>/dev/null | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
    printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s), 0 to any probe target)"
@@ -311,19 +333,25 @@ main() {
    ## Phase 2: the FULL battery incl the comprehensive gateway-craft emit matrix (the
    ## deliberate direct-egress vectors the canary watches for). Exit 0 = Tor-only;
    ## anything else = leak/inconclusive.
+   ## NOTE: ipv6-clearnet (the reply-based IPv6 Tor-confirm) is deliberately NOT in this
+   ## battery. It is built for the Qubes anon-whonix context where Tor's DNS path serves
+   ## check.torproject.org over IPv6; on a standard Whonix-Workstation with no global IPv6
+   ## it ERRORs by design (curl --ipv6 cannot reach the A-only host), which would fail the
+   ## run on a non-leak. The WS's IPv6 egress IS covered here -- by the gateway-craft v6
+   ## matrix (emit + GW-NIC canary), which is gated on a live v6 path and recorded honestly.
    printf '%s\n' "${me}: run the full leak-test battery in the Workstation (sysmaint)"
-   ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe ipv6-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
+   ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
       || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
 
    ## Phase 3: KILLSWITCH. Stop Tor on the GW (user session + leaprun sudo, forwarding
-   ## intact), then re-emit the craft matrix. With Tor down the firewall must DROP, not
-   ## leak: tor-confirm must now FAIL, and the final canary must still show zero target
-   ## hits across the WHOLE capture. This is the live fail-closed proof.
-   printf '%s\n' "${me}: killswitch -- stop Tor on the Gateway, then re-emit"
+   ## intact). gw_stop_tor POSITIVELY confirms tor@default is inactive on the GW -- the
+   ## fail-closed proof Tor is down, independent of any WS probe exit code (a WS probe
+   ## failing non-zero could mean leak, inconclusive, OR broken guestcontrol, so it is
+   ## NOT a sound "Tor is down" signal). Then re-emit the craft matrix: with Tor down the
+   ## firewall must DROP, so the final canary must still show zero target hits across the
+   ## WHOLE capture (both the Tor-up and Tor-down windows).
+   printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
    gw_stop_tor
-   if ws_battery "--probe tor-confirm"; then
-      die "${FAIL_RC}" "killswitch: tor-confirm still PASSED after stopping Tor (Tor not stopped / stale circuit)"
-   fi
    ws_battery "--probe gateway-craft ${craft_flags}" \
       || die "${FAIL_RC}" "killswitch: craft emit could not run with Tor down"
 
