@@ -365,6 +365,13 @@ parse_args() {
    ## --reinstall reuses an existing VM+disk; a fresh install needs a disk path.
    [ -n "${disk}" ] || [ "${reinstall}" = 'true' ] \
       || disk="$(mktemp --tmpdir --dry-run "${vm}.XXXXXX.vdi")"
+   ## --reinstall leaves disk empty unless --disk is given; mok_host_enroll then reads
+   ## the host-side MOK cert from that disk path, so --mok-enroll needs an explicit
+   ## --disk here or the post-install enroll dies "--disk required" in vbox-disk-extract.
+   if [ "${mok_enroll}" = 'true' ] && [ -z "${disk}" ]; then
+      usage >&2
+      die "${SETUP_RC}" "--mok-enroll requires --disk (the host-side cert read needs the disk path)"
+   fi
 }
 
 ## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the
