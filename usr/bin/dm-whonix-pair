@@ -116,7 +116,9 @@ assert_vm_running() {
    esac
 }
 
-lib_base="$(dirname -- "$(readlink --canonicalize -- "$0")")/../share/dm-smbios-reader-boot-tests"
+## Resolve from BASH_SOURCE[0], not $0: this script is source-able (guard at EOF) and
+## the canary test sources it, where $0 is the TEST's path -> the wrong lib_base.
+lib_base="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dm-smbios-reader-boot-tests"
 [ -d "${lib_base}" ] || lib_base='/usr/share/dm-smbios-reader-boot-tests'
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
 source "${lib_base}/gui-drive.bsh"
