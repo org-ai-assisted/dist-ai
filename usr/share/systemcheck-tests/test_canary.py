@@ -26,12 +26,16 @@ import os
 import subprocess
 import unittest
 
-from systemcheck_testlib import ScenarioTestBase, read, run_check_scenario, systemcheck_dir
+from systemcheck_testlib import ScenarioTestBase, run_check_scenario, systemcheck_dir
 
 
-def _libexec(name: str) -> str:
+def _libexec(name: str, required: bool = False) -> str:
     path = os.path.join(systemcheck_dir(), name)
     if not os.path.isfile(path):
+        ## A configured checkout (SYSTEMCHECK_REPO) that lacks a REQUIRED script is a
+        ## regression to FAIL on, not silently skip -- a skip would green the whole class.
+        if required and os.environ.get('SYSTEMCHECK_REPO', '').strip():
+            raise AssertionError(f"{name} missing from configured checkout at {path!r}")
         raise unittest.SkipTest(f"{name} not found at {path!r}")
     return path
 
@@ -83,7 +87,7 @@ class TestCanarySourceable(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.script = _libexec('canary')
+        cls.script = _libexec('canary', required=True)
         cls.hs_root = _helper_scripts_root()
 
     def _source(self, body: str, strict_off: bool = False):
@@ -105,10 +109,18 @@ class TestCanarySourceable(unittest.TestCase):
         self.assertNotIn('Attempting to download', res.stdout)
 
     def test_no_strict_mode_leak(self) -> None:
-        ## Fresh bash -c starts errexit OFF; a leaked 'set -e' would abort the
-        ## following 'false' before 'true'.
-        res = self._source('false\ntrue', strict_off=True)
+        ## Fresh bash -c starts errexit/nounset/pipefail OFF; sourcing must not turn
+        ## ANY of them on in the caller. Check all three named by the sourceable
+        ## contract, not only errexit (a 'false;true' probe misses nounset/pipefail).
+        res = self._source(
+            'lk=""\n'
+            'case "$-" in *e*) lk="${lk} errexit";; esac\n'
+            'case "$-" in *u*) lk="${lk} nounset";; esac\n'
+            'set -o | grep --quiet "^pipefail[[:space:]]*on" && lk="${lk} pipefail"\n'
+            'printf "LEAK:%s:END\\n" "${lk}"',
+            strict_off=True)
         self.assertEqual(res.returncode, 0)
+        self.assertIn('LEAK::END', res.stdout)
 
     def test_count_or_not_skips_in_live_mode(self) -> None:
         ## live_status_detected=true -> canary_count_or_not exits 0 early with the
@@ -163,6 +175,9 @@ class TestCheckWarrantCanaryScenarios(ScenarioTestBase):
                         stubs='leaprun() { return 1; }\n')
         self.assertCleanRun(res)
         self.assertIn('not running', res.joined())
+        ## The "not running" record must be INFO severity: an error-severity emit at
+        ## exit 0 would still pass the exit_code check, so assert the severity too.
+        self.assertTrue(res.has_severity('info'))
         self.assertEqual(res.exit_code, '0')
 
 

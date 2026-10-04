@@ -215,6 +215,13 @@ for bad in nan inf 0 -1 2147483648 1e20; do
    fi
 done
 
+## Case 4: an oversized FINITE override must be CLAMPED to the ceiling (10s), PROVEN
+## against the expensive graph: 30 > OUTER_TIMEOUT(15), so if the override were honored
+## verbatim the exponential follow would blow past the outer cap and be killed. The
+## clean-file loop above cannot show this (it finishes instantly regardless of the cap).
+run_gate "${graph_dir}" "30"
+assert_graceful_degrade "oversized-finite-override-clamped-on-graph"
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
    exit 1

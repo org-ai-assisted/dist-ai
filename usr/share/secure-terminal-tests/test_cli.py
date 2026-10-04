@@ -295,6 +295,30 @@ _oenv, _ = run_in_pty(['--', 'sh', '-c', 'printf T=$TERM,P=$PAGER,'])
 ok(b'T=dumb,' in _oenv, 'the cli wrapper child sees TERM=dumb')
 ok(b'P=,' in _oenv, 'the cli wrapper does NOT force PAGER (no ambient -> empty)')
 
+# --- child environment: anti-fingerprinting scrub (cli.py _run) ---------------
+# The wrapper runs atop a REAL outer terminal, so without a scrub the child would
+# inherit that emulator's fingerprint vars AND any of our own SECURE_TERMINAL_* modes.
+# Preload every CHILD_ENV_SCRUB var with a sentinel, run `env` in the child, and assert
+# each is gone. SHOT/SOLID_CURSOR get a non-'1' sentinel on principle (cli never reads
+# them, but this cannot flip any mode). Iterating the shipped list keeps the two spawn
+# paths and this assertion from drifting. Canary: drop cli.py's scrub_child_env() -> fail.
+from secure_terminal.sanitize import CHILD_ENV_SCRUB          # noqa: E402
+_fp_saved = {_k: os.environ.get(_k) for _k in CHILD_ENV_SCRUB}
+for _k in CHILD_ENV_SCRUB:
+    os.environ[_k] = 'leak-not-one'
+# leading newline so a first-line var is caught by the "\nNAME=" test too
+_fpout = b'\n' + run_in_pty(['--', 'sh', '-c', 'env; printf ENVEND'])[0]
+ok(b'ENVEND' in _fpout,
+   'cli child env captured (guards the scrub asserts against a vacuous pass)')
+for _k in CHILD_ENV_SCRUB:
+    ok(('\n' + _k + '=').encode() not in _fpout,
+       'the cli wrapper child does not inherit ' + _k)
+for _k, _v in _fp_saved.items():                              # restore the test env
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
+
 # --- real line tools run under the wrapper: output survives, no escape leaks ---
 # a representative slice of the compatibility programs table; the full-screen,
 # interactive and network tools in it stay manual captures by design

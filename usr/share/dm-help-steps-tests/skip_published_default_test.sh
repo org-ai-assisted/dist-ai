@@ -64,10 +64,18 @@ resolve_skip() {
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
      source pre >/dev/null 2>&1
      ## variables' own output must reach out_file (not /dev/null) so a rejected typo's
-     ## error message is visible to the grep below; a satisfied run reaches printf.
+     ## error message is visible to the grep below. Capture variables' OWN exit status
+     ## (R-011: no errexit toggle): the '( ) || true' wrapper suppresses errexit inside,
+     ## so without this an unexpected failure would reach printf and masquerade as a
+     ## resolved skip=. skip= prints ONLY when variables actually completed.
+     var_rc=0
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
-     source variables
-     printf 'skip=%s\n' "${dist_build_skip_published_packages:-<unset>}"
+     source variables || var_rc=$?
+     if [ "${var_rc}" -eq 0 ]; then
+        printf 'skip=%s\n' "${dist_build_skip_published_packages:-<unset>}"
+     else
+        printf 'VARIABLES_FAILED rc=%s\n' "${var_rc}"
+     fi
    ) > "${out_file}" 2>&1 || true
    if grep --quiet -- 'supported options for --skip-published-packages' "${out_file}"; then
       printf 'rejected\n'

@@ -99,7 +99,8 @@ if [ "${#whitelist_list[@]}" -ge 1 ]; then
    ## keeping a literal path as-is; CONFIRM the live pattern matches it, else skip (an
    ## unusual ERE form this cannot synthesize is not a false fail -- the canary above
    ## already enforces the dangerous direction).
-   sample_hit="${entry%.\*}:94: emoji here"
+   sample_base="${entry%.\*}"
+   sample_hit="${sample_base}:94: emoji here"
    if grep --quiet --extended-regexp -- "${whitelist_pattern}" <<< "${sample_hit}" \
       2>/dev/null; then
       pos_filtered="$( printf '%s\n' "${sample_hit}" \
@@ -113,6 +114,10 @@ if [ "${#whitelist_list[@]}" -ge 1 ]; then
             pass "whitelisted hit is excluded by the whitelist"
             ;;
       esac
+   elif ! grep --quiet -- '[][(){}.^$*+?|\]' <<< "${sample_base}"; then
+      ## A plain-literal entry (no ERE metacharacters) MUST match its own generated
+      ## pattern; a non-match there is a real regression, not an unsynthesizable form.
+      fail "supported literal entry '${entry}' no longer matches its own whitelist pattern"
    else
       printf '%s\n' "SKIP: could not synthesize a positive sample for entry '${entry}' (unusual ERE form); negative canary still enforced"
    fi

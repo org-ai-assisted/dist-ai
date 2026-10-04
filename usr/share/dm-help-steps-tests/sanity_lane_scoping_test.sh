@@ -266,7 +266,9 @@ LOOP_BACKFILES="/var/swapfile
 ${other_chroot%/*}/otherlane.raw
 ${binary_build_folder_dist}/Kicksecure-CLI.raw"
 run_fn check-stray-loop-devices
-if grep --quiet 'Stray loop devices detected' <<< "${CAP}" \
+## warn-only: it must return 0 (a warning that ABORTED would still match the grep).
+if [ "${CAP_RC}" -eq 0 ] \
+   && grep --quiet 'Stray loop devices detected' <<< "${CAP}" \
    && grep --quiet "${binary_build_folder_dist}/Kicksecure-CLI.raw" <<< "${CAP}"; then
    pass "check-stray-loop-devices: warns about a loop backing a file in this lane"
 else
@@ -281,7 +283,7 @@ fi
 ## A DELETED backing file in this lane (typical aborted-build leftover) is still matched.
 LOOP_BACKFILES="${binary_build_folder_dist}/Kicksecure-CLI.raw (deleted)"
 run_fn check-stray-loop-devices
-if grep --quiet 'Stray loop devices detected' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 0 ] && grep --quiet 'Stray loop devices detected' <<< "${CAP}"; then
    pass "check-stray-loop-devices: matches a '(deleted)' backing file in this lane"
 else
    fail "check-stray-loop-devices: missed a '(deleted)' backing file"
@@ -291,7 +293,7 @@ fi
 LOOP_BACKFILES="/var/swapfile
 ${other_chroot%/*}/otherlane.raw"
 run_fn check-stray-loop-devices
-if grep --quiet 'No stray loop devices in this build lane' <<< "${CAP}"; then
+if [ "${CAP_RC}" -eq 0 ] && grep --quiet 'No stray loop devices in this build lane' <<< "${CAP}"; then
    pass "check-stray-loop-devices: clean when only other lanes / swapfile hold loops"
 else
    fail "check-stray-loop-devices: false-positive on another lane's loop"
@@ -328,10 +330,14 @@ fi
 DMSETUP_LS=""
 LOOP_BACK=()
 run_fn mount-test
-if ! grep --quiet 'stale device-mapper' <<< "${CAP}"; then
-   pass "mount-test: clean dm state passes the stale precheck"
+## Mirror the other-lane case: prove the precheck was PASSED THROUGH to the image
+## step (distinct 'could not size' at rc 42), not short-circuited by an early failure
+## that merely happens to lack the 'stale device-mapper' text.
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'could not size the test image' <<< "${CAP}" \
+   && ! grep --quiet 'stale device-mapper' <<< "${CAP}"; then
+   pass "mount-test: clean dm state passes the stale precheck (reaches the image step)"
 else
-   fail "mount-test: false stale-dm error with no mappings present"
+   fail "mount-test: false stale-dm error or did not reach the image step (rc=${CAP_RC}): ${CAP}"
 fi
 
 ## An ORPHANED loopNpM whose backing /dev/loopN is gone (empty BACK-FILE) cannot be attributed to a

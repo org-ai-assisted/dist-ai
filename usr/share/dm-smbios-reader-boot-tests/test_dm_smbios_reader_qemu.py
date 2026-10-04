@@ -56,7 +56,9 @@ def _path_without_qemu(tmp_path):
             if name == 'qemu-img' or name.startswith('qemu-system-'):
                 continue
             try:
-                (bindir / name).symlink_to(os.path.join(entry, name))
+                ## Absolute target: a relative PATH entry (e.g. '.') would otherwise
+                ## symlink to a relative path that resolves inside bindir -- a self-loop.
+                (bindir / name).symlink_to(os.path.abspath(os.path.join(entry, name)))
                 seen.add(name)
             except OSError:
                 pass
@@ -129,3 +131,14 @@ def test_emit_cmdline_disk_without_qemu_img(tmp_path):
         env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip('\n') == TEST_CONSOLE_PAYLOAD
+
+
+def test_emit_cmdline_still_validates_enum_flags():
+    """Skipping qemu setup must NOT skip argument validation: a bad --firmware or
+    --accel value is rejected (exit 2) even on the build-only --emit-cmdline path."""
+    for bad in (['--firmware', 'definitely-invalid'], ['--accel', 'definitely-invalid']):
+        result = subprocess.run(
+            [str(QEMU), '--emit-cmdline', '--iso', '/dev/null', '--arch', 'amd64',
+             '--test-console', *bad],
+            capture_output=True, text=True)
+        assert result.returncode == 2, (bad, result.returncode, result.stdout)

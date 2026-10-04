@@ -27,6 +27,27 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## A hardened sysctl key is secure only when assigned EXACTLY its hardened number.
+## The kernel parses the value C-style, so `01` (leading-0 octal) and `0x1` (hex)
+## both store 1 -- `secure` must list every such spelling of the number. Flags any
+## assignment of `key` whose value is not one of them. systemd-sysctl applies in
+## order (last assignment wins) and accepts `.` or `/` as the key separator, so
+## `key` matches every scope segment on both spellings. Pure grep -- no arithmetic
+## eval on file content. Returns 0 on pass, 1 on any insecure assignment.
+check_values() {
+   local file="$1" key="$2" secure="$3"
+   local sep='[[:space:]]*=[[:space:]]*' eol='([[:space:]]|$)' assign bad
+   assign="^[[:space:]]*-?${key}${sep}"
+   bad="$(grep --extended-regexp "${assign}" "${file}" \
+      | grep --invert-match --extended-regexp "${assign}${secure}${eol}" || true)"
+   if [ -n "${bad}" ]; then
+      printf 'FAIL: sysctl sets a hardened key to an insecure value: %s\n' \
+         "$(printf '%s' "${bad}" | tr '\n' ' ')" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## Audit the security-misc sysctl file for the hardened neighbor/RA/redirect keys.
 ## Returns 0 on pass, 1 on any missing/changed key. Reused by the canary.
 audit_sysctl() {
@@ -51,31 +72,20 @@ audit_sysctl() {
       printf 'FAIL: sysctl net.ipv4.conf.*.arp_ignore not set to 1 or 2\n' >&2
       rc=1
    fi
-   ## Presence is not enough: systemd-sysctl applies in order and a later
-   ## assignment (a wildcard flip or a per-interface override like
-   ## net.ipv6.conf.eth1.accept_ra=1) WINS. Reject ANY assignment of these keys to
-   ## an insecure value, on any scope (*, all, default, or a specific interface).
-   ## Tolerate the whitespace sysctl.conf allows around `=` and an optional leading
-   ## `-` (systemd ignore-errors prefix), so a spaced/prefixed override cannot slip
-   ## an insecure value past. Scope: dotted keys in the canonical form our file
-   ## uses -- `/`-separator and VLAN-dotted (eth1.100) key spellings are not modelled.
-   local bad sep='[[:space:]]*=[[:space:]]*'
-   local bad_values=(
-      "net\\.ipv6\\.conf\\.[^.]+\\.accept_ra${sep}[^0[:space:]]"
-      "net\\.ipv4\\.conf\\.[^.]+\\.accept_redirects${sep}[^0[:space:]]"
-      "net\\.ipv6\\.conf\\.[^.]+\\.accept_redirects${sep}[^0[:space:]]"
-      "net\\.ipv4\\.conf\\.[^.]+\\.arp_filter${sep}[^1[:space:]]"
-      "net\\.ipv4\\.conf\\.[^.]+\\.arp_ignore${sep}0"
-      "net\\.ipv4\\.conf\\.[^.]+\\.accept_source_route${sep}[^0[:space:]]"
-      "net\\.ipv6\\.conf\\.[^.]+\\.accept_source_route${sep}[^0[:space:]]"
-   )
-   for bad in "${bad_values[@]}"; do
-      if grep --quiet --extended-regexp "^[[:space:]]*-?${bad}" "${file}"; then
-         printf 'FAIL: sysctl sets a hardened key to an insecure value: %s\n' \
-            "$(grep --extended-regexp "^[[:space:]]*-?${bad}" "${file}" | tr '\n' ' ')" >&2
-         rc=1
-      fi
-   done
+   ## Presence is not enough: a later assignment of a hardened key to an insecure
+   ## value WINS (systemd-sysctl applies in order), on any scope (*, all, default,
+   ## or a specific interface) and either `.` or `/` separator. Reject any such
+   ## assignment, interpreting the value as the kernel does (decimal, leading-0
+   ## octal, 0x hex) so 01/0x1 cannot read as 0. Per-key hardened number differs.
+   ## Scope: VLAN-dotted segments (eth1.100) are not modelled (eth0/eth1 only here).
+   local nz='(0+|0[xX]0+)' one='(0*1|0[xX]0*1)' onetwo='(0*[12]|0[xX]0*[12])'
+   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_ra'           "${nz}"     || rc=1
+   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]accept_redirects'    "${nz}"     || rc=1
+   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_redirects'    "${nz}"     || rc=1
+   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]arp_filter'          "${one}"    || rc=1
+   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]arp_ignore'          "${onetwo}" || rc=1
+   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]accept_source_route' "${nz}"     || rc=1
+   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_source_route' "${nz}"     || rc=1
    return "${rc}"
 }
 
@@ -108,6 +118,15 @@ audit_internal_inet6_static() {
       if grep --quiet --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}"; then
          printf 'FAIL: interfaces stanza re-enables RA/autoconf: %s\n' \
             "$(grep --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}" | tr '\n' ' ')" >&2
+         rc=1
+      fi
+      ## No ifupdown command hooks ship on the internal interfaces. ANY of them is an
+      ## uninterpreted escape hatch -- `up dhclient -6 eth1` re-enables DHCPv6/SLAAC,
+      ## `post-up ip route add default ...` injects a non-Tor route -- so reject them
+      ## all rather than chase individual commands.
+      if grep --quiet --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${f}"; then
+         printf 'FAIL: internal interfaces file has ifupdown command hooks (unaudited bypass): %s\n' \
+            "$(grep --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
    done
@@ -164,6 +183,47 @@ if audit_sysctl "${canary_override}" 2>/dev/null; then
    rc=1
 else
    printf 'PASS: canary (per-iface accept_ra override rejected); audit has teeth\n'
+fi
+
+## Canary 3: insecure per-iface overrides in uncommon-but-valid spellings must FAIL
+## -- octal (01) and hex (0x1) both store 1, and systemd accepts a `/`-separated key.
+for bad_line in \
+   'net.ipv6.conf.eth1.accept_ra=01' \
+   'net.ipv6.conf.eth1.accept_ra=0x1' \
+   'net/ipv6/conf/eth1/accept_ra=1'; do
+   canary_val="$(mktemp)"
+   cp -- "${sysctl_file}" "${canary_val}"
+   printf '%s\n' "${bad_line}" >>"${canary_val}"
+   if audit_sysctl "${canary_val}" 2>/dev/null; then
+      printf 'FAIL: canary -- sysctl audit PASSED insecure override %s (no teeth)\n' "${bad_line}" >&2
+      rc=1
+   else
+      printf 'PASS: canary (insecure override %s rejected); audit has teeth\n' "${bad_line}"
+   fi
+done
+
+## Canary 4: FALSE-POSITIVE GUARD -- arp_filter=01 is octal 1 = SECURE; the audit
+## must still PASS so the octal/hex tightening does not reject a valid hardened value.
+canary_ok="$(mktemp)"
+cp -- "${sysctl_file}" "${canary_ok}"
+printf '%s\n' 'net.ipv4.conf.eth1.arp_filter=01' >>"${canary_ok}"
+if audit_sysctl "${canary_ok}" 2>/dev/null; then
+   printf 'PASS: guard (arp_filter=01 is octal 1, accepted as secure)\n'
+else
+   printf 'FAIL: guard -- audit wrongly rejected arp_filter=01 (octal 1 = secure)\n' >&2
+   rc=1
+fi
+
+## Canary 5: a dhclient command hook on the GW internal iface must FAIL -- it would
+## re-enable DHCPv6 at ifup despite the inet6 static stanza.
+canary_hook="$(mktemp)"
+cp -- "${gw_iface_file}" "${canary_hook}"
+printf '%s\n' 'up dhclient -6 eth1' >>"${canary_hook}"
+if audit_internal_inet6_static "${canary_hook}" "${ws_iface_file}" 2>/dev/null; then
+   printf 'FAIL: canary -- audit PASSED a dhclient command hook (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (dhclient command hook rejected); audit has teeth\n'
 fi
 
 exit "${rc}"

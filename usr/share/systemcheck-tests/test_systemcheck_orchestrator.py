@@ -27,6 +27,10 @@ from systemcheck_testlib import systemcheck_dir
 def _orchestrator() -> str:
     path = os.path.join(systemcheck_dir(), 'systemcheck')
     if not os.path.isfile(path):
+        ## A configured checkout (SYSTEMCHECK_REPO) missing its orchestrator is a
+        ## regression to FAIL on, not silently skip.
+        if os.environ.get('SYSTEMCHECK_REPO', '').strip():
+            raise AssertionError(f"orchestrator missing from configured checkout at {path!r}")
         raise unittest.SkipTest(f"orchestrator not found at {path!r}")
     return path
 
@@ -42,8 +46,10 @@ class OrchestratorTestBase(unittest.TestCase):
         cls.hs_root = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
         cls.strings = (os.path.join(cls.hs_root, 'usr/libexec/helper-scripts/strings.bsh')
                        if cls.hs_root else '/usr/libexec/helper-scripts/strings.bsh')
-        if not os.path.isfile(cls.strings):
-            raise unittest.SkipTest('helper-scripts strings.bsh not found')
+        ## strings.bsh is required ONLY by the subclasses that pass strings=True; its
+        ## absence is enforced in run_sourced (below), not here -- gating it in the
+        ## shared base silently dropped TestSourceableContract and TestMoveProgressBar,
+        ## which never source it.
 
     def run_sourced(self, body: str, stubs: str = '', strings: bool = False,
                     strict: bool = True, timeout: int = 30):
@@ -53,6 +59,10 @@ class OrchestratorTestBase(unittest.TestCase):
         lines.append(f'export HELPER_SCRIPTS_PATH={self.hs_root!r}')
         lines.append(f'source {self.script!r}')
         if strings:
+            if not os.path.isfile(self.strings):
+                if os.environ.get('SYSTEMCHECK_REPO', '').strip():
+                    raise AssertionError(f"strings.bsh missing at {self.strings!r}")
+                raise unittest.SkipTest('helper-scripts strings.bsh not found')
             lines.append(f'source {self.strings!r}')
         lines.append(stubs)
         lines.append(body)
@@ -87,8 +97,17 @@ class TestSourceableContract(OrchestratorTestBase):
         self.assertEqual(res.stdout.strip(), '')
 
     def test_no_strict_mode_leak(self) -> None:
-        res = self.run_sourced('false\ntrue', strict=False)
+        ## Check all three strict options named by the sourceable contract, not only
+        ## errexit -- a 'false;true' probe misses a leaked nounset/pipefail.
+        res = self.run_sourced(
+            'lk=""\n'
+            'case "$-" in *e*) lk="${lk} errexit";; esac\n'
+            'case "$-" in *u*) lk="${lk} nounset";; esac\n'
+            'set -o | grep --quiet "^pipefail[[:space:]]*on" && lk="${lk} pipefail"\n'
+            'printf "LEAK:%s:END\\n" "${lk}"',
+            strict=False)
         self.assertEqual(res.returncode, 0)
+        self.assertIn('LEAK::END', res.stdout)
 
 
 class TestProgressMainIncrement(OrchestratorTestBase):
@@ -116,9 +135,13 @@ class TestProgressMainIncrement(OrchestratorTestBase):
     def test_non_numeric_increment_exits(self) -> None:
         ## A non-whole increment calls 'exit 1' (not return), terminating the
         ## shell, so assert the process exit code and that it never forwarded.
+        ## strict=False so errexit does not mask the distinction: a real 'exit 1'
+        ## still terminates (rc 1, 'reached' absent), but a regression to 'return 1'
+        ## would let 'echo reached' run (rc 0) and fail this test. Under errexit both
+        ## look identical, so the test could not catch the regression.
         res = self.run_sourced(
             'PROGRESS_MAIN=0\nsystemcheck_progress_main_increment abc\necho reached',
-            stubs=self._STUBS, strings=True)
+            stubs=self._STUBS, strings=True, strict=False)
         self.assertEqual(res.returncode, 1)
         self.assertNotIn('reached', res.stdout)
         self.assertNotIn('RUN:', res.stdout)

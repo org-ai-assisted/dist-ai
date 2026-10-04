@@ -105,6 +105,13 @@ esac
 ## a hard dependency alongside the required sandbox, emits a path-safe [A-Za-z0-9_-]
 ## slug). The slot is trusted (env / command line), so it is used as-is.
 build_slot="${dist_build_slot:-$(sandbox-session-slug)}"
+## sandbox-session-slug is a hard dependency; an EMPTY result (it failed but exited 0)
+## would make binary_lane the SHARED binary_mnt root, so the artifact finds below would
+## match a FOREIGN lane's image and compare the wrong sha512. Assert it loud instead.
+if [ -z "${build_slot}" ]; then
+   printf '%s\n' "${0##*/}: ERROR: empty build lane (sandbox-session-slug produced no slug)" >&2
+   exit 2
+fi
 binary_lane="/home/user/binary_mnt/${build_slot}"
 
 note() {

@@ -69,12 +69,19 @@ resolve_repo() {
      set -- ${extra_args}
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
      source pre >/dev/null 2>&1
-     ## variables is sourced under the inherited errexit, exactly as a real build step
-     ## sources it: the mandatory-choice 'error' aborts THIS subshell (its message lands
-     ## in out_file, which Case 1 greps). A satisfied choice completes and reaches printf.
+     ## Capture variables' OWN exit status (R-011: no errexit toggle). The '( ) || true'
+     ## wrapper suppresses errexit inside, so without this an unexpected variables failure
+     ## would still reach printf and masquerade as a resolved repo=. The mandatory-choice
+     ## 'error' still lands its message in out_file (Case 1 greps it); repo= prints ONLY
+     ## when variables actually completed.
+     var_rc=0
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
-     source variables
-     printf 'repo=%s\n' "${build_remote_repo_enable:-<unset>}"
+     source variables || var_rc=$?
+     if [ "${var_rc}" -eq 0 ]; then
+        printf 'repo=%s\n' "${build_remote_repo_enable:-<unset>}"
+     else
+        printf 'VARIABLES_FAILED rc=%s\n' "${var_rc}"
+     fi
    ) > "${out_file}" 2>&1 || true   ## the mandatory-error path exits non-zero by design
    if grep --quiet -- 'MANDATORY' "${out_file}"; then
       printf 'MANDATORY\n'

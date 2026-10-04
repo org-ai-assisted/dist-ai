@@ -82,6 +82,10 @@ if [[ "${func_text}" != *pkg_git_branch_agnostic* ]]; then
 fi
 
 tmp_root="$(mktemp -d)"
+## Scrub inherited git location vars: run from a git hook, an inherited GIT_DIR (etc.)
+## makes 'git -C "${repo}"' operate on the HOOK's real repo, not the fixture.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
    safe-rm --recursive --force -- "${tmp_root}"

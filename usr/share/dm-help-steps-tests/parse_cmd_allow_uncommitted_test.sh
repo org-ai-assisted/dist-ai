@@ -72,8 +72,14 @@ fi
 ## $1 label, $2 expected (refused|allowed), then env assignments for this run.
 probe() {
    local label="$1" expect="$2"; shift 2
-   local out
-   out="$( env "$@" "${parse_cmd}" --allow-uncommitted true 2>&1 || true )"
+   local out rc
+   out="$( env "$@" "${parse_cmd}" --allow-uncommitted true 2>&1 )" && rc=0 || rc=$?
+   ## An 'allowed' probe must SUCCEED: a non-zero exit with no refusal text (an
+   ## unrelated parse-cmd error) must not be read as 'allowed'.
+   if [ "${expect}" = 'allowed' ] && [ "${rc}" -ne 0 ]; then
+      fail "${label}: allowed probe exited ${rc} (parse-cmd errored, not the gate)"
+      return
+   fi
    local got='allowed'
    case "${out}" in
       *"${REFUSAL}"*)
@@ -96,16 +102,23 @@ probe "AI + dangerous-options unlock (no override)"     refused CLAUDECODE=1 dis
 probe "forbid + dangerous-options unlock (no override)" refused -u CLAUDECODE dist_build_forbid_allow_uncommitted=true dist_build_unlock_dangerous_options=true
 
 ## Allowed: a plain human build (no CLAUDECODE, no forbid).
-probe "human (no CLAUDECODE, no forbid)"                allowed -u CLAUDECODE
+## Clear the inherited forbid var too: a hardened ambient env that sets
+## dist_build_forbid_allow_uncommitted would otherwise refuse the human probe.
+probe "human (no CLAUDECODE, no forbid)"                allowed -u CLAUDECODE -u dist_build_forbid_allow_uncommitted
 
 ## --allow-uncommitted false never trips the gate, even for an AI session.
-false_out="$( env CLAUDECODE=1 "${parse_cmd}" --allow-uncommitted false 2>&1 || true )"
+false_rc=0
+false_out="$( env CLAUDECODE=1 "${parse_cmd}" --allow-uncommitted false 2>&1 )" || false_rc=$?
 case "${false_out}" in
    *"${REFUSAL}"*)
       fail "--allow-uncommitted false wrongly refused for an AI session"
       ;;
    *)
-      pass "--allow-uncommitted false is never refused"
+      if [ "${false_rc}" -ne 0 ]; then
+         fail "--allow-uncommitted false: parse-cmd exited ${false_rc} (unrelated error, not the gate)"
+      else
+         pass "--allow-uncommitted false is never refused"
+      fi
       ;;
 esac
 

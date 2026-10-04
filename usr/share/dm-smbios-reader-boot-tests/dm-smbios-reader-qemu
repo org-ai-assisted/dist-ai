@@ -330,6 +330,25 @@ if [ -n "${smbios_append}" ] && [ "${direct_kernel}" = 'true' ]; then
    exit 2
 fi
 
+## Enum validation of the execution-only flags, up front with the other argument checks so
+## EVERY path -- including the build-only --emit-cmdline path, which does no qemu setup --
+## rejects a bad value loudly. Arch/runtime compatibility (efi needs x86, KVM availability)
+## is a boot concern, checked on the execution path below.
+case "${firmware}" in
+   bios|efi|efi-secureboot) ;;
+   *)
+      printf 'dm-smbios-reader-qemu: --firmware must be bios, efi, or efi-secureboot\n' >&2
+      exit 2
+      ;;
+esac
+case "${accel}" in
+   auto|kvm|tcg) ;;
+   *)
+      printf 'dm-smbios-reader-qemu: --accel must be auto|kvm|tcg: %s\n' "${accel}" >&2
+      exit 2
+      ;;
+esac
+
 ## Reuse the canonical Debian-arch -> qemu machine-name map (single source of truth, shared
 ## with help-steps/variables) instead of re-encoding it here. The fragment is side-effect
 ## free (no dependency on help-steps/pre), so sourcing it drags in no build context.
@@ -423,24 +442,17 @@ command -v "${qemu_bin}" >/dev/null || { printf 'dm-smbios-reader-qemu: %s not i
 ## --firmware: bios (SeaBIOS on x86 / edk2 on arm64, the default), efi (OVMF), or efi-secureboot
 ## (OVMF secboot firmware + Microsoft-key vars that validate Debian's MS-signed shim). efi and
 ## efi-secureboot are x86 (amd64) only here; arm64 already boots via edk2 UEFI on the plain path.
-case "${firmware}" in
-   bios)
-      ;;
-   efi|efi-secureboot)
-      if [ "${guest_machine}" != 'x86_64' ]; then
-         printf 'dm-smbios-reader-qemu: --firmware %s is x86 (amd64) only; arm64 already uses UEFI\n' "${firmware}" >&2
-         exit 2
-      fi
-      ## Secure Boot requires System Management Mode; the q35 machine supports it.
-      if [ "${firmware}" = 'efi-secureboot' ]; then
-         machine="${machine},smm=on"
-      fi
-      ;;
-   *)
-      printf 'dm-smbios-reader-qemu: --firmware must be bios, efi, or efi-secureboot\n' >&2
+## The value is validated up top; here only the arch/runtime constraints apply.
+if [ "${firmware}" != 'bios' ]; then
+   if [ "${guest_machine}" != 'x86_64' ]; then
+      printf 'dm-smbios-reader-qemu: --firmware %s is x86 (amd64) only; arm64 already uses UEFI\n' "${firmware}" >&2
       exit 2
-      ;;
-esac
+   fi
+   ## Secure Boot requires System Management Mode; the q35 machine supports it.
+   if [ "${firmware}" = 'efi-secureboot' ]; then
+      machine="${machine},smm=on"
+   fi
+fi
 
 ## Command pre-flight (R-091: once, near the top). xorriso reads the ISO for --direct-kernel;
 ## qemu-img auto-detects a disk image's format; ImageMagick powers --screendump. Each is checked
@@ -492,10 +504,6 @@ case "${accel}" in
             printf 'dm-smbios-reader-qemu: no usable /dev/kvm -- TCG emulation (slow)%s\n' "$([ "${fast}" = 'true' ] && printf ' (--fast: mitigations=off)')" >&2
          fi
       fi
-      ;;
-   *)
-      printf 'dm-smbios-reader-qemu: --accel must be auto|kvm|tcg: %s\n' "${accel}" >&2
-      exit 2
       ;;
 esac
 

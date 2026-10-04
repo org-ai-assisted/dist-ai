@@ -315,6 +315,8 @@ def _forced_no_follow_rcfile(rc_file):
             with open(rc_file, "r", encoding="utf-8", errors="replace") as src:
                 body += src.read()
         except OSError:
+            ## best-effort: an unreadable project rcfile just means the forced
+            ## 'external-sources=false' body stands alone; following stays OFF.
             pass
     handle = tempfile.NamedTemporaryFile(
         mode="w", prefix="dist-ai-nofollow-", suffix=".shellcheckrc",
@@ -327,6 +329,7 @@ def _forced_no_follow_rcfile(rc_file):
         try:
             os.unlink(handle.name)
         except OSError:
+            ## best-effort cleanup: the temp rcfile may already be gone; ignore.
             pass
 
 ## A '# shellcheck source=' directive into the helper-scripts sibling repo
