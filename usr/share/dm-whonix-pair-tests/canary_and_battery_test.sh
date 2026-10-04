@@ -6,8 +6,9 @@
 ## AI-Assisted
 
 ## dm-whonix-pair pure-logic unit tests (no VM): the fail-closed GW-trace canary (a leak MUST
-## turn it red, a blind/missing capture MUST NOT read as a no-leak) and the battery run-command
-## assembly (one short command on /mnt/shared under sudo -S, no inline script). Sources the real
+## turn it red, a blind/missing capture MUST NOT read as a no-leak), the battery run-command
+## assembly (one short command on /mnt/shared under plain sudo, no inline script), and the
+## systemcheck positive control (both Tor ports, sysmaint, no sudo, fail-closed). Sources the real
 ## dm-whonix-pair (its source-guard keeps main() from running) with stubbed tcpdump/vbox-exec-local.
 
 set -o errexit
@@ -110,6 +111,33 @@ rc=0; has "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-con
 check 'ws_battery: runs the battery on /mnt/shared under plain sudo (no copyto, no inline script)' "${rc}"
 rc=0; has "printf " "${out}" && rc=1 || rc=0
 check 'ws_battery: no piped password (sysmaint passwordless sudo; no hardcoded secret)' "${rc}"
+
+## --- ws_tor_confirm: systemcheck positive control, BOTH Tor ports, sysmaint, no sudo ---------
+out="$(ws_tor_confirm)"
+rc=0; has "systemcheck --cli --leak-tests --function check_tor_socks_port" "${out}" || rc=1
+check 'ws_tor_confirm: confirms Tor SocksPort via the AppArmor-confined systemcheck' "${rc}"
+rc=0; has "systemcheck --cli --leak-tests --function check_tor_trans_port" "${out}" || rc=1
+check 'ws_tor_confirm: confirms Tor TransPort too (BOTH ports -- not the SocksPort-or-TransPort OR)' "${rc}"
+rc=0; has "--role sysmaint" "${out}" || rc=1
+check 'ws_tor_confirm: runs systemcheck in the sysmaint session (the booted role)' "${rc}"
+rc=0; has "sudo " "${out}" && rc=1 || rc=0
+check 'ws_tor_confirm: NO sudo (systemcheck runs unprivileged; single --function skips root_check)' "${rc}"
+
+## Fail-closed: if EITHER port control cannot confirm Tor, the positive control MUST fail -- a
+## dead/half-broken link must never read as a pass (no false green).
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x "${work}/vbe"
+rc=0; ws_tor_confirm >/dev/null 2>&1 || rc=$?
+check_fail 'ws_tor_confirm fails-closed (nonzero) when a port control cannot confirm Tor' "${rc}"
+## restore the echoing stub for anything after
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
 
 ## --- canary watch list: IPv6 targets are watched too ---------------------------------------
 set_counts 5 0

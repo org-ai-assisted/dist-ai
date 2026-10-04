@@ -13,7 +13,8 @@
 ## WS -> GW -> Tor by construction. The leak test PROVES that path is live and really
 ## Tor by running the authoritative anon-leak-test BATTERY inside the WS -- the full
 ## probe set (enumerate / icmp / udp-123 / ipv6 / tor-confirm / gateway-craft), fail-
-## closed, with tor-confirm as the live positive control -- NOT a single IsTor grep.
+## closed, with the AppArmor-confined systemcheck (both SocksPort + TransPort) as the
+## live positive control -- NOT a single IsTor grep.
 ##
 ## Shipped Whonix images carry VBoxService, so the battery is RUN via guestcontrol
 ## (vbox-exec-local), NOT OCR. It is DELIVERED via a VBox shared folder (name 'shared',
@@ -259,6 +260,24 @@ ws_battery() {
       --cmd "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
 }
 
+## Functional positive control: confirm LIVE Tor egress via the AppArmor-confined, hardened
+## systemcheck -- a stronger confirmer than a bespoke curl/JSON parse (a subverted control would
+## mask a dead link). Confirm BOTH ports: systemcheck's check_tor_socks_or_trans_port is an OR, so
+## a single-port pass could ride a HALF-broken Tor; require SocksPort AND TransPort. Runs as
+## sysmaint (the booted role), NO sudo: a single --function run skips root_check and the
+## connectivity test is user-agnostic, and it avoids the full --leak-tests `systemctl --user
+## is-system-running` (no user session under guestcontrol). Each systemcheck exit 0 = that port
+## reached Tor; ANY non-zero fails the control -- fail-closed.
+ws_tor_confirm() {
+   local port
+   for port in check_tor_socks_port check_tor_trans_port; do
+      "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+         --cmd "systemcheck --cli --leak-tests --function ${port}" \
+         || return 1
+   done
+   return 0
+}
+
 ## Stop Tor on the Gateway to ARM the killswitch, keeping the GW in its USER session so
 ## forwarding stays intact (a sysmaint boot could sever it). dev-root -- run once in a
 ## sysmaint session and baked into the clean-live snapshot -- makes `leaprun sudo` grant
@@ -331,9 +350,10 @@ main() {
    printf '%s\n' "${me}: boot Workstation (${ws}) into sysmaint (battery on /mnt/shared)"
    boot_workstation_sysmaint
 
-   ## Phase 1: gate on the GW's Tor bootstrap -- retry tor-confirm (the live positive
-   ## control) until it passes, so a clean battery later is meaningful, not a dead link.
-   printf '%s\n' "${me}: wait for Tor egress (tor-confirm) to come up"
+   ## Phase 1: gate on the GW's Tor bootstrap -- retry the systemcheck positive control
+   ## (SocksPort + TransPort) until it passes, so a clean battery later is meaningful, not
+   ## a dead link.
+   printf '%s\n' "${me}: wait for Tor egress (systemcheck SocksPort + TransPort) to come up"
    ## NOTE: clean-live must be a WARMED snapshot (booted once so first-boot provisioning
    ## ran and Tor cached its consensus on disk); a never-booted import does a cold Tor
    ## bootstrap that can exceed this budget (seen on a fresh dev-version import).
@@ -342,7 +362,7 @@ main() {
       ## Fast-fail: a crashed/aborted GW will never bootstrap -- do not burn the whole
       ## retry budget on a dead VM.
       assert_vm_running "${gw}" 'phase 1 (wait Tor)'
-      if ws_battery "--probe tor-confirm"; then
+      if ws_tor_confirm; then
          tor_ok='true'
          break
       fi
@@ -392,7 +412,7 @@ main() {
       local attempt2 restored='false'
       for attempt2 in $(seq 1 15); do
          assert_vm_running "${gw}" 'killswitch recovery'
-         if ws_battery "--probe tor-confirm"; then
+         if ws_tor_confirm; then
             restored='true'
             break
          fi
