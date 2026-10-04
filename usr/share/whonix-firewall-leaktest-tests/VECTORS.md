@@ -168,14 +168,15 @@ extension-header vectors, which this suite adds.
   `grep -r 'accept_ra\|accept_redirects' <whonix-firewall sysctl config>` and
   assert `=0` on the internal interface.)
 - Tor ControlPort (9051) command scoping from the internal interface -- a
-  control-channel concern, not forward egress, and ALREADY COVERED by its own suite:
-  the ControlPort is reachable from the Workstation BY DESIGN (onion-grater mediates
-  it), and which control commands a compromised Workstation may smuggle through is
-  tested exhaustively by the onion-grater profile tests (`onion-grater-tests`, also
-  run as `anon-gw-anonymizer-config-tests/onion_grater_profile_test.sh`: whitelist
-  fullmatch, argument-injection blocks, the June 2026 deanonymization fix). Not a gap
-  here -- it is the wrong layer for this forward-egress suite, and the right layer
-  already tests it.
+  control-channel concern, not forward egress: which control COMMANDS a compromised
+  Workstation may smuggle through is covered by its own layer, the onion-grater profile
+  tests (`onion-grater-tests`, the Python `onion_grater_profile_test.py` -- NOT the
+  `anon-gw-anonymizer-config-tests/onion_grater_profile_test.sh`, which only tests the
+  add/remove helpers' path-traversal). Command filtering is the wrong layer for this
+  forward-egress suite and the right layer already tests it. BUT port REACHABILITY
+  scoping (a SocksPort/TransPort/ControlPort bound 0.0.0.0, or reachable on a non-INT_IF
+  address, from the internal OR the VBox-NAT external side) is NOT covered by onion-grater
+  and REMAINS A GAP -- see the Non-Qubes-Whonix gaps section.
 - Firewall rule-reload race under live traffic -- the serial setup/teardown model
   structurally cannot exercise it.
 - EXHAUSTIVE protocol-number / destination-port sweeps (the wiki's 0-255 / 0-65535
@@ -202,3 +203,40 @@ extension-header vectors, which this suite adds.
   ruleset sed, the DNS-redirect strip) matches exact generated `.nft` wording; an
   upstream wording change makes a canary no-op, which fails LOUDLY ("canary did NOT
   reproduce"), never a false pass -- but would need re-syncing suite-wide.
+
+## Non-Qubes-Whonix gaps (reviewer-identified 2026-10-04 -- open, not yet covered)
+
+This suite + catalog grew from the Qubes-oriented forward-egress model. A focused
+ai-review (agy/grok/claude) confirmed it is comprehensive for L3 FORWARD egress but NOT
+for the full Non-Qubes-Whonix threat model (two VMs on a VirtualBox INTERNAL network + a
+host OS). Open, in-scope gaps and the layer each belongs to:
+
+- GW-ORIGINATED / host-DNS leaks (the Non-Qubes `NON_TOR_GATEWAY` exceptions): the shipped
+  Gateway OUTPUT accepts + skips Tor-redirect for `10.0.2.0/24` (VBox NAT: .2 router, .3
+  host DNS proxy), `192.168.0.0/24`, `192.168.1.0/24` -- EMPTY on Qubes. A Gateway process
+  reaching the host DNS proxy (`10.0.2.3`) or the LAN is a real non-Tor leak (the wiki
+  "Deactivate Host DNS" leak). The netns egress oracle EXCLUDES all `10.0.2.0/24` unicast
+  (not just DHCP/ND), so it is invisible by construction; the live canary watches only the
+  probe targets, so it misses it too. Layer: (a) tighten the netns oracle to exclude only
+  DHCP(67/68)/ND, not all `/24` unicast, + add gw-namespace egress probes to `10.0.2.3` /
+  `192.168.x`; (b) make the LIVE `dm-whonix-pair` canary an ALLOWLIST (only Tor-guard + DHCP
+  permitted on the GW external NIC), not a watchlist of specific targets.
+- GW external-side INPUT exposure / port reachability: SocksPort/TransPort/DnsPort/
+  ControlPort or ssh reachable from the VBox-NAT side or a non-INT_IF address (bound
+  `0.0.0.0`). In scope (open-proxy / inbound deanonymisation). Layer: netns input-chain
+  probes + a static ruleset/torrc bind audit (SocksPort is `10.152.152.10` / `127.0.0.1` /
+  the ULA, never `0.0.0.0`).
+- WS adapter-config invariant: a Workstation second NIC on NAT/Bridged bypasses the Gateway
+  entirely. Layer: static VM-config audit (exactly one NIC, internal-network, correct name).
+- Application / browser layer: WebRTC/STUN local-IP exposure, DNS prefetch, non-torified WS
+  apps (apt/ping launched without proxy), doileak/ipleak. In scope for the WS torification
+  guarantee. Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser).
+- GW/WS sysctl + neighbor config: `accept_ra` / `accept_redirects` / autoconf off on the
+  internal interface, `arp_ignore`/`arp_filter` -- load-bearing for the uRPF FIB. Layer:
+  static sysctl audit (merges with the rogue-RA config-audit above).
+
+OUT of scope (reviewer-confirmed): a second compromised Workstation SNIFFING a peer on the
+shared VBox internal LAN -- Whonix does not promise WS<->WS isolation and the traffic is
+still torified at the Gateway; only a rogue RA/DHCP from such a WS (FIB poisoning) matters,
+which the RA sysctl audit covers. Stream-isolation / circuit correlation is a torrc audit,
+not an egress leak.
