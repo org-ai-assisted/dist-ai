@@ -47,7 +47,7 @@ lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 source "${lib_dir}/leaktest_lib_nonqubes.sh"
 
 leaktest_preconditions
-trap leaktest_teardown EXIT
+trap leaktest_nonqubes_cleanup EXIT
 
 capture_file="$(mktemp)"
 rc=0
@@ -91,12 +91,17 @@ else
    rc=1
 fi
 
-## 5. Canary: OUTPUT made permissive -> the same clearnet datagram now egresses.
+## 5. Canary: OUTPUT made permissive -> the same clearnet datagram now egresses,
+## BOTH families -- so a silently broken IPv6 harness (e.g. a swallowed routing
+## error) cannot leave the v6 blocked leg above untested.
 output_permissive="$(mktemp --suffix=.nft)"
 leaktest_output_permissive_ruleset "${ruleset_file}" "${output_permissive}"
 leaktest_setup_gw_origin "${output_permissive}"
 leaktest_fire_gw_origin 4 "${PROBE_DST_IP4}" 443 0 "${capture_file}"
-leaktest_assert_leaked 'GW-originated clearnet (OUTPUT permissive)' \
+leaktest_assert_leaked 'GW-originated IPv4 clearnet (OUTPUT permissive)' \
+   "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
+leaktest_fire_gw_origin 6 "${PROBE_DST_IP6}" 443 0 "${capture_file}"
+leaktest_assert_leaked 'GW-originated IPv6 clearnet (OUTPUT permissive)' \
    "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
 exit "${rc}"

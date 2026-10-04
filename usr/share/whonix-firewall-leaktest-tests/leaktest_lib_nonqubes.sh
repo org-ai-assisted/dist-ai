@@ -59,11 +59,21 @@ leaktest_setup_gw_origin() {
 ## Args: <family 4|6> <dst> <dport> <sport> <capture_file>  (sport 0 = ephemeral)
 leaktest_fire_gw_origin() {
    local family="$1" dst="$2" dport="$3" sport="$4" capture_file="$5"
+   local send_err
+   send_err="$(mktemp)"
    LEAKTEST_PROBE_ERROR=''
    leaktest_capture_up "${LEAKTEST_EGRESS_BPF}" 6 "${capture_file}"
    sleep 1
-   ip netns exec gw python3 - "${family}" "${dst}" "${dport}" "${sport}" <<'PY'
-import socket, sys
+   ## A send the OUTPUT reject bounces (EPERM/EACCES) is the BLOCKED outcome (exit
+   ## 0 -> the oracle confirms zero egress). ANY OTHER OSError -- a broken route
+   ## (ENETUNREACH), a bad address (gaierror) -- is a HARNESS failure, not a
+   ## firewall block: the datagram never left, so a zero count would be a FALSE
+   ## pass. Exit 3 on it and surface it via LEAKTEST_PROBE_ERROR so assert_blocked
+   ## FAILS with a clear reason instead of a silent green.
+   if ! ip netns exec gw python3 - "${family}" "${dst}" "${dport}" "${sport}" 2>"${send_err}" <<'PY'
+import errno
+import socket
+import sys
 fam = socket.AF_INET6 if sys.argv[1] == '6' else socket.AF_INET
 dst = sys.argv[2]
 dport = int(sys.argv[3])
@@ -74,11 +84,14 @@ if sport:
     sock.bind((bind_addr, sport))
 try:
     sock.sendto(b'leaktest-probe', (dst, dport))
-except OSError:
-    ## An OUTPUT-rejected datagram bounces EPERM/EACCES here; that is the blocked
-    ## result the oracle confirms as zero egress, never a harness failure.
-    pass
+except OSError as exc:
+    if exc.errno not in (errno.EPERM, errno.EACCES):
+        print('unexpected send error: %s' % errno.errorcode.get(exc.errno, exc.errno), file=sys.stderr)
+        sys.exit(3)
 PY
+   then
+      LEAKTEST_PROBE_ERROR="gw-origin send failed (not a firewall block): $(tr '\n' ' ' <"${send_err}" 2>/dev/null)"
+   fi
    sleep 3
    leaktest_capture_wait
    LEAKTEST_CAPTURE_LIVE=0
@@ -218,4 +231,14 @@ leaktest_assert_reachable() {
    fi
    fail_case "${label} canary: NOT reachable with the firewall flushed -- probe proves nothing (dead listener?)"
    return 1
+}
+
+## Combined EXIT cleanup for the nonqubes cases: stop the helper processes THIS
+## extension starts (the external listener, the up UDP sink) -- the shared
+## leaktest_teardown only knows about the stub listener -- then run the standard
+## teardown. Idempotent: each stop is a no-op when its pid is empty.
+leaktest_nonqubes_cleanup() {
+   leaktest_ext_listener_stop
+   leaktest_up_udp_sink_stop
+   leaktest_teardown
 }

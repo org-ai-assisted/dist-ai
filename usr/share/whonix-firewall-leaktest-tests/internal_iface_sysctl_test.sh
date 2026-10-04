@@ -51,6 +51,27 @@ audit_sysctl() {
       printf 'FAIL: sysctl net.ipv4.conf.*.arp_ignore not set to 1 or 2\n' >&2
       rc=1
    fi
+   ## Presence is not enough: systemd-sysctl applies in order and a later
+   ## assignment (a wildcard flip or a per-interface override like
+   ## net.ipv6.conf.eth1.accept_ra=1) WINS. Reject ANY assignment of these keys to
+   ## an insecure value, on any scope (*, all, default, or a specific interface).
+   local bad
+   local bad_values=(
+      'net\.ipv6\.conf\.[^.]+\.accept_ra=[^0[:space:]]'
+      'net\.ipv4\.conf\.[^.]+\.accept_redirects=[^0[:space:]]'
+      'net\.ipv6\.conf\.[^.]+\.accept_redirects=[^0[:space:]]'
+      'net\.ipv4\.conf\.[^.]+\.arp_filter=[^1[:space:]]'
+      'net\.ipv4\.conf\.[^.]+\.arp_ignore=0'
+      'net\.ipv4\.conf\.[^.]+\.accept_source_route=[^0[:space:]]'
+      'net\.ipv6\.conf\.[^.]+\.accept_source_route=[^0[:space:]]'
+   )
+   for bad in "${bad_values[@]}"; do
+      if grep --quiet --extended-regexp "^[[:space:]]*${bad}" "${file}"; then
+         printf 'FAIL: sysctl sets a hardened key to an insecure value: %s\n' \
+            "$(grep --extended-regexp "^[[:space:]]*${bad}" "${file}" | tr '\n' ' ')" >&2
+         rc=1
+      fi
+   done
    return "${rc}"
 }
 
@@ -64,6 +85,16 @@ audit_internal_inet6_static() {
    fi
    if ! grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet6[[:space:]]+static([[:space:]]|$)' "${ws_file}"; then
       printf 'FAIL: WS internal iface eth0 is not inet6 static\n' >&2
+      rc=1
+   fi
+   ## A conflicting `inet6 auto`/`dhcp` stanza on the SAME internal iface re-enables
+   ## SLAAC/autoconf (accept_ra defaults back on) even beside the static one -- reject it.
+   if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth1[[:space:]]+inet6[[:space:]]+(auto|dhcp)([[:space:]]|$)' "${gw_file}"; then
+      printf 'FAIL: GW internal iface eth1 has a conflicting inet6 auto/dhcp stanza\n' >&2
+      rc=1
+   fi
+   if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet6[[:space:]]+(auto|dhcp)([[:space:]]|$)' "${ws_file}"; then
+      printf 'FAIL: WS internal iface eth0 has a conflicting inet6 auto/dhcp stanza\n' >&2
       rc=1
    fi
    return "${rc}"
@@ -99,7 +130,7 @@ else
    rc=1
 fi
 
-## Canary: drop the accept_ra line -> the sysctl audit must FAIL (teeth).
+## Canary 1: drop the accept_ra line -> the sysctl audit must FAIL (teeth).
 canary="$(mktemp)"
 grep --invert-match --line-regexp --fixed-strings 'net.ipv6.conf.*.accept_ra=0' "${sysctl_file}" >"${canary}"
 if audit_sysctl "${canary}" 2>/dev/null; then
@@ -107,6 +138,18 @@ if audit_sysctl "${canary}" 2>/dev/null; then
    rc=1
 else
    printf 'PASS: canary (missing accept_ra rejected); audit has teeth\n'
+fi
+
+## Canary 2: a per-interface override re-enabling RA must FAIL (proves the
+## conflicting-value teeth, not just the presence check).
+canary_override="$(mktemp)"
+cp -- "${sysctl_file}" "${canary_override}"
+printf '%s\n' 'net.ipv6.conf.eth1.accept_ra=1' >>"${canary_override}"
+if audit_sysctl "${canary_override}" 2>/dev/null; then
+   printf 'FAIL: canary -- sysctl audit PASSED a per-iface accept_ra=1 override (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (per-iface accept_ra override rejected); audit has teeth\n'
 fi
 
 exit "${rc}"

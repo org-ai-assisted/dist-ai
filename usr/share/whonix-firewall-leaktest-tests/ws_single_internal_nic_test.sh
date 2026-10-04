@@ -25,10 +25,11 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## Audit one interfaces file: exactly one non-lo iface, named eth0, internal.
-## Returns 0 on pass, 1 on any violation. Reused by the canary.
+## Audit one interfaces file: exactly one non-lo iface, named eth0, configured
+## STATIC on the internal network. Returns 0 on pass, 1 on any violation. Reused
+## by the canary.
 audit_ws_nic() {
-   local file="$1" names count
+   local file="$1" names count stanza
    ## Uncommented `iface <name> inet{,6} ...` stanzas, loopback excluded. A
    ## commented `#iface ... dhcp` line does not match (the `#` precedes `iface`).
    names="$(grep --extended-regexp '^[[:space:]]*iface[[:space:]]+[^[:space:]]+[[:space:]]+inet' "${file}" \
@@ -43,12 +44,36 @@ audit_ws_nic() {
       printf 'FAIL: the single NIC is not the internal eth0: %s\n' "${names}" >&2
       return 1
    fi
-   if ! grep --quiet --extended-regexp '^[[:space:]]*address[[:space:]]+10\.152\.152\.11([[:space:]]|$)' "${file}"; then
-      printf 'FAIL: eth0 is not on the internal network (no address 10.152.152.11)\n' >&2
+   ## A `source`/`source-directory` directive could pull in a NIC-adding file this
+   ## single-file audit cannot see -- the shipped package must not use one.
+   if grep --quiet --extended-regexp '^[[:space:]]*(source|source-directory)[[:space:]]' "${file}"; then
+      printf 'FAIL: interfaces file pulls in others via source/source-directory (unaudited NICs)\n' >&2
       return 1
    fi
-   if ! grep --quiet --extended-regexp '^[[:space:]]*gateway[[:space:]]+10\.152\.152\.10([[:space:]]|$)' "${file}"; then
-      printf 'FAIL: eth0 does not route via the Whonix-Gateway (no gateway 10.152.152.10)\n' >&2
+   ## eth0 must be STATIC, never dhcp (a DHCP lease on a NAT/bridged eth0 installs a
+   ## non-Tor default route).
+   if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+dhcp([[:space:]]|$)' "${file}"; then
+      printf 'FAIL: eth0 is configured inet dhcp (must be static)\n' >&2
+      return 1
+   fi
+   ## Extract ONLY the `iface eth0 inet static` stanza (up to the next stanza
+   ## keyword) and require the internal address + gateway WITHIN it -- so address /
+   ## gateway lines parked under another stanza (e.g. lo) cannot satisfy the check.
+   stanza="$(awk '
+      /^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+static([[:space:]]|$)/ { inblk = 1; print; next }
+      inblk && /^[[:space:]]*(iface|mapping|auto|allow-|source|source-directory)/ { inblk = 0 }
+      inblk { print }
+   ' "${file}")"
+   if [ -z "${stanza}" ]; then
+      printf 'FAIL: no "iface eth0 inet static" stanza\n' >&2
+      return 1
+   fi
+   if ! grep --quiet --extended-regexp '^[[:space:]]*address[[:space:]]+10\.152\.152\.11([[:space:]]|$)' <<< "${stanza}"; then
+      printf 'FAIL: eth0 static stanza is not on the internal network (no address 10.152.152.11)\n' >&2
+      return 1
+   fi
+   if ! grep --quiet --extended-regexp '^[[:space:]]*gateway[[:space:]]+10\.152\.152\.10([[:space:]]|$)' <<< "${stanza}"; then
+      printf 'FAIL: eth0 static stanza does not route via the Whonix-Gateway (no gateway 10.152.152.10)\n' >&2
       return 1
    fi
    return 0
@@ -72,7 +97,7 @@ else
    rc=1
 fi
 
-## Canary: a second NIC must FAIL the audit, proving it has teeth.
+## Canary 1: a second NIC must FAIL the audit, proving it has teeth.
 canary="$(mktemp)"
 cp -- "${iface_file}" "${canary}"
 printf '%s\n' 'auto eth1' 'iface eth1 inet dhcp' >>"${canary}"
@@ -81,6 +106,17 @@ if audit_ws_nic "${canary}" 2>/dev/null; then
    rc=1
 else
    printf 'PASS: canary (second NIC rejected); audit has teeth\n'
+fi
+
+## Canary 2: eth0 flipped to dhcp must FAIL (proves the static-method teeth).
+canary_dhcp="$(mktemp)"
+sed -E 's/^([[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+)static/\1dhcp/' \
+   "${iface_file}" >"${canary_dhcp}"
+if audit_ws_nic "${canary_dhcp}" 2>/dev/null; then
+   printf 'FAIL: canary -- audit PASSED eth0 as inet dhcp (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (eth0 dhcp rejected); audit has teeth\n'
 fi
 
 exit "${rc}"
