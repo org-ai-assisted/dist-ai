@@ -78,7 +78,11 @@ image_test_results_publish() {
    outdir="${results_root}/${name}/${ts}"
    mkdir --parents -- "${outdir}"
 
-   if [ -n "${shot_src}" ] && [ -f "${shot_src}" ]; then
+   ## The screenshot path is produced by the unprivileged TEST_USER but copied
+   ## here as root: a symlink there would make root read its target (e.g.
+   ## /etc/shadow) into the world-readable results plane. Refuse a symlink;
+   ## -f alone follows it.
+   if [ -n "${shot_src}" ] && [ ! -L "${shot_src}" ] && [ -f "${shot_src}" ]; then
       cp -- "${shot_src}" "${outdir}/screenshot.png"
    fi
    image_test_write_result_json \

@@ -74,6 +74,9 @@ resume='false'
 ## downloaded inside work_dir, so removing it also discards an unverified
 ## download.
 work_dir=""
+## The predictable --resume staging dir is kept across runs; every other work_dir
+## (ephemeral download dir, print-version temp dir) is removed on exit.
+keep_work_dir='false'
 
 print_usage() {
    printf '%s\n' "Usage:
@@ -99,9 +102,10 @@ http (onion services carry their own encryption)."
 }
 
 cleanup() {
-   ## Resume keeps its predictable staging dir (and any partial) on purpose, so a
-   ## re-run continues; a verification-failed partial is dropped at the check.
-   if [ "${resume}" = 'true' ]; then
+   ## The --resume download dir is kept on purpose (a re-run continues it; a
+   ## verification-failed partial is dropped at the check). Every other work_dir
+   ## -- including the print-version temp dir, which also sets resume -- is removed.
+   if [ "${keep_work_dir}" = 'true' ]; then
       return 0
    fi
    if [ -n "${work_dir}" ] && [ -d "${work_dir}" ]; then
@@ -508,9 +512,23 @@ main() {
    ## persistent 0700 dir (guarded against being a symlink) to continue a partial.
    if [ "${resume}" = 'true' ]; then
       work_dir="${output_dir}/.iso-download-resume"
+      ## A predictable dir in a world-writable output_dir is a root arbitrary-write
+      ## vector: an attacker pre-creates it and plants symlinks that root's curl
+      ## follows. chmod does NOT change ownership, so REFUSE a pre-existing dir we
+      ## do not own, then re-assert owner + 0700 + not-a-symlink after our mkdir --
+      ## once the dir is exclusively ours, nothing else can plant inside it.
+      if [ -e "${work_dir}" ] && [ ! -O "${work_dir}" ]; then
+         die 2 "refusing resume dir not owned by us: '${work_dir}'"
+      fi
       guard_not_symlink "${work_dir}"
+      ## output_dir pre-exists, so this creates only the leaf; chmod sets its mode
+      ## (we own it, default umask keeps others out until the chmod narrows to 0700).
       mkdir --parents -- "${work_dir}"
       chmod 0700 -- "${work_dir}"
+      if [ ! -O "${work_dir}" ] || [ ! -d "${work_dir}" ] || [ -L "${work_dir}" ]; then
+         die 2 "resume dir is not an exclusively-owned directory: '${work_dir}'"
+      fi
+      keep_work_dir='true'
    else
       work_dir="$(mktemp --directory -- "${output_dir}/.iso-download.XXXXXXXX")"
    fi
