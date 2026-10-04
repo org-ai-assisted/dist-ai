@@ -236,6 +236,30 @@ SHELLCHECK_OPTIONAL = (
     "avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,"
     "quote-safe-variables,require-variable-braces")
 
+## Per-subprocess wall-clock cap on a single shellcheck run. '--external-sources'
+## follows '# shellcheck source=' directives transitively, and that following is
+## EXPONENTIAL on the deep helper-scripts graph (see the comment above
+## _absent_helper_scripts_sibling): a resolvable sibling tree makes shellcheck hang
+## for minutes. Without a cap the hang reaches the OUTER hook timeout, which fails
+## OPEN -- the gate silently stops gating. On expiry the run is retried once without
+## following (bounded; see Shellcheck.detect), so a hanging file degrades loudly
+## instead of vanishing.
+##
+## INVARIANT: this inner cap MUST stay strictly below the smallest OUTER hook cap
+## (shell-style-check.py SHELL_STYLE_GATE_TIMEOUT = 20s; pre-commit
+## STYLE_GATE_TIMEOUT_SECONDS = 120s). If it ever exceeds the outer cap the outer
+## fail-open re-opens the silent-pass hole this closes. Overridable for tests via
+## DIST_AI_SHELLCHECK_TIMEOUT.
+try:
+    SHELLCHECK_TIMEOUT = float(os.environ.get("DIST_AI_SHELLCHECK_TIMEOUT", "10"))
+except ValueError:
+    SHELLCHECK_TIMEOUT = 10.0
+
+
+def _run_shellcheck(command, timeout):
+    return subprocess.run(
+        command, capture_output=True, text=True, timeout=timeout)
+
 ## A '# shellcheck source=' directive into the helper-scripts sibling repo
 ## (repo-tree shape '<repo-parent>/helper-scripts/usr/libexec/helper-scripts/...')
 ## cannot be FOLLOWED on a dev host: a local helper-scripts checkout is disallowed,
@@ -335,6 +359,55 @@ def _render_shellcheck(path, comments):
     return "\n".join(lines)
 
 
+def _emit_shellcheck(ctx, proc, src_dir, drop_all_sc1091):
+    """Turn a finished shellcheck PROC into model events. drop_all_sc1091 is the
+    degraded (no-following) path: EVERY SC1091 'not following' is dropped -- that
+    info is the forced consequence of disabling the follow, identical in semantics
+    to the already-accepted absent-sibling drop; every other finding stays real.
+    The normal path drops only the SC1091 of a genuinely absent helper-scripts
+    sibling (see _is_absent_helper_scripts_source)."""
+    try:
+        comments = json.loads(proc.stdout)["comments"]
+    except (ValueError, KeyError, TypeError):
+        ## No parseable JSON (a shellcheck internal error, or a build without
+        ## --format=json1). Fall back to the raw exit status so a real failure
+        ## is never silently swallowed.
+        if proc.returncode != 0:
+            message = "shellcheck: '%s'" % ctx.path
+            raw = proc.stdout.strip() or proc.stderr.strip()
+            if raw:
+                message += "\n" + raw.rstrip("\n")
+            yield model.fail("shellcheck", message, ctx.path)
+        return
+    if drop_all_sc1091:
+        remaining = [c for c in comments if c.get("code") != 1091]
+    else:
+        ## The git probe for the sibling runs only when there is an unfollowable
+        ## source to judge (rc>=1 with an SC1091 'does not exist').
+        needs_sibling = any(
+            comment.get("code") == 1091
+            and "does not exist" in comment.get("message", "")
+            for comment in comments)
+        sibling_dir = (_absent_helper_scripts_sibling(ctx.abspath)
+                       if needs_sibling else None)
+        remaining = [
+            comment for comment in comments
+            if not _is_absent_helper_scripts_source(comment, src_dir, sibling_dir)]
+    if remaining:
+        yield model.fail(
+            "shellcheck", _render_shellcheck(ctx.path, remaining), ctx.path)
+    elif proc.returncode >= 2:
+        ## rc 0 clean, rc 1 findings (all tolerated if we reach here); rc>=2 is a
+        ## shellcheck PROCESSING error (unreadable path, a directory) that emits
+        ## '{"comments":[]}' -- fail-closed, never a silent green.
+        message = "shellcheck: '%s' could not be processed (exit %d)" % (
+            ctx.path, proc.returncode)
+        err = proc.stderr.strip()
+        if err:
+            message += "\n" + err.rstrip("\n")
+        yield model.fail("shellcheck", message, ctx.path)
+
+
 class Shellcheck(ExternalRule):
     """'shellcheck --external-sources' with the ai-review-aligned optional
     checks. '--source-path=<script dir>' resolves a '# shellcheck source=' path
@@ -350,7 +423,9 @@ class Shellcheck(ExternalRule):
     sibling that cannot be followed locally is dropped -- see
     _is_absent_helper_scripts_source -- while every other finding stays fatal.
     Fail-open when shellcheck is absent (a bare git-hook run without it installed
-    must still commit)."""
+    must still commit). Each run is bounded by SHELLCHECK_TIMEOUT: if
+    '--external-sources' following explodes it is retried once without following and
+    a NOTE marks the degrade, so a hanging file never reaches the outer fail-open."""
 
     id = "shellcheck"
 
@@ -371,7 +446,28 @@ class Shellcheck(ExternalRule):
                 if rc_file is not None:
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
-                proc = subprocess.run(command, capture_output=True, text=True)
+                try:
+                    proc = _run_shellcheck(command, SHELLCHECK_TIMEOUT)
+                    degraded = False
+                except subprocess.TimeoutExpired:
+                    ## '--external-sources' following exploded (exponential on the
+                    ## deep helper-scripts graph). Re-run ONCE without following: it
+                    ## cannot follow, so it cannot explode, and shellcheck still
+                    ## fully analyzes the file BODY. Bound it too -- no unbounded
+                    ## subprocess remains.
+                    fallback = [arg for arg in command
+                                if arg != "--external-sources"]
+                    proc = _run_shellcheck(fallback, SHELLCHECK_TIMEOUT)
+                    degraded = True
+        except subprocess.TimeoutExpired:
+            ## The no-following fallback itself hung (pathological: not a following
+            ## explosion). Fail CLOSED and loud -- never a silent green.
+            yield model.fail(
+                "shellcheck",
+                "shellcheck: '%s' timed out after %gs even without "
+                "--external-sources following" % (ctx.path, SHELLCHECK_TIMEOUT),
+                ctx.path)
+            return
         except OSError as exc:
             ## shellcheck resolved on PATH but could not be executed. Fail OPEN so
             ## a bare git-hook run still commits, but leave a NOTE so the skip is
@@ -380,43 +476,14 @@ class Shellcheck(ExternalRule):
                 "shellcheck",
                 "shellcheck present but could not run (%s); skipping" % exc)
             return
-        try:
-            comments = json.loads(proc.stdout)["comments"]
-        except (ValueError, KeyError, TypeError):
-            ## No parseable JSON (a shellcheck internal error, or a build without
-            ## --format=json1). Fall back to the raw exit status so a real failure
-            ## is never silently swallowed.
-            if proc.returncode != 0:
-                message = "shellcheck: '%s'" % ctx.path
-                raw = proc.stdout.strip() or proc.stderr.strip()
-                if raw:
-                    message += "\n" + raw.rstrip("\n")
-                yield model.fail("shellcheck", message, ctx.path)
-            return
-        ## The git probe for the sibling runs only when there is an unfollowable
-        ## source to judge (rc>=1 with an SC1091 'does not exist').
-        needs_sibling = any(
-            comment.get("code") == 1091
-            and "does not exist" in comment.get("message", "")
-            for comment in comments)
-        sibling_dir = (_absent_helper_scripts_sibling(ctx.abspath)
-                       if needs_sibling else None)
-        remaining = [
-            comment for comment in comments
-            if not _is_absent_helper_scripts_source(comment, src_dir, sibling_dir)]
-        if remaining:
-            yield model.fail(
-                "shellcheck", _render_shellcheck(ctx.path, remaining), ctx.path)
-        elif proc.returncode >= 2:
-            ## rc 0 clean, rc 1 findings (all tolerated if we reach here); rc>=2 is a
-            ## shellcheck PROCESSING error (unreadable path, a directory) that emits
-            ## '{"comments":[]}' -- fail-closed, never a silent green.
-            message = "shellcheck: '%s' could not be processed (exit %d)" % (
-                ctx.path, proc.returncode)
-            err = proc.stderr.strip()
-            if err:
-                message += "\n" + err.rstrip("\n")
-            yield model.fail("shellcheck", message, ctx.path)
+        if degraded:
+            ## Always VISIBLE -- the degrade is never a silent pass.
+            yield model.note(
+                "shellcheck",
+                "shellcheck '--external-sources' following exceeded %gs on '%s'; "
+                "re-checked without following (SC1091 cross-file source resolution "
+                "deferred to CI)" % (SHELLCHECK_TIMEOUT, ctx.path))
+        yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 
 
 RULES = (BashParse(), Shellcheck())
