@@ -277,6 +277,53 @@ def security_tests(lockfile_sh, check):
                         res2.returncode))
 
 
+def fallback_tests(lockfile_sh, check):
+    """With no usable per-user runtime dir (headless / container / 'sudo -u user' /
+    ssh without a logind session), lockfile.sh falls back to the per-user CACHE dir
+    and still locks -- and the anti-TOCTOU property must hold on the fallback too: a
+    cache dir that is a symlink is refused."""
+    tmp = tempfile.mkdtemp(prefix='lockfile-fb-')
+    src = make_source_script(tmp, lockfile_sh)
+
+    ## 1) runtime dir absent -> fall back to XDG_CACHE_HOME and lock there; a 2nd
+    ##    instance skips. XDG_RUNTIME_DIR points at a nonexistent path so the host's
+    ##    real /run/user/EUID is not used.
+    cache = os.path.join(tmp, 'cache')
+    os.mkdir(cache, 0o700)
+    env = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp, 'absent'),
+               XDG_CACHE_HOME=cache)
+    holder = subprocess.Popen([src, 'fbkey', '2'], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, env=env)
+    time.sleep(0.6)
+    second = subprocess.run([src, 'fbkey', '0'], capture_output=True, text=True,
+                            timeout=30, env=env)
+    lockdir = os.path.join(cache, 'flocker-temp-folder')
+    first_out = holder.communicate(timeout=15)[0]
+    check('fallback: no runtime dir locks under the cache dir',
+          'LOCKED' in first_out and os.path.isdir(lockdir),
+          'isdir=%s out=%r' % (os.path.isdir(lockdir), first_out.strip()[:80]))
+    check('fallback: 2nd instance skips under the cache fallback',
+          'LOCKED' not in second.stdout and second.returncode != 0,
+          '%r rc=%d' % (second.stdout.strip(), second.returncode))
+
+    ## 2) a symlinked cache dir is refused.
+    tmp2 = tempfile.mkdtemp(prefix='lockfile-fb2-')
+    src2 = make_source_script(tmp2, lockfile_sh)
+    real = os.path.join(tmp2, 'real')
+    os.mkdir(real)
+    link = os.path.join(tmp2, 'cachelink')
+    os.symlink(real, link)
+    env2 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp2, 'absent'),
+                XDG_CACHE_HOME=link)
+    res = subprocess.run([src2, '', '0'], capture_output=True, text=True,
+                         timeout=30, env=env2)
+    combined = (res.stdout + res.stderr).lower()
+    check('fallback: symlinked cache dir refused',
+          'LOCKED' not in res.stdout and res.returncode != 0
+          and 'symlink' in combined,
+          '%r rc=%d' % ((res.stdout + res.stderr).strip()[:120], res.returncode))
+
+
 def fuzz(lockfile_sh, iterations, seed, check):
     """Hammer random keys through wrap mode: a same-key contender must skip
     while a holder runs; a distinct-key contender must run."""
@@ -337,6 +384,7 @@ def main():
         wrap_mode_tests(lockfile_sh, check)
         inline_safety_tests(lockfile_sh, check)
         security_tests(lockfile_sh, check)
+        fallback_tests(lockfile_sh, check)
     fuzz(lockfile_sh, args.iterations, args.seed, check)
 
     print('%d passed, %d failed' % (passed, failed))
