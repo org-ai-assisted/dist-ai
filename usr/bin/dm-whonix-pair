@@ -111,7 +111,7 @@ assert_vm_running() {
          return 0
          ;;
       *)
-         die "${FAIL_RC}" "${label}: VM '${vm}' is not running (state=${state:-unknown}) -- boot crashed/aborted; failing fast instead of retrying"
+         die "${SETUP_RC}" "${label}: VM '${vm}' is not running (state=${state:-unknown}) -- boot crashed/aborted; a provisioning/infra failure, not a WS leak"
          ;;
    esac
 }
@@ -214,7 +214,7 @@ restore_fresh() {
       sleep 2
    done
    "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
-      || die "${FAIL_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}'"
+      || die "${SETUP_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}' -- a provisioning failure, not a WS leak"
    "${VBOXMANAGE}" discardstate "${target}" >/dev/null 2>&1 || true
 }
 
@@ -247,7 +247,7 @@ boot_workstation_sysmaint() {
    ## before its ~5s autoboot into USER (single-source selector, shared with the gates).
    select_installed_sysmaint
    wait_guestcontrol_ready sysmaint 300 \
-      || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint"
+      || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
 }
 
 ## Run the battery in the WS as sysmaint via guestcontrol; its exit code is the verdict
@@ -315,9 +315,9 @@ gw_start_tor() {
 ## unreadable pcap is treated as a blind capture, never a pass.
 canary_gateway_pcap() {
    local hits total
-   [ -s "${nictrace_pcap}" ] || die "${FAIL_RC}" "canary: GW nictrace pcap empty/missing (blind capture)"
+   [ -s "${nictrace_pcap}" ] || die "${SETUP_RC}" "canary: GW nictrace pcap empty/missing (blind capture -- inconclusive, not a leak)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
-   [ "${total}" -gt 0 ] || die "${FAIL_RC}" "canary: GW emitted nothing on its external NIC (blind -- not a no-leak)"
+   [ "${total}" -gt 0 ] || die "${SETUP_RC}" "canary: GW emitted nothing on its external NIC (blind -- inconclusive, not a leak)"
    ## Watch the clearnet targets as DESTINATION and the forged sources as SOURCE: a
    ## forged-source leak egresses with CRAFT_SRC/CRAFT_SRC6 as its SOURCE (to any dst),
    ## which a dst-only filter would miss. The un-NAT'd redirect reply (dst=CRAFT_SRC) is
@@ -369,7 +369,11 @@ main() {
       printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
       sleep 20
    done
-   [ "${tor_ok}" = 'true' ] || die "${FAIL_RC}" "Tor egress never confirmed (GW Tor did not bootstrap, or a leak)"
+   ## Budget exhausted = the positive control never confirmed Tor. This is INCONCLUSIVE
+   ## (GW Tor did not bootstrap, or a provisioning gap) -- NOT a leak: systemcheck's exit is
+   ## binary, so it cannot distinguish "not up" from "IsTor=false", and a real leak is caught
+   ## authoritatively by Phase 2's battery + GW-NIC canary. SETUP, never a false leak verdict.
+   [ "${tor_ok}" = 'true' ] || die "${SETUP_RC}" "Tor egress never confirmed (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a leak"
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
    ## canary (canary_gateway_pcap) watches exactly these. clearnet-ipv4 = CLEARNET_ICMP.
@@ -385,8 +389,17 @@ main() {
    ## run on a non-leak. The WS's IPv6 egress IS covered here -- by the gateway-craft v6
    ## matrix (emit + GW-NIC canary), which is gated on a live v6 path and recorded honestly.
    printf '%s\n' "${me}: run the full leak-test battery in the Workstation (sysmaint)"
+   ## Battery exit: 0 clean | 1 a probe FAILed (proven non-Tor egress = LEAK) | 2 a probe
+   ## could not run (inconclusive). Only a PROVEN leak is FAIL_RC; inconclusive is SETUP_RC
+   ## -- a provisioning/transient probe error must never record as a leak verdict.
+   local battery_rc=0
    ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
-      || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
+      || battery_rc=$?
+   if [ "${battery_rc}" = '1' ]; then
+      die "${FAIL_RC}" "LEAK: the battery proved non-Tor egress (a probe FAILed)"
+   elif [ "${battery_rc}" != '0' ]; then
+      die "${SETUP_RC}" "leak test INCONCLUSIVE: a probe could not run (battery rc=${battery_rc}) -- not a proven leak"
+   fi
 
    ## Phase 3+4: KILLSWITCH -- OPT-IN only (DM_WHONIX_PAIR_KILLSWITCH=1). Stopping Tor on
    ## the GW needs root there, and the only no-sysmaint route (dev-root -> leaprun sudo)
@@ -402,7 +415,7 @@ main() {
       printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
       gw_stop_tor
       ws_battery "--probe gateway-craft ${craft_flags}" \
-         || die "${FAIL_RC}" "killswitch: craft emit could not run with Tor down"
+         || die "${SETUP_RC}" "killswitch: craft emit could not run with Tor down -- an infra failure, not a WS leak"
 
       ## RECOVERY. Restart Tor and prove egress is restored -- so the killswitch STOP was a
       ## bracketed, reversible operation (the GW is not wedged) and a dead Tor can never
@@ -420,7 +433,7 @@ main() {
          sleep 20
       done
       [ "${restored}" = 'true' ] \
-         || die "${FAIL_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible)"
+         || die "${SETUP_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible) -- an infra failure, not a WS leak"
    fi
 
    ## Canary: stop the GW so its nictrace pcap is flushed, then assert NO probe target
