@@ -82,6 +82,31 @@ cp -- "${template}" "${work}/usr/bin/dist-installer-cli"
 cp -- "${generator}" "${work}/usr/share/usability-misc/build-dist-installer-cli"
 git -C "${work}" init -q
 
+## build-dist-installer-cli runs 'shellcheck' on the regenerated standalone, which
+## relies on the project .shellcheckrc to silence unavoidable cross-file-source
+## noise (SC2034 config vars read by sourced children, SC1090/SC1091 unfollowable
+## sources). shellcheck finds it by walking UP from the checked file; this
+## throwaway tree has none, so provide one -- else the generator's shellcheck step
+## FATALs on noise and this guard false-fails. Prefer the real .shellcheckrc that
+## governs the committed standalone (no policy drift); fall back to the canonical
+## disable set for a standalone component checkout that ships no .shellcheckrc.
+work_shellcheckrc="${work}/.shellcheckrc"
+governing_shellcheckrc=""
+rc_search_dir="$( dirname -- "${committed}" )"
+while [ "${rc_search_dir}" != "/" ]; do
+   if [ -f "${rc_search_dir}/.shellcheckrc" ]; then
+      governing_shellcheckrc="${rc_search_dir}/.shellcheckrc"
+      break
+   fi
+   rc_search_dir="$( dirname -- "${rc_search_dir}" )"
+done
+if [ -n "${governing_shellcheckrc}" ]; then
+   cp -- "${governing_shellcheckrc}" "${work_shellcheckrc}"
+else
+   printf '%s\n' 'disable=SC2154' 'disable=SC2034' 'disable=SC1090' \
+      'disable=SC1091' > "${work_shellcheckrc}"
+fi
+
 regenerated="${work}/usr/share/usability-misc/dist-installer-cli-standalone"
 gen_log="${work}/gen.log"
 if ! HELPER_SCRIPTS_PATH="${helper_scripts_path}" \
