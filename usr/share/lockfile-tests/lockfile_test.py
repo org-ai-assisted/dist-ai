@@ -19,6 +19,11 @@
 ##     command inherits neither LOCK_NAME nor FLOCKER, a command that itself
 ##     sources lockfile does NOT self-deadlock, and the usage guards.
 ##
+##   * INLINE-SAFETY -- some builds (the dist-installer-cli standalone generator)
+##     paste lockfile.sh's BODY verbatim into a host script. Inlined, its top
+##     level runs with BASH_SOURCE[0]==$0, which must NOT mis-fire wrap mode and
+##     eat the host's own first argument; the host must still self-lock.
+##
 ## A fuzz phase hammers random keys through wrap mode and asserts per-key
 ## isolation against a key-equality oracle.
 ##
@@ -174,6 +179,63 @@ def wrap_mode_tests(lockfile_sh, check):
     holder.wait(timeout=15)
 
 
+def make_inlined_host(tmp, lockfile_sh):
+    """Mimic build-dist-installer-cli: paste lockfile.sh's BODY (minus its
+    shebang) verbatim into a host script, under a fixed LOCK_NAME, then the host's
+    own 'main'. Reads the CURRENT lockfile.sh text, so no drift. The host takes
+    its own args ($1 a stand-in installer flag, $2 a hold time) -- $1 must NOT be
+    mis-read as a wrap-mode lock key once inlined."""
+    body = open(lockfile_sh, encoding='ascii').read().splitlines()
+    if body and body[0].startswith('#!'):
+        body = body[1:]
+    path = os.path.join(tmp, 'inlined_host.sh')
+    write_exec(path,
+               '#!/bin/bash\n'
+               'set -o errexit\n'
+               'set -o nounset\n'
+               'export LOCK_NAME="inlined-host-key"\n'
+               + '\n'.join(body) + '\n'
+               'echo LOCKED\n'
+               "sleep \"${2:-0}\"\n")
+    return path
+
+
+def inline_safety_tests(lockfile_sh, check):
+    """build-dist-installer-cli inlines lockfile.sh's body into the
+    dist-installer-cli standalone. Inlined, BASH_SOURCE[0]==$0 at the host's top
+    level: wrap mode must stay off (not eat the host's $1) and the host must still
+    self-lock. Pre-fix, an inlined host aborted on ANY argument."""
+    tmp = tempfile.mkdtemp(prefix='lockfile-inline-')
+    runtime = os.path.join(tmp, 'xdg')
+    os.mkdir(runtime, 0o700)
+    env = dict(os.environ, XDG_RUNTIME_DIR=runtime)
+    host = make_inlined_host(tmp, lockfile_sh)
+
+    def hrun(args):
+        return subprocess.run([host] + args, capture_output=True, text=True,
+                              timeout=30, env=env)
+
+    ## 1) a host invoked WITH an argument self-locks instead of mis-firing wrap
+    ##    mode: it reaches LOCKED and exits 0 (pre-fix: aborts, no LOCKED).
+    first = hrun(['installer-flag', '0'])
+    check('inline: host argument does not mis-fire wrap mode',
+          'LOCKED' in first.stdout and first.returncode == 0,
+          '%r rc=%d' % ((first.stdout + first.stderr).strip()[:120],
+                        first.returncode))
+
+    ## 2) the inlined self-lock still mutually excludes: a 2nd instance skips
+    ##    (non-zero, no LOCKED) while the 1st holds the lock.
+    holder = subprocess.Popen([host, 'installer-flag', '2'],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, env=env)
+    time.sleep(0.6)
+    second = hrun(['installer-flag', '0'])
+    check('inline: 2nd inlined instance skips while 1st holds',
+          'LOCKED' not in second.stdout and second.returncode != 0,
+          '%r rc=%d' % (second.stdout.strip(), second.returncode))
+    holder.wait(timeout=15)
+
+
 def security_tests(lockfile_sh, check):
     """The lock directory must live under the caller's per-user runtime dir
     (XDG_RUNTIME_DIR), never /tmp, and a symlinked lock dir must be refused --
@@ -269,6 +331,7 @@ def main():
     if not args.fuzz_only:
         source_mode_tests(lockfile_sh, check)
         wrap_mode_tests(lockfile_sh, check)
+        inline_safety_tests(lockfile_sh, check)
         security_tests(lockfile_sh, check)
     fuzz(lockfile_sh, args.iterations, args.seed, check)
 

@@ -6,8 +6,9 @@
 ## AI-Assisted
 
 ## dm-whonix-pair pure-logic unit tests (no VM): the fail-closed GW-trace canary (a leak MUST
-## turn it red, a blind/missing capture MUST NOT read as a no-leak) and the battery run-command
-## assembly (one short command on /mnt/shared under sudo -S, no inline script). Sources the real
+## turn it red, a blind/missing capture MUST NOT read as a no-leak), the battery run-command
+## assembly (one short command on /mnt/shared under plain sudo, no inline script), and the
+## systemcheck positive control (both Tor ports, sysmaint, no sudo, fail-closed). Sources the real
 ## dm-whonix-pair (its source-guard keeps main() from running) with stubbed tcpdump/vbox-exec-local.
 
 set -o errexit
@@ -93,15 +94,15 @@ check 'canary clean (traffic present, 0 hits to any probe target) -> PASS' "${rc
 
 set_counts 7 3
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check_fail 'canary CATCHES a leak (a probe target on the wire) -> nonzero (NO silent green)' "${rc}"
+check "canary CATCHES a leak (a probe target on the wire) -> FAIL_RC(${FAIL_RC}), a proven leak" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
 
 set_counts 0 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check_fail 'canary blind capture (pcap empty of traffic) -> nonzero (not a false no-leak)' "${rc}"
+check "canary blind capture (pcap empty of traffic) -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 
 nictrace_pcap="${work}/does-not-exist"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check_fail 'canary missing pcap -> nonzero (fail-closed)' "${rc}"
+check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 nictrace_pcap="${work}/pcap"
 
 ## --- ws_battery: one short command on /mnt/shared, no inline script -------------------------
@@ -110,6 +111,33 @@ rc=0; has "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-con
 check 'ws_battery: runs the battery on /mnt/shared under plain sudo (no copyto, no inline script)' "${rc}"
 rc=0; has "printf " "${out}" && rc=1 || rc=0
 check 'ws_battery: no piped password (sysmaint passwordless sudo; no hardcoded secret)' "${rc}"
+
+## --- ws_tor_confirm: systemcheck positive control, BOTH Tor ports, sysmaint, no sudo ---------
+out="$(ws_tor_confirm)"
+rc=0; has "systemcheck --cli --leak-tests --function check_tor_socks_port" "${out}" || rc=1
+check 'ws_tor_confirm: confirms Tor SocksPort via the AppArmor-confined systemcheck' "${rc}"
+rc=0; has "systemcheck --cli --leak-tests --function check_tor_trans_port" "${out}" || rc=1
+check 'ws_tor_confirm: confirms Tor TransPort too (BOTH ports -- not the SocksPort-or-TransPort OR)' "${rc}"
+rc=0; has "--role sysmaint" "${out}" || rc=1
+check 'ws_tor_confirm: runs systemcheck in the sysmaint session (the booted role)' "${rc}"
+rc=0; has "sudo " "${out}" && rc=1 || rc=0
+check 'ws_tor_confirm: NO sudo (systemcheck runs unprivileged; single --function skips root_check)' "${rc}"
+
+## Fail-closed: if EITHER port control cannot confirm Tor, the positive control MUST fail -- a
+## dead/half-broken link must never read as a pass (no false green).
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x "${work}/vbe"
+rc=0; ws_tor_confirm >/dev/null 2>&1 || rc=$?
+check_fail 'ws_tor_confirm fails-closed (nonzero) when a port control cannot confirm Tor' "${rc}"
+## restore the echoing stub for anything after
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
 
 ## --- canary watch list: IPv6 targets are watched too ---------------------------------------
 set_counts 5 0
@@ -184,6 +212,36 @@ rc=0; ls "${work}"/whonix-pair-leak-*.pcap >/dev/null 2>&1 && rc=1
 check 'on_exit does NOT preserve on a clean PASS (artifact only on failure)' "${rc}"
 rc=0; [ -e "${work}/trace.pcap" ] && rc=1
 check 'on_exit removes the working pcap on a clean PASS' "${rc}"
+
+## --- SETUP vs LEAK: a provisioning/infra failure exits SETUP_RC(2), never FAIL_RC(5) -------
+## A false leak verdict (pass=false) on a provisioning gap is the bug this guards. A capable
+## VBoxManage stub drives the paths without a real VM: showvminfo reports ${VBM_STATE};
+## `snapshot <vm> restore <snap>` exits ${VBM_SNAP_RC}.
+cat > "${work}/vbm2" <<'STUB'
+#!/bin/bash
+case "$1" in
+   showvminfo) printf 'VMState="%s"\n' "${VBM_STATE:-poweroff}" ;;
+   snapshot) [ "$3" = 'restore' ] && exit "${VBM_SNAP_RC:-0}"; exit 0 ;;
+   *) exit 0 ;;
+esac
+STUB
+chmod +x "${work}/vbm2"
+VBOXMANAGE="${work}/vbm2"
+export VBM_STATE VBM_SNAP_RC
+
+## restore_fresh: a missing clean-live snapshot is a PROVISIONING failure -> SETUP_RC, not a
+## leak. Canary: old code died FAIL_RC(5), so this rc check fails on it.
+VBM_STATE='poweroff'; VBM_SNAP_RC=1
+rc=0; ( restore_fresh 'X' ) >/dev/null 2>&1 || rc=$?
+check "restore_fresh: snapshot-restore failure exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+
+## assert_vm_running: a crashed/aborted VM is an infra failure -> SETUP_RC, not a leak.
+VBM_STATE='aborted'; VBM_SNAP_RC=0
+rc=0; ( assert_vm_running 'X' 'setup-vs-leak test' ) >/dev/null 2>&1 || rc=$?
+check "assert_vm_running: a crashed VM exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+
+unset VBM_STATE VBM_SNAP_RC
+VBOXMANAGE="${work}/VBoxManage"
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1

@@ -19,6 +19,13 @@
 ##     nftables leak-drop covers eph-run-* by name).
 ##   - blessed (resolved == stable pin): the longitudinal golden account
 ##     persist-stable-<guest>; a non-blessed version is REFUSED there.
+##   - leak lane (the Whonix pair + anon-leak-test battery): ALWAYS the dedicated,
+##     persistent persist-leak-<guest>, never the shared persist-stable- or eph-run-
+##     namespace -- a non-leak lane's dev-root/leaprun mutation of a shared account's
+##     GW/WS would falsify the leak verdict. Pre-provisioned (pair imported once;
+##     dm-whonix-pair restore_fresh gives a pristine pair each run), NEVER
+##     host-sudo/leaprun-enabled, covered by the host nftables leak-drop. Not created
+##     or gc'd here; a missing/privileged leak account fails SETUP, never a leak FAIL.
 ##
 ## Runs as root on the server (creates users, publishes to the web root); drops
 ## to the test account for every VM operation. Sourced by dm-release-test-tests
@@ -51,6 +58,8 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
 NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
+## Seconds to let a killed VBoxSVC reap before userdel in cleanup (test seam).
+EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-2}"
 
 ISO_DIR="${DM_RELEASE_TEST_ISO_DIR:-/var/lib/image-tests/iso}"
 CERT_PATH="${DM_RELEASE_TEST_CERT:-/usr/share/keyrings/derivative.asc}"
@@ -99,6 +108,7 @@ print_usage() {
 
 A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-stable-GUEST.
+The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account.
 --dry-run prints the resolved plan and runs nothing."
 }
 
@@ -146,13 +156,17 @@ rt_version_token() {
          ;;
    esac
    token="${version//./-}"
+   ## Bound the token: it becomes a results-path component (and, for eph-run-, part of
+   ## the account name). The leak/blessed lanes skip the account-name ceiling, so cap it
+   ## here -- a garbage/overlong --version fails SETUP loudly, never a suppressed publish.
+   [ "${#token}" -le 32 ] || return 1
    printf '%s\n' "${token}"
 }
 
-## Compose + validate the ephemeral account name. Keeping the eph-run- prefix is
-## load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
-## resolves the fleet by persist-stable-*|eph-run-* name pattern. useradd's
-## NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
+## Compose + validate the ephemeral install account name. Keeping the eph-run- prefix
+## is load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
+## resolves the fleet by persist-stable-*|eph-run-*|persist-leak-* name pattern.
+## useradd's NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
 rt_eph_account() {
    local guest_name token account
    guest_name="$1"
@@ -173,6 +187,46 @@ rt_eph_account() {
    esac
    [ "${#account}" -le 32 ] || return 1
    printf '%s\n' "${account}"
+}
+
+## True when GUEST runs the leak lane (the Whonix GW/WS pair + anon-leak-test); the
+## leak lane ALWAYS uses the dedicated persist-leak- account, regardless of bless-state.
+rt_lane_is_leak() {
+   [ "$1" = 'whonix' ]
+}
+
+## True only for a leak-namespace account name. Guards the invariant that the leak
+## lane is never handed a shared persist-stable-/eph-run- account.
+rt_account_is_leak() {
+   case "$1" in
+      persist-leak-*)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+## Pure host-privilege gate (unit-tested): a test account must not be uid 0, and EVERY
+## group it holds -- its private primary group AND every supplementary -- must be the
+## account's OWN private group (named for the account, useradd default) or vboxusers.
+## ALLOWLIST with NO blind trust of the primary: a privileged primary (root/sudo/docker)
+## has a group name != the account, so it is rejected. $1=account-name $2=uid
+## $3=`id -nG` output (space-separated).
+rt_account_unprivileged() {
+   local account uid grp
+   account="$1"
+   uid="$2"
+   [ "${uid}" -ne 0 ] || return 1
+   for grp in $3; do
+      case "${grp}" in
+         "${account}"|vboxusers)
+            ;;
+         *)
+            return 1
+            ;;
+      esac
+   done
+   return 0
 }
 
 ## "blessed" when the resolved version equals the stable pin, else "prebless".
@@ -245,6 +299,12 @@ rt_ensure_eph_account() {
    fi
    getent group vboxusers >/dev/null || groupadd --system vboxusers
    usermod --append --groups vboxusers -- "${account}"
+   ## INVARIANT: a test account (above all a leak account) is never host-privileged.
+   ## A privileged account could tamper with the nft leak-drop or the results plane and
+   ## void the verdict. Enforced by group/uid allowlist (see rt_account_unprivileged);
+   ## the dedicated namespace + fresh creation is the primary guarantee.
+   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
+      || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    rt_refresh_fleet
 }
 
@@ -253,7 +313,14 @@ rt_ensure_eph_account() {
 rt_eph_cleanup() {
    [ -n "${eph_account}" ] || return 0
    "${IMAGE_TEST_GC}" "${eph_account}" || true
-   userdel --remove -- "${eph_account}" || true
+   ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers for a few seconds after
+   ## the VM stops and holds userdel open (it leaked the account in a live run);
+   ## kill the account's processes and let them reap before removing it.
+   pkill --kill --uid "${eph_account}" 2>/dev/null || true
+   sleep "${EPH_CLEANUP_SETTLE}"
+   if ! userdel --remove -- "${eph_account}"; then
+      log warn "userdel '${eph_account}' failed -- reap stray processes of that account and 'userdel --remove' it manually"
+   fi
    rt_refresh_fleet
 }
 
@@ -338,6 +405,12 @@ rt_lane_whonix() {
    ## 'clean-live' snapshot on each VM. Building that one-time state (OVA acquire
    ## + import + sysmaint dev-root bake + snapshot) is finalized on the live
    ## server; dm-whonix-pair fails closed with a clear message if it is absent.
+   ##
+   ## LIMITATION of the persistent persist-leak- account: the imported pair is NOT
+   ## version-tied, so ${version} here is the REQUESTED version, not an independently
+   ## verified pair version. Run the leak lane only for the version the pair was
+   ## provisioned with, and serialize concurrent whonix runs -- they share this one
+   ## account + fixed VM names. Pair-version pinning + a run lock are tracked follow-ups.
    rc=0
    sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
@@ -401,7 +474,7 @@ parse_args() {
 }
 
 main() {
-   local version stable bless_state account token
+   local version stable bless_state account account_kind token
 
    parse_args "$@"
 
@@ -423,13 +496,25 @@ main() {
    token="$(rt_version_token "${version}")" || die "${SETUP_RC}" "resolved version '${version}' is not a safe token"
    stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
    bless_state="$(rt_bless_state "${version}" "${stable}")"
-   account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
-      || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+   ## The leak lane ALWAYS runs in the dedicated, PERSISTENT persist-leak- account
+   ## (never the shared persist-stable-/eph-run- namespace); every other lane selects
+   ## by bless-state. account_kind in {blessed, prebless, leak}; only prebless is
+   ## ephemeral (created + gc'd here) -- blessed and leak are pre-provisioned.
+   if rt_lane_is_leak "${guest}"; then
+      account="persist-leak-${guest}"
+      rt_account_is_leak "${account}" \
+         || die "${SETUP_RC}" "leak account '${account}' is not in the persist-leak- namespace"
+      account_kind='leak'
+   else
+      account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
+         || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+      account_kind="${bless_state}"
+   fi
 
    if [ "${dry_run}" = 'true' ]; then
       printf '%s\n' "plan:" \
          "  guest=${guest} interface=${interface} desktop=${desktop}" \
-         "  channel=${channel} resolved=${version} stable=${stable} state=${bless_state}" \
+         "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
@@ -440,9 +525,22 @@ main() {
    ## Arm the single cleanup path BEFORE creating the account, so an abort during
    ## creation or the run still reclaims the ephemeral account on exit.
    trap rt_eph_cleanup EXIT
-   if [ "${bless_state}" = 'prebless' ]; then
+   if [ "${account_kind}" = 'prebless' ]; then
       eph_account="${account}"
       rt_ensure_eph_account "${account}"
+   fi
+
+   ## The leak + blessed accounts are PRE-PROVISIONED (persistent); never created or
+   ## removed here. Enforce the leak invariant at run time: a missing or host-privileged
+   ## leak account fails SETUP (SETUP_RC) -- NOT a leak FAIL -- so a provisioning gap or
+   ## a dev-root/leaprun/sudo-enabled account can never masquerade as (or taint) a leak
+   ## verdict. rt_refresh_fleet re-asserts the host nftables leak-drop covers it.
+   if [ "${account_kind}" = 'leak' ]; then
+      id "${account}" >/dev/null 2>&1 \
+         || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
+      rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
+         || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
+      rt_refresh_fleet
    fi
 
    local rc

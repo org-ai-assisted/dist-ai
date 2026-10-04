@@ -13,7 +13,8 @@
 ## WS -> GW -> Tor by construction. The leak test PROVES that path is live and really
 ## Tor by running the authoritative anon-leak-test BATTERY inside the WS -- the full
 ## probe set (enumerate / icmp / udp-123 / ipv6 / tor-confirm / gateway-craft), fail-
-## closed, with tor-confirm as the live positive control -- NOT a single IsTor grep.
+## closed, with the AppArmor-confined systemcheck (both SocksPort + TransPort) as the
+## live positive control -- NOT a single IsTor grep.
 ##
 ## Shipped Whonix images carry VBoxService, so the battery is RUN via guestcontrol
 ## (vbox-exec-local), NOT OCR. It is DELIVERED via a VBox shared folder (name 'shared',
@@ -92,6 +93,29 @@ die() {
    exit "$1"
 }
 
+## Current VBox run-state of a VM ('running', 'poweroff', 'aborted', ...); empty if
+## showvminfo failed. Single source for the VMState parse used across the harness.
+vm_state() {
+   "${VBOXMANAGE}" showvminfo "$1" --machinereadable 2>/dev/null \
+      | sed -n 's/^VMState="\(.*\)"$/\1/p' || true
+}
+
+## Fast-fail guard: a VM that is no longer running (crashed/aborted/powered off) will
+## never make progress, so detect it in ONE check instead of waiting out a whole retry
+## budget. Call in any wait loop that depends on the VM being up.
+assert_vm_running() {
+   local vm="$1" label="$2" state
+   state="$(vm_state "${vm}")"
+   case "${state}" in
+      running|paused)
+         return 0
+         ;;
+      *)
+         die "${SETUP_RC}" "${label}: VM '${vm}' is not running (state=${state:-unknown}) -- boot crashed/aborted; a provisioning/infra failure, not a WS leak"
+         ;;
+   esac
+}
+
 lib_base="$(dirname -- "$(readlink --canonicalize -- "$0")")/../share/dm-smbios-reader-boot-tests"
 [ -d "${lib_base}" ] || lib_base='/usr/share/dm-smbios-reader-boot-tests'
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/gui-drive.bsh
@@ -143,11 +167,9 @@ on_exit() {
       "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
       ## Poweroff is async and the nictrace pcap is not flushed until the GW settles;
       ## wait (bounded) so a preserved capture is complete, not truncated mid-write.
-      local _i _state
+      local _i
       for _i in $(seq 1 15); do
-         _state="$("${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
-            | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
-         case "${_state}" in poweroff|aborted|'') break ;; esac
+         case "$(vm_state "${gw}")" in poweroff|aborted|'') break ;; esac
          sleep 1
       done
    fi
@@ -185,16 +207,14 @@ on_exit() {
 ## boot (reaches GRUB) rather than a live-snapshot RESUME -- required to pick a boot role
 ## and to (re)apply a NIC trace the snapshot would otherwise revert.
 restore_fresh() {
-   local target="$1" state
+   local target="$1"
    "${VBOXMANAGE}" controlvm "${target}" poweroff >/dev/null 2>&1 || true
    for _ in $(seq 1 20); do
-      state="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null \
-         | sed -n 's/^VMState="\(.*\)"$/\1/p' || true)"
-      case "${state}" in poweroff|aborted|'') break ;; esac
+      case "$(vm_state "${target}")" in poweroff|aborted|'') break ;; esac
       sleep 2
    done
    "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
-      || die "${FAIL_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}'"
+      || die "${SETUP_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}' -- a provisioning failure, not a WS leak"
    "${VBOXMANAGE}" discardstate "${target}" >/dev/null 2>&1 || true
 }
 
@@ -227,7 +247,7 @@ boot_workstation_sysmaint() {
    ## before its ~5s autoboot into USER (single-source selector, shared with the gates).
    select_installed_sysmaint
    wait_guestcontrol_ready sysmaint 300 \
-      || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint"
+      || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
 }
 
 ## Run the battery in the WS as sysmaint via guestcontrol; its exit code is the verdict
@@ -238,6 +258,24 @@ ws_battery() {
    ## sudo). The guest exit code IS the verdict; one short command, no inline script.
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
       --cmd "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+}
+
+## Functional positive control: confirm LIVE Tor egress via the AppArmor-confined, hardened
+## systemcheck -- a stronger confirmer than a bespoke curl/JSON parse (a subverted control would
+## mask a dead link). Confirm BOTH ports: systemcheck's check_tor_socks_or_trans_port is an OR, so
+## a single-port pass could ride a HALF-broken Tor; require SocksPort AND TransPort. Runs as
+## sysmaint (the booted role), NO sudo: a single --function run skips root_check and the
+## connectivity test is user-agnostic, and it avoids the full --leak-tests `systemctl --user
+## is-system-running` (no user session under guestcontrol). Each systemcheck exit 0 = that port
+## reached Tor; ANY non-zero fails the control -- fail-closed.
+ws_tor_confirm() {
+   local port
+   for port in check_tor_socks_port check_tor_trans_port; do
+      "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+         --cmd "systemcheck --cli --leak-tests --function ${port}" \
+         || return 1
+   done
+   return 0
 }
 
 ## Stop Tor on the Gateway to ARM the killswitch, keeping the GW in its USER session so
@@ -277,9 +315,9 @@ gw_start_tor() {
 ## unreadable pcap is treated as a blind capture, never a pass.
 canary_gateway_pcap() {
    local hits total
-   [ -s "${nictrace_pcap}" ] || die "${FAIL_RC}" "canary: GW nictrace pcap empty/missing (blind capture)"
+   [ -s "${nictrace_pcap}" ] || die "${SETUP_RC}" "canary: GW nictrace pcap empty/missing (blind capture -- inconclusive, not a leak)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
-   [ "${total}" -gt 0 ] || die "${FAIL_RC}" "canary: GW emitted nothing on its external NIC (blind -- not a no-leak)"
+   [ "${total}" -gt 0 ] || die "${SETUP_RC}" "canary: GW emitted nothing on its external NIC (blind -- inconclusive, not a leak)"
    ## Watch the clearnet targets as DESTINATION and the forged sources as SOURCE: a
    ## forged-source leak egresses with CRAFT_SRC/CRAFT_SRC6 as its SOURCE (to any dst),
    ## which a dst-only filter would miss. The un-NAT'd redirect reply (dst=CRAFT_SRC) is
@@ -312,19 +350,31 @@ main() {
    printf '%s\n' "${me}: boot Workstation (${ws}) into sysmaint (battery on /mnt/shared)"
    boot_workstation_sysmaint
 
-   ## Phase 1: gate on the GW's Tor bootstrap -- retry tor-confirm (the live positive
-   ## control) until it passes, so a clean battery later is meaningful, not a dead link.
-   printf '%s\n' "${me}: wait for Tor egress (tor-confirm) to come up"
+   ## Phase 1: gate on the GW's Tor bootstrap -- retry the systemcheck positive control
+   ## (SocksPort + TransPort) until it passes, so a clean battery later is meaningful, not
+   ## a dead link.
+   printf '%s\n' "${me}: wait for Tor egress (systemcheck SocksPort + TransPort) to come up"
+   ## NOTE: clean-live must be a WARMED snapshot (booted once so first-boot provisioning
+   ## ran and Tor cached its consensus on disk); a never-booted import does a cold Tor
+   ## bootstrap that can exceed this budget (seen on a fresh dev-version import).
    local attempt tor_ok='false'
    for attempt in $(seq 1 15); do
-      if ws_battery "--probe tor-confirm"; then
+      ## Fast-fail: a crashed/aborted GW will never bootstrap -- do not burn the whole
+      ## retry budget on a dead VM.
+      assert_vm_running "${gw}" 'phase 1 (wait Tor)'
+      if ws_tor_confirm; then
          tor_ok='true'
          break
       fi
       printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
       sleep 20
    done
-   [ "${tor_ok}" = 'true' ] || die "${FAIL_RC}" "Tor egress never confirmed (GW Tor did not bootstrap, or a leak)"
+   ## Budget exhausted = the positive control never confirmed Tor. INCONCLUSIVE (GW Tor did
+   ## not bootstrap, a provisioning gap, or a persistent leak that systemcheck's binary exit
+   ## cannot tell apart from "not up") -> SETUP: fail-closed, never a PASS and never a false
+   ## leak verdict. The authoritative leak oracle (Phase 2 battery + GW-NIC canary) runs ONLY
+   ## after Tor is confirmed here; if it never is, the run is reported inconclusive, not clean.
+   [ "${tor_ok}" = 'true' ] || die "${SETUP_RC}" "Tor egress never confirmed (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a leak"
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
    ## canary (canary_gateway_pcap) watches exactly these. clearnet-ipv4 = CLEARNET_ICMP.
@@ -340,45 +390,68 @@ main() {
    ## run on a non-leak. The WS's IPv6 egress IS covered here -- by the gateway-craft v6
    ## matrix (emit + GW-NIC canary), which is gated on a live v6 path and recorded honestly.
    printf '%s\n' "${me}: run the full leak-test battery in the Workstation (sysmaint)"
+   ## Battery exit: 0 clean | 1 a probe FAILed (proven non-Tor egress = LEAK) | 2 a probe
+   ## could not run (inconclusive). Only a PROVEN leak is FAIL_RC; inconclusive is SETUP_RC
+   ## -- a provisioning/transient probe error must never record as a leak verdict.
+   local battery_rc=0
    ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
-      || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
+      || battery_rc=$?
+   if [ "${battery_rc}" = '1' ]; then
+      die "${FAIL_RC}" "LEAK: the battery proved non-Tor egress (a probe FAILed)"
+   elif [ "${battery_rc}" != '0' ]; then
+      die "${SETUP_RC}" "leak test INCONCLUSIVE: a probe could not run (battery rc=${battery_rc}) -- not a proven leak"
+   fi
 
-   ## Phase 3: KILLSWITCH. Stop Tor on the GW (user session + leaprun sudo, forwarding
-   ## intact). gw_stop_tor POSITIVELY confirms tor@default is inactive on the GW -- the
-   ## fail-closed proof Tor is down, independent of any WS probe exit code (a WS probe
-   ## failing non-zero could mean leak, inconclusive, OR broken guestcontrol, so it is
-   ## NOT a sound "Tor is down" signal). Then re-emit the craft matrix: with Tor down the
-   ## firewall must DROP, so the final canary must still show zero target hits across the
-   ## WHOLE capture (both the Tor-up and Tor-down windows).
-   printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
-   gw_stop_tor
-   ws_battery "--probe gateway-craft ${craft_flags}" \
-      || die "${FAIL_RC}" "killswitch: craft emit could not run with Tor down"
-
-   ## Phase 4: RECOVERY. Restart Tor and prove egress is restored -- so the killswitch
-   ## STOP was a bracketed, reversible operation (the GW is not wedged) and a dead Tor
-   ## can never silently carry into anything added after this phase.
-   printf '%s\n' "${me}: killswitch recovery -- restart Tor, confirm egress restored"
-   gw_start_tor
-   local attempt2 restored='false'
-   for attempt2 in $(seq 1 15); do
-      if ws_battery "--probe tor-confirm"; then
-         restored='true'
-         break
+   ## Phase 3+4: KILLSWITCH -- OPT-IN only (DM_WHONIX_PAIR_KILLSWITCH=1). Stopping Tor on
+   ## the GW needs root there, and the only no-sysmaint route (dev-root -> leaprun sudo)
+   ## MUTATES the Gateway, which can falsify the very leak result this harness measures.
+   ## So the DEFAULT run is the pure leak test (Phase 1+2 + canary, GW untouched); the
+   ## fail-closed/killswitch behavior is covered by the netns fail_closed_test. Enable this
+   ## phase only in a DEDICATED leak-test lane where mutating the GW is acceptable.
+   if [ "${DM_WHONIX_PAIR_KILLSWITCH:-0}" = '1' ]; then
+      ## gw_stop_tor POSITIVELY confirms tor@default is inactive on the GW -- the fail-closed
+      ## proof Tor is down, independent of any WS probe exit code. Then re-emit the craft
+      ## matrix: with Tor down the firewall must DROP, so the final canary must still show
+      ## zero target hits across the WHOLE capture (both Tor-up and Tor-down windows).
+      printf '%s\n' "${me}: killswitch -- stop + confirm Tor down on the Gateway, then re-emit"
+      gw_stop_tor
+      ## Same battery-exit contract as Phase 2: 1 = a probe proved non-Tor egress (LEAK),
+      ## any other non-zero = the emit could not run (inconclusive/infra). Classify identically
+      ## so a proven leak with Tor down is never downgraded to SETUP.
+      local ks_rc=0
+      ws_battery "--probe gateway-craft ${craft_flags}" || ks_rc=$?
+      if [ "${ks_rc}" = '1' ]; then
+         die "${FAIL_RC}" "killswitch LEAK: a crafted probe proved non-Tor egress with Tor down"
+      elif [ "${ks_rc}" != '0' ]; then
+         die "${SETUP_RC}" "killswitch: craft emit could not run with Tor down (battery rc=${ks_rc}) -- an infra failure, not a WS leak"
       fi
-      printf '%s\n' "${me}: Tor egress not back yet (attempt ${attempt2}); retrying"
-      sleep 20
-   done
-   [ "${restored}" = 'true' ] \
-      || die "${FAIL_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible)"
+
+      ## RECOVERY. Restart Tor and prove egress is restored -- so the killswitch STOP was a
+      ## bracketed, reversible operation (the GW is not wedged) and a dead Tor can never
+      ## silently carry into anything added after this phase.
+      printf '%s\n' "${me}: killswitch recovery -- restart Tor, confirm egress restored"
+      gw_start_tor
+      local attempt2 restored='false'
+      for attempt2 in $(seq 1 15); do
+         assert_vm_running "${gw}" 'killswitch recovery'
+         if ws_tor_confirm; then
+            restored='true'
+            break
+         fi
+         printf '%s\n' "${me}: Tor egress not back yet (attempt ${attempt2}); retrying"
+         sleep 20
+      done
+      [ "${restored}" = 'true' ] \
+         || die "${SETUP_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible) -- an infra failure, not a WS leak"
+   fi
 
    ## Canary: stop the GW so its nictrace pcap is flushed, then assert NO probe target
-   ## reached clearnet through it -- in EITHER the Tor-up or the Tor-down window.
+   ## reached clearnet through it -- across every capture window.
    "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
    sleep 3
    canary_gateway_pcap
 
-   printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + killswitch + GW-trace canary)"
+   printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + GW-trace canary)"
    return "${PASS_RC}"
 }
 

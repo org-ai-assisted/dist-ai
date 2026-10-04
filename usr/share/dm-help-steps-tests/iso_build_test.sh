@@ -108,7 +108,14 @@ run_iso() {
    printf '' > "${args_log}"
    printf '' > "${env_log}"
    iso_rc=0
-   env "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" DM_ENV_LOG="${env_log}" \
+   ## Strip dm-iso-build's own env overrides (its documented set, dm-iso-build:75)
+   ## so an ambient DM_* in the caller's shell cannot contaminate the default-value
+   ## assertions (e.g. case 1 expects amd64). 'env' applies -u before the NAME=VALUE
+   ## operands, so a case's deliberate env_pairs override still wins. 'env -i' is
+   ## wrong here: it would also strip PATH/HOME, which the wrapper and the marker
+   ## check rely on.
+   env -u DM_FLAVOR -u DM_ARCH -u DM_TARGET -u DM_FREEDOM -u DM_USER -u DM_CLEAN \
+      "${env_pairs[@]}" DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" DM_ENV_LOG="${env_log}" \
       "${tool}" "$@" > "${run_out}" 2>&1 || iso_rc="$?"
 }
 
@@ -197,7 +204,10 @@ done
 ## would eat it as an env pair), so drive the tool directly.
 printf '' > "${args_log}"
 repo_eq_rc=0
-DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" DM_ENV_LOG="${env_log}" "${tool}" --repo=false > "${run_out}" 2>&1 || repo_eq_rc="$?"
+## Same ambient-DM_* isolation as run_iso (uniformity): the refusal fires pre-build so
+## this case is immune today, but the uniform form forecloses a future leak here.
+env -u DM_FLAVOR -u DM_ARCH -u DM_TARGET -u DM_FREEDOM -u DM_USER -u DM_CLEAN \
+   DM_REPO="${repo}" DM_ARGS_LOG="${args_log}" DM_ENV_LOG="${env_log}" "${tool}" --repo=false > "${run_out}" 2>&1 || repo_eq_rc="$?"
 if [ "${repo_eq_rc}" -ne 0 ] && grep --quiet -- "refusing '--repo'" "${run_out}" && [ ! -s "${args_log}" ]; then
    pass "a caller-passed '--repo=false' is refused before any build"
 else
@@ -210,13 +220,23 @@ fi
 ## (no build) and assert the per-flavor ISO build step carries '--repo true'. Requires a
 ## derivative-maker checkout (dm_checkout, from help_steps_test_lib.bsh); SKIP that single
 ## assertion when absent -- the stub cases above still gate the wrapper's own behavior.
+## e2e_verified gates the summary: it must stay 0 unless this assertion actually ran and
+## passed, so a skipped e2e is never reported as a verified '--repo true' property.
+e2e_verified=0
 if [ -f "${dm_checkout}/help-steps/dm-build-official-one" ]; then
-   plan="$(DM_REPO="${dm_checkout}" DM_FLAVOR=kicksecure-lxqt DM_ARCH=amd64 \
+   ## Same ambient-DM_* isolation as run_iso. dm-iso-build echoes a status line that
+   ## interpolates DM_USER/DM_FREEDOM/DM_TARGET, and an ambient DM_TARGET also RE-PLANS the
+   ## build (iso -> VM image) -- either can steer the grep below (a status line matching the
+   ## selectors is picked by head -n1 and read as proof; a re-planned target drops the ISO
+   ## line and false-fails). Strip them; the three vars the case sets explicitly still win.
+   plan="$(env -u DM_FLAVOR -u DM_ARCH -u DM_TARGET -u DM_FREEDOM -u DM_USER -u DM_CLEAN \
+      DM_REPO="${dm_checkout}" DM_FLAVOR=kicksecure-lxqt DM_ARCH=amd64 \
       "${tool}" --show-steps 2>/dev/null || true)"
    iso_line="$(printf '%s\n' "${plan}" \
       | grep -- './derivative-maker' | grep -- '--target iso' | grep -- '--flavor kicksecure-lxqt' \
       | head -n1 || true)"
    if [ -n "${iso_line}" ] && grep --quiet -- '--repo true' <<< "${iso_line}"; then
+      e2e_verified=1
       pass "the real official path dry-plans the ISO build with --repo true (repo enabled)"
    else
       fail "the real official path did not emit '--repo true' for the ISO build; iso_line=<<<${iso_line}>>>"
@@ -229,4 +249,12 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-iso-build drives dm-build-official-one repo-enabled (refuses caller --repo, real path emits --repo true), upload-simulated, frozen-only, stateless, forces from-scratch under DM_CLEAN, and propagates a build failure."
+## Honest summary: only claim the real-path '--repo true' property when the e2e
+## assertion actually verified it; otherwise say so. The 7 stub assertions passed
+## either way, so a skipped e2e is still a clean (exit 0) run -- just not a verified one.
+if [ "${e2e_verified}" -eq 1 ]; then
+   repo_true_claim="real path emits --repo true"
+else
+   repo_true_claim="real-path '--repo true' e2e NOT verified (SKIPPED: no derivative-maker checkout)"
+fi
+printf '%s\n' "OK: dm-iso-build drives dm-build-official-one repo-enabled (refuses caller --repo, ${repo_true_claim}), upload-simulated, frozen-only, stateless, forces from-scratch under DM_CLEAN, and propagates a build failure."

@@ -20,6 +20,7 @@ cannot be steered this way in isolation; those are covered at integration level
 and tracked in COVERAGE.md.
 """
 
+import os
 import unittest
 
 from systemcheck_testlib import (
@@ -392,6 +393,66 @@ class TestApparmorIsolatedScenarios(ScenarioTestBase):
         self.assertTrue(r.has_severity('error'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Failed', r.joined())
+
+
+class TestAptRepositoryIsolatedScenarios(ScenarioTestBase):
+    """check_apt_repository branches on the presence/readability of
+    /etc/apt/sources.list.d/derivative.{sources,list}, so it needs the isolated
+    runner to control those absolute paths.
+
+    The Disabled branch (derivative repository NOT configured) MUST fail the run:
+    a system that silently stopped receiving the project's security updates is a
+    real finding, not cosmetic.
+    """
+
+    FILE = 'check_apt_repository.bsh'
+    SOURCES = '/etc/apt/sources.list.d/derivative.sources'
+    LEGACY = '/etc/apt/sources.list.d/derivative.list'
+    ENV = ('silent=0\nverbose=1\n'
+           'PROJECT_NAME=Kicksecure\n'
+           'PROJECT_HOMEPAGE=https://www.kicksecure.com\n')
+    SOURCES_BODY = 'Types: deb\nURIs: https://example\nSuites: bookworm\nComponents: main\n'
+
+    def _run(self, ci: str, **kw):
+        return run_check_scenario_isolated(
+            self.check(self.FILE), 'check_apt_repository',
+            env_setup=self.ENV + f'ci={ci}\n', **kw)
+
+    def test_enabled_info_no_failure(self) -> None:
+        ## derivative.sources present + readable -> Enabled, informational only.
+        r = self._run('false', place=[(self.SOURCES, self.SOURCES_BODY, False)])
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('info'))
+        self.assertIn('Enabled', r.joined())
+        self.assertEqual(r.exit_code, '0')
+
+    def test_disabled_warns_and_fails(self) -> None:
+        ## Neither derivative.sources nor derivative.list present -> Disabled.
+        r = self._run('false', hide_dirs=[os.path.dirname(self.SOURCES)])
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Disabled', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_disabled_fails_even_under_ci(self) -> None:
+        ## The guarantee this suite exists to lock in: --ci tolerates ONLY the
+        ## "updates available" finding (check_operating_system). A DISABLED
+        ## derivative repository must still exit non-zero under --ci, so a CI /
+        ## image-build gate cannot pass with the security-update channel off.
+        r = self._run('true', hide_dirs=[os.path.dirname(self.SOURCES)])
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Disabled', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_legacy_list_warns_and_fails(self) -> None:
+        ## Old-format derivative.list (release-upgraded system) -> Legacy warning.
+        r = self._run('false', place=[(self.LEGACY,
+                                       'deb https://example bookworm main\n', False)])
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Legacy', r.joined())
+        self.assertEqual(r.exit_code, '1')
 
 
 if __name__ == '__main__':
