@@ -48,7 +48,11 @@ resolve_skip() {
    local extra_args="$1"
    ( cd -- "${dm_checkout}/help-steps" || exit 90
      unset dist_build_redistributable dist_build_skip_published_packages
-     export CI=true dist_build_unlock_dangerous_options=true
+     ## dist_build_allow_root=true: the dm-help-steps suite re-runs itself as root
+     ## (mount-cleanup requires it), so help-steps/pre's root_check would abort with
+     ## "must NOT be run as root" unless this sanctioned CI/container override is
+     ## set. Harmless when non-root (root_check only consults it under EUID=0).
+     export CI=true dist_build_unlock_dangerous_options=true dist_build_allow_root=true
      # shellcheck disable=SC2086  ## deliberate word-split of the arg string
      set -- ${extra_args}
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout

@@ -49,47 +49,50 @@ fail() {
 eval "$( sed -n '/^whitelist_list=(/,/^)/p' -- "${script}" )"
 eval "$( sed -n '/^whitelist_pattern=/p' -- "${script}" )"
 
-## Structural: a representative whitelisted path (translated manpages) is present.
-## Uses a currently-shipped entry as the fixture, so the test tracks the live
-## allow-list rather than a specific historical entry.
-sample_entry='./live-build/manpages/po/fr/.*'
-found=no
+## Structural: the allow-list is NOT empty. An emptied list would turn the Unicode
+## check into a blanket pass for every path -- that is the regression this guards.
+## WHICH paths are whitelisted is dm-check-unicode's call; the test tracks the LIVE
+## list (see the behavioral check) rather than mandating a historical entry, so a
+## legitimate allow-list edit never false-fails it.
 # shellcheck disable=SC2154  # whitelist_list: populated by the eval of the subject script above
-for entry in "${whitelist_list[@]}"; do
-   if [ "${entry}" = "${sample_entry}" ]; then
-      found=yes
-   fi
-done
-if [ "${found}" = yes ]; then
-   pass "whitelist_list contains the sample allow-list entry"
+if [ "${#whitelist_list[@]}" -ge 1 ]; then
+   pass "whitelist_list is non-empty (${#whitelist_list[@]} entries)"
 else
-   fail "whitelist_list is missing '${sample_entry}'"
+   fail "whitelist_list is empty -- the Unicode allow-list would blanket-pass"
 fi
 
-## Behavioral: run the SAME invert-match filter production uses. A whitelisted hit
-## must be filtered OUT; a non-whitelisted hit must survive.
-sample_hit='./live-build/manpages/po/fr/debian.po:94: emoji here'
-other_hit='./packages/kicksecure/some-package/usr/bin/some-file:1: emoji here'
-# shellcheck disable=SC2154  # whitelist_pattern: eval'd from the script under test above
-filtered="$( printf '%s\n%s\n' "${sample_hit}" "${other_hit}" \
-   | grep --invert-match --extended-regexp -- "${whitelist_pattern}" || true )"
+## Behavioral: run the SAME invert-match filter production uses, against a hit built
+## from a LIVE allow-list entry, so the test cannot drift from the script's actual
+## list. A whitelisted hit must be filtered OUT; a non-whitelisted hit must survive.
+## Entries are path patterns, so a line that BEGINS with an entry's text is matched
+## by that entry's ERE (a literal path matches itself; a '.*'-tailed one matches any
+## suffix) -- true for every historical and current entry.
+if [ "${#whitelist_list[@]}" -ge 1 ]; then
+   sample_hit="${whitelist_list[0]}:94: emoji here"
+   ## A path no whitelist entry names. The canary below fails loudly if some entry
+   ## ever does match it, so an accidental collision cannot pass silently.
+   other_hit='./not-whitelisted/unicode-check-canary:1: emoji here'
+   # shellcheck disable=SC2154  # whitelist_pattern: eval'd from the script under test above
+   filtered="$( printf '%s\n%s\n' "${sample_hit}" "${other_hit}" \
+      | grep --invert-match --extended-regexp -- "${whitelist_pattern}" || true )"
 
-case "${filtered}" in
-   *"${sample_hit}"*)
-      fail "whitelisted hit was NOT excluded by the whitelist"
-      ;;
-   *)
-      pass "whitelisted hit is excluded by the whitelist"
-      ;;
-esac
-case "${filtered}" in
-   *"${other_hit}"*)
-      pass "a non-whitelisted unicode hit still survives the filter (check not blanket-disabled)"
-      ;;
-   *)
-      fail "canary broken: a non-whitelisted hit was also filtered -- the pattern over-matches"
-      ;;
-esac
+   case "${filtered}" in
+      *"${sample_hit}"*)
+         fail "whitelisted hit was NOT excluded by the whitelist"
+         ;;
+      *)
+         pass "whitelisted hit is excluded by the whitelist"
+         ;;
+   esac
+   case "${filtered}" in
+      *"${other_hit}"*)
+         pass "a non-whitelisted unicode hit still survives the filter (check not blanket-disabled)"
+         ;;
+      *)
+         fail "canary broken: a non-whitelisted hit was also filtered -- the pattern over-matches"
+         ;;
+   esac
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
