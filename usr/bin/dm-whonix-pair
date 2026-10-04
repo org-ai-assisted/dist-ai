@@ -333,8 +333,14 @@ main() {
    ## Phase 2: the FULL battery incl the comprehensive gateway-craft emit matrix (the
    ## deliberate direct-egress vectors the canary watches for). Exit 0 = Tor-only;
    ## anything else = leak/inconclusive.
+   ## NOTE: ipv6-clearnet (the reply-based IPv6 Tor-confirm) is deliberately NOT in this
+   ## battery. It is built for the Qubes anon-whonix context where Tor's DNS path serves
+   ## check.torproject.org over IPv6; on a standard Whonix-Workstation with no global IPv6
+   ## it ERRORs by design (curl --ipv6 cannot reach the A-only host), which would fail the
+   ## run on a non-leak. The WS's IPv6 egress IS covered here -- by the gateway-craft v6
+   ## matrix (emit + GW-NIC canary), which is gated on a live v6 path and recorded honestly.
    printf '%s\n' "${me}: run the full leak-test battery in the Workstation (sysmaint)"
-   ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe ipv6-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
+   ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
       || die "${FAIL_RC}" "leak test FAILED: the battery did not confirm Tor-only egress"
 
    ## Phase 3: KILLSWITCH. Stop Tor on the GW (user session + leaprun sudo, forwarding
