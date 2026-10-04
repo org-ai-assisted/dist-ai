@@ -25,6 +25,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## ifupdown directives that are uninterpreted escape hatches on this static-only
+## internal interface: command hooks (up/*-up/*-down, run arbitrary commands incl.
+## dhclient / route injection), a `mapping` script, and `source`/`source-directory`
+## includes (pull in unaudited NIC-adding stanzas). The `([[:space:]]|\|$)` terminator
+## also catches a `up\` line-continuation.
+unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|\\|$)'
+
 ## Audit one interfaces file: exactly one non-lo iface, named eth0, configured
 ## STATIC on the internal network. Returns 0 on pass, 1 on any violation. Reused
 ## by the canary.
@@ -44,25 +51,19 @@ audit_ws_nic() {
       printf 'FAIL: the single NIC is not the internal eth0: %s\n' "${names}" >&2
       return 1
    fi
-   ## A `source`/`source-directory` directive could pull in a NIC-adding file this
-   ## single-file audit cannot see -- the shipped package must not use one.
-   if grep --quiet --extended-regexp '^[[:space:]]*(source|source-directory)[[:space:]]' "${file}"; then
-      printf 'FAIL: interfaces file pulls in others via source/source-directory (unaudited NICs)\n' >&2
+   ## Reject the whole class of uninterpreted escape hatches (command hooks, a
+   ## `mapping` script, `source`/`source-directory` includes) -- any can re-enable DHCP,
+   ## inject a non-Tor route, or pull in an unaudited NIC-adding stanza this single-file
+   ## audit cannot see. See unsafe_directive_re.
+   if grep --quiet --extended-regexp "${unsafe_directive_re}" "${file}"; then
+      printf 'FAIL: interfaces file uses an unsafe directive (hook/mapping/source): %s\n' \
+         "$(grep --extended-regexp "${unsafe_directive_re}" "${file}" | tr '\n' ' ')" >&2
       return 1
    fi
    ## eth0 must be STATIC, never a DYNAMIC method (dhcp/bootp/ppp) -- any of those
    ## on a NAT/bridged eth0 installs a non-Tor default route.
    if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+(dhcp|bootp|ppp)([[:space:]]|$)' "${file}"; then
       printf 'FAIL: eth0 uses a dynamic inet method (must be static)\n' >&2
-      return 1
-   fi
-   ## No ifupdown command hooks ship on this interface. ANY of them is an
-   ## uninterpreted escape hatch -- `up dhclient eth0` re-enables DHCP,
-   ## `post-up ip route add default ...` injects a non-Tor default route -- so reject
-   ## them all rather than chase individual commands.
-   if grep --quiet --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${file}"; then
-      printf 'FAIL: WS interfaces file has ifupdown command hooks (unaudited bypass): %s\n' \
-         "$(grep --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${file}" | tr '\n' ' ')" >&2
       return 1
    fi
    ## Extract ONLY the `iface eth0 inet static` stanza (up to the next stanza
@@ -147,20 +148,24 @@ else
    printf 'PASS: canary (eth0 bootp rejected); audit has teeth\n'
 fi
 
-## Canary 4: a command hook hidden in the static stanza must FAIL -- `up dhclient`
-## re-enables DHCP and `post-up ip route add default` injects a non-Tor route, both
-## bypassing Tor despite the stanza looking static.
-for hook_line in \
+## Canary 4: every unsafe-directive spelling hidden in the static stanza must FAIL --
+## `up dhclient` re-enables DHCP, `post-up ip route add default` injects a non-Tor
+## route, a `mapping` script and a `source` include pull in arbitrary commands/NICs,
+## and a `up\` line-continuation hides the hook from a naive line match.
+for bad_line in \
    'up dhclient eth0' \
-   'post-up ip route add default via 10.0.2.2'; do
+   'post-up ip route add default via 10.0.2.2' \
+   'mapping eth0' \
+   'source /etc/network/interfaces.d/evil' \
+   $'up\\'; do
    canary_hook="$(mktemp)"
    cp -- "${iface_file}" "${canary_hook}"
-   printf '%s\n' "${hook_line}" >>"${canary_hook}"
+   printf '%s\n' "${bad_line}" >>"${canary_hook}"
    if audit_ws_nic "${canary_hook}" 2>/dev/null; then
-      printf 'FAIL: canary -- audit PASSED command hook "%s" (no teeth)\n' "${hook_line}" >&2
+      printf 'FAIL: canary -- audit PASSED unsafe directive "%s" (no teeth)\n' "${bad_line}" >&2
       rc=1
    else
-      printf 'PASS: canary (command hook "%s" rejected); audit has teeth\n' "${hook_line}"
+      printf 'PASS: canary (unsafe directive "%s" rejected); audit has teeth\n' "${bad_line}"
    fi
 done
 

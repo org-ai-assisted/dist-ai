@@ -27,21 +27,34 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## A hardened sysctl key is secure only when assigned EXACTLY its hardened number.
-## The kernel parses the value C-style, so `01` (leading-0 octal) and `0x1` (hex)
-## both store 1 -- `secure` must list every such spelling of the number. Flags any
-## assignment of `key` whose value is not one of them. systemd-sysctl applies in
-## order (last assignment wins) and accepts `.` or `/` as the key separator, so
-## `key` matches every scope segment on both spellings. Pure grep -- no arithmetic
-## eval on file content. Returns 0 on pass, 1 on any insecure assignment.
+## ifupdown directives that are uninterpreted escape hatches on these static-only
+## internal interfaces: command hooks (up/*-up/*-down, run arbitrary commands incl.
+## dhclient / route injection), a `mapping` script, and `source`/`source-directory`
+## includes (pull in unaudited stanzas). The `([[:space:]]|\|$)` terminator also
+## catches a `up\` line-continuation.
+unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|\\|$)'
+
+## A hardened sysctl leaf (accept_ra, ...) is secure only when assigned EXACTLY its
+## hardened number. The kernel parses the value C-style, so `01` (leading-0 octal)
+## and `0x1` (hex) both store 1 -- `secure` must list every such spelling. Matches the
+## leaf on ANY scope and ANY key spelling systemd-sysctl accepts: `.`/`/` separators
+## (incl. mixed, e.g. a VLAN `eth1/100`), and globs in any segment. Flags every such
+## line that is not a secure assignment -- INCLUDING a value-less shadow line
+## (`-net.ipv6.conf.eth1.accept_ra` with no `=`), which registers an explicit key that
+## makes the `*` wildcard skip that interface, leaving it at the insecure default. The
+## leaf-terminal boundary (`=`/space/EOL) avoids false-matching a sub-key such as
+## accept_ra_defrtr. A leading `#` comment cannot match (the `net` anchor is at line
+## start). Pure grep -- no arithmetic eval. Returns 0 on pass, 1 on any bad line.
 check_values() {
-   local file="$1" key="$2" secure="$3"
-   local sep='[[:space:]]*=[[:space:]]*' eol='([[:space:]]|$)' assign bad
-   assign="^[[:space:]]*-?${key}${sep}"
+   local file="$1" leaf="$2" secure="$3"
+   local sep='[[:space:]]*=[[:space:]]*' eol='([[:space:]]|$)' term='([[:space:]]|=|$)'
+   local key assign bad
+   key="^[[:space:]]*-?net[./].*[./]${leaf}"
+   assign="${key}${term}"
    bad="$(grep --extended-regexp "${assign}" "${file}" \
-      | grep --invert-match --extended-regexp "${assign}${secure}${eol}" || true)"
+      | grep --invert-match --extended-regexp "${key}${sep}${secure}${eol}" || true)"
    if [ -n "${bad}" ]; then
-      printf 'FAIL: sysctl sets a hardened key to an insecure value: %s\n' \
+      printf 'FAIL: sysctl sets a hardened key to an insecure/missing value: %s\n' \
          "$(printf '%s' "${bad}" | tr '\n' ' ')" >&2
       return 1
    fi
@@ -73,19 +86,16 @@ audit_sysctl() {
       rc=1
    fi
    ## Presence is not enough: a later assignment of a hardened key to an insecure
-   ## value WINS (systemd-sysctl applies in order), on any scope (*, all, default,
-   ## or a specific interface) and either `.` or `/` separator. Reject any such
-   ## assignment, interpreting the value as the kernel does (decimal, leading-0
-   ## octal, 0x hex) so 01/0x1 cannot read as 0. Per-key hardened number differs.
-   ## Scope: VLAN-dotted segments (eth1.100) are not modelled (eth0/eth1 only here).
+   ## value WINS (systemd-sysctl applies in order). Reject any such assignment on any
+   ## scope and key spelling (see check_values), interpreting the value as the kernel
+   ## does (decimal, leading-0 octal, 0x hex) so 01/0x1 cannot read as 0. Per-leaf
+   ## hardened number differs; one check per leaf covers both address families.
    local nz='(0+|0[xX]0+)' one='(0*1|0[xX]0*1)' onetwo='(0*[12]|0[xX]0*[12])'
-   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_ra'           "${nz}"     || rc=1
-   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]accept_redirects'    "${nz}"     || rc=1
-   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_redirects'    "${nz}"     || rc=1
-   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]arp_filter'          "${one}"    || rc=1
-   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]arp_ignore'          "${onetwo}" || rc=1
-   check_values "${file}" 'net[./]ipv4[./]conf[./][^./]+[./]accept_source_route' "${nz}"     || rc=1
-   check_values "${file}" 'net[./]ipv6[./]conf[./][^./]+[./]accept_source_route' "${nz}"     || rc=1
+   check_values "${file}" 'accept_ra'           "${nz}"     || rc=1
+   check_values "${file}" 'accept_redirects'    "${nz}"     || rc=1
+   check_values "${file}" 'arp_filter'          "${one}"    || rc=1
+   check_values "${file}" 'arp_ignore'          "${onetwo}" || rc=1
+   check_values "${file}" 'accept_source_route' "${nz}"     || rc=1
    return "${rc}"
 }
 
@@ -120,13 +130,14 @@ audit_internal_inet6_static() {
             "$(grep --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
-      ## No ifupdown command hooks ship on the internal interfaces. ANY of them is an
-      ## uninterpreted escape hatch -- `up dhclient -6 eth1` re-enables DHCPv6/SLAAC,
-      ## `post-up ip route add default ...` injects a non-Tor route -- so reject them
-      ## all rather than chase individual commands.
-      if grep --quiet --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${f}"; then
-         printf 'FAIL: internal interfaces file has ifupdown command hooks (unaudited bypass): %s\n' \
-            "$(grep --extended-regexp '^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down)[[:space:]]' "${f}" | tr '\n' ' ')" >&2
+      ## The internal interfaces ship as plain static stanzas. Reject the whole class
+      ## of uninterpreted escape hatches: command hooks (up/*-up/*-down) can run
+      ## `dhclient -6`/add a non-Tor route, a `mapping` script runs an arbitrary
+      ## command, and `source`/`source-directory` pulls in unaudited stanzas. The
+      ## `([[:space:]]|\|$)` terminator also catches a `up\` line-continuation form.
+      if grep --quiet --extended-regexp "${unsafe_directive_re}" "${f}"; then
+         printf 'FAIL: internal interfaces file uses an unsafe directive (hook/mapping/source): %s\n' \
+            "$(grep --extended-regexp "${unsafe_directive_re}" "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
    done
@@ -185,12 +196,18 @@ else
    printf 'PASS: canary (per-iface accept_ra override rejected); audit has teeth\n'
 fi
 
-## Canary 3: insecure per-iface overrides in uncommon-but-valid spellings must FAIL
-## -- octal (01) and hex (0x1) both store 1, and systemd accepts a `/`-separated key.
+## Canary 3: insecure per-iface overrides in every uncommon-but-valid spelling must
+## FAIL -- octal (01) and hex (0x1) both store 1; systemd accepts `/`-separated,
+## `.`/`/`-mixed (VLAN eth1/100), VLAN-dotted (eth1.100) and glob-segment keys; and a
+## value-less shadow key neutralises the `*` wildcard for that interface.
 for bad_line in \
    'net.ipv6.conf.eth1.accept_ra=01' \
    'net.ipv6.conf.eth1.accept_ra=0x1' \
-   'net/ipv6/conf/eth1/accept_ra=1'; do
+   'net/ipv6/conf/eth1/accept_ra=1' \
+   'net.ipv6.conf.eth1/100.accept_ra=1' \
+   'net.ipv6.conf.eth1.100.accept_ra=1' \
+   'net.ipv6.*.eth1.accept_ra=1' \
+   '-net.ipv6.conf.eth1.accept_ra'; do
    canary_val="$(mktemp)"
    cp -- "${sysctl_file}" "${canary_val}"
    printf '%s\n' "${bad_line}" >>"${canary_val}"
@@ -202,28 +219,41 @@ for bad_line in \
    fi
 done
 
-## Canary 4: FALSE-POSITIVE GUARD -- arp_filter=01 is octal 1 = SECURE; the audit
-## must still PASS so the octal/hex tightening does not reject a valid hardened value.
-canary_ok="$(mktemp)"
-cp -- "${sysctl_file}" "${canary_ok}"
-printf '%s\n' 'net.ipv4.conf.eth1.arp_filter=01' >>"${canary_ok}"
-if audit_sysctl "${canary_ok}" 2>/dev/null; then
-   printf 'PASS: guard (arp_filter=01 is octal 1, accepted as secure)\n'
-else
-   printf 'FAIL: guard -- audit wrongly rejected arp_filter=01 (octal 1 = secure)\n' >&2
-   rc=1
-fi
+## Canary 4: FALSE-POSITIVE GUARDS -- the audit must still PASS on secure-but-uncommon
+## spellings: arp_filter=01 is octal 1, and accept_ra_defrtr is a different sub-key the
+## leaf-terminal boundary must not catch.
+for ok_line in \
+   'net.ipv4.conf.eth1.arp_filter=01' \
+   'net.ipv6.conf.eth1.accept_ra_defrtr=1'; do
+   canary_ok="$(mktemp)"
+   cp -- "${sysctl_file}" "${canary_ok}"
+   printf '%s\n' "${ok_line}" >>"${canary_ok}"
+   if audit_sysctl "${canary_ok}" 2>/dev/null; then
+      printf 'PASS: guard (secure/out-of-scope line %s accepted)\n' "${ok_line}"
+   else
+      printf 'FAIL: guard -- audit wrongly rejected %s\n' "${ok_line}" >&2
+      rc=1
+   fi
+done
 
-## Canary 5: a dhclient command hook on the GW internal iface must FAIL -- it would
-## re-enable DHCPv6 at ifup despite the inet6 static stanza.
-canary_hook="$(mktemp)"
-cp -- "${gw_iface_file}" "${canary_hook}"
-printf '%s\n' 'up dhclient -6 eth1' >>"${canary_hook}"
-if audit_internal_inet6_static "${canary_hook}" "${ws_iface_file}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED a dhclient command hook (no teeth)\n' >&2
-   rc=1
-else
-   printf 'PASS: canary (dhclient command hook rejected); audit has teeth\n'
-fi
+## Canary 5: every unsafe-directive spelling on the GW internal iface must FAIL -- a
+## command hook (`up dhclient -6 eth1`), a `mapping` script, a `source` include, and a
+## `up\` line-continuation all re-enable DHCPv6 / pull in unaudited stanzas despite the
+## inet6 static stanza.
+for bad_line in \
+   'up dhclient -6 eth1' \
+   'mapping eth1' \
+   'source /etc/network/interfaces.d/evil' \
+   $'up\\'; do
+   canary_hook="$(mktemp)"
+   cp -- "${gw_iface_file}" "${canary_hook}"
+   printf '%s\n' "${bad_line}" >>"${canary_hook}"
+   if audit_internal_inet6_static "${canary_hook}" "${ws_iface_file}" 2>/dev/null; then
+      printf 'FAIL: canary -- audit PASSED unsafe directive "%s" (no teeth)\n' "${bad_line}" >&2
+      rc=1
+   else
+      printf 'PASS: canary (unsafe directive "%s" rejected); audit has teeth\n' "${bad_line}"
+   fi
+done
 
 exit "${rc}"
