@@ -206,22 +206,26 @@ rt_account_is_leak() {
    return 1
 }
 
-## Pure host-privilege gate (unit-tested): a test account must not be uid 0, and EVERY
-## group it holds -- its private primary group AND every supplementary -- must be the
-## account's OWN private group (named for the account, useradd default) or vboxusers.
-## ALLOWLIST with NO blind trust of the primary: a privileged primary (root/sudo/docker)
-## has a group name != the account, so it is rejected. $1=account-name $2=uid
-## $3=`id -nG` output (space-separated).
-## Scope: this rejects every privilege-granting GROUP (sudo/wheel/docker/disk/...). A
-## NON-group root grant (sudoers.d / privleap-leaprun / dev-root) is invisible here --
-## the companion rt_account_can_sudo EXERCISES sudo to catch it. polkit / file-caps
-## remain provisioning-time guarantees (create the account with only vboxusers).
+## Pure host-privilege gate (unit-tested): a test account must not be uid 0, its PRIMARY
+## group must be its own private group (name == account), and every group it holds must
+## be that private group or vboxusers. Requiring a PRIVATE primary (not a shared users/
+## vboxusers) keeps the account's files off a group other fleet accounts share -- a
+## shared primary breaks per-account isolation. The allowlist is keyed on the account
+## name, NOT blind-trusting the primary, so a privileged group (root/sudo/docker/disk)
+## anywhere is rejected. $1=account $2=uid $3=primary-group (id -gn) $4=`id -nG` output.
+## Scope: rejects every privilege-granting GROUP + a shared primary. A NON-group root
+## grant (sudoers.d / privleap-leaprun / dev-root) is invisible here -- the companion
+## rt_account_can_sudo EXERCISES sudo to catch it. polkit / file-caps remain
+## provisioning-time guarantees. rt_ensure_eph_account forces the private primary with
+## `useradd --user-group`; a pre-provisioned account must be created the same way.
 rt_account_unprivileged() {
-   local account uid grp
+   local account uid primary grp
    account="$1"
    uid="$2"
+   primary="$3"
    [ "${uid}" -ne 0 ] || return 1
-   for grp in $3; do
+   [ "${primary}" = "${account}" ] || return 1
+   for grp in $4; do
       case "${grp}" in
          "${account}"|vboxusers)
             ;;
@@ -307,7 +311,10 @@ rt_ensure_eph_account() {
    local account
    account="$1"
    if ! id "${account}" >/dev/null 2>&1; then
-      useradd --create-home --shell /bin/bash -- "${account}"
+      ## --user-group forces a private primary group (name == account) regardless of the
+      ## host's USERGROUPS_ENAB, so the isolation invariant holds and rt_account_unprivileged
+      ## never rejects a freshly-created, otherwise-clean account.
+      useradd --create-home --user-group --shell /bin/bash -- "${account}"
    fi
    getent group vboxusers >/dev/null || groupadd --system vboxusers
    usermod --append --groups vboxusers -- "${account}"
@@ -316,7 +323,7 @@ rt_ensure_eph_account() {
    ## void the verdict. Enforced by group/uid allowlist AND a sudo-exercise check (a
    ## sudoers.d/privleap grant is not group-based); the dedicated namespace + fresh
    ## creation is the primary guarantee.
-   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
+   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
       || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    ! rt_account_can_sudo "${account}" \
       || die "${SETUP_RC}" "refusing test account '${account}': has passwordless root (sudoers.d/privleap/dev-root)"
@@ -556,7 +563,7 @@ main() {
    if [ "${account_kind}" = 'leak' ]; then
       id "${account}" >/dev/null 2>&1 \
          || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
-      rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
+      rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
          || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
       ! rt_account_can_sudo "${account}" \
          || die "${SETUP_RC}" "leak account '${account}' has passwordless root (sudoers.d/privleap/dev-root) -- forbidden for a leak account"

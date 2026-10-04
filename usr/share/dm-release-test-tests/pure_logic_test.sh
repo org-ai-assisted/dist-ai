@@ -116,18 +116,20 @@ assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-
 assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
 assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
 
-## host-privilege gate: allowlist (every group is the account's own private group or
-## vboxusers; uid != 0). Canaries: a group denylist would pass docker/disk, and
-## blind-trusting the primary group (id -gn) would pass a privileged primary -- the
-## allowlist keyed on the account name rejects both.
-assert_out "unpriv: private group + vboxusers" "" rt_account_unprivileged persist-leak-whonix 5001 "persist-leak-whonix vboxusers"
-assert_out "unpriv: private group alone" "" rt_account_unprivileged u 5001 "u"
-assert_reject "unpriv: docker supplementary rejected" rt_account_unprivileged u 5001 "u docker vboxusers"
-assert_reject "unpriv: disk supplementary rejected" rt_account_unprivileged u 5001 "u disk vboxusers"
-assert_reject "unpriv: sudo rejected" rt_account_unprivileged u 5001 "u sudo"
-assert_reject "unpriv: privileged primary root rejected" rt_account_unprivileged u 5001 "root vboxusers"
-assert_reject "unpriv: privileged primary docker rejected" rt_account_unprivileged u 5001 "docker vboxusers"
-assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 "u vboxusers"
+## host-privilege gate: uid != 0, PRIMARY group == the account's own private group, and
+## every group is that private group or vboxusers. Canaries: a group denylist would pass
+## docker/disk; blind-trusting the primary would pass a privileged primary; and a SHARED
+## primary (users/vboxusers, group-writable files) would break isolation -- all rejected.
+assert_out "unpriv: private primary + vboxusers" "" rt_account_unprivileged persist-leak-whonix 5001 persist-leak-whonix "persist-leak-whonix vboxusers"
+assert_out "unpriv: private primary alone" "" rt_account_unprivileged u 5001 u "u"
+assert_reject "unpriv: shared vboxusers primary rejected" rt_account_unprivileged u 5001 vboxusers "vboxusers"
+assert_reject "unpriv: shared users primary rejected" rt_account_unprivileged u 5001 users "users vboxusers"
+assert_reject "unpriv: docker supplementary rejected" rt_account_unprivileged u 5001 u "u docker vboxusers"
+assert_reject "unpriv: disk supplementary rejected" rt_account_unprivileged u 5001 u "u disk vboxusers"
+assert_reject "unpriv: sudo supplementary rejected" rt_account_unprivileged u 5001 u "u sudo"
+assert_reject "unpriv: privileged primary root rejected" rt_account_unprivileged u 5001 root "root vboxusers"
+assert_reject "unpriv: privileged primary docker rejected" rt_account_unprivileged u 5001 docker "docker vboxusers"
+assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 u "u vboxusers"
 
 ## rt_account_can_sudo reports the EXERCISED sudo's rc (0 => passwordless root granted),
 ## NOT a listing (`sudo -l` exits 0 for everyone). Real passwordless-root semantics are
