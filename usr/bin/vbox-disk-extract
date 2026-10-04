@@ -205,7 +205,10 @@ main() {
          -- "${luks_target}" "${luks_name}"
    fi
 
-   mnt_dir="$(mktemp --directory)"
+   ## Canonicalize so the realpath-based confinement prefix test below holds even when
+   ## an ancestor of the mktemp base (TMPDIR) is a symlink -- otherwise realpath's
+   ## canonical result would never start with the raw mnt_dir and EVERY file is rejected.
+   mnt_dir="$(realpath -- "$(mktemp --directory)")"
    local fs found='false' resolved
    ## Run candidate_filesystems in THIS shell via a file (NOT a '< <()' process
    ## substitution): a procsub subshell would discard its vg_activated assignment, so
@@ -223,7 +226,10 @@ main() {
       fi
       ## Confine to the mounted guest fs: fully resolve symlinks and require the REAL
       ## path to stay under mnt_dir, so a guest absolute symlink (e.g. -> /etc/shadow)
-      ## cannot make install copy a HOST file out (CWE-59 defense-in-depth).
+      ## cannot make install copy a HOST file out (CWE-59 defense-in-depth). A guest
+      ## ABSOLUTE symlink resolves against the host root and is therefore (safely) NOT
+      ## followed -- the extract targets (e.g. /var/lib/dkms/mok.pub) are regular files;
+      ## do NOT "fix" this by chrooting into the guest to follow absolute links out.
       resolved="$(realpath --canonicalize-existing -- "${mnt_dir}/${source_path#/}" 2>/dev/null || true)"
       if [ -n "${resolved}" ] && [ -f "${resolved}" ] \
          && [ "${resolved#"${mnt_dir}/"}" != "${resolved}" ]; then
