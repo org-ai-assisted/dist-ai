@@ -769,8 +769,10 @@ def test_assert_no_external_refs_rejects_external_files(tmp_path):
         M._assert_no_external_refs(str(overlay))
     ## (b) qcow2v3 external data file (reports no backing-filename, but convert reads it)
     datafile = tmp_path / 'datafile.qcow2'
+    ## qemu-img -o is comma-delimited; a literal comma in the path escapes as ',,'.
     subprocess.run(['qemu-img', 'create', '-f', 'qcow2',
-                    '-o', 'data_file=%s,data_file_raw=on' % (secret,),
+                    '-o', 'data_file=%s,data_file_raw=on'
+                    % (str(secret).replace(',', ',,'),),
                     str(datafile), '1M'], check=True, capture_output=True)
     with pytest.raises(M.SetupError):
         M._assert_no_external_refs(str(datafile))
