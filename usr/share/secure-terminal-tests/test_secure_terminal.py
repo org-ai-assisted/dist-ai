@@ -1622,6 +1622,19 @@ eq(_se, {'PATH': '/usr/bin', 'HOME': '/home/x', 'TERM': 'xterm-256color'},
 S.scrub_child_env(_se)   # idempotent: a second pass over an already-clean env is a no-op
 eq(_se, {'PATH': '/usr/bin', 'HOME': '/home/x', 'TERM': 'xterm-256color'},
    'scrub: idempotent -- re-running changes nothing')
+# Drift guard: every SECURE_TERMINAL_* name the package source carries must be on the
+# denylist, so a newly added app-config env read cannot silently ride into a child / a
+# nested secure-terminal. Scans the shipped package, not a hardcoded list.
+import re as _re_sc, glob as _glob_sc                       # noqa: E402
+_pkg_dir_sc = os.path.dirname(S.__file__)
+_st_env_tokens = set()
+for _pyf_sc in _glob_sc.glob(os.path.join(_pkg_dir_sc, '*.py')):
+    with open(_pyf_sc, encoding='utf-8') as _fh_sc:
+        _st_env_tokens.update(_re_sc.findall(r'SECURE_TERMINAL_[A-Z_]+', _fh_sc.read()))
+_missing_sc = sorted(_t for _t in _st_env_tokens if _t not in S.CHILD_ENV_SCRUB)
+ok(not _missing_sc,
+   'scrub: every SECURE_TERMINAL_* in the package is on CHILD_ENV_SCRUB (missing: %r)'
+   % (_missing_sc,))
 
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
