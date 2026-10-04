@@ -55,6 +55,7 @@ nbd_dev=""
 luks_name=""
 vg_activated=""
 mnt_dir=""
+fs_list=""
 
 cleanup() {
    if [ -n "${mnt_dir}" ] && mountpoint --quiet -- "${mnt_dir}"; then
@@ -62,6 +63,9 @@ cleanup() {
    fi
    if [ -n "${mnt_dir}" ]; then
       rmdir -- "${mnt_dir}" 2>/dev/null || true
+   fi
+   if [ -n "${fs_list}" ]; then
+      safe-rm --force -- "${fs_list}" 2>/dev/null || true
    fi
    if [ -n "${vg_activated}" ]; then
       vgchange --activate n -- "${vg_activated}" >/dev/null 2>&1 || true
@@ -202,7 +206,12 @@ main() {
    fi
 
    mnt_dir="$(mktemp --directory)"
-   local fs found='false'
+   local fs found='false' resolved
+   ## Run candidate_filesystems in THIS shell via a file (NOT a '< <()' process
+   ## substitution): a procsub subshell would discard its vg_activated assignment, so
+   ## cleanup would never deactivate the VG it turned on (leaking the VG + its dm nodes).
+   fs_list="$(mktemp)"
+   candidate_filesystems > "${fs_list}"
    while read -r fs; do
       [ -n "${fs}" ] || continue
       ## A hard-powered-off VM leaves an unclean ext journal; ext* cannot replay it
@@ -212,8 +221,13 @@ main() {
          && ! mount --read-only --options noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          continue
       fi
-      if [ -e "${mnt_dir}/${source_path#/}" ]; then
-         install --mode=0644 -- "${mnt_dir}/${source_path#/}" "${dest_path}"
+      ## Confine to the mounted guest fs: fully resolve symlinks and require the REAL
+      ## path to stay under mnt_dir, so a guest absolute symlink (e.g. -> /etc/shadow)
+      ## cannot make install copy a HOST file out (CWE-59 defense-in-depth).
+      resolved="$(realpath --canonicalize-existing -- "${mnt_dir}/${source_path#/}" 2>/dev/null || true)"
+      if [ -n "${resolved}" ] && [ -f "${resolved}" ] \
+         && [ "${resolved#"${mnt_dir}/"}" != "${resolved}" ]; then
+         install --mode=0644 -- "${resolved}" "${dest_path}"
          ## Hand the file back to the invoking (sudo) user, not root.
          if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
             chown -- "${SUDO_UID}:${SUDO_GID}" "${dest_path}"
@@ -222,7 +236,7 @@ main() {
       fi
       umount -- "${mnt_dir}"
       [ "${found}" = 'true' ] && break
-   done < <(candidate_filesystems)
+   done < "${fs_list}"
 
    [ "${found}" = 'true' ] || die "'${source_path}' not found in any filesystem on '${disk}'"
    printf '%s: extracted %s -> %s\n' "${me}" "${source_path}" "${dest_path}"
