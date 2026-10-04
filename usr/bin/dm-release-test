@@ -212,6 +212,10 @@ rt_account_is_leak() {
 ## ALLOWLIST with NO blind trust of the primary: a privileged primary (root/sudo/docker)
 ## has a group name != the account, so it is rejected. $1=account-name $2=uid
 ## $3=`id -nG` output (space-separated).
+## Scope: this rejects every privilege-granting GROUP (sudo/wheel/docker/disk/...). A
+## NON-group root grant (sudoers.d / privleap-leaprun / dev-root) is invisible here --
+## the companion rt_account_can_sudo EXERCISES sudo to catch it. polkit / file-caps
+## remain provisioning-time guarantees (create the account with only vboxusers).
 rt_account_unprivileged() {
    local account uid grp
    account="$1"
@@ -227,6 +231,14 @@ rt_account_unprivileged() {
       esac
    done
    return 0
+}
+
+## True if ACCOUNT can obtain PASSWORDLESS root. Unlike `sudo -l` (a listing that exits
+## 0 for everyone), this EXERCISES sudo AS the account: rc 0 only when passwordless root
+## genuinely works -- catching a sudoers.d / privleap(leaprun) / dev-root grant that is
+## NOT group-based and so invisible to rt_account_unprivileged. Needs root (runuser).
+rt_account_can_sudo() {
+   runuser -u "$1" -- sudo --non-interactive /usr/bin/true >/dev/null 2>&1
 }
 
 ## "blessed" when the resolved version equals the stable pin, else "prebless".
@@ -301,10 +313,13 @@ rt_ensure_eph_account() {
    usermod --append --groups vboxusers -- "${account}"
    ## INVARIANT: a test account (above all a leak account) is never host-privileged.
    ## A privileged account could tamper with the nft leak-drop or the results plane and
-   ## void the verdict. Enforced by group/uid allowlist (see rt_account_unprivileged);
-   ## the dedicated namespace + fresh creation is the primary guarantee.
+   ## void the verdict. Enforced by group/uid allowlist AND a sudo-exercise check (a
+   ## sudoers.d/privleap grant is not group-based); the dedicated namespace + fresh
+   ## creation is the primary guarantee.
    rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
       || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
+   ! rt_account_can_sudo "${account}" \
+      || die "${SETUP_RC}" "refusing test account '${account}': has passwordless root (sudoers.d/privleap/dev-root)"
    rt_refresh_fleet
 }
 
@@ -336,12 +351,15 @@ rt_publish_result() {
    rc="$5"
    shift 5
 
-   if [ "${rc}" -eq 0 ]; then
+   ## rc 0 = PASS; the reserved SETUP/inconclusive code 2 = INCONCLUSIVE (a provisioning
+   ## gap or inconclusive probe -- pass=false but NOT a leak); any other non-zero (incl
+   ## dm-whonix-pair FAIL_RC=5) = FAIL. Shared helper so result.json agrees (see
+   ## results-publish.bsh); this is what keeps a SETUP gap from reading as a leak.
+   verdict="$(image_test_verdict_from_rc "${rc}")"
+   if [ "${verdict}" = 'PASS' ]; then
       pass='true'
-      verdict='PASS'
    else
       pass='false'
-      verdict='FAIL'
    fi
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
       "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
@@ -540,6 +558,8 @@ main() {
          || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
       rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
          || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
+      ! rt_account_can_sudo "${account}" \
+         || die "${SETUP_RC}" "leak account '${account}' has passwordless root (sudoers.d/privleap/dev-root) -- forbidden for a leak account"
       rt_refresh_fleet
    fi
 

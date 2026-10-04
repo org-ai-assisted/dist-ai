@@ -117,11 +117,26 @@ notok() {
    fail_count=$(( fail_count + 1 ))
 }
 
-## Start a holder that owns the 'dist-installer-cli' lock under the private runtime
-## dir. It runs a command UNDER the lock that first touches a ready marker, then
-## sleeps -- so the test can wait for the marker WITHOUT itself trying to acquire
-## the lock (an acquiring probe would race the holder). setsid: its own process
-## group for a clean group-kill in cleanup.
+## Assertion 1 (INLINE-SAFETY) runs FIRST, before any holder exists, so the lock
+## is guaranteed free -- no dependency on releasing a holder, whose process-group
+## teardown races the slow PID reaping in a CI container. With the lock free,
+## standalone -h self-locks and prints usage (rc 0), proving the inlined lockfile.sh
+## body did not mis-fire wrap mode.
+free_rc=0
+free_out="$( run_standalone_h 2>/dev/null )" || free_rc=$?
+if [ "${free_rc}" -eq 0 ] \
+   && [[ "${free_out}" == *'Usage:'* ]]; then
+   ok "uncontended run self-locks and prints usage (rc=0, no wrap mis-fire)"
+else
+   notok "uncontended run did not behave as a normal '-h'" \
+      "rc=${free_rc} out='$( printf '%s' "${free_out}" | head --lines=1 )'"
+fi
+
+## Now start a holder that owns the 'dist-installer-cli' lock under the private
+## runtime dir. It runs a command UNDER the lock that first touches a ready marker,
+## then sleeps -- so the test can wait for the marker WITHOUT itself trying to
+## acquire the lock (an acquiring probe would race the holder). setsid: its own
+## process group for a clean group-kill in cleanup.
 ready_marker="${work}/holder-ready"
 setsid env XDG_RUNTIME_DIR="${runtime_dir}" \
    "${lockfile_sh}" "${lock_key}" -- \
@@ -145,7 +160,7 @@ if [ "${held}" != 1 ]; then
    exit 1
 fi
 
-## Assertion 1: CONTENTION -- standalone -h must fail fast with the flock message.
+## Assertion 2: CONTENTION -- standalone -h must fail fast with the flock message.
 contend_rc=0
 contend_err="$( run_standalone_h 2>&1 1>/dev/null )" || contend_rc=$?
 if [ "${contend_rc}" -ne 0 ] \
@@ -154,23 +169,6 @@ if [ "${contend_rc}" -ne 0 ] \
 else
    notok "contended run did not fail fast" \
       "rc=${contend_rc} err='$( printf '%s' "${contend_err}" | tr '\n' ' ' )'"
-fi
-
-## Release the holder so the lock is free for assertion 2.
-kill -- -"${holder_pid}" 2>/dev/null || true
-wait "${holder_pid}" 2>/dev/null || true
-holder_pid=""
-
-## Assertion 2: INLINE-SAFETY -- with the lock free, standalone -h prints usage and
-## exits 0 (no wrap-mode mis-fire from the inlined lockfile.sh body).
-free_rc=0
-free_out="$( run_standalone_h 2>/dev/null )" || free_rc=$?
-if [ "${free_rc}" -eq 0 ] \
-   && [[ "${free_out}" == *'Usage:'* ]]; then
-   ok "uncontended run self-locks and prints usage (rc=0, no wrap mis-fire)"
-else
-   notok "uncontended run did not behave as a normal '-h'" \
-      "rc=${free_rc} out='$( printf '%s' "${free_out}" | head --lines=1 )'"
 fi
 
 printf '%s\n' ""
