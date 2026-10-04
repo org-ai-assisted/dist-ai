@@ -246,12 +246,17 @@ SHELLCHECK_OPTIONAL = (
 ## following FORCED off (_forced_no_follow_rcfile), so it cannot explode and returns
 ## fast, and the file degrades loudly instead of vanishing.
 ##
-## INVARIANT: primary cap + fallback cap MUST stay strictly below the smallest OUTER
-## hook cap (shell-style-check.py SHELL_STYLE_GATE_TIMEOUT = 20s; pre-commit
-## STYLE_GATE_TIMEOUT_SECONDS = 120s), or the outer fail-open re-opens the
-## silent-pass hole this closes. The fallback cannot follow, so it returns in well
-## under its (smaller) cap; the two caps only ever stack on one pathological file.
-## Default 10 + 5 = 15 < 20. Overridable for tests via DIST_AI_SHELLCHECK_TIMEOUT.
+## BUDGET: the primary (follow) and the fallback (full body analysis, no follow) each
+## get SHELLCHECK_TIMEOUT. The common case spends ONE: a normal file passes the
+## primary; an exploding-follow file is cut at the primary cap, then the fallback
+## analyzes its body well under the cap. Both caps stack only on ONE pathological file
+## (exploding follow AND a body too big to analyze in the budget). That rare file
+## approaches the 20s PostToolUse outer cap (its fail-OPEN) or exhausts the fallback
+## (fail-CLOSED, loud) -- never a silent pass; the 120s pre-commit cap is unaffected.
+## The fallback needs the full budget because its body analysis scales with file size
+## (a ~5000-line script like usr/bin/ai-review takes ~6s); a smaller cap fail-closes
+## clean large files. Overridable for tests via DIST_AI_SHELLCHECK_TIMEOUT (clamped,
+## LOWER only).
 
 
 ## Ceiling on the per-run cap, and the default when unset. DIST_AI_SHELLCHECK_TIMEOUT
@@ -280,9 +285,14 @@ def _read_shellcheck_timeout():
 
 
 SHELLCHECK_TIMEOUT = _read_shellcheck_timeout()
-## The fallback is forced-no-follow, so it returns fast; this smaller ceiling only
-## bounds a pathological huge file body and keeps primary+fallback under the outer cap.
-SHELLCHECK_FALLBACK_TIMEOUT = min(SHELLCHECK_TIMEOUT, 5.0)
+## The fallback still runs shellcheck's FULL body analysis (just no following), and
+## that scales with FILE SIZE -- a ~5000-line script takes ~6s. A smaller cap here
+## fail-CLOSES a clean large file (e.g. usr/bin/ai-review), so the fallback gets the
+## SAME budget as the primary. The two caps stack only on ONE pathological file (big
+## body AND an exploding follow graph); that rare file approaches the 20s PostToolUse
+## cap (its fail-open) or exhausts the fallback (fail-closed, loud) -- never a silent
+## pass, and the 120s pre-commit cap is unaffected.
+SHELLCHECK_FALLBACK_TIMEOUT = SHELLCHECK_TIMEOUT
 
 
 def _run_shellcheck(command, timeout, env=None):
