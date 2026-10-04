@@ -35,6 +35,8 @@
 ##     (package reuse is the derivative-maker default); DM_CLEAN forces from-scratch by
 ##     dropping --reuse-cowbuilder-base and passing --skip-published-packages false;
 ##   - NO freshness marker/state file is ever written (the reuse decision is stateless);
+##   - the wrapper never mutates ${HOME}/.ssh -- it neither creates it (CI=true bypasses
+##     the upload-readiness gate) nor aborts on a pre-existing non-directory ~/.ssh;
 ##   - a build FAILURE propagates (nonzero).
 
 set -o errexit
@@ -65,8 +67,8 @@ trap cleanup EXIT
 
 ## ${HOME}/.cache/dm-iso-build.last-freshness is the marker path the stateless-check
 ## below asserts is absent; keep HOME inside the throwaway workspace so that check never
-## depends on the operator's real ~/.cache. The wrapper also creates ${HOME}/.ssh (the
-## official path's upload-readiness guard); confine that here too.
+## depends on the operator's real ~/.cache. Cases 9/10 also probe ${HOME}/.ssh; confine
+## that here too so the probes never touch the operator's real ~/.ssh.
 export HOME="${workspace}/home"
 mkdir --parents -- "${HOME}/.cache"
 marker="${HOME}/.cache/dm-iso-build.last-freshness"
@@ -222,6 +224,12 @@ fi
 ## assertion when absent -- the stub cases above still gate the wrapper's own behavior.
 ## e2e_verified gates the summary: it must stay 0 unless this assertion actually ran and
 ## passed, so a skipped e2e is never reported as a verified '--repo true' property.
+## SCOPE: this proves repo-enabled only at the ARGV level (-one's static --repo true). It
+## does NOT prove the repo ships enabled against a config-file override: --show-steps never
+## sources buildconfig.d / --conffile / --confdir nor runs variables.d/15_redistributable.bsh,
+## so a buildconfig.d-set build_remote_repo_enable=false (+ dist_build_redistributable_allow_no_repo=true)
+## is invisible here and is honored by derivative-maker -- out of the wrapper's argv-level
+## reach (see dm-iso-build's Scope note).
 e2e_verified=0
 if [ -f "${dm_checkout}/help-steps/dm-build-official-one" ]; then
    ## Same ambient-DM_* isolation as run_iso. dm-iso-build echoes a status line that
@@ -244,6 +252,33 @@ if [ -f "${dm_checkout}/help-steps/dm-build-official-one" ]; then
 else
    printf '%s\n' "SKIP (end-to-end): no derivative-maker checkout at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR)." >&2
 fi
+
+## --- Case 9 (CANARY): a run never creates ${HOME}/.ssh ---------------------------
+## The wrapper hardcodes CI=true, which bypasses dm-build-official-one's ~/.ssh
+## upload-readiness gate; uploads simulate, so ssh is never used. The wrapper must NOT
+## mutate ~/.ssh (a dry/repeated run creating an empty ~/.ssh would spuriously satisfy a
+## later non-CI consumer's 'test -d ~/.ssh'). On the old wrapper (unconditional mkdir) this FAILS.
+safe-rm --recursive --force -- "${HOME}/.ssh"
+run_iso
+if [ "${iso_rc}" -eq 0 ] && [ ! -e "${HOME}/.ssh" ]; then
+   pass "a run creates no ${HOME}/.ssh (upload-readiness gate bypassed by CI=true)"
+else
+   fail "the wrapper created ${HOME}/.ssh; rc=${iso_rc}"
+fi
+
+## --- Case 10 (CANARY): a non-directory ${HOME}/.ssh does not abort the build -----
+## A regular file or dangling symlink at ~/.ssh makes '[ -d ]' false; the old wrapper's
+## 'mkdir ~/.ssh' then fails EEXIST and errexit aborts the run. The wrapper must tolerate
+## it (it never touches ~/.ssh). On the old wrapper this FAILS (nonzero exit).
+safe-rm --recursive --force -- "${HOME}/.ssh"
+ln --symbolic -- /nonexistent-dm-iso-build-canary "${HOME}/.ssh"
+run_iso
+if [ "${iso_rc}" -eq 0 ]; then
+   pass "a non-directory ${HOME}/.ssh does not abort the build"
+else
+   fail "a non-directory ${HOME}/.ssh aborted the build; rc=${iso_rc} out=<<<$(cat -- "${run_out}")>>>"
+fi
+safe-rm --force -- "${HOME}/.ssh"
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

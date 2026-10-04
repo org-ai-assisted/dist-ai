@@ -66,6 +66,13 @@
 ## dist_build_sources_list_primary) -- keep those frozen too. Signing is enforced by
 ## derivative-maker itself, not this wrapper.
 ##
+## The repo-ENABLED promise is enforced only at the ARGV level (the --repo refusal below).
+## It does NOT police the config channel: a buildconfig.d/*.conf (or --conffile/--confdir),
+## sourced AFTER parse_cmd, can set build_remote_repo_enable=false together with
+## dist_build_redistributable_allow_no_repo=true (derivative-maker's own escape hatch) and
+## ship the repo DISABLED -- out of this wrapper's reach. The official/CI path has no such
+## config, so the promise holds there; keep those knobs frozen too.
+##
 ## The ISO is intrinsic to a kicksecure flavor build in the official path. VM images
 ## are selected via DM_TARGET (mapped to dist_build_multi_target_list): DM_TARGET=iso
 ## builds the ISO only; any other value also builds that VM image. The ISO is produced
@@ -106,12 +113,6 @@ done
 unset dm_iso_build_arg
 
 cd -- "${dm_repo}"
-
-## dm-build-official-one gates a non-CI, non-dry-run build on an existing ~/.ssh (its
-## upload-readiness check). This builder simulates uploads unconditionally and never uses
-## ssh keys, so that guard is spurious here -- create the dir (mode 0700) when absent so a
-## fresh build machine does not fail the check; leave an existing dir's mode untouched.
-[ -d "${HOME}/.ssh" ] || mkdir --mode=0700 -- "${HOME}/.ssh"
 
 ## dm-build-official-one consumes the flavor, arch and VM-target set from the
 ## environment (NOT from --flavor/--arch/--target on its own argv). An empty
