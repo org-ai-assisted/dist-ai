@@ -58,6 +58,8 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
 NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
+## Seconds to let a killed VBoxSVC reap before userdel in cleanup (test seam).
+EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-2}"
 
 ISO_DIR="${DM_RELEASE_TEST_ISO_DIR:-/var/lib/image-tests/iso}"
 CERT_PATH="${DM_RELEASE_TEST_CERT:-/usr/share/keyrings/derivative.asc}"
@@ -305,7 +307,14 @@ rt_ensure_eph_account() {
 rt_eph_cleanup() {
    [ -n "${eph_account}" ] || return 0
    "${IMAGE_TEST_GC}" "${eph_account}" || true
-   userdel --remove -- "${eph_account}" || true
+   ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers for a few seconds after
+   ## the VM stops and holds userdel open (it leaked the account in a live run);
+   ## kill the account's processes and let them reap before removing it.
+   pkill --kill --uid "${eph_account}" 2>/dev/null || true
+   sleep "${EPH_CLEANUP_SETTLE}"
+   if ! userdel --remove -- "${eph_account}"; then
+      log warn "userdel '${eph_account}' failed -- reap stray processes of that account and 'userdel --remove' it manually"
+   fi
    rt_refresh_fleet
 }
 
