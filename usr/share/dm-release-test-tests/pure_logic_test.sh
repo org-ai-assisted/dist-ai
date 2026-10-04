@@ -87,6 +87,8 @@ assert_out "version token dotted" "18-2-3-5" rt_version_token 18.2.3.5
 assert_out "version token short" "18-2" rt_version_token 18.2
 assert_reject "version with letter rejected" rt_version_token 1.2a
 assert_reject "version empty rejected" rt_version_token ""
+## length bound (the leak/blessed lanes skip the account-name ceiling): 33 chars reject
+assert_reject "version token over 32 chars" rt_version_token 123456789012345678901234567890123
 
 ## ephemeral account name
 assert_out "eph account kicksecure" "eph-run-kicksecure-18-2-3-5" rt_eph_account kicksecure 18-2-3-5
@@ -114,15 +116,18 @@ assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-
 assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
 assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
 
-## host-privilege gate: allowlist (groups subset of {primary, vboxusers}, uid != 0).
-## Canary: a group denylist would pass docker/disk; this allowlist rejects them.
-assert_out "unpriv: primary+vboxusers only" "" rt_account_unprivileged 5001 eph-leak-whonix-18-2-3-5 "eph-leak-whonix-18-2-3-5 vboxusers"
-assert_out "unpriv: primary alone" "" rt_account_unprivileged 5001 u "u"
-assert_reject "unpriv: docker rejected" rt_account_unprivileged 5001 u "u docker vboxusers"
-assert_reject "unpriv: disk rejected" rt_account_unprivileged 5001 u "u disk vboxusers"
-assert_reject "unpriv: sudo rejected" rt_account_unprivileged 5001 u "u sudo"
-assert_reject "unpriv: wheel rejected" rt_account_unprivileged 5001 u "u wheel vboxusers"
-assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged 0 u "u vboxusers"
+## host-privilege gate: allowlist (every group is the account's own private group or
+## vboxusers; uid != 0). Canaries: a group denylist would pass docker/disk, and
+## blind-trusting the primary group (id -gn) would pass a privileged primary -- the
+## allowlist keyed on the account name rejects both.
+assert_out "unpriv: private group + vboxusers" "" rt_account_unprivileged persist-leak-whonix 5001 "persist-leak-whonix vboxusers"
+assert_out "unpriv: private group alone" "" rt_account_unprivileged u 5001 "u"
+assert_reject "unpriv: docker supplementary rejected" rt_account_unprivileged u 5001 "u docker vboxusers"
+assert_reject "unpriv: disk supplementary rejected" rt_account_unprivileged u 5001 "u disk vboxusers"
+assert_reject "unpriv: sudo rejected" rt_account_unprivileged u 5001 "u sudo"
+assert_reject "unpriv: privileged primary root rejected" rt_account_unprivileged u 5001 "root vboxusers"
+assert_reject "unpriv: privileged primary docker rejected" rt_account_unprivileged u 5001 "docker vboxusers"
+assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 "u vboxusers"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s assertion(s) failed\n' "${failures}" >&2

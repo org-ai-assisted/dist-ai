@@ -156,6 +156,10 @@ rt_version_token() {
          ;;
    esac
    token="${version//./-}"
+   ## Bound the token: it becomes a results-path component (and, for eph-run-, part of
+   ## the account name). The leak/blessed lanes skip the account-name ceiling, so cap it
+   ## here -- a garbage/overlong --version fails SETUP loudly, never a suppressed publish.
+   [ "${#token}" -le 32 ] || return 1
    printf '%s\n' "${token}"
 }
 
@@ -202,18 +206,20 @@ rt_account_is_leak() {
    return 1
 }
 
-## Pure host-privilege gate (unit-tested): a test account must not be uid 0, and
-## beyond its own primary group may hold ONLY vboxusers. An ALLOWLIST, not a group
-## denylist -- a denylist silently passes docker/disk/wheel/any future escalation
-## group. $1=uid $2=primary-group-name $3=`id -nG` output (space-separated).
+## Pure host-privilege gate (unit-tested): a test account must not be uid 0, and EVERY
+## group it holds -- its private primary group AND every supplementary -- must be the
+## account's OWN private group (named for the account, useradd default) or vboxusers.
+## ALLOWLIST with NO blind trust of the primary: a privileged primary (root/sudo/docker)
+## has a group name != the account, so it is rejected. $1=account-name $2=uid
+## $3=`id -nG` output (space-separated).
 rt_account_unprivileged() {
-   local uid primary grp
-   uid="$1"
-   primary="$2"
+   local account uid grp
+   account="$1"
+   uid="$2"
    [ "${uid}" -ne 0 ] || return 1
    for grp in $3; do
       case "${grp}" in
-         "${primary}"|vboxusers)
+         "${account}"|vboxusers)
             ;;
          *)
             return 1
@@ -297,7 +303,7 @@ rt_ensure_eph_account() {
    ## A privileged account could tamper with the nft leak-drop or the results plane and
    ## void the verdict. Enforced by group/uid allowlist (see rt_account_unprivileged);
    ## the dedicated namespace + fresh creation is the primary guarantee.
-   rt_account_unprivileged "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
       || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    rt_refresh_fleet
 }
@@ -399,6 +405,12 @@ rt_lane_whonix() {
    ## 'clean-live' snapshot on each VM. Building that one-time state (OVA acquire
    ## + import + sysmaint dev-root bake + snapshot) is finalized on the live
    ## server; dm-whonix-pair fails closed with a clear message if it is absent.
+   ##
+   ## LIMITATION of the persistent persist-leak- account: the imported pair is NOT
+   ## version-tied, so ${version} here is the REQUESTED version, not an independently
+   ## verified pair version. Run the leak lane only for the version the pair was
+   ## provisioned with, and serialize concurrent whonix runs -- they share this one
+   ## account + fixed VM names. Pair-version pinning + a run lock are tracked follow-ups.
    rc=0
    sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
@@ -526,7 +538,7 @@ main() {
    if [ "${account_kind}" = 'leak' ]; then
       id "${account}" >/dev/null 2>&1 \
          || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
-      rt_account_unprivileged "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+      rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -nG "${account}")" \
          || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
       rt_refresh_fleet
    fi
