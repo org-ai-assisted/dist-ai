@@ -129,6 +129,26 @@ assert_reject "unpriv: privileged primary root rejected" rt_account_unprivileged
 assert_reject "unpriv: privileged primary docker rejected" rt_account_unprivileged u 5001 "docker vboxusers"
 assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 "u vboxusers"
 
+## rt_account_can_sudo reports the EXERCISED sudo's rc (0 => passwordless root granted),
+## NOT a listing (`sudo -l` exits 0 for everyone). Real passwordless-root semantics are
+## verified live in the sandbox; here a runuser+sudo PATH stub pins the rc wiring.
+cansudo_stub="$(mktemp --directory)"
+printf '%s\n' '#!/bin/bash' 'shift 2' 'exec "$@"' > "${cansudo_stub}/runuser"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${cansudo_stub}/sudo"
+chmod +x -- "${cansudo_stub}/runuser" "${cansudo_stub}/sudo"
+if PATH="${cansudo_stub}:${PATH}" rt_account_can_sudo acct; then
+   printf 'ok: rt_account_can_sudo true when the exercised sudo succeeds\n'
+else
+   printf 'FAIL: rt_account_can_sudo false though sudo exited 0\n' >&2; failures=$((failures + 1))
+fi
+printf '%s\n' '#!/bin/bash' 'exit 1' > "${cansudo_stub}/sudo"
+if PATH="${cansudo_stub}:${PATH}" rt_account_can_sudo acct; then
+   printf 'FAIL: rt_account_can_sudo true though sudo exited 1\n' >&2; failures=$((failures + 1))
+else
+   printf 'ok: rt_account_can_sudo false when the exercised sudo fails\n'
+fi
+safe-rm --recursive --force -- "${cansudo_stub}"
+
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s assertion(s) failed\n' "${failures}" >&2
    exit 1
