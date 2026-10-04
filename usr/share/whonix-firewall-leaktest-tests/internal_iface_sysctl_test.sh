@@ -30,13 +30,15 @@ export LC_ALL=C
 ## ifupdown directives that are uninterpreted escape hatches on these static-only
 ## internal interfaces: command hooks (up/*-up/*-down, run arbitrary commands incl.
 ## dhclient / route injection), a `mapping` script, and `source`/`source-directory`
-## includes (pull in unaudited stanzas). Backslash line-continuations are rejected
-## separately (continuation_re), so a hook split across lines (`u\`+`p ...`) cannot
-## hide here.
-unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|$)'
-## ifupdown joins a line ending in `\` with the next; any continuation in these
-## static files is uncommon and can splice a hook across lines, so reject them all.
-continuation_re='\\$'
+## includes (pull in unaudited stanzas). ifupdown strips one trailing `?` from a hook
+## keyword (`up?` runs as `up`), so tolerate it. Backslash line-continuations are
+## rejected separately (continuation_re), so a hook split across lines (`u\`+`p ...`)
+## cannot hide here.
+unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)[?]?([[:space:]]|$)'
+## ifupdown joins a line whose last non-whitespace char is `\` with the next; any
+## continuation in these static files is uncommon and can splice a hook across lines,
+## so reject them all (trailing whitespace after the `\` still continues).
+continuation_re='\\[[:space:]]*$'
 
 ## A hardened sysctl leaf (accept_ra, ...) is secure only when assigned EXACTLY its
 ## hardened number. The kernel parses the value C-style, so `01` (leading-0 octal)
@@ -104,12 +106,16 @@ audit_sysctl() {
    check_values "${file}" 'arp_ignore'          "${onetwo}" || rc=1
    check_values "${file}" 'accept_source_route' "${nz}"     || rc=1
    ## A glob in the LEAF segment expands to the hardened keys too, which a literal-leaf
-   ## match cannot see: `net.ipv6.conf.eth1.accept_*=1`, `...accept_r?=1`, `...eth1.*=1`
-   ## each set accept_ra (and siblings) insecure. Reject ANY conf assignment whose final
-   ## component carries a glob metachar (*?[) -- the shipped file never globs a leaf, so
-   ## this flags the whole class (even a secure value) for human review rather than
-   ## resolving systemd's glob expansion (which a static audit cannot do).
-   local glob_leaf='^[[:space:]]*-?net[./]ipv[46][./]conf[./][^=]*[*?[][^./=]*([[:space:]]*=|[[:space:]]|$)'
+   ## match cannot see: `net.ipv6.conf.eth1.accept_*=1`, `...accept_r?=1`, `...eth1.*=1`,
+   ## a globbed conf/ipv segment (`net.ipv6.*.eth1.accept_*=1`, `net.ipv?.conf...`), or a
+   ## brace list (`...*.{accept_ra,unused}=1`) each set accept_ra (or a sibling) insecure.
+   ## Reject ANY net key whose final component carries a glob metachar (*?[{) -- a legit
+   ## scope glob (`net.ipv6.conf.*.accept_ra=0`) has a LITERAL leaf and is not matched.
+   ## The shipped file never globs a leaf, so this flags the whole class (even a secure
+   ## value) for human review rather than resolving systemd's glob expansion (which a
+   ## static audit cannot do). Residual, documented out-of-scope: a bracket class that
+   ## embeds a separator (`accept_r[a/]`) -- resolving it needs a real glob(3) matcher.
+   local glob_leaf='^[[:space:]]*-?net[./][^=]*[*?[{][^./=]*([[:space:]]*=|[[:space:]]|$)'
    if grep --quiet --extended-regexp "${glob_leaf}" "${file}"; then
       printf 'FAIL: sysctl globs a hardened-key leaf (can match accept_ra/etc.): %s\n' \
          "$(grep --extended-regexp "${glob_leaf}" "${file}" | tr '\n' ' ')" >&2
@@ -238,6 +244,9 @@ for bad_line in \
    'net.ipv6.conf.eth1.accept_r?=1' \
    'net.ipv6.conf.eth1.*=1' \
    'net.ipv6.conf.eth?.accept_r?=1' \
+   'net.ipv6.*.eth1.accept_*=1' \
+   'net.ipv?.conf.eth1.accept_r?=1' \
+   'net.ipv6.conf.*.{accept_ra,unused}=1' \
    'net.ipv6.conf.eth1.accept_ra=1 net.ipv6.conf.all.accept_ra=0'; do
    canary_val="$(mktemp)"
    cp -- "${sysctl_file}" "${canary_val}"
@@ -275,6 +284,7 @@ done
 ## inet6 static stanza.
 for bad_line in \
    'up dhclient -6 eth1' \
+   'up? dhclient -6 eth1' \
    'mapping eth1' \
    'source /etc/network/interfaces.d/evil' \
    $'up\\'; do
@@ -290,15 +300,18 @@ for bad_line in \
 done
 
 ## Canary 6: a hook SPLIT across a backslash continuation (ifupdown joins `u\`+`p ...`
-## into `up dhclient -6 eth1`) must FAIL -- the continuation line ends in `\`.
-canary_split="$(mktemp)"
-cp -- "${gw_iface_file}" "${canary_split}"
-printf '%s\n' $'u\\' 'p dhclient -6 eth1' >>"${canary_split}"
-if audit_internal_inet6_static "${canary_split}" "${ws_iface_file}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
-   rc=1
-else
-   printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
-fi
+## into `up dhclient -6 eth1`) must FAIL -- including the form with trailing whitespace
+## after the `\`, which still continues.
+for split_first in $'u\\' $'u\\  '; do
+   canary_split="$(mktemp)"
+   cp -- "${gw_iface_file}" "${canary_split}"
+   printf '%s\n' "${split_first}" 'p dhclient -6 eth1' >>"${canary_split}"
+   if audit_internal_inet6_static "${canary_split}" "${ws_iface_file}" 2>/dev/null; then
+      printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
+      rc=1
+   else
+      printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
+   fi
+done
 
 exit "${rc}"

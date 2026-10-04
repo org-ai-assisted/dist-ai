@@ -28,13 +28,15 @@ export LC_ALL=C
 ## ifupdown directives that are uninterpreted escape hatches on this static-only
 ## internal interface: command hooks (up/*-up/*-down, run arbitrary commands incl.
 ## dhclient / route injection), a `mapping` script, and `source`/`source-directory`
-## includes (pull in unaudited NIC-adding stanzas). Backslash line-continuations are
-## rejected separately (continuation_re), so a hook split across lines (`u\`+`p ...`)
-## cannot hide here.
-unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)([[:space:]]|$)'
-## ifupdown joins a line ending in `\` with the next; any continuation in this static
-## file is uncommon and can splice a hook across lines, so reject them all.
-continuation_re='\\$'
+## includes (pull in unaudited NIC-adding stanzas). ifupdown strips one trailing `?`
+## from a hook keyword (`up?` runs as `up`), so tolerate it. Backslash
+## line-continuations are rejected separately (continuation_re), so a hook split across
+## lines (`u\`+`p ...`) cannot hide here.
+unsafe_directive_re='^[[:space:]]*(pre-up|up|post-up|pre-down|down|post-down|mapping|source|source-directory)[?]?([[:space:]]|$)'
+## ifupdown joins a line whose last non-whitespace char is `\` with the next; any
+## continuation in this static file is uncommon and can splice a hook across lines, so
+## reject them all (trailing whitespace after the `\` still continues).
+continuation_re='\\[[:space:]]*$'
 
 ## Audit one interfaces file: exactly one non-lo iface, named eth0, configured
 ## STATIC on the internal network. Returns 0 on pass, 1 on any violation. Reused
@@ -163,6 +165,7 @@ fi
 ## and a `up\` line-continuation hides the hook from a naive line match.
 for bad_line in \
    'up dhclient eth0' \
+   'up? dhclient eth0' \
    'post-up ip route add default via 10.0.2.2' \
    'mapping eth0' \
    'source /etc/network/interfaces.d/evil' \
@@ -179,15 +182,18 @@ for bad_line in \
 done
 
 ## Canary 5: a hook SPLIT across a backslash continuation (ifupdown joins `u\`+`p ...`
-## into `up dhclient eth0`) must FAIL -- the continuation line ends in `\`.
-canary_split="$(mktemp)"
-cp -- "${iface_file}" "${canary_split}"
-printf '%s\n' $'u\\' 'p dhclient eth0' >>"${canary_split}"
-if audit_ws_nic "${canary_split}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
-   rc=1
-else
-   printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
-fi
+## into `up dhclient eth0`) must FAIL -- including the form with trailing whitespace
+## after the `\`, which still continues.
+for split_first in $'u\\' $'u\\  '; do
+   canary_split="$(mktemp)"
+   cp -- "${iface_file}" "${canary_split}"
+   printf '%s\n' "${split_first}" 'p dhclient eth0' >>"${canary_split}"
+   if audit_ws_nic "${canary_split}" 2>/dev/null; then
+      printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
+      rc=1
+   else
+      printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
+   fi
+done
 
 exit "${rc}"
