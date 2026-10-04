@@ -73,6 +73,20 @@ def bg(argv):
                             stderr=subprocess.STDOUT, text=True)
 
 
+def wait_for_locked(proc, timeout=10):
+    """Read PROC's stdout until a 'LOCKED' line (the holder acquired the lock) or
+    EOF (it exited first). Returns True iff LOCKED was seen -- a deterministic sync
+    point for 'now contend' tests, unlike a fixed sleep that races a loaded host."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            return False
+        if 'LOCKED' in line:
+            return True
+    return False
+
+
 def make_source_script(tmp, lockfile_sh):
     """A script that sources lockfile.sh (optional LOCK_NAME from $1), then
     prints LOCKED and sleeps $2 -- run concurrently to observe the lock."""
@@ -227,17 +241,19 @@ def inline_safety_tests(lockfile_sh, check):
     ##    while the 1st holds the lock. Assert the flock failure message, not just
     ##    a non-zero exit -- a wrap-mode mis-fire also exits non-zero with no
     ##    LOCKED, so a bare rc check would pass for the wrong reason.
-    holder = subprocess.Popen([host, 'installer-flag', '2'],
-                              stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, env=env)
-    time.sleep(0.6)
+    holder = subprocess.Popen([host, 'installer-flag', '10'],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, env=env)
+    locked = wait_for_locked(holder)
     second = hrun(['installer-flag', '0'])
     check('inline: 2nd inlined instance skips while 1st holds',
-          'LOCKED' not in second.stdout and second.returncode != 0
+          locked and 'LOCKED' not in second.stdout and second.returncode != 0
           and 'failed to get lock' in (second.stdout + second.stderr),
-          '%r rc=%d' % ((second.stdout + second.stderr).strip(),
-                        second.returncode))
-    holder.wait(timeout=15)
+          'locked=%s %r rc=%d' % (locked,
+                                  (second.stdout + second.stderr).strip(),
+                                  second.returncode))
+    holder.terminate()
+    holder.wait(timeout=10)
 
 
 def security_tests(lockfile_sh, check):
@@ -288,23 +304,33 @@ def fallback_tests(lockfile_sh, check):
     ## 1) runtime dir absent -> fall back to XDG_CACHE_HOME and lock there; a 2nd
     ##    instance skips. XDG_RUNTIME_DIR points at a nonexistent path so the host's
     ##    real /run/user/EUID is not used.
+    ## HOME is redirected too so nothing can touch the real ~/.cache if the
+    ## implementation ignored XDG_CACHE_HOME.
     cache = os.path.join(tmp, 'cache')
     os.mkdir(cache, 0o700)
     env = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp, 'absent'),
-               XDG_CACHE_HOME=cache)
-    holder = subprocess.Popen([src, 'fbkey', '2'], stdout=subprocess.PIPE,
+               XDG_CACHE_HOME=cache, HOME=tmp)
+    ## sleep 10 so the holder keeps the lock while the 2nd runs; wait for its LOCKED
+    ## line (deterministic) rather than a fixed sleep that races a loaded host.
+    holder = subprocess.Popen([src, 'fbkey', '10'], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, env=env)
-    time.sleep(0.6)
+    locked = wait_for_locked(holder)
+    lockdir = os.path.join(cache, 'flocker-temp-folder')
+    check('fallback: no runtime dir locks under the cache dir',
+          locked and os.path.isdir(lockdir),
+          'locked=%s isdir=%s' % (locked, os.path.isdir(lockdir)))
+    ## 2nd instance while the holder still holds it -> flock contention refusal
+    ## (assert the flock message, not a bare non-zero that a broken fallback also
+    ## produces via the 'no usable lock dir' error).
     second = subprocess.run([src, 'fbkey', '0'], capture_output=True, text=True,
                             timeout=30, env=env)
-    lockdir = os.path.join(cache, 'flocker-temp-folder')
-    first_out = holder.communicate(timeout=15)[0]
-    check('fallback: no runtime dir locks under the cache dir',
-          'LOCKED' in first_out and os.path.isdir(lockdir),
-          'isdir=%s out=%r' % (os.path.isdir(lockdir), first_out.strip()[:80]))
-    check('fallback: 2nd instance skips under the cache fallback',
-          'LOCKED' not in second.stdout and second.returncode != 0,
-          '%r rc=%d' % (second.stdout.strip(), second.returncode))
+    check('fallback: 2nd instance refused under the cache fallback',
+          'LOCKED' not in second.stdout and second.returncode != 0
+          and 'failed to get lock' in (second.stdout + second.stderr),
+          '%r rc=%d' % ((second.stdout + second.stderr).strip()[:80],
+                        second.returncode))
+    holder.terminate()
+    holder.wait(timeout=10)
 
     ## 2) a symlinked cache dir is refused.
     tmp2 = tempfile.mkdtemp(prefix='lockfile-fb2-')
@@ -314,7 +340,7 @@ def fallback_tests(lockfile_sh, check):
     link = os.path.join(tmp2, 'cachelink')
     os.symlink(real, link)
     env2 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp2, 'absent'),
-                XDG_CACHE_HOME=link)
+                XDG_CACHE_HOME=link, HOME=tmp2)
     res = subprocess.run([src2, '', '0'], capture_output=True, text=True,
                          timeout=30, env=env2)
     combined = (res.stdout + res.stderr).lower()
@@ -322,6 +348,42 @@ def fallback_tests(lockfile_sh, check):
           'LOCKED' not in res.stdout and res.returncode != 0
           and 'symlink' in combined,
           '%r rc=%d' % ((res.stdout + res.stderr).strip()[:120], res.returncode))
+
+    ## 2b) a runtime dir that exists but is NOT owned by the caller (an inherited
+    ##     XDG_RUNTIME_DIR under 'sudo -u') must fall back to the cache dir, not
+    ##     hard-exit. '/usr' stands in: a stable root-owned, non-symlink directory
+    ##     the test user does not own.
+    tmp2b = tempfile.mkdtemp(prefix='lockfile-fb2b-')
+    src2b = make_source_script(tmp2b, lockfile_sh)
+    cache2b = os.path.join(tmp2b, 'cache')
+    os.mkdir(cache2b, 0o700)
+    env2b = dict(os.environ, XDG_RUNTIME_DIR='/usr',
+                 XDG_CACHE_HOME=cache2b, HOME=tmp2b)
+    holder2b = subprocess.Popen([src2b, 'fbownkey', '10'], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, env=env2b)
+    locked2b = wait_for_locked(holder2b)
+    check('fallback: non-owned runtime dir falls back to the cache dir',
+          locked2b
+          and os.path.isdir(os.path.join(cache2b, 'flocker-temp-folder')),
+          'locked=%s' % locked2b)
+    holder2b.terminate()
+    holder2b.wait(timeout=10)
+
+    ## 3) unset HOME under the caller's 'set -o nounset' must degrade to the clean
+    ##    "no usable lock dir" error, NOT abort with 'HOME: unbound variable'.
+    tmp3 = tempfile.mkdtemp(prefix='lockfile-fb3-')
+    src3 = make_source_script(tmp3, lockfile_sh)
+    env3 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp3, 'absent'))
+    env3.pop('XDG_CACHE_HOME', None)
+    env3.pop('HOME', None)
+    res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
+                          timeout=30, env=env3)
+    combined3 = (res3.stdout + res3.stderr).lower()
+    check('fallback: unset HOME under nounset errors cleanly',
+          'LOCKED' not in res3.stdout and res3.returncode != 0
+          and 'unbound variable' not in combined3,
+          '%r rc=%d' % ((res3.stdout + res3.stderr).strip()[:120],
+                        res3.returncode))
 
 
 def fuzz(lockfile_sh, iterations, seed, check):
