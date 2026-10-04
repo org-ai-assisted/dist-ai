@@ -6686,6 +6686,35 @@ eq(len(_pcv._screen.history.top), _pcv_top0,
    '#16: a program canvas (content below the cursor) shrink pushes nothing to scrollback')
 _pcv.shutdown()
 
+# #16: a shell editing a multi-line command that AUTOWRAPPED -- the cursor moved UP into the
+# wrap (Left-Arrow / Alt-B), so content is STILL drawn below it, but on rows that are
+# wrap-CONTINUATIONS of the cursor's OWN logical line. That is the shell shape, NOT a fixed
+# canvas, so a shrink must preserve the output above. Regression: before the
+# wrapped-continuation check, last_content > cursor.y misclassified this as a canvas and the
+# top rows were DROPPED -- permanent data loss on the review-bar/resize transient shrink.
+_pwv = SecureTerminal(command='/bin/cat', tui=True)
+_pwv.resize(700, 400)
+_pwv.show()
+pump(40)
+_pwv_n = _pwv._screen.lines
+_pwv_cols = _pwv._screen.columns
+feed_output(_pwv, b'out A\r\nout B\r\n')                     # real output on the top rows
+feed_output(_pwv, b'cmd ' + b'a' * (2 * _pwv_cols))         # a command that wraps 3 rows
+feed_output(_pwv, b'\x1b[A\x1b[A')                          # cursor UP into the wrap
+_pwv._render_tui()
+pump(20)
+ok(_pwv._screen.cursor.y < max(
+    (_y for _y in range(_pwv._screen.lines)
+     if any(_c.data != ' ' for _c in _pwv._screen.buffer[_y].values())), default=-1),
+   '#16: precondition -- the cursor sits ABOVE still-drawn wrapped-command content')
+_pwv_top0 = len(_pwv._screen.history.top)
+_pwv_small = max(3, _pwv_n // 2)
+_pwv._tui_grid_size = lambda: (_pwv._screen.columns, _pwv_small)
+_pwv._sync_tui_size()                                       # SHRINK (review bar opening)
+ok(len(_pwv._screen.history.top) > _pwv_top0,
+   '#16: a shrink while editing a WRAPPED command preserves the top rows (no data loss)')
+_pwv.shutdown()
+
 # #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
 # resize of an unused screen adds none).
 _pbv = SecureTerminal(command='/bin/cat', tui=True)
