@@ -511,8 +511,10 @@ fi
 
 ## 15) Option forwarding: any argument BEFORE the final ref/range is forwarded verbatim to
 ## the review tools (and thus to 'git diff'), so e.g. -C makes a rename show as a diff instead
-## of a delete plus an add. Assert git-meld receives the option and the range, in order. Fails
-## on the pre-forward code, which took exactly one argument and rejected a leading-dash option.
+## of a delete plus an add. The range is passed FIRST, ahead of the forwarded options (so a
+## range-consuming option cannot swallow it -- see case 17). Assert git-meld receives the range
+## then the option, in that order. Fails on the pre-forward code, which took exactly one
+## argument and rejected a leading-dash option.
 opt_dir="${work}/opt-bin"
 mkdir -p "${opt_dir}"
 opt_meld_args="${work}/opt-meld-args"
@@ -537,10 +539,10 @@ opt_base="$(git -C "${repo}" merge-base HEAD feature)"
 opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
    fail "option forwarding: 'dm-review-branch -C feature' should exit 0, got ${rc}"
-elif [ "${opt_args}" != "[-C][${opt_base}..${feature_sha_opt}]" ]; then
-   fail "option forwarding: git-meld argv '${opt_args}', want '[-C][${opt_base}..${feature_sha_opt}]' (-C as its own token before the range)"
+elif [ "${opt_args}" != "[${opt_base}..${feature_sha_opt}][-C]" ]; then
+   fail "option forwarding: git-meld argv '${opt_args}', want '[${opt_base}..${feature_sha_opt}][-C]' (range first, then -C as its own token)"
 else
-   pass 'option forwarding: a git-diff option before the ref reaches the review tools as a separate argv token, with the range'
+   pass 'option forwarding: a git-diff option reaches the review tools as a separate argv token, after the range'
 fi
 
 ## 16) A bare '--' among the options is rejected: forwarded to 'git diff' it
@@ -555,6 +557,61 @@ elif ! grep --fixed-strings --quiet -- "'--' is not a valid option" "${dashdash_
    fail "a bare '--' option was not rejected with a clear message"
 else
    pass "option forwarding: a bare '--' (pathspec separator) is rejected, not silently forwarded"
+fi
+
+## 17) SECURITY: a forwarded option that CONSUMES an operand (--word-diff-regex,
+## --src-prefix, --output, ...) must not swallow the range. Because the range is
+## passed FIRST, such an option trails it and finds no operand, so git fails
+## closed rather than silently diffing the clean worktree (an empty, exit-0
+## review of content check-ref-commits-for-unicode never displayed). The review
+## tools are stubbed, so assert the property dm-review-branch controls: the range
+## PRECEDES the option in the forwarded argv, leaving it nothing to consume.
+## Canary: the pre-fix opts-last order put the option first, so git consumed the
+## range -- git-meld argv began with the option, not the range.
+( cd -- "${repo}" \
+   && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --word-diff-regex feature ) \
+   </dev/null >/dev/null 2>&1 || true
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+if [ "${opt_args}" != "[${opt_base}..${feature_sha_opt}][--word-diff-regex]" ]; then
+   fail "range-consuming option: git-meld argv '${opt_args}', want '[${opt_base}..${feature_sha_opt}][--word-diff-regex]' (range first, so the option cannot consume it)"
+else
+   pass 'option forwarding: a range-consuming option trails the already-bound range (no silent empty-diff bypass)'
+fi
+
+## 18) SECURITY: a BARE (non-dash) forwarded argument is rejected up front. git
+## would read it as an extra revision, or -- if it matches a path -- as a
+## PATHSPEC, filtering the displayed diff to that path (empty when it did not
+## change in the range): a silently-successful review omitting every scanned
+## change. Only attached-value options (--opt=value) are safe to forward. Canary:
+## range-first alone does NOT catch a path-like bare token -- git treats it as a
+## pathspec and exits 0 empty -- so this up-front rejection is the closing guard.
+bare_out="${work}/bare-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch other-ref feature ) </dev/null >"${bare_out}" 2>&1 || rc="$?"
+if [ "${rc}" != 2 ]; then
+   fail "a bare forwarded argument must be rejected (die 2), got ${rc}"
+elif ! grep --fixed-strings --quiet -- 'must be a git-diff option in attached-value form' "${bare_out}"; then
+   fail "a bare forwarded argument was not rejected with the attached-value-form message"
+else
+   pass 'option forwarding: a bare (non-dash) argument is rejected up front (no pathspec/extra-revision empty-review bypass)'
+fi
+
+## 19) No-regression: a forwarded option in ATTACHED-value form (--stat-width=120)
+## is forwarded verbatim after the range, and the review completes. Real git
+## accepts the attached form, so the attached-value requirement (case 18) costs
+## no capability -- it only forbids the space-separated spelling whose bare value
+## is indistinguishable from a pathspec. Guards against over-rejecting a valid option.
+rc=0
+( cd -- "${repo}" \
+   && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --stat-width=120 feature ) \
+   </dev/null >/dev/null 2>&1 || rc="$?"
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+if [ "${rc}" != 0 ]; then
+   fail "attached-value option: 'dm-review-branch --stat-width=120 feature' should exit 0, got ${rc}"
+elif [ "${opt_args}" != "[${opt_base}..${feature_sha_opt}][--stat-width=120]" ]; then
+   fail "attached-value option: git-meld argv '${opt_args}', want '[${opt_base}..${feature_sha_opt}][--stat-width=120]' (attached value forwarded verbatim)"
+else
+   pass 'option forwarding: an attached-value option is forwarded verbatim after the range (attached form not over-rejected)'
 fi
 
 if [ "${fail_count}" -gt 0 ]; then

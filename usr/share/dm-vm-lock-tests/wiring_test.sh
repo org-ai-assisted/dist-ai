@@ -43,6 +43,9 @@ chmod +x -- "${stubbin}/dm-vm-lock"
 export PATH="${stubbin}:${PATH}"
 
 ppfile="${work}/pp"; printf 'x\n' > "${ppfile}"
+## image-test-run locks AFTER its config-readability check, so give it a readable (empty) config
+## -- the guard re-execs before the config is sourced, so its contents do not matter here.
+conf="${work}/dummy.conf"; printf '' > "${conf}"
 
 assert_class() {
    ## assert_class <label> <expected-class> <leaf-path> <args...>
@@ -67,7 +70,7 @@ assert_class() {
 
 assert_class 'dm-whonix-pair (leak test)'     leak "${bin}/dm-whonix-pair"     --gw GW --ws WS
 assert_class 'dm-calamares-install (VBox)'    work "${bin}/dm-calamares-install" --vm V --iso /nonexistent.iso --passphrase-file "${ppfile}"
-assert_class 'image-test-run (VBox image)'    work "${bin}/image-test-run"     "${work}/dummy.conf"
+assert_class 'image-test-run (VBox image)'    work "${bin}/image-test-run"     "${conf}"
 assert_class 'dm-iso-build (image build)'     work "${bin}/dm-iso-build"
 
 vmlock_done

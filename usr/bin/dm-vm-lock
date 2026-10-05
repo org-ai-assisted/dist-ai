@@ -57,9 +57,9 @@ vm_lock_kill_after="${DM_VM_LOCK_KILL_AFTER:-30}"
 vm_lock_default_ttl=3600
 vm_lock_default_wait=5400
 
-## Set by cmd_acquire, removed by the EXIT trap (R-051: a trap runs a FUNCTION, not an inline
-## command). Empty = nothing to clean up.
+## Set by cmd_acquire; the traps run FUNCTIONS, not inline commands (R-051). Empty = no-op.
 vm_lock_holder_file=""
+vm_lock_child_pid=""
 
 die() {
    printf '%s: ERROR: %s\n' "${me}" "$2" >&2
@@ -69,6 +69,12 @@ die() {
 vm_lock_cleanup() {
    [ -n "${vm_lock_holder_file}" ] || return 0
    safe-rm --force -- "${vm_lock_holder_file}" 2>/dev/null || true
+}
+
+## Forward a signal on this wrapper to the wrapped command (via the timeout child).
+vm_lock_forward_term() {
+   [ -n "${vm_lock_child_pid}" ] || return 0
+   kill -TERM "${vm_lock_child_pid}" 2>/dev/null || true
 }
 
 usage() {
@@ -131,7 +137,10 @@ vm_lock_reap() {
          safe-rm --force -- "${f}" 2>/dev/null || true
          continue
       fi
-      if [ -n "${pid}" ] && ! kill -0 "${pid}" 2>/dev/null; then
+      ## Liveness by /proc (cross-user safe): `kill -0` fails with EPERM on ANOTHER user's LIVE
+      ## process, which would wrongly reap a live holder's record and lose the who-holds-it
+      ## diagnostic. A present /proc/<pid> (incl. a zombie) counts as alive; TTL reaps it later.
+      if [ -n "${pid}" ] && [ ! -e "/proc/${pid}" ]; then
          safe-rm --force -- "${f}" 2>/dev/null || true
       fi
    done
@@ -189,16 +198,30 @@ cmd_acquire() {
    flag="$(vm_lock_flock_flag "${class}")" || die 64 "acquire: --class must be 'leak' or 'work', got '${class}'"
    ttl="${ttl:-${vm_lock_default_ttl}}"
    wait="${wait:-${vm_lock_default_wait}}"
-   case "${ttl}${wait}" in
-      *[!0-9]*)
-         die 64 "acquire: --ttl/--wait must be whole seconds"
-         ;;
-   esac
+   ## Whole seconds only; normalize to base 10 so a leading-zero value (e.g. 08) is NOT taken as
+   ## octal by the arithmetic below and agrees with timeout(1)'s decimal parse.
+   case "${ttl}" in ''|*[!0-9]*) die 64 "acquire: --ttl must be whole seconds" ;; esac
+   case "${wait}" in ''|*[!0-9]*) die 64 "acquire: --wait must be whole seconds" ;; esac
+   case "${vm_lock_kill_after}" in ''|*[!0-9]*) die 64 "DM_VM_LOCK_KILL_AFTER must be whole seconds" ;; esac
+   ttl="$(( 10#${ttl} ))"
+   wait="$(( 10#${wait} ))"
+   vm_lock_kill_after="$(( 10#${vm_lock_kill_after} ))"
+   ## A 0 ttl / 0 kill-after would tell timeout(1) to DISABLE the deadline / the SIGKILL backstop,
+   ## silently removing the wedged-holder protection -- require both positive.
+   [ "${ttl}" -ge 1 ] || die 64 "acquire: --ttl must be >= 1 (0 disables the timeout backstop)"
+   [ "${vm_lock_kill_after}" -ge 1 ] || die 64 "DM_VM_LOCK_KILL_AFTER must be >= 1 (0 disables the SIGKILL backstop)"
 
    ## Reentrancy: already holding the lock in this process tree -> run through, do NOT
    ## re-acquire (a nested leak-under-leak would self-deadlock on LOCK_EX). The outer
    ## holder's flock + TTL already cover this command.
    if [ -n "${DM_VM_LOCK_HELD:-}" ]; then
+      ## Reentrancy: already under a lock in this process tree -> pass through only when the held
+      ## class COVERS the requested one. A held leak (exclusive) covers anything; a held work
+      ## (shared) covers only work. A leak requested while merely holding work would run
+      ## NON-exclusively (other work holders still active), so refuse it rather than under-protect.
+      if [ "${DM_VM_LOCK_HELD}" = 'work' ] && [ "${class}" = 'leak' ]; then
+         die 70 "cannot take a 'leak' (exclusive) lock while already holding a 'work' (shared) lock"
+      fi
       ## style-ok: R-103 -- reentrancy pass-through: run the command in THIS already-locked process.
       exec "$@"
    fi
@@ -235,11 +258,17 @@ cmd_acquire() {
    session_id="${CLAUDE_CODE_SESSION_ID:-none}"
    user="$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")"
    vm_lock_holder_file="${vm_lock_dir}/holder.${class}.${pid}"
-   {
+   ## Write the record refusing to FOLLOW a symlink or clobber an existing path: the dir is
+   ## group-writable, so a member could pre-plant holder.<class>.<pid> as a symlink to a root file
+   ## and a root-run holder (image-test-run) would overwrite that target. noclobber opens O_EXCL,
+   ## which fails on any pre-existing path (symlink included) instead of following it. The record
+   ## is advisory, so a refused write is harmless (the flock on fd 9 is the real mutex).
+   (
+      set -o noclobber
       printf 'class=%s session=%s session_id=%s user=%s pid=%s acquired=%s ttl=%s ttl_deadline_epoch=%s cmd=%s\n' \
          "${class}" "${session}" "${session_id}" "${user}" "${pid}" \
-         "$(date -u -d "@${now}" +%FT%TZ)" "${ttl}" "${deadline}" "$*"
-   } > "${vm_lock_holder_file}" 2>/dev/null || true
+         "$(date -u -d "@${now}" +%FT%TZ)" "${ttl}" "${deadline}" "$*" > "${vm_lock_holder_file}"
+   ) 2>/dev/null || true
 
    ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
    trap vm_lock_cleanup EXIT
@@ -247,9 +276,27 @@ cmd_acquire() {
    ## Run the command under the TTL deadline, with the lock fd CLOSED in the child so the
    ## command's descendants (VBoxSVC, a detached GUI) cannot inherit it and pin the lock.
    ## DM_VM_LOCK_HELD marks the subtree as already-locked (reentrancy no-op above).
+   ## Backgrounded + waited so a signal to THIS wrapper is FORWARDED to the timeout subtree and
+   ## the child is reaped BEFORE we exit: otherwise killing the wrapper would release the flock
+   ## (fd 9 closes on our exit) while the orphaned VM-work command kept running -- the lock must
+   ## always outlive the command, never the reverse. SIGKILL to the wrapper is uncatchable and
+   ## remains a residual. NOTE: a VBox VM runs under VBoxSVC (a separate process tree), so a kill
+   ## here does NOT stop the VM -- the leaf's own exit/TERM cleanup powers it off; the TTL backstop
+   ## is a last resort for an already-wedged holder.
    local rc=0
    DM_VM_LOCK_HELD="${class}" \
-      timeout --signal=TERM --kill-after="${vm_lock_kill_after}" "${ttl}" "$@" 9<&- || rc=$?
+      timeout --signal=TERM --kill-after="${vm_lock_kill_after}" "${ttl}" "$@" 9<&- &
+   vm_lock_child_pid=$!
+   trap vm_lock_forward_term TERM INT HUP
+   wait "${vm_lock_child_pid}"
+   rc=$?
+   ## A trapped signal interrupts wait before the child is reaped; re-wait until it is truly gone
+   ## so the flock is not released while the (now-signaled) command still runs.
+   while kill -0 "${vm_lock_child_pid}" 2>/dev/null; do
+      wait "${vm_lock_child_pid}"
+      rc=$?
+   done
+   trap - TERM INT HUP
    if [ "${rc}" -eq 124 ]; then
       printf '%s: TTL %ss exceeded -- killed the %s holder (wedged?)\n' "${me}" "${ttl}" "${class}" >&2
    fi

@@ -63,17 +63,21 @@ fi
 
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
-   safe-rm -r -f -- "${test_dir}"
+   ## '|| true': a cleanup failure must not clobber the script's real exit code.
+   safe-rm -r -f -- "${test_dir}" || true
 }
 trap cleanup_handler EXIT
 
-## Write a minimal, dependency-free stub (printf + exit only, no coreutils) so
-## the probe can run under a stub-ONLY PATH -- which is how 'leaprun absent'
-## stays reliable (a leaprun installed on the host cannot leak onto PATH).
+## Write a minimal, dependency-free stub (printf + exit only, no coreutils) that
+## RECORDS its argv to <record> then emits <stdout_line> and exits <exit_code>.
+## No coreutils so the probe runs under a stub-ONLY PATH (how 'leaprun absent'
+## stays reliable: a host leaprun cannot leak onto PATH); the recording lets the
+## test assert HOW the subject invoked id / leaprun, not just which branch ran.
 write_stub() {
-   local file="$1" stdout_line="$2" exit_code="$3"
+   local file="$1" record="$2" stdout_line="$3" exit_code="$4"
    {
       printf '%s\n' '#!/bin/bash'
+      printf 'printf %s "$*" >> %q\n' "'%s\\n'" "${record}"
       if [ -n "${stdout_line}" ]; then
          printf "printf '%%s\\\\n' %q\\n" "${stdout_line}"
       fi
@@ -98,34 +102,67 @@ check() {
    fi
 }
 
-## Run the probe under a fresh stub-only PATH. Args: $1 id's 'id -u' output
-## (uid), $2 leaprun mode ('ok' present+exit0, 'fail' present+exit1, 'absent'
-## not on PATH). Echoes the probe's single RAN:* line.
+## Run the probe under a fresh stub-only PATH and populate the case_* globals:
+## case_out (probe stdout), case_rc (probe exit status), case_id_args and
+## case_leaprun_args (recorded argv, '' when the command was never invoked).
+## $1 uid for 'id -u', $2 leaprun mode ('ok' present+exit0, 'fail' present+exit1,
+## 'absent' not on PATH).
+case_out=''
+case_rc=0
+case_id_args=''
+case_leaprun_args=''
 run_case() {
-   local uid="$1" leaprun_mode="$2" bin out
+   local uid="$1" leaprun_mode="$2" bin id_rec leaprun_rec
    bin="$(mktemp --directory --tmpdir="${test_dir}")"
-   write_stub "${bin}/id" "${uid}" 0
+   id_rec="${bin}/id.args"
+   leaprun_rec="${bin}/leaprun.args"
+   write_stub "${bin}/id" "${id_rec}" "${uid}" 0
    ## 'absent' writes no leaprun stub -> not on the stub-only PATH.
    if [ "${leaprun_mode}" = 'ok' ]; then
-      write_stub "${bin}/leaprun" 'RAN:leaprun' 0
+      write_stub "${bin}/leaprun" "${leaprun_rec}" 'RAN:leaprun' 0
    elif [ "${leaprun_mode}" = 'fail' ]; then
-      write_stub "${bin}/leaprun" '' 1
+      write_stub "${bin}/leaprun" "${leaprun_rec}" '' 1
    fi
-   ## stdout is the assertion; a probe crash yields empty -> the check fails
-   ## loud. '|| true' keeps this test's errexit from aborting on it.
-   out="$(SUBJECT="${subject}" HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" \
-      PATH="${bin}" "${probe}")" || true
-   printf '%s' "${out}"
+   ## '|| case_rc=$?' captures the probe's exit instead of letting errexit abort,
+   ## so a dispatch that prints the right marker then FAILS is still caught.
+   case_rc=0
+   case_out="$(SUBJECT="${subject}" HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" \
+      PATH="${bin}" "${probe}")" || case_rc=$?
+   case_id_args=''
+   if [ -f "${id_rec}" ]; then
+      case_id_args="$(cat -- "${id_rec}")"
+   fi
+   case_leaprun_args=''
+   if [ -f "${leaprun_rec}" ]; then
+      case_leaprun_args="$(cat -- "${leaprun_rec}")"
+   fi
 }
 
-check "root (uid 0), leaprun available -> direct, never leaprun" \
-   "$(run_case 0 ok)" "RAN:direct"
-check "non-root, leaprun --check ok -> leaprun" \
-   "$(run_case 1000 ok)" "RAN:leaprun"
-check "non-root, leaprun --check fails -> direct (fallback)" \
-   "$(run_case 1000 fail)" "RAN:direct"
-check "non-root, leaprun absent -> direct (fallback)" \
-   "$(run_case 1000 absent)" "RAN:direct"
+## root: direct, never leaprun; and the subject must query uid via 'id -u'.
+run_case 0 ok
+check "root: dispatch -> direct"           "${case_out}" "RAN:direct"
+check "root: probe exits 0"                "${case_rc}"  "0"
+check "root: subject queried 'id -u'"      "${case_id_args}" "-u"
+check "root: leaprun never invoked"        "${case_leaprun_args}" ""
+
+## non-root + leaprun can run it: leaprun, invoked with the CORRECT action name
+## (the real call is the last recorded invocation, after the '--check' probe).
+run_case 1000 ok
+check "non-root, leaprun ok: dispatch -> leaprun" "${case_out}" "RAN:leaprun"
+check "non-root, leaprun ok: probe exits 0"       "${case_rc}"  "0"
+check "non-root, leaprun ok: real call action is try-wait-for-tor-service-running" \
+   "${case_leaprun_args##*$'\n'}" "try-wait-for-tor-service-running"
+
+## non-root + leaprun --check fails: fall back to direct.
+run_case 1000 fail
+check "non-root, leaprun --check fails: dispatch -> direct" "${case_out}" "RAN:direct"
+check "non-root, leaprun --check fails: probe exits 0"      "${case_rc}"  "0"
+
+## non-root + leaprun absent: fall back to direct, leaprun never invoked.
+run_case 1000 absent
+check "non-root, leaprun absent: dispatch -> direct"   "${case_out}" "RAN:direct"
+check "non-root, leaprun absent: probe exits 0"        "${case_rc}"  "0"
+check "non-root, leaprun absent: leaprun never invoked" "${case_leaprun_args}" ""
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

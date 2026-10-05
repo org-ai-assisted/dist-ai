@@ -92,6 +92,7 @@ core_suites=(
    user-sysmaint-split-tests
    vm-config-dist-tests
    check-ref-commits-for-unicode-tests
+   clusterfuzzlite-lib-tests
    developer-meta-files-tests
    dist-base-files-tests
    grub-live-tests
@@ -891,6 +892,12 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      clusterfuzzlite-lib)
+         ## Self-contained: each payload sources the real shared library as a
+         ## sibling under usr/share/, so no component checkout or env is needed.
+         wire_env=()
+         wire_args=()
+         ;;
       github-api)
          ## Self-contained: the transport is stubbed by a fake curl on PATH, so
          ## no request leaves the machine and no token is needed. Guards the
@@ -1035,7 +1042,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

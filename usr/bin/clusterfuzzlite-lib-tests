@@ -1,0 +1,66 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Unit tests for the shared ClusterFuzzLite build-time library in
+## usr/share/clusterfuzzlite-lib/ (sourced by each package's
+## .clusterfuzzlite/build.sh). The library's guards exist to turn a silent-green
+## fuzz build -- zero fuzzers compiled, or a vacuously-passing frozen bundle --
+## into a loud failure, so a defect in them fails silently in exactly the way the
+## guards defend against. These tests exercise the guards directly.
+##
+## Self-contained: each payload sources the real library as a sibling under
+## usr/share/, so no component checkout or DIST_AI_REPO is needed. No root, no
+## network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/clusterfuzzlite-lib-tests" ]; then
+   share="${script_dir}/../share/clusterfuzzlite-lib-tests"
+else
+   share='/usr/share/clusterfuzzlite-lib-tests'
+fi
+
+## Every *_test.sh payload runs, and all of them run: a payload that fails must
+## not hide the ones after it, and a payload added to the directory must not need
+## a second edit here to be executed (an unrun test is a silent green).
+rc=0
+ran=0
+skipped=0
+shopt -s nullglob
+for payload in "${share}"/*_test.sh; do
+   ran=$(( ran + 1 ))
+   payload_rc=0
+   bash -- "${payload}" "$@" || payload_rc=$?
+   if [ "${payload_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+   if [ "${payload_rc}" -ne 0 ]; then
+      rc="${payload_rc}"
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf '%s\n' "FAIL: clusterfuzzlite-lib-tests: no *_test.sh payload found in '${share}'; the suite ran nothing." >&2
+   exit 1
+fi
+
+## All payloads skipped means the library itself is absent, i.e. the suite is a
+## SKIP.
+if [ "${rc}" -eq 0 ] && [ "${skipped}" -eq "${ran}" ]; then
+   rc=77
+fi
+
+exit "${rc}"

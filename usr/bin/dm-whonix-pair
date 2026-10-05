@@ -71,6 +71,11 @@ ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}
 ## guest's mnt-shared-vbox.service). The host staging dir is made in main.
 GUEST_SHARE_MOUNT='/mnt/shared'
 share_dir=''
+## World-readable guest-local stage for the browser probe. /mnt/shared is a root-only, read-only
+## vboxsf mount, so the NON-root browser probe (Tor Browser refuses root) cannot read its CLI +
+## harness off it -- copy them here as root first, then run the probe from here (tmpfs; a
+## snapshot restore reverts it anyway).
+GUEST_PROBE_LOCAL='/run/anon-leak-probe'
 
 ## Clearnet targets the battery aims its direct-egress probes at (anon-leak-test's fixed
 ## defaults, so the GW-pcap watch list is exactly these). On a CORRECT Whonix the GW drops/
@@ -359,6 +364,16 @@ ws_battery() {
       --cmd "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
 }
 
+## Run the app/browser-layer webrtc probe. It runs as the NON-root sysmaint user (Tor Browser
+## refuses root), but /mnt/shared is a root-only read-only mount a non-root read cannot open. So
+## copy the CLI + harness off it into a world-readable guest-local dir as root (dsudo), then run
+## the probe from THERE (find_harness looks beside the CLI). The guest exit code IS the verdict
+## (0 clear / 1 leak / other inconclusive).
+ws_browser_probe() {
+   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+      --cmd "dsudo install -D -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -D -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html && ${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json"
+}
+
 ## Preflight (run once the WS is up in sysmaint, BEFORE any root step): confirm the guest session
 ## is the expected account AND can actually obtain root via dsudo, so a mis-set account fails HERE
 ## with a clear message instead of a confusing mid-run "sudo: a password is required". Same
@@ -366,8 +381,12 @@ ws_battery() {
 ws_assert_root() {
    local out
    ## The \$(...) run IN THE GUEST (double-quoted + escaped \$, the file's guestcontrol convention).
+   ## Assert the account (whoami=sysmaint), that dsudo YIELDS root (whoami=root), and that dsudo can
+   ## RUN a command as root (`test -d /usr`, dev-root's own check). Plain dsudo -- NOT
+   ## `dsudo --non-interactive` (that passes `sudo -n`, which refuses the empty-password submit the
+   ## askpass makes; dsudo is already non-interactive, no tty, fail-closed).
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 60 \
-      --cmd "[ \"\$(whoami)\" = sysmaint ] || { printf 'WRONGUSER=%s\n' \"\$(whoami)\"; exit 10; }; [ \"\$(dsudo whoami)\" = root ] || { printf 'NOROOT\n'; exit 11; }; printf 'ROOT_OK\n'" 2>&1)" \
+      --cmd "[ \"\$(whoami)\" = sysmaint ] || { printf 'WRONGUSER=%s\n' \"\$(whoami)\"; exit 10; }; [ \"\$(dsudo whoami)\" = root ] || { printf 'NOROOT\n'; exit 11; }; dsudo test -d /usr || { printf 'DSUDO_RUN_FAIL\n'; exit 12; }; printf 'ROOT_OK\n'" 2>&1)" \
       || die "${SETUP_RC}" "WS sysmaint session cannot obtain root via dsudo (empty-password submit failed; account state?): ${out}"
    [ "${out}" != "${out#*ROOT_OK}" ] \
       || die "${SETUP_RC}" "WS root preflight did not confirm uid 0 via dsudo: ${out}"
@@ -713,13 +732,11 @@ main() {
    if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
       printf '%s\n' "${me}: app/browser layer -- run the browser-webrtc probe in the Workstation"
       local browser_rc=0
-      "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-         --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc --json" \
-         || browser_rc=$?
+      ws_browser_probe || browser_rc=$?
       if [ "${browser_rc}" = '1' ]; then
          die "${FAIL_RC}" "LEAK: the browser layer proved non-Tor egress / a WebRTC host-IP exposure"
       elif [ "${browser_rc}" != '0' ]; then
-         die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: browser-webrtc could not run (rc=${browser_rc}; no browser in the WS?) -- not a proven leak"
+         die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: the browser-webrtc probe exited ${browser_rc} (see the guest output above) -- not a proven leak"
       fi
    fi
 

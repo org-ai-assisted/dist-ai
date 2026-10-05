@@ -54,12 +54,14 @@ export MARKER_RESPONSE_FILE="${work}/marker.response"
 export SETEXTRA_LOG="${work}/setextradata.log"
 export PAIR_ARGV="${work}/dm-whonix-pair.argv"
 export DIST_ARGV="${work}/dist-installer-cli.argv"
+export SUDO_LOG="${work}/sudo.log"
 
 ## sudo: `--non-interactive <cmd>` (the rt_account_can_sudo probe) exits 1 => "account is
 ## clean". Otherwise drop `-u <user>` and a leading `--` and run the rest as this user, so
 ## the lane's per-account VBoxManage / dm-whonix-pair steps work without root.
 cat > "${stubbin}/sudo" <<'EOF'
 #!/bin/bash
+printf '%s\n' "$*" >> "${SUDO_LOG}"
 if [ "$1" = "--non-interactive" ]; then exit 1; fi
 args=()
 while [ "$#" -gt 0 ]; do
@@ -114,7 +116,12 @@ esac
 EOF
 cat > "${stubbin}/getent" <<'EOF'
 #!/bin/bash
-exit 0
+# group lookups: succeed (vboxusers exists). passwd lookups: synthesize a home so
+# rt_provision_leak can derive --directory-prefix for the target account.
+case "$1" in
+  passwd) printf '%s:x:5001:5001::/home/%s:/bin/bash\n' "$2" "$2";;
+  *) exit 0;;
+esac
 EOF
 cat > "${stubbin}/usermod" <<'EOF'
 #!/bin/bash
@@ -185,6 +192,7 @@ check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf t
 ## Case D: provisioner imports with the pinned version and marks BOTH VMs.
 printf "" > "${DIST_ARGV}"
 printf "" > "${SETEXTRA_LOG}"
+printf "" > "${SUDO_LOG}"
 rc_d=0
 ( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_d=$?
 check "provision: returns 0" "$([ "${rc_d}" = '0' ] && printf true || printf false)"
@@ -196,10 +204,23 @@ check "provision: dist-installer-cli got the leak account" \
    "$(grep --quiet -- '--user=persist-leak-whonix' "${DIST_ARGV}" && printf true || printf false)"
 check "provision: dist-installer-cli imports both VMs" \
    "$(grep --quiet -- '--import-only=both' "${DIST_ARGV}" && printf true || printf false)"
+## download/import run AS the target, so the staging dir must be the target's own home,
+## not the invoker's. Canary: a revert to no/invoker-home prefix fails this.
+check "provision: directory-prefix is the target account home" \
+   "$(grep --quiet -- '--directory-prefix=/home/persist-leak-whonix/dist-installer-cli-download' "${DIST_ARGV}" && printf true || printf false)"
+## skip the installer's apt-upgrade gate (irrelevant to an OVA re-import on a host with
+## VirtualBox already installed).
+check "provision: skips the OS-upgrade gate" \
+   "$(grep --quiet -- '--noupgrade' "${DIST_ARGV}" && printf true || printf false)"
 check "provision: GW marker set to the version" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
 check "provision: WS marker set to the version" \
    "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
+## dist-installer-cli REFUSES root, so it must be invoked via sudo -u <invoker>, NOT directly
+## by the root dm-release-test process. Canary: a revert to a direct call leaves no sudo-drop
+## of dist-installer-cli in the sudo log.
+check "provision: dist-installer-cli invoked via sudo -u (not as root)" \
+   "$(grep --quiet --extended-regexp -- '-u .*dist-installer-cli' "${SUDO_LOG}" && printf true || printf false)"
 
 ## Lock dir hardened to 0700 (a world-writable lock dir lets any local user hold the
 ## lock and wedge every run). Canary: pre-created 0777 above; the chmod must tighten it.

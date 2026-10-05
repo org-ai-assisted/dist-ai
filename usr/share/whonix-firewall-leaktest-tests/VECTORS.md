@@ -267,6 +267,13 @@ DONE (app/browser layer, LANDED -- live-drive tuned at the live run):
   AND the browser's exit is Tor. Pure classifier unit-tested + canaried; fail-closed to SETUP if
   no browser. Live-only pieces (which WS account/session, the Tor Browser path via
   ANON_LEAK_BROWSER, a display) are tuned at the live run.
+  LIVE STATUS (2026-10-05, OVH): the CORE oracle PASSES live (full battery + GW-trace canary:
+  1758 genuine Tor-guard pkts + 10 positive-control pkts, 0 non-guard clearnet). The opt-in
+  browser phase INCONCLUSIVE-fail-closes on the test VM: a fresh Whonix-Workstation ships NO
+  Tor Browser until tb-updater fetches one, so browser-webrtc rc=34 "no browser in the WS" ->
+  SETUP (correct, not a false pass). FOLLOW-UP to validate the browser layer live: provision a
+  tb-updater'd Tor Browser into the WS clean-live snapshot (+ a headless display / ANON_LEAK_BROWSER
+  + DM_WHONIX_PAIR_BROWSER_ENV), then re-run with DM_WHONIX_PAIR_BROWSER=1.
 
 OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 

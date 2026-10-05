@@ -25,6 +25,14 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
+## SKIP (exit 77) so the orchestrator's --allow-skip governs it, instead of
+## being folded into a passing suite.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/set-keyboard-layout-tests" ]; then
@@ -42,7 +50,6 @@ if [ "${#case_scripts[@]}" -eq 0 ]; then
    exit 1
 fi
 
-rc=0
 failed=0
 skipped=0
 for case_script in "${case_scripts[@]}"; do
@@ -53,10 +60,9 @@ for case_script in "${case_scripts[@]}"; do
       skipped=$(( skipped + 1 ))
    elif [ "${case_rc}" -ne 0 ]; then
       failed=$(( failed + 1 ))
-      rc=1
    fi
 done
 
 printf '%s\n' ""
 printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
-exit "${rc}"
+suite_exit "${failed}" "${skipped}"
