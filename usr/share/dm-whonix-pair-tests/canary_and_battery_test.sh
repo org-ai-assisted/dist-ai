@@ -159,7 +159,7 @@ rc=0; { grep --quiet "${CRAFT_SRC}" "${work}/last_filter" && grep --quiet "${CLE
 check 'canary still watches the IPv4 targets' "${rc}"
 
 ## --- gw_stop_tor: arms the killswitch from the GW USER session, fail-closed -----------------
-out="$(gw_stop_tor 2>&1)"; rc=$?
+rc=0; out="$(gw_stop_tor 2>&1)" || rc=$?
 check 'gw_stop_tor succeeds when guestcontrol does' "${rc}"
 rc=0; has 'leaprun sudo && sudo --non-interactive systemctl stop tor@default.service' "${out}" || rc=1
 check 'gw_stop_tor stops Tor via leaprun sudo (so the GW stays in its user session, forwarding intact)' "${rc}"
@@ -185,12 +185,35 @@ STUB
 chmod +x "${work}/vbe"
 
 ## --- gw_start_tor: recovery restarts Tor (same user-session path), so the STOP brackets ---
-out="$(gw_start_tor 2>&1)"; rc=$?
+rc=0; out="$(gw_start_tor 2>&1)" || rc=$?
 check 'gw_start_tor succeeds when guestcontrol does' "${rc}"
 rc=0; has 'leaprun sudo && sudo --non-interactive systemctl start tor@default.service' "${out}" || rc=1
 check 'gw_start_tor restarts Tor (killswitch recovery) via leaprun sudo' "${rc}"
 rc=0; has '--role user' "${out}" || rc=1
 check 'gw_start_tor runs in the GW USER session' "${rc}"
+
+## --- ws_flush_firewall: remove the WS firewall so leaks reach the GW (the real boundary) ------
+rc=0; out="$(ws_flush_firewall 2>&1)" || rc=$?
+check 'ws_flush_firewall succeeds when guestcontrol does' "${rc}"
+rc=0; has 'nft flush ruleset' "${out}" || rc=1
+check 'ws_flush_firewall flushes the WS nftables ruleset' "${rc}"
+rc=0; has '--role sysmaint' "${out}" || rc=1
+check 'ws_flush_firewall runs as sysmaint (passwordless sudo)' "${rc}"
+rc=0; has 'nft list ruleset' "${out}" || rc=1
+check 'ws_flush_firewall CONFIRMS the ruleset is empty (fail-closed proof)' "${rc}"
+## Fail-closed: a WS whose firewall cannot be flushed could mask a leak -> SETUP, never a pass.
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x "${work}/vbe"
+rc=0; ( ws_flush_firewall ) >/dev/null 2>&1 || rc=$?
+check_fail 'ws_flush_firewall fails-closed (nonzero) when the flush cannot run' "${rc}"
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
 
 ## --- on_exit: PRESERVE the GW capture on a leak, drop it on a clean PASS --------------------
 export LEAK_ARTIFACT_DIR="${work}"

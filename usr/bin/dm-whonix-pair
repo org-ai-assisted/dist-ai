@@ -344,6 +344,20 @@ ws_tor_confirm() {
    return 0
 }
 
+## Flush the Workstation's OWN nftables firewall before the leak battery. The WS firewall is a
+## failsafe; the MAIN Whonix leak protection is the GATEWAY. With the WS firewall up, a leak probe
+## can be DROPPED at the WS and never reach the GW external NIC -- a false "clean" that would hide
+## a broken Gateway. Flushing it lets every probe flow to the GW, so the GW-NIC / host-wire canary
+## measures the GATEWAY's protection (the real boundary). The WS has no direct route (single
+## internal NIC via the GW), so this exposes no new egress path; snapshot restore reverts it.
+## Fail-closed: if the WS firewall cannot be flushed+confirmed-empty, a leak could be masked at
+## the WS -> SETUP, never a vacuous pass. Runs as sysmaint (passwordless sudo).
+ws_flush_firewall() {
+   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
+      --cmd "sudo --non-interactive nft flush ruleset && [ -z \"\$(sudo --non-interactive nft list ruleset)\" ]" \
+      || die "${SETUP_RC}" "could not flush the WS nftables firewall (a leak could be masked at the WS) -- inconclusive, not a leak"
+}
+
 ## Stop Tor on the Gateway to ARM the killswitch, keeping the GW in its USER session so
 ## forwarding stays intact (a sysmaint boot could sever it). dev-root -- run once in a
 ## sysmaint session and baked into the clean-live snapshot -- makes `leaprun sudo` grant
@@ -519,6 +533,12 @@ main() {
    ## leak verdict. The authoritative leak oracle (Phase 2 battery + GW-NIC canary) runs ONLY
    ## after Tor is confirmed here; if it never is, the run is reported inconclusive, not clean.
    [ "${tor_ok}" = 'true' ] || die "${SETUP_RC}" "Tor egress never confirmed (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a leak"
+
+   ## Flush the WS's OWN firewall before the battery: the MAIN leak protection is the GATEWAY, and
+   ## a WS-firewall drop would stop a leak probe at the WS so it never reaches the GW NIC -- a
+   ## false "clean" that hides a broken GW. Removing it lets every probe flow to the GW so the
+   ## canary measures the GATEWAY's protection. Reverted by the next snapshot restore.
+   ws_flush_firewall
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
    ## canary (canary_gateway_pcap) watches exactly these. clearnet-ipv4 = CLEARNET_ICMP.
