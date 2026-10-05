@@ -51,21 +51,27 @@ gc_run() {
    "${argv[@]}"
 }
 
+## Where gc_gui_launch_snippet redirects the launched GUI's output; gc_gui_launch_log
+## reads it back for diagnostics. Single source so the two never drift.
+GC_GUI_LAUNCH_LOG='/var/tmp/dm-gui-launch.log'
+
 ## Build the in-guest snippet that launches a GUI PROGRAM in the live Wayland session
 ## via guestcontrol. Separated from gc_launch_gui so a unit test asserts its shape.
 ## WHY each piece: the guestcontrol env carries XDG_RUNTIME_DIR but NOT WAYLAND_DISPLAY
-## (no logind graphical session), so export it (labwc's socket is wayland-0); setsid +
-## </dev/null + log-redirect detach the GUI from the exec channel so it keeps running
-## after the gc_run bash exits (a plain `&` child would be SIGHUP'd when the channel
-## closes). EXTRA (optional) is a space-separated VAR=VAL list exported alongside.
+## (no logind graphical session), so export it (labwc's live-session socket is wayland-0,
+## probe-confirmed); setsid + </dev/null + log-redirect detach the GUI from the exec
+## channel so it keeps running after the gc_run bash exits (a plain `&` child would be
+## SIGHUP'd when the channel closes). EXTRA (optional) is a space-separated VAR=VAL list
+## exported alongside. PROGRAM + EXTRA are TRUSTED harness literals interpolated into the
+## guest shell -- never pass untrusted data (no escaping is done).
 gc_gui_launch_snippet() {
    local program="$1" extra="${2:-}"
    local exports='export WAYLAND_DISPLAY=wayland-0'
    if [ -n "${extra}" ]; then
       exports+=" ${extra}"
    fi
-   printf '%s; setsid %s >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &' \
-      "${exports}" "${program}"
+   printf '%s; setsid %s >%s 2>&1 </dev/null &' \
+      "${exports}" "${program}" "${GC_GUI_LAUNCH_LOG}"
 }
 
 ## Launch a GUI PROGRAM in-guest as USERNAME (= boot role), backgrounded so gc_run
@@ -75,6 +81,31 @@ gc_gui_launch_snippet() {
 gc_launch_gui() {
    local username="$1" program="$2" extra="${3:-}"
    gc_run "${username}" "$(gc_gui_launch_snippet "${program}" "${extra}")"
+}
+
+## Dump the GUI-launch log back to the caller for diagnostics. gc_launch_gui backgrounds
+## and returns 0 regardless, so a program that died at once leaves its reason ONLY here.
+gc_gui_launch_log() {
+   local username="$1"
+   gc_run "${username}" "cat ${GC_GUI_LAUNCH_LOG} 2>/dev/null || true"
+}
+
+## Confirm a gc_launch_gui'd program actually came up: poll (as USERNAME) for a process
+## matching PATTERN via pgrep -f, up to TIMEOUT. 0 = up, 1 = never appeared. WHY: the
+## launch is fire-and-forget, so without this a failed program (wrong boot role, missing
+## binary, compositor unreachable) would surface only as a downstream OCR timeout minutes
+## later with no reason; the caller dumps gc_gui_launch_log on 1. PATTERN is a trusted
+## harness literal (interpolated into the guest shell).
+gc_wait_gui_started() {
+   local username="$1" pattern="$2" timeout="$3" deadline
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if gc_run "${username}" "pgrep -f -- ${pattern} >/dev/null 2>&1"; then
+         return 0
+      fi
+      sleep 5
+   done
+   return 1
 }
 
 ## Poll until guestcontrol as USERNAME can run `true` (VBoxService up + account

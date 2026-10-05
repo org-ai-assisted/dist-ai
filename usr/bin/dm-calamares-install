@@ -485,8 +485,19 @@ main() {
    fi
    ## install-host opens Calamares as its own Wayland window; gc_launch_gui sets
    ## WAYLAND_DISPLAY (absent in the guestcontrol env) and backgrounds via setsid so
-   ## the GUI survives the exec channel closing.
+   ## the GUI survives the exec channel closing. Account is 'user': the live install
+   ## session autologs in as user (the old OCR path typed install-host into a user
+   ## desktop terminal), and the UNRESTRICTED boot ROLE install-host needs is set by GRUB
+   ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
+   ## sysmaint cannot even log in to the live session.
    gc_launch_gui user 'install-host' "${mok_export}"
+   ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
+   ## confirm Calamares actually started; on failure dump the launch log and fail with a
+   ## real reason instead of a silent wait to the downstream OCR timeout.
+   if ! gc_wait_gui_started user 'calamares' 60; then
+      printf '%s: install-host launch log:\n%s\n' "${me}" "$(gc_gui_launch_log user)" >&2
+      die "${FAIL_RC}" "install-host did not start Calamares in the live session"
+   fi
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
 
    printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
