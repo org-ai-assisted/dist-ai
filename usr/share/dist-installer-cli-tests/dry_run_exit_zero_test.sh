@@ -84,6 +84,29 @@ exec "$@"
 STUB
 chmod +x -- "${work}/bin/sudo"
 
+## Deterministic 'vboxmanage': exit non-zero so the forced VM-existence probes
+## ('showvminfo') report "no VM", independent of whether the host actually has
+## VirtualBox or an imported Whonix VM. Without this the result would depend on
+## the caller's environment (codex finding), and a real 'vboxmanage' detected as
+## unowned could even trip the installer's tarball-conflict guard.
+cat > "${work}/bin/vboxmanage" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x -- "${work}/bin/vboxmanage"
+
+## Tripwire 'openssl': a dry-run must NEVER execute it. 'install_pkg openssl'
+## checks the PACKAGE via the package manager, so the openssl BINARY is not run;
+## if the installer ever expands an uninitialized check-command array it would
+## run 'openssl' directly (a dry-run side-effect) and leave this marker.
+openssl_marker="${work}/openssl-was-run"
+cat > "${work}/bin/openssl" <<STUB
+#!/bin/bash
+touch -- "${openssl_marker}"
+exit 0
+STUB
+chmod +x -- "${work}/bin/openssl"
+
 directory_prefix="${work}/download"
 mkdir --parents -- "${directory_prefix}"
 
@@ -135,6 +158,14 @@ if grep --quiet --extended-regexp "realpath: .*No such file or directory" -- "${
    notok "forced realpath failed on a missing path (copy_thru_barrier gap)"
 else
    ok "forced realpath tolerated the simulated (missing) log dir"
+fi
+
+## 5. A dry-run must not EXECUTE a to-be-installed command (it only checks the
+## package). The openssl tripwire marker must be absent.
+if [ -e "${openssl_marker}" ]; then
+   notok "dry-run executed 'openssl' (install_pkg ran the command, not a package check)"
+else
+   ok "dry-run did not execute the installed command (openssl tripwire clean)"
 fi
 
 printf '%s\n' ""

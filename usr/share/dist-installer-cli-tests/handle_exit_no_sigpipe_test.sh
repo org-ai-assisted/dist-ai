@@ -94,9 +94,12 @@ driver="${work}/driver.sh"
    printf '%s\n' 'set -o pipefail'
    printf '%s\n' 'set -o errtrace'
    printf '%s\n' 'shopt -s inherit_errexit'
-   ## Arm the real ERR/EXIT trap, then raise a genuine error.
+   ## Arm the real ERR/EXIT trap, then raise a genuine error with a DISTINCTIVE
+   ## exit code (42, not 1) so the assertion proves the real code propagates --
+   ## not just that some non-SIGPIPE code came back, and not a handler that
+   ## hardcodes 1.
    printf '%s\n' 'set_trap'
-   printf '%s\n' 'false'
+   printf '%s\n' '( exit 42 )'
    pad_line='## padding so pr streams well past the pipe buffer before head closes it'
    for _i in $( seq 1 6000 ); do
       printf '%s\n' "${pad_line}"
@@ -109,12 +112,13 @@ rc=0
 STANDALONE="${standalone}" timeout --kill-after=5 30 bash "${driver}" >/dev/null 2>&1 \
    || rc="$?"
 
-## 'false' makes the genuine exit code 1. The fixed handler must propagate it.
-if [ "${rc}" -eq 1 ]; then
-   ok "handle_exit propagates the real exit code (1), not a SIGPIPE"
+## The error's genuine exit code is 42. The fixed handler must propagate exactly
+## that, not a SIGPIPE (141) and not a hardcoded 1.
+if [ "${rc}" -eq 42 ]; then
+   ok "handle_exit propagates the real exit code (42), not a SIGPIPE"
 else
-   notok "handle_exit did not exit with the real code (rc=${rc})" \
-      "141 = the pr|head SIGPIPE re-entry; 124/137 = a runaway re-entrant loop"
+   notok "handle_exit did not exit with the real code 42 (rc=${rc})" \
+      "141 = the pr|head SIGPIPE re-entry; 124/137 = a runaway re-entrant loop; 1 = a hardcoded code"
 fi
 
 printf '%s\n' ""
