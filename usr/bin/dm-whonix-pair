@@ -283,7 +283,14 @@ restore_fresh() {
 boot_gateway() {
    vm="${gw}"
    restore_fresh "${gw}"
-   ## Boot 1 (UNtraced): bring the GW up just far enough to write the guard pin.
+   ## Boot 1 (UNtraced) exists ONLY to write the guard pin -- it must NOT egress. A warmed snapshot
+   ## autostarts Tor onto its OWN persisted (non-pinned) guards the moment it boots; on the shared
+   ## host wire (a continuous capture that brackets the whole run) that pre-pin traffic would read
+   ## as non-pinned-guard clearnet and FALSE-FAIL. So DISCONNECT the external NIC for boot 1:
+   ## guestcontrol rides the guest-additions channel (NIC-independent), so the pin still writes,
+   ## while Tor has no uplink to reach any guard. Reconnected before the traced boot 2 below.
+   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 on \
+      || die "${SETUP_RC}" "${gw}: cannot disconnect the external NIC for the pin-only boot"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
    gw_started='true'
    wait_guestcontrol_ready user 300 \
@@ -310,11 +317,13 @@ boot_gateway() {
    done
    [ "${off}" = 'true' ] \
       || die "${SETUP_RC}" "${gw}: did not reach poweroff before re-trace -- a provisioning failure, not a WS leak"
-   ## Boot 2 (TRACED): enable the NIC trace offline (-u: just a name, VBox creates the pcap), then
-   ## start. Tor autostarts and StrictNodes forces it onto the pinned guards only.
+   ## Boot 2 (TRACED): RECONNECT the external NIC, enable the NIC trace offline (-u: just a name,
+   ## VBox creates the pcap), then start. Tor autostarts and StrictNodes forces it onto the pinned
+   ## guards only -- now the FIRST clearnet egress of the measured boot, so neither the guest trace
+   ## nor the host wire sees any pre-pin guard.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
-   "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
-      || die "${SETUP_RC}" "${gw}: cannot enable --nictrace1"
+   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 off --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
+      || die "${SETUP_RC}" "${gw}: cannot reconnect the external NIC / enable --nictrace1"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
 }
 
