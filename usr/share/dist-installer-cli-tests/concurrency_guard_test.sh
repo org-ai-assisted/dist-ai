@@ -97,21 +97,22 @@ else
    notok "acquire_concurrency_lock failed on a free lock"
 fi
 
-## Assertion 2: a second acquirer (a subshell opens its own fd = a distinct open
-## file description) is refused fast with the in-progress message. The subshell's
-## stdout/stderr go to files, not a pipe, so a regression that wrongly acquired --
-## and so spawned a holder inheriting the capture fd -- fails the assertion instead
-## of hanging the test on an open pipe.
+## Assertion 2: while the holder holds the lock, the lock is genuinely held AND a
+## second acquirer (a subshell opens its own fd = a distinct open file description)
+## is refused with a non-zero exit. The refusal is confirmed by a DIRECT flock probe
+## on the lock file, not by the die MESSAGE text: die routes through the installer's
+## log pipeline (stecho / sanitize-string), whose python modules are absent in a
+## source-only CI checkout of helper-scripts, so the message is not portable -- the
+## flock state is. The subshell's output is discarded, so a regression that wrongly
+## acquired (and spawned a holder inheriting a capture fd) fails here, never hangs.
+lock_file="${XDG_RUNTIME_DIR}/dist-installer-cli.lock"
 contend_rc=0
-( dic_lock_holder_pid=""; acquire_concurrency_lock ) \
-   >/dev/null 2>"${work}/contend.err" || contend_rc=$?
-contend_out="$( cat -- "${work}/contend.err" )"
+( dic_lock_holder_pid=""; acquire_concurrency_lock ) >/dev/null 2>&1 || contend_rc=$?
 if [ "${contend_rc}" -ne 0 ] \
-   && [[ "${contend_out}" == *'already in progress'* ]]; then
+   && ! flock --exclusive --nonblock "${lock_file}" true 2>/dev/null; then
    ok "second acquirer refused while the lock is held"
 else
-   notok "second acquirer was not refused" \
-      "rc=${contend_rc} out='$( printf '%s' "${contend_out}" | tr '\n' ' ' )'"
+   notok "second acquirer was not refused" "rc=${contend_rc}"
 fi
 
 ## Assertion 3: after release (holder killed) the lock is re-acquirable.
