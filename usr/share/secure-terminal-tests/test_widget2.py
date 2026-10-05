@@ -7694,4 +7694,20 @@ eq(_zr._grid_rows, _zr_rows0, 'idempotence: a colors toggle preserves the grid r
 _zr.shutdown()
 
 
+# Small-scrollback content-loss guard: with the block cap SMALLER than the viewport (reachable
+# only via the raw apply_scrollback API, not the shipped >=1000 choices), the screen==viewport
+# full-grid fill must NOT pad trailing blanks that evict the leading non-blank row as Qt prunes
+# to the cap. Fall back to the trim so live content survives (codex-found regression).
+_cap = SecureTerminal(command='/bin/cat', tui=True)
+_cap.resize(400, 300); _cap.show(); APP.processEvents()
+_cap._tui_grid_size = lambda: (10, 5)           # columns=10, lines=5 (so 6 fed lines scroll)
+_cap._make_screen()
+_cap.apply_scrollback(1)                         # raw API: cap (1) smaller than the 5-row viewport
+feed_output(_cap, b'1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\x1b[2J\x1b[HVISIBLE')
+_cap._render_tui(); APP.processEvents()
+ok('VISIBLE' in _cap.toPlainText(),
+   'small-cap: a live non-blank row is not evicted by the full-grid fill (content survives)')
+_cap.shutdown()
+
+
 finish('widget2')
