@@ -117,6 +117,40 @@ count4="$(cflite_explode_hex_corpus "${seeds4}" cat "${out4}")"
 assert 'name-without-hex line skipped, only the valid seed counted' \
    test "${count4}" = '1'
 
+## Case 5: a NAME of exactly '.' must FATAL (it would otherwise redirect into the
+## output directory itself and crash with a confusing "Is a directory" error).
+seeds5="${work_dir}/seeds5.txt"
+out5="${work_dir}/out5"
+mkdir -- "${out5}"
+err5="${work_dir}/err5"
+printf 'ok 6161\n. 6262\n' > "${seeds5}"
+rc5=0
+cflite_explode_hex_corpus "${seeds5}" cat "${out5}" >/dev/null 2>"${err5}" || rc5=$?
+assert 'dot name returns non-zero' test "${rc5}" -ne 0
+assert 'dot name prints a clear FATAL' grep -q 'unsafe seed name' "${err5}"
+
+## Case 6: a decoder (or write) failure must FATAL, never be silently counted --
+## even when the caller invokes the function in an || list (errexit disabled).
+seeds6="${work_dir}/seeds6.txt"
+out6="${work_dir}/out6"
+mkdir -- "${out6}"
+err6="${work_dir}/err6"
+printf 'bad deadbeef\n' > "${seeds6}"
+rc6=0
+cflite_explode_hex_corpus "${seeds6}" false "${out6}" >/dev/null 2>"${err6}" || rc6=$?
+assert 'decoder failure returns non-zero' test "${rc6}" -ne 0
+assert 'decoder failure prints a clear FATAL' grep -q 'decode failed' "${err6}"
+
+## Case 7: parsing is independent of the caller's IFS (a narrowed IFS must not
+## fold "NAME HEX" into a single field).
+seeds7="${work_dir}/seeds7.txt"
+out7="${work_dir}/out7"
+mkdir -- "${out7}"
+printf 'one 61\ntwo 62\n' > "${seeds7}"
+count7="$(IFS=$'\n'; cflite_explode_hex_corpus "${seeds7}" cat "${out7}")"
+assert 'narrowed caller IFS still parses NAME<space>HEX' test "${count7}" = '2'
+assert 'narrowed IFS: a seed file is written' test -f "${out7}/one"
+
 if [ "${failures}" -eq 0 ]; then
    printf '%s\n' 'seed_corpus_test: all checks passed'
    exit 0

@@ -157,6 +157,31 @@ assert 'set -f zero-match still returns non-zero' test "${rc5}" -ne 0
 assert 'set -f zero-match leaves the array empty' test "${#arr5[@]}" -eq 0
 assert 'set -f restored by the helper' test "${noglob_after}" = 'on'
 
+## Case 6: a caller with failglob must still get the clean zero-match FATAL (the
+## helper disables failglob for the expansion), with no spurious bash "no match"
+## error, and failglob restored afterward.
+shopt -s failglob
+err6="${work_dir}/err6"
+declare -a arr6=()
+rc6=0
+cflite_list_harnesses arr6 "${empty_dir}/fuzz_*.py" 2>"${err6}" || rc6=$?
+failglob_after='off'
+if shopt -q failglob; then
+   failglob_after='on'
+fi
+shopt -u failglob
+assert 'failglob zero-match returns non-zero' test "${rc6}" -ne 0
+assert 'failglob zero-match leaves the array empty' test "${#arr6[@]}" -eq 0
+assert 'failglob zero-match prints the clean FATAL' \
+   grep --quiet 'no fuzz harnesses matched' "${err6}"
+if grep --quiet 'no match' "${err6}"; then
+   printf 'FAIL: %s\n' 'failglob leaked a bash "no match" error (not disabled)' >&2
+   failures=$(( failures + 1 ))
+else
+   printf 'PASS: %s\n' 'failglob zero-match has no spurious bash "no match" error'
+fi
+assert 'failglob restored by the helper' test "${failglob_after}" = 'on'
+
 if [ "${failures}" -eq 0 ]; then
    printf '%s\n' 'harness_glob_test: all checks passed'
    exit 0
