@@ -429,17 +429,25 @@ allowlist_bpf() {
 ## traffic (non-blind). tcpdump -r reads the pcap -- no root. Fail-closed: a missing /
 ## unreadable pcap is treated as a blind capture, never a pass.
 canary_gateway_pcap() {
-   local hits total
+   local total deny_filter hits_out hits leaks_out leaks rc
    [ -s "${nictrace_pcap}" ] || die "${SETUP_RC}" "canary: GW nictrace pcap empty/missing (blind capture -- inconclusive, not a leak)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
    [ "${total}" -gt 0 ] || die "${SETUP_RC}" "canary: GW emitted nothing on its external NIC (blind -- inconclusive, not a leak)"
-   ## Watch the clearnet targets as DESTINATION and the forged sources as SOURCE: a
-   ## forged-source leak egresses with CRAFT_SRC/CRAFT_SRC6 as its SOURCE (to any dst),
-   ## which a dst-only filter would miss. The un-NAT'd redirect reply (dst=CRAFT_SRC) is
-   ## still caught by the dst match on the same addresses.
-   hits="$("${TCPDUMP}" -nr "${nictrace_pcap}" \
-      "dst host ${CLEARNET_ICMP} or dst host ${CLEARNET_NTP} or dst host ${CLEARNET_IPV6} \
-       or host ${CRAFT_SRC} or host ${CRAFT_SRC6}" 2>/dev/null | wc -l)"
+   ## A FILTERED run that is piped to `wc -l` hides tcpdump's exit status: a filter that fails to
+   ## COMPILE (libpcap lacking a primitive, a malformed BPF) prints nothing -> count 0 -> a false
+   ## "no leak" in any caller where errexit is suppressed. Capture tcpdump's rc DIRECTLY (no pipe)
+   ## and die SETUP on failure, so a bad filter is inconclusive, never a clean pass. Counts here
+   ## are the leak matches only (0 on a clean run), so holding the output in a var is cheap.
+   ## Watch the clearnet targets as DESTINATION and the forged sources as SOURCE (a forged-source
+   ## leak egresses with CRAFT_SRC/CRAFT_SRC6 as SOURCE to any dst; the un-NAT'd redirect reply
+   ## with dst=CRAFT_SRC is still caught by the dst match).
+   deny_filter="dst host ${CLEARNET_ICMP} or dst host ${CLEARNET_NTP} or dst host ${CLEARNET_IPV6} or host ${CRAFT_SRC} or host ${CRAFT_SRC6}"
+   rc=0
+   hits_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "${deny_filter}" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] \
+      || die "${SETUP_RC}" "canary: denylist filter failed to run (unreadable pcap / non-compiling filter) -- inconclusive, not a leak verdict"
+   hits=0
+   [ -z "${hits_out}" ] || hits="$(printf '%s\n' "${hits_out}" | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
    ## Allowlist (deny-by-default): permit ONLY the pinned entry guards (either direction) + link
@@ -448,8 +456,12 @@ canary_gateway_pcap() {
    ## denylist above never names. Fail-closed: an empty guard set cannot form an allowlist.
    [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
       || die "${SETUP_RC}" "canary: no pinned guards configured -- cannot build the allowlist (inconclusive, not a leak)"
-   local leaks
-   leaks="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null | wc -l)"
+   rc=0
+   leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] \
+      || die "${SETUP_RC}" "canary: allowlist filter failed to run (non-compiling filter?) -- inconclusive, not a leak verdict"
+   leaks=0
+   [ -z "${leaks_out}" ] || leaks="$(printf '%s\n' "${leaks_out}" | wc -l)"
    [ "${leaks}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: ${leaks} non-guard clearnet pkt(s) on the GW NIC -- NOT Tor-only (allowlist; see preserved pcap decode)"
    printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); 0 to any probe target, 0 non-guard clearnet)"

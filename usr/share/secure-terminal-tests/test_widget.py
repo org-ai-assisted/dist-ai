@@ -6667,9 +6667,11 @@ ok(_psv_after == _psv_before,
 _psv.shutdown()
 
 # #16: a PROGRAM-managed canvas -- a full-screen app in the NORMAL buffer that draws content
-# BELOW the cursor (a status/hint line) and repaints on the SIGWINCH, e.g. Claude Code -- is
-# NOT preserved: pushing would leave stale duplicate scrollback and cost it the fixed-canvas
-# treatment (row-0 pin, no scrollbar). Only the shell shape (cursor on the last row) is kept.
+# BELOW the cursor (a status/hint line) and repaints on the SIGWINCH, e.g. Claude Code. There
+# is NO reliable signal at resize time to tell it from a shell, so a primary-screen shrink
+# ALWAYS preserves the clipped top rows -- the deliberate no-data-loss trade-off: it costs
+# such a program cosmetic duplicate scrollback (which scrolls away) rather than risk dropping
+# a shell's unrecoverable output.
 _pcv = SecureTerminal(command='/bin/cat', tui=True)
 _pcv.resize(700, 400)
 _pcv.show()
@@ -6680,49 +6682,65 @@ for _r in range(1, _pcv_n + 1):
     _pcv._stream.feed(('\x1b[%d;1Hrow%02d' % (_r, _r)).encode())    # content on EVERY row
 _pcv._stream.feed(('\x1b[%d;1H' % max(1, _pcv_n - 4)).encode())     # caret ABOVE the last rows
 _pcv_top0 = len(_pcv._screen.history.top)
-_pcv._tui_grid_size = lambda: (_pcv._screen.columns, max(3, _pcv_n // 2))
+_pcv_small = max(3, _pcv_n // 2)
+_pcv._tui_grid_size = lambda: (_pcv._screen.columns, _pcv_small)
 _pcv._sync_tui_size()
-eq(len(_pcv._screen.history.top), _pcv_top0,
-   '#16: a program canvas (content below the cursor) shrink pushes nothing to scrollback')
+eq(len(_pcv._screen.history.top), _pcv_top0 + (_pcv_n - _pcv_small),
+   '#16: a primary-screen shrink preserves the clipped top rows even for a canvas (no data loss)')
 _pcv.shutdown()
 
-# #16: a shell editing a multi-line command that AUTOWRAPPED -- the cursor moved UP into the
-# wrap (Left-Arrow / Alt-B), so content is STILL drawn below it, but on rows that are
-# wrap-CONTINUATIONS of the cursor's OWN logical line. That is the shell shape, NOT a fixed
-# canvas, so a shrink must preserve the output above. Regression: before the
-# wrapped-continuation check, last_content > cursor.y misclassified this as a canvas and the
-# top rows were DROPPED -- permanent data loss on the review-bar/resize transient shrink.
+# #16: a shell with the cursor moved UP (Left-Arrow / Alt-B) so it sits MID-grid above
+# still-drawn content (editing a multi-line command). A shrink preserves the clipped top rows
+# -- the data (output + command) must survive, even though the caret is mid-grid rather than on
+# the last row. (Cursor re-homing for a mid-grid caret is left to the shell's SIGWINCH redraw;
+# see resize_preserving_scrollback -- no blanket shift is safe across all screens.)
 _pwv = SecureTerminal(command='/bin/cat', tui=True)
 _pwv.resize(700, 400)
 _pwv.show()
 pump(40)
-_pwv_n = _pwv._screen.lines
 _pwv_cols = _pwv._screen.columns
 feed_output(_pwv, b'out A\r\nout B\r\n')                     # real output on the top rows
 feed_output(_pwv, b'cmd ' + b'a' * (2 * _pwv_cols))         # a command that wraps 3 rows
-feed_output(_pwv, b'\x1b[A\x1b[A')                          # cursor UP into the wrap
+feed_output(_pwv, b'\x1b[A\x1b[A')                          # cursor UP, mid-grid
 _pwv._render_tui()
 pump(20)
+_pwv_n = _pwv._screen.lines
 ok(_pwv._screen.cursor.y < max(
-    (_y for _y in range(_pwv._screen.lines)
+    (_y for _y in range(_pwv_n)
      if any(_c.data != ' ' for _c in _pwv._screen.buffer[_y].values())), default=-1),
-   '#16: precondition -- the cursor sits ABOVE still-drawn wrapped-command content')
+   '#16: precondition -- the cursor sits ABOVE still-drawn content')
 _pwv_top0 = len(_pwv._screen.history.top)
 _pwv_small = max(3, _pwv_n // 2)
 _pwv._tui_grid_size = lambda: (_pwv._screen.columns, _pwv_small)
 _pwv._sync_tui_size()                                       # SHRINK (review bar opening)
 ok(len(_pwv._screen.history.top) > _pwv_top0,
-   '#16: a shrink while editing a WRAPPED command preserves the top rows to scrollback')
-# Content survives, not merely "scrollback grew": reconstruct the retained text from the
-# preserved history rows PLUS the live grid and require EVERY output line and the wrapped
-# command to still be present -- a broken resize that kept only the first row would pass a
-# bare count check while silently losing the rest.
+   '#16: a mid-grid-cursor shrink preserves the top rows to scrollback')
+# Content survives, not merely "scrollback grew": every output line and the wrapped command
+# must still be present across the preserved history rows plus the live grid.
 _pwv_retained = '\n'.join(
     [''.join(_r[_x].data for _x in sorted(_r)).rstrip()
      for _r in list(_pwv._screen.history.top)]
     + [_l.rstrip() for _l in _pwv._screen.display])
 ok('out A' in _pwv_retained and 'out B' in _pwv_retained and 'cmd ' in _pwv_retained,
-   '#16: the shrink preserves ALL content (both output lines and the wrapped command)')
+   '#16: the shrink preserves ALL content (every output line and the wrapped command)')
+_pwv.shutdown()
+
+# #16: a row that is BLANK text but visibly STYLED (a reverse-video / coloured status bar of
+# spaces) is real content -- it must be preserved on a shrink, not treated as a trailing blank
+# and dropped. Regression for the `c.data != ' '` content test ignoring styled spaces.
+_pss = SecureTerminal(command='/bin/cat', tui=True)
+_pss.resize(700, 400)
+_pss.show()
+pump(40)
+_pss_n = _pss._screen.lines
+_pss._stream.feed(b'\x1b[2J\x1b[1;1HTOP LINE\x1b[2;1H\x1b[7m' + b' ' * 8 + b'\x1b[0m')
+_pss_top0 = len(_pss._screen.history.top)
+_pss._tui_grid_size = lambda: (_pss._screen.columns, max(3, _pss_n // 2))
+_pss._sync_tui_size()                                       # SHRINK
+_pss_hist = [_r for _r in list(_pss._screen.history.top)]
+ok(any(any(getattr(_c, 'reverse', False) for _c in _r.values()) for _r in _pss_hist),
+   '#16: a reverse-video (styled-space) status row is preserved to scrollback, not dropped')
+_pss.shutdown()
 _pwv.shutdown()
 
 # #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
