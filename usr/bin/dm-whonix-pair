@@ -270,7 +270,15 @@ boot_gateway() {
    gw_pin_guards
    ## CLEAN poweroff (ACPI) so the torrc write is flushed; a hard poweroff could lose it. NOT
    ## restore_fresh -- that reverts the pin; a plain power-cycle keeps the on-disk drop-in.
+   ## gw_pin_guards already `sync`ed the drop-in, so even clean_poweroff's hard fallback cannot
+   ## truncate it. Then WAIT for the VM to actually reach poweroff: clean_poweroff's hard-fallback
+   ## path returns without waiting, and the next modifyvm needs the VM fully stopped.
    clean_poweroff
+   local _i
+   for _i in $(seq 1 20); do
+      case "$(vm_state "${gw}")" in poweroff|aborted|'') break ;; esac
+      sleep 2
+   done
    ## Boot 2 (TRACED): enable the NIC trace offline (-u: just a name, VBox creates the pcap), then
    ## start. Tor autostarts and StrictNodes forces it onto the pinned guards only.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
@@ -372,15 +380,29 @@ gw_pin_guards() {
       || die "${SETUP_RC}" "could not pin entry guards on the GW (torrc.d writable? leaprun sudo available?)"
 }
 
-## Deny-by-default allowlist BPF: permit ONLY the pinned guards (EITHER direction -- a nictrace
-## tap sees the guard's replies too, dst = the GW's own NAT IP, so a dst-only match would flag
-## every legit return packet) plus structural link infra (DHCP, link-local, multicast, limited
-## broadcast). Any other clearnet packet is a leak. SINGLE source of the allowlist semantics:
-## canary_gateway_pcap uses it, and --print-allow-filter emits it verbatim for the host-wire
-## oracle (host-wire-leak-capture), so the in-VM and on-the-wire oracles never drift.
+## Deny-by-default allowlist BPF: permit ONLY the pinned guards + structural link infra; any other
+## clearnet packet is a leak. SINGLE source of the allowlist semantics: canary_gateway_pcap uses
+## it, and --print-allow-filter emits it verbatim for the host-wire oracle (host-wire-leak-capture),
+## so the in-VM and on-the-wire oracles never drift.
+##
+## Each infra exclusion is DST-scoped or both-port, so a clearnet dst can NEVER hide behind one
+## infra-looking endpoint:
+##   - DHCP is `port 67 AND port 68` (a real client<->server exchange), NOT either port alone --
+##     else any clearnet UDP merely touching 67/68 would be exempt.
+##   - multicast / broadcast / link-local / loopback match the DESTINATION only -- a packet FROM a
+##     link-local/loopback source TO a clearnet dst is still a leak.
+## Guards match EITHER direction (`host`): a nictrace/host tap also sees the guard's REPLIES (whose
+## dst is the local NAT/host IP, not a guard) and the self IP differs per observation point, so a
+## dst-only guard match would flag every legit reply. Accepted + documented limitations (the
+## denylist and the live run backstop these): a packet FORGING a guard IP as its SOURCE to a
+## clearnet dst is allowed (no exfil value, and the tested forged-source vector uses CRAFT_SRC,
+## which the denylist catches); EntryNodes pins IPs not fingerprints (a deliberate single-source
+## choice -- traffic to any relay at a pinned IP is still Tor egress, which is what a leak test
+## proves); and a COLD snapshot could bootstrap via non-pinned fallback dirs -- the harness
+## requires a WARMED clean-live snapshot so Tor fetches through the pinned guards.
 allowlist_bpf() {
    local infra allow guard
-   infra='(udp port 67 or udp port 68) or ip multicast or ip6 multicast or host 255.255.255.255 or net 169.254.0.0/16 or (ip6 and net fe80::/10)'
+   infra='(udp port 67 and udp port 68) or ip multicast or ip6 multicast or dst host 255.255.255.255 or dst net 169.254.0.0/16 or dst net 127.0.0.0/8 or (ip6 and (dst net fe80::/10 or dst net ::1/128))'
    allow=''
    for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do
       allow="${allow:+${allow} or }host ${guard}"
