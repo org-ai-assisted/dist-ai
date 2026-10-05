@@ -529,7 +529,12 @@ main() {
    sleep 1
    gui_click_word 'next' 45 bottom 'Partitions Next'
    gui_wait_for 'overview|erase disk /dev|the following changes' 60 'Summary page'
-   gui_click_word 'install' 45 bottom 'Summary Install'
+   ## Trigger Install via its Alt+I accelerator, NOT an OCR-located click: the Summary
+   ## "Install" BUTTON caption OCRs unreliably (grey-on-grey, low confidence), so a
+   ## 'bottom' match falls through to the body text "Install Kicksecure on new ext4..."
+   ## and the click no-ops -- calamares sits on Summary until the completion poll times
+   ## out (verified: Alt+I advances to the exec page; the OCR click does not).
+   gui_scan 38 17 97 b8
    printf '%s\n' "${me}: installing (encrypted) -- polling for completion"
    gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)'
 
