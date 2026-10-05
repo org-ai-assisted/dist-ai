@@ -51,6 +51,16 @@ if [ -z "${HELPER_SCRIPTS_PATH:-}" ] \
    export HELPER_SCRIPTS_PATH="${repo}/../helper-scripts"
 fi
 
+## The installer logs via helper-scripts' 'sanitize-string', a python3 program
+## that imports the 'sanitize_string' package. Installed helper-scripts puts that
+## on the default path; a CHECKOUT (HELPER_SCRIPTS_PATH) does not, so wire its
+## dist-packages dir onto PYTHONPATH (the script's '-Bsu' shebang honors it) --
+## the real dependency, required not stubbed.
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
+   && [ -d "${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages/sanitize_string" ]; then
+   export PYTHONPATH="${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 ## The installer refuses to run as root (not_as_root). This e2e exercises the
 ## real run_installer flow, so it needs a non-root uid; running the suite as
 ## root is an environment bug, not something to paper over here.
