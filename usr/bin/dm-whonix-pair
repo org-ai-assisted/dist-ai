@@ -366,8 +366,12 @@ ws_battery() {
 ws_assert_root() {
    local out
    ## The \$(...) run IN THE GUEST (double-quoted + escaped \$, the file's guestcontrol convention).
+   ## Assert the account (whoami=sysmaint), that dsudo YIELDS root (whoami=root), and that dsudo can
+   ## RUN a command as root (`test -d /usr`, dev-root's own check). Plain dsudo -- NOT
+   ## `dsudo --non-interactive` (that passes `sudo -n`, which refuses the empty-password submit the
+   ## askpass makes; dsudo is already non-interactive, no tty, fail-closed).
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 60 \
-      --cmd "[ \"\$(whoami)\" = sysmaint ] || { printf 'WRONGUSER=%s\n' \"\$(whoami)\"; exit 10; }; [ \"\$(dsudo whoami)\" = root ] || { printf 'NOROOT\n'; exit 11; }; printf 'ROOT_OK\n'" 2>&1)" \
+      --cmd "[ \"\$(whoami)\" = sysmaint ] || { printf 'WRONGUSER=%s\n' \"\$(whoami)\"; exit 10; }; [ \"\$(dsudo whoami)\" = root ] || { printf 'NOROOT\n'; exit 11; }; dsudo test -d /usr || { printf 'DSUDO_RUN_FAIL\n'; exit 12; }; printf 'ROOT_OK\n'" 2>&1)" \
       || die "${SETUP_RC}" "WS sysmaint session cannot obtain root via dsudo (empty-password submit failed; account state?): ${out}"
    [ "${out}" != "${out#*ROOT_OK}" ] \
       || die "${SETUP_RC}" "WS root preflight did not confirm uid 0 via dsudo: ${out}"

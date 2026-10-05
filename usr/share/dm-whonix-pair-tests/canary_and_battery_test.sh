@@ -145,6 +145,9 @@ check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when the guest session is the wro
 mk_vbe 'printf "NOROOT\n"; exit 11'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
 check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot obtain root" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+mk_vbe 'printf "DSUDO_RUN_FAIL\n"; exit 12'
+rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot RUN a root command (test -d /usr)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 ## exit 0 but NO ROOT_OK marker (e.g. truncated output) must still fail-closed, never a vacuous pass.
 mk_vbe 'printf "garbage\n"; exit 0'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
