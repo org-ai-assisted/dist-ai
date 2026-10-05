@@ -431,13 +431,30 @@ def _render_shellcheck(path, comments):
     return "\n".join(lines)
 
 
-def _emit_shellcheck(ctx, proc, src_dir, drop_all_sc1091):
-    """Turn a finished shellcheck PROC into model events. drop_all_sc1091 is the
-    degraded (no-following) path: EVERY SC1091 'not following' is dropped -- that
-    info is the forced consequence of disabling the follow, identical in semantics
-    to the already-accepted absent-sibling drop; every other finding stays real.
-    The normal path drops only the SC1091 of a genuinely absent helper-scripts
-    sibling (see _is_absent_helper_scripts_source)."""
+## SC2034 (assigned, never used) and SC2154 (used, never assigned) are reliable ONLY
+## when shellcheck can follow 'source'. In the degraded no-follow fallback a global
+## SHARED across a source boundary (set here, read in a sourced file, or vice versa) is
+## FALSE-flagged (e.g. systemcheck's ICON/IDENTIFIER). We cannot tell such a false
+## positive from a genuine in-file typo without following the (transitively) sourced
+## files -- exactly the work that exploded. Heuristically re-deriving it from the
+## sourced files' text is a bash parser that lies in BOTH directions (a name in a
+## comment/string excuses a real bug; a quoted/transitive/space path misses a real use),
+## so per the "never reinvent a bash parser -> NOTIFY-only" rule the fallback does NOT
+## gate on SC2034/SC2154: it surfaces them as a VISIBLE ADVISORY note (not silently
+## dropped, so no silent green; not a hard fail, so a load-induced degrade of a valid
+## large file is not blocked). SC1091 is still dropped unconditionally (never a real bug,
+## just "could not follow").
+_FOLLOW_DEPENDENT_VAR_CODES = frozenset({2034, 2154})
+
+
+def _emit_shellcheck(ctx, proc, src_dir, no_follow):
+    """Turn a finished shellcheck PROC into model events. no_follow is the degraded
+    (no-following) path: SC1091 'not following' is dropped (the forced consequence of
+    disabling the follow, identical to the absent-sibling drop); SC2034/SC2154 cannot be
+    verified across 'source' boundaries without the follow that exploded, so they are
+    emitted as a NON-GATING advisory NOTE (visible, never silently dropped) rather than
+    a fail; every other finding stays a real fail. The normal path drops only the SC1091
+    of a genuinely absent helper-scripts sibling (see _is_absent_helper_scripts_source)."""
     try:
         comments = json.loads(proc.stdout)["comments"]
     except (ValueError, KeyError, TypeError):
@@ -451,8 +468,19 @@ def _emit_shellcheck(ctx, proc, src_dir, drop_all_sc1091):
                 message += "\n" + raw.rstrip("\n")
             yield model.fail("shellcheck", message, ctx.path)
         return
-    if drop_all_sc1091:
-        remaining = [c for c in comments if c.get("code") != 1091]
+    if no_follow:
+        advisory = [c for c in comments
+                    if c.get("code") in _FOLLOW_DEPENDENT_VAR_CODES]
+        if advisory:
+            yield model.note(
+                "shellcheck",
+                "following timed out on '%s'; these unused/unassigned-variable findings "
+                "could not be verified across 'source' boundaries and are ADVISORY, not "
+                "gating (inspect by hand, or re-run with following):\n%s"
+                % (ctx.path, _render_shellcheck(ctx.path, advisory)))
+        remaining = [c for c in comments
+                     if c.get("code") != 1091
+                     and c.get("code") not in _FOLLOW_DEPENDENT_VAR_CODES]
     else:
         ## The git probe for the sibling runs only when there is an unfollowable
         ## source to judge (rc>=1 with an SC1091 'does not exist').
@@ -563,15 +591,18 @@ class Shellcheck(ExternalRule):
             ## Always VISIBLE -- the degrade is never a silent pass. Honest about the
             ## COVERAGE lost: without following, shellcheck cannot resolve cross-file
             ## sources NOR distinguish a missing/typo'd 'source=' from a real one (it
-            ## emits the same SC1091 for both), so BOTH are dropped. The same cap
-            ## applies in CI, so this file's cross-file checks are not recovered there
-            ## either; the file BODY is still fully checked.
+            ## emits the same SC1091 for both), so those are dropped; and SC2034/SC2154
+            ## cannot be verified across a source boundary, so _emit_shellcheck surfaces
+            ## them as a non-gating advisory NOTE. The same cap applies in CI, so this
+            ## file's cross-file checks are not recovered there either; the BODY is still
+            ## fully checked.
             yield model.note(
                 "shellcheck",
                 "shellcheck '--external-sources' following exceeded %gs on '%s'; "
-                "re-checked with following forced off -- cross-file source resolution "
-                "and missing-source detection skipped for this file (body still "
-                "checked)" % (SHELLCHECK_TIMEOUT, ctx.path))
+                "re-checked with following forced off -- cross-file source resolution and "
+                "missing-source detection skipped, and unused/unassigned-variable checks "
+                "(SC2034/SC2154) downgraded to advisory, for this file (body still checked)"
+                % (SHELLCHECK_TIMEOUT, ctx.path))
         yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 
 

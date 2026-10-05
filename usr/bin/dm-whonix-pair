@@ -85,23 +85,36 @@ CLEARNET_IPV6='2606:4700:4700::1111'
 CRAFT_SRC6='2001:db8:beef::99'
 
 ## Pinned Tor entry guards: a small fixed set of high-uptime / high-capacity relays. gw_pin_guards
-## forces the GW onto ONLY these (EntryNodes + StrictNodes 1), so the GW's ONLY clearnet egress is
-## these IPs -- the SAME set canary_gateway_pcap allowlists (single source; --print-guards exposes
-## it to the host-wire oracle). Expect Tor-only by DEFAULT: ANY other clearnet dst -- incl. a
-## NON_TOR_GATEWAY host-DNS/LAN exception -- is a LEAK, never allowlisted. Refresh from the live
-## consensus if a relay churns; fail-closed -- a pin Tor cannot bootstrap on never passes (SETUP).
-## Source: onionoo top-consensus-weight Guard relays, 2026-10-04 (nickname / fingerprint / addr):
-##   F3Netze       9454F82D47EBA0CB0C2A4BFE7966181DBF108147  185.220.100.242, 2a0b:f4c0:16c:14::1
-##   magic848relay 616C915B1EA788FA1177EF6194608C0E13B28A96  148.251.33.107
-##   0x90          D95A2DF17815BA92E4EA49D2D46EBAEB1DCEBABC  88.99.7.87
-##   doraemon      4DD822C2CF4542CDF2EDA22480C4EB0331E7B6DB  185.107.57.64
-##   setsun        FB54F9C8AE5A3A89FDAFF834DFA9637F22D70C38  94.130.133.51
-## IPv4 pins the EntryNodes (VBox NAT uplink is v4-only); v6 is allowlisted too in case Tor ever
-## reaches a pinned guard over v6 -- a harmless no-op on a v4 uplink.
-GUARD_PIN_IPS4=( '185.220.100.242' '148.251.33.107' '88.99.7.87' '185.107.57.64' '94.130.133.51' )
-GUARD_PIN_IPS6=( '2a0b:f4c0:16c:14::1' )
+## forces the GW onto ONLY these (EntryNodes + StrictNodes 1), so the GW's ONLY Tor egress is these
+## IPs. Expect Tor-only by DEFAULT: ANY other clearnet dst -- incl. a NON_TOR_GATEWAY host-DNS/LAN
+## exception -- is a LEAK, never allowlisted. Refresh from the live consensus if a relay churns;
+## fail-closed -- a pin Tor cannot bootstrap on never passes (SETUP).
+## Source: onionoo top-consensus-weight Guard relays, 2026-10-04 (nickname / fingerprint / addr:ORPort):
+##   magic848relay 616C915B1EA788FA1177EF6194608C0E13B28A96  148.251.33.107:9001
+##   0x90          D95A2DF17815BA92E4EA49D2D46EBAEB1DCEBABC  88.99.7.87:9001
+##   doraemon      4DD822C2CF4542CDF2EDA22480C4EB0331E7B6DB  185.107.57.64:443
+##   setsun        FB54F9C8AE5A3A89FDAFF834DFA9637F22D70C38  94.130.133.51:9001
+## v4-only: the VBox NAT uplink is v4, so EntryNodes pins v4 (none of these four publish a v6 ORPort).
+GUARD_PIN_IPS4=( '148.251.33.107' '88.99.7.87' '185.107.57.64' '94.130.133.51' )
+GUARD_PIN_IPS6=()
+## Reserved positive-control guard: allowlisted like the entry guards but DELIBERATELY EXCLUDED from
+## EntryNodes, so Tor never connects to it and EVERY packet to this IP is the deterministic canary
+## emit -- cleanly separable from genuine Tor guard traffic by HOST (no port heuristics). The emit
+## is a legitimate TCP connection to this PUBLIC relay's real ORPort (published in the consensus for
+## any client to connect to -- authorized by design, not an unsolicited scan), so it raises no abuse
+## complaint. gw_positive_control dials GUARD_PC_IP4:GUARD_PC_PORT as the clearnet user.
+##   F3Netze 9454F82D47EBA0CB0C2A4BFE7966181DBF108147  185.220.100.242:9100, [2a0b:f4c0:16c:14::1]:9100
+GUARD_PC_IP4='185.220.100.242'
+GUARD_PC_IP6='2a0b:f4c0:16c:14::1'
+GUARD_PC_PORT='9100'
 ## Whonix %includes /usr/local/etc/torrc.d/*.conf; a drop-in there is picked up at Tor start.
 GW_TORRC_PIN='/usr/local/etc/torrc.d/50_dm-whonix-pair-pin.conf'
+## Liveness floor: the trace must contain at least this many GENUINE Tor guard packets (the entry
+## guards on their ORPorts), counted SEPARATELY from the reserved-guard positive-control emit so the
+## artificial canary packet never inflates it. A real Tor guard TLS+circuit over a run is hundreds;
+## a tiny count means an UNDERCOUNTING (dropping) tap or Tor never reached a guard, not a trustworthy
+## clean. A floor, not an exact expectation.
+GUARD_MIN_PKTS='10'
 
 gw_started='false'
 ws_started='false'
@@ -168,9 +181,10 @@ parse_args() {
             shift 2
             ;;
          --print-guards)
-            ## Single source of the pinned-guard allowlist IPs, consumed by the host-wire
-            ## oracle (host-wire-leak-capture) so the two never drift. One IP per line.
-            printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"
+            ## Single source of the allowlisted guard IPs (entry guards + the reserved
+            ## positive-control guard), consumed by the host-wire oracle (host-wire-leak-capture)
+            ## so the two never drift. One IP per line.
+            printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"
             exit 0
             ;;
          --print-allow-filter)
@@ -179,6 +193,13 @@ parse_args() {
             [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
                || die "${SETUP_RC}" "no pinned guards configured -- cannot emit the allowlist filter"
             printf '%s\n' "$(allowlist_bpf)"
+            exit 0
+            ;;
+         --print-pc-filter)
+            ## Emit the reserved-guard positive-control discriminator BPF so the host-wire oracle
+            ## counts the deliberate canary packet SEPARATELY from genuine Tor guard traffic, with
+            ## the SAME definition as the in-VM canary (single source).
+            printf '%s\n' "$(pc_bpf)"
             exit 0
             ;;
          -h|--help)
@@ -262,7 +283,14 @@ restore_fresh() {
 boot_gateway() {
    vm="${gw}"
    restore_fresh "${gw}"
-   ## Boot 1 (UNtraced): bring the GW up just far enough to write the guard pin.
+   ## Boot 1 (UNtraced) exists ONLY to write the guard pin -- it must NOT egress. A warmed snapshot
+   ## autostarts Tor onto its OWN persisted (non-pinned) guards the moment it boots; on the shared
+   ## host wire (a continuous capture that brackets the whole run) that pre-pin traffic would read
+   ## as non-pinned-guard clearnet and FALSE-FAIL. So DISCONNECT the external NIC for boot 1:
+   ## guestcontrol rides the guest-additions channel (NIC-independent), so the pin still writes,
+   ## while Tor has no uplink to reach any guard. Reconnected before the traced boot 2 below.
+   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 on \
+      || die "${SETUP_RC}" "${gw}: cannot disconnect the external NIC for the pin-only boot"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
    gw_started='true'
    wait_guestcontrol_ready user 300 \
@@ -289,11 +317,13 @@ boot_gateway() {
    done
    [ "${off}" = 'true' ] \
       || die "${SETUP_RC}" "${gw}: did not reach poweroff before re-trace -- a provisioning failure, not a WS leak"
-   ## Boot 2 (TRACED): enable the NIC trace offline (-u: just a name, VBox creates the pcap), then
-   ## start. Tor autostarts and StrictNodes forces it onto the pinned guards only.
+   ## Boot 2 (TRACED): RECONNECT the external NIC, enable the NIC trace offline (-u: just a name,
+   ## VBox creates the pcap), then start. Tor autostarts and StrictNodes forces it onto the pinned
+   ## guards only -- now the FIRST clearnet egress of the measured boot, so neither the guest trace
+   ## nor the host wire sees any pre-pin guard.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
-   "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
-      || die "${SETUP_RC}" "${gw}: cannot enable --nictrace1"
+   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 off --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
+      || die "${SETUP_RC}" "${gw}: cannot reconnect the external NIC / enable --nictrace1"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
 }
 
@@ -353,9 +383,29 @@ ws_tor_confirm() {
 ## Fail-closed: if the WS firewall cannot be flushed+confirmed-empty, a leak could be masked at
 ## the WS -> SETUP, never a vacuous pass. Runs as sysmaint (passwordless sudo).
 ws_flush_firewall() {
+   ## DUMP the ruleset (shared dumper) -> FLUSH all -> DUMP again (same dumper) -> CHECK empty.
+   ## The BEFORE dump is emitted to the host log (forensics: what was flushed); the AFTER dump is
+   ## the fail-closed empty check -- a non-empty AFTER means the flush did not take.
+   ## Capture the AFTER-dump's rc separately: a failed `nft list` with empty stdout must NOT read
+   ## as confirmed-empty (`after=$(dump) || exit 1`), else a broken list vacuously "passes".
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
-      --cmd "sudo --non-interactive nft flush ruleset && [ -z \"\$(sudo --non-interactive nft list ruleset)\" ]" \
-      || die "${SETUP_RC}" "could not flush the WS nftables firewall (a leak could be masked at the WS) -- inconclusive, not a leak"
+      --cmd "dump() { sudo --non-interactive nft list ruleset; }; printf 'ws_flush_firewall: WS nft ruleset BEFORE flush:\n' >&2; dump >&2; sudo --non-interactive nft flush ruleset; after=\"\$(dump)\" || exit 1; [ -z \"\${after}\" ]" \
+      || die "${SETUP_RC}" "could not flush+confirm-empty the WS nftables firewall (a leak could be masked at the WS) -- inconclusive, not a leak"
+}
+
+## Positive-control EMIT: from the GW, as the `clearnet` user (allowed DIRECT clearnet TCP on the
+## GW -- not torified), open ONE TCP connection to the RESERVED guard's real ORPort. Legitimate:
+## that ORPort is published in the public consensus for any client to connect to, so a single
+## connection attempt is authorized by design and raises no abuse complaint (not an unsolicited
+## scan). The reserved guard is allowlisted (no leak) and excluded from EntryNodes (Tor never uses
+## it), so this puts a DETERMINISTIC known-good packet on the wire that the canary counts SEPARATELY
+## from genuine Tor guard traffic. Wrapped (|| true) so a transient guestcontrol error does not
+## abort before the canary runs; canary_gateway_pcap's pc_seen>=1 check is the authoritative gate
+## (a truly missing emit surfaces there as SETUP, never a silent pass).
+gw_positive_control() {
+   "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 60 \
+      --cmd "leaprun sudo && sudo --non-interactive -u clearnet timeout 5 bash -c 'exec 3<>/dev/tcp/${GUARD_PC_IP4}/${GUARD_PC_PORT}'; true" \
+      || true
 }
 
 ## Stop Tor on the Gateway to ARM the killswitch, keeping the GW in its USER session so
@@ -389,8 +439,9 @@ gw_start_tor() {
       || die "${SETUP_RC}" "killswitch recovery: could not restart Tor on the GW"
 }
 
-## Pin the GW's Tor to the fixed entry guards (EntryNodes + StrictNodes 1) so its ONLY clearnet
-## egress is GUARD_PIN_IPS4 -- the set the canary (and the host-wire oracle) allowlists. Written
+## Pin the GW's Tor to the fixed entry guards (EntryNodes + StrictNodes 1) so its ONLY Tor egress
+## is GUARD_PIN_IPS4. The allowlist is a superset -- those entry guards PLUS the reserved
+## positive-control guard (GUARD_PC_IP4, deliberately not an EntryNode, so Tor never dials it). Written
 ## as a torrc.d drop-in (Whonix %includes /usr/local/etc/torrc.d/*.conf) via leaprun sudo in the
 ## GW USER session (forwarding intact), then read back + synced so a clean poweroff flushes it.
 ## Done on the UNtraced first boot; boot_gateway then power-cycles into the TRACED boot where Tor
@@ -428,13 +479,32 @@ gw_pin_guards() {
 ## choice -- traffic to any relay at a pinned IP is still Tor egress, which is what a leak test
 ## proves); and a COLD snapshot could bootstrap via non-pinned fallback dirs -- the harness
 ## requires a WARMED clean-live snapshot so Tor fetches through the pinned guards.
-allowlist_bpf() {
-   local infra allow guard
-   infra='(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
-   allow=''
-   for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do
+## ALL allowlisted guards (entry guards + the reserved positive-control guard) as a BPF host-match
+## (EITHER direction), the single "permitted" set the allowlist is built from. Empty string if none.
+guard_hosts_bpf() {
+   local allow='' guard
+   for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
       allow="${allow:+${allow} or }host ${guard}"
    done
+   printf '%s' "${allow}"
+}
+
+## The reserved positive-control guard ONLY (EITHER direction). Tor never connects here (not an
+## EntryNode), so every captured packet to this IP is the deliberate canary emit -- the discriminator
+## that counts the positive control SEPARATELY from genuine Tor guard traffic. Both oracles derive
+## `genuine Tor guard traffic` as `guard_hosts_bpf AND NOT pc_bpf` (identical semantics, no drift).
+pc_bpf() {
+   local allow='' guard
+   for guard in "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
+      allow="${allow:+${allow} or }host ${guard}"
+   done
+   printf '%s' "${allow}"
+}
+
+allowlist_bpf() {
+   local infra allow
+   infra='(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
+   allow="$(guard_hosts_bpf)"
    printf '%s' "(ip or ip6) and not ( ${infra} ) and not ( ${allow} )"
 }
 
@@ -443,7 +513,7 @@ allowlist_bpf() {
 ## traffic (non-blind). tcpdump -r reads the pcap -- no root. Fail-closed: a missing /
 ## unreadable pcap is treated as a blind capture, never a pass.
 canary_gateway_pcap() {
-   local total deny_filter hits_out hits leaks_out leaks rc
+   local total deny_filter hits_out hits leaks_out leaks tor_out tor_seen pc_out pc_seen rc
    [ -s "${nictrace_pcap}" ] || die "${SETUP_RC}" "canary: GW nictrace pcap empty/missing (blind capture -- inconclusive, not a leak)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
    [ "${total}" -gt 0 ] || die "${SETUP_RC}" "canary: GW emitted nothing on its external NIC (blind -- inconclusive, not a leak)"
@@ -464,12 +534,37 @@ canary_gateway_pcap() {
    [ -z "${hits_out}" ] || hits="$(printf '%s\n' "${hits_out}" | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
-   ## Allowlist (deny-by-default): permit ONLY the pinned entry guards (either direction) + link
-   ## infra; EVERY other clearnet packet is a LEAK -- Tor-only by default, NO carve-out for
-   ## host-DNS / a NON_TOR_GATEWAY exception. Catches a GW-originated non-Tor egress the fixed
-   ## denylist above never names. Fail-closed: an empty guard set cannot form an allowlist.
+   ## Allowlist (deny-by-default): permit ONLY the allowlisted guards -- entry guards + the reserved
+   ## positive-control guard -- (either direction) + link infra; EVERY other clearnet packet is a
+   ## LEAK -- Tor-only by default, NO carve-out for host-DNS / a NON_TOR_GATEWAY exception. Catches a
+   ## GW-originated non-Tor egress the fixed denylist above never names. Fail-closed: an empty guard
+   ## set cannot form an allowlist.
    [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
       || die "${SETUP_RC}" "canary: no pinned guards configured -- cannot build the allowlist (inconclusive, not a leak)"
+   ## Liveness floor -- GENUINE Tor guard traffic (entry guards on their ORPorts), i.e. all
+   ## allowlisted guards EXCEPT the reserved positive-control guard (`guard_hosts_bpf AND NOT
+   ## pc_bpf`). The GW's Tor MUST have reached an entry guard, so this MUST be non-trivial; a tiny
+   ## count => blind/undercounting tap (wrong NIC / died / over-tight filter) OR Tor never connected
+   ## => inconclusive, never a pass. Counted separately from the pc emit so the artificial canary
+   ## packet can never satisfy this floor.
+   rc=0
+   tor_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(guard_hosts_bpf) and not ( $(pc_bpf) )" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: Tor guard-traffic read failed -- inconclusive, not a leak verdict"
+   tor_seen=0
+   [ -z "${tor_out}" ] || tor_seen="$(printf '%s\n' "${tor_out}" | wc -l)"
+   [ "${tor_seen}" -ge "${GUARD_MIN_PKTS}" ] \
+      || die "${SETUP_RC}" "canary: GW NIC trace shows only ${tor_seen} genuine Tor guard pkt(s) (< ${GUARD_MIN_PKTS}) -- blind/undercounting capture or Tor never reached a guard (inconclusive, not a pass)"
+   ## Positive control -- the deliberate capture canary: the clearnet user's TCP connection to the
+   ## reserved guard's real ORPort MUST appear, proving the tap catches a known-good packet. Counted
+   ## on its own (pc_bpf) so it neither masks nor is masked by the Tor floor. Zero => the capture is
+   ## blind to the reserved-guard flow or the emit failed => inconclusive, never a pass.
+   rc=0
+   pc_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(pc_bpf)" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: positive-control read failed -- inconclusive, not a leak verdict"
+   pc_seen=0
+   [ -z "${pc_out}" ] || pc_seen="$(printf '%s\n' "${pc_out}" | wc -l)"
+   [ "${pc_seen}" -ge 1 ] \
+      || die "${SETUP_RC}" "canary: positive-control emit (clearnet user -> reserved guard ${GUARD_PC_IP4}:${GUARD_PC_PORT}) not observed (${pc_seen} pkt) -- capture blind to the deliberate canary or emit failed (inconclusive, not a pass)"
    rc=0
    leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null)" || rc=$?
    [ "${rc}" -eq 0 ] \
@@ -478,7 +573,7 @@ canary_gateway_pcap() {
    [ -z "${leaks_out}" ] || leaks="$(printf '%s\n' "${leaks_out}" | wc -l)"
    [ "${leaks}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: ${leaks} non-guard clearnet pkt(s) on the GW NIC -- NOT Tor-only (allowlist; see preserved pcap decode)"
-   printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); 0 to any probe target, 0 non-guard clearnet)"
+   printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); ${tor_seen} genuine Tor guard pkt(s), ${pc_seen} positive-control pkt(s); 0 probe-target, 0 non-guard clearnet)"
 }
 
 main() {
@@ -628,6 +723,13 @@ main() {
          || die "${SETUP_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible) -- an infra failure, not a WS leak"
    fi
 
+   ## Positive control: emit one deterministic known-good packet to a pinned guard (best-effort),
+   ## so the canary's guard-packet floor has a controlled contributor, not only Tor's traffic.
+   gw_positive_control
+   ## Settle BEFORE powering off: a probe's packet may be in flight (WS -> GW -> wire) when the
+   ## battery returns; let it egress + land in the trace first, so a late leak is not raced out of
+   ## the capture window.
+   sleep 5
    ## Canary: stop the GW so its nictrace pcap is flushed, then assert NO probe target
    ## reached clearnet through it -- across every capture window.
    "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true

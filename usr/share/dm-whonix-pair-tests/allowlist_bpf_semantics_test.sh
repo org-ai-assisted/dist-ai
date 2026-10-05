@@ -108,6 +108,7 @@ check 'pseudo-multicast 240.0.0.0/4 is a LEAK (not real multicast)' "10.0.2.15,2
 check 'genuine DHCP broadcast (67+68 to 255.255.255.255) is allowed' "0.0.0.0,255.255.255.255,68,67" 0
 check 'egress to a pinned guard is allowed'                    "10.0.2.15,${guard4},40000,443" 0
 check 'a pinned guard REPLY (guard as source) is allowed'      "${guard4},10.0.2.15,443,40000" 0
+check 'egress to the reserved positive-control guard is allowed' "10.0.2.15,${GUARD_PC_IP4},40000,${GUARD_PC_PORT}" 0
 check 'real multicast 224.0.0.0/4 destination is allowed'      "10.0.2.15,224.0.0.251,5353,5353" 0
 check 'link-local DESTINATION (not routed off-link) is allowed' "10.0.2.15,169.254.169.254,40000,80" 0
 
