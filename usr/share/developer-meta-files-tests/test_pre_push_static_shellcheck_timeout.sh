@@ -264,14 +264,56 @@ chmod 0755 -- "${crossvar_dir}/caller"
 run_gate "${crossvar_dir}" "${INNER_TIMEOUT}"
 assert_graceful_degrade "cross-file-vars-sc2034-sc2154-dropped"
 ## Sharpen the canary: green is necessary but also assert neither code surfaced as a
-## rendered FINDING, so a future regression that reds on them (or renders them without
-## failing) is caught. Match the bracketed finding form '[SC2034]' from _render_shellcheck,
-## NOT the degrade note's own '(SC2034/SC2154) skipped' wording.
+## rendered FINDING, so a future regression that reds on them is caught. Match the
+## bracketed finding form '[SC2034]' from _render_shellcheck, NOT the degrade note's own
+## 'SC2034/SC2154 suppressed' wording.
 if grep --quiet --extended-regexp '\[SC2034\]|\[SC2154\]' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: cross-file-vars: SC2034/SC2154 leaked through the no-follow fallback (following-dependent false positive not dropped)"
    printf '%s\n' "${gate_output}" | tail -10; fail=1
 else
    printf '%s\n' "PASS: cross-file-vars: no SC2034/SC2154 finding from the no-follow fallback"
+fi
+
+## Case 6: the narrowing has TEETH. A degraded file with an in-file variable bug NOT
+## shared with any sourced file must STILL fail -- dropping it would be a silent green on
+## a script that aborts under 'set -o nounset'. UNASSIGNED_SECRET is referenced but
+## assigned nowhere (SC2154) and UNUSED_SECRET assigned but used nowhere (SC2034);
+## neither name appears in the sourced level_0.sh, so the shallow cross-file scan does
+## NOT excuse them. A wholesale SC2034/SC2154 drop (the first-cut fix) went GREEN here.
+infile_dir="$(mktemp --directory --tmpdir="${test_dir}" infile.XXXXXX)"
+build_graph "${infile_dir}"
+cat >"${infile_dir}/caller" <<'INFILE'
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Assigned, used nowhere (SC2034); and a referenced-but-unassigned typo (SC2154) that
+## aborts at runtime under nounset. Neither name is in level_0.sh -> provably in-file.
+UNUSED_SECRET="present"
+printf '%s\n' "${UNASSIGNED_SECRET}"
+
+# shellcheck source=./level_0.sh
+source "./level_0.sh"
+INFILE
+chmod 0755 -- "${infile_dir}/caller"
+run_gate "${infile_dir}" "${INNER_TIMEOUT}"
+if [ "${gate_timed_out}" -ne 0 ]; then
+   printf '%s\n' "FAIL: in-file-vars: gate hung (rc ${gate_rc}) -- fallback did not bound the follow"
+   printf '%s\n' "${gate_output}" | tail -6; fail=1
+elif [ "${gate_rc}" -eq 0 ]; then
+   printf '%s\n' "FAIL: in-file-vars: gate GREEN on an in-file SC2034/SC2154 (silent green on a crashing script)"
+   printf '%s\n' "${gate_output}" | tail -10; fail=1
+elif grep --quiet --extended-regexp '\[SC2154\]|\[SC2034\]' <<< "${gate_output}"; then
+   printf '%s\n' "PASS: in-file-vars: gate RED and names the in-file finding (not excused as cross-file)"
+else
+   printf '%s\n' "FAIL: in-file-vars: gate red (rc=${gate_rc}) but did not report SC2034/SC2154"
+   printf '%s\n' "${gate_output}" | tail -10; fail=1
 fi
 
 if [ "${fail}" -ne 0 ]; then
