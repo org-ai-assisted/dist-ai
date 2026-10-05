@@ -133,6 +133,23 @@ check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inli
 rc=0; has "printf " "${out}" && rc=1 || rc=0
 check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass)' "${rc}"
 
+## --- ws_browser_probe: stage the CLI+harness readably, run the probe as non-root sysmaint -----
+## /mnt/shared is a root-only read-only vboxsf mount; the battery reads it as root (dsudo), but the
+## browser probe runs NON-root (Tor Browser refuses root) and a non-root read of the share is
+## EACCES. So the probe must read a world-readable guest-local COPY, never the share directly --
+## the exact regression this guards (the first live browser run died EACCES opening the share).
+out="$(ws_browser_probe)"
+rc=0; has "dsudo install -D -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test" "${out}" || rc=1
+check 'ws_browser_probe: stages the CLI off the root-only share into a world-readable guest-local dir (as root)' "${rc}"
+rc=0; has "dsudo install -D -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" "${out}" || rc=1
+check 'ws_browser_probe: stages the harness beside the CLI (find_harness looks beside it)' "${rc}"
+rc=0; has "python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json" "${out}" || rc=1
+check 'ws_browser_probe: runs the probe from the readable guest-local copy' "${rc}"
+rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc" "${out}" && rc=1 || rc=0
+check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
+rc=0; has '--role sysmaint' "${out}" || rc=1
+check 'ws_browser_probe: runs in the WS sysmaint session (dsudo yields root for the staging copy)' "${rc}"
+
 ## --- ws_assert_root: root-capability preflight, fail-closed ----------------------------------
 ## Controlled vbe stub (not the echoing one): simulate the guest snippet's verdict + rc.
 mk_vbe() { printf '#!/bin/bash\n%s\n' "$1" > "${work}/vbe"; chmod +x "${work}/vbe"; }

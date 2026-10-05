@@ -71,6 +71,11 @@ ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}
 ## guest's mnt-shared-vbox.service). The host staging dir is made in main.
 GUEST_SHARE_MOUNT='/mnt/shared'
 share_dir=''
+## World-readable guest-local stage for the browser probe. /mnt/shared is a root-only, read-only
+## vboxsf mount, so the NON-root browser probe (Tor Browser refuses root) cannot read its CLI +
+## harness off it -- copy them here as root first, then run the probe from here (tmpfs; a
+## snapshot restore reverts it anyway).
+GUEST_PROBE_LOCAL='/run/anon-leak-probe'
 
 ## Clearnet targets the battery aims its direct-egress probes at (anon-leak-test's fixed
 ## defaults, so the GW-pcap watch list is exactly these). On a CORRECT Whonix the GW drops/
@@ -357,6 +362,16 @@ ws_battery() {
    ## guest exit code IS the verdict; one short command, no inline script.
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
       --cmd "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+}
+
+## Run the app/browser-layer webrtc probe. It runs as the NON-root sysmaint user (Tor Browser
+## refuses root), but /mnt/shared is a root-only read-only mount a non-root read cannot open. So
+## copy the CLI + harness off it into a world-readable guest-local dir as root (dsudo), then run
+## the probe from THERE (find_harness looks beside the CLI). The guest exit code IS the verdict
+## (0 clear / 1 leak / other inconclusive).
+ws_browser_probe() {
+   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+      --cmd "dsudo install -D -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -D -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html && ${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json"
 }
 
 ## Preflight (run once the WS is up in sysmaint, BEFORE any root step): confirm the guest session
@@ -717,13 +732,11 @@ main() {
    if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
       printf '%s\n' "${me}: app/browser layer -- run the browser-webrtc probe in the Workstation"
       local browser_rc=0
-      "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-         --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc --json" \
-         || browser_rc=$?
+      ws_browser_probe || browser_rc=$?
       if [ "${browser_rc}" = '1' ]; then
          die "${FAIL_RC}" "LEAK: the browser layer proved non-Tor egress / a WebRTC host-IP exposure"
       elif [ "${browser_rc}" != '0' ]; then
-         die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: browser-webrtc could not run (rc=${browser_rc}; no browser in the WS?) -- not a proven leak"
+         die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: the browser-webrtc probe exited ${browser_rc} (see the guest output above) -- not a proven leak"
       fi
    fi
 
