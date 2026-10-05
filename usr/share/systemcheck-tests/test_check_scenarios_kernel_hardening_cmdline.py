@@ -204,6 +204,33 @@ class TestKernelHardeningCmdlineIsolatedScenarios(ScenarioTestBase):
         r = self._run(cmdline, verbose=0)
         self.assertNotIn(CMDLINE_PREFIX, r.joined())
 
+    ## -- verbose gating of the green "Present" success line -----------------
+    ## The all-hardened result is reassuring but noise to a layman; it is
+    ## gated behind verbose so a non-verbose run shows only problems.
+    def test_non_verbose_hides_present_line(self) -> None:
+        cmdline = CMDLINE_PREFIX + ' ' + ' '.join(self.tokens)
+        r = self._run(cmdline, verbose=0)
+        self.assertCleanRun(r)
+        self.assertNotIn('>Present<', r.joined())
+        self.assertFalse(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '0')
+
+    def test_verbose_shows_present_line(self) -> None:
+        cmdline = CMDLINE_PREFIX + ' ' + ' '.join(self.tokens)
+        r = self._run(cmdline, verbose=1)
+        self.assertCleanRun(r)
+        self.assertIn('>Present<', r.joined())
+        self.assertEqual(r.exit_code, '0')
+
+    ## -- the "Missing" warning is NOT gated: a real hardening gap must still
+    ## -- surface for a layman running without --verbose --------------------
+    def test_non_verbose_still_reports_missing(self) -> None:
+        r = self._run(CMDLINE_PREFIX, verbose=0)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('>Missing<', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
 
 if __name__ == '__main__':
     unittest.main()
