@@ -28,28 +28,33 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-## Stub tcpdump, three filter kinds (canary runs the denylist AND the allowlist read):
-##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow
-##     lines, capture to last_filter_allow.
-##   - DENYLIST (watched targets) -> has "dst host", no 169.254 -> emit STUB_DIR/hits, capture to
-##     last_filter (so the denylist assertions still see their own filter, not the allowlist one).
+## Stub tcpdump, five filter kinds (canary runs the denylist, the Tor-guard read, the pc read, and
+## the allowlist read), classified by filter text (most specific first):
+##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow.
+##   - DENYLIST (watched targets)  -> has "dst host", no 169.254 -> emit STUB_DIR/hits.
+##   - TOR GUARD (guards AND NOT pc) -> has "not (" -> emit STUB_DIR/tor.
+##   - POSITIVE CONTROL (reserved guard) -> host-only -> emit STUB_DIR/pc.
 ##   - full read (no filter) -> emit STUB_DIR/total.
-## A missing count file reads as 0 (so set_counts needs only total+hits; allow defaults 0). Counts
-## come from FILES (not subshell env) so canary can run in a die-catching subshell cleanly.
+## A missing count file reads as 0. Counts come from FILES (not subshell env) so canary can run in
+## a die-catching subshell cleanly.
 cat > "${work}/tcpdump" <<'STUB'
 #!/bin/bash
 mode=full
-for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow" ;; esac; done
+for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter" ;; esac; done
+   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"host "*) mode=guard; printf '%s' "$a" > "${STUB_DIR}/last_filter_guard" ;; esac; done
+   for a in "$@"; do case "$a" in *"not ("*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
+fi
+if [ "${mode}" = full ]; then
+   for a in "$@"; do case "$a" in *"host "*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 case "${mode}" in
    allow) f="${STUB_DIR}/allow" ;;
    deny)  f="${STUB_DIR}/hits" ;;
-   guard) f="${STUB_DIR}/guard"; [ -e "${f}" ] || f="${STUB_DIR}/total" ;;
+   tor)   f="${STUB_DIR}/tor" ;;
+   pc)    f="${STUB_DIR}/pc" ;;
    *)     f="${STUB_DIR}/total" ;;
 esac
 n="$(cat -- "${f}" 2>/dev/null || printf 0)"
@@ -101,7 +106,7 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 
-set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '20\n' > "${work}/guard"; }
+set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '20\n' > "${work}/tor"; printf '1\n' > "${work}/pc"; }
 
 set_counts 7 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
@@ -219,12 +224,14 @@ printf '%s\n' "$*"
 STUB
 chmod +x "${work}/vbe"
 
-## --- gw_positive_control: emit a known-good packet to a pinned guard as the clearnet user ------
+## --- gw_positive_control: emit a known-good packet to the RESERVED guard's ORPort as clearnet ---
 out="$(gw_positive_control 2>&1)"
 rc=0; has '-u clearnet' "${out}" || rc=1
 check 'gw_positive_control emits as the clearnet user (allowed direct clearnet TCP on the GW)' "${rc}"
-rc=0; has "/dev/tcp/${GUARD_PIN_IPS4[0]}/" "${out}" || rc=1
-check 'gw_positive_control opens a TCP connection to a PINNED guard IP (allowlisted, no leak)' "${rc}"
+rc=0; has "/dev/tcp/${GUARD_PC_IP4}/${GUARD_PC_PORT}" "${out}" || rc=1
+check 'gw_positive_control dials the RESERVED guard real ORPort (allowlisted, legitimate, no leak)' "${rc}"
+rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "/dev/tcp/${g}/" "${out}" && rc=1; done
+check 'gw_positive_control does NOT dial an entry guard (separation: pc traffic is its own count)' "${rc}"
 rc=0; has '--role user' "${out}" || rc=1
 check 'gw_positive_control runs in the GW USER session' "${rc}"
 

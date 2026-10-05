@@ -251,6 +251,13 @@ DONE (LIVE `dm-whonix-pair`, not this netns suite):
   (`host-wire-leak-capture` in private-ai-config/ovh-server-debug) applies the SAME allowlist
   (read verbatim via `dm-whonix-pair --print-allow-filter`) to a RAW capture of the host's
   physical NIC, catching egress a per-uid rule or the guest-NIC tap could miss.
+  Two liveness signals, counted SEPARATELY (neither masks the other): (1) GENUINE Tor guard
+  traffic (entry guards on their ORPorts) must clear a floor (`GUARD_MIN_PKTS`); (2) a deliberate
+  POSITIVE-CONTROL emit -- the `clearnet` user opens one TCP connection to a RESERVED guard's real
+  ORPort. The reserved guard is allowlisted but excluded from `EntryNodes`, so Tor never dials it
+  and every packet to it is the canary (separable by host); its ORPort is public consensus infra,
+  so the emit is legitimate (no abuse complaint), not an unsolicited scan. Both oracles derive the
+  split identically from `--print-guards` / `--print-pc-filter` (single source, no drift).
 
 DONE (app/browser layer, LANDED -- live-drive tuned at the live run):
 
