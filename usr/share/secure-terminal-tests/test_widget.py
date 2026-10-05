@@ -6713,6 +6713,8 @@ _pfit_top0 = len(_pfit._screen.history.top)
 _pfit_small = max(5, _pfit_n - 2)                            # shrink by 2; the caret (row 2) fits
 _pfit._tui_grid_size = lambda: (_pfit._screen.columns, _pfit_small)
 _pfit._sync_tui_size()
+eq(_pfit._screen.lines, _pfit_small,
+   '#16: the cursor-fits shrink actually applied (test is non-vacuous)')
 eq(len(_pfit._screen.history.top), _pfit_top0,
    '#16: a cursor-fits shrink scrolls nothing into history (no manufactured scrollback)')
 _pfit_grid = '\n'.join(
