@@ -259,7 +259,7 @@ DONE (LIVE `dm-whonix-pair`, not this netns suite):
   so the emit is legitimate (no abuse complaint), not an unsolicited scan. Both oracles derive the
   split identically from `--print-guards` / `--print-pc-filter` (single source, no drift).
 
-DONE (app/browser layer, LANDED -- live-drive tuned at the live run):
+LANDED (app/browser layer code + unit tests) -- LIVE validation DEFERRED (headless Tor Browser):
 
 - WebRTC/STUN local-IP exposure + doileak exit-IP: the opt-in `browser-webrtc` anon-leak-test
   probe (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS browser headless through a staged harness and
@@ -267,13 +267,25 @@ DONE (app/browser layer, LANDED -- live-drive tuned at the live run):
   AND the browser's exit is Tor. Pure classifier unit-tested + canaried; fail-closed to SETUP if
   no browser. Live-only pieces (which WS account/session, the Tor Browser path via
   ANON_LEAK_BROWSER, a display) are tuned at the live run.
-  LIVE STATUS (2026-10-05, OVH): the CORE oracle PASSES live (full battery + GW-trace canary:
-  1758 genuine Tor-guard pkts + 10 positive-control pkts, 0 non-guard clearnet). The opt-in
-  browser phase INCONCLUSIVE-fail-closes on the test VM: a fresh Whonix-Workstation ships NO
-  Tor Browser until tb-updater fetches one, so browser-webrtc rc=34 "no browser in the WS" ->
-  SETUP (correct, not a false pass). FOLLOW-UP to validate the browser layer live: provision a
-  tb-updater'd Tor Browser into the WS clean-live snapshot (+ a headless display / ANON_LEAK_BROWSER
-  + DM_WHONIX_PAIR_BROWSER_ENV), then re-run with DM_WHONIX_PAIR_BROWSER=1.
+  LIVE STATUS (2026-10-05, OVH): the CORE oracle PASSES live (full battery + GW-trace canary
+  green: genuine Tor-guard traffic + positive-control pkts, 0 probe-target, 0 non-guard clearnet).
+  The opt-in browser phase is DEFERRED for live validation (operator decision): the network-layer
+  oracle already gates any real WebRTC/browser egress at the wire, so the app-layer probe is
+  defense-in-depth. The probe now RUNS live (find_browser locates the WS Tor Browser and launches
+  it headless) but headless Tor Browser does not POST its result back within the 90s harness
+  timeout -> SETUP (inconclusive, fail-closed; never a false pass). FOLLOW-UP to bring the browser
+  layer live: capture the launcher's stderr (the probe DEVNULLs it); confirm the `torbrowser`
+  wrapper forwards `--headless` and loads the localhost collector URL; the harness fetches
+  check.torproject.org THROUGH Tor, which can exceed 90s on a cold circuit, so make the browser
+  timeout longer + probe-configurable; then re-run with DM_WHONIX_PAIR_BROWSER=1. Also nail down
+  the guestcontrol guest-exit -> VBoxManage-exit mapping (observed guest exit 2 -> 34): confirm a
+  genuine probe leak (guest exit 1) still reaches the caller as 1 so the browser/battery `==1`
+  LEAK classification can fire (the pcap canary is the authoritative, exit-independent gate
+  regardless).
+  STAGING (fixed 2026-10-05): the probe runs NON-root (Tor Browser refuses root) and reads its CLI
+  + harness from a world-readable guest-local copy -- `ws_browser_probe` does `install -d -m 0755`
+  then `install` as root off the root-only read-only /mnt/shared, in a SEPARATE guestcontrol call
+  so a staging/transport failure is SETUP, never a false LEAK.
 
 OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 
