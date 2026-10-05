@@ -222,6 +222,58 @@ done
 run_gate "${graph_dir}" "30"
 assert_graceful_degrade "oversized-finite-override-clamped-on-graph"
 
+## Case 5: in the degraded no-follow fallback the FOLLOWING-DEPENDENT variable checks
+## must be dropped too, not just SC1091. SC2034 (a global assigned here, used only in a
+## sourced file) and SC2154 (a global used here, assigned only in a sourced file) are
+## FALSE POSITIVES once following is forced off -- shellcheck cannot see the sourced
+## file. Pre-fix the fallback dropped only SC1091, so it failed RED here (the exact
+## systemcheck ICON/IDENTIFIER false positive). Force degraded mode with the expensive
+## graph, then share a global across the (unfollowed) source boundary.
+crossvar_dir="$(mktemp --directory --tmpdir="${test_dir}" crossvar.XXXXXX)"
+build_graph "${crossvar_dir}"
+## A sourced (in-fallback unfollowed) file uses the caller's global and assigns one the
+## caller reads back -- so WITH following both are clean, only no-follow misjudges them.
+cat >>"${crossvar_dir}/level_0.sh" <<'LEVEL0_EXTRA'
+printf '%s\n' "${ASSIGNED_IN_CALLER}"
+ASSIGNED_IN_SOURCE="from a sourced file"
+LEVEL0_EXTRA
+cat >"${crossvar_dir}/caller" <<'CROSSVAR'
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Assigned here, used ONLY in the sourced level_0.sh (never referenced in this
+## caller) -> SC2034 "appears unused" without following.
+ASSIGNED_IN_CALLER="shared into a sourced file"
+
+# shellcheck source=./level_0.sh
+source "./level_0.sh"
+
+## Assigned only in the sourced level_0.sh, referenced here -> SC2154 "referenced but
+## not assigned" without following. ASSIGNED_IN_CALLER is deliberately NOT referenced
+## here, so its only use is across the source boundary.
+printf '%s\n' "${ASSIGNED_IN_SOURCE}"
+CROSSVAR
+chmod 0755 -- "${crossvar_dir}/caller"
+run_gate "${crossvar_dir}" "${INNER_TIMEOUT}"
+assert_graceful_degrade "cross-file-vars-sc2034-sc2154-dropped"
+## Sharpen the canary: green is necessary but also assert neither code surfaced as a
+## rendered FINDING, so a future regression that reds on them (or renders them without
+## failing) is caught. Match the bracketed finding form '[SC2034]' from _render_shellcheck,
+## NOT the degrade note's own '(SC2034/SC2154) skipped' wording.
+if grep --quiet --extended-regexp '\[SC2034\]|\[SC2154\]' <<< "${gate_output}"; then
+   printf '%s\n' "FAIL: cross-file-vars: SC2034/SC2154 leaked through the no-follow fallback (following-dependent false positive not dropped)"
+   printf '%s\n' "${gate_output}" | tail -10; fail=1
+else
+   printf '%s\n' "PASS: cross-file-vars: no SC2034/SC2154 finding from the no-follow fallback"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
    exit 1

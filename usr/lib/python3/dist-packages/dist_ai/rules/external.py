@@ -431,13 +431,27 @@ def _render_shellcheck(path, comments):
     return "\n".join(lines)
 
 
-def _emit_shellcheck(ctx, proc, src_dir, drop_all_sc1091):
-    """Turn a finished shellcheck PROC into model events. drop_all_sc1091 is the
-    degraded (no-following) path: EVERY SC1091 'not following' is dropped -- that
-    info is the forced consequence of disabling the follow, identical in semantics
-    to the already-accepted absent-sibling drop; every other finding stays real.
-    The normal path drops only the SC1091 of a genuinely absent helper-scripts
-    sibling (see _is_absent_helper_scripts_source)."""
+## shellcheck checks whose verdict depends on FOLLOWING '# shellcheck source='
+## directives. In the degraded no-follow fallback all are indeterminate:
+##   SC1091 -- could not follow a source.
+##   SC2034 -- assigned but never used; the use may be in an unfollowed source.
+##   SC2154 -- referenced but never assigned; the assignment may be in one.
+## All three are dropped in that path, identical in semantics to the
+## already-accepted absent-sibling SC1091 drop. Emitting SC2034/SC2154 there is a
+## FALSE POSITIVE on any global shared with a sourced file (e.g. systemcheck's
+## ICON/IDENTIFIER, set in the entrypoint and read by its sourced fragments).
+_NO_FOLLOW_UNRELIABLE_CODES = frozenset({1091, 2034, 2154})
+
+
+def _emit_shellcheck(ctx, proc, src_dir, no_follow):
+    """Turn a finished shellcheck PROC into model events. no_follow is the degraded
+    (no-following) path: every following-dependent finding is dropped
+    (_NO_FOLLOW_UNRELIABLE_CODES -- SC1091 'not following' plus SC2034/SC2154, whose
+    unused/unassigned verdict needs the sourced files) -- the forced consequence of
+    disabling the follow, identical in semantics to the already-accepted
+    absent-sibling drop; every other finding stays real. The normal path drops only
+    the SC1091 of a genuinely absent helper-scripts sibling (see
+    _is_absent_helper_scripts_source)."""
     try:
         comments = json.loads(proc.stdout)["comments"]
     except (ValueError, KeyError, TypeError):
@@ -451,8 +465,9 @@ def _emit_shellcheck(ctx, proc, src_dir, drop_all_sc1091):
                 message += "\n" + raw.rstrip("\n")
             yield model.fail("shellcheck", message, ctx.path)
         return
-    if drop_all_sc1091:
-        remaining = [c for c in comments if c.get("code") != 1091]
+    if no_follow:
+        remaining = [c for c in comments
+                     if c.get("code") not in _NO_FOLLOW_UNRELIABLE_CODES]
     else:
         ## The git probe for the sibling runs only when there is an unfollowable
         ## source to judge (rc>=1 with an SC1091 'does not exist').
@@ -563,15 +578,18 @@ class Shellcheck(ExternalRule):
             ## Always VISIBLE -- the degrade is never a silent pass. Honest about the
             ## COVERAGE lost: without following, shellcheck cannot resolve cross-file
             ## sources NOR distinguish a missing/typo'd 'source=' from a real one (it
-            ## emits the same SC1091 for both), so BOTH are dropped. The same cap
-            ## applies in CI, so this file's cross-file checks are not recovered there
-            ## either; the file BODY is still fully checked.
+            ## emits the same SC1091 for both), and its unused/unassigned-variable
+            ## verdicts (SC2034/SC2154) cannot see the sourced files, so ALL of those
+            ## are dropped (_NO_FOLLOW_UNRELIABLE_CODES). The same cap applies in CI, so
+            ## this file's cross-file checks are not recovered there either; the file
+            ## BODY is still fully checked.
             yield model.note(
                 "shellcheck",
                 "shellcheck '--external-sources' following exceeded %gs on '%s'; "
-                "re-checked with following forced off -- cross-file source resolution "
-                "and missing-source detection skipped for this file (body still "
-                "checked)" % (SHELLCHECK_TIMEOUT, ctx.path))
+                "re-checked with following forced off -- cross-file source resolution, "
+                "missing-source detection, and unused/unassigned-variable checks "
+                "(SC2034/SC2154) skipped for this file (body still checked)"
+                % (SHELLCHECK_TIMEOUT, ctx.path))
         yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 
 
