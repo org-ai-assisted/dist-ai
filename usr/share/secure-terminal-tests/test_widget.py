@@ -6691,8 +6691,9 @@ _pcv.shutdown()
 
 # #16: a shell with the cursor moved UP (Left-Arrow / Alt-B) so it sits MID-grid above
 # still-drawn content (editing a multi-line command). A shrink preserves the clipped top rows
-# (always-preserve) AND shifts the caret up WITH the content, so it is not stranded `drop`
-# rows below on a blank row -- which would misplace the shell's post-SIGWINCH redraw.
+# -- the data (output + command) must survive, even though the caret is mid-grid rather than on
+# the last row. (Cursor re-homing for a mid-grid caret is left to the shell's SIGWINCH redraw;
+# see resize_preserving_scrollback -- no blanket shift is safe across all screens.)
 _pwv = SecureTerminal(command='/bin/cat', tui=True)
 _pwv.resize(700, 400)
 _pwv.show()
@@ -6704,8 +6705,7 @@ feed_output(_pwv, b'\x1b[A\x1b[A')                          # cursor UP, mid-gri
 _pwv._render_tui()
 pump(20)
 _pwv_n = _pwv._screen.lines
-_pwv_cy = _pwv._screen.cursor.y
-ok(_pwv_cy < max(
+ok(_pwv._screen.cursor.y < max(
     (_y for _y in range(_pwv_n)
      if any(_c.data != ' ' for _c in _pwv._screen.buffer[_y].values())), default=-1),
    '#16: precondition -- the cursor sits ABOVE still-drawn content')
@@ -6723,10 +6723,24 @@ _pwv_retained = '\n'.join(
     + [_l.rstrip() for _l in _pwv._screen.display])
 ok('out A' in _pwv_retained and 'out B' in _pwv_retained and 'cmd ' in _pwv_retained,
    '#16: the shrink preserves ALL content (every output line and the wrapped command)')
-# The caret shifts UP with the content by the number of clipped rows -- regression for the
-# mid-grid cursor that pyte's resize restores UNCHANGED, stranding it below its content.
-eq(_pwv._screen.cursor.y, max(0, _pwv_cy - (_pwv_n - _pwv_small)),
-   '#16: the caret shifts up with the preserved content, not stranded below it')
+_pwv.shutdown()
+
+# #16: a row that is BLANK text but visibly STYLED (a reverse-video / coloured status bar of
+# spaces) is real content -- it must be preserved on a shrink, not treated as a trailing blank
+# and dropped. Regression for the `c.data != ' '` content test ignoring styled spaces.
+_pss = SecureTerminal(command='/bin/cat', tui=True)
+_pss.resize(700, 400)
+_pss.show()
+pump(40)
+_pss_n = _pss._screen.lines
+_pss._stream.feed(b'\x1b[2J\x1b[1;1HTOP LINE\x1b[2;1H\x1b[7m' + b' ' * 8 + b'\x1b[0m')
+_pss_top0 = len(_pss._screen.history.top)
+_pss._tui_grid_size = lambda: (_pss._screen.columns, max(3, _pss_n // 2))
+_pss._sync_tui_size()                                       # SHRINK
+_pss_hist = [_r for _r in list(_pss._screen.history.top)]
+ok(any(any(getattr(_c, 'reverse', False) for _c in _r.values()) for _r in _pss_hist),
+   '#16: a reverse-video (styled-space) status row is preserved to scrollback, not dropped')
+_pss.shutdown()
 _pwv.shutdown()
 
 # #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
