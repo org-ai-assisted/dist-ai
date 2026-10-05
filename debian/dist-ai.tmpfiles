@@ -1,0 +1,9 @@
+# dm-vm-lock: VM-work concurrency mutex on the shared OVH test server.
+# One dir + a pre-created lock file, boot-durable (systemd recreates /run at boot).
+# Group vboxusers = the users that do VM work on this host (test accounts + build user +
+# admins), so each can flock the lock file. The lock file's CONTENTS are advisory only
+# (flock is the mutex); pre-creating it root-owned means no unprivileged user can swap it.
+# dm-vm-lock runs only on the server; on a host without group vboxusers systemd-tmpfiles
+# simply skips these lines (harmless -- the dir is not needed there).
+d /run/dm-vm-lock 0770 root vboxusers -
+f /run/dm-vm-lock/vm.lock 0660 root vboxusers -

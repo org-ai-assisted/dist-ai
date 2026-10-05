@@ -166,12 +166,15 @@ plain_run_one_suite() {  ## $1 = suite .py path
 ##   - test_zoom_regression -- zoom E2E, likewise
 ##   - test_user_scenarios  -- deterministic "normal user behaviour" E2E (forks real shell
 ##                             children, like test_instances; not a coverage-gated suite)
+##   - test_startup_stderr  -- startup-noise E2E: a real launch under a C locale emits no Qt
+##                             locale warning (spawns the real binary; not coverage-gated)
 ## A suite in NEITHER runner is a gap: keep this in sync with the coverage runner's suite + proof set.
 suites=(
    "${tests_dir}/test_instances.py"
    "${tests_dir}/test_unicode_gallery.py"
    "${tests_dir}/test_zoom_regression.py"
    "${tests_dir}/test_user_scenarios.py"
+   "${tests_dir}/test_startup_stderr.py"
 )
 ## Fast single-suite iteration: SECURE_TERMINAL_TESTS_ONLY selects a subset by basename
 ## (space/comma-separated, with or without .py) -- e.g. SECURE_TERMINAL_TESTS_ONLY=test_mainwin

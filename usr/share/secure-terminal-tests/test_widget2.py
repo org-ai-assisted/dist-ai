@@ -7638,4 +7638,60 @@ _fbar._pulse.stop()
 _ffw.close(); _ffw.deleteLater(); APP.processEvents()
 
 
+# zoom/resize stale-row surfacing (seed #1/#4): a full-screen PRIMARY-buffer app (claude/tmux
+# in the normal buffer, cursor at the bottom) that repaints on SIGWINCH. A zoom-in is a height
+# SHRINK: resize_preserving_scrollback promotes the clipped top rows into scrollback (correct,
+# the xterm rule), so committed scrollback now sits ABOVE the live grid. When the app then
+# repaints a SHORTER frame, the live grid must still FILL the viewport (screen==viewport
+# invariant) so the promoted old rows stay above the fold -- NOT trimmed to the last non-blank
+# row, which would under-fill the viewport and surface the old rows as duplicates/blank bands.
+_zr = SecureTerminal(command='/bin/cat', tui=True)
+_zr.resize(400, 300); _zr.show(); APP.processEvents()
+_zr._tui_grid_size = lambda: (10, 20)
+_zr._make_screen()
+# Fill all 10 rows with distinct content; cursor ends on the bottom row (no trailing newline).
+feed_output(_zr, b'\x1b[H' + b'\r\n'.join(('line%02d' % _i).encode() for _i in range(10)))
+_zr._render_tui(); APP.processEvents()
+ok(_zr.document().blockCount() == _zr._grid_rows == 10,
+   'zoom-setup: a full 10-row canvas is a fixed canvas (no scrollback above)')
+# Zoom-in -> 10 rows shrink to 6: cursor at row 9 promotes 4 top rows into scrollback.
+_zr._screen.resize_preserving_scrollback(6, 20)
+_zr._render_tui(); APP.processEvents()
+eq(len(list(_zr._screen.history.top)), 4,
+   'zoom-shrink: 4 clipped top rows promoted into scrollback (xterm shrink rule)')
+ok(_zr.document().blockCount() > _zr._grid_rows,
+   'zoom-shrink: committed scrollback now sits above the live grid')
+# The app repaints a SHORTER frame on SIGWINCH: home + clear-screen + two lines.
+feed_output(_zr, b'\x1b[H\x1b[2Jnew0\r\nnew1')
+_zr._render_tui(); APP.processEvents()
+eq(_zr._grid_rows, _zr._screen.lines,
+   'zoom: a shorter repaint still fills the viewport (no stale-row surfacing)')
+# The viewport (what the user sees following the tail) is the bottom screen.lines blocks of
+# the document. It must show ONLY the new frame; the promoted old rows stay ABOVE the fold.
+# Without the fix the trimmed grid under-fills, so the viewport tail includes the old rows.
+_zr_doc = _zr.toPlainText().split('\n')
+_zr_view = _zr_doc[-_zr._screen.lines:]
+ok(any('new0' in _l for _l in _zr_view) and any('new1' in _l for _l in _zr_view),
+   'zoom: the viewport tail shows the new repainted frame')
+ok(not any('line0' in _l for _l in _zr_view),
+   'zoom: the viewport tail shows NO promoted old rows (not surfaced as dup/blank)')
+ok(any('line00' in _l for _l in _zr_doc[:-_zr._screen.lines]),
+   'zoom: the promoted old rows are preserved in scrollback above the fold')
+# Re-render idempotence (Oracle A): a COSMETIC re-apply with scrollback above the grid must
+# change only styling, never the grid content/structure. A theme toggle and a colors toggle
+# must leave the document text and the grid row count byte-identical -- a re-render that
+# drops/dupes/blanks rows (the same family as the zoom bug) would change one of them.
+_zr_text0 = _zr.toPlainText()
+_zr_rows0 = _zr._grid_rows
+_zr.apply_theme('dark' if _zr._theme != 'dark' else 'light')
+_zr._render_tui(); APP.processEvents()
+eq(_zr.toPlainText(), _zr_text0, 'idempotence: a theme toggle preserves grid content exactly')
+eq(_zr._grid_rows, _zr_rows0, 'idempotence: a theme toggle preserves the grid row count')
+_zr.apply_colors(not _zr.colors_enabled())
+_zr._render_tui(); APP.processEvents()
+eq(_zr.toPlainText(), _zr_text0, 'idempotence: a colors toggle preserves grid content exactly')
+eq(_zr._grid_rows, _zr_rows0, 'idempotence: a colors toggle preserves the grid row count')
+_zr.shutdown()
+
+
 finish('widget2')

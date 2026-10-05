@@ -114,6 +114,7 @@ core_suites=(
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-release-test-tests
+   dm-vm-lock-tests
    dm-virtualbox-wiki-links-tests
    dist-installer-cli-tests
    genmkfile-tests
@@ -165,6 +166,7 @@ core_suites=(
    tor-ctrl-tests
    unicode-show-tests
    unicode-show-tests-verify
+   uwt-tests
    web-analyzer-tests
    website-tests
    website-tests-delegation-test
@@ -283,7 +285,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|uwt|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -471,6 +473,16 @@ wire() {
          ;;
       anon-ws-disable-stacked-tor)
          wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )
+         ;;
+      uwt)
+         ## The tor-wait dispatch test SOURCES dnf-3.anondist (it is source-able)
+         ## and calls wait_for_tor_service; it needs the uwt checkout to locate the
+         ## wrapper, plus a helper-scripts checkout so the sourced wrapper resolves
+         ## check_runtime.bsh (was_executed) via HELPER_SCRIPTS_PATH.
+         wire_env=( "UWT_REPO=$( pkg_dir uwt )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       dist-installer-cli)
          ## The suite drives usability-misc's shipped ci/vbox-back-to-default-repo.sh
@@ -855,6 +867,13 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      dm-vm-lock)
+         ## Self-contained: drives the real dm-vm-lock (and the real VM entry points for
+         ## the wiring canary) from this dist-ai checkout, with a real flock on a temp lock
+         ## dir (DM_VM_LOCK_DIR seam). No external checkout, no VM, no root, no network.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-release-test)
          ## dist-ai's own orchestrator: the suite sources the real dm-release-test
          ## (which sources helper-scripts log_run_die.sh) and the shared
@@ -1016,7 +1035,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
@@ -1036,6 +1055,9 @@ suite_component() {
          ;;
       legacy-dist)
          printf '%s' 'legacy-dist'
+         ;;
+      uwt)
+         printf '%s' 'uwt'
          ;;
       libvirt-dist)
          printf '%s' 'libvirt-dist'

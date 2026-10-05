@@ -61,10 +61,12 @@ SNAPSHOT="${SNAPSHOT:-clean-live}"
 ## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
 ## battery -- no re-embedded copy). Provisioned location; overridable.
 ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}"
-## The battery needs root (icmp + gateway-craft). The sysmaint session has passwordless sudo by
-## default, so run it under a plain `sudo`. Under guestcontrol there is no tty, so an image that
-## ever required a password makes sudo FAIL (non-zero) rather than hang or pass vacuously --
-## fail-closed, never a silent green.
+## The battery needs root (icmp + gateway-craft). Kicksecure accounts ship with an EMPTY password
+## (NOT NOPASSWD), so a bare `sudo -n`/`--non-interactive` is REFUSED -- the empty password still
+## has to be SUBMITTED, and guestcontrol has no tty. Use `dsudo` (dist-base-files): its SUDO_ASKPASS
+## submits the empty password headlessly (the no-tty equivalent of pressing Enter at the prompt). A
+## genuinely password-protected account makes dsudo FAIL (non-zero) -- fail-closed, never a vacuous
+## pass. ws_assert_root confirms root up front so a mis-set account fails EARLY and clearly.
 ## Where the guest auto-mounts the 'shared' folder that carries the battery (fixed by the
 ## guest's mnt-shared-vbox.service). The host staging dir is made in main.
 GUEST_SHARE_MOUNT='/mnt/shared'
@@ -351,10 +353,24 @@ boot_workstation_sysmaint() {
 ## (0 clear / 1 leak / 2 inconclusive). PROBES selects the probe set.
 ws_battery() {
    local probes="$1"
-   ## Run the battery (on the /mnt/shared mount) as root via plain sudo (sysmaint = passwordless
-   ## sudo). The guest exit code IS the verdict; one short command, no inline script.
+   ## Run the battery (on the /mnt/shared mount) as root via dsudo (empty-password submit). The
+   ## guest exit code IS the verdict; one short command, no inline script.
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+      --cmd "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+}
+
+## Preflight (run once the WS is up in sysmaint, BEFORE any root step): confirm the guest session
+## is the expected account AND can actually obtain root via dsudo, so a mis-set account fails HERE
+## with a clear message instead of a confusing mid-run "sudo: a password is required". Same
+## guestcontrol mechanism the battery/flush use.
+ws_assert_root() {
+   local out
+   ## The \$(...) run IN THE GUEST (double-quoted + escaped \$, the file's guestcontrol convention).
+   out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 60 \
+      --cmd "[ \"\$(whoami)\" = sysmaint ] || { printf 'WRONGUSER=%s\n' \"\$(whoami)\"; exit 10; }; [ \"\$(dsudo whoami)\" = root ] || { printf 'NOROOT\n'; exit 11; }; printf 'ROOT_OK\n'" 2>&1)" \
+      || die "${SETUP_RC}" "WS sysmaint session cannot obtain root via dsudo (empty-password submit failed; account state?): ${out}"
+   [ "${out}" != "${out#*ROOT_OK}" ] \
+      || die "${SETUP_RC}" "WS root preflight did not confirm uid 0 via dsudo: ${out}"
 }
 
 ## Functional positive control: confirm LIVE Tor egress via the AppArmor-confined, hardened
@@ -382,7 +398,7 @@ ws_tor_confirm() {
 ## measures the GATEWAY's protection (the real boundary). The WS has no direct route (single
 ## internal NIC via the GW), so this exposes no new egress path; snapshot restore reverts it.
 ## Fail-closed: if the WS firewall cannot be flushed+confirmed-empty, a leak could be masked at
-## the WS -> SETUP, never a vacuous pass. Runs as sysmaint (passwordless sudo).
+## the WS -> SETUP, never a vacuous pass. Root via dsudo (empty-password submit).
 ws_flush_firewall() {
    ## DUMP the ruleset (shared dumper) -> FLUSH all -> DUMP again (same dumper) -> CHECK empty.
    ## The BEFORE dump is emitted to the host log (forensics: what was flushed); the AFTER dump is
@@ -390,7 +406,7 @@ ws_flush_firewall() {
    ## Capture the AFTER-dump's rc separately: a failed `nft list` with empty stdout must NOT read
    ## as confirmed-empty (`after=$(dump) || exit 1`), else a broken list vacuously "passes".
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
-      --cmd "dump() { sudo --non-interactive nft list ruleset; }; printf 'ws_flush_firewall: WS nft ruleset BEFORE flush:\n' >&2; dump >&2; sudo --non-interactive nft flush ruleset; after=\"\$(dump)\" || exit 1; [ -z \"\${after}\" ]" \
+      --cmd "dump() { dsudo nft list ruleset; }; printf 'ws_flush_firewall: WS nft ruleset BEFORE flush:\n' >&2; dump >&2; dsudo nft flush ruleset; after=\"\$(dump)\" || exit 1; [ -z \"\${after}\" ]" \
       || die "${SETUP_RC}" "could not flush+confirm-empty the WS nftables firewall (a leak could be masked at the WS) -- inconclusive, not a leak"
 }
 
@@ -499,11 +515,18 @@ guard_hosts_bpf() {
 ## that IP on any OTHER port/proto (e.g. UDP/53) is a LEAK, never the positive control and never
 ## allowlisted. This is both the positive-control count and the reserved guard's allowlist arm.
 pc_bpf() {
-   local hosts='' guard
+   local dsthosts='' srchosts='' guard
    for guard in "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
-      hosts="${hosts:+${hosts} or }host ${guard}"
+      dsthosts="${dsthosts:+${dsthosts} or }dst host ${guard}"
+      srchosts="${srchosts:+${srchosts} or }src host ${guard}"
    done
-   printf '( %s ) and tcp port %s' "${hosts}" "${GUARD_PC_PORT}"
+   ## Match ONLY the legit flow: the GW dials OUT to the reserved guard's ORPort (dst side) and its
+   ## reply comes back FROM that ORPort (src side). Scope the ORPort to the reserved-guard side
+   ## (not a bare `tcp port`, which also matches a packet whose OTHER endpoint happens to use 9100)
+   ## so the allowlist exempts nothing beyond this one connection + its reply. A dst-only match would
+   ## wrongly flag the reply (src=guard:9100 -> local:ephemeral) as a leak.
+   printf '(tcp dst port %s and ( %s )) or (tcp src port %s and ( %s ))' \
+      "${GUARD_PC_PORT}" "${dsthosts}" "${GUARD_PC_PORT}" "${srchosts}"
 }
 
 ## Deny-by-default: permit ONLY link infra, the entry guards (any port), and the reserved guard on
@@ -585,6 +608,17 @@ canary_gateway_pcap() {
 
 main() {
    parse_args "$@"
+   ## Self-lock AFTER parse_args, so informational flags (--print-guards/-filter, --help) that
+   ## exit in parse_args never take a VM lock. A leak test is mutually exclusive with ALL
+   ## other VM work on the shared OVH server (foreign VM traffic confounds a leak measurement;
+   ## the fleet VMs collide). Re-exec under dm-vm-lock (class=leak, EXCLUSIVE) so the mutex is
+   ## acquired INSIDE the script and cannot be bypassed; the re-exec'd run sees DM_VM_LOCK_HELD
+   ## and runs through (staging below then happens once, under the lock). Fail-closed: a
+   ## missing dm-vm-lock aborts rather than running a leak test unlocked.
+   if [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+      ## style-ok: R-103 -- intentional re-exec: run this leak test under the VM-work lock.
+      exec dm-vm-lock acquire --class leak --ttl "${DM_WHONIX_PAIR_LOCK_TTL:-2400}" -- "$0" "$@"
+   fi
    [ -x "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" ] \
       || die "${SETUP_RC}" "anon-leak-test checkout not found at ${ANON_LEAK_TEST_REPO} (set ANON_LEAK_TEST_REPO)"
    [ -r "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-inject" ] \
@@ -609,6 +643,8 @@ main() {
 
    printf '%s\n' "${me}: boot Workstation (${ws}) into sysmaint (battery on /mnt/shared)"
    boot_workstation_sysmaint
+   ## Fail EARLY + clearly if the WS session cannot obtain root (before any root-needing step).
+   ws_assert_root
 
    ## Phase 1: gate on the GW's Tor bootstrap -- retry the systemcheck positive control
    ## (SocksPort + TransPort) until it passes, so a clean battery later is meaningful, not

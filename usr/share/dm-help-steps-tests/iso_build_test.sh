@@ -47,6 +47,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## dm-iso-build self-locks under dm-vm-lock (a build is mutually exclusive with a leak test
+## on the shared server). This suite exercises its build-PLANNING logic, which is downstream
+## of the lock gate; run as if already under the lock (the reentrancy no-op) so no real
+## /run/dm-vm-lock is needed in the test env.
+export DM_VM_LOCK_HELD=work
+
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=./help_steps_test_lib.bsh

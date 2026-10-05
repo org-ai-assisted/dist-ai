@@ -55,6 +55,14 @@ DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
 IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
+## Forward the AI-session identity ACROSS the sudo drop into a leaf VM tool, so dm-vm-lock
+## (re-exec'd inside the leaf) records WHICH session holds the VM-work lock and another
+## session can investigate a suspicious holder. sudo strips inherited env; running `env` as
+## the sudo'd command re-sets it regardless of sudoers env policy. Empty outside a session
+## -> dm-vm-lock falls back to 'none'.
+rt_session_env=(env
+   "CLAUDE_RC_SESSION_NAME=${CLAUDE_RC_SESSION_NAME:-}"
+   "CLAUDE_CODE_SESSION_ID=${CLAUDE_CODE_SESSION_ID:-}")
 ## VBox extradata key pinning the imported leak pair's version. Set on BOTH VMs at
 ## provision time (rt_provision_leak) and read back by rt_lane_whonix, which REFUSES to
 ## attribute a verdict to a version the pair was not provisioned with.
@@ -527,7 +535,7 @@ rt_lane_kicksecure() {
    fi
 
    rc=0
-   sudo -u "${account}" -- "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
       "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
@@ -564,7 +572,7 @@ rt_lane_whonix() {
       || die "${SETUP_RC}" "leak pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with 'dm-release-test whonix ${interface} --version ${version} --provision-leak' or pass the matching --version"
 
    rc=0
-   sudo -u "${account}" -- "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
    rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" tor-confirm
    return "${rc}"

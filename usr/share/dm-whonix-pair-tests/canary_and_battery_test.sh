@@ -31,10 +31,11 @@ trap cleanup EXIT
 ## Stub tcpdump, five filter kinds (canary runs the denylist, the Tor-guard read, the pc read, and
 ## the allowlist read), classified by filter text (most specific first):
 ##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow.
+##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp dst port" -> emit STUB_DIR/pc.
 ##   - DENYLIST (watched targets)  -> has "dst host", no 169.254 -> emit STUB_DIR/hits.
-##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp port" -> emit STUB_DIR/pc.
 ##   - TOR GUARD (entry guards) -> has "host " -> emit STUB_DIR/tor.
 ##   - full read (no filter) -> emit STUB_DIR/total.
+## pc is matched BEFORE deny because pc_bpf also contains "dst host" (its dst-scoped ORPort clause).
 ## A missing count file reads as 0. Counts come from FILES (not subshell env) so canary can run in
 ## a die-catching subshell cleanly.
 cat > "${work}/tcpdump" <<'STUB'
@@ -42,10 +43,10 @@ cat > "${work}/tcpdump" <<'STUB'
 mode=full
 for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"tcp dst port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"tcp port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"host "*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
@@ -127,10 +128,33 @@ nictrace_pcap="${work}/pcap"
 
 ## --- ws_battery: one short command on /mnt/shared, no inline script -------------------------
 out="$(ws_battery '--probe tor-confirm')"
-rc=0; has "sudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
-check 'ws_battery: runs the battery on /mnt/shared under plain sudo (no copyto, no inline script)' "${rc}"
+rc=0; has "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
+check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inline script)' "${rc}"
 rc=0; has "printf " "${out}" && rc=1 || rc=0
-check 'ws_battery: no piped password (sysmaint passwordless sudo; no hardcoded secret)' "${rc}"
+check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass)' "${rc}"
+
+## --- ws_assert_root: root-capability preflight, fail-closed ----------------------------------
+## Controlled vbe stub (not the echoing one): simulate the guest snippet's verdict + rc.
+mk_vbe() { printf '#!/bin/bash\n%s\n' "$1" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+mk_vbe 'printf "ROOT_OK\n"; exit 0'
+rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
+check 'ws_assert_root PASSES when the guest confirms root via dsudo (ROOT_OK)' "${rc}"
+mk_vbe 'printf "WRONGUSER=user\n"; exit 10'
+rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when the guest session is the wrong account" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+mk_vbe 'printf "NOROOT\n"; exit 11'
+rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot obtain root" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## exit 0 but NO ROOT_OK marker (e.g. truncated output) must still fail-closed, never a vacuous pass.
+mk_vbe 'printf "garbage\n"; exit 0'
+rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) on a missing ROOT_OK marker (no vacuous pass)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Restore the echoing stub for the remaining assertions.
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
 
 ## --- ws_tor_confirm: systemcheck positive control, BOTH Tor ports, sysmaint, no sudo ---------
 out="$(ws_tor_confirm)"
@@ -204,11 +228,11 @@ check 'gw_start_tor runs in the GW USER session' "${rc}"
 ## --- ws_flush_firewall: remove the WS firewall so leaks reach the GW (the real boundary) ------
 rc=0; out="$(ws_flush_firewall 2>&1)" || rc=$?
 check 'ws_flush_firewall succeeds when guestcontrol does' "${rc}"
-rc=0; has 'nft flush ruleset' "${out}" || rc=1
-check 'ws_flush_firewall flushes the WS nftables ruleset' "${rc}"
+rc=0; has 'dsudo nft flush ruleset' "${out}" || rc=1
+check 'ws_flush_firewall flushes the WS nftables ruleset as root via dsudo' "${rc}"
 rc=0; has '--role sysmaint' "${out}" || rc=1
-check 'ws_flush_firewall runs as sysmaint (passwordless sudo)' "${rc}"
-rc=0; has 'nft list ruleset' "${out}" || rc=1
+check 'ws_flush_firewall runs in the WS sysmaint session' "${rc}"
+rc=0; has 'dsudo nft list ruleset' "${out}" || rc=1
 check 'ws_flush_firewall CONFIRMS the ruleset is empty (fail-closed proof)' "${rc}"
 ## Fail-closed: a WS whose firewall cannot be flushed could mask a leak -> SETUP, never a pass.
 cat > "${work}/vbe" <<'STUB'
