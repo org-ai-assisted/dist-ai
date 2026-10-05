@@ -43,9 +43,13 @@ for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${ST
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter" ;; esac; done
 fi
+if [ "${mode}" = full ]; then
+   for a in "$@"; do case "$a" in *"host "*) mode=guard; printf '%s' "$a" > "${STUB_DIR}/last_filter_guard" ;; esac; done
+fi
 case "${mode}" in
    allow) f="${STUB_DIR}/allow" ;;
    deny)  f="${STUB_DIR}/hits" ;;
+   guard) f="${STUB_DIR}/guard"; [ -e "${f}" ] || f="${STUB_DIR}/total" ;;
    *)     f="${STUB_DIR}/total" ;;
 esac
 n="$(cat -- "${f}" 2>/dev/null || printf 0)"
@@ -97,7 +101,7 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 
-set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; }
+set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '20\n' > "${work}/guard"; }
 
 set_counts 7 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
@@ -214,6 +218,15 @@ cat > "${work}/vbe" <<'STUB'
 printf '%s\n' "$*"
 STUB
 chmod +x "${work}/vbe"
+
+## --- gw_positive_control: emit a known-good packet to a pinned guard as the clearnet user ------
+out="$(gw_positive_control 2>&1)"
+rc=0; has '-u clearnet' "${out}" || rc=1
+check 'gw_positive_control emits as the clearnet user (allowed direct clearnet TCP on the GW)' "${rc}"
+rc=0; has "/dev/tcp/${GUARD_PIN_IPS4[0]}/" "${out}" || rc=1
+check 'gw_positive_control opens a TCP connection to a PINNED guard IP (allowlisted, no leak)' "${rc}"
+rc=0; has '--role user' "${out}" || rc=1
+check 'gw_positive_control runs in the GW USER session' "${rc}"
 
 ## --- on_exit: PRESERVE the GW capture on a leak, drop it on a clean PASS --------------------
 export LEAK_ARTIFACT_DIR="${work}"

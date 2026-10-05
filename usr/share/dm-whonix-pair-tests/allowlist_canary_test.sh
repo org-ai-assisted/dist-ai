@@ -44,8 +44,12 @@ if [ "${mode}" = full ]; then
 fi
 ## A filtered run exits nonzero when STUB_DIR/filter_fail exists -- models a filter that does not
 ## COMPILE (libpcap missing a primitive / malformed BPF), which must be SETUP, not a clean 0.
+if [ "${mode}" = full ]; then
+   for a in "$@"; do case "$a" in *"host "*) mode=guard ;; esac; done
+fi
 case "${mode}" in
-   full) f="${STUB_DIR}/total" ;;
+   full)  f="${STUB_DIR}/total" ;;
+   guard) f="${STUB_DIR}/guard"; [ -e "${f}" ] || f="${STUB_DIR}/total" ;;
    *)
       [ -e "${STUB_DIR}/filter_fail" ] && exit 1
       [ "${mode}" = allow ] && f="${STUB_DIR}/allow" || f="${STUB_DIR}/hits"
@@ -89,7 +93,7 @@ nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 
 ## total, denylist-hits, allowlist-leaks.
-set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '%s\n' "$3" > "${work}/allow"; }
+set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '%s\n' "$3" > "${work}/allow"; printf '20\n' > "${work}/guard"; }
 
 ## --- allowlist verdicts --------------------------------------------------------------------
 ## Clean: traffic present, 0 watched-target hits, 0 non-guard dsts (guard-only + DHCP) -> PASS.
@@ -144,6 +148,14 @@ printf '' > "${work}/filter_fail"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "non-compiling filter -> SETUP_RC(${SETUP_RC}), not a vacuous no-leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 safe-rm --force -- "${work}/filter_fail" 2>/dev/null || true
+
+## --- positive control: the trace MUST contain pinned-guard traffic, else the capture is blind --
+## (traffic present + 0 watched + 0 non-guard could still be a tap that never saw the GW's egress;
+## require guard packets so a leak would actually be observable, not a 0 from a dead tap.)
+set_counts 10 0 0
+printf '3\n' > "${work}/guard"   ## below GUARD_MIN_PKTS -- an undercounting / near-blind tap
+rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
+check "too few pinned-guard pkts (undercount) -> SETUP_RC(${SETUP_RC}) (positive control)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 
 ## --- gw_pin_guards: EntryNodes + StrictNodes 1 drop-in via leaprun sudo, GW user session --------
 rc=0; out="$(gw_pin_guards 2>&1)" || rc=$?
