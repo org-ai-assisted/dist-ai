@@ -166,6 +166,7 @@ core_suites=(
    tor-ctrl-tests
    unicode-show-tests
    unicode-show-tests-verify
+   uwt-tests
    web-analyzer-tests
    website-tests
    website-tests-delegation-test
@@ -284,7 +285,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|uwt|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -472,6 +473,16 @@ wire() {
          ;;
       anon-ws-disable-stacked-tor)
          wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )
+         ;;
+      uwt)
+         ## The tor-wait dispatch test SOURCES dnf-3.anondist (it is source-able)
+         ## and calls wait_for_tor_service; it needs the uwt checkout to locate the
+         ## wrapper, plus a helper-scripts checkout so the sourced wrapper resolves
+         ## check_runtime.bsh (was_executed) via HELPER_SCRIPTS_PATH.
+         wire_env=( "UWT_REPO=$( pkg_dir uwt )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       dist-installer-cli)
          ## The suite drives usability-misc's shipped ci/vbox-back-to-default-repo.sh
@@ -1044,6 +1055,9 @@ suite_component() {
          ;;
       legacy-dist)
          printf '%s' 'legacy-dist'
+         ;;
+      uwt)
+         printf '%s' 'uwt'
          ;;
       libvirt-dist)
          printf '%s' 'libvirt-dist'
