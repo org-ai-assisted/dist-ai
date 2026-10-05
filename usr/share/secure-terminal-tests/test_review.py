@@ -683,6 +683,24 @@ ok(not _pe._block_no_newline(_gblk) and not _pe._block_redraw(_gblk),
    'gutter parity: a review line carries no no-newline / redraw provenance marker')
 eq(_pe._gutter_tooltip(_gblk), '', 'gutter parity: a review line has no gutter tooltip')
 
+# Gutter RESIZE parity: the box's gutter strip must re-align to the viewport on a resize.
+# RevealedEditor defines no resizeEvent of its own; the shared base (_RenderedTextView) owns
+# resizeEvent -> _position_gutter so the box tracks the viewport by DEFAULT. Pre-fix (the base
+# had no resizeEvent) the child _GutterArea kept its construction-time geometry on a vertical
+# resize -- updateRequest re-reserves only the margin WIDTH, never the strip height -- leaving a
+# grown box's gutter short of the viewport. FAILS on the pre-fix box (stale gutter height).
+_rg = RevealedEditor()
+_rg.show()
+_rg.resize(400, 200)
+APP.processEvents()
+_gh_small = _rg._gutter.height()
+_rg.resize(400, 520)                          # grow vertically
+APP.processEvents()
+ok(_rg._gutter.height() > _gh_small,
+   'resize regression: the box gutter height grows with a taller viewport (was stale pre-fix)')
+ok(abs(_rg._gutter.height() - _rg.viewport().height()) <= 2,
+   'resize regression: the box gutter tracks the viewport height after a resize')
+
 
 # ======================================================================
 # ReviewBar -- the bar around the box
