@@ -1,0 +1,78 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Canary: the TTL self-release backstop and stale-holder reaping + registry format.
+##   - a command exceeding --ttl is killed via timeout(1) (exit 124), releasing the lock,
+##     so a wedged holder cannot hold the mutex forever (without the timeout wrap it would
+##     run to completion and this FAILS);
+##   - a holder registry file records the session identity + pid + ttl + cmd (so another
+##     session can investigate a holder);
+##   - a stale holder (dead pid, OR expired TTL even with a live pid) is reaped.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+# shellcheck source=./lib.bash
+source "${test_dir}/lib.bash"
+
+tmp="$(mktemp --directory --tmpdir dm-vm-lock-ttlreap.XXXXXX)"
+# shellcheck disable=SC2317  ## runs via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${tmp}"; }
+trap cleanup EXIT
+
+## --- TTL self-release ------------------------------------------------------------------
+d1="${tmp}/d1"; mkdir -- "${d1}"; printf '' > "${d1}/vm.lock"
+export DM_VM_LOCK_DIR="${d1}"
+start=${SECONDS}
+rc=0; "${TOOL}" acquire --class leak --ttl 1 --wait 5 -- sleep 10 2>/dev/null || rc=$?
+dur=$(( SECONDS - start ))
+if [ "${rc}" -eq 124 ] && [ "${dur}" -lt 5 ]; then r=0; else r=1; fi
+check 'TTL kills a wedged holder (exit 124, well before the command would finish)' "${r}"
+rc=0; "${TOOL}" acquire --class leak --nonblock -- true || rc=$?
+check 'the lock is free after a TTL kill' "${rc}"
+
+## --- registry format -------------------------------------------------------------------
+d2="${tmp}/d2"; mkdir -- "${d2}"; printf '' > "${d2}/vm.lock"
+export DM_VM_LOCK_DIR="${d2}"
+CLAUDE_RC_SESSION_NAME=devX CLAUDE_CODE_SESSION_ID=uuid-X \
+   "${TOOL}" acquire --class work --ttl 30 --wait 5 -- sh -c 'sleep 3' &
+bgpid=$!
+rc=0; wait_for_holder "${d2}" work || rc=$?
+check 'a holder registry file is created' "${rc}"
+line="$(cat -- "${d2}"/holder.work.* 2>/dev/null || true)"
+for kv in 'class=work' 'session=devX' 'session_id=uuid-X' 'ttl=30' 'cmd=sh -c sleep 3'; do
+   case "${line}" in *"${kv}"*) r=0 ;; *) r=1 ;; esac
+   check "registry records ${kv}" "${r}"
+done
+case "${line}" in *pid=*) r=0 ;; *) r=1 ;; esac
+check 'registry records pid' "${r}"
+case "${line}" in *ttl_deadline_epoch=*) r=0 ;; *) r=1 ;; esac
+check 'registry records ttl_deadline_epoch (for investigation + reaping)' "${r}"
+wait "${bgpid}" 2>/dev/null || true
+
+## --- reaping ---------------------------------------------------------------------------
+d3="${tmp}/d3"; mkdir -- "${d3}"; printf '' > "${d3}/vm.lock"
+export DM_VM_LOCK_DIR="${d3}"
+printf 'class=work session=g session_id=g user=g pid=999999 acquired=2020-01-01T00:00:00Z ttl=60 ttl_deadline_epoch=9999999999 cmd=ghost\n' \
+   > "${d3}/holder.work.999999"
+"${TOOL}" status >/dev/null 2>&1 || true
+if [ -e "${d3}/holder.work.999999" ]; then r=1; else r=0; fi
+check 'status reaps a dead-pid holder' "${r}"
+
+printf 'class=work session=g session_id=g user=g pid=%s acquired=2020-01-01T00:00:00Z ttl=1 ttl_deadline_epoch=1 cmd=old\n' "$$" \
+   > "${d3}/holder.work.$$"
+"${TOOL}" status >/dev/null 2>&1 || true
+if [ -e "${d3}/holder.work.$$" ]; then r=1; else r=0; fi
+check 'status reaps an expired-TTL holder (even with a live pid)' "${r}"
+
+vmlock_done

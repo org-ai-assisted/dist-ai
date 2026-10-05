@@ -1,0 +1,281 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## VM-work concurrency mutex for the SHARED OVH test server, where many AI sessions
+## launch VM work (the Whonix leak test, VBox image/install tests, image builds)
+## against one host's VMs + AMD-V + VirtualBox. A leak test MUST be mutually
+## exclusive with ALL other VM work, or foreign VM traffic confounds the leak
+## measurement and the fleet VMs collide.
+##
+## Readers-writer flock, two classes:
+##   leak -> exclusive (LOCK_EX): one leak test at a time; blocks all work + blocked by it.
+##   work -> shared    (LOCK_SH): builds + VBox tests run concurrently among themselves
+##                                (builds auto-lane scratch; AMD-V has its own lock), but
+##                                collectively block a leak test and are blocked by one.
+##
+## Wrap any VM-work command: `dm-vm-lock acquire --class <leak|work> --ttl N -- <cmd...>`.
+## The leaf entry points self-lock (re-exec under this tool) so acquisition is INSIDE the
+## server-side scripts and cannot be bypassed -- nothing to remember.
+##
+## Liveness, not lifetime:
+##   - flock auto-releases when the holder process dies (crash / ssh disconnect).
+##   - TTL backstop for a WEDGED-but-alive (or ssh-orphaned) holder: the wrapped command
+##     runs under timeout(1), so a stuck holder kills ITSELF at the deadline and flock
+##     releases -- no cross-machine session query, no session killing another's process.
+##   - the flock fd is CLOSED in the child (9<&-) so VBoxSVC / detached GUIs the command
+##     spawns never inherit it and pin the lock past the command.
+##
+## Holder identity (session name+id, forwarded from work-claude via server-exec) is recorded
+## in a structured registry file purely for observability (`dm-vm-lock status`); lock
+## correctness never depends on it.
+
+## style-ok: no-has -- self-contained server lock primitive (sibling of ovh-hostop-lock);
+## no helper-scripts sourcing, minimal dependencies on the hot lock path.
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+## Overridable only as a TEST seam (DM_VM_LOCK_DIR); production is the fixed /run path a
+## boot-durable tmpfiles.d entry creates 0770 root:vboxusers with a pre-created vm.lock.
+vm_lock_dir="${DM_VM_LOCK_DIR:-/run/dm-vm-lock}"
+vm_lock_file="${vm_lock_dir}/vm.lock"
+
+## Grace between SIGTERM and SIGKILL when a TTL deadline is hit, giving a leaf's cleanup
+## trap a chance to power off VMs before the hard kill.
+vm_lock_kill_after="${DM_VM_LOCK_KILL_AFTER:-30}"
+
+vm_lock_default_ttl=3600
+vm_lock_default_wait=5400
+
+## Set by cmd_acquire, removed by the EXIT trap (R-051: a trap runs a FUNCTION, not an inline
+## command). Empty = nothing to clean up.
+vm_lock_holder_file=""
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+vm_lock_cleanup() {
+   [ -n "${vm_lock_holder_file}" ] || return 0
+   safe-rm --force -- "${vm_lock_holder_file}" 2>/dev/null || true
+}
+
+usage() {
+   cat >&2 <<USAGE
+usage:
+  ${me} acquire --class <leak|work> [--ttl SECONDS] [--wait SECONDS | --nonblock] -- <command...>
+  ${me} status
+
+  acquire  hold the VM-work lock for the duration of <command>, then release.
+             --class leak   exclusive: mutually exclusive with ALL other VM work.
+             --class work   shared: coexists with other work, excludes leak.
+             --ttl N        hard deadline for <command> via timeout(1) (default ${vm_lock_default_ttl}).
+             --wait N       block up to N seconds for the lock (default ${vm_lock_default_wait}).
+             --nonblock     fail immediately if the lock is contended.
+  status   reap stale holders, then list the current holders.
+USAGE
+   exit 64
+}
+
+## flock mode flag for a class. The ONLY place class semantics are encoded.
+vm_lock_flock_flag() {
+   case "$1" in
+      leak)
+         printf '%s' '--exclusive'
+         ;;
+      work)
+         printf '%s' '--shared'
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## Read one space-delimited key=value field from a registry line. cmd= is written LAST and
+## may contain spaces, so every other key is safely matched as a run of non-space chars.
+vm_lock_kv() {
+   local line="$1" key="$2"
+   if [[ "${line}" =~ (^|[[:space:]])"${key}"=([^[:space:]]*) ]]; then
+      printf '%s' "${BASH_REMATCH[2]}"
+   fi
+}
+
+## Remove registry files whose holder is gone: pid dead OR past its TTL deadline. Advisory
+## cleanup of the observability files only -- the flock itself self-releases on death. TTL
+## guarantees eventual removal even across pid reuse.
+vm_lock_reap() {
+   local f line pid deadline now
+   now="$(date +%s)"
+   shopt -s nullglob
+   for f in "${vm_lock_dir}"/holder.*; do
+      line="$(cat -- "${f}" 2>/dev/null || true)"
+      if [ -z "${line}" ]; then
+         safe-rm --force -- "${f}" 2>/dev/null || true
+         continue
+      fi
+      pid="$(vm_lock_kv "${line}" pid)"
+      deadline="$(vm_lock_kv "${line}" ttl_deadline_epoch)"
+      if [ -n "${deadline}" ] && [ "${now}" -gt "${deadline}" ]; then
+         safe-rm --force -- "${f}" 2>/dev/null || true
+         continue
+      fi
+      if [ -n "${pid}" ] && ! kill -0 "${pid}" 2>/dev/null; then
+         safe-rm --force -- "${f}" 2>/dev/null || true
+      fi
+   done
+}
+
+cmd_status() {
+   if [ ! -d "${vm_lock_dir}" ]; then
+      printf '%s: no lock dir %s -- no VM work locked\n' "${me}" "${vm_lock_dir}"
+      return 0
+   fi
+   vm_lock_reap
+   shopt -s nullglob
+   local f any=0
+   for f in "${vm_lock_dir}"/holder.*; do
+      any=1
+      printf '%s\n' "$(cat -- "${f}" 2>/dev/null || true)"
+   done
+   if [ "${any}" -eq 0 ]; then
+      printf '%s: no current VM-work lock holders\n' "${me}"
+   fi
+}
+
+cmd_acquire() {
+   local class='' ttl='' wait='' nonblock=0
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --class)
+            class="${2:-}"
+            shift 2
+            ;;
+         --ttl)
+            ttl="${2:-}"
+            shift 2
+            ;;
+         --wait)
+            wait="${2:-}"
+            shift 2
+            ;;
+         --nonblock)
+            nonblock=1
+            shift
+            ;;
+         --)
+            shift
+            break
+            ;;
+         *)
+            die 64 "unknown acquire option '$1'"
+            ;;
+      esac
+   done
+   [ "$#" -ge 1 ] || die 64 "acquire: no command after '--'"
+
+   local flag
+   flag="$(vm_lock_flock_flag "${class}")" || die 64 "acquire: --class must be 'leak' or 'work', got '${class}'"
+   ttl="${ttl:-${vm_lock_default_ttl}}"
+   wait="${wait:-${vm_lock_default_wait}}"
+   case "${ttl}${wait}" in
+      *[!0-9]*)
+         die 64 "acquire: --ttl/--wait must be whole seconds"
+         ;;
+   esac
+
+   ## Reentrancy: already holding the lock in this process tree -> run through, do NOT
+   ## re-acquire (a nested leak-under-leak would self-deadlock on LOCK_EX). The outer
+   ## holder's flock + TTL already cover this command.
+   if [ -n "${DM_VM_LOCK_HELD:-}" ]; then
+      ## style-ok: R-103 -- reentrancy pass-through: run the command in THIS already-locked process.
+      exec "$@"
+   fi
+
+   ## The lock dir + file are a boot-durable precondition (tmpfiles.d). Assert loudly rather
+   ## than lazily create: a non-root user creating them would get the wrong owner/group and
+   ## lock out the other VM-work users.
+   [ -e "${vm_lock_file}" ] || die 69 "lock file ${vm_lock_file} missing -- (re)deploy dist-ai (systemd-tmpfiles) on the server"
+
+   vm_lock_reap
+
+   ## O_RDWR, no truncate (the file is shared and may be held; flock needs only an fd).
+   exec 9<>"${vm_lock_file}" || die 69 "cannot open ${vm_lock_file} -- is this user in group 'vboxusers'?"
+
+   local flock_wait=(--timeout "${wait}")
+   if [ "${nonblock}" -eq 1 ]; then
+      flock_wait=(--nonblock)
+   fi
+   if ! flock "${flag}" "${flock_wait[@]}" 9; then
+      printf '%s: VM-work lock (%s) contended; current holders:\n' "${me}" "${class}" >&2
+      cmd_status >&2 || true
+      if [ "${nonblock}" -eq 1 ]; then
+         die 75 "could not acquire the ${class} VM-work lock (--nonblock)"
+      fi
+      die 75 "could not acquire the ${class} VM-work lock within ${wait}s"
+   fi
+
+   ## Record holder identity for observability. Best-effort: a failed write never fails the
+   ## run (the flock on fd 9 is the real mutex). cmd= is LAST (may contain spaces).
+   local pid=$$ now deadline session session_id user
+   now="$(date +%s)"
+   deadline=$(( now + ttl ))
+   session="${CLAUDE_RC_SESSION_NAME:-none}"
+   session_id="${CLAUDE_CODE_SESSION_ID:-none}"
+   user="$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")"
+   vm_lock_holder_file="${vm_lock_dir}/holder.${class}.${pid}"
+   {
+      printf 'class=%s session=%s session_id=%s user=%s pid=%s acquired=%s ttl=%s ttl_deadline_epoch=%s cmd=%s\n' \
+         "${class}" "${session}" "${session_id}" "${user}" "${pid}" \
+         "$(date -u -d "@${now}" +%FT%TZ)" "${ttl}" "${deadline}" "$*"
+   } > "${vm_lock_holder_file}" 2>/dev/null || true
+
+   ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
+   trap vm_lock_cleanup EXIT
+
+   ## Run the command under the TTL deadline, with the lock fd CLOSED in the child so the
+   ## command's descendants (VBoxSVC, a detached GUI) cannot inherit it and pin the lock.
+   ## DM_VM_LOCK_HELD marks the subtree as already-locked (reentrancy no-op above).
+   local rc=0
+   DM_VM_LOCK_HELD="${class}" \
+      timeout --signal=TERM --kill-after="${vm_lock_kill_after}" "${ttl}" "$@" 9<&- || rc=$?
+   if [ "${rc}" -eq 124 ]; then
+      printf '%s: TTL %ss exceeded -- killed the %s holder (wedged?)\n' "${me}" "${ttl}" "${class}" >&2
+   fi
+   return "${rc}"
+}
+
+main() {
+   [ "$#" -ge 1 ] || usage
+   local sub="$1"
+   shift
+   case "${sub}" in
+      acquire)
+         cmd_acquire "$@"
+         ;;
+      status)
+         cmd_status
+         ;;
+      -h|--help)
+         usage
+         ;;
+      *)
+         die 64 "unknown subcommand '${sub}'"
+         ;;
+   esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi

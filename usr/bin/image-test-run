@@ -137,4 +137,13 @@ main() {
    return "${rc}"
 }
 
+## Self-lock: a VBox image test is 'work'-class VM work on the shared OVH server -- it may
+## run alongside other work but is mutually exclusive with a leak test. Re-exec under
+## dm-vm-lock (class=work, SHARED) on direct execution only; the re-exec'd run sees
+## DM_VM_LOCK_HELD and runs through. Runs as root (systemd unit); the lock spans the whole
+## test including the dm-smbios-reader-vbox child it sudo-drops into.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+   ## style-ok: R-103 -- intentional re-exec: run this VBox image test under the VM-work lock.
+   exec dm-vm-lock acquire --class work --ttl "${IMAGE_TEST_LOCK_TTL:-3600}" -- "$0" "$@"
+fi
 main "$@"

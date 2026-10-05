@@ -449,6 +449,14 @@ build_vm() {
 
 main() {
    parse_args "$@"
+   ## Self-lock AFTER parse_args, so --help (which exits in parse_args) never takes a VM lock.
+   ## A VBox install test is 'work'-class VM work on the shared OVH server -- it may run
+   ## alongside other work but is mutually exclusive with a leak test. Re-exec under
+   ## dm-vm-lock (class=work, SHARED); the re-exec'd run sees DM_VM_LOCK_HELD and runs through.
+   if [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+      ## style-ok: R-103 -- intentional re-exec: run this VBox install test under the VM-work lock.
+      exec dm-vm-lock acquire --class work --ttl "${DM_CALAMARES_LOCK_TTL:-3600}" -- "$0" "$@"
+   fi
    trap on_exit EXIT
 
    printf '%s\n' "${me}: build + boot install session"

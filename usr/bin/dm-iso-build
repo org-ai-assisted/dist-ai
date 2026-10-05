@@ -110,6 +110,16 @@ for dm_iso_build_arg in "$@"; do
          ;;
    esac
 done
+
+## Self-lock AFTER arg validation (so a --repo misuse errors without taking a lock). An image
+## build is 'work'-class work on the shared OVH server -- it may run alongside other work but
+## is mutually exclusive with a leak test (a build saturates the host). Re-exec under
+## dm-vm-lock (class=work, SHARED) on direct execution only; the re-exec'd run sees
+## DM_VM_LOCK_HELD and runs through. TTL is generous (a cold build ~1h).
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+   ## style-ok: R-103 -- intentional re-exec: run this image build under the VM-work lock.
+   exec dm-vm-lock acquire --class work --ttl "${DM_ISO_BUILD_LOCK_TTL:-5400}" -- "$0" "$@"
+fi
 unset dm_iso_build_arg
 
 cd -- "${dm_repo}"
