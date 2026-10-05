@@ -42,10 +42,14 @@ for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${ST
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter" ;; esac; done
 fi
+## A filtered run exits nonzero when STUB_DIR/filter_fail exists -- models a filter that does not
+## COMPILE (libpcap missing a primitive / malformed BPF), which must be SETUP, not a clean 0.
 case "${mode}" in
-   allow) f="${STUB_DIR}/allow" ;;
-   deny)  f="${STUB_DIR}/hits" ;;
-   *)     f="${STUB_DIR}/total" ;;
+   full) f="${STUB_DIR}/total" ;;
+   *)
+      [ -e "${STUB_DIR}/filter_fail" ] && exit 1
+      [ "${mode}" = allow ] && f="${STUB_DIR}/allow" || f="${STUB_DIR}/hits"
+      ;;
 esac
 n="$(cat -- "${f}" 2>/dev/null || printf 0)"
 i=0
@@ -132,8 +136,17 @@ rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "empty pinned-guard set -> SETUP_RC(${SETUP_RC}), inconclusive not a pass (fail-closed)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 GUARD_PIN_IPS4=( "${saved_guards[@]}" )
 
+## --- fail-closed: a filter that does not COMPILE is SETUP, never a vacuous 0-leak "canary OK" ----
+## (A piped `tcpdump | wc -l` hid tcpdump's rc; the fix captures it, so a compile failure dies
+## SETUP. On the old code this aborted with tcpdump's exit, NOT SETUP_RC -- this asserts SETUP_RC.)
+set_counts 10 0 0
+printf '' > "${work}/filter_fail"
+rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
+check "non-compiling filter -> SETUP_RC(${SETUP_RC}), not a vacuous no-leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+safe-rm --force -- "${work}/filter_fail" 2>/dev/null || true
+
 ## --- gw_pin_guards: EntryNodes + StrictNodes 1 drop-in via leaprun sudo, GW user session --------
-out="$(gw_pin_guards 2>&1)"; rc=$?
+rc=0; out="$(gw_pin_guards 2>&1)" || rc=$?
 check 'gw_pin_guards succeeds when guestcontrol does' "${rc}"
 rc=0; has 'leaprun sudo' "${out}" || rc=1
 check 'gw_pin_guards writes the pin via leaprun sudo (GW stays in its user session)' "${rc}"
@@ -158,7 +171,7 @@ STUB
 chmod +x "${work}/vbe"
 
 ## --- --print-guards: the single source the host-wire oracle consumes (one IP per line) ----------
-guards_out="$("${tool}" --print-guards)"; rc=$?
+rc=0; guards_out="$("${tool}" --print-guards)" || rc=$?
 check '--print-guards exits 0' "${rc}"
 rc=0
 for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do grep --quiet --line-regexp --fixed-strings -- "${g}" <<< "${guards_out}" || rc=1; done
@@ -167,7 +180,7 @@ rc=0; [ "$(grep -c . <<< "${guards_out}")" = "$(( ${#GUARD_PIN_IPS4[@]} + ${#GUA
 check '--print-guards prints ONLY the pinned guards (no extra lines)' "${rc}"
 
 ## --- --print-allow-filter: the host-wire oracle reuses the SAME allowlist BPF (single source) --
-filt_out="$("${tool}" --print-allow-filter)"; rc=$?
+rc=0; filt_out="$("${tool}" --print-allow-filter)" || rc=$?
 check '--print-allow-filter exits 0' "${rc}"
 rc=0; { has 'not (' "${filt_out}" && has '169.254.0.0/16' "${filt_out}"; } || rc=1
 for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do has "host ${g}" "${filt_out}" || rc=1; done
