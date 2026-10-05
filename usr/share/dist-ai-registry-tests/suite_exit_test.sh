@@ -5,9 +5,10 @@
 
 ## AI-Assisted
 
-## suite_exit(): the canonical runner exit decision. Precedence fail > skip >
-## pass, so a skip is never folded into a passing suite (the silent-skip the
-## orchestrator's --allow-skip must get to govern). Drives the REAL helper.
+## suite-exit.bash: the canonical result vocabulary + aggregator. Distinct,
+## non-overloaded exit codes per outcome (0 PASS, 1 FAIL, 77 SKIP:target-absent,
+## 78 SKIP:env-unmet); suite_exit precedence fail > target-absent > env-unmet >
+## pass, so a skip is never folded into a passing suite. Drives the REAL helper.
 
 set -o errexit
 set -o nounset
@@ -18,7 +19,6 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 script_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-## The helper ships in dist-ai-tests-common beside this suite's share dir.
 helper="${script_dir}/../dist-ai-tests-common/suite-exit.bash"
 if [ ! -r "${helper}" ]; then
    helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
@@ -41,18 +41,34 @@ check() {
       printf '%s\n' "PASS: ${label}"
       pass=$((pass + 1))
    else
-      printf '%s\n' "FAIL: ${label} (rc ${got}, want ${want})"
+      printf '%s\n' "FAIL: ${label} (got '${got}', want '${want}')"
       fail=$((fail + 1))
    fi
 }
 
-## suite_exit never returns, so run it in a subshell and read the exit code.
-rc=0; ( suite_exit 0 0 ) || rc=$?; check "0 failed 0 skipped -> 0 (pass)"        "${rc}" "0"
-rc=0; ( suite_exit 0 2 ) || rc=$?; check "0 failed 2 skipped -> 77 (skip)"       "${rc}" "77"
-rc=0; ( suite_exit 1 0 ) || rc=$?; check "1 failed 0 skipped -> 1 (fail)"        "${rc}" "1"
-rc=0; ( suite_exit 3 5 ) || rc=$?; check "fail dominates skip -> 1"              "${rc}" "1"
-rc=0; ( suite_exit "" "" ) || rc=$?; check "empty counts -> 0 (pass)"           "${rc}" "0"
-rc=0; ( suite_exit "" 1 ) || rc=$?; check "empty failed, 1 skipped -> 77"       "${rc}" "77"
+## Emitters each exit their own distinct code (run in a subshell; they never return).
+rc=0; ( result_pass ) || rc=$?; check "result_pass -> 0" "${rc}" "0"
+rc=0; ( result_fail 'x' ) || rc=$?; check "result_fail -> 1" "${rc}" "1"
+rc=0; ( result_skip_target_absent 'x' ) || rc=$?; check "result_skip_target_absent -> 77" "${rc}" "77"
+rc=0; ( result_skip_env_unmet 'x' ) || rc=$?; check "result_skip_env_unmet -> 78" "${rc}" "78"
+
+## result_word maps code -> label.
+check "word 0"  "$(result_word 0)"  "PASS"
+check "word 1"  "$(result_word 1)"  "FAIL"
+check "word 77" "$(result_word 77)" "SKIP:target-absent"
+check "word 78" "$(result_word 78)" "SKIP:env-unmet"
+check "word other" "$(result_word 42)" "FAIL"
+
+## suite_exit precedence: fail > target-absent > env-unmet > pass.
+rc=0; ( suite_exit 0 0 0 ) || rc=$?; check "0/0/0 -> PASS(0)"                    "${rc}" "0"
+rc=0; ( suite_exit 0 1 0 ) || rc=$?; check "target-absent -> 77"                "${rc}" "77"
+rc=0; ( suite_exit 0 0 1 ) || rc=$?; check "env-unmet -> 78"                    "${rc}" "78"
+rc=0; ( suite_exit 0 2 3 ) || rc=$?; check "target-absent outranks env-unmet -> 77" "${rc}" "77"
+rc=0; ( suite_exit 1 0 0 ) || rc=$?; check "fail -> 1"                          "${rc}" "1"
+rc=0; ( suite_exit 3 5 7 ) || rc=$?; check "fail dominates all -> 1"            "${rc}" "1"
+rc=0; ( suite_exit '' '' '' ) || rc=$?; check "empty counts -> PASS(0)"         "${rc}" "0"
+rc=0; ( suite_exit '' '' 1 ) || rc=$?; check "2-arg legacy call still skips (env) -> 78" "${rc}" "78"
+rc=0; ( suite_exit 0 1 ) || rc=$?; check "2-arg call: skipped -> target-absent 77" "${rc}" "77"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
