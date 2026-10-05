@@ -181,10 +181,11 @@ parse_args() {
             shift 2
             ;;
          --print-guards)
-            ## Single source of the allowlisted guard IPs (entry guards + the reserved
-            ## positive-control guard), consumed by the host-wire oracle (host-wire-leak-capture)
-            ## so the two never drift. One IP per line.
-            printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"
+            ## Single source of the ENTRY guard IPs (the genuine-Tor-guard set), consumed by the
+            ## host-wire oracle (host-wire-leak-capture) to count Tor egress -- so the two never
+            ## drift. One IP per line. The reserved positive-control guard is NOT here (it is its
+            ## own count, via --print-pc-filter); the full allowlist is via --print-allow-filter.
+            printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"
             exit 0
             ;;
          --print-allow-filter)
@@ -479,33 +480,39 @@ gw_pin_guards() {
 ## choice -- traffic to any relay at a pinned IP is still Tor egress, which is what a leak test
 ## proves); and a COLD snapshot could bootstrap via non-pinned fallback dirs -- the harness
 ## requires a WARMED clean-live snapshot so Tor fetches through the pinned guards.
-## ALL allowlisted guards (entry guards + the reserved positive-control guard) as a BPF host-match
-## (EITHER direction), the single "permitted" set the allowlist is built from. Empty string if none.
+## The ENTRY guards as a BPF host-match (EITHER direction). Tor egresses to these on their ORPorts;
+## they are permitted on ANY port (the forged-source / reply accepted-limitation above). This is the
+## genuine-Tor-guard liveness count AND one arm of the allowlist. Does NOT include the reserved
+## positive-control guard -- that is permitted ONLY on its ORPort via pc_bpf, so a non-Tor packet to
+## it is still a leak. Empty string if no entry guards are pinned.
 guard_hosts_bpf() {
    local allow='' guard
-   for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
+   for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do
       allow="${allow:+${allow} or }host ${guard}"
    done
    printf '%s' "${allow}"
 }
 
-## The reserved positive-control guard ONLY (EITHER direction). Tor never connects here (not an
-## EntryNode), so every captured packet to this IP is the deliberate canary emit -- the discriminator
-## that counts the positive control SEPARATELY from genuine Tor guard traffic. Both oracles derive
-## `genuine Tor guard traffic` as `guard_hosts_bpf AND NOT pc_bpf` (identical semantics, no drift).
+## The reserved positive-control flow ONLY: the reserved guard on its real ORPort (GUARD_PC_PORT),
+## EITHER direction (the SYN out + any reply). Scoped to the PORT, not just the host: the reserved
+## guard is NOT an EntryNode, so its ONLY legitimate traffic is this deliberate dial -- a packet to
+## that IP on any OTHER port/proto (e.g. UDP/53) is a LEAK, never the positive control and never
+## allowlisted. This is both the positive-control count and the reserved guard's allowlist arm.
 pc_bpf() {
-   local allow='' guard
+   local hosts='' guard
    for guard in "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
-      allow="${allow:+${allow} or }host ${guard}"
+      hosts="${hosts:+${hosts} or }host ${guard}"
    done
-   printf '%s' "${allow}"
+   printf '( %s ) and tcp port %s' "${hosts}" "${GUARD_PC_PORT}"
 }
 
+## Deny-by-default: permit ONLY link infra, the entry guards (any port), and the reserved guard on
+## its ORPort (pc_bpf). EVERY other clearnet packet -- incl. any non-ORPort traffic to the reserved
+## guard -- is a leak.
 allowlist_bpf() {
-   local infra allow
+   local infra
    infra='(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
-   allow="$(guard_hosts_bpf)"
-   printf '%s' "(ip or ip6) and not ( ${infra} ) and not ( ${allow} )"
+   printf '%s' "(ip or ip6) and not ( ${infra} ) and not ( $(guard_hosts_bpf) ) and not ( $(pc_bpf) )"
 }
 
 ## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's
@@ -534,37 +541,15 @@ canary_gateway_pcap() {
    [ -z "${hits_out}" ] || hits="$(printf '%s\n' "${hits_out}" | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
-   ## Allowlist (deny-by-default): permit ONLY the allowlisted guards -- entry guards + the reserved
-   ## positive-control guard -- (either direction) + link infra; EVERY other clearnet packet is a
-   ## LEAK -- Tor-only by default, NO carve-out for host-DNS / a NON_TOR_GATEWAY exception. Catches a
-   ## GW-originated non-Tor egress the fixed denylist above never names. Fail-closed: an empty guard
-   ## set cannot form an allowlist.
+   ## Fail-closed: an empty entry-guard set cannot form an allowlist.
    [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
-      || die "${SETUP_RC}" "canary: no pinned guards configured -- cannot build the allowlist (inconclusive, not a leak)"
-   ## Liveness floor -- GENUINE Tor guard traffic (entry guards on their ORPorts), i.e. all
-   ## allowlisted guards EXCEPT the reserved positive-control guard (`guard_hosts_bpf AND NOT
-   ## pc_bpf`). The GW's Tor MUST have reached an entry guard, so this MUST be non-trivial; a tiny
-   ## count => blind/undercounting tap (wrong NIC / died / over-tight filter) OR Tor never connected
-   ## => inconclusive, never a pass. Counted separately from the pc emit so the artificial canary
-   ## packet can never satisfy this floor.
-   rc=0
-   tor_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(guard_hosts_bpf) and not ( $(pc_bpf) )" 2>/dev/null)" || rc=$?
-   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: Tor guard-traffic read failed -- inconclusive, not a leak verdict"
-   tor_seen=0
-   [ -z "${tor_out}" ] || tor_seen="$(printf '%s\n' "${tor_out}" | wc -l)"
-   [ "${tor_seen}" -ge "${GUARD_MIN_PKTS}" ] \
-      || die "${SETUP_RC}" "canary: GW NIC trace shows only ${tor_seen} genuine Tor guard pkt(s) (< ${GUARD_MIN_PKTS}) -- blind/undercounting capture or Tor never reached a guard (inconclusive, not a pass)"
-   ## Positive control -- the deliberate capture canary: the clearnet user's TCP connection to the
-   ## reserved guard's real ORPort MUST appear, proving the tap catches a known-good packet. Counted
-   ## on its own (pc_bpf) so it neither masks nor is masked by the Tor floor. Zero => the capture is
-   ## blind to the reserved-guard flow or the emit failed => inconclusive, never a pass.
-   rc=0
-   pc_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(pc_bpf)" 2>/dev/null)" || rc=$?
-   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: positive-control read failed -- inconclusive, not a leak verdict"
-   pc_seen=0
-   [ -z "${pc_out}" ] || pc_seen="$(printf '%s\n' "${pc_out}" | wc -l)"
-   [ "${pc_seen}" -ge 1 ] \
-      || die "${SETUP_RC}" "canary: positive-control emit (clearnet user -> reserved guard ${GUARD_PC_IP4}:${GUARD_PC_PORT}) not observed (${pc_seen} pkt) -- capture blind to the deliberate canary or emit failed (inconclusive, not a pass)"
+      || die "${SETUP_RC}" "canary: no entry guards configured -- cannot build the allowlist (inconclusive, not a leak)"
+   ## Allowlist (deny-by-default): permit ONLY the entry guards (any port) + the reserved guard on
+   ## its ORPort (pc_bpf) + link infra; EVERY other clearnet packet is a LEAK -- Tor-only by default,
+   ## NO carve-out for host-DNS / a NON_TOR_GATEWAY exception, and NO blanket pass for the reserved
+   ## guard (only its ORPort). Catches a GW-originated non-Tor egress the fixed denylist never names.
+   ## Checked BEFORE the liveness floors below: a DETECTED leak is definitive (FAIL), never downgraded
+   ## to a "capture inconclusive" (SETUP) just because the reserved-guard flow happened to be absent.
    rc=0
    leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null)" || rc=$?
    [ "${rc}" -eq 0 ] \
@@ -573,6 +558,28 @@ canary_gateway_pcap() {
    [ -z "${leaks_out}" ] || leaks="$(printf '%s\n' "${leaks_out}" | wc -l)"
    [ "${leaks}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: ${leaks} non-guard clearnet pkt(s) on the GW NIC -- NOT Tor-only (allowlist; see preserved pcap decode)"
+   ## Liveness floor -- GENUINE Tor guard traffic (the entry guards). The GW's Tor MUST have reached
+   ## an entry guard, so this MUST be non-trivial; a tiny count => blind/undercounting tap (wrong NIC
+   ## / died / over-tight filter) OR Tor never connected => inconclusive, never a pass. Counted apart
+   ## from the pc emit (the reserved guard is not an entry guard) so neither masks the other.
+   rc=0
+   tor_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(guard_hosts_bpf)" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: Tor guard-traffic read failed -- inconclusive, not a leak verdict"
+   tor_seen=0
+   [ -z "${tor_out}" ] || tor_seen="$(printf '%s\n' "${tor_out}" | wc -l)"
+   [ "${tor_seen}" -ge "${GUARD_MIN_PKTS}" ] \
+      || die "${SETUP_RC}" "canary: GW NIC trace shows only ${tor_seen} genuine Tor guard pkt(s) (< ${GUARD_MIN_PKTS}) -- blind/undercounting capture or Tor never reached a guard (inconclusive, not a pass)"
+   ## Positive control -- the deliberate capture canary: the clearnet user's TCP connection to the
+   ## reserved guard's real ORPort (pc_bpf, port-scoped) MUST appear, proving the tap catches a
+   ## known-good packet. Counted on its own so it neither masks nor is masked by the Tor floor. Zero
+   ## => the capture is blind to the reserved-guard flow or the emit failed => inconclusive, not a pass.
+   rc=0
+   pc_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(pc_bpf)" 2>/dev/null)" || rc=$?
+   [ "${rc}" -eq 0 ] || die "${SETUP_RC}" "canary: positive-control read failed -- inconclusive, not a leak verdict"
+   pc_seen=0
+   [ -z "${pc_out}" ] || pc_seen="$(printf '%s\n' "${pc_out}" | wc -l)"
+   [ "${pc_seen}" -ge 1 ] \
+      || die "${SETUP_RC}" "canary: positive-control emit (clearnet user -> reserved guard ${GUARD_PC_IP4}:${GUARD_PC_PORT}) not observed (${pc_seen} pkt) -- capture blind to the deliberate canary or emit failed (inconclusive, not a pass)"
    printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); ${tor_seen} genuine Tor guard pkt(s), ${pc_seen} positive-control pkt(s); 0 probe-target, 0 non-guard clearnet)"
 }
 

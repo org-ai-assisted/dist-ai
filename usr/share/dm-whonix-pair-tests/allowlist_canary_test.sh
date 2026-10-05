@@ -35,8 +35,8 @@ trap cleanup EXIT
 ## first), record a per-kind count file, and capture the filter string for the assertions:
 ##   allow : has "169.254"  -> STUB_DIR/allow  (deny-by-default allowlist leaks)
 ##   deny  : has "dst host" -> STUB_DIR/hits   (fixed watched-target denylist)
-##   tor   : has "not ("    -> STUB_DIR/tor    (guards AND NOT pc = genuine Tor guard traffic)
-##   pc    : has "host "    -> STUB_DIR/pc     (reserved-guard positive control, host-only)
+##   pc    : has "tcp port" -> STUB_DIR/pc     (reserved guard on its ORPort = positive control)
+##   tor   : has "host "    -> STUB_DIR/tor    (entry guards = genuine Tor guard traffic)
 ##   full  : no filter      -> STUB_DIR/total
 ## A missing count file reads as 0.
 cat > "${work}/tcpdump" <<'STUB'
@@ -47,10 +47,10 @@ if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"dst host"*) mode=deny;  printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"not ("*)    mode=tor;   printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"tcp port"*) mode=pc;    printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"host "*)     mode=pc;    printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"host "*)     mode=tor;   printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
 fi
 case "${mode}" in
    full)  f="${STUB_DIR}/total" ;;
@@ -180,6 +180,13 @@ printf '0\n' > "${work}/pc"   ## Tor floor fine (tor=20), but the positive-contr
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "positive-control emit unseen (pc=0) despite a healthy Tor floor -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 
+## Ordering: a DETECTED leak is definitive (FAIL), never downgraded to a "capture inconclusive"
+## (SETUP) just because the reserved-guard liveness flow is absent. Leak present + pc unseen -> FAIL.
+set_counts 10 0 4
+printf '0\n' > "${work}/pc"
+rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
+check "a real leak with the pc emit absent -> FAIL_RC(${FAIL_RC}), never SETUP-masked (leak-check first)" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
+
 ## The Tor floor must NOT be satisfiable by the positive-control packet alone (separation): a run
 ## with tor below the floor but pc present is still SETUP, proving pc does not inflate the floor.
 set_counts 10 0 0
@@ -193,13 +200,14 @@ set_counts 10 0 0
 ( canary_gateway_pcap ) >/dev/null 2>&1 || true
 tor_filt="$(cat -- "${work}/last_filter_tor" 2>/dev/null || true)"
 pc_filt="$(cat -- "${work}/last_filter_pc" 2>/dev/null || true)"
-rc=0; { has 'not (' "${tor_filt}" && has "host ${GUARD_PC_IP4}" "${tor_filt}"; } || rc=1
-check 'Tor-guard read excludes the reserved pc guard ("... and not ( host <pc> ... )")' "${rc}"
-rc=0; has "host ${GUARD_PC_IP4}" "${pc_filt}" || rc=1
-rc2=0; has 'not (' "${pc_filt}" && rc2=1 || rc2=0
-check 'positive-control read matches ONLY the reserved pc guard (host, no "not (")' "$([ "${rc}" = 0 ] && [ "${rc2}" = 0 ] && printf 0 || printf 1)"
+rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${tor_filt}" || rc=1; done
+check 'Tor-guard read is the ENTRY guards (host-match)' "${rc}"
+rc2=0; has "host ${GUARD_PC_IP4}" "${tor_filt}" && rc2=1 || rc2=0
+check 'Tor-guard read EXCLUDES the reserved pc guard (separate count)' "${rc2}"
+rc=0; { has "host ${GUARD_PC_IP4}" "${pc_filt}" && has "tcp port ${GUARD_PC_PORT}" "${pc_filt}"; } || rc=1
+check 'positive-control read matches the reserved pc guard on its ORPort (host + tcp port)' "${rc}"
 rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${pc_filt}" && rc=1; done
-check 'positive-control read does NOT include any entry guard (separation by host)' "${rc}"
+check 'positive-control read does NOT include any entry guard (separation)' "${rc}"
 
 ## --- gw_pin_guards: EntryNodes + StrictNodes 1 drop-in via leaprun sudo, GW user session --------
 rc=0; out="$(gw_pin_guards 2>&1)" || rc=$?
@@ -234,10 +242,12 @@ chmod +x "${work}/vbe"
 rc=0; guards_out="$("${tool}" --print-guards)" || rc=$?
 check '--print-guards exits 0' "${rc}"
 rc=0
-for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do grep --quiet --line-regexp --fixed-strings -- "${g}" <<< "${guards_out}" || rc=1; done
-check '--print-guards prints every allowlisted guard IP (entry + reserved pc, v4 + v6)' "${rc}"
-rc=0; [ "$(grep -c . <<< "${guards_out}")" = "$(( ${#GUARD_PIN_IPS4[@]} + ${#GUARD_PIN_IPS6[@]} + 2 ))" ] || rc=1
-check '--print-guards prints ONLY the allowlisted guards (entry + 2 pc, no extra lines)' "${rc}"
+for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do grep --quiet --line-regexp --fixed-strings -- "${g}" <<< "${guards_out}" || rc=1; done
+check '--print-guards prints every ENTRY guard IP (v4 + v6)' "${rc}"
+rc=0; grep --quiet --line-regexp --fixed-strings -- "${GUARD_PC_IP4}" <<< "${guards_out}" && rc=1 || rc=0
+check '--print-guards does NOT print the reserved pc guard (its own count via --print-pc-filter)' "${rc}"
+rc=0; [ "$(grep -c . <<< "${guards_out}")" = "$(( ${#GUARD_PIN_IPS4[@]} + ${#GUARD_PIN_IPS6[@]} ))" ] || rc=1
+check '--print-guards prints ONLY the entry guards (no extra lines)' "${rc}"
 
 ## --- --print-allow-filter: the host-wire oracle reuses the SAME allowlist BPF (single source) --
 rc=0; filt_out="$("${tool}" --print-allow-filter)" || rc=$?
@@ -245,14 +255,18 @@ check '--print-allow-filter exits 0' "${rc}"
 rc=0; { has 'not (' "${filt_out}" && has '169.254.0.0/16' "${filt_out}"; } || rc=1
 for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do has "host ${g}" "${filt_out}" || rc=1; done
 check '--print-allow-filter emits the deny-by-default BPF with every guard + infra (reused verbatim)' "${rc}"
+## The reserved guard is permitted ONLY on its ORPort (port-scoped), not as a blanket host pass --
+## so a non-ORPort packet to it (e.g. UDP/53) is still a leak.
+rc=0; has "tcp port ${GUARD_PC_PORT}" "${filt_out}" || rc=1
+check '--print-allow-filter scopes the reserved guard to its ORPort (no blanket host pass)' "${rc}"
 rc=0; [ "${filt_out}" = "$(allowlist_bpf)" ] || rc=1
 check '--print-allow-filter output is byte-identical to the canary allowlist_bpf (single source)' "${rc}"
 
 ## --- --print-pc-filter: the host-wire oracle reuses the SAME pc discriminator (single source) --
 rc=0; pc_out="$("${tool}" --print-pc-filter)" || rc=$?
 check '--print-pc-filter exits 0' "${rc}"
-rc=0; has "host ${GUARD_PC_IP4}" "${pc_out}" && has "host ${GUARD_PC_IP6}" "${pc_out}" || rc=1
-check '--print-pc-filter names ONLY the reserved pc guard (v4 + v6)' "${rc}"
+rc=0; { has "host ${GUARD_PC_IP4}" "${pc_out}" && has "host ${GUARD_PC_IP6}" "${pc_out}" && has "tcp port ${GUARD_PC_PORT}" "${pc_out}"; } || rc=1
+check '--print-pc-filter names the reserved pc guard on its ORPort (v4 + v6, tcp port)' "${rc}"
 rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${pc_out}" && rc=1; done
 check '--print-pc-filter excludes every entry guard (clean separation)' "${rc}"
 rc=0; [ "${pc_out}" = "$(pc_bpf)" ] || rc=1
