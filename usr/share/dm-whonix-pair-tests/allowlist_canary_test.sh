@@ -35,22 +35,23 @@ trap cleanup EXIT
 ## first), record a per-kind count file, and capture the filter string for the assertions:
 ##   allow : has "169.254"  -> STUB_DIR/allow  (deny-by-default allowlist leaks)
 ##   deny  : has "dst host" -> STUB_DIR/hits   (fixed watched-target denylist)
-##   pc    : has "tcp port" -> STUB_DIR/pc     (reserved guard on its ORPort = positive control)
-##   tor   : has "host "    -> STUB_DIR/tor    (entry guards = genuine Tor guard traffic)
-##   full  : no filter      -> STUB_DIR/total
+##   pc    : has "tcp dst port" -> STUB_DIR/pc (reserved guard on its ORPort = positive control)
+##   tor   : has "host "        -> STUB_DIR/tor (entry guards = genuine Tor guard traffic)
+##   full  : no filter          -> STUB_DIR/total
+## pc is matched BEFORE deny because pc_bpf also contains "dst host" (its dst-scoped ORPort clause).
 ## A missing count file reads as 0.
 cat > "${work}/tcpdump" <<'STUB'
 #!/bin/bash
 mode=full
-for a in "$@"; do case "$a" in *"169.254"*)  mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
+for a in "$@"; do case "$a" in *"169.254"*)     mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"dst host"*) mode=deny;  printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"tcp dst port"*) mode=pc;   printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"tcp port"*) mode=pc;    printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"dst host"*)     mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"host "*)     mode=tor;   printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"host "*)         mode=tor;  printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
 fi
 case "${mode}" in
    full)  f="${STUB_DIR}/total" ;;
@@ -204,7 +205,7 @@ rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${tor_filt}" || rc=1;
 check 'Tor-guard read is the ENTRY guards (host-match)' "${rc}"
 rc2=0; has "host ${GUARD_PC_IP4}" "${tor_filt}" && rc2=1 || rc2=0
 check 'Tor-guard read EXCLUDES the reserved pc guard (separate count)' "${rc2}"
-rc=0; { has "host ${GUARD_PC_IP4}" "${pc_filt}" && has "tcp port ${GUARD_PC_PORT}" "${pc_filt}"; } || rc=1
+rc=0; { has "host ${GUARD_PC_IP4}" "${pc_filt}" && has "tcp dst port ${GUARD_PC_PORT}" "${pc_filt}"; } || rc=1
 check 'positive-control read matches the reserved pc guard on its ORPort (host + tcp port)' "${rc}"
 rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${pc_filt}" && rc=1; done
 check 'positive-control read does NOT include any entry guard (separation)' "${rc}"
@@ -257,7 +258,7 @@ for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}" "${GUARD_PC_IP4}" "${GUAR
 check '--print-allow-filter emits the deny-by-default BPF with every guard + infra (reused verbatim)' "${rc}"
 ## The reserved guard is permitted ONLY on its ORPort (port-scoped), not as a blanket host pass --
 ## so a non-ORPort packet to it (e.g. UDP/53) is still a leak.
-rc=0; has "tcp port ${GUARD_PC_PORT}" "${filt_out}" || rc=1
+rc=0; has "tcp dst port ${GUARD_PC_PORT}" "${filt_out}" || rc=1
 check '--print-allow-filter scopes the reserved guard to its ORPort (no blanket host pass)' "${rc}"
 rc=0; [ "${filt_out}" = "$(allowlist_bpf)" ] || rc=1
 check '--print-allow-filter output is byte-identical to the canary allowlist_bpf (single source)' "${rc}"
@@ -265,7 +266,7 @@ check '--print-allow-filter output is byte-identical to the canary allowlist_bpf
 ## --- --print-pc-filter: the host-wire oracle reuses the SAME pc discriminator (single source) --
 rc=0; pc_out="$("${tool}" --print-pc-filter)" || rc=$?
 check '--print-pc-filter exits 0' "${rc}"
-rc=0; { has "host ${GUARD_PC_IP4}" "${pc_out}" && has "host ${GUARD_PC_IP6}" "${pc_out}" && has "tcp port ${GUARD_PC_PORT}" "${pc_out}"; } || rc=1
+rc=0; { has "host ${GUARD_PC_IP4}" "${pc_out}" && has "host ${GUARD_PC_IP6}" "${pc_out}" && has "tcp dst port ${GUARD_PC_PORT}" "${pc_out}"; } || rc=1
 check '--print-pc-filter names the reserved pc guard on its ORPort (v4 + v6, tcp port)' "${rc}"
 rc=0; for g in "${GUARD_PIN_IPS4[@]}"; do has "host ${g}" "${pc_out}" && rc=1; done
 check '--print-pc-filter excludes every entry guard (clean separation)' "${rc}"

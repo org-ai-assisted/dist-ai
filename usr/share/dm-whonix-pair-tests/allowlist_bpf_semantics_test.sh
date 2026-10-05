@@ -120,6 +120,11 @@ check 'TCP to the reserved pc guard ORPort is allowed'         "10.0.2.15,${GUAR
 ## The reserved guard is NOT an EntryNode -- allowed ONLY on its ORPort over TCP. Anything else is a LEAK:
 check 'TCP to the reserved pc guard on a NON-ORPort is a LEAK'  "10.0.2.15,${GUARD_PC_IP4},40000,53,tcp" 1
 check 'UDP to the reserved pc guard (even on the ORPort) is a LEAK' "10.0.2.15,${GUARD_PC_IP4},40000,${GUARD_PC_PORT},udp" 1
+## The pc guard's REPLY (src=guard:ORPort -> local) must be allowed (dst-only scoping would flag it).
+check 'reply FROM the reserved pc guard ORPort is allowed'     "${GUARD_PC_IP4},10.0.2.15,${GUARD_PC_PORT},40000,tcp" 0
+## Port-scoped to the GUARD side: a packet whose OTHER endpoint uses 9100 (guard not on the ORPort
+## side) is a LEAK -- the bare either-side `tcp port` would have wrongly allowed it.
+check 'ORPort on the NON-guard side (to the pc guard) is a LEAK' "8.8.8.8,${GUARD_PC_IP4},${GUARD_PC_PORT},40000,tcp" 1
 check 'real multicast 224.0.0.0/4 destination is allowed'      "10.0.2.15,224.0.0.251,5353,5353" 0
 check 'link-local DESTINATION (not routed off-link) is allowed' "10.0.2.15,169.254.169.254,40000,80" 0
 

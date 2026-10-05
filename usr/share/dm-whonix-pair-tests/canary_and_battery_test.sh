@@ -31,10 +31,11 @@ trap cleanup EXIT
 ## Stub tcpdump, five filter kinds (canary runs the denylist, the Tor-guard read, the pc read, and
 ## the allowlist read), classified by filter text (most specific first):
 ##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow.
+##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp dst port" -> emit STUB_DIR/pc.
 ##   - DENYLIST (watched targets)  -> has "dst host", no 169.254 -> emit STUB_DIR/hits.
-##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp port" -> emit STUB_DIR/pc.
 ##   - TOR GUARD (entry guards) -> has "host " -> emit STUB_DIR/tor.
 ##   - full read (no filter) -> emit STUB_DIR/total.
+## pc is matched BEFORE deny because pc_bpf also contains "dst host" (its dst-scoped ORPort clause).
 ## A missing count file reads as 0. Counts come from FILES (not subshell env) so canary can run in
 ## a die-catching subshell cleanly.
 cat > "${work}/tcpdump" <<'STUB'
@@ -42,10 +43,10 @@ cat > "${work}/tcpdump" <<'STUB'
 mode=full
 for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"tcp dst port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"tcp port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"host "*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done

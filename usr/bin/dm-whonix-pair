@@ -499,11 +499,18 @@ guard_hosts_bpf() {
 ## that IP on any OTHER port/proto (e.g. UDP/53) is a LEAK, never the positive control and never
 ## allowlisted. This is both the positive-control count and the reserved guard's allowlist arm.
 pc_bpf() {
-   local hosts='' guard
+   local dsthosts='' srchosts='' guard
    for guard in "${GUARD_PC_IP4}" "${GUARD_PC_IP6}"; do
-      hosts="${hosts:+${hosts} or }host ${guard}"
+      dsthosts="${dsthosts:+${dsthosts} or }dst host ${guard}"
+      srchosts="${srchosts:+${srchosts} or }src host ${guard}"
    done
-   printf '( %s ) and tcp port %s' "${hosts}" "${GUARD_PC_PORT}"
+   ## Match ONLY the legit flow: the GW dials OUT to the reserved guard's ORPort (dst side) and its
+   ## reply comes back FROM that ORPort (src side). Scope the ORPort to the reserved-guard side
+   ## (not a bare `tcp port`, which also matches a packet whose OTHER endpoint happens to use 9100)
+   ## so the allowlist exempts nothing beyond this one connection + its reply. A dst-only match would
+   ## wrongly flag the reply (src=guard:9100 -> local:ephemeral) as a leak.
+   printf '(tcp dst port %s and ( %s )) or (tcp src port %s and ( %s ))' \
+      "${GUARD_PC_PORT}" "${dsthosts}" "${GUARD_PC_PORT}" "${srchosts}"
 }
 
 ## Deny-by-default: permit ONLY link infra, the entry guards (any port), and the reserved guard on
@@ -585,6 +592,17 @@ canary_gateway_pcap() {
 
 main() {
    parse_args "$@"
+   ## Self-lock AFTER parse_args, so informational flags (--print-guards/-filter, --help) that
+   ## exit in parse_args never take a VM lock. A leak test is mutually exclusive with ALL
+   ## other VM work on the shared OVH server (foreign VM traffic confounds a leak measurement;
+   ## the fleet VMs collide). Re-exec under dm-vm-lock (class=leak, EXCLUSIVE) so the mutex is
+   ## acquired INSIDE the script and cannot be bypassed; the re-exec'd run sees DM_VM_LOCK_HELD
+   ## and runs through (staging below then happens once, under the lock). Fail-closed: a
+   ## missing dm-vm-lock aborts rather than running a leak test unlocked.
+   if [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+      ## style-ok: R-103 -- intentional re-exec: run this leak test under the VM-work lock.
+      exec dm-vm-lock acquire --class leak --ttl "${DM_WHONIX_PAIR_LOCK_TTL:-2400}" -- "$0" "$@"
+   fi
    [ -x "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" ] \
       || die "${SETUP_RC}" "anon-leak-test checkout not found at ${ANON_LEAK_TEST_REPO} (set ANON_LEAK_TEST_REPO)"
    [ -r "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-inject" ] \
