@@ -6666,12 +6666,12 @@ ok(_psv_after == _psv_before,
    '#16: a shell shrink+grow round trip preserves the full display (no vanished output)')
 _psv.shutdown()
 
-# #16: a PROGRAM-managed canvas -- a full-screen app in the NORMAL buffer that draws content
-# BELOW the cursor (a status/hint line) and repaints on the SIGWINCH, e.g. Claude Code. There
-# is NO reliable signal at resize time to tell it from a shell, so a primary-screen shrink
-# ALWAYS preserves the clipped top rows -- the deliberate no-data-loss trade-off: it costs
-# such a program cosmetic duplicate scrollback (which scrolls away) rather than risk dropping
-# a shell's unrecoverable output.
+# #16: canonical height shrink (xterm ScreenResize / alacritty shrink_lines / VTE
+# screen_set_size) -- ANCHOR THE CURSOR: exactly max(0, cursor.y+1 - new_rows) TOP rows scroll
+# into history, and the caret follows its content up by that count. Rows BELOW the cursor drop
+# from the bottom (the program repaints them on SIGWINCH). A full-screen primary app and a
+# shell take the SAME path -- there is no content heuristic. Here the caret sits near the
+# bottom, so the shrink pushes it off and some rows must scroll off the top.
 _pcv = SecureTerminal(command='/bin/cat', tui=True)
 _pcv.resize(700, 400)
 _pcv.show()
@@ -6680,68 +6680,71 @@ _pcv_n = _pcv._screen.lines
 _pcv._stream.feed(b'\x1b[2J')
 for _r in range(1, _pcv_n + 1):
     _pcv._stream.feed(('\x1b[%d;1Hrow%02d' % (_r, _r)).encode())    # content on EVERY row
-_pcv._stream.feed(('\x1b[%d;1H' % max(1, _pcv_n - 4)).encode())     # caret ABOVE the last rows
+_pcv._stream.feed(('\x1b[%d;1H' % (_pcv_n - 4)).encode())          # caret near the bottom
+_pcv._render_tui()
+pump(20)
 _pcv_top0 = len(_pcv._screen.history.top)
+_pcv_cy = _pcv._screen.cursor.y
 _pcv_small = max(3, _pcv_n // 2)
+_pcv_scroll = max(0, (_pcv_cy + 1) - _pcv_small)
+ok(_pcv_scroll > 0, '#16 setup: the shrink pushes the caret off, so rows must scroll off the top')
 _pcv._tui_grid_size = lambda: (_pcv._screen.columns, _pcv_small)
 _pcv._sync_tui_size()
-eq(len(_pcv._screen.history.top), _pcv_top0 + (_pcv_n - _pcv_small),
-   '#16: a primary-screen shrink preserves the clipped top rows even for a canvas (no data loss)')
+eq(len(_pcv._screen.history.top), _pcv_top0 + _pcv_scroll,
+   '#16: a shrink scrolls exactly max(0, cursor+1 - new_rows) top rows into history')
+eq(_pcv._screen.cursor.y, max(0, _pcv_cy - _pcv_scroll),
+   '#16: the caret follows its content up by the scrolled-off count (not stranded)')
 _pcv.shutdown()
 
-# #16: a shell with the cursor moved UP (Left-Arrow / Alt-B) so it sits MID-grid above
-# still-drawn content (editing a multi-line command). A shrink preserves the clipped top rows
-# -- the data (output + command) must survive, even though the caret is mid-grid rather than on
-# the last row. (Cursor re-homing for a mid-grid caret is left to the shell's SIGWINCH redraw;
-# see resize_preserving_scrollback -- no blanket shift is safe across all screens.)
-_pwv = SecureTerminal(command='/bin/cat', tui=True)
-_pwv.resize(700, 400)
-_pwv.show()
+# #16: a shrink that STILL FITS the cursor scrolls NOTHING into history -- the content above
+# stays in the live grid, nothing is lost, and a no-scrollback full-screen frame does not
+# gain a scrollbar. This is the key NO-REGRESSION property: a small transient shrink (the
+# review bar opening) must not manufacture scrollback for a primary-buffer full-screen app
+# (e.g. Claude Code). (The fixed-canvas RENDERING under this is asserted in test_widget2.)
+_pfit = SecureTerminal(command='/bin/cat', tui=True)
+_pfit.resize(700, 400)
+_pfit.show()
 pump(40)
-_pwv_cols = _pwv._screen.columns
-feed_output(_pwv, b'out A\r\nout B\r\n')                     # real output on the top rows
-feed_output(_pwv, b'cmd ' + b'a' * (2 * _pwv_cols))         # a command that wraps 3 rows
-feed_output(_pwv, b'\x1b[A\x1b[A')                          # cursor UP, mid-grid
-_pwv._render_tui()
+_pfit_n = _pfit._screen.lines
+_pfit._stream.feed(b'\x1b[2J\x1b[1;1Hout A\x1b[2;1Hout B\x1b[3;1H$ cmd here\x1b[3;7H')  # caret row 2
+_pfit._render_tui()
 pump(20)
-_pwv_n = _pwv._screen.lines
-ok(_pwv._screen.cursor.y < max(
-    (_y for _y in range(_pwv_n)
-     if any(_c.data != ' ' for _c in _pwv._screen.buffer[_y].values())), default=-1),
-   '#16: precondition -- the cursor sits ABOVE still-drawn content')
-_pwv_top0 = len(_pwv._screen.history.top)
-_pwv_small = max(3, _pwv_n // 2)
-_pwv._tui_grid_size = lambda: (_pwv._screen.columns, _pwv_small)
-_pwv._sync_tui_size()                                       # SHRINK (review bar opening)
-ok(len(_pwv._screen.history.top) > _pwv_top0,
-   '#16: a mid-grid-cursor shrink preserves the top rows to scrollback')
-# Content survives, not merely "scrollback grew": every output line and the wrapped command
-# must still be present across the preserved history rows plus the live grid.
-_pwv_retained = '\n'.join(
-    [''.join(_r[_x].data for _x in sorted(_r)).rstrip()
-     for _r in list(_pwv._screen.history.top)]
-    + [_l.rstrip() for _l in _pwv._screen.display])
-ok('out A' in _pwv_retained and 'out B' in _pwv_retained and 'cmd ' in _pwv_retained,
-   '#16: the shrink preserves ALL content (every output line and the wrapped command)')
-_pwv.shutdown()
+_pfit_top0 = len(_pfit._screen.history.top)
+_pfit_small = max(5, _pfit_n - 2)                            # shrink by 2; the caret (row 2) fits
+_pfit._tui_grid_size = lambda: (_pfit._screen.columns, _pfit_small)
+_pfit._sync_tui_size()
+eq(len(_pfit._screen.history.top), _pfit_top0,
+   '#16: a cursor-fits shrink scrolls nothing into history (no manufactured scrollback)')
+_pfit_grid = '\n'.join(
+    ''.join((_pfit._screen.buffer[_y].get(_x).data if _pfit._screen.buffer[_y].get(_x) else ' ')
+            for _x in range(_pfit._screen.columns))
+    for _y in range(_pfit._screen.lines))
+ok('out A' in _pfit_grid and 'out B' in _pfit_grid and '$ cmd here' in _pfit_grid,
+   '#16: the content above the cursor stays in the live grid (no data loss)')
+_pfit.shutdown()
 
-# #16: a row that is BLANK text but visibly STYLED (a reverse-video / coloured status bar of
-# spaces) is real content -- it must be preserved on a shrink, not treated as a trailing blank
-# and dropped. Regression for the `c.data != ' '` content test ignoring styled spaces.
-_pss = SecureTerminal(command='/bin/cat', tui=True)
-_pss.resize(700, 400)
-_pss.show()
+# #16: a shrink that narrows the WIDTH as well exercises the canonical shrink's column
+# truncation -- cells past the new width are dropped while the kept rows still scroll into
+# history. (A diagonal window resize hits both dimensions at once.)
+_pcw = SecureTerminal(command='/bin/cat', tui=True)
+_pcw.resize(700, 400)
+_pcw.show()
 pump(40)
-_pss_n = _pss._screen.lines
-_pss._stream.feed(b'\x1b[2J\x1b[1;1HTOP LINE\x1b[2;1H\x1b[7m' + b' ' * 8 + b'\x1b[0m')
-_pss_top0 = len(_pss._screen.history.top)
-_pss._tui_grid_size = lambda: (_pss._screen.columns, max(3, _pss_n // 2))
-_pss._sync_tui_size()                                       # SHRINK
-_pss_hist = [_r for _r in list(_pss._screen.history.top)]
-ok(any(any(getattr(_c, 'reverse', False) for _c in _r.values()) for _r in _pss_hist),
-   '#16: a reverse-video (styled-space) status row is preserved to scrollback, not dropped')
-_pss.shutdown()
-_pwv.shutdown()
+_pcw_n = _pcw._screen.lines
+feed_output(_pcw, b''.join(('line%02d_WIDEWIDEWIDE\r\n' % _i).encode()
+                           for _i in range(_pcw_n + 2)) + b'$ ')   # fill: bottom-anchored caret
+_pcw._render_tui()
+pump(20)
+_pcw_top0 = len(_pcw._screen.history.top)
+_pcw._tui_grid_size = lambda: (10, max(3, _pcw_n // 2))            # narrower AND shorter
+_pcw._sync_tui_size()
+eq(_pcw._screen.columns, 10, '#16: a combined height+width shrink applies the new width')
+ok(len(_pcw._screen.history.top) > _pcw_top0,
+   '#16: a combined shrink still scrolls the clipped top rows into history')
+ok(all(max(_pcw._screen.buffer[_y].keys(), default=-1) < 10
+       for _y in range(_pcw._screen.lines)),
+   '#16: the canonical shrink truncates kept-row cells past the new width')
+_pcw.shutdown()
 
 # #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
 # resize of an unused screen adds none).
@@ -6806,7 +6809,7 @@ _plk.resize(700, 400)
 _plk.show()
 pump(40)
 _plk_n = _plk._screen.lines
-feed_output(_plk, (('shell-line\r\n' * 5) + '$ ').encode())      # shell content + a prompt
+feed_output(_plk, (('shell-line\r\n' * _plk_n) + '$ ').encode())  # fill to a BOTTOM-anchored prompt
 feed_output(_plk, b'\x1b[?1049h')                                # a full-screen program: enter alt
 feed_output(_plk, ('\x1b[2;%dr' % (_plk_n - 1)).encode())        # ...sets a DECSTBM region
 feed_output(_plk, b'\x1b[?1049l')                                # ...and leaves WITHOUT resetting it
@@ -6816,7 +6819,8 @@ _plk_top0 = len(_plk._screen.history.top)
 _plk._tui_grid_size = lambda: (_plk._screen.columns, max(3, _plk_n // 2))
 _plk._sync_tui_size()
 ok(len(_plk._screen.history.top) > _plk_top0,
-   '#16: after an alt program leaks a region and leaves, the shell shrink still preserves')
+   '#16: after an alt program leaks a region and leaves, the shell shrink still preserves '
+   '(the restored margins==None re-enables the canonical bottom-anchored shrink)')
 _plk.shutdown()
 
 # #16 (ai-review): a resize DURING the alt session that shrinks the screen below the saved

@@ -252,11 +252,19 @@ DONE (LIVE `dm-whonix-pair`, not this netns suite):
   (read verbatim via `dm-whonix-pair --print-allow-filter`) to a RAW capture of the host's
   physical NIC, catching egress a per-uid rule or the guest-NIC tap could miss.
 
+DONE (app/browser layer, LANDED -- live-drive tuned at the live run):
+
+- WebRTC/STUN local-IP exposure + doileak exit-IP: the opt-in `browser-webrtc` anon-leak-test
+  probe (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS browser headless through a staged harness and
+  asserts WebRTC exposes NO host-identifying address (only the WS internal net / mDNS / loopback)
+  AND the browser's exit is Tor. Pure classifier unit-tested + canaried; fail-closed to SETUP if
+  no browser. Live-only pieces (which WS account/session, the Tor Browser path via
+  ANON_LEAK_BROWSER, a display) are tuned at the live run.
+
 OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 
-- Application / browser layer: WebRTC/STUN local-IP exposure, DNS prefetch, non-torified WS
-  apps (apt/ping launched without proxy), doileak/ipleak -- the WS torification guarantee.
-  Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser), opt-in `DM_WHONIX_PAIR_BROWSER=1`.
+- Non-torified WS apps (apt/ping launched without a proxy) + DNS-prefetch -- not yet a probe
+  (the gateway-craft + GW/host-NIC allowlists already catch the resulting clearnet egress).
 - Bridge lane: `EntryNodes` is mutually exclusive with bridges, so the pinned-guard allowlist
   cannot cover a bridge config. A separate lane would allow the configured bridge IPs instead.
 - nftables allowlist ENFORCEMENT: convert the host `ai_server_fw` OUTPUT fleet-uid rule from a
