@@ -578,23 +578,40 @@ else
    pass 'option forwarding: a range-consuming option trails the already-bound range (no silent empty-diff bypass)'
 fi
 
-## 18) No-regression: a forwarded option with a SEPARATE operand (e.g.
-## '--stat-width 120') must be forwarded verbatim, operand and all -- not
-## rejected as a stray non-dash argument. Guards against reinstating a naive
-## "every forwarded token must start with '-'" check, which breaks valid 'git
-## diff' syntax that real git accepts. Assert both tokens reach git-meld after
-## the range, and the review completes (exit 0).
+## 18) SECURITY: a BARE (non-dash) forwarded argument is rejected up front. git
+## would read it as an extra revision, or -- if it matches a path -- as a
+## PATHSPEC, filtering the displayed diff to that path (empty when it did not
+## change in the range): a silently-successful review omitting every scanned
+## change. Only attached-value options (--opt=value) are safe to forward. Canary:
+## range-first alone does NOT catch a path-like bare token -- git treats it as a
+## pathspec and exits 0 empty -- so this up-front rejection is the closing guard.
+bare_out="${work}/bare-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch other-ref feature ) </dev/null >"${bare_out}" 2>&1 || rc="$?"
+if [ "${rc}" != 2 ]; then
+   fail "a bare forwarded argument must be rejected (die 2), got ${rc}"
+elif ! grep --fixed-strings --quiet -- 'must be a git-diff option in attached-value form' "${bare_out}"; then
+   fail "a bare forwarded argument was not rejected with the attached-value-form message"
+else
+   pass 'option forwarding: a bare (non-dash) argument is rejected up front (no pathspec/extra-revision empty-review bypass)'
+fi
+
+## 19) No-regression: a forwarded option in ATTACHED-value form (--stat-width=120)
+## is forwarded verbatim after the range, and the review completes. Real git
+## accepts the attached form, so the attached-value requirement (case 18) costs
+## no capability -- it only forbids the space-separated spelling whose bare value
+## is indistinguishable from a pathspec. Guards against over-rejecting a valid option.
 rc=0
 ( cd -- "${repo}" \
-   && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --stat-width 120 feature ) \
+   && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --stat-width=120 feature ) \
    </dev/null >/dev/null 2>&1 || rc="$?"
 opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
 if [ "${rc}" != 0 ]; then
-   fail "separate-operand option: 'dm-review-branch --stat-width 120 feature' should exit 0, got ${rc}"
-elif [ "${opt_args}" != "[${opt_base}..${feature_sha_opt}][--stat-width][120]" ]; then
-   fail "separate-operand option: git-meld argv '${opt_args}', want '[${opt_base}..${feature_sha_opt}][--stat-width][120]' (operand forwarded, not rejected)"
+   fail "attached-value option: 'dm-review-branch --stat-width=120 feature' should exit 0, got ${rc}"
+elif [ "${opt_args}" != "[${opt_base}..${feature_sha_opt}][--stat-width=120]" ]; then
+   fail "attached-value option: git-meld argv '${opt_args}', want '[${opt_base}..${feature_sha_opt}][--stat-width=120]' (attached value forwarded verbatim)"
 else
-   pass 'option forwarding: a separate-operand option is forwarded verbatim, after the range (no naive non-dash rejection)'
+   pass 'option forwarding: an attached-value option is forwarded verbatim after the range (attached form not over-rejected)'
 fi
 
 if [ "${fail_count}" -gt 0 ]; then
