@@ -6871,6 +6871,35 @@ eq(''.join(_pke._screen.buffer[5][_x].data for _x in range(3)), 'foo',
    '#16: the write outside the inherited region lands at its true row (no misplacement)')
 _pke.shutdown()
 
+# #16 (ai-review): a window resize DURING the alt session must reconcile the restored primary
+# to the CURRENT size on leave. _alt_leave restores the ENTRY-size snapshot; without replaying
+# the resize the restored cursor (and the shell prompt) is stranded off a shrunk screen -- the
+# next linefeed clamps and new output lands mid-screen, disconnected from the prompt. The replay
+# scrolls the excess top rows into scrollback (the xterm-rule shrink) so the prompt stays at the
+# grid bottom and the next command connects to it.
+_prz = SecureTerminal(command='/bin/cat', tui=True)
+_prz.resize(900, 700)
+_prz.show()
+pump(40)
+_prz_n = _prz._screen.lines
+ok(_prz_n > 12, '#16 setup: grid tall enough to shrink to 10 and observe the reconcile')
+feed_output(_prz, ('\x1b[%d;1Hprompt$ ' % _prz_n).encode())   # shell prompt at the BOTTOM row
+feed_output(_prz, b'\x1b[?1049h')                             # a full-screen program enters alt
+_prz._tui_grid_size = lambda: (_prz._screen.columns, 10)      # ...the window shrinks to 10 rows
+_prz._sync_tui_size()
+_prz_hist0 = len(_prz._screen.history.top)
+feed_output(_prz, b'\x1b[?1049l')                             # ...and the program leaves alt
+eq(_prz._screen.cursor.y, _prz._screen.lines - 1,
+   '#16: alt-leave reconciles the restored cursor to the shrunk grid bottom (not stranded '
+   'off-screen at the entry row)')
+ok(max(_prz._screen.buffer) <= _prz._screen.lines - 1,
+   '#16: alt-leave reconciles the restored buffer to the shrunk size (no rows off the grid)')
+ok(len(_prz._screen.history.top) > _prz_hist0,
+   '#16: the reconcile preserves the clipped primary rows into scrollback (not destroyed)')
+eq(''.join(_prz._screen.buffer[_prz._screen.cursor.y][_x].data for _x in range(7)), 'prompt$',
+   '#16: the restored shell prompt stays visible at the reconciled grid bottom')
+_prz.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
