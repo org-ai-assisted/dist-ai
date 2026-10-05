@@ -557,6 +557,27 @@ else
    pass "option forwarding: a bare '--' (pathspec separator) is rejected, not silently forwarded"
 fi
 
+## 17) A BARE (non-dash) arg among the options is rejected. Forwarded args are
+## git-diff OPTIONS; the ref/range is always the LAST arg. 'dm-review-branch
+## other-ref feature' would send 'other-ref' to 'git diff' as a SECOND revision,
+## widening the diff to commits check-ref-commits-for-unicode never scanned --
+## defeating the up-front scan contract. 'other-ref' is a real branch so the
+## pre-fix path would genuinely feed git diff a second revision. Regression
+## guard: the loop once rejected only '--', so this exited 0 (the diff ran);
+## it must now fail closed up front.
+git -C "${repo}" branch -- other-ref master
+bare_out="${work}/bare-arg-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch other-ref feature ) </dev/null >"${bare_out}" 2>&1 || rc="$?"
+git -C "${repo}" branch --delete --force -- other-ref >/dev/null 2>&1 || true
+if [ "${rc}" = 0 ]; then
+   fail "a bare non-dash forwarded arg should be rejected, but dm-review-branch exited 0"
+elif ! grep --fixed-strings --quiet -- 'must be a git-diff option starting with' "${bare_out}"; then
+   fail "a bare non-dash forwarded arg was not rejected with a clear message"
+else
+   pass "option forwarding: a bare non-dash arg (extra revision/pathspec) is rejected, not silently forwarded"
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
