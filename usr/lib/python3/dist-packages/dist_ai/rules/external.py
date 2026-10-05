@@ -17,7 +17,6 @@ import contextlib
 import json
 import math
 import os
-import re
 import subprocess
 import tempfile
 
@@ -432,82 +431,30 @@ def _render_shellcheck(path, comments):
     return "\n".join(lines)
 
 
-## SC2034 (assigned, never used) and SC2154 (used, never assigned) are following-
-## DEPENDENT only for a variable SHARED across a 'source' boundary -- a global set here
-## and read in a sourced file, or vice versa. In the degraded no-follow fallback
-## shellcheck cannot see the sourced file, so it FALSE-flags such a global (e.g.
-## systemcheck's ICON/IDENTIFIER, set in the entrypoint and read by its sourced
-## fragments). A variable NOT shared with any sourced file -- a genuine typo or an
-## unused local -- is a REAL finding that must still fail the gate even in the fallback
-## (dropping it would go GREEN on a script that aborts under 'set -o nounset'). So the
-## fallback drops SC2034/SC2154 ONLY for a name that appears in a directly-sourced file,
-## and SC1091 unconditionally (it is never a real bug, just "could not follow").
-_SC2034_VAR_RE = re.compile(r"^(\w+) appears unused")
-_SC2154_VAR_RE = re.compile(r"^(\w+) is referenced but not assigned")
-_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SHELLCHECK_SOURCE_DIRECTIVE_RE = re.compile(r"#\s*shellcheck\s+source=(\S+)")
-_SOURCE_STMT_RE = re.compile(r"(?m)^[ \t]*(?:source|\.)[ \t]+(\S+)")
+## SC2034 (assigned, never used) and SC2154 (used, never assigned) are reliable ONLY
+## when shellcheck can follow 'source'. In the degraded no-follow fallback a global
+## SHARED across a source boundary (set here, read in a sourced file, or vice versa) is
+## FALSE-flagged (e.g. systemcheck's ICON/IDENTIFIER). We cannot tell such a false
+## positive from a genuine in-file typo without following the (transitively) sourced
+## files -- exactly the work that exploded. Heuristically re-deriving it from the
+## sourced files' text is a bash parser that lies in BOTH directions (a name in a
+## comment/string excuses a real bug; a quoted/transitive/space path misses a real use),
+## so per the "never reinvent a bash parser -> NOTIFY-only" rule the fallback does NOT
+## gate on SC2034/SC2154: it surfaces them as a VISIBLE ADVISORY note (not silently
+## dropped, so no silent green; not a hard fail, so a load-induced degrade of a valid
+## large file is not blocked). SC1091 is still dropped unconditionally (never a real bug,
+## just "could not follow").
+_FOLLOW_DEPENDENT_VAR_CODES = frozenset({2034, 2154})
 
 
-def _followup_var_name(comment):
-    """The variable name an SC2034/SC2154 comment is about, or None when it is neither
-    code or the message does not parse (an unparseable name KEEPS the finding -- never a
-    silent drop)."""
-    code = comment.get("code")
-    message = comment.get("message", "")
-    if code == 2034:
-        match = _SC2034_VAR_RE.match(message)
-    elif code == 2154:
-        match = _SC2154_VAR_RE.match(message)
-    else:
-        return None
-    return match.group(1) if match else None
-
-
-def _sourced_file_identifiers(path, src_dir):
-    """Identifier tokens in the files the script at PATH sources DIRECTLY (named by a
-    '# shellcheck source=' directive or a literal 'source'/'.' argument), resolved
-    against SRC_DIR then the script's own directory. Depth 1 only -- NOT the transitive
-    follow the fallback exists to avoid. A target holding a variable or that does not
-    resolve is skipped; worst case a genuinely shared global goes unrecognized and its
-    SC2034/SC2154 is KEPT (a false RED in the degrade, never a silent green)."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
-    except OSError:
-        return frozenset()
-    targets = set()
-    for match in _SHELLCHECK_SOURCE_DIRECTIVE_RE.finditer(text):
-        targets.add(match.group(1))
-    for match in _SOURCE_STMT_RE.finditer(text):
-        targets.add(match.group(1).strip("\"'"))
-    names = set()
-    file_dir = os.path.dirname(os.path.abspath(path))
-    for target in targets:
-        if "$" in target or target in ("", "/dev/null"):
-            continue
-        for base in (src_dir, file_dir):
-            cand = target if os.path.isabs(target) else os.path.join(base, target)
-            cand = os.path.normpath(cand)
-            if os.path.isfile(cand):
-                try:
-                    with open(cand, encoding="utf-8", errors="replace") as handle:
-                        names.update(_IDENT_RE.findall(handle.read()))
-                except OSError:
-                    pass
-                break
-    return names
-
-
-def _emit_shellcheck(ctx, proc, src_dir, no_follow, sourced_names=frozenset()):
+def _emit_shellcheck(ctx, proc, src_dir, no_follow):
     """Turn a finished shellcheck PROC into model events. no_follow is the degraded
-    (no-following) path: SC1091 'not following' is dropped unconditionally (the forced
-    consequence of disabling the follow, identical to the absent-sibling drop), and
-    SC2034/SC2154 are dropped ONLY for a variable in SOURCED_NAMES (shared with a
-    directly-sourced file -> a cross-file false positive); an in-file SC2034/SC2154
-    stays REAL and fails the gate. Every other finding stays real. The normal path
-    drops only the SC1091 of a genuinely absent helper-scripts sibling (see
-    _is_absent_helper_scripts_source)."""
+    (no-following) path: SC1091 'not following' is dropped (the forced consequence of
+    disabling the follow, identical to the absent-sibling drop); SC2034/SC2154 cannot be
+    verified across 'source' boundaries without the follow that exploded, so they are
+    emitted as a NON-GATING advisory NOTE (visible, never silently dropped) rather than
+    a fail; every other finding stays a real fail. The normal path drops only the SC1091
+    of a genuinely absent helper-scripts sibling (see _is_absent_helper_scripts_source)."""
     try:
         comments = json.loads(proc.stdout)["comments"]
     except (ValueError, KeyError, TypeError):
@@ -522,16 +469,18 @@ def _emit_shellcheck(ctx, proc, src_dir, no_follow, sourced_names=frozenset()):
             yield model.fail("shellcheck", message, ctx.path)
         return
     if no_follow:
-        remaining = []
-        for comment in comments:
-            code = comment.get("code")
-            if code == 1091:
-                continue
-            if code in (2034, 2154):
-                name = _followup_var_name(comment)
-                if name is not None and name in sourced_names:
-                    continue
-            remaining.append(comment)
+        advisory = [c for c in comments
+                    if c.get("code") in _FOLLOW_DEPENDENT_VAR_CODES]
+        if advisory:
+            yield model.note(
+                "shellcheck",
+                "following timed out on '%s'; these unused/unassigned-variable findings "
+                "could not be verified across 'source' boundaries and are ADVISORY, not "
+                "gating (inspect by hand, or re-run with following):\n%s"
+                % (ctx.path, _render_shellcheck(ctx.path, advisory)))
+        remaining = [c for c in comments
+                     if c.get("code") != 1091
+                     and c.get("code") not in _FOLLOW_DEPENDENT_VAR_CODES]
     else:
         ## The git probe for the sibling runs only when there is an unfollowable
         ## source to judge (rc>=1 with an SC1091 'does not exist').
@@ -598,7 +547,6 @@ class Shellcheck(ExternalRule):
                 if rc_file is not None:
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
-                sourced_names = frozenset()
                 try:
                     proc = _run_shellcheck(command, SHELLCHECK_TIMEOUT)
                     degraded = False
@@ -621,10 +569,6 @@ class Shellcheck(ExternalRule):
                         proc = _run_shellcheck(
                             fallback, SHELLCHECK_FALLBACK_TIMEOUT, env=env)
                     degraded = True
-                    ## While PATH is still materialized: the identifiers in the files
-                    ## this script sources directly. _emit_shellcheck keeps a REAL
-                    ## in-file SC2034/SC2154 and drops only a cross-file one.
-                    sourced_names = _sourced_file_identifiers(path, src_dir)
         except subprocess.TimeoutExpired:
             ## The forced-no-follow fallback itself hung (pathological: a huge file
             ## body, NOT a following explosion). Fail CLOSED and loud -- never a
@@ -647,19 +591,19 @@ class Shellcheck(ExternalRule):
             ## Always VISIBLE -- the degrade is never a silent pass. Honest about the
             ## COVERAGE lost: without following, shellcheck cannot resolve cross-file
             ## sources NOR distinguish a missing/typo'd 'source=' from a real one (it
-            ## emits the same SC1091 for both), so those are dropped; and an SC2034/SC2154
-            ## for a global shared with a directly-sourced file is dropped as a cross-file
-            ## false positive (shallow name scan). An in-file SC2034/SC2154 still fails.
-            ## The same cap applies in CI, so this file's cross-file checks are not
-            ## recovered there either; the file BODY is still fully checked.
+            ## emits the same SC1091 for both), so those are dropped; and SC2034/SC2154
+            ## cannot be verified across a source boundary, so _emit_shellcheck surfaces
+            ## them as a non-gating advisory NOTE. The same cap applies in CI, so this
+            ## file's cross-file checks are not recovered there either; the BODY is still
+            ## fully checked.
             yield model.note(
                 "shellcheck",
                 "shellcheck '--external-sources' following exceeded %gs on '%s'; "
                 "re-checked with following forced off -- cross-file source resolution and "
-                "missing-source detection skipped, and a cross-file-shared variable's "
-                "SC2034/SC2154 suppressed, for this file (body still checked)"
+                "missing-source detection skipped, and unused/unassigned-variable checks "
+                "(SC2034/SC2154) downgraded to advisory, for this file (body still checked)"
                 % (SHELLCHECK_TIMEOUT, ctx.path))
-        yield from _emit_shellcheck(ctx, proc, src_dir, degraded, sourced_names)
+        yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 
 
 RULES = (BashParse(), Shellcheck())

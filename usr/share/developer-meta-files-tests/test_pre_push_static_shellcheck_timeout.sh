@@ -167,6 +167,21 @@ assert_graceful_degrade() {
    fi
 }
 
+## Assert a degraded run treated its SC2034/SC2154 as ADVISORY: gate GREEN (not blocked)
+## AND the codes SURFACED in the output (visible, not silently dropped). This is the
+## notify-only contract -- it fails on a hard-fail (red, the pre-fix false positive) AND on
+## a silent wholesale drop (green but the code vanished). Arg 1 = case label.
+assert_vars_advisory() {
+   local label="$1"
+   assert_graceful_degrade "${label}"
+   if grep --quiet --extended-regexp '\[SC2034\]|\[SC2154\]' <<< "${gate_output}"; then
+      printf '%s\n' "PASS: ${label}: SC2034/SC2154 surfaced as advisory (visible, not silently dropped)"
+   else
+      printf '%s\n' "FAIL: ${label}: SC2034/SC2154 NOT surfaced -- a silent drop hides a possible real bug"
+      printf '%s\n' "${gate_output}" | tail -10; fail=1
+   fi
+}
+
 ## Case 1: diamond graph, no rcfile.
 graph_dir="$(mktemp --directory --tmpdir="${test_dir}" graph.XXXXXX)"
 build_graph "${graph_dir}"
@@ -222,17 +237,15 @@ done
 run_gate "${graph_dir}" "30"
 assert_graceful_degrade "oversized-finite-override-clamped-on-graph"
 
-## Case 5: in the degraded no-follow fallback the FOLLOWING-DEPENDENT variable checks
-## must be dropped too, not just SC1091. SC2034 (a global assigned here, used only in a
-## sourced file) and SC2154 (a global used here, assigned only in a sourced file) are
-## FALSE POSITIVES once following is forced off -- shellcheck cannot see the sourced
-## file. Pre-fix the fallback dropped only SC1091, so it failed RED here (the exact
-## systemcheck ICON/IDENTIFIER false positive). Force degraded mode with the expensive
-## graph, then share a global across the (unfollowed) source boundary.
+## Case 5: in the degraded no-follow fallback SC2034/SC2154 cannot be verified across a
+## 'source' boundary, so they are ADVISORY (visible note, non-gating), never a hard fail
+## and never silently dropped. CROSS-FILE fixture: a global assigned here is used only in
+## the sourced level_0.sh, and one assigned there is read here -- WITH following both are
+## clean; the no-follow fallback cannot see level_0.sh. Pre-fix (SC1091-only drop) this
+## failed RED (the systemcheck ICON/IDENTIFIER false positive); assert_vars_advisory
+## catches that regression (green) AND a silent wholesale drop (surfaced).
 crossvar_dir="$(mktemp --directory --tmpdir="${test_dir}" crossvar.XXXXXX)"
 build_graph "${crossvar_dir}"
-## A sourced (in-fallback unfollowed) file uses the caller's global and assigns one the
-## caller reads back -- so WITH following both are clean, only no-follow misjudges them.
 cat >>"${crossvar_dir}/level_0.sh" <<'LEVEL0_EXTRA'
 printf '%s\n' "${ASSIGNED_IN_CALLER}"
 ASSIGNED_IN_SOURCE="from a sourced file"
@@ -248,38 +261,27 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## Assigned here, used ONLY in the sourced level_0.sh (never referenced in this
-## caller) -> SC2034 "appears unused" without following.
+## Assigned here, used ONLY in the sourced level_0.sh -> SC2034 without following.
 ASSIGNED_IN_CALLER="shared into a sourced file"
 
 # shellcheck source=./level_0.sh
 source "./level_0.sh"
 
-## Assigned only in the sourced level_0.sh, referenced here -> SC2154 "referenced but
-## not assigned" without following. ASSIGNED_IN_CALLER is deliberately NOT referenced
-## here, so its only use is across the source boundary.
+## Assigned only in level_0.sh, referenced here -> SC2154 without following.
 printf '%s\n' "${ASSIGNED_IN_SOURCE}"
 CROSSVAR
 chmod 0755 -- "${crossvar_dir}/caller"
 run_gate "${crossvar_dir}" "${INNER_TIMEOUT}"
-assert_graceful_degrade "cross-file-vars-sc2034-sc2154-dropped"
-## Sharpen the canary: green is necessary but also assert neither code surfaced as a
-## rendered FINDING, so a future regression that reds on them is caught. Match the
-## bracketed finding form '[SC2034]' from _render_shellcheck, NOT the degrade note's own
-## 'SC2034/SC2154 suppressed' wording.
-if grep --quiet --extended-regexp '\[SC2034\]|\[SC2154\]' <<< "${gate_output}"; then
-   printf '%s\n' "FAIL: cross-file-vars: SC2034/SC2154 leaked through the no-follow fallback (following-dependent false positive not dropped)"
-   printf '%s\n' "${gate_output}" | tail -10; fail=1
-else
-   printf '%s\n' "PASS: cross-file-vars: no SC2034/SC2154 finding from the no-follow fallback"
-fi
+assert_vars_advisory "cross-file-vars-advisory"
 
-## Case 6: the narrowing has TEETH. A degraded file with an in-file variable bug NOT
-## shared with any sourced file must STILL fail -- dropping it would be a silent green on
-## a script that aborts under 'set -o nounset'. UNASSIGNED_SECRET is referenced but
-## assigned nowhere (SC2154) and UNUSED_SECRET assigned but used nowhere (SC2034);
-## neither name appears in the sourced level_0.sh, so the shallow cross-file scan does
-## NOT excuse them. A wholesale SC2034/SC2154 drop (the first-cut fix) went GREEN here.
+## Case 6: an IN-FILE variable bug (not shared with any source) is ALSO advisory in the
+## degrade -- shellcheck cannot tell it from the cross-file case without the follow that
+## exploded, and heuristically re-deriving it is a bash parser that lies, so the honest
+## contract is notify-only: surfaced (never a silent green), not gating (a load-induced
+## degrade of a valid large file is not blocked). UNASSIGNED_SECRET is referenced but
+## assigned nowhere (SC2154, aborts under nounset); UNUSED_SECRET assigned, used nowhere
+## (SC2034). A wholesale silent drop would make these VANISH -- assert_vars_advisory fails
+## on that; the pre-fix hard-fail reds -- it fails on that too.
 infile_dir="$(mktemp --directory --tmpdir="${test_dir}" infile.XXXXXX)"
 build_graph "${infile_dir}"
 cat >"${infile_dir}/caller" <<'INFILE'
@@ -293,8 +295,6 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## Assigned, used nowhere (SC2034); and a referenced-but-unassigned typo (SC2154) that
-## aborts at runtime under nounset. Neither name is in level_0.sh -> provably in-file.
 UNUSED_SECRET="present"
 printf '%s\n' "${UNASSIGNED_SECRET}"
 
@@ -303,18 +303,7 @@ source "./level_0.sh"
 INFILE
 chmod 0755 -- "${infile_dir}/caller"
 run_gate "${infile_dir}" "${INNER_TIMEOUT}"
-if [ "${gate_timed_out}" -ne 0 ]; then
-   printf '%s\n' "FAIL: in-file-vars: gate hung (rc ${gate_rc}) -- fallback did not bound the follow"
-   printf '%s\n' "${gate_output}" | tail -6; fail=1
-elif [ "${gate_rc}" -eq 0 ]; then
-   printf '%s\n' "FAIL: in-file-vars: gate GREEN on an in-file SC2034/SC2154 (silent green on a crashing script)"
-   printf '%s\n' "${gate_output}" | tail -10; fail=1
-elif grep --quiet --extended-regexp '\[SC2154\]|\[SC2034\]' <<< "${gate_output}"; then
-   printf '%s\n' "PASS: in-file-vars: gate RED and names the in-file finding (not excused as cross-file)"
-else
-   printf '%s\n' "FAIL: in-file-vars: gate red (rc=${gate_rc}) but did not report SC2034/SC2154"
-   printf '%s\n' "${gate_output}" | tail -10; fail=1
-fi
+assert_vars_advisory "in-file-vars-advisory"
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
