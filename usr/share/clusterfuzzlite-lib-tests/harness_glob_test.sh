@@ -123,6 +123,40 @@ assert 'nullglob restored to on when caller had it on' \
    test "${nullglob_state}" = 'on'
 shopt -u nullglob
 
+## Case 4: a glob whose path contains a SPACE must not be word-split into a fake
+## match -- an empty such directory still FATALs, a populated one returns intact.
+space_dir="${work_dir}/a b"
+mkdir -- "${space_dir}"
+err4="${work_dir}/err4"
+declare -a arr4=()
+rc4=0
+cflite_list_harnesses arr4 "${space_dir}/fuzz_*.py" 2>"${err4}" || rc4=$?
+assert 'space-path zero-match returns non-zero' test "${rc4}" -ne 0
+assert 'space-path zero-match leaves the array empty' test "${#arr4[@]}" -eq 0
+touch -- "${space_dir}/fuzz_s.py"
+declare -a arr4b=()
+cflite_list_harnesses arr4b "${space_dir}/fuzz_*.py"
+assert 'space-path match returns exactly the one harness' test "${#arr4b[@]}" -eq 1
+
+## Case 5: a caller with noglob (set -f) must still get real expansion, so a
+## zero match FATALs instead of returning the literal pattern -- and set -f must
+## be restored afterward.
+set -f
+err5="${work_dir}/err5"
+declare -a arr5=()
+rc5=0
+cflite_list_harnesses arr5 "${empty_dir}/fuzz_*.py" 2>"${err5}" || rc5=$?
+noglob_after='off'
+case "$-" in
+   *f*)
+      noglob_after='on'
+      ;;
+esac
+set +f
+assert 'set -f zero-match still returns non-zero' test "${rc5}" -ne 0
+assert 'set -f zero-match leaves the array empty' test "${#arr5[@]}" -eq 0
+assert 'set -f restored by the helper' test "${noglob_after}" = 'on'
+
 if [ "${failures}" -eq 0 ]; then
    printf '%s\n' 'harness_glob_test: all checks passed'
    exit 0

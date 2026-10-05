@@ -26,31 +26,49 @@
 ## place, so the consumer calls one function and cannot reintroduce either half.
 
 ## cflite_list_harnesses OUTVAR GLOB
-##   Expand GLOB under nullglob into the caller's array named OUTVAR, and FATAL
-##   (return 1) if nothing matches. nullglob is saved and restored so the
-##   caller's own globbing is left untouched. Returned as a nameref array (not
-##   printed) so the zero-match return 1 propagates to the caller's errexit as a
-##   simple command, rather than through a process substitution that would
-##   swallow it.
+##   Expand GLOB into the caller's array named OUTVAR, and FATAL (return 1) if
+##   nothing matches. Returned as a nameref array (not printed) so the zero-match
+##   return 1 propagates to the caller's errexit as a simple command, rather than
+##   through a process substitution that would swallow it.
+##
+##   The expansion runs under a controlled, then-restored shell state so the
+##   zero-match guard cannot be faked:
+##     - IFS empty  -- a GLOB containing a space is NOT word-split before
+##                     globbing; a split, wildcard-less word would survive
+##                     nullglob as a literal array entry and fake a match;
+##     - noglob off -- a caller's `set -f` cannot leave GLOB unexpanded (the
+##                     literal pattern would likewise fake a match);
+##     - nullglob on -- a zero match yields an EMPTY array, caught below.
+##   Internals are named `__clh_*` so a caller's OUTVAR is very unlikely to
+##   collide with (and shadow) them.
+##   Save/restore nullglob with `shopt -q` in a condition, NOT `$(shopt -p
+##   nullglob)`: `shopt -p` returns non-zero when the option is UNSET, tripping
+##   the caller's errexit on the assignment.
 cflite_list_harnesses() {
-  local -n _cflite_out="$1"
-  local _cflite_pattern="$2"
-  ## Save/restore nullglob with `shopt -q` in a condition, NOT `_prev="$(shopt -p
-  ## nullglob)"`: `shopt -p` returns non-zero when the option is UNSET, which
-  ## trips the caller's errexit on the assignment (a bare call then aborts the
-  ## build on the normal match path).
-  local _cflite_had_nullglob='no'
+  local -n __clh_out="$1"
+  local __clh_nullglob='off'
+  local __clh_noglob='off'
   if shopt -q nullglob; then
-    _cflite_had_nullglob='yes'
+    __clh_nullglob='on'
   fi
+  case "$-" in
+    *f*)
+      __clh_noglob='on'
+      ;;
+  esac
+  local IFS=
+  set +f
   shopt -s nullglob
-  # shellcheck disable=SC2206  # intentional pathname expansion of the glob
-  _cflite_out=( ${_cflite_pattern} )
-  if [ "${_cflite_had_nullglob}" = 'no' ]; then
+  # shellcheck disable=SC2206  # intentional single-word pathname expansion
+  __clh_out=( ${2} )
+  if [ "${__clh_nullglob}" = 'off' ]; then
     shopt -u nullglob
   fi
-  if [ "${#_cflite_out[@]}" -eq 0 ]; then
-    printf 'FATAL: no fuzz harnesses matched %s\n' "${_cflite_pattern}" >&2
+  if [ "${__clh_noglob}" = 'on' ]; then
+    set -f
+  fi
+  if [ "${#__clh_out[@]}" -eq 0 ]; then
+    printf 'FATAL: no fuzz harnesses matched %s\n' "${2}" >&2
     return 1
   fi
 }
