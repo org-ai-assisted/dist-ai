@@ -12,15 +12,14 @@ updatecheck, the systemcheck orchestrator, and canary each source the required
 runtime lib check_runtime.bsh (which provides was_executed) at the very top,
 BEFORE anything else runs. They carry a '#!/bin/bash -e' shebang, but errexit
 from the shebang is NOT applied when a script is invoked as `bash <script>`
-(only when executed directly). So the source failure is caught ONLY by the
-explicit guard:
+(only when executed directly). So the source failure is caught ONLY by an
+explicit guard that fails loud when the runtime lib did not load. These tests are
+behavioral: they assert the loud-fail CONTRACT, not a specific guard syntax -- any
+guard that aborts with the marker satisfies them (whether it checks `source`'s
+exit status or the was_executed POSTCONDITION, the `sourceable` skill's current
+recommended form).
 
-    if ! source ".../check_runtime.bsh" ; then
-      printf '%s\\n' "$0: ERROR: cannot source check_runtime.bsh!" >&2
-      exit 1
-    fi
-
-Without that guard a failed source would fall through and the script would reach
+Without such a guard a failed source would fall through and the script would reach
 its end and exit 0 -- a health check falsely reporting success (silent green).
 
 These tests invoke each script as `bash <script>` (shebang -e deliberately NOT
