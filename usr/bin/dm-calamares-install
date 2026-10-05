@@ -115,6 +115,19 @@ fi
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/grub-boot-select.bsh
 source "${grub_boot_select_lib}"
 
+## guestcontrol layer (gc_run/gc_launch_gui/wait_guestcontrol_ready), shared with
+## dm-upgrade-regression. The live ISO squashfs ships VBoxService (Guest Additions
+## installed from the bundled virtualbox-guest-additions-iso at build), so install-host
+## launches DIRECTLY via guestcontrol -- no fragile OCR terminal + blind-typed line.
+## Sourced after gui-drive.bsh + grub-boot-select.bsh (it uses gui_* + select_installed_sysmaint).
+if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh" ]; then
+   vbox_session_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh"
+else
+   vbox_session_lib='/usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh'
+fi
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh
+source "${vbox_session_lib}"
+
 ## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
 ## lands on the default USER session, where install-host refuses (wrong boot role).
@@ -446,28 +459,26 @@ main() {
    ## fixed sleep that races the autoboot into the wrong session).
    select_install_boot_entry
 
-   printf '%s\n' "${me}: wait for the live desktop, then launch Calamares"
-   ## Poll for the desktop instead of a blind sleep (keeps the display awake too).
+   printf '%s\n' "${me}: wait for the live desktop + guestcontrol, then launch Calamares"
+   ## Poll for the compositor (desktop >=1024 wide, keeps the display awake) AND for
+   ## VBoxService in the live session, so install-host can be launched DIRECTLY via
+   ## guestcontrol -- a real launch signal, no OCR terminal + blind-typed line (the
+   ## single most fragile step: a fullscreen terminal OCRs unreliably, so the old
+   ## blind type had no verification at all).
    wait_ready 480
-   open_terminal
-   ## open_terminal already confirmed a terminal is up + focused; give it a moment
-   ## to accept input, clear any partial line, type the launch command (paced ->
-   ## reliable) and run it. No OCR-verify of the typed line: a fullscreen terminal
-   ## (green-on-black, one line atop a large black screen) OCRs unreliably, which
-   ## caused false "could not type" failures; the paced type is proven reliable.
-   sleep 6
-   gui_scan 1d 16 96 9d
-   ## --mok-enroll: set MOK_ENROLL=1 in install-host's env; install-host's
-   ## 'sudo --preserve-env' (sudoers SETENV) carries it into Calamares, and the
+   wait_guestcontrol_ready user 300 \
+      || die "${FAIL_RC}" "guestcontrol (VBoxService) never came up in the live session"
+   ## --mok-enroll: export MOK_ENROLL=1 into install-host's env; its 'sudo
+   ## --preserve-env' (sudoers SETENV) carries it into Calamares, and the
    ## shellprocess_mok_enroll module reads it across the target chroot.
-   local launch_cmd='install-host'
+   local mok_export=''
    if [ "${mok_enroll}" = 'true' ]; then
-      launch_cmd='MOK_ENROLL=1 install-host'
+      mok_export='MOK_ENROLL=1'
    fi
-   "${GUESTCTL}" "${vm}" type "${launch_cmd}" >/dev/null
-   sleep 1
-   ## foreground: install-host holds the terminal, Calamares opens as its own window.
-   gui_scan 1c 9c
+   ## install-host opens Calamares as its own Wayland window; gc_launch_gui sets
+   ## WAYLAND_DISPLAY (absent in the guestcontrol env) and backgrounds via setsid so
+   ## the GUI survives the exec channel closing.
+   gc_launch_gui user 'install-host' "${mok_export}"
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
 
    printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
