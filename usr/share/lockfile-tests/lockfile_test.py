@@ -37,7 +37,9 @@
 
 import argparse
 import os
+import pwd
 import random
+import select
 import stat
 import subprocess
 import sys
@@ -74,17 +76,31 @@ def bg(argv):
 
 
 def wait_for_locked(proc, timeout=10):
-    """Read PROC's stdout until a 'LOCKED' line (the holder acquired the lock) or
+    """Read PROC's stdout until a 'LOCKED' token (the holder acquired the lock) or
     EOF (it exited first). Returns True iff LOCKED was seen -- a deterministic sync
-    point for 'now contend' tests, unlike a fixed sleep that races a loaded host."""
+    point for 'now contend' tests, unlike a fixed sleep that races a loaded host.
+
+    Hard-bounded by TIMEOUT even if the holder stalls WITHOUT writing a newline (a
+    hung 'source lockfile.sh' -- the very regression this suite guards): select()
+    caps every wait and os.read() on the raw fd never blocks past the deadline, so
+    a blocking readline() can no longer hang the whole suite. On timeout the stalled
+    holder is killed so it cannot leak."""
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
+    fd = proc.stdout.fileno()
+    buf = b''
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            proc.kill()
             return False
-        if 'LOCKED' in line:
+        if not select.select([fd], [], [], remaining)[0]:
+            continue
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return False
+        buf += chunk
+        if b'LOCKED' in buf:
             return True
-    return False
 
 
 def make_source_script(tmp, lockfile_sh):
@@ -351,13 +367,24 @@ def fallback_tests(lockfile_sh, check):
 
     ## 2b) a runtime dir that exists but is NOT owned by the caller (an inherited
     ##     XDG_RUNTIME_DIR under 'sudo -u') must fall back to the cache dir, not
-    ##     hard-exit. '/usr' stands in: a stable root-owned, non-symlink directory
-    ##     the test user does not own.
+    ##     hard-exit. The leg's precondition is a dir the EUID does NOT own: as root
+    ##     (root owns /usr, so a hard-coded '/usr' would make the -O gate TRUE and
+    ##     the fallback leg never run -- plus pollute /usr with a lock dir) create a
+    ##     controlled dir and chown it to 'nobody'; unprivileged, a stable root-owned
+    ##     system dir is already not-owned-by-me. Either way the -O gate is FALSE and
+    ##     the fallback is genuinely exercised.
     tmp2b = tempfile.mkdtemp(prefix='lockfile-fb2b-')
     src2b = make_source_script(tmp2b, lockfile_sh)
     cache2b = os.path.join(tmp2b, 'cache')
     os.mkdir(cache2b, 0o700)
-    env2b = dict(os.environ, XDG_RUNTIME_DIR='/usr',
+    if os.geteuid() == 0:
+        nobody = pwd.getpwnam('nobody')
+        runtime2b = os.path.join(tmp2b, 'notowned')
+        os.mkdir(runtime2b, 0o755)
+        os.chown(runtime2b, nobody.pw_uid, nobody.pw_gid)
+    else:
+        runtime2b = '/usr'
+    env2b = dict(os.environ, XDG_RUNTIME_DIR=runtime2b,
                  XDG_CACHE_HOME=cache2b, HOME=tmp2b)
     holder2b = subprocess.Popen([src2b, 'fbownkey', '10'], stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, env=env2b)
@@ -379,9 +406,13 @@ def fallback_tests(lockfile_sh, check):
     res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
                           timeout=30, env=env3)
     combined3 = (res3.stdout + res3.stderr).lower()
+    ## Require the EXPECTED diagnostic, not merely any nonzero exit lacking
+    ## 'unbound variable': an unrelated failure (a different abort) would otherwise
+    ## pass. 'no usable per-user lock directory' proves the fallback failed CLEANLY.
     check('fallback: unset HOME under nounset errors cleanly',
           'LOCKED' not in res3.stdout and res3.returncode != 0
-          and 'unbound variable' not in combined3,
+          and 'unbound variable' not in combined3
+          and 'no usable per-user lock directory' in combined3,
           '%r rc=%d' % ((res3.stdout + res3.stderr).strip()[:120],
                         res3.returncode))
 

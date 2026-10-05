@@ -32,6 +32,40 @@ nonqubes_lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}"
 # shellcheck source=./leaktest_lib.sh
 source "${nonqubes_lib_dir}/leaktest_lib.sh"
 
+## proc_dead / proc_diag: a readiness wait must tell a bound-and-serving helper
+## from one that DIED during startup, and a bare 'kill -0' reports a killed-but-
+## unreaped zombie as alive (false survivor under a slow-reaping CI-container PID 1).
+nonqubes_proc_lib="${nonqubes_lib_dir}/../dist-ai-tests-common/proc-lib.bash"
+if [ ! -r "${nonqubes_proc_lib}" ]; then
+   printf '%s\n' "FATAL: proc-lib.bash not found: ${nonqubes_proc_lib}" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/proc-lib.bash
+source "${nonqubes_proc_lib}"
+
+## Wait (bounded, ~5s) until a backgrounded helper has BOUND its socket(s): the
+## helper creates READY_FILE only AFTER every bind succeeds, so its presence is
+## positive proof the port is absorbing -- not a fixed 'sleep' that returns before
+## the bind and lets a probe measure an unbound port. Fail the setup loudly if the
+## helper (PID) dies first or never signals, so a harness miss never masquerades as
+## a firewall verdict. Mirrors the leaktest_assert_* 'fail_case; return 1' idiom.
+leaktest_wait_ready() {
+   local pid="$1" ready_file="$2" label="$3" _
+   for _ in $(seq 1 50); do
+      if [ -e "${ready_file}" ]; then
+         return 0
+      fi
+      if proc_dead "${pid}"; then
+         fail_case "${label} exited before binding its socket(s)"
+         return 1
+      fi
+      sleep 0.1
+   done
+   proc_diag "${label}" "${pid}"
+   fail_case "${label} did not signal readiness within 5s"
+   return 1
+}
+
 ## Reused scratch file for leaktest_fire_gw_origin's stderr (allocated once).
 LEAKTEST_GW_SEND_ERR=''
 
@@ -136,13 +170,20 @@ LEAKTEST_UP_SINK_PID=''
 ## not the excluded DHCP). A real network has a DHCP server/relay here; this stands
 ## in for it, so the DHCP-exclusion precision leg measures the BPF, not an artifact.
 leaktest_up_udp_sink_start() {
-   local port="$1"
+   local port="$1" ready_dir ready_file rc=0
    leaktest_up_udp_sink_stop
-   ip netns exec up python3 - "${port}" <<'PY' &
+   ## A mktemp DIR + a not-yet-existing sentinel inside it: the helper creates the
+   ## sentinel only AFTER bind, so its presence is real proof. A bare 'mktemp' file
+   ## would already EXIST, making the readiness check pass on the first poll (handshake
+   ## defeated, bind race back).
+   ready_dir="$(mktemp --directory)"
+   ready_file="${ready_dir}/ready"
+   ip netns exec up python3 - "${port}" "${ready_file}" <<'PY' &
 import socket, sys
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 sock.bind(('0.0.0.0', int(sys.argv[1])))
+open(sys.argv[2], 'w').close()
 while True:
     try:
         sock.recvfrom(4096)
@@ -150,7 +191,15 @@ while True:
         break
 PY
    LEAKTEST_UP_SINK_PID="$!"
-   sleep 1
+   ## Confirm the sink actually bound port <port> before returning: a failed bind
+   ## (port in use) or a startup abort would otherwise leave a dead PID and the
+   ## caller would probe with NO absorber, provoking an ICMP port-unreachable the
+   ## egress oracle counts -- a harness artifact failing the DHCP-precision leg.
+   ## PROPAGATE the readiness verdict: masking it with the always-0 cleanup would
+   ## re-hide exactly the failed-bind case this guards.
+   leaktest_wait_ready "${LEAKTEST_UP_SINK_PID}" "${ready_file}" 'up UDP sink' || rc=1
+   safe-rm --recursive --force -- "${ready_dir}"
+   return "${rc}"
 }
 
 leaktest_up_udp_sink_stop() {
@@ -167,10 +216,22 @@ LEAKTEST_EXT_LISTENER_PID=''
 ## worst case the audit guards against (a Tor port bound to 0.0.0.0). Kills any
 ## prior instance first (idempotent across re-setups, which delete gw's netns).
 leaktest_ext_listener_start() {
+   local ready_dir ready_file rc=0
    leaktest_ext_listener_stop
-   ip netns exec gw python3 "$(leaktest_helpers_dir)/ext_listener.py" '0.0.0.0' '::' &
+   ## mktemp DIR + a not-yet-existing sentinel (see leaktest_up_udp_sink_start): a bare
+   ## 'mktemp' file already exists and defeats the readiness check.
+   ready_dir="$(mktemp --directory)"
+   ready_file="${ready_dir}/ready"
+   ip netns exec gw python3 "$(leaktest_helpers_dir)/ext_listener.py" '0.0.0.0' '::' "${ready_file}" &
    LEAKTEST_EXT_LISTENER_PID="$!"
-   sleep 1
+   ## Block until EVERY listener socket is bound AND listening (ext_listener.py signals
+   ## readiness only after all binds + listens succeed): a transient bind miss on one
+   ## port would else let its probe read 'blocked' and pass the unreachable assertion
+   ## for the wrong reason, since the canary rebuilds the namespace with a fresh
+   ## listener. PROPAGATE the verdict, do not mask it with the always-0 cleanup.
+   leaktest_wait_ready "${LEAKTEST_EXT_LISTENER_PID}" "${ready_file}" 'external listener' || rc=1
+   safe-rm --recursive --force -- "${ready_dir}"
+   return "${rc}"
 }
 
 leaktest_ext_listener_stop() {

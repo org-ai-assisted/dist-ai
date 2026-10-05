@@ -310,6 +310,7 @@ def _run_suite(tag):
         _burst_rounds = 5
         _burst_width = 8
         _ball = []
+        _bstuck = 0
         for _bround in range(_burst_rounds):
             if not alive(_ip):
                 break                       # primary already down -> stop hammering, report below
@@ -320,13 +321,19 @@ def _run_suite(tag):
                 try:
                     _brc = _br.wait(timeout=15)
                 except subprocess.TimeoutExpired:
-                    _brc = None             # a stuck handoff -> the ping assertion fails loud
+                    _brc = None
+                    _bstuck += 1            # a client that never handed off is a FAILURE (below), not a wait skipped
                 if _brc == 0 and _br in kids:
                     kids.remove(_br)        # clean handoff: drop so the finally never killpg's a freed pid
+        ## A --reuse client hands off to the primary and exits promptly; one still
+        ## running after its 15s wait is a wedged handoff, NOT proven fine by a
+        ## responsive primary (the ping assertions below test the primary, a separate
+        ## fact). Fail on any such client so a stuck handoff cannot pass case I.
+        ok(_bstuck == 0,
+           'I: no --reuse burst client hung (every client handed off within 15s)')
         ## Every burst client that EXITED must have handed off cleanly (exit 0); a silent
         ## non-zero would otherwise pass as long as the primary survived. Tolerate the
-        ## Qt-startup-crash flake exactly as case F does; a still-running (timed-out)
-        ## client is left to the primary-ping assertion below.
+        ## Qt-startup-crash flake exactly as case F does (those exited clients only).
         ok(all(_b.returncode == 0 for _b in _ball
                if not alive(_b) and _b.returncode not in _QT_STARTUP_CRASH),
            'I: every exited --reuse burst client handed off cleanly (exit 0)')

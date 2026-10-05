@@ -96,14 +96,19 @@ PROBE_DST_IP4='198.51.100.7'
 ## a host in that subnet -- the host DNS proxy 10.0.2.3 (the "Deactivate Host DNS"
 ## leak) -- invisible by construction. Scoping it to DHCP keeps the only legit v4
 ## link control-plane excluded while leaving every gw-originated /24 unicast
-## visible. ARP is non-ip (dropped by the leading `(ip or ip6)`); IPv6 ND is
-## covered by the fe80::/10 + multicast clauses above.
+## visible. Match the DHCP port PAIR by direction (68->67 or 67->68), NOT either
+## port alone: a bare `port 67 or port 68` would also hide a non-DHCP /24 unicast
+## that merely reuses source port 68 (e.g. that same gw->10.0.2.3:53 leak), so
+## assert_blocked would read zero egress for a real leak. ARP is non-ip (dropped by
+## the leading `(ip or ip6)`); IPv6 ND is covered by the fe80::/10 + multicast
+## clauses above.
 LEAKTEST_EGRESS_BPF="\
 (ip or ip6) and not ( \
   ip6 multicast or ip multicast or ip broadcast \
   or ( (src net fe80::/10 or src host ${EXT_UP_IP6} or src host ${EXT_GW_IP6}) \
        and (dst net fe80::/10 or dst host ${EXT_UP_IP6} or dst host ${EXT_GW_IP6}) ) \
-  or ( src net 10.0.2.0/24 and dst net 10.0.2.0/24 and udp and (port 67 or port 68) ) \
+  or ( src net 10.0.2.0/24 and dst net 10.0.2.0/24 and udp \
+       and ( (src port 68 and dst port 67) or (src port 67 and dst port 68) ) ) \
 )"
 
 LEAKTEST_LISTENER_PID=''

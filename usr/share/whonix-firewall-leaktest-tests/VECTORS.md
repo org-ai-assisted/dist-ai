@@ -240,13 +240,28 @@ CLOSED:
   the static audit `internal_iface_sysctl_test.sh` (security-misc wildcard sysctls +
   internal iface is inet6 static; there is no explicit autoconf sysctl).
 
+DONE (LIVE `dm-whonix-pair`, not this netns suite):
+
+- GW-originated ALLOWLIST canary: the LIVE `dm-whonix-pair` GW external-NIC canary is now
+  deny-by-default -- it pins the GW to a fixed set of Tor entry guards (`EntryNodes` +
+  `StrictNodes 1`) and allows ONLY those guard IPs (either direction) + link infra
+  (DHCP/link-local/multicast); ANY other clearnet packet is a LEAK. Tor-only by default, NO
+  carve-out for the `NON_TOR_GATEWAY` host-DNS/LAN exception (if it fires it is a true leak).
+  The existing watchlist stays as defense-in-depth. A second, on-the-wire oracle
+  (`host-wire-leak-capture` in private-ai-config/ovh-server-debug) applies the SAME allowlist
+  (read verbatim via `dm-whonix-pair --print-allow-filter`) to a RAW capture of the host's
+  physical NIC, catching egress a per-uid rule or the guest-NIC tap could miss.
+
 OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 
-- GW-originated ALLOWLIST canary: make the LIVE `dm-whonix-pair` GW external-NIC canary an
-  ALLOWLIST (only Tor-guard + DHCP permitted), not a watchlist of specific targets.
 - Application / browser layer: WebRTC/STUN local-IP exposure, DNS prefetch, non-torified WS
   apps (apt/ping launched without proxy), doileak/ipleak -- the WS torification guarantee.
-  Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser).
+  Layer: LIVE `dm-whonix-pair` (real Tor clearnet + Tor Browser), opt-in `DM_WHONIX_PAIR_BROWSER=1`.
+- Bridge lane: `EntryNodes` is mutually exclusive with bridges, so the pinned-guard allowlist
+  cannot cover a bridge config. A separate lane would allow the configured bridge IPs instead.
+- nftables allowlist ENFORCEMENT: convert the host `ai_server_fw` OUTPUT fleet-uid rule from a
+  denylist (two probe dsts) to a pinned-guard allowlist drop -- the enforcement counterpart to
+  the `host-wire-leak-capture` observation.
 
 OUT of scope (reviewer-confirmed): a second compromised Workstation SNIFFING a peer on the
 shared VBox internal LAN -- Whonix does not promise WS<->WS isolation and the traffic is

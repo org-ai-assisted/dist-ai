@@ -6712,7 +6712,17 @@ _pwv_small = max(3, _pwv_n // 2)
 _pwv._tui_grid_size = lambda: (_pwv._screen.columns, _pwv_small)
 _pwv._sync_tui_size()                                       # SHRINK (review bar opening)
 ok(len(_pwv._screen.history.top) > _pwv_top0,
-   '#16: a shrink while editing a WRAPPED command preserves the top rows (no data loss)')
+   '#16: a shrink while editing a WRAPPED command preserves the top rows to scrollback')
+# Content survives, not merely "scrollback grew": reconstruct the retained text from the
+# preserved history rows PLUS the live grid and require EVERY output line and the wrapped
+# command to still be present -- a broken resize that kept only the first row would pass a
+# bare count check while silently losing the rest.
+_pwv_retained = '\n'.join(
+    [''.join(_r[_x].data for _x in sorted(_r)).rstrip()
+     for _r in list(_pwv._screen.history.top)]
+    + [_l.rstrip() for _l in _pwv._screen.display])
+ok('out A' in _pwv_retained and 'out B' in _pwv_retained and 'cmd ' in _pwv_retained,
+   '#16: the shrink preserves ALL content (both output lines and the wrapped command)')
 _pwv.shutdown()
 
 # #16: shrinking a blank / just-cleared grid manufactures NO scrollback (a plain terminal
