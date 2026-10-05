@@ -119,8 +119,8 @@ rc=0
 for g in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do has "host ${g}" "${filt}" || rc=1; done
 check 'allowlist permits EVERY pinned guard IP (v4 + v6), either direction (host, not dst-only)' "${rc}"
 rc=0
-for term in 'udp port 67' 'udp port 68' 'ip multicast' 'net 169.254.0.0/16'; do has "${term}" "${filt}" || rc=1; done
-check 'allowlist excludes structural link infra (DHCP, multicast, link-local)' "${rc}"
+for term in 'udp port 67 and udp port 68 and dst host 255.255.255.255' 'dst net 224.0.0.0/4' 'dst net 169.254.0.0/16'; do has "${term}" "${filt}" || rc=1; done
+check 'allowlist excludes structural link infra (scoped DHCP, 224/4 multicast, link-local)' "${rc}"
 rc=0; has '10.0.2.3' "${filt}" && rc=1 || rc=0
 check 'allowlist does NOT carve out the host resolver 10.0.2.3 (Tor-only by default)' "${rc}"
 

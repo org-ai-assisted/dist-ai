@@ -274,11 +274,21 @@ boot_gateway() {
    ## truncate it. Then WAIT for the VM to actually reach poweroff: clean_poweroff's hard-fallback
    ## path returns without waiting, and the next modifyvm needs the VM fully stopped.
    clean_poweroff
-   local _i
+   ## Poll for a CONFIRMED off-state before re-tracing. An empty vm_state is transient showvminfo
+   ## lock-contention (NOT off), so do not break on it; fail-closed if the VM never settles -- the
+   ## next modifyvm needs it fully stopped.
+   local _i off='false'
    for _i in $(seq 1 20); do
-      case "$(vm_state "${gw}")" in poweroff|aborted|'') break ;; esac
+      case "$(vm_state "${gw}")" in
+         poweroff|aborted)
+            off='true'
+            break
+            ;;
+      esac
       sleep 2
    done
+   [ "${off}" = 'true' ] \
+      || die "${SETUP_RC}" "${gw}: did not reach poweroff before re-trace -- a provisioning failure, not a WS leak"
    ## Boot 2 (TRACED): enable the NIC trace offline (-u: just a name, VBox creates the pcap), then
    ## start. Tor autostarts and StrictNodes forces it onto the pinned guards only.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
@@ -385,12 +395,16 @@ gw_pin_guards() {
 ## it, and --print-allow-filter emits it verbatim for the host-wire oracle (host-wire-leak-capture),
 ## so the in-VM and on-the-wire oracles never drift.
 ##
-## Each infra exclusion is DST-scoped or both-port, so a clearnet dst can NEVER hide behind one
-## infra-looking endpoint:
-##   - DHCP is `port 67 AND port 68` (a real client<->server exchange), NOT either port alone --
-##     else any clearnet UDP merely touching 67/68 would be exempt.
-##   - multicast / broadcast / link-local / loopback match the DESTINATION only -- a packet FROM a
-##     link-local/loopback source TO a clearnet dst is still a leak.
+## Every infra exclusion is scoped so a clearnet dst can NEVER hide behind an infra-looking
+## endpoint, AND so VBox slirp's surprising routing is not mistaken for unroutable:
+##   - DHCP is `port 67 AND port 68 AND dst 255.255.255.255` (the real broadcast exchange slirp
+##     consumes) -- not the ports alone (else `:68 -> 8.8.8.8:67` would be exempt), and not a bare
+##     `dst 255.255.255.255` (slirp rewrites that to the host's 127.0.0.1, so a non-DHCP packet
+##     there IS a leak path).
+##   - multicast is `dst net 224.0.0.0/4` (not tcpdump's `ip multicast`, which is a bare `>= 224`
+##     with no upper bound, so 240.0.0.0/4 and 255.0.0.0/8 would leak).
+##   - link-local dst only (slirp does not route it off-link); NO loopback exclusion -- slirp
+##     delivers 127.0.0.1 / ::1 to the HOST, so those are leaks, not local.
 ## Guards match EITHER direction (`host`): a nictrace/host tap also sees the guard's REPLIES (whose
 ## dst is the local NAT/host IP, not a guard) and the self IP differs per observation point, so a
 ## dst-only guard match would flag every legit reply. Accepted + documented limitations (the
@@ -402,7 +416,7 @@ gw_pin_guards() {
 ## requires a WARMED clean-live snapshot so Tor fetches through the pinned guards.
 allowlist_bpf() {
    local infra allow guard
-   infra='(udp port 67 and udp port 68) or ip multicast or ip6 multicast or dst host 255.255.255.255 or dst net 169.254.0.0/16 or dst net 127.0.0.0/8 or (ip6 and (dst net fe80::/10 or dst net ::1/128))'
+   infra='(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
    allow=''
    for guard in "${GUARD_PIN_IPS4[@]}" "${GUARD_PIN_IPS6[@]}"; do
       allow="${allow:+${allow} or }host ${guard}"

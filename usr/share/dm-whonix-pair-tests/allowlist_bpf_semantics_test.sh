@@ -95,28 +95,32 @@ check() {
 guard4="${GUARD_PIN_IPS4[0]}"
 
 ## LEAKS (must count 1) -- the exact failing inputs the reviewers gave, now caught:
-check 'clearnet pkt with src udp port 68 (not DHCP) is a LEAK' "10.0.2.15,8.8.8.8,68,4444" 1
-check 'link-local SOURCE to a clearnet dst is a LEAK'          "169.254.5.5,8.8.8.8,40000,53" 1
+check 'clearnet pkt with src udp port 68 (not DHCP) is a LEAK'  "10.0.2.15,8.8.8.8,68,4444" 1
+check 'DHCP-port pkt (67+68) to a CLEARNET dst is a LEAK'       "10.0.2.15,8.8.8.8,68,67" 1
+check 'link-local SOURCE to a clearnet dst is a LEAK'           "169.254.5.5,8.8.8.8,40000,53" 1
 check 'GW host-DNS to 10.0.2.3 is a LEAK (no carve-out)'        "10.0.2.15,10.0.2.3,40000,53" 1
-check 'ordinary non-guard clearnet dst is a LEAK'               "10.0.2.15,1.1.1.1,40000,53" 1
+check 'ordinary non-guard clearnet dst is a LEAK'              "10.0.2.15,1.1.1.1,40000,53" 1
+check 'loopback dst is a LEAK (slirp delivers 127/8 to the host)' "10.0.2.15,127.0.0.1,40000,53" 1
+check 'NON-DHCP broadcast is a LEAK (slirp maps it to host 127.0.0.1)' "10.0.2.15,255.255.255.255,9,4444" 1
+check 'pseudo-multicast 240.0.0.0/4 is a LEAK (not real multicast)' "10.0.2.15,240.0.0.1,40000,53" 1
 
 ## ALLOWED (must count 0) -- genuine infra + guard traffic, either direction:
-check 'genuine DHCP (both ports 67+68) is allowed'             "0.0.0.0,255.255.255.255,68,67" 0
+check 'genuine DHCP broadcast (67+68 to 255.255.255.255) is allowed' "0.0.0.0,255.255.255.255,68,67" 0
 check 'egress to a pinned guard is allowed'                    "10.0.2.15,${guard4},40000,443" 0
 check 'a pinned guard REPLY (guard as source) is allowed'      "${guard4},10.0.2.15,443,40000" 0
-check 'multicast destination is allowed'                       "10.0.2.15,224.0.0.251,5353,5353" 0
-check 'link-local DESTINATION (unroutable) is allowed'         "10.0.2.15,169.254.169.254,40000,80" 0
-check 'loopback destination is allowed'                        "10.0.2.15,127.0.0.1,40000,53" 0
+check 'real multicast 224.0.0.0/4 destination is allowed'      "10.0.2.15,224.0.0.251,5353,5353" 0
+check 'link-local DESTINATION (not routed off-link) is allowed' "10.0.2.15,169.254.169.254,40000,80" 0
 
-## Combined pcap: the four leak datagrams together -> exactly 4.
+## Combined pcap: the eight leak datagrams together -> exactly 8.
 "${work}/mkpcap.py" "${work}/multi.pcap" \
-   "10.0.2.15,8.8.8.8,68,4444" "169.254.5.5,8.8.8.8,40000,53" \
-   "10.0.2.15,10.0.2.3,40000,53" "10.0.2.15,1.1.1.1,40000,53" >/dev/null
+   "10.0.2.15,8.8.8.8,68,4444" "10.0.2.15,8.8.8.8,68,67" "169.254.5.5,8.8.8.8,40000,53" \
+   "10.0.2.15,10.0.2.3,40000,53" "10.0.2.15,1.1.1.1,40000,53" "10.0.2.15,127.0.0.1,40000,53" \
+   "10.0.2.15,255.255.255.255,9,4444" "10.0.2.15,240.0.0.1,40000,53" >/dev/null
 multi="$(tcpdump -nr "${work}/multi.pcap" "${filter}" 2>/dev/null | wc -l)"
-if [ "${multi}" = 4 ]; then
-   pass=$(( pass + 1 )); printf 'PASS: a mixed pcap counts exactly the 4 leak datagrams\n'
+if [ "${multi}" = 8 ]; then
+   pass=$(( pass + 1 )); printf 'PASS: a mixed pcap counts exactly the 8 leak datagrams\n'
 else
-   fail=$(( fail + 1 )); printf 'FAIL: mixed pcap counted %s leaks, wanted 4\n' "${multi}"
+   fail=$(( fail + 1 )); printf 'FAIL: mixed pcap counted %s leaks, wanted 8\n' "${multi}"
 fi
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
