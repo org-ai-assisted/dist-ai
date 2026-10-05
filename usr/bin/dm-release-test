@@ -442,18 +442,26 @@ rt_set_pair_version() {
 ## snapshot still runs on the live guests (printed as the next step) -- it needs a booted
 ## sysmaint session, not scriptable headless from here. Needs root.
 rt_provision_leak() {
-   local account version gw ws
+   local account version gw ws account_home
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
    ws="Whonix-Workstation-${desktop}"
    rt_lock_account "${account}"
    rt_create_clean_account "${account}"
-   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER})"
+   ## dist-installer-cli runs the download AND import AS the target account
+   ## (run_as_target_user), so the staging dir must be target-writable. Pin it to the
+   ## target's OWN home (always writable by it) via --directory-prefix; otherwise it
+   ## defaults to the invoker's home, which the target cannot write (mkdir fails). This
+   ## matches what the sysmaint-invoker path does automatically, without needing sysmaint.
+   account_home="$(getent passwd "${account}" | cut -d: -f6)"
+   [ -n "${account_home}" ] || die "${SETUP_RC}" "cannot resolve home for '${account}'"
+   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER}, prefix ${account_home})"
    ## Invoke as the sudo-capable invoker (NOT root -- dist-installer-cli refuses root);
    ## --user="${account}" is the INSTALL target (the leak account), distinct from the invoker.
    sudo -u "${DIST_INSTALLER_USER}" -- "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
       --interface="${interface}" --non-interactive --user="${account}" \
+      --directory-prefix="${account_home}/dist-installer-cli-download" \
       --no-boot --import-only=both --destroy-existing-guest \
       || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
    rt_set_pair_version "${account}" "${gw}" "${version}"

@@ -116,7 +116,12 @@ esac
 EOF
 cat > "${stubbin}/getent" <<'EOF'
 #!/bin/bash
-exit 0
+# group lookups: succeed (vboxusers exists). passwd lookups: synthesize a home so
+# rt_provision_leak can derive --directory-prefix for the target account.
+case "$1" in
+  passwd) printf '%s:x:5001:5001::/home/%s:/bin/bash\n' "$2" "$2";;
+  *) exit 0;;
+esac
 EOF
 cat > "${stubbin}/usermod" <<'EOF'
 #!/bin/bash
@@ -199,6 +204,10 @@ check "provision: dist-installer-cli got the leak account" \
    "$(grep --quiet -- '--user=persist-leak-whonix' "${DIST_ARGV}" && printf true || printf false)"
 check "provision: dist-installer-cli imports both VMs" \
    "$(grep --quiet -- '--import-only=both' "${DIST_ARGV}" && printf true || printf false)"
+## download/import run AS the target, so the staging dir must be the target's own home,
+## not the invoker's. Canary: a revert to no/invoker-home prefix fails this.
+check "provision: directory-prefix is the target account home" \
+   "$(grep --quiet -- '--directory-prefix=/home/persist-leak-whonix/dist-installer-cli-download' "${DIST_ARGV}" && printf true || printf false)"
 check "provision: GW marker set to the version" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
 check "provision: WS marker set to the version" \
