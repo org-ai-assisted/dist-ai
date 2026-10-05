@@ -61,21 +61,21 @@ check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"
 boot_gateway >/dev/null 2>&1
 log="$(cat -- "${LOG}")"
 
-## Line numbers of the key events in invocation order.
-on_line="$(grep -n -- 'cabledisconnected1 on' <<< "${log}" | head -1 | cut -d: -f1)"
+## Line numbers of the key events in invocation order (disconnect = cableconnected1 off).
+disc_line="$(grep -n -- 'cableconnected1 off' <<< "${log}" | head -1 | cut -d: -f1)"
 pin_line="$(grep -n -- '^PIN$' <<< "${log}" | head -1 | cut -d: -f1)"
-off_line="$(grep -n -- 'cabledisconnected1 off' <<< "${log}" | head -1 | cut -d: -f1)"
+recon_line="$(grep -n -- 'cableconnected1 on' <<< "${log}" | head -1 | cut -d: -f1)"
 
-rc=0; [ -n "${on_line}" ] || rc=1
-check 'boot_gateway disconnects the external NIC (--cabledisconnected1 on)' "${rc}"
-rc=0; [ -n "${off_line}" ] || rc=1
-check 'boot_gateway reconnects the external NIC (--cabledisconnected1 off)' "${rc}"
-rc=0; { [ -n "${on_line}" ] && [ -n "${pin_line}" ] && [ "${on_line}" -lt "${pin_line}" ]; } || rc=1
+rc=0; [ -n "${disc_line}" ] || rc=1
+check 'boot_gateway disconnects the external NIC (--cableconnected1 off)' "${rc}"
+rc=0; [ -n "${recon_line}" ] || rc=1
+check 'boot_gateway reconnects the external NIC (--cableconnected1 on)' "${rc}"
+rc=0; { [ -n "${disc_line}" ] && [ -n "${pin_line}" ] && [ "${disc_line}" -lt "${pin_line}" ]; } || rc=1
 check 'NIC is disconnected BEFORE the guard pin (no pre-pin uplink)' "${rc}"
-rc=0; { [ -n "${pin_line}" ] && [ -n "${off_line}" ] && [ "${pin_line}" -lt "${off_line}" ]; } || rc=1
+rc=0; { [ -n "${pin_line}" ] && [ -n "${recon_line}" ] && [ "${pin_line}" -lt "${recon_line}" ]; } || rc=1
 check 'NIC is reconnected AFTER the pin (for the traced boot)' "${rc}"
 ## The reconnect rides the SAME modifyvm that enables the trace (one offline reconfigure).
-rc=0; grep --quiet -- 'cabledisconnected1 off .*nictrace1 on\|nictrace1 on .*cabledisconnected1 off' <<< "${log}" || rc=1
+rc=0; grep --quiet -- 'cableconnected1 on .*nictrace1 on\|nictrace1 on .*cableconnected1 on' <<< "${log}" || rc=1
 check 'reconnect + nictrace enablement happen together (single offline modifyvm)' "${rc}"
 ## Fail-closed: a NIC toggle that cannot run aborts SETUP, never a silent pass.
 printf '#!/bin/bash\nexit 1\n' > "${work}/VBoxManage"; chmod +x "${work}/VBoxManage"

@@ -51,6 +51,32 @@ gc_run() {
    "${argv[@]}"
 }
 
+## Build the in-guest snippet that launches a GUI PROGRAM in the live Wayland session
+## via guestcontrol. Separated from gc_launch_gui so a unit test asserts its shape.
+## WHY each piece: the guestcontrol env carries XDG_RUNTIME_DIR but NOT WAYLAND_DISPLAY
+## (no logind graphical session), so export it (labwc's socket is wayland-0); setsid +
+## </dev/null + log-redirect detach the GUI from the exec channel so it keeps running
+## after the gc_run bash exits (a plain `&` child would be SIGHUP'd when the channel
+## closes). EXTRA (optional) is a space-separated VAR=VAL list exported alongside.
+gc_gui_launch_snippet() {
+   local program="$1" extra="${2:-}"
+   local exports='export WAYLAND_DISPLAY=wayland-0'
+   if [ -n "${extra}" ]; then
+      exports+=" ${extra}"
+   fi
+   printf '%s; setsid %s >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &' \
+      "${exports}" "${program}"
+}
+
+## Launch a GUI PROGRAM in-guest as USERNAME (= boot role), backgrounded so gc_run
+## returns at once (the program holds its own Wayland window). EXTRA is an optional
+## VAR=VAL env list (e.g. MOK_ENROLL=1). The guest must already have a graphical
+## session up (compositor) and VBoxService reachable (wait_guestcontrol_ready).
+gc_launch_gui() {
+   local username="$1" program="$2" extra="${3:-}"
+   gc_run "${username}" "$(gc_gui_launch_snippet "${program}" "${extra}")"
+}
+
 ## Poll until guestcontrol as USERNAME can run `true` (VBoxService up + account
 ## loginable in this boot role), or TIMEOUT. 0 ready / 1 timeout (NOT die: a guest
 ## that never comes back after an upgrade is the gate's signal, not a harness crash --

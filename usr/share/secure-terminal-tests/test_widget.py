@@ -6844,6 +6844,33 @@ eq(_pmc._screen.margins, None,
    '#16: alt-leave drops a saved scroll region that no longer fits the resized screen')
 _pmc.shutdown()
 
+# #16 (ai-review re-flag guard): alt-screen ENTRY KEEPS the primary DECSTBM region when
+# geometry is unchanged, matching a real terminal -- `smcup` (\x1b[?1049h) carries NO
+# scroll-region reset, so entering alt does not clear the region (a full-screen program that
+# wants a clean region issues its own CSI r). Clearing it on enter (s.margins=None) was proposed
+# and refuted: it makes this faithful case diverge, and an inherited region does NOT misplace an
+# absolute write -- CUP is absolute with origin mode off, so a write OUTSIDE the region lands at
+# its true row. The margins save/restore protects the margins==None shrink gate on LEAVE only.
+_pke = SecureTerminal(command='/bin/cat', tui=True)
+_pke.resize(700, 500)
+_pke.show()
+pump(40)
+ok(_pke._screen.lines >= 6, '#16 setup: grid tall enough for the row-6 absolute-write check')
+_pke._stream.feed(b'\x1b[2;4r')                              # PRIMARY DECSTBM region rows 2..4
+ok(_pke._screen.margins is not None and tuple(_pke._screen.margins) == (1, 3),
+   '#16 setup: the primary scroll region set pyte margins (1,3)')
+_pke._tui_grid_size = lambda: (_pke._screen.columns, _pke._screen.lines)  # pin -> enter no-op
+feed_output(_pke, b'\x1b[?1049h')                           # a full-screen program enters alt
+ok(_pke._screen.margins is not None and tuple(_pke._screen.margins) == (1, 3),
+   '#16: alt-enter KEEPS the inherited primary region (smcup has no region reset); clearing '
+   'it on enter was refuted')
+feed_output(_pke, b'\x1b[6;1Hfoo')                          # write at row 6, OUTSIDE the region
+eq(_pke._screen.cursor.y, 5,
+   '#16: CUP to a row outside the region is ABSOLUTE (origin mode off), not clamped to margins')
+eq(''.join(_pke._screen.buffer[5][_x].data for _x in range(3)), 'foo',
+   '#16: the write outside the inherited region lands at its true row (no misplacement)')
+_pke.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the

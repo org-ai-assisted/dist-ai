@@ -72,6 +72,19 @@ assert_eq 'account for sysmaint' "$(gc_account_for_role sysmaint)" 'sysmaint'
 assert_eq 'account for user'     "$(gc_account_for_role user)"     'user'
 assert_eq 'account default'      "$(gc_account_for_role '')"       'user'
 
+## gc_gui_launch_snippet: the in-guest GUI-launch line. Canaries -- each assertion
+## pins a load-bearing piece: WAYLAND_DISPLAY (guestcontrol env lacks it -> Calamares
+## would fail to connect), setsid + </dev/null + trailing & (detach, or the GUI is
+## SIGHUP'd when the exec channel closes), and the EXTRA env passthrough (MOK_ENROLL).
+assert_eq 'gui snippet (no extra env)' "$(gc_gui_launch_snippet 'install-host')" \
+   'export WAYLAND_DISPLAY=wayland-0; setsid install-host >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &'
+assert_eq 'gui snippet (extra env)' "$(gc_gui_launch_snippet 'install-host' 'MOK_ENROLL=1')" \
+   'export WAYLAND_DISPLAY=wayland-0 MOK_ENROLL=1; setsid install-host >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &'
+
+## gc_launch_gui delegates the snippet through gc_run -> vbox-exec-local (the stub).
+assert_eq 'gc_launch_gui delegates the gui snippet as --cmd' "$(gc_launch_gui user 'install-host')" \
+   'testvm|--role|user|--cmd|export WAYLAND_DISPLAY=wayland-0; setsid install-host >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &'
+
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

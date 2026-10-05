@@ -32,8 +32,8 @@ trap cleanup EXIT
 ## the allowlist read), classified by filter text (most specific first):
 ##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow.
 ##   - DENYLIST (watched targets)  -> has "dst host", no 169.254 -> emit STUB_DIR/hits.
-##   - TOR GUARD (guards AND NOT pc) -> has "not (" -> emit STUB_DIR/tor.
-##   - POSITIVE CONTROL (reserved guard) -> host-only -> emit STUB_DIR/pc.
+##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp port" -> emit STUB_DIR/pc.
+##   - TOR GUARD (entry guards) -> has "host " -> emit STUB_DIR/tor.
 ##   - full read (no filter) -> emit STUB_DIR/total.
 ## A missing count file reads as 0. Counts come from FILES (not subshell env) so canary can run in
 ## a die-catching subshell cleanly.
@@ -45,10 +45,10 @@ if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"dst host"*) mode=deny; printf '%s' "$a" > "${STUB_DIR}/last_filter"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"not ("*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"tcp port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
 if [ "${mode}" = full ]; then
-   for a in "$@"; do case "$a" in *"host "*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
+   for a in "$@"; do case "$a" in *"host "*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
 fi
 case "${mode}" in
    allow) f="${STUB_DIR}/allow" ;;
