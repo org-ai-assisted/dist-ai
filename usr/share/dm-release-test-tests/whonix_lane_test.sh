@@ -208,6 +208,10 @@ check "provision: dist-installer-cli imports both VMs" \
 ## not the invoker's. Canary: a revert to no/invoker-home prefix fails this.
 check "provision: directory-prefix is the target account home" \
    "$(grep --quiet -- '--directory-prefix=/home/persist-leak-whonix/dist-installer-cli-download' "${DIST_ARGV}" && printf true || printf false)"
+## skip the installer's apt-upgrade gate (irrelevant to an OVA re-import on a host with
+## VirtualBox already installed).
+check "provision: skips the OS-upgrade gate" \
+   "$(grep --quiet -- '--noupgrade' "${DIST_ARGV}" && printf true || printf false)"
 check "provision: GW marker set to the version" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
 check "provision: WS marker set to the version" \

@@ -459,10 +459,14 @@ rt_provision_leak() {
    log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER}, prefix ${account_home})"
    ## Invoke as the sudo-capable invoker (NOT root -- dist-installer-cli refuses root);
    ## --user="${account}" is the INSTALL target (the leak account), distinct from the invoker.
+   ## --noupdate/--noupgrade skip the installer's apt-update + "upgrade the OS first" gate.
+   ## That gate guards a fresh VirtualBox INSTALL on a user machine; here VBox is already
+   ## installed on the test host and we only re-import OVAs, so a pending host upgrade is
+   ## irrelevant to the import -- not masked, just not this harness's concern.
    sudo -u "${DIST_INSTALLER_USER}" -- "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
       --interface="${interface}" --non-interactive --user="${account}" \
       --directory-prefix="${account_home}/dist-installer-cli-download" \
-      --no-boot --import-only=both --destroy-existing-guest \
+      --noupdate --noupgrade --no-boot --import-only=both --destroy-existing-guest \
       || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
