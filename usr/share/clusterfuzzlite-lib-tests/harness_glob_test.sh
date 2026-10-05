@@ -73,17 +73,20 @@ assert 'zero-match leaves the array empty' test "${#arr1[@]}" -eq 0
 assert 'zero-match prints a clear FATAL' \
    grep -q 'no fuzz harnesses matched' "${err1}"
 
-## Case 2: a real match is returned intact (only the glob, nothing else).
+## Case 2: a real match is returned intact, via the REAL bare-under-errexit
+## calling convention a consumer build.sh uses. A non-zero return here -- e.g. a
+## save/restore step that trips errexit on the normal match path -- ABORTS this
+## script, which is the regression signal; reaching the assertions proves it
+## returned 0. (A `|| rc=$?` call would disable errexit and MASK that class.)
 full_dir="${work_dir}/full"
 mkdir -- "${full_dir}"
 touch -- "${full_dir}/fuzz_x.py"
 touch -- "${full_dir}/fuzz_y.py"
 touch -- "${full_dir}/notme.txt"
 declare -a arr2=()
-rc2=0
-cflite_list_harnesses arr2 "${full_dir}/fuzz_*.py" || rc2=$?
-assert 'match returns zero' test "${rc2}" -eq 0
-assert 'match populates exactly the two harnesses' test "${#arr2[@]}" -eq 2
+cflite_list_harnesses arr2 "${full_dir}/fuzz_*.py"
+assert 'match populates exactly the two harnesses (bare call under errexit)' \
+   test "${#arr2[@]}" -eq 2
 found_x='no'
 found_y='no'
 for harness in "${arr2[@]}"; do

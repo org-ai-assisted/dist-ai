@@ -35,12 +35,20 @@
 cflite_list_harnesses() {
   local -n _cflite_out="$1"
   local _cflite_pattern="$2"
-  local _cflite_prev
-  _cflite_prev="$(shopt -p nullglob)"
+  ## Save/restore nullglob with `shopt -q` in a condition, NOT `_prev="$(shopt -p
+  ## nullglob)"`: `shopt -p` returns non-zero when the option is UNSET, which
+  ## trips the caller's errexit on the assignment (a bare call then aborts the
+  ## build on the normal match path).
+  local _cflite_had_nullglob='no'
+  if shopt -q nullglob; then
+    _cflite_had_nullglob='yes'
+  fi
   shopt -s nullglob
   # shellcheck disable=SC2206  # intentional pathname expansion of the glob
   _cflite_out=( ${_cflite_pattern} )
-  eval "${_cflite_prev}"
+  if [ "${_cflite_had_nullglob}" = 'no' ]; then
+    shopt -u nullglob
+  fi
   if [ "${#_cflite_out[@]}" -eq 0 ]; then
     printf 'FATAL: no fuzz harnesses matched %s\n' "${_cflite_pattern}" >&2
     return 1
