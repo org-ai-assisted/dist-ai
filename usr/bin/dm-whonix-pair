@@ -480,6 +480,13 @@ main() {
    share_dir="$(mktemp -d -t whonix-battery.XXXXXX)"
    cp -- "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" "${share_dir}/anon-leak-test"
    cp -- "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-inject" "${share_dir}/anon-leak-inject"
+   ## Opt-in app/browser layer: stage the WebRTC harness beside the battery (anon-leak-test's
+   ## find_harness looks beside itself on /mnt/shared).
+   if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
+      [ -r "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" ] \
+         || die "${SETUP_RC}" "DM_WHONIX_PAIR_BROWSER=1 but the WebRTC harness is missing in ${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test"
+      cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" "${share_dir}/anon-leak-webrtc.html"
+   fi
 
    printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"
    boot_gateway
@@ -537,6 +544,25 @@ main() {
       die "${FAIL_RC}" "LEAK: the battery proved non-Tor egress (a probe FAILed)"
    elif [ "${battery_rc}" != '0' ]; then
       die "${SETUP_RC}" "leak test INCONCLUSIVE: a probe could not run (battery rc=${battery_rc}) -- not a proven leak"
+   fi
+
+   ## Phase 2b: APP/BROWSER layer -- OPT-IN (DM_WHONIX_PAIR_BROWSER=1). Drives the WS browser
+   ## (headless) via anon-leak-test's browser-webrtc probe: asserts WebRTC exposes no host IP
+   ## and the browser's exit is Tor. Same 0/1/other exit contract as Phase 2. Run WITHOUT sudo
+   ## (Tor Browser refuses to run as root); the probe auto-discovers the browser, or honour
+   ## ANON_LEAK_BROWSER / DISPLAY injected via DM_WHONIX_PAIR_BROWSER_ENV. If no browser is
+   ## found the probe is inconclusive (SETUP), never a vacuous pass.
+   if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
+      printf '%s\n' "${me}: app/browser layer -- run the browser-webrtc probe in the Workstation"
+      local browser_rc=0
+      "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+         --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc --json" \
+         || browser_rc=$?
+      if [ "${browser_rc}" = '1' ]; then
+         die "${FAIL_RC}" "LEAK: the browser layer proved non-Tor egress / a WebRTC host-IP exposure"
+      elif [ "${browser_rc}" != '0' ]; then
+         die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: browser-webrtc could not run (rc=${browser_rc}; no browser in the WS?) -- not a proven leak"
+      fi
    fi
 
    ## Phase 3+4: KILLSWITCH -- OPT-IN only (DM_WHONIX_PAIR_KILLSWITCH=1). Stopping Tor on
