@@ -964,6 +964,23 @@ try:
 finally:
     _ri._write = _saved_write
 
+# --- isolation_notice: SILENT by default, opt-in via the debug env -------------
+# The startup-noise fix: a non-delegated host (cg_base None) is the normal Qubes
+# AppVM case and must NOT print on every launch -- only under the debug env. Pure
+# gating, tested directly (the real-launch integration lives in test_startup_stderr).
+ok(_ri.isolation_notice('x') is None,
+   'isolation_notice: available (default environ) -> None')          # os.environ branch
+ok(_ri.isolation_notice('x', {}) is None,
+   'isolation_notice: available -> None regardless of env')
+ok(_ri.isolation_notice('x', {_ri.ISOLATION_DEBUG_ENV: '1'}) is None,
+   'isolation_notice: available stays silent even under the debug env')
+ok(_ri.isolation_notice(None, {}) is None,
+   'isolation_notice: unavailable is SILENT by default (the fix)')
+ok(_ri.isolation_notice(None, {_ri.ISOLATION_DEBUG_ENV: '0'}) is None,
+   'isolation_notice: debug env != "1" stays silent')
+eq(_ri.isolation_notice(None, {_ri.ISOLATION_DEBUG_ENV: '1'}), _ri.ISOLATION_NOTICE,
+   'isolation_notice: unavailable + debug env -> the notice text')
+
 # --- effective_mem: MemAvailable, else the base cgroup cap, else None ----------
 _root, _scope, _proc = _mk_fakecg(memmax='2000000000')
 _meminfo = os.path.join(_root, 'meminfo')
