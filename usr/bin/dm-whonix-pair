@@ -290,7 +290,7 @@ boot_gateway() {
    ## as non-pinned-guard clearnet and FALSE-FAIL. So DISCONNECT the external NIC for boot 1:
    ## guestcontrol rides the guest-additions channel (NIC-independent), so the pin still writes,
    ## while Tor has no uplink to reach any guard. Reconnected before the traced boot 2 below.
-   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 on \
+   "${VBOXMANAGE}" modifyvm "${gw}" --cableconnected1 off \
       || die "${SETUP_RC}" "${gw}: cannot disconnect the external NIC for the pin-only boot"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
    gw_started='true'
@@ -323,7 +323,7 @@ boot_gateway() {
    ## guards only -- now the FIRST clearnet egress of the measured boot, so neither the guest trace
    ## nor the host wire sees any pre-pin guard.
    nictrace_pcap="$(mktemp -u -t "whonix-gw-trace.XXXXXX.pcap")"
-   "${VBOXMANAGE}" modifyvm "${gw}" --cabledisconnected1 off --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
+   "${VBOXMANAGE}" modifyvm "${gw}" --cableconnected1 on --nictrace1 on --nictracefile1 "${nictrace_pcap}" \
       || die "${SETUP_RC}" "${gw}: cannot reconnect the external NIC / enable --nictrace1"
    "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
 }
