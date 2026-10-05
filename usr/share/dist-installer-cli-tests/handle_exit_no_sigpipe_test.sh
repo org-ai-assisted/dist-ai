@@ -121,6 +121,22 @@ else
       "141 = the pr|head SIGPIPE re-entry; 124/137 = a runaway re-entrant loop; 1 = a hardcoded code"
 fi
 
+## Same, but with the handler's OWN output piped to a reader that closes early
+## ('... | head -n1'). The handler writes several context lines; if the closed
+## pipe is not handled it SIGPIPEs (141) mid-report, masking the real code and
+## skipping end_exit cleanup. The fixed handler ignores SIGPIPE and still exits 42.
+## pipefail makes the pipeline's status the producer's (head exits 0), and
+## '|| rc_piped=$?' keeps this test's own errexit from aborting on it.
+rc_piped=0
+STANDALONE="${standalone}" timeout --kill-after=5 30 bash "${driver}" 2>/dev/null \
+   | head -n 1 >/dev/null || rc_piped="$?"
+if [ "${rc_piped}" -eq 42 ]; then
+   ok "handle_exit survives a closed output pipe and still exits 42"
+else
+   notok "handle_exit did not exit 42 when piped to head (rc=${rc_piped})" \
+      "141 = SIGPIPE on the handler's own write"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== dist-installer-cli handle_exit no-SIGPIPE: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
