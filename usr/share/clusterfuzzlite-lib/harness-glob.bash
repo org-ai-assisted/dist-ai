@@ -48,8 +48,15 @@ cflite_list_harnesses() {
   local -n __clh_out="$1"
   local __clh_nullglob='off'
   local __clh_noglob='off'
+  local __clh_failglob='off'
   if shopt -q nullglob; then
     __clh_nullglob='on'
+  fi
+  ## failglob makes a zero match ABORT the shell during expansion (it takes
+  ## precedence over nullglob), before the guard below can turn it into the
+  ## documented FATAL -- disable it for the expansion, restore after.
+  if shopt -q failglob; then
+    __clh_failglob='on'
   fi
   case "$-" in
     *f*)
@@ -59,10 +66,14 @@ cflite_list_harnesses() {
   local IFS=
   set +f
   shopt -s nullglob
+  shopt -u failglob
   # shellcheck disable=SC2206  # intentional single-word pathname expansion
   __clh_out=( ${2} )
   if [ "${__clh_nullglob}" = 'off' ]; then
     shopt -u nullglob
+  fi
+  if [ "${__clh_failglob}" = 'on' ]; then
+    shopt -s failglob
   fi
   if [ "${__clh_noglob}" = 'on' ]; then
     set -f

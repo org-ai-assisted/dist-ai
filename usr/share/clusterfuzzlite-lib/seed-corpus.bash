@@ -41,6 +41,9 @@ cflite_explode_hex_corpus() {
   local out_dir="$3"
   local seed_name seed_hex
   local count=0
+  ## Parse NAME<space>HEX on whitespace regardless of the caller's IFS (a
+  ## narrowed IFS would otherwise fold the whole line into seed_name).
+  local IFS=$' \t\n'
   ## `|| [ -n "${seed_name}" ]` keeps the final line when the file has no
   ## trailing newline (read returns non-zero but still sets the variables).
   while read -r seed_name seed_hex || [ -n "${seed_name}" ]; do
@@ -48,13 +51,19 @@ cflite_explode_hex_corpus() {
       ''|'##'*)
         continue
         ;;
-      */*|*..*)
+      '.'|*/*|*..*)
         printf 'FATAL: unsafe seed name %s in %s\n' "${seed_name}" "${seeds_file}" >&2
         return 1
         ;;
     esac
     [ -n "${seed_hex}" ] || continue
-    printf '%s' "${seed_hex}" | "${decoder}" > "${out_dir}/${seed_name}"
+    ## Check decode-and-write explicitly so a decoder or write failure FATALs
+    ## regardless of the caller's errexit -- a partial or empty seed must never
+    ## be silently counted.
+    if ! printf '%s' "${seed_hex}" | "${decoder}" > "${out_dir}/${seed_name}"; then
+      printf 'FATAL: decode failed for seed %s in %s\n' "${seed_name}" "${seeds_file}" >&2
+      return 1
+    fi
     count=$(( count + 1 ))
   done < "${seeds_file}"
   if [ "${count}" -eq 0 ]; then
