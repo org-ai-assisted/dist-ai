@@ -55,6 +55,11 @@ DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
 IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
+## dist-installer-cli REFUSES to run as root; it must be invoked by a non-root,
+## passwordless-sudo-capable user (it sudo's internally for apt/modprobe and run_as_target_user
+## to the install account). dm-release-test runs as root, so rt_provision_leak drops to this
+## invoker. Default matches the VBOX_INSTALL_USER convention on the derivative hosts.
+DIST_INSTALLER_USER="${DIST_INSTALLER_USER:-${VBOX_INSTALL_USER:-user}}"
 ## Forward the AI-session identity ACROSS the sudo drop into a leaf VM tool, so dm-vm-lock
 ## (re-exec'd inside the leaf) records WHICH session holds the VM-work lock and another
 ## session can investigate a suspicious holder. sudo strips inherited env; running `env` as
@@ -444,8 +449,10 @@ rt_provision_leak() {
    ws="Whonix-Workstation-${desktop}"
    rt_lock_account "${account}"
    rt_create_clean_account "${account}"
-   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI}"
-   "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
+   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER})"
+   ## Invoke as the sudo-capable invoker (NOT root -- dist-installer-cli refuses root);
+   ## --user="${account}" is the INSTALL target (the leak account), distinct from the invoker.
+   sudo -u "${DIST_INSTALLER_USER}" -- "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
       --interface="${interface}" --non-interactive --user="${account}" \
       --no-boot --import-only=both --destroy-existing-guest \
       || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
