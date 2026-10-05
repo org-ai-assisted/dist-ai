@@ -3,7 +3,11 @@
 # Group vboxusers = the users that do VM work on this host (test accounts + build user +
 # admins), so each can flock the lock file. The lock file's CONTENTS are advisory only
 # (flock is the mutex); pre-creating it root-owned means no unprivileged user can swap it.
+# STICKY (1770): members may create their own holder.<class>.<pid> records but cannot delete
+# or replace another's -- above all they cannot delete+recreate the root-owned vm.lock, which
+# would move the flock to a NEW inode and break mutual exclusion (old holders keep the old
+# inode while new callers lock the replacement).
 # dm-vm-lock runs only on the server; on a host without group vboxusers systemd-tmpfiles
 # simply skips these lines (harmless -- the dir is not needed there).
-d /run/dm-vm-lock 0770 root vboxusers -
+d /run/dm-vm-lock 1770 root vboxusers -
 f /run/dm-vm-lock/vm.lock 0660 root vboxusers -

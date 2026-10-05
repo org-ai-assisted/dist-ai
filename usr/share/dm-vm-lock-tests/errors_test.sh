@@ -45,4 +45,14 @@ rc=0; DM_VM_LOCK_DIR="${nolock}" "${TOOL}" acquire --class work -- true 2>/dev/n
 if [ "${rc}" -eq 69 ]; then r=0; else r=1; fi
 check 'a missing lock file is rejected (69), not run unlocked' "${r}"
 
+## --ttl 0 would tell timeout(1) to DISABLE the deadline -- reject it (the backstop must stay).
+rc=0; "${TOOL}" acquire --class work --ttl 0 -- true 2>/dev/null || rc=$?
+if [ "${rc}" -eq 64 ]; then r=0; else r=1; fi
+check 'a zero --ttl is rejected (64), not silently unbounded' "${r}"
+
+## A leading-zero TTL is base-10, not octal: --ttl 08 must RUN (8s), not die on octal arithmetic.
+rc=0; out="$("${TOOL}" acquire --class work --ttl 08 --wait 5 -- printf 'ok')" || rc=$?
+if [ "${rc}" -eq 0 ] && [ "${out}" = 'ok' ]; then r=0; else r=1; fi
+check 'a leading-zero --ttl (08) is parsed base-10 and runs' "${r}"
+
 vmlock_done

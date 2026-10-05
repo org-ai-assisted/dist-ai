@@ -45,4 +45,15 @@ if [ "${#work_holders[@]}" -eq 0 ]; then r=0; else r=1; fi
 check 'reentrant acquire registers no holder (took no lock)' "${r}"
 
 wait "${bgpid}" 2>/dev/null || true
+
+## Class-aware reentrancy: a held 'work' (shared) does NOT cover a nested 'leak' (exclusive),
+## so it must be REFUSED (not silently run non-exclusively), while a held 'leak' covers anything.
+rc=0; DM_VM_LOCK_HELD=work "${TOOL}" acquire --class leak --nonblock -- true 2>/dev/null || rc=$?
+if [ "${rc}" -eq 70 ]; then r=0; else r=1; fi
+check 'a leak acquire while holding work is refused (70), not run non-exclusively' "${r}"
+
+rc=0; out="$(DM_VM_LOCK_HELD=leak "${TOOL}" acquire --class work --nonblock -- printf 'ok')" || rc=$?
+if [ "${rc}" -eq 0 ] && [ "${out}" = 'ok' ]; then r=0; else r=1; fi
+check 'a work acquire while holding leak passes through (leak covers work)' "${r}"
+
 vmlock_done

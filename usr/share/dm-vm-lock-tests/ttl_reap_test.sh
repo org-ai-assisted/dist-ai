@@ -69,6 +69,14 @@ printf 'class=work session=g session_id=g user=g pid=999999 acquired=2020-01-01T
 if [ -e "${d3}/holder.work.999999" ]; then r=1; else r=0; fi
 check 'status reaps a dead-pid holder' "${r}"
 
+## A LIVE pid with a future deadline must NOT be reaped (the who-holds-it record must survive).
+printf 'class=leak session=g session_id=g user=g pid=%s acquired=2020-01-01T00:00:00Z ttl=999999 ttl_deadline_epoch=9999999999 cmd=live\n' "$$" \
+   > "${d3}/holder.leak.$$"
+"${TOOL}" status >/dev/null 2>&1 || true
+if [ -e "${d3}/holder.leak.$$" ]; then r=0; else r=1; fi
+check 'status keeps a live-pid, non-expired holder (no over-reaping)' "${r}"
+safe-rm --force -- "${d3}/holder.leak.$$"
+
 printf 'class=work session=g session_id=g user=g pid=%s acquired=2020-01-01T00:00:00Z ttl=1 ttl_deadline_epoch=1 cmd=old\n' "$$" \
    > "${d3}/holder.work.$$"
 "${TOOL}" status >/dev/null 2>&1 || true
