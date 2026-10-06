@@ -753,13 +753,13 @@ def _c_behind_wrapper(call, words, start, source):
     """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START] is
     the shell). Handles the separate ('-c PROG') and attached ('-c"prog"') forms,
     the same classifier + value extraction as _c_in_command. Classifies on the
-    word_string, falling back to the raw source (as command_tokens does) so an
-    expansion-bearing attached value is resolved, not silently skipped."""
+    word_string ONLY: an expansion-bearing word (None) is SKIPPED so the scan
+    reaches a real later '-c' (e.g. 'bash -$cflags -c PROG'), rather than reading
+    the expansion word's literal 'c' as a bogus cluster. So an expansion-bearing
+    ATTACHED value behind a wrapper ('bash -c"$x; b"', itself an invalid glued
+    spelling bash rejects) is a documented under-report, not a misread."""
     for index in range(start + 1, len(words)):
-        lit = bash_ast.word_string(words[index])
-        if lit is None:
-            lit = bash_ast.word_source(words[index], source)
-        classified = _c_opt_program(lit)
+        classified = _c_opt_program(bash_ast.word_string(words[index]))
         if classified is None:
             continue
         form, ci = classified

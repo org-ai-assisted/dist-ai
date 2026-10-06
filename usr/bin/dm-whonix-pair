@@ -393,21 +393,21 @@ ws_battery() {
    probe_verdict "${out}"
 }
 
-## Run the app/browser-layer webrtc probe. It runs as the NON-root sysmaint user (Tor Browser
-## refuses root), but /mnt/shared is a root-only read-only mount a non-root read cannot open.
-## STAGE (as root, dsudo) into a world-readable guest-local dir in a SEPARATE guestcontrol call so
-## a staging/transport failure returns SETUP_RC -- never the probe's exit-1 LEAK code; explicit dir
-## mode 0755 so a hardened (Kicksecure) root umask cannot leave it non-searchable for the non-root
-## probe. Then RUN the probe from there (find_harness looks beside the CLI) and classify its JSON
-## verdict via probe_verdict like the battery -- so a probe-run infra/transport failure (no JSON
-## verdict) is SETUP, never a false LEAK.
+## Run the app/browser-layer webrtc probe. STAGE as root (sysmaint + dsudo): /mnt/shared is a
+## root-only read-only mount, so copy the CLI + harness into a world-readable guest-local dir
+## (explicit 0755, umask-independent), in a SEPARATE call so a staging/transport failure returns
+## SETUP_RC, never a false exit-1 LEAK. Then RUN the probe in the sysmaint session (the WS boots
+## sysmaint for the battery's root ops; `user` is not logon-able over guestcontrol there). Tor
+## Browser refuses a sysmaint-booted session (boot_session is read from the kernel cmdline, not the
+## uid) unless tb_allow_start_in_sysmaint=true -- the documented override -- so inject it. Classify
+## the JSON verdict via probe_verdict: a probe-run infra failure (no JSON) is SETUP, never a leak.
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
       --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
+      --cmd "env tb_allow_start_in_sysmaint=true ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
    printf '%s\n' "${out}"
    probe_verdict "${out}"
 }
@@ -763,10 +763,11 @@ main() {
 
    ## Phase 2b: APP/BROWSER layer -- OPT-IN (DM_WHONIX_PAIR_BROWSER=1). Drives the WS browser
    ## (headless) via anon-leak-test's browser-webrtc probe: asserts WebRTC exposes no host IP
-   ## and the browser's exit is Tor. Same 0/1/other exit contract as Phase 2. Run WITHOUT sudo
-   ## (Tor Browser refuses to run as root); the probe auto-discovers the browser, or honour
-   ## ANON_LEAK_BROWSER / DISPLAY injected via DM_WHONIX_PAIR_BROWSER_ENV. If no browser is
-   ## found the probe is inconclusive (SETUP), never a vacuous pass.
+   ## and the browser's exit is Tor. Verdict via probe_verdict (ws_browser_probe stages as root,
+   ## runs the probe in the sysmaint session with tb_allow_start_in_sysmaint=true). The probe
+   ## auto-discovers the browser, or honours ANON_LEAK_BROWSER / DISPLAY injected via
+   ## DM_WHONIX_PAIR_BROWSER_ENV. If no browser is found the probe is inconclusive (SETUP),
+   ## never a vacuous pass.
    if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
       printf '%s\n' "${me}: app/browser layer -- run the browser-webrtc probe in the Workstation"
       local browser_rc=0

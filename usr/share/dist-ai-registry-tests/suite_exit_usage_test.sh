@@ -58,6 +58,11 @@ sources_helper() {
 ## Does the file CALL the vocabulary? Anchored to a statement (optional indent
 ## then the name), so a comment mentioning suite_exit cannot mask a forget, and
 ## the 'suite_exit_helper' assignment (no space before '_') is not a call.
+## SCOPE (heuristic, deliberately not a shell parser): this grep cannot tell a
+## real call from a 'suite_exit' line sitting in a here-document body, so a
+## runner that only MENTIONS the token in a heredoc would read as calling it.
+## That is a contrived shape, not the forgot-to-call ACCIDENT this guards; a
+## heredoc parser here would be the fragile-parser trap, so it is out of scope.
 calls_vocabulary() {
    grep --quiet --extended-regexp \
       '^[[:space:]]*(suite_exit[[:space:]]|result_(pass|fail|skip_target_absent|skip_env_unmet)([[:space:]]|$|\)))' \

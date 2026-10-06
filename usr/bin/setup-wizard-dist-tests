@@ -40,5 +40,7 @@ run_unittest="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/
 ## run-unittest.py maps all-skipped (78) / nothing-collected (77) to a surfaced
 ## SKIP so a run where nothing actually executed (PyQt5 or guimessages absent)
 ## cannot read as a green PASS. Its exit code is the suite's -- it is the last
-## command, so errexit propagates it.
-"${run_unittest}" --start-directory "${tests_dir}" --pattern 'test_*.py'
+## command, so errexit propagates it. "$@" is forwarded so --help and -v work;
+## an unsupported arg fails loudly there rather than being silently ignored
+## (the orchestrator calls this with no args).
+"${run_unittest}" --start-directory "${tests_dir}" --pattern 'test_*.py' "$@"
