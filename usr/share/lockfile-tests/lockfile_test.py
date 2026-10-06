@@ -406,15 +406,17 @@ def no_fallback_tests(lockfile_sh, check):
         os.mkdir(runtime3, 0o755)
         os.chown(runtime3, nobody.pw_uid, nobody.pw_gid)
     else:
-        runtime3 = None
-        for cand in ('/tmp', '/var/tmp', '/dev/shm'):
+        ## Default to a read-only not-owned dir; prefer a writable one when present.
+        ## The /tmp-class dirs are probed read-only for the not-owned + writable
+        ## property -- nothing is created in them (the real helper refuses before any
+        ## mkdir), so this is not an insecure tempfile use.
+        runtime3 = '/usr'
+        for cand in ('/tmp', '/var/tmp', '/dev/shm'):  # nosec B108
             if (os.path.isdir(cand) and not os.path.islink(cand)
                     and os.stat(cand).st_uid != os.geteuid()
                     and os.access(cand, os.W_OK)):
                 runtime3 = cand
                 break
-        if runtime3 is None:
-            runtime3 = '/usr'
     env3 = dict(os.environ, XDG_RUNTIME_DIR=runtime3,
                 XDG_CACHE_HOME=cache3, HOME=tmp3)
     res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
