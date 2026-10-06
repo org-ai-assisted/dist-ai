@@ -15,14 +15,13 @@
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
 
-## Emit the result JSON. All values are caller-controlled tokens plus rc/pass/
-## expect; expect is rendered as a JSON array. printf keeps it zero-dependency
-## (no jq).
 ## Map a lane rc to a verdict. 0 = PASS; the reserved SETUP/inconclusive code 2 =
 ## INCONCLUSIVE (a provisioning/infra gap or an inconclusive probe -- NOT a product
 ## failure, so neither green nor a leak); any other non-zero = FAIL. Single source so
 ## the console summary and result.json never drift (dist-ai harness convention: a lane
 ## exits 2 for setup/inconclusive -- see dm-release-test SETUP_RC / dm-whonix-pair).
+## Mirrors dm_test_results.model.verdict_from_rc (the emitter is the JSON writer; this
+## stays for the console line a caller prints without shelling out to python).
 image_test_verdict_from_rc() {
    case "$1" in
       0)
@@ -37,65 +36,105 @@ image_test_verdict_from_rc() {
    esac
 }
 
-image_test_write_result_json() {
-   local dest name test_user mode ts rc pass verdict
-   dest="$1"
-   name="$2"
-   test_user="$3"
-   mode="$4"
-   ts="$5"
-   rc="$6"
-   pass="$7"
-   shift 7
-
-   verdict="$(image_test_verdict_from_rc "${rc}")"
-
-   local expect_json item first
-   expect_json=""
-   first='true'
-   for item in "$@"; do
-      item="${item//\\/\\\\}"
-      item="${item//\"/\\\"}"
-      if [ "${first}" = 'true' ]; then
-         expect_json="\"${item}\""
-         first='false'
-      else
-         expect_json="${expect_json}, \"${item}\""
-      fi
-   done
-
-   {
-      printf '{\n'
-      printf '  "name": "%s",\n' "${name}"
-      printf '  "test_user": "%s",\n' "${test_user}"
-      printf '  "mode": "%s",\n' "${mode}"
-      printf '  "timestamp": "%s",\n' "${ts}"
-      printf '  "rc": %s,\n' "${rc}"
-      printf '  "pass": %s,\n' "${pass}"
-      printf '  "verdict": "%s",\n' "${verdict}"
-      printf '  "expect": [%s]\n' "${expect_json}"
-      printf '}\n'
-   } > "${dest}"
+## Resolve the result.json writer (dm-test-result/v1 single-source-of-truth). The
+## checkout's sibling by default (lib is <root>/usr/libexec/image-test/..., the bin
+## is <root>/usr/bin/...), overridable so a suite drives the in-tree tool with
+## nothing written to /usr.
+image_test_result_emit_bin() {
+   local self bin
+   if [ -n "${IMAGE_TEST_RESULT_EMIT:-}" ]; then
+      printf '%s\n' "${IMAGE_TEST_RESULT_EMIT}"
+      return 0
+   fi
+   self="$(readlink --canonicalize -- "${BASH_SOURCE[0]}")"
+   bin="$(dirname -- "$(dirname -- "$(dirname -- "${self}")")")/bin/image-test-result-emit"
+   if [ -x "${bin}" ]; then
+      printf '%s\n' "${bin}"
+   else
+      printf '%s\n' '/usr/bin/image-test-result-emit'
+   fi
 }
 
-## Publish one run's artifacts. Args:
-##   results_root owner name test_user mode rc pass shot_src expect...
+## Publish one run's artifacts. Positionals (stable core):
+##   results_root owner name test_user mode rc shot_src
+## then named options: --lane L --version V --builder B --origin downloaded|built
+##   --step-name S [--start-unix N] [--stop-unix N] [--expect TOK]...
+## No `pass` arg: the verdict, pass flag, and per-step status all derive from rc in
+## ONE place (the emitter / dm_test_results.model), so there is nothing to keep in
+## sync and nothing to drift.
+##
 ## shot_src may be empty or a missing file (a run that never powered on is still
-## reported); the caller owns and cleans its own screenshot temp. Must run as
-## root: it writes under the web root and chowns the subtree to the nginx owner.
+## reported); the caller owns and cleans its own screenshot temp. The shot is stored
+## as a step-named PNG in the run dir; the site generator produces the normalized
+## webp the public page serves (so cwebp is not on this best-effort server path).
+## Must run as root: it writes under the web root and chowns the subtree to nginx.
 image_test_results_publish() {
-   local results_root owner name test_user mode rc pass shot_src
+   local results_root owner name test_user mode rc shot_src
    results_root="$1"
    owner="$2"
    name="$3"
    test_user="$4"
    mode="$5"
    rc="$6"
-   pass="$7"
-   shot_src="$8"
-   shift 8
+   shot_src="$7"
+   shift 7
 
-   local ts outdir
+   local lane version builder origin step_name start_unix stop_unix
+   local -a expect=()
+   lane=""
+   version=""
+   builder="dm-image-test"
+   origin="built"
+   step_name="${mode}"
+   start_unix=""
+   stop_unix=""
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --lane)
+            lane="$2"
+            shift 2
+            ;;
+         --version)
+            version="$2"
+            shift 2
+            ;;
+         --builder)
+            builder="$2"
+            shift 2
+            ;;
+         --origin)
+            origin="$2"
+            shift 2
+            ;;
+         --step-name)
+            step_name="$2"
+            shift 2
+            ;;
+         --start-unix)
+            start_unix="$2"
+            shift 2
+            ;;
+         --stop-unix)
+            stop_unix="$2"
+            shift 2
+            ;;
+         --expect)
+            expect+=( "$2" )
+            shift 2
+            ;;
+         *)
+            printf 'image_test_results_publish: unknown option: %s\n' "$1" >&2
+            return 2
+            ;;
+      esac
+   done
+   ## lane defaults to the subtree name for the generic runner; dm-release-test
+   ## passes the real guest-interface lane.
+   if [ -z "${lane}" ]; then
+      lane="${name}"
+   fi
+
+   local ts outdir shot_rel emit
    ts="$(date -u +%Y%m%dT%H%M%SZ)"
    outdir="${results_root}/${name}/${ts}"
    mkdir --parents -- "${outdir}"
@@ -103,13 +142,41 @@ image_test_results_publish() {
    ## The screenshot path is produced by the unprivileged TEST_USER but copied
    ## here as root: a symlink there would make root read its target (e.g.
    ## /etc/shadow) into the world-readable results plane. Refuse a symlink;
-   ## -f alone follows it.
+   ## -f alone follows it. Stored step-named so multiple per-step shots never
+   ## collide (single shot today; multi-step is a later, schema-stable extension).
+   shot_rel=""
    if [ -n "${shot_src}" ] && [ ! -L "${shot_src}" ] && [ -f "${shot_src}" ]; then
-      cp -- "${shot_src}" "${outdir}/screenshot.png"
+      shot_rel="${step_name}.png"
+      cp -- "${shot_src}" "${outdir}/${shot_rel}"
    fi
-   image_test_write_result_json \
-      "${outdir}/result.json" "${name}" "${test_user}" "${mode}" "${ts}" \
-      "${rc}" "${pass}" "$@"
+
+   emit="$(image_test_result_emit_bin)"
+   local -a emit_args=(
+      --dest "${outdir}/result.json"
+      --run-id "${name}-${ts}"
+      --lane "${lane}"
+      --version "${version}"
+      --builder "${builder}"
+      --mode "${mode}"
+      --test-user "${test_user}"
+      --origin "${origin}"
+      --rc "${rc}"
+      --step-name "${step_name}"
+   )
+   if [ -n "${start_unix}" ]; then
+      emit_args+=( --start-unix "${start_unix}" )
+   fi
+   if [ -n "${stop_unix}" ]; then
+      emit_args+=( --stop-unix "${stop_unix}" )
+   fi
+   if [ -n "${shot_rel}" ]; then
+      emit_args+=( --step-shot "${shot_rel}" )
+   fi
+   local item
+   for item in "${expect[@]}"; do
+      emit_args+=( --expect "${item}" )
+   done
+   "${emit}" "${emit_args[@]}"
 
    ## Point <name>/latest at this run and hand the whole subtree to nginx.
    ln --symbolic --force --no-dereference -- "${ts}" "${results_root}/${name}/latest"

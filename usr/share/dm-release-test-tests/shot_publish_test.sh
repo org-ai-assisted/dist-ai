@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Canary: rt_publish_result must FORWARD its shot arg (6th positional) to
-## image_test_results_publish's shot_src (8th arg), and forward an empty shot as
+## image_test_results_publish's shot_src (7th arg), and forward an empty shot as
 ## empty. A reverted change that hardcoded "" would silently drop every screenshot
 ## from the results plane. Sources the REAL dm-release-test (guarded main) and
 ## stubs image_test_results_publish to capture the forwarded shot_src.
@@ -41,11 +41,11 @@ shot_cap_cleanup() { safe-rm --force -- "${capture_file}"; }
 trap shot_cap_cleanup EXIT
 captured_shot='UNSET'
 
-## Stub the publisher: record the 8th positional (shot_src) the lane forwards, and
+## Stub the publisher: record the 7th positional (shot_src) the lane forwards, and
 ## print an outdir so rt_publish_result's summary line does not choke.
 # shellcheck disable=SC2329  ## invoked indirectly by rt_publish_result
 image_test_results_publish() {
-   printf '%s' "$8" > "${capture_file}"
+   printf '%s' "$7" > "${capture_file}"
    printf '%s' "/nonexistent/outdir"
 }
 

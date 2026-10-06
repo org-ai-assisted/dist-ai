@@ -8,8 +8,15 @@
 ## Unit-tests the shared results-plane publisher (results-publish.bsh), used by
 ## both image-test-run and dm-release-test. Runs as a normal user into a temp
 ## results root (owner = the running user, so the chown is a no-op), no network.
-## Canary: a result.json that dropped a field or a 'latest' link that did not
-## point at the run would fail the assertions below.
+## Drives the REAL publisher, which shells out to the REAL image-test-result-emit
+## (resolved as its in-tree sibling) -- no synthetic JSON.
+##
+## Canary (fails on the pre-schema code): the result is dm-test-result/v1 with a
+## steps[] array carrying a per-step status and a summary that agrees with it; the
+## shot is stored step-named (calamares-install.png), not the old generic
+## screenshot.png; and rc 2 maps to step status 'broken' (an INCONCLUSIVE setup
+## gap), not the old binary pass/fail. A reverted flat-schema / screenshot.png /
+## binary-pass writer would fail these.
 
 set -o errexit
 set -o nounset
@@ -51,7 +58,9 @@ owner="$(id --user --name)"
 
 outdir="$(image_test_results_publish "${results_root}" "${owner}" \
    "kicksecure-18-2-3-5" "eph-run-kicksecure-18-2-3-5" "calamares-install" \
-   0 "true" "${shot}" "Kicksecure")"
+   0 "${shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure)"
 
 check() {
    local label cond
@@ -68,33 +77,54 @@ check() {
 json="${outdir}/result.json"
 check "outdir created" "$([ -d "${outdir}" ] && printf true || printf false)"
 check "result.json written" "$([ -f "${json}" ] && printf true || printf false)"
-check "screenshot copied" "$([ -f "${outdir}/screenshot.png" ] && printf true || printf false)"
-check "json has name" "$(grep --quiet '"name": "kicksecure-18-2-3-5"' -- "${json}" && printf true || printf false)"
-check "json has test_user" "$(grep --quiet '"test_user": "eph-run-kicksecure-18-2-3-5"' -- "${json}" && printf true || printf false)"
+## Shot stored step-named (canary: old code wrote the generic screenshot.png).
+check "shot stored step-named" "$([ -f "${outdir}/calamares-install.png" ] && printf true || printf false)"
+check "no legacy screenshot.png" "$([ ! -f "${outdir}/screenshot.png" ] && printf true || printf false)"
+## Schema envelope (canary: the old flat {name,test_user,pass,timestamp} schema
+## carried none of these).
+check "json has schema tag" "$(grep --quiet '"schema": "dm-test-result/v1"' -- "${json}" && printf true || printf false)"
+check "json has stage finished" "$(grep --quiet '"stage": "finished"' -- "${json}" && printf true || printf false)"
+check "json has lane" "$(grep --quiet '"lane": "kicksecure-lxqt"' -- "${json}" && printf true || printf false)"
+check "json has version" "$(grep --quiet '"version": "18.2.3.5"' -- "${json}" && printf true || printf false)"
 check "json has mode" "$(grep --quiet '"mode": "calamares-install"' -- "${json}" && printf true || printf false)"
-check "json has rc" "$(grep --quiet '"rc": 0' -- "${json}" && printf true || printf false)"
-check "json has pass" "$(grep --quiet '"pass": true' -- "${json}" && printf true || printf false)"
+check "json has test_user" "$(grep --quiet '"test_user": "eph-run-kicksecure-18-2-3-5"' -- "${json}" && printf true || printf false)"
+check "json has origin downloaded" "$(grep --quiet '"origin": "downloaded"' -- "${json}" && printf true || printf false)"
 check "json has verdict PASS" "$(grep --quiet '"verdict": "PASS"' -- "${json}" && printf true || printf false)"
-check "json has expect" "$(grep --quiet '"expect": \["Kicksecure"\]' -- "${json}" && printf true || printf false)"
+check "json has expect token" "$(grep --quiet '"Kicksecure"' -- "${json}" && printf true || printf false)"
+## steps[] + per-step status + summary agreement (canary: old schema had no steps).
+check "step status passed" "$(grep --quiet '"status": "passed"' -- "${json}" && printf true || printf false)"
+check "summary passed 1" "$(grep --quiet '"passed": 1' -- "${json}" && printf true || printf false)"
+check "summary total 1" "$(grep --quiet '"total": 1' -- "${json}" && printf true || printf false)"
+## Attachment references the stored shot by name + mediaType.
+check "attachment path" "$(grep --quiet '"path": "calamares-install.png"' -- "${json}" && printf true || printf false)"
+check "attachment mediaType png" "$(grep --quiet '"mediaType": "image/png"' -- "${json}" && printf true || printf false)"
 
 ## latest must point at the run's timestamp dir (basename of outdir).
 latest="${results_root}/kicksecure-18-2-3-5/latest"
 link_target="$(readlink -- "${latest}" 2>/dev/null || true)"
 check "latest symlink points at run" "$([ "${link_target}" = "$(basename -- "${outdir}")" ] && printf true || printf false)"
 
-## verdict mapping (canary: the old binary pass/fail schema published rc 2 as FAIL).
-## SETUP_RC(2) -> INCONCLUSIVE (pass=false but NOT a leak); any other non-zero -> FAIL.
+## rc 2 = SETUP/inconclusive: run verdict INCONCLUSIVE AND step status 'broken'
+## (an infra/setup error, distinct from a FAIL). Canary: the old binary pass/fail
+## schema published rc 2 as FAIL and had no step status at all. No shot here (the
+## packet-based whonix lane), so attachments must be empty.
 inc_out="$(image_test_results_publish "${results_root}" "${owner}" \
    "whonix-18-2-3-5" "persist-leak-whonix" "whonix-pair" \
-   2 "false" "" "tor-confirm")"
+   2 "" --lane whonix-gw-ws --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect tor-confirm)"
 inc_json="${inc_out}/result.json"
 check "rc 2 verdict INCONCLUSIVE" "$(grep --quiet '"verdict": "INCONCLUSIVE"' -- "${inc_json}" && printf true || printf false)"
-check "rc 2 pass false" "$(grep --quiet '"pass": false' -- "${inc_json}" && printf true || printf false)"
+check "rc 2 step status broken" "$(grep --quiet '"status": "broken"' -- "${inc_json}" && printf true || printf false)"
+check "rc 2 summary broken 1" "$(grep --quiet '"broken": 1' -- "${inc_json}" && printf true || printf false)"
+check "rc 2 no attachment" "$(grep --quiet '"attachments": \[\]' -- "${inc_json}" && printf true || printf false)"
 
 fail_out="$(image_test_results_publish "${results_root}" "${owner}" \
    "whonix-18-2-3-6" "persist-leak-whonix" "whonix-pair" \
-   5 "false" "" "tor-confirm")"
-check "rc 5 verdict FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${fail_out}/result.json" && printf true || printf false)"
+   5 "" --lane whonix-gw-ws --version 18.2.3.6 --builder dm-release-test \
+   --origin downloaded --expect tor-confirm)"
+fail_json="${fail_out}/result.json"
+check "rc 5 verdict FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${fail_json}" && printf true || printf false)"
+check "rc 5 step status failed" "$(grep --quiet '"status": "failed"' -- "${fail_json}" && printf true || printf false)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s publish assertion(s) failed\n' "${failures}" >&2

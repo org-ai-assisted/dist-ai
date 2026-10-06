@@ -116,6 +116,7 @@ core_suites=(
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-release-test-tests
+   test-results-site-tests
    dm-vm-lock-tests
    dm-virtualbox-wiki-links-tests
    dist-installer-cli-tests
@@ -894,6 +895,16 @@ wire() {
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
+      test-results-site)
+         ## dist-ai's own results-plane + verification-site tooling. The suite
+         ## imports dm_test_results from this tree directly; the generator lane
+         ## shells out to the in-tree image-optimize, which sources helper-scripts
+         ## strings.bsh via HELPER_SCRIPTS_PATH -- wire it when a checkout exists.
+         wire_env=()
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'
          ## (stubbed resolver), so there is no checkout to point at and no
@@ -1052,7 +1063,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
