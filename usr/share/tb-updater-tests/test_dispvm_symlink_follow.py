@@ -264,21 +264,27 @@ def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
         text = handle.read()
     lines = text.splitlines()
 
-    ## The symlink reject over the mount points, and it must exit nonzero on a
-    ## planted symlink. Removing it (or its exit) is the regression this guards.
+    ## Locate the reject's 'if [ -L "${tb_mount_point}" ]; then' OPENER -- anchored
+    ## to the real if-statement line, so a bare match in a comment cannot stand in
+    ## for it. Removing the guard is the regression this guards against.
     reject_idx = None
     for i, line in enumerate(lines):
-        if re.search(r'\[ -L "\$\{tb_mount_point\}" \]', line):
+        if re.match(r'\s*if \[ -L "\$\{tb_mount_point\}" \]; then\s*$', line):
             reject_idx = i
             break
     assert reject_idx is not None, (
-        f'dispvm must guard the mount points with a \'[ -L "${{tb_mount_point}}" ]\' '
-        f"symlink reject before binding: {DISPVM}"
+        f'dispvm must guard the mount points with an '
+        f'\'if [ -L "${{tb_mount_point}}" ]; then\' reject before binding: {DISPVM}'
     )
-    assert re.search(
-        r'if \[ -L "\$\{tb_mount_point\}" \]; then(?:[^\n]*\n){1,4}?\s*exit 1\b',
-        text), (
-        f"the symlink reject must 'exit 1' on a planted symlink: {DISPVM}"
+    ## The guard body (up to its closing 'fi') must exit nonzero on a planted
+    ## symlink -- bounded to the block so an 'exit' elsewhere cannot satisfy it.
+    guard_body = []
+    for line in lines[reject_idx + 1:]:
+        if re.match(r'\s*fi\b', line):
+            break
+        guard_body.append(line)
+    assert any(re.match(r'\s*exit [1-9][0-9]*\b', b) for b in guard_body), (
+        f"the symlink reject must 'exit' nonzero on a planted symlink: {DISPVM}"
     )
 
     ## Each persistent-cache bind is a raw 'mount --bind' onto the home mount
