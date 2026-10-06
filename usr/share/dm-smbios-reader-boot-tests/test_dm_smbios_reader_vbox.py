@@ -937,3 +937,26 @@ def test_serial_up_tears_down_half_built_vm_on_build_failure(monkeypatch):
         emit_argv=False)
     assert M.run_serial_up(args) == M.SETUP_RC
     assert any('unregistervm' in a for a in ran), ran  # teardown unregistered it
+
+
+def test_run_boot_test_ova_import_failure_maps_to_setup_rc(monkeypatch):
+    ## A failing OVA import (missing/corrupt .ova) is a SETUP step: it must map to
+    ## SETUP_RC, not escape as an uncaught CalledProcessError traceback + exit 1
+    ## that bypasses the SETUP_RC(2)/FAIL_RC(5) contract dist-ai-tests-all relies on.
+    ## RED pre-fix: the import ran OUTSIDE the try, so the exception propagated out of
+    ## run_boot_test and pytest records an ERROR instead of SETUP_RC.
+    monkeypatch.setattr(M, 'require_vboxmanage', lambda: None)
+
+    def boom(argv):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(M, '_run', boom)
+    started = []
+    ## start_vm must never be reached when the import fails; prove it stays unstarted.
+    monkeypatch.setattr(M, 'start_vm', lambda *a, **k: started.append(True))
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: None)
+    args = types.SimpleNamespace(
+        ova='/nonexistent.ova', vm='kick', no_poweroff=True,
+        expect=['x'], timeout=1, interval=1, shot=None)
+    assert M.run_boot_test(args) == M.SETUP_RC
+    assert started == []  # import failed -> VM never started

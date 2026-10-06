@@ -955,7 +955,15 @@ def run_boot_test(args):
         print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
         return SETUP_RC
     if args.ova is not None:
-        _run(build_import_argv(args.ova, args.vm))
+        try:
+            _run(build_import_argv(args.ova, args.vm))
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            ## Import is a SETUP step (missing/corrupt OVA, VBoxManage gone): map it
+            ## to SETUP_RC like require_vboxmanage above, never let it escape as an
+            ## uncaught traceback + exit 1 that bypasses the RC contract.
+            print('dm-smbios-reader-vbox: SETUP -- OVA import failed: %s' % (exc,),
+                  file=sys.stderr)
+            return SETUP_RC
     rc = FAIL_RC
     started = False
     try:
