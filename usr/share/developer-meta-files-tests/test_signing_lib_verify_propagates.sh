@@ -59,9 +59,12 @@ cleanup() {
 trap cleanup EXIT
 
 ## Stub `sq` and `signify-openbsd` on PATH so the REAL lib functions run without
-## real keys. `sq sign` and `signify-openbsd -S` create their signature file;
-## verification honours SQ_VERIFY_RC / SIGNIFY_RC; every signify call is logged
-## to SIGNIFY_CALLS so a test can assert signify was (not) invoked.
+## real keys. `sq sign` / `signify-openbsd -S` create their signature file.
+## Exit codes are controllable PER OPERATION so a test can model "signs OK but
+## verification fails": sq sign->SQ_SIGN_RC, sq verify->SQ_VERIFY_RC, signify
+## -S->SIGNIFY_SIGN_RC, signify -V->SIGNIFY_VERIFY_RC (each falls back to the
+## shared SIGNIFY_RC, then 0). Every signify call is logged to SIGNIFY_CALLS so a
+## test can assert signify was (not) invoked.
 bindir="${work}/bin"
 mkdir -p -- "${bindir}"
 cat > "${bindir}/sq" <<'SQ'
@@ -94,8 +97,14 @@ for a in "$@"; do
    fi
    prev="${a}"
 done
-if [ "${1:-}" = "-S" ] && [ -n "${xfile}" ]; then
-   printf 'sig' > "${xfile}"
+if [ "${1:-}" = "-S" ]; then
+   if [ -n "${xfile}" ]; then
+      printf 'sig' > "${xfile}"
+   fi
+   exit "${SIGNIFY_SIGN_RC:-${SIGNIFY_RC:-0}}"
+fi
+if [ "${1:-}" = "-V" ]; then
+   exit "${SIGNIFY_VERIFY_RC:-${SIGNIFY_RC:-0}}"
 fi
 exit "${SIGNIFY_RC:-0}"
 SIGNIFY
@@ -191,10 +200,54 @@ else
    fail "verify_signature_signify wrongly failed with two valid signatures"
 fi
 
+## PROPAGATION: sign_and_verify must FAIL a bad OpenPGP verify. The structural
+## grep below accepts any chaining including a failure-masking '|| true', so this
+## behavioural check is what actually catches a swallowed failure.
+reset_artifact
+if ( SQ_SIGN_RC=0 SQ_VERIFY_RC=1 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
+   fail "sign_and_verify returned 0 despite a failing OpenPGP verify (failure masked)"
+else
+   pass "sign_and_verify FAILS when OpenPGP verification fails"
+fi
+
+## sign_and_verify_signify must VERIFY after signing: signify signs OK but the
+## signify VERIFY fails -> the function must fail, not just leave a '.sig'.
+reset_artifact
+if ( SQ_VERIFY_RC=0 SIGNIFY_SIGN_RC=0 SIGNIFY_VERIFY_RC=1 sign_and_verify_signify "${artifact}" ) >/dev/null 2>&1; then
+   fail "sign_and_verify_signify returned 0 though the signify verify failed (verify skipped)"
+else
+   pass "sign_and_verify_signify FAILS when the signify verification fails"
+fi
+
+## verify_signature is OpenPGP-only: a valid OpenPGP signature verifies WITHOUT
+## invoking signify.
+reset_artifact
+printf 'asc' > "${artifact}.asc"
+if ( SQ_VERIFY_RC=0 verify_signature "${artifact}" ) >/dev/null 2>&1; then
+   if [ ! -s "${SIGNIFY_CALLS}" ]; then
+      pass "verify_signature verifies via OpenPGP only, never invoking signify"
+   else
+      fail "verify_signature invoked signify (must be OpenPGP-only)"
+   fi
+else
+   fail "verify_signature wrongly failed a valid OpenPGP signature"
+fi
+
+## verify_signature_signify must PROPAGATE a bad OpenPGP signature even when the
+## signify signature is good (the OpenPGP check must not be skipped).
+reset_artifact
+printf 'asc' > "${artifact}.asc"
+printf 'sig' > "${artifact}.sig"
+if ( SQ_VERIFY_RC=1 SIGNIFY_VERIFY_RC=0 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
+   fail "verify_signature_signify returned 0 with a bad OpenPGP sig (OpenPGP check skipped)"
+else
+   pass "verify_signature_signify FAILS on a bad OpenPGP signature (good signify)"
+fi
+
 ## STRUCTURAL: every sign/verify check chains with '|| return'. An unchained
 ## '(sign|verify)_cmd_* "${1}" ...' line (no trailing '|| return') is the
-## status-masking bug this guards.
-if grep --extended-regexp --quiet '^\s+(sign|verify)_cmd_(openpgp|signify) "\$\{1\}"[^|]*$' -- "${lib}"; then
+## status-masking bug this guards. '\s*' so a column-0 line is caught too.
+if grep --extended-regexp --quiet '^\s*(sign|verify)_cmd_(openpgp|signify) "\$\{1\}"[^|]*$' -- "${lib}"; then
    fail "signing-lib.bsh has an UNCHAINED sign/verify check (status would be masked)"
 else
    pass "every sign/verify check in signing-lib.bsh is chained (|| return)"
