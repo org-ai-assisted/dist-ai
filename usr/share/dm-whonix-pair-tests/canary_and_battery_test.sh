@@ -152,12 +152,12 @@ rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webr
 check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*dsudo install' <<< "${out}" || rc=1
 check 'ws_browser_probe: STAGES as root in the sysmaint session (dsudo for the copy)' "${rc}"
-rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*DISPLAY=:0.*browser-webrtc' <<< "${out}" || rc=1
-check 'ws_browser_probe: headless env (sysmaint-allow + skip link-confirm GUI) + attaches to the live session DISPLAY=:0' "${rc}"
-rc=0; grep --quiet -- 'XDG_RUNTIME_DIR=/run/user/.*browser-webrtc' <<< "${out}" || rc=1
-check 'ws_browser_probe: sets XDG_RUNTIME_DIR to the session runtime dir (reaches the live compositor)' "${rc}"
-rc=0; grep --quiet -- 'offscreen' <<< "${out}" && rc=1 || rc=0
-check 'ws_browser_probe: does NOT use QT offscreen (a real display, not a null surface)' "${rc}"
+rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*WAYLAND_DISPLAY=wayland-0.*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: headless env (sysmaint-allow + skip link-confirm GUI) + attaches to the live WAYLAND_DISPLAY' "${rc}"
+rc=0; grep --quiet -- 'MOZ_ENABLE_WAYLAND=1.*XDG_RUNTIME_DIR=/run/user/.*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: native Wayland (MOZ_ENABLE_WAYLAND=1) + session XDG_RUNTIME_DIR' "${rc}"
+rc=0; grep --quiet -- 'DISPLAY=:0\|offscreen\|xvfb' <<< "${out}" && rc=1 || rc=0
+check 'ws_browser_probe: Wayland-only -- no X11 DISPLAY, no Qt offscreen, no xvfb' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*browser-webrtc' <<< "${out}" || rc=1
 check 'ws_browser_probe: runs the browser probe in the logon-able sysmaint session' "${rc}"
 ## A staging/transport failure must be SETUP (inconclusive), NEVER the probe's exit-1 LEAK code:
