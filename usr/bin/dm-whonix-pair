@@ -614,7 +614,7 @@ allowlist_bpf() {
 ## bracketed-IPv6 token in the consensus is a relay or authority address, so grep them all.
 gw_tor_relay_ips() {
    "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 60 \
-      --cmd "leaprun sudo grep -hoE '([0-9]{1,3}[.]){3}[0-9]{1,3}' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null; leaprun sudo grep -hoE '\[[0-9a-fA-F:]+\]' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null | tr -d '[]'"
+      --cmd "leaprun sudo && { sudo --non-interactive grep -hoE '([0-9]{1,3}[.]){3}[0-9]{1,3}' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null; sudo --non-interactive grep -hoE '\[[0-9a-fA-F:]+\]' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null | tr -d '[]'; }"
 }
 
 ## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's

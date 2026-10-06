@@ -64,12 +64,16 @@ STUB
 chmod +x "${work}/tcpdump"
 export STUB_DIR="${work}"
 
-## Stub vbox-exec-local: for gw_tor_relay_ips (a consensus grep) emit the stubbed relay set;
-## otherwise echo args so gw_pin_guards's assembled --cmd is captured.
+## Stub vbox-exec-local, faithful to privleap: `leaprun sudo` GRANTS sudo, then only a
+## following `sudo --non-interactive <cmd>` runs as root -- `leaprun sudo <cmd>` does NOT run
+## <cmd> (privleap ignores trailing argv), so a 700 consensus file stays unreadable. Hence the
+## relay set is emitted ONLY for a real root read; a mis-built `leaprun sudo grep` reads nothing
+## (live SETUP). Other calls echo args so gw_pin_guards's assembled --cmd is captured.
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
 case "$*" in
-   *cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *"sudo --non-interactive grep"*cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *cached-microdesc-consensus*) : ;;
    *) printf '%s\n' "$*" ;;
 esac
 STUB
@@ -212,6 +216,36 @@ check 'positive-control read does NOT include any entry guard (separation)' "${r
 ## --- gw_tor_relay_ips: reads the GW consensus as root in the user session ----------------------
 rc=0; gw_tor_relay_ips >/dev/null 2>&1 || rc=$?
 check 'gw_tor_relay_ips succeeds when guestcontrol does' "${rc}"
+rc=0; relay_out="$(gw_tor_relay_ips)" || rc=1
+rc2=0; [ -n "${relay_out}" ] || rc2=1
+check 'gw_tor_relay_ips emits the relay set (faithful privleap stub -> real root read)' "$(( rc + rc2 ))"
+
+## Regression: gw_tor_relay_ips must GRANT sudo then read as root
+## (`leaprun sudo && ... sudo --non-interactive grep ...`), NEVER misuse `leaprun sudo grep ...`
+## -- privleap ignores trailing argv, so that form runs nothing and the 700 consensus stays
+## unread (the live SETUP rc=2 this guards against). Capture the assembled --cmd via an echo stub.
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
+relaycmd="$(gw_tor_relay_ips)"
+rc=0; has 'sudo --non-interactive grep' "${relaycmd}" || rc=1
+check 'gw_tor_relay_ips reads the consensus as root (sudo --non-interactive grep)' "${rc}"
+rc=0; has 'leaprun sudo &&' "${relaycmd}" || rc=1
+check 'gw_tor_relay_ips grants sudo before reading (leaprun sudo &&)' "${rc}"
+rc=0; has 'leaprun sudo grep' "${relaycmd}" && rc=1 || rc=0
+check 'gw_tor_relay_ips does NOT misuse leaprun sudo as a command prefix' "${rc}"
+## restore the faithful dispatching stub
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+case "$*" in
+   *"sudo --non-interactive grep"*cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *cached-microdesc-consensus*) : ;;
+   *) printf '%s\n' "$*" ;;
+esac
+STUB
+chmod +x "${work}/vbe"
 set_relay_set   ## the stub consensus branch returns relay_ips; restore after the gw_pin stub swap
 
 ## --- gw_pin_guards: EntryNodes + StrictNodes 1 drop-in via leaprun sudo, GW user session --------
@@ -239,7 +273,8 @@ check_fail 'gw_pin_guards fails-closed (nonzero) when the pin write cannot run' 
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
 case "$*" in
-   *cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *"sudo --non-interactive grep"*cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *cached-microdesc-consensus*) : ;;
    *) printf '%s\n' "$*" ;;
 esac
 STUB
