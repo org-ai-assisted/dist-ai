@@ -109,6 +109,9 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 ## --- canary_gateway_pcap: fail-closed ------------------------------------------------------
 nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
+## The canary reads the consensus relay set from gw_relay_cache (main populates it while the GW is
+## up, BEFORE the poweroff); point it at the fixture set_counts writes.
+gw_relay_cache="${work}/relay_ips"
 
 ## total + denylist-hits; liveness defaults tor=20/pc=1; relay set = the pinned + reserved guards
 ## (all real relays), and a clean dst line to a pinned guard so the consensus set-diff passes.
