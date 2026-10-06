@@ -143,11 +143,17 @@ run_subject() {
    ## umask 0022 deliberately: it is the permissive default that made the
    ## created files world-readable, so running under it is what gives the
    ## assertions below something to prove.
+   ## tor_user_sudo='env' is a no-op pass-through. The subject runs
+   ## 'default_if_empty tor_user_sudo "sudo --non-interactive -u ${tor_user}"',
+   ## so an EMPTY value is turned back into real sudo -- which cannot run under
+   ## the test's no-new-privileges isolation and is wrong for a unit test. A
+   ## non-empty pass-through runs the file ops directly as the current user,
+   ## which is exactly what these permission-mode assertions need to prove.
    ( umask 0022
      env --ignore-environment \
         PATH="${stub_dir}:/usr/bin:/bin" \
         HOME="${test_dir}/home" \
-        tor_user_sudo='' \
+        tor_user_sudo='env' \
         tor_user="$(id --user --name)" \
         tor_group="$(id --group --name)" \
         client="${client_id}" \

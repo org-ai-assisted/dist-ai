@@ -7,7 +7,7 @@
 # (test_ssh_config.py::test_policy_matches_client_config) fails if they diverge.
 #
 # The client matches the server's strictest set (post-quantum-only kex,
-# aes256-gcm only).
+# chacha20-poly1305 + aes256-gcm AEAD ciphers).
 #
 # allow_algorithm_subset_and_reordering = false makes this an EXACT match.
 #
@@ -21,5 +21,5 @@ allow_larger_keys = false
 
 host keys = sk-ssh-ed25519@openssh.com, ssh-ed25519
 key exchanges = sntrup761x25519-sha512, sntrup761x25519-sha512@openssh.com, mlkem768x25519-sha256, ext-info-c, kex-strict-c-v00@openssh.com
-ciphers = aes256-gcm@openssh.com
+ciphers = chacha20-poly1305@openssh.com, aes256-gcm@openssh.com
 macs = umac-128-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256-etm@openssh.com

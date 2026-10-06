@@ -97,6 +97,9 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 
 nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
+## The canary reads the consensus relay set from the gw_relay_cache file that main() populates
+## (while the GW is up) BEFORE the poweroff; point it at the test's relay-set fixture.
+gw_relay_cache="${work}/relay_ips"
 
 ## The GW consensus relay set the canary classifies against: the pinned guards + the reserved pc
 ## guard (all real relays) + an extra unrelated V2Dir relay, so a DIRECTORY connection to a
@@ -236,6 +239,23 @@ rc=0; has 'leaprun sudo &&' "${relaycmd}" || rc=1
 check 'gw_tor_relay_ips grants sudo before reading (leaprun sudo &&)' "${rc}"
 rc=0; has 'leaprun sudo grep' "${relaycmd}" && rc=1 || rc=0
 check 'gw_tor_relay_ips does NOT misuse leaprun sudo as a command prefix' "${rc}"
+
+## Ordering regression: the consensus MUST be read while the GW is still up (into gw_relay_cache,
+## in main, BEFORE the poweroff), never live inside the canary -- the canary runs AFTER the GW
+## poweroff that flushes the pcap, when guestcontrol cannot reach the GW (the live SETUP rc=2 bug).
+canary_body="$(awk '/^canary_gateway_pcap\(\) \{/,/^}/' "${tool}")"
+rc=0; has 'gw_tor_relay_ips' "${canary_body}" && rc=1 || rc=0
+check 'canary_gateway_pcap does NOT read the consensus live (uses the pre-poweroff cache)' "${rc}"
+rc=0; has 'gw_relay_cache' "${canary_body}" || rc=1
+check 'canary_gateway_pcap classifies against gw_relay_cache' "${rc}"
+## $-free grep patterns (SC2016): match the population's `gw_tor_relay_ips >` redirect, the
+## canary call line, and the last `poweroff >/dev/null` before it.
+ln_cache="$(grep -n 'gw_tor_relay_ips >' "${tool}" | head -1 | cut -d: -f1)"
+ln_canarycall="$(grep -n 'canary_gateway_pcap$' "${tool}" | tail -1 | cut -d: -f1)"
+ln_poweroff="$(grep -n 'poweroff >/dev/null' "${tool}" | awk -F: -v c="${ln_canarycall:-0}" '$1<c{last=$1} END{print last}')"
+rc=0; { [ -n "${ln_cache}" ] && [ -n "${ln_poweroff}" ] && [ -n "${ln_canarycall}" ] && [ "${ln_cache}" -lt "${ln_poweroff}" ] && [ "${ln_poweroff}" -lt "${ln_canarycall}" ]; } || rc=1
+check 'main populates gw_relay_cache BEFORE the GW poweroff that precedes the canary' "${rc}"
+
 ## restore the faithful dispatching stub
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash

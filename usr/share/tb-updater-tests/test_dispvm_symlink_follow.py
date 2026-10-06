@@ -39,10 +39,14 @@ extract_bash_function -- no drift), stubbing only the root/Qubes externals:
     skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
     covering a manual restart (incl. retry of a failed first run) that
     --no-start does not. Old code/unit had neither -> FAILS.
-  * Bind via the TOCTOU-safe helper: the user-home bind mounts go through
-    dispvm-bind-mount (O_NOFOLLOW + mount against a pinned fd), never a raw
-    'mount --bind <home path>'. Old code used the raw racy form -> FAILS.
-    (The helper's own resolver is unit-tested in test_dispvm_bind_mount.py.)
+  * Home binds + symlink reject: the user-home bind mounts are raw
+    'mount --bind' onto /home/<user>/.tb and .cache/tb (there is no way to stop
+    mount dereferencing a symlinked mount point). Their safety rests on the
+    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds -- refusing a
+    pre-planted symlink at any mount point -- plus the boot-only run-once
+    execution above. This test asserts that structural model (binds are raw
+    'mount --bind'; the reject precedes them); the behavioral refusal itself is
+    driven by test_planted_symlink_is_refused.
 """
 
 import os
@@ -247,24 +251,58 @@ def test_dispvm_unit_skips_on_sentinel():
     )
 
 
-def test_home_binds_go_through_toctou_safe_helper():
-    """The user-home bind mounts must use dispvm-bind-mount (O_NOFOLLOW + pinned
-    fd), never a raw 'mount --bind <home path>' that follows a symlinked mount
-    point. Reads the shipped dispvm."""
+def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
+    """The user-home bind mounts are raw 'mount --bind' onto /home/<user>/.tb and
+    .cache/tb. There is no way to stop mount dereferencing a symlinked mount
+    point, so their safety rests on (a) the '[ -L ] ... exit 1' reject loop that
+    runs BEFORE the binds and refuses a pre-planted symlink at any mount point,
+    and (b) the service running only at early boot (asserted by the run-once and
+    --no-start tests). This asserts that structural model: each home bind is a
+    raw 'mount --bind' and the symlink reject precedes every one of them. The
+    behavioral refusal itself is driven by test_planted_symlink_is_refused."""
     with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
+    lines = text.splitlines()
 
-    ## Both persistent-cache binds route through the helper.
+    ## Locate the reject's 'if [ -L "${tb_mount_point}" ]; then' OPENER -- anchored
+    ## to the real if-statement line, so a bare match in a comment cannot stand in
+    ## for it. Removing the guard is the regression this guards against.
+    reject_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'\s*if \[ -L "\$\{tb_mount_point\}" \]; then\s*$', line):
+            reject_idx = i
+            break
+    assert reject_idx is not None, (
+        f'dispvm must guard the mount points with an '
+        f'\'if [ -L "${{tb_mount_point}}" ]; then\' reject before binding: {DISPVM}'
+    )
+    ## The guard body (up to its closing 'fi') must exit nonzero on a planted
+    ## symlink -- bounded to the block so an 'exit' elsewhere cannot satisfy it.
+    guard_body = []
+    for line in lines[reject_idx + 1:]:
+        if re.match(r'\s*fi\b', line):
+            break
+        guard_body.append(line)
+    assert any(re.match(r'\s*exit [1-9][0-9]*\b', b) for b in guard_body), (
+        f"the symlink reject must 'exit' nonzero on a planted symlink: {DISPVM}"
+    )
+
+    ## Each persistent-cache bind is a raw 'mount --bind' onto the home mount
+    ## point, and must appear AFTER the symlink reject.
     for target in (".tb", ".cache/tb"):
-        assert re.search(
-            rf'dispvm-bind-mount"?\s+"/var/cache/tb-binary/{re.escape(target)}"'
-            rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"', text), (
-            f"the {target} bind must go through dispvm-bind-mount: {DISPVM}"
+        pat = re.compile(
+            rf'mount --bind\b[^\n]*"/var/cache/tb-binary/{re.escape(target)}"'
+            rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"')
+        bind_idxs = [i for i, line in enumerate(lines) if pat.search(line)]
+        assert bind_idxs, (
+            f"the {target} home bind must be a raw 'mount --bind ... "
+            f"/home/${{user_name}}/{target}': {DISPVM}"
         )
-    ## No raw 'mount --bind' onto a user-home path remains (the racy form).
-    racy = [line for line in text.splitlines()
-            if "mount --bind" in line and "/home/${user_name}" in line]
-    assert not racy, f"raw 'mount --bind' onto a home path (racy): {racy}"
+        assert reject_idx < min(bind_idxs), (
+            f"the symlink reject (line {reject_idx + 1}) must precede the "
+            f"{target} bind (line {min(bind_idxs) + 1}) so a symlinked mount "
+            f"point is refused before any bind"
+        )
 
 
 if __name__ == "__main__":

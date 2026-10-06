@@ -122,10 +122,19 @@ run_anon_dns() {
    ## under set -x, so they are kept; every other '+' line is a command trace,
    ## which necessarily changes when the code is restructured and says nothing
    ## about behaviour.
+   ##
+   ## Unset HELPER_SCRIPTS_PATH so anon-dns resolves as_root.sh / has.bsh to the
+   ## STUB helpers bound over /usr/libexec/helper-scripts above. The suite-wide
+   ## HELPER_SCRIPTS_PATH (exported by dist-ai-tests-all for the onion-grater
+   ## profile test) would otherwise point at the real checkout, dragging in the
+   ## real as_root -> log_run_die -> strings.bsh -> wc-test.sh chain: that both
+   ## sudo-re-execs (defeating the as_root stub) and needs coreutils absent from
+   ## this test's deliberately closed PATH (which keeps the 'absent' qubesdb-read
+   ## case genuine).
    bwrap --dev-bind / / \
       --bind "${helpers}" /usr/libexec/helper-scripts \
       --bind "${etc}" /etc \
-      -- env PATH="${bin}" ${env_spec} timeout 20 bash "${subject}" 2>&1 \
+      -- env --unset=HELPER_SCRIPTS_PATH PATH="${bin}" ${env_spec} timeout 20 bash "${subject}" 2>&1 \
       | grep --invert-match --extended-regexp -- '^\++ ' || true
    printf '%s' "__RESOLV__$(tr '\n' '|' <"${etc}/resolv.conf" 2>/dev/null)"
 }

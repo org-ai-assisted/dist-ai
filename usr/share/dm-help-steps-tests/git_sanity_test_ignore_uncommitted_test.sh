@@ -54,7 +54,7 @@ fail() {
 ## A stable substring of this consumption-point refusal, specific enough that only the
 ## mode_working_tree guard (not parse-cmd's flag gate, which says "--allow-uncommitted
 ## true) is forbidden") satisfies it. Drift-guarded: a missing sentinel is a hard error.
-REFUSAL='uncommitted changes (dist_build_ignore_uncommitted=true) is forbidden'
+REFUSAL='building with uncommitted changes is forbidden'
 if ! grep --quiet --fixed-strings -- "${REFUSAL}" "${script}"; then
    printf '%s\n' "FATAL: refusal sentinel '${REFUSAL}' not found in '${script}'; the message drifted -- update this test." >&2
    exit 1
