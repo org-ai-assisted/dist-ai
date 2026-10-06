@@ -161,7 +161,7 @@ done
 ## --- the same shift-before-check class in the other value-taking options: a
 ## trailing bare flag must give the actionable "requires a ..." error, not a raw
 ## 'shift count out of range' crash. ---
-for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after; do
+for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after -t --tag -r --ref; do
    bare_out="$( run_out "${flag}" )"
    case "${bare_out}" in
       *"requires a"*)
@@ -178,7 +178,7 @@ done
 ## skip the retry hook), so only a MISSING value (trailing bare flag, above) is an
 ## error. Guards against re-tightening the guard from an argument-count check back
 ## to an emptiness check, which would reject the supported empty value. ---
-for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after; do
+for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after -t --tag -r --ref; do
    empty_out="$( run_out "${flag}" "" )"
    case "${empty_out}" in
       *"requires a"*)
