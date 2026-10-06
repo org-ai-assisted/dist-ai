@@ -266,11 +266,18 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         ## Many distinct catastrophe lines must ALL be shown -- there is no cap, precisely so
         ## an attacker who floods earlier-sorting forged lines cannot push a real catastrophe
         ## past a cut. HTML neutralization is a single-pass translation (not a per-line fork),
-        ## so a large match set neither stalls nor truncates.
+        ## so a large match set neither stalls nor truncates. (A pathological multi-MiB flood
+        ## can still hit the GUI message dispatcher's own volume limit downstream -- a
+        ## separate, pre-existing component, not this function's concern.)
         lines = ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)]
         out = self._run_check_critical(lines)
         self.assertEqual(out.count('synthetic oops number'), 250,
                          'every matched catastrophe line must be shown, none dropped')
+        ## Distinct-line guard: the count alone would pass if one line were duplicated 250x,
+        ## so check that specific first/middle/last lines each survive intact.
+        for probe in (0, 125, 249):
+            self.assertIn('synthetic oops number %d\n' % probe, out,
+                          'each distinct catastrophe line must survive, not be duplicated')
 
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
