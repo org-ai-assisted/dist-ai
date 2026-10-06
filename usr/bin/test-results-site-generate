@@ -63,6 +63,29 @@ STATUS_LABEL = [
 ]
 
 
+## Overview SORT order, worst (most attention) first. Distinct from STATUS_LABEL,
+## which is legend/display order (pass first).
+_SORT_ORDER = [
+    site.STATUS_FAIL, site.STATUS_UNKNOWN, site.STATUS_INCOMPLETE, site.STATUS_NODATA,
+    site.STATUS_INCONCLUSIVE, site.STATUS_CHANGED, site.STATUS_NEW, site.STATUS_STALE,
+    site.STATUS_PASS,
+]
+_SORT_SEVERITY = {status: i for i, status in enumerate(_SORT_ORDER)}
+
+
+def _sort_severity(status):
+    return _SORT_SEVERITY.get(status, len(_SORT_ORDER))
+
+
+def _view_stop_unix(view):
+    if isinstance(view.result, dict):
+        stop = (view.result.get("run") or {}).get("stop") or {}
+        unix = stop.get("unix")
+        if isinstance(unix, int) and not isinstance(unix, bool):
+            return unix
+    return 0
+
+
 def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -195,8 +218,11 @@ class RunView:
     def key(self):
         if isinstance(self.result, dict):
             return site.run_key(self.result)
-        ## NO-DATA run: key off the directory name so it still appears.
-        return (self.run_id, "", "", "")
+        ## NO-DATA run: key off the results-plane NAME (not the unique run id), so
+        ## repeated NO-DATA runs of the same lane collapse to the latest and older
+        ## ones get pruned -- else every emitter-failure dir would accumulate forever.
+        name = os.path.basename(os.path.dirname(self.run_dir))
+        return (name, "", "", "__nodata__")
 
 
 def desired_run_id(run_dir, result):
@@ -723,9 +749,11 @@ def main(argv):
             now_unix, stale_seconds, args.tolerance, args.channel_threshold,
         ))
 
-    ## Overview order: worst-first then newest-first, deterministic.
-    severity = {status: i for i, (status, _) in enumerate(STATUS_LABEL)}
-    views.sort(key=lambda v: (severity.get(v.status, 99), v.run_id))
+    ## Overview order: worst-first then newest-first, deterministic. The legend
+    ## lists pass first; the SORT is the opposite -- the rows needing attention go
+    ## to the top. Secondary key is stop time descending (newest first), run_id as
+    ## the final tiebreak for determinism.
+    views.sort(key=lambda v: (_sort_severity(v.status), -_view_stop_unix(v), v.run_id))
 
     keep = select_keep(views, args.history)
     shown = [v for v in views if v.run_id in keep]

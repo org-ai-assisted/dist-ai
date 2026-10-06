@@ -163,6 +163,12 @@ check_raises("validate refuses a non-dict attachment",
              lambda: _tamper(lambda r: r["steps"][0].__setitem__("attachments", ["x"])))
 check_raises("validate refuses a non-dict run",
              lambda: _tamper(lambda r: r.__setitem__("run", "nope")))
+## run.stop/start are read as (run.get(k) or {}).get("unix") by the generator; a
+## truthy non-dict would crash it, so validate must refuse it (-> NO-DATA).
+check_raises("validate refuses a non-dict run.stop",
+             lambda: _tamper(lambda r: r["run"].__setitem__("stop", "now")))
+check_raises("validate refuses a non-int run.stop.unix",
+             lambda: _tamper(lambda r: r["run"].__setitem__("stop", {"unix": "soon"})))
 check_raises(
     "build_result refuses a bad origin",
     lambda: model.build_result(

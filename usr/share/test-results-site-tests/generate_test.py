@@ -234,6 +234,14 @@ check("needs-approval lists the NEW shot", "kicksecure-cli/calamares-install" in
 check("needs-approval does not list the approved MATCH run",
       "kicksecure-lxqt/calamares-install" not in needs)
 
+## Overview sorts worst-first: a FAIL run appears ABOVE a PASS run in the matrix
+## (the legend still lists pass first, so scope this to the matrix section).
+matrix_sec = overview.split('id="matrix"', 1)[-1].split("</section>", 1)[0]
+fail_pos = matrix_sec.find("kicksecure-lxqt-18-2-3-6-1")  # run C (fail)
+pass_pos = matrix_sec.find("kicksecure-lxqt-18-2-3-5-1")  # run A (pass)
+check("overview lists the FAIL run before the PASS run",
+      fail_pos != -1 and pass_pos != -1 and fail_pos < pass_pos)
+
 ## The green run (A) page shows a screenshot; the text-only run (E) page has none.
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))

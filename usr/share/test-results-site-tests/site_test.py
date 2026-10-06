@@ -27,7 +27,11 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results import compare, model, site  # noqa: E402
+try:
+    from dm_test_results import compare, model, site
+except ImportError as exc:  # compare/site import numpy + PIL
+    print("site_test: env-unmet (Pillow/numpy): %s" % exc, file=sys.stderr)
+    sys.exit(78)
 
 _failures = 0
 

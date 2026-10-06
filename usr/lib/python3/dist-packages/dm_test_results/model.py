@@ -290,6 +290,18 @@ def validate(result):
     ## would escape. Keep them safe components.
     _require_safe_component("run.id", run.get("id"))
     _require_safe_component("run.lane", run.get("lane"))
+    ## stop/start are read as (run.get(key) or {}).get("unix") by the generator
+    ## (freshness, pruning) OUTSIDE a try; a truthy non-dict would raise there. Each
+    ## must be null or an object whose unix (when present) is an int.
+    for key in ("start", "stop"):
+        val = run.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, dict):
+            raise ModelError("run.%s must be null or an object: %r" % (key, val))
+        unix = val.get("unix")
+        if unix is not None and (not isinstance(unix, int) or isinstance(unix, bool)):
+            raise ModelError("run.%s.unix must be an int: %r" % (key, unix))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")
