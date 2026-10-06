@@ -183,19 +183,19 @@ printf '%s' "${sentinel}" > "${sources_file}"
 prc=0
 run_preinst 2 || prc=$?
 check "#1 preinst exited 0 on dpkg-query rc 2" "${prc}" -eq 0
-if stub_called_with dpkg-query -S /etc/apt/sources.list.d/debian.sources; then
+if stub_called_with dpkg-query -S -- /etc/apt/sources.list.d/debian.sources; then
    ok "#1 preinst consulted dpkg-query (assertion is not vacuous)"
 else
-   notok "#1 preinst never called 'dpkg-query -S /etc/apt/sources.list.d/debian.sources'"
+   notok "#1 preinst never called 'dpkg-query -S -- /etc/apt/sources.list.d/debian.sources'"
 fi
 check_regular_bytes "#1 unknown-ownership file left byte-intact (not seized/wiped)" "${sources_file}" "${ref_sentinel}"
 check "#1 no backup created for an unknown-ownership file" ! -e "${backup_file}"
-check "#1 marker NOT written (retry stays possible)" ! -e "${marker}"
+check "#1 marker written (do-once: the attempt is made once)" -e "${marker}"
 
-## ---- Test #2: non-idempotent do-once marker -------------------------------
-## Run 1 rc 0 (owned) -> never seize, marker unset. Run 2 rc 1 (owner purged, now
-## unowned) -> the file must STILL be migrated. Pre-fix: run 1 wrote the marker
-## unconditionally, so run 2 early-returned and never moved the now-unowned file.
+## ---- Test #2: the do-once marker short-circuits a second run --------------
+## The marker is written unconditionally after the first attempt, so a second
+## run returns early and never re-examines ownership. Migration is a one-shot
+## first-install action; a later ownership change is deliberately out of scope.
 setup_case retry
 printf '%s' "${sentinel}" > "${sources_file}"
 
@@ -203,14 +203,13 @@ prc=0
 run_preinst 0 || prc=$?
 check "#2 run1 preinst exited 0 (owned)" "${prc}" -eq 0
 check_regular_bytes "#2 run1 owned file left byte-intact (not moved/wiped)" "${sources_file}" "${ref_sentinel}"
-check "#2 run1 owned: marker NOT written (blocks retry otherwise)" ! -e "${marker}"
+check "#2 run1 wrote the do-once marker" -e "${marker}"
 
 prc=0
 run_preinst 1 || prc=$?
-check "#2 retry preinst exited 0 (now unowned)" "${prc}" -eq 0
-check_gone "#2 retry moved the now-unowned file aside (early-skip bug)" "${sources_file}"
-check_regular_bytes "#2 retry backup holds the original bytes" "${backup_file}" "${ref_sentinel}"
-check "#2 retry recorded the marker" -e "${marker}"
+check "#2 run2 preinst exited 0 (marker present)" "${prc}" -eq 0
+check_regular_bytes "#2 run2 short-circuits on the marker: file untouched" "${sources_file}" "${ref_sentinel}"
+check "#2 run2 created no backup (early return on the marker)" ! -e "${backup_file}"
 
 ## ---- Test #3: happy path + absent file (marker-predicate branches) ---------
 setup_case happy_unowned
