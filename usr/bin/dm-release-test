@@ -301,10 +301,23 @@ rt_account_can_sudo() {
 ## leak accounts at run time (this run did not create them). $1=account $2=role-label.
 ## Needs root (reads id, exercises sudo). Precondition: the account exists.
 rt_require_account_unprivileged() {
-   local account role
+   local account role uid primary groups
    account="$1"
    role="$2"
-   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+   ## Enumerate identity + groups with each `id` checked on its OWN line. Folded into the
+   ## `rt_account_unprivileged ... || die` arg list, a failing `id` is MASKED: errexit is
+   ## suspended left of `||`, so the substitution passes its partial stdout and the non-zero
+   ## exit is lost. GNU id on a getgrouplist() failure prints ONLY the primary group and
+   ## exits non-zero -> a primary-only (non-empty) list clears the empty-list guard and a
+   ## privileged account reads as unprivileged. Cannot enumerate identity -> cannot prove
+   ## unprivileged -> REFUSE (SETUP_RC).
+   uid="$(id -u "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot read uid (id -u failed)"
+   primary="$(id -gn "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot read primary group (id -gn failed)"
+   groups="$(id -nG "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot enumerate groups (id -nG failed)"
+   rt_account_unprivileged "${account}" "${uid}" "${primary}" "${groups}" \
       || die "${SETUP_RC}" "refusing ${role} account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    ! rt_account_can_sudo "${account}" \
       || die "${SETUP_RC}" "refusing ${role} account '${account}': has passwordless sudo (NOPASSWD root)"
