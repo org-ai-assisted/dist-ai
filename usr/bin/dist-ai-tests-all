@@ -1256,6 +1256,16 @@ run_suite() {
             skip_count=$(( skip_count + 1 ))
          fi
          ;;
+      78)
+         ## SKIP:env-unmet -- a RUNTIME capability the test needs is absent here
+         ## (the suite self-declared it via result_skip_env_unmet). Always tolerated
+         ## (counted, never failed): unlike target-absent (77), an env-unmet skip is
+         ## inherently "cannot run in this environment", not an unauthorized coverage
+         ## gap. The audit is at the SOURCE -- R-220 requires the per-skip allow-skip
+         ## waiver naming the missing capability.
+         verdict="SKIP:env-unmet"
+         skip_count=$(( skip_count + 1 ))
+         ;;
       124)
          verdict="TIMEOUT"
          fail_count=$(( fail_count + 1 ))
@@ -1285,6 +1295,9 @@ run_suite() {
             done < "${log_dir}/dist-ai-tests-all.${suite}.log"
             emit "---- ${suite}: end captured output ----"
          fi
+         ;;
+      78)
+         ## SKIP:env-unmet is always tolerated; stay quiet like an ordinary SKIP.
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
