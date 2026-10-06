@@ -156,10 +156,13 @@ fi
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${work_dir}/absent" ; then
-   if [ "${umount_called}" = "0" ]; then
-      pass "absent path: no-op (return 0), does not umount"
+   ## mountpoint_called=1 ENFORCES mountpoint-first: an existence-first revert would
+   ## skip mountpoint here and still leave umount_called=0, so asserting the no-op
+   ## alone would not catch it.
+   if [ "${umount_called}" = "0" ] && [ "${mountpoint_called}" = "1" ]; then
+      pass "absent path: mountpoint consulted first, no-op (return 0), does not umount"
    else
-      fail "absent path: umount_called=${umount_called} on a nonexistent path"
+      fail "absent path: mountpoint_called=${mountpoint_called} umount_called=${umount_called}"
    fi
 else
    fail "absent path: expected return 0, got non-zero"
