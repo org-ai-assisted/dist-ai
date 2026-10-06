@@ -955,7 +955,18 @@ def run_boot_test(args):
         print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
         return SETUP_RC
     if args.ova is not None:
-        _run(build_import_argv(args.ova, args.vm))
+        try:
+            _run(build_import_argv(args.ova, args.vm))
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            ## A failed import of the OVA under test is a FAILING verdict on that
+            ## artifact (corrupt/missing release OVA), not INCONCLUSIVE: never let it
+            ## escape as an uncaught traceback + exit 1 (bypasses the RC contract) nor
+            ## mask a broken OVA as SETUP. require_vboxmanage above owns the genuine
+            ## tooling-absent SETUP case; this matches how a CalledProcessError from
+            ## start_vm below is already classed FAIL.
+            print('dm-smbios-reader-vbox: FAIL -- OVA import failed: %s' % (exc,),
+                  file=sys.stderr)
+            return FAIL_RC
     rc = FAIL_RC
     started = False
     try:

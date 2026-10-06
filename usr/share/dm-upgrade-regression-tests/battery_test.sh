@@ -145,11 +145,15 @@ else
    assert_eq 'T6 skip notice printed to stdout' "${skip_out}" 'a line matching: check 8 ... SKIPPED in this gate'
 fi
 
-## T6b: a skipped FUNCTIONAL check does not suppress the real failure of another check.
-reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'; EXEC_FAIL_NUM=4
-rc=0; run_release_check_battery stub_exec stub_reboot stub_verify || rc=$?
-assert_eq 'T6b still fails at 4 despite skip' "${RELEASE_CHECK_FAILED_NUM}" '4'
-assert_eq 'T6b battery rc'                    "${rc}" '1'
+## T6b: a skipped FUNCTIONAL check does not suppress a real failure of a LATER check.
+## The failing check (2) must come AFTER the skipped one (8) in RELEASE_CHECK_ORDER
+## (1 5 6 4 8 2 3), else fail-fast short-circuits before the skip and the skip is inert.
+## Canary: remove the SKIP_REASON[8] line and check 8 runs -> '8:user' count 1 -> T6b fails.
+reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'; EXEC_FAIL_NUM=2
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify >/dev/null || rc=$?
+assert_eq 'T6b check 8 actually skipped'          "$(count_tok "${EXEC_LOG}" '8:user')" '0'
+assert_eq 'T6b still fails at 2 (after the skip)' "${RELEASE_CHECK_FAILED_NUM}" '2'
+assert_eq 'T6b battery rc'                        "${rc}" '1'
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1
