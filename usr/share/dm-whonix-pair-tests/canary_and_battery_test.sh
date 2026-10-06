@@ -28,20 +28,19 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-## Stub tcpdump, five filter kinds (canary runs the denylist, the Tor-guard read, the pc read, and
-## the allowlist read), classified by filter text (most specific first):
-##   - ALLOWLIST (deny-by-default) -> has the unique "169.254" infra term -> emit STUB_DIR/allow.
+## Stub tcpdump, classified by filter text (most specific first):
+##   - INFRA-EXCLUDE (the consensus-relay leak read) -> has the unique "169.254" infra term ->
+##     emit STUB_DIR/dsts (the pcap's clearnet DST LINES, input to the relay set-diff).
 ##   - POSITIVE CONTROL (reserved guard ORPort) -> has "tcp dst port" -> emit STUB_DIR/pc.
 ##   - DENYLIST (watched targets)  -> has "dst host", no 169.254 -> emit STUB_DIR/hits.
 ##   - TOR GUARD (entry guards) -> has "host " -> emit STUB_DIR/tor.
 ##   - full read (no filter) -> emit STUB_DIR/total.
-## pc is matched BEFORE deny because pc_bpf also contains "dst host" (its dst-scoped ORPort clause).
-## A missing count file reads as 0. Counts come from FILES (not subshell env) so canary can run in
-## a die-catching subshell cleanly.
+## infra is matched FIRST (its DHCP term also has "dst host 255.255.255.255"); pc before deny
+## (pc_bpf also has "dst host"). A missing count file reads as 0.
 cat > "${work}/tcpdump" <<'STUB'
 #!/bin/bash
 mode=full
-for a in "$@"; do case "$a" in *"169.254"*) mode=allow; printf '%s' "$a" > "${STUB_DIR}/last_filter_allow"; break ;; esac; done
+for a in "$@"; do case "$a" in *"169.254"*) mode=infra; break ;; esac; done
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"tcp dst port"*) mode=pc; printf '%s' "$a" > "${STUB_DIR}/last_filter_pc"; break ;; esac; done
 fi
@@ -51,8 +50,8 @@ fi
 if [ "${mode}" = full ]; then
    for a in "$@"; do case "$a" in *"host "*) mode=tor; printf '%s' "$a" > "${STUB_DIR}/last_filter_tor"; break ;; esac; done
 fi
+if [ "${mode}" = infra ]; then cat -- "${STUB_DIR}/dsts" 2>/dev/null; exit 0; fi
 case "${mode}" in
-   allow) f="${STUB_DIR}/allow" ;;
    deny)  f="${STUB_DIR}/hits" ;;
    tor)   f="${STUB_DIR}/tor" ;;
    pc)    f="${STUB_DIR}/pc" ;;
@@ -68,10 +67,14 @@ STUB
 chmod +x "${work}/tcpdump"
 export STUB_DIR="${work}"
 
-## Stub vbox-exec-local: echo its args so ws_battery's / gw_stop_tor's assembled --cmd is captured.
+## Stub vbox-exec-local: for gw_tor_relay_ips (a consensus grep) emit the stubbed relay set;
+## otherwise echo args so ws_battery's / gw_stop_tor's assembled --cmd is captured.
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
-printf '%s\n' "$*"
+case "$*" in
+   *cached-microdesc-consensus*) cat -- "${STUB_DIR}/relay_ips" 2>/dev/null ;;
+   *) printf '%s\n' "$*" ;;
+esac
 STUB
 chmod +x "${work}/vbe"
 
@@ -107,7 +110,14 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 
-set_counts() { printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"; printf '20\n' > "${work}/tor"; printf '1\n' > "${work}/pc"; }
+## total + denylist-hits; liveness defaults tor=20/pc=1; relay set = the pinned + reserved guards
+## (all real relays), and a clean dst line to a pinned guard so the consensus set-diff passes.
+set_counts() {
+   printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"
+   printf '20\n' > "${work}/tor"; printf '1\n' > "${work}/pc"
+   printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PC_IP4}" > "${work}/relay_ips"
+   printf 'IP 10.0.2.15.5 > %s.9001:\n' "${GUARD_PIN_IPS4[0]}" > "${work}/dsts"
+}
 
 set_counts 7 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
