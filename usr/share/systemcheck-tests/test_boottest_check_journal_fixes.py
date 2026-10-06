@@ -192,34 +192,41 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
     / nouveau, and a kernel ' BUG:'/oops). Tor's userspace 'Bug:' lines -- non-fatal asserts,
     fatal aborts, and log_backtrace() frames -- never reach this stream, so they are never
     force-shown here; that exclusion is enforced by the --dmesg capture, NOT by this grep
-    (so it is not re-tested here). Drives the REAL function against a crafted kernel stream;
-    canaries on the old code, which read the mixed service-log file."""
+    (so it is not re-tested here). check_critical_logs greps the RAW kernel stream before
+    sanitizing, so a '<' in an unrelated line cannot swallow a later catastrophe line; this
+    suite canaries that. Drives the REAL function against a crafted kernel stream."""
 
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
     CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
     ## A benign kernel line (journalctl --dmesg --output short): no catastrophe token.
     BENIGN = 'host kernel: usb 1-1: new high-speed USB device number 2 using xhci_hcd'
+    ## A benign kernel line ending in an unclosed '<word' (e.g. a device string the kernel
+    ## echoes). sanitize-string treats it as an open HTML tag and, parsing the whole blob,
+    ## deletes everything to the next '>' (or EOF) -- so sanitize-before-grep would swallow a
+    ## following catastrophe line. Verified to trigger the eating against sanitize-string.
+    TAG_NOISE = 'host kernel: usb 1-1: Manufacturer: Acme <widget corp'
 
     def _run_check_critical(self, kernel_lines: list) -> str:
-        """Run the REAL check_critical_logs against a crafted KERNEL-transport stream (the
-        journalctl_kernel.txt_br file check_service_logs writes). Mirrors log-checker's own
-        shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
-        exits non-zero on no-match)."""
+        """Run the REAL check_critical_logs against a crafted RAW KERNEL-transport stream
+        (the journalctl_kernel.txt file check_service_logs writes). Mirrors log-checker's
+        own shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
+        exits non-zero on no-match). stcatn/safe-rm/br_add_to_file are irrelevant to the
+        classification under test, so they are stubbed; sanitize-string runs for real."""
         func = extract_bash_function(
             os.path.join(self.dir, 'log-checker'), 'check_critical_logs')
         with tempfile.TemporaryDirectory() as td:
-            br = os.path.join(td, 'journalctl_kernel.txt_br')
-            with open(br, 'w', encoding='utf-8') as handle:
+            raw = os.path.join(td, 'journalctl_kernel.txt')
+            with open(raw, 'w', encoding='utf-8') as handle:
                 handle.write('\n'.join(kernel_lines) + '\n')
             script = (
                 'set -o errexit\n'
                 'set -o nounset\n'
                 f'TMPDIR={shlex.quote(td)}\n'
-                ## stcatn (ANSI strip) and safe-rm are irrelevant to the ASCII
-                ## classification under test; stub them so the test needs neither.
-                'stcatn() { cat; }\n'
+                'stcatn() { cat -- "$@"; }\n'
                 'safe-rm() { :; }\n'
+                ## no-op '<br />' step: br_add_to_file X normally creates X_br.
+                'br_add_to_file() { cp -- "$1" "$1_br"; }\n'
                 f'{func}\n'
                 'check_critical_logs\n'
             )
@@ -257,6 +264,14 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('Bad RAM detected', out)
         self.assertNotIn('new high-speed USB device', out,
                          'a benign kernel line must not ride along')
+
+    def test_tag_noise_line_does_not_hide_bug(self) -> None:
+        ## A benign kernel line with an unclosed '<' precedes a real kernel BUG. Because
+        ## check_critical_logs greps the RAW stream BEFORE sanitizing, sanitize-string's
+        ## whole-blob HTML parse cannot swallow the BUG line. (RED if sanitize ran first.)
+        out = self._run_check_critical([self.TAG_NOISE, self.KERNEL_BUG])
+        self.assertIn('NULL pointer dereference', out,
+                      'a catastrophe line must survive a preceding unclosed-tag line')
 
     def test_debug_token_not_matched(self) -> None:
         ## The leading space in ' BUG:' avoids matching 'debug:'; a kernel line mentioning
