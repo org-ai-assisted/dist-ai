@@ -242,14 +242,22 @@ Covered by the LIVE `dm-whonix-pair` (not this netns suite):
 - GW-originated ALLOWLIST canary (deny-by-default): the LIVE `dm-whonix-pair` GW external-NIC
   canary permits ONLY current Tor relays + link infra (DHCP/link-local/multicast); ANY other
   clearnet dst is a LEAK. Tor-only by default, NO carve-out for the `NON_TOR_GATEWAY` host-DNS/LAN
-  exception (if it fires it is a true leak). The permitted relay set is the GW's OWN cached
-  consensus, read as root in the GW user session (`gw_tor_relay_ips`: every IPv4 / bracketed-IPv6
-  token in `cached-microdesc-consensus` + `cached-consensus`). The FULL relay set on purpose:
-  `EntryNodes` + `StrictNodes 1` pins circuit ENTRY, but Tor still opens DIRECTORY (V2Dir)
-  connections to non-guard relays for descriptor/consensus fetches, so a pinned-guard-only
-  allowlist would false-flag those. The canary extracts each clearnet dst from the GW nictrace
-  pcap (infra excluded via `infra_bpf`) and fails if any dst is not in the consensus relay set;
-  fail-closed -- an empty/unreadable relay set is SETUP, never a pass. The fixed watchlist stays
+  exception (if it fires it is a true leak). The permitted set has TWO sources, both read in the
+  GW user session (`gw_tor_relay_ips`): (a) the GW's OWN cached consensus -- every IPv4 /
+  bracketed-IPv6 token in `cached-microdesc-consensus` + `cached-consensus` (relays + authority
+  `dir-source` lines); (b) the tor binary's HARDCODED dir IPs (`grep -aoE` over the tor binary) --
+  the FALLBACK directories + authorities Tor dials on a COLD bootstrap BEFORE it has a consensus,
+  so they are absent from (a). The FULL relay set on purpose: `EntryNodes` + `StrictNodes 1` pins
+  circuit ENTRY, but Tor still opens DIRECTORY (V2Dir) connections to non-guard relays and, on a
+  cold start, to fallback dirs/authorities -- a pinned-guard-only allowlist would false-flag those.
+  The relay set is read WHILE the GW is up and cached, BEFORE the poweroff that flushes the pcap
+  (the canary runs after poweroff, when guestcontrol can no longer reach the GW). The canary
+  extracts each clearnet dst from the GW nictrace pcap (link infra excluded via `infra_bpf`; the
+  GW's OWN NIC address 10.0.2.15 excluded as a dst, since the trace is bidirectional and every
+  inbound reply's dst is the GW itself, never an egress leak) and fails if any dst is not in the
+  allowed set; fail-closed -- an empty/unreadable relay set is SETUP, never a pass. Over-allowing
+  Tor's own hardcoded dir infra is safe: the fixed watchlist (checked FIRST) still catches a probe
+  target even if one coincided with a hardcoded IP. The watchlist stays
   as defense-in-depth. Two liveness signals, counted SEPARATELY (neither masks the other): (1)
   GENUINE Tor guard traffic (entry guards on their ORPorts) must clear a floor (`GUARD_MIN_PKTS`);
   (2) a deliberate POSITIVE-CONTROL emit -- the `clearnet` user opens one TCP connection to a
@@ -260,7 +268,11 @@ Covered by the LIVE `dm-whonix-pair` (not this netns suite):
   applies a PINNED-GUARD allowlist (read verbatim via `--print-allow-filter` / `--print-guards` /
   `--print-pc-filter`, single source) to a RAW capture of the host's physical NIC, catching egress
   the guest-NIC tap could miss. It still uses the pinned-guard basis, NOT the consensus relay set,
-  so it can false-flag a legitimate directory connection -- see the Open follow-up.
+  so it can false-flag a legitimate directory / bootstrap connection -- see the Open follow-up.
+- Live status: the full `dm-whonix-pair` run PASSes on the OVH pair (rc=0) -- the GW-trace canary
+  reports 0 probe-target and 0 non-guard clearnet dsts, with the genuine-guard floor and the
+  positive-control emit both cleared, over a bidirectional trace that includes the cold-bootstrap
+  fallback-dir dial (allowlisted via source (b)) and the inbound replies (GW own address excluded).
 
 App/browser layer -- LIVE-verified:
 
@@ -304,11 +316,13 @@ Open (owned by the LIVE `dm-whonix-pair`, not this netns suite):
   the `host-wire-leak-capture` observation.
 - host-wire allowlist basis: `host-wire-leak-capture` still allows only the PINNED guards (+
   infra) via `--print-allow-filter`, while the guest-NIC canary allows the full consensus relay
-  set, so the host-wire oracle can false-flag a legitimate Tor DIRECTORY (V2Dir) connection to a
-  non-guard relay. Align it on the consensus relay set (single source): persist
-  `gw_tor_relay_ips`'s set to a run artifact the host tool reads, or expose it via a new
-  `--print-relay-ips`. Mechanism is a dwp<->host-wire contract choice; host-wire's live path is
-  the `dm-release-test` root orchestration, not the `DM_WHONIX_PAIR_BROWSER` guest run.
+  set PLUS the tor binary's hardcoded fallback-dir/authority IPs, so the host-wire oracle can
+  false-flag a legitimate Tor DIRECTORY (V2Dir) connection or a cold-bootstrap fallback-dir dial.
+  Align it on the same set (single source): persist `gw_tor_relay_ips`'s cache to a run artifact
+  the host tool reads, or expose it via a new `--print-relay-ips`. Mechanism is a dwp<->host-wire
+  contract choice; host-wire's live path is the `dm-release-test` root orchestration, not the
+  `DM_WHONIX_PAIR_BROWSER` guest run. It must ALSO exclude the GW's own NIC address as a dst (the
+  same direction fix) and read the relay set before the GW poweroff.
 
 OUT of scope (reviewer-confirmed): a second compromised Workstation SNIFFING a peer on the
 shared VBox internal LAN -- Whonix does not promise WS<->WS isolation and the traffic is

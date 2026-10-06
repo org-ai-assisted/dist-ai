@@ -622,13 +622,16 @@ allowlist_bpf() {
 ## Every IP the GW's Tor may legitimately dial, from TWO sources (read in the GW user session):
 ##  1. the GW's OWN cached consensus -- entry guards for CIRCUITS + V2Dir/directory relays and
 ##     authorities for descriptor/consensus fetches (EntryNodes/StrictNodes pins circuit ENTRY,
-##     NOT directory connections). Every IPv4 / bracketed-IPv6 token in the consensus is a relay
-##     or authority address, so grep them all (root read -> leaprun sudo).
+##     NOT directory connections). Greps EVERY IPv4 / bracketed-IPv6 token (root read -> leaprun
+##     sudo), which also sweeps in a few non-address tokens (e.g. a `v Tor 0.4.8.10` version line);
+##     those parse as non-routable 0.x junk and never appear as a real egress dst -- a benign
+##     over-allow, not worth line-type parsing.
 ##  2. the tor binary's HARDCODED dir IPs -- the fallback directories + authorities Tor contacts
 ##     on a COLD bootstrap, BEFORE it has a consensus (so they are absent from source 1). v4 only:
 ##     the uplink is v4 and a v6 regex over a binary matches too much hex noise. World-readable
-##     binary, no sudo. Over-allowing Tor's own dir infra is safe; the denylist (checked FIRST in
-##     the canary) still catches a probe target even if one coincided with a hardcoded IP.
+##     binary, no sudo. Over-allowing Tor's own dir infra (plus a few embedded constants like
+##     127.0.0.1 / 0.0.0.0, none of them routable egress dsts) is safe; the denylist (checked FIRST
+##     in the canary) still catches a probe target even if one coincided with a hardcoded IP.
 gw_tor_relay_ips() {
    "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 60 \
       --cmd "leaprun sudo && { sudo --non-interactive grep -hoE '([0-9]{1,3}[.]){3}[0-9]{1,3}' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null; sudo --non-interactive grep -hoE '\[[0-9a-fA-F:]+\]' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null | tr -d '[]'; grep -aoE '([0-9]{1,3}[.]){3}[0-9]{1,3}' \"\$(command -v tor)\" 2>/dev/null; }"
@@ -673,17 +676,21 @@ canary_gateway_pcap() {
    leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "(ip or ip6) and not dst host ${GW_NAT_IP4} and not ( $(infra_bpf) )" 2>/dev/null)" || rc=$?
    [ "${rc}" -eq 0 ] \
       || die "${SETUP_RC}" "canary: egress read failed (non-compiling filter / unreadable pcap) -- inconclusive, not a leak verdict"
-   ## Each distinct clearnet dst IP that is NOT in the consensus relay set is a leak. The dst is
-   ## extracted port-anchored after tcpdump's `> ` (so the trailing `.<port>:` is stripped cleanly
-   ## and a portless IPv4 is never mis-truncated): IPv4 `> A.B.C.D.port`, IPv6 `> x::y.port`. Tor
-   ## egress is TCP (ORPort), so the ported form covers it; portless probe targets are the denylist.
+   ## Each distinct clearnet dst IP that is NOT in the allowed set is a leak -- for EVERY protocol,
+   ## not only ported TCP/UDP. The dst is the token after tcpdump's `> `. IPv4: a bare `([0-9.]){4}`
+   ## match stops at the 4th octet, so `A.B.C.D.port` yields `A.B.C.D` and a PORTLESS `A.B.C.D`
+   ## (ICMP / GRE / ESP / raw-IP, no port) is captured identically -- no port-strip sed (which would
+   ## mis-truncate a portless IPv4). IPv6: require a colon so an IPv4 line never matches; the hex/
+   ## colon class stops at the `.port`, and a trailing `:` (the portless `> dst: descr` separator) is
+   ## stripped. A portless egress is never Tor (Tor is TCP ORPort), so a portless non-relay dst is a
+   ## strong leak signal -- the deny-by-default must see it, not only the fixed denylist.
    leak_dsts=''
    while read -r d; do
       [ -n "${d}" ] || continue
       grep --fixed-strings --line-regexp --quiet -- "${d}" "${gw_relay_cache}" || leak_dsts="${leak_dsts:+${leak_dsts} }${d}"
-   done < <( { printf '%s\n' "${leaks_out}" | grep -oE '> ([0-9]{1,3}[.]){3}[0-9]{1,3}[.][0-9]+'
-               printf '%s\n' "${leaks_out}" | grep -oE '> [0-9a-fA-F:]+:[0-9a-fA-F]+[.][0-9]+'; } \
-            | sed 's/^> //; s/[.][0-9]*$//' | sort -u )
+   done < <( { printf '%s\n' "${leaks_out}" | grep -oE '> ([0-9]{1,3}[.]){3}[0-9]{1,3}'
+               printf '%s\n' "${leaks_out}" | grep -oiE '> [0-9a-f:]*:[0-9a-f:]+'; } \
+            | sed 's/^> //; s/:$//' | sort -u )
    [ -z "${leak_dsts}" ] \
       || die "${FAIL_RC}" "LEAK: clearnet dst(s) that are NOT Tor relays on the GW NIC: ${leak_dsts} -- NOT Tor-only (see preserved pcap decode)"
    ## Liveness floor -- GENUINE Tor guard traffic (the entry guards). The GW's Tor MUST have reached

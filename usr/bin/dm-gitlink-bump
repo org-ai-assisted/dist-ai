@@ -247,7 +247,13 @@ fi
 ## already names the submodules, so listing them here would only restate it.
 ## Overrides: this IS the deliberate gitlink bumper -- the guard that would
 ## otherwise refuse a pointer commit is meant for ACCIDENTAL bumps.
+## Identity: pin the committer/author NAME to 'claude'. The harness exports
+## GIT_AUTHOR_NAME / GIT_COMMITTER_NAME carrying a session-id suffix that
+## OVERRIDES git config, so without this the session id lands in the public
+## commit object. A per-command assignment overrides the inherited export;
+## email is left to git config (noreply), never set here (would risk PII).
 GIT_BRANCH_GUARD_ALLOW=1 GIT_GITLINK_GUARD_ALLOW=1 \
+GIT_AUTHOR_NAME=claude GIT_COMMITTER_NAME=claude \
    git -C "${top}" commit --quiet \
       -m "Bump submodule gitlinks to published ai tips" \
       -- "${to_bump_paths[@]}"

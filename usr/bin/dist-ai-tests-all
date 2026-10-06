@@ -103,6 +103,7 @@ core_suites=(
    dist-ai-registry-tests
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
+   dm-gitlink-bump-tests
    github-api-tests
    dm-smbios-reader-boot-test-tests
    dm-upgrade-regression-tests

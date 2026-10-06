@@ -1,0 +1,71 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the dm-gitlink-bump regression suite: drives the real dm-gitlink-bump
+## against a throwaway superproject + submodule and asserts the parent gitlink
+## bump is committed under a clean 'claude' identity, never the session-id name
+## the harness exports. No root, no network. Works installed (tests under
+## /usr/share/dm-gitlink-bump-tests) or from a dist-ai checkout. Set
+## DM_GITLINK_BUMP to pick the script under test; otherwise the suite uses the
+## dm-gitlink-bump beside this runner, then the install.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as SKIP
+## so the orchestrator's --allow-skip governs it, not folded into a pass.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+## Wire the checkout copy beside this runner so the suite tests the tree under
+## review, not a possibly-stale install.
+if [ -z "${DM_GITLINK_BUMP:-}" ] && test -x "${script_dir}/dm-gitlink-bump"; then
+   export DM_GITLINK_BUMP="${script_dir}/dm-gitlink-bump"
+fi
+
+if [ -d "${script_dir}/../share/dm-gitlink-bump-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-gitlink-bump-tests"
+else
+   tests_dir='/usr/share/dm-gitlink-bump-tests'
+fi
+
+shopt -s nullglob
+failures=0
+skipped=0
+env_unmet=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    skipped=$(( skipped + 1 ))
+  elif [ "${rc}" -eq 78 ]; then
+    env_unmet=$(( env_unmet + 1 ))
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+printf '%s\n' '' "${ran} dm-gitlink-bump case(s): ${failures} failed, ${skipped} skipped, ${env_unmet} env-unmet"
+suite_exit "${failures}" "${skipped}" "${env_unmet}"
