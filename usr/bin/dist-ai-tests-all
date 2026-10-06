@@ -557,7 +557,8 @@ wire() {
          local anon_repo
          anon_repo="$( pkg_dir anon-leak-test )"
          ## if/then/fi, not `&&`: a bare `[ ] && ...` as the branch's last command would
-         ## return 1 when anon_repo is empty, and wire() is called under errexit -> abort.
+         ## return 1 when anon_repo is empty, and a non-zero return from a case that DID
+         ## wire would mis-mark this suite UNWIRED (run_suite treats wire() != 0 as unwired).
          if [ -n "${anon_repo}" ]; then
             wire_env+=( "ANON_LEAK_TEST_REPO=${anon_repo}" )
          fi
@@ -1033,9 +1034,9 @@ wire() {
          ## app (SECURE_TERMINAL_REPO, from the component checkout) and the
          ## terminal-poc-corpus payloads. The reusable CI exports the corpus checkout
          ## as TERMINAL_POC_CORPUS_REPO when requested; bridge it to the CORPUS_REPO
-         ## the shots payloads read. Unwired, wire()'s default 'return 1' aborts the
-         ## whole run under errexit, and the app/corpus-driving payloads FATAL (R-220)
-         ## instead of running.
+         ## the shots payloads read. Unwired, this suite is marked UNWIRED and fails
+         ## (run_suite handles wire()'s 'return 1'); wired, the app/corpus-driving
+         ## payloads run instead of FATALing (R-220) on the absent env.
          ## ${mydir} (dist-ai/usr/bin) on PATH: the shots binaries live there, and so do
          ## safe-pgrep/safe-pkill, which the reaper's marker-scoped orphan sweep needs (a
          ## bare pgrep -f self-matches the caller's shell, so the reaper HARD-FAILS its
@@ -1257,7 +1258,18 @@ run_suite() {
       fail_count=$(( fail_count + 1 ))
       return 0
    fi
-   wire "${suite}"
+   ## UNWIRED is a wiring bug in THIS repo (a suite in the run set with no wire()
+   ## case) -- handled like MISSING: fail just this suite and continue, NEVER abort
+   ## the whole run. wire()'s default 'return 1' under errexit would otherwise kill
+   ## every remaining suite over one unwired entry -- e.g. a suite registered a beat
+   ## before its wire case lands during a concurrent edit takes the whole run down.
+   ## The 'if !' also suspends errexit inside wire(), so an unexpected internal
+   ## failure likewise fails just this suite loudly rather than wedging the run.
+   if ! wire "${suite}"; then
+      emit "$( printf '%-38s %-12s UNWIRED' "${suite}" "[${category}]" )"
+      fail_count=$(( fail_count + 1 ))
+      return 0
+   fi
    ## Tell a suite that fails closed on an absent target (e.g. secure-terminal-tests)
    ## whether an absent-target SKIP (exit 77) is tolerated HERE. Set exactly when we would
    ## NOT fail on its skip -- named in --allow-skip, or a lenient non-strict run -- so the

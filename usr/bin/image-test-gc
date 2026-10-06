@@ -36,7 +36,7 @@ die() {
 }
 
 main() {
-   local user home vmname vms_raw
+   local user home vmname vms_raw ipc_dir
    local -a vmnames=()
    user="${1:-}"
    [ -n "${user}" ] || die 2 "usage: ${me} EPHEMERAL_USER (eph-*)"
@@ -79,7 +79,14 @@ main() {
    ## another account, so a surviving .vbox-<user>-ipc becomes foreign-owned and makes
    ## the next same-named account's VBox COM object fail to create. eph-* only (persist-*
    ## refused above), so removing it unconditionally here is safe.
-   safe-rm --recursive --force -- "${VBOX_IPC_BASE}/.vbox-${user}-ipc"
+   ## A symlink at this world-writable /tmp path is never a real IPC dir -- remove
+   ## the LINK itself, never --recursive through it to a target.
+   ipc_dir="${VBOX_IPC_BASE}/.vbox-${user}-ipc"
+   if [ -L "${ipc_dir}" ]; then
+      safe-rm --force -- "${ipc_dir}"
+   else
+      safe-rm --recursive --force -- "${ipc_dir}"
+   fi
    printf '%s\n' "${me}: done"
 }
 
