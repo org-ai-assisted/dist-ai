@@ -144,10 +144,17 @@ git commit -qm addsmod
 git add smod
 git commit -qm 'bump smod'
 esc_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if grep --quiet "$( printf '\x1b')" <<< "${esc_out}"; then
-   fail "submodule inner diff leaked a raw terminal escape"
+## The DANGEROUS payload is an OSC title-set (ESC ] 0 ; ... BEL); it must never
+## reach the terminal raw. stcat DELIBERATELY preserves safe SGR colour
+## (ESC [ ... m) -- the submodule --stat summary runs --color=always -- so
+## rejecting every ESC would false-flag that safe colour. Assert the two
+## dangerous bytes the payload carries (an OSC introducer ESC ] and a BEL 0x07)
+## are absent; a real leak of the content escape would carry both.
+if grep --quiet --fixed-strings -- "$( printf '\x1b]' )" <<< "${esc_out}" \
+   || grep --quiet --fixed-strings -- "$( printf '\x07' )" <<< "${esc_out}"; then
+   fail "submodule inner diff leaked a raw dangerous terminal escape (OSC/BEL)"
 else
-   pass "submodule inner diff neutralizes terminal escapes (stcat)"
+   pass "submodule inner diff neutralizes dangerous terminal escapes (stcat)"
 fi
 
 ## Pre-flight: a .gitattributes-binary-suppressed change must still be listed by

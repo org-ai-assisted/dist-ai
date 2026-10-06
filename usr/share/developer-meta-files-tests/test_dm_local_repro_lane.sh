@@ -9,7 +9,8 @@
 ## Once builds are laned (dist_build_slot), an UN-laned read rooted at the flat binary_mnt would
 ## descend into a CONCURRENT build's lane and cat a FOREIGN artifact's sha512 as the comparison
 ## key -- a wrong verdict. So this tool must lane its own build and scope every find to that lane.
-## The real lines are extracted + eval'd (no copy to drift); the finds are checked structurally.
+## The real assignments are extracted + eval'd (no copy to drift) regardless of any leading
+## `if !`/indent or trailing `; then`; the finds are checked structurally.
 ## Canary: fails on the pre-lane tool (flat binary_mnt root, no slot on the build).
 
 ## File-wide: dist_build_slot / build_slot / binary_lane are set + read by `eval` of lines
@@ -46,9 +47,29 @@ printf '#!/bin/bash\nprintf %%s stub-slug\n' > "${stub_dir}/sandbox-session-slug
 chmod +x "${stub_dir}/sandbox-session-slug"
 PATH="${stub_dir}:${PATH}"
 
-## Extract the two real resolution lines and eval them.
-slot_line="$(grep -E '^build_slot=' -- "${subject}")"
-lane_line="$(grep -E '^binary_lane=' -- "${subject}")"
+## Extract a `NAME="..."` assignment from the subject, LINE-START-anchored: only leading
+## indentation + an optional `if ! ` wrapper may precede the name, so the test evals the REAL
+## resolution RHS without coupling to the assignment's source-line SHAPE. Anchoring (no `.*`
+## before the capture) is load-bearing: it keeps a COMMENT mentioning the name, a trailing
+## `# NAME=...` comment, and a `dist_build_slot=` prefix from being picked up, and takes the
+## FIRST real assignment. Both RHS values contain no embedded double quote. An unmatched form
+## yields empty -> the loud `[ -z ]` fail below, never a vacuous pass.
+extract_assignment() { sed -nE "s/^[[:space:]]*(if[[:space:]]+!?[[:space:]]*)?($1=\"[^\"]*\").*/\2/p" -- "$2" | head -1; }
+
+## Guard the extractor against comment-shadowing (an earlier unanchored pattern grabbed a
+## `NAME="..."` from a comment, or the LAST match on a line, so a commented/trailing-comment
+## assignment could shadow the real one -> a vacuous pass). Fixture inside stub_dir so the EXIT
+## trap already cleans it.
+printf '%s\n' '## build_slot="commented-shadow"' \
+   'build_slot="real-first" # build_slot="trailing-shadow"' > "${stub_dir}/subject-fixture"
+if [ "$(extract_assignment build_slot "${stub_dir}/subject-fixture")" = 'build_slot="real-first"' ]; then
+   pass "extractor ignores commented/trailing-comment assignments (not shadowed)"
+else
+   fail "extractor shadowed by a comment: got [$(extract_assignment build_slot "${stub_dir}/subject-fixture")]"
+fi
+
+slot_line="$(extract_assignment build_slot "${subject}")"
+lane_line="$(extract_assignment binary_lane "${subject}")"
 if [ -z "${slot_line}" ] || [ -z "${lane_line}" ]; then
    fail "dm-local-repro-build has no build_slot/binary_lane resolution (not lane-aware)"
    printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"

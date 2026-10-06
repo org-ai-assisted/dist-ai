@@ -206,43 +206,40 @@ extension-header vectors, which this suite adds.
   upstream wording change makes a canary no-op, which fails LOUDLY ("canary did NOT
   reproduce"), never a false pass -- but would need re-syncing suite-wide.
 
-## Non-Qubes-Whonix gaps (reviewer-identified 2026-10-04)
+## Non-Qubes-Whonix threat model (two VMs on a VBox internal network + a host OS)
 
-This suite + catalog grew from the Qubes-oriented forward-egress model. A focused
-ai-review (agy/grok/claude) confirmed it is comprehensive for L3 FORWARD egress but NOT
-for the full Non-Qubes-Whonix threat model (two VMs on a VirtualBox INTERNAL network + a
-host OS). The gateway-origination, external-input and static-invariant gaps are now
-CLOSED; only the two LIVE `dm-whonix-pair` layers remain open.
+This netns suite covers L3 FORWARD egress. The full Non-Qubes-Whonix model adds
+gateway-origination, external-input and static-invariant surfaces that the forward model
+does not reach; those are covered as below, leaving the two LIVE `dm-whonix-pair` layers.
 
-CLOSED:
+Covered:
 
 - GW-ORIGINATED / host-DNS leaks (the Non-Qubes `NON_TOR_GATEWAY` exceptions): the shipped
   Gateway OUTPUT accepts + skips Tor-redirect for `10.0.2.0/24` (VBox NAT: .2 router, .3
   host DNS proxy), `192.168.0.0/24`, `192.168.1.0/24` -- EMPTY on Qubes. A Gateway process
   reaching the host DNS proxy (`10.0.2.3`) or the LAN is a real non-Tor leak (the wiki
-  "Deactivate Host DNS" leak), and the netns oracle used to EXCLUDE all `10.0.2.0/24`
-  unicast, so it was invisible by construction. CLOSED: the oracle (`leaktest_lib.sh`
-  `LEAKTEST_EGRESS_BPF`) now excludes only DHCP(67/68) on that link, and
-  `gw_originated_nontor_egress_test.sh` fires REAL gw-namespace sockets (the OUTPUT chain,
-  which the AF_PACKET injector bypasses): clearnet is rejected, `10.0.2.3` / `192.168.x`
-  egress and are now SEEN (teeth), DHCP stays excluded (precision).
+  "Deactivate Host DNS" leak). The shared oracle (`leaktest_lib.sh` `LEAKTEST_EGRESS_BPF`)
+  excludes only DHCP(67/68) on that link (NOT all `10.0.2.0/24` unicast, which would hide the
+  leak), and `gw_originated_nontor_egress_test.sh` fires REAL gw-namespace sockets (the OUTPUT
+  chain, which the AF_PACKET injector bypasses): clearnet is rejected, `10.0.2.3` / `192.168.x`
+  egress ARE seen (teeth), DHCP stays excluded (precision).
 - GW external-side INPUT exposure / port reachability: SocksPort/TransPort/DnsPort/
   ControlPort or ssh reachable from the VBox-NAT side or a non-INT_IF address (bound
-  `0.0.0.0`). CLOSED by `gw_external_input_reachability_test.sh` (netns INPUT-chain probes
+  `0.0.0.0`). Covered by `gw_external_input_reachability_test.sh` (netns INPUT-chain probes
   from the upstream namespace, listener bound wide to model the 0.0.0.0 worst case) and the
   static bind audit `tor_socksport_bind_test.sh` (every Tor listener binds `10.152.152.10` /
   `127.0.0.1` / the ULA / a unix socket, never a wildcard).
 - WS adapter-config invariant: a Workstation second NIC on NAT/Bridged bypasses the Gateway
-  entirely. CLOSED by the static audit `ws_single_internal_nic_test.sh` (exactly one
+  entirely. Covered by the static audit `ws_single_internal_nic_test.sh` (exactly one
   internal-network NIC, eth0, via gateway 10.152.152.10).
 - GW/WS sysctl + neighbor config: `accept_ra` / `accept_redirects` / autoconf off on the
   internal interface, `arp_ignore`/`arp_filter` -- load-bearing for the uRPF FIB. CLOSED by
   the static audit `internal_iface_sysctl_test.sh` (security-misc wildcard sysctls +
   internal iface is inet6 static; there is no explicit autoconf sysctl).
 
-DONE (LIVE `dm-whonix-pair`, not this netns suite):
+Covered by the LIVE `dm-whonix-pair` (not this netns suite):
 
-- GW-originated ALLOWLIST canary: the LIVE `dm-whonix-pair` GW external-NIC canary is now
+- GW-originated ALLOWLIST canary: the LIVE `dm-whonix-pair` GW external-NIC canary is
   deny-by-default -- it pins the GW to a fixed set of Tor entry guards (`EntryNodes` +
   `StrictNodes 1`) and allows ONLY those guard IPs (either direction) + link infra
   (DHCP/link-local/multicast); ANY other clearnet packet is a LEAK. Tor-only by default, NO
@@ -259,35 +256,34 @@ DONE (LIVE `dm-whonix-pair`, not this netns suite):
   so the emit is legitimate (no abuse complaint), not an unsolicited scan. Both oracles derive the
   split identically from `--print-guards` / `--print-pc-filter` (single source, no drift).
 
-LANDED (app/browser layer code + unit tests) -- LIVE validation DEFERRED (headless Tor Browser):
+App/browser layer -- code + unit tests complete, live validation deferred:
 
 - WebRTC/STUN local-IP exposure + doileak exit-IP: the opt-in `browser-webrtc` anon-leak-test
-  probe (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS browser headless through a staged harness and
-  asserts WebRTC exposes NO host-identifying address (only the WS internal net / mDNS / loopback)
-  AND the browser's exit is Tor. Pure classifier unit-tested + canaried; fail-closed to SETUP if
-  no browser. Live-only pieces (which WS account/session, the Tor Browser path via
-  ANON_LEAK_BROWSER, a display) are tuned at the live run.
-  LIVE STATUS (2026-10-05, OVH): the CORE oracle PASSES live (full battery + GW-trace canary
-  green: genuine Tor-guard traffic + positive-control pkts, 0 probe-target, 0 non-guard clearnet).
-  The opt-in browser phase is DEFERRED for live validation (operator decision): the network-layer
-  oracle already gates any real WebRTC/browser egress at the wire, so the app-layer probe is
-  defense-in-depth. The probe now RUNS live (find_browser locates the WS Tor Browser and launches
-  it headless) but headless Tor Browser does not POST its result back within the 90s harness
-  timeout -> SETUP (inconclusive, fail-closed; never a false pass). FOLLOW-UP to bring the browser
-  layer live: capture the launcher's stderr (the probe DEVNULLs it); confirm the `torbrowser`
-  wrapper forwards `--headless` and loads the localhost collector URL; the harness fetches
-  check.torproject.org THROUGH Tor, which can exceed 90s on a cold circuit, so make the browser
-  timeout longer + probe-configurable; then re-run with DM_WHONIX_PAIR_BROWSER=1. Also nail down
-  the guestcontrol guest-exit -> VBoxManage-exit mapping (observed guest exit 2 -> 34): confirm a
-  genuine probe leak (guest exit 1) still reaches the caller as 1 so the browser/battery `==1`
-  LEAK classification can fire (the pcap canary is the authoritative, exit-independent gate
-  regardless).
-  STAGING (fixed 2026-10-05): the probe runs NON-root (Tor Browser refuses root) and reads its CLI
-  + harness from a world-readable guest-local copy -- `ws_browser_probe` does `install -d -m 0755`
-  then `install` as root off the root-only read-only /mnt/shared, in a SEPARATE guestcontrol call
-  so a staging/transport failure is SETUP, never a false LEAK.
+  probe (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS Tor Browser headless through a staged harness
+  and asserts WebRTC exposes NO host-identifying address (only the WS internal net / mDNS /
+  loopback) AND the browser exit is Tor. Pure classifier unit-tested + canaried; fail-closed to
+  SETUP when the probe cannot run.
+- This is the ONE assertion no other layer covers: the wire oracle sees only NON-Tor clearnet
+  egress and cannot inspect an ICE candidate carried INSIDE the Tor circuit to a STUN server /
+  peer, so a local IP disclosed that way is opaque to it. The probe is therefore not mere
+  defense-in-depth, and WebRTC local-IP exposure is UNVERIFIED live until the probe runs there.
+- Staging: the probe runs NON-root (Tor Browser refuses root) and so cannot read the root-only
+  read-only `/mnt/shared` mount. `ws_browser_probe` copies the CLI + harness to a world-readable
+  guest-local dir as root (explicit `install -d -m 0755`, umask-independent) in a SEPARATE
+  guestcontrol call, so a staging/transport failure is SETUP not a false LEAK, then runs the probe
+  from there.
+- Live follow-up: headless Tor Browser launches but does not POST its result within the 90s
+  harness timeout. Capture the launcher stderr (the probe DEVNULLs it), confirm the `torbrowser`
+  wrapper forwards `--headless` + loads the localhost URL, and make the browser timeout longer +
+  probe-configurable (the through-Tor `check.torproject.org` fetch can exceed 90s on a cold
+  circuit).
+- Verdict source: the guestcontrol layer does not preserve the guest exit (guest 2 surfaces as
+  34) and a transport failure can surface as 1, so classifying on the process exit is unreliable.
+  The battery + browser probe should classify on the probe's `--json` (`leak_detected` /
+  `exit_code`), treating absent JSON as SETUP; the GW-trace pcap canary is the authoritative,
+  exit-independent leak gate.
 
-OPEN (owned by the LIVE `dm-whonix-pair`, not this netns suite):
+Open (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 
 - Non-torified WS apps (apt/ping launched without a proxy) + DNS-prefetch -- not yet a probe
   (the gateway-craft + GW/host-NIC allowlists already catch the resulting clearnet egress).

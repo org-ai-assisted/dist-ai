@@ -494,13 +494,16 @@ rt_eph_cleanup() {
 ## results subtree carries guest, interface AND version so lxqt and cli (or two
 ## versions) never collide on one path.
 rt_publish_result() {
-   local guest_name version account mode rc pass outdir verdict
+   local guest_name version account mode rc shot pass outdir verdict
    guest_name="$1"
    version="$2"
    account="$3"
    mode="$4"
    rc="$5"
-   shift 5
+   ## shot: optional screenshot path for the results plane ('' when none, e.g. a
+   ## download failure before any VM, or the packet-based whonix lane).
+   shot="$6"
+   shift 6
 
    ## rc 0 = PASS; the reserved SETUP/inconclusive code 2 = INCONCLUSIVE (a provisioning
    ## gap or inconclusive probe -- pass=false but NOT a leak); any other non-zero (incl
@@ -514,7 +517,7 @@ rt_publish_result() {
    fi
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
       "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
-      "${rc}" "${pass}" "" "$@")"
+      "${rc}" "${pass}" "${shot}" "$@")"
    printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
       "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
 }
@@ -524,7 +527,7 @@ rt_publish_result() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc
+   local account version iso pass_file vmname rc shot shot_arg
    local -a checks_arg=()
 
    account="$1"
@@ -540,13 +543,15 @@ rt_lane_kicksecure() {
       --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")" || rc=$?
    if [ "${rc}" -ne 0 ]; then
       log error "iso-download failed (rc=${rc}) for kicksecure '${version}' -- not installing"
-      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" Kicksecure
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "" Kicksecure
       return "${rc}"
    fi
 
    ## Disposable LUKS passphrase for the install, readable only by the account.
    pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"
    printf '%s\n' "release-test-${version}" | sudo -u "${account}" -- tee -- "${pass_file}" >/dev/null
+   ## Account-owned screenshot path; dm-calamares-install captures the R4 first boot here.
+   shot="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-shot.XXXXXX.png")"
 
    vmname="Kicksecure-release-${version//./-}"
    if [ "${run_checks}" = 'true' ]; then
@@ -556,10 +561,15 @@ rt_lane_kicksecure() {
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      "${checks_arg[@]}" || rc=$?
+      --shot "${shot}" "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
-   rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" Kicksecure
+   ## Publish the screenshot only if it was actually captured (R4 reached); a pre-R4
+   ## failure leaves the mktemp placeholder empty -- do not publish a 0-byte screenshot.
+   shot_arg=""
+   [ -s "${shot}" ] && shot_arg="${shot}"
+   rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
+   sudo -u "${account}" -- safe-rm --force -- "${shot}" 2>/dev/null || true
    return "${rc}"
 }
 
@@ -593,7 +603,7 @@ rt_lane_whonix() {
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
 
-   rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" tor-confirm
+   rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" "" tor-confirm
    return "${rc}"
 }
 

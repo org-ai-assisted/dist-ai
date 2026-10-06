@@ -359,6 +359,34 @@ run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "touch /run/x"')"
 assert_not_at "R-192 spares a single-command 'bash -c' (glue)"       "R-192" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c "foo bar"')"
 assert_not_at "R-192 spares a wrapped single-command 'bash -c' (glue)" "R-192" 2
+## WRAPPED + ATTACHED '-c' (glued '-lc"prog"'/'-c"prog"', NO space before the quote,
+## behind a wrapper): the separate-form-only wrapper gate dropped the attached
+## program, so a multi-statement payload slipped -- now classified like command
+## position. Canary: FAILS on the pre-fix gate.
+run_det "$(printf '%s\n' '#!/bin/bash' 'ssh host -- bash -lc"a && b"')"
+assert_at "R-192 flags a wrapped ATTACHED multi-statement bash -lc" "R-192" 2
+## The single-command attached form behind a wrapper stays spared -- the new path
+## must not over-fire.
+run_det "$(printf '%s\n' '#!/bin/bash' 'sudo bash -c"foo bar"')"
+assert_not_at "R-192 spares a wrapped ATTACHED single-command bash -c" "R-192" 2
+## The inject's exact COMMAND-POSITION glued spelling ('-c'"a"; "b"''): the
+## attached branch re-'unquote'd an already-resolved value, collapsing the two
+## quoted statements into one word. Now fed verbatim. Canary: FAILS on the pre-fix gate.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c'\''"a"; "b"'\')"
+assert_at "R-192 flags the command-position glued bash -c" "R-192" 2
+## EXPANSION-bearing attached value: statically unresolvable, so the extractor
+## falls back to the raw source with its outer quotes stripped (as the separate
+## form does) -- '"$x; b"' -> '$x; b', two statements. Feeding the quoted source
+## verbatim would collapse it to one word and miss it. Canary (command + wrapper).
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c"$x; b"')"
+assert_at "R-192 flags an expansion-bearing attached bash -c" "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c"$x; b"')"
+assert_at "R-192 flags a wrapped expansion-bearing attached bash -c" "R-192" 2
+## Double-quote escapes ARE decoded in the attached value (as the separate form
+## does): '"a\";\"b"' -> the single word 'a;b', so the ';' is quoted and this is
+## ONE command -- not decoding would misread the escaped quote and false-flag it.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c"a\";\"b"')"
+assert_not_at "R-192 spares a decoded escaped-quote attached bash -c" "R-192" 2
 ## CONCATENATED-quote value: 'echo AA'"; echo BB" is TWO statements (bash joins
 ## the adjacent spans into 'echo AA; echo BB'). Stripping only ONE outer quote
 ## pair misses it (the mismatched outer quotes '.."'); the value extractor
@@ -391,6 +419,11 @@ assert_not_at "R-191 spares a single-command Exec" "R-191" 2
 run_det_at "etc/systemd/system/concat.service" \
    "$(printf '%s\n' '[Service]' "ExecStart=/bin/bash -c 'a'\"; b\"")"
 assert_at "R-191 flags a concatenated-quote multi-statement Exec" "R-191" 2
+## R-191 also inherits the wrapper fix: an attached '-c' behind a wrapper in an
+## Exec ('sudo bash -lc"..."') must be caught too. Canary: FAILS on the pre-fix gate.
+run_det_at "etc/systemd/system/wrapattach.service" \
+   "$(printf '%s\n' '[Service]' 'ExecStart=/usr/bin/sudo bash -lc"a && b"')"
+assert_at "R-191 flags a wrapped attached multi-statement Exec" "R-191" 2
 
 run_det_at "etc/apt/apt.conf.d/99x" \
    'DPkg::Post-Invoke {"if [ -x /x ]; then /x; fi"};'

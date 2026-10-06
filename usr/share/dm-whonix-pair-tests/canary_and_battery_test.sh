@@ -126,19 +126,20 @@ rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 nictrace_pcap="${work}/pcap"
 
-## --- ws_battery: one short command on /mnt/shared, no inline script -------------------------
-out="$(ws_battery '--probe tor-confirm')"
+## --- ws_battery: one short command on /mnt/shared, classified by the JSON verdict --------------
+## The echo stub emits no JSON exit_code, so probe_verdict returns SETUP -> capture with || true.
+out="$(ws_battery '--probe tor-confirm')" || true
 rc=0; has "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
 check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inline script)' "${rc}"
-rc=0; has "printf " "${out}" && rc=1 || rc=0
-check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass)' "${rc}"
+rc=0; has "sudo -S" "${out}" && rc=1 || rc=0
+check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass, no sudo -S)' "${rc}"
 
 ## --- ws_browser_probe: stage the CLI+harness readably, run the probe as non-root sysmaint -----
 ## /mnt/shared is a root-only read-only vboxsf mount; the battery reads it as root (dsudo), but the
 ## browser probe runs NON-root (Tor Browser refuses root) and a non-root read of the share is
 ## EACCES. So the probe must read a world-readable guest-local COPY, never the share directly --
 ## the exact regression this guards (the first live browser run died EACCES opening the share).
-out="$(ws_browser_probe)"
+out="$(ws_browser_probe)" || true   ## probe_verdict returns SETUP with the echo stub (no real sentinel)
 rc=0; has "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL}" "${out}" || rc=1
 check 'ws_browser_probe: creates the stage dir with an EXPLICIT 0755 (umask-independent, searchable by the non-root probe)' "${rc}"
 rc=0; has "dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test" "${out}" || rc=1
@@ -160,6 +161,61 @@ STUB
 chmod +x "${work}/vbe"
 rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
 check "ws_browser_probe: a staging/transport failure exits SETUP_RC(${SETUP_RC}), never FAIL_RC/leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## restore the echoing stub for anything after
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
+
+## --- probe_verdict: classify on anon-leak-test's JSON "exit_code", NOT the process exit ---------
+## guestcontrol does not convey the guest exit (a guest 2 reaches the host as 34), and a guest-side
+## infra failure (dsudo failure / python traceback) exits 1 with NO JSON verdict -- the absence of
+## the verdict line, not the exit, is what distinguishes infra failure from a real leak.
+jvout() { printf '{\n  "exit_code": %s,\n  "leak_detected": false,\n  "results": []\n}\n' "$1"; }
+rc=0; ( probe_verdict "$(jvout 0)" ) || rc=$?
+check 'probe_verdict: JSON exit_code 0 -> clean (0)' "${rc}"
+rc=0; ( probe_verdict "$(jvout 1)" ) || rc=$?
+check "probe_verdict: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(jvout 2)" ) || rc=$?
+check "probe_verdict: JSON exit_code 2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## A guest-side crash (dsudo failure / python traceback) exits 1 with NO JSON verdict -> SETUP,
+## never a false LEAK -- the exact misclassification this fix removes.
+rc=0; ( probe_verdict "$(printf 'sudo: a password is required\n')" ) || rc=$?
+check "probe_verdict: a dsudo failure (exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(printf 'Traceback (most recent call last):\n  File x\nValueError\n')" ) || rc=$?
+check "probe_verdict: a python traceback (no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict '' ) || rc=$?
+check "probe_verdict: empty output (transport cut) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Keyed on the real top-level exit_code line, NOT a lookalike inside a string value: a message
+## mentioning exit_code must not override the true verdict.
+rc=0; ( probe_verdict "$(printf '{\n  "exit_code": 1,\n  "results": [ { "message": "saw exit_code: 0 in noise" } ]\n}\n')" ) || rc=$?
+check "probe_verdict: keys on the real exit_code (1), ignores a string-value lookalike (0) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+
+## --- ws_battery / ws_browser_probe: verdict is the JSON exit_code, not the host process exit ----
+## Stub emits a pretty-printed exit_code line + a chosen host exit code.
+mk_json() { printf '#!/bin/bash\nprintf %s\nexit %s\n' "'  \"exit_code\": ${1}\n'" "${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+## A probe LEAK (JSON exit_code 1), clean host exit -> 1.
+mk_json 1 0
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check "ws_battery: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+## A CLEAN verdict (exit_code 0) even with a MANGLED nonzero host exit (34) -> clean (0).
+mk_json 0 34
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check 'ws_battery: JSON exit_code 0 with a mangled host exit 34 -> clean (0), host exit ignored' "${rc}"
+## An infra failure (nonzero host exit, NO JSON verdict) -> SETUP, NEVER misread as a leak.
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf 'sudo: a password is required\n'
+exit 1
+STUB
+chmod +x "${work}/vbe"
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check "ws_battery: an infra failure (host exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Browser probe: staging succeeds (exit 0), the probe reports a LEAK (JSON exit_code 1) -> 1.
+mk_json 1 0
+rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
+check "ws_browser_probe: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
 ## restore the echoing stub for anything after
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
