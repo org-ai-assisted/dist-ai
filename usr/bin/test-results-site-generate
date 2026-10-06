@@ -433,14 +433,21 @@ _DEFAULT_HEADER = (
 ## page's own on-page section anchors (#overview, ...), which do not exist on a
 ## results page and would read as broken links. This footer carries only the three
 ## family URLs the family-footer gate requires, with no on-page anchors.
+##
+## Structure: each gutter-bearing row (.ftop, .fbot) is a DIRECT <footer> child, as
+## in every family footer. style.css gives .ftop and .fbot their own
+## max-width/margin:auto + 22px horizontal padding, so wrapping them in an extra
+## .wrap double-applies the gutter and misaligns the rows -- the broken-footer bug
+## the website-tests footer-structure gate now catches.
 _FOOTER = (
-    '<footer><div class="wrap"><div class="fcols"><div class="fcol">'
+    '<footer><div class="ftop"><nav class="fcols"><div class="fcol">'
     "<h4>Family</h4>"
     '<a href="https://output-lies.github.io">output lies</a>'
     '<a href="https://secure-terminal.github.io">secure-terminal</a>'
     '<a class="self" href="https://org-ai-assisted.github.io" aria-current="page">org-ai-assisted</a>'
-    '</div></div><p class="fbot">AI-assisted. Automated OS-image test results.</p>'
-    "</div></footer>"
+    '</div></nav></div>'
+    '<div class="fbot"><span class="fcopy">AI-assisted. Automated OS-image test results.</span></div>'
+    "</footer>"
 )
 
 
