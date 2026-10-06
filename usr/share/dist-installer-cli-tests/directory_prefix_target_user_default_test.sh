@@ -35,8 +35,11 @@
 ## home, so the 'directory_prefix=<target-home>/...' assertion (and the
 ## target-home dir-created assertion) fail.
 ##
-## Exit: 0 pass | 1 fail. A missing subject / helper-scripts, or running as root,
-## is FATAL (exit 1), never a silent skip.
+## Exit: 0 pass | 1 fail. The cross-component subject (usability-misc) being
+## absent is a target-absent SKIP (77); running as root (the installer refuses
+## it) is an env-unmet SKIP (78). Both surface for the orchestrator's
+## --allow-skip to govern -- never a silent pass -- matching the runner contract
+## and the suite's other payload.
 
 set -o errexit
 set -o nounset
@@ -52,9 +55,10 @@ if [ -z "${repo}" ]; then
 fi
 standalone="${repo}/usr/share/usability-misc/dist-installer-cli-standalone"
 if [ ! -r "${standalone}" ]; then
-   printf '%s\n' "FATAL: not readable: '${standalone}'" >&2
+   printf '%s\n' "SKIP: not readable: '${standalone}'" >&2
    printf '%s\n' "set USABILITY_MISC_REPO to a usability-misc checkout." >&2
-   exit 1
+   ## style-ok: allow-skip: usability-misc is a cross-component subject; absent = target-absent SKIP, --allow-skip governs it
+   exit 77
 fi
 
 if [ -z "${HELPER_SCRIPTS_PATH:-}" ] \
@@ -75,8 +79,9 @@ fi
 ## real run_installer flow, so it needs a non-root uid; running the suite as root
 ## is an environment bug, not something to paper over here.
 if [ "$(id -u)" = "0" ]; then
-   printf '%s\n' "FATAL: this end-to-end test must run as a non-root user (the installer refuses root)." >&2
-   exit 1
+   printf '%s\n' "SKIP: this end-to-end test needs a non-root uid (the installer refuses root)." >&2
+   ## style-ok: allow-skip: the installer refuses root; the non-root capability this e2e needs is unmet here (env-unmet)
+   exit 78
 fi
 
 target_user="dict-target"
@@ -159,21 +164,42 @@ resolved_prefix() {
    PATH="${work}/bin:${PATH}" HOME="${work}/invokerhome" \
       timeout --kill-after=10 60 \
       bash "${standalone}" "$@" --getopt >"${out}" 2>"${err}" || rc="$?"
-   ## '--getopt' exits 0; a non-zero rc means the real directory step aborted
-   ## (e.g. the pre-fix failure). Surface the resolved value regardless so the
-   ## assertion message is meaningful.
+   ## '--getopt' exits 0 on success; a non-zero rc means the real directory step
+   ## aborted (e.g. the pre-fix failure). resolved_prefix runs in command
+   ## substitution, so a variable cannot carry rc to the caller -- record it in a
+   ## file for check_prefix to assert. Surface the resolved value regardless so
+   ## the assertion message is meaningful.
+   printf '%s' "${rc}" >"${work}/rc"
    grep --max-count=1 -- '^directory_prefix=' "${out}" | cut -d= -f2- || printf '%s' "<none:rc=${rc}>"
 }
 
+## Assert the standalone reached the '--getopt' success exit (rc 0) AND resolved
+## the prefix to ${2}. The rc check is load-bearing: without it a standalone that
+## PRINTED the right prefix then exited non-zero (the real directory step
+## aborting) would pass vacuously -- the 'grep | cut' pipeline's own success
+## hides the standalone's failure.
+check_prefix() {
+   local label="$1" want="$2" got rc
+   shift 2
+   got="$( resolved_prefix "$@" )"
+   rc="$( cat -- "${work}/rc" )"
+   if [ "${rc}" != 0 ]; then
+      notok "${label}: standalone --getopt exited ${rc}, expected 0" \
+         "got='${got}' ($(tail -n1 -- "${work}/err"))"
+   elif [ "${got}" = "${want}" ]; then
+      ok "${label}"
+   else
+      notok "${label}" "want='${want}' got='${got}'"
+   fi
+}
+
 ## Scenario 1 (CANARY): target user, no '--directory-prefix' -> the TARGET home.
-got="$( resolved_prefix --user="${target_user}" )"
+## On the OLD code this resolves to the INVOKER home AND the real directory step
+## aborts (sudo -u target mkdir under the invoker home), so BOTH the prefix and
+## the rc assertion fail.
 want="${work}/targethome/dist-installer-cli-download"
-if [ "${got}" = "${want}" ]; then
-   ok "target user (no -P) resolves the download dir to the TARGET home"
-else
-   notok "target user (no -P) did NOT resolve to the target home" \
-      "want='${want}' got='${got}' ($(tail -n1 -- "${work}/err"))"
-fi
+check_prefix "target user (no -P) resolves the download dir to the TARGET home" \
+   "${want}" --user="${target_user}"
 ## The real 'sudo -u <target> -- mkdir' must have created that dir (pre-fix it is
 ## created under the invoker home instead, so this dir is absent).
 if [ -d "${want}" ]; then
@@ -183,24 +209,14 @@ else
 fi
 
 ## Scenario 2: no target user, no '-P' -> the INVOKER home (same-account default).
-got="$( resolved_prefix )"
 want="${work}/invokerhome/dist-installer-cli-download"
-if [ "${got}" = "${want}" ]; then
-   ok "no target user resolves the download dir to the invoker home"
-else
-   notok "no target user did NOT resolve to the invoker home" \
-      "want='${want}' got='${got}'"
-fi
+check_prefix "no target user resolves the download dir to the invoker home" \
+   "${want}"
 
 ## Scenario 3: explicit '--directory-prefix' wins over the target-home default.
 want="${work}/custom/pfx"
-got="$( resolved_prefix --user="${target_user}" --directory-prefix="${want}" )"
-if [ "${got}" = "${want}" ]; then
-   ok "explicit --directory-prefix is preserved for a target user"
-else
-   notok "explicit --directory-prefix was overridden" \
-      "want='${want}' got='${got}'"
-fi
+check_prefix "explicit --directory-prefix is preserved for a target user" \
+   "${want}" --user="${target_user}" --directory-prefix="${want}"
 
 printf '%s\n' ""
 printf '%s\n' "===== dist-installer-cli --user directory_prefix default: ${pass_count} pass, ${fail_count} fail ====="
