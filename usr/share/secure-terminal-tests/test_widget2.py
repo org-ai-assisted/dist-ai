@@ -437,6 +437,28 @@ finally:
     _TabEditDialog.exec = _ted_oexec2
 win.set_tab_color(0, None)
 
+# finding 1: the Edit Tab dialog must apply the configured menu (UI) scale like every other
+# dialog -- rename_tab calls _select_labels(dlg, self._ui_scale) before exec(), so its chrome
+# enlarges when the menu size is raised. Record the dialog font at exec time (after rename_tab
+# applied the scale) and compare to an unscaled reference. Canary: drop the _select_labels call
+# -> the exec-time size equals the base and this fails.
+_ted_ref = _TabEditDialog(win, 'x', None, win._TAB_COLOR_PRESETS)
+_base_pt = _ted_ref.font().pointSizeF()
+_ted_ref.deleteLater()
+_us_save = win._ui_scale
+_seen_pt = []
+_ted_oexec3 = _TabEditDialog.exec
+try:
+    win._ui_scale = 150
+    _TabEditDialog.exec = lambda self: (_seen_pt.append(self.font().pointSizeF()),
+                                        _QDlg.DialogCode.Rejected)[1]
+    win.rename_tab(0)
+    ok(_seen_pt and _seen_pt[0] > _base_pt,
+       'finding1: the Edit Tab dialog enlarges its font to the menu (UI) scale before exec')
+finally:
+    _TabEditDialog.exec = _ted_oexec3
+    win._ui_scale = _us_save
+
 # tab-title elide floor: a SHORT label is never squeezed below its natural width, so a crowded
 # bar can no longer middle-elide it ("dev725" -> "1..25"); a LONG label's floor is capped below
 # natural (Qt may shrink it, where _paint_content middle-elides its ends). Test the bar in
