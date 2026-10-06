@@ -78,6 +78,13 @@ PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
 NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
 ## Seconds to let a killed VBoxSVC reap before userdel in cleanup (test seam).
 EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-2}"
+## Base dir for VBoxXPCOMIPCD's per-user IPC socket dir (.vbox-<user>-ipc). VBox
+## puts it at /tmp/.vbox-<user>-ipc for the sudo'd eph account: sudo env_reset with
+## no PAM session strips TMPDIR, so VBox falls back to /tmp (confirmed on the host).
+## This is VBox's fixed socket location, not a redirectable temp path of ours; the
+## unit test overrides it via the env var.
+## style-ok: no-tmp-hardcode -- VBox's fixed per-user IPC socket dir for the sudo'd account
+VBOX_IPC_BASE="${VBOX_IPC_BASE:-/tmp}"
 
 ISO_DIR="${DM_RELEASE_TEST_ISO_DIR:-/var/lib/image-tests/iso}"
 CERT_PATH="${DM_RELEASE_TEST_CERT:-/usr/share/keyrings/derivative.asc}"
@@ -419,6 +426,25 @@ rt_lock_account() {
       || die "${SETUP_RC}" "another dm-release-test run holds '${lockfile}' -- serialize runs on the shared '$1' account"
 }
 
+## VBoxXPCOMIPCD keeps its per-user IPC socket under <base>/.vbox-<user>-ipc and
+## REFUSES a dir it does not own -- so VBoxManage then fails "Failed to create the
+## VirtualBox object" (COM/IPC daemon socket error). userdel leaves the dir behind,
+## and an eph-run-<guest>-<version> account is REUSED by name across runs but gets a
+## fresh UID each time; the old UID is later reused by another account, so the stale
+## dir is now foreign-owned and poisons the next same-named account. Remove a stale,
+## FOREIGN-owned dir before VBox is used; never touch one the account owns (a persist-*
+## account legitimately keeps its dir across runs). Idempotent; self-heals a prior run
+## that crashed before image-test-gc could clean up.
+rt_purge_foreign_vbox_ipc() {
+   local account dir owner
+   account="$1"
+   dir="${VBOX_IPC_BASE}/.vbox-${account}-ipc"
+   [ -e "${dir}" ] || return 0
+   owner="$(stat --format='%U' -- "${dir}" 2>/dev/null || true)"
+   [ "${owner}" = "${account}" ] && return 0
+   safe-rm --recursive --force -- "${dir}"
+}
+
 rt_create_clean_account() {
    local account
    account="$1"
@@ -431,6 +457,7 @@ rt_create_clean_account() {
    fi
    getent group vboxusers >/dev/null || groupadd --system vboxusers
    usermod --append --groups vboxusers -- "${account}"
+   rt_purge_foreign_vbox_ipc "${account}"
    ## INVARIANT: a test account (above all a leak account) is never host-privileged.
    ## A privileged account could tamper with the nft leak-drop or the results plane and
    ## void the verdict. Enforced by group/uid allowlist AND a passwordless-sudo exercise

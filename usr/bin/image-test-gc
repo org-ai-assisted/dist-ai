@@ -24,6 +24,11 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+## Base dir for VBoxXPCOMIPCD's per-user IPC socket dir (.vbox-<user>-ipc). VBox
+## puts it at /tmp/.vbox-<user>-ipc for the sudo'd eph account (env_reset strips
+## TMPDIR); its fixed socket location, not a redirectable temp path. Test overrides.
+## style-ok: no-tmp-hardcode -- VBox's fixed per-user IPC socket dir for the sudo'd account
+VBOX_IPC_BASE="${VBOX_IPC_BASE:-/tmp}"
 
 die() {
    printf '%s: ERROR: %s\n' "${me}" "$2" >&2
@@ -69,6 +74,12 @@ main() {
    done
    ## drop any leftover VM/disk folder.
    safe-rm --recursive --force -- "${home}/VirtualBox VMs"
+   ## Remove the per-user VBox IPC socket dir too. userdel leaves it behind, and an
+   ## eph-* name is reused with a FRESH uid next run; the old uid is later reused by
+   ## another account, so a surviving .vbox-<user>-ipc becomes foreign-owned and makes
+   ## the next same-named account's VBox COM object fail to create. eph-* only (persist-*
+   ## refused above), so removing it unconditionally here is safe.
+   safe-rm --recursive --force -- "${VBOX_IPC_BASE}/.vbox-${user}-ipc"
    printf '%s\n' "${me}: done"
 }
 
