@@ -47,13 +47,29 @@ printf '#!/bin/bash\nprintf %%s stub-slug\n' > "${stub_dir}/sandbox-session-slug
 chmod +x "${stub_dir}/sandbox-session-slug"
 PATH="${stub_dir}:${PATH}"
 
-## Extract a `NAME="..."` assignment substring from the subject regardless of any leading
-## `if ! ` / indentation or trailing `; then`, so the test evals the REAL resolution RHS
-## without coupling to the assignment's source-line SHAPE. `\b` excludes a `dist_build_slot=`
-## prefix match; both RHS values contain no embedded double quote.
-extract_assignment() { sed -nE "s/.*\\b($1=\"[^\"]*\").*/\1/p" -- "${subject}" | head -1; }
-slot_line="$(extract_assignment build_slot)"
-lane_line="$(extract_assignment binary_lane)"
+## Extract a `NAME="..."` assignment from the subject, LINE-START-anchored: only leading
+## indentation + an optional `if ! ` wrapper may precede the name, so the test evals the REAL
+## resolution RHS without coupling to the assignment's source-line SHAPE. Anchoring (no `.*`
+## before the capture) is load-bearing: it keeps a COMMENT mentioning the name, a trailing
+## `# NAME=...` comment, and a `dist_build_slot=` prefix from being picked up, and takes the
+## FIRST real assignment. Both RHS values contain no embedded double quote. An unmatched form
+## yields empty -> the loud `[ -z ]` fail below, never a vacuous pass.
+extract_assignment() { sed -nE "s/^[[:space:]]*(if[[:space:]]+!?[[:space:]]*)?($1=\"[^\"]*\").*/\2/p" -- "$2" | head -1; }
+
+## Guard the extractor against comment-shadowing (an earlier unanchored pattern grabbed a
+## `NAME="..."` from a comment, or the LAST match on a line, so a commented/trailing-comment
+## assignment could shadow the real one -> a vacuous pass). Fixture inside stub_dir so the EXIT
+## trap already cleans it.
+printf '%s\n' '## build_slot="commented-shadow"' \
+   'build_slot="real-first" # build_slot="trailing-shadow"' > "${stub_dir}/subject-fixture"
+if [ "$(extract_assignment build_slot "${stub_dir}/subject-fixture")" = 'build_slot="real-first"' ]; then
+   pass "extractor ignores commented/trailing-comment assignments (not shadowed)"
+else
+   fail "extractor shadowed by a comment: got [$(extract_assignment build_slot "${stub_dir}/subject-fixture")]"
+fi
+
+slot_line="$(extract_assignment build_slot "${subject}")"
+lane_line="$(extract_assignment binary_lane "${subject}")"
 if [ -z "${slot_line}" ] || [ -z "${lane_line}" ]; then
    fail "dm-local-repro-build has no build_slot/binary_lane resolution (not lane-aware)"
    printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
