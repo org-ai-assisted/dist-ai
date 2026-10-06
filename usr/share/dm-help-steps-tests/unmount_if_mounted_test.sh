@@ -10,14 +10,20 @@
 ## of a plain 'umount'. Those callers pass paths that MAY OR MAY NOT be mounted
 ## (bind mounts that were never set up, an already-unmounted CHROOT_FOLDER) and run
 ## under 'set -o errexit', so the function must:
-##   1. NO-OP when the path is not a mountpoint (a plain 'umount' there would exit
-##      non-zero and errexit would break the build) -- the load-bearing guard;
-##   2. call 'umount' when it IS a mountpoint;
-##   3. propagate a failing 'umount' (return non-zero) so errexit fails the build.
+##   1. call 'umount' when the path IS a mountpoint (mountpoint(1) exit 0);
+##   2. NO-OP when it is not a mountpoint (exit 32) or is a confirmed-nonexistent
+##      path (a plain 'umount' there would exit non-zero and errexit would break
+##      the build) -- the load-bearing guard;
+##   3. PROPAGATE a genuine mountpoint(1) error on an existing path (exit 1/other),
+##      never swallow it as "not mounted" -- else a caller could delete across a
+##      mount whose state is undetermined;
+##   4. propagate a failing 'umount' (return non-zero) so errexit fails the build.
+## mountpoint(1) is queried FIRST, so a mounted path is unmounted even if a separate
+## existence check would glitch.
 ##
 ## The real function is SOURCED. 'mountpoint' and 'umount' are stubbed so the test
 ## needs no root and no real mounts; SUDO_TO_ROOT is emptied so the stub bash
-## functions (not external binaries) are what the function calls.
+## functions (and the real 'test' builtin) are what the function calls.
 
 set -o errexit
 set -o nounset
@@ -88,9 +94,9 @@ umount() {
    return "${stub_umount_rc}"
 }
 
-## A real existing target so the 'test -e' existence pre-check passes and the
-## mountpoint stub decides the outcome. (SUDO_TO_ROOT="" above, so 'test' is the
-## shell builtin against the real filesystem.)
+## A real existing target. mountpoint(1) is queried first; the real 'test' builtin
+## (SUDO_TO_ROOT="" above) then disambiguates the error branch against the real
+## filesystem: an existing target propagates, a nonexistent one no-ops.
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
@@ -125,10 +131,11 @@ else
    fail "mounted+umount ok: expected return 0, got non-zero"
 fi
 
-## --- case 3: mountpoint ERROR (exit 1) on an existing path -> PROPAGATE -----
-## The finding: 'mountpoint --quiet ... || return 0' swallowed a genuine error
-## (exit 1: bad invocation / system error) as "not mounted", returning success
-## and skipping umount, so a caller could delete across an undetermined mount.
+## --- case 3: mountpoint ERROR (exit 1) on an EXISTING path -> PROPAGATE -----
+## A genuine mountpoint(1) error (exit 1: bad invocation / system error) on a path
+## that EXISTS must propagate, not be swallowed as "not mounted" -- else a caller
+## could delete across an undetermined mount. (The error branch confirms the path
+## exists via the real 'test' builtin, so it propagates rather than no-ops.)
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${target}" ; then
@@ -141,16 +148,18 @@ else
    fi
 fi
 
-## --- case 4: nonexistent path -> no-op, mountpoint NEVER consulted ----------
+## --- case 4: CONFIRMED-nonexistent path -> no-op --------------------------
 ## A missing target is nothing to unmount, and must not be conflated with the
-## exit-1 error above (mountpoint shares exit 1 for a nonexistent path).
+## exit-1 error above (mountpoint shares exit 1 for a nonexistent path). mountpoint
+## is queried first, so it IS consulted here; the real 'test ! -e' then confirms
+## absence and the function no-ops.
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${work_dir}/absent" ; then
-   if [ "${mountpoint_called}" = "0" ] && [ "${umount_called}" = "0" ]; then
-      pass "absent path: no-op (return 0), mountpoint not consulted"
+   if [ "${umount_called}" = "0" ]; then
+      pass "absent path: no-op (return 0), does not umount"
    else
-      fail "absent path: mountpoint_called=${mountpoint_called} umount_called=${umount_called}"
+      fail "absent path: umount_called=${umount_called} on a nonexistent path"
    fi
 else
    fail "absent path: expected return 0, got non-zero"

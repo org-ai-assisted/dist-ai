@@ -15,10 +15,11 @@
 ##     dist_build_unlock_dangerous_options with a :- default).
 ##   - --package-jobs must fail-fast (exit) on a non-integer value; a whole integer
 ##     (including 0) is accepted at parse time.
-##   - value-taking flags (--vmram/--vram/--vmsize, --only-packages, --file-system,
-##     --hostname, --retry-{max,wait,before,after}) must check the empty value BEFORE
-##     'shift 2', so a trailing bare flag gives the actionable error, not a raw
-##     'shift count out of range' crash under errexit.
+##   - value-taking flags must reject a MISSING value before 'shift 2' (a trailing
+##     bare flag otherwise crashes 'shift count out of range' under errexit).
+##     --vmram/--vram/--vmsize also reject an explicit empty value; the others
+##     (--only-packages/--file-system/--hostname/--retry-{max,wait,before,after})
+##     ACCEPT an explicit empty value, which is meaningful downstream.
 ##
 ## Drives the REAL parse-cmd; only the color/error reporting layer help-steps/pre
 ## would supply is stubbed.
@@ -168,6 +169,23 @@ for flag in --only-packages --file-system --hostname --retry-max --retry-wait --
          ;;
       *)
          fail "${flag} as last arg did not give the actionable error: ${bare_out}"
+         ;;
+   esac
+done
+
+## --- an EXPLICIT empty value ('--flag ""') must be ACCEPTED for these flags: an
+## empty value is meaningful downstream (clear the list / fall back to the default /
+## skip the retry hook), so only a MISSING value (trailing bare flag, above) is an
+## error. Guards against re-tightening the guard from an argument-count check back
+## to an emptiness check, which would reject the supported empty value. ---
+for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after; do
+   empty_out="$( run_out "${flag}" "" )"
+   case "${empty_out}" in
+      *"requires a"*)
+         fail "${flag} \"\" wrongly rejected an explicit empty value (meaningful downstream)"
+         ;;
+      *)
+         pass "${flag} \"\" accepts an explicit empty value (not rejected at parse)"
          ;;
    esac
 done
