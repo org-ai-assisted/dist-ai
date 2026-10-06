@@ -1224,6 +1224,23 @@ def run():
         check('the complete index footer is not flagged',
               not any(f.startswith('index.html') for f in fails), repr(fails))
 
+    # check_assets must NOT flag a golden reference image (automated-test-results/
+    # goldens/) as orphaned -- goldens are sha256-referenced in golden-approvals.json,
+    # not by any page. A genuinely orphaned image elsewhere is still flagged.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<img src="a.webp">')
+        _png(root, 'a.webp')
+        _png(root, 'automated-test-results/goldens/kicksecure-lxqt/calamares-install.webp')
+        check('a golden reference image is not flagged orphaned',
+              _assets_failures(check_site, root) == [], repr(_assets_failures(check_site, root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>nothing</p>')
+        _png(root, 'automated-test-results/stray.webp')
+        check('a non-golden orphaned image under the results tree is still flagged',
+              any('stray.webp' in f for f in _assets_failures(check_site, root)),
+              repr(_assets_failures(check_site, root)))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
