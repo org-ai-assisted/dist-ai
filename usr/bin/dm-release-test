@@ -257,6 +257,11 @@ rt_account_unprivileged() {
    primary="$3"
    [ "${uid}" -ne 0 ] || return 1
    [ "${primary}" = "${account}" ] || return 1
+   ## Fail CLOSED on an empty group list: `id -nG` on a valid account always lists at
+   ## least the primary group, so an empty $4 means the lookup FAILED (NSS/initgroups) --
+   ## without this the loop runs zero times and ACCEPTS. Mirrors rt_account_can_sudo's
+   ## fail-closed-on-error stance.
+   [ -n "$4" ] || return 1
    for grp in $4; do
       case "${grp}" in
          "${account}"|vboxusers)
@@ -280,6 +285,22 @@ rt_account_unprivileged() {
 rt_account_can_sudo() {
    has runuser && has sudo || return 0
    runuser -u "$1" -- sudo --non-interactive /usr/bin/true >/dev/null 2>&1
+}
+
+## Fail-closed privilege gate for an account about to run a test. Refuses (SETUP_RC)
+## a host-privileged account (uid 0 or a group beyond vboxusers) or one with
+## passwordless sudo. Applied to EVERY test account so the isolation invariant holds
+## uniformly: the ephemeral account at creation, and the PRE-PROVISIONED blessed and
+## leak accounts at run time (this run did not create them). $1=account $2=role-label.
+## Needs root (reads id, exercises sudo). Precondition: the account exists.
+rt_require_account_unprivileged() {
+   local account role
+   account="$1"
+   role="$2"
+   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
+   ! rt_account_can_sudo "${account}" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': has passwordless sudo (NOPASSWD root)"
 }
 
 ## Extract the value from `VBoxManage getextradata` output. A set key prints
@@ -415,10 +436,7 @@ rt_create_clean_account() {
    ## void the verdict. Enforced by group/uid allowlist AND a passwordless-sudo exercise
    ## check (a NOPASSWD sudoers entry is not group-based); the dedicated namespace + clean
    ## creation is the primary guarantee.
-   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
-      || die "${SETUP_RC}" "refusing test account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
-   ! rt_account_can_sudo "${account}" \
-      || die "${SETUP_RC}" "refusing test account '${account}': has passwordless sudo (NOPASSWD root)"
+   rt_require_account_unprivileged "${account}" test
    rt_refresh_fleet
 }
 
@@ -744,11 +762,18 @@ main() {
    if [ "${account_kind}" = 'leak' ]; then
       id "${account}" >/dev/null 2>&1 \
          || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
-      rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
-         || die "${SETUP_RC}" "leak account '${account}' is host-privileged (uid 0 or a group beyond vboxusers) -- forbidden for a leak account"
-      ! rt_account_can_sudo "${account}" \
-         || die "${SETUP_RC}" "leak account '${account}' has passwordless sudo (NOPASSWD root) -- forbidden for a leak account"
+      rt_require_account_unprivileged "${account}" leak
       rt_refresh_fleet
+   fi
+
+   ## The blessed account (persist-stable-) is ALSO pre-provisioned, not created here,
+   ## so re-assert the same fail-closed privilege gate at run time: a NOPASSWD sudoers
+   ## entry or a privileged group on it would otherwise void the account-isolation
+   ## boundary the suite depends on. No nft leak-drop applies (not a leak account).
+   if [ "${account_kind}" = 'blessed' ]; then
+      id "${account}" >/dev/null 2>&1 \
+         || die "${SETUP_RC}" "blessed account '${account}' does not exist -- pre-provision persist-stable-${guest}"
+      rt_require_account_unprivileged "${account}" blessed
    fi
 
    local rc
