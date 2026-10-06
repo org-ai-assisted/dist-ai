@@ -112,6 +112,23 @@ assert_rc correct_unquoted.cfg \
 assert_rc comment_doc.cfg \
    '   ## documents the bug: [ "x${v}" = "efi" ] -- always false' 0
 
+## --- regression: valid comparisons the fix must NOT false-flag (rc 0) -------
+## A quote-concatenation ""xfoo is the single word 'xfoo', not an empty literal.
+assert_rc concat_not_empty.cfg \
+   '   if [ "x${v}" = ""xfoo ]; then' 0
+## A RHS that is itself a variable is not a literal (it can expand to anything).
+assert_rc var_rhs_double.cfg \
+   '   if [ "x${a}" = "${b}" ]; then' 0
+assert_rc var_rhs_xvar.cfg \
+   '   if [ "x${a}" = "x${b}" ]; then' 0
+assert_rc var_rhs_bare.cfg \
+   '   if [ "x${v}" = $b ]; then' 0
+
+## --- a tab between [ and the test IS linted (context gate accepts any ws) ----
+tab_fixture=$'   if [\t"x${v}" = "efi" ]; then'
+printf '%s\n' "${tab_fixture}" >"${work_dir}/tab_after_bracket.cfg"
+assert_rc_path tab_after_bracket "${work_dir}/tab_after_bracket.cfg" 1
+
 ## --- #3 silent-green: a non-regular input MUST fail loudly (rc 2) -----------
 mkdir -- "${work_dir}/a_directory.cfg"
 assert_rc_path directory_input "${work_dir}/a_directory.cfg" 2

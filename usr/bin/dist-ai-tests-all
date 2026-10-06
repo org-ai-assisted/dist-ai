@@ -822,8 +822,10 @@ wire() {
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
       dm-iso-grub-menu-lint)
-         ## Self-contained: drives dist-ai's grub-xprefix-lint checker against
-         ## fixtures, so there is no checkout to point at and no network.
+         ## Drives dist-ai's grub-xprefix-lint checker against its own fixtures,
+         ## so it needs no checkout env and no network. Mapped to derivative-maker
+         ## (suite_component) only so it runs in that component's CI lane alongside
+         ## dm-iso-grub-menu, which lints the real templates.
          wire_env=()
          wire_args=()
          ;;
@@ -1040,7 +1042,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-iso-grub-menu-lint|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)

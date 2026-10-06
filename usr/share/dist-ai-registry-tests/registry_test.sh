@@ -82,15 +82,12 @@ allowed_unregistered=(
 ##   dm-smbios-reader-boot    self-contained; takes a built image as an argument
 ##   dm-gitlink-upstream-check  self-contained; offline --self-test of dist-ai's
 ##                    own tool, no component checkout under test
-##   dm-iso-grub-menu-lint  self-contained; canaries dist-ai's own
-##                    grub-xprefix-lint checker against fixtures, no checkout
 allowed_no_component=(
    'web-analyzer'
    'website'
    'iso-boot'
    'dm-smbios-reader-boot'
    'dm-gitlink-upstream-check'
-   'dm-iso-grub-menu-lint'
 )
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"

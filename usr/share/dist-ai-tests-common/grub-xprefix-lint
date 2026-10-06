@@ -52,10 +52,17 @@ if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
 fi
 
 xprefix_quote="[\"']"
-## x-idiom LHS, an operator, then the RHS literal's first token: either an empty
-## quoted literal (two adjacent quotes) OR an optional quote followed by a
-## significant char that is not 'x'.
-xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}|${xprefix_quote}?[^x[:space:]\"'=])"
+## x-idiom LHS, an operator, then the RHS literal's first token: either an EMPTY
+## quoted literal ("" / '', where the two quotes TERMINATE the operand) OR an
+## optional quote followed by a significant char that is not 'x'. Two constraints
+## keep valid comparisons from false-firing:
+##   - the empty-literal branch requires a word terminator after the quotes, so a
+##     quote-concatenation like ""xfoo (which GRUB joins into the one word 'xfoo')
+##     is not misread as an empty literal;
+##   - a '$' first char is a VARIABLE operand, not a literal, so it is excluded
+##     (it can expand to anything, exactly like the bare-var reverse direction the
+##     header already declines to flag).
+xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}([[:space:]]|]|;|\$)|${xprefix_quote}?[^x[:space:]\"'=\$])"
 
 lineno=0
 hits=0
@@ -63,10 +70,12 @@ while IFS= read -r line || [ -n "${line}" ]; do
    lineno=$(( lineno + 1 ))
    ## Context-aware: a comment documenting the bug, a menuentry title, or a
    ## kernel cmdline is not a comparison -- only an actual [ ... ] / test lints.
+   ## '[' and 'test' are matched followed by ANY whitespace (GRUB, like POSIX sh,
+   ## accepts a tab there), so a tab-separated test is not silently skipped.
    if [[ "${line}" =~ ^[[:space:]]*# ]]; then
       continue
    fi
-   if [[ "${line}" != *'[ '* && "${line}" != *'test '* ]]; then
+   if [[ ! "${line}" =~ (\[|test)[[:space:]] ]]; then
       continue
    fi
    if [[ "${line}" =~ ${xprefix_mismatch_ere} ]]; then
