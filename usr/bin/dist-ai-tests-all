@@ -267,6 +267,19 @@ EOF
 ## Resolve a package checkout path under --repo-root, or empty when unset.
 pkg_dir() {
    local name="$1"
+   ## Ambient per-subject override: DIST_AI_PKG_<NAME> (NAME = the subject name
+   ## uppercased, every '-' -> '_') points ONE subject at an arbitrary checkout.
+   ## It is the seam for a local "run everything" against repos that are NOT a
+   ## monorepo packages/ subpath -- a sibling repo such as secure-terminal, whose
+   ## default resolution below yields a path that does not exist. Unset -> normal
+   ## resolution, so CI and the monorepo path are unaffected.
+   local override_var override_val
+   override_var="DIST_AI_PKG_$( printf '%s' "${name}" | LC_ALL=C tr 'a-z-' 'A-Z_' )"
+   override_val="${!override_var:-}"
+   if [ -n "${override_val}" ]; then
+      printf '%s' "${override_val}"
+      return 0
+   fi
    ## Standalone-component override: the selected component's checkout root is
    ## given directly (the repo root itself), bypassing the monorepo
    ## packages/<team>/<name> join. This is the per-repo CI path.
