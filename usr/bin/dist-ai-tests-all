@@ -1204,6 +1204,8 @@ all_components() {
 pass_count=0
 fail_count=0
 skip_count=0
+## Per-suite wall-clock (seconds), for the slowest-suites table at the end.
+declare -A suite_elapsed_map=()
 
 ## STANDING POLICY: a skipped test must NOT produce a green exit 0 unless the skip
 ## was specifically authorized. A suite that exits 77 because its target could not
@@ -1257,13 +1259,15 @@ run_suite() {
    if ! skip_is_fatal "${suite}"; then
       wire_env+=( "DIST_AI_SKIP_AUTHORIZED=1" )
    fi
-   local rc=0
+   local rc=0 suite_t0="${SECONDS}"
    ## --kill-after: a suite that blocks SIGTERM would otherwise never yield the
    ## 124 TIMEOUT verdict and the whole run would wedge with no verdict at all.
    ## --unset first so an ambient DIST_AI_SKIP_AUTHORIZED from the parent environment
    ## cannot authorize a skip; only our own wire_env (set above per skip_is_fatal) may.
    timeout --kill-after=30s "${tmo}" env --unset=DIST_AI_SKIP_AUTHORIZED "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
       >"${log_dir}/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
+   local suite_elapsed=$(( SECONDS - suite_t0 ))
+   suite_elapsed_map["${suite}"]="${suite_elapsed}"
    local verdict log_line
    case "${rc}" in
       0)
@@ -1303,7 +1307,7 @@ run_suite() {
          fail_count=$(( fail_count + 1 ))
          ;;
    esac
-   emit "$( printf '%-38s %-12s %s' "${suite}" "[${category}]" "${verdict}" )"
+   emit "$( printf '%-38s %-12s %-26s %5ss' "${suite}" "[${category}]" "${verdict}" "${suite_elapsed}" )"
    ## Surface the failing suite's captured output inline: the per-suite log
    ## lives in /tmp, which CI discards, so a bare FAIL verdict is not
    ## actionable. Echo it on FAIL / TIMEOUT (not on PASS / SKIP).
@@ -1713,6 +1717,19 @@ for item in "${selected[@]}"; do
          ;;
    esac
 done
+
+## Slowest suites first, so a run's time sinks -- and any suite sitting near its
+## timeout -- are visible at a glance without digging through the per-suite lines.
+if [ "${#suite_elapsed_map[@]}" -gt 0 ]; then
+   emit "== slowest suites (wall-clock seconds) =="
+   while IFS="$( printf '\t' )" read -r secs name; do
+      emit "$( printf '%6ss  %s' "${secs}" "${name}" )"
+   done < <(
+      for timed_suite in "${!suite_elapsed_map[@]}"; do
+         printf '%s\t%s\n' "${suite_elapsed_map[${timed_suite}]}" "${timed_suite}"
+      done | sort -rn
+   )
+fi
 
 if [ "${strict_skips}" = 'true' ]; then
    emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} authorized skip, ${requested_skip_count} skipped by request =="
