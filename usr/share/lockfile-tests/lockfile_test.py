@@ -385,9 +385,17 @@ def no_fallback_tests(lockfile_sh, check):
     ##    XDG_RUNTIME_DIR under 'sudo -u') is refused by the '-O' gate -- it must
     ##    hard-exit, NOT relocate the lock to the cache dir. This closes the TOCTOU
     ##    hole of trusting a dir another uid controls. The precondition is a dir the
-    ##    EUID does NOT own: as root (root owns /usr, so a hard-coded '/usr' would
-    ##    make '-O' TRUE and skip the leg) create a controlled dir and chown it to
-    ##    'nobody'; unprivileged, a stable root-owned system dir already qualifies.
+    ##    EUID does NOT own, and -- crucially -- one that is WRITABLE, so OWNERSHIP is
+    ##    the only thing triggering rejection: a read-only not-owned dir (e.g. '/usr')
+    ##    would, against a helper MISSING the '-O' gate, fail with a misleading
+    ##    'read-only file system' mkdir error instead of exposing that the lock was
+    ##    placed in a dir another uid controls. As root: create a dir and chown it to
+    ##    'nobody'. Unprivileged: a sticky, root-owned, world-writable dir (/tmp,
+    ##    ...), verified not-owned + writable at runtime; against the real helper the
+    ##    '-O' gate refuses it BEFORE any mkdir, while a helper lacking the gate would
+    ##    create a lock there and print LOCKED (the vulnerability signal this asserts
+    ##    against). Fall back to a read-only not-owned dir only if none qualifies
+    ##    (e.g. a user-owned /tmp in a rootless environment).
     tmp3 = tempfile.mkdtemp(prefix='lockfile-nofb3-')
     src3 = make_source_script(tmp3, lockfile_sh)
     cache3 = os.path.join(tmp3, 'cache')
@@ -398,7 +406,15 @@ def no_fallback_tests(lockfile_sh, check):
         os.mkdir(runtime3, 0o755)
         os.chown(runtime3, nobody.pw_uid, nobody.pw_gid)
     else:
-        runtime3 = '/usr'
+        runtime3 = None
+        for cand in ('/tmp', '/var/tmp', '/dev/shm'):
+            if (os.path.isdir(cand) and not os.path.islink(cand)
+                    and os.stat(cand).st_uid != os.geteuid()
+                    and os.access(cand, os.W_OK)):
+                runtime3 = cand
+                break
+        if runtime3 is None:
+            runtime3 = '/usr'
     env3 = dict(os.environ, XDG_RUNTIME_DIR=runtime3,
                 XDG_CACHE_HOME=cache3, HOME=tmp3)
     res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
