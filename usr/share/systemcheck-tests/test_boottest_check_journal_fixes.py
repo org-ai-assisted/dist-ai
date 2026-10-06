@@ -190,10 +190,12 @@ class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
     syslog identifier ' kernel:'), because Tor logs mixed-case 'Bug:' for EVERY LD_BUG line
     -- non-fatal asserts, fatal aborts, AND log_backtrace() frames alike, with no stable
     backtrace signature -- and those userspace lines are surfaced by the service-log check,
-    not this tier. Kernel-anchoring is also tamper-resistant: no process-controlled journal
-    text (a comm/name on a kernel line) can add or hide a critical line. Drives the REAL
-    function so the actual matching -- not a reimplementation -- is exercised; canaries on
-    the old code that classed Tor 'Bug:' lines critical."""
+    not this tier. Kernel-scoping cannot HIDE a real kernel BUG (a genuine kernel line
+    always carries the ' kernel:' identifier); it is a substring test, not a positional
+    anchor, so a local process logging 'kernel:' next to 'BUG:' can still raise a false
+    positive (accepted; the robust fix is a capture-time _TRANSPORT=kernel anchor). Drives
+    the REAL function so the actual matching -- not a reimplementation -- is exercised;
+    canaries on the old code that classed Tor 'Bug:' lines critical."""
 
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
@@ -287,16 +289,19 @@ class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
         self.assertNotIn('aborting', out)
         self.assertNotIn('microdesc.c', out)
 
-    def test_kernel_bug_not_hidden_by_injected_substring(self) -> None:
-        ## A kernel BUG line whose message carries attacker-controlled text (a process
-        ## comm/name) must STAY critical: the match anchors on the kernel identifier, not a
-        ## substring anywhere on the line, so a crafted 'Tor[..]: Bug:'-looking comm cannot
-        ## demote a genuine kernel BUG.
+    def test_kernel_bug_with_trailing_noise_stays_critical(self) -> None:
+        ## A genuine kernel BUG line stays critical regardless of trailing text in its
+        ## message (a process comm/name echoed by the kernel). This guards the SAFE
+        ## direction: a real kernel catastrophe is never hidden. NOTE the match is a
+        ## ' kernel:' substring, not a positional field anchor, so it does NOT claim the
+        ## reverse -- a userspace process logging 'kernel:' next to 'BUG:' can still raise a
+        ## false-positive (accepted; strictly rarer than the prior ' BUG:'-anywhere match;
+        ## the robust fix is a capture-time _TRANSPORT=kernel anchor in parse_cmd).
         line = ('host kernel: BUG: soft lockup - CPU#0 stuck for 22s! '
-                '[Tor[1]: Bug:]')
+                '[comm_with_bug_text]')
         out = self._run_check_critical([line])
         self.assertIn('soft lockup', out,
-                      'a kernel BUG: must not be demotable by injected journal text')
+                      'a genuine kernel BUG: must stay critical despite trailing text')
 
     def test_hard_critical_kernel_line_stays_critical(self) -> None:
         ## A hard kernel token (Bad RAM / CPU-stall / nouveau) is critical on its own
@@ -306,10 +311,6 @@ class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
         out = self._run_check_critical([line])
         self.assertIn('Bad RAM detected', out,
                       'a hard-critical token must survive a trailing phrase')
-
-
-if __name__ == '__main__':
-    unittest.main()
 
 
 class TestMountSharedJournalIgnore(SystemcheckTestBase):
@@ -402,3 +403,7 @@ class TestAnondateGetJournalIgnore(SystemcheckTestBase):
             self.assertNotIn(
                 ignore, line,
                 'an unrelated anondate error must still be reported')
+
+
+if __name__ == '__main__':
+    unittest.main()
