@@ -134,6 +134,20 @@ else
    fail "sign_and_verify unexpectedly failed on the happy path"
 fi
 
+## CANARY 1b: sign_and_verify must DELETE a stale '.sig' (from an earlier build
+## or planted), so a signature that does not match this file cannot be published.
+reset_artifact
+printf 'stale signature for a previous file' > "${artifact}.sig"
+if ( SQ_VERIFY_RC=0 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
+   if [ ! -f "${artifact}.sig" ]; then
+      pass "sign_and_verify removes a stale .sig"
+   else
+      fail "sign_and_verify left a stale .sig in place (would publish a mismatched signature)"
+   fi
+else
+   fail "sign_and_verify unexpectedly failed with a stale .sig present"
+fi
+
 ## CANARY 2: sign_and_verify_signify DOES invoke signify and produces both
 ## sidecars. FAILS on the old code (no such function).
 reset_artifact
