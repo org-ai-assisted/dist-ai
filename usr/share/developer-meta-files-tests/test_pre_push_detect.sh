@@ -374,6 +374,19 @@ assert_not_at "R-192 spares a wrapped ATTACHED single-command bash -c" "R-192" 2
 ## quoted statements into one word. Now fed verbatim. Canary: FAILS on the pre-fix gate.
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c'\''"a"; "b"'\')"
 assert_at "R-192 flags the command-position glued bash -c" "R-192" 2
+## EXPANSION-bearing attached value: statically unresolvable, so the extractor
+## falls back to the raw source with its outer quotes stripped (as the separate
+## form does) -- '"$x; b"' -> '$x; b', two statements. Feeding the quoted source
+## verbatim would collapse it to one word and miss it. Canary (command + wrapper).
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c"$x; b"')"
+assert_at "R-192 flags an expansion-bearing attached bash -c" "R-192" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'timeout 5 bash -c"$x; b"')"
+assert_at "R-192 flags a wrapped expansion-bearing attached bash -c" "R-192" 2
+## Double-quote escapes ARE decoded in the attached value (as the separate form
+## does): '"a\";\"b"' -> the single word 'a;b', so the ';' is quoted and this is
+## ONE command -- not decoding would misread the escaped quote and false-flag it.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c"a\";\"b"')"
+assert_not_at "R-192 spares a decoded escaped-quote attached bash -c" "R-192" 2
 ## CONCATENATED-quote value: 'echo AA'"; echo BB" is TWO statements (bash joins
 ## the adjacent spans into 'echo AA; echo BB'). Stripping only ONE outer quote
 ## pair misses it (the mismatched outer quotes '.."'); the value extractor

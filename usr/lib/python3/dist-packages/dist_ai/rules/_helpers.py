@@ -673,18 +673,19 @@ SHELL_C_WRAPPERS = frozenset({
 
 def _c_opt_program(text):
     """Classify the '-c' in a short-option cluster word (TEXT is the word's
-    word_string -- quotes already unwrapped and spans joined). Returns:
-      - ("separate", None): '-c' is the cluster's LAST char ('-c'/'-lc'/'-ec'), so
-        the program is the NEXT word;
-      - ("attached", PROG): a program is glued into this word ('-c"prog"' ->
-        ("attached", "prog")), PROG being the remainder after the 'c';
-      - None: TEXT is not a '-c'-bearing short-option cluster.
-    PROG is NOT unquoted: TEXT is already resolved, so the remainder IS the value
-    the inner shell runs -- stripping an outer quote again corrupts a value that
-    legitimately begins and ends with a quote ('"a"; "b"', two statements, would
-    collapse to the single word 'a"; "b'). One source of truth for the
-    command-position and wrapper paths, so a '-c' spelling is handled the same by
-    both ('ci + 2': +1 re-adds the leading '-', +1 skips past the 'c')."""
+    word_string, else its raw source -- both carry the literal '-<cluster>'
+    prefix). Returns ("separate", None) when '-c' is the cluster's LAST char
+    ('-c'/'-lc'/'-ec'), so the program is the NEXT word; ("attached", CI) when a
+    program is glued into this word ('-c"prog"'), CI being 'c's index in the
+    cluster so the caller slices the program at <value>[CI + 2:] (+1 re-adds the
+    leading '-', +1 skips the 'c'); or None when TEXT is not a '-c' short cluster.
+    SCOPE: real bash/sh/dash reject a glued '-c<cmd>' -- the chars after 'c' parse
+    as more option letters and the command is the NEXT word -- so a trailing-letter
+    cluster like '-ce' is classed 'attached' here though bash reads it 'separate'.
+    Telling a flag cluster from a glued-command attempt needs a bash option-letter
+    model we do not reinvent; the realistic forms (the valid separate '-c <prog>'
+    and the common bad-style glued '-c'prog'') are both served, and a mis-split
+    '-ce <prog>' only UNDER-reports its next-word payload (safe direction)."""
     if text is None or not text.startswith("-") or text.startswith("--") \
             or len(text) < 2:
         return None
@@ -694,7 +695,22 @@ def _c_opt_program(text):
     ci = cluster.index("c")
     if ci == len(cluster) - 1:
         return "separate", None
-    return "attached", text[ci + 2:]
+    return "attached", ci
+
+
+def _attached_c_value(word, ci, source):
+    """Program value of a glued '-c<prog>' (the slice of the option WORD after the
+    'c'), resolved exactly like _shell_c_value so the attached and separate forms
+    agree: the decoded word_string when the value is static -- so a value flanked
+    by quotes ('"a"; "b"') is KEPT verbatim (two statements), not collapsed by an
+    outer-quote strip -- else the raw source slice with one outer quote layer
+    stripped (an expansion-bearing value, unresolvable statically, e.g. '"$x; b"').
+    The '-<cluster>' prefix is literal, so the CI + 2 offset holds in the decoded
+    string and the raw source alike."""
+    decoded = bash_ast.word_string(word, decode_dquote=True)
+    if decoded is not None:
+        return decoded[ci + 2:]
+    return unquote(bash_ast.word_source(word, source)[ci + 2:])
 
 
 def _c_in_command(call, source):
@@ -710,7 +726,7 @@ def _c_in_command(call, source):
         classified = _c_opt_program(text)
         if classified is None:
             continue
-        form, program_value = classified
+        form, ci = classified
         if form == "separate":
             ## The next word is the program.
             if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
@@ -720,7 +736,7 @@ def _c_in_command(call, source):
         else:
             ## Attached ('-c"prog"'): the program is the rest of this option word.
             span = word["End"]["Line"] - word["Pos"]["Line"] + 1
-            yield (call, program_value, span)
+            yield (call, _attached_c_value(word, ci, source), span)
         return
 
 
@@ -734,15 +750,19 @@ def _is_separate_c_opt(text):
 
 
 def _c_behind_wrapper(call, words, start, source):
-    """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START]
-    is the shell). Handles the separate ('-c PROG') and attached ('-c"prog"')
-    forms, the same classifier as _c_in_command -- an attached '-c' behind a
-    wrapper is rarer but just as real, and feeds the same multi-statement check."""
+    """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START] is
+    the shell). Handles the separate ('-c PROG') and attached ('-c"prog"') forms,
+    the same classifier + value extraction as _c_in_command. Classifies on the
+    word_string, falling back to the raw source (as command_tokens does) so an
+    expansion-bearing attached value is resolved, not silently skipped."""
     for index in range(start + 1, len(words)):
-        classified = _c_opt_program(bash_ast.word_string(words[index]))
+        lit = bash_ast.word_string(words[index])
+        if lit is None:
+            lit = bash_ast.word_source(words[index], source)
+        classified = _c_opt_program(lit)
         if classified is None:
             continue
-        form, program_value = classified
+        form, ci = classified
         if form == "separate":
             if index + 1 < len(words):
                 program = words[index + 1]
@@ -751,7 +771,7 @@ def _c_behind_wrapper(call, words, start, source):
         else:
             ## Attached: the program is glued into this option word.
             span = words[index]["End"]["Line"] - words[index]["Pos"]["Line"] + 1
-            yield (call, program_value, span)
+            yield (call, _attached_c_value(words[index], ci, source), span)
         return
 
 
