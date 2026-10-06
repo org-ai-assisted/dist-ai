@@ -262,19 +262,15 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertEqual(out.strip(), '',
                          'a bare BUG token in a kernel-echoed path must NOT be critical')
 
-    def test_many_matches_are_bounded(self) -> None:
-        ## Attacker-influenceable kernel text could spam many distinct catastrophe-looking
-        ## lines; the per-line sanitize is capped so it cannot stall. Assert the output is
-        ## actually BOUNDED below the input count (not merely that a marker appears), and
-        ## that the truncation is marked.
-        out = self._run_check_critical(
-            ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)])
-        shown = out.count('synthetic oops number')
-        self.assertLessEqual(shown, 200,
-                             'the per-line sanitize must stop at the 200-line cap')
-        self.assertLess(shown, 250,
-                        'output must be bounded below the input count, not unbounded')
-        self.assertIn('truncated', out, 'truncation past the cap must be marked')
+    def test_many_matches_all_shown(self) -> None:
+        ## Many distinct catastrophe lines must ALL be shown -- there is no cap, precisely so
+        ## an attacker who floods earlier-sorting forged lines cannot push a real catastrophe
+        ## past a cut. HTML neutralization is a single-pass translation (not a per-line fork),
+        ## so a large match set neither stalls nor truncates.
+        lines = ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)]
+        out = self._run_check_critical(lines)
+        self.assertEqual(out.count('synthetic oops number'), 250,
+                         'every matched catastrophe line must be shown, none dropped')
 
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
@@ -310,8 +306,9 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
 
     def test_catastrophe_with_tag_does_not_hide_next(self) -> None:
         ## Two catastrophe lines where the FIRST carries an unclosed '<' (a kernel-echoed
-        ## process comm can inject one). The matched set is sanitized PER LINE, so the '<'
-        ## cannot eat the SECOND catastrophe. (RED if the matches were sanitized as one blob.)
+        ## process comm can inject one). HTML neutralization translates '<>&' to '_' in one
+        ## pass, so the '<' cannot eat the SECOND catastrophe. (RED if the matches were run
+        ## through sanitize-string as one HTML blob.)
         out = self._run_check_critical([
             'host kernel: BUG: soft lockup note <unclosed',
             'host kernel: EDAC MC0: Bad RAM detected',
