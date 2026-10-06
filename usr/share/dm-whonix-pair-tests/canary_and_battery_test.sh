@@ -152,8 +152,10 @@ rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webr
 check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*dsudo install' <<< "${out}" || rc=1
 check 'ws_browser_probe: STAGES as root in the sysmaint session (dsudo for the copy)' "${rc}"
-rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*xvfb-run .*browser-webrtc' <<< "${out}" || rc=1
-check 'ws_browser_probe: headless env (sysmaint-allow + skip link-confirm GUI) + runs under a real xvfb display' "${rc}"
+rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*DISPLAY=:0.*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: headless env (sysmaint-allow + skip link-confirm GUI) + attaches to the live session DISPLAY=:0' "${rc}"
+rc=0; grep --quiet -- 'XDG_RUNTIME_DIR=/run/user/.*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: sets XDG_RUNTIME_DIR to the session runtime dir (reaches the live compositor)' "${rc}"
 rc=0; grep --quiet -- 'offscreen' <<< "${out}" && rc=1 || rc=0
 check 'ws_browser_probe: does NOT use QT offscreen (a real display, not a null surface)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*browser-webrtc' <<< "${out}" || rc=1

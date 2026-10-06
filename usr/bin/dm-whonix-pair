@@ -402,18 +402,19 @@ ws_battery() {
 ## uid) unless tb_allow_start_in_sysmaint=true -- the documented override -- so inject it. Classify
 ## the JSON verdict via probe_verdict: a probe-run infra failure (no JSON) is SETUP, never a leak.
 ## Headless env for the torbrowser wrapper: tb_allow_start_in_sysmaint=true (sysmaint-booted WS)
-## and open_link_confirmation_skip=true (skip the GUI link-confirmation dialog). The probe runs
-## under xvfb-run so the browser renders to a REAL (virtual) X display -- NOT QT_QPA_PLATFORM=
-## offscreen, which only null-surfaces Qt helpers and leaves firefox with no display to render in,
-## so it never loads the harness. xvfb-run is the firefox/X11 equivalent of secure-terminal's
-## headless wlroots compositor. The browser (a python child) inherits $DISPLAY from xvfb-run.
+## and open_link_confirmation_skip=true (skip the GUI link-confirmation dialog). The WS sysmaint
+## session already runs a full desktop (Wayland wayland-0 + Xwayland :0 under /run/user/<uid>), but
+## guestcontrol does NOT inherit the session env, so firefox has no display and never loads the
+## harness. Attach to the LIVE session display -- DISPLAY=:0 + XDG_RUNTIME_DIR=/run/user/<uid> (the
+## probe runs as the session owner sysmaint) -- a real rendering surface, no xvfb/compositor to
+## install, more faithful than a synthetic display.
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
       --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }xvfb-run --auto-servernum python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
+      --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/\$(id -u) ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
    printf '%s\n' "${out}"
    probe_verdict "${out}"
 }
