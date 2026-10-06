@@ -24,12 +24,15 @@ Regression tests for log-checker config / temp-dir hardening:
   * source_config keeps 'shopt -s nullglob' so an empty /etc/systemcheck.d is a
     clean no-op (an unmatched literal glob would otherwise crash under errexit).
 
-The real functions are extracted and driven under log-checker's own options
-(errexit + nounset, NO pipefail). Absolute-path state (the Qubes marker-vm, the
-fixed /var/cache temp dir, the /etc config dirs) is neutralized with a
-bubblewrap tmpfs overlay so the tests are deterministic on a Qubes host as well
-as a non-Qubes CI container; SkipTest when bubblewrap is unavailable, matching
-the testlib convention.
+log-checker is source-able (was_executed guard), so the tests SOURCE the real
+script -- defining its functions (and the real strings.bsh helpers) without
+running it or inheriting strict-mode -- then call the function under test. Only
+genuine external / root actions (leaprun, safe-rm) and the GUI-format sinks
+(sanitize-string / br_add_to_file / stcatn) are stubbed, for deterministic,
+offline assertions. Absolute-path state (the Qubes marker-vm, the fixed
+/var/cache temp dir, the /etc config dirs) is neutralized with a bubblewrap
+tmpfs so the tests are deterministic on a Qubes host as well as a non-Qubes CI
+container; SkipTest when bubblewrap is unavailable, matching the testlib.
 """
 
 import os
@@ -38,11 +41,7 @@ import subprocess
 import tempfile
 import unittest
 
-from systemcheck_testlib import (
-    SystemcheckTestBase,
-    bwrap_available,
-    extract_bash_function,
-)
+from systemcheck_testlib import SystemcheckTestBase, bwrap_available
 
 ## A journal line matching log-checker's positive journal_search_pattern_list
 ## ("error"), so it survives the first match grep and reaches the ignore filters.
@@ -50,9 +49,10 @@ MATCH_LINE = 'testhost app[1]: this is an error sample'
 
 
 class LogCheckerHardeningBase(SystemcheckTestBase):
-    """Shared harness: extract a real log-checker function and run it, overlaying
-    the absolute paths it reads with a bubblewrap tmpfs so the case under test is
-    deterministic regardless of host (Qubes or CI container)."""
+    """Shared harness: SOURCE the real log-checker (source-able, so this defines
+    its functions without auto-running or leaking strict-mode), then call the
+    function under test, overlaying the absolute paths it reads with a bubblewrap
+    tmpfs so the case under test is deterministic on any host (Qubes or CI)."""
 
     def _log_checker(self) -> str:
         return os.path.join(self.dir, 'log-checker')
@@ -73,28 +73,34 @@ class LogCheckerHardeningBase(SystemcheckTestBase):
             prefix += ['--tmpfs', directory]
         return prefix + cmd
 
-    def _run(self, script: str, tmpfs_dirs: list) -> subprocess.CompletedProcess:
+    def _run(self, body: str, tmpfs_dirs: list) -> subprocess.CompletedProcess:
+        ## Source the source-able script (was_executed is false here -> no
+        ## auto-run, no strict leak), then run the caller-supplied body under the
+        ## same options the executed script sets, so the functions behave as in
+        ## production.
+        script = (
+            f'source {shlex.quote(self._log_checker())}\n'
+            ## Match the executed script's own options so the function runs as in
+            ## production (pipefail on -> the grep brace-masks are genuinely
+            ## exercised); the source itself did not enable strict (was_executed
+            ## is false when sourced).
+            'set -o errexit\n'
+            'set -o nounset\n'
+            'set -o pipefail\n'
+            f'{body}'
+        )
         cmd = self._wrap(['bash', '-c', script], tmpfs_dirs)
-        ## stdin=DEVNULL so the pre-fix degenerate grep (file path consumed as the
-        ## pattern) drops to EOF immediately instead of hanging; the timeout still
-        ## fails loudly on a genuine hang.
+        ## stdin=DEVNULL so nothing can block on a terminal; timeout fails a hang
+        ## loudly instead of wedging CI.
         return subprocess.run(cmd, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=30)
 
-    def _run_check_service_logs(self, journal_line: str, fixed: list,
-                                patterns: list) -> subprocess.CompletedProcess:
-        func = extract_bash_function(self._log_checker(), 'check_service_logs')
-        tmp = tempfile.mkdtemp()
-        fixed_arr = ' '.join(shlex.quote(item) for item in fixed)
-        patterns_arr = ' '.join(shlex.quote(item) for item in patterns)
-        script = (
-            'set -o errexit\n'
-            'set -o nounset\n'
-            f'TMPDIR={shlex.quote(tmp)}\n'
-            ## leaprun feeds the canned journal; the apparmor-info branch emits
-            ## nothing. sanitize-string / br_add_to_file / stcatn / safe-rm are
-            ## format/sink helpers irrelevant to the ignore-filter logic under
-            ## test, so they are stubbed to the identity transform.
+    ## Stubs for the externals/sinks the functions call as bare names. Defined
+    ## AFTER the source so they shadow the real definitions; kept to the identity
+    ## transform so assertions are deterministic and offline.
+    @staticmethod
+    def _stubs(journal_line: str) -> str:
+        return (
             'leaprun() { case "$1" in'
             f" read-journalctl-logs-this-boot) printf '%s\\n' {shlex.quote(journal_line)} ;;"
             ' *) : ;; esac ; }\n'
@@ -102,28 +108,33 @@ class LogCheckerHardeningBase(SystemcheckTestBase):
             'br_add_to_file() { cp -- "$1" "$1_br" ; }\n'
             'stcatn() { cat -- "$@" ; }\n'
             'safe-rm() { : ; }\n'
-            f'journal_ignore_fixed_list=( {fixed_arr} )\n'
-            f'journal_ignore_patterns_list=( {patterns_arr} )\n'
-            f'{func}\n'
-            'check_service_logs this_boot\n'
         )
-        ## Hide the Qubes marker so the 'virtualbox' auto-append (which would make
-        ## journal_ignore_patterns_list non-empty) does not fire on a Qubes host.
-        return self._run(script, ['/usr/share/qubes'])
+
+    def _run_check_service_logs(self, journal_line: str, fixed: list,
+                                patterns: list) -> subprocess.CompletedProcess:
+        tmp = tempfile.mkdtemp()
+        fixed_arr = ' '.join(shlex.quote(item) for item in fixed)
+        patterns_arr = ' '.join(shlex.quote(item) for item in patterns)
+        body = (
+            self._stubs(journal_line)
+            + f'TMPDIR={shlex.quote(tmp)}\n'
+            + f'journal_ignore_fixed_list=( {fixed_arr} )\n'
+            + f'journal_ignore_patterns_list=( {patterns_arr} )\n'
+            + 'check_service_logs this_boot\n'
+        )
+        ## Hide the Qubes marker so the 'virtualbox' auto-append does not make
+        ## journal_ignore_patterns_list non-empty on a Qubes host.
+        return self._run(body, ['/usr/share/qubes'])
 
     def _run_prep_temp_dir(self, setup: str = '') -> subprocess.CompletedProcess:
-        func = extract_bash_function(self._log_checker(), 'prep_temp_dir')
         ## prep_temp_dir hardcodes TMPDIR=/var/cache/systemcheck-log-checker, so
-        ## isolate /var/cache with a tmpfs: a clean per-run dir, writable by us,
-        ## that cannot touch the real cache.
-        script = (
-            'set -o errexit\n'
-            'set -o nounset\n'
-            f'{func}\n'
+        ## isolate /var/cache with a tmpfs: a clean per-run dir, writable by us.
+        body = (
+            'safe-rm() { command rm --recursive --force -- "${@:3}" ; }\n'
             f'{setup}'
             'if prep_temp_dir ; then echo PREP_OK ; else echo "PREP_FAIL rc=$?" ; fi\n'
         )
-        return self._run(script, ['/var/cache'])
+        return self._run(body, ['/var/cache'])
 
 
 class TestLogCheckerEmptyIgnoreLists(LogCheckerHardeningBase):
@@ -197,23 +208,17 @@ class TestLogCheckerSourceConfigNullglob(LogCheckerHardeningBase):
     """source_config must keep nullglob so an empty config dir is a clean no-op."""
 
     def test_nullglob_set_in_source_config(self) -> None:
-        func = extract_bash_function(self._log_checker(), 'source_config')
-        self.assertIn('shopt -s nullglob', func,
+        with open(self._log_checker(), encoding='utf-8') as handle:
+            text = handle.read()
+        self.assertIn('shopt -s nullglob', text,
                       'source_config must set nullglob (empty *.conf glob -> no-op, '
                       'not a literal unmatched path sourced under errexit)')
 
     def test_empty_config_dirs_are_a_noop(self) -> None:
-        func = extract_bash_function(self._log_checker(), 'source_config')
-        script = (
-            'set -o errexit\n'
-            'set -o nounset\n'
-            f'{func}\n'
-            'source_config\n'
-            'echo SOURCE_CONFIG_OK\n'
-        )
+        body = 'source_config\necho SOURCE_CONFIG_OK\n'
         ## Empty the config dirs so the globs match nothing.
-        proc = self._run(script, ['/etc/systemcheck.d',
-                                  '/usr/local/etc/systemcheck.d'])
+        proc = self._run(body, ['/etc/systemcheck.d',
+                                '/usr/local/etc/systemcheck.d'])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('SOURCE_CONFIG_OK', proc.stdout,
                       'an empty config dir must be a clean no-op')
