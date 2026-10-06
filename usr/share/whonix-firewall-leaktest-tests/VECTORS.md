@@ -269,9 +269,13 @@ LANDED (app/browser layer code + unit tests) -- LIVE validation DEFERRED (headle
   ANON_LEAK_BROWSER, a display) are tuned at the live run.
   LIVE STATUS (2026-10-05, OVH): the CORE oracle PASSES live (full battery + GW-trace canary
   green: genuine Tor-guard traffic + positive-control pkts, 0 probe-target, 0 non-guard clearnet).
-  The opt-in browser phase is DEFERRED for live validation (operator decision): the network-layer
-  oracle already gates any real WebRTC/browser egress at the wire, so the app-layer probe is
-  defense-in-depth. The probe now RUNS live (find_browser locates the WS Tor Browser and launches
+  The opt-in browser phase is DEFERRED for live validation (operator decision). The wire oracle
+  catches only NON-Tor clearnet egress; it CANNOT establish that WebRTC did not disclose a local
+  IP within traffic carried THROUGH Tor (an ICE candidate bearing the host's real address, sent to
+  a STUN server / peer over the Tor circuit, rides inside the allowed guard flow and is opaque to
+  the wire). So the app-layer probe is the ONLY check of WebRTC local-IP exposure, NOT mere
+  defense-in-depth -- and while it is deferred, local-IP exposure via WebRTC remains UNVERIFIED
+  live. The probe now RUNS live (find_browser locates the WS Tor Browser and launches
   it headless) but headless Tor Browser does not POST its result back within the 90s harness
   timeout -> SETUP (inconclusive, fail-closed; never a false pass). FOLLOW-UP to bring the browser
   layer live: capture the launcher's stderr (the probe DEVNULLs it); confirm the `torbrowser`
