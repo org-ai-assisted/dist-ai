@@ -150,8 +150,12 @@ rc=0; has "python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webr
 check 'ws_browser_probe: runs the probe from the readable guest-local copy' "${rc}"
 rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc" "${out}" && rc=1 || rc=0
 check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
-rc=0; has '--role sysmaint' "${out}" || rc=1
-check 'ws_browser_probe: runs in the WS sysmaint session (dsudo yields root for the staging copy)' "${rc}"
+rc=0; grep --quiet -- '--role sysmaint.*dsudo install' <<< "${out}" || rc=1
+check 'ws_browser_probe: STAGES as root in the sysmaint session (dsudo for the copy)' "${rc}"
+rc=0; grep --quiet -- '--role user.*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: RUNS the browser as the unprivileged user (Tor Browser refuses sysmaint)' "${rc}"
+rc=0; grep --quiet -- '--role sysmaint.*browser-webrtc' <<< "${out}" && rc=1 || rc=0
+check 'ws_browser_probe: does NOT run the browser in the sysmaint session (the tb_allow_start_in_sysmaint regression)' "${rc}"
 ## A staging/transport failure must be SETUP (inconclusive), NEVER the probe's exit-1 LEAK code:
 ## the install steps are a SEPARATE call, so their failure cannot be misread as a proven leak.
 cat > "${work}/vbe" <<'STUB'
