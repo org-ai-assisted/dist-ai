@@ -471,9 +471,10 @@ def render_overview(views, header, footer, generated_utc):
     matrix = (
         '<section class="cat" id="matrix"><div class="wrap">'
         "<h2 class=\"catname\">Runs</h2>"
-        '<table class="matrix"><thead><tr><th>lane</th><th>version</th>'
-        "<th>builder</th><th>provenance</th><th>status</th><th>age</th><th></th>"
-        "</tr></thead><tbody>%s</tbody></table></div></section>"
+        '<div class="matrix-wrap"><table class="matrix"><thead><tr><th>lane</th>'
+        "<th>version</th><th>builder</th><th>provenance</th><th>status</th>"
+        "<th>age</th><th></th></tr></thead><tbody>%s</tbody></table></div>"
+        "</div></section>"
     ) % ("".join(rows) if rows else '<tr><td colspan="7">no runs</td></tr>')
 
     ## NEEDS-APPROVAL: every NEW/CHANGED shot across all runs.
