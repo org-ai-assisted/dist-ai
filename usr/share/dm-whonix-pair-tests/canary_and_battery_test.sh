@@ -152,8 +152,10 @@ rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webr
 check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*dsudo install' <<< "${out}" || rc=1
 check 'ws_browser_probe: STAGES as root in the sysmaint session (dsudo for the copy)' "${rc}"
-rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*QT_QPA_PLATFORM=offscreen.*browser-webrtc' <<< "${out}" || rc=1
-check 'ws_browser_probe: injects the headless env (sysmaint-allow + skip link-confirm GUI + Qt offscreen)' "${rc}"
+rc=0; grep --quiet -- 'tb_allow_start_in_sysmaint=true.*open_link_confirmation_skip=true.*xvfb-run .*browser-webrtc' <<< "${out}" || rc=1
+check 'ws_browser_probe: headless env (sysmaint-allow + skip link-confirm GUI) + runs under a real xvfb display' "${rc}"
+rc=0; grep --quiet -- 'offscreen' <<< "${out}" && rc=1 || rc=0
+check 'ws_browser_probe: does NOT use QT offscreen (a real display, not a null surface)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*browser-webrtc' <<< "${out}" || rc=1
 check 'ws_browser_probe: runs the browser probe in the logon-able sysmaint session' "${rc}"
 ## A staging/transport failure must be SETUP (inconclusive), NEVER the probe's exit-1 LEAK code:
