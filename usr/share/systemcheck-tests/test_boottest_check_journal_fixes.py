@@ -226,7 +226,7 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
                 'stcatn() { cat -- "$@"; }\n'
                 'safe-rm() { :; }\n'
                 ## no-op '<br />' step: br_add_to_file X normally creates X_br.
-                'br_add_to_file() { cp -- "$1" "$1_br"; }\n'
+                'br_add_to_file() { cp -- "$1" "${1}_br"; }\n'
                 f'{func}\n'
                 'check_critical_logs\n'
             )
