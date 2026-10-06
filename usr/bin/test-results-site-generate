@@ -593,7 +593,9 @@ def render_run(view, header, footer, generated_utc):
         )
     body = (
         '<section class="hero"><div class="wrap">'
-        '<p class="kicker">%s</p><h1>%s</h1>'
+        # .runid: a machine run-id is a long unbreakable token; the default hero h1
+        # is white-space:nowrap, so it must opt into wrapping or it overflows mobile.
+        '<p class="kicker">%s</p><h1 class="runid">%s</h1>'
         '<p class="line">%s %s &middot; builder %s &middot; provenance %s &middot; '
         "%s &middot; %s</p>"
         '<p class="sub"><a href="../">back to all results</a></p>'
