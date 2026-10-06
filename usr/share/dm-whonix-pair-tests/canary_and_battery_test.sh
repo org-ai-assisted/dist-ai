@@ -126,13 +126,11 @@ rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 nictrace_pcap="${work}/pcap"
 
-## --- ws_battery: one short command on /mnt/shared, classified by the PROBE_EXIT sentinel ------
-## The echo stub emits no real sentinel, so probe_verdict returns SETUP -> capture with || true.
+## --- ws_battery: one short command on /mnt/shared, classified by the JSON verdict --------------
+## The echo stub emits no JSON exit_code, so probe_verdict returns SETUP -> capture with || true.
 out="$(ws_battery '--probe tor-confirm')" || true
 rc=0; has "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
 check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inline script)' "${rc}"
-rc=0; has "PROBE_EXIT=" "${out}" || rc=1
-check 'ws_battery: echoes the in-guest exit as the PROBE_EXIT sentinel (survives guestcontrol mangling)' "${rc}"
 rc=0; has "sudo -S" "${out}" && rc=1 || rc=0
 check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass, no sudo -S)' "${rc}"
 
@@ -170,38 +168,54 @@ printf '%s\n' "$*"
 STUB
 chmod +x "${work}/vbe"
 
-## --- probe_verdict: classify on the in-guest PROBE_EXIT sentinel, NOT the host-side exit -------
-## guestcontrol does not convey the guest exit (a guest 2 reaches the host as 34, a transport
-## failure as 1). The verdict comes from the sentinel; its ABSENCE is SETUP, never a leak.
-rc=0; ( probe_verdict '{ "exit_code": 0 } PROBE_EXIT=0' ) || rc=$?
-check 'probe_verdict: PROBE_EXIT=0 -> clean (0)' "${rc}"
-rc=0; ( probe_verdict 'PROBE_EXIT=1' ) || rc=$?
-check "probe_verdict: PROBE_EXIT=1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
-rc=0; ( probe_verdict 'PROBE_EXIT=2' ) || rc=$?
-check "probe_verdict: PROBE_EXIT=2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
-rc=0; ( probe_verdict 'the guest command never produced a sentinel' ) || rc=$?
-check "probe_verdict: ABSENT sentinel (transport/infra failure) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
-rc=0; ( probe_verdict 'VBoxManage noise exit code=34 ... PROBE_EXIT=1' ) || rc=$?
-check "probe_verdict: keys on the sentinel (PROBE_EXIT=1) not a stray host number (34) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+## --- probe_verdict: classify on anon-leak-test's JSON "exit_code", NOT the process exit ---------
+## guestcontrol does not convey the guest exit (a guest 2 reaches the host as 34), and a guest-side
+## infra failure (dsudo failure / python traceback) exits 1 with NO JSON verdict -- the absence of
+## the verdict line, not the exit, is what distinguishes infra failure from a real leak.
+jvout() { printf '{\n  "exit_code": %s,\n  "leak_detected": false,\n  "results": []\n}\n' "$1"; }
+rc=0; ( probe_verdict "$(jvout 0)" ) || rc=$?
+check 'probe_verdict: JSON exit_code 0 -> clean (0)' "${rc}"
+rc=0; ( probe_verdict "$(jvout 1)" ) || rc=$?
+check "probe_verdict: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(jvout 2)" ) || rc=$?
+check "probe_verdict: JSON exit_code 2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## A guest-side crash (dsudo failure / python traceback) exits 1 with NO JSON verdict -> SETUP,
+## never a false LEAK -- the exact misclassification this fix removes.
+rc=0; ( probe_verdict "$(printf 'sudo: a password is required\n')" ) || rc=$?
+check "probe_verdict: a dsudo failure (exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(printf 'Traceback (most recent call last):\n  File x\nValueError\n')" ) || rc=$?
+check "probe_verdict: a python traceback (no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict '' ) || rc=$?
+check "probe_verdict: empty output (transport cut) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Keyed on the real top-level exit_code line, NOT a lookalike inside a string value: a message
+## mentioning exit_code must not override the true verdict.
+rc=0; ( probe_verdict "$(printf '{\n  "exit_code": 1,\n  "results": [ { "message": "saw exit_code: 0 in noise" } ]\n}\n')" ) || rc=$?
+check "probe_verdict: keys on the real exit_code (1), ignores a string-value lookalike (0) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
 
-## --- ws_battery / ws_browser_probe: verdict comes from the sentinel, not the host exit ---------
-mk_sentinel() { printf '#!/bin/bash\nprintf %s\nexit %s\n' "'${1}\n'" "${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
-## A probe LEAK (PROBE_EXIT=1) with a clean host exit -> 1.
-mk_sentinel 'PROBE_EXIT=1' 0
+## --- ws_battery / ws_browser_probe: verdict is the JSON exit_code, not the host process exit ----
+## Stub emits a pretty-printed exit_code line + a chosen host exit code.
+mk_json() { printf '#!/bin/bash\nprintf %s\nexit %s\n' "'  \"exit_code\": ${1}\n'" "${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+## A probe LEAK (JSON exit_code 1), clean host exit -> 1.
+mk_json 1 0
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
-check "ws_battery: a probe LEAK (PROBE_EXIT=1) -> 1 via the sentinel" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
-## A CLEAN sentinel (PROBE_EXIT=0) even with a MANGLED nonzero host exit (34) -> clean (0).
-mk_sentinel 'PROBE_EXIT=0' 34
+check "ws_battery: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+## A CLEAN verdict (exit_code 0) even with a MANGLED nonzero host exit (34) -> clean (0).
+mk_json 0 34
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
-check 'ws_battery: a clean sentinel with a mangled host exit 34 -> clean (0), host exit ignored' "${rc}"
-## A TRANSPORT failure (nonzero host exit, NO sentinel) -> SETUP, NEVER misread as a leak.
-mk_sentinel 'transport blew up, no sentinel' 1
+check 'ws_battery: JSON exit_code 0 with a mangled host exit 34 -> clean (0), host exit ignored' "${rc}"
+## An infra failure (nonzero host exit, NO JSON verdict) -> SETUP, NEVER misread as a leak.
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf 'sudo: a password is required\n'
+exit 1
+STUB
+chmod +x "${work}/vbe"
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
-check "ws_battery: transport failure (host exit 1, no sentinel) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
-## Same for the browser probe: staging succeeds (exit 0), the probe reports a LEAK -> 1.
-mk_sentinel 'PROBE_EXIT=1' 0
+check "ws_battery: an infra failure (host exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Browser probe: staging succeeds (exit 0), the probe reports a LEAK (JSON exit_code 1) -> 1.
+mk_json 1 0
 rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
-check "ws_browser_probe: a probe LEAK (PROBE_EXIT=1) -> 1 via the sentinel" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+check "ws_browser_probe: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
 ## restore the echoing stub for anything after
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
