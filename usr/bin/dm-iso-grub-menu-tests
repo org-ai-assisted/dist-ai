@@ -39,10 +39,16 @@ export LC_ALL=C
 grub_config_dir="${DERIVATIVE_MAKER_DIR}/iso-build-data/grub-config"
 menu_file="${grub_config_dir}/grub.cfg"
 config_file="${grub_config_dir}/config.cfg"
+iso_step="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
+raw_to_iso_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
+parse_cmd_file="${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd"
 
-for f in "${menu_file}" "${config_file}"; do
+## Every subject file is checked UP FRONT, before any assertion runs. The SKIP
+## (missing checkout) decision is made here so a later missing-file guard can
+## never fire AFTER a real assertion has failed and mask that failure as a SKIP.
+for f in "${menu_file}" "${config_file}" "${iso_step}" "${raw_to_iso_file}" "${parse_cmd_file}"; do
    if [ ! -r "${f}" ]; then
-      printf '%s\n' "SKIP: missing ISO GRUB config: ${f}" >&2
+      printf '%s\n' "SKIP: missing ISO source file: ${f}" >&2
       printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere" >&2
       ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
       exit 77
@@ -235,18 +241,9 @@ fi
 ######################################################################
 ## ISO-build integrity the menu template cannot express: structural (source)
 ## guards on build-steps.d/4310 and help-steps/parse-cmd, complementing the runtime
-## boot-leg checks in dm-smbios-reader-boot-tests. Absent files -> SKIP (same contract).
+## boot-leg checks in dm-smbios-reader-boot-tests. All three files were verified
+## present by the up-front guard, so these are pure assertions (no skip here).
 ######################################################################
-iso_step="${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso"
-raw_to_iso_file="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
-parse_cmd_file="${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd"
-for f in "${iso_step}" "${raw_to_iso_file}" "${parse_cmd_file}"; do
-   if [ ! -r "${f}" ]; then
-      printf '%s\n' "SKIP: missing source file: ${f}" >&2
-      ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
-      exit 77
-   fi
-done
 
 ## Kernel hardening: help-steps/dm-raw-to-iso must scrape the rootfs kernel
 ## hardening cmdline (from the rootfs boot/grub/grub.cfg) and carry it into the live
@@ -261,16 +258,10 @@ assert_matches "dm-raw-to-iso carries the scrape into the live kernel append" \
 ## rootfs (correct arch even on a cross-build), NOT the host /usr/lib -- otherwise a
 ## cross-arch ISO build fails on the host's wrong-arch loaders. Guards against a
 ## regression back to host-sourced loaders (which is what broke cross-build before).
-raw_to_iso="${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso"
-if [ ! -r "${raw_to_iso}" ]; then
-   printf '%s\n' "SKIP: missing source file: ${raw_to_iso}" >&2
-   ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
-   exit 77
-fi
 assert_matches "dm-raw-to-iso sources signed EFI loaders from the target rootfs" \
-   'signed_grub_file=.*\$\{rootfs_dir\}/usr/lib/grub' "${raw_to_iso}"
+   'signed_grub_file=.*\$\{rootfs_dir\}/usr/lib/grub' "${raw_to_iso_file}"
 assert_matches "dm-raw-to-iso sources the shim from the target rootfs" \
-   'signed_shim_file=.*\$\{rootfs_dir\}/usr/lib/shim' "${raw_to_iso}"
+   'signed_shim_file=.*\$\{rootfs_dir\}/usr/lib/shim' "${raw_to_iso_file}"
 
 ## parse-cmd must reject an ISO --arch the converter cannot build (fail fast, not
 ## ~40 min in and then deep inside dm-raw-to-iso).

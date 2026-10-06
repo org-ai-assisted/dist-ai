@@ -576,6 +576,13 @@ def main():
     if results.failed:
         print("RESULT: FAIL")
         return 1
+    if results.skipped:
+        print(
+            "RESULT: SKIP (environment unmet): "
+            + str(results.skipped)
+            + " check(s) skipped (a runtime capability such as PyQt5 is absent)"
+        )
+        return 78
     print("RESULT: PASS")
     return 0
 

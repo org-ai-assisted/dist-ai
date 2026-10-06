@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 resolve_script() {
    if [ -n "${OPEN_LINK_CONFIRMATION_BIN:-}" ]; then
@@ -85,8 +86,9 @@ if ! grep --quiet 'link_confirmation_for_links_env' -- "${func_file}"; then
    printf '%s\n' "script: ${script_path}"
    printf '%s\n' "  SKIP  this open-link-confirmation predates the env-override feature."
    printf '%s\n' "        Point at a checkout that has it via OPEN_LINK_CONFIRMATION_BIN to run these checks."
-   printf '%s\n' "RESULT: SKIP"
-   exit 0
+   printf '%s\n' "RESULT: SKIP (target absent): the env-override feature is not in the subject"
+   ## style-ok: allow-skip: the code under test predates the env-override feature (target-absent); --allow-skip governs it
+   exit 77
 fi
 
 ## A single scenario runs source_config() in a fresh bash so no state leaks
@@ -110,7 +112,10 @@ run_scenario() {
    fi
 
    ## The single-quoted body is intentionally expanded by the inner bash, not
-   ## this shell (SC2016).
+   ## this shell (SC2016). A clean-env subprocess that runs source_config exactly
+   ## as production does -- deliberately WITHOUT strict mode, so a dedicated
+   ## strict-mode script would not mirror it; kept inline as a 3-line probe.
+   ## style-ok: allow-embedded-script -- clean-env, no-strict probe mirroring production source_config
    # shellcheck disable=SC2016
    env "${env_array[@]}" bash -c '
       source "$1"

@@ -20,6 +20,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Canonical suite exit: a check that cannot drive its real path here (a runtime
+## tool like 'overwrite' absent) surfaces as SKIP:env-unmet (78), never a green pass.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
@@ -40,6 +47,7 @@ fi
 [ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
 
 fails=0
+env_unmet=0
 pass() { printf '%s\n' "  PASS: $1"; }
 fail() { printf '%s\n' "  FAIL: $1" >&2; fails=$((fails + 1)); }
 
@@ -65,6 +73,7 @@ if [ -z "${save_src}" ]; then
    fail "could not extract save_cached_page_to_wiki() from the script"
 elif ! has overwrite; then
    printf '%s\n' "  SKIP: 'overwrite' not on PATH (cannot drive the real write path)"
+   env_unmet=$((env_unmet + 1))
 else
    eval "${save_src}"
    wiki_capture="$(mktemp)"
@@ -192,5 +201,7 @@ else
    safe-rm -rf "${scrape_err}" "${derivative_maker_source_code_dir}"
 fi
 
-printf '%s\n' "" "==== FAILURES: ${fails} ===="
-exit "${fails}"
+printf '%s\n' "" "==== FAILURES: ${fails}, env-unmet: ${env_unmet} ===="
+## fail dominates; a check that could not drive its real path surfaces as
+## SKIP:env-unmet (78), governed by --allow-skip -- never folded into a pass.
+suite_exit "${fails}" 0 "${env_unmet}"

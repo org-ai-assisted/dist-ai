@@ -23,6 +23,14 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Canonical suite exit: a lane that skips (PyQt5 absent -> env-unmet 78, or the
+## subject predates a feature -> target-absent 77) surfaces per category instead
+## of being counted as a failure or folded into a pass.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/open-link-confirmation-tests" ]; then
@@ -31,15 +39,34 @@ else
    tests_dir='/usr/share/open-link-confirmation-tests'
 fi
 
-overall_rc=0
+failed=0
+target_absent=0
+env_unmet=0
+run_lane() {
+   local rc=0
+   "$@" || rc=$?
+   case "${rc}" in
+      0)
+         ;;
+      77)
+         target_absent=$(( target_absent + 1 ))
+         ;;
+      78)
+         env_unmet=$(( env_unmet + 1 ))
+         ;;
+      *)
+         failed=$(( failed + 1 ))
+         ;;
+   esac
+}
 
 printf '%s\n' "=== open-link-confirmation security tests (python/Qt) ==="
-"${tests_dir}/open_link_confirmation_test.py" "$@" || overall_rc=1
+run_lane "${tests_dir}/open_link_confirmation_test.py" "$@"
 
 printf '%s\n' "=== open-link-confirmation env-override unit test (bash) ==="
-"${tests_dir}/env_override_test.sh" "$@" || overall_rc=1
+run_lane "${tests_dir}/env_override_test.sh" "$@"
 
 printf '%s\n' "=== open-link-confirmation error_handler dialog-failure unit test (bash) ==="
-"${tests_dir}/error_handler_dialog_failure_test.sh" "$@" || overall_rc=1
+run_lane "${tests_dir}/error_handler_dialog_failure_test.sh" "$@"
 
-exit "${overall_rc}"
+suite_exit "${failed}" "${target_absent}" "${env_unmet}"
