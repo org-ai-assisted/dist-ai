@@ -50,7 +50,21 @@ if [ "${mode}" = full ]; then for a in "$@"; do case "$a" in *"host "*)        m
 ## A FILTERED run exits nonzero when STUB_DIR/filter_fail exists -- models a non-compiling BPF,
 ## which must be SETUP, not a clean 0.
 if [ "${mode}" != full ] && [ -e "${STUB_DIR}/filter_fail" ]; then exit 1; fi
-if [ "${mode}" = infra ]; then cat -- "${STUB_DIR}/dsts" 2>/dev/null; exit 0; fi
+if [ "${mode}" = infra ]; then
+   printf '%s' "$*" > "${STUB_DIR}/last_filter_leak"
+   ## Model `not dst host <ip>` (the inbound-reply / GW-own-address exclusion): drop emitted dst
+   ## lines whose DESTINATION (after `> `) is an excluded host, else emit all dst lines verbatim.
+   excl=""
+   for a in "$@"; do case "$a" in *"not dst host"*) excl="$(printf '%s\n' "$a" | grep -oE 'not dst host [0-9.]+' | awk '{print $4}')"; break ;; esac; done
+   if [ -n "${excl}" ]; then
+      pat=""
+      for e in ${excl}; do pat="${pat:+${pat}|}> ${e}[.]"; done
+      grep -vE "${pat}" -- "${STUB_DIR}/dsts" 2>/dev/null
+   else
+      cat -- "${STUB_DIR}/dsts" 2>/dev/null
+   fi
+   exit 0
+fi
 case "${mode}" in
    full) f="${STUB_DIR}/total" ;;
    deny) f="${STUB_DIR}/hits" ;;
@@ -139,6 +153,18 @@ printf 'IP 10.0.2.15.7 > 203.0.113.9.443:\n' >> "${work}/dsts"
 out="$( ( canary_gateway_pcap ) 2>&1 || true )"
 rc=0; { has '203.0.113.9' "${out}" && ! has "${RELAY_DIR}" "${out}"; } || rc=1
 check 'leak message names the non-relay dst, not the allowed relay dsts' "${rc}"
+
+## Direction: an INBOUND reply (dst = the GW's own NAT address 10.0.2.15) must NOT be a leak. The
+## nictrace is bidirectional; without excluding the GW's own address as a dst, every inbound packet
+## (relay -> GW) reads as a "non-relay dst" -> a systematic false LEAK (the live FAIL this guards).
+set_counts 10 0
+printf 'IP 203.0.113.50.9001 > 10.0.2.15.50788:\n' >> "${work}/dsts"   ## a relay replying to the GW
+rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
+check 'inbound reply to the GW own address (dst 10.0.2.15) is NOT flagged (PASS, not a false leak)' "${rc}"
+## ...and the leak filter explicitly excludes the GW own address as a destination.
+set_counts 10 0; ( canary_gateway_pcap ) >/dev/null 2>&1 || true
+rc=0; has 'not dst host 10.0.2.15' "$(cat -- "${work}/last_filter_leak" 2>/dev/null)" || rc=1
+check 'leak filter excludes the GW own address as a dst (not dst host 10.0.2.15)' "${rc}"
 
 ## Defense-in-depth: the fixed denylist still fires first on a watched target (forged-source too).
 set_counts 10 2
@@ -239,6 +265,10 @@ rc=0; has 'leaprun sudo &&' "${relaycmd}" || rc=1
 check 'gw_tor_relay_ips grants sudo before reading (leaprun sudo &&)' "${rc}"
 rc=0; has 'leaprun sudo grep' "${relaycmd}" && rc=1 || rc=0
 check 'gw_tor_relay_ips does NOT misuse leaprun sudo as a command prefix' "${rc}"
+## Also harvests the tor binary's HARDCODED dir IPs (fallbacks + authorities) for cold-bootstrap
+## connections that precede any consensus -- else a fallback-dir dial reads as a non-relay leak.
+rc=0; { has 'grep -aoE' "${relaycmd}" && has 'command -v tor' "${relaycmd}"; } || rc=1
+check 'gw_tor_relay_ips also reads the tor binary hardcoded dir IPs (bootstrap fallbacks)' "${rc}"
 
 ## Ordering regression: the consensus MUST be read while the GW is still up (into gw_relay_cache,
 ## in main, BEFORE the poweroff), never live inside the canary -- the canary runs AFTER the GW
