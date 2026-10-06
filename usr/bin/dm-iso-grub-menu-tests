@@ -126,45 +126,20 @@ assert_matches() {
    fi
 }
 
-## GRUB x-prefix comparison MISMATCH: an x-idiom variable operand ("x${VAR}" /
-## x$VAR) compared =/==/!= against a literal whose first significant char is not
-## 'x' (e.g. [ "x${grub_platform}" = "efi" ] -> "xefi" != "efi", ALWAYS false).
-## This actually shipped: the EFI 'UEFI Firmware Settings' menuentry never rendered.
-## Either operand may be single- OR double-quoted; the quote is skipped so a correct
-## single-quoted idiom is not a false positive. Reverse direction (bare var vs
-## x-literal) is intentionally not flagged (indistinguishable from a legit "xterm").
-xprefix_quote="[\"']"
-xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*${xprefix_quote}?[^x[:space:]\"'=]"
-
-## Scan line by line so the match is CONTEXT-aware: a comment documenting the bug
-## (`## ... [ "x${grub_platform}" = "efi" ] ...`), a menuentry title, or a kernel
-## cmdline must not false-fire -- only an actual `[ ... ]` / `test` conditional is a
-## comparison. An unreadable file is a loud failure, not a silent green (a lint for
-## a silently-disabled branch must not itself skip a file quietly).
-assert_no_xprefix_mismatch() {
-   local file="$1" line lineno=0 hits=0
-   if [ ! -r "${file}" ]; then
-      check_fail "cannot read ${file##*/}; not linted"
-      return 0
-   fi
-   while IFS= read -r line || [ -n "${line}" ]; do
-      lineno=$(( lineno + 1 ))
-      if [[ "${line}" =~ ^[[:space:]]*# ]]; then
-         continue
-      fi
-      if [[ "${line}" != *'[ '* && "${line}" != *'test '* ]]; then
-         continue
-      fi
-      if [[ "${line}" =~ ${xprefix_mismatch_ere} ]]; then
-         check_fail "x-prefix MISMATCH (always-false test) in ${file##*/}:${lineno}: ${line}"
-         hits=$(( hits + 1 ))
-      fi
-   done < "${file}"
-   if [ "${hits}" -eq 0 ]; then
-      check_pass "no x-prefix mismatch in ${file##*/}"
-   fi
-   return 0
-}
+## GRUB x-prefix comparison lint: resolved from this checkout else the installed
+## tree (same idiom as grub-live-tests). The scan logic lives in the shared
+## checker so both this suite (real templates) and dm-iso-grub-menu-lint-tests
+## (fixtures) exercise one copy.
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -x "${script_dir}/../share/dist-ai-tests-common/grub-xprefix-lint" ]; then
+   xprefix_lint="${script_dir}/../share/dist-ai-tests-common/grub-xprefix-lint"
+else
+   xprefix_lint='/usr/share/dist-ai-tests-common/grub-xprefix-lint'
+fi
+if [ ! -x "${xprefix_lint}" ]; then
+   printf '%s\n' "FATAL: grub-xprefix-lint checker not found at '${xprefix_lint}'" >&2
+   exit 1
+fi
 
 ######################################################################
 ## Menu skeleton.
@@ -245,7 +220,15 @@ if (( ${#grub_cfgs[@]} == 0 )); then
    check_fail "no *.cfg templates in ${grub_config_dir} (environment bug)"
 else
    for grub_cfg in "${grub_cfgs[@]}"; do
-      assert_no_xprefix_mismatch "${grub_cfg}"
+      lint_rc=0
+      lint_out="$( "${xprefix_lint}" "${grub_cfg}" )" || lint_rc=$?
+      if [ "${lint_rc}" -eq 0 ]; then
+         check_pass "no x-prefix mismatch in ${grub_cfg##*/}"
+      elif [ "${lint_rc}" -eq 1 ]; then
+         check_fail "x-prefix MISMATCH (always-false test): ${lint_out}"
+      else
+         check_fail "cannot lint ${grub_cfg##*/} (grub-xprefix-lint rc=${lint_rc})"
+      fi
    done
 fi
 

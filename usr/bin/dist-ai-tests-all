@@ -110,6 +110,7 @@ core_suites=(
    dm-grub-smbios-tests
    dm-grub-theme-tests
    dm-iso-grub-menu-tests
+   dm-iso-grub-menu-lint-tests
    dm-help-steps-tests
    dm-package-depends-tests
    dm-approx-curlrc-tests
@@ -819,6 +820,12 @@ wire() {
          ## Reads the ISO GRUB menu template (iso-build-data/grub-config), in the
          ## derivative-maker parent checkout.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
+      dm-iso-grub-menu-lint)
+         ## Self-contained: drives dist-ai's grub-xprefix-lint checker against
+         ## fixtures, so there is no checkout to point at and no network.
+         wire_env=()
+         wire_args=()
          ;;
       dm-grub-menu-render)
          ## Boots a grub-mkrescue image of the ISO GRUB menu template

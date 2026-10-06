@@ -1,0 +1,81 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared checker: a GRUB x-idiom comparison must not be always-false.
+##
+## The idiom [ "x${VAR}" = "xLITERAL" ] prefixes BOTH operands with a literal
+## 'x' so a VAR that is empty or starts with '-' cannot be mis-parsed by test(1).
+## Drop the 'x' from the RHS literal and the two sides can never be equal -- the
+## test is ALWAYS false (or, with !=, always true). This actually shipped: the
+## EFI 'UEFI Firmware Settings' menuentry guarded by such a test never rendered.
+##
+## The guard lives here, once, because both the derivative-maker ISO grub-config
+## suite (dm-iso-grub-menu-tests, against the real templates) and the canary
+## suite (dm-iso-grub-menu-lint-tests, against fixtures) scan with it.
+##
+## What is flagged: an x-idiom variable operand ("x${VAR}" / x$VAR) compared
+## =/==/!= against a literal whose first significant char is NOT 'x' -- including
+## an EMPTY literal ("" / ''), which can never equal the always-"x"-prefixed LHS.
+## Either operand may be single- OR double-quoted (the quote is skipped), so a
+## correct single-quoted idiom = 'xefi' is NOT a false positive. The reverse
+## direction (bare var vs x-literal) is intentionally not flagged: it is
+## indistinguishable from a legitimate value like "xterm".
+##
+## Usage: grub-xprefix-lint <file>
+## Exit: 0 no mismatch; 1 one or more mismatches (each printed as
+##       name:lineno: line); 2 the input is not a readable regular file (LOUD --
+##       a lint for a silently-disabled branch must not itself skip a file
+##       quietly, and a directory / FIFO / unreadable path would otherwise read
+##       as a clean empty scan, doubly so under the root CI container where the
+##       permission bit is bypassed).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+file="${1:?usage: grub-xprefix-lint <file>}"
+
+## A regular file is required: [ -f ] rejects a directory / FIFO / device and is
+## uid-independent (a directory is never -f, even for root), unlike [ -r ] which
+## the root CI container satisfies for any path.
+if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
+   printf '%s\n' "FATAL: grub-xprefix-lint: not a readable regular file: '${file}'" >&2
+   exit 2
+fi
+
+xprefix_quote="[\"']"
+## x-idiom LHS, an operator, then the RHS literal's first token: either an empty
+## quoted literal (two adjacent quotes) OR an optional quote followed by a
+## significant char that is not 'x'.
+xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}|${xprefix_quote}?[^x[:space:]\"'=])"
+
+lineno=0
+hits=0
+while IFS= read -r line || [ -n "${line}" ]; do
+   lineno=$(( lineno + 1 ))
+   ## Context-aware: a comment documenting the bug, a menuentry title, or a
+   ## kernel cmdline is not a comparison -- only an actual [ ... ] / test lints.
+   if [[ "${line}" =~ ^[[:space:]]*# ]]; then
+      continue
+   fi
+   if [[ "${line}" != *'[ '* && "${line}" != *'test '* ]]; then
+      continue
+   fi
+   if [[ "${line}" =~ ${xprefix_mismatch_ere} ]]; then
+      printf '%s\n' "${file##*/}:${lineno}: ${line}"
+      hits=$(( hits + 1 ))
+   fi
+done < "${file}"
+
+if [ "${hits}" -eq 0 ]; then
+   exit 0
+fi
+exit 1
