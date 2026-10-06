@@ -18,6 +18,14 @@
 ##
 ## Reads the REAL shipped config (no netns, no root). The source checkouts are
 ## REQUIRED dependencies: absent -> FATAL, never a skip.
+##
+## SCOPE: a SOURCE-spelling linter -- it detects dangerous spellings, shadow keys and
+## leaf-globs in the shipped config statically, with no root. It does NOT compute the
+## kernel's effective per-interface values: resolving systemd glob expansion / last-wins
+## against live interfaces needs root+netns (and systemd silently expands a `*` glob only
+## for interfaces that exist), which is the job of an optional differential oracle, not
+## this static lane. Parser-precision edges on effective values are out of scope BY DESIGN
+## -- flag the suspicious spelling, do not reimplement systemd-sysctl here.
 
 set -o errexit
 set -o nounset
@@ -49,7 +57,9 @@ continuation_re='\\[[:space:]]*$'
 ## wrongly satisfy the secure exemption. Flags every such line that is not a secure
 ## assignment -- INCLUDING a value-less shadow line (`-net.ipv6.conf.eth1.accept_ra`
 ## with no `=`), which registers an explicit key that makes the `*` wildcard skip that
-## interface, leaving it at the insecure default. The leaf-terminal boundary
+## interface, leaving it at the insecure default. The ignore/negative `-` prefix may be
+## whitespace-separated from the key (systemd strips whitespace after the `-`), so a
+## spaced `- net...` form is caught too (`-?[[:space:]]*`). The leaf-terminal boundary
 ## (`=`/space/EOL) avoids false-matching a sub-key such as accept_ra_defrtr. A leading
 ## `#` comment cannot match (the `net` anchor is at line start). A glob IN the leaf
 ## (`accept_*`) is caught separately (see glob_leaf in audit_sysctl). Pure grep -- no
@@ -58,7 +68,7 @@ check_values() {
    local file="$1" leaf="$2" secure="$3"
    local sep='[[:space:]]*=[[:space:]]*' eol='([[:space:]]|$)' term='([[:space:]]|=|$)'
    local key assign bad
-   key="^[[:space:]]*-?net[./][^=]*[./]${leaf}"
+   key="^[[:space:]]*-?[[:space:]]*net[./][^=]*[./]${leaf}"
    assign="${key}${term}"
    bad="$(grep --extended-regexp "${assign}" "${file}" \
       | grep --invert-match --extended-regexp "${key}${sep}${secure}${eol}" || true)"
@@ -70,10 +80,25 @@ check_values() {
    return 0
 }
 
+## A NUL byte makes grep treat the config as binary and suppress match output (empty
+## stdout AND stderr, exit 0 on GNU grep), so a `grep | grep -v insecure` check silently
+## yields nothing -> reads as PASS. A leak audit cannot certify an unparseable config:
+## fail closed. Pure byte count via tr -- `LC_ALL=C` (exported) gives byte semantics.
+require_text_config() {
+   local file="$1"
+   if [ "$(tr -dc '\000' < "${file}" | wc -c)" -ne 0 ]; then
+      printf 'FAIL: sysctl config is binary / contains NUL (unparseable, refusing to certify): %s\n' \
+         "${file}" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## Audit the security-misc sysctl file for the hardened neighbor/RA/redirect keys.
 ## Returns 0 on pass, 1 on any missing/changed key. Reused by the canary.
 audit_sysctl() {
    local file="$1" rc=0 key
+   require_text_config "${file}" || return 1
    ## Wildcard-scoped key=value pairs required verbatim (apply to every iface).
    local required=(
       'net.ipv6.conf.*.accept_ra=0'
@@ -115,7 +140,7 @@ audit_sysctl() {
    ## value) for human review rather than resolving systemd's glob expansion (which a
    ## static audit cannot do). Residual, documented out-of-scope: a bracket class that
    ## embeds a separator (`accept_r[a/]`) -- resolving it needs a real glob(3) matcher.
-   local glob_leaf='^[[:space:]]*-?net[./][^=]*[*?[{][^./=]*([[:space:]]*=|[[:space:]]|$)'
+   local glob_leaf='^[[:space:]]*-?[[:space:]]*net[./][^=]*[*?[{][^./=]*([[:space:]]*=|[[:space:]]|$)'
    if grep --quiet --extended-regexp "${glob_leaf}" "${file}"; then
       printf 'FAIL: sysctl globs a hardened-key leaf (can match accept_ra/etc.): %s\n' \
          "$(grep --extended-regexp "${glob_leaf}" "${file}" | tr '\n' ' ')" >&2
@@ -229,7 +254,8 @@ fi
 ## Canary 3: insecure per-iface overrides in every uncommon-but-valid spelling must
 ## FAIL -- octal (01) and hex (0x1) both store 1; systemd accepts `/`-separated,
 ## `.`/`/`-mixed (VLAN eth1/100), VLAN-dotted (eth1.100) and non-leaf-glob keys; a
-## value-less shadow key neutralises the `*` wildcard; a glob IN the leaf (accept_*,
+## value-less shadow key (glued `-net...` or whitespace-separated `- net...`) neutralises
+## the `*` wildcard, and systemd applies a spaced `- net...=1`; a glob IN the leaf (accept_*,
 ## accept_r?, eth1.*) expands to the hardened keys; and a second leaf embedded in a
 ## value must not wrongly satisfy the secure exemption.
 for bad_line in \
@@ -240,6 +266,8 @@ for bad_line in \
    'net.ipv6.conf.eth1.100.accept_ra=1' \
    'net.ipv6.*.eth1.accept_ra=1' \
    '-net.ipv6.conf.eth1.accept_ra' \
+   '- net.ipv6.conf.eth1.accept_ra=1' \
+   '- net.ipv6.conf.eth1.accept_ra' \
    'net.ipv6.conf.eth1.accept_*=1' \
    'net.ipv6.conf.eth1.accept_r?=1' \
    'net.ipv6.conf.eth1.*=1' \
@@ -313,5 +341,31 @@ for split_first in $'u\\' $'u\\  '; do
       printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
    fi
 done
+
+## Canary 7: a NUL byte makes grep treat the config as binary and suppress match output,
+## which would let check_values read as PASS. A leak audit must fail closed on an
+## unparseable config (require_text_config). Both an insecure line beside a NUL and a bare
+## NUL in an otherwise-secure file must FAIL. RED on the pre-guard code (grep suppressed
+## -> empty -> PASS). The NUL is written via printf (it cannot live in a bash variable),
+## so the two cases are open-coded rather than table-driven.
+canary_nul_insecure="$(mktemp)"
+cp -- "${sysctl_file}" "${canary_nul_insecure}"
+printf 'net.ipv6.conf.eth1.accept_ra=1\n\000\n' >>"${canary_nul_insecure}"
+if audit_sysctl "${canary_nul_insecure}" 2>/dev/null; then
+   printf 'FAIL: canary -- sysctl audit PASSED a NUL config hiding accept_ra=1 (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (NUL config hiding an insecure line rejected); audit fails closed\n'
+fi
+
+canary_nul_bare="$(mktemp)"
+cp -- "${sysctl_file}" "${canary_nul_bare}"
+printf '\000\n' >>"${canary_nul_bare}"
+if audit_sysctl "${canary_nul_bare}" 2>/dev/null; then
+   printf 'FAIL: canary -- sysctl audit PASSED an otherwise-secure config with a NUL byte (no teeth)\n' >&2
+   rc=1
+else
+   printf 'PASS: canary (binary/NUL config rejected); audit fails closed on unparseable\n'
+fi
 
 exit "${rc}"
