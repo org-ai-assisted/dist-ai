@@ -12,6 +12,9 @@
 ## guard). No parser logic is reimplemented.
 ##
 ## $1 parse-cmd path, $2 variable to read back, rest: args forwarded to the parser.
+## PARSE_CMD_PRESEED (optional): when set, the read-back variable is pre-exported to
+## that value before the parser runs -- so a test can assert an explicit flag value
+## OVERRIDES an inherited environment value. Unset -> the variable starts cleared.
 
 set -o errexit
 set -o nounset
@@ -44,6 +47,10 @@ error() {
    return 0
 }
 
-unset "${var_name}"
+if [ -n "${PARSE_CMD_PRESEED+x}" ]; then
+   export "${var_name}=${PARSE_CMD_PRESEED}"
+else
+   unset "${var_name}"
+fi
 dist_build_one_parse_cmd "$@" >/dev/null 2>&1
 printf '%s' "${!var_name:-UNSET}"
