@@ -183,6 +183,60 @@ else
 fi
 safe-rm --recursive --force -- "${cansudo_stub}"
 
+## rt_require_account_unprivileged: the single fail-closed privilege gate every test
+## account passes through. Stub id + rt_account_can_sudo in a subshell so the real die's
+## exit is CONTAINED, then assert the exit status (SETUP_RC on refusal, 0 on a clean
+## account). $1=uid $2=primary-group $3=`id -nG` groups $4=can_sudo rc.
+gate_probe() {
+   ## SETUP_RC feeds the real gate's `die "${SETUP_RC}"`; id/rt_account_can_sudo/die are
+   ## stubs the SOURCED gate calls indirectly -- invisible to shellcheck, hence the disables.
+   # shellcheck disable=SC2034,SC2317
+   (
+      SETUP_RC=2
+      _u="$1"; _p="$2"; _g="$3"; _cs="$4"
+      id() { case "$1" in -u) printf '%s\n' "${_u}";; -gn) printf '%s\n' "${_p}";; -nG) printf '%s\n' "${_g}";; esac; }
+      rt_account_can_sudo() { return "${_cs}"; }
+      die() { exit "$1"; }
+      rt_require_account_unprivileged acct blessed
+   )
+}
+gate_rc=0; gate_probe 1000 acct "acct vboxusers" 1 || gate_rc=$?
+if [ "${gate_rc}" -eq 0 ]; then
+   printf 'ok: gate passes a clean unprivileged account\n'
+else
+   printf 'FAIL: gate rejected a clean account (rc=%s)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+fi
+gate_rc=0; gate_probe 1000 acct "acct vboxusers" 0 || gate_rc=$?
+if [ "${gate_rc}" -eq 2 ]; then
+   printf 'ok: gate refuses a passwordless-sudo account (SETUP_RC)\n'
+else
+   printf 'FAIL: gate did not refuse a sudo-capable account (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+fi
+gate_rc=0; gate_probe 0 acct "acct vboxusers" 1 || gate_rc=$?
+if [ "${gate_rc}" -eq 2 ]; then
+   printf 'ok: gate refuses a uid-0 account (SETUP_RC)\n'
+else
+   printf 'FAIL: gate did not refuse uid 0 (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+fi
+gate_rc=0; gate_probe 1000 acct "acct sudo" 1 || gate_rc=$?
+if [ "${gate_rc}" -eq 2 ]; then
+   printf 'ok: gate refuses a privileged-group account (SETUP_RC)\n'
+else
+   printf 'FAIL: gate did not refuse a privileged group (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+fi
+
+## Call-site canary: EVERY account kind -- ephemeral (test), leak, AND blessed -- must be
+## wired through the gate. The blessed wiring is the regression: before it, a privileged
+## persist-stable- account ran a test unchecked (isolation-boundary gap). Fails on the old
+## code, where the 'blessed' call was absent.
+for role in test leak blessed; do
+   if grep --quiet --fixed-strings "rt_require_account_unprivileged \"\${account}\" ${role}" "${subject}"; then
+      printf 'ok: %s account wired through the privilege gate\n' "${role}"
+   else
+      printf 'FAIL: %s account not routed through rt_require_account_unprivileged\n' "${role}" >&2; failures=$((failures + 1))
+   fi
+done
+
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s assertion(s) failed\n' "${failures}" >&2
    exit 1
