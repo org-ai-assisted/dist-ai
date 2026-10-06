@@ -107,22 +107,60 @@ _t2.close()
 
 # --- #2b: a CLI<->TUI reseed does NOT duplicate a completed alt session's exit snapshot ---
 # _seed_grid replays _raw through the same _feed_stream path, re-firing the alt enter/leave of
-# a session already recorded by the live feed. _alt_exit_snapshots survives _make_screen, so an
-# unguarded replay re-appends the final frame on every reseed (enough toggles evict older
-# records). _alt_leave must suppress the record while _seeding. Canary: drop the _seeding guard
-# -> the post-reseed count is 2, not 1.
+# a session already recorded live. It REBUILDS the in-_raw snapshot set from the one replay
+# instead of appending, so a session captured live is not duplicated on every reseed (which
+# used to evict distinct older records past the cap). Canary: have _seed_grid append instead of
+# rebuild -> the post-reseed count is 2, not 1.
 _t2b = SecureTerminal(command='/bin/cat', tui=True)
 APP.processEvents()
 feed_output(_t2b, b'\x1b[?1049h\x1b[2J\x1b[HALT-DUP-FRAME\x1b[?1049l')   # one complete session
 APP.processEvents()
 eq(len(_t2b._alt_exit_snapshots), 1, '#2b: the live feed records exactly ONE exit snapshot')
-_t2b._make_screen()        # fresh screen (snapshot list untouched -- reset only in __init__)
+_t2b._make_screen()        # fresh screen for the reseed
 _t2b._seed_grid()          # replay _raw, which holds the completed alt enter/leave
 eq(len(_t2b._alt_exit_snapshots), 1,
    '#2b: a reseed replay does NOT re-append a duplicate exit snapshot')
 ok('ALT-DUP-FRAME' in _t2b._alt_exit_snapshots[0],
    '#2b: the single retained snapshot still holds the alt program final frame')
 _t2b.close()
+
+
+# --- #2c: a session that ran ENTIRELY in CLI mode is still captured on the reseed ------------
+# CLI mode never feeds pyte (_read_and_render streams only in TUI), so a full-screen session
+# that ran in CLI leaves bytes in _raw but NO live snapshot. The CLI->TUI reseed replay is its
+# ONLY capture -- a blanket seeding-suppression would lose it (the data-integrity regression a
+# rebuild-not-suppress _seed_grid avoids). Canary: suppress replay captures -> post-seed count 0.
+_t2c = SecureTerminal(command='/bin/cat')       # CLI/line mode -- no pyte feed
+APP.processEvents()
+feed_output(_t2c, b'\x1b[?1049h\x1b[2J\x1b[HALT-CLI-FRAME\x1b[?1049l')
+APP.processEvents()
+eq(len(_t2c._alt_exit_snapshots), 0, '#2c: a CLI-mode alt session records no live snapshot')
+_t2c.apply_tui(True)       # real CLI->TUI switch: TUI goes active, then the grid is seeded
+APP.processEvents()        # from _raw -- the replay is this session's first and only capture
+eq(len(_t2c._alt_exit_snapshots), 1,
+   '#2c: the reseed captures a session first parsed during seeding')
+ok('ALT-CLI-FRAME' in _t2c._alt_exit_snapshots[0],
+   '#2c: the captured snapshot holds the CLI-mode session final frame')
+_t2c.close()
+
+
+# --- #2d: the reseed PRESERVES a prior frame whose raw bytes have aged past _RAW_MAX ---------
+# The exit-snapshot record is bounded SEPARATELY from _raw, so an old frame can outlive its raw
+# bytes. The rebuild-from-replay must keep such an aged-out frame (the replay cannot reproduce
+# it), not drop it. Canary: clear instead of preserve -> AGED-OUT is lost.
+_t2d = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_t2d, b'\x1b[?1049h\x1b[2J\x1b[HNEW-FRAME\x1b[?1049l')        # in-_raw session
+APP.processEvents()
+_aged = '\n----- full-screen application (final screen) -----\nAGED-OUT\n'
+_t2d._alt_exit_snapshots.insert(0, _aged)       # a frame whose raw bytes are no longer in _raw
+_t2d._make_screen()
+_t2d._seed_grid()
+_joined = ''.join(_t2d._alt_exit_snapshots)
+ok('AGED-OUT' in _joined, '#2d: a prior frame not reproducible from _raw is preserved')
+ok('NEW-FRAME' in _joined, '#2d: the in-_raw session is rebuilt alongside it')
+eq(len(_t2d._alt_exit_snapshots), 2, '#2d: preserved + rebuilt, with no duplicate')
+_t2d.close()
 
 
 # --- #5: CLI-mode Alt+key sends an ESC (Meta) prefix, and is not mirrored literally ----

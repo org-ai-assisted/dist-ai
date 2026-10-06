@@ -26,9 +26,19 @@
 # shellcheck disable=SC1090,SC2154  # STANDALONE: injected by the wiring harness
 source "${STANDALONE}" >/dev/null 2>&1
 
-## reset_variables initialises the option globals; parse_opt then applies the
-## given options through the REAL getopt parser.
-reset_variables >/dev/null 2>&1
+## set_default initialises the option globals (user_home_dir, directory_prefix,
+## dry_run_skip_commands, ...); parse_opt then applies the given options through
+## the REAL getopt parser.
+set_default >/dev/null 2>&1
+
+## parse_opt computes the download-dir default and runs its mkdir / per-run
+## log-dir block (real sudo + filesystem writes). This probe exercises ONLY the
+## --dry-run flag and log_run wiring, not directory creation, so neutralize that
+## privileged boundary: no elevation, no stray dirs, no abort on a non-tty sudo.
+run_as_target_user() { return 0; }
+test_file() { return 0; }
+copy_thru_barrier() { return 0; }
+
 parse_opt "$@" >/dev/null 2>&1
 
 # shellcheck disable=SC2154  # MODE: injected by the wiring harness

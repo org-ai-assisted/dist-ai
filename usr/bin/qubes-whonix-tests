@@ -11,19 +11,30 @@
 ## them does. Discovery is a glob so a new lane needs no edit here.
 ##
 ## Targets the installed package by default; set QUBES_WHONIX_REPO to test a
-## checkout. A lane that cannot resolve its subject exits 77 and is reported as
-## SKIPPED, never folded into a pass. No root, no network.
+## checkout (dist-ai-tests-all wires it to the qubes-whonix submodule). A lane
+## that cannot resolve its subject is FATAL (exit 1) -- the subject is required,
+## not optional. A per-case SKIP (77) / env-unmet (78) surfaces through suite_exit,
+## never folded into a pass. No root, no network.
 
 ## check_runtime.bsh provides was_executed + the strict-mode gate below. If it is
 ## absent the source fails BEFORE strict mode, was_executed is undefined (127), both
 ## guards read false, main never runs, and the suite exits 0 -- a false PASS for a
-## file that was never tested. Fail loud (SKIP) instead. A source-able test
-## caller runs in an env that HAS the helper, so the guard never fires there.
+## file that was never tested. helper-scripts is a REQUIRED dependency, so its
+## absence is an environment bug: fail loud as FATAL (exit 1), never a skip. A
+## source-able test caller runs in an env that HAS the helper, so this never fires there.
 if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
-   printf '%s\n' 'qubes-whonix-tests: SKIP (helper-scripts check_runtime.bsh not found)' >&2
-   exit 77
+   printf '%s\n' 'qubes-whonix-tests: FATAL: helper-scripts check_runtime.bsh not found (required dependency)' >&2
+   exit 1
 fi
 source /usr/libexec/helper-scripts/check_runtime.bsh
+
+## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
+## SKIP so the orchestrator's --allow-skip governs it, instead of being
+## folded into a passing suite.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
 
 if was_executed "${BASH_SOURCE[0]}"; then
    set -o errexit
@@ -53,24 +64,25 @@ main() {
       exit 1
    fi
 
-   rc=0
    failed=0
    skipped=0
+   env_unmet=0
    for case_script in "${case_scripts[@]}"; do
       printf '%s\n' "== $(basename -- "${case_script}") =="
       case_rc=0
       "${case_script}" "$@" || case_rc=$?
       if [ "${case_rc}" -eq 77 ]; then
          skipped=$(( skipped + 1 ))
+      elif [ "${case_rc}" -eq 78 ]; then
+         env_unmet=$(( env_unmet + 1 ))
       elif [ "${case_rc}" -ne 0 ]; then
          failed=$(( failed + 1 ))
-         rc=1
       fi
    done
 
    printf '%s\n' ""
-   printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
-   exit "${rc}"
+   printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped, ${env_unmet} env-unmet"
+   suite_exit "${failed}" "${skipped}" "${env_unmet}"
 }
 
 if was_executed "${BASH_SOURCE[0]}"; then

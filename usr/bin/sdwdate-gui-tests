@@ -6,7 +6,8 @@
 ## Runs the sdwdate-gui regression test suite. Works both when installed
 ## (tests under /usr/share/sdwdate-gui-tests) and when run straight from a
 ## git checkout (tests under usr/share/sdwdate-gui-tests relative to this
-## script). Any extra arguments are forwarded to "python3 -m unittest".
+## script). Driven through run-unittest.py so an all-skipped run (PyQt5 or the
+## subject module absent) surfaces as SKIP (78) instead of a green PASS.
 
 set -o errexit
 set -o nounset
@@ -14,6 +15,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The Qt offscreen platform plugin lets the PyQt5 test suite run without an
 ## X server or a system tray.
@@ -27,9 +29,10 @@ else
   tests_dir='/usr/share/sdwdate-gui-tests'
 fi
 
-rc=0
-python3 -m unittest discover \
-  --start-directory "${tests_dir}" \
-  --pattern 'test_*.py' \
-  "$@" || rc=$?
-exit "${rc}"
+run_unittest="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+## run-unittest.py maps all-skipped (78) / nothing-collected (77) to a surfaced
+## SKIP so a run where nothing actually executed cannot read as a green PASS. Its
+## exit code is the suite's -- it is the last command, so errexit propagates it.
+"${run_unittest}" --start-directory "${tests_dir}" --pattern 'test_*.py'

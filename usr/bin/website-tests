@@ -26,6 +26,14 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Canonical suite exit: a browser lane that cannot run here (no Playwright and no
+## sandbox) must surface as SKIP:env-unmet (78), never fold into a green pass --
+## site-deploy treats a skip as a publish failure.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/website-tests" ]; then
@@ -145,6 +153,7 @@ if [ "${#roots[@]}" -eq 0 ]; then
 fi
 
 overall=0
+env_unmet=0
 "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
@@ -204,6 +213,7 @@ if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+      env_unmet=1
    fi
 else
    ## Local browser present -- mobile ran here. Gate it, then run the width lane too.
@@ -213,6 +223,7 @@ else
       "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
       if [ "${width_rc}" = '77' ]; then
          printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
+         env_unmet=1
       elif [ "${width_rc}" != '0' ]; then
          overall=1
       fi
@@ -227,6 +238,7 @@ else
       "${tests_dir}/check_footer.py" "${roots[@]}" || footer_rc="$?"
       if [ "${footer_rc}" = '77' ]; then
          printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium)' >&2
+         env_unmet=1
       elif [ "${footer_rc}" != '0' ]; then
          overall=1
       fi
@@ -254,4 +266,5 @@ if [ -n "${st_site}" ]; then
    fi
 fi
 
-exit "${overall}"
+## fail dominates; a browser lane that could not run here surfaces as SKIP:env-unmet (78).
+suite_exit "${overall}" 0 "${env_unmet}"

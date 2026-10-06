@@ -21,6 +21,16 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+export LC_ALL=C
+
+## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
+## SKIP so the orchestrator's --allow-skip governs it, instead of being
+## folded into a passing suite.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/genmkfile-tests" ]; then
@@ -35,6 +45,8 @@ fi
 ## least one test failed.
 shopt -s nullglob
 failures=0
+skipped=0
+env_unmet=0
 ran=0
 for test_script in "${tests_dir}"/*_test.sh; do
   ran=$(( ran + 1 ))
@@ -43,6 +55,9 @@ for test_script in "${tests_dir}"/*_test.sh; do
   bash -- "${test_script}" "$@" || rc=$?
   if [ "${rc}" -eq 77 ]; then
     printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    skipped=$(( skipped + 1 ))
+  elif [ "${rc}" -eq 78 ]; then
+    env_unmet=$(( env_unmet + 1 ))
   elif [ "${rc}" -ne 0 ]; then
     printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
     failures=$(( failures + 1 ))
@@ -53,9 +68,5 @@ if [ "${ran}" -eq 0 ]; then
   printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
   exit 1
 fi
-if [ "${failures}" -ne 0 ]; then
-  printf '\nFAILED: %s genmkfile test script(s) failed\n' "${failures}" >&2
-  exit 1
-fi
-printf '\nOK: all genmkfile test scripts passed\n'
-exit 0
+printf '%s\n' '' "${ran} genmkfile case(s): ${failures} failed, ${skipped} skipped, ${env_unmet} env-unmet"
+suite_exit "${failures}" "${skipped}" "${env_unmet}"
