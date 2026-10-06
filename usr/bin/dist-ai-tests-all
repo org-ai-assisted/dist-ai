@@ -255,8 +255,9 @@ helper-scripts checkout exists.
 suite temporarily broken or pending a merge, so a component's other suites can
 still gate PRs.
 
---allow-skip NAME authorizes suite NAME to exit 77 (SKIP) without failing the run
-(repeatable). Under a --component filter an UNAUTHORIZED skip is a FAILURE, because
+--allow-skip NAME authorizes suite NAME to SKIP -- exit 77 (target-absent) or 78
+(env-unmet) -- without failing the run (repeatable; one knob governs both skip
+codes). Under a --component filter an UNAUTHORIZED skip is a FAILURE, because
 a suite that could not resolve its target must not report the same green exit 0 as
 one that ran and passed. Authorize a suite only when a human has decided it may
 legitimately be absent here -- never to turn a red run green.
@@ -1204,6 +1205,12 @@ skip_count=0
 ## point, where every suite selected is supposed to have its target provided. A bare
 ## developer run selects the whole registry, most of which has no checkout on any one
 ## machine, so it stays lenient (and says so in the summary).
+## Authorizes BOTH skip categories -- target-absent (77) and env-unmet (78) --
+## per suite: lenient unless strict (--component), then an unauthorized skip of
+## either kind fails unless the suite is named in --allow-skip. One mechanism, no
+## separate env-skip flag: our CI has root and the usual capabilities, so an
+## env-unmet skip is not a routine CI state to auto-tolerate -- if one happens it
+## must be authorized explicitly, exactly like a target-absent skip.
 skip_is_fatal() {
    local suite="$1"
    local allowed
@@ -1259,14 +1266,19 @@ run_suite() {
          fi
          ;;
       78)
-         ## SKIP:env-unmet -- a RUNTIME capability the test needs is absent here
-         ## (the suite self-declared it via result_skip_env_unmet). Always tolerated
-         ## (counted, never failed): unlike target-absent (77), an env-unmet skip is
-         ## inherently "cannot run in this environment", not an unauthorized coverage
-         ## gap. The audit is at the SOURCE -- R-220 requires the per-skip allow-skip
-         ## waiver naming the missing capability.
-         verdict="SKIP:env-unmet"
-         skip_count=$(( skip_count + 1 ))
+         ## SKIP:env-unmet -- a RUNTIME capability the test needs is absent here.
+         ## Governed exactly like target-absent (77): an UNAUTHORIZED env-unmet skip
+         ## FAILS the run, authorized via --allow-skip only where the environment
+         ## legitimately lacks the capability. Not auto-tolerated: 78 is also
+         ## sysexits EX_CONFIG, so a stray exit 78 (a tool's config error) must not
+         ## pass as a green skip. The source-level R-220 waiver names the capability.
+         if skip_is_fatal "${suite}"; then
+            verdict="SKIP:env-unmet-UNAUTHORIZED"
+            fail_count=$(( fail_count + 1 ))
+         else
+            verdict="SKIP:env-unmet"
+            skip_count=$(( skip_count + 1 ))
+         fi
          ;;
       124)
          verdict="TIMEOUT"
@@ -1299,7 +1311,16 @@ run_suite() {
          fi
          ;;
       78)
-         ## SKIP:env-unmet is always tolerated; stay quiet like an ordinary SKIP.
+         ## Mirror 77: echo the captured log only on an UNAUTHORIZED env-unmet skip
+         ## (which counts as a failure), so the operator sees which capability was
+         ## absent; an authorized SKIP:env-unmet stays quiet.
+         if skip_is_fatal "${suite}"; then
+            emit "---- ${suite}: begin captured output (${verdict}) ----"
+            while IFS= read -r log_line || [ -n "${log_line}" ]; do
+               emit "${log_line}"
+            done < "${log_dir}/dist-ai-tests-all.${suite}.log"
+            emit "---- ${suite}: end captured output ----"
+         fi
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
