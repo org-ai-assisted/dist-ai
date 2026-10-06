@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The Qt offscreen platform plugin lets the PyQt5 suite run without an X server.
 export QT_QPA_PLATFORM="offscreen"
@@ -33,7 +34,11 @@ else
    tests_dir='/usr/share/setup-wizard-dist-tests'
 fi
 
-python3 -m unittest discover \
-   --start-directory "${tests_dir}" \
-   --pattern 'test_*.py' \
-   "$@"
+run_unittest="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+## run-unittest.py maps all-skipped (78) / nothing-collected (77) to a surfaced
+## SKIP so a run where nothing actually executed (PyQt5 or guimessages absent)
+## cannot read as a green PASS. Its exit code is the suite's -- it is the last
+## command, so errexit propagates it.
+"${run_unittest}" --start-directory "${tests_dir}" --pattern 'test_*.py'
