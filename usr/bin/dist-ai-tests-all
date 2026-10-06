@@ -897,13 +897,10 @@ wire() {
          ;;
       test-results-site)
          ## dist-ai's own results-plane + verification-site tooling. The suite
-         ## imports dm_test_results from this tree directly; the generator lane
-         ## shells out to the in-tree image-optimize, which sources helper-scripts
-         ## strings.bsh via HELPER_SCRIPTS_PATH -- wire it when a checkout exists.
+         ## imports dm_test_results from this tree directly and uses Pillow for
+         ## normalize + lossless webp (no helper-scripts, no external subject), so
+         ## there is nothing to wire; the case exists to satisfy the registry guard.
          wire_env=()
-         if [ -n "${hs}" ]; then
-            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
-         fi
          ;;
       dm-gitlink-upstream-check)
          ## Self-contained: the suite runs the checker's offline '--self-test'

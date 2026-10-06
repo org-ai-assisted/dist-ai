@@ -1,0 +1,69 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## dist-ai SELF-test lane for the image-test results plane + verification-site
+## tooling (the dm-test-result/v1 schema model, the golden normalize/compare state
+## machine, and the deterministic site generator).
+##
+## These tools live HERE, in dist-ai, and have no downstream consumer workflow to
+## exercise them, so without this lane a regression would surface nowhere. The
+## suite is pure logic -- tiny in-memory images, no root, no network -- so it runs
+## in seconds. local-* prefix per G-A-005: dist-ai-specific, not a cross-repo
+## reusable, and NOT a pkg_update_consumer_workflows-managed consumer-*.yml.
+
+name: test-results-site-self-tests
+
+on:
+  push:
+    branches:
+      - master
+      - ai
+    paths:
+      - 'usr/lib/python3/dist-packages/dm_test_results/**'
+      - 'usr/bin/image-test-result-emit'
+      - 'usr/bin/test-results-site-generate'
+      - 'usr/bin/test-results-site-tests'
+      - 'usr/share/test-results-site-tests/**'
+      - '.github/workflows/local-test-results-site-tests.yml'
+  pull_request:
+    paths:
+      - 'usr/lib/python3/dist-packages/dm_test_results/**'
+      - 'usr/bin/image-test-result-emit'
+      - 'usr/bin/test-results-site-generate'
+      - 'usr/bin/test-results-site-tests'
+      - 'usr/share/test-results-site-tests/**'
+      - '.github/workflows/local-test-results-site-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-results-site-self-tests:
+    ## CI runs only where we enabled it. Unset variable -> the job is skipped, no
+    ## runner is allocated, and the run stays green: forks are never handed a red X
+    ## for a lane they did not opt into.
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install apt deps
+        uses: org-ai-assisted/developer-meta-files/.github/actions/install-deps@master
+        with:
+          ## The compare lib + generator need Pillow (normalize + lossless webp) and
+          ## numpy (pixel diff); safe-rm is used by the suite harness. No install-self:
+          ## the suite drives dist-ai's own tree from the checkout.
+          apt-packages: 'python3-pil python3-numpy safe-rm'
+
+      - name: Run test-results-site self-tests (pure logic; no root, no network)
+        run: ./usr/bin/test-results-site-tests
