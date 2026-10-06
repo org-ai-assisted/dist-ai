@@ -250,6 +250,24 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('kernel BUG at', out,
                       'a BUG_ON() (kernel BUG at ...) must be critical')
 
+    def test_apparmor_bug_path_not_critical(self) -> None:
+        ## A kernel-echoed, attacker-controlled path containing a bare 'BUG' token (e.g. an
+        ## AppArmor denial for '/tmp/BUG') must NOT be force-shown: the token requires 'BUG:'
+        ## or 'BUG at ', so a bare 'BUG' in a path does not trip a false critical.
+        out = self._run_check_critical(
+            ['host kernel: audit: apparmor="DENIED" operation="open" '
+             'name="/tmp/BUG" pid=123 comm="probe"'])
+        self.assertEqual(out.strip(), '',
+                         'a bare BUG token in a kernel-echoed path must NOT be critical')
+
+    def test_many_matches_are_bounded(self) -> None:
+        ## Attacker-influenceable kernel text could spam many distinct catastrophe-looking
+        ## lines; the per-line sanitize is capped so it cannot stall. Past the cap the output
+        ## is truncated with a marker (and the run still completes within the test timeout).
+        out = self._run_check_critical(
+            ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)])
+        self.assertIn('truncated', out, 'output past the cap must be truncated, not unbounded')
+
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
         self.assertIn('Bad RAM detected', out)
