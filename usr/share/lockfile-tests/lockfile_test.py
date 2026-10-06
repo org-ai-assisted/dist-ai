@@ -453,12 +453,14 @@ def fuzz(lockfile_sh, iterations, seed, check):
     ok = True
     for _ in range(iterations):
         key = 'fuzz-%d' % rng.randrange(1000)
-        holder = bg([lockfile_sh, key, '--', 'sleep', '1'])
-        time.sleep(0.15)
+        ## Sync on the held command's LOCKED line, not a fixed sleep that races the
+        ## holder's acquisition on a loaded host (a 0.15s sleep flaked on a cold run).
+        holder = bg([lockfile_sh, key, '--', 'bash', '-c', 'echo LOCKED; sleep 1'])
+        locked = wait_for_locked(holder)
         same = run([lockfile_sh, key, '--', 'echo', 'RAN'])
         distinct = run([lockfile_sh, key + '-x', '--', 'echo', 'RAN'])
         holder.wait(timeout=10)
-        if 'RAN' in same.stdout or same.returncode == 0:
+        if not locked or 'RAN' in same.stdout or same.returncode == 0:
             ok = False
             break
         if 'RAN' not in distinct.stdout:
@@ -474,6 +476,12 @@ def main():
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--fuzz-only', action='store_true')
     args = parser.parse_args()
+
+    ## Hermetic locale: the contention checks assert flock's 'failed to get lock'
+    ## message, which `flock --verbose` localizes via gettext. Force C so a non-English
+    ## ambient LC_ALL cannot translate it and spuriously fail -- every subprocess env
+    ## here derives from os.environ, so this covers them all.
+    os.environ['LC_ALL'] = 'C'
 
     lockfile_sh = lockfile_sh_path()
     print('lockfile.sh: %s' % lockfile_sh)
