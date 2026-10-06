@@ -1598,6 +1598,13 @@ printf '%s\n' \
    '[Service]' \
    "ExecStart=/bin/bash -c'a && b'" \
    > "${unit_repo}/bad-attached.service"
+## Attached '-c' BEHIND A WRAPPER ('timeout'/'sudo' ... bash -c'...'): the
+## separate-form-only wrapper gate dropped the attached program, so a
+## multi-statement payload slipped. Still an inline program -- must be flagged.
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/usr/bin/timeout 5 bash -c'a${sc} b'" \
+   > "${unit_repo}/bad-wrapped-attached.service"
 ## A standalone '&' background separator is multi-statement too. 'worker &
 ## runner' carries no control keyword and no ';'/'&&'/pipe, so only the
 ## '&'-background check -- not the keyword or separator checks -- flags this
@@ -1678,6 +1685,12 @@ else
    printf '%s\n' 'FAIL: R-191 did not flag a command attached to -c with no space' >&2
    failures=$((failures + 1))
 fi
+if grep --quiet --fixed-strings -- 'bad-wrapped-attached.service' <<< "${unit_hits}"; then
+   printf '%s\n' 'PASS: R-191 flags an attached -c behind a wrapper'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag an attached -c behind a wrapper' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- 'bad-bg.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a standalone "&" background separator'
 else
@@ -1738,6 +1751,12 @@ expect_rule "R-192" "bash -c ${dollar}${sq}echo a${sq}${dq}${sc} echo b${dq}"   
 ## false-positive the inject warned about ('bwrap/timeout bash -c <single>').
 expect_rule "R-192" "bash -c 'touch /run/x'"      absent
 expect_rule "R-192" "timeout 5 bash -c 'foo bar'" absent
+## WRAPPED + ATTACHED '-c' (glued '-c"prog"'/'-lc"prog"', NO space, behind a
+## wrapper): the separate-form-only wrapper gate dropped the attached program, so a
+## multi-statement payload slipped -- now caught like command position. The
+## single-command attached form behind a wrapper stays SPARED.
+expect_rule "R-192" "timeout 5 bash -lc${dq}a${sc} b${dq}"  present
+expect_rule "R-192" "sudo bash -c${dq}foo bar${dq}"         absent
 ## The file-wide named waiver and the id override each exempt the script.
 expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: allow-embedded-script' "bash -c 'a && b'")" absent
 expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: R-192' "bash -c 'a && b'")" absent

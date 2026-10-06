@@ -671,56 +671,88 @@ SHELL_C_WRAPPERS = frozenset({
     "setsid", "stdbuf", "setpriv"})
 
 
+def _c_opt_program(text):
+    """Classify the '-c' in a short-option cluster word (TEXT is the word's
+    word_string -- quotes already unwrapped and spans joined). Returns:
+      - ("separate", None): '-c' is the cluster's LAST char ('-c'/'-lc'/'-ec'), so
+        the program is the NEXT word;
+      - ("attached", PROG): a program is glued into this word ('-c"prog"' ->
+        ("attached", "prog")), PROG being the remainder after the 'c';
+      - None: TEXT is not a '-c'-bearing short-option cluster.
+    PROG is NOT unquoted: TEXT is already resolved, so the remainder IS the value
+    the inner shell runs -- stripping an outer quote again corrupts a value that
+    legitimately begins and ends with a quote ('"a"; "b"', two statements, would
+    collapse to the single word 'a"; "b'). One source of truth for the
+    command-position and wrapper paths, so a '-c' spelling is handled the same by
+    both ('ci + 2': +1 re-adds the leading '-', +1 skips past the 'c')."""
+    if text is None or not text.startswith("-") or text.startswith("--") \
+            or len(text) < 2:
+        return None
+    cluster = text[1:]
+    if "c" not in cluster:
+        return None
+    ci = cluster.index("c")
+    if ci == len(cluster) - 1:
+        return "separate", None
+    return "attached", text[ci + 2:]
+
+
 def _c_in_command(call, source):
     """Command-position shell '-c': classify the args with command_tokens (which
     reconstructs an attached '-c'prog'' value a raw word_lit cannot, since a
-    mixed literal+quoted word has no single literal). Handles separate and
-    attached forms and a cluster ('-lc')."""
+    mixed literal+quoted word has no single literal). Handles the separate,
+    attached, and cluster ('-lc') forms via the shared _c_opt_program."""
     tokens = list(bash_ast.command_tokens(
         call, source, frozenset("c"), frozenset()))
     for index, (kind, word, text) in enumerate(tokens):
-        if kind != "opt" or text.startswith("--") or not text.startswith("-"):
+        if kind != "opt":
             continue
-        cluster = text[1:]
-        if "c" not in cluster:
+        classified = _c_opt_program(text)
+        if classified is None:
             continue
-        if cluster.index("c") == len(cluster) - 1:
-            ## Separate form: the next word is the program.
+        form, program_value = classified
+        if form == "separate":
+            ## The next word is the program.
             if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
                 program = tokens[index + 1][1]
                 span = program["End"]["Line"] - program["Pos"]["Line"] + 1
                 yield (call, _shell_c_value(program, source), span)
         else:
-            ## Attached form ('-c"prog"'): the program is the rest of this word.
-            ## No standalone word node here (it is a slice of the option word), so
-            ## a concatenated value stays a documented follow-up, like 'su -c'.
+            ## Attached ('-c"prog"'): the program is the rest of this option word.
             span = word["End"]["Line"] - word["Pos"]["Line"] + 1
-            yield (call, unquote(text[cluster.index("c") + 2:]), span)
+            yield (call, program_value, span)
         return
 
 
 def _is_separate_c_opt(text):
-    """True if TEXT is a short-option cluster whose LAST character is 'c' (so the
-    NEXT word is the program): '-c', '-lc', '-ec'. A long option, an operand, or
-    a quoted word (word_lit None) is not."""
-    if text is None or not text.startswith("-") or text.startswith("--") \
-            or len(text) < 2:
-        return False
-    cluster = text[1:]
-    return "c" in cluster and cluster.index("c") == len(cluster) - 1
+    """True if TEXT (a word's word_string) is a short-option cluster whose '-c'
+    takes the NEXT word as its program ('-c'/'-lc'/'-ec'); False for an attached
+    '-c"prog"', a long option, an operand, or an expansion-bearing word (None).
+    The separate-only consumer (R-101's shell_c_program_words) keys on this;
+    _c_opt_program is the single source of truth."""
+    return _c_opt_program(text) == ("separate", None)
 
 
 def _c_behind_wrapper(call, words, start, source):
     """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START]
-    is the shell). Separate form only -- an attached '-c'prog'' behind a wrapper
-    is rare and a mixed word has no word_lit, so it is a documented follow-up."""
+    is the shell). Handles the separate ('-c PROG') and attached ('-c"prog"')
+    forms, the same classifier as _c_in_command -- an attached '-c' behind a
+    wrapper is rarer but just as real, and feeds the same multi-statement check."""
     for index in range(start + 1, len(words)):
-        if _is_separate_c_opt(bash_ast.word_string(words[index])):
+        classified = _c_opt_program(bash_ast.word_string(words[index]))
+        if classified is None:
+            continue
+        form, program_value = classified
+        if form == "separate":
             if index + 1 < len(words):
                 program = words[index + 1]
                 span = program["End"]["Line"] - program["Pos"]["Line"] + 1
                 yield (call, _shell_c_value(program, source), span)
-            return
+        else:
+            ## Attached: the program is glued into this option word.
+            span = words[index]["End"]["Line"] - words[index]["Pos"]["Line"] + 1
+            yield (call, program_value, span)
+        return
 
 
 def shell_c_programs(tree, source):
