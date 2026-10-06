@@ -184,29 +184,35 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
 
 
 class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
-    """check_critical_logs demotes Tor's userspace soft-assert block OUT of the
-    always-shown CRITICAL tier while a real kernel ' BUG:' (and Bad RAM / CPU-stall)
-    STAYS critical. Tor 0.4.9.11's tor_bug_occurred_() logs a mixed-case 'Bug: ...
-    Non-fatal assertion failed.' line AND THEN log_backtrace() emits SEPARATE
-    'tor_log(): Bug:' backtrace records -- the WHOLE block must be demoted, not just the
-    assertion line. Drives the REAL function so the actual matching -- not a
-    reimplementation -- is exercised; canaries on BOTH the old single-grep code and an
-    incomplete 'Non-fatal assertion'-only demotion (where the backtrace records WOULD
-    still be emitted as critical)."""
+    """check_critical_logs demotes Tor's userspace non-fatal soft-assert block OUT of the
+    always-shown CRITICAL tier while a real kernel ' BUG:', a FATAL Tor assert (which
+    aborts the process), Bad RAM and CPU-stall all STAY critical. Tor's log.c prepends
+    'Bug: ' to EVERY LD_BUG line, so case alone cannot separate a survivable non-fatal
+    assert from a fatal abort; the demotion is CONTENT-scoped -- it drops only the
+    self-declared 'Non-fatal assertion' line and log_backtrace()'s 'tor_log(): Bug:' stack
+    frames. Drives the REAL function so the actual matching -- not a reimplementation -- is
+    exercised; canaries on the old single-grep code, on a 'Non-fatal assertion'-only
+    demotion (backtrace frames leak as critical), AND on a case-sensitive demotion (fatal
+    Tor asserts wrongly dropped)."""
 
-    ## Tor's soft-assert path logs mixed-case ' Bug:' -- over-matched by a case-INSENSITIVE
-    ## ' BUG:'. A correct demotion rests on kernel-uppercase vs userspace-mixed case, NOT
-    ## on the 'Non-fatal assertion' phrase, which only the first line carries.
+    ## Tor's log.c prepends 'Bug: ' to EVERY LD_BUG line, so case cannot tell a survivable
+    ## soft assert from a fatal abort -- demotion keys on CONTENT.
+    ## Non-fatal assert (self-declared 'Non-fatal assertion'); demoted.
     TOR_LINE = ('host Tor[1234]: [warn] tor_bug_occurred_(): Bug: '
                 'src/feature/nodelist/microdesc.c:123: microdescs_add_to_cache: '
                 'Non-fatal assertion failed. (on Tor 0.4.9.11)')
-    ## log_backtrace() records emitted AFTER the assertion line: each carries ' Bug:' but
-    ## NOT "Non-fatal assertion", so a phrase-only demotion leaves them classed critical.
+    ## log_backtrace() frames emitted after the assert: carry ' Bug:' but NOT "Non-fatal
+    ## assertion"; keyed by the 'tor_log(): Bug:' logger prefix; demoted.
     TOR_BACKTRACE = [
         ('host Tor[1234]: [warn] tor_log(): Bug:     '
          '/usr/bin/tor(tor_bug_occurred_+0x44) [0x5612ab]'),
         'host Tor[1234]: [warn] tor_log(): Bug:     Unable to generate backtrace.',
     ]
+    ## FATAL assert (tor_assertion_failed_() aborts the process): carries NEITHER demotion
+    ## token, so it STAYS critical -- demoting it would silently hide a Tor crash.
+    TOR_FATAL = ('host Tor[2919]: [err] tor_assertion_failed_(): Bug: '
+                 'src/core/or/conflux.c:534: conflux_note_cell_sent: '
+                 'Assertion leg failed; aborting. (on Tor 0.4.8.10)')
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
     CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
@@ -264,6 +270,15 @@ class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
         out = self._run_check_critical([self.KERNEL_BUG])
         self.assertIn('NULL pointer dereference', out,
                       'a real kernel BUG: must stay critical')
+
+    def test_tor_fatal_assert_stays_critical(self) -> None:
+        ## A FATAL Tor assert aborts the process; it carries neither 'Non-fatal assertion'
+        ## nor the 'tor_log(): Bug:' backtrace token, so it must STAY critical. Canaries a
+        ## case-sensitive demotion, which drops every mixed-case Tor 'Bug:' including this
+        ## and would silently hide a Tor crash.
+        out = self._run_check_critical([self.TOR_FATAL])
+        self.assertIn('aborting', out,
+                      'a FATAL Tor assert (aborting) must stay critical')
 
     def test_bad_ram_still_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
