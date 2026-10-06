@@ -126,19 +126,22 @@ rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
 nictrace_pcap="${work}/pcap"
 
-## --- ws_battery: one short command on /mnt/shared, no inline script -------------------------
-out="$(ws_battery '--probe tor-confirm')"
+## --- ws_battery: one short command on /mnt/shared, classified by the PROBE_EXIT sentinel ------
+## The echo stub emits no real sentinel, so probe_verdict returns SETUP -> capture with || true.
+out="$(ws_battery '--probe tor-confirm')" || true
 rc=0; has "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
 check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inline script)' "${rc}"
-rc=0; has "printf " "${out}" && rc=1 || rc=0
-check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass)' "${rc}"
+rc=0; has "PROBE_EXIT=" "${out}" || rc=1
+check 'ws_battery: echoes the in-guest exit as the PROBE_EXIT sentinel (survives guestcontrol mangling)' "${rc}"
+rc=0; has "sudo -S" "${out}" && rc=1 || rc=0
+check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass, no sudo -S)' "${rc}"
 
 ## --- ws_browser_probe: stage the CLI+harness readably, run the probe as non-root sysmaint -----
 ## /mnt/shared is a root-only read-only vboxsf mount; the battery reads it as root (dsudo), but the
 ## browser probe runs NON-root (Tor Browser refuses root) and a non-root read of the share is
 ## EACCES. So the probe must read a world-readable guest-local COPY, never the share directly --
 ## the exact regression this guards (the first live browser run died EACCES opening the share).
-out="$(ws_browser_probe)"
+out="$(ws_browser_probe)" || true   ## probe_verdict returns SETUP with the echo stub (no real sentinel)
 rc=0; has "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL}" "${out}" || rc=1
 check 'ws_browser_probe: creates the stage dir with an EXPLICIT 0755 (umask-independent, searchable by the non-root probe)' "${rc}"
 rc=0; has "dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test" "${out}" || rc=1
@@ -160,6 +163,45 @@ STUB
 chmod +x "${work}/vbe"
 rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
 check "ws_browser_probe: a staging/transport failure exits SETUP_RC(${SETUP_RC}), never FAIL_RC/leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## restore the echoing stub for anything after
+cat > "${work}/vbe" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod +x "${work}/vbe"
+
+## --- probe_verdict: classify on the in-guest PROBE_EXIT sentinel, NOT the host-side exit -------
+## guestcontrol does not convey the guest exit (a guest 2 reaches the host as 34, a transport
+## failure as 1). The verdict comes from the sentinel; its ABSENCE is SETUP, never a leak.
+rc=0; ( probe_verdict '{ "exit_code": 0 } PROBE_EXIT=0' ) || rc=$?
+check 'probe_verdict: PROBE_EXIT=0 -> clean (0)' "${rc}"
+rc=0; ( probe_verdict 'PROBE_EXIT=1' ) || rc=$?
+check "probe_verdict: PROBE_EXIT=1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict 'PROBE_EXIT=2' ) || rc=$?
+check "probe_verdict: PROBE_EXIT=2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict 'the guest command never produced a sentinel' ) || rc=$?
+check "probe_verdict: ABSENT sentinel (transport/infra failure) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict 'VBoxManage noise exit code=34 ... PROBE_EXIT=1' ) || rc=$?
+check "probe_verdict: keys on the sentinel (PROBE_EXIT=1) not a stray host number (34) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+
+## --- ws_battery / ws_browser_probe: verdict comes from the sentinel, not the host exit ---------
+mk_sentinel() { printf '#!/bin/bash\nprintf %s\nexit %s\n' "'${1}\n'" "${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+## A probe LEAK (PROBE_EXIT=1) with a clean host exit -> 1.
+mk_sentinel 'PROBE_EXIT=1' 0
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check "ws_battery: a probe LEAK (PROBE_EXIT=1) -> 1 via the sentinel" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+## A CLEAN sentinel (PROBE_EXIT=0) even with a MANGLED nonzero host exit (34) -> clean (0).
+mk_sentinel 'PROBE_EXIT=0' 34
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check 'ws_battery: a clean sentinel with a mangled host exit 34 -> clean (0), host exit ignored' "${rc}"
+## A TRANSPORT failure (nonzero host exit, NO sentinel) -> SETUP, NEVER misread as a leak.
+mk_sentinel 'transport blew up, no sentinel' 1
+rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
+check "ws_battery: transport failure (host exit 1, no sentinel) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+## Same for the browser probe: staging succeeds (exit 0), the probe reports a LEAK -> 1.
+mk_sentinel 'PROBE_EXIT=1' 0
+rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
+check "ws_browser_probe: a probe LEAK (PROBE_EXIT=1) -> 1 via the sentinel" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
 ## restore the echoing stub for anything after
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash

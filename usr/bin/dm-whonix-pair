@@ -354,14 +354,42 @@ boot_workstation_sysmaint() {
       || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
 }
 
-## Run the battery in the WS as sysmaint via guestcontrol; its exit code is the verdict
+## Classify a guest probe run from its captured output. anon-leak-test's own exit (0 clear /
+## 1 leak / 2 inconclusive) is echoed IN-GUEST as `PROBE_EXIT=<n>`, because guestcontrol does not
+## convey the guest exit faithfully -- a guest exit of 2 reaches the host as 34, and a transport
+## failure can reach it as 1, which a raw host-side exit check would MISREAD as a proven leak. The
+## sentinel's ABSENCE means the probe never completed (transport/infra failure) -> SETUP, never a
+## leak. Callers run `<probe> ; printf '\nPROBE_EXIT=%s\n' "$?"` and pass the captured stdout here.
+probe_verdict() {
+   local out="$1" n
+   n="$(printf '%s' "${out}" | sed -n 's/.*PROBE_EXIT=\([0-9]\{1,\}\).*/\1/p' | tail -1)"
+   case "${n}" in
+      0)
+         ## clear
+         return 0
+         ;;
+      1)
+         ## a probe proved non-Tor egress (LEAK)
+         return 1
+         ;;
+      *)
+         ## 2 (inconclusive), a mangled host-side code, or no sentinel
+         return "${SETUP_RC}"
+         ;;
+   esac
+}
+
+## Run the battery in the WS as sysmaint via guestcontrol; the PROBE_EXIT sentinel is the verdict
 ## (0 clear / 1 leak / 2 inconclusive). PROBES selects the probe set.
 ws_battery() {
-   local probes="$1"
-   ## Run the battery (on the /mnt/shared mount) as root via dsudo (empty-password submit). The
-   ## guest exit code IS the verdict; one short command, no inline script.
-   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json"
+   local probes="$1" out
+   ## Run the battery (on the /mnt/shared mount) as root via dsudo (empty-password submit); one
+   ## short command, no inline script. Echo the in-guest exit as the PROBE_EXIT sentinel and
+   ## classify on THAT (guestcontrol does not preserve the guest exit); keep the JSON on stdout.
+   out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+      --cmd "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json; printf '\nPROBE_EXIT=%s\n' \"\$?\"")" || true
+   printf '%s\n' "${out}"
+   probe_verdict "${out}"
 }
 
 ## Run the app/browser-layer webrtc probe. It runs as the NON-root sysmaint user (Tor Browser
@@ -369,14 +397,18 @@ ws_battery() {
 ## STAGE (as root, dsudo) into a world-readable guest-local dir in a SEPARATE guestcontrol call so
 ## a staging/transport failure returns SETUP_RC -- never the probe's exit-1 LEAK code; explicit dir
 ## mode 0755 so a hardened (Kicksecure) root umask cannot leave it non-searchable for the non-root
-## probe. Then RUN the probe from there (find_harness looks beside the CLI); its exit IS the verdict
-## (0 clear / 1 leak / other inconclusive), mirroring ws_battery.
+## probe. Then RUN the probe from there (find_harness looks beside the CLI); the PROBE_EXIT sentinel
+## is the verdict (0 clear / 1 leak / other inconclusive), classified via probe_verdict like the
+## battery -- so a probe-run transport failure is SETUP, never a false LEAK.
 ws_browser_probe() {
+   local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
       --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
       || return "${SETUP_RC}"
-   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json"
+   out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
+      --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json; printf '\nPROBE_EXIT=%s\n' \"\$?\"")" || true
+   printf '%s\n' "${out}"
+   probe_verdict "${out}"
 }
 
 ## Preflight (run once the WS is up in sysmaint, BEFORE any root step): confirm the guest session
