@@ -399,23 +399,93 @@ class _FooterAudit(html.parser.HTMLParser):
 
 
 def check_footer(root, failures):
-    index = os.path.join(root, 'index.html')
-    if not os.path.isfile(index):
-        return
-    with open(index, encoding='utf-8') as handle:
-        markup = handle.read()
-    audit = _FooterAudit()
-    audit.feed(markup)
-    if not audit.saw:
-        failures.append('index.html: no <footer>')
-        return
-    # Check the family links against the union of ALL <footer> regions: content
-    # AFTER a footer must not mask a missing link (the whole-tail bug), and an
-    # earlier <article>/<section> footer must not hide the site footer.
-    scope = audit.scope()
-    for name, url in FAMILY.items():
-        if url not in scope:
-            failures.append('index.html: footer missing family link %s' % url)
+    # EVERY page that has a footer must carry all family links -- the uniform chrome
+    # puts a footer on every page, INCLUDING generated subpages (e.g. the
+    # automated-test-results page). A root-index-only check missed a subpage whose
+    # footer dropped or mislaid them. The top-level index must have a footer at all.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding='utf-8') as handle:
+            markup = handle.read()
+        audit = _FooterAudit()
+        audit.feed(markup)
+        if not audit.saw:
+            if rel == 'index.html':
+                failures.append('index.html: no <footer>')
+            continue
+        # Check the family links against the union of ALL <footer> regions: content
+        # AFTER a footer must not mask a missing link (the whole-tail bug), and an
+        # earlier <article>/<section> footer must not hide the site footer.
+        scope = audit.scope()
+        for _name, url in FAMILY.items():
+            if url not in scope:
+                failures.append('%s: footer missing family link %s' % (rel, url))
+
+
+# <footer> rows styled with their own horizontal gutter + centered max-width in the
+# shared stylesheet. Each is a DIRECT child of <footer>; nesting one inside an extra
+# wrapper (e.g. a lone <div class="wrap">) double-applies the gutter and shoves the
+# row out of line with its siblings -- the broken-footer bug the browser guard
+# (check_footer.py) could not see once a single wrapper collapsed <footer> to one
+# child. These classes are style.css footer-row selectors, kept in sync with it.
+FOOTER_ROW_CLASSES = frozenset(('ftop', 'fbot', 'fshare', 'ffree'))
+
+# Void elements have no end tag, so they must never be pushed onto the parent stack
+# (an <img> left on the stack would mis-parent the row that follows it).
+_VOID_ELEMENTS = frozenset((
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+    'param', 'source', 'track', 'wbr',
+))
+
+
+class _FooterStructure(html.parser.HTMLParser):
+    """Flag any footer row (.ftop/.fbot/.fshare/.ffree) that is NOT a direct child
+    of a <footer>. Parsed, not regex, so attribute quoting and nesting are handled
+    uniformly with the other audits; a row inside an HTML comment is invisible."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # open, non-void element tags, outermost first
+        self.offenders = set()    # row classes nested below a direct <footer> child
+
+    def _flag_if_indirect(self, attrs):
+        # A footer row misplaced <=> we are inside a footer but its immediate parent
+        # (top of the open-element stack) is not the <footer> itself.
+        if 'footer' not in self._stack:
+            return
+        hit = set((dict(attrs).get('class') or '').split()) & FOOTER_ROW_CLASSES
+        if hit and (not self._stack or self._stack[-1] != 'footer'):
+            self.offenders |= hit
+
+    def handle_starttag(self, tag, attrs):
+        self._flag_if_indirect(attrs)
+        if tag not in _VOID_ELEMENTS:
+            self._stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        # A self-closing tag is a childless leaf: run the class check, never push it.
+        self._flag_if_indirect(attrs)
+
+    def handle_endtag(self, tag):
+        if tag in _VOID_ELEMENTS:
+            return
+        # Pop to the nearest matching open tag (tolerates an unclosed inner element
+        # the same way a browser recovers), so parent tracking stays correct.
+        if tag in self._stack:
+            while self._stack:
+                if self._stack.pop() == tag:
+                    break
+
+
+def check_footer_structure(root, failures):
+    for page in html_files(root):
+        audit = _FooterStructure()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        rel = os.path.relpath(page, root)
+        for cls in sorted(audit.offenders):
+            failures.append('%s: footer .%s is not a direct <footer> child -- a nested '
+                            'row double-applies the gutter and misaligns it' % (rel, cls))
 
 
 class _StatusPillAudit(html.parser.HTMLParser):
@@ -1818,8 +1888,14 @@ def main():
                 parent_roots = (by_name[parent_name],)
         check_links(root, failures, mount, parent_roots)
         check_wording(root, failures)
+        # check_freshness / check_banner / check_seo_current inspect only the site
+        # root index.html by design: the "last generated" freshness line, the
+        # review-status banner, and the canonical-SEO meta are landing-page concerns,
+        # not per-subpage ones. check_footer (family links) and check_footer_structure
+        # run on EVERY page, so a generated subpage's footer cannot drift unchecked.
         check_freshness(root, failures)
         check_footer(root, failures)
+        check_footer_structure(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)
         check_no_inline_script(root, failures)
@@ -1840,7 +1916,8 @@ def main():
             for item in failures:
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
-            sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
+            sys.stdout.write('ok %s: links + wording + footer + footer-structure + '
+                             'banner + csp + '
                              'no-inline-js + '
                              'supply-chain + assets + card-layout + repro-raw + '
                              'nav + '

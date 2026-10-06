@@ -1158,6 +1158,72 @@ def run():
         check('a background-color-only token is not judged for text contrast',
               _ct_failures(root) == [], repr(_ct_failures(root)))
 
+    # check_footer_structure: footer rows must be DIRECT <footer> children. A row
+    # wrapped in an extra container double-applies the gutter and misaligns -- the
+    # broken-footer bug the browser guard could not see once a wrapper collapsed the
+    # footer to one child. Runs on every page, so a subpage is covered.
+    def _fs_failures(root):
+        failures: list[str] = []
+        check_site.check_footer_structure(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        good = ('<footer><div class="ftop"><nav class="fcols"><div class="fcol">'
+                '<a href="/">x</a></div></nav></div>'
+                '<div class="fbot"><span class="fcopy">y</span></div></footer>')
+        _write(root, 'index.html', good)
+        check('footer rows as direct <footer> children pass', _fs_failures(root) == [],
+              repr(_fs_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # The exact pre-fix results-page footer: the .fbot row wrapped in one .wrap.
+        bad = ('<footer><div class="wrap"><div class="fcols"><div class="fcol">'
+               '<a href="/">x</a></div></div><p class="fbot">y</p></div></footer>')
+        _write(root, 'index.html', bad)
+        check('a .fbot nested below an extra wrapper is flagged',
+              any('.fbot' in f for f in _fs_failures(root)), repr(_fs_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<footer><div class="fbot"><span class="fcopy">y</span></div></footer>')
+        _write(root, 'sub/page.html',
+               '<footer><div class="wrap"><p class="fbot">y</p></div></footer>')
+        check('footer-structure check reaches a subpage, not just index.html',
+              any('sub/page.html' in f and '.fbot' in f for f in _fs_failures(root)),
+              repr(_fs_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # A void element (<img>) inside a footer row must not mis-parent the next row.
+        ok_void = ('<footer><div class="ftop"><img src="/l.webp"><nav class="fcols">'
+                   '<div class="fcol"><a href="/">x</a></div></nav></div>'
+                   '<div class="fbot"><span class="fcopy">y</span></div></footer>')
+        _write(root, 'index.html', ok_void)
+        check('a void element in a footer row does not false-flag the next row',
+              _fs_failures(root) == [], repr(_fs_failures(root)))
+
+    # check_footer (family links) now runs on every page that has a footer, so a
+    # subpage dropping a family link is caught -- not just the top-level index.
+    def _footer_failures(root):
+        failures: list[str] = []
+        check_site.check_footer(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        full = ('<footer><div class="fbot">'
+                + ''.join('<a href="%s">x</a>' % u for u in check_site.FAMILY.values())
+                + '</div></footer>')
+        _write(root, 'index.html', full)
+        # Subpage footer missing one family link.
+        partial = ('<footer><div class="fbot">'
+                   + '<a href="%s">x</a>' % list(check_site.FAMILY.values())[0]
+                   + '</div></footer>')
+        _write(root, 'sub/page.html', partial)
+        fails = _footer_failures(root)
+        check('a subpage footer missing a family link is flagged',
+              any('sub/page.html' in f and 'family link' in f for f in fails), repr(fails))
+        check('the complete index footer is not flagged',
+              not any(f.startswith('index.html') for f in fails), repr(fails))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

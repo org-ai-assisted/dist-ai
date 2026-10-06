@@ -412,7 +412,7 @@ ws_battery() {
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
-      --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
+      --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.js ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.js" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
       --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true WAYLAND_DISPLAY=wayland-0 MOZ_ENABLE_WAYLAND=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
@@ -597,10 +597,24 @@ pc_bpf() {
 ## Deny-by-default: permit ONLY link infra, the entry guards (any port), and the reserved guard on
 ## its ORPort (pc_bpf). EVERY other clearnet packet -- incl. any non-ORPort traffic to the reserved
 ## guard -- is a leak.
+## Link infra that is never a leak: DHCP, multicast, link-local (v4+v6).
+infra_bpf() {
+   printf '%s' '(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
+}
+
+## Guard-only allowlist BPF -- retained for --print-allow-filter / the host-wire oracle.
 allowlist_bpf() {
-   local infra
-   infra='(udp port 67 and udp port 68 and dst host 255.255.255.255) or dst net 224.0.0.0/4 or dst net 169.254.0.0/16 or (ip6 and (dst net ff00::/8 or dst net fe80::/10))'
-   printf '%s' "(ip or ip6) and not ( ${infra} ) and not ( $(guard_hosts_bpf) ) and not ( $(pc_bpf) )"
+   printf '%s' "(ip or ip6) and not ( $(infra_bpf) ) and not ( $(guard_hosts_bpf) ) and not ( $(pc_bpf) )"
+}
+
+## All current Tor relay + directory-authority IPs, from the GW's OWN cached consensus -- the set
+## the GW's Tor may legitimately connect to: entry guards for CIRCUITS and V2Dir/directory relays
+## for descriptor/consensus fetches (EntryNodes/StrictNodes pins circuit entry, NOT directory
+## connections). Read as root in the GW user session (dev-root -> leaprun sudo). Every IPv4 /
+## bracketed-IPv6 token in the consensus is a relay or authority address, so grep them all.
+gw_tor_relay_ips() {
+   "${VBOX_EXEC_LOCAL}" "${gw}" --role user --timeout 60 \
+      --cmd "leaprun sudo && { sudo --non-interactive grep -hoE '([0-9]{1,3}[.]){3}[0-9]{1,3}' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null; sudo --non-interactive grep -hoE '\[[0-9a-fA-F:]+\]' /var/lib/tor/cached-microdesc-consensus /var/lib/tor/cached-consensus 2>/dev/null | tr -d '[]'; }"
 }
 
 ## PASS only if NONE of the battery's tagged clearnet targets appear leaving the GW's
@@ -608,7 +622,7 @@ allowlist_bpf() {
 ## traffic (non-blind). tcpdump -r reads the pcap -- no root. Fail-closed: a missing /
 ## unreadable pcap is treated as a blind capture, never a pass.
 canary_gateway_pcap() {
-   local total deny_filter hits_out hits leaks_out leaks tor_out tor_seen pc_out pc_seen rc
+   local total deny_filter hits_out hits leaks_out relay_file leak_dsts d tor_out tor_seen pc_out pc_seen rc
    [ -s "${nictrace_pcap}" ] || die "${SETUP_RC}" "canary: GW nictrace pcap empty/missing (blind capture -- inconclusive, not a leak)"
    total="$("${TCPDUMP}" -nr "${nictrace_pcap}" 2>/dev/null | wc -l)"
    [ "${total}" -gt 0 ] || die "${SETUP_RC}" "canary: GW emitted nothing on its external NIC (blind -- inconclusive, not a leak)"
@@ -629,23 +643,35 @@ canary_gateway_pcap() {
    [ -z "${hits_out}" ] || hits="$(printf '%s\n' "${hits_out}" | wc -l)"
    [ "${hits}" -eq 0 ] \
       || die "${FAIL_RC}" "LEAK: a WS probe target reached clearnet via the GW (${hits} pkt(s)) -- NOT Tor-only"
-   ## Fail-closed: an empty entry-guard set cannot form an allowlist.
-   [ "${#GUARD_PIN_IPS4[@]}" -gt 0 ] \
-      || die "${SETUP_RC}" "canary: no entry guards configured -- cannot build the allowlist (inconclusive, not a leak)"
-   ## Allowlist (deny-by-default): permit ONLY the entry guards (any port) + the reserved guard on
-   ## its ORPort (pc_bpf) + link infra; EVERY other clearnet packet is a LEAK -- Tor-only by default,
-   ## NO carve-out for host-DNS / a NON_TOR_GATEWAY exception, and NO blanket pass for the reserved
-   ## guard (only its ORPort). Catches a GW-originated non-Tor egress the fixed denylist never names.
-   ## Checked BEFORE the liveness floors below: a DETECTED leak is definitive (FAIL), never downgraded
-   ## to a "capture inconclusive" (SETUP) just because the reserved-guard flow happened to be absent.
+   ## Allowlist (deny-by-default) = any current Tor relay/authority (the GW's OWN consensus) + link
+   ## infra. A packet to a Tor relay -- a pinned guard, another guard, or a V2Dir/directory relay
+   ## for a descriptor/consensus fetch (EntryNodes/StrictNodes pins CIRCUIT entry, not directory
+   ## connections) -- is Tor, not a leak; only a clearnet dst that is NOT a Tor relay (and not
+   ## infra) is a leak. NO carve-out for host-DNS / a NON_TOR_GATEWAY exception. The pinned +
+   ## reserved guards ARE relays, so they are covered here; they stay the liveness signals below.
+   ## Checked BEFORE the liveness floors: a DETECTED leak is definitive (FAIL), never downgraded.
+   relay_file="$(mktemp)"
+   gw_tor_relay_ips > "${relay_file}" 2>/dev/null || true
+   [ -s "${relay_file}" ] \
+      || { safe-rm --force -- "${relay_file}" 2>/dev/null; die "${SETUP_RC}" "canary: could not read the GW Tor consensus relay set -- cannot classify egress (inconclusive, not a leak)"; }
    rc=0
-   leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "$(allowlist_bpf)" 2>/dev/null)" || rc=$?
+   leaks_out="$("${TCPDUMP}" -nr "${nictrace_pcap}" "(ip or ip6) and not ( $(infra_bpf) )" 2>/dev/null)" || rc=$?
    [ "${rc}" -eq 0 ] \
-      || die "${SETUP_RC}" "canary: allowlist filter failed to run (non-compiling filter?) -- inconclusive, not a leak verdict"
-   leaks=0
-   [ -z "${leaks_out}" ] || leaks="$(printf '%s\n' "${leaks_out}" | wc -l)"
-   [ "${leaks}" -eq 0 ] \
-      || die "${FAIL_RC}" "LEAK: ${leaks} non-guard clearnet pkt(s) on the GW NIC -- NOT Tor-only (allowlist; see preserved pcap decode)"
+      || { safe-rm --force -- "${relay_file}" 2>/dev/null; die "${SETUP_RC}" "canary: egress read failed (non-compiling filter / unreadable pcap) -- inconclusive, not a leak verdict"; }
+   ## Each distinct clearnet dst IP that is NOT in the consensus relay set is a leak. The dst is
+   ## extracted port-anchored after tcpdump's `> ` (so the trailing `.<port>:` is stripped cleanly
+   ## and a portless IPv4 is never mis-truncated): IPv4 `> A.B.C.D.port`, IPv6 `> x::y.port`. Tor
+   ## egress is TCP (ORPort), so the ported form covers it; portless probe targets are the denylist.
+   leak_dsts=''
+   while read -r d; do
+      [ -n "${d}" ] || continue
+      grep --fixed-strings --line-regexp --quiet -- "${d}" "${relay_file}" || leak_dsts="${leak_dsts:+${leak_dsts} }${d}"
+   done < <( { printf '%s\n' "${leaks_out}" | grep -oE '> ([0-9]{1,3}[.]){3}[0-9]{1,3}[.][0-9]+'
+               printf '%s\n' "${leaks_out}" | grep -oE '> [0-9a-fA-F:]+:[0-9a-fA-F]+[.][0-9]+'; } \
+            | sed 's/^> //; s/[.][0-9]*$//' | sort -u )
+   safe-rm --force -- "${relay_file}" 2>/dev/null || true
+   [ -z "${leak_dsts}" ] \
+      || die "${FAIL_RC}" "LEAK: clearnet dst(s) that are NOT Tor relays on the GW NIC: ${leak_dsts} -- NOT Tor-only (see preserved pcap decode)"
    ## Liveness floor -- GENUINE Tor guard traffic (the entry guards). The GW's Tor MUST have reached
    ## an entry guard, so this MUST be non-trivial; a tiny count => blind/undercounting tap (wrong NIC
    ## / died / over-tight filter) OR Tor never connected => inconclusive, never a pass. Counted apart
@@ -698,9 +724,9 @@ main() {
    ## Opt-in app/browser layer: stage the WebRTC harness beside the battery (anon-leak-test's
    ## find_harness looks beside itself on /mnt/shared).
    if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
-      [ -r "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" ] \
+      [ -r "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.js" ] \
          || die "${SETUP_RC}" "DM_WHONIX_PAIR_BROWSER=1 but the WebRTC harness is missing in ${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test"
-      cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" "${share_dir}/anon-leak-webrtc.html"
+      cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.js" "${share_dir}/anon-leak-webrtc.js"
    fi
 
    printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"

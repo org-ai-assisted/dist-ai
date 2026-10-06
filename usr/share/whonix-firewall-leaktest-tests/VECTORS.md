@@ -239,49 +239,59 @@ Covered:
 
 Covered by the LIVE `dm-whonix-pair` (not this netns suite):
 
-- GW-originated ALLOWLIST canary: the LIVE `dm-whonix-pair` GW external-NIC canary is
-  deny-by-default -- it pins the GW to a fixed set of Tor entry guards (`EntryNodes` +
-  `StrictNodes 1`) and allows ONLY those guard IPs (either direction) + link infra
-  (DHCP/link-local/multicast); ANY other clearnet packet is a LEAK. Tor-only by default, NO
-  carve-out for the `NON_TOR_GATEWAY` host-DNS/LAN exception (if it fires it is a true leak).
-  The existing watchlist stays as defense-in-depth. A second, on-the-wire oracle
-  (`host-wire-leak-capture` in private-ai-config/ovh-server-debug) applies the SAME allowlist
-  (read verbatim via `dm-whonix-pair --print-allow-filter`) to a RAW capture of the host's
-  physical NIC, catching egress a per-uid rule or the guest-NIC tap could miss.
-  Two liveness signals, counted SEPARATELY (neither masks the other): (1) GENUINE Tor guard
-  traffic (entry guards on their ORPorts) must clear a floor (`GUARD_MIN_PKTS`); (2) a deliberate
-  POSITIVE-CONTROL emit -- the `clearnet` user opens one TCP connection to a RESERVED guard's real
-  ORPort. The reserved guard is allowlisted but excluded from `EntryNodes`, so Tor never dials it
-  and every packet to it is the canary (separable by host); its ORPort is public consensus infra,
-  so the emit is legitimate (no abuse complaint), not an unsolicited scan. Both oracles derive the
-  split identically from `--print-guards` / `--print-pc-filter` (single source, no drift).
+- GW-originated ALLOWLIST canary (deny-by-default): the LIVE `dm-whonix-pair` GW external-NIC
+  canary permits ONLY current Tor relays + link infra (DHCP/link-local/multicast); ANY other
+  clearnet dst is a LEAK. Tor-only by default, NO carve-out for the `NON_TOR_GATEWAY` host-DNS/LAN
+  exception (if it fires it is a true leak). The permitted relay set is the GW's OWN cached
+  consensus, read as root in the GW user session (`gw_tor_relay_ips`: every IPv4 / bracketed-IPv6
+  token in `cached-microdesc-consensus` + `cached-consensus`). The FULL relay set on purpose:
+  `EntryNodes` + `StrictNodes 1` pins circuit ENTRY, but Tor still opens DIRECTORY (V2Dir)
+  connections to non-guard relays for descriptor/consensus fetches, so a pinned-guard-only
+  allowlist would false-flag those. The canary extracts each clearnet dst from the GW nictrace
+  pcap (infra excluded via `infra_bpf`) and fails if any dst is not in the consensus relay set;
+  fail-closed -- an empty/unreadable relay set is SETUP, never a pass. The fixed watchlist stays
+  as defense-in-depth. Two liveness signals, counted SEPARATELY (neither masks the other): (1)
+  GENUINE Tor guard traffic (entry guards on their ORPorts) must clear a floor (`GUARD_MIN_PKTS`);
+  (2) a deliberate POSITIVE-CONTROL emit -- the `clearnet` user opens one TCP connection to a
+  RESERVED guard's real ORPort. The reserved guard is allowlisted but excluded from `EntryNodes`,
+  so Tor never dials it and every packet to it is the canary (separable by host); its ORPort is
+  public consensus infra, so the emit is legitimate (no abuse complaint), not an unsolicited scan.
+- A second, on-the-wire oracle (`host-wire-leak-capture` in private-ai-config/ovh-server-debug)
+  applies a PINNED-GUARD allowlist (read verbatim via `--print-allow-filter` / `--print-guards` /
+  `--print-pc-filter`, single source) to a RAW capture of the host's physical NIC, catching egress
+  the guest-NIC tap could miss. It still uses the pinned-guard basis, NOT the consensus relay set,
+  so it can false-flag a legitimate directory connection -- see the Open follow-up.
 
-App/browser layer -- code + unit tests complete, live validation deferred:
+App/browser layer -- LIVE-verified:
 
-- WebRTC/STUN local-IP exposure + doileak exit-IP: the opt-in `browser-webrtc` anon-leak-test
-  probe (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS Tor Browser headless through a staged harness
-  and asserts WebRTC exposes NO host-identifying address (only the WS internal net / mDNS /
-  loopback) AND the browser exit is Tor. Pure classifier unit-tested + canaried; fail-closed to
-  SETUP when the probe cannot run.
+- WebRTC local-IP exposure + browser Tor-exit: the opt-in `browser-webrtc` anon-leak-test probe
+  (`DM_WHONIX_PAIR_BROWSER=1`) drives the WS Tor Browser headless and asserts WebRTC exposes NO
+  host-identifying address (only the WS internal net / mDNS / loopback) and, when reachable, that
+  the browser exit is Tor. Pure classifier unit-tested + canaried; fail-closed to SETUP when the
+  probe cannot run.
 - This is the ONE assertion no other layer covers: the wire oracle sees only NON-Tor clearnet
   egress and cannot inspect an ICE candidate carried INSIDE the Tor circuit to a STUN server /
-  peer, so a local IP disclosed that way is opaque to it. The probe is therefore not mere
-  defense-in-depth, and WebRTC local-IP exposure is UNVERIFIED live until the probe runs there.
-- Staging: the probe runs NON-root (Tor Browser refuses root) and so cannot read the root-only
-  read-only `/mnt/shared` mount. `ws_browser_probe` copies the CLI + harness to a world-readable
-  guest-local dir as root (explicit `install -d -m 0755`, umask-independent) in a SEPARATE
-  guestcontrol call, so a staging/transport failure is SETUP not a false LEAK, then runs the probe
-  from there.
-- Live follow-up: headless Tor Browser launches but does not POST its result within the 90s
-  harness timeout. Capture the launcher stderr (the probe DEVNULLs it), confirm the `torbrowser`
-  wrapper forwards `--headless` + loads the localhost URL, and make the browser timeout longer +
-  probe-configurable (the through-Tor `check.torproject.org` fetch can exceed 90s on a cold
-  circuit).
-- Verdict source: the guestcontrol layer does not preserve the guest exit (guest 2 surfaces as
-  34) and a transport failure can surface as 1, so classifying on the process exit is unreliable.
-  The battery + browser probe should classify on the probe's `--json` (`leak_detected` /
-  `exit_code`), treating absent JSON as SETUP; the GW-trace pcap canary is the authoritative,
-  exit-independent leak gate.
+  peer, so a local IP disclosed that way is opaque to it.
+- Control channel: the probe drives Tor Browser over its marionette automation port
+  (127.0.0.1:2828), NOT an in-page collector -- Tor Browser routes all page traffic (incl.
+  127.0.0.1) through Tor, so a localhost sink is unreachable; marionette is not page-proxied.
+  `ANON_LEAK_BROWSER_TIMEOUT` makes the through-Tor `check.torproject.org` fetch deadline
+  configurable (a cold circuit can exceed the default).
+- Display: Tor Browser renders on the WS's real Wayland session (sysmaint) with
+  `MOZ_ENABLE_WAYLAND=1`; headless/offscreen does not render firefox. Needs the
+  apparmor-profile-torbrowser fix allowing firefox's native-Wayland sockets
+  (`/run/user/*/wayland-[0-9]*`, `wayland-proxy-*`).
+- Staging: the probe runs NON-root (Tor Browser refuses root) so cannot read the root-only
+  `/mnt/shared`; `ws_browser_probe` installs the CLI + harness to a world-readable guest-local dir
+  as root (explicit `install -d -m 0755`) in a SEPARATE guestcontrol call, so a staging/transport
+  failure is SETUP not a false LEAK.
+- Verdict source: the guestcontrol layer does not preserve the guest exit (guest 2 surfaces as 34)
+  and a transport failure can surface as 1, so the battery + browser probe classify on the probe's
+  `--json` (`leak_detected` / `exit_code`), absent JSON = SETUP; the GW-trace pcap canary is the
+  authoritative, exit-independent leak gate.
+- Live status: browser-webrtc PASSes on the OVH pair -- marionette drives Tor Browser, WebRTC is
+  disabled (Tor Browser default -> no routable candidate, the secure state), and the network-layer
+  tor-confirm shows a Tor exit.
 
 Open (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 
@@ -292,6 +302,13 @@ Open (owned by the LIVE `dm-whonix-pair`, not this netns suite):
 - nftables allowlist ENFORCEMENT: convert the host `ai_server_fw` OUTPUT fleet-uid rule from a
   denylist (two probe dsts) to a pinned-guard allowlist drop -- the enforcement counterpart to
   the `host-wire-leak-capture` observation.
+- host-wire allowlist basis: `host-wire-leak-capture` still allows only the PINNED guards (+
+  infra) via `--print-allow-filter`, while the guest-NIC canary allows the full consensus relay
+  set, so the host-wire oracle can false-flag a legitimate Tor DIRECTORY (V2Dir) connection to a
+  non-guard relay. Align it on the consensus relay set (single source): persist
+  `gw_tor_relay_ips`'s set to a run artifact the host tool reads, or expose it via a new
+  `--print-relay-ips`. Mechanism is a dwp<->host-wire contract choice; host-wire's live path is
+  the `dm-release-test` root orchestration, not the `DM_WHONIX_PAIR_BROWSER` guest run.
 
 OUT of scope (reviewer-confirmed): a second compromised Workstation SNIFFING a peer on the
 shared VBox internal LAN -- Whonix does not promise WS<->WS isolation and the traffic is

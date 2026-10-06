@@ -220,6 +220,16 @@ run_generator(plane, goldens, approvals_path, site1)
 out1 = os.path.join(site1, "automated-test-results")
 overview = read(os.path.join(out1, "index.html"))
 
+## The footer rows are DIRECT <footer> children: no intermediate .wrap that would
+## double-apply style.css's per-row gutter and misalign the tagline -- the
+## broken-footer regression. The website-tests footer-structure gate enforces this
+## across all pages; this canary keeps the generator's own _FOOTER honest.
+footer_region = overview.split("<footer>", 1)[-1].rsplit("</footer>", 1)[0]
+check("footer .ftop is a direct <footer> child",
+      overview.count('<footer><div class="ftop">') == 1)
+check("footer has no intermediate .wrap row-wrapper", 'class="wrap"' not in footer_region)
+check("footer .fbot tagline row present", '<div class="fbot">' in footer_region)
+
 ## Overview carries the non-green statuses, and green for exactly the green runs.
 check("overview has green pass cell", "st-pass" in overview)
 check("overview has NEW cell", "st-new" in overview)
