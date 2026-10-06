@@ -401,13 +401,16 @@ ws_battery() {
 ## Browser refuses a sysmaint-booted session (boot_session is read from the kernel cmdline, not the
 ## uid) unless tb_allow_start_in_sysmaint=true -- the documented override -- so inject it. Classify
 ## the JSON verdict via probe_verdict: a probe-run infra failure (no JSON) is SETUP, never a leak.
+## Headless env for the torbrowser wrapper: tb_allow_start_in_sysmaint=true (sysmaint-booted WS),
+## open_link_confirmation_skip=true (skip the GUI link-confirmation dialog -- it crashes with no
+## display), QT_QPA_PLATFORM=offscreen (any remaining Qt helper inits without a Wayland/X display).
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
       --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "env tb_allow_start_in_sysmaint=true ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
+      --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true QT_QPA_PLATFORM=offscreen ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
    printf '%s\n' "${out}"
    probe_verdict "${out}"
 }
