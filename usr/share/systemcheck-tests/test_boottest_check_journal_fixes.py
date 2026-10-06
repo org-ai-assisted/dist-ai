@@ -251,9 +251,11 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
                       'a BUG_ON() (kernel BUG at ...) must be critical')
 
     def test_apparmor_bug_path_not_critical(self) -> None:
-        ## A kernel-echoed, attacker-controlled path containing a bare 'BUG' token (e.g. an
-        ## AppArmor denial for '/tmp/BUG') must NOT be force-shown: the token requires 'BUG:'
-        ## or 'BUG at ', so a bare 'BUG' in a path does not trip a false critical.
+        ## A kernel-echoed, attacker-controlled path with a BARE 'BUG' token (an AppArmor
+        ## denial for '/tmp/BUG') must NOT be force-shown: the token requires 'BUG:' or
+        ## 'BUG at ', so a bare 'BUG' in a path does not trip a false critical. (A crafted
+        ## path that embeds the literal ' BUG:' DOES still match -- an accepted residual
+        ## false-positive; it can never HIDE a real catastrophe, which is the safe direction.)
         out = self._run_check_critical(
             ['host kernel: audit: apparmor="DENIED" operation="open" '
              'name="/tmp/BUG" pid=123 comm="probe"'])
@@ -262,11 +264,17 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
 
     def test_many_matches_are_bounded(self) -> None:
         ## Attacker-influenceable kernel text could spam many distinct catastrophe-looking
-        ## lines; the per-line sanitize is capped so it cannot stall. Past the cap the output
-        ## is truncated with a marker (and the run still completes within the test timeout).
+        ## lines; the per-line sanitize is capped so it cannot stall. Assert the output is
+        ## actually BOUNDED below the input count (not merely that a marker appears), and
+        ## that the truncation is marked.
         out = self._run_check_critical(
             ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)])
-        self.assertIn('truncated', out, 'output past the cap must be truncated, not unbounded')
+        shown = out.count('synthetic oops number')
+        self.assertLessEqual(shown, 200,
+                             'the per-line sanitize must stop at the 200-line cap')
+        self.assertLess(shown, 250,
+                        'output must be bounded below the input count, not unbounded')
+        self.assertIn('truncated', out, 'truncation past the cap must be marked')
 
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
