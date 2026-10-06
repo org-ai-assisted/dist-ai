@@ -103,7 +103,15 @@ def _launch_capture(extra_env=None, settle=3.0):
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            _out, err = proc.communicate()
+            try:
+                _out, err = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                # A descendant that escaped the process group via its own setsid() still
+                # holds the stderr pipe, so killpg cannot reach it and this would block
+                # forever. Stop waiting instead of wedging the suite: the leader is already
+                # reaped and the per-invocation PID namespace reaps the stray. The real app
+                # prints its startup warnings during settle and forks no such child.
+                err = b''
         if proc.returncode in _QT_STARTUP_CRASH:
             continue                      # startup crash -> respawn
         return (err or b'').decode('utf-8', 'replace')
