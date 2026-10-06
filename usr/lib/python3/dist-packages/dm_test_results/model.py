@@ -276,7 +276,10 @@ def validate(result):
     this, so run id / lane / attachment paths that would escape an output or
     golden dir are rejected here -- a malformed or hand-edited result is dropped
     (NO-DATA), never read. Raises ModelError on any violation."""
-    if result.get("schema") != SCHEMA:
+    ## Type-defensive throughout: a consumer validates an untrusted result.json, so
+    ## a non-dict at any level must raise ModelError (-> NO-DATA), never an
+    ## AttributeError/TypeError that escapes the caller's ModelError catch.
+    if not isinstance(result, dict) or result.get("schema") != SCHEMA:
         raise ModelError("schema must be %r" % (SCHEMA,))
     run = result.get("run")
     if not isinstance(run, dict):
@@ -291,6 +294,8 @@ def validate(result):
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")
     for step in steps:
+        if not isinstance(step, dict):
+            raise ModelError("each step must be an object")
         if step.get("status") not in VALID_STATUS:
             raise ModelError("step status invalid: %r" % (step.get("status"),))
         _require_safe_component("step.name", step.get("name"))
@@ -298,6 +303,11 @@ def validate(result):
         if not isinstance(attachments, list):
             raise ModelError("step.attachments must be a list")
         for att in attachments:
+            if not isinstance(att, dict):
+                raise ModelError("each attachment must be an object")
+            ## name AND path both become path components (name feeds the screenshot
+            ## id -> golden path when a step has >1 shot), so both must be safe.
+            _require_safe_component("attachment name", att.get("name"))
             _require_safe_component("attachment path", att.get("path"))
     expected = summarize(steps)
     if result.get("summary") != expected:

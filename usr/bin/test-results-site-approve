@@ -26,7 +26,9 @@ Exit: 0 ok, 2 usage/error.
 
 import argparse
 import datetime
+import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -46,34 +48,39 @@ def _flatten(sid):
     return sid.replace("/", "__")
 
 
-def _unflatten(flat):
-    return flat.replace("__", "/")
+_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _safe_component(value, what):
+    if not isinstance(value, str) or not _COMPONENT.fullmatch(value):
+        raise SystemExit("test-results-site-approve: unsafe %s: %r" % (what, value))
+    return value
 
 
 def _safe_sid(sid):
     """A screenshot id is <lane>/<step>[/<name>]: slash-separated safe components.
     Refuse a '..' or empty component so it cannot escape the goldens dir."""
-    parts = sid.split("/")
-    if not parts or any(p == "" or p == ".." or p == "." for p in parts):
+    if not isinstance(sid, str) or sid == "":
         raise SystemExit("test-results-site-approve: unsafe screenshot id: %r" % sid)
-    import re
-
-    for part in parts:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part):
-            raise SystemExit("test-results-site-approve: unsafe screenshot id: %r" % sid)
+    for part in sid.split("/"):
+        _safe_component(part, "screenshot id component")
     return sid
 
 
-def _run_shot_sids(run_page_dir):
-    """Every screenshot id present in a run's page dir (excludes the *-golden.webp
-    before/after renders)."""
-    sids = []
-    if not os.path.isdir(run_page_dir):
-        return sids
-    for name in sorted(os.listdir(run_page_dir)):
-        if name.endswith(".webp") and not name.endswith("-golden.webp"):
-            sids.append(_unflatten(name[: -len(".webp")]))
-    return sids
+def _load_manifest(run_page_dir):
+    """Read a run's shots.json -> {sid: {webp, bucket, needs_approval}}. The generator
+    writes it so ids resolve EXACTLY (no lossy filename-unflatten). Absent -> {}."""
+    path = os.path.join(run_page_dir, "shots.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for entry in data.get("shots", []) if isinstance(data, dict) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("sid"), str):
+            out[entry["sid"]] = entry
+    return out
 
 
 def main(argv):
@@ -93,11 +100,15 @@ def main(argv):
     out_root = os.path.join(args.site_out, RESULTS_SUBDIR)
     goldens_dir = args.goldens_dir or os.path.join(out_root, "goldens")
     approvals_path = args.approvals or os.path.join(out_root, "golden-approvals.json")
+    ## run id is a path component (the run's page dir); refuse an escape.
+    _safe_component(args.run_id, "run id")
     run_page_dir = os.path.join(out_root, args.run_id)
+    manifest = _load_manifest(run_page_dir)
 
     approve = list(args.approve)
     if args.approve_all:
-        approve.extend(_run_shot_sids(run_page_dir))
+        ## From the manifest, exactly the shots flagged as needing approval.
+        approve.extend(sid for sid, entry in manifest.items() if entry.get("needs_approval"))
     approve = sorted(set(approve))
 
     if approve and not args.approver:
@@ -116,7 +127,10 @@ def main(argv):
 
     for sid in approve:
         _safe_sid(sid)
-        src = os.path.join(run_page_dir, _flatten(sid) + ".webp")
+        ## Resolve the shot's webp EXACTLY from the manifest when present (the id ->
+        ## filename map is not reliably invertible); fall back to the flattened name.
+        webp = manifest.get(sid, {}).get("webp") if sid in manifest else None
+        src = os.path.join(run_page_dir, webp or (_flatten(sid) + ".webp"))
         if not os.path.isfile(src):
             raise SystemExit(
                 "test-results-site-approve: no screenshot for %r in run %r (looked for %s)"
@@ -134,6 +148,7 @@ def main(argv):
         print("approved %s" % sid)
 
     for sid in args.reject:
+        _safe_sid(sid)
         if sid in approvals:
             del approvals[sid]
             print("rejected %s (approval cleared)" % sid)

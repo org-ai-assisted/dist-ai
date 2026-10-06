@@ -156,6 +156,19 @@ def build_plane(root, goldens, approvals_path):
         "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
     }
 
+    ## I: structurally malformed result (attachments is a list of strings) -> must
+    ## be NO-DATA, never an uncaught crash that denies the whole site.
+    i_dir = os.path.join(root, "malformed-18-2-3-5", "20261006T000000Z")
+    write_result(i_dir, "malformed-1", "malformed", "18.2.3.5", 0, now, "verify-signature", None)
+    _rewrite(os.path.join(i_dir, "result.json"), '"attachments": []', '"attachments": ["x"]')
+
+    ## J/K: two runs claiming the SAME run.id -> both must appear (unique page dirs),
+    ## neither silently overwritten or dropped.
+    j_dir = os.path.join(root, "dup-a-18-2-3-5", "20261006T000000Z")
+    write_result(j_dir, "dup-run-1", "dup-a", "18.2.3.5", 0, now, "verify-signature", None)
+    k_dir = os.path.join(root, "dup-b-18-2-3-5", "20261006T000000Z")
+    write_result(k_dir, "dup-run-1", "dup-b", "18.2.3.5", 0, now, "verify-signature", None)
+
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
 
@@ -256,6 +269,21 @@ h_page = read(os.path.join(out1, "kicksecure-xfce-18-2-3-5-1", "index.html"))
 check("missing-expected-shot run flags unknown", "st-unknown" in h_page)
 check("missing-expected-shot reason is shown",
       "expected approved golden not produced" in h_page)
+
+## I: a structurally malformed result.json is NO-DATA, and generation did not crash
+## (reaching here proves it). One bad file must not deny the whole site.
+mal_page = os.path.join(out1, "malformed-18-2-3-5__20261006T000000Z", "index.html")
+check("malformed result is NO-DATA (no crash)",
+      os.path.isfile(mal_page) and "st-nodata" in read(mal_page))
+
+## J/K: a duplicated run.id does not drop or overwrite a run -- both page dirs exist.
+check("colliding run.id keeps the first run", os.path.isdir(os.path.join(out1, "dup-run-1")))
+check("colliding run.id keeps the second run (dir-derived id)",
+      os.path.isdir(os.path.join(out1, "dup-b-18-2-3-5__20261006T000000Z")))
+
+## The green run (with a shot) gets a per-run shots.json manifest for the approver.
+check("per-run shots.json manifest written",
+      os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "shots.json")))
 
 ## Determinism: a second generation over identical input is byte-identical.
 site2 = os.path.join(work, "site2")

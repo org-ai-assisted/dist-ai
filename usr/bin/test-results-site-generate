@@ -141,11 +141,12 @@ def discover_runs(results_root):
         return runs
     for name in sorted(os.listdir(results_root)):
         name_dir = os.path.join(results_root, name)
-        if not os.path.isdir(name_dir):
+        ## Skip a symlinked name dir or the 'latest' run symlink -- never traverse a
+        ## symlink into the plane (it could point anywhere root can read).
+        if os.path.islink(name_dir) or not os.path.isdir(name_dir):
             continue
         for ts in sorted(os.listdir(name_dir)):
             run_dir = os.path.join(name_dir, ts)
-            ## Skip the 'latest' symlink and any non-dir.
             if os.path.islink(run_dir) or not os.path.isdir(run_dir):
                 continue
             result = _load_result(os.path.join(run_dir, "result.json"))
@@ -154,14 +155,16 @@ def discover_runs(results_root):
 
 
 def _load_result(path):
+    ## result.json is untrusted plane input: ANY read / parse / shape error yields
+    ## NO-DATA (never a crash that denies the whole site). A symlinked result.json
+    ## is refused outright rather than followed.
+    if os.path.islink(path):
+        return None
     try:
         with open(path, "r", encoding="utf-8") as handle:
             result = json.load(handle)
-    except (FileNotFoundError, ValueError):
-        return None
-    try:
         model.validate(result)
-    except model.ModelError:
+    except (OSError, ValueError, model.ModelError, AttributeError, TypeError, KeyError):
         return None
     return result
 
@@ -196,20 +199,26 @@ class RunView:
         return (self.run_id, "", "", "")
 
 
-def process_run(run_dir, result, out_root, goldens_dir, approvals, mask_config,
+def desired_run_id(run_dir, result):
+    """The run's own id if valid + not reserved, else a unique dir-derived id. Does
+    NOT guarantee global uniqueness -- main() resolves collisions before processing,
+    since the page dir must be settled before shots are written into it."""
+    if not isinstance(result, dict):
+        return run_dir_id(run_dir)
+    try:
+        return safe_run_dir(result["run"]["id"])
+    except (ValueError, KeyError, TypeError):
+        return run_dir_id(run_dir)
+
+
+def process_run(run_dir, result, run_id, out_root, goldens_dir, approvals, mask_config,
                 now_unix, stale_seconds, tolerance, channel_threshold):
     """Classify a run's screenshots, write their normalized webp into the run's
-    output dir, and compute the run-cell status."""
+    output dir (run_id, already made unique by main), and compute the status."""
     if not isinstance(result, dict):
-        return RunView(run_dir_id(run_dir), run_dir, None, site.STATUS_NODATA, None, [])
+        return RunView(run_id, run_dir, None, site.STATUS_NODATA, None, [])
 
     run = result["run"]
-    try:
-        run_id = safe_run_dir(run["id"])
-    except ValueError:
-        ## Valid schema but an unusable id -> treat as NO-DATA so one bad run can
-        ## neither abort the generation nor hijack a reserved output path.
-        return RunView(run_dir_id(run_dir), run_dir, None, site.STATUS_NODATA, None, [])
     lane = run["lane"]
     page_dir = os.path.join(out_root, run_id)
 
@@ -689,10 +698,28 @@ def main(argv):
 
     os.makedirs(out_root, exist_ok=True)
 
-    views = []
+    ## Assign a GLOBALLY-UNIQUE run id to each run BEFORE processing, so two runs
+    ## with the same (possibly crafted) run.id cannot write into the same page dir
+    ## and silently overwrite / drop one another. The page dir must be settled
+    ## before shots are written, hence the up-front pass.
+    used_ids = set()
+    assigned = []
     for run_dir, result in discover_runs(args.results_root):
+        rid = desired_run_id(run_dir, result)
+        if rid in used_ids:
+            rid = run_dir_id(run_dir)
+        base = rid
+        suffix = 1
+        while rid in used_ids:
+            rid = "%s-%d" % (base, suffix)
+            suffix += 1
+        used_ids.add(rid)
+        assigned.append((run_dir, result, rid))
+
+    views = []
+    for run_dir, result, rid in assigned:
         views.append(process_run(
-            run_dir, result, out_root, goldens_dir, approvals, mask_config,
+            run_dir, result, rid, out_root, goldens_dir, approvals, mask_config,
             now_unix, stale_seconds, args.tolerance, args.channel_threshold,
         ))
 
@@ -706,6 +733,7 @@ def main(argv):
     for view in shown:
         html_text = render_run(view, header, footer, generated_utc)
         _write(os.path.join(out_root, view.run_id, "index.html"), html_text)
+        _write_manifest(out_root, view)
 
     _write(os.path.join(out_root, "index.html"),
            render_overview(shown, header, footer, generated_utc))
@@ -720,6 +748,26 @@ def _write(path, text):
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(text)
     os.replace(tmp, path)
+
+
+def _write_manifest(out_root, view):
+    """A per-run shots.json mapping each screenshot id to its webp + bucket, so the
+    approval tool resolves ids EXACTLY (no lossy filename-unflatten) and can target
+    just the ones needing approval. Only runs with shots get one."""
+    if not view.shots:
+        return
+    shots = [
+        {
+            "sid": shot["sid"],
+            "webp": shot["webp"],
+            "bucket": shot["bucket"],
+            "needs_approval": shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED),
+        }
+        for shot in sorted(view.shots, key=lambda s: s["sid"])
+    ]
+    path = os.path.join(out_root, view.run_id, "shots.json")
+    payload = json.dumps({"shots": shots}, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    _write(path, payload)
 
 
 if __name__ == "__main__":

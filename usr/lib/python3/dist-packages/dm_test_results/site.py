@@ -42,6 +42,11 @@ STATUS_GREEN = STATUS_PASS
 ## so an old result cannot masquerade as a current pass.
 DEFAULT_STALE_SECONDS = 30 * 24 * 3600
 
+## Tolerate minor builder-vs-publisher clock skew: a stop time a little ahead of
+## the generator clock is fine, but one clearly in the future (tampered or badly
+## skewed) is treated as incomplete so it can never read green via a negative age.
+CLOCK_SKEW_GRACE_SECONDS = 300
+
 ## Screenshot buckets that hold a run out of green, most-serious first.
 _SHOT_NONGREEN_ORDER = (
     (compare.BUCKET_UNKNOWN, STATUS_UNKNOWN),
@@ -86,7 +91,7 @@ def run_cell_status(result, shot_buckets, now_unix, stale_seconds=DEFAULT_STALE_
     ## tampered timestamp) -> cannot be trusted as a clean result. A negative age is
     ## never stale, so without this guard a future-dated PASS would read green
     ## forever; treat it as incomplete instead.
-    if run.get("stage") != model.STAGE_FINISHED or age is None or age < 0:
+    if run.get("stage") != model.STAGE_FINISHED or age is None or age < -CLOCK_SKEW_GRACE_SECONDS:
         return STATUS_INCOMPLETE, age
 
     verdict = run.get("verdict")

@@ -150,6 +150,19 @@ check_raises("validate refuses a lane with a slash",
              lambda: _tamper(lambda r: r["run"].__setitem__("lane", "a/b")))
 check_raises("validate refuses a run id with ..",
              lambda: _tamper(lambda r: r["run"].__setitem__("id", "../escape")))
+## An attachment NAME feeds the screenshot id -> golden path when a step has >1 shot.
+check_raises("validate refuses an escaping attachment name",
+             lambda: _tamper(lambda r: r["steps"][0]["attachments"][0].__setitem__("name", "../../x")))
+
+## Malformed STRUCTURE (untrusted result.json) must raise ModelError, never an
+## AttributeError/TypeError that escapes the consumer's catch and denies the site.
+check_raises("validate refuses a non-dict result", lambda: model.validate(["not", "a", "dict"]))
+check_raises("validate refuses a non-dict step",
+             lambda: _tamper(lambda r: r.__setitem__("steps", ["x"])))
+check_raises("validate refuses a non-dict attachment",
+             lambda: _tamper(lambda r: r["steps"][0].__setitem__("attachments", ["x"])))
+check_raises("validate refuses a non-dict run",
+             lambda: _tamper(lambda r: r.__setitem__("run", "nope")))
 check_raises(
     "build_result refuses a bad origin",
     lambda: model.build_result(

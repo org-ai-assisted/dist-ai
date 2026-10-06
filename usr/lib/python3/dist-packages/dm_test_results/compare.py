@@ -124,6 +124,12 @@ def load_approvals(path):
     records = payload.get("approvals")
     if not isinstance(records, dict):
         raise CompareError("approvals.approvals must be an object: %s" % path)
+    ## Each record must be an object: a consumer calls record.get("status") /
+    ## ["golden_sha256"] outside classify's fail-closed try, so a hand-edited
+    ## scalar value (e.g. "lane/step": "approved") must fail here, not crash later.
+    for sid, record in records.items():
+        if not isinstance(record, dict):
+            raise CompareError("approval %r must be an object, got %r" % (sid, record))
     return records
 
 

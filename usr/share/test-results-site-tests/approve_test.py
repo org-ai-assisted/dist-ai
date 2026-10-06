@@ -126,6 +126,33 @@ res_bad = run_approve(work, "--run-id", run_id, "--approve", "../../etc/x",
                       "--approvals", approvals_path, expect_ok=False)
 check("unsafe screenshot id is refused", res_bad.returncode != 0)
 
+## An unsafe --run-id (would read from an arbitrary dir) is refused.
+res_rid = run_approve(work, "--run-id", "../../etc", "--approve", sid,
+                      "--approver", "x", "--goldens-dir", goldens,
+                      "--approvals", approvals_path, expect_ok=False)
+check("unsafe --run-id is refused", res_rid.returncode != 0)
+
+## --approve-all resolves ids from the per-run shots.json manifest (no lossy
+## filename-unflatten) and approves only the ones flagged needs_approval.
+import json as _json  # noqa: E402
+
+if os.path.exists(approvals_path):
+    os.remove(approvals_path)
+with open(os.path.join(run_dir, "shots.json"), "w", encoding="ascii") as handle:
+    handle.write(_json.dumps({"shots": [
+        {"sid": sid, "webp": "kicksecure-lxqt__calamares-install.webp",
+         "bucket": "NEW", "needs_approval": True},
+        {"sid": "kicksecure-lxqt/other", "webp": "x.webp",
+         "bucket": "MATCH", "needs_approval": False},
+    ]}))
+run_approve(work, "--run-id", run_id, "--approve-all", "--approver", "patrick",
+            "--goldens-dir", goldens, "--approvals", approvals_path,
+            "--source-date-epoch", "1760000000")
+appr_all = compare.load_approvals(approvals_path)
+check("--approve-all approved the NEW shot (via manifest)", sid in appr_all)
+check("--approve-all skipped the already-MATCH shot",
+      "kicksecure-lxqt/other" not in appr_all)
+
 import shutil  # noqa: E402
 
 shutil.rmtree(work, ignore_errors=True)

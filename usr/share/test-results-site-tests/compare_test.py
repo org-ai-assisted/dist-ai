@@ -151,6 +151,17 @@ check(
     "missing approvals file is empty (not an error)",
     compare.load_approvals(os.path.join(work, "no-such.json")) == {},
 )
+## ...and a record that is not an object fails closed (a consumer calls .get on it
+## outside classify's try), never crashes the caller later.
+nondict_appr = os.path.join(work, "nondict-approvals.json")
+with open(nondict_appr, "w", encoding="ascii") as handle:
+    handle.write('{"schema": "golden-approvals/v1", "approvals": {"a/b": "approved"}}')
+raised_nd = False
+try:
+    compare.load_approvals(nondict_appr)
+except compare.CompareError:
+    raised_nd = True
+check("non-dict approval record raises", raised_nd)
 
 import shutil  # noqa: E402
 
