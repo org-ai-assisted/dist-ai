@@ -63,17 +63,20 @@ export -f error
 ## --allow-uncommitted gate (not the sibling --allow-unsigned one, which shares the
 ## generic 'forbidden for AI sessions' phrasing) can satisfy it. Guarded against
 ## drift: a missing sentinel is a hard error, not a quiet mis-report.
-REFUSAL='uncommitted changes (--allow-uncommitted true) is forbidden'
+REFUSAL='building with uncommitted changes is forbidden'
 if ! grep --quiet --fixed-strings -- "${REFUSAL}" "${parse_cmd}"; then
    printf '%s\n' "FATAL: refusal sentinel '${REFUSAL}' not found in '${parse_cmd}'; the message drifted -- update this test." >&2
    exit 1
 fi
 
 ## $1 label, $2 expected (refused|allowed), then env assignments for this run.
+## '--flavor source' (a source run) lets parse-cmd reach a clean exit for the
+## ALLOWED path instead of aborting on the unrelated mandatory --flavor/--arch
+## checks; it does not affect the gate, which fires first for a refused run.
 probe() {
    local label="$1" expect="$2"; shift 2
    local out rc
-   out="$( env "$@" "${parse_cmd}" --allow-uncommitted true 2>&1 )" && rc=0 || rc=$?
+   out="$( env "$@" "${parse_cmd}" --flavor source --allow-uncommitted true 2>&1 )" && rc=0 || rc=$?
    ## An 'allowed' probe must SUCCEED: a non-zero exit with no refusal text (an
    ## unrelated parse-cmd error) must not be read as 'allowed'.
    if [ "${expect}" = 'allowed' ] && [ "${rc}" -ne 0 ]; then
@@ -108,7 +111,7 @@ probe "human (no CLAUDECODE, no forbid)"                allowed -u CLAUDECODE -u
 
 ## --allow-uncommitted false never trips the gate, even for an AI session.
 false_rc=0
-false_out="$( env CLAUDECODE=1 "${parse_cmd}" --allow-uncommitted false 2>&1 )" || false_rc=$?
+false_out="$( env CLAUDECODE=1 "${parse_cmd}" --flavor source --allow-uncommitted false 2>&1 )" || false_rc=$?
 case "${false_out}" in
    *"${REFUSAL}"*)
       fail "--allow-uncommitted false wrongly refused for an AI session"
