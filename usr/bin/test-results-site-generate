@@ -465,7 +465,11 @@ def extract_header(path):
     return header.group(0)
 
 
-def page(title, description, header, footer, body):
+def page(title, description, header, footer, body, noindex=False):
+    # A per-run detail page is ephemeral (pruned as runs roll over), so it opts out
+    # of indexing + the sitemap -- otherwise sitemap.xml churns every run. The
+    # overview is the stable landing page and stays indexable.
+    robots = '<meta name="robots" content="noindex">\n' if noindex else ''
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -473,12 +477,13 @@ def page(title, description, header, footer, body):
         '<meta http-equiv="Content-Security-Policy" content="%s">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<meta name="ai-disclosure" content="ai-assisted">\n'
+        "%s"
         "<title>%s</title>\n"
         '<meta name="description" content="%s">\n'
         '<link rel="stylesheet" href="/style.css">\n'
         "%s\n%s\n%s\n"
         "</html>\n"
-    ) % (CSP, esc(title), esc(description), header, body, footer)
+    ) % (CSP, robots, esc(title), esc(description), header, body, footer)
 
 
 def status_chip(status):
@@ -608,6 +613,7 @@ def render_run(view, header, footer, generated_utc):
     )
     return page(
         "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,
+        noindex=True,
     )
 
 

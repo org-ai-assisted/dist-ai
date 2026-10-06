@@ -1775,13 +1775,42 @@ def _quote_path(rel):
     return '/'.join(urllib.parse.quote(seg, safe='') for seg in rel.split('/'))
 
 
+class _RobotsMeta(html.parser.HTMLParser):
+    """Detect <meta name="robots" content="...noindex...">."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.noindex = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'meta':
+            return
+        amap = {k.lower(): (v or '') for k, v in attrs}
+        if amap.get('name', '').lower() == 'robots' \
+                and 'noindex' in amap.get('content', '').lower():
+            self.noindex = True
+
+
+def _is_noindex(path):
+    """True if a page opts out of indexing via a robots noindex meta. Such a page
+    (an ephemeral per-run results detail page) is kept OUT of the sitemap and the
+    SEO page set -- the web-standard way to exclude a churny page from search and
+    the sitemap, so the sitemap stays stable across runs."""
+    audit = _RobotsMeta()
+    with open(path, encoding='utf-8', errors='replace') as handle:
+        audit.feed(handle.read())
+    return audit.noindex
+
+
 def seo_page_urls(root, host):
-    """Sorted absolute URLs for every navigable content page under root. A
-    directory index maps to its directory URL ('/', '/sub/'); any other page
-    keeps its .html name. Assumes the site is served at the domain root (true
-    for every <owner>.github.io Pages site here)."""
+    """Sorted absolute URLs for every navigable, INDEXABLE content page under root.
+    A directory index maps to its directory URL ('/', '/sub/'); any other page
+    keeps its .html name. A noindex page is excluded. Assumes the site is served at
+    the domain root (true for every <owner>.github.io Pages site here)."""
     urls = set()
     for page in html_files(root):
+        if _is_noindex(page):
+            continue
         rel = os.path.relpath(page, root).replace(os.sep, '/')
         if rel == 'index.html':
             path = '/'
