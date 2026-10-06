@@ -257,6 +257,11 @@ rt_account_unprivileged() {
    primary="$3"
    [ "${uid}" -ne 0 ] || return 1
    [ "${primary}" = "${account}" ] || return 1
+   ## Fail CLOSED on an empty group list: `id -nG` on a valid account always lists at
+   ## least the primary group, so an empty $4 means the lookup FAILED (NSS/initgroups) --
+   ## without this the loop runs zero times and ACCEPTS. Mirrors rt_account_can_sudo's
+   ## fail-closed-on-error stance.
+   [ -n "$4" ] || return 1
    for grp in $4; do
       case "${grp}" in
          "${account}"|vboxusers)

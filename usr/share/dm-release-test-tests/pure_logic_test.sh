@@ -146,6 +146,9 @@ assert_reject "unpriv: sudo supplementary rejected" rt_account_unprivileged u 50
 assert_reject "unpriv: privileged primary root rejected" rt_account_unprivileged u 5001 root "root vboxusers"
 assert_reject "unpriv: privileged primary docker rejected" rt_account_unprivileged u 5001 docker "docker vboxusers"
 assert_reject "unpriv: uid 0 rejected" rt_account_unprivileged u 0 u "u vboxusers"
+## fail-CLOSED on empty groups: `id -nG` failure (NSS/initgroups) yields "" -> must REJECT,
+## not vacuously accept. Canary: the old loop-only body skipped the loop and returned 0.
+assert_reject "unpriv: empty group list fails closed" rt_account_unprivileged u 5001 u ""
 
 ## rt_account_can_sudo reports the EXERCISED sudo's rc (0 => passwordless root granted),
 ## NOT a listing (`sudo -l` exits 0 for everyone). Real passwordless-root semantics are
