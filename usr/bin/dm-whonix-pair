@@ -408,16 +408,14 @@ ws_battery() {
 ## does NOT inherit the session env, so firefox has no display and never loads the harness. Attach
 ## to the LIVE Wayland session -- WAYLAND_DISPLAY=wayland-0 + XDG_RUNTIME_DIR=/run/user/<uid> (the
 ## probe runs as the session owner sysmaint) + MOZ_ENABLE_WAYLAND=1 so Tor Browser runs as a native
-## Wayland client. Wayland-only: no X11/Xwayland, no xvfb/compositor to install. LIBGL_ALWAYS_
-## SOFTWARE=1 forces llvmpipe so firefox's GL init does not crash on the GPU-less VM ("No GPUs
-## detected", glxtest/SWGL GraphicsCriticalError) before it can load the harness.
+## Wayland client. Wayland-only: no X11/Xwayland, no xvfb/compositor to install.
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
       --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true WAYLAND_DISPLAY=wayland-0 MOZ_ENABLE_WAYLAND=1 LIBGL_ALWAYS_SOFTWARE=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
+      --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true WAYLAND_DISPLAY=wayland-0 MOZ_ENABLE_WAYLAND=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
    printf '%s\n' "${out}"
    probe_verdict "${out}"
 }
