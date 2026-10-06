@@ -920,6 +920,13 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      dm-gitlink-bump)
+         ## Self-contained: the suite builds a throwaway superproject+submodule
+         ## and drives the dm-gitlink-bump beside its runner (the checkout copy),
+         ## no network, no component checkout.
+         wire_env=()
+         wire_args=()
+         ;;
       clusterfuzzlite-lib)
          ## Self-contained: each payload sources the real shared library as a
          ## sibling under usr/share/, so no component checkout or env is needed.
@@ -1070,7 +1077,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
