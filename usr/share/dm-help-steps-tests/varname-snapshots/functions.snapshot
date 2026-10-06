@@ -297,28 +297,28 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --vmram)
-                export VMRAM="${2:-}";
-                shift 2;
-                if [ "${VMRAM:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vmram.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VMRAM="${2}";
+                shift 2
             ;;
             --vram)
-                export VRAM="${2:-}";
-                shift 2;
-                if [ "${VRAM:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much MB to use for --vram.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VRAM="${2}";
+                shift 2
             ;;
             --vmsize)
-                export VMSIZE="${2:-}";
-                shift 2;
-                if [ "${VMSIZE:-}" = "" ]; then
+                if [ -z "${2:-}" ]; then
                     printf '%s\n' "${red}${bold}ERROR: You forgot to specify how much GB to use for --vmsize.${reset}";
                     exit 1;
-                fi
+                fi;
+                export VMSIZE="${2}";
+                shift 2
             ;;
             --freshness)
                 if [ "${2:-}" = "frozen" ]; then
@@ -380,11 +380,30 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --testing-frozen-sources)
-                export dist_build_sources_list_primary="build_sources/debian_testing_frozen.sources";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_sources_list_primary="build_sources/debian_testing_frozen.sources";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        true "${cyan}INFO: --testing-frozen-sources false: using default sources.${reset}";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --testing-frozen-sources are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --debug)
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    true "${cyan}INFO: --debug true: verbose/debug (xtrace) output kept.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        true "${cyan}INFO: --debug false: verbose/debug (xtrace) output disabled.${reset}";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --debug are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --arch)
                 if [ "${2:-}" = "" ]; then
@@ -518,32 +537,41 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --only-packages)
-                export dist_build_only_packages="${2:-}";
+                if [ "$#" -lt 2 ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --only-packages requires a package list.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_only_packages="${2}";
                 true "${cyan}INFO: --only-packages: rebuilding only '${dist_build_only_packages}', reusing the rest.${reset}";
                 shift 2
             ;;
             --skip-packages)
-                export dist_build_skip_packages="true";
-                true "${cyan}INFO: --skip-packages: reusing the existing local package repo.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_packages="true";
+                    true "${cyan}INFO: --skip-packages: reusing the existing local package repo.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_skip_packages="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-packages are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --skip-published-packages)
-                case "${2:-}" in
-                    true | false)
-                        export dist_build_skip_published_packages="${2}";
-                        true "${cyan}INFO: --skip-published-packages ${2}.${reset}";
-                        shift 2
-                    ;;
-                    '' | --*)
-                        export dist_build_skip_published_packages="true";
-                        true "${cyan}INFO: --skip-published-packages: rebuilding only changed packages.${reset}";
-                        shift
-                    ;;
-                    *)
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_published_packages="true";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        true "${cyan}INFO: Published package skip disabled.${reset}";
+                        export dist_build_skip_published_packages="false";
+                    else
                         printf '%s\n' "${red}${bold}ERROR: supported options for --skip-published-packages are 'true' or 'false'.${reset}";
-                        exit 1
-                    ;;
-                esac
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --package-jobs)
                 export dist_build_package_jobs="${2:-}";
@@ -555,25 +583,61 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --skip-prepare-build-machine)
-                export dist_build_skip_prepare_build_machine="true";
-                true "${cyan}INFO: --skip-prepare-build-machine: not preparing build machine.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_prepare_build_machine="true";
+                    true "${cyan}INFO: --skip-prepare-build-machine: not preparing build machine.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_skip_prepare_build_machine="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-prepare-build-machine are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --skip-cowbuilder-setup)
-                export dist_build_skip_cowbuilder_setup="true";
-                true "${cyan}INFO: --skip-cowbuilder-setup: not building a new cowbuilder chroot.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_cowbuilder_setup="true";
+                    true "${cyan}INFO: --skip-cowbuilder-setup: not building a new cowbuilder chroot.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_skip_cowbuilder_setup="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-cowbuilder-setup are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --reproducible-dist-build-version)
                 error_dangerous_option_maybe '--reproducible-dist-build-version';
-                export dist_build_version_reproducible="true";
-                true "${cyan}INFO: --reproducible-dist-build-version: version will be normalized to the nearest tag.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_version_reproducible="true";
+                    true "${cyan}INFO: --reproducible-dist-build-version: version will be normalized to the nearest tag.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_version_reproducible="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --reproducible-dist-build-version are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --reuse-cowbuilder-base)
-                export dist_build_reuse_cowbuilder_base="true";
-                true "${cyan}INFO: --reuse-cowbuilder-base: reusing an existing cowbuilder base if present.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_reuse_cowbuilder_base="true";
+                    true "${cyan}INFO: --reuse-cowbuilder-base: reusing an existing cowbuilder base if present.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_reuse_cowbuilder_base="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --reuse-cowbuilder-base are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --base-image-role)
                 case "${2:-}" in
@@ -589,9 +653,18 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --skip-local-dependencies)
-                export dist_build_skip_local_dependencies="true";
-                true "${cyan}INFO: --skip-local-dependencies: reusing already installed local dependencies.${reset}";
-                shift
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_local_dependencies="true";
+                    true "${cyan}INFO: --skip-local-dependencies: reusing already installed local dependencies.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_skip_local_dependencies="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-local-dependencies are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
             ;;
             --sanity-tests)
                 if [ "${2:-}" = "true" ]; then
@@ -608,32 +681,25 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             --file-system)
-                export dist_build_file_system="${2:-}";
+                if [ "$#" -lt 2 ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --file-system requires a filesystem type.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_file_system="${2}";
                 shift 2
             ;;
             --hostname)
-                export dist_build_hostname="${2:-}";
-                shift 2
-            ;;
-            --retry-max)
-                export dist_build_auto_retry="${2:-}";
-                shift 2
-            ;;
-            --retry-wait)
-                export dist_build_wait_auto_retry="${2:-}";
-                shift 2
-            ;;
-            --retry-before)
-                export dist_build_dispatch_before_retry="${2:-}";
-                shift 2
-            ;;
-            --retry-after)
-                export dist_build_dispatch_after_retry="${2:-}";
+                if [ "$#" -lt 2 ]; then
+                    printf '%s\n' "${red}${bold}ERROR: --hostname requires a hostname.${reset}";
+                    exit 1;
+                fi;
+                export dist_build_hostname="${2}";
                 shift 2
             ;;
             --allow-untagged)
                 if [ "${2:-}" = "false" ]; then
                     true "${cyan}INFO: Would stop if building from untagged commits.${reset}";
+                    export dist_build_ignore_untagged="false";
                 else
                     if [ "${2:-}" = "true" ]; then
                         true "${cyan}INFO: Would build from untagged commits.${reset}";
@@ -648,10 +714,11 @@ dist_build_one_parse_cmd ()
             --allow-uncommitted)
                 if [ "${2:-}" = "false" ]; then
                     true "${cyan}INFO: Would stop if uncommitted changes detected.${reset}";
+                    export dist_build_ignore_uncommitted="false";
                 else
                     if [ "${2:-}" = "true" ]; then
                         if [ "${CLAUDECODE:-}" = "1" ] || [ "${dist_build_forbid_allow_uncommitted:-}" = "true" ]; then
-                            error "${bold}${red}ERROR: building with uncommitted changes (--allow-uncommitted true) is forbidden for AI sessions or under dist_build_forbid_allow_uncommitted=true. AI models should commit their changes (e.g. bump the submodule gitlink) so the working tree is clean.${reset}";
+                            error "${bold}${red}ERROR: building with uncommitted changes is forbidden for AI sessions or under dist_build_forbid_allow_uncommitted=true. AI models should commit their changes so the working tree is clean.${reset}";
                         fi;
                         true "${cyan}INFO: Would ignore if uncommitted changes detected.${reset}";
                         export dist_build_ignore_uncommitted="true";
@@ -756,6 +823,8 @@ dist_build_one_parse_cmd ()
             ;;
             --unsafe-io)
                 if [ "${2:-}" = "false" ]; then
+                    dist_build_unsafe_io="false";
+                    export dist_build_unsafe_io;
                     true "${cyan}INFO: Not using unsafe io.${reset}";
                 else
                     if [ "${2:-}" = "true" ]; then
@@ -866,11 +935,19 @@ dist_build_one_parse_cmd ()
                 shift 2
             ;;
             -t | --tag)
-                target_tag="${2:-}";
+                if [ "$#" -lt 2 ]; then
+                    printf '%s\n' "${red}${bold}ERROR: -t/--tag requires a tag.${reset}";
+                    exit 1;
+                fi;
+                target_tag="${2}";
                 shift 2
             ;;
             -r | --ref)
-                target_ref="${2:-}";
+                if [ "$#" -lt 2 ]; then
+                    printf '%s\n' "${red}${bold}ERROR: -r/--ref requires a branch or ref.${reset}";
+                    exit 1;
+                fi;
+                target_ref="${2}";
                 shift 2
             ;;
             -u | --update-only)
@@ -1180,7 +1257,7 @@ Optional Parameters:
   --build-slot [name]      : Build under derivative-binary/<name> so multiple builds can run
                              concurrently. Name chars: [A-Za-z0-9_-]. Default: unset.
   --connection [option]    : Select 'clearnet' for clearnet apt sources or 'onion' for onion apt sources.
-  --repo [true|false]      : Enable or disable the derivative remote repository. MANDATORY for an image build (no default): choose true or false, or set build_remote_repo_enable in the environment. help-steps/dm-build-official-one passes true for release builds.
+  --repo [true|false]      : Enable or disable the derivative remote repository. Mandatory when building an image.
 
 Environment Variables:
   - flavor_meta_packages_to_install: Define meta packages to be installed.
@@ -1216,20 +1293,16 @@ Advanced Options:
   --smbios-reader [true|false]    : DANGEROUS, DO NOT USE. Allow injecting kernel parameters via the SMBIOS serial number field. This will allow attackers with physical access to inject arbitrary kernel parameters into the boot process! Only useful for CI and AI agents.
   --sanity-tests [true|false]     : Enable or disable chroot script sanity tests for faster build speed (default: false).
   --only-packages 'p1 p2'         : Rebuild only listed packages into the persistent local repo, reuse the rest from the prior build.
-  --skip-packages                 : Skip package building entirely and reuse the whole local package repo from the prior build.
-  --skip-published-packages [true|false] : Rebuild only packages that changed since the last build, reusing unchanged packages from the prior build. Default: true. Pass 'false' for a from-scratch rebuild of all packages.
+  --skip-packages [true|false]    : Skip package building entirely and reuse the whole local package repo from the prior build.
+  --skip-published-packages [true|false] : Rebuild only packages that changed since the last build, reusing unchanged packages from the prior build (default: true).
   --package-jobs N                : Build up to N derivative packages concurrently. Default: 1.
-  --skip-prepare-build-machine    : Skip build-steps.d/*_prepare-build-machine. Only safe when the build machine was already prepared by an earlier run in the same session.
-  --skip-cowbuilder-setup         : Skip build-steps.d/*_cowbuilder-setup. Only safe when the cowbuilder chroot was already created by an earlier run in the same session.
-  --reproducible-dist-build-version : DANGEROUS, DO NOT USE. Drops the '-<n>-g<commit>' version suffix on builds from untagged commits. This will result in the built image carrying a misleading version number! Only useful for AI agents, for reproducing CI-built images outside of CI. Humans should tolerate the version suffix or create a release tag.
-  --reuse-cowbuilder-base         : Reuse an already-present cowbuilder base chroot instead of rebuilding it, if one exists.
-  --skip-local-dependencies       : Skip build-steps.d/*_local-dependencies. Only safe when the local dependencies were already installed by an earlier run in the same session.
+  --skip-prepare-build-machine [true|false] : Skip build-steps.d/*_prepare-build-machine. Only safe when the build machine was already prepared by an earlier run in the same session.
+  --skip-cowbuilder-setup [true|false] : Skip build-steps.d/*_cowbuilder-setup. Only safe when the cowbuilder chroot was already created by an earlier run in the same session.
+  --reproducible-dist-build-version [true|false] : DANGEROUS, DO NOT USE. Drops the '-<n>-g<commit>' version suffix on builds from untagged commits. This will result in the built image carrying a misleading version number! Only useful for AI agents, for reproducing CI-built images outside of CI. Humans should tolerate the version suffix or create a release tag.
+  --reuse-cowbuilder-base [true|false] : Reuse an already-present cowbuilder base chroot instead of rebuilding it, if one exists.
+  --skip-local-dependencies [true|false] : Skip build-steps.d/*_local-dependencies. Only safe when the local dependencies were already installed by an earlier run in the same session.
   --base-image-role <create|consume> : Creates or reuses a shared base image for building multiple images quicker. Mainly useful for building release images.
-  --retry-max [attempts]          : Set maximum retry attempts. (default: 2)
-  --retry-wait [seconds]          : Set wait time between retry attempts.
-  --retry-before [script]         : Specify a script to run before retry. [default: none)
-  --retry-after [script]          : Specify a script to run after retry. [default: none)
-  --allow-uncommitted [true|false]: Permit builds with uncommitted changes (default: false). Forbidden for AI sessions.
+  --allow-uncommitted [true|false]: Permit builds with uncommitted changes (default: false).
   --allow-untagged [true|false]   : Permit builds from non-tagged sources (default: false).
   --allow-unsigned [true|false]   : Skip git_sanity_test commit-signature verification (default: false).
   --sign-and-tag [true|false]     : DANGEROUS, DO NOT USE. Amend, sign, and tag HEAD and submodules. This may sign code you did not intend to sign! It may break your ability to pull from git! Only useful for AI agents to test signing verification without access to sensitive keys. Humans should either use --allow-unsigned or set up a GPG key properly. (default: false).
@@ -1240,7 +1313,7 @@ Advanced Options:
   --arch [architecture]           : Set architecture (pick one of the following)
     ${architecture_all_list[*]}
     (Note: amd64 also works with most Intel CPUs.)
-  --debug                         : Does not disable verbose/debug (xtrace) during help-steps pre, variables and parse-cmd.
+  --debug [true|false]            : Does not disable verbose/debug (xtrace) during help-steps pre, variables and parse-cmd.
   --dry-run [true|false]          : Does not actually build real images. Just an empty text file. Useful for debugging dm-prepare-release script.
   --unsupported-os [true|false]   : Skip the build-host operating system / codename sanity check. NOT for release builds; for dev / AI / CI smoke tests on non-Debian hosts only.
 
@@ -1532,8 +1605,22 @@ source_date_epoch_valid ()
 }
 unmount_if_mounted ()
 {
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || return 0;
-    ${SUDO_TO_ROOT} umount --verbose -- "$1"
+    local unmount_if_mounted_rc=0;
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
+    case "${unmount_if_mounted_rc}" in
+        0)
+            ${SUDO_TO_ROOT} umount --verbose -- "$1"
+        ;;
+        32)
+            return 0
+        ;;
+        *)
+            if ${SUDO_TO_ROOT} test ! -e "$1"; then
+                return 0;
+            fi;
+            return "${unmount_if_mounted_rc}"
+        ;;
+    esac
 }
 username-plain-for-sudoers ()
 {
@@ -1546,6 +1633,9 @@ username-plain-for-sudoers ()
 }
 value_charset_ok ()
 {
+    if [ -z "${2:-}" ]; then
+        return 1;
+    fi;
     if [ -z "${1:-}" ] || [[ "${1:-}" == *[!${2:-}]* ]]; then
         return 1;
     fi;

@@ -244,7 +244,7 @@ open_terminal() {
 ##    contain the literal marker -- else a poll matches before the command even runs.
 ##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
 run_check() {
-   local num="$1" cmd="$2" timeout="$3" deadline text
+   local num="$1" cmd="$2" timeout="$3" deadline text session out
    ## Redirect the check command's own output to a persistent file so a failure can
    ## be audited off the disk afterwards (the login session's scrollback is lost on
    ## power-off); only the PASS/FAIL marker reaches the screen for the OCR.
@@ -264,6 +264,15 @@ run_check() {
       fi
       if [[ "${text,,}" =~ dmchkfailmark ]]; then
          printf '%s\n' "${me}: check ${num} FAIL"
+         ## Surface the failing check's OWN output (otherwise lost on power-off):
+         ## read the persisted file via guestcontrol -- a plain file read needs no
+         ## user session, so it is reliable (unlike OCR). Best-effort; logged to
+         ## stderr so a check failure is diagnosable without a re-run.
+         session="${RELEASE_CHECK_SESSION[${num}]}"
+         out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
+         if [ -n "${out}" ]; then
+            printf '%s: check %s output (why it failed):\n%s\n' "${me}" "${num}" "${out}" >&2
+         fi
          return 1
       fi
       sleep 10

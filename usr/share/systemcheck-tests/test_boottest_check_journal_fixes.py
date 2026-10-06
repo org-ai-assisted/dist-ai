@@ -183,39 +183,39 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
                              'ignore pattern must match the real journal line')
 
 
-class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
-    """check_critical_logs demotes Tor's userspace non-fatal soft-assert block OUT of the
-    always-shown CRITICAL tier while a real kernel ' BUG:', a FATAL Tor assert (which
-    aborts the process), Bad RAM and CPU-stall all STAY critical. Tor's log.c prepends
-    'Bug: ' to EVERY LD_BUG line, so case alone cannot separate a survivable non-fatal
-    assert from a fatal abort; the demotion is CONTENT-scoped -- it drops only the
-    self-declared 'Non-fatal assertion' line and log_backtrace()'s 'tor_log(): Bug:' stack
-    frames. Drives the REAL function so the actual matching -- not a reimplementation -- is
-    exercised; canaries on the old single-grep code, on a 'Non-fatal assertion'-only
-    demotion (backtrace frames leak as critical), AND on a case-sensitive demotion (fatal
-    Tor asserts wrongly dropped)."""
+class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
+    """check_critical_logs force-shows a line in the always-shown CRITICAL tier only when
+    it is a kernel catastrophe: a hard token (Bad RAM / CPU-stall / nouveau) or a kernel
+    ' BUG:'/oops. The ' BUG:' match is SCOPED to kernel-origin lines (journald short-format
+    syslog identifier ' kernel:'), because Tor logs mixed-case 'Bug:' for EVERY LD_BUG line
+    -- non-fatal asserts, fatal aborts, AND log_backtrace() frames alike, with no stable
+    backtrace signature -- and those userspace lines are surfaced by the service-log check,
+    not this tier. Kernel-scoping cannot HIDE a real kernel BUG (a genuine kernel line
+    always carries the ' kernel:' identifier); it is a substring test, not a positional
+    anchor, so a local process logging 'kernel:' next to 'BUG:' can still raise a false
+    positive (accepted; the robust fix is a capture-time _TRANSPORT=kernel anchor). Drives
+    the REAL function so the actual matching -- not a reimplementation -- is exercised;
+    canaries on the old code that classed Tor 'Bug:' lines critical."""
 
-    ## Tor's log.c prepends 'Bug: ' to EVERY LD_BUG line, so case cannot tell a survivable
-    ## soft assert from a fatal abort -- demotion keys on CONTENT.
-    ## Non-fatal assert (self-declared 'Non-fatal assertion'); demoted.
-    TOR_LINE = ('host Tor[1234]: [warn] tor_bug_occurred_(): Bug: '
-                'src/feature/nodelist/microdesc.c:123: microdescs_add_to_cache: '
-                'Non-fatal assertion failed. (on Tor 0.4.9.11)')
-    ## log_backtrace() frames emitted after the assert: carry ' Bug:' but NOT "Non-fatal
-    ## assertion"; keyed by the 'tor_log(): Bug:' logger prefix; demoted.
-    TOR_BACKTRACE = [
-        ('host Tor[1234]: [warn] tor_log(): Bug:     '
-         '/usr/bin/tor(tor_bug_occurred_+0x44) [0x5612ab]'),
-        'host Tor[1234]: [warn] tor_log(): Bug:     Unable to generate backtrace.',
-    ]
-    ## FATAL assert (tor_assertion_failed_() aborts the process): carries NEITHER demotion
-    ## token, so it STAYS critical -- demoting it would silently hide a Tor crash.
-    TOR_FATAL = ('host Tor[2919]: [err] tor_assertion_failed_(): Bug: '
-                 'src/core/or/conflux.c:534: conflux_note_cell_sent: '
-                 'Assertion leg failed; aborting. (on Tor 0.4.8.10)')
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
     CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
+    ## Real Tor journal lines (journalctl --output short): userspace, identifier 'Tor[pid]'.
+    ## Non-fatal soft assert.
+    TOR_NONFATAL = ('host Tor[1234]: [warn] tor_bug_occurred_(): Bug: '
+                    'src/feature/nodelist/microdesc.c:123: microdescs_add_to_cache: '
+                    'Non-fatal assertion failed. (on Tor 0.4.9.11)')
+    ## FATAL assert (tor_assertion_failed_() aborts the process).
+    TOR_FATAL = ('host Tor[2919]: [err] tor_assertion_failed_(): Bug: '
+                 'src/core/or/conflux.c:534: conflux_note_cell_sent: '
+                 'Assertion leg failed; aborting. (on Tor 0.4.8.10)')
+    ## log_backtrace() frames: Tor's tor_log() logs them with a NULL function name, so the
+    ## REAL line is 'Bug:     <frame>' -- NO 'tor_log():' prefix (verified against Tor
+    ## 0.4.9.12). All are userspace 'Tor[pid]' lines.
+    TOR_BACKTRACE = [
+        'host Tor[1234]: [warn] Bug:     /usr/bin/tor(log_backtrace_impl+0x56) [0x5612ab]',
+        'host Tor[1234]: [warn] Bug:     Unable to generate backtrace.',
+    ]
 
     def _run_check_critical(self, lines: list) -> str:
         """Run the REAL check_critical_logs against a crafted matched-journal file.
@@ -244,73 +244,73 @@ class TestLogCheckerCriticalNonFatalDemotion(SystemcheckTestBase):
                              f'check_critical_logs crashed: {proc.stderr}')
             return proc.stdout
 
-    def test_tor_nonfatal_microdesc_not_critical(self) -> None:
-        out = self._run_check_critical([self.TOR_LINE])
-        self.assertNotIn('microdesc.c', out,
-                         'a Tor non-fatal "Bug:" line must NOT be classed critical')
-        self.assertEqual(out.strip(), '',
-                         'no critical output expected for a lone non-fatal line')
-
-    def test_tor_nonfatal_backtrace_not_critical(self) -> None:
-        ## The WHOLE Tor soft-assert block: the assertion line AND its log_backtrace()
-        ## 'tor_log(): Bug:' records. Each backtrace record carries ' Bug:' but NOT
-        ## "Non-fatal assertion", so a phrase-only demotion leaves them critical. None of
-        ## the block may be classed critical -- a survivable soft-assert is not a kernel
-        ## catastrophe. Canaries the backtrace gap (RED on old single-grep AND on the
-        ## 'Non-fatal assertion'-only demotion).
-        out = self._run_check_critical([self.TOR_LINE, *self.TOR_BACKTRACE])
-        self.assertNotIn('microdesc.c', out,
-                         'the Tor non-fatal assertion line must NOT be critical')
-        self.assertNotIn('tor_log()', out,
-                         'a Tor log_backtrace() "Bug:" record must NOT be critical')
-        self.assertEqual(out.strip(), '',
-                         'no critical output expected for a lone Tor non-fatal block')
-
-    def test_kernel_bug_still_critical(self) -> None:
+    def test_kernel_bug_critical(self) -> None:
         out = self._run_check_critical([self.KERNEL_BUG])
         self.assertIn('NULL pointer dereference', out,
-                      'a real kernel BUG: must stay critical')
+                      'a real kernel BUG: must be critical')
 
-    def test_tor_fatal_assert_stays_critical(self) -> None:
-        ## A FATAL Tor assert aborts the process; it carries neither 'Non-fatal assertion'
-        ## nor the 'tor_log(): Bug:' backtrace token, so it must STAY critical. Canaries a
-        ## case-sensitive demotion, which drops every mixed-case Tor 'Bug:' including this
-        ## and would silently hide a Tor crash.
-        out = self._run_check_critical([self.TOR_FATAL])
-        self.assertIn('aborting', out,
-                      'a FATAL Tor assert (aborting) must stay critical')
-
-    def test_bad_ram_still_critical(self) -> None:
+    def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
         self.assertIn('Bad RAM detected', out)
 
-    def test_cpu_stall_still_critical(self) -> None:
+    def test_cpu_stall_critical(self) -> None:
         out = self._run_check_critical([self.CPU_STALL])
         self.assertIn('self-detected stall on CPU', out)
 
-    def test_mixed_keeps_kernel_drops_tor(self) -> None:
-        ## A real kernel BUG alongside the full Tor non-fatal block: the narrowing must
-        ## keep the kernel one and drop the assertion line AND its backtrace records.
-        out = self._run_check_critical(
-            [self.TOR_LINE, *self.TOR_BACKTRACE, self.KERNEL_BUG])
-        self.assertIn('NULL pointer dereference', out)
-        self.assertNotIn('microdesc.c', out)
-        self.assertNotIn('tor_log()', out)
+    def test_tor_nonfatal_not_critical(self) -> None:
+        ## Userspace Tor 'Bug:' line -> not a kernel catastrophe; surfaced by the
+        ## service-log check, not this tier. RED on the old code that matched ' BUG:'
+        ## unconditionally.
+        out = self._run_check_critical([self.TOR_NONFATAL])
+        self.assertEqual(out.strip(), '',
+                         'a Tor non-fatal "Bug:" line must NOT be critical')
 
-    def test_hard_critical_line_with_nonfatal_phrase_stays_critical(self) -> None:
-        ## The demotion is scoped to the ' BUG:' token: a HARD kernel token (Bad RAM /
-        ## CPU-stall / nouveau) on a line that ALSO contains "Non-fatal assertion" must
-        ## NOT be demoted -- else an attacker-/noise-appended phrase could hide a real
-        ## catastrophe. (Over-broadening caught in ai-review.)
+    def test_tor_fatal_not_critical(self) -> None:
+        ## A FATAL Tor abort is a userspace service failure, not a kernel catastrophe -- it
+        ## leaves this tier (the service-log check surfaces it). RED on the old code.
+        out = self._run_check_critical([self.TOR_FATAL])
+        self.assertEqual(out.strip(), '',
+                         'a Tor fatal abort is a service-log concern, not kernel-critical')
+
+    def test_tor_backtrace_not_critical(self) -> None:
+        ## Real log_backtrace() frames ('Bug:     <frame>', no 'tor_log():' prefix) are
+        ## userspace Tor lines -> never kernel-critical.
+        out = self._run_check_critical(self.TOR_BACKTRACE)
+        self.assertEqual(out.strip(), '',
+                         'Tor log_backtrace() frames must NOT be critical')
+
+    def test_mixed_keeps_kernel_drops_all_tor(self) -> None:
+        ## Kernel BUG alongside the whole Tor block (non-fatal + fatal + backtrace):
+        ## only the kernel line survives.
+        out = self._run_check_critical(
+            [self.TOR_NONFATAL, self.TOR_FATAL, *self.TOR_BACKTRACE, self.KERNEL_BUG])
+        self.assertIn('NULL pointer dereference', out)
+        self.assertNotIn('Tor[', out, 'no Tor-origin line may be critical')
+        self.assertNotIn('aborting', out)
+        self.assertNotIn('microdesc.c', out)
+
+    def test_kernel_bug_with_trailing_noise_stays_critical(self) -> None:
+        ## A genuine kernel BUG line stays critical regardless of trailing text in its
+        ## message (a process comm/name echoed by the kernel). This guards the SAFE
+        ## direction: a real kernel catastrophe is never hidden. NOTE the match is a
+        ## ' kernel:' substring, not a positional field anchor, so it does NOT claim the
+        ## reverse -- a userspace process logging 'kernel:' next to 'BUG:' can still raise a
+        ## false-positive (accepted; strictly rarer than the prior ' BUG:'-anywhere match;
+        ## the robust fix is a capture-time _TRANSPORT=kernel anchor in parse_cmd).
+        line = ('host kernel: BUG: soft lockup - CPU#0 stuck for 22s! '
+                '[comm_with_bug_text]')
+        out = self._run_check_critical([line])
+        self.assertIn('soft lockup', out,
+                      'a genuine kernel BUG: must stay critical despite trailing text')
+
+    def test_hard_critical_kernel_line_stays_critical(self) -> None:
+        ## A hard kernel token (Bad RAM / CPU-stall / nouveau) is critical on its own
+        ## kernel line regardless of any trailing noise phrase.
         line = ('host kernel: EDAC MC0: Bad RAM detected -- '
                 'Non-fatal assertion failed')
         out = self._run_check_critical([line])
         self.assertIn('Bad RAM detected', out,
-                      'a hard-critical token must survive the phrase on the same line')
-
-
-if __name__ == '__main__':
-    unittest.main()
+                      'a hard-critical token must survive a trailing phrase')
 
 
 class TestMountSharedJournalIgnore(SystemcheckTestBase):
@@ -403,3 +403,7 @@ class TestAnondateGetJournalIgnore(SystemcheckTestBase):
             self.assertNotIn(
                 ignore, line,
                 'an unrelated anondate error must still be reported')
+
+
+if __name__ == '__main__':
+    unittest.main()

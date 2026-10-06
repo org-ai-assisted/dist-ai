@@ -135,14 +135,16 @@ def source_mode_tests(lockfile_sh, check):
     ## self-lock (no key): 2nd instance skips (non-zero) while the 1st holds it.
     ## Assert the flock 'failed to get lock' signal (the --verbose probe emits it to
     ## stderr on genuine contention), not merely 'no LOCKED + non-zero' -- an unrelated
-    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip.
+    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip. Sync on the
+    ## holder's LOCKED line (wait_for_locked), not a fixed sleep that races a loaded host.
     holder = bg([src, '', '2'])
-    time.sleep(0.6)
+    locked = wait_for_locked(holder)
     second = run([src, '', '0'])
     combined = second.stdout + second.stderr
     check('source: self-lock 2nd instance skips',
-          'LOCKED' not in second.stdout and 'failed to get lock' in combined,
-          combined.strip())
+          locked and 'LOCKED' not in second.stdout
+          and 'failed to get lock' in combined,
+          'locked=%s %r' % (locked, combined.strip()))
     check('source: skip exits non-zero', second.returncode != 0,
           'rc=%d' % second.returncode)
     holder.wait(timeout=15)
@@ -172,16 +174,19 @@ def wrap_mode_tests(lockfile_sh, check):
     tmp = tempfile.mkdtemp(prefix='lockfile-wrap-')
 
     ## per-key: same key skips (rc!=0, command not run), different concurrent.
-    holder = bg([lockfile_sh, 'wA', '--', 'sleep', '2'])
-    time.sleep(0.6)
+    ## Sync on the held command's LOCKED line (wait_for_locked), not a fixed sleep that
+    ## races a loaded host: the wrapped command prints LOCKED once it runs under the lock.
+    holder = bg([lockfile_sh, 'wA', '--', 'bash', '-c', 'echo LOCKED; sleep 2'])
+    locked = wait_for_locked(holder)
     same = run([lockfile_sh, 'wA', '--', 'echo', 'RAN'])
     other = run([lockfile_sh, 'wB', '--', 'echo', 'RAN'])
     ## Require the flock 'failed to get lock' signal (the --verbose probe emits it on
     ## contention), not just 'no RAN + non-zero' which an unrelated abort also yields.
-    check('wrap: same key skips', 'RAN' not in same.stdout
+    check('wrap: same key skips', locked and 'RAN' not in same.stdout
           and same.returncode != 0
           and 'failed to get lock' in (same.stdout + same.stderr),
-          '%r rc=%d' % ((same.stdout + same.stderr).strip(), same.returncode))
+          'locked=%s %r rc=%d' % (locked, (same.stdout + same.stderr).strip(),
+                                  same.returncode))
     check('wrap: different key concurrent', 'RAN' in other.stdout,
           other.stdout.strip())
     holder.wait(timeout=15)
@@ -380,9 +385,17 @@ def no_fallback_tests(lockfile_sh, check):
     ##    XDG_RUNTIME_DIR under 'sudo -u') is refused by the '-O' gate -- it must
     ##    hard-exit, NOT relocate the lock to the cache dir. This closes the TOCTOU
     ##    hole of trusting a dir another uid controls. The precondition is a dir the
-    ##    EUID does NOT own: as root (root owns /usr, so a hard-coded '/usr' would
-    ##    make '-O' TRUE and skip the leg) create a controlled dir and chown it to
-    ##    'nobody'; unprivileged, a stable root-owned system dir already qualifies.
+    ##    EUID does NOT own, and -- crucially -- one that is WRITABLE, so OWNERSHIP is
+    ##    the only thing triggering rejection: a read-only not-owned dir (e.g. '/usr')
+    ##    would, against a helper MISSING the '-O' gate, fail with a misleading
+    ##    'read-only file system' mkdir error instead of exposing that the lock was
+    ##    placed in a dir another uid controls. As root: create a dir and chown it to
+    ##    'nobody'. Unprivileged: a sticky, root-owned, world-writable dir (/tmp,
+    ##    ...), verified not-owned + writable at runtime; against the real helper the
+    ##    '-O' gate refuses it BEFORE any mkdir, while a helper lacking the gate would
+    ##    create a lock there and print LOCKED (the vulnerability signal this asserts
+    ##    against). Fall back to a read-only not-owned dir only if none qualifies
+    ##    (e.g. a user-owned /tmp in a rootless environment).
     tmp3 = tempfile.mkdtemp(prefix='lockfile-nofb3-')
     src3 = make_source_script(tmp3, lockfile_sh)
     cache3 = os.path.join(tmp3, 'cache')
@@ -393,7 +406,17 @@ def no_fallback_tests(lockfile_sh, check):
         os.mkdir(runtime3, 0o755)
         os.chown(runtime3, nobody.pw_uid, nobody.pw_gid)
     else:
+        ## Default to a read-only not-owned dir; prefer a writable one when present.
+        ## The /tmp-class dirs are probed read-only for the not-owned + writable
+        ## property -- nothing is created in them (the real helper refuses before any
+        ## mkdir), so this is not an insecure tempfile use.
         runtime3 = '/usr'
+        for cand in ('/tmp', '/var/tmp', '/dev/shm'):  # nosec B108
+            if (os.path.isdir(cand) and not os.path.islink(cand)
+                    and os.stat(cand).st_uid != os.geteuid()
+                    and os.access(cand, os.W_OK)):
+                runtime3 = cand
+                break
     env3 = dict(os.environ, XDG_RUNTIME_DIR=runtime3,
                 XDG_CACHE_HOME=cache3, HOME=tmp3)
     res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
@@ -432,12 +455,14 @@ def fuzz(lockfile_sh, iterations, seed, check):
     ok = True
     for _ in range(iterations):
         key = 'fuzz-%d' % rng.randrange(1000)
-        holder = bg([lockfile_sh, key, '--', 'sleep', '1'])
-        time.sleep(0.15)
+        ## Sync on the held command's LOCKED line, not a fixed sleep that races the
+        ## holder's acquisition on a loaded host (a 0.15s sleep flaked on a cold run).
+        holder = bg([lockfile_sh, key, '--', 'bash', '-c', 'echo LOCKED; sleep 1'])
+        locked = wait_for_locked(holder)
         same = run([lockfile_sh, key, '--', 'echo', 'RAN'])
         distinct = run([lockfile_sh, key + '-x', '--', 'echo', 'RAN'])
         holder.wait(timeout=10)
-        if 'RAN' in same.stdout or same.returncode == 0:
+        if not locked or 'RAN' in same.stdout or same.returncode == 0:
             ok = False
             break
         if 'RAN' not in distinct.stdout:
@@ -453,6 +478,12 @@ def main():
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--fuzz-only', action='store_true')
     args = parser.parse_args()
+
+    ## Hermetic locale: the contention checks assert flock's 'failed to get lock'
+    ## message, which `flock --verbose` localizes via gettext. Force C so a non-English
+    ## ambient LC_ALL cannot translate it and spuriously fail -- every subprocess env
+    ## here derives from os.environ, so this covers them all.
+    os.environ['LC_ALL'] = 'C'
 
     lockfile_sh = lockfile_sh_path()
     print('lockfile.sh: %s' % lockfile_sh)
