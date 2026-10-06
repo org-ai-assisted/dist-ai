@@ -64,7 +64,7 @@ drive_var() {
    local var_name="$1"
    shift
    local out rc
-   out="$(timeout --kill-after=5 10 bash "${source_driver}" "${parse_cmd}" "${var_name}" "$@")" && rc=0 || rc=$?
+   out="$(timeout --kill-after=5 10 bash "${source_driver}" "${parse_cmd}" "${var_name}" "" "$@")" && rc=0 || rc=$?
    ## 124 = killed by SIGTERM on timeout; 137 = killed by SIGKILL (--kill-after).
    if [ "${rc}" -eq 124 ] || [ "${rc}" -eq 137 ]; then
       printf '%s' '__TIMEOUT__'

@@ -11,10 +11,11 @@
 ## shellcheck'd, and so the test can bound it with 'timeout' (the infinite-loop
 ## guard). No parser logic is reimplemented.
 ##
-## $1 parse-cmd path, $2 variable to read back, rest: args forwarded to the parser.
-## PARSE_CMD_PRESEED (optional): when set, the read-back variable is pre-exported to
-## that value before the parser runs -- so a test can assert an explicit flag value
-## OVERRIDES an inherited environment value. Unset -> the variable starts cleared.
+## $1 parse-cmd path, $2 variable to read back, $3 preseed, rest: args forwarded to
+## the parser. $3 empty -> the read-back variable starts cleared; $3 non-empty ->
+## it is pre-exported to that value before the parser runs, so a test can assert an
+## explicit flag value OVERRIDES an inherited environment value. Passed explicitly
+## (not via the environment) so no caller can be contaminated by an inherited value.
 
 set -o errexit
 set -o nounset
@@ -26,7 +27,8 @@ export LC_ALL=C
 
 parse_cmd="$1"
 var_name="$2"
-shift 2
+preseed="$3"
+shift 3
 
 # shellcheck disable=SC1090  # dynamic path to the subject parse-cmd under test
 source "${parse_cmd}" >/dev/null 2>&1
@@ -47,8 +49,8 @@ error() {
    return 0
 }
 
-if [ -n "${PARSE_CMD_PRESEED+x}" ]; then
-   export "${var_name}=${PARSE_CMD_PRESEED}"
+if [ -n "${preseed}" ]; then
+   export "${var_name}=${preseed}"
 else
    unset "${var_name}"
 fi

@@ -14,8 +14,8 @@
 ## when EMPTY, an inherited '=true' survived the explicit override -- a silent
 ## no-op. This asserts the override wins.
 ##
-## Drives the REAL parse-cmd via parse_cmd_source_driver.sh (PARSE_CMD_PRESEED pre-
-## exports the variable to "true"), reads it back, asserts "false". On the pre-fix
+## Drives the REAL parse-cmd via parse_cmd_source_driver.sh (its preseed positional
+## pre-exports the variable to "true"), reads it back, asserts "false". On the pre-fix
 ## parser each reads back "true" -> FAIL (canary RED). Bounded by 'timeout' so a
 ## non-terminating arg loop surfaces as a FAIL instead of hanging the suite. No
 ## parser logic is reimplemented. Needs no root, no network, no build.
@@ -60,7 +60,7 @@ drive_preseed() {
    local var_name="$1" preseed="$2"
    shift 2
    local out rc
-   out="$(timeout --kill-after=5 10 env "PARSE_CMD_PRESEED=${preseed}" bash "${source_driver}" "${parse_cmd}" "${var_name}" "$@")" && rc=0 || rc=$?
+   out="$(timeout --kill-after=5 10 bash "${source_driver}" "${parse_cmd}" "${var_name}" "${preseed}" "$@")" && rc=0 || rc=$?
    ## 124 = killed by SIGTERM on timeout; 137 = killed by SIGKILL (--kill-after).
    if [ "${rc}" -eq 124 ] || [ "${rc}" -eq 137 ]; then
       printf '%s' '__TIMEOUT__'
