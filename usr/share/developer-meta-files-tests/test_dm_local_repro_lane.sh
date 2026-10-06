@@ -9,7 +9,8 @@
 ## Once builds are laned (dist_build_slot), an UN-laned read rooted at the flat binary_mnt would
 ## descend into a CONCURRENT build's lane and cat a FOREIGN artifact's sha512 as the comparison
 ## key -- a wrong verdict. So this tool must lane its own build and scope every find to that lane.
-## The real lines are extracted + eval'd (no copy to drift); the finds are checked structurally.
+## The real assignments are extracted + eval'd (no copy to drift) regardless of any leading
+## `if !`/indent or trailing `; then`; the finds are checked structurally.
 ## Canary: fails on the pre-lane tool (flat binary_mnt root, no slot on the build).
 
 ## File-wide: dist_build_slot / build_slot / binary_lane are set + read by `eval` of lines
@@ -46,9 +47,13 @@ printf '#!/bin/bash\nprintf %%s stub-slug\n' > "${stub_dir}/sandbox-session-slug
 chmod +x "${stub_dir}/sandbox-session-slug"
 PATH="${stub_dir}:${PATH}"
 
-## Extract the two real resolution lines and eval them.
-slot_line="$(grep -E '^build_slot=' -- "${subject}")"
-lane_line="$(grep -E '^binary_lane=' -- "${subject}")"
+## Extract a `NAME="..."` assignment substring from the subject regardless of any leading
+## `if ! ` / indentation or trailing `; then`, so the test evals the REAL resolution RHS
+## without coupling to the assignment's source-line SHAPE. `\b` excludes a `dist_build_slot=`
+## prefix match; both RHS values contain no embedded double quote.
+extract_assignment() { sed -nE "s/.*\\b($1=\"[^\"]*\").*/\1/p" -- "${subject}" | head -1; }
+slot_line="$(extract_assignment build_slot)"
+lane_line="$(extract_assignment binary_lane)"
 if [ -z "${slot_line}" ] || [ -z "${lane_line}" ]; then
    fail "dm-local-repro-build has no build_slot/binary_lane resolution (not lane-aware)"
    printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
