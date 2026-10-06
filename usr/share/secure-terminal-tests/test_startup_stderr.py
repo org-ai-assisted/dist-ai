@@ -85,12 +85,19 @@ def _launch_capture(extra_env=None, settle=3.0):
             stderr=subprocess.PIPE, start_new_session=True)
         time.sleep(settle)
         early = proc.poll()
-        if early is not None and early in _QT_STARTUP_CRASH:
-            try:
-                proc.stderr.read()
-            finally:
-                proc.stderr.close()
-            continue                      # startup crash -> respawn
+        if early is not None:
+            # Already exited during settle: poll() has reaped the pid, which the OS may now
+            # have reused -- os.killpg here could signal an unrelated process group
+            # (CWE-362 PID-reuse race). Handle the exit without any killpg.
+            if early in _QT_STARTUP_CRASH:
+                try:
+                    proc.stderr.read()
+                finally:
+                    proc.stderr.close()
+                continue                  # startup crash -> respawn
+            _out, err = proc.communicate(timeout=15)  # clean early exit -> take its stderr
+            return (err or b'').decode('utf-8', 'replace')
+        # Still running: terminate the whole session, then collect.
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:

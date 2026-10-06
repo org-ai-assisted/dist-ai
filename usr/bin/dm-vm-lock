@@ -109,6 +109,17 @@ vm_lock_flock_flag() {
    esac
 }
 
+## Sanitize an observability field before it is written to a registry line. The reader
+## (vm_lock_kv) splits on whitespace and matches KEY=VALUE leftmost/unanchored, so an untrusted
+## value carrying whitespace or '=' could forge a later field -- e.g. a session name 'x pid=1'
+## would be read back as the pid and mis-reap a LIVE holder's record. Map every char outside
+## [A-Za-z0-9._-] to '_' so no value can inject a field boundary. LC_ALL=C makes the ranges
+## byte-stable. Quoting alone does NOT help: the reader never sees the quotes.
+vm_lock_sanitize_field() {
+   local s="$1"
+   printf '%s' "${s//[^A-Za-z0-9._-]/_}"
+}
+
 ## Read one space-delimited key=value field from a registry line. cmd= is written LAST and
 ## may contain spaces, so every other key is safely matched as a run of non-space chars.
 vm_lock_kv() {
@@ -168,15 +179,18 @@ cmd_acquire() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --class)
-            class="${2:-}"
+            [ "$#" -ge 2 ] || die 64 "--class requires a value"
+            class="$2"
             shift 2
             ;;
          --ttl)
-            ttl="${2:-}"
+            [ "$#" -ge 2 ] || die 64 "--ttl requires a value"
+            ttl="$2"
             shift 2
             ;;
          --wait)
-            wait="${2:-}"
+            [ "$#" -ge 2 ] || die 64 "--wait requires a value"
+            wait="$2"
             shift 2
             ;;
          --nonblock)
@@ -254,9 +268,11 @@ cmd_acquire() {
    local pid=$$ now deadline session session_id user
    now="$(date +%s)"
    deadline=$(( now + ttl ))
-   session="${CLAUDE_RC_SESSION_NAME:-none}"
-   session_id="${CLAUDE_CODE_SESSION_ID:-none}"
-   user="$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")"
+   ## Sanitized: these are untrusted (forwarded env / id output) and precede pid= on the line;
+   ## an unsanitized value could forge a field the reader picks up (see vm_lock_sanitize_field).
+   session="$(vm_lock_sanitize_field "${CLAUDE_RC_SESSION_NAME:-none}")"
+   session_id="$(vm_lock_sanitize_field "${CLAUDE_CODE_SESSION_ID:-none}")"
+   user="$(vm_lock_sanitize_field "$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")")"
    vm_lock_holder_file="${vm_lock_dir}/holder.${class}.${pid}"
    ## Write the record refusing to FOLLOW a symlink or clobber an existing path: the dir is
    ## group-writable, so a member could pre-plant holder.<class>.<pid> as a symlink to a root file

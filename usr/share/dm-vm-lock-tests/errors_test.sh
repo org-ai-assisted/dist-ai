@@ -55,4 +55,12 @@ rc=0; out="$("${TOOL}" acquire --class work --ttl 08 --wait 5 -- printf 'ok')" |
 if [ "${rc}" -eq 0 ] && [ "${out}" = 'ok' ]; then r=0; else r=1; fi
 check 'a leading-zero --ttl (08) is parsed base-10 and runs' "${r}"
 
+## A value-taking option given as the LAST arg (no value) is a clean usage error (64), not a
+## shift-2 crash (exit 1) under errexit+shift_verbose.
+for opt in --class --ttl --wait; do
+   rc=0; "${TOOL}" acquire "${opt}" 2>/dev/null || rc=$?
+   if [ "${rc}" -eq 64 ]; then r=0; else r=1; fi
+   check "a trailing ${opt} with no value is rejected (64), not a crash" "${r}"
+done
+
 vmlock_done
