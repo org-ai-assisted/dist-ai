@@ -32,6 +32,7 @@ source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
+explicit_arg="${1:-}"
 script="${1:-}"
 if [ -z "${script}" ]; then
    for cand in \
@@ -43,8 +44,16 @@ if [ -z "${script}" ]; then
       fi
    done
 fi
-# shellcheck disable=SC2015  # guard: error path runs whenever the script is missing or unreadable
-[ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
+## No subject passed and none checked out -> the cross-component subject is
+## absent: a target-absent SKIP (77), governed by --allow-skip, not a FAIL.
+if [ -z "${explicit_arg}" ] && [ -z "${script}" ]; then
+   result_skip_target_absent "dm-virtualbox-update-local-and-wiki-links not found; pass it as arg 1 or check out developer-meta-files"
+fi
+## An EXPLICIT arg that is not readable is a usage error, not a skip: fail loud.
+if [ ! -r "${script}" ]; then
+   printf '%s\n' "ERROR: '${script}' not readable." >&2
+   exit 1
+fi
 
 fails=0
 env_unmet=0

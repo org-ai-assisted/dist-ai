@@ -144,15 +144,16 @@ git commit -qm addsmod
 git add smod
 git commit -qm 'bump smod'
 esc_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-## The DANGEROUS payload is an OSC title-set (ESC ] 0 ; ... BEL); it must never
-## reach the terminal raw. stcat DELIBERATELY preserves safe SGR colour
-## (ESC [ ... m) -- the submodule --stat summary runs --color=always -- so
-## rejecting every ESC would false-flag that safe colour. Assert the two
-## dangerous bytes the payload carries (an OSC introducer ESC ] and a BEL 0x07)
-## are absent; a real leak of the content escape would carry both.
-if grep --quiet --fixed-strings -- "$( printf '\x1b]' )" <<< "${esc_out}" \
-   || grep --quiet --fixed-strings -- "$( printf '\x07' )" <<< "${esc_out}"; then
-   fail "submodule inner diff leaked a raw dangerous terminal escape (OSC/BEL)"
+## The payload is an OSC title-set (ESC ] 0 ; ... BEL); it must never reach the
+## terminal raw. stcat DELIBERATELY preserves safe SGR colour (ESC [ ... m) -- the
+## submodule --stat summary runs --color=always -- so rejecting every ESC would
+## false-flag that safe colour. Normalise the known-safe SGR away, then ANY
+## residual ESC or BEL is a real leak: this catches the OSC the payload carries
+## AND any other dangerous sequence (CSI erase, DCS, APC) without re-implementing
+## stcat and without flagging safe colour.
+esc_residual="$( printf '%s' "${esc_out}" | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g' )"
+if LC_ALL=C grep --quiet -- "$( printf '[\x1b\x07]' )" <<< "${esc_residual}"; then
+   fail "submodule inner diff leaked a raw dangerous terminal escape"
 else
    pass "submodule inner diff neutralizes dangerous terminal escapes (stcat)"
 fi
