@@ -391,7 +391,7 @@ for _z in range(100, 311, 5):
     _jb_sweep.apply_zoom(_z)
     APP.processEvents()
     _avail = _jb_sweep._text_area()[1]
-    if _avail // (_jb_sweep.fontMetrics().height() or 1) > _avail // _jb_sweep._line_pitch():
+    if _avail // (_jb_sweep.fontMetrics().height() or 1) > int(_avail // _jb_sweep._line_pitch()):
         _jb_zoom = _z
         break
 _jb_sweep.close()
@@ -409,7 +409,7 @@ if _jb_zoom is not None:
     _fm = _jbt.fontMetrics().height()
     ok(_jbt._grid_fixed_canvas(),
        'JB: the full-grid frame is a fixed canvas (top-pinned) -- the path that clips')
-    eq(_jbt._rows, max(2, _avail // _pitch),
+    eq(_jbt._rows, max(2, int(_avail // _pitch)),
        'JB: winsize rows computed against the real painted pitch')
     ok(_jbt._rows * _pitch <= _avail < (_jbt._rows + 1) * _pitch,
        'JB: rows * pitch fits the viewport with no room for one more row')
