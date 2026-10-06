@@ -126,8 +126,45 @@ def build_plane(root, goldens, approvals_path):
     write_result(e_dir, "whonix-text-18-2-3-5-1", "whonix-gw-ws-text", "18.2.3.5",
                  0, now, "verify-signature", None)
 
+    ## F: a result.json with an ESCAPING (absolute) attachment path -- validate must
+    ## reject it (NO-DATA), so root never reads /etc/hostname into a published webp.
+    f_dir = os.path.join(root, "escape-18-2-3-5", "20261006T000000Z")
+    write_result(f_dir, "escape-1", "escape", "18.2.3.5", 0, now,
+                 "calamares-install", "calamares-install.png")
+    write_png(os.path.join(f_dir, "calamares-install.png"), (1, 1, 1))
+    _rewrite(os.path.join(f_dir, "result.json"),
+             '"path": "calamares-install.png"', '"path": "/etc/hostname"')
+
+    ## G: a result.json whose run.id is the RESERVED name 'goldens' -- must be
+    ## treated as NO-DATA, never allowed to write into / overwrite the goldens dir.
+    g_dir = os.path.join(root, "reserved-18-2-3-5", "20261006T000000Z")
+    write_result(g_dir, "goldens", "reserved-lane", "18.2.3.5", 0, now,
+                 "verify-signature", None)
+
+    ## H: a PASS run that produces NO shot, but an APPROVED golden exists for its
+    ## lane -- the expected screenshot vanished, so the run must NOT read green.
+    h_dir = os.path.join(root, "kicksecure-xfce-18-2-3-5", "20261006T000000Z")
+    write_result(h_dir, "kicksecure-xfce-18-2-3-5-1", "kicksecure-xfce", "18.2.3.5",
+                 0, now, "verify-signature", None)
+    sid_h = "kicksecure-xfce/calamares-install"
+    golden_h = os.path.join(goldens, sid_h + ".webp")
+    os.makedirs(os.path.dirname(golden_h), exist_ok=True)
+    Image.new("RGB", (40, 30), (9, 9, 9)).save(golden_h, "WEBP", lossless=True, method=6)
+    approvals["approvals"][sid_h] = {
+        "golden_sha256": compare.sha256_file(golden_h),
+        "status": "approved", "approver": "dev",
+        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
+    }
+
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
+
+
+def _rewrite(path, old, new):
+    with open(path, "r", encoding="ascii") as handle:
+        text = handle.read()
+    with open(path, "w", encoding="ascii") as handle:
+        handle.write(text.replace(old, new))
 
 
 def run_generator(root, goldens, approvals_path, site_out):
@@ -199,6 +236,26 @@ check("text-only run page is still green", "st-pass" in e_page)
 ## approved golden path works end to end.
 check("green run page is not flagged new/changed",
       "st-new" not in a_page and "st-changed" not in a_page)
+
+## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
+## copied from the escaping target (no webp written for that run).
+f_id = "escape-18-2-3-5__20261006T000000Z"
+f_dir_out = os.path.join(out1, f_id)
+check("escaping-path run is NO-DATA",
+      os.path.isfile(os.path.join(f_dir_out, "index.html"))
+      and "st-nodata" in read(os.path.join(f_dir_out, "index.html")))
+check("escaping-path run wrote no webp",
+      not any(n.endswith(".webp") for n in (os.listdir(f_dir_out) if os.path.isdir(f_dir_out) else [])))
+
+## G: a run whose id is the reserved name 'goldens' never writes into a goldens dir.
+check("reserved run.id did not create out_root/goldens",
+      not os.path.exists(os.path.join(out1, "goldens")))
+
+## H: a PASS run missing its expected approved golden is NOT green.
+h_page = read(os.path.join(out1, "kicksecure-xfce-18-2-3-5-1", "index.html"))
+check("missing-expected-shot run flags unknown", "st-unknown" in h_page)
+check("missing-expected-shot reason is shown",
+      "expected approved golden not produced" in h_page)
 
 ## Determinism: a second generation over identical input is byte-identical.
 site2 = os.path.join(work, "site2")

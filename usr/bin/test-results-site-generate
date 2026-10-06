@@ -67,12 +67,35 @@ def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
+## Names under the output root the generator owns and must never let a run id
+## shadow (writing into goldens/, or colliding with the overview / approvals file).
+RESERVED_RUN_DIRS = frozenset({"index.html", "goldens", "golden-approvals.json"})
+
+
 def safe_run_dir(run_id):
-    """A run id is written as a directory name; refuse a '/' or '..' so a crafted
-    result.json cannot escape the output tree."""
-    if "/" in run_id or run_id in (".", "..") or run_id == "":
-        raise ValueError("unsafe run id: %r" % run_id)
+    """A run id is written as a directory name; refuse a '/' or '..' (escape) or a
+    reserved name (which would hijack the overview, the approvals file, or the
+    goldens dir)."""
+    if ("/" in run_id or run_id in (".", "..") or run_id == ""
+            or run_id in RESERVED_RUN_DIRS):
+        raise ValueError("unsafe or reserved run id: %r" % run_id)
     return run_id
+
+
+def _sanitize_component(value):
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", value or "")
+    return cleaned or "run"
+
+
+def run_dir_id(run_dir):
+    """A unique, filesystem-safe id derived from <name>/<ts>, for a NO-DATA run (or
+    one whose own id is unusable) -- so two lanes failing at the same timestamp do
+    not collide and the lane name is not lost."""
+    ts = os.path.basename(run_dir)
+    name = os.path.basename(os.path.dirname(run_dir))
+    return "%s__%s" % (_sanitize_component(name), _sanitize_component(ts))
 
 
 def age_text(age_seconds):
@@ -99,6 +122,14 @@ def load_mask_config(path):
         data = json.load(handle)
     if not isinstance(data, dict):
         raise ValueError("mask config must be a JSON object of lane -> rects")
+    for lane, rects in data.items():
+        if not isinstance(rects, list):
+            raise ValueError("mask config: rects for %r must be a list" % lane)
+        for rect in rects:
+            if not (isinstance(rect, list) and len(rect) == 4
+                    and all(isinstance(n, int) and not isinstance(n, bool) for n in rect)):
+                raise ValueError(
+                    "mask config: each rect for %r must be [x, y, w, h] ints" % lane)
     return data
 
 
@@ -166,15 +197,19 @@ class RunView:
 
 
 def process_run(run_dir, result, out_root, goldens_dir, approvals, mask_config,
-                now_unix, stale_seconds):
+                now_unix, stale_seconds, tolerance, channel_threshold):
     """Classify a run's screenshots, write their normalized webp into the run's
     output dir, and compute the run-cell status."""
     if not isinstance(result, dict):
-        run_id = safe_run_dir(os.path.basename(run_dir))
-        return RunView(run_id, run_dir, None, site.STATUS_NODATA, None, [])
+        return RunView(run_dir_id(run_dir), run_dir, None, site.STATUS_NODATA, None, [])
 
     run = result["run"]
-    run_id = safe_run_dir(run["id"])
+    try:
+        run_id = safe_run_dir(run["id"])
+    except ValueError:
+        ## Valid schema but an unusable id -> treat as NO-DATA so one bad run can
+        ## neither abort the generation nor hijack a reserved output path.
+        return RunView(run_dir_id(run_dir), run_dir, None, site.STATUS_NODATA, None, [])
     lane = run["lane"]
     page_dir = os.path.join(out_root, run_id)
 
@@ -186,10 +221,26 @@ def process_run(run_dir, result, out_root, goldens_dir, approvals, mask_config,
                 continue
             shot = _process_shot(
                 run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
-                mask_config,
+                mask_config, tolerance, channel_threshold,
             )
             shots.append(shot)
             buckets.append(shot["bucket"])
+
+    ## No-false-green: if an APPROVED golden exists for this lane but no shot in
+    ## this run produced it, the expected screenshot vanished -- flag it (non-green),
+    ## never let a missing-but-expected shot pass as a clean run.
+    produced = {shot["sid"] for shot in shots}
+    for sid, record in sorted(approvals.items()):
+        if (sid.startswith(lane + "/") and record.get("status") == "approved"
+                and sid not in produced):
+            shots.append({
+                "sid": sid, "step": sid.split("/", 1)[-1], "name": "screenshot",
+                "bucket": compare.BUCKET_UNKNOWN,
+                "detail": {"reason": "expected approved golden not produced by this run"},
+                "webp": None, "golden_webp": None, "exit": None, "status": None,
+                "stdout_tail": "", "stderr_tail": "",
+            })
+            buckets.append(compare.BUCKET_UNKNOWN)
 
     status, age = site.run_cell_status(result, buckets, now_unix, stale_seconds)
     return RunView(run_id, run_dir, result, status, age, shots)
@@ -204,15 +255,28 @@ def _screenshot_id(lane, step_name, attachment_name, shot_count):
 
 
 def _process_shot(run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
-                  mask_config):
+                  mask_config, tolerance, channel_threshold):
     step_name = step["name"]
     shot_count = sum(
         1 for att in step["attachments"]
         if str(att.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX)
     )
     sid = _screenshot_id(lane, step_name, attachment["name"], shot_count)
+    ## attachment["path"] was validated as a safe basename by model.validate, so it
+    ## cannot escape run_dir. Still refuse a SYMLINK: its versioned name is safe but
+    ## its target could be any file root could read -- never follow it.
     current_path = os.path.join(run_dir, attachment["path"])
     golden_path = os.path.join(goldens_dir, sid + ".webp") if goldens_dir else None
+
+    base = {
+        "sid": sid, "step": step_name, "name": attachment["name"],
+        "golden_webp": None, "exit": step.get("exit"), "status": step.get("status"),
+        "stdout_tail": step.get("stdout_tail", ""), "stderr_tail": step.get("stderr_tail", ""),
+    }
+    if os.path.islink(current_path):
+        base.update(bucket=compare.BUCKET_UNKNOWN,
+                    detail={"reason": "refusing to read a symlinked screenshot"}, webp=None)
+        return base
 
     rects = None
     out_webp = None
@@ -225,11 +289,12 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, goldens_dir, approv
         out_name = _flatten(sid) + ".webp"
         out_webp = out_name
         _save_webp(current, os.path.join(page_dir, out_name))
-    except (FileNotFoundError, OSError):
+    except Exception:  # noqa: BLE001 -- any shot error is per-shot, never aborts the run/site
         out_webp = None
 
     bucket, detail = compare.classify(
         sid, current_path, golden_path, approvals, rects=rects,
+        tolerance=tolerance, channel_threshold=channel_threshold,
     )
 
     ## For a CHANGED shot, also render the approved golden so the page shows
@@ -295,11 +360,14 @@ def prune(out_root, keep_ids):
     index.html, goldens/, or golden-approvals.json."""
     if not os.path.isdir(out_root):
         return
-    protected = {"index.html", "goldens", "golden-approvals.json"}
     for entry in sorted(os.listdir(out_root)):
-        if entry in protected:
+        if entry in RESERVED_RUN_DIRS:
             continue
         full = os.path.join(out_root, entry)
+        ## Skip symlinks: os.path.isdir follows them, and rmtree on a symlinked
+        ## dir raises; a run dir the generator writes is never a symlink.
+        if os.path.islink(full):
+            continue
         if os.path.isdir(full) and entry not in keep_ids:
             shutil.rmtree(full)
 
@@ -313,39 +381,46 @@ CSP = (
     "img-src 'self' data:; base-uri 'none'; form-action 'none'"
 )
 
-## Minimal built-in chrome, used when --chrome-from is not given. For the real
-## site, --chrome-from an existing family page lifts its exact header+footer so
-## the uniform-nav / family-footer gates pass.
+## Built-in header fallback (used when --chrome-from is not given, e.g. standalone
+## or in the suite). For the real site, --chrome-from an existing family page lifts
+## that page's exact masthead so the uniform-nav gate (identical header across all
+## pages) passes without this needing to track family nav edits.
 _DEFAULT_HEADER = (
     '<header class="nav"><div class="wrap">'
     '<a class="brand" href="/">org-ai-assisted</a>'
-    '<nav><a href="https://output-lies.github.io">output lies</a>'
-    '<a href="https://secure-terminal.github.io">secure-terminal</a>'
-    '<a href="https://org-ai-assisted.github.io">org-ai-assisted</a></nav>'
+    '<nav><a href="https://github.com/org-ai-assisted">GitHub</a>'
+    '<a href="https://output-lies.github.io">output lies</a>'
+    '<a href="https://secure-terminal.github.io">secure-terminal</a></nav>'
     "</div></header>"
 )
-_DEFAULT_FOOTER = (
-    '<footer><div class="wrap">'
-    '<a href="https://output-lies.github.io">output lies</a> '
-    '<a href="https://secure-terminal.github.io">secure-terminal</a> '
-    '<a class="self" href="https://org-ai-assisted.github.io">org-ai-assisted</a>'
+
+## Footer is ALWAYS built here, never lifted: a family page's footer carries that
+## page's own on-page section anchors (#overview, ...), which do not exist on a
+## results page and would read as broken links. This footer carries only the three
+## family URLs the family-footer gate requires, with no on-page anchors.
+_FOOTER = (
+    '<footer><div class="wrap"><div class="fcols"><div class="fcol">'
+    "<h4>Family</h4>"
+    '<a href="https://output-lies.github.io">output lies</a>'
+    '<a href="https://secure-terminal.github.io">secure-terminal</a>'
+    '<a class="self" href="https://org-ai-assisted.github.io" aria-current="page">org-ai-assisted</a>'
+    '</div></div><p class="fbot">AI-assisted. Automated OS-image test results.</p>'
     "</div></footer>"
 )
 
 
-def extract_chrome(path):
-    """Lift the verbatim <header>...</header> and <footer>...</footer> from an
-    existing family page so generated pages carry an identical masthead + footer
-    (what the uniform-nav / family-footer gates require)."""
+def extract_header(path):
+    """Lift the verbatim <header>...</header> from an existing family page so every
+    generated page carries an identical masthead (the uniform-nav gate). The footer
+    is NOT lifted (see _FOOTER)."""
     import re
 
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
     header = re.search(r"<header\b.*?</header>", text, re.DOTALL)
-    footer = re.search(r"<footer\b.*?</footer>", text, re.DOTALL)
-    if not header or not footer:
-        raise ValueError("could not find <header> and <footer> in %s" % path)
-    return header.group(0), footer.group(0)
+    if not header:
+        raise ValueError("could not find <header> in %s" % path)
+    return header.group(0)
 
 
 def page(title, description, header, footer, body):
@@ -386,10 +461,9 @@ def render_overview(views, header, footer, generated_utc):
     for view in views:
         f = run_fields(view)
         rows.append(
-            '<tr class="%s"><td>%s</td><td>%s</td><td>%s</td><td>%s</td>'
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
             "<td>%s</td><td>%s</td><td><a href=\"%s/\">details</a></td></tr>"
             % (
-                site.css_class(view.status),
                 esc(f["lane"]), esc(f["version"]), esc(f["builder"]), esc(f["origin"]),
                 status_chip(view.status), esc(age_text(view.age)), esc(view.run_id),
             )
@@ -407,14 +481,14 @@ def render_overview(views, header, footer, generated_utc):
     for view in views:
         for shot in view.shots:
             if shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED):
+                chip_status = (
+                    site.STATUS_NEW if shot["bucket"] == compare.BUCKET_NEW
+                    else site.STATUS_CHANGED
+                )
                 pending.append(
-                    '<li class="%s">%s &mdash; %s / %s (<a href="%s/">%s</a>)</li>'
+                    "<li>%s %s / %s (<a href=\"%s/\">%s</a>)</li>"
                     % (
-                        site.css_class(
-                            site.STATUS_NEW if shot["bucket"] == compare.BUCKET_NEW
-                            else site.STATUS_CHANGED
-                        ),
-                        esc(shot["bucket"]), esc(view.run_id), esc(shot["sid"]),
+                        status_chip(chip_status), esc(view.run_id), esc(shot["sid"]),
                         esc(view.run_id), esc("open run"),
                     )
                 )
@@ -455,8 +529,20 @@ def render_run(view, header, footer, generated_utc):
     f = run_fields(view)
     blocks = []
     if isinstance(view.result, dict):
+        step_names = set()
         for step in view.result["steps"]:
+            step_names.add(step["name"])
             blocks.append(render_step(view, step))
+        ## Shots not tied to a rendered step are the expected-but-missing goldens
+        ## (an approved golden whose shot this run did not produce); show them so the
+        ## non-green status is explained, never a silent omission.
+        for shot in view.shots:
+            if shot["step"] not in step_names:
+                blocks.append(
+                    '<div class="issue"><h3>%s %s</h3><p>%s</p></div>'
+                    % (esc(shot["sid"]), status_chip(_bucket_status_class(shot["bucket"])),
+                       esc(shot["detail"].get("reason", "")))
+                )
     else:
         blocks.append(
             '<div class="issue"><h3>No data</h3><p>This run has no readable '
@@ -493,14 +579,12 @@ def render_step(view, step):
     )
     if not shots:
         ## Text-only step: NO image slot, never a broken-image blank.
-        return '<div class="issue %s">%s</div>' % (site.css_class(status_cls), caption)
+        return '<div class="issue">%s</div>' % caption
 
     imgs = []
     for shot in shots:
         imgs.append(_shot_html(view, shot))
-    return '<div class="issue %s">%s%s</div>' % (
-        site.css_class(status_cls), caption, "".join(imgs),
-    )
+    return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
 
 
 def _shot_html(view, shot):
@@ -565,7 +649,8 @@ def resolve_source_date_epoch(arg_value):
     try:
         return int(raw)
     except ValueError:
-        raise SystemExit("test-results-site-generate: bad SOURCE_DATE_EPOCH: %r" % raw)
+        print("test-results-site-generate: bad SOURCE_DATE_EPOCH: %r" % raw, file=sys.stderr)
+        raise SystemExit(2)
 
 
 def main(argv):
@@ -578,6 +663,9 @@ def main(argv):
     parser.add_argument("--chrome-from", default=None)
     parser.add_argument("--stale-days", type=int, default=30)
     parser.add_argument("--history", type=int, default=20)
+    parser.add_argument("--tolerance", type=float, default=compare.DEFAULT_TOLERANCE)
+    parser.add_argument("--channel-threshold", type=int,
+                        default=compare.DEFAULT_CHANNEL_THRESHOLD)
     parser.add_argument("--source-date-epoch", default=None)
     args = parser.parse_args(argv)
 
@@ -593,10 +681,8 @@ def main(argv):
     try:
         approvals = compare.load_approvals(approvals_path)
         mask_config = load_mask_config(args.mask_config)
-        if args.chrome_from:
-            header, footer = extract_chrome(args.chrome_from)
-        else:
-            header, footer = _DEFAULT_HEADER, _DEFAULT_FOOTER
+        header = extract_header(args.chrome_from) if args.chrome_from else _DEFAULT_HEADER
+        footer = _FOOTER
     except (ValueError, compare.CompareError) as exc:
         raise SystemExit("test-results-site-generate: %s" % exc)
 
@@ -606,7 +692,7 @@ def main(argv):
     for run_dir, result in discover_runs(args.results_root):
         views.append(process_run(
             run_dir, result, out_root, goldens_dir, approvals, mask_config,
-            now_unix, stale_seconds,
+            now_unix, stale_seconds, args.tolerance, args.channel_threshold,
         ))
 
     ## Overview order: worst-first then newest-first, deterministic.

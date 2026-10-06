@@ -124,6 +124,32 @@ def _bad_status():
 
 
 check_raises("validate refuses an invalid step status", _bad_status)
+
+
+def _tamper(mutate):
+    bad = model.build_result(
+        run_id="r", lane="kicksecure-lxqt", version="v", builder="b", mode="m",
+        origin=model.ORIGIN_BUILT, rc=0, generated_unix=1, stop_unix=1,
+        steps=[model.make_step(
+            name="s1", status=model.STATUS_PASSED, exit_code=0,
+            attachments=[model.make_attachment("screenshot", "image/png", "s1.png")],
+        )],
+    )
+    mutate(bad)
+    model.validate(bad)
+
+
+## validate() is the UNTRUSTED-INPUT guard the site generator relies on: a loaded
+## result.json whose id / lane / attachment path would escape an output or golden
+## dir must be refused (-> NO-DATA), never read.
+check_raises("validate refuses an escaping attachment path",
+             lambda: _tamper(lambda r: r["steps"][0]["attachments"][0].__setitem__("path", "../../x.png")))
+check_raises("validate refuses an absolute attachment path",
+             lambda: _tamper(lambda r: r["steps"][0]["attachments"][0].__setitem__("path", "/etc/shadow")))
+check_raises("validate refuses a lane with a slash",
+             lambda: _tamper(lambda r: r["run"].__setitem__("lane", "a/b")))
+check_raises("validate refuses a run id with ..",
+             lambda: _tamper(lambda r: r["run"].__setitem__("id", "../escape")))
 check_raises(
     "build_result refuses a bad origin",
     lambda: model.build_result(

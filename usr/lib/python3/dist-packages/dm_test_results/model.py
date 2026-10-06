@@ -271,7 +271,11 @@ def build_result(
 
 def validate(result):
     """Re-derive the summary from steps and refuse any disagreement, plus the
-    structural no-false-green invariants. Raises ModelError on any violation."""
+    structural no-false-green invariants. Also the UNTRUSTED-INPUT guard: a
+    consumer (the site generator) validates a result.json it did not write with
+    this, so run id / lane / attachment paths that would escape an output or
+    golden dir are rejected here -- a malformed or hand-edited result is dropped
+    (NO-DATA), never read. Raises ModelError on any violation."""
     if result.get("schema") != SCHEMA:
         raise ModelError("schema must be %r" % (SCHEMA,))
     run = result.get("run")
@@ -279,12 +283,22 @@ def validate(result):
         raise ModelError("run must be an object")
     if run.get("stage") not in VALID_STAGE:
         raise ModelError("run.stage invalid: %r" % (run.get("stage"),))
+    ## id + lane become path components (output dir, golden path); a '/' or '..'
+    ## would escape. Keep them safe components.
+    _require_safe_component("run.id", run.get("id"))
+    _require_safe_component("run.lane", run.get("lane"))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")
     for step in steps:
         if step.get("status") not in VALID_STATUS:
             raise ModelError("step status invalid: %r" % (step.get("status"),))
+        _require_safe_component("step.name", step.get("name"))
+        attachments = step.get("attachments")
+        if not isinstance(attachments, list):
+            raise ModelError("step.attachments must be a list")
+        for att in attachments:
+            _require_safe_component("attachment path", att.get("path"))
     expected = summarize(steps)
     if result.get("summary") != expected:
         raise ModelError(

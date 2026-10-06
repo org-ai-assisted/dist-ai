@@ -81,6 +81,13 @@ st_stale, age_stale = site.run_cell_status(stale, [compare.BUCKET_MATCH], NOW, W
 check("stale PASS is stale (not green)", st_stale == site.STATUS_STALE and not site.is_green(st_stale))
 check("stale age exceeds the window", age_stale > WINDOW)
 
+## A future stop time (clock skew or tampering) must NOT read green: a negative age
+## is never stale, so without the guard a future-dated PASS would stay green forever.
+future = make_result(0, stop_unix=NOW + 10 ** 9)
+st_future, age_future = site.run_cell_status(future, [compare.BUCKET_MATCH], NOW, WINDOW)
+check("future-dated PASS is not green", not site.is_green(st_future))
+check("future age is negative", age_future < 0)
+
 ## A functional PASS with an unapproved / changed / errored shot is held out of green.
 check("PASS + NEW shot is new", status_of(make_result(0), [compare.BUCKET_NEW]) == site.STATUS_NEW)
 check("PASS + CHANGED shot is changed", status_of(make_result(0), [compare.BUCKET_CHANGED]) == site.STATUS_CHANGED)

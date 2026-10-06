@@ -82,8 +82,11 @@ def run_cell_status(result, shot_buckets, now_unix, stale_seconds=DEFAULT_STALE_
     age = run_age_seconds(result, now_unix)
     run = result.get("run") or {}
 
-    ## Did not finish -> cannot be a clean result, regardless of any verdict field.
-    if run.get("stage") != model.STAGE_FINISHED or age is None:
+    ## Did not finish, no stop time, or a stop time in the FUTURE (clock skew or a
+    ## tampered timestamp) -> cannot be trusted as a clean result. A negative age is
+    ## never stale, so without this guard a future-dated PASS would read green
+    ## forever; treat it as incomplete instead.
+    if run.get("stage") != model.STAGE_FINISHED or age is None or age < 0:
         return STATUS_INCOMPLETE, age
 
     verdict = run.get("verdict")

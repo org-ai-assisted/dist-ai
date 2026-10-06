@@ -42,10 +42,12 @@ BUCKET_UNKNOWN = "UNKNOWN"
 BUCKET_GREEN = BUCKET_MATCH
 
 ## A current vs golden is a MATCH only when at most this fraction of pixels differ
-## by more than CHANNEL_THRESHOLD on any channel. Defaults are deliberately tight:
-## a masked VM screenshot is near-deterministic, so only real UI change should move
-## them. Both are overridable per call (the generator passes per-lane config).
-DEFAULT_TOLERANCE = 0.001
+## by more than CHANNEL_THRESHOLD on any channel. Deliberately tight: a masked VM
+## screenshot is near-deterministic, so only a real UI change should move them.
+## At 0.0002 a ~20x20-pixel block on a 1080p shot already trips CHANGED, so a small
+## status-icon / word change is not approved as green by a loose fraction. Both are
+## overridable (--tolerance / --channel-threshold) for a noisier lane.
+DEFAULT_TOLERANCE = 0.0002
 DEFAULT_CHANNEL_THRESHOLD = 16
 
 
