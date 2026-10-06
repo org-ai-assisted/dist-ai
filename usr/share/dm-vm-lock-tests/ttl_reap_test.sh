@@ -60,6 +60,32 @@ case "${line}" in *ttl_deadline_epoch=*) r=0 ;; *) r=1 ;; esac
 check 'registry records ttl_deadline_epoch (for investigation + reaping)' "${r}"
 wait "${bgpid}" 2>/dev/null || true
 
+## --- field-injection resistance --------------------------------------------------------
+## An untrusted session name carrying a ' pid=NNN' token must not forge the pid field: the
+## reader (vm_lock_kv) matches leftmost, so an unsanitized session would hijack the pid lookup
+## and mis-reap the LIVE holder. The written session= must be sanitized AND vm_lock_kv must
+## read back the REAL wrapper pid, not the injected one.
+d4="${tmp}/d4"; mkdir -- "${d4}"; printf '' > "${d4}/vm.lock"
+export DM_VM_LOCK_DIR="${d4}"
+CLAUDE_RC_SESSION_NAME='foo pid=123' CLAUDE_CODE_SESSION_ID='id bar=1' \
+   "${TOOL}" acquire --class work --ttl 30 --wait 5 -- sh -c 'sleep 3' &
+bgpid=$!
+rc=0; wait_for_holder "${d4}" work || rc=$?
+check 'injection: a holder registry file is created' "${rc}"
+line="$(cat -- "${d4}"/holder.work.* 2>/dev/null || true)"
+case "${line}" in *'session=foo pid=123'*) r=1 ;; *'session=foo_pid_123'*) r=0 ;; *) r=1 ;; esac
+check 'injection: session value is sanitized (no forged field boundary)' "${r}"
+## Source the real tool (its BASH_SOURCE/$0 guard keeps main from running) to use vm_lock_kv,
+## the exact reader vm_lock_reap relies on -- never a reimplementation that could drift.
+read_pid="$(
+   # shellcheck source=../../bin/dm-vm-lock
+   source "${TOOL}"
+   vm_lock_kv "${line}" pid
+)"
+if [ "${read_pid}" = "${bgpid}" ]; then r=0; else r=1; fi
+check 'injection: vm_lock_kv reads the real pid, not the injected 123' "${r}"
+wait "${bgpid}" 2>/dev/null || true
+
 ## --- reaping ---------------------------------------------------------------------------
 d3="${tmp}/d3"; mkdir -- "${d3}"; printf '' > "${d3}/vm.lock"
 export DM_VM_LOCK_DIR="${d3}"
