@@ -135,14 +135,16 @@ def source_mode_tests(lockfile_sh, check):
     ## self-lock (no key): 2nd instance skips (non-zero) while the 1st holds it.
     ## Assert the flock 'failed to get lock' signal (the --verbose probe emits it to
     ## stderr on genuine contention), not merely 'no LOCKED + non-zero' -- an unrelated
-    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip.
+    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip. Sync on the
+    ## holder's LOCKED line (wait_for_locked), not a fixed sleep that races a loaded host.
     holder = bg([src, '', '2'])
-    time.sleep(0.6)
+    locked = wait_for_locked(holder)
     second = run([src, '', '0'])
     combined = second.stdout + second.stderr
     check('source: self-lock 2nd instance skips',
-          'LOCKED' not in second.stdout and 'failed to get lock' in combined,
-          combined.strip())
+          locked and 'LOCKED' not in second.stdout
+          and 'failed to get lock' in combined,
+          'locked=%s %r' % (locked, combined.strip()))
     check('source: skip exits non-zero', second.returncode != 0,
           'rc=%d' % second.returncode)
     holder.wait(timeout=15)
@@ -172,16 +174,19 @@ def wrap_mode_tests(lockfile_sh, check):
     tmp = tempfile.mkdtemp(prefix='lockfile-wrap-')
 
     ## per-key: same key skips (rc!=0, command not run), different concurrent.
-    holder = bg([lockfile_sh, 'wA', '--', 'sleep', '2'])
-    time.sleep(0.6)
+    ## Sync on the held command's LOCKED line (wait_for_locked), not a fixed sleep that
+    ## races a loaded host: the wrapped command prints LOCKED once it runs under the lock.
+    holder = bg([lockfile_sh, 'wA', '--', 'bash', '-c', 'echo LOCKED; sleep 2'])
+    locked = wait_for_locked(holder)
     same = run([lockfile_sh, 'wA', '--', 'echo', 'RAN'])
     other = run([lockfile_sh, 'wB', '--', 'echo', 'RAN'])
     ## Require the flock 'failed to get lock' signal (the --verbose probe emits it on
     ## contention), not just 'no RAN + non-zero' which an unrelated abort also yields.
-    check('wrap: same key skips', 'RAN' not in same.stdout
+    check('wrap: same key skips', locked and 'RAN' not in same.stdout
           and same.returncode != 0
           and 'failed to get lock' in (same.stdout + same.stderr),
-          '%r rc=%d' % ((same.stdout + same.stderr).strip(), same.returncode))
+          'locked=%s %r rc=%d' % (locked, (same.stdout + same.stderr).strip(),
+                                  same.returncode))
     check('wrap: different key concurrent', 'RAN' in other.stdout,
           other.stdout.strip())
     holder.wait(timeout=15)
