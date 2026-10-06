@@ -27,6 +27,7 @@ golden and is judged on its functional status alone (model.py).
 
 import hashlib
 import json
+import os
 
 import numpy
 from PIL import Image
@@ -126,6 +127,16 @@ def load_approvals(path):
     return records
 
 
+def write_approvals(path, approvals):
+    """Write a golden-approvals/v1 file deterministically (sorted keys, ASCII), so
+    an approval diff is minimal and re-emitting identical state is byte-identical."""
+    payload = {"schema": APPROVALS_SCHEMA, "approvals": approvals}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="ascii") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
 def classify(
     screenshot_id,
     current_path,
@@ -176,6 +187,4 @@ def classify(
 
 
 def _is_file(path):
-    import os
-
     return os.path.isfile(path)
