@@ -92,11 +92,18 @@ chmod +x -- "${stub_dir}/sandbox" "${stub_dir}/driver"
 
 out="${stub_dir}/out.log"
 
-## Run the real wrapper with the stubs; $1 = extra env assignments; output -> $out.
+## Run the real wrapper with the stubs; $1.. = extra env assignments; output -> $out.
+## --unset=DIST_AI_IN_SANDBOX: these scenarios simulate a HOST context (stub `sandbox`
+## + stub driver on PATH), so the HOST delegation branch must be reachable. When this
+## test itself runs INSIDE the sandbox, DIST_AI_IN_SANDBOX=1 is inherited and would
+## short-circuit the wrapper to its in-sandbox SKIP branch, hiding the delegation path.
+## A scenario that WANTS the in-sandbox branch passes 'DIST_AI_IN_SANDBOX=1' itself (a
+## later NAME=VALUE operand overrides the --unset).
 run_wrapper(){
    local rc
    rc=0
-   env PATH="${stub_dir}:${PATH}" \
+   env --unset=DIST_AI_IN_SANDBOX \
+       PATH="${stub_dir}:${PATH}" \
        OUTPUT_LIES_REPO="${OUTPUT_LIES_REPO}" \
        SECURE_TERMINAL_SITE_REPO="${SECURE_TERMINAL_SITE_REPO}" \
        ORG_AI_ASSISTED_REPO="${ORG_AI_ASSISTED_REPO}" \
@@ -124,13 +131,28 @@ rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=0')"
 if [ "${rc}" = '0' ]; then pass 'delegated success -> wrapper zero'; else fail "delegated success not green (rc=${rc}); see ${out}"; fi
 if [ -f "${marker}" ]; then pass 'driver invoked on success path'; else fail 'driver not invoked on success path'; fi
 
-## Scenario 3: with the sandbox disabled, the wrapper SKIPs, does NOT delegate, and
-## stays green (only the static lane gates).
+## Scenario 3: with the sandbox disabled, the wrapper does NOT delegate and surfaces
+## the browser lanes as env-unmet SKIP (exit 78) for the orchestrator's --allow-skip
+## to govern -- NOT a silent green 0 (that false green is exactly what the suite-exit
+## contract closes). Only the static lane actually gated.
 safe-rm --force -- "${marker}"
 rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1' 'WEBSITE_TESTS_NO_SANDBOX=1')"
-if [ "${rc}" = '0' ]; then pass 'no-sandbox path stays green (static only)'; else fail "no-sandbox path non-zero (rc=${rc})"; fi
+if [ "${rc}" = '78' ]; then pass 'no-sandbox path -> env-unmet SKIP (78), not silent green'; else fail "no-sandbox path rc=${rc}, want 78 (env-unmet)"; fi
 if grep --quiet 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' -- "${out}"; then pass 'no-sandbox context SKIPs explicitly'; else fail 'no-sandbox context did not emit the SKIP notice'; fi
 if [ ! -f "${marker}" ]; then pass 'driver not invoked when sandbox disabled'; else fail 'driver invoked despite sandbox disabled'; fi
+
+## Scenario 4: INSIDE the sandbox (DIST_AI_IN_SANDBOX=1) with no local browser, the
+## wrapper must NOT delegate to a nested `sandbox` call (it has no --target and cannot
+## nest -- that doomed call flipped a clean run to FAIL(1)). It surfaces env-unmet SKIP
+## (78) instead and never invokes the driver. The stub `sandbox` is STILL on PATH and
+## DRIVER_RC=1, so without the guard this path would delegate and FAIL(1); the in-sandbox
+## branch must win regardless, proving the guard (not merely an absent sandbox) is what
+## prevents the nested call.
+safe-rm --force -- "${marker}"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1' 'DIST_AI_IN_SANDBOX=1')"
+if [ "${rc}" = '78' ]; then pass 'in-sandbox path -> env-unmet SKIP (78), not a nested-sandbox FAIL'; else fail "in-sandbox path rc=${rc}, want 78 (env-unmet)"; fi
+if grep --quiet 'in-sandbox, cannot nest-provision' -- "${out}"; then pass 'in-sandbox context SKIPs with the nest-provision notice'; else fail 'in-sandbox context did not emit the in-sandbox SKIP notice'; fi
+if [ ! -f "${marker}" ]; then pass 'driver not invoked inside the sandbox'; else fail 'driver invoked inside the sandbox (nested delegation attempted)'; fi
 
 printf '%s\n' "website-tests-delegation-test: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
