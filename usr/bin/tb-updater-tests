@@ -18,12 +18,12 @@
 ## check_runtime.bsh provides was_executed + the strict-mode gate below. If it is
 ## absent the source fails BEFORE strict mode, was_executed is undefined (127), both
 ## guards read false, main never runs, and the suite exits 0 -- a false PASS for a
-## file that was never tested. Fail loud (SKIP) instead. A source-able test
-## caller runs in an env that HAS the helper, so the guard never fires there.
+## file that was never tested. helper-scripts is a REQUIRED dependency, so its
+## absence is an environment bug: fail loud as FATAL (exit 1), never a skip. A
+## source-able test caller runs in an env that HAS the helper, so this never fires there.
 if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
-   printf '%s\n' 'tb-updater-tests: SKIP (helper-scripts check_runtime.bsh not found)' >&2
-   ## style-ok: allow-skip: helper-scripts check_runtime.bsh absent -- optional runtime dep
-   exit 77
+   printf '%s\n' 'tb-updater-tests: FATAL: helper-scripts check_runtime.bsh not found (required dependency)' >&2
+   exit 1
 fi
 source /usr/libexec/helper-scripts/check_runtime.bsh
 

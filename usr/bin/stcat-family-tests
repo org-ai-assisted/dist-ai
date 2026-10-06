@@ -24,9 +24,8 @@
 [ -v STDISPLAY_REPO ] || STDISPLAY_REPO=""
 check_runtime_bsh="${STDISPLAY_REPO:+${STDISPLAY_REPO%/}}/usr/libexec/helper-scripts/check_runtime.bsh"
 if [ ! -r "${check_runtime_bsh}" ]; then
-   printf '%s\n' "stcat-family-tests: SKIP (helper-scripts check_runtime.bsh not found at '${check_runtime_bsh}')" >&2
-   ## style-ok: allow-skip: helper-scripts check_runtime.bsh absent -- set STDISPLAY_REPO or install helper-scripts
-   exit 77
+   printf '%s\n' "stcat-family-tests: FATAL: helper-scripts check_runtime.bsh not found at '${check_runtime_bsh}' (required dependency -- set STDISPLAY_REPO or install helper-scripts)" >&2
+   exit 1
 fi
 # shellcheck disable=SC1090  # dynamic path: check_runtime.bsh from the checkout or install
 source "${check_runtime_bsh}"
