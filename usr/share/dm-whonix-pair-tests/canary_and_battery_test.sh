@@ -146,8 +146,8 @@ rc=0; has "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL}" "${out}" || rc=1
 check 'ws_browser_probe: creates the stage dir with an EXPLICIT 0755 (umask-independent, searchable by the non-root probe)' "${rc}"
 rc=0; has "dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test" "${out}" || rc=1
 check 'ws_browser_probe: stages the CLI off the root-only share into the world-readable dir (as root)' "${rc}"
-rc=0; has "dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" "${out}" || rc=1
-check 'ws_browser_probe: stages the harness beside the CLI (find_harness looks beside it)' "${rc}"
+rc=0; has "dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.js ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.js" "${out}" || rc=1
+check 'ws_browser_probe: stages the harness JS beside the CLI (find_harness looks beside it)' "${rc}"
 rc=0; has "${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json" "${out}" || rc=1
 check 'ws_browser_probe: runs the probe from the readable guest-local copy' "${rc}"
 rc=0; has "${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc" "${out}" && rc=1 || rc=0

@@ -412,7 +412,7 @@ ws_battery() {
 ws_browser_probe() {
    local out
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
-      --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
+      --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.js ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.js" \
       || return "${SETUP_RC}"
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
       --cmd "env tb_allow_start_in_sysmaint=true open_link_confirmation_skip=true WAYLAND_DISPLAY=wayland-0 MOZ_ENABLE_WAYLAND=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) ${DM_WHONIX_PAIR_BROWSER_ENV:+${DM_WHONIX_PAIR_BROWSER_ENV} }${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json")" || true
@@ -698,9 +698,9 @@ main() {
    ## Opt-in app/browser layer: stage the WebRTC harness beside the battery (anon-leak-test's
    ## find_harness looks beside itself on /mnt/shared).
    if [ "${DM_WHONIX_PAIR_BROWSER:-0}" = '1' ]; then
-      [ -r "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" ] \
+      [ -r "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.js" ] \
          || die "${SETUP_RC}" "DM_WHONIX_PAIR_BROWSER=1 but the WebRTC harness is missing in ${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test"
-      cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.html" "${share_dir}/anon-leak-webrtc.html"
+      cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.js" "${share_dir}/anon-leak-webrtc.js"
    fi
 
    printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"
