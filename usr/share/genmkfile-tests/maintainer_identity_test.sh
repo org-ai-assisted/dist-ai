@@ -111,8 +111,10 @@ write_control() {
    } > "${test_root}/control"
 }
 
-## Drive the REAL deb_variables_check against the control fixture. Records the resulting
-## DEBEMAIL / DEBFULLNAME to ${test_root}/out, and any exit_with_error message to
+## Drive the REAL maintainer-identity flow against the control fixture, exactly as
+## make_get_dependencies does it: derive from debian/control ONLY when neither
+## DEBEMAIL nor DEBFULLNAME is set, then validate. Records the resulting DEBEMAIL /
+## DEBFULLNAME to ${test_root}/out, and any exit_with_error message to
 ## ${test_root}/die (the run is a subshell so a stubbed exit_with_error cannot end the
 ## test, and DEBEMAIL/DEBFULLNAME changes do not leak between cases). DEBEMAIL/DEBFULLNAME
 ## are taken from the environment the caller sets up before invoking this.
@@ -134,6 +136,9 @@ run_check() {
          printf '%s' "${2:-}" > "${test_root}/die"
          exit "${1:-1}"
       }
+      if [ -z "${DEBEMAIL:-}" ] && [ -z "${DEBFULLNAME:-}" ]; then
+         deb_maintainer_identity_from_control
+      fi
       deb_variables_check
       printf 'DEBEMAIL=%s\n' "${DEBEMAIL:-}" > "${test_root}/out"
       printf 'DEBFULLNAME=%s\n' "${DEBFULLNAME:-}" >> "${test_root}/out"
