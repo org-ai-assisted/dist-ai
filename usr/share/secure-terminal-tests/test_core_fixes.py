@@ -13,7 +13,7 @@ OSC-52 modal notifier guard."""
 
 from test_widget_common import *   # noqa: F401,F403  (shared harness)
 
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtGui import QKeyEvent, QTextLayout
 from PyQt6.QtCore import QEvent
 from secure_terminal.terminal import (_alt_partial_tail, _alt_scan_partial_tail, PROMPT_START,
                                        _SafeHistoryScreen, _Utf8CharsetByteStream,
@@ -338,5 +338,139 @@ for _ in range(20):
 ok(len(_cl5_prompts) <= 5 and _cl5._clip_read_flood_advised,
    'Cl5: a read-query flood is bounded to a few prompts, then auto-denied + advised once')
 _cl5.close()
+
+# --- JB: TUI last-row clip + Ctrl+End "jump to bottom" (real painted line pitch) ------
+# The winsize rows told to the child are computed against the REAL painted pitch
+# (_line_pitch), not fontMetrics().height() -- which Qt rounds UP by ~1px at some zooms. With
+# the old formula the grid is one row too tall for the viewport; top-pinned with the
+# scrollbar off (a full-screen TUI), the BOTTOM row is clipped -- the truncated last line AND
+# the "jump to bottom" (Ctrl+End) that reveals it appearing to do nothing. Sweep for a zoom
+# where the two formulas actually disagree (font-env robust: fail loud if none in band), then
+# assert no overcount and no clip.
+def _jb_probe_height(term):
+    """Single-line height a probe QTextLayout computes at the term's font -- the
+    content-independent twin of _line_pitch's firstVisibleBlock path."""
+    pr = QTextLayout('M', term.font())
+    pr.beginLayout()
+    ln = pr.createLine()
+    ln.setLineWidth(1 << 24)
+    pr.endLayout()
+    return int(ln.height())
+
+
+def _jb_show_tui(zoom):
+    """A shown TUI term at `zoom` with synchronous font apply (no debounce)."""
+    t = SecureTerminal(command='/bin/cat', tui=True)
+    t._zoom_debounce_ms = 0
+    t.resize(1000, 640)
+    t.show()
+    wait_for(lambda: t._rows > 0 and t.isVisible())
+    t.apply_zoom(zoom)
+    APP.processEvents()
+    return t
+
+
+def _jb_feed_full_grid(term):
+    """Fill every grid row (CUP per row, no LF -> no scroll) so the document is one block per
+    row and the LAST grid row carries a sentinel: a fixed canvas, no scrollback promoted."""
+    parts = []
+    for r in range(1, term._rows + 1):
+        parts.append('\x1b[%d;1H' % r)
+        parts.append('JB_LAST_ROW' if r == term._rows else 'jb row %03d' % r)
+    feed_output(term, ''.join(parts).encode())
+    term._force_current_frame()
+
+
+# Sweep (MEASURE ONLY -- _line_pitch returns the real pitch even on an empty doc via its
+# probe branch, so no feeding is needed; feeding across shrinking zooms would promote
+# scrollback and stop being a fixed canvas) for the first zoom where the OLD formula
+# (// fontMetrics().height()) overcounts rows vs the fixed one (// _line_pitch()).
+_jb_sweep = _jb_show_tui(100)
+_jb_zoom = None
+for _z in range(100, 311, 5):
+    _jb_sweep.apply_zoom(_z)
+    APP.processEvents()
+    _avail = _jb_sweep._text_area()[1]
+    if _avail // (_jb_sweep.fontMetrics().height() or 1) > _avail // _jb_sweep._line_pitch():
+        _jb_zoom = _z
+        break
+_jb_sweep.close()
+ok(_jb_zoom is not None,
+   'JB: no zoom in 100-310 makes _line_pitch disagree with fontMetrics().height() for the CI '
+   'font -- widen the sweep band (the clip canary would be vacuous otherwise)')
+
+if _jb_zoom is not None:
+    # Assert on a FRESH term at the chosen zoom, fed the full grid ONCE -> a clean fixed
+    # canvas (the real full-screen-TUI shape).
+    _jbt = _jb_show_tui(_jb_zoom)
+    _jb_feed_full_grid(_jbt)
+    _avail = _jbt._text_area()[1]
+    _pitch = _jbt._line_pitch()
+    _fm = _jbt.fontMetrics().height()
+    ok(_jbt._grid_fixed_canvas(),
+       'JB: the full-grid frame is a fixed canvas (top-pinned) -- the path that clips')
+    eq(_jbt._rows, max(2, _avail // _pitch),
+       'JB: winsize rows computed against the real painted pitch')
+    ok(_jbt._rows * _pitch <= _avail < (_jbt._rows + 1) * _pitch,
+       'JB: rows * pitch fits the viewport with no room for one more row')
+    ok(_avail // _fm > _jbt._rows,
+       'JB: canary non-vacuous -- fontMetrics().height() would overcount rows at this zoom')
+    _jb_last = [(b, t, bot) for (b, t, bot) in _jbt._visible_blocks()
+                if 'JB_LAST_ROW' in b.text()]
+    ok(bool(_jb_last) and _jb_last[-1][2] <= _jbt.viewport().height(),
+       'JB: the last TUI grid row is fully visible, not clipped at the bottom '
+       '(reverting rows to fontMetrics().height() clips it)')
+    _jb_layout = _jbt.firstVisibleBlock().layout()
+    _jb_real = int(_jb_layout.lineAt(0).height()) if _jb_layout and _jb_layout.lineCount() else 0
+    eq(_jb_real, _jb_probe_height(_jbt),
+       'JB: probe QTextLayout pitch equals the painted first-block pitch (first winsize '
+       'is correct -> no corrective SIGWINCH on the first content)')
+    _jbt.close()
+
+
+# --- JB-perf: _grid_space_is_visible memoized (session-exit scrollback rebuild) --------
+# On session exit ST rebuilds the whole restored history; the per-space-cell visibility scan
+# recomputed a format resolve + luminance compare for EVERY padded space cell. Memoized by
+# SGR identity, the expensive compute is width-INDEPENDENT. Assert too_close() calls for a
+# styled space BAR do not grow with the bar width; the canary (drop the memo) makes them grow
+# one per cell.
+import secure_terminal.terminal as _TT              # noqa: E402
+
+_jb_tc_orig = _TT.too_close
+_jb_tc = {'n': 0}
+
+
+def _jb_counting_too_close(a, b):
+    _jb_tc['n'] += 1
+    return _jb_tc_orig(a, b)
+
+
+def _jb_bar_too_close_calls(width):
+    _TT.too_close = _jb_counting_too_close
+    try:
+        t = SecureTerminal(command='/bin/cat', tui=True)
+        t.resize(1200, 400)
+        t.show()
+        wait_for(lambda: t._rows > 0 and t.isVisible())
+        t._effective_colors = lambda: True          # colors ON (ctor default is False); env-
+        t._colors = True                            # independent, so the bar bg is PAINTED and
+        t._fmt_cache = {}                            # the visibility scan reaches too_close
+        t._space_vis_cache = {}
+        _jb_tc['n'] = 0
+        feed_output(t, b'\x1b[H\x1b[44m' + b' ' * width + b'\x1b[0m')   # a blue status bar
+        t._force_current_frame()
+        n = _jb_tc['n']
+        t.close()
+        return n
+    finally:
+        _TT.too_close = _jb_tc_orig
+
+
+_jb_tc_30 = _jb_bar_too_close_calls(30)
+_jb_tc_90 = _jb_bar_too_close_calls(90)
+ok(_jb_tc_30 == _jb_tc_90,
+   'JB-perf: space-visibility memoized -- too_close() calls are width-independent (%d vs %d); '
+   'without the memo they grow one per styled space cell' % (_jb_tc_30, _jb_tc_90))
+
 
 finish('core-fixes')
