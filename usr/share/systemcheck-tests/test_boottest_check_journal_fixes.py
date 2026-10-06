@@ -273,6 +273,18 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('NULL pointer dereference', out,
                       'a catastrophe line must survive a preceding unclosed-tag line')
 
+    def test_catastrophe_with_tag_does_not_hide_next(self) -> None:
+        ## Two catastrophe lines where the FIRST carries an unclosed '<' (a kernel-echoed
+        ## process comm can inject one). The matched set is sanitized PER LINE, so the '<'
+        ## cannot eat the SECOND catastrophe. (RED if the matches were sanitized as one blob.)
+        out = self._run_check_critical([
+            'host kernel: BUG: soft lockup note <unclosed',
+            'host kernel: EDAC MC0: Bad RAM detected',
+        ])
+        self.assertIn('Bad RAM detected', out,
+                      'a later catastrophe must survive an earlier matched line with "<"')
+        self.assertIn('BUG:', out, 'the first catastrophe is still shown')
+
     def test_debug_token_not_matched(self) -> None:
         ## The leading space in ' BUG:' avoids matching 'debug:'; a kernel line mentioning
         ## 'debug:' without a real ' BUG:' is not force-shown.
