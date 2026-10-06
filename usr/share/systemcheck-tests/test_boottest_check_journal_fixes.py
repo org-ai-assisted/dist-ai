@@ -183,50 +183,35 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
                              'ignore pattern must match the real journal line')
 
 
-class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
-    """check_critical_logs force-shows a line in the always-shown CRITICAL tier only when
-    it is a kernel catastrophe: a hard token (Bad RAM / CPU-stall / nouveau) or a kernel
-    ' BUG:'/oops. The ' BUG:' match is SCOPED to kernel-origin lines (journald short-format
-    syslog identifier ' kernel:'), because Tor logs mixed-case 'Bug:' for EVERY LD_BUG line
-    -- non-fatal asserts, fatal aborts, AND log_backtrace() frames alike, with no stable
-    backtrace signature -- and those userspace lines are surfaced by the service-log check,
-    not this tier. Kernel-scoping cannot HIDE a real kernel BUG (a genuine kernel line
-    always carries the ' kernel:' identifier); it is a substring test, not a positional
-    anchor, so a local process logging 'kernel:' next to 'BUG:' can still raise a false
-    positive (accepted; the robust fix is a capture-time _TRANSPORT=kernel anchor). Drives
-    the REAL function so the actual matching -- not a reimplementation -- is exercised;
-    canaries on the old code that classed Tor 'Bug:' lines critical."""
+class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
+    """check_critical_logs force-shows kernel catastrophes read from the KERNEL-TRANSPORT
+    journal stream that check_service_logs captures via journalctl --dmesg (the
+    read-journalctl-kernel-logs-* leap actions). Because that stream is _TRANSPORT=kernel, a
+    userspace process cannot forge a kernel line into it: the origin guarantee is STRUCTURAL
+    (capture-time), so this function only matches the catastrophe tokens (Bad RAM / CPU-stall
+    / nouveau, and a kernel ' BUG:'/oops). Tor's userspace 'Bug:' lines -- non-fatal asserts,
+    fatal aborts, and log_backtrace() frames -- never reach this stream, so they are never
+    force-shown here; that exclusion is enforced by the --dmesg capture, NOT by this grep
+    (so it is not re-tested here). Drives the REAL function against a crafted kernel stream;
+    canaries on the old code, which read the mixed service-log file."""
 
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
     CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
-    ## Real Tor journal lines (journalctl --output short): userspace, identifier 'Tor[pid]'.
-    ## Non-fatal soft assert.
-    TOR_NONFATAL = ('host Tor[1234]: [warn] tor_bug_occurred_(): Bug: '
-                    'src/feature/nodelist/microdesc.c:123: microdescs_add_to_cache: '
-                    'Non-fatal assertion failed. (on Tor 0.4.9.11)')
-    ## FATAL assert (tor_assertion_failed_() aborts the process).
-    TOR_FATAL = ('host Tor[2919]: [err] tor_assertion_failed_(): Bug: '
-                 'src/core/or/conflux.c:534: conflux_note_cell_sent: '
-                 'Assertion leg failed; aborting. (on Tor 0.4.8.10)')
-    ## log_backtrace() frames: Tor's tor_log() logs them with a NULL function name, so the
-    ## REAL line is 'Bug:     <frame>' -- NO 'tor_log():' prefix (verified against Tor
-    ## 0.4.9.12). All are userspace 'Tor[pid]' lines.
-    TOR_BACKTRACE = [
-        'host Tor[1234]: [warn] Bug:     /usr/bin/tor(log_backtrace_impl+0x56) [0x5612ab]',
-        'host Tor[1234]: [warn] Bug:     Unable to generate backtrace.',
-    ]
+    ## A benign kernel line (journalctl --dmesg --output short): no catastrophe token.
+    BENIGN = 'host kernel: usb 1-1: new high-speed USB device number 2 using xhci_hcd'
 
-    def _run_check_critical(self, lines: list) -> str:
-        """Run the REAL check_critical_logs against a crafted matched-journal file.
-        Mirrors log-checker's own shell options (errexit + nounset, NO pipefail --
-        the grep pipeline legitimately exits non-zero on no-match)."""
+    def _run_check_critical(self, kernel_lines: list) -> str:
+        """Run the REAL check_critical_logs against a crafted KERNEL-transport stream (the
+        journalctl_kernel.txt_br file check_service_logs writes). Mirrors log-checker's own
+        shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
+        exits non-zero on no-match)."""
         func = extract_bash_function(
             os.path.join(self.dir, 'log-checker'), 'check_critical_logs')
         with tempfile.TemporaryDirectory() as td:
-            br = os.path.join(td, 'journalctl_match_filtered.txt_br')
+            br = os.path.join(td, 'journalctl_kernel.txt_br')
             with open(br, 'w', encoding='utf-8') as handle:
-                handle.write('\n'.join(lines) + '\n')
+                handle.write('\n'.join(kernel_lines) + '\n')
             script = (
                 'set -o errexit\n'
                 'set -o nounset\n'
@@ -257,57 +242,44 @@ class TestLogCheckerCriticalKernelScoped(SystemcheckTestBase):
         out = self._run_check_critical([self.CPU_STALL])
         self.assertIn('self-detected stall on CPU', out)
 
-    def test_tor_nonfatal_not_critical(self) -> None:
-        ## Userspace Tor 'Bug:' line -> not a kernel catastrophe; surfaced by the
-        ## service-log check, not this tier. RED on the old code that matched ' BUG:'
-        ## unconditionally.
-        out = self._run_check_critical([self.TOR_NONFATAL])
+    def test_benign_kernel_line_not_critical(self) -> None:
+        ## A kernel line with no catastrophe token is not force-shown, so the critical tier
+        ## stays quiet on a healthy boot.
+        out = self._run_check_critical([self.BENIGN])
         self.assertEqual(out.strip(), '',
-                         'a Tor non-fatal "Bug:" line must NOT be critical')
+                         'a benign kernel line must NOT be critical')
 
-    def test_tor_fatal_not_critical(self) -> None:
-        ## A FATAL Tor abort is a userspace service failure, not a kernel catastrophe -- it
-        ## leaves this tier (the service-log check surfaces it). RED on the old code.
-        out = self._run_check_critical([self.TOR_FATAL])
-        self.assertEqual(out.strip(), '',
-                         'a Tor fatal abort is a service-log concern, not kernel-critical')
-
-    def test_tor_backtrace_not_critical(self) -> None:
-        ## Real log_backtrace() frames ('Bug:     <frame>', no 'tor_log():' prefix) are
-        ## userspace Tor lines -> never kernel-critical.
-        out = self._run_check_critical(self.TOR_BACKTRACE)
-        self.assertEqual(out.strip(), '',
-                         'Tor log_backtrace() frames must NOT be critical')
-
-    def test_mixed_keeps_kernel_drops_all_tor(self) -> None:
-        ## Kernel BUG alongside the whole Tor block (non-fatal + fatal + backtrace):
-        ## only the kernel line survives.
-        out = self._run_check_critical(
-            [self.TOR_NONFATAL, self.TOR_FATAL, *self.TOR_BACKTRACE, self.KERNEL_BUG])
+    def test_mixed_only_catastrophes_shown(self) -> None:
+        ## In a kernel stream mixing benign and catastrophe lines, only the catastrophes
+        ## are force-shown.
+        out = self._run_check_critical([self.BENIGN, self.KERNEL_BUG, self.BAD_RAM])
         self.assertIn('NULL pointer dereference', out)
-        self.assertNotIn('Tor[', out, 'no Tor-origin line may be critical')
-        self.assertNotIn('aborting', out)
-        self.assertNotIn('microdesc.c', out)
+        self.assertIn('Bad RAM detected', out)
+        self.assertNotIn('new high-speed USB device', out,
+                         'a benign kernel line must not ride along')
+
+    def test_debug_token_not_matched(self) -> None:
+        ## The leading space in ' BUG:' avoids matching 'debug:'; a kernel line mentioning
+        ## 'debug:' without a real ' BUG:' is not force-shown.
+        out = self._run_check_critical(
+            ['host kernel: audit: type=1400 debug: profile loaded'])
+        self.assertEqual(out.strip(), '',
+                         "'debug:' must not trip the ' BUG:' token")
 
     def test_kernel_bug_with_trailing_noise_stays_critical(self) -> None:
-        ## A genuine kernel BUG line stays critical regardless of trailing text in its
-        ## message (a process comm/name echoed by the kernel). This guards the SAFE
-        ## direction: a real kernel catastrophe is never hidden. NOTE the match is a
-        ## ' kernel:' substring, not a positional field anchor, so it does NOT claim the
-        ## reverse -- a userspace process logging 'kernel:' next to 'BUG:' can still raise a
-        ## false-positive (accepted; strictly rarer than the prior ' BUG:'-anywhere match;
-        ## the robust fix is a capture-time _TRANSPORT=kernel anchor in parse_cmd).
+        ## A kernel BUG line stays critical regardless of trailing text in its message
+        ## (e.g. a process comm echoed by the kernel): a real catastrophe is never hidden.
         line = ('host kernel: BUG: soft lockup - CPU#0 stuck for 22s! '
                 '[comm_with_bug_text]')
         out = self._run_check_critical([line])
         self.assertIn('soft lockup', out,
-                      'a genuine kernel BUG: must stay critical despite trailing text')
+                      'a kernel BUG: must stay critical despite trailing text')
 
-    def test_hard_critical_kernel_line_stays_critical(self) -> None:
-        ## A hard kernel token (Bad RAM / CPU-stall / nouveau) is critical on its own
-        ## kernel line regardless of any trailing noise phrase.
+    def test_hard_critical_with_trailing_phrase_stays_critical(self) -> None:
+        ## A hard kernel token (Bad RAM / CPU-stall / nouveau) stays critical regardless of
+        ## any trailing noise phrase on the same line.
         line = ('host kernel: EDAC MC0: Bad RAM detected -- '
-                'Non-fatal assertion failed')
+                'some trailing noise')
         out = self._run_check_critical([line])
         self.assertIn('Bad RAM detected', out,
                       'a hard-critical token must survive a trailing phrase')
