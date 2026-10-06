@@ -241,6 +241,15 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('NULL pointer dereference', out,
                       'a real kernel BUG: must be critical')
 
+    def test_bug_on_macro_critical(self) -> None:
+        ## The BUG()/BUG_ON() macro logs 'kernel BUG at <file>:<line>!' -- ' BUG ' with no
+        ## colon. The word-boundary token must catch it (a plain ' BUG:' substring would
+        ## miss this genuine kernel catastrophe).
+        out = self._run_check_critical(
+            ['host kernel: kernel BUG at mm/slub.c:4567!'])
+        self.assertIn('kernel BUG at', out,
+                      'a BUG_ON() (kernel BUG at ...) must be critical')
+
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
         self.assertIn('Bad RAM detected', out)
