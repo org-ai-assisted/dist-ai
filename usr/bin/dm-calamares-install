@@ -78,7 +78,7 @@ usage() {
              modifynvram enrollmok'), then reboots so tirdad loads under Secure
              Boot. Requires EFI firmware, and a sudo-capable user (host disk mount).
 --checks     after the installed boot, run the release-critical check battery
-             in-guest (check 8: systemcheck --leak-tests) and fail on a non-pass.
+             in-guest (check 8: systemcheck) and fail on a non-pass.
 --shot PATH  capture a screenshot of the installed system's first boot (R4) to PATH
              (for the results plane); best-effort, never fails the install."
 }

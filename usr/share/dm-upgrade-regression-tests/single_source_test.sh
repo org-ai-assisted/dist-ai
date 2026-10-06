@@ -88,6 +88,15 @@ if [[ "${RELEASE_CHECK_CMD[8]:-}" == *systemcheck* ]]; then
 else
    bad "check 8 wrong: ${RELEASE_CHECK_CMD[8]:-<unset>}"
 fi
+## --leak-tests (aka --ip-test) is a Tor/Whonix connectivity check (curl
+## check.torproject.org through a SocksPort); every caller of this table is
+## Kicksecure (Calamares install + upgrade gate), which has no Tor, so it must
+## never appear here -- the Whonix leak battery is dm-whonix-pair's own lane.
+if [[ "${RELEASE_CHECK_CMD[8]:-}" != *leak* && "${RELEASE_CHECK_CMD[8]:-}" != *ip-test* ]]; then
+   ok 'check 8 carries no Whonix leak/ip test'
+else
+   bad "check 8 runs a Whonix leak test on a Kicksecure table: ${RELEASE_CHECK_CMD[8]:-<unset>}"
+fi
 
 printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
 [ "${fail}" -eq 0 ] || exit 1
