@@ -810,6 +810,39 @@ else
 fi
 
 ## =============================================================================
+## Superproject K: the bounded-parallel pre-fetch must honour CONTAINMENT (run it
+## BEFORE any fetch). A '.gitmodules' path '../victim' that escapes the superproject
+## and points at a real repo WITH the fork remote must NOT be fetched -- the run STOPs
+## and the escaping repo gets no remote-tracking ref. FAILS on a pre-fetch that skips
+## the containment check (it would fetch ../victim before the loop rejects it).
+## =============================================================================
+superK="${workspace}/superK"
+new_super "${superK}"
+## a real victim repo OUTSIDE superK, with an org-ai-assisted remote that HAS 'ai'.
+new_fork "${workspace}/fork-victim.git" "${workspace}/drv-victim"
+gitq clone --quiet "file://${workspace}/fork-victim.git" "${workspace}/victim"
+gitq -C "${workspace}/victim" remote rename origin org-ai-assisted
+gitq -C "${workspace}/victim" config protocol.file.allow always
+## drop the tracking ref the clone created, so a stray pre-fetch re-creating it is observable.
+gitq -C "${workspace}/victim" update-ref -d refs/remotes/org-ai-assisted/ai 2>/dev/null || true
+gitq -C "${superK}" config --file "${superK}/.gitmodules" submodule.evilk.path ../victim
+gitq -C "${superK}" config --file "${superK}/.gitmodules" submodule.evilk.url "file:///unused"
+
+rc=0
+k_out="$("${tool}" --dir "${superK}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ]; then
+   pass "escaping-path run STOPs (exit 1)"
+else
+   fail "escaping-path run exited ${rc}; output:<<<${k_out}>>>"
+fi
+require_result "${k_out}" "resolves outside the superproject" "escaping path surfaced as a STOP"
+if gitq -C "${workspace}/victim" rev-parse --verify --quiet refs/remotes/org-ai-assisted/ai >/dev/null 2>&1; then
+   fail "pre-fetch FETCHED an escaping submodule path (containment bypass)"
+else
+   pass "pre-fetch did NOT fetch an escaping submodule path (contained before fetch)"
+fi
+
+## =============================================================================
 ## Invariant: no 'git submodule update' ever ran.
 ## =============================================================================
 if [ ! -s "${SUBUPDATE_LOG}" ]; then

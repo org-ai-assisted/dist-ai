@@ -219,6 +219,15 @@ ensure_ai_upstream "${top}" "(parent)"
 
 top_real="$( realpath -m -- "${top}" )"
 
+## The bounded-parallel pre-fetch below uses 'wait -n -p' (reap a SPECIFIC finished job), which
+## needs bash >= 5.1. Assert it loudly: on older bash '-p' is an invalid option that fails WITHOUT
+## setting the pid, so the running-counter is never decremented and the concurrency cap is lost
+## (unbounded fetches -- the exact OOM this guards against). The supported OS (trixie) ships 5.2.
+if [ "${BASH_VERSINFO[0]}" -lt 5 ] \
+   || { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+   die 2 "bash >= 5.1 required for the bounded-parallel fetch (found ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]})"
+fi
+
 ## --- Bounded-parallel pre-fetch ------------------------------------------------
 ## The per-submodule fork fetch is the slow part -- a network round-trip each -- so run them
 ## CONCURRENTLY, capped, instead of one-at-a-time in the loop below (a ~30-submodule sync was ~30
@@ -240,6 +249,20 @@ prefetch_paths=()
 for path in "${sub_paths[@]}"; do
    [ -n "${path}" ] || continue
    sub="${top}/${path}"
+   ## CONTAINMENT FIRST -- identical to the loop's check below, and it MUST precede any fetch here:
+   ## a crafted '.gitmodules' path ('..', '.', a symlink) that escapes or equals the superproject
+   ## would otherwise have its fork remote fetched (contacting a repo-controlled URL, pruning the
+   ## wrong repo's refs) before the loop ever rejects it. realpath -m resolves symlinks too. Skip
+   ## (not STOP) here; the loop surfaces the STOP with the right reason.
+   sub_real="$( realpath -m -- "${sub}" )"
+   [ "${sub_real}" = "${top_real}" ] && continue
+   case "${sub_real}/" in
+      "${top_real}"/* )
+         ;;
+      * )
+         continue
+         ;;
+   esac
    ## Only initialized, readable submodules that actually have the fork remote -- the exact set the
    ## loop fetches. (Uninitialised / unreadable / no-fork-remote submodules are handled in the loop
    ## before any fetch, so pre-fetching them would be wasted or wrong.)
@@ -345,8 +368,10 @@ for path in "${sub_paths[@]}"; do
    ## this path was somehow not pre-fetched (defensive -- the pre-fetch set is the same one this
    ## line is reached for). Fetch-failure handling (STOP for ai-workflow, skip otherwise) unchanged.
    fetch_rc=0
-   if [ -n "${prefetch_rc[${path}]+set}" ]; then
-      fetch_rc="${prefetch_rc[${path}]}"
+   ## Subscript quoted: a submodule path is trusted .gitmodules content but may contain characters
+   ## (']', spaces) that an UNquoted associative-array subscript would misparse under nounset.
+   if [ -n "${prefetch_rc["${path}"]+set}" ]; then
+      fetch_rc="${prefetch_rc["${path}"]}"
    else
       git -C "${sub}" fetch --quiet --prune "${FORK_REMOTE}" 2>/dev/null || fetch_rc=$?
    fi
