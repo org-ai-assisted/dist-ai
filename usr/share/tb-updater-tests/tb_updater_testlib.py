@@ -83,13 +83,6 @@ def dispvm_script() -> str:
                     "/usr/libexec/tb-updater/dispvm", "dispvm")
 
 
-def dispvm_bind_mount_script() -> str:
-    """Absolute path of the TOCTOU-safe bind-mount helper under test."""
-    return _resolve("usr/libexec/tb-updater/dispvm-bind-mount",
-                    "/usr/libexec/tb-updater/dispvm-bind-mount",
-                    "dispvm-bind-mount")
-
-
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
