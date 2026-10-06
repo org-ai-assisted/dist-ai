@@ -129,10 +129,12 @@ nictrace_pcap="${work}/pcap"
 ## --- ws_battery: one short command on /mnt/shared, classified by the JSON verdict --------------
 ## The echo stub emits no JSON exit_code, so probe_verdict returns SETUP -> capture with || true.
 out="$(ws_battery '--probe tor-confirm')" || true
-rc=0; has "dsudo python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
+rc=0; has "dsudo ${GUEST_SHARE_MOUNT}/anon-leak-test --probe tor-confirm --json" "${out}" || rc=$?
 check 'ws_battery: runs the battery on /mnt/shared via dsudo (no copyto, no inline script)' "${rc}"
 rc=0; has "sudo -S" "${out}" && rc=1 || rc=0
 check 'ws_battery: no hand-rolled piped password (dsudo submits the empty password via askpass, no sudo -S)' "${rc}"
+rc=0; has "python3 -Bsu" "${out}" && rc=1 || rc=0
+check 'ws_battery: invokes the CLI by shebang + exec bit, not an explicit python3 -Bsu' "${rc}"
 
 ## --- ws_browser_probe: stage the CLI+harness readably, run the probe as non-root sysmaint -----
 ## /mnt/shared is a root-only read-only vboxsf mount; the battery reads it as root (dsudo), but the
@@ -146,9 +148,9 @@ rc=0; has "dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PRO
 check 'ws_browser_probe: stages the CLI off the root-only share into the world-readable dir (as root)' "${rc}"
 rc=0; has "dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" "${out}" || rc=1
 check 'ws_browser_probe: stages the harness beside the CLI (find_harness looks beside it)' "${rc}"
-rc=0; has "python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json" "${out}" || rc=1
+rc=0; has "${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json" "${out}" || rc=1
 check 'ws_browser_probe: runs the probe from the readable guest-local copy' "${rc}"
-rc=0; has "python3 -Bsu ${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc" "${out}" && rc=1 || rc=0
+rc=0; has "${GUEST_SHARE_MOUNT}/anon-leak-test --probe browser-webrtc" "${out}" && rc=1 || rc=0
 check 'ws_browser_probe: does NOT run the probe directly off the root-only share (the EACCES regression)' "${rc}"
 rc=0; grep --quiet -- '--role sysmaint.*dsudo install' <<< "${out}" || rc=1
 check 'ws_browser_probe: STAGES as root in the sysmaint session (dsudo for the copy)' "${rc}"
