@@ -111,6 +111,7 @@ nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 ## The canary reads the consensus relay set from gw_relay_cache (main populates it while the GW is
 ## up, BEFORE the poweroff); point it at the fixture set_counts writes.
+# shellcheck disable=SC2034  ## consumed by the sourced dm-whonix-pair canary_gateway_pcap (dynamic scope)
 gw_relay_cache="${work}/relay_ips"
 
 ## total + denylist-hits; liveness defaults tor=20/pc=1; relay set = the pinned + reserved guards

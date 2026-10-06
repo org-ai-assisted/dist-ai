@@ -113,6 +113,7 @@ nictrace_pcap="${work}/pcap"
 printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 ## The canary reads the consensus relay set from the gw_relay_cache file that main() populates
 ## (while the GW is up) BEFORE the poweroff; point it at the test's relay-set fixture.
+# shellcheck disable=SC2034  ## consumed by the sourced dm-whonix-pair canary_gateway_pcap (dynamic scope)
 gw_relay_cache="${work}/relay_ips"
 
 ## The GW consensus relay set the canary classifies against: the pinned guards + the reserved pc
@@ -165,6 +166,15 @@ check 'inbound reply to the GW own address (dst 10.0.2.15) is NOT flagged (PASS,
 set_counts 10 0; ( canary_gateway_pcap ) >/dev/null 2>&1 || true
 rc=0; has 'not dst host 10.0.2.15' "$(cat -- "${work}/last_filter_leak" 2>/dev/null)" || rc=1
 check 'leak filter excludes the GW own address as a dst (not dst host 10.0.2.15)' "${rc}"
+
+## PORTLESS protocol leak: a non-relay clearnet dst reached WITHOUT a port (ICMP / GRE / ESP /
+## raw-IP) must be caught, not only ported TCP/UDP. Tor is TCP (ported), so a portless non-relay
+## dst is never Tor -- a deny-by-default gap if the extraction were port-anchored.
+set_counts 10 0
+printf 'IP 10.0.2.15 > 8.8.8.8: ICMP echo request, id 1, seq 1, length 64\n' >> "${work}/dsts"
+out="$( ( canary_gateway_pcap ) 2>&1 || true )"
+rc=0; { has 'LEAK' "${out}" && has '8.8.8.8' "${out}"; } || rc=1
+check 'allowlist CATCHES a PORTLESS (ICMP) non-relay dst -> leak names 8.8.8.8' "${rc}"
 
 ## Defense-in-depth: the fixed denylist still fires first on a watched target (forged-source too).
 set_counts 10 2
