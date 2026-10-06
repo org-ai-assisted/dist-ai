@@ -486,6 +486,18 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || exit 77  ## style-ok: allow-skip')"
 assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 
+## R-220 gates BOTH skip codes: 78 (SKIP:env-unmet) like 77 (SKIP:target-absent).
+## The waived 'exit 78' is LAST so its waiver comment does not sit on the line
+## above either unwaived skip (_skip_waived also checks the line above).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'type -P foo || exit 78' \
+   'return 78' \
+   'type -P bar || exit 78  ## style-ok: allow-skip: needs root, not in CI')"
+assert_at     "R-220 flags an unwaived 'exit 78' (env-unmet)"    "R-220" 2
+assert_at     "R-220 flags an unwaived 'return 78'"              "R-220" 3
+assert_not_at "R-220 spares an 'exit 78' with a trailing waiver" "R-220" 4
+
 ## --- quote-aware loopholes (ai-review): a quoted arg is the same command -----
 ## R-220: 'exit "77"' is the same skip as 'exit 77'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit "77"')"
@@ -500,10 +512,11 @@ assert_at "R-220 flags a whitespace-padded 'exit \"  77  \"'" "R-220" 2
 ## missed it.
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 077')"
 assert_at "R-220 flags 'exit 077' (decimal 77)" "R-220" 2
-## Non-77 codes must be spared -- normalize the VALUE, do not substring-match '77'.
-run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 770' 'bar || return 78')"
+## Non-skip codes must be spared -- normalize the VALUE, do not substring-match,
+## and match EXACTLY the skip set {77,78}, not a range (76 is adjacent but not a skip).
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 770' 'bar || return 76')"
 assert_not_at "R-220 spares 'exit 770'"   "R-220" 2
-assert_not_at "R-220 spares 'return 78'"  "R-220" 3
+assert_not_at "R-220 spares 'return 76'"  "R-220" 3
 ## bash truncates the exit code to 8 bits, so ANY code == 77 mod 256 runs as 77 at
 ## runtime ('exit 333' -> 77, 'exit -179' -> 77) and must be gated; a code that mods
 ## to something else is spared. A literal '== 77' missed the whole truncation class.

@@ -1,0 +1,103 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared checker: a GRUB x-idiom comparison must not be always-false.
+##
+## The idiom [ "x${VAR}" = "xLITERAL" ] prefixes BOTH operands with a literal
+## 'x' so a VAR that is empty or starts with '-' cannot be mis-parsed by test(1).
+## Drop the 'x' from the RHS literal and the two sides can never be equal -- the
+## test is ALWAYS false (or, with !=, always true). This actually shipped: the
+## EFI 'UEFI Firmware Settings' menuentry guarded by such a test never rendered.
+##
+## The guard lives here, once, because both the derivative-maker ISO grub-config
+## suite (dm-iso-grub-menu-tests, against the real templates) and the canary
+## suite (dm-iso-grub-menu-lint-tests, against fixtures) scan with it.
+##
+## What is flagged: a QUOTED x-idiom LHS operand ("x${VAR}") compared =/==/!=
+## against a literal whose first significant char is NOT 'x' -- including an EMPTY
+## literal ("" / ''), which can never equal the always-"x"-prefixed LHS. The RHS
+## may be single- OR double-quoted (the quote is skipped), so a correct
+## single-quoted idiom = 'xefi' is NOT a false positive. The reverse direction
+## (bare var vs x-literal) is intentionally not flagged: it is indistinguishable
+## from a legitimate value like "xterm".
+##
+## SCOPE: a line scan for the canonical idiom, NOT a shell parser. The LHS must
+## carry its opening quote, so an x${VAR} appearing inside some other string
+## (e.g. an echo argument or a menuentry title) is not mistaken for a comparison.
+## Deliberately OUT of scope (they do not occur in the hand-written grub-config
+## templates this guards, and catching them would mean reimplementing shell word
+## splitting -- a worse trade than the miss):
+##   - quote-concatenation literals ("" joined with more, e.g. ""efi -> one word
+##     'efi'); only a standalone "" / '' empty literal is flagged;
+##   - a single-quoted dollar literal ('$b'), where $ does not expand;
+##   - an unquoted LHS (x${VAR} without surrounding quotes), non-idiomatic here.
+##
+## Usage: grub-xprefix-lint <file>
+## Exit: 0 no mismatch; 1 one or more mismatches (each printed as
+##       name:lineno: line); 2 the input is not a readable regular file (LOUD --
+##       a lint for a silently-disabled branch must not itself skip a file
+##       quietly, and a directory / FIFO / unreadable path would otherwise read
+##       as a clean empty scan, doubly so under the root CI container where the
+##       permission bit is bypassed).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+file="${1:?usage: grub-xprefix-lint <file>}"
+
+## A regular file is required: [ -f ] rejects a directory / FIFO / device and is
+## uid-independent (a directory is never -f, even for root), unlike [ -r ] which
+## the root CI container satisfies for any path.
+if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
+   printf '%s\n' "FATAL: grub-xprefix-lint: not a readable regular file: '${file}'" >&2
+   exit 2
+fi
+
+xprefix_quote="[\"']"
+## QUOTED x-idiom LHS (an opening quote, then x${VAR}), an operator, then the RHS
+## literal's first token: either an EMPTY quoted literal ("" / '', where the two
+## quotes TERMINATE the operand) OR an optional quote followed by a significant
+## char that is not 'x'. Three constraints keep valid comparisons from firing:
+##   - the LHS opening quote is REQUIRED, so an x${VAR} embedded in some other
+##     string (an echo argument, a title) is not read as an operand;
+##   - the empty-literal branch requires a word terminator after the quotes, so a
+##     quote-concatenation like ""xfoo (one word 'xfoo' in GRUB) is not misread as
+##     an empty literal;
+##   - a '$' first char is a VARIABLE operand, not a literal, so it is excluded
+##     (it can expand to anything, like the bare-var reverse direction above).
+## (See the SCOPE note in the header for what is deliberately not caught.)
+xprefix_mismatch_ere="${xprefix_quote}x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}([[:space:]]|]|;|\$)|${xprefix_quote}?[^x[:space:]\"'=\$])"
+
+lineno=0
+hits=0
+while IFS= read -r line || [ -n "${line}" ]; do
+   lineno=$(( lineno + 1 ))
+   ## Context-aware: a comment documenting the bug, a menuentry title, or a
+   ## kernel cmdline is not a comparison -- only an actual [ ... ] / test lints.
+   ## '[' and 'test' are matched followed by ANY whitespace (GRUB, like POSIX sh,
+   ## accepts a tab there), so a tab-separated test is not silently skipped.
+   if [[ "${line}" =~ ^[[:space:]]*# ]]; then
+      continue
+   fi
+   if [[ ! "${line}" =~ (\[|test)[[:space:]] ]]; then
+      continue
+   fi
+   if [[ "${line}" =~ ${xprefix_mismatch_ere} ]]; then
+      printf '%s\n' "${file##*/}:${lineno}: ${line}"
+      hits=$(( hits + 1 ))
+   fi
+done < "${file}"
+
+if [ "${hits}" -eq 0 ]; then
+   exit 0
+fi
+exit 1

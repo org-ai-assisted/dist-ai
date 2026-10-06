@@ -365,13 +365,18 @@ ws_battery() {
 }
 
 ## Run the app/browser-layer webrtc probe. It runs as the NON-root sysmaint user (Tor Browser
-## refuses root), but /mnt/shared is a root-only read-only mount a non-root read cannot open. So
-## copy the CLI + harness off it into a world-readable guest-local dir as root (dsudo), then run
-## the probe from THERE (find_harness looks beside the CLI). The guest exit code IS the verdict
-## (0 clear / 1 leak / other inconclusive).
+## refuses root), but /mnt/shared is a root-only read-only mount a non-root read cannot open.
+## STAGE (as root, dsudo) into a world-readable guest-local dir in a SEPARATE guestcontrol call so
+## a staging/transport failure returns SETUP_RC -- never the probe's exit-1 LEAK code; explicit dir
+## mode 0755 so a hardened (Kicksecure) root umask cannot leave it non-searchable for the non-root
+## probe. Then RUN the probe from there (find_harness looks beside the CLI); its exit IS the verdict
+## (0 clear / 1 leak / other inconclusive), mirroring ws_battery.
 ws_browser_probe() {
+   "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 120 \
+      --cmd "dsudo install -d -m 0755 ${GUEST_PROBE_LOCAL} && dsudo install -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html" \
+      || return "${SETUP_RC}"
    "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
-      --cmd "dsudo install -D -m 0755 ${GUEST_SHARE_MOUNT}/anon-leak-test ${GUEST_PROBE_LOCAL}/anon-leak-test && dsudo install -D -m 0644 ${GUEST_SHARE_MOUNT}/anon-leak-webrtc.html ${GUEST_PROBE_LOCAL}/anon-leak-webrtc.html && ${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json"
+      --cmd "${DM_WHONIX_PAIR_BROWSER_ENV:+env ${DM_WHONIX_PAIR_BROWSER_ENV} }python3 -Bsu ${GUEST_PROBE_LOCAL}/anon-leak-test --probe browser-webrtc --json"
 }
 
 ## Preflight (run once the WS is up in sysmaint, BEFORE any root step): confirm the guest session
@@ -405,7 +410,7 @@ ws_tor_confirm() {
    for port in check_tor_socks_port check_tor_trans_port; do
       "${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
          --cmd "systemcheck --cli --leak-tests --function ${port}" \
-         || return 1
+         || return "${SETUP_RC}"
    done
    return 0
 }

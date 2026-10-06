@@ -6,9 +6,10 @@
 ## AI-Assisted
 
 """Regression tests for the ai-review-confirmed pre-existing core bugs (terminal.py):
-Save-Transcript integrity (alt-leave snapshot), colors=false in TUI, TUI scrollback
-repaint on a theme toggle, the CLI Alt/Meta prefix, the zero-width mid-row-gap cursor
-advance, the PROMPT_START split carry, and the OSC-52 modal notifier guard."""
+Save-Transcript integrity (alt-leave snapshot, incl. no duplicate snapshot on a reseed
+replay), colors=false in TUI, TUI scrollback repaint on a theme toggle, the CLI Alt/Meta
+prefix, the zero-width mid-row-gap cursor advance, the PROMPT_START split carry, and the
+OSC-52 modal notifier guard."""
 
 from test_widget_common import *   # noqa: F401,F403  (shared harness)
 
@@ -102,6 +103,26 @@ ok('ALT-FINAL-FRAME' in _snap,
 ok('PRIMARY-SCROLL-000' not in _snap and 'PRIMARY-SCROLL-001' not in _snap,
    '#2: the exit snapshot does NOT inflate with the primary scrollback')
 _t2.close()
+
+
+# --- #2b: a CLI<->TUI reseed does NOT duplicate a completed alt session's exit snapshot ---
+# _seed_grid replays _raw through the same _feed_stream path, re-firing the alt enter/leave of
+# a session already recorded by the live feed. _alt_exit_snapshots survives _make_screen, so an
+# unguarded replay re-appends the final frame on every reseed (enough toggles evict older
+# records). _alt_leave must suppress the record while _seeding. Canary: drop the _seeding guard
+# -> the post-reseed count is 2, not 1.
+_t2b = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_t2b, b'\x1b[?1049h\x1b[2J\x1b[HALT-DUP-FRAME\x1b[?1049l')   # one complete session
+APP.processEvents()
+eq(len(_t2b._alt_exit_snapshots), 1, '#2b: the live feed records exactly ONE exit snapshot')
+_t2b._make_screen()        # fresh screen (snapshot list untouched -- reset only in __init__)
+_t2b._seed_grid()          # replay _raw, which holds the completed alt enter/leave
+eq(len(_t2b._alt_exit_snapshots), 1,
+   '#2b: a reseed replay does NOT re-append a duplicate exit snapshot')
+ok('ALT-DUP-FRAME' in _t2b._alt_exit_snapshots[0],
+   '#2b: the single retained snapshot still holds the alt program final frame')
+_t2b.close()
 
 
 # --- #5: CLI-mode Alt+key sends an ESC (Meta) prefix, and is not mirrored literally ----

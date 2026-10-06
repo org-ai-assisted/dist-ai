@@ -55,13 +55,16 @@ bad_hash='false'
 bad_sig='false'
 sums_wrong_name='false'
 omit_wiki='false'
+wiki_crlf='false'
+index_leading_version='false'
 
 print_usage() {
    printf '%s\n' "Usage:
   ${me} <output_dir> [--version V] [--stable-version V] [--older-version V]
         [--vmname N] [--desktop T] [--arch A]
         [--wrong-signer] [--bad-hash] [--bad-sig]
-        [--sums-wrong-name] [--omit-wiki]"
+        [--sums-wrong-name] [--omit-wiki] [--wiki-crlf]
+        [--index-leading-version]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -114,6 +117,14 @@ while [ "$#" -gt 0 ]; do
          ;;
       --omit-wiki)
          omit_wiki='true'
+         shift
+         ;;
+      --wiki-crlf)
+         wiki_crlf='true'
+         shift
+         ;;
+      --index-leading-version)
+         index_leading_version='true'
          shift
          ;;
       -h|--help)
@@ -206,6 +217,13 @@ fi
 ## Directory index: several version dirs plus non-version noise, so the parser
 ## must filter and version-sort. ${version} is the highest.
 {
+   if [ "${index_leading_version}" = 'true' ]; then
+      ## A bare-version first text line (ahead of the markup, so href parsing is
+      ## unaffected). Makes a stale fetch_text read observable: if the reused tmp
+      ## leaks this index body into the stable-pin fetch, sanitize_wiki_version
+      ## returns ${version} -- a false stable pin equal to the highest.
+      printf '%s\n' "${version}"
+   fi
    printf '%s\n' "<html><body><pre>"
    printf '<a href="../">../</a>\n'
    printf '<a href="robots.txt">robots.txt</a>\n'
@@ -214,8 +232,16 @@ fi
    printf '%s\n' "</pre></body></html>"
 } > "${index_path}"
 
-printf '%s<noinclude>[[Category:MultiWiki]]\n{{mbox}}\n</noinclude>\n' \
-   "${stable_version}" > "${wiki_path}"
+if [ "${wiki_crlf}" = 'true' ]; then
+   ## CRLF body with the version alone on the first line: a trailing CR then
+   ## sits AFTER the version and BEFORE any '<', so sanitize_wiki_version's
+   ## '<'-cut cannot strip it -- the version must be CR-stripped in its own right.
+   printf '%s\r\n<noinclude>[[Category:MultiWiki]]\r\n{{mbox}}\r\n</noinclude>\r\n' \
+      "${stable_version}" > "${wiki_path}"
+else
+   printf '%s<noinclude>[[Category:MultiWiki]]\n{{mbox}}\n</noinclude>\n' \
+      "${stable_version}" > "${wiki_path}"
+fi
 
 {
    if [ "${omit_wiki}" != 'true' ]; then

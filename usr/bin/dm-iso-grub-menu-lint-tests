@@ -5,14 +5,17 @@
 
 ## AI-Assisted
 
-## Suite runner for libvirt-dist.
+## Suite runner for the GRUB x-prefix lint's own canaries.
 ##
-## Runs every *_test.sh in usr/share/libvirt-dist-tests and fails if any of them
-## does. Discovery is a glob so a new lane needs no edit here.
+## Self-contained: it exercises dist-ai's shared checker
+## usr/share/dist-ai-tests-common/grub-xprefix-lint against fixtures, so it
+## needs NO component checkout and runs on every dist-ai PR -- unlike
+## dm-iso-grub-menu-tests, which runs the SAME checker over the real
+## derivative-maker ISO templates and SKIPs when that checkout is absent.
 ##
-## Targets the installed package by default; set LIBVIRT_DIST_REPO to test a
-## checkout. A lane that cannot resolve its subject (or the libvirt/qemu stack)
-## exits 77 and is reported as SKIPPED, never folded into a pass.
+## Runs every *_test.sh in usr/share/dm-iso-grub-menu-lint-tests and fails if
+## any does. Discovery is a glob so a new lane needs no edit here. No root, no
+## network.
 
 set -o errexit
 set -o nounset
@@ -22,9 +25,6 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
-## SKIP (exit 77) so the orchestrator's --allow-skip governs it, instead of
-## being folded into a passing suite.
 suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
 [ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
 # shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
@@ -32,10 +32,10 @@ source "${suite_exit_helper}"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d "${script_dir}/../share/libvirt-dist-tests" ]; then
-   tests_dir="${script_dir}/../share/libvirt-dist-tests"
+if [ -d "${script_dir}/../share/dm-iso-grub-menu-lint-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-iso-grub-menu-lint-tests"
 else
-   tests_dir='/usr/share/libvirt-dist-tests'
+   tests_dir='/usr/share/dm-iso-grub-menu-lint-tests'
 fi
 
 shopt -s nullglob

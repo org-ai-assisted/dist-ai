@@ -49,15 +49,22 @@ gui_ocr() {
 
 ## Poll until REGEX (lowercase ERE) appears on screen (PASS) or TIMEOUT elapses
 ## (die FAIL, saving the stuck screen). A Shift tap each round keeps a DPMS-blanked
-## display awake.
+## display awake. Optional ABORT_REGEX (lowercase ERE): if it matches BEFORE the pass
+## regex, die at once with the on-screen reason instead of waiting out the full timeout
+## -- e.g. a Calamares "installation failed" dialog, so a failed step reports its real
+## cause in ~10s rather than after a 20-minute completion poll.
 gui_wait_for() {
-   local regex="$1" timeout="$2" what="$3" deadline text
+   local regex="$1" timeout="$2" what="$3" abort_regex="${4:-}" deadline text
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       "${VBOXMANAGE}" controlvm "${vm}" keyboardputscancode 2a aa >/dev/null
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ ${regex} ]]; then
          return 0
+      fi
+      if [ -n "${abort_regex}" ] && [[ "${text,,}" =~ ${abort_regex} ]]; then
+         "${GUESTCTL}" "${vm}" shot "${HOME}/${me}-stuck.png" >/dev/null 2>&1 || true
+         die "${FAIL_RC}" "aborted while waiting for ${what}: screen matched '${abort_regex}' (screen -> ~/${me}-stuck.png)"
       fi
       sleep 10
    done

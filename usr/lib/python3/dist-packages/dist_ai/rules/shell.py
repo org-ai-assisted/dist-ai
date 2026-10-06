@@ -768,6 +768,12 @@ ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
 ## ungated.
 _DECIMAL_INT = re.compile(r'[+-]?[0-9]+')
 
+## The test-skip exit codes R-220 gates (both mod 256), kept in sync with
+## dist-ai-tests-common/suite-exit.bash: 77 SKIP:target-absent, 78 SKIP:env-unmet.
+## Both are skips that must carry an 'allow-skip' waiver; neither may be an
+## unwaived silent green.
+_SKIP_CODES = frozenset({77, 78})
+
 
 ## Statically evaluate a CONSTANT '$(( ))' exit code, so a skip disguised as
 ## 'exit $((70+7))' (runs 77) is caught. Kept to plain constant arithmetic
@@ -882,23 +888,25 @@ def _const_arith_exit_value(word, source):
         return None
 
 
-def _is_skip_code_77(word):
-    """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash truncates
-    the code to 8 bits and parses it as a signed decimal (leading zeros / '+' / '-'
-    included), so 'exit 077', 'exit +77', 'exit 333' (333 mod 256) and 'exit -179'
-    (-179 mod 256) ALL exit 77 -- a literal '== 77' misses every one and lets an
-    unwaived skip slip. Normalize mod 256 (Python's floored '%' is non-negative, so
-    a negative code lands right); a non-literal (expansion, or a quoted non-number)
-    is not a recognizable skip. Bash parses the code with strtol -- LEADING
-    whitespace is skipped and TRAILING whitespace tolerated -- so 'exit "  77  "'
-    really exits 77; strip before matching or a whitespace-padded quoted code is a
-    silent skip. Whitespace BETWEEN digits ('7 7') stays illegal (bash rejects it)."""
+def _is_skip_code(word):
+    """True if WORD is an 'exit'/'return' argument that RUNS AS a test-skip code
+    (77 SKIP:target-absent or 78 SKIP:env-unmet). Bash truncates the code to 8 bits
+    and parses it as a signed decimal (leading zeros / '+' / '-' included), so
+    'exit 077', 'exit +77', 'exit 333' (333 mod 256) and 'exit -179' (-179 mod 256)
+    ALL exit 77 -- a literal '== 77' misses every one and lets an unwaived skip
+    slip. Normalize mod 256 (Python's floored '%' is non-negative, so a negative
+    code lands right) and test membership in the skip-code set; a non-literal
+    (expansion, or a quoted non-number) is not a recognizable skip. Bash parses the
+    code with strtol -- LEADING whitespace is skipped and TRAILING whitespace
+    tolerated -- so 'exit "  78  "' really exits 78; strip before matching or a
+    whitespace-padded quoted code is a silent skip. Whitespace BETWEEN digits
+    ('7 7') stays illegal (bash rejects it)."""
     if word is None:
         return False
     word = word.strip()
     if _DECIMAL_INT.fullmatch(word) is None:
         return False
-    return int(word, 10) % 256 == 77
+    return int(word, 10) % 256 in _SKIP_CODES
 
 
 ## Prefixes bash treats as running the SAME exit/return builtin: '\exit' (alias
@@ -1039,7 +1047,7 @@ def _skip_exit_code_word(call, source, const_ints=None):
     ## word_string resolves a literal/quoted code; a CONSTANT '$(( ))' has no literal
     ## value (word_string is None) yet still runs as a fixed code, so evaluate it --
     ## 'exit $((70+7))' is the same 77 skip as 'exit 77'. Return it as a decimal string
-    ## so _is_skip_code_77 applies the same mod-256 normalization.
+    ## so _is_skip_code applies the same mod-256 normalization.
     code = bash_ast.word_string(words[index])
     if code is not None:
         return code
@@ -1073,9 +1081,10 @@ def _skip_waived(comment_by_line, line):
 
 
 class UnauthorizedSkip(Rule):
-    """R-220: a test SKIP ('exit 77'/'return 77') must be authorized by a
-    per-skip '## style-ok: allow-skip: <why>' waiver on the line or the line
-    above. A required-dep absence must be 'exit 1' (FATAL), never a skip."""
+    """R-220: a test SKIP ('exit 77' SKIP:target-absent / 'exit 78'
+    SKIP:env-unmet, and the return forms) must be authorized by a per-skip
+    '## style-ok: allow-skip: <why>' waiver on the line or the line above. A
+    required-dep absence must be 'exit 1' (FATAL), never a skip."""
 
     id = "R-220"
 
@@ -1094,11 +1103,11 @@ class UnauthorizedSkip(Rule):
             ## _skip_exit_code_word resolves exit/return incl. the '\exit' /
             ## 'builtin exit' / 'command exit' spellings, then word_string
             ## (quote-aware) so 'exit "77"' is the same skip as 'exit 77';
-            ## _is_skip_code_77 normalizes a leading '+' and decimal leading zeros
+            ## _is_skip_code normalizes a leading '+' and decimal leading zeros
             ## ('exit +77' / 'exit 077' both run as 77); const_ints resolves a
             ## constant-var indirection ('SKIP=77; exit "${SKIP}"').
             code_word = _skip_exit_code_word(call, ctx.source, const_ints)
-            if code_word is None or not _is_skip_code_77(code_word):
+            if code_word is None or not _is_skip_code(code_word):
                 continue
             ## Check the statement's START line (and the line above) AND its END
             ## line: a backslash-continued 'exit \<nl>77  ## style-ok: allow-skip'
@@ -1110,9 +1119,9 @@ class UnauthorizedSkip(Rule):
                 continue
             yield _fail(
                 ctx, "R-220",
-                "R-220 unauthorized skip: 'exit 77' without '## style-ok: "
-                "allow-skip: <reason>' -- a required-dep absence must be 'exit "
-                "1' (FATAL); only an optional target may skip, and must say why",
+                "R-220 unauthorized skip: 'exit 77'/'exit 78' without "
+                "'## style-ok: allow-skip: <reason>' -- a required-dep absence must "
+                "be 'exit 1' (FATAL); only an optional target may skip, and must say why",
                 call)
 
 

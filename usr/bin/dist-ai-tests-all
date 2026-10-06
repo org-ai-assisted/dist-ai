@@ -110,6 +110,7 @@ core_suites=(
    dm-grub-smbios-tests
    dm-grub-theme-tests
    dm-iso-grub-menu-tests
+   dm-iso-grub-menu-lint-tests
    dm-help-steps-tests
    dm-package-depends-tests
    dm-approx-curlrc-tests
@@ -820,6 +821,14 @@ wire() {
          ## derivative-maker parent checkout.
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-iso-grub-menu-lint)
+         ## Drives dist-ai's grub-xprefix-lint checker against its own fixtures,
+         ## so it needs no checkout env and no network. Mapped to derivative-maker
+         ## (suite_component) only so it runs in that component's CI lane alongside
+         ## dm-iso-grub-menu, which lints the real templates.
+         wire_env=()
+         wire_args=()
+         ;;
       dm-grub-menu-render)
          ## Boots a grub-mkrescue image of the ISO GRUB menu template
          ## (iso-build-data/grub-config), in the derivative-maker parent checkout.
@@ -1033,7 +1042,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-iso-grub-menu-lint|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
@@ -1249,6 +1258,16 @@ run_suite() {
             skip_count=$(( skip_count + 1 ))
          fi
          ;;
+      78)
+         ## SKIP:env-unmet -- a RUNTIME capability the test needs is absent here
+         ## (the suite self-declared it via result_skip_env_unmet). Always tolerated
+         ## (counted, never failed): unlike target-absent (77), an env-unmet skip is
+         ## inherently "cannot run in this environment", not an unauthorized coverage
+         ## gap. The audit is at the SOURCE -- R-220 requires the per-skip allow-skip
+         ## waiver naming the missing capability.
+         verdict="SKIP:env-unmet"
+         skip_count=$(( skip_count + 1 ))
+         ;;
       124)
          verdict="TIMEOUT"
          fail_count=$(( fail_count + 1 ))
@@ -1278,6 +1297,9 @@ run_suite() {
             done < "${log_dir}/dist-ai-tests-all.${suite}.log"
             emit "---- ${suite}: end captured output ----"
          fi
+         ;;
+      78)
+         ## SKIP:env-unmet is always tolerated; stay quiet like an ordinary SKIP.
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"

@@ -536,7 +536,10 @@ main() {
    ## out (verified: Alt+I advances to the exec page; the OCR click does not).
    gui_scan 38 17 97 b8
    printf '%s\n' "${me}: installing (encrypted) -- polling for completion"
-   gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)'
+   ## Abort fast on a Calamares failure dialog (e.g. a shellprocess exiting non-zero)
+   ## instead of waiting out the full 1200s for a completion marker that will never come.
+   gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)' \
+      'installation failed|external command finished with errors'
 
    printf '%s\n' "${me}: reboot into the installed disk (detach ISO)"
    ## Install is finished at the "all done" page; we power off + detach the ISO +

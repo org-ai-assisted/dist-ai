@@ -180,6 +180,12 @@ fetch_text() {
       https://*|http://*)
          local tmp
          tmp="${work_dir}/fetch_text.tmp"
+         ## curl --fail leaves the previous body in --output DEST on an HTTP
+         ## error, so a reused tmp would make cat emit a PRIOR fetch's content
+         ## when this one fails under a caller's errexit-suppressing '|| true'
+         ## (e.g. the developers stable-pin probe). Truncate so a failed fetch
+         ## yields empty, not stale.
+         true > "${tmp}"
          fetch "${location}" "${tmp}"
          cat -- "${tmp}"
          ;;
@@ -215,11 +221,13 @@ validate_version() {
 }
 
 ## Extract the pinned version from a wiki Template:VersionNew raw body:
-## first line, cut at the first '<' (drops the <noinclude> tail).
+## first line, cut at the first '<' (drops the <noinclude> tail). CRs are
+## stripped first so a CRLF body cannot leave a trailing '\r' on the version
+## (a CR on a version-only first line survives the '<'-cut otherwise).
 sanitize_wiki_version() {
    local raw first
    raw="$1"
-   first="$(printf '%s\n' "${raw}" | head -n 1)"
+   first="$(printf '%s\n' "${raw}" | tr -d '\r' | head -n 1)"
    first="$(printf '%s' "${first}" | sed 's/<.*//')"
    printf '%s' "${first}"
 }

@@ -313,6 +313,27 @@ scenario_developers_survives_wiki_failure() {
    assert_file_exists "still downloaded" "${out_dir}/${img}"
 }
 
+scenario_developers_wiki_404_no_stale_pin() {
+   local fix ver img
+   ver='18.4.0.5'
+   ## fetch_text reuses one tmp across the index and the stable-pin fetch. The
+   ## wiki pin 404s (--omit-wiki) and curl leaves the prior body in place, so a
+   ## reused tmp makes cat emit the stale index as the pin. With a leading bare
+   ## version in the index that stale pin sanitizes to == highest and fires a
+   ## FALSE "coincides with stable" notice; a failed fetch must yield empty.
+   fix="$(make_fixture_into devwiki404 --version "${ver}" --omit-wiki --index-leading-version)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel developers --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "developers wiki-404" "${tool_rc}"
+   assert_file_exists "still downloaded" "${out_dir}/${img}"
+   assert_no_grep "no false coincides from stale tmp" "coincides with stable" "${out_file}"
+}
+
 scenario_spaced_name_verifies() {
    local fix ver img
    ver='18.4.0.5'
@@ -328,6 +349,24 @@ scenario_spaced_name_verifies() {
 
    assert_rc_zero "spaced name verifies" "${tool_rc}"
    assert_file_exists "spaced-name artifact kept" "${out_dir}/${img}"
+}
+
+scenario_wiki_crlf_version_tolerated() {
+   local fix ver img
+   ver='18.4.0.5'
+   ## The wiki Template:VersionNew raw body is untrusted network input and may
+   ## arrive with CRLF line endings; sanitize_wiki_version must strip the trailing
+   ## CR or validate_version rejects the version as non-[0-9.] (die 3).
+   fix="$(make_fixture_into wikicrlf --version "${ver}" --wiki-crlf)"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_zero "wiki crlf tolerated" "${tool_rc}"
+   assert_file_exists "wiki-crlf artifact kept" "${out_dir}/${img}"
 }
 
 scenario_socks_proxy_wired() {
@@ -437,7 +476,9 @@ all_scenarios=(
    scenario_wrong_signer_rejected
    scenario_wrong_name_rejected
    scenario_developers_survives_wiki_failure
+   scenario_developers_wiki_404_no_stale_pin
    scenario_spaced_name_verifies
+   scenario_wiki_crlf_version_tolerated
    scenario_socks_proxy_wired
    scenario_print_version_stable_no_download
    scenario_print_version_developers_highest
