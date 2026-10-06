@@ -14,9 +14,10 @@
 ## quiet package's committed auto-generated-man-pages/ silently drifts from
 ## its source.
 ##
-## Structural check against the CURRENT script text (no drift): it is a pure
-## statement-ordering invariant, so a text assertion is the faithful guard and
-## needs no reprepro/dpkg fixture.
+## Structural check against the CURRENT script text (no drift): an unconditional
+## (base-indentation) call that precedes the gate is a pure statement-placement
+## invariant, so a text assertion is the faithful guard and needs no
+## reprepro/dpkg fixture.
 
 set -o errexit
 set -o nounset
@@ -73,44 +74,83 @@ if [ -z "${func_text}" ]; then
    exit 1
 fi
 
-## 1-based line index of the first call to ${1} in the function body, or empty.
-call_line() {
+## 1-based line index of the gate call, and its leading whitespace. The three
+## calls sit at the function's top level, so that indentation is the "base": a
+## regen call found as a bare line at exactly that indent is UNCONDITIONAL,
+## while one wrapped in an if/loop is indented deeper and must not match. This
+## is a simple whole-line match, not a bash-control-flow parser.
+gate_raw="$(printf '%s\n' "${func_text}" \
+   | grep --extended-regexp -- '^[[:space:]]*pkg_need_version_bump_show([[:space:]]|$)' \
+   | head -1 \
+   || true)"
+if [ -z "${gate_raw}" ]; then
+   fail "pkg_need_version_bump_show not called in the orchestration function"
+   printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
+   exit 1
+fi
+base_indent="${gate_raw%%[![:space:]]*}"
+show_line="$(printf '%s\n' "${func_text}" \
+   | grep --line-number --extended-regexp -- '^[[:space:]]*pkg_need_version_bump_show([[:space:]]|$)' \
+   | head -1 \
+   | cut -d: -f1 \
+   || true)"
+
+## 1-based line index of a bare, unconditional call to ${1} -- a whole line
+## equal to base_indent + name (no args, no && / || / conditional) -- or empty.
+base_call_line() {
    local needle="${1}"
    printf '%s\n' "${func_text}" \
-      | grep --line-number --extended-regexp -- "^[[:space:]]*${needle}([[:space:]]|$)" \
+      | grep --line-number --fixed-strings --line-regexp -- "${base_indent}${needle}" \
       | head -1 \
-      | cut -d: -f1
+      | cut -d: -f1 \
+      || true
 }
 
-manpages_line="$(call_line 'pkg_git_manpages')"
-debinstfile_line="$(call_line 'pkg_git_debinstfile')"
-show_line="$(call_line 'pkg_need_version_bump_show')"
+manpages_line="$(base_call_line 'pkg_git_manpages')"
+debinstfile_line="$(base_call_line 'pkg_git_debinstfile')"
 
 if [ -z "${manpages_line}" ]; then
-   fail "pkg_git_manpages not called in the orchestration function"
+   fail "pkg_git_manpages not called unconditionally at function base indentation -- absent, or nested in a conditional/loop, so man pages can drift"
+elif [ "${manpages_line}" -lt "${show_line}" ]; then
+   pass "pkg_git_manpages (line ${manpages_line}) runs unconditionally before the version-bump gate (line ${show_line})"
+else
+   fail "pkg_git_manpages (line ${manpages_line}) runs at/after the version-bump gate (line ${show_line}) -- man pages drift on quiet packages"
 fi
+
 if [ -z "${debinstfile_line}" ]; then
-   fail "pkg_git_debinstfile not called in the orchestration function"
-fi
-if [ -z "${show_line}" ]; then
-   fail "pkg_need_version_bump_show not called in the orchestration function"
-fi
-
-if [ -n "${manpages_line}" ] && [ -n "${show_line}" ]; then
-   if [ "${manpages_line}" -lt "${show_line}" ]; then
-      pass "pkg_git_manpages (line ${manpages_line}) runs before the version-bump gate (line ${show_line})"
-   else
-      fail "pkg_git_manpages (line ${manpages_line}) runs at/after the version-bump gate (line ${show_line}) -- man pages drift on quiet packages"
-   fi
+   fail "pkg_git_debinstfile not called unconditionally at function base indentation -- absent, or nested in a conditional/loop, so the install file can drift"
+elif [ "${debinstfile_line}" -lt "${show_line}" ]; then
+   pass "pkg_git_debinstfile (line ${debinstfile_line}) runs unconditionally before the version-bump gate (line ${show_line})"
+else
+   fail "pkg_git_debinstfile (line ${debinstfile_line}) runs at/after the version-bump gate (line ${show_line}) -- install file drifts on quiet packages"
 fi
 
-if [ -n "${debinstfile_line}" ] && [ -n "${show_line}" ]; then
-   if [ "${debinstfile_line}" -lt "${show_line}" ]; then
-      pass "pkg_git_debinstfile (line ${debinstfile_line}) runs before the version-bump gate (line ${show_line})"
-   else
-      fail "pkg_git_debinstfile (line ${debinstfile_line}) runs at/after the version-bump gate (line ${show_line}) -- install file drifts on quiet packages"
+## The regen commits must be pathspec-scoped: an unconditional every-pass commit
+## with a bare `git commit -m` would sweep a sibling's unrelated staged change
+## into the generated-file commit. Assert each helper commits with a `--`
+## pathspec.
+commit_scoped() {
+   local fn="${1}" body
+   body="$(awk -v fn="${fn}" '
+      $0 ~ "^"fn"\\(\\) \\{" { f=1 }
+      f                      { print }
+      f && /^\}/             { exit }
+   ' "${subject}")"
+   if [ -z "${body}" ]; then
+      fail "${fn}: not found for commit-scope check"
+      return
    fi
-fi
+   ## A ' -- ' must follow 'git commit ' (glob is left-to-right), i.e. the
+   ## commit carries a pathspec. A bare 'git commit -m ...' has no later ' -- '.
+   if [[ "${body}" == *'git commit '*' -- '* ]]; then
+      pass "${fn}: commit is pathspec-scoped"
+   else
+      fail "${fn}: commit is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
+   fi
+}
+
+commit_scoped 'pkg_git_manpages'
+commit_scoped 'pkg_git_debinstfile'
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
 [ "${test_failures}" -eq 0 ]

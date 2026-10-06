@@ -1,0 +1,802 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Generate the static test-results verification site from the results plane.
+
+Reads a results plane (<name>/<ts>/result.json + step screenshots), the in-repo
+goldens and golden-approvals.json, normalizes + compares each screenshot, and
+emits a static, strict-CSP site under <site-out>/automated-test-results/: an
+overview matrix (lane x version x builder x provenance) with a prominent
+NEEDS-APPROVAL section and a legend, plus one page per run.
+
+No-false-green: the run-cell status comes from dm_test_results.site, where green
+requires finished + fresh + functional PASS + every screenshot an approved MATCH;
+stale / new / changed / unknown / inconclusive / no-data all render non-green, and
+the age is always shown. A screenshot that cannot be read shows alt text, never a
+silent blank.
+
+Deterministic: the generated timestamp is pinned to SOURCE_DATE_EPOCH (or
+--source-date-epoch), ordering is sorted, and normalized shots are re-encoded as
+lossless webp by Pillow -- so regenerating identical input yields byte-identical
+output (verified by a canary).
+
+Exit: 0 ok, 2 usage/error.
+"""
+
+import argparse
+import datetime
+import html
+import json
+import os
+import shutil
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results import compare, model, site  # noqa: E402
+
+RESULTS_SUBDIR = "automated-test-results"
+IMAGE_MEDIA_PREFIX = "image/"
+
+## Legend: status -> human label. Order is display order on the page.
+STATUS_LABEL = [
+    (site.STATUS_PASS, "pass"),
+    (site.STATUS_FAIL, "fail"),
+    (site.STATUS_INCONCLUSIVE, "inconclusive"),
+    (site.STATUS_INCOMPLETE, "did not finish"),
+    (site.STATUS_STALE, "stale (too old)"),
+    (site.STATUS_CHANGED, "changed -- needs re-approval"),
+    (site.STATUS_NEW, "new -- needs approval"),
+    (site.STATUS_UNKNOWN, "unknown / compare error"),
+    (site.STATUS_NODATA, "no data"),
+]
+
+
+## Overview SORT order, worst (most attention) first. Distinct from STATUS_LABEL,
+## which is legend/display order (pass first).
+_SORT_ORDER = [
+    site.STATUS_FAIL, site.STATUS_UNKNOWN, site.STATUS_INCOMPLETE, site.STATUS_NODATA,
+    site.STATUS_INCONCLUSIVE, site.STATUS_CHANGED, site.STATUS_NEW, site.STATUS_STALE,
+    site.STATUS_PASS,
+]
+_SORT_SEVERITY = {status: i for i, status in enumerate(_SORT_ORDER)}
+
+
+def _sort_severity(status):
+    return _SORT_SEVERITY.get(status, len(_SORT_ORDER))
+
+
+def _view_stop_unix(view):
+    if isinstance(view.result, dict):
+        stop = (view.result.get("run") or {}).get("stop") or {}
+        unix = stop.get("unix")
+        if isinstance(unix, int) and not isinstance(unix, bool):
+            return unix
+    return 0
+
+
+def esc(value):
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+## Names under the output root the generator owns and must never let a run id
+## shadow (writing into goldens/, or colliding with the overview / approvals file).
+RESERVED_RUN_DIRS = frozenset({"index.html", "goldens", "golden-approvals.json"})
+
+
+def safe_run_dir(run_id):
+    """A run id is written as a directory name; refuse a '/' or '..' (escape) or a
+    reserved name (which would hijack the overview, the approvals file, or the
+    goldens dir)."""
+    if ("/" in run_id or run_id in (".", "..") or run_id == ""
+            or run_id in RESERVED_RUN_DIRS):
+        raise ValueError("unsafe or reserved run id: %r" % run_id)
+    return run_id
+
+
+def _sanitize_component(value):
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", value or "")
+    return cleaned or "run"
+
+
+def run_dir_id(run_dir):
+    """A unique, filesystem-safe id derived from <name>/<ts>, for a NO-DATA run (or
+    one whose own id is unusable) -- so two lanes failing at the same timestamp do
+    not collide and the lane name is not lost."""
+    ts = os.path.basename(run_dir)
+    name = os.path.basename(os.path.dirname(run_dir))
+    return "%s__%s" % (_sanitize_component(name), _sanitize_component(ts))
+
+
+def age_text(age_seconds):
+    if age_seconds is None:
+        return "unknown"
+    if age_seconds < 0:
+        return "in the future"
+    days, rem = divmod(int(age_seconds), 86400)
+    hours = rem // 3600
+    if days > 0:
+        return "%dd %dh ago" % (days, hours)
+    minutes = (rem % 3600) // 60
+    if hours > 0:
+        return "%dh %dm ago" % (hours, minutes)
+    return "%dm ago" % minutes
+
+
+def load_mask_config(path):
+    """lane -> list of [x, y, w, h] rects. Absent -> {} (a per-image top-right clock
+    rect is then used)."""
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("mask config must be a JSON object of lane -> rects")
+    for lane, rects in data.items():
+        if not isinstance(rects, list):
+            raise ValueError("mask config: rects for %r must be a list" % lane)
+        for rect in rects:
+            if not (isinstance(rect, list) and len(rect) == 4
+                    and all(isinstance(n, int) and not isinstance(n, bool) for n in rect)):
+                raise ValueError(
+                    "mask config: each rect for %r must be [x, y, w, h] ints" % lane)
+    return data
+
+
+def discover_runs(results_root):
+    """Yield (run_dir, result_or_None) for every <name>/<ts>/ under results_root,
+    sorted deterministically. A missing/invalid result.json yields None (NO-DATA)."""
+    runs = []
+    if not os.path.isdir(results_root):
+        return runs
+    for name in sorted(os.listdir(results_root)):
+        name_dir = os.path.join(results_root, name)
+        ## Skip a symlinked name dir or the 'latest' run symlink -- never traverse a
+        ## symlink into the plane (it could point anywhere root can read).
+        if os.path.islink(name_dir) or not os.path.isdir(name_dir):
+            continue
+        for ts in sorted(os.listdir(name_dir)):
+            run_dir = os.path.join(name_dir, ts)
+            if os.path.islink(run_dir) or not os.path.isdir(run_dir):
+                continue
+            result = _load_result(os.path.join(run_dir, "result.json"))
+            runs.append((run_dir, result))
+    return runs
+
+
+def _load_result(path):
+    ## result.json is untrusted plane input: ANY read / parse / shape error yields
+    ## NO-DATA (never a crash that denies the whole site). A symlinked result.json
+    ## is refused outright rather than followed.
+    if os.path.islink(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            result = json.load(handle)
+        model.validate(result)
+    except (OSError, ValueError, model.ModelError, AttributeError, TypeError, KeyError):
+        return None
+    return result
+
+
+def rects_for(lane, image_size, mask_config):
+    rects = mask_config.get(lane)
+    if rects:
+        return [tuple(rect) for rect in rects]
+    ## No configured rect: blank the usual top-right clock corner.
+    return [compare.top_right_rect(image_size)]
+
+
+class RunView:
+    """Everything the templates need about one run, computed once."""
+
+    def __init__(self, run_id, run_dir, result, status, age, shots):
+        self.run_id = run_id
+        self.run_dir = run_dir
+        self.result = result
+        self.status = status
+        self.age = age
+        self.shots = shots  # list of dicts: name, bucket, webp, golden_webp, detail, step
+
+    @property
+    def is_green(self):
+        return site.is_green(self.status)
+
+    def key(self):
+        if isinstance(self.result, dict):
+            return site.run_key(self.result)
+        ## NO-DATA run: key off the results-plane NAME (not the unique run id), so
+        ## repeated NO-DATA runs of the same lane collapse to the latest and older
+        ## ones get pruned -- else every emitter-failure dir would accumulate forever.
+        name = os.path.basename(os.path.dirname(self.run_dir))
+        return (name, "", "", "__nodata__")
+
+
+def desired_run_id(run_dir, result):
+    """The run's own id if valid + not reserved, else a unique dir-derived id. Does
+    NOT guarantee global uniqueness -- main() resolves collisions before processing,
+    since the page dir must be settled before shots are written into it."""
+    if not isinstance(result, dict):
+        return run_dir_id(run_dir)
+    try:
+        return safe_run_dir(result["run"]["id"])
+    except (ValueError, KeyError, TypeError):
+        return run_dir_id(run_dir)
+
+
+def process_run(run_dir, result, run_id, out_root, goldens_dir, approvals, mask_config,
+                now_unix, stale_seconds, tolerance, channel_threshold):
+    """Classify a run's screenshots, write their normalized webp into the run's
+    output dir (run_id, already made unique by main), and compute the status."""
+    if not isinstance(result, dict):
+        return RunView(run_id, run_dir, None, site.STATUS_NODATA, None, [])
+
+    run = result["run"]
+    lane = run["lane"]
+    page_dir = os.path.join(out_root, run_id)
+
+    shots = []
+    buckets = []
+    for step in result["steps"]:
+        for attachment in step["attachments"]:
+            if not str(attachment.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX):
+                continue
+            shot = _process_shot(
+                run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
+                mask_config, tolerance, channel_threshold,
+            )
+            shots.append(shot)
+            buckets.append(shot["bucket"])
+
+    ## No-false-green: if an APPROVED golden exists for this lane but no shot in
+    ## this run produced it, the expected screenshot vanished -- flag it (non-green),
+    ## never let a missing-but-expected shot pass as a clean run.
+    produced = {shot["sid"] for shot in shots}
+    for sid, record in sorted(approvals.items()):
+        if (sid.startswith(lane + "/") and record.get("status") == "approved"
+                and sid not in produced):
+            shots.append({
+                "sid": sid, "step": sid.split("/", 1)[-1], "name": "screenshot",
+                "bucket": compare.BUCKET_UNKNOWN,
+                "detail": {"reason": "expected approved golden not produced by this run"},
+                "webp": None, "golden_webp": None, "exit": None, "status": None,
+                "stdout_tail": "", "stderr_tail": "",
+            })
+            buckets.append(compare.BUCKET_UNKNOWN)
+
+    status, age = site.run_cell_status(result, buckets, now_unix, stale_seconds)
+    return RunView(run_id, run_dir, result, status, age, shots)
+
+
+def _screenshot_id(lane, step_name, attachment_name, shot_count):
+    base = "%s/%s" % (lane, step_name)
+    ## Only disambiguate by attachment when a step carries more than one shot.
+    if shot_count > 1:
+        base = "%s/%s" % (base, attachment_name)
+    return base
+
+
+def _process_shot(run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
+                  mask_config, tolerance, channel_threshold):
+    step_name = step["name"]
+    shot_count = sum(
+        1 for att in step["attachments"]
+        if str(att.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX)
+    )
+    sid = _screenshot_id(lane, step_name, attachment["name"], shot_count)
+    ## attachment["path"] was validated as a safe basename by model.validate, so it
+    ## cannot escape run_dir. Still refuse a SYMLINK: its versioned name is safe but
+    ## its target could be any file root could read -- never follow it.
+    current_path = os.path.join(run_dir, attachment["path"])
+    golden_path = os.path.join(goldens_dir, sid + ".webp") if goldens_dir else None
+
+    base = {
+        "sid": sid, "step": step_name, "name": attachment["name"],
+        "golden_webp": None, "exit": step.get("exit"), "status": step.get("status"),
+        "stdout_tail": step.get("stdout_tail", ""), "stderr_tail": step.get("stderr_tail", ""),
+    }
+    if os.path.islink(current_path):
+        base.update(bucket=compare.BUCKET_UNKNOWN,
+                    detail={"reason": "refusing to read a symlinked screenshot"}, webp=None)
+        return base
+
+    rects = None
+    out_webp = None
+    golden_webp = None
+    try:
+        current = compare.normalize_image(current_path, None)
+        rects = rects_for(lane, current.size, mask_config)
+        current = compare.normalize_image(current_path, rects)
+        os.makedirs(page_dir, exist_ok=True)
+        out_name = _flatten(sid) + ".webp"
+        out_webp = out_name
+        _save_webp(current, os.path.join(page_dir, out_name))
+    except Exception:  # noqa: BLE001 -- any shot error is per-shot, never aborts the run/site
+        out_webp = None
+
+    bucket, detail = compare.classify(
+        sid, current_path, golden_path, approvals, rects=rects,
+        tolerance=tolerance, channel_threshold=channel_threshold,
+    )
+
+    ## For a CHANGED shot, also render the approved golden so the page shows
+    ## before/after of exactly what was compared.
+    if bucket == compare.BUCKET_CHANGED and golden_path and os.path.isfile(golden_path):
+        try:
+            golden_img = compare.normalize_image(golden_path, rects)
+            golden_name = _flatten(sid) + "-golden.webp"
+            _save_webp(golden_img, os.path.join(page_dir, golden_name))
+            golden_webp = golden_name
+        except (FileNotFoundError, OSError):
+            golden_webp = None
+
+    return {
+        "sid": sid,
+        "step": step_name,
+        "name": attachment["name"],
+        "bucket": bucket,
+        "detail": detail,
+        "webp": out_webp,
+        "golden_webp": golden_webp,
+        "exit": step.get("exit"),
+        "status": step.get("status"),
+        "stdout_tail": step.get("stdout_tail", ""),
+        "stderr_tail": step.get("stderr_tail", ""),
+    }
+
+
+def _flatten(sid):
+    """A screenshot id (lane/step[/name]) -> a flat, filesystem-safe basename for
+    the per-run page dir."""
+    return sid.replace("/", "__")
+
+
+def _save_webp(image, path):
+    ## Lossless webp, deterministic for a given input + params.
+    image.save(path, format="WEBP", lossless=True, quality=100, method=6)
+
+
+def select_keep(views, history):
+    """Keep the latest run per (lane, version, builder, provenance) plus the
+    `history` most recent runs overall. Deterministic."""
+    def sort_key(view):
+        stop = 0
+        if isinstance(view.result, dict):
+            stop = ((view.result.get("run") or {}).get("stop") or {}).get("unix") or 0
+        return (stop, view.run_id)
+
+    ordered = sorted(views, key=sort_key, reverse=True)
+    keep = set()
+    seen_keys = set()
+    for view in ordered:
+        if view.key() not in seen_keys:
+            seen_keys.add(view.key())
+            keep.add(view.run_id)
+    for view in ordered[:history]:
+        keep.add(view.run_id)
+    return keep
+
+
+def prune(out_root, keep_ids):
+    """Remove per-run dirs under out_root that are not in keep_ids. Never touches
+    index.html, goldens/, or golden-approvals.json."""
+    if not os.path.isdir(out_root):
+        return
+    for entry in sorted(os.listdir(out_root)):
+        if entry in RESERVED_RUN_DIRS:
+            continue
+        full = os.path.join(out_root, entry)
+        ## Skip symlinks: os.path.isdir follows them, and rmtree on a symlinked
+        ## dir raises; a run dir the generator writes is never a symlink.
+        if os.path.islink(full):
+            continue
+        if os.path.isdir(full) and entry not in keep_ids:
+            shutil.rmtree(full)
+
+
+## --------------------------------------------------------------------------
+## HTML (strict CSP, no inline JS; status via st-<status> classes in style.css)
+## --------------------------------------------------------------------------
+
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'"
+)
+
+## Built-in header fallback (used when --chrome-from is not given, e.g. standalone
+## or in the suite). For the real site, --chrome-from an existing family page lifts
+## that page's exact masthead so the uniform-nav gate (identical header across all
+## pages) passes without this needing to track family nav edits.
+_DEFAULT_HEADER = (
+    '<header class="nav"><div class="wrap">'
+    '<a class="brand" href="/">org-ai-assisted</a>'
+    '<nav><a href="https://github.com/org-ai-assisted">GitHub</a>'
+    '<a href="https://output-lies.github.io">output lies</a>'
+    '<a href="https://secure-terminal.github.io">secure-terminal</a></nav>'
+    "</div></header>"
+)
+
+## Footer is ALWAYS built here, never lifted: a family page's footer carries that
+## page's own on-page section anchors (#overview, ...), which do not exist on a
+## results page and would read as broken links. This footer carries only the three
+## family URLs the family-footer gate requires, with no on-page anchors.
+_FOOTER = (
+    '<footer><div class="wrap"><div class="fcols"><div class="fcol">'
+    "<h4>Family</h4>"
+    '<a href="https://output-lies.github.io">output lies</a>'
+    '<a href="https://secure-terminal.github.io">secure-terminal</a>'
+    '<a class="self" href="https://org-ai-assisted.github.io" aria-current="page">org-ai-assisted</a>'
+    '</div></div><p class="fbot">AI-assisted. Automated OS-image test results.</p>'
+    "</div></footer>"
+)
+
+
+def extract_header(path):
+    """Lift the verbatim <header>...</header> from an existing family page so every
+    generated page carries an identical masthead (the uniform-nav gate). The footer
+    is NOT lifted (see _FOOTER)."""
+    import re
+
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    header = re.search(r"<header\b.*?</header>", text, re.DOTALL)
+    if not header:
+        raise ValueError("could not find <header> in %s" % path)
+    return header.group(0)
+
+
+def page(title, description, header, footer, body):
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        '<meta charset="utf-8">\n'
+        '<meta http-equiv="Content-Security-Policy" content="%s">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="ai-disclosure" content="ai-assisted">\n'
+        "<title>%s</title>\n"
+        '<meta name="description" content="%s">\n'
+        '<link rel="stylesheet" href="/style.css">\n'
+        "%s\n%s\n%s\n"
+        "</html>\n"
+    ) % (CSP, esc(title), esc(description), header, body, footer)
+
+
+def status_chip(status):
+    label = dict(STATUS_LABEL).get(status, status)
+    return '<span class="chip %s">%s</span>' % (site.css_class(status), esc(label))
+
+
+def run_fields(view):
+    run = view.result["run"] if isinstance(view.result, dict) else {}
+    prov = view.result.get("provenance", {}) if isinstance(view.result, dict) else {}
+    return {
+        "lane": run.get("lane", view.run_id),
+        "version": run.get("version", ""),
+        "builder": run.get("builder", ""),
+        "origin": (prov or {}).get("origin", ""),
+        "verdict": run.get("verdict", ""),
+    }
+
+
+def render_overview(views, header, footer, generated_utc):
+    rows = []
+    for view in views:
+        f = run_fields(view)
+        rows.append(
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%s</td><td><a href=\"%s/\">details</a></td></tr>"
+            % (
+                esc(f["lane"]), esc(f["version"]), esc(f["builder"]), esc(f["origin"]),
+                status_chip(view.status), esc(age_text(view.age)), esc(view.run_id),
+            )
+        )
+    matrix = (
+        '<section class="cat" id="matrix"><div class="wrap">'
+        "<h2 class=\"catname\">Runs</h2>"
+        '<div class="matrix-wrap"><table class="matrix"><thead><tr><th>lane</th>'
+        "<th>version</th><th>builder</th><th>provenance</th><th>status</th>"
+        "<th>age</th><th></th></tr></thead><tbody>%s</tbody></table></div>"
+        "</div></section>"
+    ) % ("".join(rows) if rows else '<tr><td colspan="7">no runs</td></tr>')
+
+    ## NEEDS-APPROVAL: every NEW/CHANGED shot across all runs.
+    pending = []
+    for view in views:
+        for shot in view.shots:
+            if shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED):
+                chip_status = (
+                    site.STATUS_NEW if shot["bucket"] == compare.BUCKET_NEW
+                    else site.STATUS_CHANGED
+                )
+                pending.append(
+                    "<li>%s %s / %s (<a href=\"%s/\">%s</a>)</li>"
+                    % (
+                        status_chip(chip_status), esc(view.run_id), esc(shot["sid"]),
+                        esc(view.run_id), esc("open run"),
+                    )
+                )
+    approval = (
+        '<section class="cat" id="needs-approval"><div class="wrap">'
+        '<h2 class="catname">Needs approval</h2>'
+        "%s</div></section>"
+    ) % (
+        "<ul>%s</ul>" % "".join(pending) if pending
+        else "<p>No screenshots are awaiting approval.</p>"
+    )
+
+    legend_items = "".join(
+        "<li>%s</li>" % status_chip(status) for status, _ in STATUS_LABEL
+    )
+    legend = (
+        '<section class="cat" id="legend"><div class="wrap">'
+        '<h2 class="catname">Legend</h2><ul class="legend">%s</ul>'
+        "<p>Only pass is green. Stale, new, changed, unknown, inconclusive and "
+        "no-data are never green, and the age is always shown.</p>"
+        "</div></section>"
+    ) % legend_items
+
+    body = (
+        '<section class="hero"><div class="wrap">'
+        '<p class="kicker">automated test suite</p>'
+        "<h1>Test results</h1>"
+        '<p class="line">OS-image install + boot runs, with golden screenshot '
+        "verification. Generated %s.</p></div></section>%s%s%s"
+    ) % (esc(generated_utc), matrix, approval, legend)
+    return page(
+        "Test results", "Automated OS-image test-run results with golden verification.",
+        header, footer, body,
+    )
+
+
+def render_run(view, header, footer, generated_utc):
+    f = run_fields(view)
+    blocks = []
+    if isinstance(view.result, dict):
+        step_names = set()
+        for step in view.result["steps"]:
+            step_names.add(step["name"])
+            blocks.append(render_step(view, step))
+        ## Shots not tied to a rendered step are the expected-but-missing goldens
+        ## (an approved golden whose shot this run did not produce); show them so the
+        ## non-green status is explained, never a silent omission.
+        for shot in view.shots:
+            if shot["step"] not in step_names:
+                blocks.append(
+                    '<div class="issue"><h3>%s %s</h3><p>%s</p></div>'
+                    % (esc(shot["sid"]), status_chip(_bucket_status_class(shot["bucket"])),
+                       esc(shot["detail"].get("reason", "")))
+                )
+    else:
+        blocks.append(
+            '<div class="issue"><h3>No data</h3><p>This run has no readable '
+            "result.json.</p></div>"
+        )
+    body = (
+        '<section class="hero"><div class="wrap">'
+        '<p class="kicker">%s</p><h1>%s</h1>'
+        '<p class="line">%s %s &middot; builder %s &middot; provenance %s &middot; '
+        "%s &middot; %s</p>"
+        '<p class="sub"><a href="../">back to all results</a></p>'
+        "</div></section>"
+        '<section class="cat"><div class="wrap"><div class="fg">%s</div></div></section>'
+    ) % (
+        esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
+        esc(f["builder"]), esc(f["origin"]), status_chip(view.status),
+        esc(age_text(view.age)), "".join(blocks),
+    )
+    return page(
+        "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,
+    )
+
+
+def render_step(view, step):
+    shots = [s for s in view.shots if s["step"] == step["name"]]
+    status_cls = _step_status_class(step.get("status"))
+    caption = (
+        "<h3>%s %s</h3>"
+        "<p>exit %s</p>"
+        "<pre>%s</pre><pre>%s</pre>"
+    ) % (
+        esc(step["name"]), status_chip(status_cls), esc(step.get("exit")),
+        esc(_tail(step.get("stdout_tail", ""))), esc(_tail(step.get("stderr_tail", ""))),
+    )
+    if not shots:
+        ## Text-only step: NO image slot, never a broken-image blank.
+        return '<div class="issue">%s</div>' % caption
+
+    imgs = []
+    for shot in shots:
+        imgs.append(_shot_html(view, shot))
+    return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
+
+
+def _shot_html(view, shot):
+    bucket_cls = _bucket_status_class(shot["bucket"])
+    parts = ["<p>%s" % status_chip(bucket_cls)]
+    if shot["detail"].get("reason"):
+        parts.append(" &mdash; %s" % esc(shot["detail"]["reason"]))
+    parts.append("</p>")
+    if shot["webp"]:
+        parts.append(
+            '<a href="%s"><img loading="lazy" src="%s" alt="%s"></a>'
+            % (esc(shot["webp"]), esc(shot["webp"]), esc("screenshot %s" % shot["sid"]))
+        )
+    else:
+        ## Expected-but-absent shot: flagged, never shown green-with-blank.
+        parts.append("<p>screenshot missing or unreadable</p>")
+    if shot["golden_webp"]:
+        parts.append(
+            '<p>approved golden (before):</p>'
+            '<a href="%s"><img loading="lazy" src="%s" alt="%s"></a>'
+            % (esc(shot["golden_webp"]), esc(shot["golden_webp"]),
+               esc("golden %s" % shot["sid"]))
+        )
+    return "".join(parts)
+
+
+def _step_status_class(step_status):
+    ## Map a step functional status to a cell status class.
+    if step_status == model.STATUS_PASSED:
+        return site.STATUS_PASS
+    if step_status == model.STATUS_FAILED:
+        return site.STATUS_FAIL
+    if step_status == model.STATUS_TIMEDOUT:
+        return site.STATUS_FAIL
+    if step_status in (model.STATUS_BROKEN, model.STATUS_SKIPPED):
+        return site.STATUS_INCONCLUSIVE
+    return site.STATUS_UNKNOWN
+
+
+def _bucket_status_class(bucket):
+    return {
+        compare.BUCKET_MATCH: site.STATUS_PASS,
+        compare.BUCKET_CHANGED: site.STATUS_CHANGED,
+        compare.BUCKET_NEW: site.STATUS_NEW,
+        compare.BUCKET_UNKNOWN: site.STATUS_UNKNOWN,
+    }.get(bucket, site.STATUS_UNKNOWN)
+
+
+def _tail(text, limit=1200):
+    text = text or ""
+    if len(text) > limit:
+        return "..." + text[-limit:]
+    return text
+
+
+def resolve_source_date_epoch(arg_value):
+    raw = arg_value if arg_value is not None else os.environ.get("SOURCE_DATE_EPOCH")
+    if raw is None:
+        import time
+
+        return int(time.time())
+    try:
+        return int(raw)
+    except ValueError:
+        print("test-results-site-generate: bad SOURCE_DATE_EPOCH: %r" % raw, file=sys.stderr)
+        raise SystemExit(2)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--results-root", required=True)
+    parser.add_argument("--site-out", required=True)
+    parser.add_argument("--goldens-dir", default=None)
+    parser.add_argument("--approvals", default=None)
+    parser.add_argument("--mask-config", default=None)
+    parser.add_argument("--chrome-from", default=None)
+    parser.add_argument("--stale-days", type=int, default=30)
+    parser.add_argument("--history", type=int, default=20)
+    parser.add_argument("--tolerance", type=float, default=compare.DEFAULT_TOLERANCE)
+    parser.add_argument("--channel-threshold", type=int,
+                        default=compare.DEFAULT_CHANNEL_THRESHOLD)
+    parser.add_argument("--source-date-epoch", default=None)
+    args = parser.parse_args(argv)
+
+    out_root = os.path.join(args.site_out, RESULTS_SUBDIR)
+    goldens_dir = args.goldens_dir or os.path.join(out_root, "goldens")
+    approvals_path = args.approvals or os.path.join(out_root, "golden-approvals.json")
+    now_unix = resolve_source_date_epoch(args.source_date_epoch)
+    stale_seconds = args.stale_days * 86400
+    generated_utc = datetime.datetime.fromtimestamp(
+        now_unix, tz=datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        approvals = compare.load_approvals(approvals_path)
+        mask_config = load_mask_config(args.mask_config)
+        header = extract_header(args.chrome_from) if args.chrome_from else _DEFAULT_HEADER
+        footer = _FOOTER
+    except (ValueError, compare.CompareError) as exc:
+        raise SystemExit("test-results-site-generate: %s" % exc)
+
+    os.makedirs(out_root, exist_ok=True)
+
+    ## Assign a GLOBALLY-UNIQUE run id to each run BEFORE processing, so two runs
+    ## with the same (possibly crafted) run.id cannot write into the same page dir
+    ## and silently overwrite / drop one another. The page dir must be settled
+    ## before shots are written, hence the up-front pass.
+    used_ids = set()
+    assigned = []
+    for run_dir, result in discover_runs(args.results_root):
+        rid = desired_run_id(run_dir, result)
+        if rid in used_ids:
+            rid = run_dir_id(run_dir)
+        base = rid
+        suffix = 1
+        while rid in used_ids:
+            rid = "%s-%d" % (base, suffix)
+            suffix += 1
+        used_ids.add(rid)
+        assigned.append((run_dir, result, rid))
+
+    views = []
+    for run_dir, result, rid in assigned:
+        views.append(process_run(
+            run_dir, result, rid, out_root, goldens_dir, approvals, mask_config,
+            now_unix, stale_seconds, args.tolerance, args.channel_threshold,
+        ))
+
+    ## Overview order: worst-first then newest-first, deterministic. The legend
+    ## lists pass first; the SORT is the opposite -- the rows needing attention go
+    ## to the top. Secondary key is stop time descending (newest first), run_id as
+    ## the final tiebreak for determinism.
+    views.sort(key=lambda v: (_sort_severity(v.status), -_view_stop_unix(v), v.run_id))
+
+    keep = select_keep(views, args.history)
+    shown = [v for v in views if v.run_id in keep]
+
+    for view in shown:
+        html_text = render_run(view, header, footer, generated_utc)
+        _write(os.path.join(out_root, view.run_id, "index.html"), html_text)
+        _write_manifest(out_root, view)
+
+    _write(os.path.join(out_root, "index.html"),
+           render_overview(shown, header, footer, generated_utc))
+
+    prune(out_root, keep)
+    return 0
+
+
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+
+
+def _write_manifest(out_root, view):
+    """A per-run shots.json mapping each screenshot id to its webp + bucket, so the
+    approval tool resolves ids EXACTLY (no lossy filename-unflatten) and can target
+    just the ones needing approval. Only runs with shots get one."""
+    if not view.shots:
+        return
+    shots = [
+        {
+            "sid": shot["sid"],
+            "webp": shot["webp"],
+            "bucket": shot["bucket"],
+            "needs_approval": shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED),
+        }
+        for shot in sorted(view.shots, key=lambda s: s["sid"])
+    ]
+    path = os.path.join(out_root, view.run_id, "shots.json")
+    payload = json.dumps({"shots": shots}, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    _write(path, payload)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

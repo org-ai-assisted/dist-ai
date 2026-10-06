@@ -106,35 +106,37 @@ main() {
          ;;
    esac
 
-   ## Collect the --expect values (for the JSON summary) from DM_ARGS.
+   ## Collect the --expect values (for the JSON summary) from DM_ARGS, already as
+   ## the publisher's repeated --expect flags.
    local -a expect=()
    local i
    for (( i = 0; i < ${#DM_ARGS[@]}; i++ )); do
       if [ "${DM_ARGS[i]}" = '--expect' ] && [ $(( i + 1 )) -lt ${#DM_ARGS[@]} ]; then
-         expect+=( "${DM_ARGS[i + 1]}" )
+         expect+=( --expect "${DM_ARGS[i + 1]}" )
       fi
    done
 
    ## dm-smbios-reader-vbox runs as TEST_USER and writes the screenshot to a path the test user
    ## owns (the web root is not user-writable); the runner (root) then republishes
    ## it via the shared publisher -- root reads the test user's file directly.
-   local shot_user rc pass outdir verdict
+   local shot_user rc outdir verdict
    shot_user="$(sudo -u "${TEST_USER}" -- mktemp --tmpdir "image-test-${NAME}.XXXXXX.png")"
 
    ## The VM step may FAIL (that is the signal we publish) -- capture rc, never
-   ## let it abort the publish.
+   ## let it abort the publish. The publisher derives verdict/pass/status from rc.
    rc=0
    sudo -u "${TEST_USER}" -- "${DM_VBOX}" "${MODE}" "${DM_ARGS[@]}" \
       --shot "${shot_user}" || rc=$?
-   if [ "${rc}" -eq 0 ]; then
-      pass='true'
-   else
-      pass='false'
-   fi
 
+   ## A publish failure must NOT abort the runner or change the VM verdict: keep
+   ## rc, log it, still clean up the temp shot and return the real result (the run
+   ## simply has no results-plane entry -- NO-DATA, never a faked or downgraded
+   ## verdict, and <name>/latest stays at the last good run, not repointed at an
+   ## empty dir).
    outdir="$(image_test_results_publish \
       "${RESULTS_ROOT}" "${RESULTS_OWNER}" "${NAME}" "${TEST_USER}" "${MODE}" \
-      "${rc}" "${pass}" "${shot_user}" "${expect[@]}")"
+      "${rc}" "${shot_user}" "${expect[@]}")" \
+      || { printf '%s: WARNING: results publish failed (rc=%s preserved)\n' "${me}" "${rc}" >&2; outdir='(publish-failed)'; }
    if [ -f "${shot_user}" ]; then
       safe-rm --force -- "${shot_user}"
    fi

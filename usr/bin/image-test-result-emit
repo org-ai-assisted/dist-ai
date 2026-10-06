@@ -1,0 +1,171 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Deterministic writer for a per-run result.json (dm-test-result/v1).
+
+The single place that serializes the schema: the image-test publisher
+(results-publish.bsh) hands it run-envelope flags plus one `--step`, and this
+assembles + validates + writes the JSON. Keeping JSON construction here (not in
+bash printf) means the schema -- field order, the honest status enum, the summary
+that must agree with steps -- is defined and tested ONCE.
+
+A run has at least one functional step (the lane's pass/fail). A text-only step
+carries no `--step-shot` (its attachments[] is empty); a GUI step carries one.
+Multi-step capture is a later, non-schema-changing extension: it will drop one
+per-step record per step and this tool will assemble them; the single-step flags
+below are the current surface.
+
+Exit: 0 ok, 2 usage/schema error.
+"""
+
+import argparse
+import os
+import sys
+import time
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results import model  # noqa: E402
+
+## Bound per-step log capture so a runaway log cannot bloat the plane or the page.
+TAIL_BYTES = 4000
+
+_MEDIA_BY_EXT = {
+    ".webp": "image/webp",
+    ".png": "image/png",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+}
+
+
+def read_tail(path):
+    """Last TAIL_BYTES of a file as text (utf-8, lossy). Missing file -> ''."""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - TAIL_BYTES), os.SEEK_SET)
+            data = handle.read()
+    except FileNotFoundError:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def media_type_for(path, override):
+    if override:
+        return override
+    _, ext = os.path.splitext(path)
+    media = _MEDIA_BY_EXT.get(ext.lower())
+    if media is None:
+        raise SystemExit("image-test-result-emit: unknown mediaType for %s" % path)
+    return media
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--dest", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--version", default="")
+    parser.add_argument("--builder", required=True)
+    parser.add_argument("--mode", required=True)
+    parser.add_argument("--test-user", default="")
+    parser.add_argument("--origin", required=True, choices=model.VALID_ORIGIN)
+    parser.add_argument("--rc", required=True, type=int)
+    parser.add_argument("--stage", default=model.STAGE_FINISHED, choices=model.VALID_STAGE)
+    parser.add_argument("--generated-unix", type=int, default=None)
+    parser.add_argument("--start-unix", type=int, default=None)
+    parser.add_argument("--stop-unix", type=int, default=None)
+    parser.add_argument("--expect", action="append", default=[])
+    ## One functional step (defaults its rc to the run rc so a single-step run needs
+    ## only --step-name). A screenshot is attached via --step-shot.
+    parser.add_argument("--step-name", required=True)
+    parser.add_argument("--step-rc", type=int, default=None)
+    parser.add_argument("--step-stdout-file", default=None)
+    parser.add_argument("--step-stderr-file", default=None)
+    parser.add_argument("--step-shot", default=None)
+    parser.add_argument("--step-shot-mediatype", default=None)
+    ## provenance (origin is above; these detail it)
+    parser.add_argument("--provenance-source-uri", default=None)
+    parser.add_argument("--provenance-source-commit", default=None)
+    parser.add_argument("--provenance-artifact-sha256", default=None)
+    parser.add_argument("--provenance-built-utc", default=None)
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    now = int(time.time())
+    generated_unix = args.generated_unix if args.generated_unix is not None else now
+    stop_unix = args.stop_unix if args.stop_unix is not None else now
+    step_rc = args.step_rc if args.step_rc is not None else args.rc
+
+    attachments = []
+    if args.step_shot:
+        shot = os.path.basename(args.step_shot)
+        attachments.append(
+            model.make_attachment(
+                "screenshot", media_type_for(shot, args.step_shot_mediatype), shot
+            )
+        )
+
+    step = model.make_step(
+        name=args.step_name,
+        status=model.step_status_from_rc(step_rc),
+        exit_code=step_rc,
+        start_unix=args.start_unix,
+        stop_unix=stop_unix,
+        stdout_tail=read_tail(args.step_stdout_file),
+        stderr_tail=read_tail(args.step_stderr_file),
+        attachments=attachments,
+    )
+
+    try:
+        result = model.build_result(
+            run_id=args.run_id,
+            lane=args.lane,
+            version=args.version,
+            builder=args.builder,
+            mode=args.mode,
+            test_user=args.test_user,
+            origin=args.origin,
+            rc=args.rc,
+            generated_unix=generated_unix,
+            stop_unix=stop_unix,
+            start_unix=args.start_unix,
+            stage=args.stage,
+            expect=args.expect,
+            steps=[step],
+            provenance={
+                "source_uri": args.provenance_source_uri,
+                "source_commit": args.provenance_source_commit,
+                "artifact_sha256": args.provenance_artifact_sha256,
+                "built_utc": args.provenance_built_utc,
+            },
+        )
+    except model.ModelError as exc:
+        raise SystemExit("image-test-result-emit: %s" % exc)
+
+    payload = model.dumps(result)
+    tmp = args.dest + ".tmp"
+    with open(tmp, "w", encoding="ascii") as handle:
+        handle.write(payload)
+    os.replace(tmp, args.dest)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

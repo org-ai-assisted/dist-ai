@@ -1,0 +1,165 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Promote (or reject) golden screenshots for the verification site.
+
+The mechanical half of the AI-chat-mediated approval workflow: the human reviews
+the NEW/CHANGED shots on the page and says, in chat, which to approve; the AI runs
+this to copy the approved run's normalized shot into the in-repo goldens and record
+the approval (sha256 + approver + time + commit) in golden-approvals.json, then
+commits goldens + the approvals file and regenerates (a now-approved shot flips to
+MATCH / green). Rejected shots are left NEW/CHANGED (flagged).
+
+The golden copied is the generator's NORMALIZED webp (what was shown AND compared),
+so the recorded sha256 matches what classify() will re-read -- no drift. This tool
+does NOT git-commit or regenerate; the caller does (so the human sees the diff).
+
+Exit: 0 ok, 2 usage/error.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import sys
+import time
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results import compare  # noqa: E402
+
+RESULTS_SUBDIR = "automated-test-results"
+
+
+def _flatten(sid):
+    return sid.replace("/", "__")
+
+
+_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _safe_component(value, what):
+    if not isinstance(value, str) or not _COMPONENT.fullmatch(value):
+        raise SystemExit("test-results-site-approve: unsafe %s: %r" % (what, value))
+    return value
+
+
+def _safe_sid(sid):
+    """A screenshot id is <lane>/<step>[/<name>]: slash-separated safe components.
+    Refuse a '..' or empty component so it cannot escape the goldens dir."""
+    if not isinstance(sid, str) or sid == "":
+        raise SystemExit("test-results-site-approve: unsafe screenshot id: %r" % sid)
+    for part in sid.split("/"):
+        _safe_component(part, "screenshot id component")
+    return sid
+
+
+def _load_manifest(run_page_dir):
+    """Read a run's shots.json -> {sid: {webp, bucket, needs_approval}}. The generator
+    writes it so ids resolve EXACTLY (no lossy filename-unflatten). Absent -> {}."""
+    path = os.path.join(run_page_dir, "shots.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for entry in data.get("shots", []) if isinstance(data, dict) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("sid"), str):
+            out[entry["sid"]] = entry
+    return out
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--site-out", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--approve", action="append", default=[])
+    parser.add_argument("--approve-all", action="store_true")
+    parser.add_argument("--reject", action="append", default=[])
+    parser.add_argument("--approver", default=None)
+    parser.add_argument("--approved-commit", default="")
+    parser.add_argument("--goldens-dir", default=None)
+    parser.add_argument("--approvals", default=None)
+    parser.add_argument("--source-date-epoch", default=None)
+    args = parser.parse_args(argv)
+
+    out_root = os.path.join(args.site_out, RESULTS_SUBDIR)
+    goldens_dir = args.goldens_dir or os.path.join(out_root, "goldens")
+    approvals_path = args.approvals or os.path.join(out_root, "golden-approvals.json")
+    ## run id is a path component (the run's page dir); refuse an escape.
+    _safe_component(args.run_id, "run id")
+    run_page_dir = os.path.join(out_root, args.run_id)
+    manifest = _load_manifest(run_page_dir)
+
+    approve = list(args.approve)
+    if args.approve_all:
+        ## From the manifest, exactly the shots flagged as needing approval.
+        approve.extend(sid for sid, entry in manifest.items() if entry.get("needs_approval"))
+    approve = sorted(set(approve))
+
+    if approve and not args.approver:
+        raise SystemExit("test-results-site-approve: --approver is required to approve")
+
+    raw = args.source_date_epoch or os.environ.get("SOURCE_DATE_EPOCH")
+    when = int(raw) if raw else int(time.time())
+    approved_utc = datetime.datetime.fromtimestamp(
+        when, tz=datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        approvals = compare.load_approvals(approvals_path)
+    except compare.CompareError as exc:
+        raise SystemExit("test-results-site-approve: %s" % exc)
+
+    for sid in approve:
+        _safe_sid(sid)
+        ## Resolve the shot's webp EXACTLY from the manifest when present (the id ->
+        ## filename map is not reliably invertible); fall back to the flattened name.
+        webp = manifest.get(sid, {}).get("webp") if sid in manifest else None
+        src = os.path.join(run_page_dir, webp or (_flatten(sid) + ".webp"))
+        if not os.path.isfile(src):
+            raise SystemExit(
+                "test-results-site-approve: no screenshot for %r in run %r (looked for %s)"
+                % (sid, args.run_id, src))
+        dst = os.path.join(goldens_dir, sid + ".webp")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+        approvals[sid] = {
+            "golden_sha256": compare.sha256_file(dst),
+            "status": compare.APPROVAL_STATUS_APPROVED,
+            "approver": args.approver,
+            "approved_utc": approved_utc,
+            "approved_commit": args.approved_commit,
+        }
+        print("approved %s" % sid)
+
+    for sid in args.reject:
+        _safe_sid(sid)
+        if sid in approvals:
+            del approvals[sid]
+            print("rejected %s (approval cleared)" % sid)
+        else:
+            print("reject %s: no existing approval" % sid)
+
+    os.makedirs(os.path.dirname(approvals_path), exist_ok=True)
+    compare.write_approvals(approvals_path, approvals)
+    print("wrote %s (%d approved golden(s))" % (approvals_path, len(approvals)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

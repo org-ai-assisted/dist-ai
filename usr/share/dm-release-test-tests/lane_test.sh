@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Regression test for the Kicksecure lane's acquire step. Canary targets:
-##   - a FAILED iso-download must FAIL the lane, publish pass=false, and NEVER
+##   - a FAILED iso-download must FAIL the lane, publish verdict FAIL, and NEVER
 ##     reach the installer (errexit is disabled inside a function called as
 ##     `... || rc=$?`, so the lane must check the download rc explicitly -- a
 ##     reverted fix falls through to the install and emits a false PASS).
@@ -123,7 +123,7 @@ check "installer was NOT invoked after a failed download" "$([ ! -s "${install_a
 json="$(find "${RESULTS_ROOT}" -name result.json -print -quit 2>/dev/null || true)"
 check "a result.json was published" "$([ -n "${json}" ] && [ -f "${json}" ] && printf true || printf false)"
 if [ -n "${json}" ]; then
-   check "published verdict is pass=false" "$(grep --quiet '"pass": false' -- "${json}" && printf true || printf false)"
+   check "published verdict is FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${json}" && printf true || printf false)"
 fi
 
 ## B: the lane pinned the resolved version (did not re-resolve).
