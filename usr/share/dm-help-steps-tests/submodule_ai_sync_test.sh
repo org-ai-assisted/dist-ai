@@ -781,6 +781,35 @@ else
 fi
 
 ## =============================================================================
+## Superproject J: the bounded-parallel pre-fetch must sync correctly at the serial
+## cap too (DM_SUBMODULE_AI_SYNC_FETCH_JOBS=1 -- the wait-reap fires every iteration).
+## The default (parallel) cap is already exercised by superA's several submodules.
+## =============================================================================
+superJ="${workspace}/superJ"
+new_super "${superJ}"
+new_fork "${workspace}/fork-j1.git" "${workspace}/drv-j1"
+add_sub "${superJ}" "${workspace}/fork-j1.git" j1
+advance_fork "${workspace}/drv-j1" "${workspace}/fork-j1.git"
+j1_tip="$(gitq -C "${workspace}/drv-j1" rev-parse ai)"
+new_fork "${workspace}/fork-j2.git" "${workspace}/drv-j2"
+add_sub "${superJ}" "${workspace}/fork-j2.git" j2
+advance_fork "${workspace}/drv-j2" "${workspace}/fork-j2.git"
+j2_tip="$(gitq -C "${workspace}/drv-j2" rev-parse ai)"
+
+rc=0
+j_out="$(DM_SUBMODULE_AI_SYNC_FETCH_JOBS=1 "${tool}" --dir "${superJ}" 2>&1)" || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   pass "serial-cap (FETCH_JOBS=1) run exits 0"
+else
+   fail "serial-cap run exited ${rc}; output:<<<${j_out}>>>"
+fi
+if [ "$(head_of "${superJ}/j1")" = "${j1_tip}" ] && [ "$(head_of "${superJ}/j2")" = "${j2_tip}" ]; then
+   pass "both submodules fast-forwarded under FETCH_JOBS=1 (pre-fetch result consumed)"
+else
+   fail "FETCH_JOBS=1 did not FF both submodules (j1=$(head_of "${superJ}/j1") j2=$(head_of "${superJ}/j2"))"
+fi
+
+## =============================================================================
 ## Invariant: no 'git submodule update' ever ran.
 ## =============================================================================
 if [ ! -s "${SUBUPDATE_LOG}" ]; then

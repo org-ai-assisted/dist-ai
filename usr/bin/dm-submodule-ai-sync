@@ -115,6 +115,9 @@ while [ "$#" -gt 0 ]; do
             "  --dir      the derivative-maker checkout to operate on (default: cwd)" \
             "  --dry-run  fetch + classify + report; make no checkout / fast-forward" \
             "" \
+            "Submodule fork fetches run bounded-parallel (default 4 concurrent; the cap bounds" \
+            "peak memory). Override with DM_SUBMODULE_AI_SYNC_FETCH_JOBS=<n> (set 1 to serialize)." \
+            "" \
             "Happy-path only: behind -> fast-forward, detached -> re-attach. Ahead/" \
             "diverged/dirty/unpublished/fetch-failure STOP and are surfaced for a human." \
             "" \
@@ -216,6 +219,62 @@ ensure_ai_upstream "${top}" "(parent)"
 
 top_real="$( realpath -m -- "${top}" )"
 
+## --- Bounded-parallel pre-fetch ------------------------------------------------
+## The per-submodule fork fetch is the slow part -- a network round-trip each -- so run them
+## CONCURRENTLY, capped, instead of one-at-a-time in the loop below (a ~30-submodule sync was ~30
+## serial round-trips). The CAP is the safe bounded default the operator used to hand-set: it
+## bounds PEAK MEMORY to a handful of concurrent fetches (not all at once), so no external
+## MemoryMax scope is needed; DM_SUBMODULE_AI_SYNC_FETCH_JOBS overrides it. Classification +
+## fast-forward in the loop stays SERIAL (local, fast). Each fetch targets a DISTINCT submodule
+## repo, so concurrent fetches never contend. Results are recorded per path in 'prefetch_rc'; the
+## loop consumes them instead of fetching inline (falling back to an inline fetch only if a path
+## was somehow not pre-fetched). Runs in --dry-run too (fetch is the only way to classify).
+fetch_jobs="${DM_SUBMODULE_AI_SYNC_FETCH_JOBS:-4}"
+case "${fetch_jobs}" in
+   '' | *[!0-9]* | 0 )
+      fetch_jobs=4
+      ;;
+esac
+declare -A prefetch_rc=()
+prefetch_paths=()
+for path in "${sub_paths[@]}"; do
+   [ -n "${path}" ] || continue
+   sub="${top}/${path}"
+   ## Only initialized, readable submodules that actually have the fork remote -- the exact set the
+   ## loop fetches. (Uninitialised / unreadable / no-fork-remote submodules are handled in the loop
+   ## before any fetch, so pre-fetching them would be wasted or wrong.)
+   { [ -d "${sub}/.git" ] || [ -f "${sub}/.git" ]; } || continue
+   git -C "${sub}" rev-parse --git-dir >/dev/null 2>&1 || continue
+   git -C "${sub}" remote get-url -- "${FORK_REMOTE}" &>/dev/null || continue
+   prefetch_paths+=( "${path}" )
+done
+declare -A prefetch_pid=()
+prefetch_running=0
+for path in "${prefetch_paths[@]}"; do
+   ## Same fetch the loop would run (quiet, prune -- prune is load-bearing: a deleted fork 'ai'
+   ## must not leave a stale remote-tracking ref). errexit is kept off this background job via the
+   ## reap below; a failure is recorded as its rc, handled by the loop.
+   git -C "${top}/${path}" fetch --quiet --prune "${FORK_REMOTE}" 2>/dev/null &
+   prefetch_pid["$!"]="${path}"
+   prefetch_running=$(( prefetch_running + 1 ))
+   if [ "${prefetch_running}" -ge "${fetch_jobs}" ]; then
+      reaped_pid=""
+      reaped_rc=0
+      wait -n -p reaped_pid || reaped_rc=$?
+      if [ -n "${reaped_pid}" ]; then
+         prefetch_rc["${prefetch_pid[${reaped_pid}]}"]="${reaped_rc}"
+         unset "prefetch_pid[${reaped_pid}]"
+         prefetch_running=$(( prefetch_running - 1 ))
+      fi
+   fi
+done
+## Drain the remaining in-flight fetches.
+for reaped_pid in "${!prefetch_pid[@]}"; do
+   reaped_rc=0
+   wait "${reaped_pid}" || reaped_rc=$?
+   prefetch_rc["${prefetch_pid[${reaped_pid}]}"]="${reaped_rc}"
+done
+
 for path in "${sub_paths[@]}"; do
    [ -n "${path}" ] || continue
    sub="${top}/${path}"
@@ -278,11 +337,20 @@ for path in "${sub_paths[@]}"; do
       continue
    fi
 
-   ## Fetch (also in --dry-run: the only way to classify accurately). Fetch only,
-   ## never 'submodule update'. '--prune': without it a deleted fork 'ai' leaves a
-   ## stale refs/remotes/${FORK_REMOTE}/${AI_BRANCH}, and the missing-tip check below
-   ## would then treat the unpublished branch as published against an obsolete tip.
-   if ! git -C "${sub}" fetch --quiet --prune "${FORK_REMOTE}" 2>/dev/null; then
+   ## Fetch result from the bounded-parallel pre-fetch above (also populated in --dry-run: fetch is
+   ## the only way to classify accurately). Fetch only, never 'submodule update'. '--prune' there
+   ## is load-bearing: without it a deleted fork 'ai' leaves a stale
+   ## refs/remotes/${FORK_REMOTE}/${AI_BRANCH} and the missing-tip check below would treat the
+   ## unpublished branch as published against an obsolete tip. Fall back to an inline fetch only if
+   ## this path was somehow not pre-fetched (defensive -- the pre-fetch set is the same one this
+   ## line is reached for). Fetch-failure handling (STOP for ai-workflow, skip otherwise) unchanged.
+   fetch_rc=0
+   if [ -n "${prefetch_rc[${path}]+set}" ]; then
+      fetch_rc="${prefetch_rc[${path}]}"
+   else
+      git -C "${sub}" fetch --quiet --prune "${FORK_REMOTE}" 2>/dev/null || fetch_rc=$?
+   fi
+   if [ "${fetch_rc}" -ne 0 ]; then
       if [ "${is_ai_workflow}" = "true" ]; then
          stopped+=( "${path} :: ai-workflow submodule but fetch from '${FORK_REMOTE}' failed" )
       else
