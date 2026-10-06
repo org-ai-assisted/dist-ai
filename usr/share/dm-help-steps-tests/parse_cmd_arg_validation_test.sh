@@ -83,12 +83,19 @@ has_crash_signature() {
 
 ## Verdict for a '--flag ""' run (explicit empty value): a crash is NOT a clean accept;
 ## 'requires a' is a wrongful rejection; anything else accepted the empty value.
+## Empty output is anomalous, NOT acceptance: a clean accept lets parsing CONTINUE to the
+## downstream mandatory-arg error ("Missing '--arch' option!"), which is non-empty. run_out
+## discards rc, so a hypothetical silent (no-message) rejection would otherwise read as a
+## pass -- treat empty output as its own verdict and fail it.
 classify_empty_value_out() {
    if has_crash_signature "$1"; then
       printf 'crash'
       return
    fi
    case "$1" in
+      "")
+         printf 'empty'
+         ;;
       *"requires a"*)
          printf 'rejected'
          ;;
@@ -255,6 +262,9 @@ for flag in --only-packages --file-system --hostname --retry-max --retry-wait --
       crash)
          fail "${flag} \"\" crashed instead of accepting an explicit empty value: ${empty_out}"
          ;;
+      empty)
+         fail "${flag} \"\" produced NO output -- cannot confirm the empty value was accepted"
+         ;;
    esac
 done
 
@@ -273,6 +283,11 @@ if [ "$( classify_empty_value_out "${crash_stub_out}" )" = "crash" ]; then
    pass 'canary: an empty-value crash is caught, not mistaken for an accept'
 else
    fail 'canary broken: an empty-value crash reached the accept branch'
+fi
+if [ "$( classify_empty_value_out "" )" = "empty" ]; then
+   pass 'canary: empty output is not read as acceptance (run_out discards rc)'
+else
+   fail 'canary broken: empty output was read as an accept'
 fi
 if [ "$( classify_package_jobs_zero_out "${crash_stub_out}" )" = "crash" ]; then
    pass 'canary: a --package-jobs 0 crash is caught, not mistaken for acceptance'
