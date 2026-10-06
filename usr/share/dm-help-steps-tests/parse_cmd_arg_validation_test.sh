@@ -15,6 +15,10 @@
 ##     dist_build_unlock_dangerous_options with a :- default).
 ##   - --package-jobs must fail-fast (exit) on a non-integer value; a whole integer
 ##     (including 0) is accepted at parse time.
+##   - value-taking flags (--vmram/--vram/--vmsize, --only-packages, --file-system,
+##     --hostname, --retry-{max,wait,before,after}) must check the empty value BEFORE
+##     'shift 2', so a trailing bare flag gives the actionable error, not a raw
+##     'shift count out of range' crash under errexit.
 ##
 ## Drives the REAL parse-cmd; only the color/error reporting layer help-steps/pre
 ## would supply is stubbed.
@@ -136,6 +140,37 @@ case "${zero_out}" in
       pass "--package-jobs 0 is accepted at parse time (a whole integer)"
       ;;
 esac
+
+## --- --vmram / --vram / --vmsize: a trailing bare flag gives the actionable error,
+## not a 'shift count out of range' crash (the empty-value check must run BEFORE
+## 'shift 2'). The pre-fix order shifted first, so shift died under errexit before
+## the message printed. ---
+for flag in --vmram --vram --vmsize; do
+   last_out="$( run_out "${flag}" )"
+   case "${last_out}" in
+      *"You forgot to specify"*)
+         pass "${flag} as last arg gives the actionable error, not a shift crash"
+         ;;
+      *)
+         fail "${flag} as last arg did not give the actionable error: ${last_out}"
+         ;;
+   esac
+done
+
+## --- the same shift-before-check class in the other value-taking options: a
+## trailing bare flag must give the actionable "requires a ..." error, not a raw
+## 'shift count out of range' crash. ---
+for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after; do
+   bare_out="$( run_out "${flag}" )"
+   case "${bare_out}" in
+      *"requires a"*)
+         pass "${flag} as last arg gives the actionable error, not a shift crash"
+         ;;
+      *)
+         fail "${flag} as last arg did not give the actionable error: ${bare_out}"
+         ;;
+   esac
+done
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

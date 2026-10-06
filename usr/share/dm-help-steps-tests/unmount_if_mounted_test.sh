@@ -10,9 +10,9 @@
 ## of a plain 'umount'. Those callers pass paths that MAY OR MAY NOT be mounted
 ## (bind mounts that were never set up, an already-unmounted CHROOT_FOLDER) and run
 ## under 'set -o errexit', so the function must:
-##   1. NO-OP when 'mountpoint' reports non-zero (not a mountpoint) -- a plain
-##      'umount' there would exit non-zero and errexit would break the build;
-##   2. call 'umount' when the path IS a mountpoint;
+##   1. NO-OP when the path is not a mountpoint (a plain 'umount' there would exit
+##      non-zero and errexit would break the build) -- the load-bearing guard;
+##   2. call 'umount' when it IS a mountpoint;
 ##   3. propagate a failing 'umount' (return non-zero) so errexit fails the build.
 ##
 ## The real function is SOURCED. 'mountpoint' and 'umount' are stubbed so the test
@@ -88,7 +88,9 @@ umount() {
    return "${stub_umount_rc}"
 }
 
-## A path to pass to unmount_if_mounted; the mountpoint stub decides the outcome.
+## A real existing target so the 'test -e' existence pre-check passes and the
+## mountpoint stub decides the outcome. (SUDO_TO_ROOT="" above, so 'test' is the
+## shell builtin against the real filesystem.)
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
@@ -123,21 +125,38 @@ else
    fail "mounted+umount ok: expected return 0, got non-zero"
 fi
 
-## --- case 3: mountpoint reports non-zero other than 32 -> treated as not a
-## mountpoint (upstream 'mountpoint --quiet ... || return 0'): no-op, no umount ---
+## --- case 3: mountpoint ERROR (exit 1) on an existing path -> PROPAGATE -----
+## The finding: 'mountpoint --quiet ... || return 0' swallowed a genuine error
+## (exit 1: bad invocation / system error) as "not mounted", returning success
+## and skipping umount, so a caller could delete across an undetermined mount.
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${target}" ; then
-   if [ "${umount_called}" = "0" ]; then
-      pass "mountpoint non-zero (1): returns 0 and does not call umount"
-   else
-      fail "mountpoint non-zero (1): umount was called ${umount_called} time(s)"
-   fi
+   fail "mountpoint error (1): swallowed as success -- must propagate the error"
 else
-   fail "mountpoint non-zero (1): expected return 0, got non-zero"
+   if [ "${umount_called}" = "0" ]; then
+      pass "mountpoint error (1): propagates non-zero and does not umount"
+   else
+      fail "mountpoint error (1): umount ran despite an undetermined mount state"
+   fi
 fi
 
-## --- case 4: is a mountpoint, umount fails -> propagate non-zero -----------
+## --- case 4: nonexistent path -> no-op, mountpoint NEVER consulted ----------
+## A missing target is nothing to unmount, and must not be conflated with the
+## exit-1 error above (mountpoint shares exit 1 for a nonexistent path).
+reset_stubs
+stub_mp_rc=1
+if unmount_if_mounted "${work_dir}/absent" ; then
+   if [ "${mountpoint_called}" = "0" ] && [ "${umount_called}" = "0" ]; then
+      pass "absent path: no-op (return 0), mountpoint not consulted"
+   else
+      fail "absent path: mountpoint_called=${mountpoint_called} umount_called=${umount_called}"
+   fi
+else
+   fail "absent path: expected return 0, got non-zero"
+fi
+
+## --- case 5: is a mountpoint, umount fails -> propagate non-zero -----------
 reset_stubs
 stub_mp_rc=0
 stub_umount_rc=1

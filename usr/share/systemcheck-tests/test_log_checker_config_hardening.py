@@ -42,7 +42,6 @@ from systemcheck_testlib import (
     SystemcheckTestBase,
     bwrap_available,
     extract_bash_function,
-    read,
 )
 
 ## A journal line matching log-checker's positive journal_search_pattern_list

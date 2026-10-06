@@ -221,13 +221,17 @@ validate_version() {
 }
 
 ## Extract the pinned version from a wiki Template:VersionNew raw body:
-## first line, cut at the first '<' (drops the <noinclude> tail). CRs are
-## stripped first so a CRLF body cannot leave a trailing '\r' on the version
-## (a CR on a version-only first line survives the '<'-cut otherwise).
+## first line, cut at the first '<' (drops the <noinclude> tail). Strip ONLY a
+## trailing CR (the CRLF line terminator) so a CRLF body does not leave '\r' on a
+## version-only first line (it survives the '<'-cut otherwise). An EMBEDDED CR is
+## left in place so a malformed pin is rejected by validate_version rather than
+## silently normalized into a different valid version.
 sanitize_wiki_version() {
-   local raw first
+   local raw first cr
    raw="$1"
-   first="$(printf '%s\n' "${raw}" | tr -d '\r' | head -n 1)"
+   cr="$(printf '\r')"
+   first="$(printf '%s\n' "${raw}" | head -n 1)"
+   first="${first%"${cr}"}"
    first="$(printf '%s' "${first}" | sed 's/<.*//')"
    printf '%s' "${first}"
 }

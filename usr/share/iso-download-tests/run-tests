@@ -369,6 +369,28 @@ scenario_wiki_crlf_version_tolerated() {
    assert_file_exists "wiki-crlf artifact kept" "${out_dir}/${img}"
 }
 
+scenario_wiki_embedded_cr_rejected() {
+   local fix ver img embedded
+   ver='18.4.0.5'
+   ## A CR EMBEDDED in the pin (not the line terminator) is malformed untrusted
+   ## input and must be REJECTED, not silently normalized into a valid version
+   ## (which would then download a different release). The stable pin carries the
+   ## embedded CR; the published image uses the clean ${ver}, so only rejection --
+   ## not a coincidental match -- keeps the artifact from being kept.
+   embedded="$(printf '18.4\r.0.5')"
+   fix="$(make_fixture_into embcr --version "${ver}" --stable-version "${embedded}")"
+   cur_map="${fix}/urlmap"
+   img="$(image_name "${ver}")"
+
+   run_tool --vmname "${vmname}" --desktop "${desktop}" --arch "${arch}" \
+      --channel stable --download-base "${download_base}" --wiki-base "${wiki_base}" \
+      --output-dir "${out_dir}" --cert "${fix}/${cert_name}"
+
+   assert_rc_nonzero "embedded-cr pin rejected" "${tool_rc}"
+   assert_grep "names the charset guard" "non \[0-9.\] characters" "${out_file}"
+   assert_file_absent "no artifact from a malformed pin" "${out_dir}/${img}"
+}
+
 scenario_socks_proxy_wired() {
    local fix ver
    ver='18.4.0.5'
@@ -479,6 +501,7 @@ all_scenarios=(
    scenario_developers_wiki_404_no_stale_pin
    scenario_spaced_name_verifies
    scenario_wiki_crlf_version_tolerated
+   scenario_wiki_embedded_cr_rejected
    scenario_socks_proxy_wired
    scenario_print_version_stable_no_download
    scenario_print_version_developers_highest
