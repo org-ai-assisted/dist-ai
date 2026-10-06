@@ -95,14 +95,14 @@ def _launch_capture(extra_env=None, settle=3.0):
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            pass                          # whole group already gone -- nothing to signal
         try:
             _out, err = proc.communicate(timeout=15)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                pass                      # group exited between SIGTERM and SIGKILL
             try:
                 _out, err = proc.communicate(timeout=15)
             except subprocess.TimeoutExpired:
