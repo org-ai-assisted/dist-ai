@@ -84,20 +84,14 @@ def _launch_capture(extra_env=None, settle=3.0):
             env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, start_new_session=True)
         time.sleep(settle)
-        early = proc.poll()
-        if early is not None:
-            # Already exited during settle: poll() has reaped the pid, which the OS may now
-            # have reused -- os.killpg here could signal an unrelated process group
-            # (CWE-362 PID-reuse race). Handle the exit without any killpg.
-            if early in _QT_STARTUP_CRASH:
-                try:
-                    proc.stderr.read()
-                finally:
-                    proc.stderr.close()
-                continue                  # startup crash -> respawn
-            _out, err = proc.communicate(timeout=15)  # clean early exit -> take its stderr
-            return (err or b'').decode('utf-8', 'replace')
-        # Still running: terminate the whole session, then collect.
+        # Tear the whole session down, then collect. Signal the process GROUP *before*
+        # anything reaps the leader (no poll()/wait() precedes this): a leader that already
+        # exited during settle is still a zombie here, so its pid -- and thus the pgid --
+        # stays reserved and killpg cannot race onto a reused pid (CWE-362). communicate()
+        # then reaps the leader and drains stderr even when a surviving descendant still
+        # holds the pipe open; its timeout + SIGKILL fallback guarantees no hang and no
+        # orphaned process tree. A clean early exit and a still-running launch take the
+        # same path; a startup crash (SIGSEGV/SIGABRT) is detected from returncode below.
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -105,10 +99,13 @@ def _launch_capture(extra_env=None, settle=3.0):
         try:
             _out, err = proc.communicate(timeout=15)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             _out, err = proc.communicate()
         if proc.returncode in _QT_STARTUP_CRASH:
-            continue                      # crashed during teardown -> respawn
+            continue                      # startup crash -> respawn
         return (err or b'').decode('utf-8', 'replace')
     return None
 
