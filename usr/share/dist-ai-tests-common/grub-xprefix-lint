@@ -17,13 +17,24 @@
 ## suite (dm-iso-grub-menu-tests, against the real templates) and the canary
 ## suite (dm-iso-grub-menu-lint-tests, against fixtures) scan with it.
 ##
-## What is flagged: an x-idiom variable operand ("x${VAR}" / x$VAR) compared
-## =/==/!= against a literal whose first significant char is NOT 'x' -- including
-## an EMPTY literal ("" / ''), which can never equal the always-"x"-prefixed LHS.
-## Either operand may be single- OR double-quoted (the quote is skipped), so a
-## correct single-quoted idiom = 'xefi' is NOT a false positive. The reverse
-## direction (bare var vs x-literal) is intentionally not flagged: it is
-## indistinguishable from a legitimate value like "xterm".
+## What is flagged: a QUOTED x-idiom LHS operand ("x${VAR}") compared =/==/!=
+## against a literal whose first significant char is NOT 'x' -- including an EMPTY
+## literal ("" / ''), which can never equal the always-"x"-prefixed LHS. The RHS
+## may be single- OR double-quoted (the quote is skipped), so a correct
+## single-quoted idiom = 'xefi' is NOT a false positive. The reverse direction
+## (bare var vs x-literal) is intentionally not flagged: it is indistinguishable
+## from a legitimate value like "xterm".
+##
+## SCOPE: a line scan for the canonical idiom, NOT a shell parser. The LHS must
+## carry its opening quote, so an x${VAR} appearing inside some other string
+## (e.g. an echo argument or a menuentry title) is not mistaken for a comparison.
+## Deliberately OUT of scope (they do not occur in the hand-written grub-config
+## templates this guards, and catching them would mean reimplementing shell word
+## splitting -- a worse trade than the miss):
+##   - quote-concatenation literals ("" joined with more, e.g. ""efi -> one word
+##     'efi'); only a standalone "" / '' empty literal is flagged;
+##   - a single-quoted dollar literal ('$b'), where $ does not expand;
+##   - an unquoted LHS (x${VAR} without surrounding quotes), non-idiomatic here.
 ##
 ## Usage: grub-xprefix-lint <file>
 ## Exit: 0 no mismatch; 1 one or more mismatches (each printed as
@@ -52,17 +63,19 @@ if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
 fi
 
 xprefix_quote="[\"']"
-## x-idiom LHS, an operator, then the RHS literal's first token: either an EMPTY
-## quoted literal ("" / '', where the two quotes TERMINATE the operand) OR an
-## optional quote followed by a significant char that is not 'x'. Two constraints
-## keep valid comparisons from false-firing:
+## QUOTED x-idiom LHS (an opening quote, then x${VAR}), an operator, then the RHS
+## literal's first token: either an EMPTY quoted literal ("" / '', where the two
+## quotes TERMINATE the operand) OR an optional quote followed by a significant
+## char that is not 'x'. Three constraints keep valid comparisons from firing:
+##   - the LHS opening quote is REQUIRED, so an x${VAR} embedded in some other
+##     string (an echo argument, a title) is not read as an operand;
 ##   - the empty-literal branch requires a word terminator after the quotes, so a
-##     quote-concatenation like ""xfoo (which GRUB joins into the one word 'xfoo')
-##     is not misread as an empty literal;
+##     quote-concatenation like ""xfoo (one word 'xfoo' in GRUB) is not misread as
+##     an empty literal;
 ##   - a '$' first char is a VARIABLE operand, not a literal, so it is excluded
-##     (it can expand to anything, exactly like the bare-var reverse direction the
-##     header already declines to flag).
-xprefix_mismatch_ere="x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}([[:space:]]|]|;|\$)|${xprefix_quote}?[^x[:space:]\"'=\$])"
+##     (it can expand to anything, like the bare-var reverse direction above).
+## (See the SCOPE note in the header for what is deliberately not caught.)
+xprefix_mismatch_ere="${xprefix_quote}x\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?${xprefix_quote}?[[:space:]]*(==|!=|=)[[:space:]]*(${xprefix_quote}${xprefix_quote}([[:space:]]|]|;|\$)|${xprefix_quote}?[^x[:space:]\"'=\$])"
 
 lineno=0
 hits=0

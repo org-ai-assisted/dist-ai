@@ -129,6 +129,12 @@ tab_fixture=$'   if [\t"x${v}" = "efi" ]; then'
 printf '%s\n' "${tab_fixture}" >"${work_dir}/tab_after_bracket.cfg"
 assert_rc_path tab_after_bracket "${work_dir}/tab_after_bracket.cfg" 1
 
+## --- an x-idiom pattern inside a NON-test string is not a comparison (rc 0) --
+## The LHS opening quote is required, so x${v} inside an echo argument is not
+## read as an operand even though the line contains the word 'test'.
+assert_rc echo_not_test.cfg \
+   '   echo "test x${v} = efi"' 0
+
 ## --- #3 silent-green: a non-regular input MUST fail loudly (rc 2) -----------
 mkdir -- "${work_dir}/a_directory.cfg"
 assert_rc_path directory_input "${work_dir}/a_directory.cfg" 2
