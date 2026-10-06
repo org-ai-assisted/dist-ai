@@ -126,6 +126,30 @@ fail_json="${fail_out}/result.json"
 check "rc 5 verdict FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${fail_json}" && printf true || printf false)"
 check "rc 5 step status failed" "$(grep --quiet '"status": "failed"' -- "${fail_json}" && printf true || printf false)"
 
+## Canary: a step name with a path-traversal component is rejected BEFORE any
+## root write; nothing is created and no latest is published. (The publisher
+## writes as root, so this guards a latent escape of the run dir.)
+## '../../evil' from the ts run dir resolves to ${results_root}/evil.png on the
+## OLD (unvalidated) publisher -- outside the run dir. The fix rejects it.
+trav_rc=0
+image_test_results_publish "${results_root}" "${owner}" \
+   "trav-run" "acct" "calamares-install" 0 "${shot}" \
+   --lane l --version v --builder b --origin built --step-name "../../evil" >/dev/null 2>&1 || trav_rc=$?
+check "unsafe step name rejected (nonzero)" "$([ "${trav_rc}" -ne 0 ] && printf true || printf false)"
+check "no traversal file written outside run dir" "$([ ! -e "${results_root}/evil.png" ] && printf true || printf false)"
+check "no latest for a rejected run" "$([ ! -e "${results_root}/trav-run/latest" ] && printf true || printf false)"
+
+## Canary: an emitter failure (an empty --expect token the schema rejects) FAILS
+## the publish and does NOT repoint latest -- a run with no result.json must never
+## become the published 'latest' (that would be a NO-DATA dir reading as current).
+emitfail_rc=0
+image_test_results_publish "${results_root}" "${owner}" \
+   "emitfail-run" "acct" "calamares-install" 0 "${shot}" \
+   --lane l --version v --builder b --origin built --expect "" >/dev/null 2>&1 || emitfail_rc=$?
+check "emitter failure fails the publish (nonzero)" "$([ "${emitfail_rc}" -ne 0 ] && printf true || printf false)"
+check "no latest when result.json was not written" "$([ ! -e "${results_root}/emitfail-run/latest" ] && printf true || printf false)"
+check "no result.json for the failed emit" "$([ -z "$(find "${results_root}/emitfail-run" -name result.json 2>/dev/null)" ] && printf true || printf false)"
+
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s publish assertion(s) failed\n' "${failures}" >&2
    exit 1

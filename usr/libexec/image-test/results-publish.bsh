@@ -134,6 +134,17 @@ image_test_results_publish() {
       lane="${name}"
    fi
 
+   ## step_name becomes a filename component written AS ROOT; a '/' or '..' would
+   ## escape outdir. Reject anything but a safe component before any write (the
+   ## step name is set by our own lane code, so this is a programming-error guard,
+   ## not untrusted input -- but it runs as root, so validate anyway).
+   case "${step_name}" in
+      *[!A-Za-z0-9._-]* | '' | '.' | '..')
+         printf 'image_test_results_publish: unsafe step name: %s\n' "${step_name}" >&2
+         return 2
+         ;;
+   esac
+
    local ts outdir shot_rel emit
    ts="$(date -u +%Y%m%dT%H%M%SZ)"
    outdir="${results_root}/${name}/${ts}"
@@ -176,7 +187,21 @@ image_test_results_publish() {
    for item in "${expect[@]}"; do
       emit_args+=( --expect "${item}" )
    done
-   "${emit}" "${emit_args[@]}"
+
+   ## result.json is the critical artifact. If the emitter fails (a malformed
+   ## token, argparse rejecting a '-'-leading value, an out-of-range time), the run
+   ## dir has NO result.json: do NOT repoint <name>/latest at it and do NOT report
+   ## success -- leave latest at the last good run (the site reads the incomplete
+   ## dir as NO-DATA, never green) and fail the publish. The caller preserves the
+   ## TEST verdict: a publish hiccup must never downgrade or fake a result.
+   local emit_rc
+   emit_rc=0
+   "${emit}" "${emit_args[@]}" || emit_rc="$?"
+   if [ "${emit_rc}" -ne 0 ]; then
+      printf 'image_test_results_publish: result emit FAILED (rc=%s) for %s; latest left unchanged\n' \
+         "${emit_rc}" "${name}" >&2
+      return 3
+   fi
 
    ## Point <name>/latest at this run and hand the whole subtree to nginx.
    ln --symbolic --force --no-dereference -- "${ts}" "${results_root}/${name}/latest"

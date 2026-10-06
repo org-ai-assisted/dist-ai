@@ -109,6 +109,16 @@ def _require_token(name, value):
     return value
 
 
+def _require_safe_component(name, value):
+    """A value used as a single path component (a filename relative to the run dir)
+    must contain no slash and be neither '.' nor '..', so it can never escape the
+    run dir. Fail closed: an attachment path is written + served as-is."""
+    _require_token(name, value)
+    if "/" in value or value in (".", ".."):
+        raise ModelError("%s must be a safe filename (no '/' or '..'): %r" % (name, value))
+    return value
+
+
 def time_pair(unix):
     """A timestamp as both wall-clock UTC (human) and epoch seconds (machine),
     derived from one integer so the two can never disagree. None -> None (an
@@ -117,9 +127,12 @@ def time_pair(unix):
         return None
     if not isinstance(unix, int) or isinstance(unix, bool):
         raise ModelError("unix time must be an int: %r" % (unix,))
-    utc = datetime.datetime.fromtimestamp(
-        unix, tz=datetime.timezone.utc
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        utc = datetime.datetime.fromtimestamp(
+            unix, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ModelError("unix time out of range: %r (%s)" % (unix, exc))
     return {"utc": utc, "unix": unix}
 
 
@@ -130,7 +143,7 @@ def make_attachment(name, media_type, path):
     return {
         "name": _require_token("attachment name", name),
         "mediaType": _require_token("attachment mediaType", media_type),
-        "path": _require_token("attachment path", path),
+        "path": _require_safe_component("attachment path", path),
     }
 
 

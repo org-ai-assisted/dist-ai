@@ -137,6 +137,25 @@ check("time_pair(None) is None", model.time_pair(None) is None)
 tp = model.time_pair(1700000000)
 check("time_pair carries unix", tp["unix"] == 1700000000)
 check("time_pair carries utc Z", tp["utc"] == "2023-11-14T22:13:20Z")
+## An out-of-range time is a ModelError, not a raw OverflowError traceback (so the
+## emitter reports it cleanly instead of crashing, and the publish fails cleanly).
+check_raises("time_pair rejects an out-of-range unix", lambda: model.time_pair(10 ** 30))
+
+## An attachment path must be a safe basename: no '/' and not '..' (it is written
+## and served as-is). Canary for the root-write / escape-the-run-dir class.
+check_raises(
+    "attachment path rejects a slash",
+    lambda: model.make_attachment("screenshot", "image/png", "a/b.png"),
+)
+check_raises(
+    "attachment path rejects ..",
+    lambda: model.make_attachment("screenshot", "image/png", ".."),
+)
+check(
+    "a plain basename attachment path is accepted",
+    model.make_attachment("screenshot", "image/png", "r4-first-boot.png")["path"]
+    == "r4-first-boot.png",
+)
 
 ## Deterministic + ASCII serialization.
 a = model.dumps(built)

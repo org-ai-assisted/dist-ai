@@ -535,12 +535,16 @@ rt_publish_result() {
    ## origin=downloaded: this lane downloads + signature-verifies the OFFICIAL
    ## release image, it does not build it. lane = guest-interface so the site groups
    ## lxqt vs cli (and distinct versions) as separate matrix cells.
+   ## A publish failure must NOT change the TEST verdict: keep rc, log it, and
+   ## report the lane's real result on the console line (the results plane simply
+   ## has no entry for this run -- NO-DATA on the site, never a faked verdict).
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
       "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}" --version "${version}" \
       --builder dm-release-test --origin downloaded \
-      "${pub_expect[@]}")"
+      "${pub_expect[@]}")" \
+      || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
       "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
 }

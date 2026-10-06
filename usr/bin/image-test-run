@@ -128,9 +128,15 @@ main() {
    sudo -u "${TEST_USER}" -- "${DM_VBOX}" "${MODE}" "${DM_ARGS[@]}" \
       --shot "${shot_user}" || rc=$?
 
+   ## A publish failure must NOT abort the runner or change the VM verdict: keep
+   ## rc, log it, still clean up the temp shot and return the real result (the run
+   ## simply has no results-plane entry -- NO-DATA, never a faked or downgraded
+   ## verdict, and <name>/latest stays at the last good run, not repointed at an
+   ## empty dir).
    outdir="$(image_test_results_publish \
       "${RESULTS_ROOT}" "${RESULTS_OWNER}" "${NAME}" "${TEST_USER}" "${MODE}" \
-      "${rc}" "${shot_user}" "${expect[@]}")"
+      "${rc}" "${shot_user}" "${expect[@]}")" \
+      || { printf '%s: WARNING: results publish failed (rc=%s preserved)\n' "${me}" "${rc}" >&2; outdir='(publish-failed)'; }
    if [ -f "${shot_user}" ]; then
       safe-rm --force -- "${shot_user}"
    fi
