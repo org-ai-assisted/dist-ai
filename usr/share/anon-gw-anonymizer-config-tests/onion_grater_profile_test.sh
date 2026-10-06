@@ -91,7 +91,7 @@ fi
 ## makes '! validate_safe_filename' succeed and reject EVERY name, so the
 ## traversal cases would "pass" while proving nothing. Fail loudly here instead.
 for guard_script in onion-grater-add onion-grater-remove; do
-   if ! grep --quiet -- '^source /usr/libexec/helper-scripts/strings.bsh$' "${bin_dir}/${guard_script}"; then
+   if ! grep --quiet --extended-regexp -- '^source .*/usr/libexec/helper-scripts/strings\.bsh$' "${bin_dir}/${guard_script}"; then
       printf '%s\n' "FAIL: ${guard_script} no longer sources helper-scripts strings.bsh -- validator wiring is stale" >&2
       exit 1
    fi

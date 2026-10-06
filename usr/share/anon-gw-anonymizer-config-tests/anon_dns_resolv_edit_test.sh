@@ -95,10 +95,15 @@ run_anon_dns() {
    chmod "${mode}" -- "${resolv}"
 
    status=0
+   ## Unset HELPER_SCRIPTS_PATH so anon-dns resolves as_root.sh / has.bsh to the
+   ## STUB helpers bound above. The suite-wide HELPER_SCRIPTS_PATH (exported by
+   ## dist-ai-tests-all for the onion-grater profile test) would otherwise point
+   ## at the real checkout, whose real as_root re-execs under sudo -- taking the
+   ## run out of bwrap and leaving resolv.conf unedited.
    bwrap --dev-bind / / \
       --bind "${stubs}" /usr/libexec/helper-scripts \
       --bind "${etc_dir}" /etc \
-      -- env PATH="${bin_stubs}:/usr/bin:/bin" ${env_spec} \
+      -- env --unset=HELPER_SCRIPTS_PATH PATH="${bin_stubs}:/usr/bin:/bin" ${env_spec} \
       timeout 20 bash "${subject}" "$@" >"${work_dir}/out" 2>&1 || status=$?
    chmod u+rw -- "${resolv}" 2>/dev/null || true
    printf '%s' "${status}"
