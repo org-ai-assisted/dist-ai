@@ -1241,6 +1241,18 @@ def run():
               any('stray.webp' in f for f in _assets_failures(check_site, root)),
               repr(_assets_failures(check_site, root)))
 
+    # A noindex page is excluded from the SEO page set + sitemap, so an ephemeral
+    # per-run results detail page does not churn sitemap.xml; indexable pages stay.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>home</p>')
+        _write(root, 'automated-test-results/r1/index.html',
+               '<meta name="robots" content="noindex"><p>run</p>')
+        urls = check_site.seo_page_urls(root, 'example.github.io')
+        check('noindex run page excluded from the sitemap page set',
+              not any('/automated-test-results/r1/' in u for u in urls), repr(urls))
+        check('indexable home page still in the sitemap page set',
+              any(u.endswith('example.github.io/') for u in urls), repr(urls))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

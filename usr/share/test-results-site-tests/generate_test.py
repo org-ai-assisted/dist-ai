@@ -256,6 +256,10 @@ check("overview lists the FAIL run before the PASS run",
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))
 check("green run page has an <img", "<img" in a_page)
+## Per-run detail pages are ephemeral -> noindex (kept out of the sitemap); the
+## overview is the stable landing page and stays indexable.
+check("run detail page is noindex", 'name="robots" content="noindex"' in a_page)
+check("overview page is indexable (no robots noindex)", 'name="robots"' not in overview)
 check("green run page webp exists",
       os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1",
                                   "kicksecure-lxqt__calamares-install.webp")))

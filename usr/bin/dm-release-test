@@ -76,8 +76,9 @@ PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
 NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
-## Seconds to let a killed VBoxSVC reap before userdel in cleanup (test seam).
-EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-2}"
+## MAX seconds to wait for a killed VBoxSVC to reap before userdel (cleanup polls
+## each second and stops as soon as the account's processes are gone). Test seam.
+EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-20}"
 ## Base dir for VBoxXPCOMIPCD's per-user IPC socket dir (.vbox-<user>-ipc). VBox
 ## puts it at /tmp/.vbox-<user>-ipc for the sudo'd eph account: sudo env_reset with
 ## no PAM session strips TMPDIR, so VBox falls back to /tmp (confirmed on the host).
@@ -301,10 +302,23 @@ rt_account_can_sudo() {
 ## leak accounts at run time (this run did not create them). $1=account $2=role-label.
 ## Needs root (reads id, exercises sudo). Precondition: the account exists.
 rt_require_account_unprivileged() {
-   local account role
+   local account role uid primary groups
    account="$1"
    role="$2"
-   rt_account_unprivileged "${account}" "$(id -u "${account}")" "$(id -gn "${account}")" "$(id -nG "${account}")" \
+   ## Enumerate identity + groups with each `id` checked on its OWN line. Folded into the
+   ## `rt_account_unprivileged ... || die` arg list, a failing `id` is MASKED: errexit is
+   ## suspended left of `||`, so the substitution passes its partial stdout and the non-zero
+   ## exit is lost. GNU id on a getgrouplist() failure prints ONLY the primary group and
+   ## exits non-zero -> a primary-only (non-empty) list clears the empty-list guard and a
+   ## privileged account reads as unprivileged. Cannot enumerate identity -> cannot prove
+   ## unprivileged -> REFUSE (SETUP_RC).
+   uid="$(id -u "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot read uid (id -u failed)"
+   primary="$(id -gn "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot read primary group (id -gn failed)"
+   groups="$(id -nG "${account}")" \
+      || die "${SETUP_RC}" "refusing ${role} account '${account}': cannot enumerate groups (id -nG failed)"
+   rt_account_unprivileged "${account}" "${uid}" "${primary}" "${groups}" \
       || die "${SETUP_RC}" "refusing ${role} account '${account}': host-privileged (uid 0 or a group beyond vboxusers)"
    ! rt_account_can_sudo "${account}" \
       || die "${SETUP_RC}" "refusing ${role} account '${account}': has passwordless sudo (NOPASSWD root)"
@@ -524,11 +538,22 @@ rt_provision_leak() {
 rt_eph_cleanup() {
    [ -n "${eph_account}" ] || return 0
    "${IMAGE_TEST_GC}" "${eph_account}" || true
-   ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers for a few seconds after
-   ## the VM stops and holds userdel open (it leaked the account in a live run);
-   ## kill the account's processes and let them reap before removing it.
+   ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers after the VM stops and
+   ## holds userdel open (userdel REFUSES while any process still has the uid).
+   ## SIGKILL the account's processes and POLL until they are actually gone -- a
+   ## fixed settle guesses wrong (the daemon outlived a 2s sleep), so userdel then
+   ## failed and leaked the account. Bounded by EPH_CLEANUP_SETTLE so a wedged
+   ## reaper cannot hang cleanup; re-send the kill each poll in case a child respawned.
+   local waited=0
    pkill --kill --uid "${eph_account}" 2>/dev/null || true
-   sleep "${EPH_CLEANUP_SETTLE}"
+   while pgrep --uid "${eph_account}" >/dev/null 2>&1; do
+      if [ "${waited}" -ge "${EPH_CLEANUP_SETTLE}" ]; then
+         break
+      fi
+      sleep 1
+      waited=$(( waited + 1 ))
+      pkill --kill --uid "${eph_account}" 2>/dev/null || true
+   done
    if ! userdel --remove -- "${eph_account}"; then
       log warn "userdel '${eph_account}' failed -- reap stray processes of that account and 'userdel --remove' it manually"
    fi

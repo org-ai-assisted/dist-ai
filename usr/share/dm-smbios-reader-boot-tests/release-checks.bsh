@@ -55,7 +55,7 @@ declare -A RELEASE_CHECK_DESC=(
    [5]='CLI login'
    [6]='GUI login'
    [4]='networking'
-   [8]='systemcheck --leak-tests'
+   [8]='systemcheck'
    [2]='sysmaint session boot'
    [3]='upgrade-nonroot'
 )
@@ -74,7 +74,7 @@ declare -A RELEASE_CHECK_CMD=(
    [5]='whoami'
    [6]='pgrep labwc'
    [4]='curl --silent --fail --max-time 30 --output /dev/null https://deb.debian.org'
-   [8]='systemcheck --cli --leak-tests --ci'
+   [8]='systemcheck --cli --ci'
    [2]='grep -q boot-role=sysmaint /proc/cmdline'
    [3]='upgrade-nonroot'
 )

@@ -228,6 +228,49 @@ else
    printf 'FAIL: gate did not refuse a privileged group (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
 fi
 
+## Fail CLOSED when `id` itself ERRORS. Stub id so the named subcommand prints a plausible
+## value AND exits non-zero while the others succeed -- GNU id's partial failure when
+## getgrouplist() fails prints only the primary group and exits non-zero. primary == account
+## and can_sudo == 1 (clean), so the id error is the SOLE reason to refuse. Canary: the old
+## body folded `$(id ...)` into the `rt_account_unprivileged ... || die` arg list, where
+## errexit is suspended (left of ||) and id's non-zero exit was SWALLOWED -- a primary-only,
+## non-empty group list then cleared the empty-list guard and the account was ACCEPTED.
+gate_probe_idfail() {
+   # shellcheck disable=SC2034,SC2317
+   (
+      SETUP_RC=2
+      _fail="$1"
+      id() {
+         local rc=0
+         [ "$1" != "${_fail}" ] || rc=1
+         case "$1" in
+            -u)
+               printf '1000\n'
+               ;;
+            -gn)
+               printf 'acct\n'
+               ;;
+            -nG)
+               printf 'acct\n'
+               ;;
+         esac
+         return "${rc}"
+      }
+      rt_account_can_sudo() { return 1; }
+      die() { exit "$1"; }
+      rt_require_account_unprivileged acct blessed
+   )
+}
+for sub in -u -gn -nG; do
+   gate_rc=0; gate_probe_idfail "${sub}" || gate_rc=$?
+   if [ "${gate_rc}" -eq 2 ]; then
+      printf 'ok: gate fails closed when id %s errors (SETUP_RC)\n' "${sub}"
+   else
+      printf 'FAIL: gate did not fail closed on id %s error (rc=%s, want 2)\n' "${sub}" "${gate_rc}" >&2
+      failures=$((failures + 1))
+   fi
+done
+
 ## Call-site canary: EVERY account kind -- ephemeral (test), leak, AND blessed -- must be
 ## wired through the gate. The blessed wiring is the regression: before it, a privileged
 ## persist-stable- account ran a test unchecked (isolation-boundary gap). Fails on the old

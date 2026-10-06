@@ -65,6 +65,61 @@ run_out() {
    env -u CLAUDECODE "${parse_cmd}" "$@" 2>&1 || true
 }
 
+## run_out ignores rc, so a CRASH (nounset 'unbound variable', or errexit tripping on
+## 'shift count out of range') surfaces ONLY in the captured text, never as a non-zero
+## exit. A crash must therefore be recognized from its message, or an assertion whose
+## pass branch is "the expected error is absent" would read a crash as success -- masking
+## a crash in exactly the path the assertion protects. Single source for the markers.
+has_crash_signature() {
+   case "$1" in
+      *"unbound variable"*|*"shift count out of range"*)
+         return 0
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## Verdict for a '--flag ""' run (explicit empty value): a crash is NOT a clean accept;
+## 'requires a' is a wrongful rejection; anything else accepted the empty value.
+classify_empty_value_out() {
+   if has_crash_signature "$1"; then
+      printf 'crash'
+      return
+   fi
+   case "$1" in
+      *"requires a"*)
+         printf 'rejected'
+         ;;
+      *)
+         printf 'accepted'
+         ;;
+   esac
+}
+
+## Verdict for the '--package-jobs 0 --headers ""' run: 0 is a whole integer, so parse-cmd
+## must ACCEPT it and CONTINUE to the trailing mandatory-empty '--headers ""' error
+## ('must not be empty'). The integer error means 0 was wrongly rejected at parse; a crash
+## is not acceptance; a missing downstream error means parsing never continued.
+classify_package_jobs_zero_out() {
+   if has_crash_signature "$1"; then
+      printf 'crash'
+      return
+   fi
+   case "$1" in
+      *"must be passed a whole integer"*)
+         printf 'rejected-at-parse'
+         ;;
+      *"must not be empty"*)
+         printf 'accepted-continued'
+         ;;
+      *)
+         printf 'unexpected'
+         ;;
+   esac
+}
+
 ## --- the nounset crash: a real package value must not trip 'unbound variable' ---
 for flag in --kernel --headers --initramfs; do
    out="$( run_out "${flag}" some-real-package )"
@@ -131,14 +186,24 @@ esac
 
 ## --- --package-jobs 0 is a whole integer and accepted at parse time -----------
 ## The parse-time check accepts a whole integer (^(0|[1-9][0-9]*)$), so 0 passes
-## here (any semantic rejection of 0 happens later, elsewhere).
+## here (any semantic rejection of 0 happens later, elsewhere). The trailing
+## '--headers ""' is a SECOND, downstream mandatory-empty error; its PRESENCE
+## positively proves 0 was accepted and parsing CONTINUED past the package-jobs
+## branch. Keying the pass on "no integer error" alone would also hold on a crash
+## or any other early error, wrongly reading it as acceptance.
 zero_out="$( run_out --package-jobs 0 --headers '' )"
-case "${zero_out}" in
-   *"must be passed a whole integer"*)
+case "$( classify_package_jobs_zero_out "${zero_out}" )" in
+   accepted-continued)
+      pass "--package-jobs 0 is accepted at parse time (parsing continued to --headers)"
+      ;;
+   rejected-at-parse)
       fail "--package-jobs 0 was rejected at parse time (the whole-integer check accepts 0)"
       ;;
+   crash)
+      fail "--package-jobs 0 crashed instead of being accepted at parse time: ${zero_out}"
+      ;;
    *)
-      pass "--package-jobs 0 is accepted at parse time (a whole integer)"
+      fail "--package-jobs 0: expected accept-then-stop at the --headers error, got: ${zero_out}"
       ;;
 esac
 
@@ -180,15 +245,40 @@ done
 ## to an emptiness check, which would reject the supported empty value. ---
 for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after -t --tag -r --ref; do
    empty_out="$( run_out "${flag}" "" )"
-   case "${empty_out}" in
-      *"requires a"*)
+   case "$( classify_empty_value_out "${empty_out}" )" in
+      accepted)
+         pass "${flag} \"\" accepts an explicit empty value (not rejected at parse)"
+         ;;
+      rejected)
          fail "${flag} \"\" wrongly rejected an explicit empty value (meaningful downstream)"
          ;;
-      *)
-         pass "${flag} \"\" accepts an explicit empty value (not rejected at parse)"
+      crash)
+         fail "${flag} \"\" crashed instead of accepting an explicit empty value: ${empty_out}"
          ;;
    esac
 done
+
+## --- CANARY: the crash-signature guard is load-bearing. run_out ignores rc, so the
+## ONLY thing between a crashing parse-cmd and a false PASS is this text match. Prove it
+## on synthetic inputs (the real clean parse-cmd is exercised live above): a shift-crash
+## must classify as 'crash' in BOTH the empty-value and package-jobs-0 blocks, and a clean
+## mandatory-arg error must not. RED here if a crash arm is ever dropped. ---
+crash_stub_out='parse-cmd: line 42: shift: shift count out of range'
+if has_crash_signature "${crash_stub_out}" && ! has_crash_signature "ERROR: --headers must not be empty."; then
+   pass 'canary: a shift-crash is a crash signature, a clean mandatory-arg error is not'
+else
+   fail 'canary broken: crash-signature detection lost its teeth'
+fi
+if [ "$( classify_empty_value_out "${crash_stub_out}" )" = "crash" ]; then
+   pass 'canary: an empty-value crash is caught, not mistaken for an accept'
+else
+   fail 'canary broken: an empty-value crash reached the accept branch'
+fi
+if [ "$( classify_package_jobs_zero_out "${crash_stub_out}" )" = "crash" ]; then
+   pass 'canary: a --package-jobs 0 crash is caught, not mistaken for acceptance'
+else
+   fail 'canary broken: a --package-jobs 0 crash reached the accept branch'
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

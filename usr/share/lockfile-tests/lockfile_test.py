@@ -24,6 +24,16 @@
 ##     level runs with BASH_SOURCE[0]==$0, which must NOT mis-fire wrap mode and
 ##     eat the host's own first argument; the host must still self-lock.
 ##
+##   * NO-FALLBACK (by design) -- the lock dir lives ONLY under the per-user
+##     runtime dir (XDG_RUNTIME_DIR, else /run/user/$EUID), owned by $EUID and not
+##     a symlink. There is NO /tmp, 1777-dir or ${HOME}/.cache fallback: such a
+##     fallback would reopen the TOCTOU + pre-login/post-login double-run hole the
+##     comment in lockfile.sh spells out. When the runtime dir is absent, symlinked
+##     or not owned, the helper HARD-EXITS 'no per-user runtime dir' and creates NO
+##     lock anywhere -- never silently relocating the lock. These legs are the
+##     canary: reintroducing a cache/tmp fallback, or following a symlinked runtime
+##     dir, flips them RED.
+##
 ## A fuzz phase hammers random keys through wrap mode and asserts per-key
 ## isolation against a key-equality oracle.
 ##
@@ -123,11 +133,16 @@ def source_mode_tests(lockfile_sh, check):
     src = make_source_script(tmp, lockfile_sh)
 
     ## self-lock (no key): 2nd instance skips (non-zero) while the 1st holds it.
+    ## Assert the flock 'failed to get lock' signal (the --verbose probe emits it to
+    ## stderr on genuine contention), not merely 'no LOCKED + non-zero' -- an unrelated
+    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip.
     holder = bg([src, '', '2'])
     time.sleep(0.6)
     second = run([src, '', '0'])
-    check('source: self-lock 2nd instance skips', 'LOCKED' not in second.stdout,
-          second.stdout.strip())
+    combined = second.stdout + second.stderr
+    check('source: self-lock 2nd instance skips',
+          'LOCKED' not in second.stdout and 'failed to get lock' in combined,
+          combined.strip())
     check('source: skip exits non-zero', second.returncode != 0,
           'rc=%d' % second.returncode)
     holder.wait(timeout=15)
@@ -161,9 +176,12 @@ def wrap_mode_tests(lockfile_sh, check):
     time.sleep(0.6)
     same = run([lockfile_sh, 'wA', '--', 'echo', 'RAN'])
     other = run([lockfile_sh, 'wB', '--', 'echo', 'RAN'])
+    ## Require the flock 'failed to get lock' signal (the --verbose probe emits it on
+    ## contention), not just 'no RAN + non-zero' which an unrelated abort also yields.
     check('wrap: same key skips', 'RAN' not in same.stdout
-          and same.returncode != 0,
-          '%r rc=%d' % (same.stdout.strip(), same.returncode))
+          and same.returncode != 0
+          and 'failed to get lock' in (same.stdout + same.stderr),
+          '%r rc=%d' % ((same.stdout + same.stderr).strip(), same.returncode))
     check('wrap: different key concurrent', 'RAN' in other.stdout,
           other.stdout.strip())
     holder.wait(timeout=15)
@@ -309,112 +327,102 @@ def security_tests(lockfile_sh, check):
                         res2.returncode))
 
 
-def fallback_tests(lockfile_sh, check):
-    """With no usable per-user runtime dir (headless / container / 'sudo -u user' /
-    ssh without a logind session), lockfile.sh falls back to the per-user CACHE dir
-    and still locks -- and the anti-TOCTOU property must hold on the fallback too: a
-    cache dir that is a symlink is refused."""
-    tmp = tempfile.mkdtemp(prefix='lockfile-fb-')
+def no_fallback_tests(lockfile_sh, check):
+    """By design lockfile.sh has NO fallback outside the per-user runtime dir -- no
+    /tmp, no 1777 dir, no ${HOME}/.cache (lockfile.sh's own comment spells out the
+    TOCTOU + pre-login/post-login double-run concurrency reasons). When the runtime
+    dir is unusable the helper HARD-EXITS 'no per-user runtime dir' and creates NO
+    lock anywhere. These legs are the canary for that guarantee: a build that
+    reintroduces an XDG_CACHE_HOME (or /tmp) fallback, or follows a symlinked runtime
+    dir, flips them RED."""
+    ## 1) runtime dir absent -> hard exit, NO lock created under the cache dir.
+    ##    XDG_CACHE_HOME + HOME are redirected into the temp tree so a (wrongly
+    ##    reintroduced) cache fallback would materialise a lock dir HERE and be
+    ##    caught, while the real ~/.cache is never touched.
+    tmp = tempfile.mkdtemp(prefix='lockfile-nofb-')
     src = make_source_script(tmp, lockfile_sh)
-
-    ## 1) runtime dir absent -> fall back to XDG_CACHE_HOME and lock there; a 2nd
-    ##    instance skips. XDG_RUNTIME_DIR points at a nonexistent path so the host's
-    ##    real /run/user/EUID is not used.
-    ## HOME is redirected too so nothing can touch the real ~/.cache if the
-    ## implementation ignored XDG_CACHE_HOME.
     cache = os.path.join(tmp, 'cache')
     os.mkdir(cache, 0o700)
     env = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp, 'absent'),
                XDG_CACHE_HOME=cache, HOME=tmp)
-    ## sleep 10 so the holder keeps the lock while the 2nd runs; wait for its LOCKED
-    ## line (deterministic) rather than a fixed sleep that races a loaded host.
-    holder = subprocess.Popen([src, 'fbkey', '10'], stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, env=env)
-    locked = wait_for_locked(holder)
-    lockdir = os.path.join(cache, 'flocker-temp-folder')
-    check('fallback: no runtime dir locks under the cache dir',
-          locked and os.path.isdir(lockdir),
-          'locked=%s isdir=%s' % (locked, os.path.isdir(lockdir)))
-    ## 2nd instance while the holder still holds it -> flock contention refusal
-    ## (assert the flock message, not a bare non-zero that a broken fallback also
-    ## produces via the 'no usable lock dir' error).
-    second = subprocess.run([src, 'fbkey', '0'], capture_output=True, text=True,
-                            timeout=30, env=env)
-    check('fallback: 2nd instance refused under the cache fallback',
-          'LOCKED' not in second.stdout and second.returncode != 0
-          and 'failed to get lock' in (second.stdout + second.stderr),
-          '%r rc=%d' % ((second.stdout + second.stderr).strip()[:80],
-                        second.returncode))
-    holder.terminate()
-    holder.wait(timeout=10)
-
-    ## 2) a symlinked cache dir is refused.
-    tmp2 = tempfile.mkdtemp(prefix='lockfile-fb2-')
-    src2 = make_source_script(tmp2, lockfile_sh)
-    real = os.path.join(tmp2, 'real')
-    os.mkdir(real)
-    link = os.path.join(tmp2, 'cachelink')
-    os.symlink(real, link)
-    env2 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp2, 'absent'),
-                XDG_CACHE_HOME=link, HOME=tmp2)
-    res = subprocess.run([src2, '', '0'], capture_output=True, text=True,
-                         timeout=30, env=env2)
+    res = subprocess.run([src, '', '0'], capture_output=True, text=True,
+                         timeout=30, env=env)
     combined = (res.stdout + res.stderr).lower()
-    check('fallback: symlinked cache dir refused',
+    cache_lock = os.path.exists(os.path.join(cache, 'flocker-temp-folder'))
+    check('no-fallback: absent runtime dir hard-exits, no cache lock',
           'LOCKED' not in res.stdout and res.returncode != 0
-          and 'symlink' in combined,
-          '%r rc=%d' % ((res.stdout + res.stderr).strip()[:120], res.returncode))
+          and 'no per-user runtime dir' in combined and not cache_lock,
+          '%r rc=%d cache_lock=%s' % ((res.stdout + res.stderr).strip()[:120],
+                                      res.returncode, cache_lock))
 
-    ## 2b) a runtime dir that exists but is NOT owned by the caller (an inherited
-    ##     XDG_RUNTIME_DIR under 'sudo -u') must fall back to the cache dir, not
-    ##     hard-exit. The leg's precondition is a dir the EUID does NOT own: as root
-    ##     (root owns /usr, so a hard-coded '/usr' would make the -O gate TRUE and
-    ##     the fallback leg never run -- plus pollute /usr with a lock dir) create a
-    ##     controlled dir and chown it to 'nobody'; unprivileged, a stable root-owned
-    ##     system dir is already not-owned-by-me. Either way the -O gate is FALSE and
-    ##     the fallback is genuinely exercised.
-    tmp2b = tempfile.mkdtemp(prefix='lockfile-fb2b-')
-    src2b = make_source_script(tmp2b, lockfile_sh)
-    cache2b = os.path.join(tmp2b, 'cache')
-    os.mkdir(cache2b, 0o700)
+    ## 2) a symlinked runtime dir is refused by the '! -L' gate AND not followed:
+    ##    the symlink target dir stays empty (no lock dir created inside it). A stub
+    ##    that followed the symlink would create flocker-temp-folder in the target.
+    tmp2 = tempfile.mkdtemp(prefix='lockfile-nofb2-')
+    src2 = make_source_script(tmp2, lockfile_sh)
+    target = os.path.join(tmp2, 'target')
+    os.mkdir(target)
+    runtime2 = os.path.join(tmp2, 'runtime-link')
+    os.symlink(target, runtime2)
+    env2 = dict(os.environ, XDG_RUNTIME_DIR=runtime2,
+                XDG_CACHE_HOME=os.path.join(tmp2, 'cache'), HOME=tmp2)
+    res2 = subprocess.run([src2, '', '0'], capture_output=True, text=True,
+                          timeout=30, env=env2)
+    combined2 = (res2.stdout + res2.stderr).lower()
+    target_entries = os.listdir(target)
+    check('no-fallback: symlinked runtime dir refused, not followed',
+          'LOCKED' not in res2.stdout and res2.returncode != 0
+          and 'no per-user runtime dir' in combined2 and target_entries == [],
+          '%r rc=%d target=%r' % ((res2.stdout + res2.stderr).strip()[:120],
+                                  res2.returncode, target_entries))
+
+    ## 3) a runtime dir that exists but is NOT owned by the caller (an inherited
+    ##    XDG_RUNTIME_DIR under 'sudo -u') is refused by the '-O' gate -- it must
+    ##    hard-exit, NOT relocate the lock to the cache dir. This closes the TOCTOU
+    ##    hole of trusting a dir another uid controls. The precondition is a dir the
+    ##    EUID does NOT own: as root (root owns /usr, so a hard-coded '/usr' would
+    ##    make '-O' TRUE and skip the leg) create a controlled dir and chown it to
+    ##    'nobody'; unprivileged, a stable root-owned system dir already qualifies.
+    tmp3 = tempfile.mkdtemp(prefix='lockfile-nofb3-')
+    src3 = make_source_script(tmp3, lockfile_sh)
+    cache3 = os.path.join(tmp3, 'cache')
+    os.mkdir(cache3, 0o700)
     if os.geteuid() == 0:
         nobody = pwd.getpwnam('nobody')
-        runtime2b = os.path.join(tmp2b, 'notowned')
-        os.mkdir(runtime2b, 0o755)
-        os.chown(runtime2b, nobody.pw_uid, nobody.pw_gid)
+        runtime3 = os.path.join(tmp3, 'notowned')
+        os.mkdir(runtime3, 0o755)
+        os.chown(runtime3, nobody.pw_uid, nobody.pw_gid)
     else:
-        runtime2b = '/usr'
-    env2b = dict(os.environ, XDG_RUNTIME_DIR=runtime2b,
-                 XDG_CACHE_HOME=cache2b, HOME=tmp2b)
-    holder2b = subprocess.Popen([src2b, 'fbownkey', '10'], stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, env=env2b)
-    locked2b = wait_for_locked(holder2b)
-    check('fallback: non-owned runtime dir falls back to the cache dir',
-          locked2b
-          and os.path.isdir(os.path.join(cache2b, 'flocker-temp-folder')),
-          'locked=%s' % locked2b)
-    holder2b.terminate()
-    holder2b.wait(timeout=10)
-
-    ## 3) unset HOME under the caller's 'set -o nounset' must degrade to the clean
-    ##    "no usable lock dir" error, NOT abort with 'HOME: unbound variable'.
-    tmp3 = tempfile.mkdtemp(prefix='lockfile-fb3-')
-    src3 = make_source_script(tmp3, lockfile_sh)
-    env3 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp3, 'absent'))
-    env3.pop('XDG_CACHE_HOME', None)
-    env3.pop('HOME', None)
+        runtime3 = '/usr'
+    env3 = dict(os.environ, XDG_RUNTIME_DIR=runtime3,
+                XDG_CACHE_HOME=cache3, HOME=tmp3)
     res3 = subprocess.run([src3, '', '0'], capture_output=True, text=True,
                           timeout=30, env=env3)
     combined3 = (res3.stdout + res3.stderr).lower()
-    ## Require the EXPECTED diagnostic, not merely any nonzero exit lacking
-    ## 'unbound variable': an unrelated failure (a different abort) would otherwise
-    ## pass. 'no usable per-user lock directory' proves the fallback failed CLEANLY.
-    check('fallback: unset HOME under nounset errors cleanly',
+    cache3_lock = os.path.exists(os.path.join(cache3, 'flocker-temp-folder'))
+    check('no-fallback: non-owned runtime dir hard-exits, no cache lock',
           'LOCKED' not in res3.stdout and res3.returncode != 0
-          and 'unbound variable' not in combined3
-          and 'no usable per-user lock directory' in combined3,
-          '%r rc=%d' % ((res3.stdout + res3.stderr).strip()[:120],
-                        res3.returncode))
+          and 'no per-user runtime dir' in combined3 and not cache3_lock,
+          '%r rc=%d cache_lock=%s' % ((res3.stdout + res3.stderr).strip()[:120],
+                                      res3.returncode, cache3_lock))
+
+    ## 4) unset HOME under the caller's 'set -o nounset' must still reach the clean
+    ##    'no per-user runtime dir' exit, NOT abort with 'HOME: unbound variable':
+    ##    the helper has no cache fallback, so it must never dereference HOME.
+    tmp4 = tempfile.mkdtemp(prefix='lockfile-nofb4-')
+    src4 = make_source_script(tmp4, lockfile_sh)
+    env4 = dict(os.environ, XDG_RUNTIME_DIR=os.path.join(tmp4, 'absent'))
+    env4.pop('XDG_CACHE_HOME', None)
+    env4.pop('HOME', None)
+    res4 = subprocess.run([src4, '', '0'], capture_output=True, text=True,
+                          timeout=30, env=env4)
+    combined4 = (res4.stdout + res4.stderr).lower()
+    check('no-fallback: unset HOME under nounset errors cleanly',
+          'LOCKED' not in res4.stdout and res4.returncode != 0
+          and 'unbound variable' not in combined4
+          and 'no per-user runtime dir' in combined4,
+          '%r rc=%d' % ((res4.stdout + res4.stderr).strip()[:120],
+                        res4.returncode))
 
 
 def fuzz(lockfile_sh, iterations, seed, check):
@@ -477,7 +485,7 @@ def main():
         wrap_mode_tests(lockfile_sh, check)
         inline_safety_tests(lockfile_sh, check)
         security_tests(lockfile_sh, check)
-        fallback_tests(lockfile_sh, check)
+        no_fallback_tests(lockfile_sh, check)
     fuzz(lockfile_sh, args.iterations, args.seed, check)
 
     print('%d passed, %d failed' % (passed, failed))

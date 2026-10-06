@@ -66,16 +66,27 @@ trap cleanup EXIT
 super="${test_root}/super"
 sub="${super}/sub"
 
-## git without the operator's global hooks/identity: this fixture tests
-## dm-gitlink-bump, not the operator's pre-commit guards, and must commit
-## regardless of the host gitconfig. gpgsign off: no signing in a throwaway.
-git_fx() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.email=fx@example.invalid -c user.name=fx "$@"; }
+## Hermetic: ignore the host's global/system git config so the outcome does not
+## depend on an ambient user.email / hooksPath, and set identity per repo below.
+## The REAL dm-gitlink-bump commit runs without our -c flags, so without a
+## resolvable local identity it would abort "Please tell me who you are" in a
+## clean CI home and report a false regression.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+
+## git without the operator's hooks (this tests dm-gitlink-bump, not the
+## operator's pre-commit guards); gpgsign off: no signing in a throwaway.
+git_fx() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false "$@"; }
+## Persist an identity in the repo so both fixture commits and the real tool
+## commit (which does not see our -c flags) resolve an author; the tool still
+## pins the NAME to 'claude', which is what this suite asserts.
+set_identity() { git -C "$1" config user.email fx@example.invalid && git -C "$1" config user.name fx; }
 
 ## Submodule: two commits on 'ai'; HEAD (c1) ahead of the pin (c0). A file://
 ## remote whose tracking ref equals HEAD makes the tool treat c1 as a published
 ## ai tip (it reads the tracking ref only -- never fetches).
 mkdir -p -- "${sub}"
 git_fx -C "${sub}" init -q -b ai
+set_identity "${sub}"
 git_fx -C "${sub}" commit -q --allow-empty -m c0
 c0="$(git -C "${sub}" rev-parse HEAD)"
 git_fx -C "${sub}" commit -q --allow-empty -m c1
@@ -87,6 +98,7 @@ git_fx -C "${sub}" update-ref "refs/remotes/org-ai-assisted/ai" "${c1}"
 ## must exist) on 'ai', pinning the submodule at c0 while its worktree is at c1.
 mkdir -p -- "${super}/build-steps.d" "${super}/help-steps"
 git_fx -C "${super}" init -q -b ai
+set_identity "${super}"
 cat > "${super}/.gitmodules" <<EOF
 [submodule "sub"]
 	path = sub
