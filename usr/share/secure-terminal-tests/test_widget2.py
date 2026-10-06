@@ -7732,4 +7732,47 @@ ok('VISIBLE' in _cap.toPlainText(),
 _cap.shutdown()
 
 
+# Resize GROW with scrollback must NOT pad a blank band below the prompt. A height INCREASE
+# (zoom-out / taller window) defers to stock pyte Screen.resize, which PROMOTES NOTHING and
+# leaves the cursor put -- the new bottom rows are genuinely empty. The screen==viewport fill
+# (correct for the SHRINK short-repaint above, which DOES promote dup-able rows) then rendered
+# those empty new rows UNDER the prompt, stranding it mid-viewport. On a grow the fill is
+# wrong: trim to the prompt and let the genuine scrollback fill the grown viewport from above
+# (xterm/VTE reflow history down on a grow). Drives the REAL resize path (_sync_tui_size) so
+# _grid_grew is set in production code. RED on the old gate (grid padded to _big), green here.
+for _small, _big in ((6, 10), (24, 40)):
+    _gw = SecureTerminal(command='/bin/cat', tui=True)
+    _gw.resize(400, 300); _gw.show(); APP.processEvents()
+    _gw._tui_grid_size = lambda s=_small: (20, s)
+    _gw._make_screen()
+    # Fill MORE than the grid so rows scroll into scrollback; end at a prompt on the last row
+    # (no trailing newline -> the cursor sits on it).
+    feed_output(_gw, (''.join('out%02d\r\n' % _i for _i in range(_big + _small + 4))
+                      + 'prompt$ ').encode())
+    _gw._render_tui(); APP.processEvents()
+    ok(len(list(_gw._screen.history.top)) >= _big - _small,
+       'grow-setup(%d->%d): scrollback above the grid fills the grown viewport' % (_small, _big))
+    eq(_gw._screen.cursor.y, _small - 1,
+       'grow-setup(%d->%d): the prompt is on the last grid row' % (_small, _big))
+    _gw_before = [_l for _l in _gw.toPlainText().split('\n') if _l.strip()]
+    # GROW the window (the review bar closing, a zoom-out, a window drag taller).
+    _gw._tui_grid_size = lambda b=_big: (20, b)
+    _gw._sync_tui_size()
+    _gw._render_tui(); APP.processEvents()
+    _gw_doc = _gw.toPlainText().split('\n')
+    ok('prompt$' in _gw_doc[-1],
+       'grow(%d->%d): the document ends at the prompt, no blank band padded below' % (_small, _big))
+    eq(_gw._grid_rows, _small,
+       'grow(%d->%d): the grid is trimmed to the prompt, not padded to the grown viewport'
+       % (_small, _big))
+    ok('prompt$' in _gw_doc[-_gw._screen.lines:][-1],
+       'grow(%d->%d): the prompt sits at the viewport bottom (scrollback fills above)'
+       % (_small, _big))
+    _gw_after = [_l for _l in _gw.toPlainText().split('\n') if _l.strip()]
+    ok(_gw_after == _gw_before,
+       'grow(%d->%d): the grow preserves the display (no vanished/duplicated output)'
+       % (_small, _big))
+    _gw.shutdown()
+
+
 finish('widget2')
