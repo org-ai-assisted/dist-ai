@@ -86,6 +86,19 @@ rt_purge_foreign_vbox_ipc 'eph-run-absent-account-1' || absent_rc=$?
 check "absent IPC dir is a clean no-op" \
    "$([ "${absent_rc}" -eq 0 ] && printf true || printf false)"
 
+## Case 4: a SYMLINK at the IPC path (it lives in world-writable /tmp) is removed as
+## a LINK -- never followed -- so its target is untouched. Guards the /tmp symlink
+## hardening note: a planted symlink must not let --recursive delete the target.
+target_dir="${work}/precious"
+mkdir -- "${target_dir}"
+touch -- "${target_dir}/keep"
+ln --symbolic -- "${target_dir}" "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc"
+rt_purge_foreign_vbox_ipc 'eph-run-symlink-1'
+check "symlink at the IPC path is removed (the link itself)" \
+   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc" ] && [ ! -L "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc" ] && printf true || printf false)"
+check "symlink target is untouched (not followed/recursed)" \
+   "$([ -f "${target_dir}/keep" ] && printf true || printf false)"
+
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s ipc-purge assertion(s) failed\n' "${failures}" >&2
    exit 1

@@ -78,7 +78,14 @@ PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
 NFT_FLEET_TOOL="${NFT_FLEET_TOOL:-provision-server-nftables.sh}"
 ## MAX seconds to wait for a killed VBoxSVC to reap before userdel (cleanup polls
 ## each second and stops as soon as the account's processes are gone). Test seam.
+## Coerce a non-integer override back to the default so the poll's `[ -ge ]` cannot
+## error (and spin) on a bad value.
 EPH_CLEANUP_SETTLE="${EPH_CLEANUP_SETTLE:-20}"
+case "${EPH_CLEANUP_SETTLE}" in
+   ''|*[!0-9]*)
+      EPH_CLEANUP_SETTLE=20
+      ;;
+esac
 ## Base dir for VBoxXPCOMIPCD's per-user IPC socket dir (.vbox-<user>-ipc). VBox
 ## puts it at /tmp/.vbox-<user>-ipc for the sudo'd eph account: sudo env_reset with
 ## no PAM session strips TMPDIR, so VBox falls back to /tmp (confirmed on the host).
@@ -453,6 +460,13 @@ rt_purge_foreign_vbox_ipc() {
    local account dir owner
    account="$1"
    dir="${VBOX_IPC_BASE}/.vbox-${account}-ipc"
+   ## A real IPC dir is a plain directory. This path lives in world-writable /tmp,
+   ## so a symlink here is never ours (stale or planted): remove the LINK itself --
+   ## never --recursive, never stat/rm through it to a target -- then stop.
+   if [ -L "${dir}" ]; then
+      safe-rm --force -- "${dir}"
+      return 0
+   fi
    [ -e "${dir}" ] || return 0
    owner="$(stat --format='%U' -- "${dir}" 2>/dev/null || true)"
    [ "${owner}" = "${account}" ] && return 0
