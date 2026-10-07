@@ -42,8 +42,12 @@ fake_repo="${work}/usability-misc"
 mkdir --parents -- "${fake_repo}/usr/share/usability-misc"
 touch -- "${fake_repo}/usr/share/usability-misc/dist-installer-cli-standalone"
 
-## PATH 'id' stub: report the invoker name as sysmaint, delegate everything else
-## (incl. 'id -u') to the real coreutils id so the uid stays the real non-root value.
+## PATH 'id' stub: report the invoker name as sysmaint AND a nonzero uid, delegating
+## every other query to the real coreutils id. The nonzero uid is load-bearing: if the
+## suite runs as ROOT, a real 'id -u' of 0 would trip the guard's ROOT branch first and
+## exit 78 regardless of the sysmaint clause -- the regression would then pass even with
+## the sysmaint clause removed (vacuous). Forcing a nonzero uid makes the exit 78 come
+## ONLY from the sysmaint clause this test guards.
 stub_bin="${work}/bin"
 mkdir --parents -- "${stub_bin}"
 # shellcheck disable=SC2016  # these are the GENERATED stub's literals, not expanded here
@@ -51,6 +55,10 @@ printf '%s\n' \
    '#!/bin/bash' \
    'if [ "$1" = "-un" ]; then' \
    '   printf "%s\n" sysmaint' \
+   '   exit 0' \
+   'fi' \
+   'if [ "$1" = "-u" ]; then' \
+   '   printf "%s\n" 1000' \
    '   exit 0' \
    'fi' \
    'exec /usr/bin/id "$@"' \
