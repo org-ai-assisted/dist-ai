@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-## Regression: usability-misc ci/vbox-back-to-default-repo.sh must exit with the
-## INSTALLER's own exit code when the installer fails for a reason OTHER than the
+## Regression: ci/dist-installer-cli-build/vbox-back-to-default-repo.sh must exit
+## with the INSTALLER's own exit code when the installer fails for a reason OTHER than the
 ## expected Debian 108 (Oracle-repo-not-selected). A prior version ran
 ## `exit "$?"` where `$?` was the status of the `if` that had just tested the
 ## code, collapsing every distinct installer failure into a meaningless 1 - so
@@ -16,7 +16,7 @@
 ## code; grep stays real (it reads /etc/os-release), apt-get is never reached.
 ## The else (propagation) branch is the one under test. No root, no network.
 ##
-## Exit: 0 pass | 1 fail | 77 skip when the usability-misc checkout is absent.
+## Exit: 0 pass | 1 fail. A missing subject is FATAL, never a skip.
 
 set -o errexit
 set -o nounset
@@ -28,16 +28,15 @@ export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
-## Subject: the shipped step script in a usability-misc checkout. USABILITY_MISC_REPO
-## (wired by dist-ai-tests-all), else a derivative-maker checkout under ${HOME}.
-repo="${USABILITY_MISC_REPO:-}"
-if [ -z "${repo}" ]; then
-   repo="${HOME}/derivative-maker/packages/kicksecure/usability-misc"
-fi
-step_script="${repo}/ci/vbox-back-to-default-repo.sh"
+## Subject: the shipped step script, now in dist-ai (moved here from usability-misc).
+test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+## usr/share/dist-installer-cli-tests -> repo root is three levels up (installed: '/').
+repo="${DIST_AI_REPO:-${test_dir}/../../..}"
+step_rel="ci/dist-installer-cli-build/vbox-back-to-default-repo.sh"
+step_script="${repo}/${step_rel}"
 
 if [ ! -x "${step_script}" ]; then
-   printf '%s\n' "FATAL: ${step_script} not found; set USABILITY_MISC_REPO to a checkout." >&2
+   printf '%s\n' "FATAL: ${step_script} not found (DIST_AI_REPO='${DIST_AI_REPO:-}')." >&2
    exit 1
 fi
 
@@ -57,7 +56,7 @@ printf '%s\n' '#!/bin/bash' "exit ${stub_exit}" > "${work_dir}/bin/sudo"
 chmod +x -- "${work_dir}/bin/sudo"
 
 exit_code=0
-( cd -- "${repo}" && PATH="${work_dir}/bin:${PATH}" ./ci/vbox-back-to-default-repo.sh ) \
+( cd -- "${repo}" && PATH="${work_dir}/bin:${PATH}" "./${step_rel}" ) \
    || exit_code="$?"
 
 if [ "${exit_code}" = "${stub_exit}" ]; then

@@ -20,7 +20,9 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 if test -f /etc/debian_version; then
-   adduser --comment "" --disabled-password user2
+   ## Debian trixie needs "--comment"; older adduser (e.g. Ubuntu 22.04) needs
+   ## "--gecos" -- same fallback as the primary user in normal-user-with-sudo.sh.
+   adduser --comment "" --disabled-password user2 || adduser --gecos "" --disabled-password user2
 elif test -f /etc/fedora-release; then
    adduser user2
 else
