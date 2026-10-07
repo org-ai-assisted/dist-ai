@@ -43,6 +43,9 @@ reinstall="false"
 checks="false"
 mok_enroll="false"
 shot=""
+## When set, the failing release check's own in-guest output is written here so the
+## caller can publish it as the result step's stderr tail (why the run failed).
+check_log=""
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
 
@@ -272,6 +275,9 @@ run_check() {
          out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
          if [ -n "${out}" ]; then
             printf '%s: check %s output (why it failed):\n%s\n' "${me}" "${num}" "${out}" >&2
+            if [ -n "${check_log}" ]; then
+               printf 'check %s (%s) FAILED:\n%s\n' "${num}" "${RELEASE_CHECK_DESC[${num}]:-}" "${out}" > "${check_log}"
+            fi
          fi
          return 1
       fi
@@ -356,6 +362,10 @@ parse_args() {
             ;;
          --shot)
             shot="$2"
+            shift 2
+            ;;
+         --check-log)
+            check_log="$2"
             shift 2
             ;;
          -h|--help)

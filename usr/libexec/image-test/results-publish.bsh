@@ -79,7 +79,7 @@ image_test_results_publish() {
    shot_src="$7"
    shift 7
 
-   local lane version builder origin step_name start_unix stop_unix
+   local lane version builder origin step_name start_unix stop_unix step_stderr_file
    local -a expect=()
    lane=""
    version=""
@@ -88,6 +88,7 @@ image_test_results_publish() {
    step_name="${mode}"
    start_unix=""
    stop_unix=""
+   step_stderr_file=""
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --lane)
@@ -120,6 +121,10 @@ image_test_results_publish() {
             ;;
          --expect)
             expect+=( "$2" )
+            shift 2
+            ;;
+         --step-stderr-file)
+            step_stderr_file="$2"
             shift 2
             ;;
          *)
@@ -182,6 +187,12 @@ image_test_results_publish() {
    fi
    if [ -n "${shot_rel}" ]; then
       emit_args+=( --step-shot "${shot_rel}" )
+   fi
+   ## Failed-check output -> the step's stderr tail (why the run failed). Produced by
+   ## the unprivileged account, read here as root by the emitter: refuse a symlink (it
+   ## would make root read the target's tail into the plane).
+   if [ -n "${step_stderr_file}" ] && [ ! -L "${step_stderr_file}" ] && [ -f "${step_stderr_file}" ]; then
+      emit_args+=( --step-stderr-file "${step_stderr_file}" )
    fi
    local item
    for item in "${expect[@]}"; do
