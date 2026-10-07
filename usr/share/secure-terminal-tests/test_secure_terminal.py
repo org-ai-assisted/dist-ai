@@ -315,6 +315,52 @@ finally:
     S._ASCII_FOLD_MAP = _saved_fold
     S._MULTICHAR_ASCII_FOLD = _saved_multi
 
+# require_confusables_data() -- the startup / test gate (main._require_confusables_data and
+# the unicode_gallery suite call it) that fails LOUD with a clear message when the data is
+# unavailable, so a missing python3-confusable-homoglyphs cannot masquerade as oracle/summary
+# "drift". Unlike _ascii_confusables above (which degrades on an unreadable data FILE), the
+# gate is strict: a missing PACKAGE (ImportError) or degenerate data both fail loud.
+S.require_confusables_data()
+ok(True, 'require_confusables_data passes when the confusables data is present')
+# forced PACKAGE-absent: shadow the import so _build_fold_maps raises a clear ImportError.
+_rc_conf = S._ASCII_CONFUSABLES
+_rc_fold = S._ASCII_FOLD_MAP
+_rc_multi = S._MULTICHAR_ASCII_FOLD
+_rc_mod = sys.modules.get('confusable_homoglyphs', 0)
+try:
+    S._ASCII_CONFUSABLES = None
+    S._ASCII_FOLD_MAP = None
+    S._MULTICHAR_ASCII_FOLD = None
+    sys.modules['confusable_homoglyphs'] = None      # -> ImportError on `from ... import`
+    _rc_msg = ''
+    try:
+        S.require_confusables_data()
+    except ImportError as _rc_exc:
+        _rc_msg = str(_rc_exc)
+    ok('python3-confusable-homoglyphs' in _rc_msg,
+       'require_confusables_data fails loud (clear ImportError) when the package is absent')
+finally:
+    if _rc_mod == 0:
+        sys.modules.pop('confusable_homoglyphs', None)
+    else:
+        sys.modules['confusable_homoglyphs'] = _rc_mod
+    S._ASCII_CONFUSABLES = _rc_conf
+    S._ASCII_FOLD_MAP = _rc_fold
+    S._MULTICHAR_ASCII_FOLD = _rc_multi
+# forced DEGENERATE data: the U+0430 sentinel fires when the homoglyph map lacks it.
+_rc_fold2 = S._ASCII_FOLD_MAP
+try:
+    S._ASCII_FOLD_MAP = {}
+    _rc_sent = ''
+    try:
+        S.require_confusables_data()
+    except RuntimeError as _rc_exc:
+        _rc_sent = str(_rc_exc)
+    ok('missing expected' in _rc_sent,
+       'require_confusables_data fails loud (sentinel) when the homoglyph data is degenerate')
+finally:
+    S._ASCII_FOLD_MAP = _rc_fold2
+
 # --- multi-char ASCII-target confusable fold (ellipsis U+2026 -> '...', dashes, etc.) --
 # The 261 sources with NO single-char ASCII look-alike fold to the ASCII STRING they
 # imitate, revealing the disguise on the paste/review surface.

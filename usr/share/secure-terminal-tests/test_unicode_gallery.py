@@ -61,6 +61,18 @@ except Exception as exc:      # pylint: disable=broad-except
                      'generator %s: %s\n' % (_GEN_PATH, exc))
     sys.exit(1)
 
+# A missing hard dependency (python3-confusable-homoglyphs) must FAIL LOUD with a clear
+# message, NOT masquerade as oracle/summary "drift": both S and G degrade identically
+# when it is absent, so marking_class conformance still passes while the oracle fixtures
+# and the committed summary appear stale. Check it up front, before any drift test runs.
+try:
+    S.require_confusables_data()
+    G.require_confusables_data()
+except Exception as exc:      # pylint: disable=broad-except
+    sys.stderr.write('secure-terminal-tests(unicode_gallery): FAIL missing '
+                     'dependency: %s\n' % exc)
+    sys.exit(1)
+
 FAIL = 0
 
 
@@ -315,10 +327,43 @@ def test_summary():
         ok('committed summary matches generated output')
 
 
+def test_missing_dep_fails_clearly():
+    """CANARY: with python3-confusable-homoglyphs unimportable, the suite must FAIL with
+    a clear missing-dependency message and exit 1 -- NOT the misleading 'oracle drift' /
+    'STALE summary' (the silent-degrade this fix closes), and NOT a pass. Re-runs this
+    suite in a child with the package shadowed by a module that raises ImportError."""
+    if os.environ.get('_ST_UNICODE_CANARY_CHILD'):
+        return                                   # we ARE the child; never recurse
+    before = FAIL
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as shadow:
+        with open(os.path.join(shadow, 'confusable_homoglyphs.py'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write("raise ImportError('shadowed: confusable_homoglyphs absent')\n")
+        env = dict(os.environ)
+        env['_ST_UNICODE_CANARY_CHILD'] = '1'
+        env['PYTHONPATH'] = shadow + os.pathsep + env.get('PYTHONPATH', '')
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__)],
+                              env=env, capture_output=True, text=True, check=False)
+    err = proc.stderr
+    if proc.returncode != 1:
+        fail('CANARY: dep-absent run exited %d, want 1\n%s' % (proc.returncode, err))
+        return
+    if 'missing dependency' not in err or 'confusable-homoglyphs' not in err:
+        fail('CANARY: dep-absent run lacks a clear missing-dependency message:\n%s' % err)
+    if 'STALE' in err or 'oracle classify' in err:
+        fail('CANARY: dep-absent run emitted the misleading drift/stale diagnosis '
+             'instead of a clear missing-dependency message:\n%s' % err)
+    if FAIL == before:
+        ok('a missing confusables dependency fails with a clear message, not fake drift')
+
+
 def main():
     for test in (test_oracle_fixtures, test_honest_foreign_is_nonascii,
                  test_marking_class_conformance, test_conformance_canary,
-                 test_payload_safety, test_payload_safety_canary, test_summary):
+                 test_payload_safety, test_payload_safety_canary, test_summary,
+                 test_missing_dep_fails_clearly):
         test()
     if FAIL:
         sys.stderr.write('secure-terminal-tests(unicode_gallery): %d FAILURE(s)\n'

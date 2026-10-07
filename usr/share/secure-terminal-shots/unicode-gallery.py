@@ -108,8 +108,17 @@ def _ascii_confusables():
                          and all(0x20 <= ord(g) <= 0x7E for g in a['c'])
                          for a in alternatives):
                     multi_srcs.add(source)
+        except ImportError as exc:      # the PACKAGE is absent -> provisioning error, fail loud
+            # Must mirror secure_terminal.sanitize: a missing package silently degrades the
+            # homoglyph set and masquerades as oracle/summary drift. require_confusables_data()
+            # surfaces it in the test gate.
+            raise ImportError(
+                'unicode-gallery: the Unicode confusables data '
+                '(python3-confusable-homoglyphs) is not installed. It is a hard '
+                'dependency; without it confusable classification silently degrades. '
+                'Install: sudo apt install python3-confusable-homoglyphs') from exc
         except Exception:      # pylint: disable=broad-except
-            pass
+            pass               # package present but data unreadable/corrupt -> degrade (NFKC survives)
         # Mirror secure-terminal _build_fold_maps: a compatibility character whose NFKC form is
         # a SINGLE printable-ASCII char poses as that ASCII and joins the confusable set -- but
         # DEFER to the confusables data where it already places the source (its disjointness
@@ -132,6 +141,21 @@ def _ascii_confusables():
                 found.add(cp)
         _ASCII_CONFUSABLES = frozenset(found)
     return _ASCII_CONFUSABLES
+
+
+def require_confusables_data():
+    """Fail loud (raise) when the Unicode confusables data is unavailable or degenerate.
+    Mirrors secure_terminal.sanitize.require_confusables_data so the oracle and the app
+    agree: a missing python3-confusable-homoglyphs raises a clear ImportError (via
+    _ascii_confusables) instead of masquerading as oracle/summary drift. The sentinel
+    also catches present-but-empty data (U+0430 CYRILLIC SMALL LETTER A is a confusable
+    in every real dataset)."""
+    if 0x0430 not in _ascii_confusables():
+        raise RuntimeError(
+            'unicode-gallery: the Unicode confusables data '
+            '(python3-confusable-homoglyphs) is installed but missing expected '
+            'homoglyph mappings (e.g. U+0430); classification would be degraded. '
+            'Reinstall python3-confusable-homoglyphs.')
 
 
 def _is_mark(ch):

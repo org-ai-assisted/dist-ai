@@ -1026,6 +1026,28 @@ try:
         ok(isinstance(M._require_default_font(), bool),
            'font: _require_default_font uses a live QFontDatabase API (returns bool)')
     M.QFontDatabase = _FontDBPresent    # restore present for the shot test below
+
+    # _require_confusables_data: python3-confusable-homoglyphs (the Unicode confusables
+    # data) is a hard dependency too. Without it the confusable/homoglyph detection -- a
+    # core security guarantee -- silently degrades, so main() fails loud with exit 1 like
+    # the missing font. Drive both branches via the sanitize gate it delegates to.
+    ok(M._require_confusables_data() is True,
+       'confusables: _require_confusables_data True when the data is present')
+    import secure_terminal.sanitize as _san_mod
+    _saved_rcd = _san_mod.require_confusables_data
+
+    def _rcd_boom():
+        raise RuntimeError('forced: confusables data unavailable')
+
+    _san_mod.require_confusables_data = _rcd_boom
+    _cerr = _io.StringIO()
+    with _ctx.redirect_stderr(_cerr):
+        ok(M._require_confusables_data() is False,
+           'confusables: _require_confusables_data False when the data is unavailable')
+    ok('confusables data unavailable' in _cerr.getvalue(),
+       'confusables: the failure reason is written to stderr')
+    _san_mod.require_confusables_data = _saved_rcd
+
     # NOTE: the exit-1 wiring (main() -> `return 1`) is asserted in the block below,
     # AFTER the threaded single-instance handoff test -- an extra main() call BEFORE
     # that delicate block destabilizes it into an intermittent segfault.
