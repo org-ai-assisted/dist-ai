@@ -13,14 +13,19 @@
 ## network.
 ##
 ## Assertions (each a canary -- a missing subject is FATAL, never a skip):
-##   1. a free lock is ACQUIRED and held (confirmed by a DIRECT flock probe on the
-##      lock file, not by message text), and a second acquirer is REFUSED while the
-##      lock is genuinely held;
-##   2. after the holder exits the lock is re-acquirable;
-##   3. flock --close: a backgrounded grandchild that OUTLIVES the locked command
+##   1. a FREE lock is acquired and the command runs;
+##   2. a second acquirer is REFUSED while the lock is held (confirmed by a DIRECT
+##      flock probe, not by message text) -- the no-double-start guarantee;
+##   3. after the holder exits the lock is re-acquirable;
+##   4. flock --close: a backgrounded grandchild that OUTLIVES the locked command
 ##      (the real dist-installer-cli case: a detached VirtualBox GUI) does NOT pin
 ##      the lock. Without --close the grandchild inherits the lock fd and this
 ##      FAILS -- the canary that keeps --close load-bearing.
+##   5. SOURCED self-lock under strict mode (errexit/errtrace + an ERR trap) refuses
+##      a held lock CLEANLY: exit 75 (EX_TEMPFAIL), NO ERR-trap abort, body not run.
+##      This is the systemcheck regression -- a bare pre-check 'flock' fired the
+##      sourcing script's ERR trap (a spurious error dialog), so the lock was
+##      disabled. FAILS on the old code (ERR trap fires, exit != 75).
 ##
 ## Exit: 0 pass | 1 fail.
 
@@ -44,17 +49,11 @@ proc_lib="${repo}/usr/share/dist-ai-tests-common/proc-lib.bash"
 # shellcheck source=../dist-ai-tests-common/proc-lib.bash
 . "${proc_lib}"
 
-## Subject: the shipped lockfile.sh. HELPER_SCRIPTS_REPO points the suite at a
-## checkout; unset means the installed package. A checkout stores it under
-## '<repo>/usr/libexec/...'; installed it is '/usr/libexec/...' (not '/usr/usr/...').
-[ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
-if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   hs_root="${HELPER_SCRIPTS_REPO}"
-else
-   hs_root='/usr'
-fi
+## Subject: the shipped lockfile.sh. HELPER_SCRIPTS_REPO (empty when testing the
+## installed package) prefixes the path -- empty -> '/usr/libexec/...', a checkout
+## -> '<repo>/usr/libexec/...'.
+hs_root="${HELPER_SCRIPTS_REPO:-}"
 subject="${hs_root}/usr/libexec/helper-scripts/lockfile.sh"
-[ "${hs_root}" = "/usr" ] && subject='/usr/libexec/helper-scripts/lockfile.sh'
 if [ ! -r "${subject}" ]; then
    printf '%s\n' "FATAL: lockfile.sh not readable: '${subject}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout." >&2
@@ -67,14 +66,12 @@ export XDG_RUNTIME_DIR="${work}/xdg"
 mkdir --mode=0700 -- "${XDG_RUNTIME_DIR}"
 
 holder_pid=""
-sleep_pid=""
 gchild_pid=""
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
    ## End every process we started; each guard tolerates an already-gone target so
-   ## errexit cannot abort the trap before the work dir is removed. No blocking
-   ## primitive (FIFO/pipe) is used, so cleanup cannot hang on a dead holder.
-   if [ -n "${sleep_pid}" ]; then kill -s KILL -- "${sleep_pid}" 2>/dev/null || true; fi
+   ## errexit cannot abort the trap before the work dir is removed. The holder holds
+   ## the lock fd directly (no child), so SIGKILL releases it with nothing orphaned.
    if [ -n "${holder_pid}" ]; then kill -s KILL -- "${holder_pid}" 2>/dev/null || true; fi
    if [ -n "${gchild_pid}" ]; then kill -s KILL -- "${gchild_pid}" 2>/dev/null || true; fi
    safe-rm --recursive --force -- "${work}" || true
@@ -104,49 +101,51 @@ lock_held() {
    [ -e "${lockfile_one}" ] && ! flock --exclusive --nonblock "${lockfile_one}" true 2>/dev/null
 }
 
-## --- Assertion 1: acquire + hold + refuse a second acquirer ------------------
-## Holder: 'sleep' holds the lock for the whole command; a simple command, no
-## detached child. Captured by PARENT pid ('pgrep -P', no pattern -> self-safe) so
-## assertion 2 can end it precisely and leave no orphan.
-bash "${subject}" "${key_one}" -- sleep 3600 >/dev/null 2>&1 &
+## --- Assertion 1: lockfile.sh acquires a free lock and runs the command -------
+## This also creates the flocker-temp-folder and the key_one lock file that the
+## holder below opens directly.
+if bash "${subject}" "${key_one}" -- true >/dev/null 2>&1; then
+   ok "free lock acquired and command ran"
+else
+   notok "lockfile.sh failed to acquire a free lock"
+fi
+
+## --- Assertion 2: a second acquirer is refused while the lock is held ---------
+## The holder holds the lock DIRECTLY on its own fd, then execs 'sleep' so it keeps
+## that fd open with no child -- SIGKILL releases the lock immediately and orphans
+## nothing. The fd is opened INSIDE the subshell, so neither this shell nor the
+## acquirers under test inherit it.
+## style-ok: allow-exec -- the holder execs 'sleep' so the lock-holder is a single
+## killable PID holding the fd, leaving no orphaned child to pin the lock.
+( exec {hf}>"${lockfile_one}"; flock --exclusive --nonblock "${hf}" || exit 1; exec sleep 3600 ) &
 holder_pid="$!"
+## Drop it from the job table so bash does not print an async "Killed" notice when
+## we SIGKILL it below; liveness is polled via proc_dead (/proc), not wait.
+disown "${holder_pid}" 2>/dev/null || true
 
 for _ in $(seq 1 200); do
-   sleep_pid="$(pgrep -P "${holder_pid}" 2>/dev/null | head -n 1 || true)"
-   if [ -n "${sleep_pid}" ] && lock_held; then
-      break
-   fi
+   lock_held && break
    sleep 0.05
 done
 
-if [ -n "${sleep_pid}" ] && lock_held; then
-   ok "free lock acquired and held (direct flock probe confirms, holder pid=${holder_pid})"
-else
-   notok "holder never acquired the lock" "lockfile='${lockfile_one}'"
-fi
-
-## Refusal requires BOTH: the second acquirer exits non-zero AND the lock is still
-## genuinely held (direct probe) -- so a non-zero exit for any unrelated reason,
-## or a holder that never acquired, cannot false-pass this.
 contend_rc=0
 bash "${subject}" "${key_one}" -- true >/dev/null 2>&1 || contend_rc=$?
-if [ "${contend_rc}" -ne 0 ] && lock_held; then
-   ok "second acquirer refused while the lock is held"
+## Exit MUST be 75 (EX_TEMPFAIL -- the conventional 'resource busy, retry later'
+## code), not merely non-zero, so a regression to flock's generic default (1) or a
+## dropped --conflict-exit-code is caught.
+if [ "${contend_rc}" -eq 75 ] && lock_held; then
+   ok "second acquirer refused while the lock is held (exit 75 EX_TEMPFAIL)"
 else
-   notok "second acquirer was not refused while the lock is held" "contend_rc=${contend_rc}"
+   notok "second acquirer not refused with exit 75 while the lock is held" "contend_rc=${contend_rc}"
 fi
 
-## --- Assertion 2: re-acquirable after the holder exits -----------------------
-## End the locked command ('sleep'); flock then releases the lock and exits (the
-## normal command-exit path). Signalling the command, not flock, leaves no orphan.
-if [ -n "${sleep_pid}" ]; then kill "${sleep_pid}" 2>/dev/null || true; fi
+## --- Assertion 3: re-acquirable after the holder exits ------------------------
+if [ -n "${holder_pid}" ]; then kill -s KILL -- "${holder_pid}" 2>/dev/null || true; fi
 for _ in $(seq 1 200); do
    proc_dead "${holder_pid}" && break
    sleep 0.05
 done
-wait "${holder_pid}" 2>/dev/null || true
 holder_pid=""
-sleep_pid=""
 
 reacq_rc=0
 bash "${subject}" "${key_one}" -- true >/dev/null 2>&1 || reacq_rc=$?
@@ -156,7 +155,7 @@ else
    notok "lock not re-acquirable after the holder exits"
 fi
 
-## --- Assertion 3: flock --close -- a detached grandchild must not pin the lock
+## --- Assertion 4: flock --close -- a detached grandchild must not pin the lock
 ## The locked command spawns a background grandchild that outlives it, then exits.
 ## With flock --close the grandchild never inherits the lock fd, so the lock frees
 ## the moment the command exits; without --close the grandchild pins it.
@@ -177,6 +176,59 @@ else
       notok "detached grandchild pinned the lock -- flock --close missing or ineffective"
    fi
 fi
+
+## --- Assertion 5: SOURCED self-lock under strict mode refuses cleanly ----------
+## The systemcheck regression. A script that SOURCES lockfile.sh under
+## errexit/errtrace with an ERR trap must, when the lock is held, exit 75 via the
+## authoritative exec'd flock -- NOT abort through its ERR trap. The old bare
+## pre-check 'flock' failed under errexit and fired the trap (a spurious error
+## dialog), which is why the lock was disabled in systemcheck.
+key_src="guardkeysource"
+lockfile_src="${XDG_RUNTIME_DIR}/flocker-temp-folder/${key_src}"
+
+## Hold the key_src lock directly (same fd-holder pattern as assertion 2); the '>'
+## redirect creates the lock file, so no prior lockfile.sh run is needed.
+( exec {hf}>"${lockfile_src}"; flock --exclusive --nonblock "${hf}" || exit 1; exec sleep 3600 ) &
+holder_pid="$!"
+disown "${holder_pid}" 2>/dev/null || true
+for _ in $(seq 1 200); do
+   if [ -e "${lockfile_src}" ] && ! flock --exclusive --nonblock "${lockfile_src}" true 2>/dev/null; then
+      break
+   fi
+   sleep 0.05
+done
+
+## Contender: a strict-mode script that SOURCES the real lockfile.sh with
+## LOCK_NAME=key_src (locking the held key). Its ERR trap prints a marker and exits
+## 42; a clean refusal instead exits 75 with neither the trap marker nor the
+## post-source body ('PROCEEDED') having run.
+src_caller="${work}/selflock_caller.sh"
+cat > "${src_caller}" <<EOF
+#!/bin/bash
+set -o errexit -o nounset -o pipefail -o errtrace
+shopt -s inherit_errexit
+trap 'printf "ERRTRAP\n" >&2; exit 42' ERR
+export LOCK_NAME='${key_src}'
+source '${subject}'
+printf 'PROCEEDED\n'
+EOF
+chmod +x -- "${src_caller}"
+
+src_out="${work}/selflock.out"
+src_rc=0
+"${src_caller}" >"${src_out}" 2>&1 || src_rc=$?
+
+if [ "${src_rc}" -eq 75 ] \
+   && ! grep --quiet 'ERRTRAP' -- "${src_out}" \
+   && ! grep --quiet 'PROCEEDED' -- "${src_out}"; then
+   ok "sourced self-lock under strict mode refused cleanly (exit 75, no ERR-trap abort)"
+else
+   notok "sourced self-lock mishandled a held lock -- bug #1 regression" \
+      "src_rc=${src_rc} out=[$(tr '\n' '|' < "${src_out}" 2>/dev/null || true)]"
+fi
+
+if [ -n "${holder_pid}" ]; then kill -s KILL -- "${holder_pid}" 2>/dev/null || true; fi
+holder_pid=""
 
 printf '%s\n' ""
 printf '%s\n' "===== lockfile.sh: ${pass_count} pass, ${fail_count} fail ====="

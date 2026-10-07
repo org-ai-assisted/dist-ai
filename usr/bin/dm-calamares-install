@@ -58,6 +58,22 @@ die() {
 ## failure never leaks a running headless VM. Preserves the exit status.
 on_exit() {
    local rc=$?
+   local stuck
+   ## On a FAILED run, surface WHY for the results plane: a gui_wait_for abort/timeout
+   ## (install or boot failure, BEFORE the check battery) already saved the on-screen error
+   ## to ${HOME}/${me}-stuck.png. Publish it as --shot (when no success shot was captured) and
+   ## leave a reason in --check-log, so the page shows the Calamares error instead of a bare
+   ## FAIL with no evidence. Best-effort: never let capture change the exit status.
+   if [ "${rc}" -ne 0 ]; then
+      stuck="${HOME}/${me}-stuck.png"
+      if [ -n "${shot}" ] && [ ! -s "${shot}" ] && [ -s "${stuck}" ]; then
+         cp -- "${stuck}" "${shot}" 2>/dev/null || true
+      fi
+      if [ -n "${check_log}" ] && [ ! -s "${check_log}" ]; then
+         printf '%s FAILED (rc=%s) -- see the published screenshot for the on-screen error.\n' \
+            "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+      fi
+   fi
    if [ "${vm_started}" = 'true' ]; then
       "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
    fi
@@ -484,6 +500,9 @@ main() {
       exec dm-vm-lock acquire --class work --ttl "${DM_CALAMARES_LOCK_TTL:-3600}" -- "$0" "$@"
    fi
    trap on_exit EXIT
+   ## Clear any stale stuck screenshot left by a PRIOR run of this account, so on_exit can
+   ## only ever publish THIS run's failure screen -- never a previous run's error.
+   safe-rm --force -- "${HOME}/${me}-stuck.png" 2>/dev/null || true
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
