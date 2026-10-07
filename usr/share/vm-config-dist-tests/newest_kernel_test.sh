@@ -10,15 +10,15 @@
 ##
 ## Its contract:
 ##   - globs /boot for 'vmlinuz-*' regular files (not config-*, initrd.img-*, ...);
-##   - keeps only entries whose trailing '-<arch>' matches 'dpkg --print-architecture';
-##   - strips the 'vmlinuz-' prefix and the '-<arch>' suffix, leaving the version;
-##   - returns the version-sorted newest.
+##   - returns the FULL release (the 'vmlinuz-' basename minus the prefix:
+##     '<version>-<abi>-<flavour>', i.e. the uname -r / /lib/modules/<release> name),
+##     because vboxadd consumes it as TARGET_VER (/lib/modules/"${TARGET_VER}"/build);
+##   - picks the version-sorted newest. No architecture filter.
 ## It takes NO argument -- its one call site (the chroot branch) passes none.
 ##
 ## /boot is bind-mounted from a fixture, so the result does not depend on which
-## kernels the test host happens to have installed -- and so the newest-wins and
-## arch-filter cases are decidable at all. The host arch is read at runtime so the
-## fixtures are valid on any Debian architecture, not just amd64.
+## kernels the test host happens to have installed -- so newest-wins is decidable.
+## The host arch is read at runtime only to name realistic fixtures.
 ##
 ## No root, no network.
 
@@ -51,14 +51,8 @@ if ! grep --quiet -- '^find_latest_installed_kernel() {' "${subject}"; then
    exit 1
 fi
 
-## The host arch the subject filters on. Fixtures are named with it so they match;
-## a DIFFERENT arch is used for the decoy that must be excluded.
+## Name fixtures with the host arch so they look like real installed kernels.
 host_arch="$(dpkg --print-architecture)"
-if [ "${host_arch}" = "amd64" ]; then
-   foreign_arch="arm64"
-else
-   foreign_arch="amd64"
-fi
 
 work_dir="$(mktemp --directory -- "${TMP}/vbox-newest-kernel-test.XXXXXX")"
 
@@ -131,21 +125,19 @@ check() {
    fi
 }
 
-## One kernel -- the real no-arg call site. The 'vmlinuz-' prefix and '-<arch>'
-## suffix are stripped, leaving the bare version.
-check 'one kernel -- the real no-arg call site' 'TARGET_VER=[6.1.0-13]' \
+## One kernel -- the real no-arg call site. Only the 'vmlinuz-' prefix is stripped;
+## the full release (incl. the '-<flavour>' suffix) is what vboxadd needs.
+check 'one kernel -- the real no-arg call site' "TARGET_VER=[6.1.0-13-${host_arch}]" \
    "vmlinuz-6.1.0-13-${host_arch}"
 ## Newest of three wins, by version-sort.
-check 'three kernels: the newest wins' 'TARGET_VER=[6.1.0-18]' \
+check 'three kernels: the newest wins' "TARGET_VER=[6.1.0-18-${host_arch}]" \
    "vmlinuz-6.1.0-13-${host_arch}" "vmlinuz-6.1.0-18-${host_arch}" \
    "vmlinuz-5.10.0-26-${host_arch}"
-## The higher-versioned entries here must ALL be excluded: a foreign-arch vmlinuz
-## by the arch filter, and the config-/initrd.img-/System.map- files by the
-## 'vmlinuz-' glob. Only the matching-arch vmlinuz counts.
-check 'foreign-arch and non-vmlinuz entries are ignored' 'TARGET_VER=[6.1.0-13]' \
-   "vmlinuz-6.1.0-13-${host_arch}" "vmlinuz-9.9.9-9-${foreign_arch}" \
-   "config-9.9.9-9-${host_arch}" "initrd.img-9.9.9-9-${host_arch}" \
-   "System.map-9.9.9-9-${host_arch}"
+## The higher-versioned config-/initrd.img-/System.map- files must be ignored by
+## the 'vmlinuz-' glob; only the vmlinuz entry counts.
+check 'non-vmlinuz /boot entries are ignored' "TARGET_VER=[6.1.0-13-${host_arch}]" \
+   "vmlinuz-6.1.0-13-${host_arch}" "config-9.9.9-9-${host_arch}" \
+   "initrd.img-9.9.9-9-${host_arch}" "System.map-9.9.9-9-${host_arch}"
 ## No vmlinuz at all: an empty result, with no nounset abort on the empty array.
 check 'no vmlinuz in /boot -- empty result' 'TARGET_VER=[]'
 
