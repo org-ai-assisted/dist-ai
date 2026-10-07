@@ -147,6 +147,27 @@ case "${v}" in
       ;;
 esac
 
+## --- Case: REAL divergence -- master conflicts AND ai ALSO conflicts with the combined
+## base (content mirrored). The OLD benign rule (trixie-ancestor-of-ai + mirrored) wrongly
+## called this benign; the fix requires ai itself to merge the combined base CLEANLY, so a
+## genuine upstream-vs-ours conflict (here on the added fileU) is reported WARN, not hidden.
+gitq -C "${sc}" checkout --quiet -b m_rd "${B}"
+printf 'ours-fileU\n' > "${sc}/fileU" ; printf 'ours\n' > "${sc}/shared"
+gitq -C "${sc}" add fileU shared ; gitq -C "${sc}" commit --quiet -m m_rd
+M_RD="$(gitq -C "${sc}" rev-parse HEAD)"
+## ai with the SAME tree as master (mirrored) and TRX as a parent (trixie "absorbed"), yet it
+## still conflicts with combined on fileU -> a real divergence, must be WARN.
+AI_RD="$(gitq -C "${sc}" commit-tree "${M_RD}^{tree}" -p "${M_RD}" -p "${TRX}" -m ai-rd-trixie)"
+v="$(verdict_for "${M_RD}" "${AI_RD}")"
+case "${v}" in
+   WARN\ * )
+      pass "real divergence (ai also conflicts) -> WARN not benign: ${v}"
+      ;;
+   * )
+      fail "real-divergence: expected WARN (ai-into-combined=conflict), got '${v}'"
+      ;;
+esac
+
 ## --- Case: WARN is INFORMATIONAL -- dm-tidy still exits 0 ------------------------
 gitq -C "${sc}" push --quiet --force "${O}" "${M_OURS}:refs/heads/master" "${M_OURS}:refs/heads/ai"
 rc=0
