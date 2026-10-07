@@ -89,13 +89,32 @@ if [ -z "${gate_raw}" ]; then
    exit 1
 fi
 ## The function's base (top-level) indentation, derived INDEPENDENTLY of the gate
-## call: the leading whitespace of the first non-blank body line (the statement
-## right after the 'name() {' header). Deriving it from gate_raw instead let an
-## all-three-in-one-conditional evade -- a gate nested in an if/loop would set the
-## "base" to that deeper indent, so a regen nested alongside it would masquerade as
-## unconditional. The first body line is always at the true top level.
-base_indent="$(printf '%s\n' "${func_text}" \
-   | awk 'NR == 1 { next } /[^[:space:]]/ { match($0, /^[[:space:]]*/); print substr($0, 1, RLENGTH); exit }')"
+## call: the leading whitespace of the first STATEMENT in the body (after the
+## 'name() {' header), skipping blank and COMMENT lines. Deriving it from gate_raw
+## instead let an all-three-in-one-conditional evade -- a gate nested in an if/loop
+## would set the "base" to that deeper indent, so a regen nested alongside it would
+## masquerade as unconditional. A comment may sit at column 0 (or any indent)
+## regardless of the code's indent, so it does not mark the base.
+base_indent=""
+header_seen="false"
+while IFS= read -r line; do
+   if [ "${header_seen}" = "false" ]; then
+      ## The 'name() {' header line itself.
+      header_seen="true"
+      continue
+   fi
+   trimmed="${line#"${line%%[![:space:]]*}"}"
+   if [ -z "${trimmed}" ]; then
+      continue
+   fi
+   case "${trimmed}" in
+      '#'*)
+         continue
+         ;;
+   esac
+   base_indent="${line%%[![:space:]]*}"
+   break
+done <<< "${func_text}"
 show_line="$(printf '%s\n' "${func_text}" \
    | grep --line-number --extended-regexp -- '^[[:space:]]*pkg_need_version_bump_show([[:space:]]|$)' \
    | head -1 \
@@ -147,22 +166,37 @@ commit_scoped() {
       fail "${fn}: not found for commit-scope check"
       return
    fi
-   ## Check the pathspec PER 'git commit' invocation: a ' -- ' must appear on the
-   ## SAME command line, after its options/message. The prior whole-body glob
-   ## matched a ' -- ' anywhere later in the body (an unrelated line, or one inside
-   ## a message), so a bare 'git commit -m ...' passed as long as some other line
-   ## carried ' -- '. Quoted spans are stripped first so a ' -- ' inside -m "..."
-   ## does not count as a pathspec. Simple per-line match, not a bash parser: a
-   ## backslash-continued multi-line 'git commit' or a ' -- ' in an escaped quote is
-   ## out of scope (the real commits are single-line).
-   local found=0 scoped=1 line stripped
+   ## Check the pathspec PER 'git commit' invocation: a ' -- ' separator on the SAME
+   ## command line must be followed by a REAL pathspec token. The prior whole-body
+   ## glob matched a ' -- ' anywhere later in the body. Per line we first drop the
+   ## '-m'/'--message' quoted value (so a ' -- ' inside the commit message is not
+   ## counted) and the trailing '#' comment, then require ' -- ' followed by a token
+   ## that is neither empty nor a shell operator (a bare 'git commit --' or
+   ## '-- || true' commits every staged path, not a scoped set). Simple per-line
+   ## match, not a shell tokenizer: a backslash-continued multi-line 'git commit', an
+   ## unquoted/`--message=` message form, or a ' -- ' in an escaped quote is out of
+   ## scope (the real commits are single-line, '-m "..."').
+   local found=0 scoped=1 line nomsg after lead
    while IFS= read -r line; do
       case "${line}" in
          *'git commit '*)
             found=1
-            stripped="$(printf '%s' "${line}" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
-            if [[ "${stripped}" != *' -- '* ]]; then
+            ## Drop the -m/--message quoted value, then the trailing '#' comment.
+            nomsg="$(printf '%s' "${line}" \
+               | sed -E -e 's/(-m|--message)[[:space:]]+"[^"]*"//g' \
+                        -e "s/(-m|--message)[[:space:]]+'[^']*'//g")"
+            nomsg="${nomsg%% #*}"
+            if [[ "${nomsg}" != *' -- '* ]]; then
                scoped=0
+            else
+               after="${nomsg#* -- }"
+               lead="${after%%[![:space:]]*}"
+               after="${after#"${lead}"}"
+               case "${after}" in
+                  ''|'&'*|'|'*|';'*|'<'*|'>'*|')'*)
+                     scoped=0
+                     ;;
+               esac
             fi
             ;;
       esac

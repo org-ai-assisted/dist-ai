@@ -126,6 +126,60 @@ printf '%s\n' \
    > "${unscoped_fixture}"
 check "a bare commit with a stray later ' -- ' is refused" "$(run_gate "${unscoped_fixture}")" 'fail'
 
+## A well-formed fixture whose pkg_git_manpages runs COMMIT_LINE, to probe the
+## per-commit pathspec check in isolation (every other part is correct).
+write_commit_fixture() {
+   printf '%s\n' \
+      '#!/bin/bash' \
+      'pkg_git_manpages() {' \
+      "   $2" \
+      '}' \
+      'pkg_git_debinstfile() {' \
+      '   git commit -m "regen install" -- "debian/x.install"' \
+      '}' \
+      'pkg_need_version_bump_and_pkg_build_and_reprepro_add() {' \
+      '   pkg_git_manpages' \
+      '   pkg_git_debinstfile' \
+      '   pkg_need_version_bump_show' \
+      '}' \
+      > "$1"
+}
+
+## Evasion 3 (#6): a ' -- ' inside a comment, a bare '--' with no pathspec, a '--'
+## followed by a shell operator, or a ' -- ' inside the -m message are NOT real
+## pathspecs -> refused (the commit would sweep every staged path).
+write_commit_fixture "${workdir}/h-comment" 'git commit -m "regen man" # -- "man"'
+check "a ' -- ' inside a comment is refused" "$(run_gate "${workdir}/h-comment")" 'fail'
+write_commit_fixture "${workdir}/h-bare" 'git commit -m "regen man" -- '
+check "a bare '--' with no pathspec is refused" "$(run_gate "${workdir}/h-bare")" 'fail'
+write_commit_fixture "${workdir}/h-op" 'git commit -m "regen man" -- || true'
+check "a '--' followed by a shell operator is refused" "$(run_gate "${workdir}/h-op")" 'fail'
+write_commit_fixture "${workdir}/h-msg" 'git commit -m "regen -- man"'
+check "a ' -- ' inside the -m message is refused" "$(run_gate "${workdir}/h-msg")" 'fail'
+## A genuinely pathspec-scoped commit is still accepted.
+write_commit_fixture "${workdir}/h-ok" 'git commit -m "regen man" -- "man" "auto-generated-man-pages"'
+check "a genuine '-- <paths>' commit is accepted" "$(run_gate "${workdir}/h-ok")" 'pass'
+
+## Evasion 4 (#5): a column-0 comment as the first body line must NOT become the
+## measured base indent (the gate still accepts the well-formed regens below it).
+comment_fixture="${workdir}/helper-comment-base"
+printf '%s\n' \
+   '#!/bin/bash' \
+   'pkg_git_manpages() {' \
+   '   git commit -m "regen man" -- "man" "auto-generated-man-pages"' \
+   '}' \
+   'pkg_git_debinstfile() {' \
+   '   git commit -m "regen install" -- "debian/x.install"' \
+   '}' \
+   'pkg_need_version_bump_and_pkg_build_and_reprepro_add() {' \
+   '# a column-0 comment must not skew the measured base indent' \
+   '   pkg_git_manpages' \
+   '   pkg_git_debinstfile' \
+   '   pkg_need_version_bump_show' \
+   '}' \
+   > "${comment_fixture}"
+check "a column-0 comment does not skew base_indent" "$(run_gate "${comment_fixture}")" 'pass'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
