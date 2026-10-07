@@ -73,8 +73,7 @@ check "no override -> monorepo path" \
 
 ## Override wins for a sibling repo whose normal resolution would be a path that
 ## does not exist.
-DIST_AI_PKG_SECURE_TERMINAL='/home/user/private-sources/secure-terminal' \
-   check "DIST_AI_PKG_SECURE_TERMINAL wins" \
+check "DIST_AI_PKG_SECURE_TERMINAL wins" \
    "$(DIST_AI_PKG_SECURE_TERMINAL='/home/user/private-sources/secure-terminal' pkg_dir secure-terminal)" \
    '/home/user/private-sources/secure-terminal'
 

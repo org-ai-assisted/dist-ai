@@ -77,10 +77,13 @@ fi
 
 ## The installer refuses to run as root (not_as_root). This e2e exercises the
 ## real run_installer flow, so it needs a non-root uid; running the suite as root
-## is an environment bug, not something to paper over here.
-if [ "$(id -u)" = "0" ]; then
-   printf '%s\n' "SKIP: this end-to-end test needs a non-root uid (the installer refuses root)." >&2
-   ## style-ok: allow-skip: the installer refuses root; the non-root capability this e2e needs is unmet here (env-unmet)
+## is an environment bug, not something to paper over here. It must ALSO not run as
+## sysmaint: the bug under test was the target-home default applying ONLY under a
+## sysmaint invoker, so Scenario 1 (the canary) would pass vacuously there -- this
+## repro requires a non-sysmaint invoker (header). Both are env-capability-unmet.
+if [ "$(id -u)" = "0" ] || [ "$(id -un)" = "sysmaint" ]; then
+   printf '%s\n' "SKIP: this end-to-end test needs a non-root, non-sysmaint uid (the installer refuses root; a sysmaint invoker makes Scenario 1 pass vacuously)." >&2
+   ## style-ok: allow-skip: the non-root, non-sysmaint invoker this e2e needs is unmet here (env-unmet)
    exit 78
 fi
 
