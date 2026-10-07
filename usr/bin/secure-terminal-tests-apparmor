@@ -109,6 +109,30 @@ else
       "FAIL: the profile ALLOWED a non-granted path (${deny_probe}) -- NOT enforcing"
 fi
 
+## ALLOW: the confusable_homoglyphs JSON data file. The python abstraction grants module
+## files but not this .json, so sanitize.py's confusable/homoglyph detection (a core
+## security guarantee) reads it only via the explicit rule in the profile. Canary: strip
+## that rule -> this probe fails (detection would silently degrade under enforcement).
+## The Debian dist-packages path sanitize.py reads AND the profile grants (both pin
+## /usr/lib/python3/dist-packages/confusable_homoglyphs/); testing the literal path keeps
+## the probe in step with the rule without an embedded python program.
+conf_json=/usr/lib/python3/dist-packages/confusable_homoglyphs/confusables.json
+if [ -f "${conf_json}" ]; then
+   conf_rc=0
+   aa-exec -p secure-terminal -- cat "${conf_json}" >/dev/null 2>&1 || conf_rc=$?
+   if [ "${conf_rc}" -eq 0 ]; then
+      pass=$(( pass + 1 ))
+   else
+      fail=$(( fail + 1 ))
+      printf '%s\n' \
+         "FAIL: the profile DENIED the confusables data (${conf_json}) -- confusable detection degrades under enforcement"
+   fi
+else
+   fail=$(( fail + 1 ))
+   printf '%s\n' \
+      "FAIL: ${conf_json} absent -- python3-confusable-homoglyphs (a hard test dependency) is not installed"
+fi
+
 ## ALLOW (write): the predefined canary subtree that `secure-terminal
 ## --test-canary` writes. This proves the profile GRANTS the confined terminal a
 ## write to exactly that folder -- so the EICAR-style positive control still fires

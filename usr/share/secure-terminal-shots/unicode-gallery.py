@@ -98,16 +98,22 @@ def _ascii_confusables():
             path = os.path.join(os.path.dirname(cf.__file__), 'confusables.json')
             with open(path, encoding='utf-8') as handle:
                 data = json.load(handle)
+            # Mirror secure_terminal.sanitize: build into TEMP sets and commit only on FULL
+            # success, so a malformed record mid-parse DISCARDS the partial homoglyph set
+            # rather than publishing a map that silently drops every look-alike after it.
+            _found, _multi = set(), set()
             for source, alternatives in data.items():
                 if len(source) != 1 or ord(source) <= 0x7F:
                     continue
                 if any(len(a.get('c', '')) == 1 and 0x20 <= ord(a['c']) <= 0x7E
                        for a in alternatives):
-                    found.add(ord(source))
+                    _found.add(ord(source))
                 elif any(len(a.get('c', '')) >= 2
                          and all(0x20 <= ord(g) <= 0x7E for g in a['c'])
                          for a in alternatives):
-                    multi_srcs.add(source)
+                    _multi.add(source)
+            found |= _found
+            multi_srcs |= _multi
         except ImportError as exc:      # the PACKAGE is absent -> provisioning error, fail loud
             # Must mirror secure_terminal.sanitize: a missing package silently degrades the
             # homoglyph set and masquerades as oracle/summary drift. require_confusables_data()
@@ -118,7 +124,8 @@ def _ascii_confusables():
                 'dependency; without it confusable classification silently degrades. '
                 'Install: sudo apt install python3-confusable-homoglyphs') from exc
         except Exception:      # pylint: disable=broad-except
-            pass               # package present but data unreadable/corrupt -> degrade (NFKC survives)
+            pass               # data unreadable/corrupt OR malformed record -> discard partial
+                               # (NFKC posers below survive); never a partial homoglyph map
         # Mirror secure-terminal _build_fold_maps: a compatibility character whose NFKC form is
         # a SINGLE printable-ASCII char poses as that ASCII and joins the confusable set -- but
         # DEFER to the confusables data where it already places the source (its disjointness
@@ -144,18 +151,12 @@ def _ascii_confusables():
 
 
 def require_confusables_data():
-    """Fail loud (raise) when the Unicode confusables data is unavailable or degenerate.
-    Mirrors secure_terminal.sanitize.require_confusables_data so the oracle and the app
-    agree: a missing python3-confusable-homoglyphs raises a clear ImportError (via
-    _ascii_confusables) instead of masquerading as oracle/summary drift. The sentinel
-    also catches present-but-empty data (U+0430 CYRILLIC SMALL LETTER A is a confusable
-    in every real dataset)."""
-    if 0x0430 not in _ascii_confusables():
-        raise RuntimeError(
-            'unicode-gallery: the Unicode confusables data '
-            '(python3-confusable-homoglyphs) is installed but missing expected '
-            'homoglyph mappings (e.g. U+0430); classification would be degraded. '
-            'Reinstall python3-confusable-homoglyphs.')
+    """Fail loud (raise ImportError) when python3-confusable-homoglyphs (a hard dependency)
+    is NOT installed: building the set raises a clear ImportError instead of silently
+    degrading and masquerading as oracle/summary drift. Mirrors
+    secure_terminal.sanitize.require_confusables_data -- a present-but-unreadable data file
+    still degrades gracefully (not failed closed)."""
+    _ascii_confusables()        # triggers the build -> clear ImportError if the package is absent
 
 
 def _is_mark(ch):

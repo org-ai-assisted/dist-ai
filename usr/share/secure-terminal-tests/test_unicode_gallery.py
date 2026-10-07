@@ -343,7 +343,11 @@ def test_missing_dep_fails_clearly():
             handle.write("raise ImportError('shadowed: confusable_homoglyphs absent')\n")
         env = dict(os.environ)
         env['_ST_UNICODE_CANARY_CHILD'] = '1'
-        env['PYTHONPATH'] = shadow + os.pathsep + env.get('PYTHONPATH', '')
+        # Prepend the shadow dir WITHOUT a trailing separator: a trailing os.pathsep leaves
+        # an empty PYTHONPATH entry, which Python resolves as the CWD -> a planted json.py
+        # in the CWD would hijack the stdlib import (CWE-426).
+        _pp = env.get('PYTHONPATH', '')
+        env['PYTHONPATH'] = (shadow + os.pathsep + _pp) if _pp else shadow
         proc = subprocess.run([sys.executable, os.path.abspath(__file__)],
                               env=env, capture_output=True, text=True, check=False)
     err = proc.stderr

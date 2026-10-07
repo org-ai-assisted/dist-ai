@@ -316,22 +316,23 @@ finally:
     S._MULTICHAR_ASCII_FOLD = _saved_multi
 
 # require_confusables_data() -- the startup / test gate (main._require_confusables_data and
-# the unicode_gallery suite call it) that fails LOUD with a clear message when the data is
-# unavailable, so a missing python3-confusable-homoglyphs cannot masquerade as oracle/summary
-# "drift". Unlike _ascii_confusables above (which degrades on an unreadable data FILE), the
-# gate is strict: a missing PACKAGE (ImportError) or degenerate data both fail loud.
+# the unicode_gallery suite call it) that fails LOUD with a clear ImportError when
+# python3-confusable-homoglyphs (the PACKAGE) is absent, so a missing dependency cannot
+# masquerade as oracle/summary "drift". A present-but-unreadable data FILE still degrades
+# gracefully (see the block above); only the missing-PACKAGE check fires here.
 S.require_confusables_data()
 ok(True, 'require_confusables_data passes when the confusables data is present')
 # forced PACKAGE-absent: shadow the import so _build_fold_maps raises a clear ImportError.
 _rc_conf = S._ASCII_CONFUSABLES
 _rc_fold = S._ASCII_FOLD_MAP
 _rc_multi = S._MULTICHAR_ASCII_FOLD
-_rc_mod = sys.modules.get('confusable_homoglyphs', 0)
+_rc_had = 'confusable_homoglyphs' in sys.modules
+_rc_realmod = sys.modules.get('confusable_homoglyphs')
 try:
     S._ASCII_CONFUSABLES = None
     S._ASCII_FOLD_MAP = None
     S._MULTICHAR_ASCII_FOLD = None
-    sys.modules['confusable_homoglyphs'] = None      # -> ImportError on `from ... import`
+    sys.modules['confusable_homoglyphs'] = None      # type: ignore[assignment]  # -> ImportError
     _rc_msg = ''
     try:
         S.require_confusables_data()
@@ -340,26 +341,35 @@ try:
     ok('python3-confusable-homoglyphs' in _rc_msg,
        'require_confusables_data fails loud (clear ImportError) when the package is absent')
 finally:
-    if _rc_mod == 0:
-        sys.modules.pop('confusable_homoglyphs', None)
+    if _rc_had and _rc_realmod is not None:
+        sys.modules['confusable_homoglyphs'] = _rc_realmod
     else:
-        sys.modules['confusable_homoglyphs'] = _rc_mod
+        sys.modules.pop('confusable_homoglyphs', None)
     S._ASCII_CONFUSABLES = _rc_conf
     S._ASCII_FOLD_MAP = _rc_fold
     S._MULTICHAR_ASCII_FOLD = _rc_multi
-# forced DEGENERATE data: the U+0430 sentinel fires when the homoglyph map lacks it.
+# all-or-nothing: a MALFORMED record mid-parse must DISCARD the partial homoglyph map, not
+# publish it -- a partial map silently drops the look-alikes AFTER the bad record, so they
+# read as safe 'nonascii' (a security hole). Feed data whose second record is malformed
+# ([null]); the homoglyph set must end up EMPTY -- only the stdlib NFKC posers survive.
+import io as _rcio                                    # noqa: E402
+_rc_conf2 = S._ASCII_CONFUSABLES
 _rc_fold2 = S._ASCII_FOLD_MAP
+_rc_multi2 = S._MULTICHAR_ASCII_FOLD
+_rc_bad = '{"%s":[{"c":"a"}],"%s":[null]}' % (chr(0x0430), chr(0x03BF))
 try:
-    S._ASCII_FOLD_MAP = {}
-    _rc_sent = ''
-    try:
-        S.require_confusables_data()
-    except RuntimeError as _rc_exc:
-        _rc_sent = str(_rc_exc)
-    ok('missing expected' in _rc_sent,
-       'require_confusables_data fails loud (sentinel) when the homoglyph data is degenerate')
+    S._ASCII_CONFUSABLES = None
+    S._ASCII_FOLD_MAP = None
+    S._MULTICHAR_ASCII_FOLD = None
+    S.open = lambda *_a, **_k: _rcio.StringIO(_rc_bad)
+    _rc_degraded = S._ascii_confusables()
+    ok(0x0430 not in _rc_degraded and 0x00B2 in _rc_degraded,
+       'a malformed record discards the PARTIAL homoglyph map (not retained); NFKC posers survive')
 finally:
+    del S.open
+    S._ASCII_CONFUSABLES = _rc_conf2
     S._ASCII_FOLD_MAP = _rc_fold2
+    S._MULTICHAR_ASCII_FOLD = _rc_multi2
 
 # --- multi-char ASCII-target confusable fold (ellipsis U+2026 -> '...', dashes, etc.) --
 # The 261 sources with NO single-char ASCII look-alike fold to the ASCII STRING they
