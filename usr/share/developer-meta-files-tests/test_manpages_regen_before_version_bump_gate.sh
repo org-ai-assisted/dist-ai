@@ -88,7 +88,14 @@ if [ -z "${gate_raw}" ]; then
    printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
    exit 1
 fi
-base_indent="${gate_raw%%[![:space:]]*}"
+## The function's base (top-level) indentation, derived INDEPENDENTLY of the gate
+## call: the leading whitespace of the first non-blank body line (the statement
+## right after the 'name() {' header). Deriving it from gate_raw instead let an
+## all-three-in-one-conditional evade -- a gate nested in an if/loop would set the
+## "base" to that deeper indent, so a regen nested alongside it would masquerade as
+## unconditional. The first body line is always at the true top level.
+base_indent="$(printf '%s\n' "${func_text}" \
+   | awk 'NR == 1 { next } /[^[:space:]]/ { match($0, /^[[:space:]]*/); print substr($0, 1, RLENGTH); exit }')"
 show_line="$(printf '%s\n' "${func_text}" \
    | grep --line-number --extended-regexp -- '^[[:space:]]*pkg_need_version_bump_show([[:space:]]|$)' \
    | head -1 \
@@ -140,12 +147,32 @@ commit_scoped() {
       fail "${fn}: not found for commit-scope check"
       return
    fi
-   ## A ' -- ' must follow 'git commit ' (glob is left-to-right), i.e. the
-   ## commit carries a pathspec. A bare 'git commit -m ...' has no later ' -- '.
-   if [[ "${body}" == *'git commit '*' -- '* ]]; then
-      pass "${fn}: commit is pathspec-scoped"
+   ## Check the pathspec PER 'git commit' invocation: a ' -- ' must appear on the
+   ## SAME command line, after its options/message. The prior whole-body glob
+   ## matched a ' -- ' anywhere later in the body (an unrelated line, or one inside
+   ## a message), so a bare 'git commit -m ...' passed as long as some other line
+   ## carried ' -- '. Quoted spans are stripped first so a ' -- ' inside -m "..."
+   ## does not count as a pathspec. Simple per-line match, not a bash parser: a
+   ## backslash-continued multi-line 'git commit' or a ' -- ' in an escaped quote is
+   ## out of scope (the real commits are single-line).
+   local found=0 scoped=1 line stripped
+   while IFS= read -r line; do
+      case "${line}" in
+         *'git commit '*)
+            found=1
+            stripped="$(printf '%s' "${line}" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
+            if [[ "${stripped}" != *' -- '* ]]; then
+               scoped=0
+            fi
+            ;;
+      esac
+   done <<< "${body}"
+   if [ "${found}" -eq 0 ]; then
+      fail "${fn}: no 'git commit' found for commit-scope check"
+   elif [ "${scoped}" -eq 1 ]; then
+      pass "${fn}: every 'git commit' is pathspec-scoped"
    else
-      fail "${fn}: commit is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
+      fail "${fn}: a 'git commit' is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
    fi
 }
 

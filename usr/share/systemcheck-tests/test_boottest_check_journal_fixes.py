@@ -303,12 +303,14 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         out = self._run_check_critical(lines)
         self.assertEqual(out.count('synthetic oops number'), 250,
                          'every matched catastrophe line must be shown, none dropped')
-        ## Distinct-line guard: the count alone would pass if one line were duplicated 250x,
-        ## so check that specific first/middle/last lines each survive intact (each number is
-        ## a unique contiguous substring; '<br />' is appended after it).
-        for probe in (0, 125, 249):
-            self.assertIn('synthetic oops number %d<br />' % probe, out,
-                          'each distinct catastrophe line must survive, not be duplicated')
+        ## Distinct-line guard: the total count alone passes even if one line were omitted
+        ## and another duplicated (both among the unprobed indices). Assert EACH of the 250
+        ## lines appears EXACTLY once -- the '<br />' delimiter makes each per-line substring
+        ## unambiguous ('number 2<br />' cannot match inside 'number 12<br />'), so a count
+        ## of 1 means present-and-not-duplicated and a count of 0/>=2 is caught.
+        for i in range(250):
+            self.assertEqual(out.count('synthetic oops number %d<br />' % i), 1,
+                             'line %d must appear exactly once (not omitted or duplicated)' % i)
 
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
@@ -488,8 +490,13 @@ class TestCheckJournalReadFailure(ScenarioTestBase):
     def _run(self, leaprun_body: str):
         stubs = "leaprun() {\n%s\n}\n" % leaprun_body
         env = 'verbose=1\nsystemcheck_virtualizer_detected=none\n'
-        return run_check_scenario(self.check(SERVICES), 'check_journal',
-                                  env_setup=env, stubs=stubs)
+        result = run_check_scenario(self.check(SERVICES), 'check_journal',
+                                    env_setup=env, stubs=stubs)
+        ## A silent bash crash in check_journal emits nothing, so the clean-case
+        ## tests below ('no warning', exit 0) would pass vacuously -- guard first
+        ## (COVERAGE.md: assertCleanRun before asserting a clean result).
+        self.assertCleanRun(result)
+        return result
 
     def test_this_boot_read_failure_warns_and_sets_exit(self) -> None:
         ## Every read fails -> the this-boot failure must warn and set EXIT_CODE=1

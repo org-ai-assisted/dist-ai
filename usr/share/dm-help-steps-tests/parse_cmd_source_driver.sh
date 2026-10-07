@@ -54,5 +54,14 @@ if [ -n "${preseed}" ]; then
 else
    unset "${var_name}"
 fi
+## dist_build_one_parse_cmd's exit STATUS is deliberately discarded: its error/exit
+## path is neutralized to return() above (so the loop under test runs to completion),
+## and in this isolated harness the parser ALSO takes that path on EVERY invocation
+## for an unrelated reason (no action/subcommand follows the lone flag), so the status
+## is a CONSTANT that carries no per-flag parse-success information -- capturing it
+## would be a fabricated signal, not a real one. The read-back VALUE below is the
+## genuine signal: a flag that failed value validation never sets its variable, so a
+## bad parse cannot satisfy a value assertion (the caller's bogus-value cases drive
+## the real parse-cmd via run_err and assert on its emitted error instead).
 dist_build_one_parse_cmd "$@" >/dev/null 2>&1
 printf '%s' "${!var_name:-UNSET}"

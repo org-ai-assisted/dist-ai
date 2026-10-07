@@ -468,7 +468,7 @@ def _jb_bar_too_close_calls(width):
 
 _jb_tc_30 = _jb_bar_too_close_calls(30)
 _jb_tc_90 = _jb_bar_too_close_calls(90)
-ok(_jb_tc_30 == _jb_tc_90,
+ok(_jb_tc_30 > 0 and _jb_tc_30 == _jb_tc_90,
    'JB-perf: space-visibility memoized -- too_close() calls are width-independent (%d vs %d); '
    'without the memo they grow one per styled space cell' % (_jb_tc_30, _jb_tc_90))
 
