@@ -248,6 +248,16 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('soft lockup', out,
                       'a catastrophe line with a control byte must still be critical')
 
+    def test_terminal_escape_neutralized(self) -> None:
+        ## '--all' delivers raw bytes, so attacker-echoed kernel text can carry an ANSI/OSC
+        ## escape. The line is still shown (catastrophe), but the ESC byte must be
+        ## neutralized to '_' so it cannot inject a terminal escape sequence downstream.
+        out = self._run_check_critical(
+            ['host kernel: BUG: evil \x1b[2Jclear \x1b]0;hijack\x07 lockup'])
+        self.assertIn('lockup', out, 'the catastrophe line must still be shown')
+        self.assertNotIn('\x1b', out, 'ESC bytes must be neutralized, not passed through')
+        self.assertNotIn('\x07', out, 'BEL bytes must be neutralized')
+
     def test_bug_on_macro_critical(self) -> None:
         ## The BUG()/BUG_ON() macro logs 'kernel BUG at <file>:<line>!' -- ' BUG ' with no
         ## colon. The word-boundary token must catch it (a plain ' BUG:' substring would
