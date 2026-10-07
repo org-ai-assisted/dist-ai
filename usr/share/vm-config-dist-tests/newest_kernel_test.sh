@@ -5,17 +5,20 @@
 
 ## AI-Assisted
 
-## vbox-guest-installer's _get_newest_kernel_debian(): it must work when
-## called the way its ONE call site calls it.
+## vbox-guest-installer's find_latest_installed_kernel(): the chroot branch sets
+## TARGET_VER from it, and fails closed if the result is empty.
 ##
-## THE BUG: the function reads $1 on its first loop iteration, but its only
-## caller -- the chroot branch -- passes no argument. Under nounset that
-## aborted on the first /boot/config-* found, which is every run on a normal
-## image build.
+## Its contract:
+##   - globs /boot for 'vmlinuz-*' regular files (not config-*, initrd.img-*, ...);
+##   - keeps only entries whose trailing '-<arch>' matches 'dpkg --print-architecture';
+##   - strips the 'vmlinuz-' prefix and the '-<arch>' suffix, leaving the version;
+##   - returns the version-sorted newest.
+## It takes NO argument -- its one call site (the chroot branch) passes none.
 ##
 ## /boot is bind-mounted from a fixture, so the result does not depend on which
-## kernels the test host happens to have installed -- and so the
-## newest-wins case is decidable at all.
+## kernels the test host happens to have installed -- and so the newest-wins and
+## arch-filter cases are decidable at all. The host arch is read at runtime so the
+## fixtures are valid on any Debian architecture, not just amd64.
 ##
 ## No root, no network.
 
@@ -42,10 +45,19 @@ if [ ! -r "${subject}" ]; then
    exit 1
 fi
 
-if ! grep --quiet -- '^_get_newest_kernel_debian() {' "${subject}"; then
-   printf '%s\n' "FATAL: no _get_newest_kernel_debian definition in '${subject}'" >&2
+if ! grep --quiet -- '^find_latest_installed_kernel() {' "${subject}"; then
+   printf '%s\n' "FATAL: no find_latest_installed_kernel definition in '${subject}'" >&2
    printf '%s\n' "the extraction anchor no longer matches; this test would pass vacuously" >&2
    exit 1
+fi
+
+## The host arch the subject filters on. Fixtures are named with it so they match;
+## a DIFFERENT arch is used for the decoy that must be excluded.
+host_arch="$(dpkg --print-architecture)"
+if [ "${host_arch}" = "amd64" ]; then
+   foreign_arch="arm64"
+else
+   foreign_arch="amd64"
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/vbox-newest-kernel-test.XXXXXX")"
@@ -62,10 +74,7 @@ fail_count=0
 ## SC2016: the driver body is LITERAL code written into a file.
 # shellcheck disable=SC2016
 run_newest_kernel() {
-   local call_args base boot name
-
-   call_args="$1"
-   shift
+   local base boot name
 
    base="${work_dir}/case"
    safe-rm --recursive --force -- "${base}"
@@ -81,8 +90,8 @@ run_newest_kernel() {
       printf '%s\n' '#!/bin/bash'
       printf '%s\n' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
          'set -o errtrace' 'shopt -s inherit_errexit'
-      sed -n '/^_get_newest_kernel_debian() {/,/^}/p' "${subject}"
-      printf '%s\n' "result=\"\$(_get_newest_kernel_debian ${call_args})\""
+      sed -n '/^find_latest_installed_kernel() {/,/^}/p' "${subject}"
+      printf '%s\n' 'result="$(find_latest_installed_kernel)"'
       printf '%s\n' 'printf "%s\n" "TARGET_VER=[${result}]"'
    } >"${base}/driver"
 
@@ -90,7 +99,7 @@ run_newest_kernel() {
       -- timeout 20 bash "${base}/driver" 2>&1 || true
 }
 
-## check <description> <expected TARGET_VER, or ''> <call args> <config names...>
+## check <description> <expected TARGET_VER line> <boot file names...>
 check() {
    local description want output verdict
 
@@ -107,9 +116,8 @@ check() {
       printf '%s\n' "FAIL: ${description}: the driver never ran"
    elif printf '%s\n' "${output}" | grep --fixed-strings -- 'unbound variable' >/dev/null; then
       verdict=FAIL
-      printf '%s\n' "FAIL: ${description}: nounset abort -- this is the bug"
-   elif [ -n "${want}" ] \
-      && ! printf '%s\n' "${output}" | grep --fixed-strings -- "${want}" >/dev/null; then
+      printf '%s\n' "FAIL: ${description}: nounset abort"
+   elif ! printf '%s\n' "${output}" | grep --fixed-strings -- "${want}" >/dev/null; then
       verdict=FAIL
       printf '%s\n' "FAIL: ${description}: expected '${want}'"
    fi
@@ -123,15 +131,23 @@ check() {
    fi
 }
 
-## The real call site passes NO argument. Both of these aborted.
-check 'no argument, one kernel -- the real call site' 'TARGET_VER=[6.1.0-13-amd64]' \
-   '' 'config-6.1.0-13-amd64'
-check 'no argument, three kernels: the newest wins' 'TARGET_VER=[6.1.0-18-amd64]' \
-   '' 'config-6.1.0-13-amd64' 'config-6.1.0-18-amd64' 'config-5.10.0-26-amd64'
-## The argument form was never broken; asserted so the fix cannot be bought by
-## ignoring the argument.
-check 'an explicit argument still works' '' '0.0.0-0' 'config-6.1.0-13-amd64'
-check 'no /boot/config-* at all' '' '0.0.0-0'
+## One kernel -- the real no-arg call site. The 'vmlinuz-' prefix and '-<arch>'
+## suffix are stripped, leaving the bare version.
+check 'one kernel -- the real no-arg call site' 'TARGET_VER=[6.1.0-13]' \
+   "vmlinuz-6.1.0-13-${host_arch}"
+## Newest of three wins, by version-sort.
+check 'three kernels: the newest wins' 'TARGET_VER=[6.1.0-18]' \
+   "vmlinuz-6.1.0-13-${host_arch}" "vmlinuz-6.1.0-18-${host_arch}" \
+   "vmlinuz-5.10.0-26-${host_arch}"
+## The higher-versioned entries here must ALL be excluded: a foreign-arch vmlinuz
+## by the arch filter, and the config-/initrd.img-/System.map- files by the
+## 'vmlinuz-' glob. Only the matching-arch vmlinuz counts.
+check 'foreign-arch and non-vmlinuz entries are ignored' 'TARGET_VER=[6.1.0-13]' \
+   "vmlinuz-6.1.0-13-${host_arch}" "vmlinuz-9.9.9-9-${foreign_arch}" \
+   "config-9.9.9-9-${host_arch}" "initrd.img-9.9.9-9-${host_arch}" \
+   "System.map-9.9.9-9-${host_arch}"
+## No vmlinuz at all: an empty result, with no nounset abort on the empty array.
+check 'no vmlinuz in /boot -- empty result' 'TARGET_VER=[]'
 
 printf '%s\n' ""
 printf '%s\n' "${pass_count} pass, ${fail_count} fail"
