@@ -26,7 +26,9 @@ Exit: 0 ok, 2 usage/schema error.
 """
 
 import argparse
+import errno
 import os
+import stat
 import sys
 import time
 
@@ -49,19 +51,72 @@ _MEDIA_BY_EXT = {
 }
 
 
+def open_regular_nofollow(path):
+    """Open an account-owned path as root WITHOUT following a final-component
+    symlink and refusing any non-regular file.
+
+    The screenshot and step logs are produced by the unprivileged TEST_USER and
+    ingested here as root. A plain open follows a symlink, so an account that
+    swaps one in (e.g. -> /etc/shadow) between a caller's `[ ! -L ]` check and
+    this reopen makes root read an off-limits target into the world-readable
+    results plane (a TOCTOU). O_NOFOLLOW fails the open atomically on a symlink
+    (no window); O_NONBLOCK avoids blocking on a FIFO; the fstat rejects a
+    FIFO/device/directory. Returns an open fd (caller closes). A missing path
+    raises FileNotFoundError (the caller decides); a symlink / non-regular file
+    is refused with SystemExit (never read)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(
+                "image-test-result-emit: refusing symlinked input '%s' "
+                "(root must not read a symlink target)" % path)
+        raise
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(mode):
+        os.close(fd)
+        raise SystemExit(
+            "image-test-result-emit: refusing non-regular input '%s'" % path)
+    return fd
+
+
 def read_tail(path):
-    """Last TAIL_BYTES of a file as text (utf-8, lossy). Missing file -> ''."""
+    """Last TAIL_BYTES of a file as text (utf-8, lossy). Missing file -> ''.
+
+    Opened no-follow (see open_regular_nofollow): a symlinked path is refused,
+    not read as root."""
     if not path:
         return ""
     try:
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - TAIL_BYTES), os.SEEK_SET)
-            data = handle.read()
+        fd = open_regular_nofollow(path)
     except FileNotFoundError:
         return ""
+    with os.fdopen(fd, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - TAIL_BYTES), os.SEEK_SET)
+        data = handle.read()
     return data.decode("utf-8", errors="replace")
+
+
+def copy_shot(src, dst):
+    """Copy an account-owned screenshot to the root-owned result dir using the
+    same no-follow open as read_tail. A missing source is a normal 'no shot this
+    run' (results-publish may hand an absent path) -> skip, return False. A
+    symlink / non-regular source is refused. Returns True when a file was copied."""
+    try:
+        fd = open_regular_nofollow(src)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read()
+    with open(dst, "wb") as out:
+        out.write(data)
+    return True
 
 
 def media_type_for(path, override):
@@ -97,6 +152,10 @@ def parse_args(argv):
     parser.add_argument("--step-stdout-file", default=None)
     parser.add_argument("--step-stderr-file", default=None)
     parser.add_argument("--step-shot", default=None)
+    ## The account-owned screenshot source. When given, the emitter copies it
+    ## into the result dir no-follow (results-publish no longer does the copy,
+    ## so the only root reopen of an account path happens here, safely).
+    parser.add_argument("--step-shot-src", default=None)
     parser.add_argument("--step-shot-mediatype", default=None)
     ## provenance (origin is above; these detail it)
     parser.add_argument("--provenance-source-uri", default=None)
@@ -116,11 +175,18 @@ def main(argv):
     attachments = []
     if args.step_shot:
         shot = os.path.basename(args.step_shot)
-        attachments.append(
-            model.make_attachment(
-                "screenshot", media_type_for(shot, args.step_shot_mediatype), shot
+        shot_present = True
+        if args.step_shot_src:
+            dest_dir = os.path.dirname(os.path.abspath(args.dest))
+            shot_present = copy_shot(args.step_shot_src, os.path.join(dest_dir, shot))
+        ## A run that never powered on is published without a shot: an absent
+        ## source records no attachment, exactly as before the copy moved here.
+        if shot_present:
+            attachments.append(
+                model.make_attachment(
+                    "screenshot", media_type_for(shot, args.step_shot_mediatype), shot
+                )
             )
-        )
 
     step = model.make_step(
         name=args.step_name,

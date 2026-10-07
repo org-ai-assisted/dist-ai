@@ -155,15 +155,17 @@ image_test_results_publish() {
    outdir="${results_root}/${name}/${ts}"
    mkdir --parents -- "${outdir}"
 
-   ## The screenshot path is produced by the unprivileged TEST_USER but copied
-   ## here as root: a symlink there would make root read its target (e.g.
-   ## /etc/shadow) into the world-readable results plane. Refuse a symlink;
-   ## -f alone follows it. Stored step-named so multiple per-step shots never
-   ## collide (single shot today; multi-step is a later, schema-stable extension).
+   ## The screenshot and the step stderr tail are produced by the unprivileged
+   ## TEST_USER but ingested as root by image-test-result-emit, which opens each
+   ## O_NOFOLLOW and refuses a symlink / non-regular file atomically. The copy +
+   ## reopen happen ONCE, inside the emitter, so there is no check-then-reopen
+   ## window here for the account to swap a symlink into (root never reads an
+   ## off-limits target into the world-readable plane). The publisher only
+   ## forwards the account-owned paths. Stored step-named so multiple per-step
+   ## shots never collide (single shot today; multi-step is a later extension).
    shot_rel=""
-   if [ -n "${shot_src}" ] && [ ! -L "${shot_src}" ] && [ -f "${shot_src}" ]; then
+   if [ -n "${shot_src}" ]; then
       shot_rel="${step_name}.png"
-      cp -- "${shot_src}" "${outdir}/${shot_rel}"
    fi
 
    emit="$(image_test_result_emit_bin)"
@@ -186,12 +188,12 @@ image_test_results_publish() {
       emit_args+=( --stop-unix "${stop_unix}" )
    fi
    if [ -n "${shot_rel}" ]; then
-      emit_args+=( --step-shot "${shot_rel}" )
+      emit_args+=( --step-shot "${shot_rel}" --step-shot-src "${shot_src}" )
    fi
-   ## Failed-check output -> the step's stderr tail (why the run failed). Produced by
-   ## the unprivileged account, read here as root by the emitter: refuse a symlink (it
-   ## would make root read the target's tail into the plane).
-   if [ -n "${step_stderr_file}" ] && [ ! -L "${step_stderr_file}" ] && [ -f "${step_stderr_file}" ]; then
+   ## Failed-check output -> the step's stderr tail (why the run failed). The emitter
+   ## reads it no-follow (symlink refused), so the account-owned path is forwarded
+   ## as-is; an absent file tails to empty.
+   if [ -n "${step_stderr_file}" ]; then
       emit_args+=( --step-stderr-file "${step_stderr_file}" )
    fi
    local item
