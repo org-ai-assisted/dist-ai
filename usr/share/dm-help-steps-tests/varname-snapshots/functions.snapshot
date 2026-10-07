@@ -1327,7 +1327,7 @@ Configuration Files:
 
 Miscellaneous:
   --unsafe-io [true|false]        : Toggle unsafe IO options (default: false).
-  --interactive [true|false]      : Force interactive (continue/retry menus) or non-interactive mode. Default: auto-detect (TTY on stdin and stdout, and not CI).
+  --interactive [true|false]      : Force interactive (error menu) or non-interactive mode. Default: auto-detect (TTY on stdin and stdout, and not CI).
   --freedom [true|false]          : Choose between pure or impure builds (required for host builds).
   --tb [none|closed|open]         : Configure Tor Browser installation options (default: open).
   none: Do not install Tor Browser.
