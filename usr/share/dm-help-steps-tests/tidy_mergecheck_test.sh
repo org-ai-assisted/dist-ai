@@ -125,14 +125,15 @@ case "${v}" in
       ;;
 esac
 
-## --- Case: BENIGN (master conflicts; ai absorbed trixie; content mirrored) ------
+## --- Case: RECONCILED-ON-AI (master conflicts; ai merges combined cleanly; content mirrored):
+## the conflict is already resolved on ai, so it is a 'note', not a WARN and not a clean 'ok'.
 v="$(verdict_for "${M_OURS}" "${AI_BENIGN}")"
 case "${v}" in
-   ok\ \(benign\ ancestry\ artifact* )
-      pass "BENIGN -> ${v}"
+   note\ \(reconciled\ on\ ai* )
+      pass "RECONCILED-ON-AI -> ${v}"
       ;;
    * )
-      fail "BENIGN: expected 'ok (benign ancestry artifact ...)', got '${v}'"
+      fail "RECONCILED-ON-AI: expected 'note (reconciled on ai ...)', got '${v}'"
       ;;
 esac
 
@@ -200,8 +201,33 @@ else
    fail "phase 6 leaked ${leftover} refs/dm-tidy-mergecheck/* ref(s)"
 fi
 
+## --- Case: scrub self-heals a crashed run's refs, but spares a live concurrent run ---------
+## A dead pid's leftover must be reaped; an alive pid's (a concurrent dm-tidy) must be left.
+sleep 0.1 &
+dead_pid=$!
+wait "${dead_pid}" 2>/dev/null || true
+sleep 30 &
+live_pid=$!
+seed="$(gitq -C "${super}" rev-parse HEAD)"
+gitq -C "${super}" update-ref "refs/dm-tidy-mergecheck/${dead_pid}/up" "${seed}"
+gitq -C "${super}" update-ref "refs/dm-tidy-mergecheck/${live_pid}/up" "${seed}"
+_="$(mergecheck_verdict)"
+if gitq -C "${super}" rev-parse --verify -q "refs/dm-tidy-mergecheck/${dead_pid}/up" >/dev/null 2>&1; then
+   fail "scrub did not reap a dead-pid crashed run's refs"
+else
+   pass "scrub reaps a dead-pid crashed run's refs"
+fi
+if gitq -C "${super}" rev-parse --verify -q "refs/dm-tidy-mergecheck/${live_pid}/up" >/dev/null 2>&1; then
+   pass "scrub spares a live concurrent run's refs"
+else
+   fail "scrub wrongly deleted a live concurrent run's refs"
+fi
+kill "${live_pid}" 2>/dev/null || true
+wait "${live_pid}" 2>/dev/null || true
+gitq -C "${super}" update-ref -d "refs/dm-tidy-mergecheck/${live_pid}/up" 2>/dev/null || true
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-tidy phase 6 classifies clean/benign/warn/skipped, stays informational, and leaves no refs."
+printf '%s\n' "OK: dm-tidy phase 6 classifies clean/reconciled/warn/skipped, stays informational, leaves no refs, and self-heals a crashed run while sparing a live one."

@@ -419,11 +419,12 @@ phase_fsck() {
 ## builds the combined (upstream+trixie) base with merge-tree, and tests master into it.
 ## It must NOT cry wolf on the BY-DESIGN case: master intentionally lacks trixie in its ancestry
 ## (trixie reaches master only when it lands upstream; master carries trixie's CONTENT via the
-## ai->master mirror, not its commits). A master conflict is BENIGN iff ai -- which DOES carry
-## trixie -- merges into the combined base with NO file conflict AND master mirrors ai's
-## non-gitlink content: then the sole cause is the missing ancestry, not a real divergence.
-## Any OTHER master conflict (ai also conflicts with the combined base, or master's content does
-## not mirror ai) is a real divergence -> WARN. Does not touch HEAD/index/worktree/tracked refs
+## ai->master mirror, not its commits). A master conflict is already-RECONCILED (verdict 'note',
+## not a problem) iff ai -- which DOES carry trixie -- merges into the combined base with NO file
+## conflict AND master mirrors ai's non-gitlink content: master still textually conflicts now,
+## but the resolution already lives on ai, so no NEW work and the remaster carries it. Any OTHER
+## master conflict (ai also conflicts with the combined base, or master's content does not mirror
+## ai) is a real, unreconciled divergence -> WARN. Does not touch HEAD/index/worktree/tracked refs
 ## or the exit code; the only writes are transient dangling merge-tree/commit-tree objects (gc
 ## reclaims them) plus per-run throwaway refs it scrubs. A missing remote/ref, an unmergeable
 ## upstream+trixie, or a merge-tree ERROR records 'skipped'. DM_TIDY_MERGECHECK overrides the
@@ -435,13 +436,21 @@ MERGECHECK_CMD="${DM_TIDY_MERGECHECK:-}"
 ## rev-parse FETCH_HEAD would read a STALE value.
 MERGECHECK_NS="refs/dm-tidy-mergecheck/$$"
 
-## Delete this run's throwaway refs (scrubbed at phase start AND end; self-heals a crash).
+## Delete throwaway refs: this run's own namespace PLUS any left by a CRASHED earlier run (a
+## dead pid). Scanned over the whole refs/dm-tidy-mergecheck/ tree so a crash self-heals, yet a
+## still-ALIVE pid (a concurrent run) is left untouched -- no cross-run clobber. --no-deref so a
+## symref never redirects the delete to a real branch. Run at phase start AND end.
 mergecheck_scrub_refs() {
-   local r
+   local r pid
    while IFS= read -r r; do
       [ -n "${r}" ] || continue
+      ## refs/dm-tidy-mergecheck/<pid>/<name> -- the element after the prefix is the owning pid.
+      pid="${r#refs/dm-tidy-mergecheck/}"
+      pid="${pid%%/*}"
+      case "${pid}" in ''|*[!0-9]*) continue ;; esac
+      if [ "${pid}" != "$$" ] && [ -e "/proc/${pid}" ]; then continue; fi
       git -C "${top}" update-ref --no-deref -d "${r}" 2>/dev/null || true
-   done < <( git -C "${top}" for-each-ref --format='%(refname)' "${MERGECHECK_NS}/" 2>/dev/null )
+   done < <( git -C "${top}" for-each-ref --format='%(refname)' 'refs/dm-tidy-mergecheck/' 2>/dev/null )
 }
 
 ## Fetch <remote> <src-ref> into MERGECHECK_NS/<name> (never FETCH_HEAD) and echo its sha;
@@ -536,7 +545,10 @@ mergecheck_run() {
    mirrored="no"
    if mergecheck_content_mirrored "${master}" "${ai}"; then mirrored="yes"; fi
    if [ "${a_state}" = "clean" ] && [ "${mirrored}" = "yes" ]; then
-      record "6 mergecheck" "ok (benign ancestry artifact: ai merges upstream+trixie cleanly + content mirrored to master; master merges once trixie lands upstream)"
+      ## Honest: master DOES conflict with upstream+trixie now, but the resolution already
+      ## lives on ai (ai -- same content, trixie absorbed -- merges the combined base cleanly),
+      ## so it is not a NEW divergence; the remaster carries ai's resolution when trixie lands.
+      record "6 mergecheck" "note (reconciled on ai: master conflicts with upstream+trixie but ai merges the combined base cleanly + content mirrored; no new reconciliation -- the remaster carries ai's)"
    else
       record "6 mergecheck" "WARN (master NOT cleanly mergeable by upstream+trixie; ai-into-combined=${a_state} content-mirrored=${mirrored} -- reconcile)"
    fi
