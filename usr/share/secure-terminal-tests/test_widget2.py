@@ -17,6 +17,7 @@ from test_widget_common import *   # noqa: F401,F403  (shared harness)
 # Every top-level import half 1 makes; half 2 needs its own copy (all stateless).
 from PyQt6.QtWidgets import QPlainTextEdit as _QPTE
 import re
+import random as _rnd
 from pathlib import Path
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtCore import QPoint as _QP, QEvent
@@ -7730,6 +7731,161 @@ _cap._render_tui(); APP.processEvents()
 ok('VISIBLE' in _cap.toPlainText(),
    'small-cap: a live non-blank row is not evicted by the full-grid fill (content survives)')
 _cap.shutdown()
+
+
+# Option B: a TUI height GROW with scrollback RESTORES the most-recent scrolled-off rows into the
+# TOP of the grid (xterm saveEditBufLines; the inverse of the shrink promotion), the cursor riding
+# DOWN with them, so the grown viewport fills with real history and the prompt stays at the bottom
+# -- never a blank band padded below it. Drives the REAL resize path (_sync_tui_size). RED on
+# pre-option-B code (grow padded blanks: cursor stayed put, document ended blank).
+for _small, _big in ((6, 10), (24, 40)):
+    _gw = SecureTerminal(command='/bin/cat', tui=True)
+    _gw.resize(400, 300); _gw.show(); APP.processEvents()
+    _gw._tui_grid_size = lambda s=_small: (20, s)
+    _gw._make_screen()
+    feed_output(_gw, (''.join('out%02d\r\n' % _i for _i in range(_big + _small + 4))
+                      + 'prompt$ ').encode())
+    _gw._render_tui(); APP.processEvents()
+    _gw_htop0 = len(list(_gw._screen.history.top))
+    ok(_gw_htop0 >= _big - _small,
+       'grow-setup(%d->%d): enough scrollback to fully restore the grown rows' % (_small, _big))
+    eq(_gw._screen.cursor.y, _small - 1,
+       'grow-setup(%d->%d): the prompt is on the last grid row' % (_small, _big))
+    _gw_before = [_l for _l in _gw.toPlainText().split('\n') if _l.strip()]
+    _gw._tui_grid_size = lambda b=_big: (20, b)
+    _gw._sync_tui_size(); _gw._render_tui(); APP.processEvents()
+    eq(_gw._screen.cursor.y, _big - 1,
+       'grow(%d->%d): the cursor rides down with the restored rows to the new bottom'
+       % (_small, _big))
+    eq(len(list(_gw._screen.history.top)), _gw_htop0 - (_big - _small),
+       'grow(%d->%d): history shrank by exactly the restored count' % (_small, _big))
+    eq(_gw._grid_rows, _big,
+       'grow(%d->%d): the grid is full (restored history + content), no blank pad'
+       % (_small, _big))
+    _gw_doc = _gw.toPlainText().split('\n')
+    ok('prompt$' in _gw_doc[-1],
+       'grow(%d->%d): the document ends at the prompt, no blank band below' % (_small, _big))
+    ok('prompt$' in _gw_doc[-_big:][-1],
+       'grow(%d->%d): the prompt sits at the viewport bottom' % (_small, _big))
+    ok([_l for _l in _gw.toPlainText().split('\n') if _l.strip()] == _gw_before,
+       'grow(%d->%d): the restore is lossless (no vanished/duplicated output)' % (_small, _big))
+    _gw.shutdown()
+
+
+# Guard (grok's finding on the rejected flag fix): a GROW must not DROP below-cursor screen rows
+# that render as blank TEXT but carry a reverse-video background (a full-screen panel). The render
+# fills the grown grid (never trims to the last non-space row), so the panel survives; the restore
+# only shifts it down. A trim-on-grow dropped these rows and surfaced scrollback in their place.
+_rp = SecureTerminal(command='/bin/cat', tui=True)
+_rp.resize(400, 300); _rp.show(); APP.processEvents()
+_rp._tui_grid_size = lambda: (20, 10)
+_rp._make_screen()
+feed_output(_rp, b''.join(b'OLD%02d\r\n' % _i for _i in range(25)))
+_rp._render_tui(); APP.processEvents()
+_rp_panel = b'\x1b[H\x1b[2J\x1b[1;1HWARNING' + b''.join(
+    (b'\x1b[%d;1H\x1b[7m' % _y) + b' ' * 20 + b'\x1b[0m' for _y in range(2, 11))
+feed_output(_rp, _rp_panel + b'\x1b[1;8H')
+_rp._render_tui(); APP.processEvents()
+_rp._tui_grid_size = lambda: (20, 16)
+_rp._sync_tui_size(); _rp._render_tui(); APP.processEvents()
+eq(_rp._grid_rows, 16, 'grow: the full grid is rendered (no trim), so the panel is not dropped')
+ok('WARNING' in _rp.toPlainText(), 'grow: the full-screen panel survives the grow')
+_rp.shutdown()
+
+
+# Guard: a CLEAR after a grow keeps the screen==viewport fill -- the fresh canvas fills the
+# viewport and old scrollback stays above the fold (the case the rejected flag fix broke).
+_cg = SecureTerminal(command='/bin/cat', tui=True)
+_cg.resize(400, 300); _cg.show(); APP.processEvents()
+_cg._tui_grid_size = lambda: (20, 6)
+_cg._make_screen()
+feed_output(_cg, b''.join(b'HIST%02d\r\n' % _i for _i in range(25)))
+_cg._render_tui(); APP.processEvents()
+_cg._tui_grid_size = lambda: (20, 12)
+_cg._sync_tui_size()
+feed_output(_cg, b'\x1b[H\x1b[2JVISIBLE')
+_cg._render_tui(); APP.processEvents()
+_cg_view = _cg.toPlainText().split('\n')[-_cg._screen.lines:]
+ok(any('VISIBLE' in _l for _l in _cg_view),
+   'clear-after-grow: the fresh canvas shows in the viewport')
+ok(not any('HIST' in _l for _l in _cg_view),
+   'clear-after-grow: old scrollback stays above the fold (screen==viewport fill intact)')
+_cg.shutdown()
+
+
+# Resize round-trip PROPERTY (state-sequence): shrink-promote and grow-restore are inverses, so
+# any sequence of height resizes that returns to the start size restores the EXACT start document
+# and cursor. Guards the grow-restore model against drift / duplication / loss vs the shrink path.
+# RED on pre-option-B code (a grow padded blanks instead of restoring, so the round trip diverged).
+_rr = _rnd.Random(0xB0B)
+for _trial in range(12):
+    _rt = SecureTerminal(command='/bin/cat', tui=True)
+    _rt.resize(400, 300); _rt.show(); APP.processEvents()
+    _start = _rr.choice((8, 12, 16, 20))
+    _rt._tui_grid_size = lambda s=_start: (20, s)
+    _rt._make_screen()
+    feed_output(_rt, (''.join('L%03d-xyz\r\n' % _i for _i in range(_start + 15))
+                      + 'PROMPT$ ').encode())
+    _rt._render_tui(); APP.processEvents()
+    _base_doc = _rt.toPlainText()
+    _base_cur = _rt._screen.cursor.y
+    _cur = _start
+    for _ in range(_rr.randint(2, 5)):
+        _nxt = _rr.choice((6, 8, 10, 12, 16, 20, 24))
+        if _nxt == _cur:
+            continue
+        _rt._tui_grid_size = lambda n=_nxt: (20, n)
+        _rt._sync_tui_size(); _rt._render_tui(); APP.processEvents()
+        _cur = _nxt
+    _rt._tui_grid_size = lambda s=_start: (20, s)
+    _rt._sync_tui_size(); _rt._render_tui(); APP.processEvents()
+    eq(_rt._screen.cursor.y, _base_cur,
+       'resize round-trip #%d: cursor restored to the start row' % _trial)
+    eq(_rt.toPlainText(), _base_doc,
+       'resize round-trip #%d: returning to the start size restores the exact document' % _trial)
+    _rt.shutdown()
+
+
+# Branch coverage: the grow-restore is a PURE-height-grow-with-scrollback path only. A grow with
+# no scrollback, and a mixed width+height grow, both DEFER to pyte (no restore, history untouched).
+_gn = SecureTerminal(command='/bin/cat', tui=True)
+_gn.resize(400, 300); _gn.show(); APP.processEvents()
+_gn._tui_grid_size = lambda: (20, 10)
+_gn._make_screen()
+feed_output(_gn, b'a\r\nb\r\nc')
+_gn._render_tui(); APP.processEvents()
+ok(not _gn._screen.history.top, 'no-scrollback setup: history is empty')
+_gn._tui_grid_size = lambda: (20, 16)
+_gn._sync_tui_size(); _gn._render_tui(); APP.processEvents()
+ok(not _gn._screen.history.top, 'grow with no scrollback: defers to pyte, no restore')
+feed_output(_gn, b''.join(b'S%02d\r\n' % _i for _i in range(30)))
+_gn._render_tui(); APP.processEvents()
+_gn_h = len(list(_gn._screen.history.top))
+ok(_gn_h > 0, 'mixed setup: scrollback present')
+_gn._tui_grid_size = lambda: (30, 24)                  # BOTH columns and lines grow -> defer
+_gn._sync_tui_size(); _gn._render_tui(); APP.processEvents()
+eq(len(list(_gn._screen.history.top)), _gn_h,
+   'mixed width+height grow: defers to pyte (history untouched, no restore)')
+_gn.shutdown()
+
+
+# Partial restore: a grow by MORE than the available scrollback restores all of it; the remaining
+# new rows stay blank at the bottom and the cursor rides down only by the restored count.
+_pt = SecureTerminal(command='/bin/cat', tui=True)
+_pt.resize(400, 300); _pt.show(); APP.processEvents()
+_pt._tui_grid_size = lambda: (20, 6)
+_pt._make_screen()
+feed_output(_pt, b''.join(b'p%02d\r\n' % _i for _i in range(8)) + b'END$ ')
+_pt._render_tui(); APP.processEvents()
+_pt_h = len(list(_pt._screen.history.top))
+_pt_cy = _pt._screen.cursor.y
+ok(0 < _pt_h < 14, 'partial setup: some but fewer than the grow-worth of scrollback')
+_pt._tui_grid_size = lambda: (20, 20)
+_pt._sync_tui_size(); _pt._render_tui(); APP.processEvents()
+eq(len(list(_pt._screen.history.top)), 0, 'partial grow: all available scrollback restored')
+eq(_pt._screen.cursor.y, _pt_cy + _pt_h, 'partial grow: cursor rode down by the restored count only')
+ok('END$' in _pt.toPlainText(), 'partial grow: the prompt survives a partial restore')
+_pt.shutdown()
 
 
 finish('widget2')
