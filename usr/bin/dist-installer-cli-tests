@@ -22,6 +22,19 @@ shopt -s shift_verbose
 
 export LC_ALL=C
 
+## The standalone every payload drives acquires a per-user concurrency lock
+## (helper-scripts lockfile.sh) that needs a runtime dir. A CI runner may have no
+## /run/user/${EUID} and sudo does not pass XDG_RUNTIME_DIR, so give the whole
+## suite a private, owned one; a payload that needs its own still overrides it.
+dist_installer_tests_xdg="$(mktemp --directory)"
+chmod 0700 -- "${dist_installer_tests_xdg}"
+export XDG_RUNTIME_DIR="${dist_installer_tests_xdg}"
+# shellcheck disable=SC2317  # reached only via the EXIT trap
+dist_installer_tests_cleanup() {
+   safe-rm --recursive --force -- "${dist_installer_tests_xdg}" || true
+}
+trap dist_installer_tests_cleanup EXIT
+
 ## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
 ## SKIP so the orchestrator's --allow-skip governs it, instead of being
 ## folded into a passing suite.
