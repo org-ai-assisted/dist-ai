@@ -225,8 +225,6 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
                 f'TMPDIR={shlex.quote(td)}\n'
                 'stcatn() { cat -- "$@"; }\n'
                 'safe-rm() { :; }\n'
-                ## no-op '<br />' step: br_add_to_file X normally creates X_br.
-                'br_add_to_file() { cp -- "$1" "${1}_br"; }\n'
                 f'{func}\n'
                 'check_critical_logs\n'
             )
@@ -274,9 +272,10 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertEqual(out.count('synthetic oops number'), 250,
                          'every matched catastrophe line must be shown, none dropped')
         ## Distinct-line guard: the count alone would pass if one line were duplicated 250x,
-        ## so check that specific first/middle/last lines each survive intact.
+        ## so check that specific first/middle/last lines each survive intact (each number is
+        ## a unique contiguous substring; '<br />' is appended after it).
         for probe in (0, 125, 249):
-            self.assertIn('synthetic oops number %d\n' % probe, out,
+            self.assertIn('synthetic oops number %d<br />' % probe, out,
                           'each distinct catastrophe line must survive, not be duplicated')
 
     def test_bad_ram_critical(self) -> None:
