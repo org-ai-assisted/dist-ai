@@ -27,9 +27,11 @@ uname -a
 printf '%s\n' "${sep}"
 printf '%s\n' "${PATH}"
 printf '%s\n' "${sep}"
-localedef --list-archive
+## Diagnostics only -- never abort the dump: localedef --list-archive exits
+## nonzero when the locale archive is absent (a bare image pre locale-gen).
+localedef --list-archive || true
 printf '%s\n' "${sep}"
-locale
+locale || true
 printf '%s\n' "${sep}"
 if command -v apt-get >/dev/null; then
    for f in \

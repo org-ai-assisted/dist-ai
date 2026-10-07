@@ -32,7 +32,10 @@ if command -v apt-get; then
 elif command -v dnf; then
    dnf upgrade --assumeyes
    ## Fedora has no locale-gen workflow; glibc-langpack-ru ships ru_RU.UTF-8.
-   dnf install --assumeyes ShellCheck sudo tor systemd gawk glibc-langpack-ru
+   ## dnf5-plugins supplies the 'needs-restarting' subcommand the installer's
+   ## reboot check calls; without it that check hard-fails on images that do not
+   ## ship it by default (Fedora < 43).
+   dnf install --assumeyes ShellCheck sudo tor systemd gawk glibc-langpack-ru dnf5-plugins
    ## Debugging.
    dnf provides needs-restarting
 else
