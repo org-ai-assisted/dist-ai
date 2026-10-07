@@ -224,9 +224,23 @@ rt_version_token() {
 rt_build_version_from_iso() {
    local base v
    base="${1##*/}"
-   base="${base%.iso}"
-   v="${base#*-*-}"   ## drop leading "Kicksecure-<Desktop>-"
-   v="${v%.*}"        ## drop trailing ".<arch>"
+   ## Match the exact built-ISO shape Kicksecure-<Desktop>-<version>.<arch>.iso with a
+   ## KNOWN arch suffix and strip prefix+suffix in the arm -- never a blind last-dot strip
+   ## (which would corrupt a dotted version with no arch component, 18.2.3.0 -> 18.2.3).
+   ## Fail closed on any other shape (-> the caller requires --version).
+   case "${base}" in
+      Kicksecure-*-*.Intel_AMD64.iso)
+         v="${base%.Intel_AMD64.iso}"
+         v="${v#*-*-}"
+         ;;
+      Kicksecure-*-*.ARM64.iso)
+         v="${base%.ARM64.iso}"
+         v="${v#*-*-}"
+         ;;
+      *)
+         return 1
+         ;;
+   esac
    [ -n "${v}" ] || return 1
    printf '%s\n' "${v}"
 }
@@ -235,8 +249,11 @@ rt_build_version_from_iso() {
 ## separators / traversal, a bounded git-describe-ish charset.
 rt_build_version_ok() {
    local v="$1"
+   ## A leading '-' would be read as an option by the emitter's argparse (--version <v>
+   ## exits 2 -> no result.json -> a false NO-DATA); '.'/'..' resolve to a directory, not
+   ## a distinct results cell. Reject both, plus separators / traversal / bad charset.
    case "${v}" in
-      '' | */* | *..* | *[!A-Za-z0-9.+_-]*)
+      '' | '.' | '..' | -* | */* | *..* | *[!A-Za-z0-9.+_-]*)
          return 1
          ;;
    esac
@@ -679,9 +696,17 @@ rt_lane_kicksecure() {
    ## inside a function called as `... || rc=$?`, so check explicitly).
    rc=0
    if [ -n "${local_iso}" ]; then
-      ## Built-ISO lane: install the provided local ISO directly -- it is our own build,
-      ## already on disk, so no download/signature-verify step.
-      iso="${local_iso}"
+      ## Built-ISO lane: the account is FIXED (not per-version), so serialize concurrent
+      ## built runs -- otherwise one run's eph cleanup (userdel/pkill --uid) would destroy
+      ## the other's install + home. Then STAGE the ISO into the account-readable ISO_DIR:
+      ## a build commonly sits under a 0700 home the unprivileged install account cannot
+      ## traverse, so root copies it out (a+r) rather than hand the account an unreadable path.
+      rt_lock_account "${account}"
+      mkdir --parents -- "${ISO_DIR}"
+      chmod a+rx -- "${ISO_DIR}"
+      iso="${ISO_DIR}/${local_iso##*/}"
+      cp -- "${local_iso}" "${iso}"
+      chmod a+r -- "${iso}"
    else
       iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
          --desktop "${desktop}" --channel "${channel}" --version "${version}" \
@@ -845,12 +870,25 @@ main() {
       ## an ISO install). A disposable eph-run-GUEST-built account installs it; the version
       ## is a results-matrix LABEL only (git-describe, not a release token).
       [ "${guest}" = 'kicksecure' ] || die "${SETUP_RC}" "--iso is kicksecure-only"
-      [ -r "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a readable file"
+      [ -f "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a regular file"
+      ## The filename's desktop must match INTERFACE, else the lane would publish (say) an
+      ## Xfce build into the lxqt results cell.
+      local iso_base
+      iso_base="${local_iso##*/}"
+      [ "${iso_base#"Kicksecure-${desktop}-"}" != "${iso_base}" ] \
+         || die "${SETUP_RC}" "--iso name does not match interface '${interface}' (expected Kicksecure-${desktop}-<version>.<arch>.iso)"
       version="${version_override}"
       [ -n "${version}" ] || version="$(rt_build_version_from_iso "${local_iso}")" \
          || die "${SETUP_RC}" "could not derive a version label from --iso '${local_iso}' -- pass --version"
       rt_build_version_ok "${version}" \
-         || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no '/' or '..')"
+         || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
+      ## A built result must NOT overwrite an official-release results cell: reject a
+      ## release-shaped label (pure dotted token) -- a built label is the git-describe
+      ## <ver>-g<sha>, which rt_version_token rejects (has dashes), so this only fires on an
+      ## explicit --version <release>.
+      if rt_version_token "${version}" >/dev/null 2>&1; then
+         die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
+      fi
       rt_origin='built'
       account='eph-run-'"${guest}"'-built'
       account_kind='prebless'
