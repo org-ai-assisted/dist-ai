@@ -113,6 +113,11 @@ firmware="efi-secureboot"
 run_checks='false'
 dry_run='false'
 provision_leak='false'
+## --iso PATH: test a LOCALLY-BUILT ISO instead of downloading a published release.
+## Empty = the normal download path; set = built-origin lane (no iso-download).
+local_iso=""
+## origin recorded in the result.json: downloaded (official release) or built (--iso).
+rt_origin="downloaded"
 
 ## Trap state: the ephemeral account to remove on exit (set once created), so an
 ## abort between creation and the normal cleanup never leaks it. Empty => nothing.
@@ -141,11 +146,15 @@ die() {
 print_usage() {
    printf '%s\n' "Usage:
   ${me} GUEST INTERFACE [--channel stable|developers] [--version VER]
-        [--firmware bios|efi|efi-secureboot] [--checks] [--dry-run]
+        [--firmware bios|efi|efi-secureboot] [--iso PATH] [--checks] [--dry-run]
         [--provision-leak]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | xfce | cli (the published desktop flavor)
+  --iso PATH test a LOCALLY-BUILT ISO (kicksecure only): skip iso-download, install
+             PATH, record origin=built. Version LABEL is derived from the filename
+             (override with --version); the run uses a disposable eph-run-GUEST-built
+             account.
 
 A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-stable-GUEST.
@@ -205,6 +214,34 @@ rt_version_token() {
    ## here -- a garbage/overlong --version fails SETUP loudly, never a suppressed publish.
    [ "${#token}" -le 32 ] || return 1
    printf '%s\n' "${token}"
+}
+
+## Derive a build-version LABEL from a built ISO's filename
+## (Kicksecure-<Desktop>-<version>.<arch>.iso). The git-describe <version>
+## (e.g. 18.2.3.0-222-g<sha>) is NOT a release token (dashes + sha), so it never
+## flows through rt_version_token / the eph account name -- a built run uses a FIXED
+## eph-run-<guest>-built account; this label is only the results-matrix cell + --version.
+rt_build_version_from_iso() {
+   local base v
+   base="${1##*/}"
+   base="${base%.iso}"
+   v="${base#*-*-}"   ## drop leading "Kicksecure-<Desktop>-"
+   v="${v%.*}"        ## drop trailing ".<arch>"
+   [ -n "${v}" ] || return 1
+   printf '%s\n' "${v}"
+}
+
+## Validate a built-ISO version label is a safe results-path component: no path
+## separators / traversal, a bounded git-describe-ish charset.
+rt_build_version_ok() {
+   local v="$1"
+   case "${v}" in
+      '' | */* | *..* | *[!A-Za-z0-9.+_-]*)
+         return 1
+         ;;
+   esac
+   [ "${#v}" -le 64 ] || return 1
+   return 0
 }
 
 ## Compose + validate the ephemeral install account name. Keeping the eph-run- prefix
@@ -618,7 +655,7 @@ rt_publish_result() {
       "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}" --version "${version}" \
-      --builder dm-release-test --origin downloaded \
+      --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
@@ -641,13 +678,19 @@ rt_lane_kicksecure() {
    ## to an install with an empty --iso and publish a false PASS (errexit is off
    ## inside a function called as `... || rc=$?`, so check explicitly).
    rc=0
-   iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
-      --desktop "${desktop}" --channel "${channel}" --version "${version}" \
-      --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")" || rc=$?
-   if [ "${rc}" -ne 0 ]; then
-      log error "iso-download failed (rc=${rc}) for kicksecure '${version}' -- not installing"
-      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "" Kicksecure
-      return "${rc}"
+   if [ -n "${local_iso}" ]; then
+      ## Built-ISO lane: install the provided local ISO directly -- it is our own build,
+      ## already on disk, so no download/signature-verify step.
+      iso="${local_iso}"
+   else
+      iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
+         --desktop "${desktop}" --channel "${channel}" --version "${version}" \
+         --output-dir "${ISO_DIR}" --cert "${CERT_PATH}")" || rc=$?
+      if [ "${rc}" -ne 0 ]; then
+         log error "iso-download failed (rc=${rc}) for kicksecure '${version}' -- not installing"
+         rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "" Kicksecure
+         return "${rc}"
+      fi
    fi
 
    ## Disposable LUKS passphrase for the install, readable only by the account.
@@ -740,6 +783,11 @@ parse_args() {
             firmware="$2"
             shift 2
             ;;
+         --iso)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --iso"
+            local_iso="$2"
+            shift 2
+            ;;
          --checks)
             run_checks='true'
             shift
@@ -792,26 +840,43 @@ main() {
          ;;
    esac
 
-   has "${ISO_DOWNLOAD}" || die "${SETUP_RC}" "'${ISO_DOWNLOAD}' not on PATH"
-
-   version="$(rt_resolve_version "${channel}")"
-   [ -n "${version}" ] || die "${SETUP_RC}" "could not resolve version"
-   token="$(rt_version_token "${version}")" || die "${SETUP_RC}" "resolved version '${version}' is not a safe token"
-   stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
-   bless_state="$(rt_bless_state "${version}" "${stable}")"
-   ## The leak lane ALWAYS runs in the dedicated, PERSISTENT persist-leak- account
-   ## (never the shared persist-stable-/eph-run- namespace); every other lane selects
-   ## by bless-state. account_kind in {blessed, prebless, leak}; only prebless is
-   ## ephemeral (created + gc'd here) -- blessed and leak are pre-provisioned.
-   if rt_lane_is_leak "${guest}"; then
-      account="persist-leak-${guest}"
-      rt_account_is_leak "${account}" \
-         || die "${SETUP_RC}" "leak account '${account}' is not in the persist-leak- namespace"
-      account_kind='leak'
+   if [ -n "${local_iso}" ]; then
+      ## Built-ISO lane: no download. kicksecure-only (whonix tests an imported pair, not
+      ## an ISO install). A disposable eph-run-GUEST-built account installs it; the version
+      ## is a results-matrix LABEL only (git-describe, not a release token).
+      [ "${guest}" = 'kicksecure' ] || die "${SETUP_RC}" "--iso is kicksecure-only"
+      [ -r "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a readable file"
+      version="${version_override}"
+      [ -n "${version}" ] || version="$(rt_build_version_from_iso "${local_iso}")" \
+         || die "${SETUP_RC}" "could not derive a version label from --iso '${local_iso}' -- pass --version"
+      rt_build_version_ok "${version}" \
+         || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no '/' or '..')"
+      rt_origin='built'
+      account='eph-run-'"${guest}"'-built'
+      account_kind='prebless'
+      stable='(local build)'
    else
-      account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
-         || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
-      account_kind="${bless_state}"
+      has "${ISO_DOWNLOAD}" || die "${SETUP_RC}" "'${ISO_DOWNLOAD}' not on PATH"
+
+      version="$(rt_resolve_version "${channel}")"
+      [ -n "${version}" ] || die "${SETUP_RC}" "could not resolve version"
+      token="$(rt_version_token "${version}")" || die "${SETUP_RC}" "resolved version '${version}' is not a safe token"
+      stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
+      bless_state="$(rt_bless_state "${version}" "${stable}")"
+      ## The leak lane ALWAYS runs in the dedicated, PERSISTENT persist-leak- account
+      ## (never the shared persist-stable-/eph-run- namespace); every other lane selects
+      ## by bless-state. account_kind in {blessed, prebless, leak}; only prebless is
+      ## ephemeral (created + gc'd here) -- blessed and leak are pre-provisioned.
+      if rt_lane_is_leak "${guest}"; then
+         account="persist-leak-${guest}"
+         rt_account_is_leak "${account}" \
+            || die "${SETUP_RC}" "leak account '${account}' is not in the persist-leak- namespace"
+         account_kind='leak'
+      else
+         account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
+            || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
+         account_kind="${bless_state}"
+      fi
    fi
 
    ## --provision-leak is a one-time setup of the dedicated leak pair, not a test run;
@@ -825,6 +890,7 @@ main() {
       printf '%s\n' "plan:" \
          "  guest=${guest} interface=${interface} desktop=${desktop}" \
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
+         "  origin=${rt_origin} iso=${local_iso:-<download>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
          "  mode=$([ "${provision_leak}" = 'true' ] && printf 'provision-leak' || printf 'test')" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
