@@ -244,6 +244,41 @@ kill "${live_pid}" 2>/dev/null || true
 wait "${live_pid}" 2>/dev/null || true
 gitq -C "${super}" update-ref -d "refs/dm-tidy-mergecheck/${live_pid}/up" 2>/dev/null || true
 
+## --- Case: a submodule-PIN conflict on master is a 'note', never a silent 'ok' -----------
+## master and upstream carry gitlink 'mysub' at different commits (a pin divergence); trixie
+## touches only an unrelated file. merge-tree exits 1 with ONLY 'CONFLICT (submodule)'. The old
+## code filtered that out and reported 'ok (can merge)' -- a silent green on a real pin conflict.
+GLA=1111111111111111111111111111111111111111
+GLC=3333333333333333333333333333333333333333
+GLD=4444444444444444444444444444444444444444
+gitq -C "${sc}" checkout --quiet -b gl_base "${B}"
+gitq -C "${sc}" update-index --add --cacheinfo "160000,${GLA},mysub"
+gitq -C "${sc}" commit --quiet -m gl-base
+GLB="$(gitq -C "${sc}" rev-parse HEAD)"
+gitq -C "${sc}" checkout --quiet -b gl_up "${GLB}"          ## upstream bumps the pin -> C
+gitq -C "${sc}" update-index --cacheinfo "160000,${GLC},mysub"
+gitq -C "${sc}" commit --quiet -m gl-up
+GL_UP="$(gitq -C "${sc}" rev-parse HEAD)"
+gitq -C "${sc}" checkout --quiet -b gl_trx "${GLB}"          ## trixie: unrelated file only
+printf 't\n' > "${sc}/gltrxfile" ; gitq -C "${sc}" add gltrxfile ; gitq -C "${sc}" commit --quiet -m gl-trx
+GL_TRX="$(gitq -C "${sc}" rev-parse HEAD)"
+gitq -C "${sc}" checkout --quiet -b gl_master "${GLB}"       ## master bumps the pin -> D (conflict)
+gitq -C "${sc}" update-index --cacheinfo "160000,${GLD},mysub"
+gitq -C "${sc}" commit --quiet -m gl-master
+GL_MASTER="$(gitq -C "${sc}" rev-parse HEAD)"
+gitq -C "${sc}" push --quiet --force "${U}" "${GL_UP}:refs/heads/master"
+gitq -C "${sc}" push --quiet --force "${A}" "${GL_TRX}:refs/heads/arraybolt3/trixie"
+gitq -C "${sc}" push --quiet --force "${O}" "${GL_MASTER}:refs/heads/master" "${GL_MASTER}:refs/heads/ai"
+v="$(mergecheck_verdict)"
+case "${v}" in
+   note\ \(master\ submodule\ pin\ conflicts* )
+      pass "gitlink pin conflict -> ${v}"
+      ;;
+   * )
+      fail "gitlink pin conflict: expected 'note (master submodule pin conflicts ...)', got '${v}'"
+      ;;
+esac
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1

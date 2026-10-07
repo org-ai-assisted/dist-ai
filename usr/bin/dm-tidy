@@ -424,7 +424,9 @@ phase_fsck() {
 ## conflict AND master mirrors ai's non-gitlink content: master still textually conflicts now,
 ## but the resolution already lives on ai, so no NEW work and the remaster carries it. Any OTHER
 ## master conflict (ai also conflicts with the combined base, or master's content does not mirror
-## ai) is a real, unreconciled divergence -> WARN. Does not touch HEAD/index/worktree/tracked refs
+## ai) is a real, unreconciled divergence -> WARN. A master conflict that is ONLY a submodule-pin
+## (gitlink) conflict is neither -- master's pins must equal upstream's, so it is the
+## remaster/gitlink-pin phase's domain -> verdict 'note', never a silent 'ok'. Does not touch HEAD/index/worktree/tracked refs
 ## or the exit code; the only writes are transient dangling merge-tree/commit-tree objects (gc
 ## reclaims them) plus per-run throwaway refs it scrubs. A missing remote/ref, an unmergeable
 ## upstream+trixie, or a merge-tree ERROR records 'skipped'. DM_TIDY_MERGECHECK overrides the
@@ -482,12 +484,15 @@ mergecheck_content_mirrored() {
    return 0
 }
 
-## merge-tree <base> <branch>: echo 'conflict' (a real NON-gitlink file conflict) | 'clean' (no
-## conflict, or only submodule/gitlink conflicts) | 'error' (merge-tree aborted -- unrelated
-## histories, a missing object, ...). A non-1 exit must NOT be mistaken for 'clean'. LC_ALL=C
-## (global) keeps the CONFLICT text English for the grep. Always returns 0 (echoes the state).
+## merge-tree <base> <branch>: echo 'conflict' (a real NON-gitlink file conflict) | 'gitlink'
+## (rc 1 but ONLY submodule/gitlink pin conflicts, no file conflict) | 'clean' (no conflict) |
+## 'error' (merge-tree aborted -- unrelated histories, a missing object, ...). A non-1 exit must
+## NOT be mistaken for 'clean', and a gitlink pin conflict must NOT be silently swallowed as
+## 'clean' (it would false-green "ok can merge" on a real pin divergence). The CALLER decides
+## what a gitlink pin conflict means per branch -- a real problem on master (pins must == upstream),
+## expected/benign on ai (its ahead fork pins). LC_ALL=C (global) keeps the CONFLICT text English.
 mergecheck_merge_state() {
-   local base="$1" branch="$2" out rc=0 conf
+   local base="$1" branch="$2" out rc=0 all file
    out="$( git -C "${top}" merge-tree --write-tree "${base}" "${branch}" 2>&1 )" || rc="$?"
    if [ "${rc}" -eq 0 ]; then
       printf 'clean'
@@ -497,8 +502,15 @@ mergecheck_merge_state() {
       printf 'error'
       return 0
    fi
-   conf="$( printf '%s\n' "${out}" | grep -E '^CONFLICT \(' | grep -vE '^CONFLICT \(submodule' || true )"
-   if [ -n "${conf}" ]; then printf 'conflict'; else printf 'clean'; fi
+   all="$( printf '%s\n' "${out}" | grep -E '^CONFLICT \(' || true )"
+   file="$( printf '%s\n' "${all}" | grep -vE '^CONFLICT \(submodule' || true )"
+   if [ -n "${file}" ]; then
+      printf 'conflict'
+   elif [ -n "${all}" ]; then
+      printf 'gitlink'
+   else
+      printf 'clean'
+   fi
    return 0
 }
 
@@ -541,14 +553,23 @@ mergecheck_run() {
          record "6 mergecheck" "skipped (merge-tree error testing master)"
          return 0
          ;;
+      gitlink )
+         ## ONLY a submodule-pin conflict (no file conflict). master's gitlinks must equal
+         ## upstream's (0 behind) in a tidy tree, so a pin divergence here is the gitlink-pin
+         ## phase's domain (remaster + dm-git-sync re-pin master to upstream), NOT a file
+         ## divergence. Surface it honestly -- never silent 'ok' on a real pin conflict.
+         record "6 mergecheck" "note (master submodule pin conflicts with upstream+trixie; the remaster/gitlink-pin phase reconciles master's pins to upstream -- not a file divergence)"
+         return 0
+         ;;
    esac
-   ## master conflicts. Benign ONLY if ai (which carries trixie) merges into the combined base
-   ## with no file conflict AND master mirrors ai's non-gitlink content -- i.e. the single cause
-   ## is the by-design missing trixie ancestry, not a real upstream/trixie-vs-ours divergence.
+   ## master has a FILE conflict. It is already-reconciled-on-ai ONLY if ai (which carries trixie)
+   ## merges the combined base with no FILE conflict (a gitlink pin conflict on ai is its expected
+   ## ahead-pin, not a divergence) AND master mirrors ai's non-gitlink content -- i.e. the single
+   ## cause is the by-design missing trixie ancestry, not a real upstream/trixie-vs-ours divergence.
    a_state="$( mergecheck_merge_state "${combined}" "${ai}" )"
    mirrored="no"
    if mergecheck_content_mirrored "${master}" "${ai}"; then mirrored="yes"; fi
-   if [ "${a_state}" = "clean" ] && [ "${mirrored}" = "yes" ]; then
+   if { [ "${a_state}" = "clean" ] || [ "${a_state}" = "gitlink" ]; } && [ "${mirrored}" = "yes" ]; then
       ## Honest: master DOES conflict with upstream+trixie now, but the resolution already
       ## lives on ai (ai -- same content, trixie absorbed -- merges the combined base cleanly),
       ## so it is not a NEW divergence; the remaster carries ai's resolution when trixie lands.
