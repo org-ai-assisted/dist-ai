@@ -717,9 +717,15 @@ def _c_in_command(call, source):
     """Command-position shell '-c': classify the args with command_tokens (which
     reconstructs an attached '-c'prog'' value a raw word_lit cannot, since a
     mixed literal+quoted word has no single literal). Handles the separate,
-    attached, and cluster ('-lc') forms via the shared _c_opt_program."""
+    attached, and cluster ('-lc') forms via the shared _c_opt_program.
+
+    'o'/'O' and --rcfile/--init-file are passed as value-taking so a separate
+    argument ('bash -o pipefail -c PROG') is consumed as that option's value, not
+    read as the script operand that would end the option scan before the '-c'. (A
+    '+o'/'+O' is a command_tokens edge -- it does not model '+'-options -- and is
+    handled in the wrapper scans; it is a rare command-position spelling here.)"""
     tokens = list(bash_ast.command_tokens(
-        call, source, frozenset("c"), frozenset()))
+        call, source, frozenset("coO"), frozenset(("rcfile", "init-file"))))
     for index, (kind, word, text) in enumerate(tokens):
         if kind != "opt":
             continue
@@ -749,6 +755,39 @@ def _is_separate_c_opt(text):
     return _c_opt_program(text) == ("separate", None)
 
 
+## Bash invocation options that consume the NEXT word as their argument, other than
+## -c (handled by _c_opt_program): -o / -O (and a short cluster ending in o/O),
+## +o / +O, and the long --rcfile / --init-file. A CLOSED set from bash(1), not a
+## general option parser -- its argument ('pipefail' in 'bash -o pipefail -c PROG')
+## must be consumed, else it reads as the script operand and ends the scan before the
+## real '-c'. Inline-value forms carry no next word: an o/O not last in a short
+## cluster ('-opipefail') takes the cluster rest, and '--rcfile=FILE' / an abbreviated
+## '--rc' are self-contained / not matched (rare; a documented edge).
+##
+## SCOPE: these scanners flag an ACCIDENTAL multi-statement / expansion-spliced shell
+## '-c' (the realistic forms: 'bash -c', 'bash -o pipefail -c', a wrapper, a script
+## operand before '-c'). They are NOT an adversarial gate, so exotic bash-invocation
+## spellings nobody writes by accident are out of scope and accepted: a '+'-flag toggle
+## other than +o/+O ('bash +x -c ...'), a 'c'/'o' mixed cluster ('-oc'/'-co'), a
+## '--rcfile=FILE' / abbreviated '--rc', and a command-position '+o'/'+O' (command_tokens
+## does not model '+'-options; the wrapper scans do). Do NOT grow a bash option parser
+## to chase these -- an author with write access does not need to evade a style rule.
+_BASH_LONG_ARG_OPTS = ("--rcfile", "--init-file")
+
+
+def _bash_opt_takes_arg(text):
+    """True if TEXT is a bash value-taking invocation option (see _BASH_LONG_ARG_OPTS)
+    whose argument is the following word."""
+    if text in _BASH_LONG_ARG_OPTS:
+        return True
+    if text.startswith("--"):
+        return False
+    if text[:1] in ("-", "+"):
+        cluster = text[1:]
+        return bool(cluster) and cluster[-1] in ("o", "O")
+    return False
+
+
 def _c_behind_wrapper(call, words, start, source):
     """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START] is
     the shell). Handles the separate ('-c PROG') and attached ('-c"prog"') forms,
@@ -757,22 +796,43 @@ def _c_behind_wrapper(call, words, start, source):
     reaches a real later '-c' (e.g. 'bash -$cflags -c PROG'), rather than reading
     the expansion word's literal 'c' as a bogus cluster. So an expansion-bearing
     ATTACHED value behind a wrapper ('bash -c"$x; b"', itself an invalid glued
-    spelling bash rejects) is a documented under-report, not a misread."""
-    for index in range(start + 1, len(words)):
-        classified = _c_opt_program(bash_ast.word_string(words[index]))
-        if classified is None:
+    spelling bash rejects) is a documented under-report, not a misread.
+
+    A value-taking option's argument ('bash -o pipefail -c PROG') is consumed with
+    it (_bash_opt_takes_arg) so it is not mistaken for the script operand. A
+    resolvable script operand ('bash foo.sh ...'), a bare '-' (stdin), or the '--'
+    end-of-options marker then STOPS the scan: everything after is the script's own
+    argv, not a bash option, so a later '-c"a;b"' there is the script's, not bash's
+    -- mirroring command_tokens' operand_region (which _c_in_command uses)."""
+    index = start + 1
+    while index < len(words):
+        text = bash_ast.word_string(words[index])
+        ## Expansion-bearing word: skip to reach a real later '-c' (see above).
+        if text is None:
+            index += 1
             continue
-        form, ci = classified
-        if form == "separate":
-            if index + 1 < len(words):
-                program = words[index + 1]
-                span = program["End"]["Line"] - program["Pos"]["Line"] + 1
-                yield (call, _shell_c_value(program, source), span)
-        else:
-            ## Attached: the program is glued into this option word.
-            span = words[index]["End"]["Line"] - words[index]["Pos"]["Line"] + 1
-            yield (call, _attached_c_value(words[index], ci, source), span)
-        return
+        classified = _c_opt_program(text)
+        if classified is not None:
+            form, ci = classified
+            if form == "separate":
+                if index + 1 < len(words):
+                    program = words[index + 1]
+                    span = program["End"]["Line"] - program["Pos"]["Line"] + 1
+                    yield (call, _shell_c_value(program, source), span)
+            else:
+                ## Attached: the program is glued into this option word.
+                span = words[index]["End"]["Line"] - words[index]["Pos"]["Line"] + 1
+                yield (call, _attached_c_value(words[index], ci, source), span)
+            return
+        ## A value-taking option consumes its separate argument word too.
+        if _bash_opt_takes_arg(text):
+            index += 2
+            continue
+        ## First operand / '-' / '--' ends bash's own options -> stop.
+        if text == "--" or text == "-" or not text.startswith("-"):
+            return
+        ## A plain flag ('-x', '--norc'): keep scanning for a later '-c'.
+        index += 1
 
 
 def shell_c_programs(tree, source):
@@ -849,11 +909,28 @@ def shell_c_program_words(tree):
                     break
         if start is None:
             continue
-        for j in range(start + 1, len(words)):
-            if _is_separate_c_opt(bash_ast.word_string(words[j])):
+        j = start + 1
+        while j < len(words):
+            text = bash_ast.word_string(words[j])
+            ## Expansion-bearing word: skip to reach a real later '-c'.
+            if text is None:
+                j += 1
+                continue
+            if _is_separate_c_opt(text):
                 if j + 1 < len(words):
                     yield (call, words[j + 1])
                 break
+            ## A value-taking option consumes its separate argument word too, so the
+            ## argument ('pipefail' in 'bash -o pipefail -c PROG') is not read as the
+            ## script operand (mirrors _c_behind_wrapper).
+            if _bash_opt_takes_arg(text):
+                j += 2
+                continue
+            ## First operand / '-' / '--' ends bash's own options: a later '-c' there
+            ## belongs to the script, not the shell -- stop (mirrors _c_behind_wrapper).
+            if text == "--" or text == "-" or not text.startswith("-"):
+                break
+            j += 1
 
 
 _C_EXPANSIONS = frozenset(("ParamExp", "CmdSubst", "ArithmExp", "ArithmCmd"))

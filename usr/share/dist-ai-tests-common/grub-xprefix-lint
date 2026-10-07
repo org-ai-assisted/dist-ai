@@ -34,7 +34,11 @@
 ##   - quote-concatenation literals ("" joined with more, e.g. ""efi -> one word
 ##     'efi'); only a standalone "" / '' empty literal is flagged;
 ##   - a single-quoted dollar literal ('$b'), where $ does not expand;
-##   - an unquoted LHS (x${VAR} without surrounding quotes), non-idiomatic here.
+##   - an unquoted LHS (x${VAR} without surrounding quotes), non-idiomatic here;
+##   - an INLINE comment tail, or a '#'/x-idiom carried inside a quoted string, AFTER
+##     a '[' / test on the same line -- only a FULL-LINE '#' comment is skipped;
+##     stripping an inline tail needs an unquoted-'#' tokenizer (a shell parser), the
+##     same worse trade as above.
 ##
 ## Usage: grub-xprefix-lint <file>
 ## Exit: 0 no mismatch; 1 one or more mismatches (each printed as
@@ -81,8 +85,10 @@ lineno=0
 hits=0
 while IFS= read -r line || [ -n "${line}" ]; do
    lineno=$(( lineno + 1 ))
-   ## Context-aware: a comment documenting the bug, a menuentry title, or a
-   ## kernel cmdline is not a comparison -- only an actual [ ... ] / test lints.
+   ## A FULL-LINE comment is skipped: a bug note, a menuentry title, or a kernel
+   ## cmdline on its own '#' line is not a comparison. An INLINE comment tail or a
+   ## quoted '#' later on a '[ ... ]' / test line is NOT stripped (out of scope -- see
+   ## the header SCOPE note); only a line that then looks like a test is scanned.
    ## '[' and 'test' are matched followed by ANY whitespace (GRUB, like POSIX sh,
    ## accepts a tab there), so a tab-separated test is not silently skipped.
    if [[ "${line}" =~ ^[[:space:]]*# ]]; then

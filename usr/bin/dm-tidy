@@ -255,7 +255,7 @@ validate_repo_remotes() {
 ## gated arraybolt3/trixie merge).
 phase_remotes() {
    local flag=() rc=0 path top_real tree_real on_target="false"
-   log ">>> [1/5] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
+   log ">>> [1/6] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
    ## Run the DESTRUCTIVE ensure only when 'top' IS the tree REMOTES_ENSURE_CMD acts
    ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree. An
    ## empty REMOTES_TARGET_TREE (unset HOME) is a non-matching sentinel -> always skip.
@@ -322,7 +322,7 @@ phase_submodule_sync() {
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
-   log ">>> [2/5] submodule 'ai' sync (${SUBMODULE_SYNC_CMD})"
+   log ">>> [2/6] submodule 'ai' sync (${SUBMODULE_SYNC_CMD})"
    "${SUBMODULE_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
@@ -350,7 +350,7 @@ phase_remaster() {
       return 0
    fi
    [ "${dry_run}" = "true" ] && mode_flag="--dry-run"
-   log ">>> [3/5] remaster masters + merge master->ai (${REMASTER_ALL_CMD} ${mode_flag})"
+   log ">>> [3/6] remaster masters + merge master->ai (${REMASTER_ALL_CMD} ${mode_flag})"
    "${REMASTER_ALL_CMD}" "${mode_flag}" "${top}" || rc="$?"
    case "${rc}" in
       0)
@@ -376,7 +376,7 @@ phase_parent_sync() {
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
-   log ">>> [4/5] pin gitlinks + mirror to master + push (${GIT_SYNC_CMD})"
+   log ">>> [4/6] pin gitlinks + mirror to master + push (${GIT_SYNC_CMD})"
    "${GIT_SYNC_CMD}" --dir "${top}" "${flag[@]}" || rc="$?"
    case "${rc}" in
       0)
@@ -399,7 +399,7 @@ phase_parent_sync() {
 ## happened.
 phase_fsck() {
    local rc=0
-   log ">>> [5/5] verify object store (git fsck --full)"
+   log ">>> [5/6] verify object store (git fsck --full)"
    if [ -n "${FSCK_CMD}" ]; then
       "${FSCK_CMD}" "${top}" || rc="$?"
    else
@@ -413,12 +413,175 @@ phase_fsck() {
    fi
 }
 
+## Phase 6: upstream+trixie mergeability of master (informational). Answers the dm-mergable-test
+## question in-sweep: can org-ai-assisted master be merged once upstream master has absorbed the
+## arraybolt3/trixie contributor branch? It fetches the published parent tips (no submodules),
+## builds the combined (upstream+trixie) base with merge-tree, and tests master into it.
+## It must NOT cry wolf on the BY-DESIGN case: master intentionally lacks trixie in its ancestry
+## (trixie reaches master only when it lands upstream; master carries trixie's CONTENT via the
+## ai->master mirror, not its commits). A master conflict is already-RECONCILED (verdict 'note',
+## not a problem) iff ai -- which DOES carry trixie -- merges into the combined base with NO file
+## conflict AND master mirrors ai's non-gitlink content: master still textually conflicts now,
+## but the resolution already lives on ai, so no NEW work and the remaster carries it. Any OTHER
+## master conflict (ai also conflicts with the combined base, or master's content does not mirror
+## ai) is a real, unreconciled divergence -> WARN. Does not touch HEAD/index/worktree/tracked refs
+## or the exit code; the only writes are transient dangling merge-tree/commit-tree objects (gc
+## reclaims them) plus per-run throwaway refs it scrubs. A missing remote/ref, an unmergeable
+## upstream+trixie, or a merge-tree ERROR records 'skipped'. DM_TIDY_MERGECHECK overrides the
+## whole phase (test seam).
+MERGECHECK_CMD="${DM_TIDY_MERGECHECK:-}"
+## Throwaway ref namespace, PER-PID so concurrent runs on one checkout never scrub each other's
+## refs. A dest refspec writes HERE, so the checkout's FETCH_HEAD is never clobbered (a sibling
+## 'git merge FETCH_HEAD' stays safe) -- unlike a plain '--no-write-fetch-head' fetch, where
+## rev-parse FETCH_HEAD would read a STALE value.
+MERGECHECK_NS="refs/dm-tidy-mergecheck/$$"
+
+## Delete throwaway refs: this run's own namespace PLUS any left by a CRASHED earlier run (a
+## dead pid). Scanned over the whole refs/dm-tidy-mergecheck/ tree so a crash self-heals, yet a
+## still-ALIVE pid (a concurrent run) is left untouched -- no cross-run clobber. --no-deref so a
+## symref never redirects the delete to a real branch. Run at phase start AND end.
+mergecheck_scrub_refs() {
+   local r pid
+   while IFS= read -r r; do
+      [ -n "${r}" ] || continue
+      ## refs/dm-tidy-mergecheck/<pid>/<name> -- the element after the prefix is the owning pid.
+      pid="${r#refs/dm-tidy-mergecheck/}"
+      pid="${pid%%/*}"
+      case "${pid}" in ''|*[!0-9]*) continue ;; esac
+      if [ "${pid}" != "$$" ] && [ -e "/proc/${pid}" ]; then continue; fi
+      git -C "${top}" update-ref --no-deref -d "${r}" 2>/dev/null || true
+   done < <( git -C "${top}" for-each-ref --format='%(refname)' 'refs/dm-tidy-mergecheck/' 2>/dev/null )
+}
+
+## Fetch <remote> <src-ref> into MERGECHECK_NS/<name> (never FETCH_HEAD) and echo its sha;
+## rc 1 if the fetch fails (missing remote / ref / network) -- the caller records 'skipped'.
+mergecheck_fetch() {
+   local remote="$1" src="$2" dest="${MERGECHECK_NS}/$3"
+   ## --refmap='': WITHOUT it, git ALSO opportunistically applies the remote's configured
+   ## refspec and force-updates refs/remotes/<remote>/* (outside MERGECHECK_NS, unscrubbed) --
+   ## a tracking-ref mutation that would break this phase's "only throwaway refs" contract,
+   ## even on --dry-run. Empty refmap means only the explicit +src:dest below is applied.
+   git -C "${top}" fetch --quiet --no-tags --no-recurse-submodules --no-write-fetch-head \
+      --refmap='' "${remote}" "+${src}:${dest}" 2>/dev/null || return 1
+   git -C "${top}" rev-parse --verify --quiet "${dest}"
+}
+
+## Non-gitlink content of <a> and <b> identical? rc 0 = identical; rc 1 = a real file differs.
+## A differing path counts UNLESS it is a gitlink (mode 160000) on BOTH sides (a pin diff, not
+## file content) -- a file-vs-gitlink swap on either side IS a real difference. '-z': NUL-
+## delimited, so git never C-quotes an unusual path (which would miss the ls-tree lookup).
+mergecheck_content_mirrored() {
+   local a="$1" b="$2" f ma mb
+   while IFS= read -r -d '' f; do
+      [ -n "${f}" ] || continue
+      ma="$( git -C "${top}" ls-tree "${a}" -- "${f}" 2>/dev/null | awk '{print $1}' )"
+      mb="$( git -C "${top}" ls-tree "${b}" -- "${f}" 2>/dev/null | awk '{print $1}' )"
+      if [ "${ma}" = "160000" ] && [ "${mb}" = "160000" ]; then continue; fi
+      return 1
+   done < <( git -C "${top}" diff --no-renames -z --name-only "${a}" "${b}" 2>/dev/null )
+   return 0
+}
+
+## merge-tree <base> <branch>: echo 'conflict' (a real NON-gitlink file conflict) | 'clean' (no
+## conflict, or only submodule/gitlink conflicts) | 'error' (merge-tree aborted -- unrelated
+## histories, a missing object, ...). A non-1 exit must NOT be mistaken for 'clean'. LC_ALL=C
+## (global) keeps the CONFLICT text English for the grep. Always returns 0 (echoes the state).
+mergecheck_merge_state() {
+   local base="$1" branch="$2" out rc=0 conf
+   out="$( git -C "${top}" merge-tree --write-tree "${base}" "${branch}" 2>&1 )" || rc="$?"
+   if [ "${rc}" -eq 0 ]; then
+      printf 'clean'
+      return 0
+   fi
+   if [ "${rc}" -ne 1 ]; then
+      printf 'error'
+      return 0
+   fi
+   conf="$( printf '%s\n' "${out}" | grep -E '^CONFLICT \(' | grep -vE '^CONFLICT \(submodule' || true )"
+   if [ -n "${conf}" ]; then printf 'conflict'; else printf 'clean'; fi
+   return 0
+}
+
+## The fetch + classify + record, factored so phase_mergecheck can scrub the throwaway refs
+## afterwards on every return path.
+mergecheck_run() {
+   local up trx master ai ct combined m_state a_state mirrored
+   if ! up="$( mergecheck_fetch github-kicksecure refs/heads/master up )"; then
+      record "6 mergecheck" "skipped (upstream master unavailable)"
+      return 0
+   fi
+   if ! trx="$( mergecheck_fetch ArrayBolt3 refs/heads/arraybolt3/trixie trx )"; then
+      record "6 mergecheck" "skipped (arraybolt3/trixie unavailable)"
+      return 0
+   fi
+   if ! master="$( mergecheck_fetch "${FORK_REMOTE}" refs/heads/master master )"; then
+      record "6 mergecheck" "skipped (published master unavailable)"
+      return 0
+   fi
+   if ! ai="$( mergecheck_fetch "${FORK_REMOTE}" "refs/heads/${AI_BRANCH}" ai )"; then
+      record "6 mergecheck" "skipped (published ${AI_BRANCH} unavailable)"
+      return 0
+   fi
+   if ! ct="$( git -C "${top}" merge-tree --write-tree "${up}" "${trx}" 2>/dev/null )"; then
+      record "6 mergecheck" "skipped (upstream + arraybolt3/trixie do not merge cleanly)"
+      return 0
+   fi
+   if ! combined="$( GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+         git -C "${top}" commit-tree "${ct}" -p "${up}" -p "${trx}" -m combined 2>/dev/null )"; then
+      record "6 mergecheck" "skipped (could not build combined base)"
+      return 0
+   fi
+   m_state="$( mergecheck_merge_state "${combined}" "${master}" )"
+   case "${m_state}" in
+      clean )
+         record "6 mergecheck" "ok (upstream+trixie can merge master)"
+         return 0
+         ;;
+      error )
+         record "6 mergecheck" "skipped (merge-tree error testing master)"
+         return 0
+         ;;
+   esac
+   ## master conflicts. Benign ONLY if ai (which carries trixie) merges into the combined base
+   ## with no file conflict AND master mirrors ai's non-gitlink content -- i.e. the single cause
+   ## is the by-design missing trixie ancestry, not a real upstream/trixie-vs-ours divergence.
+   a_state="$( mergecheck_merge_state "${combined}" "${ai}" )"
+   mirrored="no"
+   if mergecheck_content_mirrored "${master}" "${ai}"; then mirrored="yes"; fi
+   if [ "${a_state}" = "clean" ] && [ "${mirrored}" = "yes" ]; then
+      ## Honest: master DOES conflict with upstream+trixie now, but the resolution already
+      ## lives on ai (ai -- same content, trixie absorbed -- merges the combined base cleanly),
+      ## so it is not a NEW divergence; the remaster carries ai's resolution when trixie lands.
+      record "6 mergecheck" "note (reconciled on ai: master conflicts with upstream+trixie but ai merges the combined base cleanly + content mirrored; no new reconciliation -- the remaster carries ai's)"
+   else
+      record "6 mergecheck" "WARN (master NOT cleanly mergeable by upstream+trixie; ai-into-combined=${a_state} content-mirrored=${mirrored} -- reconcile)"
+   fi
+   return 0
+}
+
+phase_mergecheck() {
+   log ">>> [6/6] upstream+trixie mergeability of master (read-only)"
+   if [ -n "${MERGECHECK_CMD}" ]; then
+      local out rc=0
+      out="$( "${MERGECHECK_CMD}" "${top}" 2>&1 )" || rc="$?"
+      ## Collapse any newline/tab so a multi-line stub cannot forge extra summary-table rows.
+      out="$( printf '%s' "${out}" | tr '\n\t' '  ' )"
+      record "6 mergecheck" "${out:-stub rc ${rc}}"
+      return 0
+   fi
+   mergecheck_scrub_refs
+   mergecheck_run
+   mergecheck_scrub_refs
+}
+
 phase_remotes
 phase_submodule_sync
 phase_remaster
 phase_parent_sync
 ## fsck is read-only: always verify the store, even after an abort.
 phase_fsck
+## mergecheck is read-only + informational: always run it.
+phase_mergecheck
 
 ## --- Summary ---------------------------------------------------------------------
 mode_label="apply"

@@ -76,6 +76,35 @@ check "other suite: 300 passes through unchanged" \
 check "dmf: a unit-suffixed value is left as-is" \
    "$(effective_timeout developer-meta-files-tests 5m)" '5m'
 
+## require_timeout clamps an implausibly large bare-integer timeout (>=10 digits) at the
+## arg-parse boundary, so it can never reach effective_timeout's [ -ge ] compare -- which
+## ERRORS past INT64_MAX and would otherwise fall through to a timeout-disabling floor.
+## Drive the REAL orchestrator: the validator runs during arg parse, before listing.
+rt_rc() {
+   local value="$1" rc=0
+   "${orch}" --timeout-core "${value}" --list-components >/dev/null 2>&1 || rc="$?"
+   printf '%s' "${rc}"
+}
+## 11-digit value: rejected with exit 2 (old code accepted it -> this is the canary).
+check "require_timeout: an 11-digit timeout is rejected" \
+   "$(rt_rc 99999999999)" '2'
+## The rejection is OURS (the magnitude clamp), not some unrelated parse error.
+rt_err="$("${orch}" --timeout-core 99999999999 --list-components 2>&1 >/dev/null || true)"
+case "${rt_err}" in
+   *'implausibly large'*)
+      rt_err_named=yes
+      ;;
+   *)
+      rt_err_named=no
+      ;;
+esac
+check "require_timeout: rejection names the implausible magnitude" "${rt_err_named}" 'yes'
+## A plausible 9-digit value and a normal budget still pass the validator.
+check "require_timeout: a 9-digit timeout is accepted" \
+   "$(rt_rc 999999999)" '0'
+check "require_timeout: a normal 300 budget is accepted" \
+   "$(rt_rc 300)" '0'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

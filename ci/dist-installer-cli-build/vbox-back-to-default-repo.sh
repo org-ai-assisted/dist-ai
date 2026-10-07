@@ -20,8 +20,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## The reusable build workflow checks the consumer out under 'component/' and
+## sets DIST_INSTALLER_CLI_STANDALONE to its standalone path; the default keeps a
+## direct in-repo run (from the usability-misc checkout root) working.
+standalone="${DIST_INSTALLER_CLI_STANDALONE:-usr/share/usability-misc/dist-installer-cli-standalone}"
+
 run_installer() {
-   sudo -u user -- usr/share/usability-misc/dist-installer-cli-standalone \
+   sudo -u user -- "${standalone}" \
       --non-interactive --log-level=debug --no-boot --dev --ci --virtualbox-only
 }
 

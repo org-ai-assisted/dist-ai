@@ -88,7 +88,35 @@ if [ -z "${gate_raw}" ]; then
    printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
    exit 1
 fi
-base_indent="${gate_raw%%[![:space:]]*}"
+## The function's base (top-level) indentation, derived INDEPENDENTLY of the gate
+## call: the leading whitespace of the first STATEMENT in the body (after the
+## 'name() {' header), skipping blank and COMMENT lines. Deriving it from gate_raw
+## instead let an all-three-in-one-conditional evade -- a gate nested in an if/loop
+## would set the "base" to that deeper indent, so a regen nested alongside it would
+## masquerade as unconditional. A comment may sit at column 0 (or any indent)
+## regardless of the code's indent, so it does not mark the base. Assumes the first
+## statement is a normal top-level line (these functions open with a plain call); a
+## first line that opened a heredoc / line-continuation is out of scope.
+base_indent=""
+header_seen="false"
+while IFS= read -r line; do
+   if [ "${header_seen}" = "false" ]; then
+      ## The 'name() {' header line itself.
+      header_seen="true"
+      continue
+   fi
+   trimmed="${line#"${line%%[![:space:]]*}"}"
+   if [ -z "${trimmed}" ]; then
+      continue
+   fi
+   case "${trimmed}" in
+      '#'*)
+         continue
+         ;;
+   esac
+   base_indent="${line%%[![:space:]]*}"
+   break
+done <<< "${func_text}"
 show_line="$(printf '%s\n' "${func_text}" \
    | grep --line-number --extended-regexp -- '^[[:space:]]*pkg_need_version_bump_show([[:space:]]|$)' \
    | head -1 \
@@ -140,12 +168,49 @@ commit_scoped() {
       fail "${fn}: not found for commit-scope check"
       return
    fi
-   ## A ' -- ' must follow 'git commit ' (glob is left-to-right), i.e. the
-   ## commit carries a pathspec. A bare 'git commit -m ...' has no later ' -- '.
-   if [[ "${body}" == *'git commit '*' -- '* ]]; then
-      pass "${fn}: commit is pathspec-scoped"
+   ## Check the pathspec PER 'git commit' invocation: a ' -- ' separator on the SAME
+   ## command line must be followed by a REAL pathspec token. The prior whole-body
+   ## glob matched a ' -- ' anywhere later in the body. Per line we first drop the
+   ## '-m'/'--message' quoted value (so a ' -- ' inside the commit message is not
+   ## counted) and the trailing '#' comment, then require ' -- ' followed by a token
+   ## that is neither empty nor a shell operator (a bare 'git commit --' or
+   ## '-- || true' commits every staged path, not a scoped set). Simple per-line
+   ## match, not a shell tokenizer: a backslash-continued multi-line 'git commit', an
+   ## unquoted/`--message=` message form, a ' -- ' in an escaped quote, or a crafted
+   ## empty/non-path token after '--' ('-- ""', '-- --') is out of scope (the real
+   ## commits are single-line, '-m "..."'). This guards an ACCIDENTAL dropped pathspec,
+   ## not an author deliberately crafting an unscoped commit that looks scoped.
+   local found=0 scoped=1 line nomsg after lead
+   while IFS= read -r line; do
+      case "${line}" in
+         *'git commit '*)
+            found=1
+            ## Drop the -m/--message quoted value, then the trailing '#' comment.
+            nomsg="$(printf '%s' "${line}" \
+               | sed -E -e 's/(-m|--message)[[:space:]]+"[^"]*"//g' \
+                        -e "s/(-m|--message)[[:space:]]+'[^']*'//g")"
+            nomsg="${nomsg%% #*}"
+            if [[ "${nomsg}" != *' -- '* ]]; then
+               scoped=0
+            else
+               after="${nomsg#* -- }"
+               lead="${after%%[![:space:]]*}"
+               after="${after#"${lead}"}"
+               case "${after}" in
+                  ''|'&'*|'|'*|';'*|'<'*|'>'*|')'*)
+                     scoped=0
+                     ;;
+               esac
+            fi
+            ;;
+      esac
+   done <<< "${body}"
+   if [ "${found}" -eq 0 ]; then
+      fail "${fn}: no 'git commit' found for commit-scope check"
+   elif [ "${scoped}" -eq 1 ]; then
+      pass "${fn}: every 'git commit' is pathspec-scoped"
    else
-      fail "${fn}: commit is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
+      fail "${fn}: a 'git commit' is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
    fi
 }
 

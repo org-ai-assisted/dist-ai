@@ -52,9 +52,26 @@ if [ "${got}" != "${want}" ]; then
    exit 1
 fi
 
-## The real 'sudo -u user2 -- mkdir' must have created the dir in the target home.
+## The installer must also have SUCCEEDED: --getopt exits 0 right after the
+## directory-creation block, so a nonzero code means it errored before/at that
+## point even though the expected prefix was already printed.
+if [ "${rc}" -ne 0 ]; then
+   printf '%s\n' "FAIL: installer exited ${rc} (expected 0 from --getopt)" >&2
+   printf '%s\n' "----- installer output (tail) -----" >&2
+   printf '%s\n' "${getopt_out}" | tail -n 15 >&2
+   exit 1
+fi
+
+## The real 'sudo -u user2 -- mkdir' must have created the dir in the target home
+## AND it must be WRITABLE by user2 -- the whole point of staging under the target
+## home. A root:root 0755 dir would exist yet be unusable by the download, which
+## runs as user2, so check writability, not mere existence.
 if ! sudo -u user2 -- test -d "${want}"; then
    printf '%s\n' "FAIL: the target-home download dir was not created: '${want}'" >&2
+   exit 1
+fi
+if ! sudo -u user2 -- test -w "${want}"; then
+   printf '%s\n' "FAIL: the target-home download dir '${want}' is not writable by user2" >&2
    exit 1
 fi
 

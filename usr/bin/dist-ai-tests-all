@@ -1436,6 +1436,17 @@ require_timeout() {
       printf '%s\n' "dist-ai-tests-all: $1 requires a timeout(1) interval (e.g. 300, 600s, 10m): got '$2'" >&2
       exit 2
    fi
+   ## A bare-integer timeout with an absurd digit count (>=10 digits, ~317 years) is
+   ## never a real per-suite budget and, past INT64_MAX, ERRORS effective_timeout's
+   ## [ "${tmo}" -ge "${floor}" ] compare -> the if goes false -> it returns the floor
+   ## (0 for every non-floored suite) -> 'timeout 0' DISABLES the hang detector and a
+   ## wedged suite reads green. Clamp by digit count HERE so such a value never reaches
+   ## that compare. Suffixed / fractional forms skip the -ge path (returned unchanged)
+   ## and are range-checked by timeout(1) itself.
+   if [[ "$2" =~ ^[0-9]{10,}$ ]]; then
+      printf '%s\n' "dist-ai-tests-all: $1 timeout is implausibly large (>=10 digits); a real per-suite timeout is far smaller: got '$2'" >&2
+      exit 2
+   fi
    ## timeout(1) treats a value of 0 as "no timeout at all". A zero interval (0, 0.0,
    ## 0s, ...) would silently DISABLE the per-suite timeout -- exactly the wedge with
    ## no verdict that --kill-after exists to prevent -- so reject it, not accept it.

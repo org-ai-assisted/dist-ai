@@ -1757,6 +1757,18 @@ expect_rule "R-192" "timeout 5 bash -c 'foo bar'" absent
 ## single-command attached form behind a wrapper stays SPARED.
 expect_rule "R-192" "timeout 5 bash -lc${dq}a${sc} b${dq}"  present
 expect_rule "R-192" "sudo bash -c${dq}foo bar${dq}"         absent
+## A script OPERAND or a '--' behind a wrapper ENDS bash's own options: a later
+## '-c"a;b"' is then the SCRIPT's argument, not bash's inline program, so the
+## wrapper scan must STOP there (it previously skipped the operand and misread the
+## script's '-c' as bash's -- a false positive). A non-'c' option before the real
+## '-c' is still skipped and the later '-c' still caught.
+expect_rule "R-192" "timeout 5 bash foo.sh -c${dq}a${sc} b${dq}"  absent
+expect_rule "R-192" "timeout 5 bash ${dd} -c${dq}a${sc} b${dq}"   absent
+expect_rule "R-192" "timeout 5 bash -x -c${dq}a${sc} b${dq}"      present
+## A value-taking option's ARGUMENT ('pipefail' after -o) is not the script operand:
+## the real '-c' after it is still a bash inline program, still caught.
+expect_rule "R-192" "timeout 5 bash -o pipefail -c${dq}a${sc} b${dq}"  present
+expect_rule "R-192" "timeout 5 bash -O extglob -c${dq}a${sc} b${dq}"   present
 ## The file-wide named waiver and the id override each exempt the script.
 expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: allow-embedded-script' "bash -c 'a && b'")" absent
 expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: R-192' "bash -c 'a && b'")" absent

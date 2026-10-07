@@ -81,7 +81,7 @@ def draw():
     try:
         sys.stdout.flush()
     except (OSError, ValueError):
-        pass
+        pass  # best-effort flush: a closed pty / broken pipe is ignorable here
 
 
 def _on_winch(_signum, _frame):
@@ -103,7 +103,7 @@ def main():
     try:
         signal.signal(signal.SIGWINCH, _on_winch)
     except (OSError, ValueError, AttributeError):
-        pass
+        pass  # best-effort SIGWINCH handler: its absence just means no resize redraw
     draw()
     global _bottom_text
     buf = b''
@@ -128,11 +128,11 @@ def main():
             try:
                 termios.tcsetattr(0, termios.TCSADRAIN, _old_tc)
             except (termios.error, OSError, ValueError):
-                pass
+                pass  # best-effort terminal-mode restore during teardown
 
 
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        pass
+        pass  # clean exit on Ctrl+C

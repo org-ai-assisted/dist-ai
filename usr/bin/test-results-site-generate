@@ -87,7 +87,15 @@ def _view_stop_unix(view):
 
 
 def esc(value):
-    return html.escape("" if value is None else str(value), quote=True)
+    ## Captured terminal output (e.g. systemcheck's colored ERROR lines) carries raw ANSI
+    ## escape sequences + C0 control bytes -- non-ASCII control chars with no place in the
+    ## HTML (they render as garbage and trip the ASCII-only commit guard). Strip them
+    ## centrally here: every rendered field goes through esc(). Keep \t and \n.
+    import re
+    s = "" if value is None else str(value)
+    s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)          # ANSI CSI (colors)
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", s)   # other C0 controls + DEL
+    return html.escape(s, quote=True)
 
 
 ## Names under the output root the generator owns and must never let a run id
