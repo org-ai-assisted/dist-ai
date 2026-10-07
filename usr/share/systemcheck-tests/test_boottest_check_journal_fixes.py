@@ -492,16 +492,31 @@ class TestCheckJournalReadFailure(ScenarioTestBase):
                                   env_setup=env, stubs=stubs)
 
     def test_this_boot_read_failure_warns_and_sets_exit(self) -> None:
-        ## Every read fails -> the this-boot failure must warn and set EXIT_CODE=1,
-        ## and must NOT emit a clean "OK." result for an unreadable journal.
+        ## Every read fails -> the this-boot failure must warn and set EXIT_CODE=1
+        ## (the authoritative not-a-clean-result signals), never a silent exit 0.
         r = self._run('return 1')
         self.assertEqual(r.exit_code, '1',
                          'a journal-read failure must set EXIT_CODE=1')
         self.assertTrue(r.has_severity('warning'),
                         'a journal-read failure must emit a warning')
         self.assertIn('Could not read the systemd journal', r.joined())
-        self.assertNotIn('OK.', r.joined(),
-                         'an unreadable journal must not report a clean result')
+
+    def test_read_failure_still_shows_captured_critical(self) -> None:
+        ## A this-boot SERVICE read error must NOT suppress a critical line that was
+        ## captured anyway (kernel line tee'd before the stream errored, or a
+        ## successfully-read boot). The read-failure warning is ADDITIVE, not an
+        ## early return. Fails on the old 'return 0' that dropped the finding.
+        body = ('case "$1" in '
+                '*service_logs_this_boot*) return 1 ;; '
+                '*check_critical_logs*) printf "host kernel: Bad RAM detected\\n" ;; '
+                '*) printf "" ;; esac')
+        r = self._run(body)
+        self.assertEqual(r.exit_code, '1')
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Could not read the systemd journal', r.joined())
+        self.assertIn('Bad RAM detected', r.joined(),
+                      'a captured critical must still be reported despite a '
+                      'this-boot read failure')
 
     def test_this_boot_ok_last_boot_missing_does_not_warn(self) -> None:
         ## This-boot reads succeed (empty output = clean); only the last-boot
