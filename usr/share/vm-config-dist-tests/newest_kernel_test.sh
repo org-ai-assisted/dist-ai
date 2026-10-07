@@ -152,9 +152,14 @@ check 'ABI +debN+M revision ordering' 'TARGET_VER=[6.12.74+deb13+1-amd64]' \
 check 'backup and non-vmlinuz /boot entries ignored' 'TARGET_VER=[6.1.0-13-amd64]' \
    "K:6.1.0-13-amd64" "B:vmlinuz-9.9.9-9-amd64.dpkg-bak" \
    "B:config-9.9.9-9-amd64" "B:initrd.img-9.9.9-9-amd64"
-## A vmlinuz with no installed module tree (e.g. a foreign-arch image) is ignored.
-check 'vmlinuz without a module tree ignored' 'TARGET_VER=[6.1.0-13-amd64]' \
+## A foreign-arch vmlinuz has no installed module tree -> ignored.
+check 'foreign-arch vmlinuz without a module tree ignored' 'TARGET_VER=[6.1.0-13-amd64]' \
    "K:6.1.0-13-amd64" "B:vmlinuz-9.9.9-9-arm64"
+## A SAME-arch, valid-looking, higher-versioned vmlinuz with no module tree must
+## also be skipped -- this pins the /lib/modules check specifically: a selector that
+## instead filtered on the arch suffix or a backup extension would wrongly pick it.
+check 'same-arch vmlinuz without a module tree ignored' 'TARGET_VER=[6.1.0-13-amd64]' \
+   "K:6.1.0-13-amd64" "B:vmlinuz-9.9.9-9-amd64"
 ## No installed kernel -- empty result (the call site then fails closed).
 check 'no installed kernel -- empty result' 'TARGET_VER=[]'
 
