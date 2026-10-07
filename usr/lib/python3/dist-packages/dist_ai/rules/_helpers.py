@@ -763,6 +763,15 @@ def _is_separate_c_opt(text):
 ## real '-c'. Inline-value forms carry no next word: an o/O not last in a short
 ## cluster ('-opipefail') takes the cluster rest, and '--rcfile=FILE' / an abbreviated
 ## '--rc' are self-contained / not matched (rare; a documented edge).
+##
+## SCOPE: these scanners flag an ACCIDENTAL multi-statement / expansion-spliced shell
+## '-c' (the realistic forms: 'bash -c', 'bash -o pipefail -c', a wrapper, a script
+## operand before '-c'). They are NOT an adversarial gate, so exotic bash-invocation
+## spellings nobody writes by accident are out of scope and accepted: a '+'-flag toggle
+## other than +o/+O ('bash +x -c ...'), a 'c'/'o' mixed cluster ('-oc'/'-co'), a
+## '--rcfile=FILE' / abbreviated '--rc', and a command-position '+o'/'+O' (command_tokens
+## does not model '+'-options; the wrapper scans do). Do NOT grow a bash option parser
+## to chase these -- an author with write access does not need to evade a style rule.
 _BASH_LONG_ARG_OPTS = ("--rcfile", "--init-file")
 
 

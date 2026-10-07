@@ -94,7 +94,9 @@ fi
 ## instead let an all-three-in-one-conditional evade -- a gate nested in an if/loop
 ## would set the "base" to that deeper indent, so a regen nested alongside it would
 ## masquerade as unconditional. A comment may sit at column 0 (or any indent)
-## regardless of the code's indent, so it does not mark the base.
+## regardless of the code's indent, so it does not mark the base. Assumes the first
+## statement is a normal top-level line (these functions open with a plain call); a
+## first line that opened a heredoc / line-continuation is out of scope.
 base_indent=""
 header_seen="false"
 while IFS= read -r line; do
@@ -174,8 +176,10 @@ commit_scoped() {
    ## that is neither empty nor a shell operator (a bare 'git commit --' or
    ## '-- || true' commits every staged path, not a scoped set). Simple per-line
    ## match, not a shell tokenizer: a backslash-continued multi-line 'git commit', an
-   ## unquoted/`--message=` message form, or a ' -- ' in an escaped quote is out of
-   ## scope (the real commits are single-line, '-m "..."').
+   ## unquoted/`--message=` message form, a ' -- ' in an escaped quote, or a crafted
+   ## empty/non-path token after '--' ('-- ""', '-- --') is out of scope (the real
+   ## commits are single-line, '-m "..."'). This guards an ACCIDENTAL dropped pathspec,
+   ## not an author deliberately crafting an unscoped commit that looks scoped.
    local found=0 scoped=1 line nomsg after lead
    while IFS= read -r line; do
       case "${line}" in
