@@ -92,22 +92,25 @@ check "regular stderr file accepted" \
 check "regular stderr tail recorded" \
    "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out1}" && printf yes || printf no)" 'yes'
 
-## 2. A symlinked stderr file is refused; the target never reaches the output.
+## 2. A symlinked stderr file is REFUSED but the run is still published (exit 0): the
+##    target never reaches the output and the tail is empty. The account cannot
+##    suppress its own result by planting a symlink.
 ##    (Canary: the pre-fix emitter followed the symlink and leaked the target.)
 out2="${workdir}/r2.json"
-rc2="$(emit_rc "${out2}" --step-stderr-file "${workdir}/err.symlink")"
-check "symlinked stderr file refused" \
-   "$([ "${rc2}" -ne 0 ] && printf yes || printf no)" 'yes'
+check "symlinked stderr file does not abort the publish" \
+   "$(emit_rc "${out2}" --step-stderr-file "${workdir}/err.symlink")" '0'
 check "symlinked stderr target not leaked" \
    "$(leaked "${out2}")" 'no'
 
-## 3. A symlinked screenshot source is likewise refused, no leak.
+## 3. A symlinked screenshot source is likewise refused, no leak, publish still OK and
+##    no attachment recorded.
 out3="${workdir}/r3.json"
-rc3="$(emit_rc "${out3}" --step-shot cli.png --step-shot-src "${workdir}/shot.symlink")"
-check "symlinked shot-src refused" \
-   "$([ "${rc3}" -ne 0 ] && printf yes || printf no)" 'yes'
+check "symlinked shot-src does not abort the publish" \
+   "$(emit_rc "${out3}" --step-shot cli.png --step-shot-src "${workdir}/shot.symlink")" '0'
 check "symlinked shot target not leaked" \
    "$(leaked "${out3}")" 'no'
+check "symlinked shot records no attachment" \
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out3}" && printf yes || printf no)" 'yes'
 
 ## 4. A genuine regular screenshot is copied into the result dir and attached.
 out4="${workdir}/r4.json"
@@ -122,6 +125,23 @@ check "missing shot-src is a clean no-shot" \
    "$(emit_rc "${out5}" --step-shot cli.png --step-shot-src "${workdir}/absent.png")" '0'
 check "missing shot-src records no attachment" \
    "$(grep --quiet --fixed-strings -- '"attachments": []' "${out5}" && printf yes || printf no)" 'yes'
+
+## 6. An oversized screenshot (beyond the cap) is dropped: no attachment, no partial
+##    copy, the run still published. Cap lowered via the env seam so the fixture is
+##    tiny; an isolated dest dir so the check sees only this run's copy.
+mkdir --parents -- "${workdir}/d6"
+out6="${workdir}/d6/r6.json"
+printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' > "${workdir}/big.png"
+rc6=0
+IMAGE_TEST_MAX_SHOT_BYTES=8 "${emit}" \
+   --run-id r-1 --lane testlane --builder builder --mode cli \
+   --origin built --rc 0 --step-name cli --dest "${out6}" \
+   --step-shot cli.png --step-shot-src "${workdir}/big.png" >/dev/null 2>&1 || rc6=$?
+check "oversized shot does not abort the publish" "${rc6}" '0'
+check "oversized shot records no attachment" \
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out6}" && printf yes || printf no)" 'yes'
+check "oversized shot leaves no partial copy" \
+   "$([ -e "${workdir}/d6/cli.png" ] && printf exists || printf absent)" 'absent'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

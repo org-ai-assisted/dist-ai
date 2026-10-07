@@ -51,6 +51,17 @@ _MEDIA_BY_EXT = {
 }
 
 
+## An account-owned screenshot larger than this is not a real test screenshot; cap
+## the root-side copy so a planted multi-GB file cannot exhaust memory / fill the plane.
+## Overridable for tests (trust the env; a bad value fails loud).
+MAX_SHOT_BYTES = int(os.environ.get("IMAGE_TEST_MAX_SHOT_BYTES") or 25 * 1024 * 1024)
+
+
+class _RefusedInput(Exception):
+    """An account-owned input that root must not read as given (a symlink, or a
+    non-regular file). Distinct from a missing file."""
+
+
 def open_regular_nofollow(path):
     """Open an account-owned path as root WITHOUT following a final-component
     symlink and refusing any non-regular file.
@@ -62,15 +73,17 @@ def open_regular_nofollow(path):
     results plane (a TOCTOU). O_NOFOLLOW fails the open atomically on a symlink
     (no window); O_NONBLOCK avoids blocking on a FIFO; the fstat rejects a
     FIFO/device/directory. Returns an open fd (caller closes). A missing path
-    raises FileNotFoundError (the caller decides); a symlink / non-regular file
-    is refused with SystemExit (never read)."""
+    raises FileNotFoundError; a symlink / non-regular file raises _RefusedInput --
+    both are handled as 'no such input' by the callers (the result is still
+    published, minus that attachment/tail), so the account cannot suppress its own
+    result by planting a symlink, while root still never reads the target."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        raise
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            raise SystemExit(
-                "image-test-result-emit: refusing symlinked input '%s' "
-                "(root must not read a symlink target)" % path)
+            raise _RefusedInput("symlinked input '%s'" % path)
         raise
     try:
         mode = os.fstat(fd).st_mode
@@ -79,21 +92,31 @@ def open_regular_nofollow(path):
         raise
     if not stat.S_ISREG(mode):
         os.close(fd)
-        raise SystemExit(
-            "image-test-result-emit: refusing non-regular input '%s'" % path)
+        raise _RefusedInput("non-regular input '%s'" % path)
     return fd
 
 
-def read_tail(path):
-    """Last TAIL_BYTES of a file as text (utf-8, lossy). Missing file -> ''.
+def _open_account_input(path, kind):
+    """open_regular_nofollow, mapping a missing OR refused input to None (with a
+    stderr note for the refused case) so the caller continues without it."""
+    try:
+        return open_regular_nofollow(path)
+    except FileNotFoundError:
+        return None
+    except _RefusedInput as exc:
+        sys.stderr.write(
+            "image-test-result-emit: refusing %s %s (not read as root); "
+            "%s omitted from the result\n" % (kind, exc, kind))
+        return None
 
-    Opened no-follow (see open_regular_nofollow): a symlinked path is refused,
-    not read as root."""
+
+def read_tail(path):
+    """Last TAIL_BYTES of a file as text (utf-8, lossy). A missing or refused
+    (symlinked / non-regular) path -> '' (see open_regular_nofollow)."""
     if not path:
         return ""
-    try:
-        fd = open_regular_nofollow(path)
-    except FileNotFoundError:
+    fd = _open_account_input(path, "step log")
+    if fd is None:
         return ""
     with os.fdopen(fd, "rb") as handle:
         handle.seek(0, os.SEEK_END)
@@ -104,19 +127,30 @@ def read_tail(path):
 
 
 def copy_shot(src, dst):
-    """Copy an account-owned screenshot to the root-owned result dir using the
-    same no-follow open as read_tail. A missing source is a normal 'no shot this
-    run' (results-publish may hand an absent path) -> skip, return False. A
-    symlink / non-regular source is refused. Returns True when a file was copied."""
-    try:
-        fd = open_regular_nofollow(src)
-    except FileNotFoundError:
+    """Copy an account-owned screenshot to the root-owned result dir using the same
+    no-follow open as read_tail. A missing or refused (symlinked / non-regular)
+    source -> skip, return False (normal 'no shot this run'). The copy is streamed
+    and bounded to MAX_SHOT_BYTES; an oversized source is dropped (no partial file,
+    no attachment). Returns True only when a complete file was copied."""
+    fd = _open_account_input(src, "screenshot")
+    if fd is None:
         return False
-    with os.fdopen(fd, "rb") as handle:
-        data = handle.read()
-    with open(dst, "wb") as out:
-        out.write(data)
-    return True
+    copied = 0
+    with os.fdopen(fd, "rb") as handle, open(dst, "wb") as out:
+        while copied <= MAX_SHOT_BYTES:
+            chunk = handle.read(65536)
+            if not chunk:
+                return True
+            copied += len(chunk)
+            if copied > MAX_SHOT_BYTES:
+                break
+            out.write(chunk)
+    ## Oversized: drop the partial copy and record no attachment.
+    os.unlink(dst)
+    sys.stderr.write(
+        "image-test-result-emit: screenshot '%s' exceeds %d bytes; omitted\n"
+        % (src, MAX_SHOT_BYTES))
+    return False
 
 
 def media_type_for(path, override):
