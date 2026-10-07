@@ -129,29 +129,11 @@ expect() {
 ## '-V' is the one success path here: it prints and exits 0.
 expect "tor-ctrl -V" 0 "tor-ctrl" "${bin_dir}/tor-ctrl" -V
 
-## Usage exits 1 by design.
-for subject in tor-ctrl tor-ctrl-onion tor-ctrl-observer; do
+## Usage exits 1 by design. Every companion sources its libraries through
+## ${HELPER_SCRIPTS_PATH:-}, so running from a checkout starts and prints usage.
+for subject in tor-ctrl tor-ctrl-onion tor-ctrl-observer tor-ctrl-circuit tor-ctrl-stream; do
    expect "${subject} -h" 1 "usage:" "${bin_dir}/${subject}" -h
 done
-
-## tor-ctrl-circuit and tor-ctrl-stream source /usr/libexec/tor-ctrl/pad.bsh by
-## ABSOLUTE path, so running them from a checkout alone cannot work -- the path
-## is not relative to the script and cannot be redirected. Rather than skip them,
-## assert whichever contract actually applies:
-##   library installed -> they start and print usage;
-##   library absent    -> they say WHICH file is missing.
-## The second half is the one that matters: sourcing happens under errexit, so
-## the failure mode to guard against is a bare non-zero with no explanation.
-if [ -r /usr/libexec/tor-ctrl/pad.bsh ]; then
-   for subject in tor-ctrl-circuit tor-ctrl-stream; do
-      expect "${subject} -h (pad.bsh installed)" 1 "usage:" "${bin_dir}/${subject}" -h
-   done
-else
-   for subject in tor-ctrl-circuit tor-ctrl-stream; do
-      expect "${subject} -h (pad.bsh absent) names the missing library" 1 \
-         "/usr/libexec/tor-ctrl/pad.bsh" "${bin_dir}/${subject}" -h
-   done
-fi
 
 ## A missing option argument must be reported, not swallowed. get_arg rejects an
 ## empty or '-'-prefixed argument.
