@@ -302,6 +302,13 @@ def validate(result):
         unix = val.get("unix")
         if unix is not None and (not isinstance(unix, int) or isinstance(unix, bool)):
             raise ModelError("run.%s.unix must be an int: %r" % (key, unix))
+    ## provenance is read as result.get("provenance").get(...) by the generator
+    ## (run_key / run_fields) OUTSIDE a try; a truthy non-dict (which the generator's
+    ## `or {}` / absent-key default does NOT rescue) raises AttributeError there. Must
+    ## be null or an object, like run.start / run.stop above.
+    provenance = result.get("provenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        raise ModelError("provenance must be null or an object: %r" % (provenance,))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")
@@ -311,6 +318,13 @@ def validate(result):
         if step.get("status") not in VALID_STATUS:
             raise ModelError("step status invalid: %r" % (step.get("status"),))
         _require_safe_component("step.name", step.get("name"))
+        ## The tails are rendered via _tail(), which does len(text) OUTSIDE a try; a
+        ## truthy non-str (e.g. an int) raises TypeError there. null/absent is fine
+        ## (_tail coerces it to ''), but a present value must be a string.
+        for tail_key in ("stdout_tail", "stderr_tail"):
+            tail = step.get(tail_key)
+            if tail is not None and not isinstance(tail, str):
+                raise ModelError("step.%s must be a string: %r" % (tail_key, tail))
         attachments = step.get("attachments")
         if not isinstance(attachments, list):
             raise ModelError("step.attachments must be a list")

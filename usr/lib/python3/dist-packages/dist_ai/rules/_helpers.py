@@ -757,9 +757,22 @@ def _c_behind_wrapper(call, words, start, source):
     reaches a real later '-c' (e.g. 'bash -$cflags -c PROG'), rather than reading
     the expansion word's literal 'c' as a bogus cluster. So an expansion-bearing
     ATTACHED value behind a wrapper ('bash -c"$x; b"', itself an invalid glued
-    spelling bash rejects) is a documented under-report, not a misread."""
+    spelling bash rejects) is a documented under-report, not a misread.
+
+    A resolvable script operand ('bash foo.sh ...'), a bare '-' (stdin), or the
+    '--' end-of-options marker STOPS the scan: everything after is the script's
+    own argv, not a bash option, so a later '-c"a;b"' there is the script's, not
+    bash's -- mirroring command_tokens' operand_region (which _c_in_command uses)."""
     for index in range(start + 1, len(words)):
-        classified = _c_opt_program(bash_ast.word_string(words[index]))
+        text = bash_ast.word_string(words[index])
+        ## Expansion-bearing word: skip to reach a real later '-c' (see above).
+        if text is None:
+            continue
+        ## First operand / '-' / '--' ends bash's own options -> stop.
+        if text == "--" or text == "-" or not text.startswith("-"):
+            return
+        classified = _c_opt_program(text)
+        ## A non-'c' option ('-x', '--norc'): keep scanning for a later '-c'.
         if classified is None:
             continue
         form, ci = classified
@@ -850,7 +863,15 @@ def shell_c_program_words(tree):
         if start is None:
             continue
         for j in range(start + 1, len(words)):
-            if _is_separate_c_opt(bash_ast.word_string(words[j])):
+            text = bash_ast.word_string(words[j])
+            ## Expansion-bearing word: skip to reach a real later '-c'.
+            if text is None:
+                continue
+            ## First operand / '-' / '--' ends bash's own options: a later '-c' there
+            ## belongs to the script, not the shell -- stop (mirrors _c_behind_wrapper).
+            if text == "--" or text == "-" or not text.startswith("-"):
+                break
+            if _is_separate_c_opt(text):
                 if j + 1 < len(words):
                     yield (call, words[j + 1])
                 break

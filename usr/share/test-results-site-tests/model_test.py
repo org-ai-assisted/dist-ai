@@ -169,6 +169,27 @@ check_raises("validate refuses a non-dict run.stop",
              lambda: _tamper(lambda r: r["run"].__setitem__("stop", "now")))
 check_raises("validate refuses a non-int run.stop.unix",
              lambda: _tamper(lambda r: r["run"].__setitem__("stop", {"unix": "soon"})))
+## provenance is read as result.get("provenance").get(...) by run_key / run_fields
+## OUTSIDE a try; a truthy non-dict (not rescued by their `or {}` / absent-key
+## default) crashes it, so validate must refuse it (-> NO-DATA).
+check_raises("validate refuses a non-dict provenance",
+             lambda: _tamper(lambda r: r.__setitem__("provenance", "built")))
+## The step tails feed _tail() -> len() OUTSIDE a try; a truthy non-str crashes it.
+check_raises("validate refuses a non-str step.stdout_tail",
+             lambda: _tamper(lambda r: r["steps"][0].__setitem__("stdout_tail", 5)))
+check_raises("validate refuses a non-str step.stderr_tail",
+             lambda: _tamper(lambda r: r["steps"][0].__setitem__("stderr_tail", ["x"])))
+## A null provenance / null tails stay valid (the generator coerces them): do not
+## over-reject.
+_null_ok = model.build_result(
+    run_id="r", lane="l", version="v", builder="b", mode="m",
+    origin=model.ORIGIN_BUILT, rc=0, generated_unix=1, stop_unix=1,
+    steps=[_passed_step()],
+)
+_null_ok["provenance"] = None
+_null_ok["steps"][0]["stdout_tail"] = None
+_null_ok["steps"][0]["stderr_tail"] = None
+check("validate accepts null provenance and null tails", model.validate(_null_ok) is True)
 check_raises(
     "build_result refuses a bad origin",
     lambda: model.build_result(
