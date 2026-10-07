@@ -248,6 +248,19 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('soft lockup', out,
                       'a catastrophe line with a control byte must still be critical')
 
+    def test_nul_byte_does_not_hide_catastrophe(self) -> None:
+        ## A NUL anywhere in the raw (--all) stream makes GNU grep treat it as binary and
+        ## print 'binary file matches' instead of the line; '--text' must force line-wise
+        ## matching so a real catastrophe is still emitted (the NUL itself is neutralized).
+        out = self._run_check_critical([
+            'host kernel: usb 1-1: Product: evil\x00descriptor',
+            'host kernel: BUG: unable to handle kernel NULL pointer dereference',
+        ])
+        self.assertIn('NULL pointer dereference', out,
+                      'a NUL elsewhere in the stream must not hide a real catastrophe')
+        self.assertNotIn('binary file matches', out,
+                         'grep must match as text, not report "binary file matches"')
+
     def test_terminal_escape_neutralized(self) -> None:
         ## '--all' delivers raw bytes, so attacker-echoed kernel text can carry an ANSI/OSC
         ## escape. The line is still shown (catastrophe), but the ESC byte must be
