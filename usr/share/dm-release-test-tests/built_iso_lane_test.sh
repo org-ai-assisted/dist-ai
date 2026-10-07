@@ -92,6 +92,23 @@ else
    ok '--iso rejected for whonix (kicksecure-only)'
 fi
 
+## An EMPTY --iso value must be REJECTED, not silently fall back to downloading a
+## published release: local_iso would stay empty and the [ -n "${local_iso}" ] gate
+## would pick the DOWNLOAD path -- testing the wrong subject and publishing a false
+## PASS. The pre-fix '-ge 2'-only check accepted '--iso ""'.
+if empty_iso_err="$("${subject}" kicksecure lxqt --iso '' --dry-run 2>&1)"; then
+   bad "empty --iso value wrongly accepted: ${empty_iso_err}"
+else
+   case "${empty_iso_err}" in
+      *'empty value for --iso'*)
+         ok 'empty --iso value rejected (no silent download fallback)'
+         ;;
+      *)
+         bad "empty --iso failed for the wrong reason: ${empty_iso_err}"
+         ;;
+   esac
+fi
+
 ## A built result must NOT overwrite an official-release cell: a release-shaped label
 ## (pure dotted token) is rejected.
 if "${subject}" kicksecure lxqt --iso "${iso}" --version 18.2.3.0 --dry-run >/dev/null 2>&1; then

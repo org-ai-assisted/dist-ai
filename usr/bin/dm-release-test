@@ -840,6 +840,10 @@ parse_args() {
             ;;
          --iso)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --iso"
+            ## Reject an EMPTY value: local_iso stays "" and the [ -n "${local_iso}" ]
+            ## gate downstream would silently fall back to DOWNLOADING a published
+            ## release instead of testing the local build -- a false, wrong-subject PASS.
+            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --iso (would silently test a downloaded release, not the local build)"
             local_iso="$2"
             shift 2
             ;;

@@ -70,8 +70,16 @@ on_exit() {
          cp -- "${stuck}" "${shot}" 2>/dev/null || true
       fi
       if [ -n "${check_log}" ] && [ ! -s "${check_log}" ]; then
-         printf '%s FAILED (rc=%s) -- see the published screenshot for the on-screen error.\n' \
-            "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+         ## Only point at a screenshot that was ACTUALLY published (a non-empty
+         ## ${shot} after the copy above); otherwise a bare 'FAILED' note, never a
+         ## false 'see the published screenshot' when none was captured.
+         if [ -n "${shot}" ] && [ -s "${shot}" ]; then
+            printf '%s FAILED (rc=%s) -- see the published screenshot for the on-screen error.\n' \
+               "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+         else
+            printf '%s FAILED (rc=%s).\n' \
+               "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+         fi
       fi
    fi
    if [ "${vm_started}" = 'true' ]; then
