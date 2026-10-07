@@ -11,8 +11,9 @@
 ## Drives the REAL script. It is source-able (was_executed guard, strict-mode
 ## confined to main()), so this test sources it and calls the functions that
 ## carry logic worth testing, each pointed at a tmpdir fixture:
-##   - should_skip <name>            SKIP_SCRIPTS membership (exact token).
-##   - check_debconf_passwords <f>   refuse (return 1) iff a stored answer is
+##   - should_skip                   SKIP_SCRIPTS membership of own_filename
+##                                   (exact token).
+##   - clean_debconf_passwords <f>   refuse (return 1) iff a stored answer is
 ##                                   present; otherwise delete the file.
 ##   - reset_debconf_grub_devices <f> emit 'RESET <name>' for each grub
 ##                                   install_devices question, nothing else.
@@ -168,10 +169,18 @@ check "executed with unresolvable helper-scripts fails loud (non-zero)" "${exec_
 # shellcheck disable=SC1090
 source "${subject}"
 
+## main() sets own_filename (the script's basename) before calling the functions
+## below; should_skip compares SKIP_SCRIPTS tokens against it, and the refuse-path
+## diagnostics interpolate it. Establish it here, as main() would, so the functions
+## run as they are actually driven (otherwise nounset aborts them). Consumed by the
+## sourced subject's functions (dynamic scope), invisible to shellcheck through 'source'.
+# shellcheck disable=SC2034
+own_filename="$(basename -- "${subject}")"
+
 ## grep / cut / sort / sed / basename / safe-rm are hard deps of the subject and
 ## this test; they are called directly and fail loud if absent (no preflight).
 check "should_skip is defined"                 "$(type -t should_skip)"                 "function"
-check "check_debconf_passwords is defined"      "$(type -t check_debconf_passwords)"      "function"
+check "clean_debconf_passwords is defined"      "$(type -t clean_debconf_passwords)"      "function"
 check "report_answered_question_names is defined" "$(type -t report_answered_question_names)" "function"
 check "reset_debconf_grub_devices is defined"   "$(type -t reset_debconf_grub_devices)"   "function"
 check "check_debconf_device_leak is defined"    "$(type -t check_debconf_device_leak)"    "function"
@@ -179,44 +188,45 @@ check "clean_dhcp is defined"                   "$(type -t clean_dhcp)"         
 check "clean_apt is defined"                    "$(type -t clean_apt)"                    "function"
 check "clean_nondeterministic is defined"       "$(type -t clean_nondeterministic)"       "function"
 check "clean_seeds_and_ids is defined"          "$(type -t clean_seeds_and_ids)"          "function"
-check "clean_logs_and_history is defined"       "$(type -t clean_logs_and_history)"       "function"
 check "main is defined"                         "$(type -t main)"                         "function"
 
 ## ============================== should_skip ==============================
-check "should_skip: exact token in list -> 0" \
-   "$(SKIP_SCRIPTS='40_first 80_cleanup 90_last' call_fn should_skip 80_cleanup)" "0"
-check "should_skip: name absent -> 1" \
-   "$(SKIP_SCRIPTS='40_first 90_last' call_fn should_skip 80_cleanup)" "1"
+## should_skip takes no argument: it tests membership of own_filename (set to
+## '80_cleanup' above) in SKIP_SCRIPTS.
+check "should_skip: own filename in list -> 0" \
+   "$(SKIP_SCRIPTS='40_first 80_cleanup 90_last' call_fn should_skip)" "0"
+check "should_skip: own filename absent -> 1" \
+   "$(SKIP_SCRIPTS='40_first 90_last' call_fn should_skip)" "1"
 check "should_skip: empty list -> 1" \
-   "$(SKIP_SCRIPTS='' call_fn should_skip 80_cleanup)" "1"
+   "$(SKIP_SCRIPTS='' call_fn should_skip)" "1"
 check "should_skip: unset list -> 1" \
-   "$(unset SKIP_SCRIPTS; call_fn should_skip 80_cleanup)" "1"
-## A longer name that merely CONTAINS the target is not a match (word, not substring).
+   "$(unset SKIP_SCRIPTS; call_fn should_skip)" "1"
+## A longer name that merely CONTAINS own_filename is not a match (word, not substring).
 check "should_skip: substring is not a match -> 1" \
-   "$(SKIP_SCRIPTS='80_cleanup_extra' call_fn should_skip 80_cleanup)" "1"
+   "$(SKIP_SCRIPTS='80_cleanup_extra' call_fn should_skip)" "1"
 
-## ===================== check_debconf_passwords =====================
+## ===================== clean_debconf_passwords =====================
 ## Stored answer present -> refuse (return 1) and KEEP the file.
 pw="${test_dir}/pw_answer.dat"
 printf '%s\n' 'Name: shim/secureboot_key' 'Value: hunter2' > "${pw}"
-check "passwords: stored answer -> return 1" "$(call_fn check_debconf_passwords "${pw}")" "1"
+check "passwords: stored answer -> return 1" "$(call_fn clean_debconf_passwords "${pw}")" "1"
 check "passwords: refused file NOT deleted"  "$(exists "${pw}")" "yes"
 
 ## No stored answer (question ownership only) -> return 0 and DELETE the file.
 pw="${test_dir}/pw_empty.dat"
 printf '%s\n' 'Name: shim/secureboot_key' 'Owners: shim-signed' 'Flags: seen' > "${pw}"
-check "passwords: no answer -> return 0"      "$(call_fn check_debconf_passwords "${pw}")" "0"
+check "passwords: no answer -> return 0"      "$(call_fn clean_debconf_passwords "${pw}")" "0"
 check "passwords: emptied file deleted"       "$(exists "${pw}")" "no"
 
 ## 'Value:' only counts at line start: a mid-line mention must not trip it.
 pw="${test_dir}/pw_midline.dat"
 printf '%s\n' 'Name: foo/bar' 'Description: the Value: field is empty' > "${pw}"
-check "passwords: mid-line 'Value:' -> return 0" "$(call_fn check_debconf_passwords "${pw}")" "0"
+check "passwords: mid-line 'Value:' -> return 0" "$(call_fn clean_debconf_passwords "${pw}")" "0"
 check "passwords: mid-line file deleted"         "$(exists "${pw}")" "no"
 
 ## Missing file -> return 0, no error.
 check "passwords: missing file -> return 0" \
-   "$(call_fn check_debconf_passwords "${test_dir}/absent.dat")" "0"
+   "$(call_fn clean_debconf_passwords "${test_dir}/absent.dat")" "0"
 
 ## Only the question(s) that actually carry a Value: are reported, not every
 ## question in the file. Records are blank-line separated (822-style): the first
@@ -227,7 +237,7 @@ printf '%s\n' \
    'Name: unanswered/prompt' 'Template: unanswered/prompt' 'Owners: pkg-a' \
    '' \
    'Name: captured/password' 'Template: captured/password' 'Value: s3cr3t' 'Owners: pkg-b' > "${pw}"
-reported="$(check_debconf_passwords "${pw}" 2>&1 1>/dev/null | grep -- '^Name:')" || true
+reported="$(clean_debconf_passwords "${pw}" 2>&1 1>/dev/null | grep -- '^Name:')" || true
 check "passwords: reports only the answered question name" "${reported}" "Name: captured/password"
 check "passwords: multi-record refused file kept" "$(exists "${pw}")" "yes"
 

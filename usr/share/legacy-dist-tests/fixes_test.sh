@@ -10,7 +10,7 @@
 ## Drives the REAL script. It is source-able (was_executed guard, strict-mode
 ## confined to main()), so this test sources it and calls each pure function
 ## with the two testability seams pointed at a tmpdir:
-##   - LEGACY_DIST_FIXES_ROOT prefixes the host state paths (/var, /etc, /home, ...).
+##   - LEGACY_DIST_TEST_ROOT prefixes the host state paths (/var, /etc, /home, ...).
 ##   - HELPER_SCRIPTS_PATH prefixes the sourced libs AND the executed helper-scripts,
 ##     so a composite tree supplies the real libs plus mock get-user-list /
 ##     check-image-builtin-mok / shim-signed-mok-setup.
@@ -205,11 +205,11 @@ reset_user_list() {
 }
 
 ## Start a fresh, empty per-case root and point the subject's seam at it. Sets
-## the global 'r' and exports LEGACY_DIST_FIXES_ROOT. Must run in THIS shell (not
+## the global 'r' and exports LEGACY_DIST_TEST_ROOT. Must run in THIS shell (not
 ## a command-substitution subshell) so the export survives into later calls.
 new_root() {
    r="$(mktemp --directory --tmpdir="${test_dir}" root.XXXXXX)"
-   export LEGACY_DIST_FIXES_ROOT="${r}"
+   export LEGACY_DIST_TEST_ROOT="${r}"
 }
 
 do_once() {

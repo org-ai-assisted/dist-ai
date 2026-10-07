@@ -71,13 +71,67 @@ fi
 ## cannot judge it, and failing instead gates unrelated PRs on a tool that was
 ## never shipped. A missing prerequisite of a subject that IS present stays a
 ## FATAL, so a broken dependency declaration still fails loudly.
+##
+## Payloads are INDEPENDENT processes with isolated workspaces (each mktemps its
+## own; none writes the read-only DMF_REPO/HELPER_SCRIPTS subjects or mutates global
+## git config), so run them in PARALLEL. The suite is subprocess-spawn-bound -- each
+## pre-push test forks the dist-ai-style gate many times (the style-rule payload 300+)
+## -- so serially it runs ~12 min, past dist-ai-tests-all's per-suite timeout; in
+## parallel the wall-clock falls to the slowest single payload. Bounded to
+## DMF_TESTS_JOBS (default nproc). Output is CAPTURED per-payload and replayed in the
+## fixed suite order, so the log is byte-deterministic regardless of finish order.
+jobs_max="${DMF_TESTS_JOBS:-"$(nproc)"}"
+## A non-numeric / empty override must neither error under errexit nor silently
+## serialize past a typo: fall back to a single job only on a genuinely invalid value.
+[ "${jobs_max}" -ge 1 ] 2>/dev/null || jobs_max=1
+
+work="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached only via the EXIT trap
+cleanup() {
+   safe-rm --recursive --force -- "${work}"
+}
+trap cleanup EXIT
+
+## Run ONE payload, capturing combined output + exit status to files keyed by the
+## suite-order index. ALWAYS returns 0 (status is recorded, not propagated) so a
+## failing payload under the parent's errexit cannot abort the pool; the aggregation
+## below reads the recorded status and fails closed on a missing one.
+run_one() {
+   local idx="$1"
+   local path="$2"
+   shift 2
+   local rc=0
+   "${path}" "$@" > "${work}/${idx}.out" 2>&1 || rc="$?"
+   printf '%s' "${rc}" > "${work}/${idx}.rc"
+   return 0
+}
+
+for idx in "${!tests[@]}"; do
+   run_one "${idx}" "${tests[idx]}" "$@" &
+   ## Throttle to jobs_max concurrent payloads. '|| true': wait -n must not abort the
+   ## pool under errexit if a reaped job's status is non-zero (run_one returns 0, so
+   ## this is belt-and-suspenders) or if no job is left to reap.
+   while [ "$(jobs -r -p | wc -l)" -ge "${jobs_max}" ]; do
+      wait -n || true
+   done
+done
+wait || true
+
+## Aggregate in the FIXED suite order (not finish order) for a deterministic log.
 failed=0
 ran=0
 skipped=0
-for test_path in "${tests[@]}"; do
-   test_name="$(basename -- "${test_path}")"
-   rc=0
-   "${test_path}" "$@" || rc="$?"
+for idx in "${!tests[@]}"; do
+   test_name="$(basename -- "${tests[idx]}")"
+   cat -- "${work}/${idx}.out" 2>/dev/null || true
+   if [ ! -f "${work}/${idx}.rc" ]; then
+      ## No status file: the payload process vanished (OOM-killed, etc.) without
+      ## recording an exit. Fail closed -- never silently drop a payload.
+      failed=$(( failed + 1 ))
+      printf 'developer-meta-files-tests: FAIL %s (no exit status recorded)\n' "${test_name}" >&2
+      continue
+   fi
+   rc="$(cat -- "${work}/${idx}.rc")"
    case "${rc}" in
       0)
          ran=$(( ran + 1 ))

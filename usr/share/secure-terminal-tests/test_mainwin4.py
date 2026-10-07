@@ -62,6 +62,22 @@ try:
     with _ctx.redirect_stderr(_io.StringIO()):
         eq(M.main(), 1, 'font: main() exits 1 when the default font is missing')
     M.QFontDatabase = _FontDBPresent
+    # the missing-confusables-data wiring: main() -> `if not _require_confusables_data():
+    # return 1` (before QApplication). Force the sanitize gate to fail.
+    import secure_terminal.sanitize as _san4
+    _saved_rcd4 = _san4.require_confusables_data
+
+    def _rcd_boom4():
+        raise RuntimeError('forced: no confusables data')
+
+    _san4.require_confusables_data = _rcd_boom4
+    sys.argv = ['secure-terminal', '--new-instance', '--title', 'noconf']
+    try:
+        with _ctx.redirect_stderr(_io.StringIO()):
+            eq(M.main(), 1,
+               'confusables: main() exits 1 when the confusables data is unavailable')
+    finally:
+        _san4.require_confusables_data = _saved_rcd4
 finally:
     sys.argv = _o_argv2
     M.ipc.send_request = _o_sr3

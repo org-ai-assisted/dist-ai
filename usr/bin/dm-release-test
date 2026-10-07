@@ -98,6 +98,9 @@ ISO_DIR="${DM_RELEASE_TEST_ISO_DIR:-/var/lib/image-tests/iso}"
 CERT_PATH="${DM_RELEASE_TEST_CERT:-/usr/share/keyrings/derivative.asc}"
 RESULTS_ROOT="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
 RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
+## A lane sets this to a FAILED release check's output file; rt_publish_result
+## publishes it as the step's stderr tail, then resets it. Empty = nothing to add.
+rt_check_log=""
 
 SETUP_RC=2
 
@@ -580,6 +583,7 @@ rt_eph_cleanup() {
 rt_publish_result() {
    local guest_name version account mode rc shot outdir verdict tok
    local -a pub_expect=()
+   local -a pub_stderr=()
    guest_name="$1"
    version="$2"
    account="$3"
@@ -598,6 +602,12 @@ rt_publish_result() {
    for tok in "$@"; do
       pub_expect+=( --expect "${tok}" )
    done
+   ## A lane may hand us the failed check's output (rt_check_log) to publish as the
+   ## step's stderr tail, so the run record explains WHY it failed. Consumed once.
+   if [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
+      pub_stderr=( --step-stderr-file "${rt_check_log}" )
+   fi
+   rt_check_log=""
    ## origin=downloaded: this lane downloads + signature-verifies the OFFICIAL
    ## release image, it does not build it. lane = guest-interface so the site groups
    ## lxqt vs cli (and distinct versions) as separate matrix cells.
@@ -609,7 +619,7 @@ rt_publish_result() {
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}" --version "${version}" \
       --builder dm-release-test --origin downloaded \
-      "${pub_expect[@]}")" \
+      "${pub_expect[@]}" "${pub_stderr[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
       "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
@@ -620,7 +630,7 @@ rt_publish_result() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc shot shot_arg
+   local account version iso pass_file vmname rc shot shot_arg check_log
    local -a checks_arg=()
 
    account="$1"
@@ -645,6 +655,9 @@ rt_lane_kicksecure() {
    printf '%s\n' "release-test-${version}" | sudo -u "${account}" -- tee -- "${pass_file}" >/dev/null
    ## Account-owned screenshot path; dm-calamares-install captures the R4 first boot here.
    shot="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-shot.XXXXXX.png")"
+   ## Account-owned sink for a FAILED release check's own in-guest output, so the run
+   ## record explains WHY it failed (otherwise lost on power-off).
+   check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"
 
    vmname="Kicksecure-release-${version//./-}"
    if [ "${run_checks}" = 'true' ]; then
@@ -654,15 +667,19 @@ rt_lane_kicksecure() {
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      --shot "${shot}" "${checks_arg[@]}" || rc=$?
+      --shot "${shot}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the screenshot only if it was actually captured (R4 reached); a pre-R4
    ## failure leaves the mktemp placeholder empty -- do not publish a 0-byte screenshot.
    shot_arg=""
    [ -s "${shot}" ] && shot_arg="${shot}"
+   ## Thread the failed check's output into the published step's stderr tail (empty
+   ## file = a pass or a pre-check failure -> no tail).
+   rt_check_log=""
+   [ -s "${check_log}" ] && rt_check_log="${check_log}"
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
-   sudo -u "${account}" -- safe-rm --force -- "${shot}" 2>/dev/null || true
+   sudo -u "${account}" -- safe-rm --force -- "${shot}" "${check_log}" 2>/dev/null || true
    return "${rc}"
 }
 

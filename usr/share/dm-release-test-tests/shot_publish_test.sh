@@ -37,15 +37,18 @@ failures=0
 ## rt_publish_result calls the publisher inside a command substitution (a subshell), so
 ## a global set by the stub would not escape -- capture via a FILE instead.
 capture_file="$(mktemp --tmpdir dm-release-test-shotcap.XXXXXX)"
-shot_cap_cleanup() { safe-rm --force -- "${capture_file}"; }
+argv_file="$(mktemp --tmpdir dm-release-test-argvcap.XXXXXX)"
+shot_cap_cleanup() { safe-rm --force -- "${capture_file}" "${argv_file}"; }
 trap shot_cap_cleanup EXIT
 captured_shot='UNSET'
 
-## Stub the publisher: record the 7th positional (shot_src) the lane forwards, and
-## print an outdir so rt_publish_result's summary line does not choke.
+## Stub the publisher: record the 7th positional (shot_src) the lane forwards AND the
+## whole argv (to assert option passthrough), and print an outdir so rt_publish_result's
+## summary line does not choke.
 # shellcheck disable=SC2329  ## invoked indirectly by rt_publish_result
 image_test_results_publish() {
    printf '%s' "$7" > "${capture_file}"
+   printf '%s\n' "$*" > "${argv_file}"
    printf '%s' "/nonexistent/outdir"
 }
 
@@ -76,6 +79,31 @@ assert_shot "rt_publish_result forwards a shot path" '/nonexistent/shot.png'
 rt_publish_result whonix 18.2.3.5 acct whonix-pair 0 '' tor-confirm >/dev/null
 captured_shot="$(cat -- "${capture_file}")"
 assert_shot "rt_publish_result forwards an empty shot" ''
+
+## A non-empty rt_check_log (a FAILED check's output) threads as --step-stderr-file,
+## so the run record explains WHY it failed.
+clog="$(mktemp --tmpdir dm-release-test-clog.XXXXXX)"
+printf 'check 8 (systemcheck) FAILED:\nsystemcheck unknown option: --ci\n' > "${clog}"
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+rt_check_log="${clog}"
+rt_publish_result kicksecure 18.2.3.5 acct calamares-install 5 '' Kicksecure >/dev/null
+if grep --quiet -- "--step-stderr-file ${clog}" "${argv_file}"; then
+   printf 'ok: rt_publish_result threads rt_check_log as --step-stderr-file\n'
+else
+   printf 'FAIL: --step-stderr-file not forwarded: %s\n' "$(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Canary: rt_check_log is consumed ONCE -- the next publish (no failed check) must
+## NOT re-forward the stale path.
+rt_publish_result kicksecure 18.2.3.5 acct calamares-install 0 '' Kicksecure >/dev/null
+if grep --quiet -- '--step-stderr-file' "${argv_file}"; then
+   printf 'FAIL: rt_check_log leaked to the next publish\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'ok: rt_check_log consumed once (reset after use)\n'
+fi
+safe-rm --force -- "${clog}"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s shot-publish assertion(s) failed\n' "${failures}" >&2

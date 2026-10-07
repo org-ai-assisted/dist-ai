@@ -192,33 +192,38 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
     / nouveau, and a kernel ' BUG:'/oops). Tor's userspace 'Bug:' lines -- non-fatal asserts,
     fatal aborts, and log_backtrace() frames -- never reach this stream, so they are never
     force-shown here; that exclusion is enforced by the --dmesg capture, NOT by this grep
-    (so it is not re-tested here). Drives the REAL function against a crafted kernel stream;
-    canaries on the old code, which read the mixed service-log file."""
+    (so it is not re-tested here). check_critical_logs greps the RAW kernel stream before
+    sanitizing, so a '<' in an unrelated line cannot swallow a later catastrophe line; this
+    suite canaries that. Drives the REAL function against a crafted kernel stream."""
 
     KERNEL_BUG = 'host kernel: BUG: unable to handle kernel NULL pointer dereference'
     BAD_RAM = 'host kernel: EDAC MC0: Bad RAM detected'
     CPU_STALL = 'host kernel: rcu: INFO: rcu_sched self-detected stall on CPU'
     ## A benign kernel line (journalctl --dmesg --output short): no catastrophe token.
     BENIGN = 'host kernel: usb 1-1: new high-speed USB device number 2 using xhci_hcd'
+    ## A benign kernel line ending in an unclosed '<word' (e.g. a device string the kernel
+    ## echoes). sanitize-string treats it as an open HTML tag and, parsing the whole blob,
+    ## deletes everything to the next '>' (or EOF) -- so sanitize-before-grep would swallow a
+    ## following catastrophe line. Verified to trigger the eating against sanitize-string.
+    TAG_NOISE = 'host kernel: usb 1-1: Manufacturer: Acme <widget corp'
 
     def _run_check_critical(self, kernel_lines: list) -> str:
-        """Run the REAL check_critical_logs against a crafted KERNEL-transport stream (the
-        journalctl_kernel.txt_br file check_service_logs writes). Mirrors log-checker's own
-        shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
-        exits non-zero on no-match)."""
+        """Run the REAL check_critical_logs against a crafted RAW KERNEL-transport stream
+        (the journalctl_kernel.txt file check_service_logs writes). Mirrors log-checker's
+        own shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
+        exits non-zero on no-match). stcatn/safe-rm/br_add_to_file are irrelevant to the
+        classification under test, so they are stubbed; sanitize-string runs for real."""
         func = extract_bash_function(
             os.path.join(self.dir, 'log-checker'), 'check_critical_logs')
         with tempfile.TemporaryDirectory() as td:
-            br = os.path.join(td, 'journalctl_kernel.txt_br')
-            with open(br, 'w', encoding='utf-8') as handle:
+            raw = os.path.join(td, 'journalctl_kernel.txt')
+            with open(raw, 'w', encoding='utf-8') as handle:
                 handle.write('\n'.join(kernel_lines) + '\n')
             script = (
                 'set -o errexit\n'
                 'set -o nounset\n'
                 f'TMPDIR={shlex.quote(td)}\n'
-                ## stcatn (ANSI strip) and safe-rm are irrelevant to the ASCII
-                ## classification under test; stub them so the test needs neither.
-                'stcatn() { cat; }\n'
+                'stcatn() { cat -- "$@"; }\n'
                 'safe-rm() { :; }\n'
                 f'{func}\n'
                 'check_critical_logs\n'
@@ -233,6 +238,77 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         out = self._run_check_critical([self.KERNEL_BUG])
         self.assertIn('NULL pointer dereference', out,
                       'a real kernel BUG: must be critical')
+
+    def test_control_byte_line_still_matched(self) -> None:
+        ## The kernel reader uses journalctl --all, so a catastrophe printk carrying a
+        ## control byte (e.g. a soft-lockup line echoing a prctl-set comm) arrives RAW, not
+        ## blanked to '[blob data]'. check_critical_logs must still match it on the token.
+        out = self._run_check_critical(
+            ['host kernel: BUG: soft lockup - CPU#0 stuck for 22s! [\x01bad:42]'])
+        self.assertIn('soft lockup', out,
+                      'a catastrophe line with a control byte must still be critical')
+
+    def test_nul_byte_does_not_hide_catastrophe(self) -> None:
+        ## A NUL anywhere in the raw (--all) stream makes GNU grep treat it as binary and
+        ## print 'binary file matches' instead of the line; '--text' must force line-wise
+        ## matching so a real catastrophe is still emitted (the NUL itself is neutralized).
+        out = self._run_check_critical([
+            'host kernel: usb 1-1: Product: evil\x00descriptor',
+            'host kernel: BUG: unable to handle kernel NULL pointer dereference',
+        ])
+        ## Without --text, grep emits no matching line to stdout (its 'Binary file matches'
+        ## diagnostic goes to stderr), so the catastrophe would be absent here.
+        self.assertIn('NULL pointer dereference', out,
+                      'a NUL elsewhere in the stream must not hide a real catastrophe')
+
+    def test_terminal_escape_neutralized(self) -> None:
+        ## '--all' delivers raw bytes, so attacker-echoed kernel text can carry an ANSI/OSC
+        ## escape. The line is still shown (catastrophe), but the ESC byte must be
+        ## neutralized to '_' so it cannot inject a terminal escape sequence downstream.
+        out = self._run_check_critical(
+            ['host kernel: BUG: evil \x1b[2Jclear \x1b]0;hijack\x07 lockup'])
+        self.assertIn('lockup', out, 'the catastrophe line must still be shown')
+        self.assertNotIn('\x1b', out, 'ESC bytes must be neutralized, not passed through')
+        self.assertNotIn('\x07', out, 'BEL bytes must be neutralized')
+
+    def test_bug_on_macro_critical(self) -> None:
+        ## The BUG()/BUG_ON() macro logs 'kernel BUG at <file>:<line>!' -- ' BUG ' with no
+        ## colon. The word-boundary token must catch it (a plain ' BUG:' substring would
+        ## miss this genuine kernel catastrophe).
+        out = self._run_check_critical(
+            ['host kernel: kernel BUG at mm/slub.c:4567!'])
+        self.assertIn('kernel BUG at', out,
+                      'a BUG_ON() (kernel BUG at ...) must be critical')
+
+    def test_apparmor_bug_path_not_critical(self) -> None:
+        ## A kernel-echoed, attacker-controlled path with a BARE 'BUG' token (an AppArmor
+        ## denial for '/tmp/BUG') must NOT be force-shown: the token requires 'BUG:' or
+        ## 'BUG at ', so a bare 'BUG' in a path does not trip a false critical. (A crafted
+        ## path that embeds the literal ' BUG:' DOES still match -- an accepted residual
+        ## false-positive; it can never HIDE a real catastrophe, which is the safe direction.)
+        out = self._run_check_critical(
+            ['host kernel: audit: apparmor="DENIED" operation="open" '
+             'name="/tmp/BUG" pid=123 comm="probe"'])
+        self.assertEqual(out.strip(), '',
+                         'a bare BUG token in a kernel-echoed path must NOT be critical')
+
+    def test_many_matches_all_shown(self) -> None:
+        ## Many distinct catastrophe lines must ALL be shown -- there is no cap, precisely so
+        ## an attacker who floods earlier-sorting forged lines cannot push a real catastrophe
+        ## past a cut. HTML neutralization is a single-pass translation (not a per-line fork),
+        ## so a large match set neither stalls nor truncates. (A pathological multi-MiB flood
+        ## can still hit the GUI message dispatcher's own volume limit downstream -- a
+        ## separate, pre-existing component, not this function's concern.)
+        lines = ['host kernel: BUG: synthetic oops number %d' % i for i in range(250)]
+        out = self._run_check_critical(lines)
+        self.assertEqual(out.count('synthetic oops number'), 250,
+                         'every matched catastrophe line must be shown, none dropped')
+        ## Distinct-line guard: the count alone would pass if one line were duplicated 250x,
+        ## so check that specific first/middle/last lines each survive intact (each number is
+        ## a unique contiguous substring; '<br />' is appended after it).
+        for probe in (0, 125, 249):
+            self.assertIn('synthetic oops number %d<br />' % probe, out,
+                          'each distinct catastrophe line must survive, not be duplicated')
 
     def test_bad_ram_critical(self) -> None:
         out = self._run_check_critical([self.BAD_RAM])
@@ -257,6 +333,27 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('Bad RAM detected', out)
         self.assertNotIn('new high-speed USB device', out,
                          'a benign kernel line must not ride along')
+
+    def test_tag_noise_line_does_not_hide_bug(self) -> None:
+        ## A benign kernel line with an unclosed '<' precedes a real kernel BUG. Because
+        ## check_critical_logs greps the RAW stream BEFORE sanitizing, sanitize-string's
+        ## whole-blob HTML parse cannot swallow the BUG line. (RED if sanitize ran first.)
+        out = self._run_check_critical([self.TAG_NOISE, self.KERNEL_BUG])
+        self.assertIn('NULL pointer dereference', out,
+                      'a catastrophe line must survive a preceding unclosed-tag line')
+
+    def test_catastrophe_with_tag_does_not_hide_next(self) -> None:
+        ## Two catastrophe lines where the FIRST carries an unclosed '<' (a kernel-echoed
+        ## process comm can inject one). HTML neutralization translates '<>&' to '_' in one
+        ## pass, so the '<' cannot eat the SECOND catastrophe. (RED if the matches were run
+        ## through sanitize-string as one HTML blob.)
+        out = self._run_check_critical([
+            'host kernel: BUG: soft lockup note <unclosed',
+            'host kernel: EDAC MC0: Bad RAM detected',
+        ])
+        self.assertIn('Bad RAM detected', out,
+                      'a later catastrophe must survive an earlier matched line with "<"')
+        self.assertIn('BUG:', out, 'the first catastrophe is still shown')
 
     def test_debug_token_not_matched(self) -> None:
         ## The leading space in ' BUG:' avoids matching 'debug:'; a kernel line mentioning

@@ -1246,8 +1246,43 @@ skip_is_fatal() {
    return 0
 }
 
+## The per-suite timeout to actually enforce: the category budget, raised to a FLOOR
+## for the few suites that legitimately need more than it. developer-meta-files forks
+## the dist-ai-style gate hundreds of times; its runner parallelizes the payloads, but
+## a smaller / contended sandbox can still exceed the 300s core budget. A FLOOR for the
+## NAMED suite -- never a global bump -- keeps the tight hang-detector for every other
+## suite while still capping a truly wedged payload. max() semantics: an operator who
+## RAISED the category timeout keeps the larger value; one who set it BELOW the floor
+## still gets the floor, since below it this suite would spuriously time out. A value
+## with a unit suffix (e.g. '5m') is operator-explicit and returned unchanged.
+effective_timeout() {
+   local suite="$1" tmo="$2" floor=0
+   case "${suite}" in
+      developer-meta-files-tests)
+         ## ~85 payloads, each forking the style gate many times. Parallelized, it is
+         ## typically ~150-250s on a dedicated sandbox, but a smaller / loaded one runs
+         ## longer (measured ~676s on a host saturated by many sessions). 900s clears
+         ## that with margin yet still catches a genuinely wedged payload.
+         floor=900
+         ;;
+   esac
+   case "${tmo}" in
+      *[!0-9]*)
+         printf '%s' "${tmo}"
+         ;;
+      *)
+         if [ "${tmo}" -ge "${floor}" ]; then
+            printf '%s' "${tmo}"
+         else
+            printf '%s' "${floor}"
+         fi
+         ;;
+   esac
+}
+
 run_suite() {
    local suite="$1" category="$2" tmo="$3"
+   tmo="$( effective_timeout "${suite}" "${tmo}" )"
    local entry="${mydir}/${suite}"
    if [ ! -x "${entry}" ]; then
       ## MISSING is never tolerated -- in EVERY invocation, not just under a
