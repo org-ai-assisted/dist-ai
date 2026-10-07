@@ -256,10 +256,10 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
             'host kernel: usb 1-1: Product: evil\x00descriptor',
             'host kernel: BUG: unable to handle kernel NULL pointer dereference',
         ])
+        ## Without --text, grep emits no matching line to stdout (its 'Binary file matches'
+        ## diagnostic goes to stderr), so the catastrophe would be absent here.
         self.assertIn('NULL pointer dereference', out,
                       'a NUL elsewhere in the stream must not hide a real catastrophe')
-        self.assertNotIn('binary file matches', out,
-                         'grep must match as text, not report "binary file matches"')
 
     def test_terminal_escape_neutralized(self) -> None:
         ## '--all' delivers raw bytes, so attacker-echoed kernel text can carry an ANSI/OSC
