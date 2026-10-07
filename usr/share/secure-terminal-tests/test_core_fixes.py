@@ -193,7 +193,7 @@ _t5.close()
 _t8 = SecureTerminal(command='/bin/cat', tui=True)
 APP.processEvents()
 _t8.apply_osc('osc_clipboard_read', True)
-_seen = {}
+_seen: dict = {}
 _t8.clipboard_read_requested.connect(
     lambda: _seen.__setitem__('enabled_during', _t8._notifier.isEnabled()))
 _enabled_before = _t8._notifier.isEnabled()
@@ -273,7 +273,7 @@ _c5.close()
 # --- offload #7: sound_file_allowed returns None (system-beep fallback) on a NUL-containing path
 # instead of crashing -- os.path.realpath's lstat raises ValueError, not OSError, on an embedded
 # NUL. Distinct from the settled F5 validate-then-use symlink race; this is a plain crash guard. -
-ok(sound_file_allowed('/tmp/a\x00b') is None,
+ok(sound_file_allowed('/tmp/a\x00b') is None,  # nosec B108 -- NUL-path validation input, not a temp file
    '#7: a NUL-containing bell_sound path returns None (system beep), never raises ValueError')
 ok(sound_file_allowed('') is None, "#7: an empty path is still disallowed (no change)")
 
