@@ -694,7 +694,7 @@ rt_publish_result() {
 
 rt_lane_kicksecure() {
    local account version iso pass_file vmname rc shot_dir shot_arg check_log
-   local -a checks_arg=() shot_pngs=()
+   local -a checks_arg=()
 
    account="$1"
    version="$2"
@@ -769,11 +769,12 @@ rt_lane_kicksecure() {
       --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
-   ## Publish the milestone sequence only if at least one shot landed; a run that never
-   ## powered on leaves the dir empty -- publish with no shot rather than an empty dir.
-   shot_arg=""
-   shot_pngs=( "${shot_dir}"/*.png )
-   [ -e "${shot_pngs[0]}" ] && shot_arg="${shot_dir}"
+   ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
+   ## *.png milestones (the install "full story") and skips anything else. An empty /
+   ## never-powered-on dir yields no attachments -- the verdict still publishes. Always
+   ## forward the dir; do NOT pre-filter here with a glob ([ -e ] follows a dangling
+   ## symlink that sorts first and would drop the whole real sequence).
+   shot_arg="${shot_dir}"
    ## Thread the failed check's output into the published step's stderr tail (empty
    ## file = a pass or a pre-check failure -> no tail).
    rt_check_log=""

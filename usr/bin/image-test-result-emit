@@ -226,26 +226,50 @@ def main(argv):
         )
         return 2
     dest_dir = os.path.dirname(os.path.abspath(args.dest))
-    seen = set()
+    ## A bad individual shot (a crafted/odd filename in an account-owned shot dir, a
+    ## duplicate name, an over-long stored basename) SKIPS that one attachment and notes
+    ## why -- it must NEVER abort the emit, or an untrusted test account could SUPPRESS
+    ## its own result.json by dropping a stray *.png. The verdict is the critical
+    ## artifact; a shot is best-effort, exactly like a missing/symlinked source.
+    seen_names = set()
+    seen_dests = set()
     for i, step_shot in enumerate(shots):
         shot = os.path.basename(step_shot)
         name = names[i] if i < len(names) and names[i] else "screenshot"
         mtype = mtypes[i] if i < len(mtypes) else None
         ## Distinct attachment names so the site can disambiguate + label each milestone;
-        ## distinct stored basenames so multiple shots in one step never collide.
-        if name in seen:
-            sys.stderr.write("image-test-result-emit: duplicate --step-shot-name '%s'\n" % name)
-            return 2
-        seen.add(name)
+        ## distinct stored basenames so a second shot never truncates a prior one.
+        if name in seen_names:
+            sys.stderr.write(
+                "image-test-result-emit: skipping duplicate --step-shot-name '%s'\n" % name)
+            continue
+        if shot in seen_dests:
+            sys.stderr.write(
+                "image-test-result-emit: skipping duplicate stored shot '%s'\n" % shot)
+            continue
+        ## Build the attachment FIRST (validates name/mediaType/path); an invalid one
+        ## (non-ASCII, control char, '.'/'..', empty) is skipped, never fatal.
+        try:
+            attachment = model.make_attachment(name, media_type_for(shot, mtype), shot)
+        except model.ModelError as exc:
+            sys.stderr.write("image-test-result-emit: skipping shot '%s': %s\n" % (shot, exc))
+            continue
+        ## Reserve name + dest only once the attachment itself is valid.
+        seen_names.add(name)
+        seen_dests.add(shot)
         shot_present = True
         if srcs:
-            shot_present = copy_shot(srcs[i], os.path.join(dest_dir, shot))
+            ## copy_shot is best-effort; an OSError (e.g. a >255-byte stored basename)
+            ## skips this shot rather than aborting the whole result.
+            try:
+                shot_present = copy_shot(srcs[i], os.path.join(dest_dir, shot))
+            except OSError as exc:
+                sys.stderr.write("image-test-result-emit: skipping shot '%s': %s\n" % (shot, exc))
+                continue
         ## A run that never powered on is published without a shot: an absent
         ## source records no attachment, exactly as before the copy moved here.
         if shot_present:
-            attachments.append(
-                model.make_attachment(name, media_type_for(shot, mtype), shot)
-            )
+            attachments.append(attachment)
 
     step = model.make_step(
         name=args.step_name,

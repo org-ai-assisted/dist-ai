@@ -168,12 +168,25 @@ image_test_results_publish() {
    ## whole sequence. Stored step-named so shots never collide.
    if [ -n "${shot_src}" ] && [ -d "${shot_src}" ] && [ ! -L "${shot_src}" ]; then
       local shot_f shot_base shot_milestone
+      ## The shot dir is written by the UNPRIVILEGED test account, so a filename here is
+      ## account-controlled. Accept only a NON-EMPTY regular *.png whose derived milestone
+      ## is a safe label (no leading '-' that argparse would eat, no unsafe char, not
+      ## '.'/'..'); SKIP anything else. A stray/crafted file must never make the emit
+      ## fail -- that would let the account suppress its own result.json. The emitter
+      ## defends the same invariant per-shot; this is the first, cheap filter.
       ## -type f excludes symlinks; the emitter re-checks each O_NOFOLLOW.
       while IFS= read -r -d '' shot_f; do
+         [ -s "${shot_f}" ] || continue
          shot_base="${shot_f##*/}"
          shot_milestone="${shot_base%.png}"
          shot_milestone="${shot_milestone#*-}"   ## drop the NN- ordering prefix
-         [ -n "${shot_milestone}" ] || shot_milestone="shot"
+         case "${shot_milestone}" in
+            '' | '.' | '..' | -* | *[!A-Za-z0-9._-]*)
+               printf 'image_test_results_publish: skipping shot with unusable name: %s\n' \
+                  "${shot_base}" >&2
+               continue
+               ;;
+         esac
          shot_emit+=( --step-shot "${step_name}-${shot_base}" \
             --step-shot-src "${shot_f}" --step-shot-name "${shot_milestone}" )
       done < <(find "${shot_src}" -maxdepth 1 -type f -name '*.png' -print0 | sort --zero-terminated)

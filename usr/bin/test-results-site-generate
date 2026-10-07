@@ -167,7 +167,7 @@ def load_mask_config(path):
 def discover_runs(results_root):
     """Yield (run_dir, result_or_None) for every <name>/<ts>/ under results_root,
     sorted deterministically. A missing/invalid result.json yields None (NO-DATA)."""
-    runs = []
+    runs: list = []
     if not os.path.isdir(results_root):
         return runs
     for name in sorted(os.listdir(results_root)):

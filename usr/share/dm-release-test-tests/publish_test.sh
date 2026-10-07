@@ -131,6 +131,25 @@ p_pos="$(grep --byte-offset --only-matching '"name": "partitions"' -- "${story_j
 f_pos="$(grep --byte-offset --only-matching '"name": "failure"' -- "${story_json}" | head -1 | cut -d: -f1)"
 check "full story: milestones in capture order" "$([ "${w_pos}" -lt "${p_pos}" ] && [ "${p_pos}" -lt "${f_pos}" ] && printf true || printf false)"
 
+## Full story is ROBUST to a stray/odd file in the account-owned dir: a 0-byte shot and
+## an argparse-hostile name (milestone '-x') are SKIPPED, the good milestones still publish,
+## and result.json IS written -- the account cannot suppress its own result with junk.
+hardstory="${work}/hardstory"
+mkdir --parents -- "${hardstory}"
+printf 'WELCOME\n' > "${hardstory}/01-welcome.png"
+touch -- "${hardstory}/02-empty.png"        ## 0-byte -> skipped
+printf 'X\n' > "${hardstory}/03--x.png"     ## milestone '-x' (leading dash) -> skipped
+hard_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-hardstory-18-2-3-5" "eph-run-kicksecure-hardstory" "calamares-install" \
+   0 "${hardstory}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin built --expect Kicksecure)"
+hard_json="${hard_out}/result.json"
+check "junk-in-dir: result.json still written" "$([ -f "${hard_json}" ] && printf true || printf false)"
+check "junk-in-dir: good milestone kept" "$(grep --quiet '"name": "welcome"' -- "${hard_json}" && printf true || printf false)"
+check "junk-in-dir: 0-byte shot skipped" "$([ ! -f "${hard_out}/calamares-install-02-empty.png" ] && printf true || printf false)"
+check "junk-in-dir: latest advanced to this run" "$([ -L "${results_root}/kicksecure-hardstory-18-2-3-5/latest" ] && printf true || printf false)"
+
 ## rc 2 = SETUP/inconclusive: run verdict INCONCLUSIVE AND step status 'broken'
 ## (an infra/setup error, distinct from a FAIL). Canary: the old binary pass/fail
 ## schema published rc 2 as FAIL and had no step status at all. No shot here (the
