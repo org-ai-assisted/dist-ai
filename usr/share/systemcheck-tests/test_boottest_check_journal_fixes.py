@@ -474,5 +474,51 @@ class TestAnondateGetJournalIgnore(SystemcheckTestBase):
                 'an unrelated anondate error must still be reported')
 
 
+class TestCheckJournalReadFailure(ScenarioTestBase):
+    """check_journal must surface a journal-READ failure, never read it as clean.
+
+    The four 'leaprun log-checker-*' reads were each '|| true', so a failed read
+    (privleap denial, broken journalctl, a corrupt journal) produced an EMPTY
+    result that the critical/verbose printers then reported as a clean journal -- a
+    false green. This-boot reads (the running boot always exists) now fail LOUD;
+    last-boot reads stay lenient because 'journalctl --boot=-1' legitimately fails
+    with "No journal boot entry found" when there is no previous boot.
+    """
+
+    def _run(self, leaprun_body: str):
+        stubs = "leaprun() {\n%s\n}\n" % leaprun_body
+        env = 'verbose=1\nsystemcheck_virtualizer_detected=none\n'
+        return run_check_scenario(self.check(SERVICES), 'check_journal',
+                                  env_setup=env, stubs=stubs)
+
+    def test_this_boot_read_failure_warns_and_sets_exit(self) -> None:
+        ## Every read fails -> the this-boot failure must warn and set EXIT_CODE=1,
+        ## and must NOT emit a clean "OK." result for an unreadable journal.
+        r = self._run('return 1')
+        self.assertEqual(r.exit_code, '1',
+                         'a journal-read failure must set EXIT_CODE=1')
+        self.assertTrue(r.has_severity('warning'),
+                        'a journal-read failure must emit a warning')
+        self.assertIn('Could not read the systemd journal', r.joined())
+        self.assertNotIn('OK.', r.joined(),
+                         'an unreadable journal must not report a clean result')
+
+    def test_this_boot_ok_last_boot_missing_does_not_warn(self) -> None:
+        ## This-boot reads succeed (empty output = clean); only the last-boot
+        ## service read fails (no previous boot). Benign -> no warning, exit 0.
+        body = 'case "$1" in *last_boot*) return 1 ;; *) printf "" ;; esac'
+        r = self._run(body)
+        self.assertEqual(r.exit_code, '0',
+                         'a benign no-previous-boot must not fail the check')
+        self.assertNotIn('Could not read the systemd journal', r.joined(),
+                         'no-previous-boot is benign and must not warn')
+
+    def test_clean_reads_report_no_warning(self) -> None:
+        ## All reads succeed with empty output = a genuinely clean journal.
+        r = self._run('printf ""')
+        self.assertEqual(r.exit_code, '0')
+        self.assertNotIn('Could not read the systemd journal', r.joined())
+
+
 if __name__ == '__main__':
     unittest.main()
