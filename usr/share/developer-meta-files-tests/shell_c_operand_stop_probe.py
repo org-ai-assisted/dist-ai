@@ -67,6 +67,20 @@ _check("wrapper: non-'c' option skipped, real '-c' caught",
 ## The genuine wrapped '-c' (no operand before it) is unchanged.
 _check("wrapper: genuine attached '-c' still read",
        _programs('timeout 5 bash -c"a;b"'), ["a;b"])
+## A value-taking option's ARGUMENT ('pipefail' after -o) is NOT the script operand:
+## the real '-c' after it must still be caught (regression: the operand-stop used to
+## read the argument as an operand and miss the '-c').
+_check("wrapper: -o pipefail argument is not an operand",
+       _programs('timeout 5 bash -o pipefail -c "a; b"'), ["a; b"])
+_check("wrapper: -O extglob argument is not an operand",
+       _programs('timeout 5 bash -O extglob -c "a; b"'), ["a; b"])
+_check("wrapper: +o argument is not an operand",
+       _programs('timeout 5 bash +o history -c "a;b"'), ["a;b"])
+_check("wrapper: --rcfile argument is not an operand",
+       _programs('timeout 5 bash --rcfile /dev/null -c "a; b"'), ["a; b"])
+## Command position too (the shell is the command, not a wrapper operand).
+_check("command: -o pipefail argument is not an operand",
+       _programs('bash -o pipefail -c "a; b"'), ["a; b"])
 
 ## shell_c_program_words sibling (separate '-c PROG'): same operand/'--' stop.
 _check("sibling: operand before separate '-c' stops the scan",
@@ -77,6 +91,10 @@ _check("sibling: non-'c' option skipped, real separate '-c' caught",
        _separate_values('bash -x -c prog'), ["prog"])
 _check("sibling: genuine separate '-c' still read",
        _separate_values('bash -c prog'), ["prog"])
+_check("sibling: -o pipefail argument is not an operand",
+       _separate_values('bash -o pipefail -c prog'), ["prog"])
+_check("sibling: +o argument is not an operand",
+       _separate_values('bash +o history -c prog'), ["prog"])
 
 if _failures:
     print("")
