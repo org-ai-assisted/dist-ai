@@ -70,7 +70,7 @@ on_exit() {
          cp -- "${stuck}" "${shot}" 2>/dev/null || true
       fi
       if [ -n "${check_log}" ] && [ ! -s "${check_log}" ]; then
-         printf '%s FAILED (rc=%s) during install/boot, before the check battery -- see the published screenshot for the on-screen (Calamares) error.\n' \
+         printf '%s FAILED (rc=%s) -- see the published screenshot for the on-screen error.\n' \
             "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
       fi
    fi
@@ -500,6 +500,9 @@ main() {
       exec dm-vm-lock acquire --class work --ttl "${DM_CALAMARES_LOCK_TTL:-3600}" -- "$0" "$@"
    fi
    trap on_exit EXIT
+   ## Clear any stale stuck screenshot left by a PRIOR run of this account, so on_exit can
+   ## only ever publish THIS run's failure screen -- never a previous run's error.
+   safe-rm --force -- "${HOME}/${me}-stuck.png" 2>/dev/null || true
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
