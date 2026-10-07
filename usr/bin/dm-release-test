@@ -122,6 +122,9 @@ rt_origin="downloaded"
 ## Trap state: the ephemeral account to remove on exit (set once created), so an
 ## abort between creation and the normal cleanup never leaks it. Empty => nothing.
 eph_account=""
+## Per-run built-ISO staging dir (set by the kicksecure lane), removed by rt_eph_cleanup
+## on ANY exit path so a staged multi-GB copy never leaks on an error return or a signal.
+rt_staged_dir=""
 
 ## fd holding the shared-account lock (rt_lock_account); held until this process exits.
 rt_lock_fd=""
@@ -607,6 +610,12 @@ rt_provision_leak() {
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
 ## cleanup path, so an abort anywhere after creation still reclaims it.
 rt_eph_cleanup() {
+   ## Reap the per-run built-ISO staging dir first, on ANY exit (error return, signal) and
+   ## independent of the eph account -- it holds only files this run created.
+   if [ -n "${rt_staged_dir}" ]; then
+      safe-rm --recursive --force -- "${rt_staged_dir}" 2>/dev/null || true
+      rt_staged_dir=""
+   fi
    [ -n "${eph_account}" ] || return 0
    "${IMAGE_TEST_GC}" "${eph_account}" || true
    ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers after the VM stops and
@@ -684,8 +693,7 @@ rt_publish_result() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc shot shot_arg check_log rt_staged_iso
-   rt_staged_iso=""
+   local account version iso pass_file vmname rc shot shot_arg check_log
    local -a checks_arg=()
 
    account="$1"
@@ -707,26 +715,22 @@ rt_lane_kicksecure() {
          log error "cannot create ISO staging dir '${ISO_DIR}'"
          return "${SETUP_RC}"
       fi
-      if ! chmod a+rx -- "${ISO_DIR}"; then
-         log error "cannot make ISO staging dir '${ISO_DIR}' readable"
+      ## Stage into a PER-RUN subdir (reaped on ANY exit by rt_eph_cleanup): a unique dir
+      ## cannot collide with -- or clobber -- a same-basename downloaded ISO already in
+      ## ISO_DIR, and whole-dir removal only ever touches files this run created. No .part/mv
+      ## dance needed: a failed cp returns before install and the trap reaps the dir.
+      if ! rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"; then
+         log error "cannot create per-run ISO staging dir under '${ISO_DIR}'"
          return "${SETUP_RC}"
       fi
-      iso="${ISO_DIR}/${local_iso##*/}"
-      ## Skip the copy when --iso already IS the staged path (cp would fail "same file", and
-      ## removing it afterwards would delete the caller's ISO). Otherwise copy via a .part
-      ## temp + atomic mv so a crash never leaves a truncated ISO at the final path, and
-      ## remember the staged COPY so it is removed after the run (a 1.5G file per run).
-      if ! [ "${local_iso}" -ef "${iso}" ]; then
-         if ! cp -- "${local_iso}" "${iso}.part"; then
-            log error "staging copy of '${local_iso}' failed"
-            safe-rm --force -- "${iso}.part"
-            return "${SETUP_RC}"
-         fi
-         if ! mv --force -- "${iso}.part" "${iso}"; then
-            log error "staging mv of '${local_iso}' failed"
-            return "${SETUP_RC}"
-         fi
-         rt_staged_iso="${iso}"
+      if ! chmod a+rx -- "${ISO_DIR}" "${rt_staged_dir}"; then
+         log error "cannot make ISO staging dirs readable"
+         return "${SETUP_RC}"
+      fi
+      iso="${rt_staged_dir}/${local_iso##*/}"
+      if ! cp -- "${local_iso}" "${iso}"; then
+         log error "staging copy of '${local_iso}' failed"
+         return "${SETUP_RC}"
       fi
       if ! chmod a+r -- "${iso}"; then
          log error "cannot make staged ISO '${iso}' readable"
@@ -773,11 +777,7 @@ rt_lane_kicksecure() {
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
    sudo -u "${account}" -- safe-rm --force -- "${shot}" "${check_log}" 2>/dev/null || true
-   ## Drop the staged ISO copy (only a copy we made, never the caller's original) so built
-   ## runs do not accumulate multi-GB files in ISO_DIR.
-   if [ -n "${rt_staged_iso}" ]; then
-      safe-rm --force -- "${rt_staged_iso}" 2>/dev/null || true
-   fi
+   ## The per-run staged ISO dir (rt_staged_dir) is reaped by rt_eph_cleanup on exit.
    return "${rc}"
 }
 
