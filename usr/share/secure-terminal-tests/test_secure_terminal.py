@@ -370,6 +370,30 @@ finally:
     S._ASCII_CONFUSABLES = _rc_conf2
     S._ASCII_FOLD_MAP = _rc_fold2
     S._MULTICHAR_ASCII_FOLD = _rc_multi2
+# require_confusables_data FAILS CLOSED when a present data file loads NO usable homoglyphs
+# (empty / corrupt), via the multi-sentinel of canonical look-alikes -- startup must refuse
+# rather than run with confusable detection silently disabled. (The AppArmor profile grants
+# the data read, so this fires only on a genuinely unusable file, never a normal enforced run.)
+_rc_conf3 = S._ASCII_CONFUSABLES
+_rc_fold3 = S._ASCII_FOLD_MAP
+_rc_multi3 = S._MULTICHAR_ASCII_FOLD
+try:
+    S._ASCII_CONFUSABLES = None
+    S._ASCII_FOLD_MAP = None
+    S._MULTICHAR_ASCII_FOLD = None
+    S.open = lambda *_a, **_k: _rcio.StringIO('{}')
+    _rc_empty = ''
+    try:
+        S.require_confusables_data()
+    except RuntimeError as _rc_exc:
+        _rc_empty = str(_rc_exc)
+    ok('did not load usable' in _rc_empty,
+       'require_confusables_data fails closed when the data loads no homoglyphs (empty/corrupt)')
+finally:
+    del S.open
+    S._ASCII_CONFUSABLES = _rc_conf3
+    S._ASCII_FOLD_MAP = _rc_fold3
+    S._MULTICHAR_ASCII_FOLD = _rc_multi3
 
 # --- multi-char ASCII-target confusable fold (ellipsis U+2026 -> '...', dashes, etc.) --
 # The 261 sources with NO single-char ASCII look-alike fold to the ASCII STRING they

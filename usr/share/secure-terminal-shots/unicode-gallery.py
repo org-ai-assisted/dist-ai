@@ -151,12 +151,23 @@ def _ascii_confusables():
 
 
 def require_confusables_data():
-    """Fail loud (raise ImportError) when python3-confusable-homoglyphs (a hard dependency)
-    is NOT installed: building the set raises a clear ImportError instead of silently
-    degrading and masquerading as oracle/summary drift. Mirrors
-    secure_terminal.sanitize.require_confusables_data -- a present-but-unreadable data file
-    still degrades gracefully (not failed closed)."""
-    _ascii_confusables()        # triggers the build -> clear ImportError if the package is absent
+    """Fail loud when the Unicode confusables data is UNUSABLE, mirroring
+    secure_terminal.sanitize.require_confusables_data so the oracle and the app agree:
+      - PACKAGE absent -> a clear ImportError (via _ascii_confusables);
+      - data EMPTY / corrupt / truncated -> the canonical Cyrillic/Greek homoglyphs below
+        (none has an NFKC decomposition, so present only via the package data) are missing
+        -> RuntimeError.
+    So a missing/degraded dependency fails loud instead of masquerading as oracle/summary
+    drift."""
+    confusables = _ascii_confusables()
+    expected = (0x0430, 0x03BF, 0x0435, 0x0441, 0x0440, 0x0455, 0x04BB)
+    missing = [cp for cp in expected if cp not in confusables]
+    if missing:
+        raise RuntimeError(
+            'unicode-gallery: the Unicode confusables data '
+            '(python3-confusable-homoglyphs) is installed but did not load usable homoglyph '
+            'mappings (%d of %d canonical look-alikes missing); classification would be '
+            'degraded. Reinstall python3-confusable-homoglyphs.' % (len(missing), len(expected)))
 
 
 def _is_mark(ch):
