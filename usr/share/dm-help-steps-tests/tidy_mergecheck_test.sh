@@ -201,6 +201,24 @@ else
    fail "phase 6 leaked ${leftover} refs/dm-tidy-mergecheck/* ref(s)"
 fi
 
+## --- Case: the fetch must NOT touch refs/remotes/* (--refmap='') ----------------
+## Without --refmap='', fetch opportunistically force-updates the configured refs/remotes/<r>/*
+## -- a tracking-ref mutation outside the throwaway ns, breaking the "only throwaway refs"
+## contract even on this dry-run. Snapshot refs/remotes/* around a run; it must be unchanged.
+## Clear any tracking refs an EARLIER case's run may have left, so this case is isolated: a
+## no-refmap fetch (the canary) would then repopulate them and this must FAIL.
+while IFS= read -r r; do
+   [ -n "${r}" ] || continue
+   gitq -C "${super}" update-ref -d "${r}" 2>/dev/null || true
+done < <(gitq -C "${super}" for-each-ref --format='%(refname)' refs/remotes)
+_="$(mergecheck_verdict)"
+remotes_after="$(gitq -C "${super}" for-each-ref --format='%(refname)' refs/remotes)"
+if [ -z "${remotes_after}" ]; then
+   pass "mergecheck leaves refs/remotes/* untouched (--refmap='')"
+else
+   fail "mergecheck populated refs/remotes/*: <<<${remotes_after}>>>"
+fi
+
 ## --- Case: scrub self-heals a crashed run's refs, but spares a live concurrent run ---------
 ## A dead pid's leftover must be reaped; an alive pid's (a concurrent dm-tidy) must be left.
 sleep 0.1 &

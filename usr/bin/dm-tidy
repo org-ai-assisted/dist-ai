@@ -457,8 +457,12 @@ mergecheck_scrub_refs() {
 ## rc 1 if the fetch fails (missing remote / ref / network) -- the caller records 'skipped'.
 mergecheck_fetch() {
    local remote="$1" src="$2" dest="${MERGECHECK_NS}/$3"
+   ## --refmap='': WITHOUT it, git ALSO opportunistically applies the remote's configured
+   ## refspec and force-updates refs/remotes/<remote>/* (outside MERGECHECK_NS, unscrubbed) --
+   ## a tracking-ref mutation that would break this phase's "only throwaway refs" contract,
+   ## even on --dry-run. Empty refmap means only the explicit +src:dest below is applied.
    git -C "${top}" fetch --quiet --no-tags --no-recurse-submodules --no-write-fetch-head \
-      "${remote}" "+${src}:${dest}" 2>/dev/null || return 1
+      --refmap='' "${remote}" "+${src}:${dest}" 2>/dev/null || return 1
    git -C "${top}" rev-parse --verify --quiet "${dest}"
 }
 
