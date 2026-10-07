@@ -239,6 +239,15 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertIn('NULL pointer dereference', out,
                       'a real kernel BUG: must be critical')
 
+    def test_control_byte_line_still_matched(self) -> None:
+        ## The kernel reader uses journalctl --all, so a catastrophe printk carrying a
+        ## control byte (e.g. a soft-lockup line echoing a prctl-set comm) arrives RAW, not
+        ## blanked to '[blob data]'. check_critical_logs must still match it on the token.
+        out = self._run_check_critical(
+            ['host kernel: BUG: soft lockup - CPU#0 stuck for 22s! [\x01bad:42]'])
+        self.assertIn('soft lockup', out,
+                      'a catastrophe line with a control byte must still be critical')
+
     def test_bug_on_macro_critical(self) -> None:
         ## The BUG()/BUG_ON() macro logs 'kernel BUG at <file>:<line>!' -- ' BUG ' with no
         ## colon. The word-boundary token must catch it (a plain ' BUG:' substring would
