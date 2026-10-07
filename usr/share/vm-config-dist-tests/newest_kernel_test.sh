@@ -160,6 +160,10 @@ check 'foreign-arch vmlinuz without a module tree ignored' 'TARGET_VER=[6.1.0-13
 ## instead filtered on the arch suffix or a backup extension would wrongly pick it.
 check 'same-arch vmlinuz without a module tree ignored' 'TARGET_VER=[6.1.0-13-amd64]' \
    "K:6.1.0-13-amd64" "B:vmlinuz-9.9.9-9-amd64"
+## Pathological vmlinuz- names ('.', '..', leading '-') must be rejected before the
+## module-tree test and dpkg: '..' would otherwise stat /lib and be selected.
+check 'pathological vmlinuz names rejected' 'TARGET_VER=[6.1.0-13-amd64]' \
+   "K:6.1.0-13-amd64" "B:vmlinuz-.." "B:vmlinuz-." "B:vmlinuz--foo"
 ## No installed kernel -- empty result (the call site then fails closed).
 check 'no installed kernel -- empty result' 'TARGET_VER=[]'
 
