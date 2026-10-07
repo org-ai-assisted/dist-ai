@@ -80,6 +80,24 @@ def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_
         handle.write(model.dumps(result))
 
 
+def write_result_multi(run_dir, run_id, lane, version, rc, stop_unix, step_name, shots):
+    """A result with several named milestone shots on one step (the install 'full
+    story'). `shots` is a list of (attachment_name, file_basename)."""
+    atts = [model.make_attachment(n, "image/png", p) for n, p in shots]
+    step = model.make_step(
+        name=step_name, status=model.step_status_from_rc(rc), exit_code=rc,
+        attachments=atts,
+    )
+    result = model.build_result(
+        run_id=run_id, lane=lane, version=version, builder="dm-release-test",
+        mode="calamares-install", origin=model.ORIGIN_DOWNLOADED, rc=rc,
+        generated_unix=stop_unix, stop_unix=stop_unix, steps=[step],
+    )
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(result))
+
+
 def build_plane(root, goldens, approvals_path):
     import json
 
@@ -168,6 +186,20 @@ def build_plane(root, goldens, approvals_path):
     write_result(j_dir, "dup-run-1", "dup-a", "18.2.3.5", 0, now, "verify-signature", None)
     k_dir = os.path.join(root, "dup-b-18-2-3-5", "20261006T000000Z")
     write_result(k_dir, "dup-run-1", "dup-b", "18.2.3.5", 0, now, "verify-signature", None)
+
+    ## L: a PASS run with a MULTI-shot "full story" -- several milestone screenshots
+    ## on ONE step. Each must render (own webp), labelled by its milestone name, in
+    ## filename order. Regression for the multi-screenshot extension.
+    l_dir = os.path.join(root, "kicksecure-fullstory-18-2-3-5", "20261006T000000Z")
+    write_png(os.path.join(l_dir, "01-welcome.png"), (20, 20, 20))
+    write_png(os.path.join(l_dir, "02-partitions.png"), (30, 30, 30))
+    write_png(os.path.join(l_dir, "03-first-boot.png"), (40, 40, 40))
+    write_result_multi(
+        l_dir, "kicksecure-fullstory-18-2-3-5-1", "kicksecure-fullstory", "18.2.3.5",
+        0, now, "calamares-install",
+        [("welcome", "01-welcome.png"), ("partitions", "02-partitions.png"),
+         ("first-boot", "03-first-boot.png")],
+    )
 
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
@@ -306,6 +338,24 @@ check("colliding run.id keeps the second run (dir-derived id)",
 ## The green run (with a shot) gets a per-run shots.json manifest for the approver.
 check("per-run shots.json manifest written",
       os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "shots.json")))
+
+## L: the multi-shot "full story" -- all three milestone webps exist, each is labelled
+## by its milestone name, and they render in filename (capture) order.
+l_out = os.path.join(out1, "kicksecure-fullstory-18-2-3-5-1")
+l_page = read(os.path.join(l_out, "index.html"))
+for mshot in ("welcome", "partitions", "first-boot"):
+    check("full-story webp for '%s' exists" % mshot,
+          os.path.isfile(os.path.join(
+              l_out, "kicksecure-fullstory__calamares-install__%s.webp" % mshot)))
+    check("full-story page labels milestone '%s'" % mshot,
+          "<strong>%s</strong>" % mshot in l_page)
+check("full-story milestones render in capture order",
+      l_page.find("<strong>welcome</strong>")
+      < l_page.find("<strong>partitions</strong>")
+      < l_page.find("<strong>first-boot</strong>"))
+## The disambiguating sid (lane/step/<milestone>) is used only for multiple shots; a
+## single-shot run keeps the plain placeholder caption (no <strong> milestone label).
+check("single-shot green run has no milestone label", "<strong>" not in a_page)
 
 ## Determinism: a second generation over identical input is byte-identical.
 site2 = os.path.join(work, "site2")

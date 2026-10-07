@@ -71,7 +71,7 @@ check() {
 ## stuck screenshot exists; print the resulting check-log, classified: 'shot-note'
 ## (points at a screenshot), 'generic' (bare FAILED), or 'empty' (nothing written).
 run_on_exit() {
-   local rc="$1" shot_arg="$2" want_stuck="$3"
+   local rc="$1" shot_arg="$2" want_stuck="$3" shot_dir_arg="${4:-}"
    local run_home="${workdir}/home.$$.${RANDOM}"
    local clog="${workdir}/clog.$$.${RANDOM}"
    mkdir --parents -- "${run_home}"
@@ -81,10 +81,11 @@ run_on_exit() {
    fi
    ## on_exit reads these as globals via dynamic scope -- shellcheck cannot see the
    ## use through the eval'd function, hence SC2034. The subshell inherits them and
-   ## on_exit's final 'exit' terminates only that subshell.
+   ## on_exit's final 'exit' terminates only that subshell. shot_dir is the milestone
+   ## "full story" dir (empty for the single-shot cases).
    # shellcheck disable=SC2034
    local me='dm-calamares-install' shot="${shot_arg}" check_log="${clog}" \
-      vm_started='false' VBOXMANAGE=':' HOME="${run_home}"
+      shot_dir="${shot_dir_arg}" vm_started='false' VBOXMANAGE=':' HOME="${run_home}"
    (
       ## Set $? to the simulated run rc that on_exit reads as 'local rc=$?'.
       ( exit "${rc}" )
@@ -125,6 +126,23 @@ check "no shot configured -> generic note" "$(run_on_exit 5 '' no)" 'generic'
 
 ## 4. A successful run writes no failure note at all.
 check "rc 0 writes no note" "$(run_on_exit 0 '' no)" 'empty'
+
+## 5. On a FAILED run with a --shot-dir set, the stuck screen is appended to the
+##    milestone "full story" as 99-failure.png, so the sequence ends on the error.
+story_home="${workdir}/story_home"
+story_dir="${story_home}/shots"
+mkdir --parents -- "${story_dir}"
+printf 'STUCK' > "${story_home}/dm-calamares-install-stuck.png"
+(
+   # shellcheck disable=SC2034
+   me='dm-calamares-install' shot='' check_log="${workdir}/story_clog" \
+      shot_dir="${story_dir}" vm_started='false' VBOXMANAGE=':' HOME="${story_home}"
+   touch -- "${check_log}"
+   ( exit 5 )
+   on_exit
+) >/dev/null 2>&1 || true
+check "failed run appends 99-failure.png to the full-story dir" \
+   "$([ -s "${story_dir}/99-failure.png" ] && printf yes || printf no)" 'yes'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

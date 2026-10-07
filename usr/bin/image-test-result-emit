@@ -185,12 +185,18 @@ def parse_args(argv):
     parser.add_argument("--step-rc", type=int, default=None)
     parser.add_argument("--step-stdout-file", default=None)
     parser.add_argument("--step-stderr-file", default=None)
-    parser.add_argument("--step-shot", default=None)
+    ## Screenshots are REPEATABLE: a single GUI step may carry several milestone shots
+    ## (the install "full story"). --step-shot/-src/-name/-mediatype are parallel lists
+    ## (one per shot); --step-shot-name is the attachment name the site uses to label +
+    ## disambiguate the shot (falls back to "screenshot" for a lone shot). A single
+    ## --step-shot (no name) reproduces the prior one-shot behaviour exactly.
+    parser.add_argument("--step-shot", action="append", default=None)
     ## The account-owned screenshot source. When given, the emitter copies it
     ## into the result dir no-follow (results-publish no longer does the copy,
     ## so the only root reopen of an account path happens here, safely).
-    parser.add_argument("--step-shot-src", default=None)
-    parser.add_argument("--step-shot-mediatype", default=None)
+    parser.add_argument("--step-shot-src", action="append", default=None)
+    parser.add_argument("--step-shot-name", action="append", default=None)
+    parser.add_argument("--step-shot-mediatype", action="append", default=None)
     ## provenance (origin is above; these detail it)
     parser.add_argument("--provenance-source-uri", default=None)
     parser.add_argument("--provenance-source-commit", default=None)
@@ -207,19 +213,38 @@ def main(argv):
     step_rc = args.step_rc if args.step_rc is not None else args.rc
 
     attachments = []
-    if args.step_shot:
-        shot = os.path.basename(args.step_shot)
+    shots = args.step_shot or []
+    srcs = args.step_shot_src or []
+    names = args.step_shot_name or []
+    mtypes = args.step_shot_mediatype or []
+    ## --step-shot-src must be 1:1 with --step-shot (each shot is copied from its own
+    ## account source); name/mediatype may be shorter and default per shot.
+    if srcs and len(srcs) != len(shots):
+        sys.stderr.write(
+            "image-test-result-emit: --step-shot-src count (%d) != --step-shot count (%d)\n"
+            % (len(srcs), len(shots))
+        )
+        return 2
+    dest_dir = os.path.dirname(os.path.abspath(args.dest))
+    seen = set()
+    for i, step_shot in enumerate(shots):
+        shot = os.path.basename(step_shot)
+        name = names[i] if i < len(names) and names[i] else "screenshot"
+        mtype = mtypes[i] if i < len(mtypes) else None
+        ## Distinct attachment names so the site can disambiguate + label each milestone;
+        ## distinct stored basenames so multiple shots in one step never collide.
+        if name in seen:
+            sys.stderr.write("image-test-result-emit: duplicate --step-shot-name '%s'\n" % name)
+            return 2
+        seen.add(name)
         shot_present = True
-        if args.step_shot_src:
-            dest_dir = os.path.dirname(os.path.abspath(args.dest))
-            shot_present = copy_shot(args.step_shot_src, os.path.join(dest_dir, shot))
+        if srcs:
+            shot_present = copy_shot(srcs[i], os.path.join(dest_dir, shot))
         ## A run that never powered on is published without a shot: an absent
         ## source records no attachment, exactly as before the copy moved here.
         if shot_present:
             attachments.append(
-                model.make_attachment(
-                    "screenshot", media_type_for(shot, args.step_shot_mediatype), shot
-                )
+                model.make_attachment(name, media_type_for(shot, mtype), shot)
             )
 
     step = model.make_step(

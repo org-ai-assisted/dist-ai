@@ -640,6 +640,10 @@ def render_step(view, step):
         ## Text-only step: NO image slot, never a broken-image blank.
         return '<div class="issue">%s</div>' % caption
 
+    ## Render the milestone sequence in CAPTURE order. view.shots preserves the
+    ## result.json attachments[] order, which results-publish emits NN-sorted (the
+    ## install "full story" welcome -> partitions -> ... -> first-boot); the milestone
+    ## NAME is NOT sortable (alphabetical != capture order), so do NOT re-sort here.
     imgs = []
     for shot in shots:
         imgs.append(_shot_html(view, shot))
@@ -649,6 +653,12 @@ def render_step(view, step):
 def _shot_html(view, shot):
     bucket_cls = _bucket_status_class(shot["bucket"])
     parts = ["<p>%s" % status_chip(bucket_cls)]
+    ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
+    ## story" is readable. A lone unnamed shot carries the placeholder name "screenshot"
+    ## (one-shot runs) -- omit the redundant caption there.
+    milestone = shot.get("name") or ""
+    if milestone and milestone != "screenshot":
+        parts.append(" <strong>%s</strong>" % esc(milestone))
     if shot["detail"].get("reason"):
         parts.append(" &mdash; %s" % esc(shot["detail"]["reason"]))
     parts.append("</p>")
