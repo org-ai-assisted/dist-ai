@@ -100,6 +100,13 @@ else
    ok 'release-shaped --version label rejected (no official-cell overwrite)'
 fi
 
+## a LONG pure-dotted label (> the 32-char release-token cap) is still release-shaped.
+if "${subject}" kicksecure lxqt --iso "${iso}" --version 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8 --dry-run >/dev/null 2>&1; then
+   bad 'long pure-dotted --version label wrongly accepted'
+else
+   ok 'long pure-dotted --version label rejected'
+fi
+
 ## a build-distinct override IS accepted and keeps origin=built.
 over_plan="$("${subject}" kicksecure lxqt --iso "${iso}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
 if grep --quiet 'resolved=18.2.3.0-g9999' <<<"${over_plan}" && grep --quiet 'origin=built' <<<"${over_plan}"; then

@@ -684,7 +684,8 @@ rt_publish_result() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc shot shot_arg check_log
+   local account version iso pass_file vmname rc shot shot_arg check_log rt_staged_iso
+   rt_staged_iso=""
    local -a checks_arg=()
 
    account="$1"
@@ -696,17 +697,41 @@ rt_lane_kicksecure() {
    ## inside a function called as `... || rc=$?`, so check explicitly).
    rc=0
    if [ -n "${local_iso}" ]; then
-      ## Built-ISO lane: the account is FIXED (not per-version), so serialize concurrent
-      ## built runs -- otherwise one run's eph cleanup (userdel/pkill --uid) would destroy
-      ## the other's install + home. Then STAGE the ISO into the account-readable ISO_DIR:
-      ## a build commonly sits under a 0700 home the unprivileged install account cannot
-      ## traverse, so root copies it out (a+r) rather than hand the account an unreadable path.
-      rt_lock_account "${account}"
-      mkdir --parents -- "${ISO_DIR}"
-      chmod a+rx -- "${ISO_DIR}"
+      ## Built-ISO lane: STAGE the ISO into the account-readable ISO_DIR -- a build commonly
+      ## sits under a 0700 home the unprivileged install account cannot traverse, so root
+      ## copies it out (a+r). (The run is already serialized on the fixed account in main.)
+      ## errexit is OFF in this lane (called `... || rc=$?`), so every staging step is checked
+      ## explicitly: a silent mkdir/cp failure would install a missing/truncated ISO and
+      ## mis-attribute the result to the install rather than to staging.
+      if ! mkdir --parents -- "${ISO_DIR}"; then
+         log error "cannot create ISO staging dir '${ISO_DIR}'"
+         return "${SETUP_RC}"
+      fi
+      if ! chmod a+rx -- "${ISO_DIR}"; then
+         log error "cannot make ISO staging dir '${ISO_DIR}' readable"
+         return "${SETUP_RC}"
+      fi
       iso="${ISO_DIR}/${local_iso##*/}"
-      cp -- "${local_iso}" "${iso}"
-      chmod a+r -- "${iso}"
+      ## Skip the copy when --iso already IS the staged path (cp would fail "same file", and
+      ## removing it afterwards would delete the caller's ISO). Otherwise copy via a .part
+      ## temp + atomic mv so a crash never leaves a truncated ISO at the final path, and
+      ## remember the staged COPY so it is removed after the run (a 1.5G file per run).
+      if ! [ "${local_iso}" -ef "${iso}" ]; then
+         if ! cp -- "${local_iso}" "${iso}.part"; then
+            log error "staging copy of '${local_iso}' failed"
+            safe-rm --force -- "${iso}.part"
+            return "${SETUP_RC}"
+         fi
+         if ! mv --force -- "${iso}.part" "${iso}"; then
+            log error "staging mv of '${local_iso}' failed"
+            return "${SETUP_RC}"
+         fi
+         rt_staged_iso="${iso}"
+      fi
+      if ! chmod a+r -- "${iso}"; then
+         log error "cannot make staged ISO '${iso}' readable"
+         return "${SETUP_RC}"
+      fi
    else
       iso="$("${ISO_DOWNLOAD}" --project kicksecure --vmname Kicksecure \
          --desktop "${desktop}" --channel "${channel}" --version "${version}" \
@@ -748,6 +773,11 @@ rt_lane_kicksecure() {
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
    sudo -u "${account}" -- safe-rm --force -- "${shot}" "${check_log}" 2>/dev/null || true
+   ## Drop the staged ISO copy (only a copy we made, never the caller's original) so built
+   ## runs do not accumulate multi-GB files in ISO_DIR.
+   if [ -n "${rt_staged_iso}" ]; then
+      safe-rm --force -- "${rt_staged_iso}" 2>/dev/null || true
+   fi
    return "${rc}"
 }
 
@@ -883,12 +913,17 @@ main() {
       rt_build_version_ok "${version}" \
          || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
       ## A built result must NOT overwrite an official-release results cell: reject a
-      ## release-shaped label (pure dotted token) -- a built label is the git-describe
-      ## <ver>-g<sha>, which rt_version_token rejects (has dashes), so this only fires on an
-      ## explicit --version <release>.
-      if rt_version_token "${version}" >/dev/null 2>&1; then
-         die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
-      fi
+      ## release-shaped (pure dotted) label of ANY length. A build-distinct label carries a
+      ## dash/letter (the git-describe <ver>-g<sha>); matching on the charset here avoids
+      ## rt_version_token's 32-char cap letting a long pure-dotted label slip through.
+      case "${version}" in
+         *[!0-9.]*)
+            true
+            ;;
+         *)
+            die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
+            ;;
+      esac
       rt_origin='built'
       account='eph-run-'"${guest}"'-built'
       account_kind='prebless'
@@ -940,6 +975,14 @@ main() {
    if [ "${provision_leak}" = 'true' ]; then
       rt_provision_leak "${account}" "${version}"
       return 0
+   fi
+
+   ## The built lane uses a FIXED account: serialize concurrent built runs HERE, before the
+   ## eph-cleanup trap is armed and before the account is (re)created. A second run's failed
+   ## lock then dies with NO trap set, so it cannot fire rt_eph_cleanup (userdel/pkill) on
+   ## the account the first run is actively using.
+   if [ -n "${local_iso}" ]; then
+      rt_lock_account "${account}"
    fi
 
    ## Arm the single cleanup path BEFORE creating the account, so an abort during
