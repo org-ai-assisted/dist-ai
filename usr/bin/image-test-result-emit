@@ -76,15 +76,39 @@ def open_regular_nofollow(path):
     raises FileNotFoundError; a symlink / non-regular file raises _RefusedInput --
     both are handled as 'no such input' by the callers (the result is still
     published, minus that attachment/tail), so the account cannot suppress its own
-    result by planting a symlink, while root still never reads the target."""
+    result by planting a symlink, while root still never reads the target.
+
+    O_NOFOLLOW guards only the FINAL path component, so a bare os.open(fullpath)
+    still resolves the PARENT dirs through symlinks. The adversary TEST_USER owns
+    the shot dir, so it could swap that dir to a symlink AFTER results-publish
+    enumerated the leaves (parent-dir TOCTOU) and redirect root's read into a
+    root-only tree. So open the PARENT no-follow as a directory first, then open the
+    leaf RELATIVE to that fd (openat): the dir open fails closed if the parent was
+    swapped to a symlink, and the openat pins the leaf to that exact directory inode
+    with no parent re-resolution window."""
+    dirpath = os.path.dirname(path) or "."
+    base = os.path.basename(path)
+    if not base:
+        raise _RefusedInput("no filename component in '%s'" % path)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        dir_fd = os.open(dirpath, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except FileNotFoundError:
         raise
     except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise _RefusedInput("symlinked input '%s'" % path)
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _RefusedInput("symlinked parent dir of '%s'" % path)
         raise
+    try:
+        try:
+            fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise _RefusedInput("symlinked input '%s'" % path)
+            raise
+    finally:
+        os.close(dir_fd)
     try:
         mode = os.fstat(fd).st_mode
     except OSError:
@@ -254,9 +278,6 @@ def main(argv):
         except model.ModelError as exc:
             sys.stderr.write("image-test-result-emit: skipping shot '%s': %s\n" % (shot, exc))
             continue
-        ## Reserve name + dest only once the attachment itself is valid.
-        seen_names.add(name)
-        seen_dests.add(shot)
         shot_present = True
         if srcs:
             ## copy_shot is best-effort; an OSError (e.g. a >255-byte stored basename)
@@ -268,7 +289,15 @@ def main(argv):
                 continue
         ## A run that never powered on is published without a shot: an absent
         ## source records no attachment, exactly as before the copy moved here.
+        ## Reserve name + dest only once the shot is actually EMITTED: a DROPPED shot
+        ## (oversized/missing source) must not reserve its milestone, or a valid
+        ## same-stem retake (02-welcome after an oversized 00-welcome, both -> 'welcome'
+        ## once results-publish strips the NN- prefix) would be skipped as a dup and the
+        ## milestone lost. Reserving dest only on emit still blocks a later same-basename
+        ## shot from truncating this one (the seen_dests gate runs before copy_shot).
         if shot_present:
+            seen_names.add(name)
+            seen_dests.add(shot)
             attachments.append(attachment)
 
     step = model.make_step(
