@@ -591,7 +591,9 @@ main() {
    ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
    ## confirm Calamares actually started; on failure dump the launch log and fail with a
    ## real reason instead of a silent wait to the downstream OCR timeout.
-   if ! gc_wait_gui_started user 'calamares' 60; then
+   ## install-host waits (up to ~180s) for the unrestricted-admin unlock to finish before it
+   ## launches Calamares, so allow for that window plus Calamares startup.
+   if ! gc_wait_gui_started user 'calamares' 240; then
       printf '%s: install-host launch log:\n%s\n' "${me}" "$(gc_gui_launch_log user)" >&2
       die "${FAIL_RC}" "install-host did not start Calamares in the live session"
    fi
