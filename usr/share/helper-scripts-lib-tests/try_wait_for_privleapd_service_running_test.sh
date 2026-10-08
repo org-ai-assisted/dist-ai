@@ -122,6 +122,18 @@ else
    fail "LoadState=not-found looped (${calls} systemctl calls), expected immediate break"
 fi
 
+## bad-setting (an unparsable unit that will not start) is also terminal.
+safe-rm --force -- "${args_log}"
+rc=0
+TEST_PRIVLEAPD_LOADSTATE='bad-setting' TEST_PRIVLEAPD_STATE='inactive' \
+   SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
+calls="$(wc -l < "${args_log}")"
+if [ "${rc}" = '0' ] && [ "${calls}" -le 2 ]; then
+   pass "LoadState=bad-setting breaks immediately (${calls} systemctl call(s))"
+else
+   fail "LoadState=bad-setting -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== try_wait_for_privleapd_service_running: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
