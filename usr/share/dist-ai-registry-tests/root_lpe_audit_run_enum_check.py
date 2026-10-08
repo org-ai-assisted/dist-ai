@@ -23,7 +23,11 @@ dropped -- a false negative on a security tool). Asserts:
   3. non-UTF-8 bytes                   -> clean SystemExit (not a traceback);
   4. valid JSON that is not an object  -> clean SystemExit (not a later crash);
   5. valid JSON object with NONZERO exit -> run_enum RETURNS it (no false negative);
-  6. valid JSON object with exit 0     -> run_enum RETURNS it (positive control).
+  6. valid JSON object with exit 0     -> run_enum RETURNS it (positive control);
+  7. report with non-empty parse_errors -> SystemExit (degraded, incomplete scan);
+  8. report with non-empty walk_errors  -> SystemExit (degraded, incomplete scan);
+  9. report with EMPTY error lists + nonzero exit -> RETURNED (the legitimate
+     zero-entries advisory is complete, not degraded -- must not fail closed).
 Prints 'N pass, N fail'.
 """
 
@@ -88,6 +92,15 @@ NON_UTF8_EXIT_ZERO = b"#!/bin/sh\nprintf '\\377'\nexit 0\n"
 VALID_JSON_NON_OBJECT = b"#!/bin/sh\nprintf '%s\\n' '[1, 2, 3]'\nexit 0\n"
 VALID_OBJECT_EXIT_NONZERO = b'#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 3\n'
 VALID_OBJECT_EXIT_ZERO = b'#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 0\n'
+DEGRADED_PARSE_ERRORS = (b'#!/bin/sh\nprintf \'%s\\n\''
+                         b' \'{"ok": true, "parse_errors": ["x"], "walk_errors": []}\'\n'
+                         b'exit 1\n')
+DEGRADED_WALK_ERRORS = (b'#!/bin/sh\nprintf \'%s\\n\''
+                        b' \'{"ok": true, "parse_errors": [], "walk_errors": ["x"]}\'\n'
+                        b'exit 1\n')
+COMPLETE_EMPTY_ERRORS_EXIT_NONZERO = (
+    b'#!/bin/sh\nprintf \'%s\\n\''
+    b' \'{"ok": true, "parse_errors": [], "walk_errors": []}\'\nexit 1\n')
 
 
 def main(argv):
@@ -125,6 +138,17 @@ def main(argv):
         expect_return(
             module, make_stub_dir(enum_name, VALID_OBJECT_EXIT_ZERO, temp_dirs),
             "exit 0 with valid JSON object -> returned (positive control)", checks)
+        expect_systemexit(
+            module, make_stub_dir(enum_name, DEGRADED_PARSE_ERRORS, temp_dirs),
+            "report with parse_errors -> SystemExit (degraded, incomplete)", checks)
+        expect_systemexit(
+            module, make_stub_dir(enum_name, DEGRADED_WALK_ERRORS, temp_dirs),
+            "report with walk_errors -> SystemExit (degraded, incomplete)", checks)
+        expect_return(
+            module,
+            make_stub_dir(enum_name, COMPLETE_EMPTY_ERRORS_EXIT_NONZERO, temp_dirs),
+            "empty error lists + nonzero exit -> returned (complete advisory)",
+            checks)
     finally:
         for stub_dir in temp_dirs:
             shutil.rmtree(stub_dir, ignore_errors=True)
