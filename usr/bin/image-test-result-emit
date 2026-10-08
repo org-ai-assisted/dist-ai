@@ -86,7 +86,12 @@ def open_regular_nofollow(path):
     opening each as a directory with O_DIRECTORY|O_NOFOLLOW relative to the previous
     component's fd (an openat chain), then open the leaf relative to the final dir fd.
     A symlinked ANY component fails the open closed (ELOOP); each fd pins one exact
-    inode, so no component can be re-resolved through a symlink after it was opened."""
+    inode, so no component can be re-resolved through a symlink after it was opened.
+    Tradeoff (accepted, fail-SAFE): a LEGITIMATELY symlinked ancestor (e.g. a distro
+    where /home -> /var/home) also fails the walk, so the attachment is OMITTED, never
+    leaked. Our shot/step-file paths live under the per-run account tmp dir with no such
+    symlink, so this does not fire in practice; if it ever does, the result still
+    publishes minus that one shot."""
     ## Reject a lexical '..'/'.' component: our callers only ever pass concrete
     ## result-dir / account-home paths, and resolving '..' against a pinned dir fd
     ## would let a crafted path climb back out of the walked chain.
