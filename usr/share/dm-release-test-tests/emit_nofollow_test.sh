@@ -185,6 +185,48 @@ check "duplicate stored basename keeps the first shot's bytes" \
 check "duplicate stored basename records one attachment path" \
    "$(grep --count --fixed-strings -- '"path": "same.png"' "${out9}")" '1'
 
+## 10. PARENT-DIR TOCTOU: O_NOFOLLOW guards only the LEAF, so a bare open of a full
+##     path still resolves the PARENT through a symlink. The adversary owns the shot
+##     dir and can swap it to a symlink AFTER enumeration, redirecting root's read into
+##     a root-only tree. The emitter must open the parent no-follow + openat the leaf,
+##     so a symlinked parent is REFUSED (no copy, no leak), run still published.
+##     Canary: a regular leaf inside a SYMLINKED parent dir. Pre-fix (bare O_NOFOLLOW on
+##     the full path) followed the parent symlink and COPIED the sentinel.
+realparent="${workdir}/realparent"
+mkdir --parents -- "${realparent}"
+printf '%s\n' "${sentinel}" > "${realparent}/leaf.png"
+ln --symbolic -- "${realparent}" "${workdir}/symparent"
+out10="${workdir}/d10/r10.json"
+mkdir --parents -- "${workdir}/d10"
+check "symlinked parent dir does not abort the publish" \
+   "$(emit_rc "${out10}" --step-shot leaf.png --step-shot-src "${workdir}/symparent/leaf.png")" '0'
+check "symlinked parent dir -- leaf NOT copied (records no attachment)" \
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out10}" && printf yes || printf no)" 'yes'
+## The real leak is the COPIED file in the world-readable plane, not the json text:
+## grep the whole run dir for the sentinel (pre-fix copied realparent/leaf.png there).
+check "symlinked parent dir -- sentinel NOT leaked into the plane" \
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d10" 2>/dev/null && printf LEAKED || printf no)" 'no'
+
+## 11. A DROPPED first shot (oversized -> copy skips it) must NOT reserve its milestone,
+##     so a valid same-milestone retake is still emitted (not skipped as a dup). The
+##     publisher strips the NN- prefix, so 00-welcome and 01-welcome both map to
+##     'welcome'. Pre-fix reserved the name BEFORE copy_shot, losing the milestone.
+out11="${workdir}/d11/r11.json"
+mkdir --parents -- "${workdir}/d11"
+printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' > "${workdir}/oversize.png"
+rc11=0
+IMAGE_TEST_MAX_SHOT_BYTES=8 "${emit}" \
+   --run-id r-1 --lane testlane --builder builder --mode cli \
+   --origin built --rc 0 --step-name cli --dest "${out11}" \
+   --step-shot 00-welcome.png --step-shot-src "${workdir}/oversize.png" --step-shot-name welcome \
+   --step-shot 01-welcome.png --step-shot-src "${workdir}/good1.png" --step-shot-name welcome \
+   >/dev/null 2>&1 || rc11=$?
+check "dropped first shot does not abort the publish" "${rc11}" '0'
+check "dropped first shot -- same-milestone retake still emitted" \
+   "$(grep --count --fixed-strings -- '"name": "welcome"' "${out11}")" '1'
+check "dropped first shot -- retake stored, oversize not" \
+   "$([ -f "${workdir}/d11/01-welcome.png" ] && [ ! -f "${workdir}/d11/00-welcome.png" ] && printf yes || printf no)" 'yes'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
