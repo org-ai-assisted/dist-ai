@@ -55,10 +55,13 @@ exit 0
 STUB
 chmod 0755 -- "${stub_bin}/sleep"
 
-## systemctl stub: prints the ActiveState given by TEST_PRIVLEAPD_STATE,
-## mimicking 'systemctl show ... --property ActiveState'.
+## systemctl stub: logs its args (so a test can confirm WHICH unit was queried)
+## and prints the LoadState/ActiveState given by the TEST_PRIVLEAPD_* env,
+## mimicking 'systemctl show ... --property LoadState --property ActiveState'.
 cat > "${stub_bin}/systemctl" <<'STUB'
 #!/bin/bash
+printf '%s\n' "$*" >> "${SYSTEMCTL_ARGS_LOG:-/dev/null}"
+printf 'LoadState=%s\n' "${TEST_PRIVLEAPD_LOADSTATE:-loaded}"
 printf 'ActiveState=%s\n' "${TEST_PRIVLEAPD_STATE:-activating}"
 STUB
 chmod 0755 -- "${stub_bin}/systemctl"
@@ -91,6 +94,32 @@ if [ "${rc}" = '0' ]; then
    pass "timeout -> exit 0 (best-effort contract)"
 else
    fail "timeout -> exit ${rc}, expected 0 (best-effort contract)"
+fi
+
+## Confirms the subject queries privleapd.service (not a copied unit name) and
+## that an unrunnable unit (LoadState=not-found) breaks on the first poll instead
+## of waiting out the whole loop. 'sleep' is stubbed, so the systemctl CALL COUNT
+## (not wall time) distinguishes an immediate break from a 120-iteration loop.
+args_log="${work_dir}/systemctl.args"
+safe-rm --force -- "${args_log}"
+rc=0
+TEST_PRIVLEAPD_LOADSTATE='not-found' TEST_PRIVLEAPD_STATE='inactive' \
+   SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" = '0' ]; then
+   pass "LoadState=not-found -> exit 0"
+else
+   fail "LoadState=not-found -> exit ${rc}, expected 0"
+fi
+if grep --quiet -- 'privleapd.service' "${args_log}"; then
+   pass "queries privleapd.service"
+else
+   fail "did not query privleapd.service (args: $(cat -- "${args_log}"))"
+fi
+calls="$(wc -l < "${args_log}")"
+if [ "${calls}" -le 2 ]; then
+   pass "LoadState=not-found breaks immediately (${calls} systemctl call(s))"
+else
+   fail "LoadState=not-found looped (${calls} systemctl calls), expected immediate break"
 fi
 
 printf '%s\n' ""

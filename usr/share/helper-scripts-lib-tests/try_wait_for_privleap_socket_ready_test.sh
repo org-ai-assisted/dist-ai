@@ -80,8 +80,12 @@ leaprun_useable_test() {
       use_leaprun='no'
    fi
 }
-## Time stub: never actually sleep.
-light_sleep() { return 0; }
+## Use the REAL light_sleep (skipped), not a stub: a stub returning 0 could hide
+## a subject that misuses light_sleep (the real one returns non-zero on a missing
+## duration, which under production errexit would abort the wait).
+# shellcheck disable=SC1090,SC1091
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/light_sleep.bsh
+export light_sleep_skip='true'
 
 ## Reachable on the first probe -> returns 0 after exactly one probe.
 use_leaprun='no'
@@ -119,6 +123,20 @@ if [ "${rc}" = '0' ] && [ "${probe_calls}" = '4' ]; then
    pass "never reachable -> exit 0 after max_ctr (4) probes (bounded best-effort)"
 else
    fail "bound-out -> rc=${rc}, probes=${probe_calls} (want 0, 4)"
+fi
+
+## Errexit contract: the standalone main() calls this under 'set -o errexit', so
+## a never-ready run must RETURN (0), not abort on an internal command (an
+## unguarded (( )) or a failing probe/sleep). A plain '|| rc=$?' would suppress
+## errexit inside the function, so run it in an errexit subshell where it is
+## called as a plain command.
+export use_leaprun='no'
+leaprun_ready_on_call=0
+if ( set -o errexit; set -o nounset; set -o pipefail; shopt -s inherit_errexit
+     privleap_socket_wait_max_ctr=3 try_wait_for_privleap_socket_ready ); then
+   pass "never-ready run returns cleanly under errexit (does not abort)"
+else
+   fail "aborted under errexit (rc=$?)"
 fi
 
 printf '%s\n' ""
