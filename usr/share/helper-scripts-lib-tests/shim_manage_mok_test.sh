@@ -18,9 +18,10 @@
 ##
 ## A missing subject/dep is an ENVIRONMENT BUG -> exit 1 (FATAL), never a skip.
 
-## dkms_mok_dir (set here) and dkms_mok_public_file (assigned by the sourced
-## dkms_mok_variables_set) cross a boundary shellcheck does not follow -- so its
-## unused (SC2034) and unassigned (SC2154) warnings are false here.
+## SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR (the subject's override prefix, exported
+## below) and dkms_mok_public_file (assigned by the sourced dkms_mok_variables_set)
+## cross a boundary shellcheck does not follow -- so its unused (SC2034) and
+## unassigned (SC2154) warnings are false here.
 # shellcheck disable=SC2034,SC2154
 set -o errexit
 set -o nounset
@@ -74,7 +75,9 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-dkms_base="${work}/dkms"
+## Mirror the subject's derived layout: dkms_mok_variables_set computes
+## dkms_mok_dir="${SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR}/var/lib/dkms".
+dkms_base="${work}/var/lib/dkms"
 bindir="${work}/bin"
 mkdir --parents -- "${bindir}" "${dkms_base}"
 
@@ -92,9 +95,11 @@ STUB
 chmod +x -- "${bindir}/mokutil"
 export PATH="${bindir}:${PATH}"
 
-## Point the dkms base at the temp tree and derive dkms_mok_public_file (read by
-## shim_enroll_mok) through the REAL dkms_mok_variables_set.
-dkms_mok_dir="${dkms_base}"
+## Drive the subject's dkms_mok_variables_set via its env-var prefix (NOT by
+## setting dkms_mok_dir, which the function overwrites) so the derived
+## dkms_mok_public_file (read by shim_enroll_mok) lands under the temp tree, not
+## the real /var/lib/dkms. 'touch' then creates it in dkms_base (created above).
+export SHIM_SIGNED_MOK_SETUP_DKMS_MOK_DIR="${work}"
 dkms_mok_variables_set
 touch -- "${dkms_mok_public_file}"
 
