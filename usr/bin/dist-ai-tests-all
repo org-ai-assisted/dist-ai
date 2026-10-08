@@ -421,7 +421,17 @@ wire() {
          ## strings.bsh sources wc-test.sh via ${HELPER_SCRIPTS_PATH:-}). Both
          ## point at the checkout, else the sibling source hits the absent
          ## /usr/libexec and the suite dies mid-source.
-         wire_env=( "HELPER_SCRIPTS_REPO=${hs}" "HELPER_SCRIPTS_PATH=${hs}" )
+         ## PYTHONPATH: a subject's 'log' (log_run_die.sh) shells out to stecho /
+         ## sanitize-string ('#!/usr/bin/python3 -Bsu', -s excludes user-site),
+         ## which import from helper-scripts' dist-packages. Uninstalled in CI
+         ## they must resolve from the checkout, else every logged line vanishes
+         ## (ModuleNotFoundError, emits nothing) -- a message-asserting case then
+         ## fails, a non-asserting one false-greens.
+         wire_env=(
+            "HELPER_SCRIPTS_REPO=${hs}"
+            "HELPER_SCRIPTS_PATH=${hs}"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+         )
          ;;
       lockfile)
          ## lockfile.sh ships in helper-scripts; the suite takes either a file
@@ -959,10 +969,17 @@ wire() {
          ## dist-ai's own tool, driven against local sqop-signed fixtures via a
          ## curl stub (no network, no checkout under test). It sources
          ## helper-scripts log_run_die.sh (validate_safe_filename, log, die),
-         ## required real.
+         ## required real. log / die shell out to stecho / sanitize-string
+         ## ('#!/usr/bin/python3 -Bsu'), so from a checkout they need its
+         ## dist-packages on PYTHONPATH -- else the verified-OK / rejection
+         ## messages the suite greps for become a ModuleNotFoundError traceback
+         ## and those scenarios fail.
          wire_env=()
          if [ -n "${hs}" ]; then
-            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+            )
          fi
          ;;
       private-ai-config)

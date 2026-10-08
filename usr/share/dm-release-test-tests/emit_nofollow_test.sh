@@ -227,6 +227,26 @@ check "dropped first shot -- same-milestone retake still emitted" \
 check "dropped first shot -- retake stored, oversize not" \
    "$([ -f "${workdir}/d11/01-welcome.png" ] && [ ! -f "${workdir}/d11/00-welcome.png" ] && printf yes || printf no)" 'yes'
 
+## 12. ANCESTOR-COMPONENT TOCTOU: a symlink NOT in the immediate parent but higher in
+##     the path. O_NOFOLLOW + an immediate-parent-only openat still FOLLOWS an ancestor
+##     symlink, so root reads the redirected target. The full component-wise walk must
+##     refuse ANY symlinked component. Canary: a 2-level link (box/link/sub/leaf, link ->
+##     a real tree) -- the pre-fix immediate-parent emitter copied the sentinel; the walk
+##     refuses at 'link' and copies nothing, run still published.
+realtree="${workdir}/realtree"
+mkdir --parents -- "${realtree}/sub"
+printf '%s\n' "${sentinel}" > "${realtree}/sub/leaf.png"
+mkdir --parents -- "${workdir}/box"
+ln --symbolic -- "${realtree}" "${workdir}/box/link"
+out12="${workdir}/d12/r12.json"
+mkdir --parents -- "${workdir}/d12"
+check "ancestor-symlink component does not abort the publish" \
+   "$(emit_rc "${out12}" --step-shot leaf.png --step-shot-src "${workdir}/box/link/sub/leaf.png")" '0'
+check "ancestor-symlink -- leaf NOT copied (records no attachment)" \
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out12}" && printf yes || printf no)" 'yes'
+check "ancestor-symlink -- sentinel NOT leaked into the plane" \
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d12" 2>/dev/null && printf LEAKED || printf no)" 'no'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

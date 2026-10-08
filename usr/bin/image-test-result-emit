@@ -78,29 +78,53 @@ def open_regular_nofollow(path):
     published, minus that attachment/tail), so the account cannot suppress its own
     result by planting a symlink, while root still never reads the target.
 
-    O_NOFOLLOW guards only the FINAL path component, so a bare os.open(fullpath)
-    still resolves the PARENT dirs through symlinks. The adversary TEST_USER owns
-    the shot dir, so it could swap that dir to a symlink AFTER results-publish
-    enumerated the leaves (parent-dir TOCTOU) and redirect root's read into a
-    root-only tree. So open the PARENT no-follow as a directory first, then open the
-    leaf RELATIVE to that fd (openat): the dir open fails closed if the parent was
-    swapped to a symlink, and the openat pins the leaf to that exact directory inode
-    with no parent re-resolution window."""
-    dirpath = os.path.dirname(path) or "."
-    base = os.path.basename(path)
-    if not base:
+    O_NOFOLLOW guards only the FINAL component of ONE open, so opening a full path
+    (or even just its immediate parent) still resolves every ANCESTOR dir through
+    symlinks. The adversary TEST_USER owns the tree, so it could point ANY ancestor
+    component at a root-only location (e.g. /tmp/acct/link/etc/shadow with link -> /)
+    and redirect root's read. So WALK every path component from a trusted root,
+    opening each as a directory with O_DIRECTORY|O_NOFOLLOW relative to the previous
+    component's fd (an openat chain), then open the leaf relative to the final dir fd.
+    A symlinked ANY component fails the open closed (ELOOP); each fd pins one exact
+    inode, so no component can be re-resolved through a symlink after it was opened.
+    Tradeoff (accepted, fail-SAFE): a LEGITIMATELY symlinked ancestor (e.g. a distro
+    where /home -> /var/home) also fails the walk, so the attachment is OMITTED, never
+    leaked. Our shot/step-file paths live under the per-run account tmp dir with no such
+    symlink, so this does not fire in practice; if it ever does, the result still
+    publishes minus that one shot."""
+    ## Reject a lexical '..'/'.' component: our callers only ever pass concrete
+    ## result-dir / account-home paths, and resolving '..' against a pinned dir fd
+    ## would let a crafted path climb back out of the walked chain.
+    parts = [p for p in path.split(os.sep) if p]
+    for comp in parts:
+        if comp in (os.curdir, os.pardir):
+            raise _RefusedInput("unsafe '.'/'..' component in '%s'" % path)
+    if not parts:
         raise _RefusedInput("no filename component in '%s'" % path)
+    leaf = parts[-1]
+    ## Absolute path -> start at '/', which cannot itself be a symlink; a relative
+    ## path -> start at the cwd. Open each DIRECTORY component O_PATH (not O_RDONLY):
+    ## O_PATH gives a dir fd usable only as an openat anchor and needs just SEARCH (x)
+    ## permission on the dir, not READ -- an ancestor like /tmp/user is execute-only
+    ## (0711), so O_RDONLY would wrongly EACCES on a path we are allowed to traverse.
+    ## O_DIRECTORY|O_NOFOLLOW still rejects a symlinked or non-dir component.
+    dir_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    anchor = os.sep if os.path.isabs(path) else os.curdir
+    dir_fd = os.open(anchor, dir_flags)
     try:
-        dir_fd = os.open(dirpath, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise _RefusedInput("symlinked parent dir of '%s'" % path)
-        raise
-    try:
+        for comp in parts[:-1]:
+            try:
+                next_fd = os.open(comp, dir_flags, dir_fd=dir_fd)
+            except FileNotFoundError:
+                raise
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise _RefusedInput("symlinked path component '%s' in '%s'" % (comp, path))
+                raise
+            os.close(dir_fd)
+            dir_fd = next_fd
         try:
-            fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
         except FileNotFoundError:
             raise
         except OSError as exc:
