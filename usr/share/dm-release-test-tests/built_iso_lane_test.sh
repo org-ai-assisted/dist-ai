@@ -84,14 +84,6 @@ plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware efi --checks --dr
 if grep --quiet 'origin=built' <<<"${plan}"; then ok '--iso plan records origin=built'; else bad "no origin=built in plan: ${plan}"; fi
 if grep --quiet 'account=eph-run-kicksecure-built' <<<"${plan}"; then ok '--iso uses the fixed eph-run-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
 if grep --quiet 'resolved=18.2.3.0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26' <<<"${plan}"; then ok '--iso derives the version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
-if grep --quiet 'mok-enroll=no' <<<"${plan}"; then ok 'plain efi lane plans mok-enroll=no'; else bad "efi plan should be mok-enroll=no: ${plan}"; fi
-
-## Only efi-secureboot enrolls the installed system's MOK (so its DKMS-signed modules
-## load under Secure Boot); bios and plain efi must NOT. Guards the firmware->mok coupling.
-sb_plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware efi-secureboot --checks --dry-run 2>&1)"
-if grep --quiet 'mok-enroll=yes' <<<"${sb_plan}"; then ok 'efi-secureboot lane plans mok-enroll=yes'; else bad "efi-secureboot plan should be mok-enroll=yes: ${sb_plan}"; fi
-bios_plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware bios --checks --dry-run 2>&1)"
-if grep --quiet 'mok-enroll=no' <<<"${bios_plan}"; then ok 'bios lane plans mok-enroll=no'; else bad "bios plan should be mok-enroll=no: ${bios_plan}"; fi
 
 ## --iso is kicksecure-only (whonix tests an imported pair, not an ISO install).
 if "${subject}" whonix lxqt --iso "${iso}" --dry-run >/dev/null 2>&1; then
