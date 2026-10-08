@@ -59,6 +59,10 @@ RESULTS_ROOT='/nonexistent/results'
 RESULTS_OWNER='nobody'
 # shellcheck disable=SC2034
 interface='lxqt'
+## Firmware axis: rt_publish_result reads it to disambiguate the Calamares-install lane
+## (bios vs efi are separate goldens). Non-install lanes ignore it.
+# shellcheck disable=SC2034
+firmware='efi'
 
 assert_shot() {
    local label="$1" expected="$2"
@@ -104,6 +108,62 @@ else
    printf 'ok: rt_check_log consumed once (reset after use)\n'
 fi
 safe-rm --force -- "${clog}"
+
+## Firmware is part of the Calamares-install lane identity: bios and efi installs produce
+## DIFFERENT screenshots (firmware menu, boot chrome), so they must land in separate
+## subtrees / sids / goldens and separate overview rows -- never collide. Assert the
+## firmware suffix reaches BOTH the results subtree name (3rd positional) and --lane.
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+firmware='bios'
+rt_publish_result kicksecure 18.2.3.6 acct calamares-install 0 '' Kicksecure >/dev/null
+if grep --quiet -- '--lane kicksecure-lxqt-bios ' "${argv_file}"; then
+   printf 'ok: calamares-install --lane carries firmware (kicksecure-lxqt-bios)\n'
+else
+   printf 'FAIL: calamares-install --lane missing firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet -- 'kicksecure-lxqt-bios-18-2-3-6' "${argv_file}"; then
+   printf 'ok: calamares-install subtree name carries firmware\n'
+else
+   printf 'FAIL: calamares-install subtree name missing firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## A non-install lane (whonix-pair) has NO firmware axis -- its lane must stay bare even
+## when firmware is set, or EFI/BIOS would wrongly fork packet-based runs.
+rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
+if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}" \
+   && ! grep --quiet -- 'whonix-lxqt-bios' "${argv_file}"; then
+   printf 'ok: whonix-pair lane carries no firmware suffix\n'
+else
+   printf 'FAIL: whonix-pair lane wrongly forked by firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## efi-secureboot is the DEFAULT firmware and the value most real install runs publish
+## under; its longer, hyphenated token must survive intact in the lane (no truncation at
+## the inner '-').
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+firmware='efi-secureboot'
+rt_publish_result kicksecure 18.2.3.6 acct calamares-install 0 '' Kicksecure >/dev/null
+if grep --quiet -- '--lane kicksecure-lxqt-efi-secureboot ' "${argv_file}" \
+   && grep --quiet -- 'kicksecure-lxqt-efi-secureboot-18-2-3-6' "${argv_file}"; then
+   printf 'ok: calamares-install lane carries efi-secureboot intact\n'
+else
+   printf 'FAIL: efi-secureboot lane wrong: %s\n' "$(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Parse-time guard: an unknown --firmware must be REJECTED (SETUP_RC) before it can flow
+## into a lane/subtree name. Drive the REAL binary as a subprocess; the die fires in the
+## arg loop, before any root/preflight, so it is safe to run unprivileged.
+fw_reject="$("${subject}" kicksecure lxqt --firmware bogus --dry-run 2>&1 || true)"
+if [[ "${fw_reject}" == *"--firmware must be bios|efi|efi-secureboot, got 'bogus'"* ]]; then
+   printf 'ok: unknown --firmware rejected at parse time\n'
+else
+   printf 'FAIL: unknown --firmware not rejected: %s\n' "${fw_reject}" >&2
+   failures=$((failures + 1))
+fi
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s shot-publish assertion(s) failed\n' "${failures}" >&2

@@ -644,7 +644,7 @@ rt_eph_cleanup() {
 ## results subtree carries guest, interface AND version so lxqt and cli (or two
 ## versions) never collide on one path.
 rt_publish_result() {
-   local guest_name version account mode rc shot outdir verdict tok
+   local guest_name version account mode rc shot outdir verdict tok lane_fw
    local -a pub_expect=()
    local -a pub_stderr=()
    guest_name="$1"
@@ -671,16 +671,25 @@ rt_publish_result() {
       pub_stderr=( --step-stderr-file "${rt_check_log}" )
    fi
    rt_check_log=""
+   ## Firmware is part of the run identity for the Calamares INSTALL lane only: a BIOS
+   ## install lays down a BIOS-boot partition and an EFI one an ESP, a legitimately
+   ## different screenshot sequence + golden set, and the overview must not collapse a
+   ## bios and an efi run of one ISO onto a single matrix row (run_key is lane-derived).
+   ## The whonix-pair lane has no firmware axis, so it keeps the bare guest-interface lane.
+   lane_fw=""
+   if [ "${mode}" = 'calamares-install' ]; then
+      lane_fw="-${firmware}"
+   fi
    ## origin=downloaded: this lane downloads + signature-verifies the OFFICIAL
-   ## release image, it does not build it. lane = guest-interface so the site groups
-   ## lxqt vs cli (and distinct versions) as separate matrix cells.
+   ## release image, it does not build it. lane = guest-interface[-firmware] so the site
+   ## groups lxqt vs cli, distinct versions, AND distinct firmware as separate cells.
    ## A publish failure must NOT change the TEST verdict: keep rc, log it, and
    ## report the lane's real result on the console line (the results plane simply
    ## has no entry for this run -- NO-DATA on the site, never a faked verdict).
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
-      "${guest_name}-${interface}-${version//./-}" "${account}" "${mode}" \
+      "${guest_name}-${interface}${lane_fw}-${version//./-}" "${account}" "${mode}" \
       "${rc}" "${shot}" \
-      --lane "${guest_name}-${interface}" --version "${version}" \
+      --lane "${guest_name}-${interface}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
@@ -839,7 +848,18 @@ parse_args() {
             ;;
          --firmware)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --firmware"
-            firmware="$2"
+            ## Validate at PARSE time: firmware is interpolated into the install lane's
+            ## results subtree name + --lane, so an empty/garbage value would otherwise
+            ## flow in (e.g. a malformed 'guest-interface--version' cell) before the
+            ## downstream publisher's safe-name check. Reject anything but the known set.
+            case "$2" in
+               bios | efi | efi-secureboot)
+                  firmware="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '$2'"
+                  ;;
+            esac
             shift 2
             ;;
          --iso)
