@@ -489,6 +489,9 @@ class TestTempdirScenarios(ScenarioTestBase):
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=env,
                                stubs=self.ID + self.STAT_OK + self.TEST_OK)
+        ## assertCleanRun first: a Bash error would also leave records empty and
+        ## make the empty-record assertion pass vacuously.
+        self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')
 
