@@ -430,7 +430,7 @@ wire() {
          wire_env=(
             "HELPER_SCRIPTS_REPO=${hs}"
             "HELPER_SCRIPTS_PATH=${hs}"
-            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
          )
          ;;
       lockfile)
@@ -978,7 +978,7 @@ wire() {
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
