@@ -292,10 +292,17 @@ def run_enum(dm_root, tool_dir):
     if not os.path.isfile(enum):
         raise SystemExit("ERROR: sibling %s not found beside this tool" % ENUM_TOOL)
     result = subprocess.run([enum, dm_root], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit("ERROR: %s exited %d:\n%s"
+                         % (ENUM_TOOL, result.returncode, result.stderr.strip()))
     if not result.stdout.strip():
         raise SystemExit("ERROR: %s produced no output:\n%s"
                          % (ENUM_TOOL, result.stderr.strip()))
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("ERROR: %s produced invalid JSON: %s"
+                         % (ENUM_TOOL, exc))
 
 
 def collect_reachable(dm_root, enum_report, tree_files, submodules,
