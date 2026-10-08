@@ -247,6 +247,25 @@ check "ancestor-symlink -- leaf NOT copied (records no attachment)" \
 check "ancestor-symlink -- sentinel NOT leaked into the plane" \
    "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d12" 2>/dev/null && printf LEAKED || printf no)" 'no'
 
+## 13. A harmless '.' component must NOT be rejected: the component walk drops '.' (a
+##     no-op in resolution), so an unnormalized caller path like <dir>/./err.txt is
+##     accepted and its tail read. (Canary: the pre-fix walk refused '.' -> tail omitted.)
+out13="${workdir}/r13.json"
+check "dot-component path accepted" \
+   "$(emit_rc "${out13}" --step-stderr-file "${workdir}/./err.txt")" '0'
+check "dot-component stderr tail recorded" \
+   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out13}" && printf yes || printf no)" 'yes'
+
+## 14. A '..' component is STILL rejected (it could climb out of the walked chain), so
+##     even a path that lexically resolves to a real file is refused -> tail omitted, run
+##     still published. Guards against loosening '..' while fixing '.'.
+mkdir --parents -- "${workdir}/sub14"
+out14="${workdir}/r14.json"
+check "dotdot path does not abort the publish" \
+   "$(emit_rc "${out14}" --step-stderr-file "${workdir}/sub14/../err.txt")" '0'
+check "dotdot path REJECTED -- tail NOT recorded" \
+   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out14}" && printf yes || printf no)" 'no'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

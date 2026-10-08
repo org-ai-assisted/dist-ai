@@ -455,5 +455,115 @@ class TestAptRepositoryIsolatedScenarios(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
 
+class TestTempdirScenarios(ScenarioTestBase):
+    FILE = 'check_tempdir.bsh'
+
+    ## id -> uid 1000, so the expected per-user tmpdir is /tmp/user/1000. The
+    ## four temp-dir variables are set to it; verbose=1 so the OK info line is
+    ## emitted (it is verbose-gated).
+    GOOD_ENV = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+                'TEMP=/tmp/user/1000\nTEMPDIR=/tmp/user/1000\nverbose=1\n')
+    ## id stub. `test`/`stat` are stubbed per scenario; `test` and `[` are
+    ## different builtins, so stubbing a `test` function steers only the
+    ## directory probes, not the emit helpers' `[`.
+    ID = 'id() { printf "1000\\n"; }\n'
+    ## Safe layout: base /tmp/user root-owned (%u=0) mode 0711 (%a=711), per-user
+    ## /tmp/user/1000 mode 0700 (%a on a path containing /tmp/user/); nothing is a
+    ## symlink (-h false), dirs present and owned (-d/-O true).
+    STAT_OK = ('stat() { case "$*" in *--format=%u*) printf "0\\n" ;; '
+               '*--format=%a*/tmp/user/*) printf "700\\n" ;; '
+               '*--format=%a*) printf "711\\n" ;; esac; }\n')
+    TEST_OK = ('test() { case "$1" in -h) return 1 ;; -d|-O) return 0 ;; '
+               '*) builtin test "$@" ;; esac; }\n')
+
+    def test_all_correct_emits_info_no_failure(self) -> None:
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV,
+                               stubs=self.ID + self.STAT_OK + self.TEST_OK)
+        self.assertTrue(r.has_severity('info'))
+        self.assertFalse(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '0')
+
+    def test_ok_info_is_verbose_gated(self) -> None:
+        env = self.GOOD_ENV.replace('verbose=1', 'verbose=0')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env,
+                               stubs=self.ID + self.STAT_OK + self.TEST_OK)
+        ## assertCleanRun first: a Bash error would also leave records empty and
+        ## make the empty-record assertion pass vacuously.
+        self.assertCleanRun(r)
+        self.assertEqual(r.records, [])
+        self.assertEqual(r.exit_code, '0')
+
+    def test_variable_wrong_warns_and_fails(self) -> None:
+        env = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+               'TEMP=/tmp/user/1000\nTEMPDIR=/tmp/elsewhere\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs=self.ID)
+        self.assertTrue(r.has_severity('warning'))
+        ## Only the variable NAME is reported, never its (user-controlled) value.
+        self.assertIn('incorrect: TEMPDIR', r.joined())
+        self.assertNotIn('/tmp/elsewhere', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_variable_unset_warns_and_fails(self) -> None:
+        env = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+               'TEMP=/tmp/user/1000\nunset TEMPDIR\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs=self.ID)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('incorrect: TEMPDIR', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_hostile_value_is_not_rendered(self) -> None:
+        ## A user-set TMP containing markup must NOT reach the HTML message
+        ## (else it could forge a green result); only the name is reported.
+        env = ("TMPDIR=/tmp/user/1000\nTEMP=/tmp/user/1000\n"
+               "TEMPDIR=/tmp/user/1000\n"
+               "TMP='<font color=\"green\">OK</font>'\n")
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs=self.ID)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('incorrect: TMP', r.joined())
+        self.assertNotIn('<font color="green">OK</font>', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_base_dir_not_root_owned_warns(self) -> None:
+        ## Variables correct, per-user dir fine, but /tmp/user is not root-owned.
+        stat_base_bad = ('stat() { case "$*" in *--format=%u*) printf "1000\\n" ;; '
+                         '*--format=%a*/tmp/user/*) printf "700\\n" ;; '
+                         '*--format=%a*) printf "711\\n" ;; esac; }\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV,
+                               stubs=self.ID + stat_base_bad + self.TEST_OK)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('base directory', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_symlink_peruser_dir_warns(self) -> None:
+        ## Base fine; the per-user dir is a symlink (-h true only for it).
+        test_symlink = ('test() { p="${!#}"; case "$1" in '
+                        '-h) [ "$p" = /tmp/user/1000 ] ;; -d|-O) return 0 ;; '
+                        '*) builtin test "$@" ;; esac; }\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV,
+                               stubs=self.ID + self.STAT_OK + test_symlink)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('owned by this account', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_wrong_mode_peruser_dir_warns(self) -> None:
+        ## Base fine; the per-user dir is mode 0755, not 0700.
+        stat_peruser_bad = ('stat() { case "$*" in *--format=%u*) printf "0\\n" ;; '
+                            '*--format=%a*/tmp/user/*) printf "755\\n" ;; '
+                            '*--format=%a*) printf "711\\n" ;; esac; }\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV,
+                               stubs=self.ID + stat_peruser_bad + self.TEST_OK)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('owned by this account', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+
 if __name__ == '__main__':
     unittest.main()
