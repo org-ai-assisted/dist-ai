@@ -317,10 +317,15 @@ def run_enum(dm_root, tool_dir):
     ## degradation signal (the exit code is not -- see above); keying on it does not
     ## touch the legitimate zero-entries advisory, whose errors lists are empty.
     degraded = []
-    if report.get("parse_errors"):
-        degraded.append("%d parse error(s)" % len(report["parse_errors"]))
-    if report.get("walk_errors"):
-        degraded.append("%d walk error(s)" % len(report["walk_errors"]))
+    for key, label in (("parse_errors", "parse error(s)"),
+                       ("walk_errors", "walk error(s)")):
+        value = report.get(key)
+        if not value:
+            continue
+        ## Tolerate a malformed field (not a list) -- a misbehaving enum must
+        ## still fail CLEANLY here, never crash with a TypeError traceback.
+        count = len(value) if isinstance(value, list) else 1
+        degraded.append("%d %s" % (count, label))
     if degraded:
         raise SystemExit(
             "ERROR: %s reported a DEGRADED enumeration (%s) -- the inventory is "

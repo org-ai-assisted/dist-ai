@@ -27,7 +27,9 @@ dropped -- a false negative on a security tool). Asserts:
   7. report with non-empty parse_errors -> SystemExit (degraded, incomplete scan);
   8. report with non-empty walk_errors  -> SystemExit (degraded, incomplete scan);
   9. report with EMPTY error lists + nonzero exit -> RETURNED (the legitimate
-     zero-entries advisory is complete, not degraded -- must not fail closed).
+     zero-entries advisory is complete, not degraded -- must not fail closed);
+ 10. report with a MALFORMED error field (not a list) -> clean SystemExit, not a
+     TypeError traceback (a misbehaving enum must still fail closed cleanly).
 Prints 'N pass, N fail'.
 """
 
@@ -101,6 +103,8 @@ DEGRADED_WALK_ERRORS = (b'#!/bin/sh\nprintf \'%s\\n\''
 COMPLETE_EMPTY_ERRORS_EXIT_NONZERO = (
     b'#!/bin/sh\nprintf \'%s\\n\''
     b' \'{"ok": true, "parse_errors": [], "walk_errors": []}\'\nexit 1\n')
+MALFORMED_ERROR_FIELD = (b'#!/bin/sh\nprintf \'%s\\n\''
+                         b' \'{"ok": true, "walk_errors": 1}\'\nexit 0\n')
 
 
 def main(argv):
@@ -149,6 +153,9 @@ def main(argv):
             make_stub_dir(enum_name, COMPLETE_EMPTY_ERRORS_EXIT_NONZERO, temp_dirs),
             "empty error lists + nonzero exit -> returned (complete advisory)",
             checks)
+        expect_systemexit(
+            module, make_stub_dir(enum_name, MALFORMED_ERROR_FIELD, temp_dirs),
+            "malformed error field -> clean SystemExit (no TypeError)", checks)
     finally:
         for stub_dir in temp_dirs:
             shutil.rmtree(stub_dir, ignore_errors=True)
