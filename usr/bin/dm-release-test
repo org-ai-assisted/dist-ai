@@ -704,6 +704,7 @@ rt_publish_result() {
 rt_lane_kicksecure() {
    local account version iso pass_file vmname rc shot_dir shot_arg check_log
    local -a checks_arg=()
+   local -a mok_arg=()
 
    account="$1"
    version="$2"
@@ -771,11 +772,17 @@ rt_lane_kicksecure() {
    if [ "${run_checks}" = 'true' ]; then
       checks_arg=( --checks )
    fi
+   ## Under Secure Boot, enroll the installed system's per-machine MOK so its DKMS-signed
+   ## modules (tirdad, GA) load on the next boot -- the point of an SB lane. Fresh install,
+   ## so dm-calamares-install auto-generates + tracks the disk; no --disk needed here.
+   if [ "${firmware}" = 'efi-secureboot' ]; then
+      mok_arg=( --mok-enroll )
+   fi
 
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
+      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" "${mok_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
@@ -993,6 +1000,7 @@ main() {
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  origin=${rt_origin} iso=${local_iso:-<download>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
+         "  mok-enroll=$([ "${firmware}" = 'efi-secureboot' ] && printf 'yes' || printf 'no')" \
          "  mode=$([ "${provision_leak}" = 'true' ] && printf 'provision-leak' || printf 'test')" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
