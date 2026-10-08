@@ -30,6 +30,16 @@ source "${suite_exit_helper}"
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
+## The wiki-write test drives helper-scripts' 'overwrite' (a '-Bsu' python tool
+## importing append_shared). When a helper-scripts checkout is wired, put its
+## usr/bin on PATH and its library on PYTHONPATH so the test runs instead of
+## skipping env-unmet.
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   export HELPER_SCRIPTS_PATH
+   export PATH="${HELPER_SCRIPTS_PATH}/usr/bin:${PATH}"
+   export PYTHONPATH="${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
 explicit_arg="${1:-}"

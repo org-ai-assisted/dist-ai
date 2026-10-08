@@ -790,7 +790,13 @@ wire() {
          fi
          ;;
       dm-virtualbox-wiki-links)
+         ## The wiki-write test drives helper-scripts' 'overwrite' (a '-Bsu'
+         ## python tool); wire HELPER_SCRIPTS_PATH so the runner puts its usr/bin
+         ## on PATH and its library on PYTHONPATH, else the test skips env-unmet.
          wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" )
+         if [ -n "${hs}" ]; then
+            wire_env=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       dm-help-steps)
          wire_env=(
