@@ -133,17 +133,20 @@ def source_mode_tests(lockfile_sh, check):
     src = make_source_script(tmp, lockfile_sh)
 
     ## self-lock (no key): 2nd instance skips (non-zero) while the 1st holds it.
-    ## Assert the flock 'failed to get lock' signal (the --verbose probe emits it to
-    ## stderr on genuine contention), not merely 'no LOCKED + non-zero' -- an unrelated
-    ## abort (e.g. a broken lock dir) would otherwise false-pass as a skip. Sync on the
-    ## holder's LOCKED line (wait_for_locked), not a fixed sleep that races a loaded host.
+    ## Assert lockfile.sh's OWN contention message ('another instance is already
+    ## running'), not merely 'no LOCKED + non-zero' -- an unrelated abort (e.g. a broken
+    ## lock dir, which exits with a DIFFERENT message) would otherwise false-pass as a
+    ## skip. lockfile.sh deliberately suppresses flock's stderr and runs it WITHOUT
+    ## --verbose (no 'failed to get lock' / acquire noise), so key on its own message,
+    ## not flock's removed + locale-dependent string. Sync on the holder's LOCKED line
+    ## (wait_for_locked), not a fixed sleep that races a loaded host.
     holder = bg([src, '', '2'])
     locked = wait_for_locked(holder)
     second = run([src, '', '0'])
     combined = second.stdout + second.stderr
     check('source: self-lock 2nd instance skips',
           locked and 'LOCKED' not in second.stdout
-          and 'failed to get lock' in combined,
+          and 'another instance is already running' in combined,
           'locked=%s %r' % (locked, combined.strip()))
     check('source: skip exits non-zero', second.returncode != 0,
           'rc=%d' % second.returncode)
@@ -180,11 +183,13 @@ def wrap_mode_tests(lockfile_sh, check):
     locked = wait_for_locked(holder)
     same = run([lockfile_sh, 'wA', '--', 'echo', 'RAN'])
     other = run([lockfile_sh, 'wB', '--', 'echo', 'RAN'])
-    ## Require the flock 'failed to get lock' signal (the --verbose probe emits it on
-    ## contention), not just 'no RAN + non-zero' which an unrelated abort also yields.
+    ## Require lockfile.sh's OWN contention message ('another instance is already
+    ## running'), not just 'no RAN + non-zero' which an unrelated abort also yields.
+    ## The subject runs flock WITHOUT --verbose (no 'failed to get lock'), so assert its
+    ## own message; the conflict exit is 75 (flock --conflict-exit-code 75).
     check('wrap: same key skips', locked and 'RAN' not in same.stdout
           and same.returncode != 0
-          and 'failed to get lock' in (same.stdout + same.stderr),
+          and 'another instance is already running' in (same.stdout + same.stderr),
           'locked=%s %r rc=%d' % (locked, (same.stdout + same.stderr).strip(),
                                   same.returncode))
     check('wrap: different key concurrent', 'RAN' in other.stdout,
@@ -277,9 +282,10 @@ def inline_safety_tests(lockfile_sh, check):
                         first.returncode))
 
     ## 2) the inlined self-lock still mutually excludes: a 2nd instance skips
-    ##    while the 1st holds the lock. Assert the flock failure message, not just
-    ##    a non-zero exit -- a wrap-mode mis-fire also exits non-zero with no
-    ##    LOCKED, so a bare rc check would pass for the wrong reason.
+    ##    while the 1st holds the lock. Assert lockfile.sh's OWN contention message,
+    ##    not just a non-zero exit -- a wrap-mode mis-fire also exits non-zero with no
+    ##    LOCKED, so a bare rc check would pass for the wrong reason. The subject runs
+    ##    flock WITHOUT --verbose (no 'failed to get lock'), so key on its own message.
     holder = subprocess.Popen([host, 'installer-flag', '10'],
                               stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, env=env)
@@ -287,7 +293,7 @@ def inline_safety_tests(lockfile_sh, check):
     second = hrun(['installer-flag', '0'])
     check('inline: 2nd inlined instance skips while 1st holds',
           locked and 'LOCKED' not in second.stdout and second.returncode != 0
-          and 'failed to get lock' in (second.stdout + second.stderr),
+          and 'another instance is already running' in (second.stdout + second.stderr),
           'locked=%s %r rc=%d' % (locked,
                                   (second.stdout + second.stderr).strip(),
                                   second.returncode))

@@ -47,6 +47,7 @@ cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
 trap cleanup EXIT
 stub_bin="${work_dir}/bin"
 mkdir --parents -- "${stub_bin}"
+args_log="${work_dir}/systemctl.args"
 
 ## sleep stub: no-op, so the 120-iteration timeout path is instant.
 cat > "${stub_bin}/sleep" <<'STUB'
@@ -66,42 +67,61 @@ printf 'ActiveState=%s\n' "${TEST_PRIVLEAPD_STATE:-activating}"
 STUB
 chmod 0755 -- "${stub_bin}/systemctl"
 
+## Drives the REAL subject with 'systemctl'/'sleep' stubbed and the args log
+## captured, returning 'rc calls' so a case can assert BOTH the exit status and
+## the systemctl call count. 'sleep' is a no-op, so the count (not wall time)
+## distinguishes an immediate break from the full bounded wait.
 run_with_state() {
-   local state="$1" rc=0
-   TEST_PRIVLEAPD_STATE="${state}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
-   printf '%s' "${rc}"
+   local state="$1" rc=0 calls
+   ## Truncate-or-CREATE: a buggy subject that returns before any systemctl poll
+   ## leaves no log, and 'wc -l < absent' under errexit would abort the whole
+   ## script (silent, no FAIL line) instead of reporting a clean 0-poll failure.
+   true >| "${args_log}"
+   TEST_PRIVLEAPD_STATE="${state}" SYSTEMCTL_ARGS_LOG="${args_log}" \
+      PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
+   calls="$(wc -l < "${args_log}")"
+   printf '%s %s' "${rc}" "${calls}"
 }
 
-## active -> success (0)
-rc="$( run_with_state active )"
-if [ "${rc}" = '0' ]; then
-   pass "active -> exit 0"
+## active -> success (0), breaking on the first poll
+result="$( run_with_state active )"
+rc="${result%% *}"
+calls="${result##* }"
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
+   pass "active -> exit 0 (${calls} systemctl call(s))"
 else
-   fail "active -> exit ${rc}, expected 0"
+   fail "active -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
 fi
 
-## failed -> exit 0 (best-effort contract; the caller handles privleapd's absence)
-rc="$( run_with_state failed )"
-if [ "${rc}" = '0' ]; then
-   pass "failed -> exit 0 (best-effort contract)"
+## failed -> exit 0 (best-effort contract; the caller handles privleapd's
+## absence), breaking on the first poll
+result="$( run_with_state failed )"
+rc="${result%% *}"
+calls="${result##* }"
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
+   pass "failed -> exit 0 (best-effort contract, ${calls} systemctl call(s))"
 else
-   fail "failed -> exit ${rc}, expected 0 (best-effort contract)"
+   fail "failed -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
 fi
 
-## never terminal (timeout) -> exit 0 (best-effort contract)
-rc="$( run_with_state activating )"
-if [ "${rc}" = '0' ]; then
-   pass "timeout -> exit 0 (best-effort contract)"
+## Never terminal -> exit 0 (best-effort) only AFTER the full bounded wait.
+## Asserting rc=0 alone is vacuous: a subject that polled once and returned 0
+## would pass too. Pin the systemctl call count to the full 120-iteration loop
+## bound, which proves it actually timed out instead of returning early.
+result="$( run_with_state activating )"
+rc="${result%% *}"
+calls="${result##* }"
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 120 ]; then
+   pass "timeout -> exit 0 after the full ${calls}-poll bounded wait"
 else
-   fail "timeout -> exit ${rc}, expected 0 (best-effort contract)"
+   fail "timeout -> rc=${rc}, ${calls} poll(s); expected 0 after 120 polls"
 fi
 
 ## Confirms the subject queries privleapd.service (not a copied unit name) and
 ## that an unrunnable unit (LoadState=not-found) breaks on the first poll instead
 ## of waiting out the whole loop. 'sleep' is stubbed, so the systemctl CALL COUNT
 ## (not wall time) distinguishes an immediate break from a 120-iteration loop.
-args_log="${work_dir}/systemctl.args"
-safe-rm --force -- "${args_log}"
+true >| "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='not-found' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
@@ -116,19 +136,19 @@ else
    fail "did not query privleapd.service (args: $(cat -- "${args_log}"))"
 fi
 calls="$(wc -l < "${args_log}")"
-if [ "${calls}" -le 2 ]; then
+if [ "${calls}" -eq 1 ]; then
    pass "LoadState=not-found breaks immediately (${calls} systemctl call(s))"
 else
    fail "LoadState=not-found looped (${calls} systemctl calls), expected immediate break"
 fi
 
 ## bad-setting (an unparsable unit that will not start) is also terminal.
-safe-rm --force -- "${args_log}"
+true >| "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='bad-setting' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
 calls="$(wc -l < "${args_log}")"
-if [ "${rc}" = '0' ] && [ "${calls}" -le 2 ]; then
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
    pass "LoadState=bad-setting breaks immediately (${calls} systemctl call(s))"
 else
    fail "LoadState=bad-setting -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
