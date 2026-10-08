@@ -41,6 +41,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## `sandbox` requires a target (no implicit default -- remote targets are possible). This
+## tool captures shots in the local review sandbox (temp-claude), so default to it; the
+## bare `sandbox` calls below would otherwise die "no target". SANDBOX_TARGET still
+## overrides via an explicit --target (see below).
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
 die() {
    printf '%s\n' "secure-terminal-shots-sandbox: $*" >&2
    exit 1

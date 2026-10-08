@@ -33,6 +33,13 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## `sandbox` requires a target (no implicit default -- remote targets are possible), so the
+## bare `sandbox exec` calls below would die "no target" unless QUBE_CTL_TARGET is set by
+## hand. This is a LOCAL build in the review sandbox, so default to it; override via
+## QUBE_CTL_TARGET.
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
 progress="$1"
 ## The commit under test. Passed explicitly because sign-and-tag AMENDS the
 ## parent HEAD, so after any attempt the tree no longer sits on it -- a second
