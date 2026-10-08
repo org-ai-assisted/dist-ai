@@ -7,15 +7,23 @@
 
 """Assertion checker for root_lpe_audit_run_enum_test.sh.
 
-Targeted unit canary for dm-root-lpe-audit's run_enum fail-closed contract.
-Imports the REAL tool (argv[1]) as a module and calls run_enum directly with a
-tool_dir holding a STUB dm-root-scripts-enum (a controlled test INPUT, not a copy
-of the subject). A security-inventory tool must FAIL CLOSED: a degraded enum run
-(nonzero exit, or non-JSON stdout) must stop the audit, never look clean. Asserts:
-  1. enum exits nonzero but prints valid JSON -> SystemExit (not silently accepted);
-  2. enum exits 0 but prints invalid JSON   -> SystemExit (clean, not a traceback);
-  3. positive control: enum exits 0 with valid JSON -> run_enum returns the dict
-     (proves the stub harness really drives run_enum, so 1+2 are not vacuous).
+Targeted unit canary for dm-root-lpe-audit's run_enum contract. Imports the REAL
+tool (argv[1]) as a module and calls run_enum directly with a tool_dir holding a
+STUB dm-root-scripts-enum (a controlled test INPUT, not a copy of the subject).
+
+run_enum must FAIL CLOSED on UNUSABLE enumerator output -- no output, non-JSON or
+undecodable bytes, or a non-object document -- so a broken enum run cannot look
+clean. It must NOT key fail-close on the exit CODE: the enum prints a complete
+report and then exits nonzero as a "wrong root?" advisory, and the audit's own
+root-guarded scan must still run on that report, so a nonzero exit with a valid
+JSON object must be RETURNED, not aborted (else real LPE findings are silently
+dropped -- a false negative on a security tool). Asserts:
+  1. no output (nonzero exit)          -> SystemExit;
+  2. non-JSON text                     -> clean SystemExit (not a traceback);
+  3. non-UTF-8 bytes                   -> clean SystemExit (not a traceback);
+  4. valid JSON that is not an object  -> clean SystemExit (not a later crash);
+  5. valid JSON object with NONZERO exit -> run_enum RETURNS it (no false negative);
+  6. valid JSON object with exit 0     -> run_enum RETURNS it (positive control).
 Prints 'N pass, N fail'.
 """
 
@@ -35,6 +43,7 @@ def load_subject(path):
     name = "dm_root_lpe_audit_under_test"
     loader = SourceFileLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -44,7 +53,7 @@ def make_stub_dir(enum_name, body, temp_dirs):
     stub_dir = tempfile.mkdtemp(prefix="lpe-run-enum-")
     temp_dirs.append(stub_dir)
     stub = os.path.join(stub_dir, enum_name)
-    with open(stub, "w", encoding="utf-8") as handle:
+    with open(stub, "wb") as handle:
         handle.write(body)
     os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return stub_dir
@@ -72,9 +81,13 @@ def expect_return(module, stub_dir, description, checks):
         checks.append((description, isinstance(out, dict) and out.get("ok") is True))
 
 
-VALID_JSON_EXIT_NONZERO = '#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 3\n'
-INVALID_JSON_EXIT_ZERO = '#!/bin/sh\nprintf \'%s\\n\' \'this is { not json\'\nexit 0\n'
-VALID_JSON_EXIT_ZERO = '#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 0\n'
+## Stub enum bodies (written verbatim as bytes). 0xFF is invalid UTF-8.
+NO_OUTPUT_EXIT_NONZERO = b"#!/bin/sh\nexit 1\n"
+INVALID_JSON_EXIT_ZERO = b"#!/bin/sh\nprintf '%s\\n' 'this is { not json'\nexit 0\n"
+NON_UTF8_EXIT_ZERO = b"#!/bin/sh\nprintf '\\377'\nexit 0\n"
+VALID_JSON_NON_OBJECT = b"#!/bin/sh\nprintf '%s\\n' '[1, 2, 3]'\nexit 0\n"
+VALID_OBJECT_EXIT_NONZERO = b'#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 3\n'
+VALID_OBJECT_EXIT_ZERO = b'#!/bin/sh\nprintf \'%s\\n\' \'{"ok": true}\'\nexit 0\n'
 
 
 def main(argv):
@@ -90,22 +103,28 @@ def main(argv):
     module = load_subject(subject)
     enum_name = module.ENUM_TOOL  ## real constant -> no drift from the subject
 
-    checks = []
-    temp_dirs = []
+    checks: list[tuple[str, bool]] = []
+    temp_dirs: list[str] = []
     try:
         expect_systemexit(
-            module,
-            make_stub_dir(enum_name, VALID_JSON_EXIT_NONZERO, temp_dirs),
-            "enum exits nonzero with valid JSON -> SystemExit", checks)
+            module, make_stub_dir(enum_name, NO_OUTPUT_EXIT_NONZERO, temp_dirs),
+            "no output -> SystemExit", checks)
         expect_systemexit(
-            module,
-            make_stub_dir(enum_name, INVALID_JSON_EXIT_ZERO, temp_dirs),
-            "enum emits invalid JSON -> clean SystemExit (no traceback)", checks)
+            module, make_stub_dir(enum_name, INVALID_JSON_EXIT_ZERO, temp_dirs),
+            "non-JSON output -> clean SystemExit (no traceback)", checks)
+        expect_systemexit(
+            module, make_stub_dir(enum_name, NON_UTF8_EXIT_ZERO, temp_dirs),
+            "non-UTF-8 output -> clean SystemExit (no traceback)", checks)
+        expect_systemexit(
+            module, make_stub_dir(enum_name, VALID_JSON_NON_OBJECT, temp_dirs),
+            "valid non-object JSON -> clean SystemExit (no later crash)", checks)
         expect_return(
-            module,
-            make_stub_dir(enum_name, VALID_JSON_EXIT_ZERO, temp_dirs),
-            "enum exits 0 with valid JSON -> run_enum returns the parsed dict",
+            module, make_stub_dir(enum_name, VALID_OBJECT_EXIT_NONZERO, temp_dirs),
+            "nonzero exit with valid JSON object -> returned (no false negative)",
             checks)
+        expect_return(
+            module, make_stub_dir(enum_name, VALID_OBJECT_EXIT_ZERO, temp_dirs),
+            "exit 0 with valid JSON object -> returned (positive control)", checks)
     finally:
         for stub_dir in temp_dirs:
             shutil.rmtree(stub_dir, ignore_errors=True)

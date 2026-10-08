@@ -6,13 +6,16 @@
 ## AI-Assisted
 
 ## Canary for dm-root-lpe-audit's run_enum fail-closed contract. run_enum shells
-## out to the sibling dm-root-scripts-enum and parses its JSON; a degraded enum
-## run (nonzero exit, or non-JSON stdout) must STOP the audit, never look clean --
-## a silent-green on a security-inventory tool is the worst failure. The enum is
-## resolved as a sibling of the tool (no env override), so this drives run_enum as
-## a targeted unit: the checker imports the REAL tool and calls run_enum with a
-## tool_dir holding a STUB enum (a controlled INPUT, not a copy of the subject).
-## No root, no network.
+## out to the sibling dm-root-scripts-enum and parses its JSON; a broken enum run
+## (no output, non-JSON/undecodable bytes, or a non-object document) must STOP the
+## audit cleanly, never look clean -- a silent-green on a security-inventory tool is
+## the worst failure. A NONZERO enum exit is NOT a failure: the enum prints a
+## complete report then exits nonzero as a "wrong root?" advisory, and the audit's
+## own root-guarded scan must still run on it, so run_enum must RETURN that report
+## (keying fail-close on the exit code drops real LPE findings). The enum is resolved
+## as a sibling of the tool (no env override), so this drives run_enum as a targeted
+## unit: the checker imports the REAL tool and calls run_enum with a tool_dir holding
+## a STUB enum (a controlled INPUT, not a copy of the subject). No root, no network.
 
 set -o errexit
 set -o nounset
