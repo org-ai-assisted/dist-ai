@@ -73,7 +73,10 @@ chmod 0755 -- "${stub_bin}/systemctl"
 ## distinguishes an immediate break from the full bounded wait.
 run_with_state() {
    local state="$1" rc=0 calls
-   safe-rm --force -- "${args_log}"
+   ## Truncate-or-CREATE: a buggy subject that returns before any systemctl poll
+   ## leaves no log, and 'wc -l < absent' under errexit would abort the whole
+   ## script (silent, no FAIL line) instead of reporting a clean 0-poll failure.
+   true > "${args_log}"
    TEST_PRIVLEAPD_STATE="${state}" SYSTEMCTL_ARGS_LOG="${args_log}" \
       PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
    calls="$(wc -l < "${args_log}")"
@@ -84,7 +87,7 @@ run_with_state() {
 result="$( run_with_state active )"
 rc="${result%% *}"
 calls="${result##* }"
-if [ "${rc}" = '0' ] && [ "${calls}" -le 2 ]; then
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
    pass "active -> exit 0 (${calls} systemctl call(s))"
 else
    fail "active -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
@@ -95,7 +98,7 @@ fi
 result="$( run_with_state failed )"
 rc="${result%% *}"
 calls="${result##* }"
-if [ "${rc}" = '0' ] && [ "${calls}" -le 2 ]; then
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
    pass "failed -> exit 0 (best-effort contract, ${calls} systemctl call(s))"
 else
    fail "failed -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
@@ -118,7 +121,7 @@ fi
 ## that an unrunnable unit (LoadState=not-found) breaks on the first poll instead
 ## of waiting out the whole loop. 'sleep' is stubbed, so the systemctl CALL COUNT
 ## (not wall time) distinguishes an immediate break from a 120-iteration loop.
-safe-rm --force -- "${args_log}"
+true > "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='not-found' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
@@ -133,19 +136,19 @@ else
    fail "did not query privleapd.service (args: $(cat -- "${args_log}"))"
 fi
 calls="$(wc -l < "${args_log}")"
-if [ "${calls}" -le 2 ]; then
+if [ "${calls}" -eq 1 ]; then
    pass "LoadState=not-found breaks immediately (${calls} systemctl call(s))"
 else
    fail "LoadState=not-found looped (${calls} systemctl calls), expected immediate break"
 fi
 
 ## bad-setting (an unparsable unit that will not start) is also terminal.
-safe-rm --force -- "${args_log}"
+true > "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='bad-setting' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
 calls="$(wc -l < "${args_log}")"
-if [ "${rc}" = '0' ] && [ "${calls}" -le 2 ]; then
+if [ "${rc}" = '0' ] && [ "${calls}" -eq 1 ]; then
    pass "LoadState=bad-setting breaks immediately (${calls} systemctl call(s))"
 else
    fail "LoadState=bad-setting -> rc=${rc}, ${calls} call(s); expected 0 and immediate break"
