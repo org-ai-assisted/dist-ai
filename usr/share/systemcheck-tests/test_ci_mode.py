@@ -62,6 +62,20 @@ sanitize-string() { printf '%s' "${3:-}"; }
 br_add() { printf '%s' "${1:-}"; }
 """
 
+## apt-get-update ITSELF fails -> "Could not check for software updates!". A
+## failure to check is a real finding (not the tolerated updates-available one),
+## so it must exit non-zero even under --ci.
+_STUBS_UPDATE_CHECK_FAILS = r"""
+leaprun() {
+  case "${1:-}" in
+    apt-get-update) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+sanitize-string() { printf '%s' "${3:-}"; }
+br_add() { printf '%s' "${1:-}"; }
+"""
+
 
 class TestCiUpdatesAvailable(ScenarioTestBase):
     def _run(self, ci: str, stubs: str):
@@ -101,6 +115,16 @@ class TestCiUpdatesAvailable(ScenarioTestBase):
         self.assertCleanRun(res)
         self.assertTrue(res.has_severity('error'),
                         f'expected an error-severity emit; got {res.records!r}')
+        self.assertEqual(res.exit_code, '1')
+
+    def test_ci_does_not_mask_update_check_failure(self) -> None:
+        ## apt-get-update failing (could not check at all) is a real finding, not
+        ## the tolerated "updates available" one: non-zero exit even with ci=true.
+        res = self._run('true', _STUBS_UPDATE_CHECK_FAILS)
+        self.assertCleanRun(res)
+        self.assertTrue(res.has_severity('warning'),
+                        f'expected could-not-check warning; got {res.records!r}')
+        self.assertIn('Could not check', res.joined())
         self.assertEqual(res.exit_code, '1')
 
 
