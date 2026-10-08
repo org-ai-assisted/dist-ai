@@ -104,6 +104,52 @@ latest="${results_root}/kicksecure-18-2-3-5/latest"
 link_target="$(readlink -- "${latest}" 2>/dev/null || true)"
 check "latest symlink points at run" "$([ "${link_target}" = "$(basename -- "${outdir}")" ] && printf true || printf false)"
 
+## Multi-shot "full story": shot_src is a DIRECTORY of NN-<milestone>.png files. Each is
+## published as its own attachment NAMED by the milestone (the NN- prefix stripped), stored
+## step-named so basenames never collide, in filename (capture) order. Canary for the
+## multi-screenshot extension: the pre-extension publisher only forwarded a single shot file.
+story="${work}/story"
+mkdir --parents -- "${story}"
+printf 'WELCOME\n'    > "${story}/01-welcome.png"
+printf 'PARTITIONS\n' > "${story}/02-partitions.png"
+printf 'FAILURE\n'    > "${story}/99-failure.png"
+story_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-story-18-2-3-5" "eph-run-kicksecure-story" "calamares-install" \
+   0 "${story}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin built --expect Kicksecure)"
+story_json="${story_out}/result.json"
+check "full story: welcome attachment named" "$(grep --quiet '"name": "welcome"' -- "${story_json}" && printf true || printf false)"
+check "full story: partitions attachment named" "$(grep --quiet '"name": "partitions"' -- "${story_json}" && printf true || printf false)"
+check "full story: failure attachment named" "$(grep --quiet '"name": "failure"' -- "${story_json}" && printf true || printf false)"
+check "full story: welcome shot stored step-named" "$([ -f "${story_out}/calamares-install-01-welcome.png" ] && printf true || printf false)"
+check "full story: partitions shot stored step-named" "$([ -f "${story_out}/calamares-install-02-partitions.png" ] && printf true || printf false)"
+check "full story: failure shot stored step-named" "$([ -f "${story_out}/calamares-install-99-failure.png" ] && printf true || printf false)"
+## Order in result.json is capture order (NN-sorted), not alphabetical by milestone name.
+w_pos="$(grep --byte-offset --only-matching '"name": "welcome"' -- "${story_json}" | head -1 | cut -d: -f1)"
+p_pos="$(grep --byte-offset --only-matching '"name": "partitions"' -- "${story_json}" | head -1 | cut -d: -f1)"
+f_pos="$(grep --byte-offset --only-matching '"name": "failure"' -- "${story_json}" | head -1 | cut -d: -f1)"
+check "full story: milestones in capture order" "$([ "${w_pos}" -lt "${p_pos}" ] && [ "${p_pos}" -lt "${f_pos}" ] && printf true || printf false)"
+
+## Full story is ROBUST to a stray/odd file in the account-owned dir: a 0-byte shot and
+## an argparse-hostile name (milestone '-x') are SKIPPED, the good milestones still publish,
+## and result.json IS written -- the account cannot suppress its own result with junk.
+hardstory="${work}/hardstory"
+mkdir --parents -- "${hardstory}"
+printf 'WELCOME\n' > "${hardstory}/01-welcome.png"
+touch -- "${hardstory}/02-empty.png"        ## 0-byte -> skipped
+printf 'X\n' > "${hardstory}/03--x.png"     ## milestone '-x' (leading dash) -> skipped
+hard_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-hardstory-18-2-3-5" "eph-run-kicksecure-hardstory" "calamares-install" \
+   0 "${hardstory}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin built --expect Kicksecure)"
+hard_json="${hard_out}/result.json"
+check "junk-in-dir: result.json still written" "$([ -f "${hard_json}" ] && printf true || printf false)"
+check "junk-in-dir: good milestone kept" "$(grep --quiet '"name": "welcome"' -- "${hard_json}" && printf true || printf false)"
+check "junk-in-dir: 0-byte shot skipped" "$([ ! -f "${hard_out}/calamares-install-02-empty.png" ] && printf true || printf false)"
+check "junk-in-dir: latest advanced to this run" "$([ -L "${results_root}/kicksecure-hardstory-18-2-3-5/latest" ] && printf true || printf false)"
+
 ## rc 2 = SETUP/inconclusive: run verdict INCONCLUSIVE AND step status 'broken'
 ## (an infra/setup error, distinct from a FAIL). Canary: the old binary pass/fail
 ## schema published rc 2 as FAIL and had no step status at all. No shot here (the

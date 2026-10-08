@@ -567,6 +567,13 @@ mergecheck_run() {
    ## ahead-pin, not a divergence) AND master mirrors ai's non-gitlink content -- i.e. the single
    ## cause is the by-design missing trixie ancestry, not a real upstream/trixie-vs-ours divergence.
    a_state="$( mergecheck_merge_state "${combined}" "${ai}" )"
+   if [ "${a_state}" = "error" ]; then
+      ## merge-tree aborted testing ai (unrelated histories / missing object). Symmetric with
+      ## the master-side error arm: we could not COMPLETE the merge, so we cannot claim a
+      ## divergence -- report honestly, never a cry-wolf WARN.
+      record "6 mergecheck" "skipped (merge-tree error testing ai)"
+      return 0
+   fi
    mirrored="no"
    if mergecheck_content_mirrored "${master}" "${ai}"; then mirrored="yes"; fi
    if { [ "${a_state}" = "clean" ] || [ "${a_state}" = "gitlink" ]; } && [ "${mirrored}" = "yes" ]; then

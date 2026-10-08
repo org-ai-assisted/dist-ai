@@ -43,6 +43,9 @@ reinstall="false"
 checks="false"
 mok_enroll="false"
 shot=""
+## When set, milestone screenshots are dropped here as NN-<milestone>.png (the install
+## "full story" the results plane publishes as an ordered sequence). Best-effort, like --shot.
+shot_dir=""
 ## When set, the failing release check's own in-guest output is written here so the
 ## caller can publish it as the result step's stderr tail (why the run failed).
 check_log=""
@@ -69,6 +72,11 @@ on_exit() {
       if [ -n "${shot}" ] && [ ! -s "${shot}" ] && [ -s "${stuck}" ]; then
          cp -- "${stuck}" "${shot}" 2>/dev/null || true
       fi
+      ## Add the failure screen as the LAST milestone (99-) so the full-story sequence
+      ## ends on the on-screen error, not a missing final frame. Best-effort.
+      if [ -n "${shot_dir}" ] && [ -s "${stuck}" ] && [ ! -e "${shot_dir}/99-failure.png" ]; then
+         cp -- "${stuck}" "${shot_dir}/99-failure.png" 2>/dev/null || true
+      fi
       if [ -n "${check_log}" ] && [ ! -s "${check_log}" ]; then
          ## Only point at a screenshot that was ACTUALLY published (a non-empty
          ## ${shot} after the copy above); otherwise a bare 'FAILED' note, never a
@@ -86,6 +94,16 @@ on_exit() {
       "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
    fi
    exit "${rc}"
+}
+
+## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
+## (the install "full story"). NN orders the sequence on the results page; <name> becomes the
+## milestone caption (results-publish derives it from the filename). Best-effort: a capture
+## failure (display 0x0, a transient guestcontrol hiccup) NEVER fails a passing install.
+snap() {
+   local nn="$1" name="$2"
+   [ -n "${shot_dir}" ] || return 0
+   "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
 usage() {
@@ -107,7 +125,10 @@ usage() {
 --checks     after the installed boot, run the release-critical check battery
              in-guest (check 8: systemcheck) and fail on a non-pass.
 --shot PATH  capture a screenshot of the installed system's first boot (R4) to PATH
-             (for the results plane); best-effort, never fails the install."
+             (for the results plane); best-effort, never fails the install.
+--shot-dir D capture milestone screenshots as D/NN-<milestone>.png across the install
+             (welcome, partitions, summary, install-done, first-boot) -- the 'full story'
+             the results plane renders as an ordered sequence; best-effort like --shot."
 }
 
 ## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
@@ -388,6 +409,10 @@ parse_args() {
             shot="$2"
             shift 2
             ;;
+         --shot-dir)
+            shot_dir="$2"
+            shift 2
+            ;;
          --check-log)
             check_log="$2"
             shift 2
@@ -511,6 +536,10 @@ main() {
    ## Clear any stale stuck screenshot left by a PRIOR run of this account, so on_exit can
    ## only ever publish THIS run's failure screen -- never a previous run's error.
    safe-rm --force -- "${HOME}/${me}-stuck.png" 2>/dev/null || true
+   ## Milestone "full story" dir: ensure it exists (best-effort, like the shots themselves).
+   if [ -n "${shot_dir}" ]; then
+      mkdir --parents -- "${shot_dir}" 2>/dev/null || true
+   fi
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
@@ -552,6 +581,7 @@ main() {
       die "${FAIL_RC}" "install-host did not start Calamares in the live session"
    fi
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
+   snap 01 welcome
 
    printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
    ## Each page is confirmed by its own CONTENT text (never a sidebar label -- those
@@ -564,6 +594,7 @@ main() {
    gui_wait_for 'keyboard model|physical keyboard|default keyboard' 60 'Keyboard page'
    gui_click_word 'next' 45 bottom 'Keyboard Next'
    gui_wait_for 'erase disk' 60 'Partitions page'
+   snap 02 partitions
    ## Erase disk is a clickable card; selecting it auto-enables Encrypt system
    ## (Kicksecure default), revealing the two LUKS fields. Locate each field by its
    ## placeholder text ("Passphrase" = 1st, "Confirm passphrase" = the Confirm one).
@@ -582,6 +613,7 @@ main() {
    sleep 1
    gui_click_word 'next' 45 bottom 'Partitions Next'
    gui_wait_for 'overview|erase disk /dev|the following changes' 60 'Summary page'
+   snap 03 summary
    ## Trigger Install via its Alt+I accelerator, NOT an OCR-located click: the Summary
    ## "Install" BUTTON caption OCRs unreliably (grey-on-grey, low confidence), so a
    ## 'bottom' match falls through to the body text "Install Kicksecure on new ext4..."
@@ -593,6 +625,7 @@ main() {
    ## instead of waiting out the full 1200s for a completion marker that will never come.
    gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)' \
       'installation failed|external command finished with errors'
+   snap 04 install-done
 
    printf '%s\n' "${me}: reboot into the installed disk (detach ISO)"
    ## Install is finished at the "all done" page; we power off + detach the ISO +
@@ -616,6 +649,7 @@ main() {
    if [ -n "${shot}" ]; then
       "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
    fi
+   snap 05 first-boot
 
    ## --mok-enroll: before the checks, read the per-machine MOK cert off the disk on
    ## the host and enroll it, then reboot, so tirdad loads under Secure Boot and

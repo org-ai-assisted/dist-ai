@@ -150,22 +150,48 @@ image_test_results_publish() {
          ;;
    esac
 
-   local ts outdir shot_rel emit
+   local ts outdir emit
+   local -a shot_emit=()
    ts="$(date -u +%Y%m%dT%H%M%SZ)"
    outdir="${results_root}/${name}/${ts}"
    mkdir --parents -- "${outdir}"
 
-   ## The screenshot and the step stderr tail are produced by the unprivileged
+   ## The screenshot(s) and the step stderr tail are produced by the unprivileged
    ## TEST_USER but ingested as root by image-test-result-emit, which opens each
    ## O_NOFOLLOW and refuses a symlink / non-regular file atomically. The copy +
    ## reopen happen ONCE, inside the emitter, so there is no check-then-reopen
-   ## window here for the account to swap a symlink into (root never reads an
-   ## off-limits target into the world-readable plane). The publisher only
-   ## forwards the account-owned paths. Stored step-named so multiple per-step
-   ## shots never collide (single shot today; multi-step is a later extension).
-   shot_rel=""
-   if [ -n "${shot_src}" ]; then
-      shot_rel="${step_name}.png"
+   ## window here. The publisher only forwards the account-owned paths.
+   ##
+   ## shot_src is EITHER a single screenshot file (one-shot runs) OR a DIRECTORY of
+   ## milestone shots named NN-<milestone>.png (the install "full story"): each is
+   ## published as a named attachment, ordered by filename, so the site renders the
+   ## whole sequence. Stored step-named so shots never collide.
+   if [ -n "${shot_src}" ] && [ -d "${shot_src}" ] && [ ! -L "${shot_src}" ]; then
+      local shot_f shot_base shot_milestone
+      ## The shot dir is written by the UNPRIVILEGED test account, so a filename here is
+      ## account-controlled. Accept only a NON-EMPTY regular *.png whose derived milestone
+      ## is a safe label (no leading '-' that argparse would eat, no unsafe char, not
+      ## '.'/'..'); SKIP anything else. A stray/crafted file must never make the emit
+      ## fail -- that would let the account suppress its own result.json. The emitter
+      ## defends the same invariant per-shot; this is the first, cheap filter.
+      ## -type f excludes symlinks; the emitter re-checks each O_NOFOLLOW.
+      while IFS= read -r -d '' shot_f; do
+         [ -s "${shot_f}" ] || continue
+         shot_base="${shot_f##*/}"
+         shot_milestone="${shot_base%.png}"
+         shot_milestone="${shot_milestone#*-}"   ## drop the NN- ordering prefix
+         case "${shot_milestone}" in
+            '' | '.' | '..' | -* | *[!A-Za-z0-9._-]*)
+               printf 'image_test_results_publish: skipping shot with unusable name: %s\n' \
+                  "${shot_base}" >&2
+               continue
+               ;;
+         esac
+         shot_emit+=( --step-shot "${step_name}-${shot_base}" \
+            --step-shot-src "${shot_f}" --step-shot-name "${shot_milestone}" )
+      done < <(find "${shot_src}" -maxdepth 1 -type f -name '*.png' -print0 | sort --zero-terminated)
+   elif [ -n "${shot_src}" ] && [ -f "${shot_src}" ]; then
+      shot_emit+=( --step-shot "${step_name}.png" --step-shot-src "${shot_src}" )
    fi
 
    emit="$(image_test_result_emit_bin)"
@@ -187,8 +213,8 @@ image_test_results_publish() {
    if [ -n "${stop_unix}" ]; then
       emit_args+=( --stop-unix "${stop_unix}" )
    fi
-   if [ -n "${shot_rel}" ]; then
-      emit_args+=( --step-shot "${shot_rel}" --step-shot-src "${shot_src}" )
+   if [ "${#shot_emit[@]}" -gt 0 ]; then
+      emit_args+=( "${shot_emit[@]}" )
    fi
    ## Failed-check output -> the step's stderr tail (why the run failed). The emitter
    ## reads it no-follow (symlink refused), so the account-owned path is forwarded

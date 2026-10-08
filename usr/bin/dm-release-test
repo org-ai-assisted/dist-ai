@@ -693,7 +693,7 @@ rt_publish_result() {
 ## ---------------------------------------------------------------------------
 
 rt_lane_kicksecure() {
-   local account version iso pass_file vmname rc shot shot_arg check_log
+   local account version iso pass_file vmname rc shot_dir shot_arg check_log
    local -a checks_arg=()
 
    account="$1"
@@ -750,8 +750,10 @@ rt_lane_kicksecure() {
    ## Disposable LUKS passphrase for the install, readable only by the account.
    pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"
    printf '%s\n' "release-test-${version}" | sudo -u "${account}" -- tee -- "${pass_file}" >/dev/null
-   ## Account-owned screenshot path; dm-calamares-install captures the R4 first boot here.
-   shot="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-shot.XXXXXX.png")"
+   ## Account-owned shot DIR; dm-calamares-install drops milestone shots (NN-<milestone>.png,
+   ## the install "full story") here, and image_test_results_publish publishes the whole
+   ## ordered sequence. Account-owned + root forwards each path no-follow to the emitter.
+   shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-shots.XXXXXX")"
    ## Account-owned sink for a FAILED release check's own in-guest output, so the run
    ## record explains WHY it failed (otherwise lost on power-off).
    check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"
@@ -764,19 +766,21 @@ rt_lane_kicksecure() {
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      --shot "${shot}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
+      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
-   ## Publish the screenshot only if it was actually captured (R4 reached); a pre-R4
-   ## failure leaves the mktemp placeholder empty -- do not publish a 0-byte screenshot.
-   shot_arg=""
-   [ -s "${shot}" ] && shot_arg="${shot}"
+   ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
+   ## *.png milestones (the install "full story") and skips anything else. An empty /
+   ## never-powered-on dir yields no attachments -- the verdict still publishes. Always
+   ## forward the dir; do NOT pre-filter here with a glob ([ -e ] follows a dangling
+   ## symlink that sorts first and would drop the whole real sequence).
+   shot_arg="${shot_dir}"
    ## Thread the failed check's output into the published step's stderr tail (empty
    ## file = a pass or a pre-check failure -> no tail).
    rt_check_log=""
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
-   sudo -u "${account}" -- safe-rm --force -- "${shot}" "${check_log}" 2>/dev/null || true
+   sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" "${check_log}" 2>/dev/null || true
    ## The per-run staged ISO dir (rt_staged_dir) is reaped by rt_eph_cleanup on exit.
    return "${rc}"
 }

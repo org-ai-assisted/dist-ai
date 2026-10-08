@@ -143,6 +143,48 @@ check "oversized shot records no attachment" \
 check "oversized shot leaves no partial copy" \
    "$([ -e "${workdir}/d6/cli.png" ] && printf exists || printf absent)" 'absent'
 
+## A bad INDIVIDUAL shot must SKIP that attachment, never abort the whole emit -- else
+## an untrusted account could suppress its own result.json by planting one odd *.png
+## next to the real milestones. Two genuine sources to pair bad shots with a good one.
+printf '%s' 'GOOD-ONE' > "${workdir}/good1.png"
+printf '%s' 'GOOD-TWO' > "${workdir}/good2.png"
+
+## 7. A duplicate --step-shot-name is SKIPPED (one attachment kept), publish still OK.
+##    (Canary: the pre-fix emitter `return 2`'d and wrote NO result.json.)
+out7="${workdir}/d7/r7.json"
+mkdir --parents -- "${workdir}/d7"
+check "duplicate shot name does not abort the publish" \
+   "$(emit_rc "${out7}" \
+      --step-shot a.png --step-shot-src "${workdir}/good1.png" --step-shot-name dup \
+      --step-shot b.png --step-shot-src "${workdir}/good2.png" --step-shot-name dup)" '0'
+check "duplicate shot name kept exactly once" \
+   "$(grep --count --fixed-strings -- '"name": "dup"' "${out7}")" '1'
+
+## 8. An unsafe --step-shot-name (a control char) is SKIPPED, a co-emitted good shot
+##    is still recorded, and result.json is written.
+out8="${workdir}/d8/r8.json"
+mkdir --parents -- "${workdir}/d8"
+check "unsafe shot name does not abort the publish" \
+   "$(emit_rc "${out8}" \
+      --step-shot bad.png --step-shot-src "${workdir}/good1.png" --step-shot-name "$(printf 'bad\tname')" \
+      --step-shot ok.png --step-shot-src "${workdir}/good2.png" --step-shot-name good)" '0'
+check "unsafe shot name skipped, good shot kept" \
+   "$(grep --quiet --fixed-strings -- '"name": "good"' "${out8}" \
+      && ! grep --quiet --fixed-strings -- '"name": "bad' "${out8}" && printf yes || printf no)" 'yes'
+
+## 9. Two shots with the SAME stored basename: the second is skipped, so it cannot
+##    TRUNCATE the first; the stored file keeps the first shot's bytes, publish OK.
+out9="${workdir}/d9/r9.json"
+mkdir --parents -- "${workdir}/d9"
+check "duplicate stored basename does not abort the publish" \
+   "$(emit_rc "${out9}" \
+      --step-shot same.png --step-shot-src "${workdir}/good1.png" --step-shot-name one \
+      --step-shot same.png --step-shot-src "${workdir}/good2.png" --step-shot-name two)" '0'
+check "duplicate stored basename keeps the first shot's bytes" \
+   "$(cat -- "${workdir}/d9/same.png")" 'GOOD-ONE'
+check "duplicate stored basename records one attachment path" \
+   "$(grep --count --fixed-strings -- '"path": "same.png"' "${out9}")" '1'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

@@ -169,6 +169,23 @@ case "${v}" in
       ;;
 esac
 
+## --- Case: ai-side merge-tree ERROR -> skipped (not WARN) ------------------------
+## master FILE-conflicts with the combined base (so execution reaches the ai-side check), but
+## ai is an unrelated-history root commit, so merge-tree(combined, ai) ABORTS ("refusing to
+## merge unrelated histories", exit !=0/1 -> a_state=error). This must mirror the master-side
+## error handling -- 'skipped (merge-tree error testing ai)' -- NOT a WARN that falsely claims
+## a divergence git could not even test. (Canary: pre-fix code records 'WARN ... =error'.)
+AI_ERR="$(gitq -C "${sc}" commit-tree "${B}^{tree}" -m ai-unrelated-root)"
+v="$(verdict_for "${M_OURS}" "${AI_ERR}")"
+case "${v}" in
+   skipped\ \(merge-tree\ error\ testing\ ai\)* )
+      pass "ai-side merge-tree error -> ${v}"
+      ;;
+   * )
+      fail "ai-error: expected 'skipped (merge-tree error testing ai)', got '${v}'"
+      ;;
+esac
+
 ## --- Case: WARN is INFORMATIONAL -- dm-tidy still exits 0 ------------------------
 gitq -C "${sc}" push --quiet --force "${O}" "${M_OURS}:refs/heads/master" "${M_OURS}:refs/heads/ai"
 rc=0
