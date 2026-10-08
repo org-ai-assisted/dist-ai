@@ -76,7 +76,7 @@ run_with_state() {
    ## Truncate-or-CREATE: a buggy subject that returns before any systemctl poll
    ## leaves no log, and 'wc -l < absent' under errexit would abort the whole
    ## script (silent, no FAIL line) instead of reporting a clean 0-poll failure.
-   true > "${args_log}"
+   true >| "${args_log}"
    TEST_PRIVLEAPD_STATE="${state}" SYSTEMCTL_ARGS_LOG="${args_log}" \
       PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
    calls="$(wc -l < "${args_log}")"
@@ -121,7 +121,7 @@ fi
 ## that an unrunnable unit (LoadState=not-found) breaks on the first poll instead
 ## of waiting out the whole loop. 'sleep' is stubbed, so the systemctl CALL COUNT
 ## (not wall time) distinguishes an immediate break from a 120-iteration loop.
-true > "${args_log}"
+true >| "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='not-found' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
@@ -143,7 +143,7 @@ else
 fi
 
 ## bad-setting (an unparsable unit that will not start) is also terminal.
-true > "${args_log}"
+true >| "${args_log}"
 rc=0
 TEST_PRIVLEAPD_LOADSTATE='bad-setting' TEST_PRIVLEAPD_STATE='inactive' \
    SYSTEMCTL_ARGS_LOG="${args_log}" PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
