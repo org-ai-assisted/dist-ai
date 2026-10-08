@@ -61,7 +61,7 @@ die() {
 ## failure never leaks a running headless VM. Preserves the exit status.
 on_exit() {
    local rc=$?
-   local stuck
+   local stuck launch_out
    ## On a FAILED run, surface WHY for the results plane: a gui_wait_for abort/timeout
    ## (install or boot failure, BEFORE the check battery) already saved the on-screen error
    ## to ${HOME}/${me}-stuck.png. Publish it as --shot (when no success shot was captured) and
@@ -87,6 +87,21 @@ on_exit() {
          else
             printf '%s FAILED (rc=%s).\n' \
                "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+         fi
+      fi
+      ## install-host / Calamares launch log: the ONLY place a GUI that STARTED but never
+      ## showed a window leaves its reason -- gc_wait_gui_started passes on the bare process,
+      ## so the downstream OCR just times out with no cause. Fetch it while the VM is still
+      ## alive (before the poweroff below) and surface it on BOTH the install log and the
+      ## published check-log. Best-effort: a pre-guestcontrol failure has no log -> no-op.
+      if [ "${vm_started}" = 'true' ]; then
+         launch_out="$(gc_gui_launch_log user 2>/dev/null || true)"
+         if [ -n "${launch_out}" ]; then
+            printf '%s: install-host launch log (%s):\n%s\n' \
+               "${me}" "${GC_GUI_LAUNCH_LOG}" "${launch_out}" >&2
+            if [ -n "${check_log}" ]; then
+               printf '\ninstall-host launch log:\n%s\n' "${launch_out}" >> "${check_log}" 2>/dev/null || true
+            fi
          fi
       fi
    fi
