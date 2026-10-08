@@ -52,6 +52,11 @@ fail_count=0
 pass() { pass_count=$((pass_count + 1)); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$((fail_count + 1)); printf '%s\n' "FAIL: $*" >&2; }
 
+work_dir="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+trap cleanup EXIT
+
 ## Sourcing defines the pure function without running main: was_executed sees
 ## BASH_SOURCE[0] (the subject) != $0 (this test), so main is skipped.
 # shellcheck disable=SC1090
@@ -127,16 +132,38 @@ fi
 
 ## Errexit contract: the standalone main() calls this under 'set -o errexit', so
 ## a never-ready run must RETURN (0), not abort on an internal command (an
-## unguarded (( )) or a failing probe/sleep). A plain '|| rc=$?' would suppress
-## errexit inside the function, so run it in an errexit subshell where it is
-## called as a plain command.
+## unguarded (( )) or a failing probe/sleep). errexit is IGNORED inside a
+## compound used as an if-condition (or in a '&&'/'||' list), so an in-process
+## 'if ( set -o errexit; ... )' would assert NOTHING -- the inner set has no
+## effect there and any internal abort is masked. Assert the contract in a real
+## child 'bash' where errexit is set at top level and the function runs as a
+## plain command. Mirror main()'s full preamble and use the REAL light_sleep
+## (skipped): a sleep STUB would hide a subject that misuses light_sleep (the
+## real one returns non-zero on a missing duration -> errexit abort).
+errexit_probe="${work_dir}/errexit-probe.bash"
+cat > "${errexit_probe}" <<'PROBE'
+#!/bin/bash
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+source "${SUBJECT}"
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/light_sleep.bsh
+export light_sleep_skip='true'
+## Never-ready readiness oracle (the real one needs a live socket).
 export use_leaprun='no'
-leaprun_ready_on_call=0
-if ( set -o errexit; set -o nounset; set -o pipefail; shopt -s inherit_errexit
-     privleap_socket_wait_max_ctr=3 try_wait_for_privleap_socket_ready ); then
-   pass "never-ready run returns cleanly under errexit (does not abort)"
+leaprun_useable_test() { use_leaprun='no'; }
+privleap_socket_wait_max_ctr=3 try_wait_for_privleap_socket_ready
+PROBE
+rc=0
+SUBJECT="${subject}" bash "${errexit_probe}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" = '0' ]; then
+   pass "never-ready run returns cleanly under errexit (child process, does not abort)"
 else
-   fail "aborted under errexit (rc=$?)"
+   fail "aborted under errexit (rc=${rc})"
 fi
 
 printf '%s\n' ""
