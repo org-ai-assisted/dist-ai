@@ -33,7 +33,7 @@ Map of what the suite exercises and where the gaps are. Run everything with:
 | Check | info | warning | error | notes |
 |-------|------|---------|-------|-------|
 | check_environment_variables | yes | yes | -   | + verbose-gating + both-channels assertions |
-| check_tempdir               | yes | yes | -   | all-correct / verbose-gating / var-wrong / var-unset / symlink-dir / wrong-mode (stubbed id/stat/test) |
+| check_tempdir               | yes | yes | -   | all-correct / verbose-gating / var-wrong / var-unset / hostile-value-not-rendered / base-not-root / symlink-peruser / wrong-mode-peruser (stubbed id/stat/test) |
 | check_man                   | yes | yes | -   | |
 | check_dpkg                  | yes | -   | yes | error fails the run even when not verbose |
 | check_hostname              | yes | -   | yes | all-ok / all-wrong / single-field-wrong / machine-skip |
