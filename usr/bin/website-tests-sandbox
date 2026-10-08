@@ -54,6 +54,14 @@ fi
 command -v sandbox >/dev/null 2>&1 \
    || die 'the review sandbox (sandbox command) is not available on this host'
 
+## `sandbox` requires a target (no implicit default -- remote targets are possible), so on
+## a host with QUBE_CTL_TARGET unset every `sandbox` call below would die "no target" and
+## silently block this publish gate. The local review sandbox is the forget-proof default
+## (the safe-path-is-default contract website-tests relies on); override via QUBE_CTL_TARGET
+## for a different sandbox.
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
 ## Provisioned? The venv is the tell. Provision once if absent (idempotent, slow the
 ## first time -- chromium download); a failed provision fails the gate, never skips.
 if ! sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
