@@ -455,5 +455,77 @@ class TestAptRepositoryIsolatedScenarios(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
 
+class TestTempdirScenarios(ScenarioTestBase):
+    FILE = 'check_tempdir.bsh'
+
+    ## id -> uid 1000, so the expected per-user tmpdir is /tmp/user/1000. The
+    ## four temp-dir variables are set to it; verbose=1 so the OK info line is
+    ## emitted (it is verbose-gated).
+    GOOD_ENV = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+                'TEMP=/tmp/user/1000\nTEMPDIR=/tmp/user/1000\nverbose=1\n')
+    ## A safe directory: non-symlink (-h false), present and owned (-d/-O true),
+    ## mode 0700. `test` and `[` are different builtins, so stubbing a `test`
+    ## function steers only the directory probes, not the emit helpers' `[`.
+    DIR_OK = ('id() { printf "1000\\n"; }\n'
+              'stat() { printf "700\\n"; }\n'
+              'test() { case "$1" in -h) return 1 ;; -d|-O) return 0 ;; '
+              '*) builtin test "$@" ;; esac; }\n')
+
+    def test_all_correct_emits_info_no_failure(self) -> None:
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV, stubs=self.DIR_OK)
+        self.assertTrue(r.has_severity('info'))
+        self.assertFalse(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '0')
+
+    def test_ok_info_is_verbose_gated(self) -> None:
+        env = self.GOOD_ENV.replace('verbose=1', 'verbose=0')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs=self.DIR_OK)
+        self.assertEqual(r.records, [])
+        self.assertEqual(r.exit_code, '0')
+
+    def test_variable_wrong_warns_and_fails(self) -> None:
+        env = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+               'TEMP=/tmp/user/1000\nTEMPDIR=/tmp/elsewhere\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs='id() { printf "1000\\n"; }\n')
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('TEMPDIR=/tmp/elsewhere', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_variable_unset_warns_and_fails(self) -> None:
+        env = ('TMPDIR=/tmp/user/1000\nTMP=/tmp/user/1000\n'
+               'TEMP=/tmp/user/1000\nunset TEMPDIR\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=env, stubs='id() { printf "1000\\n"; }\n')
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('TEMPDIR=<unset>', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_symlink_dir_warns_and_fails(self) -> None:
+        ## Variables correct, but the directory is a symlink (-h true) -> Unsafe.
+        stubs = ('id() { printf "1000\\n"; }\n'
+                 'stat() { printf "700\\n"; }\n'
+                 'test() { case "$1" in -h) return 0 ;; *) return 0 ;; esac; }\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV, stubs=stubs)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Unsafe', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_wrong_mode_dir_warns_and_fails(self) -> None:
+        ## Variables correct, directory present and owned, but mode 0755 -> Unsafe.
+        stubs = ('id() { printf "1000\\n"; }\n'
+                 'stat() { printf "755\\n"; }\n'
+                 'test() { case "$1" in -h) return 1 ;; -d|-O) return 0 ;; '
+                 '*) builtin test "$@" ;; esac; }\n')
+        r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
+                               env_setup=self.GOOD_ENV, stubs=stubs)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('Unsafe', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+
 if __name__ == '__main__':
     unittest.main()
