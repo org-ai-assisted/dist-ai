@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Pin the companion-branch resolution in developer-meta-files'
-## .github/actions/resolve-dist-ai-ref/resolve-dist-ai-ref.sh.
+## .github/actions/resolve-companion-ref/resolve-companion-ref.sh.
 ##
 ## WHY IT EXISTS: dist-ai was pinned to 'master' for every consumer.
 ## dist-ai holds the tests; consumers hold the behaviour those tests
@@ -37,13 +37,13 @@ export LC_ALL=C
 ## subject -> exit 1 (FATAL): a required subject absent is an environment
 ## bug that must fail loud, not skip (R-220).
 if [ -z "${DEVELOPER_META_FILES_DIR:-}" ]; then
-   printf '%s\n' 'FATAL: test_resolve_dist_ai_ref: DEVELOPER_META_FILES_DIR unset.' >&2
+   printf '%s\n' 'FATAL: test_resolve_companion_ref: DEVELOPER_META_FILES_DIR unset.' >&2
    exit 1
 fi
 
-resolver="${DEVELOPER_META_FILES_DIR}/.github/actions/resolve-dist-ai-ref/resolve-dist-ai-ref.sh"
+resolver="${DEVELOPER_META_FILES_DIR}/.github/actions/resolve-companion-ref/resolve-companion-ref.sh"
 if [ ! -x "${resolver}" ]; then
-   printf '%s\n' "FATAL: test_resolve_dist_ai_ref: '${resolver}' not found." >&2
+   printf '%s\n' "FATAL: test_resolve_companion_ref: '${resolver}' not found." >&2
    exit 1
 fi
 
@@ -83,15 +83,15 @@ git -C "${seed}" -c core.hooksPath=/dev/null branch ai
 git -C "${seed}" push --quiet -- "${companion_remote}" master ai
 
 ## Run the resolver and echo the ref it chose.
-## Args: repo, sha, branch, dist-ai-repo, [remote-url].
+## Args: repo, sha, branch, companion-repo, [remote-url].
 resolve() {
    local out
    out="${work}/github_output"
    ## Truncate with printf, not ':' -- R-130 forbids ':' as a command.
    printf '%s' '' > "${out}"
    GITHUB_OUTPUT="${out}" \
-   THIS_REPO="$1" THIS_SHA="$2" BRANCH_NAME="$3" DIST_AI_REPO="$4" \
-   DIST_AI_REMOTE_URL="${5:-}" \
+   THIS_REPO="$1" THIS_SHA="$2" BRANCH_NAME="$3" COMPANION_REPO="$4" \
+   COMPANION_REMOTE_URL="${5:-}" \
       "${resolver}" 2>/dev/null || true
    sed -n 's/^ref=//p' "${out}"
 }
