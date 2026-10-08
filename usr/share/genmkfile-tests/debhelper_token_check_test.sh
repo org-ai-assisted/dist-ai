@@ -134,6 +134,31 @@ run_case "indented standalone token" ok pkg.prerm \
 run_case "no token" ok pkg.postinst \
    '#!/bin/bash' 'true'
 
+## arch-qualified name (debian/<pkg>.<script>.<arch>) -> dh_installdeb selects it.
+run_case "arch-qualified comment token" err pkg.postinst.amd64 \
+   '#!/bin/bash' '## note: #DEBHELPER# snippets' 'true' '#DEBHELPER#'
+
+## package-less arch-qualified name (debian/<script>.<arch>).
+run_case "bare arch-qualified comment token" err postinst.linux \
+   '#!/bin/bash' '## #DEBHELPER#' '#DEBHELPER#'
+
+## debhelper's own generated artifact is not a source script -> skipped.
+run_case "debhelper artifact skipped" ok pkg.preinst.debhelper \
+   '#DEBHELPER#' '#DEBHELPER#'
+
+## a stray NUL byte must not make grep treat the script as binary and miss the
+## token (grep -a). Built directly because printf '%s' args cannot carry a NUL.
+nul_work="$(mktemp -d --tmpdir="${test_root}")"
+mkdir -- "${nul_work}/debian"
+printf '#!/bin/bash\n## note: #DEBHELPER#\n#DEBHELPER#\n\000x\n' > "${nul_work}/debian/postinst"
+if ( cd -- "${nul_work}" && make_debhelper_token_check ) >/dev/null 2>&1; then
+   printf 'FAIL: %s\n' "NUL byte hides duplicate token"
+   fail=1
+else
+   printf 'PASS: %s\n' "NUL byte duplicate token rejected"
+fi
+safe-rm -r -f -- "${nul_work}"
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "RESULT: FAIL"
    exit 1
