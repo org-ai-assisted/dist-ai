@@ -169,20 +169,25 @@ case "${v}" in
       ;;
 esac
 
-## --- Case: ai-side merge-tree ERROR -> skipped (not WARN) ------------------------
+## --- Case: ai-side merge-tree ERROR is diagnostic, the master conflict still WARNs ---------
 ## master FILE-conflicts with the combined base (so execution reaches the ai-side check), but
 ## ai is an unrelated-history root commit, so merge-tree(combined, ai) ABORTS ("refusing to
-## merge unrelated histories", exit !=0/1 -> a_state=error). This must mirror the master-side
-## error handling -- 'skipped (merge-tree error testing ai)' -- NOT a WARN that falsely claims
-## a divergence git could not even test. (Canary: pre-fix code records 'WARN ... =error'.)
+## merge unrelated histories", exit !=0/1 -> a_state=error). The master conflict is ALREADY
+## established; the ai-side error is the downgrade-justification check failing to COMPLETE, so
+## it cannot grant the benign exception (which needs ai to merge clean/gitlink + content
+## mirrored). The established conflict stands -> WARN, with the error surfaced as the
+## 'ai-into-combined=error' diagnostic. It must NOT collapse to 'skipped': skipped means
+## deliberately-not-run (a missing remote), and masking a known conflict as skipped is a
+## false-green. (This differs from the master-side error arm, where the PRIMARY merge errored
+## so nothing is yet established -> skipped is honest.)
 AI_ERR="$(gitq -C "${sc}" commit-tree "${B}^{tree}" -m ai-unrelated-root)"
 v="$(verdict_for "${M_OURS}" "${AI_ERR}")"
 case "${v}" in
-   skipped\ \(merge-tree\ error\ testing\ ai\)* )
-      pass "ai-side merge-tree error -> ${v}"
+   WARN\ *ai-into-combined=error* )
+      pass "ai-side merge-tree error -> WARN, error is diagnostic (not a masking skip): ${v}"
       ;;
    * )
-      fail "ai-error: expected 'skipped (merge-tree error testing ai)', got '${v}'"
+      fail "ai-error: expected WARN with ai-into-combined=error, got '${v}'"
       ;;
 esac
 
