@@ -848,7 +848,18 @@ parse_args() {
             ;;
          --firmware)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --firmware"
-            firmware="$2"
+            ## Validate at PARSE time: firmware is interpolated into the install lane's
+            ## results subtree name + --lane, so an empty/garbage value would otherwise
+            ## flow in (e.g. a malformed 'guest-interface--version' cell) before the
+            ## downstream publisher's safe-name check. Reject anything but the known set.
+            case "$2" in
+               bios | efi | efi-secureboot)
+                  firmware="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '$2'"
+                  ;;
+            esac
             shift 2
             ;;
          --iso)
