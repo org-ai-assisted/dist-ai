@@ -1,0 +1,61 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## No-VM unit suite for dm-build-account: asserts the PRIVILEGED build-account profile
+## (private primary group, sysmaint for sudo-exec, passwordless sudo) and the two safety
+## properties -- NO vboxusers, and a name OUTSIDE the host nftables leak-drop patterns.
+## Drives the real script under a stub PATH: no VM, no root, no network, no mutation.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Canonical suite exit (fail > skip > pass).
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-build-account-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-build-account-tests"
+else
+   tests_dir='/usr/share/dm-build-account-tests'
+fi
+
+shopt -s nullglob
+failures=0
+skips=0
+env_unmet=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+   ran=$((ran + 1))
+   printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+   rc=0
+   bash -- "${test_script}" "$@" || rc=$?
+   if [ "${rc}" -eq 77 ]; then
+      printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+      skips=$((skips + 1))
+   elif [ "${rc}" -eq 78 ]; then
+      env_unmet=$((env_unmet + 1))
+   elif [ "${rc}" -ne 0 ]; then
+      printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+      failures=$((failures + 1))
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+   exit 1
+fi
+printf '%s\n' '' "${ran} dm-build-account case(s): ${failures} failed, ${skips} skipped, ${env_unmet} env-unmet"
+suite_exit "${failures}" "${skips}" "${env_unmet}"

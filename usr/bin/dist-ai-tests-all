@@ -117,6 +117,7 @@ core_suites=(
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-release-test-tests
+   dm-build-account-tests
    test-results-site-tests
    dm-vm-lock-tests
    dm-virtualbox-wiki-links-tests
@@ -922,6 +923,12 @@ wire() {
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
+      dm-build-account)
+         ## Pure unit suite for the build-account provisioner: drives the real script
+         ## under a stub PATH (no checkout, no VM, no root, no network). Nothing to wire;
+         ## the case exists to satisfy the registry guard.
+         wire_env=()
+         ;;
       test-results-site)
          ## dist-ai's own results-plane + verification-site tooling. The suite
          ## imports dm_test_results from this tree directly and uses Pillow for
@@ -1101,7 +1108,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

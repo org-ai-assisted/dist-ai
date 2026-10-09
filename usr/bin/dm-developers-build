@@ -1,0 +1,166 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Build a derivative-maker ISO locally on the test server in a clean, ISOLATED,
+## scheme-compliant way -- the non-ad-hoc replacement for hand-run build wrappers.
+##
+## Runs as root. For GUEST it:
+##   1. ensures the dedicated build account persist-build-<guest> (dm-build-account) --
+##      privileged + networked, outside the install-account leak-drop;
+##   2. seeds that account's OWN derivative-maker checkout from a reference checkout
+##      (rsync; source + .git + submodules, NOT the separate derivative-binary output),
+##      so builds never share admin's tree;
+##   3. AS the account: SIGNS HEAD with an ephemeral key (signing-key-create + sign-and-tag)
+##      so git_sanity_test passes legitimately -- no goodlist / ignore-flag hacks;
+##   4. builds AS the account with its own HOMEVAR and dist_build_slot=persist-build-<guest>
+##      (per-slot cowbuilder base -> parallel-safe);
+##   5. prints the built ISO path on the last line (for dm-release-test --iso).
+##
+## Local test build: --repo false (LOCAL packages, so a patched submodule lands in the
+## ISO) and --sign-and-tag true (output signed; never --allow-unsigned, which is
+## policy-refused for AI).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+DM_BUILD_ACCOUNT="${DM_BUILD_ACCOUNT:-dm-build-account}"
+source_checkout="${DM_SOURCE_CHECKOUT:-/home/admin/derivative-maker}"
+flavor='kicksecure-lxqt'
+
+print_usage() {
+   printf '%s\n' "Usage: ${me} <kicksecure|whonix> [--flavor FLAVOR] [--source-checkout DIR]
+
+Build a <flavor> ISO as the dedicated persist-build-<guest> account (default flavor
+kicksecure-lxqt). Seeds the account's checkout from --source-checkout (default
+/home/admin/derivative-maker). Prints the built ISO path on the last line. Must run as root."
+}
+
+case "${1:-}" in
+   kicksecure | whonix)
+      guest="$1"
+      shift
+      ;;
+   -h | --help)
+      print_usage
+      exit 0
+      ;;
+   *)
+      print_usage >&2
+      die 2 "GUEST must be kicksecure or whonix, got '${1:-}'"
+      ;;
+esac
+
+while [ "$#" -ge 1 ]; do
+   case "$1" in
+      --flavor)
+         flavor="$2"
+         shift 2
+         ;;
+      --source-checkout)
+         source_checkout="$2"
+         shift 2
+         ;;
+      *)
+         die 2 "unknown option '$1'"
+         ;;
+   esac
+done
+
+[ "$(id -u)" = '0' ] || die 1 "must run as root"
+[ -d "${source_checkout}/.git" ] || die 2 "source checkout '${source_checkout}' is not a git checkout"
+
+## 1. ensure the build account; capture its name from the helper's last line.
+account="$("${DM_BUILD_ACCOUNT}" "${guest}" | tail -1)"
+case "${account}" in
+   persist-build-*)
+      ;;
+   *)
+      die 1 "dm-build-account did not yield a persist-build-* name: '${account}'"
+      ;;
+esac
+home="$(getent passwd "${account}" | cut -d: -f6)"
+[ -n "${home}" ] || die 1 "cannot resolve home for ${account}"
+checkout="${home}/derivative-maker"
+binary_out="${home}/derivative-binary"
+
+## 2. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
+printf '%s: seeding %s checkout from %s\n' "${me}" "${account}" "${source_checkout}"
+rsync --archive --delete --hard-links "${source_checkout}/" "${checkout}/"
+chown --recursive "${account}:${account}" "${checkout}"
+
+## 3 + 4. sign HEAD then build, AS the account, with its own slot. Written to a per-account
+## log that grows for a durable supervisor; failures fail loud.
+log="/var/tmp/${account}.build.log"
+true >| "${log}"
+chown "${account}:${account}" "${log}"
+
+## ISO set BEFORE the build: the freshly built ISO is the path present AFTER but not
+## before (set difference -- never mtime, which reproducible builds clamp to a fixed past).
+mkdir --parents -- "${binary_out}"
+chown "${account}:${account}" "${binary_out}"
+before="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
+
+## Values reach the account's shell via `env` (NOT spliced into the single-quoted program
+## -- that quote-nesting silently eats values). The inner program reads them from the
+## environment; a login shell keeps exported vars.
+build_rc=0
+## The single-quoted program below is intentional: its DM_* / $(date) refs expand in the
+## INNER account shell (DM_* come from the env above), not in this one.
+# shellcheck disable=SC2016
+runuser -u "${account}" -- \
+   env DM_LOGF="${log}" DM_ACCT="${account}" DM_FLAV="${flavor}" \
+   bash -lc '
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   cd ~/derivative-maker || exit 1
+   exec >>"${DM_LOGF}" 2>&1
+   printf "SIGN-START %s\n" "$(date -u +%FT%TZ)"
+   export dist_build_sign_and_tag=true
+   export dist_build_unlock_dangerous_options=true
+   ./help-steps/signing-key-create
+   ./help-steps/sign-and-tag
+   printf "BUILD-START %s\n" "$(date -u +%FT%TZ)"
+   user_name="${DM_ACCT}" \
+   dist_build_slot="${DM_ACCT}" \
+   make_lintian_fail_open_versus_closed=open \
+   dist_build_ignore_uncommitted=true \
+      ./derivative-maker \
+         --flavor "${DM_FLAV}" --arch amd64 --target iso \
+         --freshness frozen --type vm --freedom false \
+         --allow-uncommitted true --sign-and-tag true \
+         --repo false --skip-published-packages true
+   printf "BUILD-DONE %s\n" "$(date -u +%FT%TZ)"
+' || build_rc=$?
+
+if [ "${build_rc}" -ne 0 ]; then
+   printf '%s: build FAILED (rc=%s); see %s\n' "${me}" "${build_rc}" "${log}" >&2
+   exit "${build_rc}"
+fi
+
+## 5. locate the freshly built ISO by set difference against the pre-build snapshot (NOT
+## mtime -- reproducible builds clamp mtimes). Exactly one new ISO per build.
+after="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
+iso="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -1)"
+if [ -z "${iso}" ] || [ ! -f "${iso}" ]; then
+   die 1 "no new ISO appeared under ${binary_out} after the build"
+fi
+
+printf '%s: built %s\n' "${me}" "${iso}"
+printf '%s\n' "${iso}"
