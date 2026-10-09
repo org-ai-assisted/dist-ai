@@ -329,6 +329,51 @@ fi
 install -m 0700 -o root -g root /dev/null /var/lib/targetpkg/state
 EOF
 
+## SAFE: a user-only launcher whose OWN root_check REFUSES root (tb-starter
+## torbrowser shape). The helper name alone must not make it a root entry point.
+write 'packages/kicksecure/targetpkg/usr/bin/safe-refuses-root#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      true
+   else
+      printf '%s\n' "Do not run ${0} as root!"
+      exit 1
+   fi
+}
+root_check
+done_file="${HOME}/.tb/first-boot-home-population.done"
+cp --recursive --no-clobber /var/cache/tb-binary/.cache "${HOME}/"
+touch "${done_file}"
+EOF
+
+## SAFE: an inline refusal whose message embeds the root-require phrase
+## 'run this as root' (developer-meta-files dm-upload-canary shape).
+write 'packages/kicksecure/targetpkg/usr/bin/safe-text-refusal#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" = "0" ]; then
+   echo "ERROR: Do not run this as root!"
+   exit 1
+fi
+. "${HOME}/derivative-maker/help-steps/pre"
+EOF
+
+## VULN: a real root gate; a refusal phrase OUTSIDE root_check's own body (about
+## a different program) must not cancel it.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-refusal-elsewhere#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+}
+root_check
+echo "Note: do not run the browser as root."
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
 ## VULN + WAIVER: pins the per-line by-design waiver. Every sink is a real
 ## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
 ## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule

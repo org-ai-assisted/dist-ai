@@ -40,13 +40,16 @@ EXPECTED = [
     ("vuln-env-nonid", "home-recursive-write", "MEDIUM"),  ## env -- X-Y=1 chown (non-identifier name)
     ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
     ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
+    ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
 ## home-write vuln under ci/ that must never enter the root surface (no FHS
-## install path -> not a shipped root entry point).
+## install path -> not a shipped root entry point), AND a launcher whose own
+## root_check refuses root, AND an inline refusal message.
 SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci",
-              "safe-env-dashdash", "safe-env-expand")
+              "safe-env-dashdash", "safe-env-expand", "safe-refuses-root",
+              "safe-text-refusal")
 
 
 def _sev_ok(actual, minimum):

@@ -96,9 +96,11 @@ ROOT_REQUIRE_TEXT_RE = re.compile(
     r"|run this as \broot\b",
     re.IGNORECASE)
 ## The refusal direction only; kept NARROW (an over-broad phrase like 'as user'
-## would wrongly cancel a real root gate). It suppresses a TEXT signal, never a
-## root-require FUNCTION call (see is_root_guarded).
-NOT_ROOT_RE = re.compile(r"must not be run as root|do not run as root|not_as_root",
+## would wrongly cancel a real root gate). It suppresses a TEXT signal anywhere,
+## but a root-require FUNCTION call only when it matches that function's OWN
+## in-script body (see is_root_guarded).
+NOT_ROOT_RE = re.compile(r"must not be run as root|do not run\b[^\n]{0,60}?\bas root\b"
+                         r"|not_as_root",
                          re.IGNORECASE)
 
 ## Blast-radius weight of the root category -- shifts a rule's base severity.
@@ -218,13 +220,33 @@ def entry_targets(entry):
     ## nonshell-escalation is handled as a direct Python file separately.
 
 
+def _local_refusal_func(tree, raw, name):
+    """True if every in-script definition of NAME is a refusal guard (its body
+    says 'do not run as root'). The helper names are conventions, not contracts:
+    tb-starter's root_check REFUSES root. No local definition -> False."""
+    bodies = [raw[decl["Pos"]["Offset"]:decl["End"]["Offset"]]
+              .decode("utf-8", errors="replace")
+              for decl in bash_ast.func_decls(tree)
+              if (decl.get("Name") or {}).get("Value") == name]
+    return bool(bodies) and all(NOT_ROOT_RE.search(body) for body in bodies)
+
+
 def is_root_guarded(source):
     ## A root-require FUNCTION call is authoritative -- a script that calls
     ## root_check IS a root entry point even if it elsewhere mentions a refusal
-    ## phrase. Only the weaker TEXT signal is cancelled by an explicit refusal.
+    ## phrase -- unless the script defines that function itself as a refusal.
+    ## Only the weaker TEXT signal is cancelled by an explicit refusal anywhere.
+    try:
+        tree = bash_ast.parse_normalized(source)
+    except bash_ast.BashParseError:
+        tree = None
+    raw = source.encode("utf-8")
     for name in ROOT_REQUIRE_FUNCS:
-        if re.search(r"\b" + re.escape(name) + r"\b", source):
-            return True
+        if not re.search(r"\b" + re.escape(name) + r"\b", source):
+            continue
+        if tree is not None and _local_refusal_func(tree, raw, name):
+            continue
+        return True
     return bool(ROOT_REQUIRE_TEXT_RE.search(source)) and not NOT_ROOT_RE.search(source)
 
 
