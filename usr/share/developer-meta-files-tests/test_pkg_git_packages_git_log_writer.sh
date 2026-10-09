@@ -103,6 +103,11 @@ tmp_root="$(mktemp -d)"
 ## hook) makes git operate on the hook's repo, not the fixture.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE
+## Isolate from ambient git config: a global tag.gpgSign / core.hooksPath /
+## commit template could make the fixture commits or tags fail, so the result
+## would depend on the runner's environment. /dev/null = no user/system config.
+## Exported so the inner-runner git invocations inherit the isolation too.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
    safe-rm --recursive --force -- "${tmp_root}"
@@ -130,14 +135,22 @@ make_parent() {
       git_c "${parent}" tag oldtag
       git_c "${parent}" tag newtag
    else
-      ## Tagged commit has NO testpkg; it appears only in the working tree
-      ## afterwards -> absent from both tags (added after the release tag).
-      printf 'y\n' > "${parent}/packages/kicksecure/keep"
+      ## testpkg is present at oldtag and REMOVED at newtag (then restored in
+      ## the worktree). This is the canonical "absent from new tag" case and,
+      ## unlike an absent-from-both fixture, it forces the NEW-tag guard to be
+      ## the one that fires: the old-tag lookup HITS, so a writer that guarded
+      ## only the old lookup still hits the unguarded new rev-parse and crashes.
+      mkdir -- "${parent}/packages/kicksecure/${pkg}"
+      printf 'x\n' > "${parent}/packages/kicksecure/${pkg}/f"
       git_c "${parent}" add -A
       git_c "${parent}" commit -q -m c1
       git_c "${parent}" tag oldtag
+      git_c "${parent}" rm -q -r -- "packages/kicksecure/${pkg}"
+      git_c "${parent}" commit -q -m c2-remove-testpkg
       git_c "${parent}" tag newtag
-      mkdir -- "${parent}/packages/kicksecure/${pkg}"
+      ## Restore in the worktree so run_writer's `cd .../${pkg}` succeeds
+      ## (git rm removed the now-empty parent dir, so --parents is needed).
+      mkdir --parents -- "${parent}/packages/kicksecure/${pkg}"
       printf 'x\n' > "${parent}/packages/kicksecure/${pkg}/f"
    fi
    printf '%s\n' "${parent}"
@@ -175,6 +188,10 @@ fi
 drafts="$(mktemp -d -p "${tmp_root}")"
 printf '%s\n' 'KSENTINEL-changelog-line' > "${drafts}/kicksecure_giant_git_log.txt"
 printf '%s\n' 'WSENTINEL-changelog-line' > "${drafts}/whonix_giant_git_log.txt"
+## Oversized changelog (> MAX_ARG_STRLEN ~128 KiB): the fix streams it via
+## redirection, so this must still be written; the old single-argv `overwrite`
+## would E2BIG here. Sentinel stays on line 1, so the content check still holds.
+head -c 140000 /dev/zero | tr '\0' A >> "${drafts}/kicksecure_giant_git_log.txt"
 (
    # shellcheck disable=SC2034  # consumed by the extracted functions
    {
@@ -198,10 +215,11 @@ else
    fail "Kicksecure announcement missing changelog contents or emits the literal path"
 fi
 if [ -r "${ws}" ] && grep --quiet -- 'WSENTINEL-changelog-line' "${ws}" \
-   && ! grep --quiet -- 'KSENTINEL-changelog-line' "${ws}"; then
-   pass "Whonix announcement draws from the Whonix changelog, not the Kicksecure one"
+   && ! grep --quiet -- 'KSENTINEL-changelog-line' "${ws}" \
+   && ! grep --quiet -- 'whonix_giant_git_log.txt' "${ws}"; then
+   pass "Whonix announcement draws from the Whonix changelog, not the Kicksecure one or the path"
 else
-   fail "Whonix announcement drew from the wrong (Kicksecure) changelog"
+   fail "Whonix announcement drew from the wrong changelog or emitted the literal path"
 fi
 
 ## --- Single-pass commit loop emits correctly (guards the perf refactor) -----
@@ -226,21 +244,61 @@ printf '%s\n' 'feature two' '' 'a detail body line' '' \
 git_c "${emit_repo}" commit -q --allow-empty -m 'typo'
 git_c "${emit_repo}" tag emit_new
 
-WRITER_TEXT="${writer_text}" DRY_RUN_TEXT="${dry_run_text}" FILTER_TEXT="${filter_text}" \
-   bash "${emit_inner}" "${emit_repo}" emit_old emit_new "${emit_out}"
-
-emit_ok=true
-grep --quiet --fixed-strings -- '* derivative-maker:'                   "${emit_out}" || emit_ok=false
-grep --quiet --fixed-strings -- '  * real feature one (Thanks to A Human!)' "${emit_out}" || emit_ok=false
-grep --quiet --fixed-strings -- '  * feature two (AI assisted)'        "${emit_out}" || emit_ok=false
-grep --quiet --fixed-strings -- '    a detail body line'               "${emit_out}" || emit_ok=false
-## AI trailer stripped and the noise commit filtered out.
-! grep --quiet --fixed-strings -- 'Co-Authored-By' "${emit_out}" || emit_ok=false
-! grep --quiet --fixed-strings -- 'typo'           "${emit_out}" || emit_ok=false
-if [ "${emit_ok}" = 'true' ]; then
-   pass "single-pass loop: bullets, credit, multi-line body, trailer-strip, filter"
+## Run the emit inner in its own `if` so an unexpected abort is a clear FAIL
+## with the output, not a silent errexit exit of the whole suite. (The inner
+## has its own errexit, unaffected by this `if` -- see run_writer's note.)
+if ! WRITER_TEXT="${writer_text}" DRY_RUN_TEXT="${dry_run_text}" FILTER_TEXT="${filter_text}" \
+      bash "${emit_inner}" "${emit_repo}" emit_old emit_new "${emit_out}"; then
+   fail "single-pass emit runner aborted unexpectedly"
 else
-   fail "single-pass loop emission wrong: $(tr '\n' '|' < "${emit_out}")"
+   emit_ok=true
+   grep --quiet --fixed-strings -- '* derivative-maker:'                       "${emit_out}" || emit_ok=false
+   grep --quiet --fixed-strings -- '  * real feature one (Thanks to A Human!)' "${emit_out}" || emit_ok=false
+   grep --quiet --fixed-strings -- '  * feature two (AI assisted)'             "${emit_out}" || emit_ok=false
+   grep --quiet --fixed-strings -- '    a detail body line'                    "${emit_out}" || emit_ok=false
+   ## AI trailer stripped and the noise commit filtered out.
+   ! grep --quiet --fixed-strings -- 'Co-Authored-By' "${emit_out}" || emit_ok=false
+   ! grep --quiet --fixed-strings -- 'typo'           "${emit_out}" || emit_ok=false
+   if [ "${emit_ok}" = 'true' ]; then
+      pass "single-pass loop: bullets, credit, multi-line body, trailer-strip, filter"
+   else
+      fail "single-pass loop emission wrong: $(tr '\n' '|' < "${emit_out}")"
+   fi
+fi
+
+## --- Hardening: NUL record separator resists in-band delimiter injection, ---
+## and the subject is git's %s (not the %B first line). A commit body carrying
+## literal 0x1e/0x1f must NOT forge a second record/author; a message whose
+## first line is blank (%s non-empty, %B first line empty) must still emit.
+inj_repo="$(mktemp -d -p "${tmp_root}")"
+inj_out="$(mktemp -p "${tmp_root}")"
+git -C "${inj_repo}" init -q -b master
+git_c "${inj_repo}" commit -q --allow-empty -m base
+git_c "${inj_repo}" tag inj_old
+printf 'inject subject\n\nbody-a\x1e40cafe\x1fFORGEDAUTHOR\x1fforged subject\nbody-b\n' \
+   | git_c "${inj_repo}" commit -q --allow-empty --cleanup=verbatim \
+      --author='Real Person <r@example.invalid>' -F -
+printf '\nleading blank subject\n' \
+   | git_c "${inj_repo}" commit -q --allow-empty --cleanup=verbatim \
+      --author='assisted-by-ai (Bot Account) <a@example.invalid>' -F -
+git_c "${inj_repo}" tag inj_new
+
+if ! WRITER_TEXT="${writer_text}" DRY_RUN_TEXT="${dry_run_text}" FILTER_TEXT="${filter_text}" \
+      bash "${emit_inner}" "${inj_repo}" inj_old inj_new "${inj_out}"; then
+   fail "hardening emit runner aborted unexpectedly"
+else
+   inj_ok=true
+   grep --quiet --fixed-strings -- '  * inject subject (Thanks to Real Person!)'  "${inj_out}" || inj_ok=false
+   grep --quiet --fixed-strings -- '  * leading blank subject (AI assisted)'      "${inj_out}" || inj_ok=false
+   ## No forged record: the 0x1e/0x1f bytes stay inert body text, so there is
+   ## no extra top-level bullet and no credit to the forged author.
+   [ "$(grep -c -- '^  \* ' "${inj_out}")" -eq 2 ] || inj_ok=false
+   ! grep --quiet --fixed-strings -- '(Thanks to FORGEDAUTHOR' "${inj_out}" || inj_ok=false
+   if [ "${inj_ok}" = 'true' ]; then
+      pass "NUL records resist delimiter injection; subject uses %s (leading-blank emitted)"
+   else
+      fail "delimiter-injection/%s hardening wrong: $(tr '\n' '|' < "${inj_out}")"
+   fi
 fi
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
