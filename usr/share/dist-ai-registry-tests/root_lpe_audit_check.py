@@ -37,12 +37,16 @@ EXPECTED = [
     ("vuln-round2", "world-writable-perms", "MEDIUM"),     ## chmod a=w
     ("vuln-env-single", "home-recursive-write", "MEDIUM"), ## env -- VAR=val chown
     ("vuln-env-multi", "home-recursive-write", "MEDIUM"),  ## env -- A=1 B=2 chown (loop)
+    ("vuln-env-nonid", "home-recursive-write", "MEDIUM"),  ## env -- X-Y=1 chown (non-identifier name)
+    ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
+    ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
 ## home-write vuln under ci/ that must never enter the root surface (no FHS
 ## install path -> not a shipped root entry point).
-SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci")
+SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci",
+              "safe-env-dashdash", "safe-env-expand")
 
 
 def _sev_ok(actual, minimum):

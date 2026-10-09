@@ -411,6 +411,33 @@ def word_string(word, decode_dquote=False):
             return None
     return "".join(out)
 
+def word_literal_text(word):
+    """The concatenation of WORD's LITERAL segments, with every expansion
+    (parameter/command/arithmetic) SKIPPED rather than making the whole word
+    unknown. A character reported here is present in the word VERBATIM whatever
+    an expansion yields -- e.g. the '=' in '"PATH=$PATH"' survives, which
+    word_string cannot report because the $PATH expansion makes it decline the
+    whole word. Use when a rule needs to know a literal character is present even
+    though the word also expands something (an env NAME=VALUE operand check: a
+    literal '=' means a real assignment; a '=' that is only expansion syntax,
+    '${v:=x}' / '$((a=1))', is NOT here and must not read as one)."""
+    if word is None:
+        return ""
+    out = []
+    for part in word.get("Parts") or []:
+        kind = part.get("Type")
+        if kind == "Lit":
+            out.append(_deescape_unquoted_lit(part.get("Value") or ""))
+        elif kind == "SglQuoted":
+            out.append(part.get("Value") or "")
+        elif kind == "DblQuoted":
+            for inner in part.get("Parts") or []:
+                if inner.get("Type") == "Lit":
+                    out.append(inner.get("Value") or "")
+        ## else: an expansion contributes no statically-known literal text.
+    return "".join(out)
+
+
 ## A CallExpr's own arguments, always a list (never None).
 
 

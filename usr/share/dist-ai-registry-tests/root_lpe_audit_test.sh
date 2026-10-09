@@ -212,6 +212,73 @@ tu="$1"
 env -- A=1 B=2 chown --recursive root:root "/home/${tu}/multi"
 EOF
 
+## VULN: GNU env puts NO identifier constraint on a NAME=VALUE operand -- it
+## treats ANY word containing '=' as an assignment ('X-Y=1', '0=1', '--unset=P'
+## all set a variable), so a peeler that only skips shell-identifier names peels
+## to the assignment word and misses the sink.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-env-nonid' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- X-Y=1 chown --recursive root:root "/home/${tu}/nonid"
+EOF
+
+## VULN: a QUOTED/EXPANDED assignment ('"PATH=$PATH"') has no static word_string,
+## so the '=' operand test must read the RAW word, not a parsed literal.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-env-expand' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- "PATH=$PATH" chown --recursive root:root "/home/${tu}/expand"
+EOF
+
+## VULN: a lone '-' right after options is 'env --ignore-environment' (GNU synopsis
+## 'env [OPTION]... [-] [NAME=VALUE]... [COMMAND]'), NOT the command -- assignments
+## still follow it, so the peeler must consume it and keep looking for the command.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-env-dash' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- - PATH=/usr/bin chown --recursive root:root "/home/${tu}/dash"
+EOF
+
+## SAFE: '--' only ends option parsing while getopt is still running; a NAME=VALUE
+## operand already stopped it, so a LATER '--' is the command env tries to exec
+## ('env: --: No such file'), and the chown never runs. The peeler must NOT treat
+## this '--' as an option terminator and flag the chown (that is a false positive).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/safe-env-dashdash' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env PATH=/usr/bin -- LANG=C chown --recursive root:root "/home/${tu}/nope"
+EOF
+
+## SAFE: a '=' that is only EXPANSION SYNTAX ('${v:=default}', '$((a=1))') is not
+## an env NAME=VALUE operand -- the word expands to a value with no '=', so env
+## execs THAT word and the chown never runs. The peeler must test the LITERAL
+## text, not the raw source, or it skips the word and false-flags the chown.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/safe-env-expand' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- "${envx:=true}" chown --recursive root:root "/home/${tu}/nope"
+EOF
+
 ## SAFE round-2 counterparts that must stay clean: 'command -V' only DESCRIBES,
 ## dd 'if=' is a READ (only 'of=' writes), 'chmod +w' is umask-filtered, and a
 ## 'source FILE -- args' sources FILE (safe path), not the '--' argument.
