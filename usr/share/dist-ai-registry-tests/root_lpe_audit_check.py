@@ -241,6 +241,18 @@ def main(argv):
         "python waiver above an 'if' header does not reach its body",
         has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
+    for op_sub, header in ((".excepthdr", "except"), (".caseguard", "case")):
+        checks.append((
+            "python waiver above a wrapped '%s' header suppresses its op"
+            % header,
+            has(suppressed, "vuln_py_waived", "python-advisory", op_sub,
+                need_reason=True)
+            and not has(findings, "vuln_py_waived", "python-advisory", op_sub)))
+    checks.append((
+        "python form feed does not shift the advisory onto a waiver line",
+        has(findings, "vuln_py_formfeed", "python-advisory", ".formfeed")
+        and not has(suppressed, "vuln_py_formfeed", "python-advisory",
+                    ".formfeed")))
     checks.append((
         "python waiver in an unparseable file is not honored",
         has(findings, "vuln_py_unparsed", "python-advisory", ".unparsed")

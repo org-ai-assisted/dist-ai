@@ -496,7 +496,37 @@ chowned = [
 # style-ok: lpe-python-advisory -- waives the if header only, must NOT reach the body
 if chowned:
     os.chown("/home/user/.ifbody", 0, 0)
+try:
+    pass
+# style-ok: lpe-python-advisory -- waiver above a wrapped except header
+except (
+    os.chown("/home/user/.excepthdr", 0, 0)
+):
+    pass
+match chowned:
+    # style-ok: lpe-python-advisory -- waiver above a wrapped case guard
+    case [_] if (
+        os.chown("/home/user/.caseguard", 0, 0)
+    ):
+        pass
 EOF
+
+## VULN + WAIVER (python form feed): a form feed is NOT a line break to Python,
+## so the advisory's line numbers must not count it as one -- else the op below
+## is reported one line low, ON the waiver comment, and wrongly suppressed.
+form_feed=$'\f'
+printf '%s\n' \
+   '#!/usr/bin/python3' \
+   'import os' \
+   'import subprocess' \
+   'subprocess.run(["sudo", "systemctl", "restart", "unit"])' \
+   "# page break${form_feed} inside a comment" \
+   'os.chown("/home/user/.formfeed", 0, 0)' \
+   '# style-ok: lpe-python-advisory -- waives the list below only' \
+   'waived = [' \
+   '    0,' \
+   ']' \
+   | write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_formfeed.py'
 
 ## VULN + WAIVER (python parse error): the file tokenizes but does not parse, so
 ## it has no trustworthy statement boundaries -- even a waiver directly above

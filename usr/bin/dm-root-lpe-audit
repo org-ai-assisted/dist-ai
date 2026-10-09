@@ -307,7 +307,10 @@ def severity_of(rule, factors, weight):
 
 def python_advisory(abs_path, rel_path):
     findings = []
-    for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
+    ## Split on '\n' ONLY, like ast/tokenize: str.splitlines() also breaks on
+    ## form feed / vertical tab / etc., shifting finding lines off the
+    ## statement spans and comment lines the waivers are matched against.
+    for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
         if raw.lstrip().startswith("#"):
             continue
         if PYTHON_SINK_RE.search(raw) and PYTHON_TAINT_RE.search(raw):
@@ -496,15 +499,19 @@ def _py_stmt_spans(source):
         return None
     spans = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.stmt):
+        ## 'except' and 'case' clauses are not ast.stmt, but their headers are
+        ## statement-like lines a finding can wrap inside.
+        if not isinstance(node, (ast.stmt, ast.ExceptHandler, ast.match_case)):
             continue
         suite_fields = _PY_SUITE_FIELDS.intersection(node._fields)
         if not suite_fields:
             spans.append((node.lineno, node.end_lineno or node.lineno))
             continue
-        ## Header = every non-suite child; decorators sit ABOVE lineno, so the
-        ## start is widened to them too.
-        start = end = node.lineno
+        ## Header = the node's own line plus every non-suite child; decorators
+        ## sit ABOVE lineno, so the start widens to them too. A match_case has
+        ## no position of its own -- its pattern/guard children supply it.
+        own_line = getattr(node, "lineno", None)
+        lines = [] if own_line is None else [own_line]
         for field, value in ast.iter_fields(node):
             if field in suite_fields:
                 continue
@@ -512,9 +519,12 @@ def _py_stmt_spans(source):
                 if not isinstance(child, ast.AST):
                     continue
                 for sub in ast.walk(child):
-                    start = min(start, getattr(sub, "lineno", None) or start)
-                    end = max(end, getattr(sub, "end_lineno", None) or end)
-        spans.append((start, end))
+                    lines.extend(
+                        line for line in (getattr(sub, "lineno", None),
+                                          getattr(sub, "end_lineno", None))
+                        if line is not None)
+        if lines:
+            spans.append((min(lines), max(lines)))
     return spans
 
 
