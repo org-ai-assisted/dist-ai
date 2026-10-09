@@ -105,8 +105,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE
 ## Isolate from ambient git config: a global tag.gpgSign / core.hooksPath /
 ## commit template could make the fixture commits or tags fail, so the result
-## would depend on the runner's environment. /dev/null = no user/system config.
-## Exported so the inner-runner git invocations inherit the isolation too.
+## would depend on the runner's environment. /dev/null = no user/system config;
+## also clear the inline-config env (GIT_CONFIG_COUNT/PARAMETERS), which would
+## otherwise override the /dev/null files. Exported so the inner-runner git
+## invocations inherit the full isolation too.
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
