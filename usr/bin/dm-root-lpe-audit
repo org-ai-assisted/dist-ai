@@ -101,8 +101,9 @@ ROOT_REQUIRE_TEXT_RE = re.compile(
 ## would wrongly cancel a real root gate). At most ONE word between 'run' and
 ## 'as root' ('this', '${SCRIPTNAME}'), so 'do not run the browser as root' or
 ## 'do not run as a user, must be run as root' does not read as a refusal. It
-## suppresses a TEXT signal anywhere, but a root-require FUNCTION call only when
-## it matches that function's OWN in-script body (see is_root_guarded).
+## masks root-require text inside a refusal phrase, and cancels a root-require
+## FUNCTION call only when it matches that function's OWN in-script body (see
+## is_root_guarded).
 NOT_ROOT_RE = re.compile(r"must not be run as root|do not run (?:\S+ )?as root\b"
                          r"|\bnot_as_root\b",
                          re.IGNORECASE)
@@ -224,12 +225,15 @@ def entry_targets(entry):
     ## nonshell-escalation is handled as a direct Python file separately.
 
 
+def _requires_root_text(text):
+    ## Root-require text left once the refusal phrases are removed ('Do not run
+    ## this as root' contains 'run this as root'). Text carrying both directions
+    ## stays a root gate.
+    return bool(ROOT_REQUIRE_TEXT_RE.search(NOT_ROOT_RE.sub(" ", text)))
+
+
 def _is_refusal_body(body):
-    ## Refusal text present AND no root-require text left once the refusal
-    ## phrases are removed ('Do not run this as root' contains 'run this as
-    ## root'). A body carrying both directions stays a root gate.
-    return bool(NOT_ROOT_RE.search(body)) and not ROOT_REQUIRE_TEXT_RE.search(
-        NOT_ROOT_RE.sub(" ", body))
+    return bool(NOT_ROOT_RE.search(body)) and not _requires_root_text(body)
 
 
 def _local_refusal_func(tree, raw, name):
@@ -247,7 +251,8 @@ def is_root_guarded(source):
     ## A root-require FUNCTION call is authoritative -- a script that calls
     ## root_check IS a root entry point even if it elsewhere mentions a refusal
     ## phrase -- unless the script defines that function itself as a refusal.
-    ## Only the weaker TEXT signal is cancelled by an explicit refusal anywhere.
+    ## The weaker TEXT signal counts only root-require text that is not part of
+    ## a refusal phrase.
     try:
         tree = bash_ast.parse_normalized(source)
     except bash_ast.BashParseError:
@@ -259,7 +264,7 @@ def is_root_guarded(source):
         if tree is not None and _local_refusal_func(tree, raw, name):
             continue
         return True
-    return bool(ROOT_REQUIRE_TEXT_RE.search(source)) and not NOT_ROOT_RE.search(source)
+    return _requires_root_text(source)
 
 
 def sourced_targets(tree, source, by_path, by_base):

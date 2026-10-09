@@ -43,6 +43,7 @@ EXPECTED = [
     ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
     ("vuln-mixed-body", "home-recursive-write", "HIGH"),         ## refusal text inside a real root_check
     ("vuln-text-cross-clause", "home-recursive-write", "HIGH"),  ## 'do not run ...' spanning clauses
+    ("vuln-text-both", "home-recursive-write", "HIGH"),          ## separate refusal beside a root gate
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded

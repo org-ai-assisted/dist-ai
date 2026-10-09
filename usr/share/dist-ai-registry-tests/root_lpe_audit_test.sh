@@ -405,6 +405,18 @@ home_folder="/home/$1"
 find "${home_folder}" -name '*.tmp' -delete
 EOF
 
+## VULN: TEXT-signal root gate beside a separate one-word refusal; the refusal
+## must not cancel the remaining 'must be run as root'.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-text-both#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" != "0" ]; then
+   echo "ERROR: this helper must be run as root."
+   exit 1
+fi
+echo "Tip: do not run it as root from a desktop session."
+find "/home/$1" -name '*.tmp' -delete
+EOF
+
 ## VULN + WAIVER: pins the per-line by-design waiver. Every sink is a real
 ## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
 ## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule
