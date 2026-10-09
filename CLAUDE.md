@@ -52,7 +52,7 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
 - Fidelity: `session_type_dispatch_test.sh` extracts a trace-line-delimited block (fragile
   -- use a `# BEGIN/END` sentinel or drive real msgdispatcher); `check_returns_not_exits_test.sh`
   re-tests at lower fidelity what `unit_tests_test.sh` already sources.
-- `extract_bash_function` still used by 16 python suites/testlibs (msgcollector,
-  onion-time-pre-script, systemcheck, tb-updater) -- migrate each subject to source-able.
+- `extract_bash_function` still used by 14 python suites/testlibs (msgcollector,
+  systemcheck, tb-updater) -- migrate each subject to source-able.
 - Reimplemented `has` remains in `anon-gw-anonymizer-config-tests`, `setup-dist-tests`;
   a stub-mode `validate_safe_filename` in `onion_grater_profile_test.sh` -- require + skip 77 instead.

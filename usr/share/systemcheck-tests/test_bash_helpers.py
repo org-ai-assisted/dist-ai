@@ -6,31 +6,23 @@
 ## AI-Assisted
 
 """
-Functional tests for the pure bash helpers in preparation.bsh, extracted and
-run in isolation (the fragment cannot be sourced wholesale -- it sources
-sibling files by absolute path).
+Functional tests for the pure bash helpers in preparation.bsh, run by sourcing
+the real fragment.
 """
 
 import unittest
 
 from systemcheck_testlib import (
     SystemcheckTestBase,
-    extract_bash_function,
-    run_bash_function,
+    fragment_sources,
+    run_sourced,
 )
 
 
 class TestLeaprunCmdDescribe(SystemcheckTestBase):
-    func: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        cls.func = extract_bash_function(cls.preparation, 'leaprun_cmd_describe')
-
     def test_privileged_form(self) -> None:
-        out = run_bash_function(
-            self.func,
+        out = run_sourced(
+            fragment_sources(),
             'leaprun_cmd_describe "systemctl --wait is-system-running" '
             '"system-ready-check"',
         )
@@ -39,8 +31,9 @@ class TestLeaprunCmdDescribe(SystemcheckTestBase):
         self.assertIn('systemctl --wait is-system-running', out)
 
     def test_unprivileged_form(self) -> None:
-        out = run_bash_function(
-            self.func, 'leaprun_cmd_describe "systemctl --user --wait is-system-running"'
+        out = run_sourced(
+            fragment_sources(),
+            'leaprun_cmd_describe "systemctl --user --wait is-system-running"',
         )
         self.assertIn('systemctl --user --wait is-system-running', out)
         self.assertNotIn('leaprun', out)
@@ -48,19 +41,12 @@ class TestLeaprunCmdDescribe(SystemcheckTestBase):
 
 
 class TestRemediationInstructions(SystemcheckTestBase):
-    func: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        cls.func = extract_bash_function(cls.preparation, 'remediation_instructions')
-
     def test_sysmaint_session(self) -> None:
-        out = run_bash_function(
-            self.func,
+        out = run_sourced(
+            fragment_sources(),
             'remediation_instructions "dpkg --configure -a"',
-            env_setup='booted_in_sysmaint_session=true\n'
-                      'user_sysmaint_split_installed=false',
+            setup='booted_in_sysmaint_session=true\n'
+                  'user_sysmaint_split_installed=false',
         )
         self.assertIn('Open Terminal', out)
         self.assertIn('System Maintenance Panel', out)
@@ -68,23 +54,23 @@ class TestRemediationInstructions(SystemcheckTestBase):
         self.assertIn('sudo dpkg --configure -a', out)
 
     def test_user_sysmaint_split(self) -> None:
-        out = run_bash_function(
-            self.func,
+        out = run_sourced(
+            fragment_sources(),
             'remediation_instructions "dpkg --configure -a"',
-            env_setup='booted_in_sysmaint_session=false\n'
-                      'user_sysmaint_split_installed=true',
+            setup='booted_in_sysmaint_session=false\n'
+                  'user_sysmaint_split_installed=true',
         )
         self.assertIn('SYSMAINT Session', out)
         self.assertIn('System Maintenance Panel', out)
         self.assertIn('sudo dpkg --configure -a', out)
 
     def test_plain_uses_sudo(self) -> None:
-        out = run_bash_function(
-            self.func,
+        out = run_sourced(
+            fragment_sources(),
             'remediation_instructions "dpkg --configure -a"',
-            env_setup='booted_in_sysmaint_session=false\n'
-                      'user_sysmaint_split_installed=false\n'
-                      'start_menu_instructions_system_first_part="Start Menu / System"',
+            setup='booted_in_sysmaint_session=false\n'
+                  'user_sysmaint_split_installed=false\n'
+                  'start_menu_instructions_system_first_part="Start Menu / System"',
         )
         self.assertIn('sudo dpkg --configure -a', out)
 

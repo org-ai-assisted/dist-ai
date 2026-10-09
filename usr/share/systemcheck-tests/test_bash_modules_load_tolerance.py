@@ -22,9 +22,9 @@ mask a jitterentropy_rng (security-misc) load failure, the exact
 tolerance fires ONLY for the tirdad-under-Secure-Boot case and FAILS on any other
 module failure, Secure Boot off, or systemd-modules-load not actually failed.
 
-Drives the real bash helper (extracted from the systemcheck checkout) with
-stubbed check_secure_boot_enabled / systemctl / lsmod and the modules-load.d dir
-test seam (systemcheck_modules_load_d_dirs).
+Sources the real preparation.bsh, then stubs check_secure_boot_enabled /
+systemctl / lsmod and sets the modules-load.d dir test seam
+(systemcheck_modules_load_d_dirs).
 """
 
 import os
@@ -34,28 +34,12 @@ import unittest
 
 from systemcheck_testlib import (
     SystemcheckTestBase,
-    extract_bash_function,
-    run_bash_function,
+    fragment_sources,
+    run_sourced,
 )
 
 
 class TestModulesLoadTirdadTolerance(SystemcheckTestBase):
-    func: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        ## The systemcheck under test may predate the --ci tolerance (dist-ai lands
-        ## before the systemcheck consumer catches up); SKIP, not error, in the gap.
-        try:
-            cls.func = extract_bash_function(
-                cls.preparation,
-                'systemcheck_modules_load_degrade_is_tirdad_sb_only',
-            )
-        except LookupError as exc:
-            raise unittest.SkipTest(
-                f"systemcheck lacks the --ci tirdad tolerance helper: {exc}")
-
     def _verdict(self, sb_rc, modules_load_failed, loaded_mods, confs) -> str:
         """Return 'tolerate' or 'no' for the given mocked state."""
         tmp = tempfile.mkdtemp()
@@ -75,11 +59,11 @@ class TestModulesLoadTirdadTolerance(SystemcheckTestBase):
             f'lsmod() {{ {lsmod_body}; }}\n'
             f'systemcheck_modules_load_d_dirs={tmp!r}\n'
         )
-        return run_bash_function(
-            self.func,
+        return run_sourced(
+            fragment_sources(),
             'systemcheck_modules_load_degrade_is_tirdad_sb_only '
             '&& echo tolerate || echo no',
-            env_setup=env_setup,
+            setup=env_setup,
         )
 
     _CONFS = {
@@ -155,23 +139,6 @@ class TestCiToleranceInjection(SystemcheckTestBase):
     when the helper confirms the tirdad-under-Secure-Boot case.
     """
 
-    combined: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        try:
-            cls.combined = (
-                extract_bash_function(
-                    cls.preparation,
-                    'systemcheck_modules_load_degrade_is_tirdad_sb_only')
-                + '\n'
-                + extract_bash_function(
-                    cls.preparation, 'systemcheck_modules_load_ci_tolerance'))
-        except LookupError as exc:
-            raise unittest.SkipTest(
-                f"systemcheck lacks the --ci tirdad tolerance helpers: {exc}")
-
     def _inject(self, ci, sb_rc, modules_load_failed, loaded_mods, confs) -> str:
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
@@ -193,13 +160,13 @@ class TestCiToleranceInjection(SystemcheckTestBase):
             f'lsmod() {{ {lsmod_body}; }}\n'
             f'systemcheck_modules_load_d_dirs={tmp!r}\n'
         )
-        return run_bash_function(
-            self.combined,
+        return run_sourced(
+            fragment_sources(),
             'systemcheck_modules_load_ci_tolerance; '
             'printf "IGN=[%s] JRN=[%s]\\n" '
             '"$systemcheck_ignore_failed_units_cli" '
             '"$systemcheck_journal_ignore_fixed_cli"',
-            env_setup=env_setup,
+            setup=env_setup,
         )
 
     _CONFS = {

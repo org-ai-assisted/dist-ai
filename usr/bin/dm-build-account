@@ -39,7 +39,7 @@ export LC_ALL=C
 me="${0##*/}"
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: $2" >&2
    exit "$1"
 }
 
@@ -75,10 +75,26 @@ account="persist-bild-${guest}"
 if ! getent passwd "${account}" >/dev/null; then
    ## --user-group: a PRIVATE primary group, so no shared-group privilege bleed.
    useradd --create-home --user-group --shell /bin/bash "${account}"
-   printf '%s: created %s\n' "${me}" "${account}"
+   printf '%s\n' "${me}: created ${account}"
 else
-   printf '%s: %s already exists\n' "${me}" "${account}"
+   printf '%s\n' "${me}: ${account} already exists"
 fi
+
+## A pre-existing account is reused, not recreated, so verify the profile instead of
+## assuming it: a private primary group and no vboxusers. Refuse rather than repair -- an
+## account drifted this way was changed by hand and needs a human look. Verified BEFORE the
+## sysmaint grant below, so a refused account is never left able to run sudo.
+primary_group="$(id --group --name "${account}")"
+[ "${primary_group}" = "${account}" ] \
+   || die 1 "${account} primary group is '${primary_group}', not its private group '${account}'"
+## Plain assignment, not a here-string: a failed id lookup must abort (errexit), never read
+## as an empty or partial group list that hides vboxusers.
+account_groups_line="$(id --groups --name "${account}")"
+read -r -a account_groups <<< "${account_groups_line}"
+for group in "${account_groups[@]}"; do
+   [ "${group}" != 'vboxusers' ] \
+      || die 1 "${account} is in vboxusers; a build account must not be (remove it by hand)"
+done
 
 ## On the hardened host /usr/bin/sudo is mode 4750 root:sysmaint, so a build account must
 ## be in 'sysmaint' even to EXECUTE sudo. Deliberately NOT vboxusers: a build never drives
@@ -90,15 +106,22 @@ usermod --append --groups sysmaint "${account}"
 ## it is the production /etc/sudoers.d, byte-identical.
 sudoers_dir="${DM_BUILD_ACCOUNT_SUDOERS_DIR:-/etc/sudoers.d}"
 sudoers_file="${sudoers_dir}/${account}"
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${account}" > "${sudoers_file}"
-chmod 0440 "${sudoers_file}"
-visudo --check --file "${sudoers_file}" > /dev/null \
-   || die 1 "sudoers validation failed for ${sudoers_file}"
+## Validate a temp copy, then rename it into place: a rejected rule never becomes live
+## (a broken sudoers.d file disables sudo host-wide). The '.' in the temp name makes
+## sudo's includedir skip it even if this script dies before the rename.
+sudoers_tmp="$(mktemp -- "${sudoers_dir}/.${account}.XXXXXX")"
+printf '%s\n' "${account} ALL=(ALL) NOPASSWD:ALL" > "${sudoers_tmp}"
+chmod 0440 "${sudoers_tmp}"
+if ! visudo --check --file "${sudoers_tmp}" > /dev/null; then
+   safe-rm --force -- "${sudoers_tmp}"
+   die 1 "sudoers validation failed for ${sudoers_file}; existing rule left unchanged"
+fi
+mv --force --no-target-directory -- "${sudoers_tmp}" "${sudoers_file}"
 
 ## Fail loud if the profile does not actually yield passwordless root -- never report a
 ## half-provisioned account as ready.
 runuser -u "${account}" -- sudo --non-interactive true \
    || die 1 "${account} cannot obtain passwordless root (sysmaint/sudoers incomplete)"
 
-printf '%s: ready: sysmaint sudo, networked (outside the leak-drop), no vboxusers\n' "${me}"
+printf '%s\n' "${me}: ready: sysmaint sudo, networked (outside the leak-drop), no vboxusers"
 printf '%s\n' "${account}"

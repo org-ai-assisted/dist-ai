@@ -11,9 +11,9 @@ onion-time-pre-script output stability.
 sdwdate's preparation loop lengthens its retry interval only for as long as
 this script's output stays byte-identical between runs (sdwdate.py,
 SdwdateClass.preparation). Tor's bootstrap line carries COUNT=, a retry counter
-incremented on every failed connection attempt, so an offline Gateway used to
-emit a never-repeating message and hold the loop at its minimum interval,
-re-spawning six Tor control port helpers per interval indefinitely.
+incremented on every failed connection attempt, so printing it verbatim
+makes an offline Gateway emit a never-repeating message and hold the loop at
+its minimum interval, re-spawning six Tor control port helpers per interval.
 
 These tests pin BOTH directions: a pure counter tick must not change the
 output, and a real status transition must still change it.
@@ -22,12 +22,7 @@ output, and a real status transition must still change it.
 import subprocess
 import unittest
 
-from onion_time_pre_script_testlib import (
-    PreScriptTestBase,
-    extract_bash_function,
-    run_bash,
-    stub_env,
-)
+from onion_time_pre_script_testlib import PreScriptTestBase
 
 ## A Tor bootstrap warning as documented in tor_bootstrap_check.py, emitted
 ## while the network is unreachable. COUNT= increments per failed attempt.
@@ -42,52 +37,27 @@ WARN_REASON_TIMEOUT = WARN_COUNT_26.replace('REASON=NOROUTE', 'REASON=TIMEOUT')
 DONE_LINE = 'NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY="Done"'
 
 
+## Sourced subject, control port stubbed: check_tor_bootstrap_status publishes
+## the canned status, so no Tor control port, privleap or root is involved.
+BOOTSTRAP_BODY = '\n'.join(
+    [
+        'set -o pipefail',
+        'check_tor_bootstrap_status() {',
+        '   tor_bootstrap_status="$STUB_STATUS"',
+        '}',
+        'VM="$STUB_VM"',
+        'tor_circuit_established_word="not established."',
+        'tor_bootstrap_check',
+    ]
+)
+
+
 class TestBootstrapOutputStability(PreScriptTestBase):
     """Drive the real tor_bootstrap_check with a stubbed control port."""
 
-    output_cmd: str
-    bootstrap_check: str
-    redact: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        cls.output_cmd = extract_bash_function(cls.path, 'output_cmd')
-        cls.bootstrap_check = extract_bash_function(
-            cls.path, 'tor_bootstrap_check'
-        )
-        ## Extracted only when present: absent on the pre-fix script, where
-        ## these tests are meant to FAIL on the assertion rather than error
-        ## out during setup.
-        try:
-            cls.redact = extract_bash_function(
-                cls.path, 'redact_bootstrap_retry_count'
-            )
-        except LookupError:
-            cls.redact = ''
-
     def bootstrap_output(self, status: str, vm: str = 'Gateway') -> str:
-        """
-        Run tor_bootstrap_check against `status` and return its stdout.
-
-        check_tor_bootstrap_status is stubbed to publish the canned status, so
-        no Tor control port, privleap or root is involved.
-        """
-        script = '\n'.join(
-            [
-                'set -o pipefail',
-                self.output_cmd,
-                self.redact,
-                'check_tor_bootstrap_status() {',
-                '   tor_bootstrap_status="$STUB_STATUS"',
-                '}',
-                'VM="$STUB_VM"',
-                'tor_circuit_established_word="not established."',
-                self.bootstrap_check,
-                'tor_bootstrap_check',
-            ]
-        )
-        result = run_bash(script, stub_env(STUB_STATUS=status, STUB_VM=vm))
+        """Run tor_bootstrap_check against `status` and return its stdout."""
+        result = self.run_sourced(BOOTSTRAP_BODY, STUB_STATUS=status, STUB_VM=vm)
         self.assertEqual(
             result.returncode,
             0,
@@ -146,21 +116,9 @@ class TestBootstrapOutputStability(PreScriptTestBase):
         A Workstation has no access to the Gateway's control port, so the
         volatile line never reaches its output at all.
         """
-        script = '\n'.join(
-            [
-                'set -o pipefail',
-                self.output_cmd,
-                self.redact,
-                'check_tor_bootstrap_status() {',
-                '   tor_bootstrap_status="$STUB_STATUS"',
-                '}',
-                'VM="Workstation"',
-                'tor_circuit_established_word="not established."',
-                self.bootstrap_check,
-                'tor_bootstrap_check',
-            ]
+        result = self.run_sourced(
+            BOOTSTRAP_BODY, STUB_STATUS=WARN_COUNT_26, STUB_VM='Workstation'
         )
-        result = run_bash(script, stub_env(STUB_STATUS=WARN_COUNT_26))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('Tor reports:', result.stdout)
         self.assertIn('Tor circuit:', result.stdout)
@@ -172,28 +130,12 @@ class TestExitHandler(PreScriptTestBase):
     documented 'wait, retry and error icon' contract sdwdate reads.
     """
 
-    output_cmd: str
-    exit_handler: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        cls.output_cmd = extract_bash_function(cls.path, 'output_cmd')
-        cls.exit_handler = extract_bash_function(cls.path, 'exit_handler')
-
     def run_exit_handler(
         self, preset: str = ''
     ) -> 'subprocess.CompletedProcess[str]':
-        script = '\n'.join(
-            [
-                'set -o pipefail',
-                self.output_cmd,
-                preset,
-                self.exit_handler,
-                'exit_handler',
-            ]
+        return self.run_sourced(
+            '\n'.join(['set -o pipefail', preset, 'exit_handler'])
         )
-        return run_bash(script)
 
     def test_unset_exit_code_becomes_one(self) -> None:
         """

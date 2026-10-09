@@ -11,10 +11,10 @@
 ## exit-code contract sdwdate reads. No Tor, no privleap, no root, no network.
 ##
 ## The subject is resolved by onion_time_pre_script_testlib:
-##   * ONION_TIME_PRE_SCRIPT_BIN=/path/to/onion-time-pre-script -> that file, OR
-##   * ONION_TIME_PRE_SCRIPT_REPO=/path/to/helper-scripts       -> that checkout, OR
+##   * ONION_TIME_PRE_SCRIPT_REPO=/path/to/helper-scripts -> that checkout, OR
 ##   * unset -> the installed package
 ##              (/usr/libexec/helper-scripts/onion-time-pre-script).
+## Tests source the real script; its .bsh siblings resolve from the same tree.
 ##
 ## Any extra arguments are forwarded to "python3 -m unittest".
 
@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 

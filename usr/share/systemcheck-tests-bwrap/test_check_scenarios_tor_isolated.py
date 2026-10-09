@@ -35,18 +35,12 @@ from systemcheck_testlib import (
 GATEWAY = ('/usr/share/anon-gw-base-files/gateway', '', False)
 ## Make the Qubes TemplateVM marker PRESENT (used by the skip test).
 TEMPLATEVM = ('/run/qubes/this-is-templatevm', '', False)
-## Keep the TemplateVM marker ABSENT (empty /run/qubes) and empty /usr/share so
-## bubblewrap can create the gateway marker's parent dir on hosts that lack
-## /usr/share/anon-gw-base-files (a tmpfs mountpoint under a read-only /usr
-## cannot be created without emptying an existing ancestor first).
-HIDE_QUBES = ['/run/qubes', '/usr/share']
-## The gateway marker's parent tmpfs needs this ancestor emptied even when the
-## TemplateVM marker is being PLACED (the skip tests) rather than hidden.
-HIDE_USR_SHARE = ['/usr/share']
+## Keep the TemplateVM marker ABSENT (empty /run/qubes).
+HIDE_QUBES = ['/run/qubes']
 
-## br_add (adds <br> to newlines) and cleanup are not among the preparation.bsh
-## helpers the harness extracts, so stub them; a passthrough br_add preserves the
-## text the assertions look for.
+## br_add (strings.bsh, adds <br> to newlines) and cleanup (cleanup.bsh) are not
+## in the files the harness sources, so stub them; a passthrough br_add preserves
+## the text the assertions look for.
 BR_ADD = "br_add() { printf '%s' \"$1\"; }"
 CLEANUP = 'cleanup() { :; }'
 
@@ -117,7 +111,7 @@ class TestTorRunningIsolatedScenarios(ScenarioTestBase):
         ## emission is the verbose-gated OK info, so verbose=0 yields no records.
         r = run_check_scenario_isolated(
             self.check(self.FILE), 'check_tor_running', env_setup='verbose=0',
-            stubs=BR_ADD, hide_dirs=HIDE_USR_SHARE, place=[GATEWAY, TEMPLATEVM])
+            stubs=BR_ADD, place=[GATEWAY, TEMPLATEVM])
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')
@@ -159,7 +153,7 @@ class TestTorEnabledIsolatedScenarios(ScenarioTestBase):
         r = run_check_scenario_isolated(
             self.check(self.FILE), 'check_tor_enabled', env_setup='verbose=0',
             stubs='check_tor_enabled_do() { TOR_ENABLED=1; }\n' + CLEANUP,
-            hide_dirs=HIDE_USR_SHARE, place=[GATEWAY, TEMPLATEVM])
+            place=[GATEWAY, TEMPLATEVM])
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, '0')

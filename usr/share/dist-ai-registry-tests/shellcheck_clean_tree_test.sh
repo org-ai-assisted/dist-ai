@@ -85,7 +85,28 @@ if ! grep --quiet --extended-regexp 'check\(s\) (failed|passed)|all static check
    fail=1
 fi
 
-sc_lines="$( printf '%s\n' "${gate_out}" | grep --extended-regexp '\[SC[0-9]+\]' || true )"
+## Print the [SC....] lines that belong to a gating FAIL block of gate output $1. A
+## block starts at a 'dist-ai-style: ' header; a NOTE block (e.g. the timed-out
+## following degrade's SC2034/SC2154 advisory) never fails the gate, so its
+## findings are not a regression.
+gating_sc_lines() {
+   local line in_fail=0
+   while IFS= read -r line; do
+      case "${line}" in
+         "dist-ai-style: FAIL "*)
+            in_fail=1
+            ;;
+         "dist-ai-style: "*)
+            in_fail=0
+            ;;
+      esac
+      if [ "${in_fail}" -eq 1 ] && [[ "${line}" =~ \[SC[0-9]+\] ]]; then
+         printf '%s\n' "${line}"
+      fi
+   done <<< "$1"
+}
+
+sc_lines="$( gating_sc_lines "${gate_out}" )"
 if [ -n "${sc_lines}" ]; then
    printf '%s\n' 'FAIL: shellcheck codes fire in dist-ai shell tree (the rc removal is not clean):' >&2
    printf '%s\n' "${sc_lines}" >&2
@@ -125,9 +146,21 @@ y='value'
 printf '%s\n' 'literal $y stays literal'
 CANARY
 canary_out="$( "${gate}" --check "${work_dir}/canary.sh" 2>&1 || true )"
-if ! grep --quiet '\[SC2016\]' <<< "${canary_out}"; then
+if ! grep --quiet '\[SC2016\]' <<< "$( gating_sc_lines "${canary_out}" )"; then
    printf '%s\n' 'FAIL(canary B): the gate did NOT flag a planted SC2016 violation -- the guard would not catch a real regression' >&2
    printf '%s\n' "${canary_out}" | tail -10 >&2
+   fail=1
+fi
+
+## Canary C: an advisory NOTE block's [SC....] lines are not gating, and a FAIL
+## block after it still is.
+advisory_out="dist-ai-style: following timed out on 'x.sh'; these unused/unassigned-variable findings are ADVISORY:
+x.sh:3:1: warning: FOO is referenced but not assigned. [SC2154]
+dist-ai-style: FAIL shellcheck: 'y.sh'
+y.sh:5:1: info: Expressions don't expand in single quotes. [SC2016]"
+canary_c="$( gating_sc_lines "${advisory_out}" )"
+if [ "${canary_c}" != "y.sh:5:1: info: Expressions don't expand in single quotes. [SC2016]" ]; then
+   printf '%s\n' "FAIL(canary C): gating_sc_lines mis-split advisory vs gating findings: [${canary_c}]" >&2
    fail=1
 fi
 

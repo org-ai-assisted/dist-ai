@@ -35,7 +35,7 @@ export LC_ALL=C
 me="${0##*/}"
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -44,13 +44,14 @@ die() {
 dm_developers_build_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 DM_BUILD_ACCOUNT="${DM_BUILD_ACCOUNT:-${dm_developers_build_dir}/dm-build-account}"
 source_checkout="${DM_SOURCE_CHECKOUT:-/home/admin/derivative-maker}"
-flavor='kicksecure-lxqt'
+flavor=''
 
 print_usage() {
    printf '%s\n' "Usage: ${me} <kicksecure|whonix> [--flavor FLAVOR] [--source-checkout DIR]
 
 Build a <flavor> ISO as the dedicated persist-bild-<guest> account (default flavor
-kicksecure-lxqt). Seeds the account's checkout from --source-checkout (default
+kicksecure-lxqt for kicksecure; whonix has no default, pass e.g. whonix-gateway-lxqt;
+FLAVOR must belong to GUEST). Seeds the account's checkout from --source-checkout (default
 /home/admin/derivative-maker). Prints the built ISO path on the last line. Must run as root."
 }
 
@@ -85,6 +86,27 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
+## The ISO flavor of each guest, so 'whonix' never silently builds a Kicksecure image.
+## Whonix has no single ISO (gateway and workstation are separate flavors, and
+## derivative-maker does not implement whonix-host-*), so it must be named explicitly.
+if [ -z "${flavor}" ]; then
+   case "${guest}" in
+      kicksecure)
+         flavor='kicksecure-lxqt'
+         ;;
+      whonix)
+         die 2 "guest whonix needs --flavor (e.g. whonix-gateway-lxqt or whonix-workstation-lxqt)"
+         ;;
+   esac
+fi
+case "${flavor}" in
+   "${guest}"-*)
+      ;;
+   *)
+      die 2 "flavor '${flavor}' does not belong to guest '${guest}'"
+      ;;
+esac
+
 [ "$(id -u)" = '0' ] || die 1 "must run as root"
 [ -d "${source_checkout}/.git" ] || die 2 "source checkout '${source_checkout}' is not a git checkout"
 
@@ -107,23 +129,26 @@ binary_out="${home}/derivative-binary"
 ## so describe falls back to an older tag and the ISO is MISLABELLED (e.g. 18.2.3.3 when
 ## the tip is really 18.2.3.6). Fetch tags into the reference AS ITS OWNER (which holds the
 ## remote credentials; the build account does not) BEFORE seeding, so the slot inherits a
-## complete tag set and describes the correct version. Fail LOUD on a stale label rather
-## than silently ship a wrong version.
+## complete tag set and describes the correct version. Fail LOUD when the fetch fails or
+## the describe is not a release tag. A remote that itself lacks the newest release tag
+## still yields an older, valid-looking describe; that case is not detectable here.
+## Same describe as derivative-maker's version derivation: annotated tags only, and
+## '--exclude *_*_*' skips the ephemeral '<tag>_<commit>_<fingerprint>' tags that
+## help-steps/sign-tag-head leaves on locally signed builds (release tags carry no
+## underscore).
 ref_owner="$(stat -c '%U' "${source_checkout}")"
 runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
-   || printf '%s: WARNING: tag fetch into %s failed; version label may be stale\n' "${me}" "${source_checkout}" >&2
-desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags 2>/dev/null || true)"
-case "${desc}" in
-   *-developers-only-*|*-developers-only)
-      printf '%s: reference describes as %s\n' "${me}" "${desc}"
-      ;;
-   *)
-      printf '%s: WARNING: reference describe is %s -- release tags may be missing; the ISO version label may be wrong\n' "${me}" "${desc:-<none>}" >&2
-      ;;
-esac
+   || die 1 "tag fetch into ${source_checkout} failed; refusing to build with a possibly stale version label"
+desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --exclude '*_*_*' 2>/dev/null || true)"
+## Anchored: a dotted numeric version, exactly one channel suffix, then at most git's
+## '-<count>-g<sha>' tail -- so a tag like '18.2.3.6-stable-backup' is not a release.
+release_describe_regex='^[0-9]+(\.[0-9]+)*-(developers-only|testers-only|stable)(-[0-9]+-g[0-9a-f]+)?$'
+[[ "${desc}" =~ ${release_describe_regex} ]] \
+   || die 1 "reference describe is '${desc:-<none>}', not a release tag (developers-only, testers-only or stable); release tags are missing and the ISO version label would be wrong"
+printf '%s\n' "${me}: reference describes as ${desc}"
 
 ## 2b. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
-printf '%s: seeding %s checkout from %s\n' "${me}" "${account}" "${source_checkout}"
+printf '%s\n' "${me}: seeding ${account} checkout from ${source_checkout}"
 rsync --archive --delete --hard-links "${source_checkout}/" "${checkout}/"
 chown --recursive "${account}:${account}" "${checkout}"
 
@@ -133,11 +158,16 @@ chown --recursive "${account}:${account}" "${checkout}"
 ## fs.protected_regular=2 blocks even for root). A durable supervisor watches it grow.
 log="${home}/derivative-build.log"
 
-## ISO set BEFORE the build: the freshly built ISO is the path present AFTER but not
-## before (set difference -- never mtime, which reproducible builds clamp to a fixed past).
+## ISO set BEFORE the build, keyed by path + inode + ctime: the freshly built ISO is the
+## key present AFTER but not before. A rebuild of the same version reuses the PATH (the
+## output dir persists), so path alone misses it; ctime, unlike mtime (which reproducible
+## builds clamp to a fixed past), always moves on a rewrite.
+iso_snapshot() {
+   find "${binary_out}" -name '*.Intel_AMD64.iso' -printf '%p\t%i\t%C@\n' 2>/dev/null | sort
+}
 mkdir --parents -- "${binary_out}"
 chown "${account}:${account}" "${binary_out}"
-before="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
+before="$(iso_snapshot)"
 
 ## Values reach the account's shell via `env` (NOT spliced into the single-quoted program
 ## -- that quote-nesting silently eats values). The inner program reads them from the
@@ -173,17 +203,22 @@ runuser -u "${account}" -- \
 ' || build_rc=$?
 
 if [ "${build_rc}" -ne 0 ]; then
-   printf '%s: build FAILED (rc=%s); see %s\n' "${me}" "${build_rc}" "${log}" >&2
+   printf '%s\n' "${me}: build FAILED (rc=${build_rc}); see ${log}" >&2
    exit "${build_rc}"
 fi
 
-## 5. locate the freshly built ISO by set difference against the pre-build snapshot (NOT
-## mtime -- reproducible builds clamp mtimes). Exactly one new ISO per build.
-after="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
-iso="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -1)"
-if [ -z "${iso}" ] || [ ! -f "${iso}" ]; then
-   die 1 "no new ISO appeared under ${binary_out} after the build"
+## 5. locate the freshly built (new or rewritten) ISO by set difference against the
+## pre-build snapshot. Exactly one ISO per build.
+after="$(iso_snapshot)"
+changed="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | cut -f1)"
+if [ -z "${changed}" ]; then
+   die 1 "no new or rewritten ISO appeared under ${binary_out} after the build"
 fi
+## More than one changed ISO is ambiguous: never guess which one this build produced.
+[ "$(printf '%s\n' "${changed}" | wc -l)" -eq 1 ] \
+   || die 1 "more than one ISO changed under ${binary_out} during the build: ${changed//$'\n'/ }"
+iso="${changed}"
+[ -f "${iso}" ] || die 1 "built ISO ${iso} is not a regular file"
 
-printf '%s: built %s\n' "${me}" "${iso}"
+printf '%s\n' "${me}: built ${iso}"
 printf '%s\n' "${iso}"

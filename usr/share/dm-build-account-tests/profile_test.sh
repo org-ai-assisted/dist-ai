@@ -31,11 +31,11 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-build-account'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-build-account not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-build-account not found at ${subject}" >&2; exit 1; }
 
 failures=0
-ok()  { printf 'ok: %s\n' "$1"; }
-bad() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
+ok()  { printf '%s\n' "ok: $1"; }
+bad() { printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); }
 
 work="$(mktemp --directory)"
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
@@ -51,33 +51,37 @@ sudoers_d="${work}/sudoers.d"
 mkdir --parents -- "${stub_bin}" "${sudoers_d}"
 
 ## Stubs: record argv, and return the status the real flow expects. getent reports the
-## account ABSENT (exit 1) so the useradd branch runs; id -u is root; visudo/runuser/
-## useradd/usermod succeed. chmod is the real binary (acts on the temp file).
+## account ABSENT (exit 1) so the useradd branch runs; id -u is root and the account has
+## its private primary group plus sysmaint; visudo/runuser/useradd/usermod succeed.
+## STUB_* env knobs force the other branches. chmod/mktemp/mv are the real binaries.
 make_stub() {
    local name="$1" body="$2"
    {
-      printf '#!/bin/bash\n'
-      printf 'printf "%%s %%s\\n" "%s" "$*" >> "%s"\n' "${name}" "${calls}"
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' "printf '%s\\n' \"${name} \$*\" >> \"${calls}\""
       printf '%s\n' "${body}"
    } > "${stub_bin}/${name}"
    chmod +x "${stub_bin}/${name}"
 }
-make_stub id       'exit 0'
-make_stub getent   'exit 1'
+## The single-quoted bodies expand in the STUB, not here.
+# shellcheck disable=SC2016
+make_stub id '
+case "$1" in
+   -u) printf "0\n" ;;
+   --group) printf "%s\n" "${STUB_PRIMARY_GROUP:-${!#}}" ;;
+   --groups)
+      printf "%s\n" "${STUB_GROUPS:-${!#} sysmaint}"
+      exit "${STUB_GROUPS_RC:-0}"
+      ;;
+esac'
+# shellcheck disable=SC2016
+make_stub getent   'exit "${STUB_GETENT_RC:-1}"'
 make_stub useradd  'exit 0'
 make_stub usermod  'exit 0'
-make_stub visudo   'exit 0'
+# shellcheck disable=SC2016
+make_stub visudo   'exit "${STUB_VISUDO_RC:-0}"'
 make_stub runuser  'exit 0'
 true >| "${calls}"
-
-## id -u must print 0 for the root check; the generic stub prints its name, so override id.
-cat > "${stub_bin}/id" <<'STUB'
-#!/bin/bash
-printf 'id %s\n' "$*" >> CALLS_LOG
-printf '0\n'
-STUB
-sed --in-place "s#CALLS_LOG#${calls}#" "${stub_bin}/id"
-chmod +x "${stub_bin}/id"
 
 run_subject() {
    PATH="${stub_bin}:${PATH}" \
@@ -169,9 +173,67 @@ else
    bad "unknown guest not rejected cleanly (rc=${rc})"
 fi
 
+## 10. an EXISTING account in vboxusers is refused, not reported ready, and gets neither
+## a sudoers rule nor the sysmaint grant (usermod) that would let it execute sudo.
+true >| "${calls}"
+safe-rm --force -- "${sudoers_d}"/* 2>/dev/null || true
+rc=0
+out3="$(STUB_GETENT_RC=0 STUB_GROUPS='persist-bild-kicksecure vboxusers' \
+   run_subject kicksecure 2>&1)" || rc=$?
+if [ "${rc}" -ne 0 ] && ! grep --quiet 'ready:' <<< "${out3}" \
+   && [ ! -e "${sudoers_d}/persist-bild-kicksecure" ] \
+   && ! grep --quiet '^usermod ' "${calls}"; then
+   ok 'existing account in vboxusers refused, no sysmaint grant, no sudoers rule'
+else
+   bad "existing vboxusers account not refused before any grant (rc=${rc}): ${out3}"
+fi
+
+## 11. an EXISTING account without its private primary group is refused before the
+## sysmaint grant.
+true >| "${calls}"
+safe-rm --force -- "${sudoers_d}"/* 2>/dev/null || true
+rc=0
+out4="$(STUB_GETENT_RC=0 STUB_PRIMARY_GROUP='users' run_subject kicksecure 2>&1)" || rc=$?
+if [ "${rc}" -ne 0 ] && ! grep --quiet 'ready:' <<< "${out4}" \
+   && ! grep --quiet '^usermod ' "${calls}"; then
+   ok 'existing account with shared primary group refused, no sysmaint grant'
+else
+   bad "existing shared-primary-group account not refused before any grant (rc=${rc}): ${out4}"
+fi
+
+## 12. a FAILED group lookup (id prints only the primary group, then exits non-zero) is
+## refused, never read as "not in vboxusers".
+true >| "${calls}"
+safe-rm --force -- "${sudoers_d}"/* 2>/dev/null || true
+rc=0
+out5="$(STUB_GETENT_RC=0 STUB_GROUPS='persist-bild-kicksecure' STUB_GROUPS_RC=1 \
+   run_subject kicksecure 2>&1)" || rc=$?
+if [ "${rc}" -ne 0 ] && ! grep --quiet 'ready:' <<< "${out5}" \
+   && [ ! -e "${sudoers_d}/persist-bild-kicksecure" ] \
+   && ! grep --quiet '^usermod ' "${calls}"; then
+   ok 'failed group lookup refused, no sysmaint grant, no sudoers rule'
+else
+   bad "failed group lookup not refused (rc=${rc}): ${out5}"
+fi
+
+## 13. a sudoers rule visudo rejects never becomes live: the existing rule is left
+## byte-identical and no temp file is left in the include dir.
+safe-rm --force -- "${sudoers_d}"/* "${sudoers_d}"/.[!.]* 2>/dev/null || true
+printf '%s\n' 'previous-good-rule' > "${sudoers_d}/persist-bild-kicksecure"
+rc=0
+STUB_VISUDO_RC=1 run_subject kicksecure >/dev/null 2>&1 || rc=$?
+leftover="$(find "${sudoers_d}" -mindepth 1 ! -name persist-bild-kicksecure)"
+if [ "${rc}" -ne 0 ] \
+   && [ "$(cat -- "${sudoers_d}/persist-bild-kicksecure")" = 'previous-good-rule' ] \
+   && [ -z "${leftover}" ]; then
+   ok 'rejected sudoers rule not installed, existing rule unchanged, no temp left'
+else
+   bad "rejected sudoers rule handling wrong (rc=${rc}, leftover='${leftover}'): $(cat -- "${sudoers_d}/persist-bild-kicksecure")"
+fi
+
 if [ "${failures}" -eq 0 ]; then
-   printf '%s: all checks passed\n' "${0##*/}"
+   printf '%s\n' "${0##*/}: all checks passed"
    exit 0
 fi
-printf '%s: %s check(s) FAILED\n' "${0##*/}" "${failures}" >&2
+printf '%s\n' "${0##*/}: ${failures} check(s) FAILED" >&2
 exit 1

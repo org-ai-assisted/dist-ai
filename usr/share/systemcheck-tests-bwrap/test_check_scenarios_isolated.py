@@ -68,12 +68,18 @@ class TestFullDiskEncryptionIsolatedScenarios(ScenarioTestBase):
 
     def _run(self, crypt_check_rc: int):
         ## crypt-check is called by absolute path, so place a fake over it whose
-        ## exit code selects the FDE state (0 full, 1 partial, else none).
+        ## exit code selects the FDE state (0 full, 1 partial, else none). Over
+        ## an installed systemcheck, bind the single file: a tmpfs over its dir
+        ## would hide the installed subject the scenario sources.
+        fake = ('/usr/libexec/systemcheck/crypt-check',
+                f"#!/bin/bash\nexit {crypt_check_rc}\n", True)
+        if os.path.exists(fake[0]):
+            overlay = {'bind_files': [fake]}
+        else:
+            overlay = {'place': [fake]}
         return run_check_scenario_isolated(
             self.check(self.FILE), 'check_full_disk_encryption',
-            env_setup=self.BAREMETAL, hide_dirs=self.HIDE,
-            place=[('/usr/libexec/systemcheck/crypt-check',
-                    f"#!/bin/bash\nexit {crypt_check_rc}\n", True)])
+            env_setup=self.BAREMETAL, hide_dirs=self.HIDE, **overlay)
 
     def test_fully_encrypted_enabled(self) -> None:
         self.assertIn('>Enabled<', self._run(0).joined())
@@ -206,6 +212,28 @@ class TestAptRepositoryIsolatedScenarios(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertIn('Legacy', r.joined())
         self.assertEqual(r.exit_code, '1')
+
+
+class TestIsolatedHarnessOverlays(ScenarioTestBase):
+    ## Any fragment serves: these pin the harness, not a check.
+    FILE = 'check_grub_security.bsh'
+    ABSENT_DIR = '/usr/share/dist-ai-systemcheck-absent-dir'
+
+    def test_place_under_absent_dir_under_read_only_parent(self) -> None:
+        ## bwrap cannot create a mount point under read-only /usr/share, so the
+        ## placed file's absent parent must be reached via an existing ancestor.
+        self.assertFalse(os.path.exists(self.ABSENT_DIR))
+        marker = os.path.join(self.ABSENT_DIR, 'nested', 'marker')
+        r = run_check_scenario_isolated(
+            self.check(self.FILE),
+            f"cat -- {marker} && printf 'PLACED\\n'",
+            place=[(marker, 'fixture-content', False)])
+        self.assertIn('fixture-contentPLACED', r.stdout)
+
+    def test_overlay_hiding_the_subject_is_refused(self) -> None:
+        with self.assertRaisesRegex(AssertionError, 'hiding sourced subject'):
+            run_check_scenario_isolated(
+                self.check(self.FILE), 'true', hide_dirs=[self.dir])
 
 
 if __name__ == '__main__':

@@ -503,28 +503,54 @@ rt_require_fleet_member() {
 ## world-writable dir like /run/lock would let any local user pre-create the lock file and
 ## hold LOCK_EX on it, wedging every future run with a bogus "another run holds the lock".
 ## Child VM processes are spawned via sudo / run_as_target_user (closefrom 3), so they do
-## not inherit this fd and cannot carry the lock past our exit. Test seam:
-## DM_RELEASE_TEST_LOCK_DIR.
-## Print the root-only state dir (locks + kept-run markers), creating it 0700.
-rt_lock_dir() {
-   local lockdir
-   lockdir="${DM_RELEASE_TEST_LOCK_DIR:-/run/dm-release-test}"
-   mkdir --parents -- "${lockdir}" \
-      || die "${SETUP_RC}" "cannot create lock dir '${lockdir}'"
-   ## Enforce 0700 even on a pre-existing dir (mkdir -m would skip that, and would only
-   ## set the deepest path with -p); /run is root-only so no unprivileged pre-create races.
-   chmod 0700 -- "${lockdir}" \
-      || die "${SETUP_RC}" "cannot secure lock dir '${lockdir}'"
-   printf '%s\n' "${lockdir}"
+## not inherit this fd and cannot carry the lock past our exit. Test seams:
+## DM_RELEASE_TEST_LOCK_DIR, DM_RELEASE_TEST_STATE_DIR, DM_RELEASE_TEST_LOCK_WAIT.
+##
+## The dir helpers SET a global rather than print: a die inside "$(...)" only exits the
+## substitution, leaving an empty prefix -- root would then write '/kept-ACCOUNT.staged'.
+
+## Create root-only dir $1 (described as $2) 0700. Enforce 0700 even on a pre-existing dir
+## (mkdir -m would skip that, and would only set the deepest path with -p).
+rt_private_dir() {
+   case "$1" in
+      /?*)
+         ;;
+      *)
+         die "${SETUP_RC}" "$2 dir '$1' is not an absolute path"
+         ;;
+   esac
+   mkdir --parents -- "$1" \
+      || die "${SETUP_RC}" "cannot create $2 dir '$1'"
+   chmod 0700 -- "$1" \
+      || die "${SETUP_RC}" "cannot secure $2 dir '$1'"
 }
 
+## Locks live in /run: they belong to running processes, so a reboot clearing them is right.
+## Sets rt_lockdir.
+rt_lock_dir() {
+   rt_lockdir="${DM_RELEASE_TEST_LOCK_DIR:-/run/dm-release-test}"
+   rt_private_dir "${rt_lockdir}" lock
+}
+
+## Kept-run markers outlive a reboot (the multi-GB staged ISO dir they name does), so they
+## live in persistent root-only state. Sets rt_statedir.
+rt_state_dir() {
+   rt_statedir="${DM_RELEASE_TEST_STATE_DIR:-/var/lib/image-tests/dm-release-test}"
+   rt_private_dir "${rt_statedir}" state
+}
+
+## A leftover sweep briefly holds a reclaimed account's lock (gc + process settle), so a run
+## starting on that account waits for it, bounded and announced, instead of failing at once.
 rt_lock_account() {
-   local lockdir lockfile
-   lockdir="$(rt_lock_dir)"
-   lockfile="${lockdir}/dm-release-test-$1.lock"
+   local lockfile wait
+   rt_lock_dir
+   lockfile="${rt_lockdir}/dm-release-test-$1.lock"
+   wait="${DM_RELEASE_TEST_LOCK_WAIT:-300}"
    exec {rt_lock_fd}>"${lockfile}" \
       || die "${SETUP_RC}" "cannot open lock '${lockfile}'"
-   flock --nonblock "${rt_lock_fd}" \
+   flock --nonblock "${rt_lock_fd}" && return 0
+   log notice "waiting up to ${wait}s for '${lockfile}' (another run, or a leftover sweep reclaiming '$1')"
+   flock --timeout "${wait}" "${rt_lock_fd}" \
       || die "${SETUP_RC}" "another dm-release-test run holds '${lockfile}' -- serialize runs on the shared '$1' account"
 }
 
@@ -629,11 +655,36 @@ rt_provision_leak() {
 }
 
 ## Marker recording a kept run's staged ISO dir (the VM still has the ISO attached), so
-## rt_eph_reclaim removes exactly that dir. Lives in the ROOT-ONLY lock dir: root must
+## rt_eph_reclaim removes exactly that dir. Lives in the ROOT-ONLY state dir: root must
 ## never write into, or read from, a home the unprivileged account controls (a planted
 ## symlink would redirect root's write; a FIFO would hang the EXIT trap under the lock).
+## Sets rt_marker.
 rt_kept_marker() {
-   printf '%s\n' "$(rt_lock_dir)/kept-$1.staged"
+   rt_state_dir
+   rt_marker="${rt_statedir}/kept-$1.staged"
+}
+
+## A kept VM must outlive this run. Under any systemd unit (systemd-run, a durable launcher)
+## stopping the unit kills its whole cgroup, the kept VM's VBox processes included, so move
+## the account's processes into a transient scope of their own. rt_eph_reclaim's per-uid
+## kill empties the scope, which systemd then drops. Returns 1 when it cannot.
+rt_detach_kept_vm() {
+   local account scope
+   account="$1"
+   scope="dm-release-test-kept-${account}-$$.scope"
+   local -a pids=()
+   mapfile -t pids < <(pgrep --uid "${account}" || true)
+   if [ "${#pids[@]}" -eq 0 ]; then
+      log error "kept run: account '${account}' has no running processes -- there is no VM to keep"
+      return 1
+   fi
+   if ! busctl call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+         org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' \
+         "${scope}" fail 1 PIDs au "${#pids[@]}" "${pids[@]}" 0 >/dev/null; then
+      log error "kept run: cannot move the processes of '${account}' into '${scope}' -- the kept VM dies as soon as this run's unit or session ends"
+      return 1
+   fi
+   log notice "kept run: VM processes of '${account}' moved into '${scope}', independent of this run"
 }
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
@@ -643,9 +694,11 @@ rt_eph_cleanup() {
    local rc=$?
    if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
       if [ -n "${rt_staged_dir}" ]; then
-         printf '%s\n' "${rt_staged_dir}" > "$(rt_kept_marker "${eph_account}")" \
+         rt_kept_marker "${eph_account}"
+         printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
             || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
       fi
+      rt_detach_kept_vm "${eph_account}" || true
       log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
       return 0
    fi
@@ -665,9 +718,12 @@ rt_eph_cleanup() {
 rt_sweep_eph_leftovers() {
    local current other lockfile
    current="$1"
+   ## Validate both dirs here, OUTSIDE the "( ... ) || true" below, so a die aborts the run.
+   rt_lock_dir
+   rt_state_dir
    while IFS= read -r other; do
       [ "${other}" = "${current}" ] && continue
-      lockfile="$(rt_lock_dir)/dm-release-test-${other}.lock"
+      lockfile="${rt_lockdir}/dm-release-test-${other}.lock"
       (
          exec {sweep_fd}>"${lockfile}" || exit 0
          flock --nonblock "${sweep_fd}" || exit 0
@@ -682,7 +738,8 @@ rt_sweep_eph_leftovers() {
 rt_eph_reclaim() {
    local account marker kept_dir
    account="$1"
-   marker="$(rt_kept_marker "${account}")"
+   rt_kept_marker "${account}"
+   marker="${rt_marker}"
    kept_dir=""
    if [ -f "${marker}" ]; then
       kept_dir="$(cat -- "${marker}")"

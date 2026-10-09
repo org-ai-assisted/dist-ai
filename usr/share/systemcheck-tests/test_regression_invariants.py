@@ -20,7 +20,7 @@ import unittest
 
 from systemcheck_testlib import (
     SystemcheckTestBase,
-    extract_bash_function,
+    function_definition,
     read,
 )
 
@@ -125,28 +125,11 @@ class TestRegressionInvariants(SystemcheckTestBase):
         helper-scripts tools -- so the neutralization is exercised end to end.
         """
         log_checker = os.path.join(self.dir, 'log-checker')
-        if not os.path.exists(log_checker):
-            self.skipTest('log-checker not present')
-        ## The subject sanitizes with the bare `sanitize-string` tool; resolve it
-        ## on PATH (the runner puts helper-scripts' usr/bin there). Absent ->
-        ## SKIP, never a false green: an unsanitized run would pass vacuously.
-        sanitize = shutil.which('sanitize-string')
-        if sanitize is None:
-            self.skipTest('sanitize-string not on PATH (wire helper-scripts)')
-        ## helper-scripts root = <root>/usr/bin/sanitize-string; strings.bsh
-        ## (br_add_to_file / stcatn helpers, sourced by absolute path in the real
-        ## script) lives at <root>/usr/libexec/helper-scripts/strings.bsh.
-        hs_root = os.path.dirname(os.path.dirname(os.path.dirname(sanitize)))
-        strings_bsh = os.path.join(
-            hs_root, 'usr', 'libexec', 'helper-scripts', 'strings.bsh')
-        if not os.path.exists(strings_bsh):
-            self.skipTest(f"helper-scripts strings.bsh not found at {strings_bsh}")
-
-        ## Extract the REAL function (anti-vacuous: a rename/refactor that drops
-        ## it raises LookupError, failing the test loudly instead of passing).
-        func_def = extract_bash_function(log_checker, 'check_service_logs')
-        self.assertIn('sanitize-string', func_def,
-                      'check_service_logs no longer sanitizes journal output')
+        ## The subject sanitizes with the bare `sanitize-string` tool (the runner
+        ## puts helper-scripts' usr/bin on PATH). Required: an unsanitized run
+        ## would pass vacuously.
+        self.assertIsNotNone(shutil.which('sanitize-string'),
+                             'sanitize-string not on PATH (wire helper-scripts)')
 
         ## Crafted journal content: each line matches the search pattern
         ## (error/warn...) so it survives the filters, carries HTML-active bytes,
@@ -156,18 +139,19 @@ class TestRegressionInvariants(SystemcheckTestBase):
         marker_two = 'SANITIZECANARYTWO'
         journal = (
             f'error <script>alert({marker_one})</script>\n'
-            f'warning <a href="http://evil.example">{marker_two}</a>\n'
+            f'warning <a href="http://example.com">{marker_two}</a>\n'
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             harness = '\n'.join([
+                ## Source-able: defines the functions (and sources strings.bsh
+                ## via HELPER_SCRIPTS_PATH) without auto-running.
+                f"source {_q(log_checker)}",
                 'set -o errexit',
                 'set -o nounset',
                 'set -o errtrace',
-                f"export HELPER_SCRIPTS_PATH={_q(hs_root)}",
                 f"export TMPDIR={_q(tmpdir)}",
                 f"export TMP={_q(tmpdir)}",
-                f"source {_q(strings_bsh)}",
                 ## Privileged journal reader: emit the crafted content for the
                 ## boot read; nothing for the apparmor-info read.
                 'leaprun() {',
@@ -185,7 +169,6 @@ class TestRegressionInvariants(SystemcheckTestBase):
                 ## sources; supply non-matching entries so the fixture survives.
                 'journal_ignore_fixed_list=( "ZZZ_NEVER_MATCH_FIXED_ZZZ" )',
                 'journal_ignore_patterns_list=( "ZZZ_NEVER_MATCH_PATTERN_ZZZ" )',
-                func_def,
                 'check_service_logs this_boot',
             ])
             proc = subprocess.run(['bash', '-c', harness],
@@ -258,10 +241,10 @@ class TestRegressionInvariants(SystemcheckTestBase):
         call (found by ai-review during the check_kernel_hardening_cmdline PR)
         bypassed both: `--skip check_packages` silently ran it anyway, because
         the skip-list is only ever consulted inside the wrapper."""
-        entry = os.path.join(self.dir, 'systemcheck')
-        if not os.path.exists(entry):
-            self.skipTest('systemcheck entrypoint not present')
-        func = extract_bash_function(entry, 'systemcheck_main')
+        ## Source-able entrypoint: sourcing defines systemcheck_main without
+        ## running it; `declare -f` drops comments, so only real calls remain.
+        func = function_definition(
+            [os.path.join(self.dir, 'systemcheck')], 'systemcheck_main')
         bad = []
         for num, line in enumerate(func.split('\n'), 1):
             stripped = line.strip()

@@ -17,9 +17,10 @@ import unittest
 
 from systemcheck_testlib import (
     ScenarioTestBase,
-    extract_bash_function,
-    run_bash_function,
+    fragment_sources,
+    function_definition,
     run_check_scenario,
+    run_sourced,
 )
 
 
@@ -99,7 +100,8 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
         ## helper and begins the Tor-query/wait path) -- so a privleap-unusable
         ## session fails fast rather than looping. Pre-fix, the guard name is
         ## absent from the loop body and assertIn fails (canary).
-        body = extract_bash_function(self.check(self.FILE), 'check_tor_bootstrap')
+        body = function_definition(
+            fragment_sources(self.check(self.FILE)), 'check_tor_bootstrap')
         self.assertIn('check_tor_bootstrap_require_leaprun', body)
         self.assertLess(
             body.index('check_tor_bootstrap_require_leaprun'),
@@ -108,18 +110,17 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
 
     def test_privleap_usable_guard_returns_zero(self) -> None:
         ## run_check_scenario discards the guard's own $? (it runs under `set +e`),
-        ## so test_privleap_usable_is_noop cannot see it. Source the extracted guard
-        ## and call it: a `return 1` usable-branch -- which would make
+        ## so test_privleap_usable_is_noop cannot see it. Source the real fragment
+        ## and call the guard: a `return 1` usable-branch -- which would make
         ## `check_tor_bootstrap_require_leaprun || break` wrongly skip the whole Tor
         ## check -- is caught here. The usable path returns before any emit/cleanup,
         ## so only the probe stub is needed. The `if` suspends errexit for the guard
         ## body so a non-zero return is captured rather than aborting the run.
-        guard = extract_bash_function(
-            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun')
-        status = run_bash_function(
-            self.PROBE_YES + '\n' + guard,
+        status = run_sourced(
+            fragment_sources(self.check(self.FILE)),
             'if check_tor_bootstrap_require_leaprun; then echo "RET:0";'
-            ' else echo "RET:nonzero"; fi')
+            ' else echo "RET:nonzero"; fi',
+            setup=self.PROBE_YES)
         self.assertEqual(status, 'RET:0')
 
     def test_privleap_unusable_guard_returns_nonzero(self) -> None:
@@ -130,14 +131,12 @@ class TestTorBootstrapLeaprunGuard(ScenarioTestBase):
         ## the EXIT_CODE global) while the loop kept waiting -- the exact #100 hang.
         ## emit_message is the REAL preparation.bsh helper; only its output channel
         ## is redirected via the production output_x/output_cli command-name seam.
-        guard = extract_bash_function(
-            self.check(self.FILE), 'check_tor_bootstrap_require_leaprun')
-        emit = extract_bash_function(self.preparation, 'emit_message')
-        status = run_bash_function(
-            self.CLEANUP + '\n' + self.PROBE_NO + '\n' + emit + '\n' + guard,
+        status = run_sourced(
+            fragment_sources(self.check(self.FILE)),
             'if check_tor_bootstrap_require_leaprun; then echo "RET:0";'
             ' else echo "RET:nonzero"; fi',
-            env_setup='output_x=true\noutput_cli=true\noutput_opts=()')
+            setup='\n'.join([self.CLEANUP, self.PROBE_NO, 'output_x=true',
+                             'output_cli=true', 'output_opts=()']))
         self.assertEqual(status, 'RET:nonzero')
 
 

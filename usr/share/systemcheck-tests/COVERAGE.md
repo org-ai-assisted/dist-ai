@@ -71,7 +71,8 @@ check_network_interfaces, check_warrant_canary, check_unrestricted_mode_in_templ
 
 **G2. Checks that invoke a binary by absolute path (CLOSED).** A bash function
 stub only shadows bare names. `run_check_scenario_isolated` places a fake at the
-absolute path -- via `place=` (tmpfs the dedicated parent + write, for
+absolute path -- via `place=` (tmpfs the dedicated parent, or its nearest
+existing ancestor when absent, + write, for
 check_full_disk_encryption's `/usr/libexec/systemcheck/crypt-check`) or
 `bind_files=` (single-file overlay that leaves the rest of the directory intact,
 for check_apparmor's `/usr/bin/disallowed-test` in shared `/usr/bin`).

@@ -55,9 +55,22 @@ keep_failed="false"
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
 
+## The installer command, launched the way a user's click does: it must equal the Exec=
+## line of live-config-dist's install-host.desktop, so the test drives the same entry
+## point users do (pinned by live-config-dist-tests install_host_exec_pin_test.sh).
+INSTALL_HOST_CMD='install-host'
+
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
+}
+
+## Indices of VM $1's configured NICs (nicN not "none"), one per line. The NIC count
+## depends on the chipset (8 on PIIX3, 36 on ICH9), so read it instead of assuming.
+vm_nic_indices() {
+   "${VBOXMANAGE}" showvminfo "$1" --machinereadable \
+      | sed --quiet --regexp-extended 's/^nic([0-9]+)="([^"]*)"$/\1 \2/p' \
+      | awk '$2 != "none" { print $1 }'
 }
 
 ## Power off the VM this run started, on ANY exit (incl. a die/timeout), so a
@@ -113,16 +126,21 @@ on_exit() {
          ## Unplug every NIC: the shared dm-vm-lock is released on our exit, and a kept
          ## VM with live NAT would break the leak lanes' one-networked-VM exclusivity.
          ## Inspection uses guestcontrol (host channel), not the network.
-         ## Fail safe: if the primary NIC cannot be unplugged, power off instead.
-         local nic
-         if "${VBOXMANAGE}" controlvm "${vm}" setlinkstate1 off >/dev/null 2>&1; then
-            for nic in 2 3 4 5 6 7 8; do
-               "${VBOXMANAGE}" controlvm "${vm}" "setlinkstate${nic}" off >/dev/null 2>&1 || true
-            done
-            printf '%s: kept FAILED VM '\''%s'\'' running for inspection, network unplugged (--keep-failed)\n' "${me}" "${vm}" >&2
+         ## Fail safe: unless EVERY configured NIC is unplugged, power off instead.
+         local nic unplugged='true'
+         local -a nics=()
+         mapfile -t nics < <(vm_nic_indices "${vm}" 2>/dev/null || true)
+         [ "${#nics[@]}" -gt 0 ] || unplugged='false'
+         for nic in "${nics[@]}"; do
+            "${VBOXMANAGE}" controlvm "${vm}" "setlinkstate${nic}" off >/dev/null 2>&1 \
+               || unplugged='false'
+         done
+         if [ "${unplugged}" = 'true' ]; then
+            printf '%s\n' "${me}: kept FAILED VM '${vm}' running for inspection, network unplugged (--keep-failed)" >&2
+         elif "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1; then
+            printf '%s\n' "${me}: could not unplug every NIC of FAILED VM '${vm}'; powered it off instead" >&2
          else
-            "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
-            printf '%s: could not unplug the network of FAILED VM '\''%s'\''; powered it off instead\n' "${me}" "${vm}" >&2
+            printf '%s\n' "${me}: ERROR: could not unplug every NIC of FAILED VM '${vm}' and its poweroff FAILED -- it may still be networked; power it off by hand: ${VBOXMANAGE} controlvm ${vm} poweroff" >&2
          fi
       else
          "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
@@ -171,7 +189,7 @@ usage() {
 ## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
 ## same gui_scan/gui_ocr/gui_wait_for/gui_locate_word/gui_click_word used by the
 ## Whonix pair orchestrator, so the subtle OCR logic lives in ONE place.
-lib_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh" ]; then
    gui_drive_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh"
 else
@@ -613,7 +631,7 @@ main() {
    ## desktop terminal), and the UNRESTRICTED boot ROLE install-host needs is set by GRUB
    ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
    ## sysmaint cannot even log in to the live session.
-   gc_launch_gui user 'install-host' "${mok_export}"
+   gc_launch_gui user "${INSTALL_HOST_CMD}" "${mok_export}"
    ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
    ## confirm Calamares actually started; on failure dump the launch log and fail with a
    ## real reason instead of a silent wait to the downstream OCR timeout.
@@ -723,4 +741,8 @@ main() {
    return "${PASS_RC}"
 }
 
-main "$@"
+## Sourced (dm-release-test-tests) -> expose the functions without running;
+## executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi

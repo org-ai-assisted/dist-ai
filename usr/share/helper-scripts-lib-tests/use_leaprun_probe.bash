@@ -27,6 +27,9 @@
 ##   LEAPRUN_FAKE_HIDEPID=1  live listener + a pid with no    -> expect 'yes'
 ##                           '/proc/<pid>' (as under hidepid=2); false-NEGATIVE
 ##                           on the old heuristic
+##   LEAPRUN_FAKE_SOCAT_DENIED=1  live listener + a stub socat  -> expect 'no'
+##                           failing like an AppArmor exec denial (exit code
+##                           126, 'Permission denied'); the warning must carry both
 
 set -o errexit
 set -o nounset
@@ -95,6 +98,13 @@ elif [ "${LEAPRUN_FAKE_HIDEPID:-}" = '1' ]; then
    ## positive integer whose '/proc/<pid>' never exists -- a deterministic stand
    ## in for a daemon pid hidden by hidepid=2.
    setup_fake_privleapd listen "$(cat /proc/sys/kernel/pid_max)"
+elif [ "${LEAPRUN_FAKE_SOCAT_DENIED:-}" = '1' ]; then
+   setup_fake_privleapd listen "$$"
+   ## Shadows the real socat via the stub dir setup_fake_privleapd put first on PATH.
+   printf '%s\n' '#!/bin/sh' \
+      'printf "%s\n" "socat: Permission denied" >&2' \
+      'exit 126' > /run/privleapd/stub/socat
+   chmod +x /run/privleapd/stub/socat
 fi
 
 use_leaprun=''
