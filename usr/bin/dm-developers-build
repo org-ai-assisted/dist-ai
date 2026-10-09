@@ -39,7 +39,10 @@ die() {
    exit "$1"
 }
 
-DM_BUILD_ACCOUNT="${DM_BUILD_ACCOUNT:-dm-build-account}"
+## Resolve the sibling provisioner by a SELF-ANCHORED path, not a bare name: in a checkout
+## it is not on PATH (both live in the same bin dir, installed or in-tree).
+dm_developers_build_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+DM_BUILD_ACCOUNT="${DM_BUILD_ACCOUNT:-${dm_developers_build_dir}/dm-build-account}"
 source_checkout="${DM_SOURCE_CHECKOUT:-/home/admin/derivative-maker}"
 flavor='kicksecure-lxqt'
 
