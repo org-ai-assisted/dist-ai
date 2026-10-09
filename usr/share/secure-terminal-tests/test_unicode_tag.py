@@ -300,14 +300,17 @@ def run():
             sys.stdin, sys.stdout, sys.stderr = saved
 
     rc, got, _err = _run_json(json.dumps(
-        {unicode_tag.JSON_REQUEST_KEY: {'f': ['x', 'm\u0430ster']}}).encode('ascii'))
+        {unicode_tag.JSON_REQUEST_KEY: {'f': ['x', 'm\u0430ster', 1.5]}}).encode('ascii'))
     ok(rc == 0 and json.loads(got) == {unicode_tag.JSON_RESULT_KEY:
-                                         {'f': ['x', 'm[U+0430 CYRILLIC SMALL LETTER A]ster']}},
+                                         {'f': ['x', 'm[U+0430 CYRILLIC SMALL LETTER A]ster', 1.5]}},
        'main_stdin --json replies with the tagged document in the result envelope')
     for _label, _bad in (('malformed JSON', b'{not json'),
                          ('missing request key', b'{"other": 1}'),
                          ('non-object request', b'[1, 2]'),
-                         ('invalid UTF-8', b'\xff\xfe')):
+                         ('invalid UTF-8', b'\xff\xfe'),
+                         ('NaN constant', b'{"unicode-tag-json": [NaN]}'),
+                         ('Infinity constant', b'{"unicode-tag-json": -Infinity}'),
+                         ('overflowing number', b'{"unicode-tag-json": 1e400}')):
         rc, got, err = _run_json(_bad)
         ok(rc == 1 and got == '' and 'unicode-tag: --json: bad request' in err,
            'main_stdin --json rejects a bad request cleanly (rc=1): %s' % _label)
