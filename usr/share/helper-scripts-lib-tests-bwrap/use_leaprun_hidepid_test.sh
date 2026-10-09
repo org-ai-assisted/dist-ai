@@ -28,7 +28,8 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-probe="${script_dir}/use_leaprun_probe.bash"
+## The probe fixture is shared with the unsandboxed use_leaprun_test.sh.
+probe="${script_dir}/../helper-scripts-lib-tests/use_leaprun_probe.bash"
 # shellcheck source=./bwrap_capability.bash
 source "${script_dir}/bwrap_capability.bash"
 
@@ -44,10 +45,7 @@ if [ ! -r "${use_leaprun_sh}" ]; then
 fi
 [ -r "${probe}" ] || { printf '%s\n' "FATAL: probe fixture missing: ${probe}" >&2; exit 1; }
 
-if ! bwrap_can_sandbox; then
-   printf '%s\n' "unprivileged bwrap sandbox unavailable; cannot fake /run/privleapd; skipping." >&2
-   exit 77  ## style-ok: allow-skip: unprivileged bwrap sandbox unavailable here
-fi
+bwrap_require
 
 pass_count=0
 fail_count=0

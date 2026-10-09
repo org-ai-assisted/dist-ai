@@ -34,11 +34,14 @@ suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}
 source "${suite_exit_helper}"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+## The invoked name picks the case dir, so a sub-suite entrypoint that sources
+## this runner (helper-scripts-lib-tests-bwrap) reuses it unchanged.
+suite_name="$(basename -- "$0")"
 
-if [ -d "${script_dir}/../share/helper-scripts-lib-tests" ]; then
-   tests_dir="${script_dir}/../share/helper-scripts-lib-tests"
+if [ -d "${script_dir}/../share/${suite_name}" ]; then
+   tests_dir="${script_dir}/../share/${suite_name}"
 else
-   tests_dir='/usr/share/helper-scripts-lib-tests'
+   tests_dir="/usr/share/${suite_name}"
 fi
 
 shopt -s nullglob

@@ -127,6 +127,7 @@ core_suites=(
    grep-find-unicode-wrapper-tests
    helper-scripts-lib-tests
    helper-scripts-lib-tests-verify
+   helper-scripts-lib-tests-bwrap
    image-optimize-tests
    iso-download-tests
    lock-screen-tests
