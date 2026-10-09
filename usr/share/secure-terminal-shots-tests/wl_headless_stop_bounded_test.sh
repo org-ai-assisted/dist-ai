@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## The inline 'bash -c' programs run in a deliberately separate child shell.
+## style-ok: allow-embedded-script
+
 ## Regression (functional): wl_headless_stop must not HANG the lane on a labwc that
 ## ignores SIGTERM. The teardown once did `kill PID; wait PID` -- SIGTERM only, then
 ## an UNBOUNDED wait -- so a wedged compositor blocked the wait forever. This drives
@@ -97,7 +100,7 @@ check 'wl_headless_stop force-kills a SIGTERM-ignoring labwc (SIGKILL fallback)'
 ## The discriminating canary: the bounded poll returns in ~5s; the pre-fix unbounded
 ## wait only returned when the 15s watchdog fired.
 check "wl_headless_stop returns bounded, not hung (elapsed=${elapsed}s < 10)" \
-   "$( [ "${elapsed}" -lt 10 ] && printf '1' )"
+   "$( [ "${elapsed}" -lt 10 ] && printf '%s' "1" )"
 
 printf '%s\n' ''
 printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"

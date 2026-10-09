@@ -27,7 +27,7 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 bin="${script_dir}/../../bin/dm-upgrade-regression"
-[ -r "${bin}" ] || { printf 'ERROR: dm-upgrade-regression not found: %s\n' "${bin}" >&2; exit 1; }
+[ -r "${bin}" ] || { printf '%s\n' "ERROR: dm-upgrade-regression not found: ${bin}" >&2; exit 1; }
 
 tmp="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap, not a direct call
@@ -64,12 +64,12 @@ pass=0
 fail=0
 assert() {
    if [ "$2" = "$3" ]; then
-      printf 'PASS: %s\n' "$1"; pass=$(( pass + 1 ))
+      printf '%s\n' "PASS: ${1}"; pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s\n  got:  %s\n  want: %s\n' "$1" "$2" "$3" >&2; fail=$(( fail + 1 ))
+      printf '%s\n' "FAIL: ${1}" "  got:  ${2}" "  want: ${3}" >&2; fail=$(( fail + 1 ))
    fi
 }
-has_line() { grep --quiet --fixed-strings -- "$2" "$1" && printf 'yes' || printf 'no'; }
+has_line() { grep --quiet --fixed-strings -- "$2" "$1" && printf '%s' "yes" || printf '%s' "no"; }
 
 ## Default: nothing routed.
 assert 'routed_checks_sorted empty by default' "$(routed_checks_sorted | tr '\n' ' ')" ''
@@ -85,6 +85,6 @@ RELEASE_CHECK_SKIP_REASON=()
 write_report >/dev/null
 assert 'report.json routed_checks [] when none routed' "$(has_line "${tmp}/report.json" '"routed_checks": [],')" 'yes'
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

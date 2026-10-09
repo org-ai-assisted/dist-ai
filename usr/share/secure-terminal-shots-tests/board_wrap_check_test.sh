@@ -63,7 +63,7 @@ fail=0
 hb_line() {  ## $1=count [$2=trailing-space-count] -> half-blocks (+ optional trailing spaces) + newline
    local n="$1" pad="${2:-0}" i line=''
    for (( i = 0; i < n; i++ )); do
-      line+="$(printf '\342\226\200')"
+      line+="$(printf '%s' $'\342\226\200')"
    done
    for (( i = 0; i < pad; i++ )); do
       line+=' '

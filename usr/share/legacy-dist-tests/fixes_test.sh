@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## The inline 'bash -c' programs run in a deliberately separate child shell.
+## style-ok: allow-embedded-script
+
 ## legacy-dist 'fixes': source-ability + every fix function.
 ##
 ## Drives the REAL script. It is source-able (was_executed guard, strict-mode
@@ -188,7 +191,7 @@ check() {
 
 ## true if the path exists (file, dir or symlink), else false -- as a word.
 exists() {
-   if [ -e "$1" ]; then printf 'yes'; else printf 'no'; fi
+   if [ -e "$1" ]; then printf '%s' "yes"; else printf '%s' "no"; fi
 }
 
 ## Run a fix function with errexit disabled inside it (as main() does via '|| true'),
@@ -282,7 +285,7 @@ check "cnf_sources_list: writes do_once marker" \
    "$(exists "$(do_once "${r}" command_not_found_sources_list_fix_version_1)")" "yes"
 
 ## Existing sources.list is left untouched (not truncated).
-new_root; mkdir --parents -- "${r}/etc/apt"; printf 'deb example\n' > "${r}/etc/apt/sources.list"
+new_root; mkdir --parents -- "${r}/etc/apt"; printf '%s\n' "deb example" > "${r}/etc/apt/sources.list"
 rc="$(call_fn command_not_found_sources_list_fix)"
 check "cnf_sources_list: existing file preserved" "$(cat -- "${r}/etc/apt/sources.list")" "deb example"
 

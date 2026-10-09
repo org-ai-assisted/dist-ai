@@ -50,14 +50,14 @@ review_rc=0
 guard_body="$(sed -n '/^if \[ -z "${DEVELOPER_META_FILES_DIR:-}" \]; then/,/^fi$/p' -- "${runner}")"
 
 if [ -z "${guard_body}" ]; then
-   printf 'PASS: entrypoint has no blanket "DEVELOPER_META_FILES_DIR unset" guard\n'
+   printf '%s\n' "PASS: entrypoint has no blanket \"DEVELOPER_META_FILES_DIR unset\" guard"
 else
    if grep --quiet --extended-regexp '^[[:space:]]*exit 77[[:space:]]*$' <<< "${guard_body}"; then
-      printf 'FAIL: entrypoint skips the whole suite when DEVELOPER_META_FILES_DIR is unset\n' >&2
+      printf '%s\n' "FAIL: entrypoint skips the whole suite when DEVELOPER_META_FILES_DIR is unset" >&2
       printf '%s\n' "${guard_body}" >&2
       failures=$((failures + 1))
    else
-      printf 'PASS: the "DEVELOPER_META_FILES_DIR unset" guard does not skip the suite\n'
+      printf '%s\n' "PASS: the \"DEVELOPER_META_FILES_DIR unset\" guard does not skip the suite"
    fi
 fi
 
@@ -65,7 +65,7 @@ fi
 ## the developer-meta-files checkout, so that path must stay a 77.
 review_test="${test_dir}/test_dm_review_branch.sh"
 if [ ! -r "${review_test}" ]; then
-   printf 'FAIL: test_dm_review_branch.sh not found next to this test\n' >&2
+   printf '%s\n' "FAIL: test_dm_review_branch.sh not found next to this test" >&2
    failures=$((failures + 1))
 else
    ## Executed, not grepped: an 'exit 77' ANYWHERE in the file would satisfy a
@@ -75,16 +75,16 @@ else
    review_rc=0
    env --unset=DEVELOPER_META_FILES_DIR -- "${review_test}" >/dev/null 2>&1 || review_rc="$?"
    if [ "${review_rc}" -eq 77 ]; then
-      printf 'PASS: test_dm_review_branch self-skips (77) on an absent subject\n'
+      printf '%s\n' "PASS: test_dm_review_branch self-skips (77) on an absent subject"
    else
-      printf 'FAIL: test_dm_review_branch exited %s, expected 77, with DEVELOPER_META_FILES_DIR unset\n' \
-         "${review_rc}" >&2
+      printf '%s\n' \
+         "FAIL: test_dm_review_branch exited ${review_rc}, expected 77, with DEVELOPER_META_FILES_DIR unset" >&2
       failures=$((failures + 1))
    fi
 fi
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'test_dmf_runner_no_blanket_skip: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "test_dmf_runner_no_blanket_skip: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'test_dmf_runner_no_blanket_skip: OK\n'
+printf '%s\n' "test_dmf_runner_no_blanket_skip: OK"

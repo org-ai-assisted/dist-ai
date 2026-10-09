@@ -118,10 +118,10 @@ check() {
 contains() {
    case "$1" in
       *"$2"*)
-         printf 'yes'
+         printf '%s' "yes"
          ;;
       *)
-         printf 'no'
+         printf '%s' "no"
          ;;
    esac
 }
@@ -151,13 +151,13 @@ check "parse_cmdline --reset -n -> non_interactive=true" "${non_interactive}" "t
 ## unknown option exits nonzero (subshell: parse_cmdline calls 'exit').
 unknown_rc=0
 ( parse_cmdline --bogus-option ) >/dev/null 2>&1 || unknown_rc=$?
-check "parse_cmdline unknown option -> nonzero exit" "$([ "${unknown_rc}" -ne 0 ] && printf nonzero || printf zero)" "nonzero"
+check "parse_cmdline unknown option -> nonzero exit" "$([ "${unknown_rc}" -ne 0 ] && printf '%s' "nonzero" || printf '%s' "zero")" "nonzero"
 
 ## --- (2) mokutil --test-key enrolled-detection (the confusing rc convention) -
 run_enroll() {
    local rc=0 out
    out="$(shim_enroll_mok 2>&1)" || rc=$?
-   printf '%s\n%s' "${rc}" "${out}"
+   printf '%s' "${rc}"$'\n'"${out}"
 }
 
 export MOKUTIL_MODE='enrolled'

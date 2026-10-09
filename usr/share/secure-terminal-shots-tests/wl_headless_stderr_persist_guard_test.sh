@@ -54,8 +54,8 @@ persist_traps() {  ## $1 = file; prints each offending line, empty when clean
 
 pass=0
 fail=0
-_pass() { printf 'PASS: %s\n' "$1"; pass=$(( pass + 1 )); }
-_fail() { printf 'FAIL: %s\n' "$1"; fail=$(( fail + 1 )); }
+_pass() { printf '%s\n' "PASS: ${1}"; pass=$(( pass + 1 )); }
+_fail() { printf '%s\n' "FAIL: ${1}"; fail=$(( fail + 1 )); }
 
 ## CHECK 1: the real lib is free of the persist-trap.
 lbl1='wl-headless-lib.bash has no bare exec-with-2>/dev/null persist-trap'

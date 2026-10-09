@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## The inline 'bash -c' programs run in a deliberately separate child shell.
+## style-ok: allow-embedded-script
+
 ## Regenerate the derivative-maker variable snapshots: for every build command
 ## (--flavor x --target), the set of variables 'help-steps/variables' introduces,
 ## with volatile values normalized to placeholders. One '<flavor>__<target>.vars'
@@ -129,7 +132,7 @@ for flavor in "${vs_flavors[@]}"; do
          printf '%s\n' "${result}" > "${stage_dir}/${name}.vars"
          valid_count=$((valid_count + 1))
       else
-         printf '%s\t%s\n' "${name}" "${result}" >> "${rejected_tmp}"
+         printf '%s\n' "${name}"$'\t'"${result}" >> "${rejected_tmp}"
          rejected_count=$((rejected_count + 1))
       fi
    done

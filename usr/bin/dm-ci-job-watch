@@ -69,11 +69,11 @@ state_helper="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}
 last_state=""
 unreadable=0
 while true; do
-   payload="$(github-api GET "/repos/org-ai-assisted/derivative-maker/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null || printf '')"
+   payload="$(github-api GET "/repos/org-ai-assisted/derivative-maker/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null || printf '%s' "")"
 
    state=""
    if [ -n "${payload}" ]; then
-      state="$(printf '%s' "${payload}" | "${state_helper}" 2>/dev/null || printf '')"
+      state="$(printf '%s' "${payload}" | "${state_helper}" 2>/dev/null || printf '%s' "")"
    fi
 
    if [ -z "${state}" ]; then

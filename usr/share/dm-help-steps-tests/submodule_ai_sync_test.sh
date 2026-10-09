@@ -59,7 +59,7 @@ REAL_GIT="$(type -P git)"
 export REAL_GIT
 SUBUPDATE_LOG="${workspace}/subupdate.log"
 export SUBUPDATE_LOG
-printf '' > "${SUBUPDATE_LOG}"
+printf '%s' "" > "${SUBUPDATE_LOG}"
 shimbin="${workspace}/shimbin"
 mkdir --parents -- "${shimbin}"
 cat > "${shimbin}/git" <<'SHIM'
@@ -86,7 +86,7 @@ new_fork() {
    gitq init --quiet --bare -- "${fork}"
    gitq init --quiet -- "${driver}"
    gitq -C "${driver}" checkout --quiet -b ai
-   printf 'c1\n' > "${driver}/f"
+   printf '%s\n' "c1" > "${driver}/f"
    gitq -C "${driver}" add f
    gitq -C "${driver}" commit --quiet -m c1
    gitq -C "${driver}" remote add fork "file://${fork}"
@@ -96,7 +96,7 @@ new_fork() {
 ## Add a commit to the fork's 'ai' tip via its driver clone.
 advance_fork() {
    local driver="$1" fork="$2"
-   printf 'c2\n' > "${driver}/f"
+   printf '%s\n' "c2" > "${driver}/f"
    gitq -C "${driver}" add f
    gitq -C "${driver}" commit --quiet -m c2
    gitq -C "${driver}" push --quiet fork ai
@@ -108,8 +108,8 @@ new_super() {
    gitq init --quiet -- "${super}"
    gitq -C "${super}" checkout --quiet -b ai
    mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-   printf 'x\n' > "${super}/build-steps.d/keep"
-   printf 'x\n' > "${super}/help-steps/keep"
+   printf '%s\n' "x" > "${super}/build-steps.d/keep"
+   printf '%s\n' "x" > "${super}/help-steps/keep"
    gitq -C "${super}" add build-steps.d help-steps
    gitq -C "${super}" commit --quiet -m "super base"
 }
@@ -131,7 +131,7 @@ add_sub() {
 }
 
 head_of() { gitq -C "$1" rev-parse HEAD; }
-branch_of() { gitq -C "$1" symbolic-ref --quiet HEAD 2>/dev/null || printf 'DETACHED\n'; }
+branch_of() { gitq -C "$1" symbolic-ref --quiet HEAD 2>/dev/null || printf '%s\n' "DETACHED"; }
 
 ## =============================================================================
 ## Superproject A: AUTO cases (behind, current, detached) -> must exit 0.
@@ -162,7 +162,7 @@ gitq -C "${superA}/detached" checkout --quiet --detach ai
 gitq init --quiet --bare -- "${workspace}/fork-upstream.git"
 gitq init --quiet -- "${workspace}/drv-upstream"
 gitq -C "${workspace}/drv-upstream" checkout --quiet -b master
-printf 'm\n' > "${workspace}/drv-upstream/f"
+printf '%s\n' "m" > "${workspace}/drv-upstream/f"
 gitq -C "${workspace}/drv-upstream" add f
 gitq -C "${workspace}/drv-upstream" commit --quiet -m m
 gitq -C "${workspace}/drv-upstream" remote add fork "file://${workspace}/fork-upstream.git"
@@ -295,7 +295,7 @@ new_super "${superB}"
 ## ahead: local ai committed past the fork tip.
 new_fork "${workspace}/fork-ahead.git" "${workspace}/drv-ahead"
 add_sub "${superB}" "${workspace}/fork-ahead.git" ahead
-printf 'local-ahead\n' > "${superB}/ahead/f"
+printf '%s\n' "local-ahead" > "${superB}/ahead/f"
 gitq -C "${superB}/ahead" add f
 gitq -C "${superB}/ahead" commit --quiet -m "local ahead"
 ahead_head="$(head_of "${superB}/ahead")"
@@ -304,7 +304,7 @@ ahead_head="$(head_of "${superB}/ahead")"
 new_fork "${workspace}/fork-diverged.git" "${workspace}/drv-diverged"
 add_sub "${superB}" "${workspace}/fork-diverged.git" diverged
 advance_fork "${workspace}/drv-diverged" "${workspace}/fork-diverged.git"
-printf 'local-diverged\n' > "${superB}/diverged/f"
+printf '%s\n' "local-diverged" > "${superB}/diverged/f"
 gitq -C "${superB}/diverged" add f
 gitq -C "${superB}/diverged" commit --quiet -m "local diverged"
 diverged_head="$(head_of "${superB}/diverged")"
@@ -313,13 +313,13 @@ diverged_head="$(head_of "${superB}/diverged")"
 new_fork "${workspace}/fork-dirty.git" "${workspace}/drv-dirty"
 add_sub "${superB}" "${workspace}/fork-dirty.git" dirty
 dirty_head="$(head_of "${superB}/dirty")"
-printf 'uncommitted\n' > "${superB}/dirty/f"
+printf '%s\n' "uncommitted" > "${superB}/dirty/f"
 
 ## nofork-ai: fork has master but no 'ai'.
 gitq init --quiet --bare -- "${workspace}/fork-noai.git"
 gitq init --quiet -- "${workspace}/drv-noai"
 gitq -C "${workspace}/drv-noai" checkout --quiet -b master
-printf 'm\n' > "${workspace}/drv-noai/f"
+printf '%s\n' "m" > "${workspace}/drv-noai/f"
 gitq -C "${workspace}/drv-noai" add f
 gitq -C "${workspace}/drv-noai" commit --quiet -m m
 gitq -C "${workspace}/drv-noai" remote add fork "file://${workspace}/fork-noai.git"
@@ -347,14 +347,14 @@ gitq init --quiet --bare -- "${workspace}/fork-mirrorai-org.git"
 gitq init --quiet --bare -- "${workspace}/fork-mirrorai-gl.git"
 gitq init --quiet -- "${workspace}/drv-mirrorai"
 gitq -C "${workspace}/drv-mirrorai" checkout --quiet -b master
-printf 'm\n' > "${workspace}/drv-mirrorai/f"
+printf '%s\n' "m" > "${workspace}/drv-mirrorai/f"
 gitq -C "${workspace}/drv-mirrorai" add f
 gitq -C "${workspace}/drv-mirrorai" commit --quiet -m m
 gitq -C "${workspace}/drv-mirrorai" remote add org "file://${workspace}/fork-mirrorai-org.git"
 gitq -C "${workspace}/drv-mirrorai" push --quiet org master
 ## publish 'ai' ONLY to the gitlab mirror (org fork gets master only).
 gitq -C "${workspace}/drv-mirrorai" checkout --quiet -b ai
-printf 'a\n' >> "${workspace}/drv-mirrorai/f"
+printf '%s\n' "a" >> "${workspace}/drv-mirrorai/f"
 gitq -C "${workspace}/drv-mirrorai" add f
 gitq -C "${workspace}/drv-mirrorai" commit --quiet -m a
 gitq -C "${workspace}/drv-mirrorai" remote add gl "file://${workspace}/fork-mirrorai-gl.git"
@@ -375,7 +375,7 @@ mirrorai_head="$(head_of "${superB}/mirrorai")"
 gitq init --quiet --bare -- "${workspace}/fork-mirrorunreach-org.git"
 gitq init --quiet -- "${workspace}/drv-mirrorunreach"
 gitq -C "${workspace}/drv-mirrorunreach" checkout --quiet -b master
-printf 'm\n' > "${workspace}/drv-mirrorunreach/f"
+printf '%s\n' "m" > "${workspace}/drv-mirrorunreach/f"
 gitq -C "${workspace}/drv-mirrorunreach" add f
 gitq -C "${workspace}/drv-mirrorunreach" commit --quiet -m m
 gitq -C "${workspace}/drv-mirrorunreach" remote add org "file://${workspace}/fork-mirrorunreach-org.git"
@@ -474,19 +474,19 @@ new_super "${superC}"
 gitq init --quiet --bare -- "${workspace}/fork-collide.git"
 gitq init --quiet -- "${workspace}/drv-collide"
 gitq -C "${workspace}/drv-collide" checkout --quiet -b ai
-printf 'c1\n' > "${workspace}/drv-collide/f"
+printf '%s\n' "c1" > "${workspace}/drv-collide/f"
 gitq -C "${workspace}/drv-collide" add f
 gitq -C "${workspace}/drv-collide" commit --quiet -m c1
 gitq -C "${workspace}/drv-collide" remote add fork "file://${workspace}/fork-collide.git"
 gitq -C "${workspace}/drv-collide" push --quiet fork ai
 add_sub "${superC}" "${workspace}/fork-collide.git" aa_collide
 ## fork adds a NEW tracked file 'newfile'.
-printf 'from-fork\n' > "${workspace}/drv-collide/newfile"
+printf '%s\n' "from-fork" > "${workspace}/drv-collide/newfile"
 gitq -C "${workspace}/drv-collide" add newfile
 gitq -C "${workspace}/drv-collide" commit --quiet -m "add newfile"
 gitq -C "${workspace}/drv-collide" push --quiet fork ai
 ## untracked collision in the submodule working tree.
-printf 'attacker\n' > "${superC}/aa_collide/newfile"
+printf '%s\n' "attacker" > "${superC}/aa_collide/newfile"
 collide_head="$(head_of "${superC}/aa_collide")"
 
 ## detuniq: local ai == fork tip, but HEAD is detached at a UNIQUE extra commit.
@@ -494,7 +494,7 @@ collide_head="$(head_of "${superC}/aa_collide")"
 new_fork "${workspace}/fork-detuniq.git" "${workspace}/drv-detuniq"
 add_sub "${superC}" "${workspace}/fork-detuniq.git" detuniq
 gitq -C "${superC}/detuniq" checkout --quiet --detach ai
-printf 'unique\n' > "${superC}/detuniq/g"
+printf '%s\n' "unique" > "${superC}/detuniq/g"
 gitq -C "${superC}/detuniq" add g
 gitq -C "${superC}/detuniq" commit --quiet -m "unique detached commit"
 detuniq_head="$(head_of "${superC}/detuniq")"
@@ -587,26 +587,26 @@ new_super "${superE}"
 gitq init --quiet --bare -- "${workspace}/fork-detcol.git"
 gitq init --quiet -- "${workspace}/drv-detcol"
 gitq -C "${workspace}/drv-detcol" checkout --quiet -b ai
-printf 'c0\n' > "${workspace}/drv-detcol/f"
+printf '%s\n' "c0" > "${workspace}/drv-detcol/f"
 gitq -C "${workspace}/drv-detcol" add f
 gitq -C "${workspace}/drv-detcol" commit --quiet -m c0
 gitq -C "${workspace}/drv-detcol" remote add fork "file://${workspace}/fork-detcol.git"
 gitq -C "${workspace}/drv-detcol" push --quiet fork ai
 add_sub "${superE}" "${workspace}/fork-detcol.git" detcol
 ## fork advances: c1 (adds g), then c2 (adds newfile).
-printf 'g\n' > "${workspace}/drv-detcol/g"
+printf '%s\n' "g" > "${workspace}/drv-detcol/g"
 gitq -C "${workspace}/drv-detcol" add g
 gitq -C "${workspace}/drv-detcol" commit --quiet -m c1
 detcol_c1="$(gitq -C "${workspace}/drv-detcol" rev-parse ai)"
 gitq -C "${workspace}/drv-detcol" push --quiet fork ai
-printf 'from-fork\n' > "${workspace}/drv-detcol/newfile"
+printf '%s\n' "from-fork" > "${workspace}/drv-detcol/newfile"
 gitq -C "${workspace}/drv-detcol" add newfile
 gitq -C "${workspace}/drv-detcol" commit --quiet -m c2
 gitq -C "${workspace}/drv-detcol" push --quiet fork ai
 ## sub: fetch c1/c2 objects, detach at c1 (distinct from local ai=c0), untracked collision.
 gitq -C "${superE}/detcol" fetch --quiet org-ai-assisted
 gitq -C "${superE}/detcol" checkout --quiet --detach "${detcol_c1}"
-printf 'attacker\n' > "${superE}/detcol/newfile"
+printf '%s\n' "attacker" > "${superE}/detcol/newfile"
 
 rc=0
 e_out="$("${tool}" --dir "${superE}" 2>&1)" || rc=$?
@@ -631,13 +631,13 @@ fi
 ## restore it exactly as found).
 new_fork "${workspace}/fork-nbr.git" "${workspace}/drv-nbr"
 add_sub "${superE}" "${workspace}/fork-nbr.git" nbr
-printf 'gg\n' > "${workspace}/drv-nbr/g"
+printf '%s\n' "gg" > "${workspace}/drv-nbr/g"
 gitq -C "${workspace}/drv-nbr" add g
 gitq -C "${workspace}/drv-nbr" commit --quiet -m c2
 gitq -C "${workspace}/drv-nbr" push --quiet fork ai
 gitq -C "${superE}/nbr" fetch --quiet org-ai-assisted
 gitq -C "${superE}/nbr" checkout --quiet -b work      # off ai, a named branch
-printf 'collide\n' > "${superE}/nbr/g"                # untracked collision with incoming c2
+printf '%s\n' "collide" > "${superE}/nbr/g"                # untracked collision with incoming c2
 
 rc=0
 # shellcheck disable=SC2034  # n_out: tool stdout+stderr captured to keep test output quiet; only rc is asserted
@@ -682,7 +682,7 @@ new_super "${superG}"
 ## broken: a normal ai submodule whose gitlink points at a missing gitdir.
 new_fork "${workspace}/fork-broken.git" "${workspace}/drv-broken"
 add_sub "${superG}" "${workspace}/fork-broken.git" broken
-printf 'gitdir: /nonexistent/dm-sais-broken\n' > "${superG}/broken/.git"
+printf '%s\n' "gitdir: /nonexistent/dm-sais-broken" > "${superG}/broken/.git"
 
 ## det_ai_dead: DETACHED but has local 'ai'; org-ai-assisted points nowhere so the
 ## fetch fails. An ai-workflow submodule -> STOP, not an upstream-only skip.

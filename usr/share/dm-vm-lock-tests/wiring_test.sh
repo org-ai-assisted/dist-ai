@@ -42,10 +42,10 @@ rec="${work}/calls"
 chmod +x -- "${stubbin}/dm-vm-lock"
 export PATH="${stubbin}:${PATH}"
 
-ppfile="${work}/pp"; printf 'x\n' > "${ppfile}"
+ppfile="${work}/pp"; printf '%s\n' "x" > "${ppfile}"
 ## image-test-run locks AFTER its config-readability check, so give it a readable (empty) config
 ## -- the guard re-execs before the config is sourced, so its contents do not matter here.
-conf="${work}/dummy.conf"; printf '' > "${conf}"
+conf="${work}/dummy.conf"; printf '%s' "" > "${conf}"
 
 assert_class() {
    ## assert_class <label> <expected-class> <leaf-path> <args...>
@@ -54,7 +54,7 @@ assert_class() {
       check "${label}: leaf present at ${leaf}" 1
       return
    fi
-   printf '' > "${rec}"
+   printf '%s' "" > "${rec}"
    DM_VM_LOCK_HELD='' "${leaf}" "$@" >/dev/null 2>&1 || true
    local got; got="$(cat -- "${rec}" 2>/dev/null || true)"
    case "${got}" in

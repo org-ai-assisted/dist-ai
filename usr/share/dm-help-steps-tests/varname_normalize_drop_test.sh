@@ -64,9 +64,9 @@ out="$(
 fail=0
 check() {  ## $1=got $2=want $3=label
    if [ "$1" = "$2" ]; then
-      printf 'PASS: %s\n' "$3"
+      printf '%s\n' "PASS: ${3}"
    else
-      printf 'FAIL: %s (got %s, want %s)\n' "$3" "$1" "$2" >&2
+      printf '%s\n' "FAIL: ${3} (got ${1}, want ${2})" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -84,7 +84,7 @@ n_special="$(printf '%s\n' "${out}" | grep -c -- 'BASH_REMATCH' || true)"
 check "${n_special}" 0 "a shell-special is still dropped (filter intact)"
 
 if [ "${fail}" -gt 0 ]; then
-   printf 'varname_normalize_drop_test: %s assertion(s) FAILED.\n' "${fail}" >&2
+   printf '%s\n' "varname_normalize_drop_test: ${fail} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'varname_normalize_drop_test: OK\n'
+printf '%s\n' "varname_normalize_drop_test: OK"

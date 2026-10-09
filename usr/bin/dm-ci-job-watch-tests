@@ -47,22 +47,22 @@ env_unmet=0
 ran=0
 for test_script in "${tests_dir}"/*_test.sh; do
   ran=$(( ran + 1 ))
-  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  printf '%s\n' "" "########## $(basename -- "${test_script}") ##########"
   rc=0
   bash -- "${test_script}" "$@" || rc=$?
   if [ "${rc}" -eq 77 ]; then
-    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    printf '%s\n' "########## SKIPPED: $(basename -- "${test_script}") ##########"
     skipped=$(( skipped + 1 ))
   elif [ "${rc}" -eq 78 ]; then
     env_unmet=$(( env_unmet + 1 ))
   elif [ "${rc}" -ne 0 ]; then
-    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    printf '%s\n' "########## FAILED (${rc}): $(basename -- "${test_script}") ##########"
     failures=$(( failures + 1 ))
   fi
 done
 
 if [ "${ran}" -eq 0 ]; then
-  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
   exit 1
 fi
 printf '%s\n' '' "${ran} dm-ci-job-watch case(s): ${failures} failed, ${skipped} skipped, ${env_unmet} env-unmet"

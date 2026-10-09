@@ -169,7 +169,7 @@ fi
 
 ## --- F6: safe-pgrep -a is newline-safe -- one output line per match --------------------------
 nlmarker="NL-$$-${RANDOM}"
-bash -c 'exec -a "$1" sleep 300' _ "$(printf '%s\nINJECTED-SECOND-LINE' "${nlmarker}")" &
+bash -c 'exec -a "$1" sleep 300' _ "$(printf '%s' "${nlmarker}"$'\n'"INJECTED-SECOND-LINE")" &
 nl_pid=$!
 for _ in $(seq 1 20); do
    if pgrep --full -- "${nlmarker}" >/dev/null 2>&1; then break; fi
@@ -204,8 +204,8 @@ printf '%s\n' '' "${passes} pass, ${failures} fail, 0 skip"
 ## Guard against a silently-skipped block reading green: the full path runs 17 assertions, so a
 ## clean run with fewer means something was skipped (e.g. a marker never appeared).
 if [ "${failures}" -eq 0 ] && [ "$(( passes + failures ))" -ne 17 ]; then
-   printf 'FAIL: expected 17 assertions, only %s ran -- a block was silently skipped\n' \
-      "$(( passes + failures ))" >&2
+   printf '%s\n' \
+      "FAIL: expected 17 assertions, only $(( passes + failures )) ran -- a block was silently skipped" >&2
    exit 1
 fi
 if [ "${failures}" -ne 0 ]; then

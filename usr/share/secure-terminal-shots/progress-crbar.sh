@@ -27,6 +27,7 @@ for (( i=1; i<=steps; i++ )); do
    bar=''
    for (( c=0; c<filled; c++ )); do bar+='#'; done
    for (( c=filled; c<width; c++ )); do bar+=' '; done
-   printf '\r\033[K\033[36mFetching \033[32m[%s]\033[0m %3d%%' "${bar}" "$(( i * 100 / steps ))"
+   printf -v pct '%3d' "$(( i * 100 / steps ))"
+   printf '%s' $'\r\033[K\033[36mFetching \033[32m['"${bar}"$']\033[0m '"${pct}%"
 done
-printf '\r\033[K\033[32mFetch complete.\033[0m\n'
+printf '%s\n' $'\r\033'"[K"$'\033'"[32mFetch complete."$'\033'"[0m"

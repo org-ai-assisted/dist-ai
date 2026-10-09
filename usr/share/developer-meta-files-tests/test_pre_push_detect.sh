@@ -233,7 +233,7 @@ assert_at "R-120 unwraps 'sudo sudo -- rm' (inner end-of-options)"  "R-120" 4
 assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
 ## A maliciously DEEP wrapper chain must not crash the linter: the unwrap is ITERATIVE,
 ## not recursive, so it peels any depth without a RecursionError. (ai-review agy.)
-deep_sudo="$(printf 'sudo %.0s' $(seq 1 1500))"
+printf -v deep_sudo 'sudo %.0s' $(seq 1 1500)
 run_det "$(printf '%s\n' '#!/bin/bash' "${deep_sudo}rm -rf /x")"
 assert_at "R-120 unwraps a 1500-deep 'sudo ... rm' without crashing" "R-120" 2
 ## env/command/builtin are pass-through wrappers too -- 'env VAR=1 rm', 'command rm',
@@ -323,7 +323,7 @@ assert_at "R-120 catches a backslash-escaped '\\rm'"     "R-120" 4
 assert_at "R-120 catches 'sudo \\rm'"                    "R-120" 5
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
-printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
+printf '%s\n' "#!/bin/bash"$'\r' "# c \\"$'\r' "rm -rf /x"$'\r' > "${test_dir}/crlf.sh"
 output="$("${DET}" --detect "${test_dir}/crlf.sh" 2>/dev/null || true)"
 assert_at "R-120 not blinded by a CRLF comment-tail backslash" "R-120" 3
 
@@ -578,7 +578,7 @@ assert_not_at "R-220 spares constant non-77 'exit \$((70+6))'" "R-220" 5
 ## OverflowErrors past ~1e308 (crashing the linter on untrusted data) and loses precision
 ## above 2**53. '77 * BIG / BIG' is 77 for any BIG -> must still flag, and must not crash.
 ## (ai-review agy/grok.)
-arith_big="$(printf '9%.0s' $(seq 1 400))"
+printf -v arith_big '9%.0s' $(seq 1 400)
 run_det "$(printf '%s\n' '#!/bin/bash' \
    "foo || exit \$(( 77 * ${arith_big} / ${arith_big} ))")"
 assert_at "R-220 evaluates a huge constant with integer arithmetic (no float overflow)" "R-220" 2
@@ -1062,7 +1062,7 @@ assert_at "R-063 flags a checked-param + command-substitution target" "R-063" 4
 ## valid UTF-8 -- matching the byte-level grep the bash gate used. Canary: FAILED
 ## when detect read decoded source only (an undecodable file gave source=None and
 ## no finding). 0xFF is never a valid UTF-8 byte.
-printf '%b' '#!/bin/bash\ntrue \377\n' > "${test_dir}/badutf8.sh"
+printf '%s\n' "#!/bin/bash" "true "$'\377' > "${test_dir}/badutf8.sh"
 output="$("${DET}" --detect "${test_dir}/badutf8.sh" 2>/dev/null || true)"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
    note_pass "R-001 flags a non-ASCII byte in a non-UTF-8 file"
@@ -1075,7 +1075,7 @@ fi
 ## The pending commit message is not a tree file; --message-file hands it to the
 ## SAME non-ASCII rule. A U+00E9 (0xC3 0xA9) in the body must be flagged; a clean
 ## ASCII message must pass.
-printf '%b' 'subject line\n\nbody with \303\251 accent\n' > "${test_dir}/msg-bad"
+printf '%s\n' "subject line" "" "body with "$'\303\251'" accent" > "${test_dir}/msg-bad"
 det_msgfile "${test_dir}/msg-bad"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
    note_pass "R-001 flags a non-ASCII commit message via --message-file"
@@ -1095,7 +1095,7 @@ fi
 ## MESSAGE must NOT suppress R-001 there -- a message is not a file. Canary: the
 ## message context decoded source, so has_waiver honored the in-message waiver
 ## and dropped the finding.
-printf '%b' 'subj\n\n## style-ok: allow-non-ascii\nbody caf\303\251\n' \
+printf '%s\n' "subj" "" "## style-ok: allow-non-ascii" "body caf"$'\303\251' \
    > "${test_dir}/msg-waiver"
 det_msgfile "${test_dir}/msg-waiver"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then

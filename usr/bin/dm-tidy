@@ -201,7 +201,7 @@ any_error="false"
 aborted="false"
 
 record() {
-   step_results+=( "$(printf '%s\t%s' "$1" "$2")" )
+   step_results+=( "$(printf '%s' "${1}"$'\t'"${2}")" )
 }
 
 ## Submodule paths from the parent's .gitmodules (declaration order), into the global
@@ -305,7 +305,7 @@ phase_remotes() {
          ## remotes. Tell them to add them here instead.
          printf '%s\n' "${0##*/}: missing expected git remotes -- add them on the repo(s) below (the automatic ensure runs only on the helper's own tree, not this checkout):" >&2
       fi
-      printf '  %s\n' "${missing[@]}" >&2
+      printf '%s\n' "${missing[@]/#/  }" >&2
       return 0
    fi
    record "1 remotes" "ok"
@@ -495,21 +495,21 @@ mergecheck_merge_state() {
    local base="$1" branch="$2" out rc=0 all file
    out="$( git -C "${top}" merge-tree --write-tree "${base}" "${branch}" 2>&1 )" || rc="$?"
    if [ "${rc}" -eq 0 ]; then
-      printf 'clean'
+      printf '%s' "clean"
       return 0
    fi
    if [ "${rc}" -ne 1 ]; then
-      printf 'error'
+      printf '%s' "error"
       return 0
    fi
    all="$( printf '%s\n' "${out}" | grep -E '^CONFLICT \(' || true )"
    file="$( printf '%s\n' "${all}" | grep -vE '^CONFLICT \(submodule' || true )"
    if [ -n "${file}" ]; then
-      printf 'conflict'
+      printf '%s' "conflict"
    elif [ -n "${all}" ]; then
-      printf 'gitlink'
+      printf '%s' "gitlink"
    else
-      printf 'clean'
+      printf '%s' "clean"
    fi
    return 0
 }
@@ -607,7 +607,7 @@ phase_mergecheck
 ## --- Summary ---------------------------------------------------------------------
 mode_label="apply"
 [ "${dry_run}" = "true" ] && mode_label="dry-run"
-printf '\n%s\n' "${0##*/}: summary (${mode_label} run on '${top}'):"
+printf '%s\n' "" "${0##*/}: summary (${mode_label} run on '${top}'):"
 printf '%s\n' "${step_results[@]}" | awk -F '\t' '{printf "  %-22s %s\n", $1, $2}'
 
 if [ "${any_error}" = "true" ]; then

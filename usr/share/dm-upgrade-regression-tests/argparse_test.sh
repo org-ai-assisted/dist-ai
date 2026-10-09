@@ -24,7 +24,7 @@ if [ -n "${DM_UPGRADE_REGRESSION_BIN:-}" ]; then
 else
    bin="${script_dir}/../../bin/dm-upgrade-regression"
 fi
-[ -x "${bin}" ] || { printf 'ERROR: dm-upgrade-regression not found/executable: %s\n' "${bin}" >&2; exit 1; }
+[ -x "${bin}" ] || { printf '%s\n' "ERROR: dm-upgrade-regression not found/executable: ${bin}" >&2; exit 1; }
 
 pass=0
 fail=0
@@ -35,10 +35,10 @@ expect_rc() {
    local rc=0
    "${bin}" --validate-only "$@" >/dev/null 2>&1 || rc=$?
    if [ "${rc}" -eq "${want}" ]; then
-      printf 'PASS: %s (rc=%s)\n' "${desc}" "${rc}"
+      printf '%s\n' "PASS: ${desc} (rc=${rc})"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s (want rc=%s, got %s)\n' "${desc}" "${want}" "${rc}" >&2
+      printf '%s\n' "FAIL: ${desc} (want rc=${want}, got ${rc})" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -51,10 +51,10 @@ tmp="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${tmp}"; }
 trap cleanup EXIT
 pass_ok="${tmp}/pass-0600"
-printf 'secret\n' > "${pass_ok}"
+printf '%s\n' "secret" > "${pass_ok}"
 chmod 0600 "${pass_ok}"
 pass_bad="${tmp}/pass-0644"
-printf 'secret\n' > "${pass_bad}"
+printf '%s\n' "secret" > "${pass_bad}"
 chmod 0644 "${pass_bad}"
 
 ## Valid combinations -> 0.
@@ -82,9 +82,9 @@ expect_rc "${SETUP_RC}" 'trailing --vm with no value is setup, not a crash' --re
 ## CANARY: a world-readable (0644) passphrase file is refused.
 expect_rc "${SETUP_RC}" 'a 0644 passphrase-file is refused'          --vm v --repository developers --persist --passphrase-file "${pass_bad}"
 ## CANARY: a control character in a free-form field is refused (would corrupt JSON).
-expect_rc "${SETUP_RC}" 'control char in --snapshot-name is refused' --vm v --repository developers --persist --snapshot-name "$(printf 'bad\x01name')"
-expect_rc "${SETUP_RC}" 'control char in --vm is refused'           --vm "$(printf 'bad\x01vm')" --repository developers --persist
+expect_rc "${SETUP_RC}" 'control char in --snapshot-name is refused' --vm v --repository developers --persist --snapshot-name "$(printf '%s' "bad"$'\x01'"name")"
+expect_rc "${SETUP_RC}" 'control char in --vm is refused'           --vm "$(printf '%s' "bad"$'\x01'"vm")" --repository developers --persist
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

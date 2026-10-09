@@ -101,8 +101,8 @@ expect_flag() {
          ;;
    esac
    if [ "${got}" != "${want}" ]; then
-      printf 'FAIL [%s]: python-shell-guard expected %s, got %s\n' \
-         "${label}" "${want}" "${got}" >&2
+      printf '%s\n' \
+         "FAIL [${label}]: python-shell-guard expected ${want}, got ${got}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -123,8 +123,8 @@ expect_guard() {
       got='absent'
    fi
    if [ "${got}" != "${want}" ]; then
-      printf 'FAIL [%s]: guard line after --fix expected %s, got %s\n' \
-         "${label}" "${want}" "${got}" >&2
+      printf '%s\n' \
+         "FAIL [${label}]: guard line after --fix expected ${want}, got ${got}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -216,7 +216,7 @@ doc_path="$(fixture 'usr/bin/fix_b_recheck' "${doc}")"
 recheck_out="$("${STYLE}" --check -- "${doc_path}" 2>&1 || true)"
 ## '#*python-shell-guard' strips through the tag; unchanged string == tag ABSENT.
 if [ "${recheck_out}" = "${recheck_out#*python-shell-guard}" ]; then
-   printf 'FAIL [doc still flagged after --fix]: expected the rule to still report it\n' >&2
+   printf '%s\n' "FAIL [doc still flagged after --fix]: expected the rule to still report it" >&2
    failures=$((failures + 1))
 fi
 
@@ -225,14 +225,14 @@ fi
 canary_path="$(fixture 'usr/bin/canary' "${nodoc}")"
 "${STYLE}" --fix -- "${canary_path}" >/dev/null 2>&1 || true
 if ! python3 -m py_compile "${canary_path}" 2>/dev/null; then
-   printf 'FAIL [canary]: fixed file does not compile as python\n' >&2
+   printf '%s\n' "FAIL [canary]: fixed file does not compile as python" >&2
    failures=$((failures + 1))
 fi
 guard_ln="$(grep --line-number --fixed-strings -- "${guard_line}" "${canary_path}" | head --lines=1 | cut -d: -f1 || true)"
 import_ln="$(grep --line-number --extended-regexp '^(import|from) ' "${canary_path}" | head --lines=1 | cut -d: -f1 || true)"
 if [ -z "${guard_ln}" ] || [ -z "${import_ln}" ] || [ "${guard_ln}" -ge "${import_ln}" ]; then
-   printf 'FAIL [canary]: guard (line %s) must precede first import (line %s)\n' \
-      "${guard_ln:-none}" "${import_ln:-none}" >&2
+   printf '%s\n' \
+      "FAIL [canary]: guard (line ${guard_ln:-none}) must precede first import (line ${import_ln:-none})" >&2
    failures=$((failures + 1))
 fi
 

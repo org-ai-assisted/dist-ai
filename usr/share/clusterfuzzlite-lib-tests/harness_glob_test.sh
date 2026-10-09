@@ -54,9 +54,9 @@ assert() {
    local desc="$1"
    shift
    if "$@"; then
-      printf 'PASS: %s\n' "${desc}"
+      printf '%s\n' "PASS: ${desc}"
    else
-      printf 'FAIL: %s\n' "${desc}" >&2
+      printf '%s\n' "FAIL: ${desc}" >&2
       failures=$(( failures + 1 ))
    fi
 }
@@ -175,10 +175,10 @@ assert 'failglob zero-match leaves the array empty' test "${#arr6[@]}" -eq 0
 assert 'failglob zero-match prints the clean FATAL' \
    grep --quiet 'no fuzz harnesses matched' "${err6}"
 if grep --quiet 'no match' "${err6}"; then
-   printf 'FAIL: %s\n' 'failglob leaked a bash "no match" error (not disabled)' >&2
+   printf '%s\n' "FAIL: failglob leaked a bash \"no match\" error (not disabled)" >&2
    failures=$(( failures + 1 ))
 else
-   printf 'PASS: %s\n' 'failglob zero-match has no spurious bash "no match" error'
+   printf '%s\n' "PASS: failglob zero-match has no spurious bash \"no match\" error"
 fi
 assert 'failglob restored by the helper' test "${failglob_after}" = 'on'
 
@@ -186,5 +186,5 @@ if [ "${failures}" -eq 0 ]; then
    printf '%s\n' 'harness_glob_test: all checks passed'
    exit 0
 fi
-printf 'harness_glob_test: %s check(s) failed\n' "${failures}" >&2
+printf '%s\n' "harness_glob_test: ${failures} check(s) failed" >&2
 exit 1

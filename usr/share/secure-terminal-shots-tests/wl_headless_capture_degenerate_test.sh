@@ -90,21 +90,21 @@ check() {  ## $1=label $2=ok?(non-empty=pass)
 out1="${work}/degenerate.png"
 export GRIM_STUB_FRAME='black'
 rc=0; wl_headless_capture_window "${out1}" >/dev/null 2>&1 || rc=$?
-check 'a degenerate (nothing-mapped) capture returns non-zero' "$([ "${rc}" -ne 0 ] && printf y)"
-check 'a degenerate capture leaves NO outfile behind (no 1x1 to publish)' "$([ ! -e "${out1}" ] && printf y)"
+check 'a degenerate (nothing-mapped) capture returns non-zero' "$([ "${rc}" -ne 0 ] && printf '%s' "y")"
+check 'a degenerate capture leaves NO outfile behind (no 1x1 to publish)' "$([ ! -e "${out1}" ] && printf '%s' "y")"
 
 ## ARM 2: a real window on the output -> a sane, non-degenerate shot IS written (fix didn't break
 ## the happy path).
 out2="${work}/good.png"
 export GRIM_STUB_FRAME='content'
 rc=0; wl_headless_capture_window "${out2}" >/dev/null 2>&1 || rc=$?
-check 'a mapped window captures successfully (rc 0)' "$([ "${rc}" -eq 0 ] && printf y)"
+check 'a mapped window captures successfully (rc 0)' "$([ "${rc}" -eq 0 ] && printf '%s' "y")"
 if [ -f "${out2}" ]; then
    ## `|| true`: identify prints no trailing newline, so `read` returns 1 at EOF, which would
    ## abort under errexit even though gw/gh were assigned.
-   read -r gw gh < <(identify -format '%w %h' "${out2}" 2>/dev/null || printf '0 0') || true
+   read -r gw gh < <(identify -format '%w %h' "${out2}" 2>/dev/null || printf '%s' "0 0") || true
    check "the captured shot has sane dimensions (${gw}x${gh}, both >= 20)" \
-      "$([ "${gw:-0}" -ge 20 ] && [ "${gh:-0}" -ge 20 ] && printf y)"
+      "$([ "${gw:-0}" -ge 20 ] && [ "${gh:-0}" -ge 20 ] && printf '%s' "y")"
 else
    check 'the captured shot has sane dimensions' ''
 fi

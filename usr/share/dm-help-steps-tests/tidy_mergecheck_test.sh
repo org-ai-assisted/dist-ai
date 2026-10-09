@@ -38,7 +38,7 @@ test_failures=0
 
 dist_ai_bin="$(cd -- "${test_dir}/../../bin" && pwd)"
 tool="${DM_TIDY_BIN:-${dist_ai_bin}/dm-tidy}"
-[ -x "${tool}" ] || { printf 'FATAL: dm-tidy not found/executable at %s\n' "${tool}" >&2 ; exit 1 ; }
+[ -x "${tool}" ] || { printf '%s\n' "FATAL: dm-tidy not found/executable at ${tool}" >&2 ; exit 1 ; }
 
 export GIT_AUTHOR_NAME="test" GIT_AUTHOR_EMAIL="test@example.invalid"
 export GIT_COMMITTER_NAME="test" GIT_COMMITTER_EMAIL="test@example.invalid"
@@ -67,24 +67,24 @@ sc="${workspace}/scratch"
 gitq init --quiet -- "${sc}"
 gitq -C "${sc}" checkout --quiet -b base
 mkdir --parents -- "${sc}/build-steps.d" "${sc}/help-steps"
-printf 'x\n' > "${sc}/build-steps.d/keep" ; printf 'x\n' > "${sc}/help-steps/keep"
-printf 'base\n' > "${sc}/shared"
+printf '%s\n' "x" > "${sc}/build-steps.d/keep" ; printf '%s\n' "x" > "${sc}/help-steps/keep"
+printf '%s\n' "base" > "${sc}/shared"
 gitq -C "${sc}" add --all ; gitq -C "${sc}" commit --quiet -m base
 B="$(gitq -C "${sc}" rev-parse HEAD)"
 ## upstream master: adds fileU, leaves 'shared' -- disjoint from trixie, so they combine clean.
 gitq -C "${sc}" checkout --quiet -b upb "${B}"
-printf 'u\n' > "${sc}/fileU" ; gitq -C "${sc}" add fileU ; gitq -C "${sc}" commit --quiet -m up
+printf '%s\n' "u" > "${sc}/fileU" ; gitq -C "${sc}" add fileU ; gitq -C "${sc}" commit --quiet -m up
 UP="$(gitq -C "${sc}" rev-parse HEAD)"
 ## arraybolt3/trixie: changes 'shared' -- this is what master will conflict with in combined.
 gitq -C "${sc}" checkout --quiet -b trxb "${B}"
-printf 'trx\n' > "${sc}/shared" ; gitq -C "${sc}" commit --quiet -am trx
+printf '%s\n' "trx" > "${sc}/shared" ; gitq -C "${sc}" commit --quiet -am trx
 TRX="$(gitq -C "${sc}" rev-parse HEAD)"
 ## ours 'master' variants from base.
 gitq -C "${sc}" checkout --quiet -b m_clean "${B}"     ## adds fileM only -> merges clean with combined
-printf 'm\n' > "${sc}/fileM" ; gitq -C "${sc}" add fileM ; gitq -C "${sc}" commit --quiet -m m_clean
+printf '%s\n' "m" > "${sc}/fileM" ; gitq -C "${sc}" add fileM ; gitq -C "${sc}" commit --quiet -m m_clean
 M_CLEAN="$(gitq -C "${sc}" rev-parse HEAD)"
 gitq -C "${sc}" checkout --quiet -b m_ours "${B}"      ## changes 'shared' -> conflicts with combined
-printf 'ours\n' > "${sc}/shared" ; gitq -C "${sc}" commit --quiet -am m_ours
+printf '%s\n' "ours" > "${sc}/shared" ; gitq -C "${sc}" commit --quiet -am m_ours
 M_OURS="$(gitq -C "${sc}" rev-parse HEAD)"
 ## benign ai: master's TREE with TRX as a second parent (trixie absorbed; content == master).
 AI_BENIGN="$(gitq -C "${sc}" commit-tree "${M_OURS}^{tree}" -p "${M_OURS}" -p "${TRX}" -m ai-absorbed-trixie)"
@@ -97,7 +97,7 @@ super="${HOME}/derivative-maker"
 gitq init --quiet -- "${super}"
 gitq -C "${super}" checkout --quiet -b ai
 mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-printf 'x\n' > "${super}/build-steps.d/keep" ; printf 'x\n' > "${super}/help-steps/keep"
+printf '%s\n' "x" > "${super}/build-steps.d/keep" ; printf '%s\n' "x" > "${super}/help-steps/keep"
 gitq -C "${super}" add --all ; gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" remote add github-kicksecure "file://${U}"
 gitq -C "${super}" remote add ArrayBolt3 "file://${A}"
@@ -153,7 +153,7 @@ esac
 ## called this benign; the fix requires ai itself to merge the combined base CLEANLY, so a
 ## genuine upstream-vs-ours conflict (here on the added fileU) is reported WARN, not hidden.
 gitq -C "${sc}" checkout --quiet -b m_rd "${B}"
-printf 'ours-fileU\n' > "${sc}/fileU" ; printf 'ours\n' > "${sc}/shared"
+printf '%s\n' "ours-fileU" > "${sc}/fileU" ; printf '%s\n' "ours" > "${sc}/shared"
 gitq -C "${sc}" add fileU shared ; gitq -C "${sc}" commit --quiet -m m_rd
 M_RD="$(gitq -C "${sc}" rev-parse HEAD)"
 ## ai with the SAME tree as master (mirrored) and TRX as a parent (trixie "absorbed"), yet it
@@ -282,7 +282,7 @@ gitq -C "${sc}" update-index --cacheinfo "160000,${GLC},mysub"
 gitq -C "${sc}" commit --quiet -m gl-up
 GL_UP="$(gitq -C "${sc}" rev-parse HEAD)"
 gitq -C "${sc}" checkout --quiet -b gl_trx "${GLB}"          ## trixie: unrelated file only
-printf 't\n' > "${sc}/gltrxfile" ; gitq -C "${sc}" add gltrxfile ; gitq -C "${sc}" commit --quiet -m gl-trx
+printf '%s\n' "t" > "${sc}/gltrxfile" ; gitq -C "${sc}" add gltrxfile ; gitq -C "${sc}" commit --quiet -m gl-trx
 GL_TRX="$(gitq -C "${sc}" rev-parse HEAD)"
 gitq -C "${sc}" checkout --quiet -b gl_master "${GLB}"       ## master bumps the pin -> D (conflict)
 gitq -C "${sc}" update-index --cacheinfo "160000,${GLD},mysub"

@@ -72,7 +72,7 @@ fail=0
 check() {
    local want="$1" comment="$2" sample got out
    sample="${work_dir}/sample.sh"
-   printf '## %s\nx=1\n' "${comment}" > "${sample}"
+   printf '%s\n' "## ${comment}" "x=1" > "${sample}"
    ## Capture then grep (R-161): 'cmd | grep --quiet' SIGPIPE-kills cmd under
    ## pipefail, which can misread a real match as no-match.
    out="$("${audit_bin}" --files "${sample}" 2>&1)" || true
@@ -82,9 +82,10 @@ check() {
       got='spare'
    fi
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS %-5s %s\n' "${want}" "${comment}"
+      printf -v want_col '%-5s' "${want}"
+      printf '%s\n' "PASS ${want_col} ${comment}"
    else
-      printf 'FAIL want=%s got=%s -- %s\n' "${want}" "${got}" "${comment}" >&2
+      printf '%s\n' "FAIL want=${want} got=${got} -- ${comment}" >&2
       fail=1
    fi
 }

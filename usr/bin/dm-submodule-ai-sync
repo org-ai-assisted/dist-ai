@@ -586,8 +586,8 @@ done
 print_bucket() {
    local title="$1" ; shift
    [ "$#" -gt 0 ] || return 0
-   printf '%s (%d):\n' "${title}" "$#"
-   printf '   %s\n' "$@"
+   printf '%s\n' "${title} ($#):"
+   printf '%s\n' "${@/#/   }"
 }
 
 ## Dry-run must never read like completed work: the action buckets become
@@ -611,11 +611,11 @@ print_bucket "${up_title}" "${upstream_fixed[@]}"
 print_bucket "uninitialised (skipped)" "${uninit[@]}"
 ## Upstream-only submodules (no 'ai' workflow) are non-actionable; a count keeps
 ## the summary scannable.
-[ "${#skipped_upstream[@]}" -eq 0 ] || printf 'upstream-only, left alone (%d)\n' "${#skipped_upstream[@]}"
+[ "${#skipped_upstream[@]}" -eq 0 ] || printf '%s\n' "upstream-only, left alone (${#skipped_upstream[@]})"
 
 if [ "${#stopped[@]}" -gt 0 ]; then
-   printf '\n%s\n' "STOPPED -- resolve by hand, then re-run:" >&2
-   printf '   %s\n' "${stopped[@]}" >&2
+   printf '%s\n' "" "STOPPED -- resolve by hand, then re-run:" >&2
+   printf '%s\n' "${stopped[@]/#/   }" >&2
    die 1 "${#stopped[@]} submodule(s) STOPPED; not safe to pin/mirror until resolved."
 fi
 

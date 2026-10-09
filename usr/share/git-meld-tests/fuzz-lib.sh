@@ -23,7 +23,7 @@ git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master
 mkdir -p "${work}/bin"; meld_log="${work}/display.log"
 for gui in meld kdiff3; do
-   { printf "%s\n" "#!/bin/bash"; printf 'printf "DISPLAY %%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/${gui}"
+   { printf "%s\n" "#!/bin/bash"; printf '%s\n' "printf \"DISPLAY %s"$'\\'"n\" \"\$*\">>\"${meld_log}\""; } >"${work}/bin/${gui}"
    chmod +x "${work}/bin/${gui}"
 done
 export PATH="${work}/bin:${PATH}"
@@ -37,16 +37,18 @@ rand_blob () {
    local kind=$((RANDOM % 6))
    case "${kind}" in
       0)
-         printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}"
+         printf '%s\n' "line ${RANDOM}" "code ${RANDOM}"
          ;;
       1)
-         printf 'a\x00b NUL embedded %s\n' "${RANDOM}"                   ## auto-binary
+         printf '%s\0' 'a'                                               ## auto-binary
+         printf '%s\n' "b NUL embedded ${RANDOM}"
          ;;
       2)
-         printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}" ## bidi
+         printf '%s\n' "x # "$'\xe2\x80\xae\xe2\x81\xa6'"hidden"$'\xe2\x81\xa9'" ${RANDOM}" ## bidi
          ;;
       3)
-         printf 'Subproject commit %040d\n' "${RANDOM}"                  ## gitlink mimic
+         printf -v fake_sha '%040d' "${RANDOM}"                          ## gitlink mimic
+         printf '%s\n' "Subproject commit ${fake_sha}"
          ;;
       4)
          ## long
@@ -54,12 +56,12 @@ rand_blob () {
          printf '%s\n' ''
          ;;
       5)
-         printf '\xef\xbb\xbfbom %s\n' "${RANDOM}"                       ## BOM/zero-width
+         printf '%s\n' $'\xef\xbb\xbf'"bom ${RANDOM}"                       ## BOM/zero-width
          ;;
    esac
 }
 
-printf '== git-meld fuzz: %s iters, seed %s, %s ==\n' "${iters}" "${seed}" "${GIT_MELD}"
+printf '%s\n' "== git-meld fuzz: ${iters} iters, seed ${seed}, ${GIT_MELD} =="
 i=0
 while [ "${i}" -lt "${iters}" ]; do
    i=$((i + 1))
@@ -97,7 +99,7 @@ while [ "${i}" -lt "${iters}" ]; do
          ;;
       6)
          ## attrs+change
-         printf 'x.data binary\n' > .gitattributes
+         printf '%s\n' "x.data binary" > .gitattributes
          rand_blob > f2
          ;;
    esac
@@ -117,12 +119,12 @@ while [ "${i}" -lt "${iters}" ]; do
       base="${path##*/}"
       if ! grep --fixed-strings --quiet -- "${base}" <<< "${seen}"; then
          fails=$((fails + 1))
-         printf 'FAIL iter=%s: changed path %s NOT surfaced by git-meld\n' "${i}" "${path}" >&2
-         printf '  git saw: %s\n' "${changed[*]}" >&2
-         printf '  reviewer saw: %s\n' "$(printf '%s' "${seen}"|tr '\n' '|'|cut -c1-160)" >&2
+         printf '%s\n' "FAIL iter=${i}: changed path ${path} NOT surfaced by git-meld" >&2
+         printf '%s\n' "  git saw: ${changed[*]}" >&2
+         printf '%s\n' "  reviewer saw: $(printf '%s' "${seen}"|tr '\n' '|'|cut -c1-160)" >&2
       fi
    done
 done
 
-printf '\n==== fuzz FAILURES (hidden changes): %s ====\n' "${fails}"
+printf '%s\n' "" "==== fuzz FAILURES (hidden changes): ${fails} ===="
 rm -rf "${work}"; exit "${fails}"

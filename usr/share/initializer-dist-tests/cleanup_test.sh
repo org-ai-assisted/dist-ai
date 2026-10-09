@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## The inline 'bash -c' programs run in a deliberately separate child shell.
+## style-ok: allow-embedded-script
+
 ## initializer-dist chroot-scripts-post.d '80_cleanup': source-ability plus the
 ## pure decision functions.
 ##
@@ -104,7 +107,7 @@ check() {
 
 ## true if the path exists, else false -- as a word.
 exists() {
-   if [ -e "$1" ]; then printf 'yes'; else printf 'no'; fi
+   if [ -e "$1" ]; then printf '%s' "yes"; else printf '%s' "no"; fi
 }
 
 ## Run a function with errexit disabled inside it (as main()'s bare calls do

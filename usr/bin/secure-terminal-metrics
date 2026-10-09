@@ -43,7 +43,7 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf 'secure-terminal-metrics: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   printf '%s\n' "secure-terminal-metrics: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)" >&2
    ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
    exit 77
 fi

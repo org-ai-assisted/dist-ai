@@ -54,10 +54,10 @@ check() {
    got="$2"
    want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${label}"
+      printf '%s\n' "PASS: ${label}"
       pass=$((pass + 1))
    else
-      printf 'FAIL: %s (got %s, want %s)\n' "${label}" "${got}" "${want}"
+      printf '%s\n' "FAIL: ${label} (got ${got}, want ${want})"
       fail=$((fail + 1))
    fi
 }
@@ -72,7 +72,7 @@ run_on_exit() {
    mkdir --parents -- "${run_home}"
    touch -- "${clog}"
    if [ "${want_stuck}" = yes ]; then
-      printf 'STUCK-SCREENSHOT-BYTES' > "${run_home}/dm-calamares-install-stuck.png"
+      printf '%s' "STUCK-SCREENSHOT-BYTES" > "${run_home}/dm-calamares-install-stuck.png"
    fi
    ## on_exit reads these as globals via dynamic scope -- shellcheck cannot see the
    ## use through the eval'd function, hence SC2034. The subshell inherits them and
@@ -90,16 +90,16 @@ run_on_exit() {
    out="$(cat -- "${clog}")"
    case "${out}" in
       '')
-         printf 'empty'
+         printf '%s' "empty"
          ;;
       *'see the published screenshot'*)
-         printf 'shot-note'
+         printf '%s' "shot-note"
          ;;
       *FAILED*)
-         printf 'generic'
+         printf '%s' "generic"
          ;;
       *)
-         printf 'other:%s' "${out}"
+         printf '%s' "other:${out}"
          ;;
    esac
 }
@@ -127,7 +127,7 @@ check "rc 0 writes no note" "$(run_on_exit 0 '' no)" 'empty'
 story_home="${workdir}/story_home"
 story_dir="${story_home}/shots"
 mkdir --parents -- "${story_dir}"
-printf 'STUCK' > "${story_home}/dm-calamares-install-stuck.png"
+printf '%s' "STUCK" > "${story_home}/dm-calamares-install-stuck.png"
 (
    # shellcheck disable=SC2034
    me='dm-calamares-install' shot='' check_log="${workdir}/story_clog" \
@@ -137,7 +137,7 @@ printf 'STUCK' > "${story_home}/dm-calamares-install-stuck.png"
    on_exit
 ) >/dev/null 2>&1 || true
 check "failed run appends 99-failure.png to the full-story dir" \
-   "$([ -s "${story_dir}/99-failure.png" ] && printf yes || printf no)" 'yes'
+   "$([ -s "${story_dir}/99-failure.png" ] && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## --keep-failed. The stub reports the NICs in STUB_NICS (index=type), fails
 ## setlinkstateN for N in STUB_FAIL_NICS, fails poweroff when STUB_POWEROFF_FAIL=1,

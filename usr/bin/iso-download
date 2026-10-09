@@ -229,7 +229,7 @@ validate_version() {
 sanitize_wiki_version() {
    local raw first cr
    raw="$1"
-   cr="$(printf '\r')"
+   cr="$(printf '%s' $'\r')"
    first="$(printf '%s\n' "${raw}" | head -n 1)"
    first="${first%"${cr}"}"
    first="$(printf '%s' "${first}" | sed 's/<.*//')"
@@ -237,7 +237,7 @@ sanitize_wiki_version() {
 }
 
 wiki_version_url() {
-   printf '%s/w/index.php?title=Template:VersionNew&stable=0&action=raw' "${wiki_base}"
+   printf '%s' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw"
 }
 
 fetch_stable_version() {

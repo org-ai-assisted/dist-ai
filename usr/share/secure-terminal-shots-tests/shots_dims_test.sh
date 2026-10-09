@@ -196,7 +196,7 @@ safe-rm -- "${site}/comparison/shots/dup.webp"
 
 ## a pathological >4300-digit dimension must NOT crash the tool (CPython int() ValueError) --
 ## it is treated as 'not a pixel pin' (rc 0 here: no valid pinned gallery img), never rc 2.
-big="$(printf '9%.0s' $(seq 1 5000))"
+printf -v big '9%.0s' $(seq 1 5000)
 cat > "${site}/index.html" <<HTML
 <!doctype html><html><body>
 <img src="/comparison/shots/demo.webp" width="${big}" height="80" alt="huge">

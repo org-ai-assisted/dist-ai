@@ -141,7 +141,7 @@ done
 {
    cat -- "${work}/table.tsv"
    head --lines 1 -- "${work}/table.tsv"                ## duplicate the first row
-   printf 'zz-not-a-listed-shot\tfull\tcat x\n'         ## an unlisted extra row
+   printf '%s\n' "zz-not-a-listed-shot"$'\t'"full"$'\t'"cat x"         ## an unlisted extra row
 } >"${work}/table.doctored"
 if table_names_match "${work}/table.doctored" >/dev/null 2>&1; then rc=1; else rc=0; fi
 check 'table validation rejects a duplicate row + an unlisted extra row (no silent-green)' "${rc}"
@@ -163,7 +163,8 @@ if [ -n "${page}" ]; then
    done
    site_shots="$(dirname -- "${page}")/shots"
    # shellcheck disable=SC2086
-   names_sp=" $(printf '%s ' ${names}) "
+   printf -v names_sp '%s ' ${names}
+   names_sp=" ${names_sp} "
    shopt -s nullglob
    for webp in "${site_shots}"/*.webp; do
       base="$(basename -- "${webp}" .webp)"

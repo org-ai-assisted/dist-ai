@@ -40,7 +40,7 @@ fail() {
 
 ## retry_run calls 'error' only on misuse; define a stub so the source is safe.
 error() {
-   printf 'error: %s\n' "$*" >&2
+   printf '%s\n' "error: $*" >&2
    return 1
 }
 # shellcheck disable=SC1090
@@ -56,7 +56,7 @@ countfile="${work}/attempts"
 ## A transient-looking failure (matches retry_run's transient regex), so
 ## retry_run retries up to its attempt count. Each call appends one byte.
 flaky() {
-   printf 'x' >> "${countfile}"
+   printf '%s' "x" >> "${countfile}"
    printf '%s\n' "Could not resolve host: example.invalid"
    return 1
 }

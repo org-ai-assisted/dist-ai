@@ -122,7 +122,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -n "${load}" ]; then
-   ncpu="$(nproc 2>/dev/null || printf '2')"
+   ncpu="$(nproc 2>/dev/null || printf '%s' "2")"
    ## 2x the CPU count of busy loops -> the runnable queue always exceeds the cores, so every
    ## process in the run-under-test contends for the scheduler (the condition CI flakes need).
    loops=$(( ncpu * 2 ))
@@ -169,7 +169,7 @@ while [ "${total}" -lt "${runs}" ]; do
    done
    ## Judge this round's results in order.
    for i in ${idxs}; do
-      rc="$(cat -- "${work}/run.${i}.rc" 2>/dev/null || printf 'X')"
+      rc="$(cat -- "${work}/run.${i}.rc" 2>/dev/null || printf '%s' "X")"
       if [ "${rc}" = '0' ]; then
          continue
       fi

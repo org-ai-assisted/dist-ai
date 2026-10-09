@@ -46,9 +46,9 @@ check() {
       expect="no"
    fi
    if [ "${found}" = "${expect}" ]; then
-      printf 'PASS: %s\n' "${desc}"
+      printf '%s\n' "PASS: ${desc}"
    else
-      printf 'FAIL: %s (wanted %s: %s)\n' "${desc}" "${want}" "${needle}" >&2
+      printf '%s\n' "FAIL: ${desc} (wanted ${want}: ${needle})" >&2
       failures=$((failures + 1))
    fi
 }
@@ -75,7 +75,7 @@ dump="$(declare -f heredoc_fn plain_fn)"
 ## Empty baseline so nothing is subtracted; vs_normalize is a passthrough here (no
 ## checkout path or $HOME substring appears in the crafted dump).
 vs_baseline_func_file="$(mktemp)"
-printf '' > "${vs_baseline_func_file}"
+printf '%s' "" > "${vs_baseline_func_file}"
 cleanup() {
    safe-rm --force -- "${vs_baseline_func_file}"
 }
@@ -107,7 +107,7 @@ check "vs_extract_consumed_bodies keeps the post-heredoc body" "${extracted}" "t
 check "vs_extract_consumed_bodies stops before the next function" "${extracted}" "plain_marker" absent
 
 if [ "${failures}" -ne 0 ]; then
-   printf 'FAILED: %s assertion(s).\n' "${failures}" >&2
+   printf '%s\n' "FAILED: ${failures} assertion(s)." >&2
    exit 1
 fi
-printf 'OK: function-body capture survives a heredoc with a column-0 brace.\n'
+printf '%s\n' "OK: function-body capture survives a heredoc with a column-0 brace."

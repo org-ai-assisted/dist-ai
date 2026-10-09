@@ -145,12 +145,12 @@ mounts_fixture="${work_dir}/mounts"
 ## userspace filesystems (forgeable source), the rest are real block filesystems.
 filesystems_fixture="${work_dir}/filesystems"
 {
-   printf 'nodev\t%s\n' 'sysfs'
-   printf 'nodev\t%s\n' 'tmpfs'
-   printf 'nodev\t%s\n' 'fuse'
-   printf '\t%s\n' 'ext4'
-   printf '\t%s\n' 'btrfs'
-   printf '\t%s\n' 'xfs'
+   printf '%s\n' "nodev"$'\t'"sysfs"
+   printf '%s\n' "nodev"$'\t'"tmpfs"
+   printf '%s\n' "nodev"$'\t'"fuse"
+   printf '%s\n' $'\t'"ext4"
+   printf '%s\n' $'\t'"btrfs"
+   printf '%s\n' $'\t'"xfs"
 } > "${filesystems_fixture}"
 
 stub_path_init

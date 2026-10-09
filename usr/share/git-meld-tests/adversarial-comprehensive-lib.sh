@@ -19,14 +19,14 @@ git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master; git config --global protocol.file.allow always
 mkdir -p "${work}/bin"; meld_log="${work}/display.log"
 for gui in meld kdiff3; do
-   { printf "%s\n" "#!/bin/bash"; printf 'printf "DISPLAY:%%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/${gui}"
+   { printf "%s\n" "#!/bin/bash"; printf '%s\n' "printf \"DISPLAY:%s"$'\\'"n\" \"\$*\">>\"${meld_log}\""; } >"${work}/bin/${gui}"
    chmod +x "${work}/bin/${gui}"
 done
 export PATH="${work}/bin:${PATH}"
 
 fails=0
-pass() { printf '  PASS  %s\n' "$1"; }
-fail() { printf '  FAIL  %s\n' "$1" >&2; fails=$((fails+1)); }
+pass() { printf '%s\n' "  PASS  ${1}"; }
+fail() { printf '%s\n' "  FAIL  ${1}" >&2; fails=$((fails+1)); }
 
 ## review <name> <expected-regex> : diff HEAD~1..HEAD through git-meld as driver;
 ## PASS if git-meld output OR a meld invocation matches the expected signal.
@@ -41,14 +41,14 @@ review () {
 
 ## Fresh single-file-change repo each time, so nothing bleeds between cases.
 new_repo () { rm -rf "${work}/r"; git init -q "${work}/r"; cd "${work}/r"
-   printf '#!/bin/sh\necho hi\n' >a.sh; printf 'plain\n' >b.txt; git add -A; git commit -qm base; }
+   printf '%s\n' "#!/bin/sh" "echo hi" >a.sh; printf '%s\n' "plain" >b.txt; git add -A; git commit -qm base; }
 
-printf '== git-meld adversarial suite: %s ==\n' "${GIT_MELD}"
+printf '%s\n' "== git-meld adversarial suite: ${GIT_MELD} =="
 
 new_repo; chmod +x a.sh; git add -A; git commit -qm x
 review "mode-only-+x"                 'MODE CHANGE|EXECUTABLE|old mode|new mode'
 
-new_repo; printf '#!/bin/sh\nEVIL\n' >a.sh; git add -A; git commit -qm x
+new_repo; printf '%s\n' "#!/bin/sh" "EVIL" >a.sh; git add -A; git commit -qm x
 review "content-change (control)"     'DISPLAY:|@@|EVIL'
 
 ## Regression: a plain changed file must NOT report a false "stcat failed".
@@ -56,7 +56,7 @@ review "content-change (control)"     'DISPLAY:|@@|EVIL'
 ## exit-code check, so every changed file mis-reported an stcat failure and
 ## dumped a redundant unicode-show report. meld/kdiff3 never touch stcat, so
 ## this holds for them trivially.
-new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
+new_repo; printf '%s\n' "#!/bin/sh" "echo changed" >a.sh; git add -A; git commit -qm x
 true >"${meld_log}"
 nofalse_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 if grep --quiet --ignore-case 'stcat failed' <<< "${nofalse_out}"; then
@@ -65,7 +65,7 @@ else
    pass "no false 'stcat failed' for a plain changed file"
 fi
 
-new_repo; printf 'Subproject commit 0123456789abcdef0123456789abcdef01234567\n' >b.txt; git add -A; git commit -qm x
+new_repo; printf '%s\n' "Subproject commit 0123456789abcdef0123456789abcdef01234567" >b.txt; git add -A; git commit -qm x
 review "fake-Subproject content spoof" 'mimics a gitlink|DISPLAY:'
 
 new_repo; rm b.txt; ln -s /etc/passwd b.txt; git add -A; git commit -qm x
@@ -91,13 +91,13 @@ else
    fail "symlink retarget targets hidden; saw: $(printf '%s' "${retarget_out}"|tr '\n' '|'|cut -c1-160)"
 fi
 
-new_repo; printf '#!/bin/sh\nif x # \xe2\x80\xae\xe2\x81\xa6then evil\xe2\x81\xa9\n' >b.txt; git add -A; git commit -qm x
+new_repo; printf '%s\n' "#!/bin/sh" "if x # "$'\xe2\x80\xae\xe2\x81\xa6'"then evil"$'\xe2\x81\xa9' >b.txt; git add -A; git commit -qm x
 review "trojan-source bidi unicode"   'unicode-show'
 
 ## Undecodable (non-UTF-8, unicode-show rc 2) content must FAIL CLOSED: surfaced,
 ## but the viewer is NEVER opened (guards the driver's pre-open fatal gate).
 new_repo
-printf 'x\xff y\n' >b.txt
+printf '%s\n' "x"$'\xff'" y" >b.txt
 git add -A
 git commit -qm x
 true >"${meld_log}"
@@ -120,12 +120,12 @@ else
    fail "undecodable + NONFATAL OPENED the GUI viewer (meld_log: $(tr '\n' '|' < "${meld_log}"))"
 fi
 
-new_repo; printf 'x\n' >c.txt; git add -A; git commit -qm x
+new_repo; printf '%s\n' "x" >c.txt; git add -A; git commit -qm x
 review "added file"                   'DISPLAY:|new file|@@'
 
 ## Real submodule gitlink change.
 new_repo
-sm="${work}/sm"; git init -q "${sm}"; ( cd "${sm}"; printf '1\n'>f; git add -A; git commit -qm s1; printf '2\n'>f; git add -A; git commit -qm s2 )
+sm="${work}/sm"; git init -q "${sm}"; ( cd "${sm}"; printf '%s\n' "1">f; git add -A; git commit -qm s1; printf '%s\n' "2">f; git add -A; git commit -qm s2 )
 git -c protocol.file.allow=always submodule add -q "${sm}" mod 2>/dev/null; git commit -qm addmod
 ( cd mod; git checkout -q HEAD~1 ); git add mod; git commit -qm 'bump submodule'
 ## The driver prints the path %q-quoted inside literal single quotes:
@@ -137,7 +137,7 @@ review "submodule gitlink change"     "Submodule '?mod'?:"
 new_repo
 sme="${work}/sme"
 git init -q "${sme}"
-( cd "${sme}"; git config user.email t@example.com; git config user.name test; printf '1\n' >g; git add -A; git commit -qm a; printf 'evil\x1b]0;PWNED\x07here\n' >g; git add -A; git commit -qm b )
+( cd "${sme}"; git config user.email t@example.com; git config user.name test; printf '%s\n' "1" >g; git add -A; git commit -qm a; printf '%s\n' "evil"$'\x1b'"]0;PWNED"$'\x07'"here" >g; git add -A; git commit -qm b )
 git -c protocol.file.allow=always submodule add -q "${sme}" smod 2>/dev/null
 git commit -qm addsmod
 ( cd smod; git checkout -q HEAD~1 )
@@ -152,7 +152,7 @@ esc_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 ## AND any other dangerous sequence (CSI erase, DCS, APC) without re-implementing
 ## stcat and without flagging safe colour.
 esc_residual="$( printf '%s' "${esc_out}" | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g' )"
-if LC_ALL=C grep --quiet -- "$( printf '[\x1b\x07]' )" <<< "${esc_residual}"; then
+if LC_ALL=C grep --quiet -- "$( printf '%s' "["$'\x1b\x07'"]" )" <<< "${esc_residual}"; then
    fail "submodule inner diff leaked a raw dangerous terminal escape"
 else
    pass "submodule inner diff neutralizes dangerous terminal escapes (stcat)"
@@ -161,8 +161,8 @@ fi
 ## Pre-flight: a .gitattributes-binary-suppressed change must still be listed by
 ## the re-dispatch overview even though git skips the per-file driver.
 new_repo
-printf 'a.sh binary\n' >.gitattributes; git add -A; git commit -qm attr
-printf '#!/bin/sh\nrm -rf /\n' >a.sh; git add -A; git commit -qm evilbinary
+printf '%s\n' "a.sh binary" >.gitattributes; git add -A; git commit -qm attr
+printf '%s\n' "#!/bin/sh" "rm -rf /" >a.sh; git add -A; git commit -qm evilbinary
 true >"${meld_log}"
 preflight="$( "${GIT_MELD}" HEAD~1 HEAD 2>&1 || true )"
 if grep --quiet --extended-regexp 'change set|diffstat' <<< "${preflight}" && grep --quiet --extended-regexp 'a\.sh' <<< "${preflight}"; then
@@ -175,7 +175,7 @@ fi
 ## remap diff behavior and hide other files' content), unless the operator opts
 ## in with GIT_REVIEW_ALLOW_GITATTRIBUTES=1.
 new_repo
-printf '*.md diff\n' > .gitattributes
+printf '%s\n' "*.md diff" > .gitattributes
 git add -A
 git commit -qm changeattr
 ga_rc=0
@@ -198,7 +198,7 @@ fi
 new_repo
 smr="${work}/smr"
 git init -q "${smr}"
-( cd "${smr}"; git config user.email t@example.com; git config user.name test; printf 'v1\n' >r.txt; git add -A; git commit -qm a; printf 'v2 SUBFILECHANGED\n' >r.txt; git add -A; git commit -qm b )
+( cd "${smr}"; git config user.email t@example.com; git config user.name test; printf '%s\n' "v1" >r.txt; git add -A; git commit -qm a; printf '%s\n' "v2 SUBFILECHANGED" >r.txt; git add -A; git commit -qm b )
 git -c protocol.file.allow=always submodule add -q "${smr}" smr 2>/dev/null
 git commit -qm addsmr
 ( cd smr; git checkout -q HEAD~1 )
@@ -216,7 +216,7 @@ new_repo; ln -s /some/target newlink; git add -A; git commit -qm x
 review "symlink add surfaced"          'SYMLINK|/some/target'
 new_repo; ln -s /gone existing; git add -A; git commit -qm addlink; rm existing; git add -A; git commit -qm x
 review "symlink delete surfaced"       'SYMLINK|none'
-new_repo; ln -s /old/target dl; git add -A; git commit -qm addlink; rm dl; printf 'now regular\n' > dl; git add -A; git commit -qm x
+new_repo; ln -s /old/target dl; git add -A; git commit -qm addlink; rm dl; printf '%s\n' "now regular" > dl; git add -A; git commit -qm x
 review "symlink->regular type change"  'SYMLINK|regular file'
 
 ## --- fail-open regression: a .gitattributes change buried in a change set whose
@@ -228,11 +228,11 @@ review "symlink->regular type change"  'SYMLINK|regular file'
 ## per-file diff (long names keep the file count -- and viewer stubs on a
 ## regression -- manageable while still crossing the buffer).
 new_repo
-ga_pfx="$( printf 'x%.0s' $(seq 1 110) )"
-i=1; while [ "${i}" -le 700 ]; do printf 'v1\n' > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
+printf -v ga_pfx 'x%.0s' $(seq 1 110)
+i=1; while [ "${i}" -le 700 ]; do printf '%s\n' "v1" > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
 git add -A; git commit -qm manyfiles
-i=1; while [ "${i}" -le 700 ]; do printf 'v2\n' > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
-printf '*.md diff\n' > .gitattributes
+i=1; while [ "${i}" -le 700 ]; do printf '%s\n' "v2" > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
+printf '%s\n' "*.md diff" > .gitattributes
 git add -A; git commit -qm 'big change plus attr'
 bigattr_rc=0
 "${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || bigattr_rc=$?
@@ -247,8 +247,8 @@ fi
 ## (core.quotePath), so a text/anchored match misses it while git still applies
 ## the file; the gate reads raw '-z' NUL-separated names instead. ---
 new_repo
-mkdir "$( printf 'm\xc3\xb6r' )"
-printf '*.md diff\n' > "$( printf 'm\xc3\xb6r' )/.gitattributes"
+mkdir "$( printf '%s' "m"$'\xc3\xb6'"r" )"
+printf '%s\n' "*.md diff" > "$( printf '%s' "m"$'\xc3\xb6'"r" )/.gitattributes"
 git add -A; git commit -qm 'attr in non-ascii dir'
 nonascii_rc=0
 "${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || nonascii_rc=$?
@@ -261,7 +261,7 @@ fi
 ## --- submodule bump that changes .gitattributes fails closed (the recursion
 ## re-applies the gate, which the external-diff mode would otherwise bypass) ---
 new_repo
-smga="${work}/smga"; git init -q "${smga}"; ( cd "${smga}"; git config user.email t@example.com; git config user.name test; printf 'a\n'>sf; git add -A; git commit -qm a; printf 'b\n'>sf; printf '*.md diff\n'>.gitattributes; git add -A; git commit -qm 'b+attr' )
+smga="${work}/smga"; git init -q "${smga}"; ( cd "${smga}"; git config user.email t@example.com; git config user.name test; printf '%s\n' "a">sf; git add -A; git commit -qm a; printf '%s\n' "b">sf; printf '%s\n' "*.md diff">.gitattributes; git add -A; git commit -qm 'b+attr' )
 git -c protocol.file.allow=always submodule add -q "${smga}" smga 2>/dev/null; git commit -qm addsmga
 ( cd smga; git checkout -q HEAD~1 ); git add smga; git commit -qm bumpsmga
 smga_rc=0
@@ -275,7 +275,7 @@ fi
 ## --- a DANGLING real symlink (working-tree side) still shows its target;
 ## read_target must test -L before -e/-s (which follow the link) ---
 new_repo; git config core.symlinks true
-printf 'was a file\n' > slk; git add -A; git commit -qm base
+printf '%s\n' "was a file" > slk; git add -A; git commit -qm base
 rm slk; ln -s /nonexistent/DANGLING-TGT slk
 dangle_out="$( git -c "diff.external=${GIT_MELD}" diff 2>&1 || true )"
 if grep --quiet 'DANGLING-TGT' <<< "${dangle_out}"; then
@@ -286,13 +286,13 @@ fi
 
 ## --- malicious FILENAMES (git_review_scan_path) ---
 ## A bidi-override in the filename is warned (suspicious, rc 1), review proceeds.
-new_repo; bidi_name="$(printf 'safe\xe2\x80\xaednekot.txt')"; printf 'x\n' > "${bidi_name}"; git add -A; git commit -qm x
+new_repo; bidi_name="$(printf '%s' "safe"$'\xe2\x80\xae'"dnekot.txt")"; printf '%s\n' "x" > "${bidi_name}"; git add -A; git commit -qm x
 review "bidi filename warned"          'suspicious|unicode-show'
 ## A tab in the filename triggers the forgery warning.
-new_repo; tab_name="$(printf 'has\ttab.txt')"; printf 'x\n' > "${tab_name}"; git add -A; git commit -qm x
+new_repo; tab_name="$(printf '%s' "has"$'\t'"tab.txt")"; printf '%s\n' "x" > "${tab_name}"; git add -A; git commit -qm x
 review "tab-in-filename warned"        'tab or newline'
 ## An undecodable (non-UTF-8) filename FAILS CLOSED before any viewer opens.
-new_repo; bad_name="$(printf 'bad\xff.txt')"; printf 'x\n' > "${bad_name}"; git add -A; git commit -qm x
+new_repo; bad_name="$(printf '%s' "bad"$'\xff'".txt")"; printf '%s\n' "x" > "${bad_name}"; git add -A; git commit -qm x
 true >"${meld_log}"
 badname_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 if grep --quiet --ignore-case --extended-regexp 'suspicious|undecodable' <<< "${badname_out}" && ! grep --quiet 'DISPLAY:' "${meld_log}"; then
@@ -306,7 +306,7 @@ new_repo; head -c 6000 /dev/zero | tr '\0' 'x' > longline.txt; printf '%s\n' '' 
 review "over-long line warned"         'char line|truncate'
 
 ## --- binary blob in driver mode: --stat only, viewer NOT opened ---
-new_repo; printf 'a\x00b\n' > bin.dat; git add -A; git commit -qm x
+new_repo; { printf '%s\0' 'a'; printf '%s\n' 'b'; } > bin.dat; git add -A; git commit -qm x
 true >"${meld_log}"
 bin_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 if grep --quiet --ignore-case 'BINARY' <<< "${bin_out}" && ! grep --quiet 'DISPLAY:' "${meld_log}"; then
@@ -317,7 +317,7 @@ fi
 
 ## --- submodule ADD ("no inner diff") ---
 new_repo
-smadd="${work}/smadd"; git init -q "${smadd}"; ( cd "${smadd}"; git config user.email t@example.com; git config user.name test; printf 's\n'>x; git add -A; git commit -qm s )
+smadd="${work}/smadd"; git init -q "${smadd}"; ( cd "${smadd}"; git config user.email t@example.com; git config user.name test; printf '%s\n' "s">x; git add -A; git commit -qm s )
 git -c protocol.file.allow=always submodule add -q "${smadd}" addmod 2>/dev/null; git commit -qm 'add submodule'
 addmod_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 if grep --quiet --ignore-case 'added or removed' <<< "${addmod_out}"; then
@@ -328,7 +328,7 @@ fi
 
 ## --- uninitialized submodule fails closed ---
 new_repo
-smde="${work}/smde"; git init -q "${smde}"; ( cd "${smde}"; git config user.email t@example.com; git config user.name test; printf '1\n'>x; git add -A; git commit -qm a; printf '2\n'>x; git add -A; git commit -qm b )
+smde="${work}/smde"; git init -q "${smde}"; ( cd "${smde}"; git config user.email t@example.com; git config user.name test; printf '%s\n' "1">x; git add -A; git commit -qm a; printf '%s\n' "2">x; git add -A; git commit -qm b )
 git -c protocol.file.allow=always submodule add -q "${smde}" demod 2>/dev/null; git commit -qm adddemod
 ( cd demod; git checkout -q HEAD~1 ); git add demod; git commit -qm bump
 git submodule deinit -f demod >/dev/null 2>&1
@@ -345,8 +345,8 @@ fi
 ## not call it, so exercise the branch the way the contract specifies -- a direct
 ## 1-arg invocation over a real conflicted path.
 new_repo
-git switch -q -c feat; printf 'FEAT\n' > b.txt; git add -A; git commit -qm feat
-git switch -q master; printf 'MAIN\n' > b.txt; git add -A; git commit -qm main
+git switch -q -c feat; printf '%s\n' "FEAT" > b.txt; git add -A; git commit -qm feat
+git switch -q master; printf '%s\n' "MAIN" > b.txt; git add -A; git commit -qm main
 git merge feat >/dev/null 2>&1 || true
 um_rc=0
 unmerged_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" b.txt 2>&1 )" || um_rc=$?
@@ -360,7 +360,7 @@ fi
 ## --- GIT_REVIEW_UNICODE_NONFATAL deferral (git-diff-review run DIRECTLY) ---
 gdr="$( dirname -- "${GIT_MELD}" )/git-diff-review"
 if [ -x "${gdr}" ]; then
-   new_repo; printf 'ok\n' > u.txt; git add -A; git commit -qm base; printf 'x \xff\xfe y\n' > u.txt; git add -A; git commit -qm bad
+   new_repo; printf '%s\n' "ok" > u.txt; git add -A; git commit -qm base; printf '%s\n' "x "$'\xff\xfe'" y" > u.txt; git add -A; git commit -qm bad
    nf_rc=0
    nf_out="$( GIT_REVIEW_UNICODE_NONFATAL=1 "${gdr}" HEAD~1 HEAD 2>&1 )" || nf_rc=$?
    if [ "${nf_rc}" -ne 0 ] && grep --quiet 'GIT_REVIEW_UNICODE_NONFATAL was set' <<< "${nf_out}"; then
@@ -373,7 +373,7 @@ fi
 ## --- recursion-depth guard (git_external_level > 2 -> abort rc 255) ---
 ## Simulate git invoking the driver already two levels deep, as a nested-
 ## submodule recursion would; the next increment (3) must abort the diff loop.
-new_repo; printf 'old\n' > "${work}/rold"; printf 'new\n' > "${work}/rnew"
+new_repo; printf '%s\n' "old" > "${work}/rold"; printf '%s\n' "new" > "${work}/rnew"
 rec_rc=0
 rec_out="$( GIT_DIFF_PATH_TOTAL=1 git_external_level=2 "${GIT_MELD}" \
    a.sh "${work}/rold" 0000000000000000000000000000000000000000 100644 \
@@ -385,7 +385,7 @@ else
 fi
 
 ## --- unexpected-mode warning (driver mode, non-octal mode arg) ---
-new_repo; printf 'old\n' > "${work}/mo"; printf 'new\n' > "${work}/mn"
+new_repo; printf '%s\n' "old" > "${work}/mo"; printf '%s\n' "new" > "${work}/mn"
 mode_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" \
    a.sh "${work}/mo" 0000000000000000000000000000000000000000 888888 \
         "${work}/mn" 1111111111111111111111111111111111111111 888888 2>&1 || true )"
@@ -412,7 +412,7 @@ case "$( basename -- "${GIT_MELD}" )" in
       ;;
 esac
 if [ -n "${nz_gui}" ]; then
-   new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
+   new_repo; printf '%s\n' "#!/bin/sh" "echo changed" >a.sh; git add -A; git commit -qm x
    ## Stub kdiff3 to FAIL, mimicking its exit-1-on-differ.
    cat >"${work}/bin/${nz_gui}" <<EOF
 #!/bin/bash
@@ -432,5 +432,5 @@ EOF
    fi
 fi
 
-printf '\n==== FAILURES: %s ====\n' "${fails}"
+printf '%s\n' "" "==== FAILURES: ${fails} ===="
 rm -rf "${work}"; exit "${fails}"

@@ -53,9 +53,9 @@ assert() {
    local desc="$1"
    shift
    if "$@"; then
-      printf 'PASS: %s\n' "${desc}"
+      printf '%s\n' "PASS: ${desc}"
    else
-      printf 'FAIL: %s\n' "${desc}" >&2
+      printf '%s\n' "FAIL: ${desc}" >&2
       failures=$(( failures + 1 ))
    fi
 }
@@ -71,5 +71,5 @@ if [ "${failures}" -eq 0 ]; then
    printf '%s\n' 'smoke_run_nonames_test: all checks passed'
    exit 0
 fi
-printf 'smoke_run_nonames_test: %s check(s) failed\n' "${failures}" >&2
+printf '%s\n' "smoke_run_nonames_test: ${failures} check(s) failed" >&2
 exit 1

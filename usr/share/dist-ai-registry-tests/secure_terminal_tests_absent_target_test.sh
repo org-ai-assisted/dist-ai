@@ -48,9 +48,9 @@ rc=0
 env --unset=DIST_AI_SKIP_AUTHORIZED "SECURE_TERMINAL_REPO=${absent}" \
    "${runner}" >/dev/null 2>&1 || rc="$?"
 if [ "${rc}" -eq 1 ]; then
-   printf 'PASS: absent target without authorization is FATAL (exit 1)\n'
+   printf '%s\n' "PASS: absent target without authorization is FATAL (exit 1)"
 else
-   printf 'FAIL: absent target without authorization exited %s, expected 1 (FATAL)\n' "${rc}" >&2
+   printf '%s\n' "FAIL: absent target without authorization exited ${rc}, expected 1 (FATAL)" >&2
    failures=$((failures + 1))
 fi
 
@@ -59,9 +59,9 @@ rc=0
 env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=${absent}" \
    "${runner}" >/dev/null 2>&1 || rc="$?"
 if [ "${rc}" -eq 77 ]; then
-   printf 'PASS: absent target WITH authorization SKIPs (exit 77)\n'
+   printf '%s\n' "PASS: absent target WITH authorization SKIPs (exit 77)"
 else
-   printf 'FAIL: absent target with DIST_AI_SKIP_AUTHORIZED=1 exited %s, expected 77\n' "${rc}" >&2
+   printf '%s\n' "FAIL: absent target with DIST_AI_SKIP_AUTHORIZED=1 exited ${rc}, expected 77" >&2
    failures=$((failures + 1))
 fi
 
@@ -70,20 +70,20 @@ fi
 ##    The line that sets DIST_AI_SKIP_AUTHORIZED must be guarded by skip_is_fatal, not
 ##    unconditional -- an unconditional set would authorize every skip and re-open the hole.
 if [ ! -r "${orch}" ]; then
-   printf 'FAIL: dist-ai-tests-all not found for the plumbing check\n' >&2
+   printf '%s\n' "FAIL: dist-ai-tests-all not found for the plumbing check" >&2
    failures=$((failures + 1))
 else
    plumb="$(grep -B1 -- 'DIST_AI_SKIP_AUTHORIZED=1' "${orch}" 2>/dev/null || true)"
    if [ -z "${plumb}" ]; then
-      printf 'FAIL: dist-ai-tests-all never sets DIST_AI_SKIP_AUTHORIZED (suite can never be authorized to skip)\n' >&2
+      printf '%s\n' "FAIL: dist-ai-tests-all never sets DIST_AI_SKIP_AUTHORIZED (suite can never be authorized to skip)" >&2
       failures=$((failures + 1))
    elif [[ "${plumb}" == *'! skip_is_fatal'* ]]; then
       ## Require the NEGATION: authorize the skip only when it is NOT fatal. An inverted
       ## guard ('if skip_is_fatal') authorizes exactly when it should fail -- a security
       ## regression -- so matching a bare 'skip_is_fatal' substring is not enough.
-      printf 'PASS: dist-ai-tests-all gates DIST_AI_SKIP_AUTHORIZED on "! skip_is_fatal"\n'
+      printf '%s\n' "PASS: dist-ai-tests-all gates DIST_AI_SKIP_AUTHORIZED on \"! skip_is_fatal\""
    else
-      printf 'FAIL: dist-ai-tests-all sets DIST_AI_SKIP_AUTHORIZED without an "! skip_is_fatal" guard (missing or inverted)\n' >&2
+      printf '%s\n' "FAIL: dist-ai-tests-all sets DIST_AI_SKIP_AUTHORIZED without an \"! skip_is_fatal\" guard (missing or inverted)" >&2
       failures=$((failures + 1))
    fi
 fi
@@ -92,9 +92,9 @@ fi
 ##    silent skip: the loop fails closed on it unless authorized. Read statically -- the
 ##    fail-closed path must be present, not a bare continue that reads green.
 if grep --quiet -- 'exited 77 (skipped)' "${runner}"; then
-   printf 'PASS: a non-pure suite exit-77 is fail-closed, not a silent continue\n'
+   printf '%s\n' "PASS: a non-pure suite exit-77 is fail-closed, not a silent continue"
 else
-   printf 'FAIL: secure-terminal-tests silently continues on a non-pure suite exit-77\n' >&2
+   printf '%s\n' "FAIL: secure-terminal-tests silently continues on a non-pure suite exit-77" >&2
    failures=$((failures + 1))
 fi
 
@@ -130,7 +130,7 @@ for a in "$@"; do
 STUB
       local pair
       for pair in "$@"; do
-         printf '      */%s.py) exit %s ;;\n' "${pair%%:*}" "${pair##*:}"
+         printf '%s\n' "      */${pair%%:*}.py) exit ${pair##*:} ;;"
       done
       cat <<'STUB'
    esac
@@ -164,7 +164,7 @@ if [ "${#runner_suites[@]}" -eq 0 ]; then
    ## Anti-drift backstop: the scan matched ZERO suites, so the dynamic assertions below
    ## would test nothing. Either the array moved to a form this anchor no longer matches,
    ## or the runner lists none -- either way FATAL, never a silent green.
-   printf 'FAIL: could not read the plain runner suites=() array (format changed? update this test)\n' >&2
+   printf '%s\n' "FAIL: could not read the plain runner suites=() array (format changed? update this test)" >&2
    failures=$((failures + 1))
 fi
 
@@ -178,9 +178,9 @@ if [ "${#runner_suites[@]}" -ge 1 ]; then
    write_stub_python3 "${stubdir}/python3" "${runner_suites[0]}:77"
    rc="$(run_with_stub "${stubdir}/python3" "${fakerepo}")"
    if [ "${rc}" -eq 77 ]; then
-      printf 'PASS: an authorized non-pure skip makes the runner exit 77, not a silent 0\n'
+      printf '%s\n' "PASS: an authorized non-pure skip makes the runner exit 77, not a silent 0"
    else
-      printf 'FAIL: authorized non-pure skip exited %s, expected 77 (lenient skip hidden as PASS)\n' "${rc}" >&2
+      printf '%s\n' "FAIL: authorized non-pure skip exited ${rc}, expected 77 (lenient skip hidden as PASS)" >&2
       failures=$((failures + 1))
    fi
 fi
@@ -197,13 +197,13 @@ if [ "${#runner_suites[@]}" -ge 2 ]; then
    write_stub_python3 "${stubdir}/python3" "${runner_suites[0]}:77" "${runner_suites[-1]}:1"
    rc="$(run_with_stub "${stubdir}/python3" "${fakerepo}")"
    if [ "${rc}" -eq 1 ]; then
-      printf 'PASS: a later suite failure is not masked by an earlier authorized skip (exit 1)\n'
+      printf '%s\n' "PASS: a later suite failure is not masked by an earlier authorized skip (exit 1)"
    else
-      printf 'FAIL: fail-closed aggregation exited %s, expected 1 (a real failure was masked)\n' "${rc}" >&2
+      printf '%s\n' "FAIL: fail-closed aggregation exited ${rc}, expected 1 (a real failure was masked)" >&2
       failures=$((failures + 1))
    fi
 else
-   printf 'FAIL: fail-closed aggregation needs >=2 runner suites to prove it; runner lists %s (revisit this test)\n' "${#runner_suites[@]}" >&2
+   printf '%s\n' "FAIL: fail-closed aggregation needs >=2 runner suites to prove it; runner lists ${#runner_suites[@]} (revisit this test)" >&2
    failures=$((failures + 1))
 fi
 
@@ -212,14 +212,14 @@ fi
 ##    (run_suites_parallel writes no rc file for an absent suite, so the result loop is the only
 ##    place to catch it). Static check, mirroring test 4: the fail-closed guard must be present.
 if grep --quiet -- 'registered suite missing from checkout' "${runner}"; then
-   printf 'PASS: a missing registered suite fails closed, not a silent skip\n'
+   printf '%s\n' "PASS: a missing registered suite fails closed, not a silent skip"
 else
-   printf 'FAIL: the runner silently skips a missing registered suite (no fail-closed guard)\n' >&2
+   printf '%s\n' "FAIL: the runner silently skips a missing registered suite (no fail-closed guard)" >&2
    failures=$((failures + 1))
 fi
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'secure_terminal_tests_absent_target_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "secure_terminal_tests_absent_target_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'secure_terminal_tests_absent_target_test: OK\n'
+printf '%s\n' "secure_terminal_tests_absent_target_test: OK"

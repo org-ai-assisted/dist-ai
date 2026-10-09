@@ -238,7 +238,7 @@ pp_begin "${lane}"
 while kill -0 "${capture_pid}" 2>/dev/null; do
    sleep 20
    # shellcheck disable=SC2016  # inner-shell payload: $HOME resolved by the bash run inside the sandbox
-   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '?')"
+   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '%s' "?")"
    pp_capture_tick "${rendered}"
 done
 wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"

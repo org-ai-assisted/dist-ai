@@ -146,7 +146,7 @@ die() {
    local code
    code="$1"
    shift
-   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   printf '%s\n' "${me}: ERROR: $*" >&2
    exit "${code}"
 }
 
@@ -474,7 +474,7 @@ rt_resolve_version() {
 ## the set only over-blocks, so a failure here warns instead of aborting cleanup.
 rt_refresh_fleet() {
    "${NFT_FLEET_TOOL}" --refresh-fleet-set \
-      || printf '%s: WARN: fleet-set refresh failed; run %s --refresh-fleet-set\n' "${me}" "${NFT_FLEET_TOOL}" >&2
+      || printf '%s\n' "${me}: WARN: fleet-set refresh failed; run ${NFT_FLEET_TOOL} --refresh-fleet-set" >&2
 }
 
 ## Refresh the host leak-drop set and PROVE ACCOUNT is in the loaded set before its
@@ -828,8 +828,8 @@ rt_publish_result() {
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
-   printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
-      "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
+   printf '%s\n' \
+      "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
 }
 
 ## ---------------------------------------------------------------------------
@@ -1132,7 +1132,7 @@ main() {
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  origin=${rt_origin} iso=${local_iso:-<download>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
-         "  mode=$([ "${provision_leak}" = 'true' ] && printf 'provision-leak' || printf 'test')" \
+         "  mode=$([ "${provision_leak}" = 'true' ] && printf '%s' "provision-leak" || printf '%s' "test")" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
    fi

@@ -318,7 +318,7 @@ idle_ticks=0
 last_size=""
 while true; do
    sleep 60
-   size="$(sandbox exec -- stat --format=%s -- "${remote_log}" 2>/dev/null || printf '0')"
+   size="$(sandbox exec -- stat --format=%s -- "${remote_log}" 2>/dev/null || printf '%s' "0")"
    size="${size//[!0-9]/}"
    ## 'wc -l' always exits 0. 'grep -c' exits 1 on a zero count, which once made
    ## a '|| printf 0' fallback fire TOO and return "0\n0", so the equality test

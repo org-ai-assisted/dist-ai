@@ -72,7 +72,7 @@ fi
 for sentinel in \
    'skip: MOK_ENROLL unset' \
    'skip: not EFI' \
-   'run: creating MOK + signing DKMS modules' \
+   'run: creating MOK + signing modules' \
    'done: mok.pub'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
@@ -152,9 +152,9 @@ all_externals_invoked() {
 }
 log_has() {
    if [ -r "${logfile}" ] && grep --quiet --fixed-strings -- "$1" "${logfile}"; then
-      printf 'yes'
+      printf '%s' "yes"
    else
-      printf 'no'
+      printf '%s' "no"
    fi
 }
 
@@ -197,7 +197,7 @@ export MOK_ENROLL=1
 rc="$(run_enroll)"
 check "set + EFI -> rc 0"                     "${rc}"                     "0"
 check "set + EFI -> both externals invoked"   "$(all_externals_invoked)"  "yes"
-check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing DKMS modules')" "yes"
+check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing modules')" "yes"
 check "set + EFI -> logs 'done: mok.pub'"     "$(log_has 'done: mok.pub')" "yes"
 
 printf '%s\n' ""

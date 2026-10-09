@@ -73,8 +73,8 @@ check_values() {
    bad="$(grep --extended-regexp "${assign}" "${file}" \
       | grep --invert-match --extended-regexp "${key}${sep}${secure}${eol}" || true)"
    if [ -n "${bad}" ]; then
-      printf 'FAIL: sysctl sets a hardened key to an insecure/missing value: %s\n' \
-         "$(printf '%s' "${bad}" | tr '\n' ' ')" >&2
+      printf '%s\n' \
+         "FAIL: sysctl sets a hardened key to an insecure/missing value: $(printf '%s' "${bad}" | tr '\n' ' ')" >&2
       return 1
    fi
    return 0
@@ -87,8 +87,8 @@ check_values() {
 require_text_config() {
    local file="$1"
    if [ "$(tr -dc '\000' < "${file}" | wc -c)" -ne 0 ]; then
-      printf 'FAIL: sysctl config is binary / contains NUL (unparseable, refusing to certify): %s\n' \
-         "${file}" >&2
+      printf '%s\n' \
+         "FAIL: sysctl config is binary / contains NUL (unparseable, refusing to certify): ${file}" >&2
       return 1
    fi
    return 0
@@ -110,13 +110,13 @@ audit_sysctl() {
    )
    for key in "${required[@]}"; do
       if ! grep --quiet --line-regexp --fixed-strings "${key}" "${file}"; then
-         printf 'FAIL: sysctl missing or changed: %s\n' "${key}" >&2
+         printf '%s\n' "FAIL: sysctl missing or changed: ${key}" >&2
          rc=1
       fi
    done
    ## arp_ignore must be ON: 2 is shipped, 1 is tolerated per the in-file VM note.
    if ! grep --quiet --line-regexp --extended-regexp 'net\.ipv4\.conf\.\*\.arp_ignore=[12]' "${file}"; then
-      printf 'FAIL: sysctl net.ipv4.conf.*.arp_ignore not set to 1 or 2\n' >&2
+      printf '%s\n' "FAIL: sysctl net.ipv4.conf.*.arp_ignore not set to 1 or 2" >&2
       rc=1
    fi
    ## Presence is not enough: a later assignment of a hardened key to an insecure
@@ -142,8 +142,8 @@ audit_sysctl() {
    ## embeds a separator (`accept_r[a/]`) -- resolving it needs a real glob(3) matcher.
    local glob_leaf='^[[:space:]]*-?[[:space:]]*net[./][^=]*[*?[{][^./=]*([[:space:]]*=|[[:space:]]|$)'
    if grep --quiet --extended-regexp "${glob_leaf}" "${file}"; then
-      printf 'FAIL: sysctl globs a hardened-key leaf (can match accept_ra/etc.): %s\n' \
-         "$(grep --extended-regexp "${glob_leaf}" "${file}" | tr '\n' ' ')" >&2
+      printf '%s\n' \
+         "FAIL: sysctl globs a hardened-key leaf (can match accept_ra/etc.): $(grep --extended-regexp "${glob_leaf}" "${file}" | tr '\n' ' ')" >&2
       rc=1
    fi
    return "${rc}"
@@ -154,21 +154,21 @@ audit_sysctl() {
 audit_internal_inet6_static() {
    local gw_file="$1" ws_file="$2" rc=0
    if ! grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth1[[:space:]]+inet6[[:space:]]+static([[:space:]]|$)' "${gw_file}"; then
-      printf 'FAIL: GW internal iface eth1 is not inet6 static\n' >&2
+      printf '%s\n' "FAIL: GW internal iface eth1 is not inet6 static" >&2
       rc=1
    fi
    if ! grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet6[[:space:]]+static([[:space:]]|$)' "${ws_file}"; then
-      printf 'FAIL: WS internal iface eth0 is not inet6 static\n' >&2
+      printf '%s\n' "FAIL: WS internal iface eth0 is not inet6 static" >&2
       rc=1
    fi
    ## A conflicting `inet6 auto`/`dhcp` stanza on the SAME internal iface re-enables
    ## SLAAC/autoconf (accept_ra defaults back on) even beside the static one -- reject it.
    if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth1[[:space:]]+inet6[[:space:]]+(auto|dhcp)([[:space:]]|$)' "${gw_file}"; then
-      printf 'FAIL: GW internal iface eth1 has a conflicting inet6 auto/dhcp stanza\n' >&2
+      printf '%s\n' "FAIL: GW internal iface eth1 has a conflicting inet6 auto/dhcp stanza" >&2
       rc=1
    fi
    if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet6[[:space:]]+(auto|dhcp)([[:space:]]|$)' "${ws_file}"; then
-      printf 'FAIL: WS internal iface eth0 has a conflicting inet6 auto/dhcp stanza\n' >&2
+      printf '%s\n' "FAIL: WS internal iface eth0 has a conflicting inet6 auto/dhcp stanza" >&2
       rc=1
    fi
    ## An ifupdown stanza OPTION `accept_ra`/`autoconf` set non-zero re-enables RA /
@@ -176,8 +176,8 @@ audit_internal_inet6_static() {
    local f
    for f in "${gw_file}" "${ws_file}"; do
       if grep --quiet --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}"; then
-         printf 'FAIL: interfaces stanza re-enables RA/autoconf: %s\n' \
-            "$(grep --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}" | tr '\n' ' ')" >&2
+         printf '%s\n' \
+            "FAIL: interfaces stanza re-enables RA/autoconf: $(grep --extended-regexp '^[[:space:]]+(accept_ra|autoconf)[[:space:]]+[^0[:space:]]' "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
       ## The internal interfaces ship as plain static stanzas. Reject the whole class
@@ -186,13 +186,13 @@ audit_internal_inet6_static() {
       ## command, and `source`/`source-directory` pulls in unaudited stanzas. Plus any
       ## backslash line-continuation (a hook split across lines).
       if grep --quiet --extended-regexp "${unsafe_directive_re}" "${f}"; then
-         printf 'FAIL: internal interfaces file uses an unsafe directive (hook/mapping/source): %s\n' \
-            "$(grep --extended-regexp "${unsafe_directive_re}" "${f}" | tr '\n' ' ')" >&2
+         printf '%s\n' \
+            "FAIL: internal interfaces file uses an unsafe directive (hook/mapping/source): $(grep --extended-regexp "${unsafe_directive_re}" "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
       if grep --quiet --extended-regexp "${continuation_re}" "${f}"; then
-         printf 'FAIL: internal interfaces file has a line-continuation (can splice a hook): %s\n' \
-            "$(grep --extended-regexp "${continuation_re}" "${f}" | tr '\n' ' ')" >&2
+         printf '%s\n' \
+            "FAIL: internal interfaces file has a line-continuation (can splice a hook): $(grep --extended-regexp "${continuation_re}" "${f}" | tr '\n' ' ')" >&2
          rc=1
       fi
    done
@@ -203,7 +203,7 @@ sm_repo="${SECURITY_MISC_REPO:-}"
 gw_repo="${WHONIX_GW_NETWORK_CONF_REPO:-}"
 ws_repo="${WHONIX_WS_NETWORK_CONF_REPO:-}"
 if [ -z "${sm_repo}" ] || [ -z "${gw_repo}" ] || [ -z "${ws_repo}" ]; then
-   printf 'FATAL: SECURITY_MISC_REPO / WHONIX_GW_NETWORK_CONF_REPO / WHONIX_WS_NETWORK_CONF_REPO must all be set (required sources)\n' >&2
+   printf '%s\n' "FATAL: SECURITY_MISC_REPO / WHONIX_GW_NETWORK_CONF_REPO / WHONIX_WS_NETWORK_CONF_REPO must all be set (required sources)" >&2
    exit 1
 fi
 ## security-misc ships this file with a literal `#security-misc-shared` suffix.
@@ -212,19 +212,19 @@ gw_iface_file="${gw_repo}/etc/network/interfaces.d/30_non-qubes-whonix"
 ws_iface_file="${ws_repo}/etc/network/interfaces.d/30_non-qubes-whonix"
 for f in "${sysctl_file}" "${gw_iface_file}" "${ws_iface_file}"; do
    if [ ! -r "${f}" ]; then
-      printf 'FATAL: required config file not readable: %s\n' "${f}" >&2
+      printf '%s\n' "FATAL: required config file not readable: ${f}" >&2
       exit 1
    fi
 done
 
 rc=0
 if audit_sysctl "${sysctl_file}"; then
-   printf 'PASS: internal-iface sysctls hardened (accept_ra/redirects/arp/source-route)\n'
+   printf '%s\n' "PASS: internal-iface sysctls hardened (accept_ra/redirects/arp/source-route)"
 else
    rc=1
 fi
 if audit_internal_inet6_static "${gw_iface_file}" "${ws_iface_file}"; then
-   printf 'PASS: internal interfaces are inet6 static (no autoconf)\n'
+   printf '%s\n' "PASS: internal interfaces are inet6 static (no autoconf)"
 else
    rc=1
 fi
@@ -233,10 +233,10 @@ fi
 canary="$(mktemp)"
 grep --invert-match --line-regexp --fixed-strings 'net.ipv6.conf.*.accept_ra=0' "${sysctl_file}" >"${canary}"
 if audit_sysctl "${canary}" 2>/dev/null; then
-   printf 'FAIL: canary -- sysctl audit PASSED with accept_ra removed (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- sysctl audit PASSED with accept_ra removed (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (missing accept_ra rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (missing accept_ra rejected); audit has teeth"
 fi
 
 ## Canary 2: a per-interface override re-enabling RA must FAIL (proves the
@@ -245,10 +245,10 @@ canary_override="$(mktemp)"
 cp -- "${sysctl_file}" "${canary_override}"
 printf '%s\n' 'net.ipv6.conf.eth1.accept_ra=1' >>"${canary_override}"
 if audit_sysctl "${canary_override}" 2>/dev/null; then
-   printf 'FAIL: canary -- sysctl audit PASSED a per-iface accept_ra=1 override (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- sysctl audit PASSED a per-iface accept_ra=1 override (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (per-iface accept_ra override rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (per-iface accept_ra override rejected); audit has teeth"
 fi
 
 ## Canary 3: insecure per-iface overrides in every uncommon-but-valid spelling must
@@ -280,10 +280,10 @@ for bad_line in \
    cp -- "${sysctl_file}" "${canary_val}"
    printf '%s\n' "${bad_line}" >>"${canary_val}"
    if audit_sysctl "${canary_val}" 2>/dev/null; then
-      printf 'FAIL: canary -- sysctl audit PASSED insecure override %s (no teeth)\n' "${bad_line}" >&2
+      printf '%s\n' "FAIL: canary -- sysctl audit PASSED insecure override ${bad_line} (no teeth)" >&2
       rc=1
    else
-      printf 'PASS: canary (insecure override %s rejected); audit has teeth\n' "${bad_line}"
+      printf '%s\n' "PASS: canary (insecure override ${bad_line} rejected); audit has teeth"
    fi
 done
 
@@ -299,9 +299,9 @@ for ok_line in \
    cp -- "${sysctl_file}" "${canary_ok}"
    printf '%s\n' "${ok_line}" >>"${canary_ok}"
    if audit_sysctl "${canary_ok}" 2>/dev/null; then
-      printf 'PASS: guard (secure/out-of-scope line %s accepted)\n' "${ok_line}"
+      printf '%s\n' "PASS: guard (secure/out-of-scope line ${ok_line} accepted)"
    else
-      printf 'FAIL: guard -- audit wrongly rejected %s\n' "${ok_line}" >&2
+      printf '%s\n' "FAIL: guard -- audit wrongly rejected ${ok_line}" >&2
       rc=1
    fi
 done
@@ -320,10 +320,10 @@ for bad_line in \
    cp -- "${gw_iface_file}" "${canary_hook}"
    printf '%s\n' "${bad_line}" >>"${canary_hook}"
    if audit_internal_inet6_static "${canary_hook}" "${ws_iface_file}" 2>/dev/null; then
-      printf 'FAIL: canary -- audit PASSED unsafe directive "%s" (no teeth)\n' "${bad_line}" >&2
+      printf '%s\n' "FAIL: canary -- audit PASSED unsafe directive \"${bad_line}\" (no teeth)" >&2
       rc=1
    else
-      printf 'PASS: canary (unsafe directive "%s" rejected); audit has teeth\n' "${bad_line}"
+      printf '%s\n' "PASS: canary (unsafe directive \"${bad_line}\" rejected); audit has teeth"
    fi
 done
 
@@ -335,10 +335,10 @@ for split_first in $'u\\' $'u\\  '; do
    cp -- "${gw_iface_file}" "${canary_split}"
    printf '%s\n' "${split_first}" 'p dhclient -6 eth1' >>"${canary_split}"
    if audit_internal_inet6_static "${canary_split}" "${ws_iface_file}" 2>/dev/null; then
-      printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
+      printf '%s\n' "FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)" >&2
       rc=1
    else
-      printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
+      printf '%s\n' "PASS: canary (split-line hook continuation rejected); audit has teeth"
    fi
 done
 
@@ -350,22 +350,26 @@ done
 ## so the two cases are open-coded rather than table-driven.
 canary_nul_insecure="$(mktemp)"
 cp -- "${sysctl_file}" "${canary_nul_insecure}"
-printf 'net.ipv6.conf.eth1.accept_ra=1\n\000\n' >>"${canary_nul_insecure}"
+{
+   printf '%s\n' 'net.ipv6.conf.eth1.accept_ra=1'
+   printf '%s\0' ''
+   printf '%s\n' ''
+} >>"${canary_nul_insecure}"
 if audit_sysctl "${canary_nul_insecure}" 2>/dev/null; then
-   printf 'FAIL: canary -- sysctl audit PASSED a NUL config hiding accept_ra=1 (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- sysctl audit PASSED a NUL config hiding accept_ra=1 (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (NUL config hiding an insecure line rejected); audit fails closed\n'
+   printf '%s\n' "PASS: canary (NUL config hiding an insecure line rejected); audit fails closed"
 fi
 
 canary_nul_bare="$(mktemp)"
 cp -- "${sysctl_file}" "${canary_nul_bare}"
-printf '\000\n' >>"${canary_nul_bare}"
+{ printf '%s\0' ''; printf '%s\n' ''; } >>"${canary_nul_bare}"
 if audit_sysctl "${canary_nul_bare}" 2>/dev/null; then
-   printf 'FAIL: canary -- sysctl audit PASSED an otherwise-secure config with a NUL byte (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- sysctl audit PASSED an otherwise-secure config with a NUL byte (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (binary/NUL config rejected); audit fails closed on unparseable\n'
+   printf '%s\n' "PASS: canary (binary/NUL config rejected); audit fails closed on unparseable"
 fi
 
 exit "${rc}"

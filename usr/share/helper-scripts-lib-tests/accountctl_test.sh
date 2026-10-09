@@ -186,7 +186,7 @@ for cand in en_US.UTF-8 en_US.utf8 de_DE.UTF-8; do
       break
    fi
 done
-non_ascii="$(printf '\xc3\x89')"   # U+00C9 (E with acute); no raw non-ASCII in source
+non_ascii="$(printf '%s' $'\xc3\x89')"   # U+00C9 (E with acute); no raw non-ASCII in source
 if [ -n "${utf8_locale}" ]; then
    if LC_ALL="${utf8_locale}" is_name_valid "${non_ascii}"; then
       fail "is_name_valid accepted a non-ASCII name under ${utf8_locale} (missing LC_ALL=C)"

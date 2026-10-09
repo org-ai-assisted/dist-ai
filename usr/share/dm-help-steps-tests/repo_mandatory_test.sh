@@ -78,20 +78,20 @@ resolve_repo() {
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
      source variables || var_rc=$?
      if [ "${var_rc}" -eq 0 ]; then
-        printf 'repo=%s\n' "${build_remote_repo_enable:-<unset>}"
+        printf '%s\n' "repo=${build_remote_repo_enable:-<unset>}"
      else
-        printf 'VARIABLES_FAILED rc=%s\n' "${var_rc}"
+        printf '%s\n' "VARIABLES_FAILED rc=${var_rc}"
      fi
    ) > "${out_file}" 2>&1 || true   ## the mandatory-error path exits non-zero by design
    if grep --quiet -- 'MANDATORY' "${out_file}"; then
-      printf 'MANDATORY\n'
+      printf '%s\n' "MANDATORY"
    elif grep --quiet -- '^repo=' "${out_file}"; then
       grep -- '^repo=' "${out_file}" | tail -n1
    else
       ## Neither outcome: pre/variables aborted for an unexpected reason. Surface
       ## the captured diagnostic to stderr so the failure names its cause instead
       ## of an opaque 'other' (the subshell's output is otherwise swallowed).
-      printf 'other\n'
+      printf '%s\n' "other"
       printf '%s\n' "DIAG(resolve_repo other): ---8<--- ${out_file} ---" >&2
       cat -- "${out_file}" >&2 || true
       printf '%s\n' "--->8--- end DIAG" >&2

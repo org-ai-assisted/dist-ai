@@ -54,7 +54,7 @@ source "${image_test_libexec}/results-publish.bsh"
 die() {
    local code="$1"
    shift
-   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   printf '%s\n' "${me}: ERROR: $*" >&2
    exit "${code}"
 }
 
@@ -136,7 +136,7 @@ main() {
    outdir="$(image_test_results_publish \
       "${RESULTS_ROOT}" "${RESULTS_OWNER}" "${NAME}" "${TEST_USER}" "${MODE}" \
       "${rc}" "${shot_user}" "${expect[@]}")" \
-      || { printf '%s: WARNING: results publish failed (rc=%s preserved)\n' "${me}" "${rc}" >&2; outdir='(publish-failed)'; }
+      || { printf '%s\n' "${me}: WARNING: results publish failed (rc=${rc} preserved)" >&2; outdir='(publish-failed)'; }
    if [ -f "${shot_user}" ]; then
       safe-rm --force -- "${shot_user}"
    fi
@@ -144,8 +144,8 @@ main() {
    ## Verdict from the SAME shared helper the publisher uses for result.json, so the
    ## console line and the JSON never disagree (rc 2 = INCONCLUSIVE, not FAIL).
    verdict="$(image_test_verdict_from_rc "${rc}")"
-   printf '%s: %s -- %s (rc=%s) -> %s\n' \
-      "${me}" "${NAME}" "${verdict}" "${rc}" "${outdir}"
+   printf '%s\n' \
+      "${me}: ${NAME} -- ${verdict} (rc=${rc}) -> ${outdir}"
    return "${rc}"
 }
 

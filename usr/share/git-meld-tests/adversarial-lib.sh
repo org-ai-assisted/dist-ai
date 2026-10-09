@@ -37,15 +37,15 @@ export PATH="${work}/bin:${PATH}"
 
 ## Build a submodule repo 'sub' with two real commits A and B.
 sub="${work}/sub"; git init -q "${sub}"; ( cd "${sub}"
-  printf 'v1\n' > f.txt; git add f.txt; git commit -qm A
-  printf 'v2\n' > f.txt; git add f.txt; git commit -qm B )
+  printf '%s\n' "v1" > f.txt; git add f.txt; git commit -qm A
+  printf '%s\n' "v2" > f.txt; git add f.txt; git commit -qm B )
 A="$(git -C "${sub}" rev-parse HEAD~1)"
 B="$(git -C "${sub}" rev-parse HEAD)"
 ## A plausible-looking but ABSENT commit id (models an unfetched submodule commit).
 ABSENT="0123456789abcdef0123456789abcdef01234567"
 
 ## Craft the two "Subproject commit" blob temp files git would hand the driver.
-blob() { printf 'Subproject commit %s\n' "$1" > "${work}/blob_$2"; printf '%s' "${work}/blob_$2"; }
+blob() { printf '%s\n' "Subproject commit ${1}" > "${work}/blob_$2"; printf '%s' "${work}/blob_$2"; }
 
 ## Invoke git-meld exactly as git invokes an external diff driver for a gitlink
 ## change: driver mode (GIT_DIFF_PATH_TOTAL set), 7 positional args
@@ -64,14 +64,14 @@ run_case () {
   if grep --quiet --ignore-case --extended-regexp "warn|error|cannot|not (present|available|fetched)|${old_commit:0:12}|${new_commit:0:12}" <<< "${out}"; then
     visible="yes"
   fi
-  printf '=== case: %s (%.12s -> %.12s) rc=%s ===\n' "${name}" "${old_commit}" "${new_commit}" "${rc}"
-  printf '  output: %s\n' "$(printf '%s' "${out}" | tr '\n' '|' | cut -c1-200)"
-  printf '  CHANGE VISIBLE TO REVIEWER: %s\n' "${visible}"
+  printf '%s\n' "=== case: ${name} (${old_commit:0:12} -> ${new_commit:0:12}) rc=${rc} ==="
+  printf '%s\n' "  output: $(printf '%s' "${out}" | tr '\n' '|' | cut -c1-200)"
+  printf '%s\n' "  CHANGE VISIBLE TO REVIEWER: ${visible}"
   if [ "${visible}" = "no" ]; then
-    printf '  >>> FAIL: a real gitlink change was HIDDEN (empty/no-signal output)\n'
+    printf '%s\n' "  >>> FAIL: a real gitlink change was HIDDEN (empty/no-signal output)"
     return 1
   fi
-  printf '  >>> ok: change is surfaced\n'
+  printf '%s\n' "  >>> ok: change is surfaced"
   return 0
 }
 
@@ -81,6 +81,6 @@ run_case "NEW-commit-unfetched"  "${A}" "${ABSENT}"  || fails=$((fails+1))
 run_case "OLD-commit-unfetched"  "${ABSENT}" "${B}"  || fails=$((fails+1))
 run_case "BOTH-commits-unfetched" "${ABSENT}" "0000000000000000000000000000000000000000" || fails=$((fails+1))
 
-printf '\n==== TOTAL HIDDEN-CHANGE FAILURES: %s ====\n' "${fails}"
+printf '%s\n' "" "==== TOTAL HIDDEN-CHANGE FAILURES: ${fails} ===="
 safe-rm --recursive --force -- "${work}"
 exit "${fails}"

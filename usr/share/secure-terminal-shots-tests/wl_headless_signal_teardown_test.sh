@@ -145,9 +145,9 @@ done
 check "SIGTERM reaps the command child (pid ${child})" "${child_dead}"
 check "SIGTERM reaps the GRANDCHILD too (whole process group, pid ${grandchild})" "${gc_dead}"
 check "wl-headless-run exits non-zero on SIGTERM (rc=${rc})" \
-   "$( [ "${rc}" -ne 0 ] && printf '1' )"
+   "$( [ "${rc}" -ne 0 ] && printf '%s' "1" )"
 check "teardown is bounded, not hung (elapsed=${elapsed}s < 15)" \
-   "$( [ "${elapsed}" -lt 15 ] && printf '1' )"
+   "$( [ "${elapsed}" -lt 15 ] && printf '%s' "1" )"
 
 printf '%s\n' ''
 printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"

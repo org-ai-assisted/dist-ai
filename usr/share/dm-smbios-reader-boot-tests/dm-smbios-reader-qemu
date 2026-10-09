@@ -174,62 +174,62 @@ serial_logfile=''
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --iso)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --iso needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --iso needs a value" >&2; exit 2; }
          iso="${2}"
          shift 2
          ;;
       --disk)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --disk needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --disk needs a value" >&2; exit 2; }
          disk="${2}"
          shift 2
          ;;
       --disk-format)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --disk-format needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --disk-format needs a value" >&2; exit 2; }
          disk_format="${2}"
          shift 2
          ;;
       --arch)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --arch needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --arch needs a value" >&2; exit 2; }
          arch="${2}"
          shift 2
          ;;
       --accel)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --accel needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --accel needs a value" >&2; exit 2; }
          accel="${2}"
          shift 2
          ;;
       --firmware)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --firmware needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --firmware needs a value" >&2; exit 2; }
          firmware="${2}"
          shift 2
          ;;
       --qmp)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --qmp needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --qmp needs a value" >&2; exit 2; }
          qmp="${2}"
          shift 2
          ;;
       --screendump)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --screendump needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --screendump needs a value" >&2; exit 2; }
          screendump="${2}"
          shift 2
          ;;
       --smbios-append)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --smbios-append needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --smbios-append needs a value" >&2; exit 2; }
          smbios_append="${2}"
          shift 2
          ;;
       --serial-log)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --serial-log needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --serial-log needs a value" >&2; exit 2; }
          serial_log="${2}"
          shift 2
          ;;
       --serial-logfile)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --serial-logfile needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --serial-logfile needs a value" >&2; exit 2; }
          serial_logfile="${2}"
          shift 2
          ;;
       --timeout)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --timeout needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --timeout needs a value" >&2; exit 2; }
          timeout_secs="${2}"
          shift 2
          ;;
@@ -254,22 +254,22 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       --entry)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --entry needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --entry needs a value" >&2; exit 2; }
          entry="${2}"
          shift 2
          ;;
       --memory)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --memory needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --memory needs a value" >&2; exit 2; }
          memory="${2}"
          shift 2
          ;;
       --smp)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --smp needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --smp needs a value" >&2; exit 2; }
          smp="${2}"
          shift 2
          ;;
       --extra-append)
-         [ "$#" -ge 2 ] || { printf 'dm-smbios-reader-qemu: --extra-append needs a value\n' >&2; exit 2; }
+         [ "$#" -ge 2 ] || { printf '%s\n' "dm-smbios-reader-qemu: --extra-append needs a value" >&2; exit 2; }
          extra_append="${2}"
          shift 2
          ;;
@@ -282,7 +282,7 @@ while [ "$#" -gt 0 ]; do
          break
          ;;
       -*)
-         printf 'dm-smbios-reader-qemu: unknown option: %s\n' "$1" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: unknown option: ${1}" >&2
          exit 2
          ;;
       *)
@@ -293,19 +293,19 @@ done
 
 ## Exactly one artifact: --iso or --disk.
 if [ -n "${iso}" ] && [ -n "${disk}" ]; then
-   printf 'dm-smbios-reader-qemu: --iso and --disk are mutually exclusive\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: --iso and --disk are mutually exclusive" >&2
    exit 2
 fi
 if [ -z "${iso}" ] && [ -z "${disk}" ]; then
-   printf 'dm-smbios-reader-qemu: one of --iso or --disk is required\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: one of --iso or --disk is required" >&2
    usage >&2
    exit 2
 fi
 if [ -n "${iso}" ]; then
-   [ -r "${iso}" ] || { printf 'dm-smbios-reader-qemu: ISO not readable: %s\n' "${iso}" >&2; exit 2; }
+   [ -r "${iso}" ] || { printf '%s\n' "dm-smbios-reader-qemu: ISO not readable: ${iso}" >&2; exit 2; }
    image="${iso}"
 else
-   [ -r "${disk}" ] || { printf 'dm-smbios-reader-qemu: disk image not readable: %s\n' "${disk}" >&2; exit 2; }
+   [ -r "${disk}" ] || { printf '%s\n' "dm-smbios-reader-qemu: disk image not readable: ${disk}" >&2; exit 2; }
    image="${disk}"
 fi
 [ -n "${serial_log}" ] || serial_log="${image}.serial-boot.log"
@@ -313,20 +313,20 @@ fi
 ## --direct-kernel extracts the kernel/initrd from an ISO's /live tree; a disk image has no such
 ## tree to extract from, so it is ISO-only.
 if [ "${direct_kernel}" = 'true' ] && [ -z "${iso}" ]; then
-   printf 'dm-smbios-reader-qemu: --direct-kernel needs --iso (it extracts kernel/initrd from the ISO); a disk image boots through firmware only\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: --direct-kernel needs --iso (it extracts kernel/initrd from the ISO); a disk image boots through firmware only" >&2
    exit 2
 fi
 ## --screendump (framebuffer, full-chain) and --direct-kernel (serial '-kernel' direct boot) are
 ## different, incompatible boot paths.
 if [ -n "${screendump}" ] && [ "${direct_kernel}" = 'true' ]; then
-   printf 'dm-smbios-reader-qemu: --screendump and --direct-kernel are mutually exclusive (framebuffer vs serial direct-boot)\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: --screendump and --direct-kernel are mutually exclusive (framebuffer vs serial direct-boot)" >&2
    exit 2
 fi
 ## --smbios-append travels through GRUB; --direct-kernel boots the kernel past GRUB, so the
 ## SMBIOS reader never runs. Refuse the combination loudly rather than silently dropping it
 ## (use --extra-append in --direct-kernel mode instead).
 if [ -n "${smbios_append}" ] && [ "${direct_kernel}" = 'true' ]; then
-   printf 'dm-smbios-reader-qemu: --smbios-append needs the GRUB path; it is ignored under --direct-kernel. Use --extra-append for direct boot.\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: --smbios-append needs the GRUB path; it is ignored under --direct-kernel. Use --extra-append for direct boot." >&2
    exit 2
 fi
 
@@ -337,14 +337,14 @@ fi
 case "${firmware}" in
    bios|efi|efi-secureboot) ;;
    *)
-      printf 'dm-smbios-reader-qemu: --firmware must be bios, efi, or efi-secureboot\n' >&2
+      printf '%s\n' "dm-smbios-reader-qemu: --firmware must be bios, efi, or efi-secureboot" >&2
       exit 2
       ;;
 esac
 case "${accel}" in
    auto|kvm|tcg) ;;
    *)
-      printf 'dm-smbios-reader-qemu: --accel must be auto|kvm|tcg: %s\n' "${accel}" >&2
+      printf '%s\n' "dm-smbios-reader-qemu: --accel must be auto|kvm|tcg: ${accel}" >&2
       exit 2
       ;;
 esac
@@ -367,12 +367,12 @@ host_arch="$(dpkg --print-architecture)"
 ## truth): the qemu binary ('qemu-system-<machine>'), the '-machine' board type, and the serial
 ## console device. An arch the fragment does not map is not wired for boot-testing.
 guest_machine="$(dist_build_arch_to_qemu_machine "${arch}")" \
-   || { printf 'dm-smbios-reader-qemu: unsupported --arch %s\n' "${arch}" >&2; exit 2; }
+   || { printf '%s\n' "dm-smbios-reader-qemu: unsupported --arch ${arch}" >&2; exit 2; }
 qemu_bin="qemu-system-${guest_machine}"
 machine="$(dist_build_arch_to_qemu_machine_type "${arch}")" \
-   || { printf 'dm-smbios-reader-qemu: boot-testing not wired for arch %s (no qemu machine type)\n' "${arch}" >&2; exit 2; }
+   || { printf '%s\n' "dm-smbios-reader-qemu: boot-testing not wired for arch ${arch} (no qemu machine type)" >&2; exit 2; }
 serial_console="$(dist_build_arch_to_serial_console "${arch}")" \
-   || { printf 'dm-smbios-reader-qemu: boot-testing not wired for arch %s (no serial console)\n' "${arch}" >&2; exit 2; }
+   || { printf '%s\n' "dm-smbios-reader-qemu: boot-testing not wired for arch ${arch} (no serial console)" >&2; exit 2; }
 
 ## Serial + verbose kernel parameters, shared by the SMBIOS-injected default boot and the
 ## --direct-kernel '-append'. Surface the EARLY boot on serial: without this the kernel
@@ -437,7 +437,7 @@ if [ "${emit_cmdline}" = 'true' ]; then
    exit 0
 fi
 
-command -v "${qemu_bin}" >/dev/null || { printf 'dm-smbios-reader-qemu: %s not installed (needed for --arch %s)\n' "${qemu_bin}" "${arch}" >&2; exit 2; }
+command -v "${qemu_bin}" >/dev/null || { printf '%s\n' "dm-smbios-reader-qemu: ${qemu_bin} not installed (needed for --arch ${arch})" >&2; exit 2; }
 
 ## --firmware: bios (SeaBIOS on x86 / edk2 on arm64, the default), efi (OVMF), or efi-secureboot
 ## (OVMF secboot firmware + Microsoft-key vars that validate Debian's MS-signed shim). efi and
@@ -445,7 +445,7 @@ command -v "${qemu_bin}" >/dev/null || { printf 'dm-smbios-reader-qemu: %s not i
 ## The value is validated up top; here only the arch/runtime constraints apply.
 if [ "${firmware}" != 'bios' ]; then
    if [ "${guest_machine}" != 'x86_64' ]; then
-      printf 'dm-smbios-reader-qemu: --firmware %s is x86 (amd64) only; arm64 already uses UEFI\n' "${firmware}" >&2
+      printf '%s\n' "dm-smbios-reader-qemu: --firmware ${firmware} is x86 (amd64) only; arm64 already uses UEFI" >&2
       exit 2
    fi
    ## Secure Boot requires System Management Mode; the q35 machine supports it.
@@ -458,18 +458,18 @@ fi
 ## qemu-img auto-detects a disk image's format; ImageMagick powers --screendump. Each is checked
 ## only on the path that actually needs it.
 if [ "${direct_kernel}" = 'true' ]; then
-   command -v xorriso >/dev/null || { printf 'dm-smbios-reader-qemu: xorriso not installed (needed to read the ISO for --direct-kernel)\n' >&2; exit 2; }
+   command -v xorriso >/dev/null || { printf '%s\n' "dm-smbios-reader-qemu: xorriso not installed (needed to read the ISO for --direct-kernel)" >&2; exit 2; }
 fi
 if [ -n "${disk}" ] && [ -z "${disk_format}" ]; then
-   command -v qemu-img >/dev/null || { printf 'dm-smbios-reader-qemu: qemu-img not installed (needed to auto-detect the disk format; or pass --disk-format)\n' >&2; exit 2; }
+   command -v qemu-img >/dev/null || { printf '%s\n' "dm-smbios-reader-qemu: qemu-img not installed (needed to auto-detect the disk format; or pass --disk-format)" >&2; exit 2; }
    disk_info="$(qemu-img info -- "${disk}")" \
-      || { printf 'dm-smbios-reader-qemu: qemu-img info failed for disk %s\n' "${disk}" >&2; exit 2; }
+      || { printf '%s\n' "dm-smbios-reader-qemu: qemu-img info failed for disk ${disk}" >&2; exit 2; }
    disk_format="$(printf '%s\n' "${disk_info}" | sed -n -e 's/^file format: //p')"
-   [ -n "${disk_format}" ] || { printf 'dm-smbios-reader-qemu: could not auto-detect the format of %s; pass --disk-format\n' "${disk}" >&2; exit 2; }
+   [ -n "${disk_format}" ] || { printf '%s\n' "dm-smbios-reader-qemu: could not auto-detect the format of ${disk}; pass --disk-format" >&2; exit 2; }
 fi
 if [ -n "${screendump}" ]; then
    if ! command -v identify >/dev/null || ! command -v compare >/dev/null; then
-      printf 'dm-smbios-reader-qemu: ImageMagick (identify + compare) not installed (needed for --screendump)\n' >&2
+      printf '%s\n' "dm-smbios-reader-qemu: ImageMagick (identify + compare) not installed (needed for --screendump)" >&2
       exit 2
    fi
 fi
@@ -484,24 +484,24 @@ if [ "${arch}" = "${host_arch}" ] && [ -e /dev/kvm ] && [ -w /dev/kvm ]; then
 fi
 case "${accel}" in
    kvm)
-      [ "${kvm_usable}" = 'true' ] || { printf 'dm-smbios-reader-qemu: --accel kvm requested but KVM is unavailable (guest %s vs host %s, /dev/kvm)\n' "${arch}" "${host_arch}" >&2; exit 2; }
+      [ "${kvm_usable}" = 'true' ] || { printf '%s\n' "dm-smbios-reader-qemu: --accel kvm requested but KVM is unavailable (guest ${arch} vs host ${host_arch}, /dev/kvm)" >&2; exit 2; }
       accel_opts=(-enable-kvm -cpu host)
-      printf 'dm-smbios-reader-qemu: KVM acceleration (forced) (%s on %s)\n' "${arch}" "${host_arch}" >&2
+      printf '%s\n' "dm-smbios-reader-qemu: KVM acceleration (forced) (${arch} on ${host_arch})" >&2
       ;;
    tcg)
       accel_opts=(-cpu max)
-      printf 'dm-smbios-reader-qemu: TCG emulation (forced, slow)%s\n' "$([ "${fast}" = 'true' ] && printf ' (--fast)')" >&2
+      printf '%s\n' "dm-smbios-reader-qemu: TCG emulation (forced, slow)$([ "${fast}" = 'true' ] && printf '%s' " (--fast)")" >&2
       ;;
    auto)
       if [ "${kvm_usable}" = 'true' ]; then
          accel_opts=(-enable-kvm -cpu host)
-         printf 'dm-smbios-reader-qemu: KVM acceleration (auto-detected) (%s on %s)\n' "${arch}" "${host_arch}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: KVM acceleration (auto-detected) (${arch} on ${host_arch})" >&2
       else
          accel_opts=(-cpu max)
          if [ "${arch}" != "${host_arch}" ]; then
-            printf 'dm-smbios-reader-qemu: cross-arch (%s guest on %s host) -- TCG emulation (slow)%s\n' "${arch}" "${host_arch}" "$([ "${fast}" = 'true' ] && printf ', --fast')" >&2
+            printf '%s\n' "dm-smbios-reader-qemu: cross-arch (${arch} guest on ${host_arch} host) -- TCG emulation (slow)$([ "${fast}" = 'true' ] && printf '%s' ", --fast")" >&2
          else
-            printf 'dm-smbios-reader-qemu: no usable /dev/kvm -- TCG emulation (slow)%s\n' "$([ "${fast}" = 'true' ] && printf ' (--fast: mitigations=off)')" >&2
+            printf '%s\n' "dm-smbios-reader-qemu: no usable /dev/kvm -- TCG emulation (slow)$([ "${fast}" = 'true' ] && printf '%s' " (--fast: mitigations=off)")" >&2
          fi
       fi
       ;;
@@ -596,19 +596,19 @@ if [ "${direct_kernel}" = 'true' ]; then
    fi
 
    xorriso -osirrox on -indev "${iso}" -extract /boot/grub/grub.cfg "${work_dir}/grub.cfg" >/dev/null 2>&1 \
-      || { printf 'dm-smbios-reader-qemu: could not extract /boot/grub/grub.cfg from the ISO\n' >&2; exit 2; }
+      || { printf '%s\n' "dm-smbios-reader-qemu: could not extract /boot/grub/grub.cfg from the ISO" >&2; exit 2; }
 
    ## Locate the live kernel + initrd inside the ISO (version-independent).
    kernel_iso_path="$(xorriso -indev "${iso}" -find /live -name 'vmlinuz-*' -type f 2>/dev/null | tr -d "'" | grep -m1 -E '/live/vmlinuz-' || true)"
    initrd_iso_path="$(xorriso -indev "${iso}" -find /live -name 'initrd.img-*' -type f 2>/dev/null | tr -d "'" | grep -m1 -E '/live/initrd.img-' || true)"
    if [ -z "${kernel_iso_path}" ] || [ -z "${initrd_iso_path}" ]; then
-      printf 'dm-smbios-reader-qemu: could not locate /live/vmlinuz-* and /live/initrd.img-* in the ISO\n' >&2
+      printf '%s\n' "dm-smbios-reader-qemu: could not locate /live/vmlinuz-* and /live/initrd.img-* in the ISO" >&2
       exit 2
    fi
    xorriso -osirrox on -indev "${iso}" \
       -extract "${kernel_iso_path}" "${work_dir}/vmlinuz" \
       -extract "${initrd_iso_path}" "${work_dir}/initrd.img" >/dev/null 2>&1 \
-      || { printf 'dm-smbios-reader-qemu: kernel/initrd extraction failed\n' >&2; exit 2; }
+      || { printf '%s\n' "dm-smbios-reader-qemu: kernel/initrd extraction failed" >&2; exit 2; }
 
    ## Pick the menu entry whose cmdline to reuse. The USER entry is the first 'linux' line; the
    ## others are matched by their distinguishing boot-role token so the choice is unambiguous.
@@ -624,13 +624,13 @@ if [ "${direct_kernel}" = 'true' ]; then
          entry_grep='boot-role=unrestricted-admin'
          ;;
       *)
-         printf 'dm-smbios-reader-qemu: --entry must be user|sysmaint|unrestricted: %s\n' "${entry}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: --entry must be user|sysmaint|unrestricted: ${entry}" >&2
          exit 2
          ;;
    esac
    linux_line="$(grep -E '^\s*linux\s+/live/vmlinuz' "${work_dir}/grub.cfg" | grep -m1 -F -- "${entry_grep}" || true)"
    [ -n "${linux_line}" ] || linux_line="$(grep -m1 -E '^\s*linux\s+/live/vmlinuz' "${work_dir}/grub.cfg" || true)"
-   [ -n "${linux_line}" ] || { printf 'dm-smbios-reader-qemu: no live "linux" entry found in grub.cfg\n' >&2; exit 2; }
+   [ -n "${linux_line}" ] || { printf '%s\n' "dm-smbios-reader-qemu: no live \"linux\" entry found in grub.cfg" >&2; exit 2; }
 
    ## Everything after the kernel path is the cmdline. Strip the silencers (debug-misc parity),
    ## the GRUB-only 'iso-scan/filename=${iso_path}' variable, and the halt-on-initrd-failure so a
@@ -644,7 +644,7 @@ if [ "${direct_kernel}" = 'true' ]; then
    ## entry somehow lacked them (or carried an x86 ttyS0 on an arm64 image); append the extra cmdline.
    full_append="${serial_verbose_params} ${cmdline} systemd.log_level=info ${extra_append}"
 
-   printf 'dm-smbios-reader-qemu: direct-kernel boot of %s (entry=%s, fast=%s, timeout=%ss)\n' "${kernel_iso_path##*/}" "${entry}" "${fast}" "${timeout_secs}" >&2
+   printf '%s\n' "dm-smbios-reader-qemu: direct-kernel boot of ${kernel_iso_path##*/} (entry=${entry}, fast=${fast}, timeout=${timeout_secs}s)" >&2
    qemu_opts+=(-kernel "${work_dir}/vmlinuz" -initrd "${work_dir}/initrd.img" -append "${full_append}" "${media_opts[@]}")
 else
    ## Firmware boot (the default). On arm64 there is no BIOS, so 'virt' needs UEFI firmware to run
@@ -661,7 +661,7 @@ else
             break
          fi
       done
-      [ -n "${arm_uefi}" ] || { printf 'dm-smbios-reader-qemu: arm64 boot needs edk2 UEFI firmware (install qemu-efi-aarch64)\n' >&2; exit 2; }
+      [ -n "${arm_uefi}" ] || { printf '%s\n' "dm-smbios-reader-qemu: arm64 boot needs edk2 UEFI firmware (install qemu-efi-aarch64)" >&2; exit 2; }
       qemu_opts+=(-bios "${arm_uefi}")
    elif [ "${guest_machine}" = 'x86_64' ] && [ "${firmware}" != 'bios' ]; then
       ## x86 EFI boot via OVMF pflash (SeaBIOS is the default BIOS path). efi-secureboot uses the
@@ -679,7 +679,7 @@ else
             ;;
       esac
       if [ ! -r "${ovmf_code}" ] || [ ! -r "${ovmf_vars_src}" ]; then
-         printf 'dm-smbios-reader-qemu: OVMF firmware not found (install the ovmf package) for --firmware %s\n' "${firmware}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: OVMF firmware not found (install the ovmf package) for --firmware ${firmware}" >&2
          exit 2
       fi
       ## Writable per-boot copy of the vars flash in an auto-cleaned workdir (--emit-argv leaves
@@ -695,7 +695,7 @@ else
          -drive "if=pflash,format=raw,unit=1,file=${work_dir}/OVMF_VARS.fd"
       )
    fi
-   printf 'dm-smbios-reader-qemu: firmware boot of %s over serial (firmware=%s; verbose+serial params injected via SMBIOS)\n' "${image##*/}" "${firmware}" >&2
+   printf '%s\n' "dm-smbios-reader-qemu: firmware boot of ${image##*/} over serial (firmware=${firmware}; verbose+serial params injected via SMBIOS)" >&2
    ## Boot from the emulated media (no '-boot d': there is no CD; firmware picks the bootable
    ## USB stick / virtio disk -- SeaBIOS on x86, edk2 on arm64).
    qemu_opts+=("${media_opts[@]}")
@@ -728,7 +728,7 @@ if [ "${emit_argv}" = 'true' ]; then
    ## extraction OR the EFI OVMF_VARS copy), so the caller can remove it after
    ## qemu exits; --emit-argv deliberately leaves it untrapped here.
    if [ -n "${work_dir:-}" ]; then
-      printf 'dm-smbios-reader-qemu: emit-argv workdir (caller owns cleanup): %s\n' "${work_dir}" >&2
+      printf '%s\n' "dm-smbios-reader-qemu: emit-argv workdir (caller owns cleanup): ${work_dir}" >&2
    fi
    printf '%s\n' "${qemu_bin}"
    printf '%s\n' "${qemu_opts[@]}"
@@ -741,8 +741,8 @@ true > "${serial_log}"
 ## end/verdict line. Point the operator at the file up front so a detached/backgrounded run
 ## is watched by tailing the right thing (mistaking dm-smbios-reader-qemu's quiet stderr for "stuck" is an
 ## easy trap): tail -f "${serial_log}".
-printf 'dm-smbios-reader-qemu: booting; serial console -> %s\n' "${serial_log}" >&2
-printf 'dm-smbios-reader-qemu: watch the boot LIVE with: tail -f %s  (this stderr shows only start + verdict)\n' "${serial_log}" >&2
+printf '%s\n' "dm-smbios-reader-qemu: booting; serial console -> ${serial_log}" >&2
+printf '%s\n' "dm-smbios-reader-qemu: watch the boot LIVE with: tail -f ${serial_log}  (this stderr shows only start + verdict)" >&2
 qemu_rc=0
 
 if [ -n "${screendump}" ]; then
@@ -775,19 +775,19 @@ if [ -n "${screendump}" ]; then
    reached="$(grep -ioE 'login:|Reached target|systemd\[1\]|Welcome to' "${serial_log}" 2>/dev/null | sort -u | tr '\n' ' ' || true)"
    case "${watch_rc}" in
       0)
-         printf 'dm-smbios-reader-qemu: PASS -- guest reached a rendered greeter/desktop (frames in %s)\n' "${screendump}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: PASS -- guest reached a rendered greeter/desktop (frames in ${screendump})" >&2
          exit 0
          ;;
       5)
          if [ -n "${reached}" ]; then
-            printf 'dm-smbios-reader-qemu: PASS -- serial log confirms boot (%s); framebuffer heuristic did not latch (frames in %s)\n' "${reached}" "${screendump}" >&2
+            printf '%s\n' "dm-smbios-reader-qemu: PASS -- serial log confirms boot (${reached}); framebuffer heuristic did not latch (frames in ${screendump})" >&2
             exit 0
          fi
-         printf 'dm-smbios-reader-qemu: PARTIAL -- no greeter/desktop within %ss and no serial boot marker (frames in %s)\n' "${timeout_secs}" "${screendump}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: PARTIAL -- no greeter/desktop within ${timeout_secs}s and no serial boot marker (frames in ${screendump})" >&2
          exit 5
          ;;
       *)
-         printf 'dm-smbios-reader-qemu: screendump watcher error (rc=%s); frames in %s\n' "${watch_rc}" "${screendump}" >&2
+         printf '%s\n' "dm-smbios-reader-qemu: screendump watcher error (rc=${watch_rc}); frames in ${screendump}" >&2
          exit 2
          ;;
    esac
@@ -798,18 +798,18 @@ timeout --kill-after=30 "${timeout_secs}" "${qemu_bin}" "${qemu_opts[@]}" < /dev
 ## '|| true': a fully-failed boot produces none of the markers, so grep exits 1, which under
 ## 'set -e -o pipefail' would abort the assignment here and bypass the FAIL / exit-5 reporting below.
 reached="$(grep -ioE 'login:|Reached target|systemd\[1\]|Welcome to' "${serial_log}" 2>/dev/null | sort -u | tr '\n' ' ' || true)"
-printf 'dm-smbios-reader-qemu: boot ended (qemu rc=%s); serial=%s bytes; reached: %s\n' "${qemu_rc}" "$(wc -c < "${serial_log}" 2>/dev/null || printf '0')" "${reached:-<none>}" >&2
+printf '%s\n' "dm-smbios-reader-qemu: boot ended (qemu rc=${qemu_rc}); serial=$(wc -c < "${serial_log}" 2>/dev/null || printf '%s' "0") bytes; reached: ${reached:-<none>}" >&2
 
 if grep --quiet --ignore-case --extended-regexp 'login:' <<< "${reached}"; then
-   printf 'dm-smbios-reader-qemu: PASS -- reached a login prompt\n' >&2
+   printf '%s\n' "dm-smbios-reader-qemu: PASS -- reached a login prompt" >&2
    exit 0
 fi
 ## 'Welcome to ...' is emitted by systemd at the START of userspace boot, long before a login
 ## prompt, so it proves "kernel + systemd started" (PARTIAL), NOT "reached login" -- a guest that
 ## prints it and then stalls before login must not read as PASS.
 if grep --quiet --ignore-case --extended-regexp 'Reached target|systemd\[1\]|Welcome to' <<< "${reached}"; then
-   printf 'dm-smbios-reader-qemu: PARTIAL -- kernel + systemd booted but no login prompt within %ss\n' "${timeout_secs}" >&2
+   printf '%s\n' "dm-smbios-reader-qemu: PARTIAL -- kernel + systemd booted but no login prompt within ${timeout_secs}s" >&2
    exit 5
 fi
-printf 'dm-smbios-reader-qemu: FAIL -- kernel produced no systemd/login markers (see %s)\n' "${serial_log}" >&2
+printf '%s\n' "dm-smbios-reader-qemu: FAIL -- kernel produced no systemd/login markers (see ${serial_log})" >&2
 exit 5

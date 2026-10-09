@@ -32,7 +32,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${subject}"
 
@@ -109,29 +109,29 @@ check() {
    label="$1"
    cond="$2"
    if [ "${cond}" = 'true' ]; then
-      printf 'ok: %s\n' "${label}"
+      printf '%s\n' "ok: ${label}"
    else
-      printf 'FAIL: %s\n' "${label}" >&2
+      printf '%s\n' "FAIL: ${label}" >&2
       failures=$((failures + 1))
    fi
 }
 
 ## A: the download failure propagates, the installer is never reached, and the
 ## published verdict is a FAIL (not a false PASS).
-check "lane returns nonzero on download failure" "$([ "${rc}" -ne 0 ] && printf true || printf false)"
-check "installer was NOT invoked after a failed download" "$([ ! -s "${install_argv}" ] && printf true || printf false)"
+check "lane returns nonzero on download failure" "$([ "${rc}" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
+check "installer was NOT invoked after a failed download" "$([ ! -s "${install_argv}" ] && printf '%s' "true" || printf '%s' "false")"
 json="$(find "${RESULTS_ROOT}" -name result.json -print -quit 2>/dev/null || true)"
-check "a result.json was published" "$([ -n "${json}" ] && [ -f "${json}" ] && printf true || printf false)"
+check "a result.json was published" "$([ -n "${json}" ] && [ -f "${json}" ] && printf '%s' "true" || printf '%s' "false")"
 if [ -n "${json}" ]; then
-   check "published verdict is FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${json}" && printf true || printf false)"
+   check "published verdict is FAIL" "$(grep --quiet '"verdict": "FAIL"' -- "${json}" && printf '%s' "true" || printf '%s' "false")"
 fi
 
 ## B: the lane pinned the resolved version (did not re-resolve).
 check "iso-download was invoked with --version 18.2.3.5" \
-   "$(grep --quiet -- '--version 18.2.3.5' "${iso_argv}" && printf true || printf false)"
+   "$(grep --quiet -- '--version 18.2.3.5' "${iso_argv}" && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s lane assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} lane assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall lane assertions passed\n'
+printf '%s\n' "" "all lane assertions passed"

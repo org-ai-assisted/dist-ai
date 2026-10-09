@@ -29,7 +29,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${subject}"
 
@@ -67,9 +67,9 @@ firmware='efi'
 assert_shot() {
    local label="$1" expected="$2"
    if [ "${captured_shot}" = "${expected}" ]; then
-      printf 'ok: %s\n' "${label}"
+      printf '%s\n' "ok: ${label}"
    else
-      printf 'FAIL: %s: got %s, expected %s\n' "${label}" "'${captured_shot}'" "'${expected}'" >&2
+      printf '%s\n' "FAIL: ${label}: got '${captured_shot}', expected '${expected}'" >&2
       failures=$((failures + 1))
    fi
 }
@@ -87,14 +87,14 @@ assert_shot "rt_publish_result forwards an empty shot" ''
 ## A non-empty rt_check_log (a FAILED check's output) threads as --step-stderr-file,
 ## so the run record explains WHY it failed.
 clog="$(mktemp --tmpdir dm-release-test-clog.XXXXXX)"
-printf 'check 8 (systemcheck) FAILED:\nsystemcheck unknown option: --ci\n' > "${clog}"
+printf '%s\n' "check 8 (systemcheck) FAILED:" "systemcheck unknown option: --ci" > "${clog}"
 # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
 rt_check_log="${clog}"
 rt_publish_result kicksecure 18.2.3.5 acct calamares-install 5 '' Kicksecure >/dev/null
 if grep --quiet -- "--step-stderr-file ${clog}" "${argv_file}"; then
-   printf 'ok: rt_publish_result threads rt_check_log as --step-stderr-file\n'
+   printf '%s\n' "ok: rt_publish_result threads rt_check_log as --step-stderr-file"
 else
-   printf 'FAIL: --step-stderr-file not forwarded: %s\n' "$(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: --step-stderr-file not forwarded: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 
@@ -102,10 +102,10 @@ fi
 ## NOT re-forward the stale path.
 rt_publish_result kicksecure 18.2.3.5 acct calamares-install 0 '' Kicksecure >/dev/null
 if grep --quiet -- '--step-stderr-file' "${argv_file}"; then
-   printf 'FAIL: rt_check_log leaked to the next publish\n' >&2
+   printf '%s\n' "FAIL: rt_check_log leaked to the next publish" >&2
    failures=$((failures + 1))
 else
-   printf 'ok: rt_check_log consumed once (reset after use)\n'
+   printf '%s\n' "ok: rt_check_log consumed once (reset after use)"
 fi
 safe-rm --force -- "${clog}"
 
@@ -117,15 +117,15 @@ safe-rm --force -- "${clog}"
 firmware='bios'
 rt_publish_result kicksecure 18.2.3.6 acct calamares-install 0 '' Kicksecure >/dev/null
 if grep --quiet -- '--lane kicksecure-lxqt-bios ' "${argv_file}"; then
-   printf 'ok: calamares-install --lane carries firmware (kicksecure-lxqt-bios)\n'
+   printf '%s\n' "ok: calamares-install --lane carries firmware (kicksecure-lxqt-bios)"
 else
-   printf 'FAIL: calamares-install --lane missing firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: calamares-install --lane missing firmware: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 if grep --quiet -- 'kicksecure-lxqt-bios-18-2-3-6' "${argv_file}"; then
-   printf 'ok: calamares-install subtree name carries firmware\n'
+   printf '%s\n' "ok: calamares-install subtree name carries firmware"
 else
-   printf 'FAIL: calamares-install subtree name missing firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: calamares-install subtree name missing firmware: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 
@@ -134,9 +134,9 @@ fi
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
 if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}" \
    && ! grep --quiet -- 'whonix-lxqt-bios' "${argv_file}"; then
-   printf 'ok: whonix-pair lane carries no firmware suffix\n'
+   printf '%s\n' "ok: whonix-pair lane carries no firmware suffix"
 else
-   printf 'FAIL: whonix-pair lane wrongly forked by firmware: %s\n' "$(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: whonix-pair lane wrongly forked by firmware: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 
@@ -148,9 +148,9 @@ firmware='efi-secureboot'
 rt_publish_result kicksecure 18.2.3.6 acct calamares-install 0 '' Kicksecure >/dev/null
 if grep --quiet -- '--lane kicksecure-lxqt-efi-secureboot ' "${argv_file}" \
    && grep --quiet -- 'kicksecure-lxqt-efi-secureboot-18-2-3-6' "${argv_file}"; then
-   printf 'ok: calamares-install lane carries efi-secureboot intact\n'
+   printf '%s\n' "ok: calamares-install lane carries efi-secureboot intact"
 else
-   printf 'FAIL: efi-secureboot lane wrong: %s\n' "$(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: efi-secureboot lane wrong: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 
@@ -159,14 +159,14 @@ fi
 ## arg loop, before any root/preflight, so it is safe to run unprivileged.
 fw_reject="$("${subject}" kicksecure lxqt --firmware bogus --dry-run 2>&1 || true)"
 if [[ "${fw_reject}" == *"--firmware must be bios|efi|efi-secureboot, got 'bogus'"* ]]; then
-   printf 'ok: unknown --firmware rejected at parse time\n'
+   printf '%s\n' "ok: unknown --firmware rejected at parse time"
 else
-   printf 'FAIL: unknown --firmware not rejected: %s\n' "${fw_reject}" >&2
+   printf '%s\n' "FAIL: unknown --firmware not rejected: ${fw_reject}" >&2
    failures=$((failures + 1))
 fi
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s shot-publish assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} shot-publish assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall shot-publish assertions passed\n'
+printf '%s\n' "" "all shot-publish assertions passed"

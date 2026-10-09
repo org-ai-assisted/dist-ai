@@ -189,10 +189,10 @@ done
 check "SIGKILL-escalation reaps the TERM-ignoring command child (pid ${child})" "${child_dead}"
 check "SIGKILL-escalation reaps the TERM-ignoring GRANDCHILD too (whole group, pid ${grandchild})" "${gc_dead}"
 check "wl-headless-run exits non-zero on SIGTERM (rc=${rc})" \
-   "$( [ "${rc}" -ne 0 ] && printf '1' )"
+   "$( [ "${rc}" -ne 0 ] && printf '%s' "1" )"
 ## The escalation bound (~2s) must be well under the callers' outer --kill-after=30s.
 check "teardown escalates in bounded time, not hung (elapsed=${elapsed}s < 15)" \
-   "$( [ "${elapsed}" -lt 15 ] && printf '1' )"
+   "$( [ "${elapsed}" -lt 15 ] && printf '%s' "1" )"
 
 printf '%s\n' ''
 printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"

@@ -359,7 +359,7 @@ fi
 ## preflight exists to prevent.
 gitfail="${workdir}/gitfail"
 build_fixture "${gitfail}"
-printf '<<<<<<< HEAD\n' >> "${gitfail}/.gitmodules"
+printf '%s\n' "<<<<<<< HEAD" >> "${gitfail}/.gitmodules"
 git_quiet -C "${gitfail}" commit --quiet --all --no-verify --message corrupt-gitmodules
 rc="$(run_preflight "${gitfail}")"
 if [ "${rc}" -ne 0 ]; then

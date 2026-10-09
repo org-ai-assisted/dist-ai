@@ -76,9 +76,9 @@ gate_rc() {
 check() {
    local desc="$1" want="$2" got="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s (rc %s)\n' "${desc}" "${got}"
+      printf '%s\n' "PASS: ${desc} (rc ${got})"
    else
-      printf 'FAIL: %s: rc %s, expected %s\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}: rc ${got}, expected ${want}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -95,7 +95,7 @@ check 'DIST_AI_ALLOW_HOST_TESTS=1 is exempt' 0 "$(gate_rc export DIST_AI_ALLOW_H
 check 'CI=true plus a stray var still refuses' 3 "$(gate_rc export CI=true SOME_OTHER=1)"
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'enforce_sandbox_only_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "enforce_sandbox_only_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'enforce_sandbox_only_test: OK\n'
+printf '%s\n' "enforce_sandbox_only_test: OK"

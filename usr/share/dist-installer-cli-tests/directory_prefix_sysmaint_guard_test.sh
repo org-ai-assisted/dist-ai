@@ -72,10 +72,10 @@ USABILITY_MISC_REPO="${fake_repo}" PATH="${stub_bin}:${PATH}" \
 pass=0
 fail=0
 if [ "${rc}" -eq 78 ]; then
-   printf 'PASS: a sysmaint invoker is skipped (exit 78)\n'
+   printf '%s\n' "PASS: a sysmaint invoker is skipped (exit 78)"
    pass=$((pass + 1))
 else
-   printf 'FAIL: a sysmaint invoker was not skipped (got exit %s, want 78)\n' "${rc}" >&2
+   printf '%s\n' "FAIL: a sysmaint invoker was not skipped (got exit ${rc}, want 78)" >&2
    fail=$((fail + 1))
 fi
 

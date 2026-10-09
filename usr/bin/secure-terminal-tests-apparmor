@@ -86,7 +86,7 @@ fail=0
 allow_dir=/usr/share/secure-terminal
 mkdir --parents "${allow_dir}"
 allow_probe="${allow_dir}/aa-enforce-probe"
-printf granted > "${allow_probe}"
+printf '%s' "granted" > "${allow_probe}"
 allow_rc=0
 aa-exec -p secure-terminal -- cat "${allow_probe}" >/dev/null 2>&1 || allow_rc=$?
 if [ "${allow_rc}" -eq 0 ]; then
@@ -98,7 +98,7 @@ fi
 
 ## DENY: a path the profile does not grant (AppArmor is default-deny once loaded).
 deny_probe=/root/aa-enforce-deny-probe
-printf secret > "${deny_probe}"
+printf '%s' "secret" > "${deny_probe}"
 deny_rc=0
 aa-exec -p secure-terminal -- cat "${deny_probe}" >/dev/null 2>&1 || deny_rc=$?
 if [ "${deny_rc}" -ne 0 ]; then
@@ -145,7 +145,7 @@ canary_probe="${canary_dir}/canary"
 ## r), so a source-read denial cannot masquerade as a destination-write denial --
 ## this probe must isolate the canary WRITE grant.
 canary_src="${allow_dir}/aa-canary-src"
-printf token > "${canary_src}"
+printf '%s' "token" > "${canary_src}"
 canary_rc=0
 ## cp is the aa-exec target, so it runs CONFINED as secure-terminal; its write to
 ## the destination is subject to the profile.
@@ -342,7 +342,7 @@ else
    utag_allow_dir=/usr/lib/python3/dist-packages/secure_terminal
    mkdir --parents "${utag_allow_dir}"
    utag_allow_probe="${utag_allow_dir}/aa-utag-probe"
-   printf granted > "${utag_allow_probe}"
+   printf '%s' "granted" > "${utag_allow_probe}"
    utag_allow_rc=0
    aa-exec -p unicode-tag-stdin -- cat "${utag_allow_probe}" >/dev/null 2>&1 \
       || utag_allow_rc=$?
@@ -356,7 +356,7 @@ else
 
    ## DENY: a path the profile does not grant (default-deny once loaded).
    utag_deny_probe=/root/aa-utag-deny-probe
-   printf secret > "${utag_deny_probe}"
+   printf '%s' "secret" > "${utag_deny_probe}"
    utag_deny_rc=0
    aa-exec -p unicode-tag-stdin -- cat "${utag_deny_probe}" >/dev/null 2>&1 \
       || utag_deny_rc=$?

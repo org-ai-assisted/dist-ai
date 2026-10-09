@@ -143,7 +143,7 @@ find_window() { printf '%s' '12345'; }
 wait_window_ready() { : ; }
 st_wait_render_settled() { : ; }
 sleep() { : ; }                                  ## skip the real 3s+1s settle waits
-capture_settled() { printf '' > "$1"; }          ## write the "PNG", succeed
+capture_settled() { printf '%s' "" > "$1"; }          ## write the "PNG", succeed
 shots_transcript_has_content() { return 0; }     ## isolate the cmdlog gate
 
 ## Globals lineedit_capture_row reads (normally set by the main flow above the source boundary).
@@ -166,7 +166,7 @@ run_case() {  ## $1=stub-mode $2=shot-name -> echoes "rc:<0|1> png:<yes|no>"
    true > "${SHOTS_CMDLOG}"
    rc=0
    CV_STUB_MODE="${mode}" lineedit_capture_row compat "${name}" full "${CMD}" >/dev/null 2>&1 || rc="$?"
-   if [ -f "${out}/${name}.png" ]; then printf 'rc:%s png:yes' "${rc}"; else printf 'rc:%s png:no' "${rc}"; fi
+   if [ -f "${out}/${name}.png" ]; then printf '%s' "rc:${rc} png:yes"; else printf '%s' "rc:${rc} png:no"; fi
 }
 
 ## 1. Happy path: the injected command ran cleanly -> publish (rc 0, PNG kept).

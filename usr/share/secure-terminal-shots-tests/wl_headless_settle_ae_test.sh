@@ -77,7 +77,7 @@ source "${lib}"
 ## Replace the real grab with a no-compositor stub that always "succeeds" writing a dummy PNG,
 ## so only the settle/AE-parse logic is under test.
 wl_headless_capture_window() {
-   printf 'x' > "$1"
+   printf '%s' "x" > "$1"
 }
 
 pass=0
@@ -94,22 +94,22 @@ check() {  ## $1=label $2=actual $3=expected
 
 ## ARM 1 (canary): a large AE in scientific notation must NOT settle at maxdiff=1, and must
 ## publish NO frame. Pre-fix: "1.44e+06" -> "1" -> 1<=1 -> wrongly settles + writes out1.png.
-printf '1.44e+06' > "${AE_STUB_FILE}"
+printf '%s' "1.44e+06" > "${AE_STUB_FILE}"
 rc=0; wl_headless_capture_settled "${work}/out1.png" 2 1 >/dev/null 2>&1 || rc=$?
-check 'scientific-notation AE (1.44e+06) does not falsely settle at maxdiff=1' "$([ "${rc}" -ne 0 ] && printf notsettled || printf settled)" 'notsettled'
-check 'no mid-paint frame is published' "$([ -f "${work}/out1.png" ] && printf written || printf absent)" 'absent'
+check 'scientific-notation AE (1.44e+06) does not falsely settle at maxdiff=1' "$([ "${rc}" -ne 0 ] && printf '%s' "notsettled" || printf '%s' "settled")" 'notsettled'
+check 'no mid-paint frame is published' "$([ -f "${work}/out1.png" ] && printf '%s' "written" || printf '%s' "absent")" 'absent'
 
 ## ARM 2: a genuinely settled frame (AE=0, maxdiff=0) settles and writes the output.
-printf '0' > "${AE_STUB_FILE}"
+printf '%s' "0" > "${AE_STUB_FILE}"
 rc=0; wl_headless_capture_settled "${work}/out2.png" 3 0 >/dev/null 2>&1 || rc=$?
-check 'a zero-diff frame settles' "$([ "${rc}" -eq 0 ] && printf settled || printf notsettled)" 'settled'
-check 'the settled frame is written' "$([ -f "${work}/out2.png" ] && printf written || printf absent)" 'written'
+check 'a zero-diff frame settles' "$([ "${rc}" -eq 0 ] && printf '%s' "settled" || printf '%s' "notsettled")" 'settled'
+check 'the settled frame is written' "$([ -f "${work}/out2.png" ] && printf '%s' "written" || printf '%s' "absent")" 'written'
 
 ## ARM 3: a non-numeric compare error (size mismatch, window still resizing) must NOT settle.
-printf 'compare: image widths or heights differ' > "${AE_STUB_FILE}"
+printf '%s' "compare: image widths or heights differ" > "${AE_STUB_FILE}"
 rc=0; wl_headless_capture_settled "${work}/out3.png" 2 5 >/dev/null 2>&1 || rc=$?
-check 'a non-numeric compare error does not settle' "$([ "${rc}" -ne 0 ] && printf notsettled || printf settled)" 'notsettled'
-check 'no frame published on a compare error' "$([ -f "${work}/out3.png" ] && printf written || printf absent)" 'absent'
+check 'a non-numeric compare error does not settle' "$([ "${rc}" -ne 0 ] && printf '%s' "notsettled" || printf '%s' "settled")" 'notsettled'
+check 'no frame published on a compare error' "$([ -f "${work}/out3.png" ] && printf '%s' "written" || printf '%s' "absent")" 'absent'
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

@@ -214,7 +214,7 @@ wl_headless_start() {
       printf '%s\n' '<?xml version="1.0"?>'
       printf '%s\n' '<labwc_config>'
       if [ -n "${icon_theme}" ]; then
-         printf '  %s\n' "<theme><icon>${icon_theme}</icon></theme>"
+         printf '%s\n' "  <theme><icon>${icon_theme}</icon></theme>"
       fi
       printf '%s\n' '</labwc_config>'
    } > "${cfg}/rc.xml"
@@ -457,7 +457,7 @@ wl_headless_capture_window() {
    ## file -> the caller's discard/retry sees the miss, and a persistently-missing shot fails LOUD
    ## (the driver's missing-shot check) instead of shipping a degenerate placeholder.
    local dims w h
-   dims="$(identify -format '%w %h' "${outfile}" 2>/dev/null || printf '0 0')"
+   dims="$(identify -format '%w %h' "${outfile}" 2>/dev/null || printf '%s' "0 0")"
    w="${dims% *}"; h="${dims#* }"
    if [ "${w:-0}" -lt 20 ] || [ "${h:-0}" -lt 20 ]; then
       safe-rm --force -- "${outfile}" 2>/dev/null || true
@@ -496,7 +496,7 @@ wl_headless_capture_settled() {  ## $1=outfile  $2=max-tries(default 12)  $3=max
          ## prints a non-numeric error string -> printf fails -> ae_int empty -> not-yet-settled.
          ae="$(compare -metric AE "${prev}" "${cur}" null: 2>&1)"
          ae="${ae%%[[:space:]]*}"
-         ae_int="$(printf '%.0f' "${ae}" 2>/dev/null)" || ae_int=''
+         printf -v ae_int '%.0f' "${ae}" 2>/dev/null || ae_int=''
          if [ -n "${ae_int}" ] && [ "${ae_int}" -le "${maxdiff}" ]; then
             cp -- "${cur}" "${outfile}"
             rc=0

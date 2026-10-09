@@ -66,7 +66,7 @@ other_chroot="/home/user/derivative-binary/otherlane/Kicksecure-CLI_image"
 # shellcheck disable=SC2317
 true() { printf '%s\n' "$*"; }
 # shellcheck disable=SC2317
-error() { printf 'ERROR: %s\n' "$*"; exit 42; }
+error() { printf '%s\n' "ERROR: $*"; exit 42; }
 
 ## Privileged-call dispatcher (SUDO_TO_ROOT). Fixtures are set per case in the globals below.
 MOUNTS_FIXTURE=""        # stdin of 'cat /proc/mounts'

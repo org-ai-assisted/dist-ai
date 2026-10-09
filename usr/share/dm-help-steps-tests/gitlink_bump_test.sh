@@ -72,15 +72,15 @@ gitq init --quiet --bare -- "${fork}"
 ## NOT be pinned -- only the tip is).
 gitq init --quiet -- "${sub_src}"
 gitq -C "${sub_src}" checkout --quiet -b ai
-printf 'v1\n' > "${sub_src}/file"
+printf '%s\n' "v1" > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v1"
 sub_pin="$(gitq -C "${sub_src}" rev-parse HEAD)"
-printf 'v2\n' > "${sub_src}/file"
+printf '%s\n' "v2" > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v2"
 sub_mid="$(gitq -C "${sub_src}" rev-parse HEAD)"
-printf 'v3\n' > "${sub_src}/file"
+printf '%s\n' "v3" > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v3"
 sub_tip="$(gitq -C "${sub_src}" rev-parse HEAD)"
@@ -95,8 +95,8 @@ gitq -C "${sub_src}" push --quiet fork ai
 gitq init --quiet -- "${super}"
 gitq -C "${super}" checkout --quiet -b ai
 mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-printf 'x\n' > "${super}/build-steps.d/keep"
-printf 'x\n' > "${super}/help-steps/keep"
+printf '%s\n' "x" > "${super}/build-steps.d/keep"
+printf '%s\n' "x" > "${super}/help-steps/keep"
 gitq -C "${super}" add build-steps.d help-steps
 gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" -c protocol.file.allow=always submodule --quiet add -b ai "file://${fork}" sub

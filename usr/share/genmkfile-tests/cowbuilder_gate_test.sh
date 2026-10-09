@@ -73,7 +73,7 @@ source "${helper_file}"
 ## trace state that only the full run sets up) with a recording stub, so
 ## make_get_distdir's cowbuilder guard is observed in isolation.
 # shellcheck disable=SC2317  # invoked indirectly by make_get_distdir
-exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit 66; }
+exit_with_error() { printf '%s\n' "DIE: ${2}" >&2; exit 66; }
 
 ## DISTDIR='.' is a writable directory, so only the cowbuilder gate can exit here.
 test_root="$(mktemp --directory)"

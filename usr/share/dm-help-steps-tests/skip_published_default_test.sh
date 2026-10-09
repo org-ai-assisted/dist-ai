@@ -72,20 +72,20 @@ resolve_skip() {
      # shellcheck disable=SC1091  ## dynamic path in the derivative-maker checkout
      source variables || var_rc=$?
      if [ "${var_rc}" -eq 0 ]; then
-        printf 'skip=%s\n' "${dist_build_skip_published_packages:-<unset>}"
+        printf '%s\n' "skip=${dist_build_skip_published_packages:-<unset>}"
      else
-        printf 'VARIABLES_FAILED rc=%s\n' "${var_rc}"
+        printf '%s\n' "VARIABLES_FAILED rc=${var_rc}"
      fi
    ) > "${out_file}" 2>&1 || true
    if grep --quiet -- 'supported options for --skip-published-packages' "${out_file}"; then
-      printf 'rejected\n'
+      printf '%s\n' "rejected"
    elif grep --quiet -- '^skip=' "${out_file}"; then
       grep -- '^skip=' "${out_file}" | tail -n1
    else
       ## No 'skip=' line: pre/variables aborted for an unexpected reason. Surface
       ## the captured diagnostic to stderr so the failure names its cause instead
       ## of an opaque 'skip=<none>' (the subshell's output is otherwise swallowed).
-      printf 'skip=<none>\n'
+      printf '%s\n' "skip=<none>"
       printf '%s\n' "DIAG(resolve_skip none): ---8<--- ${out_file} ---" >&2
       cat -- "${out_file}" >&2 || true
       printf '%s\n' "--->8--- end DIAG" >&2

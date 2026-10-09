@@ -98,11 +98,11 @@ on_exit() {
          ## ${shot} after the copy above); otherwise a bare 'FAILED' note, never a
          ## false 'see the published screenshot' when none was captured.
          if [ -n "${shot}" ] && [ -s "${shot}" ]; then
-            printf '%s FAILED (rc=%s) -- see the published screenshot for the on-screen error.\n' \
-               "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+            printf '%s\n' \
+               "${me} FAILED (rc=${rc}) -- see the published screenshot for the on-screen error." > "${check_log}" 2>/dev/null || true
          else
-            printf '%s FAILED (rc=%s).\n' \
-               "${me}" "${rc}" > "${check_log}" 2>/dev/null || true
+            printf '%s\n' \
+               "${me} FAILED (rc=${rc})." > "${check_log}" 2>/dev/null || true
          fi
       fi
       ## install-host / Calamares launch log: the ONLY place a GUI that STARTED but never
@@ -113,10 +113,11 @@ on_exit() {
       if [ "${vm_started}" = 'true' ]; then
          launch_out="$(gc_gui_launch_log user 2>/dev/null || true)"
          if [ -n "${launch_out}" ]; then
-            printf '%s: install-host launch log (%s):\n%s\n' \
-               "${me}" "${GC_GUI_LAUNCH_LOG}" "${launch_out}" >&2
+            printf '%s\n' \
+               "${me}: install-host launch log (${GC_GUI_LAUNCH_LOG}):" \
+               "${launch_out}" >&2
             if [ -n "${check_log}" ]; then
-               printf '\ninstall-host launch log:\n%s\n' "${launch_out}" >> "${check_log}" 2>/dev/null || true
+               printf '%s\n' "" "install-host launch log:" "${launch_out}" >> "${check_log}" 2>/dev/null || true
             fi
          fi
       fi
@@ -374,9 +375,9 @@ run_check() {
          session="${RELEASE_CHECK_SESSION[${num}]}"
          out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
          if [ -n "${out}" ]; then
-            printf '%s: check %s output (why it failed):\n%s\n' "${me}" "${num}" "${out}" >&2
+            printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
             if [ -n "${check_log}" ]; then
-               printf 'check %s (%s) FAILED:\n%s\n' "${num}" "${RELEASE_CHECK_DESC[${num}]:-}" "${out}" > "${check_log}"
+               printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:" "${out}" > "${check_log}"
             fi
          fi
          return 1
@@ -638,7 +639,7 @@ main() {
    ## install-host waits (up to ~180s) for the unrestricted-admin unlock to finish before it
    ## launches Calamares, so allow for that window plus Calamares startup.
    if ! gc_wait_gui_started user 'calamares' 240; then
-      printf '%s: install-host launch log:\n%s\n' "${me}" "$(gc_gui_launch_log user)" >&2
+      printf '%s\n' "${me}: install-host launch log:" "$(gc_gui_launch_log user)" >&2
       die "${FAIL_RC}" "install-host did not start Calamares in the live session"
    fi
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'

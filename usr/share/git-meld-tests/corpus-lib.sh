@@ -141,12 +141,12 @@ if name_is_flagged 'plain-ascii-branch-name'; then
    printf '%s\n' 'FATAL: corpus-lib: name_is_flagged flags a CLEAN ascii name -- the refname scan is vacuous.' >&2
    exit 1
 fi
-if ! name_is_flagged "rtl$(printf '\342\200\256')override"; then
+if ! name_is_flagged "rtl$(printf '%s' $'\342\200\256')override"; then
    printf '%s\n' 'FATAL: corpus-lib: name_is_flagged does NOT flag an RTL-override name -- the refname scan is broken.' >&2
    exit 1
 fi
 
-while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do
+while IFS="$( printf '%s' $'\t' )" read -r branch class assert arg _summary; do
    case "${branch}" in ''|'#'*) continue ;; esac
 
    if [ "${class}" = refname ]; then

@@ -300,7 +300,7 @@ case_concurrency_capped() {
    ONION_TESTER_WARMUP_CONCURRENCY=3 \
       "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
 
-   peak="$(cat -- "${work_dir}/state/peak" 2>/dev/null || printf '0')"
+   peak="$(cat -- "${work_dir}/state/peak" 2>/dev/null || printf '%s' "0")"
    check "concurrency: exits 0" "0" "${rc}"
    check "concurrency: swept every URL" "12" "$(curl_calls)"
    check_le "concurrency: never exceeded the cap of 3" "3" "${peak}"
@@ -323,10 +323,10 @@ case_default_concurrency_from_chunk() {
    ONION_TESTER_CHUNK=2 \
       "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
 
-   peak="$(cat -- "${work_dir}/state/peak" 2>/dev/null || printf '0')"
+   peak="$(cat -- "${work_dir}/state/peak" 2>/dev/null || printf '%s' "0")"
    check "default concurrency: exits 0" "0" "${rc}"
    check "default concurrency: capped at ONION_TESTER_CHUNK=2" "1" \
-      "$([ "${peak}" -le 2 ] && printf '1' || printf '0')"
+      "$([ "${peak}" -le 2 ] && printf '%s' "1" || printf '%s' "0")"
    check_ge "default concurrency: ran in parallel" "2" "${peak}"
 }
 

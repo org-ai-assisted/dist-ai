@@ -48,22 +48,22 @@ while [ "$#" -ge 1 ]; do
          shift 2
          ;;
       *)
-         printf 'build-grub-test-image: unexpected argument: %s\n' "$1" >&2
+         printf '%s\n' "build-grub-test-image: unexpected argument: ${1}" >&2
          exit 2
          ;;
    esac
 done
 
 for req in grub_config_dir output work; do
-   [ -n "${!req}" ] || { printf 'build-grub-test-image: --%s is required\n' "${req//_/-}" >&2; exit 2; }
+   [ -n "${!req}" ] || { printf '%s\n' "build-grub-test-image: --${req//_/-} is required" >&2; exit 2; }
 done
 
 menu_src="${grub_config_dir}/grub.cfg"
 config_src="${grub_config_dir}/config.cfg"
 theme_src="${grub_config_dir}/theme.cfg"
-[ -r "${menu_src}" ]   || { printf 'build-grub-test-image: missing %s\n' "${menu_src}" >&2; exit 2; }
-[ -r "${config_src}" ] || { printf 'build-grub-test-image: missing %s\n' "${config_src}" >&2; exit 2; }
-[ -r "${theme_src}" ]  || { printf 'build-grub-test-image: missing %s\n' "${theme_src}" >&2; exit 2; }
+[ -r "${menu_src}" ]   || { printf '%s\n' "build-grub-test-image: missing ${menu_src}" >&2; exit 2; }
+[ -r "${config_src}" ] || { printf '%s\n' "build-grub-test-image: missing ${config_src}" >&2; exit 2; }
+[ -r "${theme_src}" ]  || { printf '%s\n' "build-grub-test-image: missing ${theme_src}" >&2; exit 2; }
 
 iso_root="${work}/iso-root"
 grub_dir="${iso_root}/boot/grub"
@@ -109,6 +109,6 @@ EOF
 ## OVMF (efi). It bundles the full platform module set, so the config's runtime
 ## insmod calls (serial, gfxterm, all_video, png, play, regexp, test) resolve.
 grub-mkrescue --output "${output}" "${iso_root}" >/dev/null 2>&1 \
-   || { printf 'build-grub-test-image: grub-mkrescue failed\n' >&2; exit 2; }
+   || { printf '%s\n' "build-grub-test-image: grub-mkrescue failed" >&2; exit 2; }
 
-printf 'build-grub-test-image: wrote %s\n' "${output}" >&2
+printf '%s\n' "build-grub-test-image: wrote ${output}" >&2

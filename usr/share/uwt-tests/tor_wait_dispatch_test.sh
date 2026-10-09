@@ -77,11 +77,13 @@ write_stub() {
    local file="$1" record="$2" stdout_line="$3" exit_code="$4"
    {
       printf '%s\n' '#!/bin/bash'
-      printf 'printf %s "$*" >> %q\n' "'%s\\n'" "${record}"
+      printf -v record_q '%q' "${record}"
+      printf '%s\n' "printf '%s\\n' \"\$*\" >> ${record_q}"
       if [ -n "${stdout_line}" ]; then
-         printf "printf '%%s\\\\n' %q\\n" "${stdout_line}"
+         printf -v stdout_line_q '%q' "${stdout_line}"
+         printf '%s\n' "printf '%s"$'\\'"n' ${stdout_line_q}"
       fi
-      printf 'exit %s\n' "${exit_code}"
+      printf '%s\n' "exit ${exit_code}"
    } > "${file}"
    chmod 0755 -- "${file}"
 }

@@ -79,7 +79,7 @@ cflite_list_harnesses() {
     set -f
   fi
   if [ "${#__clh_out[@]}" -eq 0 ]; then
-    printf 'FATAL: no fuzz harnesses matched %s\n' "${2}" >&2
+    printf '%s\n' "FATAL: no fuzz harnesses matched ${2}" >&2
     return 1
   fi
 }

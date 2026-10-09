@@ -70,8 +70,8 @@ gc_gui_launch_snippet() {
    if [ -n "${extra}" ]; then
       exports+=" ${extra}"
    fi
-   printf '%s; setsid %s >%s 2>&1 </dev/null &' \
-      "${exports}" "${program}" "${GC_GUI_LAUNCH_LOG}"
+   printf '%s' \
+      "${exports}; setsid ${program} >${GC_GUI_LAUNCH_LOG} 2>&1 </dev/null &"
 }
 
 ## Launch a GUI PROGRAM in-guest as USERNAME (= boot role), backgrounded so gc_run

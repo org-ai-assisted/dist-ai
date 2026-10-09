@@ -51,7 +51,7 @@ fail() { printf '%s\n' "FAIL: $*" >&2; test_failures=$((test_failures + 1)); }
 ## Defined once at top level; each subshell run of the parser inherits them.
 export bold='' cyan='' eunder='' green='' red='' reset='' under=''
 error() {
-   printf 'ERROR: %s\n' "$*" >&2
+   printf '%s\n' "ERROR: $*" >&2
    exit 1
 }
 export -f error
@@ -74,7 +74,7 @@ upload_supported_for() {
       if dist_build_one_parse_cmd "$@" >/dev/null 2>&1; then
          printf '%s' "${dist_build_image_upload_supported:-UNSET}"
       else
-         printf 'PARSE-FAILED'
+         printf '%s' "PARSE-FAILED"
       fi
    )
 }

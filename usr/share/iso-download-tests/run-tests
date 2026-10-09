@@ -94,7 +94,7 @@ forward_scenario_ec() {
 }
 
 image_name() {
-   printf '%s-%s-%s.%s.iso' "${vmname}" "${desktop}" "$1" "${arch}"
+   printf '%s' "${vmname}-${desktop}-${1}.${arch}.iso"
 }
 
 assert_rc_zero() {
@@ -377,7 +377,7 @@ scenario_wiki_embedded_cr_rejected() {
    ## (which would then download a different release). The stable pin carries the
    ## embedded CR; the published image uses the clean ${ver}, so only rejection --
    ## not a coincidental match -- keeps the artifact from being kept.
-   embedded="$(printf '18.4\r.0.5')"
+   embedded="$(printf '%s' "18.4"$'\r'".0.5")"
    fix="$(make_fixture_into embcr --version "${ver}" --stable-version "${embedded}")"
    cur_map="${fix}/urlmap"
    img="$(image_name "${ver}")"
@@ -535,7 +535,7 @@ main() {
    printf '%s\n' "== iso-download self-test: start =="
    for scenario in "${all_scenarios[@]}"; do
       if ! should_run "${scenario}"; then
-         printf '  [SKIP] %s\n' "${scenario}"
+         printf '%s\n' "  [SKIP] ${scenario}"
          continue
       fi
       setup
@@ -550,11 +550,11 @@ main() {
       )
       ec="$(cat -- "${test_root}/.scenario_ec")"
       if [ "${ec}" = '0' ]; then
-         printf '  [PASS] %s\n' "${scenario}"
+         printf '%s\n' "  [PASS] ${scenario}"
          pass_count=$((pass_count + 1))
          [ "${verbose}" = 'true' ] && sed 's/^/    | /' "${out_file}"
       else
-         printf '  [FAIL] %s (exit=%s)\n' "${scenario}" "${ec}"
+         printf '%s\n' "  [FAIL] ${scenario} (exit=${ec})"
          fail_count=$((fail_count + 1))
          failed_names="${failed_names} ${scenario}"
          sed 's/^/    | /' "${out_file}"

@@ -68,7 +68,7 @@ check() {  ## $1=label $2=actual-rc $3=expected-rc
 ## 1. CANARY on a throwaway fixture -- a minimal site with one shot, referenced by one page.
 site="${work}/site"
 mkdir --parents -- "${site}/comparison/shots"
-printf 'x' > "${site}/comparison/shots/demo.webp"
+printf '%s' "x" > "${site}/comparison/shots/demo.webp"
 cat > "${site}/index.html" <<'HTML'
 <!doctype html><html><body>
 <img src="/comparison/shots/demo.webp" alt="demo">
@@ -79,7 +79,7 @@ rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'clean fixture passes' "${rc}" 0
 
 ## add an ORPHAN shot (no page references it) -> must fail
-printf 'y' > "${site}/comparison/shots/orphan-handrolled.webp"
+printf '%s' "y" > "${site}/comparison/shots/orphan-handrolled.webp"
 rc=0; "${tool}" "${site}" >/dev/null 2>&1 || rc=$?
 check 'an orphan (hand-rolled) shot is caught' "${rc}" 1
 safe-rm -- "${site}/comparison/shots/orphan-handrolled.webp"
@@ -97,7 +97,7 @@ check 'a dangling shot reference is caught' "${rc}" 1
 ## a shot referenced with a ?cache-buster query string (or #fragment) must still resolve --
 ## if the extension check runs before the query/fragment strip, such a reference is dropped
 ## and its shot reads as a false orphan. Self-contained fixture (fresh index.html).
-printf 'z' > "${site}/comparison/shots/qbuster.webp"
+printf '%s' "z" > "${site}/comparison/shots/qbuster.webp"
 cat > "${site}/index.html" <<'HTML'
 <!doctype html><html><body>
 <img src="/comparison/shots/demo.webp" alt="demo">
@@ -110,8 +110,8 @@ safe-rm -- "${site}/comparison/shots/qbuster.webp"
 
 ## a URL-ENCODED reference (%2E) and a srcset-only reference must resolve to their files
 ## (the browser decodes %XX and honours srcset URLs) -- else the shot reads as a false orphan.
-printf 'e' > "${site}/comparison/shots/enc.webp"
-printf 's' > "${site}/comparison/shots/set.webp"
+printf '%s' "e" > "${site}/comparison/shots/enc.webp"
+printf '%s' "s" > "${site}/comparison/shots/set.webp"
 cat > "${site}/index.html" <<'HTML'
 <!doctype html><html><body>
 <img src="/comparison/shots/demo.webp" alt="demo">

@@ -49,7 +49,7 @@ id "${build_user}" >/dev/null 2>&1 \
 ## container images ship no /etc/sudoers.d, so create it before writing the drop-in (0440, the
 ## mode sudo requires; a bare '>' would leave it group/world-readable and sudo would ignore it).
 install --directory --mode=0755 -- /etc/sudoers.d
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${build_user}" \
+printf '%s\n' "${build_user} ALL=(ALL) NOPASSWD:ALL" \
    > "/etc/sudoers.d/${build_user}"
 chmod 0440 -- "/etc/sudoers.d/${build_user}"
 ## Own the whole workspace so the build user can read the trees, write scratch,

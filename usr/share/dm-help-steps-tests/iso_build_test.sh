@@ -113,8 +113,8 @@ run_iso() {
             ;;
       esac
    done
-   printf '' > "${args_log}"
-   printf '' > "${env_log}"
+   printf '%s' "" > "${args_log}"
+   printf '%s' "" > "${env_log}"
    iso_rc=0
    ## Strip dm-iso-build's own env overrides (its documented set, dm-iso-build:75)
    ## so an ambient DM_* in the caller's shell cannot contaminate the default-value
@@ -210,7 +210,7 @@ for repo_flag_arg in '--repo true' '--repo false'; do
 done
 ## The '--repo=VALUE' form cannot go through run_iso (its leading NAME=VALUE parsing
 ## would eat it as an env pair), so drive the tool directly.
-printf '' > "${args_log}"
+printf '%s' "" > "${args_log}"
 repo_eq_rc=0
 ## Same ambient-DM_* isolation as run_iso (uniformity): the refusal fires pre-build so
 ## this case is immune today, but the uniform form forecloses a future leak here.

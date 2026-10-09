@@ -74,7 +74,7 @@ fi
 ## 3. Canary: flush the firewall, keep the same wide listener -> every port now
 ## reachable from up, proving the probe + listener detect an exposed port.
 empty="$(mktemp --suffix=.nft)"
-printf 'flush ruleset\n' >"${empty}"
+printf '%s\n' "flush ruleset" >"${empty}"
 leaktest_setup_ext_input "${empty}"
 for probe in "${probes[@]}"; do
    read -r proto port name <<< "${probe}"

@@ -44,6 +44,6 @@ proc_diag() {
    state="${rest%% *}"
    rest="${rest#* }"
    ppid="${rest%% *}"
-   printf 'DIAG: %s pid %s SURVIVED: state=%s ppid=%s comm=%s\n' \
-      "$1" "$2" "${state}" "${ppid}" "${comm}" >&2
+   printf '%s\n' \
+      "DIAG: ${1} pid ${2} SURVIVED: state=${state} ppid=${ppid} comm=${comm}" >&2
 }

@@ -28,7 +28,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${subject}"
 
@@ -43,16 +43,16 @@ assert_out() {
    rc=0
    out="$("$@")" || rc=$?
    if [ "${rc}" -ne 0 ]; then
-      printf 'FAIL: %s: rc=%s (expected output %s)\n' "${label}" "${rc}" "${expected}" >&2
+      printf '%s\n' "FAIL: ${label}: rc=${rc} (expected output ${expected})" >&2
       failures=$((failures + 1))
       return
    fi
    if [ "${out}" != "${expected}" ]; then
-      printf 'FAIL: %s: got %s, expected %s\n' "${label}" "'${out}'" "'${expected}'" >&2
+      printf '%s\n' "FAIL: ${label}: got '${out}', expected '${expected}'" >&2
       failures=$((failures + 1))
       return
    fi
-   printf 'ok: %s\n' "${label}"
+   printf '%s\n' "ok: ${label}"
 }
 
 ## Assert a function exits non-zero (rejects bad input).
@@ -63,11 +63,11 @@ assert_reject() {
    rc=0
    "$@" >/dev/null 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
-      printf 'FAIL: %s: expected non-zero rc, got 0\n' "${label}" >&2
+      printf '%s\n' "FAIL: ${label}: expected non-zero rc, got 0" >&2
       failures=$((failures + 1))
       return
    fi
-   printf 'ok: %s (rejected, rc=%s)\n' "${label}" "${rc}"
+   printf '%s\n' "ok: ${label} (rejected, rc=${rc})"
 }
 
 ## guest validation
@@ -168,23 +168,23 @@ cansudo_origpath="${PATH}"
 # shellcheck disable=SC2030,SC2031,SC2123
 cansudo_probe() { ( PATH="$1"; rt_account_can_sudo acct ); }
 if cansudo_probe "${cansudo_stub}:${cansudo_origpath}"; then
-   printf 'ok: rt_account_can_sudo true when the exercised sudo succeeds\n'
+   printf '%s\n' "ok: rt_account_can_sudo true when the exercised sudo succeeds"
 else
-   printf 'FAIL: rt_account_can_sudo false though sudo exited 0\n' >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: rt_account_can_sudo false though sudo exited 0" >&2; failures=$((failures + 1))
 fi
 printf '%s\n' '#!/bin/bash' 'exit 1' > "${cansudo_stub}/sudo"
 if cansudo_probe "${cansudo_stub}:${cansudo_origpath}"; then
-   printf 'FAIL: rt_account_can_sudo true though sudo exited 1\n' >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: rt_account_can_sudo true though sudo exited 1" >&2; failures=$((failures + 1))
 else
-   printf 'ok: rt_account_can_sudo false when the exercised sudo fails\n'
+   printf '%s\n' "ok: rt_account_can_sudo false when the exercised sudo fails"
 fi
 ## fail-CLOSED: probe tools absent => report "can sudo" so the caller REJECTS (a missing
 ## runuser must never read as "account is clean"). Canary: the old no-guard body exited
 ## 127 -> `! rt_account_can_sudo` true -> a privileged account wrongly accepted.
 if cansudo_probe "${cansudo_stub}/none"; then
-   printf 'ok: rt_account_can_sudo fails closed when probe tools are absent\n'
+   printf '%s\n' "ok: rt_account_can_sudo fails closed when probe tools are absent"
 else
-   printf 'FAIL: rt_account_can_sudo failed OPEN with runuser/sudo absent\n' >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: rt_account_can_sudo failed OPEN with runuser/sudo absent" >&2; failures=$((failures + 1))
 fi
 safe-rm --recursive --force -- "${cansudo_stub}"
 
@@ -207,27 +207,27 @@ gate_probe() {
 }
 gate_rc=0; gate_probe 1000 acct "acct vboxusers" 1 || gate_rc=$?
 if [ "${gate_rc}" -eq 0 ]; then
-   printf 'ok: gate passes a clean unprivileged account\n'
+   printf '%s\n' "ok: gate passes a clean unprivileged account"
 else
-   printf 'FAIL: gate rejected a clean account (rc=%s)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: gate rejected a clean account (rc=${gate_rc})" >&2; failures=$((failures + 1))
 fi
 gate_rc=0; gate_probe 1000 acct "acct vboxusers" 0 || gate_rc=$?
 if [ "${gate_rc}" -eq 2 ]; then
-   printf 'ok: gate refuses a passwordless-sudo account (SETUP_RC)\n'
+   printf '%s\n' "ok: gate refuses a passwordless-sudo account (SETUP_RC)"
 else
-   printf 'FAIL: gate did not refuse a sudo-capable account (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: gate did not refuse a sudo-capable account (rc=${gate_rc}, want 2)" >&2; failures=$((failures + 1))
 fi
 gate_rc=0; gate_probe 0 acct "acct vboxusers" 1 || gate_rc=$?
 if [ "${gate_rc}" -eq 2 ]; then
-   printf 'ok: gate refuses a uid-0 account (SETUP_RC)\n'
+   printf '%s\n' "ok: gate refuses a uid-0 account (SETUP_RC)"
 else
-   printf 'FAIL: gate did not refuse uid 0 (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: gate did not refuse uid 0 (rc=${gate_rc}, want 2)" >&2; failures=$((failures + 1))
 fi
 gate_rc=0; gate_probe 1000 acct "acct sudo" 1 || gate_rc=$?
 if [ "${gate_rc}" -eq 2 ]; then
-   printf 'ok: gate refuses a privileged-group account (SETUP_RC)\n'
+   printf '%s\n' "ok: gate refuses a privileged-group account (SETUP_RC)"
 else
-   printf 'FAIL: gate did not refuse a privileged group (rc=%s, want 2)\n' "${gate_rc}" >&2; failures=$((failures + 1))
+   printf '%s\n' "FAIL: gate did not refuse a privileged group (rc=${gate_rc}, want 2)" >&2; failures=$((failures + 1))
 fi
 
 ## Fail CLOSED when `id` itself ERRORS. Stub id so the named subcommand prints a plausible
@@ -247,13 +247,13 @@ gate_probe_idfail() {
          [ "$1" != "${_fail}" ] || rc=1
          case "$1" in
             -u)
-               printf '1000\n'
+               printf '%s\n' "1000"
                ;;
             -gn)
-               printf 'acct\n'
+               printf '%s\n' "acct"
                ;;
             -nG)
-               printf 'acct\n'
+               printf '%s\n' "acct"
                ;;
          esac
          return "${rc}"
@@ -266,9 +266,9 @@ gate_probe_idfail() {
 for sub in -u -gn -nG; do
    gate_rc=0; gate_probe_idfail "${sub}" || gate_rc=$?
    if [ "${gate_rc}" -eq 2 ]; then
-      printf 'ok: gate fails closed when id %s errors (SETUP_RC)\n' "${sub}"
+      printf '%s\n' "ok: gate fails closed when id ${sub} errors (SETUP_RC)"
    else
-      printf 'FAIL: gate did not fail closed on id %s error (rc=%s, want 2)\n' "${sub}" "${gate_rc}" >&2
+      printf '%s\n' "FAIL: gate did not fail closed on id ${sub} error (rc=${gate_rc}, want 2)" >&2
       failures=$((failures + 1))
    fi
 done
@@ -279,14 +279,14 @@ done
 ## code, where the 'blessed' call was absent.
 for role in test leak blessed; do
    if grep --quiet --fixed-strings "rt_require_account_unprivileged \"\${account}\" ${role}" "${subject}"; then
-      printf 'ok: %s account wired through the privilege gate\n' "${role}"
+      printf '%s\n' "ok: ${role} account wired through the privilege gate"
    else
-      printf 'FAIL: %s account not routed through rt_require_account_unprivileged\n' "${role}" >&2; failures=$((failures + 1))
+      printf '%s\n' "FAIL: ${role} account not routed through rt_require_account_unprivileged" >&2; failures=$((failures + 1))
    fi
 done
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall pure-logic assertions passed\n'
+printf '%s\n' "" "all pure-logic assertions passed"

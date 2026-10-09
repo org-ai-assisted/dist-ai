@@ -125,7 +125,7 @@ run_install() {
 ## raw 'stat' of the missing destination.
 pkg1="${work}/pkg1"
 mkdir --parents -- "${pkg1}/usr/bin"
-printf 'x\n' > "${pkg1}/usr/bin/realfile"
+printf '%s\n' "x" > "${pkg1}/usr/bin/realfile"
 ln -s /etc/hostname "${pkg1}/usr/bin/escaping"
 out1=''
 rc1=0
@@ -144,7 +144,7 @@ fi
 ## install must SKIP it (the destination target is absent) rather than stat-crash.
 pkg2="${work}/pkg2"
 mkdir --parents -- "${pkg2}/usr/bin"
-printf 'x\n' > "${pkg2}/usr/bin/realfile"
+printf '%s\n' "x" > "${pkg2}/usr/bin/realfile"
 ln -s does-not-exist-in-tree "${pkg2}/usr/bin/danglink"
 out2=''
 rc2=0

@@ -79,7 +79,7 @@ fetch_is_unconditional() {
    ## Scope to update_repo()'s body: its opener line to the next column-0 '}'.
    body="$( sed -n '/^update_repo() {$/,/^}$/p' -- "${fsubject}" )"
    if [ -z "${body}" ]; then
-      printf 'no update_repo() {...} in %s (the function moved or was renamed -- update this test)\n' "${fsubject}"
+      printf '%s\n' "no update_repo() {...} in ${fsubject} (the function moved or was renamed -- update this test)"
       return 1
    fi
 
@@ -87,7 +87,7 @@ fetch_is_unconditional() {
    ## match, non-zero when absent; '|| true' keeps errexit from aborting on the absent case.
    fetch_text="$( printf '%s\n' "${body}" | grep -m1 -E '^[[:space:]]*git fetch --recurse-submodules' || true )"
    if [ -z "${fetch_text}" ]; then
-      printf 'no EXECUTED "git fetch --recurse-submodules" inside update_repo() in %s (removed, renamed, or commented out)\n' "${fsubject}"
+      printf '%s\n' "no EXECUTED \"git fetch --recurse-submodules\" inside update_repo() in ${fsubject} (removed, renamed, or commented out)"
       return 1
    fi
 
@@ -95,7 +95,7 @@ fetch_is_unconditional() {
    ## deepens it (project style keeps nesting indented).
    indent="${fetch_text%%[! ]*}"
    if [ "${#indent}" -ne 2 ]; then
-      printf 'the fetch is indented %d space(s), not update_repo 2-space base indent -- it looks nested in a conditional:\n%s\n' "${#indent}" "${fetch_text}"
+      printf '%s\n' "the fetch is indented ${#indent} space(s), not update_repo 2-space base indent -- it looks nested in a conditional:" "${fetch_text}"
       return 1
    fi
    return 0

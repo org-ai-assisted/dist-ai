@@ -51,9 +51,9 @@ fail_count=0
 check() {
    local label="$1" condition="$2"
    if [ "${condition}" = 'yes' ]; then
-      pass_count=$(( pass_count + 1 )); printf 'ok   - %s\n' "${label}"
+      pass_count=$(( pass_count + 1 )); printf '%s\n' "ok   - ${label}"
    else
-      fail_count=$(( fail_count + 1 )); printf 'FAIL - %s\n' "${label}" >&2
+      fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL - ${label}" >&2
    fi
 }
 
@@ -67,10 +67,10 @@ flags_tag() {
    ## literal) -- no 'cmd | grep -q' pipe (R-161) and no subprocess.
    case "${out}" in
       *"${tag}"*)
-         printf 'yes\n'
+         printf '%s\n' "yes"
          ;;
       *)
-         printf 'no\n'
+         printf '%s\n' "no"
          ;;
    esac
 }
@@ -99,7 +99,7 @@ clean="${work}/clean.bash"
 clean_rc=0
 "${STYLE}" --check -- "${clean}" >/dev/null 2>&1 || clean_rc=$?
 check "clean fully-strict .bash is spared (rc 0)" \
-   "$( [ "${clean_rc}" -eq 0 ] && printf 'yes\n' || printf 'no\n' )"
+   "$( [ "${clean_rc}" -eq 0 ] && printf '%s\n' "yes" || printf '%s\n' "no" )"
 
 printf '%s\n' "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

@@ -50,7 +50,7 @@ if [ -z "${dest}" ] || [ -z "${url}" ]; then
 fi
 
 src=""
-while IFS="$(printf '\t')" read -r map_url map_path; do
+while IFS="$(printf '%s' $'\t')" read -r map_url map_path; do
    if [ "${map_url}" = "${url}" ]; then
       src="${map_path}"
       break

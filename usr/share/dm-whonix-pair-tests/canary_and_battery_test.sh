@@ -21,7 +21,7 @@ export LC_ALL=C
 
 here="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 tool="${here}/../../bin/dm-whonix-pair"
-[ -x "${tool}" ] || { printf 'FAIL: dm-whonix-pair not found at %s\n' "${tool}" >&2; exit 1; }
+[ -x "${tool}" ] || { printf '%s\n' "FAIL: dm-whonix-pair not found at ${tool}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap
@@ -102,13 +102,13 @@ source "${tool}"
 
 pass=0
 fail=0
-check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"; else fail=$(( fail + 1 )); printf 'FAIL: %s\n' "$1"; fi }
-check_fail() { if [ "$2" -ne 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"; else fail=$(( fail + 1 )); printf 'FAIL: %s (rc=0, wanted nonzero)\n' "$1"; fi }
+check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: ${1}"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${1}"; fi }
+check_fail() { if [ "$2" -ne 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: ${1}"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${1} (rc=0, wanted nonzero)"; fi }
 has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 
 ## --- canary_gateway_pcap: fail-closed ------------------------------------------------------
 nictrace_pcap="${work}/pcap"
-printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
+printf '%s\n' "x" > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 ## The canary reads the consensus relay set from gw_relay_cache (main populates it while the GW is
 ## up, BEFORE the poweroff); point it at the fixture set_counts writes.
 # shellcheck disable=SC2034  ## consumed by the sourced dm-whonix-pair canary_gateway_pcap (dynamic scope)
@@ -118,9 +118,9 @@ gw_relay_cache="${work}/relay_ips"
 ## (all real relays), and a clean dst line to a pinned guard so the consensus set-diff passes.
 set_counts() {
    printf '%s\n' "$1" > "${work}/total"; printf '%s\n' "$2" > "${work}/hits"
-   printf '20\n' > "${work}/tor"; printf '1\n' > "${work}/pc"
+   printf '%s\n' "20" > "${work}/tor"; printf '%s\n' "1" > "${work}/pc"
    printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PC_IP4}" > "${work}/relay_ips"
-   printf 'IP 10.0.2.15.5 > %s.9001:\n' "${GUARD_PIN_IPS4[0]}" > "${work}/dsts"
+   printf '%s\n' "IP 10.0.2.15.5 > ${GUARD_PIN_IPS4[0]}.9001:" > "${work}/dsts"
 }
 
 set_counts 7 0
@@ -129,15 +129,15 @@ check 'canary clean (traffic present, 0 hits to any probe target) -> PASS' "${rc
 
 set_counts 7 3
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "canary CATCHES a leak (a probe target on the wire) -> FAIL_RC(${FAIL_RC}), a proven leak" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
+check "canary CATCHES a leak (a probe target on the wire) -> FAIL_RC(${FAIL_RC}), a proven leak" "$([ "${rc}" = "${FAIL_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 set_counts 0 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "canary blind capture (pcap empty of traffic) -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "canary blind capture (pcap empty of traffic) -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 nictrace_pcap="${work}/does-not-exist"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 nictrace_pcap="${work}/pcap"
 
 ## --- ws_battery: one short command on /mnt/shared, classified by the JSON verdict --------------
@@ -184,7 +184,7 @@ exit 1
 STUB
 chmod +x "${work}/vbe"
 rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
-check "ws_browser_probe: a staging/transport failure exits SETUP_RC(${SETUP_RC}), never FAIL_RC/leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_browser_probe: a staging/transport failure exits SETUP_RC(${SETUP_RC}), never FAIL_RC/leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## restore the echoing stub for anything after
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
@@ -196,33 +196,33 @@ chmod +x "${work}/vbe"
 ## guestcontrol does not convey the guest exit (a guest 2 reaches the host as 34), and a guest-side
 ## infra failure (dsudo failure / python traceback) exits 1 with NO JSON verdict -- the absence of
 ## the verdict line, not the exit, is what distinguishes infra failure from a real leak.
-jvout() { printf '{\n  "exit_code": %s,\n  "leak_detected": false,\n  "results": []\n}\n' "$1"; }
+jvout() { printf '%s\n' "{" "  \"exit_code\": ${1}," "  \"leak_detected\": false," "  \"results\": []" "}"; }
 rc=0; ( probe_verdict "$(jvout 0)" ) || rc=$?
 check 'probe_verdict: JSON exit_code 0 -> clean (0)' "${rc}"
 rc=0; ( probe_verdict "$(jvout 1)" ) || rc=$?
-check "probe_verdict: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+check "probe_verdict: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf '%s' "0" || printf '%s' "1")"
 rc=0; ( probe_verdict "$(jvout 2)" ) || rc=$?
-check "probe_verdict: JSON exit_code 2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "probe_verdict: JSON exit_code 2 (inconclusive) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## A guest-side crash (dsudo failure / python traceback) exits 1 with NO JSON verdict -> SETUP,
 ## never a false LEAK -- the exact misclassification this fix removes.
-rc=0; ( probe_verdict "$(printf 'sudo: a password is required\n')" ) || rc=$?
-check "probe_verdict: a dsudo failure (exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
-rc=0; ( probe_verdict "$(printf 'Traceback (most recent call last):\n  File x\nValueError\n')" ) || rc=$?
-check "probe_verdict: a python traceback (no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(printf '%s\n' "sudo: a password is required")" ) || rc=$?
+check "probe_verdict: a dsudo failure (exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
+rc=0; ( probe_verdict "$(printf '%s\n' "Traceback (most recent call last):" "  File x" "ValueError")" ) || rc=$?
+check "probe_verdict: a python traceback (no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 rc=0; ( probe_verdict '' ) || rc=$?
-check "probe_verdict: empty output (transport cut) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "probe_verdict: empty output (transport cut) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## Keyed on the real top-level exit_code line, NOT a lookalike inside a string value: a message
 ## mentioning exit_code must not override the true verdict.
-rc=0; ( probe_verdict "$(printf '{\n  "exit_code": 1,\n  "results": [ { "message": "saw exit_code: 0 in noise" } ]\n}\n')" ) || rc=$?
-check "probe_verdict: keys on the real exit_code (1), ignores a string-value lookalike (0) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+rc=0; ( probe_verdict "$(printf '%s\n' "{" "  \"exit_code\": 1," "  \"results\": [ { \"message\": \"saw exit_code: 0 in noise\" } ]" "}")" ) || rc=$?
+check "probe_verdict: keys on the real exit_code (1), ignores a string-value lookalike (0) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf '%s' "0" || printf '%s' "1")"
 
 ## --- ws_battery / ws_browser_probe: verdict is the JSON exit_code, not the host process exit ----
 ## Stub emits a pretty-printed exit_code line + a chosen host exit code.
-mk_json() { printf '#!/bin/bash\nprintf %s\nexit %s\n' "'  \"exit_code\": ${1}\n'" "${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+mk_json() { printf '%s\n' "#!/bin/bash" "printf '  \"exit_code\": ${1}\n'" "exit ${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
 ## A probe LEAK (JSON exit_code 1), clean host exit -> 1.
 mk_json 1 0
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
-check "ws_battery: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+check "ws_battery: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf '%s' "0" || printf '%s' "1")"
 ## A CLEAN verdict (exit_code 0) even with a MANGLED nonzero host exit (34) -> clean (0).
 mk_json 0 34
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
@@ -235,11 +235,11 @@ exit 1
 STUB
 chmod +x "${work}/vbe"
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?
-check "ws_battery: an infra failure (host exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_battery: an infra failure (host exit 1, no JSON) -> SETUP_RC(${SETUP_RC}), never a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## Browser probe: staging succeeds (exit 0), the probe reports a LEAK (JSON exit_code 1) -> 1.
 mk_json 1 0
 rc=0; ( ws_browser_probe ) >/dev/null 2>&1 || rc=$?
-check "ws_browser_probe: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf 0 || printf 1)"
+check "ws_browser_probe: JSON exit_code 1 -> LEAK (1)" "$([ "${rc}" = 1 ] && printf '%s' "0" || printf '%s' "1")"
 ## restore the echoing stub for anything after
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
@@ -249,23 +249,23 @@ chmod +x "${work}/vbe"
 
 ## --- ws_assert_root: root-capability preflight, fail-closed ----------------------------------
 ## Controlled vbe stub (not the echoing one): simulate the guest snippet's verdict + rc.
-mk_vbe() { printf '#!/bin/bash\n%s\n' "$1" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+mk_vbe() { printf '%s\n' "#!/bin/bash" "${1}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
 mk_vbe 'printf "ROOT_OK\n"; exit 0'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
 check 'ws_assert_root PASSES when the guest confirms root via dsudo (ROOT_OK)' "${rc}"
 mk_vbe 'printf "WRONGUSER=user\n"; exit 10'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
-check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when the guest session is the wrong account" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when the guest session is the wrong account" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 mk_vbe 'printf "NOROOT\n"; exit 11'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
-check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot obtain root" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot obtain root" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 mk_vbe 'printf "DSUDO_RUN_FAIL\n"; exit 12'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
-check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot RUN a root command (test -d /usr)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) when dsudo cannot RUN a root command (test -d /usr)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## exit 0 but NO ROOT_OK marker (e.g. truncated output) must still fail-closed, never a vacuous pass.
 mk_vbe 'printf "garbage\n"; exit 0'
 rc=0; ( ws_assert_root ) >/dev/null 2>&1 || rc=$?
-check "ws_assert_root -> SETUP_RC(${SETUP_RC}) on a missing ROOT_OK marker (no vacuous pass)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "ws_assert_root -> SETUP_RC(${SETUP_RC}) on a missing ROOT_OK marker (no vacuous pass)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 ## Restore the echoing stub for the remaining assertions.
 cat > "${work}/vbe" <<'STUB'
 #!/bin/bash
@@ -385,7 +385,7 @@ gw_started='false'
 # shellcheck disable=SC2034  ## consumed by the sourced dm-whonix-pair on_exit
 share_dir=''
 
-printf 'PCAPDATA\n' > "${work}/trace.pcap"
+printf '%s\n' "PCAPDATA" > "${work}/trace.pcap"
 nictrace_pcap="${work}/trace.pcap"
 ## Run on_exit with $?=FAIL_RC without toggling errexit: the failing subshell feeds
 ## its status into on_exit via `||` (bash gives B the status of A in `A || B`), and a
@@ -397,7 +397,7 @@ rc=0; ls "${work}"/whonix-pair-leak-*.txt >/dev/null 2>&1 || rc=1
 check 'on_exit writes a human-readable decode alongside the preserved pcap' "${rc}"
 
 safe-rm -f -- "${work}"/whonix-pair-leak-*.pcap "${work}"/whonix-pair-leak-*.txt 2>/dev/null || true
-printf 'PCAPDATA\n' > "${work}/trace.pcap"
+printf '%s\n' "PCAPDATA" > "${work}/trace.pcap"
 nictrace_pcap="${work}/trace.pcap"
 ## Clean PASS: set $?=PASS_RC, then run on_exit (its own return absorbed by `|| true`).
 ## No errexit toggle, and no `A && B || C` (SC2015) ambiguity.
@@ -428,16 +428,16 @@ export VBM_STATE VBM_SNAP_RC
 ## leak. Canary: old code died FAIL_RC(5), so this rc check fails on it.
 VBM_STATE='poweroff'; VBM_SNAP_RC=1
 rc=0; ( restore_fresh 'X' ) >/dev/null 2>&1 || rc=$?
-check "restore_fresh: snapshot-restore failure exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "restore_fresh: snapshot-restore failure exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## assert_vm_running: a crashed/aborted VM is an infra failure -> SETUP_RC, not a leak.
 VBM_STATE='aborted'; VBM_SNAP_RC=0
 rc=0; ( assert_vm_running 'X' 'setup-vs-leak test' ) >/dev/null 2>&1 || rc=$?
-check "assert_vm_running: a crashed VM exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "assert_vm_running: a crashed VM exits SETUP_RC(${SETUP_RC}), not a leak verdict" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 unset VBM_STATE VBM_SNAP_RC
 VBOXMANAGE="${work}/VBoxManage"
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

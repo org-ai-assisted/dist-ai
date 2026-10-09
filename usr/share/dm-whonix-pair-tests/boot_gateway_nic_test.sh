@@ -23,7 +23,7 @@ export LC_ALL=C
 
 here="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 tool="${here}/../../bin/dm-whonix-pair"
-[ -x "${tool}" ] || { printf 'FAIL: dm-whonix-pair not found at %s\n' "${tool}" >&2; exit 1; }
+[ -x "${tool}" ] || { printf '%s\n' "FAIL: dm-whonix-pair not found at ${tool}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap
@@ -38,7 +38,7 @@ exit 0
 STUB
 chmod +x "${work}/VBoxManage"
 export LOG="${work}/order.log"
-printf '' > "${LOG}"
+printf '%s' "" > "${LOG}"
 
 export PATH="${work}:${PATH}"
 export VBOXMANAGE="${work}/VBoxManage"
@@ -51,12 +51,12 @@ source "${tool}"
 restore_fresh() { :; }
 wait_guestcontrol_ready() { return 0; }
 clean_poweroff() { :; }
-vm_state() { printf 'poweroff'; }
-gw_pin_guards() { printf 'PIN\n' >> "${LOG}"; }
+vm_state() { printf '%s' "poweroff"; }
+gw_pin_guards() { printf '%s\n' "PIN" >> "${LOG}"; }
 
 pass=0
 fail=0
-check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"; else fail=$(( fail + 1 )); printf 'FAIL: %s\n' "$1"; fi }
+check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: ${1}"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${1}"; fi }
 
 boot_gateway >/dev/null 2>&1
 log="$(cat -- "${LOG}")"
@@ -78,10 +78,10 @@ check 'NIC is reconnected AFTER the pin (for the traced boot)' "${rc}"
 rc=0; grep --quiet -- 'cableconnected1 on .*nictrace1 on\|nictrace1 on .*cableconnected1 on' <<< "${log}" || rc=1
 check 'reconnect + nictrace enablement happen together (single offline modifyvm)' "${rc}"
 ## Fail-closed: a NIC toggle that cannot run aborts SETUP, never a silent pass.
-printf '#!/bin/bash\nexit 1\n' > "${work}/VBoxManage"; chmod +x "${work}/VBoxManage"
+printf '%s\n' "#!/bin/bash" "exit 1" > "${work}/VBoxManage"; chmod +x "${work}/VBoxManage"
 rc=0; ( boot_gateway ) >/dev/null 2>&1 || rc=$?
-check "a failed NIC toggle -> SETUP_RC(${SETUP_RC}), never a silent pass" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "a failed NIC toggle -> SETUP_RC(${SETUP_RC}), never a silent pass" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

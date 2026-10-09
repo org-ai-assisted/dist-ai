@@ -164,9 +164,12 @@ canary_script="${work}/canary.sh"
    printf '%s\n' '#!/bin/bash'
    printf '%s\n' 'set -o errexit'
    printf '%s\n' 'set -o nounset'
-   printf 'mydir=%q\n'   "${mydir}"
-   printf 'log_dir=%q\n' "${log_dir}"
-   printf 'work=%q\n'    "${work}"
+   printf -v mydir_q '%q' "${mydir}"
+   printf '%s\n' "mydir=${mydir_q}"
+   printf -v log_dir_q '%q' "${log_dir}"
+   printf '%s\n' "log_dir=${log_dir_q}"
+   printf -v work_q '%q' "${work}"
+   printf '%s\n' "work=${work_q}"
    printf '%s\n' 'declare -A suite_elapsed_map=()'
    printf '%s\n' 'wire_env=()'
    printf '%s\n' 'wire_args=()'
