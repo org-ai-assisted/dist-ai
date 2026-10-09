@@ -35,6 +35,8 @@ EXPECTED = [
     ("vuln-round2", "home-recursive-write", "HIGH"),       ## find -L ... -delete
     ("vuln-round2", "symlink-follow", "HIGH"),             ## dd of= home
     ("vuln-round2", "world-writable-perms", "MEDIUM"),     ## chmod a=w
+    ("vuln-env-single", "home-recursive-write", "MEDIUM"), ## env -- VAR=val chown
+    ("vuln-env-multi", "home-recursive-write", "MEDIUM"),  ## env -- A=1 B=2 chown (loop)
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
