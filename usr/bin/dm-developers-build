@@ -44,13 +44,14 @@ die() {
 dm_developers_build_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 DM_BUILD_ACCOUNT="${DM_BUILD_ACCOUNT:-${dm_developers_build_dir}/dm-build-account}"
 source_checkout="${DM_SOURCE_CHECKOUT:-/home/admin/derivative-maker}"
-flavor='kicksecure-lxqt'
+flavor=''
 
 print_usage() {
    printf '%s\n' "Usage: ${me} <kicksecure|whonix> [--flavor FLAVOR] [--source-checkout DIR]
 
 Build a <flavor> ISO as the dedicated persist-bild-<guest> account (default flavor
-kicksecure-lxqt). Seeds the account's checkout from --source-checkout (default
+kicksecure-lxqt for kicksecure, whonix-host-lxqt for whonix; FLAVOR must belong to
+GUEST). Seeds the account's checkout from --source-checkout (default
 /home/admin/derivative-maker). Prints the built ISO path on the last line. Must run as root."
 }
 
@@ -85,6 +86,25 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
+## The ISO flavor of each guest, so 'whonix' never silently builds a Kicksecure image.
+if [ -z "${flavor}" ]; then
+   case "${guest}" in
+      kicksecure)
+         flavor='kicksecure-lxqt'
+         ;;
+      whonix)
+         flavor='whonix-host-lxqt'
+         ;;
+   esac
+fi
+case "${flavor}" in
+   "${guest}"-*)
+      ;;
+   *)
+      die 2 "flavor '${flavor}' does not belong to guest '${guest}'"
+      ;;
+esac
+
 [ "$(id -u)" = '0' ] || die 1 "must run as root"
 [ -d "${source_checkout}/.git" ] || die 2 "source checkout '${source_checkout}' is not a git checkout"
 
@@ -111,14 +131,14 @@ binary_out="${home}/derivative-binary"
 ## than silently ship a wrong version.
 ref_owner="$(stat -c '%U' "${source_checkout}")"
 runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
-   || printf '%s: WARNING: tag fetch into %s failed; version label may be stale\n' "${me}" "${source_checkout}" >&2
+   || die 1 "tag fetch into ${source_checkout} failed; refusing to build with a possibly stale version label"
 desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags 2>/dev/null || true)"
 case "${desc}" in
    *-developers-only-*|*-developers-only)
       printf '%s: reference describes as %s\n' "${me}" "${desc}"
       ;;
    *)
-      printf '%s: WARNING: reference describe is %s -- release tags may be missing; the ISO version label may be wrong\n' "${me}" "${desc:-<none>}" >&2
+      die 1 "reference describe is '${desc:-<none>}', not a *-developers-only tag; release tags are missing and the ISO version label would be wrong"
       ;;
 esac
 
@@ -133,11 +153,16 @@ chown --recursive "${account}:${account}" "${checkout}"
 ## fs.protected_regular=2 blocks even for root). A durable supervisor watches it grow.
 log="${home}/derivative-build.log"
 
-## ISO set BEFORE the build: the freshly built ISO is the path present AFTER but not
-## before (set difference -- never mtime, which reproducible builds clamp to a fixed past).
+## ISO set BEFORE the build, keyed by path + inode + ctime: the freshly built ISO is the
+## key present AFTER but not before. A rebuild of the same version reuses the PATH (the
+## output dir persists), so path alone misses it; ctime, unlike mtime (which reproducible
+## builds clamp to a fixed past), always moves on a rewrite.
+iso_snapshot() {
+   find "${binary_out}" -name '*.Intel_AMD64.iso' -printf '%p\t%i\t%C@\n' 2>/dev/null | sort
+}
 mkdir --parents -- "${binary_out}"
 chown "${account}:${account}" "${binary_out}"
-before="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
+before="$(iso_snapshot)"
 
 ## Values reach the account's shell via `env` (NOT spliced into the single-quoted program
 ## -- that quote-nesting silently eats values). The inner program reads them from the
@@ -177,12 +202,12 @@ if [ "${build_rc}" -ne 0 ]; then
    exit "${build_rc}"
 fi
 
-## 5. locate the freshly built ISO by set difference against the pre-build snapshot (NOT
-## mtime -- reproducible builds clamp mtimes). Exactly one new ISO per build.
-after="$(find "${binary_out}" -name '*.Intel_AMD64.iso' 2>/dev/null | sort)"
-iso="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -1)"
+## 5. locate the freshly built (new or rewritten) ISO by set difference against the
+## pre-build snapshot. Exactly one ISO per build.
+after="$(iso_snapshot)"
+iso="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -1 | cut -f1)"
 if [ -z "${iso}" ] || [ ! -f "${iso}" ]; then
-   die 1 "no new ISO appeared under ${binary_out} after the build"
+   die 1 "no new or rewritten ISO appeared under ${binary_out} after the build"
 fi
 
 printf '%s: built %s\n' "${me}" "${iso}"
