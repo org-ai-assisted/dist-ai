@@ -274,10 +274,10 @@ def run():
        'tag_json: a tagged key colliding with a literal key keeps BOTH values')
     ok(_tj(['a\udcffb']) == ['a\ufffd\ufffd\ufffdb'],
        'tag_json: a lone surrogate is scrubbed (UTF-8 safe), not a crash')
-    _deep = []
+    _deep: list = []
     _cur = _deep
     for _ in range(5000):
-        _nxt = []
+        _nxt: list = []
         _cur.append(_nxt)
         _cur = _nxt
     _cur.append('z\u200b')
