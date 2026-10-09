@@ -19,9 +19,9 @@ work: a --ro-bind layered after --proc /proc successfully shadows the real
 pseudo-file for the sandboxed process).
 
 The list of asserted hardening tokens is NOT duplicated by hand here -- it is
-read from the real fragment's top-level `kernel_hardening_cmdline_tokens`
-array by sourcing it (see _load_tokens), so this suite can never silently
-drift from what the check actually asserts.
+read from the real fragment's `kernel_hardening_cmdline_tokens` function by
+sourcing it (see _load_tokens), so this suite can never silently drift from
+what the check actually asserts.
 """
 
 import os
@@ -49,10 +49,10 @@ _MISSING_RE = re.compile(
 
 def _load_tokens(path: str) -> list:
     """The token list the check asserts, read by sourcing the real fragment
-    and printing its array, so it can never drift by hand-copying."""
+    and calling its list function, so it can never drift by hand-copying."""
     out = run_sourced(
         fragment_sources(path),
-        'printf "%s\\n" "${kernel_hardening_cmdline_tokens[@]}"')
+        'kernel_hardening_cmdline_tokens')
     tokens = out.split('\n') if out else []
     if not tokens:
         raise LookupError(
@@ -170,6 +170,20 @@ class TestKernelHardeningCmdlineIsolatedScenarios(ScenarioTestBase):
         self.assertCleanRun(r)
         self.assertIn('>Present<', r.joined())
         self.assertEqual(r.exit_code, '0')
+
+    ## -- a config clearing a same-named global cannot empty the list -------
+    def test_config_global_cannot_clear_token_list(self) -> None:
+        ## /etc/systemcheck.d/*.conf is sourced into the same shell before the
+        ## check runs; an empty list would make it vacuously green.
+        r = run_check_scenario_isolated(
+            self.check(FILE), FUNC,
+            env_setup='verbose=1\nkernel_hardening_cmdline_tokens=()',
+            hide_dirs=self.HIDE,
+            bind_files=[('/proc/cmdline', CMDLINE_PREFIX, False)])
+        self.assertCleanRun(r)
+        self.assertIn('>Missing<', r.joined())
+        self.assertEqual(set(_missing_list(r.joined())), set(self.tokens))
+        self.assertEqual(r.exit_code, '1')
 
     ## -- Qubes: cmdline model differs, report info rather than fail --------
     def test_qubes_reports_info_not_failure(self) -> None:
