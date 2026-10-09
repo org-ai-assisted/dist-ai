@@ -30,7 +30,7 @@ if [ -z "${subject}" ]; then
    fi
 fi
 [ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
-# shellcheck disable=SC1090
+# shellcheck source=../../bin/dm-release-test
 source "${subject}"
 
 failures=0
@@ -42,9 +42,17 @@ cleanup_test_cleanup() {
 }
 trap cleanup_test_cleanup EXIT
 
+## Every seam that keeps the subject off REAL state is set before the first subject call:
+## run as root, an unset seam would reclaim a real kept run's marker and staged ISO dir.
+export ISO_DIR="${work}/iso"
+export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
+export DM_RELEASE_TEST_STATE_DIR="${work}/state"
+mkdir --parents -- "${ISO_DIR}"
+
 stubbin="${work}/bin"
 mkdir --parents -- "${stubbin}"
 order="${work}/order.log"
+busctl_log="${work}/busctl.log"
 
 ## getent stub: the eph account resolves to a fake home under ${work}; anything else is
 ## passed to the real getent.
@@ -73,6 +81,21 @@ for tool in image-test-gc pkill userdel; do
    } > "${stubbin}/${tool}"
 done
 chmod 0770 -- "${stubbin}/image-test-gc" "${stubbin}/pkill" "${stubbin}/userdel"
+
+## pgrep stub: the account's processes are STUB_PGREP_PIDS (none when empty). busctl stub:
+## records the call, fails when STUB_BUSCTL_FAIL=1.
+cat > "${stubbin}/pgrep" <<'EOF'
+#!/bin/bash
+[ -n "${STUB_PGREP_PIDS:-}" ] || exit 1
+tr ' ' '\n' <<< "${STUB_PGREP_PIDS}"
+EOF
+cat > "${stubbin}/busctl" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> '${busctl_log}'
+[ "\${STUB_BUSCTL_FAIL:-0}" != 1 ] || exit 1
+exit 0
+EOF
+chmod 0770 -- "${stubbin}/pgrep" "${stubbin}/busctl"
 
 ## Globals rt_eph_cleanup reads (exported so shellcheck sees them used).
 export PATH="${stubbin}:${PATH}"
@@ -105,11 +128,10 @@ check "userdel was invoked" "$([ -n "${userdel_line}" ] && printf true || printf
 check "pkill ran BEFORE userdel" "$([ -n "${pkill_line}" ] && [ -n "${userdel_line}" ] && [ "${pkill_line}" -lt "${userdel_line}" ] && printf true || printf false)"
 
 ## ---- keep-on-failure + reclaim ------------------------------------------------------
-export ISO_DIR="${work}/iso"
-mkdir --parents -- "${ISO_DIR}"
-## Root-only state dir (locks + kept markers); the test seam keeps it under ${work}.
-export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
-marker="$(rt_kept_marker 'eph-inst-kicksecure-18-2-3-5')"
+rt_kept_marker 'eph-inst-kicksecure-18-2-3-5'
+marker="${rt_marker}"
+check "keep: marker lives in the persistent state dir, not the /run lock dir" \
+   "$([ "${marker}" = "${DM_RELEASE_TEST_STATE_DIR}/kept-eph-inst-kicksecure-18-2-3-5.staged" ] && printf true || printf false)"
 
 ## Sets $? for the next command, as main's exit status does for the EXIT trap.
 rc_is() {
@@ -158,7 +180,8 @@ check "reclaim: ignores a '..' escape from ISO_DIR/.built-*" "$([ -d "${victim}"
 ## run holds its lock) and a persist-* account are never touched; the current account is
 ## left to the caller.
 true >| "${order}"
-lockdir="$(rt_lock_dir)"
+rt_lock_dir
+lockdir="${rt_lockdir}"
 exec {held_fd}>"${lockdir}/dm-release-test-eph-inst-kicksecure-built.lock"
 flock --nonblock "${held_fd}"
 rt_sweep_eph_leftovers 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
@@ -167,6 +190,65 @@ check "sweep: unlocked leftover reclaimed" "$(grep --quiet -- '^userdel .*eph-in
 check "sweep: locked (live) account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-built' "${order}" && printf false || printf true)"
 check "sweep: current account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-18-2-3-5' "${order}" && printf false || printf true)"
 check "sweep: persist account untouched" "$(grep --quiet -- 'persist-inst' "${order}" && printf false || printf true)"
+
+## (f) an unusable state/lock dir ABORTS the run (SETUP rc 2). A die inside "$(...)" was
+## masked: the marker path collapsed to '/kept-ACCOUNT.staged' and the keep "succeeded".
+printf '%s\n' 'not a dir' > "${work}/afile"
+export DM_RELEASE_TEST_KEEP_FAILED=1
+bad_rc=0
+(
+   # shellcheck disable=SC2030  # scoped to this subshell on purpose
+   export DM_RELEASE_TEST_STATE_DIR="${work}/afile/state" DM_RELEASE_TEST_LOCK_DIR="${work}/afile/lock"
+   rt_staged_dir="${ISO_DIR}/.built-bad"
+   rc_is 5 || rt_eph_cleanup
+) >/dev/null 2>&1 || bad_rc=$?
+check "unusable state dir aborts with the SETUP rc (no masked die)" "$([ "${bad_rc}" = 2 ] && printf true || printf false)"
+rel_rc=0
+(
+   # shellcheck disable=SC2030,SC2031  # scoped to this subshell on purpose
+   export DM_RELEASE_TEST_LOCK_DIR='relative/lock'
+   rt_lock_dir
+) >/dev/null 2>&1 || rel_rc=$?
+check "a relative lock dir is refused" "$([ "${rel_rc}" = 2 ] && printf true || printf false)"
+
+## (g) a run starting while a sweep briefly holds its account's lock WAITS for it (bounded),
+## instead of dying 'another run holds the lock'.
+wait_lock="${lockdir}/dm-release-test-eph-inst-wait.lock"
+held_flag="${work}/held"
+## Hold the lock for $1 seconds in the background; return once it is actually held.
+hold_wait_lock() {
+   safe-rm --force -- "${held_flag}"
+   # shellcheck disable=SC2016  # positional args of the inner sh
+   flock -o "${wait_lock}" sh -c 'touch -- "$1" && sleep "$2"' sh "${held_flag}" "$1" &
+   sweep_holder=$!
+   while [ ! -e "${held_flag}" ]; do
+      sleep 0.1
+   done
+}
+hold_wait_lock 3
+wait_rc=0
+( DM_RELEASE_TEST_LOCK_WAIT=30 rt_lock_account 'eph-inst-wait' ) >/dev/null 2>&1 || wait_rc=$?
+check "lock: waits out a briefly held lock (rc=${wait_rc})" "$([ "${wait_rc}" = 0 ] && printf true || printf false)"
+wait "${sweep_holder}" || true
+hold_wait_lock 600
+wait_rc=0
+( DM_RELEASE_TEST_LOCK_WAIT=1 rt_lock_account 'eph-inst-wait' ) >"${work}/wait.out" 2>&1 || wait_rc=$?
+check "lock: the wait is bounded, dies with the SETUP rc (rc=${wait_rc}: $(tr '\n' ' ' < "${work}/wait.out"))" "$([ "${wait_rc}" = 2 ] && printf true || printf false)"
+## flock -o: the lock lives only in the flock process, so killing it releases the lock.
+kill -- "${sweep_holder}" 2>/dev/null || true
+wait "${sweep_holder}" || true
+
+## (h) a kept VM leaves this run's cgroup: its processes move into their own scope, and a
+## failure to do so is reported, never silent.
+keep_out="${work}/keep.out"
+rt_staged_dir=""
+true >| "${busctl_log}"
+STUB_PGREP_PIDS='4242 4243' rc_is 5 || STUB_PGREP_PIDS='4242 4243' rt_eph_cleanup 2>"${keep_out}" >/dev/null
+check "keep: VM processes moved into their own scope" \
+   "$(grep --quiet -- 'StartTransientUnit .*dm-release-test-kept-eph-inst-kicksecure-18-2-3-5-.*\.scope fail 1 PIDs au 2 4242 4243 0' "${busctl_log}" && printf true || printf false)"
+rc_is 5 || STUB_PGREP_PIDS='4242' STUB_BUSCTL_FAIL=1 rt_eph_cleanup 2>"${keep_out}" >/dev/null
+check "keep: a failed detach is reported loudly" \
+   "$(grep --quiet -- 'dies as soon as' "${keep_out}" && printf true || printf false)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s cleanup assertion(s) failed\n' "${failures}" >&2
