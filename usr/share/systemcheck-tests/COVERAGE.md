@@ -2,9 +2,11 @@
 
 <!-- AI-Assisted -->
 
-Map of what the suite exercises and where the gaps are. Run everything with:
+Map of what the suite exercises and where the gaps are. Run everything (both
+suites, strict skip policy) with:
 
-    SYSTEMCHECK_REPO=/path/to/systemcheck python3 -m pytest usr/share/systemcheck-tests/ -q
+    dist-ai-tests-all --component systemcheck --component-root /path/to/systemcheck \
+       --helper-scripts-root /path/to/helper-scripts
 
 ## Test layers
 
