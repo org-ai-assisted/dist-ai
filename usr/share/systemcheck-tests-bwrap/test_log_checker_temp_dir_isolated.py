@@ -14,8 +14,7 @@ attacker-shaped world-readable dir.
 
 prep_temp_dir hardcodes /var/cache/systemcheck-log-checker, which exists on
 every host, so each case needs a bubblewrap tmpfs over /var/cache. The other
-log-checker hardening cases: systemcheck-tests
-test_log_checker_config_hardening.py.
+log-checker hardening cases: test_log_checker_config_hardening.py.
 """
 
 import unittest

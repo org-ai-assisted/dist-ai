@@ -26,8 +26,10 @@ genuine external / root actions (leaprun, safe-rm) and the GUI-format sinks
 (sanitize-string / br_add_to_file / stcatn) are stubbed, for deterministic,
 offline assertions. Absolute-path state (the Qubes marker-vm, the /etc config
 dirs) is neutralized with a bubblewrap tmpfs only where it EXISTS on the host,
-so on a non-Qubes CI container these run plain. The prep_temp_dir TOCTOU cases
-always need bubblewrap: systemcheck-tests-bwrap
+so on a non-Qubes CI container these run plain -- and still gate there, since a
+real failure is exit 1 even when the sub-suite's skip is authorized. They live
+in this sub-suite because on a Qubes host or one with systemcheck installed
+they do need bubblewrap. The prep_temp_dir TOCTOU cases:
 test_log_checker_temp_dir_isolated.py.
 """
 

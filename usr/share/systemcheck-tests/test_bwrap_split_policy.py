@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 ## A parent case using any of these needs a working bwrap sandbox.
 BWRAP_USE = re.compile(
-    r"run_check_scenario_isolated\(|bwrap_available\(|_run_prep_temp_dir\(|'bwrap'")
+    r"run_check_scenario_isolated\(|bwrap_available\(|LogCheckerHardeningBase|'bwrap'")
 
 
 def _sub_suite_runner() -> str:
@@ -41,6 +41,8 @@ def _sub_suite_runner() -> str:
 
 
 class TestBwrapSplitPolicy(unittest.TestCase):
+    stub_dir: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.stub_dir = tempfile.mkdtemp()
@@ -49,7 +51,7 @@ class TestBwrapSplitPolicy(unittest.TestCase):
             handle.write('#!/bin/sh\n'
                          'echo "bwrap: No permissions to create new namespace" >&2\n'
                          'exit 1\n')
-        os.chmod(stub, 0o755)  # nosec B103 -- test stub must be executable
+        os.chmod(stub, 0o755)  # nosec B103
 
     @classmethod
     def tearDownClass(cls) -> None:

@@ -57,6 +57,8 @@ def run(start_directory, pattern, verbosity, strict_skips):
       start_dir=start_directory, pattern=pattern)
    result = unittest.TextTestRunner(
       verbosity=verbosity, resultclass=_CountingResult).run(suite)
+   ## run() is typed as returning the base TestResult; resultclass makes it ours.
+   assert isinstance(result, _CountingResult)  # nosec B101
 
    ## wasSuccessful() is False on a failure, an error, OR an unexpected success.
    if not result.wasSuccessful():

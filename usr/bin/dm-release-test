@@ -505,8 +505,9 @@ rt_require_fleet_member() {
 ## Child VM processes are spawned via sudo / run_as_target_user (closefrom 3), so they do
 ## not inherit this fd and cannot carry the lock past our exit. Test seam:
 ## DM_RELEASE_TEST_LOCK_DIR.
-rt_lock_account() {
-   local lockdir lockfile
+## Print the root-only state dir (locks + kept-run markers), creating it 0700.
+rt_lock_dir() {
+   local lockdir
    lockdir="${DM_RELEASE_TEST_LOCK_DIR:-/run/dm-release-test}"
    mkdir --parents -- "${lockdir}" \
       || die "${SETUP_RC}" "cannot create lock dir '${lockdir}'"
@@ -514,6 +515,12 @@ rt_lock_account() {
    ## set the deepest path with -p); /run is root-only so no unprivileged pre-create races.
    chmod 0700 -- "${lockdir}" \
       || die "${SETUP_RC}" "cannot secure lock dir '${lockdir}'"
+   printf '%s\n' "${lockdir}"
+}
+
+rt_lock_account() {
+   local lockdir lockfile
+   lockdir="$(rt_lock_dir)"
    lockfile="${lockdir}/dm-release-test-$1.lock"
    exec {rt_lock_fd}>"${lockfile}" \
       || die "${SETUP_RC}" "cannot open lock '${lockfile}'"
@@ -621,23 +628,25 @@ rt_provision_leak() {
    log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force', power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
-## Name of the marker, in a kept account's home, recording the kept run's staged ISO dir
-## so rt_eph_reclaim removes exactly that dir (the VM still has the ISO attached).
-rt_kept_staged_marker='.dm-release-test-kept-staged-dir'
+## Marker recording a kept run's staged ISO dir (the VM still has the ISO attached), so
+## rt_eph_reclaim removes exactly that dir. Lives in the ROOT-ONLY lock dir: root must
+## never write into, or read from, a home the unprivileged account controls (a planted
+## symlink would redirect root's write; a FIFO would hang the EXIT trap under the lock).
+rt_kept_marker() {
+   printf '%s\n' "$(rt_lock_dir)/kept-$1.staged"
+}
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
 ## cleanup path, so an abort anywhere after creation still reclaims it -- unless the
 ## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection.
 rt_eph_cleanup() {
    local rc=$?
-   local account_home
    if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
-      account_home="$(getent passwd "${eph_account}" | cut -d: -f6)"
-      if [ -n "${rt_staged_dir}" ] && [ -n "${account_home}" ]; then
-         printf '%s\n' "${rt_staged_dir}" > "${account_home}/${rt_kept_staged_marker}" \
+      if [ -n "${rt_staged_dir}" ]; then
+         printf '%s\n' "${rt_staged_dir}" > "$(rt_kept_marker "${eph_account}")" \
             || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
       fi
-      log notice "kept FAILED run for inspection: account '${eph_account}', VM left running (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next run of this lane reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
+      log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
       return 0
    fi
    ## Reap the per-run built-ISO staging dir first, on ANY exit (error return, signal) and
@@ -650,15 +659,33 @@ rt_eph_cleanup() {
    rt_eph_reclaim "${eph_account}"
 }
 
+## Reclaim every OTHER eph-inst-* account whose lock is free: every ephemeral run holds
+## its account lock for its whole life, so a free lock means a leftover (a kept failed
+## run or a crash), never a live run. Bounds kept VMs to the most recent failure.
+rt_sweep_eph_leftovers() {
+   local current other lockfile
+   current="$1"
+   while IFS= read -r other; do
+      [ "${other}" = "${current}" ] && continue
+      lockfile="$(rt_lock_dir)/dm-release-test-${other}.lock"
+      (
+         exec {sweep_fd}>"${lockfile}" || exit 0
+         flock --nonblock "${sweep_fd}" || exit 0
+         log notice "reclaiming leftover ephemeral account '${other}'"
+         rt_eph_reclaim "${other}"
+      ) || true
+   done < <(getent passwd | cut -d: -f1 | grep -- '^eph-inst-' || true)
+}
+
 ## Remove an ephemeral account and everything it owns: VirtualBox state (incl. a kept
 ## run's still-running VM), processes, home, and a kept run's staged ISO dir.
 rt_eph_reclaim() {
-   local account account_home kept_dir
+   local account marker kept_dir
    account="$1"
-   account_home="$(getent passwd "${account}" | cut -d: -f6)"
+   marker="$(rt_kept_marker "${account}")"
    kept_dir=""
-   if [ -n "${account_home}" ] && [ -f "${account_home}/${rt_kept_staged_marker}" ]; then
-      kept_dir="$(cat -- "${account_home}/${rt_kept_staged_marker}")"
+   if [ -f "${marker}" ]; then
+      kept_dir="$(cat -- "${marker}")"
    fi
    "${IMAGE_TEST_GC}" "${account}" || true
    ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers after the VM stops and
@@ -687,6 +714,7 @@ rt_eph_reclaim() {
          [[ "${kept_dir}" == *'/../'* ]] || safe-rm --recursive --force -- "${kept_dir}" 2>/dev/null || true
          ;;
    esac
+   safe-rm --force -- "${marker}" 2>/dev/null || true
    rt_refresh_fleet
 }
 
@@ -822,7 +850,7 @@ rt_lane_kicksecure() {
    if [ "${run_checks}" = 'true' ]; then
       checks_arg=( --checks )
    fi
-   if [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
+   if [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ] && [ -n "${eph_account}" ]; then
       keep_arg=( --keep-failed )
    fi
 
@@ -1071,6 +1099,10 @@ main() {
    ## creation or the run still reclaims the ephemeral account on exit.
    trap rt_eph_cleanup EXIT
    if [ "${account_kind}" = 'prebless' ]; then
+      ## Hold the account lock for the whole run (the --iso lane took it above): a
+      ## concurrent same-version run must not have its live account reclaimed below.
+      [ -n "${rt_lock_fd}" ] || rt_lock_account "${account}"
+      rt_sweep_eph_leftovers "${account}"
       ## A same-named account left by a KEPT failed run (or a crash) still holds its VM
       ## and state; reclaim it so this run starts from a genuinely clean account.
       if id "${account}" >/dev/null 2>&1; then

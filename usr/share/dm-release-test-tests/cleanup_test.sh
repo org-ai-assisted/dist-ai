@@ -57,6 +57,10 @@ real_getent='/usr/bin/getent'
    printf '%s\n' "   printf '%s\\n' 'eph-inst-kicksecure-18-2-3-5:x:5005:5005::${eph_home}:/bin/bash'"
    printf '%s\n' '   exit 0'
    printf '%s\n' 'fi'
+   printf '%s\n' "if [ \"\$#\" = 1 ] && [ \"\${1:-}\" = passwd ]; then"
+   printf '%s\n' "   printf '%s\\n' 'eph-inst-kicksecure-18-2-3-5:x:5005:5005::${eph_home}:/bin/bash' 'eph-inst-whonix-18-2-3-5:x:5006:5006::/nonexistent:/bin/bash' 'eph-inst-kicksecure-built:x:5007:5007::/nonexistent:/bin/bash' 'persist-inst-kicksecure:x:5008:5008::/nonexistent:/bin/bash'"
+   printf '%s\n' '   exit 0'
+   printf '%s\n' 'fi'
    printf '%s\n' "'${real_getent}' \"\$@\""
 } > "${stubbin}/getent"
 chmod 0770 -- "${stubbin}/getent"
@@ -103,9 +107,9 @@ check "pkill ran BEFORE userdel" "$([ -n "${pkill_line}" ] && [ -n "${userdel_li
 ## ---- keep-on-failure + reclaim ------------------------------------------------------
 export ISO_DIR="${work}/iso"
 mkdir --parents -- "${ISO_DIR}"
-## rt_kept_staged_marker comes from the sourced subject.
-# shellcheck disable=SC2154
-marker="${eph_home}/${rt_kept_staged_marker}"
+## Root-only state dir (locks + kept markers); the test seam keeps it under ${work}.
+export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
+marker="$(rt_kept_marker 'eph-inst-kicksecure-18-2-3-5')"
 
 ## Sets $? for the next command, as main's exit status does for the EXIT trap.
 rc_is() {
@@ -120,6 +124,8 @@ rc_is 5 || rt_eph_cleanup >/dev/null 2>&1
 check "keep: failed run tears nothing down" "$([ ! -s "${order}" ] && printf true || printf false)"
 check "keep: staged ISO dir kept (VM still has it attached)" "$([ -d "${rt_staged_dir}" ] && printf true || printf false)"
 check "keep: marker records the staged dir" "$([ "$(cat -- "${marker}" 2>/dev/null)" = "${rt_staged_dir}" ] && printf true || printf false)"
+## Root must never write into the account-controlled home (symlink / FIFO attack).
+check "keep: nothing written into the account home" "$([ -z "$(ls -A -- "${eph_home}")" ] && printf true || printf false)"
 kept_dir="${rt_staged_dir}"
 
 ## (b) FAILED run, keep off: torn down as before.
@@ -135,8 +141,8 @@ printf '%s\n' "${kept_dir}" > "${marker}"
 rt_eph_reclaim 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
 check "reclaim: removes the kept staged ISO dir" "$([ ! -e "${kept_dir}" ] && printf true || printf false)"
 
-## (d) the marker lives in a home the account owned: a path outside ISO_DIR/.built-*,
-## or one escaping it with '..', is never removed.
+## (d) defense in depth: a marker path outside ISO_DIR/.built-*, or one escaping it
+## with '..', is never removed.
 victim="${work}/victim"
 mkdir --parents -- "${victim}"
 printf '%s\n' "${victim}" > "${marker}"
@@ -147,6 +153,20 @@ mkdir --parents -- "${ISO_DIR}/.built-x"
 printf '%s\n' "${ISO_DIR}/.built-x/../../victim" > "${marker}"
 rt_eph_reclaim 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
 check "reclaim: ignores a '..' escape from ISO_DIR/.built-*" "$([ -d "${victim}" ] && printf true || printf false)"
+
+## (e) sweep: an UNLOCKED leftover eph-inst-* account is reclaimed; a LOCKED one (a live
+## run holds its lock) and a persist-* account are never touched; the current account is
+## left to the caller.
+true >| "${order}"
+lockdir="$(rt_lock_dir)"
+exec {held_fd}>"${lockdir}/dm-release-test-eph-inst-kicksecure-built.lock"
+flock --nonblock "${held_fd}"
+rt_sweep_eph_leftovers 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
+exec {held_fd}>&-
+check "sweep: unlocked leftover reclaimed" "$(grep --quiet -- '^userdel .*eph-inst-whonix-18-2-3-5' "${order}" && printf true || printf false)"
+check "sweep: locked (live) account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-built' "${order}" && printf false || printf true)"
+check "sweep: current account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-18-2-3-5' "${order}" && printf false || printf true)"
+check "sweep: persist account untouched" "$(grep --quiet -- 'persist-inst' "${order}" && printf false || printf true)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '\n%s cleanup assertion(s) failed\n' "${failures}" >&2

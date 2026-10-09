@@ -48,6 +48,8 @@ for payload in "${share}"/*_test.sh; do
       continue
    fi
    if [ "${payload_rc}" -ne 0 ]; then
+      ## Name the failing payload: the aggregate rc alone cannot be triaged.
+      printf '%s\n' "FAIL: clusterfuzzlite-lib-tests: '${payload##*/}' exited ${payload_rc}." >&2
       rc="${payload_rc}"
    fi
 done

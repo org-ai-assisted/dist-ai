@@ -110,7 +110,20 @@ on_exit() {
    fi
    if [ "${vm_started}" = 'true' ]; then
       if [ "${rc}" -ne 0 ] && [ "${keep_failed}" = 'true' ]; then
-         printf '%s: kept FAILED VM '\''%s'\'' running for inspection (--keep-failed)\n' "${me}" "${vm}" >&2
+         ## Unplug every NIC: the shared dm-vm-lock is released on our exit, and a kept
+         ## VM with live NAT would break the leak lanes' one-networked-VM exclusivity.
+         ## Inspection uses guestcontrol (host channel), not the network.
+         ## Fail safe: if the primary NIC cannot be unplugged, power off instead.
+         local nic
+         if "${VBOXMANAGE}" controlvm "${vm}" setlinkstate1 off >/dev/null 2>&1; then
+            for nic in 2 3 4 5 6 7 8; do
+               "${VBOXMANAGE}" controlvm "${vm}" "setlinkstate${nic}" off >/dev/null 2>&1 || true
+            done
+            printf '%s: kept FAILED VM '\''%s'\'' running for inspection, network unplugged (--keep-failed)\n' "${me}" "${vm}" >&2
+         else
+            "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+            printf '%s: could not unplug the network of FAILED VM '\''%s'\''; powered it off instead\n' "${me}" "${vm}" >&2
+         fi
       else
          "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
       fi

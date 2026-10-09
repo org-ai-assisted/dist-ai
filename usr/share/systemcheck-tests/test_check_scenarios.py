@@ -308,7 +308,7 @@ class TestTempdirScenarios(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         ## Only the variable NAME is reported, never its (user-controlled) value.
         self.assertIn('incorrect: TEMPDIR', r.joined())
-        self.assertNotIn('/tmp/elsewhere', r.joined())
+        self.assertNotIn('/tmp/elsewhere', r.joined())  # nosec B108
         self.assertEqual(r.exit_code, '1')
 
     def test_variable_unset_warns_and_fails(self) -> None:
