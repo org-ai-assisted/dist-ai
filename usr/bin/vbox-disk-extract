@@ -46,7 +46,7 @@ Read-only throughout. Run as root (via sudo)." >&2
 }
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$1" >&2
+   printf '%s\n' "${me}: ERROR: ${1}" >&2
    exit 1
 }
 
@@ -77,7 +77,19 @@ cleanup() {
       qemu-nbd --disconnect "${nbd_dev}" >/dev/null 2>&1 || true
    fi
 }
-trap cleanup EXIT
+
+## Open LUKS volume $1 as mapping $2 with the passphrase file. The file is text: its
+## trailing newline is not part of the key, which the installer typed without one.
+## Read it exactly as dm-calamares-install does ("$(< file)" drops trailing
+## newlines) and hand cryptsetup the bare bytes on stdin -- --key-file PATH would
+## read the file byte for byte, newline included, and fail to unlock.
+luks_open() {
+   local passphrase
+   passphrase="$(< "${passphrase_file}")"
+   [ -n "${passphrase}" ] || die "passphrase file is empty: '${passphrase_file}'"
+   printf '%s' "${passphrase}" \
+      | cryptsetup --readonly open --key-file - -- "$1" "$2"
+}
 
 parse_args() {
    while [ "$#" -gt 0 ]; do
@@ -141,7 +153,7 @@ free_nbd() {
    local d
    for d in /sys/class/block/nbd*; do
       if [ "$(cat "${d}/size")" = '0' ]; then
-         printf '/dev/%s' "${d##*/}"
+         printf '%s' "/dev/${d##*/}"
          return 0
       fi
    done
@@ -182,6 +194,7 @@ candidate_filesystems() {
 }
 
 main() {
+   trap cleanup EXIT
    parse_args "$@"
 
    modprobe nbd max_part=16 2>/dev/null || true
@@ -201,8 +214,7 @@ main() {
       done
       [ -n "${luks_target}" ] || die "no LUKS volume found on '${disk}'"
       luks_name="vde-$$-luks"
-      cryptsetup --readonly open --key-file "${passphrase_file}" \
-         -- "${luks_target}" "${luks_name}"
+      luks_open "${luks_target}" "${luks_name}"
    fi
 
    ## Canonicalize so the realpath-based confinement prefix test below holds even when
@@ -245,7 +257,11 @@ main() {
    done < "${fs_list}"
 
    [ "${found}" = 'true' ] || die "'${source_path}' not found in any filesystem on '${disk}'"
-   printf '%s: extracted %s -> %s\n' "${me}" "${source_path}" "${dest_path}"
+   printf '%s\n' "${me}: extracted ${source_path} -> ${dest_path}"
 }
 
-main "$@"
+## Sourced (dm-release-test-tests) -> expose the functions without running;
+## executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi
