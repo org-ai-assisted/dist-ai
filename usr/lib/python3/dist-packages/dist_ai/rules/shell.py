@@ -1770,35 +1770,108 @@ class BareNewlinePrintf(Rule):
 _PRINTF_EXPANSION = re.compile(r'[$`]')
 
 
+_R030_REDIR_OPS = None
+
+
+def _r030_redir_ops():
+    """{op_code: kind} for the output redirections the numeric-probe exemption
+    tracks, learned from shfmt itself (op codes are not a stable public API).
+    kind: 'file' ('>' '>>' '>|' write fd N), 'all' ('&>' '&>>' write fds 1+2),
+    'dup' ('>&' copies another fd). Cached."""
+    global _R030_REDIR_OPS
+    if _R030_REDIR_OPS is None:
+        ops = {}
+        for snippet, kind in (("a > f", "file"), ("a >> f", "file"),
+                              ("a >| f", "file"), ("a &> f", "all"),
+                              ("a &>> f", "all"), ("a 2>&1", "dup")):
+            for stmt in bash_ast.iter_stmts(bash_ast.parse(snippet)):
+                for redirect in stmt.get("Redirs") or []:
+                    ops[redirect.get("Op")] = kind
+        _R030_REDIR_OPS = ops
+    return _R030_REDIR_OPS
+
+
+def _discards_stdout_and_stderr(stmt):
+    """True if STMT's redirections, applied left to right as bash does, leave
+    BOTH fd 1 and fd 2 pointing at /dev/null ('>/dev/null 2>&1', '&>/dev/null').
+    '2>&1 >/dev/null' leaves stderr on the original stdout -> False."""
+    ops = _r030_redir_ops()
+    fds = {1: "out", 2: "err"}
+    for redirect in stmt.get("Redirs") or []:
+        kind = ops.get(redirect.get("Op"))
+        if kind is None:
+            continue
+        number = (redirect.get("N") or {}).get("Value")
+        target = bash_ast.word_string(redirect.get("Word"))
+        dest = "null" if target == "/dev/null" else "other"
+        if kind == "all":
+            fds[1] = fds[2] = dest
+        elif kind == "file":
+            fds[int(number) if number else 1] = dest
+        elif number is None and target is not None and not target.isdigit():
+            fds[1] = fds[2] = dest  ## '>&FILE' is the '&>FILE' spelling
+        else:
+            source_fd = int(target) if target and target.isdigit() else None
+            fds[int(number) if number else 1] = fds.get(source_fd, "other")
+    return fds[1] == "null" and fds[2] == "null"
+
+
 class PrintfFormatString(Rule):
-    """R-030: a printf format must not INTERPOLATE data into itself -- data goes
-    in the data argument. A format is flagged ONLY when it can interpolate: a
-    DOUBLE-quoted or UNQUOTED format containing a '$' or backtick reads a
-    '$var' / command substitution straight INTO the format (the injection this
-    prevents). A SINGLE-quoted format -- OR any format with no expansion metachar
-    (a fixed literal like '%02x', '%(%Y)T', '%-12s') -- interpolates nothing and
-    is allowed whatever verbs it uses; the data still goes in the data argument."""
+    """R-030: a printf format is exactly '%s\\n', '%s' or '%s\\0'; all text goes
+    in the data argument. Two checks, one finding per call:
+      - INJECTION (any printf, '-v' included): a double-quoted / unquoted format
+        with a '$' or backtick reads data INTO the format.
+      - FIXED FORMAT: any other literal format ('%d', '%-12s', 'x: %s\\n') is
+        flagged. Exempt: 'printf -v' (R-041, builds a string, emits nothing);
+        a '%q'-only format (shell-escaping); the numeric probe, a '%d'-only format
+        whose stdout AND stderr go to /dev/null (its failure IS the check); a
+        newline-only format with no data argument (R-031 reports that one).
+    Judged from the AST format word (word_string), so '%s\\n', "%s\\n", %s\\\\n and
+    $'%s\\n' are the same allowed format."""
 
     id = "R-030"
     waiver_tag = "printf-format"
     _ALLOWED = frozenset({
         "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
+    _FIXED_OK = frozenset({"%s\\n", "%s", "%s\\0", "%q", "%q ", "%q\\n"})
+    _NUMERIC_PROBE = re.compile(r'^(?:%d)+$')
 
     def applies(self, ctx):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for _stmt, call in _printf_calls(ctx.tree):
+        for stmt, call in _printf_calls(ctx.tree):
             inner, single_quoted = _printf_format(call, ctx.source)
-            ## Safe: no format, a single-quoted literal, an allowlisted verb, or a
-            ## double/unquoted format with NO '$'/backtick (cannot interpolate).
-            if (inner is None or single_quoted or inner in self._ALLOWED
-                    or _PRINTF_EXPANSION.search(inner) is None):
+            if inner is None:
                 continue
+            if (not single_quoted and inner not in self._ALLOWED
+                    and _PRINTF_EXPANSION.search(inner) is not None):
+                yield _fail(
+                    ctx, "R-030",
+                    "R-030 printf format string must not interpolate data "
+                    "('$'/'`') -- put the data in the argument, not the format",
+                    call)
+                continue
+            if h.printf_v_target(call) is not None:
+                continue
+            fmt_word = h.printf_format_word(call)
+            literal = bash_ast.word_string(fmt_word)
+            if literal is None or literal in self._FIXED_OK:
+                continue
+            if (self._NUMERIC_PROBE.match(literal)
+                    and _discards_stdout_and_stderr(stmt)):
+                continue
+            if (bash_ast.args(call)[-1] is fmt_word
+                    and BareNewlinePrintf._NEWLINE_ONLY.match(literal)):
+                continue
+            shown = literal.replace("\n", "\\n")
+            if len(shown) > 40:
+                shown = shown[:37] + "..."
             yield _fail(
                 ctx, "R-030",
-                "R-030 printf format string must not interpolate data ('$'/'`') "
-                "-- put the data in the argument, not the format", call)
+                "R-030 printf format string must be '%s\\n' (or '%s' / '%s\\0'), "
+                "not '" + shown + "' -- put the text in the data: "
+                "printf '%s\\n' \"prefix ${var} suffix\"", call)
 
 
 class HeaderFirst(Rule):

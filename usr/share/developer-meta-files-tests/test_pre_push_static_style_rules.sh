@@ -265,9 +265,9 @@ hash='#'
 dollar='$'
 ## A real tab, assembled at run time so no literal trailing tab lives in this
 ## tracked file (which the gate's own trailing-whitespace check would flag).
-tab="$(printf '\t')"
+tab=$'\t'
 ## A real carriage return, for the CRLF trailing-whitespace cases.
-cr="$(printf '\r')"
+cr=$'\r'
 ## The hardcoded temp path R-170 forbids, assembled so the literal never
 ## appears in THIS tracked file (which the gate would, correctly, flag).
 tmpp="/$(printf '%s' 'tmp')"
@@ -375,7 +375,7 @@ expect_rule "R-034" "echo hi ## style-ok: R-034"       "present"
 ## STRING is data, not a comment, so it must not waive; a genuine '#' comment
 ## still does. A non-ASCII byte (built at runtime so THIS file stays ASCII) trips
 ## R-001, the rule the spoofed waiver tries to silence.
-emdash="$(printf '\342\200\224')"
+emdash=$'\342\200\224'
 py_spoof_out="$(py_gate_output '#!/usr/bin/python3' 'x = """' '## style-ok: allow-non-ascii' '"""' "y = \"${emdash}\"")"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${py_spoof_out}"; then
    printf '%s\n' "PASS: R-001 not waived by a '## style-ok:' inside a Python string"
@@ -435,31 +435,57 @@ expect_rule "R-030 printf format" "${awk_program}" "absent"
 ## -- the awk program's inner printfs are data, but the next line is a live call.
 expect_rule "R-030 printf format" "${awk_program}${nlreal}printf \"bad \${x}\\n\"" "present"
 
-## R-030 flags a format ONLY when it CAN interpolate data -- a DOUBLE-quoted or
-## UNQUOTED format containing a '$' or backtick reads '$var' / command
-## substitution straight INTO the format. A SINGLE-quoted format, OR any format
-## with no expansion metachar (a fixed literal '%d'/'%02x'/'%(%Y)T'), interpolates
-## nothing and is SPARED whatever verbs it spells -- the data goes in the data
-## argument. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
-## judged, not the option.
+## R-030 has two checks. INJECTION: a DOUBLE-quoted or UNQUOTED format with a
+## '$' or backtick reads '$var' / command substitution INTO the format.
+## FIXED FORMAT: any other format than '%s\n' / '%s' / '%s\0' is flagged; text
+## goes in the data argument. Exempt from the fixed-format check: 'printf -v'
+## (R-041), a '%q'-only format, the numeric probe ('%d' with stdout AND stderr
+## on /dev/null), and the file-wide waivers. printf's own options ('-v NAME',
+## '--') are skipped so the FORMAT is judged, not the option.
 r030fmt="R-030 printf format string"
+r030inj="R-030 printf format string must not interpolate"
+r030fixed="R-030 printf format string must be"
 bt='`'
-## Single-quoted verbs -- literal, SPARED (a redirect makes no difference):
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                 "absent"
-expect_rule "${r030fmt}" "printf ${sq}%8d${sq} ${dq}\${1}${dq}"                "absent"
-expect_rule "${r030fmt}" "printf ${sq}%-12s${sq} ${dq}\${a}${dq}"              "absent"
+## CANARY: a text-bearing '%s' format FAILS the fixed-format check (the injection-
+## only gate passed it).
+expect_rule "${r030fixed}" "printf ${sq}%s: kept %s${nl}${sq} ${dq}\${a}${dq} ${dq}\${b}${dq}" "present"
+## Verb / padding formats are flagged in any quoting:
+expect_rule "${r030fixed}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"               "present"
+expect_rule "${r030fixed}" "printf ${sq}%8d${sq} ${dq}\${1}${dq}"              "present"
+expect_rule "${r030fixed}" "printf ${sq}%-12s${sq} ${dq}\${a}${dq}"            "present"
+expect_rule "${r030fixed}" "printf %d ${dq}\${1}${dq}"                         "present"
+expect_rule "${r030fixed}" "printf ${dq}%02x${dq} ${dq}\${n}${dq}"             "present"
+expect_rule "${r030fixed}" "printf ${dq}%(%Y)T${dq} -1"                        "present"
+expect_rule "${r030fixed}" "printf ${sq}%s${nl}%s${nl}${sq} a b"               "present"
+## The allowed formats, in every quoting that yields the same format string:
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} a"                          "absent"
+expect_rule "${r030fmt}" "printf ${dq}%s${nl}${dq} a"                          "absent"
+expect_rule "${r030fmt}" "printf %s${bs}${bs}n a"                              "absent"
+expect_rule "${r030fmt}" "printf ${sq}%s${sq} a"                               "absent"
+expect_rule "${r030fmt}" "printf ${sq}%s${bs}0${sq} a"                         "absent"
+## Numeric probe: '%d' with BOTH stdout and stderr on /dev/null is a validator.
+## Stdout alone, or '2>&1 >/dev/null' (stderr still on the old stdout), emits.
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null 2>&1 || exit 1" "absent"
-## No-expansion literal, DOUBLE-quoted or UNQUOTED -- cannot interpolate, SPARED
-## (these fixed-verb false positives are exactly what this rule used to raise):
-expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "absent"
-expect_rule "${r030fmt}" "printf ${dq}%02x${dq} ${dq}\${n}${dq}"               "absent"
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} &>/dev/null || exit 1"     "absent"
+expect_rule "${r030fixed}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null"              "present"
+expect_rule "${r030fixed}" "printf ${sq}%d${sq} ${dq}\${1}${dq} 2>&1 >/dev/null"         "present"
+expect_rule "${r030fixed}" "printf ${sq}x %d${sq} ${dq}\${1}${dq} >/dev/null 2>&1"       "present"
+## 'printf -v' builds a string (R-041), emits nothing -- spared:
 expect_rule "${r030fmt}" "printf -v hex ${dq}%02x${dq} ${dq}\${n}${dq}"        "absent"
 expect_rule "${r030fmt}" "printf -v pad ${dq}%05d${dq} ${dq}\${n}${dq}"        "absent"
-expect_rule "${r030fmt}" "printf ${dq}%(%Y)T${dq} -1"                          "absent"
+## '%q'-only formats (shell-escaping) are spared; '%q' with text is not:
+expect_rule "${r030fmt}" "printf ${sq}%q${sq} ${dq}\${a}${dq}"                 "absent"
+expect_rule "${r030fmt}" "printf ${sq}%q ${sq} ${dq}\$@${dq}"                  "absent"
+expect_rule "${r030fixed}" "printf ${sq}source %q${nl}${sq} ${dq}\${a}${dq}"   "present"
+## A newline-only format with no data arg is R-031's finding, not a second R-030:
+expect_rule "${r030fixed}" "printf ${sq}${nl}${sq}"                            "absent"
+## Waivers: the file-wide 'printf-format' tag and the per-rule id override.
+expect_rule "${r030fmt}" "## style-ok: printf-format${nlreal}printf ${sq}%-12s|${nl}${sq} a" "absent"
+expect_rule "${r030fmt}" "## style-ok: R-030${nlreal}printf ${sq}x %s${nl}${sq} a"           "absent"
 ## A '$' or backtick in a double/unquoted format DOES interpolate -- FLAGGED:
-expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
-expect_rule "${r030fmt}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
-expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
+expect_rule "${r030inj}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
+expect_rule "${r030inj}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
+expect_rule "${r030inj}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
 ## CANARY: an apostrophe INSIDE a double-quoted format (any English contraction,
 ## "don't") is a LITERAL apostrophe, NOT a single-quote opener, so a '$var' AFTER
 ## it still interpolates INTO the format and must be FLAGGED. FAILS pre-fix: a
@@ -477,19 +503,21 @@ expect_rule "${r030fmt}" "printf ${sq}x${sq}\$name${sq}y${sq} 1 2"             "
 ## CANARY: 'x''$name' is TWO ADJACENT single-quoted segments ('x' . '$name'), so
 ## $name stays LITERAL (single quotes suppress it) -- SPARED. A naive "inner has a
 ## quote" heuristic would wrongly flag it; the quote-SEGMENT scan does not.
-expect_rule "${r030fmt}" "printf ${sq}x${sq}${sq}\$name${sq} 1 2"             "absent"
-## a PURE single-quoted '\$name' is a LITERAL dollar (no interpolation) -- SPARED.
-expect_rule "${r030fmt}" "printf ${sq}\$name${sq}"                            "absent"
+expect_rule "${r030inj}" "printf ${sq}x${sq}${sq}\$name${sq} 1 2"             "absent"
+## a PURE single-quoted '\$name' is a LITERAL dollar (no interpolation) -- not an
+## injection (the fixed-format check still flags its text).
+expect_rule "${r030inj}" "printf ${sq}\$name${sq}"                            "absent"
+expect_rule "${r030fixed}" "printf ${sq}\$name${sq}"                          "present"
 ## 'printf -v NAME' with NO format string has nothing to judge -- SPARED.
 expect_rule "${r030fmt}" "printf -v onlyname"                                 "absent"
 ## '-v NAME' / '--' options skipped, so the FORMAT is what is judged:
 expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
-expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"
+expect_rule "${r030inj}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"
 expect_rule "${r030fmt}" "printf -- ${dq}bad \${x}${dq}"                       "present"
 ## a NON-bare '-v' spelling (attached '-vNAME', quoted '"-v"') is STILL the option,
 ## so the real FORMAT after it is judged -- else a $(...) format smuggles past R-030.
 ## FAILS pre-fix: the exact word=="-v" match read the spelled -v AS the format.
-expect_rule "${r030fmt}" "printf -vfoo ${dq}\$(id)${dq}"                       "present"
+expect_rule "${r030inj}" "printf -vfoo ${dq}\$(id)${dq}"                       "present"
 expect_rule "${r030fmt}" "printf ${dq}-v${dq} foo ${dq}\$(id)${dq}"            "present"
 ## An allowlisted verb is safe in any quoting.
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"            "absent"
@@ -1469,7 +1497,7 @@ git -C "${ascii_repo}" config user.name 'ci-test'
 git -C "${ascii_repo}" commit --quiet --no-verify --allow-empty --message base
 ascii_base="$(git -C "${ascii_repo}" rev-parse HEAD)"
 ## a non-ASCII byte (U+00D6) assembled so THIS file stays pure ASCII
-non_ascii="$(printf '\303\226')"
+non_ascii=$'\303\226'
 printf '%s\n' \
    '#!/usr/bin/python3 -Bsu' \
    "x = ${dq}${non_ascii}${dq}" \
@@ -1539,7 +1567,7 @@ fi
 ## (errors='replace') corrupts it, the open fails, and the advisory silently
 ## drops -- the exact gap it exists to close. The 0xFF byte comes from a run-time
 ## octal escape, so no non-UTF-8 byte lives in THIS tracked file.
-nonutf_name="$(printf 'untr8-\377-marker')"
+nonutf_name=$'untr8-\377-marker'
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/${nonutf_name}"
 # shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 nonutf_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
@@ -1576,7 +1604,7 @@ printf '%s\n' \
 ## signal even without a separator on any single physical line. The trailing
 ## '\' is assembled from an octal escape so no literal backslash-before-quote
 ## lives in THIS tracked file (which shellcheck would flag SC1003).
-bslash="$(printf '\134')"
+bslash=$'\134'
 printf '%s\n' \
    '[Service]' \
    "ExecStart=/bin/bash -c ${bslash}" \
@@ -1722,7 +1750,7 @@ expect_rule "R-192" "bash -c 'if x; then y; fi'"  present
 expect_rule "R-192" "timeout 5 bash -c 'a && b'"  present
 ## The long-form (>5-line) program is still caught (kept from the original
 ## predicate); the body carries embedded newlines.
-expect_rule "R-192" "$(printf 'bash -c "a\nb\nc\nd\ne\nf\ng"')" present
+expect_rule "R-192" $'bash -c "a\nb\nc\nd\ne\nf\ng"' present
 ## Concatenated-quote value ('echo AA'"; echo BB" joins to 'echo AA; echo BB',
 ## two statements) -- the single-outer-quote strip missed it; the value
 ## extractor (word_string) catches it. The '..'"'"'..' quote-escape idiom is one
@@ -1770,8 +1798,8 @@ expect_rule "R-192" "timeout 5 bash -x -c${dq}a${sc} b${dq}"      present
 expect_rule "R-192" "timeout 5 bash -o pipefail -c${dq}a${sc} b${dq}"  present
 expect_rule "R-192" "timeout 5 bash -O extglob -c${dq}a${sc} b${dq}"   present
 ## The file-wide named waiver and the id override each exempt the script.
-expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: allow-embedded-script' "bash -c 'a && b'")" absent
-expect_rule "R-192" "$(printf '%s\n%s' '## style-ok: R-192' "bash -c 'a && b'")" absent
+expect_rule "R-192" "## style-ok: allow-embedded-script${nlreal}bash -c 'a && b'" absent
+expect_rule "R-192" "## style-ok: R-192${nlreal}bash -c 'a && b'" absent
 
 ## R-193 (config hosts): an explicit python interpreter in a systemd 'Exec*='
 ## directive or a workflow 'run:' step. A script run through the interpreter and
@@ -2380,8 +2408,8 @@ gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output 
    base="$(git -C "${repo}" rev-parse HEAD)"
    ## A raw byte stream's shape: a non-ASCII byte (0xC3 0xA9), a CR, and no final
    ## newline -- each an independent R-001 / line-ending / end-of-file violation. Built
-   ## with '%b' octal escapes, so no literal non-ASCII lives in THIS tracked file.
-   printf '%b' 'blob header\rcaf\0303\0251 body no-newline' > "${repo}/blob.dat"
+   ## with ANSI-C octal escapes, so no literal non-ASCII lives in THIS tracked file.
+   printf '%s' $'blob header\rcaf\303\251 body no-newline' > "${repo}/blob.dat"
    if [ -n "${attr}" ]; then
       printf '%s\n' "${attr}" > "${repo}/.gitattributes"
       git -C "${repo}" add .gitattributes
@@ -2432,7 +2460,7 @@ gate_output_nul_binary() {  ## -> gate output over base..HEAD for a NUL-bearing 
    base="$(git -C "${repo}" rev-parse HEAD)"
    ## A NUL byte (git's binary tell) plus a non-ASCII byte (0xC3 0xA9) that WOULD trip
    ## R-001 in text -- built with octal escapes so THIS tracked file stays ASCII.
-   printf '%b' 'img\000header\0303\0251 body' > "${repo}/image.bin"
+   { printf '%s\0' 'img'; printf '%s' $'header\303\251 body'; } > "${repo}/image.bin"
    git -C "${repo}" add image.bin
    git -C "${repo}" commit --quiet --no-verify --message blob
    (
@@ -2475,7 +2503,8 @@ gate_output_msg() {  ## $1=commit subject -> gate output over base..HEAD
    ) 2>&1 || true
 }
 ## A U+00E9 (0xC3 0xA9) in the subject, assembled so THIS tracked file stays ASCII.
-msg_bad_out="$(gate_output_msg "fix caf$(printf '%b' '\303\251') bug")"
+eacute=$'\303\251'
+msg_bad_out="$(gate_output_msg "fix caf${eacute} bug")"
 if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): '(commit message)" <<< "${msg_bad_out}"; then
    printf '%s\n' 'PASS: R-001 flags a non-ASCII commit message (push mode)'
 else
@@ -2531,4 +2560,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string (injection + fixed format + exemptions), R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
