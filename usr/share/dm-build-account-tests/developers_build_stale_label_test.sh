@@ -68,7 +68,9 @@ make_stub stat 'printf "admin\n"'
 make_stub runuser 'shift 3; exec "$@"'
 ## describe models a HEAD carrying help-steps/sign-tag-head's ephemeral
 ## '<tag>_<commit>_<fingerprint>' tag: real git returns it unless the caller passes
-## --exclude '*_*_*', so a describe without the exclude sees the signing tag.
+## --exclude '*_*_*', so a describe without the exclude sees the signing tag. A
+## '--tags' describe sees a lightweight backup tag, as derivative-maker's annotated-only
+## describe never would.
 # shellcheck disable=SC2016
 make_stub git '
 case "$*" in
@@ -76,6 +78,7 @@ case "$*" in
    *" describe "*)
       [ -n "${STUB_DESC:-}" ] || exit 128
       case "$*" in
+         *" --tags"*) printf "%s\n" "backup/gitlab-parent-ai-preforce" ;;
          *"--exclude *_*_*"*) printf "%s\n" "${STUB_DESC}" ;;
          *) printf "%s\n" "${STUB_DESC%%-[0-9]*-g*}_0123abcd_F31F9496" ;;
       esac

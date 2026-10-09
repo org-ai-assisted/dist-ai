@@ -129,15 +129,17 @@ binary_out="${home}/derivative-binary"
 ## so describe falls back to an older tag and the ISO is MISLABELLED (e.g. 18.2.3.3 when
 ## the tip is really 18.2.3.6). Fetch tags into the reference AS ITS OWNER (which holds the
 ## remote credentials; the build account does not) BEFORE seeding, so the slot inherits a
-## complete tag set and describes the correct version. Fail LOUD on a stale label rather
-## than silently ship a wrong version.
+## complete tag set and describes the correct version. Fail LOUD when the fetch fails or
+## the describe is not a release tag. A remote that itself lacks the newest release tag
+## still yields an older, valid-looking describe; that case is not detectable here.
+## Same describe as derivative-maker's version derivation: annotated tags only, and
 ## '--exclude *_*_*' skips the ephemeral '<tag>_<commit>_<fingerprint>' tags that
-## help-steps/sign-tag-head leaves on locally signed builds, matching derivative-maker's own
-## version describe; release tags carry no underscore.
+## help-steps/sign-tag-head leaves on locally signed builds (release tags carry no
+## underscore).
 ref_owner="$(stat -c '%U' "${source_checkout}")"
 runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
    || die 1 "tag fetch into ${source_checkout} failed; refusing to build with a possibly stale version label"
-desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags --exclude '*_*_*' 2>/dev/null || true)"
+desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --exclude '*_*_*' 2>/dev/null || true)"
 case "${desc}" in
    [0-9]*-developers-only | [0-9]*-developers-only-* \
    | [0-9]*-testers-only | [0-9]*-testers-only-* \
