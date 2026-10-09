@@ -140,16 +140,12 @@ ref_owner="$(stat -c '%U' "${source_checkout}")"
 runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
    || die 1 "tag fetch into ${source_checkout} failed; refusing to build with a possibly stale version label"
 desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --exclude '*_*_*' 2>/dev/null || true)"
-case "${desc}" in
-   [0-9]*-developers-only | [0-9]*-developers-only-* \
-   | [0-9]*-testers-only | [0-9]*-testers-only-* \
-   | [0-9]*-stable | [0-9]*-stable-*)
-      printf '%s\n' "${me}: reference describes as ${desc}"
-      ;;
-   *)
-      die 1 "reference describe is '${desc:-<none>}', not a release tag (developers-only, testers-only or stable); release tags are missing and the ISO version label would be wrong"
-      ;;
-esac
+## Anchored: a dotted numeric version, exactly one channel suffix, then at most git's
+## '-<count>-g<sha>' tail -- so a tag like '18.2.3.6-stable-backup' is not a release.
+release_describe_regex='^[0-9]+(\.[0-9]+)*-(developers-only|testers-only|stable)(-[0-9]+-g[0-9a-f]+)?$'
+[[ "${desc}" =~ ${release_describe_regex} ]] \
+   || die 1 "reference describe is '${desc:-<none>}', not a release tag (developers-only, testers-only or stable); release tags are missing and the ISO version label would be wrong"
+printf '%s\n' "${me}: reference describes as ${desc}"
 
 ## 2b. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
 printf '%s\n' "${me}: seeding ${account} checkout from ${source_checkout}"

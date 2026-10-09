@@ -115,6 +115,9 @@ run_case 'tag fetch fails' 1 '18.2.3.6-developers-only-3-gabcdef0' die
 run_case 'describe empty' 0 '' die
 run_case 'describe bare version, no release suffix' 0 '18.2.3.6' die
 run_case 'describe non-release tag' 0 'adrelanos_f65a6f9f' die
+run_case 'describe channel word not the suffix' 0 '18.2.3.6-stable-backup' die
+run_case 'describe trailing text after channel' 0 '0-testers-only-wip' die
+run_case 'describe channel word mid-tag' 0 '18.2.3.6-pre-stable' die
 run_case 'describe exact developers-only tag' 0 '18.2.3.6-developers-only' seed
 run_case 'describe developers-only plus commits' 0 '18.2.3.6-developers-only-3-gabcdef0' seed
 run_case 'describe testers-only tag' 0 '18.2.3.6-testers-only' seed
