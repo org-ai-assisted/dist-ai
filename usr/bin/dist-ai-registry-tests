@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -46,6 +47,8 @@ for payload in "${share}"/*_test.sh; do
       continue
    fi
    if [ "${payload_rc}" -ne 0 ]; then
+      ## Name the failing payload: the aggregate rc alone cannot be triaged.
+      printf '%s\n' "FAIL: dist-ai-registry-tests: '${payload##*/}' exited ${payload_rc}." >&2
       rc="${payload_rc}"
    fi
 done
