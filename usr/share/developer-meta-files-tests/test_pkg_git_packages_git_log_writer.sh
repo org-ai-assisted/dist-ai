@@ -87,6 +87,7 @@ extract_func() {
 
 writer_text="$(extract_func pkg_git_packages_git_log_writer)"
 dry_run_text="$(extract_func dry_run_or_run)"
+filter_text="$(extract_func commit_filter)"
 announce_text="$(extract_func generate_announcement)"
 
 ## Assert the resolved subject carries the new-tag guard; otherwise a stale
@@ -201,6 +202,45 @@ if [ -r "${ws}" ] && grep --quiet -- 'WSENTINEL-changelog-line' "${ws}" \
    pass "Whonix announcement draws from the Whonix changelog, not the Kicksecure one"
 else
    fail "Whonix announcement drew from the wrong (Kicksecure) changelog"
+fi
+
+## --- Single-pass commit loop emits correctly (guards the perf refactor) -----
+## Cases A-C return before the commit loop; this drives it: a surviving commit,
+## one with a multi-line body + an AI trailer that must be stripped and an AI
+## author that earns credit, and a noise commit the filter must drop.
+emit_inner="$(dirname -- "${BASH_SOURCE[0]}")/pkg_git_log_writer_emit_inner.sh"
+emit_repo="$(mktemp -d -p "${tmp_root}")"
+emit_out="$(mktemp -p "${tmp_root}")"
+## Authors are set with explicit --author (overrides any ambient GIT_AUTHOR_*
+## env) so credit mapping is deterministic: a human -> "(Thanks to X!)", the
+## AI bot -> "(AI assisted)".
+git -C "${emit_repo}" init -q -b master
+git_c "${emit_repo}" commit -q --allow-empty -m base
+git_c "${emit_repo}" tag emit_old
+git_c "${emit_repo}" commit -q --allow-empty \
+   --author='A Human <h@example.invalid>' -m 'real feature one'
+printf '%s\n' 'feature two' '' 'a detail body line' '' \
+   'Co-Authored-By: Claude <noreply@anthropic.com>' \
+   | git_c "${emit_repo}" commit -q --allow-empty \
+      --author='assisted-by-ai (Bot Account) <ai@example.invalid>' -F -
+git_c "${emit_repo}" commit -q --allow-empty -m 'typo'
+git_c "${emit_repo}" tag emit_new
+
+WRITER_TEXT="${writer_text}" DRY_RUN_TEXT="${dry_run_text}" FILTER_TEXT="${filter_text}" \
+   bash "${emit_inner}" "${emit_repo}" emit_old emit_new "${emit_out}"
+
+emit_ok=true
+grep --quiet --fixed-strings -- '* derivative-maker:'                   "${emit_out}" || emit_ok=false
+grep --quiet --fixed-strings -- '  * real feature one (Thanks to A Human!)' "${emit_out}" || emit_ok=false
+grep --quiet --fixed-strings -- '  * feature two (AI assisted)'        "${emit_out}" || emit_ok=false
+grep --quiet --fixed-strings -- '    a detail body line'               "${emit_out}" || emit_ok=false
+## AI trailer stripped and the noise commit filtered out.
+! grep --quiet --fixed-strings -- 'Co-Authored-By' "${emit_out}" || emit_ok=false
+! grep --quiet --fixed-strings -- 'typo'           "${emit_out}" || emit_ok=false
+if [ "${emit_ok}" = 'true' ]; then
+   pass "single-pass loop: bullets, credit, multi-line body, trailer-strip, filter"
+else
+   fail "single-pass loop emission wrong: $(tr '\n' '|' < "${emit_out}")"
 fi
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
