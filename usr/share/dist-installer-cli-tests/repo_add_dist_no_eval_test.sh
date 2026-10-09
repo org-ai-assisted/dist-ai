@@ -19,7 +19,8 @@
 ## Canary: on eval-based code (single-quoted, double-quoted or unquoted) the
 ## injected 'touch' runs, so the assertions fail.
 ##
-## Exit: 0 pass | 1 fail | 77 usability-misc checkout absent (target-absent).
+## Exit: 0 pass | 1 fail | 77 usability-misc checkout absent (target-absent) |
+## 78 run as real root (env-unmet).
 
 set -o errexit
 set -o nounset
@@ -28,6 +29,19 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+
+if [ "${EUID}" = 0 ]; then
+   printf '%s\n' "SKIP: refusing real root: a regressed subject that ignores the path overrides would write the host's /etc/apt and keyring." >&2
+   ## style-ok: allow-skip: the non-root invoker this hermetic test needs is unmet here (env-unmet)
+   exit 78
+fi
+
+## The subject runs from its work dir (env --chdir), so every path handed to it
+## or put on PATH must be absolute.
+if [ -n "${TMPDIR:-}" ]; then
+   TMPDIR="$(readlink --canonicalize -- "${TMPDIR}")"
+   export TMPDIR
+fi
 
 repo="${USABILITY_MISC_REPO:-}"
 if [ -z "${repo}" ]; then
@@ -40,6 +54,7 @@ if [ ! -r "${subject}" ]; then
    ## style-ok: allow-skip: usability-misc is a cross-component subject; absent = target-absent SKIP, --allow-skip governs it
    exit 77
 fi
+subject="$(readlink --canonicalize -- "${subject}")"
 
 harness="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common/stub-path-harness.bash"
 [ -r "${harness}" ] || harness='/usr/share/dist-ai-tests-common/stub-path-harness.bash'
