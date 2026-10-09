@@ -324,6 +324,9 @@ def tmpfs_mounts(hide_dirs, place_paths) -> list[str]:
     (the in-sandbox prefix then `mkdir -p`s the parent inside that tmpfs). An
     absent hide_dir needs no mount: its contents are already absent. A target
     under another target is dropped: it is already inside a writable tmpfs."""
+    for path in [*hide_dirs, *place_paths]:
+        if not os.path.isabs(path):
+            raise ValueError(f"isolated overlay path must be absolute: {path!r}")
     targets = {d for d in hide_dirs if os.path.isdir(d)}
     targets.update(_nearest_existing_dir(os.path.dirname(p))
                    for p in place_paths)

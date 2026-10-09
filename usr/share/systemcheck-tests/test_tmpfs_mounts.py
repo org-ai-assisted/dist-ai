@@ -61,6 +61,13 @@ class TestTmpfsMounts(unittest.TestCase):
                          [self.p('usr/share/anon-gw-base-files/gateway')]),
             [self.p('usr/share')])
 
+    def test_relative_path_is_refused(self) -> None:
+        ## dirname('') == '' never reaches an existing dir: refuse, do not hang.
+        with self.assertRaises(ValueError):
+            tmpfs_mounts([], ['relative-name'])
+        with self.assertRaises(ValueError):
+            tmpfs_mounts(['relative-dir'], [])
+
     def test_sibling_prefix_is_not_nesting(self) -> None:
         os.makedirs(self.p('usr/share/qubes-extra'))
         self.assertEqual(
