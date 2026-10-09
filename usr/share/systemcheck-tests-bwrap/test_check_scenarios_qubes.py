@@ -18,8 +18,7 @@ markers can be made present (place=) or absent (hide_dirs=/place tmpfs) and
 qubesdb-read / cleanup can be stubbed.
 
 Each test asserts the actual severity and a content substring of the real
-message the branch emits, plus $EXIT_CODE. Tests SkipTest automatically when
-bubblewrap / unprivileged user namespaces are unavailable.
+message the branch emits, plus $EXIT_CODE.
 """
 
 import unittest

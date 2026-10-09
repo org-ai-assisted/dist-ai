@@ -8,7 +8,13 @@
 ## Runs the systemcheck regression + hardening test suite. Works both when
 ## installed (tests under /usr/share/systemcheck-tests) and when run straight
 ## from a git checkout (tests under usr/share/systemcheck-tests relative to
-## this script). Any extra arguments are forwarded to "python3 -m unittest".
+## this script). Extra arguments are forwarded to run-unittest.py.
+##
+## The invoked name picks the case dir, so the sub-suite entrypoint that sources
+## this runner (systemcheck-tests-bwrap) reuses it unchanged. Both run with
+## --strict-skips: no case here is optional, so ANY skip is FATAL unless the
+## orchestrator authorized it (then 78). Only systemcheck-tests-bwrap has a skip
+## CI may authorize (no unprivileged user namespaces on GitHub runners).
 ##
 ## The systemcheck sources under test are resolved by systemcheck_testlib:
 ##   * SYSTEMCHECK_REPO=/path/to/systemcheck -> that checkout, OR
@@ -21,16 +27,24 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+suite_name="$(basename -- "$0")"
 
-if [ -d "${script_dir}/../share/systemcheck-tests" ]; then
-   tests_dir="${script_dir}/../share/systemcheck-tests"
+if [ -d "${script_dir}/../share/${suite_name}" ]; then
+   share_dir="${script_dir}/../share"
 else
-   tests_dir='/usr/share/systemcheck-tests'
+   share_dir='/usr/share'
 fi
+tests_dir="${share_dir}/${suite_name}"
 
-python3 -m unittest discover \
-   --start-directory "${tests_dir}" \
-   --pattern 'test_*.py' \
-   "$@"
+run_unittest="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+## The sub-suite imports systemcheck_testlib from the parent suite's dir (single
+## source); discover only puts its own start dir on sys.path.
+export PYTHONPATH="${share_dir}/systemcheck-tests${PYTHONPATH:+:${PYTHONPATH}}"
+
+"${run_unittest}" --strict-skips --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' "$@"

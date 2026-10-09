@@ -165,6 +165,7 @@ core_suites=(
    stdisplay-tests-verify
    strip-markup-tests
    systemcheck-tests
+   systemcheck-tests-bwrap
    tb-updater-tests
    terminal-poc-corpus-tests
    tor-control-panel-tests
