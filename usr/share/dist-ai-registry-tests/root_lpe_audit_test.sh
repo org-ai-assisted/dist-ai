@@ -521,6 +521,19 @@ match chowned:
         os.chown("/home/user/.caseguard", 0, 0)
     ):
         pass
+    # style-ok: lpe-python-advisory -- waiver above a case whose pattern wraps
+    case (
+        [_, _]
+    ) if (
+        os.chown("/home/user/.caseparen", 0, 0)
+    ):
+        pass
+    case (
+        [_, _, _]  # style-ok: lpe-python-advisory -- TRAILING on the pattern line, must NOT reach the guard
+    ) if (
+        os.chown("/home/user/.casetrail", 0, 0)
+    ):
+        pass
 EOF
 
 ## VULN + WAIVER (python form feed): a form feed is NOT a line break to Python,

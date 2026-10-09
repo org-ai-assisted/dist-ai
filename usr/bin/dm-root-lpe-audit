@@ -45,6 +45,7 @@ Output: JSON on stdout; a ranked human summary on stderr.
 """
 
 import ast
+import bisect
 import io
 import json
 import os
@@ -483,6 +484,24 @@ def _py_comment_text_by_line(source):
 ## Fields holding a compound statement's nested SUITES: their statements get
 ## their own spans, so the compound's span stops at its header.
 _PY_SUITE_FIELDS = frozenset(("body", "orelse", "finalbody", "handlers", "cases"))
+_PY_LOGICAL_LINE_BREAKS = frozenset((tokenize.NEWLINE, tokenize.INDENT,
+                                     tokenize.DEDENT))
+
+
+def _py_case_keyword_lines(source):
+    """Sorted lines where a logical line OPENS with the name 'case' -- the
+    soft-keyword line of a match clause. ast.match_case carries no position,
+    and its pattern may start lines below the keyword ('case (' + newline)."""
+    lines = []
+    prev_type = tokenize.NEWLINE
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.NL):
+            continue
+        if (tok.type == tokenize.NAME and tok.string == "case"
+                and prev_type in _PY_LOGICAL_LINE_BREAKS):
+            lines.append(tok.start[0])
+        prev_type = tok.type
+    return lines
 
 
 def _py_stmt_spans(source):
@@ -500,7 +519,8 @@ def _py_stmt_spans(source):
             ## print on stderr.
             warnings.simplefilter("ignore")
             tree = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError):
+        case_lines = _py_case_keyword_lines(source)
+    except (SyntaxError, ValueError, RecursionError, tokenize.TokenError):
         return None
     spans = []
     for node in ast.walk(tree):
@@ -514,8 +534,13 @@ def _py_stmt_spans(source):
             continue
         ## Header = the node's own line plus every non-suite child; decorators
         ## sit ABOVE lineno, so the start widens to them too. A match_case has
-        ## no position of its own -- its pattern/guard children supply it.
-        own_line = getattr(node, "lineno", None)
+        ## no position of its own: its line is the nearest 'case' keyword at
+        ## or above its pattern.
+        if isinstance(node, ast.match_case):
+            index = bisect.bisect_right(case_lines, node.pattern.lineno)
+            own_line = case_lines[index - 1] if index else None
+        else:
+            own_line = node.lineno
         lines = [] if own_line is None else [own_line]
         for field, value in ast.iter_fields(node):
             if field in suite_fields:

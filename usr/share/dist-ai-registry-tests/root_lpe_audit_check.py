@@ -242,7 +242,13 @@ def main(argv):
         "python waiver above an 'if' header does not reach its body",
         has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
-    for op_sub, header in ((".excepthdr", "except"), (".caseguard", "case")):
+    checks.append((
+        "python trailing waiver on a wrapped case pattern does not reach the guard",
+        has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".casetrail")))
+    for op_sub, header in ((".excepthdr", "except"), (".caseguard", "case"),
+                           (".caseparen", "case (")):
         checks.append((
             "python waiver above a wrapped '%s' header suppresses its op"
             % header,
