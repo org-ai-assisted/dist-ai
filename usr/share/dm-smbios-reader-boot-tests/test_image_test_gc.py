@@ -47,18 +47,18 @@ def env(tmp_path):
     _write_exec(binp / 'sudo', 'shift 2\nexec "$@"\n')
     _write_exec(binp / 'id', 'exit 0\n')
     _write_exec(binp / 'getent',
-                'printf "%s:x:9999:9999::%s:/bin/bash\\n" "eph-test" "%s"\n'
+                'printf "%s:x:9999:9999::%s:/bin/bash\\n" "eph-inst-kicksecure-built" "%s"\n'
                 % ('%s', '%s', home))
     ## getent needs to echo the home path; build it plainly to avoid quoting games.
     _write_exec(binp / 'getent',
-                'echo "eph-test:x:9999:9999::' + str(home) + ':/bin/bash"\n')
+                'echo "eph-inst-kicksecure-built:x:9999:9999::' + str(home) + ':/bin/bash"\n')
     _write_exec(binp / 'safe-rm', 'echo "$@" >> "' + str(marker) + '"\n')
     environ = dict(os.environ)
     environ['PATH'] = str(binp) + os.pathsep + environ['PATH']
     return {'bin': binp, 'home': home, 'marker': marker, 'environ': environ}
 
 
-def _run(env, user='eph-test'):
+def _run(env, user='eph-inst-kicksecure-built'):
     return subprocess.run(
         [str(GC), user], env=env['environ'],
         capture_output=True, text=True, timeout=60)
@@ -115,7 +115,7 @@ def test_persist_leak_refused(env):
 def test_persist_refused(env):
     ## persist-* is the golden fleet: refused BEFORE any VBox call or folder wipe.
     _write_exec(env['bin'] / 'VBoxManage', 'exit 0\n')
-    res = _run(env, 'persist-stable-whonix')
+    res = _run(env, 'persist-inst-whonix')
     assert res.returncode != 0, res.stdout + res.stderr
     assert not env['marker'].exists(), 'safe-rm ran on a persist- account'
 

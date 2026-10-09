@@ -60,7 +60,7 @@ export PATH="${stubbin}:${PATH}"
 export IMAGE_TEST_GC="${stubbin}/image-test-gc"
 export EPH_CLEANUP_SETTLE=0
 export NFT_FLEET_TOOL="definitely-not-on-path-${RANDOM}"
-export eph_account='eph-run-kicksecure-18-2-3-5'
+export eph_account='eph-inst-kicksecure-18-2-3-5'
 
 rt_eph_cleanup >/dev/null 2>&1
 
@@ -80,7 +80,7 @@ pkill_line="$(grep -n '^pkill ' -- "${order}" | head -n 1 | cut -d: -f1)"
 userdel_line="$(grep -n '^userdel ' -- "${order}" | head -n 1 | cut -d: -f1)"
 
 check "image-test-gc was invoked" "$(grep --quiet '^image-test-gc ' -- "${order}" && printf true || printf false)"
-check "pkill killed the account by uid" "$(grep --quiet -- 'pkill .*--uid eph-run-kicksecure-18-2-3-5' "${order}" && printf true || printf false)"
+check "pkill killed the account by uid" "$(grep --quiet -- 'pkill .*--uid eph-inst-kicksecure-18-2-3-5' "${order}" && printf true || printf false)"
 check "userdel was invoked" "$([ -n "${userdel_line}" ] && printf true || printf false)"
 ## Canary: a reverted fix (userdel with no prior pkill) leaves pkill_line empty or after userdel.
 check "pkill ran BEFORE userdel" "$([ -n "${pkill_line}" ] && [ -n "${userdel_line}" ] && [ "${pkill_line}" -lt "${userdel_line}" ] && printf true || printf false)"

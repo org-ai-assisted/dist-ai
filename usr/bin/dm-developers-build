@@ -9,14 +9,14 @@
 ## scheme-compliant way -- the non-ad-hoc replacement for hand-run build wrappers.
 ##
 ## Runs as root. For GUEST it:
-##   1. ensures the dedicated build account persist-build-<guest> (dm-build-account) --
+##   1. ensures the dedicated build account persist-bild-<guest> (dm-build-account) --
 ##      privileged + networked, outside the install-account leak-drop;
 ##   2. seeds that account's OWN derivative-maker checkout from a reference checkout
 ##      (rsync; source + .git + submodules, NOT the separate derivative-binary output),
 ##      so builds never share admin's tree;
 ##   3. AS the account: SIGNS HEAD with an ephemeral key (signing-key-create + sign-and-tag)
 ##      so git_sanity_test passes legitimately -- no goodlist / ignore-flag hacks;
-##   4. builds AS the account with its own HOMEVAR and dist_build_slot=persist-build-<guest>
+##   4. builds AS the account with its own HOMEVAR and dist_build_slot=persist-bild-<guest>
 ##      (per-slot cowbuilder base -> parallel-safe);
 ##   5. prints the built ISO path on the last line (for dm-release-test --iso).
 ##
@@ -49,7 +49,7 @@ flavor='kicksecure-lxqt'
 print_usage() {
    printf '%s\n' "Usage: ${me} <kicksecure|whonix> [--flavor FLAVOR] [--source-checkout DIR]
 
-Build a <flavor> ISO as the dedicated persist-build-<guest> account (default flavor
+Build a <flavor> ISO as the dedicated persist-bild-<guest> account (default flavor
 kicksecure-lxqt). Seeds the account's checkout from --source-checkout (default
 /home/admin/derivative-maker). Prints the built ISO path on the last line. Must run as root."
 }
@@ -91,10 +91,10 @@ done
 ## 1. ensure the build account; capture its name from the helper's last line.
 account="$("${DM_BUILD_ACCOUNT}" "${guest}" | tail -1)"
 case "${account}" in
-   persist-build-*)
+   persist-bild-*)
       ;;
    *)
-      die 1 "dm-build-account did not yield a persist-build-* name: '${account}'"
+      die 1 "dm-build-account did not yield a persist-bild-* name: '${account}'"
       ;;
 esac
 home="$(getent passwd "${account}" | cut -d: -f6)"

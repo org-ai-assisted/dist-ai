@@ -14,13 +14,13 @@
 ## Account model (VBox state is per-$HOME, so the Linux user IS the isolation
 ## boundary):
 ##   - pre-bless candidate (resolved version != the wiki stable pin): a
-##     disposable, version-named ephemeral account eph-run-<guest>-<version>,
+##     disposable, version-named ephemeral account eph-inst-<guest>-<version>,
 ##     created on demand and removed after (image-test-gc wipes eph-*; the host
-##     nftables leak-drop covers eph-run-* by name).
+##     nftables leak-drop covers eph-inst-* by name).
 ##   - blessed (resolved == stable pin): the longitudinal golden account
-##     persist-stable-<guest>; a non-blessed version is REFUSED there.
+##     persist-inst-<guest>; a non-blessed version is REFUSED there.
 ##   - leak lane (the Whonix pair + anon-leak-test battery): ALWAYS the dedicated,
-##     persistent persist-leak-<guest>, never the shared persist-stable- or eph-run-
+##     persistent persist-leak-<guest>, never the shared persist-inst- or eph-inst-
 ##     namespace -- a non-leak lane's dev-root/leaprun mutation of a shared account's
 ##     GW/WS would falsify the leak verdict. Pre-provisioned (pair imported once;
 ##     dm-whonix-pair restore_fresh gives a pristine pair each run), NEVER
@@ -156,11 +156,11 @@ print_usage() {
   INTERFACE  lxqt | xfce | cli (the published desktop flavor)
   --iso PATH test a LOCALLY-BUILT ISO (kicksecure only): skip iso-download, install
              PATH, record origin=built. Version LABEL is derived from the filename
-             (override with --version); the run uses a disposable eph-run-GUEST-built
+             (override with --version); the run uses a disposable eph-inst-GUEST-built
              account.
 
-A pre-bless candidate installs under a disposable eph-run-GUEST-VERSION
-account; a blessed release (version == stable pin) uses persist-stable-GUEST.
+A pre-bless candidate installs under a disposable eph-inst-GUEST-VERSION
+account; a blessed release (version == stable pin) uses persist-inst-GUEST.
 The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account.
 --dry-run prints the resolved plan and runs nothing.
 --provision-leak (whonix only) is the one-time setup of the leak pair: create the clean
@@ -212,7 +212,7 @@ rt_version_token() {
          ;;
    esac
    token="${version//./-}"
-   ## Bound the token: it becomes a results-path component (and, for eph-run-, part of
+   ## Bound the token: it becomes a results-path component (and, for eph-inst-, part of
    ## the account name). The leak/blessed lanes skip the account-name ceiling, so cap it
    ## here -- a garbage/overlong --version fails SETUP loudly, never a suppressed publish.
    [ "${#token}" -le 32 ] || return 1
@@ -223,7 +223,7 @@ rt_version_token() {
 ## (Kicksecure-<Desktop>-<version>.<arch>.iso). The git-describe <version>
 ## (e.g. 18.2.3.0-222-g<sha>) is NOT a release token (dashes + sha), so it never
 ## flows through rt_version_token / the eph account name -- a built run uses a FIXED
-## eph-run-<guest>-built account; this label is only the results-matrix cell + --version.
+## eph-inst-<guest>-built account; this label is only the results-matrix cell + --version.
 rt_build_version_from_iso() {
    local base v
    base="${1##*/}"
@@ -264,15 +264,15 @@ rt_build_version_ok() {
    return 0
 }
 
-## Compose + validate the ephemeral install account name. Keeping the eph-run- prefix
+## Compose + validate the ephemeral install account name. Keeping the eph-inst- prefix
 ## is load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
-## resolves the fleet by persist-stable-*|eph-run-*|persist-leak-* name pattern.
+## resolves the fleet by persist-inst-*|eph-inst-*|persist-leak-*|eph-leak-* name pattern.
 ## useradd's NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ (no dots) with a 32-char ceiling.
 rt_eph_account() {
    local guest_name token account
    guest_name="$1"
    token="$2"
-   account="eph-run-${guest_name}-${token}"
+   account="eph-inst-${guest_name}-${token}"
    case "${account}" in
       [a-z]*)
          true
@@ -297,7 +297,7 @@ rt_lane_is_leak() {
 }
 
 ## True only for a leak-namespace account name. Guards the invariant that the leak
-## lane is never handed a shared persist-stable-/eph-run- account.
+## lane is never handed a shared persist-inst-/eph-inst- account.
 rt_account_is_leak() {
    case "$1" in
       persist-leak-*)
@@ -314,7 +314,7 @@ rt_account_is_leak() {
 ## shared primary breaks per-account isolation. The allowlist is keyed on the account
 ## name, NOT blind-trusting the primary, so a privileged group (root/sudo/docker/disk)
 ## anywhere is rejected. $1=account $2=uid $3=primary-group (id -gn) $4=`id -nG` output.
-## Precondition: callers pass a NAMESPACED account (eph-run-/persist-leak-/persist-stable-
+## Precondition: callers pass a NAMESPACED account (eph-inst-/persist-leak-/persist-inst-
 ## <...>), never a bare group name -- so an account that IS itself a privileged/shared
 ## group name (docker, sudo, users) cannot occur and is not special-cased.
 ## Scope: rejects every privilege-granting GROUP + a shared primary. A NON-group
@@ -431,7 +431,7 @@ rt_select_account() {
    token="$3"
    case "${bless_state}" in
       blessed)
-         printf '%s\n' "persist-stable-${guest_name}"
+         printf '%s\n' "persist-inst-${guest_name}"
          ;;
       prebless)
          rt_eph_account "${guest_name}" "${token}" || return 1
@@ -510,7 +510,7 @@ rt_lock_account() {
 ## VBoxXPCOMIPCD keeps its per-user IPC socket under <base>/.vbox-<user>-ipc and
 ## REFUSES a dir it does not own -- so VBoxManage then fails "Failed to create the
 ## VirtualBox object" (COM/IPC daemon socket error). userdel leaves the dir behind,
-## and an eph-run-<guest>-<version> account is REUSED by name across runs but gets a
+## and an eph-inst-<guest>-<version> account is REUSED by name across runs but gets a
 ## fresh UID each time; the old UID is later reused by another account, so the stale
 ## dir is now foreign-owned and poisons the next same-named account. Remove a stale,
 ## FOREIGN-owned dir before VBox is used; never touch one the account owns (a persist-*
@@ -925,7 +925,7 @@ main() {
 
    if [ -n "${local_iso}" ]; then
       ## Built-ISO lane: no download. kicksecure-only (whonix tests an imported pair, not
-      ## an ISO install). A disposable eph-run-GUEST-built account installs it; the version
+      ## an ISO install). A disposable eph-inst-GUEST-built account installs it; the version
       ## is a results-matrix LABEL only (git-describe, not a release token).
       [ "${guest}" = 'kicksecure' ] || die "${SETUP_RC}" "--iso is kicksecure-only"
       [ -f "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a regular file"
@@ -953,7 +953,7 @@ main() {
             ;;
       esac
       rt_origin='built'
-      account='eph-run-'"${guest}"'-built'
+      account='eph-inst-'"${guest}"'-built'
       account_kind='prebless'
       stable='(local build)'
    else
@@ -965,7 +965,7 @@ main() {
       stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
       bless_state="$(rt_bless_state "${version}" "${stable}")"
       ## The leak lane ALWAYS runs in the dedicated, PERSISTENT persist-leak- account
-      ## (never the shared persist-stable-/eph-run- namespace); every other lane selects
+      ## (never the shared persist-inst-/eph-inst- namespace); every other lane selects
       ## by bless-state. account_kind in {blessed, prebless, leak}; only prebless is
       ## ephemeral (created + gc'd here) -- blessed and leak are pre-provisioned.
       if rt_lane_is_leak "${guest}"; then
@@ -1033,13 +1033,13 @@ main() {
       rt_refresh_fleet
    fi
 
-   ## The blessed account (persist-stable-) is ALSO pre-provisioned, not created here,
+   ## The blessed account (persist-inst-) is ALSO pre-provisioned, not created here,
    ## so re-assert the same fail-closed privilege gate at run time: a NOPASSWD sudoers
    ## entry or a privileged group on it would otherwise void the account-isolation
    ## boundary the suite depends on. No nft leak-drop applies (not a leak account).
    if [ "${account_kind}" = 'blessed' ]; then
       id "${account}" >/dev/null 2>&1 \
-         || die "${SETUP_RC}" "blessed account '${account}' does not exist -- pre-provision persist-stable-${guest}"
+         || die "${SETUP_RC}" "blessed account '${account}' does not exist -- pre-provision persist-inst-${guest}"
       rt_require_account_unprivileged "${account}" blessed
    fi
 

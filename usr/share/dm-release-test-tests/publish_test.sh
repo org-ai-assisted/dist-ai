@@ -57,7 +57,7 @@ results_root="${work}/results"
 owner="$(id --user --name)"
 
 outdir="$(image_test_results_publish "${results_root}" "${owner}" \
-   "kicksecure-18-2-3-5" "eph-run-kicksecure-18-2-3-5" "calamares-install" \
+   "kicksecure-18-2-3-5" "eph-inst-kicksecure-18-2-3-5" "calamares-install" \
    0 "${shot}" \
    --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
    --origin downloaded --expect Kicksecure)"
@@ -87,7 +87,7 @@ check "json has stage finished" "$(grep --quiet '"stage": "finished"' -- "${json
 check "json has lane" "$(grep --quiet '"lane": "kicksecure-lxqt"' -- "${json}" && printf true || printf false)"
 check "json has version" "$(grep --quiet '"version": "18.2.3.5"' -- "${json}" && printf true || printf false)"
 check "json has mode" "$(grep --quiet '"mode": "calamares-install"' -- "${json}" && printf true || printf false)"
-check "json has test_user" "$(grep --quiet '"test_user": "eph-run-kicksecure-18-2-3-5"' -- "${json}" && printf true || printf false)"
+check "json has test_user" "$(grep --quiet '"test_user": "eph-inst-kicksecure-18-2-3-5"' -- "${json}" && printf true || printf false)"
 check "json has origin downloaded" "$(grep --quiet '"origin": "downloaded"' -- "${json}" && printf true || printf false)"
 check "json has verdict PASS" "$(grep --quiet '"verdict": "PASS"' -- "${json}" && printf true || printf false)"
 check "json has expect token" "$(grep --quiet '"Kicksecure"' -- "${json}" && printf true || printf false)"
@@ -114,7 +114,7 @@ printf 'WELCOME\n'    > "${story}/01-welcome.png"
 printf 'PARTITIONS\n' > "${story}/02-partitions.png"
 printf 'FAILURE\n'    > "${story}/99-failure.png"
 story_out="$(image_test_results_publish "${results_root}" "${owner}" \
-   "kicksecure-story-18-2-3-5" "eph-run-kicksecure-story" "calamares-install" \
+   "kicksecure-story-18-2-3-5" "eph-inst-kicksecure-story" "calamares-install" \
    0 "${story}" \
    --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
    --origin built --expect Kicksecure)"
@@ -140,7 +140,7 @@ printf 'WELCOME\n' > "${hardstory}/01-welcome.png"
 touch -- "${hardstory}/02-empty.png"        ## 0-byte -> skipped
 printf 'X\n' > "${hardstory}/03--x.png"     ## milestone '-x' (leading dash) -> skipped
 hard_out="$(image_test_results_publish "${results_root}" "${owner}" \
-   "kicksecure-hardstory-18-2-3-5" "eph-run-kicksecure-hardstory" "calamares-install" \
+   "kicksecure-hardstory-18-2-3-5" "eph-inst-kicksecure-hardstory" "calamares-install" \
    0 "${hardstory}" \
    --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
    --origin built --expect Kicksecure)"

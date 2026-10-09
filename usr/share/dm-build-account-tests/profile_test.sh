@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## dm-build-account provisions the PRIVILEGED build account persist-build-<guest> -- the
+## dm-build-account provisions the PRIVILEGED build account persist-bild-<guest> -- the
 ## inverse of dm-release-test's unprivileged, leak-dropped install accounts. Drive the
 ## REAL script under a stub PATH (no root, no system mutation) and assert the build
 ## profile: private primary group, sysmaint (sudo-exec on the hardened host), passwordless
@@ -95,8 +95,8 @@ else
 fi
 
 ## 2. final line is the account name (callers capture it)
-if [ "$(printf '%s\n' "${out}" | tail -1)" = 'persist-build-kicksecure' ]; then
-   ok 'prints persist-build-kicksecure as the last line'
+if [ "$(printf '%s\n' "${out}" | tail -1)" = 'persist-bild-kicksecure' ]; then
+   ok 'prints persist-bild-kicksecure as the last line'
 else
    bad "last line not the account name: $(printf '%s\n' "${out}" | tail -1)"
 fi
@@ -123,7 +123,7 @@ else
 fi
 
 ## 6. passwordless sudo written + validated
-sudoers_file="${sudoers_d}/persist-build-kicksecure"
+sudoers_file="${sudoers_d}/persist-bild-kicksecure"
 if [ -f "${sudoers_file}" ] && grep --quiet --extended-regexp 'NOPASSWD:ALL' "${sudoers_file}"; then
    ok 'NOPASSWD sudoers entry written'
 else
@@ -137,10 +137,10 @@ fi
 
 ## 7. SAFETY: name is OUTSIDE the host leak-drop patterns, so the build keeps network
 ## and an install account can never collide with it.
-account='persist-build-kicksecure'
+account='persist-bild-kicksecure'
 leak_dropped='false'
 case "${account}" in
-   persist-stable-* | eph-run-* | persist-leak-*)
+   persist-inst-* | eph-inst-* | persist-leak-* | eph-leak-*)
       leak_dropped='true'
       ;;
 esac
@@ -153,8 +153,8 @@ fi
 ## 8. whonix variant
 true >| "${calls}"
 if out2="$(run_subject whonix 2>&1)" \
-   && [ "$(printf '%s\n' "${out2}" | tail -1)" = 'persist-build-whonix' ]; then
-   ok 'whonix variant -> persist-build-whonix'
+   && [ "$(printf '%s\n' "${out2}" | tail -1)" = 'persist-bild-whonix' ]; then
+   ok 'whonix variant -> persist-bild-whonix'
 else
    bad "whonix variant wrong: ${out2}"
 fi

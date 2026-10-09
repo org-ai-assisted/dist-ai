@@ -9,7 +9,7 @@
 ## dm-smbios-reader-vbox args (--shot is appended by the runner).
 
 NAME="kicksecure-iso-efi"
-TEST_USER="persist-stable-kicksecure"
+TEST_USER="persist-inst-kicksecure"
 MODE="install"
 DM_ARGS=(
    --vm "Kicksecure-ISO-EFI"

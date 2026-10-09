@@ -4,28 +4,28 @@
 ## See the file COPYING for copying conditions.
 
 ## Idempotently provision a PERSISTENT, scheme-compliant build account
-## 'persist-build-<guest>' for local derivative-maker ISO builds on the test server.
+## 'persist-bild-<guest>' for local derivative-maker ISO builds on the test server.
 ##
 ## This is the deliberate INVERSE of dm-release-test's install/test accounts, and the
 ## two must never be confused:
-##   - install accounts (eph-run-<guest>-<version|built>, persist-stable-<guest>,
+##   - install accounts (eph-inst-<guest>-<version|built>, persist-inst-<guest>,
 ##     persist-leak-<guest>) run UNTRUSTED ISO guest code, so they are UNPRIVILEGED
 ##     (dm-release-test's rt_account_unprivileged rejects any sudo/group grant beyond
 ##     vboxusers) and NETWORK-ISOLATED (the host nftables leak-drop matches them by the
-##     name patterns persist-stable-*|eph-run-*|persist-leak-*).
+##     name patterns persist-inst-*|eph-inst-*|persist-leak-*|eph-leak-*).
 ##   - a BUILD account runs cowbuilder/apt (needs ROOT via sudo) and fetches packages
 ##     from the frozen snapshot / approx proxy (needs NETWORK). So it is PRIVILEGED and
 ##     NETWORKED -- exactly what an install account must never be.
 ##
 ## Two invariants keep that boundary safe by construction:
-##   1. The name 'persist-build-*' is OUTSIDE the leak-drop patterns above, so the build
+##   1. The name 'persist-bild-*' is OUTSIDE the leak-drop patterns above, so the build
 ##      account keeps network without any nftables change.
 ##   2. Because it is sudo-capable, dm-release-test's rt_account_can_sudo /
 ##      rt_account_unprivileged FAIL CLOSED on it -- it can NEVER be selected as an ISO
 ##      install target, so the install side stays clean even if a name is fat-fingered.
 ##
 ## Persistent (reuses its home checkout + the cowbuilder base under
-## dist_build_slot=persist-build-<guest> across builds); never gc'd by image-test-gc
+## dist_build_slot=persist-bild-<guest> across builds); never gc'd by image-test-gc
 ## (which only wipes eph-*).
 
 set -o errexit
@@ -46,7 +46,7 @@ die() {
 print_usage() {
    printf '%s\n' "Usage: ${me} <kicksecure|whonix>
 
-Idempotently ensure the persistent build account persist-build-<guest> exists with the
+Idempotently ensure the persistent build account persist-bild-<guest> exists with the
 build profile (sysmaint group for sudo on the hardened host, passwordless sudo for
 cowbuilder/apt, own home; NOT vboxusers, NOT network-leak-dropped). Prints the account
 name on the last line. Must run as root."
@@ -68,10 +68,10 @@ esac
 
 [ "$(id -u)" = '0' ] || die 1 "must run as root (useradd/usermod/sudoers)"
 
-account="persist-build-${guest}"
+account="persist-bild-${guest}"
 
 ## useradd NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ with a 32-char ceiling;
-## persist-build-kicksecure is 25 chars, persist-build-whonix 20 -- both fit.
+## persist-bild-kicksecure is 23 chars, persist-bild-whonix 19 -- both fit.
 if ! getent passwd "${account}" >/dev/null; then
    ## --user-group: a PRIVATE primary group, so no shared-group privilege bleed.
    useradd --create-home --user-group --shell /bin/bash "${account}"

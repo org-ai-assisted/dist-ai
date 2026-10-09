@@ -91,30 +91,32 @@ assert_reject "version empty rejected" rt_version_token ""
 assert_reject "version token over 32 chars" rt_version_token 123456789012345678901234567890123
 
 ## ephemeral account name
-assert_out "eph account kicksecure" "eph-run-kicksecure-18-2-3-5" rt_eph_account kicksecure 18-2-3-5
-assert_out "eph account whonix" "eph-run-whonix-18-2-3-5" rt_eph_account whonix 18-2-3-5
+assert_out "eph account kicksecure" "eph-inst-kicksecure-18-2-3-5" rt_eph_account kicksecure 18-2-3-5
+assert_out "eph account whonix" "eph-inst-whonix-18-2-3-5" rt_eph_account whonix 18-2-3-5
 assert_reject "eph account bad charset" rt_eph_account kicksecure "18_2"
-## 32-char ceiling: eph-run-kicksecure- is 19 chars, so a 14+ char token overflows.
-assert_reject "eph account over 32 chars" rt_eph_account kicksecure "1-2-3-4-5-6-7-8"
+## 32-char ceiling: eph-inst-kicksecure- is 20 chars, so a 12-char token fits exactly
+## and a 13-char token overflows.
+assert_out "eph account exactly 32 chars" "eph-inst-kicksecure-1-2-3-4-5-67" rt_eph_account kicksecure "1-2-3-4-5-67"
+assert_reject "eph account 33 chars" rt_eph_account kicksecure "1-2-3-4-5-678"
 
 ## bless-state
 assert_out "bless equal" "blessed" rt_bless_state 18.2.3.5 18.2.3.5
 assert_out "bless differ" "prebless" rt_bless_state 18.2.3.5 18.2.3.3
 
 ## account selection by bless-state
-assert_out "select blessed golden" "persist-stable-kicksecure" rt_select_account kicksecure blessed 18-2-3-5
-assert_out "select prebless eph" "eph-run-whonix-18-2-3-5" rt_select_account whonix prebless 18-2-3-5
+assert_out "select blessed golden" "persist-inst-kicksecure" rt_select_account kicksecure blessed 18-2-3-5
+assert_out "select prebless eph" "eph-inst-whonix-18-2-3-5" rt_select_account whonix prebless 18-2-3-5
 assert_reject "select unknown state" rt_select_account kicksecure bogus 18-2-3-5
 
 ## leak-lane + leak-account predicates: the whonix lane IS the leak test and ALWAYS
 ## uses the dedicated, persistent persist-leak- account, never a shared namespace.
-## rt_account_is_leak must REJECT the golden persist-stable- and the install eph-run-
+## rt_account_is_leak must REJECT the golden persist-inst- and the install eph-inst-
 ## accounts, so the leak lane can never be handed a potentially-contaminated account.
 assert_out "whonix is leak lane" "" rt_lane_is_leak whonix
 assert_reject "kicksecure not leak lane" rt_lane_is_leak kicksecure
 assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-whonix
-assert_reject "persist-stable- not a leak account" rt_account_is_leak persist-stable-whonix
-assert_reject "eph-run- not a leak account" rt_account_is_leak eph-run-whonix-18-2-3-5
+assert_reject "persist-inst- not a leak account" rt_account_is_leak persist-inst-whonix
+assert_reject "eph-inst- not a leak account" rt_account_is_leak eph-inst-whonix-18-2-3-5
 
 ## pair-version marker parse: VBoxManage prints "Value: <v>" for a set key and
 ## "No value set!" for an unset one. Canary: a naive impl that echoed the whole line
@@ -273,7 +275,7 @@ done
 
 ## Call-site canary: EVERY account kind -- ephemeral (test), leak, AND blessed -- must be
 ## wired through the gate. The blessed wiring is the regression: before it, a privileged
-## persist-stable- account ran a test unchecked (isolation-boundary gap). Fails on the old
+## persist-inst- account ran a test unchecked (isolation-boundary gap). Fails on the old
 ## code, where the 'blessed' call was absent.
 for role in test leak blessed; do
    if grep --quiet --fixed-strings "rt_require_account_unprivileged \"\${account}\" ${role}" "${subject}"; then
