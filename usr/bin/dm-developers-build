@@ -35,7 +35,7 @@ export LC_ALL=C
 me="${0##*/}"
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -50,8 +50,8 @@ print_usage() {
    printf '%s\n' "Usage: ${me} <kicksecure|whonix> [--flavor FLAVOR] [--source-checkout DIR]
 
 Build a <flavor> ISO as the dedicated persist-bild-<guest> account (default flavor
-kicksecure-lxqt for kicksecure, whonix-host-lxqt for whonix; FLAVOR must belong to
-GUEST). Seeds the account's checkout from --source-checkout (default
+kicksecure-lxqt for kicksecure; whonix has no default, pass e.g. whonix-gateway-lxqt;
+FLAVOR must belong to GUEST). Seeds the account's checkout from --source-checkout (default
 /home/admin/derivative-maker). Prints the built ISO path on the last line. Must run as root."
 }
 
@@ -87,13 +87,15 @@ while [ "$#" -ge 1 ]; do
 done
 
 ## The ISO flavor of each guest, so 'whonix' never silently builds a Kicksecure image.
+## Whonix has no single ISO (gateway and workstation are separate flavors, and
+## derivative-maker does not implement whonix-host-*), so it must be named explicitly.
 if [ -z "${flavor}" ]; then
    case "${guest}" in
       kicksecure)
          flavor='kicksecure-lxqt'
          ;;
       whonix)
-         flavor='whonix-host-lxqt'
+         die 2 "guest whonix needs --flavor (e.g. whonix-gateway-lxqt or whonix-workstation-lxqt)"
          ;;
    esac
 fi
@@ -129,21 +131,26 @@ binary_out="${home}/derivative-binary"
 ## remote credentials; the build account does not) BEFORE seeding, so the slot inherits a
 ## complete tag set and describes the correct version. Fail LOUD on a stale label rather
 ## than silently ship a wrong version.
+## '--exclude *_*_*' skips the ephemeral '<tag>_<commit>_<fingerprint>' tags that
+## help-steps/sign-tag-head leaves on locally signed builds, matching derivative-maker's own
+## version describe; release tags carry no underscore.
 ref_owner="$(stat -c '%U' "${source_checkout}")"
 runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
    || die 1 "tag fetch into ${source_checkout} failed; refusing to build with a possibly stale version label"
-desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags 2>/dev/null || true)"
+desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags --exclude '*_*_*' 2>/dev/null || true)"
 case "${desc}" in
-   *-developers-only-*|*-developers-only)
-      printf '%s: reference describes as %s\n' "${me}" "${desc}"
+   [0-9]*-developers-only | [0-9]*-developers-only-* \
+   | [0-9]*-testers-only | [0-9]*-testers-only-* \
+   | [0-9]*-stable | [0-9]*-stable-*)
+      printf '%s\n' "${me}: reference describes as ${desc}"
       ;;
    *)
-      die 1 "reference describe is '${desc:-<none>}', not a *-developers-only tag; release tags are missing and the ISO version label would be wrong"
+      die 1 "reference describe is '${desc:-<none>}', not a release tag (developers-only, testers-only or stable); release tags are missing and the ISO version label would be wrong"
       ;;
 esac
 
 ## 2b. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
-printf '%s: seeding %s checkout from %s\n' "${me}" "${account}" "${source_checkout}"
+printf '%s\n' "${me}: seeding ${account} checkout from ${source_checkout}"
 rsync --archive --delete --hard-links "${source_checkout}/" "${checkout}/"
 chown --recursive "${account}:${account}" "${checkout}"
 
@@ -198,17 +205,22 @@ runuser -u "${account}" -- \
 ' || build_rc=$?
 
 if [ "${build_rc}" -ne 0 ]; then
-   printf '%s: build FAILED (rc=%s); see %s\n' "${me}" "${build_rc}" "${log}" >&2
+   printf '%s\n' "${me}: build FAILED (rc=${build_rc}); see ${log}" >&2
    exit "${build_rc}"
 fi
 
 ## 5. locate the freshly built (new or rewritten) ISO by set difference against the
 ## pre-build snapshot. Exactly one ISO per build.
 after="$(iso_snapshot)"
-iso="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -1 | cut -f1)"
-if [ -z "${iso}" ] || [ ! -f "${iso}" ]; then
+changed="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | cut -f1)"
+if [ -z "${changed}" ]; then
    die 1 "no new or rewritten ISO appeared under ${binary_out} after the build"
 fi
+## More than one changed ISO is ambiguous: never guess which one this build produced.
+[ "$(printf '%s\n' "${changed}" | wc -l)" -eq 1 ] \
+   || die 1 "more than one ISO changed under ${binary_out} during the build: ${changed//$'\n'/ }"
+iso="${changed}"
+[ -f "${iso}" ] || die 1 "built ISO ${iso} is not a regular file"
 
-printf '%s: built %s\n' "${me}" "${iso}"
+printf '%s\n' "${me}: built ${iso}"
 printf '%s\n' "${iso}"

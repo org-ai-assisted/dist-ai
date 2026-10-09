@@ -8,7 +8,7 @@
 ## dm-developers-build labels the ISO from `git describe` of the reference checkout, so a
 ## missing release tag silently ships a MISLABELLED ISO. Drive the REAL script under a stub
 ## PATH (no root, no network, no build) and assert both preconditions DIE before seeding:
-## a failed tag fetch, and a describe that is empty or lacks -developers-only. rsync (the
+## a failed tag fetch, and a describe that is empty or not a release tag. rsync (the
 ## first step after the check) is stubbed to exit 99, the "reached seeding" sentinel.
 ## Canary: downgrading either die back to a warning lets rsync run and fails a case below.
 
@@ -30,11 +30,11 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-developers-build'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-developers-build not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-developers-build not found at ${subject}" >&2; exit 1; }
 
 failures=0
-ok()  { printf 'ok: %s\n' "$1"; }
-bad() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
+ok()  { printf '%s\n' "ok: $1"; }
+bad() { printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); }
 
 work="$(mktemp --directory)"
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
@@ -52,8 +52,8 @@ mkdir --parents -- "${stub_bin}" "${source_checkout}/.git" "${work}/home"
 make_stub() {
    local name="$1" body="$2"
    {
-      printf '#!/bin/bash\n'
-      printf 'printf "%%s %%s\\n" "%s" "$*" >> "%s"\n' "${name}" "${calls}"
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' "printf '%s\\n' \"${name} \$*\" >> \"${calls}\""
       printf '%s\n' "${body}"
    } > "${stub_bin}/${name}"
    chmod +x "${stub_bin}/${name}"
@@ -66,13 +66,19 @@ make_stub stat 'printf "admin\n"'
 ## runuser -u USER -- CMD...: drop the account switch, run CMD.
 # shellcheck disable=SC2016
 make_stub runuser 'shift 3; exec "$@"'
+## describe models a HEAD carrying help-steps/sign-tag-head's ephemeral
+## '<tag>_<commit>_<fingerprint>' tag: real git returns it unless the caller passes
+## --exclude '*_*_*', so a describe without the exclude sees the signing tag.
 # shellcheck disable=SC2016
 make_stub git '
 case "$*" in
    *" fetch "*) exit "${STUB_FETCH_RC:-0}" ;;
    *" describe "*)
       [ -n "${STUB_DESC:-}" ] || exit 128
-      printf "%s\n" "${STUB_DESC}"
+      case "$*" in
+         *"--exclude *_*_*"*) printf "%s\n" "${STUB_DESC}" ;;
+         *) printf "%s\n" "${STUB_DESC%%-[0-9]*-g*}_0123abcd_F31F9496" ;;
+      esac
       ;;
 esac'
 make_stub rsync 'exit 99'
@@ -104,12 +110,15 @@ run_case() {
 
 run_case 'tag fetch fails' 1 '18.2.3.6-developers-only-3-gabcdef0' die
 run_case 'describe empty' 0 '' die
-run_case 'describe without -developers-only' 0 '18.2.3.6' die
+run_case 'describe bare version, no release suffix' 0 '18.2.3.6' die
+run_case 'describe non-release tag' 0 'adrelanos_f65a6f9f' die
 run_case 'describe exact developers-only tag' 0 '18.2.3.6-developers-only' seed
 run_case 'describe developers-only plus commits' 0 '18.2.3.6-developers-only-3-gabcdef0' seed
+run_case 'describe testers-only tag' 0 '18.2.3.6-testers-only' seed
+run_case 'describe stable plus commits' 0 '18.2.3.6-stable-2-g0123abc' seed
 
 if [ "${failures}" -ne 0 ]; then
-   printf '%s case(s) failed\n' "${failures}" >&2
+   printf '%s\n' "${failures} case(s) failed" >&2
    exit 1
 fi
-printf 'all dm-developers-build stale-label cases passed\n'
+printf '%s\n' 'all dm-developers-build stale-label cases passed'

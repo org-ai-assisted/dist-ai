@@ -7,8 +7,8 @@
 
 ## dm-developers-build drives a real ISO build as the persist-bild-<guest> account. Drive
 ## the REAL script under a stub PATH (no root, no build, no network) and assert the
-## guest -> flavor mapping and the built-ISO detection. Canary: a fixed
-## 'kicksecure-lxqt' default fails case 1; path-only ISO detection fails case 4.
+## guest -> flavor mapping and the built-ISO detection. Canary: any whonix default flavor
+## fails case 1; path-only ISO detection fails case 4; a first-changed-ISO pick fails case 6.
 
 set -o errexit
 set -o nounset
@@ -28,11 +28,11 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-developers-build'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-developers-build not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-developers-build not found at ${subject}" >&2; exit 1; }
 
 failures=0
-ok()  { printf 'ok: %s\n' "$1"; }
-bad() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
+ok()  { printf '%s\n' "ok: $1"; }
+bad() { printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); }
 
 work="$(mktemp --directory)"
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
@@ -51,13 +51,14 @@ mkdir --parents -- "${stub_bin}" "${stub_home}" "${source_checkout}/.git"
 
 ## Stubs: record argv. runuser answers the reference tag fetch/describe and, for the
 ## build call, writes ONE ISO at a fixed path (in place, like a rebuild of the same
-## version) unless STUB_NO_ISO is set. The sleep lets the coarse filesystem clock tick
-## so a rewrite gets a ctime distinct from the pre-build snapshot.
+## version) unless STUB_NO_ISO is set; STUB_EXTRA_ISO also rewrites a second ISO
+## (an older version) to model an ambiguous build. A full-second sleep crosses even a 1s-granularity
+## filesystem clock, so a rewrite gets a ctime distinct from the pre-build snapshot.
 make_stub() {
    local name="$1" body="$2"
    {
-      printf '#!/bin/bash\n'
-      printf 'printf "%%s %%s\\n" "%s" "$*" >> "%s"\n' "${name}" "${calls}"
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' "printf '%s\\n' \"${name} \$*\" >> \"${calls}\""
       printf '%s\n' "${body}"
    } > "${stub_bin}/${name}"
    chmod +x "${stub_bin}/${name}"
@@ -78,8 +79,10 @@ case "$*" in
       ;;
    *"DM_FLAV="*)
       [ -z "${STUB_NO_ISO:-}" ] || exit 0
-      sleep 0.1
+      sleep 1
       printf "built %s\n" "$(date +%s%N)" > "'"${iso_dir}"'/stub.Intel_AMD64.iso"
+      [ -z "${STUB_EXTRA_ISO:-}" ] \
+         || printf "built %s\n" "$(date +%s%N)" > "'"${iso_dir}"'/older.Intel_AMD64.iso"
       ;;
 esac'
 
@@ -96,12 +99,25 @@ built_flavor() {
 
 iso="${iso_dir}/stub.Intel_AMD64.iso"
 
-## 1. whonix defaults to the Whonix ISO flavor, never a Kicksecure one.
+## 1. whonix has no buildable single ISO flavor (whonix-host-* is not implemented in
+## derivative-maker), so a missing --flavor is refused before any build.
 true >| "${calls}"
-if out="$(run_subject whonix 2>&1)" && [ "$(built_flavor)" = 'whonix-host-lxqt' ]; then
-   ok 'whonix defaults to flavor whonix-host-lxqt'
+rc=0
+run_subject whonix >/dev/null 2>&1 || rc=$?
+if [ "${rc}" = '2' ] && [ -z "$(built_flavor)" ]; then
+   ok 'whonix without --flavor refused (exit 2), no build'
 else
-   bad "whonix default flavor wrong ($(built_flavor)): ${out}"
+   bad "whonix without --flavor not refused (rc=${rc}, flavor=$(built_flavor))"
+fi
+
+## 1b. an explicit whonix flavor is built as given.
+true >| "${calls}"
+safe-rm --force -- "${iso}"
+if out="$(run_subject whonix --flavor whonix-gateway-lxqt 2>&1)" \
+   && [ "$(built_flavor)" = 'whonix-gateway-lxqt' ]; then
+   ok 'whonix --flavor whonix-gateway-lxqt builds that flavor'
+else
+   bad "whonix explicit flavor wrong ($(built_flavor)): ${out}"
 fi
 
 ## 2. kicksecure keeps its default.
@@ -146,9 +162,22 @@ else
    bad "untouched pre-existing ISO reported as built (rc=${rc}): ${out}"
 fi
 
+## 6. two ISOs changed during one build is ambiguous: refused, never a guessed pick.
+printf '%s\n' 'previous build' > "${iso}"
+printf '%s\n' 'older build' > "${iso_dir}/older.Intel_AMD64.iso"
+true >| "${calls}"
+rc=0
+out="$(STUB_EXTRA_ISO=1 run_subject kicksecure 2>&1)" || rc=$?
+if [ "${rc}" -ne 0 ] && grep --quiet 'more than one ISO changed' <<< "${out}"; then
+   ok 'two changed ISOs refused as ambiguous'
+else
+   bad "two changed ISOs not refused (rc=${rc}): ${out}"
+fi
+safe-rm --force -- "${iso_dir}/older.Intel_AMD64.iso"
+
 if [ "${failures}" -eq 0 ]; then
-   printf '%s: all checks passed\n' "${0##*/}"
+   printf '%s\n' "${0##*/}: all checks passed"
    exit 0
 fi
-printf '%s: %s check(s) FAILED\n' "${0##*/}" "${failures}" >&2
+printf '%s\n' "${0##*/}: ${failures} check(s) FAILED" >&2
 exit 1
