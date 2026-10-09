@@ -85,15 +85,34 @@ fi
 ## VirtualBox (that is the install side).
 usermod --append --groups sysmaint "${account}"
 
+## A pre-existing account is reused, not recreated, so verify the profile instead of
+## assuming it: a private primary group and no vboxusers. Refuse rather than repair -- an
+## account drifted this way was changed by hand and needs a human look.
+primary_group="$(id --group --name "${account}")"
+[ "${primary_group}" = "${account}" ] \
+   || die 1 "${account} primary group is '${primary_group}', not its private group '${account}'"
+read -r -a account_groups <<< "$(id --groups --name "${account}")"
+for group in "${account_groups[@]}"; do
+   [ "${group}" != 'vboxusers' ] \
+      || die 1 "${account} is in vboxusers; a build account must not be (remove it by hand)"
+done
+
 ## Passwordless sudo: cowbuilder and apt run non-interactively during the build.
 ## The directory is overridable ONLY so the unit test can point it at a temp dir; unset
 ## it is the production /etc/sudoers.d, byte-identical.
 sudoers_dir="${DM_BUILD_ACCOUNT_SUDOERS_DIR:-/etc/sudoers.d}"
 sudoers_file="${sudoers_dir}/${account}"
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${account}" > "${sudoers_file}"
-chmod 0440 "${sudoers_file}"
-visudo --check --file "${sudoers_file}" > /dev/null \
-   || die 1 "sudoers validation failed for ${sudoers_file}"
+## Validate a temp copy, then rename it into place: a rejected rule never becomes live
+## (a broken sudoers.d file disables sudo host-wide). The '.' in the temp name makes
+## sudo's includedir skip it even if this script dies before the rename.
+sudoers_tmp="$(mktemp -- "${sudoers_dir}/.${account}.XXXXXX")"
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${account}" > "${sudoers_tmp}"
+chmod 0440 "${sudoers_tmp}"
+if ! visudo --check --file "${sudoers_tmp}" > /dev/null; then
+   safe-rm --force -- "${sudoers_tmp}"
+   die 1 "sudoers validation failed for ${sudoers_file}; existing rule left unchanged"
+fi
+mv --force --no-target-directory -- "${sudoers_tmp}" "${sudoers_file}"
 
 ## Fail loud if the profile does not actually yield passwordless root -- never report a
 ## half-provisioned account as ready.
