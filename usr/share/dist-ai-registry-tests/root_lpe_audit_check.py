@@ -46,7 +46,7 @@ EXPECTED = [
 ## home-write vuln under ci/ that must never enter the root surface (no FHS
 ## install path -> not a shipped root entry point).
 SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci",
-              "safe-env-dashdash")
+              "safe-env-dashdash", "safe-env-expand")
 
 
 def _sev_ok(actual, minimum):

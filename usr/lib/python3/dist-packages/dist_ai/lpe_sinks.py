@@ -323,14 +323,18 @@ def _peel_wrappers(call, source):
                 continue
             break
         ## GNU env operand grammar once getopt has stopped: an optional lone '-'
-        ## (ignore-environment), then NAME=VALUE operands (ANY word containing
-        ## '=' -- env uses no identifier check, so 'X-Y=1'/'0=1'/'--unset=P' all
-        ## count), then the command. A '--' here is a literal command name, not
-        ## an option terminator (getopt already stopped at the first operand).
+        ## (ignore-environment), then NAME=VALUE operands, then the command. An
+        ## operand is an assignment when it has a LITERAL '=' (env uses no
+        ## identifier check, so 'X-Y=1'/'0=1'/'--unset=P'/'"PATH=$PATH"' all
+        ## count); a '=' that is only expansion syntax ('"${v:=x}"'/'$((a=1))')
+        ## is NOT in env's argv, so it reads as the command, not an assignment.
+        ## A '--' here is a literal command name, not an option terminator
+        ## (getopt already stopped at the first operand).
         if base == "env":
             if index < len(words) and _word_raw(words[index], source) == "-":
                 index += 1
-            while index < len(words) and "=" in _word_raw(words[index], source):
+            while index < len(words) \
+                    and "=" in bash_ast.word_literal_text(words[index]):
                 index += 1
     effective = words[index:]
     if not effective:
