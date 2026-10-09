@@ -70,5 +70,5 @@ for case_script in "${case_scripts[@]}"; do
 done
 
 printf '%s\n' ""
-printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
+printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped, ${env_unmet} env-unmet"
 suite_exit "${failed}" "${skipped}" "${env_unmet}"

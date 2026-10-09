@@ -48,13 +48,15 @@ fi
 
 for case_script in "${bwrap_cases[@]}"; do
    name="$(basename -- "${case_script}")"
+   ## rc 1 alone could come from an earlier guard (e.g. subject unreadable);
+   ## require bwrap_require's own FATAL line so the gate is what fired.
    rc=0
-   env --unset=DIST_AI_SKIP_AUTHORIZED PATH="${stub_dir}:${PATH}" \
-      "${case_script}" >/dev/null 2>&1 || rc=$?
-   if [ "${rc}" -eq 1 ]; then
-      ok "${name}: unusable bwrap, unauthorized -> FATAL (1)"
+   stderr_text="$(env --unset=DIST_AI_SKIP_AUTHORIZED PATH="${stub_dir}:${PATH}" \
+      "${case_script}" 2>&1 >/dev/null)" || rc=$?
+   if [ "${rc}" -eq 1 ] && [[ "${stderr_text}" == *'FATAL: unprivileged bwrap sandbox unavailable and the skip is not authorized'* ]]; then
+      ok "${name}: unusable bwrap, unauthorized -> FATAL (1) from bwrap_require"
    else
-      notok "${name}: unusable bwrap, unauthorized exited ${rc}, expected 1"
+      notok "${name}: unusable bwrap, unauthorized exited ${rc}, expected 1 from bwrap_require; stderr: ${stderr_text}"
    fi
    rc=0
    env DIST_AI_SKIP_AUTHORIZED=1 PATH="${stub_dir}:${PATH}" \

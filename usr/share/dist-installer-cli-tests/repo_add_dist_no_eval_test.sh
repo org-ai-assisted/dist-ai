@@ -81,7 +81,9 @@ target_key="${work_dir}/keyrings/derivative.asc"
 mkdir --parents -- "${work_dir}/keyrings"
 
 rc=0
+## An inherited value would skip the default that interpolates $codename.
 env \
+   --unset=sources_list_build_remote_derivative \
    --chdir="${work_dir}" \
    codename="${payload}" \
    apt_target_key_derivative="${target_key}" \
