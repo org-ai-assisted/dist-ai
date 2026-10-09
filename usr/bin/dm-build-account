@@ -1,0 +1,104 @@
+#!/bin/bash
+
+## Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Idempotently provision a PERSISTENT, scheme-compliant build account
+## 'persist-bild-<guest>' for local derivative-maker ISO builds on the test server.
+##
+## This is the deliberate INVERSE of dm-release-test's install/test accounts, and the
+## two must never be confused:
+##   - install accounts (eph-inst-<guest>-<version|built>, persist-inst-<guest>,
+##     persist-leak-<guest>) run UNTRUSTED ISO guest code, so they are UNPRIVILEGED
+##     (dm-release-test's rt_account_unprivileged rejects any sudo/group grant beyond
+##     vboxusers) and NETWORK-ISOLATED (the host nftables leak-drop matches them by the
+##     name patterns persist-inst-*|eph-inst-*|persist-leak-*|eph-leak-*).
+##   - a BUILD account runs cowbuilder/apt (needs ROOT via sudo) and fetches packages
+##     from the frozen snapshot / approx proxy (needs NETWORK). So it is PRIVILEGED and
+##     NETWORKED -- exactly what an install account must never be.
+##
+## Two invariants keep that boundary safe by construction:
+##   1. The name 'persist-bild-*' is OUTSIDE the leak-drop patterns above, so the build
+##      account keeps network without any nftables change.
+##   2. Because it is sudo-capable, dm-release-test's rt_account_can_sudo /
+##      rt_account_unprivileged FAIL CLOSED on it -- it can NEVER be selected as an ISO
+##      install target, so the install side stays clean even if a name is fat-fingered.
+##
+## Persistent (reuses its home checkout + the cowbuilder base under
+## dist_build_slot=persist-bild-<guest> across builds); never gc'd by image-test-gc
+## (which only wipes eph-*).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+die() {
+   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   exit "$1"
+}
+
+print_usage() {
+   printf '%s\n' "Usage: ${me} <kicksecure|whonix>
+
+Idempotently ensure the persistent build account persist-bild-<guest> exists with the
+build profile (sysmaint group for sudo on the hardened host, passwordless sudo for
+cowbuilder/apt, own home; NOT vboxusers, NOT network-leak-dropped). Prints the account
+name on the last line. Must run as root."
+}
+
+case "${1:-}" in
+   kicksecure | whonix)
+      guest="$1"
+      ;;
+   -h | --help)
+      print_usage
+      exit 0
+      ;;
+   *)
+      print_usage >&2
+      die 2 "GUEST must be kicksecure or whonix, got '${1:-}'"
+      ;;
+esac
+
+[ "$(id -u)" = '0' ] || die 1 "must run as root (useradd/usermod/sudoers)"
+
+account="persist-bild-${guest}"
+
+## useradd NAME_REGEX is ^[a-zA-Z][a-zA-Z0-9_-]*$ with a 32-char ceiling;
+## persist-bild-kicksecure is 23 chars, persist-bild-whonix 19 -- both fit.
+if ! getent passwd "${account}" >/dev/null; then
+   ## --user-group: a PRIVATE primary group, so no shared-group privilege bleed.
+   useradd --create-home --user-group --shell /bin/bash "${account}"
+   printf '%s: created %s\n' "${me}" "${account}"
+else
+   printf '%s: %s already exists\n' "${me}" "${account}"
+fi
+
+## On the hardened host /usr/bin/sudo is mode 4750 root:sysmaint, so a build account must
+## be in 'sysmaint' even to EXECUTE sudo. Deliberately NOT vboxusers: a build never drives
+## VirtualBox (that is the install side).
+usermod --append --groups sysmaint "${account}"
+
+## Passwordless sudo: cowbuilder and apt run non-interactively during the build.
+## The directory is overridable ONLY so the unit test can point it at a temp dir; unset
+## it is the production /etc/sudoers.d, byte-identical.
+sudoers_dir="${DM_BUILD_ACCOUNT_SUDOERS_DIR:-/etc/sudoers.d}"
+sudoers_file="${sudoers_dir}/${account}"
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${account}" > "${sudoers_file}"
+chmod 0440 "${sudoers_file}"
+visudo --check --file "${sudoers_file}" > /dev/null \
+   || die 1 "sudoers validation failed for ${sudoers_file}"
+
+## Fail loud if the profile does not actually yield passwordless root -- never report a
+## half-provisioned account as ready.
+runuser -u "${account}" -- sudo --non-interactive true \
+   || die 1 "${account} cannot obtain passwordless root (sysmaint/sudoers incomplete)"
+
+printf '%s: ready: sysmaint sudo, networked (outside the leak-drop), no vboxusers\n' "${me}"
+printf '%s\n' "${account}"

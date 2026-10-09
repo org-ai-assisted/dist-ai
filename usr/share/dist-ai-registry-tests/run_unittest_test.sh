@@ -10,6 +10,7 @@
 ## as a green PASS (a bare `unittest discover` exits 0 when every test skips at
 ## import). Drives the REAL helper against synthetic suites.
 ##   0 pass, 1 fail/error, 77 nothing collected, 78 every collected test skipped.
+## --strict-skips: any skip is 1, or 78 when DIST_AI_SKIP_AUTHORIZED=1.
 
 set -o errexit
 set -o nounset
@@ -106,6 +107,36 @@ check "class-level setUpClass skip -> 78 (env-unmet, not target-absent)" "$(run_
 ## len(skipped)==testsRun check would misread the pass as all-skipped (78).
 d="$(make_suite passclassskip $'import unittest\nclass A(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\nclass B(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls): raise unittest.SkipTest("x")\n    def test_y(self): pass')"
 check "pass + class-skip -> 0 (partial mix is a pass)" "$(run_helper "${d}")" "0"
+
+## --strict-skips: ANY skip is FATAL unless DIST_AI_SKIP_AUTHORIZED=1 (then 78).
+## $1 suite dir, $2 '1' = authorized, '' = ambient value removed.
+run_strict() {
+   local rc=0
+   if [ "$2" = '1' ]; then
+      env DIST_AI_SKIP_AUTHORIZED=1 "${helper}" --strict-skips \
+         --start-directory "$1" --pattern 'test_*.py' >/dev/null 2>&1 || rc=$?
+   else
+      env --unset=DIST_AI_SKIP_AUTHORIZED "${helper}" --strict-skips \
+         --start-directory "$1" --pattern 'test_*.py' >/dev/null 2>&1 || rc=$?
+   fi
+   printf '%s' "${rc}"
+}
+
+d="${work}/passing"
+check "strict: all pass -> 0" "$(run_strict "${d}" '')" "0"
+d="${work}/mixed"
+check "strict: pass + skip, unauthorized -> 1" "$(run_strict "${d}" '')" "1"
+check "strict: pass + skip, authorized -> 78" "$(run_strict "${d}" '1')" "78"
+d="${work}/passclassskip"
+check "strict: pass + class-skip, unauthorized -> 1" "$(run_strict "${d}" '')" "1"
+d="${work}/modskip"
+check "strict: module skip, unauthorized -> 1" "$(run_strict "${d}" '')" "1"
+check "strict: module skip, authorized -> 78" "$(run_strict "${d}" '1')" "78"
+## A real failure stays 1 even when the skip is authorized.
+d="$(make_suite failskip $'import unittest\nclass T(unittest.TestCase):\n    def test_bad(self): self.assertTrue(False)\n    @unittest.skip("x")\n    def test_s(self): pass')"
+check "strict: failure + skip, authorized -> 1" "$(run_strict "${d}" '1')" "1"
+d="${work}/empty"
+check "strict: nothing collected -> 77" "$(run_strict "${d}" '')" "77"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

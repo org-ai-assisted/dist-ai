@@ -102,7 +102,7 @@ export RESULTS_OWNER
 RESULTS_OWNER="$(id --user --name)"
 
 rc=0
-rt_lane_kicksecure "persist-stable-kicksecure" 18.2.3.5 >/dev/null 2>&1 || rc=$?
+rt_lane_kicksecure "persist-inst-kicksecure" 18.2.3.5 >/dev/null 2>&1 || rc=$?
 
 check() {
    local label cond

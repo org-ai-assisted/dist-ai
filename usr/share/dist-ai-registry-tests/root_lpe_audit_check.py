@@ -40,13 +40,19 @@ EXPECTED = [
     ("vuln-env-nonid", "home-recursive-write", "MEDIUM"),  ## env -- X-Y=1 chown (non-identifier name)
     ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
     ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
+    ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
+    ("vuln-mixed-body", "home-recursive-write", "HIGH"),         ## refusal text inside a real root_check
+    ("vuln-text-cross-clause", "home-recursive-write", "HIGH"),  ## 'do not run ...' spanning clauses
+    ("vuln-text-both", "home-recursive-write", "HIGH"),          ## separate refusal beside a root gate
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
 ## home-write vuln under ci/ that must never enter the root surface (no FHS
-## install path -> not a shipped root entry point).
+## install path -> not a shipped root entry point), AND a launcher whose own
+## root_check refuses root, AND an inline refusal message.
 SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci",
-              "safe-env-dashdash", "safe-env-expand")
+              "safe-env-dashdash", "safe-env-expand", "safe-refuses-root",
+              "safe-text-refusal")
 
 
 def _sev_ok(actual, minimum):
@@ -73,6 +79,13 @@ def main(argv):
                 continue
             return True
         return False
+
+    def reason_of(path_sub, rule, op_sub):
+        for f in suppressed:
+            if (path_sub in f["path"] and f["rule"] == rule
+                    and op_sub in f["tainted_operand"]):
+                return f.get("waiver_reason", "")
+        return None
 
     checks = []
 
@@ -162,6 +175,46 @@ def main(argv):
         "continuation-comment above a sink does not suppress it",
         has(findings, "vuln-waived", "symlink-follow", ".dircolors")
         and not has(suppressed, "vuln-waived", "symlink-follow", ".dircolors")))
+    ## A waiver wrapped over a CONTIGUOUS standalone comment block is honored
+    ## wherever it sits in the block; a blank or code line ends the block.
+    for op_sub in (".wrap2", ".wrap3", ".wrapmid"):
+        checks.append((
+            "wrapped waiver block suppresses the %s sink" % op_sub,
+            has(suppressed, "vuln-waived", "symlink-follow", op_sub,
+                need_reason=True)
+            and not has(findings, "vuln-waived", "symlink-follow", op_sub)))
+    for op_sub, sep in ((".blanksep", "blank"), (".codesep", "code")):
+        checks.append((
+            "waiver cut off by a %s line does not suppress the %s sink"
+            % (sep, op_sub),
+            has(findings, "vuln-waived", "symlink-follow", op_sub)
+            and not has(suppressed, "vuln-waived", "symlink-follow", op_sub)))
+    checks.append((
+        "wrapped waiver reason carries every wrapped line",
+        reason_of("vuln-waived", "symlink-follow", ".wrap3")
+        == "wrapped reason, first line of a three-line waiver block, third line."))
+    checks.append((
+        "waiver syntax quoted mid-comment is not a waiver",
+        has(findings, "vuln-waived", "symlink-follow", ".quoted")
+        and not has(suppressed, "vuln-waived", "symlink-follow", ".quoted")))
+    checks.append((
+        "a comment-ending backslash does not cut the waiver block",
+        has(suppressed, "vuln-waived", "symlink-follow", ".cbs",
+            need_reason=True)
+        and not has(findings, "vuln-waived", "symlink-follow", ".cbs")))
+    checks.append((
+        "the nearest waiver's reason wins",
+        reason_of("vuln-waived", "symlink-follow", ".near")
+        == "near trailing reason"))
+    checks.append((
+        "python waiver in a deeper-indented suite does not reach a dedented op",
+        has(findings, "vuln_py_waived", "python-advisory", ".cache")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".cache")))
+    checks.append((
+        "python wrapped waiver block suppresses the advisory",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".local",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".local")))
     ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
     ## not a comment, so it must not waive the advisory finding below it. The
     ## 'in findings' half also proves the python-advisory path is exercised (no
@@ -176,6 +229,42 @@ def main(argv):
         "python trailing waiver above an advisory does not suppress it",
         has(findings, "vuln_py_waived", "python-advisory", ".ssh")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ssh")))
+    ## Python statement spans (ast): a finding on a LATER line of a multi-line
+    ## statement resolves to its first line, where the waiver sits above it; a
+    ## compound statement's span is its header only, so a waiver above 'if'
+    ## does not reach the body; an unparseable file honors no waiver.
+    checks.append((
+        "python waiver above a multi-line statement suppresses a later-line op",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".multiline",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".multiline")))
+    checks.append((
+        "python waiver above an 'if' header does not reach its body",
+        has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
+    checks.append((
+        "python trailing waiver on a wrapped case pattern does not reach the guard",
+        has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".casetrail")))
+    for op_sub, header in ((".excepthdr", "except"), (".caseguard", "case"),
+                           (".caseparen", "case (")):
+        checks.append((
+            "python waiver above a wrapped '%s' header suppresses its op"
+            % header,
+            has(suppressed, "vuln_py_waived", "python-advisory", op_sub,
+                need_reason=True)
+            and not has(findings, "vuln_py_waived", "python-advisory", op_sub)))
+    checks.append((
+        "python form feed does not shift the advisory onto a waiver line",
+        has(findings, "vuln_py_formfeed", "python-advisory", ".formfeed")
+        and not has(suppressed, "vuln_py_formfeed", "python-advisory",
+                    ".formfeed")))
+    checks.append((
+        "python waiver in an unparseable file is not honored",
+        has(findings, "vuln_py_unparsed", "python-advisory", ".unparsed")
+        and not has(suppressed, "vuln_py_unparsed", "python-advisory",
+                    ".unparsed")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.

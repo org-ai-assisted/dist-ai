@@ -13,9 +13,9 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
   `${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/...` (unset -> `/usr/libexec`, i.e.
   production is byte-identical). `dist-ai-tests-all`'s wire exports both, pointed at the
   checkouts, so a suite runs the tree in place with nothing written to `/usr/libexec`.
-- Extraction (`extract_bash_function` reads the CURRENT script text -> no drift) is
-  acceptable for a targeted unit, but the whole real script end-to-end is more faithful --
-  prefer it where the script can run headless.
+- Do not extract shell functions (`extract_bash_function`, sed/awk body cuts). To unit-test
+  a function, make the subject source-able (**sourceable** skill) and source the real file;
+  prefer driving the whole real script end-to-end where it can run headless.
 
 ## Require dependencies -- do not stub or reimplement them
 
@@ -28,7 +28,7 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
   gate. Adding an unwaived `exit 77` to go green is the exact silent-pass this
   closes.
 - NEVER reimplement a helper-scripts function (`is_whole_number`, `has`,
-  `validate_safe_filename`, ...). Source the real file or `extract_bash_function` it -- a
+  `validate_safe_filename`, ...). Source the real file -- a
   reimplementation drifts (e.g. `is_whole_number` rejects leading zeros; a hand copy did not).
 - Stubs ONLY for genuine unit-test isolation -- an external GUI (`yad`, `notify-send`), a
   root/network action, a sink that records output, or forcing a branch of the REAL function.
@@ -52,5 +52,7 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
 - Fidelity: `session_type_dispatch_test.sh` extracts a trace-line-delimited block (fragile
   -- use a `# BEGIN/END` sentinel or drive real msgdispatcher); `check_returns_not_exits_test.sh`
   re-tests at lower fidelity what `unit_tests_test.sh` already sources.
+- `extract_bash_function` still used by 16 python suites/testlibs (msgcollector,
+  onion-time-pre-script, systemcheck, tb-updater) -- migrate each subject to source-able.
 - Reimplemented `has` remains in `anon-gw-anonymizer-config-tests`, `setup-dist-tests`;
   a stub-mode `validate_safe_filename` in `onion_grater_profile_test.sh` -- require + skip 77 instead.

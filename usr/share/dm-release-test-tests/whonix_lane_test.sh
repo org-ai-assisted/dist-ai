@@ -128,6 +128,20 @@ cat > "${stubbin}/usermod" <<'EOF'
 exit 0
 EOF
 
+## Fleet tool stub: logs each call; --assert-fleet-member fails when the account is
+## listed in NFT_UNCOVERED_FILE (an account the host leak-drop does not cover).
+export NFT_FLEET_LOG="${work}/nft-fleet.log"
+export NFT_UNCOVERED_FILE="${work}/nft-uncovered"
+true >| "${NFT_UNCOVERED_FILE}"
+cat > "${stubbin}/nft-fleet" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${NFT_FLEET_LOG}"
+if [ "${1:-}" = '--assert-fleet-member' ] && grep --quiet --line-regexp --fixed-strings -- "${2:-}" "${NFT_UNCOVERED_FILE}"; then
+   exit 1
+fi
+exit 0
+EOF
+
 chmod 0770 -- "${stubbin}"/*
 
 ## Resolve the results owner with the REAL id, BEFORE the stub id shadows PATH.
@@ -138,8 +152,7 @@ export PATH="${stubbin}:${PATH}"
 export VBOXMANAGE="${stubbin}/VBoxManage"
 export DM_WHONIX_PAIR="${stubbin}/dm-whonix-pair"
 export DIST_INSTALLER_CLI="${stubbin}/dist-installer-cli"
-## NFT fleet tool absent => rt_refresh_fleet only NOTEs (no fail).
-export NFT_FLEET_TOOL="${stubbin}/nft-fleet-absent"
+export NFT_FLEET_TOOL="${stubbin}/nft-fleet"
 ## Lock dir this user can write (root uses a 0700 dir under /run in production).
 ## Pre-create it world-writable so the chmod-to-0700 hardening is a real canary.
 export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
@@ -188,6 +201,16 @@ printf "" > "${PAIR_ARGV}"
 rc_c="$(run_lane)"
 check "unset: lane fails SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf true || printf false)"
 check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf true || printf false)"
+
+## Case E: the leak account is NOT covered by the host leak-drop -> provisioning fails
+## SETUP_RC before any import (fail-closed; a fail-open refresh would proceed).
+printf '%s\n' 'persist-leak-whonix' > "${NFT_UNCOVERED_FILE}"
+printf "" > "${DIST_ARGV}"
+rc_e=0
+( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_e=$?
+check "uncovered: provision fails SETUP_RC(2)" "$([ "${rc_e}" = '2' ] && printf true || printf false)"
+check "uncovered: dist-installer-cli NOT invoked" "$([ ! -s "${DIST_ARGV}" ] && printf true || printf false)"
+true >| "${NFT_UNCOVERED_FILE}"
 
 ## Case D: provisioner imports with the pinned version and marks BOTH VMs.
 printf "" > "${DIST_ARGV}"

@@ -49,6 +49,9 @@ shot_dir=""
 ## When set, the failing release check's own in-guest output is written here so the
 ## caller can publish it as the result step's stderr tail (why the run failed).
 check_log=""
+## When true, a FAILED run leaves its VM running for post-mortem inspection instead of
+## powering it off. The caller owns reclaiming it (dm-release-test does, next run).
+keep_failed="false"
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
 
@@ -106,7 +109,11 @@ on_exit() {
       fi
    fi
    if [ "${vm_started}" = 'true' ]; then
-      "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+      if [ "${rc}" -ne 0 ] && [ "${keep_failed}" = 'true' ]; then
+         printf '%s: kept FAILED VM '\''%s'\'' running for inspection (--keep-failed)\n' "${me}" "${vm}" >&2
+      else
+         "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+      fi
    fi
    exit "${rc}"
 }
@@ -143,7 +150,9 @@ usage() {
              (for the results plane); best-effort, never fails the install.
 --shot-dir D capture milestone screenshots as D/NN-<milestone>.png across the install
              (welcome, partitions, summary, install-done, first-boot) -- the 'full story'
-             the results plane renders as an ordered sequence; best-effort like --shot."
+             the results plane renders as an ordered sequence; best-effort like --shot.
+--keep-failed on a FAILED run leave the VM running for post-mortem inspection
+             (default: power it off). The caller reclaims it."
 }
 
 ## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
@@ -431,6 +440,10 @@ parse_args() {
          --check-log)
             check_log="$2"
             shift 2
+            ;;
+         --keep-failed)
+            keep_failed="true"
+            shift
             ;;
          -h|--help)
             usage

@@ -352,8 +352,10 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
                    to exist on the host, or its parent to be writable so
                    bubblewrap can create the mount point.
 
-    SkipTest when bubblewrap / user namespaces are unavailable, or when the
-    sandbox cannot be built on this host.
+    SkipTest when bubblewrap / user namespaces are unavailable; the
+    systemcheck-tests-bwrap runner (--strict-skips) turns that into FATAL unless
+    the orchestrator authorized the skip. A sandbox that bubblewrap CAN create but
+    fails to set up for this scenario is a test failure (AssertionError).
     """
     if not bwrap_available():
         raise unittest.SkipTest(
@@ -405,11 +407,12 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
     result = _parse_scenario_output(proc)
     ## The scenario script unconditionally prints the EXITCODE marker last (it
     ## runs under `set +e`). A missing marker means bubblewrap never got to run
-    ## the script -- a per-host sandbox-setup failure (e.g. cannot create a
-    ## mount point under a read-only /usr). SKIP rather than fail with a
-    ## confusing empty-records assertion.
+    ## the script -- a sandbox-setup failure (e.g. cannot create a mount point
+    ## under a read-only /usr). bwrap_available() already proved the sandbox
+    ## works here, so the scenario's fixture is broken: fail with the bwrap
+    ## diagnostic rather than a confusing empty-records assertion.
     if result.exit_code is None:
-        raise unittest.SkipTest(
+        raise AssertionError(
             'bubblewrap could not set up the isolated sandbox on this host: '
             + (proc.stderr.strip() or f"exit {proc.returncode}"))
     return result
@@ -447,3 +450,92 @@ class ScenarioTestBase(SystemcheckTestBase):
             self.assertNotIn(
                 marker, result.stderr,
                 f"bash error during scenario: {result.stderr.strip()!r}")
+
+
+class LogCheckerHardeningBase(SystemcheckTestBase):
+    """Shared harness: SOURCE the real log-checker (source-able, so this defines
+    its functions without auto-running or leaking strict-mode), then call the
+    function under test, overlaying the absolute paths it reads with a bubblewrap
+    tmpfs so the case under test is deterministic on any host (Qubes or CI)."""
+
+    def _log_checker(self) -> str:
+        return os.path.join(self.dir, 'log-checker')
+
+    def _wrap(self, cmd: list, tmpfs_dirs: list) -> list:
+        """Prefix cmd with a bubblewrap tmpfs overlay for each EXISTING tmpfs_dir.
+        A dir absent on the host already yields the 'empty' state, so no overlay
+        (and no bwrap) is needed there -- this is what lets the check_service_logs
+        tests run plain on a non-Qubes CI container with no /usr/share/qubes."""
+        dirs = [d for d in tmpfs_dirs if os.path.isdir(d)]
+        if not dirs:
+            return cmd
+        if not bwrap_available():
+            raise unittest.SkipTest(
+                'bubblewrap unavailable; cannot isolate ' + ' '.join(dirs))
+        prefix = ['bwrap', '--bind', '/', '/', '--dev', '/dev', '--proc', '/proc']
+        for directory in dirs:
+            prefix += ['--tmpfs', directory]
+        return prefix + cmd
+
+    def _run(self, body: str, tmpfs_dirs: list) -> subprocess.CompletedProcess:
+        ## Source the source-able script (was_executed is false here -> no
+        ## auto-run, no strict leak), then run the caller-supplied body under the
+        ## same options the executed script sets, so the functions behave as in
+        ## production.
+        script = (
+            f'source {shlex.quote(self._log_checker())}\n'
+            ## Match the executed script's own options so the function runs as in
+            ## production (pipefail on -> the grep brace-masks are genuinely
+            ## exercised); the source itself did not enable strict (was_executed
+            ## is false when sourced).
+            'set -o errexit\n'
+            'set -o nounset\n'
+            'set -o pipefail\n'
+            f'{body}'
+        )
+        cmd = self._wrap(['bash', '-c', script], tmpfs_dirs)
+        ## stdin=DEVNULL so nothing can block on a terminal; timeout fails a hang
+        ## loudly instead of wedging CI.
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=30)
+
+    ## Stubs for the externals/sinks the functions call as bare names. Defined
+    ## AFTER the source so they shadow the real definitions; kept to the identity
+    ## transform so assertions are deterministic and offline.
+    @staticmethod
+    def _stubs(journal_line: str) -> str:
+        return (
+            'leaprun() { case "$1" in'
+            f" read-journalctl-logs-this-boot) printf '%s\\n' {shlex.quote(journal_line)} ;;"
+            ' *) : ;; esac ; }\n'
+            'sanitize-string() { cat ; }\n'
+            'br_add_to_file() { cp -- "$1" "$1_br" ; }\n'
+            'stcatn() { cat -- "$@" ; }\n'
+            'safe-rm() { : ; }\n'
+        )
+
+    def _run_check_service_logs(self, journal_line: str, fixed: list,
+                                patterns: list) -> subprocess.CompletedProcess:
+        tmp = tempfile.mkdtemp()
+        fixed_arr = ' '.join(shlex.quote(item) for item in fixed)
+        patterns_arr = ' '.join(shlex.quote(item) for item in patterns)
+        body = (
+            self._stubs(journal_line)
+            + f'TMPDIR={shlex.quote(tmp)}\n'
+            + f'journal_ignore_fixed_list=( {fixed_arr} )\n'
+            + f'journal_ignore_patterns_list=( {patterns_arr} )\n'
+            + 'check_service_logs this_boot\n'
+        )
+        ## Hide the Qubes marker so the 'virtualbox' auto-append does not make
+        ## journal_ignore_patterns_list non-empty on a Qubes host.
+        return self._run(body, ['/usr/share/qubes'])
+
+    def _run_prep_temp_dir(self, setup: str = '') -> subprocess.CompletedProcess:
+        ## prep_temp_dir hardcodes TMPDIR=/var/cache/systemcheck-log-checker, so
+        ## isolate /var/cache with a tmpfs: a clean per-run dir, writable by us.
+        body = (
+            'safe-rm() { command rm --recursive --force -- "${@:3}" ; }\n'
+            f'{setup}'
+            'if prep_temp_dir ; then echo PREP_OK ; else echo "PREP_FAIL rc=$?" ; fi\n'
+        )
+        return self._run(body, ['/var/cache'])

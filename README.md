@@ -35,6 +35,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `stdisplay-tests`        | shipping | `usr/share/stdisplay-tests/` |
 | `systemcheck-tests`      | shipping | `usr/share/systemcheck-tests/` |
+| `systemcheck-tests-bwrap` | shipping | `usr/share/systemcheck-tests-bwrap/` |
 | `tor-control-panel-tests` | shipping | `usr/share/tor-control-panel-tests/` |
 | `tb-updater-tests`       | shipping | `usr/share/tb-updater-tests/` |
 | `terminal-poc-corpus-tests` | shipping | `usr/bin/terminal-poc-corpus-tests` |

@@ -8,7 +8,7 @@
 ## The --iso built-origin lane: test a LOCALLY-BUILT ISO instead of downloading.
 ## A git-describe build version (18.2.3.0-222-g<sha>) is NOT a release token, so it
 ## must NOT flow through rt_version_token / the eph account-name ceiling -- a built run
-## uses a FIXED eph-run-GUEST-built account and records origin=built. Canary: on the old
+## uses a FIXED eph-inst-GUEST-built account and records origin=built. Canary: on the old
 ## (download-only) code `--iso` is an unknown option and the helpers do not exist.
 
 set -o errexit
@@ -82,7 +82,7 @@ trap cleanup EXIT
 
 plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware efi --checks --dry-run 2>&1)"
 if grep --quiet 'origin=built' <<<"${plan}"; then ok '--iso plan records origin=built'; else bad "no origin=built in plan: ${plan}"; fi
-if grep --quiet 'account=eph-run-kicksecure-built' <<<"${plan}"; then ok '--iso uses the fixed eph-run-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
+if grep --quiet 'account=eph-inst-kicksecure-built' <<<"${plan}"; then ok '--iso uses the fixed eph-inst-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
 if grep --quiet 'resolved=18.2.3.0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26' <<<"${plan}"; then ok '--iso derives the version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
 
 ## --iso is kicksecure-only (whonix tests an imported pair, not an ISO install).

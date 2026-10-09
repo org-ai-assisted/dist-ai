@@ -29,7 +29,7 @@ extracted function with a stubbed curl that fails to connect:
 
 The failure branch calls /usr/libexec/helper-scripts/curl_exit_codes by absolute
 path, so each scenario runs in a bubblewrap mount namespace with a stub bound
-there; SkipTest when bubblewrap / user namespaces are unavailable.
+there.
 """
 
 import unittest

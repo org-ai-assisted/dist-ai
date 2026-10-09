@@ -24,9 +24,16 @@ Codes (match dist-ai-tests-common/suite-exit.bash):
 
 A partial mix of passes and skips is a PASS: individual opt-in / live-service
 cases skip legitimately and must not red an otherwise-passing suite.
+
+--strict-skips is for a suite with NO legitimately-optional case: ANY skip
+(method, class or module) is exit 1, listing the skipped tests, unless the
+orchestrator authorized the skip (DIST_AI_SKIP_AUTHORIZED=1, set for an
+--allow-skip'd suite), then 78. A partial mix is otherwise a silent PASS that
+hides every case which tested nothing.
 """
 
 import argparse
+import os
 import sys
 import unittest
 
@@ -45,7 +52,7 @@ class _CountingResult(unittest.TextTestResult):
       self.passed += 1
 
 
-def run(start_directory, pattern, verbosity):
+def run(start_directory, pattern, verbosity, strict_skips):
    suite = unittest.TestLoader().discover(
       start_dir=start_directory, pattern=pattern)
    result = unittest.TextTestRunner(
@@ -53,6 +60,17 @@ def run(start_directory, pattern, verbosity):
 
    ## wasSuccessful() is False on a failure, an error, OR an unexpected success.
    if not result.wasSuccessful():
+      return 1
+   if strict_skips and result.skipped:
+      for test, reason in result.skipped:
+         print(f'skipped: {test.id()}: {reason}', file=sys.stderr)
+      if os.environ.get('DIST_AI_SKIP_AUTHORIZED') == '1':
+         print(f'SKIP (environment unmet): {len(result.skipped)} test(s) '
+               'skipped (authorized)', file=sys.stderr)
+         return 78
+      print(f'FATAL: {len(result.skipped)} test(s) skipped under --strict-skips '
+            'and the skip is not authorized (DIST_AI_SKIP_AUTHORIZED=1)',
+            file=sys.stderr)
       return 1
    ## A real pass (or an expected failure that behaved) means the suite actually
    ## exercised something -> PASS, even alongside some skips.
@@ -75,11 +93,13 @@ def main(argv):
    parser.add_argument('--pattern', default='test_*.py')
    parser.add_argument('-v', '--verbose', dest='verbosity',
                        action='store_const', const=2, default=1)
+   parser.add_argument('--strict-skips', action='store_true')
    ## Unknown args (a forwarded -k/-f) are REJECTED loudly by argparse (exit 2),
    ## never silently ignored -- a runner forwards "$@" here so --help and -v work
    ## and anything unsupported fails visibly instead of pretending it applied.
    args = parser.parse_args(argv)
-   return run(args.start_directory, args.pattern, args.verbosity)
+   return run(args.start_directory, args.pattern, args.verbosity,
+              args.strict_skips)
 
 
 if __name__ == '__main__':

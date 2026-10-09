@@ -329,11 +329,101 @@ fi
 install -m 0700 -o root -g root /dev/null /var/lib/targetpkg/state
 EOF
 
+## SAFE: a user-only launcher whose OWN root_check REFUSES root (tb-starter
+## torbrowser shape). The helper name alone must not make it a root entry point.
+write 'packages/kicksecure/targetpkg/usr/bin/safe-refuses-root#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      true
+   else
+      printf '%s\n' "Do not run ${0} as root!"
+      exit 1
+   fi
+}
+root_check
+done_file="${HOME}/.tb/first-boot-home-population.done"
+cp --recursive --no-clobber /var/cache/tb-binary/.cache "${HOME}/"
+touch "${done_file}"
+EOF
+
+## SAFE: an inline refusal whose message embeds the root-require phrase
+## 'run this as root' (developer-meta-files dm-upload-canary shape).
+write 'packages/kicksecure/targetpkg/usr/bin/safe-text-refusal#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" = "0" ]; then
+   echo "ERROR: Do not run this as root!"
+   exit 1
+fi
+. "${HOME}/derivative-maker/help-steps/pre"
+EOF
+
+## VULN: a real root gate; a refusal phrase OUTSIDE root_check's own body (about
+## a different program) must not cancel it.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-refusal-elsewhere#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+}
+root_check
+echo "Note: do not run the browser as root."
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
+## VULN: a real root_check whose OWN body also carries refusal-looking text (a
+## 'not_as_root' comment, a 'do not run as root' note). Both directions in one
+## body -> still a root gate.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-mixed-body#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   # not_as_root
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+   echo "Note: do not run as root without sudo logging."
+}
+root_check
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
+## VULN: TEXT-signal root gate whose message spans 'do not run ... as root'
+## across clauses; must not read as a refusal.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-text-cross-clause#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" != "0" ]; then
+   echo "Do not run as a regular user, this script must be run as root."
+   exit 1
+fi
+echo "Note: do not run the browser as root."
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
+## VULN: TEXT-signal root gate beside a separate one-word refusal; the refusal
+## must not cancel the remaining 'must be run as root'.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-text-both#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" != "0" ]; then
+   echo "ERROR: this helper must be run as root."
+   exit 1
+fi
+echo "Tip: do not run it as root from a desktop session."
+find "/home/$1" -name '*.tmp' -delete
+EOF
+
 ## VULN + WAIVER: pins the per-line by-design waiver. Every sink is a real
 ## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
 ## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule
 ## on the same statement, an identical UN-waived sink, and a reason-less waiver.
-## The continuation sink pins the walk-up past a '\' line continuation.
+## The continuation sink pins the walk-up past a '\' line continuation. A
+## waiver wrapped over a contiguous standalone comment block is honored;
+## one cut off by a blank or code line is not.
 write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-waived#targetpkg-shared' <<'EOF'
 #!/bin/bash
 root_check() {
@@ -363,6 +453,31 @@ cp --dereference /etc/skel/.inputrc "${home}/.inputrc"
 echo continued-echo \
 ## style-ok: lpe-symlink-follow -- comment is a CONTINUATION of the echo above (a '\' line), NOT a standalone waiver
 cp --dereference /etc/skel/.dircolors "${home}/.dircolors"
+## style-ok: lpe-symlink-follow -- wrapped reason, first line
+## of a two-line waiver block.
+cp --dereference /etc/skel/.wrap2 "${home}/.wrap2"
+## style-ok: lpe-symlink-follow -- wrapped reason, first line
+## of a three-line waiver block,
+## third line.
+cp --dereference /etc/skel/.wrap3 "${home}/.wrap3"
+## Unrelated prose opening the block.
+## style-ok: lpe-symlink-follow -- waiver on the middle line,
+## reason wrapped below it.
+cp --dereference /etc/skel/.wrapmid "${home}/.wrapmid"
+## style-ok: lpe-symlink-follow -- separated by a BLANK line, must NOT reach the cp below
+
+cp --dereference /etc/skel/.blanksep "${home}/.blanksep"
+## style-ok: lpe-symlink-follow -- separated by a CODE line, must NOT reach the cp below
+true
+## Comment block of the cp below, with no waiver of its own.
+cp --dereference /etc/skel/.codesep "${home}/.codesep"
+## Prose quoting the form: ## style-ok: lpe-symlink-follow -- example only, not a waiver
+cp --dereference /etc/skel/.quoted "${home}/.quoted"
+## style-ok: lpe-symlink-follow -- waiver line ending in a comment backslash \
+## that does not continue anything.
+cp --dereference /etc/skel/.cbs "${home}/.cbs"
+## style-ok: lpe-symlink-follow -- far block reason
+cp --dereference /etc/skel/.near "${home}/.near" ## style-ok: lpe-symlink-follow -- near trailing reason
 EOF
 
 ## VULN + WAIVER (python path): the python-advisory scanner must ALSO reject a
@@ -379,6 +494,76 @@ _DOC = """documentation line
 os.chown("/home/user/.config", 0, 0)
 marker_py = 1  # style-ok: lpe-python-advisory -- TRAILING waiver for marker_py only, must NOT reach the os.chown below
 os.chown("/home/user/.ssh", 0, 0)
+if marker_py:
+    pass
+    # style-ok: lpe-python-advisory -- closes the if suite, must NOT reach the os.chown below
+os.chown("/home/user/.cache", 0, 0)
+# style-ok: lpe-python-advisory -- wrapped python waiver,
+# second line.
+os.chown("/home/user/.local", 0, 0)
+# style-ok: lpe-python-advisory -- waiver above a multi-line statement
+chowned = [
+    os.chown("/home/user/.multiline", 0, 0),
+]
+# style-ok: lpe-python-advisory -- waives the if header only, must NOT reach the body
+if chowned:
+    os.chown("/home/user/.ifbody", 0, 0)
+try:
+    pass
+# style-ok: lpe-python-advisory -- waiver above a wrapped except header
+except (
+    os.chown("/home/user/.excepthdr", 0, 0)
+):
+    pass
+match chowned:
+    # style-ok: lpe-python-advisory -- waiver above a wrapped case guard
+    case [_] if (
+        os.chown("/home/user/.caseguard", 0, 0)
+    ):
+        pass
+    # style-ok: lpe-python-advisory -- waiver above a case whose pattern wraps
+    case (
+        [_, _]
+    ) if (
+        os.chown("/home/user/.caseparen", 0, 0)
+    ):
+        pass
+    case (
+        [_, _, _]  # style-ok: lpe-python-advisory -- TRAILING on the pattern line, must NOT reach the guard
+    ) if (
+        os.chown("/home/user/.casetrail", 0, 0)
+    ):
+        pass
+EOF
+
+## VULN + WAIVER (python form feed): a form feed is NOT a line break to Python,
+## so the advisory's line numbers must not count it as one -- else the op below
+## is reported one line low, ON the waiver comment, and wrongly suppressed.
+form_feed=$'\f'
+printf '%s\n' \
+   '#!/usr/bin/python3' \
+   'import os' \
+   'import subprocess' \
+   'subprocess.run(["sudo", "systemctl", "restart", "unit"])' \
+   "# page break${form_feed} inside a comment" \
+   'os.chown("/home/user/.formfeed", 0, 0)' \
+   '# style-ok: lpe-python-advisory -- waives the list below only' \
+   'waived = [' \
+   '    0,' \
+   ']' \
+   | write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_formfeed.py'
+
+## VULN + WAIVER (python parse error): the file tokenizes but does not parse, so
+## it has no trustworthy statement boundaries -- even a waiver directly above
+## the advisory must NOT be honored (fail safe: the finding stays).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_unparsed.py' <<'EOF'
+#!/usr/bin/python3
+import os
+import subprocess
+subprocess.run(["sudo", "systemctl", "restart", "unit"])
+# style-ok: lpe-python-advisory -- must NOT be honored in an unparseable file
+os.chown("/home/user/.unparsed", 0, 0)
+broken = = 1
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------

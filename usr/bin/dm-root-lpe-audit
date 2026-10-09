@@ -44,6 +44,8 @@ Usage:  dm-root-lpe-audit [<derivative-maker-root>]
 Output: JSON on stdout; a ranked human summary on stderr.
 """
 
+import ast
+import bisect
 import io
 import json
 import os
@@ -51,6 +53,7 @@ import re
 import subprocess
 import sys
 import tokenize
+import warnings
 from typing import Any
 
 _LIB = os.path.join(
@@ -96,9 +99,14 @@ ROOT_REQUIRE_TEXT_RE = re.compile(
     r"|run this as \broot\b",
     re.IGNORECASE)
 ## The refusal direction only; kept NARROW (an over-broad phrase like 'as user'
-## would wrongly cancel a real root gate). It suppresses a TEXT signal, never a
-## root-require FUNCTION call (see is_root_guarded).
-NOT_ROOT_RE = re.compile(r"must not be run as root|do not run as root|not_as_root",
+## would wrongly cancel a real root gate). At most ONE word between 'run' and
+## 'as root' ('this', '${SCRIPTNAME}'), so 'do not run the browser as root' or
+## 'do not run as a user, must be run as root' does not read as a refusal. It
+## masks root-require text inside a refusal phrase, and cancels a root-require
+## FUNCTION call only when it matches that function's OWN in-script body (see
+## is_root_guarded).
+NOT_ROOT_RE = re.compile(r"must not be run as root|do not run (?:\S+ )?as root\b"
+                         r"|\bnot_as_root\b",
                          re.IGNORECASE)
 
 ## Blast-radius weight of the root category -- shifts a rule's base severity.
@@ -218,14 +226,46 @@ def entry_targets(entry):
     ## nonshell-escalation is handled as a direct Python file separately.
 
 
+def _requires_root_text(text):
+    ## Root-require text left once the refusal phrases are removed ('Do not run
+    ## this as root' contains 'run this as root'). Text carrying both directions
+    ## stays a root gate.
+    return bool(ROOT_REQUIRE_TEXT_RE.search(NOT_ROOT_RE.sub(" ", text)))
+
+
+def _is_refusal_body(body):
+    return bool(NOT_ROOT_RE.search(body)) and not _requires_root_text(body)
+
+
+def _local_refusal_func(tree, raw, name):
+    """True if every in-script definition of NAME is a refusal guard. The
+    helper names are conventions, not contracts: tb-starter's root_check
+    REFUSES root. No local definition -> False."""
+    bodies = [raw[decl["Pos"]["Offset"]:decl["End"]["Offset"]]
+              .decode("utf-8", errors="replace")
+              for decl in bash_ast.func_decls(tree)
+              if (decl.get("Name") or {}).get("Value") == name]
+    return bool(bodies) and all(_is_refusal_body(body) for body in bodies)
+
+
 def is_root_guarded(source):
     ## A root-require FUNCTION call is authoritative -- a script that calls
     ## root_check IS a root entry point even if it elsewhere mentions a refusal
-    ## phrase. Only the weaker TEXT signal is cancelled by an explicit refusal.
+    ## phrase -- unless the script defines that function itself as a refusal.
+    ## The weaker TEXT signal counts only root-require text that is not part of
+    ## a refusal phrase.
+    try:
+        tree = bash_ast.parse_normalized(source)
+    except bash_ast.BashParseError:
+        tree = None
+    raw = source.encode("utf-8")
     for name in ROOT_REQUIRE_FUNCS:
-        if re.search(r"\b" + re.escape(name) + r"\b", source):
-            return True
-    return bool(ROOT_REQUIRE_TEXT_RE.search(source)) and not NOT_ROOT_RE.search(source)
+        if not re.search(r"\b" + re.escape(name) + r"\b", source):
+            continue
+        if tree is not None and _local_refusal_func(tree, raw, name):
+            continue
+        return True
+    return _requires_root_text(source)
 
 
 def sourced_targets(tree, source, by_path, by_base):
@@ -273,7 +313,10 @@ def severity_of(rule, factors, weight):
 
 def python_advisory(abs_path, rel_path):
     findings = []
-    for lineno, raw in enumerate(read_text(abs_path).splitlines(), start=1):
+    ## Split on '\n' ONLY, like ast/tokenize: str.splitlines() also breaks on
+    ## form feed / vertical tab / etc., shifting finding lines off the
+    ## statement spans and comment lines the waivers are matched against.
+    for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
         if raw.lstrip().startswith("#"):
             continue
         if PYTHON_SINK_RE.search(raw) and PYTHON_TAINT_RE.search(raw):
@@ -398,8 +441,10 @@ def weight_for(reasons):
 ##   ## style-ok: lpe-<rule>[,lpe-<rule>...] -- <why>
 ## 'lpe-all' waives every rule for that statement. A non-empty reason after
 ## '--' is REQUIRED so a waiver is self-documenting; a reason-less waiver is
-## ignored and the finding still fires. The waiver must be a REAL comment
-## (located via the shfmt AST, not a textual scan) -- a 'style-ok: lpe-...'
+## ignored and the finding still fires. The marker must OPEN the comment
+## (matched, not searched), so prose that merely quotes the syntax mid-comment
+## is not a waiver. The waiver must be a REAL comment (located via the shfmt
+## AST / Python tokenize, not a textual scan) -- a 'style-ok: lpe-...'
 ## inside a heredoc body or a quoted string is DATA, not a waiver. Waived
 ## findings stay VISIBLE (counted and listed under 'suppressed'), so a
 ## mis-waiver is auditable, never a silent drop.
@@ -436,21 +481,112 @@ def _py_comment_text_by_line(source):
     return comments
 
 
-def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line):
+## Fields holding a compound statement's nested SUITES: their statements get
+## their own spans, so the compound's span stops at its header.
+_PY_SUITE_FIELDS = frozenset(("body", "orelse", "finalbody", "handlers", "cases"))
+_PY_LOGICAL_LINE_BREAKS = frozenset((tokenize.NEWLINE, tokenize.INDENT,
+                                     tokenize.DEDENT))
+
+
+def _py_case_keyword_lines(source):
+    """Sorted lines where a logical line OPENS with the name 'case' -- the
+    soft-keyword line of a match clause. ast.match_case carries no position,
+    and its pattern may start lines below the keyword ('case (' + newline)."""
+    lines = []
+    prev_type = tokenize.NEWLINE
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.NL):
+            continue
+        if (tok.type == tokenize.NAME and tok.string == "case"
+                and prev_type in _PY_LOGICAL_LINE_BREAKS):
+            lines.append(tok.start[0])
+        prev_type = tok.type
+    return lines
+
+
+def _py_stmt_spans(source):
+    """(start, end) line spans of every Python statement in SOURCE, via ast --
+    the Python counterpart of the shfmt CallExpr spans, so a finding on a later
+    physical line of a wrapped statement resolves to that statement's first
+    line. A simple statement spans lineno..end_lineno; a compound one (if/for/
+    def/with/...) spans only its HEADER, never its suites, so a waiver above an
+    'if' cannot reach the body (as a shell waiver above 'if' cannot reach the
+    commands inside it). Returns None on a parse error: an unparseable file
+    has no trustworthy statement boundaries, so the caller waives nothing."""
+    try:
+        with warnings.catch_warnings():
+            ## Invalid-escape SyntaxWarnings in an audited file are not ours to
+            ## print on stderr.
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+        case_lines = _py_case_keyword_lines(source)
+    except (SyntaxError, ValueError, RecursionError, tokenize.TokenError):
+        return None
+    spans = []
+    for node in ast.walk(tree):
+        ## 'except' and 'case' clauses are not ast.stmt, but their headers are
+        ## statement-like lines a finding can wrap inside.
+        if not isinstance(node, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+            continue
+        suite_fields = _PY_SUITE_FIELDS.intersection(node._fields)
+        if not suite_fields:
+            spans.append((node.lineno, node.end_lineno or node.lineno))
+            continue
+        ## Header = the node's own line plus every non-suite child; decorators
+        ## sit ABOVE lineno, so the start widens to them too. A match_case has
+        ## no position of its own: its line is the nearest 'case' keyword at
+        ## or above its pattern.
+        if isinstance(node, ast.match_case):
+            index = bisect.bisect_right(case_lines, node.pattern.lineno)
+            own_line = case_lines[index - 1] if index else None
+        else:
+            own_line = node.lineno
+        lines = [] if own_line is None else [own_line]
+        for field, value in ast.iter_fields(node):
+            if field in suite_fields:
+                continue
+            for child in value if isinstance(value, list) else [value]:
+                if not isinstance(child, ast.AST):
+                    continue
+                for sub in ast.walk(child):
+                    lines.extend(
+                        line for line in (getattr(sub, "lineno", None),
+                                          getattr(sub, "end_lineno", None))
+                        if line is not None)
+        if lines:
+            spans.append((min(lines), max(lines)))
+    return spans
+
+
+def _indent(line):
+    """Width of LINE's leading whitespace."""
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line,
+                source_lines):
     """Map rule -> reason for waivers covering the command at finding_line.
 
     A waiver is honored (a) on the finding's own line or the owning command's
     first line -- as a trailing OR standalone comment, since it sits ON that
-    statement -- or (b) as a STANDALONE comment on the line directly above the
-    command. The 'directly above' line must be standalone (STANDALONE_LINES): a
-    TRAILING comment there belongs to the preceding statement, so honoring it
-    would let 'x=1  # style-ok: ...' silently suppress the finding on the next
-    line. The owning command + its line span come from the shfmt AST (CALL_SPANS:
-    (start, end) line pairs); the waiver is matched against the real COMMENT TEXT
-    (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a
-    'style-ok: lpe-...' in a QUOTED STRING is data, not a waiver. Association is
-    AST-truthful, never a textual '\\'-continuation scan. A rule of 'all' waives
-    every rule for that command.
+    statement -- or (b) anywhere in the CONTIGUOUS block of STANDALONE comment
+    lines directly above the command, so a reason wrapped over several comment
+    lines still waives. The block walk stops at the first line that is not a
+    standalone comment (code, blank, a trailing comment, a heredoc/string line)
+    or that is indented DEEPER than the command: a TRAILING comment belongs to
+    the preceding statement, so honoring it would let 'x=1  # style-ok: ...'
+    silently suppress the finding on the next line; a blank or code line ends
+    the comment block that documents this statement; a deeper-indented comment
+    closes an enclosing suite (a Python 'if' body) the command is not in. The
+    nearest waiver for a rule wins, and its reason absorbs the plain comment
+    lines wrapped below it in the block (up to the next waiver), so the
+    'suppressed' entry carries the whole reason. The owning command + its line
+    span come from the shfmt AST, or the Python ast for a .py file (CALL_SPANS:
+    (start, end) line pairs); the waiver is matched against the real COMMENT
+    TEXT (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a 'style-ok: lpe-...' in a
+    QUOTED STRING is data, not a waiver. Association is AST-truthful, never a
+    textual '\\'-continuation scan. A rule of 'all' waives every rule for that
+    command.
     """
     waivers: dict[str, str] = {}
     if finding_line < 1:
@@ -461,25 +597,42 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
     containing = [start for start, end in call_spans
                   if start <= finding_line <= end]
     stmt_start = min(containing) if containing else finding_line
-    ## (candidate line, must-be-standalone).
-    candidates = [(finding_line, False), (stmt_start, False),
-                  (stmt_start - 1, True)]
-    for cand, require_standalone in candidates:
+    stmt_indent = (_indent(source_lines[stmt_start - 1])
+                   if 1 <= stmt_start <= len(source_lines) else 0)
+    ## Standalone comment block above the statement, nearest first.
+    block = []
+    above = stmt_start - 1
+    while (above >= 1 and above in standalone_lines
+           and _indent(source_lines[above - 1]) <= stmt_indent):
+        block.append(above)
+        above -= 1
+    ## Wrapped-reason text: the block's plain comment lines BELOW each waiver.
+    wrapped: dict[int, str] = {}
+    tail: list[str] = []
+    for ln in block:
+        text = comment_text_by_line[ln]
+        if LPE_WAIVER_RE.match(text):
+            wrapped[ln] = " ".join(tail)
+            tail = []
+        else:
+            prose = text.lstrip("#").strip()
+            tail = [prose] + tail if prose else tail
+    for cand in [finding_line, stmt_start] + block:
         text = comment_text_by_line.get(cand)
         if text is None:
             continue
-        if require_standalone and cand not in standalone_lines:
-            continue
-        match = LPE_WAIVER_RE.search(text)
+        match = LPE_WAIVER_RE.match(text)
         if match is None:
             continue
         reason = match.group("why").strip()
         if not reason:
             continue
+        if wrapped.get(cand):
+            reason = reason + " " + wrapped[cand]
         for token in match.group("rules").split(","):
             token = token.strip()
             rule = "all" if token == "lpe-all" else token[len("lpe-"):]
-            waivers[rule] = reason
+            waivers.setdefault(rule, reason)
     return waivers
 
 
@@ -538,24 +691,31 @@ def audit(dm_root):
             ## MULTI-LINE triple-quoted one) is a STRING token, not a COMMENT, so
             ## it cannot masquerade as a waiver -- the same robustness the shfmt
             ## path gets. Fail SAFE on a parse error (empty -> nothing waived ->
-            ## findings stay). Each advisory finding stands on its own line (no
-            ## multi-line command spans), so call_spans is empty.
+            ## findings stay). Statement spans come from ast, so a finding on a
+            ## wrapped statement's later line finds the waiver above its first
+            ## line; an ast parse error drops every waiver (fail SAFE).
             comment_text_by_line = _py_comment_text_by_line(source)
-            call_spans = []
+            py_spans = _py_stmt_spans(source)
+            if py_spans is None:
+                comment_text_by_line = {}
+            call_spans = py_spans or []
         else:
             continue
         ## A comment line is STANDALONE when only whitespace precedes its '#'
         ## (language-agnostic) AND the physical line before it is not a '\\' line
         ## continuation (else this line belongs to the statement above it, not a
-        ## standalone comment). Split on '\\n' ONLY -- str.splitlines() also
-        ## breaks on vertical tab / form feed / etc., which shfmt does not count
-        ## as newlines, desyncing these indices from the AST line numbers.
+        ## standalone comment). A '\\' that ends a COMMENT is comment text, not a
+        ## continuation (bash and Python both end a comment at the newline).
+        ## Split on '\\n' ONLY -- str.splitlines() also breaks on vertical tab /
+        ## form feed / etc., which shfmt does not count as newlines, desyncing
+        ## these indices from the AST line numbers.
         source_lines = source.split("\n")
         standalone_lines = {
             ln for ln in comment_text_by_line
             if ln and 1 <= ln <= len(source_lines)
             and source_lines[ln - 1].lstrip().startswith("#")
-            and (ln < 2 or not _continues(source_lines[ln - 2]))}
+            and (ln < 2 or (ln - 1) in comment_text_by_line
+                 or not _continues(source_lines[ln - 2]))}
         for finding in raw_findings:
             entry = {
                 "component": component,
@@ -575,7 +735,7 @@ def audit(dm_root):
             ## reviewed by-design finding to 'suppressed' (still visible) rather
             ## than dropping it -- so a rescan no longer re-flags a settled line.
             waived = lpe_waivers(comment_text_by_line, standalone_lines,
-                                 call_spans, finding["line"])
+                                 call_spans, finding["line"], source_lines)
             reason = waived.get(finding["rule"]) or waived.get("all")
             if reason is not None:
                 entry["waiver_reason"] = reason

@@ -25,8 +25,10 @@ Map of what the suite exercises and where the gaps are. Run everything with:
    but inside a bubblewrap mount namespace, so checks gated on absolute-path
    files (`[ -f /usr/share/qubes/marker-vm ]`) or that call a binary by absolute
    path can be steered: overlay a tmpfs to hide a guard file, `touch` one to make
-   it present, or bind a fake executable over the real one. These SkipTest when
-   bubblewrap / unprivileged user namespaces are unavailable.
+   it present, or bind a fake executable over the real one. These live in the
+   `systemcheck-tests-bwrap` sub-suite (`usr/share/systemcheck-tests-bwrap/`),
+   the only systemcheck suite CI may authorize to skip (no unprivileged user
+   namespaces on GitHub runners); unauthorized, an unusable bubblewrap is FATAL.
 
 ## Checks with scenario (branch) coverage
 
@@ -103,7 +105,8 @@ before asserting `r.records == []`, so a silent bash crash cannot pass vacuously
     self.assertEqual(r.exit_code, "1")
 
 For a check gated on an absolute path or that calls a binary by absolute path,
-use the isolated runner:
+use the isolated runner, in a test module under `usr/share/systemcheck-tests-bwrap/`
+(`test_bwrap_split_policy.py` fails if one is left in the strict parent suite):
 
     r = run_check_scenario_isolated(
         self.check("check_foo.bsh"), "check_foo",

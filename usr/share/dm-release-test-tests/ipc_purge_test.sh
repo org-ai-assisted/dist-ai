@@ -8,7 +8,7 @@
 ## Regression test for rt_purge_foreign_vbox_ipc. Canary: VBoxXPCOMIPCD keeps its
 ## per-user IPC socket under <base>/.vbox-<user>-ipc and REFUSES a dir it does not
 ## own, so VBoxManage fails "Failed to create the VirtualBox object". userdel leaves
-## the dir behind and an eph-run-<guest>-<version> account is reused by NAME with a
+## the dir behind and an eph-inst-<guest>-<version> account is reused by NAME with a
 ## fresh uid; the old uid is later reused by another account, so the stale dir is now
 ## foreign-owned and poisons the next same-named account. The purge MUST remove a
 ## foreign-owned dir, KEEP one the account owns (a persist-* account's own dir), and
@@ -65,8 +65,8 @@ me="$(id --user --name)"
 
 ## Case 1: a FOREIGN-owned dir (created by this test user, named for a DIFFERENT
 ## account) is the exact poison state -> must be removed.
-foreign_acct='eph-run-kicksecure-18-2-3-5'
-[ "${foreign_acct}" != "${me}" ] || foreign_acct='eph-run-other-account-1'
+foreign_acct='eph-inst-kicksecure-18-2-3-5'
+[ "${foreign_acct}" != "${me}" ] || foreign_acct='eph-inst-other-account-1'
 mkdir -- "${VBOX_IPC_BASE}/.vbox-${foreign_acct}-ipc"
 rt_purge_foreign_vbox_ipc "${foreign_acct}"
 check "foreign-owned stale IPC dir removed" \
@@ -82,7 +82,7 @@ check "account-owned IPC dir preserved" \
 
 ## Case 3: absent -> clean no-op (returns success, errexit-safe).
 absent_rc=0
-rt_purge_foreign_vbox_ipc 'eph-run-absent-account-1' || absent_rc=$?
+rt_purge_foreign_vbox_ipc 'eph-inst-absent-account-1' || absent_rc=$?
 check "absent IPC dir is a clean no-op" \
    "$([ "${absent_rc}" -eq 0 ] && printf true || printf false)"
 
@@ -92,10 +92,10 @@ check "absent IPC dir is a clean no-op" \
 target_dir="${work}/precious"
 mkdir -- "${target_dir}"
 touch -- "${target_dir}/keep"
-ln --symbolic -- "${target_dir}" "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc"
-rt_purge_foreign_vbox_ipc 'eph-run-symlink-1'
+ln --symbolic -- "${target_dir}" "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc"
+rt_purge_foreign_vbox_ipc 'eph-inst-symlink-1'
 check "symlink at the IPC path is removed (the link itself)" \
-   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc" ] && [ ! -L "${VBOX_IPC_BASE}/.vbox-eph-run-symlink-1-ipc" ] && printf true || printf false)"
+   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && [ ! -L "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && printf true || printf false)"
 check "symlink target is untouched (not followed/recursed)" \
    "$([ -f "${target_dir}/keep" ] && printf true || printf false)"
 

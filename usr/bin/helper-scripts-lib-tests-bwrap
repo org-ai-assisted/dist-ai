@@ -1,0 +1,24 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Sub-suite of helper-scripts-lib-tests: the cases that need an unprivileged
+## bwrap sandbox (usr/share/helper-scripts-lib-tests-bwrap). Split out so a CI
+## host without user namespaces can authorize skipping THESE cases alone
+## (--allow-skip helper-scripts-lib-tests-bwrap) while every other library case
+## stays strict. Unauthorized, an unusable sandbox is FATAL (bwrap_require).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Sourced, not executed: $0 stays this entrypoint, which selects the case dir.
+# shellcheck source=./helper-scripts-lib-tests
+source "$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/helper-scripts-lib-tests"

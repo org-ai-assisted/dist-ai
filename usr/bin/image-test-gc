@@ -9,7 +9,7 @@
 ## off + delete every VM it has registered and remove its VM/disk folder, so
 ## ephemeral runs never accumulate state (disk exhaustion) or cross-contaminate.
 ## REFUSES a persistent user (persist-*) and root -- those are never wiped. persist-*
-## spans the golden release fleet (persist-stable-) AND the dedicated leak account
+## spans the golden release fleet (persist-inst-) AND the dedicated leak account
 ## (persist-leak-); only eph-* (the ephemeral install pool) is wipeable here.
 ## VBox internal networks are per-VM and vanish with the VMs, so deleting the VMs is
 ## enough; no separate intnet cleanup.
