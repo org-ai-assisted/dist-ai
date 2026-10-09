@@ -33,7 +33,8 @@ class TestBrokenSibling(PreScriptTestBase):
     """A sibling that fails to source exits 1 via exit_handler."""
 
     def run_with_broken(self, name: str, content: 'str | None',
-                        argv0: 'list[str]') -> 'subprocess.CompletedProcess':
+                        argv0: 'list[str]', **extra_env: str
+                        ) -> 'subprocess.CompletedProcess':
         real_dir = os.path.join(self.root or '/', LIBEXEC)
         with tempfile.TemporaryDirectory() as tmp:
             fake_dir = os.path.join(tmp, LIBEXEC)
@@ -47,7 +48,7 @@ class TestBrokenSibling(PreScriptTestBase):
                 with open(os.path.join(fake_dir, name), 'w',
                           encoding='utf-8') as handle:
                     handle.write(content)
-            env = dict(os.environ, HELPER_SCRIPTS_PATH=tmp)
+            env = dict(os.environ, HELPER_SCRIPTS_PATH=tmp, **extra_env)
             return subprocess.run(
                 argv0 + [self.path],
                 capture_output=True,
@@ -74,6 +75,26 @@ class TestBrokenSibling(PreScriptTestBase):
     def test_failing_sibling_executed(self) -> None:
         self.assert_error_exit(
             self.run_with_broken('strings.bsh', 'false\n', []))
+
+    def test_sibling_status_2_is_not_busy(self) -> None:
+        ## A raw 2 would read as 'busy, wait' to sdwdate.
+        self.assert_error_exit(
+            self.run_with_broken('tor_enabled_check', 'return 2\n', []))
+
+    def test_sibling_command_failure_status_2_is_not_busy(self) -> None:
+        self.assert_error_exit(
+            self.run_with_broken('tor_enabled_check', '[ 1 -eq abc ]\n', []))
+
+    def test_unknown_command_in_sibling_is_error(self) -> None:
+        ## 127 is outside the 0/1/2 contract.
+        self.assert_error_exit(
+            self.run_with_broken(
+                'tor_enabled_check',
+                'onion-time-pre-script-test-no-such-command\n', []))
+
+    def test_inherited_exit_code_does_not_mask_failure(self) -> None:
+        self.assert_error_exit(
+            self.run_with_broken('tor_enabled_check', None, [], exit_code='0'))
 
 
 if __name__ == '__main__':
