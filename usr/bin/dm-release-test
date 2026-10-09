@@ -53,6 +53,10 @@ ISO_DOWNLOAD="${ISO_DOWNLOAD:-iso-download}"
 DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
 DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
 IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
+## 1 (default): a FAILED run keeps its ephemeral account, its running VM and its staged
+## ISO for post-mortem inspection; the next run of the same account reclaims them first
+## (rt_eph_reclaim). 0: tear down on every exit.
+DM_RELEASE_TEST_KEEP_FAILED="${DM_RELEASE_TEST_KEEP_FAILED:-1}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
 ## dist-installer-cli REFUSES to run as root; it must be invoked by a non-root,
@@ -466,13 +470,23 @@ rt_resolve_version() {
 ## account lifecycle (root)
 ## ---------------------------------------------------------------------------
 
+## Best-effort refresh after an account is REMOVED (exit cleanup): a stale uid left in
+## the set only over-blocks, so a failure here warns instead of aborting cleanup.
 rt_refresh_fleet() {
-   if has "${NFT_FLEET_TOOL}"; then
-      "${NFT_FLEET_TOOL}" --refresh-fleet-set \
-         || printf '%s: WARN: fleet-set refresh failed; run %s --refresh-fleet-set\n' "${me}" "${NFT_FLEET_TOOL}" >&2
-   else
-      printf '%s: NOTE: %s not on PATH; run it --refresh-fleet-set so the host firewall covers new fleet users\n' "${me}" "${NFT_FLEET_TOOL}" >&2
-   fi
+   "${NFT_FLEET_TOOL}" --refresh-fleet-set \
+      || printf '%s: WARN: fleet-set refresh failed; run %s --refresh-fleet-set\n' "${me}" "${NFT_FLEET_TOOL}" >&2
+}
+
+## Refresh the host leak-drop set and PROVE ACCOUNT is in the loaded set before its
+## VMs run (fail-closed): a missing tool, a failed refresh, an unprovisioned table or a
+## selector that does not match the account name would otherwise run it unprotected.
+rt_require_fleet_member() {
+   local account
+   account="$1"
+   "${NFT_FLEET_TOOL}" --refresh-fleet-set \
+      || die "${SETUP_RC}" "fleet-set refresh failed ('${NFT_FLEET_TOOL}' --refresh-fleet-set)"
+   "${NFT_FLEET_TOOL}" --assert-fleet-member "${account}" \
+      || die "${SETUP_RC}" "account '${account}' is not covered by the host nftables leak-drop"
 }
 
 ## Create ACCOUNT as a clean, unprivileged fleet member if absent (idempotent), and
@@ -552,7 +566,7 @@ rt_create_clean_account() {
    ## check (a NOPASSWD sudoers entry is not group-based); the dedicated namespace + clean
    ## creation is the primary guarantee.
    rt_require_account_unprivileged "${account}" test
-   rt_refresh_fleet
+   rt_require_fleet_member "${account}"
 }
 
 ## Read the leak pair's version marker off VM (as ACCOUNT -- VBox state is per-$HOME).
@@ -607,9 +621,25 @@ rt_provision_leak() {
    log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force', power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
+## Name of the marker, in a kept account's home, recording the kept run's staged ISO dir
+## so rt_eph_reclaim removes exactly that dir (the VM still has the ISO attached).
+rt_kept_staged_marker='.dm-release-test-kept-staged-dir'
+
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
-## cleanup path, so an abort anywhere after creation still reclaims it.
+## cleanup path, so an abort anywhere after creation still reclaims it -- unless the
+## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection.
 rt_eph_cleanup() {
+   local rc=$?
+   local account_home
+   if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
+      account_home="$(getent passwd "${eph_account}" | cut -d: -f6)"
+      if [ -n "${rt_staged_dir}" ] && [ -n "${account_home}" ]; then
+         printf '%s\n' "${rt_staged_dir}" > "${account_home}/${rt_kept_staged_marker}" \
+            || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
+      fi
+      log notice "kept FAILED run for inspection: account '${eph_account}', VM left running (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next run of this lane reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
+      return 0
+   fi
    ## Reap the per-run built-ISO staging dir first, on ANY exit (error return, signal) and
    ## independent of the eph account -- it holds only files this run created.
    if [ -n "${rt_staged_dir}" ]; then
@@ -617,7 +647,20 @@ rt_eph_cleanup() {
       rt_staged_dir=""
    fi
    [ -n "${eph_account}" ] || return 0
-   "${IMAGE_TEST_GC}" "${eph_account}" || true
+   rt_eph_reclaim "${eph_account}"
+}
+
+## Remove an ephemeral account and everything it owns: VirtualBox state (incl. a kept
+## run's still-running VM), processes, home, and a kept run's staged ISO dir.
+rt_eph_reclaim() {
+   local account account_home kept_dir
+   account="$1"
+   account_home="$(getent passwd "${account}" | cut -d: -f6)"
+   kept_dir=""
+   if [ -n "${account_home}" ] && [ -f "${account_home}/${rt_kept_staged_marker}" ]; then
+      kept_dir="$(cat -- "${account_home}/${rt_kept_staged_marker}")"
+   fi
+   "${IMAGE_TEST_GC}" "${account}" || true
    ## A VBoxSVC/VBoxXPCOMIPCD owned by the account lingers after the VM stops and
    ## holds userdel open (userdel REFUSES while any process still has the uid).
    ## SIGKILL the account's processes and POLL until they are actually gone -- a
@@ -625,18 +668,25 @@ rt_eph_cleanup() {
    ## failed and leaked the account. Bounded by EPH_CLEANUP_SETTLE so a wedged
    ## reaper cannot hang cleanup; re-send the kill each poll in case a child respawned.
    local waited=0
-   pkill --kill --uid "${eph_account}" 2>/dev/null || true
-   while pgrep --uid "${eph_account}" >/dev/null 2>&1; do
+   pkill --kill --uid "${account}" 2>/dev/null || true
+   while pgrep --uid "${account}" >/dev/null 2>&1; do
       if [ "${waited}" -ge "${EPH_CLEANUP_SETTLE}" ]; then
          break
       fi
       sleep 1
       waited=$(( waited + 1 ))
-      pkill --kill --uid "${eph_account}" 2>/dev/null || true
+      pkill --kill --uid "${account}" 2>/dev/null || true
    done
-   if ! userdel --remove -- "${eph_account}"; then
-      log warn "userdel '${eph_account}' failed -- reap stray processes of that account and 'userdel --remove' it manually"
+   if ! userdel --remove -- "${account}"; then
+      log warn "userdel '${account}' failed -- reap stray processes of that account and 'userdel --remove' it manually"
    fi
+   ## Only a dir this harness staged (ISO_DIR/.built-*): the marker sits in a home the
+   ## account owned, so never trust it as an arbitrary path.
+   case "${kept_dir}" in
+      "${ISO_DIR}"/.built-*)
+         [[ "${kept_dir}" == *'/../'* ]] || safe-rm --recursive --force -- "${kept_dir}" 2>/dev/null || true
+         ;;
+   esac
    rt_refresh_fleet
 }
 
@@ -704,6 +754,7 @@ rt_publish_result() {
 rt_lane_kicksecure() {
    local account version iso pass_file vmname rc shot_dir shot_arg check_log
    local -a checks_arg=()
+   local -a keep_arg=()
 
    account="$1"
    version="$2"
@@ -771,11 +822,14 @@ rt_lane_kicksecure() {
    if [ "${run_checks}" = 'true' ]; then
       checks_arg=( --checks )
    fi
+   if [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
+      keep_arg=( --keep-failed )
+   fi
 
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" || rc=$?
+      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" "${keep_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
@@ -1017,6 +1071,12 @@ main() {
    ## creation or the run still reclaims the ephemeral account on exit.
    trap rt_eph_cleanup EXIT
    if [ "${account_kind}" = 'prebless' ]; then
+      ## A same-named account left by a KEPT failed run (or a crash) still holds its VM
+      ## and state; reclaim it so this run starts from a genuinely clean account.
+      if id "${account}" >/dev/null 2>&1; then
+         log notice "reclaiming leftover ephemeral account '${account}' from a previous run"
+         rt_eph_reclaim "${account}"
+      fi
       eph_account="${account}"
       rt_create_clean_account "${account}"
    fi
@@ -1025,12 +1085,12 @@ main() {
    ## removed here. Enforce the leak invariant at run time: a missing or host-privileged
    ## leak account fails SETUP (SETUP_RC) -- NOT a leak FAIL -- so a provisioning gap or
    ## a dev-root/leaprun/sudo-enabled account can never masquerade as (or taint) a leak
-   ## verdict. rt_refresh_fleet re-asserts the host nftables leak-drop covers it.
+   ## verdict. rt_require_fleet_member proves the host nftables leak-drop covers it.
    if [ "${account_kind}" = 'leak' ]; then
       id "${account}" >/dev/null 2>&1 \
          || die "${SETUP_RC}" "leak account '${account}' does not exist -- pre-provision it with the clean-live Whonix pair"
       rt_require_account_unprivileged "${account}" leak
-      rt_refresh_fleet
+      rt_require_fleet_member "${account}"
    fi
 
    ## The blessed account (persist-inst-) is ALSO pre-provisioned, not created here,
