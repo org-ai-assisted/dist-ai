@@ -489,6 +489,26 @@ os.chown("/home/user/.cache", 0, 0)
 # style-ok: lpe-python-advisory -- wrapped python waiver,
 # second line.
 os.chown("/home/user/.local", 0, 0)
+# style-ok: lpe-python-advisory -- waiver above a multi-line statement
+chowned = [
+    os.chown("/home/user/.multiline", 0, 0),
+]
+# style-ok: lpe-python-advisory -- waives the if header only, must NOT reach the body
+if chowned:
+    os.chown("/home/user/.ifbody", 0, 0)
+EOF
+
+## VULN + WAIVER (python parse error): the file tokenizes but does not parse, so
+## it has no trustworthy statement boundaries -- even a waiver directly above
+## the advisory must NOT be honored (fail safe: the finding stays).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_unparsed.py' <<'EOF'
+#!/usr/bin/python3
+import os
+import subprocess
+subprocess.run(["sudo", "systemctl", "restart", "unit"])
+# style-ok: lpe-python-advisory -- must NOT be honored in an unparseable file
+os.chown("/home/user/.unparsed", 0, 0)
+broken = = 1
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------

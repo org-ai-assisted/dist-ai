@@ -228,6 +228,24 @@ def main(argv):
         "python trailing waiver above an advisory does not suppress it",
         has(findings, "vuln_py_waived", "python-advisory", ".ssh")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ssh")))
+    ## Python statement spans (ast): a finding on a LATER line of a multi-line
+    ## statement resolves to its first line, where the waiver sits above it; a
+    ## compound statement's span is its header only, so a waiver above 'if'
+    ## does not reach the body; an unparseable file honors no waiver.
+    checks.append((
+        "python waiver above a multi-line statement suppresses a later-line op",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".multiline",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".multiline")))
+    checks.append((
+        "python waiver above an 'if' header does not reach its body",
+        has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
+    checks.append((
+        "python waiver in an unparseable file is not honored",
+        has(findings, "vuln_py_unparsed", "python-advisory", ".unparsed")
+        and not has(suppressed, "vuln_py_unparsed", "python-advisory",
+                    ".unparsed")))
     checks.append(("coverage.suppressed >= 2", coverage.get("suppressed", 0) >= 2))
 
     ## Coverage is real, not a silent green.

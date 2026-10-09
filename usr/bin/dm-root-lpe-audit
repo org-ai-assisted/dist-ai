@@ -44,6 +44,7 @@ Usage:  dm-root-lpe-audit [<derivative-maker-root>]
 Output: JSON on stdout; a ranked human summary on stderr.
 """
 
+import ast
 import io
 import json
 import os
@@ -51,6 +52,7 @@ import re
 import subprocess
 import sys
 import tokenize
+import warnings
 from typing import Any
 
 _LIB = os.path.join(
@@ -432,8 +434,8 @@ def weight_for(reasons):
 ## '--' is REQUIRED so a waiver is self-documenting; a reason-less waiver is
 ## ignored and the finding still fires. The marker must OPEN the comment
 ## (matched, not searched), so prose that merely quotes the syntax mid-comment
-## is not a waiver. The waiver must be a REAL comment
-## (located via the shfmt AST, not a textual scan) -- a 'style-ok: lpe-...'
+## is not a waiver. The waiver must be a REAL comment (located via the shfmt
+## AST / Python tokenize, not a textual scan) -- a 'style-ok: lpe-...'
 ## inside a heredoc body or a quoted string is DATA, not a waiver. Waived
 ## findings stay VISIBLE (counted and listed under 'suppressed'), so a
 ## mis-waiver is auditable, never a silent drop.
@@ -470,6 +472,52 @@ def _py_comment_text_by_line(source):
     return comments
 
 
+## Fields holding a compound statement's nested SUITES: their statements get
+## their own spans, so the compound's span stops at its header.
+_PY_SUITE_FIELDS = frozenset(("body", "orelse", "finalbody", "handlers", "cases"))
+
+
+def _py_stmt_spans(source):
+    """(start, end) line spans of every Python statement in SOURCE, via ast --
+    the Python counterpart of the shfmt CallExpr spans, so a finding on a later
+    physical line of a wrapped statement resolves to that statement's first
+    line. A simple statement spans lineno..end_lineno; a compound one (if/for/
+    def/with/...) spans only its HEADER, never its suites, so a waiver above an
+    'if' cannot reach the body (as a shell waiver above 'if' cannot reach the
+    commands inside it). Returns None on a parse error: an unparseable file
+    has no trustworthy statement boundaries, so the caller waives nothing."""
+    try:
+        with warnings.catch_warnings():
+            ## Invalid-escape SyntaxWarnings in an audited file are not ours to
+            ## print on stderr.
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    spans = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        suite_fields = _PY_SUITE_FIELDS.intersection(node._fields)
+        if not suite_fields:
+            spans.append((node.lineno, node.end_lineno or node.lineno))
+            continue
+        ## Header = every non-suite child; decorators sit ABOVE lineno, so the
+        ## start is widened to them too.
+        start = end = node.lineno
+        for field, value in ast.iter_fields(node):
+            if field in suite_fields:
+                continue
+            for child in value if isinstance(value, list) else [value]:
+                if not isinstance(child, ast.AST):
+                    continue
+                for sub in ast.walk(child):
+                    start = min(start, getattr(sub, "lineno", None) or start)
+                    end = max(end, getattr(sub, "end_lineno", None) or end)
+        spans.append((start, end))
+    return spans
+
+
 def _indent(line):
     """Width of LINE's leading whitespace."""
     return len(line) - len(line.lstrip(" \t"))
@@ -493,9 +541,9 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
     nearest waiver for a rule wins, and its reason absorbs the plain comment
     lines wrapped below it in the block (up to the next waiver), so the
     'suppressed' entry carries the whole reason. The owning command + its line
-    span come from the shfmt AST (CALL_SPANS: (start, end) line pairs); the
-    waiver is matched against the real COMMENT TEXT (COMMENT_TEXT_BY_LINE:
-    line -> '#...'), never the raw source line, so a 'style-ok: lpe-...' in a
+    span come from the shfmt AST, or the Python ast for a .py file (CALL_SPANS:
+    (start, end) line pairs); the waiver is matched against the real COMMENT
+    TEXT (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a 'style-ok: lpe-...' in a
     QUOTED STRING is data, not a waiver. Association is AST-truthful, never a
     textual '\\'-continuation scan. A rule of 'all' waives every rule for that
     command.
@@ -603,10 +651,14 @@ def audit(dm_root):
             ## MULTI-LINE triple-quoted one) is a STRING token, not a COMMENT, so
             ## it cannot masquerade as a waiver -- the same robustness the shfmt
             ## path gets. Fail SAFE on a parse error (empty -> nothing waived ->
-            ## findings stay). Each advisory finding stands on its own line (no
-            ## multi-line command spans), so call_spans is empty.
+            ## findings stay). Statement spans come from ast, so a finding on a
+            ## wrapped statement's later line finds the waiver above its first
+            ## line; an ast parse error drops every waiver (fail SAFE).
             comment_text_by_line = _py_comment_text_by_line(source)
-            call_spans = []
+            py_spans = _py_stmt_spans(source)
+            if py_spans is None:
+                comment_text_by_line = {}
+            call_spans = py_spans or []
         else:
             continue
         ## A comment line is STANDALONE when only whitespace precedes its '#'
