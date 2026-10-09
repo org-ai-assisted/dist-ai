@@ -17,38 +17,21 @@ These tests pin that contract across the Tor / system states the script
 branches on, so enabling full strict mode (set -o nounset) cannot silently
 change which code a state produces. The whole real script is sourced (its
 was_executed guard keeps it from auto-running) and driven through its real
-entry point te_pe_tb_check; only the I/O boundary (VM-type marker files, the
-/run state folder, timesanitycheck) and the Tor-control collaborators (the
-sourced .bsh functions) are stubbed to select a state -- the exit-code decision
-logic under test is the script's own.
+entry point main; only the I/O boundary (VM-type marker files, the /run state
+folder, timesanitycheck) and the Tor-control collaborators (the sourced .bsh
+functions) are stubbed to select a state -- the exit-code decision logic under
+test is the script's own.
 
-The harness runs under the SAME strict options the script sets when executed,
-INCLUDING nounset, so an unset-prone reference that the refactor must guard
-shows up here as a failing case (not a silent pass).
+main enables the script's own strict mode (INCLUDING nounset) and installs its
+own ERR/EXIT traps, so an unset-prone reference shows up here as a failing case
+(not a silent pass), and the exit code is the one the EXIT trap delivers.
 """
 
-import os
+import tempfile
 import time
 import unittest
 
-from onion_time_pre_script_testlib import (
-    PreScriptTestBase,
-    run_bash,
-    stub_env,
-)
-
-
-def _helper_scripts_path() -> str:
-    """
-    Root of a helper-scripts checkout, so the sourced script can load its .bsh
-    siblings (check_runtime.bsh, tor_bootstrap_check.bsh, ...). Prefer an
-    explicit HELPER_SCRIPTS_PATH, else the repo the subject came from
-    (ONION_TIME_PRE_SCRIPT_REPO, wired by dist-ai-tests-all).
-    """
-    explicit = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
-    if explicit:
-        return explicit
-    return os.environ.get('ONION_TIME_PRE_SCRIPT_REPO', '').strip()
+from onion_time_pre_script_testlib import PreScriptTestBase
 
 
 ## Default state: Gateway, Tor enabled, not dormant, control port reachable,
@@ -77,9 +60,7 @@ _DEFAULTS = {
 
 
 class TestExitCodeContract(PreScriptTestBase):
-    """Drive the real te_pe_tb_check across states; assert the sdwdate code."""
-
-    helper_scripts_path: str
+    """Drive the real main across states; assert the sdwdate code."""
 
     def _consensus_stub(self, kind: str, now: int) -> str:
         """
@@ -128,8 +109,7 @@ class TestExitCodeContract(PreScriptTestBase):
     def run_scenario(self, **overrides: object) -> 'tuple[int, str, str]':
         """
         Source the real script, override the I/O + Tor-control boundary to
-        select the state, then run te_pe_tb_check under full strict mode
-        (nounset included). Returns (returncode, stdout, stderr).
+        select the state, then run main. Returns (returncode, stdout, stderr).
         """
         cfg = dict(_DEFAULTS)
         cfg.update(overrides)
@@ -191,39 +171,12 @@ class TestExitCodeContract(PreScriptTestBase):
             % cfg['rate_limited_rc'],
         ]
 
-        script = '\n'.join(
-            [
-                'source "%s"' % self.path,
-                '\n'.join(stubs),
-                'set -o errexit',
-                'set -o nounset',
-                'set -o errtrace',
-                'set -o pipefail',
-                'shopt -s inherit_errexit',
-                'shopt -s shift_verbose',
-                'te_pe_tb_check',
-            ]
-        )
-        env = stub_env(
-            HELPER_SCRIPTS_PATH=self.helper_scripts_path,
-            USER=str(cfg['user']),
-        )
-        result = run_bash(script, env)
+        stubs.append('main')
+        result = self.run_sourced('\n'.join(stubs), USER=str(cfg['user']))
         return result.returncode, result.stdout, result.stderr
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        cls.helper_scripts_path = _helper_scripts_path()
-        if not cls.helper_scripts_path:
-            raise unittest.SkipTest(
-                'set HELPER_SCRIPTS_PATH or ONION_TIME_PRE_SCRIPT_REPO'
-            )
 
     def setUp(self) -> None:
         ## A writable stand-in for /run/sdwdate so anondate_use's touch works.
-        import tempfile
-
         self._tmp = tempfile.TemporaryDirectory()
         self.state_dir = self._tmp.name
 
@@ -320,7 +273,7 @@ class TestExitCodeContract(PreScriptTestBase):
         ## Workstation + static-failed leaves clock_tor_consensus_check_result
         ## unset (the consensus check returns early) and tor_bootstrap_percent
         ## unset (workstation skips the bootstrap read) -- both are references
-        ## the strict-mode refactor must guard. Falls through to the busy-wait.
+        ## nounset must not trip on. Falls through to the busy-wait.
         self.assert_exit(
             2, 'END', vm='Workstation', static_failed='true', circuit_est='0'
         )
@@ -329,7 +282,7 @@ class TestExitCodeContract(PreScriptTestBase):
         ## Workstation with Tor up but no circuit and an ok clock reaches
         ## exit_success_if_tor_circuit_already_established, which reads
         ## tor_bootstrap_percent -- unset on a workstation (bootstrap status is
-        ## skipped there), another reference the refactor must guard. Falls
+        ## skipped there), another reference nounset must not trip on. Falls
         ## through to the busy-wait.
         self.assert_exit(
             2,
