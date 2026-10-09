@@ -36,7 +36,6 @@ import unittest
 from systemcheck_testlib import (
     SystemcheckTestBase,
     ScenarioTestBase,
-    extract_bash_function,
     read,
     run_check_scenario,
 )
@@ -213,19 +212,20 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         own shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
         exits non-zero on no-match). stcatn/safe-rm/br_add_to_file are irrelevant to the
         classification under test, so they are stubbed; sanitize-string runs for real."""
-        func = extract_bash_function(
-            os.path.join(self.dir, 'log-checker'), 'check_critical_logs')
+        log_checker = os.path.join(self.dir, 'log-checker')
         with tempfile.TemporaryDirectory() as td:
             raw = os.path.join(td, 'journalctl_kernel.txt')
             with open(raw, 'w', encoding='utf-8') as handle:
                 handle.write('\n'.join(kernel_lines) + '\n')
+            ## log-checker is source-able: sourcing defines its functions without
+            ## auto-running or enabling strict mode; the stubs follow so they shadow.
             script = (
+                f'source {shlex.quote(log_checker)}\n'
                 'set -o errexit\n'
                 'set -o nounset\n'
                 f'TMPDIR={shlex.quote(td)}\n'
                 'stcatn() { cat -- "$@"; }\n'
                 'safe-rm() { :; }\n'
-                f'{func}\n'
                 'check_critical_logs\n'
             )
             proc = subprocess.run(['bash', '-c', script], capture_output=True,

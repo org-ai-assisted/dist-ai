@@ -19,9 +19,9 @@ work: a --ro-bind layered after --proc /proc successfully shadows the real
 pseudo-file for the sandboxed process).
 
 The list of asserted hardening tokens is NOT duplicated by hand here -- it is
-parsed straight out of the real check function's `hardening_tokens=(...)`
-bash array (see _load_tokens), so this suite can never silently drift from
-what the check actually asserts.
+read from the real fragment's top-level `kernel_hardening_cmdline_tokens`
+array by sourcing it (see _load_tokens), so this suite can never silently
+drift from what the check actually asserts.
 """
 
 import os
@@ -30,8 +30,9 @@ import unittest
 
 from systemcheck_testlib import (
     ScenarioTestBase,
+    fragment_sources,
     run_check_scenario_isolated,
-    extract_bash_function,
+    run_sourced,
 )
 
 FILE = 'check_kernel_hardening_cmdline.bsh'
@@ -47,17 +48,15 @@ _MISSING_RE = re.compile(
 
 
 def _load_tokens(path: str) -> list:
-    """Parse the hardening_tokens=(...) bash array literal straight out of
-    the real check function, so this suite exercises exactly what the check
-    asserts and can never drift from it by hand-copying the list."""
-    func_src = extract_bash_function(path, FUNC)
-    match = re.search(r"hardening_tokens=\((.*?)\n\s*\)", func_src, re.DOTALL)
-    if not match:
-        raise LookupError(
-            f"hardening_tokens array not found in {FUNC}() in {path}")
-    tokens = re.findall(r"'([^']+)'", match.group(1))
+    """The token list the check asserts, read by sourcing the real fragment
+    and printing its array, so it can never drift by hand-copying."""
+    out = run_sourced(
+        fragment_sources(path),
+        'printf "%s\\n" "${kernel_hardening_cmdline_tokens[@]}"')
+    tokens = out.split('\n') if out else []
     if not tokens:
-        raise LookupError(f"hardening_tokens array in {path} parsed empty")
+        raise LookupError(
+            f"kernel_hardening_cmdline_tokens in {path} is empty or unset")
     return tokens
 
 

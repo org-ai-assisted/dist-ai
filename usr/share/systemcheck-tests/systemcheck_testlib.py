@@ -12,14 +12,13 @@ Resolves the systemcheck sources under test:
   * SYSTEMCHECK_REPO=/path/to/systemcheck -> <repo>/usr/libexec/systemcheck
   * unset                                 -> /usr/libexec/systemcheck (installed)
 
-Also provides a helper to extract a single top-level bash function from a .bsh
-fragment and run it in isolation (the fragments cannot be sourced wholesale
-because they source sibling files by absolute path).
+Bash under test is always SOURCED from the real files: the fragments resolve
+their siblings via ${SYSTEMCHECK_REPO:-} / ${HELPER_SCRIPTS_PATH:-}, which the
+child bash inherits from this environment, so a checkout runs in place.
 """
 
 import base64
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -129,50 +128,46 @@ def read(path: str) -> str:
         return handle.read()
 
 
-_FUNC_RE_TMPL = r'^%s\(\) \{\n(.*?)^\}'
+def has_bsh() -> str:
+    """helper-scripts has.bsh. The systemcheck entrypoint sources it before the
+    fragments (uwt_tool.bsh, sourced by preparation.bsh, calls `has` at source
+    time), so every harness sources it first too."""
+    hs_root = os.environ.get('HELPER_SCRIPTS_PATH', '').strip() or '/'
+    return os.path.join(hs_root, 'usr', 'libexec', 'helper-scripts', 'has.bsh')
 
 
-def extract_bash_function(path: str, name: str) -> str:
-    """
-    Return the full definition of a top-level bash function `name` from `path`.
-    Assumes the closing brace is at column 0 (the fragment style). Raises
-    LookupError if not found.
-    """
-    text = read(path)
-    match = re.search(_FUNC_RE_TMPL % re.escape(name), text, re.DOTALL | re.MULTILINE)
-    if not match:
-        raise LookupError(f"function {name!r} not found in {path}")
-    return f"{name}() {{\n{match.group(1)}}}\n"
+def fragment_sources(*fragments: str) -> list[str]:
+    """The real files a check fragment needs, in the entrypoint's order:
+    has.bsh, preparation.bsh (emit_message & co.), then `fragments`."""
+    return [has_bsh(), os.path.join(systemcheck_dir(), 'preparation.bsh'),
+            *fragments]
 
 
-def run_bash_function(func_def: str, call: str, env_setup: str = '') -> str:
-    """
-    Source `func_def`, run `env_setup`, then `call`; return stdout (stripped).
-    Runs under a strict-ish bash but WITHOUT nounset (the fragments rely on
-    optional globals).
-    """
-    script = f"set -o errexit\nset -o pipefail\n{env_setup}\n{func_def}\n{call}\n"
-    result = subprocess.run(
-        ['bash', '-c', script],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
+def _source_block(sources) -> str:
+    return '\n'.join(f'source {shlex.quote(path)}' for path in sources)
 
 
-## Helpers from preparation.bsh that the check fragments call. The scenario
-## runner pulls the REAL definitions (so emit_status_line / emit_message output
-## is exercised for real) rather than stubbing them.
-_EMIT_HELPERS = (
-    'run_if_verbose',
-    'html_link',
-    'emit_status_line',
-    'emit_message',
-    'leaprun_cmd_describe',
-    'remediation_instructions',
-    'if_you_know_what_you_are_doing_funct',
-)
+def run_sourced(sources, call: str, setup: str = '') -> str:
+    """Source the real `sources`, run `setup` (stubs / globals; AFTER the source
+    so a stub shadows the real definition), then `call`; return stdout stripped.
+    errexit + pipefail, no nounset (the fragments read optional globals). A
+    non-zero exit fails with bash's stderr."""
+    script = '\n'.join([
+        'set -o errexit', 'set -o pipefail', _source_block(sources), setup, call,
+    ])
+    proc = subprocess.run(['bash', '-c', script], capture_output=True,
+                          text=True, timeout=30)
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"bash exited {proc.returncode}: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def function_definition(sources, name: str) -> str:
+    """`declare -f name` after sourcing the real `sources`: the body as bash
+    itself parsed it, for static assertions. An undefined name fails."""
+    return run_sourced(sources, f'declare -f -- {shlex.quote(name)}')
+
 
 ## Records every message emission. $output_x / $output_cli are variables holding
 ## a command name, so pointing them at this function captures the severity and
@@ -231,40 +226,16 @@ class ScenarioResult:
         return '\n'.join(self.messages())
 
 
-def _all_functions(path: str) -> str:
-    """Concatenated definitions of every top-level function in `path`, so a
-    check can call its sibling helpers (e.g. check_hostname_field)."""
-    names = re.findall(r'(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\) \{', read(path))
-    return '\n'.join(extract_bash_function(path, name) for name in dict.fromkeys(names))
-
-
-def _has_definition() -> str:
-    """The real `has` function from helper-scripts has.bsh.
-
-    Check fragments call it as a bare command (`has pw-play`, `has mokutil`).
-    The real systemcheck entrypoint SOURCES has.bsh; this harness extracts
-    individual check functions instead, so it must bring `has` in the same way
-    (dist-ai/CLAUDE.md: never REIMPLEMENT a helper-scripts function). `has` is a
-    plain `command -v` wrapper, so a test's PATH override or a function stub
-    (e.g. `mokutil() { :; }`) steers it exactly as in production."""
-    hs = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
-    path = (os.path.join(hs, 'usr/libexec/helper-scripts/has.bsh') if hs
-            else '/usr/libexec/helper-scripts/has.bsh')
-    if not os.path.isfile(path):
-        print(f"has.bsh not found at {path!r} (set HELPER_SCRIPTS_PATH); skipping.",
-              file=sys.stderr)
-        sys.exit(77)
-    return extract_bash_function(path, 'has')
-
-
 def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
                               stubs: str, prefix: str = '') -> str:
-    prep = os.path.join(systemcheck_dir(), 'preparation.bsh')
-    helper_defs = '\n'.join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
-    check_defs = _all_functions(check_file)
+    ## Sourcing runs under errexit so a subject that fails to load (a sibling
+    ## source path that does not resolve) aborts before the SOURCED marker;
+    ## stubs and env_setup follow the source so they shadow the real code.
     return '\n'.join([
-        _SCENARIO_PREAMBLE, prefix, stubs, env_setup, helper_defs,
-        _has_definition(), check_defs,
+        _SCENARIO_PREAMBLE, prefix,
+        'set -o errexit', _source_block(fragment_sources(check_file)),
+        'set +o errexit', 'printf "SOURCED\\n"',
+        stubs, env_setup,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
     ])
 
@@ -272,12 +243,26 @@ def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
 def _parse_scenario_output(proc) -> ScenarioResult:
     records = []
     exit_code = None
+    sourced = False
     for line in proc.stdout.splitlines():
         if line.startswith('REC\t'):
             _tag, channel, sev, msg = line.split('\t', 3)
             records.append((channel, sev, msg))
         elif line.startswith('EXITCODE\t'):
             exit_code = line.split('\t', 1)[1]
+        elif line == 'SOURCED':
+            sourced = True
+    if not sourced:
+        raise AssertionError(
+            'scenario never got past sourcing the subject (or, isolated, '
+            'past bubblewrap sandbox setup): '
+            + (proc.stderr.strip() or f"exit {proc.returncode}"))
+    ## The call runs under `set +e`, so only an `exit` or a crash skips the
+    ## EXITCODE marker; an assertion on records alone would then pass vacuously.
+    if exit_code is None:
+        raise AssertionError(
+            'scenario call never returned: '
+            + (proc.stderr.strip() or f"exit {proc.returncode}"))
     return ScenarioResult(records, exit_code, proc.stdout, proc.stderr)
 
 
@@ -325,6 +310,31 @@ def bwrap_available() -> bool:
     return _BWRAP_OK
 
 
+def _nearest_existing_dir(path: str) -> str:
+    while not os.path.isdir(path):
+        path = os.path.dirname(path)
+    return path
+
+
+def tmpfs_mounts(hide_dirs, place_paths) -> list[str]:
+    """The bwrap --tmpfs targets for an isolated scenario (none nested).
+
+    bwrap cannot create a mount point under a read-only host dir, so a placed
+    file's absent parent is reached by emptying its nearest EXISTING ancestor
+    (the in-sandbox prefix then `mkdir -p`s the parent inside that tmpfs). An
+    absent hide_dir needs no mount: its contents are already absent. A target
+    under another target is dropped: it is already inside a writable tmpfs."""
+    targets = {d for d in hide_dirs if os.path.isdir(d)}
+    targets.update(_nearest_existing_dir(os.path.dirname(p))
+                   for p in place_paths)
+    return sorted(t for t in targets
+                  if not any(o != t and _is_under(t, o) for o in targets))
+
+
+def _is_under(path: str, directory: str) -> bool:
+    return path == directory or path.startswith(directory.rstrip('/') + '/')
+
+
 def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
                                 stubs: str = '', hide_dirs=(), place=(),
                                 bind_files=()) -> ScenarioResult:
@@ -338,8 +348,10 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
                    so there is nothing to hide (this is what makes the tests run
                    on a non-Qubes CI host).
       place      : iterable of (abs_path, content, is_exec) to materialize inside
-                   the sandbox. The parent directory is overlaid with a writable
-                   tmpfs, then the file is written there. Use ONLY for a
+                   the sandbox. The parent directory -- or, when absent, its
+                   nearest existing ancestor (see tmpfs_mounts) -- is overlaid
+                   with a writable tmpfs, then the file is written there. Use
+                   ONLY for a
                    dedicated directory whose other files the check does not need
                    (e.g. '/usr/share/qubes/marker-vm', a fake
                    '/usr/libexec/systemcheck/crypt-check'); the tmpfs hides the
@@ -355,23 +367,31 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
     SkipTest when bubblewrap / user namespaces are unavailable; the
     systemcheck-tests-bwrap runner (--strict-skips) turns that into FATAL unless
     the orchestrator authorized the skip. A sandbox that bubblewrap CAN create but
-    fails to set up for this scenario is a test failure (AssertionError).
+    fails to set up for this scenario is a test failure (AssertionError from
+    _parse_scenario_output: the script never reached its markers).
     """
     if not bwrap_available():
         raise unittest.SkipTest(
             'bubblewrap unavailable or unprivileged user namespaces disabled')
 
-    ## Only overlay hide_dirs that actually exist; a tmpfs over an absent path
-    ## fails, and an absent guard dir already yields the "absent" branch.
-    tmpfs_dirs = [d for d in hide_dirs if os.path.isdir(d)]
+    tmpfs_dirs = tmpfs_mounts(hide_dirs, [p for p, _c, _x in place])
+    ## A tmpfs over the subject's own dir (e.g. placing a fake crypt-check
+    ## into the installed /usr/libexec/systemcheck) would empty what the
+    ## scenario sources; refuse it by name instead of a sourcing failure.
+    for source in fragment_sources(check_file):
+        for directory in tmpfs_dirs:
+            if _is_under(source, directory):
+                raise AssertionError(
+                    f"isolated scenario would tmpfs {directory!r}, hiding "
+                    f"sourced subject {source!r}; set SYSTEMCHECK_REPO / "
+                    "HELPER_SCRIPTS_PATH to checkouts")
     prefix_lines = []
     for abs_path, content, is_exec in place:
-        parent = os.path.dirname(abs_path)
-        if parent not in tmpfs_dirs:
-            tmpfs_dirs.append(parent)
         ## base64 so arbitrary content (shebangs, quotes, newlines) round-trips
         ## through the shell prefix without quoting hazards.
         encoded = base64.b64encode(content.encode()).decode()
+        prefix_lines.append(
+            f"mkdir -p -- {shlex.quote(os.path.dirname(abs_path))}")
         prefix_lines.append(
             f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(abs_path)}")
         if is_exec:
@@ -404,18 +424,7 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
             except OSError:
                 # the temp file was already removed
                 pass
-    result = _parse_scenario_output(proc)
-    ## The scenario script unconditionally prints the EXITCODE marker last (it
-    ## runs under `set +e`). A missing marker means bubblewrap never got to run
-    ## the script -- a sandbox-setup failure (e.g. cannot create a mount point
-    ## under a read-only /usr). bwrap_available() already proved the sandbox
-    ## works here, so the scenario's fixture is broken: fail with the bwrap
-    ## diagnostic rather than a confusing empty-records assertion.
-    if result.exit_code is None:
-        raise AssertionError(
-            'bubblewrap could not set up the isolated sandbox on this host: '
-            + (proc.stderr.strip() or f"exit {proc.returncode}"))
-    return result
+    return _parse_scenario_output(proc)
 
 
 class SystemcheckTestBase(unittest.TestCase):

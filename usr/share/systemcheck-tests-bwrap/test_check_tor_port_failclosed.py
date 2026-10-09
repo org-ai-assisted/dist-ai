@@ -17,7 +17,7 @@ exits 0 is a false green that would mask the dead link the control exists to cat
 The curl-failure branch classifies the result (info for an EXPECTED-unreachable
 port -- Whonix-Gateway's absent TransPort, a Qubes TemplateVM -- else error) and
 must set EXIT_CODE=1 for ANY error-typed failure. These scenarios drive the real
-extracted function with a stubbed curl that fails to connect:
+sourced function with a stubbed curl that fails to connect:
 
   * TransPort on a Whonix-Workstation  -> error, EXIT_CODE 1  (the regression;
     pre-fix the branch pre-set type=error but EXIT_CODE stayed 0 -> false green,
