@@ -75,6 +75,8 @@ TRUST_BOUNDARY_PARAMS = frozenset(("SUDO_USER", "SUDO_UID", "SUDO_GID"))
 VALIDATOR_NAMES = frozenset(("is_name_valid", "validate_safe_filename"))
 
 ARGV_PARAM_RE = re.compile(r"^(?:[1-9][0-9]*|[@*])$")
+## GNU env NAME=VALUE assignment operand (a valid identifier left of '=').
+ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 ## A value produced by mktemp (safe, unpredictable) -- an actual command
 ## substitution calling mktemp, NOT merely a string containing 'mktemp'.
 MKTEMP_RE = re.compile(r"(?:\$\(|`)\s*(?:/usr/bin/|/bin/)?mktemp\b")
@@ -293,9 +295,19 @@ def _peel_wrappers(call, source):
         ## the value is mistaken for the wrapped command), plus env VAR=val.
         while index < len(words):
             text = _word_raw(words[index], source)
-            if base == "env" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", text):
+            if base == "env" and ENV_ASSIGN_RE.match(text):
                 index += 1
                 continue
+            if base == "env" and text == "--":
+                ## GNU env: '--' ends OPTION parsing but NAME=VALUE assignments
+                ## continue as operands after it ('env -- A=1 cp ...' runs cp).
+                ## Keep consuming leading assignments; the first non-assignment
+                ## word is the real wrapped command.
+                index += 1
+                while index < len(words) and ENV_ASSIGN_RE.match(
+                        _word_raw(words[index], source)):
+                    index += 1
+                break
             if text == "--":
                 index += 1
                 break

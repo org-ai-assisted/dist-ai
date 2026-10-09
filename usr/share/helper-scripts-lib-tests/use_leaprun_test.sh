@@ -52,11 +52,15 @@ result_len_of() { printf '%s\n' "$1" | sed -n 's/^result_len=//p'; }
 
 ## Run the probe with leaprun unresolvable (PATH without it) so use_leaprun.sh
 ## hits its first "Cannot use privleap" branch. Clear the fake-mode toggles so an
-## inherited one cannot divert the probe. Capture the two streams apart.
+## inherited one cannot divert the probe. Capture the two streams apart. A
+## non-zero probe exit must NOT abort the test under errexit+inherit_errexit: the
+## 'probe-failed' sentinel flows into the assertions below as a reported failure.
 probe_stdout="$(env --unset=LEAPRUN_FAKE_USABLE --unset=LEAPRUN_FAKE_STALE --unset=LEAPRUN_FAKE_HIDEPID \
-   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" 2>/dev/null)"
+   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" 2>/dev/null)" \
+   || probe_stdout='probe-failed'
 probe_stderr="$( { env --unset=LEAPRUN_FAKE_USABLE --unset=LEAPRUN_FAKE_STALE --unset=LEAPRUN_FAKE_HIDEPID \
-   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" >/dev/null; } 2>&1 )"
+   PATH='/nonexistent' USE_LEAPRUN_SH="${use_leaprun_sh}" /usr/bin/bash "${probe}" >/dev/null; } 2>&1 )" \
+   || probe_stderr='probe-failed'
 
 ## stdout must carry ONLY the probe's own two lines -- no warning of any kind.
 stdout_lines="$(printf '%s\n' "${probe_stdout}" | wc -l)"

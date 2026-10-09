@@ -185,6 +185,33 @@ dd if=/etc/shadow of="/home/${tu}/shadow"
 chmod a=w "/home/${tu}/pub"
 EOF
 
+## VULN: GNU 'env' reads NAME=VALUE operands AFTER '--' ('env -- A=1 cmd' runs
+## cmd), so the wrapper peeler must NOT stop skipping at '--' for env -- it has
+## to keep consuming leading assignments and resolve the REAL command. A peeler
+## that breaks on '--' resolves the command to the assignment word and MISSES the
+## sink (silent green). Single assignment after '--'.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-env-single' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- LPE=1 chown --recursive root:root "/home/${tu}/single"
+EOF
+
+## VULN: multiple assignments after '--' exercise the consume LOOP, not a single
+## skip ('env -- A=1 B=2 cmd' still runs cmd).
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-env-multi' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+env -- A=1 B=2 chown --recursive root:root "/home/${tu}/multi"
+EOF
+
 ## SAFE round-2 counterparts that must stay clean: 'command -V' only DESCRIBES,
 ## dd 'if=' is a READ (only 'of=' writes), 'chmod +w' is umask-filtered, and a
 ## 'source FILE -- args' sources FILE (safe path), not the '--' argument.
