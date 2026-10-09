@@ -102,7 +102,27 @@ home="$(getent passwd "${account}" | cut -d: -f6)"
 checkout="${home}/derivative-maker"
 binary_out="${home}/derivative-binary"
 
-## 2. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
+## 2a. The ISO version comes from `git describe`, which needs the RELEASE TAGS present.
+## A seed checkout can lack newer release tags (it only carries whatever tags it fetched),
+## so describe falls back to an older tag and the ISO is MISLABELLED (e.g. 18.2.3.3 when
+## the tip is really 18.2.3.6). Fetch tags into the reference AS ITS OWNER (which holds the
+## remote credentials; the build account does not) BEFORE seeding, so the slot inherits a
+## complete tag set and describes the correct version. Fail LOUD on a stale label rather
+## than silently ship a wrong version.
+ref_owner="$(stat -c '%U' "${source_checkout}")"
+runuser -u "${ref_owner}" -- git -C "${source_checkout}" fetch --tags --quiet \
+   || printf '%s: WARNING: tag fetch into %s failed; version label may be stale\n' "${me}" "${source_checkout}" >&2
+desc="$(runuser -u "${ref_owner}" -- git -C "${source_checkout}" describe --tags 2>/dev/null || true)"
+case "${desc}" in
+   *-developers-only-*|*-developers-only)
+      printf '%s: reference describes as %s\n' "${me}" "${desc}"
+      ;;
+   *)
+      printf '%s: WARNING: reference describe is %s -- release tags may be missing; the ISO version label may be wrong\n' "${me}" "${desc:-<none>}" >&2
+      ;;
+esac
+
+## 2b. seed the account's own checkout (source + .git + submodules; NOT derivative-binary).
 printf '%s: seeding %s checkout from %s\n' "${me}" "${account}" "${source_checkout}"
 rsync --archive --delete --hard-links "${source_checkout}/" "${checkout}/"
 chown --recursive "${account}:${account}" "${checkout}"
