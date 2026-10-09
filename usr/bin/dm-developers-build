@@ -107,11 +107,11 @@ printf '%s: seeding %s checkout from %s\n' "${me}" "${account}" "${source_checko
 rsync --archive --delete --hard-links "${source_checkout}/" "${checkout}/"
 chown --recursive "${account}:${account}" "${checkout}"
 
-## 3 + 4. sign HEAD then build, AS the account, with its own slot. Written to a per-account
-## log that grows for a durable supervisor; failures fail loud.
-log="/var/tmp/${account}.build.log"
-true >| "${log}"
-chown "${account}:${account}" "${log}"
+## 3 + 4. sign HEAD then build, AS the account, with its own slot. The per-account build
+## log lives in the account's OWN home (not /var/tmp): the account creates+writes it
+## directly, so there is no cross-owner write into a sticky world-writable dir (which
+## fs.protected_regular=2 blocks even for root). A durable supervisor watches it grow.
+log="${home}/derivative-build.log"
 
 ## ISO set BEFORE the build: the freshly built ISO is the path present AFTER but not
 ## before (set difference -- never mtime, which reproducible builds clamp to a fixed past).
@@ -133,7 +133,7 @@ runuser -u "${account}" -- \
    set -o nounset
    set -o pipefail
    cd ~/derivative-maker || exit 1
-   exec >>"${DM_LOGF}" 2>&1
+   exec >"${DM_LOGF}" 2>&1
    printf "SIGN-START %s\n" "$(date -u +%FT%TZ)"
    export dist_build_sign_and_tag=true
    export dist_build_unlock_dangerous_options=true
