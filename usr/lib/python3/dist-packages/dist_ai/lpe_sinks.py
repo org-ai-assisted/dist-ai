@@ -330,6 +330,12 @@ def _peel_wrappers(call, source):
         ## is NOT in env's argv, so it reads as the command, not an assignment.
         ## A '--' here is a literal command name, not an option terminator
         ## (getopt already stopped at the first operand).
+        ## Static scope (candidate generator, not a verdict): an UNQUOTED
+        ## expansion that word-splits or brace-expands into several argv words,
+        ## and an ANSI-C $'...' decoding to a different byte, are RUNTIME values
+        ## this AST-level scan cannot resolve, so a crafted/obfuscated operand
+        ## may mis-peel -- consistent with the accident-not-adversary scope (see
+        ## bash_ast.word_string). A plain assignment/command is resolved exactly.
         if base == "env":
             if index < len(words) and _word_raw(words[index], source) == "-":
                 index += 1
