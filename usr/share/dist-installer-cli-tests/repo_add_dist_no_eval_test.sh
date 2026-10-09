@@ -16,8 +16,8 @@
 ## stub answers uid 0 for root_check, and every output path is redirected into a
 ## temp dir through the script's own pre-set variable overrides.
 ##
-## Canary: on the eval-based code the injected 'touch' runs and the stored
-## sources entry is truncated, so both assertions fail.
+## Canary: on eval-based code (single-quoted, double-quoted or unquoted) the
+## injected 'touch' runs, so the assertions fail.
 ##
 ## Exit: 0 pass | 1 fail | 77 usability-misc checkout absent (target-absent).
 
@@ -71,14 +71,18 @@ check() {
    fi
 }
 
+## Relative marker, subject run from work_dir: the payload carries no temp
+## path, so a quote in TMPDIR cannot malform it into a false pass. It breaks
+## out of single-quoted eval AND runs under double-quoted / unquoted eval.
 marker="${work_dir}/injected"
-payload="trixie'; touch -- '${marker}'; '"
+payload="trixie\$(touch -- injected)'; touch -- injected; '"
 sources_file="${work_dir}/sources/derivative.sources"
 target_key="${work_dir}/keyrings/derivative.asc"
 mkdir --parents -- "${work_dir}/keyrings"
 
 rc=0
 env \
+   --chdir="${work_dir}" \
    codename="${payload}" \
    apt_target_key_derivative="${target_key}" \
    apt_source_key_temp_folder_derivative="${work_dir}/key-temp" \
