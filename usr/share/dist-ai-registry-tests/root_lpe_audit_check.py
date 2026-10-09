@@ -41,6 +41,8 @@ EXPECTED = [
     ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
     ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
     ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
+    ("vuln-mixed-body", "home-recursive-write", "HIGH"),         ## refusal text inside a real root_check
+    ("vuln-text-cross-clause", "home-recursive-write", "HIGH"),  ## 'do not run ...' spanning clauses
 ]
 
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
@@ -76,6 +78,13 @@ def main(argv):
                 continue
             return True
         return False
+
+    def reason_of(path_sub, rule, op_sub):
+        for f in suppressed:
+            if (path_sub in f["path"] and f["rule"] == rule
+                    and op_sub in f["tainted_operand"]):
+                return f.get("waiver_reason", "")
+        return None
 
     checks = []
 
@@ -179,6 +188,32 @@ def main(argv):
             % (sep, op_sub),
             has(findings, "vuln-waived", "symlink-follow", op_sub)
             and not has(suppressed, "vuln-waived", "symlink-follow", op_sub)))
+    checks.append((
+        "wrapped waiver reason carries every wrapped line",
+        reason_of("vuln-waived", "symlink-follow", ".wrap3")
+        == "wrapped reason, first line of a three-line waiver block, third line."))
+    checks.append((
+        "waiver syntax quoted mid-comment is not a waiver",
+        has(findings, "vuln-waived", "symlink-follow", ".quoted")
+        and not has(suppressed, "vuln-waived", "symlink-follow", ".quoted")))
+    checks.append((
+        "a comment-ending backslash does not cut the waiver block",
+        has(suppressed, "vuln-waived", "symlink-follow", ".cbs",
+            need_reason=True)
+        and not has(findings, "vuln-waived", "symlink-follow", ".cbs")))
+    checks.append((
+        "the nearest waiver's reason wins",
+        reason_of("vuln-waived", "symlink-follow", ".near")
+        == "near trailing reason"))
+    checks.append((
+        "python waiver in a deeper-indented suite does not reach a dedented op",
+        has(findings, "vuln_py_waived", "python-advisory", ".cache")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".cache")))
+    checks.append((
+        "python wrapped waiver block suppresses the advisory",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".local",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".local")))
     ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
     ## not a comment, so it must not waive the advisory finding below it. The
     ## 'in findings' half also proves the python-advisory path is exercised (no

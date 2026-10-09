@@ -374,6 +374,37 @@ home_folder="/home/$1"
 find "${home_folder}" -name '*.tmp' -delete
 EOF
 
+## VULN: a real root_check whose OWN body also carries refusal-looking text (a
+## 'not_as_root' comment, a 'do not run as root' note). Both directions in one
+## body -> still a root gate.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-mixed-body#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check() {
+   # not_as_root
+   if [ "$(id -u)" != "0" ]; then
+      echo "ERROR: must be run as root!"
+      exit 1
+   fi
+   echo "Note: do not run as root without sudo logging."
+}
+root_check
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
+## VULN: TEXT-signal root gate whose message spans 'do not run ... as root'
+## across clauses; must not read as a refusal.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-text-cross-clause#targetpkg-shared' <<'EOF'
+#!/bin/bash
+if [ "$(id -u)" != "0" ]; then
+   echo "Do not run as a regular user, this script must be run as root."
+   exit 1
+fi
+echo "Note: do not run the browser as root."
+home_folder="/home/$1"
+find "${home_folder}" -name '*.tmp' -delete
+EOF
+
 ## VULN + WAIVER: pins the per-line by-design waiver. Every sink is a real
 ## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
 ## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule
@@ -428,6 +459,13 @@ cp --dereference /etc/skel/.blanksep "${home}/.blanksep"
 true
 ## Comment block of the cp below, with no waiver of its own.
 cp --dereference /etc/skel/.codesep "${home}/.codesep"
+## Prose quoting the form: ## style-ok: lpe-symlink-follow -- example only, not a waiver
+cp --dereference /etc/skel/.quoted "${home}/.quoted"
+## style-ok: lpe-symlink-follow -- waiver line ending in a comment backslash \
+## that does not continue anything.
+cp --dereference /etc/skel/.cbs "${home}/.cbs"
+## style-ok: lpe-symlink-follow -- far block reason
+cp --dereference /etc/skel/.near "${home}/.near" ## style-ok: lpe-symlink-follow -- near trailing reason
 EOF
 
 ## VULN + WAIVER (python path): the python-advisory scanner must ALSO reject a
@@ -444,6 +482,13 @@ _DOC = """documentation line
 os.chown("/home/user/.config", 0, 0)
 marker_py = 1  # style-ok: lpe-python-advisory -- TRAILING waiver for marker_py only, must NOT reach the os.chown below
 os.chown("/home/user/.ssh", 0, 0)
+if marker_py:
+    pass
+    # style-ok: lpe-python-advisory -- closes the if suite, must NOT reach the os.chown below
+os.chown("/home/user/.cache", 0, 0)
+# style-ok: lpe-python-advisory -- wrapped python waiver,
+# second line.
+os.chown("/home/user/.local", 0, 0)
 EOF
 
 ## --- run the real tool + delegate assertions --------------------------------
