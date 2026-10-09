@@ -10,8 +10,12 @@
 ## (a non-empty ${shot} after the stuck-screenshot copy); otherwise a bare 'FAILED
 ## (rc=N)' note. Previously the screenshot sentence was unconditional, so a run that
 ## captured no screenshot still told the results plane to "see the published
-## screenshot" -- a false diagnostic. Extracts the REAL on_exit from the shipped
-## script (no copy) and drives it; vm_started=false so no VBox call is made.
+## screenshot" -- a false diagnostic. Sources the REAL script (no copy) and drives
+## on_exit; vm_started=false so no VBox call is made.
+##
+## --keep-failed: a kept VM must have EVERY configured NIC unplugged, else it is
+## powered off, and a failed poweroff must be reported as an error -- never as
+## "network unplugged" or "powered it off". Driven with a recording VBoxManage stub.
 
 set -o errexit
 set -o nounset
@@ -31,19 +35,10 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-calamares-install'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-calamares-install not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-calamares-install not found at ${subject}" >&2; exit 1; }
 
-## Extract the real on_exit() -- header to its first column-0 '}'.
-on_exit_src="$(awk '
-   /^on_exit\(\) \{/ { f = 1 }
-   f               { print }
-   f && /^\}$/     { exit }
-' "${subject}")"
-if [ -z "${on_exit_src}" ]; then
-   printf '%s\n' 'FATAL: could not extract on_exit() from dm-calamares-install' >&2
-   exit 1
-fi
-eval "${on_exit_src}"
+# shellcheck source=../../bin/dm-calamares-install
+source "${subject}"
 
 workdir="$(mktemp --directory --tmpdir calamares-on-exit-test.XXXXXX)"
 cleanup() {
@@ -143,6 +138,80 @@ printf 'STUCK' > "${story_home}/dm-calamares-install-stuck.png"
 ) >/dev/null 2>&1 || true
 check "failed run appends 99-failure.png to the full-story dir" \
    "$([ -s "${story_dir}/99-failure.png" ] && printf yes || printf no)" 'yes'
+
+## --keep-failed. The stub reports the NICs in STUB_NICS (index=type), fails
+## setlinkstateN for N in STUB_FAIL_NICS, fails poweroff when STUB_POWEROFF_FAIL=1,
+## and logs every call. Prints: <stderr verdict> <poweroff attempted yes|no>.
+vbox_stub="${workdir}/VBoxManage"
+cat > "${vbox_stub}" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${STUB_LOG}"
+case "$1 ${3:-}" in
+   'showvminfo --machinereadable')
+      for entry in ${STUB_NICS}; do
+         printf '%s\n' "nic${entry%%=*}=\"${entry#*=}\""
+      done
+      ;;
+   'controlvm setlinkstate'*)
+      nic="${3#setlinkstate}"
+      case " ${STUB_FAIL_NICS} " in
+         *" ${nic} "*)
+            exit 1
+            ;;
+      esac
+      ;;
+   'controlvm poweroff')
+      [ "${STUB_POWEROFF_FAIL}" != 1 ] || exit 1
+      ;;
+esac
+exit 0
+EOF
+chmod +x -- "${vbox_stub}"
+
+run_keep_failed() {
+   local nic_spec="$1" fail_nics="$2" poweroff_fail="$3"
+   local stub_log="${workdir}/stub.$$.${RANDOM}" stub_err="${workdir}/err.$$.${RANDOM}"
+   local verdict poweroff
+   touch -- "${stub_log}"
+   # shellcheck disable=SC2034
+   local me='dm-calamares-install' shot='' check_log='' shot_dir='' \
+      vm='vm-under-test' vm_started='true' keep_failed='true' \
+      VBOXMANAGE="${vbox_stub}" HOME="${workdir}"
+   (
+      export STUB_LOG="${stub_log}" STUB_NICS="${nic_spec}" STUB_FAIL_NICS="${fail_nics}" \
+         STUB_POWEROFF_FAIL="${poweroff_fail}"
+      ( exit 5 )
+      on_exit
+   ) >/dev/null 2>"${stub_err}" || true
+   case "$(cat -- "${stub_err}")" in
+      *ERROR*'poweroff FAILED'*)
+         verdict='error'
+         ;;
+      *'powered it off instead'*)
+         verdict='poweroff'
+         ;;
+      *'network unplugged'*)
+         verdict='kept'
+         ;;
+      *)
+         verdict='other'
+         ;;
+   esac
+   poweroff='no'
+   grep --quiet -- 'controlvm vm-under-test poweroff' "${stub_log}" && poweroff='yes'
+   printf '%s\n' "${verdict} ${poweroff}"
+}
+
+check "keep-failed: every NIC unplugged -> kept, no poweroff" \
+   "$(run_keep_failed '1=nat 2=intnet 3=none' '' 0)" 'kept no'
+check "keep-failed: a NIC beyond 8 (ICH9) is unplugged too; its failure -> powered off" \
+   "$(run_keep_failed '1=nat 12=nat' '12' 0)" 'poweroff yes'
+check "keep-failed: a secondary NIC unplug fails -> powered off" \
+   "$(run_keep_failed '1=nat 2=nat' '2' 0)" 'poweroff yes'
+check "keep-failed: unplug AND poweroff fail -> loud error, no success claim" \
+   "$(run_keep_failed '1=nat 2=nat' '2' 1)" 'error yes'
+check "keep-failed: no NIC readable -> powered off" \
+   "$(run_keep_failed '' '' 0)" 'poweroff yes'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
