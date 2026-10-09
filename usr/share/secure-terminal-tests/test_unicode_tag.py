@@ -14,6 +14,7 @@
 ## override, Cyrillic/Greek homoglyph, zero-width, control) that motivated it.
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -252,6 +253,82 @@ def run():
        'has_deceptive: a zero-width char PAST the old 1M cap is caught (no size cap)')
     ok(not _hd('c' * 1_050_000),
        'has_deceptive: a clean multi-MB string is not deceptive (no false positive)')
+
+    # 11. --json: one process tags every string of a JSON document (the hook's batch
+    #     path -- a process per string ran a large Grep past the hook timeout).
+    _tj = unicode_tag.tag_json
+    ok(_tj('p\u0430ss') == 'p[U+0430 CYRILLIC SMALL LETTER A]ss',
+       'tag_json: a top-level string is tagged')
+    ok(_tj(7) == 7 and _tj(None) is None and _tj(True) is True,
+       'tag_json: a top-level non-string scalar passes unchanged')
+    _doc = {'stdout': 'a\u202eb', 'list': ['ok', ['d\u200beep'], 3, None],
+            'k\u200b': 'v', 'k[U+200B ZERO WIDTH SPACE]': 'w'}
+    _out = _tj(_doc)
+    ok(_out['stdout'] == 'a[U+202E RIGHT-TO-LEFT OVERRIDE]b'
+       and _out['list'] == ['ok', ['d[U+200B ZERO WIDTH SPACE]eep'], 3, None],
+       'tag_json: nested values are tagged in place, order and non-strings kept')
+    ok(sorted(_out) == ['k[U+200B ZERO WIDTH SPACE]', 'k[U+200B ZERO WIDTH SPACE]#2',
+                        'list', 'stdout']
+       and sorted((_out['k[U+200B ZERO WIDTH SPACE]'],
+                   _out['k[U+200B ZERO WIDTH SPACE]#2'])) == ['v', 'w'],
+       'tag_json: a tagged key colliding with a literal key keeps BOTH values')
+    ok(_tj(['a\udcffb']) == ['a\ufffd\ufffd\ufffdb'],
+       'tag_json: a lone surrogate is scrubbed (UTF-8 safe), not a crash')
+    _deep = []
+    _cur = _deep
+    for _ in range(5000):
+        _nxt = []
+        _cur.append(_nxt)
+        _cur = _nxt
+    _cur.append('z\u200b')
+    _walked = _tj(_deep)
+    for _ in range(5000):
+        _walked = _walked[0]
+    ok(_walked == ['z[U+200B ZERO WIDTH SPACE]'],
+       'tag_json: a 5000-deep document is walked (explicit stack, no RecursionError)')
+
+    def _run_json(stdin_bytes, out=None, argv=('--json',)):
+        saved = sys.stdin, sys.stdout, sys.stderr
+        try:
+            sys.stdin = io.TextIOWrapper(io.BytesIO(stdin_bytes), encoding='utf-8')
+            sys.stdout = out if out is not None else io.StringIO()
+            sys.stderr = io.StringIO()
+            rc = unicode_tag.main_stdin(None if argv is None else list(argv))
+            got = sys.stdout.getvalue() if out is None else ''
+            return rc, got, sys.stderr.getvalue()
+        finally:
+            sys.stdin, sys.stdout, sys.stderr = saved
+
+    rc, got, _err = _run_json(json.dumps(
+        {unicode_tag.JSON_REQUEST_KEY: {'f': ['x', 'm\u0430ster']}}).encode('ascii'))
+    ok(rc == 0 and json.loads(got) == {unicode_tag.JSON_RESULT_KEY:
+                                         {'f': ['x', 'm[U+0430 CYRILLIC SMALL LETTER A]ster']}},
+       'main_stdin --json replies with the tagged document in the result envelope')
+    for _label, _bad in (('malformed JSON', b'{not json'),
+                         ('missing request key', b'{"other": 1}'),
+                         ('non-object request', b'[1, 2]'),
+                         ('invalid UTF-8', b'\xff\xfe')):
+        rc, got, err = _run_json(_bad)
+        ok(rc == 1 and got == '' and 'unicode-tag: --json: bad request' in err,
+           'main_stdin --json rejects a bad request cleanly (rc=1): %s' % _label)
+
+    class _BrokenText:
+        @staticmethod
+        def write(_data):
+            raise BrokenPipeError()
+
+    rc, _got, _err = _run_json(b'{"unicode-tag-json": "x"}', out=_BrokenText())
+    ok(rc == 1, 'main_stdin --json: a closed output pipe exits 1, no traceback')
+
+    _saved_argv = sys.argv
+    try:
+        sys.argv = ['unicode-tag-stdin', '--json']
+        rc, got, _err = _run_json(b'{"unicode-tag-json": "a\\u200bb"}', argv=None)
+    finally:
+        sys.argv = _saved_argv
+    ok(rc == 0 and json.loads(got)[unicode_tag.JSON_RESULT_KEY]
+       == 'a[U+200B ZERO WIDTH SPACE]b',
+       'main_stdin() with no argv reads --json from sys.argv (the installed script path)')
 
     print('test_unicode_tag: %d pass, %d fail, 0 skip' % (_passed, _failed))
     return 1 if _failed else 0
