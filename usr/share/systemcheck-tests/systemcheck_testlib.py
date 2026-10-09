@@ -228,12 +228,15 @@ class ScenarioResult:
 
 def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
                               stubs: str, prefix: str = '') -> str:
-    ## Sourcing runs under errexit so a subject that fails to load (a sibling
-    ## source path that does not resolve) aborts before the SOURCED marker;
-    ## stubs and env_setup follow the source so they shadow the real code.
+    ## The fixture prefix and the sourcing run under errexit, so a failed
+    ## fixture write (mkdir, a 'printf | base64 -d' pipeline -- hence pipefail)
+    ## or a subject that fails to load (a sibling source path that does not
+    ## resolve) aborts before the SOURCED marker; stubs and env_setup follow the
+    ## source so they shadow the real code.
     return '\n'.join([
-        _SCENARIO_PREAMBLE, prefix,
-        'set -o errexit', _source_block(fragment_sources(check_file)),
+        _SCENARIO_PREAMBLE,
+        'set -o errexit', 'set -o pipefail', prefix, 'set +o pipefail',
+        _source_block(fragment_sources(check_file)),
         'set +o errexit', 'printf "SOURCED\\n"',
         stubs, env_setup,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
