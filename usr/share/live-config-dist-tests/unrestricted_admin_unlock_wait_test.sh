@@ -11,13 +11,16 @@
 ## purges user-sysmaint-split (slow apt), which restores sudo/pkexec to setuid root:root.
 ## The autologin desktop appears before that finishes, so install-host raced it and
 ## died "Unable To Elevate". The fix: install-host waits for system-ready via the
-## sanctioned system-wide helper-scripts action `leaprun system-ready-check` before the
+## sanctioned system-wide helper-scripts action leaprun system-ready-check before the
 ## elevation assert -- it does NOT start the unit and does NOT busy-poll.
 ##
 ## This pins that contract:
-##   - install-host invokes `leaprun system-ready-check` under a boot-role=unrestricted-admin
-##     guard;
-##   - the superseded 180s `elevate_deadline` busy-poll band-aid is gone.
+##   - a CODE line invokes leaprun system-ready-check (matched on non-comment lines only --
+##     install-host's own explanatory comment names the action, so a bare substring over the
+##     whole file would false-pass if the call were removed but the comment kept);
+##   - the wait runs BEFORE the pkexec/sudo elevation assert;
+##   - the superseded elevate_deadline busy-poll band-aid and the --user readiness variant
+##     are gone.
 ##
 ## Static contract check (no root, no network, no sourcing).
 
@@ -42,37 +45,50 @@ if [ ! -r "${subject}" ]; then
    exit 1
 fi
 
-content="$(cat -- "${subject}")"
-
 fail=0
 
-assert_contains() {
-   local needle="$1" why="$2"
-   if [[ "${content}" == *"${needle}"* ]]; then
+## '<lineno>:<text>' for lines matching the ERE that are NOT full-line comments. Anchoring to
+## code avoids matching install-host's own comments (which name these same tokens). '|| true'
+## keeps a no-match from tripping errexit/pipefail.
+code_lines() {
+   grep -nE -- "$1" "${subject}" | grep --invert-match -E '^[0-9]+:[[:space:]]*#' || true
+}
+
+assert_code_present() {
+   local re="$1" why="$2"
+   if [ -n "$(code_lines "${re}")" ]; then
       printf '%s\n' "ok: present -- ${why}"
    else
-      printf '%s\n' "FAIL: missing '${needle}' -- ${why}" >&2
+      printf '%s\n' "FAIL: no code line matches /${re}/ -- ${why}" >&2
       fail=1
    fi
 }
 
-assert_absent() {
-   local needle="$1" why="$2"
-   if [[ "${content}" == *"${needle}"* ]]; then
-      printf '%s\n' "FAIL: unexpected '${needle}' -- ${why}" >&2
-      fail=1
-   else
+assert_code_absent() {
+   local re="$1" why="$2"
+   if [ -z "$(code_lines "${re}")" ]; then
       printf '%s\n' "ok: absent -- ${why}"
+   else
+      printf '%s\n' "FAIL: code line matches /${re}/ -- ${why}" >&2
+      fail=1
    fi
 }
 
-## The wait: sanctioned system-wide readiness action, gated on the unrestricted-admin boot.
-assert_contains 'boot-role=unrestricted-admin' 'unlock wait is gated on the unrestricted-admin boot-role'
-assert_contains 'leaprun system-ready-check' 'waits via the system-wide system-ready-check action (not --user, not systemctl start)'
+assert_code_present 'leaprun system-ready-check' 'waits via the system-wide system-ready-check action (not --user, not systemctl start)'
+assert_code_present 'boot-role=unrestricted-admin' 'the unlock wait is gated on the unrestricted-admin boot-role'
+assert_code_absent 'elevate_deadline' 'the superseded 180s busy-poll band-aid is gone'
+assert_code_absent 'systemctl --user' 'the --user readiness variant is not used for a system unit'
 
-## No regressions: neither the superseded busy-poll band-aid nor a direct unit start.
-assert_absent 'elevate_deadline' 'the 180s busy-poll band-aid must be gone'
-assert_absent 'systemctl --user' 'the user-manager readiness variant must not be used for a system unit'
+## Ordering: the readiness wait must run BEFORE the pkexec/sudo elevation assert, otherwise it
+## cannot prevent the race it exists to close.
+leaprun_line="$(code_lines 'leaprun system-ready-check' | head -n1 | cut -d: -f1)"
+assert_line="$(grep -nF -- "[ -x '/usr/bin/pkexec' ]" "${subject}" | head -n1 | cut -d: -f1 || true)"
+if [ -n "${leaprun_line}" ] && [ -n "${assert_line}" ] && [ "${leaprun_line}" -lt "${assert_line}" ]; then
+   printf '%s\n' "ok: readiness wait (line ${leaprun_line}) precedes the elevation assert (line ${assert_line})"
+else
+   printf '%s\n' "FAIL: readiness wait must precede the elevation assert (wait=${leaprun_line:-none} assert=${assert_line:-none})" >&2
+   fail=1
+fi
 
 printf '%s\n' ""
 if [ "${fail}" -ne 0 ]; then
