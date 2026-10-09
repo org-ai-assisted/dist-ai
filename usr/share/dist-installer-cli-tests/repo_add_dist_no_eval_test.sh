@@ -5,16 +5,19 @@
 
 ## AI-Assisted
 
-## Regression: repo-add-dist (runs as root) set_default_variable must store a
-## value VERBATIM, never parse it as shell code. A value carrying a single quote
-## (e.g. an inherited 'codename') must not break out and execute a command.
+## Regression: repo-add-dist (runs as root) must store a default VERBATIM, never
+## parse it as shell code. A 'codename' carrying a single quote flows into the
+## sources_list_build_remote_derivative default and must not break out and run
+## a command.
 ##
-## SUBJECT: the real usr/bin/repo-add-dist; check_variable_name and
-## set_default_variable are extracted from the CURRENT script text (no copy).
-## The whole script is not run: it requires root and writes /etc/apt.
+## SUBJECT: the real usr/bin/repo-add-dist, EXECUTED end to end. It is
+## self-contained by design (derivative-maker copies it alone into the build
+## chroot), so it is driven whole, not sourced. Hermetic, no root: a PATH 'id'
+## stub answers uid 0 for root_check, and every output path is redirected into a
+## temp dir through the script's own pre-set variable overrides.
 ##
-## Canary: on the eval-based code the payload's 'touch' runs and the stored
-## value is truncated, so both assertions fail.
+## Canary: on the eval-based code the injected 'touch' runs and the stored
+## sources entry is truncated, so both assertions fail.
 ##
 ## Exit: 0 pass | 1 fail | 77 usability-misc checkout absent (target-absent).
 
@@ -38,18 +41,21 @@ if [ ! -r "${subject}" ]; then
    exit 77
 fi
 
+harness="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common/stub-path-harness.bash"
+[ -r "${harness}" ] || harness='/usr/share/dist-ai-tests-common/stub-path-harness.bash'
+# shellcheck source=../dist-ai-tests-common/stub-path-harness.bash
+source "${harness}"
+
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
+   stub_path_cleanup
    safe-rm --recursive --force -- "${work_dir}" || true
 }
 trap cleanup EXIT
 
-functions_file="${work_dir}/functions.bash"
-sed --quiet \
-   --expression='/^check_variable_name() {$/,/^}$/p' \
-   --expression='/^set_default_variable() {$/,/^}$/p' \
-   -- "${subject}" >| "${functions_file}"
+stub_path_init
+stub_cmd id 0 0
 
 pass=0
 fail=0
@@ -65,29 +71,35 @@ check() {
    fi
 }
 
-check 'both functions extracted' \
-   test "$(grep --count --extended-regexp -- '^(check_variable_name|set_default_variable)\(\) \{$' "${functions_file}")" = 2
-
 marker="${work_dir}/injected"
-payload="x'; touch -- '${marker}'; '"
+payload="trixie'; touch -- '${marker}'; '"
+sources_file="${work_dir}/sources/derivative.sources"
+target_key="${work_dir}/keyrings/derivative.asc"
+mkdir --parents -- "${work_dir}/keyrings"
 
-# shellcheck disable=SC1090 # dynamic path: the functions are extracted at runtime
-source -- "${functions_file}"
+rc=0
+env \
+   codename="${payload}" \
+   apt_target_key_derivative="${target_key}" \
+   apt_source_key_temp_folder_derivative="${work_dir}/key-temp" \
+   apt_source_key_derivative="${work_dir}/key-temp/derivative.asc" \
+   sources_list_target_folder_build_remote_derivative="${work_dir}/sources" \
+   sources_list_target_build_remote_derivative="${sources_file}" \
+   bash -- "${subject}" >"${work_dir}/log" 2>&1 \
+   || rc=$?
 
-unset -v repo_add_dist_test_var
-## Non-fatal: on eval-based code the injected tail errors; the asserts report it.
-set_default_variable repo_add_dist_test_var "${payload}" >/dev/null || true
+check 'script exits 0' test "${rc}" = 0
+check 'id stub reached root_check' stub_called_with id -u
 check 'quote payload does not execute' test ! -e "${marker}"
-check 'quote payload stored verbatim' test "${repo_add_dist_test_var:-}" = "${payload}"
+check 'quote payload stored verbatim' \
+   grep --quiet --line-regexp --fixed-strings -- "Suites: ${payload}" "${sources_file}"
+check 'signing key installed' \
+   grep --quiet --line-regexp --fixed-strings -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' "${target_key}"
 
-repo_add_dist_test_preset='keep'
-set_default_variable repo_add_dist_test_preset 'other' >/dev/null
-check 'pre-set variable kept' test "${repo_add_dist_test_preset}" = 'keep'
-
-refuses_invalid_name() {
-   ! set_default_variable 'a;b' 'v' >/dev/null
-}
-check 'invalid variable name refused' refuses_invalid_name
+if [ "${fail}" -ne 0 ]; then
+   printf '%s\n' '--- subject output ---'
+   cat -- "${work_dir}/log"
+fi
 
 printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
