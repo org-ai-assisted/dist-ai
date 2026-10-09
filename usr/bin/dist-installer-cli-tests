@@ -5,11 +5,8 @@
 
 ## AI-Assisted
 
-## Regression suite for usability-misc's dist-installer-cli CI glue. Currently
-## one payload: the "back to default repository" step must propagate the
-## installer's OWN exit code, not the status of the `if` that tested it. Drives
-## the shipped ci/vbox-back-to-default-repo.sh with a stubbed installer; no root,
-## no network. Works installed (payloads under /usr/share/dist-installer-cli-tests)
+## Regression suite for usability-misc: dist-installer-cli (standalone + CI
+## glue) and repo-add-dist. No root, no network. Works installed (payloads under /usr/share/dist-installer-cli-tests)
 ## or from a git checkout. Point it at the usability-misc checkout with
 ## USABILITY_MISC_REPO; otherwise a payload exits 77 (SKIP).
 
