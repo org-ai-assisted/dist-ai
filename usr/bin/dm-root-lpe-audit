@@ -441,12 +441,15 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
 
     A waiver is honored (a) on the finding's own line or the owning command's
     first line -- as a trailing OR standalone comment, since it sits ON that
-    statement -- or (b) as a STANDALONE comment on the line directly above the
-    command. The 'directly above' line must be standalone (STANDALONE_LINES): a
-    TRAILING comment there belongs to the preceding statement, so honoring it
-    would let 'x=1  # style-ok: ...' silently suppress the finding on the next
-    line. The owning command + its line span come from the shfmt AST (CALL_SPANS:
-    (start, end) line pairs); the waiver is matched against the real COMMENT TEXT
+    statement -- or (b) anywhere in the CONTIGUOUS block of STANDALONE comment
+    lines directly above the command, so a reason wrapped over several comment
+    lines still waives. The block walk stops at the first line that is not a
+    standalone comment (code, blank, a trailing comment, a heredoc/string line):
+    a TRAILING comment belongs to the preceding statement, so honoring it would
+    let 'x=1  # style-ok: ...' silently suppress the finding on the next line,
+    and a blank or code line ends the comment block that documents this
+    statement. The owning command + its line span come from the shfmt AST
+    (CALL_SPANS: (start, end) line pairs); the waiver is matched against the real COMMENT TEXT
     (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a
     'style-ok: lpe-...' in a QUOTED STRING is data, not a waiver. Association is
     AST-truthful, never a textual '\\'-continuation scan. A rule of 'all' waives
@@ -461,14 +464,17 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
     containing = [start for start, end in call_spans
                   if start <= finding_line <= end]
     stmt_start = min(containing) if containing else finding_line
-    ## (candidate line, must-be-standalone).
-    candidates = [(finding_line, False), (stmt_start, False),
-                  (stmt_start - 1, True)]
-    for cand, require_standalone in candidates:
+    candidates = [finding_line, stmt_start]
+    ## Standalone comment block above the statement. A line absent from
+    ## STANDALONE_LINES (blank, code, trailing comment, string/heredoc body)
+    ## ends the block.
+    above = stmt_start - 1
+    while above >= 1 and above in standalone_lines:
+        candidates.append(above)
+        above -= 1
+    for cand in candidates:
         text = comment_text_by_line.get(cand)
         if text is None:
-            continue
-        if require_standalone and cand not in standalone_lines:
             continue
         match = LPE_WAIVER_RE.search(text)
         if match is None:

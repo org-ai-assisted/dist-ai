@@ -162,6 +162,20 @@ def main(argv):
         "continuation-comment above a sink does not suppress it",
         has(findings, "vuln-waived", "symlink-follow", ".dircolors")
         and not has(suppressed, "vuln-waived", "symlink-follow", ".dircolors")))
+    ## A waiver wrapped over a CONTIGUOUS standalone comment block is honored
+    ## wherever it sits in the block; a blank or code line ends the block.
+    for op_sub in (".wrap2", ".wrap3", ".wrapmid"):
+        checks.append((
+            "wrapped waiver block suppresses the %s sink" % op_sub,
+            has(suppressed, "vuln-waived", "symlink-follow", op_sub,
+                need_reason=True)
+            and not has(findings, "vuln-waived", "symlink-follow", op_sub)))
+    for op_sub, sep in ((".blanksep", "blank"), (".codesep", "code")):
+        checks.append((
+            "waiver cut off by a %s line does not suppress the %s sink"
+            % (sep, op_sub),
+            has(findings, "vuln-waived", "symlink-follow", op_sub)
+            and not has(suppressed, "vuln-waived", "symlink-follow", op_sub)))
     ## Python path: a 'style-ok' inside a MULTI-LINE string is a string token,
     ## not a comment, so it must not waive the advisory finding below it. The
     ## 'in findings' half also proves the python-advisory path is exercised (no

@@ -333,7 +333,9 @@ EOF
 ## candidate; a '## style-ok: lpe-<rule> -- <why>' comment must route ONLY the
 ## named rule to 'suppressed' (still visible), leaving intact: every OTHER rule
 ## on the same statement, an identical UN-waived sink, and a reason-less waiver.
-## The continuation sink pins the walk-up past a '\' line continuation.
+## The continuation sink pins the walk-up past a '\' line continuation. A
+## waiver wrapped over a contiguous standalone comment block is honored;
+## one cut off by a blank or code line is not.
 write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-waived#targetpkg-shared' <<'EOF'
 #!/bin/bash
 root_check() {
@@ -363,6 +365,24 @@ cp --dereference /etc/skel/.inputrc "${home}/.inputrc"
 echo continued-echo \
 ## style-ok: lpe-symlink-follow -- comment is a CONTINUATION of the echo above (a '\' line), NOT a standalone waiver
 cp --dereference /etc/skel/.dircolors "${home}/.dircolors"
+## style-ok: lpe-symlink-follow -- wrapped reason, first line
+## of a two-line waiver block.
+cp --dereference /etc/skel/.wrap2 "${home}/.wrap2"
+## style-ok: lpe-symlink-follow -- wrapped reason, first line
+## of a three-line waiver block,
+## third line.
+cp --dereference /etc/skel/.wrap3 "${home}/.wrap3"
+## Unrelated prose opening the block.
+## style-ok: lpe-symlink-follow -- waiver on the middle line,
+## reason wrapped below it.
+cp --dereference /etc/skel/.wrapmid "${home}/.wrapmid"
+## style-ok: lpe-symlink-follow -- separated by a BLANK line, must NOT reach the cp below
+
+cp --dereference /etc/skel/.blanksep "${home}/.blanksep"
+## style-ok: lpe-symlink-follow -- separated by a CODE line, must NOT reach the cp below
+true
+## Comment block of the cp below, with no waiver of its own.
+cp --dereference /etc/skel/.codesep "${home}/.codesep"
 EOF
 
 ## VULN + WAIVER (python path): the python-advisory scanner must ALSO reject a
