@@ -88,8 +88,20 @@ fi
 fake_home="${work_dir}/home"
 mkdir --parents -- "${fake_home}/.local/bin"
 
+## A HERMETIC system PATH: only the commands the tool runs, so an installed dist-ai
+## (its tools in /usr/bin) cannot make the shadow-skip fire for every probe. One
+## fake system command proves the shadow-skip branch itself.
+sys_dir="${work_dir}/sys"
+mkdir --parents -- "${sys_dir}"
+for sys_cmd in dirname ln mkdir readlink; do
+   ln --symbolic -- "$( type -P "${sys_cmd}" )" "${sys_dir}/${sys_cmd}"
+done
+printf '%s\n' '#!/bin/sh' > "${sys_dir}/dm-ci-job-watch"
+chmod +x -- "${sys_dir}/dm-ci-job-watch"
+hermetic_path="${fake_home}/.local/bin:${sys_dir}"
+
 status=0
-output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" --dry-run 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${hermetic_path}" "${bin_dir}/dist-ai-dev-symlinks" --dry-run 2>&1 )" || status="$?"
 if [ "${status}" -eq 0 ] && [[ "${output}" == *"would link"* ]]; then
    pass 'dist-ai-dev-symlinks --dry-run reports what it would link'
 else
@@ -108,7 +120,7 @@ fi
 real_file="${fake_home}/.local/bin/dm-preflight"
 printf '%s\n' 'do not clobber me' > "${real_file}"
 status=0
-output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${hermetic_path}" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
 if [ -f "${real_file}" ] && [ ! -L "${real_file}" ] \
    && grep --quiet --fixed-strings 'do not clobber me' -- "${real_file}"; then
    pass 'a real file at a target name is left untouched'
@@ -132,9 +144,17 @@ else
    fail 'dm-build-step-fn was not linked to this checkout'
 fi
 
+## A tool already on PATH elsewhere is NOT shadowed, and the skip is reported.
+if [ ! -e "${fake_home}/.local/bin/dm-ci-job-watch" ] \
+   && [[ "${output}" == *"skip: 'dm-ci-job-watch' already on PATH"* ]]; then
+   pass 'a tool already on PATH is reported and not shadowed'
+else
+   fail "a tool already on PATH was shadowed or not reported: ${output}"
+fi
+
 ## Re-running is a no-op, not a pile of churn: it must report them as current.
 status=0
-output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${hermetic_path}" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
 if [ "${status}" -eq 0 ] && [[ "${output}" == *"already current"* ]] \
    && [[ "${output}" != *" 0 already current"* ]]; then
    pass 're-running is idempotent and reports links as already current'

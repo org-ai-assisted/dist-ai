@@ -11,7 +11,8 @@
 ## WHY this exists: --skip-published-packages=true is the default for EVERY build (rebuild
 ## only changed packages, reuse the rest) with no per-path exceptions. '--skip-published-packages
 ## false' is the explicit opt-out for a from-scratch rebuild (e.g. a reproducible-build
-## verification). A bare '--skip-published-packages' stays true.
+## verification). Like every parse-cmd boolean it takes an explicit true|false; a bare
+## '--skip-published-packages' is rejected.
 ##
 ## It drives the REAL help-steps/pre + help-steps/variables of a derivative-maker checkout
 ## in a subprocess (variables is sourced under the inherited errexit, as a real build step
@@ -113,12 +114,21 @@ else
    fail "--skip-published-packages false did not resolve false; got '${r}'"
 fi
 
-## --- Case 3: a bare --skip-published-packages stays true -------------------------
-r="$(resolve_skip "--skip-published-packages ${base_args}")"
+## --- Case 3: --skip-published-packages true -> true ------------------------------
+r="$(resolve_skip "--skip-published-packages true ${base_args}")"
 if [ "${r}" = 'skip=true' ]; then
-   pass "a bare --skip-published-packages stays true"
+   pass "--skip-published-packages true resolves true"
 else
-   fail "a bare --skip-published-packages did not resolve true; got '${r}'"
+   fail "--skip-published-packages true did not resolve true; got '${r}'"
+fi
+
+## --- Case 3b: a bare --skip-published-packages is rejected (strict true|false) ------
+## The next token (--repo) must not be swallowed as the value.
+r="$(resolve_skip "--skip-published-packages ${base_args}")"
+if [ "${r}" = 'rejected' ]; then
+   pass "a bare --skip-published-packages is rejected (true|false required)"
+else
+   fail "a bare --skip-published-packages was not rejected; got '${r}'"
 fi
 
 ## --- Case 4 (CANARY): a typo'd value is REJECTED, not silently treated as bare -------
@@ -135,4 +145,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: --skip-published-packages defaults to true, '--skip-published-packages false' opts out, a bare flag stays true, and a typo'd value is rejected."
+printf '%s\n' "OK: --skip-published-packages defaults to true, '--skip-published-packages false' opts out, true resolves true, a bare flag and a typo'd value are rejected."

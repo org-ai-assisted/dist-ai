@@ -35,8 +35,9 @@ fail_count=0
 pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*"; }
 
-## Extract the real passthrough block (guard line through its closing 'fi' at column 0).
-block="$(sed -n '/if \[ -v dist_build_slot \]/,/^fi/p' -- "${docker_run}")"
+## Extract the real passthrough block: the column-0 'if' testing dist_build_slot through its
+## closing 'fi'. Keyed on the variable, not the guard's spelling.
+block="$(sed -n '/^if .*dist_build_slot/,/^fi/p' -- "${docker_run}")"
 if [ -z "${block}" ]; then
    fail "docker-run has no dist_build_slot passthrough block (not forwarding the lane)"
    printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
@@ -75,7 +76,7 @@ else
    fail "empty dist_build_slot still appended options: ${docker_run_opts[*]}"
 fi
 
-## unset -> nothing appended (the -v guard).
+## unset -> nothing appended (nounset-safe guard).
 docker_run_opts=()
 unset dist_build_slot
 eval "${block}"

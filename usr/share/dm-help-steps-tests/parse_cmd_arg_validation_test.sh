@@ -18,7 +18,7 @@
 ##   - value-taking flags must reject a MISSING value before 'shift 2' (a trailing
 ##     bare flag otherwise crashes 'shift count out of range' under errexit).
 ##     --vmram/--vram/--vmsize also reject an explicit empty value; the others
-##     (--only-packages/--file-system/--hostname/--retry-{max,wait,before,after})
+##     (--only-packages/--file-system/--hostname/-t/--tag/-r/--ref)
 ##     ACCEPT an explicit empty value, which is meaningful downstream.
 ##
 ## Drives the REAL parse-cmd; only the color/error reporting layer help-steps/pre
@@ -96,7 +96,9 @@ classify_empty_value_out() {
       "")
          printf '%s' "empty"
          ;;
-      *"requires a"*)
+      ## An unknown flag is rejected too -- never "accepted" (a removed flag would
+      ## otherwise pass this check vacuously).
+      *"requires a"*|*"unknown option"*)
          printf '%s' "rejected"
          ;;
       *)
@@ -233,7 +235,7 @@ done
 ## --- the same shift-before-check class in the other value-taking options: a
 ## trailing bare flag must give the actionable "requires a ..." error, not a raw
 ## 'shift count out of range' crash. ---
-for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after -t --tag -r --ref; do
+for flag in --only-packages --file-system --hostname -t --tag -r --ref; do
    bare_out="$( run_out "${flag}" )"
    case "${bare_out}" in
       *"requires a"*)
@@ -246,11 +248,10 @@ for flag in --only-packages --file-system --hostname --retry-max --retry-wait --
 done
 
 ## --- an EXPLICIT empty value ('--flag ""') must be ACCEPTED for these flags: an
-## empty value is meaningful downstream (clear the list / fall back to the default /
-## skip the retry hook), so only a MISSING value (trailing bare flag, above) is an
-## error. Guards against re-tightening the guard from an argument-count check back
+## empty value is meaningful downstream (clear the list / fall back to the
+## default), so only a MISSING value (trailing bare flag, above) is an error. Guards against re-tightening the guard from an argument-count check back
 ## to an emptiness check, which would reject the supported empty value. ---
-for flag in --only-packages --file-system --hostname --retry-max --retry-wait --retry-before --retry-after -t --tag -r --ref; do
+for flag in --only-packages --file-system --hostname -t --tag -r --ref; do
    empty_out="$( run_out "${flag}" "" )"
    case "$( classify_empty_value_out "${empty_out}" )" in
       accepted)
@@ -288,6 +289,11 @@ if [ "$( classify_empty_value_out "" )" = "empty" ]; then
    pass 'canary: empty output is not read as acceptance (run_out discards rc)'
 else
    fail 'canary broken: empty output was read as an accept'
+fi
+if [ "$( classify_empty_value_out "unknown option (1): '--gone'" )" = "rejected" ]; then
+   pass 'canary: an unknown (removed) flag is rejected, not read as acceptance'
+else
+   fail 'canary broken: an unknown flag reached the accept branch'
 fi
 if [ "$( classify_package_jobs_zero_out "${crash_stub_out}" )" = "crash" ]; then
    pass 'canary: a --package-jobs 0 crash is caught, not mistaken for acceptance'

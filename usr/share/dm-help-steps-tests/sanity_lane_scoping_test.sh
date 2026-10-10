@@ -19,9 +19,10 @@
 ##                              loop is inside THIS lane, AND for an ORPHAN loopNpM with no backing
 ##                              loop at all (empty BACK-FILE), but NOT for another lane's live mapping
 ##
-## The REAL functions are SOURCED (1100 is source-able: was_executed gates its main()). All
-## privileged calls route through ${SUDO_TO_ROOT}, so a single dispatcher stub feeds fixtures
-## for cat/losetup/dmsetup/mktemp/truncate -- no root, no real loop devices, no real mounts.
+## The REAL functions are SOURCED (was_executed gates 1100 main(); its top-level pre/variables run
+## with build args supplied below). All privileged calls route through ${SUDO_TO_ROOT}, so a
+## single dispatcher stub feeds fixtures for cat/losetup/dmsetup/mktemp/truncate -- no root, no
+## real loop devices, no real mounts.
 ## Canary: fails on the pre-lane (basename / whole-host) versions.
 
 ## Fixture / config vars (MOUNTS_FIXTURE, LOOP_BACKFILES, DMSETUP_LS, LOOP_BACK, SUDO_TO_ROOT,
@@ -48,9 +49,19 @@ pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*"; }
 
 ## Source the real build step WITHOUT running it (was_executed is false when sourced).
+## 1100 sources help-steps/pre + variables at top level, so feed them what a real build
+## step gets: build args (variables parses "$@"), root allowed (the suite runs as root in
+## CI), and user_name (variables will not derive it at EUID=0).
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH:-${dm_checkout}/packages/kicksecure/helper-scripts}"
+export CI=true dist_build_unlock_dangerous_options=true dist_build_allow_root=true
+export user_name="${SUDO_USER:-user}"
+set -- --repo true --arch amd64 --tb closed --freedom false --freshness frozen --target iso --flavor kicksecure-lxqt
 # shellcheck disable=SC1090
-source "${subject}"
+source "${subject}" >/dev/null
+## pre installs strict-mode traps for the build; this harness keeps control itself.
+trap - ERR EXIT INT TERM HUP
+set +o xtrace
+set --
 if [ "$(type -t check-stray-mounts)" != "function" ] || [ "$(type -t mount-test)" != "function" ]; then
    printf '%s\n' "FAIL: sourcing 1100 did not expose the check functions (source-able broken?)" >&2
    exit 1
@@ -205,42 +216,49 @@ safe-rm --recursive --force -- "${sym_root}"
 sym_root=""
 trap - EXIT
 
-## /proc/mounts OCTAL-ESCAPES space/tab/newline/backslash in the mount point. Rather than unescape,
-## check-stray-mounts FAILS CLOSED on a CHROOT_FOLDER containing any of those, so field 2 can be
-## compared verbatim without silently missing an escaped mount. Canary: a verbatim compare with no
-## such guard would just not match and return 0 (fail-open) instead of aborting.
+## /proc/mounts OCTAL-ESCAPES space/tab/newline/backslash in the mount point (\040 \011 \012 \134).
+## check-stray-mounts DECODES the escapes before matching (it must not reject such a CHROOT_FOLDER).
+## Fixtures use the kernel's escaped spelling. Canary: a verbatim compare of the escaped field never
+## matches and returns 0 (fail-open) instead of aborting on this lane's own mount.
 saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
-MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/Foo\040Bar_image ext4 rw 0 0'
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
-   pass "check-stray-mounts: fails closed on a whitespace CHROOT_FOLDER (verbatim-match precondition)"
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: decodes \\040 and aborts on a spaced CHROOT_FOLDER's mount"
 else
-   fail "check-stray-mounts: did not reject a whitespace CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
+   fail "check-stray-mounts: missed an escaped-space mount of this lane (rc=${CAP_RC}): ${CAP}"
+fi
+CHROOT_FOLDER=$'/home/user/derivative-binary/mylane/Tab\tbed_image'
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/Tab\011bed_image ext4 rw 0 0'
+run_fn check-stray-mounts
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: decodes \\011 and aborts on a tab CHROOT_FOLDER's mount"
+else
+   fail "check-stray-mounts: missed an escaped-tab mount of this lane (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER='/home/user/derivative-binary/mylane/back\slash_image'
-MOUNTS_FIXTURE="/dev/mapper/x ${CHROOT_FOLDER} ext4 rw 0 0"
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/mylane/back\134slash_image ext4 rw 0 0'
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
-   pass "check-stray-mounts: fails closed on a backslash CHROOT_FOLDER (verbatim-match precondition)"
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: decodes \\134 and aborts on a backslash CHROOT_FOLDER's mount"
 else
-   fail "check-stray-mounts: did not reject a backslash CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
+   fail "check-stray-mounts: missed an escaped-backslash mount of this lane (rc=${CAP_RC}): ${CAP}"
 fi
-## A TRAILING NEWLINE must be caught on the RAW value: realpath via $() strips it from the canonical
-## path, so a canon-only check would pass it while /proc/mounts records the byte as \012 (fail-open).
-CHROOT_FOLDER=$'/home/user/derivative-binary/mylane/Kicksecure-CLI_image\n'
-MOUNTS_FIXTURE="/dev/mapper/x /home/user/derivative-binary/mylane/Kicksecure-CLI_image ext4 rw 0 0"
+## Decoding must not widen the match: another lane's escaped path stays out of scope.
+CHROOT_FOLDER="/home/user/derivative-binary/mylane/Foo Bar_image"
+MOUNTS_FIXTURE='/dev/mapper/x /home/user/derivative-binary/otherlane/Foo\040Bar_image ext4 rw 0 0'
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
-   pass "check-stray-mounts: fails closed on a trailing-newline CHROOT_FOLDER (raw-value check)"
+if [ "${CAP_RC}" -eq 0 ]; then
+   pass "check-stray-mounts: ignores another lane's escaped mount after decoding"
 else
-   fail "check-stray-mounts: did not reject a trailing-newline CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
+   fail "check-stray-mounts: false-aborted on another lane's escaped mount (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER="${saved_chroot}"
 
-## The reject must apply to the CANONICAL path: a CLEAN-spelled CHROOT_FOLDER whose symlink resolves
-## to a spaced path would otherwise slip past and then fail-open on the verbatim compare. Build a real
-## symlink to a spaced directory and point CHROOT_FOLDER (clean) through it; expect a fail-closed reject.
+## Decoding applies to the CANONICAL path too: a CLEAN-spelled CHROOT_FOLDER whose symlink resolves
+## to a spaced path must still match the kernel's escaped spelling of that real path. Build a real
+## symlink to a spaced directory and point CHROOT_FOLDER (clean) through it; expect the abort.
 sym_sp_root="$(mktemp --directory)"
 mkdir --parents -- "${sym_sp_root}/sp ace/Kicksecure-CLI_image"
 # shellcheck disable=SC2317  # reached via the EXIT trap
@@ -249,12 +267,12 @@ trap cleanup_sym_sp EXIT
 ln --symbolic -- "${sym_sp_root}/sp ace" "${sym_sp_root}/clean"
 saved_chroot="${CHROOT_FOLDER}"
 CHROOT_FOLDER="${sym_sp_root}/clean/Kicksecure-CLI_image"
-MOUNTS_FIXTURE="/dev/mapper/x ${sym_sp_root}/sp ace/Kicksecure-CLI_image ext4 rw 0 0"
+MOUNTS_FIXTURE="/dev/mapper/x ${sym_sp_root}/sp\\040ace/Kicksecure-CLI_image ext4 rw 0 0"
 run_fn check-stray-mounts
-if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'must not contain a space, tab, newline or backslash' <<< "${CAP}"; then
-   pass "check-stray-mounts: rejects on the CANONICAL path when a clean symlink resolves to a space"
+if [ "${CAP_RC}" -eq 42 ] && grep --quiet 'Stray mounts detected' <<< "${CAP}"; then
+   pass "check-stray-mounts: a clean symlink to a spaced path matches the decoded real mount"
 else
-   fail "check-stray-mounts: did not reject a symlink-to-spaced-path CHROOT_FOLDER (rc=${CAP_RC}): ${CAP}"
+   fail "check-stray-mounts: symlink-to-spaced-path CHROOT_FOLDER missed its escaped mount (rc=${CAP_RC}): ${CAP}"
 fi
 CHROOT_FOLDER="${saved_chroot}"
 safe-rm --recursive --force -- "${sym_sp_root}"
