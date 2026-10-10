@@ -689,18 +689,22 @@ rt_detach_kept_vm() {
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
 ## cleanup path, so an abort anywhere after creation still reclaims it -- unless the
-## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection.
+## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection. A VM
+## that cannot be detached from this run is not keepable: it is torn down like any
+## other, never reported as kept.
 rt_eph_cleanup() {
    local rc=$?
    if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
-      if [ -n "${rt_staged_dir}" ]; then
-         rt_kept_marker "${eph_account}"
-         printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
-            || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
+      if rt_detach_kept_vm "${eph_account}"; then
+         if [ -n "${rt_staged_dir}" ]; then
+            rt_kept_marker "${eph_account}"
+            printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
+               || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
+         fi
+         log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
+         return 0
       fi
-      rt_detach_kept_vm "${eph_account}" || true
-      log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
-      return 0
+      log error "cannot keep the FAILED run of '${eph_account}' for inspection -- tearing it down"
    fi
    ## Reap the per-run built-ISO staging dir first, on ANY exit (error return, signal) and
    ## independent of the eph account -- it holds only files this run created.

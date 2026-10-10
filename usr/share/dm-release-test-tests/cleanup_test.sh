@@ -142,7 +142,7 @@ rc_is() {
 true >| "${order}"
 rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
 export DM_RELEASE_TEST_KEEP_FAILED=1
-rc_is 5 || rt_eph_cleanup >/dev/null 2>&1
+rc_is 5 || STUB_PGREP_PIDS='4242' rt_eph_cleanup >/dev/null 2>&1
 check "keep: failed run tears nothing down" "$([ ! -s "${order}" ] && printf '%s' "true" || printf '%s' "false")"
 check "keep: staged ISO dir kept (VM still has it attached)" "$([ -d "${rt_staged_dir}" ] && printf '%s' "true" || printf '%s' "false")"
 check "keep: marker records the staged dir" "$([ "$(cat -- "${marker}" 2>/dev/null)" = "${rt_staged_dir}" ] && printf '%s' "true" || printf '%s' "false")"
@@ -238,17 +238,28 @@ check "lock: the wait is bounded, dies with the SETUP rc (rc=${wait_rc}: $(tr '\
 kill -- "${sweep_holder}" 2>/dev/null || true
 wait "${sweep_holder}" || true
 
-## (h) a kept VM leaves this run's cgroup: its processes move into their own scope, and a
-## failure to do so is reported, never silent.
+## (h) a kept VM leaves this run's cgroup: its processes move into their own scope. A VM
+## that cannot be detached is NOT kept: the run is torn down, never reported as kept.
 keep_out="${work}/keep.out"
 rt_staged_dir=""
 true >| "${busctl_log}"
-STUB_PGREP_PIDS='4242 4243' rc_is 5 || STUB_PGREP_PIDS='4242 4243' rt_eph_cleanup 2>"${keep_out}" >/dev/null
+rc_is 5 || STUB_PGREP_PIDS='4242 4243' rt_eph_cleanup 2>"${keep_out}" >/dev/null
 check "keep: VM processes moved into their own scope" \
    "$(grep --quiet -- 'StartTransientUnit .*dm-release-test-kept-eph-inst-kicksecure-18-2-3-5-.*\.scope fail 1 PIDs au 2 4242 4243 0' "${busctl_log}" && printf '%s' "true" || printf '%s' "false")"
+true >| "${order}"
+rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
+detach_fail_dir="${rt_staged_dir}"
+safe-rm --force -- "${marker}"
 rc_is 5 || STUB_PGREP_PIDS='4242' STUB_BUSCTL_FAIL=1 rt_eph_cleanup 2>"${keep_out}" >/dev/null
 check "keep: a failed detach is reported loudly" \
    "$(grep --quiet -- 'dies as soon as' "${keep_out}" && printf '%s' "true" || printf '%s' "false")"
+check "keep: a failed detach never claims the run was kept" \
+   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
+check "keep: a failed detach tears the run down" \
+   "$(grep --quiet -- '^userdel .*eph-inst-kicksecure-18-2-3-5' "${order}" && [ ! -e "${detach_fail_dir}" ] && [ ! -e "${marker}" ] && printf '%s' "true" || printf '%s' "false")"
+rc_is 5 || rt_eph_cleanup 2>"${keep_out}" >/dev/null
+check "keep: no VM process to keep -> not reported as kept" \
+   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} cleanup assertion(s) failed" >&2
