@@ -14,7 +14,8 @@
 ## private X display, so it needs xterm + xdotool + Xvfb. It does NOT install a
 ## terminal emulator itself (supply-chain policy: no vulnerable software pulled in
 ## by default). SKIPs (exit 77) when not opted in; once opted in, absent X tooling
-## or an unresolvable secure-terminal checkout is FATAL. No root, no network.
+## is FATAL, and an absent secure-terminal checkout is FATAL unless the skip was
+## authorized (DIST_AI_SKIP_AUTHORIZED=1). No root, no network.
 
 set -o errexit
 set -o nounset
@@ -55,7 +56,14 @@ elif [ -f "${script_dir}/../../../../secure-terminal/usr/bin/secure-terminal-cli
    repo="${script_dir}/../../../../secure-terminal"
 fi
 if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/secure-terminal-cli" ]; then
-   printf '%s\n' "terminal-resilience-tests: FATAL (secure-terminal not found; set SECURE_TERMINAL_REPO)" >&2
+   ## The secure-terminal checkout IS the target under test: FATAL unless the invoking run
+   ## authorized the skip (DIST_AI_SKIP_AUTHORIZED=1, set by dist-ai-tests-all).
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf '%s\n' "terminal-resilience-tests: SKIP (secure-terminal not found; set SECURE_TERMINAL_REPO) [authorized]" >&2
+      ## style-ok: allow-skip: target checkout absent AND the skip was authorized by the orchestrator
+      exit 77
+   fi
+   printf '%s\n' "terminal-resilience-tests: FATAL (secure-terminal not found; set SECURE_TERMINAL_REPO; unauthorized absent-target skip)" >&2
    exit 1
 fi
 

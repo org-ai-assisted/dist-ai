@@ -41,8 +41,15 @@ if [ -z "${git_meld}" ]; then
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
-   ## The subject is required: its absence is an environment bug, never a skip.
-   printf '%s\n' "FATAL: git-meld not found; pass it as arg 1, or check out helper-scripts." >&2
+   ## git-meld IS the target under test. Absent, a bare SKIP reads green, so it is FATAL
+   ## unless the invoking run authorized the skip (DIST_AI_SKIP_AUTHORIZED=1, set by
+   ## dist-ai-tests-all for an --allow-skip'd or lenient run).
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts. [authorized]" >&2
+      ## style-ok: allow-skip: target absent AND the skip was authorized by the orchestrator
+      exit 77
+   fi
+   printf '%s\n' "FATAL: git-meld not found; pass it as arg 1, or check out helper-scripts (unauthorized absent-target skip)." >&2
    exit 1
 fi
 

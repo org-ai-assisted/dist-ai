@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
          break
          ;;
       -*)
-         printf '%s\n' "self-test: unknown flag '${1}'" >&2
+         printf '%s\n' "self-test: unknown flag ${1@Q}" >&2
          exit 2
          ;;
       *)
