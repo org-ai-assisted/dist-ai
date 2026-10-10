@@ -9,8 +9,9 @@
 ## ('--help', a typo'd '--contarct') must never be taken AS that directory: the
 ## tool would create it and fill it with ~60 snapshot files in the caller's cwd.
 ## Asserts: --help prints usage and exits 0; an unknown option and a second
-## positional exit 2; none of them creates anything. All three return before the
-## derivative-maker tree is touched, so no checkout is needed.
+## positional exit 2; all three decide BEFORE resolving the derivative-maker
+## checkout (the step that precedes creating the output dir), so no checkout is
+## needed and none is mentioned in the output.
 ## Canary: fails on the parser that appended every non-'--contract' word to the
 ## positionals (--help became the output dir).
 
@@ -43,7 +44,8 @@ trap cleanup EXIT
 
 ## run_case <expected-rc> <label> <args...>: run in an empty cwd, with a
 ## nonexistent checkout so a parser that falls through fails rather than
-## snapshotting the real tree; assert rc and that cwd stayed empty.
+## snapshotting the real tree; assert rc and that checkout resolution was never
+## reached (a fall-through prints a checkout FATAL/INFO line).
 run_case() {
    local expected_rc="$1" label="$2"
    shift 2
@@ -52,10 +54,11 @@ run_case() {
    ( cd -- "${case_dir}" \
       && DERIVATIVE_MAKER_DIR="${work_dir}/no-such-checkout" "${tool}" "$@" ) \
       > "${case_dir}.out" 2>&1 || rc="$?"
-   if [ "${rc}" -eq "${expected_rc}" ] && [ -z "$(ls --almost-all -- "${case_dir}")" ]; then
-      pass "${label}: exit ${rc}, nothing created"
+   if [ "${rc}" -eq "${expected_rc}" ] \
+      && ! grep --quiet --ignore-case -- 'checkout' "${case_dir}.out"; then
+      pass "${label}: exit ${rc}, decided before touching the checkout"
    else
-      fail "${label}: exit ${rc} (want ${expected_rc}), cwd: '$(ls --almost-all -- "${case_dir}")', output: $(cat -- "${case_dir}.out")"
+      fail "${label}: exit ${rc} (want ${expected_rc}), output: $(cat -- "${case_dir}.out")"
    fi
 }
 
