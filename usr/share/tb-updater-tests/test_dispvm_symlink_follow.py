@@ -91,6 +91,15 @@ home_base_dir="${TB_TEST_HOME}"
 tb_binary_cache_dir="${TB_TEST_CACHE}"
 """
 
+## Containment rests on the subject reading these globals. A dispvm without
+## them would run 'mkdir' against the REAL /home, so refuse to drive it.
+REQUIRE = (
+    '[[ -v home_base_dir && -v tb_binary_cache_dir ]] || {\n'
+    '   printf \'%s\\n\' "dispvm lacks home_base_dir/tb_binary_cache_dir" >&2\n'
+    f'   exit {T.DRIVE_UNUSABLE}\n'
+    '}'
+)
+
 
 def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
     """Drive the real dispvm 'main' with its home_base_dir and
@@ -115,8 +124,21 @@ def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
 
     env = {"TB_TEST_HOME": str(home), "TB_TEST_CACHE": str(cache_src),
            "REC": str(rec)}
-    proc = T.drive_sourced_function(DISPVM, "main", setup=SETUP, env=env)
+    proc = T.drive_sourced_function(DISPVM, "main", setup=SETUP,
+                                    require=REQUIRE, env=env)
+    assert proc.returncode != T.DRIVE_UNUSABLE, proc.stderr
     return proc, home, rec.read_text().splitlines()
+
+
+def test_path_globals_default_to_production_paths():
+    """Every behavioral test overrides the path globals, so pin their shipped
+    values: a wrong default would make a real DispVM skip provisioning while
+    the scratch-tree tests stay green."""
+    proc = T.drive_sourced_function(
+        DISPVM, "true", require=REQUIRE,
+        setup='printf \'%s|%s\' "${home_base_dir}" "${tb_binary_cache_dir}"')
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "/home|/var/cache/tb-binary", proc.stdout
 
 
 @pytest.mark.parametrize("planted", [".tb", ".cache", ".cache/tb"])

@@ -28,6 +28,7 @@ covered end to end.
 """
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -108,6 +109,23 @@ def scratch(tmp_path_factory):
     return root
 
 
+## The stub tree only isolates the dialogs if the confirmation functions route
+## them through MSGCOLLECTOR_PATH; an older update-torbrowser would run the REAL
+## Qt dialog (blocking on a display), so refuse to drive it.
+REQUIRE = (
+    'for f in tb_confirm_update tb_confirm_install; do\n'
+    '   declare -f "${f}" | grep --quiet --fixed-strings MSGCOLLECTOR_PATH || {\n'
+    '      printf \'%s\\n\' "${f} does not route dialogs via MSGCOLLECTOR_PATH" >&2\n'
+    f'      exit {T.DRIVE_UNUSABLE}\n'
+    '   }\n'
+    'done'
+)
+
+## The only accepted spelling: unset MSGCOLLECTOR_PATH means the installed
+## /usr/libexec/msgcollector tree (production), never another fallback.
+MSGCOLLECTOR_REF = re.compile(r'\$\{?MSGCOLLECTOR_PATH[^}]*\}?')
+
+
 def _drive(scratch, func, tb_input, answer=None, stdin=None):
     env = dict(BASE_ENV)
     env["TB_INPUT"] = tb_input
@@ -116,8 +134,20 @@ def _drive(scratch, func, tb_input, answer=None, stdin=None):
     env["tb_cache_folder"] = str(scratch / "cache")
     if answer is not None:
         env["DIALOG_ANSWER"] = answer
-    return T.drive_sourced_function(
-        UPDATER, func, setup=STUBS, env=env, stdin=stdin)
+    proc = T.drive_sourced_function(
+        UPDATER, func, setup=STUBS, require=REQUIRE, env=env, stdin=stdin)
+    assert proc.returncode != T.DRIVE_UNUSABLE, proc.stderr
+    return proc
+
+
+def test_msgcollector_path_defaults_to_installed_tree():
+    ## Every dialog test sets MSGCOLLECTOR_PATH, so pin the production
+    ## fallback: each reference must be exactly ${MSGCOLLECTOR_PATH:-} (empty
+    ## -> /usr/libexec/msgcollector), never a different default.
+    refs = MSGCOLLECTOR_REF.findall(T.read(UPDATER))
+    assert refs, "update-torbrowser no longer references MSGCOLLECTOR_PATH"
+    bad = sorted({r for r in refs if r != "${MSGCOLLECTOR_PATH:-}"})
+    assert not bad, f"unexpected MSGCOLLECTOR_PATH spelling(s): {bad}"
 
 
 def test_desktop_wrapper_launches_gui_mode(tmp_path):

@@ -104,19 +104,38 @@ def sanitize_string_bindir() -> str:
     return ""
 
 
+## Hang guard for one driven call (a GUI dialog that escaped its stub would
+## otherwise block until a human closes it).
+DRIVE_TIMEOUT = 60.0
+
+## Exit status of the driver when the subject could not be loaded or lacks a
+## hook the test relies on -- never a status the driven functions use.
+DRIVE_UNUSABLE = 3
+
+
 def drive_sourced_function(path: str, name: str, *, setup: str = "",
-                           env=None, stdin: "str | None" = None
+                           require: str = "", env=None,
+                           stdin: "str | None" = None
                            ) -> subprocess.CompletedProcess:
     """Source the REAL script at `path` and call its function `name`,
     returning the completed process.
 
     The subject is source-able (its was_executed guard keeps main from
     auto-running and keeps strict mode out of the sourcing shell), so the
-    whole file is loaded as shipped. `setup` runs AFTER the source: stub
+    whole file is loaded as shipped. A failing source exits DRIVE_UNUSABLE.
+    `require` runs right after the source and must exit DRIVE_UNUSABLE when
+    the subject lacks a hook the test depends on (an older script would
+    otherwise act on the REAL paths/dialogs). `setup` runs next: stub
     functions defined there override the real root/Qubes/GUI externals, and
-    fixture globals assigned there override the script's own. `env`/`stdin`
-    drive the call."""
-    driver = 'source "$1"\n' + setup + '\n"$2"\n'
+    fixture globals assigned there override the script's own. Inherited
+    strict options (SHELLOPTS) are cleared first: fixtures leave unrelated
+    variables unset on purpose. `env`/`stdin` drive the call."""
+    driver = (
+        'set +o errexit +o nounset +o pipefail\n'
+        f'source "$1" || exit {DRIVE_UNUSABLE}\n'
+        + require + '\n'
+        + setup + '\n"$2"\n'
+    )
     child_env = dict(os.environ)
     bindir = sanitize_string_bindir()
     if bindir:
@@ -130,4 +149,5 @@ def drive_sourced_function(path: str, name: str, *, setup: str = "",
         text=True,
         env=child_env,
         check=False,
+        timeout=DRIVE_TIMEOUT,
     )
