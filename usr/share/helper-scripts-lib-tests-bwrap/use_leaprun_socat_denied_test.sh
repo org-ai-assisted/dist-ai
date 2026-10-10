@@ -53,8 +53,11 @@ stderr_file="$(mktemp)"
 cleanup() { safe-rm --force -- "${stderr_file}"; }
 trap cleanup EXIT
 
+## Clear the other fake-mode toggles: the fixture checks them first, so an
+## inherited one would skip the socat stub.
 probe_stdout="$(bwrap --bind / / --dev /dev --proc /proc --tmpfs /run/privleapd \
-   env LEAPRUN_FAKE_SOCAT_DENIED=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
+   env --unset=LEAPRUN_FAKE_USABLE --unset=LEAPRUN_FAKE_STALE --unset=LEAPRUN_FAKE_HIDEPID \
+   LEAPRUN_FAKE_SOCAT_DENIED=1 USE_LEAPRUN_SH="${use_leaprun_sh}" \
    /usr/bin/bash "${probe}" 2>"${stderr_file}")" || probe_stdout='bwrap-run-failed'
 probe_stderr="$(cat -- "${stderr_file}")"
 
@@ -72,7 +75,9 @@ else
    notok "warning lacks socat's exit code 126: '${probe_stderr}'"
 fi
 
-if [[ "${probe_stderr}" == *'Permission denied'* ]]; then
+## Match the warning's own quoted field, not a bare substring: a socat whose
+## stderr leaks straight through would otherwise pass.
+if [[ "${probe_stderr}" == *"socat output: 'socat: Permission denied'"* ]]; then
    ok "warning carries socat's stderr"
 else
    notok "warning lacks socat's stderr 'Permission denied': '${probe_stderr}'"
