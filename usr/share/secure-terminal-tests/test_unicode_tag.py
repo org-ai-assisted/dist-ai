@@ -269,11 +269,11 @@ def run():
        'tag_json: nested values are tagged in place, order and non-strings kept')
     ok(sorted(_out) == ['k[U+200B ZERO WIDTH SPACE]', 'k[U+200B ZERO WIDTH SPACE]#2',
                         'list', 'stdout']
-       and sorted((_out['k[U+200B ZERO WIDTH SPACE]'],
-                   _out['k[U+200B ZERO WIDTH SPACE]#2'])) == ['v', 'w'],
+       and _out['k[U+200B ZERO WIDTH SPACE]'] == 'v'
+       and _out['k[U+200B ZERO WIDTH SPACE]#2'] == 'w',
        'tag_json: a tagged key colliding with a literal key keeps BOTH values')
-    ok(_tj(['a\udcffb']) == ['a\ufffd\ufffd\ufffdb'],
-       'tag_json: a lone surrogate is scrubbed (UTF-8 safe), not a crash')
+    ok(_tj(['a\udcffb']) == ['a[INVALID-BYTE 0xFF]b'],
+       'tag_json: a lone surrogate is tagged like the byte path, not a crash')
     _deep: list = []
     _cur = _deep
     for _ in range(5000):
@@ -304,13 +304,20 @@ def run():
     ok(rc == 0 and json.loads(got) == {unicode_tag.JSON_RESULT_KEY:
                                          {'f': ['x', 'm[U+0430 CYRILLIC SMALL LETTER A]ster', 1.5]}},
        'main_stdin --json replies with the tagged document in the result envelope')
+    # Duplicate keys in untrusted input collapse last-wins in a plain dict, silently
+    # dropping a sibling value a first-wins downstream parser still sees (payload
+    # smuggling); the scrubber rejects them rather than tag only the surviving copy.
     for _label, _bad in (('malformed JSON', b'{not json'),
                          ('missing request key', b'{"other": 1}'),
                          ('non-object request', b'[1, 2]'),
                          ('invalid UTF-8', b'\xff\xfe'),
                          ('NaN constant', b'{"unicode-tag-json": [NaN]}'),
                          ('Infinity constant', b'{"unicode-tag-json": -Infinity}'),
-                         ('overflowing number', b'{"unicode-tag-json": 1e400}')):
+                         ('overflowing number', b'{"unicode-tag-json": 1e400}'),
+                         ('duplicate request key',
+                          b'{"unicode-tag-json": 1, "unicode-tag-json": 2}'),
+                         ('duplicate nested key',
+                          b'{"unicode-tag-json": {"cmd": "a", "cmd": "b"}}')):
         rc, got, err = _run_json(_bad)
         ok(rc == 1 and got == '' and 'unicode-tag: --json: bad request' in err,
            'main_stdin --json rejects a bad request cleanly (rc=1): %s' % _label)
@@ -321,7 +328,8 @@ def run():
             raise BrokenPipeError()
 
     rc, _got, _err = _run_json(b'{"unicode-tag-json": "x"}', out=_BrokenText())
-    ok(rc == 1, 'main_stdin --json: a closed output pipe exits 1, no traceback')
+    ok(rc == 1 and _err == '',
+       'main_stdin --json: a closed output pipe exits 1, silent (no traceback on stderr)')
 
     _saved_argv = sys.argv
     try:
