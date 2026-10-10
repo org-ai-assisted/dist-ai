@@ -85,30 +85,27 @@ def gen_message(rng: random.Random) -> str:
     return ''.join(parts)
 
 
-def run(func_def: str, message: str, timeout: float = 5.0):
-    """Run cli_links_to_footnotes on `message`. Returns (rc, stdout).
-    Raises subprocess.TimeoutExpired on a hang (the bug we hunt)."""
-    script = func_def + '\ncli_links_to_footnotes "$1"\n'
-    proc = subprocess.run(
-        ['bash', '-c', script, 'bash', message],
-        capture_output=True, text=True, timeout=timeout)
+def run(subject: str, message: str):
+    """Run the real cli_links_to_footnotes (subject sourced) on `message`.
+    Returns (rc, stdout). Raises subprocess.TimeoutExpired on a hang (the bug
+    we hunt)."""
+    proc = T.run_sourced(subject, ('cli_links_to_footnotes',),
+                         'cli_links_to_footnotes "$1"', message)
     return proc.returncode, proc.stdout
 
 
-def run_translate(links_def: str, translate_def: str, message: str,
-                  timeout: float = 5.0):
-    """Run cli_translate_gui_markup (which calls cli_links_to_footnotes) on
-    `message`, color disabled. Returns (rc, stdout). Raises on a hang."""
-    script = (links_def + '\n' + translate_def
-              + '\ngreen="" yellow="" red="" reset=""\n'
-              + 'cli_translate_gui_markup "$1"\n')
-    proc = subprocess.run(
-        ['bash', '-c', script, 'bash', message],
-        capture_output=True, text=True, timeout=timeout)
+def run_translate(subject: str, message: str):
+    """Run the real cli_translate_gui_markup (which calls
+    cli_links_to_footnotes) on `message`, color disabled. Returns (rc, stdout).
+    Raises on a hang."""
+    body = ('green="" yellow="" red="" reset=""\n'
+            'cli_translate_gui_markup "$1"')
+    proc = T.run_sourced(subject, ('cli_translate_gui_markup',), body,
+                         message)
     return proc.returncode, proc.stdout
 
 
-def check_translate(links_def: str, translate_def: str, message: str) -> None:
+def check_translate(subject: str, message: str) -> None:
     """Raise AssertionError (or let TimeoutExpired propagate) on a violation.
     The markup cli_translate_gui_markup OWNS -- the four handled <font color>
     openers, </font>, and every <br> spelling -- must be gone from the output.
@@ -116,7 +113,7 @@ def check_translate(links_def: str, translate_def: str, message: str) -> None:
     check()), and the <br>-to-newline pass can turn a <br>-containing anchor
     text into a well-formed anchor that strip-markup removes later -- that is
     correct, not a leak."""
-    rc, out = run_translate(links_def, translate_def, message)
+    rc, out = run_translate(subject, message)
     assert rc == 0, f"cli_translate_gui_markup non-zero exit {rc}"
     assert not TRANSLATED_FONT.search(out), 'a handled <font color> tag survived'
     assert '</font>' not in out, 'a </font> tag survived'
@@ -134,7 +131,7 @@ def check_translate(links_def: str, translate_def: str, message: str) -> None:
         assert out.rstrip('\n') == expected, 'plain text content was not preserved'
 
 
-def check(func_def: str, message: str) -> None:
+def check(subject: str, message: str) -> None:
     """Raise AssertionError (or let TimeoutExpired propagate) on a violation.
 
     These invariants deliberately do NOT parse the "Links:" footer -- an input
@@ -143,13 +140,13 @@ def check(func_def: str, message: str) -> None:
     forms an anchor; the output is therefore anchor-free everywhere and a second
     pass is a no-op.
     """
-    rc, out = run(func_def, message)
+    rc, out = run(subject, message)
     assert rc == 0, f"non-zero exit {rc}"
     ## Every well-formed anchor is rewritten away (body consumed; footer URLs
     ## have no '>', so they cannot form one either).
     assert not WELL_FORMED_ANCHOR.search(out), 'a well-formed anchor survived'
     ## Idempotent: the output has no anchors left, so re-running is the identity.
-    rc2, out2 = run(func_def, out)
+    rc2, out2 = run(subject, out)
     assert rc2 == 0, f"non-zero exit {rc2} on second pass"
     assert out2 == out, 'not idempotent'
 
@@ -165,20 +162,7 @@ def main() -> int:
     print(f"fuzz_cli_rendering: seed={seed} iterations={args.iterations}",
           file=sys.stderr)
 
-    script = T.msgcollector_script()
-    try:
-        func_def = T.extract_bash_function(script, 'cli_links_to_footnotes')
-    except LookupError as exc:
-        print(f"SKIP: {exc}", file=sys.stderr)
-        return 77
-    ## cli_translate_gui_markup wraps cli_links_to_footnotes plus the color-tag
-    ## and <br> translation. Absent on an older msgcollector -> just skip that
-    ## lane rather than the whole run.
-    try:
-        translate_def = T.extract_bash_function(script,
-                                                'cli_translate_gui_markup')
-    except LookupError:
-        translate_def = None
+    subject = T.msgcollector_script()
 
     ## Always retry the curated regressions first, then the random sweep.
     cases: list[tuple[str, str | None]] = [
@@ -188,9 +172,8 @@ def main() -> int:
     for i, (kind, fixed) in enumerate(cases):
         message = fixed if fixed is not None else gen_message(rng)
         try:
-            check(func_def, message)
-            if translate_def is not None:
-                check_translate(func_def, translate_def, message)
+            check(subject, message)
+            check_translate(subject, message)
         except subprocess.TimeoutExpired:
             print(f"FAIL (hang, {kind}): seed={seed} i={i} message={message!r}",
                   file=sys.stderr)

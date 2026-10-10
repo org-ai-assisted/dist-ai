@@ -15,9 +15,10 @@ chunk to the msgcollector CLI. It runs over attacker-influenceable content
 a crafted message must never make it hang, crash, lose or reorder data, or emit
 an over-sized argument.
 
-The function is extracted and driven in isolation with a stub output_func_core
-that records each chunk (NUL-delimited, so a chunk may contain any byte but NUL,
-which a bash argument cannot carry anyway).
+The real msgdispatcher_run_check is sourced (it is a pure library) and
+output_func is driven with output_func_core redefined as a sink that records
+each chunk (NUL-delimited, so a chunk may contain any byte but NUL, which a bash
+argument cannot carry anyway).
 
 Differential oracle. Exactly which inputs output_func can chunk is subtle (an
 empty line can consume the byte a break needs, so the effective per-line bound is
@@ -43,7 +44,6 @@ deterministically.
 """
 
 import argparse
-import os
 import random
 import subprocess
 import sys
@@ -56,13 +56,6 @@ import msgcollector_testlib as T
 _SAFE_CHARS = [
     chr(c) for c in range(0x20, 0x7F)
 ] + ['\t']
-
-
-def run_check_script() -> str:
-    """Absolute path of msgdispatcher_run_check, a sibling of the msgcollector
-    script under test."""
-    return os.path.join(os.path.dirname(T.msgcollector_script()),
-                        'msgdispatcher_run_check')
 
 
 def gen_case(rng: random.Random):
@@ -92,25 +85,22 @@ def gen_case(rng: random.Random):
     return amb, '\n'.join(lines)
 
 
-## Populated by main() with the REAL is_whole_number extracted from the current
-## helper-scripts strings.bsh (a reimplementation drifts -- the real one rejects
-## leading zeros). output_func_core is a sink stub recording each chunk
+## Sourcing the subject also sources the REAL helper-scripts strings.bsh, so
+## arg_max_bytes is validated by the production is_whole_number.
+## output_func_core is redefined after sourcing as a sink recording each chunk
 ## NUL-delimited (a bash argument never contains NUL).
-_DRIVER_HEAD = ''
+_BODY = (
+    "output_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
+    'arg_max_bytes="$1"\n'
+    'output_func --setting "$2"'
+)
 
 
-def run(func_def: str, amb: int, message: str, timeout: float = 5.0):
+def run(subject: str, amb: int, message: str):
     """Drive output_func on `message` with arg_max_bytes=amb. Returns
     (rc, chunks). Raises subprocess.TimeoutExpired on a hang."""
-    script = (
-        _DRIVER_HEAD
-        + f'arg_max_bytes={amb}\n'
-        + func_def
-        + '\noutput_func --setting "$1"\n'
-    )
-    proc = subprocess.run(
-        ['bash', '-c', script, 'bash', message],
-        capture_output=True, timeout=timeout)
+    proc = T.run_sourced(subject, ('output_func', 'is_whole_number'),
+                         _BODY, str(amb), message, text=False)
     ## Chunks are NUL-terminated; the trailing element after the last NUL is
     ## empty and dropped. A message byte is never NUL (bash args are C strings).
     raw = proc.stdout.split(b'\0')
@@ -118,9 +108,9 @@ def run(func_def: str, amb: int, message: str, timeout: float = 5.0):
     return proc.returncode, chunks
 
 
-def check(func_def: str, amb: int, message: str) -> None:
+def check(subject: str, amb: int, message: str) -> None:
     """Raise AssertionError (or let TimeoutExpired propagate) on a violation."""
-    rc, chunks = run(func_def, amb, message)
+    rc, chunks = run(subject, amb, message)
     if rc == 0:
         for idx, chunk in enumerate(chunks):
             assert len(chunk) <= amb, (
@@ -144,32 +134,12 @@ def main() -> int:
     print(f"fuzz_output_chunking: seed={seed} iterations={args.iterations}",
           file=sys.stderr)
 
-    subject = run_check_script()
-    if not os.path.isfile(subject):
-        print(f"SKIP: msgdispatcher_run_check not found at {subject!r}",
-              file=sys.stderr)
-        return 77
-    try:
-        func_def = T.extract_bash_function(subject, 'output_func')
-    except LookupError as exc:
-        print(f"SKIP: {exc}", file=sys.stderr)
-        return 77
-
-    strings_bsh = (os.environ.get('HELPER_SCRIPTS_PATH', '')
-                   + '/usr/libexec/helper-scripts/strings.bsh')
-    try:
-        is_whole_number = T.extract_bash_function(strings_bsh, 'is_whole_number')
-    except (LookupError, OSError) as exc:
-        print(f"SKIP: {exc}", file=sys.stderr)
-        return 77
-    global _DRIVER_HEAD
-    _DRIVER_HEAD = (is_whole_number
-                    + "\noutput_func_core() { printf '%s\\0' \"${@: -1}\"; }\n")
+    subject = T.run_check_script()
 
     for i in range(args.iterations):
         amb, message = gen_case(rng)
         try:
-            check(func_def, amb, message)
+            check(subject, amb, message)
         except subprocess.TimeoutExpired:
             print(f"FAIL (hang): seed={seed} i={i} amb={amb} "
                   f"message={message!r}", file=sys.stderr)

@@ -8,42 +8,87 @@
 """
 Shared helpers for the msgcollector test suite.
 
-Resolves the msgcollector script under test:
-  * MSGCOLLECTOR_REPO=/path/to/msgcollector -> <repo>/usr/libexec/msgcollector/msgcollector
-  * unset                                   -> /usr/libexec/msgcollector/msgcollector (installed)
+Resolves the msgcollector scripts under test:
+  * MSGCOLLECTOR_REPO=/path/to/msgcollector -> <repo>/usr/libexec/msgcollector/<name>
+  * unset                                   -> /usr/libexec/msgcollector/<name> (installed)
 
-The CLI-rendering logic (cli_links_to_footnotes, the <font>-to-ANSI and
-<br>-to-newline conversions) is bash inside that one script; the fuzzers extract
-a single function and run it in isolation, exactly like the systemcheck suite.
+A missing subject is an environment bug, so resolution raises instead of
+skipping.
+
+Bash functions are tested by SOURCING the real script (msgcollector is
+source-able, msgdispatcher_run_check is a pure library) in a fresh bash and
+calling the function -- see sourced_bash_argv.
 """
 
 import os
 import re
-import sys
+import subprocess
+
+## Hang guard for one sourced call. Generous on purpose: each call sources the
+## whole subject, which is slow on a loaded runner, and a too-tight value turns
+## load into a false 'hang'. A real infinite loop still trips it.
+HANG_TIMEOUT = 60.0
+
+
+def _libexec_file(name: str) -> str:
+    repo = os.environ.get('MSGCOLLECTOR_REPO', '').strip()
+    if repo:
+        base = os.path.join(repo, 'usr', 'libexec', 'msgcollector')
+    else:
+        base = '/usr/libexec/msgcollector'
+    path = os.path.join(base, name)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"{path} not found (set MSGCOLLECTOR_REPO to a msgcollector checkout, "
+            'or install the package)')
+    return path
 
 
 def msgcollector_script() -> str:
     """Absolute path of the msgcollector script under test."""
-    repo = os.environ.get('MSGCOLLECTOR_REPO', '').strip()
-    if repo:
-        cand = os.path.join(repo, 'usr', 'libexec', 'msgcollector', 'msgcollector')
-        if os.path.isfile(cand):
-            return cand
-        print(f"MSGCOLLECTOR_REPO={repo!r} has no usr/libexec/msgcollector/msgcollector; "
-              'skipping.', file=sys.stderr)
-        sys.exit(77)
-    installed = '/usr/libexec/msgcollector/msgcollector'
-    if os.path.isfile(installed):
-        return installed
-    print('msgcollector not found (set MSGCOLLECTOR_REPO); skipping.', file=sys.stderr)
-    sys.exit(77)
+    return _libexec_file('msgcollector')
 
 
 def dispatch_script() -> str:
-    """Absolute path of msgdispatcher_dispatch_x (the PyQt5 GUI renderer), a
-    sibling of the msgcollector script under test."""
-    return os.path.join(os.path.dirname(msgcollector_script()),
-                        'msgdispatcher_dispatch_x.py')
+    """Absolute path of msgdispatcher_dispatch_x (the PyQt5 GUI renderer)."""
+    return _libexec_file('msgdispatcher_dispatch_x.py')
+
+
+def run_check_script() -> str:
+    """Absolute path of msgdispatcher_run_check (defines output_func)."""
+    return _libexec_file('msgdispatcher_run_check')
+
+
+def sourced_bash_argv(subject: str, funcs: tuple[str, ...], body: str,
+                      *args: str) -> list[str]:
+    """argv that runs `body` in a fresh, non-strict bash after sourcing the
+    REAL `subject`, the way a consumer sources it. In `body`, "$@" is `args`.
+
+    Exits 3 when any of `funcs` is undefined after sourcing: a nested source
+    with a wrong HELPER_SCRIPTS_PATH only warns in a non-strict shell, and the
+    function under test would then silently call a missing helper."""
+    script = (
+        'subject="$1"\n'
+        'shift\n'
+        'source -- "${subject}"\n'
+        f'if ! declare -F -- {" ".join(funcs)} >/dev/null; then\n'
+        '   printf \'%s\\n\' "sourced_bash: ${subject}: a required function'
+        ' is undefined after sourcing" >&2\n'
+        '   exit 3\n'
+        'fi\n'
+        + body + '\n'
+    )
+    return ['bash', '-c', script, 'bash', subject, *args]
+
+
+def run_sourced(subject: str, funcs: tuple[str, ...], body: str, *args: str,
+                text: bool = True, env: 'dict | None' = None,
+                timeout: float = HANG_TIMEOUT) -> subprocess.CompletedProcess:
+    """Run sourced_bash_argv(...) and capture its output, under the shared
+    HANG_TIMEOUT (TimeoutExpired propagates: a fuzzer reads it as a hang)."""
+    return subprocess.run(sourced_bash_argv(subject, funcs, body, *args),
+                          capture_output=True, text=text, env=env,
+                          timeout=timeout)
 
 
 def read(path: str) -> str:
@@ -61,18 +106,3 @@ def extract_python_class(path: str, name: str) -> str:
     if not match:
         raise LookupError(f"class {name!r} not found in {path}")
     return match.group(0)
-
-
-_FUNC_RE_TMPL = r'^%s\(\) \{\n(.*?)^\}'
-
-
-def extract_bash_function(path: str, name: str) -> str:
-    """Return the full definition of a top-level bash function `name` from
-    `path`. Assumes the closing brace is at column 0. Raises LookupError if not
-    found (which the fuzzer turns into SKIP -- an older msgcollector may predate
-    the function)."""
-    match = re.search(_FUNC_RE_TMPL % re.escape(name), read(path),
-                      re.DOTALL | re.MULTILINE)
-    if not match:
-        raise LookupError(f"function {name!r} not found in {path}")
-    return f"{name}() {{\n{match.group(1)}}}\n"
