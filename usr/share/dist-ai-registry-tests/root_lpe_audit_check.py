@@ -261,6 +261,13 @@ def main(argv):
         has(suppressed, "vuln_py_waived", "python-advisory", ".ifheader",
             need_reason=True)
         and not has(findings, "vuln_py_waived", "python-advisory", ".ifheader")))
+    ## A decorated def leads its line at the '@' (not an ast node); a waiver
+    ## block above the decorator MUST still reach a sink in the def header.
+    checks.append((
+        "python waiver above a decorated def reaches a header sink",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".decohdr",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".decohdr")))
     checks.append((
         "python trailing waiver on a wrapped case pattern does not reach the guard",
         has(findings, "vuln_py_waived", "python-advisory", ".casetrail")

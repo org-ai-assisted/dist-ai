@@ -531,6 +531,12 @@ try:
 finally: os.chown("/home/user/.finally1liner", 0, 0)
 # style-ok: lpe-python-advisory -- the sink IS in the header; precision canary, MUST suppress
 if os.chown("/home/user/.ifheader", 0, 0): pass
+def _mark(_f):
+    return _f
+# style-ok: lpe-python-advisory -- a DECORATED def leads its line at '@'; waiver MUST reach the header sink
+@_mark
+def _deco_hdr(_p=os.chown("/home/user/.decohdr", 0, 0)):
+    pass
 try:
     pass
 # style-ok: lpe-python-advisory -- waiver above a wrapped except header

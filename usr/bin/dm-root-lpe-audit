@@ -570,6 +570,15 @@ def _py_stmt_spans(source):
             for child in value if isinstance(value, list) else [value]:
                 if not isinstance(child, ast.AST):
                     continue
+                ## A decorator's '@' is not an AST node, so the expression's
+                ## col_offset is indent+1; the statement really begins at the
+                ## '@' (the line's indent). Anchor the start there, else a
+                ## decorated def/class reads as NOT leading its line and loses a
+                ## waiver block above it.
+                if (field == "decorator_list" and isinstance(child, ast.expr)
+                        and 1 <= child.lineno <= len(src_lines)):
+                    points.append((child.lineno,
+                                   _indent(src_lines[child.lineno - 1])))
                 for sub in ast.walk(child):
                     for line, col in ((getattr(sub, "lineno", None),
                                        getattr(sub, "col_offset", None)),
