@@ -28,8 +28,7 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 
 ## Ensure locales don't cause problems.
-LC_ALL=C
-export LC_ALL
+export LC_ALL=C
 
 ## helper-scripts 'has' for the command-presence checks (R-090). The suite
 ## already requires the helper-scripts package (safe-rm below is from it).
@@ -58,7 +57,7 @@ while [ $# -gt 0 ]; do
          break
          ;;
       -*)
-         printf 'self-test: unknown flag %q\n' "$1" >&2
+         printf '%s\n' "self-test: unknown flag ${1@Q}" >&2
          exit 2
          ;;
       *)
@@ -74,7 +73,7 @@ pass_count=0
 fail_count=0
 failed_names=""
 
-die() { printf 'self-test: ERROR: %s\n' "$*" >&2; exit 2; }
+die() { printf '%s\n' "self-test: ERROR: $*" >&2; exit 2; }
 
 ## EXIT-trap handler for the per-scenario subshell (below): forward the
 ## scenario's real exit status into a file so the outer shell can read it, then
@@ -191,13 +190,13 @@ cache_folder_for() {
    ## Mirror the path update-torbrowser would generate as tb_cache_folder when
    ## running direct-as-user.
    local install_folder="$1"
-   printf '%s/.cache/%s' "${HOME}" "${install_folder}"
+   printf '%s' "${HOME}/.cache/${install_folder}"
 }
 
 browser_folder_for() {
    ## Mirror tb_browser_folder.
    local install_folder_dot="$1" browser_name="$2"
-   printf '%s/%s/%s' "${HOME}" "${install_folder_dot}" "${browser_name}"
+   printf '%s' "${HOME}/${install_folder_dot}/${browser_name}"
 }
 
 ## ---------------------------------------------------------------------------
@@ -233,7 +232,7 @@ scenario_second_run_cache_hit_tb() {
    assert_file_exists "first run: cache" "${cache_folder}/last_used_gpg_bash_lib_output_signed_on_unixtime"
 
    ## Second run uses the just-written cache.
-   :>"${out_file}"
+   truncate --size=0 -- "${out_file}"
    run_updater update-torbrowser --danger-insecure-self-test "${fix}" --noask --input none --no-tor-con-check
 
    assert_file_exists "second run: cache still there" "${cache_folder}/last_used_gpg_bash_lib_output_signed_on_unixtime"
@@ -266,7 +265,7 @@ scenario_tampered_cache_rejected() {
    fix="$(fixture_dir_for tb)"
    cache_folder="$(cache_folder_for tb)"
    mkdir --parents -- "${cache_folder}"
-   printf 'not-a-number-tampered\n' > "${cache_folder}/last_used_gpg_bash_lib_output_signed_on_unixtime"
+   printf '%s\n' 'not-a-number-tampered' > "${cache_folder}/last_used_gpg_bash_lib_output_signed_on_unixtime"
 
    run_updater update-torbrowser --danger-insecure-self-test "${fix}" --noask --input none --no-tor-con-check
 
@@ -296,7 +295,7 @@ scenario_invalid_signature_rejected() {
    fix="$(fixture_dir_for tb)"
    ## Corrupt the signature bytes. sqop verify will exit non-zero and
    ## the downloader should bail with an OpenPGP verification error.
-   printf 'garbage\n' > "${fix}/99.0.0/tor-browser-linux-x86_64-99.0.0.tar.xz.asc"
+   printf '%s\n' 'garbage' > "${fix}/99.0.0/tor-browser-linux-x86_64-99.0.0.tar.xz.asc"
 
    local ec=0
    run_updater update-torbrowser --danger-insecure-self-test "${fix}" --noask --input none --no-tor-con-check \
@@ -313,7 +312,7 @@ scenario_tampered_tarball_rejected() {
    ## signature.
    local fix
    fix="$(fixture_dir_for tb)"
-   printf 'attacker-appended\n' \
+   printf '%s\n' 'attacker-appended' \
       >> "${fix}/99.0.0/tor-browser-linux-x86_64-99.0.0.tar.xz"
 
    local ec=0
@@ -443,7 +442,7 @@ scenario_second_run_mullvad_cache_hit() {
    run_updater update-mullvadbrowser --danger-insecure-self-test "${fix}" --noask --input none --no-tor-con-check
    assert_file_exists "mullvad first run: cache" "${cache_folder}/last_used_gpg_bash_lib_output_signed_on_unixtime"
 
-   :>"${out_file}"
+   truncate --size=0 -- "${out_file}"
    run_updater update-mullvadbrowser --danger-insecure-self-test "${fix}" --noask --input none --no-tor-con-check
 
    ## This is the regression test for the original bug on this branch: a
@@ -543,10 +542,10 @@ main() {
       done
       [ "${found}" = true ] || die "unknown scenario filter: '${want}'"
    done
-   printf '== self-test: start ==\n'
+   printf '%s\n' '== self-test: start =='
    for scenario in "${all_scenarios[@]}"; do
       if ! should_run "${scenario}"; then
-         printf '  [SKIP] %s\n' "${scenario}"
+         printf '%s\n' "  [SKIP] ${scenario}"
          continue
       fi
       setup
@@ -565,20 +564,19 @@ main() {
         "${scenario}" )
       ec="$(cat -- "${test_root}/.scenario_ec")"
       if [ "${ec}" = 0 ]; then
-         printf '  [PASS] %s\n' "${scenario}"
+         printf '%s\n' "  [PASS] ${scenario}"
          pass_count=$((pass_count + 1))
          [ "${verbose}" = 'true' ] && sed 's/^/    | /' "${out_file}"
       else
-         printf '  [FAIL] %s (exit=%s)\n' "${scenario}" "${ec}"
+         printf '%s\n' "  [FAIL] ${scenario} (exit=${ec})"
          fail_count=$((fail_count + 1))
          failed_names="${failed_names} ${scenario}"
          sed 's/^/    | /' "${out_file}"
       fi
       teardown
    done
-   printf '== self-test: %d passed, %d failed ==\n' \
-      "${pass_count}" "${fail_count}"
-   [ "${fail_count}" -eq 0 ] || { printf 'Failed:%s\n' "${failed_names}" >&2; exit 1; }
+   printf '%s\n' "== self-test: ${pass_count} passed, ${fail_count} failed =="
+   [ "${fail_count}" -eq 0 ] || { printf '%s\n' "Failed:${failed_names}" >&2; exit 1; }
 }
 
 main "$@"

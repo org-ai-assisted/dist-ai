@@ -191,18 +191,28 @@ check "sweep: locked (live) account untouched" "$(grep --quiet -- 'eph-inst-kick
 check "sweep: current account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-18-2-3-5' "${order}" && printf '%s' "false" || printf '%s' "true")"
 check "sweep: persist account untouched" "$(grep --quiet -- 'persist-inst' "${order}" && printf '%s' "false" || printf '%s' "true")"
 
-## (f) an unusable state/lock dir ABORTS the run (SETUP rc 2). A die inside "$(...)" was
-## masked: the marker path collapsed to '/kept-ACCOUNT.staged' and the keep "succeeded".
+## (f) an unusable state dir: the keep cannot record its marker, so the run is NOT kept
+## and is torn down in full -- never a "kept" claim with the marker lost, and never a die
+## inside the EXIT trap that skips teardown (a die in "$(...)" was once masked and wrote
+## the marker to '/kept-ACCOUNT.staged').
 printf '%s\n' 'not a dir' > "${work}/afile"
 export DM_RELEASE_TEST_KEEP_FAILED=1
+true >| "${order}"
+bad_staged="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
 bad_rc=0
 (
    # shellcheck disable=SC2030  # scoped to this subshell on purpose
-   export DM_RELEASE_TEST_STATE_DIR="${work}/afile/state" DM_RELEASE_TEST_LOCK_DIR="${work}/afile/lock"
-   rt_staged_dir="${ISO_DIR}/.built-bad"
-   rc_is 5 || rt_eph_cleanup
-) >/dev/null 2>&1 || bad_rc=$?
-check "unusable state dir aborts with the SETUP rc (no masked die)" "$([ "${bad_rc}" = 2 ] && printf '%s' "true" || printf '%s' "false")"
+   export DM_RELEASE_TEST_STATE_DIR="${work}/afile/state"
+   rt_staged_dir="${bad_staged}"
+   rc_is 5 || STUB_PGREP_PIDS='4242' rt_eph_cleanup
+) >/dev/null 2>"${work}/bad.err" || bad_rc=$?
+check "unusable state dir: the EXIT trap completes (rc=${bad_rc})" "$([ "${bad_rc}" = 0 ] && printf '%s' "true" || printf '%s' "false")"
+check "unusable state dir: not reported as kept" \
+   "$(grep --quiet -- 'kept FAILED run' "${work}/bad.err" && printf '%s' "false" || printf '%s' "true")"
+check "unusable state dir: VM not detached before the marker failed" \
+   "$(grep --quiet -- 'moved into' "${work}/bad.err" && printf '%s' "false" || printf '%s' "true")"
+check "unusable state dir: torn down (account + staged ISO)" \
+   "$(grep --quiet -- '^userdel .*eph-inst-kicksecure-18-2-3-5' "${order}" && [ ! -e "${bad_staged}" ] && printf '%s' "true" || printf '%s' "false")"
 rel_rc=0
 (
    # shellcheck disable=SC2030,SC2031  # scoped to this subshell on purpose
@@ -215,11 +225,19 @@ check "a relative lock dir is refused" "$([ "${rel_rc}" = 2 ] && printf '%s' "tr
 ## instead of dying 'another run holds the lock'.
 wait_lock="${lockdir}/dm-release-test-eph-inst-wait.lock"
 held_flag="${work}/held"
-## Hold the lock for $1 seconds in the background; return once it is actually held.
+## Hold the lock for $1 seconds in the background; return once it is actually held. The
+## subshell locks its own fd, then becomes the sleep: ONE process holds the lock, so one
+## kill releases it, and with stdio detached no sleeper keeps this test's output pipe open.
 hold_wait_lock() {
+   local seconds="$1"
    safe-rm --force -- "${held_flag}"
-   # shellcheck disable=SC2016  # positional args of the inner sh
-   flock -o "${wait_lock}" sh -c 'touch -- "$1" && sleep "$2"' sh "${held_flag}" "$1" &
+   (
+      exec {hold_fd}>"${wait_lock}"
+      flock "${hold_fd}"
+      touch -- "${held_flag}"
+      ## style-ok: R-103 -- the holder must BECOME the sleep so one process owns the lock fd
+      exec sleep "${seconds}"
+   ) </dev/null >/dev/null 2>&1 &
    sweep_holder=$!
    while [ ! -e "${held_flag}" ]; do
       sleep 0.1
@@ -234,12 +252,12 @@ hold_wait_lock 600
 wait_rc=0
 ( DM_RELEASE_TEST_LOCK_WAIT=1 rt_lock_account 'eph-inst-wait' ) >"${work}/wait.out" 2>&1 || wait_rc=$?
 check "lock: the wait is bounded, dies with the SETUP rc (rc=${wait_rc}: $(tr '\n' ' ' < "${work}/wait.out"))" "$([ "${wait_rc}" = 2 ] && printf '%s' "true" || printf '%s' "false")"
-## flock -o: the lock lives only in the flock process, so killing it releases the lock.
 kill -- "${sweep_holder}" 2>/dev/null || true
 wait "${sweep_holder}" || true
 
 ## (h) a kept VM leaves this run's cgroup: its processes move into their own scope. A VM
-## that cannot be detached is NOT kept: the run is torn down, never reported as kept.
+## that cannot be detached is NOT kept: the run is torn down, never reported as kept. An
+## account with no running process keeps its on-disk state (nothing for a unit stop to kill).
 keep_out="${work}/keep.out"
 rt_staged_dir=""
 true >| "${busctl_log}"
@@ -256,10 +274,13 @@ check "keep: a failed detach is reported loudly" \
 check "keep: a failed detach never claims the run was kept" \
    "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
 check "keep: a failed detach tears the run down" \
-   "$(grep --quiet -- '^userdel .*eph-inst-kicksecure-18-2-3-5' "${order}" && [ ! -e "${detach_fail_dir}" ] && [ ! -e "${marker}" ] && printf '%s' "true" || printf '%s' "false")"
+   "$(grep --quiet -- '^userdel .*eph-inst-kicksecure-18-2-3-5' "${order}" && [ ! -e "${detach_fail_dir}" ] && printf '%s' "true" || printf '%s' "false")"
+true >| "${order}"
+rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
+novm_dir="${rt_staged_dir}"
 rc_is 5 || rt_eph_cleanup 2>"${keep_out}" >/dev/null
-check "keep: no VM process to keep -> not reported as kept" \
-   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
+check "keep: no running VM -> on-disk state kept, not torn down" \
+   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && [ ! -s "${order}" ] && [ -d "${novm_dir}" ] && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} cleanup assertion(s) failed" >&2

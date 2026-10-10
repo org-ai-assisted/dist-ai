@@ -43,6 +43,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Single source of truth for the required retention line and the codename
 ## prefix it is required on. Keep in sync with
@@ -125,7 +126,7 @@ check_distributions_file() {
             stanza_tracking="${line}"
             ;;
       esac
-   done < <(cat -- "${file}"; printf '\n')
+   done < <(cat -- "${file}"; printf '%s\n' "")
 
    if [ "${checked_count}" = "0" ]; then
       fail "${repo}: no '${tracked_codename_prefix}*' stanza found in ${file} (parser bug or config removed?)"

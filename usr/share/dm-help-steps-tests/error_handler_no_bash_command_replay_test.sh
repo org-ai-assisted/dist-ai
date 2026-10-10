@@ -46,10 +46,14 @@ fail() {
    test_failures=$((test_failures + 1))
 }
 
+## pre ends in root_check, which exits as root; the dm-help-steps suite runs as
+## root in CI. stderr stays visible so a pre abort is not a silent FAILED.
+export dist_build_allow_root=true
+
 ## Source the REAL handler, then DISARM the traps it installs so this test shell
 ## keeps control and calls the handler explicitly.
 # shellcheck disable=SC1090
-source "${pre}" >/dev/null 2>&1
+source "${pre}" >/dev/null
 trap - ERR EXIT INT TERM HUP
 
 ## STRUCTURAL CANARY: the replay function must not exist. FAILS on the old code,

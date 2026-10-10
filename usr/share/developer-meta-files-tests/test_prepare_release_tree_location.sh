@@ -181,18 +181,35 @@ for tool_name in dm-prepare-release dm-upload-images dm-reprepro-wrapper; do
    fi
 done
 
+## resolve_from <cwd> <caller_dir> <source_code_folder_dist or empty>: source the
+## REAL resolver in a subshell started in <cwd> (it captures cwd at source time)
+## and print what it resolves, or its error.
+resolve_from() {
+   (
+      cd -- "$1" || exit 1
+      unset derivative_maker_invocation_pwd source_code_folder_dist
+      if [ -n "$3" ]; then
+         ## Read by the sourced resolver.
+         # shellcheck disable=SC2034
+         source_code_folder_dist="$3"
+      fi
+      ## The resolver under test, located at runtime.
+      # shellcheck disable=SC1090
+      source "${lib}"
+      derivative_maker_source_tree_resolve "$2" || exit 1
+      ## Assigned by the resolver.
+      # shellcheck disable=SC2154
+      printf '%s\n' "${derivative_maker_source_code_dir}"
+   ) 2>&1 || true
+}
+
 ## --- behavioural: the cwd branch actually resolves a tree ------------------
 ## The regression was silent: every branch missed and the tool reported an
 ## unresolvable tree even though cwd WAS a checkout.
 fake_tree="$(mktemp --directory)"
 mkdir --parents -- "${fake_tree}/help-steps"
 printf '%s\n' '## stub' > "${fake_tree}/help-steps/pre"
-# shellcheck disable=SC2015,SC2016  # guarded capture of an inner-shell payload, not an expansion here
-resolved="$(cd -- "${fake_tree}" && env --unset=source_code_folder_dist bash -c '
-   source "$1"
-   derivative_maker_source_tree_resolve /usr/bin || exit 1
-   printf "%s\n" "${derivative_maker_source_code_dir}"
-' _ "${lib}" 2>&1 || true)"
+resolved="$(resolve_from "${fake_tree}" /usr/bin "")"
 if [ "${resolved}" = "${fake_tree}" ]; then
    pass "cwd branch resolves a checkout in the invocation directory"
 else
@@ -211,12 +228,7 @@ mkdir --parents -- "${real_root}/help-steps" "${other_tree}/help-steps" \
 printf '%s\n' '## stub' > "${real_root}/help-steps/pre"
 printf '%s\n' '## stub' > "${other_tree}/help-steps/pre"
 
-# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
-resolved="$(env source_code_folder_dist="${other_tree}" bash -c '
-   source "$1"
-   derivative_maker_source_tree_resolve "$2" || exit 1
-   printf "%s\n" "${derivative_maker_source_code_dir}"
-' _ "${lib}" "${real_root}/packages/kicksecure/developer-meta-files/usr/bin" 2>&1 || true)"
+resolved="$(resolve_from "${real_root}" "${real_root}/packages/kicksecure/developer-meta-files/usr/bin" "${other_tree}")"
 if [ "${resolved}" = "${real_root}" ]; then
    pass "a copy inside a tree binds to THAT tree, ignoring source_code_folder_dist"
 else
@@ -230,12 +242,7 @@ fi
 ## operator who correctly set source_code_folder_dist was still refused.
 standalone="$(mktemp --directory)"
 mkdir --parents -- "${standalone}/usr/bin"
-# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
-resolved="$(env source_code_folder_dist="${other_tree}" bash -c '
-   source "$1"
-   derivative_maker_source_tree_resolve "$2" || exit 1
-   printf "%s\n" "${derivative_maker_source_code_dir}"
-' _ "${lib}" "${standalone}/usr/bin" 2>&1 || true)"
+resolved="$(resolve_from "${standalone}" "${standalone}/usr/bin" "${other_tree}")"
 if [ "${resolved}" = "${other_tree}" ]; then
    pass "a copy NOT inside a tree falls through to source_code_folder_dist"
 else
@@ -243,18 +250,26 @@ else
 fi
 safe-rm --recursive --force -- "${real_root}" "${other_tree}" "${standalone}"
 
-## --- behavioural: an unresolvable tree exits non-zero, and says so ----------
-## Run the real script with HOME pointed at an empty dir, no source_code_folder_dist,
-## and a cwd that is not a checkout: every branch must miss.
+## Installed layout outside any tree: '<root>/bin/dm-prepare-release' +
+## '<root>/libexec/developer-meta-files', symlinked to the REAL files (a copy in a
+## checkout binds to that checkout, so only an out-of-tree copy reaches the
+## source_code_folder_dist / cwd / HOME branches).
 workdir="$(mktemp --directory)"
 cleanup() {
    safe-rm --recursive --force -- "${workdir}"
 }
 trap cleanup EXIT
+inst_root="${workdir}/inst"
+mkdir --parents -- "${inst_root}/bin" "${inst_root}/libexec"
+ln --symbolic -- "$(realpath -- "${subject}")" "${inst_root}/bin/dm-prepare-release"
+ln --symbolic -- "$(realpath -- "$(dirname -- "${lib}")")" "${inst_root}/libexec/developer-meta-files"
 
+## --- behavioural: an unresolvable tree exits non-zero, and says so ----------
+## HOME an empty dir, no source_code_folder_dist, cwd not a checkout: every
+## branch must miss.
 rc=0
 out="$(cd -- "${workdir}" && env --unset=source_code_folder_dist HOME="${workdir}" \
-   bash -- "${subject}" --target source 2>&1)" || rc="$?"
+   bash -- "${inst_root}/bin/dm-prepare-release" --target source 2>&1)" || rc="$?"
 if [ "${rc}" -ne 0 ]; then
    pass "unresolvable tree: exits non-zero (${rc})"
 else
@@ -271,6 +286,34 @@ case "${out}" in
       fail "unresolvable tree: unexpected output -- ${out}"
       ;;
 esac
+
+## --- behavioural: an INSTALLED-layout copy loads helper-scripts from the tree -
+## The build host installs the developer-meta-files .deb (1400_local-dependencies)
+## but NOT helper-scripts, so the /usr/bin copy must take check_runtime.bsh from
+## the resolved derivative-maker tree -- never from a '../../../helper-scripts'
+## beside itself (absent) nor an installed /usr/libexec copy (absent on the host,
+## and would mask a missing tree copy). The tree is a fixture whose
+## check_runtime.bsh prints a marker and defines a was_executed that returns
+## false, so main() never runs.
+fixture_tree="${workdir}/tree"
+mkdir --parents -- "${fixture_tree}/help-steps" \
+   "${fixture_tree}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts"
+printf '%s\n' '## stub' > "${fixture_tree}/help-steps/pre"
+printf '%s\n' '## stub' > "${fixture_tree}/help-steps/variables"
+printf '%s\n' '## stub' > "${fixture_tree}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/has.bsh"
+printf '%s\n' \
+   "printf '%s\n' 'TREE-CHECK-RUNTIME-LOADED'" \
+   'was_executed() { return 1; }' \
+   > "${fixture_tree}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh"
+rc=0
+out="$(cd -- "${workdir}" && env --unset=HELPER_SCRIPTS_PATH \
+   source_code_folder_dist="${fixture_tree}" HOME="${workdir}" \
+   bash -- "${inst_root}/bin/dm-prepare-release" 2>&1)" || rc="$?"
+if [ "${rc}" -eq 0 ] && grep --quiet --fixed-strings -- 'TREE-CHECK-RUNTIME-LOADED' <<< "${out}"; then
+   pass "installed layout: check_runtime.bsh comes from the resolved tree"
+else
+   fail "installed layout: tree check_runtime.bsh not loaded (rc=${rc}): ${out}"
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

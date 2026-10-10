@@ -8,22 +8,19 @@
 ## unmount_if_mounted (help-steps/misc-helpers.bsh) is the shared primitive the chroot
 ## teardown callers (help-steps/unchroot-raw, help-steps/unmount-raw) use in place
 ## of a plain 'umount'. Those callers pass paths that MAY OR MAY NOT be mounted
-## (bind mounts that were never set up, an already-unmounted CHROOT_FOLDER) and run
+## (an already-unmounted CHROOT_FOLDER) and run
 ## under 'set -o errexit', so the function must:
 ##   1. call 'umount' when the path IS a mountpoint (mountpoint(1) exit 0);
-##   2. NO-OP when it is not a mountpoint (exit 32) or is a confirmed-nonexistent
-##      path (a plain 'umount' there would exit non-zero and errexit would break
-##      the build) -- the load-bearing guard;
-##   3. PROPAGATE a genuine mountpoint(1) error on an existing path (exit 1/other),
-##      never swallow it as "not mounted" -- else a caller could delete across a
-##      mount whose state is undetermined;
+##   2. NO-OP when it is not a mountpoint (exit 32) -- the load-bearing guard (a
+##      plain 'umount' there would exit non-zero and errexit would break the build);
+##   3. PROPAGATE any other mountpoint(1) result (exit 1/other), including a
+##      nonexistent path: no existence-check fallback, since 'test -e' can report
+##      a path missing when it merely lacks permission -- a swallowed error could
+##      let a caller delete across a mount whose state is undetermined;
 ##   4. propagate a failing 'umount' (return non-zero) so errexit fails the build.
-## mountpoint(1) is queried FIRST, so a mounted path is unmounted even if a separate
-## existence check would glitch.
-##
 ## The real function is SOURCED. 'mountpoint' and 'umount' are stubbed so the test
 ## needs no root and no real mounts; SUDO_TO_ROOT is emptied so the stub bash
-## functions (and the real 'test' builtin) are what the function calls.
+## functions are what the function calls.
 
 set -o errexit
 set -o nounset
@@ -94,9 +91,7 @@ umount() {
    return "${stub_umount_rc}"
 }
 
-## A real existing target. mountpoint(1) is queried first; the real 'test' builtin
-## (SUDO_TO_ROOT="" above) then disambiguates the error branch against the real
-## filesystem: an existing target propagates, a nonexistent one no-ops.
+## A real existing target, plus a real nonexistent sibling (case 4).
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
@@ -134,8 +129,7 @@ fi
 ## --- case 3: mountpoint ERROR (exit 1) on an EXISTING path -> PROPAGATE -----
 ## A genuine mountpoint(1) error (exit 1: bad invocation / system error) on a path
 ## that EXISTS must propagate, not be swallowed as "not mounted" -- else a caller
-## could delete across an undetermined mount. (The error branch confirms the path
-## exists via the real 'test' builtin, so it propagates rather than no-ops.)
+## could delete across an undetermined mount.
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${target}" ; then
@@ -148,24 +142,21 @@ else
    fi
 fi
 
-## --- case 4: CONFIRMED-nonexistent path -> no-op --------------------------
-## A missing target is nothing to unmount, and must not be conflated with the
-## exit-1 error above (mountpoint shares exit 1 for a nonexistent path). mountpoint
-## is queried first, so it IS consulted here; the real 'test ! -e' then confirms
-## absence and the function no-ops.
+## --- case 4: nonexistent path -> PROPAGATE (no existence-check fallback) ----
+## mountpoint(1) exits 1 for a nonexistent path, the same code as a real error.
+## The function must NOT second-guess it with an existence check (permission
+## denied reads as "absent"), so it propagates. Canary: fails on the former
+## 'test ! -e -> return 0' fallback.
 reset_stubs
 stub_mp_rc=1
 if unmount_if_mounted "${work_dir}/absent" ; then
-   ## mountpoint_called=1 ENFORCES mountpoint-first: an existence-first revert would
-   ## skip mountpoint here and still leave umount_called=0, so asserting the no-op
-   ## alone would not catch it.
+   fail "absent path: swallowed as success -- mountpoint error must propagate"
+else
    if [ "${umount_called}" = "0" ] && [ "${mountpoint_called}" = "1" ]; then
-      pass "absent path: mountpoint consulted first, no-op (return 0), does not umount"
+      pass "absent path: mountpoint consulted, error propagates, does not umount"
    else
       fail "absent path: mountpoint_called=${mountpoint_called} umount_called=${umount_called}"
    fi
-else
-   fail "absent path: expected return 0, got non-zero"
 fi
 
 ## --- case 5: is a mountpoint, umount fails -> propagate non-zero -----------

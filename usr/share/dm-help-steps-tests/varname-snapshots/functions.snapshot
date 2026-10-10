@@ -381,10 +381,10 @@ dist_build_one_parse_cmd ()
             ;;
             --testing-frozen-sources)
                 if [ "${2:-}" = "true" ]; then
-                    export dist_build_sources_list_primary="build_sources/debian_testing_frozen.sources";
+                    export dist_build_use_frozen_testing_sources='true';
                 else
                     if [ "${2:-}" = "false" ]; then
-                        true "${cyan}INFO: --testing-frozen-sources false: using default sources.${reset}";
+                        export dist_build_use_frozen_testing_sources='false';
                     else
                         printf '%s\n' "${red}${bold}ERROR: supported options for --testing-frozen-sources are 'true' or 'false'.${reset}";
                         exit 1;
@@ -394,7 +394,7 @@ dist_build_one_parse_cmd ()
             ;;
             --debug)
                 if [ "${2:-}" = "true" ]; then
-                    true "${cyan}INFO: --debug true: verbose/debug (xtrace) output kept.${reset}";
+                    true "${cyan}INFO: --debug true: verbose/debug (xtrace) output enabled.${reset}";
                 else
                     if [ "${2:-}" = "false" ]; then
                         true "${cyan}INFO: --debug false: verbose/debug (xtrace) output disabled.${reset}";
@@ -1193,6 +1193,9 @@ Build '--target iso' with a supported arch, or choose a different '--target'.${r
                 true "${BASH_SOURCE[0]} INFO: CI='${CI:-}', cross-build of dist_build_flavor='${dist_build_flavor:-}', therefore setting: build_dry_run='${build_dry_run:-}'";
             fi;
         fi;
+    fi;
+    if [ "${dist_build_use_frozen_testing_sources:-}" = 'true' ]; then
+        export dist_build_sources_list_primary="build_sources/debian_testing_frozen.sources";
     fi
 }
 dist_build_one_script_help ()
@@ -1605,9 +1608,9 @@ source_date_epoch_valid ()
 }
 unmount_if_mounted ()
 {
-    local unmount_if_mounted_rc=0;
-    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || unmount_if_mounted_rc="$?";
-    case "${unmount_if_mounted_rc}" in
+    local mountpoint_rc=0;
+    ${SUDO_TO_ROOT} mountpoint --quiet -- "$1" || mountpoint_rc="$?";
+    case "${mountpoint_rc}" in
         0)
             ${SUDO_TO_ROOT} umount --verbose -- "$1"
         ;;
@@ -1615,10 +1618,7 @@ unmount_if_mounted ()
             return 0
         ;;
         *)
-            if ${SUDO_TO_ROOT} test ! -e "$1"; then
-                return 0;
-            fi;
-            return "${unmount_if_mounted_rc}"
+            return "${mountpoint_rc}"
         ;;
     esac
 }

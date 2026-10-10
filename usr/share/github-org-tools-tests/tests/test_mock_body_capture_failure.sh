@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -82,7 +83,7 @@ if [ "${api_rc}" = '0' ]; then
       '      the payload capture silently did nothing and the call reported success' >&2
    fail=1
 else
-   printf 'PASS: an unwritable capture directory fails the call (ghorg_api rc=%s)\n' "${api_rc:-<none>}"
+   printf '%s\n' "PASS: an unwritable capture directory fails the call (ghorg_api rc=${api_rc:-<none>})"
 fi
 
 ## Positive control: a writable directory must actually CAPTURE.
@@ -107,7 +108,7 @@ if [ "${body_count}" -eq 0 ]; then
    printf '%s\n' 'FAIL: no request bodies captured; the assertion surface is empty' >&2
    fail=1
 else
-   printf 'PASS: request bodies were captured (%s file(s))\n' "${body_count}"
+   printf '%s\n' "PASS: request bodies were captured (${body_count} file(s))"
 fi
 
 exit "${fail}"

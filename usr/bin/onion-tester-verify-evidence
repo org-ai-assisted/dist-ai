@@ -16,6 +16,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    printf '%s\n' \
@@ -162,9 +163,9 @@ main() {
 
    if [ -n "${GITHUB_OUTPUT:-}" ]; then
       {
-         printf 'added_count=%s\n' "${count}"
-         printf 'verified=%s\n' "${ok}"
-         printf 'missing=%s\n' "${missing}"
+         printf '%s\n' "added_count=${count}"
+         printf '%s\n' "verified=${ok}"
+         printf '%s\n' "missing=${missing}"
       } >> "${GITHUB_OUTPUT}"
    fi
 

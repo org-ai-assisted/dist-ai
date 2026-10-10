@@ -83,7 +83,7 @@ resolve_repo() {
         printf '%s\n' "VARIABLES_FAILED rc=${var_rc}"
      fi
    ) > "${out_file}" 2>&1 || true   ## the mandatory-error path exits non-zero by design
-   if grep --quiet -- 'MANDATORY' "${out_file}"; then
+   if grep --quiet --ignore-case -- 'is mandatory but is not set' "${out_file}"; then
       printf '%s\n' "MANDATORY"
    elif grep --quiet -- '^repo=' "${out_file}"; then
       grep -- '^repo=' "${out_file}" | tail -n1

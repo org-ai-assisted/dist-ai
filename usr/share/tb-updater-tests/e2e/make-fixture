@@ -41,6 +41,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## style-ok: no-has -- standalone CI fixture generator; probes for sqop / tar /
 ## xz / faketime with 'command -v' rather than helper-scripts' 'has', which is
@@ -51,7 +52,7 @@ if ! [ "${TB_UPDATER_TESTS_E2E:-}" = "1" ]; then
   exit 1
 fi
 
-die() { printf 'make-fixture: ERROR: %s\n' "$*" >&2; exit 1; }
+die() { printf '%s\n' "make-fixture: ERROR: $*" >&2; exit 1; }
 
 out_dir=""
 version="99.0.0"
@@ -118,11 +119,9 @@ fi
 mkdir --parents -- "${out_dir}"
 out_dir="$(cd -- "${out_dir}" && pwd)"
 
-printf 'make-fixture: out_dir=%s\n' "${out_dir}"
-printf 'make-fixture: version=%s download_name=%s browser_name=%s arch=%s\n' \
-   "${version}" "${download_name}" "${browser_name}" "${arch}"
-printf 'make-fixture: signed_at=%s wrong_signer=%s\n' \
-   "${signed_at:-<now>}" "${wrong_signer}"
+printf '%s\n' "make-fixture: out_dir=${out_dir}"
+printf '%s\n' "make-fixture: version=${version} download_name=${download_name} browser_name=${browser_name} arch=${arch}"
+printf '%s\n' "make-fixture: signed_at=${signed_at:-<now>} wrong_signer=${wrong_signer}"
 
 secret_key="${out_dir}/test-key.sec"
 public_key="${out_dir}/test-key.asc"
@@ -208,8 +207,8 @@ cat > "${versions_json}" <<JSON
 }
 JSON
 
-printf 'make-fixture: done\n'
-printf '  public key : %s\n' "${public_key}"
-printf '  versions   : %s\n' "${versions_json}"
-printf '  tarball    : %s\n' "${tarball_path}"
-printf '  signature  : %s\n' "${signature_path}"
+printf '%s\n' 'make-fixture: done'
+printf '%s\n' "  public key : ${public_key}"
+printf '%s\n' "  versions   : ${versions_json}"
+printf '%s\n' "  tarball    : ${tarball_path}"
+printf '%s\n' "  signature  : ${signature_path}"

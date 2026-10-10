@@ -18,6 +18,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 if [ -r "/usr/share/git-meld-tests/fuzz-lib.sh" ]; then
@@ -40,9 +41,16 @@ if [ -z "${git_meld}" ]; then
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
-   ## 77 is the runner's SKIP code; an absent subject is not a suite failure.
-   printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts." >&2
-   exit 77
+   ## git-meld IS the target under test. Absent, a bare SKIP reads green, so it is FATAL
+   ## unless the invoking run authorized the skip (DIST_AI_SKIP_AUTHORIZED=1, set by
+   ## dist-ai-tests-all for an --allow-skip'd or lenient run).
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts. [authorized]" >&2
+      ## style-ok: allow-skip: target absent AND the skip was authorized by the orchestrator
+      exit 77
+   fi
+   printf '%s\n' "FATAL: git-meld not found; pass it as arg 1, or check out helper-scripts (unauthorized absent-target skip)." >&2
+   exit 1
 fi
 
 iters="${2:-300}"
@@ -59,7 +67,7 @@ printf '%s\n' "PASS: no hidden change across ${iters} fuzz iterations (seed ${se
 ## Also fuzz the difftool/mergetool wrappers' fail-closed invariant (a fatal /
 ## binary blob must never reach the viewer). The wrappers are siblings of
 ## git-meld; 77 == not present next to it (older install) -> SKIP.
-printf '\n%s\n' "-- wrapper fail-closed fuzz --"
+printf '%s\n' "" "-- wrapper fail-closed fuzz --"
 wrap_rc=0
 bash "${wlib}" "$( dirname -- "${git_meld}" )" "${iters}" "${seed}" || wrap_rc=$?
 if [ "${wrap_rc}" = 77 ]; then

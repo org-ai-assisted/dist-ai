@@ -8,6 +8,9 @@
 ##
 ## Run 'dist-ai-tests-all --help' for full usage (see usage() below).
 
+## style-ok: printf-format -- the summary is a column-aligned table (%-38s / %-12s /
+## %5ss) and the timing list is tab-separated data, the genuine table case R-030 allows.
+
 set -o errexit
 set -o nounset
 set -o pipefail

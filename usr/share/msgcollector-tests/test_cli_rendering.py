@@ -27,28 +27,18 @@ import re
 import subprocess
 import sys
 
-import pytest
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import msgcollector_testlib as T
 
-try:
-    FUNC = T.extract_bash_function(T.msgcollector_script(), 'cli_links_to_footnotes')
-except (LookupError, SystemExit):
-    pytest.skip('cli_links_to_footnotes not available', allow_module_level=True)
+## msgcollector is source-able: sourcing defines its functions without running
+## main, so each run calls the REAL function from the shipped script.
+SUBJECT = T.msgcollector_script()
 
 WELL_FORMED_ANCHOR = re.compile(r'<a href="?[^">]*"?>[^<]*</a>')
 
-## cli_translate_gui_markup wraps cli_links_to_footnotes plus the color-tag and
-## <br> translation; absent on an older msgcollector -> that lane is skipped.
-try:
-    TRANSLATE_FUNC: str | None = T.extract_bash_function(
-        T.msgcollector_script(), 'cli_translate_gui_markup')
-except (LookupError, SystemExit):
-    TRANSLATE_FUNC = None
 ## The markup cli_translate_gui_markup OWNS (color disabled): the four handled
 ## <font color> openers, </font>, and every <br> spelling.
 TRANSLATED_FONT = re.compile(r'<font color="(?:green|orange|yellow|red)">')
@@ -56,18 +46,16 @@ TRANSLATED_BR = re.compile(r'<br ?/?>')
 
 
 def _run(message: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ['bash', '-c', FUNC + '\ncli_links_to_footnotes "$1"', 'bash', message],
-        capture_output=True, text=True, timeout=5)
+    return T.run_sourced(SUBJECT, ('cli_links_to_footnotes',),
+                         'cli_links_to_footnotes "$1"', message)
 
 
 def _run_translate(message: str) -> subprocess.CompletedProcess:
     ## Color disabled: the handled font tags are removed and <br> -> newline.
-    script = (FUNC + '\n' + str(TRANSLATE_FUNC)
-              + '\ngreen="" yellow="" red="" reset=""\n'
-              + 'cli_translate_gui_markup "$1"')
-    return subprocess.run(['bash', '-c', script, 'bash', message],
-                          capture_output=True, text=True, timeout=5)
+    body = ('green="" yellow="" red="" reset=""\n'
+            'cli_translate_gui_markup "$1"')
+    return T.run_sourced(SUBJECT, ('cli_translate_gui_markup',), body,
+                         message)
 
 
 ## ---------------------------------------------------------------------------
@@ -116,15 +104,11 @@ def test_mixed_labelled_and_url_text_anchors() -> None:
 ## which a transform that DELETED <br> or dropped text would also satisfy.
 ## ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(TRANSLATE_FUNC is None,
-                    reason='cli_translate_gui_markup not available')
 def test_translate_br_becomes_newline_not_deleted() -> None:
     assert _run_translate('a<br>b').stdout == 'a\nb'
     assert _run_translate('a<br/>b<br />c').stdout == 'a\nb\nc'
 
 
-@pytest.mark.skipif(TRANSLATE_FUNC is None,
-                    reason='cli_translate_gui_markup not available')
 def test_translate_line_leading_br_collapses_source_newline() -> None:
     ## Regression: callers write multi-line HTML with a literal source newline
     ## AND a line-leading <br> per line (the newline is insignificant HTML
@@ -141,16 +125,12 @@ def test_translate_line_leading_br_collapses_source_newline() -> None:
     assert out.count('\n') == 2, f'expected 2 line breaks, got: {out!r}'
 
 
-@pytest.mark.skipif(TRANSLATE_FUNC is None,
-                    reason='cli_translate_gui_markup not available')
 def test_translate_intentional_double_br_keeps_blank_line() -> None:
     ## An explicit blank line (<br><br> with no whitespace between) must survive
     ## the whitespace-absorbing collapse as two newlines.
     assert _run_translate('a<br/><br/>b').stdout == 'a\n\nb'
 
 
-@pytest.mark.skipif(TRANSLATE_FUNC is None,
-                    reason='cli_translate_gui_markup not available')
 def test_translate_preserves_plain_text() -> None:
     assert _run_translate('plain words kept').stdout == 'plain words kept'
     ## A CLI-native message (literal newlines, no <br>) must be left untouched
@@ -158,8 +138,6 @@ def test_translate_preserves_plain_text() -> None:
     assert _run_translate('line1\nline2\nline3').stdout == 'line1\nline2\nline3'
 
 
-@pytest.mark.skipif(TRANSLATE_FUNC is None,
-                    reason='cli_translate_gui_markup not available')
 def test_translate_font_tag_removed_text_kept() -> None:
     ## Color disabled: the handled font tag is removed, its text stays.
     assert _run_translate('<font color="green">colored</font>').stdout == 'colored'
@@ -220,8 +198,6 @@ if _HAVE_HYPOTHESIS:
         ## be gone. Anchors are NOT asserted -- cli_links handles most (above),
         ## and the <br>-to-newline pass can make a <br>-containing anchor text
         ## well-formed, which strip-markup removes downstream (not a leak).
-        if TRANSLATE_FUNC is None:
-            pytest.skip('cli_translate_gui_markup not available')
         proc = _run_translate(message)
         assert proc.returncode == 0, f"non-zero exit {proc.returncode}"
         assert TRANSLATED_FONT.search(proc.stdout) is None, 'a handled <font color> survived'

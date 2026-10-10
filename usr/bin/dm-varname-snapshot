@@ -54,6 +54,9 @@ fi
 ## the exported-contract goldens (exported vars + consumed-function bodies + the
 ## validity matrix) into 'varname-contract-snapshots/'. Run deliberately when the
 ## contract is meant to change; a routine full-snapshot regen never touches them.
+usage() {
+   printf '%s\n' "Usage: dm-varname-snapshot [--contract] [output-dir]"
+}
 want_contract="false"
 positional=()
 for arg in "$@"; do
@@ -61,11 +64,27 @@ for arg in "$@"; do
       --contract)
          want_contract="true"
          ;;
+      -h|--help)
+         usage
+         exit 0
+         ;;
+      -*)
+         ## Never treat an option as the output directory: it would be created
+         ## and filled with snapshots.
+         printf '%s\n' "dm-varname-snapshot: unknown option '${arg}'" >&2
+         usage >&2
+         exit 2
+         ;;
       *)
          positional+=( "${arg}" )
          ;;
    esac
 done
+if [ "${#positional[@]}" -gt 1 ]; then
+   printf '%s\n' "dm-varname-snapshot: at most one output-dir, got ${#positional[@]}" >&2
+   usage >&2
+   exit 2
+fi
 out_dir="${positional[0]:-${lib_found}/varname-snapshots}"
 
 dm="$(vs_resolve_dm)"

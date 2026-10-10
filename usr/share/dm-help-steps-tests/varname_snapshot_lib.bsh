@@ -128,6 +128,7 @@ vs_effect_staging_re='^(dist_aptgetopt_file_content|dist_build_pbuilder_config_c
 vs_consumed_funcs=(
    chroot_run
    dist_build_arch_to_qemu_machine
+   loop_teardown_verify
    repository_dist_initializer_setup
    set_cowbuilder_folders
    set_dist_build_reprepro_folder_options

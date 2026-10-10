@@ -22,10 +22,7 @@ pass on multibyte input that overruns the byte budget.
 """
 
 import os
-import subprocess
 import sys
-
-import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -34,49 +31,26 @@ if HERE not in sys.path:
 import msgcollector_testlib as T
 
 
-def _run_check_script() -> str:
-    return os.path.join(os.path.dirname(T.msgcollector_script()),
-                        'msgdispatcher_run_check')
+_SUBJECT = T.run_check_script()
 
-
-## Resolve the subject at import. Check the file exists FIRST: on an older
-## checkout msgdispatcher_run_check may be absent, and letting
-## extract_bash_function raise OSError at module level would crash pytest
-## collection for the whole suite instead of skipping just this module.
-_SUBJECT = _run_check_script()
-if not os.path.isfile(_SUBJECT):
-    pytest.skip('msgdispatcher_run_check not available', allow_module_level=True)
-try:
-    OUTPUT_FUNC = T.extract_bash_function(_SUBJECT, 'output_func')
-except (LookupError, OSError, SystemExit):
-    pytest.skip('output_func not available', allow_module_level=True)
-
-## Use the REAL is_whole_number from helper-scripts (extracted from the current
-## strings.bsh via HELPER_SCRIPTS_PATH, else the installed path), so output_func
-## validates arg_max_bytes exactly as in production -- a reimplementation drifts
-## (the real one rejects leading zeros). output_func_core is a sink stub that
-## records each chunk NUL-delimited (a bash argument never contains NUL).
-_STRINGS_BSH = (os.environ.get('HELPER_SCRIPTS_PATH', '')
-                + '/usr/libexec/helper-scripts/strings.bsh')
-try:
-    _IS_WHOLE_NUMBER = T.extract_bash_function(_STRINGS_BSH, 'is_whole_number')
-except (LookupError, OSError):
-    pytest.skip('helper-scripts is_whole_number not available',
-                allow_module_level=True)
-_DRIVER = (
-    _IS_WHOLE_NUMBER
-    + "\noutput_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
+## Sourcing the subject also sources the REAL helper-scripts strings.bsh
+## (HELPER_SCRIPTS_PATH, else installed), so output_func validates
+## arg_max_bytes with the production is_whole_number. output_func_core is
+## redefined after sourcing as a sink that records each chunk NUL-delimited (a
+## bash argument never contains NUL).
+_BODY = (
+    "output_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
+    'arg_max_bytes="$1"\n'
+    'output_func --setting "$2"'
 )
 
 
 def _run(amb: int, message: str):
     """Drive output_func with arg_max_bytes=amb. Returns (rc, chunks) where
     chunks is a list of raw byte strings. LC_ALL=C so bash chunks by bytes."""
-    script = (_DRIVER + f"arg_max_bytes={amb}\n" + OUTPUT_FUNC
-              + '\noutput_func --setting "$1"\n')
-    proc = subprocess.run(
-        ['bash', '-c', script, 'bash', message],
-        capture_output=True, timeout=5, env={**os.environ, 'LC_ALL': 'C'})
+    proc = T.run_sourced(_SUBJECT, ('output_func', 'is_whole_number'),
+                         _BODY, str(amb), message, text=False,
+                         env={**os.environ, 'LC_ALL': 'C'})
     ## Chunks are NUL-terminated; the trailing element after the last NUL is
     ## empty and dropped. A message byte is never NUL (bash args are C strings).
     return proc.returncode, proc.stdout.split(b'\0')[:-1]
