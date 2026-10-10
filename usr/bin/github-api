@@ -11,8 +11,8 @@
 ##     github-api GET /repos/org-ai-assisted/foo/pulls
 ##     github-api POST /repos/org-ai-assisted/foo/pulls --data @"$f"   # f="$(mktemp --suffix=.json)"
 ##
-## A bare /path resolves against https://api.github.com; a full https URL is
-## used as-is. Auth and the standard headers go to curl through a --config
+## A bare path (leading '/' optional) resolves against https://api.github.com;
+## a full https URL is used as-is. Auth and the standard headers go to curl through a --config
 ## document on STDIN, so the token never reaches argv, where /proc/<pid>/cmdline
 ## exposes it to every other user for the life of the request.
 ##
@@ -61,8 +61,12 @@ case "${target}" in
     printf '%s\n' 'github-api: refusing a plaintext http:// URL (would leak the token)' >&2
     exit 1
     ;;
-  *)
+  /*)
     url="https://api.github.com${target}"
+    ;;
+  *)
+    ## 'repos/x' would otherwise glue onto the host ('api.github.comrepos').
+    url="https://api.github.com/${target}"
     ;;
 esac
 

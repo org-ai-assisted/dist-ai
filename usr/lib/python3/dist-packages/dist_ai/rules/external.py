@@ -306,9 +306,17 @@ SHELLCHECK_FALLBACK_TIMEOUT = SHELLCHECK_TIMEOUT
 _SHELLCHECK_WALL_BACKSTOP_FACTOR = 5
 
 
+## Only the SOFT limit is lowered; the inherited hard limit is kept, since an
+## unprivileged process cannot raise it. SIGXCPU at the soft limit is the one cap
+## signal -- a SIGKILL (OOM killer, operator) is not a cap expiry.
 def _limit_cpu_seconds(seconds):
     def apply():
-        resource.setrlimit(resource.RLIMIT_CPU, (seconds, seconds + 1))
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+        if hard != resource.RLIM_INFINITY:
+            seconds_capped = min(seconds, hard)
+        else:
+            seconds_capped = seconds
+        resource.setrlimit(resource.RLIMIT_CPU, (seconds_capped, hard))
     return apply
 
 
@@ -318,8 +326,7 @@ def _run_shellcheck(command, timeout, env=None):
         command, capture_output=True, text=True, env=env,
         timeout=timeout * _SHELLCHECK_WALL_BACKSTOP_FACTOR,
         preexec_fn=_limit_cpu_seconds(cpu_seconds))
-    ## SIGXCPU at the soft limit, SIGKILL at the hard one: the CPU cap expired.
-    if proc.returncode in (-signal.SIGXCPU, -signal.SIGKILL):
+    if proc.returncode == -signal.SIGXCPU:
         raise subprocess.TimeoutExpired(
             command, timeout, output=proc.stdout, stderr=proc.stderr)
     return proc

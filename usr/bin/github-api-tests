@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## style-ok: no-safe-rm -- runs in a bare CI container, where safe-rm, a
 ## workstation helper, does not exist.
@@ -142,6 +143,18 @@ case "${out}" in
     ;;
 esac
 
+## A path without the leading slash must not glue onto the host.
+out="$(run_git_api GET repos/x/y)" || true
+case "${out}" in
+  *'https://api.github.com/repos/x/y'*)
+    printf '%s\n' 'ok   slashless path resolved against api.github.com'
+    ;;
+  *)
+    printf '%s\n' "FAIL: slashless path not resolved: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
 ## CI shape: no token file and no token env. The call must still be made, just
 ## without an Authorization header -- the public endpoints work unauthenticated.
 out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/absent" \
@@ -215,4 +228,4 @@ if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (10 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (11 checks, 0 failed, 0 skipped)'
