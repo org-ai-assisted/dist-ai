@@ -127,12 +127,14 @@ CALLER
 gate_rc=0
 gate_output=""
 gate_timed_out=0
+gate_outer="${OUTER_TIMEOUT}"
 run_gate() {
-   local dir="$1" inner="$2"
+   local dir="$1" inner="$2" outer="${3:-${OUTER_TIMEOUT}}"
+   gate_outer="${outer}"
    gate_rc=0
    gate_output="$( cd -- "${dir}" \
       && DIST_AI_SHELLCHECK_TIMEOUT="${inner}" \
-         timeout --kill-after=5 "${OUTER_TIMEOUT}" "${GATE}" --check ./caller 2>&1 )" \
+         timeout --kill-after=5 "${outer}" "${GATE}" --check ./caller 2>&1 )" \
       || gate_rc=$?
    gate_timed_out=0
    if [ "${gate_rc}" -eq 124 ] || [ "${gate_rc}" -eq 137 ]; then
@@ -145,10 +147,10 @@ run_gate() {
 assert_graceful_degrade() {
    local label="$1"
    if [ "${gate_timed_out}" -ne 0 ]; then
-      printf '%s\n' "FAIL: ${label}: gate hung (rc ${gate_rc}, killed by the ${OUTER_TIMEOUT}s outer cap) -- the fallback did not bound the follow"
+      printf '%s\n' "FAIL: ${label}: gate hung (rc ${gate_rc}, killed by the ${gate_outer}s outer cap) -- the fallback did not bound the follow"
       printf '%s\n' "${gate_output}" | tail -6; fail=1
    else
-      printf '%s\n' "PASS: ${label}: gate returned within ${OUTER_TIMEOUT}s"
+      printf '%s\n' "PASS: ${label}: gate returned within ${gate_outer}s"
    fi
    if grep --quiet --fixed-strings 'cross-file source resolution' <<< "${gate_output}"; then
       printf '%s\n' "PASS: ${label}: the follow-timeout degrade is reported (visible note)"
@@ -231,11 +233,22 @@ for bad in nan inf 0 -1 2147483648 1e20; do
 done
 
 ## Case 4: an oversized FINITE override must be CLAMPED to the ceiling (10s), PROVEN
-## against the expensive graph: 30 > OUTER_TIMEOUT(15), so if the override were honored
-## verbatim the exponential follow would blow past the outer cap and be killed. The
-## clean-file loop above cannot show this (it finishes instantly regardless of the cap).
-run_gate "${graph_dir}" "30"
+## against the expensive graph. The cap is CPU seconds, so the proof is CPU, not wall: the
+## clamped primary burns ~10s CPU before the fast no-follow fallback, while an honored 30
+## burns 30s+ on the exponential follow. Wall time is load-dependent, so the outer bound
+## here only catches a hang. The clean-file loop above cannot show this (it finishes
+## instantly regardless of the cap).
+TIMEFORMAT='%U %S'
+{ time run_gate "${graph_dir}" "30" 120 ; } 2> "${test_dir}/case4.cpu"
 assert_graceful_degrade "oversized-finite-override-clamped-on-graph"
+read -r cpu_user cpu_sys < "${test_dir}/case4.cpu"
+cpu_total=$(( ${cpu_user%.*} + ${cpu_sys%.*} ))
+if [ "${cpu_total}" -lt 25 ]; then
+   printf '%s\n' "PASS: oversized-finite-override-clamped-on-graph: ${cpu_total}s CPU (clamped to the 10s cap)"
+else
+   printf '%s\n' "FAIL: oversized-finite-override-clamped-on-graph: ${cpu_total}s CPU -- the 30s override was not clamped"
+   fail=1
+fi
 
 ## Case 5: in the degraded no-follow fallback SC2034/SC2154 cannot be verified across a
 ## 'source' boundary, so they are ADVISORY (visible note, non-gating), never a hard fail
@@ -305,7 +318,7 @@ chmod 0755 -- "${infile_dir}/caller"
 run_gate "${infile_dir}" "${INNER_TIMEOUT}"
 assert_vars_advisory "in-file-vars-advisory"
 
-## Case 6: the cap is CPU time, not wall-clock. A loaded host stretches a clean file's
+## Case 7: the cap is CPU time, not wall-clock. A loaded host stretches a clean file's
 ## shellcheck past the cap in WALL time while its CPU time stays well under it; a wall
 ## cap then fail-closes the clean file ("timed out ... with following forced off"). A
 ## shellcheck that idles 3s wall (no CPU) and reports clean models exactly that.
@@ -326,6 +339,21 @@ if [ "${gate_rc}" -eq 0 ] && ! grep --quiet --fixed-strings 'timed out' <<< "${g
    printf '%s\n' "PASS: cpu-starved-clean-file: 3s wall / ~0 CPU under a 1s cap stays green"
 else
    printf '%s\n' "FAIL: cpu-starved-clean-file: rc=${gate_rc} -- a wall-clock cap fail-closes a clean file on a loaded host"
+   printf '%s\n' "${gate_output}" | tail -6; fail=1
+fi
+
+## Case 8: an inherited finite HARD RLIMIT_CPU at or below the cap. An unprivileged process
+## cannot raise a hard limit, so a cap that sets one above it crashes in preexec_fn and
+## fails a clean file as a rule crash.
+gate_rc=0
+gate_output="$( cd -- "${clean_dir}" \
+   && prlimit --cpu=10:10 -- \
+      timeout --kill-after=5 "${OUTER_TIMEOUT}" "${GATE}" --check ./caller 2>&1 )" \
+   || gate_rc=$?
+if [ "${gate_rc}" -eq 0 ]; then
+   printf '%s\n' "PASS: inherited-hard-cpu-limit: a clean file stays green under a hard limit of 10s"
+else
+   printf '%s\n' "FAIL: inherited-hard-cpu-limit: rc=${gate_rc} -- the cap raised the hard RLIMIT_CPU"
    printf '%s\n' "${gate_output}" | tail -6; fail=1
 fi
 
