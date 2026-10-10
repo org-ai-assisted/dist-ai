@@ -43,10 +43,8 @@ from PyQt5 import QtWidgets, QtCore, QtGui  # noqa: E402
 
 import msgcollector_testlib as T  # noqa: E402
 
-try:
-    _CLASS_SRC = T.extract_python_class(T.dispatch_script(), 'SafeTextBrowser')
-except (LookupError, SystemExit):
-    pytest.skip('SafeTextBrowser not available', allow_module_level=True)
+## A missing subject or class is an environment bug: fail, never skip.
+_CLASS_SRC = T.extract_python_class(T.dispatch_script(), 'SafeTextBrowser')
 
 ## Define the REAL class against the real Qt base, without importing the script.
 _NS = {'QtWidgets': QtWidgets}

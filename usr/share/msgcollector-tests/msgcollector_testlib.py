@@ -64,18 +64,23 @@ def sourced_bash_argv(subject: str, funcs: tuple[str, ...], body: str,
     """argv that runs `body` in a fresh, non-strict bash after sourcing the
     REAL `subject`, the way a consumer sources it. In `body`, "$@" is `args`.
 
-    Exits 3 when any of `funcs` is undefined after sourcing: a nested source
-    with a wrong HELPER_SCRIPTS_PATH only warns in a non-strict shell, and the
-    function under test would then silently call a missing helper."""
+    Exits 3 when loading fails: the source returns nonzero, a sourced file
+    calls 'exit' (e.g. helper-scripts' wc self-test), or any of `funcs` is
+    undefined afterwards (a nested source with a wrong HELPER_SCRIPTS_PATH only
+    warns in a non-strict shell). 3 is never a status the functions under test
+    return, so a load failure can not pass for a clean decline."""
     script = (
         'subject="$1"\n'
         'shift\n'
-        'source -- "${subject}"\n'
+        'trap \'[ -n "${sourced_bash_ok:-}" ] || exit 3\' EXIT\n'
+        'source -- "${subject}" || exit 3\n'
         f'if ! declare -F -- {" ".join(funcs)} >/dev/null; then\n'
         '   printf \'%s\\n\' "sourced_bash: ${subject}: a required function'
         ' is undefined after sourcing" >&2\n'
         '   exit 3\n'
         'fi\n'
+        'sourced_bash_ok=1\n'
+        'trap - EXIT\n'
         + body + '\n'
     )
     return ['bash', '-c', script, 'bash', subject, *args]

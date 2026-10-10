@@ -36,10 +36,8 @@ pytest.importorskip('PyQt5')
 
 import msgcollector_testlib as T  # noqa: E402
 
-try:
-    DISPATCH = T.dispatch_script()
-except (LookupError, SystemExit):
-    pytest.skip('msgdispatcher_dispatch_x not available', allow_module_level=True)
+## A missing subject is an environment bug: fail, never skip.
+DISPATCH = T.dispatch_script()
 
 
 def _run_with_stdin(body: bytes) -> subprocess.CompletedProcess:
