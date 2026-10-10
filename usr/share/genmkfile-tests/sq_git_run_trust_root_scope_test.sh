@@ -108,8 +108,8 @@ source "${test_root}/fns.sh"
 tests_total=0
 tests_failed=0
 
-pass() { printf 'PASS: %s\n' "$*"; }
-fail() { printf 'FAIL: %s\n' "$*" >&2; tests_failed=$((tests_failed + 1)); }
+pass() { printf '%s\n' "PASS: $*"; }
+fail() { printf '%s\n' "FAIL: $*" >&2; tests_failed=$((tests_failed + 1)); }
 
 ## sq_git_run must run in THIS shell (not a subshell) so a global leak would be
 ## observable; the stub returns 0, so errexit is safe.
@@ -122,7 +122,7 @@ recorded_trust_root() {
 ## 1) 'HEAD' path: trust-root HEAD, and NOTHING leaks into the caller.
 tests_total=$((tests_total + 1))
 unset sq_git_trust_root sq_git_policy_file 2>/dev/null || true
-printf '' > "${args_file}"
+printf '%s' "" > "${args_file}"
 sq_git_run "HEAD" || true
 if [ "$(recorded_trust_root)" = "HEAD" ]; then
    pass "sq_git_run HEAD -> --trust-root HEAD"
@@ -140,7 +140,7 @@ fi
 ## 2) explicit 2nd arg wins (a prior 'HEAD' verify cannot override it).
 tests_total=$((tests_total + 1))
 unset sq_git_trust_root sq_git_policy_file 2>/dev/null || true
-printf '' > "${args_file}"
+printf '%s' "" > "${args_file}"
 sq_git_run "refs/tags/v1" "commitABC" || true
 if [ "$(recorded_trust_root)" = "commitABC" ]; then
    pass "sq_git_run <ref> commitABC -> --trust-root commitABC (2nd-arg precedence)"
@@ -152,7 +152,7 @@ fi
 tests_total=$((tests_total + 1))
 unset sq_git_policy_file 2>/dev/null || true
 sq_git_trust_root="envroot"
-printf '' > "${args_file}"
+printf '%s' "" > "${args_file}"
 sq_git_run "HEAD" || true
 if [ "$(recorded_trust_root)" = "envroot" ]; then
    pass "env sq_git_trust_root honored -> --trust-root envroot"

@@ -115,7 +115,7 @@ run_pin() {
    (
       # shellcheck disable=SC2317  # called by the sourced block on the reject path
       error() {
-         printf 'PIN_REJECTED: %s\n' "$*"
+         printf '%s\n' "PIN_REJECTED: $*"
          exit 3
       }
       # shellcheck disable=SC2034  # dist_build_apt_freshness: consumed by the sourced pin block
@@ -132,7 +132,7 @@ run_pin() {
       source <(printf '%s\n' "${epoch_valid_fn}")
       # shellcheck disable=SC1090
       source <(printf '%s\n' "${block}")
-      printf 'PIN_ACCEPTED: SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH}"
+      printf '%s\n' "PIN_ACCEPTED: SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
    )
 }
 

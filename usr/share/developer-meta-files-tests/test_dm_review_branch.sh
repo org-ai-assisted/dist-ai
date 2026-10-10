@@ -135,7 +135,7 @@ fi
 ## 2) A spoofed SIBLING branch name (U+202E RIGHT-TO-LEFT OVERRIDE): the review
 ## must abort non-zero. This is the regression the glob fix addresses -- a
 ## sibling ref, not the reviewed one.
-spoof_name="$(printf 'evil\xe2\x80\xaebranch')"
+spoof_name="$(printf '%s' "evil"$'\xe2\x80\xae'"branch")"
 git -C "${repo}" branch -- "${spoof_name}" master
 rc=0
 run_review feature || rc="$?"
@@ -153,7 +153,7 @@ git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1 || t
 git -C "${repo}" checkout --quiet -b dirty feature
 printf '%s\n' 'third' >> "${repo}/file"
 git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all \
-   --message "$(printf 'sneaky \xe2\x80\xae message')"
+   --message "$(printf '%s' "sneaky "$'\xe2\x80\xae'" message")"
 git -C "${repo}" checkout --quiet master
 rc=0
 run_review dirty || rc="$?"
@@ -192,7 +192,7 @@ fi
 ## so dm-review-branch asks "Continue the review anyway?" TWICE. The pty driver must answer BOTH
 ## -- a one-shot latch leaves the second prompt hanging, false-timing-out (124) instead of the
 ## real verdict. This is the two-prompt path no single-violation case exercises.
-combo_spoof="$(printf 'evil\xe2\x80\xaecombo')"
+combo_spoof="$(printf '%s' "evil"$'\xe2\x80\xae'"combo")"
 git -C "${repo}" branch -- "${combo_spoof}" master
 rc=0
 run_review_tty dirty y >/dev/null 2>&1 || rc="$?"
@@ -230,14 +230,14 @@ printf '%s\n' 'fourth' >> "${repo}/file"
 ## A distinctive ANSI payload: ESC '[31mINJECTED' ESC '[0m'. The unique
 ## 'INJECTED' tail lets the assertion match THIS sequence, so benign color
 ## escapes elsewhere in the output cannot mask a raw pass-through.
-esc_msg="$(printf 'log injection \033[31mINJECTED\033[0m')"
+esc_msg="$(printf '%s' "log injection "$'\033'"[31mINJECTED"$'\033'"[0m")"
 git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all \
    --message "${esc_msg}"
 git -C "${repo}" checkout --quiet master
 capture_file="${work}/esc-capture"
 rc=0
 run_review_tty_capture esc y "${capture_file}" || rc="$?"
-raw_seq="$(printf '\033[31mINJECTED')"
+raw_seq="$(printf '%s' $'\033'"[31mINJECTED")"
 neutralized_seq='_[31mINJECTED'
 if [ "${rc}" != 0 ]; then
    fail "interactive yes on an ANSI commit message should continue (exit 0), got ${rc}"
@@ -378,12 +378,12 @@ fi
 ## the operator RAW, before any scan or stcat neutralization. Review a
 ## nonexistent U+202E ref and assert its raw bytes never appear in the output.
 xtrace_out="${work}/xtrace-out"
-u202e_ref="$(printf 'evil\xe2\x80\xaeref')"
+u202e_ref="$(printf '%s' "evil"$'\xe2\x80\xae'"ref")"
 rc=0
 ( cd -- "${repo}" && dm-review-branch "${u202e_ref}" ) </dev/null >"${xtrace_out}" 2>&1 || rc="$?"
 if [ "${rc}" = 0 ]; then
    fail 'reviewing a nonexistent U+202E ref should fail, but it exited 0'
-elif grep --fixed-strings --quiet -- "$(printf '\xe2\x80\xae')" "${xtrace_out}"; then
+elif grep --fixed-strings --quiet -- "$(printf '%s' $'\xe2\x80\xae')" "${xtrace_out}"; then
    fail 'a raw U+202E ref name reached the terminal (xtrace leak -- set -x on?)'
 else
    pass 'no raw ref name leaks to the terminal (set -x is off)'
@@ -448,8 +448,8 @@ rc=0
    </dev/null >/dev/null 2>&1 || rc="$?"
 ## Restore feature for any later use.
 git -C "${repo}" branch --force -- feature "${orig_tip}" >/dev/null 2>&1 || true
-meld_arg="$(cat "${meld_arg_file}" 2>/dev/null || printf '')"
-scan_arg="$(cat "${scan_arg_file}" 2>/dev/null || printf '')"
+meld_arg="$(cat "${meld_arg_file}" 2>/dev/null || printf '%s' "")"
+scan_arg="$(cat "${scan_arg_file}" 2>/dev/null || printf '%s' "")"
 if [ "${rc}" != 0 ]; then
    fail "TOCTOU canary: a clean review should exit 0, got ${rc}"
 elif [[ "${meld_arg}" == *feature* ]]; then
@@ -495,9 +495,9 @@ rc=0
 ( cd -- "${repo}" \
    && PATH="${range_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch 'master...feature' ) \
    </dev/null >/dev/null 2>&1 || rc="$?"
-r_target="$(cat "${range_scan_target}" 2>/dev/null || printf '')"
-r_base="$(cat "${range_scan_base}" 2>/dev/null || printf '')"
-r_meld="$(cat "${range_meld_arg}" 2>/dev/null || printf '')"
+r_target="$(cat "${range_scan_target}" 2>/dev/null || printf '%s' "")"
+r_base="$(cat "${range_scan_base}" 2>/dev/null || printf '%s' "")"
+r_meld="$(cat "${range_meld_arg}" 2>/dev/null || printf '%s' "")"
 if [ "${rc}" != 0 ]; then
    fail "range spec: a clean 'master...feature' review should exit 0, got ${rc}"
 elif [ "${r_meld}" != "${range_base_mb}..${feature_sha}" ]; then
@@ -537,7 +537,7 @@ rc=0
    </dev/null >/dev/null 2>&1 || rc="$?"
 feature_sha_opt="$(git -C "${repo}" rev-parse --verify feature'^{commit}')"
 opt_base="$(git -C "${repo}" merge-base HEAD feature)"
-opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '%s' "")"
 if [ "${rc}" != 0 ]; then
    fail "option forwarding: 'dm-review-branch -C feature' should exit 0, got ${rc}"
 elif [ "${opt_args}" != "[-C][--end-of-options][${opt_base}..${feature_sha_opt}]" ]; then
@@ -572,7 +572,7 @@ fi
 ( cd -- "${repo}" \
    && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --word-diff-regex feature ) \
    </dev/null >/dev/null 2>&1 || true
-opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '%s' "")"
 if [ "${opt_args}" != "[--word-diff-regex][--end-of-options][${opt_base}..${feature_sha_opt}]" ]; then
    fail "range-consuming option: git-meld argv '${opt_args}', want '[--word-diff-regex][--end-of-options][${opt_base}..${feature_sha_opt}]' (--end-of-options shields the range from the option)"
 else
@@ -606,7 +606,7 @@ rc=0
 ( cd -- "${repo}" \
    && PATH="${opt_dir}:${work}/bin:${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --stat-width=120 feature ) \
    </dev/null >/dev/null 2>&1 || rc="$?"
-opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '')"
+opt_args="$(cat "${opt_meld_args}" 2>/dev/null || printf '%s' "")"
 if [ "${rc}" != 0 ]; then
    fail "attached-value option: 'dm-review-branch --stat-width=120 feature' should exit 0, got ${rc}"
 elif [ "${opt_args}" != "[--stat-width=120][--end-of-options][${opt_base}..${feature_sha_opt}]" ]; then

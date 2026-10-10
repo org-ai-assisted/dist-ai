@@ -52,7 +52,7 @@ cflite_explode_hex_corpus() {
         continue
         ;;
       '.'|*/*|*..*)
-        printf 'FATAL: unsafe seed name %s in %s\n' "${seed_name}" "${seeds_file}" >&2
+        printf '%s\n' "FATAL: unsafe seed name ${seed_name} in ${seeds_file}" >&2
         return 1
         ;;
     esac
@@ -61,13 +61,13 @@ cflite_explode_hex_corpus() {
     ## regardless of the caller's errexit -- a partial or empty seed must never
     ## be silently counted.
     if ! printf '%s' "${seed_hex}" | "${decoder}" > "${out_dir}/${seed_name}"; then
-      printf 'FATAL: decode failed for seed %s in %s\n' "${seed_name}" "${seeds_file}" >&2
+      printf '%s\n' "FATAL: decode failed for seed ${seed_name} in ${seeds_file}" >&2
       return 1
     fi
     count=$(( count + 1 ))
   done < "${seeds_file}"
   if [ "${count}" -eq 0 ]; then
-    printf 'FATAL: no seeds decoded from %s\n' "${seeds_file}" >&2
+    printf '%s\n' "FATAL: no seeds decoded from ${seeds_file}" >&2
     return 1
   fi
   printf '%s\n' "${count}"

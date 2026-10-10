@@ -111,7 +111,7 @@ make_output_info() { return 0 ; }
 # shellcheck disable=SC2317
 make_lintian_on_warning() { return 0 ; }
 # shellcheck disable=SC2317
-exit_with_error() { printf 'unexpected exit_with_error: %s\n' "$*" >&2 ; exit 99 ; }
+exit_with_error() { printf '%s\n' "unexpected exit_with_error: $*" >&2 ; exit 99 ; }
 # shellcheck disable=SC2317
 lintian() { return 0 ; }
 

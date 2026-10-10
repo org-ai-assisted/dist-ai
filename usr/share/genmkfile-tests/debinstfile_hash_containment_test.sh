@@ -89,7 +89,7 @@ source "${work}/fn.sh"
 ## Hostile source tree: a PARENT directory carrying '#..' and a file whose basename has '#'.
 pkg_root="${work}/pkgroot"
 mkdir --parents -- "${pkg_root}/x#.."
-printf 'payload\n' > "${pkg_root}/x#../pwned#realpkg"
+printf '%s\n' "payload" > "${pkg_root}/x#../pwned#realpkg"
 mkdir --parents -- "${pkg_root}/debian"
 
 genmkfile_temp_dir="${work}/scratch"
@@ -136,7 +136,7 @@ fi
 ## be silently dropped by the later non-dotglob '*.install' expansion.
 dot_root="${work}/dotroot"
 mkdir --parents -- "${dot_root}/sub" "${dot_root}/debian"
-printf 'x\n' > "${dot_root}/sub/foo#.evil"
+printf '%s\n' "x" > "${dot_root}/sub/foo#.evil"
 dot_out=''
 dot_rc=0
 dot_out="$( ( cd -- "${dot_root}" && make_debinstfile_create ) 2>&1 )" || dot_rc=$?
@@ -155,8 +155,8 @@ fi
 ## the valid file's package must NOT be copied to debian/ (it aborts at the invalid entry).
 fatal_root="${work}/fatalroot"
 mkdir --parents -- "${fatal_root}/usr/bin" "${fatal_root}/debian"
-printf 'x\n' > "${fatal_root}/usr/bin/good#pkg-ok"
-printf 'x\n' > "${fatal_root}/usr/bin/zzz#.evil"
+printf '%s\n' "x" > "${fatal_root}/usr/bin/good#pkg-ok"
+printf '%s\n' "x" > "${fatal_root}/usr/bin/zzz#.evil"
 genmkfile_temp_dir="${work}/fatalscratch"
 mkdir --parents -- "${genmkfile_temp_dir}"
 fatal_rc=0

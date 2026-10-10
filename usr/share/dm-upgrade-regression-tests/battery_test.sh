@@ -26,7 +26,7 @@ export LC_ALL=C
 me='battery-test'
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 lib="${script_dir}/../dm-smbios-reader-boot-tests/release-checks.bsh"
-[ -r "${lib}" ] || { printf 'ERROR: release-checks.bsh not found: %s\n' "${lib}" >&2; exit 1; }
+[ -r "${lib}" ] || { printf '%s\n' "ERROR: release-checks.bsh not found: ${lib}" >&2; exit 1; }
 # shellcheck source=../dm-smbios-reader-boot-tests/release-checks.bsh
 source "${lib}"
 ## No real sleeps in the retry path.
@@ -37,9 +37,9 @@ fail=0
 assert_eq() {
    local desc="$1" got="$2" want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${desc}"; pass=$(( pass + 1 ))
+      printf '%s\n' "PASS: ${desc}"; pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s\n  got:  [%s]\n  want: [%s]\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}" "  got:  [${got}]" "  want: [${want}]" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -155,6 +155,6 @@ assert_eq 'T6b check 8 actually skipped'          "$(count_tok "${EXEC_LOG}" '8:
 assert_eq 'T6b still fails at 2 (after the skip)' "${RELEASE_CHECK_FAILED_NUM}" '2'
 assert_eq 'T6b battery rc'                        "${rc}" '1'
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

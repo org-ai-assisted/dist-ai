@@ -105,10 +105,10 @@ run_leg() {
          --submenu-marker "${submenu_marker}" \
          --entry-title "${entry_title}" \
          --expect "${expect}"; then
-      printf 'PASS  %s: "%s" %s\n' "${firmware}" "${entry_title}" "${expect}"
+      printf '%s\n' "PASS  ${firmware}: \"${entry_title}\" ${expect}"
    else
       failures=$(( failures + 1 ))
-      printf 'FAIL  %s: "%s" expected %s\n' "${firmware}" "${entry_title}" "${expect}"
+      printf '%s\n' "FAIL  ${firmware}: \"${entry_title}\" expected ${expect}"
       printf '%s\n' "----- ${firmware} serial tail -----" >&2
       tail -n 40 -- "${serial_log}" 2>/dev/null >&2 || true
       printf '%s\n' "-----------------------------------" >&2

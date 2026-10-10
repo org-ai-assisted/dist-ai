@@ -43,7 +43,7 @@ stub_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # EXIT trap
 cleanup() { safe-rm --recursive --force -- "${stub_dir}"; }
 trap cleanup EXIT
-printf '#!/bin/bash\nprintf %%s stub-slug\n' > "${stub_dir}/sandbox-session-slug"
+printf '%s\n' "#!/bin/bash" "printf %s stub-slug" > "${stub_dir}/sandbox-session-slug"
 chmod +x "${stub_dir}/sandbox-session-slug"
 PATH="${stub_dir}:${PATH}"
 

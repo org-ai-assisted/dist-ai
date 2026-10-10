@@ -25,6 +25,6 @@ export LC_ALL=C
 # shellcheck disable=SC1090
 source "$1"
 
-printf 'GRUB_DISTRIBUTOR=%s\n' "${GRUB_DISTRIBUTOR:-}"
-printf 'GRUB_THEME=%s\n' "${GRUB_THEME:-}"
-printf 'GRUB_GFXMODE=%s\n' "${GRUB_GFXMODE:-}"
+printf '%s\n' "GRUB_DISTRIBUTOR=${GRUB_DISTRIBUTOR:-}"
+printf '%s\n' "GRUB_THEME=${GRUB_THEME:-}"
+printf '%s\n' "GRUB_GFXMODE=${GRUB_GFXMODE:-}"

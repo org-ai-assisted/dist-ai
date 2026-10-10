@@ -188,7 +188,7 @@ if [ -n "${GIT_MELD_OLD_REF:-}" ]; then
    old_copy="$(mktemp)"
    if git -C "${dmf_repo}" show "${GIT_MELD_OLD_REF}:usr/bin/git-meld" > "${old_copy}" 2>/dev/null; then
       chmod +x "${old_copy}"
-      printf '\n%s\n' "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero total) --"
+      printf '%s\n' "" "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero total) --"
       run_suites "${old_copy}"
       old_fails="${run_suites_total}"
       printf '%s\n' "OLD hidden-change failures: ${old_fails} (non-zero == the bug reproduced)"
@@ -200,7 +200,7 @@ fi
 ## share git-review-driver.sh (kdiff3 is a GUI sibling of meld, diff-review is the
 ## terminal-safe textual one), so each must surface every change identically. The
 ## passed path is git-meld; its siblings live in the same dir.
-printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
+printf '%s\n' "" "-- CURRENT code: expected 0 hidden-change failures --"
 driver_dir="$( dirname -- "${git_meld}" )"
 new_fails=0
 drivers_ran=0
@@ -217,7 +217,7 @@ for drv_name in git-meld git-kdiff3 git-diff-review; do
       continue
    fi
    drivers_ran=$(( drivers_ran + 1 ))
-   printf '\n%s\n' "-- adversarial suites vs ${drv_name} --"
+   printf '%s\n' "" "-- adversarial suites vs ${drv_name} --"
    run_suites "${drv}"
    if [ "${run_suites_total}" != 0 ]; then
       printf '%s\n' "FAIL: ${drv_name} hid ${run_suites_total} real change(s) -- a review tool must never do that." >&2
@@ -240,7 +240,7 @@ printf '%s\n' "PASS: no real change was hidden across ${drivers_ran} of 3 advers
 ## wrappers are siblings of git-meld, so derive their dir from the git-meld path.
 ## 77 == the wrappers are not present next to git-meld (e.g. an older install) ->
 ## SKIP rather than fail.
-printf '\n%s\n' "-- difftool/mergetool contract suite --"
+printf '%s\n' "" "-- difftool/mergetool contract suite --"
 dt_rc=0
 "${share}/difftool-mergetool-lib.sh" "$( dirname -- "${git_meld}" )" || dt_rc=$?
 if [ "${dt_rc}" = 77 ]; then
@@ -253,7 +253,7 @@ fi
 
 ## interactive-consent suite: git-diff-review's /dev/tty prompt on fatal content
 ## (needs a pseudo-tty + python3). 77 == prerequisites missing -> SKIP.
-printf '\n%s\n' "-- interactive consent suite (git-diff-review) --"
+printf '%s\n' "" "-- interactive consent suite (git-diff-review) --"
 it_rc=0
 "${share}/interactive-lib.sh" "$( dirname -- "${git_meld}" )" || it_rc=$?
 if [ "${it_rc}" = 77 ]; then
@@ -268,7 +268,7 @@ fi
 ## git-diffs-lie corpus (one safe surprise per branch) and assert
 ## each is surfaced per its manifest row. 77 == corpus not found -> SKIP (set
 ## GIT_DIFFS_LIE_DIR to a checkout).
-printf '\n%s\n' "-- adversarial corpus suite (git-diffs-lie) --"
+printf '%s\n' "" "-- adversarial corpus suite (git-diffs-lie) --"
 cp_rc=0
 "${share}/corpus-lib.sh" "$( dirname -- "${git_meld}" )" || cp_rc=$?
 if [ "${cp_rc}" = 77 ]; then

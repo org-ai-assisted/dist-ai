@@ -33,7 +33,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${subject}"
 
@@ -167,9 +167,9 @@ check() {
    label="$1"
    cond="$2"
    if [ "${cond}" = 'true' ]; then
-      printf 'ok: %s\n' "${label}"
+      printf '%s\n' "ok: ${label}"
    else
-      printf 'FAIL: %s\n' "${label}" >&2
+      printf '%s\n' "FAIL: ${label}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -183,75 +183,75 @@ run_lane() {
 
 ## Case A: marker matches -> lane proceeds to dm-whonix-pair and publishes.
 printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
-printf "" > "${PAIR_ARGV}"
+printf '%s' "" > "${PAIR_ARGV}"
 rc_a="$(run_lane)"
-check "match: lane returns 0" "$([ "${rc_a}" = '0' ] && printf true || printf false)"
-check "match: dm-whonix-pair invoked" "$([ -s "${PAIR_ARGV}" ] && printf true || printf false)"
+check "match: lane returns 0" "$([ "${rc_a}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
+check "match: dm-whonix-pair invoked" "$([ -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case B: marker differs -> SETUP_RC, dm-whonix-pair NEVER reached (no verdict mislabel).
 printf '%s\n' 'Value: 18.2.3.3' > "${MARKER_RESPONSE_FILE}"
-printf "" > "${PAIR_ARGV}"
+printf '%s' "" > "${PAIR_ARGV}"
 rc_b="$(run_lane)"
-check "mismatch: lane fails SETUP_RC(2)" "$([ "${rc_b}" = '2' ] && printf true || printf false)"
-check "mismatch: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf true || printf false)"
+check "mismatch: lane fails SETUP_RC(2)" "$([ "${rc_b}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "mismatch: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case C: marker unset -> SETUP_RC, dm-whonix-pair NEVER reached.
 printf '%s\n' 'No value set!' > "${MARKER_RESPONSE_FILE}"
-printf "" > "${PAIR_ARGV}"
+printf '%s' "" > "${PAIR_ARGV}"
 rc_c="$(run_lane)"
-check "unset: lane fails SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf true || printf false)"
-check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf true || printf false)"
+check "unset: lane fails SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case E: the leak account is NOT covered by the host leak-drop -> provisioning fails
 ## SETUP_RC before any import (fail-closed; a fail-open refresh would proceed).
 printf '%s\n' 'persist-leak-whonix' > "${NFT_UNCOVERED_FILE}"
-printf "" > "${DIST_ARGV}"
+printf '%s' "" > "${DIST_ARGV}"
 rc_e=0
 ( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_e=$?
-check "uncovered: provision fails SETUP_RC(2)" "$([ "${rc_e}" = '2' ] && printf true || printf false)"
-check "uncovered: dist-installer-cli NOT invoked" "$([ ! -s "${DIST_ARGV}" ] && printf true || printf false)"
+check "uncovered: provision fails SETUP_RC(2)" "$([ "${rc_e}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "uncovered: dist-installer-cli NOT invoked" "$([ ! -s "${DIST_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 true >| "${NFT_UNCOVERED_FILE}"
 
 ## Case D: provisioner imports with the pinned version and marks BOTH VMs.
-printf "" > "${DIST_ARGV}"
-printf "" > "${SETEXTRA_LOG}"
-printf "" > "${SUDO_LOG}"
+printf '%s' "" > "${DIST_ARGV}"
+printf '%s' "" > "${SETEXTRA_LOG}"
+printf '%s' "" > "${SUDO_LOG}"
 rc_d=0
 ( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_d=$?
-check "provision: returns 0" "$([ "${rc_d}" = '0' ] && printf true || printf false)"
+check "provision: returns 0" "$([ "${rc_d}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
 check "provision: dist-installer-cli got --guest=whonix" \
-   "$(grep --quiet -- '--guest=whonix' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--guest=whonix' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "provision: dist-installer-cli got the pinned version" \
-   "$(grep --quiet -- '--guest-version=18.2.3.5' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--guest-version=18.2.3.5' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "provision: dist-installer-cli got the leak account" \
-   "$(grep --quiet -- '--user=persist-leak-whonix' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--user=persist-leak-whonix' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "provision: dist-installer-cli imports both VMs" \
-   "$(grep --quiet -- '--import-only=both' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--import-only=both' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 ## download/import run AS the target, so the staging dir must be the target's own home,
 ## not the invoker's. Canary: a revert to no/invoker-home prefix fails this.
 check "provision: directory-prefix is the target account home" \
-   "$(grep --quiet -- '--directory-prefix=/home/persist-leak-whonix/dist-installer-cli-download' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--directory-prefix=/home/persist-leak-whonix/dist-installer-cli-download' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 ## skip the installer's apt-upgrade gate (irrelevant to an OVA re-import on a host with
 ## VirtualBox already installed).
 check "provision: skips the OS-upgrade gate" \
-   "$(grep --quiet -- '--noupgrade' "${DIST_ARGV}" && printf true || printf false)"
+   "$(grep --quiet -- '--noupgrade' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "provision: GW marker set to the version" \
-   "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
+   "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 check "provision: WS marker set to the version" \
-   "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf true || printf false)"
+   "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.5' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 ## dist-installer-cli REFUSES root, so it must be invoked via sudo -u <invoker>, NOT directly
 ## by the root dm-release-test process. Canary: a revert to a direct call leaves no sudo-drop
 ## of dist-installer-cli in the sudo log.
 check "provision: dist-installer-cli invoked via sudo -u (not as root)" \
-   "$(grep --quiet --extended-regexp -- '-u .*dist-installer-cli' "${SUDO_LOG}" && printf true || printf false)"
+   "$(grep --quiet --extended-regexp -- '-u .*dist-installer-cli' "${SUDO_LOG}" && printf '%s' "true" || printf '%s' "false")"
 
 ## Lock dir hardened to 0700 (a world-writable lock dir lets any local user hold the
 ## lock and wedge every run). Canary: pre-created 0777 above; the chmod must tighten it.
 check "lock dir hardened to 0700" \
-   "$([ "$(stat --format='%a' -- "${DM_RELEASE_TEST_LOCK_DIR}")" = '700' ] && printf true || printf false)"
+   "$([ "$(stat --format='%a' -- "${DM_RELEASE_TEST_LOCK_DIR}")" = '700' ] && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s whonix-lane assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} whonix-lane assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall whonix-lane assertions passed\n'
+printf '%s\n' "" "all whonix-lane assertions passed"

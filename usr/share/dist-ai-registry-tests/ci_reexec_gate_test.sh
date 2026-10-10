@@ -82,9 +82,9 @@ reexec_verdict() {  ## $1=euid  $2...=a command, e.g. `export GITHUB_WORKSPACE=/
 check() {
    local desc="$1" want="$2" got="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s (%s)\n' "${desc}" "${got}"
+      printf '%s\n' "PASS: ${desc} (${got})"
    else
-      printf 'FAIL: %s: got %s, expected %s\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}: got ${got}, expected ${want}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -118,7 +118,7 @@ check 'bare CI=true does NOT re-exec' \
    no "$(reexec_verdict 0 export GITHUB_WORKSPACE=/some/workspace CI=true)"
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'ci_reexec_gate_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "ci_reexec_gate_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'ci_reexec_gate_test: OK\n'
+printf '%s\n' "ci_reexec_gate_test: OK"

@@ -86,7 +86,7 @@ if [ -z "${zombie}" ]; then
 else
    ## Give the parent a beat to KILL the child so it is a zombie, not still running.
    for _ in $(seq 1 30); do
-      raw="$(cat -- "/proc/${zombie}/stat" 2>/dev/null || printf '')"
+      raw="$(cat -- "/proc/${zombie}/stat" 2>/dev/null || printf '%s' "")"
       state="${raw##*') '}"
       state="${state%% *}"
       [ "${state}" = 'Z' ] && break

@@ -92,8 +92,8 @@ expect_flag() {
          ;;
    esac
    if [ "${got}" != "${want}" ]; then
-      printf 'FAIL [%s]: python-shebang expected %s, got %s\n' \
-         "${label}" "${want}" "${got}" >&2
+      printf '%s\n' \
+         "FAIL [${label}]: python-shebang expected ${want}, got ${got}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -109,8 +109,10 @@ expect_fix() {
    "${STYLE}" --fix -- "${path}" >/dev/null 2>&1 || true
    first="$(head --lines=1 -- "${path}")"
    if [ "${first}" != "${want}" ]; then
-      printf 'FAIL [%s]: first line after --fix expected %q, got %q\n' \
-         "${label}" "${want}" "${first}" >&2
+      printf -v want_q '%q' "${want}"
+      printf -v first_q '%q' "${first}"
+      printf '%s\n' \
+         "FAIL [${label}]: first line after --fix expected ${want_q}, got ${first_q}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -235,7 +237,7 @@ python3
 ## The fixer replaces [0, first-line-end); if that end tracked only LF, a '\r'
 ## file's whole body vanished. Written with a literal CR via printf's format.
 cr_path="$(mktemp --tmpdir="${tmp_root}" fixture.XXXXXX.py)"
-printf '#!/usr/bin/python3 -u\rprint("kept")\r' > "${cr_path}"
+printf '%s' "#!/usr/bin/python3 -u"$'\r'"print(\"kept\")"$'\r' > "${cr_path}"
 "${STYLE}" --fix -- "${cr_path}" >/dev/null 2>&1 || true
 cr_body="$(tr '\r' '\n' < "${cr_path}")"
 case "${cr_body}" in
@@ -243,7 +245,7 @@ case "${cr_body}" in
       : ## body preserved
       ;;
    *)
-      printf 'FAIL [CR body preserved]: --fix deleted the body of a CR-terminated file\n' >&2
+      printf '%s\n' "FAIL [CR body preserved]: --fix deleted the body of a CR-terminated file" >&2
       failures=$((failures + 1))
       ;;
 esac

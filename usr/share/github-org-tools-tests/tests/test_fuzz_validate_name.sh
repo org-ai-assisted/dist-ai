@@ -146,10 +146,10 @@ gen_input() {
                bytes='a'
                ;;
             2)
-               bytes="$(printf 'a%.0s' $(seq 1 "${max_len}"))"
+               printf -v bytes 'a%.0s' $(seq 1 "${max_len}")
                ;;
             3)
-               bytes="$(printf 'a%.0s' $(seq 1 $((max_len + 1))))"
+               printf -v bytes 'a%.0s' $(seq 1 $((max_len + 1)))
                ;;
             4)
                bytes='.'
@@ -160,8 +160,8 @@ gen_input() {
          esac
          ;;
       4)
-         bytes="$(printf '\\%03o' $((33 + RANDOM % 94)))"
-         bytes="$(printf '%b' "${bytes}")"
+         printf -v bytes '\\%03o' $((33 + RANDOM % 94))
+         printf -v bytes '%b' "${bytes}"
          ;;
    esac
    printf '%s' "${bytes}"

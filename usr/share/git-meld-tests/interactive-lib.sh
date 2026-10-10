@@ -68,7 +68,7 @@ cd -- "${repo}"
 printf '%s\n' 'ok' > bad.txt
 git add -A
 git commit -qm base
-printf '%b' 'x \xff\xfe y\n' > bad.txt
+printf '%s\n' "x "$'\377\376'" y" > bad.txt
 git add -A
 git commit -qm bad
 

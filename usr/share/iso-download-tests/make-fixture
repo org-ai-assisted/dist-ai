@@ -182,8 +182,8 @@ fi
 
 {
    printf '%s\n' "FAKE KICKSECURE/WHONIX SELF-TEST ISO"
-   printf 'vmname=%s desktop=%s version=%s arch=%s\n' \
-      "${vmname}" "${desktop}" "${version}" "${arch}"
+   printf '%s\n' \
+      "vmname=${vmname} desktop=${desktop} version=${version} arch=${arch}"
 } > "${image_path}"
 
 ## Basename-relative sha512sums, as dm-prepare-release publishes it. The name
@@ -195,7 +195,7 @@ if [ "${sums_wrong_name}" = 'true' ]; then
    sums_name="${vmname}-${desktop}-${older_version}.${arch}.iso"
 fi
 digest="$(sha512sum -- "${image_path}" | cut --delimiter=' ' --fields=1)"
-printf '%s  %s\n' "${digest}" "${sums_name}" > "${sums_path}"
+printf '%s\n' "${digest}  ${sums_name}" > "${sums_path}"
 
 ## OpenPGP signature over the .sha512sums file (as dm-prepare-release's
 ## sign_and_verify publishes <image>.sha512sums.asc).
@@ -211,7 +211,7 @@ if [ "${bad_hash}" = 'true' ]; then
    ## Flip one byte in the image AFTER the sums were signed: the signature
    ## stays valid but the image no longer matches the signed digest, so only
    ## the HASH check rejects it.
-   printf '\xff' | dd of="${image_path}" bs=1 seek=1 count=1 conv=notrunc status=none
+   printf '%s' $'\xff' | dd of="${image_path}" bs=1 seek=1 count=1 conv=notrunc status=none
 fi
 
 ## Directory index: several version dirs plus non-version noise, so the parser
@@ -225,10 +225,10 @@ fi
       printf '%s\n' "${version}"
    fi
    printf '%s\n' "<html><body><pre>"
-   printf '<a href="../">../</a>\n'
-   printf '<a href="robots.txt">robots.txt</a>\n'
-   printf '<a href="%s/">%s/</a>\n' "${older_version}" "${older_version}"
-   printf '<a href="%s/">%s/</a>\n' "${version}" "${version}"
+   printf '%s\n' "<a href=\"../\">../</a>"
+   printf '%s\n' "<a href=\"robots.txt\">robots.txt</a>"
+   printf '%s\n' "<a href=\"${older_version}/\">${older_version}/</a>"
+   printf '%s\n' "<a href=\"${version}/\">${version}/</a>"
    printf '%s\n' "</pre></body></html>"
 } > "${index_path}"
 
@@ -236,25 +236,30 @@ if [ "${wiki_crlf}" = 'true' ]; then
    ## CRLF body with the version alone on the first line: a trailing CR then
    ## sits AFTER the version and BEFORE any '<', so sanitize_wiki_version's
    ## '<'-cut cannot strip it -- the version must be CR-stripped in its own right.
-   printf '%s\r\n<noinclude>[[Category:MultiWiki]]\r\n{{mbox}}\r\n</noinclude>\r\n' \
-      "${stable_version}" > "${wiki_path}"
+   printf '%s\n' \
+      "${stable_version}"$'\r' \
+      "<noinclude>[[Category:MultiWiki]]"$'\r' \
+      "{{mbox}}"$'\r' \
+      "</noinclude>"$'\r' > "${wiki_path}"
 else
-   printf '%s<noinclude>[[Category:MultiWiki]]\n{{mbox}}\n</noinclude>\n' \
-      "${stable_version}" > "${wiki_path}"
+   printf '%s\n' \
+      "${stable_version}<noinclude>[[Category:MultiWiki]]" \
+      "{{mbox}}" \
+      "</noinclude>" > "${wiki_path}"
 fi
 
 {
    if [ "${omit_wiki}" != 'true' ]; then
-      printf '%s\t%s\n' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw" "${wiki_path}"
+      printf '%s\n' "${wiki_base}/w/index.php?title=Template:VersionNew&stable=0&action=raw"$'\t'"${wiki_path}"
    fi
-   printf '%s\t%s\n' "${download_base}/iso/" "${index_path}"
-   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}" "${image_path}"
-   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.sha512sums" "${sums_path}"
-   printf '%s\t%s\n' "${download_base}/iso/${version}/${image}.sha512sums.asc" "${sig_path}"
+   printf '%s\n' "${download_base}/iso/"$'\t'"${index_path}"
+   printf '%s\n' "${download_base}/iso/${version}/${image}"$'\t'"${image_path}"
+   printf '%s\n' "${download_base}/iso/${version}/${image}.sha512sums"$'\t'"${sums_path}"
+   printf '%s\n' "${download_base}/iso/${version}/${image}.sha512sums.asc"$'\t'"${sig_path}"
 } > "${urlmap}"
 
 printf '%s\n' "${me}: done"
-printf '  image     : %s\n' "${image_path}"
-printf '  cert      : %s\n' "${public_cert}"
-printf '  urlmap    : %s\n' "${urlmap}"
-printf '  version   : %s (stable pin %s)\n' "${version}" "${stable_version}"
+printf '%s\n' "  image     : ${image_path}"
+printf '%s\n' "  cert      : ${public_cert}"
+printf '%s\n' "  urlmap    : ${urlmap}"
+printf '%s\n' "  version   : ${version} (stable pin ${stable_version})"

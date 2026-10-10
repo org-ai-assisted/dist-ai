@@ -29,11 +29,11 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 
 failures=0
-ok()  { printf 'ok: %s\n' "$1"; }
-bad() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
+ok()  { printf '%s\n' "ok: $1"; }
+bad() { printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); }
 
 ## --- pure helpers (source the guarded main) ---
 # shellcheck disable=SC1090
@@ -55,7 +55,8 @@ for good in '18.2.3.0-222-g0355db7f' '18.2.1.9' '1.0+build-1'; do
       bad "rt_build_version_ok rejected a safe label '${good}'"
    fi
 done
-for evil in '../etc' 'a/b' 'a..b' 'has space' '-rc' '--help' '.' '..' "$(printf 'x%065d' 0)"; do
+printf -v overlong_tag 'x%065d' 0
+for evil in '../etc' 'a/b' 'a..b' 'has space' '-rc' '--help' '.' '..' "${overlong_tag}"; do
    if rt_build_version_ok "${evil}"; then
       bad "rt_build_version_ok accepted an unsafe label '${evil}'"
    else
@@ -142,7 +143,7 @@ else
 fi
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s built-iso-lane assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} built-iso-lane assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall built-iso-lane assertions passed\n'
+printf '%s\n' "" "all built-iso-lane assertions passed"

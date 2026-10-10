@@ -45,11 +45,11 @@ skip_or_fatal() {
    ## standalone / lenient / --allow-skip run now FATALs instead of silently passing.
    local msg="$1"
    if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
-      printf 'terminal-poc-corpus-tests: SKIP (%s) [authorized]\n' "${msg}" >&2
+      printf '%s\n' "terminal-poc-corpus-tests: SKIP (${msg}) [authorized]" >&2
       ## style-ok: allow-skip: authorized by the orchestrator (DIST_AI_SKIP_AUTHORIZED=1); absent required target
       exit 77
    fi
-   printf 'terminal-poc-corpus-tests: FATAL: %s (unauthorized absent-target skip)\n' "${msg}" >&2
+   printf '%s\n' "terminal-poc-corpus-tests: FATAL: ${msg} (unauthorized absent-target skip)" >&2
    exit 1
 }
 
@@ -104,14 +104,14 @@ export DIST_AI_IN_SANDBOX='1'
 ## may be unavailable; the harness skips whatever is missing, so never fail here.
 if [ -x "${corpus}/conformance/acquire.sh" ]; then
    "${corpus}/conformance/acquire.sh" --for-tests || \
-      printf 'terminal-poc-corpus-tests: note: suite acquisition incomplete (offline?); harness will skip unacquired suites\n' >&2
+      printf '%s\n' "terminal-poc-corpus-tests: note: suite acquisition incomplete (offline?); harness will skip unacquired suites" >&2
 fi
 
 overall=0
 ran=0
 run_stage() {
    local label="$1"; shift
-   printf '\n== %s ==\n' "${label}"
+   printf '%s\n' "" "== ${label} =="
    local rc=0
    python3 -Bu -- "$@" || rc="$?"
    if [ "${rc}" = '0' ]; then
@@ -119,10 +119,10 @@ run_stage() {
       return 0
    fi
    if [ "${rc}" = '77' ]; then
-      printf 'terminal-poc-corpus-tests: %s SKIPPED (exit 77)\n' "${label}" >&2
+      printf '%s\n' "terminal-poc-corpus-tests: ${label} SKIPPED (exit 77)" >&2
       return 0
    fi
-   printf 'terminal-poc-corpus-tests: %s FAILED (exit %s)\n' "${label}" "${rc}" >&2
+   printf '%s\n' "terminal-poc-corpus-tests: ${label} FAILED (exit ${rc})" >&2
    overall=1
 }
 

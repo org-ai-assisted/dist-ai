@@ -115,8 +115,8 @@ export DEBEMAIL="test@example.invalid"
 export SIGNIFY_CALLS="${work}/signify-calls.log"
 signify_private_key="${work}/keyname.sec"
 signify_public_key="${work}/keyname.pub"
-printf 'priv' > "${signify_private_key}"
-printf 'pub' > "${signify_public_key}"
+printf '%s' "priv" > "${signify_private_key}"
+printf '%s' "pub" > "${signify_public_key}"
 
 # shellcheck disable=SC1090
 source "${lib}"
@@ -124,7 +124,7 @@ source "${lib}"
 ## Fresh artifact + clean sidecars/log for each case.
 reset_artifact() {
    artifact="${work}/artifact.img"
-   printf 'payload' > "${artifact}"
+   printf '%s' "payload" > "${artifact}"
    safe-rm -f -- "${artifact}.asc" "${artifact}.sig"
    true > "${SIGNIFY_CALLS}"
 }
@@ -146,7 +146,7 @@ fi
 ## CANARY 1b: sign_and_verify must DELETE a stale '.sig' (from an earlier build
 ## or planted), so a signature that does not match this file cannot be published.
 reset_artifact
-printf 'stale signature for a previous file' > "${artifact}.sig"
+printf '%s' "stale signature for a previous file" > "${artifact}.sig"
 if ( SQ_VERIFY_RC=0 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
    if [ ! -f "${artifact}.sig" ]; then
       pass "sign_and_verify removes a stale .sig"
@@ -172,7 +172,7 @@ fi
 
 ## PROPAGATION: a bad OpenPGP signature must FAIL verify_signature.
 reset_artifact
-printf 'asc' > "${artifact}.asc"
+printf '%s' "asc" > "${artifact}.asc"
 if ( SQ_VERIFY_RC=1 verify_signature "${artifact}" ) >/dev/null 2>&1; then
    fail "verify_signature returned 0 for a bad OpenPGP sig (propagation broken)"
 else
@@ -182,8 +182,8 @@ fi
 ## PROPAGATION: for the checksums path, a bad signify signature must FAIL even
 ## when the OpenPGP signature is GOOD (the signify check must not be masked).
 reset_artifact
-printf 'asc' > "${artifact}.asc"
-printf 'sig' > "${artifact}.sig"
+printf '%s' "asc" > "${artifact}.asc"
+printf '%s' "sig" > "${artifact}.sig"
 if ( SQ_VERIFY_RC=0 SIGNIFY_RC=1 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
    fail "verify_signature_signify returned 0 with a bad signify sig (signify check masked)"
 else
@@ -192,8 +192,8 @@ fi
 
 ## PROPAGATION: both good -> verify_signature_signify succeeds.
 reset_artifact
-printf 'asc' > "${artifact}.asc"
-printf 'sig' > "${artifact}.sig"
+printf '%s' "asc" > "${artifact}.asc"
+printf '%s' "sig" > "${artifact}.sig"
 if ( SQ_VERIFY_RC=0 SIGNIFY_RC=0 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
    pass "verify_signature_signify succeeds when both signatures are valid"
 else
@@ -222,7 +222,7 @@ fi
 ## verify_signature is OpenPGP-only: a valid OpenPGP signature verifies WITHOUT
 ## invoking signify.
 reset_artifact
-printf 'asc' > "${artifact}.asc"
+printf '%s' "asc" > "${artifact}.asc"
 if ( SQ_VERIFY_RC=0 verify_signature "${artifact}" ) >/dev/null 2>&1; then
    if [ ! -s "${SIGNIFY_CALLS}" ]; then
       pass "verify_signature verifies via OpenPGP only, never invoking signify"
@@ -236,8 +236,8 @@ fi
 ## verify_signature_signify must PROPAGATE a bad OpenPGP signature even when the
 ## signify signature is good (the OpenPGP check must not be skipped).
 reset_artifact
-printf 'asc' > "${artifact}.asc"
-printf 'sig' > "${artifact}.sig"
+printf '%s' "asc" > "${artifact}.asc"
+printf '%s' "sig" > "${artifact}.sig"
 if ( SQ_VERIFY_RC=1 SIGNIFY_VERIFY_RC=0 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
    fail "verify_signature_signify returned 0 with a bad OpenPGP sig (OpenPGP check skipped)"
 else

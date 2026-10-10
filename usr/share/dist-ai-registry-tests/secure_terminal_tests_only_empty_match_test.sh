@@ -49,9 +49,9 @@ out="$(env --unset=DIST_AI_SKIP_AUTHORIZED \
    "SECURE_TERMINAL_REPO=${fakerepo}" "SECURE_TERMINAL_TESTS_ONLY=," \
    "${runner}" 2>&1)" || rc="$?"
 if [ "${rc}" -eq 1 ] && [[ "${out}" == *'matched no suite'* ]]; then
-   printf 'PASS: a separators-only SECURE_TERMINAL_TESTS_ONLY is FATAL (exit 1), not silent green\n'
+   printf '%s\n' "PASS: a separators-only SECURE_TERMINAL_TESTS_ONLY is FATAL (exit 1), not silent green"
 else
-   printf 'FAIL: separators-only selector exited %s (want 1) / message missing; out=%s\n' "${rc}" "${out}" >&2
+   printf '%s\n' "FAIL: separators-only selector exited ${rc} (want 1) / message missing; out=${out}" >&2
    failures=$((failures + 1))
 fi
 
@@ -61,14 +61,14 @@ out="$(env --unset=DIST_AI_SKIP_AUTHORIZED \
    "SECURE_TERMINAL_REPO=${fakerepo}" "SECURE_TERMINAL_TESTS_ONLY=no_such_suite" \
    "${runner}" 2>&1)" || rc="$?"
 if [ "${rc}" -eq 1 ] && [[ "${out}" == *'unknown suite'* ]]; then
-   printf 'PASS: an unknown-named suite is still FATAL (exit 1) via the per-item guard\n'
+   printf '%s\n' "PASS: an unknown-named suite is still FATAL (exit 1) via the per-item guard"
 else
-   printf 'FAIL: unknown-suite selector exited %s (want 1) / message missing; out=%s\n' "${rc}" "${out}" >&2
+   printf '%s\n' "FAIL: unknown-suite selector exited ${rc} (want 1) / message missing; out=${out}" >&2
    failures=$((failures + 1))
 fi
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'secure_terminal_tests_only_empty_match_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "secure_terminal_tests_only_empty_match_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'secure_terminal_tests_only_empty_match_test: OK\n'
+printf '%s\n' "secure_terminal_tests_only_empty_match_test: OK"

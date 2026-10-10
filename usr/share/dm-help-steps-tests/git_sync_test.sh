@@ -105,7 +105,7 @@ super="${workspace}/super"
 gitq init --quiet --bare -- "${fork}"
 gitq init --quiet -- "${sub_src}"
 gitq -C "${sub_src}" checkout --quiet -b ai
-printf 'v1\n' > "${sub_src}/file"
+printf '%s\n' "v1" > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v1"
 gitq -C "${sub_src}" remote add fork "file://${fork}"
@@ -114,8 +114,8 @@ gitq -C "${sub_src}" push --quiet fork ai
 gitq init --quiet -- "${super}"
 gitq -C "${super}" checkout --quiet -b ai
 mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-printf 'x\n' > "${super}/build-steps.d/keep"
-printf 'x\n' > "${super}/help-steps/keep"
+printf '%s\n' "x" > "${super}/build-steps.d/keep"
+printf '%s\n' "x" > "${super}/help-steps/keep"
 gitq -C "${super}" add build-steps.d help-steps
 gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" -c protocol.file.allow=always submodule --quiet add -b ai "file://${fork}" sub
@@ -125,7 +125,7 @@ gitq -C "${super}/sub" checkout --quiet ai
 
 ## Advance the submodule so the parent pin is stale ( M sub in status): proves
 ## is_clean does NOT read that as dirty.
-printf 'v2\n' > "${super}/sub/file"
+printf '%s\n' "v2" > "${super}/sub/file"
 gitq -C "${super}/sub" add file
 gitq -C "${super}/sub" commit --quiet -m "sub v2"
 
@@ -141,7 +141,7 @@ export DM_GIT_SYNC_PUBLISH_REMOTE="fork"
 export NOHOOKS="${workspace}/nohooks"
 
 log_lines() { cat -- "${SYNC_LOG}" 2>/dev/null || true; }
-reset_log() { printf '' > "${SYNC_LOG}"; }
+reset_log() { printf '%s' "" > "${SYNC_LOG}"; }
 
 ## --- Case 1: PARENT sync -> BUMP, PUSH, CHERRY in that order --------------------
 reset_log
@@ -151,7 +151,7 @@ else
    fail "parent sync exited non-zero: $?"
 fi
 got="$(log_lines)"
-expected="$(printf 'BUMP --dir %s\nPUSH %s\nCHERRY %s' "${super}" "${super}" "${super}")"
+expected="$(printf '%s' "BUMP --dir ${super}"$'\n'"PUSH ${super}"$'\n'"CHERRY ${super}")"
 if [ "${got}" = "${expected}" ]; then
    pass "parent sync order is bump -> push -> cherry (stale pin not read as dirty)"
 else
@@ -167,7 +167,7 @@ else
 fi
 got="$(log_lines)"
 sub_real="$(cd -- "${super}/sub" && pwd -P)"
-expected="$(printf 'PUSH %s\nBUMP --dir %s\nPUSH %s\nCHERRY %s' "${sub_real}" "${super}" "${super}" "${super}")"
+expected="$(printf '%s' "PUSH ${sub_real}"$'\n'"BUMP --dir ${super}"$'\n'"PUSH ${super}"$'\n'"CHERRY ${super}")"
 if [ "${got}" = "${expected}" ]; then
    pass "submodule sync PUBLISHES the submodule before bumping the parent pin"
 else
@@ -210,7 +210,7 @@ refuse_touches_nothing "superproject on master" --dir "${super}"
 gitq -C "${super}" checkout --quiet ai
 
 ## 3c. dirty parent (a real, non-submodule file change).
-printf 'dirty\n' >> "${super}/build-steps.d/keep"
+printf '%s\n' "dirty" >> "${super}/build-steps.d/keep"
 refuse_touches_nothing "dirty working tree" --dir "${super}"
 gitq -C "${super}" checkout --quiet -- build-steps.d/keep
 
@@ -218,7 +218,7 @@ gitq -C "${super}" checkout --quiet -- build-steps.d/keep
 plain="${workspace}/plain"
 gitq init --quiet -- "${plain}"
 gitq -C "${plain}" checkout --quiet -b ai
-printf 'x\n' > "${plain}/f"
+printf '%s\n' "x" > "${plain}/f"
 gitq -C "${plain}" add f
 gitq -C "${plain}" commit --quiet -m base
 refuse_touches_nothing "non-derivative-maker repo" --dir "${plain}"
@@ -328,7 +328,7 @@ fi
 ## earlier case published), then drive a parent sync whose pusher records but publishes
 ## nothing. CANARY: drop the verify from push_repo and this case FAILS (exit 0 + CHERRY).
 reset_log
-printf 'newer\n' > "${super}/help-steps/keep"
+printf '%s\n' "newer" > "${super}/help-steps/keep"
 gitq -C "${super}" add help-steps/keep
 gitq -C "${super}" commit --quiet -m "advance super"
 noop_rc=0

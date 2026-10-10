@@ -79,12 +79,12 @@ for bad_name in "${bad_names[@]}"; do
 done
 
 ## Length cap: 100 OK, 101 reject.
-ok_100chars="$(printf 'a%.0s' {1..100})"
+printf -v ok_100chars 'a%.0s' {1..100}
 if ! ghorg_validate_name "${ok_100chars}" repo 2>/dev/null; then
    printf '%s\n' 'FAIL: rejected 100-char name' >&2
    fail=1
 fi
-overlong_101chars="$(printf 'a%.0s' {1..101})"
+printf -v overlong_101chars 'a%.0s' {1..101}
 if ghorg_validate_name "${overlong_101chars}" repo 2>/dev/null; then
    printf '%s\n' 'FAIL: accepted 101-char name (over cap)' >&2
    fail=1
@@ -113,12 +113,12 @@ for bad_ref in "${bad_refs[@]}"; do
 done
 
 ## ref length cap: 255 OK, 256 reject.
-ok_255chars="$(printf 'a%.0s' {1..255})"
+printf -v ok_255chars 'a%.0s' {1..255}
 if ! ghorg_validate_name "${ok_255chars}" ref 2>/dev/null; then
    printf '%s\n' 'FAIL: ref kind rejected 255-char name' >&2
    fail=1
 fi
-overlong_256chars="$(printf 'a%.0s' {1..256})"
+printf -v overlong_256chars 'a%.0s' {1..256}
 if ghorg_validate_name "${overlong_256chars}" ref 2>/dev/null; then
    printf '%s\n' 'FAIL: ref kind accepted 256-char name (over cap)' >&2
    fail=1

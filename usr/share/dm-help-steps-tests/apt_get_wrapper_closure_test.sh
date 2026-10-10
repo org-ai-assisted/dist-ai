@@ -47,8 +47,8 @@ done
 
 pass=0
 fail=0
-pass() { pass=$(( pass + 1 )); printf 'PASS  %s\n' "$1"; }
-fail() { fail=$(( fail + 1 )); printf 'FAIL  %s\n' "$1" >&2; }
+pass() { pass=$(( pass + 1 )); printf '%s\n' "PASS  ${1}"; }
+fail() { fail=$(( fail + 1 )); printf '%s\n' "FAIL  ${1}" >&2; }
 
 ## Transitive closure of helper-scripts library basenames the wrapper sources.
 ## A library reference is any '/usr/libexec/helper-scripts/<name>.bsh|.sh' token

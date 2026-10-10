@@ -62,7 +62,7 @@ vm_lock_holder_file=""
 vm_lock_child_pid=""
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -159,7 +159,7 @@ vm_lock_reap() {
 
 cmd_status() {
    if [ ! -d "${vm_lock_dir}" ]; then
-      printf '%s: no lock dir %s -- no VM work locked\n' "${me}" "${vm_lock_dir}"
+      printf '%s\n' "${me}: no lock dir ${vm_lock_dir} -- no VM work locked"
       return 0
    fi
    vm_lock_reap
@@ -170,7 +170,7 @@ cmd_status() {
       printf '%s\n' "$(cat -- "${f}" 2>/dev/null || true)"
    done
    if [ "${any}" -eq 0 ]; then
-      printf '%s: no current VM-work lock holders\n' "${me}"
+      printf '%s\n' "${me}: no current VM-work lock holders"
    fi
 }
 
@@ -255,7 +255,7 @@ cmd_acquire() {
       flock_wait=(--nonblock)
    fi
    if ! flock "${flag}" "${flock_wait[@]}" 9; then
-      printf '%s: VM-work lock (%s) contended; current holders:\n' "${me}" "${class}" >&2
+      printf '%s\n' "${me}: VM-work lock (${class}) contended; current holders:" >&2
       cmd_status >&2 || true
       if [ "${nonblock}" -eq 1 ]; then
          die 75 "could not acquire the ${class} VM-work lock (--nonblock)"
@@ -281,9 +281,8 @@ cmd_acquire() {
    ## is advisory, so a refused write is harmless (the flock on fd 9 is the real mutex).
    (
       set -o noclobber
-      printf 'class=%s session=%s session_id=%s user=%s pid=%s acquired=%s ttl=%s ttl_deadline_epoch=%s cmd=%s\n' \
-         "${class}" "${session}" "${session_id}" "${user}" "${pid}" \
-         "$(date -u -d "@${now}" +%FT%TZ)" "${ttl}" "${deadline}" "$*" > "${vm_lock_holder_file}"
+      printf '%s\n' \
+         "class=${class} session=${session} session_id=${session_id} user=${user} pid=${pid} acquired=$(date -u -d "@${now}" +%FT%TZ) ttl=${ttl} ttl_deadline_epoch=${deadline} cmd=$*" > "${vm_lock_holder_file}"
    ) 2>/dev/null || true
 
    ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
@@ -314,7 +313,7 @@ cmd_acquire() {
    done
    trap - TERM INT HUP
    if [ "${rc}" -eq 124 ]; then
-      printf '%s: TTL %ss exceeded -- killed the %s holder (wedged?)\n' "${me}" "${ttl}" "${class}" >&2
+      printf '%s\n' "${me}: TTL ${ttl}s exceeded -- killed the ${class} holder (wedged?)" >&2
    fi
    return "${rc}"
 }

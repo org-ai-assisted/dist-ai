@@ -23,7 +23,7 @@ export LC_ALL=C
 
 here="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 tool="${here}/../../bin/dm-whonix-pair"
-[ -x "${tool}" ] || { printf 'FAIL: dm-whonix-pair not found at %s\n' "${tool}" >&2; exit 1; }
+[ -x "${tool}" ] || { printf '%s\n' "FAIL: dm-whonix-pair not found at ${tool}" >&2; exit 1; }
 
 ## tcpdump + python3 are required deps of the real script; call them directly (assume present).
 
@@ -94,9 +94,9 @@ check() {
    local desc="$1" spec="$2" want="$3" got
    got="$(leaks_for "${spec}")"
    if [ "${got}" = "${want}" ]; then
-      pass=$(( pass + 1 )); printf 'PASS: %s (leaks=%s)\n' "${desc}" "${got}"
+      pass=$(( pass + 1 )); printf '%s\n' "PASS: ${desc} (leaks=${got})"
    else
-      fail=$(( fail + 1 )); printf 'FAIL: %s -- leaks=%s, wanted %s\n' "${desc}" "${got}" "${want}"
+      fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${desc} -- leaks=${got}, wanted ${want}"
    fi
 }
 
@@ -135,11 +135,11 @@ check 'link-local DESTINATION (not routed off-link) is allowed' "10.0.2.15,169.2
    "10.0.2.15,255.255.255.255,9,4444" "10.0.2.15,240.0.0.1,40000,53" >/dev/null
 multi="$(tcpdump -nr "${work}/multi.pcap" "${filter}" 2>/dev/null | wc -l)"
 if [ "${multi}" = 8 ]; then
-   pass=$(( pass + 1 )); printf 'PASS: a mixed pcap counts exactly the 8 leak datagrams\n'
+   pass=$(( pass + 1 )); printf '%s\n' "PASS: a mixed pcap counts exactly the 8 leak datagrams"
 else
-   fail=$(( fail + 1 )); printf 'FAIL: mixed pcap counted %s leaks, wanted 8\n' "${multi}"
+   fail=$(( fail + 1 )); printf '%s\n' "FAIL: mixed pcap counted ${multi} leaks, wanted 8"
 fi
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

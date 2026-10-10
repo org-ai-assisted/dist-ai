@@ -44,7 +44,7 @@ FIXTURES="$(cd -- "${SCRIPT_DIR}/../fixtures/owner-gate" && pwd)"
 VALIDATOR="${SCRIPT_DIR}/test_workflow_yaml.py"
 
 if [ ! -r "${VALIDATOR}" ]; then
-   printf 'FAIL: validator not found at %s\n' "${VALIDATOR}" >&2
+   printf '%s\n' "FAIL: validator not found at ${VALIDATOR}" >&2
    exit 1
 fi
 
@@ -53,12 +53,12 @@ fail_count=0
 
 pass() {
    pass_count=$(( pass_count + 1 ))
-   printf 'PASS: %s\n' "$1"
+   printf '%s\n' "PASS: ${1}"
 }
 
 fail() {
    fail_count=$(( fail_count + 1 ))
-   printf 'FAIL: %s\n' "$1" >&2
+   printf '%s\n' "FAIL: ${1}" >&2
 }
 
 ## Args: $1 = fixture dir, $2 = expect 'flag' | 'clean', $3 = description.
@@ -129,5 +129,5 @@ check_case 'wrapper-only'     'clean' 'a uses:-only wrapper job is not flagged'
 ## 'if: false' allocates no runner either way.
 check_case 'kill-switch'      'clean' 'an if:false kill-switch is not flagged'
 
-printf '\n%s pass, %s fail, 0 skip\n' "${pass_count}" "${fail_count}"
+printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

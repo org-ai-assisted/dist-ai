@@ -198,7 +198,7 @@ ssp() {
   ( source "${mw_common}" >/dev/null 2>&1
     # shellcheck disable=SC2034  # consumed by should_start_processing via nameref ($4)
     state="$4"
-    if should_start_processing "$1" "$2" "$3" state; then printf 'process'; else printf 'skip'; fi )
+    if should_start_processing "$1" "$2" "$3" state; then printf '%s' "process"; else printf '%s' "skip"; fi )
 }
 assert_eq "continue-from empty -> process"            "process" "$(ssp 1 Alpha '' no)"
 assert_eq "continue-from int 3, index 2 -> skip"      "skip"    "$(ssp 2 Beta 3 no)"

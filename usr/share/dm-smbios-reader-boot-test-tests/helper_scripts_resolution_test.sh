@@ -41,8 +41,8 @@ done
 
 pass=0
 fail=0
-pass() { pass=$(( pass + 1 )); printf 'PASS  %s\n' "$1"; }
-fail() { fail=$(( fail + 1 )); printf 'FAIL  %s\n' "$1" >&2; }
+pass() { pass=$(( pass + 1 )); printf '%s\n' "PASS  ${1}"; }
+fail() { fail=$(( fail + 1 )); printf '%s\n' "FAIL  ${1}" >&2; }
 
 workdir="$(mktemp --directory)"
 cleanup() {
@@ -52,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 
 dummy_image="${workdir}/dummy.qcow2"
-printf '' > "${dummy_image}"
+printf '%s' "" > "${dummy_image}"
 
 ## dm-smbios-reader-boot-test validates --arch AFTER sourcing package_installed_check.sh, so an
 ## invalid --arch makes it exit right after the source -- reaching "unsupported

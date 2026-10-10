@@ -63,7 +63,7 @@ check() {  ## $1=label $2=want $3=forbid [driver args...]
    want="$2"
    forbid="$3"
    shift 3
-   printf '' > "${log}"
+   printf '%s' "" > "${log}"
    env PATH="${work}/bin:${PATH}" \
       SECURE_TERMINAL_REPO="${st_repo}" CORPUS_REPO="${corpus}" \
       SECURE_TERMINAL_SITE="${work}/site" \
@@ -95,7 +95,7 @@ case "\$*" in *assert-synced*secure-terminal*) exit 1 ;; esac
 exit 0
 STUB
 chmod +x -- "${work}/bin/sandbox"
-printf '' > "${log}"
+printf '%s' "" > "${log}"
 rc=0
 env PATH="${work}/bin:${PATH}" \
    SECURE_TERMINAL_REPO="${st_repo}" CORPUS_REPO="${corpus}" \

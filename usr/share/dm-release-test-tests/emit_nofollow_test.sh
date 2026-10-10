@@ -30,7 +30,7 @@ if [ -z "${emit}" ]; then
       emit='/usr/bin/image-test-result-emit'
    fi
 fi
-[ -r "${emit}" ] || { printf 'FATAL: image-test-result-emit not found at %s\n' "${emit}" >&2; exit 1; }
+[ -r "${emit}" ] || { printf '%s\n' "FATAL: image-test-result-emit not found at ${emit}" >&2; exit 1; }
 
 workdir="$(mktemp --directory --tmpdir emit-nofollow-test.XXXXXX)"
 cleanup() {
@@ -55,10 +55,10 @@ check() {
    got="$2"
    want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${label}"
+      printf '%s\n' "PASS: ${label}"
       pass=$((pass + 1))
    else
-      printf 'FAIL: %s (got %s, want %s)\n' "${label}" "${got}" "${want}"
+      printf '%s\n' "FAIL: ${label} (got ${got}, want ${want})"
       fail=$((fail + 1))
    fi
 }
@@ -79,9 +79,9 @@ emit_rc() {
 leaked() {
    local json="$1"
    if [ -f "${json}" ] && grep --quiet --fixed-strings -- "${sentinel}" "${json}"; then
-      printf yes
+      printf '%s' "yes"
    else
-      printf no
+      printf '%s' "no"
    fi
 }
 
@@ -90,7 +90,7 @@ out1="${workdir}/r1.json"
 check "regular stderr file accepted" \
    "$(emit_rc "${out1}" --step-stderr-file "${workdir}/err.txt")" '0'
 check "regular stderr tail recorded" \
-   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out1}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out1}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 2. A symlinked stderr file is REFUSED but the run is still published (exit 0): the
 ##    target never reaches the output and the tail is empty. The account cannot
@@ -110,21 +110,21 @@ check "symlinked shot-src does not abort the publish" \
 check "symlinked shot target not leaked" \
    "$(leaked "${out3}")" 'no'
 check "symlinked shot records no attachment" \
-   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out3}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out3}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 4. A genuine regular screenshot is copied into the result dir and attached.
 out4="${workdir}/r4.json"
 check "regular shot-src accepted" \
    "$(emit_rc "${out4}" --step-shot cli.png --step-shot-src "${workdir}/shot.png")" '0'
 check "regular shot copied into result dir" \
-   "$([ -f "${workdir}/cli.png" ] && printf yes || printf no)" 'yes'
+   "$([ -f "${workdir}/cli.png" ] && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 5. A missing screenshot source is the normal 'no shot this run': clean, no attachment.
 out5="${workdir}/r5.json"
 check "missing shot-src is a clean no-shot" \
    "$(emit_rc "${out5}" --step-shot cli.png --step-shot-src "${workdir}/absent.png")" '0'
 check "missing shot-src records no attachment" \
-   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out5}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out5}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 6. An oversized screenshot (beyond the cap) is dropped: no attachment, no partial
 ##    copy, the run still published. Cap lowered via the env seam so the fixture is
@@ -139,9 +139,9 @@ IMAGE_TEST_MAX_SHOT_BYTES=8 "${emit}" \
    --step-shot cli.png --step-shot-src "${workdir}/big.png" >/dev/null 2>&1 || rc6=$?
 check "oversized shot does not abort the publish" "${rc6}" '0'
 check "oversized shot records no attachment" \
-   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out6}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out6}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 check "oversized shot leaves no partial copy" \
-   "$([ -e "${workdir}/d6/cli.png" ] && printf exists || printf absent)" 'absent'
+   "$([ -e "${workdir}/d6/cli.png" ] && printf '%s' "exists" || printf '%s' "absent")" 'absent'
 
 ## A bad INDIVIDUAL shot must SKIP that attachment, never abort the whole emit -- else
 ## an untrusted account could suppress its own result.json by planting one odd *.png
@@ -166,11 +166,11 @@ out8="${workdir}/d8/r8.json"
 mkdir --parents -- "${workdir}/d8"
 check "unsafe shot name does not abort the publish" \
    "$(emit_rc "${out8}" \
-      --step-shot bad.png --step-shot-src "${workdir}/good1.png" --step-shot-name "$(printf 'bad\tname')" \
+      --step-shot bad.png --step-shot-src "${workdir}/good1.png" --step-shot-name "$(printf '%s' "bad"$'\t'"name")" \
       --step-shot ok.png --step-shot-src "${workdir}/good2.png" --step-shot-name good)" '0'
 check "unsafe shot name skipped, good shot kept" \
    "$(grep --quiet --fixed-strings -- '"name": "good"' "${out8}" \
-      && ! grep --quiet --fixed-strings -- '"name": "bad' "${out8}" && printf yes || printf no)" 'yes'
+      && ! grep --quiet --fixed-strings -- '"name": "bad' "${out8}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 9. Two shots with the SAME stored basename: the second is skipped, so it cannot
 ##    TRUNCATE the first; the stored file keeps the first shot's bytes, publish OK.
@@ -201,11 +201,11 @@ mkdir --parents -- "${workdir}/d10"
 check "symlinked parent dir does not abort the publish" \
    "$(emit_rc "${out10}" --step-shot leaf.png --step-shot-src "${workdir}/symparent/leaf.png")" '0'
 check "symlinked parent dir -- leaf NOT copied (records no attachment)" \
-   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out10}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out10}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 ## The real leak is the COPIED file in the world-readable plane, not the json text:
 ## grep the whole run dir for the sentinel (pre-fix copied realparent/leaf.png there).
 check "symlinked parent dir -- sentinel NOT leaked into the plane" \
-   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d10" 2>/dev/null && printf LEAKED || printf no)" 'no'
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d10" 2>/dev/null && printf '%s' "LEAKED" || printf '%s' "no")" 'no'
 
 ## 11. A DROPPED first shot (oversized -> copy skips it) must NOT reserve its milestone,
 ##     so a valid same-milestone retake is still emitted (not skipped as a dup). The
@@ -225,7 +225,7 @@ check "dropped first shot does not abort the publish" "${rc11}" '0'
 check "dropped first shot -- same-milestone retake still emitted" \
    "$(grep --count --fixed-strings -- '"name": "welcome"' "${out11}")" '1'
 check "dropped first shot -- retake stored, oversize not" \
-   "$([ -f "${workdir}/d11/01-welcome.png" ] && [ ! -f "${workdir}/d11/00-welcome.png" ] && printf yes || printf no)" 'yes'
+   "$([ -f "${workdir}/d11/01-welcome.png" ] && [ ! -f "${workdir}/d11/00-welcome.png" ] && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 12. ANCESTOR-COMPONENT TOCTOU: a symlink NOT in the immediate parent but higher in
 ##     the path. O_NOFOLLOW + an immediate-parent-only openat still FOLLOWS an ancestor
@@ -243,9 +243,9 @@ mkdir --parents -- "${workdir}/d12"
 check "ancestor-symlink component does not abort the publish" \
    "$(emit_rc "${out12}" --step-shot leaf.png --step-shot-src "${workdir}/box/link/sub/leaf.png")" '0'
 check "ancestor-symlink -- leaf NOT copied (records no attachment)" \
-   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out12}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- '"attachments": []' "${out12}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 check "ancestor-symlink -- sentinel NOT leaked into the plane" \
-   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d12" 2>/dev/null && printf LEAKED || printf no)" 'no'
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d12" 2>/dev/null && printf '%s' "LEAKED" || printf '%s' "no")" 'no'
 
 ## 13. A harmless '.' component must NOT be rejected: the component walk drops '.' (a
 ##     no-op in resolution), so an unnormalized caller path like <dir>/./err.txt is
@@ -254,7 +254,7 @@ out13="${workdir}/r13.json"
 check "dot-component path accepted" \
    "$(emit_rc "${out13}" --step-stderr-file "${workdir}/./err.txt")" '0'
 check "dot-component stderr tail recorded" \
-   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out13}" && printf yes || printf no)" 'yes'
+   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out13}" && printf '%s' "yes" || printf '%s' "no")" 'yes'
 
 ## 14. A '..' component is STILL rejected (it could climb out of the walked chain), so
 ##     even a path that lexically resolves to a real file is refused -> tail omitted, run
@@ -264,7 +264,7 @@ out14="${workdir}/r14.json"
 check "dotdot path does not abort the publish" \
    "$(emit_rc "${out14}" --step-stderr-file "${workdir}/sub14/../err.txt")" '0'
 check "dotdot path REJECTED -- tail NOT recorded" \
-   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out14}" && printf yes || printf no)" 'no'
+   "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out14}" && printf '%s' "yes" || printf '%s' "no")" 'no'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

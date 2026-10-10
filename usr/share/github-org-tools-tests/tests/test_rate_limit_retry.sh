@@ -56,11 +56,11 @@ test_rate_limit_retry_cleanup_hdr() {
    safe-rm --force -- "${hdr}"
 }
 trap test_rate_limit_retry_cleanup_hdr EXIT
-printf '%s\r\n' \
-  'HTTP/2 429' \
-  'Retry-After: 17' \
-  'X-RateLimit-Reset: 99999999999' \
-  '' > "${hdr}"
+printf '%s\n' \
+  "HTTP/2 429"$'\r' \
+  "Retry-After: 17"$'\r' \
+  "X-RateLimit-Reset: 99999999999"$'\r' \
+  ""$'\r' > "${hdr}"
 parsed_retry_after="$(ghorg_parse_rate_limit_wait "${hdr}")"
 expect 'parse Retry-After' '17' "${parsed_retry_after}"
 
@@ -68,11 +68,11 @@ expect 'parse Retry-After' '17' "${parsed_retry_after}"
 ## non-empty positive integer for a reset 10 seconds in the future.
 now_seconds="$(date -u +%s)"
 future=$(( now_seconds + 10 ))
-printf '%s\r\n' \
-  'HTTP/2 403' \
-  'X-RateLimit-Remaining: 0' \
-  "X-RateLimit-Reset: ${future}" \
-  '' > "${hdr}"
+printf '%s\n' \
+  "HTTP/2 403"$'\r' \
+  "X-RateLimit-Remaining: 0"$'\r' \
+  "X-RateLimit-Reset: ${future}"$'\r' \
+  ""$'\r' > "${hdr}"
 got="$(ghorg_parse_rate_limit_wait "${hdr}")"
 if [ -z "${got}" ] || ! [[ "${got}" =~ ^[0-9]+$ ]]; then
   got_q="$(printf '%q' "${got}")"
@@ -84,10 +84,10 @@ fi
 ## falls back to backoff via 'if ! wait="$(...)"').
 now_seconds="$(date -u +%s)"
 past=$(( now_seconds - 100 ))
-printf '%s\r\n' \
-  'HTTP/2 403' \
-  "X-RateLimit-Reset: ${past}" \
-  '' > "${hdr}"
+printf '%s\n' \
+  "HTTP/2 403"$'\r' \
+  "X-RateLimit-Reset: ${past}"$'\r' \
+  ""$'\r' > "${hdr}"
 parsed_stale=''
 ghorg_parse_rate_limit_wait_rc=0
 parsed_stale="$(ghorg_parse_rate_limit_wait "${hdr}")" \
@@ -96,10 +96,10 @@ expect 'parse stale reset stdout' '' "${parsed_stale}"
 expect 'parse stale reset exit'   '1' "${ghorg_parse_rate_limit_wait_rc}"
 
 ## No relevant header -> empty stdout + non-zero exit.
-printf '%s\r\n' \
-  'HTTP/2 200' \
-  'Server: github.com' \
-  '' > "${hdr}"
+printf '%s\n' \
+  "HTTP/2 200"$'\r' \
+  "Server: github.com"$'\r' \
+  ""$'\r' > "${hdr}"
 parsed_no_hdr=''
 ghorg_parse_rate_limit_wait_rc=0
 parsed_no_hdr="$(ghorg_parse_rate_limit_wait "${hdr}")" \

@@ -87,9 +87,9 @@ make_stub() {
    {
       printf '%s\n' '#!/bin/bash'
       # shellcheck disable=SC2016
-      printf 'printf "%s %%s\\n" "$*" >> "${TIDY_LOG}"\n' "${label}"
+      printf '%s\n' "printf \"${label} %s"$'\\'"n\" \"\$*\" >> \"\${TIDY_LOG}\""
       # shellcheck disable=SC2016
-      printf 'exit "${%s:-0}"\n' "${rc_var}"
+      printf '%s\n' "exit \"\${${rc_var}:-0}\""
    } > "${path}"
    chmod +x -- "${path}"
 }
@@ -120,7 +120,7 @@ gitq init --quiet --bare -- "${fork}"
 scratch="${workspace}/scratch"
 gitq init --quiet -- "${scratch}"
 gitq -C "${scratch}" checkout --quiet -b ai
-printf 'v1\n' > "${scratch}/file"
+printf '%s\n' "v1" > "${scratch}/file"
 gitq -C "${scratch}" add file
 gitq -C "${scratch}" commit --quiet -m "sub v1"
 gitq -C "${scratch}" remote add fork "file://${fork}"
@@ -129,8 +129,8 @@ gitq -C "${scratch}" push --quiet fork ai
 gitq init --quiet -- "${super}"
 gitq -C "${super}" checkout --quiet -b ai
 mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-printf 'x\n' > "${super}/build-steps.d/keep"
-printf 'x\n' > "${super}/help-steps/keep"
+printf '%s\n' "x" > "${super}/build-steps.d/keep"
+printf '%s\n' "x" > "${super}/help-steps/keep"
 gitq -C "${super}" add build-steps.d help-steps
 gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" submodule --quiet add -b ai "file://${fork}" sub
@@ -151,7 +151,7 @@ super_top="$(gitq -C "${super}" rev-parse --show-toplevel)"
 sub_resolved_top="$(gitq -C "${super}/sub" rev-parse --show-superproject-working-tree)"
 
 log_lines() { cat -- "${TIDY_LOG}" 2>/dev/null || true; }
-reset_log() { printf '' > "${TIDY_LOG}"; }
+reset_log() { printf '%s' "" > "${TIDY_LOG}"; }
 
 ## Run dm-tidy, capturing its own exit code without tripping the test's errexit.
 ## Env assignments for the run are passed as leading NAME=VALUE args.
@@ -213,7 +213,7 @@ mkdir --parents -- "${intree_dir}"
 intree_log="${workspace}/intree.log"
 {
    printf '%s\n' '#!/bin/bash'
-   printf 'printf "INTREE %%s\\n" "$*" >> "%s"\n' "${intree_log}"
+   printf '%s\n' "printf \"INTREE %s"$'\\'"n\" \"\$*\" >> \"${intree_log}\""
    printf '%s\n' 'exit 0'
 } > "${intree_dir}/dm-packaging-helper-script"
 chmod +x -- "${intree_dir}/dm-packaging-helper-script"
@@ -222,11 +222,11 @@ mkdir --parents -- "${decoy_dir}"
 decoy_log="${workspace}/decoy.log"
 {
    printf '%s\n' '#!/bin/bash'
-   printf 'printf "DECOY %%s\\n" "$*" >> "%s"\n' "${decoy_log}"
+   printf '%s\n' "printf \"DECOY %s"$'\\'"n\" \"\$*\" >> \"${decoy_log}\""
    printf '%s\n' 'exit 0'
 } > "${decoy_dir}/dm-packaging-helper-script"
 chmod +x -- "${decoy_dir}/dm-packaging-helper-script"
-printf '' > "${intree_log}" ; printf '' > "${decoy_log}"
+printf '%s' "" > "${intree_log}" ; printf '%s' "" > "${decoy_log}"
 run_tidy DM_TIDY_REMOTES_ENSURE= PATH="${decoy_dir}:${PATH}" --dir "${super}"
 if [ "${tidy_rc}" -eq 0 ] && [ -s "${intree_log}" ] && [ ! -s "${decoy_log}" ]; then
    pass "the default ensure runs the in-tree helper (absolute), never a PATH copy"
@@ -375,7 +375,7 @@ gitq -C "${super}" checkout --quiet ai
 plain="${workspace}/plain"
 gitq init --quiet -- "${plain}"
 gitq -C "${plain}" checkout --quiet -b ai
-printf 'x\n' > "${plain}/f"
+printf '%s\n' "x" > "${plain}/f"
 gitq -C "${plain}" add f
 gitq -C "${plain}" commit --quiet -m base
 refuse_touches_nothing "non-derivative-maker repo" --dir "${plain}"
@@ -441,8 +441,8 @@ other="${workspace}/other"
 gitq init --quiet -- "${other}"
 gitq -C "${other}" checkout --quiet -b ai
 mkdir --parents -- "${other}/build-steps.d" "${other}/help-steps"
-printf 'x\n' > "${other}/build-steps.d/keep"
-printf 'x\n' > "${other}/help-steps/keep"
+printf '%s\n' "x" > "${other}/build-steps.d/keep"
+printf '%s\n' "x" > "${other}/help-steps/keep"
 gitq -C "${other}" add build-steps.d help-steps
 gitq -C "${other}" commit --quiet -m "other base"
 gitq -C "${other}" remote add org-ai-assisted "file://${fork}"
@@ -488,7 +488,7 @@ gitq -C "${other}" remote add ArrayBolt3 "file://${fork}"
 ## the failure was 2>/dev/null-swallowed to an empty list, so it validated only the
 ## parent and PROCEEDED (exit 0) -- this case fails on it. 'super' IS the helper's tree,
 ## so the ensure runs first (REMOTES), then the parse error aborts before the rest.
-printf 'this is not valid config\n[unterminated\n' > "${super}/.gitmodules"
+printf '%s\n' "this is not valid config" "[unterminated" > "${super}/.gitmodules"
 run_tidy --dir "${super}"
 if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "REMOTES,FSCK" ]; then
    pass "a malformed .gitmodules ERRORS (exit 1, only fsck after) instead of silently validating zero submodules"

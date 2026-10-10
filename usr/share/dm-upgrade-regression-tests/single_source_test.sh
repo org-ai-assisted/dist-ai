@@ -26,13 +26,13 @@ script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 cal="${script_dir}/../../bin/dm-calamares-install"
 rc_lib="${script_dir}/../dm-smbios-reader-boot-tests/release-checks.bsh"
 for f in "${cal}" "${rc_lib}"; do
-   [ -r "${f}" ] || { printf 'ERROR: required dist-ai file missing: %s\n' "${f}" >&2; exit 1; }
+   [ -r "${f}" ] || { printf '%s\n' "ERROR: required dist-ai file missing: ${f}" >&2; exit 1; }
 done
 
 pass=0
 fail=0
-ok()  { printf 'PASS: %s\n' "$1"; pass=$(( pass + 1 )); }
-bad() { printf 'FAIL: %s\n' "$1" >&2; fail=$(( fail + 1 )); }
+ok()  { printf '%s\n' "PASS: ${1}"; pass=$(( pass + 1 )); }
+bad() { printf '%s\n' "FAIL: ${1}" >&2; fail=$(( fail + 1 )); }
 
 ## --- A. dm-calamares-install uses the single source, not an inline copy ---------
 ## grep for the LITERAL source line in dm-calamares-install (no expansion wanted).
@@ -98,6 +98,6 @@ else
    bad "check 8 runs a Whonix leak test on a Kicksecure table: ${RELEASE_CHECK_CMD[8]:-<unset>}"
 fi
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

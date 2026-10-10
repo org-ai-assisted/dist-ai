@@ -68,7 +68,7 @@ audit_torrc_binds() {
                   ## public ones -- classified by directive below (empty arm).
                   ;;
                '' | *[!0-9]*)
-                  printf 'FAIL: unparsable Tor bind token %s (line: %s)\n' "${bind:-<empty>}" "${line}" >&2
+                  printf '%s\n' "FAIL: unparsable Tor bind token ${bind:-<empty>} (line: ${line})" >&2
                   rc=1
                   continue
                   ;;
@@ -79,7 +79,7 @@ audit_torrc_binds() {
             ## they are NOT in this set.
             case "${kw}" in
                orport | dirport)
-                  printf 'FAIL: %s bare %s binds a wildcard (public listener): %s\n' "${kw}" "${bind}" "${line}" >&2
+                  printf '%s\n' "FAIL: ${kw} bare ${bind} binds a wildcard (public listener): ${line}" >&2
                   rc=1
                   ;;
             esac
@@ -90,7 +90,7 @@ audit_torrc_binds() {
          127.0.0.1 | 10.152.152.10 | '[::1]' | '[fd19:c33d:88bc::10]')
             ;;
          *)
-            printf 'FAIL: disallowed Tor bind address %s (line: %s)\n' "${addr}" "${line}" >&2
+            printf '%s\n' "FAIL: disallowed Tor bind address ${addr} (line: ${line})" >&2
             rc=1
             ;;
       esac
@@ -98,7 +98,7 @@ audit_torrc_binds() {
    ## Vacuous-pass guard: the shipped gateway torrc defines dozens of listeners, so
    ## inspecting zero means the scan matched nothing (empty / all-evaded) -- FAIL.
    if [ "${inspected}" -eq 0 ]; then
-      printf 'FAIL: no Tor listener directives inspected -- scan matched nothing (vacuous pass)\n' >&2
+      printf '%s\n' "FAIL: no Tor listener directives inspected -- scan matched nothing (vacuous pass)" >&2
       rc=1
    fi
    return "${rc}"
@@ -106,23 +106,23 @@ audit_torrc_binds() {
 
 repo="${ANON_GW_ANONYMIZER_CONFIG_REPO:-}"
 if [ -z "${repo}" ]; then
-   printf 'FATAL: ANON_GW_ANONYMIZER_CONFIG_REPO unset -- the gateway torrc is a required source\n' >&2
+   printf '%s\n' "FATAL: ANON_GW_ANONYMIZER_CONFIG_REPO unset -- the gateway torrc is a required source" >&2
    exit 1
 fi
 base_file="${repo}/usr/share/tor/tor-service-defaults-torrc.anondist.base"
 torrc_dir="${repo}/etc/torrc.d"
 if [ ! -r "${base_file}" ]; then
-   printf 'FATAL: gateway torrc base not readable: %s\n' "${base_file}" >&2
+   printf '%s\n' "FATAL: gateway torrc base not readable: ${base_file}" >&2
    exit 1
 fi
 if [ ! -d "${torrc_dir}" ]; then
-   printf 'FATAL: torrc.d drop-in dir not found: %s\n' "${torrc_dir}" >&2
+   printf '%s\n' "FATAL: torrc.d drop-in dir not found: ${torrc_dir}" >&2
    exit 1
 fi
 
 rc=0
 if audit_torrc_binds "${base_file}" "${torrc_dir}"/*.conf; then
-   printf 'PASS: every Tor listener binds loopback / internal IP / ULA / unix (no wildcard)\n'
+   printf '%s\n' "PASS: every Tor listener binds loopback / internal IP / ULA / unix (no wildcard)"
 else
    rc=1
 fi
@@ -138,10 +138,10 @@ canary="$(mktemp)"
 cp -- "${base_file}" "${canary}"
 printf '%s\n' 'socksport 0.0.0.0:9050' >>"${canary}"
 if audit_torrc_binds "${canary}" 2>/dev/null; then
-   printf 'FAIL: canary -- bind audit PASSED a 0.0.0.0 SocksPort (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- bind audit PASSED a 0.0.0.0 SocksPort (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (0.0.0.0 bind rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (0.0.0.0 bind rejected); audit has teeth"
 fi
 
 exit "${rc}"

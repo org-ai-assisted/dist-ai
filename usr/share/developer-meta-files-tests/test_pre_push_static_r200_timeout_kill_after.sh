@@ -405,13 +405,13 @@ assert_fix_unchanged "zero-trailing-dot" "${tmo} 0. do_thing"
 ## A file defining its own timeout(): the fixer DECLINES a BARE call -- it targets
 ## the function, and rewriting it to '--kill-after=5 5 ...' would corrupt its args.
 assert_fix_unchanged "local-timeout-def" \
-   "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
+   "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }"$'\n'"${tmo} 5 do_thing"
 ## CANARY: in that same file, a PATH-QUALIFIED '/usr/bin/timeout' reaches coreutils
 ## (the function cannot intercept a '/'-spelled name), so the fixer MUST insert its
 ## '--kill-after' -- lockstep with detect flagging it. The former file-wide skip
 ## left this real coreutils call un-fixed (an unresolvable lint loop).
 run_fix "path-qualified-funcdef" \
-   "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "/usr/bin/${tmo} 5 do_thing")"
+   "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }"$'\n'"/usr/bin/${tmo} 5 do_thing"
 if grep --fixed-strings -- "/usr/bin/${tmo} ${ka}=5 5 do_thing" <<< "${fix_result}" >/dev/null; then
    printf '%s\n' "PASS: pre-push-fix inserted --kill-after into a path-qualified timeout in a funcdef file"
 else

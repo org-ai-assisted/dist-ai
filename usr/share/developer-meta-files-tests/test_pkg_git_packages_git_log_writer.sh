@@ -132,7 +132,7 @@ make_parent() {
    if [ "${present_in_new}" = 'true' ]; then
       ## testpkg exists at the tagged commit: old == new -> equal-version skip.
       mkdir -- "${parent}/packages/kicksecure/${pkg}"
-      printf 'x\n' > "${parent}/packages/kicksecure/${pkg}/f"
+      printf '%s\n' "x" > "${parent}/packages/kicksecure/${pkg}/f"
       git_c "${parent}" add -A
       git_c "${parent}" commit -q -m c1
       git_c "${parent}" tag oldtag
@@ -144,7 +144,7 @@ make_parent() {
       ## the one that fires: the old-tag lookup HITS, so a writer that guarded
       ## only the old lookup still hits the unguarded new rev-parse and crashes.
       mkdir -- "${parent}/packages/kicksecure/${pkg}"
-      printf 'x\n' > "${parent}/packages/kicksecure/${pkg}/f"
+      printf '%s\n' "x" > "${parent}/packages/kicksecure/${pkg}/f"
       git_c "${parent}" add -A
       git_c "${parent}" commit -q -m c1
       git_c "${parent}" tag oldtag
@@ -154,7 +154,7 @@ make_parent() {
       ## Restore in the worktree so run_writer's `cd .../${pkg}` succeeds
       ## (git rm removed the now-empty parent dir, so --parents is needed).
       mkdir --parents -- "${parent}/packages/kicksecure/${pkg}"
-      printf 'x\n' > "${parent}/packages/kicksecure/${pkg}/f"
+      printf '%s\n' "x" > "${parent}/packages/kicksecure/${pkg}/f"
    fi
    printf '%s\n' "${parent}"
 }
@@ -278,10 +278,10 @@ inj_out="$(mktemp -p "${tmp_root}")"
 git -C "${inj_repo}" init -q -b master
 git_c "${inj_repo}" commit -q --allow-empty -m base
 git_c "${inj_repo}" tag inj_old
-printf 'inject subject\n\nbody-a\x1e40cafe\x1fFORGEDAUTHOR\x1fforged subject\nbody-b\n' \
+printf '%s\n' "inject subject" "" "body-a"$'\x1e'"40cafe"$'\x1f'"FORGEDAUTHOR"$'\x1f'"forged subject" "body-b" \
    | git_c "${inj_repo}" commit -q --allow-empty --cleanup=verbatim \
       --author='Real Person <r@example.invalid>' -F -
-printf '\nleading blank subject\n' \
+printf '%s\n' "" "leading blank subject" \
    | git_c "${inj_repo}" commit -q --allow-empty --cleanup=verbatim \
       --author='assisted-by-ai (Bot Account) <a@example.invalid>' -F -
 git_c "${inj_repo}" tag inj_new

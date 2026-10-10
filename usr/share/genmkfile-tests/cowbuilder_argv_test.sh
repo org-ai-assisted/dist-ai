@@ -213,44 +213,44 @@ check() {
 
 ## --- distribution precedence ------------------------------------------------
 run_build dist_build_apt_stable_release=from-dm || true
-check 'distribution: dist_build_apt_stable_release wins' 'from-dm' "$(arg_value --distribution || printf '<none>')"
+check 'distribution: dist_build_apt_stable_release wins' 'from-dm' "$(arg_value --distribution || printf '%s' "<none>")"
 
 run_build dist_build_apt_stable_release=from-dm make_cowbuilder_distribution=explicit || true
-check 'distribution: an explicit setting is not overridden' 'explicit' "$(arg_value --distribution || printf '<none>')"
+check 'distribution: an explicit setting is not overridden' 'explicit' "$(arg_value --distribution || printf '%s' "<none>")"
 
 run_build || true
-check 'distribution: falls back to lsb_release' 'stub-codename' "$(arg_value --distribution || printf '<none>')"
+check 'distribution: falls back to lsb_release' 'stub-codename' "$(arg_value --distribution || printf '%s' "<none>")"
 
 ## --- mirror precedence ------------------------------------------------------
 run_build dist_build_apt_sources_mirror=http://dm.example.com/debian || true
-check 'mirror: dist_build_apt_sources_mirror wins' 'http://dm.example.com/debian' "$(arg_value --mirror || printf '<none>')"
+check 'mirror: dist_build_apt_sources_mirror wins' 'http://dm.example.com/debian' "$(arg_value --mirror || printf '%s' "<none>")"
 
 run_build APPROX_PROXY_ENABLE=yes || true
-check 'mirror: the approx cacher is used when enabled' 'http://127.0.0.1:9977/debian' "$(arg_value --mirror || printf '<none>')"
+check 'mirror: the approx cacher is used when enabled' 'http://127.0.0.1:9977/debian' "$(arg_value --mirror || printf '%s' "<none>")"
 
 run_build || true
-check 'mirror: falls back to deb.debian.org' 'https://deb.debian.org/debian' "$(arg_value --mirror || printf '<none>')"
+check 'mirror: falls back to deb.debian.org' 'https://deb.debian.org/debian' "$(arg_value --mirror || printf '%s' "<none>")"
 
 ## The dm mirror must beat the proxy: with both set, a build that silently went to the
 ## cacher would be building against a different archive than dm asked for.
 run_build dist_build_apt_sources_mirror=http://dm.example.com/debian APPROX_PROXY_ENABLE=yes || true
-check 'mirror: dm setting beats the approx cacher' 'http://dm.example.com/debian' "$(arg_value --mirror || printf '<none>')"
+check 'mirror: dm setting beats the approx cacher' 'http://dm.example.com/debian' "$(arg_value --mirror || printf '%s' "<none>")"
 
 ## --- basepath vs buildplace -------------------------------------------------
 ## One character apart. A swap corrupts the shared read-only base instead of the
 ## throwaway snapshot, and nothing in the output would say so.
 run_build || true
 check 'basepath is the shared read-only base' "${work_dir}/cache/base.cow_$(dpkg --print-architecture)" \
-   "$(arg_value --basepath || printf '<none>')"
+   "$(arg_value --basepath || printf '%s' "<none>")"
 check 'buildplace is the throwaway snapshot' "${work_dir}/cache/cow.cow_$(dpkg --print-architecture)" \
-   "$(arg_value --buildplace || printf '<none>')"
+   "$(arg_value --buildplace || printf '%s' "<none>")"
 
 ## --- parallel-build isolation ------------------------------------------------
 run_build make_cow_suffix=.7 || true
 check 'make_cow_suffix isolates the writable cow' "${work_dir}/cache/cow.cow_$(dpkg --print-architecture).7" \
-   "$(arg_value --buildplace || printf '<none>')"
+   "$(arg_value --buildplace || printf '%s' "<none>")"
 check 'and never the shared base' "${work_dir}/cache/base.cow_$(dpkg --print-architecture)" \
-   "$(arg_value --basepath || printf '<none>')"
+   "$(arg_value --basepath || printf '%s' "<none>")"
 
 ## --- CANARY -----------------------------------------------------------------
 ## Every assertion above reads ${argv_log}. If the stub were never reached the log

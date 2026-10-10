@@ -141,7 +141,7 @@ run_mok() {
    if [ -e "${sentinel_file}" ]; then
       invoked='yes'
    fi
-   printf '%s:%s' "${rc}" "${invoked}"
+   printf '%s' "${rc}:${invoked}"
 }
 
 ## --- check_image_builtin_mok_version_1 do_once gate -> 0 --------------------

@@ -79,7 +79,7 @@ check_bad 'a<b'         'A-Za-z0-9 ._-'
 ## a space is in the pretty class but NOT the hostname/version class
 check_bad 'has space'   'A-Za-z0-9._-'
 ## a newline (GRUB command injection) is refused by every class
-check_bad "$(printf 'a\nb')" 'A-Za-z0-9 ._-'
+check_bad "$(printf '%s' "a"$'\n'"b")" 'A-Za-z0-9 ._-'
 ## an empty charset has no members, so any non-empty value is refused (a guardless
 ## '*[!]*' glob misparses the unterminated bracket and wrongly ACCEPTS the value)
 check_bad 'a'        ''
@@ -88,7 +88,7 @@ check_bad 'anything' ''
 ## --- CANARY: the charset check is load-bearing -----------------------------
 ## A non-empty-only check would accept a newline-bearing value; value_charset_ok
 ## refuses it. Confirm the value is non-empty yet still rejected.
-inj="$(printf 'grubline\ninjected')"
+inj="$(printf '%s' "grubline"$'\n'"injected")"
 if [ -n "${inj}" ] && ! value_charset_ok "${inj}" 'A-Za-z0-9.-'; then
    pass 'canary: a non-empty newline value is refused (a non-empty check would pass it)'
 else

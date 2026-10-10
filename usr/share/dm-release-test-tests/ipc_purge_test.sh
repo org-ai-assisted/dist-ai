@@ -32,7 +32,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${subject}"
 
@@ -50,9 +50,9 @@ check() {
    label="$1"
    cond="$2"
    if [ "${cond}" = 'true' ]; then
-      printf 'ok: %s\n' "${label}"
+      printf '%s\n' "ok: ${label}"
    else
-      printf 'FAIL: %s\n' "${label}" >&2
+      printf '%s\n' "FAIL: ${label}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -70,7 +70,7 @@ foreign_acct='eph-inst-kicksecure-18-2-3-5'
 mkdir -- "${VBOX_IPC_BASE}/.vbox-${foreign_acct}-ipc"
 rt_purge_foreign_vbox_ipc "${foreign_acct}"
 check "foreign-owned stale IPC dir removed" \
-   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-${foreign_acct}-ipc" ] && printf true || printf false)"
+   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-${foreign_acct}-ipc" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case 2: a dir the account OWNS (this test user) must be preserved -- a persist-*
 ## account legitimately keeps its own dir across runs.
@@ -78,13 +78,13 @@ mine="${VBOX_IPC_BASE}/.vbox-${me}-ipc"
 mkdir -- "${mine}"
 rt_purge_foreign_vbox_ipc "${me}"
 check "account-owned IPC dir preserved" \
-   "$([ -d "${mine}" ] && printf true || printf false)"
+   "$([ -d "${mine}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case 3: absent -> clean no-op (returns success, errexit-safe).
 absent_rc=0
 rt_purge_foreign_vbox_ipc 'eph-inst-absent-account-1' || absent_rc=$?
 check "absent IPC dir is a clean no-op" \
-   "$([ "${absent_rc}" -eq 0 ] && printf true || printf false)"
+   "$([ "${absent_rc}" -eq 0 ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case 4: a SYMLINK at the IPC path (it lives in world-writable /tmp) is removed as
 ## a LINK -- never followed -- so its target is untouched. Guards the /tmp symlink
@@ -95,12 +95,12 @@ touch -- "${target_dir}/keep"
 ln --symbolic -- "${target_dir}" "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc"
 rt_purge_foreign_vbox_ipc 'eph-inst-symlink-1'
 check "symlink at the IPC path is removed (the link itself)" \
-   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && [ ! -L "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && printf true || printf false)"
+   "$([ ! -e "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && [ ! -L "${VBOX_IPC_BASE}/.vbox-eph-inst-symlink-1-ipc" ] && printf '%s' "true" || printf '%s' "false")"
 check "symlink target is untouched (not followed/recursed)" \
-   "$([ -f "${target_dir}/keep" ] && printf true || printf false)"
+   "$([ -f "${target_dir}/keep" ] && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s ipc-purge assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} ipc-purge assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall ipc-purge assertions passed\n'
+printf '%s\n' "" "all ipc-purge assertions passed"

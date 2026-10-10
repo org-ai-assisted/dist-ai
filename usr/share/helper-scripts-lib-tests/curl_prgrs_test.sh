@@ -352,7 +352,7 @@ rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
    FAKE_CURL_BODY_STEP_SLEEP=0.05 \
    run_rc -o "${out_file}" https://example.com/hookfails)"
 check "exec: failing CURL_PRGRS_EXEC hook -> error, not false success" \
-   "$([ "${rc}" -ne 0 ] && printf nonzero || printf zero)" "nonzero"
+   "$([ "${rc}" -ne 0 ] && printf '%s' "nonzero" || printf '%s' "zero")" "nonzero"
 
 ## M11 an implausibly large advertised Content-Length (would overflow Bash's
 ## 64-bit arithmetic downstream) is rejected as a bad header.
@@ -426,7 +426,7 @@ check "exec: -LO download still succeeds -> 0" "${rc}" "0"
 out_line="$(grep -n -x -- '--output' "${argv_log}" | head -1 | cut -d: -f1 || true)"
 lo_line="$(grep -n -x -- '-LO' "${argv_log}" | head -1 | cut -d: -f1 || true)"
 check "exec: HEAD probe passes --output before caller -LO (no output hijack)" \
-   "$([ -n "${out_line}" ] && [ -n "${lo_line}" ] && [ "${out_line}" -lt "${lo_line}" ] && printf ordered || printf BAD)" \
+   "$([ -n "${out_line}" ] && [ -n "${lo_line}" ] && [ "${out_line}" -lt "${lo_line}" ] && printf '%s' "ordered" || printf '%s' "BAD")" \
    "ordered"
 
 ## ============================================================
@@ -472,7 +472,7 @@ sleep 8
 sig_final=0
 [ -f "${sig_out}" ] && sig_final="$(stat -c "%s" -- "${sig_out}")"
 check "signal: SIGTERM actually stopped the download (curl killed)" \
-   "$([ "${sig_final}" -lt "${sig_body}" ] && printf stopped || printf completed)" "stopped"
+   "$([ "${sig_final}" -lt "${sig_body}" ] && printf '%s' "stopped" || printf '%s' "completed")" "stopped"
 
 ## ============================================================
 ## (O) Property fuzz: drive the REAL pure bash functions over many random inputs

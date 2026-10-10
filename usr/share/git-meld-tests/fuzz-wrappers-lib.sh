@@ -52,10 +52,11 @@ rand_blob () {
          printf '%s\n' "line ${RANDOM}" "code ${RANDOM}"
          ;;
       1)
-         printf '%b\n' 'a\x00b NUL '"${RANDOM}"                                   ## binary
+         printf '%s\0' 'a'                                                        ## binary
+         printf '%s\n' "b NUL ${RANDOM}"
          ;;
       2)
-         printf '%b\n' 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 '"${RANDOM}"  ## bidi (non-fatal)
+         printf '%s\n' "x # "$'\xe2\x80\xae\xe2\x81\xa6'"hidden"$'\xe2\x81\xa9'" ${RANDOM}"  ## bidi (non-fatal)
          ;;
       3)
          printf '%s\n' "plain ascii ${RANDOM}"
@@ -66,10 +67,10 @@ rand_blob () {
          printf '%s\n' ''
          ;;
       5)
-         printf '%b\n' '\xef\xbb\xbfbom '"${RANDOM}"
+         printf '%s\n' $'\xef\xbb\xbf'"bom ${RANDOM}"
          ;;
       6)
-         printf '%b\n' 'bad \xff\xfe undecodable '"${RANDOM}"                      ## fatal (rc>=2)
+         printf '%s\n' "bad "$'\xff\xfe'" undecodable ${RANDOM}"                  ## fatal (rc>=2)
          ;;
    esac
 }

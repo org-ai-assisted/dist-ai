@@ -117,7 +117,7 @@ x11_click_once() {
   bg_pids+=("${st_pid}")
   sleep 1.5
 
-  printf -- '--- x11 %s-click ---\n' "${label}"
+  printf -- '%s\n' "--- x11 ${label}-click ---"
   if ! DISPLAY="${display}" python3 \
     "${integration_dir}/x11_click_harness.py" "${button}"; then
     rc=1
@@ -129,9 +129,9 @@ x11_click_once() {
 
 run_x11_phase() {
   if ! have_all Xvfb stalonetray xdotool xwininfo; then
-    printf 'SKIP x11: needs Xvfb, stalonetray, xdotool, xwininfo\n'
-    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
-      'xvfb stalonetray xdotool x11-utils'
+    printf '%s\n' "SKIP x11: needs Xvfb, stalonetray, xdotool, xwininfo"
+    printf '%s\n' \
+      "  install: sudo apt-get install --no-install-recommends xvfb stalonetray xdotool x11-utils"
     return 0
   fi
 
@@ -148,9 +148,9 @@ run_x11_phase() {
 
 run_wayland_phase() {
   if ! have_all labwc || ! qt_has_wayland_plugin; then
-    printf 'SKIP wayland: needs labwc and the Qt wayland plugin\n'
-    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
-      'labwc qtwayland5'
+    printf '%s\n' "SKIP wayland: needs labwc and the Qt wayland plugin"
+    printf '%s\n' \
+      "  install: sudo apt-get install --no-install-recommends labwc qtwayland5"
     return 0
   fi
 
@@ -159,14 +159,14 @@ run_wayland_phase() {
   ## target -- no capture -- so no icon theme / output scale.
   # shellcheck disable=SC2119
   if ! wl_headless_start; then
-    printf 'SKIP wayland: labwc failed to start a compositor\n'
+    printf '%s\n' "SKIP wayland: labwc failed to start a compositor"
     return 0
   fi
   wl_started='1'
   export QT_QPA_PLATFORM='wayland'
 
   ran=$((ran + 1))
-  printf -- '--- wayland menu opt-out ---\n'
+  printf -- '%s\n' "--- wayland menu opt-out ---"
   if ! python3 "${integration_dir}/wayland_menu_harness.py"; then
     failed=$((failed + 1))
   fi
@@ -194,13 +194,13 @@ sni_run_arm() {
   ## regression: without this a dead display would be counted as a real test
   ## failure. Fail loud with a clear message instead.
   if ! kill -0 "${xvfb_pid}" 2>/dev/null; then
-    printf 'sni %s: Xvfb failed to start on %s (infrastructure)\n' \
-      "${label}" "${display}"
+    printf '%s\n' \
+      "sni ${label}: Xvfb failed to start on ${display} (infrastructure)"
     safe-rm --force -- "${wlog}"
     return 1
   fi
 
-  printf -- '--- sni %s ---\n' "${label}"
+  printf -- '%s\n' "--- sni ${label} ---"
   if ! DISPLAY="${display}" dbus-run-session -- \
     python3 "${integration_dir}/sni_late_host_harness.py" "${wlog}" "${arm}"; then
     rc=1
@@ -220,13 +220,13 @@ run_sni_phase() {
   ## to register via SNI, proving the bug is real); 'deferred' drives the
   ## real install_tray_when_available() fix (MUST register via SNI).
   if [ ! -r "${integration_dir}/sni_late_host_harness.py" ]; then
-    printf 'SKIP sni: harness sni_late_host_harness.py not present\n'
+    printf '%s\n' "SKIP sni: harness sni_late_host_harness.py not present"
     return 0
   fi
   if ! have_all Xvfb dbus-run-session || ! python_has_sni_deps; then
-    printf 'SKIP sni: needs Xvfb, dbus-run-session, python3-dbus, python3-gi\n'
-    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
-      'xvfb dbus python3-dbus python3-gi'
+    printf '%s\n' "SKIP sni: needs Xvfb, dbus-run-session, python3-dbus, python3-gi"
+    printf '%s\n' \
+      "  install: sudo apt-get install --no-install-recommends xvfb dbus python3-dbus python3-gi"
     return 0
   fi
 
@@ -244,7 +244,7 @@ run_sni_phase() {
 }
 
 report_result() {
-  printf '\n=== integration summary: %s run, %s failed ===\n' "${ran}" "${failed}"
+  printf '%s\n' "" "=== integration summary: ${ran} run, ${failed} failed ==="
   ## A real failure trumps everything.
   if [ "${failed}" -ne 0 ]; then
     exit 1
@@ -258,7 +258,7 @@ report_result() {
     ## run. This is the OPTIONAL integration lane (dist-ai-tests-all --integration);
     ## its tooling (Xvfb/weston/stalonetray/xdotool/dbus/python3-dbus/gi) is absent on
     ## a generic CI container.
-    printf 'SKIP: no integration phase ran; install the tooling above.\n'
+    printf '%s\n' "SKIP: no integration phase ran; install the tooling above."
     ## style-ok: allow-skip: nothing ran -- optional integration tooling absent
     exit 77
   fi

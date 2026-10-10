@@ -26,16 +26,16 @@ if [ -n "${DIST_BASE_FILES_REPO}" ] && [ -x "${DIST_BASE_FILES_REPO}/${rel}" ]; 
 else
    askpass="/${rel}"
 fi
-[ -x "${askpass}" ] || { printf 'FATAL: askpass-default not found/executable at %s\n' "${askpass}" >&2; exit 1; }
+[ -x "${askpass}" ] || { printf '%s\n' "FATAL: askpass-default not found/executable at ${askpass}" >&2; exit 1; }
 
 pass=0
 fail=0
 check() {
    local desc="$1" want="$2" got="$3"
    if [ "${got}" = "${want}" ]; then
-      pass=$(( pass + 1 )); printf 'PASS: %s\n' "${desc}"
+      pass=$(( pass + 1 )); printf '%s\n' "PASS: ${desc}"
    else
-      fail=$(( fail + 1 )); printf 'FAIL: %s -- got [%s], want [%s]\n' "${desc}" "${got}" "${want}"
+      fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${desc} -- got [${got}], want [${want}]"
    fi
 }
 
@@ -47,6 +47,6 @@ check 'sudo_password="" -> empty (honored)'         ''         "$(sudo_password=
 check 'sudo_password=changeme -> changeme'          'changeme' "$(sudo_password='changeme' "${askpass}")"
 check 'sudo_password=hunter2 -> hunter2'            'hunter2'  "$(sudo_password='hunter2' "${askpass}")"
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

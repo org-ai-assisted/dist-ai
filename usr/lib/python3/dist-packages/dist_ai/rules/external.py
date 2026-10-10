@@ -17,6 +17,8 @@ import contextlib
 import json
 import math
 import os
+import resource
+import signal
 import subprocess
 import tempfile
 
@@ -237,8 +239,8 @@ SHELLCHECK_OPTIONAL = (
     "avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,"
     "quote-safe-variables,require-variable-braces")
 
-## Per-subprocess wall-clock cap on a single shellcheck run. '--external-sources'
-## follows '# shellcheck source=' directives transitively, and that following is
+## Per-subprocess CPU-time cap (see _run_shellcheck) on a single shellcheck run.
+## '--external-sources' follows '# shellcheck source=' directives transitively, and that following is
 ## EXPONENTIAL on the deep helper-scripts graph (see the comment above
 ## _absent_helper_scripts_sibling): a resolvable sibling tree makes shellcheck hang
 ## for minutes. Without a cap the hang reaches the OUTER hook timeout, which fails
@@ -295,9 +297,32 @@ SHELLCHECK_TIMEOUT = _read_shellcheck_timeout()
 SHELLCHECK_FALLBACK_TIMEOUT = SHELLCHECK_TIMEOUT
 
 
+## The cap is CPU seconds (RLIMIT_CPU), not wall-clock: a following explosion is
+## CPU-bound, so CPU time catches it exactly, while a wall cap also expires a clean
+## file whenever the host is loaded (a ~2600-line script needs ~8s CPU, which is
+## 20s+ wall at load 20) -- the gate then fail-closes on load, not on the code. The
+## wall backstop only bounds a run that hangs WITHOUT burning CPU; primary plus
+## fallback at the backstop (2 x 5 x 10s) stays under the 120s pre-commit cap.
+_SHELLCHECK_WALL_BACKSTOP_FACTOR = 5
+
+
+def _limit_cpu_seconds(seconds):
+    def apply():
+        resource.setrlimit(resource.RLIMIT_CPU, (seconds, seconds + 1))
+    return apply
+
+
 def _run_shellcheck(command, timeout, env=None):
-    return subprocess.run(
-        command, capture_output=True, text=True, timeout=timeout, env=env)
+    cpu_seconds = max(1, math.ceil(timeout))
+    proc = subprocess.run(
+        command, capture_output=True, text=True, env=env,
+        timeout=timeout * _SHELLCHECK_WALL_BACKSTOP_FACTOR,
+        preexec_fn=_limit_cpu_seconds(cpu_seconds))
+    ## SIGXCPU at the soft limit, SIGKILL at the hard one: the CPU cap expired.
+    if proc.returncode in (-signal.SIGXCPU, -signal.SIGKILL):
+        raise subprocess.TimeoutExpired(
+            command, timeout, output=proc.stdout, stderr=proc.stderr)
+    return proc
 
 
 @contextlib.contextmanager

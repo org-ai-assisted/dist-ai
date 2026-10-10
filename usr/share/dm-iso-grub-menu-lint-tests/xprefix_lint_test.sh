@@ -67,10 +67,10 @@ assert_rc() {
    printf '%s\n' "${content}" >"${target}"
    "${checker}" "${target}" >/dev/null 2>&1 || rc=$?
    if [ "${rc}" -eq "${expected}" ]; then
-      printf 'PASS  %s (rc=%s)\n' "${name}" "${rc}"
+      printf '%s\n' "PASS  ${name} (rc=${rc})"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL  %s (rc=%s, expected %s)\n' "${name}" "${rc}" "${expected}"
+      printf '%s\n' "FAIL  ${name} (rc=${rc}, expected ${expected})"
       fail=$(( fail + 1 ))
    fi
 }
@@ -80,10 +80,10 @@ assert_rc_path() {
    local name="$1" target="$2" expected="$3" rc=0
    "${checker}" "${target}" >/dev/null 2>&1 || rc=$?
    if [ "${rc}" -eq "${expected}" ]; then
-      printf 'PASS  %s (rc=%s)\n' "${name}" "${rc}"
+      printf '%s\n' "PASS  ${name} (rc=${rc})"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL  %s (rc=%s, expected %s)\n' "${name}" "${rc}" "${expected}"
+      printf '%s\n' "FAIL  ${name} (rc=${rc}, expected ${expected})"
       fail=$(( fail + 1 ))
    fi
 }

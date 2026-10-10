@@ -35,7 +35,7 @@ codename="local"
 list_file="/etc/apt/sources.list.d/local-test-repo.sources"
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$1" >&2
+   printf '%s\n' "${me}: ERROR: ${1}" >&2
    exit 1
 }
 
@@ -59,7 +59,7 @@ repo_dir="${guest_mount}/aptrepo_local/${derivative}"
 
 ## Ensure the share is mounted, delegating to Kicksecure's own service if not.
 if ! mountpoint -q "${guest_mount}"; then
-   printf '%s: %s not mounted; restarting mnt-shared-vbox.service\n' "${me}" "${guest_mount}"
+   printf '%s\n' "${me}: ${guest_mount} not mounted; restarting mnt-shared-vbox.service"
    systemctl restart mnt-shared-vbox.service || true
    mountpoint -q "${guest_mount}" \
       || die "${guest_mount} still not mounted -- is the 'shared' folder attached? (host: dm-shared-apt-repo attach <vm>)"
@@ -78,9 +78,9 @@ Suites: ${codename}
 Components: main contrib non-free
 Enabled: yes
 Trusted: yes" > "${list_file}"
-printf '%s: wrote %s:\n' "${me}" "${list_file}"
+printf '%s\n' "${me}: wrote ${list_file}:"
 cat -- "${list_file}"
 
 ## style-ok: allow-apt-get -- plain `update` only, no package action to make noninteractive
 apt-get update
-printf '%s: ready -- e.g. apt-get install --only-upgrade <pkg>\n' "${me}"
+printf '%s\n' "${me}: ready -- e.g. apt-get install --only-upgrade <pkg>"

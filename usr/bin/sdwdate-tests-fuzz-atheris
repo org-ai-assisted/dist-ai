@@ -80,7 +80,7 @@ for harness in fuzz_url_to_unixtime fuzz_sdwdate_config; do
   if [ -f "${corpus_root}/dicts/${harness}.dict" ]; then
     extra+=("-dict=${corpus_root}/dicts/${harness}.dict")
   fi
-  printf '==== %s ====\n' "${harness}"
+  printf '%s\n' "==== ${harness} ===="
   hrc=0
   ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
   python3 -- "${harness_path}" "$@" "${extra[@]}" || hrc=$?

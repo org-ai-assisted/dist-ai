@@ -95,20 +95,20 @@ assert "clean staged file passes" 0 "" --check --staged
 ## --- 2. a hand-edited debian/changelog without an override FAILs -------------
 repo="$(new_repo)"
 mkdir -p "${repo}/debian"
-printf 'pkg (1.0) unstable; urgency=low\n' > "${repo}/debian/changelog"
+printf '%s\n' "pkg (1.0) unstable; urgency=low" > "${repo}/debian/changelog"
 git -C "${repo}" add debian/changelog
-printf 'add a feature\n' > "${work}/msg_plain"
+printf '%s\n' "add a feature" > "${work}/msg_plain"
 assert "changelog hand-edit FAILs" 1 "changelog" \
    --check --staged --message-file "${work}/msg_plain"
 
 ## --- 3. the mandatory override trailer permits it ---------------------------
-printf 'add a feature\n\nChangelog-manual-ok: needed for X\n' \
+printf '%s\n' "add a feature" "" "Changelog-manual-ok: needed for X" \
    > "${work}/msg_ok"
 assert "changelog override trailer passes" 0 "" \
    --check --staged --message-file "${work}/msg_ok"
 
 ## --- 4. a genmkfile auto-bump (exact subject, family-only diff) passes -------
-printf 'bumped changelog version\n' > "${work}/msg_bump"
+printf '%s\n' "bumped changelog version" > "${work}/msg_bump"
 assert "changelog auto-bump passes" 0 "" \
    --check --staged --message-file "${work}/msg_bump"
 
@@ -116,13 +116,13 @@ assert "changelog auto-bump passes" 0 "" \
 repo="$(new_repo)"
 mk_clean "${repo}/ok.sh"
 git -C "${repo}" add ok.sh
-printf 'add \xc3\xa9 feature\n' > "${work}/msg_utf8"
+printf '%s\n' "add "$'\xc3\xa9'" feature" > "${work}/msg_utf8"
 assert "non-ASCII commit message FAILs" 1 "R-001" \
    --check --staged --message-file "${work}/msg_utf8"
 
 ## --- 6. a staged malformed YAML FAILs check-yaml ----------------------------
 repo="$(new_repo)"
-printf 'foo: [unclosed\n' > "${repo}/bad.yaml"
+printf '%s\n' "foo: [unclosed" > "${repo}/bad.yaml"
 git -C "${repo}" add bad.yaml
 assert "malformed YAML FAILs check-yaml" 1 "check-yaml" --check --staged
 
@@ -136,7 +136,7 @@ assert "range over a clean commit passes" 0 "" --check --range HEAD~1
 ## --- 8. --range catches a hand-edited changelog commit ----------------------
 repo="$(new_repo)"
 mkdir -p "${repo}/debian"
-printf 'pkg (1.0) unstable; urgency=low\n' > "${repo}/debian/changelog"
+printf '%s\n' "pkg (1.0) unstable; urgency=low" > "${repo}/debian/changelog"
 git -C "${repo}" add debian/changelog
 git -C "${repo}" commit -q -m 'hand-edit changelog'
 assert "range catches changelog hand-edit" 1 "changelog" \
@@ -145,7 +145,7 @@ assert "range catches changelog hand-edit" 1 "changelog" \
 ## --- 9. --changelog-only --range catches the hand-edit (pre-push hook path) --
 repo="$(new_repo)"
 mkdir -p "${repo}/debian"
-printf 'pkg (1.0) unstable; urgency=low\n' > "${repo}/debian/changelog"
+printf '%s\n' "pkg (1.0) unstable; urgency=low" > "${repo}/debian/changelog"
 git -C "${repo}" add debian/changelog
 git -C "${repo}" commit -q -m 'hand-edit changelog'
 assert "changelog-only --range catches hand-edit" 1 "changelog" \
@@ -200,7 +200,7 @@ git -C "${repo}" add big.dat
 assert "new large file FAILs check-added-large-files" 1 \
    "check-added-large-files" --check --staged
 git -C "${repo}" commit -q -m 'add big.dat'
-printf 'more\n' >> "${repo}/big.dat"
+printf '%s\n' "more" >> "${repo}/big.dat"
 git -C "${repo}" add big.dat
 assert "appending to a tracked large file passes" 0 "" --check --staged --all
 
@@ -221,7 +221,7 @@ assert "worktree skew emits an advisory NOTE" 0 "the gate judged the staged blob
 ## (small) file exists at the base branch's TIP -- it is still new at the fork.
 repo="$(new_repo)"
 git -C "${repo}" checkout -q -b base
-printf 'small\n' > "${repo}/data.bin"
+printf '%s\n' "small" > "${repo}/data.bin"
 git -C "${repo}" add data.bin
 git -C "${repo}" commit -q -m 'base adds small data.bin'
 git -C "${repo}" checkout -q -b feature 'HEAD~1'
@@ -237,7 +237,7 @@ assert "range added-large-files uses the merge base" 1 \
 repo="$(new_repo)"
 mk_clean "${repo}/u.sh"
 git -C "${repo}" add u.sh
-git -C "${repo}" commit -q -m "$(printf 'subject with \xff byte')"
+git -C "${repo}" commit -q -m "$(printf '%s' "subject with "$'\xff'" byte")"
 assert "non-ASCII range message FAILs R-001" 1 "R-001" --check --range HEAD~1
 
 ## --- an untracked fifo must NOT hang the gate (ai-review: _is_shell_file) ----
@@ -262,7 +262,7 @@ fi
 ## escape, so no control byte lives in THIS tracked file.
 repo="$(new_repo)"
 mk_clean "${repo}/tracked.sh"; git -C "${repo}" add tracked.sh
-esc_name="$(printf 'untresc-\033[31m-marker.sh')"
+esc_name="$(printf '%s' "untresc-"$'\033'"[31m-marker.sh")"
 printf '%s\n' '#!/bin/bash' 'true' > "${repo}/${esc_name}"
 # shellcheck disable=SC2015  # guarded capture: trailing || true is the intended fallthrough
 esc_out="$( cd -- "${repo}" && "${STYLE}" --check --staged 2>&1 || true )"
@@ -276,7 +276,7 @@ fi
 ## BLOCK forever the instant it reads attributes -- inside the gate or a git-aware
 ## hook. The gate must REFUSE it fast (fail closed), never hang.
 repo="$(new_repo)"
-printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+printf '%s\n' "x" > "${repo}/f.txt"; git -C "${repo}" add f.txt
 mkfifo "${repo}/.gitattributes"
 attr_rc=0
 attr_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
@@ -293,7 +293,7 @@ fi
 ## attribute lookup -- a FIFO there hangs even the authoritative --staged mode.
 ## The pre-flight must check it too.
 repo="$(new_repo)"
-printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+printf '%s\n' "x" > "${repo}/f.txt"; git -C "${repo}" add f.txt
 mkdir -p "${repo}/.git/info"; mkfifo "${repo}/.git/info/attributes"
 info_rc=0
 info_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
@@ -344,7 +344,7 @@ assert "a staged broken symlink is flagged in blob mode" 1 \
 ## the mirror materializes the link's TARGET too, so it is not seen as broken
 ## (running against the working tree would reopen the staged-vs-worktree split).
 repo="$(new_repo)"
-printf 'data\n' > "${repo}/tracked.txt"
+printf '%s\n' "data" > "${repo}/tracked.txt"
 git -C "${repo}" add tracked.txt
 git -C "${repo}" commit --quiet --no-verify --message tracked
 ln -s tracked.txt "${repo}/goodlink"
@@ -363,7 +363,7 @@ assert "a staged tree-escaping symlink is flagged" 1 \
 ## A MULTI-HOP chain of valid links (link -> intermediate -> file) must resolve
 ## -- a one-level-deep materialization false-FAILED it.
 repo="$(new_repo)"
-printf 'data\n' > "${repo}/endfile"
+printf '%s\n' "data" > "${repo}/endfile"
 ln -s endfile "${repo}/mid"
 git -C "${repo}" add endfile mid
 git -C "${repo}" commit --quiet --no-verify --message chain-base
@@ -411,7 +411,7 @@ printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
    'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
    "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
 git -C "${repo}" add id_rsa
-printf 'id_rsa binary\n' > "${repo}/.gitattributes"   ## UNTRACKED
+printf '%s\n' "id_rsa binary" > "${repo}/.gitattributes"   ## UNTRACKED
 assert "an untracked binary attr cannot hide a staged key" 1 \
    "detect-private-key" --check --staged --all
 
@@ -419,7 +419,7 @@ assert "an untracked binary attr cannot hide a staged key" 1 \
 ## a subdir), resolves -- '.' must count as a present tree path or a valid link
 ## false-fails.
 repo="$(new_repo)"
-printf 'data\n' > "${repo}/f.txt"
+printf '%s\n' "data" > "${repo}/f.txt"
 mkdir -p "${repo}/sub"
 ln -s . "${repo}/rootlink"
 ln -s .. "${repo}/sub/uplink"
@@ -432,7 +432,7 @@ assert "a staged symlink to the tree root is not false-flagged" 0 \
 ## best-effort (checkout-time check-symlinks does it), so it is left unflagged.
 repo="$(new_repo)"
 mkdir -p "${repo}/realdir"
-printf 'data\n' > "${repo}/realdir/file.txt"
+printf '%s\n' "data" > "${repo}/realdir/file.txt"
 ln -s realdir "${repo}/dirlink"
 ln -s dirlink/file.txt "${repo}/through"
 git -C "${repo}" add realdir/file.txt dirlink through

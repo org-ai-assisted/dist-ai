@@ -442,7 +442,7 @@ github_owner_repo() {
   if [ -z "${owner}" ] || [ -z "${repo}" ]; then
     return 1
   fi
-  printf '%s%s%s\n' "${owner}" "${TAB}" "${repo}"
+  printf '%s\n' "${owner}${TAB}${repo}"
   return 0
 }
 
@@ -514,7 +514,7 @@ gitmodules_pairs() {
     url="$(git config --file "${modules}" --get "submodule.${name}.url")" || url=''
     value="$(enc_field "${value}")"
     url="$(enc_field "${url}")"
-    printf '%s%s%s\n' "${value}" "${TAB}" "${url}"
+    printf '%s\n' "${value}${TAB}${url}"
   done < <(git config --file "${modules}" -z --get-regexp '^submodule\..*\.path$')
 }
 
@@ -1531,7 +1531,7 @@ enumerate_self_test() {
     git() {
       case "$*" in
         *ls-tree*)
-          printf 'partial-record\0'
+          printf '%s\0' 'partial-record'
           return 128
           ;;
         *)
@@ -1766,7 +1766,7 @@ parent_self_test() {
   local ext_shallow="${tmp}/ext-shallow"
   local ext_marker="${tmp}/ext-helper-ran"
   local ext_helper="${tmp}/ext-helper"
-  printf '#!/bin/sh\ntouch "%s"\n' "${ext_marker}" > "${ext_helper}"
+  printf '%s\n' "#!/bin/sh" "touch \"${ext_marker}\"" > "${ext_helper}"
   chmod +x "${ext_helper}"
   fixture_git clone --quiet --depth 1 "file://${tmp}/fork" "${ext_shallow}"
   fixture_git -C "${ext_shallow}" config protocol.ext.allow always

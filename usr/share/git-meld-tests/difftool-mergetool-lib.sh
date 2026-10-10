@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## '%b' decodes the callers' fixture escapes, including NUL bytes an argument cannot carry.
+## style-ok: R-030
+
 ## difftool / mergetool contract tests for the safe git review wrappers
 ## git-review-difftool and git-review-mergetool (developer-meta-files).
 ##

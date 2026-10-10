@@ -86,10 +86,10 @@ pass=0
 fail=0
 check() {  ## $1=got $2=want $3=label
    if [ "$1" = "$2" ]; then
-      printf 'PASS: %s\n' "$3"
+      printf '%s\n' "PASS: ${3}"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s (got %s, want %s)\n' "$3" "$1" "$2" >&2
+      printf '%s\n' "FAIL: ${3} (got ${1}, want ${2})" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -104,7 +104,7 @@ check "${mine_count}" 1 "drop-in created, marker-tagged, .conf-suffixed in the r
 
 ## 2. A CONCURRENT run's drop-in: same dir, a DIFFERENT tag. The reaper must not touch it.
 foreign="${SECURE_TERMINAL_SHOT_RC_DIR}/comparison-rc.otherrun-tag.ABCDEF.conf"
-printf 'remote_control=true\n' > "${foreign}"
+printf '%s\n' "remote_control=true" > "${foreign}"
 
 ## 3. Reap THIS run (marker-scoped), exactly as cleanup() does.
 shots_rc_dropin_reap_marked "${run_marker_tag}" || true
@@ -120,7 +120,7 @@ foreign_state='gone'
 check "${foreign_state}" present "reaper spared a concurrent run's differently-tagged drop-in"
 
 if [ "${fail}" -gt 0 ]; then
-   printf 'rc_dropin_reap_test: %s assertion(s) FAILED.\n' "${fail}" >&2
+   printf '%s\n' "rc_dropin_reap_test: ${fail} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'rc_dropin_reap_test: OK (%s passed)\n' "${pass}"
+printf '%s\n' "rc_dropin_reap_test: OK (${pass} passed)"

@@ -93,13 +93,13 @@ fi
 
 failures=0
 stage() {
-   printf '\n== %s ==\n' "$*"
+   printf '%s\n' "" "== $* =="
 }
 ok() {
-   printf '   ok: %s\n' "$*"
+   printf '%s\n' "   ok: $*"
 }
 bad() {
-   printf '   FAIL: %s\n' "$*" >&2
+   printf '%s\n' "   FAIL: $*" >&2
    failures=$(( failures + 1 ))
 }
 
@@ -559,7 +559,7 @@ if [ "${quick}" = "true" ]; then
    ## Named, not silent: '--quick' means the git-state checks passed and the code
    ## was NOT exercised. Anyone reading "all checks passed" should know which
    ## checks those were.
-   printf '\n== suites: NOT RUN (--quick); this says nothing about whether the code passes ==\n'
+   printf '%s\n' "" "== suites: NOT RUN (--quick); this says nothing about whether the code passes =="
 else
    stage "dist-ai suites over this checkout"
    suite_ran=false

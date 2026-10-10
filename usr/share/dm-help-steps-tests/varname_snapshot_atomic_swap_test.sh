@@ -72,11 +72,11 @@ fi
 out_dir="${workdir}/varname-snapshots"
 stage_dir="${workdir}/stage"
 mkdir --parents -- "${out_dir}" "${stage_dir}"
-printf 'OLD-vars\n'      > "${out_dir}/kicksecure-cli__raw.vars"
-printf 'OLD-rejected\n'  > "${out_dir}/_rejected.txt"
-printf 'OLD-functions\n' > "${out_dir}/functions.snapshot"
-printf 'NEW-vars\n'      > "${stage_dir}/kicksecure-cli__raw.vars"
-printf 'NEW-rejected\n'  > "${stage_dir}/_rejected.txt"
+printf '%s\n' "OLD-vars"      > "${out_dir}/kicksecure-cli__raw.vars"
+printf '%s\n' "OLD-rejected"  > "${out_dir}/_rejected.txt"
+printf '%s\n' "OLD-functions" > "${out_dir}/functions.snapshot"
+printf '%s\n' "NEW-vars"      > "${stage_dir}/kicksecure-cli__raw.vars"
+printf '%s\n' "NEW-rejected"  > "${stage_dir}/_rejected.txt"
 ## functions.snapshot deliberately absent from stage.
 
 ## Run the shipped swap block; it is expected to fail (incomplete stage). The
@@ -94,23 +94,23 @@ failures=0
 ## copy must still be there -- an atomic replace-in-place never removes it. The old
 ## rm-then-mv deletes it up front and never restores it.
 if [ -f "${out_dir}/functions.snapshot" ]; then
-   printf 'PASS: baseline functions.snapshot survived the incomplete swap (swap rc %s)\n' "${swap_rc}"
+   printf '%s\n' "PASS: baseline functions.snapshot survived the incomplete swap (swap rc ${swap_rc})"
 else
-   printf 'FAIL: functions.snapshot was removed-but-not-replaced by the swap (swap rc %s)\n' "${swap_rc}" >&2
+   printf '%s\n' "FAIL: functions.snapshot was removed-but-not-replaced by the swap (swap rc ${swap_rc})" >&2
    failures=$((failures + 1))
 fi
 
 ## Sanity: the files that DID have a staged replacement were updated (proves the
 ## swap actually ran, so the survival above is not a vacuous no-op).
 if [ "$(cat -- "${out_dir}/kicksecure-cli__raw.vars" 2>/dev/null)" = "NEW-vars" ]; then
-   printf 'PASS: the swap replaced the files it had staged\n'
+   printf '%s\n' "PASS: the swap replaced the files it had staged"
 else
-   printf 'FAIL: the swap did not replace .vars from the stage (extraction wrong?)\n' >&2
+   printf '%s\n' "FAIL: the swap did not replace .vars from the stage (extraction wrong?)" >&2
    failures=$((failures + 1))
 fi
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'varname_snapshot_atomic_swap_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "varname_snapshot_atomic_swap_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'varname_snapshot_atomic_swap_test: OK\n'
+printf '%s\n' "varname_snapshot_atomic_swap_test: OK"

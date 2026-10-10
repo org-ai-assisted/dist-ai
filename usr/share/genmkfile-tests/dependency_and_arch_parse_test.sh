@@ -268,7 +268,7 @@ fi
 ## must fail loud, not read the truncated output and drop the rest. Override exit_with_error (its
 ## make_output_error path needs colour/trace state only a full run sets up) with a recording stub.
 # shellcheck disable=SC2317  # invoked indirectly via make_get_variables_parse_stanzas
-exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit 66; }
+exit_with_error() { printf '%s\n' "DIE: ${2}" >&2; exit 66; }
 cat > "${test_root}/control-bad" <<'EOF'
 Source: badsrc
 

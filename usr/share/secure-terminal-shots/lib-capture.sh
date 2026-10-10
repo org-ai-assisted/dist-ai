@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## The inline 'bash -c' programs run in a deliberately separate child shell.
+## style-ok: allow-embedded-script
+
 ## style-ok: no-strict -- sourced-only fragment; a top-level strict-mode block
 ## would leak set -o errexit/nounset into the consumer (both already set it).
 
@@ -315,7 +318,7 @@ shots_shot_is_blank() {  ## $1=png
    ## FAIL-CLOSED: if convert cannot read the file (a corrupt/truncated grab), treat it as blank
    ## ('1') so the caller re-grabs/discards it -- never accept an unreadable shot as valid (that
    ## silent-green shipped a corrupt shot before). Only a readable, genuinely-flat frame is blank.
-   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '1')"
+   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '%s' "1")"
    [ "${flat}" = '1' ]
 }
 

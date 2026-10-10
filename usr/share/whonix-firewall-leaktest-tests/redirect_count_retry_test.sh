@@ -47,7 +47,7 @@ fake_chain='table inet nat {
 ## shell variable would reset to 0 every attempt).
 ## mktemp scratch (left for the ephemeral tmp, as the rest of the suite does).
 call_counter="$(mktemp)"
-printf '0' > "${call_counter}"
+printf '%s' "0" > "${call_counter}"
 ## shellcheck cannot see that the helper resolves bare `ip` to this function at
 ## runtime (via `ip netns exec ...` inside a command substitution), so it marks the
 ## body unreachable -- it is not.
@@ -75,7 +75,7 @@ fi
 ## A genuinely unavailable read (never succeeds) must return the "unavailable"
 ## sentinel -- NOT a silent 0, which would be indistinguishable from a real count
 ## and could fake a redirect delta (see the assert-error case below).
-printf '0' > "${call_counter}"
+printf '%s' "0" > "${call_counter}"
 # shellcheck disable=SC2317
 ip() {
    local n

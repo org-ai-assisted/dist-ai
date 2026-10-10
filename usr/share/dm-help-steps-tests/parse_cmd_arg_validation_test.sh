@@ -89,18 +89,18 @@ has_crash_signature() {
 ## pass -- treat empty output as its own verdict and fail it.
 classify_empty_value_out() {
    if has_crash_signature "$1"; then
-      printf 'crash'
+      printf '%s' "crash"
       return
    fi
    case "$1" in
       "")
-         printf 'empty'
+         printf '%s' "empty"
          ;;
       *"requires a"*)
-         printf 'rejected'
+         printf '%s' "rejected"
          ;;
       *)
-         printf 'accepted'
+         printf '%s' "accepted"
          ;;
    esac
 }
@@ -111,18 +111,18 @@ classify_empty_value_out() {
 ## is not acceptance; a missing downstream error means parsing never continued.
 classify_package_jobs_zero_out() {
    if has_crash_signature "$1"; then
-      printf 'crash'
+      printf '%s' "crash"
       return
    fi
    case "$1" in
       *"must be passed a whole integer"*)
-         printf 'rejected-at-parse'
+         printf '%s' "rejected-at-parse"
          ;;
       *"must not be empty"*)
-         printf 'accepted-continued'
+         printf '%s' "accepted-continued"
          ;;
       *)
-         printf 'unexpected'
+         printf '%s' "unexpected"
          ;;
    esac
 }

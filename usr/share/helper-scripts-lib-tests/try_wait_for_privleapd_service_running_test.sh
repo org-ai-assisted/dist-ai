@@ -80,7 +80,7 @@ run_with_state() {
    TEST_PRIVLEAPD_STATE="${state}" SYSTEMCTL_ARGS_LOG="${args_log}" \
       PATH="${stub_bin}:${PATH}" bash "${subject}" >/dev/null 2>&1 || rc="$?"
    calls="$(wc -l < "${args_log}")"
-   printf '%s %s' "${rc}" "${calls}"
+   printf '%s' "${rc} ${calls}"
 }
 
 ## active -> success (0), breaking on the first poll

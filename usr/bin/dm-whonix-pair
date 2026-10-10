@@ -136,7 +136,7 @@ nictrace_pcap=''
 gw_relay_cache=''
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -602,8 +602,8 @@ pc_bpf() {
    ## (not a bare `tcp port`, which also matches a packet whose OTHER endpoint happens to use 9100)
    ## so the allowlist exempts nothing beyond this one connection + its reply. A dst-only match would
    ## wrongly flag the reply (src=guard:9100 -> local:ephemeral) as a leak.
-   printf '(tcp dst port %s and ( %s )) or (tcp src port %s and ( %s ))' \
-      "${GUARD_PC_PORT}" "${dsthosts}" "${GUARD_PC_PORT}" "${srchosts}"
+   printf '%s' \
+      "(tcp dst port ${GUARD_PC_PORT} and ( ${dsthosts} )) or (tcp src port ${GUARD_PC_PORT} and ( ${srchosts} ))"
 }
 
 ## Deny-by-default: permit ONLY link infra, the entry guards (any port), and the reserved guard on

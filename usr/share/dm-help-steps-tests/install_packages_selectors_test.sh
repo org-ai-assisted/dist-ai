@@ -65,13 +65,13 @@ else
    fail "newest-kernel-version: expected '6.12.0-1-amd64'"
 fi
 
-if [ "$( newest-kernel-version "$( printf 'vmlinuz-6.1.0-9-amd64\n' )" )" = "6.1.0-9-amd64" ]; then
+if [ "$( newest-kernel-version "$( printf '%s\n' "vmlinuz-6.1.0-9-amd64" )" )" = "6.1.0-9-amd64" ]; then
    pass 'newest-kernel-version returns the sole kernel and strips vmlinuz-'
 else
    fail 'newest-kernel-version single: expected 6.1.0-9-amd64'
 fi
 
-if [ -z "$( newest-kernel-version "$( printf 'config-x\ninitrd.img-x\n' )" )" ]; then
+if [ -z "$( newest-kernel-version "$( printf '%s\n' "config-x" "initrd.img-x" )" )" ]; then
    pass 'newest-kernel-version is empty when there is no vmlinuz'
 else
    fail 'newest-kernel-version no-kernel: expected empty'
@@ -79,7 +79,7 @@ fi
 
 ## Anchored to '^vmlinuz-': a higher-versioned name that merely CONTAINS vmlinuz
 ## (e.g. xen-vmlinuz-*) must not outrank the real kernel.
-if [ "$( newest-kernel-version "$( printf 'xen-vmlinuz-9.9.9-amd64\nvmlinuz-6.12.0-1-amd64\n' )" )" = "6.12.0-1-amd64" ]; then
+if [ "$( newest-kernel-version "$( printf '%s\n' "xen-vmlinuz-9.9.9-amd64" "vmlinuz-6.12.0-1-amd64" )" )" = "6.12.0-1-amd64" ]; then
    pass 'newest-kernel-version ignores non-kernel names that merely contain vmlinuz'
 else
    fail 'newest-kernel-version anchor: a decoy *vmlinuz* line was picked'

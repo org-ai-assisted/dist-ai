@@ -385,8 +385,8 @@ fi
 ## line-break code points deterministically regardless of the C locale.
 pkgN="${work}/pkgN"
 mkdir --parents -- "${pkgN}"
-nlfile="${pkgN}/$(printf 'weird\nname').py"                 ## LF in the name
-lsfile="${pkgN}/ls$(printf '\xe2\x80\xa8')name.py"          ## U+2028 (UTF-8 e2 80 a8) in the name
+nlfile="${pkgN}/$(printf '%s' "weird"$'\n'"name").py"                 ## LF in the name
+lsfile="${pkgN}/ls$(printf '%s' $'\xe2\x80\xa8')name.py"          ## U+2028 (UTF-8 e2 80 a8) in the name
 printf '%s\n' 'def never():' '    return 1' > "${nlfile}"
 printf '%s\n' 'def never():' '    return 1' > "${lsfile}"
 ## Pass the odd paths via the environment (env values carry arbitrary bytes safely), never
@@ -449,8 +449,8 @@ fi
 ## later-sorted one silently overwrites the other in the results dict -> a real gap vanishes
 ## (combined=1). With the escape char escaped they stay distinct keys (combined=2).
 pkgP="${work}/pkgP"; mkdir --parents -- "${pkgP}"
-litfile="${pkgP}/$(printf 'weird\\x0aname.py')"   ## literal chars: backslash x 0 a
-nlfile2="${pkgP}/$(printf 'weird\nname.py')"       ## a real newline byte
+litfile="${pkgP}/$(printf '%s' "weird"$'\\'"x0aname.py")"   ## literal chars: backslash x 0 a
+nlfile2="${pkgP}/$(printf '%s' "weird"$'\n'"name.py")"       ## a real newline byte
 printf '%s\n' 'def never():' '    return 1' > "${litfile}"
 printf '%s\n' 'def never():' '    return 1' > "${nlfile2}"
 printf '%s\n' 'import os, runpy' \

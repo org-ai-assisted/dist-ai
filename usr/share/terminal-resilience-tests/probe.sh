@@ -81,15 +81,15 @@ for _ in $(seq 1 40); do
 done
 
 if [ -z "${win}" ]; then
-   printf 'terminal-resilience-tests: FAIL (xterm window never appeared)\n' >&2
+   printf '%s\n' "terminal-resilience-tests: FAIL (xterm window never appeared)" >&2
    overall=1
 else
    sleep 1
    title="$(xdotool getwindowname "${win}" 2>/dev/null || true)"
    if grep --quiet --fixed-strings -- "${marker}" <<< "${title}"; then
-      printf 'ok   xterm: title HIJACKED to %s (traditional emulator acts on output)\n' "${marker}"
+      printf '%s\n' "ok   xterm: title HIJACKED to ${marker} (traditional emulator acts on output)"
    else
-      printf 'terminal-resilience-tests: FAIL (xterm title not hijacked; got %s)\n' "${title:-<empty>}" >&2
+      printf '%s\n' "terminal-resilience-tests: FAIL (xterm title not hijacked; got ${title:-<empty>})" >&2
       overall=1
    fi
 fi
@@ -102,25 +102,25 @@ xterm_pid=''
 ## pass would hide a CLI that never ran. Require it to have run (exit 0) and produced
 ## output BEFORE judging the stream neutralized.
 cli_rc=0
-out="$( printf '' | python3 -- "${cli}" -- printf "${payload}" 2>/dev/null )" || cli_rc="$?"
+out="$( printf '%s' "" | python3 -- "${cli}" -- printf "${payload}" 2>/dev/null )" || cli_rc="$?"
 
 if [ "${cli_rc}" -ne 0 ]; then
-   printf 'terminal-resilience-tests: FAIL (secure-terminal-cli invocation failed, exit %s)\n' "${cli_rc}" >&2
+   printf '%s\n' "terminal-resilience-tests: FAIL (secure-terminal-cli invocation failed, exit ${cli_rc})" >&2
    overall=1
 elif [ -z "${out}" ]; then
-   printf 'terminal-resilience-tests: FAIL (secure-terminal-cli produced no output; nothing was tested)\n' >&2
+   printf '%s\n' "terminal-resilience-tests: FAIL (secure-terminal-cli produced no output; nothing was tested)" >&2
    overall=1
 elif grep --quiet --perl-regexp -- '\x1b' <<< "${out}"; then
-   printf 'terminal-resilience-tests: FAIL (secure-terminal output still carries an escape byte)\n' >&2
+   printf '%s\n' "terminal-resilience-tests: FAIL (secure-terminal output still carries an escape byte)" >&2
    overall=1
 elif grep --quiet --fixed-strings -- "${marker}" <<< "${out}"; then
-   printf 'terminal-resilience-tests: FAIL (secure-terminal leaked the title marker %s)\n' "${marker}" >&2
+   printf '%s\n' "terminal-resilience-tests: FAIL (secure-terminal leaked the title marker ${marker})" >&2
    overall=1
 else
-   printf 'ok   secure-terminal: stream NEUTRALIZED (no escape byte, title marker stripped)\n'
+   printf '%s\n' "ok   secure-terminal: stream NEUTRALIZED (no escape byte, title marker stripped)"
 fi
 
 if [ "${overall}" -eq 0 ]; then
-   printf 'terminal-resilience-tests: PASS (xterm hijacked, secure-terminal neutralized)\n'
+   printf '%s\n' "terminal-resilience-tests: PASS (xterm hijacked, secure-terminal neutralized)"
 fi
 exit "${overall}"

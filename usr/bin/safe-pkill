@@ -104,16 +104,16 @@ classify_kill_failure() {  ## $1=kill stderr, $2=target pid
    local kill_err="$1" pid="$2" proc_stat='' proc_state=''
    case "${kill_err}" in
       *'No such process'*)
-         printf 'gone\n'
+         printf '%s\n' "gone"
          return 0
          ;;
    esac
    proc_stat="$(cat -- "/proc/${pid}/stat" 2>/dev/null)" || proc_stat=""
    read -r proc_state _ <<<"${proc_stat##*)}"
    if [ "${proc_state}" = 'Z' ]; then
-      printf 'zombie\n'
+      printf '%s\n' "zombie"
    else
-      printf 'live\n'
+      printf '%s\n' "live"
    fi
 }
 
@@ -127,7 +127,7 @@ while [ "$#" -gt 0 ]; do
    case "$1" in
       --signal|-s)
          if [ "$#" -lt 2 ]; then
-            printf 'safe-pkill: --signal needs a value\n' >&2
+            printf '%s\n' "safe-pkill: --signal needs a value" >&2
             exit 2
          fi
          signal="$2"
@@ -159,7 +159,7 @@ while [ "$#" -gt 0 ]; do
          break
          ;;
       '-'*)
-         printf 'safe-pkill: unknown option: %s\n' "$1" >&2
+         printf '%s\n' "safe-pkill: unknown option: ${1}" >&2
          exit 2
          ;;
       *)
@@ -173,19 +173,19 @@ done
 ## then reflexively appended -f (pkill -f habit) must not be downgraded to full-match without a
 ## word -- that quietly discards the safety they asked for. Fail closed on the contradiction.
 if [ "${name_flag}" = 'true' ] && [ "${full_flag}" = 'true' ]; then
-   printf 'safe-pkill: --name and --full/-f are mutually exclusive\n' >&2
+   printf '%s\n' "safe-pkill: --name and --full/-f are mutually exclusive" >&2
    exit 2
 fi
 
 if [ "$#" -lt 1 ]; then
-   printf 'safe-pkill: PATTERN required\n' >&2
+   printf '%s\n' "safe-pkill: PATTERN required" >&2
    usage >&2
    exit 2
 fi
 pattern="$1"
 shift
 if [ "$#" -gt 0 ]; then
-   printf 'safe-pkill: too many arguments -- exactly one PATTERN is allowed (got extra: %s)\n' "$*" >&2
+   printf '%s\n' "safe-pkill: too many arguments -- exactly one PATTERN is allowed (got extra: $*)" >&2
    exit 2
 fi
 ## An EMPTY or WHITESPACE-ONLY pattern matches EVERY process ('pgrep --full -- ""' matches all;
@@ -194,7 +194,7 @@ fi
 ## hits this). A whitespace-only pattern also trims to the empty key in the generic-name check --
 ## caught here before it can reach that lookup.
 if [[ "${pattern}" =~ ^[[:space:]]*$ ]]; then
-   printf 'safe-pkill: PATTERN must not be empty or whitespace-only (it would match every process)\n' >&2
+   printf '%s\n' "safe-pkill: PATTERN must not be empty or whitespace-only (it would match every process)" >&2
    exit 2
 fi
 ## Refuse a bare GENERIC process name as the target. Ancestry exclusion does NOT help here: a
@@ -202,7 +202,7 @@ fi
 ## system tree, which are not the caller's ancestors -- a `pkill sleep` once killed the
 ## qubes-session `sleep inf` keepalive and wedged the VM GUI. Kill a specific PID/PGID instead.
 if ! safe_proc_generic_override && safe_proc_is_generic "${pattern}"; then
-   printf 'safe-pkill: refusing the generic process name "%s" as a target -- it matches OTHER sessions and system processes (this class once wedged the VM GUI by killing qubes-session sleep). Kill a specific process (kill PID; kill -- -PGID), or override with SAFE_PROC_ALLOW_GENERIC=1.\n' "${pattern}" >&2
+   printf '%s\n' "safe-pkill: refusing the generic process name \"${pattern}\" as a target -- it matches OTHER sessions and system processes (this class once wedged the VM GUI by killing qubes-session sleep). Kill a specific process (kill PID; kill -- -PGID), or override with SAFE_PROC_ALLOW_GENERIC=1." >&2
    exit 2
 fi
 ## Accept the 'kill -9' muscle-memory spelling: a signal is a bare NAME or NUMBER (TERM,
@@ -214,7 +214,7 @@ signal="${signal#-}"
 ## later as a kill failure misreported as a permission problem. '--' guards against a value
 ## that still begins with '-' (e.g. an empty result) being read by 'kill -l' as its own option.
 if ! kill -l -- "${signal}" >/dev/null 2>&1; then
-   printf 'safe-pkill: invalid signal: %s\n' "${signal}" >&2
+   printf '%s\n' "safe-pkill: invalid signal: ${signal}" >&2
    exit 2
 fi
 
@@ -246,7 +246,7 @@ case "${pgrep_rc}" in
       true
       ;;
    *)
-      printf 'safe-pkill: pgrep failed (exit %s) for pattern -- bad regex? : %s\n' "${pgrep_rc}" "${pattern}" >&2
+      printf '%s\n' "safe-pkill: pgrep failed (exit ${pgrep_rc}) for pattern -- bad regex? : ${pattern}" >&2
       exit 2
       ;;
 esac
@@ -272,17 +272,17 @@ done
 
 if [ "${#targets[@]}" -eq 0 ]; then
    if [ "${#skipped[@]}" -gt 0 ]; then
-      printf 'safe-pkill: only self/ancestors matched (protected, nothing killed): %s\n' "${skipped[*]}" >&2
+      printf '%s\n' "safe-pkill: only self/ancestors matched (protected, nothing killed): ${skipped[*]}" >&2
    else
-      printf 'safe-pkill: no process matched: %s\n' "${pattern}" >&2
+      printf '%s\n' "safe-pkill: no process matched: ${pattern}" >&2
    fi
    exit 1
 fi
 
 if [ "${dry_run}" = 'true' ]; then
-   printf 'safe-pkill: DRY-RUN -- would send %s to: %s\n' "${signal}" "${targets[*]}"
+   printf '%s\n' "safe-pkill: DRY-RUN -- would send ${signal} to: ${targets[*]}"
    if [ "${#skipped[@]}" -gt 0 ]; then
-      printf 'safe-pkill: protected (self/ancestors), would skip: %s\n' "${skipped[*]}"
+      printf '%s\n' "safe-pkill: protected (self/ancestors), would skip: ${skipped[*]}"
    fi
    exit 0
 fi
@@ -300,7 +300,7 @@ for target in "${targets[@]}"; do
    ## WARN so a survivor is never hidden (honesty), and remember it for the exit-code decision.
    ## The WARNING -- not the exit code -- is what keeps a survivor from passing silently.
    if [ "$(classify_kill_failure "${kill_err}" "${target}")" = 'live' ]; then
-      printf 'safe-pkill: WARNING: could not signal process %s (still alive, or hidden by /proc permissions)\n' "${target}" >&2
+      printf '%s\n' "safe-pkill: WARNING: could not signal process ${target} (still alive, or hidden by /proc permissions)" >&2
       unsignalled_live+=("${target}")
    fi
 done
@@ -309,16 +309,16 @@ done
 ## to a broader fallback kill (the cross-session hazard) merely because ONE matched target was
 ## unsignalable while others were killed. Only when NOTHING was signalled is this a failure.
 if [ "${#signalled[@]}" -gt 0 ]; then
-   printf 'safe-pkill: sent %s to: %s\n' "${signal}" "${signalled[*]}"
+   printf '%s\n' "safe-pkill: sent ${signal} to: ${signalled[*]}"
 else
    rc=1
    if [ "${#unsignalled_live[@]}" -gt 0 ]; then
-      printf 'safe-pkill: could not signal any matched process (still alive, or hidden): %s\n' "${unsignalled_live[*]}" >&2
+      printf '%s\n' "safe-pkill: could not signal any matched process (still alive, or hidden): ${unsignalled_live[*]}" >&2
    else
-      printf 'safe-pkill: no live target remained to signal (all matches had exited)\n' >&2
+      printf '%s\n' "safe-pkill: no live target remained to signal (all matches had exited)" >&2
    fi
 fi
 if [ "${#skipped[@]}" -gt 0 ]; then
-   printf 'safe-pkill: protected (self/ancestors), NOT killed: %s\n' "${skipped[*]}"
+   printf '%s\n' "safe-pkill: protected (self/ancestors), NOT killed: ${skipped[*]}"
 fi
 exit "${rc}"

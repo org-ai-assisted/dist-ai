@@ -93,17 +93,17 @@ run_case() {
    case "${expect}" in
       ok)
          if [ "${rc}" -eq 0 ]; then
-            printf 'PASS: %s\n' "${name}"
+            printf '%s\n' "PASS: ${name}"
          else
-            printf 'FAIL: %s (expected accept, got rc=%s)\n' "${name}" "${rc}"
+            printf '%s\n' "FAIL: ${name} (expected accept, got rc=${rc})"
             fail=1
          fi
          ;;
       err)
          if [ "${rc}" -ne 0 ]; then
-            printf 'PASS: %s\n' "${name}"
+            printf '%s\n' "PASS: ${name}"
          else
-            printf 'FAIL: %s (expected reject, got rc=0)\n' "${name}"
+            printf '%s\n' "FAIL: ${name} (expected reject, got rc=0)"
             fail=1
          fi
          ;;
@@ -147,15 +147,19 @@ run_case "debhelper artifact skipped" ok pkg.preinst.debhelper \
    '#DEBHELPER#' '#DEBHELPER#'
 
 ## a stray NUL byte must not make grep treat the script as binary and miss the
-## token (grep -a). Built directly because printf '%s' args cannot carry a NUL.
+## token (grep -a). The NUL comes from the '%s\0' format: an argument cannot carry one.
 nul_work="$(mktemp -d --tmpdir="${test_root}")"
 mkdir -- "${nul_work}/debian"
-printf '#!/bin/bash\n## note: #DEBHELPER#\n#DEBHELPER#\n\000x\n' > "${nul_work}/debian/postinst"
+{
+   printf '%s\n' '#!/bin/bash' '## note: #DEBHELPER#' '#DEBHELPER#'
+   printf '%s\0' ''
+   printf '%s\n' 'x'
+} > "${nul_work}/debian/postinst"
 if ( cd -- "${nul_work}" && make_debhelper_token_check ) >/dev/null 2>&1; then
-   printf 'FAIL: %s\n' "NUL byte hides duplicate token"
+   printf '%s\n' "FAIL: NUL byte hides duplicate token"
    fail=1
 else
-   printf 'PASS: %s\n' "NUL byte duplicate token rejected"
+   printf '%s\n' "PASS: NUL byte duplicate token rejected"
 fi
 safe-rm -r -f -- "${nul_work}"
 

@@ -41,7 +41,7 @@ cflite_smoke_run_fuzzers() {
   ## No names is itself a silent skip -- the exact class this guard exists to
   ## catch, one level up. Fail loud rather than pass vacuously.
   if [ "$#" -eq 0 ]; then
-    printf 'FATAL: cflite_smoke_run_fuzzers called with no fuzzer names\n' >&2
+    printf '%s\n' "FATAL: cflite_smoke_run_fuzzers called with no fuzzer names" >&2
     return 1
   fi
   for name in "$@"; do
@@ -65,11 +65,11 @@ cflite_smoke_run_fuzzers() {
     ## keeps the caller's errexit from aborting on the expected non-zero (the
     ## SystemExit(77) silent-skip, a real crash, or a timeout).
     if "${clean_run[@]}" timeout --kill-after=10 120 "${OUT}/${name}" -runs=100; then
-      printf 'smoke-run OK %s\n' "${name}"
+      printf '%s\n' "smoke-run OK ${name}"
     else
       smoke_rc=$?
-      printf 'FATAL: %s did not fuzz (exit %s) -- subject unresolved in bundle\n' \
-        "${name}" "${smoke_rc}" >&2
+      printf '%s\n' \
+        "FATAL: ${name} did not fuzz (exit ${smoke_rc}) -- subject unresolved in bundle" >&2
       return 1
     fi
   done

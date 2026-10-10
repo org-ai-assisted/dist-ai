@@ -85,9 +85,9 @@ git_x init --quiet -- "${origin}"
 git_x -C "${origin}" config user.email 'test@example.com'
 git_x -C "${origin}" config user.name 'test'
 mkdir --parents -- "${origin}/branding"
-printf 'PNG\n' > "${origin}/branding/logo.png"
+printf '%s\n' "PNG" > "${origin}/branding/logo.png"
 ln --symbolic -- logo.png "${origin}/branding/logo_installer.png"
-printf 'cruft\n' > "${origin}/.gitignore"
+printf '%s\n' "cruft" > "${origin}/.gitignore"
 git_x -C "${origin}" add --all
 git_x -C "${origin}" submodule add --quiet -- "${sub}" pkg/testpkg
 git_x -C "${origin}" commit --quiet --message 'origin'

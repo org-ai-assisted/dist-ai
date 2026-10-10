@@ -51,9 +51,9 @@ run_orch() {
 check() {
    local desc="$1" want="$2" got="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s (rc %s)\n' "${desc}" "${got}"
+      printf '%s\n' "PASS: ${desc} (rc ${got})"
    else
-      printf 'FAIL: %s: rc %s, expected %s\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}: rc ${got}, expected ${want}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -71,7 +71,7 @@ check '--timeout-core 300 passes validation, halts at gate' 3 "$(run_orch --time
 check '--timeout-core 600s passes validation, halts at gate' 3 "$(run_orch --timeout-core 600s)"
 
 if [ "${failures}" -gt 0 ]; then
-   printf 'timeout_zero_rejected_test: %s assertion(s) FAILED.\n' "${failures}" >&2
+   printf '%s\n' "timeout_zero_rejected_test: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf 'timeout_zero_rejected_test: OK\n'
+printf '%s\n' "timeout_zero_rejected_test: OK"

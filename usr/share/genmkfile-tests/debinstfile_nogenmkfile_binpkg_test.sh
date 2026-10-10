@@ -115,12 +115,12 @@ tests_failed=0
 ##                 must still be generated.
 pkg_root="${work}/pkgroot"
 mkdir --parents -- "${pkg_root}/usr/bin" "${pkg_root}/debiantools" "${pkg_root}/debian"
-printf 'toolA\n' > "${pkg_root}/usr/bin/tool-a#optout"
-printf 'toolB\n' > "${pkg_root}/usr/bin/tool-b#regen"
-printf 'toolC\n' > "${pkg_root}/usr/bin/nogenmkfile#pathfp"
-printf 'toolD\n' > "${pkg_root}/usr/bin/tool-d#commentfp"
-printf 'toolE\n' > "${pkg_root}/usr/bin/tool-e#optoutc"
-printf 'toolX\n' > "${pkg_root}/debiantools/tool#extrapkg"
+printf '%s\n' "toolA" > "${pkg_root}/usr/bin/tool-a#optout"
+printf '%s\n' "toolB" > "${pkg_root}/usr/bin/tool-b#regen"
+printf '%s\n' "toolC" > "${pkg_root}/usr/bin/nogenmkfile#pathfp"
+printf '%s\n' "toolD" > "${pkg_root}/usr/bin/tool-d#commentfp"
+printf '%s\n' "toolE" > "${pkg_root}/usr/bin/tool-e#optoutc"
+printf '%s\n' "toolX" > "${pkg_root}/debiantools/tool#extrapkg"
 
 ## The maintainer's hand-written content that MUST survive (bare marker form).
 maintainer_content='nogenmkfile

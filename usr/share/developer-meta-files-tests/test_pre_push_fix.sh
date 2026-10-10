@@ -103,7 +103,7 @@ has_trailing_ws() {
 ## --- 1: always-safe confusables + trailing whitespace, result ASCII-clean --
 ## em dash, ellipsis, arrow -- the structure-safe set applied in code too.
 f="${test_dir}/basic.sh"
-printf '%b' '#!/bin/bash\n## a \342\200\224 b \342\200\246 c \342\206\222 d   \nx=1\t\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "## a "$'\342\200\224'" b "$'\342\200\246'" c "$'\342\206\222'" d   " "x=1"$'\t' >"${f}"
 ## Canary: the fixture must actually be dirty, else a no-op fixer "passes".
 if has_non_ascii "${f}" ; then
    note_pass "fixture is genuinely dirty (canary)"
@@ -126,7 +126,7 @@ fi
 
 ## --- 2: a non-confusable UTF-8 codepoint is PRESERVED ----------------------
 f="${test_dir}/preserve.py"
-printf '%b' '#!/usr/bin/python3\ncaf\303\251 = 1\n' >"${f}"
+printf '%s\n' "#!/usr/bin/python3" "caf"$'\303\251'" = 1" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_pass "non-confusable UTF-8 preserved (fixer only touches known set)"
@@ -136,7 +136,7 @@ fi
 
 ## --- 3: allow-non-ascii waiver suppresses R-001, not whitespace -----------
 f="${test_dir}/waived.sh"
-printf '%b' '#!/bin/bash\n## style-ok: allow-non-ascii\ny=\342\200\224   \n' >"${f}"
+printf '%s\n' "#!/bin/bash" "## style-ok: allow-non-ascii" "y="$'\342\200\224'"   " >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" && ! has_trailing_ws "${f}" ; then
    note_pass "waiver keeps non-ASCII, whitespace still fixed (gate parity)"
@@ -146,7 +146,7 @@ fi
 
 ## --- 4: undecodable file skipped, bytes unchanged -------------------------
 f="${test_dir}/binary.sh"
-printf '%b' '#!/bin/bash\n# \377\376 raw  \n' >"${f}"
+printf '%s\n' "#!/bin/bash" "# "$'\377\376'" raw  " >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -156,7 +156,7 @@ else
 fi
 
 ## --- 5: symlink skipped ---------------------------------------------------
-printf '%b' '#!/bin/bash\nx=1  \n' >"${test_dir}/target.sh"
+printf '%s\n' "#!/bin/bash" "x=1  " >"${test_dir}/target.sh"
 ln -s target.sh "${test_dir}/alias.sh"
 run_fix "${test_dir}/alias.sh" >/dev/null 2>&1
 if has_trailing_ws "${test_dir}/target.sh" ; then
@@ -167,7 +167,7 @@ fi
 
 ## --- 6: --check reports, writes nothing, exits 1 --------------------------
 f="${test_dir}/check.md"
-printf '%b' 'a \342\200\224 b\n' >"${f}"
+printf '%s\n' "a "$'\342\200\224'" b" >"${f}"
 before="$(cksum < "${f}")"
 rc=0
 run_fix --check "${f}" >/dev/null 2>&1 || rc=$?
@@ -179,7 +179,7 @@ fi
 
 ## --- 7: idempotency -------------------------------------------------------
 f="${test_dir}/idem.sh"
-printf '%b' '#!/bin/bash\n## \342\200\224   \n' >"${f}"
+printf '%s\n' "#!/bin/bash" "## "$'\342\200\224'"   " >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 first="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
@@ -193,7 +193,7 @@ fi
 ## In a .sh file a smart apostrophe stays (rewriting it to ASCII ' could break
 ## a single-quoted string); the em dash on the same line is still fixed.
 f="${test_dir}/quotes.sh"
-printf '%b' '#!/bin/bash\nx=\342\200\230hi\342\200\231 \342\200\224 y\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "x="$'\342\200\230'"hi"$'\342\200\231'" "$'\342\200\224'" y" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" && grep --quiet --fixed-strings -- ' -- ' "${f}" ; then
    note_pass "smart quotes kept in code, em dash still fixed"
@@ -202,7 +202,7 @@ else
 fi
 ## In a .md file the same smart quotes ARE fixed (quotes are content there).
 f="${test_dir}/quotes.md"
-printf '%b' 'a \342\200\230hi\342\200\231 b\n' >"${f}"
+printf '%s\n' "a "$'\342\200\230'"hi"$'\342\200\231'" b" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if ! has_non_ascii "${f}" && grep --quiet --fixed-strings -- "'hi'" "${f}" ; then
    note_pass "smart quotes fixed in markup"
@@ -212,7 +212,7 @@ fi
 
 ## --- 7c: no-break space is actually substituted --------------------------
 f="${test_dir}/nbsp.sh"
-printf '%b' '#!/bin/bash\nx=\302\2401\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "x="$'\302\240'"1" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if ! has_non_ascii "${f}" ; then
    note_pass "no-break space substituted to a plain space"
@@ -224,7 +224,7 @@ fi
 ## The gate accepts '##style-ok:allow-non-ascii'; the fixer must too, or it
 ## rewrites a file the gate exempts.
 f="${test_dir}/waiver2.sh"
-printf '%b' '#!/bin/bash\n##style-ok:allow-non-ascii\ny=\342\200\224\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "##style-ok:allow-non-ascii" "y="$'\342\200\224' >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_pass "waiver honored without whitespace after the colon (gate parity)"
@@ -247,7 +247,7 @@ fi
 ## The command word sits right after a '\n' escape (no real separator), so the
 ## fixture literal never trips the gate's own R-172 scan of THIS test file.
 f="${test_dir}/mkdirmode.sh"
-printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR"\nmkdir -m700 -- "$TMP"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -m 700 -- \"\$TMPDIR\"" "mkdir -m700 -- \"\$TMP\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- '--mode=700' "${f}")" -eq 2 ] \
    && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
@@ -268,7 +268,7 @@ fi
 ## re-merging a split 'chmod' is a multi-line change, out of the bucket-1
 ## remit. The file is left byte-identical for pre-push-static to report.
 f="${test_dir}/mkdirnomode.sh"
-printf '%b' '#!/bin/bash\nmkdir --parents -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --parents -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -283,7 +283,7 @@ fi
 ## atomic --parents/--mode pair needs). A cluster whose -m tail is NOT a clean
 ## octal ('-mp700') stays for the gate -- no mode can be guessed.
 f="${test_dir}/mkdirbundle.sh"
-printf '%b' '#!/bin/bash\nmkdir -pm700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -pm700 -- \"\$TMPDIR\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- '-p --mode=700' "${f}" \
    && ! grep --quiet --fixed-strings -- '-pm700' "${f}" \
@@ -300,7 +300,7 @@ else
    note_fail "R-172 bundled-cluster rewrite not idempotent"
 fi
 f="${test_dir}/mkdirbadtail.sh"
-printf '%b' '#!/bin/bash\nmkdir -mp700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -mp700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -312,7 +312,7 @@ fi
 ## (invalid mode, mkdir FAILS). A greedy prefix match would pick the LAST m and
 ## rewrite to a SUCCEEDING '-mp --mode=700', silencing R-172. Leave it byte-identical.
 f="${test_dir}/mkdirfirstm.sh"
-printf '%b' '#!/bin/bash\nmkdir -mpm700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -mpm700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -326,7 +326,7 @@ fi
 ## that has no valid --parents. CANARY: _long_name stripped the '=value', so the
 ## pre-fix code treated '--parents=invalid' as '--parents' and inserted SC2174.
 f="${test_dir}/mkdirparentseq.sh"
-printf '%b' '#!/bin/bash\nmkdir --parents=invalid --mode=700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --parents=invalid --mode=700 -- \"\$TMPDIR\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
    note_pass "R-172 does not treat '--parents=invalid' as --parents (no SC2174)"
@@ -340,7 +340,7 @@ fi
 ## blocked by SC2174 and no one hand-types it. CANARY: before the off-temp
 ## generalization the fixer skipped a non-TMP operand and left SC2174 unpaired.
 f="${test_dir}/mkdirnontmp.sh"
-printf '%b' '#!/bin/bash\nmkdir --parents --mode=0700 -- /run/user/0\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --parents --mode=0700 -- /run/user/0" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
    note_pass "R-172 adds SC2174 to an atomic non-temp mkdir (--mode allowed anywhere)"
@@ -357,7 +357,7 @@ fi
 ## The MODE requirement stays temp-scoped: a non-temp mkdir without --mode must
 ## be left byte-identical (the fixer must not fabricate a mode off-temp).
 f="${test_dir}/mkdirnontmpnomode.sh"
-printf '%b' '#!/bin/bash\nmkdir --parents -- /run/user/0\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --parents -- /run/user/0" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -371,7 +371,7 @@ f="${test_dir}/doc-mkdir.md"
 ## 'mkdir' at line start (after the '\n' escape), so this test SOURCE carries
 ## no real 'mkdir ... $TMPDIR' separator that the gate's own R-172 scan would
 ## flag -- while the fixture CONTENT still exercises the transform's matcher.
-printf '%b' 'mkdir -m 700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "mkdir -m 700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -386,7 +386,7 @@ fi
 ## does NOT insert one for a plain '--mode' mkdir (no -p, so no SC2174), and it
 ## never doubles an existing disable.
 f="${test_dir}/mkdirparents.sh"
-printf '%b' '#!/bin/bash\nmkdir --parents -m 700 -- "$TMPDIR"\nmkdir --mode=700 -- "$TMP"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --parents -m 700 -- \"\$TMPDIR\"" "mkdir --mode=700 -- \"\$TMP\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- 'disable=SC2174' "${f}")" -eq 1 ] \
    && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700' "${f}" ; then
@@ -407,7 +407,7 @@ fi
 ## AST yields it -- but the fixer must NOT touch it: inserting the SC2174 comment
 ## would splice into the here-document DATA. Canary: the old fixer corrupted it.
 f="${test_dir}/mkdirheredoc.sh"
-printf '%b' '#!/bin/bash\ncat <<EOF\n$(mkdir --parents -m 700 -- "$TMPDIR")\nEOF\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "cat <<EOF" "\$(mkdir --parents -m 700 -- \"\$TMPDIR\")" "EOF" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] \
@@ -423,7 +423,7 @@ fi
 ## leaves such a line alone (SC2174 there is a rare human fix).
 f="${test_dir}/mkdircont.sh"
 # shellcheck disable=SC2174
-printf '%b' '#!/bin/bash\ntrue \\\n&& mkdir --parents --mode=700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "true \\" "&& mkdir --parents --mode=700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] \
@@ -438,7 +438,7 @@ fi
 ## must be left byte-for-byte alone -- only the temp-dir mkdir's own '-m' is
 ## upgraded.
 f="${test_dir}/mkdirmulti.sh"
-printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR" && install -m 755 -- a b\nmkdir -- "$TMPDIR"; other -m700 arg\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -m 700 -- \"\$TMPDIR\" && install -m 755 -- a b" "mkdir -- \"\$TMPDIR\"; other -m700 arg" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- 'mkdir --mode=700' "${f}")" -eq 1 ] \
    && grep --quiet --fixed-strings -- 'install -m 755' "${f}" \
@@ -454,7 +454,7 @@ fi
 ## An '-m' inside a quoted path or after '--' is a literal directory name, not
 ## a flag, and must never be rewritten.
 f="${test_dir}/mkdiredge.sh"
-printf '%b' '#!/bin/bash\nmkdir "$TMPDIR/keep -m 700 name"\nmkdir -- -m 700 "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir \"\$TMPDIR/keep -m 700 name\"" "mkdir -- -m 700 \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -464,7 +464,7 @@ else
 fi
 ## A backtick command substitution is command position -> the mkdir is upgraded.
 f="${test_dir}/mkdirbtick.sh"
-printf '%b' '#!/bin/bash\nfoo=`mkdir --mode=700 -- "$TMPDIR"`\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "foo=\`mkdir --mode=700 -- \"\$TMPDIR\"\`" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- '--mode=700' "${f}" \
    && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
@@ -474,7 +474,7 @@ else
 fi
 ## The allow-mkdir-no-mode waiver disables the fixer too (lockstep with the gate).
 f="${test_dir}/mkdirwaiver.sh"
-printf '%b' '#!/bin/bash\n## style-ok: allow-mkdir-no-mode\nmkdir -m 700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "## style-ok: allow-mkdir-no-mode" "mkdir -m 700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -485,7 +485,7 @@ fi
 ## The SC2174 skip is exact: 'SC21745' is a different code and must not mask the
 ## required directive, which is still inserted (as its own whole line).
 f="${test_dir}/mkdirsc.sh"
-printf '%b' '#!/bin/bash\n# shellcheck disable=SC21745\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "# shellcheck disable=SC21745" "mkdir -p --mode=700 -- \"\$TMPDIR\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "R-172 SC2174 skip is exact (SC21745 does not mask it)"
@@ -495,7 +495,7 @@ fi
 ## An EVEN run of trailing backslashes is an escaped backslash, not a line
 ## continuation, so the disable IS inserted above the next mkdir.
 f="${test_dir}/mkdireven.sh"
-printf '%b' '#!/bin/bash\necho \\\\\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "echo \\\\" "mkdir -p --mode=700 -- \"\$TMPDIR\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "R-172 treats an even '\\\\' run as not a continuation"
@@ -516,7 +516,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --allow-empty --message "base"
 base_sha="$(git -C "${repo}" rev-parse HEAD)"
-printf '%b' '#!/bin/bash\n## comment \342\200\224 here\n' >"${repo}/doc.md"
+printf '%s\n' "#!/bin/bash" "## comment "$'\342\200\224'" here" >"${repo}/doc.md"
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -538,7 +538,7 @@ else
 fi
 
 ## --- 8b: R-172 gate parity -- short -m FAILS the gate, --mode= passes ------
-printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR"\n' >"${repo}/tmpdir.sh"
+printf '%s\n' "#!/bin/bash" "mkdir -m 700 -- \"\$TMPDIR\"" >"${repo}/tmpdir.sh"
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -562,7 +562,7 @@ fi
 ## (-p with -m). After the fixer -- '--mode=' plus the inserted disable -- the
 ## gate reports NEITHER, proving the SC2174 insertion actually satisfies
 ## shellcheck rather than trading one failure for another.
-printf '%b' '#!/bin/bash\nmkdir --parents -m 700 -- "$TMPDIR"\n' >"${repo}/tmpparents.sh"
+printf '%s\n' "#!/bin/bash" "mkdir --parents -m 700 -- \"\$TMPDIR\"" >"${repo}/tmpparents.sh"
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -597,7 +597,7 @@ fi
 g='grep'
 iq='-iq'
 f="${test_dir}/heredoc.sh"
-printf '%b' "#!/bin/bash\ntimeout 5 sleep 1\nDEBUG=1 ${g} ${iq} foo bar\ncat <<HD\ntimeout 5 sleep 1 stays as heredoc data\nHD\narr=(timeout 5 x)\n" >"${f}"
+printf '%s\n' '#!/bin/bash' 'timeout 5 sleep 1' "DEBUG=1 ${g} ${iq} foo bar" 'cat <<HD' 'timeout 5 sleep 1 stays as heredoc data' 'HD' 'arr=(timeout 5 x)' >"${f}"
 if grep --quiet --fixed-strings 'timeout --kill-after=5 5 sleep 1' "${f}" ; then
    note_fail "heredoc fixture not dirty -- canary would let a no-op fixer pass"
 fi
@@ -615,7 +615,7 @@ fi
 ## The headline win of the AST port. The regex fixer declined this file (it has
 ## a heredoc), so R-200 SURVIVED it -- this assertion FAILS on the old fixer and
 ## passes on the AST one.
-printf '%b' '#!/bin/bash\ntimeout 5 sleep 1\ncat <<HD\nx\nHD\n' >"${repo}/heredoc_to.sh"
+printf '%s\n' "#!/bin/bash" "timeout 5 sleep 1" "cat <<HD" "x" "HD" >"${repo}/heredoc_to.sh"
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -640,7 +640,7 @@ fi
 ## NO edit -- a silent no-op that reads as a pass. The fixer must locate the
 ## duration OPERAND (as detect does) and insert --kill-after before it.
 f="${test_dir}/leadopt.sh"
-printf '%b' '#!/bin/bash\ntimeout --foreground 5 sleep 1\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "timeout --foreground 5 sleep 1" >"${f}"
 if grep --quiet --fixed-strings 'kill-after' "${f}" ; then
    note_fail "leadopt fixture not dirty -- canary would let a no-op fixer pass"
 fi
@@ -655,7 +655,7 @@ fi
 ## Regression: a non-ASCII char earlier in the file must not shift the inserted
 ## disable into the previous line (str char-index vs shfmt byte-offset mismatch).
 f="${test_dir}/nonascii.sh"
-printf '%b' '#!/bin/bash\n## caf\303\251 padding comment here\nmkdir --parents -m 700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "## caf"$'\303\251'" padding comment here" "mkdir --parents -m 700 -- \"\$TMPDIR\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" \
    && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700 -- "$TMPDIR"' "${f}" \
@@ -667,7 +667,7 @@ fi
 
 ## --- 9e: space-form '--mode 700 -p' still detects -p and inserts SC2174 -------
 f="${test_dir}/spacemode.sh"
-printf '%b' '#!/bin/bash\nmkdir --mode 700 -p "$TMPDIR/x"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir --mode 700 -p \"\$TMPDIR/x\"" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "space-form --mode with -p gets the SC2174 disable (value skipped)"
@@ -679,7 +679,7 @@ fi
 ## A syntax error must not abort the fixer; the text transforms still run and the
 ## structural rules are left to the gate (which also runs 'bash -n').
 f="${test_dir}/broken.sh"
-printf '%b' '#!/bin/bash\nif [ 1 ; then\ntimeout 5 sleep 1\n## a \342\200\224 b   \n' >"${f}"
+printf '%s\n' "#!/bin/bash" "if [ 1 ; then" "timeout 5 sleep 1" "## a "$'\342\200\224'" b   " >"${f}"
 rc=0
 run_fix "${f}" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 0 ] \
@@ -696,7 +696,7 @@ fi
 ## then see it in the SAME fix pass. Canary: FAILs when the text rules share
 ## one pre-substitution snapshot (a residual trailing space survives).
 f="${test_dir}/nbsp-trail.sh"
-printf '%b' '#!/bin/bash\nx=1\302\240\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "x=1"$'\302\240' >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if ! has_non_ascii "${f}" && ! has_trailing_ws "${f}" ; then
    note_pass "trailing no-break space fixed in one pass (no residual space)"
@@ -707,8 +707,8 @@ fi
 ## --- 9: trailing blanks before a LONE CR (old-Mac EOL) are stripped --------
 ## The strip must peel blanks before a bare '\r' with no LF, preserving the CR.
 f="${test_dir}/crtrail.sh"
-printf '%b' '#!/bin/bash\nfoo  \r' >"${f}"
-printf '%b' '#!/bin/bash\nfoo\r' >"${test_dir}/crtrail.expect"
+printf '%s' "#!/bin/bash"$'\n'"foo  "$'\r' >"${f}"
+printf '%s' "#!/bin/bash"$'\n'"foo"$'\r' >"${test_dir}/crtrail.expect"
 run_fix "${f}" >/dev/null 2>&1
 if cmp -s "${f}" "${test_dir}/crtrail.expect" ; then
    note_pass "trailing blanks before a lone CR stripped, CR preserved"
@@ -721,7 +721,7 @@ fi
 ## span from '-m' to the mode word would DELETE it, so the fixer declines and
 ## leaves the (rare) shape byte-identical for the gate.
 f="${test_dir}/mkdir-redir.sh"
-printf '%b' '#!/bin/bash\nmkdir -m >/dev/null 700 -- "$TMPDIR"\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -m >/dev/null 700 -- \"\$TMPDIR\"" >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
@@ -735,7 +735,7 @@ fi
 ## it (with one leading space) so the call is clean. Canary: dirty before, and
 ## the exact fixed text after.
 f="${test_dir}/dashdash.sh"
-printf '%b' '#!/bin/bash\ngit check-ref-format -- refs/heads/x\n' >"${f}"
+printf '%s\n' "#!/bin/bash" "git check-ref-format -- refs/heads/x" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- 'git check-ref-format refs/heads/x' "${f}" \
    && ! grep --quiet --fixed-strings -- 'check-ref-format --' "${f}" ; then

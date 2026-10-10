@@ -54,7 +54,7 @@ REASON=""
 valid_repositories=" stable stable-proposed-updates testers developers "
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -467,10 +467,10 @@ main() {
       exit "${PASS_RC}"
    fi
    if [ "${blocking}" = 'true' ]; then
-      printf '%s: FAIL -- R6 gate RED: %s\n' "${me}" "${REASON}" >&2
+      printf '%s\n' "${me}: FAIL -- R6 gate RED: ${REASON}" >&2
       exit "${FAIL_RC}"
    fi
-   printf '%s: WARNING -- developer persona DEGRADED (non-blocking): %s\n' "${me}" "${REASON}" >&2
+   printf '%s\n' "${me}: WARNING -- developer persona DEGRADED (non-blocking): ${REASON}" >&2
    exit "${PASS_RC}"
 }
 

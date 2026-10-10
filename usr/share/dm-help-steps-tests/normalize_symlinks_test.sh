@@ -108,9 +108,9 @@ git_x init --quiet -- "${origin}"
 git_x -C "${origin}" config user.email 'test@example.com'
 git_x -C "${origin}" config user.name 'test'
 mkdir --parents -- "${origin}/live-build-data/d-i-branding"
-printf 'PNG\n' > "${origin}/live-build-data/d-i-branding/logo_debian.png"
+printf '%s\n' "PNG" > "${origin}/live-build-data/d-i-branding/logo_debian.png"
 ln --symbolic -- logo_debian.png "${origin}/live-build-data/d-i-branding/logo_installer.png"
-printf 'exec\n' > "${origin}/an_executable"
+printf '%s\n' "exec" > "${origin}/an_executable"
 chmod 0755 "${origin}/an_executable"
 git_x -C "${origin}" add --all
 git_x -C "${origin}" update-index --chmod=+x an_executable
@@ -254,7 +254,7 @@ fi
 nl_clone="${workdir}/host_nl"
 git_x -c core.symlinks=true clone --quiet -- "${origin}" "${nl_clone}"
 git_x -C "${nl_clone}" config core.symlinks true
-target_with_nl="$(printf 'a\nb')"
+target_with_nl="$(printf '%s' "a"$'\n'"b")"
 ln --symbolic -- "${target_with_nl}" "${nl_clone}/weird_link"
 ## The normaliser only touches INDEXED (mode-120000) entries, so stage it.
 git_x -C "${nl_clone}" add -- weird_link

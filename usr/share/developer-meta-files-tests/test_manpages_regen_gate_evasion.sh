@@ -44,10 +44,10 @@ check() {
    got="$2"
    want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${label}"
+      printf '%s\n' "PASS: ${label}"
       pass=$((pass + 1))
    else
-      printf 'FAIL: %s (got %s, want %s)\n' "${label}" "${got}" "${want}"
+      printf '%s\n' "FAIL: ${label} (got ${got}, want ${want})"
       fail=$((fail + 1))
    fi
 }
@@ -57,9 +57,9 @@ run_gate() {
    local fixture="$1" rc=0
    DM_PACKAGING_HELPER_SCRIPT="${fixture}" bash -- "${gate}" >/dev/null 2>&1 || rc="$?"
    if [ "${rc}" -eq 0 ]; then
-      printf pass
+      printf '%s' "pass"
    else
-      printf fail
+      printf '%s' "fail"
    fi
 }
 

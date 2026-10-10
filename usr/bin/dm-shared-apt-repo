@@ -59,7 +59,7 @@ guest_mount="/mnt/shared"
 helper_src="/usr/share/dm-smbios-reader-boot-tests/add-local-test-repo"
 
 die() {
-   printf '%s: ERROR: %s\n' "${me}" "$2" >&2
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
 
@@ -79,7 +79,7 @@ check_derivative() {
    fi
 }
 
-repo_dir_for() { printf '%s/aptrepo_local/%s' "${repo_parent}" "$1"; }
+repo_dir_for() { printf '%s' "${repo_parent}/aptrepo_local/${1}"; }
 
 ## Stage the guest helper into the share root so it rides the share into the guest
 ## (/mnt/shared/add-local-test-repo). Skipped when running from a checkout where the
@@ -105,8 +105,8 @@ do_prepare() {
    ## non-zero and would abort under errexit before stage_helper.
    ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
    stage_helper
-   printf '%s: prepared %s (codename %s); guest: run %s/add-local-test-repo\n' \
-      "${me}" "${rd}" "${codename}" "${guest_mount}"
+   printf '%s\n' \
+      "${me}: prepared ${rd} (codename ${codename}); guest: run ${guest_mount}/add-local-test-repo"
 }
 
 ## Print the VM's VMState (empty if unknown). Must never return non-zero: a
@@ -138,30 +138,31 @@ do_attach() {
       --hostpath "${repo_parent}" --readonly "${add_args[@]}"
    stage_helper
 
-   printf '%s: attached %s -> %s on %s%s\n' "${me}" "${share_name}" "${repo_parent}" "${vm}" \
-      "$([ "${transient}" = "true" ] && printf ' (transient)')"
+   printf '%s\n' \
+      "${me}: attached ${share_name} -> ${repo_parent} on ${vm}$([ "${transient}" = "true" ] && printf '%s' " (transient)")"
    if [ "${transient}" = "true" ]; then
-      printf '%s: running vm -- in the guest: systemctl restart mnt-shared-vbox.service\n' "${me}"
+      printf '%s\n' "${me}: running vm -- in the guest: systemctl restart mnt-shared-vbox.service"
    else
-      printf '%s: mounts at %s on the next boot (mnt-shared-vbox.service)\n' "${me}" "${guest_mount}"
+      printf '%s\n' "${me}: mounts at ${guest_mount} on the next boot (mnt-shared-vbox.service)"
    fi
 }
 
 do_status() {
-   local vm="${1:-}" d rd
-   printf 'share host path: %s\n' "${repo_parent}"
+   local vm="${1:-}" d rd d_col
+   printf '%s\n' "share host path: ${repo_parent}"
    for d in kicksecure whonix; do
       rd="$(repo_dir_for "${d}")"
+      printf -v d_col '%-10s' "${d}"
       if [ -d "${rd}/dists/${codename}" ]; then
-         printf '  %-10s : repo present (%s)\n' "${d}" "${rd}"
+         printf '%s\n' "  ${d_col} : repo present (${rd})"
       else
-         printf '  %-10s : no repo yet (%s)\n' "${d}" "${rd}"
+         printf '%s\n' "  ${d_col} : no repo yet (${rd})"
       fi
    done
    if [ -n "${vm}" ]; then
-      printf -- '--- %s ---\n' "${vm}"
+      printf -- '%s\n' "--- ${vm} ---"
       "${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
-         | grep --ignore-case --extended-regexp 'SharedFolder' || printf 'no shared folders mapped\n'
+         | grep --ignore-case --extended-regexp 'SharedFolder' || printf '%s\n' "no shared folders mapped"
    fi
 }
 

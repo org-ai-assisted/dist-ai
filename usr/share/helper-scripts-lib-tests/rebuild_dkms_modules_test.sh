@@ -107,10 +107,10 @@ check() {
 contains() {
    case "$1" in
       *"$2"*)
-         printf 'yes'
+         printf '%s' "yes"
          ;;
       *)
-         printf 'no'
+         printf '%s' "no"
          ;;
    esac
 }

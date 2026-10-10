@@ -65,7 +65,7 @@ chmod 0755 -- "${stub_dir}/ischroot"
 ## newline strands on its own line, so it is the value the assertions key on.
 device_one='/dev/nvme1n1p2'
 device_two='/dev/nvme0n1p2'
-multi_device="$(printf '%s\n%s' "${device_one}" "${device_two}")"
+multi_device="$(printf '%s' "${device_one}"$'\n'"${device_two}")"
 
 generator_rc=0
 output="$(env --ignore-environment \

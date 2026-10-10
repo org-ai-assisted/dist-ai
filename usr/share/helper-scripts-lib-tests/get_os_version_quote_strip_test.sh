@@ -81,7 +81,7 @@ run_get_os() {
    os_release_file="${fixture}" get_os >/dev/null 2>&1
    ## distro_version / distro_codename are globals get_os assigns.
    # shellcheck disable=SC2154
-   printf '%s|%s' "${distro_version}" "${distro_codename}"
+   printf '%s' "${distro_version}|${distro_codename}"
 }
 
 check_parses() {

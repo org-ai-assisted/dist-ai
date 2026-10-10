@@ -184,7 +184,7 @@ fi
 ## first newline, silently dropping every remote after line 1 (no push, no error).
 count
 git -C "${repo}" commit -q --allow-empty -m c3
-nl_remotes="$(printf '%s\n%s' org-ai-assisted gitlab-adrelanos)"
+nl_remotes="$(printf '%s' "org-ai-assisted"$'\n'"gitlab-adrelanos")"
 out="$(run_push "${nl_remotes}" "ai" || true)"
 loc="$(git -C "${repo}" rev-parse ai)"
 if [ "$(remote_tip "${test_root}/r1.git")" = "${loc}" ] \

@@ -46,7 +46,7 @@ trap cleanup EXIT
 mkdir --parents -- "${work}/usr/bin" "${work}/usr/libexec/dist-ai"
 marker="SIBLING-HELPER-$$-${RANDOM}${RANDOM}"
 cp -- "${lib}" "${work}/usr/libexec/dist-ai/generic-proc-names.bsh"
-printf "printf '%%s\\\\n' '%s' >&2\n" "${marker}" \
+printf '%s\n' "printf '%s"$'\\'"n' '${marker}' >&2" \
    >> "${work}/usr/libexec/dist-ai/generic-proc-names.bsh"
 
 ## Run <tool> --help (sources the helper, then prints usage) from the throwaway bin with

@@ -29,4 +29,4 @@ source help-steps/pre
 # shellcheck disable=SC1091
 source help-steps/variables "$@"
 
-printf 'RESULT=%s\n' "${!prec_var_name:-<unset>}"
+printf '%s\n' "RESULT=${!prec_var_name:-<unset>}"

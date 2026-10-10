@@ -29,7 +29,7 @@ if [ -z "${subject}" ]; then
       subject='/usr/bin/dm-release-test'
    fi
 fi
-[ -r "${subject}" ] || { printf 'FATAL: dm-release-test not found at %s\n' "${subject}" >&2; exit 1; }
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: dm-release-test not found at ${subject}" >&2; exit 1; }
 # shellcheck source=../../bin/dm-release-test
 source "${subject}"
 
@@ -111,9 +111,9 @@ check() {
    label="$1"
    cond="$2"
    if [ "${cond}" = 'true' ]; then
-      printf 'ok: %s\n' "${label}"
+      printf '%s\n' "ok: ${label}"
    else
-      printf 'FAIL: %s\n' "${label}" >&2
+      printf '%s\n' "FAIL: ${label}" >&2
       failures=$((failures + 1))
    fi
 }
@@ -121,17 +121,17 @@ check() {
 pkill_line="$(grep -n '^pkill ' -- "${order}" | head -n 1 | cut -d: -f1)"
 userdel_line="$(grep -n '^userdel ' -- "${order}" | head -n 1 | cut -d: -f1)"
 
-check "image-test-gc was invoked" "$(grep --quiet '^image-test-gc ' -- "${order}" && printf true || printf false)"
-check "pkill killed the account by uid" "$(grep --quiet -- 'pkill .*--uid eph-inst-kicksecure-18-2-3-5' "${order}" && printf true || printf false)"
-check "userdel was invoked" "$([ -n "${userdel_line}" ] && printf true || printf false)"
+check "image-test-gc was invoked" "$(grep --quiet '^image-test-gc ' -- "${order}" && printf '%s' "true" || printf '%s' "false")"
+check "pkill killed the account by uid" "$(grep --quiet -- 'pkill .*--uid eph-inst-kicksecure-18-2-3-5' "${order}" && printf '%s' "true" || printf '%s' "false")"
+check "userdel was invoked" "$([ -n "${userdel_line}" ] && printf '%s' "true" || printf '%s' "false")"
 ## Canary: a reverted fix (userdel with no prior pkill) leaves pkill_line empty or after userdel.
-check "pkill ran BEFORE userdel" "$([ -n "${pkill_line}" ] && [ -n "${userdel_line}" ] && [ "${pkill_line}" -lt "${userdel_line}" ] && printf true || printf false)"
+check "pkill ran BEFORE userdel" "$([ -n "${pkill_line}" ] && [ -n "${userdel_line}" ] && [ "${pkill_line}" -lt "${userdel_line}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## ---- keep-on-failure + reclaim ------------------------------------------------------
 rt_kept_marker 'eph-inst-kicksecure-18-2-3-5'
 marker="${rt_marker}"
 check "keep: marker lives in the persistent state dir, not the /run lock dir" \
-   "$([ "${marker}" = "${DM_RELEASE_TEST_STATE_DIR}/kept-eph-inst-kicksecure-18-2-3-5.staged" ] && printf true || printf false)"
+   "$([ "${marker}" = "${DM_RELEASE_TEST_STATE_DIR}/kept-eph-inst-kicksecure-18-2-3-5.staged" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Sets $? for the next command, as main's exit status does for the EXIT trap.
 rc_is() {
@@ -142,12 +142,12 @@ rc_is() {
 true >| "${order}"
 rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
 export DM_RELEASE_TEST_KEEP_FAILED=1
-rc_is 5 || rt_eph_cleanup >/dev/null 2>&1
-check "keep: failed run tears nothing down" "$([ ! -s "${order}" ] && printf true || printf false)"
-check "keep: staged ISO dir kept (VM still has it attached)" "$([ -d "${rt_staged_dir}" ] && printf true || printf false)"
-check "keep: marker records the staged dir" "$([ "$(cat -- "${marker}" 2>/dev/null)" = "${rt_staged_dir}" ] && printf true || printf false)"
+rc_is 5 || STUB_PGREP_PIDS='4242' rt_eph_cleanup >/dev/null 2>&1
+check "keep: failed run tears nothing down" "$([ ! -s "${order}" ] && printf '%s' "true" || printf '%s' "false")"
+check "keep: staged ISO dir kept (VM still has it attached)" "$([ -d "${rt_staged_dir}" ] && printf '%s' "true" || printf '%s' "false")"
+check "keep: marker records the staged dir" "$([ "$(cat -- "${marker}" 2>/dev/null)" = "${rt_staged_dir}" ] && printf '%s' "true" || printf '%s' "false")"
 ## Root must never write into the account-controlled home (symlink / FIFO attack).
-check "keep: nothing written into the account home" "$([ -z "$(ls -A -- "${eph_home}")" ] && printf true || printf false)"
+check "keep: nothing written into the account home" "$([ -z "$(ls -A -- "${eph_home}")" ] && printf '%s' "true" || printf '%s' "false")"
 kept_dir="${rt_staged_dir}"
 
 ## (b) FAILED run, keep off: torn down as before.
@@ -155,13 +155,13 @@ true >| "${order}"
 rt_staged_dir=""
 export DM_RELEASE_TEST_KEEP_FAILED=0
 rc_is 5 || rt_eph_cleanup >/dev/null 2>&1
-check "no-keep: failed run invokes image-test-gc" "$(grep --quiet '^image-test-gc ' -- "${order}" && printf true || printf false)"
-check "no-keep: failed run invokes userdel" "$(grep --quiet '^userdel ' -- "${order}" && printf true || printf false)"
+check "no-keep: failed run invokes image-test-gc" "$(grep --quiet '^image-test-gc ' -- "${order}" && printf '%s' "true" || printf '%s' "false")"
+check "no-keep: failed run invokes userdel" "$(grep --quiet '^userdel ' -- "${order}" && printf '%s' "true" || printf '%s' "false")"
 
 ## (c) reclaim of the kept account removes exactly the marked staged dir.
 printf '%s\n' "${kept_dir}" > "${marker}"
 rt_eph_reclaim 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
-check "reclaim: removes the kept staged ISO dir" "$([ ! -e "${kept_dir}" ] && printf true || printf false)"
+check "reclaim: removes the kept staged ISO dir" "$([ ! -e "${kept_dir}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## (d) defense in depth: a marker path outside ISO_DIR/.built-*, or one escaping it
 ## with '..', is never removed.
@@ -169,12 +169,12 @@ victim="${work}/victim"
 mkdir --parents -- "${victim}"
 printf '%s\n' "${victim}" > "${marker}"
 rt_eph_reclaim 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
-check "reclaim: ignores a marker outside ISO_DIR/.built-*" "$([ -d "${victim}" ] && printf true || printf false)"
+check "reclaim: ignores a marker outside ISO_DIR/.built-*" "$([ -d "${victim}" ] && printf '%s' "true" || printf '%s' "false")"
 ## .built-x must EXIST, else the path walk fails and the escape is never attempted.
 mkdir --parents -- "${ISO_DIR}/.built-x"
 printf '%s\n' "${ISO_DIR}/.built-x/../../victim" > "${marker}"
 rt_eph_reclaim 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
-check "reclaim: ignores a '..' escape from ISO_DIR/.built-*" "$([ -d "${victim}" ] && printf true || printf false)"
+check "reclaim: ignores a '..' escape from ISO_DIR/.built-*" "$([ -d "${victim}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## (e) sweep: an UNLOCKED leftover eph-inst-* account is reclaimed; a LOCKED one (a live
 ## run holds its lock) and a persist-* account are never touched; the current account is
@@ -186,10 +186,10 @@ exec {held_fd}>"${lockdir}/dm-release-test-eph-inst-kicksecure-built.lock"
 flock --nonblock "${held_fd}"
 rt_sweep_eph_leftovers 'eph-inst-kicksecure-18-2-3-5' >/dev/null 2>&1
 exec {held_fd}>&-
-check "sweep: unlocked leftover reclaimed" "$(grep --quiet -- '^userdel .*eph-inst-whonix-18-2-3-5' "${order}" && printf true || printf false)"
-check "sweep: locked (live) account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-built' "${order}" && printf false || printf true)"
-check "sweep: current account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-18-2-3-5' "${order}" && printf false || printf true)"
-check "sweep: persist account untouched" "$(grep --quiet -- 'persist-inst' "${order}" && printf false || printf true)"
+check "sweep: unlocked leftover reclaimed" "$(grep --quiet -- '^userdel .*eph-inst-whonix-18-2-3-5' "${order}" && printf '%s' "true" || printf '%s' "false")"
+check "sweep: locked (live) account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-built' "${order}" && printf '%s' "false" || printf '%s' "true")"
+check "sweep: current account untouched" "$(grep --quiet -- 'eph-inst-kicksecure-18-2-3-5' "${order}" && printf '%s' "false" || printf '%s' "true")"
+check "sweep: persist account untouched" "$(grep --quiet -- 'persist-inst' "${order}" && printf '%s' "false" || printf '%s' "true")"
 
 ## (f) an unusable state/lock dir ABORTS the run (SETUP rc 2). A die inside "$(...)" was
 ## masked: the marker path collapsed to '/kept-ACCOUNT.staged' and the keep "succeeded".
@@ -202,14 +202,14 @@ bad_rc=0
    rt_staged_dir="${ISO_DIR}/.built-bad"
    rc_is 5 || rt_eph_cleanup
 ) >/dev/null 2>&1 || bad_rc=$?
-check "unusable state dir aborts with the SETUP rc (no masked die)" "$([ "${bad_rc}" = 2 ] && printf true || printf false)"
+check "unusable state dir aborts with the SETUP rc (no masked die)" "$([ "${bad_rc}" = 2 ] && printf '%s' "true" || printf '%s' "false")"
 rel_rc=0
 (
    # shellcheck disable=SC2030,SC2031  # scoped to this subshell on purpose
    export DM_RELEASE_TEST_LOCK_DIR='relative/lock'
    rt_lock_dir
 ) >/dev/null 2>&1 || rel_rc=$?
-check "a relative lock dir is refused" "$([ "${rel_rc}" = 2 ] && printf true || printf false)"
+check "a relative lock dir is refused" "$([ "${rel_rc}" = 2 ] && printf '%s' "true" || printf '%s' "false")"
 
 ## (g) a run starting while a sweep briefly holds its account's lock WAITS for it (bounded),
 ## instead of dying 'another run holds the lock'.
@@ -228,30 +228,41 @@ hold_wait_lock() {
 hold_wait_lock 3
 wait_rc=0
 ( DM_RELEASE_TEST_LOCK_WAIT=30 rt_lock_account 'eph-inst-wait' ) >/dev/null 2>&1 || wait_rc=$?
-check "lock: waits out a briefly held lock (rc=${wait_rc})" "$([ "${wait_rc}" = 0 ] && printf true || printf false)"
+check "lock: waits out a briefly held lock (rc=${wait_rc})" "$([ "${wait_rc}" = 0 ] && printf '%s' "true" || printf '%s' "false")"
 wait "${sweep_holder}" || true
 hold_wait_lock 600
 wait_rc=0
 ( DM_RELEASE_TEST_LOCK_WAIT=1 rt_lock_account 'eph-inst-wait' ) >"${work}/wait.out" 2>&1 || wait_rc=$?
-check "lock: the wait is bounded, dies with the SETUP rc (rc=${wait_rc}: $(tr '\n' ' ' < "${work}/wait.out"))" "$([ "${wait_rc}" = 2 ] && printf true || printf false)"
+check "lock: the wait is bounded, dies with the SETUP rc (rc=${wait_rc}: $(tr '\n' ' ' < "${work}/wait.out"))" "$([ "${wait_rc}" = 2 ] && printf '%s' "true" || printf '%s' "false")"
 ## flock -o: the lock lives only in the flock process, so killing it releases the lock.
 kill -- "${sweep_holder}" 2>/dev/null || true
 wait "${sweep_holder}" || true
 
-## (h) a kept VM leaves this run's cgroup: its processes move into their own scope, and a
-## failure to do so is reported, never silent.
+## (h) a kept VM leaves this run's cgroup: its processes move into their own scope. A VM
+## that cannot be detached is NOT kept: the run is torn down, never reported as kept.
 keep_out="${work}/keep.out"
 rt_staged_dir=""
 true >| "${busctl_log}"
-STUB_PGREP_PIDS='4242 4243' rc_is 5 || STUB_PGREP_PIDS='4242 4243' rt_eph_cleanup 2>"${keep_out}" >/dev/null
+rc_is 5 || STUB_PGREP_PIDS='4242 4243' rt_eph_cleanup 2>"${keep_out}" >/dev/null
 check "keep: VM processes moved into their own scope" \
-   "$(grep --quiet -- 'StartTransientUnit .*dm-release-test-kept-eph-inst-kicksecure-18-2-3-5-.*\.scope fail 1 PIDs au 2 4242 4243 0' "${busctl_log}" && printf true || printf false)"
+   "$(grep --quiet -- 'StartTransientUnit .*dm-release-test-kept-eph-inst-kicksecure-18-2-3-5-.*\.scope fail 1 PIDs au 2 4242 4243 0' "${busctl_log}" && printf '%s' "true" || printf '%s' "false")"
+true >| "${order}"
+rt_staged_dir="$(mktemp --directory -- "${ISO_DIR}/.built-XXXXXX")"
+detach_fail_dir="${rt_staged_dir}"
+safe-rm --force -- "${marker}"
 rc_is 5 || STUB_PGREP_PIDS='4242' STUB_BUSCTL_FAIL=1 rt_eph_cleanup 2>"${keep_out}" >/dev/null
 check "keep: a failed detach is reported loudly" \
-   "$(grep --quiet -- 'dies as soon as' "${keep_out}" && printf true || printf false)"
+   "$(grep --quiet -- 'dies as soon as' "${keep_out}" && printf '%s' "true" || printf '%s' "false")"
+check "keep: a failed detach never claims the run was kept" \
+   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
+check "keep: a failed detach tears the run down" \
+   "$(grep --quiet -- '^userdel .*eph-inst-kicksecure-18-2-3-5' "${order}" && [ ! -e "${detach_fail_dir}" ] && [ ! -e "${marker}" ] && printf '%s' "true" || printf '%s' "false")"
+rc_is 5 || rt_eph_cleanup 2>"${keep_out}" >/dev/null
+check "keep: no VM process to keep -> not reported as kept" \
+   "$(grep --quiet -- 'kept FAILED run' "${keep_out}" && printf '%s' "false" || printf '%s' "true")"
 
 if [ "${failures}" -ne 0 ]; then
-   printf '\n%s cleanup assertion(s) failed\n' "${failures}" >&2
+   printf '%s\n' "" "${failures} cleanup assertion(s) failed" >&2
    exit 1
 fi
-printf '\nall cleanup assertions passed\n'
+printf '%s\n' "" "all cleanup assertions passed"

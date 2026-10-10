@@ -21,7 +21,7 @@ export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 lib="${script_dir}/../dm-smbios-reader-boot-tests/vbox-session.bsh"
-[ -r "${lib}" ] || { printf 'ERROR: vbox-session.bsh not found: %s\n' "${lib}" >&2; exit 1; }
+[ -r "${lib}" ] || { printf '%s\n' "ERROR: vbox-session.bsh not found: ${lib}" >&2; exit 1; }
 
 tmp="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap, not a direct call
@@ -51,10 +51,10 @@ fail=0
 assert_eq() {
    local desc="$1" got="$2" want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${desc}"
+      printf '%s\n' "PASS: ${desc}"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s\n  got:  %s\n  want: %s\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}" "  got:  ${got}" "  want: ${want}" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -85,6 +85,6 @@ assert_eq 'gui snippet (extra env)' "$(gc_gui_launch_snippet 'install-host' 'MOK
 assert_eq 'gc_launch_gui delegates the gui snippet as --cmd' "$(gc_launch_gui user 'install-host')" \
    'testvm|--role|user|--cmd|export WAYLAND_DISPLAY=wayland-0; setsid install-host >/var/tmp/dm-gui-launch.log 2>&1 </dev/null &'
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

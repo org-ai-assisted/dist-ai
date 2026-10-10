@@ -228,7 +228,7 @@ fi
 ## marking it binary, must still be flagged by R-001 under --range -- the range
 ## judges the HEAD blob, whose tree has no such attribute, so a staged attribute
 ## must not exempt it.
-nonascii="$(printf 'caf\303\251\n')"
+nonascii="$(printf '%s\n' "caf"$'\303\251')"
 printf '%s' "${nonascii}" > "${repo}/data.txt"
 gc add -- data.txt
 gc commit --quiet --message committed-nonascii
@@ -253,7 +253,7 @@ safe-rm --force -- "${repo}/.gitattributes"
 ## (an on-disk 'file' mime probe fails on the missing path and drops the file from
 ## the text scope). Non-shell + extensionless so ONLY the is_text path decides it.
 mkdir --parents -- "${repo}/usr/share"
-printf 'plain note line \n' > "${repo}/usr/share/note"
+printf '%s\n' "plain note line " > "${repo}/usr/share/note"
 gc add -- usr/share/note
 safe-rm --force -- "${repo}/usr/share/note"   ## working copy gone; blob still staged
 c8_rc=0

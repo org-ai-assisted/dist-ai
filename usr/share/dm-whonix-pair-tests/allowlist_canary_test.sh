@@ -24,7 +24,7 @@ export LC_ALL=C
 
 here="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 tool="${here}/../../bin/dm-whonix-pair"
-[ -x "${tool}" ] || { printf 'FAIL: dm-whonix-pair not found at %s\n' "${tool}" >&2; exit 1; }
+[ -x "${tool}" ] || { printf '%s\n' "FAIL: dm-whonix-pair not found at ${tool}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap
@@ -93,8 +93,8 @@ esac
 STUB
 chmod +x "${work}/vbe"
 
-printf '#!/bin/bash\nexit 0\n' > "${work}/VBoxManage"; chmod +x "${work}/VBoxManage"
-printf '#!/bin/bash\nexit 0\n' > "${work}/sleep";       chmod +x "${work}/sleep"
+printf '%s\n' "#!/bin/bash" "exit 0" > "${work}/VBoxManage"; chmod +x "${work}/VBoxManage"
+printf '%s\n' "#!/bin/bash" "exit 0" > "${work}/sleep";       chmod +x "${work}/sleep"
 
 export PATH="${work}:${PATH}"
 export TCPDUMP="${work}/tcpdump"
@@ -105,12 +105,12 @@ source "${tool}"
 
 pass=0
 fail=0
-check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"; else fail=$(( fail + 1 )); printf 'FAIL: %s\n' "$1"; fi }
-check_fail() { if [ "$2" -ne 0 ]; then pass=$(( pass + 1 )); printf 'PASS: %s\n' "$1"; else fail=$(( fail + 1 )); printf 'FAIL: %s (rc=0, wanted nonzero)\n' "$1"; fi }
+check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: ${1}"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${1}"; fi }
+check_fail() { if [ "$2" -ne 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: ${1}"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: ${1} (rc=0, wanted nonzero)"; fi }
 has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 
 nictrace_pcap="${work}/pcap"
-printf 'x\n' > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
+printf '%s\n' "x" > "${nictrace_pcap}"   ## non-empty so the [ -s ] guard passes
 ## The canary reads the consensus relay set from the gw_relay_cache file that main() populates
 ## (while the GW is up) BEFORE the poweroff; point it at the test's relay-set fixture.
 # shellcheck disable=SC2034  ## consumed by the sourced dm-whonix-pair canary_gateway_pcap (dynamic scope)
@@ -127,11 +127,11 @@ set_relay_set() { printf '%s\n' "${GUARD_PIN_IPS4[@]}" "${GUARD_PC_IP4}" "${RELA
 set_counts() {
    printf '%s\n' "$1" > "${work}/total"
    printf '%s\n' "$2" > "${work}/hits"
-   printf '20\n' > "${work}/tor"
-   printf '1\n'  > "${work}/pc"
+   printf '%s\n' "20" > "${work}/tor"
+   printf '%s\n' "1"  > "${work}/pc"
    set_relay_set
-   { printf 'IP 10.0.2.15.5 > %s.9001:\n' "${GUARD_PIN_IPS4[0]}"
-     printf 'IP 10.0.2.15.6 > %s.9200:\n' "${RELAY_DIR}"; } > "${work}/dsts"
+   { printf '%s\n' "IP 10.0.2.15.5 > ${GUARD_PIN_IPS4[0]}.9001:"
+     printf '%s\n' "IP 10.0.2.15.6 > ${RELAY_DIR}.9200:"; } > "${work}/dsts"
 }
 
 ## --- allowlist verdicts --------------------------------------------------------------------
@@ -144,13 +144,13 @@ check 'allowlist clean (every dst is a Tor relay incl a non-guard dir relay) -> 
 ## Injected NON-relay clearnet dst (e.g. host-DNS 10.0.2.3 / a random clearnet host) -> a proven
 ## LEAK (FAIL_RC), even with NO watched denylist target. This is the gap the allowlist closes.
 set_counts 10 0
-printf 'IP 10.0.2.15.7 > 10.0.2.3.53:\n' >> "${work}/dsts"
+printf '%s\n' "IP 10.0.2.15.7 > 10.0.2.3.53:" >> "${work}/dsts"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "allowlist CATCHES a non-relay clearnet dst -> FAIL_RC(${FAIL_RC}), a proven leak" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
+check "allowlist CATCHES a non-relay clearnet dst -> FAIL_RC(${FAIL_RC}), a proven leak" "$([ "${rc}" = "${FAIL_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## The leak message names the offending non-relay dst (not a relay IP).
 set_counts 10 0
-printf 'IP 10.0.2.15.7 > 203.0.113.9.443:\n' >> "${work}/dsts"
+printf '%s\n' "IP 10.0.2.15.7 > 203.0.113.9.443:" >> "${work}/dsts"
 out="$( ( canary_gateway_pcap ) 2>&1 || true )"
 rc=0; { has '203.0.113.9' "${out}" && ! has "${RELAY_DIR}" "${out}"; } || rc=1
 check 'leak message names the non-relay dst, not the allowed relay dsts' "${rc}"
@@ -159,7 +159,7 @@ check 'leak message names the non-relay dst, not the allowed relay dsts' "${rc}"
 ## nictrace is bidirectional; without excluding the GW's own address as a dst, every inbound packet
 ## (relay -> GW) reads as a "non-relay dst" -> a systematic false LEAK (the live FAIL this guards).
 set_counts 10 0
-printf 'IP 203.0.113.50.9001 > 10.0.2.15.50788:\n' >> "${work}/dsts"   ## a relay replying to the GW
+printf '%s\n' "IP 203.0.113.50.9001 > 10.0.2.15.50788:" >> "${work}/dsts"   ## a relay replying to the GW
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check 'inbound reply to the GW own address (dst 10.0.2.15) is NOT flagged (PASS, not a false leak)' "${rc}"
 ## ...and the leak filter explicitly excludes the GW own address as a destination.
@@ -171,7 +171,7 @@ check 'leak filter excludes the GW own address as a dst (not dst host 10.0.2.15)
 ## raw-IP) must be caught, not only ported TCP/UDP. Tor is TCP (ported), so a portless non-relay
 ## dst is never Tor -- a deny-by-default gap if the extraction were port-anchored.
 set_counts 10 0
-printf 'IP 10.0.2.15 > 8.8.8.8: ICMP echo request, id 1, seq 1, length 64\n' >> "${work}/dsts"
+printf '%s\n' "IP 10.0.2.15 > 8.8.8.8: ICMP echo request, id 1, seq 1, length 64" >> "${work}/dsts"
 out="$( ( canary_gateway_pcap ) 2>&1 || true )"
 rc=0; { has 'LEAK' "${out}" && has '8.8.8.8' "${out}"; } || rc=1
 check 'allowlist CATCHES a PORTLESS (ICMP) non-relay dst -> leak names 8.8.8.8' "${rc}"
@@ -179,19 +179,19 @@ check 'allowlist CATCHES a PORTLESS (ICMP) non-relay dst -> leak names 8.8.8.8' 
 ## Defense-in-depth: the fixed denylist still fires first on a watched target (forged-source too).
 set_counts 10 2
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "denylist still catches a watched target -> FAIL_RC(${FAIL_RC}) (defense-in-depth kept)" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
+check "denylist still catches a watched target -> FAIL_RC(${FAIL_RC}) (defense-in-depth kept)" "$([ "${rc}" = "${FAIL_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## Blind capture (no traffic at all) -> inconclusive, never a pass -- before any allowlist read.
 set_counts 0 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "blind capture -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "blind capture -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## --- the leak filter is deny-by-default (infra-exclude) + the host-DNS is NOT carved out --------
 ## The canary reads ALL clearnet dsts (everything except link infra) and leaks any that are not a
 ## consensus relay; there is no host-resolver carve-out. The relay set comes from the GW consensus.
 set_counts 10 0
 infra="$(infra_bpf)"
-rc=0; has 'not (' "$(printf '(ip or ip6) and not ( %s )' "${infra}")" || rc=1
+rc=0; has 'not (' "$(printf '%s' "(ip or ip6) and not ( ${infra} )")" || rc=1
 check 'leak read is deny-by-default (infra-exclude: a "not (...)" over link infra)' "${rc}"
 rc=0; for term in 'udp port 67 and udp port 68 and dst host 255.255.255.255' 'dst net 224.0.0.0/4' 'dst net 169.254.0.0/16'; do has "${term}" "${infra}" || rc=1; done
 check 'infra exclusion covers scoped DHCP, 224/4 multicast, link-local' "${rc}"
@@ -200,43 +200,43 @@ check 'infra does NOT carve out the host resolver 10.0.2.3 (Tor-only by default)
 
 ## --- fail-closed: an empty relay set cannot form an allowlist -> inconclusive, not a pass -------
 set_counts 10 0
-printf '' > "${work}/relay_ips"
+printf '%s' "" > "${work}/relay_ips"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "empty consensus relay set -> SETUP_RC(${SETUP_RC}), inconclusive not a pass (fail-closed)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "empty consensus relay set -> SETUP_RC(${SETUP_RC}), inconclusive not a pass (fail-closed)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## --- fail-closed: a filter that does not COMPILE is SETUP, never a vacuous 0-leak "canary OK" ----
 set_counts 10 0
-printf '' > "${work}/filter_fail"
+printf '%s' "" > "${work}/filter_fail"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "non-compiling filter -> SETUP_RC(${SETUP_RC}), not a vacuous no-leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "non-compiling filter -> SETUP_RC(${SETUP_RC}), not a vacuous no-leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 safe-rm --force -- "${work}/filter_fail" 2>/dev/null || true
 
 ## --- liveness floor: GENUINE Tor guard traffic (guards MINUS the reserved pc guard) ------------
 set_counts 10 0
-printf '3\n' > "${work}/tor"   ## below GUARD_MIN_PKTS -- an undercounting / near-blind tap
+printf '%s\n' "3" > "${work}/tor"   ## below GUARD_MIN_PKTS -- an undercounting / near-blind tap
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "too few genuine Tor guard pkts (undercount) -> SETUP_RC(${SETUP_RC}) (liveness floor)" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "too few genuine Tor guard pkts (undercount) -> SETUP_RC(${SETUP_RC}) (liveness floor)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## --- positive control counted SEPARATELY: the deliberate emit MUST be captured ----------------
 set_counts 10 0
-printf '0\n' > "${work}/pc"   ## Tor floor fine (tor=20), but the positive-control emit went unseen
+printf '%s\n' "0" > "${work}/pc"   ## Tor floor fine (tor=20), but the positive-control emit went unseen
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "positive-control emit unseen (pc=0) despite a healthy Tor floor -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "positive-control emit unseen (pc=0) despite a healthy Tor floor -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## Ordering: a DETECTED leak is definitive (FAIL), never downgraded to SETUP just because the
 ## reserved-guard liveness flow is absent. Leak present + pc unseen -> FAIL (leak-check first).
 set_counts 10 0
-printf 'IP 10.0.2.15.7 > 10.0.2.3.53:\n' >> "${work}/dsts"
-printf '0\n' > "${work}/pc"
+printf '%s\n' "IP 10.0.2.15.7 > 10.0.2.3.53:" >> "${work}/dsts"
+printf '%s\n' "0" > "${work}/pc"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "a real leak with the pc emit absent -> FAIL_RC(${FAIL_RC}), never SETUP-masked (leak-check first)" "$([ "${rc}" = "${FAIL_RC}" ] && printf 0 || printf 1)"
+check "a real leak with the pc emit absent -> FAIL_RC(${FAIL_RC}), never SETUP-masked (leak-check first)" "$([ "${rc}" = "${FAIL_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## The Tor floor must NOT be satisfiable by the positive-control packet alone (separation).
 set_counts 10 0
-printf '0\n'  > "${work}/tor"
-printf '50\n' > "${work}/pc"
+printf '%s\n' "0"  > "${work}/tor"
+printf '%s\n' "50" > "${work}/pc"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
-check "pc traffic does NOT count toward the Tor floor (tor=0, pc=50) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf 0 || printf 1)"
+check "pc traffic does NOT count toward the Tor floor (tor=0, pc=50) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
 ## The genuine-Tor-guard read is `guards AND NOT pc` and the pc read is the reserved guard only.
 set_counts 10 0
@@ -326,7 +326,7 @@ rc=0; has "${GW_TORRC_PIN}" "${out}" || rc=1
 check 'gw_pin_guards writes the torrc.d drop-in path Whonix %includes' "${rc}"
 
 ## Fail-closed: a GW whose pin cannot be written is not measurable -> nonzero (SETUP), never a pass.
-printf '#!/bin/bash\nexit 1\n' > "${work}/vbe"; chmod +x "${work}/vbe"
+printf '%s\n' "#!/bin/bash" "exit 1" > "${work}/vbe"; chmod +x "${work}/vbe"
 rc=0; ( gw_pin_guards ) >/dev/null 2>&1 || rc=$?
 check_fail 'gw_pin_guards fails-closed (nonzero) when the pin write cannot run' "${rc}"
 ## restore the dispatching stub for anything after
@@ -363,6 +363,6 @@ check '--print-pc-filter names the reserved pc guard on its ORPort' "${rc}"
 rc=0; [ "${pc_out}" = "$(pc_bpf)" ] || rc=1
 check '--print-pc-filter output is byte-identical to pc_bpf (single source)' "${rc}"
 
-printf '\n%s: %s pass, %s fail\n' "$(basename -- "$0")" "${pass}" "${fail}"
+printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## '%b' decodes the escape-sequence log fixtures the cases pass in.
+## style-ok: R-030
+
 ## Regression: the COMPETITOR (emulator) comparison shots gained a fail-closed content verifier.
 ## capture_settled only rejects a fully BLANK frame, so a dropped keystroke that turned the injected
 ## `cat X.payload` into `at X.payload` -> `at: command not found` produced a NON-blank shell-error
@@ -89,7 +92,7 @@ trap cleanup EXIT
 EXP='cat escape.payload'   ## the expected injected command for the synthetic-log cases
 verdict() {  ## $1=cmdlog-contents (printf %b)  [$2=expected-cmd, default EXP] -> 'ok' | 'fail'
    printf '%b' "$1" > "${tmp}/log"
-   if shots_cmd_ran_ok "${tmp}/log" "${2-${EXP}}"; then printf 'ok'; else printf 'fail'; fi
+   if shots_cmd_ran_ok "${tmp}/log" "${2-${EXP}}"; then printf '%s' "ok"; else printf '%s' "fail"; fi
 }
 
 ## --- Part A: fail-closed classifier verdicts (log format RAN<TAB>rc<TAB>cmd) ---------
@@ -111,13 +114,13 @@ eq "$(verdict 'RAN\t1\tcat escape.payload\n')" fail 'a non-zero completion of th
 
 ## With an explicit ANY-rc (''), the EXACT command that exited nonzero is accepted (the compat
 ## 'diff' row exits 1 as its demo); a mangle changes the text and is still rejected.
-printf 'RAN\t1\tdiff --color=always old.txt new.txt\n' > "${tmp}/log"
+printf '%s\n' "RAN"$'\t'"1"$'\t'"diff --color=always old.txt new.txt" > "${tmp}/log"
 if shots_cmd_ran_ok "${tmp}/log" 'diff --color=always old.txt new.txt' ''; then
    eq ok ok 'any-rc: the exact command with rc 1 (diff demo) is accepted'
 else
    eq fail ok 'any-rc: the exact command with rc 1 (diff demo) is accepted'
 fi
-printf 'RAN\t1\tdiff --color=always old.txt ne.txt\n' > "${tmp}/log"
+printf '%s\n' "RAN"$'\t'"1"$'\t'"diff --color=always old.txt ne.txt" > "${tmp}/log"
 if shots_cmd_ran_ok "${tmp}/log" 'diff --color=always old.txt new.txt' ''; then
    eq ok fail 'any-rc: a mangled (different-text) command is still rejected'
 else
@@ -158,7 +161,7 @@ if ! declare -F shots_cmd_not_mangled >/dev/null 2>&1; then
 else
    nm_verdict() {  ## $1=cmdlog-contents (printf %b)  [$2=expected, default EXP] -> 'ok' | 'fail'
       printf '%b' "$1" > "${tmp}/nmlog"
-      if shots_cmd_not_mangled "${tmp}/nmlog" "${2-${EXP}}"; then printf 'ok'; else printf 'fail'; fi
+      if shots_cmd_not_mangled "${tmp}/nmlog" "${2-${EXP}}"; then printf '%s' "ok"; else printf '%s' "fail"; fi
    }
    ## A blocking program still running at grab time logs only a startup empty-command entry -> passes.
    eq "$(nm_verdict 'RAN\t0\t\n')" ok 'a startup-only log (blocking program still running) passes'
@@ -211,7 +214,7 @@ else
    run_shell() {  ## $1=command-line to submit -> the produced cmdlog contents
       local log
       log="${home}/.shots-cmdlog"
-      printf '' > "${log}"
+      printf '%s' "" > "${log}"
       printf '%b' "$1\nexit\n" | script --quiet --return --command \
          "cd '${home}'; SHOTS_CMDLOG='${log}' HOME='${home}' bash --rcfile '${strc}' -i" \
          /dev/null >/dev/null 2>&1 || true
@@ -236,7 +239,7 @@ else
    ## of whether a real `at` binary is on PATH -- claude F2) and assert the NOTFOUND sentinel was
    ## actually written, not just that the aggregate verdict was reject.
    nf_log="$(run_shell 'st-nonexistent-cmd-zzq escape.payload')"
-   if grep --quiet "^NOTFOUND$(printf '\t')" -- "${nf_log}"; then
+   if grep --quiet "^NOTFOUND$(printf '%s' $'\t')" -- "${nf_log}"; then
       eq ok ok 'live hooks: command_not_found_handle writes the NOTFOUND sentinel'
    else
       eq fail ok 'live hooks: command_not_found_handle writes the NOTFOUND sentinel'

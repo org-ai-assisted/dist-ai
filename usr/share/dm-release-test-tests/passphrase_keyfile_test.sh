@@ -67,15 +67,15 @@ printf '%s' 'release-test-18.2.3.5' > "${work}/want"
 luks_open /dev/nbd-test vde-test-luks
 
 check "cryptsetup reads the key from stdin" \
-   "$(grep --quiet -- '--key-file - -- /dev/nbd-test vde-test-luks' "${args_seen}" && printf true || printf false)"
+   "$(grep --quiet -- '--key-file - -- /dev/nbd-test vde-test-luks' "${args_seen}" && printf '%s' "true" || printf '%s' "false")"
 check "the key carries no trailing newline (matches the typed passphrase)" \
-   "$(cmp --silent -- "${work}/want" "${key_seen}" && printf true || printf false)"
+   "$(cmp --silent -- "${work}/want" "${key_seen}" && printf '%s' "true" || printf '%s' "false")"
 
 ## An empty passphrase file is refused, never an empty key.
 truncate --size=0 -- "${passphrase_file}"
 empty_rc=0
 ( luks_open /dev/nbd-test vde-test-luks ) >/dev/null 2>&1 || empty_rc=$?
-check "an empty passphrase file is refused" "$([ "${empty_rc}" -ne 0 ] && printf true || printf false)"
+check "an empty passphrase file is refused" "$([ "${empty_rc}" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "${failures} passphrase-keyfile assertion(s) failed" >&2

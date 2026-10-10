@@ -94,7 +94,7 @@ assert_no_crash() {
    done
 }
 
-tab="$(printf '\t')"
+tab="$(printf '%s' $'\t')"
 
 ## --- dm-boot-local-select-run.py ---------------------------------------------
 rc=0

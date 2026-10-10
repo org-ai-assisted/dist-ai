@@ -75,8 +75,8 @@ fs_uuid="12345678-1234-1234-1234-1234567890ab"
 
 tree="${work_dir}/tree"
 mkdir --parents -- "${tree}/etc" "${tree}/usr/bin"
-printf 'host\n' > "${tree}/etc/hostname"
-printf 'data\n' > "${tree}/usr/bin/thing"
+printf '%s\n' "host" > "${tree}/etc/hostname"
+printf '%s\n' "data" > "${tree}/usr/bin/thing"
 find "${tree}" -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" -- {} +
 
 ## Two synthetic host /etc/mke2fs.conf, differing in ext4 features + geometry.

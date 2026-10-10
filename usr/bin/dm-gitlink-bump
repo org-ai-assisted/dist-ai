@@ -203,7 +203,7 @@ if [ "${check_only}" = "true" ]; then
    [ "${#to_bump_paths[@]}" -eq 0 ] && exit 0
    printf '%s\n' "${0##*/}: ${#to_bump_paths[@]} submodule gitlink(s) behind published HEAD:" >&2
    for i in "${!to_bump_paths[@]}"; do
-      printf '   %s -> %s\n' "${to_bump_paths[${i}]}" "${to_bump_shas[${i}]:0:12}" >&2
+      printf '%s\n' "   ${to_bump_paths[${i}]} -> ${to_bump_shas[${i}]:0:12}" >&2
    done
    exit 3
 fi
@@ -211,7 +211,7 @@ fi
 ## Report ahead-but-not-at-a-published-tip submodules (WIP or stale local; not
 ## an error).
 for note in "${skipped_notes[@]}"; do
-   printf 'NOTE: %s\n' "${note}" >&2
+   printf '%s\n' "NOTE: ${note}" >&2
 done
 
 if [ "${#to_bump_paths[@]}" -eq 0 ]; then
@@ -229,10 +229,8 @@ fi
 
 printf '%s\n' "${0##*/}: bumping ${#to_bump_paths[@]} gitlink(s):"
 for i in "${!to_bump_paths[@]}"; do
-   printf '   %s: %s -> %s\n' \
-      "${to_bump_paths[${i}]}" \
-      "$( git -C "${top}" rev-parse --verify --short "HEAD:${to_bump_paths[${i}]}" 2>/dev/null )" \
-      "${to_bump_shas[${i}]:0:12}"
+   printf '%s\n' \
+      "   ${to_bump_paths[${i}]}: $( git -C "${top}" rev-parse --verify --short "HEAD:${to_bump_paths[${i}]}" 2>/dev/null ) -> ${to_bump_shas[${i}]:0:12}"
 done
 
 if [ "${dry_run}" = "true" ]; then

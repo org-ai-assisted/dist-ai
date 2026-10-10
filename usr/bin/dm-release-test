@@ -146,7 +146,7 @@ die() {
    local code
    code="$1"
    shift
-   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   printf '%s\n' "${me}: ERROR: $*" >&2
    exit "${code}"
 }
 
@@ -474,7 +474,7 @@ rt_resolve_version() {
 ## the set only over-blocks, so a failure here warns instead of aborting cleanup.
 rt_refresh_fleet() {
    "${NFT_FLEET_TOOL}" --refresh-fleet-set \
-      || printf '%s: WARN: fleet-set refresh failed; run %s --refresh-fleet-set\n' "${me}" "${NFT_FLEET_TOOL}" >&2
+      || printf '%s\n' "${me}: WARN: fleet-set refresh failed; run ${NFT_FLEET_TOOL} --refresh-fleet-set" >&2
 }
 
 ## Refresh the host leak-drop set and PROVE ACCOUNT is in the loaded set before its
@@ -689,18 +689,22 @@ rt_detach_kept_vm() {
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
 ## cleanup path, so an abort anywhere after creation still reclaims it -- unless the
-## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection.
+## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection. A VM
+## that cannot be detached from this run is not keepable: it is torn down like any
+## other, never reported as kept.
 rt_eph_cleanup() {
    local rc=$?
    if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
-      if [ -n "${rt_staged_dir}" ]; then
-         rt_kept_marker "${eph_account}"
-         printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
-            || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
+      if rt_detach_kept_vm "${eph_account}"; then
+         if [ -n "${rt_staged_dir}" ]; then
+            rt_kept_marker "${eph_account}"
+            printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
+               || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
+         fi
+         log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
+         return 0
       fi
-      rt_detach_kept_vm "${eph_account}" || true
-      log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
-      return 0
+      log error "cannot keep the FAILED run of '${eph_account}' for inspection -- tearing it down"
    fi
    ## Reap the per-run built-ISO staging dir first, on ANY exit (error return, signal) and
    ## independent of the eph account -- it holds only files this run created.
@@ -828,8 +832,8 @@ rt_publish_result() {
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
-   printf '%s: %s %s %s -- %s (rc=%s) -> %s\n' \
-      "${me}" "${guest_name}" "${interface}" "${version}" "${verdict}" "${rc}" "${outdir}"
+   printf '%s\n' \
+      "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
 }
 
 ## ---------------------------------------------------------------------------
@@ -1132,7 +1136,7 @@ main() {
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  origin=${rt_origin} iso=${local_iso:-<download>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
-         "  mode=$([ "${provision_leak}" = 'true' ] && printf 'provision-leak' || printf 'test')" \
+         "  mode=$([ "${provision_leak}" = 'true' ] && printf '%s' "provision-leak" || printf '%s' "test")" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
    fi

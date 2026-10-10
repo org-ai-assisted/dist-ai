@@ -153,7 +153,7 @@ run_build_all() {
    case_dir="${work_dir}/${mode}"
    mkdir --parents -- "${case_dir}"
    marker="${case_dir}/grub-kbdcomp.calls"
-   printf '' >"${marker}"
+   printf '%s' "" >"${marker}"
    out_file="${case_dir}/output.txt"
 
    local proc_mounts cmdline writable_lists

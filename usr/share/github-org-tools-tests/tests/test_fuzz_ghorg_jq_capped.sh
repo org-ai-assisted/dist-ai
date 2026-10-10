@@ -95,7 +95,9 @@ esac
 ## ---------------------------------------------------------------
 GHORG_JQ_MAX_BYTES=4194304
 depth=10000
-nested_in="$(printf '[%.0s' $(seq 1 "${depth}"))$(printf ']%.0s' $(seq 1 "${depth}"))"
+printf -v nested_open '[%.0s' $(seq 1 "${depth}")
+printf -v nested_close ']%.0s' $(seq 1 "${depth}")
+nested_in="${nested_open}${nested_close}"
 start_ms="$(date +%s%N)"
 rc=0
 printf '%s' "${nested_in}" | ghorg_jq_capped -- '.' >/dev/null 2>&1 || rc=$?
@@ -123,9 +125,9 @@ esac
 GHORG_JQ_MAX_BYTES=1024
 start_ms="$(date +%s%N)"
 rc=0
-printf '"' > "${TMP}/long_in_$$"
+printf '%s' "\"" > "${TMP}/long_in_$$"
 head -c $((10 * 1024 * 1024)) /dev/zero | tr '\0' a >> "${TMP}/long_in_$$"
-printf '"' >> "${TMP}/long_in_$$"
+printf '%s' "\"" >> "${TMP}/long_in_$$"
 ghorg_jq_capped -- '.' < "${TMP}/long_in_$$" >/dev/null 2>&1 || rc=$?
 end_ms="$(date +%s%N)"
 elapsed_ms=$(( (end_ms - start_ms) / 1000000 ))

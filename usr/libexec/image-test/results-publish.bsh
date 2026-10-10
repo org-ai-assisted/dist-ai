@@ -25,13 +25,13 @@
 image_test_verdict_from_rc() {
    case "$1" in
       0)
-         printf 'PASS\n'
+         printf '%s\n' "PASS"
          ;;
       2)
-         printf 'INCONCLUSIVE\n'
+         printf '%s\n' "INCONCLUSIVE"
          ;;
       *)
-         printf 'FAIL\n'
+         printf '%s\n' "FAIL"
          ;;
    esac
 }
@@ -128,7 +128,7 @@ image_test_results_publish() {
             shift 2
             ;;
          *)
-            printf 'image_test_results_publish: unknown option: %s\n' "$1" >&2
+            printf '%s\n' "image_test_results_publish: unknown option: ${1}" >&2
             return 2
             ;;
       esac
@@ -145,7 +145,7 @@ image_test_results_publish() {
    ## not untrusted input -- but it runs as root, so validate anyway).
    case "${step_name}" in
       *[!A-Za-z0-9._-]* | '' | '.' | '..')
-         printf 'image_test_results_publish: unsafe step name: %s\n' "${step_name}" >&2
+         printf '%s\n' "image_test_results_publish: unsafe step name: ${step_name}" >&2
          return 2
          ;;
    esac
@@ -182,8 +182,8 @@ image_test_results_publish() {
          shot_milestone="${shot_milestone#*-}"   ## drop the NN- ordering prefix
          case "${shot_milestone}" in
             '' | '.' | '..' | -* | *[!A-Za-z0-9._-]*)
-               printf 'image_test_results_publish: skipping shot with unusable name: %s\n' \
-                  "${shot_base}" >&2
+               printf '%s\n' \
+                  "image_test_results_publish: skipping shot with unusable name: ${shot_base}" >&2
                continue
                ;;
          esac
@@ -237,8 +237,8 @@ image_test_results_publish() {
    emit_rc=0
    "${emit}" "${emit_args[@]}" || emit_rc="$?"
    if [ "${emit_rc}" -ne 0 ]; then
-      printf 'image_test_results_publish: result emit FAILED (rc=%s) for %s; latest left unchanged\n' \
-         "${emit_rc}" "${name}" >&2
+      printf '%s\n' \
+         "image_test_results_publish: result emit FAILED (rc=${emit_rc}) for ${name}; latest left unchanged" >&2
       return 3
    fi
 

@@ -140,8 +140,8 @@ run_check() {
          deb_maintainer_identity_from_control
       fi
       deb_variables_check
-      printf 'DEBEMAIL=%s\n' "${DEBEMAIL:-}" > "${test_root}/out"
-      printf 'DEBFULLNAME=%s\n' "${DEBFULLNAME:-}" >> "${test_root}/out"
+      printf '%s\n' "DEBEMAIL=${DEBEMAIL:-}" > "${test_root}/out"
+      printf '%s\n' "DEBFULLNAME=${DEBFULLNAME:-}" >> "${test_root}/out"
    ) >/dev/null 2>&1 || true
 }
 

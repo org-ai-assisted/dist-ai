@@ -49,12 +49,12 @@ audit_ws_nic() {
       | awk '{ print $2 }' | grep --invert-match --line-regexp --fixed-strings 'lo' | sort -u)"
    count="$(printf '%s' "${names}" | grep --count --extended-regexp '.' || true)"
    if [ "${count}" -ne 1 ]; then
-      printf 'FAIL: expected exactly ONE non-loopback NIC, found %s: %s\n' \
-         "${count}" "$(printf '%s' "${names}" | tr '\n' ' ')" >&2
+      printf '%s\n' \
+         "FAIL: expected exactly ONE non-loopback NIC, found ${count}: $(printf '%s' "${names}" | tr '\n' ' ')" >&2
       return 1
    fi
    if [ "${names}" != 'eth0' ]; then
-      printf 'FAIL: the single NIC is not the internal eth0: %s\n' "${names}" >&2
+      printf '%s\n' "FAIL: the single NIC is not the internal eth0: ${names}" >&2
       return 1
    fi
    ## Reject the whole class of uninterpreted escape hatches (command hooks, a
@@ -62,19 +62,19 @@ audit_ws_nic() {
    ## line-continuation) -- each can re-enable DHCP, inject a non-Tor route, or pull in
    ## an unaudited NIC-adding stanza this single-file audit cannot see.
    if grep --quiet --extended-regexp "${unsafe_directive_re}" "${file}"; then
-      printf 'FAIL: interfaces file uses an unsafe directive (hook/mapping/source): %s\n' \
-         "$(grep --extended-regexp "${unsafe_directive_re}" "${file}" | tr '\n' ' ')" >&2
+      printf '%s\n' \
+         "FAIL: interfaces file uses an unsafe directive (hook/mapping/source): $(grep --extended-regexp "${unsafe_directive_re}" "${file}" | tr '\n' ' ')" >&2
       return 1
    fi
    if grep --quiet --extended-regexp "${continuation_re}" "${file}"; then
-      printf 'FAIL: interfaces file has a line-continuation (can splice a hook): %s\n' \
-         "$(grep --extended-regexp "${continuation_re}" "${file}" | tr '\n' ' ')" >&2
+      printf '%s\n' \
+         "FAIL: interfaces file has a line-continuation (can splice a hook): $(grep --extended-regexp "${continuation_re}" "${file}" | tr '\n' ' ')" >&2
       return 1
    fi
    ## eth0 must be STATIC, never a DYNAMIC method (dhcp/bootp/ppp) -- any of those
    ## on a NAT/bridged eth0 installs a non-Tor default route.
    if grep --quiet --extended-regexp '^[[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+(dhcp|bootp|ppp)([[:space:]]|$)' "${file}"; then
-      printf 'FAIL: eth0 uses a dynamic inet method (must be static)\n' >&2
+      printf '%s\n' "FAIL: eth0 uses a dynamic inet method (must be static)" >&2
       return 1
    fi
    ## Extract ONLY the `iface eth0 inet static` stanza (up to the next stanza
@@ -86,7 +86,7 @@ audit_ws_nic() {
       inblk { print }
    ' "${file}")"
    if [ -z "${stanza}" ]; then
-      printf 'FAIL: no "iface eth0 inet static" stanza\n' >&2
+      printf '%s\n' "FAIL: no \"iface eth0 inet static\" stanza" >&2
       return 1
    fi
    ## Exactly ONE address + ONE gateway in the stanza, each the internal value --
@@ -94,12 +94,12 @@ audit_ws_nic() {
    ## optional /CIDR suffix is accepted (the shipped form uses a separate netmask).
    if [ "$(grep --count --extended-regexp '^[[:space:]]*address[[:space:]]' <<< "${stanza}")" != '1' ] \
       || ! grep --quiet --extended-regexp '^[[:space:]]*address[[:space:]]+10\.152\.152\.11(/[0-9]+)?([[:space:]]|$)' <<< "${stanza}"; then
-      printf 'FAIL: eth0 static stanza needs exactly one internal address 10.152.152.11\n' >&2
+      printf '%s\n' "FAIL: eth0 static stanza needs exactly one internal address 10.152.152.11" >&2
       return 1
    fi
    if [ "$(grep --count --extended-regexp '^[[:space:]]*gateway[[:space:]]' <<< "${stanza}")" != '1' ] \
       || ! grep --quiet --extended-regexp '^[[:space:]]*gateway[[:space:]]+10\.152\.152\.10([[:space:]]|$)' <<< "${stanza}"; then
-      printf 'FAIL: eth0 static stanza needs exactly one gateway 10.152.152.10\n' >&2
+      printf '%s\n' "FAIL: eth0 static stanza needs exactly one gateway 10.152.152.10" >&2
       return 1
    fi
    return 0
@@ -107,18 +107,18 @@ audit_ws_nic() {
 
 repo="${WHONIX_WS_NETWORK_CONF_REPO:-}"
 if [ -z "${repo}" ]; then
-   printf 'FATAL: WHONIX_WS_NETWORK_CONF_REPO unset -- the WS network config is a required source\n' >&2
+   printf '%s\n' "FATAL: WHONIX_WS_NETWORK_CONF_REPO unset -- the WS network config is a required source" >&2
    exit 1
 fi
 iface_file="${repo}/etc/network/interfaces.d/30_non-qubes-whonix"
 if [ ! -r "${iface_file}" ]; then
-   printf 'FATAL: WS interfaces file not readable: %s\n' "${iface_file}" >&2
+   printf '%s\n' "FATAL: WS interfaces file not readable: ${iface_file}" >&2
    exit 1
 fi
 
 rc=0
 if audit_ws_nic "${iface_file}"; then
-   printf 'PASS: Workstation declares exactly one internal-network NIC (eth0)\n'
+   printf '%s\n' "PASS: Workstation declares exactly one internal-network NIC (eth0)"
 else
    rc=1
 fi
@@ -128,10 +128,10 @@ canary="$(mktemp)"
 cp -- "${iface_file}" "${canary}"
 printf '%s\n' 'auto eth1' 'iface eth1 inet dhcp' >>"${canary}"
 if audit_ws_nic "${canary}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED a config with a second NIC (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- audit PASSED a config with a second NIC (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (second NIC rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (second NIC rejected); audit has teeth"
 fi
 
 ## Canary 2: eth0 flipped to dhcp must FAIL (proves the static-method teeth).
@@ -139,10 +139,10 @@ canary_dhcp="$(mktemp)"
 sed -E 's/^([[:space:]]*iface[[:space:]]+eth0[[:space:]]+inet[[:space:]]+)static/\1dhcp/' \
    "${iface_file}" >"${canary_dhcp}"
 if audit_ws_nic "${canary_dhcp}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED eth0 as inet dhcp (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- audit PASSED eth0 as inet dhcp (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (eth0 dhcp rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (eth0 dhcp rejected); audit has teeth"
 fi
 
 ## Canary 3: a second `iface eth0 inet bootp` stanza beside the valid static one
@@ -153,10 +153,10 @@ canary_bootp="$(mktemp)"
 cp -- "${iface_file}" "${canary_bootp}"
 printf '%s\n' 'iface eth0 inet bootp' >>"${canary_bootp}"
 if audit_ws_nic "${canary_bootp}" 2>/dev/null; then
-   printf 'FAIL: canary -- audit PASSED a second eth0 inet bootp stanza (no teeth)\n' >&2
+   printf '%s\n' "FAIL: canary -- audit PASSED a second eth0 inet bootp stanza (no teeth)" >&2
    rc=1
 else
-   printf 'PASS: canary (eth0 bootp rejected); audit has teeth\n'
+   printf '%s\n' "PASS: canary (eth0 bootp rejected); audit has teeth"
 fi
 
 ## Canary 4: every unsafe-directive spelling hidden in the static stanza must FAIL --
@@ -174,10 +174,10 @@ for bad_line in \
    cp -- "${iface_file}" "${canary_hook}"
    printf '%s\n' "${bad_line}" >>"${canary_hook}"
    if audit_ws_nic "${canary_hook}" 2>/dev/null; then
-      printf 'FAIL: canary -- audit PASSED unsafe directive "%s" (no teeth)\n' "${bad_line}" >&2
+      printf '%s\n' "FAIL: canary -- audit PASSED unsafe directive \"${bad_line}\" (no teeth)" >&2
       rc=1
    else
-      printf 'PASS: canary (unsafe directive "%s" rejected); audit has teeth\n' "${bad_line}"
+      printf '%s\n' "PASS: canary (unsafe directive \"${bad_line}\" rejected); audit has teeth"
    fi
 done
 
@@ -189,10 +189,10 @@ for split_first in $'u\\' $'u\\  '; do
    cp -- "${iface_file}" "${canary_split}"
    printf '%s\n' "${split_first}" 'p dhclient eth0' >>"${canary_split}"
    if audit_ws_nic "${canary_split}" 2>/dev/null; then
-      printf 'FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)\n' >&2
+      printf '%s\n' "FAIL: canary -- audit PASSED a split-line hook continuation (no teeth)" >&2
       rc=1
    else
-      printf 'PASS: canary (split-line hook continuation rejected); audit has teeth\n'
+      printf '%s\n' "PASS: canary (split-line hook continuation rejected); audit has teeth"
    fi
 done
 

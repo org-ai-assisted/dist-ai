@@ -93,9 +93,9 @@ printf '%s\n' "${sentinel}" \
 
 got="$(cat -- "${out}" 2>/dev/null || true)"
 
-check "wl-headless-run exits cleanly (rc=${rc})" "$( [ "${rc}" -eq 0 ] && printf '1' )"
+check "wl-headless-run exits cleanly (rc=${rc})" "$( [ "${rc}" -eq 0 ] && printf '%s' "1" )"
 check "command receives the caller's piped stdin (got='${got}')" \
-   "$( [ "${got}" = "${sentinel}" ] && printf '1' )"
+   "$( [ "${got}" = "${sentinel}" ] && printf '%s' "1" )"
 
 printf '%s\n' ''
 printf '%s\n' "${pass} pass, ${fail} fail, 0 skip"

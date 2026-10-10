@@ -24,7 +24,7 @@ export LC_ALL=C
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 share_dir="${script_dir}/../dm-smbios-reader-boot-tests"
 for lib in gui-drive.bsh grub-boot-select.bsh vbox-session.bsh; do
-   [ -r "${share_dir}/${lib}" ] || { printf 'ERROR: not found: %s/%s\n' "${share_dir}" "${lib}" >&2; exit 1; }
+   [ -r "${share_dir}/${lib}" ] || { printf '%s\n' "ERROR: not found: ${share_dir}/${lib}" >&2; exit 1; }
 done
 
 tmp="$(mktemp --directory)"
@@ -81,10 +81,10 @@ fail=0
 assert_eq() {
    local desc="$1" got="$2" want="$3"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s\n' "${desc}"
+      printf '%s\n' "PASS: ${desc}"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL: %s\n  got:  %s\n  want: %s\n' "${desc}" "${got}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc}" "  got:  ${got}" "  want: ${want}" >&2
       fail=$(( fail + 1 ))
    fi
 }
@@ -98,7 +98,7 @@ select_installed_sysmaint() {
 ## Run inside a command substitution with a sentinel: the printf executes ONLY if
 ## boot_installed RETURNED. If die escapes (unwrapped call site), the $( ) subshell
 ## exits at die and the sentinel never prints -> out is empty (the canary: FAILS on old code).
-out="$( boot_installed sysmaint >/dev/null 2>&1; printf 'RET=%s' "$?" )" || true
+out="$( boot_installed sysmaint >/dev/null 2>&1; printf '%s' "RET=${?}" )" || true
 assert_eq 'boot_installed sysmaint returns (not exits) when select die()s' "${out}" 'RET=1'
 
 ## --- positive: happy path still returns 0 (wrap preserves semantics) ----------------
@@ -133,5 +133,5 @@ else
    assert_eq 'boot_installed user does NOT call select_installed_sysmaint' 'not-called' 'not-called'
 fi
 
-printf '\n%s pass, %s fail\n' "${pass}" "${fail}"
+printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

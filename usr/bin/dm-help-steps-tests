@@ -83,14 +83,14 @@ fi
 ## same silence would hide the opposite: a PASS earned by an old tree.
 subject_tree="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
 if [ -d "${subject_tree}" ]; then
-   subject_head="$( git -C "${subject_tree}" rev-parse --short HEAD 2>/dev/null || printf 'unknown' )"
-   subject_branch="$( git -C "${subject_tree}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown' )"
+   subject_head="$( git -C "${subject_tree}" rev-parse --short HEAD 2>/dev/null || printf '%s' "unknown" )"
+   subject_branch="$( git -C "${subject_tree}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '%s' "unknown" )"
    ## stderr, not stdout: the tests report on stderr, and stdout is block-buffered
    ## when piped -- so a banner on stdout surfaced BELOW 74 lines of failures,
    ## exactly where nobody reads it. It only does its job if it arrives first.
-   printf 'subject: %s @ %s (%s)\n' "${subject_tree}" "${subject_head}" "${subject_branch}" >&2
+   printf '%s\n' "subject: ${subject_tree} @ ${subject_head} (${subject_branch})" >&2
 else
-   printf 'subject: %s (NOT PRESENT -- tests will fall back or fail)\n' "${subject_tree}" >&2
+   printf '%s\n' "subject: ${subject_tree} (NOT PRESENT -- tests will fall back or fail)" >&2
 fi
 
 shopt -s nullglob
@@ -100,22 +100,22 @@ env_unmet=0
 ran=0
 for test_script in "${tests_dir}"/*_test.sh; do
   ran=$(( ran + 1 ))
-  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  printf '%s\n' "" "########## $(basename -- "${test_script}") ##########"
   rc=0
   bash -- "${test_script}" "$@" || rc=$?
   if [ "${rc}" -eq 77 ]; then
-    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    printf '%s\n' "########## SKIPPED: $(basename -- "${test_script}") ##########"
     skipped=$(( skipped + 1 ))
   elif [ "${rc}" -eq 78 ]; then
      env_unmet=$(( env_unmet + 1 ))
   elif [ "${rc}" -ne 0 ]; then
-    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    printf '%s\n' "########## FAILED (${rc}): $(basename -- "${test_script}") ##########"
     failures=$(( failures + 1 ))
   fi
 done
 
 if [ "${ran}" -eq 0 ]; then
-  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
   exit 1
 fi
 printf '%s\n' '' "${ran} dm-help-steps case(s): ${failures} failed, ${skipped} skipped, ${env_unmet} env-unmet"

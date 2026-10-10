@@ -171,7 +171,7 @@ expect_text "no password supplied: names HASHEDPASSWORD as the reason" \
 ## 3. Wrong password: tor rejects the AUTHENTICATE, and the failure must surface.
 run_tor_ctrl -s "${control_port}" -p "definitely-not-the-password" -c "GETINFO version"
 check "wrong password: exit status is non-zero" "nonzero" \
-   "$( [ "${last_status}" -ne 0 ] && printf 'nonzero' || printf '0' )"
+   "$( [ "${last_status}" -ne 0 ] && printf '%s' "nonzero" || printf '%s' "0" )"
 expect_text "wrong password: tor's rejection is shown" "515"
 
 stop_tor

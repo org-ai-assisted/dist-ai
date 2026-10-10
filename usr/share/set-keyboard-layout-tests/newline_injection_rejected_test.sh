@@ -101,14 +101,14 @@ source "${lib}"
 ## under test -- if the tainted value reaches dispatch, the marker is written, which
 ## on unfixed code is exactly the value that would be written into the config file.
 newline_dispatch_recorder() {
-   printf 'CALLED\n' >> "${STUB_PATH_REC}/dispatch.marker"
+   printf '%s\n' "CALLED" >> "${STUB_PATH_REC}/dispatch.marker"
 }
 
 ## A dispatch target that EXITs (the real keymap writers run as "${function_name}",
 ## and parse_cmd itself exits on --help / bad args). It still writes the marker, so
 ## a correct harness must capture 'called' and clean up despite the exit.
 exiting_dispatch_recorder() {
-   printf 'CALLED\n' >> "${STUB_PATH_REC}/dispatch.marker"
+   printf '%s\n' "CALLED" >> "${STUB_PATH_REC}/dispatch.marker"
    exit 7
 }
 
@@ -124,7 +124,7 @@ run_parse_case() {
       stub_path_init
       ## Report every token the cases use as valid, for layouts AND variants AND
       ## options (the stub returns the same list for each localectl-static query).
-      stub_cmd localectl-static 0 "$(printf 'us\nde\nnodeadkeys\ncompose:ralt')"
+      stub_cmd localectl-static 0 "$(printf '%s' "us"$'\n'"de"$'\n'"nodeadkeys"$'\n'"compose:ralt")"
 
       # shellcheck disable=SC2034  # consumed by the sourced parse_cmd
       function_name="${dispatch_target}"
@@ -190,9 +190,9 @@ assert_arg_rejected() {
    esac
 }
 
-assert_arg_rejected 'layout' "$(printf 'us\nde')" '' ''
-assert_arg_rejected 'variant' 'us' "$(printf 'nodeadkeys\nnodeadkeys')" ''
-assert_arg_rejected 'option' 'us' '' "$(printf 'compose:ralt\ncompose:ralt')"
+assert_arg_rejected 'layout' "$(printf '%s' "us"$'\n'"de")" '' ''
+assert_arg_rejected 'variant' 'us' "$(printf '%s' "nodeadkeys"$'\n'"nodeadkeys")" ''
+assert_arg_rejected 'option' 'us' '' "$(printf '%s' "compose:ralt"$'\n'"compose:ralt")"
 
 ## Regression (harness exit-containment): drive the REAL parse_cmd to dispatch with a
 ## target that EXITs. The exit must stay contained in run_parse_case's isolation

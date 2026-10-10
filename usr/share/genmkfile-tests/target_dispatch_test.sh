@@ -76,15 +76,15 @@ source "${helper_file}"
 ## recording target stubs, so make_parse_cmd's routing is observed without running real
 ## build targets. make_parse_cmd resolves these names at call time, so it sees the stubs.
 # shellcheck disable=SC2317  # invoked indirectly via make_parse_cmd
-exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit "$1"; }
+exit_with_error() { printf '%s\n' "DIE: ${2}" >&2; exit "$1"; }
 # shellcheck disable=SC2317
 make_function_run() { local f="$1"; shift; "${f}" "$@"; }
 # shellcheck disable=SC2317
-make_all() { printf 'RAN make_all\n'; }
+make_all() { printf '%s\n' "RAN make_all"; }
 # shellcheck disable=SC2317
-make_install() { printf 'RAN make_install\n'; }
+make_install() { printf '%s\n' "RAN make_install"; }
 # shellcheck disable=SC2317
-make_dist() { printf 'RAN make_dist\n'; }
+make_dist() { printf '%s\n' "RAN make_dist"; }
 
 tests_total=0
 tests_failed=0

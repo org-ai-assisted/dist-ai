@@ -294,7 +294,7 @@ leaktest_setup() {
    ## device or address"), which is a flaky topology race, not a real result.
    local settle
    for settle in 1 2 3 4 5 6 7 8 9 10; do
-      [ "$(ip netns exec ws cat /sys/class/net/eth0/carrier 2>/dev/null || printf 0)" = '1' ] && break
+      [ "$(ip netns exec ws cat /sys/class/net/eth0/carrier 2>/dev/null || printf '%s' "0")" = '1' ] && break
       sleep 0.2
    done
 
@@ -374,7 +374,7 @@ leaktest_setup_int_tif() {
    local settle
    # shellcheck disable=SC2034  # settle: loop-count idiom, iterates a fixed number of times
    for settle in 1 2 3 4 5 6 7 8 9 10; do
-      [ "$(ip netns exec ws cat /sys/class/net/tun0/carrier 2>/dev/null || printf 0)" = '1' ] && break
+      [ "$(ip netns exec ws cat /sys/class/net/tun0/carrier 2>/dev/null || printf '%s' "0")" = '1' ] && break
       sleep 0.2
    done
    sleep 1
@@ -546,7 +546,7 @@ leaktest_transport_redirect_count() {
       sleep 0.2
    done
    ## All reads failed -- a distinct, non-numeric sentinel, never a silent 0.
-   printf 'unavailable'
+   printf '%s' "unavailable"
 }
 
 ## Assert the transport redirect COUNTED the probe (after > before): the SYN
@@ -650,7 +650,7 @@ leaktest_fail_closed_case() {
    local rc=0 capture_file empty proto src dst
    capture_file="$(mktemp)"
    empty="$(mktemp --suffix=.nft)"
-   printf 'flush ruleset\n' >"${empty}"
+   printf '%s\n' "flush ruleset" >"${empty}"
 
    ## proto <ws-source> <dst> [extra inject args]. One fresh topology per fire (the
    ## proven-reliable pattern): each probe gets a nolistener setup (blocked) and a

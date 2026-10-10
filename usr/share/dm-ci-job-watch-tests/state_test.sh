@@ -55,10 +55,10 @@ check() {
    ## invoking python3 explicitly would drop the shebang's flags.
    got="$(job_filter="${flt}" "${helper}")"
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS  %s\n' "${label}"
+      printf '%s\n' "PASS  ${label}"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL  %s: want [%s] got [%s]\n' "${label}" "${want}" "${got}"
+      printf '%s\n' "FAIL  ${label}: want [${want}] got [${got}]"
       fail=$(( fail + 1 ))
    fi
 }
@@ -130,10 +130,10 @@ for bad_input in '[]' '{}' 'not json' '{"check_runs":"x"}' '{"check_runs":[null,
    bad_rc=0
    bad_out="$(printf '%s' "${bad_input}" | job_filter=uild "${helper}" 2>&1)" || bad_rc=$?
    if [ "${bad_rc}" -eq 0 ] && [ -z "${bad_out}" ]; then
-      printf 'PASS  malformed input yields no verdict, no crash: %s\n' "${bad_input}"
+      printf '%s\n' "PASS  malformed input yields no verdict, no crash: ${bad_input}"
       pass=$(( pass + 1 ))
    else
-      printf 'FAIL  malformed input crashed or emitted (rc=%s out=[%s]): %s\n' "${bad_rc}" "${bad_out}" "${bad_input}"
+      printf '%s\n' "FAIL  malformed input crashed or emitted (rc=${bad_rc} out=[${bad_out}]): ${bad_input}"
       fail=$(( fail + 1 ))
    fi
 done

@@ -24,14 +24,14 @@ if [ -z "${TOOL}" ]; then
       TOOL='/usr/bin/dm-vm-lock'
    fi
 fi
-[ -x "${TOOL}" ] || { printf 'FATAL: dm-vm-lock not found/executable at %s\n' "${TOOL}" >&2; exit 1; }
+[ -x "${TOOL}" ] || { printf '%s\n' "FATAL: dm-vm-lock not found/executable at ${TOOL}" >&2; exit 1; }
 
 vmlock_failures=0
 check() {
    if [ "$2" -eq 0 ]; then
-      printf 'PASS: %s\n' "$1"
+      printf '%s\n' "PASS: ${1}"
    else
-      printf 'FAIL: %s\n' "$1"
+      printf '%s\n' "FAIL: ${1}"
       vmlock_failures=$(( vmlock_failures + 1 ))
    fi
 }
@@ -41,7 +41,7 @@ check() {
 new_lockdir() {
    local d
    d="$(mktemp --directory --tmpdir dm-vm-lock-test.XXXXXX)"
-   printf '' > "${d}/vm.lock"
+   printf '%s' "" > "${d}/vm.lock"
    printf '%s' "${d}"
 }
 
@@ -60,7 +60,7 @@ wait_for_holder() {
 }
 
 vmlock_done() {
-   printf '\n%s: %s fail\n' "$(basename -- "$0")" "${vmlock_failures}"
+   printf '%s\n' "" "$(basename -- "$0"): ${vmlock_failures} fail"
    [ "${vmlock_failures}" -eq 0 ] || exit 1
    exit 0
 }

@@ -548,7 +548,7 @@ st_wait_render_settled() {  ## $1=window-id
             diff=999999
             ;;
          *)
-            diff="$(printf '%.0f' "${diff}" 2>/dev/null)"
+            printf -v diff '%.0f' "${diff}" 2>/dev/null
             [ -n "${diff}" ] || diff=999999
             ;;
       esac
@@ -580,7 +580,7 @@ shots_rc_dropin_create() {  ## $1=filename prefix
    ## remote_control drives ctl; terminate_verbose=false keeps the Terminate button a plain
    ## SIGTERM->SIGKILL with NO diagnostic dialog (which carries live PIDs) popping over the
    ## shot -- a stale System drop-in may set it true, and this Local dir overrides System.
-   if ! printf 'remote_control=true\nterminate_verbose=false\n' | sudo tee -- "${dropin}" >/dev/null; then
+   if ! printf '%s\n' "remote_control=true" "terminate_verbose=false" | sudo tee -- "${dropin}" >/dev/null; then
       sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
       return 1
    fi
@@ -759,7 +759,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       st_wait_render_settled "${stwid}"
       ## Zero-pad the (validated) integer level for a stable filename; 10# forces base 10 so a
       ## value like 050 is not read as octal.
-      level_padded="$(printf '%03d' "$(( 10#${level} ))")"
+      printf -v level_padded '%03d' "$(( 10#${level} ))"
       if capture_settled "${out}/zoom-live-${level_padded}.png" "${stwid}" skip-tighten; then
          shots=$(( shots + 1 ))
       else
@@ -918,7 +918,7 @@ zoom_verify_capture() {
       ## in CLI it stays valid across every zoom (ctl zoom is not a shell command).
       send_rc=0
       if [ "${mode}" = cli ]; then
-         printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+         printf '%s' "" > "${SHOTS_CMDLOG}" 2>/dev/null || true
          env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
             send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || send_rc=$?
          sleep 1
@@ -939,7 +939,7 @@ zoom_verify_capture() {
          if [ "${mode}" = tui ]; then
             ## re-cat AFTER the zoom so the board fills the NEW grid, as a SIGWINCH-aware app would.
             sleep 0.5
-            printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+            printf '%s' "" > "${SHOTS_CMDLOG}" 2>/dev/null || true
             send_rc=0
             env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
                send-text --tab "id:${st_tab_id}" --submit "${st_cmd}" >/dev/null 2>&1 || send_rc=$?
@@ -1100,7 +1100,7 @@ demo_shots_capture() {
          continue
       fi
 
-      printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+      printf '%s' "" > "${SHOTS_CMDLOG}" 2>/dev/null || true
       send_rc=0
       env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
          send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || send_rc=$?
@@ -1178,8 +1178,8 @@ lineedit_setup() {  ## $1=label
    ## never notify (output handling unchanged).
    mkdir --parents -- "${HOME}/.config/secure-terminal.d"
    {
-      printf 'escape_limit=0\n'
-      printf 'tui_autobox_notice=false\n'
+      printf '%s\n' "escape_limit=0"
+      printf '%s\n' "tui_autobox_notice=false"
    } > "${HOME}/.config/secure-terminal.d/50_shots.conf"
 
    ## An interactive bashrc: the real user@host prompt, with bracketed paste OFF. The bracketed-
@@ -1276,7 +1276,7 @@ lineedit_capture_row() {  ## $1=label $2=name $3=mode $4=cmd
          ## Type the command; the shell runs it and returns to a fresh prompt. Settle waits for that
          ## RETURN prompt to finish painting before the grab (so the shot includes it). Clear the
          ## cmdlog first so the verify sees only THIS command's run.
-         printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+         printf '%s' "" > "${SHOTS_CMDLOG}" 2>/dev/null || true
          send_rc=0
          env PYTHONPATH="${st_pkg}" "${st_bin}" ctl --instance-group "${st_group}" \
             send-text --tab "id:${st_tab_id}" --submit "${cmd}" >/dev/null 2>&1 || send_rc=$?
@@ -1330,7 +1330,7 @@ compat_capture() {
 
    failures=0
    shots=0
-   while IFS="$(printf '\t')" read -r name mode cmd; do
+   while IFS="$(printf '%s' $'\t')" read -r name mode cmd; do
       [ -n "${name}" ] || continue
       ## Optional name filter (fast single-figure iteration).
       if [ "${#compat_filter[@]}" -gt 0 ]; then
@@ -1376,7 +1376,7 @@ lineedit_attack_capture() {
    payload="${HOME}/cr-deception.payload"
    scary='apt: signature verified -- WAIT: fingerprint MISMATCH, do not install'
    cover='apt: signature verified'
-   if ! printf '%s\r\033[K%s\n' "${scary}" "${cover}" > "${payload}"; then
+   if ! printf '%s\n' "${scary}"$'\r\033'"[K${cover}" > "${payload}"; then
       printf '%s\n' 'cr-deception: cannot write payload' >&2
       return 1
    fi
@@ -1526,7 +1526,7 @@ shoot() {  ## $1=emulator  $2=case
       content_verify_failed=1
    else
    while [ "${verify_tries}" -lt 3 ]; do
-      printf '' > "${SHOTS_CMDLOG}" 2>/dev/null || true
+      printf '%s' "" > "${SHOTS_CMDLOG}" 2>/dev/null || true
       ## On a RETRY the prior failed attempt's echoed command + shell error are still on screen;
       ## clear it (Ctrl-L redraws the prompt at the top) so a recovered grab shows ONLY the payload,
       ## never the earlier failed line above it. Harmless on the first attempt (fresh screen).
@@ -1972,7 +1972,8 @@ if [ "${jobs}" -gt 1 ]; then
       ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
       ## partition (which emulators / ST / cases each lane gets) without a capture.
       if [ -n "${SHOTS_LANE_DRY_RUN:-}" ]; then
-         printf '%s\n' "LANE ${lane_i}:$(printf ' %s' "$@") --no-optimize"
+         printf -v lane_args ' %s' "$@"
+         printf '%s\n' "LANE ${lane_i}:${lane_args} --no-optimize"
          lane_i=$(( lane_i + 1 ))
          return 0
       fi
@@ -2097,7 +2098,8 @@ if [ "${jobs}" -gt 1 ]; then
       cat -- "${lane_dir}/st.log" 2>/dev/null || true
       [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
    else
-      printf '%s\n' "LANE st(sequential): --st-only$(printf ' %s' "${fwd_case[@]}") --no-optimize"
+      printf -v lane_args ' %s' "${fwd_case[@]}"
+      printf '%s\n' "LANE st(sequential): --st-only${lane_args} --no-optimize"
    fi
    safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
    if [ -n "${orch_prep}" ]; then
