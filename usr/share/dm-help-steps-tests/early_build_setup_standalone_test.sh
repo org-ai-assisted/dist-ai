@@ -79,10 +79,18 @@ else
    pass "1050 references no undefined name (no 'unbound variable')"
 fi
 
-if grep --quiet -- '^--non-interactive -- apt-get -o APT::Update::Error-Mode=any update$' "${sudo_log}"; then
+if grep --quiet -- ' apt-get -o APT::Update::Error-Mode=any update$' "${sudo_log}"; then
    pass "apt-get update ran through sudo with Error-Mode=any"
 else
    fail "no 'sudo ... apt-get -o APT::Update::Error-Mode=any update' recorded; sudo log: $(cat -- "${sudo_log}")"
+fi
+
+## sudo resets the environment; the proxy variables must survive it (as the
+## build's SUDO_TO_ROOT keeps them), else a proxy-only host cannot fetch.
+if [ -s "${sudo_log}" ] && ! grep --quiet --invert-match -- '--preserve-env=http_proxy,https_proxy ' "${sudo_log}"; then
+   pass "every sudo call preserves http_proxy/https_proxy"
+else
+   fail "a sudo call drops the proxy variables; sudo log: $(cat -- "${sudo_log}")"
 fi
 
 ## The installed set must be exactly the single-source list from 60_dependencies.bsh.
@@ -106,6 +114,9 @@ elif [ "${installed_words[*]}" != "${expected_words[*]}" ]; then
    fail "apt-get install set '${installed_words[*]}' != dist_build_early_dependencies '${expected_words[*]}'"
 elif [[ "${install_line}" != *"APT::Update::Error-Mode=any"* ]]; then
    fail "apt-get install lacks Error-Mode=any: '${install_line}'"
+## The LIST form: a scalar 'Dpkg::Options=' is silently never passed to dpkg.
+elif [[ "${install_line}" != *" -o Dpkg::Options::=--force-confold "* ]]; then
+   fail "apt-get install lacks the list-form '-o Dpkg::Options::=--force-confold': '${install_line}'"
 else
    pass "apt-get install ran through sudo for exactly \$dist_build_early_dependencies"
 fi
