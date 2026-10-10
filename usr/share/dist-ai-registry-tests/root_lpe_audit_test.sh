@@ -518,6 +518,17 @@ with open("/dev/null") as _h: os.chown("/home/user/.with1liner", 0, 0)
 def _oneliner(): os.chown("/home/user/.def1liner", 0, 0)
 # style-ok: lpe-python-advisory -- documents the assignment, must NOT reach the post-';' op
 marker_semi = 1; os.chown("/home/user/.semicolon", 0, 0)
+# style-ok: lpe-python-advisory -- if header, WRAPPED one-liner body must NOT be reached
+if chowned: (
+    os.chown("/home/user/.ifwrap1liner", 0, 0))
+if not chowned:
+    pass
+# style-ok: lpe-python-advisory -- else header ('else' is no ast node), one-liner body must NOT be reached
+else: os.chown("/home/user/.else1liner", 0, 0)
+try:
+    pass
+# style-ok: lpe-python-advisory -- finally header ('finally' is no ast node), one-liner body must NOT be reached
+finally: os.chown("/home/user/.finally1liner", 0, 0)
 # style-ok: lpe-python-advisory -- the sink IS in the header; precision canary, MUST suppress
 if os.chown("/home/user/.ifheader", 0, 0): pass
 try:

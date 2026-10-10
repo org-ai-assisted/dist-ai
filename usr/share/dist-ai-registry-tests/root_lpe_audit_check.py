@@ -246,8 +246,9 @@ def main(argv):
     ## statement: the comment block above the line documents the LEADING
     ## statement, so a sink in the body/trailing statement must stay FLAGGED.
     for op_sub, header in ((".if1liner", "if"), (".for1liner", "for"),
-                           (".with1liner", "with"),
-                           (".def1liner", "def"), (".semicolon", "';'")):
+                           (".with1liner", "with"), (".def1liner", "def"),
+                           (".semicolon", "';'"), (".ifwrap1liner", "wrapped if"),
+                           (".else1liner", "else"), (".finally1liner", "finally")):
         checks.append((
             "python waiver above a one-liner %s does not reach its body" % header,
             has(findings, "vuln_py_waived", "python-advisory", op_sub)
