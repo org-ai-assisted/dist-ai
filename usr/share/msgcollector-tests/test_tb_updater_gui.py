@@ -53,11 +53,9 @@ def _tb_updater_gui_script():
     return os.path.join(os.path.dirname(T.msgcollector_script()), 'tb_updater_gui.py')
 
 
-try:
-    _SCRIPT = _tb_updater_gui_script()
-    _CLASS_SRC = T.extract_python_class(_SCRIPT, 'GuiMessage')
-except (LookupError, SystemExit):
-    pytest.skip('tb_updater_gui GuiMessage not available', allow_module_level=True)
+## A missing subject or class is an environment bug: fail, never skip.
+_SCRIPT = _tb_updater_gui_script()
+_CLASS_SRC = T.extract_python_class(_SCRIPT, 'GuiMessage')
 
 ## Define the REAL class against the real Qt bases, without importing the script.
 _NS = {

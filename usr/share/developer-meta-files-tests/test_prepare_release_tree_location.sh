@@ -228,7 +228,8 @@ mkdir --parents -- "${real_root}/help-steps" "${other_tree}/help-steps" \
 printf '%s\n' '## stub' > "${real_root}/help-steps/pre"
 printf '%s\n' '## stub' > "${other_tree}/help-steps/pre"
 
-resolved="$(resolve_from "${real_root}" "${real_root}/packages/kicksecure/developer-meta-files/usr/bin" "${other_tree}")"
+## cwd is ANOTHER valid tree: binding must come from the copy's location, not cwd.
+resolved="$(resolve_from "${other_tree}" "${real_root}/packages/kicksecure/developer-meta-files/usr/bin" "${other_tree}")"
 if [ "${resolved}" = "${real_root}" ]; then
    pass "a copy inside a tree binds to THAT tree, ignoring source_code_folder_dist"
 else
@@ -268,7 +269,7 @@ ln --symbolic -- "$(realpath -- "$(dirname -- "${lib}")")" "${inst_root}/libexec
 ## HOME an empty dir, no source_code_folder_dist, cwd not a checkout: every
 ## branch must miss.
 rc=0
-out="$(cd -- "${workdir}" && env --unset=source_code_folder_dist HOME="${workdir}" \
+out="$(cd -- "${workdir}" && env --unset=source_code_folder_dist --unset=derivative_maker_invocation_pwd HOME="${workdir}" \
    bash -- "${inst_root}/bin/dm-prepare-release" --target source 2>&1)" || rc="$?"
 if [ "${rc}" -ne 0 ]; then
    pass "unresolvable tree: exits non-zero (${rc})"
@@ -306,7 +307,7 @@ printf '%s\n' \
    'was_executed() { return 1; }' \
    > "${fixture_tree}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh"
 rc=0
-out="$(cd -- "${workdir}" && env --unset=HELPER_SCRIPTS_PATH \
+out="$(cd -- "${workdir}" && env --unset=HELPER_SCRIPTS_PATH --unset=derivative_maker_invocation_pwd \
    source_code_folder_dist="${fixture_tree}" HOME="${workdir}" \
    bash -- "${inst_root}/bin/dm-prepare-release" 2>&1)" || rc="$?"
 if [ "${rc}" -eq 0 ] && grep --quiet --fixed-strings -- 'TREE-CHECK-RUNTIME-LOADED' <<< "${out}"; then

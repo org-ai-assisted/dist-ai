@@ -35,16 +35,15 @@ else
    tests_dir='/usr/share/msgcollector-tests'
 fi
 
-## fuzz_cli_rendering drives cli_translate_gui_markup, which shells out to
-## helper-scripts str_replace (a python process) several times per message -- so
-## each iteration costs ~100ms and a 6000-sweep alone blows timeout_fuzz (600s,
-## the measured TIMEOUT). Give the slow HTML-rewrite lane a smaller sweep; the
-## output_func lane is pure bash (~3ms/iter) and keeps the big count. The curated
+## Every iteration sources the real subject and its helper-scripts in a fresh
+## bash (measured ~220ms/iter for the HTML-rewrite lane, which also shells out
+## to str_replace; ~80ms/iter for the output_func lane). Sized to ~300s total so
+## timeout_fuzz (600s) keeps a 2x margin on a loaded runner. The curated
 ## regressions run every time regardless, and each CI run varies the random seed,
 ## so randomized coverage still accumulates across runs. Override either with
 ## --iterations N.
-cli_iterations='1500'
-chunk_iterations='6000'
+cli_iterations='800'
+chunk_iterations='1500'
 
 rc=0
 ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps

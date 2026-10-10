@@ -61,11 +61,32 @@ if [ ! "${EUID}" = "0" ] && [ ! "${DM_HELP_STEPS_TESTS_NO_ELEVATE:-}" = "true" ]
       "  Run this suite as root (CI does), or in the sandbox VM." >&2
 fi
 
-if [ -d "${script_dir}/../share/dm-help-steps-tests" ]; then
+if [ -n "${DM_HELP_STEPS_TESTS_DIR:-}" ]; then
+   tests_dir="${DM_HELP_STEPS_TESTS_DIR}"
+elif [ -d "${script_dir}/../share/dm-help-steps-tests" ]; then
    tests_dir="${script_dir}/../share/dm-help-steps-tests"
 else
    tests_dir='/usr/share/dm-help-steps-tests'
 fi
+
+## Host-only cases: a test whose header carries the marker line
+##   ## dm-help-steps-tests: host-only: <reason>
+## validates against a developer checkout and cannot verify anything in CI (an
+## operator-authorized, named exemption). Under CI it is NOT run and is listed by
+## name -- neither a pass nor a skip. A skip would turn the whole suite into SKIP,
+## and the only CI lever, a suite-wide --allow-skip, would then also hide every
+## other case's skip.
+under_ci="false"
+if [ "${CI:-}" = "true" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+   under_ci="true"
+fi
+
+## is_host_only <test>: the marker is in the HEADER (the leading block of
+## comment and blank lines), so the same text in a test's body or fixture data
+## never exempts it.
+is_host_only() {
+   awk -- '/^## dm-help-steps-tests: host-only: / { found = 1; exit } /^[^#]/ && !/^[[:space:]]*$/ { exit } END { exit !found }' "$1"
+}
 
 ## Run every *_test.sh in the suite. Exit 77 from a test means SKIP (missing
 ## target / missing tooling) and does not count as a failure; any other non-zero
@@ -98,7 +119,12 @@ failures=0
 skipped=0
 env_unmet=0
 ran=0
+host_only=()
 for test_script in "${tests_dir}"/*_test.sh; do
+  if [ "${under_ci}" = "true" ] && is_host_only "${test_script}"; then
+    host_only+=( "$(basename -- "${test_script}")" )
+    continue
+  fi
   ran=$(( ran + 1 ))
   printf '%s\n' "" "########## $(basename -- "${test_script}") ##########"
   rc=0
@@ -114,9 +140,12 @@ for test_script in "${tests_dir}"/*_test.sh; do
   fi
 done
 
-if [ "${ran}" -eq 0 ]; then
+if [ "${ran}" -eq 0 ] && [ "${#host_only[@]}" -eq 0 ]; then
   printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
   exit 1
 fi
 printf '%s\n' '' "${ran} dm-help-steps case(s): ${failures} failed, ${skipped} skipped, ${env_unmet} env-unmet"
+if [ "${#host_only[@]}" -gt 0 ]; then
+  printf '%s\n' "host-only, not run under CI (${#host_only[@]}): ${host_only[*]}"
+fi
 suite_exit "${failures}" "${skipped}" "${env_unmet}"
