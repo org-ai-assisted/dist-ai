@@ -52,6 +52,7 @@ script's path globals at a scratch tree:
 
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -322,6 +323,38 @@ def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
             f"{target} bind (line {min(bind_idxs) + 1}) so a symlinked mount "
             f"point is refused before any bind"
         )
+
+
+def _helper_scripts_root() -> str:
+    return os.environ.get("HELPER_SCRIPTS_PATH", "").strip() or "/"
+
+
+def test_executed_with_missing_helper_fails_closed(tmp_path):
+    """Executed (the boot oneshot) with strings.bsh/has.bsh unresolvable, dispvm
+    must abort nonzero. Failing open would 'exit 0' at the 'has qubesdb-read'
+    gate and skip the bind mounts while the unit reports success."""
+    libexec = tmp_path / "usr" / "libexec" / "helper-scripts"
+    libexec.mkdir(parents=True)
+    (libexec / "check_runtime.bsh").symlink_to(os.path.join(
+        _helper_scripts_root(), "usr/libexec/helper-scripts/check_runtime.bsh"))
+    env = dict(os.environ, HELPER_SCRIPTS_PATH=str(tmp_path))
+    proc = subprocess.run(["bash", DISPVM], capture_output=True, text=True,
+                          env=env, check=False, timeout=T.DRIVE_TIMEOUT)
+    assert proc.returncode != 0, (
+        "dispvm exited 0 with its helpers missing:\n" + proc.stderr)
+
+
+def test_sourcing_leaves_caller_shell_options_alone():
+    """Sourcing must not switch on errexit/nounset/xtrace in the caller."""
+    env = dict(os.environ, HELPER_SCRIPTS_PATH=_helper_scripts_root())
+    proc = subprocess.run(
+        ["bash", "-c",
+         'source "$1" || exit 3\nprintf "%s" "$-"', "bash", DISPVM],
+        capture_output=True, text=True, env=env, check=False,
+        timeout=T.DRIVE_TIMEOUT)
+    assert proc.returncode == 0, proc.stderr
+    leaked = set("eux") & set(proc.stdout)
+    assert not leaked, f"sourcing leaked shell options: {sorted(leaked)}"
 
 
 if __name__ == "__main__":
