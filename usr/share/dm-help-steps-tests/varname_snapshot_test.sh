@@ -5,6 +5,8 @@
 
 ## AI-Assisted
 
+## dm-help-steps-tests: host-only: committed snapshots are dev-generated; CI's environment cannot match them (operator-authorized 2026-09-15)
+
 ## Drift test for the derivative-maker variable snapshots: regenerate them from
 ## the live derivative-maker checkout and require the result to match the
 ## committed 'varname-snapshots/' byte-for-byte. It is the safety net for a large

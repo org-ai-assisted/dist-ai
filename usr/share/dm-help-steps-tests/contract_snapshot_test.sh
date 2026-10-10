@@ -5,6 +5,8 @@
 
 ## AI-Assisted
 
+## dm-help-steps-tests: host-only: committed goldens are dev-generated; CI's environment cannot match them (operator-authorized 2026-09-15)
+
 ## Neutrality gate for a 'help-steps/variables' PRODUCER rewrite (file split,
 ## helper reuse, declaration block, effect relocation): such a refactor
 ## legitimately changes internal temporaries and non-consumed function bodies, so
