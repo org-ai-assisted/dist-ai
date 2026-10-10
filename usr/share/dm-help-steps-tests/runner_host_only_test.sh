@@ -84,6 +84,34 @@ else
    fail "off CI: rc=${runner_rc} ran='$(cat -- "${ran_log}")' output: ${runner_out}"
 fi
 
+## Only a HEADER marker exempts: the same text in a test's body still runs.
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/bash' 'set -o errexit' \
+   'printf "%s\n" "## dm-help-steps-tests: host-only: body text" > /dev/null' \
+   'printf "%s\n" body >> "${RAN_LOG}"' 'exit 0' > "${fixture}/b_body_marker_test.sh"
+run_runner true
+if [ "${runner_rc}" -eq 0 ] && grep --quiet -- '^body$' "${ran_log}"; then
+   pass "CI: a marker in the body (not the header) does not exempt the test"
+else
+   fail "CI: body-marker test was exempted; rc=${runner_rc} ran='$(cat -- "${ran_log}")'"
+fi
+safe-rm --force -- "${fixture}/b_body_marker_test.sh"
+
+## A dir of ONLY host-only cases under CI: listed, suite passes (not "no tests").
+only_dir="${work_dir}/only"
+mkdir -- "${only_dir}"
+cp -- "${fixture}/a_host_only_test.sh" "${only_dir}/"
+runner_rc=0
+runner_out="$(env --unset=GITHUB_ACTIONS CI=true RAN_LOG="${ran_log}" \
+   DM_HELP_STEPS_TESTS_DIR="${only_dir}" DM_HELP_STEPS_TESTS_NO_ELEVATE=true \
+   DERIVATIVE_MAKER_DIR="${dm_checkout}" "${runner}" 2>&1)" || runner_rc="$?"
+if [ "${runner_rc}" -eq 0 ] \
+   && [[ "${runner_out}" == *"host-only, not run under CI (1): a_host_only_test.sh"* ]]; then
+   pass "CI: an all-host-only dir lists its cases and passes"
+else
+   fail "CI: all-host-only dir rc=${runner_rc} output: ${runner_out}"
+fi
+
 ## Only the marker exempts: an unmarked skip under CI still surfaces.
 # shellcheck disable=SC2016
 printf '%s\n' '#!/bin/bash' 'exit 77' > "${fixture}/c_unmarked_skip_test.sh"

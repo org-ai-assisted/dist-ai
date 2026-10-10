@@ -81,6 +81,13 @@ if [ "${CI:-}" = "true" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
    under_ci="true"
 fi
 
+## is_host_only <test>: the marker is in the HEADER (the leading block of
+## comment and blank lines), so the same text in a test's body or fixture data
+## never exempts it.
+is_host_only() {
+   awk -- '/^## dm-help-steps-tests: host-only: / { found = 1; exit } /^[^#]/ && !/^[[:space:]]*$/ { exit } END { exit !found }' "$1"
+}
+
 ## Run every *_test.sh in the suite. Exit 77 from a test means SKIP (missing
 ## target / missing tooling) and does not count as a failure; any other non-zero
 ## exit is a failure. Overall exit is non-zero iff at least one test failed.
@@ -114,8 +121,7 @@ env_unmet=0
 ran=0
 host_only=()
 for test_script in "${tests_dir}"/*_test.sh; do
-  if [ "${under_ci}" = "true" ] \
-     && grep --quiet -- '^## dm-help-steps-tests: host-only: ' "${test_script}"; then
+  if [ "${under_ci}" = "true" ] && is_host_only "${test_script}"; then
     host_only+=( "$(basename -- "${test_script}")" )
     continue
   fi
@@ -134,7 +140,7 @@ for test_script in "${tests_dir}"/*_test.sh; do
   fi
 done
 
-if [ "${ran}" -eq 0 ]; then
+if [ "${ran}" -eq 0 ] && [ "${#host_only[@]}" -eq 0 ]; then
   printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
   exit 1
 fi
