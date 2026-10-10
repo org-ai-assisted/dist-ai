@@ -66,9 +66,11 @@ done
 {
    ## dpkg-query: nothing is installed -> 1050 must take the install path.
    printf '%s\n' '#!/bin/bash' 'exit 1' > "${stub_dir}/dpkg-query"
-   ## sudo: record one argv per line, never act as root.
+   ## sudo: record one call per line, each argument terminated by a unit
+   ## separator (keeps argument boundaries), never act as root.
    printf '%s\n' '#!/bin/bash' \
-      'printf "%s\n" "$*" >> "${SUDO_STUB_LOG}"' > "${stub_dir}/sudo"
+      'printf "%s\x1f" "$@" >> "${SUDO_STUB_LOG}"' \
+      'printf "\n" >> "${SUDO_STUB_LOG}"' > "${stub_dir}/sudo"
    ## apt-get / env reached WITHOUT sudo: record and fail, never run the real one.
    printf '%s\n' '#!/bin/bash' \
       'printf "%s\n" "${0##*/} $*" >> "${UNSUDOED_STUB_LOG}"' 'exit 1' > "${stub_dir}/apt-get"
@@ -104,22 +106,51 @@ else
    pass "every privileged command went through sudo"
 fi
 
-## sudo_split <line>: sudo options (before the first ' -- ') -> sudo_opts, the
-## command after it -> sudo_cmd. A line with no ' -- ' has no command.
-sudo_split() {
-   sudo_opts=""
-   sudo_cmd=""
-   if [[ "$1" == *" -- "* ]]; then
-      sudo_opts="${1%% -- *}"
-      sudo_cmd="${1#* -- }"
-   fi
+## load_call <log line>: one recorded sudo call -> sudo_opts (arguments before
+## the first '--') and sudo_cmd (arguments after it), boundaries preserved. A
+## call with no '--' has no command.
+load_call() {
+   local -a call_argv=()
+   local arg seen_separator="false"
+   IFS=$'\x1f' read -r -a call_argv <<< "$1" || true
+   sudo_opts=()
+   sudo_cmd=()
+   for arg in "${call_argv[@]}"; do
+      if [ "${seen_separator}" = "true" ]; then
+         sudo_cmd+=( "${arg}" )
+      elif [ "${arg}" = "--" ]; then
+         seen_separator="true"
+      else
+         sudo_opts+=( "${arg}" )
+      fi
+   done
 }
 
-## preserves_proxies <sudo_opts>: a --preserve-env=LIST sudo option whose
-## comma list names both http_proxy and https_proxy.
+## cmd_has <word>: one ARGUMENT of sudo_cmd equals <word>.
+cmd_has() {
+   local arg
+   for arg in "${sudo_cmd[@]}"; do
+      [ "${arg}" = "$1" ] && return 0
+   done
+   return 1
+}
+
+## cmd_has_option <value>: sudo_cmd carries '-o' <value> as two adjacent arguments.
+cmd_has_option() {
+   local i
+   for (( i = 0; i + 1 < ${#sudo_cmd[@]}; i++ )); do
+      if [ "${sudo_cmd[i]}" = "-o" ] && [ "${sudo_cmd[i + 1]}" = "$1" ]; then
+         return 0
+      fi
+   done
+   return 1
+}
+
+## preserves_proxies: a --preserve-env=LIST sudo option whose comma list names
+## both http_proxy and https_proxy.
 preserves_proxies() {
    local opt list
-   for opt in $1; do
+   for opt in "${sudo_opts[@]}"; do
       case "${opt}" in
          --preserve-env=*)
             list=",${opt#--preserve-env=},"
@@ -134,33 +165,31 @@ mapfile -t sudo_lines < "${sudo_log}"
 update_lines=()
 install_lines=()
 for line in "${sudo_lines[@]}"; do
-   sudo_split "${line}"
-   case " ${sudo_cmd} " in
-      *" apt-get "*" update ")
-         update_lines+=( "${line}" )
-         ;;
-      *" apt-get "*" install "*)
-         install_lines+=( "${line}" )
-         ;;
-   esac
+   load_call "${line}"
+   cmd_has apt-get || continue
+   if [ "${sudo_cmd[-1]}" = "update" ]; then
+      update_lines+=( "${line}" )
+   elif cmd_has install; then
+      install_lines+=( "${line}" )
+   fi
 done
 if [ "${#sudo_lines[@]}" -eq 2 ] && [ "${#update_lines[@]}" -eq 1 ] && [ "${#install_lines[@]}" -eq 1 ]; then
    pass "exactly one apt-get update and one apt-get install, both through sudo"
 else
-   fail "expected one update + one install through sudo; sudo log: $(cat -- "${sudo_log}")"
+   fail "expected one update + one install through sudo; sudo log: $(tr '\037' ' ' < "${sudo_log}")"
 fi
 
 for line in "${update_lines[@]}" "${install_lines[@]}"; do
-   sudo_split "${line}"
-   if preserves_proxies "${sudo_opts}"; then
-      pass "sudo keeps http_proxy/https_proxy: '${sudo_opts}'"
+   load_call "${line}"
+   if preserves_proxies; then
+      pass "sudo keeps http_proxy/https_proxy: '${sudo_opts[*]}'"
    else
-      fail "sudo drops the proxy variables (sudo resets the environment): '${line}'"
+      fail "sudo drops the proxy variables (sudo resets the environment): '${line//$'\x1f'/ }'"
    fi
-   if [[ " ${sudo_cmd} " == *" -o APT::Update::Error-Mode=any "* ]]; then
+   if cmd_has_option APT::Update::Error-Mode=any; then
       pass "apt-get runs with Error-Mode=any"
    else
-      fail "apt-get lacks '-o APT::Update::Error-Mode=any': '${line}'"
+      fail "apt-get lacks '-o APT::Update::Error-Mode=any': '${line//$'\x1f'/ }'"
    fi
 done
 
@@ -175,20 +204,29 @@ early_deps="$(
    # shellcheck disable=SC2154
    printf '%s' "${dist_build_early_dependencies}"
 )"
-## Word lists: neither spaces nor newlines in the list's formatting matter.
+## Word list: neither spaces nor newlines in the list's formatting matter.
 read -r -d '' -a expected_words <<< "${early_deps}" || true
 install_line="${install_lines[0]:-}"
-sudo_split "${install_line}"
-read -r -d '' -a installed_words <<< "${sudo_cmd##* install }" || true
+load_call "${install_line}"
+## Packages: the arguments after the 'install' argument.
+installed_words=()
+after_install="false"
+for arg in "${sudo_cmd[@]}"; do
+   if [ "${after_install}" = "true" ]; then
+      installed_words+=( "${arg}" )
+   elif [ "${arg}" = "install" ]; then
+      after_install="true"
+   fi
+done
 if [ "${#expected_words[@]}" -eq 0 ]; then
    fail "dist_build_early_dependencies is empty; nothing to compare against"
 elif [ -z "${install_line}" ]; then
-   fail "no 'apt-get ... install' recorded through sudo; sudo log: $(cat -- "${sudo_log}")"
+   fail "no 'apt-get ... install' recorded through sudo; sudo log: $(tr '\037' ' ' < "${sudo_log}")"
 elif [ "${installed_words[*]}" != "${expected_words[*]}" ]; then
    fail "apt-get install set '${installed_words[*]}' != dist_build_early_dependencies '${expected_words[*]}'"
 ## The LIST form: a scalar 'Dpkg::Options=' is silently never passed to dpkg.
-elif [[ " ${sudo_cmd} " != *" -o Dpkg::Options::=--force-confold "* ]]; then
-   fail "apt-get install lacks the list-form '-o Dpkg::Options::=--force-confold': '${install_line}'"
+elif ! cmd_has_option Dpkg::Options::=--force-confold; then
+   fail "apt-get install lacks the list-form '-o Dpkg::Options::=--force-confold': '${install_line//$'\x1f'/ }'"
 else
    pass "apt-get install ran through sudo for exactly \$dist_build_early_dependencies"
 fi
