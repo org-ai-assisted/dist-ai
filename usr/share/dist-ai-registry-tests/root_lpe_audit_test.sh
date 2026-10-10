@@ -508,6 +508,18 @@ chowned = [
 # style-ok: lpe-python-advisory -- waives the if header only, must NOT reach the body
 if chowned:
     os.chown("/home/user/.ifbody", 0, 0)
+# style-ok: lpe-python-advisory -- waives the if header, must NOT reach the one-liner body
+if chowned: os.chown("/home/user/.if1liner", 0, 0)
+# style-ok: lpe-python-advisory -- waives the for header, must NOT reach the one-liner body
+for _ in chowned: os.chown("/home/user/.for1liner", 0, 0)
+# style-ok: lpe-python-advisory -- waives the with header, must NOT reach the one-liner body
+with open("/dev/null") as _h: os.chown("/home/user/.with1liner", 0, 0)
+# style-ok: lpe-python-advisory -- waives the def header, must NOT reach the one-liner body
+def _oneliner(): os.chown("/home/user/.def1liner", 0, 0)
+# style-ok: lpe-python-advisory -- documents the assignment, must NOT reach the post-';' op
+marker_semi = 1; os.chown("/home/user/.semicolon", 0, 0)
+# style-ok: lpe-python-advisory -- the sink IS in the header; precision canary, MUST suppress
+if os.chown("/home/user/.ifheader", 0, 0): pass
 try:
     pass
 # style-ok: lpe-python-advisory -- waiver above a wrapped except header

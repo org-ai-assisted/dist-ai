@@ -319,9 +319,14 @@ def python_advisory(abs_path, rel_path):
     for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
         if raw.lstrip().startswith("#"):
             continue
-        if PYTHON_SINK_RE.search(raw) and PYTHON_TAINT_RE.search(raw):
+        match = PYTHON_SINK_RE.search(raw)
+        if match and PYTHON_TAINT_RE.search(raw):
             findings.append({
                 "rule": "python-advisory", "sink": "python", "line": lineno,
+                ## Byte column of the sink, matching ast col_offset (also bytes),
+                ## so a waiver's block-above scope can tell a one-liner suite body
+                ## from the header that shares its line.
+                "col": len(raw[:match.start()].encode("utf-8")),
                 "tainted_operand": raw.strip()[:120],
                 "factors": {"taint": "regex"},
                 "why": "root Python script does a privileged fs op near a "
@@ -511,8 +516,14 @@ def _py_stmt_spans(source):
     line. A simple statement spans lineno..end_lineno; a compound one (if/for/
     def/with/...) spans only its HEADER, never its suites, so a waiver above an
     'if' cannot reach the body (as a shell waiver above 'if' cannot reach the
-    commands inside it). Returns None on a parse error: an unparseable file
-    has no trustworthy statement boundaries, so the caller waives nothing."""
+    commands inside it).
+
+    Returns (spans, nonleading_stmt_cols). NONLEADING_STMT_COLS maps a line ->
+    the leftmost column at which a NON-line-leading statement begins (a one-liner
+    colon-suite body, or a statement after a ';'); a finding at or past it does
+    not own the comment block above the line (that block documents the LEADING
+    statement). Returns (None, {}) on a parse error: an unparseable file has no
+    trustworthy statement boundaries, so the caller waives nothing."""
     try:
         with warnings.catch_warnings():
             ## Invalid-escape SyntaxWarnings in an audited file are not ours to
@@ -521,26 +532,34 @@ def _py_stmt_spans(source):
             tree = ast.parse(source)
         case_lines = _py_case_keyword_lines(source)
     except (SyntaxError, ValueError, RecursionError, tokenize.TokenError):
-        return None
+        return None, {}
     spans = []
+    src_lines = source.split("\n")
+    starts_by_line: dict[int, list[int]] = {}
     for node in ast.walk(tree):
         ## 'except' and 'case' clauses are not ast.stmt, but their headers are
         ## statement-like lines a finding can wrap inside.
         if not isinstance(node, (ast.stmt, ast.ExceptHandler, ast.match_case)):
             continue
+        ## Statement start. A match_case has no position of its own: its line is
+        ## the nearest 'case' keyword at or above its pattern, and that keyword
+        ## begins at the line's indent.
+        if isinstance(node, ast.match_case):
+            index = bisect.bisect_right(case_lines, node.pattern.lineno)
+            own_line = case_lines[index - 1] if index else None
+            own_col = (_indent(src_lines[own_line - 1])
+                       if own_line and 1 <= own_line <= len(src_lines) else None)
+        else:
+            own_line = node.lineno
+            own_col = node.col_offset
+        if own_line is not None and own_col is not None:
+            starts_by_line.setdefault(own_line, []).append(own_col)
         suite_fields = _PY_SUITE_FIELDS.intersection(node._fields)
         if not suite_fields:
             spans.append((node.lineno, node.end_lineno or node.lineno))
             continue
         ## Header = the node's own line plus every non-suite child; decorators
-        ## sit ABOVE lineno, so the start widens to them too. A match_case has
-        ## no position of its own: its line is the nearest 'case' keyword at
-        ## or above its pattern.
-        if isinstance(node, ast.match_case):
-            index = bisect.bisect_right(case_lines, node.pattern.lineno)
-            own_line = case_lines[index - 1] if index else None
-        else:
-            own_line = node.lineno
+        ## sit ABOVE lineno, so the start widens to them too.
         lines = [] if own_line is None else [own_line]
         for field, value in ast.iter_fields(node):
             if field in suite_fields:
@@ -555,7 +574,15 @@ def _py_stmt_spans(source):
                         if line is not None)
         if lines:
             spans.append((min(lines), max(lines)))
-    return spans
+    ## A line where >1 statement starts: the leftmost non-leading start column
+    ## marks where a one-liner suite body or a post-';' statement begins.
+    nonleading_stmt_cols = {}
+    for line, cols in starts_by_line.items():
+        lead = min(cols)
+        rest = [col for col in cols if col > lead]
+        if rest:
+            nonleading_stmt_cols[line] = min(rest)
+    return spans, nonleading_stmt_cols
 
 
 def _indent(line):
@@ -564,7 +591,7 @@ def _indent(line):
 
 
 def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line,
-                source_lines):
+                source_lines, finding_col=None, nonleading_stmt_cols=None):
     """Map rule -> reason for waivers covering the command at finding_line.
 
     A waiver is honored (a) on the finding's own line or the owning command's
@@ -599,13 +626,24 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
     stmt_start = min(containing) if containing else finding_line
     stmt_indent = (_indent(source_lines[stmt_start - 1])
                    if 1 <= stmt_start <= len(source_lines) else 0)
+    ## A finding whose statement does not BEGIN its physical line (a one-liner
+    ## colon-suite body, or a statement after a ';') must not inherit the comment
+    ## block above the line -- that block documents the line's LEADING statement,
+    ## never a statement nested or trailing inside it. Line spans cannot separate
+    ## same-line statements; the non-leading start column can. Fail safe: treat
+    ## the finding as non-leading (skip the block) whenever it is at/past that
+    ## column, or its column is unknown on such a line.
+    nonleading_col = (nonleading_stmt_cols or {}).get(finding_line)
+    finding_in_nonleading = nonleading_col is not None and (
+        finding_col is None or finding_col >= nonleading_col)
     ## Standalone comment block above the statement, nearest first.
     block = []
-    above = stmt_start - 1
-    while (above >= 1 and above in standalone_lines
-           and _indent(source_lines[above - 1]) <= stmt_indent):
-        block.append(above)
-        above -= 1
+    if not finding_in_nonleading:
+        above = stmt_start - 1
+        while (above >= 1 and above in standalone_lines
+               and _indent(source_lines[above - 1]) <= stmt_indent):
+            block.append(above)
+            above -= 1
     ## Wrapped-reason text: the block's plain comment lines BELOW each waiver.
     wrapped: dict[int, str] = {}
     tail: list[str] = []
@@ -661,6 +699,10 @@ def audit(dm_root):
         weight = weight_for(reasons)
         component, submodule = component_for(rel_path, submodules)
         root_reason = ", ".join(reasons)
+        ## Python-only: lines where a non-leading statement begins, so a waiver
+        ## block above the line cannot reach a one-liner suite body. Shell spans
+        ## carry no compound headers, so the shell path leaves this empty.
+        nonleading_stmt_cols: dict[int, int] = {}
         if is_shell(abs_path, rel_path):
             coverage["shell_scanned"] += 1
             source = read_text(abs_path)
@@ -695,7 +737,7 @@ def audit(dm_root):
             ## wrapped statement's later line finds the waiver above its first
             ## line; an ast parse error drops every waiver (fail SAFE).
             comment_text_by_line = _py_comment_text_by_line(source)
-            py_spans = _py_stmt_spans(source)
+            py_spans, nonleading_stmt_cols = _py_stmt_spans(source)
             if py_spans is None:
                 comment_text_by_line = {}
             call_spans = py_spans or []
@@ -735,7 +777,9 @@ def audit(dm_root):
             ## reviewed by-design finding to 'suppressed' (still visible) rather
             ## than dropping it -- so a rescan no longer re-flags a settled line.
             waived = lpe_waivers(comment_text_by_line, standalone_lines,
-                                 call_spans, finding["line"], source_lines)
+                                 call_spans, finding["line"], source_lines,
+                                 finding_col=finding.get("col"),
+                                 nonleading_stmt_cols=nonleading_stmt_cols)
             reason = waived.get(finding["rule"]) or waived.get("all")
             if reason is not None:
                 entry["waiver_reason"] = reason

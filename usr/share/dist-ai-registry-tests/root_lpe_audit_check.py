@@ -242,6 +242,24 @@ def main(argv):
         "python waiver above an 'if' header does not reach its body",
         has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
+    ## One-liner colon-suites (header + body share a physical line) and a post-';'
+    ## statement: the comment block above the line documents the LEADING
+    ## statement, so a sink in the body/trailing statement must stay FLAGGED.
+    for op_sub, header in ((".if1liner", "if"), (".for1liner", "for"),
+                           (".with1liner", "with"),
+                           (".def1liner", "def"), (".semicolon", "';'")):
+        checks.append((
+            "python waiver above a one-liner %s does not reach its body" % header,
+            has(findings, "vuln_py_waived", "python-advisory", op_sub)
+            and not has(suppressed, "vuln_py_waived", "python-advisory", op_sub)))
+    ## Precision canary: when the sink IS in the header of a one-liner, the block
+    ## above legitimately waives it -- proving the fix is column-precise, not a
+    ## blunt refusal of every one-liner block-above waiver.
+    checks.append((
+        "python waiver above a one-liner header reaches a sink in that header",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".ifheader",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".ifheader")))
     checks.append((
         "python trailing waiver on a wrapped case pattern does not reach the guard",
         has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
