@@ -993,7 +993,7 @@ test_messagecli_sanitizes_dangerous_input() {
   ## The two stdisplay (stcat) passes must neutralize a non-SGR control
   ## sequence and non-ASCII bytes in an otherwise unsanitized CLI message.
   local out msg
-  msg="$(printf 'X\033[2JY \303\251 Z')"
+  msg=$'X\033[2JY \303\251 Z'
   ${MSGCOLLECTOR} --identifier sanitizetest --messagecli --typecli info \
     --message "${msg}" >/dev/null 2>&1 || true
   out="${msgcollector_run_dir}/sanitizetest_messagecli"
@@ -1003,13 +1003,13 @@ test_messagecli_sanitizes_dangerous_input() {
   fi
   ## The raw clear-screen escape (ESC + '[2J') must be gone: stdisplay replaces
   ## the ESC, so the raw sequence no longer appears.
-  if LC_ALL=C grep --fixed-strings --quiet -- "$(printf '\033')[2J" "${out}"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- $'\033[2J' "${out}"; then
     fail "messagecli sanitize: raw clear-screen escape survived"
   else
     pass "messagecli sanitize: dangerous escape neutralized"
   fi
   ## The non-ASCII bytes must be gone (replaced by stdisplay).
-  if LC_ALL=C grep --fixed-strings --quiet -- "$(printf '\303\251')" "${out}"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- $'\303\251' "${out}"; then
     fail "messagecli sanitize: non-ASCII byte survived"
   else
     pass "messagecli sanitize: non-ASCII neutralized"

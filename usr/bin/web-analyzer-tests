@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
 # shellcheck disable=SC1091
@@ -46,8 +47,8 @@ for candidate in node nodejs; do
 done
 
 if [ -z "${node_bin}" ]; then
-   printf 'web-analyzer-tests: SKIP (no node/nodejs interpreter found)\n' >&2
-   exit 77
+   printf '%s\n' "web-analyzer-tests: FATAL (no node/nodejs interpreter found)" >&2
+   exit 1
 fi
 
 "${node_bin}" -- "${tests_dir}/web_analyzer_test.js" "$@"
