@@ -667,7 +667,9 @@ rt_kept_marker() {
 ## A kept VM must outlive this run. Under any systemd unit (systemd-run, a durable launcher)
 ## stopping the unit kills its whole cgroup, the kept VM's VBox processes included, so move
 ## the account's processes into a transient scope of their own. rt_eph_reclaim's per-uid
-## kill empties the scope, which systemd then drops. Returns 1 when it cannot.
+## kill empties the scope, which systemd then drops. An account with no running process
+## has nothing a unit stop could kill, so its on-disk state stays keepable. Returns 1
+## only when running processes cannot be moved.
 rt_detach_kept_vm() {
    local account scope
    account="$1"
@@ -675,8 +677,8 @@ rt_detach_kept_vm() {
    local -a pids=()
    mapfile -t pids < <(pgrep --uid "${account}" || true)
    if [ "${#pids[@]}" -eq 0 ]; then
-      log error "kept run: account '${account}' has no running processes -- there is no VM to keep"
-      return 1
+      log notice "kept run: account '${account}' has no running processes -- keeping its on-disk state only"
+      return 0
    fi
    if ! busctl call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
          org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' \
@@ -689,18 +691,23 @@ rt_detach_kept_vm() {
 
 ## EXIT-trap handler: remove the ephemeral account if one was created. Single
 ## cleanup path, so an abort anywhere after creation still reclaims it -- unless the
-## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection. A VM
-## that cannot be detached from this run is not keepable: it is torn down like any
-## other, never reported as kept.
+## run FAILED and DM_RELEASE_TEST_KEEP_FAILED=1, which keeps it for inspection. A run is
+## kept only once its staged-ISO marker is written AND its VM is detached from this run;
+## otherwise it is torn down like any other, never reported as kept. The marker is
+## written first, in a subshell: a die (unusable state dir) inside this EXIT trap would
+## otherwise end the trap before teardown, orphaning an already-detached VM.
 rt_eph_cleanup() {
    local rc=$?
    if [ -n "${eph_account}" ] && [ "${rc}" -ne 0 ] && [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ]; then
-      if rt_detach_kept_vm "${eph_account}"; then
-         if [ -n "${rt_staged_dir}" ]; then
+      local keepable='true'
+      if [ -n "${rt_staged_dir}" ] && ! (
             rt_kept_marker "${eph_account}"
-            printf '%s\n' "${rt_staged_dir}" > "${rt_marker}" \
-               || log warn "cannot record kept staged ISO dir '${rt_staged_dir}'"
-         fi
+            printf '%s\n' "${rt_staged_dir}" > "${rt_marker}"
+         ); then
+         log error "cannot record the kept staged ISO dir '${rt_staged_dir}'"
+         keepable='false'
+      fi
+      if [ "${keepable}" = 'true' ] && rt_detach_kept_vm "${eph_account}"; then
          log notice "kept FAILED run for inspection: account '${eph_account}', VM left running with its network unplugged (sudo -u ${eph_account} ${VBOXMANAGE} list runningvms). The next ephemeral run reclaims it; DM_RELEASE_TEST_KEEP_FAILED=0 disables keeping."
          return 0
       fi
@@ -742,10 +749,17 @@ rt_sweep_eph_leftovers() {
 rt_eph_reclaim() {
    local account marker kept_dir
    account="$1"
-   rt_kept_marker "${account}"
-   marker="${rt_marker}"
+   ## Reclaim runs inside the EXIT trap, where a die would skip the teardown below:
+   ## an unusable state dir only loses the kept-ISO lookup, never the account removal.
+   marker=""
+   if ( rt_state_dir ) >/dev/null 2>&1; then
+      rt_kept_marker "${account}"
+      marker="${rt_marker}"
+   else
+      log warn "state dir unusable -- a kept staged ISO dir of '${account}' cannot be located"
+   fi
    kept_dir=""
-   if [ -f "${marker}" ]; then
+   if [ -n "${marker}" ] && [ -f "${marker}" ]; then
       kept_dir="$(cat -- "${marker}")"
    fi
    "${IMAGE_TEST_GC}" "${account}" || true
@@ -775,7 +789,9 @@ rt_eph_reclaim() {
          [[ "${kept_dir}" == *'/../'* ]] || safe-rm --recursive --force -- "${kept_dir}" 2>/dev/null || true
          ;;
    esac
-   safe-rm --force -- "${marker}" 2>/dev/null || true
+   if [ -n "${marker}" ]; then
+      safe-rm --force -- "${marker}" 2>/dev/null || true
+   fi
    rt_refresh_fleet
 }
 
