@@ -95,10 +95,10 @@ build_graph() {
       next=$(( level + 1 ))
       {
          printf '%s\n' '#!/bin/bash'
-         printf '# shellcheck source=./level_%s.sh\n' "${next}"
-         printf 'source "./level_%s.sh"\n' "${next}"
-         printf '# shellcheck source=./level_%s.sh\n' "${next}"
-         printf 'source "./level_%s.sh"\n' "${next}"
+         printf '%s\n' "# shellcheck source=./level_${next}.sh"
+         printf '%s\n' "source \"./level_${next}.sh\""
+         printf '%s\n' "# shellcheck source=./level_${next}.sh"
+         printf '%s\n' "source \"./level_${next}.sh\""
       } >"${dir}/level_${level}.sh"
       level=$(( level - 1 ))
    done
@@ -194,7 +194,7 @@ assert_graceful_degrade "no-rcfile"
 ## this must degrade gracefully exactly like case 1.
 rc_dir="$(mktemp --directory --tmpdir="${test_dir}" rcfile.XXXXXX)"
 build_graph "${rc_dir}"
-printf 'external-sources=true\n' >"${rc_dir}/.shellcheckrc"
+printf '%s\n' "external-sources=true" >"${rc_dir}/.shellcheckrc"
 run_gate "${rc_dir}" "${INNER_TIMEOUT}"
 assert_graceful_degrade "rcfile-external-sources-true"
 
@@ -304,6 +304,30 @@ INFILE
 chmod 0755 -- "${infile_dir}/caller"
 run_gate "${infile_dir}" "${INNER_TIMEOUT}"
 assert_vars_advisory "in-file-vars-advisory"
+
+## Case 6: the cap is CPU time, not wall-clock. A loaded host stretches a clean file's
+## shellcheck past the cap in WALL time while its CPU time stays well under it; a wall
+## cap then fail-closes the clean file ("timed out ... with following forced off"). A
+## shellcheck that idles 3s wall (no CPU) and reports clean models exactly that.
+slow_dir="$(mktemp --directory --tmpdir="${test_dir}" slow.XXXXXX)"
+mkdir -- "${slow_dir}/bin"
+cat >"${slow_dir}/bin/shellcheck" <<'SLOW'
+#!/bin/bash
+sleep 3
+printf '%s\n' '{"comments":[]}'
+SLOW
+chmod 0755 -- "${slow_dir}/bin/shellcheck"
+gate_rc=0
+gate_output="$( cd -- "${clean_dir}" \
+   && PATH="${slow_dir}/bin:${PATH}" DIST_AI_SHELLCHECK_TIMEOUT=1 \
+      timeout --kill-after=5 "${OUTER_TIMEOUT}" "${GATE}" --check ./caller 2>&1 )" \
+   || gate_rc=$?
+if [ "${gate_rc}" -eq 0 ] && ! grep --quiet --fixed-strings 'timed out' <<< "${gate_output}"; then
+   printf '%s\n' "PASS: cpu-starved-clean-file: 3s wall / ~0 CPU under a 1s cap stays green"
+else
+   printf '%s\n' "FAIL: cpu-starved-clean-file: rc=${gate_rc} -- a wall-clock cap fail-closes a clean file on a loaded host"
+   printf '%s\n' "${gate_output}" | tail -6; fail=1
+fi
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
