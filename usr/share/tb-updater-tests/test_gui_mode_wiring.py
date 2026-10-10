@@ -46,24 +46,27 @@ try:
 except SystemExit:
     pytest.skip("tb-updater not available", allow_module_level=True)
 
-## The two msgcollector dialogs update-torbrowser drives for GUI confirmation.
-## These exact paths are what the msgcollector suite's test_gui_platform guards
-## for the Wayland no-window fix; here they are rewritten to a stub so the
-## routing around them can be exercised without a display.
-DOWNLOAD_DIALOG = "/usr/libexec/msgcollector/tb_updater_gui.py"
-INSTALL_DIALOG = "/usr/libexec/msgcollector/generic_gui_message.py"
+## The two msgcollector dialogs update-torbrowser drives for GUI confirmation,
+## relative to its MSGCOLLECTOR_PATH base. These are what the msgcollector
+## suite's test_gui_platform guards for the Wayland no-window fix; here a stub
+## tree under MSGCOLLECTOR_PATH stands in for them so the routing around them
+## runs without a display.
+DIALOGS = (
+    "usr/libexec/msgcollector/tb_updater_gui.py",
+    "usr/libexec/msgcollector/generic_gui_message.py",
+)
 
-## Rewrite both dialog invocations to a single stub that announces it ran (on
-## stderr) and returns the answer chosen per case (on stdout).
-DIALOG_REPLACE = {
-    DOWNLOAD_DIALOG: "__tb_dialog",
-    INSTALL_DIALOG: "__tb_dialog",
-}
+## Each dialog stub announces it ran (on stderr) and returns the answer chosen
+## per case (on stdout).
+DIALOG_STUB = """#!/bin/bash
+printf 'DIALOG\\n' >&2
+printf '%s' "${DIALOG_ANSWER:-}"
+"""
 
-## Stub collaborators so the confirmation functions reach their TB_INPUT
-## dispatch without a display, cache, or real exit. tb_exit_function announces
-## the code it was asked to exit with (the abort path); __tb_dialog announces it
-## ran and yields DIALOG_ANSWER.
+## Runs after sourcing the real update-torbrowser. Stub collaborators so the
+## confirmation functions reach their TB_INPUT dispatch without a display,
+## cache, or real exit. tb_exit_function announces the code it was asked to
+## exit with (the abort path).
 STUBS = r"""
 log() { :; }
 output_cli() { :; }
@@ -71,7 +74,6 @@ output_gui() { :; }
 error() { printf 'ERROR:%s\n' "$*" >&2; }
 tb_read_cached_unixtime() { printf ''; }
 tb_exit_function() { printf 'EXIT:%s\n' "${1:-}"; exit 200; }
-__tb_dialog() { printf 'DIALOG\n' >&2; printf '%s' "${DIALOG_ANSWER:-}"; }
 """
 
 ## Fixture variables so each function reaches its dispatch on the simplest
@@ -90,14 +92,32 @@ BASE_ENV = {
 }
 
 
-def _drive(func, tb_input, answer=None, stdin=None):
+@pytest.fixture(scope="module")
+def scratch(tmp_path_factory):
+    """Scratch tree: the dialog stubs under msgcollector/, plus a home and a
+    cache folder so the real functions (and their ERR-trap handler) write
+    there, never into the runner's home."""
+    root = tmp_path_factory.mktemp("tb-updater")
+    for rel in DIALOGS:
+        stub = root / "msgcollector" / rel
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(DIALOG_STUB)
+        stub.chmod(0o755)
+    (root / "home").mkdir()
+    (root / "cache").mkdir()
+    return root
+
+
+def _drive(scratch, func, tb_input, answer=None, stdin=None):
     env = dict(BASE_ENV)
     env["TB_INPUT"] = tb_input
+    env["MSGCOLLECTOR_PATH"] = str(scratch / "msgcollector")
+    env["HOME"] = str(scratch / "home")
+    env["tb_cache_folder"] = str(scratch / "cache")
     if answer is not None:
         env["DIALOG_ANSWER"] = answer
-    return T.drive_bash_function(
-        UPDATER, func, preamble=STUBS, replace=DIALOG_REPLACE,
-        env=env, stdin=stdin)
+    return T.drive_sourced_function(
+        UPDATER, func, setup=STUBS, env=env, stdin=stdin)
 
 
 def test_desktop_wrapper_launches_gui_mode(tmp_path):
@@ -124,10 +144,10 @@ def test_desktop_wrapper_launches_gui_mode(tmp_path):
         + marker.read_text().strip())
 
 
-def test_download_confirmation_gui_dispatches_dialog_and_honours_no():
+def test_download_confirmation_gui_dispatches_dialog_and_honours_no(scratch):
     ## GUI input must drive the download dialog and treat 65536 as 'No' (abort
     ## with tb_exit_function 10).
-    proc = _drive("tb_confirm_update", "gui", answer="65536")
+    proc = _drive(scratch,"tb_confirm_update", "gui", answer="65536")
     assert "DIALOG" in proc.stderr, (
         "GUI download confirmation did not invoke tb_updater_gui.py")
     assert "EXIT:10" in proc.stdout, (
@@ -135,38 +155,38 @@ def test_download_confirmation_gui_dispatches_dialog_and_honours_no():
         "return code; stdout=" + repr(proc.stdout))
 
 
-def test_download_confirmation_gui_proceeds_on_yes():
+def test_download_confirmation_gui_proceeds_on_yes(scratch):
     ## A non-65536 answer must NOT abort: the function returns and the download
     ## proceeds.
-    proc = _drive("tb_confirm_update", "gui", answer="16384")
+    proc = _drive(scratch,"tb_confirm_update", "gui", answer="16384")
     assert "DIALOG" in proc.stderr
     assert "EXIT:" not in proc.stdout, (
         "download confirmation aborted despite a 'Yes' answer; stdout="
         + repr(proc.stdout))
 
 
-def test_install_confirmation_gui_dispatches_dialog_and_honours_yes():
+def test_install_confirmation_gui_dispatches_dialog_and_honours_yes(scratch):
     ## GUI input must drive the install dialog; only 16384 ('Yes') proceeds, any
     ## other answer aborts with tb_exit_function 14.
-    yes = _drive("tb_confirm_install", "gui", answer="16384")
+    yes = _drive(scratch,"tb_confirm_install", "gui", answer="16384")
     assert "DIALOG" in yes.stderr, (
         "GUI install confirmation did not invoke generic_gui_message.py")
     assert "EXIT:" not in yes.stdout, (
         "install confirmation aborted despite a 'Yes' answer; stdout="
         + repr(yes.stdout))
-    no = _drive("tb_confirm_install", "gui", answer="65536")
+    no = _drive(scratch,"tb_confirm_install", "gui", answer="65536")
     assert "DIALOG" in no.stderr
     assert "EXIT:14" in no.stdout, (
         "install confirmation did not abort on a non-16384 answer; stdout="
         + repr(no.stdout))
 
 
-def test_stdin_input_uses_read_not_the_gui_dialog():
+def test_stdin_input_uses_read_not_the_gui_dialog(scratch):
     ## The stdin path must read from stdin, never the GUI dialog. This is the
     ## exact regression guarded: a dialog call that drifted into the stdin arm
     ## (or a stdin arm that reached for the dialog) would make the GUI dialog run
     ## here -- so require it does NOT.
-    proc = _drive("tb_confirm_update", "stdin", answer="16384", stdin="n\n")
+    proc = _drive(scratch,"tb_confirm_update", "stdin", answer="16384", stdin="n\n")
     assert "DIALOG" not in proc.stderr, (
         "stdin input path invoked the GUI dialog")
     assert "EXIT:10" in proc.stdout, (

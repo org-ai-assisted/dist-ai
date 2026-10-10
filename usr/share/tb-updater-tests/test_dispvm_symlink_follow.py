@@ -12,14 +12,15 @@ Regression guard for a root symlink-follow LPE (CWE-59) in tb-updater 'dispvm'.
 Qubes DispVM, and provisions Tor Browser mount points under /home/<user>. A
 Qubes DispVM home is a clone of the DVM Template home, so the unprivileged user
 can pre-plant a symlink at .tb / .cache / .cache/tb before the root service
-runs. The old code did a bare root 'chown user:user /home/user/.tb' (and
-.cache, .cache/tb) with no --no-dereference, so root followed the symlink and
-chowned an arbitrary target to the user -- a user->root primitive.
+runs. A bare root 'chown user:user /home/user/.tb' (or .cache, .cache/tb)
+would follow that symlink and chown an arbitrary target to the user -- a
+user->root primitive.
 
-The fix creates the directories AS the user (setpriv, so a symlink can never be
-chown-escalated -- EPERM), and guards the root 'mount --bind' targets with an
-'[ -L ]' reject. This test drives the REAL 'main' from the shipped script (via
-extract_bash_function -- no drift), stubbing only the root/Qubes externals:
+dispvm refuses a symlink at any mount point ('[ -L ]' reject before any root
+write or bind) and chowns with --no-dereference. This test sources the REAL
+dispvm (source-able: main does not auto-run, strict mode stays inside main)
+and calls 'main', stubbing only the root/Qubes externals and pointing the
+script's path globals at a scratch tree:
 
   * Symlink case: a pre-planted symlink at a mount point makes the run exit
     nonzero (the reject-guard trips), and no root operation follows it into the
@@ -67,13 +68,14 @@ except SystemExit:
     pytest.skip("tb-updater dispvm not available", allow_module_level=True)
 
 
-## Stub only the root/Qubes externals so 'main' flows past its early-exit gates
-## into the mount-point provisioning. 'mkdir'/'test' stay real so the guard sees
-## the real filesystem objects; 'chown'/'mount' record their argv instead of
-## acting (no root needed; the symlink-safety is observable from the argv).
-PREAMBLE = r"""
+## Runs after sourcing the real dispvm. Stubs only the root/Qubes externals so
+## 'main' flows past its early-exit gates into the mount-point provisioning;
+## the real 'has' and account-name validator run. 'mkdir'/'[' stay real so the
+## guard sees the real filesystem objects; 'chown'/'mount'/'touch' record their
+## argv instead of acting (no root needed; the symlink-safety is observable from
+## the argv). The script's path globals are pointed at the scratch tree.
+SETUP = r"""
 ischroot() { return 1; }
-has() { return 0; }
 qubesdb-read() {
    case "$1" in
       /name) printf '%s\n' "test" ;;
@@ -82,16 +84,17 @@ qubesdb-read() {
       *) printf '%s\n' "" ;;
    esac
 }
-check_valid_linux_user_account_name() { return 0; }
 chown() { printf 'CHOWN %s\n' "$*" >> "${REC}"; return 0; }
 mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 touch() { printf 'TOUCH %s\n' "$*" >> "${REC}"; return 0; }
+home_base_dir="${TB_TEST_HOME}"
+tb_binary_cache_dir="${TB_TEST_CACHE}"
 """
 
 
-def _drive(tmp_path, *, planted=None, victim=None, precreate=(), extra_env=None):
-    """Drive the real dispvm 'main' with /home and /var/cache/tb-binary
-    redirected into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
+def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
+    """Drive the real dispvm 'main' with its home_base_dir and
+    tb_binary_cache_dir globals pointed into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
     as a symlink to `victim` inside the fake home first; each name in `precreate`
     is created as a real directory under the fake home first.
 
@@ -110,15 +113,9 @@ def _drive(tmp_path, *, planted=None, victim=None, precreate=(), extra_env=None)
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(victim)
 
-    replace = {
-        "/home/${user_name}": "${TB_TEST_HOME}/${user_name}",
-        "/var/cache/tb-binary": str(cache_src),
-    }
-    env = {"TB_TEST_HOME": str(home), "REC": str(rec)}
-    if extra_env:
-        env.update(extra_env)
-    proc = T.drive_bash_function(DISPVM, "main", preamble=PREAMBLE,
-                                 replace=replace, env=env)
+    env = {"TB_TEST_HOME": str(home), "TB_TEST_CACHE": str(cache_src),
+           "REC": str(rec)}
+    proc = T.drive_sourced_function(DISPVM, "main", setup=SETUP, env=env)
     return proc, home, rec.read_text().splitlines()
 
 
@@ -291,12 +288,12 @@ def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
     ## point, and must appear AFTER the symlink reject.
     for target in (".tb", ".cache/tb"):
         pat = re.compile(
-            rf'mount --bind\b[^\n]*"/var/cache/tb-binary/{re.escape(target)}"'
-            rf'\s+"/home/\$\{{user_name\}}/{re.escape(target)}"')
+            rf'mount --bind\b[^\n]*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
+            rf'\s+"\$\{{home_base_dir\}}/\$\{{user_name\}}/{re.escape(target)}"')
         bind_idxs = [i for i, line in enumerate(lines) if pat.search(line)]
         assert bind_idxs, (
             f"the {target} home bind must be a raw 'mount --bind ... "
-            f"/home/${{user_name}}/{target}': {DISPVM}"
+            f"${{home_base_dir}}/${{user_name}}/{target}': {DISPVM}"
         )
         assert reject_idx < min(bind_idxs), (
             f"the symlink reject (line {reject_idx + 1}) must precede the "

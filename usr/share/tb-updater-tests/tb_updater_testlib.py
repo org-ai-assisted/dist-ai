@@ -12,14 +12,14 @@ Resolves the tb-updater scripts under test:
   * TB_UPDATER_REPO=/path/to/tb-updater -> <repo>/usr/bin/update-torbrowser etc.
   * unset                               -> the installed copies under /usr
 
-The core tests are pure-source structural checks (the GUI-mode wiring contract
-and input routing), so a checkout is enough; nothing is installed or executed.
+The core tests source the real scripts and drive their functions with only
+root/Qubes/GUI externals stubbed, so a checkout is enough; nothing is
+installed.
 Each resolver exits 77 (SKIP) when its script is absent, mirroring the
 msgcollector suite.
 """
 
 import os
-import re
 import subprocess
 import sys
 
@@ -88,20 +88,6 @@ def read(path: str) -> str:
         return handle.read()
 
 
-_FUNC_RE_TMPL = r"^%s\(\) \{\n(.*?)^\}"
-
-
-def extract_bash_function(path: str, name: str) -> str:
-    """Return the full definition of a top-level bash function `name` from
-    `path`. Assumes the closing brace is at column 0. Raises LookupError if not
-    found (an older tb-updater may predate the function)."""
-    match = re.search(_FUNC_RE_TMPL % re.escape(name), read(path),
-                      re.DOTALL | re.MULTILINE)
-    if not match:
-        raise LookupError(f"function {name!r} not found in {path}")
-    return f"{name}() {{\n{match.group(1)}}}\n"
-
-
 def sanitize_string_bindir() -> str:
     """Directory of the sanitize-string binary the driven functions call by bare
     name, resolved from the wired binary / a helper-scripts checkout, so a
@@ -118,24 +104,19 @@ def sanitize_string_bindir() -> str:
     return ""
 
 
-def drive_bash_function(path: str, name: str, *, preamble: str = "",
-                        replace=None, args: str = "", env=None,
-                        stdin: "str | None" = None
-                        ) -> subprocess.CompletedProcess:
-    """Source the REAL shipped bash function `name` from `path` and run it,
+def drive_sourced_function(path: str, name: str, *, setup: str = "",
+                           env=None, stdin: "str | None" = None
+                           ) -> subprocess.CompletedProcess:
+    """Source the REAL script at `path` and call its function `name`,
     returning the completed process.
 
-    This executes the actual function body (not a copy of it): `replace` rewrites
-    absolute helper/dialog paths in the extracted source to stubs so no real
-    dialog or privileged tool runs, `preamble` provides stub functions and
-    fixture variables, and `args`/`env`/`stdin` drive the call. Errexit/nounset
-    are left off so a fixture that leaves an unrelated variable unset does not
-    abort before the branch under test."""
-    src = extract_bash_function(path, name)
-    if replace:
-        for old, new in replace.items():
-            src = src.replace(old, new)
-    driver = "set +e +u\n" + preamble + src + f"{name} {args}\n"
+    The subject is source-able (its was_executed guard keeps main from
+    auto-running and keeps strict mode out of the sourcing shell), so the
+    whole file is loaded as shipped. `setup` runs AFTER the source: stub
+    functions defined there override the real root/Qubes/GUI externals, and
+    fixture globals assigned there override the script's own. `env`/`stdin`
+    drive the call."""
+    driver = 'source "$1"\n' + setup + '\n"$2"\n'
     child_env = dict(os.environ)
     bindir = sanitize_string_bindir()
     if bindir:
@@ -143,7 +124,7 @@ def drive_bash_function(path: str, name: str, *, preamble: str = "",
     if env:
         child_env.update(env)
     return subprocess.run(
-        ["bash", "-c", driver],
+        ["bash", "-c", driver, "bash", path, name],
         input=stdin,
         capture_output=True,
         text=True,
