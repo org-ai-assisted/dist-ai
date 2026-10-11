@@ -21,6 +21,11 @@ export LC_ALL=C
 ## X server or a system tray.
 export QT_QPA_PLATFORM="offscreen"
 
+## Importing the subject from a checkout must not scatter .pyc into the source
+## tree (it trips dm-tidy's cleanliness gates). run-unittest.py also sets
+## sys.dont_write_bytecode; this covers any child process it spawns.
+export PYTHONDONTWRITEBYTECODE=1
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then
