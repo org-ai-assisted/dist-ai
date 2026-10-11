@@ -9,8 +9,9 @@ Unit tests for the event-based sdwdate-gui-qubes-proxy.
 The workstation proxy makes a SINGLE, blocking sdwdate-gui.ConnectCheck call
 (the gateway responder is event-based and returns only when the endpoint is
 ready), then acts on the one reply: 'y' hands the systemd socket to
-sdwdate-gui.Connect; anything else (a 'q' disabled reply, an empty reply, or a
-qrexec error) drops the give-up flag and exits 0.
+sdwdate-gui.Connect; an explicit 'q' (disabled) drops the give-up flag and
+exits 0; any other reply (empty / qrexec transport error) is transient, so it
+does NOT set the give-up flag and exits non-zero to retry.
 
 The proxy script is source-able, so these tests source the real script and
 call its functions directly -- no copy, no path rewriting. qrexec-client-vm is
@@ -115,8 +116,13 @@ class TestQubesProxy(unittest.TestCase):
                 'finalize_connect wrongly called Connect on a non-ready reply',
             )
 
-    def test_finalize_drops_flag_on_empty_reply(self) -> None:
-        """An empty reply (qrexec error) is treated as give-up, like 'q'."""
+    def test_finalize_transient_empty_no_flag_nonzero(self) -> None:
+        """
+        An empty reply (transient qrexec error) must NOT set the permanent
+        give-up flag and must exit non-zero so the next socket activation
+        retries -- reserving the flag for an explicit 'q' (C3). A regression
+        (treating empty like 'q') sets the flag and exits 0, failing this test.
+        """
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             run_dir = tmp / 'run-sdwdate-gui'
@@ -130,10 +136,37 @@ class TestQubesProxy(unittest.TestCase):
                 body,
                 {'sdwdate_gui_run_dir': str(run_dir)},
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(
+            self.assertNotEqual(
+                result.returncode,
+                0,
+                'finalize_connect exited 0 on a transient empty reply '
+                '(it must fail so the next activation retries)',
+            )
+            self.assertFalse(
                 (run_dir / 'qubes-gateway-server-disabled').is_file(),
-                'finalize_connect did not drop the flag on an empty reply',
+                'finalize_connect wrongly set the permanent give-up flag on a '
+                'transient empty reply',
+            )
+
+    def test_finalize_transient_garbage_no_flag_nonzero(self) -> None:
+        """A non-y/non-q reply (e.g. a qrexec stderr line) is transient too."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            run_dir = tmp / 'run-sdwdate-gui'
+            body = """
+            qrexec-client-vm() { printf '%s\\n' 'should not be called'; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            finalize_connect 'sys-test-gw' 'qrexec-client-vm: command failed'
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {'sdwdate_gui_run_dir': str(run_dir)},
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(
+                (run_dir / 'qubes-gateway-server-disabled').is_file(),
+                'finalize_connect set the give-up flag on a transient reply',
             )
 
 
