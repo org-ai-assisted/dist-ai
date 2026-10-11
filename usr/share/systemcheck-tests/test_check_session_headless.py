@@ -123,5 +123,44 @@ class TestCheckSystemReadyHeadless(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
 
+class TestCheckJournalHeadless(ScenarioTestBase):
+    FILE = 'check_services.bsh'
+
+    ## leaprun with no per-user privleap comm socket (session-less) fails to CONNECT.
+    _PRIVLEAP_UNREACHABLE = 'leaprun() { printf "ERROR: Could not connect to privleapd!\\n" >&2; return 1; }'
+    ## A genuine journal failure: privleapd answered, the read itself failed.
+    _JOURNAL_BROKEN = 'leaprun() { printf "journalctl: unrecoverable error\\n" >&2; return 1; }'
+
+    def test_privleapd_unreachable_is_na(self) -> None:
+        ## The confirmed headless artifact: no privleap comm socket -> connect failure -> N/A,
+        ## not a false "could not read the systemd journal".
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal',
+            env_setup='verbose=1', stubs=self._PRIVLEAP_UNREACHABLE)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('info'))
+        self.assertFalse(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '0')
+        self.assertIn('not applicable', r.joined())
+
+    def test_genuine_journal_failure_still_warns(self) -> None:
+        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked.
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal', stubs=self._JOURNAL_BROKEN)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '1')
+        self.assertIn('Could not read the systemd journal', r.joined())
+
+    def test_optout_forces_strict_on_connect_failure(self) -> None:
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal',
+            env_setup='systemcheck_headless_autoskip=false',
+            stubs=self._PRIVLEAP_UNREACHABLE)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '1')
+
+
 if __name__ == '__main__':
     unittest.main()
