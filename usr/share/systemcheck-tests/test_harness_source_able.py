@@ -107,6 +107,37 @@ class TestAssertSourceAble(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'refusing to source'):
             _assert_source_able(path)
 
+    def test_post_condition_and_dispatch_is_refused(self) -> None:
+        ## A dispatch AFTER a `&&` short-circuit runs the tool on source when the
+        ## condition holds, yet does not begin the line -- a line-anchored scan
+        ## skipped it (fail-open). A whole-line scan must catch it.
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            '[ -n "${SYSTEMCHECK_RUN:-}" ] && main "$@"\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+    def test_conditional_then_dispatch_unguarded_is_refused(self) -> None:
+        ## A dispatch inside a non-was_executed `if ...; then main "$@"; fi` also
+        ## runs on source when the condition holds; the `if` prefix must not let it
+        ## pass unchecked just because the line does not start with `main`.
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            'if running_as_tool; then main "$@"; fi\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+    def test_same_line_comment_echoing_guard_is_refused(self) -> None:
+        ## Hardens the same-line-guard acceptance: a TRAILING comment that echoes
+        ## the full `if was_executed "${BASH_SOURCE[0]}"; then` guard text must be
+        ## stripped before the same-line check, so it cannot vouch for an unguarded
+        ## dispatch (fail-open the whole-line scan would otherwise introduce).
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            'main "$@"  # if was_executed "${BASH_SOURCE[0]}"; then (old guard)\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
 
 class TestRunSourcedRefusesExecutingSubject(unittest.TestCase):
     """run_sourced must refuse an unguarded entrypoint BEFORE sourcing it, so
