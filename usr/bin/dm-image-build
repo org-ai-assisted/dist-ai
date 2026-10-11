@@ -132,6 +132,10 @@ export dist_build_sign_and_tag=true
 export dist_build_target_arch="${native_arch}"
 export flavors_list="${flavor}"
 export dist_build_multi_target_list=""
+## This is a test/install build on a host with NO release-server credentials; a failed
+## dm-upload-images connection retries with linear backoff for ~7h. Skip the upload: the
+## signed image is still produced, only the upload-to-release-server step is skipped.
+export dist_build_skip_image_upload=true
 
 build_rc=0
 {
