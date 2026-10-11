@@ -136,6 +136,9 @@ class TestSecureBootIsolatedScenarios(ScenarioTestBase):
         r = self._run_efi_present(0)
         self.assertIn('>UEFI+SecureBoot<', r.joined())
         self.assertNotIn('>BIOS<', r.joined())
+        ## Exactly one lane: the plain '>UEFI<' label must NOT also appear, or the
+        ## page would report two conflicting lanes for one boot.
+        self.assertNotIn('>UEFI<', r.joined())
 
     def test_firmware_lane_uefi_when_sb_disabled(self) -> None:
         r = self._run_efi_present(1)
@@ -148,6 +151,8 @@ class TestSecureBootIsolatedScenarios(ScenarioTestBase):
         r = self._run_efi_present(2, sbe_stdout='mokutil exploded')
         self.assertIn('>UEFI<', r.joined())
         self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+        ## EFI is present, so the BIOS lane must not also be claimed.
+        self.assertNotIn('>BIOS<', r.joined())
 
 
 if __name__ == '__main__':

@@ -291,22 +291,39 @@ def test_dispvm_service_not_started_by_dpkg():
         pytest.skip(f"debian/rules not found ({rules})")
     with open(rules, encoding="utf-8") as handle:
         text = handle.read()
-    ## A dh_installsystemd RECIPE invocation carrying BOTH --no-start and the
-    ## dispvm unit as its own arguments. Drop any trailing '# comment' first,
-    ## require the command to START with 'dh_installsystemd' (not a comment, not
-    ## 'echo ...'), then require both tokens in the command -- so
-    ## '--no-start other.service # tb-updater-dispvm.service' (unit only in the
-    ## comment, --no-start on another unit) does not satisfy it.
-    def _pins_dispvm_no_start(line):
-        code = line.split("#", 1)[0]
-        return (code.strip().startswith("dh_installsystemd")
-                and "--no-start" in code
-                and "tb-updater-dispvm.service" in code)
+    ## Collect every dh_installsystemd invocation that names the dispvm unit,
+    ## each as a SINGLE shell command. Drop any trailing '# comment', then split
+    ## each recipe line on the shell separators ';', '&&', '||' so a flag binds
+    ## to the one command it sits in -- otherwise
+    ## 'dh_installsystemd --no-start other.service; dh_installsystemd tb-updater-dispvm.service'
+    ## (--no-start on the OTHER unit) would satisfy a line-wide token check while
+    ## the dispvm invocation lacks the flag. Each command must START with
+    ## 'dh_installsystemd' (not a comment, not 'echo ...') so a bare mention
+    ## elsewhere cannot stand in for the recipe call.
+    def _dispvm_installsystemd_cmds(rules_text):
+        cmds = []
+        for line in rules_text.splitlines():
+            code = line.split("#", 1)[0]
+            for cmd in re.split(r';|&&|\|\|', code):
+                cmd = cmd.strip()
+                if (cmd.startswith("dh_installsystemd")
+                        and "tb-updater-dispvm.service" in cmd):
+                    cmds.append(cmd)
+        return cmds
 
-    assert any(_pins_dispvm_no_start(line) for line in text.splitlines()), (
+    dispvm_cmds = _dispvm_installsystemd_cmds(text)
+    assert dispvm_cmds, (
+        "debian/rules must install tb-updater-dispvm.service via "
+        "dh_installsystemd (so the --no-start pin below has a command to bind to)"
+    )
+    ## EVERY dispvm invocation must carry --no-start: a single start/restart call
+    ## reopens the mount --bind check-to-use race (CWE-59) during a live session.
+    missing = [cmd for cmd in dispvm_cmds if "--no-start" not in cmd]
+    assert not missing, (
         "debian/rules must pin 'dh_installsystemd --no-start "
         "tb-updater-dispvm.service' so dpkg never starts/restarts the unit "
-        "during a live session (mount --bind check-to-use race, CWE-59)"
+        "during a live session (mount --bind check-to-use race, CWE-59); "
+        f"invocation without --no-start: {missing}"
     )
 
 
@@ -395,24 +412,31 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
     ## reject.
     for target in (".tb", ".cache/tb"):
         pat = re.compile(
-            rf'mount\b[^\n]*--bind\b[^\n]*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
+            rf'\bmount\b.*--bind\b.*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
             rf'\s+"\$\{{home_base_dir\}}/\$\{{user_name\}}/{re.escape(target)}"')
-        binds = [(i, pat.search(line)) for i, line in enumerate(lines)]
-        binds = [(i, m) for i, m in binds if m]
-        bind_idxs = [i for i, _m in binds]
+        ## Scan per SHELL COMMAND, not per line: split each line (minus any
+        ## trailing '# comment') on the separators ';', '&&', '||' so the matched
+        ## bind is a single 'mount ... --bind ...' invocation. A line-wide regex
+        ## would let 'mount --no-canonicalize; mount --bind ...' capture the flag
+        ## from the FIRST mount while the bind lacks it.
+        binds = []  # (line_idx, matched command)
+        for i, line in enumerate(lines):
+            code = line.split("#", 1)[0]
+            for cmd in re.split(r';|&&|\|\|', code):
+                if pat.search(cmd):
+                    binds.append((i, cmd))
+        bind_idxs = [i for i, _cmd in binds]
         assert bind_idxs, (
             f"the {target} home bind must be a 'mount ... --bind ... "
             f"${{home_base_dir}}/${{user_name}}/{target}': {DISPVM}"
         )
         ## The mount-layer symlink-refusal guard: every home bind must pass
         ## --no-canonicalize (removing it reopens a symlinked-mountpoint follow).
-        ## Check the MATCHED 'mount ... --bind ...' span up to its first quoted
-        ## path, so the flag must be an argument of THIS mount command: a flag on
-        ## a different command ('true --no-canonicalize; mount --bind ...') or in
+        ## The flag must be an argument of THIS single mount command -- a flag on
+        ## a different command ('mount --no-canonicalize; mount --bind ...') or in
         ## a trailing comment cannot satisfy it.
-        for i, m in binds:
-            mount_cmd = m.group(0).split('"', 1)[0]
-            assert "--no-canonicalize" in mount_cmd, (
+        for i, cmd in binds:
+            assert "--no-canonicalize" in cmd, (
                 f"the {target} home bind must carry --no-canonicalize as a mount "
                 f"argument so mount refuses a symlinked mountpoint: "
                 f"{lines[i]!r} ({DISPVM})"
