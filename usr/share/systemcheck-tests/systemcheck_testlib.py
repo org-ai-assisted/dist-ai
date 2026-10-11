@@ -10,7 +10,9 @@ Shared helpers for the systemcheck test suite.
 
 Resolves the systemcheck sources under test:
   * SYSTEMCHECK_REPO=/path/to/systemcheck -> <repo>/usr/libexec/systemcheck
-  * unset                                 -> /usr/libexec/systemcheck (installed)
+  * unset                                 -> FATAL: refuse the stale installed
+    /usr copy (it lags an `ai` checkout and fails cryptically on helpers it
+    predates); point at a checkout -- CI wires it via --component-root.
 
 Bash under test is always SOURCED from the real files: the fragments resolve
 their siblings via ${SYSTEMCHECK_REPO:-} / ${HELPER_SCRIPTS_PATH:-}, which the
@@ -41,12 +43,19 @@ def systemcheck_dir() -> str:
             file=sys.stderr,
         )
         sys.exit(77)
-    installed = '/usr/libexec/systemcheck'
-    if os.path.isdir(installed):
-        return installed
-    print('systemcheck sources not found (set SYSTEMCHECK_REPO); skipping.',
-          file=sys.stderr)
-    sys.exit(77)
+    ## Unset: do NOT silently fall back to the INSTALLED /usr/libexec/systemcheck.
+    ## It lags an `ai` checkout and fails cryptically on helpers it predates (the
+    ## version-skew trap); a required subject that is unspecified is FATAL, never a
+    ## silent stale run. CI always wires it via --component-root.
+    print(
+        'systemcheck-tests: FATAL: SYSTEMCHECK_REPO is unset -- refusing to test '
+        'the stale installed /usr/libexec/systemcheck. Point it at a systemcheck '
+        'checkout (e.g. SYSTEMCHECK_REPO=~/derivative-maker/packages/kicksecure/'
+        'systemcheck), or run: dist-ai-tests-all --core --component systemcheck '
+        '--repo-root ~/derivative-maker',
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def bsh_files() -> list[str]:
@@ -76,42 +85,19 @@ def bash_scripts() -> list[str]:
     canary-daemon, check-env, check_tor_running, crypt-check, pkexec-test,
     updatecheck-daemon, user-sysmaint-split-check, ...).
 
-    Source tree (SYSTEMCHECK_REPO set): walk the checkout, skipping VCS and
-    Debian packaging directories. Installed: use the package file list from
-    `dpkg -L systemcheck` so no prefix has to be guessed.
+    Walks the SYSTEMCHECK_REPO checkout (required: systemcheck_dir() is FATAL when
+    unset), skipping VCS and Debian packaging directories.
     """
+    ## Validate the checkout (systemcheck_dir() exits if SYSTEMCHECK_REPO is unset
+    ## or its layout is wrong), so repo is a real source tree from here on.
+    systemcheck_dir()
     repo = os.environ.get('SYSTEMCHECK_REPO', '').strip()
-    if repo and os.path.isdir(repo):
-        ## Validate the checkout layout (and SKIP if wrong) exactly like the
-        ## installed branch below, so a mis-set SYSTEMCHECK_REPO cannot be
-        ## silently walked as if it were the systemcheck source tree.
-        systemcheck_dir()
-        candidates = []
-        skip_dirs = {'.git', '.github', 'debian'}
-        for dirpath, dirs, names in os.walk(repo):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for name in names:
-                candidates.append(os.path.join(dirpath, name))
-    else:
-        ## Trigger the standard SKIP if the sources are not present at all.
-        systemcheck_dir()
-        try:
-            proc = subprocess.run(
-                ['dpkg', '-L', 'systemcheck'],
-                capture_output=True, text=True, check=False,
-            )
-        except FileNotFoundError:
-            ## No dpkg (non-Debian host): SKIP rather than crash, matching the
-            ## suite's missing-sources convention.
-            print('dpkg not found; cannot enumerate installed scripts; skipping.',
-                  file=sys.stderr)
-            sys.exit(77)
-        if proc.returncode != 0:
-            ## Surface the real error instead of silently yielding an empty
-            ## list that looks like "package has no files".
-            print(f"dpkg -L systemcheck failed (rc={proc.returncode}): "
-                  f"{proc.stderr.strip()}", file=sys.stderr)
-        candidates = proc.stdout.splitlines()
+    candidates = []
+    skip_dirs = {'.git', '.github', 'debian'}
+    for dirpath, dirs, names in os.walk(repo):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in names:
+            candidates.append(os.path.join(dirpath, name))
 
     scripts = []
     for path in sorted(set(candidates)):

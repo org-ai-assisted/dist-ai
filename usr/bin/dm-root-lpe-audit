@@ -319,9 +319,14 @@ def python_advisory(abs_path, rel_path):
     for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
         if raw.lstrip().startswith("#"):
             continue
-        if PYTHON_SINK_RE.search(raw) and PYTHON_TAINT_RE.search(raw):
+        match = PYTHON_SINK_RE.search(raw)
+        if match and PYTHON_TAINT_RE.search(raw):
             findings.append({
                 "rule": "python-advisory", "sink": "python", "line": lineno,
+                ## Byte column of the sink, matching ast col_offset (also bytes),
+                ## so a waiver's block-above scope can tell a one-liner suite body
+                ## from the header that shares its line.
+                "col": len(raw[:match.start()].encode("utf-8")),
                 "tainted_operand": raw.strip()[:120],
                 "factors": {"taint": "regex"},
                 "why": "root Python script does a privileged fs op near a "
@@ -505,14 +510,18 @@ def _py_case_keyword_lines(source):
 
 
 def _py_stmt_spans(source):
-    """(start, end) line spans of every Python statement in SOURCE, via ast --
-    the Python counterpart of the shfmt CallExpr spans, so a finding on a later
-    physical line of a wrapped statement resolves to that statement's first
-    line. A simple statement spans lineno..end_lineno; a compound one (if/for/
-    def/with/...) spans only its HEADER, never its suites, so a waiver above an
-    'if' cannot reach the body (as a shell waiver above 'if' cannot reach the
-    commands inside it). Returns None on a parse error: an unparseable file
-    has no trustworthy statement boundaries, so the caller waives nothing."""
+    """(start_line, start_col, end_line, end_col) POSITION spans of every Python
+    statement in SOURCE, via ast -- the Python counterpart of the shfmt CallExpr
+    spans, so a finding on a later physical line of a wrapped statement resolves
+    to that statement's first line. Positions (not just lines) because a one-liner
+    colon-suite puts the header and its body on the SAME line: a simple statement
+    spans its own start..end, a compound one (if/for/def/with/except/case/...)
+    spans only its HEADER (own position + non-suite children), never its suites,
+    so a header span ENDS before a body sink that shares its line. That lets the
+    caller attribute a body sink to the body, not the header, and so keep a waiver
+    above an 'if' from reaching the body (as a shell waiver above 'if' cannot
+    reach the commands inside it). Returns None on a parse error: an unparseable
+    file has no trustworthy statement boundaries, so the caller waives nothing."""
     try:
         with warnings.catch_warnings():
             ## Invalid-escape SyntaxWarnings in an audited file are not ours to
@@ -522,39 +531,69 @@ def _py_stmt_spans(source):
         case_lines = _py_case_keyword_lines(source)
     except (SyntaxError, ValueError, RecursionError, tokenize.TokenError):
         return None
+    src_lines = source.split("\n")
     spans = []
     for node in ast.walk(tree):
         ## 'except' and 'case' clauses are not ast.stmt, but their headers are
-        ## statement-like lines a finding can wrap inside.
+        ## statement-like regions a finding can wrap inside.
         if not isinstance(node, (ast.stmt, ast.ExceptHandler, ast.match_case)):
             continue
         suite_fields = _PY_SUITE_FIELDS.intersection(node._fields)
         if not suite_fields:
-            spans.append((node.lineno, node.end_lineno or node.lineno))
+            ## Only a plain statement reaches here: ExceptHandler and match_case
+            ## always carry a 'body' suite.
+            if isinstance(node, ast.stmt):
+                spans.append((node.lineno, node.col_offset,
+                              node.end_lineno or node.lineno,
+                              node.end_col_offset or node.col_offset))
             continue
-        ## Header = the node's own line plus every non-suite child; decorators
-        ## sit ABOVE lineno, so the start widens to them too. A match_case has
-        ## no position of its own: its line is the nearest 'case' keyword at
-        ## or above its pattern.
+        ## Header start. A match_case has no position of its own: its line is the
+        ## nearest 'case' keyword at or above its pattern, and that keyword begins
+        ## at the line's indent.
         if isinstance(node, ast.match_case):
             index = bisect.bisect_right(case_lines, node.pattern.lineno)
             own_line = case_lines[index - 1] if index else None
+            own_col = (_indent(src_lines[own_line - 1])
+                       if own_line and 1 <= own_line <= len(src_lines) else None)
         else:
             own_line = node.lineno
-        lines = [] if own_line is None else [own_line]
+            own_col = node.col_offset
+        if own_line is None or own_col is None:
+            continue
+        ## Header = own position plus every non-suite child's bounding box;
+        ## decorators sit ABOVE lineno, so the start widens to them too. The body
+        ## suites are skipped, so the header END stops before a one-liner body.
+        points = [(own_line, own_col)]
         for field, value in ast.iter_fields(node):
             if field in suite_fields:
                 continue
             for child in value if isinstance(value, list) else [value]:
                 if not isinstance(child, ast.AST):
                     continue
+                ## A decorator's '@' is not an AST node, so the expression's
+                ## col_offset is indent+1; the statement really begins at the
+                ## '@' (the line's indent). Anchor the start there ONLY when the
+                ## '@' is confidently on this line (its stripped text starts with
+                ## '@'), so a single-line '@deco' leads its line and keeps a
+                ## waiver block above it. A multi-line / parenthesized / '\\'-wrapped
+                ## decorator stays at the expression column -> reads as NOT leading
+                ## -> the finding is KEPT (fail safe: never let a comment INTERIOR
+                ## to a decorator grouping waive a header sink).
+                if (field == "decorator_list" and isinstance(child, ast.expr)
+                        and 1 <= child.lineno <= len(src_lines)
+                        and src_lines[child.lineno - 1].lstrip().startswith("@")):
+                    points.append((child.lineno,
+                                   _indent(src_lines[child.lineno - 1])))
                 for sub in ast.walk(child):
-                    lines.extend(
-                        line for line in (getattr(sub, "lineno", None),
-                                          getattr(sub, "end_lineno", None))
-                        if line is not None)
-        if lines:
-            spans.append((min(lines), max(lines)))
+                    for line, col in ((getattr(sub, "lineno", None),
+                                       getattr(sub, "col_offset", None)),
+                                      (getattr(sub, "end_lineno", None),
+                                       getattr(sub, "end_col_offset", None))):
+                        if line is not None and col is not None:
+                            points.append((line, col))
+        start_line, start_col = min(points)
+        end_line, end_col = max(points)
+        spans.append((start_line, start_col, end_line, end_col))
     return spans
 
 
@@ -564,7 +603,7 @@ def _indent(line):
 
 
 def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line,
-                source_lines):
+                source_lines, finding_col=None):
     """Map rule -> reason for waivers covering the command at finding_line.
 
     A waiver is honored (a) on the finding's own line or the owning command's
@@ -580,32 +619,52 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
     closes an enclosing suite (a Python 'if' body) the command is not in. The
     nearest waiver for a rule wins, and its reason absorbs the plain comment
     lines wrapped below it in the block (up to the next waiver), so the
-    'suppressed' entry carries the whole reason. The owning command + its line
-    span come from the shfmt AST, or the Python ast for a .py file (CALL_SPANS:
-    (start, end) line pairs); the waiver is matched against the real COMMENT
-    TEXT (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a 'style-ok: lpe-...' in a
-    QUOTED STRING is data, not a waiver. Association is AST-truthful, never a
-    textual '\\'-continuation scan. A rule of 'all' waives every rule for that
-    command.
+    'suppressed' entry carries the whole reason. The owning command + its span
+    come from CALL_SPANS: shell (FINDING_COL is None) gives line pairs
+    (start, end); Python gives position quads (start_line, start_col, end_line,
+    end_col) so a header and its one-liner body on the same line are separable by
+    column. The waiver is matched against the real COMMENT TEXT
+    (COMMENT_TEXT_BY_LINE: line -> '#...'), never the raw source line, so a
+    'style-ok: lpe-...' in a QUOTED STRING is data, not a waiver. Association is
+    AST-truthful, never a textual '\\'-continuation scan. A rule of 'all' waives
+    every rule for that command.
     """
     waivers: dict[str, str] = {}
     if finding_line < 1:
         return waivers
-    ## Owning command: the one whose line span contains the finding, with the
-    ## EARLIEST start -- so 'cmd ... \\<nl> arg || rc=1' attributes arg to cmd,
-    ## not to the 'rc=1' assignment that also begins on the operand's line.
-    containing = [start for start, end in call_spans
-                  if start <= finding_line <= end]
-    stmt_start = min(containing) if containing else finding_line
+    ## Owning statement, EARLIEST start -- so 'cmd ... \\<nl> arg || rc=1' and a
+    ## wrapped operand attribute to the outer statement, not to an assignment
+    ## that also begins on the operand's line. OWNER_LEADS: does that statement
+    ## BEGIN its physical line? A waiver block above a line documents the
+    ## statement that LEADS the line; a statement nested or trailing inside it (a
+    ## one-liner colon-suite body, a post-';' statement, an 'else:'/'finally:'
+    ## one-liner body) must NOT inherit it. Shell spans are line-only and carry
+    ## no compound headers, so the owner leads by construction; Python spans are
+    ## position quads, so the owner leads iff it starts at its line's indent.
+    if finding_col is None:
+        containing = [start for start, end in call_spans
+                      if start <= finding_line <= end]
+        stmt_start = min(containing) if containing else finding_line
+        owner_leads = True
+    else:
+        pos = (finding_line, finding_col)
+        owners = [(sl, sc) for sl, sc, el, ec in call_spans
+                  if (sl, sc) <= pos <= (el, ec)]
+        stmt_start, owner_col = (min(owners) if owners
+                                 else (finding_line, finding_col))
+        owner_leads = (1 <= stmt_start <= len(source_lines)
+                       and owner_col <= _indent(source_lines[stmt_start - 1]))
     stmt_indent = (_indent(source_lines[stmt_start - 1])
                    if 1 <= stmt_start <= len(source_lines) else 0)
-    ## Standalone comment block above the statement, nearest first.
+    ## Standalone comment block above the statement, nearest first -- only when
+    ## the owning statement leads its line (else the block is the LEADER's).
     block = []
-    above = stmt_start - 1
-    while (above >= 1 and above in standalone_lines
-           and _indent(source_lines[above - 1]) <= stmt_indent):
-        block.append(above)
-        above -= 1
+    if owner_leads:
+        above = stmt_start - 1
+        while (above >= 1 and above in standalone_lines
+               and _indent(source_lines[above - 1]) <= stmt_indent):
+            block.append(above)
+            above -= 1
     ## Wrapped-reason text: the block's plain comment lines BELOW each waiver.
     wrapped: dict[int, str] = {}
     tail: list[str] = []
@@ -735,7 +794,8 @@ def audit(dm_root):
             ## reviewed by-design finding to 'suppressed' (still visible) rather
             ## than dropping it -- so a rescan no longer re-flags a settled line.
             waived = lpe_waivers(comment_text_by_line, standalone_lines,
-                                 call_spans, finding["line"], source_lines)
+                                 call_spans, finding["line"], source_lines,
+                                 finding_col=finding.get("col"))
             reason = waived.get(finding["rule"]) or waived.get("all")
             if reason is not None:
                 entry["waiver_reason"] = reason

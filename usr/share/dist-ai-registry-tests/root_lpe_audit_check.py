@@ -242,6 +242,38 @@ def main(argv):
         "python waiver above an 'if' header does not reach its body",
         has(findings, "vuln_py_waived", "python-advisory", ".ifbody")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ifbody")))
+    ## One-liner colon-suites (header + body share a physical line) and a post-';'
+    ## statement: the comment block above the line documents the LEADING
+    ## statement, so a sink in the body/trailing statement must stay FLAGGED.
+    for op_sub, header in ((".if1liner", "if"), (".for1liner", "for"),
+                           (".with1liner", "with"), (".def1liner", "def"),
+                           (".semicolon", "';'"), (".ifwrap1liner", "wrapped if"),
+                           (".else1liner", "else"), (".finally1liner", "finally")):
+        checks.append((
+            "python waiver above a one-liner %s does not reach its body" % header,
+            has(findings, "vuln_py_waived", "python-advisory", op_sub)
+            and not has(suppressed, "vuln_py_waived", "python-advisory", op_sub)))
+    ## Precision canary: when the sink IS in the header of a one-liner, the block
+    ## above legitimately waives it -- proving the fix is column-precise, not a
+    ## blunt refusal of every one-liner block-above waiver.
+    checks.append((
+        "python waiver above a one-liner header reaches a sink in that header",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".ifheader",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".ifheader")))
+    ## A decorated def leads its line at the '@' (not an ast node); a waiver
+    ## block above the decorator MUST still reach a sink in the def header.
+    checks.append((
+        "python waiver above a decorated def reaches a header sink",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".decohdr",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".decohdr")))
+    ## Fail safe: a comment INTERIOR to a multi-line decorator grouping must NOT
+    ## waive a header sink (the '@' is not confidently line-leading there).
+    checks.append((
+        "python comment inside a multi-line decorator does not waive a header sink",
+        has(findings, "vuln_py_waived", "python-advisory", ".decoparen")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".decoparen")))
     checks.append((
         "python trailing waiver on a wrapped case pattern does not reach the guard",
         has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
