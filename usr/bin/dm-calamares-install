@@ -63,7 +63,11 @@ vm_started="false"
 ## point users do (pinned by live-config-dist-tests install_host_exec_pin_test.sh).
 INSTALL_HOST_CMD='install-host'
 
+## Last die() reason, read by on_exit to put the REAL cause (not a bare "FAILED (rc=N)") into
+## the published check-log when a failure happens BEFORE the check battery (install/boot/launch).
+die_reason=''
 die() {
+   die_reason="${2}"
    printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
 }
@@ -97,16 +101,18 @@ on_exit() {
          cp -- "${stuck}" "${shot_dir}/99-failure.png" 2>/dev/null || true
       fi
       if [ -n "${check_log}" ] && [ ! -s "${check_log}" ]; then
-         ## Only point at a screenshot that was ACTUALLY published (a non-empty
-         ## ${shot} after the copy above); otherwise a bare 'FAILED' note, never a
-         ## false 'see the published screenshot' when none was captured.
+         ## Lead with the REAL die() reason (why the install/boot/launch failed) so the page
+         ## names the cause, not a bare rc. Only point at a screenshot ACTUALLY published (a
+         ## non-empty ${shot} after the copy above) -- never a false 'see the published
+         ## screenshot' when none was captured.
+         local note="${me} FAILED (rc=${rc})"
+         [ -n "${die_reason}" ] && note="${note}: ${die_reason}"
          if [ -n "${shot}" ] && [ -s "${shot}" ]; then
-            printf '%s\n' \
-               "${me} FAILED (rc=${rc}) -- see the published screenshot for the on-screen error." > "${check_log}" 2>/dev/null || true
+            note="${note} -- see the published screenshot for the on-screen error."
          else
-            printf '%s\n' \
-               "${me} FAILED (rc=${rc})." > "${check_log}" 2>/dev/null || true
+            note="${note}."
          fi
+         printf '%s\n' "${note}" > "${check_log}" 2>/dev/null || true
       fi
       ## install-host / Calamares launch log: the ONLY place a GUI that STARTED but never
       ## showed a window leaves its reason -- gc_wait_gui_started passes on the bare process,
