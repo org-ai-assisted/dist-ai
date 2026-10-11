@@ -97,6 +97,16 @@ class TestAssertSourceAble(unittest.TestCase):
             'if was_executed "${BASH_SOURCE[0]}"; then main "$@"; fi\n')
         _assert_source_able(path)  # must not raise
 
+    def test_guard_text_in_trailing_comment_on_dispatch_is_refused(self) -> None:
+        ## The guard string in a TRAILING comment on the UNGUARDED dispatch line
+        ## must not vouch for it -- a same-line substring check accepted it, so the
+        ## tool ran on source (fail-open). The guard must actually enclose it.
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            'main "$@"   # TODO: wrap in was_executed "${BASH_SOURCE[0]}"\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
 
 class TestRunSourcedRefusesExecutingSubject(unittest.TestCase):
     """run_sourced must refuse an unguarded entrypoint BEFORE sourcing it, so
