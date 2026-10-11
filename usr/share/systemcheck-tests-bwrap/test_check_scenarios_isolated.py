@@ -235,6 +235,39 @@ class TestIsolatedHarnessOverlays(ScenarioTestBase):
             run_check_scenario_isolated(
                 self.check(self.FILE), 'true', hide_dirs=[self.dir])
 
+    def test_dotdot_overlay_hiding_the_subject_is_refused(self) -> None:
+        ## A '..' hide path normalizes to the subject's own dir; the guard must
+        ## catch it even though the raw string differs. Un-normalized, the guard
+        ## was bypassed and bwrap's tmpfs then emptied the real source dir, so the
+        ## scenario failed with a confusing sourcing error instead of this one.
+        sneaky = os.path.join(self.dir, '..', os.path.basename(self.dir))
+        with self.assertRaisesRegex(AssertionError, 'hiding sourced subject'):
+            run_check_scenario_isolated(
+                self.check(self.FILE), 'true', hide_dirs=[sneaky])
+
+    def test_bind_over_the_subject_is_refused(self) -> None:
+        ## A bind_files dest equal to a sourced subject file would --ro-bind a
+        ## fake over the real check before `source`: the scenario would run the
+        ## fake, emit nothing, and return EXIT 0 -- a green that never ran the
+        ## real check. Refuse it by name.
+        with self.assertRaisesRegex(AssertionError, 'bind over sourced subject'):
+            run_check_scenario_isolated(
+                self.check(self.FILE), 'true',
+                bind_files=[(self.check(self.FILE), '## fake\n', False)])
+
+    def test_place_accepts_a_one_shot_iterable(self) -> None:
+        ## `place` is read twice (tmpfs target selection, then fixture creation);
+        ## a one-shot generator must survive both passes. Exhausted by the first,
+        ## no fixture is written and the scenario runs against the wrong fs state.
+        self.assertFalse(os.path.exists(self.ABSENT_DIR))
+        marker = os.path.join(self.ABSENT_DIR, 'gen', 'marker')
+        place = ((marker, 'gen-content', False) for _ in range(1))
+        r = run_check_scenario_isolated(
+            self.check(self.FILE),
+            f"cat -- {marker} && printf 'PLACED\\n'",
+            place=place)
+        self.assertIn('gen-contentPLACED', r.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

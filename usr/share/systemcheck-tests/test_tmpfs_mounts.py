@@ -75,6 +75,24 @@ class TestTmpfsMounts(unittest.TestCase):
                           self.p('usr/share/qubes-extra')], []),
             [self.p('usr/share/qubes'), self.p('usr/share/qubes-extra')])
 
+    def test_dotdot_overlay_path_is_normalized(self) -> None:
+        ## A '..' segment must collapse to the real target bwrap's kernel-side
+        ## mount resolves it to -- not a distinct string that later slips past
+        ## the subject-overlay guard. Non-normalized, the returned target would
+        ## be the literal '.../usr/share/../share/qubes'.
+        self.assertEqual(
+            tmpfs_mounts([self.p('usr/share/../share/qubes')], []),
+            [self.p('usr/share/qubes')])
+
+    def test_place_with_no_existing_top_level_ancestor_is_refused(self) -> None:
+        ## A placed file whose WHOLE parent chain is absent has '/' as its nearest
+        ## existing ancestor; a tmpfs there would empty the entire filesystem
+        ## (bash + the subject included). Refuse loudly instead of returning ['/']
+        ## and false-rejecting the scenario with a confusing subject-hiding error.
+        self.assertFalse(os.path.isdir('/dist-ai-nonexistent-top-xyzzy'))
+        with self.assertRaises(ValueError):
+            tmpfs_mounts([], ['/dist-ai-nonexistent-top-xyzzy/foo'])
+
 
 if __name__ == '__main__':
     unittest.main()
