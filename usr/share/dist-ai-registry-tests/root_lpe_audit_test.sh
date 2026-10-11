@@ -537,6 +537,12 @@ def _mark(_f):
 @_mark
 def _deco_hdr(_p=os.chown("/home/user/.decohdr", 0, 0)):
     pass
+@(
+# style-ok: lpe-python-advisory -- INTERIOR of a multi-line decorator; MUST NOT waive the header sink
+    (_mark)
+)
+def _deco_paren(_p=os.chown("/home/user/.decoparen", 0, 0)):
+    pass
 try:
     pass
 # style-ok: lpe-python-advisory -- waiver above a wrapped except header

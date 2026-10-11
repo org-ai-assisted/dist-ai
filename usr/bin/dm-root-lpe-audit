@@ -572,11 +572,16 @@ def _py_stmt_spans(source):
                     continue
                 ## A decorator's '@' is not an AST node, so the expression's
                 ## col_offset is indent+1; the statement really begins at the
-                ## '@' (the line's indent). Anchor the start there, else a
-                ## decorated def/class reads as NOT leading its line and loses a
-                ## waiver block above it.
+                ## '@' (the line's indent). Anchor the start there ONLY when the
+                ## '@' is confidently on this line (its stripped text starts with
+                ## '@'), so a single-line '@deco' leads its line and keeps a
+                ## waiver block above it. A multi-line / parenthesized / '\\'-wrapped
+                ## decorator stays at the expression column -> reads as NOT leading
+                ## -> the finding is KEPT (fail safe: never let a comment INTERIOR
+                ## to a decorator grouping waive a header sink).
                 if (field == "decorator_list" and isinstance(child, ast.expr)
-                        and 1 <= child.lineno <= len(src_lines)):
+                        and 1 <= child.lineno <= len(src_lines)
+                        and src_lines[child.lineno - 1].lstrip().startswith("@")):
                     points.append((child.lineno,
                                    _indent(src_lines[child.lineno - 1])))
                 for sub in ast.walk(child):

@@ -268,6 +268,12 @@ def main(argv):
         has(suppressed, "vuln_py_waived", "python-advisory", ".decohdr",
             need_reason=True)
         and not has(findings, "vuln_py_waived", "python-advisory", ".decohdr")))
+    ## Fail safe: a comment INTERIOR to a multi-line decorator grouping must NOT
+    ## waive a header sink (the '@' is not confidently line-leading there).
+    checks.append((
+        "python comment inside a multi-line decorator does not waive a header sink",
+        has(findings, "vuln_py_waived", "python-advisory", ".decoparen")
+        and not has(suppressed, "vuln_py_waived", "python-advisory", ".decoparen")))
     checks.append((
         "python trailing waiver on a wrapped case pattern does not reach the guard",
         has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
