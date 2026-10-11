@@ -232,6 +232,25 @@ def build_plane(root, goldens, approvals_path):
                  0, now, "verify-signature", None,
                  artifact_sha256=SHA256_M)
 
+    ## N: a step whose stderr log is MULTI-KB. The FULL log must survive to the rendered page:
+    ## regression for the 1200-char render cut that showed a systemcheck run starting
+    ## "...emcheck#" mid-word (its head silently dropped). START + END needles bracket a body
+    ## far larger than both the old 1200-char render cut and the old 4 KB emitter cap.
+    n_dir = os.path.join(root, "kicksecure-log-18-2-3-5", "20261006T000000Z")
+    big_log = "LOGSTART_NEEDLE\n" + ("systemcheck line filler\n" * 400) + "LOGEND_NEEDLE\n"
+    n_step = model.make_step(
+        name="checks", status=model.step_status_from_rc(1), exit_code=1,
+        stderr_tail=big_log,
+    )
+    n_result = model.build_result(
+        run_id="kicksecure-log-18-2-3-5-1", lane="kicksecure-log", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=1, generated_unix=now, stop_unix=now, steps=[n_step],
+    )
+    os.makedirs(n_dir, exist_ok=True)
+    with open(os.path.join(n_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(n_result))
+
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
 
@@ -350,6 +369,17 @@ check("failed run with a matching shot still renders an <img", "<img" in i_page)
 check("failed run page is st-fail", "st-fail" in i_page)
 check("failed run page has NO green pass chip (shot not green on a failed step)",
       "st-pass" not in i_page)
+
+## N: a multi-KB step log survives IN FULL to the rendered page -- both the START (head) and
+## END (tail) needles must appear. Before the fix the generator re-cut the stored tail to the
+## last 1200 chars, dropping the head (systemcheck output began "...emcheck#" mid-word); this
+## pins that the full stored log is rendered. The <pre> carries the scroll class so a long log
+## stays bounded on the page.
+n_page = read(os.path.join(out1, "kicksecure-log-18-2-3-5-1", "index.html"))
+check("multi-KB log: END (tail) survives to the page", "LOGEND_NEEDLE" in n_page)
+check("multi-KB log: START (head) survives to the page (no 1200-char re-cut)",
+      "LOGSTART_NEEDLE" in n_page)
+check("step log <pre> is the scrollable class", 'pre class="steplog"' in n_page)
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).

@@ -236,6 +236,42 @@ wr_png="${wr_out}/calamares-install.png"
 check "result.json world-readable under a restrictive umask" "$([ "$(( 0$(stat -c %a "${wr_json}") & 04 ))" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
 check "published screenshot world-readable under a restrictive umask" "$([ "$(( 0$(stat -c %a "${wr_png}") & 04 ))" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
 
+## Step log tail: a multi-KB step stderr (e.g. a full systemcheck / check-battery run) must be
+## stored IN FULL, not clipped. Canary: the old 4 KB TAIL_BYTES cap kept only the last 4000
+## bytes, silently dropping the head of a real systemcheck log before the page ever rendered it.
+big_log="${work}/biglog.txt"
+{
+   printf '%s\n' 'STDERRSTART_NEEDLE'
+   head -c 12000 /dev/zero | tr '\0' 'x'
+   printf '%s\n' '' 'STDERREND_NEEDLE'
+} > "${big_log}"
+big_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-biglog-18-2-3-5" "eph-inst-biglog" "calamares-install" \
+   5 "${shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure --step-stderr-file "${big_log}")"
+big_json="${big_out}/result.json"
+check "multi-KB stderr: head survives (START present, no 4 KB clip)" "$(grep --quiet 'STDERRSTART_NEEDLE' -- "${big_json}" && printf '%s' "true" || printf '%s' "false")"
+check "multi-KB stderr: tail present (END)" "$(grep --quiet 'STDERREND_NEEDLE' -- "${big_json}" && printf '%s' "true" || printf '%s' "false")"
+check "sub-ceiling log is NOT marked truncated" "$(grep --quiet 'earlier output truncated' -- "${big_json}" && printf '%s' "false" || printf '%s' "true")"
+
+## An over-ceiling (runaway) log IS clipped -- but honestly marked, and the TAIL is kept.
+huge_log="${work}/hugelog.txt"
+{
+   printf '%s\n' 'HUGESTART_NEEDLE'
+   head -c 200000 /dev/zero | tr '\0' 'z'
+   printf '%s\n' '' 'HUGEEND_NEEDLE'
+} > "${huge_log}"
+huge_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-hugelog-18-2-3-5" "eph-inst-hugelog" "calamares-install" \
+   5 "${shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure --step-stderr-file "${huge_log}")"
+huge_json="${huge_out}/result.json"
+check "oversized stderr: honest truncation marker present" "$(grep --quiet 'earlier output truncated' -- "${huge_json}" && printf '%s' "true" || printf '%s' "false")"
+check "oversized stderr: tail kept (END)" "$(grep --quiet 'HUGEEND_NEEDLE' -- "${huge_json}" && printf '%s' "true" || printf '%s' "false")"
+check "oversized stderr: head dropped at the ceiling (START absent)" "$(grep --quiet 'HUGESTART_NEEDLE' -- "${huge_json}" && printf '%s' "false" || printf '%s' "true")"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
    exit 1

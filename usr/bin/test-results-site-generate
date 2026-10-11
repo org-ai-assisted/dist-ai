@@ -637,13 +637,18 @@ def render_run(view, header, footer, generated_utc):
 def render_step(view, step):
     shots = [s for s in view.shots if s["step"] == step["name"]]
     status_cls = _step_status_class(step.get("status"))
+    ## Render the FULL stored step tails -- no second truncation here. The emitter already
+    ## bounds them (TAIL_BYTES) and prepends an honest marker when it clipped a larger log, so
+    ## a re-cut here only hid real output (a full systemcheck run exceeds the old 1200-char cut
+    ## and showed as "...emcheck#" mid-word). The <pre> blocks scroll (style.css) so a long log
+    ## never blows out the page.
     caption = (
         "<h3>%s %s</h3>"
         "<p>exit %s</p>"
-        "<pre>%s</pre><pre>%s</pre>"
+        "<pre class=\"steplog\">%s</pre><pre class=\"steplog\">%s</pre>"
     ) % (
         esc(step["name"]), status_chip(status_cls), esc(step.get("exit")),
-        esc(_tail(step.get("stdout_tail", ""))), esc(_tail(step.get("stderr_tail", ""))),
+        esc(step.get("stdout_tail", "") or ""), esc(step.get("stderr_tail", "") or ""),
     )
     if not shots:
         ## Text-only step: NO image slot, never a broken-image blank.
@@ -717,13 +722,6 @@ def _bucket_status_class(bucket):
         compare.BUCKET_NEW: site.STATUS_NEW,
         compare.BUCKET_UNKNOWN: site.STATUS_UNKNOWN,
     }.get(bucket, site.STATUS_UNKNOWN)
-
-
-def _tail(text, limit=1200):
-    text = text or ""
-    if len(text) > limit:
-        return "..." + text[-limit:]
-    return text
 
 
 def resolve_source_date_epoch(arg_value):
