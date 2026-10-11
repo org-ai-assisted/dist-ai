@@ -117,6 +117,38 @@ class TestSecureBootIsolatedScenarios(ScenarioTestBase):
         r = self._run_efi_present(0)
         self.assertIn('>Yes<', r.joined())
 
+    ## -- firmware boot-lane evidence line (verbose) -----------------------
+    ## The explicit "Firmware" status line must report the three lanes so a
+    ## test-result page (and the harness firmware-evidence probe) can prove
+    ## which lane the guest actually booted.
+    def test_firmware_lane_bios_when_not_efi(self) -> None:
+        r = run_check_scenario_isolated(
+            self.check(FILE), 'check_secure_boot',
+            env_setup='verbose=1',
+            stubs='check_secure_boot_enabled() { return 0; }\n'
+                  + DKMS_STUB + MOKUTIL_STUB,
+            hide_dirs=['/sys/firmware'])
+        self.assertIn('>BIOS<', r.joined())
+        self.assertNotIn('>UEFI<', r.joined())
+        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+
+    def test_firmware_lane_uefi_secureboot_when_enabled(self) -> None:
+        r = self._run_efi_present(0)
+        self.assertIn('>UEFI+SecureBoot<', r.joined())
+        self.assertNotIn('>BIOS<', r.joined())
+
+    def test_firmware_lane_uefi_when_sb_disabled(self) -> None:
+        r = self._run_efi_present(1)
+        self.assertIn('>UEFI<', r.joined())
+        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+        self.assertNotIn('>BIOS<', r.joined())
+
+    def test_firmware_lane_uefi_when_sb_unknown(self) -> None:
+        ## SB state unknown -> cannot claim +SecureBoot; report plain UEFI.
+        r = self._run_efi_present(2, sbe_stdout='mokutil exploded')
+        self.assertIn('>UEFI<', r.joined())
+        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+
 
 if __name__ == '__main__':
     unittest.main()
