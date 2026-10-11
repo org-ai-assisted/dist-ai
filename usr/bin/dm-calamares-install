@@ -150,6 +150,18 @@ on_exit() {
    exit "${rc}"
 }
 
+## Clear transient desktop notifications in the LIVE session before a milestone frame.
+## The live desktop raises expected-but-racy notify-send passive popups that otherwise land
+## nondeterministically in the shot and push the golden-screenshot diff past tolerance. Killing
+## the LXQt notification daemon destroys its popup surfaces at once (it is D-Bus-activated, so it
+## respawns clean for any later notification); the shot's own settle lets the compositor repaint
+## without them. Best-effort in the 'user' session over guestcontrol (a GA-less installed disk,
+## e.g. the first-boot milestone, simply no-ops) and SHORT-bounded so a guestcontrol hiccup can
+## never stall or fail a passing install.
+quiesce_notifications() {
+   gc_run user 'pkill --exact lxqt-notificationd >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+}
+
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
 ## (the install "full story"). NN orders the sequence on the results page; <name> becomes the
 ## milestone caption (results-publish derives it from the filename). Best-effort: a capture
@@ -157,6 +169,9 @@ on_exit() {
 snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
+   quiesce_notifications
+   ## Settle: let the compositor repaint the cleared surfaces before the frame.
+   sleep 1
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
