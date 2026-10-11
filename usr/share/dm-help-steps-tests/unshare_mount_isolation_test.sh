@@ -68,12 +68,14 @@ case "${real_wrapper}" in
       fail "UNSHARE_PID_NS lacks --mount: ${real_wrapper}"
       ;;
 esac
+## slave OR private both block ns->host propagation (the anti-pin property); slave is
+## preferred (host unmounts still reach the ns). shared/unchanged would NOT isolate.
 case "${real_wrapper}" in
-   *'--propagation private'*)
-      pass 'UNSHARE_PID_NS sets private mount propagation'
+   *'--propagation slave'*|*'--propagation private'*)
+      pass 'UNSHARE_PID_NS sets non-shared mount propagation (slave/private)'
       ;;
    *)
-      fail "UNSHARE_PID_NS lacks --propagation private: ${real_wrapper}"
+      fail "UNSHARE_PID_NS lacks --propagation slave/private: ${real_wrapper}"
       ;;
 esac
 
