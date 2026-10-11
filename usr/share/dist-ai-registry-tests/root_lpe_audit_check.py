@@ -274,6 +274,25 @@ def main(argv):
         "python comment inside a multi-line decorator does not waive a header sink",
         has(findings, "vuln_py_waived", "python-advisory", ".decoparen")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".decoparen")))
+    ## Fail safe (flush-left regression): a comment INTERIOR to a multi-line
+    ## decorator must NOT waive a header sink even when the decorator expression
+    ## begins at or before the statement indent (owner_col <= indent would read as
+    ## leading). The span start anchors to the '@' LINE, so the interior comment is
+    ## never block-above the header.
+    checks.append((
+        "python interior comment in a flush-left decorator does not waive a header sink",
+        has(findings, "vuln_py_waived", "python-advisory", ".decoflush")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".decoflush")))
+    ## Precision canary: a waiver ABOVE the whole multi-line decorator DOES reach
+    ## the header sink -- proving the fix anchors to the '@' line, not a blunt
+    ## refusal of every decorator block-above waiver.
+    checks.append((
+        "python waiver above a multi-line decorator reaches a header sink",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".decoabove",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory",
+                    ".decoabove")))
     checks.append((
         "python trailing waiver on a wrapped case pattern does not reach the guard",
         has(findings, "vuln_py_waived", "python-advisory", ".casetrail")
