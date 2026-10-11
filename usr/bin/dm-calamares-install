@@ -137,14 +137,23 @@ on_exit() {
          ## VM with live NAT would break the leak lanes' one-networked-VM exclusivity.
          ## Inspection uses guestcontrol (host channel), not the network.
          ## Fail safe: unless EVERY configured NIC is unplugged, power off instead.
-         local nic unplugged='true'
+         local nic unplugged='true' nic_rc=0 nic_out=''
          local -a nics=()
-         mapfile -t nics < <(vm_nic_indices "${vm}" 2>/dev/null || true)
-         [ "${#nics[@]}" -gt 0 ] || unplugged='false'
-         for nic in "${nics[@]}"; do
-            "${VBOXMANAGE}" controlvm "${vm}" "setlinkstate${nic}" off >/dev/null 2>&1 \
-               || unplugged='false'
-         done
+         ## Capture discovery's EXIT STATUS, do NOT discard it: showvminfo can emit PARTIAL
+         ## output then die (pipefail makes vm_nic_indices return nonzero). A `|| true` would
+         ## accept the truncated list as complete and leave an undiscovered NIC CONNECTED while
+         ## claiming "unplugged" -- a leak. On any discovery failure, fail CLOSED (power off).
+         nic_out="$(vm_nic_indices "${vm}" 2>/dev/null)" || nic_rc=$?
+         if [ "${nic_rc}" -ne 0 ]; then
+            unplugged='false'
+         else
+            [ -z "${nic_out}" ] || mapfile -t nics <<< "${nic_out}"
+            [ "${#nics[@]}" -gt 0 ] || unplugged='false'
+            for nic in "${nics[@]}"; do
+               "${VBOXMANAGE}" controlvm "${vm}" "setlinkstate${nic}" off >/dev/null 2>&1 \
+                  || unplugged='false'
+            done
+         fi
          if [ "${unplugged}" = 'true' ]; then
             printf '%s\n' "${me}: kept FAILED VM '${vm}' running for inspection, network unplugged (--keep-failed)" >&2
          elif "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1; then
