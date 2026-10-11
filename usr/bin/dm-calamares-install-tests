@@ -1,0 +1,64 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## No-VM unit suite for dm-calamares-install's pure in-guest-check logic: run_check
+## detects completion by polling an exit-code FILE over the guestcontrol exec channel
+## (reliable, sessionless) instead of OCR'ing a screen marker (which flaked). Drives the
+## REAL run_check (sourced from the shipped script) with the guestcontrol boundary stubbed
+## -- no VM, no root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Canonical suite exit (fail > skip > pass): a per-case skip surfaces as
+## SKIP so the orchestrator's --allow-skip governs it, instead of being
+## folded into a passing suite.
+suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
+[ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${suite_exit_helper}"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-calamares-install-tests" ]; then
+   tests_dir="${script_dir}/../share/dm-calamares-install-tests"
+else
+   tests_dir='/usr/share/dm-calamares-install-tests'
+fi
+
+shopt -s nullglob
+failures=0
+skips=0
+env_unmet=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+   ran=$((ran + 1))
+   printf '%s\n' "" "########## $(basename -- "${test_script}") ##########"
+   rc=0
+   bash -- "${test_script}" "$@" || rc=$?
+   if [ "${rc}" -eq 77 ]; then
+      printf '%s\n' "########## SKIPPED: $(basename -- "${test_script}") ##########"
+      skips=$((skips + 1))
+   elif [ "${rc}" -eq 78 ]; then
+      env_unmet=$(( env_unmet + 1 ))
+   elif [ "${rc}" -ne 0 ]; then
+      printf '%s\n' "########## FAILED (${rc}): $(basename -- "${test_script}") ##########"
+      failures=$((failures + 1))
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
+   exit 1
+fi
+printf '%s\n' '' "${ran} dm-calamares-install case(s): ${failures} failed, ${skips} skipped, ${env_unmet} env-unmet"
+suite_exit "${failures}" "${skips}" "${env_unmet}"

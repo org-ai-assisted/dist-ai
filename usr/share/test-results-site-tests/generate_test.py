@@ -44,6 +44,8 @@ except ImportError as exc:
 
 GEN = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "bin", "test-results-site-generate")
 EPOCH = 1_700_000_000
+## A recognizable 64-hex ISO digest the detail page must surface (run M).
+SHA256_M = "0123456789abcdef" * 4
 
 _failures = 0
 
@@ -62,7 +64,8 @@ def write_png(path, color):
     Image.new("RGB", (40, 30), color).save(path, format="PNG")
 
 
-def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_name):
+def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_name,
+                 artifact_sha256=None):
     atts = []
     if shot_name:
         atts = [model.make_attachment("screenshot", "image/png", shot_name)]
@@ -70,10 +73,12 @@ def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_
         name=step_name, status=model.step_status_from_rc(rc), exit_code=rc,
         attachments=atts,
     )
+    provenance = {"artifact_sha256": artifact_sha256} if artifact_sha256 else None
     result = model.build_result(
         run_id=run_id, lane=lane, version=version, builder="dm-release-test",
         mode="calamares-install", origin=model.ORIGIN_DOWNLOADED, rc=rc,
         generated_unix=stop_unix, stop_unix=stop_unix, steps=[step],
+        provenance=provenance,
     )
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "result.json"), "w", encoding="ascii") as handle:
@@ -118,6 +123,25 @@ def build_plane(root, goldens, approvals_path):
     norm.save(golden_a, format="WEBP", lossless=True, quality=100, method=6)
     approvals["approvals"][sid_a] = {
         "golden_sha256": compare.sha256_file(golden_a),
+        "status": "approved", "approver": "tester",
+        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
+    }
+
+    ## I: FAIL (rc 5) with a screenshot that MATCHES an approved golden. The visual
+    ## bucket is MATCH but the step FAILED, so the shot chip must NOT read green -- a
+    ## failed step's screenshot showing a pass chip is a fabricated-green signal (the
+    ## "pass -- within tolerance" shown on a real calamares failure screen). Regression.
+    i_dir = os.path.join(root, "kicksecure-lxqt-fail-18-2-3-6", "20261006T000000Z")
+    write_png(os.path.join(i_dir, "calamares-install.png"), (10, 120, 10))
+    write_result(i_dir, "kicksecure-lxqt-fail-18-2-3-6-1", "kicksecure-lxqt-fail",
+                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
+    sid_i = "kicksecure-lxqt-fail/calamares-install"
+    norm_i = compare.normalize_image(os.path.join(i_dir, "calamares-install.png"), rects)
+    golden_i = os.path.join(goldens, sid_i + ".webp")
+    os.makedirs(os.path.dirname(golden_i), exist_ok=True)
+    norm_i.save(golden_i, format="WEBP", lossless=True, quality=100, method=6)
+    approvals["approvals"][sid_i] = {
+        "golden_sha256": compare.sha256_file(golden_i),
         "status": "approved", "approver": "tester",
         "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
     }
@@ -200,6 +224,13 @@ def build_plane(root, goldens, approvals_path):
         [("welcome", "01-welcome.png"), ("partitions", "02-partitions.png"),
          ("first-boot", "03-first-boot.png")],
     )
+
+    ## M: a PASS run that recorded the ISO sha256 -> the detail page must SHOW it, so the
+    ## exact artifact under test is identifiable. Regression for the provenance-digest surfacing.
+    m_dir = os.path.join(root, "kicksecure-sha-18-2-3-5", "20261006T000000Z")
+    write_result(m_dir, "kicksecure-sha-18-2-3-5-1", "kicksecure-sha", "18.2.3.5",
+                 0, now, "verify-signature", None,
+                 artifact_sha256=SHA256_M)
 
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
@@ -288,6 +319,11 @@ check("overview lists the FAIL run before the PASS run",
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))
 check("green run page has an <img", "<img" in a_page)
+## Provenance digest: run M recorded a sha256, so its detail page shows the exact ISO
+## digest; run A recorded none, so its page must NOT invent a sha256 line.
+m_page = read(os.path.join(out1, "kicksecure-sha-18-2-3-5-1", "index.html"))
+check("run with a recorded sha256 shows it on the detail page", SHA256_M in m_page)
+check("a run with no sha256 shows no sha256 line", "sha256 <code" not in a_page)
 ## Per-run detail pages are ephemeral -> noindex (kept out of the sitemap); the
 ## overview is the stable landing page and stays indexable.
 check("run detail page is noindex", 'name="robots" content="noindex"' in a_page)
@@ -303,6 +339,17 @@ check("text-only run page is still green", "st-pass" in e_page)
 ## approved golden path works end to end.
 check("green run page is not flagged new/changed",
       "st-new" not in a_page and "st-changed" not in a_page)
+
+## I: a FAILED run whose screenshot visually MATCHES its golden must NOT render a green
+## pass chip on the shot -- a failed step's screenshot reading "pass" is a fabricated
+## green (status classes appear only as chip classes; style.css is external). Canary:
+## before the fix, the MATCH bucket mapped straight to a st-pass chip regardless of the
+## step's functional FAIL.
+i_page = read(os.path.join(out1, "kicksecure-lxqt-fail-18-2-3-6-1", "index.html"))
+check("failed run with a matching shot still renders an <img", "<img" in i_page)
+check("failed run page is st-fail", "st-fail" in i_page)
+check("failed run page has NO green pass chip (shot not green on a failed step)",
+      "st-pass" not in i_page)
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).

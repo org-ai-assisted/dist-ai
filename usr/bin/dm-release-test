@@ -826,6 +826,14 @@ rt_publish_result() {
       pub_stderr=( --step-stderr-file "${rt_check_log}" )
    fi
    rt_check_log=""
+   ## The ISO sha256 (set by the lane via rt_artifact_sha256) identifies the EXACT artifact
+   ## under test -- without it a downloaded run's result.json digest is null and the exact ISO
+   ## is unidentifiable. Consumed once, like rt_check_log; empty on a pre-ISO failure.
+   local -a pub_sha=()
+   if [ -n "${rt_artifact_sha256:-}" ]; then
+      pub_sha=( --provenance-artifact-sha256 "${rt_artifact_sha256}" )
+   fi
+   rt_artifact_sha256=""
    ## Firmware is part of the run identity for the Calamares INSTALL lane only: a BIOS
    ## install lays down a BIOS-boot partition and an EFI one an ESP, a legitimately
    ## different screenshot sequence + golden set, and the overview must not collapse a
@@ -846,7 +854,7 @@ rt_publish_result() {
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
-      "${pub_expect[@]}" "${pub_stderr[@]}")" \
+      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
@@ -947,6 +955,12 @@ rt_lane_kicksecure() {
    ## file = a pass or a pre-check failure -> no tail).
    rt_check_log=""
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
+   ## Record the ISO sha256 so the run is identifiable to the exact artifact (built OR
+   ## downloaded). The staged built ISO and the downloaded ISO both land in "${iso}".
+   rt_artifact_sha256=""
+   if [ -n "${iso:-}" ] && [ -f "${iso}" ]; then
+      rt_artifact_sha256="$(sha256sum -- "${iso}" | { read -r h _ ; printf '%s' "${h}" ; })" || rt_artifact_sha256=""
+   fi
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
    sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" "${check_log}" 2>/dev/null || true
    ## The per-run staged ISO dir (rt_staged_dir) is reaped by rt_eph_cleanup on exit.

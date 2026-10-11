@@ -340,26 +340,55 @@ open_terminal() {
    die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
 }
 
-## Run one release-critical check in-guest via the terminal and classify by an
-## OCR marker. 0 PASS / 1 FAIL. Marker design (learned the hard way):
-##  - ALL LETTERS, no digit: tesseract flakily misreads digits in the terminal font
-##    (a '5' reads as 'S'), so a per-number marker like DMCHKPASS5 never matches.
-##  - built from a shell var (DM${M}...) so the typed command ECHO does not itself
-##    contain the literal marker -- else a poll matches before the command even runs.
-##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
+## Surface a failed check's OWN in-guest output (otherwise lost on power-off): a plain file
+## read over guestcontrol, to stderr + the check log so a failure is diagnosable without a
+## re-run. Best-effort (a GA-less guest has no exec channel). Shared by both detect paths.
+run_check_report_failure() {
+   local num="$1" session="$2" out
+   out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
+   [ -n "${out}" ] || return 0
+   printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
+   if [ -n "${check_log}" ]; then
+      printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:" "${out}" > "${check_log}"
+   fi
+}
+
+## Run one release-critical check in-guest via the terminal and classify by its EXIT CODE.
+## 0 PASS / 1 FAIL. Completion is detected PRIMARILY by polling an exit-code FILE over the
+## guestcontrol exec channel -- deterministic, no OCR (tesseract flaked on the on-screen
+## marker, timing a completed check out as "did not complete"). The LXQt Calamares-installed
+## disk ships Guest Additions, so gc_run works here (confirmed live). It FALLS BACK to an OCR
+## screen marker when the guestcontrol channel is unavailable (a GA-less image), so the gate
+## never depends on Guest Additions. Marker design (learned the hard way): ALL LETTERS, no
+## digit (tesseract misreads digits); built from a shell var so the typed command's own echo
+## does not self-match before it runs; `clear` first so a prior check's marker cannot cross
+## match. The '.rc' file is removed FIRST so a stale value from a prior attempt (check 8
+## retries) can never be read as this attempt's verdict.
 run_check() {
-   local num="$1" cmd="$2" timeout="$3" deadline text session out
-   ## Redirect the check command's own output to a persistent file so a failure can
-   ## be audited off the disk afterwards (the login session's scrollback is lost on
-   ## power-off); only the PASS/FAIL marker reaches the screen for the OCR.
-   printf '%s' "clear; M=CHK; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1 && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK; sync" \
+   local num="$1" cmd="$2" timeout="$3" deadline text session rc_raw rc_str
+   session="${RELEASE_CHECK_SESSION[${num}]}"
+   printf '%s' "clear; M=CHK; rm -f /var/tmp/dmcheck-${num}.rc; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1; rc=\$?; echo \${rc} > /var/tmp/dmcheck-${num}.rc; sync; if [ \${rc} -eq 0 ]; then echo DM\${M}PASSMARK; else echo DM\${M}FAILMARK; fi" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
-   ## let `clear` + the command run before the first OCR (so the command echo, which
-   ## holds the literal-var marker, is gone and only real output is on screen).
+   ## let `clear` + the rm + the command start before the first poll (so the command echo,
+   ## which holds the literal-var marker, is gone and the stale .rc is already removed).
    sleep 3
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
+      ## PRIMARY: the exit-code file over guestcontrol. Only a clean integer counts; a missing
+      ## file (check still running) or a torn read is ignored and retried, never a verdict.
+      rc_raw="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.rc 2>/dev/null" 2>/dev/null || true)"
+      read -r rc_str <<< "${rc_raw}" || true
+      if [[ "${rc_str}" =~ ^[0-9]+$ ]]; then
+         if [ "${rc_str}" = "0" ]; then
+            printf '%s\n' "${me}: check ${num} PASS"
+            return 0
+         fi
+         printf '%s\n' "${me}: check ${num} FAIL (rc=${rc_str})"
+         run_check_report_failure "${num}" "${session}"
+         return 1
+      fi
+      ## FALLBACK: OCR the marker, for a GA-less image where gc_run cannot reach the guest.
       gui_scan 2a aa
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ dmchkpassmark ]]; then
@@ -368,18 +397,7 @@ run_check() {
       fi
       if [[ "${text,,}" =~ dmchkfailmark ]]; then
          printf '%s\n' "${me}: check ${num} FAIL"
-         ## Surface the failing check's OWN output (otherwise lost on power-off):
-         ## read the persisted file via guestcontrol -- a plain file read needs no
-         ## user session, so it is reliable (unlike OCR). Best-effort; logged to
-         ## stderr so a check failure is diagnosable without a re-run.
-         session="${RELEASE_CHECK_SESSION[${num}]}"
-         out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
-         if [ -n "${out}" ]; then
-            printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
-            if [ -n "${check_log}" ]; then
-               printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:" "${out}" > "${check_log}"
-            fi
-         fi
+         run_check_report_failure "${num}" "${session}"
          return 1
       fi
       sleep 10

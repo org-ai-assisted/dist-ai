@@ -508,6 +508,9 @@ def run_fields(view):
         "builder": run.get("builder", ""),
         "origin": (prov or {}).get("origin", ""),
         "verdict": run.get("verdict", ""),
+        ## The artifact's sha256 (provenance.artifact.digest.sha256) pins the exact ISO a
+        ## run tested; absent/old results leave it "".
+        "sha256": ((((prov or {}).get("artifact") or {}).get("digest")) or {}).get("sha256") or "",
     }
 
 
@@ -604,6 +607,11 @@ def render_run(view, header, footer, generated_utc):
             '<div class="issue"><h3>No data</h3><p>This run has no readable '
             "result.json.</p></div>"
         )
+    ## The exact ISO sha256 (when recorded): a long unbreakable token, so it wraps and is
+    ## shown on its own line rather than crammed into the summary line.
+    sha_line = (
+        '<p class="line">sha256 <code class="runid">%s</code></p>' % esc(f["sha256"])
+    ) if f["sha256"] else ""
     body = (
         '<section class="hero"><div class="wrap">'
         # .runid: a machine run-id is a long unbreakable token; the default hero h1
@@ -611,13 +619,14 @@ def render_run(view, header, footer, generated_utc):
         '<p class="kicker">%s</p><h1 class="runid">%s</h1>'
         '<p class="line">%s %s &middot; builder %s &middot; provenance %s &middot; '
         "%s &middot; %s</p>"
+        "%s"
         '<p class="sub"><a href="../">back to all results</a></p>'
         "</div></section>"
         '<section class="cat"><div class="wrap"><div class="fg">%s</div></div></section>'
     ) % (
         esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
         esc(f["builder"]), esc(f["origin"]), status_chip(view.status),
-        esc(age_text(view.age)), "".join(blocks),
+        esc(age_text(view.age)), sha_line, "".join(blocks),
     )
     return page(
         "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,
@@ -646,13 +655,21 @@ def render_step(view, step):
     ## NAME is NOT sortable (alphabetical != capture order), so do NOT re-sort here.
     imgs = []
     for shot in shots:
-        imgs.append(_shot_html(view, shot))
+        imgs.append(_shot_html(view, shot, status_cls))
     return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
 
 
-def _shot_html(view, shot):
+def _shot_html(view, shot, step_status_cls=None):
     bucket_cls = _bucket_status_class(shot["bucket"])
-    parts = ["<p>%s" % status_chip(bucket_cls)]
+    ## A screenshot's visual bucket (golden MATCH/changed/...) is a SEPARATE axis from
+    ## the step's functional pass/fail. A visual MATCH is NOT a functional pass, so never
+    ## show a green pass chip on a shot whose step did not functionally pass -- otherwise
+    ## a FAILED step's screenshot reads green (the "pass -- within tolerance" on a failure
+    ## screen). The visual reason is still shown as context below.
+    shot_cls = bucket_cls
+    if step_status_cls is not None and step_status_cls != site.STATUS_PASS:
+        shot_cls = step_status_cls
+    parts = ["<p>%s" % status_chip(shot_cls)]
     ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
     ## story" is readable. A lone unnamed shot carries the placeholder name "screenshot"
     ## (one-shot runs) -- omit the redundant caption there.

@@ -543,6 +543,18 @@ def _deco_hdr(_p=os.chown("/home/user/.decohdr", 0, 0)):
 )
 def _deco_paren(_p=os.chown("/home/user/.decoparen", 0, 0)):
     pass
+@(
+# style-ok: lpe-python-advisory -- INTERIOR flush-left decorator expr; MUST NOT waive the header sink
+_mark
+)
+def _deco_flush(_p=os.chown("/home/user/.decoflush", 0, 0)):
+    pass
+# style-ok: lpe-python-advisory -- ABOVE the whole multi-line decorator; waiver MUST reach the header sink
+@(
+    _mark
+)
+def _deco_above(_p=os.chown("/home/user/.decoabove", 0, 0)):
+    pass
 try:
     pass
 # style-ok: lpe-python-advisory -- waiver above a wrapped except header
