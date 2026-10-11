@@ -107,6 +107,37 @@ REQUIRE = (
 )
 
 
+def _shell_commands(text):
+    """Yield (line_index, command) for every shell command in `text`.
+
+    `line_index` is the 0-based physical line the command STARTS on. Joins a
+    backslash line-continuation into one logical line, strips a trailing
+    '# comment', then splits on the command separators ';' '&&' '||' '|' '&' so
+    a later flag check binds to the single command it governs -- otherwise
+    'true --no-start | dh_installsystemd ...service' or '... --no-canonicalize;
+    mount --bind ...' would satisfy a check whose flag sits in a DIFFERENT
+    command. A simple separator match, NOT a shell parser (no quoting / nesting
+    / heredoc awareness): enough to isolate the dh_installsystemd / mount calls
+    in debian/rules and dispvm, and it fails LOUD (a mangled command stops
+    matching, so the test rejects) rather than greening what it cannot model."""
+    lines = text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        start = i
+        logical = lines[i]
+        while logical.rstrip().endswith("\\") and i + 1 < len(lines):
+            logical = logical.rstrip()[:-1] + " " + lines[i + 1]
+            i += 1
+        code = logical.split("#", 1)[0]
+        for cmd in re.split(r';|&&|\|\||\||&', code):
+            cmd = cmd.strip()
+            if cmd:
+                out.append((start, cmd))
+        i += 1
+    return out
+
+
 def _drive(tmp_path, *, planted=None, cache_planted=None, rw_planted=None,
            victim=None, precreate=()):
     """Drive the real dispvm 'main' with its home_base_dir, tb_binary_cache_dir
@@ -291,25 +322,15 @@ def test_dispvm_service_not_started_by_dpkg():
         pytest.skip(f"debian/rules not found ({rules})")
     with open(rules, encoding="utf-8") as handle:
         text = handle.read()
-    ## Collect every dh_installsystemd invocation that names the dispvm unit,
-    ## each as a SINGLE shell command. Drop any trailing '# comment', then split
-    ## each recipe line on the shell separators ';', '&&', '||' so a flag binds
-    ## to the one command it sits in -- otherwise
-    ## 'dh_installsystemd --no-start other.service; dh_installsystemd tb-updater-dispvm.service'
-    ## (--no-start on the OTHER unit) would satisfy a line-wide token check while
-    ## the dispvm invocation lacks the flag. Each command must START with
-    ## 'dh_installsystemd' (not a comment, not 'echo ...') so a bare mention
-    ## elsewhere cannot stand in for the recipe call.
+    ## Every dh_installsystemd invocation that names the dispvm unit, each as a
+    ## SINGLE shell command (_shell_commands isolates them past line
+    ## continuations, comments and command separators). Each must START with
+    ## 'dh_installsystemd' (not a comment, not a 'true --no-start | ...' command
+    ## whose flag sits elsewhere) so a bare mention cannot stand in for the call.
     def _dispvm_installsystemd_cmds(rules_text):
-        cmds = []
-        for line in rules_text.splitlines():
-            code = line.split("#", 1)[0]
-            for cmd in re.split(r';|&&|\|\|', code):
-                cmd = cmd.strip()
-                if (cmd.startswith("dh_installsystemd")
-                        and "tb-updater-dispvm.service" in cmd):
-                    cmds.append(cmd)
-        return cmds
+        return [cmd for _idx, cmd in _shell_commands(rules_text)
+                if cmd.startswith("dh_installsystemd")
+                and "tb-updater-dispvm.service" in cmd]
 
     dispvm_cmds = _dispvm_installsystemd_cmds(text)
     assert dispvm_cmds, (
@@ -414,17 +435,12 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
         pat = re.compile(
             rf'\bmount\b.*--bind\b.*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
             rf'\s+"\$\{{home_base_dir\}}/\$\{{user_name\}}/{re.escape(target)}"')
-        ## Scan per SHELL COMMAND, not per line: split each line (minus any
-        ## trailing '# comment') on the separators ';', '&&', '||' so the matched
-        ## bind is a single 'mount ... --bind ...' invocation. A line-wide regex
-        ## would let 'mount --no-canonicalize; mount --bind ...' capture the flag
-        ## from the FIRST mount while the bind lacks it.
-        binds = []  # (line_idx, matched command)
-        for i, line in enumerate(lines):
-            code = line.split("#", 1)[0]
-            for cmd in re.split(r';|&&|\|\|', code):
-                if pat.search(cmd):
-                    binds.append((i, cmd))
+        ## Scan per SHELL COMMAND, not per line: _shell_commands isolates each
+        ## 'mount ... --bind ...' invocation past line continuations, comments
+        ## and separators. A line-wide regex would let
+        ## 'mount --no-canonicalize; mount --bind ...' (or '... | mount --bind')
+        ## capture the flag from a DIFFERENT command while the bind lacks it.
+        binds = [(i, cmd) for i, cmd in _shell_commands(text) if pat.search(cmd)]
         bind_idxs = [i for i, _cmd in binds]
         assert bind_idxs, (
             f"the {target} home bind must be a 'mount ... --bind ... "
