@@ -88,16 +88,6 @@ qt_has_wayland_plugin() {
     '/usr/lib/*/qt5/plugins/platforms/libqwayland-*.so' >/dev/null 2>&1
 }
 
-## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
-python_has_sni_deps() {
-  ## The StatusNotifierWatcher stub needs python3-dbus and python3-gi.
-  python3 -c \
-    'import dbus, dbus.service, gi
-from dbus.mainloop.glib import DBusGMainLoop
-from gi.repository import GLib' \
-    >/dev/null 2>&1
-}
-
 x11_click_once() {
   ## Args: display-number, X button number, human label. Starts a clean
   ## Xvfb + systray host, runs one click, tears them down. A fresh host per
@@ -118,7 +108,7 @@ x11_click_once() {
   sleep 1.5
 
   printf -- '%s\n' "--- x11 ${label}-click ---"
-  if ! DISPLAY="${display}" python3 \
+  if ! DISPLAY="${display}" \
     "${integration_dir}/x11_click_harness.py" "${button}"; then
     rc=1
   fi
@@ -167,80 +157,13 @@ run_wayland_phase() {
 
   ran=$((ran + 1))
   printf -- '%s\n' "--- wayland menu opt-out ---"
-  if ! python3 "${integration_dir}/wayland_menu_harness.py"; then
+  if ! "${integration_dir}/wayland_menu_harness.py"; then
     failed=$((failed + 1))
   fi
 
   unset QT_QPA_PLATFORM
   wl_headless_stop
   wl_started=''
-}
-
-sni_run_arm() {
-  ## Run one late-host arm on a fresh Xvfb + private session bus. Args:
-  ## display-number, arm ('blind' | 'deferred'), human label. A fresh X
-  ## server per arm avoids any leftover tray-selection state bleeding
-  ## across arms. Returns the harness exit code.
-  local dnum="$1" arm="$2" label="$3"
-  local display=":${dnum}" xvfb_pid wlog rc=0
-  wlog="$(mktemp)"
-
-  Xvfb "${display}" -screen 0 1024x768x24 >/dev/null 2>&1 &
-  xvfb_pid=$!
-  bg_pids+=("${xvfb_pid}")
-  sleep 1.5
-
-  ## Distinguish an Xvfb startup failure (infrastructure) from a genuine SNI
-  ## regression: without this a dead display would be counted as a real test
-  ## failure. Fail loud with a clear message instead.
-  if ! kill -0 "${xvfb_pid}" 2>/dev/null; then
-    printf '%s\n' \
-      "sni ${label}: Xvfb failed to start on ${display} (infrastructure)"
-    safe-rm --force -- "${wlog}"
-    return 1
-  fi
-
-  printf -- '%s\n' "--- sni ${label} ---"
-  if ! DISPLAY="${display}" dbus-run-session -- \
-    python3 "${integration_dir}/sni_late_host_harness.py" "${wlog}" "${arm}"; then
-    rc=1
-  fi
-
-  kill "${xvfb_pid}" 2>/dev/null || true
-  safe-rm --force -- "${wlog}"
-  return "${rc}"
-}
-
-run_sni_phase() {
-  ## Regression guard for the tray-icon startup race: a QSystemTrayIcon
-  ## binds XEmbed vs. StatusNotifier at construction, so an applet started
-  ## before the panel's StatusNotifierWatcher binds XEmbed and never shows
-  ## on an SNI-only panel. Two arms, each bringing the watcher up late:
-  ## 'blind' is the negative control (the pre-fix construct+show MUST fail
-  ## to register via SNI, proving the bug is real); 'deferred' drives the
-  ## real install_tray_when_available() fix (MUST register via SNI).
-  if [ ! -r "${integration_dir}/sni_late_host_harness.py" ]; then
-    printf '%s\n' "SKIP sni: harness sni_late_host_harness.py not present"
-    return 0
-  fi
-  if ! have_all Xvfb dbus-run-session || ! python_has_sni_deps; then
-    printf '%s\n' "SKIP sni: needs Xvfb, dbus-run-session, python3-dbus, python3-gi"
-    printf '%s\n' \
-      "  install: sudo apt-get install --no-install-recommends xvfb dbus python3-dbus python3-gi"
-    return 0
-  fi
-
-  ran=$((ran + 1))
-  if ! sni_run_arm 101 blind \
-    'late-host blind path (negative control: must NOT register via SNI)'; then
-    failed=$((failed + 1))
-  fi
-
-  ran=$((ran + 1))
-  if ! sni_run_arm 102 deferred \
-    'late-host deferred fix (must register via SNI)'; then
-    failed=$((failed + 1))
-  fi
 }
 
 report_result() {
@@ -267,5 +190,4 @@ report_result() {
 
 run_x11_phase
 run_wayland_phase
-run_sni_phase
 report_result

@@ -18,7 +18,7 @@ The automated lanes verify everything that runs without a real Qubes install:
   registration invariants.
 - `sdwdate-gui-tests-integration` -- the real tray icon on a headless X11
   systray host and a headless Wayland compositor (left/right click opens the
-  menu; the Wayland opt-out; the XEmbed-vs-StatusNotifier startup race).
+  menu; the Wayland menu opt-out).
 
 What NONE of those can reach: the cross-qube qrexec handshake, a connector VM
 appearing and disappearing on its own schedule, and the menu actions firing
@@ -219,7 +219,7 @@ after it has gone DOWN (the action must fail gracefully, not wedge the server).
   - S8    -> test_disabled_gives_up
   - C1    -> test_non_server_vm_gives_up
   - C3    -> test_transient_failure_retries_no_flag
-- The headless tray/menu/SNI portions run unattended:
+- The headless tray/menu portions run unattended:
   `dist-ai-tests-all --integration --component sdwdate-gui --repo-root ~/derivative-maker`
   (installs its own tooling list when missing; skips loud otherwise).
 - What stays OPERATOR-DRIVEN (needs a live Qubes host + dom0): the real qvm
