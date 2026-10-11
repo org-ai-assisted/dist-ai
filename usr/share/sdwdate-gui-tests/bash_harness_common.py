@@ -18,7 +18,6 @@ import os
 import subprocess
 import tempfile
 import textwrap
-import unittest
 from pathlib import Path
 
 
@@ -31,10 +30,9 @@ def locate_script(name: str) -> Path:
     try:
         import sdwdate_gui  # pylint: disable=import-outside-toplevel
     except ModuleNotFoundError as exc:  # pragma: no cover
-        raise unittest.SkipTest(
-            "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-            'or set PYTHONPATH to its dist-packages directory'
-        ) from exc
+        import subject_guard  # pylint: disable=import-outside-toplevel
+
+        subject_guard.skip_if_subject_absent(exc)
     start = Path(sdwdate_gui.__file__).resolve()
     for ancestor in start.parents:
         candidate = ancestor / 'libexec' / 'sdwdate-gui' / name

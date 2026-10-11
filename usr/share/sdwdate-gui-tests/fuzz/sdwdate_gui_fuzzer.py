@@ -80,6 +80,10 @@ def _import_server():
             sdwdate_gui_server,
         )
     except ModuleNotFoundError as exc:
+        if exc.name != "sdwdate_gui":
+            ## A missing dependency/submodule is a broken install, not an absent
+            ## subject -- fail loud rather than exit 2 as "subject not present".
+            raise
         print(
             "sdwdate-gui is not importable; install the 'sdwdate-gui' "
             "package or set PYTHONPATH to its dist-packages directory",

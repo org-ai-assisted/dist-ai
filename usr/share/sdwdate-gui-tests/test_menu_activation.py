@@ -39,10 +39,9 @@ from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 try:
     from sdwdate_gui import sdwdate_gui_server as server
 except ModuleNotFoundError as exc:  # pragma: no cover
-    raise unittest.SkipTest(
-        "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        'or set PYTHONPATH to its dist-packages directory'
-    ) from exc
+    import subject_guard  # pylint: disable=import-outside-toplevel
+
+    subject_guard.skip_if_subject_absent(exc)
 
 
 _APP: QApplication = QApplication.instance() or QApplication(['sdwdate-gui-tests'])
