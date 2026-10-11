@@ -255,6 +255,10 @@ def parse_args(argv):
 
 
 def main(argv):
+    ## The result dir + its screenshots are served by nginx and pulled for the static-site
+    ## regenerate, so they must be world-readable. This runs as root under the eph account's
+    ## (possibly restrictive) umask; force 022 so copy_shot + result.json land 0644, not 0600.
+    os.umask(0o022)
     args = parse_args(argv)
     now = int(time.time())
     generated_unix = args.generated_unix if args.generated_unix is not None else now

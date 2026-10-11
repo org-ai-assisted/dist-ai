@@ -263,6 +263,11 @@ image_test_results_publish() {
    ## Point <name>/latest at this run and hand the whole subtree to nginx.
    ln --symbolic --force --no-dereference -- "${ts}" "${results_root}/${name}/latest"
    chown --recursive -- "${owner}:${owner}" "${results_root}/${name}"
+   ## World-readable: the result dir + its screenshots are served by nginx AND pulled for the
+   ## static-site regenerate. The emitter runs as root under the eph account's (restrictive)
+   ## umask, so a shot could land 0600 -- unreadable to the pulling login user. a+rX forces
+   ## read for all + traverse on dirs, regardless of the inherited umask.
+   chmod --recursive a+rX -- "${results_root}/${name}"
 
    printf '%s\n' "${outdir}"
 }

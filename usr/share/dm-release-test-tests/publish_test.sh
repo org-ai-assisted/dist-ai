@@ -220,6 +220,22 @@ badsha_json="${badsha_out}/result.json"
 check "malformed sha256 dropped (stays null)" "$(grep --quiet '"sha256": null' -- "${badsha_json}" && printf '%s' "true" || printf '%s' "false")"
 check "malformed sha256 value not in json" "$(grep --quiet 'NOT-A-SHA' -- "${badsha_json}" && printf '%s' "false" || printf '%s' "true")"
 
+## World-readable results: published under a RESTRICTIVE umask, the result.json + screenshots
+## must still be world-readable -- nginx serves them and the static-site regenerate pulls them
+## as a non-owner. Canary: the pre-fix publisher did no chmod a+rX and the emitter inherited
+## the umask, so a shot landed 0600 (a failed pull, the real bug).
+wr_shot="${work}/wr-shot.png"
+printf '%s\n' 'PNGDATA' > "${wr_shot}"
+wr_out="$(umask 077; image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-wr-18-2-3-5" "eph-inst-wr" "calamares-install" \
+   0 "${wr_shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure)"
+wr_json="${wr_out}/result.json"
+wr_png="${wr_out}/calamares-install.png"
+check "result.json world-readable under a restrictive umask" "$([ "$(( 0$(stat -c %a "${wr_json}") & 04 ))" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
+check "published screenshot world-readable under a restrictive umask" "$([ "$(( 0$(stat -c %a "${wr_png}") & 04 ))" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
    exit 1
