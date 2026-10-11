@@ -27,9 +27,10 @@ import os
 import unittest
 import unittest.mock as mock
 
+## Offscreen so importing the server (which pulls in PyQt5 widgets) never needs a
+## display. These tests mock the tray self and patch QApplication.quit, so no live
+## QApplication instance is constructed -- unlike the sibling GUI tests, which do.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-
-from PyQt5.QtWidgets import QApplication
 
 try:
     from sdwdate_gui import sdwdate_gui_server as server
@@ -38,11 +39,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover
         "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
         'or set PYTHONPATH to its dist-packages directory'
     ) from exc
-
-
-_APP: QApplication = QApplication.instance() or QApplication(
-    ['sdwdate-gui-tests']
-)
 
 
 class TestExitOnUserRequest(unittest.TestCase):
