@@ -231,6 +231,46 @@ class TestWaitForConnectEndpoint(unittest.TestCase):
         self.assertFalse(thread.is_alive(), 'did not wake on the real socket')
         self.assertEqual(result.get('reply'), 'y')
 
+    def test_flap_socket_reappears_in_own_dir_wakes(self) -> None:
+        """
+        G1: the endpoint symlink is already present but DANGLING when the
+        responder starts; the server socket then (re)appears in its OWN
+        directory, which never changes the endpoint symlink entry. The
+        responder must wake via a watch on the socket's directory -- watching
+        only the endpoint dir sees no event for this flap. A regression (no
+        socket-dir watch) never wakes and FAILS via the join timeout.
+        """
+        ## Dangling symlink: endpoint -> server_sock, socket not yet bound.
+        self.endpoint.symlink_to(self.server_sock)
+        self.assertFalse(self.server_sock.exists())
+        result: dict[str, str] = {}
+
+        def _wait() -> None:
+            with patched_config():
+                result['reply'] = cc.wait_for_connect_endpoint(
+                    str(self.endpoint), str(self.watch_dir)
+                )
+
+        thread = threading.Thread(target=_wait, daemon=True)
+        thread.start()
+        time.sleep(0.3)
+        self.assertTrue(
+            thread.is_alive(), 'responder returned on a dangling symlink'
+        )
+        ## Bind the socket in ITS dir -- the endpoint symlink entry is untouched,
+        ## so watch_dir (/run/qubes-rpc) sees no event; only the socket-dir watch
+        ## catches this.
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(self.server_sock))
+        self.addCleanup(srv.close)
+        thread.join(timeout=10)
+        self.assertFalse(
+            thread.is_alive(),
+            'responder did not wake when the socket reappeared in its own dir '
+            '(the flap race: watching only the endpoint dir misses it)',
+        )
+        self.assertEqual(result.get('reply'), 'y')
+
     def test_unwatchable_dir_fails_loud(self) -> None:
         """
         A missing watch_dir must raise, not silently hang: add_watch is quiet
