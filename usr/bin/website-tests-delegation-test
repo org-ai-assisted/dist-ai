@@ -183,6 +183,37 @@ SBSTUB
    ## Restore the plain exit-0 stub (keep the fixture state clean for any future scenario).
    printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
    chmod +x -- "${stub_dir}/sandbox"
+
+   ## Scenario 6: the Playwright auto-provision invokes the SEPARATE `provision` tool as
+   ## `provision --target <tgt> playwright` -- NOT `sandbox provision playwright` (not a valid
+   ## sandbox subcommand; the broken form silently failed the gate's auto-provision). Make the
+   ## venv probe fail so the driver enters the provision branch, stub `provision` to record its
+   ## argv, and assert the real invocation. Fails on the pre-fix `sandbox provision playwright`
+   ## (the `provision` tool is never called, so the capture stays empty).
+   prov_cap="${stub_dir}/provision-argv"
+   safe-rm --force -- "${prov_cap}"
+   ## `sandbox exec -- test -x <venv>` must return non-zero so the driver provisions; keep it
+   ## failing on the re-check too (driver then dies, but provision was already recorded).
+   printf '%s\n' '#!/bin/bash' 'exit 1' > "${stub_dir}/sandbox"
+   cat > "${stub_dir}/provision" <<'PROVSTUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${PROVISION_ARGV_CAPTURE}"
+exit 0
+PROVSTUB
+   chmod +x -- "${stub_dir}/sandbox" "${stub_dir}/provision"
+   env PATH="${stub_dir}:${PATH}" \
+       QUBE_CTL_TARGET='temp-claude' \
+       PROVISION_ARGV_CAPTURE="${prov_cap}" \
+       "${wts}" "${roots[0]}" >/dev/null 2>&1 || true
+   if [ -f "${prov_cap}" ] && [ "$(head -n 1 -- "${prov_cap}")" = '--target temp-claude playwright' ]; then
+      pass 'auto-provision invokes provision --target <tgt> playwright (separate tool, not a sandbox subcommand)'
+   else
+      fail "auto-provision used the wrong invocation (got '$(head -n 1 -- "${prov_cap}" 2>/dev/null)', want '--target temp-claude playwright')"
+   fi
+   ## Restore clean fixtures.
+   printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
+   chmod +x -- "${stub_dir}/sandbox"
+   safe-rm --force -- "${stub_dir}/provision"
 else
    fail 'website-tests-sandbox not found for the target-default check'
 fi
