@@ -37,6 +37,13 @@ import os
 import sys
 import unittest
 
+## Source-tree test runs import the SUBJECT package straight from a checkout;
+## without this they scatter .pyc into __pycache__ dirs INSIDE that checkout,
+## which later trips the Unicode/cleanliness gates (e.g. dm-tidy). Set before
+## discover() imports any test/subject module: the safe default for every suite
+## driven through this runner, so no caller must remember -B / PYTHONDONTWRITEBYTECODE.
+sys.dont_write_bytecode = True
+
 
 class _CountingResult(unittest.TextTestResult):
    ## unittest exposes failures/errors/skipped/expectedFailures/unexpectedSuccesses

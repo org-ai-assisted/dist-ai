@@ -903,6 +903,22 @@ dist_build_one_parse_cmd ()
                 export build_dry_run;
                 shift 2
             ;;
+            --simulate-upload)
+                if [ "${2:-}" = "false" ]; then
+                    dist_build_simulate_upload="false";
+                    true "${cyan}INFO: ${under}not${eunder} --simulate-upload${reset}";
+                else
+                    if [ "${2:-}" = "true" ]; then
+                        dist_build_simulate_upload="true";
+                        true "${cyan}INFO: ${under}--simulate-upload${eunder}: upload path runs, transfer is a no-op.${reset}";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --simulate-upload are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                export dist_build_simulate_upload;
+                shift 2
+            ;;
             --unsupported-os)
                 if [ "${2:-}" = "true" ]; then
                     build_unsupported_os="true";
@@ -1318,6 +1334,7 @@ Advanced Options:
     (Note: amd64 also works with most Intel CPUs.)
   --debug [true|false]            : Does not disable verbose/debug (xtrace) during help-steps pre, variables and parse-cmd.
   --dry-run [true|false]          : Does not actually build real images. Just an empty text file. Useful for debugging dm-prepare-release script.
+  --simulate-upload [true|false]  : Build real images and run the FULL upload path (file-list build, target derivation, dm-prepare-release) but transfer nothing (rsync becomes a no-op). For credential-less test builds. Distinct from --dry-run, which builds dummy images.
   --unsupported-os [true|false]   : Skip the build-host operating system / codename sanity check. NOT for release builds; for dev / AI / CI smoke tests on non-Debian hosts only.
 
 For VMs only:
