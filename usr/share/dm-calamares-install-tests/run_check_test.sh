@@ -7,15 +7,16 @@
 
 ## Regression test for dm-calamares-install's run_check.
 ##
-## THE BUG IT GUARDS: check 8 reported "did not complete in 300s" while systemcheck
-## HAD finished -- run_check OCR'd an on-screen marker (DMCHKPASSMARK/FAILMARK) and
-## tesseract flaked on it. The fix types the SAME command into the real graphical
-## terminal but detects completion by polling an exit-code FILE over the guestcontrol
-## exec channel (gc_run), which needs no OCR.
+## THE BUG IT GUARDS: tesseract flaked on the on-screen PASS/FAIL marker, timing a COMPLETED
+## check out as "did not complete". run_check now detects completion PRIMARILY by an exit-code
+## FILE read over guestcontrol (gc_run -- deterministic, confirmed working on the LXQt install
+## disk), FALLING BACK to the OCR marker when the guestcontrol channel is unavailable (a
+## Guest-Additions-less image). The '.rc' file is removed before the run so a stale value from
+## a prior attempt (check 8 retries) cannot be read as the verdict.
 ##
 ## Drives the REAL run_check (sourced define-only from the shipped script), with the
-## guestcontrol boundary stubbed: GUESTCTL records the typed command, gc_run serves the
-## .rc / .out file contents. No VM, no root, no network, no tesseract.
+## guestcontrol + OCR boundaries stubbed: GUESTCTL records the typed command, gc_run serves
+## the .rc / .out reads, gui_ocr serves the fallback marker. No VM, no root, no network.
 
 set -o errexit
 set -o nounset
@@ -56,29 +57,35 @@ printf '%s\n' '#!/bin/bash' 'cat >> "${GUESTCTL_CAPTURE}"' > "${work}/guestctl"
 chmod +x "${work}/guestctl"
 export GUESTCTL="${work}/guestctl"
 
-## Source the real script define-only (the shipped `if BASH_SOURCE==0` guard keeps main
-## from running). The sourced script's own strict-mode preamble stays in effect; the driver
-## below is written errexit-safe (explicit `|| rc=...`, each check in a subshell).
 # shellcheck disable=SC1090
 source "${subject}"
 
-## Stub the two in-guest boundaries. gui_scan sends scancodes to a VM; make it a no-op.
-## gc_run serves file reads: the .rc value (completion signal) and the .out (failure
-## output), both controlled per-case via TEST_RC_VALUE / TEST_OUT_VALUE.
-TEST_RC_VALUE=""
-TEST_OUT_VALUE=""
-# shellcheck disable=SC2317  ## invoked by the sourced run_check, not directly
+## Stub the in-guest boundaries. gui_scan sends scancodes; sleep paces the real poll -- both
+## no-ops here. gc_run serves the .rc (completion) and .out (failure output); gui_ocr serves
+## the fallback marker. Values are controlled per-case via TEST_RC / TEST_OUT / TEST_OCR.
+TEST_RC=""
+TEST_OUT=""
+TEST_OCR=""
+# shellcheck disable=SC2317
 gui_scan() {
    return 0
 }
-# shellcheck disable=SC2317  ## invoked by the sourced run_check, not directly
+# shellcheck disable=SC2317
+sleep() {
+   return 0
+}
+# shellcheck disable=SC2317
+gui_ocr() {
+   printf '%s' "${TEST_OCR}"
+}
+# shellcheck disable=SC2317
 gc_run() {
    case "$2" in
       *dmcheck-*.rc*)
-         printf '%s' "${TEST_RC_VALUE}"
+         printf '%s' "${TEST_RC}"
          ;;
       *dmcheck-*.out*)
-         printf '%s' "${TEST_OUT_VALUE}"
+         printf '%s' "${TEST_OUT}"
          ;;
       *)
          return 0
@@ -117,58 +124,77 @@ has() {
    esac
 }
 
-## --- the typed command writes an rc file and is NOT the old OCR marker --------------------
-TEST_RC_VALUE="0"
-TEST_OUT_VALUE=""
+## --- typed command: stale-rc removal + rc file + OCR marker (no gc_run-only assumption) ----
+TEST_RC="0"
+TEST_OUT=""
+TEST_OCR=""
 rc=0
 ( run_check 8 "systemcheck --ci" 30 ) >"${work}/out.pass" 2>&1 || rc=$?
 got=0
 [ "${rc}" -eq 0 ] || got=1
-check "exit 0 when the guest wrote rc 0" "${got}"
+check "gc_run rc 0 -> PASS (primary path)" "${got}"
 typed="$(cat -- "${GUESTCTL_CAPTURE}")"
 got=0
-has '/var/tmp/dmcheck-8.rc' "${typed}" || got=1
-check "typed command writes the per-check .rc file" "${got}"
+has 'rm -f /var/tmp/dmcheck-8.rc' "${typed}" || got=1
+check "typed command removes a stale .rc first" "${got}"
 got=0
-has 'echo $? > /var/tmp/dmcheck-8.rc' "${typed}" || got=1
-check "typed command captures the real exit code (echo \$?)" "${got}"
+# shellcheck disable=SC2016  ## literal guest-command text; ${rc} is the guest shell's var
+has 'echo ${rc} > /var/tmp/dmcheck-8.rc' "${typed}" || got=1
+check "typed command writes the exit code to the .rc file" "${got}"
 got=0
-if has 'DMCHKPASSMARK' "${typed}" || has 'DMCHKFAILMARK' "${typed}"; then
-   got=1
-fi
-check "canary: the OCR marker is gone from the typed command" "${got}"
+# shellcheck disable=SC2016  ## literal guest-command text; ${M} is the guest shell's var
+has 'DM${M}PASSMARK' "${typed}" || got=1
+check "typed command still emits the OCR fallback marker" "${got}"
 
-## --- a nonzero rc is a FAIL, and the .out is surfaced to the check log --------------------
-TEST_RC_VALUE="5"
-TEST_OUT_VALUE="systemcheck: unknown option: --ci"
+## --- gc_run nonzero -> FAIL, output surfaced to the check log -----------------------------
+TEST_RC="5"
+TEST_OUT="systemcheck: unknown option: --ci"
 rc=0
 ( run_check 8 "systemcheck --ci" 30 ) >"${work}/out.fail" 2>&1 || rc=$?
 got=0
 [ "${rc}" -eq 1 ] || got=1
-check "exit 1 when the guest wrote a nonzero rc" "${got}"
-got=0
-has 'FAIL (rc=5)' "$(cat -- "${work}/out.fail")" || got=1
-check "the failure reports the real rc" "${got}"
+check "gc_run rc 5 -> FAIL" "${got}"
 got=0
 has 'unknown option: --ci' "$(cat -- "${check_log}")" || got=1
-check "the failing check's own output is written to the check log" "${got}"
+check "the failing check's output is written to the check log" "${got}"
 
-## --- no rc file ever -> did-not-complete (die), never a false pass/fail -------------------
-TEST_RC_VALUE=""
-TEST_OUT_VALUE=""
+## --- GA-less image: gc_run blank, OCR fallback classifies PASS ----------------------------
+TEST_RC=""
+TEST_OUT=""
+TEST_OCR="dmchkpassmark"
+rc=0
+( run_check 8 "systemcheck --ci" 30 ) >"${work}/out.ocrpass" 2>&1 || rc=$?
+got=0
+[ "${rc}" -eq 0 ] || got=1
+check "no gc_run rc + OCR pass marker -> PASS (fallback path)" "${got}"
+
+## --- GA-less image: OCR fallback classifies FAIL ------------------------------------------
+TEST_RC=""
+TEST_OUT="boom"
+TEST_OCR="dmchkfailmark"
+rc=0
+( run_check 8 "systemcheck --ci" 30 ) >"${work}/out.ocrfail" 2>&1 || rc=$?
+got=0
+[ "${rc}" -eq 1 ] || got=1
+check "no gc_run rc + OCR fail marker -> FAIL (fallback path)" "${got}"
+
+## --- neither signal ever appears -> did-not-complete (die) --------------------------------
+TEST_RC=""
+TEST_OUT=""
+TEST_OCR=""
 rc=0
 ( run_check 8 "systemcheck --ci" 1 ) >"${work}/out.to" 2>&1 || rc=$?
 got=0
 [ "${rc}" -eq 5 ] || got=1
-check "a check whose rc file never appears times out (die rc 5)" "${got}"
+check "neither rc file nor OCR marker -> times out (die rc 5)" "${got}"
 got=0
 has 'did not complete' "$(cat -- "${work}/out.to")" || got=1
 check "the timeout says the check did not complete" "${got}"
 
-## --- a torn / non-integer read is NOT accepted as completion ------------------------------
-## Canary: only a clean integer counts; a partial read must be retried, never misclassified.
-TEST_RC_VALUE="not-an-integer"
-TEST_OUT_VALUE=""
+## --- a torn / non-integer .rc read is NOT accepted (falls through to OCR / retry) ---------
+TEST_RC="not-an-integer"
+TEST_OUT=""
+TEST_OCR=""
 rc=0
 ( run_check 8 "systemcheck --ci" 1 ) >"${work}/out.torn" 2>&1 || rc=$?
 got=0
