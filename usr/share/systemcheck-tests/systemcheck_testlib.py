@@ -137,11 +137,11 @@ def _source_block(sources) -> str:
 ## A `[prefix_]main "$@"` dispatch runs the program when the file is executed --
 ## and, absent a source-guard, ALSO when it is merely sourced. Matched per line.
 _MAIN_DISPATCH_RE = re.compile(r'(?:[A-Za-z_][A-Za-z0-9_]*_)?main\b[^\n]*"\$@"')
-## The one canonical source-guard (the `sourceable` skill's form, used verbatim by
-## systemcheck / log-checker / updatecheck): the dispatch runs only when executed,
-## never when sourced for analysis. Substring for a same-line guard; the line-regex
-## matches the guard's own `if ...; then` line (NOT a comment echoing the text).
-_SOURCE_GUARD = 'was_executed "${BASH_SOURCE[0]}"'
+## The one canonical source-guard line (the `sourceable` skill's form, used verbatim
+## by systemcheck / log-checker / updatecheck): the dispatch runs only when executed,
+## never when sourced. The regex matches the guard's own `if ...; then` line -- NOT a
+## comment echoing the text, so a guard mention in a comment (even a trailing one on
+## the dispatch line itself) cannot vouch for a dispatch (that was a fail-open).
 _SOURCE_GUARD_RE = re.compile(r'^\s*if was_executed "\$\{BASH_SOURCE\[0\]\}"; then\s*$')
 
 
@@ -157,19 +157,19 @@ def _assert_source_able(path: str) -> None:
     sourcing runs the whole tool UNSANDBOXED on the host (live network checks, file
     writes, cleanup).
 
-    A dispatch is accepted ONLY when it sits DIRECTLY inside the canonical guard:
-    the dispatch line carries the guard itself, or its preceding code line (blanks
-    / comments skipped) is the `if was_executed "${BASH_SOURCE[0]}"; then` open. A
-    bare substring of the guard ANYWHERE in the file (a comment, a docstring) does
-    NOT count -- that would let an unguarded dispatch through (fail-open). Fail
-    CLOSED: an un-verifiable dispatch is refused, never sourced-and-run.
+    A dispatch is accepted ONLY when its preceding code line (blanks / comments
+    skipped) is the canonical `if was_executed "${BASH_SOURCE[0]}"; then` open. The
+    compact one-line form `if was_executed ...; then main "$@"; fi` is accepted too
+    -- it begins with `if`, so it is not a bare dispatch line and never reaches this
+    scan. A guard substring ANYWHERE ELSE (a comment, a docstring, a trailing comment
+    on the dispatch line) does NOT count -- that would let an unguarded dispatch
+    through (fail-open). Fail CLOSED: an un-verifiable dispatch is refused, never
+    sourced-and-run.
     """
     lines = read(path).split('\n')
     for idx, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('#') or not _MAIN_DISPATCH_RE.match(stripped):
-            continue
-        if _SOURCE_GUARD in line:
             continue
         prev = idx - 1
         while prev >= 0 and (not lines[prev].strip()
