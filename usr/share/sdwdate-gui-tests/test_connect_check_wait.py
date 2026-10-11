@@ -24,6 +24,7 @@ matching the existing config tests.
 
 # pylint: disable=invalid-name
 
+import socket
 import threading
 import time
 import unittest
@@ -70,10 +71,29 @@ class TestWaitForConnectEndpoint(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.watch_dir = Path(self._tmp.name)
         self.endpoint = self.watch_dir / 'sdwdate-gui.Connect'
+        ## The real endpoint is a symlink to the server's UNIX socket, so the
+        ## socket target lives OUTSIDE watch_dir -- otherwise binding it would
+        ## itself fire an event in watch_dir and race the symlink create.
+        self._sock_dir = TemporaryDirectory()
+        self.addCleanup(self._sock_dir.cleanup)
+        self.server_sock = Path(self._sock_dir.name) / 'server.sock'
+
+    def _make_endpoint_ready(self) -> None:
+        """
+        Bind a real AF_UNIX socket and symlink the endpoint at it, exactly as
+        sdwdate-gui-qubes-connect does. The symlink create is the inotify event
+        the responder waits for, and os.stat(endpoint) then resolves to a
+        socket so _endpoint_ready is true.
+        """
+        if not self.server_sock.exists():
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(str(self.server_sock))
+            self.addCleanup(srv.close)
+        self.endpoint.symlink_to(self.server_sock)
 
     def test_fast_path_already_present(self) -> None:
         """Endpoint present before the call -> 'y' immediately (arm-then-check)."""
-        self.endpoint.write_text('', encoding='utf-8')
+        self._make_endpoint_ready()
         with patched_config():
             self.assertEqual(
                 cc.wait_for_connect_endpoint(
@@ -100,7 +120,7 @@ class TestWaitForConnectEndpoint(unittest.TestCase):
         self.assertFalse(
             self.endpoint.exists(), 'endpoint created too early for event path'
         )
-        self.endpoint.write_text('', encoding='utf-8')
+        self._make_endpoint_ready()
         thread.join(timeout=10)
         self.assertFalse(
             thread.is_alive(),
@@ -135,7 +155,7 @@ class TestWaitForConnectEndpoint(unittest.TestCase):
         self.assertEqual(
             result.get('reply'), None, 'resolved on an unrelated event'
         )
-        self.endpoint.write_text('', encoding='utf-8')
+        self._make_endpoint_ready()
         thread.join(timeout=10)
         self.assertFalse(
             thread.is_alive(),
@@ -178,6 +198,69 @@ class TestWaitForConnectEndpoint(unittest.TestCase):
             'returning q (it must not wait for an endpoint that never appears)',
         )
         self.assertEqual(result.get('reply'), 'q')
+
+    def test_non_socket_endpoint_is_not_ready(self) -> None:
+        """
+        A stray REGULAR FILE at the endpoint path is NOT ready: the responder
+        keeps waiting (readiness is 'resolves to a socket', not mere existence),
+        then returns 'y' once a real socket symlink replaces it (G3). A
+        regression (os.path.exists) returns 'y' on the file and the thread dies
+        early, failing the still-blocked assertion.
+        """
+        self.endpoint.write_text('', encoding='utf-8')
+        result: dict[str, str] = {}
+
+        def _wait() -> None:
+            with patched_config():
+                result['reply'] = cc.wait_for_connect_endpoint(
+                    str(self.endpoint), str(self.watch_dir)
+                )
+
+        thread = threading.Thread(target=_wait, daemon=True)
+        thread.start()
+        time.sleep(0.3)
+        self.assertTrue(
+            thread.is_alive(),
+            'responder returned ready on a non-socket regular file',
+        )
+        self.assertIsNone(result.get('reply'))
+        ## Replace the regular file with the real socket symlink.
+        self.endpoint.unlink()
+        self._make_endpoint_ready()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive(), 'did not wake on the real socket')
+        self.assertEqual(result.get('reply'), 'y')
+
+    def test_unwatchable_dir_fails_loud(self) -> None:
+        """
+        A missing watch_dir must raise, not silently hang: add_watch is quiet
+        by default and returns a negative descriptor for an unwatchable dir
+        (G2). Run in a thread so a regression (the old silent never-wake) FAILS
+        via the join timeout instead of hanging the suite.
+        """
+        missing_dir = self.watch_dir / 'does-not-exist'
+        box: dict[str, object] = {}
+
+        def _wait() -> None:
+            with patched_config():
+                try:
+                    box['reply'] = cc.wait_for_connect_endpoint(
+                        str(missing_dir / 'sdwdate-gui.Connect'),
+                        str(missing_dir),
+                    )
+                except OSError as exc:
+                    box['error'] = exc
+
+        thread = threading.Thread(target=_wait, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+        self.assertFalse(
+            thread.is_alive(),
+            'wait_for_connect_endpoint hung on an unwatchable directory '
+            'instead of raising',
+        )
+        self.assertIsInstance(box.get('error'), OSError)
+        self.assertNotIn('reply', box)
 
 
 class TestMain(unittest.TestCase):
