@@ -14,41 +14,20 @@ the dom0 journal is flooded at one line per client VM per second, forever.
 Fix: capped exponential backoff (1, 2, 4, ... up to a cap), implemented with
 the helper-scripts light_sleep function.
 
-This test runs the real script with stubbed dependencies and asserts the sleep
-durations grow geometrically and saturate at the cap -- failing on the old
-fixed-interval code (which never calls light_sleep at all).
+The proxy script is source-able, so these tests source the real script and
+call its functions directly -- no copy, no path rewriting. Stubs for
+light_sleep and qrexec-client-vm are plain shell functions defined in the
+harness before the source, so the real backoff logic runs without real sleeps
+or real qrexec calls.
 """
 
 # pylint: disable=invalid-name
 
-import os
-import shutil
-import stat
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-
-def _locate_script(name: str) -> Path:
-    try:
-        import sdwdate_gui  # pylint: disable=import-outside-toplevel
-    except ModuleNotFoundError as exc:  # pragma: no cover
-        raise unittest.SkipTest(
-            "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-            'or set PYTHONPATH to its dist-packages directory'
-        ) from exc
-    start = Path(sdwdate_gui.__file__).resolve()
-    for ancestor in start.parents:
-        candidate = ancestor / 'libexec' / 'sdwdate-gui' / name
-        if candidate.is_file():
-            return candidate
-    raise unittest.SkipTest(f"could not locate the '{name}' script")
-
-
-def _write_exec(path: Path, text: str) -> None:
-    path.write_text(text, encoding='utf-8')
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+from bash_harness_common import locate_script, run_sourced
 
 
 class TestQubesProxyBackoff(unittest.TestCase):
@@ -59,95 +38,52 @@ class TestQubesProxyBackoff(unittest.TestCase):
     connectcheck_n = 8
     expected_delays = ['1', '2', '4', '8', '16', '32', '64', '64', '64']
 
+    def setUp(self) -> None:
+        self.script = locate_script('sdwdate-gui-qubes-proxy')
+
     def test_backoff_is_capped_exponential(self) -> None:
-        script = _locate_script('sdwdate-gui-qubes-proxy')
+        """poll_connect_check sleeps 1,2,4,...,cap then saturates at the cap."""
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            bin_dir = tmp / 'bin'
-            stub_dir = tmp / 'stubs'
-            bin_dir.mkdir()
-            stub_dir.mkdir()
             light_sleep_log = tmp / 'light_sleep.log'
             qrexec_count = tmp / 'qrexec.count'
-
-            ## light_sleep stub: record each requested duration, never sleep.
-            _write_exec(
-                stub_dir / 'light_sleep.bsh',
-                'light_sleep() { printf \'%s\\n\' "$1" '
-                '>> "${LIGHT_SLEEP_LOG}"; }\n',
-            )
-            ## systemd-notify stub: make "${systemd_notify[@]}" --ready a no-op.
-            _write_exec(
-                stub_dir / 'systemd-notify.bsh',
-                'systemd_notify=(true)\n',
-            )
-            ## config-read stub: the proxy only reads the 'gateway' key.
-            _write_exec(
-                stub_dir / 'sdwdate-gui-config-read',
-                "#!/bin/bash\nprintf '%s\\n' 'sys-test-gw'\n",
-            )
-            ## qrexec-client-vm stub: reply 'n' connectcheck_n times then 'y';
-            ## Connect just succeeds.
-            _write_exec(
-                bin_dir / 'qrexec-client-vm',
-                '#!/bin/bash\n'
-                'service="$2"\n'
-                'if [ "${service}" = "sdwdate-gui.ConnectCheck" ]; then\n'
-                '  count="$(cat "${QREXEC_COUNT_FILE}" 2>/dev/null || echo 0)"\n'
-                '  count="$((count + 1))"\n'
-                '  printf \'%s\\n\' "${count}" > "${QREXEC_COUNT_FILE}"\n'
-                '  if [ "${count}" -le "${CONNECTCHECK_N}" ]; then\n'
-                '    printf \'%s\\n\' n\n'
-                '  else\n'
-                '    printf \'%s\\n\' y\n'
-                '  fi\n'
-                'fi\n'
-                'exit 0\n',
-            )
-            ## sleep stub: keep a regression on the OLD fixed-`sleep 1` code
-            ## fast (it would otherwise really sleep and still fail the assert).
-            _write_exec(bin_dir / 'sleep', '#!/bin/bash\nexit 0\n')
-
-            ## Materialize a runnable copy with the absolute dependency paths
-            ## redirected to the stubs. Production bytes are unchanged; only the
-            ## well-known literal paths are rewritten for the harness.
-            text = script.read_text(encoding='utf-8')
-            text = text.replace(
-                '/usr/libexec/helper-scripts/light_sleep.bsh',
-                str(stub_dir / 'light_sleep.bsh'),
-            )
-            text = text.replace(
-                '/usr/libexec/helper-scripts/systemd-notify.bsh',
-                str(stub_dir / 'systemd-notify.bsh'),
-            )
-            text = text.replace(
-                '/usr/libexec/sdwdate-gui/sdwdate-gui-config-read',
-                str(stub_dir / 'sdwdate-gui-config-read'),
-            )
-            run_script = tmp / 'sdwdate-gui-qubes-proxy'
-            _write_exec(run_script, text)
-
-            env = dict(os.environ)
-            env['PATH'] = f"{bin_dir}:{env.get('PATH', '')}"
-            env['LIGHT_SLEEP_LOG'] = str(light_sleep_log)
-            env['QREXEC_COUNT_FILE'] = str(qrexec_count)
-            env['CONNECTCHECK_N'] = str(self.connectcheck_n)
-
-            result = subprocess.run(
-                ['/bin/bash', str(run_script)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
+            body = """
+            light_sleep() { printf '%s\\n' "$1" >> "${LIGHT_SLEEP_LOG}"; }
+            qrexec-client-vm() {
+              if [ "$2" = 'sdwdate-gui.ConnectCheck' ]; then
+                count="$(cat "${QREXEC_COUNT_FILE}" 2>/dev/null || printf '%s' 0)"
+                count="$((count + 1))"
+                printf '%s\\n' "${count}" > "${QREXEC_COUNT_FILE}"
+                if [ "${count}" -le "${CONNECTCHECK_N}" ]; then
+                  printf '%s\\n' n
+                else
+                  printf '%s\\n' y
+                fi
+              fi
+            }
+            source "${SDWDATE_GUI_SCRIPT}"
+            poll_connect_check 'sys-test-gw'
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'LIGHT_SLEEP_LOG': str(light_sleep_log),
+                    'QREXEC_COUNT_FILE': str(qrexec_count),
+                    'CONNECTCHECK_N': str(self.connectcheck_n),
+                },
             )
             self.assertEqual(
                 result.returncode,
                 0,
-                f'proxy exited non-zero: {result.returncode}\n'
+                f'poll_connect_check exited non-zero: {result.returncode}\n'
                 f'stdout={result.stdout!r}\nstderr={result.stderr!r}',
             )
-
+            self.assertEqual(
+                result.stdout.strip(),
+                'y',
+                'poll_connect_check did not return the final ready reply',
+            )
             self.assertTrue(
                 light_sleep_log.is_file(),
                 'proxy never called light_sleep -- it is still using a fixed '
@@ -157,8 +93,79 @@ class TestQubesProxyBackoff(unittest.TestCase):
             self.assertEqual(
                 delays,
                 self.expected_delays,
-                'proxy backoff is not capped-exponential; got delays '
-                f'{delays}',
+                f'proxy backoff is not capped-exponential; got delays {delays}',
+            )
+
+    def test_compute_next_backoff_doubles_then_saturates(self) -> None:
+        """The pure backoff function doubles up to the cap, then holds."""
+        body = """
+        source "${SDWDATE_GUI_SCRIPT}"
+        cur=1
+        out=''
+        for _ in $(seq 1 9); do
+          out="${out}${cur} "
+          cur="$(compute_next_backoff "${cur}" 64)"
+        done
+        printf '%s\\n' "${out}"
+        """
+        result = run_sourced(self.script, body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.split(),
+            ['1', '2', '4', '8', '16', '32', '64', '64', '64'],
+        )
+
+    def test_finalize_drops_flag_when_not_ready(self) -> None:
+        """A non-'y' outcome drops the gateway-disabled flag and exits 0."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            run_dir = tmp / 'run-sdwdate-gui'
+            body = """
+            qrexec-client-vm() { printf '%s\\n' 'should not be called'; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            finalize_connect 'sys-test-gw' 'q'
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {'sdwdate_gui_run_dir': str(run_dir)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(
+                (run_dir / 'qubes-gateway-server-disabled').is_file(),
+                'finalize_connect did not drop the gateway-disabled flag',
+            )
+
+    def test_finalize_calls_connect_when_ready(self) -> None:
+        """A 'y' outcome hands the socket to sdwdate-gui.Connect."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            connect_log = tmp / 'connect.log'
+            run_dir = tmp / 'run-sdwdate-gui'
+            body = """
+            qrexec-client-vm() {
+              printf '%s %s\\n' "$2" "$1" >> "${CONNECT_LOG}"
+            }
+            source "${SDWDATE_GUI_SCRIPT}"
+            finalize_connect 'sys-test-gw' 'y'
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'CONNECT_LOG': str(connect_log),
+                    'sdwdate_gui_run_dir': str(run_dir),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(
+                (run_dir / 'qubes-gateway-server-disabled').is_file(),
+                'finalize_connect wrongly dropped the disabled flag on ready',
+            )
+            self.assertEqual(
+                connect_log.read_text(encoding='utf-8').strip(),
+                'sdwdate-gui.Connect sys-test-gw',
+                'finalize_connect did not invoke sdwdate-gui.Connect',
             )
 
 
