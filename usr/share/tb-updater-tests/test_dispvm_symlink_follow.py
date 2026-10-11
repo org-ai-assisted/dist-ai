@@ -40,14 +40,17 @@ script's path globals at a scratch tree:
     skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
     covering a manual restart (incl. retry of a failed first run) that
     --no-start does not. Old code/unit had neither -> FAILS.
-  * Home binds + symlink reject: the user-home bind mounts are raw
-    'mount --bind' onto /home/<user>/.tb and .cache/tb (there is no way to stop
-    mount dereferencing a symlinked mount point). Their safety rests on the
-    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds -- refusing a
-    pre-planted symlink at any mount point -- plus the boot-only run-once
-    execution above. This test asserts that structural model (binds are raw
-    'mount --bind'; the reject precedes them); the behavioral refusal itself is
-    driven by test_planted_symlink_is_refused.
+  * Home binds + symlink reject: the user-home bind mounts are
+    'mount --no-canonicalize --bind' onto /home/<user>/.tb and .cache/tb.
+    --no-canonicalize makes mount REFUSE a symlinked target (mountpoint) at the
+    mount layer regardless of timing; it does NOT guard the bind SOURCE. So
+    safety rests on (a) --no-canonicalize on every home bind, (b) the
+    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds and refuses a
+    pre-planted symlink at any bind SOURCE or TARGET path, and (c) the boot-only
+    run-once execution above. This test asserts that structural model
+    (each home bind carries --no-canonicalize; the reject precedes them); the
+    behavioral refusal is driven by test_planted_symlink_is_refused and
+    test_planted_symlink_in_cache_source_is_refused.
 """
 
 import os
@@ -102,11 +105,13 @@ REQUIRE = (
 )
 
 
-def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
+def _drive(tmp_path, *, planted=None, cache_planted=None, victim=None, precreate=()):
     """Drive the real dispvm 'main' with its home_base_dir and
-    tb_binary_cache_dir globals pointed into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
-    as a symlink to `victim` inside the fake home first; each name in `precreate`
-    is created as a real directory under the fake home first.
+    tb_binary_cache_dir globals pointed into tmp_path. When `planted` is given
+    (e.g. '.tb'), pre-plant it as a symlink to `victim` inside the fake home
+    first; when `cache_planted` is given, pre-plant it as a symlink to `victim`
+    inside the fake bind SOURCE (the tb-binary cache) first. Each name in
+    `precreate` is created as a real directory under the fake home first.
 
     Returns (CompletedProcess, home_dir, rec_lines)."""
     home = tmp_path / "home"
@@ -122,6 +127,10 @@ def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
         link = home / "user" / planted
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(victim)
+    if cache_planted is not None:
+        clink = cache_src / cache_planted
+        clink.parent.mkdir(parents=True, exist_ok=True)
+        clink.symlink_to(victim)
 
     env = {"TB_TEST_HOME": str(home), "TB_TEST_CACHE": str(cache_src),
            "REC": str(rec)}
@@ -160,6 +169,31 @@ def test_planted_symlink_is_refused(tmp_path, planted):
     victim_str = str(victim)
     assert not any(victim_str in line for line in rec_lines), (
         f"root operation followed the symlink into {victim_str}: {rec_lines}"
+    )
+
+
+@pytest.mark.parametrize("cache_planted", [".tb", ".cache", ".cache/tb"])
+def test_planted_symlink_in_cache_source_is_refused(tmp_path, cache_planted):
+    """A pre-planted symlink at a bind SOURCE under the tb-binary cache (.tb,
+    .cache, .cache/tb) must also abort the run. 'chown --recursive' makes the
+    cache user-owned and a DispVM cache is a DVM-Template clone, so the source
+    side is user-plantable too; mount --no-canonicalize does NOT guard the bind
+    source, so the '[ -L ]' reject must cover the cache paths. Old code's reject
+    loop checked only the /home targets -> FAILS."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    proc, _home, rec_lines = _drive(tmp_path, cache_planted=cache_planted,
+                                    victim=victim)
+
+    assert proc.returncode != 0, (
+        f"run did not refuse symlinked cache source at {cache_planted!r}; "
+        f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}\n"
+        f"rec={rec_lines}"
+    )
+    victim_str = str(victim)
+    assert not any(victim_str in line for line in rec_lines), (
+        f"root operation followed the source symlink into {victim_str}: "
+        f"{rec_lines}"
     )
 
 
@@ -271,15 +305,18 @@ def test_dispvm_unit_skips_on_sentinel():
     )
 
 
-def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
-    """The user-home bind mounts are raw 'mount --bind' onto /home/<user>/.tb and
-    .cache/tb. There is no way to stop mount dereferencing a symlinked mount
-    point, so their safety rests on (a) the '[ -L ] ... exit 1' reject loop that
-    runs BEFORE the binds and refuses a pre-planted symlink at any mount point,
-    and (b) the service running only at early boot (asserted by the run-once and
-    --no-start tests). This asserts that structural model: each home bind is a
-    raw 'mount --bind' and the symlink reject precedes every one of them. The
-    behavioral refusal itself is driven by test_planted_symlink_is_refused."""
+def test_home_binds_nocanonicalize_and_symlink_reject():
+    """The user-home bind mounts are 'mount --no-canonicalize --bind' onto
+    /home/<user>/.tb and .cache/tb. --no-canonicalize makes mount refuse a
+    symlinked target at the mount layer regardless of timing (it does NOT guard
+    the bind source), so their safety rests on (a) --no-canonicalize on every
+    home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the binds
+    and refuses a pre-planted symlink at any bind source or target, and (c) the
+    service running only at early boot (asserted by the run-once and --no-start
+    tests). This asserts that structural model: each home bind carries
+    --no-canonicalize and the symlink reject precedes every one of them. The
+    behavioral refusal is driven by test_planted_symlink_is_refused and
+    test_planted_symlink_in_cache_source_is_refused."""
     with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
     lines = text.splitlines()
@@ -307,17 +344,25 @@ def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
         f"the symlink reject must 'exit' nonzero on a planted symlink: {DISPVM}"
     )
 
-    ## Each persistent-cache bind is a raw 'mount --bind' onto the home mount
-    ## point, and must appear AFTER the symlink reject.
+    ## Each persistent-cache bind is a 'mount ... --bind' onto the home mount
+    ## point, must carry --no-canonicalize, and must appear AFTER the symlink
+    ## reject.
     for target in (".tb", ".cache/tb"):
         pat = re.compile(
-            rf'mount --bind\b[^\n]*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
+            rf'mount\b[^\n]*--bind\b[^\n]*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
             rf'\s+"\$\{{home_base_dir\}}/\$\{{user_name\}}/{re.escape(target)}"')
         bind_idxs = [i for i, line in enumerate(lines) if pat.search(line)]
         assert bind_idxs, (
-            f"the {target} home bind must be a raw 'mount --bind ... "
+            f"the {target} home bind must be a 'mount ... --bind ... "
             f"${{home_base_dir}}/${{user_name}}/{target}': {DISPVM}"
         )
+        ## The mount-layer symlink-refusal guard: every home bind must pass
+        ## --no-canonicalize (removing it reopens a symlinked-target follow).
+        for i in bind_idxs:
+            assert "--no-canonicalize" in lines[i], (
+                f"the {target} home bind must carry --no-canonicalize so mount "
+                f"refuses a symlinked target: {lines[i]!r} ({DISPVM})"
+            )
         assert reject_idx < min(bind_idxs), (
             f"the symlink reject (line {reject_idx + 1}) must precede the "
             f"{target} bind (line {min(bind_idxs) + 1}) so a symlinked mount "
