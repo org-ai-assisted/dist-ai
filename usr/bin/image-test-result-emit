@@ -262,6 +262,11 @@ def parse_args(argv):
     parser.add_argument("--provenance-source-commit", default=None)
     parser.add_argument("--provenance-artifact-sha256", default=None)
     parser.add_argument("--provenance-built-utc", default=None)
+    ## environment evidence: the firmware lane the guest ACTUALLY booted (proof, not the label)
+    parser.add_argument("--env-firmware-declared", default=None)
+    parser.add_argument("--env-firmware-detected", default=None)
+    parser.add_argument("--env-firmware-evidence", default=None)
+    parser.add_argument("--env-firmware-match", default=None, choices=["true", "false"])
     return parser.parse_args(argv)
 
 
@@ -351,6 +356,15 @@ def main(argv):
         attachments=attachments,
     )
 
+    environment = None
+    if args.env_firmware_detected or args.env_firmware_evidence:
+        environment = {"firmware": {
+            "declared": args.env_firmware_declared or "",
+            "detected": args.env_firmware_detected or "",
+            "evidence": args.env_firmware_evidence or "",
+            "match": (args.env_firmware_match == "true") if args.env_firmware_match is not None else None,
+        }}
+
     try:
         result = model.build_result(
             run_id=args.run_id,
@@ -373,6 +387,7 @@ def main(argv):
                 "artifact_sha256": args.provenance_artifact_sha256,
                 "built_utc": args.provenance_built_utc,
             },
+            environment=environment,
         )
     except model.ModelError as exc:
         raise SystemExit("image-test-result-emit: %s" % exc)

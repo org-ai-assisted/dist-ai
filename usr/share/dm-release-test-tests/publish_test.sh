@@ -272,6 +272,22 @@ check "oversized stderr: honest truncation marker present" "$(grep --quiet 'earl
 check "oversized stderr: tail kept (END)" "$(grep --quiet 'HUGEEND_NEEDLE' -- "${huge_json}" && printf '%s' "true" || printf '%s' "false")"
 check "oversized stderr: head dropped at the ceiling (START absent)" "$(grep --quiet 'HUGESTART_NEEDLE' -- "${huge_json}" && printf '%s' "false" || printf '%s' "true")"
 
+## Firmware-lane evidence flows through to result.json's environment block (the booted-lane
+## proof the detail page renders). Canary: the pre-#17 publisher dropped these flags.
+fw_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-fw-18-2-3-6" "eph-inst-fw" "calamares-install" \
+   0 "${shot}" \
+   --lane kicksecure-lxqt-efi-secureboot --version 18.2.3.6 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure \
+   --env-firmware-declared efi-secureboot --env-firmware-detected 'UEFI+SecureBoot' \
+   --env-firmware-evidence 'FWPROBE: /sys/firmware/efi present; mokutil --sb-state -> SecureBoot enabled' \
+   --env-firmware-match true)"
+fw_json="${fw_out}/result.json"
+check "firmware evidence: declared recorded" "$(grep --quiet '"declared": "efi-secureboot"' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
+check "firmware evidence: detected recorded" "$(grep --quiet '"detected": "UEFI+SecureBoot"' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
+check "firmware evidence: probe command+output recorded" "$(grep --quiet 'FWPROBE' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
+check "firmware evidence: match true recorded" "$(grep --quiet '"match": true' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
    exit 1

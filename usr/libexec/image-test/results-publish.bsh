@@ -81,6 +81,7 @@ image_test_results_publish() {
 
    local lane version builder origin step_name start_unix stop_unix step_stderr_file
    local provenance_artifact_sha256
+   local env_firmware_declared env_firmware_detected env_firmware_evidence env_firmware_match
    local -a expect=()
    lane=""
    version=""
@@ -91,6 +92,10 @@ image_test_results_publish() {
    stop_unix=""
    step_stderr_file=""
    provenance_artifact_sha256=""
+   env_firmware_declared=""
+   env_firmware_detected=""
+   env_firmware_evidence=""
+   env_firmware_match=""
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --lane)
@@ -131,6 +136,22 @@ image_test_results_publish() {
             ;;
          --provenance-artifact-sha256)
             provenance_artifact_sha256="$2"
+            shift 2
+            ;;
+         --env-firmware-declared)
+            env_firmware_declared="$2"
+            shift 2
+            ;;
+         --env-firmware-detected)
+            env_firmware_detected="$2"
+            shift 2
+            ;;
+         --env-firmware-evidence)
+            env_firmware_evidence="$2"
+            shift 2
+            ;;
+         --env-firmware-match)
+            env_firmware_match="$2"
             shift 2
             ;;
          *)
@@ -238,6 +259,16 @@ image_test_results_publish() {
          emit_args+=( --provenance-artifact-sha256 "${provenance_artifact_sha256}" )
       else
          printf '%s\n' "image_test_results_publish: ignoring malformed artifact sha256: ${provenance_artifact_sha256}" >&2
+      fi
+   fi
+   ## Firmware-lane evidence: proof of the boot lane the guest actually ran, forwarded to the
+   ## emitter's environment block. Empty = not captured (the field then stays null).
+   if [ -n "${env_firmware_detected}" ] || [ -n "${env_firmware_evidence}" ]; then
+      emit_args+=( --env-firmware-declared "${env_firmware_declared}" \
+         --env-firmware-detected "${env_firmware_detected}" \
+         --env-firmware-evidence "${env_firmware_evidence}" )
+      if [ "${env_firmware_match}" = "true" ] || [ "${env_firmware_match}" = "false" ]; then
+         emit_args+=( --env-firmware-match "${env_firmware_match}" )
       fi
    fi
    local item
