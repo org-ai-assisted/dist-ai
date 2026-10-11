@@ -63,6 +63,23 @@ def is_green(status):
     return status == STATUS_GREEN
 
 
+def _firmware_mismatch(result):
+    """True only when firmware EVIDENCE was captured and proves a wrong-lane boot:
+    environment.firmware.match is exactly False. Absent / None / uncaptured match does
+    NOT block (old runs stay unaffected). Type-defensive: a non-dict environment or
+    firmware (which validate now refuses -> NO-DATA, but this is also called directly in
+    unit tests) is simply "no mismatch evidence", never a crash."""
+    if not isinstance(result, dict):
+        return False
+    env = result.get("environment")
+    if not isinstance(env, dict):
+        return False
+    firmware = env.get("firmware")
+    if not isinstance(firmware, dict):
+        return False
+    return firmware.get("match") is False
+
+
 def run_age_seconds(result, now_unix):
     """Seconds since the run's stop time (its freshness anchor). None when there is
     no valid stop time -- which itself blocks green (handled by run_cell_status)."""
@@ -103,7 +120,14 @@ def run_cell_status(result, shot_buckets, now_unix, stale_seconds=DEFAULT_STALE_
         ## An unknown/absent verdict is never green.
         return STATUS_INCOMPLETE, age
 
-    ## Functional PASS. A shot compare error (UNKNOWN) is the next most serious.
+    ## Functional PASS. Firmware EVIDENCE overrides the verdict: if the guest provably
+    ## booted a lane other than the one declared (environment.firmware.match is False), the
+    ## run tested the wrong firmware and is never green, regardless of verdict/screenshots.
+    ## A finished run with a clean verdict but a mismatched boot is a false green otherwise.
+    if _firmware_mismatch(result):
+        return STATUS_FAIL, age
+
+    ## A shot compare error (UNKNOWN) is the next most serious.
     bucket_set = set(shot_buckets)
     if compare.BUCKET_UNKNOWN in bucket_set:
         return STATUS_UNKNOWN, age

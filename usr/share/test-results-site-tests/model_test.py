@@ -174,6 +174,14 @@ check_raises("validate refuses a non-int run.stop.unix",
 ## default) crashes it, so validate must refuse it (-> NO-DATA).
 check_raises("validate refuses a non-dict provenance",
              lambda: _tamper(lambda r: r.__setitem__("provenance", "built")))
+## environment + environment.firmware are read as result.get("environment") then
+## (env or {}).get("firmware").get(...) by run_fields OUTSIDE a try; a truthy non-dict at
+## either level is NOT rescued by that `or {}` and crashes the render (AttributeError),
+## halting the whole site. validate must refuse both (-> NO-DATA for that run only).
+check_raises("validate refuses a non-dict environment",
+             lambda: _tamper(lambda r: r.__setitem__("environment", "uefi")))
+check_raises("validate refuses a non-dict environment.firmware",
+             lambda: _tamper(lambda r: r.__setitem__("environment", {"firmware": "uefi"})))
 ## The step tails feed _tail() -> len() OUTSIDE a try; a truthy non-str crashes it.
 check_raises("validate refuses a non-str step.stdout_tail",
              lambda: _tamper(lambda r: r["steps"][0].__setitem__("stdout_tail", 5)))
@@ -190,6 +198,21 @@ _null_ok["provenance"] = None
 _null_ok["steps"][0]["stdout_tail"] = None
 _null_ok["steps"][0]["stderr_tail"] = None
 check("validate accepts null provenance and null tails", model.validate(_null_ok) is True)
+## A well-formed environment.firmware object (and a null / absent one) stays valid -- do not
+## over-reject the real firmware-evidence shape the emitter writes.
+_fw_ok = model.build_result(
+    run_id="r", lane="l", version="v", builder="b", mode="m",
+    origin=model.ORIGIN_BUILT, rc=0, generated_unix=1, stop_unix=1, steps=[_passed_step()],
+    environment={"firmware": {"declared": "efi", "detected": "UEFI", "match": True}},
+)
+check("validate accepts a well-formed environment.firmware object",
+      model.validate(_fw_ok) is True)
+_fw_null = model.build_result(
+    run_id="r", lane="l", version="v", builder="b", mode="m",
+    origin=model.ORIGIN_BUILT, rc=0, generated_unix=1, stop_unix=1, steps=[_passed_step()],
+    environment={"firmware": None},
+)
+check("validate accepts a null environment.firmware", model.validate(_fw_null) is True)
 check_raises(
     "build_result refuses a bad origin",
     lambda: model.build_result(

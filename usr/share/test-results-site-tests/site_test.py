@@ -49,15 +49,22 @@ NOW = 1_700_000_000
 WINDOW = site.DEFAULT_STALE_SECONDS
 
 
-def make_result(rc=0, stop_unix=NOW, stage=model.STAGE_FINISHED):
+def make_result(rc=0, stop_unix=NOW, stage=model.STAGE_FINISHED, environment=None):
     step = model.make_step(name="r4", status=model.step_status_from_rc(rc), exit_code=rc)
     return model.build_result(
         run_id="kicksecure-lxqt-18-2-3-5-1",
         lane="kicksecure-lxqt", version="18.2.3.5", builder="dm-release-test",
         mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
         rc=rc, generated_unix=NOW, stop_unix=stop_unix, stage=stage,
-        steps=[step],
+        steps=[step], environment=environment,
     )
+
+
+def _firmware_env(match):
+    return {"firmware": {
+        "declared": "efi-secureboot", "detected": "BIOS" if match is False else "UEFI+SecureBoot",
+        "evidence": "probe output", "match": match,
+    }}
 
 
 def status_of(result, shots, now=NOW, window=WINDOW):
@@ -96,6 +103,29 @@ check("future age is negative", age_future < 0)
 check("PASS + NEW shot is new", status_of(make_result(0), [compare.BUCKET_NEW]) == site.STATUS_NEW)
 check("PASS + CHANGED shot is changed", status_of(make_result(0), [compare.BUCKET_CHANGED]) == site.STATUS_CHANGED)
 check("PASS + UNKNOWN shot is unknown", status_of(make_result(0), [compare.BUCKET_UNKNOWN]) == site.STATUS_UNKNOWN)
+
+## Firmware EVIDENCE overrides a clean verdict: a finished fresh PASS whose captured
+## environment.firmware.match is False provably booted the WRONG lane and must NOT be green
+## (fail), even with every screenshot a MATCH -- otherwise a wrong-firmware boot is a false
+## green in both the overview cell and the detail header. match True / None / absent (old or
+## uncaptured runs) must NOT be forced to fail.
+fw_mismatch = make_result(rc=0, environment=_firmware_env(False))
+check("PASS + firmware mismatch is fail (not green)",
+      status_of(fw_mismatch, [compare.BUCKET_MATCH]) == site.STATUS_FAIL
+      and not site.is_green(status_of(fw_mismatch, [compare.BUCKET_MATCH])))
+check("PASS + firmware match stays green",
+      status_of(make_result(rc=0, environment=_firmware_env(True)), [compare.BUCKET_MATCH])
+      == site.STATUS_PASS)
+check("PASS + firmware match None stays green (uncaptured)",
+      status_of(make_result(rc=0, environment=_firmware_env(None)), [compare.BUCKET_MATCH])
+      == site.STATUS_PASS)
+check("PASS + no environment stays green (old run)",
+      status_of(make_result(rc=0, environment=None), [compare.BUCKET_MATCH]) == site.STATUS_PASS)
+## _firmware_mismatch is type-defensive: a non-dict environment/firmware is "no evidence".
+check("firmware mismatch false for non-dict environment",
+      not site._firmware_mismatch({"environment": "oops"}))
+check("firmware mismatch false for non-dict firmware",
+      not site._firmware_mismatch({"environment": {"firmware": "oops"}}))
 
 ## None of the non-green statuses is green (exhaustive guard).
 for st in (

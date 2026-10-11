@@ -319,6 +319,13 @@ def validate(result):
     environment = result.get("environment")
     if environment is not None and not isinstance(environment, dict):
         raise ModelError("environment must be null or an object: %r" % (environment,))
+    ## environment.firmware is read as (env or {}).get("firmware") then .get(...) by the
+    ## generator (run_fields) OUTSIDE a try; a truthy non-dict (e.g. a string) is NOT
+    ## rescued by that `or {}` and raises AttributeError there, halting the whole site.
+    ## Must be null or an object, so a malformed one lands as NO-DATA, not a crash.
+    firmware = environment.get("firmware") if environment is not None else None
+    if firmware is not None and not isinstance(firmware, dict):
+        raise ModelError("environment.firmware must be null or an object: %r" % (firmware,))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")
