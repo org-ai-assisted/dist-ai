@@ -169,6 +169,13 @@ def main(argv):
         "trailing waiver on the line above a shell sink does not suppress it",
         has(findings, "vuln-waived", "symlink-follow", ".inputrc")
         and not has(suppressed, "vuln-waived", "symlink-follow", ".inputrc")))
+    ## Same boundary, but the line above is a real COMMAND (not an assignment):
+    ## an inline waiver there is still trailing, so it must NOT waive the sink
+    ## below -- only a STANDALONE comment above a statement waives it.
+    checks.append((
+        "inline waiver on a COMMAND line above a shell sink does not suppress it",
+        has(findings, "vuln-waived", "symlink-follow", ".echowaiver")
+        and not has(suppressed, "vuln-waived", "symlink-follow", ".echowaiver")))
     ## A comment that is a '\\' line-continuation of the statement ABOVE it is not
     ## a standalone waiver, so it must not suppress the sink below.
     checks.append((

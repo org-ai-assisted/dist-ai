@@ -450,6 +450,8 @@ echo "reminder: #style-ok: lpe-symlink-follow -- smuggled via a quoted string" #
 cp --dereference /etc/skel/.bash_history "${home}/.bash_history"
 home_var=1 ## style-ok: lpe-symlink-follow -- TRAILING waiver for home_var only, must NOT reach the cp below
 cp --dereference /etc/skel/.inputrc "${home}/.inputrc"
+echo "harmless" ## style-ok: lpe-symlink-follow -- TRAILING waiver on a real COMMAND, must NOT reach the cp below
+cp --dereference /etc/skel/.echowaiver "${home}/.echowaiver"
 echo continued-echo \
 ## style-ok: lpe-symlink-follow -- comment is a CONTINUATION of the echo above (a '\' line), NOT a standalone waiver
 cp --dereference /etc/skel/.dircolors "${home}/.dircolors"
