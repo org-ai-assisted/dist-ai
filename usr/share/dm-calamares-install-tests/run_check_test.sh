@@ -157,6 +157,14 @@ check "gc_run rc 5 -> FAIL" "${got}"
 got=0
 has 'unknown option: --ci' "$(cat -- "${check_log}")" || got=1
 check "the failing check's output is written to the check log" "${got}"
+## The results page must NAME the command + its exit code (not just an opaque install rc),
+## so the check log records both. The command is the exact string run_check was given.
+got=0
+has 'command: systemcheck --ci' "$(cat -- "${check_log}")" || got=1
+check "the check log records the exact command run (gc_run path)" "${got}"
+got=0
+has 'exit: 5' "$(cat -- "${check_log}")" || got=1
+check "the check log records the check's own exit code (gc_run path)" "${got}"
 
 ## --- GA-less image: gc_run blank, OCR fallback classifies PASS ----------------------------
 TEST_RC=""
@@ -177,6 +185,14 @@ rc=0
 got=0
 [ "${rc}" -eq 1 ] || got=1
 check "no gc_run rc + OCR fail marker -> FAIL (fallback path)" "${got}"
+## The OCR fallback has no exit-code file, so the check log names the command but marks the
+## exit as OCR-unknown (never a fabricated 0/1).
+got=0
+has 'command: systemcheck --ci' "$(cat -- "${check_log}")" || got=1
+check "the check log records the command on the OCR fallback path" "${got}"
+got=0
+has 'exit: unknown (OCR fallback)' "$(cat -- "${check_log}")" || got=1
+check "the check log marks the exit OCR-unknown when no .rc file exists" "${got}"
 
 ## --- neither signal ever appears -> did-not-complete (die) --------------------------------
 TEST_RC=""

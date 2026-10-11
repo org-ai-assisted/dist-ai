@@ -363,16 +363,35 @@ open_terminal() {
    die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
 }
 
-## Surface a failed check's OWN in-guest output (otherwise lost on power-off): a plain file
-## read over guestcontrol, to stderr + the check log so a failure is diagnosable without a
-## re-run. Best-effort (a GA-less guest has no exec channel). Shared by both detect paths.
+## Surface a failed check's OWN identity + in-guest output (otherwise lost on power-off): the
+## exact command run, its exit code, and the captured output -- to stderr + the check log, so a
+## failure is diagnosable (and the results page names the command + exit, not just an opaque
+## "exit 5" install rc) without a re-run. The command + exit are ALWAYS known, so the check log
+## is written even when the guest produced no output. Best-effort output read (a GA-less guest
+## has no exec channel). Shared by both detect paths; the OCR fallback passes an empty rc.
 run_check_report_failure() {
-   local num="$1" session="$2" out
+   local num="$1" session="$2" cmd="$3" rc="$4" out rc_label
    out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
-   [ -n "${out}" ] || return 0
-   printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
+   case "${rc}" in
+      ''|*[!0-9]*)
+         rc_label='unknown (OCR fallback)'
+         ;;
+      *)
+         rc_label="${rc}"
+         ;;
+   esac
+   printf '%s\n' \
+      "${me}: check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED" \
+      "${me}: command: ${cmd}" \
+      "${me}: exit: ${rc_label}" >&2
+   [ -n "${out}" ] && printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
    if [ -n "${check_log}" ]; then
-      printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:" "${out}" > "${check_log}"
+      {
+         printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:"
+         printf '%s\n' "command: ${cmd}"
+         printf '%s\n' "exit: ${rc_label}"
+         [ -n "${out}" ] && printf '%s\n' "" "output:" "${out}"
+      } > "${check_log}"
    fi
 }
 
@@ -408,7 +427,7 @@ run_check() {
             return 0
          fi
          printf '%s\n' "${me}: check ${num} FAIL (rc=${rc_str})"
-         run_check_report_failure "${num}" "${session}"
+         run_check_report_failure "${num}" "${session}" "${cmd}" "${rc_str}"
          return 1
       fi
       ## FALLBACK: OCR the marker, for a GA-less image where gc_run cannot reach the guest.
@@ -420,7 +439,7 @@ run_check() {
       fi
       if [[ "${text,,}" =~ dmchkfailmark ]]; then
          printf '%s\n' "${me}: check ${num} FAIL"
-         run_check_report_failure "${num}" "${session}"
+         run_check_report_failure "${num}" "${session}" "${cmd}" ""
          return 1
       fi
       sleep 10
