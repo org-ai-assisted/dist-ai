@@ -85,8 +85,7 @@ printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
 
 ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
 printf '%s\n' "${me}: cascade: configure pending dpkg"
-## style-ok: allow-dpkg -- a legit pending-config fixup before a build, not a package install
-sudo --non-interactive dpkg --configure -a || true
+sudo --non-interactive dpkg-noninteractive --configure -a || true
 
 ## Release loop/kpartx devices a PRIOR failed build leaked: grml-debootstrap's end-of-image
 ## `kpartx -d` exits 1 against a stale partition mapping, failing the whole build. Target ONLY
