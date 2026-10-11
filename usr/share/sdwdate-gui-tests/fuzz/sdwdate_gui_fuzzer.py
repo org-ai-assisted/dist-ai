@@ -1004,8 +1004,67 @@ def _d_menu_actions(h, mode, repro):
     return findings
 
 
+def _d_chunked_qubes_header(h, mode, repro):
+    findings = []
+    ## The qrexec connection header is parsed by scanning __sock_buf for a NUL,
+    ## a DIFFERENT framing from the length-prefixed command frames. It must
+    ## reassemble across reads: deliver it split so the terminating NUL -- and a
+    ## trailing command frame in the same read -- only arrive on the second
+    ## read (the exact case the length-prefixed fragmented_message cannot cover).
+    c = h.new_client()
+    c.write(b"sdwdate-gui.Connect disp5")
+    h.pump()
+    if kicked(c):
+        findings.append(
+            Finding(
+                mode,
+                "FAILED_REGISTRATION",
+                "kicked on a partial qrexec header",
+                repro,
+            )
+        )
+        return findings
+    c.write(
+        b"711\0"
+        + FuzzClient.frame(
+            b"set_sdwdate_status", b"success", encode_status_msg("hdr-split")
+        )
+    )
+    h.pump()
+    if kicked(c):
+        findings.append(
+            Finding(
+                mode,
+                "FAILED_REGISTRATION",
+                "kicked after the qrexec header completed across reads",
+                repro,
+            )
+        )
+    sc = server_client(h, "disp5711")
+    if sc is None:
+        findings.append(
+            Finding(
+                mode,
+                "CRASH",
+                "qrexec header split across reads not parsed (name unset)",
+                repro,
+            )
+        )
+    elif sc.sdwdate_msg != "hdr-split":
+        findings.append(
+            Finding(
+                mode,
+                "CRASH",
+                f"frame after a split header mis-decoded: {sc.sdwdate_msg!r}",
+                repro,
+            )
+        )
+    return findings
+
+
 BOTH = ("qubes", "nonqubes")
 DIRECTED = [
+    ("chunked_qubes_header", ("qubes",), _d_chunked_qubes_header),
     ("menu_actions", BOTH, _d_menu_actions),
     ("qubes_nameless_header_then_name", ("qubes",), _d_qubes_nameless_header_then_name),
     ("qubes_nameless_header_bad_name", ("qubes",), _d_qubes_nameless_header_bad_name),
