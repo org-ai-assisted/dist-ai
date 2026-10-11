@@ -1,0 +1,121 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""
+Guard for the harness's OWN source-ability assumption.
+
+The suite sources the REAL systemcheck scripts to define their functions for
+`declare -f` analysis and unit calls. That is sound only when sourcing has no
+side effects. A library fragment just defines functions; an ENTRYPOINT
+(systemcheck, updatecheck, canary, log-checker) ends by dispatching its main,
+which is harmless on source ONLY behind the
+``was_executed "${BASH_SOURCE[0]}"`` guard. WITHOUT that guard, merely sourcing
+it runs the whole tool UNSANDBOXED on the host (live network checks, file writes,
+cleanup) -- the exact fabricated-signal + host-exposure a review found when the
+suite sourced a stale installed `systemcheck` that predated the guard.
+
+systemcheck_testlib refuses a non-source-able subject up front
+(`_assert_source_able`, enforced in run_sourced + the scenario assembler + the
+log-checker harness). These tests pin that contract with synthetic fixtures
+(test doubles for the guard, not subject copies) AND confirm the REAL, guarded
+entrypoint is accepted -- so the guard neither runs an unguarded tool nor
+false-refuses a correctly guarded one.
+"""
+
+import os
+import shutil
+import tempfile
+import unittest
+
+from systemcheck_testlib import (
+    SystemcheckTestBase,
+    _assert_source_able,
+    function_definition,
+    run_sourced,
+)
+
+## The one canonical source-guard line (the `sourceable` skill's form).
+_GUARD = 'if was_executed "${BASH_SOURCE[0]}"; then\n  main "$@"\nfi\n'
+
+
+class TestAssertSourceAble(unittest.TestCase):
+    """_assert_source_able: refuse a subject that executes merely by being
+    sourced; accept libraries and correctly guarded entrypoints."""
+
+    def _write(self, text: str) -> str:
+        fd, path = tempfile.mkstemp(suffix='.bsh')
+        self.addCleanup(os.unlink, path)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        return path
+
+    def test_library_fragment_is_source_able(self) -> None:
+        ## No top-level main dispatch -> always safe to source.
+        path = self._write('#!/bin/bash\nmyfunc() { echo hi; }\n')
+        _assert_source_able(path)  # must not raise
+
+    def test_guarded_entrypoint_is_source_able(self) -> None:
+        ## main dispatch present but behind the was_executed guard -> safe.
+        path = self._write('#!/bin/bash\nmain() { echo hi; }\n' + _GUARD)
+        _assert_source_able(path)  # must not raise
+
+    def test_unguarded_entrypoint_is_refused(self) -> None:
+        ## main dispatch with no guard -> sourcing would run the tool; refuse.
+        path = self._write('#!/bin/bash\nmain() { echo hi; }\nmain "$@"\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+    def test_prefixed_main_dispatch_is_refused(self) -> None:
+        ## The real dispatch is `systemcheck_main "$@"`; the prefixed form must
+        ## be caught too when unguarded.
+        path = self._write(
+            '#!/bin/bash\nsystemcheck_main() { echo hi; }\nsystemcheck_main "$@"\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+
+class TestRunSourcedRefusesExecutingSubject(unittest.TestCase):
+    """run_sourced must refuse an unguarded entrypoint BEFORE sourcing it, so
+    the tool never runs on the host."""
+
+    def test_run_sourced_refuses_and_never_executes(self) -> None:
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        marker = os.path.join(tmp, 'tool-ran')
+        fd, script = tempfile.mkstemp(suffix='.bsh')
+        self.addCleanup(os.unlink, script)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            ## If this ever gets SOURCED, main runs and drops the marker -- the
+            ## canary proving the harness did NOT run it.
+            handle.write(
+                '#!/bin/bash\n'
+                f'main() {{ : > {marker!r}; }}\n'
+                'main "$@"\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            run_sourced([script], 'true')
+        self.assertFalse(
+            os.path.exists(marker),
+            'run_sourced executed the unguarded subject instead of refusing it')
+
+
+class TestRealEntrypointIsSourceAble(SystemcheckTestBase):
+    """The real, guarded `systemcheck` entrypoint must be analysable by sourcing
+    WITHOUT running the tool -- the positive side of the guard (no false-refuse,
+    no 30s unsandboxed run)."""
+
+    def test_systemcheck_main_body_is_readable(self) -> None:
+        body = function_definition(
+            [os.path.join(self.dir, 'systemcheck')], 'systemcheck_main')
+        ## A non-empty declare -f body proves sourcing defined the function; the
+        ## call returning at all (vs the old 30s TimeoutExpired) proves the tool
+        ## did not run.
+        self.assertIn('systemcheck_main', body)
+        self.assertTrue(body.strip())
+
+
+if __name__ == '__main__':
+    unittest.main()

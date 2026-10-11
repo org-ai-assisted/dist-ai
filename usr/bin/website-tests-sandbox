@@ -66,8 +66,10 @@ export QUBE_CTL_TARGET
 ## first time -- chromium download); a failed provision fails the gate, never skips.
 if ! sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
    printf '%s\n' 'website-tests-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
-   sandbox provision playwright >&2 \
-      || die 'sandbox is not provisioned for Playwright and provisioning failed (sandbox provision playwright)'
+   ## provision is a SEPARATE tool, not a `sandbox` subcommand; --target goes before the
+   ## component. (`sandbox provision ...` is not a valid subcommand -> auto-provision failed.)
+   provision --target "${QUBE_CTL_TARGET}" playwright >&2 \
+      || die "sandbox is not provisioned for Playwright and provisioning failed (provision --target ${QUBE_CTL_TARGET} playwright)"
    sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
       || die 'Playwright venv still absent after provisioning'
 fi

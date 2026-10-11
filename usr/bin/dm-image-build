@@ -33,14 +33,18 @@ me="${0##*/}"
 flavor="kicksecure-lxqt"
 target="iso"
 freshness="current"
+## amd64 ISO builds REQUIRE an explicit firmware choice (help-steps/parse-cmd: no default).
+## false = include non-free firmware -> broadly bootable (real HW + VBox), the right default for
+## a test/install ISO; true = Free-Software-only firmware.
+freedom="false"
 dir="${DM_IMAGE_BUILD_DIR:-/home/admin/derivative-maker}"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--dir DIR]
+   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--freedom true|false] [--dir DIR]
 
 Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 /home/admin/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
---freshness current. Run as a sudo-capable NON-root user (e.g. admin)."
+--freshness current --freedom false. Run as a sudo-capable NON-root user (e.g. admin)."
 }
 
 while [ "$#" -ge 1 ]; do
@@ -55,6 +59,10 @@ while [ "$#" -ge 1 ]; do
          ;;
       --freshness)
          freshness="$2"
+         shift 2
+         ;;
+      --freedom)
+         freedom="$2"
          shift 2
          ;;
       --dir)
@@ -85,8 +93,7 @@ printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
 
 ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
 printf '%s\n' "${me}: cascade: configure pending dpkg"
-## style-ok: allow-dpkg -- a legit pending-config fixup before a build, not a package install
-sudo --non-interactive dpkg --configure -a || true
+sudo --non-interactive dpkg-noninteractive --configure -a || true
 
 ## Release loop/kpartx devices a PRIOR failed build leaked: grml-debootstrap's end-of-image
 ## `kpartx -d` exits 1 against a stale partition mapping, failing the whole build. Target ONLY
@@ -119,7 +126,7 @@ git status --porcelain=v1 | head
 
 ## --- build: DIRECT (no docker), CI=true, NATIVE arch (so CI=true builds a real image) ---
 native_arch="$(dpkg --print-architecture)"
-printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} arch=${native_arch} (direct, no docker, non-CI)"
+printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} arch=${native_arch} (direct, no docker, non-CI)"
 unset CI || true
 export dist_build_sign_and_tag=true
 export dist_build_target_arch="${native_arch}"
@@ -130,7 +137,7 @@ build_rc=0
 {
    ./help-steps/signing-key-create \
    && ./help-steps/sign-and-tag \
-   && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}"
+   && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}" --freedom "${freedom}"
 } || build_rc=$?
 
 printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"

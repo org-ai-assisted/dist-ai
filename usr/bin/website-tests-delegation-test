@@ -88,7 +88,16 @@ cat > "${stub_dir}/driver" <<'STUB'
 touch -- "${DRIVER_MARKER}"
 exit "${DRIVER_RC:-0}"
 STUB
-chmod +x -- "${stub_dir}/sandbox" "${stub_dir}/driver"
+## `provision` stub on PATH for EVERY scenario: the driver's auto-provision branch now calls
+## the SEPARATE `provision` tool, so a scenario that makes the venv probe fail (e.g. Scenario 5)
+## would otherwise run the REAL provision and touch a real sandbox. Record argv when a capture
+## file is set (Scenario 6 asserts it); otherwise just succeed harmlessly.
+cat > "${stub_dir}/provision" <<'STUB'
+#!/bin/bash
+[ -n "${PROVISION_ARGV_CAPTURE:-}" ] && printf '%s\n' "$*" >> "${PROVISION_ARGV_CAPTURE}"
+exit 0
+STUB
+chmod +x -- "${stub_dir}/sandbox" "${stub_dir}/driver" "${stub_dir}/provision"
 
 out="${stub_dir}/out.log"
 
@@ -181,6 +190,32 @@ SBSTUB
       fail "website-tests-sandbox did not default the sandbox target (got '$(head -n 1 -- "${tgt_cap}" 2>/dev/null)')"
    fi
    ## Restore the plain exit-0 stub (keep the fixture state clean for any future scenario).
+   printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
+   chmod +x -- "${stub_dir}/sandbox"
+
+   ## Scenario 6: the Playwright auto-provision invokes the SEPARATE `provision` tool as
+   ## `provision --target <tgt> playwright` -- NOT `sandbox provision playwright` (not a valid
+   ## sandbox subcommand; the broken form silently failed the gate's auto-provision). Make the
+   ## venv probe fail so the driver enters the provision branch, stub `provision` to record its
+   ## argv, and assert the real invocation. Fails on the pre-fix `sandbox provision playwright`
+   ## (the `provision` tool is never called, so the capture stays empty).
+   prov_cap="${stub_dir}/provision-argv"
+   safe-rm --force -- "${prov_cap}"
+   ## `sandbox exec -- test -x <venv>` must return non-zero so the driver provisions; keep it
+   ## failing on the re-check too (driver then dies, but provision was already recorded). The
+   ## global `provision` stub records argv when PROVISION_ARGV_CAPTURE is set.
+   printf '%s\n' '#!/bin/bash' 'exit 1' > "${stub_dir}/sandbox"
+   chmod +x -- "${stub_dir}/sandbox"
+   env PATH="${stub_dir}:${PATH}" \
+       QUBE_CTL_TARGET='temp-claude' \
+       PROVISION_ARGV_CAPTURE="${prov_cap}" \
+       "${wts}" "${roots[0]}" >/dev/null 2>&1 || true
+   if [ -f "${prov_cap}" ] && [ "$(head -n 1 -- "${prov_cap}")" = '--target temp-claude playwright' ]; then
+      pass 'auto-provision invokes provision --target <tgt> playwright (separate tool, not a sandbox subcommand)'
+   else
+      fail "auto-provision used the wrong invocation (got '$(head -n 1 -- "${prov_cap}" 2>/dev/null)', want '--target temp-claude playwright')"
+   fi
+   ## Restore clean fixtures.
    printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
    chmod +x -- "${stub_dir}/sandbox"
 else

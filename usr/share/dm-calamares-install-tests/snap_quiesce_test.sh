@@ -117,10 +117,21 @@ true > "${order}"
 cp -- /bin/sleep "${work}/lxqt-notificationd"
 "${work}/lxqt-notificationd" 5 &
 decoy_pid=$!
-## Readiness: wait (busy, sleep is stubbed) for exec to set comm before snap fires the kill.
+## Readiness: wait for the fork to exec and set its truncated comm BEFORE snap fires the
+## kill -- else the correct kill form misses a not-yet-exec'd decoy and the pkill assertion
+## below reports a FALSE failure. `command sleep` is the real sleep (the SUT's `sleep` is
+## stubbed to a no-op above); the wait is bounded (~2s, well under the decoy's 5s lifetime).
+decoy_ready=1
 for _ in $(seq 1 200); do
-   [ "$(cat "/proc/${decoy_pid}/comm" 2>/dev/null)" = "lxqt-notificati" ] && break
+   if [ "$(cat "/proc/${decoy_pid}/comm" 2>/dev/null)" = "lxqt-notificati" ]; then
+      decoy_ready=0
+      break
+   fi
+   command sleep 0.01
 done
+## Fail CLOSED + honestly: a decoy that never reached its comm is a harness problem, not a
+## pkill bug -- surface it as "decoy not ready", never let it masquerade as a kill failure.
+check "decoy reached its truncated comm before snap" "${decoy_ready}"
 
 rc=0
 snap 01 welcome || rc=$?

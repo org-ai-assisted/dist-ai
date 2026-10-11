@@ -286,6 +286,41 @@ def build_plane(root, goldens, approvals_path):
     with open(os.path.join(p_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(p_result))
 
+    ## Q: a PASS verdict (rc=0) whose captured firmware EVIDENCE proves a WRONG-lane boot
+    ## (match False). The guest booted the wrong firmware, so the run must NOT be green -- in
+    ## the overview cell AND the detail header -- even though the verdict is PASS and there is
+    ## no failing shot. The P fixture uses rc=1 (FAIL) and so cannot expose this false green.
+    q_dir = os.path.join(root, "kicksecure-fwgreen-18-2-3-5", "20261006T000000Z")
+    q_env = {"firmware": {
+        "declared": "efi-secureboot", "detected": "BIOS",
+        "evidence": "FWGREEN_NEEDLE: [ -d /sys/firmware/efi ] -> BIOS; declared efi-secureboot",
+        "match": False,
+    }}
+    q_step = model.make_step(name="checks", status=model.step_status_from_rc(0), exit_code=0)
+    q_result = model.build_result(
+        run_id="kicksecure-fwgreen-18-2-3-5-1", lane="kicksecure-fwgreen-efi-secureboot",
+        version="18.2.3.5", builder="dm-release-test", mode="calamares-install",
+        origin=model.ORIGIN_DOWNLOADED, rc=0, generated_unix=now, stop_unix=now,
+        steps=[q_step], environment=q_env)
+    os.makedirs(q_dir, exist_ok=True)
+    with open(os.path.join(q_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(q_result))
+
+    ## R: a MALFORMED environment.firmware (a non-object). validate must classify it NO-DATA so
+    ## site generation CONTINUES; before firmware-object validation, run_fields called .get() on
+    ## the string -> AttributeError aborted the WHOLE site. Written raw (model.dumps does not
+    ## re-validate), since build_result would reject it at construction.
+    r_dir = os.path.join(root, "kicksecure-fwbad2-18-2-3-5", "20261006T000000Z")
+    r_step = model.make_step(name="checks", status=model.step_status_from_rc(0), exit_code=0)
+    r_result = model.build_result(
+        run_id="kicksecure-fwbad2-18-2-3-5-1", lane="kicksecure-fwbad2", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[r_step])
+    r_result["environment"] = {"firmware": "not-an-object"}
+    os.makedirs(r_dir, exist_ok=True)
+    with open(os.path.join(r_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(r_result))
+
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
 
@@ -427,6 +462,29 @@ check("firmware panel: matching lane reads verified", "verified against the decl
 p_page = read(os.path.join(out1, "kicksecure-fwbad-18-2-3-5-1", "index.html"))
 check("firmware panel: contradicting lane reads MISMATCH", "MISMATCH" in p_page)
 check("firmware panel: mismatch evidence shown", "FWMISMATCH_NEEDLE" in p_page)
+
+## Q: a PASS verdict whose firmware EVIDENCE proves a wrong-lane boot (match False) is NOT
+## green -- the detail header AND the overview cell read non-green, not just the panel. Canary:
+## before the classifier fix, run_cell_status returned st-pass for this PASS run.
+q_page = read(os.path.join(out1, "kicksecure-fwgreen-18-2-3-5-1", "index.html"))
+## Scope to the run HEADER (hero section): the per-step chip legitimately reads st-pass (the
+## step functionally passed) -- it is the RUN-level status, shown in the header + overview,
+## that must not be green when the firmware boot was wrong.
+q_hero = q_page.split('<section class="hero">', 1)[-1].split("</section>", 1)[0]
+check("PASS+firmware-mismatch detail header is st-fail", "st-fail" in q_hero)
+check("PASS+firmware-mismatch detail header is NOT green", "st-pass" not in q_hero)
+check("PASS+firmware-mismatch still shows the MISMATCH panel", "MISMATCH" in q_page)
+## The overview CELL (not just the header) is non-green: scope to Q's own matrix row.
+q_rows = [r for r in matrix_sec.split("<tr>") if "kicksecure-fwgreen-18-2-3-5-1/" in r]
+check("PASS+firmware-mismatch has exactly one overview row", len(q_rows) == 1)
+check("PASS+firmware-mismatch overview cell is non-green",
+      bool(q_rows) and "st-fail" in q_rows[0] and "st-pass" not in q_rows[0])
+
+## R: a malformed environment.firmware does NOT abort the site. run_generator above did not
+## raise (it would have, on the pre-fix AttributeError), and the run renders NO-DATA while
+## every other run still generated.
+r_page = read(os.path.join(out1, "kicksecure-fwbad2-18-2-3-5__20261006T000000Z", "index.html"))
+check("malformed-firmware run is NO-DATA", "st-nodata" in r_page)
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).

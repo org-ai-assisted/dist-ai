@@ -21,6 +21,7 @@ child bash inherits from this environment, so a checkout runs in place.
 
 import base64
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -133,11 +134,49 @@ def _source_block(sources) -> str:
     return '\n'.join(f'source {shlex.quote(path)}' for path in sources)
 
 
+## A top-level `[prefix_]main "$@"` dispatch runs the program when the file is
+## executed -- and, absent a source-guard, ALSO when it is merely sourced.
+_MAIN_DISPATCH_RE = re.compile(r'(?m)^\s*(?:[A-Za-z_][A-Za-z0-9_]*_)?main\b[^\n]*"\$@"')
+## The one canonical source-guard (the `sourceable` skill's form, used verbatim by
+## systemcheck / log-checker / updatecheck): the dispatch runs only when executed,
+## never when sourced for analysis.
+_SOURCE_GUARD = 'was_executed "${BASH_SOURCE[0]}"'
+
+
+def _assert_source_able(path: str) -> None:
+    """Refuse to SOURCE a subject that would EXECUTE merely by being sourced.
+
+    The suite sources the REAL scripts to define their functions for `declare -f`
+    analysis and unit calls; that is sound ONLY when sourcing has no side effects.
+    A library fragment (has.bsh, preparation.bsh, check_*.bsh, log-checker's
+    function body) just defines functions. An ENTRYPOINT (systemcheck, updatecheck,
+    canary, log-checker) ends by dispatching its main -- harmless on source ONLY
+    behind the ``was_executed "${BASH_SOURCE[0]}"`` guard. WITHOUT that guard,
+    sourcing runs the whole tool UNSANDBOXED on the host (live network checks, file
+    writes, cleanup). Detect the anti-pattern with a simple match and fail LOUD
+    (fail CLOSED -- an un-verifiable subject is refused, never sourced-and-run).
+    """
+    text = read(path)
+    if _MAIN_DISPATCH_RE.search(text) and _SOURCE_GUARD not in text:
+        raise AssertionError(
+            f"refusing to source {path!r}: it dispatches a *main \"$@\" without "
+            f'the {_SOURCE_GUARD} source-guard, so sourcing would run the whole '
+            'tool unsandboxed (network + host writes). Make it source-able '
+            '(sourceable skill) before a test sources it.')
+
+
 def run_sourced(sources, call: str, setup: str = '') -> str:
     """Source the real `sources`, run `setup` (stubs / globals; AFTER the source
     so a stub shadows the real definition), then `call`; return stdout stripped.
     errexit + pipefail, no nounset (the fragments read optional globals). A
-    non-zero exit fails with bash's stderr."""
+    non-zero exit fails with bash's stderr.
+
+    Each source is first verified source-able (`_assert_source_able`): an
+    unguarded entrypoint would EXECUTE the whole tool on `source`, so the suite
+    refuses it loudly rather than run it unsandboxed on the host."""
+    sources = list(sources)
+    for src in sources:
+        _assert_source_able(src)
     script = '\n'.join([
         'set -o errexit', 'set -o pipefail', _source_block(sources), setup, call,
     ])
@@ -219,10 +258,15 @@ def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
     ## or a subject that fails to load (a sibling source path that does not
     ## resolve) aborts before the SOURCED marker; stubs and env_setup follow the
     ## source so they shadow the real code.
+    sources = fragment_sources(check_file)
+    for src in sources:
+        ## Same guard as run_sourced: a scenario must source source-able subjects
+        ## only -- an unguarded entrypoint would execute the tool on source.
+        _assert_source_able(src)
     return '\n'.join([
         _SCENARIO_PREAMBLE,
         'set -o errexit', 'set -o pipefail', prefix, 'set +o pipefail',
-        _source_block(fragment_sources(check_file)),
+        _source_block(sources),
         'set +o errexit', 'printf "SOURCED\\n"',
         stubs, env_setup,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
@@ -316,9 +360,24 @@ def tmpfs_mounts(hide_dirs, place_paths) -> list[str]:
     for path in [*hide_dirs, *place_paths]:
         if not os.path.isabs(path):
             raise ValueError(f"isolated overlay path must be absolute: {path!r}")
+    ## Normalize first so a '..' / doubled-slash target collapses to the real
+    ## directory bwrap's kernel-side mount would resolve it to -- the returned
+    ## targets then compare string-equal against the normalized subject sources.
+    hide_dirs = [os.path.normpath(d) for d in hide_dirs]
+    place_paths = [os.path.normpath(p) for p in place_paths]
     targets = {d for d in hide_dirs if os.path.isdir(d)}
-    targets.update(_nearest_existing_dir(os.path.dirname(p))
-                   for p in place_paths)
+    for p in place_paths:
+        ancestor = _nearest_existing_dir(os.path.dirname(p))
+        if ancestor == '/':
+            ## Emptying '/' would hide bash and the subject itself: the placed
+            ## file's whole parent chain is absent, so there is no narrow dir to
+            ## overlay. Refuse clearly instead of a confusing subject-hiding fail.
+            raise ValueError(
+                f"cannot isolate placed file {p!r}: its parent chain is entirely "
+                "absent, so the nearest existing ancestor is '/'; a tmpfs there "
+                "would empty the whole filesystem. Place it under an existing "
+                "top-level directory.")
+        targets.add(ancestor)
     return sorted(t for t in targets
                   if not any(o != t and _is_under(t, o) for o in targets))
 
@@ -366,17 +425,37 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
         raise unittest.SkipTest(
             'bubblewrap unavailable or unprivileged user namespaces disabled')
 
+    ## Materialize once: `place` / `bind_files` are each read more than once below
+    ## (tmpfs target selection, the subject-overlay guard, fixture/bind creation),
+    ## so a one-shot iterable must not be exhausted by the first pass -- else no
+    ## fixture is written and the scenario runs against the wrong fs state.
+    ## Normalize the destinations so the guard, the mounts, and bwrap all reason
+    ## about the same resolved path: a '..' segment cannot slip a fake past the
+    ## guard yet still resolve, kernel-side, onto the real subject.
+    place = [(os.path.normpath(p), c, x) for p, c, x in place]
+    bind_files = [(os.path.normpath(p), c, x) for p, c, x in bind_files]
+
     tmpfs_dirs = tmpfs_mounts(hide_dirs, [p for p, _c, _x in place])
-    ## A tmpfs over the subject's own dir (e.g. placing a fake crypt-check
-    ## into the installed /usr/libexec/systemcheck) would empty what the
-    ## scenario sources; refuse it by name instead of a sourcing failure.
-    for source in fragment_sources(check_file):
+    ## An overlay onto the subject's own files would run the scenario against a
+    ## fake, not the real check: a tmpfs over the subject's dir (e.g. placing a
+    ## fake crypt-check into /usr/libexec/systemcheck) EMPTIES what the scenario
+    ## sources, and a bind_files dest equal to a sourced file REPLACES it before
+    ## `source`. Both return a green that never exercised the subject, so refuse
+    ## them by name (normalized, so a '..' segment cannot evade the check).
+    subject_sources = [os.path.normpath(s) for s in fragment_sources(check_file)]
+    bind_dests = {abs_path for abs_path, _c, _x in bind_files}
+    for source in subject_sources:
         for directory in tmpfs_dirs:
             if _is_under(source, directory):
                 raise AssertionError(
                     f"isolated scenario would tmpfs {directory!r}, hiding "
                     f"sourced subject {source!r}; set SYSTEMCHECK_REPO / "
                     "HELPER_SCRIPTS_PATH to checkouts")
+        if source in bind_dests:
+            raise AssertionError(
+                f"isolated scenario would bind over sourced subject {source!r}; "
+                "bind_files must not replace a subject file (that fakes the check "
+                "away and returns a green that never ran it)")
     prefix_lines = []
     for abs_path, content, is_exec in place:
         ## base64 so arbitrary content (shebangs, quotes, newlines) round-trips
@@ -482,7 +561,9 @@ class LogCheckerHardeningBase(SystemcheckTestBase):
         ## Source the source-able script (was_executed is false here -> no
         ## auto-run, no strict leak), then run the caller-supplied body under the
         ## same options the executed script sets, so the functions behave as in
-        ## production.
+        ## production. Verify source-ability first: an unguarded log-checker would
+        ## run the whole tool on `source`, so refuse it rather than run it here.
+        _assert_source_able(self._log_checker())
         script = (
             f'source {shlex.quote(self._log_checker())}\n'
             ## Match the executed script's own options so the function runs as in
