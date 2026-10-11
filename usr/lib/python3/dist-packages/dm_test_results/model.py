@@ -326,6 +326,11 @@ def validate(result):
     firmware = environment.get("firmware") if environment is not None else None
     if firmware is not None and not isinstance(firmware, dict):
         raise ModelError("environment.firmware must be null or an object: %r" % (firmware,))
+    ## firmware.match is the wrong-lane verdict; mismatch detection keys off the bool False, so a
+    ## non-bool (e.g. the string "false") would evade it and read GREEN. Require a real bool.
+    if (isinstance(firmware, dict) and firmware.get("match") is not None
+            and not isinstance(firmware["match"], bool)):
+        raise ModelError("environment.firmware.match must be a bool or null: %r" % (firmware["match"],))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")

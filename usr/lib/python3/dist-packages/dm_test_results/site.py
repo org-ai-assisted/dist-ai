@@ -65,10 +65,11 @@ def is_green(status):
 
 def _firmware_mismatch(result):
     """True only when firmware EVIDENCE was captured and proves a wrong-lane boot:
-    environment.firmware.match is exactly False. Absent / None / uncaptured match does
-    NOT block (old runs stay unaffected). Type-defensive: a non-dict environment or
-    firmware (which validate now refuses -> NO-DATA, but this is also called directly in
-    unit tests) is simply "no mismatch evidence", never a crash."""
+    environment.firmware.match is exactly False. validate() now guarantees match is a bool or
+    null, so the False singleton is the reliable signal (a non-bool like the string "false" is
+    rejected at validation -> NO-DATA, never a silent green). Absent / None / uncaptured match
+    does NOT block (old runs stay unaffected). Type-defensive: a non-dict environment or
+    firmware is simply "no mismatch evidence", never a crash."""
     if not isinstance(result, dict):
         return False
     env = result.get("environment")

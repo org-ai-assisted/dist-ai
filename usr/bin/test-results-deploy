@@ -54,8 +54,16 @@ command -v site-deploy >/dev/null 2>&1 || die "site-deploy not found"
 [ -d "${pages_repo}/automated-test-results" ] || die "no automated-test-results/ in ${pages_repo}"
 
 staging="$(mktemp --directory)"
+## Registered in the EXIT trap so a failure at any step (read-tree / add / commit) cannot leak
+## the private index or the message temp file.
+idx=""
+msg_file=""
 # shellcheck disable=SC2317  ## runs via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${staging}" || true; }
+cleanup() {
+   safe-rm --recursive --force -- "${staging}" || true
+   [ -z "${idx}" ] || safe-rm --force -- "${idx}" || true
+   [ -z "${msg_file}" ] || safe-rm --force -- "${msg_file}" || true
+}
 trap cleanup EXIT
 
 printf '%s\n' "${me}: pulling results plane from ${target}:${results_remote}"
@@ -63,12 +71,19 @@ sandbox --target "${target}" pull "${results_remote}" "${staging}/results" \
    || die "pull of ${results_remote} from ${target} failed"
 [ -d "${staging}/results" ] || die "pull produced no results tree"
 
+## --chrome-from the site's own root page: the generated results pages then carry the SITE's
+## actual header nav, not the generator's fallback default -- so website-tests' nav-consistency
+## check cannot fail on a drift between the two.
+chrome_from=()
+[ -f "${pages_repo}/index.html" ] && chrome_from=(--chrome-from "${pages_repo}/index.html")
+
 printf '%s\n' "${me}: regenerating the static site into ${pages_repo}"
 "${generate}" \
    --results-root "${staging}/results" \
    --site-out "${pages_repo}" \
    --goldens-dir "${pages_repo}/automated-test-results/goldens" \
    --approvals "${pages_repo}/automated-test-results/golden-approvals.json" \
+   "${chrome_from[@]}" \
    || die "site generation failed"
 
 cd -- "${pages_repo}"
@@ -82,14 +97,20 @@ GIT_INDEX_FILE="${idx}" git read-tree HEAD
 GIT_INDEX_FILE="${idx}" git add -A -- automated-test-results
 if GIT_INDEX_FILE="${idx}" git diff --cached --quiet HEAD -- automated-test-results; then
    printf '%s\n' "${me}: no results changes to publish (site already current)"
-   safe-rm --force -- "${idx}"
+   ## Still publish if a PRIOR run committed but its site-deploy failed (unpushed): compare HEAD
+   ## to the published tip so a pending commit is not stranded by the no-change exit.
+   remote_tip="$(git ls-remote origin refs/heads/master 2>/dev/null | cut -f1)"
+   if [ -n "${remote_tip}" ] && [ "${remote_tip}" != "$(git rev-parse HEAD)" ]; then
+      printf '%s\n' "${me}: a committed results update is unpushed -- publishing it"
+      site-deploy || die "site-deploy failed (pending commit still unpushed)"
+      printf '%s\n' "${me}: deployed (pending commit)."
+   fi
    exit 0
 fi
 msg_file="$(mktemp)"
 printf '%s\n' "Deploy image-test results" > "${msg_file}"
 GIT_INDEX_FILE="${idx}" GIT_INDEX_COMMIT_GUARD_ALLOW=1 git commit --quiet -F "${msg_file}" \
-   || { safe-rm --force -- "${msg_file}" "${idx}"; die "commit failed"; }
-safe-rm --force -- "${msg_file}" "${idx}"
+   || die "commit failed"
 
 printf '%s\n' "${me}: publishing via site-deploy"
 site-deploy || die "site-deploy failed (results committed locally; not published)"
