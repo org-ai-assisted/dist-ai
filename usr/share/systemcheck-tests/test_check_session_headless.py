@@ -159,13 +159,19 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertIn('Could not read the systemd journal', r.joined())
 
     def test_genuine_journal_failure_still_warns(self) -> None:
-        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked.
+        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- AND the
+        ## ACTUAL error is surfaced (not only the generic "could not read"), so the page names
+        ## the cause. sanitize-string stubbed pass-through, as the sibling scenarios do.
+        ## CANARY: the pre-fix message discarded journal_read_err, so the detail assertion fails.
         r = run_check_scenario(
-            self.check(self.FILE), 'check_journal', stubs=self._JOURNAL_BROKEN)
+            self.check(self.FILE), 'check_journal',
+            stubs=self._JOURNAL_BROKEN
+            + '\nsanitize-string() { printf "%s" "$3"; }')
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
+        self.assertIn('journalctl: unrecoverable error', r.joined())
 
     def test_optout_forces_strict_on_connect_failure(self) -> None:
         r = run_check_scenario(

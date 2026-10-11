@@ -13,10 +13,12 @@
 ##
 ## Covered: MOK_ENROLL unset -> skip (rc 0, no externals); MOK_ENROLL set but not
 ## EFI -> skip; MOK_ENROLL set + EFI -> runs shim-signed-mok-setup +
-## rebuild-dkms-modules and logs. Each skip is a canary: the externals must NOT run.
-## (Oracle GA modules are signed by vbox-guest-installer / boot-time vboxadd, not
-## here, so there is no GA step; the legacy-mok-ok blessing was dropped with the
-## arraybolt3 remaster that no longer honors it.)
+## rebuild-dkms-modules + vbox-guest-installer and logs. Each skip is a canary: the
+## externals must NOT run. (VirtualBox GA modules are built OUTSIDE DKMS, so
+## rebuild-dkms-modules does not sign them -- vbox-guest-installer rebuilds + signs
+## them against the new MOK HERE, after the MOK exists; without that step they stay
+## unsigned and Secure Boot rejects them. CANARY: the pre-fix script ran no
+## vbox-guest-installer, so 'set + EFI -> all three externals' fails on it.)
 ##
 ## A missing subject/dep is an ENVIRONMENT BUG -> exit 1 (FATAL), never a skip.
 
@@ -105,7 +107,7 @@ bindir="${work}/bin"
 mkdir --parents -- "${bindir}" "${work}/dkms"
 
 ## Stubs for the two external signing commands; each records that it ran.
-for tool in shim-signed-mok-setup rebuild-dkms-modules; do
+for tool in shim-signed-mok-setup rebuild-dkms-modules vbox-guest-installer; do
    cat > "${bindir}/${tool}" <<STUB
 #!/bin/bash
 printf '%s\n' invoked > "${work}/${tool}.invoked" 2>/dev/null || true
@@ -134,7 +136,7 @@ check() {
 
 externals_invoked() {
    local any='no' tool
-   for tool in shim-signed-mok-setup rebuild-dkms-modules; do
+   for tool in shim-signed-mok-setup rebuild-dkms-modules vbox-guest-installer; do
       if [ -e "${work}/${tool}.invoked" ]; then
          any='yes'
       fi
@@ -143,7 +145,7 @@ externals_invoked() {
 }
 all_externals_invoked() {
    local all='yes' tool
-   for tool in shim-signed-mok-setup rebuild-dkms-modules; do
+   for tool in shim-signed-mok-setup rebuild-dkms-modules vbox-guest-installer; do
       if [ ! -e "${work}/${tool}.invoked" ]; then
          all='no'
       fi
@@ -162,7 +164,8 @@ log_has() {
 reset_state() {
    safe-rm --recursive --force -- "${efi}" "${logfile}"
    safe-rm --force -- "${work}"/shim-signed-mok-setup.invoked \
-      "${work}"/rebuild-dkms-modules.invoked
+      "${work}"/rebuild-dkms-modules.invoked \
+      "${work}"/vbox-guest-installer.invoked
    safe-rm --force -- "${dkms_pub}"
    if [ "${1:-}" = 'uefi' ]; then
       mkdir --parents -- "${efi}"
@@ -191,12 +194,15 @@ check "set + not-EFI -> rc 0"                "${rc}"                 "0"
 check "set + not-EFI -> no externals invoked" "$(externals_invoked)" "no"
 check "set + not-EFI -> logs 'skip: not EFI'" "$(log_has 'skip: not EFI')" "yes"
 
-## --- MOK_ENROLL set + EFI -> run both externals -----------------------------
+## --- MOK_ENROLL set + EFI -> run all three externals ------------------------
 reset_state uefi
 export MOK_ENROLL=1
 rc="$(run_enroll)"
 check "set + EFI -> rc 0"                     "${rc}"                     "0"
-check "set + EFI -> both externals invoked"   "$(all_externals_invoked)"  "yes"
+check "set + EFI -> all three externals invoked" "$(all_externals_invoked)"  "yes"
+## The GA signing step specifically: vbox-guest-installer MUST run so the VirtualBox
+## GA modules are rebuilt + signed against the new MOK (they are NOT DKMS-managed).
+check "set + EFI -> vbox-guest-installer invoked" "$([ -e "${work}/vbox-guest-installer.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
 check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing modules')" "yes"
 check "set + EFI -> logs 'done: mok.pub'"     "$(log_has 'done: mok.pub')" "yes"
 
