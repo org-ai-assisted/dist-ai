@@ -18,26 +18,39 @@ Correspondence to the implementation:
                              sdwdate-gui-qubes-connect.service: it creates the
                              symlink once the server socket exists and removes
                              it once the socket is gone (modelled as the
-                             'maintainer' transitions).
+                             'maintainer' transitions). ONLY a VM configured to
+                             run the server (run_server_in_qubes) maintains it.
   * client idle/waiting/connecting/connected/gaveup -- sdwdate-gui-qubes-proxy:
       idle       -> calls sdwdate-gui.ConnectCheck ONCE (no polling).
       waiting    -> the gateway responder BLOCKS on an inotify event and
-                    returns 'y' the instant the endpoint is present.
+                    returns 'y' the instant the endpoint is present. A TRANSIENT
+                    ConnectCheck failure (qrexec transport) does NOT give up:
+                    the proxy exits non-zero and the next socket activation
+                    retries (modelled as waiting -> idle).
       connecting -> on 'y' it calls sdwdate-gui.Connect.
       connected  -> the bridge is up.
-      gaveup     -> ConnectCheck returned 'q' (sdwdate-gui disabled); the proxy
-                    drops the give-up flag and stops.
-  * disabled -- the gateway 'disable=true' config; constant per run.
+      gaveup     -> ConnectCheck returned 'q': the gateway has sdwdate-gui
+                    disabled, OR this VM does not run the server, so no endpoint
+                    will ever appear. The proxy drops the give-up flag and stops.
 
-Proved for disabled in {False, True}:
-  * SAFETY       -- the connecting->connected step only fires while the endpoint
-                    is present (by construction); and a disabled gateway never
-                    drives a client to waiting/connecting/connected.
-  * NO DEADLOCK  -- every reachable state has a successor (gaveup aside).
-  * LIVENESS     -- 'connected' is reachable from every reachable non-gaveup
-                    state (disabled=False): the client is never permanently
-                    stuck; and 'gaveup' is reachable (disabled=True): it always
-                    terminates.
+Two gateway-config dimensions, each constant per run:
+  * disabled      -- 'disable=true' in the gateway config.
+  * runs_server   -- 'run_server_in_qubes' true (this VM maintains an endpoint).
+The responder gives up ('q') iff `disabled or not runs_server`; call that
+`gives_up`. Only the operational config (not disabled, runs the server) ever
+drives the client past 'waiting'.
+
+Proved over ALL four (disabled, runs_server) configs:
+  * SAFETY       -- a gives_up gateway never drives a client to
+                    waiting/connecting/connected; connecting->connected only
+                    fires while the endpoint is present and the server up.
+  * NO DEADLOCK  -- every reachable non-gaveup state has a successor.
+  * NO FALSE GIVE-UP -- the operational config never reaches 'gaveup' (a
+                    transient failure retries, it does not permanently disable).
+  * LIVENESS     -- operational config: 'connected' is reachable from every
+                    reachable non-gaveup state (never permanently stuck) and is
+                    reachable at all; every gives_up config always reaches
+                    'gaveup' (it terminates).
 """
 
 # pylint: disable=invalid-name
@@ -53,8 +66,17 @@ CLIENT = ("idle", "waiting", "connecting", "connected", "gaveup")
 ## A protocol state is (server, endpoint, client).
 INITIAL = ("down", "absent", "idle")
 
+## The four gateway configs as (disabled, runs_server).
+CONFIGS = ((False, False), (False, True), (True, False), (True, True))
 
-def successors(state, disabled):
+
+def gives_up(disabled, runs_server):
+    """The responder returns 'q' (client gives up) iff the gateway is disabled
+    or this VM does not run the server -- no endpoint will ever appear."""
+    return disabled or not runs_server
+
+
+def successors(state, disabled, runs_server):
     """All states reachable in one step from `state` under the event-based
     protocol. Environment moves (server, maintainer) are always enabled; client
     moves follow the handshake. Guards here ARE the safety argument."""
@@ -67,21 +89,32 @@ def successors(state, disabled):
     else:
         nxt.add(("down", endpoint, client))
 
-    ## Environment: the maintainer tracks the server socket (self-healing).
-    if server == "up" and endpoint == "absent":
+    ## Environment: the maintainer tracks the server socket (self-healing), but
+    ## ONLY on a VM that runs the server; a non-server VM never gets an endpoint.
+    if runs_server and server == "up" and endpoint == "absent":
         nxt.add((server, "present", client))
-    if server == "down" and endpoint == "present":
+    if endpoint == "present" and (server == "down" or not runs_server):
         nxt.add((server, "absent", client))
 
     ## Client handshake.
     if client == "idle":
-        ## One ConnectCheck call. Disabled -> 'q' -> give up; else block.
-        nxt.add((server, endpoint, "gaveup" if disabled else "waiting"))
+        ## One ConnectCheck call. Disabled or non-server -> 'q' -> give up;
+        ## otherwise the responder blocks until the endpoint appears.
+        nxt.add(
+            (
+                server,
+                endpoint,
+                "gaveup" if gives_up(disabled, runs_server) else "waiting",
+            )
+        )
     elif client == "waiting":
-        ## The responder returns 'y' only once the endpoint exists. No 'n', no
-        ## poll: the client simply waits for the event.
+        ## The responder returns 'y' only once the endpoint exists.
         if endpoint == "present":
             nxt.add((server, endpoint, "connecting"))
+        ## A transient ConnectCheck failure (qrexec transport) must NOT be
+        ## turned into a permanent give-up: the proxy exits non-zero and the
+        ## next socket activation retries from idle.
+        nxt.add((server, endpoint, "idle"))
     elif client == "connecting":
         ## Connect succeeds only while the endpoint is still present and the
         ## server up; otherwise the attempt fails and the client reconnects.
@@ -99,13 +132,13 @@ def successors(state, disabled):
     return nxt
 
 
-def reachable_states(disabled):
+def reachable_states(disabled, runs_server):
     seen = {INITIAL}
     queue = deque([INITIAL])
     edges = {}
     while queue:
         state = queue.popleft()
-        succ = successors(state, disabled)
+        succ = successors(state, disabled, runs_server)
         edges[state] = succ
         for s in succ:
             if s not in seen:
@@ -132,46 +165,220 @@ def can_reach(edges, targets):
 
 
 class TestHandshakeModel(unittest.TestCase):
-    """Exhaustive proof over the reachable state space."""
+    """Exhaustive proof over the reachable state space, all four configs."""
 
-    def test_safety_disabled_never_connects(self) -> None:
-        seen, _ = reachable_states(disabled=True)
-        ## A disabled gateway drives the client only to idle or gaveup.
-        bad = {s for s in seen if s[2] in ("waiting", "connecting", "connected")}
-        self.assertEqual(
-            bad, set(),
-            f"disabled gateway reached a connecting client state: {bad}",
-        )
+    def test_safety_giveup_never_connects(self) -> None:
+        """A gives_up gateway (disabled or non-server) never drives the client
+        to waiting/connecting/connected -- it only idles then gives up."""
+        for disabled, runs_server in CONFIGS:
+            if not gives_up(disabled, runs_server):
+                continue
+            seen, _ = reachable_states(disabled, runs_server)
+            bad = {
+                s for s in seen
+                if s[2] in ("waiting", "connecting", "connected")
+            }
+            self.assertEqual(
+                bad, set(),
+                f"gives_up config disabled={disabled} runs_server="
+                f"{runs_server} reached a connecting client state: {bad}",
+            )
 
     def test_no_deadlock(self) -> None:
-        for disabled in (False, True):
-            seen, edges = reachable_states(disabled)
+        """Every reachable non-gaveup state has a successor, all configs."""
+        for disabled, runs_server in CONFIGS:
+            seen, edges = reachable_states(disabled, runs_server)
             for state in seen:
                 if state[2] == "gaveup":
                     continue  ## terminal by design
                 self.assertTrue(
                     edges[state],
-                    f"deadlock (no successor) at {state}, disabled={disabled}",
+                    f"deadlock (no successor) at {state}, disabled={disabled} "
+                    f"runs_server={runs_server}",
                 )
 
-    def test_liveness_client_can_always_connect(self) -> None:
-        seen, edges = reachable_states(disabled=False)
+    def test_operational_never_gives_up(self) -> None:
+        """
+        The operational config (not disabled, runs the server) NEVER reaches
+        'gaveup': a transient ConnectCheck failure retries rather than setting
+        the permanent give-up/disabled flag. Encodes the C3 correctness fix.
+        """
+        seen, _ = reachable_states(disabled=False, runs_server=True)
+        bad = {s for s in seen if s[2] == "gaveup"}
+        self.assertEqual(
+            bad, set(),
+            f"operational gateway wrongly reached 'gaveup': {bad}",
+        )
+
+    def test_liveness_operational_can_connect(self) -> None:
+        """Operational config: 'connected' reachable from every non-gaveup
+        state, and reachable at all."""
+        seen, edges = reachable_states(disabled=False, runs_server=True)
         good = can_reach(edges, [s for s in seen if s[2] == "connected"])
         stuck = seen - good
         self.assertEqual(
             stuck, set(),
             f"client can never reach 'connected' from: {stuck}",
         )
-        ## And 'connected' is actually reachable at all.
         self.assertTrue(any(s[2] == "connected" for s in seen))
 
-    def test_liveness_disabled_always_terminates(self) -> None:
-        seen, edges = reachable_states(disabled=True)
-        good = can_reach(edges, [s for s in seen if s[2] == "gaveup"])
-        stuck = seen - good
+    def test_liveness_giveup_always_terminates(self) -> None:
+        """Every gives_up config always reaches 'gaveup' (it terminates)."""
+        for disabled, runs_server in CONFIGS:
+            if not gives_up(disabled, runs_server):
+                continue
+            seen, edges = reachable_states(disabled, runs_server)
+            good = can_reach(edges, [s for s in seen if s[2] == "gaveup"])
+            stuck = seen - good
+            self.assertEqual(
+                stuck, set(),
+                f"gives_up config disabled={disabled} runs_server="
+                f"{runs_server} can never reach 'gaveup' from: {stuck}",
+            )
+
+
+## --------------------------------------------------------------------------
+## Concurrent client admission (the single-client handshake model above cannot
+## express it). Mirrors SdwdateTrayIcon.accept_client: a unique-named client is
+## admitted only below MAX_CLIENTS, the next is kicked, and a duplicate name is
+## always kicked. MAX_CLIENTS is drift-guarded against the server constant.
+## --------------------------------------------------------------------------
+MAX_CLIENTS = 64
+
+
+def admit(count, unique_name):
+    """The admitted count after one newcomer: admitted (count+1) only if its
+    name is unique AND there is capacity; otherwise kicked (count unchanged)."""
+    if unique_name and count < MAX_CLIENTS:
+        return count + 1
+    return count
+
+
+def admitted_count_successors(count):
+    nxt = set()
+    nxt.add(admit(count, True))  # a unique-named newcomer
+    nxt.add(admit(count, False))  # a duplicate-named newcomer (kicked)
+    if count > 0:
+        nxt.add(count - 1)  # a client disconnects
+    nxt.discard(count)
+    return nxt
+
+
+def admitted_reachable():
+    seen = {0}
+    queue = deque([0])
+    while queue:
+        count = queue.popleft()
+        for nextcount in admitted_count_successors(count):
+            if nextcount not in seen:
+                seen.add(nextcount)
+                queue.append(nextcount)
+    return seen
+
+
+class TestClientAdmissionModel(unittest.TestCase):
+    """The server admits at most MAX_CLIENTS; duplicates are always kicked."""
+
+    def test_capacity_is_a_hard_bound(self) -> None:
+        seen = admitted_reachable()
+        self.assertEqual(max(seen), MAX_CLIENTS)
         self.assertEqual(
-            stuck, set(),
-            f"disabled client can never reach 'gaveup' from: {stuck}",
+            {n for n in seen if n > MAX_CLIENTS}, set(),
+            "admitted count exceeded MAX_CLIENTS",
+        )
+
+    def test_newcomer_admitted_below_cap_kicked_at_cap(self) -> None:
+        for count in range(MAX_CLIENTS):
+            self.assertEqual(admit(count, True), count + 1)
+        ## At capacity a unique newcomer is kicked (count unchanged).
+        self.assertEqual(admit(MAX_CLIENTS, True), MAX_CLIENTS)
+
+    def test_duplicate_name_never_admitted(self) -> None:
+        for count in range(MAX_CLIENTS + 1):
+            self.assertEqual(
+                admit(count, False), count,
+                "a duplicate-named client was admitted",
+            )
+
+    def test_max_clients_matches_server(self) -> None:
+        """Drift guard: the model's MAX_CLIENTS equals the server constant."""
+        try:
+            from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+                sdwdate_gui_server,
+            )
+        except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover
+            raise unittest.SkipTest(
+                "sdwdate_gui_server not importable (PyQt5 absent)"
+            ) from exc
+        self.assertEqual(MAX_CLIENTS, sdwdate_gui_server.MAX_CLIENTS)
+
+
+## --------------------------------------------------------------------------
+## Orphaned ConnectCheck responders (sdwdate_gui_connect_check.py docstring):
+## a responder blocked on inotify is not woken when its workstation
+## disconnects, so blocked responders accumulate during a server outage. The
+## claim is that this is BOUNDED (by the number of connect attempts) and
+## SELF-CLEARING (they all wake and exit once the endpoint appears). Model it.
+## --------------------------------------------------------------------------
+def orphan_successors(state, max_attempts):
+    endpoint, orphans, attempts = state
+    nxt = set()
+    ## The server/maintainer toggles endpoint readiness.
+    if endpoint == "absent":
+        nxt.add(("present", orphans, attempts))
+    else:
+        nxt.add(("absent", orphans, attempts))
+    ## A connect attempt while the endpoint is absent leaves a blocked responder.
+    if endpoint == "absent" and attempts < max_attempts:
+        nxt.add((endpoint, orphans + 1, attempts + 1))
+    ## Endpoint present -> every blocked responder wakes and exits (drains).
+    if endpoint == "present" and orphans > 0:
+        nxt.add((endpoint, 0, attempts))
+    nxt.discard(state)
+    return nxt
+
+
+def orphan_reachable(max_attempts):
+    initial = ("absent", 0, 0)
+    seen = {initial}
+    queue = deque([initial])
+    edges = {}
+    while queue:
+        state = queue.popleft()
+        succ = orphan_successors(state, max_attempts)
+        edges[state] = succ
+        for nextstate in succ:
+            if nextstate not in seen:
+                seen.add(nextstate)
+                queue.append(nextstate)
+    return seen, edges
+
+
+class TestOrphanResponderModel(unittest.TestCase):
+    """Blocked responders are bounded by attempts and drain when ready."""
+
+    MAX_ATTEMPTS = 4
+
+    def test_orphans_bounded_by_attempts(self) -> None:
+        seen, _ = orphan_reachable(self.MAX_ATTEMPTS)
+        for _endpoint, orphans, attempts in seen:
+            self.assertLessEqual(
+                orphans, attempts, "more orphans than connect attempts"
+            )
+            self.assertLessEqual(
+                attempts, self.MAX_ATTEMPTS, "attempts grew unbounded"
+            )
+
+    def test_orphans_self_clearing(self) -> None:
+        seen, edges = orphan_reachable(self.MAX_ATTEMPTS)
+        drained = can_reach(edges, [s for s in seen if s[1] == 0])
+        self.assertEqual(
+            seen - drained, set(),
+            "a state cannot reach orphans==0 (not self-clearing)",
+        )
+        ## A fully-drained ready state is actually reachable.
+        self.assertTrue(
+            any(s[0] == "present" and s[1] == 0 for s in seen)
         )
 
 

@@ -40,7 +40,20 @@ def locate_script(name: str) -> Path:
         candidate = ancestor / 'libexec' / 'sdwdate-gui' / name
         if candidate.is_file():
             return candidate
-    raise unittest.SkipTest(f"could not locate the '{name}' script")
+    ## The module imported, so the sdwdate-gui package IS present; a missing
+    ## libexec script is a broken install, not an absent subject. Fail loud --
+    ## a SkipTest here reads as success (dist-ai CLAUDE.md: a required subject's
+    ## absence is FATAL, never a silent skip) and would mask the bash tests
+    ## vanishing while the python tests still pass the suite green.
+    ## The module imported, so the sdwdate-gui package IS present; a missing
+    ## libexec script is a broken install, not an absent subject. Fail loud --
+    ## a SkipTest here reads as success (dist-ai CLAUDE.md: a required subject's
+    ## absence is FATAL, never a silent skip) and would mask the bash tests
+    ## vanishing while the python tests still pass the suite green.
+    raise RuntimeError(
+        f"sdwdate_gui is importable but its '{name}' script is missing from "
+        'the package layout; the sdwdate-gui install is broken'
+    )
 
 
 def helper_scripts_path(script: Path) -> str:

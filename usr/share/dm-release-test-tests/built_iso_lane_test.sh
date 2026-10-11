@@ -39,12 +39,24 @@ bad() { printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); }
 # shellcheck disable=SC1090
 source "${subject}"
 
+## A git-describe tail is reduced to a concise, path-safe <count>-g<12-hex> label.
 iso_name='Kicksecure-LXQt-18.2.3.0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26.Intel_AMD64.iso'
 got="$(rt_build_version_from_iso "/home/admin/derivative-binary/x/${iso_name}")"
-if [ "${got}" = '18.2.3.0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26' ]; then
-   ok 'rt_build_version_from_iso derives the git-describe label'
+if [ "${got}" = '222-g0355db7f4fe1' ]; then
+   ok 'rt_build_version_from_iso reduces a git-describe tail to <count>-g<short-sha>'
 else
    bad "rt_build_version_from_iso: got '${got}'"
+fi
+
+## The real dm dev build-version (builder-id prefix + TWO 40-char hashes) is >64 chars and
+## used to FAIL rt_build_version_ok -> require a hand-passed --version. It now auto-reduces to
+## a concise, path-safe, self-describing label (regression for the opaque-version bug).
+devname='Kicksecure-LXQt-adrelanos_f65a6f9f513e60777ed356d7de9032de652e6b91-1974-g8f5fa3b0b722686b80de4e451641ac41c747d843.Intel_AMD64.iso'
+gotdev="$(rt_build_version_from_iso "/home/admin/derivative-binary/x/${devname}")"
+if [ "${gotdev}" = '1974-g8f5fa3b0b722' ] && rt_build_version_ok "${gotdev}"; then
+   ok 'rt_build_version_from_iso auto-derives a concise path-safe label from the full dev version'
+else
+   bad "rt_build_version_from_iso dev version: got '${gotdev}'"
 fi
 
 ## path-safe labels accepted; traversal / separators / bad charset / overlong rejected.
@@ -84,7 +96,7 @@ trap cleanup EXIT
 plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware efi --checks --dry-run 2>&1)"
 if grep --quiet 'origin=built' <<<"${plan}"; then ok '--iso plan records origin=built'; else bad "no origin=built in plan: ${plan}"; fi
 if grep --quiet 'account=eph-inst-kicksecure-built' <<<"${plan}"; then ok '--iso uses the fixed eph-inst-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
-if grep --quiet 'resolved=18.2.3.0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26' <<<"${plan}"; then ok '--iso derives the version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
+if grep --quiet 'resolved=222-g0355db7f4fe1' <<<"${plan}"; then ok '--iso derives the concise version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
 
 ## --iso is kicksecure-only (whonix tests an imported pair, not an ISO install).
 if "${subject}" whonix lxqt --iso "${iso}" --dry-run >/dev/null 2>&1; then

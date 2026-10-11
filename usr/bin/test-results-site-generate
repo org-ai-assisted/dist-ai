@@ -95,13 +95,21 @@ def esc(value):
     s = "" if value is None else str(value)
     s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)          # ANSI CSI (colors)
     s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", s)   # other C0 controls + DEL
-    ## Strip per-line trailing whitespace: captured output ends many lines with spaces, which
-    ## the ASCII-only commit gate flags as suspicious trailing whitespace.
-    s = "\n".join(line.rstrip() for line in s.split("\n"))
     ## ASCII-fold: captured program output (step logs, firmware evidence) carries non-ASCII
     ## (e.g. U+2026 ellipsis from Calamares); numeric-escape it so the emitted page is
     ## ASCII-only (policy + the pre-commit gate) while still displaying the original glyph.
+    ## No rstrip here: esc() also renders identifiers/URLs (run.id, hrefs), where trimming
+    ## trailing whitespace would desync a dir name from its link. Logs use esc_log().
     return html.escape(s, quote=True).encode("ascii", "xmlcharrefreplace").decode("ascii")
+
+
+def esc_log(value):
+    ## esc() for captured MULTI-LINE output: strip per-line trailing whitespace first (the logs
+    ## end many lines with spaces, which the ASCII-only commit gate flags as suspicious), then
+    ## escape. Only for free-text log/evidence blocks, never identifiers.
+    s = "" if value is None else str(value)
+    s = "\n".join(line.rstrip() for line in s.split("\n"))
+    return esc(s)
 
 
 ## Names under the output root the generator owns and must never let a run id
@@ -612,7 +620,7 @@ def _firmware_block(f):
         chip, note = status_chip(site.STATUS_FAIL), "MISMATCH: the guest did not boot the declared lane"
     else:
         chip, note = status_chip(site.STATUS_UNKNOWN), "unverified"
-    pre = ('<pre class="steplog">%s</pre>' % esc(f["fw_evidence"])) if f["fw_evidence"] else ""
+    pre = ('<pre class="steplog">%s</pre>' % esc_log(f["fw_evidence"])) if f["fw_evidence"] else ""
     return (
         '<div class="issue"><h3>Firmware lane %s</h3>'
         "<p>declared <code>%s</code> &middot; detected <code>%s</code> &middot; %s</p>%s</div>"
@@ -687,7 +695,7 @@ def render_step(view, step):
         "<pre class=\"steplog\">%s</pre><pre class=\"steplog\">%s</pre>"
     ) % (
         esc(step["name"]), status_chip(status_cls), esc(step.get("exit")),
-        esc(step.get("stdout_tail", "") or ""), esc(step.get("stderr_tail", "") or ""),
+        esc_log(step.get("stdout_tail", "") or ""), esc_log(step.get("stderr_tail", "") or ""),
     )
     if not shots:
         ## Text-only step: NO image slot, never a broken-image blank.

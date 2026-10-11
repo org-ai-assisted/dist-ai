@@ -52,10 +52,17 @@ def check(label, cond):
         _failures += 1
 
 
-def run_approve(site_out, *args, expect_ok=True):
+def run_approve(site_out, *args, expect_ok=True, attest=True):
+    ## The human-approval interlock requires an attestation env var. The test is a sanctioned
+    ## approval context, so set it by default; attest=False exercises the refusal path.
+    env = dict(os.environ)
+    if attest:
+        env["ai_model_has_obtained_human_written_approval_asked"] = "true"
+    else:
+        env.pop("ai_model_has_obtained_human_written_approval_asked", None)
     res = subprocess.run(  # nosec B603 -- fixed argv, in-tree tool
         [APPROVE, "--site-out", site_out] + list(args),
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
     if expect_ok and res.returncode != 0:
         print("approve failed: %s" % res.stderr, file=sys.stderr)
@@ -119,6 +126,20 @@ res_noapp = run_approve(work, "--run-id", run_id, "--approve", sid,
                         "--goldens-dir", goldens, "--approvals", approvals_path,
                         expect_ok=False)
 check("approve without --approver is refused", res_noapp.returncode != 0)
+
+## HUMAN-APPROVAL INTERLOCK: without the attestation env var, approve is refused (so the AI
+## cannot approve a golden by accident).
+res_noattest = run_approve(work, "--run-id", run_id, "--approve", sid,
+                           "--approver", "patrick", "--goldens-dir", goldens,
+                           "--approvals", approvals_path,
+                           attest=False, expect_ok=False)
+check("approve without the human-approval attestation is refused", res_noattest.returncode != 0)
+
+## The AI session identity must never be recorded as approver, even with the attestation set.
+res_ai = run_approve(work, "--run-id", run_id, "--approve", sid,
+                     "--approver", "dev965-claude", "--goldens-dir", goldens,
+                     "--approvals", approvals_path, expect_ok=False)
+check("an AI approver (*-claude) is refused", res_ai.returncode != 0)
 
 ## An unsafe screenshot id (traversal) is refused.
 res_bad = run_approve(work, "--run-id", run_id, "--approve", "../../etc/x",

@@ -97,6 +97,22 @@ built = model.build_result(
 check("summary passed count", built["summary"]["passed"] == 1)
 check("summary total count", built["summary"]["total"] == 1)
 check("reproducibility reserved null", built["reproducibility"] is None)
+
+## environment.firmware.match is the wrong-lane verdict; mismatch detection keys off the bool
+## False, so a non-bool (e.g. the string "false") must be REFUSED (else it reads green). null
+## (uncaptured) and real bools are accepted.
+def _fw(match):
+    return model.build_result(
+        run_id="fw-1", lane="kicksecure-lxqt", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=1700000000, stop_unix=1700000000,
+        expect=["Kicksecure"], steps=[_passed_step()],
+        environment={"firmware": {"declared": "efi", "detected": "efi", "match": match}},
+    )
+check_raises("validate refuses a non-bool firmware.match", lambda: model.validate(_fw("false")))
+model.validate(_fw(None))
+model.validate(_fw(True))
+check("validate accepts null/bool firmware.match", True)
 check("provenance origin preserved", built["provenance"]["origin"] == model.ORIGIN_DOWNLOADED)
 
 

@@ -114,6 +114,27 @@ def main(argv):
     if approve and not args.approver:
         raise SystemExit("test-results-site-approve: --approver is required to approve")
 
+    ## HUMAN-APPROVAL INTERLOCK. A golden is a HUMAN judgement that a shot is the reference; the
+    ## AI must NEVER approve one by accident (a prior session self-approved 19, approver=claude).
+    ## TWO deliberate gates, both required:
+    ##  1. The caller must ATTEST, via an env var it has to consciously set, that the operator
+    ##     gave explicit WRITTEN approval of these specific shots. The var name is a sentence so
+    ##     setting it is self-incriminating if untrue -- it cannot be set absent-mindedly.
+    ##  2. The recorded approver must be a HUMAN, never the AI session identity
+    ##     ("claude" / "<session>-claude", the commit-stamp name).
+    if approve:
+        attest = os.environ.get("ai_model_has_obtained_human_written_approval_asked")
+        if attest != "true":
+            raise SystemExit(
+                "test-results-site-approve: refusing to approve -- goldens require the operator's "
+                "explicit WRITTEN approval of these exact shots FIRST. Obtain it, then set "
+                "ai_model_has_obtained_human_written_approval_asked=true to attest. This interlock "
+                "exists so the AI cannot approve a golden by accident.")
+        if "claude" in (args.approver or "").lower():
+            raise SystemExit(
+                "test-results-site-approve: refusing AI approver %r -- record the HUMAN operator, "
+                "never the AI session identity." % args.approver)
+
     raw = args.source_date_epoch or os.environ.get("SOURCE_DATE_EPOCH")
     when = int(raw) if raw else int(time.time())
     approved_utc = datetime.datetime.fromtimestamp(
