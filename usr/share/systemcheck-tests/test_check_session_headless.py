@@ -132,16 +132,31 @@ class TestCheckJournalHeadless(ScenarioTestBase):
     _JOURNAL_BROKEN = 'leaprun() { printf "journalctl: unrecoverable error\\n" >&2; return 1; }'
 
     def test_privleapd_unreachable_is_na(self) -> None:
-        ## The confirmed headless artifact: no privleap comm socket -> connect failure -> N/A,
-        ## not a false "could not read the systemd journal".
+        ## The confirmed headless artifact: no user manager AND no privleap comm socket ->
+        ## connect failure -> N/A, not a false "could not read the systemd journal". N/A
+        ## requires headless evidence (user_manager_present=false), matching the sibling.
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
-            env_setup='verbose=1', stubs=self._PRIVLEAP_UNREACHABLE)
+            env_setup='verbose=1\nsystemcheck_user_manager_present=false',
+            stubs=self._PRIVLEAP_UNREACHABLE)
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('info'))
         self.assertFalse(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '0')
         self.assertIn('not applicable', r.joined())
+
+    def test_privleapd_unreachable_warns_in_normal_session(self) -> None:
+        ## HARD GUARD / false-green regression: privleapd DOWN in a normal session (user
+        ## manager present) is a real fault, NOT a headless artifact. Even with the default
+        ## autoskip on, a connect failure must warn -- never report the journal as clean N/A.
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal',
+            env_setup='systemcheck_user_manager_present=true',
+            stubs=self._PRIVLEAP_UNREACHABLE)
+        self.assertCleanRun(r)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '1')
+        self.assertIn('Could not read the systemd journal', r.joined())
 
     def test_genuine_journal_failure_still_warns(self) -> None:
         ## HARD GUARD: a real read failure (privleapd connected) is NOT masked.

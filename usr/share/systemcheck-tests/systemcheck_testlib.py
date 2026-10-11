@@ -134,13 +134,15 @@ def _source_block(sources) -> str:
     return '\n'.join(f'source {shlex.quote(path)}' for path in sources)
 
 
-## A top-level `[prefix_]main "$@"` dispatch runs the program when the file is
-## executed -- and, absent a source-guard, ALSO when it is merely sourced.
-_MAIN_DISPATCH_RE = re.compile(r'(?m)^\s*(?:[A-Za-z_][A-Za-z0-9_]*_)?main\b[^\n]*"\$@"')
+## A `[prefix_]main "$@"` dispatch runs the program when the file is executed --
+## and, absent a source-guard, ALSO when it is merely sourced. Matched per line.
+_MAIN_DISPATCH_RE = re.compile(r'(?:[A-Za-z_][A-Za-z0-9_]*_)?main\b[^\n]*"\$@"')
 ## The one canonical source-guard (the `sourceable` skill's form, used verbatim by
 ## systemcheck / log-checker / updatecheck): the dispatch runs only when executed,
-## never when sourced for analysis.
+## never when sourced for analysis. Substring for a same-line guard; the line-regex
+## matches the guard's own `if ...; then` line (NOT a comment echoing the text).
 _SOURCE_GUARD = 'was_executed "${BASH_SOURCE[0]}"'
+_SOURCE_GUARD_RE = re.compile(r'^\s*if was_executed "\$\{BASH_SOURCE\[0\]\}"; then\s*$')
 
 
 def _assert_source_able(path: str) -> None:
@@ -153,16 +155,34 @@ def _assert_source_able(path: str) -> None:
     canary, log-checker) ends by dispatching its main -- harmless on source ONLY
     behind the ``was_executed "${BASH_SOURCE[0]}"`` guard. WITHOUT that guard,
     sourcing runs the whole tool UNSANDBOXED on the host (live network checks, file
-    writes, cleanup). Detect the anti-pattern with a simple match and fail LOUD
-    (fail CLOSED -- an un-verifiable subject is refused, never sourced-and-run).
+    writes, cleanup).
+
+    A dispatch is accepted ONLY when it sits DIRECTLY inside the canonical guard:
+    the dispatch line carries the guard itself, or its preceding code line (blanks
+    / comments skipped) is the `if was_executed "${BASH_SOURCE[0]}"; then` open. A
+    bare substring of the guard ANYWHERE in the file (a comment, a docstring) does
+    NOT count -- that would let an unguarded dispatch through (fail-open). Fail
+    CLOSED: an un-verifiable dispatch is refused, never sourced-and-run.
     """
-    text = read(path)
-    if _MAIN_DISPATCH_RE.search(text) and _SOURCE_GUARD not in text:
+    lines = read(path).split('\n')
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('#') or not _MAIN_DISPATCH_RE.match(stripped):
+            continue
+        if _SOURCE_GUARD in line:
+            continue
+        prev = idx - 1
+        while prev >= 0 and (not lines[prev].strip()
+                             or lines[prev].lstrip().startswith('#')):
+            prev -= 1
+        if prev >= 0 and _SOURCE_GUARD_RE.match(lines[prev]):
+            continue
         raise AssertionError(
-            f"refusing to source {path!r}: it dispatches a *main \"$@\" without "
-            f'the {_SOURCE_GUARD} source-guard, so sourcing would run the whole '
-            'tool unsandboxed (network + host writes). Make it source-able '
-            '(sourceable skill) before a test sources it.')
+            f"refusing to source {path!r}: the main dispatch on line {idx + 1} is "
+            'not inside the canonical was_executed "${BASH_SOURCE[0]}" source-guard, '
+            'so sourcing would run the whole tool unsandboxed (network + host '
+            'writes). Make it source-able (sourceable skill) before a test sources '
+            'it.')
 
 
 def run_sourced(sources, call: str, setup: str = '') -> str:
@@ -349,6 +369,18 @@ def _nearest_existing_dir(path: str) -> str:
     return path
 
 
+def _normpath(path: str) -> str:
+    """os.path.normpath, but also collapse a leading '//' to '/'. POSIX normpath
+    PRESERVES exactly two leading slashes, so '//absent/x' keeps its '//' and would
+    slip past the '/'-root refusal below AND the subject-overlay guard (string
+    compare), while bwrap's kernel-side mount still resolves '//' to the real root/
+    dir. bwrap treats '//' as '/', so collapse it to keep one canonical form."""
+    normalized = os.path.normpath(path)
+    if normalized.startswith('//') and not normalized.startswith('///'):
+        normalized = normalized[1:]
+    return normalized
+
+
 def tmpfs_mounts(hide_dirs, place_paths) -> list[str]:
     """The bwrap --tmpfs targets for an isolated scenario (none nested).
 
@@ -357,14 +389,20 @@ def tmpfs_mounts(hide_dirs, place_paths) -> list[str]:
     (the in-sandbox prefix then `mkdir -p`s the parent inside that tmpfs). An
     absent hide_dir needs no mount: its contents are already absent. A target
     under another target is dropped: it is already inside a writable tmpfs."""
+    ## Materialize first: both args are read twice (this validation splat, then the
+    ## normalization below), so a one-shot iterable must not be exhausted by the
+    ## first pass -- else the function silently returns no targets and applies no
+    ## tmpfs (the scenario runs un-isolated against the wrong fs state).
+    hide_dirs = list(hide_dirs)
+    place_paths = list(place_paths)
     for path in [*hide_dirs, *place_paths]:
         if not os.path.isabs(path):
             raise ValueError(f"isolated overlay path must be absolute: {path!r}")
-    ## Normalize first so a '..' / doubled-slash target collapses to the real
+    ## Normalize first so a '..' / '//' / doubled-slash target collapses to the real
     ## directory bwrap's kernel-side mount would resolve it to -- the returned
     ## targets then compare string-equal against the normalized subject sources.
-    hide_dirs = [os.path.normpath(d) for d in hide_dirs]
-    place_paths = [os.path.normpath(p) for p in place_paths]
+    hide_dirs = [_normpath(d) for d in hide_dirs]
+    place_paths = [_normpath(p) for p in place_paths]
     targets = {d for d in hide_dirs if os.path.isdir(d)}
     for p in place_paths:
         ancestor = _nearest_existing_dir(os.path.dirname(p))
@@ -432,8 +470,8 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
     ## Normalize the destinations so the guard, the mounts, and bwrap all reason
     ## about the same resolved path: a '..' segment cannot slip a fake past the
     ## guard yet still resolve, kernel-side, onto the real subject.
-    place = [(os.path.normpath(p), c, x) for p, c, x in place]
-    bind_files = [(os.path.normpath(p), c, x) for p, c, x in bind_files]
+    place = [(_normpath(p), c, x) for p, c, x in place]
+    bind_files = [(_normpath(p), c, x) for p, c, x in bind_files]
 
     tmpfs_dirs = tmpfs_mounts(hide_dirs, [p for p, _c, _x in place])
     ## An overlay onto the subject's own files would run the scenario against a
@@ -442,7 +480,7 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
     ## sources, and a bind_files dest equal to a sourced file REPLACES it before
     ## `source`. Both return a green that never exercised the subject, so refuse
     ## them by name (normalized, so a '..' segment cannot evade the check).
-    subject_sources = [os.path.normpath(s) for s in fragment_sources(check_file)]
+    subject_sources = [_normpath(s) for s in fragment_sources(check_file)]
     bind_dests = {abs_path for abs_path, _c, _x in bind_files}
     for source in subject_sources:
         for directory in tmpfs_dirs:

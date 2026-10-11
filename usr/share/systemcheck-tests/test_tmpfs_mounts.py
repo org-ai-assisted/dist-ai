@@ -93,6 +93,32 @@ class TestTmpfsMounts(unittest.TestCase):
         with self.assertRaises(ValueError):
             tmpfs_mounts([], ['/dist-ai-nonexistent-top-xyzzy/foo'])
 
+    def test_double_slash_root_ancestor_is_refused(self) -> None:
+        ## os.path.normpath PRESERVES a leading '//', so '//absent/foo' kept its
+        ## '//' and walked to the ancestor '//' != '/', slipping past the root
+        ## refusal and returning a tmpfs over the root filesystem. Collapse '//'
+        ## so the refusal still fires.
+        self.assertFalse(os.path.isdir('/dist-ai-nonexistent-top-xyzzy'))
+        with self.assertRaises(ValueError):
+            tmpfs_mounts([], ['//dist-ai-nonexistent-top-xyzzy/foo'])
+
+    def test_double_slash_hide_dir_is_normalized(self) -> None:
+        ## A '//'-prefixed hide dir must collapse to its single-slash real target,
+        ## not stay a distinct '//...' string the subject-overlay guard misses.
+        self.assertEqual(
+            tmpfs_mounts(['/' + self.p('usr/share/qubes')], []),
+            [self.p('usr/share/qubes')])
+
+    def test_one_shot_iterable_args_are_materialized(self) -> None:
+        ## Both args are read twice (validation splat, then normalization); a
+        ## one-shot generator exhausted by the first pass silently yielded no
+        ## targets (no tmpfs -> the scenario runs un-isolated). Materialize first.
+        existing = self.p('usr/share/qubes')
+        self.assertEqual(
+            tmpfs_mounts((d for d in [existing]), []), [existing])
+        with self.assertRaises(ValueError):
+            tmpfs_mounts([], (p for p in ['/dist-ai-nonexistent-top-xyzzy/foo']))
+
 
 if __name__ == '__main__':
     unittest.main()
