@@ -129,12 +129,35 @@ class TestAssertSourceAble(unittest.TestCase):
 
     def test_same_line_comment_echoing_guard_is_refused(self) -> None:
         ## Hardens the same-line-guard acceptance: a TRAILING comment that echoes
-        ## the full `if was_executed "${BASH_SOURCE[0]}"; then` guard text must be
-        ## stripped before the same-line check, so it cannot vouch for an unguarded
-        ## dispatch (fail-open the whole-line scan would otherwise introduce).
+        ## the full `if was_executed "${BASH_SOURCE[0]}"; then` guard text must not
+        ## vouch for an unguarded dispatch (the guard must ENCLOSE the dispatch, not
+        ## merely co-occur on the line).
         path = self._write(
             '#!/bin/bash\nmain() { echo hi; }\n'
             'main "$@"  # if was_executed "${BASH_SOURCE[0]}"; then (old guard)\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+    def test_metachar_preceded_comment_echoing_guard_is_refused(self) -> None:
+        ## The dispatch is terminated by `;` and the guard phrase sits in a comment
+        ## whose `#` follows the `;` with NO space (a real bash comment). A
+        ## whitespace-only comment strip left this un-stripped, so the guard text
+        ## falsely vouched for the dispatch -- an unguarded `main "$@"` that runs on
+        ## source. The full-line shape match must refuse it.
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            'main "$@";# if was_executed "${BASH_SOURCE[0]}"; then\n')
+        with self.assertRaisesRegex(AssertionError, 'refusing to source'):
+            _assert_source_able(path)
+
+    def test_closed_guard_then_bare_dispatch_is_refused(self) -> None:
+        ## The guard opens AND closes (`then :; fi`), then a BARE dispatch follows on
+        ## the same line -- it runs on source, unguarded. A co-occurrence check (guard
+        ## text present + a dispatch present) wrongly accepted it; requiring the guard
+        ## to ENCLOSE the dispatch refuses it.
+        path = self._write(
+            '#!/bin/bash\nmain() { echo hi; }\n'
+            'if was_executed "${BASH_SOURCE[0]}"; then :; fi; main "$@"\n')
         with self.assertRaisesRegex(AssertionError, 'refusing to source'):
             _assert_source_able(path)
 
