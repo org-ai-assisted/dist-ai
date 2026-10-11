@@ -646,13 +646,21 @@ def render_step(view, step):
     ## NAME is NOT sortable (alphabetical != capture order), so do NOT re-sort here.
     imgs = []
     for shot in shots:
-        imgs.append(_shot_html(view, shot))
+        imgs.append(_shot_html(view, shot, status_cls))
     return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
 
 
-def _shot_html(view, shot):
+def _shot_html(view, shot, step_status_cls=None):
     bucket_cls = _bucket_status_class(shot["bucket"])
-    parts = ["<p>%s" % status_chip(bucket_cls)]
+    ## A screenshot's visual bucket (golden MATCH/changed/...) is a SEPARATE axis from
+    ## the step's functional pass/fail. A visual MATCH is NOT a functional pass, so never
+    ## show a green pass chip on a shot whose step did not functionally pass -- otherwise
+    ## a FAILED step's screenshot reads green (the "pass -- within tolerance" on a failure
+    ## screen). The visual reason is still shown as context below.
+    shot_cls = bucket_cls
+    if step_status_cls is not None and step_status_cls != site.STATUS_PASS:
+        shot_cls = step_status_cls
+    parts = ["<p>%s" % status_chip(shot_cls)]
     ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
     ## story" is readable. A lone unnamed shot carries the placeholder name "screenshot"
     ## (one-shot runs) -- omit the redundant caption there.

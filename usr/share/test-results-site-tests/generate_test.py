@@ -122,6 +122,25 @@ def build_plane(root, goldens, approvals_path):
         "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
     }
 
+    ## I: FAIL (rc 5) with a screenshot that MATCHES an approved golden. The visual
+    ## bucket is MATCH but the step FAILED, so the shot chip must NOT read green -- a
+    ## failed step's screenshot showing a pass chip is a fabricated-green signal (the
+    ## "pass -- within tolerance" shown on a real calamares failure screen). Regression.
+    i_dir = os.path.join(root, "kicksecure-lxqt-fail-18-2-3-6", "20261006T000000Z")
+    write_png(os.path.join(i_dir, "calamares-install.png"), (10, 120, 10))
+    write_result(i_dir, "kicksecure-lxqt-fail-18-2-3-6-1", "kicksecure-lxqt-fail",
+                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
+    sid_i = "kicksecure-lxqt-fail/calamares-install"
+    norm_i = compare.normalize_image(os.path.join(i_dir, "calamares-install.png"), rects)
+    golden_i = os.path.join(goldens, sid_i + ".webp")
+    os.makedirs(os.path.dirname(golden_i), exist_ok=True)
+    norm_i.save(golden_i, format="WEBP", lossless=True, quality=100, method=6)
+    approvals["approvals"][sid_i] = {
+        "golden_sha256": compare.sha256_file(golden_i),
+        "status": "approved", "approver": "tester",
+        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
+    }
+
     ## B: new -- PASS with a screenshot but no golden -> NEW.
     b_dir = os.path.join(root, "kicksecure-cli-18-2-3-5", "20261006T000000Z")
     write_png(os.path.join(b_dir, "calamares-install.png"), (10, 10, 120))
@@ -303,6 +322,17 @@ check("text-only run page is still green", "st-pass" in e_page)
 ## approved golden path works end to end.
 check("green run page is not flagged new/changed",
       "st-new" not in a_page and "st-changed" not in a_page)
+
+## I: a FAILED run whose screenshot visually MATCHES its golden must NOT render a green
+## pass chip on the shot -- a failed step's screenshot reading "pass" is a fabricated
+## green (status classes appear only as chip classes; style.css is external). Canary:
+## before the fix, the MATCH bucket mapped straight to a st-pass chip regardless of the
+## step's functional FAIL.
+i_page = read(os.path.join(out1, "kicksecure-lxqt-fail-18-2-3-6-1", "index.html"))
+check("failed run with a matching shot still renders an <img", "<img" in i_page)
+check("failed run page is st-fail", "st-fail" in i_page)
+check("failed run page has NO green pass chip (shot not green on a failed step)",
+      "st-pass" not in i_page)
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).
