@@ -120,6 +120,7 @@ core_suites=(
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-release-test-tests
+   dm-calamares-install-tests
    dm-build-account-tests
    test-results-site-tests
    dm-vm-lock-tests

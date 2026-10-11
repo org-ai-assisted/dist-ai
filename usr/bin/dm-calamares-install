@@ -340,39 +340,40 @@ open_terminal() {
    die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
 }
 
-## Run one release-critical check in-guest via the terminal and classify by an
-## OCR marker. 0 PASS / 1 FAIL. Marker design (learned the hard way):
-##  - ALL LETTERS, no digit: tesseract flakily misreads digits in the terminal font
-##    (a '5' reads as 'S'), so a per-number marker like DMCHKPASS5 never matches.
-##  - built from a shell var (DM${M}...) so the typed command ECHO does not itself
-##    contain the literal marker -- else a poll matches before the command even runs.
-##  - `clear` first so a PRIOR check's marker cannot cross-match this one.
+## Run one release-critical check in-guest via the terminal and classify by its EXIT
+## CODE, read from a file over the guestcontrol exec channel -- NOT by OCR. 0 PASS /
+## 1 FAIL. Why a file, not a screen marker: tesseract flaked on the on-screen marker
+## (it misread the terminal font), so a completed check timed out as "did not complete".
+## The command is still TYPED into the real graphical login terminal (that full user
+## session is what makes this the authoritative check-8 gate), but completion is detected
+## by polling a `.rc` file via gc_run -- a plain guest file read, reliable and sessionless,
+## the same channel already trusted for the failure output below.
 run_check() {
-   local num="$1" cmd="$2" timeout="$3" deadline text session out
-   ## Redirect the check command's own output to a persistent file so a failure can
-   ## be audited off the disk afterwards (the login session's scrollback is lost on
-   ## power-off); only the PASS/FAIL marker reaches the screen for the OCR.
-   printf '%s' "clear; M=CHK; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1 && echo DM\${M}PASSMARK || echo DM\${M}FAILMARK; sync" \
+   local num="$1" cmd="$2" timeout="$3" deadline session out rc_raw rc_str
+   session="${RELEASE_CHECK_SESSION[${num}]}"
+   ## Type the check into the terminal: run it, persist its OWN output (scrollback is lost
+   ## on power-off), then write its EXIT CODE to a .rc file and fsync. '\$?' is escaped so it
+   ## is captured by the GUEST shell (the local shell must not expand it); ${cmd}/${num}
+   ## expand here. The '.rc' file APPEARING with an integer is the completion signal.
+   printf '%s' "clear; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1; echo \$? > /var/tmp/dmcheck-${num}.rc; sync" \
       | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
-   ## let `clear` + the command run before the first OCR (so the command echo, which
-   ## holds the literal-var marker, is gone and only real output is on screen).
-   sleep 3
    deadline=$(( SECONDS + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
-      gui_scan 2a aa
-      text="$(gui_ocr)"
-      if [[ "${text,,}" =~ dmchkpassmark ]]; then
-         printf '%s\n' "${me}: check ${num} PASS"
-         return 0
-      fi
-      if [[ "${text,,}" =~ dmchkfailmark ]]; then
-         printf '%s\n' "${me}: check ${num} FAIL"
-         ## Surface the failing check's OWN output (otherwise lost on power-off):
-         ## read the persisted file via guestcontrol -- a plain file read needs no
-         ## user session, so it is reliable (unlike OCR). Best-effort; logged to
-         ## stderr so a check failure is diagnosable without a re-run.
-         session="${RELEASE_CHECK_SESSION[${num}]}"
+      ## Poll the .rc file. A plain cat over the exec channel needs no graphical session, so
+      ## it is reliable (unlike OCR). Accept ONLY a clean integer: a missing file (check still
+      ## running) or a torn read is ignored and retried, never misread as completion.
+      rc_raw="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.rc 2>/dev/null" 2>/dev/null || true)"
+      read -r rc_str <<< "${rc_raw}" || true
+      if [[ "${rc_str}" =~ ^[0-9]+$ ]]; then
+         if [ "${rc_str}" = "0" ]; then
+            printf '%s\n' "${me}: check ${num} PASS"
+            return 0
+         fi
+         printf '%s\n' "${me}: check ${num} FAIL (rc=${rc_str})"
+         ## Surface the failing check's OWN output (otherwise lost on power-off), over the
+         ## same reliable exec channel. Best-effort; to stderr + the check log so a failure is
+         ## diagnosable without a re-run.
          out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
          if [ -n "${out}" ]; then
             printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
@@ -382,7 +383,7 @@ run_check() {
          fi
          return 1
       fi
-      sleep 10
+      sleep 5
    done
    die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
 }

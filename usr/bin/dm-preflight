@@ -168,6 +168,76 @@ else
    printf '%s\n' "${lagging_gitlinks}" | sed 's/^/          /' >&2
 fi
 
+## --- 2b. gitlink BEHIND the submodule's own published 'ai' tip ----------------
+## The build-from-latest-'ai' contract: CI checks out each submodule's fork 'ai'
+## branch (ci/checkout-fork-submodule-branches), so a parent gitlink that TRAILS
+## that branch's tip builds STALE fork code. The Oct-8 ISO failed check 8 with
+## 'systemcheck unknown option: --ci' for exactly this -- the pin predated the
+## fork commit that added --ci. UNLIKE stage 2 (ahead of the pin = normal
+## in-progress, report-only), a pin BEHIND the published 'ai' tip is a hard
+## failure: it is never what you want to spend a build on.
+##
+## Scoped narrowly so it does not cry wolf: only a submodule that (a) HAS an 'ai'
+## branch on a NETWORK remote and (b) whose pin is strictly an ANCESTOR of that
+## tip fails. No 'ai' branch -> the pin legitimately stands (ci/checkout-fork-branch
+## keeps it). A local-path scratch remote cannot answer -> UNVERIFIED, not failed
+## (the same leniency as the fetchability stage). Ahead/diverged is left to stage
+## 2 / stage 3. A git/network error where a network remote SHOULD answer is a hard
+## failure -- a green that could not be established is fabricated.
+stage "submodules: gitlink behind the published 'ai' tip"
+behind_rc=0
+# shellcheck disable=SC2016  # inner-shell payload: ${toplevel}/${sm_path}/${displaypath} resolved by git submodule foreach at runtime
+behind_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive '
+   net_remote=""
+   case "$(git remote get-url origin 2>/dev/null)" in
+      *://*|*@*:*) net_remote=origin ;;
+   esac
+   if [ -z "${net_remote}" ]; then
+      for r in $(git remote); do
+         case "$(git remote get-url "${r}" 2>/dev/null)" in
+            *://*|*@*:*) net_remote="${r}"; break ;;
+         esac
+      done
+   fi
+   if [ -z "${net_remote}" ]; then
+      printf "UNVERIFIED %s (no network remote to read the ai tip)\n" "${displaypath}"
+      exit 0
+   fi
+   ai_tip="$(git ls-remote "${net_remote}" refs/heads/ai 2>/dev/null | { read -r sha _ ; printf "%s" "${sha}" ; })" \
+      || { printf "AITIPFAIL %s\n" "${displaypath}"; exit 0; }
+   [ -n "${ai_tip}" ] || exit 0
+   pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
+   [ -n "${pinned}" ] || exit 0
+   [ "${pinned}" = "${ai_tip}" ] && exit 0
+   git fetch --quiet "${net_remote}" refs/heads/ai 2>/dev/null \
+      || { printf "AITIPFAIL %s\n" "${displaypath}"; exit 0; }
+   if git merge-base --is-ancestor "${pinned}" FETCH_HEAD 2>/dev/null; then
+      printf "BEHIND %s (pinned %.12s, ai-tip %.12s)\n" "${displaypath}" "${pinned}" "${ai_tip}"
+   fi
+   exit 0' 2>/dev/null )" || behind_rc="$?"
+if [ "${behind_rc}" -ne 0 ]; then
+   bad "git submodule foreach failed (rc ${behind_rc}); behind-'ai'-tip could NOT be assessed -- a green here would be fabricated"
+else
+   behind_lines="$( printf '%s\n' "${behind_report}" | sed -n -e 's/^BEHIND //p' )"
+   aitipfail_lines="$( printf '%s\n' "${behind_report}" | sed -n -e 's/^AITIPFAIL //p' )"
+   unverified_lines="$( printf '%s\n' "${behind_report}" | sed -n -e 's/^UNVERIFIED //p' )"
+   if [ -n "${aitipfail_lines}" ]; then
+      bad "could not read/fetch the published 'ai' tip for these submodules (network remote present); behind-'ai'-tip NOT established -- a green would be fabricated:"
+      printf '%s\n' "${aitipfail_lines}" | sed 's/^/          /' >&2
+   fi
+   if [ -n "${behind_lines}" ]; then
+      bad "these submodule gitlinks are BEHIND their published 'ai' tip; CI would build STALE fork code. Build from latest 'ai' (remaster + ci/checkout-fork-submodule-branches ai) and re-pin the gitlink on 'ai':"
+      printf '%s\n' "${behind_lines}" | sed 's/^/          /' >&2
+   fi
+   if [ -n "${unverified_lines}" ]; then
+      printf '%s\n' "   NOTE: the 'ai' tip could not be read for these (no network remote in this clone); freshness vs 'ai' NOT checked:" >&2
+      printf '%s\n' "${unverified_lines}" | sed 's/^/          /' >&2
+   fi
+   if [ -z "${behind_lines}${aitipfail_lines}" ]; then
+      ok "no submodule gitlink trails its published 'ai' tip"
+   fi
+fi
+
 ## --- 3. can CI actually FETCH every pin? --------------------------------------
 ## The one gitlink property that breaks a build outright: a pin CI cannot get.
 ## A submodule commit that exists only in a local clone -- committed but never

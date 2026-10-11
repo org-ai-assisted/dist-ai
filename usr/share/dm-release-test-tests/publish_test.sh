@@ -98,6 +98,8 @@ check "summary total 1" "$(grep --quiet '"total": 1' -- "${json}" && printf '%s'
 ## Attachment references the stored shot by name + mediaType.
 check "attachment path" "$(grep --quiet '"path": "calamares-install.png"' -- "${json}" && printf '%s' "true" || printf '%s' "false")"
 check "attachment mediaType png" "$(grep --quiet '"mediaType": "image/png"' -- "${json}" && printf '%s' "true" || printf '%s' "false")"
+## No --provenance-artifact-sha256 was passed, so the artifact digest stays null.
+check "sha256 null when none passed" "$(grep --quiet '"sha256": null' -- "${json}" && printf '%s' "true" || printf '%s' "false")"
 
 ## latest must point at the run's timestamp dir (basename of outdir).
 latest="${results_root}/kicksecure-18-2-3-5/latest"
@@ -195,6 +197,28 @@ image_test_results_publish "${results_root}" "${owner}" \
 check "emitter failure fails the publish (nonzero)" "$([ "${emitfail_rc}" -ne 0 ] && printf '%s' "true" || printf '%s' "false")"
 check "no latest when result.json was not written" "$([ ! -e "${results_root}/emitfail-run/latest" ] && printf '%s' "true" || printf '%s' "false")"
 check "no result.json for the failed emit" "$([ -z "$(find "${results_root}/emitfail-run" -name result.json 2>/dev/null)" ] && printf '%s' "true" || printf '%s' "false")"
+
+## Provenance sha256: a valid 64-hex digest flows into provenance.artifact.digest.sha256
+## (identifies the EXACT ISO); a malformed one is DROPPED (stays null) -- it is written as
+## root, so junk must not reach the record. Canary: the old publisher had no
+## --provenance-artifact-sha256 passthrough, so the digest was always null.
+sha_valid='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+sha_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-sha-18-2-3-5" "eph-inst-kicksecure-sha" "calamares-install" \
+   0 "${shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure --provenance-artifact-sha256 "${sha_valid}")"
+sha_json="${sha_out}/result.json"
+check "valid sha256 recorded in provenance" "$(grep --quiet "\"sha256\": \"${sha_valid}\"" -- "${sha_json}" && printf '%s' "true" || printf '%s' "false")"
+
+badsha_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-badsha-18-2-3-5" "eph-inst-kicksecure-badsha" "calamares-install" \
+   0 "${shot}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect Kicksecure --provenance-artifact-sha256 'NOT-A-SHA')"
+badsha_json="${badsha_out}/result.json"
+check "malformed sha256 dropped (stays null)" "$(grep --quiet '"sha256": null' -- "${badsha_json}" && printf '%s' "true" || printf '%s' "false")"
+check "malformed sha256 value not in json" "$(grep --quiet 'NOT-A-SHA' -- "${badsha_json}" && printf '%s' "false" || printf '%s' "true")"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2

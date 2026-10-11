@@ -44,6 +44,8 @@ except ImportError as exc:
 
 GEN = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "bin", "test-results-site-generate")
 EPOCH = 1_700_000_000
+## A recognizable 64-hex ISO digest the detail page must surface (run M).
+SHA256_M = "0123456789abcdef" * 4
 
 _failures = 0
 
@@ -62,7 +64,8 @@ def write_png(path, color):
     Image.new("RGB", (40, 30), color).save(path, format="PNG")
 
 
-def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_name):
+def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_name,
+                 artifact_sha256=None):
     atts = []
     if shot_name:
         atts = [model.make_attachment("screenshot", "image/png", shot_name)]
@@ -70,10 +73,12 @@ def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_
         name=step_name, status=model.step_status_from_rc(rc), exit_code=rc,
         attachments=atts,
     )
+    provenance = {"artifact_sha256": artifact_sha256} if artifact_sha256 else None
     result = model.build_result(
         run_id=run_id, lane=lane, version=version, builder="dm-release-test",
         mode="calamares-install", origin=model.ORIGIN_DOWNLOADED, rc=rc,
         generated_unix=stop_unix, stop_unix=stop_unix, steps=[step],
+        provenance=provenance,
     )
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "result.json"), "w", encoding="ascii") as handle:
@@ -220,6 +225,13 @@ def build_plane(root, goldens, approvals_path):
          ("first-boot", "03-first-boot.png")],
     )
 
+    ## M: a PASS run that recorded the ISO sha256 -> the detail page must SHOW it, so the
+    ## exact artifact under test is identifiable. Regression for the provenance-digest surfacing.
+    m_dir = os.path.join(root, "kicksecure-sha-18-2-3-5", "20261006T000000Z")
+    write_result(m_dir, "kicksecure-sha-18-2-3-5-1", "kicksecure-sha", "18.2.3.5",
+                 0, now, "verify-signature", None,
+                 artifact_sha256=SHA256_M)
+
     with open(approvals_path, "w", encoding="ascii") as handle:
         handle.write(json.dumps(approvals, indent=2) + "\n")
 
@@ -307,6 +319,11 @@ check("overview lists the FAIL run before the PASS run",
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))
 check("green run page has an <img", "<img" in a_page)
+## Provenance digest: run M recorded a sha256, so its detail page shows the exact ISO
+## digest; run A recorded none, so its page must NOT invent a sha256 line.
+m_page = read(os.path.join(out1, "kicksecure-sha-18-2-3-5-1", "index.html"))
+check("run with a recorded sha256 shows it on the detail page", SHA256_M in m_page)
+check("a run with no sha256 shows no sha256 line", "sha256 <code" not in a_page)
 ## Per-run detail pages are ephemeral -> noindex (kept out of the sitemap); the
 ## overview is the stable landing page and stays indexable.
 check("run detail page is noindex", 'name="robots" content="noindex"' in a_page)
