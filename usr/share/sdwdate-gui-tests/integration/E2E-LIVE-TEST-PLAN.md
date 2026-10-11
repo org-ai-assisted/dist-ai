@@ -207,10 +207,23 @@ after it has gone DOWN (the action must fail gracefully, not wedge the server).
 
 ## Resume / automation notes
 
+- The handshake core of the cross-VM scenarios (S1-S9) runs UNATTENDED, no qubes,
+  as `sdwdate-gui-tests-e2e`: it chains the real maintainer -> responder -> proxy
+  across simulated server up/down transitions (the AF_UNIX server socket binds and
+  unbinds; the maintainer's symlink-create fires the responder's inotify event).
+  `dist-ai-tests-all --e2e --component sdwdate-gui --repo-root ~/derivative-maker`
+  (also gated in CI via .github/workflows/dist-ai-e2e.yml). Scenario map:
+  - S2/S3 -> test_server_up_full_handshake
+  - S7    -> test_server_appears_wakes_waiting_responder
+  - S4/S5 -> test_server_drops_then_returns
+  - S8    -> test_disabled_gives_up
+  - C1    -> test_non_server_vm_gives_up
+  - C3    -> test_transient_failure_retries_no_flag
 - The headless tray/menu/SNI portions run unattended:
   `dist-ai-tests-all --integration --component sdwdate-gui --repo-root ~/derivative-maker`
   (installs its own tooling list when missing; skips loud otherwise).
-- The cross-VM scenarios above require a live Qubes host and are operator-driven;
-  each step lists its exact command and its O1-O4 observation point so a run can
-  be scripted from dom0 (`qvm-start`/`qvm-shutdown` for the lifecycle, the
-  journ/ls probes for evidence) once a dedicated test session is available.
+- What stays OPERATOR-DRIVEN (needs a live Qubes host + dom0): the real qvm
+  lifecycle (`qvm-start`/`qvm-shutdown`), the dom0 qrexec-policy log-spam
+  observation (O1), the real cross-qube qrexec round-trip, and the live tray
+  button actions firing RPC into real client VMs. Each step above lists its exact
+  command and O1-O4 observation point so a dedicated test session can run it.
