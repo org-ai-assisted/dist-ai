@@ -45,12 +45,31 @@ Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 
 while [ "$#" -ge 1 ]; do
    case "$1" in
-      --flavor) flavor="$2"; shift 2 ;;
-      --target) target="$2"; shift 2 ;;
-      --freshness) freshness="$2"; shift 2 ;;
-      --dir) dir="$2"; shift 2 ;;
-      --help|-h) usage; exit 0 ;;
-      *) printf '%s\n' "${me}: ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+      --flavor)
+         flavor="$2"
+         shift 2
+         ;;
+      --target)
+         target="$2"
+         shift 2
+         ;;
+      --freshness)
+         freshness="$2"
+         shift 2
+         ;;
+      --dir)
+         dir="$2"
+         shift 2
+         ;;
+      --help|-h)
+         usage
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${me}: ERROR: unknown argument: $1" >&2
+         usage >&2
+         exit 2
+         ;;
    esac
 done
 
@@ -66,6 +85,7 @@ printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
 
 ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
 printf '%s\n' "${me}: cascade: configure pending dpkg"
+## style-ok: allow-dpkg -- a legit pending-config fixup before a build, not a package install
 sudo --non-interactive dpkg --configure -a || true
 
 ## Release loop/kpartx devices a PRIOR failed build leaked: grml-debootstrap's end-of-image
@@ -115,6 +135,7 @@ build_rc=0
 
 printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' "${me}: resulting images (newest first):"
+# shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
 ls -t /home/admin/derivative-binary/*/*.iso 2>/dev/null | head -5 || printf '%s\n' "${me}: (no .iso found -- inspect the log)"
 printf '%s\n' "DM-IMAGE-BUILD-DONE rc=${build_rc}"
 exit "${build_rc}"
