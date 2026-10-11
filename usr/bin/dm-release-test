@@ -255,6 +255,19 @@ rt_build_version_from_iso() {
          ;;
    esac
    [ -n "${v}" ] || return 1
+   ## The dm dev build-version is <builder>_<basehash>-<count>-g<40-hex> -- a builder-id prefix
+   ## plus TWO 40-char hashes, far over the 64-char path-component bound. Reduce a git-describe
+   ## tail to a concise, MEANINGFUL, path-safe label <count>-g<12-hex> (commit count + short
+   ## sha), so a built run needs no hand-passed --version and its cell is self-describing.
+   local vcount vsha
+   vsha="${v##*-g}"       # after the last -g (the commit sha)
+   vcount="${v%-g*}"      # before the last -g
+   vcount="${vcount##*-}" # the <count> just before -g
+   case "${vcount}" in ''|*[!0-9]*) vcount='' ;; esac
+   case "${vsha}" in ''|*[!0-9a-f]*) vsha='' ;; esac
+   if [ -n "${vcount}" ] && [ -n "${vsha}" ] && [ "${#vsha}" -ge 7 ]; then
+      v="${vcount}-g${vsha:0:12}"
+   fi
    printf '%s\n' "${v}"
 }
 
