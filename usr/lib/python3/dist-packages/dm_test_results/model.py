@@ -209,6 +209,7 @@ def build_result(
     expect=None,
     steps=None,
     provenance=None,
+    environment=None,
 ):
     """Assemble a dm-test-result/v1 document. `reproducibility` is reserved null (a
     later phase fills {determinism, rebuild} sub-blocks without moving any existing
@@ -264,6 +265,10 @@ def build_result(
         "steps": list(steps),
         "provenance": prov,
         "reproducibility": None,
+        ## Per-run environment EVIDENCE (null when not captured). firmware carries the proof of
+        ## the boot lane the guest ACTUALLY ran -- {declared, detected, evidence (command+output),
+        ## match} -- so a detail page shows it, not just the harness's --firmware label.
+        "environment": environment if isinstance(environment, dict) else None,
     }
     validate(result)
     return result
@@ -309,6 +314,11 @@ def validate(result):
     provenance = result.get("provenance")
     if provenance is not None and not isinstance(provenance, dict):
         raise ModelError("provenance must be null or an object: %r" % (provenance,))
+    ## environment is read as result.get("environment") by the generator; a truthy non-dict
+    ## would break the render. Must be null or an object (like provenance).
+    environment = result.get("environment")
+    if environment is not None and not isinstance(environment, dict):
+        raise ModelError("environment must be null or an object: %r" % (environment,))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")

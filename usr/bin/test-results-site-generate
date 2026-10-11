@@ -431,7 +431,8 @@ CSP = (
 _DEFAULT_HEADER = (
     '<header class="nav"><div class="wrap">'
     '<a class="brand" href="/">org-ai-assisted</a>'
-    '<nav><a href="https://github.com/org-ai-assisted">GitHub</a>'
+    '<nav><a href="/automated-test-results/">Test results</a>'
+    '<a href="https://github.com/org-ai-assisted">GitHub</a>'
     '<a href="https://output-lies.github.io">output lies</a>'
     '<a href="https://secure-terminal.github.io">secure-terminal</a></nav>'
     "</div></header>"
@@ -502,6 +503,8 @@ def status_chip(status):
 def run_fields(view):
     run = view.result["run"] if isinstance(view.result, dict) else {}
     prov = view.result.get("provenance", {}) if isinstance(view.result, dict) else {}
+    env = view.result.get("environment") if isinstance(view.result, dict) else None
+    fw = (env or {}).get("firmware") or {}
     return {
         "lane": run.get("lane", view.run_id),
         "version": run.get("version", ""),
@@ -511,6 +514,12 @@ def run_fields(view):
         ## The artifact's sha256 (provenance.artifact.digest.sha256) pins the exact ISO a
         ## run tested; absent/old results leave it "".
         "sha256": ((((prov or {}).get("artifact") or {}).get("digest")) or {}).get("sha256") or "",
+        ## Firmware-lane EVIDENCE: what the guest actually booted (environment.firmware). Absent
+        ## on old runs -> "" / None, so no panel is rendered.
+        "fw_declared": fw.get("declared", "") or "",
+        "fw_detected": fw.get("detected", "") or "",
+        "fw_evidence": fw.get("evidence", "") or "",
+        "fw_match": fw.get("match"),
     }
 
 
@@ -584,9 +593,33 @@ def render_overview(views, header, footer, generated_utc):
     )
 
 
+def _firmware_block(f):
+    ## Evidence of the firmware lane the guest ACTUALLY booted (environment.firmware): declared
+    ## vs detected + the probe command/output, with a match/mismatch chip. "" when not captured
+    ## (old runs), so no panel is rendered.
+    if not (f["fw_detected"] or f["fw_evidence"]):
+        return ""
+    match = f["fw_match"]
+    if match is True:
+        chip, note = status_chip(site.STATUS_PASS), "verified against the declared lane"
+    elif match is False:
+        chip, note = status_chip(site.STATUS_FAIL), "MISMATCH: the guest did not boot the declared lane"
+    else:
+        chip, note = status_chip(site.STATUS_UNKNOWN), "unverified"
+    pre = ('<pre class="steplog">%s</pre>' % esc(f["fw_evidence"])) if f["fw_evidence"] else ""
+    return (
+        '<div class="issue"><h3>Firmware lane %s</h3>'
+        "<p>declared <code>%s</code> &middot; detected <code>%s</code> &middot; %s</p>%s</div>"
+    ) % (chip, esc(f["fw_declared"] or "?"), esc(f["fw_detected"] or "?"), esc(note), pre)
+
+
 def render_run(view, header, footer, generated_utc):
     f = run_fields(view)
     blocks = []
+    ## Firmware-lane evidence panel first (when captured) -- proof of the booted lane.
+    fw_block = _firmware_block(f)
+    if fw_block:
+        blocks.append(fw_block)
     if isinstance(view.result, dict):
         step_names = set()
         for step in view.result["steps"]:
