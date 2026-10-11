@@ -64,17 +64,17 @@ export QUBE_CTL_TARGET
 
 ## Provisioned? The venv is the tell. Provision once if absent (idempotent, slow the
 ## first time -- chromium download); a failed provision fails the gate, never skips.
-if ! sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
+if ! sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
    printf '%s\n' 'website-tests-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
    ## provision is a SEPARATE tool, not a `sandbox` subcommand; --target goes before the
    ## component. (`sandbox provision ...` is not a valid subcommand -> auto-provision failed.)
    provision --target "${QUBE_CTL_TARGET}" playwright >&2 \
       || die "sandbox is not provisioned for Playwright and provisioning failed (provision --target ${QUBE_CTL_TARGET} playwright)"
-   sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
+   sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
       || die 'Playwright venv still absent after provisioning'
 fi
 
-sandbox exec -- type sandbox-confine >/dev/null 2>&1 \
+sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
 ## Stage the two runners plus each site root (no .git) into one tree, then sync it in
@@ -92,7 +92,7 @@ cleanup(){
    # minimally-provisioned sandbox lacks safe-rm).
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -134,7 +134,7 @@ run_lane(){
    local runner rc
    runner="$1"
    rc=0
-   sandbox exec -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
+   sandbox exec --pid-scope own -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
       "${SANDBOX_VENV_PY}" "wt/${runner}" "${remote_roots[@]}" || rc="$?"
    ## A lane must actually run: 77 (SKIP) from inside the sandbox means Playwright did
    ## not fire, which defeats the purpose -- treat it as failure, never a pass.
