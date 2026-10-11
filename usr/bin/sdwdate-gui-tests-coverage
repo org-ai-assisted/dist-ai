@@ -1,0 +1,74 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Coverage gate for sdwdate-gui. Runs the offscreen unit suite under
+## coverage.py and ENFORCES 100% line coverage of the sdwdate_gui python
+## package (client, server, shared, config_read, connect_check -- the event
+## loop, wire protocol, menu/RPC, config parse, and the ConnectCheck responder).
+## A failure here means a line became unreachable by the tests -- add a test;
+## do NOT paper over it with a blanket exclusion. The few genuinely unreachable
+## defensive / debug-entrypoint lines carry a justified '# pragma: no cover' in
+## the source instead.
+##
+## Scope: this gates the PYTHON surface, which after the event-based handshake
+## rework is the bulk of the logic (the ConnectCheck responder is now Python).
+## The Qubes glue scripts (sdwdate-gui-qubes-proxy / -connect / -proxy-helper)
+## are bash; their source-able functions are unit-tested, but their main()
+## service orchestration only runs in the live gateway and is not unit-coverable.
+## Bash line coverage is measured with kcov, which needs ptrace and so runs only
+## in the sandbox -- not gated here (see the kcov skill).
+##
+## python3-coverage and an importable sdwdate_gui are REQUIRED to measure
+## coverage, so their absence is FATAL (exit 1), never a skip: a coverage gate
+## that silently exits 77 is scored green by the orchestrator and the missing
+## measurement reads as success.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## The Qt offscreen platform plugin lets the PyQt5 suite run without an X
+## server or a system tray.
+export QT_QPA_PLATFORM="offscreen"
+
+## coverage run imports modules without -B and does not set
+## sys.dont_write_bytecode, so it would write .pyc next to the sources under the
+## checkout. Keep the tree clean; inherited by every child.
+export PYTHONDONTWRITEBYTECODE=1
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then
+  tests_dir="${script_dir}/../share/sdwdate-gui-tests"
+else
+  tests_dir='/usr/share/sdwdate-gui-tests'
+fi
+
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
+if ! python3 -c 'import coverage' 2>/dev/null; then
+  printf '%s\n' 'sdwdate-gui-tests-coverage: FATAL: python3-coverage not installed' >&2
+  exit 1
+fi
+if ! python3 -c 'import sdwdate_gui' 2>/dev/null; then
+  printf '%s\n' 'sdwdate-gui-tests-coverage: FATAL: sdwdate_gui not importable; install sdwdate-gui or set PYTHONPATH to its dist-packages directory' >&2
+  exit 1
+fi
+
+python3 -m coverage erase
+
+## --source=sdwdate_gui scopes the gate to the package; -m unittest discover
+## runs the exact same suite as the plain runner.
+python3 -m coverage run --source=sdwdate_gui \
+  -m unittest discover --start-directory "${tests_dir}" --pattern 'test_*.py'
+
+## --fail-under=100 is the gate: a drop below 100% exits non-zero. The last
+## command, so errexit propagates its verdict.
+python3 -m coverage report --show-missing --fail-under=100

@@ -160,6 +160,7 @@ core_suites=(
    secure-terminal-tests-coverage-combine
    security-misc-tests
    sdwdate-gui-tests
+   sdwdate-gui-tests-coverage
    sdwdate-onion-tester-tests
    sdwdate-tests
    setup-dist-tests
