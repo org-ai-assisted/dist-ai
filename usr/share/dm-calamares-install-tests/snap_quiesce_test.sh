@@ -64,11 +64,13 @@ export ORDER="${order}"
 # shellcheck disable=SC1090
 source "${subject}"
 
-## Stub the in-guest exec + the settle. gc_run records the quiesce (role + snippet); sleep is a
-## no-op so the test does not actually wait.
+## Stub the in-guest exec + the settle. gc_run records the quiesce (role + snippet) AND runs the
+## snippet LOCALLY -- so the REAL kill command fires against a local decoy, catching a kill form
+## that silently matches nothing (the 15-char comm-truncation bug). sleep is a no-op.
 # shellcheck disable=SC2317
 gc_run() {
    printf '%s\n' "GCRUN role=$1 snippet=$2" >> "${order}"
+   eval "$2"
    return 0
 }
 # shellcheck disable=SC2317
@@ -102,10 +104,24 @@ has() {
    esac
 }
 
-## --- shot-dir set: quiesce (live user, kill lxqt-notificationd) STRICTLY before the shot -----
+## --- shot-dir set: quiesce (live user, kill the daemon) STRICTLY before the shot ------------
 shot_dir="${work}/shots"
 mkdir -- "${shot_dir}"
 true > "${order}"
+
+## Decoy that mimics the REAL daemon's /proc comm: a copy of `sleep` named 'lxqt-notificationd'
+## gets comm 'lxqt-notificati' (kernel truncates to 15 bytes), exactly like the live daemon.
+## The quiesce's kill (run locally by the gc_run stub) must TERMINATE it; a kill form matching
+## the full 18-char name hits nothing and the decoy lives to its own short natural exit.
+## A short lifetime bounds the FAIL case (no 300s hang) while leaving ample margin to be killed.
+cp -- /bin/sleep "${work}/lxqt-notificationd"
+"${work}/lxqt-notificationd" 5 &
+decoy_pid=$!
+## Readiness: wait (busy, sleep is stubbed) for exec to set comm before snap fires the kill.
+for _ in $(seq 1 200); do
+   [ "$(cat "/proc/${decoy_pid}/comm" 2>/dev/null)" = "lxqt-notificati" ] && break
+done
+
 rc=0
 snap 01 welcome || rc=$?
 check "snap returns success" "${rc}"
@@ -132,13 +148,16 @@ got=0
 has 'role=user' "${order_text}" || got=1
 check "the quiesce runs in the live 'user' session" "${got}"
 
+## Behavioral: the decoy (comm 'lxqt-notificati') must be TERMINATED BY SIGNAL. wait returns
+## >128 for a signal-killed child; 0 means it survived to its own exit -- the comm-truncation
+## bug (a kill matching the full 18-char name hits nothing). Bounded by the decoy's short life.
+## || capture: a signal-killed child makes wait return >128 (nonzero), which errexit would
+## otherwise abort on before wrc is read.
+wrc=0
+wait "${decoy_pid}" 2>/dev/null || wrc=$?
 got=0
-has 'pkill' "${order_text}" || got=1
-check "the quiesce kills the notification daemon" "${got}"
-
-got=0
-has 'lxqt-notificationd' "${order_text}" || got=1
-check "the quiesce targets the LXQt notification daemon" "${got}"
+[ "${wrc}" -gt 128 ] || got=1
+check "the quiesce actually KILLS the daemon (decoy signalled, not survived)" "${got}"
 
 got=0
 has '01-welcome.png' "${order_text}" || got=1

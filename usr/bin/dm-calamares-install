@@ -159,7 +159,12 @@ on_exit() {
 ## e.g. the first-boot milestone, simply no-ops) and SHORT-bounded so a guestcontrol hiccup can
 ## never stall or fail a passing install.
 quiesce_notifications() {
-   gc_run user 'pkill --exact lxqt-notificationd >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+   ## pkill --exact matches /proc/<pid>/comm, which the kernel truncates to 15 bytes
+   ## (TASK_COMM_LEN), so the live daemon's comm is 'lxqt-notificati' -- NOT the full 18-char
+   ## 'lxqt-notificationd'. Matching the full name kills NOTHING (the flake it fixes returns).
+   ## Match the truncated comm; a plain-name match also cannot self-kill the gc_run bash (comm
+   ## 'bash'), unlike a 'pkill -f lxqt-notificationd' which would match its own command line.
+   gc_run user 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
 }
 
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
