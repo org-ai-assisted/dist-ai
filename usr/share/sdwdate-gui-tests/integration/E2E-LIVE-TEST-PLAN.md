@@ -18,7 +18,7 @@ The automated lanes verify everything that runs without a real Qubes install:
   registration invariants.
 - `sdwdate-gui-tests-integration` -- the real tray icon on a headless X11
   systray host and a headless Wayland compositor (left/right click opens the
-  menu; the Wayland opt-out; the XEmbed-vs-StatusNotifier startup race).
+  menu; the Wayland menu opt-out).
 
 What NONE of those can reach: the cross-qube qrexec handshake, a connector VM
 appearing and disappearing on its own schedule, and the menu actions firing
@@ -97,7 +97,7 @@ Two independent dimensions, exercised in combination:
 
 | ID  | Gateway server | Connector action                                   | Expect |
 |-----|----------------|----------------------------------------------------|--------|
-| S1  | A2 not running | connector boots, client starts, no server yet      | P1,P4  |
+| S1  | A2 not running | connector boots, client starts, no server yet      | P1     |
 | S2  | A1 running     | connector already up when server starts            | P1,P3  |
 | S3  | A1 running     | connector boots AFTER server is already running    | P1,P3,P4 |
 | S4  | A1 running     | connector shuts down while server running          | P1,P3  |
@@ -112,9 +112,10 @@ Two independent dimensions, exercised in combination:
 1. Ensure the gateway server is NOT running (O3 shows no process).
 2. Boot/keep a connector VM up; confirm its client + proxy start (O4).
 3. Watch O1 for 60 s.
-   Expected: no per-second ConnectCheck stream in dom0 (P1). The client's
-   ConnectCheck call BLOCKS event-based waiting for the endpoint (P4); it does
-   not busy-poll.
+   Expected: no per-second ConnectCheck stream in dom0 (P1) -- the client's
+   ConnectCheck call BLOCKS event-based waiting for the endpoint and does not
+   busy-poll. (P4's prompt release is NOT exercised here: the server never
+   starts, so the endpoint never appears; S7 covers the late-start release.)
 
 ### S2 -- connector already up when the server starts
 
@@ -194,9 +195,11 @@ item sits below all connectors.
 | &Exit                | global       | clean server exit (see S8 / P2)                   |
 
 For each: the action fires the RPC into the correct VM only; the menu stays
-responsive; O1/O3/O4 show no spam, crash, or stuck responder. Test "Restart
-sdwdate" and "Stop sdwdate" both while that connector is UP and immediately
-after it has gone DOWN (the action must fail gracefully, not wedge the server).
+responsive; O1/O3/O4 show no spam, crash, or stuck responder. A connector that
+goes down loses its menu entry (S4), so there is no stale down-VM entry to click;
+the race to cover is instead firing an action JUST as the VM drops -- shut the
+connector down during a "Restart sdwdate" / "Stop sdwdate" RPC and confirm the
+server handles the vanishing client gracefully, not a wedge.
 
 ## Teardown
 
@@ -207,7 +210,7 @@ after it has gone DOWN (the action must fail gracefully, not wedge the server).
 
 ## Resume / automation notes
 
-- The handshake core of the cross-VM scenarios (S1-S9) runs UNATTENDED, no qubes,
+- The handshake core of several cross-VM scenarios runs UNATTENDED, no qubes,
   as `sdwdate-gui-tests-e2e`: it chains the real maintainer -> responder -> proxy
   across simulated server up/down transitions (the AF_UNIX server socket binds and
   unbinds; the maintainer's symlink-create fires the responder's inotify event).
@@ -219,7 +222,10 @@ after it has gone DOWN (the action must fail gracefully, not wedge the server).
   - S8    -> test_disabled_gives_up
   - C1    -> test_non_server_vm_gives_up
   - C3    -> test_transient_failure_retries_no_flag
-- The headless tray/menu/SNI portions run unattended:
+  S1 (no-server quiet / dom0 log), S6 (multiple connectors), and S9 (service
+  restart under live clients) are NOT in the headless suite -- they need the
+  dom0 log or several real VMs and stay operator-driven below.
+- The headless tray/menu portions run unattended:
   `dist-ai-tests-all --integration --component sdwdate-gui --repo-root ~/derivative-maker`
   (installs its own tooling list when missing; skips loud otherwise).
 - What stays OPERATOR-DRIVEN (needs a live Qubes host + dom0): the real qvm

@@ -21,10 +21,9 @@ try:
     from sdwdate_gui import sdwdate_gui_config_read as config_read
     from sdwdate_gui import sdwdate_gui_shared as shared
 except ModuleNotFoundError as exc:  # pragma: no cover
-    raise unittest.SkipTest(
-        "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        'or set PYTHONPATH to its dist-packages directory'
-    ) from exc
+    import subject_guard  # pylint: disable=import-outside-toplevel
+
+    subject_guard.skip_if_subject_absent(exc)
 
 
 class TestConfigReadMain(unittest.TestCase):
