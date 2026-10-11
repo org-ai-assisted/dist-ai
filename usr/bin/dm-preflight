@@ -177,42 +177,58 @@ fi
 ## in-progress, report-only), a pin BEHIND the published 'ai' tip is a hard
 ## failure: it is never what you want to spend a build on.
 ##
-## Scoped narrowly so it does not cry wolf: only a submodule that (a) HAS an 'ai'
-## branch on a NETWORK remote and (b) whose pin is strictly an ANCESTOR of that
-## tip fails. No 'ai' branch -> the pin legitimately stands (ci/checkout-fork-branch
-## keeps it). A local-path scratch remote cannot answer -> UNVERIFIED, not failed
-## (the same leniency as the fetchability stage). Ahead/diverged is left to stage
-## 2 / stage 3. A git/network error where a network remote SHOULD answer is a hard
-## failure -- a green that could not be established is fabricated.
+## Scoped narrowly so it does not cry wolf: only a submodule that (a) publishes an
+## 'ai' branch on SOME network remote and (b) whose pin is strictly an ANCESTOR of
+## that tip fails. ALL network remotes are consulted, not just origin: in a dev
+## clone without ci/configure-fork-mirror's insteadOf, origin is upstream (no 'ai')
+## while the fork remote (org-ai-assisted) carries it. No remote publishes 'ai' ->
+## the pin legitimately stands (ci/checkout-fork-branch keeps it). A clone with no
+## network remote -> UNVERIFIED, not failed (the fetchability stage's leniency).
+## Ahead/diverged is left to stage 2 / stage 3. A git/network error where a network
+## remote should answer, or an undecidable ancestry, is a hard failure -- a green
+## that could not be established is fabricated.
 stage "submodules: gitlink behind the published 'ai' tip"
 behind_rc=0
 # shellcheck disable=SC2016  # inner-shell payload: ${toplevel}/${sm_path}/${displaypath} resolved by git submodule foreach at runtime
 behind_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive '
-   net_remote=""
-   case "$(git remote get-url origin 2>/dev/null)" in
-      *://*|*@*:*) net_remote=origin ;;
-   esac
-   if [ -z "${net_remote}" ]; then
-      for r in $(git remote); do
-         case "$(git remote get-url "${r}" 2>/dev/null)" in
-            *://*|*@*:*) net_remote="${r}"; break ;;
-         esac
-      done
-   fi
-   if [ -z "${net_remote}" ]; then
+   net_remotes=""
+   for r in $(git remote); do
+      case "$(git remote get-url "${r}" 2>/dev/null)" in
+         *://*|*@*:*) net_remotes="${net_remotes} ${r}" ;;
+      esac
+   done
+   if [ -z "${net_remotes}" ]; then
       printf "UNVERIFIED %s (no network remote to read the ai tip)\n" "${displaypath}"
       exit 0
    fi
-   ai_tip="$(git ls-remote "${net_remote}" refs/heads/ai 2>/dev/null | { read -r sha _ ; printf "%s" "${sha}" ; })" \
-      || { printf "AITIPFAIL %s\n" "${displaypath}"; exit 0; }
-   [ -n "${ai_tip}" ] || exit 0
+   ## First network remote that PUBLISHES refs/heads/ai wins. ls-remote exit status is
+   ## captured directly (|| ...) -- a pipe into { read } would mask a failed ls-remote as
+   ## an empty tip (a silent pass); a remote that errors is remembered, not a verdict.
+   ai_tip=""
+   ai_remote=""
+   ai_err=""
+   for r in ${net_remotes}; do
+      ai_raw="$(git ls-remote "${r}" refs/heads/ai 2>/dev/null)" || { ai_err="yes"; continue; }
+      sha="$(printf "%s\n" "${ai_raw}" | { read -r s _ ; printf "%s" "${s}" ; })"
+      if [ -n "${sha}" ]; then ai_tip="${sha}"; ai_remote="${r}"; break; fi
+   done
+   if [ -z "${ai_tip}" ]; then
+      ## No remote published ai. If a network remote ERRORED, freshness was not established.
+      [ -z "${ai_err}" ] || printf "AITIPFAIL %s (ls-remote failed)\n" "${displaypath}"
+      exit 0
+   fi
    pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
    [ -n "${pinned}" ] || exit 0
    [ "${pinned}" = "${ai_tip}" ] && exit 0
-   git fetch --quiet "${net_remote}" refs/heads/ai 2>/dev/null \
-      || { printf "AITIPFAIL %s\n" "${displaypath}"; exit 0; }
+   git fetch --quiet "${ai_remote}" refs/heads/ai 2>/dev/null \
+      || { printf "AITIPFAIL %s (fetch failed)\n" "${displaypath}"; exit 0; }
    if git merge-base --is-ancestor "${pinned}" FETCH_HEAD 2>/dev/null; then
       printf "BEHIND %s (pinned %.12s, ai-tip %.12s)\n" "${displaypath}" "${pinned}" "${ai_tip}"
+   else
+      ## rc 1 = not an ancestor (ahead/diverged -- not behind, left to stage 2/3); rc > 1 =
+      ## git could not decide (e.g. the pin object is absent locally) -> a fabricated green.
+      mb_rc="$?"
+      [ "${mb_rc}" -le 1 ] || printf "AITIPFAIL %s (ancestry undecidable)\n" "${displaypath}"
    fi
    exit 0' 2>/dev/null )" || behind_rc="$?"
 if [ "${behind_rc}" -ne 0 ]; then

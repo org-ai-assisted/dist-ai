@@ -376,6 +376,72 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## --- 'ai' is read from ANY network remote, not just origin -------------------
+## A dev clone without ci/configure-fork-mirror has origin=upstream (no 'ai'); the
+## fork 'ai' lives on a second remote. The stage must consult every network remote,
+## not stop at origin. Two network remotes: one with no 'ai' (sorts first), one with
+## 'ai' ahead of the pin.
+anyremote="${workdir}/anyremote"
+build_fixture "${anyremote}"
+anyremote_noai="${workdir}/anyremote-noai.git"
+anyremote_fork="${workdir}/anyremote-fork.git"
+git_quiet init --quiet --bare -- "${anyremote_noai}"
+git_quiet init --quiet --bare -- "${anyremote_fork}"
+git_quiet -C "${anyremote}/sub" push --quiet -- "${anyremote_noai}" HEAD:refs/heads/master
+anyremote_maker="${workdir}/anyremote-maker"
+git_quiet -c protocol.file.allow=always clone --quiet -- "${anyremote}/sub" "${anyremote_maker}" >/dev/null 2>&1
+git_quiet -C "${anyremote_maker}" push --quiet -- "${anyremote_fork}" HEAD:refs/heads/ai
+printf '%s\n' 'ai work' >> "${anyremote_maker}/file.txt"
+git_quiet -C "${anyremote_maker}" commit --quiet --all --no-verify --message 'ai ahead'
+git_quiet -C "${anyremote_maker}" push --quiet -- "${anyremote_fork}" HEAD:refs/heads/ai
+## 'aa_' sorts before 'zz_' so the no-ai remote is tried first; the loop must continue to zz_.
+git_quiet -C "${anyremote}/sub" remote add aa_noai "file://${anyremote_noai}"
+git_quiet -C "${anyremote}/sub" remote add zz_fork "file://${anyremote_fork}"
+git_quiet -C "${anyremote}/sub" config protocol.file.allow always
+rc="$(run_preflight "${anyremote}")"
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- 'BEHIND' "${workdir}/out.txt"; then
+   pass "a pin behind 'ai' on a NON-origin network remote is caught"
+else
+   fail "the stage stopped at origin and missed the fork 'ai' on another remote"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
+## --- a failed ls-remote is a hard failure, not a silent pass -----------------
+## Canary: the inner pipeline's status must be ls-remote's, not the trailing read's.
+## An unreachable network remote (and no other remote serving 'ai') must FAIL loud.
+lsfail="${workdir}/lsfail"
+build_fixture "${lsfail}"
+git_quiet -C "${lsfail}/sub" remote add net "file://${workdir}/no-such-preflight-remote.git"
+git_quiet -C "${lsfail}/sub" config protocol.file.allow always
+rc="$(run_preflight "${lsfail}")"
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- 'ls-remote failed' "${workdir}/out.txt"; then
+   pass "an unreachable ai remote fails the preflight (no fabricated green)"
+else
+   fail "a failed ls-remote was swallowed as 'no ai branch' (silent pass)"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
+## --- an undecidable ancestry is a hard failure ------------------------------
+## Pin absent from the submodule's objects + a reachable 'ai' tip: merge-base
+## --is-ancestor exits 128 (not 1). That must be AITIPFAIL, not "not behind".
+undec="${workdir}/undec"
+build_fixture "${undec}"
+undec_remote="${workdir}/undec-remote.git"
+git_quiet init --quiet --bare -- "${undec_remote}"
+git_quiet -C "${undec}/sub" push --quiet -- "${undec_remote}" HEAD:refs/heads/ai
+git_quiet -C "${undec}/sub" remote add net "file://${undec_remote}"
+git_quiet -C "${undec}/sub" config protocol.file.allow always
+## Pin the parent at a SHA that is not an object in 'sub' (never fetched).
+git_quiet -C "${undec}" update-index --cacheinfo "160000,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,sub"
+git_quiet -C "${undec}" commit --quiet --no-verify --message pin-absent-object
+rc="$(run_preflight "${undec}")"
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- 'ancestry undecidable' "${workdir}/out.txt"; then
+   pass "an undecidable ancestry fails the preflight (no fabricated green)"
+else
+   fail "an undecidable merge-base was treated as 'not behind' (silent pass)"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
 ## --- a 'source' of a renamed-away in-tree file FAILS ------------------------
 ## The developer-meta-files reprepro-freshness.bsh -> package-build-freshness.bsh
 ## rename with the consumer (2100_create-debian-packages) not updated. It is a
