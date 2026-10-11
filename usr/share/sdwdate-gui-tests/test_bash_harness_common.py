@@ -17,13 +17,10 @@ pass the suite green while the bash tests silently vanished.
 
 import unittest
 
-try:
-    import sdwdate_gui  # noqa: F401  pylint: disable=unused-import
-except ModuleNotFoundError as exc:  # pragma: no cover
-    import subject_guard  # pylint: disable=import-outside-toplevel
-
-    subject_guard.skip_if_subject_absent(exc)
-
+## No top-level importability probe here: locate_script() imports sdwdate_gui
+## and skips (via subject_guard) when it is absent, so every test is already
+## guarded. A bare `import sdwdate_gui` probe would be a redundant unused import
+## (CodeQL py/unused-import) with no added coverage.
 from bash_harness_common import locate_script
 
 

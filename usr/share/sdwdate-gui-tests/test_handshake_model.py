@@ -49,8 +49,10 @@ Proved over ALL four (disabled, runs_server) configs:
                     transient failure retries, it does not permanently disable).
   * LIVENESS     -- operational config: 'connected' is reachable from every
                     reachable non-gaveup state (never permanently stuck) and is
-                    reachable at all; every gives_up config always reaches
-                    'gaveup' (it terminates).
+                    reachable at all; in every gives_up config 'gaveup' is
+                    REACHABLE from every reachable state (it can always give up
+                    -- a reachability property, not a fairness/termination
+                    guarantee, which this explicit-state check does not model).
 """
 
 # pylint: disable=invalid-name
@@ -222,8 +224,13 @@ class TestHandshakeModel(unittest.TestCase):
         )
         self.assertTrue(any(s[2] == "connected" for s in seen))
 
-    def test_liveness_giveup_always_terminates(self) -> None:
-        """Every gives_up config always reaches 'gaveup' (it terminates)."""
+    def test_giveup_reachable_from_every_state(self) -> None:
+        """
+        In every gives_up config, 'gaveup' is REACHABLE from every reachable
+        state (the client can always give up). This is a reachability property,
+        not a termination/fairness guarantee -- can_reach proves a path exists,
+        not that every run takes it.
+        """
         for disabled, runs_server in CONFIGS:
             if not gives_up(disabled, runs_server):
                 continue
