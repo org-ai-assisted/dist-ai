@@ -86,11 +86,19 @@ cleanup() {
 ## tiny, so a --passphrase-file mispointed at an endless device (/dev/zero,
 ## /dev/urandom) cannot spin or OOM this root process; a real key is far under the cap.
 luks_open() {
-   local passphrase
-   passphrase="$(head --bytes=1048576 -- "${passphrase_file}")"
-   [ -n "${passphrase}" ] || die "passphrase file is empty: '${passphrase_file}'"
-   printf '%s' "${passphrase}" \
-      | cryptsetup --readonly open --key-file - -- "$1" "$2"
+   ## Handle the passphrase in a subshell with xtrace OFF: under 'bash -x' debug a bare
+   ## 'passphrase=$(...)' assignment would print '+ passphrase=<secret>' to stderr/logs. The
+   ## subshell keeps both the secret AND the 'set +x' off the caller's trace. The $() is still
+   ## required -- it strips the trailing newline (not part of the key; see above), which a
+   ## direct 'head | cryptsetup' would pass through and fail to unlock.
+   ## style-ok: R-011 -- 'set +x' hides a secret from xtrace, not an errexit toggle.
+   (
+      set +x
+      passphrase="$(head --bytes=1048576 -- "${passphrase_file}")"
+      [ -n "${passphrase}" ] || die "passphrase file is empty: '${passphrase_file}'"
+      printf '%s' "${passphrase}" \
+         | cryptsetup --readonly open --key-file - -- "$1" "$2"
+   )
 }
 
 parse_args() {
