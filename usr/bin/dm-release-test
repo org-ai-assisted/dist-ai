@@ -105,6 +105,12 @@ RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
 ## A lane sets this to a FAILED release check's output file; rt_publish_result
 ## publishes it as the step's stderr tail, then resets it. Empty = nothing to add.
 rt_check_log=""
+## A lane sets these to the captured firmware-lane evidence; rt_publish_result forwards them to
+## the results plane (environment.firmware), then resets them. Empty = nothing to add.
+rt_fw_declared=""
+rt_fw_detected=""
+rt_fw_evidence=""
+rt_fw_match=""
 
 SETUP_RC=2
 
@@ -834,6 +840,18 @@ rt_publish_result() {
       pub_sha=( --provenance-artifact-sha256 "${rt_artifact_sha256}" )
    fi
    rt_artifact_sha256=""
+   ## Firmware-lane evidence (set by the install lane via rt_fw_*): proof of the booted lane for
+   ## the results plane's firmware panel. Consumed once. Empty detected = not captured.
+   local -a pub_fw=()
+   if [ -n "${rt_fw_detected:-}" ] || [ -n "${rt_fw_evidence:-}" ]; then
+      pub_fw=( --env-firmware-declared "${rt_fw_declared:-}" \
+         --env-firmware-detected "${rt_fw_detected:-}" \
+         --env-firmware-evidence "${rt_fw_evidence:-}" )
+      if [ "${rt_fw_match:-}" = "true" ] || [ "${rt_fw_match:-}" = "false" ]; then
+         pub_fw+=( --env-firmware-match "${rt_fw_match}" )
+      fi
+   fi
+   rt_fw_declared=""; rt_fw_detected=""; rt_fw_evidence=""; rt_fw_match=""
    ## Firmware is part of the run identity for the Calamares INSTALL lane only: a BIOS
    ## install lays down a BIOS-boot partition and an EFI one an ESP, a legitimately
    ## different screenshot sequence + golden set, and the overview must not collapse a
@@ -854,7 +872,7 @@ rt_publish_result() {
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
-      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}")" \
+      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}" "${pub_fw[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
@@ -930,6 +948,8 @@ rt_lane_kicksecure() {
    ## Account-owned sink for a FAILED release check's own in-guest output, so the run
    ## record explains WHY it failed (otherwise lost on power-off).
    check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"
+   ## Account-owned sink for the firmware-lane evidence the install captures in-guest.
+   firmware_evidence_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-fwevidence.XXXXXX")"
 
    vmname="Kicksecure-release-${version//./-}"
    if [ "${run_checks}" = 'true' ]; then
@@ -942,7 +962,8 @@ rt_lane_kicksecure() {
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
-      --shot-dir "${shot_dir}" --check-log "${check_log}" "${checks_arg[@]}" "${keep_arg[@]}" || rc=$?
+      --shot-dir "${shot_dir}" --check-log "${check_log}" \
+      --firmware-evidence-file "${firmware_evidence_file}" "${checks_arg[@]}" "${keep_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
@@ -955,6 +976,15 @@ rt_lane_kicksecure() {
    ## file = a pass or a pre-check failure -> no tail).
    rt_check_log=""
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
+   ## Firmware-lane evidence (DETECTED=, MATCH=, then the probe command/output). Empty file =
+   ## not captured -> no firmware panel. declared = the lane we asked to build/boot.
+   rt_fw_declared=""; rt_fw_detected=""; rt_fw_evidence=""; rt_fw_match=""
+   if [ -s "${firmware_evidence_file}" ]; then
+      rt_fw_declared="${firmware}"
+      rt_fw_detected="$(sed -n 's/^DETECTED=//p' "${firmware_evidence_file}" | head -1)"
+      rt_fw_match="$(sed -n 's/^MATCH=//p' "${firmware_evidence_file}" | head -1)"
+      rt_fw_evidence="$(tail -n +3 -- "${firmware_evidence_file}")"
+   fi
    ## Record the ISO sha256 so the run is identifiable to the exact artifact (built OR
    ## downloaded). The staged built ISO and the downloaded ISO both land in "${iso}".
    rt_artifact_sha256=""
@@ -962,7 +992,7 @@ rt_lane_kicksecure() {
       rt_artifact_sha256="$(sha256sum -- "${iso}" | { read -r h _ ; printf '%s' "${h}" ; })" || rt_artifact_sha256=""
    fi
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
-   sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" "${check_log}" 2>/dev/null || true
+   sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" "${check_log}" "${firmware_evidence_file}" 2>/dev/null || true
    ## The per-run staged ISO dir (rt_staged_dir) is reaped by rt_eph_cleanup on exit.
    return "${rc}"
 }

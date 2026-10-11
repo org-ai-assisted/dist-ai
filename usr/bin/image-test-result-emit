@@ -40,8 +40,12 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 
 from dm_test_results import model  # noqa: E402
 
-## Bound per-step log capture so a runaway log cannot bloat the plane or the page.
-TAIL_BYTES = 4000
+## Bound per-step log capture so a RUNAWAY log cannot bloat the plane or the page -- but
+## generously, so a real step log (e.g. a full `systemcheck --verbose` run, the release-check
+## battery's output) is kept IN FULL, not silently clipped. The old 4 KB cap clipped such logs
+## before the page ever rendered them; the page shows whatever is stored (scrollable), so the
+## only truncation now is this hard runaway ceiling, and read_tail marks it honestly when hit.
+TAIL_BYTES = 131072
 
 _MEDIA_BY_EXT = {
     ".webp": "image/webp",
@@ -172,7 +176,14 @@ def read_tail(path):
         size = handle.tell()
         handle.seek(max(0, size - TAIL_BYTES), os.SEEK_SET)
         data = handle.read()
-    return data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8", errors="replace")
+    if size > TAIL_BYTES:
+        ## Honest marker: the head was dropped at the runaway ceiling. Never present a clipped
+        ## log as if it were complete (the page renders this verbatim).
+        text = (
+            "[... earlier output truncated; last %d of %d bytes shown ...]\n" % (TAIL_BYTES, size)
+        ) + text
+    return text
 
 
 def copy_shot(src, dst):
@@ -251,10 +262,19 @@ def parse_args(argv):
     parser.add_argument("--provenance-source-commit", default=None)
     parser.add_argument("--provenance-artifact-sha256", default=None)
     parser.add_argument("--provenance-built-utc", default=None)
+    ## environment evidence: the firmware lane the guest ACTUALLY booted (proof, not the label)
+    parser.add_argument("--env-firmware-declared", default=None)
+    parser.add_argument("--env-firmware-detected", default=None)
+    parser.add_argument("--env-firmware-evidence", default=None)
+    parser.add_argument("--env-firmware-match", default=None, choices=["true", "false"])
     return parser.parse_args(argv)
 
 
 def main(argv):
+    ## The result dir + its screenshots are served by nginx and pulled for the static-site
+    ## regenerate, so they must be world-readable. This runs as root under the eph account's
+    ## (possibly restrictive) umask; force 022 so copy_shot + result.json land 0644, not 0600.
+    os.umask(0o022)
     args = parse_args(argv)
     now = int(time.time())
     generated_unix = args.generated_unix if args.generated_unix is not None else now
@@ -336,6 +356,15 @@ def main(argv):
         attachments=attachments,
     )
 
+    environment = None
+    if args.env_firmware_detected or args.env_firmware_evidence:
+        environment = {"firmware": {
+            "declared": args.env_firmware_declared or "",
+            "detected": args.env_firmware_detected or "",
+            "evidence": args.env_firmware_evidence or "",
+            "match": (args.env_firmware_match == "true") if args.env_firmware_match is not None else None,
+        }}
+
     try:
         result = model.build_result(
             run_id=args.run_id,
@@ -358,6 +387,7 @@ def main(argv):
                 "artifact_sha256": args.provenance_artifact_sha256,
                 "built_utc": args.provenance_built_utc,
             },
+            environment=environment,
         )
     except model.ModelError as exc:
         raise SystemExit("image-test-result-emit: %s" % exc)

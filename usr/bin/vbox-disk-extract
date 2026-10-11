@@ -80,12 +80,14 @@ cleanup() {
 
 ## Open LUKS volume $1 as mapping $2 with the passphrase file. The file is text: its
 ## trailing newline is not part of the key, which the installer typed without one.
-## Read it exactly as dm-calamares-install does ("$(< file)" drops trailing
-## newlines) and hand cryptsetup the bare bytes on stdin -- --key-file PATH would
-## read the file byte for byte, newline included, and fail to unlock.
+## Read it as dm-calamares-install does ("$()" drops trailing newlines) and hand
+## cryptsetup the bare bytes on stdin -- --key-file PATH would read the file byte for
+## byte, newline included, and fail to unlock. Cap the read with head: a LUKS key is
+## tiny, so a --passphrase-file mispointed at an endless device (/dev/zero,
+## /dev/urandom) cannot spin or OOM this root process; a real key is far under the cap.
 luks_open() {
    local passphrase
-   passphrase="$(< "${passphrase_file}")"
+   passphrase="$(head --bytes=1048576 -- "${passphrase_file}")"
    [ -n "${passphrase}" ] || die "passphrase file is empty: '${passphrase_file}'"
    printf '%s' "${passphrase}" \
       | cryptsetup --readonly open --key-file - -- "$1" "$2"

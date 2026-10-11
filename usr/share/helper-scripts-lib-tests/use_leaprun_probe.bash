@@ -113,5 +113,5 @@ leaprun_useable_result=''
 # shellcheck disable=SC1090
 source "${USE_LEAPRUN_SH}"
 
-printf 'use_leaprun=%s\n' "${use_leaprun:-empty}"
-printf 'result_len=%s\n' "${#leaprun_useable_result}"
+printf '%s\n' "use_leaprun=${use_leaprun:-empty}"
+printf '%s\n' "result_len=${#leaprun_useable_result}"

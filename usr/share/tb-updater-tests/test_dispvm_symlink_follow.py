@@ -40,14 +40,17 @@ script's path globals at a scratch tree:
     skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
     covering a manual restart (incl. retry of a failed first run) that
     --no-start does not. Old code/unit had neither -> FAILS.
-  * Home binds + symlink reject: the user-home bind mounts are raw
-    'mount --bind' onto /home/<user>/.tb and .cache/tb (there is no way to stop
-    mount dereferencing a symlinked mount point). Their safety rests on the
-    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds -- refusing a
-    pre-planted symlink at any mount point -- plus the boot-only run-once
-    execution above. This test asserts that structural model (binds are raw
-    'mount --bind'; the reject precedes them); the behavioral refusal itself is
-    driven by test_planted_symlink_is_refused.
+  * Home binds + symlink reject: the user-home bind mounts are
+    'mount --no-canonicalize --bind' onto /home/<user>/.tb and .cache/tb.
+    --no-canonicalize makes mount REFUSE a symlinked target (mountpoint) at the
+    mount layer regardless of timing; it does NOT guard the bind SOURCE. So
+    safety rests on (a) --no-canonicalize on every home bind, (b) the
+    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds and refuses a
+    pre-planted symlink at any bind SOURCE or TARGET path, and (c) the boot-only
+    run-once execution above. This test asserts that structural model
+    (each home bind carries --no-canonicalize; the reject precedes them); the
+    behavioral refusal is driven by test_planted_symlink_is_refused and
+    test_planted_symlink_in_cache_source_is_refused.
 """
 
 import os
@@ -90,29 +93,67 @@ mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 touch() { printf 'TOUCH %s\n' "$*" >> "${REC}"; return 0; }
 home_base_dir="${TB_TEST_HOME}"
 tb_binary_cache_dir="${TB_TEST_CACHE}"
+rw_home_base_dir="${TB_TEST_RW}"
 """
 
-## Containment rests on the subject reading these globals. A dispvm without
-## them would run 'mkdir' against the REAL /home, so refuse to drive it.
+## Containment rests on the subject reading these globals. A dispvm without them
+## would run 'mkdir'/'[ -L ]' against the REAL /home and /rw/home, so refuse to
+## drive it.
 REQUIRE = (
-    '[[ -v home_base_dir && -v tb_binary_cache_dir ]] || {\n'
-    '   printf \'%s\\n\' "dispvm lacks home_base_dir/tb_binary_cache_dir" >&2\n'
+    '[[ -v home_base_dir && -v tb_binary_cache_dir && -v rw_home_base_dir ]] || {\n'
+    '   printf \'%s\\n\' "dispvm lacks home_base_dir/tb_binary_cache_dir/rw_home_base_dir" >&2\n'
     f'   exit {T.DRIVE_UNUSABLE}\n'
     '}'
 )
 
 
-def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
-    """Drive the real dispvm 'main' with its home_base_dir and
-    tb_binary_cache_dir globals pointed into tmp_path. When `planted` is given (e.g. '.tb'), pre-plant it
-    as a symlink to `victim` inside the fake home first; each name in `precreate`
-    is created as a real directory under the fake home first.
+def _shell_commands(text):
+    """Yield (line_index, command) for every shell command in `text`.
+
+    `line_index` is the 0-based physical line the command STARTS on. Joins a
+    backslash line-continuation into one logical line, strips a trailing
+    '# comment', then splits on the command separators ';' '&&' '||' '|' '&' so
+    a later flag check binds to the single command it governs -- otherwise
+    'true --no-start | dh_installsystemd ...service' or '... --no-canonicalize;
+    mount --bind ...' would satisfy a check whose flag sits in a DIFFERENT
+    command. A simple separator match, NOT a shell parser (no quoting / nesting
+    / heredoc awareness): enough to isolate the dh_installsystemd / mount calls
+    in debian/rules and dispvm, and it fails LOUD (a mangled command stops
+    matching, so the test rejects) rather than greening what it cannot model."""
+    lines = text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        start = i
+        logical = lines[i]
+        while logical.rstrip().endswith("\\") and i + 1 < len(lines):
+            logical = logical.rstrip()[:-1] + " " + lines[i + 1]
+            i += 1
+        code = logical.split("#", 1)[0]
+        for cmd in re.split(r';|&&|\|\||\||&', code):
+            cmd = cmd.strip()
+            if cmd:
+                out.append((start, cmd))
+        i += 1
+    return out
+
+
+def _drive(tmp_path, *, planted=None, cache_planted=None, rw_planted=None,
+           victim=None, precreate=()):
+    """Drive the real dispvm 'main' with its home_base_dir, tb_binary_cache_dir
+    and rw_home_base_dir globals pointed into tmp_path. When `planted` is given
+    (e.g. '.tb'), pre-plant it as a symlink to `victim` inside the fake home
+    first; `cache_planted` pre-plants inside the fake bind SOURCE (the tb-binary
+    cache); `rw_planted` pre-plants inside the fake /rw/home remount base. Each
+    name in `precreate` is created as a real directory under the fake home first.
 
     Returns (CompletedProcess, home_dir, rec_lines)."""
     home = tmp_path / "home"
     (home / "user").mkdir(parents=True)
     cache_src = tmp_path / "tb-binary"
     cache_src.mkdir()
+    rw_home = tmp_path / "rw-home"
+    (rw_home / "user").mkdir(parents=True)
     rec = tmp_path / "rec.log"
     rec.write_text("")
 
@@ -122,9 +163,17 @@ def _drive(tmp_path, *, planted=None, victim=None, precreate=()):
         link = home / "user" / planted
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(victim)
+    if cache_planted is not None:
+        clink = cache_src / cache_planted
+        clink.parent.mkdir(parents=True, exist_ok=True)
+        clink.symlink_to(victim)
+    if rw_planted is not None:
+        rlink = rw_home / "user" / rw_planted
+        rlink.parent.mkdir(parents=True, exist_ok=True)
+        rlink.symlink_to(victim)
 
     env = {"TB_TEST_HOME": str(home), "TB_TEST_CACHE": str(cache_src),
-           "REC": str(rec)}
+           "TB_TEST_RW": str(rw_home), "REC": str(rec)}
     proc = T.drive_sourced_function(DISPVM, "main", setup=SETUP,
                                     require=REQUIRE, env=env)
     assert proc.returncode != T.DRIVE_UNUSABLE, proc.stderr
@@ -137,9 +186,10 @@ def test_path_globals_default_to_production_paths():
     the scratch-tree tests stay green."""
     proc = T.drive_sourced_function(
         DISPVM, "true", require=REQUIRE,
-        setup='printf \'%s|%s\' "${home_base_dir}" "${tb_binary_cache_dir}"')
+        setup='printf \'%s|%s|%s\' "${home_base_dir}" "${tb_binary_cache_dir}"'
+              ' "${rw_home_base_dir}"')
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "/home|/var/cache/tb-binary", proc.stdout
+    assert proc.stdout == "/home|/var/cache/tb-binary|/rw/home", proc.stdout
 
 
 @pytest.mark.parametrize("planted", [".tb", ".cache", ".cache/tb"])
@@ -156,10 +206,65 @@ def test_planted_symlink_is_refused(tmp_path, planted):
         f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}\n"
         f"rec={rec_lines}"
     )
-    ## No recorded chown/mount may target the victim the symlink points at.
-    victim_str = str(victim)
-    assert not any(victim_str in line for line in rec_lines), (
-        f"root operation followed the symlink into {victim_str}: {rec_lines}"
+    ## The reject aborts BEFORE any root chown/mount, so none may be recorded
+    ## (the /run sentinel TOUCH precedes the reject loop and is allowed). This is
+    ## the real guard: a followed symlink records the UNRESOLVED argv, so a
+    ## 'victim not in argv' check would pass vacuously.
+    root_ops = [line for line in rec_lines
+                if line.startswith(("CHOWN ", "MOUNT "))]
+    assert not root_ops, (
+        f"a root chown/mount ran despite the symlink reject: {root_ops}"
+    )
+
+
+@pytest.mark.parametrize("cache_planted", [".tb", ".cache", ".cache/tb"])
+def test_planted_symlink_in_cache_source_is_refused(tmp_path, cache_planted):
+    """A pre-planted symlink at a bind SOURCE under the tb-binary cache (.tb,
+    .cache, .cache/tb) must also abort the run. 'chown --recursive' makes the
+    cache user-owned and a DispVM cache is a DVM-Template clone, so the source
+    side is user-plantable too; mount --no-canonicalize does NOT guard the bind
+    source, so the '[ -L ]' reject must cover the cache paths. Old code's reject
+    loop checked only the /home targets -> FAILS."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    proc, _home, rec_lines = _drive(tmp_path, cache_planted=cache_planted,
+                                    victim=victim)
+
+    assert proc.returncode != 0, (
+        f"run did not refuse symlinked cache source at {cache_planted!r}; "
+        f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}\n"
+        f"rec={rec_lines}"
+    )
+    ## Same real guard as the target case: no root chown/mount may run after the
+    ## reject (a followed source symlink records the unresolved argv, so a
+    ## 'victim not in argv' check would be vacuous).
+    root_ops = [line for line in rec_lines
+                if line.startswith(("CHOWN ", "MOUNT "))]
+    assert not root_ops, (
+        f"a root chown/mount ran despite the source symlink reject: {root_ops}"
+    )
+
+
+@pytest.mark.parametrize("rw_planted", [".tb", ".cache", ".cache/tb"])
+def test_planted_symlink_in_rw_home_is_refused(tmp_path, rw_planted):
+    """A pre-planted symlink at a /rw/home remount path (.tb, .cache, .cache/tb)
+    must abort the run. The /rw/home copies are user-writable, so a symlink there
+    would make the root 'mount -o remount,nosuid,nodev' follow it (apply the
+    flags to an attacker-chosen mount, or crash under errexit). The reject loop
+    must cover the remount paths, not only the bind source/target."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    proc, _home, rec_lines = _drive(tmp_path, rw_planted=rw_planted, victim=victim)
+
+    assert proc.returncode != 0, (
+        f"run did not refuse symlinked /rw/home path at {rw_planted!r}; "
+        f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}\n"
+        f"rec={rec_lines}"
+    )
+    root_ops = [line for line in rec_lines
+                if line.startswith(("CHOWN ", "MOUNT "))]
+    assert not root_ops, (
+        f"a root chown/mount ran despite the /rw/home symlink reject: {root_ops}"
     )
 
 
@@ -217,16 +322,29 @@ def test_dispvm_service_not_started_by_dpkg():
         pytest.skip(f"debian/rules not found ({rules})")
     with open(rules, encoding="utf-8") as handle:
         text = handle.read()
-    ## A dh_installsystemd invocation carrying both --no-start and the dispvm
-    ## unit, in either order.
-    pat = re.compile(
-        r"dh_installsystemd\b(?=[^\n]*--no-start)"
-        r"(?=[^\n]*tb-updater-dispvm\.service)[^\n]*"
+    ## Every dh_installsystemd invocation that names the dispvm unit, each as a
+    ## SINGLE shell command (_shell_commands isolates them past line
+    ## continuations, comments and command separators). Each must START with
+    ## 'dh_installsystemd' (not a comment, not a 'true --no-start | ...' command
+    ## whose flag sits elsewhere) so a bare mention cannot stand in for the call.
+    def _dispvm_installsystemd_cmds(rules_text):
+        return [cmd for _idx, cmd in _shell_commands(rules_text)
+                if cmd.startswith("dh_installsystemd")
+                and "tb-updater-dispvm.service" in cmd]
+
+    dispvm_cmds = _dispvm_installsystemd_cmds(text)
+    assert dispvm_cmds, (
+        "debian/rules must install tb-updater-dispvm.service via "
+        "dh_installsystemd (so the --no-start pin below has a command to bind to)"
     )
-    assert pat.search(text), (
+    ## EVERY dispvm invocation must carry --no-start: a single start/restart call
+    ## reopens the mount --bind check-to-use race (CWE-59) during a live session.
+    missing = [cmd for cmd in dispvm_cmds if "--no-start" not in cmd]
+    assert not missing, (
         "debian/rules must pin 'dh_installsystemd --no-start "
         "tb-updater-dispvm.service' so dpkg never starts/restarts the unit "
-        "during a live session (mount --bind check-to-use race, CWE-59)"
+        "during a live session (mount --bind check-to-use race, CWE-59); "
+        f"invocation without --no-start: {missing}"
     )
 
 
@@ -271,15 +389,18 @@ def test_dispvm_unit_skips_on_sentinel():
     )
 
 
-def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
-    """The user-home bind mounts are raw 'mount --bind' onto /home/<user>/.tb and
-    .cache/tb. There is no way to stop mount dereferencing a symlinked mount
-    point, so their safety rests on (a) the '[ -L ] ... exit 1' reject loop that
-    runs BEFORE the binds and refuses a pre-planted symlink at any mount point,
-    and (b) the service running only at early boot (asserted by the run-once and
-    --no-start tests). This asserts that structural model: each home bind is a
-    raw 'mount --bind' and the symlink reject precedes every one of them. The
-    behavioral refusal itself is driven by test_planted_symlink_is_refused."""
+def test_home_binds_nocanonicalize_and_symlink_reject():
+    """The user-home bind mounts are 'mount --no-canonicalize --bind' onto
+    /home/<user>/.tb and .cache/tb. --no-canonicalize makes mount refuse a
+    symlinked target at the mount layer regardless of timing (it does NOT guard
+    the bind source), so their safety rests on (a) --no-canonicalize on every
+    home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the binds
+    and refuses a pre-planted symlink at any bind source or target, and (c) the
+    service running only at early boot (asserted by the run-once and --no-start
+    tests). This asserts that structural model: each home bind carries
+    --no-canonicalize and the symlink reject precedes every one of them. The
+    behavioral refusal is driven by test_planted_symlink_is_refused and
+    test_planted_symlink_in_cache_source_is_refused."""
     with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
     lines = text.splitlines()
@@ -307,17 +428,35 @@ def test_home_binds_are_raw_mount_guarded_by_symlink_reject():
         f"the symlink reject must 'exit' nonzero on a planted symlink: {DISPVM}"
     )
 
-    ## Each persistent-cache bind is a raw 'mount --bind' onto the home mount
-    ## point, and must appear AFTER the symlink reject.
+    ## Each persistent-cache bind is a 'mount ... --bind' onto the home mount
+    ## point, must carry --no-canonicalize, and must appear AFTER the symlink
+    ## reject.
     for target in (".tb", ".cache/tb"):
         pat = re.compile(
-            rf'mount --bind\b[^\n]*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
+            rf'\bmount\b.*--bind\b.*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
             rf'\s+"\$\{{home_base_dir\}}/\$\{{user_name\}}/{re.escape(target)}"')
-        bind_idxs = [i for i, line in enumerate(lines) if pat.search(line)]
+        ## Scan per SHELL COMMAND, not per line: _shell_commands isolates each
+        ## 'mount ... --bind ...' invocation past line continuations, comments
+        ## and separators. A line-wide regex would let
+        ## 'mount --no-canonicalize; mount --bind ...' (or '... | mount --bind')
+        ## capture the flag from a DIFFERENT command while the bind lacks it.
+        binds = [(i, cmd) for i, cmd in _shell_commands(text) if pat.search(cmd)]
+        bind_idxs = [i for i, _cmd in binds]
         assert bind_idxs, (
-            f"the {target} home bind must be a raw 'mount --bind ... "
+            f"the {target} home bind must be a 'mount ... --bind ... "
             f"${{home_base_dir}}/${{user_name}}/{target}': {DISPVM}"
         )
+        ## The mount-layer symlink-refusal guard: every home bind must pass
+        ## --no-canonicalize (removing it reopens a symlinked-mountpoint follow).
+        ## The flag must be an argument of THIS single mount command -- a flag on
+        ## a different command ('mount --no-canonicalize; mount --bind ...') or in
+        ## a trailing comment cannot satisfy it.
+        for i, cmd in binds:
+            assert "--no-canonicalize" in cmd, (
+                f"the {target} home bind must carry --no-canonicalize as a mount "
+                f"argument so mount refuses a symlinked mountpoint: "
+                f"{lines[i]!r} ({DISPVM})"
+            )
         assert reject_idx < min(bind_idxs), (
             f"the symlink reject (line {reject_idx + 1}) must precede the "
             f"{target} bind (line {min(bind_idxs) + 1}) so a symlinked mount "

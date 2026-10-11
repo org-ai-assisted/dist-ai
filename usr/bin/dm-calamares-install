@@ -49,6 +49,9 @@ shot_dir=""
 ## When set, the failing release check's own in-guest output is written here so the
 ## caller can publish it as the result step's stderr tail (why the run failed).
 check_log=""
+## When set, the firmware-lane evidence (DETECTED=, MATCH=, then the probe command/output) is
+## written here for the results plane -- proof of the boot lane the guest actually ran.
+firmware_evidence_file=""
 ## When true, a FAILED run leaves its VM running for post-mortem inspection instead of
 ## powering it off. The caller owns reclaiming it (dm-release-test does, next run).
 keep_failed="false"
@@ -150,6 +153,23 @@ on_exit() {
    exit "${rc}"
 }
 
+## Clear transient desktop notifications in the LIVE session before a milestone frame.
+## The live desktop raises expected-but-racy notify-send passive popups that otherwise land
+## nondeterministically in the shot and push the golden-screenshot diff past tolerance. Killing
+## the LXQt notification daemon destroys its popup surfaces at once (it is D-Bus-activated, so it
+## respawns clean for any later notification); the shot's own settle lets the compositor repaint
+## without them. Best-effort in the 'user' session over guestcontrol (a GA-less installed disk,
+## e.g. the first-boot milestone, simply no-ops) and SHORT-bounded so a guestcontrol hiccup can
+## never stall or fail a passing install.
+quiesce_notifications() {
+   ## pkill --exact matches /proc/<pid>/comm, which the kernel truncates to 15 bytes
+   ## (TASK_COMM_LEN), so the live daemon's comm is 'lxqt-notificati' -- NOT the full 18-char
+   ## 'lxqt-notificationd'. Matching the full name kills NOTHING (the flake it fixes returns).
+   ## Match the truncated comm; a plain-name match also cannot self-kill the gc_run bash (comm
+   ## 'bash'), unlike a 'pkill -f lxqt-notificationd' which would match its own command line.
+   gc_run user 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+}
+
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
 ## (the install "full story"). NN orders the sequence on the results page; <name> becomes the
 ## milestone caption (results-publish derives it from the filename). Best-effort: a capture
@@ -157,6 +177,9 @@ on_exit() {
 snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
+   quiesce_notifications
+   ## Settle: let the compositor repaint the cleared surfaces before the frame.
+   sleep 1
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
@@ -421,11 +444,62 @@ run_check() {
 ##  6a (in-guest): the labwc compositor process running (run_check 6 'pgrep labwc').
 ## 6b runs FIRST so the single 'check 6 PASS' (emitted by run_check) prints only
 ## after BOTH hold -- never a premature green.
+## Firmware-lane EVIDENCE: probe the INSTALLED guest (the LXQt disk ships Guest Additions, so
+## gc_run works) for the boot lane it ACTUALLY runs, cross-check vs the declared --firmware, and
+## write detected + match + the command/output to --firmware-evidence-file for the results plane
+## (so a detail page proves the lane, not just the label). Best-effort: a probe hiccup leaves the
+## file empty (-> no firmware panel), never failing a passing install.
+capture_firmware_lane() {
+   [ -n "${firmware_evidence_file}" ] || return 0
+   local out detected expected match
+   out="$(gc_run user 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true' 10 2>/dev/null || true)"
+   ## Classify from the probe text (glob match on a lowered copy -- no grep pipe). mokutil
+   ## prints 'SecureBoot enabled' / 'disabled'; the efi-dir line decides BIOS vs UEFI.
+   local out_lc="${out,,}"
+   case "${out_lc}" in
+      *'-> uefi'*)
+         case "${out_lc}" in
+            *'secureboot enabled'*)
+               detected="UEFI+SecureBoot"
+               ;;
+            *)
+               detected="UEFI"
+               ;;
+         esac
+         ;;
+      *)
+         detected="BIOS"
+         ;;
+   esac
+   case "${firmware}" in
+      bios)
+         expected="BIOS"
+         ;;
+      efi)
+         expected="UEFI"
+         ;;
+      efi-secureboot)
+         expected="UEFI+SecureBoot"
+         ;;
+      *)
+         expected=""
+         ;;
+   esac
+   if [ "${detected}" = "${expected}" ]; then match="true"; else match="false"; fi
+   {
+      printf '%s\n' "DETECTED=${detected}"
+      printf '%s\n' "MATCH=${match}"
+      printf '%s\n' "${out}"
+   } > "${firmware_evidence_file}" 2>/dev/null || true
+}
+
 # shellcheck disable=SC2317  ## dispatched indirectly by run_release_check_battery
 cal_verify() {
    case "$1" in
       6)
          gui_wait_for 'localhost|pts/|[[]user' 60 'check 6 GUI render (desktop painted)'
+         ## User session is up -> capture the firmware-lane evidence while gc_run is reliable.
+         capture_firmware_lane
          ;;
    esac
 }
@@ -489,6 +563,10 @@ parse_args() {
             ;;
          --check-log)
             check_log="$2"
+            shift 2
+            ;;
+         --firmware-evidence-file)
+            firmware_evidence_file="$2"
             shift 2
             ;;
          --keep-failed)

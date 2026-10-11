@@ -1,0 +1,141 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Build a derivative-maker image on the OVH host WITHOUT docker, in ONE command -- the proper
+## entry point so the build invocation is never hand-rolled. Runs dm-build-official DIRECTLY
+## (never docker/derivative-maker-docker-run): the docker wrapper's headless paths fail on
+## container-only gaps (in-container ~/.ssh test; an in-container git smudge on
+## qubes-template-whonix that git_sanity_test rejects), while a direct build sees the clean host
+## tree. Runs as the invoking NON-root user (root_check refuses root, probes sudo); the
+## build-steps sudo internally for root operations.
+##
+## CI is deliberately UNSET. CI=true would run derivative-update -> git_sanity_test, which
+## fails on a benign qubes-template-whonix submodule-merge smudge; and it is NOT needed here --
+## the non-CI ~/.ssh precheck passes because this runs directly with HOME=the invoking user's
+## home (admin has ~/.ssh), and a non-CI native build is a REAL image (not a dry-run). The
+## persistent-checkout cascade (configure pending dpkg, drop ephemeral signing tags, deep clean,
+## submodule sync) leaves a clean pinned tree to build from.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+flavor="kicksecure-lxqt"
+target="iso"
+freshness="current"
+dir="${DM_IMAGE_BUILD_DIR:-/home/admin/derivative-maker}"
+
+usage() {
+   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--dir DIR]
+
+Build a derivative-maker image on the OVH host, NO docker, from DIR (default
+/home/admin/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
+--freshness current. Run as a sudo-capable NON-root user (e.g. admin)."
+}
+
+while [ "$#" -ge 1 ]; do
+   case "$1" in
+      --flavor)
+         flavor="$2"
+         shift 2
+         ;;
+      --target)
+         target="$2"
+         shift 2
+         ;;
+      --freshness)
+         freshness="$2"
+         shift 2
+         ;;
+      --dir)
+         dir="$2"
+         shift 2
+         ;;
+      --help|-h)
+         usage
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${me}: ERROR: unknown argument: $1" >&2
+         usage >&2
+         exit 2
+         ;;
+   esac
+done
+
+if [ "${EUID}" = "0" ]; then
+   printf '%s\n' "${me}: ERROR: do NOT run as root -- dm's root_check refuses it; run as a sudo-capable user (admin)." >&2
+   exit 2
+fi
+[ -d "${dir}/.git" ] || { printf '%s\n' "${me}: ERROR: not a derivative-maker checkout: ${dir}" >&2; exit 2; }
+
+cd -- "${dir}"
+printf '%s\n' "${me}: build start $(date -u +%Y-%m-%dT%H:%M:%SZ) in ${dir}"
+printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
+
+## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
+printf '%s\n' "${me}: cascade: configure pending dpkg"
+## style-ok: allow-dpkg -- a legit pending-config fixup before a build, not a package install
+sudo --non-interactive dpkg --configure -a || true
+
+## Release loop/kpartx devices a PRIOR failed build leaked: grml-debootstrap's end-of-image
+## `kpartx -d` exits 1 against a stale partition mapping, failing the whole build. Target ONLY
+## loops backing a build image under derivative-binary -- never an unrelated ISO / VBox loop.
+printf '%s\n' "${me}: cascade: release leaked build loop/kpartx devices"
+for ld in $(sudo --non-interactive losetup -a 2>/dev/null | grep -F -- '/derivative-binary/' | cut -d: -f1 || true); do
+   printf '%s\n' "${me}:   releasing ${ld}"
+   sudo --non-interactive kpartx -d "${ld}" >/dev/null 2>&1 || true
+   sudo --non-interactive losetup -d "${ld}" >/dev/null 2>&1 || true
+done
+
+## Line-ending normalization FIRST: a stray core.autocrlf=true on the checkout CRLF-smudges text
+## files on checkout, so git_sanity_test (1100_sanity-tests AND derivative-update) sees them
+## "modified" and fails exit 3 (observed on qubes-template-whonix). Force it off (parent +
+## submodules) BEFORE the reset/re-checkout below, which then lands clean LF content.
+printf '%s\n' "${me}: cascade: force core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
+git config core.autocrlf false || true
+git submodule foreach --recursive 'git config core.autocrlf false || true' || true
+
+printf '%s\n' "${me}: cascade: drop ephemeral signing tags (parent + submodules)"
+git tag | grep -E '_[0-9a-f]{40}_|-developers-only' | xargs -r git tag -d || true
+git submodule foreach --recursive 'git tag | grep -E "_[0-9a-f]{40}_|-developers-only" | xargs -r git tag -d || true' || true
+
+printf '%s\n' "${me}: cascade: deep clean + submodule sync to pins"
+git clean -dfx || true
+git submodule foreach --recursive 'git reset --hard >/dev/null 2>&1 || true; git clean -dfx >/dev/null 2>&1 || true' || true
+git submodule update --init --recursive --force || true
+printf '%s\n' "${me}: tree status (expect empty):"
+git status --porcelain=v1 | head
+
+## --- build: DIRECT (no docker), CI=true, NATIVE arch (so CI=true builds a real image) ---
+native_arch="$(dpkg --print-architecture)"
+printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} arch=${native_arch} (direct, no docker, non-CI)"
+unset CI || true
+export dist_build_sign_and_tag=true
+export dist_build_target_arch="${native_arch}"
+export flavors_list="${flavor}"
+export dist_build_multi_target_list=""
+
+build_rc=0
+{
+   ./help-steps/signing-key-create \
+   && ./help-steps/sign-and-tag \
+   && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}"
+} || build_rc=$?
+
+printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "${me}: resulting images (newest first):"
+# shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
+ls -t /home/admin/derivative-binary/*/*.iso 2>/dev/null | head -5 || printf '%s\n' "${me}: (no .iso found -- inspect the log)"
+printf '%s\n' "DM-IMAGE-BUILD-DONE rc=${build_rc}"
+exit "${build_rc}"
