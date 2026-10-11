@@ -6,16 +6,18 @@
 """
 Regression tests for the sdwdate_gui_server crash-hardening.
 
-The gateway server was observed terminating with no logged cause: an exception
-escaping a Qt slot makes PyQt abort (SIGABRT), and with the server's stderr not
-captured and core dumps disabled the death left nothing in the journal.
+The gateway server was observed terminating with no logged cause. The reachable
+silent-exit path was the tray "Exit" action wired directly to sys.exit: a
+QAction.triggered passes a bool, so sys.exit(checked) raised SystemExit inside
+the Qt event loop and PyQt turned it into an exit with no log line, easy to
+trigger by accident via the "&Exit" mnemonic. A real unhandled exception in a
+slot likewise aborted silently (stderr uncaptured, cores disabled).
 
 Guards here:
-  - kick_client must not let a TypeError from disconnect() (raised when the
-    "disconnected" signal has nothing connected, e.g. a second kick) escape and
-    abort the process.
-  - log_unhandled_exception must LOG an unhandled exception (so a future abort
-    is diagnosable) and pass KeyboardInterrupt through to the default hook.
+  - exit_on_user_request logs the intent and quits the event loop cleanly, so an
+    intentional or accidental Exit is distinguishable in the journal from a crash.
+  - log_unhandled_exception LOGS an unhandled exception (making any abort
+    diagnosable) and defers KeyboardInterrupt to the default hook.
 """
 
 # pylint: disable=invalid-name,protected-access,no-name-in-module
@@ -27,7 +29,6 @@ import unittest.mock as mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtNetwork import QLocalSocket
 from PyQt5.QtWidgets import QApplication
 
 try:
@@ -44,26 +45,19 @@ _APP: QApplication = QApplication.instance() or QApplication(
 )
 
 
-class TestKickClientDisconnectGuard(unittest.TestCase):
-    """kick_client must tolerate disconnect() raising TypeError."""
+class TestExitOnUserRequest(unittest.TestCase):
+    """The tray Exit must log and quit cleanly, not silently raise SystemExit."""
 
-    def test_typeerror_on_disconnect_does_not_escape(self) -> None:
-        client = server.SdwdateGuiClient(QLocalSocket())
-        self.addCleanup(client.deleteLater)
-        ## Force disconnect() of the "disconnected" signal to raise, as it does
-        ## when nothing is connected (the second-kick path).
-        client.client_socket = mock.MagicMock()
-        client.client_socket.disconnected.disconnect.side_effect = TypeError
-        real_qubes = server.running_in_qubes_os
-        server.running_in_qubes_os = lambda: False
-        try:
-            ## Must not raise. Before the guard this TypeError aborted the
-            ## process.
-            client.kick_client()
-        finally:
-            server.running_in_qubes_os = real_qubes
-        self.assertTrue(client.kick_in_progress)
-        client.client_socket.disconnected.disconnect.assert_called_once()
+    def test_logs_and_quits_cleanly(self) -> None:
+        with mock.patch.object(server.QApplication, 'quit') as quit_app:
+            with self.assertLogs(level='INFO') as caught:
+                ## Invoked as a slot: triggered passes a bool. Call unbound with
+                ## a dummy self so no full tray construction is needed.
+                server.SdwdateTrayIcon.exit_on_user_request(mock.Mock(), True)
+        quit_app.assert_called_once()
+        self.assertTrue(
+            any('Exit requested' in line for line in caught.output)
+        )
 
 
 class TestLogUnhandledException(unittest.TestCase):
