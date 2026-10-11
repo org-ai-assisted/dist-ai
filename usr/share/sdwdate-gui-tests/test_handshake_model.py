@@ -237,5 +237,150 @@ class TestHandshakeModel(unittest.TestCase):
             )
 
 
+## --------------------------------------------------------------------------
+## Concurrent client admission (the single-client handshake model above cannot
+## express it). Mirrors SdwdateTrayIcon.accept_client: a unique-named client is
+## admitted only below MAX_CLIENTS, the next is kicked, and a duplicate name is
+## always kicked. MAX_CLIENTS is drift-guarded against the server constant.
+## --------------------------------------------------------------------------
+MAX_CLIENTS = 64
+
+
+def admit(count, unique_name):
+    """The admitted count after one newcomer: admitted (count+1) only if its
+    name is unique AND there is capacity; otherwise kicked (count unchanged)."""
+    if unique_name and count < MAX_CLIENTS:
+        return count + 1
+    return count
+
+
+def admitted_count_successors(count):
+    nxt = set()
+    nxt.add(admit(count, True))  # a unique-named newcomer
+    nxt.add(admit(count, False))  # a duplicate-named newcomer (kicked)
+    if count > 0:
+        nxt.add(count - 1)  # a client disconnects
+    nxt.discard(count)
+    return nxt
+
+
+def admitted_reachable():
+    seen = {0}
+    queue = deque([0])
+    while queue:
+        count = queue.popleft()
+        for nextcount in admitted_count_successors(count):
+            if nextcount not in seen:
+                seen.add(nextcount)
+                queue.append(nextcount)
+    return seen
+
+
+class TestClientAdmissionModel(unittest.TestCase):
+    """The server admits at most MAX_CLIENTS; duplicates are always kicked."""
+
+    def test_capacity_is_a_hard_bound(self) -> None:
+        seen = admitted_reachable()
+        self.assertEqual(max(seen), MAX_CLIENTS)
+        self.assertEqual(
+            {n for n in seen if n > MAX_CLIENTS}, set(),
+            "admitted count exceeded MAX_CLIENTS",
+        )
+
+    def test_newcomer_admitted_below_cap_kicked_at_cap(self) -> None:
+        for count in range(MAX_CLIENTS):
+            self.assertEqual(admit(count, True), count + 1)
+        ## At capacity a unique newcomer is kicked (count unchanged).
+        self.assertEqual(admit(MAX_CLIENTS, True), MAX_CLIENTS)
+
+    def test_duplicate_name_never_admitted(self) -> None:
+        for count in range(MAX_CLIENTS + 1):
+            self.assertEqual(
+                admit(count, False), count,
+                "a duplicate-named client was admitted",
+            )
+
+    def test_max_clients_matches_server(self) -> None:
+        """Drift guard: the model's MAX_CLIENTS equals the server constant."""
+        try:
+            from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+                sdwdate_gui_server,
+            )
+        except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover
+            raise unittest.SkipTest(
+                "sdwdate_gui_server not importable (PyQt5 absent)"
+            ) from exc
+        self.assertEqual(MAX_CLIENTS, sdwdate_gui_server.MAX_CLIENTS)
+
+
+## --------------------------------------------------------------------------
+## Orphaned ConnectCheck responders (sdwdate_gui_connect_check.py docstring):
+## a responder blocked on inotify is not woken when its workstation
+## disconnects, so blocked responders accumulate during a server outage. The
+## claim is that this is BOUNDED (by the number of connect attempts) and
+## SELF-CLEARING (they all wake and exit once the endpoint appears). Model it.
+## --------------------------------------------------------------------------
+def orphan_successors(state, max_attempts):
+    endpoint, orphans, attempts = state
+    nxt = set()
+    ## The server/maintainer toggles endpoint readiness.
+    if endpoint == "absent":
+        nxt.add(("present", orphans, attempts))
+    else:
+        nxt.add(("absent", orphans, attempts))
+    ## A connect attempt while the endpoint is absent leaves a blocked responder.
+    if endpoint == "absent" and attempts < max_attempts:
+        nxt.add((endpoint, orphans + 1, attempts + 1))
+    ## Endpoint present -> every blocked responder wakes and exits (drains).
+    if endpoint == "present" and orphans > 0:
+        nxt.add((endpoint, 0, attempts))
+    nxt.discard(state)
+    return nxt
+
+
+def orphan_reachable(max_attempts):
+    initial = ("absent", 0, 0)
+    seen = {initial}
+    queue = deque([initial])
+    edges = {}
+    while queue:
+        state = queue.popleft()
+        succ = orphan_successors(state, max_attempts)
+        edges[state] = succ
+        for nextstate in succ:
+            if nextstate not in seen:
+                seen.add(nextstate)
+                queue.append(nextstate)
+    return seen, edges
+
+
+class TestOrphanResponderModel(unittest.TestCase):
+    """Blocked responders are bounded by attempts and drain when ready."""
+
+    MAX_ATTEMPTS = 4
+
+    def test_orphans_bounded_by_attempts(self) -> None:
+        seen, _ = orphan_reachable(self.MAX_ATTEMPTS)
+        for _endpoint, orphans, attempts in seen:
+            self.assertLessEqual(
+                orphans, attempts, "more orphans than connect attempts"
+            )
+            self.assertLessEqual(
+                attempts, self.MAX_ATTEMPTS, "attempts grew unbounded"
+            )
+
+    def test_orphans_self_clearing(self) -> None:
+        seen, edges = orphan_reachable(self.MAX_ATTEMPTS)
+        drained = can_reach(edges, [s for s in seen if s[1] == 0])
+        self.assertEqual(
+            seen - drained, set(),
+            "a state cannot reach orphans==0 (not self-clearing)",
+        )
+        ## A fully-drained ready state is actually reachable.
+        self.assertTrue(
+            any(s[0] == "present" and s[1] == 0 for s in seen)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
