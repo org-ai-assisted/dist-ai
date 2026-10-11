@@ -1,0 +1,96 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone deploy driver; does not source helper-scripts.
+
+## Deploy the image-test results plane to the GitHub Pages site, end to end:
+##   1. pull the OVH results plane (world-readable; the ssh login user reads it)
+##   2. regenerate the static site into the Pages repo (test-results-site-generate)
+##   3. commit the regenerated site + static pages and publish via site-deploy
+##
+## STANDING DEFAULT: results are ALWAYS deployed to GitHub, unattended -- this is the one
+## command that does it (a systemd timer runs it; see the results-plane deploy unit). It does
+## NOT approve goldens: new/changed shots render as NEW for the human to review + approve
+## (test-results-site-approve), a separate human-mediated step.
+##
+## Report-only: any failure exits non-zero with a clear message and NEVER leaves a half-published
+## state read as success (site-deploy's own pre-push website-tests gate still applies).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+## Overridable knobs (defaults match the live setup).
+target="${TEST_RESULTS_DEPLOY_TARGET:-server-admin}"
+results_remote="${TEST_RESULTS_REMOTE:-/var/www/results}"
+pages_repo="${TEST_RESULTS_PAGES_REPO:-${HOME}/private-sources/org-ai-assisted.github.io}"
+
+die() {
+   printf '%s\n' "${me}: ERROR: $1" >&2
+   exit 1
+}
+
+## Resolve the generator as THIS script's SIBLING, not by PATH -- so a checkout run uses the
+## checkout generator, never the (possibly stale) installed /usr/bin copy. Falls back to PATH
+## only if no sibling exists (e.g. an odd install layout).
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+generate="${script_dir}/test-results-site-generate"
+[ -x "${generate}" ] || generate="test-results-site-generate"
+
+command -v sandbox >/dev/null 2>&1 || die "sandbox not found"
+command -v "${generate}" >/dev/null 2>&1 || die "test-results-site-generate not found"
+command -v site-deploy >/dev/null 2>&1 || die "site-deploy not found"
+[ -d "${pages_repo}/.git" ] || die "not a git checkout: ${pages_repo}"
+[ -d "${pages_repo}/automated-test-results" ] || die "no automated-test-results/ in ${pages_repo}"
+
+staging="$(mktemp --directory)"
+# shellcheck disable=SC2317  ## runs via the EXIT trap
+cleanup() { safe-rm --recursive --force -- "${staging}" || true; }
+trap cleanup EXIT
+
+printf '%s\n' "${me}: pulling results plane from ${target}:${results_remote}"
+sandbox --target "${target}" pull "${results_remote}" "${staging}/results" \
+   || die "pull of ${results_remote} from ${target} failed"
+[ -d "${staging}/results" ] || die "pull produced no results tree"
+
+printf '%s\n' "${me}: regenerating the static site into ${pages_repo}"
+"${generate}" \
+   --results-root "${staging}/results" \
+   --site-out "${pages_repo}" \
+   --goldens-dir "${pages_repo}/automated-test-results/goldens" \
+   --approvals "${pages_repo}/automated-test-results/golden-approvals.json" \
+   || die "site generation failed"
+
+cd -- "${pages_repo}"
+## Commit via a PRIVATE index: this tree is shared across sessions, so staging into the
+## shared index (or a directory pathspec) could sweep a sibling's change. read-tree HEAD +
+## add the generated site into an isolated index, then commit only that -- a sibling's
+## concurrent staging is never swept. (The whole-index commit of the PRIVATE index is the
+## intended full regenerate; GIT_INDEX_COMMIT_GUARD_ALLOW=1 satisfies the shared-index gate.)
+idx="$(mktemp)"
+GIT_INDEX_FILE="${idx}" git read-tree HEAD
+GIT_INDEX_FILE="${idx}" git add -A -- automated-test-results
+if GIT_INDEX_FILE="${idx}" git diff --cached --quiet HEAD -- automated-test-results; then
+   printf '%s\n' "${me}: no results changes to publish (site already current)"
+   safe-rm --force -- "${idx}"
+   exit 0
+fi
+msg_file="$(mktemp)"
+printf '%s\n' "Deploy image-test results" > "${msg_file}"
+GIT_INDEX_FILE="${idx}" GIT_INDEX_COMMIT_GUARD_ALLOW=1 git commit --quiet -F "${msg_file}" \
+   || { safe-rm --force -- "${msg_file}" "${idx}"; die "commit failed"; }
+safe-rm --force -- "${msg_file}" "${idx}"
+
+printf '%s\n' "${me}: publishing via site-deploy"
+site-deploy || die "site-deploy failed (results committed locally; not published)"
+printf '%s\n' "${me}: deployed."
