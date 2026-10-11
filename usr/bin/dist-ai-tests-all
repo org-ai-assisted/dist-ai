@@ -214,6 +214,7 @@ e2e_suites=(
    privleap-tests-e2e
    privleap-tests-e2e-systemd
    tb-updater-tests-e2e
+   sdwdate-gui-tests-e2e
 )
 integration_suites=(
    whonix-firewall-leaktest-tests
