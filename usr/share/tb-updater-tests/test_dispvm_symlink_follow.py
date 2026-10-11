@@ -108,33 +108,31 @@ REQUIRE = (
 
 
 def _shell_commands(text):
-    """Yield (line_index, command) for every shell command in `text`.
+    """Yield (line_index, command) for each shell command in `text`.
 
-    `line_index` is the 0-based physical line the command STARTS on. Joins a
-    backslash line-continuation into one logical line, strips a trailing
-    '# comment', then splits on the command separators ';' '&&' '||' '|' '&' so
-    a later flag check binds to the single command it governs -- otherwise
-    'true --no-start | dh_installsystemd ...service' or '... --no-canonicalize;
-    mount --bind ...' would satisfy a check whose flag sits in a DIFFERENT
-    command. A simple separator match, NOT a shell parser (no quoting / nesting
-    / heredoc awareness): enough to isolate the dh_installsystemd / mount calls
-    in debian/rules and dispvm, and it fails LOUD (a mangled command stops
-    matching, so the test rejects) rather than greening what it cannot model."""
-    lines = text.splitlines()
+    Per physical line: drop a trailing '# comment', then split on the command
+    separators ';' '&&' '||' '|' so a flag check binds to the ONE command it
+    governs. The regression this guards is a required flag moved onto a sibling
+    command on the same line --
+    'dh_installsystemd --no-start other.service; dh_installsystemd tb-updater-dispvm.service'
+    or 'true --no-canonicalize | mount --bind ...' -- which a line-wide token
+    check would miss.
+
+    A SIMPLE separator match, NOT a shell parser. It deliberately does NOT model
+    '&' backgrounding, redirections ('2>&1'), quoting, or backslash line
+    continuations: the real debian/rules and dispvm put each guarded
+    dh_installsystemd / mount call on its own line with none of these, so
+    handling them would be reinventing a bash parser (and splitting on '&' or
+    joining '\\'-continuations was shown to MIS-parse '2>&1' and a '# comment'
+    continuation). A guarded line written with those constructs is out of scope
+    -- caught by review, not by this matcher."""
     out = []
-    i = 0
-    while i < len(lines):
-        start = i
-        logical = lines[i]
-        while logical.rstrip().endswith("\\") and i + 1 < len(lines):
-            logical = logical.rstrip()[:-1] + " " + lines[i + 1]
-            i += 1
-        code = logical.split("#", 1)[0]
-        for cmd in re.split(r';|&&|\|\||\||&', code):
+    for i, line in enumerate(text.splitlines()):
+        code = line.split("#", 1)[0]
+        for cmd in re.split(r';|&&|\|\||\|', code):
             cmd = cmd.strip()
             if cmd:
-                out.append((start, cmd))
-        i += 1
+                out.append((i, cmd))
     return out
 
 
