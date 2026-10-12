@@ -310,20 +310,25 @@ validate_repo_remotes() {
 ## attribute per-submodule: the five checks emit heterogeneous path formats (some lack a
 ## './' prefix, some embed the path inside matched line text), so any matcher mis-blames
 ## or misses; the printed output is the authoritative per-path record.
+## $1 = summary-row label (e.g. "1 content" / "3 content-recheck"); $2 = the log line.
+## The checker is SKIPPED only when the DEFAULT in-tree checker FILE does not exist
+## (a minimal / off-tree superproject). A checker that EXISTS but is not executable is
+## NOT skipped -- it is run, its exec failure (126) is caught below, and the tree is
+## treated as unvalidated (ERROR), never silently published.
 check_tree_content() {
-   local checker content_out content_rc=0
+   local label="$1" logdesc="$2" checker content_out content_rc=0
    checker="${CHECK_UNICODE_CMD:-${top}/packages/kicksecure/developer-meta-files/usr/bin/dm-check-unicode}"
-   if [ -z "${CHECK_UNICODE_CMD}" ] && [ ! -x "${checker}" ]; then
-      log ">>> [1/6] tree content check SKIPPED: no dm-check-unicode in this checkout (minimal/off-tree)"
+   if [ -z "${CHECK_UNICODE_CMD}" ] && [ ! -e "${checker}" ]; then
+      log ">>> ${logdesc} SKIPPED: no dm-check-unicode in this checkout (minimal/off-tree)"
       return 0
    fi
-   log ">>> [1/6] validate tree content (${checker##*/})"
+   log ">>> ${logdesc} (${checker##*/})"
    content_out="$( "${checker}" 2>&1 )" || content_rc="$?"
    if [ "${content_rc}" -eq 0 ]; then
       return 0
    fi
    if [ "${content_rc}" -ne 1 ] || [ -z "${content_out//[[:space:]]/}" ]; then
-      record "1 content" "ERROR (dm-check-unicode exit ${content_rc}: tree NOT validated -- checker missing/broken, not a content verdict)"
+      record "${label}" "ERROR (dm-check-unicode exit ${content_rc}: tree NOT validated -- checker missing/broken, not a content verdict)"
       any_error="true" ; aborted="true"
       printf '%s\n' "${0##*/}: tree content checker (${checker##*/}) exited ${content_rc} without a usable verdict; refusing to tidy behind an unvalidated tree." >&2
       [ -n "${content_out}" ] && printf '%s\n' "${content_out}" >&2
@@ -331,8 +336,8 @@ check_tree_content() {
    fi
    content_defect="true"
    any_blocked="true"
-   record "1 content" "BLOCKED (tree content defect -- see dm-check-unicode output below for the offending path(s) and repo)"
-   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) are below. BLOCKED -- the mutating phases are skipped (nothing is published); fix the defect and re-run to tidy the rest:" >&2
+   record "${label}" "BLOCKED (tree content defect -- see the dm-check-unicode output on stderr for the offending path(s) and repo)"
+   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) follow on stderr. BLOCKED -- the mutating phases are skipped (nothing is published); fix the defect and re-run to tidy the rest:" >&2
    printf '%s\n' "${content_out}" >&2
 }
 
@@ -346,12 +351,12 @@ check_tree_content() {
 ## gated arraybolt3/trixie merge).
 phase_remotes() {
    local flag=() rc=0 path top_real tree_real on_target="false"
-   ## Tree-content validation first: a defect is BLOCKED (sweep continues) and makes
-   ## the destructive ensure redundant (skipped below), so classify it before we touch
-   ## remotes. A checker/environment FAILURE (not a defect) aborts here -- do not touch
-   ## remotes or mutate behind a tree that was never validated; the read-only fsck still
-   ## runs. A real defect sets content_defect (sweep continues) and never aborts.
-   check_tree_content
+   ## Tree-content validation first: a defect is BLOCKED (mutating phases skipped) and
+   ## makes the destructive ensure redundant (skipped below), so classify it before we
+   ## touch remotes. A checker/environment FAILURE (not a defect) aborts here -- do not
+   ## touch remotes or mutate behind a tree that was never validated; the read-only fsck
+   ## still runs. (A sync-introduced defect is caught by the post-sync re-check.)
+   check_tree_content "1 content" "[1/6] validate tree content"
    if [ "${aborted}" = "true" ]; then
       return 0
    fi
@@ -443,6 +448,20 @@ phase_submodule_sync() {
          any_error="true" ; aborted="true"
          ;;
    esac
+}
+
+## Re-validate tree content AFTER the submodule sync, BEFORE anything publishes. The
+## phase-0 pre-flight validated the START tree; the sync fast-forwards submodules to
+## their published 'ai' tips, which can introduce a defect the pre-flight never saw. The
+## publisher sub-tools (remaster --apply, dm-git-sync) do not re-check content, so a stale
+## pass would publish+pin the flagged tree. A defect here sets content_defect, so the
+## publishing phases below skip (mutation_halted). Skipped when nothing was synced (already
+## halted) -- no tree change to re-check.
+phase_content_recheck() {
+   if mutation_halted; then
+      return 0
+   fi
+   check_tree_content "3 content-recheck" "re-validate tree content after sync (publish guard)"
 }
 
 ## Phase 2: remaster + merge master->ai + publish (dm-remaster-all). 0 clean |
@@ -703,6 +722,7 @@ phase_mergecheck() {
 
 phase_remotes
 phase_submodule_sync
+phase_content_recheck
 phase_remaster
 phase_parent_sync
 ## fsck is read-only: always verify the store, even after an abort.
@@ -720,7 +740,13 @@ if [ "${any_error}" = "true" ]; then
    die 1 "dm-tidy did NOT complete cleanly -- a step failed (see the table). Resolve, then re-run."
 fi
 if [ "${any_blocked}" = "true" ]; then
-   printf '%s\n' "${0##*/}: everything else is tidy; the BLOCKED repo(s) above need a human. Resolve them, then re-run." >&2
+   if [ "${content_defect}" = "true" ]; then
+      ## A content defect skipped the mutating phases, so NOTHING was tidied -- do not
+      ## claim "everything else is tidy".
+      printf '%s\n' "${0##*/}: a tree content defect BLOCKED the tidy; the mutating phases were skipped and nothing was published. Fix the defect(s) above and re-run." >&2
+   else
+      printf '%s\n' "${0##*/}: everything else is tidy; the BLOCKED repo(s) above need a human. Resolve them, then re-run." >&2
+   fi
    exit 3
 fi
 if [ "${dry_run}" = "true" ]; then

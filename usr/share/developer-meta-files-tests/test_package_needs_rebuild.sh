@@ -6,13 +6,18 @@
 ## AI-Assisted
 
 ## Behavioural test for developer-meta-files' package-build-freshness.bsh after
-## dropping the reprepro published-version path: dm_package_needs_rebuild now
-## decides purely from a source-CONTENT hash manifest. Sources the real library
-## and drives the real functions over a fixture package tree; asserts:
-##   * first sight (no manifest entry) -> rebuild;
-##   * recorded + unchanged             -> skip;
+## dropping the reprepro published-version path: dm_package_needs_rebuild decides
+## from a source-CONTENT hash manifest AND from whether the built .deb still exists
+## in the local package output (never from reprepro / a version comparison). Sources
+## the real library and drives the real functions over a fixture package tree;
+## asserts:
+##   * first sight (no manifest entry)  -> rebuild;
+##   * recorded + unchanged + artifact present -> skip;
+##   * recorded + unchanged + artifact ABSENT  -> rebuild (manifest stale vs pool);
 ##   * a source edit with NO changelog bump -> rebuild (content hash moved);
-##   * a debian/changelog version bump  -> rebuild (the changelog is hashed too).
+##   * a debian/changelog version bump  -> rebuild (the changelog is hashed too);
+##   * an epoch version (3:1.0-2): the .deb drops the epoch, so an epoch-stripped
+##     artifact present -> skip, absent -> rebuild.
 ## Plus a structural guard that the reprepro path stayed removed and the function
 ## now takes two arguments (no repository_name).
 ##
@@ -99,6 +104,30 @@ pkg_dir="${workdir}/src"
 mkdir --parents -- "${pkg_dir}/debian"
 printf '%s\n' 'payload one' > "${pkg_dir}/file_a"
 printf '%s\n' 'payload two' > "${pkg_dir}/file_b"
+## dm_package_artifacts_present reads the binary package name(s) from debian/control.
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: fixture package
+ Fixture.
+CONTROL
+
+## The library looks for built .debs in genmkfile's DISTDIR under binary_build_folder_dist.
+distdir="${binary_build_folder_dist}/genmkfile-packages-result"
+mkdir --parents -- "${distdir}"
+make_artifact() {
+   touch -- "${distdir}/testpkg_${1}_all.deb"
+}
+clear_artifacts() {
+   local f
+   for f in "${distdir}"/testpkg_*.deb; do
+      if [ -e "${f}" ]; then
+         safe-rm --force -- "${f}"
+      fi
+   done
+}
 write_changelog() {
    cat > "${pkg_dir}/debian/changelog" <<CHANGELOG
 testpkg ($1) unstable; urgency=medium
@@ -129,13 +158,25 @@ else
    fail "first sight should rebuild, but was skipped"
 fi
 
-## Record, then unchanged -> skip (1).
+## Record + unchanged + the built artifact present -> skip (1).
 record_now
+make_artifact '1.0-1'
 if [ "$(needs_rebuild)" -eq 1 ]; then
-   pass "recorded + unchanged -> skip"
+   pass "recorded + unchanged + artifact present -> skip"
 else
-   fail "recorded + unchanged should skip, but wanted rebuild"
+   fail "recorded + unchanged + artifact present should skip, but wanted rebuild"
 fi
+
+## Record + unchanged but the built artifact GONE (pool reverted/cleared while the
+## persistent manifest survived) -> rebuild (0). The old hash-only path skipped
+## here and shipped the stale .deb.
+clear_artifacts
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "recorded + unchanged + artifact absent -> rebuild (manifest stale vs pool)"
+else
+   fail "artifact absent must rebuild, but was skipped (stale .deb would ship)"
+fi
+make_artifact '1.0-1'
 
 ## Edit a source file, NO changelog bump -> rebuild (0).
 printf '%s\n' 'payload two EDITED' > "${pkg_dir}/file_b"
@@ -153,6 +194,26 @@ if [ "$(needs_rebuild)" -eq 0 ]; then
    pass "changelog version bump -> rebuild (the changelog is hashed too)"
 else
    fail "a changelog bump should rebuild, but was skipped"
+fi
+
+## Epoch in the changelog (3:1.0-2): the .deb filename drops the epoch (-> 1.0-2).
+## With the hash recorded and the epoch-stripped artifact present -> skip; this
+## fails if the version is not epoch-stripped (the glob would miss the artifact).
+clear_artifacts
+write_changelog '3:1.0-2'
+record_now
+make_artifact '1.0-2'
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "epoch version: epoch-stripped artifact present -> skip"
+else
+   fail "epoch version: epoch-stripped artifact present should skip, but wanted rebuild"
+fi
+## And absent again -> rebuild.
+clear_artifacts
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "epoch version: artifact absent -> rebuild"
+else
+   fail "epoch version: artifact absent must rebuild, but was skipped"
 fi
 
 ## A hash FAILURE ('nohash' sentinel) must force a rebuild, never be compared like
@@ -174,4 +235,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm_package_needs_rebuild is content-hash only (${pass_count} assertions)."
+printf '%s\n' "OK: dm_package_needs_rebuild is content-hash + artifact-presence (${pass_count} assertions)."

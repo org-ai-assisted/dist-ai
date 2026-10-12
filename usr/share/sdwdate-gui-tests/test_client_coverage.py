@@ -356,6 +356,16 @@ class TestStatusChanged(ClientResetMixin):
                 self.assertLogs(level='WARNING'):
             await client.sdwdate_status_changed()
 
+    async def test_sdwdate_non_object_json(self) -> None:
+        """A valid-JSON non-object (e.g. 'null') is rejected, not crashed on.
+        The membership checks need a dict; a bare scalar would otherwise raise
+        TypeError outside the parse try/except (found by the status fuzz)."""
+        with mock.patch('os.path.isfile', return_value=True), \
+                mock.patch('builtins.open',
+                           mock.mock_open(read_data='null')), \
+                self.assertLogs(level='WARNING'):
+            await client.sdwdate_status_changed()
+
     async def test_sdwdate_missing_key(self) -> None:
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
