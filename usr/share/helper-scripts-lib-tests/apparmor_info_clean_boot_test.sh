@@ -99,6 +99,27 @@ printf '%s\n' "${allowed_line}" >"${allowed_fixture}"
 both_fixture="${fixtures_dir}/both.txt"
 { printf '%s\n' "${denied_line}"; printf '%s\n' "${allowed_line}"; } >"${both_fixture}"
 
+## A denial plus a NUL byte elsewhere in the stream (an audit record for a non-ASCII
+## path). A NUL makes GNU grep treat stdin as binary -- without --text it prints the
+## match only to stderr, exits 0 and drops the denial; the fix uses --text so the
+## denial is still reported. The DENIED line itself is ASCII so it survives as text.
+binary_fixture="${fixtures_dir}/binary.txt"
+{
+   printf '%s\n' "${denied_line}"
+   ## A NUL byte in a later record. 'printf %s\0' is the only R-030-allowed way to
+   ## emit one; a NUL cannot be carried in a shell string argument.
+   printf '%s\0' 'type=AVC msg=audit(1.0:8): embedded'
+   printf '%s\n' 'nul'
+} >"${binary_fixture}"
+
+## Two DENIED records identical EXCEPT the pid (which sed strips), so they collapse to
+## one line only if BOTH sed (redaction) and awk (dedup) run.
+dup_fixture="${fixtures_dir}/dup.txt"
+{
+   printf '%s\n' 'type=AVC msg=audit(1.0:9): apparmor="DENIED" operation="open" profile="/usr/bin/foo" name="/etc/shadow" pid=111 comm="foo" fsuid=0'
+   printf '%s\n' 'type=AVC msg=audit(1.0:9): apparmor="DENIED" operation="open" profile="/usr/bin/foo" name="/etc/shadow" pid=222 comm="foo" fsuid=0'
+} >"${dup_fixture}"
+
 out_file="${test_dir}/subject.out"
 LAST_RC=0
 LAST_OUT=""
@@ -134,6 +155,11 @@ nonzero() {
    else
       printf '%s' zero
    fi
+}
+
+## Count the lines of $1 that contain $2 (grep -c exits 1 on zero, hence '|| true').
+count_lines_with() {
+   printf '%s\n' "$1" | { grep -c -- "$2" || true; }
 }
 
 pass=0
@@ -187,6 +213,29 @@ check "both present -> DENIED reported" "$(contains "${LAST_OUT}" 'DENIED')" "ye
 check "both present -> ALLOWED reported" "$(contains "${LAST_OUT}" 'ALLOWED')" "yes"
 check "both present -> pid= redacted" "$(contains "${LAST_OUT}" 'pid=')" "no"
 check "both present -> fsuid= redacted" "$(contains "${LAST_OUT}" 'fsuid=')" "no"
+
+## (7) a NUL in the journal must not make grep's binary heuristic drop the denial.
+run_subject "${binary_fixture}"
+check "binary journal w/ DENIED -> exit 1 (not dropped)" "${LAST_RC}" "1"
+check "binary journal w/ DENIED -> denial reported" "$(contains "${LAST_OUT}" 'DENIED')" "yes"
+
+## (8) a read failure confined to the SECOND (ALLOWED) pipeline must still propagate:
+## the first journalctl call succeeds (empty), the second fails. Rules out a subject that
+## masks only the second pipeline ('output_allowed="$(...)" || true').
+count_file="${test_dir}/jcount"
+LAST_RC=0
+APPARMOR_INFO_STUB_FIXTURE="${empty_fixture}" APPARMOR_INFO_STUB_RC_SEQ="0 1" \
+   APPARMOR_INFO_STUB_COUNT_FILE="${count_file}" PATH="${stub_path}" \
+   "${subject}" --boot >"${out_file}" 2>/dev/null || LAST_RC=$?
+## Both journalctl calls must have run (count==2), so the non-zero status is the SECOND
+## call's failure, not an abort on the first pipeline.
+check "second-pipeline read failure -> both pipelines ran" "$(cat -- "${count_file}")" "2"
+check "second-pipeline read failure -> non-zero exit" "$(nonzero "${LAST_RC}")" "nonzero"
+
+## (9) duplicate DENIED records (differing only in the sed-stripped pid) collapse to one
+## line -- pins that BOTH sed and awk still run, not just that a match appears.
+run_subject "${dup_fixture}"
+check "duplicate DENIED records -> deduplicated to one line" "$(count_lines_with "${LAST_OUT}" 'DENIED')" "1"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
