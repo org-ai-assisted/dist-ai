@@ -80,6 +80,15 @@ def run_sourced(
     """
 
     env = dict(os.environ)
+    ## Bash imports code from the environment at startup two ways: BASH_ENV is
+    ## sourced before the harness body, and BASH_FUNC_* entries are exported
+    ## functions that can shadow builtins (e.g. 'source') or predefine
+    ## was_executed. Either could satisfy or defeat a test's assertions without
+    ## the subject script running, so drop both -- the harness measures only the
+    ## subject.
+    env.pop('BASH_ENV', None)
+    for _key in [_k for _k in env if _k.startswith('BASH_FUNC_')]:
+        del env[_key]
     env['SDWDATE_GUI_SCRIPT'] = str(script)
     hsp = helper_scripts_path(script)
     if hsp:
