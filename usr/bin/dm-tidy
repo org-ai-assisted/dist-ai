@@ -41,9 +41,18 @@
 ## Idempotent: re-running on an already-tidy tree is a clean no-op (every sub-tool
 ## no-ops when its target is current).
 ##
-## The four sub-commands are overridable (DM_TIDY_SUBMODULE_SYNC / _REMASTER_ALL /
-## _GIT_SYNC / _FSCK) so the regression test can drive the REAL orchestration
-## against recording stubs; unset, they are the production tools, byte-identical.
+## The sub-commands are overridable (DM_TIDY_CHECK_UNICODE / _SUBMODULE_SYNC /
+## _REMASTER_ALL / _GIT_SYNC / _FSCK) so the regression test can drive the REAL
+## orchestration against recording stubs; unset, they are the production tools,
+## byte-identical.
+##
+## TREE-CONTENT DEFECT = BLOCKED, NOT ABORT. A non-whitelisted symlink / Unicode /
+## trailing-whitespace / missing-EOF-newline / modeline defect (dm-check-unicode) in
+## ONE repo is a per-repo condition a human must fix -- so it is reported BLOCKED
+## (exit 3) and the sweep CONTINUES over the other ~80 repos, exactly like a dirty or
+## diverged submodule. Classifying it HERE keeps one repo's defect from aborting the
+## whole sweep the way the phase-0 remote-ensure's bundled, opaque exit code does when
+## a single submodule carries a committed non-whitelisted symlink.
 ##
 ## Usage:
 ##   dm-tidy [--dir <checkout>] [--dry-run]
@@ -66,6 +75,9 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 
 AI_BRANCH="ai"
+## Empty by default = run the in-tree dm-check-unicode resolved against 'top' (below).
+## A stub path here lets the test drive a clean/defect verdict without a real tree.
+CHECK_UNICODE_CMD="${DM_TIDY_CHECK_UNICODE:-}"
 SUBMODULE_SYNC_CMD="${DM_TIDY_SUBMODULE_SYNC:-dm-submodule-ai-sync}"
 REMASTER_ALL_CMD="${DM_TIDY_REMASTER_ALL:-dm-remaster-all}"
 GIT_SYNC_CMD="${DM_TIDY_GIT_SYNC:-dm-git-sync}"
@@ -199,6 +211,10 @@ step_results=()   ## "<label>\t<verdict>"
 any_blocked="false"
 any_error="false"
 aborted="false"
+## Set by check_tree_content: a tree-content defect is BLOCKED (sweep continues), and
+## it makes the destructive remote-ensure redundant (the ensure's own prerequisite
+## would fail identically), so phase_remotes skips the ensure when it is set.
+content_defect="false"
 
 record() {
    step_results+=( "$(printf '%s' "${1}"$'\t'"${2}")" )
@@ -245,6 +261,61 @@ validate_repo_remotes() {
    done
 }
 
+## Validate TREE CONTENT before the mutating sweep: dm-check-unicode flags a
+## non-whitelisted symlink, Unicode, trailing whitespace, a missing EOF newline, or an
+## editor modeline anywhere in the tree. It reads symlinks from GIT metadata
+## ('git ls-files --recurse-submodules'), so it sees a submodule's COMMITTED defect
+## even on a core.symlinks=false checkout (where the worktree symlink is a plain text
+## file). Any defect is a per-repo condition a human must fix -> BLOCKED (sweep
+## continues), NEVER an abort. Running it HERE gives dm-tidy a classifiable signal; the
+## same check, bundled inside the phase-0 remote ensure, surfaces only as that tool's
+## opaque exit code, which aborts the whole sweep on one submodule's symlink.
+##
+## Runs the IN-TREE checker (absolute path, resolves its own root to 'top'); SKIPPED
+## when the checkout ships no such checker -- a minimal / off-tree superproject, which
+## has no package content to flag and whose remote ensure is likewise skipped. On a
+## clean tree the ensure re-runs the SAME check, so it runs twice: deliberate -- this
+## pre-check is the only place dm-tidy gets a per-repo verdict the ensure's single
+## bundled exit code cannot give. DM_TIDY_CHECK_UNICODE overrides (test seam).
+##
+## ANY non-zero exit is a BLOCKING defect -- never a silent pass. The full checker
+## output is surfaced (every flagged path), and the owning repo(s) are named
+## best-effort by matching known submodule paths in that output (a label, not a parse
+## of the checker's line formats; the printed output is authoritative).
+check_tree_content() {
+   local checker content_out content_rc=0 p matched=() in_clause=""
+   checker="${CHECK_UNICODE_CMD:-${top}/packages/kicksecure/developer-meta-files/usr/bin/dm-check-unicode}"
+   if [ -z "${CHECK_UNICODE_CMD}" ] && [ ! -x "${checker}" ]; then
+      log ">>> [1/6] tree content check SKIPPED: no dm-check-unicode in this checkout (minimal/off-tree)"
+      return 0
+   fi
+   log ">>> [1/6] validate tree content (${checker##*/})"
+   content_out="$( "${checker}" 2>&1 )" || content_rc="$?"
+   [ "${content_rc}" -eq 0 ] && return 0
+   content_defect="true"
+   any_blocked="true"
+   ## Best-effort attribution. A .gitmodules parse/access error here is non-fatal (the
+   ## strict read in phase_remotes still aborts on it); attribution just falls back to
+   ## the parent-tree label and the authoritative output below.
+   read_submodule_paths || true
+   for p in "${submodule_path_list[@]}"; do
+      [ -n "${p}" ] || continue
+      ## '-F "./${p}/"' matches a flagged path UNDER submodule p at a path boundary
+      ## (the trailing '/' stops 'sub' matching 'sub-other'); checker paths all begin './'.
+      if grep --quiet --fixed-strings -- "./${p}/" <<< "${content_out}"; then
+         matched+=( "${p}" )
+      fi
+   done
+   if [ "${#matched[@]}" -gt 0 ]; then
+      in_clause=" in: ${matched[*]}"
+   else
+      in_clause=" in the parent tree"
+   fi
+   record "1 content" "BLOCKED (tree content defect${in_clause}; a human must fix it -- see dm-check-unicode output below)"
+   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the repo(s) above are BLOCKED, the rest of the sweep continues:" >&2
+   printf '%s\n' "${content_out}" >&2
+}
+
 ## Phase 0: ensure + validate git remotes. ENSURE (a DESTRUCTIVE canonical-remote
 ## rewrite -- see the CAUTION at REMOTES_ENSURE_CMD) runs ONLY when 'top' is the tree
 ## REMOTES_ENSURE_CMD acts on; otherwise it is SKIPPED so a 'top' pointed elsewhere is
@@ -255,6 +326,10 @@ validate_repo_remotes() {
 ## gated arraybolt3/trixie merge).
 phase_remotes() {
    local flag=() rc=0 path top_real tree_real on_target="false"
+   ## Tree-content validation first: a defect is BLOCKED (sweep continues) and makes
+   ## the destructive ensure redundant (skipped below), so classify it before we touch
+   ## remotes. It records its own verdict + sets content_defect; it never aborts.
+   check_tree_content
    log ">>> [1/6] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
    ## Run the DESTRUCTIVE ensure only when 'top' IS the tree REMOTES_ENSURE_CMD acts
    ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree. An
@@ -264,7 +339,13 @@ phase_remotes() {
       tree_real="$( realpath --canonicalize-missing -- "${REMOTES_TARGET_TREE}" 2>/dev/null || printf '%s' "${REMOTES_TARGET_TREE}" )"
       [ "${top_real}" = "${tree_real}" ] && on_target="true"
    fi
-   if [ "${on_target}" = "true" ]; then
+   if [ "${on_target}" = "true" ] && [ "${content_defect}" = "true" ]; then
+      ## A tree-content defect (BLOCKED above) would fail the ensure's OWN prerequisite
+      ## (it runs the same dm-check-unicode) at startup, before it rewrites any remote --
+      ## so the ensure can touch nothing here. Skip it and validate only; a genuinely
+      ## missing remote is still caught by the validation below (ERROR), no false green.
+      log "remote ensure SKIPPED: a tree content defect (BLOCKED above) would fail its own prerequisite; validating remotes only, mutating nothing."
+   elif [ "${on_target}" = "true" ]; then
       [ "${dry_run}" = "true" ] && flag=( --dry-run )
       ## A missing helper fails loud here (ensure exit 127 -> ERROR below), so no preflight
       ## -x check -- that would also wrongly reject a PATH-resolved bare-name override.
