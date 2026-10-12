@@ -744,10 +744,18 @@ apply_firmware() {
    esac
    "${VBOXMANAGE}" modifyvm "${vm}" --firmware "${fw}" >/dev/null
    if [ "${firmware}" = 'efi-secureboot' ]; then
+      ## Initialize the varstore and enroll the platform + MS keys now, but keep Secure Boot
+      ## DISABLED for the live/install phase. The live ISO's VirtualBox Guest Additions kernel
+      ## modules are NOT signed, so under enforced Secure Boot they would be rejected and
+      ## VBoxService never starts -> guestcontrol never comes up -> the install cannot be
+      ## driven. Secure Boot is turned ON only just before the installed-system first boot
+      ## (enable_secureboot_installed), where the GA is DKMS-signed and the MOK enrolled. The
+      ## keys are enrolled here (not at the transition) because inituefivarstore would wipe the
+      ## boot entries Calamares writes during the install; enabling enforcement later does not.
       "${VBOXMANAGE}" modifynvram "${vm}" inituefivarstore >/dev/null
       "${VBOXMANAGE}" modifynvram "${vm}" enrollorclpk >/dev/null
       "${VBOXMANAGE}" modifynvram "${vm}" enrollmssignatures >/dev/null
-      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null
    elif [ "${firmware}" = 'efi' ]; then
       ## A plain-EFI --reinstall over a VM that was previously efi-secureboot would
       ## otherwise inherit Secure Boot ENABLED (firmware mode != VM state); disable
@@ -755,6 +763,17 @@ apply_firmware() {
       ## Tolerated on a fresh VM whose varstore is not yet initialized (no-op there).
       "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
    fi
+}
+
+## Turn Secure Boot ON for the installed-system boot (efi-secureboot lane only). Runs while the
+## VM is powered off, between the live-session poweroff and the installed-disk start. The
+## varstore + PK/MS keys were enrolled by apply_firmware and the install wrote its boot entries
+## into that varstore; this only flips enforcement, so nothing Calamares created is lost. A
+## no-op on every other lane.
+enable_secureboot_installed() {
+   [ "${firmware}" = 'efi-secureboot' ] || return 0
+   "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+   printf '%s\n' "${me}: Secure Boot enabled for the installed-system boot"
 }
 
 build_vm() {
@@ -938,6 +957,9 @@ main() {
    sleep 3
    "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
       --type dvddrive --medium none >/dev/null
+   ## efi-secureboot: the live/install phase ran with Secure Boot OFF (unsigned live GA);
+   ## enforce it now, for the installed-system boot, while still powered off.
+   enable_secureboot_installed
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
 
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
