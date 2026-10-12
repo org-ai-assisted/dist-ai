@@ -126,10 +126,13 @@ class TestCheckSystemReadyHeadless(ScenarioTestBase):
 class TestCheckJournalHeadless(ScenarioTestBase):
     FILE = 'check_services.bsh'
 
-    ## leaprun with no per-user privleap comm socket (session-less) fails to CONNECT.
+    ## leaprun with no per-user privleap comm socket (session-less) fails to CONNECT. leaprun's
+    ## OWN error (before it execs log-checker) lands on stderr, as it does in production.
     _PRIVLEAP_UNREACHABLE = 'leaprun() { printf "ERROR: Could not connect to privleapd!\\n" >&2; return 1; }'
-    ## A genuine journal failure: privleapd answered, the read itself failed.
-    _JOURNAL_BROKEN = 'leaprun() { printf "journalctl: unrecoverable error\\n" >&2; return 1; }'
+    ## A genuine journal failure: privleapd answered, the read itself failed INSIDE log-checker.
+    ## log-checker runs 'exec 2>&1', so its error lands on STDOUT (not stderr) -- so check_journal's
+    ## stderr capture (journal_read_err) is EMPTY and the detail must come from the captured stdout.
+    _JOURNAL_BROKEN = 'leaprun() { printf "journalctl: unrecoverable error\\n"; return 1; }'
 
     def test_privleapd_unreachable_is_na(self) -> None:
         ## The confirmed headless artifact: no user manager AND no privleap comm socket ->
@@ -157,12 +160,15 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
+        ## stderr-branch detail: leaprun's own connect error IS surfaced.
+        self.assertIn('Could not connect to privleapd', r.joined())
 
     def test_genuine_journal_failure_still_warns(self) -> None:
         ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- AND the
         ## ACTUAL error is surfaced (not only the generic "could not read"), so the page names
         ## the cause. sanitize-string stubbed pass-through, as the sibling scenarios do.
-        ## CANARY: the pre-fix message discarded journal_read_err, so the detail assertion fails.
+        ## CANARY: the error is on STDOUT (log-checker's 'exec 2>&1'), so the pre-fix code --
+        ## which surfaced only journal_read_err (stderr, empty here) -- fails this detail assertion.
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
             stubs=self._JOURNAL_BROKEN
@@ -171,6 +177,12 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
+        ## CANARY ASSERTION: the detail block is sourced from the captured STDOUT. The pre-fix
+        ## code only surfaced journal_read_err (stderr, empty here) and labelled it "stderr", so
+        ## it emitted NO detail block at all -- this header is absent on old code, present on new.
+        ## (A bare 'journalctl: unrecoverable error' match is NOT a canary: the stubbed
+        ## check_critical_logs echoes it into the always-shown critical tier regardless of the fix.)
+        self.assertIn('Error detail (journal-read output)', r.joined())
         self.assertIn('journalctl: unrecoverable error', r.joined())
 
     def test_optout_forces_strict_on_connect_failure(self) -> None:
