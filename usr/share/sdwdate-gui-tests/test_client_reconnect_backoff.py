@@ -4,16 +4,16 @@
 ## See the file COPYING for copying conditions.
 
 """
-Regression test for the sdwdate_gui_client.main_loop reconnect backoff.
+Regression tests for sdwdate_gui_client reconnect backoff.
 
-Bug: when the server socket exists but the connect/setup handshake fails
-(stale socket, server not yet accepting), do_setup() returns False and
-main_loop() used to `continue` with no delay -- a tight busy-loop at 100%
-CPU, because the only asyncio.sleep(1) sat on the already-connected
-disconnect path, never on the connect-failure path.
+Under Qubes a down or disabled gateway has no server socket, so each qrexec
+Connect fails fast and the session drops at once. Reconnecting at a FIXED rate
+would then issue one gateway qrexec call per second and flood dom0's
+qrexec-policy log. main_loop must therefore back off EXPONENTIALLY (capped),
+not sleep a constant delay.
 
-Guards that a failing do_setup() backs off with asyncio.sleep(1) before
-retrying.
+These assert the growth and the cap; a regression to a fixed delay (the old
+asyncio.sleep(1)) fails test_main_loop_backs_off_exponentially.
 """
 
 # pylint: disable=wrong-import-position,invalid-name
@@ -35,57 +35,91 @@ class _StopLoop(BaseException):
     Sentinel used to break out of the otherwise-infinite main_loop.
 
     Inherits BaseException (like KeyboardInterrupt / SystemExit) so a broad
-    'except Exception' anywhere in main_loop can never swallow it and leave
-    the test spinning.
+    'except Exception' anywhere in main_loop can never swallow it and leave the
+    test spinning.
     """
 
 
-class TestClientReconnectBackoff(unittest.IsolatedAsyncioTestCase):
-    """main_loop() must not busy-spin when do_setup() keeps failing."""
+class TestReconnectBackoff(unittest.IsolatedAsyncioTestCase):
+    """reconnect_backoff grows the delay exponentially up to the cap."""
 
-    async def test_failed_setup_backs_off(self) -> None:
+    def setUp(self) -> None:
+        ## reconnect_delay is class state; start each test from the initial.
+        client.GlobalData.reconnect_delay = client.INITIAL_RECONNECT_DELAY
+        self.addCleanup(
+            setattr,
+            client.GlobalData,
+            'reconnect_delay',
+            client.INITIAL_RECONNECT_DELAY,
+        )
+
+    async def test_backoff_doubles_each_call(self) -> None:
+        delays: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay, *args, **kwargs):
+            delays.append(delay)
+            return await real_sleep(0, *args, **kwargs)
+
+        with mock.patch.object(asyncio, 'sleep', fake_sleep):
+            for _ in range(4):
+                await client.reconnect_backoff()
+
+        self.assertEqual(
+            delays,
+            [1.0, 2.0, 4.0, 8.0],
+            'reconnect_backoff did not double the delay each call',
+        )
+
+    async def test_backoff_caps_at_max(self) -> None:
+        client.GlobalData.reconnect_delay = client.MAX_RECONNECT_DELAY
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(_delay, *args, **kwargs):
+            return await real_sleep(0, *args, **kwargs)
+
+        with mock.patch.object(asyncio, 'sleep', fake_sleep):
+            await client.reconnect_backoff()
+
+        self.assertEqual(
+            client.GlobalData.reconnect_delay,
+            client.MAX_RECONNECT_DELAY,
+            'reconnect_backoff grew the delay past the cap',
+        )
+
+    async def test_main_loop_backs_off_exponentially(self) -> None:
+        """
+        main_loop must back off with a GROWING delay between failed do_setup()
+        retries, not a constant one. The old fixed asyncio.sleep(1) yields
+        [1, 1, 1] and fails the exponential assertion below.
+        """
         setup_calls: dict[str, int] = {'n': 0}
         sleep_delays: list[float] = []
 
         async def fake_do_setup() -> bool:
             setup_calls['n'] += 1
-            ## Second failure raises to escape the infinite loop; the first
-            ## failure must have triggered a backoff sleep by then.
-            if setup_calls['n'] >= 2:
+            ## Escape the infinite loop after three backoff sleeps.
+            if setup_calls['n'] >= 4:
                 raise _StopLoop
             return False
 
         real_sleep = asyncio.sleep
 
-        async def fake_sleep(delay: float, *args, **kwargs):
+        async def fake_sleep(delay, *args, **kwargs):
             sleep_delays.append(delay)
-            ## Preserve real yielding without a wall-clock delay.
             return await real_sleep(0, *args, **kwargs)
 
-        ## Gateway must not look disabled, or main_loop breaks out early.
-        disabled_path = mock.MagicMock()
-        disabled_path.is_file.return_value = False
-
         with mock.patch.object(client, 'do_setup', fake_do_setup), \
-                mock.patch.object(asyncio, 'sleep', fake_sleep), \
-                mock.patch.object(
-                    client.GlobalData,
-                    'qubes_gateway_server_disabled_path',
-                    disabled_path,
-                ):
+                mock.patch.object(asyncio, 'sleep', fake_sleep):
             with self.assertRaises(_StopLoop):
                 await client.main_loop()
 
         self.assertEqual(
-            setup_calls['n'],
-            2,
-            'do_setup() should have been retried after the first failure',
-        )
-        self.assertIn(
-            1,
-            sleep_delays,
-            'main_loop() busy-spun: no asyncio.sleep(1) backoff between '
-            'failed do_setup() retries',
+            sleep_delays[:3],
+            [1.0, 2.0, 4.0],
+            'main_loop did not back off exponentially on repeated connect '
+            f'failures (saw {sleep_delays[:3]}); a persistently-down gateway '
+            'would be polled at a fixed rate and flood dom0',
         )
 
 

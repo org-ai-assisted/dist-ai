@@ -7,18 +7,18 @@
 
 ## Coverage gate for sdwdate-gui. Runs the offscreen unit suite under
 ## coverage.py and ENFORCES 100% line coverage of the sdwdate_gui python
-## package (client, server, shared, config_read, connect_check -- the event
-## loop, wire protocol, menu/RPC, config parse, and the ConnectCheck responder).
+## package (client, server, shared, config_read -- the event loop, wire
+## protocol, menu/RPC, config parse, and reconnect backoff).
 ## A failure here means a line became unreachable by the tests -- add a test;
 ## do NOT paper over it with a blanket exclusion. The few genuinely unreachable
 ## defensive / debug-entrypoint lines carry a justified '# pragma: no cover' in
 ## the source instead.
 ##
-## Scope: this gates the PYTHON surface, which after the event-based handshake
-## rework is the bulk of the logic (the ConnectCheck responder is now Python).
-## The Qubes glue scripts (sdwdate-gui-qubes-proxy / -connect / -proxy-helper)
-## are bash; their source-able functions are unit-tested, but their main()
-## service orchestration only runs in the live gateway and is not unit-coverable.
+## Scope: this gates the PYTHON surface. The Qubes handshake is a static qrexec
+## socket-service symlink plus small bash glue scripts (sdwdate-gui-qubes-proxy
+## / -proxy-helper / sdwdate-gui-enabled-check); their source-able functions are
+## unit-tested, but their main() orchestration only runs on the live VM and is
+## not unit-coverable.
 ## Bash line coverage is measured with kcov, which needs ptrace and so runs only
 ## in the sandbox -- not gated here (see the kcov skill).
 ##

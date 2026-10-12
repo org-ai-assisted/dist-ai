@@ -9,8 +9,8 @@ Unit tests for sdwdate-gui-qubes-proxy-helper's role decision.
 The helper runs on both gateway and workstation. On a workstation (not a
 server VM) it drops the /run/sdwdate-gui-qubes-should-proxy flag so systemd
 enables the proxy sockets; on a gateway (server VM) it does nothing, because
-the Connect endpoint is maintained continuously by
-sdwdate-gui-qubes-connect.service.
+the Connect endpoint is a static qrexec socket-service symlink to the server
+socket.
 
 The script is source-able, so these tests source it and call apply_proxy_role
 directly, with the flag-file path redirected through the sdwdate_gui_proxy_flag
