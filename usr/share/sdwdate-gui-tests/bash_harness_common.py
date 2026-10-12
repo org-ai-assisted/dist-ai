@@ -80,6 +80,10 @@ def run_sourced(
     """
 
     env = dict(os.environ)
+    ## Bash sources BASH_ENV before the harness body, so an inherited BASH_ENV
+    ## could satisfy a test's assertions without the subject script running at
+    ## all. Drop it so the harness measures only the subject.
+    env.pop('BASH_ENV', None)
     env['SDWDATE_GUI_SCRIPT'] = str(script)
     hsp = helper_scripts_path(script)
     if hsp:
