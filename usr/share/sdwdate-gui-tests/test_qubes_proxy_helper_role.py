@@ -12,8 +12,9 @@ enables the proxy sockets; on a gateway (server VM) it does nothing, because
 the Connect endpoint is a static qrexec socket-service symlink to the server
 socket.
 
-The script is source-able, so these tests source it and call apply_proxy_role
-directly, with the flag-file path redirected through the sdwdate_gui_proxy_flag
+The script is source-able, so these tests source it and drive both
+apply_proxy_role (directly) and main (through the sdwdate_gui_config_read_cmd
+seam), with the flag-file path redirected through the sdwdate_gui_proxy_flag
 test seam.
 """
 
@@ -66,6 +67,87 @@ class TestProxyHelperRole(unittest.TestCase):
             self.assertFalse(
                 flag.exists(),
                 'gateway role wrongly dropped the should-proxy flag',
+            )
+
+
+class TestProxyHelperMain(unittest.TestCase):
+    """main reads run_server_in_qubes from config, then applies the role."""
+
+    def setUp(self) -> None:
+        self.script = locate_script('sdwdate-gui-qubes-proxy-helper')
+
+    def test_main_workstation_drops_flag(self) -> None:
+        """main: run_server_in_qubes false -> apply_proxy_role drops the flag."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            flag = Path(tmp_str) / 'should-proxy'
+            body = """
+            fake_config_read() { printf '%s\\n' 'false'; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
+                    'sdwdate_gui_proxy_flag': str(flag),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(
+                flag.is_file(),
+                'main did not drop the should-proxy flag on a workstation',
+            )
+
+    def test_main_server_role_drops_no_flag(self) -> None:
+        """main: run_server_in_qubes true -> gateway no-op, no flag dropped."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            flag = Path(tmp_str) / 'should-proxy'
+            body = """
+            fake_config_read() { printf '%s\\n' 'true'; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
+                    'sdwdate_gui_proxy_flag': str(flag),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(
+                flag.exists(),
+                'main wrongly dropped the should-proxy flag on a server VM',
+            )
+
+    def test_main_config_read_failure_exits_nonzero(self) -> None:
+        """main: a failing config read exits non-zero and drops no flag."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            flag = Path(tmp_str) / 'should-proxy'
+            body = """
+            fake_config_read() { return 1; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
+                    'sdwdate_gui_proxy_flag': str(flag),
+                },
+            )
+            self.assertNotEqual(
+                result.returncode,
+                0,
+                'main exited 0 despite a config-read failure',
+            )
+            self.assertFalse(
+                flag.exists(),
+                'main dropped the should-proxy flag despite a config-read '
+                'failure',
             )
 
 
