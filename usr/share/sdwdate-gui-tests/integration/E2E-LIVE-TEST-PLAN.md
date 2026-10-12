@@ -32,9 +32,12 @@ on). Run them on a test session, not while the machine is doing real work.
 ## The architecture under test
 
 - The gateway exposes its running server's UNIX socket as a native qrexec
-  SOCKET service via a STATIC symlink `/etc/qubes-rpc/sdwdate-gui.Connect` ->
-  `/run/user/1000/sdwdate-gui/sdwdate-gui-server.socket`. There is NO
-  endpoint-maintainer service and NO ConnectCheck responder.
+  SOCKET service via `/etc/qubes-rpc/sdwdate-gui.Connect` ->
+  `/run/user/<uid>/sdwdate-gui/sdwdate-gui-server.socket`. The symlink is
+  created ONCE at boot by `sdwdate-gui-qubes-connect-setup.service` (a root
+  one-shot, not a poll loop), which resolves `<uid>` from the boot mode:
+  `user` (uid 1000) normally, `sysmaint` (uid 1001) in a sysmaint session.
+  There is NO continuous endpoint-maintainer and NO ConnectCheck responder.
 - The workstation client connects to its local systemd socket, which
   socket-activates `sdwdate-gui-qubes-proxy`; the proxy execs
   `qrexec-client-vm <gateway> sdwdate-gui.Connect` and bridges stdio.
@@ -49,8 +52,9 @@ on). Run them on a test session, not while the machine is doing real work.
 
 ## Topology and roles
 
-- `sys-whonix` -- the Whonix GATEWAY. Runs the sdwdate-gui SERVER tray app and
-  ships the static `/etc/qubes-rpc/sdwdate-gui.Connect` symlink.
+- `sys-whonix` -- the Whonix GATEWAY. Runs the sdwdate-gui SERVER tray app and,
+  at boot, the `sdwdate-gui-qubes-connect-setup` one-shot that creates the
+  `/etc/qubes-rpc/sdwdate-gui.Connect` symlink for the active boot mode's uid.
 - A WORKSTATION connector VM (e.g. `anon-whonix`) -- runs the sdwdate-gui CLIENT
   plus the proxy services (`sdwdate-gui-qubes-proxy` via the socket unit,
   `sdwdate-gui-qubes-proxy-helper`). It reaches the gateway over
@@ -74,8 +78,10 @@ on). Run them on a test session, not while the machine is doing real work.
 - O2 gateway Connect endpoint + server socket:
 
       # in sys-whonix
-      ls -l /etc/qubes-rpc/sdwdate-gui.Connect          # static symlink (always)
-      ls -l /run/user/1000/sdwdate-gui/sdwdate-gui-server.socket  # only when server up
+      systemctl status sdwdate-gui-qubes-connect-setup.service   # one-shot, boot
+      ls -l /etc/qubes-rpc/sdwdate-gui.Connect          # symlink -> the server socket
+      ## normal session: /run/user/1000/...; sysmaint session: /run/user/1001/...
+      ls -l /run/user/*/sdwdate-gui/sdwdate-gui-server.socket    # only when server up
 
 - O3 gateway server log (the tray app; crash vs clean exit):
 
@@ -125,6 +131,7 @@ Two independent dimensions, exercised in combination:
 | S8  | A1->A2         | connectors up; exit the server via &Exit            | P1,P2  |
 | S9  | A1 running     | restart the gateway SERVER under live clients       | P1,P3,P4 |
 | S10 | A2 (disabled)  | gateway `disable=true`; connectors up               | P1     |
+| S11 | A1 (sysmaint)  | gateway booted in sysmaint mode (GUI as uid 1001)   | P1,P3,P4 |
 
 ### S1 -- client with no server (the flood regression, server-off arm)
 
@@ -197,6 +204,17 @@ Two independent dimensions, exercised in combination:
 3. Live clients reconnect within a backoff interval and the menu re-populates
    (P3,P4). O1: a connect burst around the restart, then quiet (P1).
 
+### S11 -- gateway booted in sysmaint mode
+
+1. Boot the gateway in SYSMAINT mode (the GUI session runs as `sysmaint`,
+   uid 1001). Start the server as sysmaint.
+2. O2: `sdwdate-gui-qubes-connect-setup.service` resolved the boot mode and
+   `/etc/qubes-rpc/sdwdate-gui.Connect` points at
+   `/run/user/1001/sdwdate-gui/sdwdate-gui-server.socket` (NOT 1000).
+3. A workstation connects and appears in the sysmaint-session tray (P3,P4);
+   O1 quiet (P1). This is the exact case a hardcoded-uid-1000 symlink would
+   silently break.
+
 ### S10 -- disabled gateway
 
 1. Set `disable=true` in the gateway config and restart `sdwdate-gui.service`
@@ -233,8 +251,8 @@ server handles the vanishing client gracefully, not a wedge.
 
 1. Exit the gateway server via `&Exit` (not kill) to validate P2 one last time.
 2. Restore each connector's normal power state.
-3. Confirm O1 is quiet and the static `/etc/qubes-rpc/sdwdate-gui.Connect`
-   symlink is present on the gateway (it is shipped, independent of the tray app).
+3. Confirm O1 is quiet and `/etc/qubes-rpc/sdwdate-gui.Connect` is present on
+   the gateway (created by the boot one-shot, independent of the tray app).
 
 ## Resume / automation notes
 
