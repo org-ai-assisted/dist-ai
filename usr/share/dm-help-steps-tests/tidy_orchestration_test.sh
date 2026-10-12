@@ -281,6 +281,13 @@ if grep --quiet -- "'./sub/etc/qubes-rpc/foo.Connect'" "${tidy_err}" \
 else
    fail "content-defect report/skip missing; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
 fi
+## The exit-3 closer must NOT claim the rest was tidied (nothing was published).
+if grep --quiet -- 'a tree content defect BLOCKED the tidy' "${tidy_err}" \
+   && ! grep --quiet -- 'everything else is tidy' "${tidy_err}"; then
+   pass "the content-defect closer does not falsely claim 'everything else is tidy'"
+else
+   fail "content-defect closer wrong; err:<<<$(cat -- "${tidy_err}")>>>"
+fi
 
 ## 1d (CANARY): a CLEAN content check is actually INVOKED (writes a marker) and lets
 ## the ensure run normally -> exit 0. On OLD dm-tidy the seam is ignored, so the marker
@@ -340,6 +347,41 @@ if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
 else
    fail "missing checker mishandled; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
 fi
+
+## 1h (CANARY): a defect introduced by the SYNC is caught by the post-sync re-check, so
+## nothing flagged is published. A stateful stub is CLEAN on the first call (phase-0
+## pre-flight, so the ensure + sync run) and reports a DEFECT on the second (the post-sync
+## re-validate), which must skip remaster + parent-sync. Expected: exit 3, labels
+## REMOTES,SYNC,FSCK (ensure + sync ran; remaster/parent-sync skipped). OLD dm-tidy has no
+## re-check: the stub is called once (clean), all phases run -> exit 0: FAILS.
+unicode_cnt="${workspace}/unicode.cnt"
+check_unicode_stub UNICODE_STALE 0 \
+   "n=\$(cat \"${unicode_cnt}\" 2>/dev/null || printf 0); n=\$((n+1)); printf '%s' \"\$n\" > \"${unicode_cnt}\"" \
+   "[ \"\$n\" -ge 2 ] && { printf '%s\n' \"dm-check-unicode: ERROR: NOT whitelisted symlink: './sub/x' -> '/run/x'\" >&2; exit 1; }"
+safe-rm --force -- "${unicode_cnt}" 2>/dev/null || true
+run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_STALE" --dir "${super}"
+if [ "${tidy_rc}" -eq 3 ] && [ "$(labels_seen)" = "REMOTES,SYNC,FSCK" ]; then
+   pass "a sync-introduced defect is caught by the post-sync re-check: remaster + parent-sync skip (nothing published), exit 3"
+else
+   fail "post-sync re-check wrong; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+
+## 1i (CANARY): a present-but-NON-EXECUTABLE default checker is NOT skipped as "no
+## checker"; it is run, its exec failure (126) is a structural ERROR -- the tree is never
+## published unvalidated. Put a non-executable dm-check-unicode in the fixture, leave
+## DM_TIDY_CHECK_UNICODE unset. OLD dm-tidy's '! -x' skip-gate SKIPS it and runs every
+## phase -> exit 0: FAILS. (Clean up the packages/ fixture afterwards.)
+intree_chk="${super}/packages/kicksecure/developer-meta-files/usr/bin"
+mkdir --parents -- "${intree_chk}"
+printf '%s\n' '#!/bin/bash' 'exit 1' > "${intree_chk}/dm-check-unicode"
+chmod 0644 -- "${intree_chk}/dm-check-unicode"
+run_tidy --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
+   pass "a present-but-non-executable checker is run (exec failure) and ERRORs, never skipped as absent"
+else
+   fail "non-executable checker mishandled; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+safe-rm --recursive --force -- "${super}/packages"
 
 ## --- Case 2 (CANARY): sync BLOCKED (exit 1) -> exit 3, sweep CONTINUES ----------
 run_tidy SYNC_RC=1 --dir "${super}"
