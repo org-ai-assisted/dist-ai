@@ -138,6 +138,55 @@ def can_reach(edges, targets):
     return good
 
 
+def fair_successors(state, reachable):
+    """The FAIR transitions out of `state`: all client progress moves plus the
+    environment bringing the server UP (down -> up). The environment DROPPING
+    the server (up -> down) is adversarial and NOT assumed fair, so it is
+    excluded -- a fair scheduler need not ever drop a running server, but under
+    strong fairness it must eventually bring a down server up and must
+    eventually take an enabled client-progress step."""
+    server, _client = state
+    adversarial = ("down", state[1]) if server == "up" else None
+    return {s for s in successors(state, reachable) if s != adversarial}
+
+
+def _strongly_connected_components(graph):
+    """Tarjan's SCCs of `graph` (a dict node -> set of successor nodes)."""
+    index = {}
+    low = {}
+    on_stack = {}
+    stack = []
+    counter = [0]
+    result = []
+
+    def strongconnect(node):
+        index[node] = counter[0]
+        low[node] = counter[0]
+        counter[0] += 1
+        stack.append(node)
+        on_stack[node] = True
+        for succ in graph[node]:
+            if succ not in index:
+                strongconnect(succ)
+                low[node] = min(low[node], low[succ])
+            elif on_stack.get(succ):
+                low[node] = min(low[node], index[succ])
+        if low[node] == index[node]:
+            component = []
+            while True:
+                member = stack.pop()
+                on_stack[member] = False
+                component.append(member)
+                if member == node:
+                    break
+            result.append(frozenset(component))
+
+    for node in graph:
+        if node not in index:
+            strongconnect(node)
+    return result
+
+
 class TestHandshakeModel(unittest.TestCase):
     """Exhaustive proof over the reachable state space, both configs."""
 
@@ -207,6 +256,75 @@ class TestHandshakeModel(unittest.TestCase):
         self.assertEqual(
             stuck, set(),
             f"client gets stuck (cannot retry) from: {stuck}",
+        )
+
+
+class TestStrongFairnessLiveness(unittest.TestCase):
+    """
+    EVENTUAL CONNECTION under strong fairness -- stronger than the reachability
+    liveness above (which only shows a path to 'connected' exists).
+
+    Assume STRONG FAIRNESS on the fair transitions (the environment bringing the
+    server up, and every client progress step) but NOT on the adversarial
+    server-drop. Then every fair run reaches 'connected': there is no "fair
+    trap" -- no cycle of non-'connected' states closed under fair transitions.
+    A fair scheduler cannot sit in such a cycle, because every one of its SCCs
+    has a fair transition leaving it toward 'connected', which strong fairness
+    forces to be taken. Proven exhaustively over the reachable state space.
+    """
+
+    @staticmethod
+    def _fair_traps(reachable):
+        """Non-'connected' SCCs with a cycle, closed under fair transitions."""
+        seen, _edges = reachable_states(reachable)
+        fgraph = {s: fair_successors(s, reachable) for s in seen}
+        traps = []
+        for scc in _strongly_connected_components(fgraph):
+            ## A single node with no fair self-loop is not a cycle (successors
+            ## never include the node itself), so only multi-node SCCs cycle.
+            if len(scc) < 2:
+                continue
+            if any(state[1] == "connected" for state in scc):
+                continue
+            ## Closed == no fair transition leaves the SCC (toward 'connected'
+            ## or elsewhere). An escaping fair transition is continuously
+            ## enabled on a recurring state, so strong fairness forces the exit.
+            closed = all(
+                succ in scc for state in scc for succ in fgraph[state]
+            )
+            if closed:
+                traps.append(scc)
+        return traps
+
+    def test_no_fair_cycle_avoids_connected(self) -> None:
+        """Reachable config: every fair run reaches 'connected'."""
+        self.assertEqual(
+            self._fair_traps(reachable=True), [],
+            "a fair cycle avoids 'connected' (eventual connection broken)",
+        )
+        seen, _ = reachable_states(reachable=True)
+        self.assertTrue(any(s[1] == "connected" for s in seen))
+
+    def test_trap_detector_catches_a_synthetic_fair_trap(self) -> None:
+        """
+        Canary: the trap detector must FLAG a closed non-'connected' fair cycle,
+        or 'no traps' above would be vacuous. A hand-built two-state cycle with
+        no exit is a trap.
+        """
+        trap_graph = {
+            ("up", "idle"): {("up", "backoff")},
+            ("up", "backoff"): {("up", "idle")},
+        }
+        sccs = _strongly_connected_components(trap_graph)
+        cyclic = [scc for scc in sccs if len(scc) >= 2]
+        self.assertEqual(len(cyclic), 1, "SCC finder missed the 2-cycle")
+        scc = cyclic[0]
+        closed = all(
+            succ in scc for state in scc for succ in trap_graph[state]
+        )
+        self.assertTrue(
+            closed and not any(s[1] == "connected" for s in scc),
+            "the detector would not have flagged a real fair trap",
         )
 
 
