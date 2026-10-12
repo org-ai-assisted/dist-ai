@@ -899,6 +899,7 @@ rt_lane_kicksecure() {
    local account version iso pass_file vmname rc shot_dir shot_arg check_log
    local -a checks_arg=()
    local -a keep_arg=()
+   local -a mok_arg=()
 
    account="$1"
    version="$2"
@@ -971,12 +972,21 @@ rt_lane_kicksecure() {
    if [ "${DM_RELEASE_TEST_KEEP_FAILED}" = '1' ] && [ -n "${eph_account}" ]; then
       keep_arg=( --keep-failed )
    fi
+   ## Secure Boot is only meaningful if the installed system's out-of-tree modules (tirdad,
+   ## Guest Additions) are DKMS-signed and their MOK enrolled; otherwise they silently fail to
+   ## load under enforced SB and the lane would pass while testing nothing. --mok-enroll runs the
+   ## Calamares MOK setup (MOK_ENROLL=1 -> sign the modules) and enrolls the resulting cert, so
+   ## the installed system boots under SB with its modules loading. Only the efi-secureboot lane.
+   if [ "${firmware}" = 'efi-secureboot' ]; then
+      mok_arg=( --mok-enroll )
+   fi
 
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
       --shot-dir "${shot_dir}" --check-log "${check_log}" \
-      --firmware-evidence-file "${firmware_evidence_file}" "${checks_arg[@]}" "${keep_arg[@]}" || rc=$?
+      --firmware-evidence-file "${firmware_evidence_file}" \
+      "${checks_arg[@]}" "${keep_arg[@]}" "${mok_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty

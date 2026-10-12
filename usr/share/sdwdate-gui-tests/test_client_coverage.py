@@ -514,6 +514,22 @@ class TestSetup(ClientResetMixin):
             await client.setup_connection()
         scn.assert_awaited_once_with('fallback')
 
+    async def test_setup_connection_qubes_workstation_skips(self) -> None:
+        """Qubes workstation (no local server_pid): the whole header/name
+        block is skipped -- the gateway's qrexec header provides the name."""
+        writer = _make_writer()
+        client.GlobalData.sock_write = writer
+        pid_path = mock.MagicMock()
+        pid_path.is_file.return_value = False
+        client.GlobalData.server_pid_path = pid_path
+        with mock.patch.object(client, 'running_in_qubes_os',
+                               return_value=True), \
+                mock.patch.object(client, 'set_client_name',
+                                  new=mock.AsyncMock()) as scn:
+            await client.setup_connection()
+        scn.assert_not_awaited()
+        writer.write.assert_not_called()
+
     def test_setup_inotify_watch_warns_on_failure(self) -> None:
         wm = mock.MagicMock()
         wm.add_watch.return_value = {'/p': -1}
@@ -533,6 +549,22 @@ class TestSetup(ClientResetMixin):
                 mock.patch.object(client, 'setup_inotify_watch') as siw:
             await client.setup_inotify_watches(True, True)
         self.assertEqual(siw.call_count, 3)
+
+    async def test_setup_inotify_watches_no_tor(self) -> None:
+        """No tor paths: only the sdwdate status watch is added."""
+        with mock.patch.object(client.pyinotify, 'WatchManager'), \
+                mock.patch.object(client.pyinotify, 'AsyncioNotifier'), \
+                mock.patch.object(client, 'setup_inotify_watch') as siw:
+            await client.setup_inotify_watches(False, True)
+        self.assertEqual(siw.call_count, 1)
+
+    async def test_setup_inotify_watches_none(self) -> None:
+        """Neither tor nor sdwdate paths: no watches added."""
+        with mock.patch.object(client.pyinotify, 'WatchManager'), \
+                mock.patch.object(client.pyinotify, 'AsyncioNotifier'), \
+                mock.patch.object(client, 'setup_inotify_watch') as siw:
+            await client.setup_inotify_watches(False, False)
+        self.assertEqual(siw.call_count, 0)
 
     async def test_find_and_handle_no_tor_sdwdate_present(self) -> None:
         client.GlobalData.tor_control_panel_installed = False
@@ -622,6 +654,22 @@ class TestSetup(ClientResetMixin):
                                   new=mock.AsyncMock()) as siw:
             self.assertTrue(await client.do_setup())
         siw.assert_awaited_once()
+
+    async def test_do_setup_watch_manager_already_set(self) -> None:
+        """On reconnect the watch manager already exists, so do_setup must NOT
+        re-create the inotify watches (the watch_manager-is-None branch)."""
+        client.GlobalData.watch_manager = mock.MagicMock()
+        with mock.patch.object(client, 'open_connection',
+                               new=mock.AsyncMock(return_value=True)), \
+                mock.patch.object(client, 'setup_connection',
+                                  new=mock.AsyncMock()), \
+                mock.patch.object(
+                    client, 'find_and_handle_tor_and_sdwdate_state',
+                    new=mock.AsyncMock(return_value=(True, True))), \
+                mock.patch.object(client, 'setup_inotify_watches',
+                                  new=mock.AsyncMock()) as siw:
+            self.assertTrue(await client.do_setup())
+        siw.assert_not_awaited()
 
     async def test_do_setup_exception(self) -> None:
         with mock.patch.object(client, 'open_connection',
@@ -747,6 +795,23 @@ class TestMainLoopAndMain(ClientResetMixin):
             client.GlobalData.reconnect_delay, client.INITIAL_RECONNECT_DELAY,
             'a long-lived session should reset the reconnect backoff',
         )
+
+    async def test_main_loop_stays_connected_then_drops(self) -> None:
+        """A True handle result loops the inner loop (stays connected); the
+        next False result breaks it -- covers the stay-connected branch."""
+        results = iter([True, False])
+
+        async def fake_handle() -> bool:
+            return next(results)
+
+        with mock.patch.object(client, 'do_setup',
+                               new=mock.AsyncMock(return_value=True)), \
+                mock.patch.object(client, 'handle_incoming_data',
+                                  new=fake_handle), \
+                mock.patch.object(client, 'running_in_qubes_os',
+                                  return_value=False):
+            with self.assertRaises(SystemExit):
+                await client.main_loop()
 
     async def test_main_loop_inner_exception_breaks(self) -> None:
         with mock.patch.object(client, 'do_setup',

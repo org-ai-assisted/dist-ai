@@ -65,10 +65,13 @@ fi
 python3 -m coverage erase
 
 ## --source=sdwdate_gui scopes the gate to the package; -m unittest discover
-## runs the exact same suite as the plain runner.
-python3 -m coverage run --source=sdwdate_gui \
+## runs the exact same suite as the plain runner. --branch also requires BOTH
+## sides of every conditional to be exercised, not just every line -- a
+## partial branch (a line run but one of its outcomes never taken) is a real
+## test gap that statement coverage hides.
+python3 -m coverage run --branch --source=sdwdate_gui \
   -m unittest discover --start-directory "${tests_dir}" --pattern 'test_*.py'
 
-## --fail-under=100 is the gate: a drop below 100% exits non-zero. The last
-## command, so errexit propagates its verdict.
+## --fail-under=100 is the gate: a drop below 100% (line OR branch) exits
+## non-zero. The last command, so errexit propagates its verdict.
 python3 -m coverage report --show-missing --fail-under=100

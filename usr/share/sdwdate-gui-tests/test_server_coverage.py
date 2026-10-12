@@ -622,6 +622,25 @@ class TestTrayMenuAndIcon(TrayTestBase):
         _APP.processEvents()
         self.tray.handle_state_change(server.MessageType.SDWDATE, client)
 
+    def test_handle_state_change_no_open_window(self) -> None:
+        """No message window open: handle_state_change only regenerates."""
+        c = self.add_client('host')
+        self.tray.msg_window = None
+        self.tray.handle_state_change(server.MessageType.SDWDATE, c)
+
+    def test_handle_state_change_open_window_other_client(self) -> None:
+        """An open window for a DIFFERENT client is not refreshed (the
+        type/name-match branch is false), it just regenerates."""
+        c = self.add_client('host', tor=server.TorStatus.RUNNING)
+        fake_socket = mock.MagicMock()
+        fake_socket.state.return_value = QLocalSocket.ConnectedState
+        c.client_socket = fake_socket
+        self.tray.show_status_msg(server.MessageType.SDWDATE, c)
+        self.tray.msg_window.show()
+        _APP.processEvents()
+        other = self.add_client('other')
+        self.tray.handle_state_change(server.MessageType.SDWDATE, other)
+
     def test_drop_client(self) -> None:
         client = self.add_client('host')
         self.tray.drop_client(client)
@@ -841,6 +860,29 @@ class TestMain(unittest.TestCase):
                 mock.patch.object(server, 'parse_config_files'), \
                 mock.patch.object(server, 'running_in_qubes_os',
                                   return_value=False), \
+                mock.patch.object(server, 'SdwdateTrayIcon',
+                                  return_value=fake_tray), \
+                mock.patch.dict(server.ConfigData.conf_dict,
+                                {'disable': False,
+                                 'run_server_in_qubes': True},
+                                clear=True):
+            with self.assertRaises(SystemExit):
+                server.main()
+        qapp.return_value.exec_.assert_called_once()
+
+    def test_happy_path_qubes_server(self) -> None:
+        """Qubes + run_server_in_qubes=True: the server does NOT exit on the
+        role check, it proceeds to the tray (the 'not run_server' branch is
+        false)."""
+        fake_tray = mock.MagicMock()
+        with mock.patch.object(server.os, 'geteuid', return_value=1000), \
+                mock.patch.object(server.Path, 'is_file', return_value=False), \
+                mock.patch.object(server, 'QApplication') as qapp, \
+                mock.patch.object(server.signal, 'signal'), \
+                mock.patch.object(server, 'QTimer'), \
+                mock.patch.object(server, 'parse_config_files'), \
+                mock.patch.object(server, 'running_in_qubes_os',
+                                  return_value=True), \
                 mock.patch.object(server, 'SdwdateTrayIcon',
                                   return_value=fake_tray), \
                 mock.patch.dict(server.ConfigData.conf_dict,
