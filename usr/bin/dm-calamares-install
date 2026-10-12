@@ -893,10 +893,17 @@ main() {
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    vm_started="true"
    story_snap 11 power-on-first-frame
+   ## Transient firmware splash (best-effort; brief and may be hidden headless).
+   sleep 2
+   story_snap 12 firmware-logo
    ## Select the install boot entry once GRUB is actually on screen (poll, not a
    ## fixed sleep that races the autoboot into the wrong session). The menu capture (20/21)
    ## is taken inside select_install_boot_entry, where the menu is known to be on screen.
    select_install_boot_entry
+   ## Transient: a frame a few seconds into the live kernel boot (best-effort; may be a splash
+   ## or an early console -- or blank if the window is between modes).
+   sleep 4
+   story_snap 22 live-kernel-boot
 
    printf '%s\n' "${me}: wait for the live desktop + guestcontrol, then launch Calamares"
    ## Poll for the compositor (desktop >=1024 wide, keeps the display awake) AND for
@@ -958,6 +965,9 @@ main() {
    ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
    ## sysmaint cannot even log in to the live session.
    gc_launch_gui "${live_account}" "${INSTALL_HOST_CMD}" "${launch_extra[*]}"
+   ## Best-effort frame of whatever install-host presents before the Calamares window appears
+   ## (it may wait on the unrestricted-admin unlock first); captures the launch transition.
+   story_snap 30 install-host-launched
    ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
    ## confirm Calamares actually started; on failure dump the launch log and fail with a
    ## real reason instead of a silent wait to the downstream OCR timeout.
@@ -1036,11 +1046,18 @@ main() {
    enable_secureboot_installed
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    story_snap 42 installed-first-frame
+   ## Transient installed-disk boot frames (best-effort; short windows, may be blank headless):
+   ## the firmware logo, then the installed GRUB menu (~5s autoboot) before the kernel takes over.
+   sleep 2
+   story_snap 43 installed-firmware-logo
+   sleep 3
+   story_snap 45 installed-grub-menu
 
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
    story_snap 47 luks-prompt
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   story_snap 48 luks-passphrase-typed
    gui_scan 1c 9c
    sleep 3
    story_snap 49 luks-unlocked
