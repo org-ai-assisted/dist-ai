@@ -49,12 +49,14 @@ class ClientResetMixin(unittest.IsolatedAsyncioTestCase):
             for name in (
                 'sock_write', 'sock_read', 'sock_buf', 'do_reconnect',
                 'last_tor_status', 'tor_control_panel_installed',
-                'watch_manager', 'notifier',
+                'watch_manager', 'notifier', 'reconnect_delay',
+                'server_pid_path',
             )
         }
         client.GlobalData.sock_buf = b''
         client.GlobalData.do_reconnect = True
         client.GlobalData.last_tor_status = ''
+        client.GlobalData.reconnect_delay = client.INITIAL_RECONNECT_DELAY
         client.GlobalData.awaitable_tasks.clear()
         client.GlobalData.background_tasks.clear()
 
@@ -624,21 +626,13 @@ class TestSetup(ClientResetMixin):
 class TestMainLoopAndMain(ClientResetMixin):
     """main_loop control flow and main()."""
 
-    async def test_main_loop_disabled_path_breaks(self) -> None:
-        disabled = mock.MagicMock()
-        disabled.is_file.return_value = True
-        client.GlobalData.qubes_gateway_server_disabled_path = disabled
-        with self.assertLogs(level='INFO'):
-            await client.main_loop()  # breaks immediately
-
     async def test_main_loop_connect_then_disconnect_exit(self) -> None:
-        disabled = mock.MagicMock()
-        disabled.is_file.return_value = False
-        client.GlobalData.qubes_gateway_server_disabled_path = disabled
+        """A connect that drops on a non-Qubes host exits the loop (no retry)."""
 
         async def fake_handle() -> bool:
             return False
 
+        client.GlobalData.reconnect_delay = 8.0
         with mock.patch.object(client, 'do_setup',
                                new=mock.AsyncMock(return_value=True)), \
                 mock.patch.object(client, 'handle_incoming_data',
@@ -649,12 +643,12 @@ class TestMainLoopAndMain(ClientResetMixin):
                                   new=mock.AsyncMock()):
             with self.assertRaises(SystemExit):
                 await client.main_loop()
+        ## A fully-established connection resets the backoff.
+        self.assertEqual(
+            client.GlobalData.reconnect_delay, client.INITIAL_RECONNECT_DELAY
+        )
 
     async def test_main_loop_gather_non_bool_breaks_and_exits(self) -> None:
-        disabled = mock.MagicMock()
-        disabled.is_file.return_value = False
-        client.GlobalData.qubes_gateway_server_disabled_path = disabled
-
         async def raising_handle() -> bool:
             raise RuntimeError('boom')
 
@@ -667,34 +661,41 @@ class TestMainLoopAndMain(ClientResetMixin):
             with self.assertRaises(SystemExit):
                 await client.main_loop()
 
-    async def test_main_loop_qubes_reconnect_then_disabled(self) -> None:
-        disabled = mock.MagicMock()
-        ## False on the first outer check, True on the second -> break out.
-        disabled.is_file.side_effect = [False, True]
-        client.GlobalData.qubes_gateway_server_disabled_path = disabled
+    async def test_main_loop_qubes_reconnect_backs_off(self) -> None:
+        """
+        On Qubes a dropped session retries via reconnect_backoff (no give-up
+        flag exists any more). do_setup succeeds once, the session drops, the
+        loop reaches the reconnect path and backs off; a second do_setup raises
+        to end the test.
+        """
+        setup_calls: dict[str, int] = {'n': 0}
+
+        async def flaky_do_setup() -> bool:
+            setup_calls['n'] += 1
+            if setup_calls['n'] >= 2:
+                raise _StopLoop
+            return True
+
+        async def disconnect_handle() -> bool:
+            return False
+
         pid_path = mock.MagicMock()
         pid_path.is_file.return_value = False
         client.GlobalData.server_pid_path = pid_path
         client.GlobalData.do_reconnect = True
 
-        async def disconnect_handle() -> bool:
-            return False
-
-        with mock.patch.object(client, 'do_setup',
-                               new=mock.AsyncMock(return_value=True)), \
+        with mock.patch.object(client, 'do_setup', flaky_do_setup), \
                 mock.patch.object(client, 'handle_incoming_data',
                                   new=disconnect_handle), \
                 mock.patch.object(client, 'running_in_qubes_os',
                                   return_value=True), \
-                mock.patch.object(client.asyncio, 'sleep',
-                                  new=mock.AsyncMock()) as slp:
-            await client.main_loop()
-        slp.assert_awaited()
+                mock.patch.object(client, 'reconnect_backoff',
+                                  new=mock.AsyncMock()) as backoff:
+            with self.assertRaises(_StopLoop):
+                await client.main_loop()
+        backoff.assert_awaited()
 
     async def test_main_loop_inner_exception_breaks(self) -> None:
-        disabled = mock.MagicMock()
-        disabled.is_file.return_value = False
-        client.GlobalData.qubes_gateway_server_disabled_path = disabled
         with mock.patch.object(client, 'do_setup',
                                new=mock.AsyncMock(return_value=True)), \
                 mock.patch.object(client, 'handle_incoming_data',
@@ -717,34 +718,15 @@ class TestMainLoopAndMain(ClientResetMixin):
             with self.assertRaises(SystemExit):
                 await client.main()
 
-    async def test_main_parse_failure_exits(self) -> None:
-        with mock.patch.object(client.os, 'geteuid', return_value=1000), \
-                mock.patch.object(client.Path, 'is_file', return_value=False), \
-                mock.patch.object(client, 'parse_config_files',
-                                  side_effect=OSError('x')), \
-                self.assertLogs(level='ERROR'):
-            with self.assertRaises(SystemExit):
-                await client.main()
-
-    async def test_main_disabled_config_exits(self) -> None:
-        with mock.patch.object(client.os, 'geteuid', return_value=1000), \
-                mock.patch.object(client.Path, 'is_file', return_value=False), \
-                mock.patch.object(client, 'parse_config_files'), \
-                mock.patch.dict(client.ConfigData.conf_dict,
-                                {'disable': True}, clear=True):
-            with self.assertRaises(SystemExit):
-                await client.main()
-
     async def test_main_runs_loop_then_exits(self) -> None:
+        """main (not root, not a template VM) runs main_loop then exits 0."""
         with mock.patch.object(client.os, 'geteuid', return_value=1000), \
                 mock.patch.object(client.Path, 'is_file', return_value=False), \
-                mock.patch.object(client, 'parse_config_files'), \
-                mock.patch.dict(client.ConfigData.conf_dict,
-                                {'disable': False}, clear=True), \
                 mock.patch.object(client, 'main_loop',
-                                  new=mock.AsyncMock()):
+                                  new=mock.AsyncMock()) as loop:
             with self.assertRaises(SystemExit):
                 await client.main()
+        loop.assert_awaited_once()
 
 
 if __name__ == '__main__':

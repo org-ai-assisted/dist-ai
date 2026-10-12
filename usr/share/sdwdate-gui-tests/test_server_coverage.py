@@ -816,18 +816,6 @@ class TestMain(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 server.main()
 
-    def test_disabled_exits(self) -> None:
-        with mock.patch.object(server.os, 'geteuid', return_value=1000), \
-                mock.patch.object(server.Path, 'is_file', return_value=False), \
-                mock.patch.object(server, 'QApplication'), \
-                mock.patch.object(server.signal, 'signal'), \
-                mock.patch.object(server, 'parse_config_files'), \
-                mock.patch.dict(server.ConfigData.conf_dict,
-                                {'disable': True, 'run_server_in_qubes': False},
-                                clear=True):
-            with self.assertRaises(SystemExit):
-                server.main()
-
     def test_qubes_without_run_server_exits(self) -> None:
         with mock.patch.object(server.os, 'geteuid', return_value=1000), \
                 mock.patch.object(server.Path, 'is_file', return_value=False), \

@@ -783,14 +783,16 @@ main() {
    ## push host files into the live guest and/or run setup snippets as 'user'
    ## BEFORE Calamares launches. Used to swap in a patched helper or seed a
    ## verification marker that must land in the live overlayfs upperdir.
-   local push_spec push_local push_dest cmd_snippet
+   local push_spec push_local push_dest cmd_snippet launch_var
    for push_spec in "${pre_install_push[@]}"; do
       push_local="${push_spec%%:*}"
       push_dest="${push_spec#*:}"
-      { [ "${push_local}" != "${push_spec}" ] && [ -n "${push_dest}" ]; } \
-         || die "${SETUP_RC}" "--pre-install-push needs LOCAL:GUEST, got '${push_spec}'"
+      { [ "${push_local}" != "${push_spec}" ] && [ -n "${push_local}" ] && [ -n "${push_dest}" ]; } \
+         || die "${SETUP_RC}" "--pre-install-push needs LOCAL:GUEST (both non-empty), got '${push_spec}'"
       printf '%s\n' "${me}: pre-install push: '${push_local}' -> guest '${push_dest}'"
-      "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push "${push_local}" "${push_dest}" \
+      ## '--' so a LOCAL/GUEST that looks like an option (e.g. '--help') is a path,
+      ## not a flag argparse would consume + exit 0 on (leaving the copy undone).
+      "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push -- "${push_local}" "${push_dest}" \
          || die "${FAIL_RC}" "pre-install push failed: '${push_spec}'"
    done
    for cmd_snippet in "${pre_install_cmd[@]}"; do
@@ -806,7 +808,16 @@ main() {
    if [ "${mok_enroll}" = 'true' ]; then
       launch_extra+=( 'MOK_ENROLL=1' )
    fi
-   launch_extra+=( "${launch_env[@]}" )
+   ## gc_launch_gui interpolates the extra VAR=VAL list into the guest shell
+   ## UNESCAPED (trusted-literal contract), so a value with whitespace would
+   ## word-split and a '$(...)'/';' would execute in-guest. Constrain each
+   ## --launch-env entry to NAME=shell-safe-value; reject anything else.
+   for launch_var in "${launch_env[@]}"; do
+      if ! [[ "${launch_var}" =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.,:=/+-]*$ ]]; then
+         die "${SETUP_RC}" "--launch-env must be NAME=VALUE with a shell-safe value (no spaces or metacharacters), got '${launch_var}'"
+      fi
+      launch_extra+=( "${launch_var}" )
+   done
    ## install-host opens Calamares as its own Wayland window; gc_launch_gui sets
    ## WAYLAND_DISPLAY (absent in the guestcontrol env) and backgrounds via setsid so
    ## the GUI survives the exec channel closing. Account is 'user': the live install

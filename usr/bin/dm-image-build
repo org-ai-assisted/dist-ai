@@ -13,10 +13,14 @@
 ## tree. Runs as the invoking NON-root user (root_check refuses root, probes sudo); the
 ## build-steps sudo internally for root operations.
 ##
+## Multi-user by design: every path is derived from the invoking user's HOME, and the
+## cowbuilder base is per-user, so two users can build concurrently on the same host without
+## colliding. Nothing is hardcoded to 'admin'.
+##
 ## CI is deliberately UNSET. CI=true would run derivative-update -> git_sanity_test, which
 ## fails on a benign qubes-template-whonix submodule-merge smudge; and it is NOT needed here --
 ## the non-CI ~/.ssh precheck passes because this runs directly with HOME=the invoking user's
-## home (admin has ~/.ssh), and a non-CI native build is a REAL image (not a dry-run). The
+## home (which has ~/.ssh), and a non-CI native build is a REAL image (not a dry-run). The
 ## persistent-checkout cascade (configure pending dpkg, drop ephemeral signing tags, deep clean,
 ## submodule sync) leaves a clean pinned tree to build from.
 
@@ -37,117 +41,141 @@ freshness="current"
 ## false = include non-free firmware -> broadly bootable (real HW + VBox), the right default for
 ## a test/install ISO; true = Free-Software-only firmware.
 freedom="false"
-dir="${DM_IMAGE_BUILD_DIR:-/home/admin/derivative-maker}"
+dir="${DM_IMAGE_BUILD_DIR:-${HOME}/derivative-maker}"
 
 usage() {
    printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--freedom true|false] [--dir DIR]
 
 Build a derivative-maker image on the OVH host, NO docker, from DIR (default
-/home/admin/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
---freshness current --freedom false. Run as a sudo-capable NON-root user (e.g. admin)."
+\${HOME}/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
+--freshness current --freedom false. Run as a sudo-capable NON-root user."
 }
 
-while [ "$#" -ge 1 ]; do
-   case "$1" in
-      --flavor)
-         flavor="$2"
-         shift 2
-         ;;
-      --target)
-         target="$2"
-         shift 2
-         ;;
-      --freshness)
-         freshness="$2"
-         shift 2
-         ;;
-      --freedom)
-         freedom="$2"
-         shift 2
-         ;;
-      --dir)
-         dir="$2"
-         shift 2
-         ;;
-      --help|-h)
-         usage
-         exit 0
-         ;;
-      *)
-         printf '%s\n' "${me}: ERROR: unknown argument: $1" >&2
-         usage >&2
-         exit 2
-         ;;
-   esac
-done
+## Release loop/kpartx devices THIS user's own prior failed build leaked: grml-debootstrap's
+## end-of-image `kpartx -d` exits 1 against a stale partition mapping, failing the whole build.
+## Scoped to the invoking user's OWN build-output tree ($1 = "${HOME}/derivative-binary/"),
+## NEVER a global '/derivative-binary/' match: on a shared host a CONCURRENT build by another
+## user owns loops backing files under ITS OWN home, and releasing those would corrupt that
+## peer's in-flight build. losetup -a lists every loop system-wide; we release only the ones
+## whose backing file is under this build's own folder.
+release_leaked_build_loops() {
+   local prefix="$1" ld
+   for ld in $(sudo --non-interactive losetup -a 2>/dev/null | grep -F -- "${prefix}" | cut -d: -f1 || true); do
+      printf '%s\n' "${me}:   releasing ${ld}"
+      sudo --non-interactive kpartx -d "${ld}" >/dev/null 2>&1 || true
+      sudo --non-interactive losetup -d "${ld}" >/dev/null 2>&1 || true
+   done
+}
 
-if [ "${EUID}" = "0" ]; then
-   printf '%s\n' "${me}: ERROR: do NOT run as root -- dm's root_check refuses it; run as a sudo-capable user (admin)." >&2
-   exit 2
+main() {
+   while [ "$#" -ge 1 ]; do
+      case "$1" in
+         --flavor)
+            flavor="$2"
+            shift 2
+            ;;
+         --target)
+            target="$2"
+            shift 2
+            ;;
+         --freshness)
+            freshness="$2"
+            shift 2
+            ;;
+         --freedom)
+            freedom="$2"
+            shift 2
+            ;;
+         --dir)
+            dir="$2"
+            shift 2
+            ;;
+         --help|-h)
+            usage
+            exit 0
+            ;;
+         *)
+            printf '%s\n' "${me}: ERROR: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+      esac
+   done
+
+   if [ "${EUID}" = "0" ]; then
+      printf '%s\n' "${me}: ERROR: do NOT run as root -- dm's root_check refuses it; run as a sudo-capable NON-root user." >&2
+      exit 2
+   fi
+   [ -d "${dir}/.git" ] || { printf '%s\n' "${me}: ERROR: not a derivative-maker checkout: ${dir}" >&2; exit 2; }
+
+   cd -- "${dir}"
+   printf '%s\n' "${me}: build start $(date -u +%Y-%m-%dT%H:%M:%SZ) in ${dir}"
+   printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
+
+   ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
+   printf '%s\n' "${me}: cascade: configure pending dpkg"
+   sudo --non-interactive dpkg-noninteractive --configure -a || true
+
+   printf '%s\n' "${me}: cascade: release leaked build loop/kpartx devices (this user's tree only)"
+   release_leaked_build_loops "${HOME}/derivative-binary/"
+
+   ## Line-ending normalization FIRST: a stray core.autocrlf=true on the checkout CRLF-smudges text
+   ## files on checkout, so git_sanity_test (1100_sanity-tests AND derivative-update) sees them
+   ## "modified" and fails exit 3 (observed on qubes-template-whonix). Force it off (parent +
+   ## submodules) BEFORE the reset/re-checkout below, which then lands clean LF content.
+   printf '%s\n' "${me}: cascade: force core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
+   git config core.autocrlf false || true
+   git submodule foreach --recursive 'git config core.autocrlf false || true' || true
+
+   printf '%s\n' "${me}: cascade: drop ephemeral signing tags (parent + submodules)"
+   git tag | grep -E '_[0-9a-f]{40}_|-developers-only' | xargs -r git tag -d || true
+   git submodule foreach --recursive 'git tag | grep -E "_[0-9a-f]{40}_|-developers-only" | xargs -r git tag -d || true' || true
+
+   printf '%s\n' "${me}: cascade: deep clean + submodule sync to pins"
+   git clean -dfx || true
+   git submodule foreach --recursive 'git reset --hard >/dev/null 2>&1 || true; git clean -dfx >/dev/null 2>&1 || true' || true
+   git submodule update --init --recursive --force || true
+   printf '%s\n' "${me}: tree status (expect empty):"
+   git status --porcelain=v1 | head
+
+   ## --- build: DIRECT (no docker), NATIVE arch (so a non-CI native build is a real image) ---
+   local native_arch
+   native_arch="$(dpkg --print-architecture)"
+   printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} arch=${native_arch} (direct, no docker, non-CI)"
+   unset CI || true
+   export dist_build_sign_and_tag=true
+   export dist_build_target_arch="${native_arch}"
+   export flavors_list="${flavor}"
+   export dist_build_multi_target_list=""
+   ## Per-user cowbuilder base so two users building concurrently do not collide on the shared
+   ## default /var/cache/pbuilder base.cow (one build would clobber the other's chroot). Set the
+   ## cache dir explicitly (honored verbatim by variables.d/70_cowbuilder.bsh) -- NOT --build-slot,
+   ## which would also redirect the OUTPUT path that dm-release-test + the result harness read.
+   local build_user
+   build_user="$(id -un)"
+   export cowbuilder_cache_dir="/var/cache/pbuilder/${build_user}"
+   ## This is a test/install build on a host with NO release-server credentials; a failed
+   ## dm-upload-images connection retries with linear backoff for ~7h. Run the FULL upload path
+   ## (file-list build, target derivation, dm-prepare-release) but make the transfer a no-op, so
+   ## the upload code is really exercised yet nothing is sent to the release server.
+   export dist_build_simulate_upload=true
+
+   local build_rc=0
+   {
+      ./help-steps/signing-key-create \
+      && ./help-steps/sign-and-tag \
+      && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}" --freedom "${freedom}"
+   } || build_rc=$?
+
+   printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   printf '%s\n' "${me}: resulting images (newest first):"
+   # shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
+   ls -t "${HOME}/derivative-binary/"*/*.iso 2>/dev/null | head -5 || printf '%s\n' "${me}: (no .iso found -- inspect the log)"
+   printf '%s\n' "DM-IMAGE-BUILD-DONE rc=${build_rc}"
+   exit "${build_rc}"
+}
+
+## Sourced (dm-image-build-tests) -> expose the functions without running; executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
 fi
-[ -d "${dir}/.git" ] || { printf '%s\n' "${me}: ERROR: not a derivative-maker checkout: ${dir}" >&2; exit 2; }
-
-cd -- "${dir}"
-printf '%s\n' "${me}: build start $(date -u +%Y-%m-%dT%H:%M:%SZ) in ${dir}"
-printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
-
-## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
-printf '%s\n' "${me}: cascade: configure pending dpkg"
-sudo --non-interactive dpkg-noninteractive --configure -a || true
-
-## Release loop/kpartx devices a PRIOR failed build leaked: grml-debootstrap's end-of-image
-## `kpartx -d` exits 1 against a stale partition mapping, failing the whole build. Target ONLY
-## loops backing a build image under derivative-binary -- never an unrelated ISO / VBox loop.
-printf '%s\n' "${me}: cascade: release leaked build loop/kpartx devices"
-for ld in $(sudo --non-interactive losetup -a 2>/dev/null | grep -F -- '/derivative-binary/' | cut -d: -f1 || true); do
-   printf '%s\n' "${me}:   releasing ${ld}"
-   sudo --non-interactive kpartx -d "${ld}" >/dev/null 2>&1 || true
-   sudo --non-interactive losetup -d "${ld}" >/dev/null 2>&1 || true
-done
-
-## Line-ending normalization FIRST: a stray core.autocrlf=true on the checkout CRLF-smudges text
-## files on checkout, so git_sanity_test (1100_sanity-tests AND derivative-update) sees them
-## "modified" and fails exit 3 (observed on qubes-template-whonix). Force it off (parent +
-## submodules) BEFORE the reset/re-checkout below, which then lands clean LF content.
-printf '%s\n' "${me}: cascade: force core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
-git config core.autocrlf false || true
-git submodule foreach --recursive 'git config core.autocrlf false || true' || true
-
-printf '%s\n' "${me}: cascade: drop ephemeral signing tags (parent + submodules)"
-git tag | grep -E '_[0-9a-f]{40}_|-developers-only' | xargs -r git tag -d || true
-git submodule foreach --recursive 'git tag | grep -E "_[0-9a-f]{40}_|-developers-only" | xargs -r git tag -d || true' || true
-
-printf '%s\n' "${me}: cascade: deep clean + submodule sync to pins"
-git clean -dfx || true
-git submodule foreach --recursive 'git reset --hard >/dev/null 2>&1 || true; git clean -dfx >/dev/null 2>&1 || true' || true
-git submodule update --init --recursive --force || true
-printf '%s\n' "${me}: tree status (expect empty):"
-git status --porcelain=v1 | head
-
-## --- build: DIRECT (no docker), CI=true, NATIVE arch (so CI=true builds a real image) ---
-native_arch="$(dpkg --print-architecture)"
-printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} arch=${native_arch} (direct, no docker, non-CI)"
-unset CI || true
-export dist_build_sign_and_tag=true
-export dist_build_target_arch="${native_arch}"
-export flavors_list="${flavor}"
-export dist_build_multi_target_list=""
-## This is a test/install build on a host with NO release-server credentials; a failed
-## dm-upload-images connection retries with linear backoff for ~7h. Run the FULL upload path
-## (file-list build, target derivation, dm-prepare-release) but make the transfer a no-op, so
-## the upload code is really exercised yet nothing is sent to the release server.
-export dist_build_simulate_upload=true
-
-build_rc=0
-{
-   ./help-steps/signing-key-create \
-   && ./help-steps/sign-and-tag \
-   && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}" --freedom "${freedom}"
-} || build_rc=$?
-
-printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '%s\n' "${me}: resulting images (newest first):"
-# shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
-ls -t /home/admin/derivative-binary/*/*.iso 2>/dev/null | head -5 || printf '%s\n' "${me}: (no .iso found -- inspect the log)"
-printf '%s\n' "DM-IMAGE-BUILD-DONE rc=${build_rc}"
-exit "${build_rc}"

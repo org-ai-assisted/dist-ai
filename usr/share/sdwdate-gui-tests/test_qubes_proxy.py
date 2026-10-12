@@ -4,19 +4,19 @@
 ## See the file COPYING for copying conditions.
 
 """
-Unit tests for the event-based sdwdate-gui-qubes-proxy.
+Unit tests for the workstation sdwdate-gui-qubes-proxy.
 
-The workstation proxy makes a SINGLE, blocking sdwdate-gui.ConnectCheck call
-(the gateway responder is event-based and returns only when the endpoint is
-ready), then acts on the one reply: 'y' hands the systemd socket to
-sdwdate-gui.Connect; an explicit 'q' (disabled) drops the give-up flag and
-exits 0; any other reply (empty / qrexec transport error) is transient, so it
-does NOT set the give-up flag and exits non-zero to retry.
+The gateway Connect endpoint is a STATIC qrexec socket-service symlink, so the
+proxy no longer does a readiness handshake: it resolves the gateway VM from
+config and bridges the systemd-activated socket (its own stdin/stdout) straight
+to the gateway's sdwdate-gui.Connect service. A down/disabled gateway makes the
+qrexec call fail fast; the client's reconnect backoff (tested elsewhere), not
+this proxy, is what avoids a dom0 policy-log flood.
 
-The proxy script is source-able, so these tests source the real script and
-call its functions directly -- no copy, no path rewriting. qrexec-client-vm is
-a plain shell-function stub defined in the harness before the source, so the
-real logic runs without real qrexec calls.
+The proxy script is source-able, so these tests source the real script and call
+its functions directly -- no copy, no path rewriting. qrexec-client-vm and
+sdwdate-gui-config-read are plain shell-function / command stubs defined in the
+harness, so the real logic runs without real qrexec or a real config read.
 """
 
 # pylint: disable=invalid-name
@@ -28,145 +28,135 @@ from pathlib import Path
 from bash_harness_common import locate_script, run_sourced
 
 
-class TestQubesProxy(unittest.TestCase):
-    """sdwdate-gui-qubes-proxy makes one blocking call, then acts on it."""
+class TestConnectToGateway(unittest.TestCase):
+    """connect_to_gateway bridges stdio to the gateway Connect service."""
 
     def setUp(self) -> None:
         self.script = locate_script('sdwdate-gui-qubes-proxy')
 
-    def test_run_connect_check_returns_single_reply(self) -> None:
-        """run_connect_check echoes the one ConnectCheck reply verbatim."""
+    def test_invokes_connect_service_with_gateway(self) -> None:
+        """connect_to_gateway runs qrexec-client-vm <gateway> sdwdate-gui.Connect."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            connect_log = Path(tmp_str) / 'connect.log'
+            body = """
+            qrexec-client-vm() {
+              printf '%s %s\\n' "$1" "$2" >> "${CONNECT_LOG}"
+            }
+            source "${SDWDATE_GUI_SCRIPT}"
+            connect_to_gateway 'sys-test-gw'
+            """
+            result = run_sourced(
+                self.script, body, {'CONNECT_LOG': str(connect_log)}
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                connect_log.read_text(encoding='utf-8').strip(),
+                'sys-test-gw sdwdate-gui.Connect',
+                'connect_to_gateway did not invoke sdwdate-gui.Connect for the '
+                'gateway',
+            )
+
+    def test_bridges_stdin_to_the_service(self) -> None:
+        """
+        The accepted socket is the proxy's stdin/stdout; connect_to_gateway
+        must hand it to qrexec-client-vm so data flows both ways. A stub that
+        cats stdin proves the stream reaches the service unbroken.
+        """
         body = """
-        qrexec-client-vm() {
-          if [ "$2" = 'sdwdate-gui.ConnectCheck' ]; then
-            printf '%s\\n' y
-          fi
-        }
+        qrexec-client-vm() { cat; }
         source "${SDWDATE_GUI_SCRIPT}"
-        run_connect_check 'sys-test-gw'
+        printf '%s' 'wire-payload' | connect_to_gateway 'sys-test-gw'
         """
         result = run_sourced(self.script, body)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            result.stdout.strip(),
-            'y',
-            'run_connect_check did not echo the single ConnectCheck reply',
+            result.stdout,
+            'wire-payload',
+            'connect_to_gateway did not bridge stdin through to the service',
         )
 
-    def test_finalize_calls_connect_when_ready(self) -> None:
-        """A 'y' reply hands the socket to sdwdate-gui.Connect, no flag."""
+    def test_honors_qrexec_client_cmd_override(self) -> None:
+        """The qrexec binary is overridable via sdwdate_gui_qrexec_client_cmd."""
         with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            connect_log = tmp / 'connect.log'
-            run_dir = tmp / 'run-sdwdate-gui'
+            marker = Path(tmp_str) / 'override.log'
             body = """
-            qrexec-client-vm() {
-              printf '%s %s\\n' "$2" "$1" >> "${CONNECT_LOG}"
-            }
+            my_fake_qrexec() { printf 'override %s %s\\n' "$1" "$2" > "${MARKER}"; }
             source "${SDWDATE_GUI_SCRIPT}"
-            finalize_connect 'sys-test-gw' 'y'
+            connect_to_gateway 'sys-test-gw'
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'MARKER': str(marker),
+                    'sdwdate_gui_qrexec_client_cmd': 'my_fake_qrexec',
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                marker.read_text(encoding='utf-8').strip(),
+                'override sys-test-gw sdwdate-gui.Connect',
+                'connect_to_gateway ignored sdwdate_gui_qrexec_client_cmd',
+            )
+
+
+class TestProxyMain(unittest.TestCase):
+    """main resolves the gateway from config, then bridges to it."""
+
+    def setUp(self) -> None:
+        self.script = locate_script('sdwdate-gui-qubes-proxy')
+
+    def test_resolves_gateway_then_connects(self) -> None:
+        """main reads the 'gateway' config value and connects to that VM."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            connect_log = Path(tmp_str) / 'connect.log'
+            body = """
+            fake_config_read() { printf '%s\\n' 'sys-configured-gw'; }
+            qrexec-client-vm() { printf '%s %s\\n' "$1" "$2" >> "${CONNECT_LOG}"; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
             """
             result = run_sourced(
                 self.script,
                 body,
                 {
                     'CONNECT_LOG': str(connect_log),
-                    'sdwdate_gui_run_dir': str(run_dir),
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(
-                (run_dir / 'qubes-gateway-server-disabled').is_file(),
-                'finalize_connect wrongly dropped the disabled flag on ready',
-            )
             self.assertEqual(
                 connect_log.read_text(encoding='utf-8').strip(),
-                'sdwdate-gui.Connect sys-test-gw',
-                'finalize_connect did not invoke sdwdate-gui.Connect',
+                'sys-configured-gw sdwdate-gui.Connect',
+                'main did not connect to the configured gateway',
             )
 
-    def test_finalize_drops_flag_when_disabled(self) -> None:
-        """A 'q' reply drops the gateway-disabled flag and never calls Connect."""
+    def test_config_read_failure_exits_nonzero(self) -> None:
+        """A failing config read exits non-zero and never calls qrexec."""
         with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            connect_log = tmp / 'connect.log'
-            run_dir = tmp / 'run-sdwdate-gui'
+            connect_log = Path(tmp_str) / 'connect.log'
             body = """
-            qrexec-client-vm() {
-              printf '%s %s\\n' "$2" "$1" >> "${CONNECT_LOG}"
-            }
+            fake_config_read() { return 1; }
+            qrexec-client-vm() { printf 'called\\n' >> "${CONNECT_LOG}"; }
             source "${SDWDATE_GUI_SCRIPT}"
-            finalize_connect 'sys-test-gw' 'q'
+            main
             """
             result = run_sourced(
                 self.script,
                 body,
                 {
                     'CONNECT_LOG': str(connect_log),
-                    'sdwdate_gui_run_dir': str(run_dir),
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
                 },
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(
-                (run_dir / 'qubes-gateway-server-disabled').is_file(),
-                'finalize_connect did not drop the gateway-disabled flag',
-            )
-            self.assertFalse(
-                connect_log.is_file(),
-                'finalize_connect wrongly called Connect on a non-ready reply',
-            )
-
-    def test_finalize_transient_empty_no_flag_nonzero(self) -> None:
-        """
-        An empty reply (transient qrexec error) must NOT set the permanent
-        give-up flag and must exit non-zero so the next socket activation
-        retries -- reserving the flag for an explicit 'q' (C3). A regression
-        (treating empty like 'q') sets the flag and exits 0, failing this test.
-        """
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            run_dir = tmp / 'run-sdwdate-gui'
-            body = """
-            qrexec-client-vm() { printf '%s\\n' 'should not be called'; }
-            source "${SDWDATE_GUI_SCRIPT}"
-            finalize_connect 'sys-test-gw' ''
-            """
-            result = run_sourced(
-                self.script,
-                body,
-                {'sdwdate_gui_run_dir': str(run_dir)},
             )
             self.assertNotEqual(
                 result.returncode,
                 0,
-                'finalize_connect exited 0 on a transient empty reply '
-                '(it must fail so the next activation retries)',
+                'main exited 0 despite a config-read failure',
             )
             self.assertFalse(
-                (run_dir / 'qubes-gateway-server-disabled').is_file(),
-                'finalize_connect wrongly set the permanent give-up flag on a '
-                'transient empty reply',
-            )
-
-    def test_finalize_transient_garbage_no_flag_nonzero(self) -> None:
-        """A non-y/non-q reply (e.g. a qrexec stderr line) is transient too."""
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            run_dir = tmp / 'run-sdwdate-gui'
-            body = """
-            qrexec-client-vm() { printf '%s\\n' 'should not be called'; }
-            source "${SDWDATE_GUI_SCRIPT}"
-            finalize_connect 'sys-test-gw' 'qrexec-client-vm: command failed'
-            """
-            result = run_sourced(
-                self.script,
-                body,
-                {'sdwdate_gui_run_dir': str(run_dir)},
-            )
-            self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(
-                (run_dir / 'qubes-gateway-server-disabled').is_file(),
-                'finalize_connect set the give-up flag on a transient reply',
+                connect_log.is_file(),
+                'main called qrexec-client-vm despite a config-read failure',
             )
 
 
