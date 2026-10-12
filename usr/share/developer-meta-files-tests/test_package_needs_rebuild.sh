@@ -23,7 +23,10 @@
 ##   * multi-binary source: EVERY produced binary's .deb must be present, so a
 ##     missing one -> rebuild;
 ##   * an arch-dependent binary ('any') needs _<arch>.deb: a wrong-suffix _all.deb
-##     -> rebuild, the correct _<arch>.deb -> skip.
+##     -> rebuild, the correct _<arch>.deb -> skip;
+##   * control parsing robustness: a stanza with Architecture BEFORE Package is
+##     still checked (Debian allows any field order); a udeb stanza is not required
+##     as a .deb; a trailing CR ('Architecture: all\r') does not defeat the match.
 ## Plus a structural guard that the reprepro path stayed removed and the function
 ## now takes two arguments (no repository_name).
 ##
@@ -307,6 +310,84 @@ else
 fi
 unset dist_build_target_arch
 clear_artifacts
+
+## --- field order within a stanza is arbitrary (Debian policy) ---------------
+## A binary stanza listing Architecture BEFORE Package must still be parsed, or
+## its .deb goes unchecked and a sibling's presence yields a false skip.
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: a
+ a
+
+Architecture: all
+Package: testpkg-extra
+Description: b
+ b
+CONTROL
+write_changelog '3.0-1'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "reordered stanza (Architecture before Package): its missing .deb -> rebuild"
+else
+   fail "a reordered stanza was dropped; its missing .deb produced a false skip"
+fi
+printf '%s\n' 'deb b' > "${distdir}/testpkg-extra_3.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "reordered stanza: both .debs present -> skip"
+else
+   fail "reordered stanza: both .debs present should skip"
+fi
+clear_artifacts
+
+## --- udeb stanza produces a .udeb, not a .deb, so it is not required ---------
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: a
+ a
+
+Package: testpkg-udeb
+Package-Type: udeb
+Architecture: all
+Description: u
+ u
+CONTROL
+write_changelog '3.0-2'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-2_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "udeb stanza not required: the .deb binary present -> skip"
+else
+   fail "a udeb stanza was wrongly required as a .deb, forcing a rebuild"
+fi
+clear_artifacts
+
+## --- a CRLF .deb control must not defeat the 'all' match ---------------------
+## Written with a literal CR on the Architecture line (not trailing whitespace in
+## this test's own source, which the style gate forbids).
+cr=$'\r'
+{
+   printf '%s\n' 'Source: testpkg' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' "Architecture: all${cr}"
+   printf '%s\n' 'Description: a' ' a'
+} > "${pkg_dir}/debian/control"
+write_changelog '3.0-3'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-3_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "CRLF 'Architecture: all' + .deb present -> skip (CR stripped)"
+else
+   fail "a trailing CR on Architecture defeated the 'all' match, forcing a rebuild"
+fi
+clear_artifacts
+
 ## Restore the single-binary Architecture: all fixture for the remaining checks.
 cat > "${pkg_dir}/debian/control" <<'CONTROL'
 Source: testpkg
