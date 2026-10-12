@@ -121,6 +121,7 @@ core_suites=(
    dm-reprepro-tracking-tests
    dm-release-test-tests
    dm-calamares-install-tests
+   dm-image-build-tests
    dm-build-account-tests
    test-results-site-tests
    dm-vm-lock-tests
@@ -214,7 +215,6 @@ e2e_suites=(
    privleap-tests-e2e
    privleap-tests-e2e-systemd
    tb-updater-tests-e2e
-   sdwdate-gui-tests-e2e
 )
 integration_suites=(
    whonix-firewall-leaktest-tests
