@@ -682,6 +682,52 @@ class TestTrayMenuAndIcon(TrayTestBase):
         self.tray.show_menu(Reason.DoubleClick)
 
 
+class TestObjectLifecycleLeaks(TrayTestBase):
+    """Server client objects must not accumulate across connect/disconnect."""
+
+    def test_clients_do_not_accumulate(self) -> None:
+        import gc  # pylint: disable=import-outside-toplevel
+
+        def live_client_count() -> int:
+            gc.collect()
+            return sum(
+                1 for obj in gc.get_objects()
+                if isinstance(obj, server.SdwdateGuiClient)
+            )
+
+        base = live_client_count()
+        ## Canary the counter: a held, undropped client IS counted (so a
+        ## leak below cannot pass vacuously by counting zero).
+        probe = self.add_client('probe')
+        self.assertGreaterEqual(
+            live_client_count() - base, 1, 'leak counter is not counting'
+        )
+        probe.clientDisconnected.emit()
+        del probe
+        self.tray.regen_menu(force_regen=True)
+        for _ in range(3):
+            _APP.processEvents()
+            gc.collect()
+
+        base = live_client_count()
+        for idx in range(30):
+            client = self.add_client(f'disp{idx}')
+            client.clientDisconnected.emit()
+            _APP.processEvents()
+        ## Force a final regen so the last dropped client loses its menu entry
+        ## and is deleteLater'd, then let Qt + Python reclaim everything.
+        self.tray.regen_menu(force_regen=True)
+        for _ in range(3):
+            _APP.processEvents()
+            gc.collect()
+        after = live_client_count()
+        self.assertLessEqual(
+            after - base, 1,
+            f'SdwdateGuiClient objects accumulated across 30 connect/drop '
+            f'cycles ({base} -> {after}); a lifecycle leak',
+        )
+
+
 class TestListener(unittest.TestCase):
     """SdwdateGuiListener.__init__ branches, mocked filesystem + QLocalServer."""
 
