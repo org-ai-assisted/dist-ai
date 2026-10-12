@@ -647,9 +647,14 @@ wire() {
          ## SDWDATE_GUI_REPO points the log-viewer test at the component checkout
          ## (CI checks out dist-ai and the component as SIBLINGS, so the test cannot
          ## find usr/libexec/sdwdate-gui/log-viewer by walking up from its own path).
+         ## PYTHONPATH carries BOTH the subject AND helper-scripts' dist-packages:
+         ## sdwdate_gui_server imports sanitize_string and sdwdate_gui_shared
+         ## imports strict_config_parser, both shipped by helper-scripts. Without
+         ## the helper-scripts leg the server/shared tests ImportError in CI
+         ## (green locally only because the package is installed there).
          wire_env=(
             "SDWDATE_GUI_REPO=$( pkg_dir sdwdate-gui )"
-            "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages"
+            "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages:${hs}/usr/lib/python3/dist-packages"
          )
          ;;
       serial-console-enable)
