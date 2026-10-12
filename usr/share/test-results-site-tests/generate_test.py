@@ -146,6 +146,16 @@ def build_plane(root, goldens, approvals_path):
         "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
     }
 
+    ## S: FAIL (rc 5) with a screenshot but NO approved golden -> bucket NEW. The step FAILED,
+    ## but the shot's only visual state is "no approved golden yet" (pending first approval), so
+    ## its chip must render st-new (soft), NOT be repainted red with the step's st-fail. Canary
+    ## for the "fail welcome -- no approved golden yet" over-flagging: pre-fix, any non-pass step
+    ## repainted every shot (NEW included) with the step's FAIL class.
+    s_dir = os.path.join(root, "kicksecure-lxqt-nogolden-18-2-3-6", "20261006T000000Z")
+    write_png(os.path.join(s_dir, "calamares-install.png"), (10, 120, 10))
+    write_result(s_dir, "kicksecure-lxqt-nogolden-18-2-3-6-1", "kicksecure-lxqt-nogolden",
+                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
+
     ## B: new -- PASS with a screenshot but no golden -> NEW.
     b_dir = os.path.join(root, "kicksecure-cli-18-2-3-5", "20261006T000000Z")
     write_png(os.path.join(b_dir, "calamares-install.png"), (10, 10, 120))
@@ -439,6 +449,21 @@ check("failed run with a matching shot still renders an <img", "<img" in i_page)
 check("failed run page is st-fail", "st-fail" in i_page)
 check("failed run page has NO green pass chip (shot not green on a failed step)",
       "st-pass" not in i_page)
+
+## S: a FAILED run whose shot has NO approved golden (bucket NEW) must render the shot as the
+## SOFT st-new "needs approval" state, NOT repainted as the step's red st-fail. This is the
+## "fail welcome -- no approved golden yet" over-flagging. The run itself is still st-fail
+## overall (verdict), so scope the chip assertion to the shot paragraph. Canary: pre-fix the
+## shot chip here was st-fail and no st-new appeared on the page.
+s_page = read(os.path.join(out1, "kicksecure-lxqt-nogolden-18-2-3-6-1", "index.html"))
+check("failed+no-golden shot shows the pending-approval reason",
+      "no approved golden yet" in s_page)
+check("failed+no-golden shot chip is the soft st-new state (not red fail)",
+      'class="chip st-new"' in s_page)
+s_shot_para = (s_page.split("no approved golden yet", 1)[0].rsplit("<p>", 1)[-1]
+               if "no approved golden yet" in s_page else "")
+check("failed+no-golden shot is not repainted as a red st-fail chip",
+      "st-new" in s_shot_para and "st-fail" not in s_shot_para)
 
 ## N: a multi-KB step log survives IN FULL to the rendered page -- both the START (head) and
 ## END (tail) needles must appear. Before the fix the generator re-cut the stored tail to the
