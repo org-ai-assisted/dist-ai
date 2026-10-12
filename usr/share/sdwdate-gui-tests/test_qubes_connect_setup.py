@@ -99,14 +99,19 @@ class TestConnectSetup(unittest.TestCase):
                 'a non-server VM did not remove the stale Connect endpoint',
             )
 
-    def test_config_read_failure_fails_loud(self) -> None:
+    def test_config_read_failure_fails_loud_and_closed(self) -> None:
         """
         A config-read FAILURE must exit non-zero (not be swallowed as 'not a
-        server'), so the one-shot is not left active-exited with no endpoint --
-        RemainAfterExit would make a later `systemctl start` a no-op.
+        server') AND fail CLOSED: a stale endpoint is removed, not left behind.
+        The server will not start on a broken config, so a surviving Connect
+        symlink would point at a socket no server owns (impersonation surface).
         """
         with tempfile.TemporaryDirectory() as tmp_str:
             endpoint = Path(tmp_str) / 'sdwdate-gui.Connect'
+            ## A stale endpoint from a previous (valid-config) server boot.
+            endpoint.symlink_to(
+                '/run/user/1000/sdwdate-gui/sdwdate-gui-server.socket'
+            )
             body = _STUBS.replace(
                 'fake_config_read() { printf \'%s\\n\' "${RUN_SERVER}"; }',
                 'fake_config_read() { return 1; }',
@@ -129,8 +134,8 @@ class TestConnectSetup(unittest.TestCase):
                 'a config-read failure was silently swallowed (should fail loud)',
             )
             self.assertFalse(
-                endpoint.is_symlink(),
-                'an endpoint was created despite a config-read failure',
+                endpoint.exists() or endpoint.is_symlink(),
+                'a stale endpoint survived a config-read failure (fail-open)',
             )
 
     def test_endpoint_is_replaced_idempotently(self) -> None:
