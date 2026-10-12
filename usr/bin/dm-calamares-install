@@ -61,6 +61,10 @@ vm_started="false"
 ## these two can install (USER Session refuses -- no root). GRUB live menu order:
 ## USER(0), SYSMAINT(1), UNRESTRICTED(2) -> Down-count from the top.
 live_session="unrestricted"
+## Derived from live_session by parse_args: guestcontrol account the live session
+## autologs in as, and Down-presses to its GRUB entry.
+live_account="user"
+live_downs=2
 ## Developer/test opt-in, all empty by default (no-op for a normal run):
 ## --launch-env VAR=VAL   extra env injected into install-host's Calamares launch
 ##                        (carried through its 'sudo --preserve-env'); repeatable.
@@ -135,7 +139,7 @@ on_exit() {
       ## alive (before the poweroff below) and surface it on BOTH the install log and the
       ## published check-log. Best-effort: a pre-guestcontrol failure has no log -> no-op.
       if [ "${vm_started}" = 'true' ]; then
-         launch_out="$(gc_gui_launch_log user 2>/dev/null || true)"
+         launch_out="$(gc_gui_launch_log "${live_account}" 2>/dev/null || true)"
          if [ -n "${launch_out}" ]; then
             printf '%s\n' \
                "${me}: install-host launch log (${GC_GUI_LAUNCH_LOG}):" \
@@ -197,7 +201,7 @@ quiesce_notifications() {
    ## 'lxqt-notificationd'. Matching the full name kills NOTHING (the flake it fixes returns).
    ## Match the truncated comm; a plain-name match also cannot self-kill the gc_run bash (comm
    ## 'bash'), unlike a 'pkill -f lxqt-notificationd' which would match its own command line.
-   gc_run user 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+   gc_run "${live_account}" 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
 }
 
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
@@ -303,29 +307,17 @@ source "${vbox_session_lib}"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
 ## lands on the default USER session, where install-host refuses (wrong boot role).
 select_install_boot_entry() {
-   local deadline text downs i
-   ## Down-presses from the default (top) USER entry to the install session.
-   case "${live_session}" in
-      sysmaint)
-         downs=1
-         ;;
-      unrestricted)
-         downs=2
-         ;;
-      *)
-         die "${SETUP_RC}" "--live-session must be sysmaint|unrestricted, got '${live_session}'"
-         ;;
-   esac
+   local deadline text i
    deadline=$(( SECONDS + 40 ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ unrestricted|"live iso"|"kicksecure live" ]]; then
-         for (( i = 0; i < downs; i++ )); do
+         for (( i = 0; i < live_downs; i++ )); do
             gui_scan e0 50 e0 d0
          done
          sleep 1
          gui_scan 1c 9c
-         printf '%s\n' "${me}: selected LIVE '${live_session}' install entry (${downs} down)" >&2
+         printf '%s\n' "${me}: selected LIVE '${live_session}' install entry (${live_downs} down)" >&2
          return 0
       fi
       sleep 2
@@ -526,7 +518,7 @@ run_check() {
 capture_firmware_lane() {
    [ -n "${firmware_evidence_file}" ] || return 0
    local out detected expected match
-   out="$(gc_run user 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true' 10 2>/dev/null || true)"
+   out="$(gc_run "${live_account}" 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true' 10 2>/dev/null || true)"
    ## Classify from the probe text (glob match on a lowered copy -- no grep pipe). mokutil
    ## prints 'SecureBoot enabled' / 'disabled'; the efi-dir line decides BIOS vs UEFI.
    local out_lc="${out,,}"
@@ -706,6 +698,23 @@ parse_args() {
       usage >&2
       die "${SETUP_RC}" "--mok-enroll requires --disk (the host-side cert read needs the disk path)"
    fi
+   ## Resolve the live install session: the GRUB entry to pick (down-count from the
+   ## top USER entry) AND the guestcontrol account the live session autologs in as
+   ## (sysmaint session autologs in as 'sysmaint', not 'user').
+   case "${live_session}" in
+      unrestricted)
+         live_account='user'
+         live_downs=2
+         ;;
+      sysmaint)
+         live_account='sysmaint'
+         live_downs=1
+         ;;
+      *)
+         usage >&2
+         die "${SETUP_RC}" "--live-session must be sysmaint|unrestricted, got '${live_session}'"
+         ;;
+   esac
 }
 
 ## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the
@@ -802,7 +811,7 @@ main() {
    ## single most fragile step: a fullscreen terminal OCRs unreliably, so the old
    ## blind type had no verification at all).
    wait_ready 480
-   wait_guestcontrol_ready user 300 \
+   wait_guestcontrol_ready "${live_account}" 300 \
       || die "${FAIL_RC}" "guestcontrol (VBoxService) never came up in the live session"
    ## Pre-install hooks (opt-in; empty -> no-op): guestcontrol is confirmed up, so
    ## push host files into the live guest and/or run setup snippets as 'user'
@@ -822,7 +831,7 @@ main() {
    done
    for cmd_snippet in "${pre_install_cmd[@]}"; do
       printf '%s\n' "${me}: pre-install cmd (user): ${cmd_snippet}"
-      gc_run user "${cmd_snippet}" 120 \
+      gc_run "${live_account}" "${cmd_snippet}" 120 \
          || die "${FAIL_RC}" "pre-install cmd failed: ${cmd_snippet}"
    done
    ## Env injected into install-host's Calamares launch; its 'sudo --preserve-env'
@@ -850,14 +859,14 @@ main() {
    ## desktop terminal), and the UNRESTRICTED boot ROLE install-host needs is set by GRUB
    ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
    ## sysmaint cannot even log in to the live session.
-   gc_launch_gui user "${INSTALL_HOST_CMD}" "${launch_extra[*]}"
+   gc_launch_gui "${live_account}" "${INSTALL_HOST_CMD}" "${launch_extra[*]}"
    ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
    ## confirm Calamares actually started; on failure dump the launch log and fail with a
    ## real reason instead of a silent wait to the downstream OCR timeout.
    ## install-host waits (up to ~180s) for the unrestricted-admin unlock to finish before it
    ## launches Calamares, so allow for that window plus Calamares startup.
-   if ! gc_wait_gui_started user 'calamares' 240; then
-      printf '%s\n' "${me}: install-host launch log:" "$(gc_gui_launch_log user)" >&2
+   if ! gc_wait_gui_started "${live_account}" 'calamares' 240; then
+      printf '%s\n' "${me}: install-host launch log:" "$(gc_gui_launch_log "${live_account}")" >&2
       die "${FAIL_RC}" "install-host did not start Calamares in the live session"
    fi
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
