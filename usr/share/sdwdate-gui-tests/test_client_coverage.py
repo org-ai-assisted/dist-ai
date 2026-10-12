@@ -341,12 +341,15 @@ class TestStatusChanged(ClientResetMixin):
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_json_unexpected_exception(self) -> None:
+        ## json.loads is now in sdwdate_gui_shared.parse_sdwdate_status_json;
+        ## patch the stdlib json module (shared looks up loads on it at call
+        ## time) and expect the client's consolidated WARNING, not an ERROR.
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
                            mock.mock_open(read_data='{"a": 1}')), \
-                mock.patch.object(client.json, 'loads',
+                mock.patch.object(json, 'loads',
                                   side_effect=RuntimeError('x')), \
-                self.assertLogs(level='ERROR'):
+                self.assertLogs(level='WARNING'):
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_bad_json(self) -> None:
