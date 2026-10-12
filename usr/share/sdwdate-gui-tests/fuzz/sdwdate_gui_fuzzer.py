@@ -53,12 +53,16 @@ finding is reproducible with --seed.
 # pylint: disable=unused-argument,too-many-branches
 
 import argparse
+import asyncio
+import builtins
+import json
 import os
 import random
 import signal
 import sys
 import tempfile
 from typing import Any
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -91,6 +95,27 @@ def _import_server():
         )
         raise SystemExit(2) from exc
     return sdwdate_gui_server
+
+
+client: Any = None  # pylint: disable=invalid-name  # set by main()
+
+
+def _import_client():
+    """Import and return the sdwdate_gui_client module, or exit 2."""
+    try:
+        from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+            sdwdate_gui_client,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name != "sdwdate_gui":
+            raise
+        print(
+            "sdwdate-gui is not importable; install the 'sdwdate-gui' "
+            "package or set PYTHONPATH to its dist-packages directory",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+    return sdwdate_gui_client
 
 
 _APP = QApplication.instance() or QApplication(["sdwdate-gui-fuzzer"])
@@ -1304,6 +1329,77 @@ def _report_coverage(cov) -> None:
             print(f"    unexercised lines: {missing}")
 
 
+def _rand_status_raw(rng) -> str:
+    """One random sdwdate-status-file content: garbage text, arbitrary bytes,
+    a non-object JSON value, a valid/near-valid object, a mistyped object, or a
+    truncated fragment (a partial write)."""
+    kind = rng.randint(0, 5)
+    if kind == 0:
+        return _rand_text(rng)
+    if kind == 1:
+        return _rand_bytes(rng).decode("latin-1")
+    if kind == 2:
+        return json.dumps(
+            rng.choice([None, True, False, rng.randint(-9, 9), [1, 2], "x"])
+        )
+    if kind == 3:
+        return json.dumps(
+            {"icon": rng.choice(STATUSES + ["bogus"]), "message": _rand_text(rng)}
+        )
+    if kind == 4:
+        return json.dumps(
+            {
+                "icon": rng.choice([1, None, "success", "busy"]),
+                "message": rng.choice([1, None, _rand_text(rng)]),
+            }
+        )
+    return "{" + _rand_text(rng)
+
+
+def run_client_status(rng, iterations) -> list[Finding]:
+    """Randomized fuzz of the CLIENT's sdwdate-status reader: arbitrary file
+    content must never crash sdwdate_status_changed, and only a valid status
+    with a string message may be forwarded to the server."""
+    findings: list[Finding] = []
+    for _ in range(iterations):
+        raw = _rand_status_raw(rng)
+        captured: list[tuple[Any, Any]] = []
+
+        async def _fake_set(status, msg, _sink=captured) -> None:
+            _sink.append((status, msg))
+
+        try:
+            with mock.patch.object(
+                client.os.path, "isfile", return_value=True
+            ), mock.patch.object(
+                builtins, "open", mock.mock_open(read_data=raw)
+            ), mock.patch.object(
+                client, "set_sdwdate_status", _fake_set
+            ):
+                asyncio.run(client.sdwdate_status_changed())
+        except Exception as exc:  # pylint: disable=broad-except
+            findings.append(
+                Finding(
+                    "client",
+                    "CRASH",
+                    f"status reader raised {type(exc).__name__}",
+                    repr(raw),
+                )
+            )
+            continue
+        for status, msg in captured:
+            if status not in STATUSES or not isinstance(msg, str):
+                findings.append(
+                    Finding(
+                        "client",
+                        "INVALID_FORWARD",
+                        f"forwarded status={status!r} msg={type(msg).__name__}",
+                        repr(raw),
+                    )
+                )
+    return findings
+
+
 def main() -> int:
     """Entry point."""
     parser = argparse.ArgumentParser(description="sdwdate-gui server fuzzer")
@@ -1339,9 +1435,15 @@ def main() -> int:
     ## also accounts for its import / class / def lines.
     global server  # pylint: disable=global-statement
     server = _import_server()
+    global client  # pylint: disable=global-statement
+    client = _import_client()
 
     findings: list[Finding] = []
     findings += run_directed(modes)
+    ## The client status reader is mode-independent, so fuzz it once.
+    findings += run_client_status(
+        random.Random(seed ^ 0xC2B2AE35), args.iterations
+    )
     for mode in modes:
         findings += run_protocol(
             mode, random.Random(seed ^ 0x9E3779B1 ^ hash(mode)), args.iterations
