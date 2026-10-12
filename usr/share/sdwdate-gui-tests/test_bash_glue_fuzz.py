@@ -35,7 +35,8 @@ from bash_harness_common import locate_script, run_sourced
 ## exact literals the branches test so the boundary is always hit.
 _glue_text = st.one_of(
     st.sampled_from(
-        ['true', '', ' ', 'true ', 'TRUE', 'false', 'sys-whonix', '-x']
+        ['true', '', ' ', 'true ', 'TRUE', 'false', 'sys-whonix', '-x',
+         '\r', '\n', 'a\rb', 'a\nb']
     ),
     st.text(
         alphabet=st.characters(min_codepoint=0x01, max_codepoint=0x2FF),
@@ -136,14 +137,16 @@ class TestConnectGatewayFuzz(unittest.TestCase):
             self.assertEqual(res.returncode, 0, res.stderr)
             ## The gateway reaches qrexec as a single verbatim argument (no word
             ## splitting / glob), and the service name is always appended.
+            ## Compare BYTES: read_text() would universal-newline-translate a
+            ## gateway containing CR/LF and spuriously mismatch.
             self.assertEqual(
-                gw_log.read_text(encoding='utf-8'),
-                gateway,
+                gw_log.read_bytes(),
+                gateway.encode('utf-8'),
                 f'gateway argument not passed verbatim for {gateway!r}',
             )
             self.assertEqual(
-                svc_log.read_text(encoding='utf-8'),
-                'sdwdate-gui.Connect',
+                svc_log.read_bytes(),
+                b'sdwdate-gui.Connect',
                 'connect_to_gateway did not request the Connect service',
             )
 
