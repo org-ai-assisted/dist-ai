@@ -65,6 +65,10 @@ live_session="unrestricted"
 ## autologs in as, and Down-presses to its GRUB entry.
 live_account="user"
 live_downs=2
+## Account quiesce_notifications/snap authenticate as: the LIVE session account
+## during the Calamares drive, but the INSTALLED session's account (default 'user')
+## for the post-reboot first-boot snapshot. Set at each phase boundary.
+snap_account="user"
 ## Developer/test opt-in, all empty by default (no-op for a normal run):
 ## --launch-env VAR=VAL   extra env injected into install-host's Calamares launch
 ##                        (carried through its 'sudo --preserve-env'); repeatable.
@@ -201,7 +205,7 @@ quiesce_notifications() {
    ## 'lxqt-notificationd'. Matching the full name kills NOTHING (the flake it fixes returns).
    ## Match the truncated comm; a plain-name match also cannot self-kill the gc_run bash (comm
    ## 'bash'), unlike a 'pkill -f lxqt-notificationd' which would match its own command line.
-   gc_run "${live_account}" 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+   gc_run "${snap_account}" 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
 }
 
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
@@ -826,7 +830,7 @@ main() {
       printf '%s\n' "${me}: pre-install push: '${push_local}' -> guest '${push_dest}'"
       ## '--' so a LOCAL/GUEST that looks like an option (e.g. '--help') is a path,
       ## not a flag argparse would consume + exit 0 on (leaving the copy undone).
-      "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push -- "${push_local}" "${push_dest}" \
+      "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push --role "${live_account}" -- "${push_local}" "${push_dest}" \
          || die "${FAIL_RC}" "pre-install push failed: '${push_spec}'"
    done
    for cmd_snippet in "${pre_install_cmd[@]}"; do
@@ -870,6 +874,8 @@ main() {
       die "${FAIL_RC}" "install-host did not start Calamares in the live session"
    fi
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
+   ## Live-session snapshots (01-04) quiesce as the live account.
+   snap_account="${live_account}"
    snap 01 welcome
 
    printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
@@ -938,6 +944,9 @@ main() {
    if [ -n "${shot}" ]; then
       "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
    fi
+   ## Installed first boot is the default 'user' boot role, regardless of the live
+   ## install session -- quiesce as 'user', not the live account.
+   snap_account="user"
    snap 05 first-boot
 
    ## --mok-enroll: before the checks, read the per-machine MOK cert off the disk on
