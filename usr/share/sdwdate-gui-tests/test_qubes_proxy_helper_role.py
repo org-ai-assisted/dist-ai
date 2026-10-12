@@ -151,12 +151,16 @@ class TestProxyHelperMain(unittest.TestCase):
             )
 
     def test_main_queries_run_server_in_qubes_key(self) -> None:
-        """main asks config for exactly the run_server_in_qubes key."""
+        """main asks config for exactly the run_server_in_qubes key, once."""
         with tempfile.TemporaryDirectory() as tmp_str:
             arg_log = Path(tmp_str) / 'arg.log'
+            ## Pre-create empty and APPEND each queried key, so a main that
+            ## queries extra keys (extra lines) or none (empty file) fails the
+            ## exact-match assertion cleanly rather than passing or crashing.
+            arg_log.write_text('', encoding='utf-8')
             flag = Path(tmp_str) / 'should-proxy'
             body = """
-            fake_config_read() { printf '%s\\n' "$1" > "${ARG_LOG}"; printf 'true\\n'; }
+            fake_config_read() { printf '%s\\n' "$1" >> "${ARG_LOG}"; printf 'true\\n'; }
             source "${SDWDATE_GUI_SCRIPT}"
             main
             """
@@ -173,7 +177,7 @@ class TestProxyHelperMain(unittest.TestCase):
             self.assertEqual(
                 arg_log.read_text(encoding='utf-8').strip(),
                 'run_server_in_qubes',
-                'main did not query the run_server_in_qubes config key',
+                'main did not query exactly the run_server_in_qubes config key',
             )
 
 
