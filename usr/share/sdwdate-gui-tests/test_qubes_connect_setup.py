@@ -82,15 +82,55 @@ class TestConnectSetup(unittest.TestCase):
                 'sysmaint session did not point the endpoint at uid 1001',
             )
 
-    def test_not_a_server_vm_creates_no_endpoint(self) -> None:
-        """run_server_in_qubes != true: no endpoint, clean exit."""
+    def test_not_a_server_vm_removes_stale_endpoint(self) -> None:
+        """
+        run_server_in_qubes != true: clean exit, and a stale endpoint from a
+        previous server role is REMOVED (a role change server -> client on a
+        persistent-/etc StandaloneVM must not leave a symlink that resolves to
+        this VM's own proxy socket).
+        """
         with tempfile.TemporaryDirectory() as tmp_str:
             endpoint = Path(tmp_str) / 'sdwdate-gui.Connect'
+            endpoint.symlink_to('/run/user/1000/sdwdate-gui/sdwdate-gui-server.socket')
             result = self._run_main('false', 'user_session', endpoint)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(
                 endpoint.exists() or endpoint.is_symlink(),
-                'a non-server VM wrongly created the Connect endpoint',
+                'a non-server VM did not remove the stale Connect endpoint',
+            )
+
+    def test_config_read_failure_fails_loud(self) -> None:
+        """
+        A config-read FAILURE must exit non-zero (not be swallowed as 'not a
+        server'), so the one-shot is not left active-exited with no endpoint --
+        RemainAfterExit would make a later `systemctl start` a no-op.
+        """
+        with tempfile.TemporaryDirectory() as tmp_str:
+            endpoint = Path(tmp_str) / 'sdwdate-gui.Connect'
+            body = _STUBS.replace(
+                'fake_config_read() { printf \'%s\\n\' "${RUN_SERVER}"; }',
+                'fake_config_read() { return 1; }',
+            ) + """
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
+            """
+            result = run_sourced(
+                self.script,
+                body,
+                {
+                    'RUN_SERVER': 'true',
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
+                    'sdwdate_gui_boot_session': 'user_session',
+                    'sdwdate_gui_connect_endpoint': str(endpoint),
+                },
+            )
+            self.assertNotEqual(
+                result.returncode, 0,
+                'a config-read failure was silently swallowed (should fail loud)',
+            )
+            self.assertFalse(
+                endpoint.is_symlink(),
+                'an endpoint was created despite a config-read failure',
             )
 
     def test_endpoint_is_replaced_idempotently(self) -> None:
