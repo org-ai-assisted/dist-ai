@@ -1,0 +1,49 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Render stdin text as a small monospace PNG "state card" for the image-test results plane,
+## where a point in the boot/install story has no framebuffer worth a screenshot (VM defined but
+## not booted, VM powered off, a Secure Boot / MOK state with no on-screen UI). The caption makes
+## clear it is rendered, not a screenshot. ImageMagick is a hard dependency; absence is a bug,
+## surfaced loudly (the CALLER decides whether a missing card is tolerable).
+##
+## usage: dm-text-to-png OUTFILE.png   (text on stdin)
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+out="${1:-}"
+if [ -z "${out}" ]; then
+   printf '%s\n' "usage: ${0##*/} OUTFILE.png (text on stdin)" >&2
+   exit 1
+fi
+
+## IM7 ships 'magick'; IM6 ships 'convert'. Prefer magick when present.
+magick_bin='convert'
+if type -P magick >/dev/null 2>&1; then
+   magick_bin='magick'
+fi
+
+## Read the whole card text. Passed DIRECTLY as a label: argument, not via '@file': ImageMagick's
+## default security policy forbids the '@' indirect-read, so label:@file fails. Cards are small
+## (a few showvminfo lines), so argv is ample.
+text="$(cat)"
+if [ -z "${text}" ]; then
+   printf '%s\n' "${0##*/}: ERROR: no text on stdin" >&2
+   exit 1
+fi
+
+## label: renders the text verbatim (embedded newlines respected), auto-sizing to the content;
+## a white border gives the card a margin. Monospace keeps the showvminfo key=value columns
+## aligned. '%' is not expected in showvminfo output; a stray one would be a harmless glyph.
+"${magick_bin}" -background '#ffffff' -fill '#111111' -family 'monospace' -pointsize 14 \
+   "label:${text}" -bordercolor '#ffffff' -border 18 "${out}"

@@ -108,6 +108,12 @@ vm_nic_indices() {
 on_exit() {
    local rc=$?
    local stuck launch_out
+   ## Final frame on a SUCCESSFUL run: the installed system's last on-screen state, captured
+   ## while the VM is still alive (before the poweroff below). On a failure the stuck/99 frame
+   ## below is the closing frame instead.
+   if [ "${rc}" -eq 0 ] && [ "${vm_started}" = 'true' ]; then
+      story_snap 70 final-last-frame
+   fi
    ## On a FAILED run, surface WHY for the results plane: a gui_wait_for abort/timeout
    ## (install or boot failure, BEFORE the check battery) already saved the on-screen error
    ## to ${HOME}/${me}-stuck.png. Publish it as --shot (when no success shot was captured) and
@@ -123,6 +129,10 @@ on_exit() {
       ## EVERY failure publishes what was on screen, never an empty results page. Best-effort.
       if [ "${vm_started}" = 'true' ] && [ ! -s "${stuck}" ]; then
          "${GUESTCTL}" "${vm}" shot "${stuck}" >/dev/null 2>&1 || true
+      fi
+      ## State card at failure time (which VM state died) -- complements the 99 failure frame.
+      if [ "${vm_started}" = 'true' ]; then
+         story_card 98 failure-vm-state "FAILED (rc=${rc}): ${die_reason:-no reason recorded}"
       fi
       if [ -n "${shot}" ] && [ ! -s "${shot}" ] && [ -s "${stuck}" ]; then
          cp -- "${stuck}" "${shot}" 2>/dev/null || true
@@ -196,6 +206,11 @@ on_exit() {
       else
          "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
       fi
+      ## Closing state card on a SUCCESSFUL run: the VM powered off (stands in for "back to the
+      ## VirtualBox GUI" -- the server is headless, so there is no manager window to photograph).
+      if [ "${rc}" -eq 0 ]; then
+         story_card 71 vm-stopped-final "VM powered off (run complete)"
+      fi
    fi
    exit "${rc}"
 }
@@ -228,6 +243,36 @@ snap() {
    ## Settle: let the compositor repaint the cleared surfaces before the frame.
    sleep 1
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
+}
+
+## Capture a milestone FRAME host-side (VBox IDisplay, no guest additions) into
+## ${shot_dir}/NN-name.png, WITHOUT snap()'s notification quiesce + settle. For boot / firmware /
+## LUKS / transient screens: there is no live desktop to quiesce, and the quiesce's guestcontrol
+## round-trip + settle would miss a short on-screen window (a ~5s GRUB autoboot, a firmware
+## logo). Best-effort: a capture failure (display 0x0, no shot_dir) NEVER fails a passing run.
+story_snap() {
+   local nn="$1" name="$2"
+   [ -n "${shot_dir}" ] || return 0
+   "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
+}
+
+## Render a host-side "state card" for a point with no framebuffer worth a photo (the VM defined
+## but not booted, the VM powered off, a Secure Boot / MOK state that has no on-screen UI). The
+## card is a small PNG of selected `VBoxManage showvminfo` fields, captioned so it is never
+## mistaken for a screenshot. Uses dm-text-to-png (ImageMagick-backed). Best-effort: if the
+## renderer or VBoxManage data is unavailable, no card is written and the run is unaffected.
+story_card() {
+   local nn="$1" name="$2" title="$3"
+   local info card
+   [ -n "${shot_dir}" ] || return 0
+   info="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
+      | grep -iE '^(VMState|firmware|chipset|memory|vram|SecureBoot|nvram|"SATA|"IDE|nic1)=' \
+      | head -20)" || true
+   [ -n "${info}" ] || return 0
+   card="${shot_dir}/${nn}-${name}.png"
+   printf '%s\n' "[state card -- rendered from VBoxManage showvminfo, not a screenshot]" \
+      "${title}" "" "${info}" \
+      | "${DM_TEXT_TO_PNG:-dm-text-to-png}" "${card}" >/dev/null 2>&1 || true
 }
 
 usage() {
@@ -325,10 +370,14 @@ select_install_boot_entry() {
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ unrestricted|"live iso"|"kicksecure live" ]]; then
+         ## The GRUB menu is on screen now (matched this poll) -- capture it, then the
+         ## highlighted entry after the Down presses, before committing with Enter.
+         story_snap 20 live-grub-menu
          for (( i = 0; i < live_downs; i++ )); do
             gui_scan e0 50 e0 d0
          done
          sleep 1
+         story_snap 21 live-grub-entry-selected
          gui_scan 1c 9c
          printf '%s\n' "${me}: selected LIVE '${live_session}' install entry (${live_downs} down)" >&2
          return 0
@@ -349,10 +398,16 @@ reboot_installed() {
       select_installed_sysmaint
    fi
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
+   if [ "${role}" = 'sysmaint' ]; then
+      story_snap 63 sysmaint-luks-prompt
+   fi
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
    wait_ready 300
    open_terminal
+   if [ "${role}" = 'sysmaint' ]; then
+      story_snap 64 sysmaint-terminal
+   fi
 }
 
 ## --mok-enroll: read the installed system's per-machine MOK public cert off the
@@ -577,6 +632,7 @@ cal_verify() {
    case "$1" in
       6)
          gui_wait_for 'localhost|pts/|[[]user' 60 'check 6 GUI render (desktop painted)'
+         snap 61 check-6-gui-rendered
          ## User session is up -> capture the firmware-lane evidence while gc_run is reliable.
          capture_firmware_lane
          ;;
@@ -830,10 +886,16 @@ main() {
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
+   ## Pre-boot state cards (no framebuffer yet): the defined VM, and the firmware / Secure Boot
+   ## varstore state (there is no SB screen to photograph on a normal boot).
+   story_card 10 vm-defined "VM defined (pre-boot)"
+   story_card 13 firmware-state "Firmware / Secure Boot varstore state"
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    vm_started="true"
+   story_snap 11 power-on-first-frame
    ## Select the install boot entry once GRUB is actually on screen (poll, not a
-   ## fixed sleep that races the autoboot into the wrong session).
+   ## fixed sleep that races the autoboot into the wrong session). The menu capture (20/21)
+   ## is taken inside select_install_boot_entry, where the menu is known to be on screen.
    select_install_boot_entry
 
    printf '%s\n' "${me}: wait for the live desktop + guestcontrol, then launch Calamares"
@@ -843,8 +905,12 @@ main() {
    ## single most fragile step: a fullscreen terminal OCRs unreliably, so the old
    ## blind type had no verification at all).
    wait_ready 480
+   story_snap 23 live-desktop-ready
    wait_guestcontrol_ready "${live_account}" 300 \
       || die "${FAIL_RC}" "guestcontrol (VBoxService) never came up in the live session"
+   ## Guestcontrol is up -> the live desktop can be quiesced; capture the clean live session.
+   snap_account="${live_account}"
+   snap 24 live-guestcontrol-ready
    ## Pre-install hooks (opt-in; empty -> no-op): guestcontrol is confirmed up, so
    ## push host files into the live guest and/or run setup snippets as 'user'
    ## BEFORE Calamares launches. Used to swap in a patched helper or seed a
@@ -904,7 +970,7 @@ main() {
    gui_wait_for 'welcome to the calamares' 180 'Calamares Welcome page'
    ## Live-session snapshots (01-04) quiesce as the live account.
    snap_account="${live_account}"
-   snap 01 welcome
+   snap 31 welcome
 
    printf '%s\n' "${me}: drive Calamares to a LUKS erase-disk install (OCR-located)"
    ## Each page is confirmed by its own CONTENT text (never a sidebar label -- those
@@ -913,11 +979,13 @@ main() {
    ## click target is found by text, so the whole drive is resolution-independent.
    gui_click_word 'next' 45 bottom 'Welcome Next'
    gui_wait_for 'region|system language' 60 'Location page'
+   snap 32 location
    gui_click_word 'next' 45 bottom 'Location Next'
    gui_wait_for 'keyboard model|physical keyboard|default keyboard' 60 'Keyboard page'
+   snap 33 keyboard
    gui_click_word 'next' 45 bottom 'Keyboard Next'
    gui_wait_for 'erase disk' 60 'Partitions page'
-   snap 02 partitions
+   snap 34 partitions
    ## Erase disk is a clickable card; selecting it auto-enables Encrypt system
    ## (Kicksecure default), revealing the two LUKS fields. Locate each field by its
    ## placeholder text ("Passphrase" = 1st, "Confirm passphrase" = the Confirm one).
@@ -934,21 +1002,26 @@ main() {
    gui_scan 0f 8f
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    sleep 1
+   ## Both LUKS fields now filled (masked dots); capture before advancing.
+   snap 35 partitions-luks-filled
    gui_click_word 'next' 45 bottom 'Partitions Next'
    gui_wait_for 'overview|erase disk /dev|the following changes' 60 'Summary page'
-   snap 03 summary
+   snap 36 summary
    ## Trigger Install via its Alt+I accelerator, NOT an OCR-located click: the Summary
    ## "Install" BUTTON caption OCRs unreliably (grey-on-grey, low confidence), so a
    ## 'bottom' match falls through to the body text "Install Kicksecure on new ext4..."
    ## and the click no-ops -- calamares sits on Summary until the completion poll times
    ## out (verified: Alt+I advances to the exec page; the OCR click does not).
    gui_scan 38 17 97 b8
+   ## Settle onto the exec/slideshow page, then capture the install in progress.
+   sleep 5
+   snap 37 install-started
    printf '%s\n' "${me}: installing (encrypted) -- polling for completion"
    ## Abort fast on a Calamares failure dialog (e.g. a shellprocess exiting non-zero)
    ## instead of waiting out the full 1200s for a completion marker that will never come.
    gui_wait_for 'all done|has been installed|restart now' 1200 'install completion (check 0)' \
       'installation failed|external command finished with errors'
-   snap 04 install-done
+   snap 39 install-done
 
    printf '%s\n' "${me}: reboot into the installed disk (detach ISO)"
    ## Install is finished at the "all done" page; we power off + detach the ISO +
@@ -957,15 +1030,20 @@ main() {
    sleep 3
    "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
       --type dvddrive --medium none >/dev/null
+   story_card 41 vm-stopped-iso-detached "Live session powered off, install ISO detached"
    ## efi-secureboot: the live/install phase ran with Secure Boot OFF (unsigned live GA);
    ## enforce it now, for the installed-system boot, while still powered off.
    enable_secureboot_installed
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   story_snap 42 installed-first-frame
 
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
+   story_snap 47 luks-prompt
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
+   sleep 3
+   story_snap 49 luks-unlocked
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
@@ -978,19 +1056,22 @@ main() {
    ## Installed first boot is the default 'user' boot role, regardless of the live
    ## install session -- quiesce as 'user', not the live account.
    snap_account="user"
-   snap 05 first-boot
+   snap 50 first-boot
 
    ## --mok-enroll: before the checks, read the per-machine MOK cert off the disk on
    ## the host and enroll it, then reboot, so tirdad loads under Secure Boot and
    ## check 8 is GREEN for the real reason (module loaded), not merely tolerated.
    if [ "${mok_enroll}" = 'true' ]; then
       mok_host_enroll
+      story_card 51 mok-cert-enrolled "Per-machine MOK enrolled into the UEFI varstore"
+      snap 52 mok-reboot-desktop
    fi
 
    if [ "${checks}" = 'true' ]; then
       printf '%s\n' "${me}: release-critical checks on the installed system"
       wait_ready 300
       open_terminal
+      snap 60 terminal-open
       ## Iterate the SINGLE shared check table (release-checks.bsh): cal_exec runs
       ## each check via run_check (OCR, and the sole emitter of 'check N PASS'),
       ## cal_verify does the render-first check-6 assertion, cal_reboot_sysmaint
@@ -1003,6 +1084,7 @@ main() {
       RELEASE_CHECK_FIRMWARE="${firmware}"
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
+      snap 66 checks-complete
    fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"
