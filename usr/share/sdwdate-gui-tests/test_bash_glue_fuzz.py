@@ -151,5 +151,46 @@ class TestConnectGatewayFuzz(unittest.TestCase):
             )
 
 
+class TestConnectSetupGateFuzz(unittest.TestCase):
+    """connect-setup: create the Connect endpoint IFF run_server_in_qubes=='true'."""
+
+    def setUp(self) -> None:
+        self.script = locate_script('sdwdate-gui-qubes-connect-setup')
+
+    @_SLOW
+    @given(run_server=_glue_text)
+    def test_endpoint_only_when_server(self, run_server: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            endpoint = Path(tmp_str) / 'sdwdate-gui.Connect'
+            body = """
+            id() {
+              case "$3" in
+                user)     printf '1000\\n' ;;
+                sysmaint) printf '1001\\n' ;;
+                *)        command id "$@" ;;
+              esac
+            }
+            fake_config_read() { printf '%s\\n' "${RUN_SERVER}"; }
+            source "${SDWDATE_GUI_SCRIPT}"
+            main
+            """
+            res = run_sourced(
+                self.script,
+                body,
+                {
+                    'RUN_SERVER': run_server,
+                    'sdwdate_gui_config_read_cmd': 'fake_config_read',
+                    'sdwdate_gui_boot_session': 'user_session',
+                    'sdwdate_gui_connect_endpoint': str(endpoint),
+                },
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(
+                endpoint.is_symlink(),
+                run_server == 'true',
+                f'endpoint presence wrong for run_server={run_server!r}',
+            )
+
+
 if __name__ == '__main__':
     unittest.main()
