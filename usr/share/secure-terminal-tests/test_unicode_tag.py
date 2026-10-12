@@ -272,8 +272,17 @@ def run():
        and _out['k[U+200B ZERO WIDTH SPACE]'] == 'v'
        and _out['k[U+200B ZERO WIDTH SPACE]#2'] == 'w',
        'tag_json: a tagged key colliding with a literal key keeps BOTH values')
-    ok(_tj(['a\udcffb']) == ['a[INVALID-BYTE 0xFF]b'],
-       'tag_json: a lone surrogate is tagged like the byte path, not a crash')
+    # A JSON lone surrogate is a genuine CODE POINT (json.loads output), NEVER a raw
+    # byte, so it must tag as [INVALID-SURROGATE U+XXXX] -- labeling it [INVALID-BYTE
+    # 0xNN] would fabricate a byte that was never in the input (a no-fabrication bug).
+    ok(_tj(['a\udcffb']) == ['a[INVALID-SURROGATE U+DCFF]b'],
+       'tag_json: a byte-range lone surrogate tags as INVALID-SURROGATE, not INVALID-BYTE')
+    ok(_tj(['a\ud800b', '\udfff']) == ['a[INVALID-SURROGATE U+D800]b', '[INVALID-SURROGATE U+DFFF]'],
+       'tag_json: a lone surrogate OUTSIDE the byte sub-range tags as INVALID-SURROGATE (not UNNAMED)')
+    # The byte path keeps the honest byte label: there U+DCNN IS a surrogateescape raw
+    # byte, so claiming the byte is correct -- this is the distinction the --json fix turns on.
+    ok(unicode_tag.tag_bytes(b'ok\x9bz') == 'ok[INVALID-BYTE 0x9B]z',
+       'tag_bytes: an undecodable byte 0x9B still tags as INVALID-BYTE (byte path unchanged)')
     _deep: list = []
     _cur = _deep
     for _ in range(5000):
@@ -304,6 +313,20 @@ def run():
     ok(rc == 0 and json.loads(got) == {unicode_tag.JSON_RESULT_KEY:
                                          {'f': ['x', 'm[U+0430 CYRILLIC SMALL LETTER A]ster', 1.5]}},
        'main_stdin --json replies with the tagged document in the result envelope')
+    # Regression (end-to-end, the exact reported repro): a JSON "\uDC9B" escape tags as
+    # the surrogate label, NOT the fabricated byte label [INVALID-BYTE 0x9B].
+    rc, got, _err = _run_json(b'{"unicode-tag-json": "\\uDC9B"}')
+    ok(rc == 0 and json.loads(got)[unicode_tag.JSON_RESULT_KEY] == '[INVALID-SURROGATE U+DC9B]',
+       'main_stdin --json: a lone surrogate tags as INVALID-SURROGATE, asserts no raw byte')
+    # Regression: a JSON surrogate key and a LITERAL [INVALID-BYTE 0x9B] key no longer
+    # conflate (pre-fix both became [INVALID-BYTE 0x9B], the second suffixed #2); the
+    # surrogate now tags distinctly, so both survive as their own keys with no collision.
+    rc, got, _err = _run_json(
+        b'{"unicode-tag-json": {"\\uDC9B": "from-surrogate", "[INVALID-BYTE 0x9B]": "from-literal"}}')
+    _res = json.loads(got)[unicode_tag.JSON_RESULT_KEY] if rc == 0 else {}
+    ok(rc == 0 and _res == {'[INVALID-SURROGATE U+DC9B]': 'from-surrogate',
+                            '[INVALID-BYTE 0x9B]': 'from-literal'},
+       'main_stdin --json: a surrogate key and a literal [INVALID-BYTE] key stay distinct, no #2 collision')
     # Duplicate keys in untrusted input collapse last-wins in a plain dict, silently
     # dropping a sibling value a first-wins downstream parser still sees (payload
     # smuggling); the scrubber rejects them rather than tag only the surviving copy.

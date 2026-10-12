@@ -57,6 +57,17 @@ firmware_evidence_file=""
 keep_failed="false"
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
+## Developer/test opt-in, all empty by default (no-op for a normal run):
+## --launch-env VAR=VAL   extra env injected into install-host's Calamares launch
+##                        (carried through its 'sudo --preserve-env'); repeatable.
+## --pre-install-push L:G push host file/dir L into the live guest at absolute G
+##                        BEFORE Calamares launches (so it lands in the overlayfs
+##                        upperdir); repeatable.
+## --pre-install-cmd CMD  run shell snippet CMD in the live guest as 'user' BEFORE
+##                        Calamares launches; repeatable.
+launch_env=()
+pre_install_push=()
+pre_install_cmd=()
 
 ## The installer command, launched the way a user's click does: it must equal the Exec=
 ## line of live-config-dist's install-host.desktop, so the test drives the same entry
@@ -222,7 +233,15 @@ usage() {
              (welcome, partitions, summary, install-done, first-boot) -- the 'full story'
              the results plane renders as an ordered sequence; best-effort like --shot.
 --keep-failed on a FAILED run leave the VM running for post-mortem inspection
-             (default: power it off). The caller reclaims it."
+             (default: power it off). The caller reclaims it.
+--launch-env VAR=VAL   inject extra env into install-host's Calamares launch
+             (carried through its 'sudo --preserve-env'), e.g. DEVOVERLAY=true for
+             the opt-in overlay-squashfs pack. Repeatable.
+--pre-install-push LOCAL:GUEST  push host file/dir LOCAL into the live guest at
+             absolute GUEST BEFORE Calamares launches (lands in the overlayfs
+             upperdir; copyto restores a script's +x). Repeatable.
+--pre-install-cmd CMD  run shell snippet CMD in the live guest as 'user' BEFORE
+             Calamares launches. Repeatable."
 }
 
 ## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
@@ -607,6 +626,18 @@ parse_args() {
             keep_failed="true"
             shift
             ;;
+         --launch-env)
+            launch_env+=( "$2" )
+            shift 2
+            ;;
+         --pre-install-push)
+            pre_install_push+=( "$2" )
+            shift 2
+            ;;
+         --pre-install-cmd)
+            pre_install_cmd+=( "$2" )
+            shift 2
+            ;;
          -h|--help)
             usage
             exit 0
@@ -748,13 +779,34 @@ main() {
    wait_ready 480
    wait_guestcontrol_ready user 300 \
       || die "${FAIL_RC}" "guestcontrol (VBoxService) never came up in the live session"
-   ## --mok-enroll: export MOK_ENROLL=1 into install-host's env; its 'sudo
-   ## --preserve-env' (sudoers SETENV) carries it into Calamares, and the
-   ## shellprocess_mok_enroll module reads it across the target chroot.
-   local mok_export=''
+   ## Pre-install hooks (opt-in; empty -> no-op): guestcontrol is confirmed up, so
+   ## push host files into the live guest and/or run setup snippets as 'user'
+   ## BEFORE Calamares launches. Used to swap in a patched helper or seed a
+   ## verification marker that must land in the live overlayfs upperdir.
+   local push_spec push_local push_dest cmd_snippet
+   for push_spec in "${pre_install_push[@]}"; do
+      push_local="${push_spec%%:*}"
+      push_dest="${push_spec#*:}"
+      { [ "${push_local}" != "${push_spec}" ] && [ -n "${push_dest}" ]; } \
+         || die "${SETUP_RC}" "--pre-install-push needs LOCAL:GUEST, got '${push_spec}'"
+      printf '%s\n' "${me}: pre-install push: '${push_local}' -> guest '${push_dest}'"
+      "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push "${push_local}" "${push_dest}" \
+         || die "${FAIL_RC}" "pre-install push failed: '${push_spec}'"
+   done
+   for cmd_snippet in "${pre_install_cmd[@]}"; do
+      printf '%s\n' "${me}: pre-install cmd (user): ${cmd_snippet}"
+      gc_run user "${cmd_snippet}" 120 \
+         || die "${FAIL_RC}" "pre-install cmd failed: ${cmd_snippet}"
+   done
+   ## Env injected into install-host's Calamares launch; its 'sudo --preserve-env'
+   ## (sudoers SETENV) carries each VAR=VAL into Calamares (and modules read it
+   ## across the target chroot). --mok-enroll adds MOK_ENROLL=1 (shellprocess_mok_enroll);
+   ## --launch-env adds arbitrary vars (e.g. DEVOVERLAY=true for the overlay pack).
+   local -a launch_extra=()
    if [ "${mok_enroll}" = 'true' ]; then
-      mok_export='MOK_ENROLL=1'
+      launch_extra+=( 'MOK_ENROLL=1' )
    fi
+   launch_extra+=( "${launch_env[@]}" )
    ## install-host opens Calamares as its own Wayland window; gc_launch_gui sets
    ## WAYLAND_DISPLAY (absent in the guestcontrol env) and backgrounds via setsid so
    ## the GUI survives the exec channel closing. Account is 'user': the live install
@@ -762,7 +814,7 @@ main() {
    ## desktop terminal), and the UNRESTRICTED boot ROLE install-host needs is set by GRUB
    ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
    ## sysmaint cannot even log in to the live session.
-   gc_launch_gui user "${INSTALL_HOST_CMD}" "${mok_export}"
+   gc_launch_gui user "${INSTALL_HOST_CMD}" "${launch_extra[*]}"
    ## gc_launch_gui is fire-and-forget (returns 0 even if install-host dies at once), so
    ## confirm Calamares actually started; on failure dump the launch log and fail with a
    ## real reason instead of a silent wait to the downstream OCR timeout.
