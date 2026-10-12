@@ -383,6 +383,37 @@ else
 fi
 safe-rm --recursive --force -- "${super}/packages"
 
+## 1j (CANARY): the post-sync re-check FAILS CLOSED if the checker is gone after sync.
+## A default (unset-seam) checker present at pre-flight DELETES ITSELF on that first run,
+## so the post-sync re-check finds it absent -- but the pre-flight proved the checkout is
+## non-minimal, so the re-check must ERROR (not skip) rather than publish an unchecked
+## tree. Expected: exit 1, labels REMOTES,SYNC,FSCK (ensure + sync ran; remaster +
+## parent-sync aborted). OLD dm-tidy has no re-check: the self-deleting checker passes
+## pre-flight, all phases run -> exit 0: FAILS.
+mkdir --parents -- "${intree_chk}"
+{
+   printf '%s\n' '#!/bin/bash'
+   ## '$0' is literal in the stub body: it expands when the STUB runs (deleting itself),
+   ## not when this test writes it.
+   # shellcheck disable=SC2016
+   printf '%s\n' 'rm -f -- "$0"'
+   printf '%s\n' 'exit 0'
+} > "${intree_chk}/dm-check-unicode"
+chmod +x -- "${intree_chk}/dm-check-unicode"
+run_tidy --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "REMOTES,SYNC,FSCK" ]; then
+   pass "the post-sync re-check fails CLOSED when the checker vanishes after sync (ERROR, nothing published)"
+else
+   fail "post-sync fail-closed wrong; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+if grep --quiet -- 'absent at re-check' "${tidy_out}" \
+   && grep --quiet -- 'refusing to publish an unvalidated tree' "${tidy_err}"; then
+   pass "the vanished-checker re-check is reported as a checker failure, not a clean tree"
+else
+   fail "vanished-checker report wrong; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
+fi
+safe-rm --recursive --force -- "${super}/packages"
+
 ## --- Case 2 (CANARY): sync BLOCKED (exit 1) -> exit 3, sweep CONTINUES ----------
 run_tidy SYNC_RC=1 --dir "${super}"
 if [ "${tidy_rc}" -eq 3 ]; then

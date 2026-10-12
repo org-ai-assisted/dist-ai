@@ -212,10 +212,14 @@ step_results=()   ## "<label>\t<verdict>"
 any_blocked="false"
 any_error="false"
 aborted="false"
-## Set by check_tree_content: a tree-content defect is BLOCKED (sweep continues), and
-## it makes the destructive remote-ensure redundant (the ensure's own prerequisite
-## would fail identically), so phase_remotes skips the ensure when it is set.
+## Set by check_tree_content: a tree-content defect is BLOCKED (mutating phases skipped,
+## exit 3), and it makes the destructive remote-ensure redundant (the ensure's own
+## prerequisite would fail identically), so phase_remotes skips the ensure when set.
 content_defect="false"
+## True once check_tree_content has actually RUN a checker (past the skip gate) -- i.e.
+## the checkout is non-minimal. The post-sync re-check then REQUIRES a checker: a sync
+## that removed it must fail CLOSED, not skip and publish an unvalidated tree.
+content_checker_ran="false"
 
 record() {
    step_results+=( "$(printf '%s' "${1}"$'\t'"${2}")" )
@@ -311,17 +315,27 @@ validate_repo_remotes() {
 ## './' prefix, some embed the path inside matched line text), so any matcher mis-blames
 ## or misses; the printed output is the authoritative per-path record.
 ## $1 = summary-row label (e.g. "1 content" / "3 content-recheck"); $2 = the log line.
-## The checker is SKIPPED only when the DEFAULT in-tree checker FILE does not exist
-## (a minimal / off-tree superproject). A checker that EXISTS but is not executable is
-## NOT skipped -- it is run, its exec failure (126) is caught below, and the tree is
-## treated as unvalidated (ERROR), never silently published.
+## The checker is SKIPPED only when the DEFAULT in-tree checker FILE does not exist AND
+## the caller did not mark it required -- a minimal / off-tree superproject. A checker
+## that EXISTS but is not executable is NOT skipped: it is run, its exec failure (126)
+## is caught below, and the tree is treated as unvalidated (ERROR). $3="require" (the
+## post-sync re-check, once the pre-flight proved a checker exists) turns an absent
+## checker into an ERROR too -- a sync that removed it must fail CLOSED, never skip and
+## publish an unvalidated tree.
 check_tree_content() {
-   local label="$1" logdesc="$2" checker content_out content_rc=0
+   local label="$1" logdesc="$2" require="${3:-}" checker content_out content_rc=0
    checker="${CHECK_UNICODE_CMD:-${top}/packages/kicksecure/developer-meta-files/usr/bin/dm-check-unicode}"
    if [ -z "${CHECK_UNICODE_CMD}" ] && [ ! -e "${checker}" ]; then
+      if [ "${require}" = "require" ]; then
+         record "${label}" "ERROR (dm-check-unicode absent at re-check -- the pre-flight validated with it, so the post-sync tree cannot be left unchecked)"
+         any_error="true" ; aborted="true"
+         printf '%s\n' "${0##*/}: the content checker is gone after sync; refusing to publish an unvalidated tree." >&2
+         return 0
+      fi
       log ">>> ${logdesc} SKIPPED: no dm-check-unicode in this checkout (minimal/off-tree)"
       return 0
    fi
+   content_checker_ran="true"
    log ">>> ${logdesc} (${checker##*/})"
    content_out="$( "${checker}" 2>&1 )" || content_rc="$?"
    if [ "${content_rc}" -eq 0 ]; then
@@ -337,7 +351,7 @@ check_tree_content() {
    content_defect="true"
    any_blocked="true"
    record "${label}" "BLOCKED (tree content defect -- see the dm-check-unicode output on stderr for the offending path(s) and repo)"
-   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) follow on stderr. BLOCKED -- the mutating phases are skipped (nothing is published); fix the defect and re-run to tidy the rest:" >&2
+   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) follow on stderr. BLOCKED -- nothing will be published or pinned (the remaster + parent-sync phases are skipped); fix the defect and re-run to tidy the rest:" >&2
    printf '%s\n' "${content_out}" >&2
 }
 
@@ -461,7 +475,13 @@ phase_content_recheck() {
    if mutation_halted; then
       return 0
    fi
-   check_tree_content "3 content-recheck" "re-validate tree content after sync (publish guard)"
+   ## If the pre-flight actually ran a checker, the checkout is non-minimal: require one
+   ## now too, so a sync that removed/dangled the checker fails CLOSED (ERROR) rather than
+   ## skipping and publishing an unchecked tree. If the pre-flight legitimately skipped
+   ## (minimal/off-tree), keep skipping unless the sync added a checker.
+   local mode=""
+   [ "${content_checker_ran}" = "true" ] && mode="require"
+   check_tree_content "3 content-recheck" "re-validate tree content after sync (publish guard)" "${mode}"
 }
 
 ## Phase 2: remaster + merge master->ai + publish (dm-remaster-all). 0 clean |
@@ -741,9 +761,11 @@ if [ "${any_error}" = "true" ]; then
 fi
 if [ "${any_blocked}" = "true" ]; then
    if [ "${content_defect}" = "true" ]; then
-      ## A content defect skipped the mutating phases, so NOTHING was tidied -- do not
-      ## claim "everything else is tidy".
-      printf '%s\n' "${0##*/}: a tree content defect BLOCKED the tidy; the mutating phases were skipped and nothing was published. Fix the defect(s) above and re-run." >&2
+      ## A content defect skipped the PUBLISHING phases (remaster + parent-sync), so
+      ## nothing was published or pinned -- do not claim "everything else is tidy", and
+      ## do not claim every phase was skipped (a post-sync defect runs after the
+      ## remote-ensure + submodule sync have already executed).
+      printf '%s\n' "${0##*/}: a tree content defect BLOCKED the tidy; nothing was published or pinned (the remaster + parent-sync phases were skipped). Fix the defect(s) above and re-run." >&2
    else
       printf '%s\n' "${0##*/}: everything else is tidy; the BLOCKED repo(s) above need a human. Resolve them, then re-run." >&2
    fi

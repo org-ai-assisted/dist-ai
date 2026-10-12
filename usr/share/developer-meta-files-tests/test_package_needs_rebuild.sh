@@ -17,7 +17,16 @@
 ##   * a source edit with NO changelog bump -> rebuild (content hash moved);
 ##   * a debian/changelog version bump  -> rebuild (the changelog is hashed too);
 ##   * an epoch version (3:1.0-2): the .deb drops the epoch, so an epoch-stripped
-##     artifact present -> skip, absent -> rebuild.
+##     artifact present -> skip, absent -> rebuild;
+##   * a 0-byte stub or a dangling symlink named like the .deb -> rebuild (a
+##     regular, non-empty file is required);
+##   * multi-binary source: EVERY produced binary's .deb must be present, so a
+##     missing one -> rebuild;
+##   * an arch-dependent binary ('any') needs _<arch>.deb: a wrong-suffix _all.deb
+##     -> rebuild, the correct _<arch>.deb -> skip;
+##   * control parsing robustness: a stanza with Architecture BEFORE Package is
+##     still checked (Debian allows any field order); a udeb stanza is not required
+##     as a .deb; a trailing CR ('Architecture: all\r') does not defeat the match.
 ## Plus a structural guard that the reprepro path stayed removed and the function
 ## now takes two arguments (no repository_name).
 ##
@@ -117,13 +126,16 @@ CONTROL
 ## The library looks for built .debs in genmkfile's DISTDIR under binary_build_folder_dist.
 distdir="${binary_build_folder_dist}/genmkfile-packages-result"
 mkdir --parents -- "${distdir}"
+## A built .deb is a regular, non-empty file; write real bytes, not a 0-byte stub.
 make_artifact() {
-   touch -- "${distdir}/testpkg_${1}_all.deb"
+   printf '%s\n' 'fake deb payload' > "${distdir}/testpkg_${1}_all.deb"
 }
 clear_artifacts() {
    local f
-   for f in "${distdir}"/testpkg_*.deb; do
-      if [ -e "${f}" ]; then
+   ## 'testpkg*' covers testpkg_ and the multi-binary testpkg-extra_ artifacts;
+   ## '-L' also catches a dangling symlink, which '-e' (it follows the link) misses.
+   for f in "${distdir}"/testpkg*.deb; do
+      if [ -e "${f}" ] || [ -L "${f}" ]; then
          safe-rm --force -- "${f}"
       fi
    done
@@ -167,10 +179,29 @@ else
    fail "recorded + unchanged + artifact present should skip, but wanted rebuild"
 fi
 
+## A 0-byte .deb stub must NOT satisfy the check (a regular, non-empty file is
+## required) -> rebuild.
+clear_artifacts
+touch -- "${distdir}/testpkg_1.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "empty .deb stub -> rebuild (non-empty file required)"
+else
+   fail "an empty .deb stub was treated as a built artifact and skipped"
+fi
+
+## A dangling symlink named like the .deb must NOT satisfy the check -> rebuild.
+clear_artifacts
+ln -s -- /nonexistent/no-such.deb "${distdir}/testpkg_1.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "dangling .deb symlink -> rebuild (regular file required)"
+else
+   fail "a dangling .deb symlink was treated as a built artifact and skipped"
+fi
+clear_artifacts
+
 ## Record + unchanged but the built artifact GONE (pool reverted/cleared while the
 ## persistent manifest survived) -> rebuild (0). The old hash-only path skipped
 ## here and shipped the stale .deb.
-clear_artifacts
 if [ "$(needs_rebuild)" -eq 0 ]; then
    pass "recorded + unchanged + artifact absent -> rebuild (manifest stale vs pool)"
 else
@@ -215,6 +246,157 @@ if [ "$(needs_rebuild)" -eq 0 ]; then
 else
    fail "epoch version: artifact absent must rebuild, but was skipped"
 fi
+
+## --- multi-binary: EVERY produced binary's .deb must be present ------------
+## Two Architecture: all binaries. Absence of EITHER forces a rebuild -- the old
+## 'any one present' logic skipped when only one was there, risking a stale
+## shipped binary.
+clear_artifacts
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: fixture
+ Fixture.
+
+Package: testpkg-extra
+Architecture: all
+Description: fixture extra
+ Extra.
+CONTROL
+write_changelog '2.0-1'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_2.0-1_all.deb"
+printf '%s\n' 'deb b' > "${distdir}/testpkg-extra_2.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "multi-binary: all produced .debs present -> skip"
+else
+   fail "multi-binary: all .debs present should skip, but wanted rebuild"
+fi
+safe-rm --force -- "${distdir}/testpkg-extra_2.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "multi-binary: one produced .deb absent -> rebuild"
+else
+   fail "multi-binary: a missing binary .deb must rebuild, but was skipped"
+fi
+clear_artifacts
+
+## --- arch-dependent suffix: 'any' -> _<arch>.deb, never _all.deb -----------
+export dist_build_target_arch='amd64'
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: any
+Description: fixture arch-dependent
+ Arch.
+CONTROL
+write_changelog '2.0-2'
+record_now
+## A wrongly-suffixed _all.deb must NOT satisfy an 'any' binary -> rebuild.
+printf '%s\n' 'deb all' > "${distdir}/testpkg_2.0-2_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "arch-dependent 'any': only _all.deb present -> rebuild (needs _amd64.deb)"
+else
+   fail "arch-dependent 'any' matched a wrong-suffix _all.deb and skipped"
+fi
+## The correctly-suffixed _<arch>.deb present -> skip.
+printf '%s\n' 'deb amd64' > "${distdir}/testpkg_2.0-2_amd64.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "arch-dependent 'any': _amd64.deb present -> skip"
+else
+   fail "arch-dependent 'any': correct _amd64.deb present should skip"
+fi
+unset dist_build_target_arch
+clear_artifacts
+
+## --- field order within a stanza is arbitrary (Debian policy) ---------------
+## A binary stanza listing Architecture BEFORE Package must still be parsed, or
+## its .deb goes unchecked and a sibling's presence yields a false skip.
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: a
+ a
+
+Architecture: all
+Package: testpkg-extra
+Description: b
+ b
+CONTROL
+write_changelog '3.0-1'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "reordered stanza (Architecture before Package): its missing .deb -> rebuild"
+else
+   fail "a reordered stanza was dropped; its missing .deb produced a false skip"
+fi
+printf '%s\n' 'deb b' > "${distdir}/testpkg-extra_3.0-1_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "reordered stanza: both .debs present -> skip"
+else
+   fail "reordered stanza: both .debs present should skip"
+fi
+clear_artifacts
+
+## --- udeb stanza produces a .udeb, not a .deb, so it is not required ---------
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: a
+ a
+
+Package: testpkg-udeb
+Package-Type: udeb
+Architecture: all
+Description: u
+ u
+CONTROL
+write_changelog '3.0-2'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-2_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "udeb stanza not required: the .deb binary present -> skip"
+else
+   fail "a udeb stanza was wrongly required as a .deb, forcing a rebuild"
+fi
+clear_artifacts
+
+## --- a CRLF .deb control must not defeat the 'all' match ---------------------
+## Written with a literal CR on the Architecture line (not trailing whitespace in
+## this test's own source, which the style gate forbids).
+cr=$'\r'
+{
+   printf '%s\n' 'Source: testpkg' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' "Architecture: all${cr}"
+   printf '%s\n' 'Description: a' ' a'
+} > "${pkg_dir}/debian/control"
+write_changelog '3.0-3'
+record_now
+printf '%s\n' 'deb a' > "${distdir}/testpkg_3.0-3_all.deb"
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "CRLF 'Architecture: all' + .deb present -> skip (CR stripped)"
+else
+   fail "a trailing CR on Architecture defeated the 'all' match, forcing a rebuild"
+fi
+clear_artifacts
+
+## Restore the single-binary Architecture: all fixture for the remaining checks.
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: fixture package
+ Fixture.
+CONTROL
 
 ## A hash FAILURE ('nohash' sentinel) must force a rebuild, never be compared like
 ## a real digest -- otherwise a source tree that fails to hash twice reads as
