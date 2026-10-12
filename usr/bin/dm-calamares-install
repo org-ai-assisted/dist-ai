@@ -115,6 +115,15 @@ on_exit() {
    ## FAIL with no evidence. Best-effort: never let capture change the exit status.
    if [ "${rc}" -ne 0 ]; then
       stuck="${HOME}/${me}-stuck.png"
+      ## Last-resort frame: if nothing captured a stuck shot (a failure BEFORE any
+      ## gui_wait_for ran one -- e.g. guestcontrol never came up because Secure Boot
+      ## blocked the live Guest Additions modules), grab the host-side framebuffer NOW,
+      ## while the VM is still alive (before the poweroff below). GUESTCTL shot is the VBox
+      ## IDisplay API, so it needs NO guest additions and works at any boot stage -- so
+      ## EVERY failure publishes what was on screen, never an empty results page. Best-effort.
+      if [ "${vm_started}" = 'true' ] && [ ! -s "${stuck}" ]; then
+         "${GUESTCTL}" "${vm}" shot "${stuck}" >/dev/null 2>&1 || true
+      fi
       if [ -n "${shot}" ] && [ ! -s "${shot}" ] && [ -s "${stuck}" ]; then
          cp -- "${stuck}" "${shot}" 2>/dev/null || true
       fi

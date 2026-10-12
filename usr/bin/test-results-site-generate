@@ -719,7 +719,15 @@ def _shot_html(view, shot, step_status_cls=None):
     ## a FAILED step's screenshot reads green (the "pass -- within tolerance" on a failure
     ## screen). The visual reason is still shown as context below.
     shot_cls = bucket_cls
-    if step_status_cls is not None and step_status_cls != site.STATUS_PASS:
+    ## Never show a GREEN (pass) chip on a shot whose step did not functionally pass -- a visual
+    ## MATCH is not a functional pass, so a failed step's "within tolerance" frame must not read
+    ## green. But a NON-green bucket already carries its own correct meaning: NEW ("no approved
+    ## golden yet") is a soft pending-first-approval state, CHANGED/UNKNOWN their own non-green
+    ## states. Repainting those with the step's FAIL would show a red "fail -- no approved golden
+    ## yet", conflating the visual-regression axis with the functional one. So downgrade ONLY a
+    ## would-be-green shot to the step status; keep every non-green bucket's own class.
+    if (step_status_cls is not None and step_status_cls != site.STATUS_PASS
+            and bucket_cls == site.STATUS_PASS):
         shot_cls = step_status_cls
     parts = ["<p>%s" % status_chip(shot_cls)]
     ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
