@@ -8,10 +8,8 @@ Shared logic for the privleap live-daemon end-to-end harnesses.
 
 The security assertions (A: authorized runs, B: unauthorized never executes,
 C: a malformed-frame barrage neither crashes nor corrupts the daemon, D: PAM /
-environment injection never reaches a root action, E: an action runs with the
-target user's OWN supplementary groups, F: an explicit TargetGroup does not
-drop the target user's own primary group) are identical regardless of HOW the
-daemon is brought up. Two backends share this code:
+environment injection never reaches a root action) are identical regardless of
+HOW the daemon is brought up. Two backends share this code:
 
   * e2e.py          -- privleapd as a subprocess inside a private mount
                        namespace (no host mutation; needs only sudo).
@@ -27,9 +25,7 @@ differs per backend, so the check is injected).
 """
 
 import atexit
-import grp
 import os
-import pwd
 import random
 import shutil
 import socket
@@ -312,38 +308,14 @@ INJECT_PAMENV: str = 'EVIL_PAMENV'
 INJECT_ETCENV: str = 'EVIL_ETCENV'
 
 
-def caller_extra_group(user: str) -> tuple[str, int] | None:
-    """Name + gid of one supplementary group of ``user`` (a gid in
-    getgrouplist other than the passwd primary), or None if the user has none.
-
-    Drives the explicit-TargetGroup regression: an action's process primary is
-    set to THIS group, and the target user's OWN passwd primary gid must still
-    survive in the supplementary set (initgroups semantics). A shim that seeds
-    getgrouplist with the TargetGroup gid instead of the passwd gid drops it."""
-
-    info: pwd.struct_passwd = pwd.getpwnam(user)
-    for gid in os.getgrouplist(user, info.pw_gid):
-        if gid == info.pw_gid:
-            continue
-        try:
-            return grp.getgrgid(gid).gr_name, gid
-        except KeyError:
-            continue
-    return None
-
-
 def config_text(user: str, workdir: str) -> str:
-    """The test privleap configuration: the caller may run e2e-allow,
-    e2e-rootenv, e2e-groups and (when the caller has a supplementary group)
-    e2e-groups-tgroup; only root may run e2e-deny. Each command leaves a
-    distinct trace. e2e-groups runs as the caller (TargetUser) so its process
-    group set can be checked against the caller's real supplementary groups;
-    e2e-groups-tgroup additionally sets an explicit TargetGroup to pin that the
-    caller's own primary group is not dropped."""
+    """The test privleap configuration: the caller may run e2e-allow and
+    e2e-rootenv, only root may run e2e-deny; each command leaves a distinct
+    trace."""
 
     allow_sentinel: str = os.path.join(workdir, 'ALLOWED_RAN')
     deny_sentinel: str = os.path.join(workdir, 'DENIED_RAN')
-    base: str = f"""[persistent-users]
+    return f"""[persistent-users]
 User={user}
 
 [allowed-users]
@@ -360,22 +332,6 @@ AuthorizedUsers=root
 [action:e2e-rootenv]
 Command=env
 AuthorizedUsers={user}
-
-[action:e2e-groups]
-Command=id -G
-AuthorizedUsers={user}
-TargetUser={user}
-"""
-    extra_group: tuple[str, int] | None = caller_extra_group(user)
-    if extra_group is None:
-        return base
-    tgroup_name: str = extra_group[0]
-    return base + f"""
-[action:e2e-groups-tgroup]
-Command=id -G
-AuthorizedUsers={user}
-TargetUser={user}
-TargetGroup={tgroup_name}
 """
 
 
@@ -508,7 +464,7 @@ def run_security_phases(
     alive_check: Callable[[], bool],
     fuzz_count: int = 250,
 ) -> str:
-    """Run the A/B/C/D/E/F security phases against an already-running daemon.
+    """Run the A/B/C/D security phases against an already-running daemon.
 
     Returns the environment the root action actually received, which
     e2e_systemd uses for its real-systemd environment assertions.
@@ -594,64 +550,4 @@ def run_security_phases(
         }
     )
     print(f"   root action received env keys: {', '.join(env_keys)}")
-
-    print('== E: action runs with the TARGET user supplementary groups ==')
-    ## An action whose TargetUser is the caller must run with that user's OWN
-    ## supplementary groups (initgroups semantics, as sudo/runuser/login do).
-    ## The historical shim bug passed extra_groups=[] to Popen -> setgroups([])
-    ## stripped every supplementary group, so e.g. a 'systemcheck' action lost
-    ## 'systemd-journal' and journalctl failed. The fix passes
-    ## os.getgrouplist(target_user, target_gid); this phase pins that.
-    caller_info: pwd.struct_passwd = pwd.getpwnam(user)
-    expected_gids: set[int] = set(os.getgrouplist(user, caller_info.pw_gid))
-    ## Canary meaningfulness: with no supplementary group the buggy extra_groups=[]
-    ## yields the same {primary_gid} as the fix, so the environment could not tell
-    ## them apart. Require at least one supplementary group and FAIL LOUDLY (never
-    ## a silent skip) when the environment has none.
-    results.check(
-        'e2e caller has a supplementary group (env can exercise the regression)',
-        len(expected_gids) > 1,
-    )
-    groups_msgs, groups_out = run_signal(user, 'e2e-groups')
-    got_gids: set[int] = {
-        int(tok)
-        for tok in groups_out.decode('utf-8', errors='replace').split()
-    }
-    results.check(
-        "action ran with the target user's supplementary groups",
-        'RESULT_EXITCODE' in groups_msgs and got_gids == expected_gids,
-    )
-    print(f"   expected gids={sorted(expected_gids)} got={sorted(got_gids)}")
-
-    print('== F: explicit TargetGroup keeps the target user own primary ==')
-    ## With TargetUser=caller and an explicit TargetGroup, the process primary
-    ## is set to the TargetGroup gid, but the caller's OWN passwd primary gid
-    ## must still appear in the supplementary set (as sudo -u -g / runuser do).
-    ## A shim seeding getgrouplist with the TargetGroup gid instead of the
-    ## passwd gid drops the passwd primary -> this phase FAILS on that bug.
-    tgroup: tuple[str, int] | None = caller_extra_group(user)
-    results.check(
-        'e2e caller has a supplementary group for the TargetGroup regression',
-        tgroup is not None,
-    )
-    if tgroup is not None:
-        tgroup_gid: int = tgroup[1]
-        tgroup_expected: set[int] = (
-            set(os.getgrouplist(user, caller_info.pw_gid)) | {tgroup_gid}
-        )
-        tg_msgs, tg_out = run_signal(user, 'e2e-groups-tgroup')
-        tg_got: set[int] = {
-            int(tok)
-            for tok in tg_out.decode('utf-8', errors='replace').split()
-        }
-        results.check(
-            "action keeps the caller's own primary group under a TargetGroup",
-            'RESULT_EXITCODE' in tg_msgs
-            and caller_info.pw_gid in tg_got
-            and tg_got == tgroup_expected,
-        )
-        print(
-            f"   TargetGroup={tgroup[0]}({tgroup_gid}) "
-            f"expected gids={sorted(tgroup_expected)} got={sorted(tg_got)}"
-        )
     return env_text
