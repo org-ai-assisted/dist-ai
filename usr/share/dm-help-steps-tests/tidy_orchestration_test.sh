@@ -239,14 +239,13 @@ fi
 ## Restore the pristine fixture for the later cases.
 safe-rm --recursive --force -- "${super}/packages"
 
-## --- Case 1c-1e: tree-content (dm-check-unicode) gate is per-repo BLOCKED, not abort
-## A non-whitelisted symlink / Unicode / whitespace / newline / modeline defect in ONE
-## repo must BLOCK that repo (exit 3) and let the sweep CONTINUE over the rest -- NOT
-## abort the whole run the way a committed submodule symlink does by tripping the
-## phase-0 remote ensure's bundled check. The content checker is driven
-## via the DM_TIDY_CHECK_UNICODE seam so the suite never needs a real tree with a
-## real symlink; each stub prints to stderr (NOT TIDY_LOG) so labels_seen stays about
-## the orchestrated phases.
+## --- Case 1c-1f: tree-content (dm-check-unicode) classification -------------------
+## dm-check-unicode exits 1 WITH output on a real defect -> per-repo BLOCKED (exit 3)
+## with the sweep continuing over the other repos. Any OTHER non-zero (127/126/2) or
+## exit 1 with NO output means the checker could not scan the tree -> structural ERROR
+## (abort), never a phantom defect nor a mutation behind an unvalidated tree. Driven via
+## the DM_TIDY_CHECK_UNICODE seam so the suite needs no real tree; each stub prints to
+## stderr (NOT TIDY_LOG) so labels_seen stays about the orchestrated phases.
 check_unicode_stub() {
    ## $1 stub filename, $2 exit code, $3.. body lines (printed verbatim before exit).
    local path="${stubs}/$1" code="$2" ; shift 2
@@ -258,9 +257,9 @@ check_unicode_stub() {
    chmod +x -- "${path}"
 }
 
-## 1c (CANARY): a defect in submodule 'sub' -> exit 3, sweep continues, ensure SKIPPED,
-## the owning submodule named + full checker output surfaced. On OLD dm-tidy the seam is
-## ignored, the ensure runs, all phases pass -> exit 0 with REMOTES present: FAILS.
+## 1c (CANARY): a real defect (exit 1 + output) -> exit 3, sweep continues, ensure
+## SKIPPED, the full checker output surfaced. On OLD dm-tidy the seam is ignored, the
+## ensure runs, all phases pass -> exit 0 with REMOTES present: FAILS.
 check_unicode_stub UNICODE_DEFECT 1 \
    "printf '%s\n' \"dm-check-unicode: ERROR: NOT whitelisted symlink: './sub/etc/qubes-rpc/foo.Connect' -> '/run/user/1000/x.socket'\" >&2"
 run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_DEFECT" --dir "${super}"
@@ -275,10 +274,10 @@ else
    fail "content-defect sweep/ensure handling wrong; labels=$(labels_seen)"
 fi
 if grep --quiet -- "'./sub/etc/qubes-rpc/foo.Connect'" "${tidy_err}" \
-   && grep --quiet -- 'BLOCKED (tree content defect in: sub' "${tidy_out}"; then
-   pass "the defect's owning submodule is named (summary) and the full dm-check-unicode output is surfaced (stderr)"
+   && grep --quiet -- 'BLOCKED (tree content defect' "${tidy_out}"; then
+   pass "the full dm-check-unicode output (every offending path) is surfaced for a defect"
 else
-   fail "content-defect report missing submodule/output; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
+   fail "content-defect report missing output; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
 fi
 
 ## 1d (CANARY): a CLEAN content check is actually INVOKED (writes a marker) and lets
@@ -299,21 +298,45 @@ else
    fail "clean content run labels wrong: $(labels_seen)"
 fi
 
-## 1e (CANARY): ANY non-zero content exit (here 2, not 1) is still BLOCKED -- never a
-## silent pass on a weird exit. Output names no submodule, so the report falls back to
-## the parent-tree label. On OLD dm-tidy: seam ignored -> exit 0, FAILS.
-check_unicode_stub UNICODE_ODD 2 \
-   "printf '%s\n' 'dm-check-unicode: ERROR: Unicode found!' >&2"
-run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_ODD" --dir "${super}"
-if [ "${tidy_rc}" -eq 3 ]; then
-   pass "a non-1 non-zero content-check exit is still BLOCKED (exit 3), never a silent pass"
+## 1e (CANARY): checker FAILURE -- a non-1 exit (here 2, with output) means the tree was
+## NOT validated. It must NOT be classed a defect: structural ERROR (exit 1), mutating
+## phases aborted (ensure never runs), only the read-only fsck after. OLD dm-tidy ignores
+## the seam -> ensure runs, exit 0: FAILS.
+check_unicode_stub UNICODE_BROKEN 2 \
+   "printf '%s\n' 'dm-check-unicode: internal failure' >&2"
+run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_BROKEN" --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
+   pass "a non-1 checker exit is a structural ERROR (exit 1), aborts the mutating sweep, fscks only"
 else
-   fail "odd-exit content check not treated as blocking; got ${tidy_rc}; err:<<<$(cat -- "${tidy_err}")>>>"
+   fail "broken checker (exit 2) mishandled; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
 fi
-if grep --quiet -- 'BLOCKED (tree content defect in the parent tree' "${tidy_out}"; then
-   pass "a defect not under any submodule is attributed to the parent tree"
+if grep --quiet -- 'ERROR (dm-check-unicode exit 2' "${tidy_out}" \
+   && grep --quiet -- 'refusing to tidy behind an unvalidated tree' "${tidy_err}"; then
+   pass "a broken checker is reported as a checker/env failure, not a content verdict"
 else
-   fail "parent-tree attribution missing; out:<<<$(cat -- "${tidy_out}")>>>"
+   fail "broken-checker report wrong; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
+fi
+
+## 1f (CANARY): exit 1 with NO output -- dm-check-unicode's own sanity test aborts before
+## scanning. An empty report is NOT a content defect: structural ERROR (abort), never a
+## phantom BLOCK that then mutates behind an unscanned tree. OLD dm-tidy: seam ignored ->
+## exit 0, FAILS.
+check_unicode_stub UNICODE_EMPTY 1 ':'
+run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_EMPTY" --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
+   pass "exit 1 with no output is a structural ERROR (tree not scanned), aborts the sweep, fscks only"
+else
+   fail "empty-output exit 1 mishandled; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+
+## 1g (CANARY): a missing/unexecutable checker (exit 127) is a checker failure, not a
+## clean tree -- the exact codex finding. Point the seam at a non-existent path. OLD
+## dm-tidy ignores the seam -> ensure runs, exit 0: FAILS.
+run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/does-not-exist" --dir "${super}"
+if [ "${tidy_rc}" -eq 1 ] && [ "$(labels_seen)" = "FSCK" ]; then
+   pass "a missing checker (exit 127) is a structural ERROR, never passed off as a clean tree"
+else
+   fail "missing checker mishandled; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
 fi
 
 ## --- Case 2 (CANARY): sync BLOCKED (exit 1) -> exit 3, sweep CONTINUES ----------

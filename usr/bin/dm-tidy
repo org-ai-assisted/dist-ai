@@ -278,12 +278,21 @@ validate_repo_remotes() {
 ## pre-check is the only place dm-tidy gets a per-repo verdict the ensure's single
 ## bundled exit code cannot give. DM_TIDY_CHECK_UNICODE overrides (test seam).
 ##
-## ANY non-zero exit is a BLOCKING defect -- never a silent pass. The full checker
-## output is surfaced (every flagged path), and the owning repo(s) are named
-## best-effort by matching known submodule paths in that output (a label, not a parse
-## of the checker's line formats; the printed output is authoritative).
+## CLASSIFY the exit, never "any non-zero = defect": dm-check-unicode exits 1 AFTER
+## printing the offending path(s) for a real defect. A different non-zero code
+## (127 not-found, 126 not-executable, an internal errexit), OR exit 1 with NO output
+## (a failed sanity test that aborts before scanning), means the tree was NOT validated
+## -- a checker/environment failure, not a content verdict. Classing that as a defect
+## would both forge a phantom BLOCK and keep mutating behind an UNSCANNED tree, so it is
+## a structural ERROR (abort) instead. The read-only fsck still runs after an abort.
+##
+## A real defect is reported BLOCKED and the FULL checker output is surfaced -- it names
+## every offending path and the repo it lives in. dm-tidy does NOT parse that output to
+## attribute per-submodule: the five checks emit heterogeneous path formats (some lack a
+## './' prefix, some embed the path inside matched line text), so any matcher mis-blames
+## or misses; the printed output is the authoritative per-path record.
 check_tree_content() {
-   local checker content_out content_rc=0 p matched=() in_clause=""
+   local checker content_out content_rc=0
    checker="${CHECK_UNICODE_CMD:-${top}/packages/kicksecure/developer-meta-files/usr/bin/dm-check-unicode}"
    if [ -z "${CHECK_UNICODE_CMD}" ] && [ ! -x "${checker}" ]; then
       log ">>> [1/6] tree content check SKIPPED: no dm-check-unicode in this checkout (minimal/off-tree)"
@@ -291,28 +300,20 @@ check_tree_content() {
    fi
    log ">>> [1/6] validate tree content (${checker##*/})"
    content_out="$( "${checker}" 2>&1 )" || content_rc="$?"
-   [ "${content_rc}" -eq 0 ] && return 0
+   if [ "${content_rc}" -eq 0 ]; then
+      return 0
+   fi
+   if [ "${content_rc}" -ne 1 ] || [ -z "${content_out//[[:space:]]/}" ]; then
+      record "1 content" "ERROR (dm-check-unicode exit ${content_rc}: tree NOT validated -- checker missing/broken, not a content verdict)"
+      any_error="true" ; aborted="true"
+      printf '%s\n' "${0##*/}: tree content checker (${checker##*/}) exited ${content_rc} without a usable verdict; refusing to tidy behind an unvalidated tree." >&2
+      [ -n "${content_out}" ] && printf '%s\n' "${content_out}" >&2
+      return 0
+   fi
    content_defect="true"
    any_blocked="true"
-   ## Best-effort attribution. A .gitmodules parse/access error here is non-fatal (the
-   ## strict read in phase_remotes still aborts on it); attribution just falls back to
-   ## the parent-tree label and the authoritative output below.
-   read_submodule_paths || true
-   for p in "${submodule_path_list[@]}"; do
-      [ -n "${p}" ] || continue
-      ## '-F "./${p}/"' matches a flagged path UNDER submodule p at a path boundary
-      ## (the trailing '/' stops 'sub' matching 'sub-other'); checker paths all begin './'.
-      if grep --quiet --fixed-strings -- "./${p}/" <<< "${content_out}"; then
-         matched+=( "${p}" )
-      fi
-   done
-   if [ "${#matched[@]}" -gt 0 ]; then
-      in_clause=" in: ${matched[*]}"
-   else
-      in_clause=" in the parent tree"
-   fi
-   record "1 content" "BLOCKED (tree content defect${in_clause}; a human must fix it -- see dm-check-unicode output below)"
-   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the repo(s) above are BLOCKED, the rest of the sweep continues:" >&2
+   record "1 content" "BLOCKED (tree content defect -- see dm-check-unicode output below for the offending path(s) and repo)"
+   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) are below -- that repo is BLOCKED, the rest of the sweep continues:" >&2
    printf '%s\n' "${content_out}" >&2
 }
 
@@ -328,8 +329,13 @@ phase_remotes() {
    local flag=() rc=0 path top_real tree_real on_target="false"
    ## Tree-content validation first: a defect is BLOCKED (sweep continues) and makes
    ## the destructive ensure redundant (skipped below), so classify it before we touch
-   ## remotes. It records its own verdict + sets content_defect; it never aborts.
+   ## remotes. A checker/environment FAILURE (not a defect) aborts here -- do not touch
+   ## remotes or mutate behind a tree that was never validated; the read-only fsck still
+   ## runs. A real defect sets content_defect (sweep continues) and never aborts.
    check_tree_content
+   if [ "${aborted}" = "true" ]; then
+      return 0
+   fi
    log ">>> [1/6] ensure + validate git remotes (${REMOTES_ENSURE_CMD##*/})"
    ## Run the DESTRUCTIVE ensure only when 'top' IS the tree REMOTES_ENSURE_CMD acts
    ## on (it takes no target dir); elsewhere skip it -- never mutate the wrong tree. An
