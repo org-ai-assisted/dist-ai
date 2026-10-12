@@ -57,6 +57,10 @@ firmware_evidence_file=""
 keep_failed="false"
 ## Set true once THIS run starts the VM, so the exit trap powers off only our VM.
 vm_started="false"
+## Which LIVE GRUB entry to install from. Both provide install-host root; only
+## these two can install (USER Session refuses -- no root). GRUB live menu order:
+## USER(0), SYSMAINT(1), UNRESTRICTED(2) -> Down-count from the top.
+live_session="unrestricted"
 ## Developer/test opt-in, all empty by default (no-op for a normal run):
 ## --launch-env VAR=VAL   extra env injected into install-host's Calamares launch
 ##                        (carried through its 'sudo --preserve-env'); repeatable.
@@ -234,6 +238,9 @@ usage() {
              the results plane renders as an ordered sequence; best-effort like --shot.
 --keep-failed on a FAILED run leave the VM running for post-mortem inspection
              (default: power it off). The caller reclaims it.
+--live-session sysmaint|unrestricted  which LIVE boot entry to install from
+             (default unrestricted). Both grant install-host root; USER Session
+             cannot install.
 --launch-env VAR=VAL   inject extra env into install-host's Calamares launch
              (carried through its 'sudo --preserve-env'), e.g. DEVOVERLAY=true for
              the opt-in overlay-squashfs pack. Repeatable.
@@ -296,15 +303,29 @@ source "${vbox_session_lib}"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
 ## lands on the default USER session, where install-host refuses (wrong boot role).
 select_install_boot_entry() {
-   local deadline text
+   local deadline text downs i
+   ## Down-presses from the default (top) USER entry to the install session.
+   case "${live_session}" in
+      sysmaint)
+         downs=1
+         ;;
+      unrestricted)
+         downs=2
+         ;;
+      *)
+         die "${SETUP_RC}" "--live-session must be sysmaint|unrestricted, got '${live_session}'"
+         ;;
+   esac
    deadline=$(( SECONDS + 40 ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ unrestricted|"live iso"|"kicksecure live" ]]; then
-         gui_scan e0 50 e0 d0
-         gui_scan e0 50 e0 d0
+         for (( i = 0; i < downs; i++ )); do
+            gui_scan e0 50 e0 d0
+         done
          sleep 1
          gui_scan 1c 9c
+         printf '%s\n' "${me}: selected LIVE '${live_session}' install entry (${downs} down)" >&2
          return 0
       fi
       sleep 2
@@ -625,6 +646,10 @@ parse_args() {
          --keep-failed)
             keep_failed="true"
             shift
+            ;;
+         --live-session)
+            live_session="$2"
+            shift 2
             ;;
          --launch-env)
             launch_env+=( "$2" )
