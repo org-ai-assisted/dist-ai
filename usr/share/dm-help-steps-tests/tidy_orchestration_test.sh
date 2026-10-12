@@ -257,9 +257,10 @@ check_unicode_stub() {
    chmod +x -- "${path}"
 }
 
-## 1c (CANARY): a real defect (exit 1 + output) -> exit 3, sweep continues, ensure
-## SKIPPED, the full checker output surfaced. On OLD dm-tidy the seam is ignored, the
-## ensure runs, all phases pass -> exit 0 with REMOTES present: FAILS.
+## 1c (CANARY): a real defect (exit 1 + output) -> exit 3, and dm-tidy SKIPS every
+## mutating phase (ensure + sync + remaster + parent-sync) so nothing is published; only
+## the read-only fsck runs, and the full checker output is surfaced. On OLD dm-tidy the
+## seam is ignored, the ensure + all mutating phases run -> exit 0 with them present: FAILS.
 check_unicode_stub UNICODE_DEFECT 1 \
    "printf '%s\n' \"dm-check-unicode: ERROR: NOT whitelisted symlink: './sub/etc/qubes-rpc/foo.Connect' -> '/run/user/1000/x.socket'\" >&2"
 run_tidy DM_TIDY_CHECK_UNICODE="${stubs}/UNICODE_DEFECT" --dir "${super}"
@@ -268,16 +269,17 @@ if [ "${tidy_rc}" -eq 3 ]; then
 else
    fail "content defect did not exit 3; got ${tidy_rc}; err:<<<$(cat -- "${tidy_err}")>>>"
 fi
-if [ "$(labels_seen)" = "SYNC,REMASTER,GITSYNC,FSCK" ]; then
-   pass "a content defect does NOT stop the sweep and SKIPS the destructive ensure (no REMOTES)"
+if [ "$(labels_seen)" = "FSCK" ]; then
+   pass "a content defect SKIPS every mutating phase (ensure/sync/remaster/parent-sync); only read-only fsck runs -- nothing published"
 else
-   fail "content-defect sweep/ensure handling wrong; labels=$(labels_seen)"
+   fail "content-defect mutation-skip wrong; labels=$(labels_seen) (expected FSCK only)"
 fi
 if grep --quiet -- "'./sub/etc/qubes-rpc/foo.Connect'" "${tidy_err}" \
-   && grep --quiet -- 'BLOCKED (tree content defect' "${tidy_out}"; then
-   pass "the full dm-check-unicode output (every offending path) is surfaced for a defect"
+   && grep --quiet -- 'BLOCKED (tree content defect' "${tidy_out}" \
+   && grep --quiet -- 'skipped (tree content defect BLOCKED' "${tidy_out}"; then
+   pass "the full dm-check-unicode output is surfaced and the mutating phases record a content-defect skip"
 else
-   fail "content-defect report missing output; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
+   fail "content-defect report/skip missing; out:<<<$(cat -- "${tidy_out}")>>> err:<<<$(cat -- "${tidy_err}")>>>"
 fi
 
 ## 1d (CANARY): a CLEAN content check is actually INVOKED (writes a marker) and lets

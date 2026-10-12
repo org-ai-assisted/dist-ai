@@ -46,13 +46,14 @@
 ## orchestration against recording stubs; unset, they are the production tools,
 ## byte-identical.
 ##
-## TREE-CONTENT DEFECT = BLOCKED, NOT ABORT. A non-whitelisted symlink / Unicode /
-## trailing-whitespace / missing-EOF-newline / modeline defect (dm-check-unicode) in
-## ONE repo is a per-repo condition a human must fix -- so it is reported BLOCKED
-## (exit 3) and the sweep CONTINUES over the other ~80 repos, exactly like a dirty or
-## diverged submodule. Classifying it HERE keeps one repo's defect from aborting the
-## whole sweep the way the phase-0 remote-ensure's bundled, opaque exit code does when
-## a single submodule carries a committed non-whitelisted symlink.
+## TREE-CONTENT DEFECT = BLOCKED, no publish. A non-whitelisted symlink / Unicode /
+## trailing-whitespace / missing-EOF-newline / modeline defect (dm-check-unicode)
+## anywhere in the tree is reported BLOCKED (exit 3) and the MUTATING phases
+## (remote-ensure, submodule sync, remaster, parent-sync) are SKIPPED -- dm-tidy never
+## publishes or pins a flagged tree, and the publisher sub-tools do not re-check content
+## themselves. The read-only fsck + mergecheck still run. Fix the one defect and re-run
+## to tidy the rest. Classifying it HERE turns the phase-0 remote-ensure's opaque,
+## sweep-aborting exit code into a clear per-tree verdict with the offending paths named.
 ##
 ## Usage:
 ##   dm-tidy [--dir <checkout>] [--dry-run]
@@ -220,6 +221,23 @@ record() {
    step_results+=( "$(printf '%s' "${1}"$'\t'"${2}")" )
 }
 
+## A MUTATING phase must not run when an earlier step ABORTED (structural, exit 1) or a
+## tree content defect was found (BLOCKED, exit 3): dm-tidy never publishes a flagged or
+## half-done tree. Sets mutation_halt_reason for the phase's skipped record; the
+## read-only fsck/mergecheck still run.
+mutation_halt_reason=""
+mutation_halted() {
+   if [ "${aborted}" = "true" ]; then
+      mutation_halt_reason="skipped (earlier step aborted)"
+      return 0
+   fi
+   if [ "${content_defect}" = "true" ]; then
+      mutation_halt_reason="skipped (tree content defect BLOCKED -- not publishing a flagged tree)"
+      return 0
+   fi
+   return 1
+}
+
 ## Submodule paths from the parent's .gitmodules (declaration order), into the global
 ## array submodule_path_list -- NUL-safe END TO END so a path containing whitespace OR
 ## a newline survives intact (splitting on a space or newline garbles such a path,
@@ -266,10 +284,11 @@ validate_repo_remotes() {
 ## editor modeline anywhere in the tree. It reads symlinks from GIT metadata
 ## ('git ls-files --recurse-submodules'), so it sees a submodule's COMMITTED defect
 ## even on a core.symlinks=false checkout (where the worktree symlink is a plain text
-## file). Any defect is a per-repo condition a human must fix -> BLOCKED (sweep
-## continues), NEVER an abort. Running it HERE gives dm-tidy a classifiable signal; the
-## same check, bundled inside the phase-0 remote ensure, surfaces only as that tool's
-## opaque exit code, which aborts the whole sweep on one submodule's symlink.
+## file). A defect is BLOCKED (exit 3): the mutating phases are SKIPPED (dm-tidy does not
+## publish or pin a flagged tree, and the publisher sub-tools do not re-check content),
+## and only the read-only fsck + mergecheck run. Running it HERE gives dm-tidy a clear
+## per-tree verdict with the offending paths named, instead of the phase-0 remote
+## ensure's opaque, sweep-aborting exit code on one submodule's symlink.
 ##
 ## Runs the IN-TREE checker (absolute path, resolves its own root to 'top'); SKIPPED
 ## when the checkout ships no such checker -- a minimal / off-tree superproject, which
@@ -313,7 +332,7 @@ check_tree_content() {
    content_defect="true"
    any_blocked="true"
    record "1 content" "BLOCKED (tree content defect -- see dm-check-unicode output below for the offending path(s) and repo)"
-   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) are below -- that repo is BLOCKED, the rest of the sweep continues:" >&2
+   printf '%s\n' "${0##*/}: tree content check (${checker##*/}) found a defect; the offending path(s) are below. BLOCKED -- the mutating phases are skipped (nothing is published); fix the defect and re-run to tidy the rest:" >&2
    printf '%s\n' "${content_out}" >&2
 }
 
@@ -404,8 +423,8 @@ phase_remotes() {
 ## firing on a non-zero child) AND captures the child's real exit code.
 phase_submodule_sync() {
    local flag=() rc=0
-   if [ "${aborted}" = "true" ]; then
-      record "2 submodule-ai-sync" "skipped (earlier step aborted)"
+   if mutation_halted; then
+      record "2 submodule-ai-sync" "${mutation_halt_reason}"
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
@@ -432,8 +451,8 @@ phase_submodule_sync() {
 ## why) if an earlier step already aborted -- never push on a half-done tree.
 phase_remaster() {
    local mode_flag="--apply" rc=0
-   if [ "${aborted}" = "true" ]; then
-      record "3 remaster-all" "skipped (earlier step aborted)"
+   if mutation_halted; then
+      record "3 remaster-all" "${mutation_halt_reason}"
       return 0
    fi
    [ "${dry_run}" = "true" ] && mode_flag="--dry-run"
@@ -458,8 +477,8 @@ phase_remaster() {
 ## (dm-git-sync on the parent). 0 ok | anything else a failed mutation (abort).
 phase_parent_sync() {
    local flag=() rc=0
-   if [ "${aborted}" = "true" ]; then
-      record "4 parent-sync" "skipped (earlier step aborted)"
+   if mutation_halted; then
+      record "4 parent-sync" "${mutation_halt_reason}"
       return 0
    fi
    [ "${dry_run}" = "true" ] && flag=( --dry-run )
