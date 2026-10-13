@@ -120,6 +120,14 @@ dup_fixture="${fixtures_dir}/dup.txt"
    printf '%s\n' 'type=AVC msg=audit(1.0:9): apparmor="DENIED" operation="open" profile="/usr/bin/foo" name="/etc/shadow" pid=222 comm="foo" fsuid=0'
 } >"${dup_fixture}"
 
+## The distinctive post-redaction substring of each record: in the raw line a 'pid=...'
+## sits between name= and comm=, so this 'name=... comm=...' adjacency exists ONLY after
+## sed's 's/pid=.* comm/comm/' ran. Asserting it (rather than just the DENIED/ALLOWED
+## token) pins that the real record flowed through sed -- a subject emitting only the bare
+## token, or one with sed removed, does not produce it.
+denied_redacted='name="/etc/shadow" comm="foo"'
+allowed_redacted='name="/srv/example" comm="bar"'
+
 out_file="${test_dir}/subject.out"
 LAST_RC=0
 LAST_OUT=""
@@ -157,9 +165,9 @@ nonzero() {
    fi
 }
 
-## Count the lines of $1 that contain $2 (grep -c exits 1 on zero, hence '|| true').
+## Count the lines of $1 that contain the fixed string $2 (grep -c exits 1 on zero).
 count_lines_with() {
-   printf '%s\n' "$1" | { grep -c -- "$2" || true; }
+   printf '%s\n' "$1" | { grep -F -c -- "$2" || true; }
 }
 
 pass=0
@@ -192,32 +200,29 @@ check "empty journal -> empty output (0 bytes)" "${LAST_BYTES}" "0"
 run_subject "${empty_fixture}" 1
 check "journalctl read failure -> non-zero exit (not swallowed)" "$(nonzero "${LAST_RC}")" "nonzero"
 
-## (4) a DENIED record -> exit 1, reported AND redacted (sed/awk ran).
+## (4) a DENIED record -> exit 1, the redacted record reported (sed ran).
 run_subject "${denied_fixture}"
 check "DENIED present -> exit 1" "${LAST_RC}" "1"
-check "DENIED present -> denial reported" "$(contains "${LAST_OUT}" 'DENIED')" "yes"
-check "DENIED present -> pid= redacted" "$(contains "${LAST_OUT}" 'pid=')" "no"
+check "DENIED present -> redacted record reported" "$(contains "${LAST_OUT}" "${denied_redacted}")" "yes"
 check "DENIED present -> fsuid= redacted" "$(contains "${LAST_OUT}" 'fsuid=')" "no"
 
-## (5) an ALLOWED record -> exit 1, reported AND redacted.
+## (5) an ALLOWED record -> exit 1, the redacted record reported.
 run_subject "${allowed_fixture}"
 check "ALLOWED present -> exit 1" "${LAST_RC}" "1"
-check "ALLOWED present -> allowance reported" "$(contains "${LAST_OUT}" 'ALLOWED')" "yes"
-check "ALLOWED present -> pid= redacted" "$(contains "${LAST_OUT}" 'pid=')" "no"
+check "ALLOWED present -> redacted record reported" "$(contains "${LAST_OUT}" "${allowed_redacted}")" "yes"
 check "ALLOWED present -> fsuid= redacted" "$(contains "${LAST_OUT}" 'fsuid=')" "no"
 
-## (6) both -> exit 1, both reported and redacted.
+## (6) both -> exit 1, both redacted records reported.
 run_subject "${both_fixture}"
 check "both present -> exit 1" "${LAST_RC}" "1"
-check "both present -> DENIED reported" "$(contains "${LAST_OUT}" 'DENIED')" "yes"
-check "both present -> ALLOWED reported" "$(contains "${LAST_OUT}" 'ALLOWED')" "yes"
-check "both present -> pid= redacted" "$(contains "${LAST_OUT}" 'pid=')" "no"
+check "both present -> DENIED record reported" "$(contains "${LAST_OUT}" "${denied_redacted}")" "yes"
+check "both present -> ALLOWED record reported" "$(contains "${LAST_OUT}" "${allowed_redacted}")" "yes"
 check "both present -> fsuid= redacted" "$(contains "${LAST_OUT}" 'fsuid=')" "no"
 
 ## (7) a NUL in the journal must not make grep's binary heuristic drop the denial.
 run_subject "${binary_fixture}"
 check "binary journal w/ DENIED -> exit 1 (not dropped)" "${LAST_RC}" "1"
-check "binary journal w/ DENIED -> denial reported" "$(contains "${LAST_OUT}" 'DENIED')" "yes"
+check "binary journal w/ DENIED -> redacted record reported" "$(contains "${LAST_OUT}" "${denied_redacted}")" "yes"
 
 ## (8) a read failure confined to the SECOND (ALLOWED) pipeline must still propagate:
 ## the first journalctl call succeeds (empty), the second fails. Rules out a subject that
@@ -233,9 +238,12 @@ check "second-pipeline read failure -> both pipelines ran" "$(cat -- "${count_fi
 check "second-pipeline read failure -> non-zero exit" "$(nonzero "${LAST_RC}")" "nonzero"
 
 ## (9) duplicate DENIED records (differing only in the sed-stripped pid) collapse to one
-## line -- pins that BOTH sed and awk still run, not just that a match appears.
+## line -- pins that BOTH sed and awk still run. Counting the REDACTED record (not the bare
+## DENIED token) means a subject with sed or awk removed, or one emitting only the token,
+## fails: without sed the two lines keep distinct pids (not merged, count 0 for the redacted
+## form); without awk the two identical redacted lines both survive (count 2).
 run_subject "${dup_fixture}"
-check "duplicate DENIED records -> deduplicated to one line" "$(count_lines_with "${LAST_OUT}" 'DENIED')" "1"
+check "duplicate DENIED records -> deduplicated to one line" "$(count_lines_with "${LAST_OUT}" "${denied_redacted}")" "1"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
