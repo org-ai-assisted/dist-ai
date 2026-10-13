@@ -1,0 +1,91 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Targeted mutation-testing lane for sdwdate-gui's security-critical code (the
+## sdwdate_gui_shared wire parser + printable/octal boundaries, the server's
+## name-length / argument-count validation and RPC send framing, the client's
+## reconnect-backoff reset, Tor-status de-dup and inotify watch mask). Applies a
+## hand-picked set of high-value mutants to a COPY of the real package, runs the
+## REAL killer suite for each, and asserts each mutant is KILLED. Nothing is written
+## back to the source tree. TRUSTED TOOLING: needs an ai-review pass before a CI
+## gate relies on its verdict.
+##
+## The sdwdate_gui checkout IS the target under test, so an absent checkout is FATAL
+## (exit 1) unless the caller authorized the skip (DIST_AI_SKIP_AUTHORIZED=1), in
+## which case it SKIPs (exit 77).
+##
+## sdwdate-gui's suites run on the Qt OFFSCREEN platform (no X / Wayland / qrexec),
+## so there is no headless-compositor re-exec -- QT_QPA_PLATFORM=offscreen is set and
+## passed through to each mutant's child suite by mutation_lane.py.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then
+   tests_dir="${script_dir}/../share/sdwdate-gui-tests"
+else
+   tests_dir='/usr/share/sdwdate-gui-tests'
+fi
+
+pkg_rel='usr/lib/python3/dist-packages'
+
+repo=''
+[ -v SDWDATE_GUI_REPO ] || SDWDATE_GUI_REPO=''
+if [ -n "${SDWDATE_GUI_REPO}" ]; then
+   repo="${SDWDATE_GUI_REPO}"
+elif [ -d "${HOME}/derivative-maker/packages/kicksecure/sdwdate-gui/${pkg_rel}/sdwdate_gui" ]; then
+   repo="${HOME}/derivative-maker/packages/kicksecure/sdwdate-gui"
+elif [ -d "${script_dir}/../../../../sdwdate-gui/${pkg_rel}/sdwdate_gui" ]; then
+   repo="${script_dir}/../../../../sdwdate-gui"
+fi
+
+if [ -z "${repo}" ] || [ ! -d "${repo}/${pkg_rel}/sdwdate_gui" ]; then
+   ## The sdwdate_gui checkout IS the target under test. Absent, there is nothing to
+   ## test -- but a bare SKIP reads green, so an absent target is FATAL unless the run
+   ## that invoked us authorized the skip: DIST_AI_SKIP_AUTHORIZED=1, which
+   ## dist-ai-tests-all sets for a --allow-skip'd (or lenient non-strict) run. The
+   ## gate/CI env always provides the checkout, so there it simply runs.
+   if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+      printf '%s\n' 'sdwdate-gui-tests-mutation: SKIP (sdwdate_gui not found; set SDWDATE_GUI_REPO) [authorized]' >&2
+      ## style-ok: allow-skip: target checkout absent AND the skip was authorized by the orchestrator
+      exit 77
+   fi
+   printf '%s\n' 'sdwdate-gui-tests-mutation: FATAL: sdwdate_gui not found; set SDWDATE_GUI_REPO (unauthorized absent-target skip)' >&2
+   exit 1
+fi
+export SDWDATE_GUI_REPO="${repo}"
+
+## The subject imports helper-scripts modules (sanitize_string, strict_config_parser).
+## Keep them on PYTHONPATH so the staged-copy suites resolve them; the lane prepends
+## the staged package dir ahead of this. Resolve from HELPER_SCRIPTS_PATH, else the
+## sibling package in the derivative-maker tree.
+hs_pkg=''
+[ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=''
+if [ -n "${HELPER_SCRIPTS_PATH}" ] && [ -d "${HELPER_SCRIPTS_PATH}" ]; then
+   hs_pkg="${HELPER_SCRIPTS_PATH}"
+elif [ -d "${repo}/../helper-scripts/${pkg_rel}" ]; then
+   hs_pkg="$(readlink --canonicalize -- "${repo}/../helper-scripts/${pkg_rel}")"
+fi
+if [ -n "${hs_pkg}" ]; then
+   export PYTHONPATH="${hs_pkg}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
+## Offscreen Qt, no bytecode writes -- matches the sdwdate-gui-tests runners.
+export QT_QPA_PLATFORM=offscreen
+export PYTHONDONTWRITEBYTECODE=1
+
+## Plain call (not exec): this is the last statement, so its exit status (0 all
+## killed / 1 survivor / 77 target absent) becomes the runner's, with no trap or
+## cleanup to bypass.
+"${tests_dir}/mutation_lane.py" "$@"
