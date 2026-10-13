@@ -199,8 +199,8 @@ class TestGenericRpcSend(_TrayFixture):
         client.client_socket.state = lambda: QLocalSocket.ConnectedState
         sent = bytearray()
 
-        def rec(data: object) -> int:
-            raw = bytes(data)  # type: ignore[arg-type]
+        def rec(data: bytes) -> int:
+            raw = bytes(data)
             if not raw:
                 return 0
             sent.append(raw[0])
@@ -223,9 +223,12 @@ class TestGenericRpcSend(_TrayFixture):
         client = server.SdwdateGuiClient(QLocalSocket())
         client.client_socket.state = lambda: QLocalSocket.UnconnectedState
         sent: list[bytes] = []
-        client.client_socket.write = lambda data: (  # type: ignore[assignment]
-            sent.append(bytes(data)) or len(bytes(data))
-        )
+
+        def _record(data: bytes) -> int:
+            sent.append(bytes(data))
+            return len(data)
+
+        client.client_socket.write = _record  # type: ignore[assignment]
         with watchdog(2.0):
             client._SdwdateGuiClient__generic_rpc_call(b"set_tor_status running")
         self.assertEqual(sent, [])
@@ -234,9 +237,23 @@ class TestGenericRpcSend(_TrayFixture):
         """A message of exactly MAX_MSG_SIZE bytes does not exit (pins `>`)."""
         client = server.SdwdateGuiClient(QLocalSocket())
         client.client_socket.state = lambda: QLocalSocket.ConnectedState
-        client.client_socket.write = lambda data: len(bytes(data))  # type: ignore
+
+        def _accept(data: bytes) -> int:
+            return len(data)
+
+        client.client_socket.write = _accept  # type: ignore[assignment]
         with watchdog(2.0):
             client._SdwdateGuiClient__generic_rpc_call(b"x" * server.MAX_MSG_SIZE)
+
+    def test_oversized_send_exits_one(self) -> None:
+        """An oversized RPC send exits 1 (failure), not 0/2 (pins the code)."""
+        client = server.SdwdateGuiClient(QLocalSocket())
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+        with self.assertRaises(SystemExit) as ctx:
+            client._SdwdateGuiClient__generic_rpc_call(
+                b"x" * (server.MAX_MSG_SIZE + 1)
+            )
+        self.assertEqual(ctx.exception.code, 1)
 
 
 class TestHandshakeTimeoutStateGuard(_TrayFixture):

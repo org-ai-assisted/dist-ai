@@ -186,6 +186,20 @@ class TestClientSendBoundary(unittest.IsolatedAsyncioTestCase):
         ## Exactly MAX_MSG_SIZE must NOT exit (pins `> MAX` vs `>= MAX`).
         await client.generic_rpc_call(b"x" * client.MAX_MSG_SIZE)
 
+    async def test_oversized_send_exits_one(self) -> None:
+        """An oversized client send exits 1 (failure), not 0/2 (pins the code)."""
+        class FakeWriter:  # pylint: disable=too-few-public-methods
+            def write(self, _data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+        client.GlobalData.sock_write = FakeWriter()
+        with self.assertRaises(SystemExit) as ctx:
+            await client.generic_rpc_call(b"x" * (client.MAX_MSG_SIZE + 1))
+        self.assertEqual(ctx.exception.code, 1)
+
 
 class TestTorStatusDedup(unittest.IsolatedAsyncioTestCase):
     """set_tor_status suppresses only genuine duplicates, in order."""
@@ -323,7 +337,12 @@ class TestMainLoopBackoffReset(unittest.IsolatedAsyncioTestCase):
 
 
 class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
-    """main_loop exits cleanly (code 0) on the non-reconnect conditions."""
+    """main_loop's exit-vs-reconnect decision is an OR over three independent
+    clauses: `not qubes`, `not do_reconnect`, `server_pid present`. Each must
+    independently force the clean exit; mutating any `or` to `and` (the
+    anti-flood regression) is caught by isolating that clause as the only true
+    one. The server_pid file is MOCKED so the real file in the test environment
+    cannot mask a clause."""
 
     def setUp(self) -> None:
         client.GlobalData.awaitable_tasks.clear()
@@ -332,32 +351,73 @@ class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(
             setattr, client.GlobalData, "do_reconnect", self._real_reconnect
         )
+        self.addCleanup(
+            setattr, client.GlobalData, "reconnect_delay",
+            client.INITIAL_RECONNECT_DELAY,
+        )
 
-    async def _run(self, in_qubes: bool, do_reconnect: bool) -> int:
+    async def _drive(self, in_qubes: bool, do_reconnect: bool,
+                     pid_present: bool):
+        """One main_loop pass. do_setup succeeds once then raises _StopLoop, so a
+        NON-exiting decision escapes the loop instead of spinning. Returns the
+        SystemExit raised on an exit decision, or None if it reconnected."""
         client.GlobalData.do_reconnect = do_reconnect
+        calls = {"n": 0}
 
         async def fake_do_setup() -> bool:
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise _StopLoop
             return True
 
         async def fake_handle() -> bool:
             return False
 
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(_d: float, *a: object, **k: object) -> None:
+            return await real_sleep(0, *a, **k)
+
+        pid = types.SimpleNamespace(is_file=lambda: pid_present)
         with mock.patch.object(client, "do_setup", fake_do_setup), \
                 mock.patch.object(client, "handle_incoming_data", fake_handle), \
                 mock.patch.object(
                     client, "running_in_qubes_os", lambda: in_qubes
-                ):
-            with self.assertRaises(SystemExit) as ctx:
+                ), \
+                mock.patch.object(client.GlobalData, "server_pid_path", pid), \
+                mock.patch.object(asyncio, "sleep", fake_sleep):
+            try:
                 await client.main_loop()
-        return 0 if ctx.exception.code is None else int(ctx.exception.code)
+            except SystemExit as exc:
+                return exc
+            except _StopLoop:
+                return None
+        return None
 
     async def test_non_qubes_exits_zero(self) -> None:
-        ## not running_in_qubes_os() -> exit 0 (first clause of the or-chain).
-        self.assertEqual(await self._run(in_qubes=False, do_reconnect=True), 0)
+        ## Clause 1 (not qubes) alone -> exit 0.
+        exc = await self._drive(False, do_reconnect=True, pid_present=False)
+        self.assertIsNotNone(exc)
+        self.assertEqual(getattr(exc, "code", None) or 0, 0)
 
     async def test_qubes_no_reconnect_exits_zero(self) -> None:
-        ## Qubes but do_reconnect suppressed -> exit 0 (second clause).
-        self.assertEqual(await self._run(in_qubes=True, do_reconnect=False), 0)
+        ## Clause 2 (not do_reconnect) alone -> exit 0. Pins `or not do_reconnect`
+        ## against `and`: an `and` here would NOT exit (clause 1 is false).
+        exc = await self._drive(True, do_reconnect=False, pid_present=False)
+        self.assertIsNotNone(exc)
+        self.assertEqual(getattr(exc, "code", None) or 0, 0)
+
+    async def test_qubes_pid_present_exits_zero(self) -> None:
+        ## Clause 3 (server_pid present) alone -> exit 0. Pins
+        ## `or server_pid_path.is_file()` against `and`.
+        exc = await self._drive(True, do_reconnect=True, pid_present=True)
+        self.assertIsNotNone(exc)
+        self.assertEqual(getattr(exc, "code", None) or 0, 0)
+
+    async def test_qubes_reconnect_no_pid_does_not_exit(self) -> None:
+        ## All clauses false -> the loop reconnects (does NOT exit).
+        exc = await self._drive(True, do_reconnect=True, pid_present=False)
+        self.assertIsNone(exc)
 
 
 if __name__ == "__main__":
