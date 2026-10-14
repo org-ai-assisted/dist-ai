@@ -13,7 +13,7 @@ guestcontrol / `su - user` without a user bus) made the user systemd-units check
 user system-ready check WARN as artifacts. systemcheck_session_detection now probes user-bus
 CONNECTIVITY and those two checks report N/A only then -- with a HARD GUARD: a reachable but
 degraded user manager stays "present", so a real failure (failed user unit on a tty / ssh /
-graphical login) is NEVER masked. The opt-out (systemcheck_headless_autoskip) is applied at
+graphical login) is NEVER masked. The opt-out (systemcheck_nosession_autoskip) is applied at
 the check sites, which run after source_config, so a config override is honored.
 
 Drives the REAL functions via run_check_scenario (preparation.bsh, which defines the detector
@@ -85,12 +85,12 @@ class TestCheckServicesHeadless(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
     def test_optout_runs_the_check_even_when_unreachable(self) -> None:
-        ## systemcheck_headless_autoskip=false forces the check to run (never auto-skip),
+        ## systemcheck_nosession_autoskip=false forces the check to run (never auto-skip),
         ## read at the gate so a config-file override takes effect.
         r = run_check_scenario(
             self.check(self.FILE), 'check_services_do',
             env_setup='check_type=user\nsystemcheck_user_manager_present=false\n'
-                      'systemcheck_headless_autoskip=false\n'
+                      'systemcheck_nosession_autoskip=false\n'
                       'machine_command_machine=fail_stub\nmachine_command_pretty=fail_stub\n'
                       'machine_command_desc=desc',
             stubs='fail_stub() { printf "%s\\n" "foo.service loaded failed failed"; }\n'
@@ -160,14 +160,11 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertEqual(r.exit_code, '0')
         self.assertIn('not applicable', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the warn still fires,
-    ## but trixie dropped the journal-read error-detail surfacing, so "Could not connect to
-    ## privleapd" is no longer embedded in the message -- remove when fixed.
-    @unittest.expectedFailure
     def test_privleapd_unreachable_warns_in_normal_session(self) -> None:
         ## HARD GUARD / false-green regression: privleapd DOWN in a normal session (user
-        ## manager present) is a real fault, NOT a headless artifact. Even with the default
-        ## autoskip on, a connect failure must warn -- never report the journal as clean N/A.
+        ## manager present) is a real fault, NOT a headless artifact. A connect failure must
+        ## warn + exit 1 -- never report the journal as clean N/A. This still holds on trixie
+        ## (only the error-DETAIL surfacing regressed -- see the xfail sibling below).
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
             env_setup='systemcheck_user_manager_present=true',
@@ -176,19 +173,22 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
-        ## stderr-branch detail: leaprun's own connect error IS surfaced.
+
+    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the warn + exit 1
+    ## above still fire, but trixie dropped the journal-read error-detail surfacing, so leaprun's
+    ## own "Could not connect to privleapd" is no longer embedded in the message -- remove when fixed.
+    @unittest.expectedFailure
+    def test_privleapd_unreachable_surfaces_connect_detail(self) -> None:
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal',
+            env_setup='systemcheck_user_manager_present=true',
+            stubs=self._PRIVLEAP_UNREACHABLE)
         self.assertIn('Could not connect to privleapd', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the warn still fires,
-    ## but trixie dropped the "Error detail (journal-read output)" block (journal_read_err is
-    ## assigned but never surfaced), so the actual cause is no longer shown -- remove when fixed.
-    @unittest.expectedFailure
     def test_genuine_journal_failure_still_warns(self) -> None:
-        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- AND the
-        ## ACTUAL error is surfaced (not only the generic "could not read"), so the page names
-        ## the cause. sanitize-string stubbed pass-through, as the sibling scenarios do.
-        ## CANARY: the error is on STDOUT (log-checker's 'exec 2>&1'), so the pre-fix code --
-        ## which surfaced only journal_read_err (stderr, empty here) -- fails this detail assertion.
+        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- it warns +
+        ## exits 1. This still holds on trixie; only the error-DETAIL surfacing regressed (see
+        ## the xfail sibling below). sanitize-string stubbed pass-through, as the siblings do.
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
             stubs=self._JOURNAL_BROKEN
@@ -197,18 +197,23 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
-        ## CANARY ASSERTION: the detail block is sourced from the captured STDOUT. The pre-fix
-        ## code only surfaced journal_read_err (stderr, empty here) and labelled it "stderr", so
-        ## it emitted NO detail block at all -- this header is absent on old code, present on new.
-        ## (A bare 'journalctl: unrecoverable error' match is NOT a canary: the stubbed
-        ## check_critical_logs echoes it into the always-shown critical tier regardless of the fix.)
+
+    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the ACTUAL cause
+    ## should be surfaced (not only the generic "could not read"), so the page names it. The
+    ## error is on STDOUT (log-checker's 'exec 2>&1'); trixie surfaces only journal_read_err
+    ## (stderr, empty here) and drops the "Error detail (journal-read output)" block -- remove when fixed.
+    @unittest.expectedFailure
+    def test_genuine_journal_failure_surfaces_detail(self) -> None:
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_journal',
+            stubs=self._JOURNAL_BROKEN
+            + '\nsanitize-string() { printf "%s" "$3"; }')
         self.assertIn('Error detail (journal-read output)', r.joined())
-        self.assertIn('journalctl: unrecoverable error', r.joined())
 
     def test_optout_forces_strict_on_connect_failure(self) -> None:
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
-            env_setup='systemcheck_headless_autoskip=false',
+            env_setup='systemcheck_nosession_autoskip=false',
             stubs=self._PRIVLEAP_UNREACHABLE)
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('warning'))
