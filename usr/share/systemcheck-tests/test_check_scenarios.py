@@ -278,7 +278,7 @@ class TestTempdirScenarios(ScenarioTestBase):
     STAT_OK = ('stat() { case "$*" in *--format=%u*) printf "0\\n" ;; '
                '*--format=%a*/tmp/user/*) printf "700\\n" ;; '
                '*--format=%a*) printf "711\\n" ;; esac; }\n')
-    TEST_OK = ('test() { case "$1" in -h) return 1 ;; -d|-O) return 0 ;; '
+    TEST_OK = ('test() { case "$1" in -L) return 1 ;; -d|-O) return 0 ;; '
                '*) builtin test "$@" ;; esac; }\n')
 
     def test_all_correct_emits_info_no_failure(self) -> None:
@@ -307,7 +307,7 @@ class TestTempdirScenarios(ScenarioTestBase):
                                env_setup=env, stubs=self.ID)
         self.assertTrue(r.has_severity('warning'))
         ## Only the variable NAME is reported, never its (user-controlled) value.
-        self.assertIn('incorrect: TEMPDIR', r.joined())
+        self.assertIn('but should be: TEMPDIR', r.joined())
         self.assertNotIn('/tmp/elsewhere', r.joined())  # nosec B108
         self.assertEqual(r.exit_code, '1')
 
@@ -317,7 +317,7 @@ class TestTempdirScenarios(ScenarioTestBase):
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=env, stubs=self.ID)
         self.assertTrue(r.has_severity('warning'))
-        self.assertIn('incorrect: TEMPDIR', r.joined())
+        self.assertIn('but should be: TEMPDIR', r.joined())
         self.assertEqual(r.exit_code, '1')
 
     def test_hostile_value_is_not_rendered(self) -> None:
@@ -329,7 +329,7 @@ class TestTempdirScenarios(ScenarioTestBase):
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=env, stubs=self.ID)
         self.assertTrue(r.has_severity('warning'))
-        self.assertIn('incorrect: TMP', r.joined())
+        self.assertIn('but should be: TMP', r.joined())
         self.assertNotIn('<font color="green">OK</font>', r.joined())
         self.assertEqual(r.exit_code, '1')
 
@@ -348,7 +348,7 @@ class TestTempdirScenarios(ScenarioTestBase):
     def test_symlink_peruser_dir_warns(self) -> None:
         ## Base fine; the per-user dir is a symlink (-h true only for it).
         test_symlink = ('test() { p="${!#}"; case "$1" in '
-                        '-h) [ "$p" = /tmp/user/1000 ] ;; -d|-O) return 0 ;; '
+                        '-L) [ "$p" = /tmp/user/1000 ] ;; -d|-O) return 0 ;; '
                         '*) builtin test "$@" ;; esac; }\n')
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=self.GOOD_ENV,

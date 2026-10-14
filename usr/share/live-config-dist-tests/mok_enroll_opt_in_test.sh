@@ -19,6 +19,9 @@
 ## them against the new MOK HERE, after the MOK exists; without that step they stay
 ## unsigned and Secure Boot rejects them. CANARY: the pre-fix script ran no
 ## vbox-guest-installer, so 'set + EFI -> all three externals' fails on it.)
+## Also: MOK_ENROLL set + EFI but vbox-guest-installer ABSENT (non-VBox EFI install)
+## -> GA signing is skipped + logged and MOK setup still completes. CANARY: the pre-guard
+## script has no skip branch, so it never logs 'skip: vbox-guest-installer absent'.
 ##
 ## A missing subject/dep is an ENVIRONMENT BUG -> exit 1 (FATAL), never a skip.
 
@@ -75,6 +78,7 @@ for sentinel in \
    'skip: MOK_ENROLL unset' \
    'skip: not EFI' \
    'run: creating MOK + signing modules' \
+   'skip: vbox-guest-installer absent' \
    'done: mok.pub'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
@@ -205,6 +209,48 @@ check "set + EFI -> all three externals invoked" "$(all_externals_invoked)"  "ye
 check "set + EFI -> vbox-guest-installer invoked" "$([ -e "${work}/vbox-guest-installer.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
 check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing modules')" "yes"
 check "set + EFI -> logs 'done: mok.pub'"     "$(log_has 'done: mok.pub')" "yes"
+
+## --- MOK_ENROLL set + EFI, but vbox-guest-installer ABSENT -> skip GA signing, no abort -----
+## A non-VirtualBox EFI install (bare metal / KVM) has no vbox-guest-installer (ships with
+## vm-config-dist, VBox guests only). MOK setup MUST still complete: shim-signed-mok-setup +
+## rebuild-dkms-modules run, GA signing is skipped + logged, the function completes ('done').
+## CANARY: the pre-guard script called vbox-guest-installer unconditionally with no skip branch,
+## so it NEVER logs 'skip: vbox-guest-installer absent' -- that check fails on the old code.
+novbox_bin="${work}/bin-novbox"
+mkdir --parents -- "${novbox_bin}"
+for tool in shim-signed-mok-setup rebuild-dkms-modules; do
+   cat > "${novbox_bin}/${tool}" <<STUB
+#!/bin/bash
+printf '%s\n' invoked > "${work}/${tool}.invoked" 2>/dev/null || true
+exit 0
+STUB
+   chmod +x -- "${novbox_bin}/${tool}"
+done
+## Run with a MINIMAL PATH (only the stub dir), not base_path, so a real
+## vbox-guest-installer on the host cannot leak in and defeat the absent case. The
+## function needs no other external: 'date' in mok_log is '|| true'-tolerated, the
+## rest are bash builtins or the two stubs.
+if PATH="${novbox_bin}" type -P vbox-guest-installer >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: 'vbox-guest-installer' present under the stub-only PATH; absent case invalid." >&2
+   exit 1
+fi
+run_enroll_novbox() {
+   ## Contain the minimal PATH in a subshell so it cannot leak into later test commands.
+   ## errexit is not relied on (the function is sourced, not run via main); the skip-log is
+   ## the canary. $1 = PATH to run under.
+   local rc=0
+   ( PATH="${1}"; export PATH; mok_enroll_opt_in ) >/dev/null 2>&1 || rc=$?
+   printf '%s' "${rc}"
+}
+reset_state uefi
+export MOK_ENROLL=1
+rc="$(run_enroll_novbox "${novbox_bin}")"
+check "set + EFI + vbox absent -> rc 0 (completes)"          "${rc}" "0"
+check "set + EFI + vbox absent -> shim-signed-mok-setup ran"  "$([ -e "${work}/shim-signed-mok-setup.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
+check "set + EFI + vbox absent -> rebuild-dkms-modules ran"   "$([ -e "${work}/rebuild-dkms-modules.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
+check "set + EFI + vbox absent -> vbox-guest-installer NOT invoked" "$([ -e "${work}/vbox-guest-installer.invoked" ] && printf '%s' yes || printf '%s' no)" "no"
+check "set + EFI + vbox absent -> logs skip (canary)"         "$(log_has 'skip: vbox-guest-installer absent')" "yes"
+check "set + EFI + vbox absent -> logs 'done: mok.pub'"       "$(log_has 'done: mok.pub')" "yes"
 
 printf '%s\n' ""
 printf '%s\n' "===== mok_enroll_opt_in: ${pass} pass, ${fail} fail, 0 skip ====="

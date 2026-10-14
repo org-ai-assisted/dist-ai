@@ -1,0 +1,109 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Bounded symbolic counterexample search (CrossHair) over sdwdate-gui's
+## PyQt-free wire-frame parsers parse_ipc_command / check_bytes_printable
+## (verify_sdwdate_gui_crosshair.py). This is NOT formal verification and NOT a
+## proof: CrossHair symbolically executes the REAL functions and searches for a
+## contract-breaking input within a time / iteration BUDGET, over an unbounded
+## byte domain. GREEN here means ONLY "no counterexample found within the
+## budget", never "holds for all inputs". The exhaustive, sound guarantees live
+## in the Z3 + full-enumeration *-tests-verify suites; this is the complementary
+## bounded search for the unbounded-input parsers those cannot enumerate.
+##
+## crosshair-tool is pip-only (not Debian-packaged), so this lane is registered
+## NON-CORE and does not gate core PRs. A MISSING crosshair is a HARD FAILURE
+## (exit 1 with a pip hint), never a silent skip -- a search suite must not
+## quietly disable itself. SKIPs (77) ONLY when the sdwdate-gui subject is
+## genuinely absent. Set SDWDATE_GUI_REPO to a component checkout to search that
+## tree. No root, no network, no PyQt, no live server.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then
+   tests_dir="${script_dir}/../share/sdwdate-gui-tests"
+else
+   tests_dir='/usr/share/sdwdate-gui-tests'
+fi
+
+[ -v SDWDATE_GUI_REPO ] || SDWDATE_GUI_REPO=""
+if [ -n "${SDWDATE_GUI_REPO}" ]; then
+   subject_dp="${SDWDATE_GUI_REPO%/}/usr/lib/python3/dist-packages"
+else
+   subject_dp='/usr/lib/python3/dist-packages'
+fi
+subject="${subject_dp}/sdwdate_gui/sdwdate_gui_shared.py"
+if [ ! -f "${subject}" ]; then
+   printf '%s\n' "sdwdate-gui-tests-verify: SKIP (sdwdate_gui not found at '${subject}')" >&2
+   printf '%s\n' "set SDWDATE_GUI_REPO to a component checkout, or install sdwdate-gui" >&2
+   ## style-ok: allow-skip: sdwdate-gui subject absent without a checkout -- set SDWDATE_GUI_REPO or install sdwdate-gui
+   exit 77
+fi
+
+## style-ok: no-has -- crosshair is a pip-only tool at a non-fixed PATH
+## location, probed only to emit a friendly pip hint; sourcing helper-scripts'
+## has.bsh would add a bash-lib dependency this self-contained entrypoint does
+## not otherwise need (wire() exports no HELPER_SCRIPTS_PATH for sdwdate-gui).
+if ! command -v crosshair >/dev/null 2>&1; then
+   printf '%s\n' "sdwdate-gui-tests-verify: crosshair not found (required, NON-CORE lane)" >&2
+   printf '%s\n' "install it: pip install crosshair-tool" >&2
+   exit 1
+fi
+
+## tests_dir carries the contract modules; subject_dp carries the real
+## sdwdate_gui package. Any inherited PYTHONPATH (the orchestrator's wire adds
+## helper-scripts for strict_config_parser) is kept last.
+export PYTHONPATH="${tests_dir}:${subject_dp}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONDONTWRITEBYTECODE=1
+
+## Bounded so the search terminates deterministically: per-condition wall-clock
+## cap plus a no-progress iteration cap (CrossHair's recommended primary knob).
+crosshair_flags=( --per_condition_timeout=30 --max_uninteresting_iterations=40 )
+
+printf '%s\n' "== sdwdate-gui-tests-verify: bounded symbolic counterexample search (CrossHair) =="
+printf '%s\n' "== NOT a proof: green == no counterexample within the budget =="
+
+## 1) Real contracts: a counterexample (exit 1) or any error (exit 2) FAILS.
+real_rc=0
+## style-ok: allow-python-interpreter -- crosshair is the pip-only search tool this lane drives
+crosshair check "${crosshair_flags[@]}" verify_sdwdate_gui_crosshair "$@" || real_rc=$?
+
+## 2) Canary: a working search MUST refute the deliberately-false contract
+## (exit 1). A clean canary (exit 0) means the search is vacuous; an error
+## (exit 2) means it could not run -- either FAILS the lane.
+canary_rc=0
+## style-ok: allow-python-interpreter -- crosshair is the pip-only search tool this lane drives
+crosshair check "${crosshair_flags[@]}" verify_sdwdate_gui_crosshair_canary "$@" || canary_rc=$?
+
+fail=0
+if [ "${real_rc}" -eq 0 ]; then
+   printf '%s\n' "PASS: no counterexample to the real contracts within the budget (bounded, not a proof)"
+else
+   printf '%s\n' "FAIL: crosshair reported a counterexample or error on the real contracts (rc=${real_rc})" >&2
+   fail=1
+fi
+
+if [ "${canary_rc}" -eq 1 ]; then
+   printf '%s\n' "PASS: canary refuted as expected -- the search has teeth"
+else
+   printf '%s\n' "FAIL: canary was NOT refuted (rc=${canary_rc}); the search is vacuous, so the real-contract result cannot be trusted" >&2
+   fail=1
+fi
+
+if [ "${fail}" -ne 0 ]; then
+   exit 1
+fi
+printf '%s\n' "== sdwdate-gui-tests-verify: 2 pass, 0 fail, 0 skip =="
+exit 0
