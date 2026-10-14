@@ -91,12 +91,23 @@ class ControlCharWireSafety(unittest.TestCase):
         body = _capture_rpc(
             lambda: client.set_sdwdate_status("busy", message)
         )
-        ## END-TO-END, not just "parse does not raise". The client's encoding
-        ## must survive the FULL server path -- parse_ipc_command AND
-        ## __set_sdwdate_status (incl. __octal_decode) -- and DISPLAY the
-        ## message with no kick. (Merely escaping the TAB to \011 would pass
-        ## parse yet still be kicked by __octal_decode, which rejects 0x09, so
-        ## the status would still never show -- that non-fix must NOT flip.)
+        ## The CORRECT fix is the CLIENT ceasing to emit raw control bytes
+        ## (strip or escape) so its output is wire-safe; the server's
+        ## printable-ASCII reject is to be KEPT (issue #10). So first assert the
+        ## client's OWN bytes are printable ASCII, checked INDEPENDENTLY of the
+        ## subject's check_bytes_printable -- a server-side weakening of that
+        ## reject (a wrong "fix" that also lets 0x09 through for every command)
+        ## must NOT satisfy this guard. Do NOT assert the raw TAB survives
+        ## intact: a strip/escape fix sanitizes it, and demanding the byte be
+        ## displayed would instead reward weakening the 0x09 reject.
+        self.assertTrue(
+            all(0x20 <= byte <= 0x7E for byte in body),
+            "client encoder emitted a byte outside printable ASCII",
+        )
+        ## And the client's output must survive the FULL unchanged server path
+        ## (parse_ipc_command AND __set_sdwdate_status incl. __octal_decode)
+        ## with no kick, so escaping the TAB to \011 -- which __octal_decode
+        ## rejects (0x09) -- stays xfail as well.
         _rest, _fn, parts = shared.parse_ipc_command(_frame(body))
         sc = server.SdwdateGuiClient(QLocalSocket())
         self.addCleanup(sc.deleteLater)
@@ -104,8 +115,8 @@ class ControlCharWireSafety(unittest.TestCase):
         sc.client_name_set = True
         accepted = sc._SdwdateGuiClient__set_sdwdate_status(parts[0], parts[1])
         self.assertTrue(accepted, "server rejected/kicked the client's message")
-        self.assertEqual(
-            sc.sdwdate_msg, message, "message not displayed intact"
+        self.assertIsNotNone(
+            sc.sdwdate_msg, "status not displayed after the server accepted it"
         )
 
 
