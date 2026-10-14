@@ -10,12 +10,20 @@ Each test asserts the CORRECT behavior and is marked expectedFailure, so it
 reports as an expected failure (xfail) today and, the moment the upstream bug
 is fixed, flips to an unexpected success (unittest reports unexpectedSuccess,
 which FAILS the suite) -- a loud signal to convert it into a plain assertion.
+Each guard was proven NON-vacuous: under a simulated fix it xpasses.
 
 The subject is ArrayBolt3's trixie code; fixes require ArrayBolt3's approval
-(each guard names its org-ai-assisted/sdwdate-gui issue). These guards also
-close the test-suite seams that let the bugs escape (the client-encode ->
-server-parse path, the multi-client Tor aggregation, the reconnect buffer
-reset, and the ConnectCheck y/n/q logic were not exercised end to end).
+(each guard names its org-ai-assisted/sdwdate-gui issue). These guards close
+the test-suite seams that let the bugs escape: the client-encode -> server-parse
+path (#10, #14), the multi-client Tor-status aggregation (#11), and the client
+reconnect buffer reset (#13).
+
+org-ai-assisted/sdwdate-gui#12 (ConnectCheck ignoring run_server_in_qubes) is
+NOT guarded here: the fix lives in the ConnectCheck bash script, which hardcodes
+its /run and /usr/libexec paths with no overridable base, so it cannot be driven
+in this python unit suite without a synthetic copy (forbidden by the dist-ai
+no-synthetic-copies rule) or a non-portable mount namespace. Its regression
+coverage belongs to the integration / kcov lane that runs the real scripts.
 
 All guards import and drive the REAL subject functions -- no vendored copies.
 """
@@ -25,12 +33,8 @@ All guards import and drive the REAL subject functions -- no vendored copies.
 
 import asyncio
 import os
-import shutil
-import subprocess
-import tempfile
 import unittest
 import unittest.mock as mock
-from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -98,12 +102,15 @@ class ClientNameWireSafety(unittest.TestCase):
         body = _capture_rpc(lambda: client.set_client_name("my box"))
         _rest, function_name, msg_parts = shared.parse_ipc_command(_frame(body))
         self.assertEqual(function_name, "set_client_name")
-        ## A space in the name must stay ONE argument (the server requires
-        ## exactly one); today it splits into ['my', 'box'] -> kick.
+        ## The server requires EXACTLY one argument for set_client_name; the
+        ## name must not split on a space (the fix escapes it, e.g. my\040box,
+        ## which parse keeps as a single token). Today it is ['my', 'box'] ->
+        ## two args -> kick. Asserting the arg COUNT is what flips on the fix;
+        ## the exact token depends on the chosen escape, so do not pin it.
         self.assertEqual(
-            msg_parts,
-            ["my box"],
-            "space in client name split into multiple args -> server kicks",
+            len(msg_parts),
+            1,
+            f"client name split into {len(msg_parts)} args -> server kicks",
         )
 
 
@@ -192,104 +199,6 @@ class ClientReconnectBufferReset(unittest.TestCase):
             client.GlobalData.sock_buf,
             b"",
             "sock_buf not reset on (re)connect; residual wedges next session",
-        )
-
-
-def _locate_connectcheck() -> Path:
-    """Resolve etc/qubes-rpc/sdwdate-gui.ConnectCheck from the subject layout."""
-    import sdwdate_gui
-
-    start = Path(sdwdate_gui.__file__).resolve()
-    for ancestor in start.parents:
-        candidate = ancestor / "etc" / "qubes-rpc" / "sdwdate-gui.ConnectCheck"
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(
-        "sdwdate_gui is importable but etc/qubes-rpc/sdwdate-gui.ConnectCheck "
-        "is missing from the package layout; the install is broken"
-    )
-
-
-class ConnectCheckRunServerInQubes(unittest.TestCase):
-    """Issue #12: ConnectCheck ignores run_server_in_qubes, loops on 'n'."""
-
-    @unittest.expectedFailure
-    def test_issue12_connectcheck_gives_up_when_server_not_permitted(
-        self,
-    ) -> None:
-        """Guards org-ai-assisted/sdwdate-gui#12 (ConnectCheck give-up)."""
-        # xfail: regresses until org-ai-assisted/sdwdate-gui#12 is fixed (fixes
-        # need ArrayBolt3 approval); unexpected success here means the fix
-        # landed -- convert to a real assertion.
-        script = _locate_connectcheck()
-        work = Path(tempfile.mkdtemp(prefix="connectcheck-"))
-        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
-
-        ## Isolate the three absolute paths the script references (redirect the
-        ## two /run paths into a temp root; route config-read through a PATH
-        ## stub). The y/n/q decision logic stays verbatim -- that is the code
-        ## under test.
-        src = script.read_text(encoding="ascii")
-        testroot = work / "root"
-        patched = (
-            src.replace(
-                "/run/user/${uid}/sdwdate-gui",
-                f"{testroot}/run/user/${{uid}}/sdwdate-gui",
-            )
-            .replace(
-                "/run/qubes-rpc/sdwdate-gui.Connect",
-                f"{testroot}/run/qubes-rpc/sdwdate-gui.Connect",
-            )
-            .replace(
-                "/usr/libexec/sdwdate-gui/sdwdate-gui-config-read",
-                "sdwdate-gui-config-read",
-            )
-        )
-        self.assertNotIn(
-            "/usr/libexec/sdwdate-gui/sdwdate-gui-config-read", patched
-        )
-        self.assertNotIn("/run/qubes-rpc/sdwdate-gui.Connect", patched)
-
-        script_copy = work / "sdwdate-gui.ConnectCheck"
-        script_copy.write_text(patched, encoding="ascii")
-        script_copy.chmod(0o755)
-
-        bin_dir = work / "bin"
-        bin_dir.mkdir()
-        ## Server enabled (disable=false) but NOT permitted to run on this VM
-        ## (run_server_in_qubes=false, the shipped default).
-        stub = bin_dir / "sdwdate-gui-config-read"
-        stub.write_text(
-            "#!/bin/bash\n"
-            'case "$1" in\n'
-            '  disable) printf "%s\\n" "false" ;;\n'
-            '  run_server_in_qubes) printf "%s\\n" "false" ;;\n'
-            '  *) printf "%s\\n" "false" ;;\n'
-            "esac\n",
-            encoding="ascii",
-        )
-        stub.chmod(0o755)
-
-        env = dict(os.environ)
-        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-
-        result = subprocess.run(
-            ["/bin/bash", str(script_copy)],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-        ## The server will never come up on this VM, so ConnectCheck must tell
-        ## the caller to give up ('q'); today it ignores run_server_in_qubes
-        ## and returns 'n' (wait forever).
-        self.assertEqual(
-            result.stdout.strip(),
-            "q",
-            f"ConnectCheck returned {result.stdout.strip()!r}, not 'q'; "
-            "run_server_in_qubes=false ignored (stderr: "
-            f"{result.stderr.strip()!r})",
         )
 
 
