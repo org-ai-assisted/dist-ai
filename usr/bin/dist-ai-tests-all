@@ -225,6 +225,7 @@ integration_suites=(
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
    sdwdate-gui-tests-mutation
+   sdwdate-gui-tests-verify
    secure-terminal-tests-apparmor
    secure-terminal-tests-mutation
    tb-updater-tests-sandbox-resume
