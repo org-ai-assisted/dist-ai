@@ -4,32 +4,27 @@
 ## See the file COPYING for copying conditions.
 
 """
-Regression tests for the sdwdate_gui_server crash-hardening.
+Regression tests for sdwdate_gui_server's make-a-silent-death-diagnosable
+behavior.
 
-The gateway server was observed terminating with no logged cause. The reachable
-silent-exit path was the tray "Exit" action wired directly to sys.exit: a
-QAction.triggered passes a bool, so sys.exit(checked) raised SystemExit inside
-the Qt event loop and PyQt turned it into an exit with no log line, easy to
-trigger by accident via the "&Exit" mnemonic. A real unhandled exception in a
-slot likewise aborted silently (stderr uncaptured, cores disabled).
-
-Guards here:
-  - exit_on_user_request logs the intent and quits the event loop cleanly, so an
-    intentional or accidental Exit is distinguishable in the journal from a crash.
-  - log_unhandled_exception LOGS an unhandled exception (making any abort
-    diagnosable) and defers KeyboardInterrupt to the default hook.
+The gateway server was observed terminating with no logged cause. The server
+now logs the reason on every intentional exit path, so a shutdown is
+distinguishable in the journal from a crash:
+  - exit_on_user_request (the tray "Exit" action) logs the intent, then exits 0.
+  - signal_handler logs the received signal number, then exits 128 + signal.
 """
 
 # pylint: disable=invalid-name,protected-access,no-name-in-module
 # pylint: disable=wrong-import-position
 
 import os
+import signal
 import unittest
 import unittest.mock as mock
 
-## Offscreen so importing the server (which pulls in PyQt5 widgets) never needs a
-## display. These tests mock the tray self and patch QApplication.quit, so no live
-## QApplication instance is constructed -- unlike the sibling GUI tests, which do.
+## Offscreen so importing the server (which pulls in PyQt5 widgets) never needs
+## a display. These tests mock the tray self, so no live QApplication instance
+## is constructed.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
@@ -41,38 +36,31 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 
 
 class TestExitOnUserRequest(unittest.TestCase):
-    """The tray Exit must log and quit cleanly, not silently raise SystemExit."""
+    """The tray Exit logs its intent and exits with code 0."""
 
-    def test_logs_and_quits_cleanly(self) -> None:
-        with mock.patch.object(server.QApplication, 'quit') as quit_app:
-            with self.assertLogs(level='INFO') as caught:
-                ## Invoked as a slot: triggered passes a bool. Call unbound with
-                ## a dummy self so no full tray construction is needed.
+    def test_logs_and_exits_zero(self) -> None:
+        ## Invoked as a slot: triggered passes a bool. Call unbound with a dummy
+        ## self so no full tray construction is needed.
+        with self.assertLogs(level='INFO') as caught:
+            with self.assertRaises(SystemExit) as raised:
                 server.SdwdateTrayIcon.exit_on_user_request(mock.Mock(), True)
-        quit_app.assert_called_once()
+        self.assertEqual(raised.exception.code, 0)
         self.assertTrue(
-            any('Exit requested' in line for line in caught.output)
+            any('exiting' in line.lower() for line in caught.output)
         )
 
 
-class TestLogUnhandledException(unittest.TestCase):
-    """log_unhandled_exception logs, and defers KeyboardInterrupt."""
+class TestSignalHandler(unittest.TestCase):
+    """signal_handler logs the signal and exits 128 + signal."""
 
-    def test_logs_critical(self) -> None:
-        with self.assertLogs(level='CRITICAL') as caught:
-            server.log_unhandled_exception(
-                ValueError, ValueError('boom'), None
-            )
+    def test_logs_and_exits_with_offset_code(self) -> None:
+        with self.assertLogs(level='INFO') as caught:
+            with self.assertRaises(SystemExit) as raised:
+                server.signal_handler(signal.SIGTERM, None)
+        self.assertEqual(raised.exception.code, 128 + int(signal.SIGTERM))
         self.assertTrue(
-            any('Unhandled exception' in line for line in caught.output)
+            any('Received signal' in line for line in caught.output)
         )
-
-    def test_keyboardinterrupt_deferred_to_default_hook(self) -> None:
-        with mock.patch.object(server.sys, '__excepthook__') as default_hook:
-            server.log_unhandled_exception(
-                KeyboardInterrupt, KeyboardInterrupt(), None
-            )
-        default_hook.assert_called_once()
 
 
 if __name__ == '__main__':

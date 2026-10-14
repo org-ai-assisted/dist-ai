@@ -62,6 +62,12 @@ if ! python3 -c 'import sdwdate_gui' 2>/dev/null; then
   exit 1
 fi
 
+## Config carrying the justified exclude_lines for the subject's few
+## unreachable defensive / debug-entrypoint lines (the subject is tested as-is,
+## never edited to add in-source pragmas). Passed explicitly so the result does
+## not depend on the invoker's working directory.
+coverage_rcfile="${tests_dir}/coveragerc"
+
 python3 -m coverage erase
 
 ## --source=sdwdate_gui scopes the gate to the package; -m unittest discover
@@ -69,9 +75,11 @@ python3 -m coverage erase
 ## sides of every conditional to be exercised, not just every line -- a
 ## partial branch (a line run but one of its outcomes never taken) is a real
 ## test gap that statement coverage hides.
-python3 -m coverage run --branch --source=sdwdate_gui \
+python3 -m coverage run --rcfile="${coverage_rcfile}" --branch \
+  --source=sdwdate_gui \
   -m unittest discover --start-directory "${tests_dir}" --pattern 'test_*.py'
 
 ## --fail-under=100 is the gate: a drop below 100% (line OR branch) exits
 ## non-zero. The last command, so errexit propagates its verdict.
-python3 -m coverage report --show-missing --fail-under=100
+python3 -m coverage report --rcfile="${coverage_rcfile}" \
+  --show-missing --fail-under=100

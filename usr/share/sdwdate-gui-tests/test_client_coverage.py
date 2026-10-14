@@ -49,14 +49,19 @@ class ClientResetMixin(unittest.IsolatedAsyncioTestCase):
             for name in (
                 'sock_write', 'sock_read', 'sock_buf', 'do_reconnect',
                 'last_tor_status', 'tor_control_panel_installed',
-                'watch_manager', 'notifier', 'reconnect_delay',
-                'server_pid_path',
+                'watch_manager', 'notifier',
+                'server_pid_path', 'qubes_gateway_server_disabled_path',
             )
         }
         client.GlobalData.sock_buf = b''
         client.GlobalData.do_reconnect = True
         client.GlobalData.last_tor_status = ''
-        client.GlobalData.reconnect_delay = client.INITIAL_RECONNECT_DELAY
+        ## Default the Qubes "server disabled" sentinel to absent so main_loop
+        ## tests do not accidentally hit the give-up branch; specific tests
+        ## override it.
+        disabled_path = mock.MagicMock()
+        disabled_path.is_file.return_value = False
+        client.GlobalData.qubes_gateway_server_disabled_path = disabled_path
         client.GlobalData.awaitable_tasks.clear()
         client.GlobalData.background_tasks.clear()
 
@@ -341,15 +346,14 @@ class TestStatusChanged(ClientResetMixin):
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_json_unexpected_exception(self) -> None:
-        ## json.loads is now in sdwdate_gui_shared.parse_sdwdate_status_json;
-        ## patch the stdlib json module (shared looks up loads on it at call
-        ## time) and expect the client's consolidated WARNING, not an ERROR.
+        ## sdwdate_status_changed parses JSON inline; a non-JSONDecodeError from
+        ## json.loads hits its 'except Exception' arm and logs an ERROR.
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
                            mock.mock_open(read_data='{"a": 1}')), \
                 mock.patch.object(json, 'loads',
                                   side_effect=RuntimeError('x')), \
-                self.assertLogs(level='WARNING'):
+                self.assertLogs(level='ERROR'):
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_bad_json(self) -> None:
@@ -717,56 +721,44 @@ class TestMainLoopAndMain(ClientResetMixin):
             with self.assertRaises(SystemExit):
                 await client.main_loop()
 
-    async def test_main_loop_qubes_reconnect_backs_off(self) -> None:
-        """
-        On Qubes a dropped session retries via reconnect_backoff (no give-up
-        flag exists any more). do_setup succeeds once, the session drops, the
-        loop reaches the reconnect path and backs off; a second do_setup raises
-        to end the test.
-        """
+    async def test_main_loop_qubes_disabled_path_breaks(self) -> None:
+        """The Qubes 'gateway server disabled' sentinel ends the loop cleanly
+        (break, no sys.exit)."""
+        disabled_path = mock.MagicMock()
+        disabled_path.is_file.return_value = True
+        client.GlobalData.qubes_gateway_server_disabled_path = disabled_path
+        with mock.patch.object(client, 'do_setup',
+                               new=mock.AsyncMock()) as setup, \
+                self.assertLogs(level='INFO'):
+            await client.main_loop()
+        ## Broke out before ever attempting a connection.
+        setup.assert_not_awaited()
+
+    async def test_main_loop_do_setup_false_retries(self) -> None:
+        """do_setup returning False sleeps one second and retries; a second
+        attempt raises to end the test (covers the busy-spin guard)."""
         setup_calls: dict[str, int] = {'n': 0}
 
         async def flaky_do_setup() -> bool:
             setup_calls['n'] += 1
             if setup_calls['n'] >= 2:
                 raise _StopLoop
-            return True
-
-        async def disconnect_handle() -> bool:
             return False
 
-        pid_path = mock.MagicMock()
-        pid_path.is_file.return_value = False
-        client.GlobalData.server_pid_path = pid_path
-        client.GlobalData.do_reconnect = True
-
-        client.GlobalData.reconnect_delay = 8.0
         with mock.patch.object(client, 'do_setup', flaky_do_setup), \
-                mock.patch.object(client, 'handle_incoming_data',
-                                  new=disconnect_handle), \
-                mock.patch.object(client, 'running_in_qubes_os',
-                                  return_value=True), \
-                mock.patch.object(client, '_now',
-                                  side_effect=[0.0, 1.0]), \
-                mock.patch.object(client, 'reconnect_backoff',
-                                  new=mock.AsyncMock()) as backoff:
+                mock.patch.object(client.asyncio, 'sleep',
+                                  new=mock.AsyncMock()) as slp:
             with self.assertRaises(_StopLoop):
                 await client.main_loop()
-        backoff.assert_awaited()
-        ## Sub-threshold session (1.0s < MIN_ESTABLISHED_SESSION_SECS): the
-        ## backoff must NOT be reset, or a down gateway would be polled at the
-        ## initial rate forever.
-        self.assertEqual(
-            client.GlobalData.reconnect_delay, 8.0,
-            'a sub-second session wrongly reset the backoff (dom0-flood '
-            'regression)',
-        )
+        slp.assert_awaited()
+        self.assertEqual(setup_calls['n'], 2)
 
-    async def test_main_loop_resets_backoff_after_established_session(
-        self,
-    ) -> None:
-        """A session that stayed up past the threshold resets the backoff."""
-        client.GlobalData.reconnect_delay = 8.0
+    async def test_main_loop_qubes_reconnect_retries(self) -> None:
+        """
+        On Qubes, with reconnect allowed and no server_pid file, a dropped
+        session sleeps and retries rather than exiting; a second do_setup
+        raises to end the test.
+        """
         setup_calls: dict[str, int] = {'n': 0}
 
         async def flaky_do_setup() -> bool:
@@ -788,16 +780,13 @@ class TestMainLoopAndMain(ClientResetMixin):
                                   new=disconnect_handle), \
                 mock.patch.object(client, 'running_in_qubes_os',
                                   return_value=True), \
-                mock.patch.object(client, '_now',
-                                  side_effect=[0.0, 100.0]), \
-                mock.patch.object(client, 'reconnect_backoff',
-                                  new=mock.AsyncMock()):
+                mock.patch.object(client.asyncio, 'sleep',
+                                  new=mock.AsyncMock()) as slp:
             with self.assertRaises(_StopLoop):
                 await client.main_loop()
-        self.assertEqual(
-            client.GlobalData.reconnect_delay, client.INITIAL_RECONNECT_DELAY,
-            'a long-lived session should reset the reconnect backoff',
-        )
+        ## Reached the reconnect path (slept) and looped back for a 2nd setup.
+        slp.assert_awaited()
+        self.assertEqual(setup_calls['n'], 2)
 
     async def test_main_loop_stays_connected_then_drops(self) -> None:
         """A True handle result loops the inner loop (stays connected); the
@@ -843,11 +832,40 @@ class TestMainLoopAndMain(ClientResetMixin):
         """main (not root, not a template VM) runs main_loop then exits 0."""
         with mock.patch.object(client.os, 'geteuid', return_value=1000), \
                 mock.patch.object(client.Path, 'is_file', return_value=False), \
+                mock.patch.object(client, 'parse_config_files'), \
+                mock.patch.dict(client.ConfigData.conf_dict,
+                                {'disable': False}, clear=False), \
                 mock.patch.object(client, 'main_loop',
                                   new=mock.AsyncMock()) as loop:
             with self.assertRaises(SystemExit):
                 await client.main()
         loop.assert_awaited_once()
+
+    async def test_main_config_parse_error_exits_one(self) -> None:
+        """A config parse failure logs an ERROR and exits 1."""
+        with mock.patch.object(client.os, 'geteuid', return_value=1000), \
+                mock.patch.object(client.Path, 'is_file', return_value=False), \
+                mock.patch.object(client, 'parse_config_files',
+                                  side_effect=RuntimeError('bad')), \
+                self.assertLogs(level='ERROR'):
+            with self.assertRaises(SystemExit) as raised:
+                await client.main()
+        self.assertEqual(raised.exception.code, 1)
+
+    async def test_main_disabled_exits_zero(self) -> None:
+        """'disable'=True logs an INFO and exits 0 before the loop runs."""
+        with mock.patch.object(client.os, 'geteuid', return_value=1000), \
+                mock.patch.object(client.Path, 'is_file', return_value=False), \
+                mock.patch.object(client, 'parse_config_files'), \
+                mock.patch.dict(client.ConfigData.conf_dict,
+                                {'disable': True}, clear=False), \
+                mock.patch.object(client, 'main_loop',
+                                  new=mock.AsyncMock()) as loop, \
+                self.assertLogs(level='INFO'):
+            with self.assertRaises(SystemExit) as raised:
+                await client.main()
+        self.assertEqual(raised.exception.code, 0)
+        loop.assert_not_awaited()
 
 
 if __name__ == '__main__':

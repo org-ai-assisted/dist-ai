@@ -135,6 +135,20 @@ class TestQubesHeader(ClientTestBase):
         self.client._SdwdateGuiClient__sock_buf = b'svc disp9\x00tail'
         self.assertTrue(self._parse())
         self.assertEqual(self.client.client_name, 'disp9')
+        ## The buffer must resume exactly one byte past the NUL (not two): the
+        ## first post-header command byte is never dropped.
+        self.assertEqual(
+            self.client._SdwdateGuiClient__sock_buf, b'tail'
+        )
+
+    def test_header_three_fields_keeps_source_vm(self) -> None:
+        """A 3-field qrexec header still names the client from the 2nd field;
+        the count guard is '< 2', not '!= 2' (which would drop the source VM)."""
+        self.set_qubes(True)
+        self.client._SdwdateGuiClient__sock_buf = b'svc src extra\x00'
+        self.assertTrue(self._parse())
+        self.assertTrue(self.client.client_name_set)
+        self.assertEqual(self.client.client_name, 'src')
 
 
 class TestSetClientName(ClientTestBase):
@@ -208,6 +222,13 @@ class TestSetSdwdateStatus(ClientTestBase):
             ## \000 decodes to a control char -> __octal_decode raises.
             self.assertFalse(self._set('success', 'x\\000y'))
         kc.assert_called_once()
+
+    def test_tilde_octal_is_accepted(self) -> None:
+        """0x7E (~, \\176) is the printable upper bound and must decode, not be
+        rejected -- pins the octal guard at '> 0x7E', not '>= 0x7E'."""
+        self.make_ready()
+        self.assertTrue(self._set('success', 'a\\176b'))
+        self.assertEqual(self.client.sdwdate_msg, 'a~b')
 
 
 class TestSetTorStatus(ClientTestBase):
@@ -938,6 +959,48 @@ class TestMain(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 server.main()
         qapp.return_value.exec_.assert_called_once()
+
+    def test_disable_exits(self) -> None:
+        """'disable'=True logs and exits 0 before building the tray."""
+        with mock.patch.object(server.os, 'geteuid', return_value=1000), \
+                mock.patch.object(server.Path, 'is_file', return_value=False), \
+                mock.patch.object(server, 'QApplication'), \
+                mock.patch.object(server.signal, 'signal'), \
+                mock.patch.object(server, 'parse_config_files'), \
+                mock.patch.object(server, 'running_in_qubes_os',
+                                  return_value=False), \
+                mock.patch.dict(server.ConfigData.conf_dict,
+                                {'disable': True,
+                                 'run_server_in_qubes': False},
+                                clear=True), \
+                self.assertLogs(level='INFO'):
+            with self.assertRaises(SystemExit) as raised:
+                server.main()
+        self.assertEqual(raised.exception.code, 0)
+
+    def test_keepalive_timer_lambda_is_callable(self) -> None:
+        """The keepalive QTimer's timeout slot is a no-op lambda; fire it so its
+        body is exercised (it only keeps the Python signal handlers serviced)."""
+        fake_tray = mock.MagicMock()
+        with mock.patch.object(server.os, 'geteuid', return_value=1000), \
+                mock.patch.object(server.Path, 'is_file', return_value=False), \
+                mock.patch.object(server, 'QApplication'), \
+                mock.patch.object(server.signal, 'signal'), \
+                mock.patch.object(server, 'QTimer') as qtimer, \
+                mock.patch.object(server, 'parse_config_files'), \
+                mock.patch.object(server, 'running_in_qubes_os',
+                                  return_value=False), \
+                mock.patch.object(server, 'SdwdateTrayIcon',
+                                  return_value=fake_tray), \
+                mock.patch.dict(server.ConfigData.conf_dict,
+                                {'disable': False,
+                                 'run_server_in_qubes': True},
+                                clear=True):
+            with self.assertRaises(SystemExit):
+                server.main()
+        ## Retrieve the lambda passed to timer.timeout.connect and invoke it.
+        slot = qtimer.return_value.timeout.connect.call_args[0][0]
+        self.assertIsNone(slot())
 
 
 if __name__ == '__main__':

@@ -1,0 +1,21 @@
+## Coverage config for the sdwdate-gui Python coverage gate.
+##
+## The subject is the upstream sdwdate-gui package, tested AS-IS: we never edit
+## its source to add coverage pragmas. The patterns below each target ONE
+## genuinely-unreachable line so the gate still enforces 100% on everything that
+## IS reachable. This is NOT a blanket exclusion -- every pattern is specific
+## and justified here:
+##   - "if __name__ ...": a module's debug entrypoint (sdwdate_gui_shared.py),
+##     run only when executed as a script, never under the test suite.
+##   - the status_str/message_str re-check in client.sdwdate_status_changed:
+##     unreachable, because the preceding per-key loop already validated both
+##     "icon" and "message" as str before this guard runs.
+
+[run]
+branch = True
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    if not isinstance\(status_str, str\) or not isinstance\(message_str, str\):

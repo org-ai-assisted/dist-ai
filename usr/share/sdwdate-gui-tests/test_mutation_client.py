@@ -61,32 +61,6 @@ class TestClientConstants(unittest.TestCase):
     def test_max_status_msg_len(self) -> None:
         self.assertEqual(client.MAX_STATUS_MSG_LEN, 1000)
 
-    def test_min_established_session_secs(self) -> None:
-        self.assertEqual(client.MIN_ESTABLISHED_SESSION_SECS, 10.0)
-
-
-class TestReconnectCapValue(unittest.IsolatedAsyncioTestCase):
-    """reconnect_backoff caps the delay at EXACTLY 60.0s (not 59/61)."""
-
-    def setUp(self) -> None:
-        self.addCleanup(
-            setattr, client.GlobalData, "reconnect_delay",
-            client.INITIAL_RECONNECT_DELAY,
-        )
-
-    async def test_cap_is_sixty_seconds(self) -> None:
-        ## 40*2 = 80, clamped to the cap. Assert the LITERAL cap so a mutation
-        ## of MAX_RECONNECT_DELAY (60 -> 59/61) is caught.
-        client.GlobalData.reconnect_delay = 40.0
-        real_sleep = asyncio.sleep
-
-        async def fake_sleep(_d: float, *a: object, **k: object) -> None:
-            return await real_sleep(0, *a, **k)
-
-        with mock.patch.object(asyncio, "sleep", fake_sleep):
-            await client.reconnect_backoff()
-        self.assertEqual(client.GlobalData.reconnect_delay, 60.0)
-
 
 class TestInotifyEventRouting(unittest.TestCase):
     """process_IN_DELETE_SELF / MOVE_SELF route on the status-path match."""
@@ -271,71 +245,6 @@ class TestInotifyWatchMask(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mask, expected)
 
 
-class TestMainLoopBackoffReset(unittest.IsolatedAsyncioTestCase):
-    """The backoff resets only after a session that stayed up past MIN."""
-
-    def setUp(self) -> None:
-        client.GlobalData.awaitable_tasks.clear()
-        self._real_now = client._now
-        self._real_reconnect = client.GlobalData.do_reconnect
-        self.addCleanup(setattr, client, "_now", self._real_now)
-        self.addCleanup(client.GlobalData.awaitable_tasks.clear)
-        self.addCleanup(
-            setattr, client.GlobalData, "reconnect_delay",
-            client.INITIAL_RECONNECT_DELAY,
-        )
-        self.addCleanup(
-            setattr, client.GlobalData, "do_reconnect", self._real_reconnect
-        )
-
-    async def _drive_once(self, session_secs: float) -> float:
-        """Run one main_loop iteration with a session of the given length;
-        return the resulting reconnect_delay (pre-cleanup)."""
-        client.GlobalData.reconnect_delay = 8.0
-        client.GlobalData.do_reconnect = True
-        calls = {"n": 0}
-
-        async def fake_do_setup() -> bool:
-            calls["n"] += 1
-            if calls["n"] >= 2:
-                raise _StopLoop
-            return True
-
-        async def fake_handle() -> bool:
-            return False  ## not connected -> inner loop breaks at once
-
-        now_iter = iter([100.0, 100.0 + session_secs])
-        real_sleep = asyncio.sleep
-
-        async def fake_sleep(_d: float, *a: object, **k: object) -> None:
-            return await real_sleep(0, *a, **k)
-
-        ## No server_pid marker -> the third exit clause stays False, so the
-        ## loop reaches the backoff-reset check instead of exiting.
-        no_pid = types.SimpleNamespace(is_file=lambda: False)
-        with mock.patch.object(client, "do_setup", fake_do_setup), \
-                mock.patch.object(client, "handle_incoming_data", fake_handle), \
-                mock.patch.object(client, "_now", lambda: next(now_iter)), \
-                mock.patch.object(client, "running_in_qubes_os", lambda: True), \
-                mock.patch.object(client.GlobalData, "server_pid_path", no_pid), \
-                mock.patch.object(asyncio, "sleep", fake_sleep):
-            with self.assertRaises(_StopLoop):
-                await client.main_loop()
-        return client.GlobalData.reconnect_delay
-
-    async def test_short_session_does_not_reset(self) -> None:
-        ## A 2s session (< MIN 10s) must NOT reset: delay keeps growing
-        ## (8 -> 16). The `- -> +` mutant computes a huge sum that always
-        ## clears MIN, wrongly resetting to INITIAL (-> 2.0 after one backoff).
-        delay = await self._drive_once(2.0)
-        self.assertEqual(delay, 16.0)
-
-    async def test_long_session_resets(self) -> None:
-        ## A 20s session (>= MIN) resets to INITIAL, then one backoff -> 2.0.
-        delay = await self._drive_once(20.0)
-        self.assertEqual(delay, 2.0)
-
-
 class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
     """main_loop's exit-vs-reconnect decision is an OR over three independent
     clauses: `not qubes`, `not do_reconnect`, `server_pid present`. Each must
@@ -350,10 +259,6 @@ class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
         self._real_reconnect = client.GlobalData.do_reconnect
         self.addCleanup(
             setattr, client.GlobalData, "do_reconnect", self._real_reconnect
-        )
-        self.addCleanup(
-            setattr, client.GlobalData, "reconnect_delay",
-            client.INITIAL_RECONNECT_DELAY,
         )
 
     async def _drive(self, in_qubes: bool, do_reconnect: bool,
@@ -379,12 +284,19 @@ class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
             return await real_sleep(0, *a, **k)
 
         pid = types.SimpleNamespace(is_file=lambda: pid_present)
+        ## The Qubes "server disabled" sentinel must be absent, else main_loop
+        ## breaks before reaching the exit-vs-reconnect decision under test.
+        not_disabled = types.SimpleNamespace(is_file=lambda: False)
         with mock.patch.object(client, "do_setup", fake_do_setup), \
                 mock.patch.object(client, "handle_incoming_data", fake_handle), \
                 mock.patch.object(
                     client, "running_in_qubes_os", lambda: in_qubes
                 ), \
                 mock.patch.object(client.GlobalData, "server_pid_path", pid), \
+                mock.patch.object(
+                    client.GlobalData, "qubes_gateway_server_disabled_path",
+                    not_disabled,
+                ), \
                 mock.patch.object(asyncio, "sleep", fake_sleep):
             try:
                 await client.main_loop()
