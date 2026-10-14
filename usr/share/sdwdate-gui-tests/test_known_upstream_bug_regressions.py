@@ -18,12 +18,15 @@ the test-suite seams that let the bugs escape: the client-encode -> server-parse
 path (#10, #14), the multi-client Tor-status aggregation (#11), and the client
 reconnect buffer reset (#13).
 
-org-ai-assisted/sdwdate-gui#12 (ConnectCheck ignoring run_server_in_qubes) is
-NOT guarded here: the fix lives in the ConnectCheck bash script, which hardcodes
-its /run and /usr/libexec paths with no overridable base, so it cannot be driven
-in this python unit suite without a synthetic copy (forbidden by the dist-ai
-no-synthetic-copies rule) or a non-portable mount namespace. Its regression
-coverage belongs to the integration / kcov lane that runs the real scripts.
+org-ai-assisted/sdwdate-gui#12 (ConnectCheck ignoring run_server_in_qubes) has
+NO automated regression guard, here or anywhere in this tree. The fix lives in
+the ConnectCheck bash script, which hardcodes its /run and config-read paths
+with no overridable base and exposes no source-able function, so it cannot be
+driven without a synthetic copy (forbidden by the dist-ai no-synthetic-copies
+rule) or a non-portable mount namespace. Nothing else runs that script either
+(no integration responder, not covered by kcov). It is tracked by
+org-ai-assisted/sdwdate-gui#12 only; the sole compliant in-suite option would be
+an unshare-based real-script harness (not built).
 
 All guards import and drive the REAL subject functions -- no vendored copies.
 """
@@ -33,11 +36,13 @@ All guards import and drive the REAL subject functions -- no vendored copies.
 
 import asyncio
 import os
+import re
 import unittest
 import unittest.mock as mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtNetwork import QLocalSocket
 from PyQt5.QtWidgets import QApplication
 
 try:
@@ -82,12 +87,26 @@ class ControlCharWireSafety(unittest.TestCase):
         # xfail: regresses until org-ai-assisted/sdwdate-gui#10 is fixed (fixes
         # need ArrayBolt3 approval); unexpected success here means the fix
         # landed -- convert to a real assertion.
+        message = "syncing\ttime"
         body = _capture_rpc(
-            lambda: client.set_sdwdate_status("busy", "syncing\ttime")
+            lambda: client.set_sdwdate_status("busy", message)
         )
-        ## The client's OWN encoder output must be accepted by the server
-        ## parser. Today the raw TAB trips check_bytes_printable -> ValueError.
-        shared.parse_ipc_command(_frame(body))
+        ## END-TO-END, not just "parse does not raise". The client's encoding
+        ## must survive the FULL server path -- parse_ipc_command AND
+        ## __set_sdwdate_status (incl. __octal_decode) -- and DISPLAY the
+        ## message with no kick. (Merely escaping the TAB to \011 would pass
+        ## parse yet still be kicked by __octal_decode, which rejects 0x09, so
+        ## the status would still never show -- that non-fix must NOT flip.)
+        _rest, _fn, parts = shared.parse_ipc_command(_frame(body))
+        sc = server.SdwdateGuiClient(QLocalSocket())
+        self.addCleanup(sc.deleteLater)
+        sc.client_name = "host"
+        sc.client_name_set = True
+        accepted = sc._SdwdateGuiClient__set_sdwdate_status(parts[0], parts[1])
+        self.assertTrue(accepted, "server rejected/kicked the client's message")
+        self.assertEqual(
+            sc.sdwdate_msg, message, "message not displayed intact"
+        )
 
 
 class ClientNameWireSafety(unittest.TestCase):
@@ -102,16 +121,19 @@ class ClientNameWireSafety(unittest.TestCase):
         body = _capture_rpc(lambda: client.set_client_name("my box"))
         _rest, function_name, msg_parts = shared.parse_ipc_command(_frame(body))
         self.assertEqual(function_name, "set_client_name")
-        ## The server requires EXACTLY one argument for set_client_name; the
-        ## name must not split on a space (the fix escapes it, e.g. my\040box,
-        ## which parse keeps as a single token). Today it is ['my', 'box'] ->
-        ## two args -> kick. Asserting the arg COUNT is what flips on the fix;
-        ## the exact token depends on the chosen escape, so do not pin it.
-        self.assertEqual(
-            len(msg_parts),
-            1,
-            f"client name split into {len(msg_parts)} args -> server kicks",
+        ## The server requires EXACTLY one argument for set_client_name AND the
+        ## whole name must survive: the fix escapes the space (e.g. my\040box,
+        ## one token that decodes back to "my box"). Today it is ['my', 'box']
+        ## -> two args -> kick. Requiring the decoded token to equal the full
+        ## name also rejects a truncating "fix" that sends only "my" (len 1 but
+        ## the name is lost) -- that must NOT flip this guard.
+        self.assertEqual(len(msg_parts), 1, "name split into multiple args")
+        decoded = re.sub(
+            r"\\(\d{3})",
+            lambda m: chr(int(m.group(1), 8)),
+            msg_parts[0],
         )
+        self.assertEqual(decoded, "my box", "client name truncated or mangled")
 
 
 class TorStatusAggregation(unittest.TestCase):
@@ -154,12 +176,15 @@ class TorStatusAggregation(unittest.TestCase):
         ## Drive the REAL method verbatim.
         server.SdwdateTrayIcon.set_tray_icon(tray)
         self.assertTrue(set_icons, "set_tray_icon chose no icon")
-        ## A STOPPED Tor on one client must show the Tor error icon, not be
-        ## hidden because another client is DISABLED_RUNNING (value 3).
+        ## Must select the STOPPED client's Tor icon SPECIFICALLY (index 1),
+        ## not merely "a Tor icon": a non-fix that widens the membership test to
+        ## include DISABLED_RUNNING (value 3) while keeping the numeric-max
+        ## aggregation picks tor_icon_list[3] and STILL hides the STOPPED
+        ## outage -- that must NOT flip this guard.
         self.assertEqual(
-            set_icons[-1][0],
-            "tor",
-            "STOPPED Tor outage hidden by a DISABLED_RUNNING client",
+            set_icons[-1],
+            ("tor", tor_status.STOPPED.value),
+            "STOPPED Tor outage not shown (hidden behind DISABLED_RUNNING)",
         )
 
 
