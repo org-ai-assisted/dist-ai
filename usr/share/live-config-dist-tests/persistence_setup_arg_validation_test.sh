@@ -98,7 +98,7 @@ check_passes_validation() {
 
 ## --- mandatory --encrypt ---------------------------------------------------
 check_rejects "missing --encrypt is rejected" "--encrypt is mandatory"
-check_rejects "non-boolean --encrypt is rejected" "encrypt" --encrypt maybe
+check_rejects "non-boolean --encrypt is rejected" "Option 'encrypt' cannot be 'maybe'" --encrypt maybe
 
 ## --- key-type rules (encrypt true) -----------------------------------------
 check_rejects "--encrypt true without --key-type" "--key-type is mandatory" --encrypt true
