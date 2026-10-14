@@ -111,6 +111,28 @@ else
    printf '%s\n' "PASS: canary: refuses '${medium_passphrase}' that pwscore accepts at ${medium_score}/100"
 fi
 
+## --- CANARY: usercheck via the optional username argument ------------------
+## A passphrase that scores 100 with NO username must be REFUSED when the
+## account name it contains is passed, proving the username reaches pwscore's
+## usercheck. Without the argument pwscore skips usercheck, so a helper that
+## dropped the argument would accept it and this case would fail.
+usercheck_name='alice'
+usercheck_pass='alice-xK9#mQ2sVL7qrt'
+usercheck_score=0
+usercheck_rc=0
+usercheck_score="$(printf '%s' "${usercheck_pass}" | pwscore 2>/dev/null)" || usercheck_rc=$?
+if [ "${usercheck_rc}" -ne 0 ] || [ ! "${usercheck_score}" = "100" ]; then
+   printf '%s\n' "FATAL: usercheck fixture invalid: pwscore must score '${usercheck_pass}' 100 WITHOUT a username (rc=${usercheck_rc} score='${usercheck_score}')" >&2
+   exit 1
+fi
+if printf '%s' "${usercheck_pass}" | password_strength_check "${usercheck_name}"; then
+   fail_count=$(( fail_count + 1 ))
+   printf '%s\n' "FAIL: usercheck: accepted a passphrase containing the username '${usercheck_name}'"
+else
+   pass_count=$(( pass_count + 1 ))
+   printf '%s\n' "PASS: usercheck: refuses a passphrase containing the username '${usercheck_name}'"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== password_strength_check: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
