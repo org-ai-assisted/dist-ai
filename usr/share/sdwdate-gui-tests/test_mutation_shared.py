@@ -38,9 +38,6 @@ class TestWireConstants(unittest.TestCase):
     def test_max_msg_size_is_4096(self) -> None:
         self.assertEqual(shared.MAX_MSG_SIZE, 4096)
 
-    def test_qrexec_header_max_size_is_4096(self) -> None:
-        self.assertEqual(shared.QREXEC_HEADER_MAX_SIZE, 4096)
-
     def test_config_defaults_are_false(self) -> None:
         """The shipped defaults disable neither the GUI nor the Qubes server."""
         self.assertIs(shared.ConfigData.defaults_dict["disable"], False)
@@ -111,83 +108,6 @@ class TestParseIpcCommandBoundary(unittest.TestCase):
         self.assertEqual(rest, buf)
         self.assertIsNone(name)
         self.assertIsNone(parts)
-
-
-class TestParseQrexecHeader(unittest.TestCase):
-    """parse_qrexec_header NUL scan, overflow boundary, and field split."""
-
-    def test_buffer_advanced_past_nul(self) -> None:
-        """The returned buffer starts exactly one byte past the NUL."""
-        buf, result, name = shared.parse_qrexec_header(b"svc src\x00REST")
-        self.assertEqual(result, shared.QrexecHeaderResult.OK)
-        self.assertEqual(name, "src")
-        self.assertEqual(buf, b"REST")
-
-    def test_stops_at_first_nul(self) -> None:
-        """Scanning stops at the FIRST NUL; a later NUL is left in the buffer."""
-        buf, result, name = shared.parse_qrexec_header(b"svc src\x00extra\x00")
-        self.assertEqual(result, shared.QrexecHeaderResult.OK)
-        self.assertEqual(name, "src")
-        self.assertEqual(buf, b"extra\x00")
-
-    def test_no_nul_within_cap_needs_more(self) -> None:
-        """A short, unterminated header asks for more (not OVERFLOW)."""
-        buf, result, name = shared.parse_qrexec_header(b"abc")
-        self.assertEqual(result, shared.QrexecHeaderResult.NEED_MORE)
-        self.assertIsNone(name)
-        self.assertEqual(buf, b"abc")
-
-    def test_exactly_cap_no_nul_needs_more(self) -> None:
-        """len == cap with no NUL is still NEED_MORE (pins `> cap`)."""
-        buf, result, _ = shared.parse_qrexec_header(
-            b"a" * shared.QREXEC_HEADER_MAX_SIZE
-        )
-        self.assertEqual(result, shared.QrexecHeaderResult.NEED_MORE)
-
-    def test_over_cap_no_nul_overflow(self) -> None:
-        """len == cap+1 with no NUL is OVERFLOW."""
-        _, result, _ = shared.parse_qrexec_header(
-            b"a" * (shared.QREXEC_HEADER_MAX_SIZE + 1)
-        )
-        self.assertEqual(result, shared.QrexecHeaderResult.OVERFLOW)
-
-    def test_three_field_header_keeps_source_vm(self) -> None:
-        """A 3-field header still returns the second field as the name.
-
-        Pins `len(parts) < 2` against `!= 2`: a 3-field header has len 3, which
-        `!= 2` would wrongly treat as nameless.
-        """
-        _, result, name = shared.parse_qrexec_header(b"svc src extra\x00")
-        self.assertEqual(result, shared.QrexecHeaderResult.OK)
-        self.assertEqual(name, "src")
-
-    def test_invalid_bytes_in_header(self) -> None:
-        """A non-printable header byte is reported INVALID."""
-        _, result, _ = shared.parse_qrexec_header(b"sv\x01c src\x00")
-        self.assertEqual(result, shared.QrexecHeaderResult.INVALID)
-
-
-class TestOctalEscapeBoundary(unittest.TestCase):
-    """decode_status_octal_escapes bounds: 0x20..0x7E plus newline (0x0A)."""
-
-    def test_tilde_is_printable_upper_bound(self) -> None:
-        """\\176 == octal 126 == 0x7E (~) decodes (pins `> 0x7E`)."""
-        self.assertEqual(shared.decode_status_octal_escapes("\\176"), "~")
-
-    def test_del_byte_rejected(self) -> None:
-        """\\177 == octal 127 == 0x7F (DEL) is rejected."""
-        with self.assertRaises(ValueError):
-            shared.decode_status_octal_escapes("\\177")
-
-    def test_space_lower_bound_and_newline(self) -> None:
-        """\\040 (space, 0x20) and \\012 (newline, 0x0A exception) decode."""
-        self.assertEqual(shared.decode_status_octal_escapes("\\040"), " ")
-        self.assertEqual(shared.decode_status_octal_escapes("\\012"), "\n")
-
-    def test_control_byte_rejected(self) -> None:
-        """\\037 == 0x1F (just below space) is rejected."""
-        with self.assertRaises(ValueError):
-            shared.decode_status_octal_escapes("\\037")
 
 
 class TestConfigReadArgHandling(unittest.TestCase):

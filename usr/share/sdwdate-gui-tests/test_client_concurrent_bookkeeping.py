@@ -51,13 +51,12 @@ class _ClientStateMixin(unittest.IsolatedAsyncioTestCase):
             name: getattr(client.GlobalData, name)
             for name in (
                 'sock_write', 'sock_read', 'sock_buf', 'do_reconnect',
-                'last_tor_status', 'reconnect_delay',
+                'last_tor_status',
             )
         }
         client.GlobalData.sock_buf = b''
         client.GlobalData.do_reconnect = True
         client.GlobalData.last_tor_status = ''
-        client.GlobalData.reconnect_delay = client.INITIAL_RECONNECT_DELAY
         ## awaitable_tasks / background_tasks are shared mutable containers;
         ## empty them before and after so no task leaks between cases.
         client.GlobalData.awaitable_tasks.clear()

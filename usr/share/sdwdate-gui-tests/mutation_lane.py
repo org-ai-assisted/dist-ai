@@ -7,12 +7,11 @@
 
 """
 TARGETED mutation-testing lane for sdwdate-gui's security-critical code: the
-sdwdate_gui_shared wire parser (length framing, printable-ASCII and octal-escape
-boundaries, the unsigned length decode, the qrexec NUL scan / field split), the
-sdwdate_gui_config_read argument check, the server's name-length and
-argument-count validation, enum-value ordering and RPC send framing, and the
-client's reconnect-backoff reset, Tor-status de-duplication and inotify watch
-mask.
+sdwdate_gui_shared wire parser (length framing, printable-ASCII boundary, the
+unsigned length decode), the sdwdate_gui_config_read argument check, the
+server's qrexec header NUL scan / field split, octal-escape decode boundary,
+name-length and argument-count validation, enum-value ordering and RPC send
+framing, and the client's Tor-status de-duplication and inotify watch mask.
 
 A full cosmic-ray pass over the package was used ONCE to discover the true
 survivor set; this permanent lane ships NO engine dependency. It applies a
@@ -103,23 +102,23 @@ MUTANTS = [
          new="if len(sock_buf) < (msg_len + 1):",
          killers=["test_mutation_shared.py"],
          note="a one-byte-short frame would be parsed as if complete."),
-    dict(id="shared qrexec NUL advance [idx + 1 :] -> [idx + 2 :]",
-         module="sdwdate_gui_shared.py",
-         old="sock_buf = sock_buf[idx + 1 :]",
-         new="sock_buf = sock_buf[idx + 2 :]",
-         killers=["test_mutation_shared.py"],
+    dict(id="server qrexec NUL advance [idx + 1 :] -> [idx + 2 :]",
+         module="sdwdate_gui_server.py",
+         old="self.__sock_buf = self.__sock_buf[idx + 1 :]",
+         new="self.__sock_buf = self.__sock_buf[idx + 2 :]",
+         killers=["test_wire_protocol.py", "test_server_coverage.py"],
          note="the byte after the qrexec NUL terminator would be dropped."),
-    dict(id="shared octal-escape upper bound > 0x7E -> >= 0x7E",
-         module="sdwdate_gui_shared.py",
+    dict(id="server octal-escape upper bound > 0x7E -> >= 0x7E",
+         module="sdwdate_gui_server.py",
          old="if (octal_int < 0x20 or octal_int > 0x7E) and octal_int != 0x0A:",
          new="if (octal_int < 0x20 or octal_int >= 0x7E) and octal_int != 0x0A:",
-         killers=["test_mutation_shared.py"],
+         killers=["test_wire_protocol.py", "test_server_coverage.py"],
          note="the printable tilde (\\176) would be wrongly rejected as unsafe."),
-    dict(id="shared qrexec field count < 2 -> != 2",
-         module="sdwdate_gui_shared.py",
+    dict(id="server qrexec field count < 2 -> != 2",
+         module="sdwdate_gui_server.py",
          old="if len(qrexec_header_parts) < 2:",
          new="if len(qrexec_header_parts) != 2:",
-         killers=["test_mutation_shared.py"],
+         killers=["test_server_coverage.py", "test_mutation_server.py"],
          note="a 3-field qrexec header would lose its authenticated source VM."),
     dict(id="config_read argument count != 2 -> < 2",
          module="sdwdate_gui_config_read.py",
@@ -169,13 +168,6 @@ MUTANTS = [
          new="& pyinotify.IN_MOVE_SELF",
          killers=["test_mutation_client.py"],
          note="the composed inotify event mask would be corrupted."),
-    dict(id="client backoff reset _now() - start -> _now() + start",
-         module="sdwdate_gui_client.py",
-         old="if _now() - session_start >= MIN_ESTABLISHED_SESSION_SECS:",
-         new="if _now() + session_start >= MIN_ESTABLISHED_SESSION_SECS:",
-         killers=["test_mutation_client.py"],
-         note="a sub-threshold session would wrongly reset the backoff, "
-              "re-enabling the dom0 qrexec-policy flood."),
     dict(id="client Tor-status de-dup != last -> > last",
          module="sdwdate_gui_client.py",
          old="if status != GlobalData.last_tor_status:",
