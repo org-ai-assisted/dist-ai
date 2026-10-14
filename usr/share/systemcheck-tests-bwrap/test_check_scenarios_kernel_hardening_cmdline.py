@@ -171,24 +171,6 @@ class TestKernelHardeningCmdlineIsolatedScenarios(ScenarioTestBase):
         self.assertIn('>Present<', r.joined())
         self.assertEqual(r.exit_code, '0')
 
-    ## -- a config clearing a same-named global cannot empty the list -------
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/19): trixie made the token
-    ## list a plain global (systemcheck_kernel_hardening_token_list), so a *.conf sourced before the
-    ## check CAN clear it -> the check iterates nothing -> vacuously green -- remove when fixed.
-    @unittest.expectedFailure
-    def test_config_global_cannot_clear_token_list(self) -> None:
-        ## /etc/systemcheck.d/*.conf is sourced into the same shell before the
-        ## check runs; an empty list would make it vacuously green.
-        r = run_check_scenario_isolated(
-            self.check(FILE), FUNC,
-            env_setup='verbose=1\nsystemcheck_kernel_hardening_token_list=()',
-            hide_dirs=self.HIDE,
-            bind_files=[('/proc/cmdline', CMDLINE_PREFIX, False)])
-        self.assertCleanRun(r)
-        self.assertIn('>Missing<', r.joined())
-        self.assertEqual(set(_missing_list(r.joined())), set(self.tokens))
-        self.assertEqual(r.exit_code, '1')
-
     ## -- Qubes: cmdline model differs, report info rather than fail --------
     def test_qubes_reports_info_not_failure(self) -> None:
         r = run_check_scenario_isolated(

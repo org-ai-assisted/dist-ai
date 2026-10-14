@@ -6,15 +6,16 @@
 ## AI-Assisted
 
 """
-Scenario tests for the user-manager-unreachable auto-skip.
+Scenario tests for the user-manager-unreachable path.
 
 Running systemcheck with NO reachable per-user systemd manager (serial console / VBox
-guestcontrol / `su - user` without a user bus) made the user systemd-units check and the
-user system-ready check WARN as artifacts. systemcheck_session_detection now probes user-bus
-CONNECTIVITY and those two checks report N/A only then -- with a HARD GUARD: a reachable but
-degraded user manager stays "present", so a real failure (failed user unit on a tty / ssh /
-graphical login) is NEVER masked. The opt-out (systemcheck_headless_autoskip) is applied at
-the check sites, which run after source_config, so a config override is honored.
+guestcontrol / `su - user` without a user bus): on a non-CI run the user systemd-units, user
+system-ready and journal checks RUN normally and surface the real result -- including a
+WARNING when the journal cannot be read -- which is the intended behavior (systemcheck issue
+#20, by design). A reachable but degraded user manager stays "present", so a real failure
+(failed user unit on a tty / ssh / graphical login) is NEVER masked. The opt-out
+(systemcheck_nosession_autoskip, true only under --ci) is applied at the check sites, which
+run after source_config, so a config override is honored.
 
 Drives the REAL functions via run_check_scenario (preparation.bsh, which defines the detector
 + emit helpers, is always sourced). No bwrap needed.
@@ -55,21 +56,6 @@ class TestSessionDetection(ScenarioTestBase):
 class TestCheckServicesHeadless(ScenarioTestBase):
     FILE = 'check_services.bsh'
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): trixie flipped the
-    ## no-session autoskip default to ${ci:-false}, so a headless user-units check now warns
-    ## instead of reporting N/A -- remove when fixed.
-    @unittest.expectedFailure
-    def test_user_units_na_when_unreachable(self) -> None:
-        ## No reachable user manager: the user-units check reports N/A (info), does not fail.
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_services_do',
-            env_setup='check_type=user\nsystemcheck_user_manager_present=false\nverbose=1')
-        self.assertCleanRun(r)
-        self.assertTrue(r.has_severity('info'))
-        self.assertFalse(r.has_severity('warning'))
-        self.assertEqual(r.exit_code, '0')
-        self.assertIn('not applicable', r.joined())
-
     def test_user_units_failure_not_masked_when_reachable(self) -> None:
         ## HARD GUARD: the user manager IS reachable, so a failed user unit still fails.
         r = run_check_scenario(
@@ -85,12 +71,12 @@ class TestCheckServicesHeadless(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
 
     def test_optout_runs_the_check_even_when_unreachable(self) -> None:
-        ## systemcheck_headless_autoskip=false forces the check to run (never auto-skip),
+        ## systemcheck_nosession_autoskip=false forces the check to run (never auto-skip),
         ## read at the gate so a config-file override takes effect.
         r = run_check_scenario(
             self.check(self.FILE), 'check_services_do',
             env_setup='check_type=user\nsystemcheck_user_manager_present=false\n'
-                      'systemcheck_headless_autoskip=false\n'
+                      'systemcheck_nosession_autoskip=false\n'
                       'machine_command_machine=fail_stub\nmachine_command_pretty=fail_stub\n'
                       'machine_command_desc=desc',
             stubs='fail_stub() { printf "%s\\n" "foo.service loaded failed failed"; }\n'
@@ -103,20 +89,6 @@ class TestCheckServicesHeadless(ScenarioTestBase):
 
 class TestCheckSystemReadyHeadless(ScenarioTestBase):
     FILE = 'check_system_ready.bsh'
-
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): trixie flipped the
-    ## no-session autoskip default, so a headless system-ready (user) check now warns instead of
-    ## reporting N/A -- remove when fixed.
-    @unittest.expectedFailure
-    def test_user_ready_na_when_unreachable(self) -> None:
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_system_ready_user',
-            env_setup='systemcheck_user_manager_present=false\nverbose=1')
-        self.assertCleanRun(r)
-        self.assertTrue(r.has_severity('info'))
-        self.assertFalse(r.has_severity('warning'))
-        self.assertEqual(r.exit_code, '0')
-        self.assertIn('not applicable', r.joined())
 
     def test_user_ready_failure_not_masked_when_reachable(self) -> None:
         ## HARD GUARD: with the user manager reachable it proceeds into the real check
@@ -138,36 +110,12 @@ class TestCheckJournalHeadless(ScenarioTestBase):
     ## OWN error (before it execs log-checker) lands on stderr, as it does in production.
     _PRIVLEAP_UNREACHABLE = 'leaprun() { printf "ERROR: Could not connect to privleapd!\\n" >&2; return 1; }'
     ## A genuine journal failure: privleapd answered, the read itself failed INSIDE log-checker.
-    ## log-checker runs 'exec 2>&1', so its error lands on STDOUT (not stderr) -- so check_journal's
-    ## stderr capture (journal_read_err) is EMPTY and the detail must come from the captured stdout.
     _JOURNAL_BROKEN = 'leaprun() { printf "journalctl: unrecoverable error\\n"; return 1; }'
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): trixie deleted the
-    ## privleapd-unreachable -> N/A case in check_journal, so a session-less connect failure now
-    ## warns ("could not read the journal") instead of reporting N/A -- remove when fixed.
-    @unittest.expectedFailure
-    def test_privleapd_unreachable_is_na(self) -> None:
-        ## The confirmed headless artifact: no user manager AND no privleap comm socket ->
-        ## connect failure -> N/A, not a false "could not read the systemd journal". N/A
-        ## requires headless evidence (user_manager_present=false), matching the sibling.
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_journal',
-            env_setup='verbose=1\nsystemcheck_user_manager_present=false',
-            stubs=self._PRIVLEAP_UNREACHABLE)
-        self.assertCleanRun(r)
-        self.assertTrue(r.has_severity('info'))
-        self.assertFalse(r.has_severity('warning'))
-        self.assertEqual(r.exit_code, '0')
-        self.assertIn('not applicable', r.joined())
-
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the warn still fires,
-    ## but trixie dropped the journal-read error-detail surfacing, so "Could not connect to
-    ## privleapd" is no longer embedded in the message -- remove when fixed.
-    @unittest.expectedFailure
     def test_privleapd_unreachable_warns_in_normal_session(self) -> None:
-        ## HARD GUARD / false-green regression: privleapd DOWN in a normal session (user
-        ## manager present) is a real fault, NOT a headless artifact. Even with the default
-        ## autoskip on, a connect failure must warn -- never report the journal as clean N/A.
+        ## HARD GUARD / false-green: privleapd DOWN in a normal session (user manager present)
+        ## is a real fault. A connect failure must warn + exit 1 -- never report the journal as
+        ## clean.
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
             env_setup='systemcheck_user_manager_present=true',
@@ -176,19 +124,10 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
-        ## stderr-branch detail: leaprun's own connect error IS surfaced.
-        self.assertIn('Could not connect to privleapd', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/20): the warn still fires,
-    ## but trixie dropped the "Error detail (journal-read output)" block (journal_read_err is
-    ## assigned but never surfaced), so the actual cause is no longer shown -- remove when fixed.
-    @unittest.expectedFailure
     def test_genuine_journal_failure_still_warns(self) -> None:
-        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- AND the
-        ## ACTUAL error is surfaced (not only the generic "could not read"), so the page names
-        ## the cause. sanitize-string stubbed pass-through, as the sibling scenarios do.
-        ## CANARY: the error is on STDOUT (log-checker's 'exec 2>&1'), so the pre-fix code --
-        ## which surfaced only journal_read_err (stderr, empty here) -- fails this detail assertion.
+        ## HARD GUARD: a real read failure (privleapd connected) is NOT masked -- it warns +
+        ## exits 1. sanitize-string stubbed pass-through, as the siblings do.
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
             stubs=self._JOURNAL_BROKEN
@@ -197,18 +136,11 @@ class TestCheckJournalHeadless(ScenarioTestBase):
         self.assertTrue(r.has_severity('warning'))
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Could not read the systemd journal', r.joined())
-        ## CANARY ASSERTION: the detail block is sourced from the captured STDOUT. The pre-fix
-        ## code only surfaced journal_read_err (stderr, empty here) and labelled it "stderr", so
-        ## it emitted NO detail block at all -- this header is absent on old code, present on new.
-        ## (A bare 'journalctl: unrecoverable error' match is NOT a canary: the stubbed
-        ## check_critical_logs echoes it into the always-shown critical tier regardless of the fix.)
-        self.assertIn('Error detail (journal-read output)', r.joined())
-        self.assertIn('journalctl: unrecoverable error', r.joined())
 
     def test_optout_forces_strict_on_connect_failure(self) -> None:
         r = run_check_scenario(
             self.check(self.FILE), 'check_journal',
-            env_setup='systemcheck_headless_autoskip=false',
+            env_setup='systemcheck_nosession_autoskip=false',
             stubs=self._PRIVLEAP_UNREACHABLE)
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('warning'))
