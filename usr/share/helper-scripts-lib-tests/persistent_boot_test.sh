@@ -212,6 +212,45 @@ else
    fail "cmdline malformed-uuid-arg not refused (rc=${uuid_rc})"
 fi
 
+## A legit kernel param with '!' (acpi_osi=!) is NOT dropped (not a grub metachar).
+printf '%s\n' 'quiet acpi_osi=! root=live:CDLABEL=DM_LIVE' > "${cmdline_file}"
+out="$(persistent_boot_cmdline persistence)"
+if [[ "${out}" == *"acpi_osi=!"* ]]; then
+   pass "cmdline: keeps a legit '!' parameter"
+else
+   fail "cmdline dropped acpi_osi=!: '${out}'"
+fi
+
+## A source the -r test passes but cat cannot read (a directory) is refused, not
+## treated as an empty/plaintext cmdline.
+dir_cmdline="${workdir}/dir_as_cmdline"
+mkdir --parents -- "${dir_cmdline}"
+cat_rc=0
+PERSISTENT_BOOT_CMDLINE_FILE="${dir_cmdline}" persistent_boot_cmdline persistence > /dev/null 2>&1 || cat_rc=$?
+if [ "${cat_rc}" -eq 1 ]; then
+   pass "cmdline: refuses a directory cmdline source (cat failure)"
+else
+   fail "cmdline dir-source not refused (rc=${cat_rc})"
+fi
+catl_rc=0
+PERSISTENT_BOOT_CMDLINE_FILE="${dir_cmdline}" persistent_boot_luks_uuid > /dev/null 2>&1 || catl_rc=$?
+if [ "${catl_rc}" -eq 2 ]; then
+   pass "luks_uuid: returns 2 (ambiguous) on a directory cmdline source"
+else
+   fail "luks_uuid dir-source not refused as ambiguous (rc=${catl_rc})"
+fi
+
+## A symlinked boot_dir is refused.
+mkdir --parents -- "${workdir}/realboot"
+ln --symbolic -- "${workdir}/realboot" "${workdir}/linkboot"
+sym_rc=0
+persistent_boot_write_grub_cfg "${workdir}/linkboot" 'quiet' > /dev/null 2>&1 || sym_rc=$?
+if [ "${sym_rc}" -eq 1 ]; then
+   pass "write_grub_cfg: refuses a symlinked boot_dir"
+else
+   fail "write_grub_cfg symlinked boot_dir not refused (rc=${sym_rc})"
+fi
+
 ## An empty boot_dir is refused by both sinks (never sweep/write the host root).
 wg_rc=0
 persistent_boot_write_grub_cfg '' 'quiet' > /dev/null 2>&1 || wg_rc=$?
