@@ -8,12 +8,17 @@
 """
 Scenario tests for the user-sysmaint-split boot-role mismatch detection.
 
-A SYSMAINT Session requested at boot (kernel 'boot-role=sysmaint', captured as
-booted_in_sysmaint_session=true) that lands on an unprivileged account instead
-of 'sysmaint' is a grave, easy-to-miss state: root / sudo silently will not
-work though the user believes they are in a maintenance session.
-check_user_sysmaint_split_boot_mismatch raises a grave (error) popup, and it is
-registered in systemcheck_autostart_functions so it also surfaces at login.
+A grave, easy-to-miss state is when the account the session landed on does not
+match the session type requested at boot (kernel 'boot-role=sysmaint', captured
+as booted_in_sysmaint_session):
+  - SYSMAINT requested, landed unprivileged: root / sudo silently fail though
+    the user believes they are in a maintenance session.
+  - USER requested, landed on 'sysmaint': the user believes they are in a
+    locked-down session but actually holds sudo-capable privileges.
+check_user_sysmaint_split_boot_mismatch raises a grave (error) popup for either
+direction, and is registered in systemcheck_autostart_functions so it also
+surfaces at login. The factual session line (check_user_sysmaint_split_boot_mode)
+reports the account actually in use and does NOT duplicate the warning at info.
 """
 
 import unittest
@@ -27,33 +32,39 @@ from systemcheck_testlib import (
 class TestSysmaintBootMismatchScenarios(ScenarioTestBase):
     FILE = 'check_user_sysmaint_split.bsh'
 
-    def test_requested_sysmaint_but_standard_user_is_grave(self) -> None:
-        ## SYSMAINT requested at boot, landed as standard 'user' -> grave popup.
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_user_sysmaint_split_boot_mismatch',
-            env_setup='booted_in_sysmaint_session=true\nwho_ami=user')
+    def _assert_grave(self, r) -> None:
         self.assertCleanRun(r)
         self.assertTrue(r.has_severity('error'))
         ## Grave error reaches BOTH channels: the GUI popup (passivepopupqueuex,
         ## recorded with channel '-') and the CLI (messagecli, channel 'cli').
         self.assertTrue(any(c == 'cli' and s == 'error' for c, s, _m in r.records))
         self.assertTrue(any(c == '-' and s == 'error' for c, s, _m in r.records))
-        self.assertIn('sysmaint', r.joined())
         self.assertEqual(r.exit_code, '0')
 
-    def test_sysmaint_session_lands_as_sysmaint_is_quiet(self) -> None:
-        ## SYSMAINT requested AND logged in as 'sysmaint' -> nothing to warn.
-        r = run_check_scenario(
+    def _run(self, env_setup: str):
+        return run_check_scenario(
             self.check(self.FILE), 'check_user_sysmaint_split_boot_mismatch',
-            env_setup='booted_in_sysmaint_session=true\nwho_ami=sysmaint')
+            env_setup=env_setup)
+
+    def test_sysmaint_requested_but_standard_user_is_grave(self) -> None:
+        r = self._run('booted_in_sysmaint_session=true\nwho_ami=user')
+        self._assert_grave(r)
+        self.assertIn('SYSMAINT Session', r.joined())
+        self.assertIn('sysmaint', r.joined())
+
+    def test_user_requested_but_sysmaint_account_is_grave(self) -> None:
+        r = self._run('booted_in_sysmaint_session=false\nwho_ami=sysmaint')
+        self._assert_grave(r)
+        self.assertIn('USER Session', r.joined())
+        self.assertIn('sysmaint', r.joined())
+
+    def test_sysmaint_session_aligned_is_quiet(self) -> None:
+        r = self._run('booted_in_sysmaint_session=true\nwho_ami=sysmaint')
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
-    def test_user_session_is_quiet(self) -> None:
-        ## Plain USER Session (no SYSMAINT requested) -> nothing to warn.
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_user_sysmaint_split_boot_mismatch',
-            env_setup='booted_in_sysmaint_session=false\nwho_ami=user')
+    def test_user_session_aligned_is_quiet(self) -> None:
+        r = self._run('booted_in_sysmaint_session=false\nwho_ami=user')
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
@@ -70,31 +81,34 @@ class TestSysmaintBootMismatchScenarios(ScenarioTestBase):
 class TestSysmaintBootModeLineScenarios(ScenarioTestBase):
     FILE = 'check_user_sysmaint_split.bsh'
 
-    def test_boot_mode_line_honest_on_mismatch(self) -> None:
-        ## The info result line must not claim "SYSMAINT Session" when the
-        ## session actually landed on an unprivileged account.
-        r = run_check_scenario(
+    def _line(self, env_setup: str):
+        return run_check_scenario(
             self.check(self.FILE), 'check_user_sysmaint_split_boot_mode',
-            env_setup='booted_in_sysmaint_session=true\nwho_ami=user')
-        self.assertCleanRun(r)
-        self.assertTrue(r.has_severity('info'))
-        self.assertIn('standard user', r.joined())
-        self.assertIn('user', r.joined())
+            env_setup=env_setup)
 
-    def test_boot_mode_line_sysmaint_session(self) -> None:
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_user_sysmaint_split_boot_mode',
-            env_setup='booted_in_sysmaint_session=true\nwho_ami=sysmaint')
-        self.assertCleanRun(r)
-        self.assertIn('SYSMAINT Session', r.joined())
-        self.assertNotIn('standard user', r.joined())
+    def test_line_is_factual_by_account_sysmaint(self) -> None:
+        ## Reports the account actually in use; never editorializes the mismatch
+        ## (that is the grave popup's job, not an info line).
+        for booted in ('true', 'false'):
+            r = self._line(f'booted_in_sysmaint_session={booted}\nwho_ami=sysmaint')
+            self.assertCleanRun(r)
+            self.assertTrue(r.has_severity('info'))
+            self.assertIn('SYSMAINT Session', r.joined())
+            self.assertNotIn('USER Session', r.joined())
 
-    def test_boot_mode_line_user_session(self) -> None:
-        r = run_check_scenario(
-            self.check(self.FILE), 'check_user_sysmaint_split_boot_mode',
-            env_setup='booted_in_sysmaint_session=false\nwho_ami=user')
-        self.assertCleanRun(r)
-        self.assertIn('USER Session', r.joined())
+    def test_line_is_factual_by_account_user(self) -> None:
+        for booted in ('true', 'false'):
+            r = self._line(f'booted_in_sysmaint_session={booted}\nwho_ami=user')
+            self.assertCleanRun(r)
+            self.assertTrue(r.has_severity('info'))
+            self.assertIn('USER Session', r.joined())
+            self.assertNotIn('SYSMAINT Session', r.joined())
+
+    def test_line_not_error_severity(self) -> None:
+        ## The result line is info only -- the mismatch is reported once, as the
+        ## grave popup, never duplicated here at a second severity.
+        r = self._line('booted_in_sysmaint_session=true\nwho_ami=user')
+        self.assertFalse(r.has_severity('error'))
 
 
 if __name__ == '__main__':
