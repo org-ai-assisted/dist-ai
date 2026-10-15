@@ -1,0 +1,23 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""
+Create an AF_UNIX socket FILE at argv[1] so the glue scripts' `[ -S path ]`
+tests see a real socket inode. bind() leaves the socket file on disk; closing
+keeps the file (a socket inode) until it is unlinked, which is exactly the
+state the real server socket / Connect endpoint present on a live gateway.
+"""
+
+import os
+import socket
+import sys
+
+path = sys.argv[1]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.bind(path)
+sock.close()
