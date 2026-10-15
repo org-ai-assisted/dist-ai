@@ -31,6 +31,14 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Drop any inherited BASH_ENV / exported shell functions so the userns probe's
+## child bash cannot run a shadowed `mount`. Adversary-controlled env is out of
+## scope (dist-ai policy); this is a cheap accident guard.
+unset BASH_ENV ENV || true
+while read -r _inherited_fn; do
+   unset -f "${_inherited_fn}" || true
+done < <(compgen -A function || true)
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then

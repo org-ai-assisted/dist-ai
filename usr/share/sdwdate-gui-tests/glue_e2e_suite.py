@@ -93,12 +93,23 @@ printf '%s\\n' "${GLUE_DEFAULT_USER:-root}"
 SYSTEMD_NOTIFY_STUB = "systemd_notify=(true)\n"
 
 
+def _clean_env() -> dict[str, str]:
+    ## Drop GLUE_* (so no ambient GLUE_* steers a result) and BASH_ENV / ENV /
+    ## exported shell functions (so an inherited `mount`/`mkdir` shadow cannot
+    ## run in the runner before the real binaries, and pollute the host /run).
+    return {
+        k: v for k, v in os.environ.items()
+        if not k.startswith(("GLUE_", "BASH_FUNC_"))
+        and k not in ("BASH_ENV", "ENV")
+    }
+
+
 def _userns_available() -> bool:
     try:
         res = subprocess.run(
             ["unshare", "--user", "--mount", "--map-root-user",
              "bash", "-c", "mount -t tmpfs tmpfs /run"],
-            capture_output=True,
+            capture_output=True, env=_clean_env(),
         )
         return res.returncode == 0
     except OSError:
@@ -170,10 +181,9 @@ class QubesGlueE2E(unittest.TestCase):
         with open(notify_stub, "w") as fh:
             fh.write(SYSTEMD_NOTIFY_STUB)
 
-        ## Start from a GLUE_*-free environment so no ambient GLUE_* can steer a
-        ## result; every input the runner/stubs read is set explicitly here.
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith("GLUE_")}
+        ## Start from a sanitized environment (no ambient GLUE_* / BASH_ENV /
+        ## exported functions); every input the runner/stubs read is set here.
+        env = _clean_env()
         env.update(
             GLUE_SCRIPT=os.path.join(SUBJECT, script_rel),
             GLUE_SUBJECT=SUBJECT,
