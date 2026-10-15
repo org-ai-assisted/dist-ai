@@ -174,6 +174,60 @@ else
    fail "prune: wrong set remains"
 fi
 
+## --- hardening: injection + misuse ------------------------------------------
+
+## A token carrying a grub metacharacter is dropped whole (grub separates
+## commands by ';'/newline/'$', never by spaces -- so what must not survive is
+## the metacharacter, not a bare word). Safe tokens are kept.
+printf '%s\n' "quiet;echo\$x root=live:CDLABEL=DM_LIVE rd.live.overlay.overlayfs=1" > "${cmdline_file}"
+out="$(persistent_boot_cmdline persistence)"
+meta_semi=";"
+meta_dollar="\$"
+meta_btick="\`"
+if [[ "${out}" != *"${meta_semi}"* ]] && [[ "${out}" != *"${meta_dollar}"* ]] \
+   && [[ "${out}" != *"${meta_btick}"* ]] && [[ "${out}" != *"echo"* ]] \
+   && [[ "${out}" == *"root=live:CDLABEL=DM_LIVE"* ]] \
+   && [[ "${out}" == *"rd.live.overlay.overlayfs=1"* ]]; then
+   pass "cmdline: drops a grub-metacharacter token, keeps safe tokens"
+else
+   fail "cmdline injection-drop wrong: '${out}'"
+fi
+
+## An unsafe overlay label is refused (rc 1).
+printf '%s\n' 'quiet' > "${cmdline_file}"
+label_rc=0
+persistent_boot_cmdline 'x; echo PWN' > /dev/null 2>&1 || label_rc=$?
+if [ "${label_rc}" -eq 1 ]; then
+   pass "cmdline: refuses an unsafe overlay label"
+else
+   fail "cmdline unsafe-label not refused (rc=${label_rc})"
+fi
+
+## A malformed luks uuid argument is refused (rc 1), not pasted raw.
+uuid_rc=0
+persistent_boot_cmdline persistence 'aaaa; reboot' > /dev/null 2>&1 || uuid_rc=$?
+if [ "${uuid_rc}" -eq 1 ]; then
+   pass "cmdline: refuses a malformed luks uuid argument"
+else
+   fail "cmdline malformed-uuid-arg not refused (rc=${uuid_rc})"
+fi
+
+## An empty boot_dir is refused by both sinks (never sweep/write the host root).
+wg_rc=0
+persistent_boot_write_grub_cfg '' 'quiet' > /dev/null 2>&1 || wg_rc=$?
+if [ "${wg_rc}" -eq 1 ]; then
+   pass "write_grub_cfg: refuses an empty boot_dir"
+else
+   fail "write_grub_cfg empty-dir not refused (rc=${wg_rc})"
+fi
+pr_rc=0
+persistent_boot_prune '' "${workdir}" > /dev/null 2>&1 || pr_rc=$?
+if [ "${pr_rc}" -eq 0 ]; then
+   pass "prune: no-op on an empty boot_dir"
+else
+   fail "prune empty-dir not handled (rc=${pr_rc})"
+fi
+
 ## --- persistent_boot_write_grub_cfg -----------------------------------------
 
 boot_dir="${workdir}/boot"
