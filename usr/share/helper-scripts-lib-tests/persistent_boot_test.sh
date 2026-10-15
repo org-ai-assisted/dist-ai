@@ -100,6 +100,80 @@ else
    fail "cmdline A3 wrong (overlay=${overlay_count} luks=${luks_count}): '${out}'"
 fi
 
+## A4: a pre-existing rd.live.overlay.reset is stripped (else a persistent entry
+## would wipe the overlay every boot). The amnesic entry re-adds it on its own.
+printf '%s\n' 'root=live:CDLABEL=DM_LIVE rd.live.overlay=LABEL=stale:/old rd.live.overlay.reset=1 quiet' > "${cmdline_file}"
+out="$(persistent_boot_cmdline persistence)"
+if [[ "${out}" != *"rd.live.overlay.reset"* ]] \
+   && [[ "${out}" == *"rd.live.overlay=LABEL=persistence:/live/overlay"* ]]; then
+   pass "cmdline: strips a pre-existing rd.live.overlay.reset"
+else
+   fail "cmdline A4 wrong: '${out}'"
+fi
+
+## --- persistent_boot_luks_uuid ----------------------------------------------
+
+printf '%s\n' 'root=live rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905 quiet' > "${cmdline_file}"
+uuid_rc=0
+uuid_out="$(persistent_boot_luks_uuid)" || uuid_rc=$?
+if [ "${uuid_rc}" -eq 0 ] && [ "${uuid_out}" = '40e273d7-4e63-4459-b16f-ba3df4374905' ]; then
+   pass "luks_uuid: echoes a valid uuid, rc 0 (encrypted)"
+else
+   fail "luks_uuid valid wrong (rc=${uuid_rc} out='${uuid_out}')"
+fi
+
+printf '%s\n' 'root=live rd.live.overlay=LABEL=persistence:/live/overlay quiet' > "${cmdline_file}"
+uuid_rc=0
+uuid_out="$(persistent_boot_luks_uuid)" || uuid_rc=$?
+if [ "${uuid_rc}" -eq 1 ] && [ -z "${uuid_out}" ]; then
+   pass "luks_uuid: rc 1 when absent (plaintext)"
+else
+   fail "luks_uuid absent wrong (rc=${uuid_rc} out='${uuid_out}')"
+fi
+
+## A crafted non-UUID (grub metacharacters) must be refused, not echoed.
+printf '%s\n' 'root=live rd.luks.uuid=not-a-uuid};evil quiet' > "${cmdline_file}"
+uuid_rc=0
+uuid_out="$(persistent_boot_luks_uuid)" || uuid_rc=$?
+if [ "${uuid_rc}" -eq 2 ] && [ -z "${uuid_out}" ]; then
+   pass "luks_uuid: rc 2 on a malformed/crafted value (refused)"
+else
+   fail "luks_uuid malformed wrong (rc=${uuid_rc} out='${uuid_out}')"
+fi
+
+## First valid uuid wins (not the last).
+printf '%s\n' 'rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905 rd.luks.uuid=11111111-2222-3333-4444-555555555555' > "${cmdline_file}"
+uuid_out="$(persistent_boot_luks_uuid)" || true
+if [ "${uuid_out}" = '40e273d7-4e63-4459-b16f-ba3df4374905' ]; then
+   pass "luks_uuid: takes the first valid uuid"
+else
+   fail "luks_uuid first-wins wrong: '${uuid_out}'"
+fi
+
+## --- persistent_boot_device (test seam) -------------------------------------
+dev_out="$(PERSISTENT_BOOT_DEVICE=/dev/fake-persistbootx persistent_boot_device persistbootx)"
+if [ "${dev_out}" = '/dev/fake-persistbootx' ]; then
+   pass "device: PERSISTENT_BOOT_DEVICE seam returns the forced device"
+else
+   fail "device seam wrong: '${dev_out}'"
+fi
+
+## --- persistent_boot_prune --------------------------------------------------
+prune_dir="${workdir}/prune"
+prune_src="${workdir}/prunesrc"
+mkdir --parents -- "${prune_dir}" "${prune_src}"
+touch -- "${prune_dir}/vmlinuz-1.0" "${prune_dir}/initrd.img-1.0"
+touch -- "${prune_dir}/vmlinuz-2.0" "${prune_dir}/initrd.img-2.0"
+## Only 2.0 is still installed in the source.
+touch -- "${prune_src}/vmlinuz-2.0" "${prune_src}/initrd.img-2.0"
+persistent_boot_prune "${prune_dir}" "${prune_src}"
+if [ ! -e "${prune_dir}/vmlinuz-1.0" ] && [ ! -e "${prune_dir}/initrd.img-1.0" ] \
+   && [ -e "${prune_dir}/vmlinuz-2.0" ]; then
+   pass "prune: drops a kernel no longer installed, keeps the current one"
+else
+   fail "prune: wrong set remains"
+fi
+
 ## --- persistent_boot_write_grub_cfg -----------------------------------------
 
 boot_dir="${workdir}/boot"
@@ -110,6 +184,8 @@ touch -- "${boot_dir}/vmlinuz-6.1.0-10"
 touch -- "${boot_dir}/initrd.img-6.1.0-10"
 ## An unpaired kernel (no matching initrd) must be excluded.
 touch -- "${boot_dir}/vmlinuz-6.1.0-11-nopair"
+## A crafted version with grub metacharacters must be SKIPPED (injection guard).
+touch -- "${boot_dir}/vmlinuz-6.1.0\" }; evil" "${boot_dir}/initrd.img-6.1.0\" }; evil"
 
 test_cmdline='root=live:CDLABEL=DM_LIVE rd.live.overlay.overlayfs=1 rd.live.overlay=LABEL=persistence:/live/overlay'
 if persistent_boot_write_grub_cfg "${boot_dir}" "${test_cmdline}"; then
@@ -144,6 +220,13 @@ if ! grep --quiet 'nopair' "${cfg}"; then
    pass "write_grub_cfg: excludes an unpaired kernel"
 else
    fail "write_grub_cfg: included an unpaired kernel"
+fi
+
+## The crafted-version pair must not appear (no grub.cfg injection).
+if ! grep --quiet 'evil' "${cfg}"; then
+   pass "write_grub_cfg: skips an unsafe kernel version (injection guard)"
+else
+   fail "write_grub_cfg: emitted an unsafe kernel version"
 fi
 
 if grep --quiet 'rd.live.overlay.reset=1' "${cfg}"; then
