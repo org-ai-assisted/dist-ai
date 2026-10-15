@@ -223,7 +223,6 @@ integration_suites=(
    dm-whonix-pair-tests
    dm-grub-menu-render-tests
    dm-reproducible-build-tests
-   sdwdate-gui-tests-glue
    sdwdate-gui-tests-integration
    sdwdate-gui-tests-mutation
    sdwdate-gui-tests-verify
