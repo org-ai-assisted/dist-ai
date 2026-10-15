@@ -119,6 +119,13 @@ check_rejects "--passphrase-file with --encrypt false" "meaningless" \
 check_rejects "--target disk without --device" "requires --device" \
    --encrypt false --target disk
 
+## --- keyfile size floor (a 1-byte/newline key is trivially weak) -----------
+tiny_keyfile="$(mktemp)"
+printf '%s\n' "" > "${tiny_keyfile}"
+check_rejects "tiny keyfile is rejected" "too small" \
+   --encrypt true --key-type keyfile --keyfile "${tiny_keyfile}"
+safe-rm --force -- "${tiny_keyfile}"
+
 ## --- valid combinations pass validation (stop at a later safe gate) --------
 check_passes_validation "valid: --encrypt false" --encrypt false
 check_passes_validation "valid: password" \
