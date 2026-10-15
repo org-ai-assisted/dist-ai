@@ -122,21 +122,19 @@ class TestSysmaintBootModeLineScenarios(ScenarioTestBase):
             self.check(self.FILE), 'check_user_sysmaint_split_boot_mode',
             env_setup=env_setup)
 
-    def test_line_is_factual_by_account_sysmaint(self) -> None:
-        ## Reports the account actually in use; never editorializes the mismatch
-        ## (that is the grave popup's job, not an info line).
-        for booted in ('true', 'false'):
-            r = self._line(f'booted_in_sysmaint_session={booted}\nwho_ami=sysmaint')
+    def test_line_reports_requested_boot_role(self) -> None:
+        ## The SYSMAINT/USER Session labels are the boot-menu names, so the line
+        ## follows the requested boot role, independent of the landed account,
+        ## and never editorializes the mismatch (that is the grave popup's job).
+        for who in ('sysmaint', 'user'):
+            r = self._line(f'booted_in_sysmaint_session=true\nwho_ami={who}')
             self.assertCleanRun(r)
             self.assertTrue(r.has_severity('info'))
             self.assertIn('SYSMAINT Session', r.joined())
             self.assertNotIn('USER Session', r.joined())
-
-    def test_line_is_factual_by_account_user(self) -> None:
-        for booted in ('true', 'false'):
-            r = self._line(f'booted_in_sysmaint_session={booted}\nwho_ami=user')
+        for who in ('sysmaint', 'user'):
+            r = self._line(f'booted_in_sysmaint_session=false\nwho_ami={who}')
             self.assertCleanRun(r)
-            self.assertTrue(r.has_severity('info'))
             self.assertIn('USER Session', r.joined())
             self.assertNotIn('SYSMAINT Session', r.joined())
 

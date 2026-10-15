@@ -109,6 +109,7 @@ class TestRegressionInvariants(SystemcheckTestBase):
             'leaprun_cmd_describe',
             'remediation_instructions',
             'running_as_sysmaint',
+            'in_working_sysmaint_session',
         ):
             self.assertRegex(text, rf"(?m)^{func}\(\) \{{", f"{func} missing")
 

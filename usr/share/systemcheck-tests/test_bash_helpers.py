@@ -70,6 +70,21 @@ class TestRemediationInstructions(SystemcheckTestBase):
         self.assertIn('SYSMAINT Session', out)
         self.assertIn('sudo dpkg --configure -a', out)
 
+    def test_sysmaint_account_without_boot_role_not_panel_guidance(self) -> None:
+        ## sysmaint ACCOUNT reached without a 'boot-role=sysmaint' boot (console
+        ## su, manual default-user): sudo works but the System Maintenance Panel
+        ## session does not exist, so the guidance must NOT be the immediate
+        ## "click Open Terminal in the panel, then run" branch. Gating on the
+        ## account alone (not the session) regresses this.
+        out = run_sourced(
+            fragment_sources(),
+            'remediation_instructions "dpkg --configure -a"',
+            setup='booted_in_sysmaint_session=false\n'
+                  'who_ami=sysmaint\n'
+                  'user_sysmaint_split_installed=true',
+        )
+        self.assertIn('reboot into', out)
+
     def test_user_sysmaint_split(self) -> None:
         out = run_sourced(
             fragment_sources(),
