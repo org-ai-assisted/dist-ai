@@ -18,10 +18,16 @@ checkout's real config-read + scripts bind-mounted over the installed copy, a
 crafted /etc/sdwdate-gui.d, and PATH stubs for the qrexec-client-vm /
 qubesdb-read externals (qubesdb-read and a live gateway are the only things
 that genuinely cannot run here). It then asserts the script's y/n/q verdict,
-exit code, and /run side effects. This pins the fixes for issues #7 (ln -s
---force restart-safety), #9 (2>/dev/null, no stderr false-disable) and #12
-(ConnectCheck gives up when run_server_in_qubes is not true), and fuzzes the
-proxy's ConnectCheck-result handling for new false-disable / hang edges.
+its EXIT CODE, the qrexec target VM, and the /run side effects (including that
+the .Connect endpoint is a SYMLINK to the server socket). This pins the fixes
+for issues #7 (ln -s --force restart-safety), #9 (2>/dev/null, no stderr
+false-disable) and #12 (ConnectCheck gives up when run_server_in_qubes is not
+true), and fuzzes the proxy's ConnectCheck-result handling for new
+false-disable / hang edges.
+
+NOT discovered by the core/coverage runners (they use --pattern 'test_*.py';
+this module is deliberately NOT so named). The glue entrypoint runs it
+explicitly through run-unittest.py.
 """
 
 # pylint: disable=invalid-name,subprocess-run-check
@@ -36,6 +42,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(HERE, "qubes_glue_runner.bash")
 MKSOCK = os.path.join(HERE, "glue_mksock")
 
+## GLUE_UID is pinned to 0 (mapped-root in the userns), so the gateway server
+## socket the proxy-helper symlinks .Connect to is this fixed path.
+SERVER_SOCK = "/run/user/0/sdwdate-gui/sdwdate-gui-server.socket"
+GATEWAY = "sys-whonix"
+
 
 def _subject() -> str:
     repo = os.environ.get("SDWDATE_GUI_REPO", "").rstrip("/")
@@ -49,9 +60,12 @@ SUBJECT = _subject()
 
 QREXEC_STUB = """#!/bin/bash
 ## Stateful qrexec-client-vm stub. $1=target_vm $2=service.
+## Records every call's target VM (one per line) so the test can assert the
+## proxy talks to the CONFIGURED gateway, not an attacker VM.
 ## ConnectCheck: 1st call emits GLUE_CC_OUT/RC (+optional stderr), later calls
 ## emit GLUE_CC_OUT2/RC2 (default 'q') so an 'n' retry terminates.
 ## Connect: records that the proxy tried to proxy to the gateway.
+printf '%s\\n' "$1" >> /run/.qrexec_targets
 svc="$2"
 case "${svc}" in
   sdwdate-gui.ConnectCheck)
@@ -98,6 +112,8 @@ class GlueCase:
         self.rc = -1
         self.out = ""
         self.flags: dict[str, int] = {}
+        self.connect_link_target = ""
+        self.qrexec_targets: list[str] = []
         for line in raw.splitlines():
             if "=" not in line:
                 continue
@@ -106,9 +122,15 @@ class GlueCase:
                 self.rc = int(val)
             elif key == "RESULT_OUT_B64":
                 self.out = base64.b64decode(val).decode("ascii", "replace")
+            elif key == "CONNECT_LINK_TARGET_B64":
+                self.connect_link_target = base64.b64decode(val).decode(
+                    "ascii", "replace")
+            elif key == "QREXEC_TARGETS_B64":
+                text = base64.b64decode(val).decode("ascii", "replace")
+                self.qrexec_targets = text.split("\n") if text else []
             elif key in (
                 "PROXY_SHOULD_RUN", "SHOULD_PROXY_FLAG", "DISABLED_FLAG",
-                "CONNECT_ENDPOINT", "CONNECT_CALLED",
+                "CONNECT_ENDPOINT", "CONNECT_CALLED", "CONNECT_IS_SYMLINK",
             ):
                 self.flags[key] = int(val)
 
@@ -126,6 +148,7 @@ class QubesGlueE2E(unittest.TestCase):
         cc_out: str = "",
         cc_rc: int = 0,
         cc_out2: str = "q",
+        cc_rc2: int = 0,
         cc_stderr: str = "",
         default_user: str = "root",
         precreate_connect: bool = False,
@@ -147,7 +170,10 @@ class QubesGlueE2E(unittest.TestCase):
         with open(notify_stub, "w") as fh:
             fh.write(SYSTEMD_NOTIFY_STUB)
 
-        env = dict(os.environ)
+        ## Start from a GLUE_*-free environment so no ambient GLUE_* can steer a
+        ## result; every input the runner/stubs read is set explicitly here.
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("GLUE_")}
         env.update(
             GLUE_SCRIPT=os.path.join(SUBJECT, script_rel),
             GLUE_SUBJECT=SUBJECT,
@@ -159,6 +185,7 @@ class QubesGlueE2E(unittest.TestCase):
             GLUE_CC_OUT=cc_out,
             GLUE_CC_RC=str(cc_rc),
             GLUE_CC_OUT2=cc_out2,
+            GLUE_CC_RC2=str(cc_rc2),
             GLUE_CC_STDERR=cc_stderr,
             GLUE_DEFAULT_USER=default_user,
             GLUE_PRECREATE_CONNECT="1" if precreate_connect else "0",
@@ -186,6 +213,7 @@ class QubesGlueE2E(unittest.TestCase):
     def test_connectcheck_socket_present_is_y(self) -> None:
         c = self.run_glue(self.CC, "disable=false\n", precreate_connect=True)
         self.assertEqual(c.out, "y")
+        self.assertEqual(c.rc, 0)
 
     def test_connectcheck_cached_flag_is_n(self) -> None:
         c = self.run_glue(
@@ -193,12 +221,14 @@ class QubesGlueE2E(unittest.TestCase):
             precreate_proxy_flag=True,
         )
         self.assertEqual(c.out, "n")
+        self.assertEqual(c.rc, 0)
 
     def test_connectcheck_enabled_is_n_and_caches(self) -> None:
         c = self.run_glue(
             self.CC, "disable=false\nrun_server_in_qubes=true\n"
         )
         self.assertEqual(c.out, "n")
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["PROXY_SHOULD_RUN"], 1)
 
     def test_connectcheck_run_server_false_is_q(self) -> None:
@@ -207,6 +237,7 @@ class QubesGlueE2E(unittest.TestCase):
             self.CC, "disable=false\nrun_server_in_qubes=false\n"
         )
         self.assertEqual(c.out, "q")
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["PROXY_SHOULD_RUN"], 0)
 
     def test_connectcheck_disabled_is_q(self) -> None:
@@ -214,21 +245,28 @@ class QubesGlueE2E(unittest.TestCase):
             self.CC, "disable=true\nrun_server_in_qubes=true\n"
         )
         self.assertEqual(c.out, "q")
+        self.assertEqual(c.rc, 0)
 
     def test_connectcheck_run_server_unset_is_q(self) -> None:
         c = self.run_glue(self.CC, "disable=false\n")
         self.assertEqual(c.out, "q")
+        self.assertEqual(c.rc, 0)
 
     ## --- proxy (workstation): ConnectCheck-result handling -----------------
     PROXY = "usr/libexec/sdwdate-gui/sdwdate-gui-qubes-proxy"
 
     def test_proxy_y_connects(self) -> None:
         c = self.run_glue(self.PROXY, 'gateway="sys-whonix"\n', cc_out="y")
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_CALLED"], 1)
         self.assertEqual(c.flags["DISABLED_FLAG"], 0)
+        ## Every qrexec call must target the CONFIGURED gateway.
+        self.assertTrue(c.qrexec_targets)
+        self.assertEqual(set(c.qrexec_targets), {GATEWAY})
 
     def test_proxy_q_disables(self) -> None:
         c = self.run_glue(self.PROXY, 'gateway="sys-whonix"\n', cc_out="q")
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_CALLED"], 0)
         self.assertEqual(c.flags["DISABLED_FLAG"], 1)
 
@@ -239,13 +277,16 @@ class QubesGlueE2E(unittest.TestCase):
             self.PROXY, 'gateway="sys-whonix"\n',
             cc_out="y", cc_stderr="qrexec-client-vm: a notice\n",
         )
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_CALLED"], 1)
         self.assertEqual(c.flags["DISABLED_FLAG"], 0)
+        self.assertEqual(set(c.qrexec_targets), {GATEWAY})
 
     def test_proxy_n_then_q_keeps_waiting_then_disables(self) -> None:
         c = self.run_glue(
             self.PROXY, 'gateway="sys-whonix"\n', cc_out="n", cc_out2="q"
         )
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_CALLED"], 0)
         self.assertEqual(c.flags["DISABLED_FLAG"], 1)
 
@@ -253,6 +294,7 @@ class QubesGlueE2E(unittest.TestCase):
         c = self.run_glue(
             self.PROXY, 'gateway="sys-whonix"\n', cc_out="unexpected"
         )
+        self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_CALLED"], 0)
         self.assertEqual(c.flags["DISABLED_FLAG"], 1)
 
@@ -270,6 +312,7 @@ class QubesGlueE2E(unittest.TestCase):
         )
         self.assertEqual(c.rc, 0)
         self.assertEqual(c.flags["CONNECT_ENDPOINT"], 0)
+        self.assertEqual(c.flags["CONNECT_IS_SYMLINK"], 0)
 
     def test_helper_creates_connect_symlink(self) -> None:
         c = self.run_glue(
@@ -277,7 +320,10 @@ class QubesGlueE2E(unittest.TestCase):
             precreate_server_sock=True,
         )
         self.assertEqual(c.rc, 0)
-        self.assertEqual(c.flags["CONNECT_ENDPOINT"], 1)
+        ## #6: the endpoint must be a SYMLINK to the server socket, not merely
+        ## a path that exists (a bare `touch` would satisfy existence).
+        self.assertEqual(c.flags["CONNECT_IS_SYMLINK"], 1)
+        self.assertEqual(c.connect_link_target, SERVER_SOCK)
 
     def test_helper_restart_safe_over_stale_symlink(self) -> None:
         ## Issue #7: `ln -s --force` must overwrite a pre-existing endpoint on
@@ -287,7 +333,8 @@ class QubesGlueE2E(unittest.TestCase):
             precreate_server_sock=True, precreate_connect_symlink=True,
         )
         self.assertEqual(c.rc, 0)
-        self.assertEqual(c.flags["CONNECT_ENDPOINT"], 1)
+        self.assertEqual(c.flags["CONNECT_IS_SYMLINK"], 1)
+        self.assertEqual(c.connect_link_target, SERVER_SOCK)
 
 
 def _write_exec(path: str, content: str) -> None:

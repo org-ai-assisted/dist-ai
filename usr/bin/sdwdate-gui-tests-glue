@@ -13,11 +13,15 @@
 ## scripts bind-mounted over the installed copy, a crafted /etc/sdwdate-gui.d,
 ## and PATH stubs for qrexec-client-vm / qubesdb-read.
 ##
-## Registered NON-CORE: it needs user namespaces (unshare + an unprivileged
-## tmpfs mount), which a restricted CI sandbox may forbid. SKIPs (77) when the
-## sdwdate-gui checkout is absent or user namespaces are unavailable -- never a
-## silent exit 0. Set SDWDATE_GUI_REPO to a component checkout. No root (only
-## mapped-root inside the userns), no network, no live qrexec.
+## Registered NON-CORE. Two SKIP paths, each a distinct dist-ai result code so
+## an absent target and an absent capability are not conflated -- and never a
+## silent exit 0 (the module is run through run-unittest.py, which maps an
+## all-skipped / nothing-collected run to 78 / 77 as a backstop):
+##   77 target-absent  -- the sdwdate-gui subject (its python package) is not
+##                        present; set SDWDATE_GUI_REPO to a component checkout.
+##   78 env-unmet      -- user namespaces (unshare + an unprivileged tmpfs
+##                        mount) are unavailable, as a restricted sandbox forbids.
+## No root (only mapped-root inside the userns), no network, no live qrexec.
 
 set -o errexit
 set -o nounset
@@ -35,30 +39,39 @@ else
    tests_dir='/usr/share/sdwdate-gui-tests'
 fi
 
-[ -v SDWDATE_GUI_REPO ] || SDWDATE_GUI_REPO=""
-if [ -n "${SDWDATE_GUI_REPO}" ]; then
-   glue="${SDWDATE_GUI_REPO%/}/etc/qubes-rpc/sdwdate-gui.ConnectCheck"
+if [ -r "${script_dir}/../share/dist-ai-tests-common/run-unittest.py" ]; then
+   run_unittest="${script_dir}/../share/dist-ai-tests-common/run-unittest.py"
 else
-   glue=''
+   run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
 fi
-if [ -z "${glue}" ] || [ ! -f "${glue}" ]; then
-   printf '%s\n' "sdwdate-gui-tests-glue: SKIP (sdwdate-gui checkout not found)" >&2
+
+## Target marker: the sdwdate_gui python package dir -- the SAME marker the
+## harness's _subject() keys off, so a partial checkout cannot slip past this
+## gate into an all-skipped (exit-0) run. Absent -> SKIP target-absent (77).
+[ -v SDWDATE_GUI_REPO ] || SDWDATE_GUI_REPO=""
+subject=''
+if [ -n "${SDWDATE_GUI_REPO}" ]; then
+   subject="${SDWDATE_GUI_REPO%/}"
+fi
+if [ -z "${subject}" ] || \
+   [ ! -d "${subject}/usr/lib/python3/dist-packages/sdwdate_gui" ]; then
+   printf '%s\n' "sdwdate-gui-tests-glue: SKIP (sdwdate-gui subject not found)" >&2
    printf '%s\n' "set SDWDATE_GUI_REPO to a component checkout" >&2
-   ## style-ok: allow-skip: sdwdate-gui checkout absent -- set SDWDATE_GUI_REPO
+   ## style-ok: allow-skip: sdwdate-gui subject absent -- set SDWDATE_GUI_REPO
    exit 77
 fi
 
 ## The harness drives the real scripts inside a user+mount namespace; a
 ## restricted sandbox (seccomp/sysctl) may forbid unprivileged userns or the
-## tmpfs mount. Probe once and SKIP rather than FAIL where it is unavailable.
+## tmpfs mount. That is a runtime CAPABILITY gap -> SKIP env-unmet (78), not 77.
 if ! unshare --user --mount --map-root-user \
    bash -c 'mount -t tmpfs tmpfs /run' >/dev/null 2>&1; then
    printf '%s\n' "sdwdate-gui-tests-glue: SKIP (user namespaces / unprivileged tmpfs unavailable)" >&2
-   ## style-ok: allow-skip: unprivileged user namespaces unavailable -- the e2e harness needs unshare + tmpfs /run
-   exit 77
+   ## style-ok: allow-skip: user namespaces unavailable -- the e2e harness needs unshare + tmpfs /run
+   exit 78
 fi
 
-export PYTHONDONTWRITEBYTECODE=1
-cd -- "${tests_dir}"
-## style-ok: allow-python-interpreter -- run the unittest harness through PATH python3
-python3 -m unittest -v test_qubes_glue_e2e "$@"
+## Named explicitly (NOT 'test_*.py'): the core and coverage runners discover
+## 'test_*.py', so this module must not match that pattern or they would collect
+## the userns e2e tests into the wrong lane.
+"${run_unittest}" --start-directory "${tests_dir}" --pattern 'glue_e2e_suite.py' "$@"

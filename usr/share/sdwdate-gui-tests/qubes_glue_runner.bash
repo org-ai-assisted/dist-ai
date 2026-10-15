@@ -84,3 +84,23 @@ emit_flag /run/sdwdate-gui-qubes-should-proxy SHOULD_PROXY_FLAG
 emit_flag /run/sdwdate-gui/qubes-gateway-server-disabled DISABLED_FLAG
 emit_flag /run/qubes-rpc/sdwdate-gui.Connect CONNECT_ENDPOINT
 emit_flag /run/.connect_called CONNECT_CALLED
+
+## The .Connect endpoint must be a SYMLINK to the server socket, not merely a
+## path that exists (a bare `touch` would satisfy existence). Report symlink-ness
+## and the link TARGET so the test can assert both.
+if [ -L /run/qubes-rpc/sdwdate-gui.Connect ]; then
+   printf '%s\n' "CONNECT_IS_SYMLINK=1"
+   connect_link_target="$(readlink -- /run/qubes-rpc/sdwdate-gui.Connect)"
+else
+   printf '%s\n' "CONNECT_IS_SYMLINK=0"
+   connect_link_target=''
+fi
+printf '%s\n' "CONNECT_LINK_TARGET_B64=$(printf '%s' "${connect_link_target}" | base64 -w0)"
+
+## Every target VM the glue passed to qrexec-client-vm (one per line), so the
+## test can assert the proxy talks to the CONFIGURED gateway, not an attacker VM.
+qrexec_targets=''
+if [ -f /run/.qrexec_targets ]; then
+   qrexec_targets="$(cat -- /run/.qrexec_targets)"
+fi
+printf '%s\n' "QREXEC_TARGETS_B64=$(printf '%s' "${qrexec_targets}" | base64 -w0)"
