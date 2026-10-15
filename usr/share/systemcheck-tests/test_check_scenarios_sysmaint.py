@@ -106,12 +106,17 @@ class TestSysmaintAutostartWiring(ScenarioTestBase):
 
     def test_main_script_invokes_it(self) -> None:
         ## Registration in the allow-list only GATES autostart; the function also
-        ## has to be invoked by the orchestrator or it never runs.
+        ## has to be invoked by the orchestrator or it never runs. Require a
+        ## real (non-comment) invocation line, so a commented-out call does not
+        ## satisfy this.
         main = os.path.join(self.dir, 'systemcheck')
         with open(main, encoding='utf-8') as fh:
-            text = fh.read()
-        self.assertIn('systemcheck_run_function check_sysmaint_boot_role_mismatch',
-                      text)
+            lines = fh.read().splitlines()
+        invoked = any(
+            ln.lstrip().startswith(
+                'systemcheck_run_function check_sysmaint_boot_role_mismatch')
+            for ln in lines)
+        self.assertTrue(invoked, 'no live invocation of the mismatch check')
 
 
 class TestSysmaintBootModeLineScenarios(ScenarioTestBase):
