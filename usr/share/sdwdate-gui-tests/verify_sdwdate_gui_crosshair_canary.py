@@ -8,7 +8,7 @@
 """
 Anti-silent-green canary for the CrossHair lane.
 
-A DELIBERATELY FALSE contract over the real parse_ipc_command. The lane runs
+A DELIBERATELY FALSE contract over the real parse_ipc_buf. The lane runs
 `crosshair check` on it and REQUIRES a counterexample (crosshair exit 1): if
 this ever comes back clean, CrossHair is not actually exercising the subject
 (a broken import, a stubbed function, an engine regression) and every clean
@@ -22,17 +22,17 @@ input -- is false for a partial frame (buffer unchanged) and for a short buffer
 
 # pylint: disable=invalid-name
 
-from sdwdate_gui.sdwdate_gui_shared import parse_ipc_command
+from sdwdate_gui.sdwdate_gui_shared import parse_ipc_buf
 
 
 def prop_canary_buffer_always_strictly_shrinks(sock_buf: bytes) -> bool:
     """
-    FALSE ON PURPOSE. Claims parse_ipc_command's returned buffer is always
+    FALSE ON PURPOSE. Claims parse_ipc_buf's returned buffer is always
     strictly shorter than the input. CrossHair MUST refute this.
     post: __return__
     """
     try:
-        new_buf, _name, _parts = parse_ipc_command(sock_buf)
+        new_buf, _msgs = parse_ipc_buf(sock_buf)
     except ValueError:
         return True
     return len(new_buf) < len(sock_buf)

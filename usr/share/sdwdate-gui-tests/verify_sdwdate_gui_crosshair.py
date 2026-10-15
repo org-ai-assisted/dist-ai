@@ -7,7 +7,7 @@
 
 """
 Bounded symbolic counterexample search (CrossHair) over sdwdate-gui's PyQt-free
-wire-frame parsers.
+wire-frame parser.
 
 NOT formal verification and NOT a proof. CrossHair symbolically executes the
 REAL functions with an SMT backend and searches for an input that breaks a
@@ -20,15 +20,15 @@ this lane is the complementary bounded search for the unbounded-input parsers
 those techniques cannot enumerate.
 
 Subject (imported, never copied -- a copy would drift from the shipped code):
-  sdwdate_gui.sdwdate_gui_shared.parse_ipc_command
+  sdwdate_gui.sdwdate_gui_shared.parse_ipc_buf
   sdwdate_gui.sdwdate_gui_shared.check_bytes_printable
 
 Scope is deliberately limited to these two: they are pure and PyQt-free, and
-live in CrossHair's well-supported core (ints, bytes, slicing, int.from_bytes,
-a bounded byte loop, ascii decode, str.split). The octal-escape decoder is
-out of scope on purpose -- it is PyQt-dependent and leans on re.sub + a
-re.Match callback + int(str, 8), where CrossHair's stdlib models are imperfect,
-so a clean result there would be weak and misleading.
+live in CrossHair's well-supported core (ints, bytes, memoryview slicing,
+int.from_bytes, a bounded byte loop, ascii decode, str.split). The octal-escape
+decoder is out of scope on purpose -- it is PyQt-dependent and leans on re.sub +
+a re.Match callback + int(str, 8), where CrossHair's stdlib models are
+imperfect, so a clean result there would be weak and misleading.
 
 Contracts are PEP 316 docstring post-conditions on thin wrapper functions that
 CALL the real subject. The "raises only ValueError" property is expressed by
@@ -39,7 +39,7 @@ escape the wrapper, which CrossHair reports as a counterexample.
 # pylint: disable=invalid-name
 
 from sdwdate_gui.sdwdate_gui_shared import (
-    parse_ipc_command,
+    parse_ipc_buf,
     check_bytes_printable,
     MAX_MSG_SIZE,
 )
@@ -47,14 +47,14 @@ from sdwdate_gui.sdwdate_gui_shared import (
 
 def prop_parse_raises_only_valueerror_and_is_suffix(sock_buf: bytes) -> bool:
     """
-    On ANY bytes input, parse_ipc_command either raises ValueError or returns a
-    new buffer that is a SUFFIX of the input and no longer than it (never
+    On ANY bytes input, parse_ipc_buf either raises ValueError or returns a
+    remaining buffer that is a SUFFIX of the input and no longer than it (never
     grows). Any exception type other than ValueError escapes this wrapper and is
     reported as a counterexample.
     post: __return__
     """
     try:
-        new_buf, _name, _parts = parse_ipc_command(sock_buf)
+        new_buf, _msgs = parse_ipc_buf(sock_buf)
     except ValueError:
         return True
     return len(new_buf) <= len(sock_buf) and sock_buf.endswith(new_buf)
@@ -62,18 +62,20 @@ def prop_parse_raises_only_valueerror_and_is_suffix(sock_buf: bytes) -> bool:
 
 def prop_parse_progress_or_unchanged(sock_buf: bytes) -> bool:
     """
-    Buffer-protocol progress: when a full frame is present (declared length
-    within the cap and enough bytes buffered) the buffer STRICTLY shrinks;
-    otherwise it is returned UNCHANGED. ValueError (a kick) is acceptable.
+    Buffer-protocol progress: when a non-empty full frame is present at the
+    front (declared length in (0, MAX] with enough bytes buffered) the returned
+    buffer STRICTLY shrinks (at least that frame was consumed); otherwise it is
+    returned UNCHANGED. ValueError (a kick -- e.g. a 0-length frame) is
+    acceptable.
     post: __return__
     """
     try:
-        new_buf, _name, _parts = parse_ipc_command(sock_buf)
+        new_buf, _msgs = parse_ipc_buf(sock_buf)
     except ValueError:
         return True
     if len(sock_buf) >= 2:
         msg_len = int.from_bytes(sock_buf[:2], byteorder="big", signed=False)
-        if msg_len <= MAX_MSG_SIZE and len(sock_buf) >= msg_len + 2:
+        if 0 < msg_len <= MAX_MSG_SIZE and len(sock_buf) >= msg_len + 2:
             return len(new_buf) < len(sock_buf)
     return len(new_buf) == len(sock_buf)
 

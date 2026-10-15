@@ -98,44 +98,50 @@ class TestCheckBytesPrintable(unittest.TestCase):
         self.assertFalse(shared.check_bytes_printable(b'ok\xff'))
 
 
-class TestParseIpcCommand(unittest.TestCase):
-    """shared.parse_ipc_command framing + validation."""
+class TestParseIpcBuf(unittest.TestCase):
+    """shared.parse_ipc_buf framing + validation."""
 
     @staticmethod
     def _frame(payload: bytes) -> bytes:
         return len(payload).to_bytes(2, 'big') + payload
 
     def test_full_command_parsed(self) -> None:
-        buf = self._frame(b'set_tor_status running') + b'TAIL'
-        rest, name, parts = shared.parse_ipc_command(buf)
-        self.assertEqual(name, 'set_tor_status')
-        self.assertEqual(parts, ['running'])
-        self.assertEqual(rest, b'TAIL')
+        buf = self._frame(b'set_tor_status running')
+        rest, msg_list = shared.parse_ipc_buf(buf)
+        self.assertEqual(msg_list, [['set_tor_status', 'running']])
+        self.assertEqual(rest, b'')
+
+    def test_two_frames_parsed_in_one_pass(self) -> None:
+        buf = self._frame(b'set_tor_status running') + self._frame(b'a b c')
+        rest, msg_list = shared.parse_ipc_buf(buf)
+        self.assertEqual(
+            msg_list, [['set_tor_status', 'running'], ['a', 'b', 'c']]
+        )
+        self.assertEqual(rest, b'')
 
     def test_oversized_length_raises(self) -> None:
         buf = (shared.MAX_MSG_SIZE + 1).to_bytes(2, 'big') + b'x'
         with self.assertRaises(ValueError):
-            shared.parse_ipc_command(buf)
+            shared.parse_ipc_buf(buf)
 
     def test_partial_message_returns_unchanged(self) -> None:
-        ## Claims 10 bytes but only 3 present -> buffer returned unchanged.
+        ## Claims 10 bytes but only 3 present -> buffer returned unchanged,
+        ## no complete messages yet.
         buf = (10).to_bytes(2, 'big') + b'abc'
-        rest, name, parts = shared.parse_ipc_command(buf)
+        rest, msg_list = shared.parse_ipc_buf(buf)
         self.assertEqual(rest, buf)
-        self.assertIsNone(name)
-        self.assertIsNone(parts)
+        self.assertEqual(msg_list, [])
 
-    def test_zero_length_message(self) -> None:
+    def test_zero_length_message_raises(self) -> None:
+        ## An empty (0-length) frame is now rejected outright.
         buf = (0).to_bytes(2, 'big') + b'rest'
-        rest, name, parts = shared.parse_ipc_command(buf)
-        self.assertEqual(rest, b'rest')
-        self.assertIsNone(name)
-        self.assertIsNone(parts)
+        with self.assertRaises(ValueError):
+            shared.parse_ipc_buf(buf)
 
     def test_nonprintable_payload_raises(self) -> None:
         buf = self._frame(b'ab\x01cd')
         with self.assertRaises(ValueError):
-            shared.parse_ipc_command(buf)
+            shared.parse_ipc_buf(buf)
 
 
 class TestParseConfigFiles(unittest.TestCase):

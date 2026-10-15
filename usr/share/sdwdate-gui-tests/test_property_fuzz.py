@@ -13,11 +13,11 @@ surfaces that face variable or attacker-influenced data. Every property drives
 the REAL functions imported from sdwdate_gui; nothing is reimplemented here.
 
 Covered surfaces:
-  - sdwdate_gui_shared.parse_ipc_command: the length-prefixed wire-frame parser
+  - sdwdate_gui_shared.parse_ipc_buf: the length-prefixed wire-frame splitter
     (2-byte big-endian length, MAX_MSG_SIZE cap, printable-ASCII check, split
     on space). Never raises anything but ValueError; its returned buffer is
     always a suffix of the input, and strictly shorter once a frame was
-    consumed; a validly framed message round-trips to the same name + parts.
+    consumed; a validly framed message round-trips to its part list.
   - SdwdateGuiClient.__set_sdwdate_status / __octal_decode: the octal-escape
     (\\NNN) decode path for status messages. Arbitrary content decodes or
     cleanly kicks the client (returns False), never raising uncaught; safe
@@ -64,7 +64,7 @@ _APP: QApplication = (
 )
 
 ## Printable-ASCII payload bytes: exactly the range check_bytes_printable
-## accepts, i.e. a frame body that parse_ipc_command decodes rather than
+## accepts, i.e. a frame body that parse_ipc_buf decodes rather than
 ## rejecting. Bounded well under MAX_MSG_SIZE so framing stays cheap.
 _printable_payload = st.text(
     alphabet=st.characters(min_codepoint=0x20, max_codepoint=0x7E),
@@ -104,45 +104,48 @@ def _frame(payload: bytes) -> bytes:
     return len(payload).to_bytes(2, "big") + payload
 
 
-class TestParseIpcCommandProperties(unittest.TestCase):
-    """Invariants of shared.parse_ipc_command over arbitrary input."""
+class TestParseIpcBufProperties(unittest.TestCase):
+    """Invariants of shared.parse_ipc_buf over arbitrary input."""
 
     @settings(max_examples=400, deadline=None)
     @given(buf=st.binary(max_size=8192))
     def test_arbitrary_bytes_contract(self, buf: bytes) -> None:
         """
         Over ANY byte buffer: raises only ValueError; the returned remaining
-        buffer is a suffix of the input and never longer; name and parts are
-        both None or both set together; and when a frame was consumed (name is
-        set) the remaining buffer is strictly shorter.
+        buffer is a suffix of the input and never longer; the message list is
+        a list of non-empty str-part lists; and when at least one frame was
+        consumed the remaining buffer is strictly shorter than the input.
         """
         try:
-            rest, name, parts = shared.parse_ipc_command(buf)
+            rest, msg_list = shared.parse_ipc_buf(buf)
         except ValueError:
             return
         self.assertIsInstance(rest, bytes)
         self.assertTrue(buf.endswith(rest))
         self.assertLessEqual(len(rest), len(buf))
-        self.assertEqual(name is None, parts is None)
-        if name is not None:
-            self.assertIsInstance(name, str)
+        self.assertIsInstance(msg_list, list)
+        for parts in msg_list:
             self.assertIsInstance(parts, list)
+            self.assertGreaterEqual(len(parts), 1)
+            self.assertTrue(all(isinstance(part, str) for part in parts))
+        if msg_list:
             self.assertLess(len(rest), len(buf))
 
     @settings(max_examples=300, deadline=None)
-    @given(payload=_printable_payload, tail=st.binary(max_size=64))
+    @given(payload=_printable_payload, tail=st.binary(max_size=1))
     def test_valid_frame_round_trips(
         self, payload: bytes, tail: bytes
     ) -> None:
         """
-        A validly framed printable-ASCII message parses back to a name + parts
-        whose single-space join reconstructs the exact payload, consumes only
-        its own frame, and returns the trailing bytes untouched.
+        A validly framed printable-ASCII message parses to exactly one
+        part-list whose single-space join reconstructs the payload; a
+        sub-length (< 2 byte) trailing fragment is returned untouched as the
+        remainder. (A >= 2 byte tail is itself a frame prefix, so it is not a
+        neutral trailer under the one-pass splitter.)
         """
-        rest, name, parts = shared.parse_ipc_command(_frame(payload) + tail)
-        self.assertIsNotNone(name)
-        assert name is not None and parts is not None
-        self.assertEqual(" ".join([name] + parts), payload.decode("ascii"))
+        rest, msg_list = shared.parse_ipc_buf(_frame(payload) + tail)
+        self.assertEqual(len(msg_list), 1)
+        self.assertEqual(" ".join(msg_list[0]), payload.decode("ascii"))
         self.assertEqual(rest, tail)
 
 

@@ -334,11 +334,17 @@ class TestTryParseCommands(ClientTestBase):
         self._run(buf)
         self.assertEqual(self.client._SdwdateGuiClient__sock_buf, buf)
 
-    def test_zero_length_frame_continues(self) -> None:
+    def test_zero_length_frame_kicks(self) -> None:
+        ## A 0-length frame makes parse_ipc_buf raise, so the whole buffer is
+        ## rejected and the client kicked -- the trailing set_client_name is
+        ## never processed.
         self.set_qubes(False)
         buf = (0).to_bytes(2, 'big') + self._frame(b'set_client_name host')
-        self._run(buf)
-        self.assertEqual(self.client.client_name, 'host')
+        with mock.patch.object(self.client, 'kick_client') as kick, \
+                self.assertLogs(level='WARNING'):
+            self._run(buf)
+        kick.assert_called()
+        self.assertIsNone(self.client.client_name)
 
     def test_setter_returns_false_stops(self) -> None:
         ## A second set_client_name in the same buffer -> __set_client_name
