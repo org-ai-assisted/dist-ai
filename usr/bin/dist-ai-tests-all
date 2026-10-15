@@ -223,6 +223,7 @@ integration_suites=(
    dm-whonix-pair-tests
    dm-grub-menu-render-tests
    dm-reproducible-build-tests
+   sdwdate-gui-tests-glue
    sdwdate-gui-tests-integration
    sdwdate-gui-tests-mutation
    sdwdate-gui-tests-verify
@@ -939,6 +940,18 @@ wire() {
          ## the case exists to satisfy the registry guard.
          wire_env=()
          ;;
+      dm-calamares-install)
+         ## Self-contained unit suite for dist-ai's own calamares-install tool:
+         ## drives the real script from this tree (no checkout, no VM, no root,
+         ## no network). Nothing to wire; the case satisfies the registry guard.
+         wire_env=()
+         ;;
+      dm-image-build)
+         ## Self-contained unit suite for dist-ai's own image-build tool: drives
+         ## the real script from this tree (no checkout, no VM, no network).
+         ## Nothing to wire; the case satisfies the registry guard.
+         wire_env=()
+         ;;
       test-results-site)
          ## dist-ai's own results-plane + verification-site tooling. The suite
          ## imports dm_test_results from this tree directly and uses Pillow for
@@ -1118,7 +1131,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

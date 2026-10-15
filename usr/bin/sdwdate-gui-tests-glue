@@ -1,0 +1,64 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## End-to-end harness for the sdwdate-gui Qubes BASH glue -- the untrusted
+## surface the Python suite cannot reach: sdwdate-gui.ConnectCheck,
+## sdwdate-gui-qubes-proxy, sdwdate-gui-qubes-proxy-helper. Each case runs the
+## REAL script (no synthetic copy) inside `unshare --user --mount
+## --map-root-user` with a private tmpfs /run, the checkout's config-read +
+## scripts bind-mounted over the installed copy, a crafted /etc/sdwdate-gui.d,
+## and PATH stubs for qrexec-client-vm / qubesdb-read.
+##
+## Registered NON-CORE: it needs user namespaces (unshare + an unprivileged
+## tmpfs mount), which a restricted CI sandbox may forbid. SKIPs (77) when the
+## sdwdate-gui checkout is absent or user namespaces are unavailable -- never a
+## silent exit 0. Set SDWDATE_GUI_REPO to a component checkout. No root (only
+## mapped-root inside the userns), no network, no live qrexec.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-gui-tests" ]; then
+   tests_dir="${script_dir}/../share/sdwdate-gui-tests"
+else
+   tests_dir='/usr/share/sdwdate-gui-tests'
+fi
+
+[ -v SDWDATE_GUI_REPO ] || SDWDATE_GUI_REPO=""
+if [ -n "${SDWDATE_GUI_REPO}" ]; then
+   glue="${SDWDATE_GUI_REPO%/}/etc/qubes-rpc/sdwdate-gui.ConnectCheck"
+else
+   glue=''
+fi
+if [ -z "${glue}" ] || [ ! -f "${glue}" ]; then
+   printf '%s\n' "sdwdate-gui-tests-glue: SKIP (sdwdate-gui checkout not found)" >&2
+   printf '%s\n' "set SDWDATE_GUI_REPO to a component checkout" >&2
+   ## style-ok: allow-skip: sdwdate-gui checkout absent -- set SDWDATE_GUI_REPO
+   exit 77
+fi
+
+## The harness drives the real scripts inside a user+mount namespace; a
+## restricted sandbox (seccomp/sysctl) may forbid unprivileged userns or the
+## tmpfs mount. Probe once and SKIP rather than FAIL where it is unavailable.
+if ! unshare --user --mount --map-root-user \
+   bash -c 'mount -t tmpfs tmpfs /run' >/dev/null 2>&1; then
+   printf '%s\n' "sdwdate-gui-tests-glue: SKIP (user namespaces / unprivileged tmpfs unavailable)" >&2
+   ## style-ok: allow-skip: unprivileged user namespaces unavailable -- the e2e harness needs unshare + tmpfs /run
+   exit 77
+fi
+
+export PYTHONDONTWRITEBYTECODE=1
+cd -- "${tests_dir}"
+## style-ok: allow-python-interpreter -- run the unittest harness through PATH python3
+python3 -m unittest -v test_qubes_glue_e2e "$@"
