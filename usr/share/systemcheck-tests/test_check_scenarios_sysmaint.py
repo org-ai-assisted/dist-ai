@@ -15,18 +15,23 @@ as booted_in_sysmaint_session):
     the user believes they are in a maintenance session.
   - USER requested, landed on 'sysmaint': the user believes they are in a
     locked-down session but actually holds sudo-capable privileges.
-check_user_sysmaint_split_boot_mismatch raises a grave (error) popup for either
-direction, and is registered in systemcheck_autostart_functions so it also
-surfaces at login. The factual session line (check_user_sysmaint_split_boot_mode)
-reports the account actually in use and does NOT duplicate the warning at info.
+check_sysmaint_boot_role_mismatch raises a grave (error) popup for either
+direction (only when user-sysmaint-split is installed), and is registered in
+systemcheck_autostart_functions so it also surfaces at login. The factual
+session line (check_user_sysmaint_split_boot_mode) reports the account actually
+in use and does NOT duplicate the warning at info.
 """
 
+import os
 import unittest
 
 from systemcheck_testlib import (
     ScenarioTestBase,
     run_check_scenario,
 )
+
+## user-sysmaint-split installed is a precondition for any mismatch warning.
+USS = 'user_sysmaint_split_installed=true'
 
 
 class TestSysmaintBootMismatchScenarios(ScenarioTestBase):
@@ -43,39 +48,70 @@ class TestSysmaintBootMismatchScenarios(ScenarioTestBase):
 
     def _run(self, env_setup: str):
         return run_check_scenario(
-            self.check(self.FILE), 'check_user_sysmaint_split_boot_mismatch',
+            self.check(self.FILE), 'check_sysmaint_boot_role_mismatch',
             env_setup=env_setup)
 
     def test_sysmaint_requested_but_standard_user_is_grave(self) -> None:
-        r = self._run('booted_in_sysmaint_session=true\nwho_ami=user')
+        r = self._run(f'{USS}\nbooted_in_sysmaint_session=true\nwho_ami=user')
         self._assert_grave(r)
         self.assertIn('SYSMAINT Session', r.joined())
         self.assertIn('sysmaint', r.joined())
 
     def test_user_requested_but_sysmaint_account_is_grave(self) -> None:
-        r = self._run('booted_in_sysmaint_session=false\nwho_ami=sysmaint')
+        r = self._run(f'{USS}\nbooted_in_sysmaint_session=false\nwho_ami=sysmaint')
         self._assert_grave(r)
         self.assertIn('USER Session', r.joined())
         self.assertIn('sysmaint', r.joined())
 
+    def test_predicate_is_positive_match_on_sysmaint(self) -> None:
+        ## Any account that is NOT 'sysmaint' is unprivileged, not just 'user'.
+        ## Pins the predicate to who_ami == sysmaint (a who_ami != user predicate
+        ## would wrongly treat 'nobody' as the privileged account and stay quiet).
+        r = self._run(f'{USS}\nbooted_in_sysmaint_session=true\nwho_ami=nobody')
+        self._assert_grave(r)
+
     def test_sysmaint_session_aligned_is_quiet(self) -> None:
-        r = self._run('booted_in_sysmaint_session=true\nwho_ami=sysmaint')
+        r = self._run(f'{USS}\nbooted_in_sysmaint_session=true\nwho_ami=sysmaint')
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
     def test_user_session_aligned_is_quiet(self) -> None:
-        r = self._run('booted_in_sysmaint_session=false\nwho_ami=user')
+        r = self._run(f'{USS}\nbooted_in_sysmaint_session=false\nwho_ami=user')
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
-    def test_autostart_registration(self) -> None:
-        ## Grave checks surface in autostart mode only when registered in
-        ## systemcheck_autostart_functions (see preparation.bsh gating).
+    def test_quiet_when_split_not_installed(self) -> None:
+        ## No user-sysmaint-split: no 'sysmaint' privilege split exists, so a
+        ## 'boot-role=sysmaint' cmdline does not imply the account lacks sudo.
+        r = self._run('user_sysmaint_split_installed=false\n'
+                      'booted_in_sysmaint_session=true\nwho_ami=user')
+        self.assertCleanRun(r)
+        self.assertEqual(r.records, [])
+
+
+class TestSysmaintAutostartWiring(ScenarioTestBase):
+    FILE = 'check_user_sysmaint_split.bsh'
+
+    def test_registered_without_substring_collision(self) -> None:
+        ## The orchestrator's autostart/skip gate is an UNANCHORED substring
+        ## match, so the registered name must not contain another check's name.
+        ## Registering 'check_user_sysmaint_split_boot_mismatch' (old name) would
+        ## make the aggregator 'check_user_sysmaint_split' match the list too.
         r = run_check_scenario(
             self.check(self.FILE),
             'printf "LIST\\t%s\\n" "${systemcheck_autostart_functions}"',
             env_setup='systemcheck_autostart_functions="${systemcheck_autostart_functions:-}"')
-        self.assertIn('check_user_sysmaint_split_boot_mismatch', r.stdout)
+        self.assertIn('check_sysmaint_boot_role_mismatch', r.stdout)
+        self.assertNotIn('check_user_sysmaint_split', r.stdout)
+
+    def test_main_script_invokes_it(self) -> None:
+        ## Registration in the allow-list only GATES autostart; the function also
+        ## has to be invoked by the orchestrator or it never runs.
+        main = os.path.join(self.dir, 'systemcheck')
+        with open(main, encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertIn('systemcheck_run_function check_sysmaint_boot_role_mismatch',
+                      text)
 
 
 class TestSysmaintBootModeLineScenarios(ScenarioTestBase):
