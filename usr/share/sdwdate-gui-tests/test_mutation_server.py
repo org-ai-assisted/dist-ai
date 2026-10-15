@@ -118,9 +118,9 @@ class TestProtocolEnumValues(unittest.TestCase):
 
     def test_tor_status_values(self) -> None:
         self.assertEqual(server.TorStatus.RUNNING.value, 0)
-        self.assertEqual(server.TorStatus.STOPPED.value, 1)
-        self.assertEqual(server.TorStatus.DISABLED.value, 2)
-        self.assertEqual(server.TorStatus.DISABLED_RUNNING.value, 3)
+        self.assertEqual(server.TorStatus.DISABLED_RUNNING.value, 1)
+        self.assertEqual(server.TorStatus.STOPPED.value, 2)
+        self.assertEqual(server.TorStatus.DISABLED.value, 3)
         self.assertEqual(server.TorStatus.ABSENT.value, 0xFE)
         self.assertEqual(server.TorStatus.UNKNOWN.value, 0xFF)
 
@@ -160,11 +160,16 @@ class TestFrameLoopAndArgCount(_TrayFixture):
     def _frame(payload: bytes) -> bytes:
         return len(payload).to_bytes(2, "big") + payload
 
-    def test_zero_length_message_consumed(self) -> None:
+    def test_zero_length_frame_kicks(self) -> None:
+        ## A 0-length frame is now rejected by parse_ipc_buf (`msg_len == 0`
+        ## raises), so the client is kicked rather than the frame consumed.
         client = _named_client()
+        kicked: list[bool] = []
+        client.clientDisconnected.connect(lambda: kicked.append(True))
         client._SdwdateGuiClient__sock_buf = (0).to_bytes(2, "big")
-        client._SdwdateGuiClient__try_parse_commands()
-        self.assertEqual(client._SdwdateGuiClient__sock_buf, b"")
+        with self.assertLogs(level="WARNING"):
+            client._SdwdateGuiClient__try_parse_commands()
+        self.assertEqual(kicked, [True])
 
     def test_sdwdate_status_three_args_kicked(self) -> None:
         ## set_sdwdate_status expects exactly 2 args; a 3rd must kick

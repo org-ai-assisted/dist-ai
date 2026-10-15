@@ -62,8 +62,8 @@ class TestCheckBytesPrintableBoundary(unittest.TestCase):
         self.assertFalse(shared.check_bytes_printable(bytes([0x7F])))
 
 
-class TestParseIpcCommandBoundary(unittest.TestCase):
-    """parse_ipc_command length/sign/framing boundaries."""
+class TestParseIpcBufBoundary(unittest.TestCase):
+    """parse_ipc_buf length/sign/framing boundaries."""
 
     @staticmethod
     def _frame(payload: bytes) -> bytes:
@@ -72,29 +72,39 @@ class TestParseIpcCommandBoundary(unittest.TestCase):
     def test_exactly_max_accepted(self) -> None:
         """A body of EXACTLY MAX_MSG_SIZE bytes is accepted (pins `> MAX`)."""
         payload = b"a" * 4096
-        rest, name, parts = shared.parse_ipc_command(self._frame(payload))
-        self.assertEqual(name, "a" * 4096)
-        self.assertEqual(parts, [])
+        rest, msg_list = shared.parse_ipc_buf(self._frame(payload))
+        self.assertEqual(msg_list, [["a" * 4096]])
         self.assertEqual(rest, b"")
 
     def test_one_over_max_rejected(self) -> None:
         """A declared length of 4097 is rejected regardless of body."""
         with self.assertRaises(ValueError):
-            shared.parse_ipc_command((4097).to_bytes(2, "big") + b"x")
+            shared.parse_ipc_buf((4097).to_bytes(2, "big") + b"x")
 
     def test_high_bit_length_is_unsigned(self) -> None:
         """A 0xFFFF prefix decodes unsigned (65535 > MAX -> raise), not -1."""
         with self.assertRaises(ValueError):
-            shared.parse_ipc_command(b"\xff\xff")
+            shared.parse_ipc_buf(b"\xff\xff")
+
+    def test_zero_length_rejected(self) -> None:
+        """A 0-length frame is rejected even when a VALID frame follows.
+
+        Pins the `msg_len == 0` raise: a mutant that admits a 0-length frame
+        would return it as an empty message plus the trailing valid one (no
+        raise), so a bare `(0, 'rest')` buffer -- which raises anyway on the
+        oversized trailer -- would not discriminate.
+        """
+        buf = (0).to_bytes(2, "big") + self._frame(b"ok")
+        with self.assertRaises(ValueError):
+            shared.parse_ipc_buf(buf)
 
     def test_one_byte_short_is_incomplete(self) -> None:
         """len == msg_len+1 (one byte short of a full frame) -> incomplete."""
         ## Declares 8 body bytes, supplies 7 -> total len = msg_len+1.
         buf = (8).to_bytes(2, "big") + b"abcdefg"
-        rest, name, parts = shared.parse_ipc_command(buf)
+        rest, msg_list = shared.parse_ipc_buf(buf)
         self.assertEqual(rest, buf)
-        self.assertIsNone(name)
-        self.assertIsNone(parts)
+        self.assertEqual(msg_list, [])
 
     def test_prefix_only_small_len_is_incomplete(self) -> None:
         """A bare 2-byte prefix (msg_len=2, no body) is incomplete.
@@ -104,10 +114,9 @@ class TestParseIpcCommandBoundary(unittest.TestCase):
         would wrongly try to parse an absent body.
         """
         buf = (2).to_bytes(2, "big")
-        rest, name, parts = shared.parse_ipc_command(buf)
+        rest, msg_list = shared.parse_ipc_buf(buf)
         self.assertEqual(rest, buf)
-        self.assertIsNone(name)
-        self.assertIsNone(parts)
+        self.assertEqual(msg_list, [])
 
 
 class TestConfigReadArgHandling(unittest.TestCase):

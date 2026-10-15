@@ -128,18 +128,23 @@ class TestFileChangedRouting(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTryParseFrameLoop(unittest.IsolatedAsyncioTestCase):
-    """The >=2 frame-loop guard consumes a complete zero-length message."""
+    """A 0-length frame is rejected by parse_ipc_buf and kicks the server."""
 
     def setUp(self) -> None:
         self.addCleanup(setattr, client.GlobalData, "sock_buf", b"")
+        self.addCleanup(setattr, client.GlobalData, "sock_write", None)
 
-    async def test_zero_length_message_consumed(self) -> None:
-        ## A complete 2-byte frame (length prefix 0, no body). The loop must
-        ## enter (len >= 2) and consume it. Mutants >=3 / >2 / !=2 skip the
-        ## loop and leave the 2 bytes unconsumed.
+    async def test_zero_length_frame_kicks(self) -> None:
+        ## A 2-byte frame with length prefix 0: parse_ipc_buf raises on
+        ## `msg_len == 0`, so try_parse_commands kicks the server. Pins the
+        ## `== 0 -> raise` guard; a mutant dropping it would parse on.
+        writer = mock.Mock()
+        writer.wait_closed = mock.AsyncMock()
+        client.GlobalData.sock_write = writer
         client.GlobalData.sock_buf = (0).to_bytes(2, "big")
-        await client.try_parse_commands()
-        self.assertEqual(client.GlobalData.sock_buf, b"")
+        with self.assertLogs(level="ERROR"):
+            await client.try_parse_commands()
+        writer.close.assert_called_once()
 
 
 class TestClientSendBoundary(unittest.IsolatedAsyncioTestCase):

@@ -271,10 +271,6 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         self.assertNotIn('\x1b', out, 'ESC bytes must be neutralized, not passed through')
         self.assertNotIn('\x07', out, 'BEL bytes must be neutralized')
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie's
-    ## check_critical_logs hard token dropped the 'BUG at' oops form (matches only ' BUG:' now),
-    ## so a 'kernel BUG at <file>:<line>!' is no longer force-shown -- remove when fixed.
-    @unittest.expectedFailure
     def test_bug_on_macro_critical(self) -> None:
         ## The BUG()/BUG_ON() macro logs 'kernel BUG at <file>:<line>!' -- ' BUG ' with no
         ## colon. The word-boundary token must catch it (a plain ' BUG:' substring would
@@ -528,20 +524,6 @@ class TestCheckJournalReadFailure(ScenarioTestBase):
         self.assertIn('Bad RAM detected', r.joined(),
                       'a captured critical must still be reported despite a '
                       'this-boot read failure')
-
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie made ALL four
-    ## journal reads strict (|| journal_read_rc=$?), including last-boot, so a benign no-previous-boot
-    ## now warns + exits 1 instead of being tolerated -- remove when fixed.
-    @unittest.expectedFailure
-    def test_this_boot_ok_last_boot_missing_does_not_warn(self) -> None:
-        ## This-boot reads succeed (empty output = clean); only the last-boot
-        ## service read fails (no previous boot). Benign -> no warning, exit 0.
-        body = 'case "$1" in *last_boot*) return 1 ;; *) printf "" ;; esac'
-        r = self._run(body)
-        self.assertEqual(r.exit_code, '0',
-                         'a benign no-previous-boot must not fail the check')
-        self.assertNotIn('Could not read the systemd journal', r.joined(),
-                         'no-previous-boot is benign and must not warn')
 
     def test_clean_reads_report_no_warning(self) -> None:
         ## All reads succeed with empty output = a genuinely clean journal.

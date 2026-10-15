@@ -217,9 +217,10 @@ class TestUserSysmaintSplitScenarios(ScenarioTestBase):
     def test_boot_mode_reports_sysmaint_session(self) -> None:
         r = run_check_scenario(
             self.check(self.FILE), 'check_user_sysmaint_split',
-            env_setup='booted_in_sysmaint_session=true',
+            env_setup='booted_in_sysmaint_session=true\nwho_ami=sysmaint',
             stubs='leaprun() { return 0; }')
         self.assertIn('SYSMAINT Session', r.joined())
+        self.assertNotIn('standard user', r.joined())
 
 
 class TestMetaPackagesScenarios(ScenarioTestBase):

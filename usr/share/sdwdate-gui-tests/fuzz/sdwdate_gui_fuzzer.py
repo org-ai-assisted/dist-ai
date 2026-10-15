@@ -584,12 +584,12 @@ def _d_zero_length_then_valid(h, mode, repro):
     findings = []
     c = h.new_client()
     h.register(c, "disp5711")
-    c.write(b"\x00\x00")  # zero-length message, must be skipped
+    c.write(b"\x00\x00")  # zero-length message: must be REJECTED (kick)
     c.set_status("busy", "ok")
     h.pump()
-    if kicked(c):
+    if not kicked(c):
         findings.append(
-            Finding(mode, "CRASH", "zero-length message broke the stream", repro)
+            Finding(mode, "CRASH", "zero-length message not rejected", repro)
         )
     return findings
 

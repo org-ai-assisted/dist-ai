@@ -297,15 +297,21 @@ class TestTryParseCommands(ClientResetMixin):
                     await client.try_parse_commands()
                 ks.assert_awaited_once()
 
-    async def test_zero_length_message_continues(self) -> None:
-        ## A zero-length frame followed by a real command.
+    async def test_zero_length_frame_kicks(self) -> None:
+        ## A zero-length frame makes parse_ipc_buf raise, so the client kicks
+        ## the server; the trailing command is never run.
+        writer = mock.Mock()
+        writer.wait_closed = mock.AsyncMock()
+        client.GlobalData.sock_write = writer
         client.GlobalData.sock_buf = (
             (0).to_bytes(2, 'big')
             + self._frame(b'suppress_client_reconnect')
         )
-        with mock.patch.object(client, 'suppress_client_reconnect') as scr:
+        with mock.patch.object(client, 'suppress_client_reconnect') as scr, \
+                self.assertLogs(level='ERROR'):
             await client.try_parse_commands()
-        scr.assert_called_once()
+        scr.assert_not_called()
+        writer.close.assert_called_once()
 
 
 class TestHandleIncomingData(ClientResetMixin):

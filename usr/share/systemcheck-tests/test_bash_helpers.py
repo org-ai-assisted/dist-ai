@@ -42,16 +42,48 @@ class TestLeaprunCmdDescribe(SystemcheckTestBase):
 
 class TestRemediationInstructions(SystemcheckTestBase):
     def test_sysmaint_session(self) -> None:
+        ## Working sysmaint session: requested at boot AND landed on 'sysmaint'.
         out = run_sourced(
             fragment_sources(),
             'remediation_instructions "dpkg --configure -a"',
             setup='booted_in_sysmaint_session=true\n'
+                  'who_ami=sysmaint\n'
                   'user_sysmaint_split_installed=false',
         )
         self.assertIn('Open Terminal', out)
         self.assertIn('System Maintenance Panel', out)
         ## sysmaint is a sudo-capable session, so sudo is still shown.
         self.assertIn('sudo dpkg --configure -a', out)
+
+    def test_sysmaint_requested_but_landed_as_user(self) -> None:
+        ## Mismatch: SYSMAINT requested at boot but logged in unprivileged.
+        ## No panel / sudo is available here, so the fix must be the reboot
+        ## advice, NOT "Open Terminal in the System Maintenance Panel".
+        out = run_sourced(
+            fragment_sources(),
+            'remediation_instructions "dpkg --configure -a"',
+            setup='booted_in_sysmaint_session=true\n'
+                  'who_ami=user\n'
+                  'user_sysmaint_split_installed=true',
+        )
+        self.assertIn('reboot into', out)
+        self.assertIn('SYSMAINT Session', out)
+        self.assertIn('sudo dpkg --configure -a', out)
+
+    def test_sysmaint_account_without_boot_role_not_panel_guidance(self) -> None:
+        ## sysmaint ACCOUNT reached without a 'boot-role=sysmaint' boot (console
+        ## su, manual default-user): sudo works but the System Maintenance Panel
+        ## session does not exist, so the guidance must NOT be the immediate
+        ## "click Open Terminal in the panel, then run" branch. Gating on the
+        ## account alone (not the session) regresses this.
+        out = run_sourced(
+            fragment_sources(),
+            'remediation_instructions "dpkg --configure -a"',
+            setup='booted_in_sysmaint_session=false\n'
+                  'who_ami=sysmaint\n'
+                  'user_sysmaint_split_installed=true',
+        )
+        self.assertIn('reboot into', out)
 
     def test_user_sysmaint_split(self) -> None:
         out = run_sourced(

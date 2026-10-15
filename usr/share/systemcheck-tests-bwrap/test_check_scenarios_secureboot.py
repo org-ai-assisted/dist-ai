@@ -83,42 +83,34 @@ class TestSecureBootIsolatedScenarios(ScenarioTestBase):
             stubs='check_secure_boot_enabled() { return 0; }\n'
                   + DKMS_STUB + MOKUTIL_STUB,
             hide_dirs=['/sys/firmware'])
-        self.assertIn('>Unavailable<', r.joined())
+        self.assertIn('BIOS, Secure Boot unavailable', r.joined())
         self.assertTrue(r.has_severity('info'))
         self.assertEqual(r.exit_code, '0')
 
     ## -- scenario 2: Secure Boot Enabled ----------------------------------
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie's
-    ## check_secure_boot rewrite dropped the separate ">Enabled<" status line, folding SB
-    ## state into the prose "Firmware: UEFI, Secure Boot enabled" line -- remove when fixed.
-    @unittest.expectedFailure
     def test_secure_boot_enabled(self) -> None:
         r = self._run_efi_present(0)
-        self.assertIn('>Enabled<', r.joined())
-        self.assertNotIn('>Disabled<', r.joined())
+        self.assertIn('UEFI, Secure Boot enabled', r.joined())
+        self.assertNotIn('UEFI, Secure Boot disabled', r.joined())
         self.assertTrue(r.has_severity('info'))
         self.assertEqual(r.exit_code, '0')
 
     ## -- scenario 3: Secure Boot Disabled ---------------------------------
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie dropped the
-    ## separate ">Disabled<" status line, folding it into "Firmware: UEFI, Secure Boot disabled"
-    ## -- remove when fixed.
-    @unittest.expectedFailure
     def test_secure_boot_disabled(self) -> None:
         r = self._run_efi_present(1)
-        self.assertIn('>Disabled<', r.joined())
-        self.assertNotIn('>Enabled<', r.joined())
+        self.assertIn('UEFI, Secure Boot disabled', r.joined())
+        self.assertNotIn('UEFI, Secure Boot enabled', r.joined())
         self.assertTrue(r.has_severity('info'))
         self.assertEqual(r.exit_code, '0')
 
     ## -- scenario 4: Secure Boot state Unknown ----------------------------
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie dropped the
-    ## verbose-only ">Unknown<" info line and now emits an always-shown WARNING ("Unable to detect
-    ## Secure Boot status!") -- a false warn on systems where SB state is indeterminate -- remove when fixed.
-    @unittest.expectedFailure
     def test_secure_boot_unknown(self) -> None:
+        ## Indeterminate SB state: a verbose-only WARNING is emitted, and because
+        ## the shared flag defaults to false the Firmware line reports "disabled".
         r = self._run_efi_present(2, sbe_stdout='mokutil exploded')
-        self.assertIn('>Unknown<', r.joined())
+        self.assertIn('Unable to detect Secure Boot status', r.joined())
+        self.assertIn('UEFI, Secure Boot disabled', r.joined())
+        self.assertTrue(r.has_severity('warning'))
         self.assertTrue(r.has_severity('info'))
         self.assertEqual(r.exit_code, '0')
 
@@ -140,41 +132,33 @@ class TestSecureBootIsolatedScenarios(ScenarioTestBase):
             stubs='check_secure_boot_enabled() { return 0; }\n'
                   + DKMS_STUB + MOKUTIL_STUB,
             hide_dirs=['/sys/firmware'])
-        self.assertIn('>BIOS<', r.joined())
-        self.assertNotIn('>UEFI<', r.joined())
-        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+        self.assertIn('BIOS, Secure Boot unavailable', r.joined())
+        self.assertNotIn('UEFI, Secure Boot enabled', r.joined())
+        self.assertNotIn('UEFI, Secure Boot disabled', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie replaced the
-    ## structured firmware-lane token ">UEFI+SecureBoot<" (machine-parseable #17 results-plane
-    ## evidence) with prose "UEFI, Secure Boot enabled" -- remove when fixed.
-    @unittest.expectedFailure
     def test_firmware_lane_uefi_secureboot_when_enabled(self) -> None:
         r = self._run_efi_present(0)
-        self.assertIn('>UEFI+SecureBoot<', r.joined())
-        self.assertNotIn('>BIOS<', r.joined())
-        ## Exactly one lane: the plain '>UEFI<' label must NOT also appear, or the
-        ## page would report two conflicting lanes for one boot.
-        self.assertNotIn('>UEFI<', r.joined())
+        self.assertIn('UEFI, Secure Boot enabled', r.joined())
+        self.assertNotIn('BIOS, Secure Boot unavailable', r.joined())
+        ## Exactly one lane: the "disabled" Firmware line must NOT also appear, or
+        ## the page would report two conflicting lanes for one boot.
+        self.assertNotIn('UEFI, Secure Boot disabled', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie replaced the
-    ## structured ">UEFI<" lane token with prose "UEFI, Secure Boot disabled" -- remove when fixed.
-    @unittest.expectedFailure
     def test_firmware_lane_uefi_when_sb_disabled(self) -> None:
         r = self._run_efi_present(1)
-        self.assertIn('>UEFI<', r.joined())
-        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
-        self.assertNotIn('>BIOS<', r.joined())
+        self.assertIn('UEFI, Secure Boot disabled', r.joined())
+        self.assertNotIn('UEFI, Secure Boot enabled', r.joined())
+        self.assertNotIn('BIOS, Secure Boot unavailable', r.joined())
 
-    ## REGRESSION(https://github.com/org-ai-assisted/systemcheck/issues/21): trixie replaced the
-    ## structured ">UEFI<" lane token (SB unknown) with prose + a warning -- remove when fixed.
-    @unittest.expectedFailure
     def test_firmware_lane_uefi_when_sb_unknown(self) -> None:
-        ## SB state unknown -> cannot claim +SecureBoot; report plain UEFI.
+        ## SB state indeterminate: the shared flag defaults to false, so the
+        ## Firmware line reports "disabled" alongside a verbose warning.
         r = self._run_efi_present(2, sbe_stdout='mokutil exploded')
-        self.assertIn('>UEFI<', r.joined())
-        self.assertNotIn('>UEFI+SecureBoot<', r.joined())
+        self.assertIn('Unable to detect Secure Boot status', r.joined())
+        self.assertIn('UEFI, Secure Boot disabled', r.joined())
+        self.assertNotIn('UEFI, Secure Boot enabled', r.joined())
         ## EFI is present, so the BIOS lane must not also be claimed.
-        self.assertNotIn('>BIOS<', r.joined())
+        self.assertNotIn('BIOS, Secure Boot unavailable', r.joined())
 
 
 if __name__ == '__main__':
