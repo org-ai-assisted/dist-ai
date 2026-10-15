@@ -71,6 +71,12 @@ cmd_enc="${work}/cmd_enc"
 printf '%s\n' 'BOOT_IMAGE=/live/vmlinuz root=live:CDLABEL=DM_LIVE rd.live.overlay.overlayfs=1 rd.live.overlay=LABEL=persistence:/live/overlay rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905 quiet' > "${cmd_enc}"
 cmd_notlive="${work}/cmd_notlive"
 printf '%s\n' 'BOOT_IMAGE=/vmlinuz root=/dev/sda2 ro quiet' > "${cmd_notlive}"
+## dracut allows the overlay label WITHOUT a subpath -- the gate must still fire.
+cmd_pathless="${work}/cmd_pathless"
+printf '%s\n' 'BOOT_IMAGE=/live/vmlinuz rd.live.image rd.live.overlay=LABEL=persistence rd.live.overlay.overlayfs=1 quiet' > "${cmd_pathless}"
+## A different label that merely has 'persistence' as a prefix must NOT match.
+cmd_substr="${work}/cmd_substr"
+printf '%s\n' 'BOOT_IMAGE=/live/vmlinuz rd.live.image rd.live.overlay=LABEL=persistence-old:/x rd.live.overlay.overlayfs=1 quiet' > "${cmd_substr}"
 
 ## Run the hook with the mount stubs on PATH, the boot device forced via the seam,
 ## the cmdline and kernel source pointed at the fixtures. TMPDIR stays in the
@@ -135,6 +141,22 @@ if [ ! -r "${work}/mountdir" ]; then
    pass "gate: no overlay token on the cmdline -> hook does nothing"
 else
    fail "gate: hook acted without the overlay token"
+fi
+
+## --- gate: pathless overlay token still fires -------------------------------
+run_hook "${cmd_pathless}" "${HELPER_SCRIPTS_PATH}"
+if [ -r "${work}/mountdir" ]; then
+   pass "gate: pathless 'LABEL=persistence' (no subpath) still syncs"
+else
+   fail "gate: pathless overlay token wrongly skipped"
+fi
+
+## --- gate: a prefix-only label (persistence-old) is NOT matched -------------
+run_hook "${cmd_substr}" "${HELPER_SCRIPTS_PATH}"
+if [ ! -r "${work}/mountdir" ]; then
+   pass "gate: 'persistence-old' does not match the exact label"
+else
+   fail "gate: prefix label wrongly matched"
 fi
 
 ## --- best-effort: a missing helper never aborts (and does not mount) --------
