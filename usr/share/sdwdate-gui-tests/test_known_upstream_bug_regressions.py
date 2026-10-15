@@ -42,7 +42,6 @@ import unittest.mock as mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtNetwork import QLocalSocket  # noqa: F401  (Qt platform init)
 from PyQt5.QtWidgets import QApplication
 
 try:
