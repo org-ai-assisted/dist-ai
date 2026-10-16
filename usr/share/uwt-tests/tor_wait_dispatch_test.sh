@@ -61,6 +61,16 @@ if [ ! -x "${probe}" ]; then
    exit 1
 fi
 
+## Sourcing dnf-3.anondist (the probe does, for was_executed + random_alpha_numeric)
+## transitively sources strings.bsh, which runs wc-test.sh on load. So wc must be
+## reachable even under the otherwise coreutils-free stub PATH. Symlink ONLY wc
+## (not the whole /usr/bin) so the 'leaprun absent' guarantee is preserved.
+wc_bin="$(type -P wc)" || true
+if [ -z "${wc_bin}" ]; then
+   printf '%s\n' "FATAL: 'wc' not found (coreutils); strings.bsh's wc-test needs it" >&2
+   exit 1
+fi
+
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
    ## '|| true': a cleanup failure must not clobber the script's real exit code.
@@ -70,9 +80,10 @@ trap cleanup_handler EXIT
 
 ## Write a minimal, dependency-free stub (printf + exit only, no coreutils) that
 ## RECORDS its argv to <record> then emits <stdout_line> and exits <exit_code>.
-## No coreutils so the probe runs under a stub-ONLY PATH (how 'leaprun absent'
-## stays reliable: a host leaprun cannot leak onto PATH); the recording lets the
-## test assert HOW the subject invoked id / leaprun, not just which branch ran.
+## The PATH carries only these stubs plus a single wc symlink (for strings.bsh's
+## load-time wc-test), so 'leaprun absent' stays reliable (a host leaprun cannot
+## leak onto PATH); the recording lets the test assert HOW the subject invoked
+## id / leaprun, not just which branch ran.
 write_stub() {
    local file="$1" record="$2" stdout_line="$3" exit_code="$4"
    {
@@ -119,6 +130,9 @@ run_case() {
    id_rec="${bin}/id.args"
    leaprun_rec="${bin}/leaprun.args"
    write_stub "${bin}/id" "${id_rec}" "${uid}" 0
+   ## wc for strings.bsh's load-time wc-test; symlinked individually so the
+   ## stub-only PATH still excludes a host leaprun.
+   ln --symbolic -- "${wc_bin}" "${bin}/wc"
    ## 'absent' writes no leaprun stub -> not on the stub-only PATH.
    if [ "${leaprun_mode}" = 'ok' ]; then
       write_stub "${bin}/leaprun" "${leaprun_rec}" 'RAN:leaprun' 0

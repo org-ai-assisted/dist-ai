@@ -12,12 +12,16 @@
 ## decisions under test:
 ##   - default (uwtwrapper_global defaults to 1) -> torsocks THEN uwtexec;
 ##   - uwtwrapper_global=0                        -> bare uwtexec, no torsocks;
-##   - UWT_DEV_PASSTHROUGH=1 (empties torsocks)   -> bare uwtexec, no torsocks.
-## The config-file-driven branches (per-application uwtwrapper[path]=0, Time
-## Privacy, bindp) are NOT exercised here: uwtwrapper reads them only from the
-## hardcoded /etc/uwt.d and /usr/local/etc/uwt.d (intentionally not env-
+##   - UWT_DEV_PASSTHROUGH=1 (empties torsocks)   -> bare uwtexec, no torsocks;
+##   - timeprivacy_global=1 (global path)         -> faketime AHEAD of torsocks THEN uwtexec;
+##   - timeprivacy_global=1 + uwtwrapper_global=0 -> faketime AHEAD of bare uwtexec, no torsocks.
+## The per-application MAP branches (uwtwrapper[path]=0, timeprivacy[path]=1,
+## bindp) are NOT exercised here: uwtwrapper reads those map entries only from
+## the hardcoded /etc/uwt.d and /usr/local/etc/uwt.d (intentionally not env-
 ## injectable, so a torification wrapper cannot be pointed at rogue config), so
-## they are not hermetically reachable without root-writable config.
+## they are not hermetically reachable without root-writable config. The GLOBAL
+## toggles (uwtwrapper_global, timeprivacy_global, UWT_DEV_PASSTHROUGH) are plain
+## variables uwt reads from the environment, so they are exercised.
 ##
 ## Method: drive the REAL uwtwrapper under a hermetic `env -i`. torsocks is a
 ## PATH stub that records it ran then execs the rest of the chain; the uwtexec
@@ -61,6 +65,16 @@ if [ ! -r "${strings_bsh}" ]; then
    exit 1
 fi
 
+## uwtwrapper sources /etc/uwt.d/*.conf and /usr/local/etc/uwt.d/*.conf from
+## HARDCODED paths (not env-overridable, by security design). A host conf could
+## flip the dispatch toggles this test asserts on, so refuse to run when any
+## exists rather than report a non-hermetic result.
+for host_conf in /etc/uwt.d/*.conf /usr/local/etc/uwt.d/*.conf; do
+   [ -e "${host_conf}" ] || continue
+   printf '%s\n' "FATAL: host uwt config present ('${host_conf}'); test is not hermetic against it" >&2
+   exit 1
+done
+
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
    ## '|| true': a cleanup failure must not clobber the script's real exit code.
@@ -94,6 +108,30 @@ uwtexec_stub="${test_dir}/uwtexec_stub"
 } > "${uwtexec_stub}"
 chmod 0755 -- "${uwtexec_stub}"
 
+## time_privacy stub: prints a fixed offset to stdout (uwtwrapper captures it in
+## privacy_time via command substitution). Terminal.
+# shellcheck disable=SC2016
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'printf "%s\n" "-15days"'
+   printf '%s\n' 'exit 0'
+} > "${bin_dir}/time_privacy"
+chmod 0755 -- "${bin_dir}/time_privacy"
+
+## faketime stub: record its full argv (FAKETIME_MARK), drop its first argument
+## (the time offset uwtwrapper passes) then exec the rest, so the chain it wraps
+## (torsocks + uwtexec, or bare uwtexec) runs on normally. The recorded argv is
+## how the test proves faketime sits AHEAD of torsocks/uwtexec. Literal shell
+## written to a file (see SC2016 note above).
+# shellcheck disable=SC2016
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'printf "%s\n" "$*" >> "${FAKETIME_MARK}"'
+   printf '%s\n' 'shift'
+   printf '%s\n' 'exec "$@"'
+} > "${bin_dir}/faketime"
+chmod 0755 -- "${bin_dir}/faketime"
+
 ## sanity_tests_general requires ${parent}.anondist-orig to exist and be
 ## executable (a dummy is fine: the uwtexec_bin stub is terminal, so the real
 ## target is never exec'd).
@@ -123,10 +161,13 @@ check() {
 ## (yes/no) and uwtexec_ran (yes/no). Extra NAME=VALUE pairs tune the case.
 torsocks_ran=no
 uwtexec_ran=no
+faketime_ran=no
+faketime_argv=""
 run_dispatch() {
-   local t_mark u_mark env_args
+   local t_mark u_mark f_mark env_args
    t_mark="$(mktemp --tmpdir="${test_dir}")"
    u_mark="$(mktemp --tmpdir="${test_dir}")"
+   f_mark="$(mktemp --tmpdir="${test_dir}")"
    env_args=(
       PATH="${base_path}"
       HOME="${test_dir}"
@@ -135,10 +176,24 @@ run_dispatch() {
       HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}"
       TORSOCKS_MARK="${t_mark}"
       UWTEXEC_MARK="${u_mark}"
+      FAKETIME_MARK="${f_mark}"
    )
    env -i "${env_args[@]}" "$@" "${uwtwrapper}"
    if [ -s "${t_mark}" ]; then torsocks_ran=yes; else torsocks_ran=no; fi
    if [ -s "${u_mark}" ]; then uwtexec_ran=yes; else uwtexec_ran=no; fi
+   if [ -s "${f_mark}" ]; then faketime_ran=yes; else faketime_ran=no; fi
+   faketime_argv="$(cat -- "${f_mark}")"
+}
+
+## 'yes' when faketime's recorded argv contains needle (i.e. faketime wraps it),
+## else 'no'. Substring match, not grep (R-161).
+faketime_wraps() {
+   local needle="$1"
+   if [[ "${faketime_argv}" == *"${needle}"* ]]; then
+      printf '%s\n' "yes"
+   else
+      printf '%s\n' "no"
+   fi
 }
 
 ## Case 1: default -> torsocks prepended, then uwtexec.
@@ -155,6 +210,26 @@ check "global-off: uwtexec stage ran" "${uwtexec_ran}"  "yes"
 run_dispatch UWT_DEV_PASSTHROUGH=1
 check "passthrough: torsocks NOT used" "${torsocks_ran}" "no"
 check "passthrough: uwtexec stage ran" "${uwtexec_ran}"  "yes"
+
+## Case 4: timeprivacy_global=1 on the normal global path -> faketime is
+## prepended AHEAD of torsocks, then uwtexec.
+run_dispatch timeprivacy_global=1
+check "timeprivacy global: faketime prepended"    "${faketime_ran}"             "yes"
+check "timeprivacy global: torsocks still used"   "${torsocks_ran}"             "yes"
+check "timeprivacy global: uwtexec stage ran"     "${uwtexec_ran}"              "yes"
+check "timeprivacy global: faketime wraps torsocks" "$(faketime_wraps torsocks)"       "yes"
+check "timeprivacy global: faketime wraps uwtexec"  "$(faketime_wraps "${uwtexec_stub}")" "yes"
+
+## Case 5: timeprivacy_global=1 with uwtwrapper_global=0 -> faketime is
+## prepended AHEAD of bare uwtexec, torsocks NOT used.
+run_dispatch uwtwrapper_global=0 timeprivacy_global=1
+check "timeprivacy global-off: faketime prepended"      "${faketime_ran}"             "yes"
+check "timeprivacy global-off: torsocks NOT used"       "${torsocks_ran}"             "no"
+check "timeprivacy global-off: uwtexec stage ran"       "${uwtexec_ran}"              "yes"
+check "timeprivacy global-off: faketime does not wrap torsocks" "$(faketime_wraps torsocks)"       "no"
+check "timeprivacy global-off: faketime wraps uwtexec"          "$(faketime_wraps "${uwtexec_stub}")" "yes"
+
+## The per-application timeprivacy["path"]=1 branch is config-file-only (read from the hardcoded /etc/uwt.d; not env-reachable), so it is not exercised here.
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

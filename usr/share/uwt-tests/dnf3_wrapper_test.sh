@@ -25,7 +25,7 @@
 ## records the exec seam's argv and no-ops the Tor wait. check_runtime.bsh (for
 ## was_executed) resolves via HELPER_SCRIPTS_PATH. No real uwtwrapper, Tor,
 ## leaprun or proxy is touched; curl.anondist-orig presence is controlled by a
-## hermetic per-case bin (tr + head only, so a host curl cannot flip a result).
+## hermetic per-case bin (coreutils only, so a host curl cannot flip a result).
 ##
 ## A missing subject / check_runtime.bsh is a REQUIRED-dependency environment
 ## bug -> exit 1 (FATAL), never a skip.
@@ -74,9 +74,11 @@ if [ ! -x "${probe}" ]; then
    exit 1
 fi
 
-## tr + head: random_alpha_numeric needs them; a REQUIRED coreutils dependency.
+## tr + head: random_alpha_numeric needs them; wc: strings.bsh sources wc-test.sh
+## on load. A REQUIRED coreutils dependency.
 tr_bin="$(type -P tr)"
 head_bin="$(type -P head)"
+wc_bin="$(type -P wc)"
 
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
@@ -101,8 +103,9 @@ check() {
    fi
 }
 
-## A hermetic bin holding ONLY tr + head (so random_alpha_numeric works) and,
-## for 'curl-fail', a curl.anondist-orig stub that exits non-zero. With no stub
+## A hermetic bin holding ONLY tr + head + wc (random_alpha_numeric + the
+## wc-test.sh strings.bsh sources on load) and, for 'curl-fail', a
+## curl.anondist-orig stub that exits non-zero. With no stub
 ## the subject's proxy probe ('command -v curl.anondist-orig') finds nothing and
 ## is skipped, so a host curl.anondist-orig can never leak in and flip a result.
 make_bin() {
@@ -110,6 +113,7 @@ make_bin() {
    bin="$(mktemp --directory --tmpdir="${test_dir}")"
    ln --symbolic -- "${tr_bin}" "${bin}/tr"
    ln --symbolic -- "${head_bin}" "${bin}/head"
+   ln --symbolic -- "${wc_bin}" "${bin}/wc"
    if [ "${curl_mode}" = 'curl-fail' ]; then
       {
          printf '%s\n' '#!/bin/bash'
