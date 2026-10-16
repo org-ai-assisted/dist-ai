@@ -18,7 +18,7 @@ SYSTEMCHECK_REPO via --component-root, so a wired run is unaffected.
 import os
 import unittest
 
-from systemcheck_testlib import systemcheck_dir
+from systemcheck_testlib import systemcheck_dir, _msgcollector_libexec
 
 
 class TestSubjectResolution(unittest.TestCase):
@@ -39,6 +39,21 @@ class TestSubjectResolution(unittest.TestCase):
     def test_set_systemcheck_repo_resolves(self):
         """A wired checkout (how the suite always runs) resolves to a real dir."""
         self.assertTrue(os.path.isdir(systemcheck_dir()))
+
+
+class TestMsgcollectorResolution(unittest.TestCase):
+    """An EXPLICIT MSGCOLLECTOR_REPO that lacks its libexec dir must FAIL loudly,
+    not silently fall back to the host msgcollector (the version-skew false-green
+    the bwrap orchestrator suite exists to avoid)."""
+
+    def test_explicit_missing_msgcollector_repo_raises(self):
+        saved = os.environ.get('MSGCOLLECTOR_REPO')
+        self.addCleanup(
+            lambda: os.environ.__setitem__('MSGCOLLECTOR_REPO', saved)
+            if saved is not None else os.environ.pop('MSGCOLLECTOR_REPO', None))
+        os.environ['MSGCOLLECTOR_REPO'] = '/nonexistent-msgcollector-checkout'
+        with self.assertRaises(AssertionError):
+            _msgcollector_libexec()
 
 
 if __name__ == '__main__':

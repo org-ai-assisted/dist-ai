@@ -254,6 +254,7 @@ def _msgcollector_libexec() -> str:
     so a checkout is staged THERE via the bwrap bind. Resolved from
     MSGCOLLECTOR_REPO, else SYSTEMCHECK_REPO's sibling ../msgcollector."""
     repo = os.environ.get('MSGCOLLECTOR_REPO', '').strip()
+    explicit = bool(repo)
     if not repo:
         sc = os.environ.get('SYSTEMCHECK_REPO', '').strip()
         if sc:
@@ -263,6 +264,15 @@ def _msgcollector_libexec() -> str:
         cand = os.path.join(repo, 'usr', 'libexec', 'msgcollector')
         if os.path.isdir(cand):
             return cand
+        ## Explicitly pointed at a checkout that lacks the libexec dir: refuse to
+        ## SILENTLY fall back to the host msgcollector (the version-skew false-green
+        ## this suite exists to avoid). A sibling-derived miss (MSGCOLLECTOR_REPO
+        ## unset) still falls back, since msgcollector was not explicitly requested.
+        if explicit:
+            raise AssertionError(
+                f"MSGCOLLECTOR_REPO={repo!r} has no usr/libexec/msgcollector; "
+                'refusing to fall back to the host copy (a version-skew '
+                'false-green). Point it at a msgcollector checkout, or unset it.')
     return ''
 
 
@@ -315,8 +325,16 @@ def source_orchestrator(body: str, stubs: str = '', strings: bool = False,
     ## /usr/libexec/helper-scripts path, which would otherwise hit the host copy.
     if hs:
         hs_libexec = os.path.join(hs, 'usr', 'libexec', 'helper-scripts')
-        if os.path.isdir(hs_libexec):
-            cmd += ['--ro-bind', hs_libexec, '/usr/libexec/helper-scripts']
+        ## HELPER_SCRIPTS_PATH explicitly set but missing its libexec: refuse to
+        ## SILENTLY leave the hardcoded /usr/libexec/helper-scripts pointing at the
+        ## host copy (version-skew false-green), the same contract as the
+        ## msgcollector staging above.
+        if not os.path.isdir(hs_libexec):
+            raise AssertionError(
+                f"HELPER_SCRIPTS_PATH={hs!r} has no usr/libexec/helper-scripts; "
+                'refusing to fall back to the host copy (a version-skew '
+                'false-green). Point it at a helper-scripts checkout, or unset it.')
+        cmd += ['--ro-bind', hs_libexec, '/usr/libexec/helper-scripts']
     cmd += ['bash', '-c', '\n'.join(lines)]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
