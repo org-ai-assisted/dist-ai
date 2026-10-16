@@ -8,10 +8,10 @@
 ## CLI shim: the static consistency checks live in the importable core
 ## `dist_ai.webcheck.site` (shared with mw-static-generator so neither side
 ## reinvents the other's checks). This file stays the stable entry point that
-## `website-tests`, `site-generate` (import check_site), and `check_seo_test.py`
-## (loads it by path) resolve. It mirrors the core module's FULL namespace -- incl.
-## underscore-prefixed helpers the SEO regression reads -- so a by-path load behaves
-## exactly as the former in-file module did.
+## `website-tests` and `site-generate` import. It mirrors the core module's FULL
+## namespace -- incl. underscore-prefixed helpers -- so importing it behaves exactly
+## as the former in-file module did. The test suites (`check_site_test.py`,
+## `check_seo_test.py`) import the core `dist_ai.webcheck.site` directly.
 
 import os
 import sys
