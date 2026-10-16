@@ -86,6 +86,11 @@ run_required_unit_test check_seo_test.py
 ## real logic regression.
 run_required_unit_test site_generate_test.py
 
+## Canary for webcheck.svg_safety's detector (every malicious SVG fixture flagged, a
+## clean one passes); pure stdlib + defusedxml, no site checkout. A failure is a real
+## logic regression.
+run_required_unit_test check_svg_safety_test.py
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
@@ -155,6 +160,18 @@ fi
 overall=0
 env_unmet=0
 "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
+
+## SVG active-content safety (generic): every committed .svg/.svgz must be safe to serve
+## same-origin -- no <script>/on*/javascript:/foreignObject, no remote url()/@import, no
+## trojan-source bidi. The family sites' SVGs are first-party favicons, so this runs
+## in-process here (defusedxml guards XXE/entity-bomb); mw-static runs the same core
+## CONFINED against untrusted wiki SVG. A shipped required check: absence FATALs, not skip.
+if [ -f "${tests_dir}/check_svg_safety.py" ]; then
+   "${tests_dir}/check_svg_safety.py" "${roots[@]}" || overall=1
+else
+   printf '%s\n' "website-tests: FATAL: check_svg_safety.py not found in ${tests_dir} (required check missing)" >&2
+   overall=1
+fi
 
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
 ## width-utilization ("no tall text section wasted in a narrow column") and
