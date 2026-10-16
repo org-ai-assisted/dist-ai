@@ -18,6 +18,16 @@ Guarded (fixed):
   - #13 client reconnect buffer reset: do_setup() clears GlobalData.sock_buf so
     residual bytes from a mid-command disconnect cannot wedge the next session.
 
+Open (xfail guards):
+  - #16 (a NUL waives the >4096 qrexec-header cap), #17 (__parse_qubes_data
+    returns True after kicking an invalid header name), and #18 (a failed octal
+    escape commits the new sdwdate status but keeps the old message) are proven,
+    filed, and NOT yet fixed upstream. Each guard asserts the FIXED behavior and
+    is marked @expectedFailure: it FAILS against the current (buggy) subject (an
+    expected failure, suite stays green) and FLIPS to an unexpected success --
+    turning the suite RED -- the moment ArrayBolt3's fix lands, which is the
+    signal to convert the guard into a plain passing regression test.
+
 Not guarded here:
   - #10 (control chars in a status message) and #14 (a hostname with a space or
     control character) are kicked BY DESIGN per the maintainer -- see the
@@ -42,6 +52,7 @@ import unittest.mock as mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtNetwork import QLocalSocket
 from PyQt5.QtWidgets import QApplication
 
 try:
@@ -140,6 +151,86 @@ class ClientReconnectBufferReset(unittest.TestCase):
             client.GlobalData.sock_buf,
             b"",
             "sock_buf not reset on (re)connect; residual wedges next session",
+        )
+
+
+class OpenUpstreamBugGuards(unittest.TestCase):
+    """xfail guards for filed-but-unfixed subject bugs (#16/#17/#18).
+
+    Each drives the REAL server handler and asserts the FIXED behavior. Marked
+    @expectedFailure: expected to FAIL on the current buggy subject; a flip to
+    unexpectedSuccess fails the suite and signals the upstream fix landed.
+    """
+
+    def setUp(self) -> None:
+        self._real_qubes = server.running_in_qubes_os
+        self.addCleanup(self._restore_qubes)
+        self.cli = server.SdwdateGuiClient(QLocalSocket())
+        self.addCleanup(self.cli.deleteLater)
+
+    def _restore_qubes(self) -> None:
+        server.running_in_qubes_os = self._real_qubes
+
+    @staticmethod
+    def _set_qubes(value: bool) -> None:
+        server.running_in_qubes_os = lambda: value
+
+    def _mangled(self, name: str):
+        return getattr(self.cli, f"_SdwdateGuiClient__{name}")
+
+    @unittest.expectedFailure
+    def test_issue16_nul_does_not_waive_header_cap(self) -> None:
+        """org-ai-assisted/sdwdate-gui#16 -- xfail until fixed.
+
+        An oversized printable prefix followed by a NUL must be kicked just
+        like an oversized no-NUL buffer. Today the >4096 cap sits only in the
+        no-NUL branch, so the NUL form is accepted (kick not called).
+        """
+        self._set_qubes(True)
+        self.cli._SdwdateGuiClient__sock_buf = b"A" * 5000 + b" syswhonix\x00"
+        with mock.patch.object(self.cli, "kick_client") as kc:
+            self._mangled("parse_qubes_data")()
+        kc.assert_called_once()
+
+    @unittest.expectedFailure
+    def test_issue17_invalid_header_name_returns_false(self) -> None:
+        """org-ai-assisted/sdwdate-gui#17 -- xfail until fixed.
+
+        When the qrexec header name is invalid, __set_client_name kicks and
+        returns False; __parse_qubes_data must propagate that False so the
+        caller does not parse the tail on a kicked client. Today it returns
+        True regardless.
+        """
+        self._set_qubes(True)
+        self.cli._SdwdateGuiClient__sock_buf = b"svc 9bad\x00"
+        with mock.patch.object(self.cli, "kick_client"):
+            result = self._mangled("parse_qubes_data")()
+        self.assertFalse(
+            result,
+            "parse_qubes_data returned True after an invalid-name kick",
+        )
+
+    @unittest.expectedFailure
+    def test_issue18_failed_octal_decode_does_not_commit_status(self) -> None:
+        """org-ai-assisted/sdwdate-gui#18 -- xfail until fixed.
+
+        A set_sdwdate_status whose message has an unsafe octal escape must
+        leave the prior status AND message untouched. Today the status is
+        committed before the decode, so a failed decode mutates status while
+        the message stays stale.
+        """
+        self.cli.client_name = "host"
+        self.cli.client_name_set = True
+        ok = self._mangled("set_sdwdate_status")("success", "hello")
+        self.assertTrue(ok)
+        self.assertEqual(self.cli.sdwdate_status, server.SdwdateStatus.SUCCESS)
+        with mock.patch.object(self.cli, "kick_client"):
+            self._mangled("set_sdwdate_status")("error", "\\777")
+        ## Fixed behavior: a rejected update is atomic -- status unchanged.
+        self.assertEqual(
+            self.cli.sdwdate_status,
+            server.SdwdateStatus.SUCCESS,
+            "status committed despite the failed octal decode",
         )
 
 

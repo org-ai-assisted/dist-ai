@@ -61,6 +61,7 @@ import random
 import signal
 import sys
 import tempfile
+import zlib
 from typing import Any
 from unittest import mock
 
@@ -75,6 +76,16 @@ from PyQt5.QtWidgets import QApplication, QLabel
 ## too and the coverage report reflects the genuinely unreached code rather
 ## than import-time measurement artifacts.
 server: Any = None  # pylint: disable=invalid-name  # set by main()
+
+
+def mode_rng_salt(mode: str) -> int:
+    """
+    Per-mode RNG salt derived with zlib.crc32, NOT builtins.hash: str hashing
+    is randomized per process by PYTHONHASHSEED, so hash(mode) made a given
+    --seed irreproducible across runs. crc32 is process-stable, so --seed
+    replays a protocol/lifecycle sequence exactly.
+    """
+    return zlib.crc32(mode.encode("ascii"))
 
 
 def _import_server():
@@ -1445,11 +1456,12 @@ def main() -> int:
         random.Random(seed ^ 0xC2B2AE35), args.iterations
     )
     for mode in modes:
+        mode_salt = mode_rng_salt(mode)
         findings += run_protocol(
-            mode, random.Random(seed ^ 0x9E3779B1 ^ hash(mode)), args.iterations
+            mode, random.Random(seed ^ 0x9E3779B1 ^ mode_salt), args.iterations
         )
         findings += run_lifecycle(
-            mode, random.Random(seed ^ 0x51ED270B ^ hash(mode)), args.iterations
+            mode, random.Random(seed ^ 0x51ED270B ^ mode_salt), args.iterations
         )
 
     if cov is not None:

@@ -101,6 +101,43 @@ class TestSdwdateStatusFileFuzz(unittest.TestCase):
                 msg, str, "forwarded a non-string message",
             )
 
+    def test_valid_status_is_forwarded(self) -> None:
+        """Liveness oracle: a well-formed status file MUST forward exactly that
+        status and message, once. The property above is safety-only (it never
+        forwards a BAD status), so without this a subject that silently dropped
+        every status would pass it vacuously."""
+        cases = [
+            ("success", "clock synced"),
+            ("busy", "waiting for consensus"),
+            ("error", "sdwdate failed"),
+            ## a long message (no wire escaping here -- set_sdwdate_status is
+            ## mocked -- so it must forward verbatim).
+            ("success", "\\" * 1000),
+        ]
+        for icon, message in cases:
+            with self.subTest(icon=icon, message_len=len(message)):
+                captured: list[tuple[str, str]] = []
+
+                async def fake_set(
+                    status: str, msg: str, _cap: list = captured
+                ) -> None:
+                    _cap.append((status, msg))
+
+                raw = json.dumps({"icon": icon, "message": message})
+                with mock.patch.object(
+                    client.os.path, "isfile", return_value=True
+                ), mock.patch.object(
+                    builtins, "open", mock.mock_open(read_data=raw)
+                ), mock.patch.object(
+                    client, "set_sdwdate_status", fake_set
+                ):
+                    asyncio.run(client.sdwdate_status_changed())
+                self.assertEqual(
+                    captured,
+                    [(icon, message)],
+                    "a valid status file was not forwarded exactly once",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
