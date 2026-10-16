@@ -35,10 +35,14 @@ from systemcheck_testlib import source_orchestrator
 ## through systemcheck_run_function. Extracted + testable so a fixture can prove it
 ## catches the command-position call a line-start-only match missed.
 _CHECK_SEP_RE = re.compile(r'&&|\|\||[;&|]')
-## Shell keywords/openers that may PRECEDE a command on the same segment; skipped so
-## the command token after them is examined (`if check_x`, `{ check_x`, `! check_x`).
+## Shell keywords/openers/command-wrappers that may PRECEDE a command on the same
+## segment; skipped so the command token after them is examined (`if check_x`,
+## `{ check_x`, `! check_x`, `command check_x`, `eval check_x`, `time check_x`).
 _CHECK_LEAD = frozenset(
-    {'if', 'elif', 'while', 'until', 'then', 'else', 'do', 'not', '!', '{', '('})
+    {'if', 'elif', 'while', 'until', 'then', 'else', 'do', 'not', '!', '{', '(',
+     'command', 'builtin', 'eval', 'time'})
+## A leading env-assignment (FOO=bar check_x) also precedes the command token.
+_CHECK_ENV_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=')
 _CHECK_NAME_RE = re.compile(r'check_[A-Za-z0-9_]+')
 
 
@@ -47,16 +51,24 @@ def direct_check_calls(func_body: str) -> list:
 
     Operates on the bash-parsed `declare -f` output (comments already dropped).
     Each line is split on command separators (`;` `&&` `||` `|` `&`) and leading
-    shell keywords/openers are stripped, so a call at line start AND one in command
-    position after a separator or keyword (`if check_x; then`, `foo && check_x`) are
-    both caught. A check_* that is an ARGUMENT (e.g. `systemcheck_run_function
-    check_x`) is never in command position, so it is correctly ignored."""
+    shell keywords/command-wrappers/env-assignments are stripped, so a call at line
+    start AND one in command position after a separator, keyword, or wrapper
+    (`if check_x; then`, `foo && check_x`, `command check_x`, `FOO=bar check_x`) are
+    all caught. A check_* that is an ARGUMENT (e.g. `systemcheck_run_function
+    check_x`) is never in command position, so it is correctly ignored.
+
+    SCOPE: this is a text scan of the dispatcher's `declare -f` body, not a full
+    bash parser. It does not model here-doc bodies (data that merely looks like a
+    command); systemcheck_main is a flat dispatcher with no here-docs, so this is
+    not a concern in practice -- do not grow it into a here-doc parser to chase a
+    hypothetical."""
     bad = []
     for raw_line in func_body.split('\n'):
         for segment in _CHECK_SEP_RE.split(raw_line):
             tokens = segment.split()
             idx = 0
-            while idx < len(tokens) and tokens[idx] in _CHECK_LEAD:
+            while idx < len(tokens) and (tokens[idx] in _CHECK_LEAD
+                                         or _CHECK_ENV_RE.match(tokens[idx])):
                 idx += 1
             if idx < len(tokens) and _CHECK_NAME_RE.fullmatch(tokens[idx]):
                 bad.append(tokens[idx])
@@ -211,6 +223,18 @@ class TestDirectCheckScan(unittest.TestCase):
         self.assertEqual(
             direct_check_calls('    systemcheck_run_function check_packages\n'
                                '    systemcheck_run_function check_dpkg'), [])
+
+    def test_flags_call_behind_wrapper_or_env(self) -> None:
+        ## A check reached via a command-wrapper or an env-assignment prefix is
+        ## still a direct call bypassing systemcheck_run_function.
+        self.assertEqual(direct_check_calls('    command check_packages'),
+                         ['check_packages'])
+        self.assertEqual(direct_check_calls('    eval check_tor'), ['check_tor'])
+        self.assertEqual(direct_check_calls('    time check_clock'), ['check_clock'])
+        self.assertEqual(direct_check_calls('    FOO=bar check_network'),
+                         ['check_network'])
+        self.assertEqual(direct_check_calls('    if command check_hidden; then'),
+                         ['check_hidden'])
 
 
 if __name__ == '__main__':
