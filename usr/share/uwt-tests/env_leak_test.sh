@@ -9,16 +9,23 @@
 ## internal bookkeeping, and must run under the CALLER's locale (not uwt's
 ## internal LC_ALL=C).
 ##
-## uwt passes uwtwrapper_parent / uwtwrapper_zeroarg / uwtwrapper_counter (and
-## the rest of the uwtwrapper_* / timeprivacy_* family, plus UWT_DEV_PASSTHROUGH)
-## between its stages by EXPORTING them, and forces LC_ALL=C for its own parsing.
-## Left uncleaned, all of that reaches the wrapped application. Two cleanup
-## points fix it:
+## uwt sets uwtwrapper_parent / uwtwrapper_zeroarg (its per-invocation plumbing)
+## and forces LC_ALL=C for its own parsing. Left uncleaned, that reaches the
+## wrapped application. Two cleanup points fix it:
 ##   - uwtexec, the chokepoint every normal exec path routes through (torsocks,
 ##     global-off, per-app-off, bindp, faketime);
 ##   - uwtwrapper's two symlink-passthrough execs, which bypass uwtexec.
-## Both strip the bookkeeping and restore the caller's LC_ALL (saved by
-## uwtwrapper before it forced C; unset when the caller had none).
+## Both strip the per-invocation plumbing (uwtwrapper_parent, uwtwrapper_zeroarg,
+## uwtexec_bin, the internal uwt_caller_lc_all save slot) and restore the
+## caller's LC_ALL (saved by uwtwrapper before it forced C; unset when the caller
+## had none).
+##
+## uwtwrapper_counter is deliberately NOT stripped: nested_protection increments
+## and exports it so a wrapper re-invoked THROUGH this application accumulates
+## recursion depth and trips uwtwrapper_max (see nested_protection_test.sh).
+## uwtwrapper_max / uwtwrapper_global / timeprivacy_global / UWT_DEV_PASSTHROUGH
+## are not stripped either: uwt only reads them, so they are the caller's own
+## environment and configuration a nested wrapper must still honor.
 ##
 ## Method: drive the REAL uwtwrapper / uwtexec against a stub application that
 ## records its own exported-variable NAMES and its LC_ALL, under a hermetic
@@ -100,16 +107,22 @@ write_recorder() {
    chmod 0755 -- "$1"
 }
 
-## uwt-internal variables that must never reach the wrapped application.
+## uwt per-invocation plumbing that must never reach the wrapped application.
+## (uwt_caller_lc_all is uwtwrapper's internal LC_ALL save slot; uwtexec_bin is
+## the dispatch override the test injects in checkout mode -- both are stripped.)
 internal_vars=(
    uwtwrapper_parent
    uwtwrapper_zeroarg
+   uwtexec_bin
+   uwt_caller_lc_all
+)
+
+## Variables that MUST survive the exec. uwtwrapper_counter carries recursion
+## depth to a nested wrapper (nested_protection), so stripping it would defeat
+## the loop guard; nested_protection runs before every exec path, so a clean
+## caller env yields counter 1 in every case here.
+required_present=(
    uwtwrapper_counter
-   uwtwrapper_verbose
-   uwtwrapper_max
-   uwtwrapper_global
-   timeprivacy_global
-   UWT_DEV_PASSTHROUGH
 )
 
 base_path="${bin_dir}:/usr/bin:/bin"
@@ -119,28 +132,37 @@ fail=0
 ## $1 label, $2 names-file, $3 lcall-file, $4 expected LC_ALL (__UNSET__ or a
 ## value). Fails if any internal var leaked or LC_ALL is not the caller's.
 check_case() {
-   local label="$1" names="$2" lcall="$3" want_lcall="$4" var leaked="" got_lcall
+   local label="$1" names="$2" lcall="$3" want_lcall="$4" var leaked="" missing="" got_lcall
    for var in "${internal_vars[@]}"; do
       if grep --quiet -x -- "${var}" "${names}"; then
          leaked+=" ${var}"
+      fi
+   done
+   for var in "${required_present[@]}"; do
+      if ! grep --quiet -x -- "${var}" "${names}"; then
+         missing+=" ${var}"
       fi
    done
    got_lcall="$(cat -- "${lcall}")"
    if [ -n "${leaked}" ]; then
       printf '%s\n' "FAIL: ${label}: leaked:${leaked}"
       fail=$((fail + 1))
+   elif [ -n "${missing}" ]; then
+      printf '%s\n' "FAIL: ${label}: missing required:${missing}"
+      fail=$((fail + 1))
    elif [ "${got_lcall}" != "${want_lcall}" ]; then
       printf '%s\n' "FAIL: ${label}: LC_ALL='${got_lcall}', want '${want_lcall}'"
       fail=$((fail + 1))
    else
-      printf '%s\n' "PASS: ${label}: no leak, LC_ALL='${got_lcall}'"
+      printf '%s\n' "PASS: ${label}: no leak, counter kept, LC_ALL='${got_lcall}'"
       pass=$((pass + 1))
    fi
 }
 
 ## In checkout mode, uwtexec_bin + HELPER_SCRIPTS_PATH are injected to reach the
-## checkout; the fix strips uwtexec_bin, and HELPER_SCRIPTS_PATH is unset in
-## production, so neither is in internal_vars.
+## checkout. uwtexec_bin is uwt dispatch plumbing the fix strips, so it is in
+## internal_vars (asserted stripped). HELPER_SCRIPTS_PATH is a test-wire detail
+## (unset in production), so it is neither asserted stripped nor required.
 uwt_env_common=( PATH="${base_path}" HOME="${test_dir}" )
 if [ -n "${UWT_REPO}" ]; then
    uwt_env_common+=( uwtexec_bin="${uwtexec}" HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" )
@@ -170,6 +192,15 @@ check_case "global-off path" "${n}2" "${l}2" "__UNSET__"
 ## Case 3: dev-passthrough path (UWT_DEV_PASSTHROUGH=1 -> torsocks skipped).
 run_main "${n}3" "${l}3" UWT_DEV_PASSTHROUGH=1
 check_case "dev-passthrough path" "${n}3" "${l}3" "__UNSET__"
+## UWT_DEV_PASSTHROUGH is the caller's own env (uwt only reads it), so it must
+## pass through to the application, not be stripped as if it were uwt plumbing.
+if grep --quiet -x -- UWT_DEV_PASSTHROUGH "${n}3"; then
+   printf '%s\n' "PASS: dev-passthrough path: caller UWT_DEV_PASSTHROUGH preserved"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: dev-passthrough path: caller UWT_DEV_PASSTHROUGH was stripped"
+   fail=$((fail + 1))
+fi
 
 ## Case 4: the caller's LC_ALL reaches the app unchanged; uwt must not force C.
 ## Uses C.UTF-8 (always available, so no setlocale noise) yet distinct from C.

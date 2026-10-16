@@ -1,0 +1,83 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Regression tests for webcheck.extlinks' pure (no-network) logic: external-URL collection
+(only absolute http(s), fragment stripped, de-duplicated across pages), own-host detection,
+and baseline parse/format roundtrip. The network probe (check_url) is not unit-tested here --
+it is exercised by the real periodic/CI run. Run by the launcher or: ./check_extlinks_test.py"""
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+
+def _load():
+    _dp = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        '..', '..', 'lib', 'python3', 'dist-packages'))
+    if os.path.isdir(_dp) and _dp not in sys.path:
+        sys.path.insert(0, _dp)
+    from dist_ai.webcheck import extlinks
+    return extlinks
+
+
+el = _load()
+
+
+def run() -> int:
+    stats = {"pass": 0, "fail": 0}
+
+    def ck(cond: bool, label: str) -> None:
+        stats["pass" if cond else "fail"] += 1
+        status = "pass" if cond else "FAIL"
+        (sys.stdout if cond else sys.stderr).write("check_extlinks_test: %s %s\n" % (status, label))
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "index.html").write_text(
+            '<a href="https://example.test/cite">c</a>'
+            '<a href="https://example.test/cite#frag">same after frag strip</a>'
+            '<img src="http://img.test/x.png">'
+            '<a href="/internal">internal, ignored</a>'
+            '<a href="mailto:x@y.z">mailto ignored</a>'
+            '<a href="#anchor">anchor ignored</a>', encoding="utf-8")
+        (root / "sub").mkdir()
+        (root / "sub" / "p.html").write_text(
+            '<a href="https://example.test/cite">dup across pages</a>'
+            '<a href="https://other.test/">o</a>', encoding="utf-8")
+        (root / ".git").mkdir()
+        (root / ".git" / "evil.html").write_text(
+            '<a href="https://should-not.test/">git ignored</a>', encoding="utf-8")
+        urls = el.collect_external_links(str(root))
+        ck(urls == {"https://example.test/cite", "http://img.test/x.png",
+                    "https://other.test/"},
+           "collects absolute http(s) only, frag stripped, de-duped, .git/internal/mailto/anchor out: %r"
+           % sorted(urls))
+
+    # own-host detection (family cross-links).
+    ck(el.is_own_host("https://output-lies.github.io/x", {"output-lies.github.io"}),
+       "own-host detected")
+    ck(not el.is_own_host("https://example.test/x", {"output-lies.github.io"}),
+       "third-party host not own")
+
+    # baseline parse/format roundtrip (sorted, comments skipped).
+    accepted = {"https://dead.test/a", "https://dead.test/b"}
+    text = el.format_baseline(accepted, site="demo")
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "b.txt"
+        p.write_text(text, encoding="utf-8")
+        ck(el.parse_baseline(p) == accepted, "baseline parse/format roundtrip")
+        p.write_text("# only a comment\n\n", encoding="utf-8")
+        ck(el.parse_baseline(p) == set(), "comment/blank-only baseline -> empty set")
+
+    sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
+                     % (stats["pass"], stats["fail"]))
+    return 1 if stats["fail"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

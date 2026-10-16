@@ -81,7 +81,14 @@ printf '%s\n' 'BOOT_IMAGE=/live/vmlinuz rd.live.image rd.live.overlay=LABEL=pers
 ## Run the hook with the mount stubs on PATH, the boot device forced via the seam,
 ## the cmdline and kernel source pointed at the fixtures. TMPDIR stays in the
 ## workdir so the hook's own mktemp mount_dir is cleaned up with it.
+## HOOK_RC carries the hook's exit code out of run_hook (its own subshell would
+## otherwise lose it). A kernel postinst.d hook MUST exit 0 on EVERY path -- a
+## nonzero return aborts the kernel upgrade (half-configured dpkg). This is the
+## hook's whole best-effort contract, so assert_rc0 is checked after every
+## scenario, not only the sync ones.
+HOOK_RC=0
 run_hook() {
+   HOOK_RC=0
    safe-rm --force -- "${work}/mountdir"
    PATH="${sb}:${PATH}" \
       TMPDIR="${work}" \
@@ -89,7 +96,14 @@ run_hook() {
       LIVE_PERSISTENCE_KERNEL_SRC="${srcboot}" \
       PERSISTENT_BOOT_CMDLINE_FILE="${1}" \
       PERSISTENT_BOOT_DEVICE=/dev/fake-persistbootx \
-      bash "${hook}" 9.9.9 > /dev/null 2>&1 || true
+      bash "${hook}" 9.9.9 > /dev/null 2>&1 || HOOK_RC=$?
+}
+assert_rc0() {
+   if [ "${HOOK_RC}" -eq 0 ]; then
+      pass "$1: hook exited 0 (never aborts the kernel upgrade)"
+   else
+      fail "$1: hook exited ${HOOK_RC} (would abort dpkg)"
+   fi
 }
 
 LAST_CFG=''
@@ -119,6 +133,7 @@ assert_synced() {
 
 ## --- plaintext: no rd.luks.uuid ---------------------------------------------
 run_hook "${cmd_plain}" "${HELPER_SCRIPTS_PATH}"
+assert_rc0 'plaintext'
 assert_synced 'plaintext'
 if [ -n "${LAST_CFG}" ] && ! grep --quiet 'rd.luks.uuid=' "${LAST_CFG}"; then
    pass "plaintext: no rd.luks.uuid in the boot cmdline"
@@ -128,6 +143,7 @@ fi
 
 ## --- encrypted: rd.luks.uuid carried from the cmdline -----------------------
 run_hook "${cmd_enc}" "${HELPER_SCRIPTS_PATH}"
+assert_rc0 'encrypted'
 assert_synced 'encrypted'
 if [ -n "${LAST_CFG}" ] && grep --quiet 'rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905' "${LAST_CFG}"; then
    pass "encrypted: rd.luks.uuid carried into the boot cmdline"
@@ -137,6 +153,7 @@ fi
 
 ## --- gate: a non-persistent (installed/amnesic) cmdline is a no-op ----------
 run_hook "${cmd_notlive}" "${HELPER_SCRIPTS_PATH}"
+assert_rc0 'gate-notlive'
 if [ ! -r "${work}/mountdir" ]; then
    pass "gate: no overlay token on the cmdline -> hook does nothing"
 else
@@ -145,14 +162,18 @@ fi
 
 ## --- gate: pathless overlay token still fires -------------------------------
 run_hook "${cmd_pathless}" "${HELPER_SCRIPTS_PATH}"
+assert_rc0 'gate-pathless'
 if [ -r "${work}/mountdir" ]; then
    pass "gate: pathless 'LABEL=persistence' (no subpath) still syncs"
 else
    fail "gate: pathless overlay token wrongly skipped"
 fi
+## The pathless gate must not just MOUNT -- it must fully sync (copy + grub.cfg).
+assert_synced 'pathless'
 
 ## --- gate: a prefix-only label (persistence-old) is NOT matched -------------
 run_hook "${cmd_substr}" "${HELPER_SCRIPTS_PATH}"
+assert_rc0 'gate-substr'
 if [ ! -r "${work}/mountdir" ]; then
    pass "gate: 'persistence-old' does not match the exact label"
 else
@@ -161,6 +182,7 @@ fi
 
 ## --- best-effort: a missing helper never aborts (and does not mount) --------
 run_hook "${cmd_plain}" "${work}/no-helper-here"
+assert_rc0 'missing-helper'
 if [ ! -r "${work}/mountdir" ]; then
    pass "missing helper: hook exits without syncing (dpkg not aborted)"
 else

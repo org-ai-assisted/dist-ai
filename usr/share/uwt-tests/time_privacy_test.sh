@@ -135,6 +135,63 @@ check_err "-r and -i are mutually exclusive" "You can not combine -r and -i." -r
 check_err "-r non-number rejected" "randomincrement must be a positive number." -r abc
 check_err "-i non-number rejected" "increment is not a digit." -i abc
 check_err "-y non-number rejected" "year is not a digit." -y abc
+check_err "-m non-number rejected" "month is not a digit." -m abc
+check_err "-d non-number rejected" "day is not a digit." -d abc
+
+## -h prints usage and exits 0 (needs no TIMEDIR; must not be treated as error).
+help_rc=0
+help_out="$("${subject}" -h 2>&1)" || help_rc=$?
+if [ "${help_rc}" -eq 0 ] && [[ "${help_out}" == *"Usage:"* ]]; then
+   printf '%s\n' "PASS: -h prints usage and exits 0"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: -h usage (rc='${help_rc}', out='${help_out}')"
+   fail=$((fail + 1))
+fi
+
+## --- file-content sanitization: a non-digit or partial-garbage counter file is
+##     treated as 0 (read_date_file's sed nodigits guard), never propagated. ---
+td="$(make_timedir garbage_sec seconds=abc)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "non-digit seconds file -> treated as 0 (0:0:1)" "${out}" "2013-12-30 0:0:1"
+
+td="$(make_timedir partial_sec seconds=1x2)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "partial-garbage seconds file -> reset to 0 (0:0:1)" "${out}" "2013-12-30 0:0:1"
+
+## --- leading-zero counter content is a DECIMAL count, not octal. An all-digit
+##     value bypasses is_whole_number (only the nodigits guard runs), so bash
+##     arithmetic must be forced to base 10: "08"/"09" would otherwise abort
+##     ("value too great for base") and "012" would silently become 10. One case
+##     per arithmetic site (seconds always, minutes/hours on carry). ---
+td="$(make_timedir octal_sec seconds=08)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "leading-zero seconds '08' is decimal 8 (0:0:9)" "${out}" "2013-12-30 0:0:9"
+
+td="$(make_timedir octal_sec_12 seconds=012)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "leading-zero seconds '012' is decimal 12 (0:0:13)" "${out}" "2013-12-30 0:0:13"
+
+td="$(make_timedir octal_min seconds=59 minutes=09)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "leading-zero minutes '09' on carry is decimal 9 (0:10:0)" "${out}" "2013-12-30 0:10:0"
+
+td="$(make_timedir octal_hr seconds=59 minutes=59 hours=08)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
+check "leading-zero hours '08' on carry is decimal 8 (9:0:0)" "${out}" "2013-12-30 9:0:0"
+
+## --- auto-provision: a missing TIMEDIR is created and seeded, not an error. ---
+auto_dir="${test_dir}/autoprov"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${auto_dir}")"
+check "missing TIMEDIR auto-provisioned (0:0:1)" "${out}" "2013-12-30 0:0:1"
+if [ -f "${auto_dir}/seconds_file" ] && [ -f "${auto_dir}/minutes_file" ] \
+   && [ -f "${auto_dir}/hours_file" ]; then
+   printf '%s\n' "PASS: missing TIMEDIR: counter files seeded"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: missing TIMEDIR: counter files not created"
+   fail=$((fail + 1))
+fi
 
 ## --- -r random path runs (exercises random-between); output is a valid line ---
 td="$(make_timedir rand)"
@@ -166,6 +223,29 @@ chmod 0755 -- "${slow_bin}/stcat"
 td="$(make_timedir slow seconds=0)"
 out="$(PATH="${slow_bin}:${PATH}" "${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
 check "offset independent of runtime (SECONDS not special)" "${out}" "2013-12-30 0:0:1"
+
+## --- property fuzz: drive the REAL time_privacy over many random inputs (option
+## parser + counter-file content) and assert the crash-free / known-rejection /
+## in-range-success invariants. Deterministic given the seed; override the
+## seed/iteration count via env, and the seed is printed so a finding reproduces.
+fuzz_script="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/time_privacy_fuzz.sh"
+if [ ! -x "${fuzz_script}" ]; then
+   printf '%s\n' "FAIL: time_privacy_fuzz.sh not found/executable at '${fuzz_script}'"
+   fail=$((fail + 1))
+else
+   fuzz_seed="${TIME_PRIVACY_FUZZ_SEED:-1}"
+   fuzz_iters="${TIME_PRIVACY_FUZZ_ITERS:-150}"
+   fuzz_out="$("${fuzz_script}" "${fuzz_seed}" "${fuzz_iters}" 2>&1)" || true
+   fuzz_fails="$(printf '%s\n' "${fuzz_out}" | sed -n 's/^FUZZFAILS=//p')"
+   if [ "${fuzz_fails:-missing}" = "0" ]; then
+      printf '%s\n' "PASS: property fuzz: ${fuzz_iters} iterations, 0 invariant violations (seed ${fuzz_seed})"
+      pass=$((pass + 1))
+   else
+      printf '%s\n' "FAIL: property fuzz: ${fuzz_fails:-missing} violation(s); reproduce with TIME_PRIVACY_FUZZ_SEED=${fuzz_seed} TIME_PRIVACY_FUZZ_ITERS=${fuzz_iters}"
+      printf '%s\n' "${fuzz_out}" >&2
+      fail=$((fail + 1))
+   fi
+fi
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

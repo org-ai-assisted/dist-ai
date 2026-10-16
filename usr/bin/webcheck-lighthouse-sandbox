@@ -1,0 +1,128 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the Lighthouse regression lane for each family site inside the review sandbox qube
+## (which ships lighthouse + chromium), serving each checkout from a localhost mount and
+## auditing it on both form factors. Unlike the lint/browser lanes this runs UNCONFINED
+## (`sandbox exec`, not sandbox-confine): lighthouse drives a real chromium and must reach
+## the localhost server over loopback, which the bwrap network namespace would block.
+##
+##   webcheck-lighthouse-sandbox <site-root> [<site-root> ...]            # gate vs baseline
+##   webcheck-lighthouse-sandbox --write-baseline <site-root> [...]      # (re)seed baselines
+##
+## Baselines live in usr/share/website-tests/lighthouse-baselines/ (committed, per site).
+## Exit: 0 all at/above baseline, 1 a regression / missing baseline, 77 lighthouse absent.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_WORKDIR="/home/user/webcheck-lighthouse-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-lighthouse-sandbox: $1" >&2
+   exit 1
+}
+
+write_baseline=0
+if [ "${1:-}" = '--write-baseline' ]; then
+   write_baseline=1
+   shift
+fi
+[ "$#" -gt 0 ] || die 'usage: webcheck-lighthouse-sandbox [--write-baseline] <site-root> [...]'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+   core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
+else
+   tests_dir='/usr/share/website-tests'
+   core_src='/usr/lib/python3/dist-packages/dist_ai'
+fi
+baselines_src="${tests_dir}/lighthouse-baselines"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
+## Stage the webcheck core (importable), the committed baselines, and each site root into
+## one tree, preserving the usr/lib/python3/dist-packages layout so `-m dist_ai.webcheck...`
+## resolves, then sync it in and run the module there UNCONFINED.
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_pylib}" "${staging}/baselines" "${staging}/roots"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
+if [ -d "${baselines_src}" ]; then
+   cp --archive -- "${baselines_src}/." "${staging}/baselines/"
+fi
+
+declare -a remote_roots=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "${SANDBOX_WORKDIR}/roots/${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+## Absolute paths throughout, so no `cd` (hence no inline `bash -c`) is needed in the sandbox.
+declare -a mod_args=( --baseline-dir "${SANDBOX_WORKDIR}/baselines" )
+[ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
+
+rc=0
+sandbox exec --pid-scope own -- env \
+   "PYTHONPATH=${SANDBOX_WORKDIR}/usr/lib/python3/dist-packages" \
+   LH_DESKTOP="${LH_DESKTOP:-1}" LH_SAMPLES="${LH_SAMPLES:-2}" \
+   LH_SEED_SAMPLES="${LH_SEED_SAMPLES:-5}" \
+   LH_TOL_PERF="${LH_TOL_PERF:-8}" LH_TOL_A11Y="${LH_TOL_A11Y:-2}" LH_TOL_BP="${LH_TOL_BP:-2}" \
+   python3 -Bsu -m dist_ai.webcheck.lighthouse "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
+
+## Seeded baselines are written inside the sandbox; copy each back to the committed dir so the
+## operator can review + commit the diff (no reverse sync is needed -- the files are small text).
+if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
+   mkdir --parents -- "${baselines_src}"
+   while IFS= read -r remote_root; do
+      base="$(basename -- "${remote_root}")"
+      bfile="lighthouse-baseline-${base}.txt"
+      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
+         sandbox exec --pid-scope own -- cat "${SANDBOX_WORKDIR}/baselines/${bfile}" \
+            > "${baselines_src}/${bfile}" \
+            || die "failed to copy back ${bfile}"
+         printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2
+      fi
+   done < <(printf '%s\n' "${remote_roots[@]}")
+fi
+
+exit "${rc}"

@@ -1,0 +1,37 @@
+# External-link reachability: accepted-unreachable URLs for output-lies.github.io (one per line).
+# The gate flags only a NEWLY-dead external link; a URL listed here is tolerated
+# (known dead / deliberately unprobeable). Review + prune periodically.
+https://web.archive.org/web/20260414161101/https://nvd.nist.gov/vuln/detail/CVE-2019-9535
+https://web.archive.org/web/20260415164132/https://attack.mitre.org/software/S1087/
+https://web.archive.org/web/20260419223636/https://www.cve.org/CVERecord?id=CVE-2025-48384
+https://web.archive.org/web/20260429051029/https://attack.mitre.org/groups/G0060/
+https://web.archive.org/web/20260503145917/https://www.cve.org/CVERecord?id=CVE-2018-11235
+https://web.archive.org/web/20260511133319/https://github.com/git/git/security/advisories/GHSA-8prw-h3cq-mghm
+https://web.archive.org/web/20260511163824/https://www.cyberark.com/resources/threat-research-blog/dont-trust-this-title-abusing-terminal-emulators-with-ansi-escape-characters
+https://web.archive.org/web/20260525042730/https://github.com/dxa4481/Pastejacking
+https://web.archive.org/web/20260528055511/https://attack.mitre.org/groups/G0004/
+https://web.archive.org/web/20260603091721/https://attack.mitre.org/software/S1111/
+https://web.archive.org/web/20260610203819/https://redcanary.com/threat-detection-report/techniques/malicious-copy-and-paste/
+https://web.archive.org/web/20260610233655/https://www.cve.org/CVERecord?id=CVE-2025-55754
+https://web.archive.org/web/20260611002953/https://nvd.nist.gov/vuln/detail/CVE-2025-55754
+https://web.archive.org/web/20260616003318/https://attack.mitre.org/techniques/T1070/003/
+https://web.archive.org/web/20260616040501/https://trojansource.codes/
+https://web.archive.org/web/20260617084902/https://dgl.cx/2023/09/ansi-terminal-security
+https://web.archive.org/web/20260617084903/https://hdm.io/writing/termulation.txt
+https://web.archive.org/web/20260623164946/https://www.cst.cam.ac.uk/
+https://web.archive.org/web/20260628124137/https://attack.mitre.org/techniques/T1036/002/
+https://web.archive.org/web/20260630151002/https://tomcat.apache.org/security-9.html
+https://web.archive.org/web/20260630155159/https://www.proofpoint.com/us/blog/threat-insight/security-brief-clickfix-social-engineering-technique-floods-threat-landscape
+https://web.archive.org/web/20260630160348/https://www.proofpoint.com/us/blog/threat-insight/clipboard-compromise-powershell-self-pwn
+https://web.archive.org/web/20260630162143/https://malpedia.caad.fkie.fraunhofer.de/details/win.netsupportmanager_rat
+https://web.archive.org/web/20260630162730/https://www.proofpoint.com/us/blog/threat-insight/around-world-90-days-state-sponsored-actors-try-clickfix
+https://web.archive.org/web/20260704055718/https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/
+https://web.archive.org/web/20260706063955/https://www.cl.cam.ac.uk/archive/rja14/
+https://web.archive.org/web/20260706215954/https://www.kicksecure.com/wiki/Stdisplay
+https://web.archive.org/web/20260709114845/https://docs.github.com/en/repositories/working-with-files/managing-files/customizing-how-changed-files-appear-on-github
+https://web.archive.org/web/20260710210619/https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+https://web.archive.org/web/20260711194112/https://attack.mitre.org/techniques/T1204/004/
+https://web.archive.org/web/20260711194112/https://www.theregister.com/security/2016/05/25/pastejack-attack-turns-your-clipboard-into-a-threat/502661
+https://web.archive.org/web/20260711194113/https://github.com/Kicksecure/helper-scripts/blob/master/man/text-safety-scan.1.ronn
+https://web.archive.org/web/20260711194126/https://github.com/Kicksecure/helper-scripts/blob/master/man/sanitize-string.1.ronn
+https://web.archive.org/web/20260711194212/https://attack.mitre.org/software/S1213/

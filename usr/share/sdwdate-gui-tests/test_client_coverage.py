@@ -14,6 +14,7 @@ module-level mutable state does not leak between cases.
 # pylint: disable=import-outside-toplevel
 
 import asyncio
+import contextlib
 import json
 import types
 import unittest
@@ -68,6 +69,18 @@ class ClientResetMixin(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         for name, value in self._saved.items():
             setattr(client.GlobalData, name, value)
+
+    @contextlib.contextmanager
+    def assertWarningLogs(self):
+        """assertLogs(level='WARNING') also accepts ERROR/CRITICAL, so an
+        ERROR-level regression would still pass a bare check. Pin that EVERY
+        captured record is exactly WARNING."""
+        with self.assertLogs(level='WARNING') as cm:
+            yield cm
+        self.assertTrue(
+            all(r.levelname == 'WARNING' for r in cm.records),
+            msg=f"expected only WARNING records, got "
+                f"{[r.levelname for r in cm.records]}")
 
 
 class TestInotifyHandler(ClientResetMixin):
@@ -366,7 +379,7 @@ class TestStatusChanged(ClientResetMixin):
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
                            mock.mock_open(read_data='{not json')), \
-                self.assertLogs(level='WARNING'):
+                self.assertWarningLogs():
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_non_object_json(self) -> None:
@@ -376,21 +389,21 @@ class TestStatusChanged(ClientResetMixin):
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
                            mock.mock_open(read_data='null')), \
-                self.assertLogs(level='WARNING'):
+                self.assertWarningLogs():
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_missing_key(self) -> None:
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open',
                            mock.mock_open(read_data='{"icon": "success"}')), \
-                self.assertLogs(level='WARNING'):
+                self.assertWarningLogs():
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_non_string_key(self) -> None:
         data = json.dumps({'icon': 'success', 'message': 5})
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open', mock.mock_open(read_data=data)), \
-                self.assertLogs(level='WARNING'):
+                self.assertWarningLogs():
             await client.sdwdate_status_changed()
 
     async def test_sdwdate_valid_success(self) -> None:
@@ -406,7 +419,7 @@ class TestStatusChanged(ClientResetMixin):
         data = json.dumps({'icon': 'weird', 'message': 'ok'})
         with mock.patch('os.path.isfile', return_value=True), \
                 mock.patch('builtins.open', mock.mock_open(read_data=data)), \
-                self.assertLogs(level='WARNING'):
+                self.assertWarningLogs():
             await client.sdwdate_status_changed()
 
     async def test_tor_not_installed(self) -> None:

@@ -86,6 +86,16 @@ run_required_unit_test check_seo_test.py
 ## real logic regression.
 run_required_unit_test site_generate_test.py
 
+## Canary for webcheck.svg_safety's detector (every malicious SVG fixture flagged, a
+## clean one passes); pure stdlib + defusedxml, no site checkout. A failure is a real
+## logic regression.
+run_required_unit_test check_svg_safety_test.py
+
+## Unit regression for check_console's browser-free logic (allowlist fail-closed, hit
+## classification, off-origin, URL join, retry clamp, page enumeration). Playwright is
+## imported inside check(), so this runs everywhere without a browser.
+run_required_unit_test check_console_test.py
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
@@ -156,6 +166,18 @@ overall=0
 env_unmet=0
 "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
+## SVG active-content safety (generic): every committed .svg/.svgz must be safe to serve
+## same-origin -- no <script>/on*/javascript:/foreignObject, no remote url()/@import, no
+## trojan-source bidi. The family sites' SVGs are first-party favicons, so this runs
+## in-process here (defusedxml guards XXE/entity-bomb); mw-static runs the same core
+## CONFINED against untrusted wiki SVG. A shipped required check: absence FATALs, not skip.
+if [ -f "${tests_dir}/check_svg_safety.py" ]; then
+   "${tests_dir}/check_svg_safety.py" "${roots[@]}" || overall=1
+else
+   printf '%s\n' "website-tests: FATAL: check_svg_safety.py not found in ${tests_dir} (required check missing)" >&2
+   overall=1
+fi
+
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
 ## width-utilization ("no tall text section wasted in a narrow column") and
 ## footer-alignment ("every footer row shares the same gutter"). All need
@@ -216,6 +238,7 @@ if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
+      printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       env_unmet=1
    elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
       && [ -n "${driver}" ] && [ -x "${driver}" ] && command -v sandbox >/dev/null 2>&1; then
@@ -224,6 +247,7 @@ if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+      printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       env_unmet=1
    fi
 else
@@ -259,6 +283,38 @@ else
       printf '%s\n' "website-footer-tests: FATAL: check_footer.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
    fi
+   if [ -f "${tests_dir}/check_console.py" ]; then
+      console_rc=0
+      "${tests_dir}/check_console.py" "${roots[@]}" || console_rc="$?"
+      if [ "${console_rc}" = '77' ]; then
+         printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium)' >&2
+         env_unmet=1
+      elif [ "${console_rc}" != '0' ]; then
+         overall=1
+      fi
+   else
+      ## Same as check_footer.py above: a shipped required lane whose absence must FATAL,
+      ## not silently skip the console-error gate to a green pass.
+      printf '%s\n' "website-console-tests: FATAL: check_console.py not found in ${tests_dir} (required test missing)" >&2
+      overall=1
+   fi
+fi
+
+## Lint lanes (generic): html-tidy validity + stylelint, run CONFINED in the sandbox
+## (the tools live there, not on this host). No browser, so delegated to the separate
+## webcheck-lint-sandbox driver (default confine profile). In-sandbox (cannot nest) or
+## with no sandbox -> env-unmet SKIP, never a silent green.
+lint_driver="${script_dir}/webcheck-lint-sandbox"
+[ -x "${lint_driver}" ] || lint_driver="$(command -v webcheck-lint-sandbox 2>/dev/null || true)"
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
+   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; in-sandbox, cannot nest)' >&2
+   env_unmet=1
+elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
+   && [ -n "${lint_driver}" ] && [ -x "${lint_driver}" ] && command -v sandbox >/dev/null 2>&1; then
+   "${lint_driver}" "${roots[@]}" || overall=1
+else
+   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; no sandbox)' >&2
+   env_unmet=1
 fi
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a

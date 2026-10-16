@@ -1,0 +1,4 @@
+# External-link reachability: accepted-unreachable URLs for secure-terminal.github.io (one per line).
+# The gate flags only a NEWLY-dead external link; a URL listed here is tolerated
+# (known dead / deliberately unprobeable). Review + prune periodically.
+https://github.com/secure-terminal/terminal-poc-corpus/tree/master/comparison

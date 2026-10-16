@@ -106,7 +106,10 @@ recorder="${test_dir}/recorder.bash"
    printf '%s\n' 'fi'
    printf '%s\n' 'mapfile -d "" -t uwt_argv < /proc/self/cmdline'
    printf '%s\n' 'printf "%s\n" "${uwt_argv[0]}" > "${REC_ZERO}"'
-   printf '%s\n' 'printf "%s\n" "${uwt_argv[*]:1}" > "${REC_ARGS}"'
+   ## NUL-delimit each forwarded arg so the argv BOUNDARIES are recorded: a
+   ## space-join ("${uwt_argv[*]:1}") cannot tell one arg "alpha beta" from two
+   ## args "alpha" "beta", which is the whole contract under test.
+   printf '%s\n' 'printf "%s\0" "${uwt_argv[@]:1}" > "${REC_ARGS}"'
    printf '%s\n' 'exit 0'
 } > "${recorder}"
 ln -s -- /bin/bash "${parent}.anondist-orig"
@@ -119,17 +122,24 @@ env -i PATH="${base_path}" BASH_ENV="${recorder}" \
 
 got_zero=""
 [ -r "${rec_zero}" ] && got_zero="$(cat -- "${rec_zero}")"
-got_args=""
-[ -r "${rec_args}" ] && got_args="$(cat -- "${rec_args}")"
 
 ok=""
 [ "${rc}" -eq 0 ] && [ "${got_zero}" = '/some/custom/argv0' ] && ok=1
 assert "exec -a sets argv[0] to uwtwrapper_zeroarg" "${ok}" \
    "rc=${rc} argv[0]='${got_zero}' want '/some/custom/argv0'"
 
+## Compare the recorded argv BYTE-FOR-BYTE against the NUL-delimited expectation:
+## 'alpha beta' as one arg vs 'alpha','beta' as two differ here (they would not
+## under a space-join). cmp handles the embedded NULs a shell var cannot hold.
+expected_args="${test_dir}/expected_args"
+printf '%s\0' alpha beta > "${expected_args}"
 ok=""
-[ "${got_args}" = 'alpha beta' ] && ok=1
-assert "trailing args forwarded verbatim" "${ok}" "args='${got_args}' want 'alpha beta'"
+[ -r "${rec_args}" ] && cmp --quiet -- "${rec_args}" "${expected_args}" && ok=1
+## NUL is unprintable; render it as '|' for the failure detail only.
+got_args_show=""
+[ -r "${rec_args}" ] && got_args_show="$(tr '\0' '|' < "${rec_args}")"
+assert "trailing args forwarded verbatim (argv boundaries)" "${ok}" \
+   "args='${got_args_show}' want 'alpha|beta|'"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

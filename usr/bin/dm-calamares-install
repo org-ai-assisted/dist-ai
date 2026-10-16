@@ -75,8 +75,8 @@ snap_account="user"
 ## --pre-install-push L:G push host file/dir L into the live guest at absolute G
 ##                        BEFORE Calamares launches (so it lands in the overlayfs
 ##                        upperdir); repeatable.
-## --pre-install-cmd CMD  run shell snippet CMD in the live guest as 'user' BEFORE
-##                        Calamares launches; repeatable.
+## --pre-install-cmd CMD  run shell snippet CMD in the live guest as the live-session
+##                        account BEFORE Calamares launches; repeatable.
 launch_env=()
 pre_install_push=()
 pre_install_cmd=()
@@ -309,8 +309,8 @@ usage() {
 --pre-install-push LOCAL:GUEST  push host file/dir LOCAL into the live guest at
              absolute GUEST BEFORE Calamares launches (lands in the overlayfs
              upperdir; copyto restores a script's +x). Repeatable.
---pre-install-cmd CMD  run shell snippet CMD in the live guest as 'user' BEFORE
-             Calamares launches. Repeatable."
+--pre-install-cmd CMD  run shell snippet CMD in the live guest as the live-session
+             account BEFORE Calamares launches. Repeatable."
 }
 
 ## Shared headless-GUI driver (OCR + scancode + resolution-independent click): the
@@ -919,7 +919,7 @@ main() {
    snap_account="${live_account}"
    snap 24 live-guestcontrol-ready
    ## Pre-install hooks (opt-in; empty -> no-op): guestcontrol is confirmed up, so
-   ## push host files into the live guest and/or run setup snippets as 'user'
+   ## push host files into the live guest and/or run setup snippets as live_account
    ## BEFORE Calamares launches. Used to swap in a patched helper or seed a
    ## verification marker that must land in the live overlayfs upperdir.
    local push_spec push_local push_dest cmd_snippet launch_var
@@ -935,7 +935,7 @@ main() {
          || die "${FAIL_RC}" "pre-install push failed: '${push_spec}'"
    done
    for cmd_snippet in "${pre_install_cmd[@]}"; do
-      printf '%s\n' "${me}: pre-install cmd (user): ${cmd_snippet}"
+      printf '%s\n' "${me}: pre-install cmd (${live_account}): ${cmd_snippet}"
       gc_run "${live_account}" "${cmd_snippet}" 120 \
          || die "${FAIL_RC}" "pre-install cmd failed: ${cmd_snippet}"
    done
@@ -959,11 +959,10 @@ main() {
    done
    ## install-host opens Calamares as its own Wayland window; gc_launch_gui sets
    ## WAYLAND_DISPLAY (absent in the guestcontrol env) and backgrounds via setsid so
-   ## the GUI survives the exec channel closing. Account is 'user': the live install
-   ## session autologs in as user (the old OCR path typed install-host into a user
-   ## desktop terminal), and the UNRESTRICTED boot ROLE install-host needs is set by GRUB
-   ## (select_install_boot_entry), orthogonal to the guestcontrol login account --
-   ## sysmaint cannot even log in to the live session.
+   ## the GUI survives the exec channel closing. Launched as live_account -- the account
+   ## the chosen live session autologs in as (user by default; sysmaint under
+   ## --live-session sysmaint) -- which is orthogonal to the live boot entry GRUB selects
+   ## (select_install_boot_entry), the entry that grants install-host the root it needs.
    gc_launch_gui "${live_account}" "${INSTALL_HOST_CMD}" "${launch_extra[*]}"
    ## Best-effort frame of whatever install-host presents before the Calamares window appears
    ## (it may wait on the unrestricted-admin unlock first); captures the launch transition.
