@@ -8,14 +8,16 @@
 ## ricochet.anondist wrapper: ricochet has no unix-domain-socket support, so the
 ## wrapper must export TOR_CONTROL_HOST / TOR_CONTROL_PORT (otherwise ricochet
 ## would try to start its own Tor instance). The wrapper is source-able via the
-## was_executed guard (same pattern as dnf-3.anondist): sourced, it sets up the
-## environment but does NOT exec uwtwrapper.
+## was_executed guard (same pattern as curl.anondist / dnf-3.anondist): sourced,
+## it defines main() + exec_uwtwrapper but runs neither, so sourcing has no side
+## effects on the caller's shell.
 ##
-## Method: source the REAL ricochet.anondist in a subshell so was_executed is
-## false (BASH_SOURCE[0] is the wrapper, $0 is this test), then read back the
-## two exported values. Running it in a subshell also means a regressed guard
-## (a bare top-level exec) replaces only that subshell -- the printed values
-## never appear, and the assertions fail loudly rather than hijacking the test.
+## Method: source the REAL ricochet.anondist in a subshell (was_executed false,
+## so main is not auto-run), OVERRIDE exec_uwtwrapper so it records instead of
+## exec'ing, then call main -- which sets the TOR_CONTROL_* exports and hands off
+## to the override. The subshell confines main's strict-mode / LC_ALL=C so they
+## never touch this harness, and a regressed guard (a bare exec) replaces only
+## that subshell, so the value never appears and the assertion fails loudly.
 ##
 ## Targets the installed package by default; set UWT_REPO to test a checkout
 ## (then HELPER_SCRIPTS_PATH must point at a helper-scripts checkout so the
@@ -69,18 +71,23 @@ check() {
    fi
 }
 
-## Source in a subshell and emit the value; the literal __UNEXPORTED__ marks a
-## missing export, distinct from an empty value. '|| ...' turns a source failure
-## (or a regressed guard that execs away) into a loud wrong value, not a crash.
+## Source in a subshell, override exec_uwtwrapper to emit the value main set, and
+## run main. The literal __UNEXPORTED__ marks a missing export, distinct from an
+## empty value. '|| ...' turns a source failure (or a regressed guard that execs
+## away before main is reached) into a loud wrong value, not a crash.
 host_got="$(
    # shellcheck disable=SC1090
    source "${ricochet}"
-   printf '%s' "${TOR_CONTROL_HOST-__UNEXPORTED__}"
+   # shellcheck disable=SC2317  # invoked indirectly by main
+   exec_uwtwrapper() { printf '%s' "${TOR_CONTROL_HOST-__UNEXPORTED__}"; }
+   main
 )" || host_got="__SOURCE_FAILED__"
 port_got="$(
    # shellcheck disable=SC1090
    source "${ricochet}"
-   printf '%s' "${TOR_CONTROL_PORT-__UNEXPORTED__}"
+   # shellcheck disable=SC2317  # invoked indirectly by main
+   exec_uwtwrapper() { printf '%s' "${TOR_CONTROL_PORT-__UNEXPORTED__}"; }
+   main
 )" || port_got="__SOURCE_FAILED__"
 
 check "ricochet exports TOR_CONTROL_HOST" "${host_got}" "127.0.0.1"
