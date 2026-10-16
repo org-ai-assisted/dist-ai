@@ -122,6 +122,17 @@ else
    notok "skip path: rc=${RUN_RC} stale_exists=${stale_exists} out='${RUN_OUT}'"
 fi
 
+## A directory --output on the skip path must still exit 0, not abort under
+## errexit (safe-rm without --recursive fails on a directory).
+dir_out="${test_dir}/outdir"
+mkdir -- "${dir_out}"
+run_subject --from-overlay "${test_dir}/noexist" --output "${dir_out}"
+if [ "${RUN_RC}" -eq 0 ] && [ -d "${dir_out}" ]; then
+   ok "no upperdir, directory output -> clean exit 0 (directory left in place)"
+else
+   notok "directory-output skip: rc=${RUN_RC} out='${RUN_OUT}'"
+fi
+
 ## --- finding 3: mksquashfs -exit-on-error (static) --------------------------
 if grep --quiet --fixed-strings -- '-exit-on-error' "${subject}"; then
    ok "mksquashfs invocation carries -exit-on-error"
