@@ -26,20 +26,22 @@ and the predicate is actually WIRED into main().
 Pure standard library, no network, no browser. Run directly: ./check_footer_test.py
 """
 
-import importlib.util
+import inspect
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
 
 def _load():
-    spec = importlib.util.spec_from_file_location(
-        'check_footer', os.path.join(_HERE, 'check_footer.py'))
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)          # safe: playwright import is inside main()
-    return module
+    # the browser lane lives in the importable core; import it (its real home).
+    # Prepend this tree's dist-packages (checkout case); no-op when installed.
+    # (safe: the playwright import is inside the core module's main(), not at import)
+    _dp = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        '..', '..', 'lib', 'python3', 'dist-packages'))
+    if os.path.isdir(_dp) and _dp not in sys.path:
+        sys.path.insert(0, _dp)
+    from dist_ai.webcheck import footer
+    return footer
 
 
 def _row(name, left, right):
@@ -125,9 +127,7 @@ def run():
           'body > footer' in cf._MEASURE_JS)
 
     # 8. the predicate must be WIRED into main() (defined-but-unused enforces nothing).
-    with open(os.path.join(_HERE, 'check_footer.py'), encoding='utf-8') as handle:
-        body = handle.read()
-    main_body = body[body.index('def main('):]
+    main_body = inspect.getsource(cf.main)
     check('predicate wired into main', 'misaligned_rows(' in main_body)
     check('measurement evaluated in main', '_MEASURE_JS' in main_body)
 
