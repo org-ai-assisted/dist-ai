@@ -207,6 +207,12 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     # the path only. Fragment is split first so path?query#frag keeps its frag.
     if '?' in target:
         target = target.split('?', 1)[0]
+    # Decode percent-encoding so the on-disk lookup matches the generator's actual
+    # filenames (it percent-encodes emitted href segments); an encoded internal
+    # link like 'my%20page.html' otherwise false-fails as a broken link. Decode
+    # BEFORE the '..' clamp / urljoin below so an encoded '..' ('%2e%2e') is clamped
+    # too, never slipped past it.
+    target = urllib.parse.unquote(target)
     if target == '':
         return ('#self', None, frag)         # same-page fragment (no candidate list)
     if target.startswith('/'):

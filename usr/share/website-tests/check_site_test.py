@@ -519,6 +519,14 @@ def run():
         _write(root, 'sub/index.html', '<p>ok</p>')
         check('same-root link still resolves', _links_failures(root) == [],
               repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A percent-encoded internal link must resolve to the generator's DECODED
+        # on-disk filename ('my%20page.html' -> 'my page.html'); without the decode
+        # the lookup hits the literal encoded name, absent on disk -> false broken.
+        _write(root, 'index.html', '<a href="my%20page.html">x</a>')
+        _write(root, 'my page.html', '<p>ok</p>')
+        check('percent-encoded internal link resolves to the decoded file',
+              _links_failures(root) == [], repr(_links_failures(root)))
 
     # check_supply_chain: srcset candidates and fetching <link> rels are external
     # subresource LOADS too (Extractor records only href/src for the tag loop).
