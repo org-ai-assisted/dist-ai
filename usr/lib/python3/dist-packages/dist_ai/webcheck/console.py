@@ -103,6 +103,17 @@ document.addEventListener('securitypolicyviolation', function (e) {
 """
 
 
+_CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+
+
+def _safe_terminal(s: str) -> str:
+    """Strip C0/C1 control chars from captured page text before it is printed to the
+    operator's terminal. The reviewed page's console / exception / CSP text is UNTRUSTED
+    (a same-origin script can emit an OSC-52 clipboard-write or ANSI that forges or hides
+    gate output), so no raw control byte reaches the terminal."""
+    return _CTRL_CHARS.sub('?', s)
+
+
 def format_csp(v: dict) -> str:
     """One actionable line per CSP violation: which directive blocked what, and where."""
     where = ""
@@ -211,7 +222,14 @@ async def check(base: str, paths: list[str], settle_ms: int, hard_timeout: int =
     inconclusive: list[str] = []
     attempts = attempts_for(retries)
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        try:
+            browser = await p.chromium.launch()
+        except Exception as exc:          # noqa: BLE001 -- engine not installed
+            # Match the sibling browser lanes: python3-playwright present but the chromium
+            # ENGINE absent (never `playwright install`-ed, or the cache pruned) is an
+            # env-unmet SKIP(77), never a hard FAIL -- as this module's docstring promises.
+            # _skip raises SystemExit(77), which propagates cleanly out of asyncio.run.
+            _skip('chromium engine unavailable: %s' % exc)
         for path in paths:
             url = page_url(base, path)
             # Re-probe a failing page up to `attempts` times: pass on the FIRST clean attempt,
@@ -288,7 +306,7 @@ async def check(base: str, paths: list[str], settle_ms: int, hard_timeout: int =
             page_hits = outcome.get("hits", [])
             print(f"{'HIT' if page_hits else 'ok':9} {len(page_hits):>3} {path}", flush=True)
             for kind, detail in page_hits:
-                print(f"          -> {kind}: {detail[:200]}", flush=True)
+                print(f"          -> {kind}: {_safe_terminal(detail[:200])}", flush=True)
                 hits.append((path, kind, detail))
         try:
             await asyncio.wait_for(browser.close(), timeout=5)
@@ -308,10 +326,15 @@ async def check(base: str, paths: list[str], settle_ms: int, hard_timeout: int =
 
 
 def check_roots(roots: list[str], settle_ms: int = 1000, hard_timeout: int = 55,
-                retries: int = 2) -> int:
+                retries: int = 0) -> int:
     """FAMILY entry: serve each local site checkout from a localhost mount (reusing mobile.py's
     harness, incl. SUBSITES mounting) and run the console gate against it. SKIPs (exit 77) when
-    Playwright/chromium is absent, exactly like the sibling browser lanes."""
+    Playwright/chromium is absent, exactly like the sibling browser lanes.
+
+    retries defaults to 0 here (unlike the live-stage --base path): a localhost mount is a
+    DETERMINISTIC server with no network transience to absorb, so re-probing would only MASK a
+    genuinely flaky page defect (a JS race, a conditional CSP violation) -- matching the sibling
+    lanes, which make a single pass."""
     import os
     roots = [os.path.abspath(r) for r in roots if os.path.isdir(r)]
     if not roots:
@@ -405,8 +428,12 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.enumerate_from:
+        if not args.enumerate_from.is_dir():
+            ap.error("--enumerate-from: not a directory: %s" % args.enumerate_from)
         paths = enumerate_paths(args.enumerate_from)
     elif args.paths_file:
+        if not args.paths_file.is_file():
+            ap.error("--paths-file: not a file: %s" % args.paths_file)
         paths = [ln.strip() for ln in args.paths_file.read_text().splitlines() if ln.strip()]
     else:
         # the required mutually-exclusive group guarantees --paths is set here

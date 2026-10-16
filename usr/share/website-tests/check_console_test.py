@@ -156,6 +156,22 @@ def run() -> int:
     # check_roots exists as the family (local-serve) entry.
     ck(callable(getattr(cce, "check_roots", None)), "check_roots family entry present")
 
+    # fix: family re-probing is OFF (retries=0). A localhost mount is deterministic -- no
+    # network transience to absorb -- so a re-probe would only MASK a flaky page defect.
+    ck(inspect.signature(cce.check_roots).parameters["retries"].default == 0,
+       "check_roots retries defaults to 0 (local mount, no masking)")
+
+    # fix: captured page text is sanitized of terminal control chars before printing, so an
+    # untrusted same-origin script cannot inject OSC-52/ANSI into the operator's terminal.
+    ck(cce._safe_terminal("a\x1b]52;c;x\x07b\nc") == "a?]52;c;x?b?c",
+       "control chars stripped from captured text before printing")
+
+    # fix: a missing chromium ENGINE is an env-unmet SKIP(77), not a hard FAIL -- check()
+    # guards the launch like the sibling lanes (canary on the guard source).
+    _check_src = inspect.getsource(cce.check)
+    ck("except Exception as exc" in _check_src and "chromium engine unavailable" in _check_src,
+       "check() turns a missing chromium engine into a SKIP, not a FAIL")
+
     # Page-source modes are mutually exclusive + exactly one required: two modes no longer
     # silently drop one, and none errors instead of a surprise empty run.
     parsed = cce.build_parser().parse_args(["--base", "https://x", "--paths", "/"])
