@@ -94,6 +94,13 @@ fi
 check "charset [A-Za-z0-9]" "${charset}" "ok"
 
 ## --- A non-numeric count is rejected. ---
+## random_alpha_numeric's reject diagnostic goes through
+## sanitize-echo --max-length "${STRINGS_BSH_REPORT_MAX}", and the message is
+## prefixed with $0 (this script's absolute path). From a deep checkout, $0 alone
+## can exceed the default 200-char cap and truncate the phrase matched below,
+## failing on correct code. Raise the cap so the match is path-independent.
+# shellcheck disable=SC2034  # read by random_alpha_numeric in the sourced strings.bsh
+STRINGS_BSH_REPORT_MAX=100000
 rc=0
 err="$(random_alpha_numeric abc 2>&1 1>/dev/null)" || rc=$?
 check "non-numeric count: return 1" "${rc}" "1"
