@@ -94,7 +94,8 @@ overlay_count="$(printf '%s\n' "${out}" | grep --only-matching 'rd.live.overlay=
 luks_count="$(printf '%s\n' "${out}" | grep --only-matching 'rd.luks.uuid=' | wc --lines)"
 if [ "${overlay_count}" = "1" ] && [ "${luks_count}" = "1" ] \
    && [[ "${out}" != *"stale"* ]] && [[ "${out}" != *"deadbeef"* ]] \
-   && [[ "${out}" == *"rd.live.overlay=LABEL=persistence:/live/overlay"* ]]; then
+   && [[ "${out}" == *"rd.live.overlay=LABEL=persistence:/live/overlay"* ]] \
+   && [[ "${out}" == *"rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905"* ]]; then
    pass "cmdline: normalizes a pre-existing overlay/luks token (no duplication)"
 else
    fail "cmdline A3 wrong (overlay=${overlay_count} luks=${luks_count}): '${out}'"
@@ -143,8 +144,9 @@ fi
 
 ## First valid uuid wins (not the last).
 printf '%s\n' 'rd.luks.uuid=40e273d7-4e63-4459-b16f-ba3df4374905 rd.luks.uuid=11111111-2222-3333-4444-555555555555' > "${cmdline_file}"
-uuid_out="$(persistent_boot_luks_uuid)" || true
-if [ "${uuid_out}" = '40e273d7-4e63-4459-b16f-ba3df4374905' ]; then
+uuid_rc=0
+uuid_out="$(persistent_boot_luks_uuid)" || uuid_rc=$?
+if [ "${uuid_rc}" -eq 0 ] && [ "${uuid_out}" = '40e273d7-4e63-4459-b16f-ba3df4374905' ]; then
    pass "luks_uuid: takes the first valid uuid"
 else
    fail "luks_uuid first-wins wrong: '${uuid_out}'"
@@ -168,7 +170,7 @@ touch -- "${prune_dir}/vmlinuz-2.0" "${prune_dir}/initrd.img-2.0"
 touch -- "${prune_src}/vmlinuz-2.0" "${prune_src}/initrd.img-2.0"
 persistent_boot_prune "${prune_dir}" "${prune_src}"
 if [ ! -e "${prune_dir}/vmlinuz-1.0" ] && [ ! -e "${prune_dir}/initrd.img-1.0" ] \
-   && [ -e "${prune_dir}/vmlinuz-2.0" ]; then
+   && [ -e "${prune_dir}/vmlinuz-2.0" ] && [ -e "${prune_dir}/initrd.img-2.0" ]; then
    pass "prune: drops a kernel no longer installed, keeps the current one"
 else
    fail "prune: wrong set remains"
