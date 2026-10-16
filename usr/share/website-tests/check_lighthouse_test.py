@@ -87,6 +87,14 @@ def run() -> int:
     finally:
         os.environ.pop("LH_TOL_PERF", None)
 
+    # a failed/timed-out lighthouse audit must yield a dropped sample (None), never crash:
+    # the handler must reference subprocess.TimeoutExpired, not the nonexistent
+    # subprocess.TimeoutError (which would raise AttributeError when the except fires).
+    import inspect
+    src = inspect.getsource(lh._run_lighthouse)
+    ck("subprocess.TimeoutExpired" in src and "subprocess.TimeoutError" not in src,
+       "lighthouse failure handler uses TimeoutExpired (not the bogus TimeoutError)")
+
     sys.stdout.write("check_lighthouse_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

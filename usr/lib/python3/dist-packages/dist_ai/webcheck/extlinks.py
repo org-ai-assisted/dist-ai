@@ -97,7 +97,12 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
             if exc.code in (404, 410):
                 return "dead", "HTTP %d" % exc.code
             return "alive", "HTTP %d (host up; not rot)" % exc.code
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001
+            # A link checker fetches arbitrary cited URLs: a malformed URL
+            # (http.client.InvalidURL / ValueError), a server that closes mid-response
+            # (http.client.BadStatusLine / IncompleteRead -- HTTPException, NOT a URLError/OSError
+            # subclass), a DNS/timeout/refused (URLError/OSError), or any other fetch surprise must
+            # fail THIS url as transient, never crash the worker thread + the whole gate.
             return "transient", "%s: %s" % (type(exc).__name__, exc)
     return "transient", "unreachable"
 
