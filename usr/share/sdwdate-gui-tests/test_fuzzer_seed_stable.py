@@ -24,7 +24,31 @@ import zlib
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "fuzz"))
 
+## Capture the process excepthook BEFORE importing the fuzzer, to prove the
+## import does not replace it (see test_import_does_not_install_excepthook).
+_EXCEPTHOOK_BEFORE_IMPORT = sys.excepthook
+
 import sdwdate_gui_fuzzer as fuzzer
+
+
+class FuzzerImportIsSideEffectFree(unittest.TestCase):
+    """Importing the fuzzer must not install its process-wide hooks."""
+
+    def test_import_does_not_install_excepthook(self) -> None:
+        ## The fuzzer installs its Qt-slot excepthook only from main(), never
+        ## at import: an import-time install would replace sys.excepthook for
+        ## the whole test process and let a slot exception in any other
+        ## discovered test pass silently.
+        self.assertIsNot(
+            sys.excepthook,
+            fuzzer._excepthook,  # pylint: disable=protected-access
+            "importing the fuzzer installed its excepthook process-wide",
+        )
+        self.assertIs(
+            sys.excepthook,
+            _EXCEPTHOOK_BEFORE_IMPORT,
+            "importing the fuzzer changed sys.excepthook",
+        )
 
 
 class FuzzerSeedSalt(unittest.TestCase):
@@ -45,6 +69,19 @@ class FuzzerSeedSalt(unittest.TestCase):
         ## sufficient; the crc32 assertion above pins cross-process stability).
         self.assertEqual(
             fuzzer.mode_rng_salt("qubes"), fuzzer.mode_rng_salt("qubes")
+        )
+
+    def test_call_site_uses_the_stable_salt(self) -> None:
+        ## Guard the CALL SITE, not just the helper: the helper could stay
+        ## crc32 while the per-mode seeding reverted to builtins.hash(mode).
+        ## The seeding calls mode_rng_salt(mode) exactly once; a revert removes
+        ## that call, so its presence pins the stable salt at the call site.
+        with open(fuzzer.__file__, encoding="ascii") as fh:
+            source = fh.read()
+        self.assertIn(
+            "mode_rng_salt(mode)",
+            source,
+            "per-mode seeding no longer uses the stable mode_rng_salt helper",
         )
 
 

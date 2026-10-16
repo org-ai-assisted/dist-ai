@@ -7,12 +7,17 @@
 Exhaustive verification of the sdwdate status octal-escape decoder.
 
 The subject decodes status messages with `re.compile(r"\\\\\\d{3}")` + a per-match
-`__octal_decode`, so every escape the decoder can ever see is a backslash
-followed by exactly three DECIMAL digits -- a finite domain of 1000 values
-(000..999). This drives the REAL `__set_sdwdate_status` (which applies the
-subject's own regex and decoder) over all 1000 and checks each against an
-independent oracle. A finite, total proof the CrossHair budget cannot give; it
-also pins the accept/reject boundary (0x20..0x7E plus 0x0A, octal digits only).
+`__octal_decode`. In production the message reaching the server is always ASCII:
+the wire parser rejects any non-printable byte (check_bytes_printable) and
+decodes with `str(buf, encoding="ascii")` before a status is ever parsed, so the
+only escapes the decoder can REACH are a backslash plus three ASCII decimal
+digits -- a finite domain of 1000 values (000..999). (Python's `\\d` also matches
+Unicode decimal digits, but those cannot survive the ASCII wire, so they are out
+of the reachable domain; this lane deliberately enumerates the ASCII triples.)
+This drives the REAL `__set_sdwdate_status` (which applies the subject's own
+regex and decoder) over all 1000 and checks each against an independent oracle:
+a finite, total proof over the reachable domain that the CrossHair budget cannot
+give, pinning the accept/reject boundary (0x20..0x7E plus 0x0A, octal digits).
 
 Drives the real subject -- no vendored copy of the pattern or the decoder.
 """

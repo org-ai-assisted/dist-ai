@@ -141,9 +141,6 @@ def _excepthook(exc_type, exc, _tb) -> None:
     _CAUGHT.append((exc_type.__name__, str(exc)))
 
 
-sys.excepthook = _excepthook
-
-
 class _Hang(Exception):
     """Raised by the SIGALRM watchdog when the event loop fails to return."""
 
@@ -152,7 +149,16 @@ def _on_alarm(_sig, _frame) -> None:
     raise _Hang()
 
 
-signal.signal(signal.SIGALRM, _on_alarm)
+def _install_fuzz_hooks() -> None:
+    """
+    Install the Qt-slot excepthook and the SIGALRM watchdog. Called from main()
+    ONLY, never at import: these are process-wide, so installing them on import
+    would let merely importing this module (e.g. a unit test importing
+    mode_rng_salt) replace sys.excepthook and mask slot exceptions in every
+    other test discovered in the same process.
+    """
+    sys.excepthook = _excepthook
+    signal.signal(signal.SIGALRM, _on_alarm)
 
 
 class FakeListener(QObject):  # pylint: disable=too-few-public-methods
@@ -1413,6 +1419,7 @@ def run_client_status(rng, iterations) -> list[Finding]:
 
 def main() -> int:
     """Entry point."""
+    _install_fuzz_hooks()
     parser = argparse.ArgumentParser(description="sdwdate-gui server fuzzer")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--iterations", type=int, default=400)
