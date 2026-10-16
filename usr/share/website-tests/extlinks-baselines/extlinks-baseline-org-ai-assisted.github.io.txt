@@ -1,0 +1,9 @@
+# External-link reachability: accepted-unreachable URLs for org-ai-assisted.github.io (one per line).
+# The gate flags only a NEWLY-dead external link; a URL listed here is tolerated
+# (known dead / deliberately unprobeable). Review + prune periodically.
+https://github.com/org-ai-assisted/onion-client-refetch-stall-arti
+https://github.com/org-ai-assisted/onion-client-refetch-stall-tor
+https://web.archive.org/web/20260418141613/https://www.kicksecure.com/wiki/Policy_On_Artificial_Intelligence
+https://web.archive.org/web/20260515195725/https://www.kicksecure.com/wiki/Dev/Build_Documentation
+https://web.archive.org/web/20260604004341/https://www.whonix.org/wiki/Policy_On_Artificial_Intelligence
+https://web.archive.org/web/20260715060626/https://forums.whonix.org/t/is-whonix-vibecoded-now/23405
