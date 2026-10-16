@@ -92,7 +92,11 @@ RESULTS_OWNER="$(id --user --name)"
 check() {
    if [ "$2" = 'true' ]; then printf '%s\n' "ok: $1"; else printf '%s\n' "FAIL: $1" >&2; failures=$((failures + 1)); fi
 }
-has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
+## Whole-TOKEN (phrase) match on the recorded argv string, NOT a substring: pad both
+## haystack and needle with spaces so a check for '--firmware efi' matches only the
+## complete 'efi' value, never 'efi-secureboot' / 'efi-invalid'. A substring match
+## would false-pass a lane that passed the wrong firmware value.
+has_arg() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac }
 
 ## Run the lane for a given firmware and return the recorded install argv.
 argv_for_firmware() {
@@ -104,15 +108,20 @@ argv_for_firmware() {
 }
 
 sb_argv="$(argv_for_firmware 'efi-secureboot')"
-check "efi-secureboot reached the installer" "$(has '--firmware efi-secureboot' "${sb_argv}" && printf '%s' true || printf '%s' false)"
-check "efi-secureboot passes --mok-enroll" "$(has '--mok-enroll' "${sb_argv}" && printf '%s' true || printf '%s' false)"
+check "efi-secureboot reached the installer" "$(has_arg '--firmware efi-secureboot' "${sb_argv}" && printf '%s' true || printf '%s' false)"
+check "efi-secureboot passes --mok-enroll" "$(has_arg '--mok-enroll' "${sb_argv}" && printf '%s' true || printf '%s' false)"
 
 efi_argv="$(argv_for_firmware 'efi')"
-check "plain efi reached the installer" "$(has '--firmware efi' "${efi_argv}" && printf '%s' true || printf '%s' false)"
-check "plain efi does NOT pass --mok-enroll" "$(has '--mok-enroll' "${efi_argv}" && printf '%s' false || printf '%s' true)"
+## Whole-token match: a lane that regressed to '--firmware efi-secureboot' (or any other
+## wrong value) must FAIL this, not satisfy it the way a substring 'efi' would.
+check "plain efi reached the installer" "$(has_arg '--firmware efi' "${efi_argv}" && printf '%s' true || printf '%s' false)"
+check "plain efi does NOT pass --mok-enroll" "$(has_arg '--mok-enroll' "${efi_argv}" && printf '%s' false || printf '%s' true)"
 
 bios_argv="$(argv_for_firmware 'bios')"
-check "bios does NOT pass --mok-enroll" "$(has '--mok-enroll' "${bios_argv}" && printf '%s' false || printf '%s' true)"
+## Positive reach check FIRST: without it an empty bios_argv (lane never reached the
+## installer) would false-pass the --mok-enroll-absent assertion below.
+check "bios reached the installer" "$(has_arg '--firmware bios' "${bios_argv}" && printf '%s' true || printf '%s' false)"
+check "bios does NOT pass --mok-enroll" "$(has_arg '--mok-enroll' "${bios_argv}" && printf '%s' false || printf '%s' true)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} mok-enroll coupling assertion(s) failed" >&2
