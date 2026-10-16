@@ -25,21 +25,22 @@ Canary cases (would pass a naive HTML-only implementation only by accident):
 Pure standard library, no network. Run directly: ./check_site_test.py
 """
 
-import importlib.util
+import inspect
 import os
 import sys
 import tempfile
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
-
 def _load_check_site():
-    spec = importlib.util.spec_from_file_location(
-        'check_site', os.path.join(_HERE, 'check_site.py'))
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # the static checks live in the importable core; import it (its real home) so a
+    # test that monkeypatches a module global patches the dict the functions read.
+    # Prepend this tree's dist-packages (checkout case); no-op when installed.
+    _dp = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        '..', '..', 'lib', 'python3', 'dist-packages'))
+    if os.path.isdir(_dp) and _dp not in sys.path:
+        sys.path.insert(0, _dp)
+    from dist_ai.webcheck import site
+    return site
 
 
 def _write(root, rel, data):
@@ -219,10 +220,10 @@ def run():
               os.path.join(root, 'logo-wide.html') in pages)
 
     # 13. The format gate must be WIRED into main(): a check that is defined but
-    # never called silently enforces nothing (it shipped that way once).
-    with open(os.path.join(_HERE, 'check_site.py'), encoding='utf-8') as handle:
-        source = handle.read()
-    main_body = source[source.index('def main('):]
+    # never called silently enforces nothing (it shipped that way once). Read the
+    # real main() source wherever it lives (the core module), not a fixed file path,
+    # so the CLI-shim split does not blind this guard.
+    main_body = inspect.getsource(check_site.main)
     check('check_image_format is invoked from main()',
           'check_image_format(root, failures)' in main_body)
 
