@@ -20,7 +20,6 @@ import unittest
 
 from systemcheck_testlib import (
     SystemcheckTestBase,
-    function_definition,
     read,
 )
 
@@ -243,16 +242,28 @@ class TestRegressionInvariants(SystemcheckTestBase):
         call (found by ai-review during the check_kernel_hardening_cmdline PR)
         bypassed both: `--skip check_packages` silently ran it anyway, because
         the skip-list is only ever consulted inside the wrapper."""
-        ## Source-able entrypoint: sourcing defines systemcheck_main without
-        ## running it; `declare -f` drops comments, so only real calls remain.
-        func = function_definition(
-            [os.path.join(self.dir, 'systemcheck')], 'systemcheck_main')
+        ## Static scan of systemcheck_main's source body. The orchestrator
+        ## sources its ~40 fragments at module top level via hardcoded
+        ## /usr/libexec paths, so `declare -f` would require staging the whole
+        ## checkout under bubblewrap (see the systemcheck-tests-bwrap suite); a
+        ## text scan needs neither. Extract the body between the column-0
+        ## `systemcheck_main() {` and its column-0 closing `}`, then flag any
+        ## line that STARTS with a bare `check_*` call (a full-line `#` comment
+        ## is skipped; a `## check_x` trailing comment never begins the line).
+        lines = read(os.path.join(self.dir, 'systemcheck')).split('\n')
+        start = next((i for i, ln in enumerate(lines)
+                      if re.match(r'^systemcheck_main\(\)\s*\{', ln)), None)
+        self.assertIsNotNone(start, 'systemcheck_main not defined at column 0')
         bad = []
-        for num, line in enumerate(func.split('\n'), 1):
+        for offset, line in enumerate(lines[start + 1:], 1):
+            if re.match(r'^\}', line):
+                break
             stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
             match = re.match(r'^(check_[A-Za-z0-9_]+)\b', stripped)
             if match and not stripped.startswith('systemcheck_run_function'):
-                bad.append((num, stripped))
+                bad.append((offset, stripped))
         self.assertEqual(
             bad, [],
             f"check_* called directly in systemcheck_main, bypassing "

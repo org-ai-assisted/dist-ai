@@ -240,6 +240,79 @@ def function_definition(sources, name: str) -> str:
     return run_sourced(sources, f'declare -f -- {shlex.quote(name)}')
 
 
+def systemcheck_orchestrator() -> str:
+    """Absolute path of the main `systemcheck` entrypoint in the checkout."""
+    return os.path.join(systemcheck_dir(), 'systemcheck')
+
+
+def _msgcollector_libexec() -> str:
+    """The msgcollector usr/libexec/msgcollector dir to stage over
+    /usr/libexec/msgcollector, or '' to fall back to the host's installed copy.
+
+    The orchestrator sources error_handler + msgdispatcher_run_check by the
+    HARDCODED absolute /usr/libexec/msgcollector path (not an overridable base),
+    so a checkout is staged THERE via the bwrap bind. Resolved from
+    MSGCOLLECTOR_REPO, else SYSTEMCHECK_REPO's sibling ../msgcollector."""
+    repo = os.environ.get('MSGCOLLECTOR_REPO', '').strip()
+    if not repo:
+        sc = os.environ.get('SYSTEMCHECK_REPO', '').strip()
+        if sc:
+            repo = os.path.join(os.path.dirname(os.path.normpath(sc)),
+                                'msgcollector')
+    if repo:
+        cand = os.path.join(repo, 'usr', 'libexec', 'msgcollector')
+        if os.path.isdir(cand):
+            return cand
+    return ''
+
+
+def source_orchestrator(body: str, stubs: str = '', strings: bool = False,
+                        strict: bool = True, timeout: int = 45):
+    """Source the REAL `systemcheck` orchestrator, then run `body`.
+
+    The orchestrator sources its ~40 check fragments and the msgcollector
+    helpers at MODULE TOP LEVEL via HARDCODED /usr/libexec/{systemcheck,
+    msgcollector} paths (upstream design: a library must be functional when
+    sourced). Those paths are NOT overridable bases, and the INSTALLED copy lags
+    the checkout (the version-skew trap), so a plain `source` from a checkout
+    fails. Stage the checkout(s) THERE with a bubblewrap bind, then source.
+
+    helper-scripts libs use ${HELPER_SCRIPTS_PATH:-} and resolve from the
+    checkout (visible under --bind / /), so only the hardcoded dirs are staged.
+
+    SkipTest when bubblewrap is unavailable; the systemcheck-tests-bwrap runner
+    (--strict-skips) turns that into FATAL unless the orchestrator authorized it
+    (no unprivileged user namespaces on a restricted CI runner)."""
+    if not bwrap_available():
+        raise unittest.SkipTest(
+            'bubblewrap unavailable or unprivileged user namespaces disabled')
+    orch = systemcheck_orchestrator()
+    ## Refuse to source an unguarded entrypoint (would run the tool on source).
+    _assert_source_able(orch)
+    hs = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
+    strings_path = (os.path.join(hs, 'usr/libexec/helper-scripts/strings.bsh')
+                    if hs else '/usr/libexec/helper-scripts/strings.bsh')
+    lines = []
+    if strict:
+        lines += ['set -o errexit', 'set -o pipefail']
+    lines.append(f'export HELPER_SCRIPTS_PATH={shlex.quote(hs)}')
+    ## Source via the STAGED path so BASH_SOURCE[0] and the hardcoded sibling
+    ## sources all resolve to the bound checkout.
+    lines.append('source /usr/libexec/systemcheck/systemcheck')
+    if strings:
+        if not os.path.isfile(strings_path):
+            raise AssertionError(f"strings.bsh missing at {strings_path!r}")
+        lines.append(f'source {shlex.quote(strings_path)}')
+    lines += [stubs, body]
+    cmd = ['bwrap', '--bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+           '--ro-bind', systemcheck_dir(), '/usr/libexec/systemcheck']
+    msg = _msgcollector_libexec()
+    if msg:
+        cmd += ['--ro-bind', msg, '/usr/libexec/msgcollector']
+    cmd += ['bash', '-c', '\n'.join(lines)]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
 ## Records every message emission. $output_x / $output_cli are variables holding
 ## a command name, so pointing them at this function captures the severity and
 ## message a check would have sent to msgcollector, without needing msgcollector.

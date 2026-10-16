@@ -8,92 +8,51 @@
 """
 Tests for the systemcheck orchestrator (usr/libexec/systemcheck/systemcheck).
 
-The orchestrator is source-able: its progress helpers and systemcheck_main are
-defined at top level, while the strict/errexit toggle, the ERR trap, and the ~40
-fragment sources live inside systemcheck_main (run only when executed, guarded
-by was_executed). So these tests SOURCE it -- defining the functions without
-running the whole system check or installing the ERR trap -- and exercise the
-progress helpers directly. systemcheck_run_function / output_x are stubbed for
-isolation; the real strings.bsh is sourced for is_whole_number.
+The orchestrator sources its ~40 check fragments and the msgcollector helpers
+at MODULE TOP LEVEL (upstream design: a library must be functional when
+sourced), via the HARDCODED /usr/libexec/{systemcheck,msgcollector} paths. Its
+progress helpers and systemcheck_main are defined at top level too, while the
+strict/errexit toggle and the ERR trap live INSIDE systemcheck_main (run only
+when executed, behind the was_executed source-guard).
+
+So these tests SOURCE the orchestrator -- which defines the functions without
+running the system check or installing the ERR trap -- and exercise the progress
+helpers directly. Because the fragment/msgcollector sources are hardcoded to
+/usr/libexec and the installed copy lags the checkout, the source needs the
+checkout staged THERE: source_orchestrator binds it with bubblewrap. That is why
+this suite is bwrap-only (the non-bwrap suite cannot stage /usr/libexec without
+root). systemcheck_run_function / output_x are stubbed for isolation; the real
+strings.bsh is sourced for is_whole_number.
 """
 
-import os
-import subprocess
 import unittest
 
-from systemcheck_testlib import systemcheck_dir
-
-
-def _orchestrator() -> str:
-    path = os.path.join(systemcheck_dir(), 'systemcheck')
-    if not os.path.isfile(path):
-        ## A configured checkout (SYSTEMCHECK_REPO) missing its orchestrator is a
-        ## regression to FAIL on, not silently skip.
-        if os.environ.get('SYSTEMCHECK_REPO', '').strip():
-            raise AssertionError(f"orchestrator missing from configured checkout at {path!r}")
-        raise unittest.SkipTest(f"orchestrator not found at {path!r}")
-    return path
+from systemcheck_testlib import source_orchestrator
 
 
 class OrchestratorTestBase(unittest.TestCase):
-    script: str
-    hs_root: str
-    strings: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.script = _orchestrator()
-        cls.hs_root = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
-        cls.strings = (os.path.join(cls.hs_root, 'usr/libexec/helper-scripts/strings.bsh')
-                       if cls.hs_root else '/usr/libexec/helper-scripts/strings.bsh')
-        ## strings.bsh is required ONLY by the subclasses that pass strings=True; its
-        ## absence is enforced in run_sourced (below), not here -- gating it in the
-        ## shared base silently dropped TestSourceableContract and TestMoveProgressBar,
-        ## which never source it.
 
     def run_sourced(self, body: str, stubs: str = '', strings: bool = False,
-                    strict: bool = True, timeout: int = 30):
-        lines = []
-        if strict:
-            lines += ['set -o errexit', 'set -o pipefail']
-        lines.append(f'export HELPER_SCRIPTS_PATH={self.hs_root!r}')
-        lines.append(f'source {self.script!r}')
-        if strings:
-            if not os.path.isfile(self.strings):
-                if os.environ.get('SYSTEMCHECK_REPO', '').strip():
-                    raise AssertionError(f"strings.bsh missing at {self.strings!r}")
-                raise unittest.SkipTest('helper-scripts strings.bsh not found')
-            lines.append(f'source {self.strings!r}')
-        lines.append(stubs)
-        lines.append(body)
-        return subprocess.run(['bash', '-c', '\n'.join(lines)],
-                              capture_output=True, text=True, timeout=timeout)
+                    strict: bool = True, timeout: int = 45):
+        return source_orchestrator(body, stubs=stubs, strings=strings,
+                                   strict=strict, timeout=timeout)
 
 
 class TestSourceableContract(OrchestratorTestBase):
     """Sourcing defines the orchestrator functions WITHOUT running the system
-    check: no fragment is sourced, no ERR trap is installed, no strict leak."""
+    check: no ERR trap is installed, no strict leak."""
 
     def test_defines_functions_without_running(self) -> None:
         res = self.run_sourced(
             'echo "main=$(type -t systemcheck_main) '
             'inc=$(type -t systemcheck_progress_main_increment)"')
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('main=function', res.stdout)
         self.assertIn('inc=function', res.stdout)
 
-    def test_fragments_not_sourced_on_source(self) -> None:
-        ## The ~40 check fragments are sourced inside systemcheck_main, so a plain
-        ## source must NOT define their check functions.
-        res = self.run_sourced('echo "dpkg=$(type -t check_dpkg) '
-                               'qubes=$(type -t check_qubes_settings)"')
-        self.assertIn('dpkg=', res.stdout)
-        self.assertNotIn('dpkg=function', res.stdout)
-        self.assertNotIn('qubes=function', res.stdout)
-
     def test_no_err_trap_installed_on_source(self) -> None:
         res = self.run_sourced('trap -p ERR')
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(res.stdout.strip(), '')
 
     def test_no_strict_mode_leak(self) -> None:
@@ -106,7 +65,7 @@ class TestSourceableContract(OrchestratorTestBase):
             'set -o | grep --quiet "^pipefail[[:space:]]*on" && lk="${lk} pipefail"\n'
             'printf "LEAK:%s:END\\n" "${lk}"',
             strict=False)
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('LEAK::END', res.stdout)
 
 
@@ -121,14 +80,14 @@ class TestProgressMainIncrement(OrchestratorTestBase):
         res = self.run_sourced(
             'PROGRESS_MAIN=5\nsystemcheck_progress_main_increment 3',
             stubs=self._STUBS, strings=True)
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('RUN: systemcheck_move_progress_bar_to_percent 8', res.stdout)
 
     def test_non_numeric_progress_resets_to_zero(self) -> None:
         res = self.run_sourced(
             'PROGRESS_MAIN=garbage\nsystemcheck_progress_main_increment 2',
             stubs=self._STUBS, strings=True)
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         ## reset to 0, then + 2.
         self.assertIn('RUN: systemcheck_move_progress_bar_to_percent 2', res.stdout)
 
@@ -159,13 +118,13 @@ class TestMoveProgressBar(OrchestratorTestBase):
     def test_skips_when_silent(self) -> None:
         res = self.run_sourced('silent=3\nsystemcheck_move_progress_bar_to_percent 50',
                                stubs=self._STUBS)
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertNotIn('OUT:', res.stdout)
 
     def test_drives_output_when_not_silent(self) -> None:
         res = self.run_sourced('silent=0\nsystemcheck_move_progress_bar_to_percent 50',
                                stubs=self._STUBS)
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('OUT:', res.stdout)
         self.assertIn('--progressx 50', res.stdout)
 
