@@ -34,7 +34,7 @@ import unittest
 from systemcheck_testlib import (
     SystemcheckTestBase,
     _assert_source_able,
-    function_definition,
+    read,
     run_sourced,
 )
 
@@ -187,18 +187,31 @@ class TestRunSourcedRefusesExecutingSubject(unittest.TestCase):
 
 
 class TestRealEntrypointIsSourceAble(SystemcheckTestBase):
-    """The real, guarded `systemcheck` entrypoint must be analysable by sourcing
-    WITHOUT running the tool -- the positive side of the guard (no false-refuse,
-    no 30s unsandboxed run)."""
+    """The real, guarded `systemcheck` entrypoint must pass the harness
+    source-guard -- the positive side of the guard: no false-refuse of a
+    correctly guarded tool.
+
+    This is a STATIC check. The orchestrator sources its ~40 fragments at module
+    top level via hardcoded /usr/libexec paths, so actually SOURCING it to prove
+    systemcheck_main gets defined requires staging the checkout under bubblewrap;
+    that behavioral proof lives in the systemcheck-tests-bwrap suite
+    (TestSourceableContract.test_defines_functions_without_running). Here we only
+    assert the guard shape the harness relies on."""
 
     def test_systemcheck_main_body_is_readable(self) -> None:
-        body = function_definition(
-            [os.path.join(self.dir, 'systemcheck')], 'systemcheck_main')
-        ## A non-empty declare -f body proves sourcing defined the function; the
-        ## call returning at all (vs the old 30s TimeoutExpired) proves the tool
-        ## did not run.
-        self.assertIn('systemcheck_main', body)
-        self.assertTrue(body.strip())
+        systemcheck = os.path.join(self.dir, 'systemcheck')
+        ## No false-refuse: _assert_source_able accepts the real, correctly
+        ## guarded entrypoint (it would raise on an unguarded dispatch).
+        _assert_source_able(systemcheck)  # must not raise
+        text = read(systemcheck)
+        ## systemcheck_main is defined at column 0, and the was_executed
+        ## source-guard is present -- so sourcing defines the function without
+        ## dispatching the tool.
+        self.assertRegex(text, r'(?m)^systemcheck_main\(\) \{',
+                         'systemcheck_main not defined at column 0')
+        self.assertRegex(
+            text, r'(?m)^if was_executed "\$\{BASH_SOURCE\[0\]\}"; then',
+            'was_executed source-guard missing from the entrypoint')
 
 
 if __name__ == '__main__':

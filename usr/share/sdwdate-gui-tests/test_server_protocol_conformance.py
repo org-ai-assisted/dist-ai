@@ -9,16 +9,24 @@ protocol against an independent reference model.
 
 The example-based wire-protocol tests each pin ONE ordering. This drives the
 REAL SdwdateGuiClient (Qubes mode pinned, mocked QLocalSocket) through RANDOM
-sequences of a header event plus command / handshake-timeout events, and
-asserts its observable state -- kicked, named, status, message -- matches a
-hand-derived reference model of the protocol. A divergence (a sequence the
-server accepts but the model rejects, a missed or spurious kick, or a wrong
-status on a live client) is a real protocol bug that single-ordering tests
-cannot surface.
+sequences of a header event plus command / handshake-timeout events -- the
+full command alphabet (set_client_name, set_sdwdate_status, set_tor_status
+across every accepted value plus a bad status, bad octal and a bad tor value,
+an unknown command, and the handshake timeout) -- and asserts its observable
+state (kicked, named, sdwdate status + message, tor status) matches a
+hand-derived reference model. A random concat_first draw also delivers the
+header and the first command in a single write, so the one-read framing is
+exercised too. A divergence (a sequence the server accepts but the model
+rejects, a missed or spurious kick, or a wrong status on a live client) is a
+real protocol bug that single-ordering tests cannot surface.
 
 Scope note: on Qubes the client identity is a dom0-stamped qrexec header that
 always precedes any client data, so every sequence begins with exactly one
-header event; the randomized part is the command ordering after it.
+header event; the randomized part is the command ordering after it. The
+non-Qubes handshake (no qrexec header; the client self-reports its name as the
+first command) runs a different path through __parse_qubes_data and is NOT
+modeled here -- it would need its own faithful reference, deferred rather than
+approximated (a wrong model yields false conformance failures).
 """
 
 # pylint: disable=wrong-import-position,no-name-in-module,protected-access
@@ -62,6 +70,12 @@ C_STATUS_SUCCESS = "c_status_success"
 C_STATUS_BUSY = "c_status_busy"
 C_STATUS_BADSTATUS = "c_status_badstatus"
 C_STATUS_BADOCTAL = "c_status_badoctal"
+C_TOR_RUNNING = "c_tor_running"
+C_TOR_STOPPED = "c_tor_stopped"
+C_TOR_DISABLED = "c_tor_disabled"
+C_TOR_DISABLED_RUNNING = "c_tor_disabled_running"
+C_TOR_ABSENT = "c_tor_absent"
+C_TOR_BAD = "c_tor_bad"
 C_UNKNOWN = "c_unknown"
 C_TIMEOUT = "c_timeout"
 COMMANDS = (
@@ -71,6 +85,12 @@ COMMANDS = (
     C_STATUS_BUSY,
     C_STATUS_BADSTATUS,
     C_STATUS_BADOCTAL,
+    C_TOR_RUNNING,
+    C_TOR_STOPPED,
+    C_TOR_DISABLED,
+    C_TOR_DISABLED_RUNNING,
+    C_TOR_ABSENT,
+    C_TOR_BAD,
     C_UNKNOWN,
     C_TIMEOUT,
 )
@@ -97,6 +117,12 @@ _COMMAND_BYTES = {
     C_STATUS_BUSY: _frame("set_sdwdate_status busy waiting"),
     C_STATUS_BADSTATUS: _frame("set_sdwdate_status bogus x"),
     C_STATUS_BADOCTAL: _frame("set_sdwdate_status success \\777"),
+    C_TOR_RUNNING: _frame("set_tor_status running"),
+    C_TOR_STOPPED: _frame("set_tor_status stopped"),
+    C_TOR_DISABLED: _frame("set_tor_status disabled"),
+    C_TOR_DISABLED_RUNNING: _frame("set_tor_status disabled_running"),
+    C_TOR_ABSENT: _frame("set_tor_status absent"),
+    C_TOR_BAD: _frame("set_tor_status bogus"),
     C_UNKNOWN: _frame("frobnicate x"),
 }
 
@@ -104,6 +130,15 @@ _COMMAND_BYTES = {
 _STATUS_OF = {
     C_STATUS_SUCCESS: ("SUCCESS", "hello"),
     C_STATUS_BUSY: ("BUSY", "waiting"),
+}
+
+## accepted tor-status events -> the TorStatus enum name each one sets.
+_TOR_OF = {
+    C_TOR_RUNNING: "RUNNING",
+    C_TOR_STOPPED: "STOPPED",
+    C_TOR_DISABLED: "DISABLED",
+    C_TOR_DISABLED_RUNNING: "DISABLED_RUNNING",
+    C_TOR_ABSENT: "ABSENT",
 }
 
 
@@ -115,6 +150,7 @@ class _Model:
         self.kicked: bool = False
         self.status: str = "UNKNOWN"
         self.msg: str | None = None
+        self.tor: str = "UNKNOWN"
         if header == H_VALID:
             self.named = True
         elif header == H_NONAME:
@@ -144,13 +180,16 @@ class _Model:
             return
         if event in (C_STATUS_SUCCESS, C_STATUS_BUSY):
             self.status, self.msg = _STATUS_OF[event]
+        elif event in _TOR_OF:
+            self.tor = _TOR_OF[event]
         else:
-            ## bad status or unsafe octal -> kick (any status residue on the
-            ## now-dead client is not an asserted observable).
+            ## bad status, unsafe octal, bad tor status, or unknown command ->
+            ## kick (any residue on the now-dead client is not an asserted
+            ## observable).
             self.kicked = True
 
 
-def _drive(header: str, events: list[str]):
+def _drive(header: str, events: list[str], concat_first: bool = False):
     """Drive the REAL server-side client; return (client, was_kicked)."""
     client = server.SdwdateGuiClient(QLocalSocket())
     client._SdwdateGuiClient__sock_buf = b""
@@ -172,8 +211,16 @@ def _drive(header: str, events: list[str]):
                 return
         client._SdwdateGuiClient__try_parse_commands()
 
-    feed(_HEADER_BYTES[header])
-    for event in events:
+    ## Optionally deliver the header and the first byte-command in ONE write,
+    ## so parse_qubes_data and the first try_parse_commands run inside a single
+    ## __handle_incoming_data -- a framing the per-event feed never exercises.
+    first_payload: bytes = _HEADER_BYTES[header]
+    rest: list[str] = events
+    if concat_first and events and events[0] != C_TIMEOUT:
+        first_payload += _COMMAND_BYTES[events[0]]
+        rest = events[1:]
+    feed(first_payload)
+    for event in rest:
         if kicked:
             break
         if event == C_TIMEOUT:
@@ -190,21 +237,22 @@ class TestServerProtocolConformance(unittest.TestCase):
     @given(
         header=st.sampled_from(HEADERS),
         events=st.lists(st.sampled_from(COMMANDS), max_size=8),
+        concat_first=st.booleans(),
     )
     def test_real_server_matches_reference_model(
-        self, header: str, events: list[str]
+        self, header: str, events: list[str], concat_first: bool
     ) -> None:
         with mock.patch.object(
             server, "running_in_qubes_os", return_value=True
         ):
-            client, real_kicked = _drive(header, events)
+            client, real_kicked = _drive(header, events, concat_first)
         self.addCleanup(client.deleteLater)
 
         model = _Model(header)
         for event in events:
             model.step(event)
 
-        ctx = f"header={header} events={events}"
+        ctx = f"header={header} events={events} concat_first={concat_first}"
         self.assertEqual(
             real_kicked,
             model.kicked,
@@ -228,6 +276,12 @@ class TestServerProtocolConformance(unittest.TestCase):
                 model.msg,
                 f"msg divergence: {ctx} "
                 f"real={client.sdwdate_msg!r} model={model.msg!r}",
+            )
+            self.assertEqual(
+                client.tor_status.name,
+                model.tor,
+                f"tor divergence: {ctx} "
+                f"real={client.tor_status.name} model={model.tor}",
             )
 
 

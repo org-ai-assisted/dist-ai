@@ -61,6 +61,7 @@ import random
 import signal
 import sys
 import tempfile
+import zlib
 from typing import Any
 from unittest import mock
 
@@ -75,6 +76,16 @@ from PyQt5.QtWidgets import QApplication, QLabel
 ## too and the coverage report reflects the genuinely unreached code rather
 ## than import-time measurement artifacts.
 server: Any = None  # pylint: disable=invalid-name  # set by main()
+
+
+def mode_rng_salt(mode: str) -> int:
+    """
+    Per-mode RNG salt derived with zlib.crc32, NOT builtins.hash: str hashing
+    is randomized per process by PYTHONHASHSEED, so hash(mode) made a given
+    --seed irreproducible across runs. crc32 is process-stable, so --seed
+    replays a protocol/lifecycle sequence exactly.
+    """
+    return zlib.crc32(mode.encode("ascii"))
 
 
 def _import_server():
@@ -130,9 +141,6 @@ def _excepthook(exc_type, exc, _tb) -> None:
     _CAUGHT.append((exc_type.__name__, str(exc)))
 
 
-sys.excepthook = _excepthook
-
-
 class _Hang(Exception):
     """Raised by the SIGALRM watchdog when the event loop fails to return."""
 
@@ -141,7 +149,16 @@ def _on_alarm(_sig, _frame) -> None:
     raise _Hang()
 
 
-signal.signal(signal.SIGALRM, _on_alarm)
+def _install_fuzz_hooks() -> None:
+    """
+    Install the Qt-slot excepthook and the SIGALRM watchdog. Called from main()
+    ONLY, never at import: these are process-wide, so installing them on import
+    would let merely importing this module (e.g. a unit test importing
+    mode_rng_salt) replace sys.excepthook and mask slot exceptions in every
+    other test discovered in the same process.
+    """
+    sys.excepthook = _excepthook
+    signal.signal(signal.SIGALRM, _on_alarm)
 
 
 class FakeListener(QObject):  # pylint: disable=too-few-public-methods
@@ -1402,6 +1419,7 @@ def run_client_status(rng, iterations) -> list[Finding]:
 
 def main() -> int:
     """Entry point."""
+    _install_fuzz_hooks()
     parser = argparse.ArgumentParser(description="sdwdate-gui server fuzzer")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--iterations", type=int, default=400)
@@ -1445,11 +1463,12 @@ def main() -> int:
         random.Random(seed ^ 0xC2B2AE35), args.iterations
     )
     for mode in modes:
+        mode_salt = mode_rng_salt(mode)
         findings += run_protocol(
-            mode, random.Random(seed ^ 0x9E3779B1 ^ hash(mode)), args.iterations
+            mode, random.Random(seed ^ 0x9E3779B1 ^ mode_salt), args.iterations
         )
         findings += run_lifecycle(
-            mode, random.Random(seed ^ 0x51ED270B ^ hash(mode)), args.iterations
+            mode, random.Random(seed ^ 0x51ED270B ^ mode_salt), args.iterations
         )
 
     if cov is not None:

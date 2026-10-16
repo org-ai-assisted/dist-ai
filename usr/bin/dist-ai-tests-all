@@ -763,6 +763,14 @@ wire() {
          ## source the real `has` (check_audio/check_secure_boot call it); has is
          ## a bash function, not a PATH binary, so PATH alone cannot resolve it.
          wire_env=( "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )" )
+         ## Only wire MSGCOLLECTOR_REPO when a msgcollector checkout resolves (full
+         ## tree). In --component mode pkg_dir prints nothing, and an empty assignment
+         ## would CLOBBER an ambient MSGCOLLECTOR_REPO and defeat the staging; leave it
+         ## unset so source_orchestrator's sibling/installed fallback applies.
+         msgcollector_repo="$( pkg_dir msgcollector )"
+         if [ -n "${msgcollector_repo}" ]; then
+            wire_env+=( "MSGCOLLECTOR_REPO=${msgcollector_repo}" )
+         fi
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
@@ -937,6 +945,18 @@ wire() {
          ## Pure unit suite for the build-account provisioner: drives the real script
          ## under a stub PATH (no checkout, no VM, no root, no network). Nothing to wire;
          ## the case exists to satisfy the registry guard.
+         wire_env=()
+         ;;
+      dm-calamares-install)
+         ## Self-contained unit suite for dist-ai's own calamares-install tool:
+         ## drives the real script from this tree (no checkout, no VM, no root,
+         ## no network). Nothing to wire; the case satisfies the registry guard.
+         wire_env=()
+         ;;
+      dm-image-build)
+         ## Self-contained unit suite for dist-ai's own image-build tool: drives
+         ## the real script from this tree (no checkout, no VM, no network).
+         ## Nothing to wire; the case satisfies the registry guard.
          wire_env=()
          ;;
       test-results-site)
@@ -1118,7 +1138,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|dm-vm-lock|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

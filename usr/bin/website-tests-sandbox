@@ -77,8 +77,11 @@ fi
 sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
-## Stage the two runners plus each site root (no .git) into one tree, then sync it in
-## and run both lanes confined. Basenames must be unique across the roots.
+## Stage the browser runners AND the importable webcheck core (preserving the real
+## usr/share/website-tests <-> usr/lib/python3/dist-packages layout, so a runner's own
+## dist-packages self-bootstrap resolves exactly as in a checkout -- no env passthrough
+## relied on), plus each site root (no .git), into one tree; sync it in and run every
+## lane confined. Basenames must be unique across the roots.
 staging="$(mktemp --directory)"
 synced=0
 cleanup(){
@@ -99,14 +102,22 @@ cleanup(){
 }
 trap cleanup EXIT
 
-## Runners and site roots live in SEPARATE staging subtrees (wt/ vs roots/), so a
-## site-root basename can never collide with the runner dir -- a checkout literally
-## named 'wt' stages fine.
-mkdir --parents -- "${staging}/wt" "${staging}/roots"
+## Runners (under usr/share/website-tests/) and site roots (roots/) live in SEPARATE
+## staging subtrees, so a site-root basename can never collide with the runner dir --
+## a checkout literally named 'usr' or 'roots' still stages fine.
+staged_wt="${staging}/usr/share/website-tests"
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_wt}" "${staged_pylib}" "${staging}/roots"
 for runner in check_mobile.py check_width.py check_footer.py; do
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
-   cp --archive -- "${tests_dir}/${runner}" "${staging}/wt/${runner}"
+   cp --archive -- "${tests_dir}/${runner}" "${staged_wt}/${runner}"
 done
+## The runners are CLI shims over dist_ai.webcheck; stage the package so the shim's
+## `../../lib/python3/dist-packages` insert resolves inside the sandbox. Required, not
+## optional: its absence is a broken install, not a skip.
+core_src="${tests_dir}/../../lib/python3/dist-packages/dist_ai"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
 
 declare -a remote_roots=()
 declare -A seen_base=()
@@ -135,7 +146,7 @@ run_lane(){
    runner="$1"
    rc=0
    sandbox exec --pid-scope own -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
-      "${SANDBOX_VENV_PY}" "wt/${runner}" "${remote_roots[@]}" || rc="$?"
+      "${SANDBOX_VENV_PY}" "usr/share/website-tests/${runner}" "${remote_roots[@]}" || rc="$?"
    ## A lane must actually run: 77 (SKIP) from inside the sandbox means Playwright did
    ## not fire, which defeats the purpose -- treat it as failure, never a pass.
    if [ "${rc}" = '77' ]; then

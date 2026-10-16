@@ -25,22 +25,24 @@ Canary cases (a naive implementation trips at least one):
 Pure standard library, no network. Run directly: ./check_seo_test.py
 """
 
-import importlib.util
+import inspect
 import os
 import sys
 import tempfile
 import xml.etree.ElementTree
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
 
 def _load_check_site():
-    spec = importlib.util.spec_from_file_location(
-        'check_site', os.path.join(_HERE, 'check_site.py'))
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # the static checks live in the importable core; import it (its real home) so a
+    # test that monkeypatches a module global patches the dict the functions read.
+    # Prepend this tree's dist-packages (checkout case); no-op when installed.
+    _dp = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        '..', '..', 'lib', 'python3', 'dist-packages'))
+    if os.path.isdir(_dp) and _dp not in sys.path:
+        sys.path.insert(0, _dp)
+    from dist_ai.webcheck import site
+    return site
 
 
 cs = _load_check_site()
@@ -252,9 +254,10 @@ def run():
         check('a directory with no index.html is not a site root',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
-    # the gate must be wired into main()
-    with open(os.path.join(_HERE, 'check_site.py'), encoding='utf-8') as handle:
-        main_src = handle.read()
+    # the gate must be wired into main() -- read the real function source wherever
+    # it lives (the core module), not a fixed file path, so the CLI-shim split does
+    # not blind this guard.
+    main_src = inspect.getsource(cs.main)
     check('check_seo_current invoked from main()',
           'check_seo_current(root, failures)' in main_src)
 
