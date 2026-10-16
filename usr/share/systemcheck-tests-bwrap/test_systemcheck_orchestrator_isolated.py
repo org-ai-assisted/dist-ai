@@ -25,6 +25,7 @@ root). systemcheck_run_function / output_x are stubbed for isolation; the real
 strings.bsh is sourced for is_whole_number.
 """
 
+import re
 import unittest
 
 from systemcheck_testlib import source_orchestrator
@@ -127,6 +128,33 @@ class TestMoveProgressBar(OrchestratorTestBase):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('OUT:', res.stdout)
         self.assertIn('--progressx 50', res.stdout)
+
+
+class TestOrchestratorInvariants(OrchestratorTestBase):
+    """Invariants over systemcheck_main's real (bash-parsed) body."""
+
+    def test_all_main_check_calls_use_run_function(self) -> None:
+        """Every check_* invocation inside systemcheck_main() must go through
+        systemcheck_run_function -- that wrapper implements --skip and the
+        --autostart allow-list (preparation.bsh). A bare `check_packages` call
+        (found by ai-review during the check_kernel_hardening_cmdline PR)
+        bypassed both: `--skip check_packages` silently ran it anyway.
+
+        Uses `declare -f` on the sourced function: bash parses the real body, so
+        the function boundary (and any heredoc) is handled correctly and comments
+        are dropped -- no column-0-`}` heuristic, no `## check_x` false positive."""
+        res = self.run_sourced('declare -f systemcheck_main')
+        self.assertEqual(res.returncode, 0, res.stderr)
+        bad = []
+        for line in res.stdout.split('\n'):
+            stripped = line.strip()
+            match = re.match(r'^(check_[A-Za-z0-9_]+)\b', stripped)
+            if match and not stripped.startswith('systemcheck_run_function'):
+                bad.append(stripped)
+        self.assertEqual(
+            bad, [],
+            f"check_* called directly in systemcheck_main, bypassing "
+            f"--skip/--autostart: {bad}")
 
 
 if __name__ == '__main__':

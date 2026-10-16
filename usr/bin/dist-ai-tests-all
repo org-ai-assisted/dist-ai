@@ -762,10 +762,15 @@ wire() {
          ## HELPER_SCRIPTS_PATH also lets the scenario harness locate has.bsh to
          ## source the real `has` (check_audio/check_secure_boot call it); has is
          ## a bash function, not a PATH binary, so PATH alone cannot resolve it.
-         wire_env=(
-            "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )"
-            "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )"
-         )
+         wire_env=( "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )" )
+         ## Only wire MSGCOLLECTOR_REPO when a msgcollector checkout resolves (full
+         ## tree). In --component mode pkg_dir prints nothing, and an empty assignment
+         ## would CLOBBER an ambient MSGCOLLECTOR_REPO and defeat the staging; leave it
+         ## unset so source_orchestrator's sibling/installed fallback applies.
+         msgcollector_repo="$( pkg_dir msgcollector )"
+         if [ -n "${msgcollector_repo}" ]; then
+            wire_env+=( "MSGCOLLECTOR_REPO=${msgcollector_repo}" )
+         fi
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"

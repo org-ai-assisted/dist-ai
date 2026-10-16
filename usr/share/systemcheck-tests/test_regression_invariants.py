@@ -235,40 +235,10 @@ class TestRegressionInvariants(SystemcheckTestBase):
         dupes = {s for s in shorts if shorts.count(s) > 1}
         self.assertEqual(dupes, set(), f"duplicate short options: {dupes}")
 
-    def test_all_main_check_calls_use_run_function(self) -> None:
-        """Every check_* invocation inside systemcheck_main() must go through
-        systemcheck_run_function -- that wrapper is what implements --skip and
-        the --autostart allow-list (preparation.bsh). A bare `check_packages`
-        call (found by ai-review during the check_kernel_hardening_cmdline PR)
-        bypassed both: `--skip check_packages` silently ran it anyway, because
-        the skip-list is only ever consulted inside the wrapper."""
-        ## Static scan of systemcheck_main's source body. The orchestrator
-        ## sources its ~40 fragments at module top level via hardcoded
-        ## /usr/libexec paths, so `declare -f` would require staging the whole
-        ## checkout under bubblewrap (see the systemcheck-tests-bwrap suite); a
-        ## text scan needs neither. Extract the body between the column-0
-        ## `systemcheck_main() {` and its column-0 closing `}`, then flag any
-        ## line that STARTS with a bare `check_*` call (a full-line `#` comment
-        ## is skipped; a `## check_x` trailing comment never begins the line).
-        lines = read(os.path.join(self.dir, 'systemcheck')).split('\n')
-        start = next((i for i, ln in enumerate(lines)
-                      if re.match(r'^systemcheck_main\(\)\s*\{', ln)), None)
-        self.assertIsNotNone(start, 'systemcheck_main not defined at column 0')
-        bad = []
-        for offset, line in enumerate(lines[start + 1:], 1):
-            if re.match(r'^\}', line):
-                break
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            match = re.match(r'^(check_[A-Za-z0-9_]+)\b', stripped)
-            if match and not stripped.startswith('systemcheck_run_function'):
-                bad.append((offset, stripped))
-        self.assertEqual(
-            bad, [],
-            f"check_* called directly in systemcheck_main, bypassing "
-            f"--skip/--autostart: {bad}",
-        )
+    ## test_all_main_check_calls_use_run_function moved to the bwrap suite
+    ## (systemcheck-tests-bwrap/test_systemcheck_orchestrator_isolated.py): with
+    ## top-level fragment sourcing it needs a staged source + `declare -f`, which
+    ## needs bubblewrap.
 
 
 if __name__ == '__main__':

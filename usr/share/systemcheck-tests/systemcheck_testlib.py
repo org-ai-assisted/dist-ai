@@ -277,8 +277,10 @@ def source_orchestrator(body: str, stubs: str = '', strings: bool = False,
     the checkout (the version-skew trap), so a plain `source` from a checkout
     fails. Stage the checkout(s) THERE with a bubblewrap bind, then source.
 
-    helper-scripts libs use ${HELPER_SCRIPTS_PATH:-} and resolve from the
-    checkout (visible under --bind / /), so only the hardcoded dirs are staged.
+    Some fragments source helper-scripts via the HARDCODED
+    /usr/libexec/helper-scripts/... path (e.g. check_login_security.bsh,
+    check_tor_bootstrap.bsh, updatecheck-daemon), NOT the overridable base, so
+    helper-scripts is staged there too when HELPER_SCRIPTS_PATH is a checkout.
 
     SkipTest when bubblewrap is unavailable; the systemcheck-tests-bwrap runner
     (--strict-skips) turns that into FATAL unless the orchestrator authorized it
@@ -309,6 +311,12 @@ def source_orchestrator(body: str, stubs: str = '', strings: bool = False,
     msg = _msgcollector_libexec()
     if msg:
         cmd += ['--ro-bind', msg, '/usr/libexec/msgcollector']
+    ## Stage helper-scripts too: a few fragments hardcode the absolute
+    ## /usr/libexec/helper-scripts path, which would otherwise hit the host copy.
+    if hs:
+        hs_libexec = os.path.join(hs, 'usr', 'libexec', 'helper-scripts')
+        if os.path.isdir(hs_libexec):
+            cmd += ['--ro-bind', hs_libexec, '/usr/libexec/helper-scripts']
     cmd += ['bash', '-c', '\n'.join(lines)]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
