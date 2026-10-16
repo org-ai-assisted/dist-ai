@@ -121,6 +121,21 @@ MUTANTS = [
          new="if (octal_int < 0x20 or octal_int >= 0x7E) and octal_int != 0x0A:",
          killers=["test_wire_protocol.py", "test_server_coverage.py"],
          note="the printable tilde (\\176) would be wrongly rejected as unsafe."),
+    dict(id="server octal-escape lower bound < 0x20 -> <= 0x20 (reject space)",
+         module="sdwdate_gui_server.py",
+         old="if (octal_int < 0x20 or octal_int > 0x7E) and octal_int != 0x0A:",
+         new="if (octal_int <= 0x20 or octal_int > 0x7E) and octal_int != 0x0A:",
+         killers=["test_octal_decode_exhaustive.py"],
+         note="the printable space (\\040 = 0x20) would be wrongly rejected; "
+              "the exhaustive octal lane pins the lower boundary."),
+    dict(id="server octal-escape newline exception != 0x0A -> != 0x0B",
+         module="sdwdate_gui_server.py",
+         old="if (octal_int < 0x20 or octal_int > 0x7E) and octal_int != 0x0A:",
+         new="if (octal_int < 0x20 or octal_int > 0x7E) and octal_int != 0x0B:",
+         killers=["test_octal_decode_exhaustive.py"],
+         note="newline (\\012 = 0x0A) would be rejected and 0x0B wrongly "
+              "admitted; the exhaustive octal lane pins the one control-char "
+              "exception."),
     dict(id="server qrexec field count < 2 -> != 2",
          module="sdwdate_gui_server.py",
          old="if len(qrexec_header_parts) < 2:",
