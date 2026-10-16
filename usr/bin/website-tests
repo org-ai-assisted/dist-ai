@@ -300,6 +300,23 @@ else
    fi
 fi
 
+## Lint lanes (generic): html-tidy validity + stylelint, run CONFINED in the sandbox
+## (the tools live there, not on this host). No browser, so delegated to the separate
+## webcheck-lint-sandbox driver (default confine profile). In-sandbox (cannot nest) or
+## with no sandbox -> env-unmet SKIP, never a silent green.
+lint_driver="${script_dir}/webcheck-lint-sandbox"
+[ -x "${lint_driver}" ] || lint_driver="$(command -v webcheck-lint-sandbox 2>/dev/null || true)"
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
+   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; in-sandbox, cannot nest)' >&2
+   env_unmet=1
+elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
+   && [ -n "${lint_driver}" ] && [ -x "${lint_driver}" ] && command -v sandbox >/dev/null 2>&1; then
+   "${lint_driver}" "${roots[@]}" || overall=1
+else
+   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; no sandbox)' >&2
+   env_unmet=1
+fi
+
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no
 ## hand-rolled/orphan shot, no dangling reference. Cheap (no Qt, no regen), so it gates

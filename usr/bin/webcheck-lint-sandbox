@@ -1,0 +1,106 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the CONFINED html-tidy + stylelint lane over each family site checkout, inside
+## the review sandbox qube under bwrap (no network; the tools -- tidy, stylelint -- live
+## there). Sibling of website-tests-sandbox (which owns the Playwright browser lanes);
+## this one owns the static CLI linters, which need no browser, so a plain sandbox-confine
+## profile (not --profile playwright).
+##
+##   webcheck-lint-sandbox <site-root> [<site-root> ...]
+##
+## Exit: 0 all clean, 1 a tidy error or stylelint finding in any site.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_WORKDIR="/home/user/webcheck-lint-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-lint-sandbox: $1" >&2
+   exit 1
+}
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+else
+   tests_dir='/usr/share/website-tests'
+fi
+
+if [ "$#" -eq 0 ]; then
+   die 'usage: webcheck-lint-sandbox <site-root> [<site-root> ...]'
+fi
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+
+## `sandbox` requires a target; the local review sandbox is the forget-proof default.
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
+sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+
+helper="${tests_dir}/webcheck-lint-built-tree.sh"
+sl_config="${tests_dir}/lint-assets/stylelint.config.json"
+[ -f "${helper}" ]    || die "missing confined helper: ${helper}"
+[ -f "${sl_config}" ] || die "missing stylelint config: ${sl_config}"
+
+## Stage the confined helper + the stylelint config + each site root (no .git) into one
+## tree, sync it in, run the lane per root confined. Basenames must be unique across roots.
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+mkdir --parents -- "${staging}/lint" "${staging}/roots"
+cp --archive -- "${helper}" "${staging}/lint/webcheck-lint-built-tree.sh"
+cp --archive -- "${sl_config}" "${staging}/lint/stylelint.config.json"
+
+declare -a remote_roots=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   if [ -n "${seen_base[${base}]:-}" ]; then
+      die "duplicate site-root basename '${base}' -- roots must have distinct names"
+   fi
+   seen_base[${base}]=1
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "roots/${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+overall=0
+for remote_root in "${remote_roots[@]}"; do
+   sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+      bash lint/webcheck-lint-built-tree.sh "${remote_root}" lint/stylelint.config.json \
+      || overall=1
+done
+
+exit "${overall}"
