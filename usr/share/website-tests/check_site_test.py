@@ -140,6 +140,21 @@ def run():
         check('referenced osi-logo.png not flagged',
               not any('osi-logo.png' in f for f in fails), repr(fails))
 
+    # 7b. check_asset_integrity decodes raster BYTES: a valid image passes; a truncated
+    # one (serves HTTP 200 but is corrupt) is flagged -- a ref/extension check cannot see it.
+    with tempfile.TemporaryDirectory() as root:
+        _png(root, 'good.png')
+        with open(os.path.join(root, 'bad.png'), 'wb') as handle:
+            # a PNG header + an IDAT cut off mid-stream, so a full decode (load()) raises.
+            handle.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+                         b'\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+                         b'\x00\x00\x00\nIDATx\x9cc')
+        fails = []
+        check_site.check_asset_integrity(root, fails)
+        check('valid image passes integrity', not any('good.png' in f for f in fails),
+              repr(fails))
+        check('truncated image flagged', any('bad.png' in f for f in fails), repr(fails))
+
     # check_image_format: a CONTENT raster reference must be webp; og:image /
     # favicon may stay PNG; the static allowlist exempts a basename.
     _page = ('<!doctype html><html><head><title>t</title></head>'
@@ -226,6 +241,8 @@ def run():
     main_body = inspect.getsource(check_site.main)
     check('check_image_format is invoked from main()',
           'check_image_format(root, failures)' in main_body)
+    check('check_asset_integrity is invoked from main()',
+          'check_asset_integrity(root, failures)' in main_body)
 
     # check_heading_breaks: a hard <br> inside a heading is the mobile-orphan bug.
     def _hb_failures(root):

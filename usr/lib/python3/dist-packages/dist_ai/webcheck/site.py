@@ -1122,6 +1122,39 @@ def check_assets(root, failures):
                             % os.path.relpath(image, root))
 
 
+# Rasters PIL decodes reliably (avif needs a plugin; .ico is multi-size; .svg is handled
+# by webcheck.svg_safety) -- integrity-checked by decoding the actual bytes.
+RASTER_DECODE_EXTS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp'})
+
+
+def check_asset_integrity(root, failures):
+    # A referenced image can exist and serve HTTP 200 yet be TRUNCATED or corrupt (a
+    # botched convert, a partial write, an unexpanded LFS pointer) -- the extension/ref
+    # checks, and often a browser's console, do not flag it. Decode every raster's BYTES
+    # and require nonzero dimensions, so a broken image cannot publish. PIL is imported
+    # lazily: only the family static lane needs it, so mw-static (no PIL dep) can still
+    # import the other checks from this module.
+    from PIL import Image
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in sorted(files):
+            if os.path.splitext(name)[1].lower() not in RASTER_DECODE_EXTS:
+                continue
+            path = os.path.join(base, name)
+            rel = os.path.relpath(path, root)
+            try:
+                with Image.open(path) as img:
+                    img.load()            # force a full decode -> catches truncation
+                    width, height = img.size
+            except Exception as exc:       # noqa: BLE001 -- any decode failure is a reject
+                failures.append('%s: undecodable/corrupt image (%s: %s)'
+                                % (rel, type(exc).__name__, exc))
+                continue
+            if width <= 0 or height <= 0:
+                failures.append('%s: image has a zero dimension (%dx%d)'
+                                % (rel, width, height))
+
+
 def check_card_layout(root, failures):
     # Each page's card sections must grid their cards, not stack them full-width.
     for page in html_files(root):
@@ -1948,6 +1981,7 @@ def main():
         check_supply_chain(root, failures)
         check_image_format(root, failures)
         check_assets(root, failures)
+        check_asset_integrity(root, failures)
         check_card_layout(root, failures)
         check_repro_raw(root, failures)
         check_nav(root, failures)
@@ -1965,7 +1999,7 @@ def main():
             sys.stdout.write('ok %s: links + wording + footer + footer-structure + '
                              'banner + csp + '
                              'no-inline-js + '
-                             'supply-chain + assets + card-layout + repro-raw + '
+                             'supply-chain + assets + asset-integrity + card-layout + repro-raw + '
                              'nav + '
                              'toc-complete + '
                              'heading-breaks + contrast + undefined-classes + '
