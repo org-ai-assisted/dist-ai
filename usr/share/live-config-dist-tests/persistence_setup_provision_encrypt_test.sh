@@ -85,6 +85,11 @@ export PATH="${shimdir}:${PATH}"
 seed_overlay_dirs() { printf '%s\n' "seed_overlay_dirs $*" >> "${PS_RECORD}"; }
 
 fake_part='/dev/fake-persist'
+## provision_persistence_fs opens the LUKS mapper as persistence_setup_${$}; it runs
+## in THIS shell (sourced), so $$ matches. Pin the exact mapper token (not a prefix)
+## so mkfs/luksOpen/luksClose are checked against the real opened device.
+mapper="persistence_setup_$$"
+mapper_dev="/dev/mapper/${mapper}"
 
 pass_count=0
 fail_count=0
@@ -98,19 +103,22 @@ check() {
    fi
 }
 
-## Does SOME recorded line contain EVERY fixed-string needle? Pinning the command
-## token AND its target operand on one line (order-independent) means a wrong-disk
-## operand or a reordered-argv regression fails, not just a missing command; and a
-## negative case keys on the COMMAND actually recorded, never on one flag VALUE.
-## "$1" is the expected presence ('true'/'false'); the rest are the needles. Prints
-## 'true' iff presence matches the expectation (the negative-case workhorse).
+## Does SOME recorded line contain EVERY needle as a COMPLETE, space-delimited
+## token? Both the line and each needle are space-padded and matched as " needle "
+## so a token boundary is required: '--all' never matches '--allow-discards',
+## 'persistence' never 'persistence-old', '/dev/fake-persist' never
+## '/dev/fake-persist-extra'. Needles match anywhere on the line (argv-order
+## independent). "$1" is the expected presence ('true'/'false'); prints 'true' iff
+## presence matches. A NEGATIVE ("$1"=false) assertion is passed the COMMAND
+## token(s) ONLY (never an operand), so a command run against the WRONG operand is
+## still detected as having run (an operand needle would let it slip the negative).
 line_has() {
    local want="$1" hay needle found='false' line_ok
    shift
    while IFS= read -r hay; do
       line_ok='true'
       for needle in "$@"; do
-         if [[ "${hay}" != *"${needle}"* ]]; then
+         if [[ " ${hay} " != *" ${needle} "* ]]; then
             line_ok='false'
             break
          fi
@@ -145,11 +153,21 @@ run_case() {
    provision_persistence_fs "${fake_part}"
    check "${desc}: wipefs targets the partition" "$(line_has true 'wipefs' '--all' "${fake_part}")"
    check "${desc}: luksFormat on the partition" "$(line_has true 'cryptsetup' 'luksFormat' "${fake_part}")"
-   check "${desc}: luksOpen on the partition" "$(line_has true 'cryptsetup' 'luksOpen' "${fake_part}")"
-   check "${desc}: luksClose ran" "$(line_has true 'cryptsetup' 'luksClose')"
-   check "${desc}: mkfs on the opened mapper" "$(line_has true 'mkfs.ext4' 'persistence' '/dev/mapper/persistence_setup_')"
-   check "${desc}: luksAddKey=${5}" "$(line_has "$5" 'cryptsetup' 'luksAddKey' "${fake_part}")"
-   check "${desc}: tpm-enroll=${6}" "$(line_has "$6" 'systemd-cryptenroll' "${fake_part}")"
+   check "${desc}: luksOpen the partition onto the mapper" "$(line_has true 'cryptsetup' 'luksOpen' "${fake_part}" "${mapper}")"
+   check "${desc}: luksClose closes the mapper" "$(line_has true 'cryptsetup' 'luksClose' "${mapper}")"
+   check "${desc}: mkfs -L persistence on the opened mapper" "$(line_has true 'mkfs.ext4' '-L' 'persistence' "${mapper_dev}")"
+   ## luksAddKey/TPM-enroll iff planned. A command run against the WRONG operand is
+   ## still a run, so the NEGATIVE asserts the command absent (command token only).
+   if [ "$5" = 'true' ]; then
+      check "${desc}: luksAddKey on the partition" "$(line_has true 'cryptsetup' 'luksAddKey' "${fake_part}")"
+   else
+      check "${desc}: no luksAddKey" "$(line_has false 'cryptsetup' 'luksAddKey')"
+   fi
+   if [ "$6" = 'true' ]; then
+      check "${desc}: tpm enroll on the partition" "$(line_has true 'systemd-cryptenroll' "${fake_part}")"
+   else
+      check "${desc}: no tpm enroll" "$(line_has false 'systemd-cryptenroll')"
+   fi
 }
 
 ## --- key-type -> command mapping (encrypt=true) ----------------------------
@@ -170,7 +188,7 @@ provision_persistence_fs "${fake_part}"
 check 'plaintext: wipefs targets the partition' "$(line_has true 'wipefs' '--all' "${fake_part}")"
 check 'plaintext: NO cryptsetup' "$(line_has false 'cryptsetup')"
 check 'plaintext: NO tpm enroll' "$(line_has false 'systemd-cryptenroll')"
-check 'plaintext: mkfs on the bare partition' "$(line_has true 'mkfs.ext4' 'persistence' "${fake_part}")"
+check 'plaintext: mkfs -L persistence on the bare partition' "$(line_has true 'mkfs.ext4' '-L' 'persistence' "${fake_part}")"
 
 printf '%s\n' ""
 printf '%s\n' "===== persistence-setup provision encrypt: ${pass_count} pass, ${fail_count} fail ====="
