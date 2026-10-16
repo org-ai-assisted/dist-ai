@@ -98,18 +98,29 @@ check() {
    fi
 }
 
-## Fixed-string presence of a recorded command line; prints 'true'/'false'.
-has_line() {
-   if grep --quiet --fixed-strings -- "$1" "${PS_RECORD}"; then
-      printf '%s' true
-   else
-      printf '%s' false
-   fi
-}
-## 'true' iff the presence of a recorded line matches the expectation (the
-## negative-case workhorse: want=false asserts the command did NOT run).
-expect_match() {
-   if [ "$(has_line "$2")" = "$1" ]; then printf '%s' true; else printf '%s' false; fi
+## Does SOME recorded line contain EVERY fixed-string needle? Pinning the command
+## token AND its target operand on one line (order-independent) means a wrong-disk
+## operand or a reordered-argv regression fails, not just a missing command; and a
+## negative case keys on the COMMAND actually recorded, never on one flag VALUE.
+## "$1" is the expected presence ('true'/'false'); the rest are the needles. Prints
+## 'true' iff presence matches the expectation (the negative-case workhorse).
+line_has() {
+   local want="$1" hay needle found='false' line_ok
+   shift
+   while IFS= read -r hay; do
+      line_ok='true'
+      for needle in "$@"; do
+         if [[ "${hay}" != *"${needle}"* ]]; then
+            line_ok='false'
+            break
+         fi
+      done
+      if [ "${line_ok}" = 'true' ]; then
+         found='true'
+         break
+      fi
+   done < "${PS_RECORD}"
+   if [ "${found}" = "${want}" ]; then printf '%s' true; else printf '%s' false; fi
 }
 
 ## desc hp hk ht expect_addkey expect_tpm
@@ -132,13 +143,13 @@ run_case() {
    true > "${primary_key_file}"
    open_mapper=''
    provision_persistence_fs "${fake_part}"
-   check "${desc}: wipefs ran" "$(has_line 'wipefs --all')"
-   check "${desc}: luksFormat ran" "$(has_line 'cryptsetup luksFormat')"
-   check "${desc}: luksOpen ran" "$(has_line 'cryptsetup luksOpen')"
-   check "${desc}: luksClose ran" "$(has_line 'cryptsetup luksClose')"
-   check "${desc}: mkfs on the opened mapper" "$(has_line 'mkfs.ext4 -L persistence /dev/mapper/')"
-   check "${desc}: luksAddKey=${5}" "$(expect_match "$5" 'cryptsetup luksAddKey')"
-   check "${desc}: tpm-enroll=${6}" "$(expect_match "$6" '--tpm2-device=auto')"
+   check "${desc}: wipefs targets the partition" "$(line_has true 'wipefs' '--all' "${fake_part}")"
+   check "${desc}: luksFormat on the partition" "$(line_has true 'cryptsetup' 'luksFormat' "${fake_part}")"
+   check "${desc}: luksOpen on the partition" "$(line_has true 'cryptsetup' 'luksOpen' "${fake_part}")"
+   check "${desc}: luksClose ran" "$(line_has true 'cryptsetup' 'luksClose')"
+   check "${desc}: mkfs on the opened mapper" "$(line_has true 'mkfs.ext4' 'persistence' '/dev/mapper/persistence_setup_')"
+   check "${desc}: luksAddKey=${5}" "$(line_has "$5" 'cryptsetup' 'luksAddKey' "${fake_part}")"
+   check "${desc}: tpm-enroll=${6}" "$(line_has "$6" 'systemd-cryptenroll' "${fake_part}")"
 }
 
 ## --- key-type -> command mapping (encrypt=true) ----------------------------
@@ -156,10 +167,10 @@ encrypt='false'
 filesystem='ext4'
 open_mapper=''
 provision_persistence_fs "${fake_part}"
-check 'plaintext: wipefs ran' "$(has_line 'wipefs --all')"
-check 'plaintext: NO cryptsetup' "$(expect_match false 'cryptsetup')"
-check 'plaintext: NO tpm enroll' "$(expect_match false 'systemd-cryptenroll')"
-check 'plaintext: mkfs on the bare partition' "$(has_line "mkfs.ext4 -L persistence ${fake_part}")"
+check 'plaintext: wipefs targets the partition' "$(line_has true 'wipefs' '--all' "${fake_part}")"
+check 'plaintext: NO cryptsetup' "$(line_has false 'cryptsetup')"
+check 'plaintext: NO tpm enroll' "$(line_has false 'systemd-cryptenroll')"
+check 'plaintext: mkfs on the bare partition' "$(line_has true 'mkfs.ext4' 'persistence' "${fake_part}")"
 
 printf '%s\n' ""
 printf '%s\n' "===== persistence-setup provision encrypt: ${pass_count} pass, ${fail_count} fail ====="
