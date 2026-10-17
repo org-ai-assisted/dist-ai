@@ -51,6 +51,11 @@ if ! has timeout ; then
    printf '%s\n' "FATAL: timeout (coreutils) not on PATH" >&2
    exit 1
 fi
+if ! has prlimit ; then
+   printf '%s\n' "FATAL: prlimit (util-linux) not on PATH" >&2
+   printf '%s\n' "Cases 8-9 need it to set an inherited RLIMIT_CPU." >&2
+   exit 1
+fi
 
 ## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/), so
 ## an in-tree edit is what gets tested, not the installed copy.
@@ -356,6 +361,30 @@ else
    printf '%s\n' "FAIL: inherited-hard-cpu-limit: rc=${gate_rc} -- the cap raised the hard RLIMIT_CPU"
    printf '%s\n' "${gate_output}" | tail -6; fail=1
 fi
+
+## Case 9: an inherited finite HARD RLIMIT_CPU AT the CPU cap (soft==hard) on the
+## EXPLODING graph. The cap relies on SIGXCPU (the soft-limit signal) to trigger the
+## forced-no-follow degrade; but at soft==hard the kernel's HARD check fires first and
+## delivers SIGKILL, not SIGXCPU. A cap expiry recognized only via SIGXCPU is then missed
+## and the gate HARD-FAILS (the killed shellcheck yields no JSON -> model.fail) instead of
+## degrading. The fix keeps soft STRICTLY below a finite hard, so a cap expiry always
+## arrives as SIGXCPU and still degrades, while SIGKILL stays "not a cap expiry". Latent in
+## our deployment (RLIMIT_CPU hard is infinite), reachable under a container/cgroup CPU cap.
+## prlimit --cpu=2:2 with a 2s inner cap makes cpu_seconds(=ceil(2)=2) == hard(=2). Pre-fix:
+## gate red on this clean graph (assert_graceful_degrade catches it).
+hardcap_dir="$(mktemp --directory --tmpdir="${test_dir}" hardcap.XXXXXX)"
+build_graph "${hardcap_dir}"
+gate_outer="${OUTER_TIMEOUT}"
+gate_rc=0
+gate_output="$( cd -- "${hardcap_dir}" \
+   && DIST_AI_SHELLCHECK_TIMEOUT=2 prlimit --cpu=2:2 -- \
+      timeout --kill-after=5 "${OUTER_TIMEOUT}" "${GATE}" --check ./caller 2>&1 )" \
+   || gate_rc=$?
+gate_timed_out=0
+if [ "${gate_rc}" -eq 124 ] || [ "${gate_rc}" -eq 137 ]; then
+   gate_timed_out=1
+fi
+assert_graceful_degrade "soft-equals-hard-cpu-cap-degrades"
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"

@@ -1947,14 +1947,56 @@ def check_seo_current(root, failures):
     failures.extend(check_seo(root))
 
 
+# MediaWiki-generated pages (the kicksecure/whonix stage sites) carry MediaWiki's own CSS
+# class tokens (mw-editsection, mw-headline, mw-parser-output, ...); the hand-authored family
+# pages carry none. A quorum of distinct mw-* class tokens in the landing page POSITIVELY
+# identifies a wiki checkout, so main() refuses the FAMILY policy on it with a clear message
+# instead of a wall of false failures (missing family footer, wording, card layout). Positive
+# detection (not "lacks a family footer") is deliberate: a genuinely BROKEN family site that
+# lost its footer is NOT a wiki, so it still runs the family checks and fails loudly rather
+# than being silently skipped. The declarative .github/web-tests.yml `policies:` selector
+# supersedes this heuristic once each site ships it.
+_WIKI_CLASS_TOKEN = re.compile(r'\bmw-[a-z][a-z0-9-]+')
+_WIKI_SIGNATURE_QUORUM = 2
+
+
+def _looks_like_wiki(root):
+    index = os.path.join(root, 'index.html')
+    try:
+        with open(index, encoding='utf-8', errors='replace') as handle:
+            markup = handle.read()
+    except OSError:
+        return False
+    tokens: set[str] = set()
+    for match in re.finditer(r'''class\s*=\s*(["'])(.*?)\1''', markup):
+        tokens.update(_WIKI_CLASS_TOKEN.findall(match.group(2)))
+        if len(tokens) >= _WIKI_SIGNATURE_QUORUM:
+            return True
+    return False
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
         sys.stderr.write('website-tests: SKIP (no site root found)\n')
         return 77
-    by_name = {os.path.basename(r): r for r in roots}
-    total = 0
+    # Applicability guard: skip a positively-identified wiki root (see _looks_like_wiki) so
+    # the family policy never mis-reports on a wiki/stage site.
+    applicable = []
     for root in roots:
+        if _looks_like_wiki(root):
+            sys.stderr.write(
+                'website-tests: SKIP %s (MediaWiki site -- the family-policy checker does '
+                'not apply; this site needs the wiki policy)\n' % os.path.basename(root))
+            continue
+        applicable.append(root)
+    if not applicable:
+        sys.stderr.write('website-tests: SKIP (only wiki site root(s) given; the family '
+                         'policy does not apply here)\n')
+        return 77
+    by_name = {os.path.basename(r): r for r in applicable}
+    total = 0
+    for root in applicable:
         failures: list[str] = []
         # A subsite (git-diffs-lie) verifies its off-mount absolute links against
         # its parent site's checkout when that is also present.

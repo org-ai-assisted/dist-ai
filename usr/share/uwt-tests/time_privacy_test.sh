@@ -196,6 +196,13 @@ td="$(make_timedir zeropad_single)"
 run_tp -y 2026 -m 01 -d 09 -i 1 -f "${td}"
 check "zero-padded -d 09 -m 01 accepted" "${tp_out}" "2026-01-09 0:0:1"
 
+## 'date +%Y' zero-pads years 0-999 (e.g. '0500'); those are valid 4-digit years
+## faketime keeps verbatim, so the year must accept a leading zero too (a strict
+## is_whole_number here would break the default date for a clock in years 0-999).
+td="$(make_timedir zeropad_year)"
+run_tp -y 0500 -m 03 -d 09 -i 1 -f "${td}"
+check "zero-padded 4-digit year 0500 accepted" "${tp_out}" "0500-03-09 0:0:1"
+
 ## A non-digit or partial-garbage counter file is treated as 0 (read_date_file's
 ## sed nodigits guard), never propagated.
 td="$(make_timedir garbage_sec seconds=abc)"

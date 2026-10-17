@@ -308,14 +308,29 @@ _SHELLCHECK_WALL_BACKSTOP_FACTOR = 5
 
 ## Only the SOFT limit is lowered; the inherited hard limit is kept, since an
 ## unprivileged process cannot raise it. SIGXCPU at the soft limit is the one cap
-## signal -- a SIGKILL (OOM killer, operator) is not a cap expiry.
+## signal -- a SIGKILL (OOM killer, operator) is not a cap expiry. For that to hold the
+## soft limit must stay STRICTLY below a finite hard limit: at soft==hard the kernel's
+## hard check fires first and delivers SIGKILL, not SIGXCPU, so a cap expiry would be
+## misread as "not a cap expiry" and hard-fail instead of degrading. Keeping soft<hard
+## makes a cap expiry always arrive as SIGXCPU and leaves SIGKILL unambiguous.
+## Cost: when a finite hard is at/below the requested budget shellcheck gets one
+## CPU-second less, so a run needing (hard-1, hard] CPU seconds degrades to no-follow
+## (VISIBLY noted, never a silent pass) rather than completing. hard-1 is the largest
+## soft still below an integer hard, so this is the MINIMUM budget loss and the
+## irreducible price of a soft-limit cap signal; it bites only under an already-
+## constrained finite hard CPU limit (none in our deployment -- hard is infinite).
 def _limit_cpu_seconds(seconds):
     def apply():
         _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
-        if hard != resource.RLIM_INFINITY:
-            seconds_capped = min(seconds, hard)
-        else:
+        if hard == resource.RLIM_INFINITY:
             seconds_capped = seconds
+        elif hard >= 2:
+            seconds_capped = min(seconds, hard - 1)
+        else:
+            ## hard in {0,1}: no room for soft<hard (soft=0 fires SIGXCPU instantly).
+            ## The gate cannot complete under a <=1 CPU-second hard limit anyway; let it
+            ## hit the hard limit (SIGKILL -> fail closed, loud). Not a cap-degrade case.
+            seconds_capped = hard
         resource.setrlimit(resource.RLIMIT_CPU, (seconds_capped, hard))
     return apply
 
