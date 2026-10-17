@@ -523,8 +523,8 @@ def run():
         # A decoy file OUTSIDE the root; a relative '..'-link that lands on it
         # must still be reported broken (throwaway decoy, not a system file).
         with open(os.path.join(outside, 'decoy.html'), 'w',
-                  encoding='utf-8') as handle:
-            handle.write('x')
+                  encoding='utf-8') as decoy_fh:
+            decoy_fh.write('x')
         rel = os.path.relpath(os.path.join(outside, 'decoy.html'),
                               os.path.join(root, 'sub'))
         _write(root, 'sub/index.html', '<a href="%s">x</a>' % rel)
@@ -1229,11 +1229,7 @@ def run():
 
     # check_footer (family links) now runs on every page that has a footer, so a
     # subpage dropping a family link is caught -- not just the top-level index.
-    def _footer_failures(root):
-        failures: list[str] = []
-        check_site.check_footer(root, failures)
-        return failures
-
+    # (_footer_failures is defined earlier in run() and reused here.)
     with tempfile.TemporaryDirectory() as root:
         full = ('<footer><div class="fbot">'
                 + ''.join('<a href="%s">x</a>' % u for u in check_site.FAMILY.values())
@@ -1384,6 +1380,40 @@ def run():
             except webcheck_config.ConfigError:
                 raised = True
             check('config.policies fails loud on %s' % _bad_label, raised, _bad_label)
+
+    # config.load: ABSENT (None) vs present-but-unreadable (ConfigError) must diverge, and a
+    # non-UTF-8 file is a loud ConfigError, never an uncaught UnicodeDecodeError crash.
+    with tempfile.TemporaryDirectory() as root:
+        check('config.load: genuinely absent -> None', webcheck_config.load(root) is None)
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, _cfg))   # a dir where the file should be = unreadable
+        _raised = False
+        try:
+            webcheck_config.load(root)
+        except webcheck_config.ConfigError:
+            _raised = True
+        check('config.load: present-but-unreadable -> ConfigError (not silently None)', _raised)
+    with tempfile.TemporaryDirectory() as root:
+        _p = os.path.join(root, _cfg)
+        os.makedirs(os.path.dirname(_p))
+        with open(_p, 'wb') as _fh:
+            _fh.write(b'policies: [family]\n#\xff\xfe\n')
+        _raised = False
+        try:
+            webcheck_config.load(root)
+        except webcheck_config.ConfigError:
+            _raised = True
+        check('config.load: non-UTF-8 -> ConfigError (not an uncaught crash)', _raised)
+    with tempfile.TemporaryDirectory() as root:
+        # end to end: a non-UTF-8 config makes main() fail LOUD (rc 1 + FAIL), not traceback.
+        _write(root, 'index.html', _page % '<p>x</p>')
+        _p = os.path.join(root, _cfg)
+        os.makedirs(os.path.dirname(_p), exist_ok=True)
+        with open(_p, 'wb') as _fh:
+            _fh.write(b'\xff\xfe\n')
+        rc, _out, err = _run_main([root])
+        check('main() fails loud (rc 1) on a non-UTF-8 config',
+              rc == 1 and 'FAIL ' in err, repr((rc, err)))
 
     # DECLARATIVE OVERRIDES THE HEURISTIC, both directions:
     with tempfile.TemporaryDirectory() as root:

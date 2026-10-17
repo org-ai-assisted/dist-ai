@@ -37,18 +37,27 @@ def config_path(root):
 
 
 def load(root):
-    """Parsed web-tests.yml mapping for `root`, or None when the file is absent.
+    """Parsed web-tests.yml mapping for `root`, or None when the file is ABSENT.
 
-    Raises ConfigError on an unreadable / non-mapping / invalid-YAML file."""
+    Only genuine absence (FileNotFoundError) is None. A present-but-unreadable
+    (EACCES, a dir in its place), invalid-YAML, or non-UTF-8 file raises ConfigError
+    -- so an unreadable authoritative config fails LOUD, never a silent fall-back to
+    the markup heuristic. Open-then-except (not os.path.isfile first) is what lets
+    'absent' and 'unreadable' diverge: isfile() returns False for BOTH.
+
+    web-tests.yml is a TRUSTED in-repo file (hand-authored in the family site repos,
+    emitted by the wiki generator). The trust boundary is repo-write access -- anyone
+    who can forge this file can equally commit a malicious index.html or test -- so
+    YAML-alias-amplification and symlink-escape hardening are out of scope here."""
     path = config_path(root)
-    if not os.path.isfile(path):
-        return None
-    import yaml
+    import yaml  # type: ignore[import-untyped]
     try:
         with open(path, encoding='utf-8') as handle:
             data = yaml.safe_load(handle)
-    except (OSError, yaml.YAMLError) as exc:
-        raise ConfigError('%s: unreadable or invalid YAML: %s' % (path, exc))
+    except FileNotFoundError:
+        return None
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
+        raise ConfigError('%s: unreadable or invalid: %s' % (path, exc))
     if data is None:
         data = {}
     if not isinstance(data, dict):
