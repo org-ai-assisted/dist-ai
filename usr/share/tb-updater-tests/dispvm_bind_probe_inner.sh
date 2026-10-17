@@ -23,6 +23,14 @@ export LC_ALL=C
 
 mode="$2"
 
+## The mount namespace isolates the MOUNT, not the filesystem: base lives on the
+## real /tmp, so clean it up (else every run leaks a dir on a long-lived host).
+base=""
+cleanup() {
+   [ -z "${base}" ] || safe-rm --recursive --force -- "${base}" || true
+}
+trap cleanup EXIT
+
 base="$(mktemp --directory)"
 mkdir -- "${base}/src" "${base}/victim"
 printf '%s\n' "SRC" > "${base}/src/marker_src"
