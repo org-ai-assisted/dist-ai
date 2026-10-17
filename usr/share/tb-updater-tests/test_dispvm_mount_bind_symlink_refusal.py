@@ -11,14 +11,21 @@ mountpoint.
 The other dispvm tests STUB mount (record argv), so the suite asserted the
 no-canonicalize directive is PRESENT but never that it WORKS. This test runs
 REAL 'mount --bind' in a private mount namespace (companion dispvm_bind_probe.sh)
-to prove the mechanism dispvm relies on:
+to prove the mechanism dispvm relies on, AND its envelope:
 
-  * plain 'mount --bind'                 -> FOLLOWS a symlinked target (the
-    CWE-59 root symlink-follow LPE). CANARY / positive control: if this does not
+  * plain 'mount --bind' onto a BARE dir-symlink target -> FOLLOWS (the CWE-59
+    root symlink-follow LPE). CANARY / positive control: if this does not
     follow, the environment cannot exhibit the bug and the proof is vacuous.
-  * 'mount --no-canonicalize --bind'     -> REFUSES.
-  * 'mount --bind -o X-mount.nocanonicalize' -> REFUSES (equivalent; this is the
-    form the shipped dispvm uses).
+  * 'mount --no-canonicalize --bind' (bare target)       -> REFUSES.
+  * 'mount --bind -o X-mount.nocanonicalize' (bare)      -> REFUSES (equivalent;
+    the form the shipped dispvm uses).
+  * same option but a TRAILING-SLASH target              -> FOLLOWS. Envelope
+    limit: a trailing slash/dot makes the kernel resolve THROUGH the symlink at
+    mount(2) time, outside mount(8)'s no-canonicalize. dispvm is unaffected -- it
+    passes bare dir targets AND the '[ -L ]' reject (pre-mount, pre-session)
+    catches every symlink form first; no-canonicalize is only a backstop.
+
+Full envelope (file-symlink etc.): org-ai-assisted/mount-nocanonicalize-symlink-refusal.
 
 Namespace availability: CI provides a user+mount namespace by design (the
 reusable-dist-ai-tests container adds SYS_ADMIN + unconfines apparmor/seccomp),
@@ -91,7 +98,13 @@ def test_dispvm_mount_bind_symlink_refusal():
 
     assert verdicts.get("opt") == "REFUSED_SAFE", (
         f"'mount --bind -o X-mount.nocanonicalize' (the dispvm form) must REFUSE "
-        f"a symlinked target; got {verdicts.get('opt')!r}\n{proc.stdout}")
+        f"a bare dir-symlink target; got {verdicts.get('opt')!r}\n{proc.stdout}")
+
+    ## Envelope limit (why dispvm must use bare targets): a trailing slash makes
+    ## the kernel resolve through the symlink, outside no-canonicalize.
+    assert verdicts.get("opt_slash") == "FOLLOWED_VULNERABLE", (
+        f"a TRAILING-SLASH target must FOLLOW despite X-mount.nocanonicalize "
+        f"(documents the envelope limit); got {verdicts.get('opt_slash')!r}\n{proc.stdout}")
 
 
 if __name__ == "__main__":

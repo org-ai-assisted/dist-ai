@@ -35,7 +35,7 @@ if ! mount_namespace_available; then
    exit 3
 fi
 
-for mode in plain flag opt; do
+for mode in plain flag opt opt_slash; do
    ## run_in_mount_namespace stages inner (+ a 'subject', unused here)
    ## world-readable and enters the namespace; inner reads the mode as its $2.
    out="$(run_in_mount_namespace "${inner}" "${inner}" "${mode}")"

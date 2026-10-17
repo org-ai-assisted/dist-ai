@@ -27,7 +27,11 @@ mode="$2"
 ## real /tmp, so clean it up (else every run leaks a dir on a long-lived host).
 base=""
 cleanup() {
-   [ -z "${base}" ] || safe-rm --recursive --force -- "${base}" || true
+   [ -z "${base}" ] && return 0
+   ## A follow case binds onto base/victim; detach it (lazy) before removing, or
+   ## safe-rm hits a busy mountpoint and leaves the dir on the real /tmp.
+   umount --lazy -- "${base}/victim" 2>/dev/null || true
+   safe-rm --recursive --force -- "${base}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -48,6 +52,12 @@ case "${mode}" in
       ;;
    opt)
       mount --bind -o nosuid,nodev,X-mount.nocanonicalize -- "${base}/src" "${base}/tgt" 2>/dev/null || rc=$?
+      ;;
+   opt_slash)
+      ## Envelope limit: a TRAILING SLASH makes the kernel resolve THROUGH the
+      ## symlink at mount(2) time, so no-canonicalize does NOT refuse it. dispvm
+      ## avoids this by passing bare dir-symlink targets.
+      mount --bind -o nosuid,nodev,X-mount.nocanonicalize -- "${base}/src" "${base}/tgt/" 2>/dev/null || rc=$?
       ;;
    *)
       printf '%s\n' "VERDICT=BAD_MODE"

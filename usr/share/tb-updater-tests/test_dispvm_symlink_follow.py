@@ -45,12 +45,14 @@ script's path globals at a scratch tree:
     the equivalent '-o X-mount.nocanonicalize' option (man mount: the flag
     entry points at the option; proven equivalent in
     org-ai-assisted/mount-nocanonicalize-symlink-refusal) -- onto
-    /home/<user>/.tb and .cache/tb. It makes mount REFUSE a symlinked target
-    (mountpoint) at the mount layer regardless of timing; it does NOT guard the
-    bind SOURCE. So safety rests on (a) a no-canonicalize directive on every
-    home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the
-    binds and refuses a pre-planted symlink at any bind SOURCE or TARGET path,
-    and (c) the boot-only run-once execution above. This test asserts that
+    /home/<user>/.tb and .cache/tb (bare dir paths). It makes mount REFUSE a
+    BARE dir-symlink target at the mount layer (a trailing slash/dot or a file
+    symlink is outside this envelope -- see the repo above); it does NOT guard
+    the bind SOURCE. So safety rests PRIMARILY on (a) the '[ -L ] ... exit 1'
+    reject loop that runs BEFORE the binds and refuses any symlink form at every
+    bind SOURCE or TARGET path, and (b) the boot-only run-once execution above;
+    the no-canonicalize directive is a mount-layer backstop for the bare-target
+    race. This test asserts that
     structural model (each home bind carries a no-canonicalize directive; the
     reject precedes them); the behavioral refusal is driven by
     test_planted_symlink_is_refused / test_planted_symlink_in_cache_source_is_refused
@@ -409,13 +411,14 @@ def _has_nocanonicalize(cmd):
 def test_home_binds_nocanonicalize_and_symlink_reject():
     """Each user-home bind mount carries a no-canonicalize directive (the
     'mount --no-canonicalize' flag or the equivalent '-o X-mount.nocanonicalize'
-    option) onto /home/<user>/.tb and .cache/tb. It makes mount refuse a
-    symlinked target at the mount layer regardless of timing (it does NOT guard
-    the bind source), so their safety rests on (a) a no-canonicalize directive on
-    every home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the
-    binds and refuses a pre-planted symlink at any bind source or target, and (c)
-    the service running only at early boot (asserted by the run-once and
-    --no-start tests). This asserts that structural model: each home bind carries
+    option) onto /home/<user>/.tb and .cache/tb (bare dir paths). It makes mount
+    refuse a BARE dir-symlink target at the mount layer (a trailing slash/dot or
+    file symlink is outside this envelope); it does NOT guard the bind source. So
+    their safety rests PRIMARILY on (a) the '[ -L ] ... exit 1' reject loop that
+    runs BEFORE the binds and refuses any symlink form at any bind source or
+    target, and (b) the service running only at early boot (asserted by the
+    run-once and --no-start tests); the no-canonicalize directive is a mount-layer
+    backstop for the bare-target race. This asserts that structural model: each home bind carries
     a no-canonicalize directive and the symlink reject precedes every one of
     them. The behavioral refusal is driven by test_planted_symlink_is_refused /
     test_planted_symlink_in_cache_source_is_refused (stubbed mount) and proven
