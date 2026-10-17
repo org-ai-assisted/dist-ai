@@ -37,8 +37,11 @@ run_gate(){
    local -a includes=()
    local line
 
-   ## Build the c8 --include list from the covered-set (explicit, growing).
-   while IFS= read -r line; do
+   ## Build the c8 --include list from the covered-set (explicit, growing). The `|| [ -n ... ]`
+   ## is load-bearing: `read` returns non-zero at EOF-without-trailing-newline, so without it a
+   ## covered.txt whose LAST line is a real path with no final newline (echo -n / some editors /
+   ## an appended path) is silently DROPPED -- never path-validated, [ -f ]-checked, or gated.
+   while IFS= read -r line || [ -n "${line}" ]; do
       ## skip blank lines and '#' comments
       if [ -z "${line}" ] || [ "${line#\#}" != "${line}" ]; then
          continue
