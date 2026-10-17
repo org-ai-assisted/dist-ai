@@ -1,0 +1,6 @@
+# jscov self-check covered-set. Lists BOTH subjects, but exercise-a.test.js runs only a.js.
+# Under c8 --all the unexercised b.js reports 0% -> the gate MUST FAIL. run.sh asserts that
+# failure before trusting the real gate; a PASS here means --all is missing/ineffective and the
+# real 100% gate would be vacuous (a false green).
+jscov-selftest/a.js
+jscov-selftest/b.js
