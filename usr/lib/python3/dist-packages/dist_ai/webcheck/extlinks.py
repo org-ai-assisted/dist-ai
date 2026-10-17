@@ -41,6 +41,28 @@ _TIMEOUT = 10
 _UA = "Mozilla/5.0 (webcheck external-link gate; +https://github.com/org-ai-assisted)"
 
 
+class _SchemeRestrictedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse a redirect whose target is not http(s).
+
+    The entry guard in _probe_once only checks the INITIAL URL. urllib follows redirects, and
+    its stock HTTPRedirectHandler permits an http(s) -> ftp hop -- so a cited page we probe could
+    30x-redirect the opener onto ftp:// (or, on an older stdlib, another scheme) and open it,
+    defeating the whole point of the http(s) allowlist. Refuse any non-web redirect target; the
+    raised HTTPError is caught by _probe_once (the origin DID respond, so it reads as alive, not
+    rot -- we simply decline to follow it off the web)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme.lower() not in _PROBE_SCHEMES:
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect to non-http(s) scheme refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# A private opener so the redirect restriction applies to every probe. urlopen() uses the global
+# default opener (stock redirect handler), which this must NOT mutate.
+_OPENER = urllib.request.build_opener(_SchemeRestrictedRedirectHandler)
+
+
 class _LinkExtractor(html.parser.HTMLParser):
     """Collect every http(s):// URL referenced by a tag attribute."""
 
@@ -98,7 +120,9 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
     for method in ("HEAD", "GET"):
         req = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 -- scheme allowlisted to http(s) directly above
+            # _OPENER (not urlopen) so the scheme restriction covers redirect hops too; the entry
+            # guard above + the redirect handler keep every opened URL http(s), closing B310.
+            with _OPENER.open(req, timeout=timeout) as resp:
                 return "alive", "%s %d" % (method, resp.status)
         except urllib.error.HTTPError as exc:
             if method == "HEAD" and exc.code in (403, 405, 501, 429):

@@ -242,8 +242,9 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                 try:
                     await asyncio.wait_for(browser.close(), timeout=5)
                 except Exception:
-                    # The browser is already wedged -- that is WHY we are here; a failing/hanging
-                    # close adds no information. Discard it and relaunch a clean browser below.
+                    # This page's audit failed (timeout, navigation or evaluation error); a close
+                    # that also errors or hangs does not change recovery. Discard this browser and
+                    # relaunch a clean one below so the failure cannot cascade to later pages.
                     pass
                 browser = await p.chromium.launch()
                 print("TIMEOUT   %s" % path, flush=True)

@@ -88,6 +88,27 @@ def run() -> int:
         ck(ok is False and "scheme" in detail,
            "non-http(s) scheme refused before urlopen: %r -> %r" % (bad_scheme, detail))
 
+    # a REDIRECT to a non-http(s) target must also be refused (urllib follows redirects; its stock
+    # handler permits http(s)->ftp). Drive the handler directly: an ftp target raises HTTPError
+    # (stops the hop before the opener touches it); an http(s) target delegates to the stdlib and
+    # yields a new Request. No network.
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+    handler = el._SchemeRestrictedRedirectHandler()
+    origin = urllib.request.Request("https://origin.test/")
+    try:
+        handler.redirect_request(origin, io.BytesIO(b""), 302, "Found", Message(),
+                                 "ftp://evil.test/x")
+        ck(False, "redirect to ftp:// should raise, did not")
+    except urllib.error.HTTPError:
+        ck(True, "redirect to ftp:// is refused (HTTPError)")
+    nxt = handler.redirect_request(origin, io.BytesIO(b""), 302, "Found", Message(),
+                                   "https://ok.test/next")
+    ck(isinstance(nxt, urllib.request.Request),
+       "redirect to https:// is allowed (delegates to stdlib)")
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0
