@@ -74,6 +74,13 @@ def run() -> int:
         p.write_text("# only a comment\n\n", encoding="utf-8")
         ck(el.parse_baseline(p) == set(), "comment/blank-only baseline -> empty set")
 
+    # a MALFORMED URL must fail THIS url, never crash the gate (urlopen raises ValueError /
+    # http.client.InvalidURL / HTTPException, none a URLError/OSError subclass -- the probe
+    # catches broadly). No network: a hostless "http://" raises before any connection.
+    res = el.check_url("http://", timeout=2)
+    ck(isinstance(res, tuple) and res[0] is False,
+       "malformed URL returns (False, reason), does not raise: %r" % (res,))
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

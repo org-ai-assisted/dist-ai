@@ -64,12 +64,13 @@ pass_count=0
 fail_count=0
 
 check_accepts() {
+   local label="${2:-strong passphrase}"
    if printf '%s' "$1" | password_strength_check; then
       pass_count=$(( pass_count + 1 ))
-      printf '%s\n' "PASS: accepts strong passphrase"
+      printf '%s\n' "PASS: accepts ${label}"
    else
       fail_count=$(( fail_count + 1 ))
-      printf '%s\n' "FAIL: expected strong passphrase accepted, was refused"
+      printf '%s\n' "FAIL: expected ${label} accepted, was refused"
    fi
 }
 
@@ -125,6 +126,13 @@ if [ "${usercheck_rc}" -ne 0 ] || [ ! "${usercheck_score}" = "100" ]; then
    printf '%s\n' "FATAL: usercheck fixture invalid: pwscore must score '${usercheck_pass}' 100 WITHOUT a username (rc=${usercheck_rc} score='${usercheck_score}')" >&2
    exit 1
 fi
+## A SECOND maximum-score accept fixture, distinct in LENGTH from the first (the
+## guard above just proved this one scores 100 with NO username). A checker that
+## ignored pwscore and accepted on length alone (e.g. len >= 40) would pass the
+## single 48-char accept above yet REFUSE this 20-char one -- so this case pins
+## that the accept decision tracks the score, not the length.
+check_accepts "${usercheck_pass}" 'a second, shorter maximum-score passphrase'
+
 if printf '%s' "${usercheck_pass}" | password_strength_check "${usercheck_name}"; then
    fail_count=$(( fail_count + 1 ))
    printf '%s\n' "FAIL: usercheck: accepted a passphrase containing the username '${usercheck_name}'"

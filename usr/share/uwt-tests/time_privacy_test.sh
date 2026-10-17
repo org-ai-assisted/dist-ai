@@ -149,36 +149,48 @@ else
    fail=$((fail + 1))
 fi
 
-## --- file-content sanitization: a non-digit or partial-garbage counter file is
-##     treated as 0 (read_date_file's sed nodigits guard), never propagated. ---
+## --- file-content sanitization + leading-zero (base-10) arithmetic. ---
+## run_tp captures the subject's exit status so a REGRESSED subject that aborts
+## (octal arithmetic on a leading-zero counter: "08: value too great for base")
+## reports a clean FAIL here instead of killing the whole suite under errexit --
+## i.e. these stay honest canaries (RED on broken code) rather than crashing out.
+tp_out=""
+run_tp() {
+   ## A crash (e.g. regressed octal arithmetic) yields the sentinel, so check()
+   ## reports a clean FAIL instead of errexit aborting the suite.
+   tp_out="$("${subject}" "$@")" || tp_out="__SUBJECT_CRASHED__"
+}
+
+## A non-digit or partial-garbage counter file is treated as 0 (read_date_file's
+## sed nodigits guard), never propagated.
 td="$(make_timedir garbage_sec seconds=abc)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "non-digit seconds file -> treated as 0 (0:0:1)" "${out}" "2013-12-30 0:0:1"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "non-digit seconds file -> treated as 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
 td="$(make_timedir partial_sec seconds=1x2)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "partial-garbage seconds file -> reset to 0 (0:0:1)" "${out}" "2013-12-30 0:0:1"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "partial-garbage seconds file -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
-## --- leading-zero counter content is a DECIMAL count, not octal. An all-digit
-##     value bypasses is_whole_number (only the nodigits guard runs), so bash
-##     arithmetic must be forced to base 10: "08"/"09" would otherwise abort
-##     ("value too great for base") and "012" would silently become 10. One case
-##     per arithmetic site (seconds always, minutes/hours on carry). ---
+## Leading-zero counter content is a DECIMAL count, not octal. An all-digit value
+## bypasses is_whole_number (only the nodigits guard runs), so bash arithmetic
+## must be forced to base 10: "08"/"09" would otherwise abort ("value too great
+## for base") and "012" would silently become 10. One case per arithmetic site
+## (seconds always, minutes/hours on carry).
 td="$(make_timedir octal_sec seconds=08)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "leading-zero seconds '08' is decimal 8 (0:0:9)" "${out}" "2013-12-30 0:0:9"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "leading-zero seconds '08' is decimal 8 (0:0:9)" "${tp_out}" "2013-12-30 0:0:9"
 
 td="$(make_timedir octal_sec_12 seconds=012)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "leading-zero seconds '012' is decimal 12 (0:0:13)" "${out}" "2013-12-30 0:0:13"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "leading-zero seconds '012' is decimal 12 (0:0:13)" "${tp_out}" "2013-12-30 0:0:13"
 
 td="$(make_timedir octal_min seconds=59 minutes=09)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "leading-zero minutes '09' on carry is decimal 9 (0:10:0)" "${out}" "2013-12-30 0:10:0"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "leading-zero minutes '09' on carry is decimal 9 (0:10:0)" "${tp_out}" "2013-12-30 0:10:0"
 
 td="$(make_timedir octal_hr seconds=59 minutes=59 hours=08)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
-check "leading-zero hours '08' on carry is decimal 8 (9:0:0)" "${out}" "2013-12-30 9:0:0"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "leading-zero hours '08' on carry is decimal 8 (9:0:0)" "${tp_out}" "2013-12-30 9:0:0"
 
 ## --- auto-provision: a missing TIMEDIR is created and seeded, not an error. ---
 auto_dir="${test_dir}/autoprov"

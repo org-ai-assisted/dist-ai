@@ -1,0 +1,205 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the axe-core accessibility REGRESSION lane for each family site inside the review sandbox
+## qube, serving each checkout from a localhost mount, loading every page in the sandbox's
+## Playwright chromium, injecting axe-core, and gating fresh violations against a committed
+## per-site baseline of ACCEPTED violations.
+##
+##   webcheck-axe-sandbox <site-root> [<site-root> ...]            # gate vs baseline
+##   webcheck-axe-sandbox --write-baseline <site-root> [...]       # (re)seed baselines
+##
+## Baselines live in usr/share/website-tests/axe-baselines/ (committed, per site).
+## Exit: 0 all clean (no NEW violations), 1 a new violation / missing baseline / unauditable page,
+## 77 Playwright/chromium/axe-core absent and un-provisionable.
+##
+## UNCONFINED (`sandbox exec`, not sandbox-confine), like the lighthouse lane and unlike the
+## console/mobile lanes: axe-core's axe.min.js lives in the sandbox's global node_modules, which
+## the Playwright venv python reads directly here (a bwrap profile would have to bind it in), and
+## the loopback mount + a real chromium are the family's OWN trusted static sites. Playwright
+## lives ONLY in the sandbox venv, so this drives that venv's python (NOT a plain python3, which
+## has no playwright) at the importable `dist_ai.webcheck.axe` module.
+##
+## Fails CLOSED: a missing sandbox, a failed provision, or a 77 SKIP from inside the sandbox
+## (axe did not actually run) is a hard error, never a silent pass.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## The sandbox Playwright venv + its chromium engine (provisioned by `provision playwright`; the
+## same path web-render / website-tests-sandbox bind).
+readonly SANDBOX_VENV_PY='/home/user/.venvs/web-render/bin/python'
+## Per-run working dir inside the sandbox. PID-unique so two concurrent gates never clobber each
+## other's staging through `sandbox sync --delete`.
+readonly SANDBOX_WORKDIR="/home/user/webcheck-axe-sandbox-run.$$"
+## Where `npm install -g axe-core` lands axe.min.js (checked in order).
+readonly AXE_SOURCE_CANDIDATES=(
+   '/usr/local/lib/node_modules/axe-core/axe.min.js'
+   '/usr/lib/node_modules/axe-core/axe.min.js'
+)
+
+die(){
+   printf '%s\n' "webcheck-axe-sandbox: $1" >&2
+   exit 1
+}
+
+write_baseline=0
+if [ "${1:-}" = '--write-baseline' ]; then
+   write_baseline=1
+   shift
+fi
+[ "$#" -gt 0 ] || die 'usage: webcheck-axe-sandbox [--write-baseline] <site-root> [...]'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+   core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
+else
+   tests_dir='/usr/share/website-tests'
+   core_src='/usr/lib/python3/dist-packages/dist_ai'
+fi
+baselines_src="${tests_dir}/axe-baselines"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+## `sandbox` requires a target; the local review sandbox is the forget-proof default.
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
+## --- provision the sandbox (idempotent, forget-proof: the safe path is the DEFAULT) ----------
+
+## 1) Playwright venv + chromium engine. Provision once if absent; a failed provision fails the
+##    gate, never skips (mirrors website-tests-sandbox).
+if ! sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-axe-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
+   provision --target "${QUBE_CTL_TARGET}" playwright >&2 \
+      || die "sandbox is not provisioned for Playwright and provisioning failed (provision --target ${QUBE_CTL_TARGET} playwright)"
+   sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
+      || die 'Playwright venv still absent after provisioning'
+fi
+
+## 2) axe-core (axe.min.js). Install globally via npm if absent. node+npm come with the lighthouse
+##    provisioning; ensure them here too so this lane is self-sufficient. sudo + apt + a global npm
+##    install need the SHARED pid namespace (sudo is dead in a private one).
+axe_present(){
+   local candidate
+   for candidate in "${AXE_SOURCE_CANDIDATES[@]}"; do
+      if sandbox exec --pid-scope own -- test -f "${candidate}" >/dev/null 2>&1; then
+         return 0
+      fi
+   done
+   return 1
+}
+
+if ! axe_present; then
+   printf '%s\n' 'webcheck-axe-sandbox: installing axe-core in the sandbox (one-time)...' >&2
+   if ! sandbox exec --pid-scope own -- sh -c 'command -v npm >/dev/null 2>&1' >/dev/null 2>&1; then
+      printf '%s\n' 'webcheck-axe-sandbox: installing nodejs + npm in the sandbox (signed apt)...' >&2
+      sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
+         || die 'could not install nodejs/npm in the sandbox'
+   fi
+   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit axe-core >&2 \
+      || die "'npm install -g axe-core' failed in the sandbox"
+   axe_present || die 'axe.min.js still absent after installing axe-core'
+fi
+
+## Resolve the installed axe.min.js path so axe.py injects exactly it (no in-sandbox discovery
+## guesswork). The first candidate that exists wins.
+axe_source=''
+for candidate in "${AXE_SOURCE_CANDIDATES[@]}"; do
+   if sandbox exec --pid-scope own -- test -f "${candidate}" >/dev/null 2>&1; then
+      axe_source="${candidate}"
+      break
+   fi
+done
+[ -n "${axe_source}" ] || die 'could not locate axe.min.js after provisioning'
+
+## --- stage the webcheck core, the baselines, and each site root, then run in the sandbox ------
+
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_pylib}" "${staging}/baselines" "${staging}/roots"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
+if [ -d "${baselines_src}" ]; then
+   cp --archive -- "${baselines_src}/." "${staging}/baselines/"
+fi
+
+declare -a remote_roots=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "${SANDBOX_WORKDIR}/roots/${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+## Absolute paths throughout, so no `cd` (hence no inline `bash -c`) is needed in the sandbox.
+declare -a mod_args=( --baseline-dir "${SANDBOX_WORKDIR}/baselines" )
+[ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
+
+rc=0
+sandbox exec --pid-scope own -- env \
+   "PYTHONPATH=${SANDBOX_WORKDIR}/usr/lib/python3/dist-packages" \
+   "AXE_SOURCE=${axe_source}" \
+   "${SANDBOX_VENV_PY}" -Bsu -m dist_ai.webcheck.axe "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
+
+## A 77 SKIP from inside the sandbox means axe did not actually run (Playwright/chromium/axe-core
+## missing) -- which defeats the purpose after we provisioned them. Treat it as failure, never a
+## pass (mirrors website-tests-sandbox).
+if [ "${rc}" = '77' ]; then
+   printf '%s\n' 'webcheck-axe-sandbox: the lane SKIPped inside the sandbox (axe did not run) -- treating as failure' >&2
+   rc=1
+fi
+
+## Seeded baselines are written inside the sandbox; copy each back to the committed dir so the
+## operator can review + commit the diff (the files are small text).
+if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
+   mkdir --parents -- "${baselines_src}"
+   while IFS= read -r remote_root; do
+      base="$(basename -- "${remote_root}")"
+      bfile="axe-baseline-${base}.txt"
+      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
+         ## Pull as a FILE, byte-faithful. `sandbox exec` STDOUT strips terminal-unsafe bytes
+         ## (the qube is untrusted) -- a CSS child combinator '>' in a selector target becomes
+         ## '_', silently corrupting the baseline so every gate run then reports every page as a
+         ## NEW violation. `sandbox pull` moves the file's bytes verbatim.
+         sandbox pull "${SANDBOX_WORKDIR}/baselines/${bfile}" "${baselines_src}/" \
+            || die "failed to copy back ${bfile}"
+         printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2
+      fi
+   done < <(printf '%s\n' "${remote_roots[@]}")
+fi
+
+exit "${rc}"

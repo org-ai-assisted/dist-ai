@@ -225,7 +225,10 @@ def _run_lighthouse(url: str, extra_flag: str) -> Optional[Scores]:
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=120)
-        except (subprocess.CalledProcessError, subprocess.TimeoutError, OSError):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            # A timeout (TimeoutExpired is the real attribute name), a non-zero exit, or a
+            # missing binary all mean "this audit produced no JSON" -> a failed sample (None),
+            # which the reducer drops (best-of); it must NOT crash the whole run.
             return None
         try:
             data = json.loads(Path(out_path).read_text(encoding="utf-8"))
@@ -326,8 +329,14 @@ def write_roots(roots: List[str], baseline_dir: str,
             print("lighthouse: refusing to seed %s -- unmeasurable/empty" % root, file=sys.stderr)
             return 2
         bpath = _baseline_path(Path(baseline_dir), root)
-        existing = parse_baseline(bpath) if bpath.is_file() else {}
+        # A re-seed OVERWRITES, so a corrupt/failure-marked existing baseline must not abort it;
+        # and the baseline dir may not exist yet (unlike the gate path, which reads it).
+        try:
+            existing = parse_baseline(bpath) if bpath.is_file() else {}
+        except ValueError:
+            existing = {}
         merged = merge_baseline(existing, floor)
+        bpath.parent.mkdir(parents=True, exist_ok=True)
         bpath.write_text(format_baseline(merged, site=os.path.basename(os.path.normpath(root))),
                          encoding="utf-8")
         print("wrote %d baseline(s) -> %s" % (len(merged), bpath), file=sys.stderr)

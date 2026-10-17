@@ -1,0 +1,143 @@
+# axe-core accepted-violation baseline for output-lies.github.io. Fields: <path> <rule-id> <target>
+# The gate FAILS only on a NEW violation (one not listed here). A listed violation is
+# pre-existing accessibility debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-axe-sandbox --write-baseline <site-root>
+/ heading-order .fcol:nth-child(1) > h4
+/ landmark-unique header > .wrap > nav
+/analyze/ heading-order #build > .wrap > .limits > h4
+/analyze/ heading-order #q-sent > h4
+/analyze/ heading-order #tool > .wrap > .limits > h4
+/analyze/ html-has-lang html
+/analyze/ landmark-unique header > .wrap > nav
+/git-diffs-lie/ color-contrast #ansi > .panes > .real.pane > pre > .dim
+/git-diffs-lie/ color-contrast #ansi > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #bidi > .panes > .real.pane > pre > .dim
+/git-diffs-lie/ color-contrast #bidi > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #bidi-filename > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #gitattributes > .panes > .see.pane > pre > .dim:nth-child(2)
+/git-diffs-lie/ color-contrast #gitattributes > .panes > .see.pane > pre > .dim:nth-child(3)
+/git-diffs-lie/ color-contrast #gitlink-mimic > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #homoglyph > .panes > .real.pane > pre > .dim
+/git-diffs-lie/ color-contrast #homoglyph > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #mode-exec > .panes > .see.pane > pre > .dim:nth-child(1)
+/git-diffs-lie/ color-contrast #mode-exec > .panes > .see.pane > pre > .dim:nth-child(2)
+/git-diffs-lie/ color-contrast #nul > .panes > .see.pane > pre > .dim:nth-child(1)
+/git-diffs-lie/ color-contrast #nul > .panes > .see.pane > pre > .dim:nth-child(2)
+/git-diffs-lie/ color-contrast #overlong > .panes > .see.pane > pre > .dim:nth-child(2)
+/git-diffs-lie/ color-contrast #overlong > .panes > .see.pane > pre > .dim:nth-child(3)
+/git-diffs-lie/ color-contrast #refname > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #submodule > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #symlink > .panes > .see.pane > pre > .dim:nth-child(1)
+/git-diffs-lie/ color-contrast #symlink > .panes > .see.pane > pre > .dim:nth-child(2)
+/git-diffs-lie/ color-contrast #whitespace > .panes > .real.pane > pre > .dim
+/git-diffs-lie/ color-contrast #whitespace > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast #zero-width > .panes > .real.pane > pre > .dim
+/git-diffs-lie/ color-contrast #zero-width > .panes > .see.pane > pre > .dim
+/git-diffs-lie/ color-contrast .p:nth-child(1)
+/git-diffs-lie/ color-contrast .rnote > code
+/git-diffs-lie/ color-contrast .wild > code
+/git-diffs-lie/ heading-order #q-safe-to-open > h4
+/git-diffs-lie/ heading-order .step:nth-child(1) > h4
+/git-diffs-lie/ html-has-lang html
+/git-diffs-lie/ landmark-unique header > .wrap > nav
+/git-diffs-lie/ scrollable-region-focusable #overlong > .panes > .see.pane > pre
+/git-diffs-lie/all/ color-contrast #dangling-symlink > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #file-to-symlink > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #gitattributes-nonascii > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #invalid-utf8 > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #lone-cr > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #newline-in-filename > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast #tab-in-filename > .panes > .see.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast .real.pane > pre > .dim
+/git-diffs-lie/all/ color-contrast .wild > code
+/git-diffs-lie/all/ html-has-lang html
+/git-diffs-lie/all/ landmark-unique header > .wrap > nav
+/paste/ color-contrast .catdesc > code
+/paste/ color-contrast .demonote > code:nth-child(1)
+/paste/ color-contrast .demonote > code:nth-child(3)
+/paste/ heading-order #q-demo-safe > h4
+/paste/ heading-order .step:nth-child(1) > h4
+/paste/ html-has-lang html
+/paste/ landmark-unique header > .wrap > nav
+/paste/ scrollable-region-focusable #autorun > .mitig > .copybox > .cmd
+/paste/ scrollable-region-focusable #autorun > .repro > .copybox:nth-child(2) > .cmd
+/paste/ scrollable-region-focusable #autorun > .repro > .copybox:nth-child(3) > .cmd
+/paste/ scrollable-region-focusable #clickfix > .mitig > .copybox > .cmd
+/paste/ scrollable-region-focusable #clickfix > .repro > .copybox > .cmd
+/paste/ scrollable-region-focusable #clipper > .mitig > .copybox > .cmd
+/paste/ scrollable-region-focusable #clipper > .repro > .copybox:nth-child(2) > .cmd
+/paste/ scrollable-region-focusable #clipper > .repro > .copybox:nth-child(3) > .cmd
+/paste/ scrollable-region-focusable #clipper > .repro > .copybox:nth-child(4) > .cmd
+/paste/ scrollable-region-focusable article:nth-child(3) > .panes > .real.pane > pre
+/quiz/ heading-order #q-sent > h4
+/quiz/ html-has-lang html
+/quiz/ landmark-unique header > .wrap > nav
+/terminal/ color-contrast #altscreen > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #board-card > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #board-card > figure > figcaption > code
+/terminal/ color-contrast #board-xray > .dim:nth-child(1)
+/terminal/ color-contrast #board-xray > .dim:nth-child(11)
+/terminal/ color-contrast #board-xray > .dim:nth-child(2)
+/terminal/ color-contrast #board-xray > .dim:nth-child(6)
+/terminal/ color-contrast #cursor-erase > .mitig > .mitighd > .rnote > code:nth-child(2)
+/terminal/ color-contrast #cursor-erase > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #cursor-erase > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #cursor-erase > figure > figcaption > code:nth-child(1)
+/terminal/ color-contrast #cursor-erase > figure > figcaption > code:nth-child(2)
+/terminal/ color-contrast #escape-rce > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #escape-rce > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #escape-rce > figure > figcaption > code:nth-child(1)
+/terminal/ color-contrast #escape-rce > figure > figcaption > code:nth-child(2)
+/terminal/ color-contrast #escape-rce > figure > figcaption > code:nth-child(3)
+/terminal/ color-contrast #escape-rce > figure > figcaption > code:nth-child(4)
+/terminal/ color-contrast #escape-rce > pre > .dim:nth-child(1)
+/terminal/ color-contrast #escape-rce > pre > .dim:nth-child(11)
+/terminal/ color-contrast #escape-rce > pre > .dim:nth-child(3)
+/terminal/ color-contrast #escape-rce > pre > .dim:nth-child(5)
+/terminal/ color-contrast #invisible > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #invisible > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #log-injection > .mitig > .mitighd > .rnote > code:nth-child(2)
+/terminal/ color-contrast #log-injection > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #log-injection > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #log-injection > figure > figcaption > code:nth-child(1)
+/terminal/ color-contrast #log-injection > figure > figcaption > code:nth-child(2)
+/terminal/ color-contrast #log-injection > figure > figcaption > code:nth-child(3)
+/terminal/ color-contrast #log-injection > figure > figcaption > code:nth-child(4)
+/terminal/ color-contrast #log-injection > pre > .dim:nth-child(1)
+/terminal/ color-contrast #log-injection > pre > .dim:nth-child(3)
+/terminal/ color-contrast #log-injection > pre > .dim:nth-child(5)
+/terminal/ color-contrast #modeline > .panes > .real.pane > pre > .dim:nth-child(2)
+/terminal/ color-contrast #modeline > .panes > .real.pane > pre > .dim:nth-child(6)
+/terminal/ color-contrast #modeline > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #modeline > figure > figcaption > code:nth-child(1)
+/terminal/ color-contrast #modeline > figure > figcaption > code:nth-child(3)
+/terminal/ color-contrast #osc8 > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast #osc8 > .repro > .reprohd > .rnote > code
+/terminal/ color-contrast #secure-terminal > .wrap > article > .panes > .see.pane > pre > .dim
+/terminal/ color-contrast .catdesc > code
+/terminal/ color-contrast .cmdlabel:nth-child(6) > code
+/terminal/ color-contrast .dim:nth-child(13)
+/terminal/ color-contrast .dim:nth-child(15)
+/terminal/ color-contrast .dim:nth-child(24)
+/terminal/ color-contrast .dim:nth-child(28)
+/terminal/ color-contrast .dim:nth-child(4)
+/terminal/ color-contrast .dim:nth-child(7)
+/terminal/ color-contrast .dim:nth-child(8)
+/terminal/ color-contrast .onrecord > code
+/terminal/ color-contrast figure:nth-child(5) > figcaption > code:nth-child(1)
+/terminal/ color-contrast figure:nth-child(5) > figcaption > code:nth-child(2)
+/terminal/ color-contrast figure:nth-child(5) > figcaption > code:nth-child(4)
+/terminal/ color-contrast figure:nth-child(6) > figcaption > code
+/terminal/ color-contrast h2 > code
+/terminal/ heading-order #q-safe-to-open > h4
+/terminal/ heading-order .step:nth-child(1) > h4
+/terminal/ heading-order .wrap > .limits > h4
+/terminal/ html-has-lang html
+/terminal/ landmark-unique header > .wrap > nav
+/terminal/ scrollable-region-focusable #board-xray
+/terminal/ scrollable-region-focusable #escape-rce > .panes > .see.pane > pre
+/terminal/ scrollable-region-focusable #invisible > .panes > .real.pane > pre
+/terminal/ scrollable-region-focusable #log-injection > .panes > .see.pane > pre
+/terminal/ scrollable-region-focusable #osc8 > .panes > .real.pane > pre
+/terminal/ scrollable-region-focusable #secure-terminal > .wrap > article > .panes > .see.pane > pre

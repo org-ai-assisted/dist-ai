@@ -23,9 +23,15 @@
 ## uwtwrapper_counter is deliberately NOT stripped: nested_protection increments
 ## and exports it so a wrapper re-invoked THROUGH this application accumulates
 ## recursion depth and trips uwtwrapper_max (see nested_protection_test.sh).
-## uwtwrapper_max / uwtwrapper_global / timeprivacy_global / UWT_DEV_PASSTHROUGH
-## are not stripped either: uwt only reads them, so they are the caller's own
+## uwtwrapper_max / uwtwrapper_global / timeprivacy_global are not stripped
+## either: uwt only reads them (never exports), so they are the caller's own
 ## environment and configuration a nested wrapper must still honor.
+##
+## UWT_DEV_PASSTHROUGH, by contrast, MUST be stripped: curl.anondist /
+## dnf-3.anondist EXPORT it (=1) per invocation to skip torsocks for their own
+## --proxy injection. If it leaked past the exec, a descendant of the wrapped
+## binary invoking a uwt-wrapped command would make uwtwrapper drop torsocks and
+## run it on the clearnet -- a de-torification. Case 3 is the regression test.
 ##
 ## Method: drive the REAL uwtwrapper / uwtexec against a stub application that
 ## records its own exported-variable NAMES and its LC_ALL, under a hermetic
@@ -109,11 +115,14 @@ write_recorder() {
 
 ## uwt per-invocation plumbing that must never reach the wrapped application.
 ## (uwt_caller_lc_all is uwtwrapper's internal LC_ALL save slot; uwtexec_bin is
-## the dispatch override the test injects in checkout mode -- both are stripped.)
+## the dispatch override the test injects in checkout mode; UWT_DEV_PASSTHROUGH is
+## exported by curl/dnf wrappers per invocation and must not leak past the exec
+## or it de-torifies nested wrapped commands -- all stripped.)
 internal_vars=(
    uwtwrapper_parent
    uwtwrapper_zeroarg
    uwtexec_bin
+   UWT_DEV_PASSTHROUGH
    uwt_caller_lc_all
 )
 
@@ -189,18 +198,13 @@ check_case "default torsocks path" "${n}1" "${l}1" "__UNSET__"
 run_main "${n}2" "${l}2" uwtwrapper_global=0
 check_case "global-off path" "${n}2" "${l}2" "__UNSET__"
 
-## Case 3: dev-passthrough path (UWT_DEV_PASSTHROUGH=1 -> torsocks skipped).
+## Case 3: dev-passthrough path (UWT_DEV_PASSTHROUGH=1 -> torsocks skipped). The
+## caller sets UWT_DEV_PASSTHROUGH; check_case (via internal_vars) asserts it is
+## STRIPPED from the exec'd application -- the regression guard for the
+## de-torification leak, where a leaked flag would drop torsocks for any nested
+## uwt-wrapped command the application spawns.
 run_main "${n}3" "${l}3" UWT_DEV_PASSTHROUGH=1
 check_case "dev-passthrough path" "${n}3" "${l}3" "__UNSET__"
-## UWT_DEV_PASSTHROUGH is the caller's own env (uwt only reads it), so it must
-## pass through to the application, not be stripped as if it were uwt plumbing.
-if grep --quiet -x -- UWT_DEV_PASSTHROUGH "${n}3"; then
-   printf '%s\n' "PASS: dev-passthrough path: caller UWT_DEV_PASSTHROUGH preserved"
-   pass=$((pass + 1))
-else
-   printf '%s\n' "FAIL: dev-passthrough path: caller UWT_DEV_PASSTHROUGH was stripped"
-   fail=$((fail + 1))
-fi
 
 ## Case 4: the caller's LC_ALL reaches the app unchanged; uwt must not force C.
 ## Uses C.UTF-8 (always available, so no setlocale noise) yet distinct from C.
