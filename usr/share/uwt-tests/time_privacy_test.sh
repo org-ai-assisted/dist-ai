@@ -171,15 +171,15 @@ else
    fail=$((fail + 1))
 fi
 
-## --- file-content sanitization + leading-zero (base-10) arithmetic. ---
+## --- counter-file content validation (read_integer_file). ---
 ## run_tp captures the subject's exit status so a REGRESSED subject that aborts
-## (octal arithmetic on a leading-zero counter: "08: value too great for base")
+## (e.g. a reintroduced octal-arithmetic abort on a leading-zero counter)
 ## reports a clean FAIL here instead of killing the whole suite under errexit --
 ## i.e. these stay honest canaries (RED on broken code) rather than crashing out.
 tp_out=""
 run_tp() {
-   ## A crash (e.g. regressed octal arithmetic) yields the sentinel, so check()
-   ## reports a clean FAIL instead of errexit aborting the suite.
+   ## A subject crash yields the sentinel, so check() reports a clean FAIL
+   ## instead of errexit aborting the suite.
    tp_out="$("${subject}" "$@")" || tp_out="__SUBJECT_CRASHED__"
 }
 
@@ -203,36 +203,41 @@ td="$(make_timedir zeropad_year)"
 run_tp -y 0500 -m 03 -d 09 -i 1 -f "${td}"
 check "zero-padded 4-digit year 0500 accepted" "${tp_out}" "0500-03-09 0:0:1"
 
-## A non-digit or partial-garbage counter file is treated as 0 (read_date_file's
-## sed nodigits guard), never propagated.
+## read_date_file validates every counter with read_integer_file (int64-safe):
+## a value that is not a plain in-range whole number is treated as 0. The script
+## only ever writes clean in-range integers, so each case below means a corrupt
+## or externally-edited file. No bash octal/overflow pitfalls reach the arithmetic.
 td="$(make_timedir garbage_sec seconds=abc)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "non-digit seconds file -> treated as 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+check "non-digit seconds file -> 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
 td="$(make_timedir partial_sec seconds=1x2)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "partial-garbage seconds file -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+check "partial-garbage seconds file -> 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
-## Leading-zero counter content is a DECIMAL count, not octal. An all-digit value
-## bypasses is_whole_number (only the nodigits guard runs), so bash arithmetic
-## must be forced to base 10: "08"/"09" would otherwise abort ("value too great
-## for base") and "012" would silently become 10. One case per arithmetic site
-## (seconds always, minutes/hours on carry).
-td="$(make_timedir octal_sec seconds=08)"
+## Leading zero is rejected (not reinterpreted) -> reset to 0; the int64-safe
+## validator sidesteps the bash octal abort ("08"/"09") entirely.
+td="$(make_timedir lz_sec seconds=08)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "leading-zero seconds '08' is decimal 8 (0:0:9)" "${tp_out}" "2013-12-30 0:0:9"
+check "leading-zero seconds '08' -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
-td="$(make_timedir octal_sec_12 seconds=012)"
+td="$(make_timedir lz_min seconds=59 minutes=09)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "leading-zero seconds '012' is decimal 12 (0:0:13)" "${tp_out}" "2013-12-30 0:0:13"
+check "leading-zero minutes '09' on carry -> reset to 0 (0:1:0)" "${tp_out}" "2013-12-30 0:1:0"
 
-td="$(make_timedir octal_min seconds=59 minutes=09)"
+td="$(make_timedir lz_hr seconds=59 minutes=59 hours=08)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "leading-zero minutes '09' on carry is decimal 9 (0:10:0)" "${tp_out}" "2013-12-30 0:10:0"
+check "leading-zero hours '08' on carry -> reset to 0 (1:0:0)" "${tp_out}" "2013-12-30 1:0:0"
 
-td="$(make_timedir octal_hr seconds=59 minutes=59 hours=08)"
+## Out-of-range or oversized content is corrupt -> reset to 0 (never carried as
+## raw seconds, never fed as an overflowing value to bash arithmetic).
+td="$(make_timedir oor_sec seconds=3600)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
-check "leading-zero hours '08' on carry is decimal 8 (9:0:0)" "${tp_out}" "2013-12-30 9:0:0"
+check "out-of-range seconds 3600 -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+
+td="$(make_timedir ovf_sec seconds=9223372036854775808)"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "overflow seconds (2^63) -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
 ## --- auto-provision: a missing TIMEDIR is created and seeded, not an error. ---
 auto_dir="${test_dir}/autoprov"
