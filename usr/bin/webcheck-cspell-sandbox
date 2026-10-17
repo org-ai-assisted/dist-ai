@@ -1,0 +1,152 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the cspell spell-check lane over each site checkout inside the review sandbox, CONFINED
+## under bwrap (no network at scan time: cspell's bundled dictionaries + the committed project
+## dictionary are all local). cspell is npm-only (not Debian), so it is installed once in the
+## sandbox and run there; this trusted VM never runs it.
+##
+##   webcheck-cspell-sandbox <site-root> [<site-root> ...]            # gate vs baseline
+##   webcheck-cspell-sandbox --write-baseline <site-root> [...]       # (re)seed baselines
+##
+## Baselines live in usr/share/website-tests/cspell-baselines/ (committed, per site); the project
+## dictionary + config in usr/share/website-tests/cspell-assets/.
+## Exit: 0 all clean (no NEW unknown words), 1 a new word / a cspell error.
+##
+## cspell is PINNED to the 8.x line: 10.x requires NodeJS >= 22 and refuses to run on the sandbox's
+## node 20, so a bare `cspell` install breaks the lane.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly CSPELL_PKG='cspell@8'
+readonly SANDBOX_WORKDIR="/home/user/webcheck-cspell-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-cspell-sandbox: $1" >&2
+   exit 1
+}
+
+write_baseline=0
+if [ "${1:-}" = '--write-baseline' ]; then
+   write_baseline=1
+   shift
+fi
+[ "$#" -gt 0 ] || die 'usage: webcheck-cspell-sandbox [--write-baseline] <site-root> [...]'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+   core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
+else
+   tests_dir='/usr/share/website-tests'
+   core_src='/usr/lib/python3/dist-packages/dist_ai'
+fi
+assets_src="${tests_dir}/cspell-assets"
+baselines_src="${tests_dir}/cspell-baselines"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+[ -f "${assets_src}/cspell.json" ] || die "missing cspell config: ${assets_src}/cspell.json"
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+
+## --- provision cspell (idempotent, forget-proof: the safe path is the DEFAULT) ---------------
+## node+npm come with the lighthouse/axe provisioning; ensure them, then install cspell globally.
+## sudo + apt + a global npm install need the SHARED pid namespace (sudo is dead in a private one).
+if ! sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1'; then
+   printf '%s\n' 'webcheck-cspell-sandbox: installing cspell in the sandbox (one-time)...' >&2
+   if ! sandbox exec --pid-scope own -- sh -c 'command -v npm >/dev/null 2>&1'; then
+      printf '%s\n' 'webcheck-cspell-sandbox: installing nodejs + npm in the sandbox (signed apt)...' >&2
+      sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
+         || die 'could not install nodejs/npm in the sandbox'
+   fi
+   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit "${CSPELL_PKG}" >&2 \
+      || die "'npm install -g ${CSPELL_PKG}' failed in the sandbox"
+   sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1' \
+      || die 'cspell still absent after install'
+fi
+
+## --- stage the webcheck core, the assets, the baselines, and each site root, then run ---------
+
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_pylib}" "${staging}/cspell-assets" "${staging}/cspell-baselines" "${staging}/roots"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
+cp --archive -- "${assets_src}/." "${staging}/cspell-assets/"
+if [ -d "${baselines_src}" ]; then
+   cp --archive -- "${baselines_src}/." "${staging}/cspell-baselines/"
+fi
+
+declare -a remote_roots=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+   ## Only the .html files are checked; rsync them (preserving tree), skip .git (exclude first, so
+   ## it is not re-included by '*/').
+   rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.html' \
+      --exclude='*' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "roots/${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+declare -a mod_args=( --baseline-dir cspell-baselines --config cspell-assets/cspell.json )
+[ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
+
+## Confined (bwrap): no network needed at scan time. cspell (a global npm bin) + plain python3
+## resolve on PATH inside the confine, as c8 does for the jscov lane. cwd = the synced workdir.
+rc=0
+sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- env \
+   "PYTHONPATH=usr/lib/python3/dist-packages" \
+   python3 -Bsu -m dist_ai.webcheck.spelling "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
+
+## Seeded baselines are written inside the sandbox; pull each back byte-faithfully (sandbox exec
+## stdout mangles some bytes) so the operator can review + commit the diff.
+if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
+   mkdir --parents -- "${baselines_src}"
+   for root in "$@"; do
+      base="$(basename -- "$(readlink --canonicalize -- "${root}")")"
+      bfile="cspell-baseline-${base}.txt"
+      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/cspell-baselines/${bfile}"; then
+         sandbox pull "${SANDBOX_WORKDIR}/cspell-baselines/${bfile}" "${baselines_src}/" \
+            || die "failed to copy back ${bfile}"
+         printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2
+      fi
+   done
+fi
+
+exit "${rc}"

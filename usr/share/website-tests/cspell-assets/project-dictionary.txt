@@ -1,0 +1,34 @@
+# Project dictionary for the webcheck cspell lane: domain terms accepted on EVERY site, so
+# technical content does not flood false positives. One word per line, '#'/blank ignored. A
+# SITE-SPECIFIC acceptance belongs in the per-site cspell-baseline-<site>.txt instead.
+# (cspell is already permissive about many proper nouns; this is the explicit, reviewed set.)
+Kicksecure
+Whonix
+Qubes
+Debian
+Tor
+Monero
+onion
+sdwdate
+systemd
+AppArmor
+dom0
+dracut
+initramfs
+Tirdad
+privleap
+sysmaint
+grsecurity
+hardcoded
+passphrase
+unencrypted
+deanonymize
+deanonymized
+pseudonymity
+VirtualBox
+hypervisor
+timestamp
+timestamps
+checksum
+checksums
+changelog
