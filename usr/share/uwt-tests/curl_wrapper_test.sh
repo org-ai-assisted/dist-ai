@@ -337,6 +337,8 @@ drive_main 0 none '--noproxy' 'example.com' 'https://example.com/'
 check "caller --noproxy: proxy STILL injected"      "$(injected_socks5h)" "yes"
 check "caller --noproxy: our loopback list injected" "$(injected_noproxy_loopback)" "yes"
 check "caller --noproxy: exec gets 9 args (6 injected + 3 original)" "${#rec_lines[@]}" "9"
+check "caller --noproxy: arg[4] --noproxy (injected)"        "${rec_lines[4]:-}" "--noproxy"
+check "caller --noproxy: arg[5] loopback list (injected)"    "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1"
 check "caller --noproxy: arg[6] --noproxy (caller, original)" "${rec_lines[6]:-}" "--noproxy"
 check "caller --noproxy: arg[7] value (caller, original)"     "${rec_lines[7]:-}" "example.com"
 check "caller --noproxy: arg[8] url (original)"               "${rec_lines[8]:-}" "https://example.com/"
