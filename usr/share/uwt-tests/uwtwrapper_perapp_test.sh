@@ -56,15 +56,6 @@ if [ ! -r "${check_runtime}" ]; then
    printf '%s\n' "set HELPER_SCRIPTS_PATH to a helper-scripts checkout, or install helper-scripts" >&2
    exit 1
 fi
-## The probe SOURCES the subject and calls compute_dispatch. A pre-refactor
-## uwtwrapper has neither compute_dispatch nor the was_executed guard, so sourcing
-## it would run main and exit 255 mid-probe -- fail with a clear required-subject
-## message instead of that cryptic abort.
-if ! grep --quiet 'compute_dispatch' "${subject}"; then
-   printf '%s\n' "FATAL: subject '${subject}' lacks compute_dispatch" >&2
-   printf '%s\n' "this suite needs the refactored (source-able) uwtwrapper; point UWT_REPO at the uwt 'ai' checkout" >&2
-   exit 1
-fi
 if [ ! -x "${probe}" ]; then
    printf '%s\n' "FATAL: test support probe missing or not executable: '${probe}'" >&2
    exit 1
@@ -115,7 +106,9 @@ run_dispatch() {
    elif [ "${out}" = "FAKE= TORSOCKS=" ]; then
       fake_decision=no; torsocks_decision=no
    else
-      printf '%s\n' "FATAL: unexpected probe output '${out}'" >&2
+      ## The probe emits exactly one 'FAKE=... TORSOCKS=...' line; anything else
+      ## means it did not reach compute_dispatch. Fail loud.
+      printf '%s\n' "FATAL: unexpected probe output '${out}' from '${subject}'" >&2
       exit 1
    fi
 }
