@@ -81,6 +81,13 @@ def run() -> int:
     ck(isinstance(res, tuple) and res[0] is False,
        "malformed URL returns (False, reason), does not raise: %r" % (res,))
 
+    # a non-http(s) scheme must be refused at the probe boundary (never reaches urlopen -- the
+    # B310 file:// / custom-scheme / SSRF guard). No network: the scheme check short-circuits.
+    for bad_scheme in ("file:///etc/passwd", "ftp://host/x", "gopher://host"):
+        ok, detail = el.check_url(bad_scheme, timeout=2)
+        ck(ok is False and "scheme" in detail,
+           "non-http(s) scheme refused before urlopen: %r -> %r" % (bad_scheme, detail))
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

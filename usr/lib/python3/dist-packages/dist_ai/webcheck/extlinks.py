@@ -32,6 +32,11 @@ from urllib.parse import urlsplit
 
 # Attributes whose value can be an outbound URL.
 _URL_ATTRS = frozenset({"href", "src", "poster", "data"})
+# Only these schemes are ever probed. urlopen would otherwise honor file:// / ftp:// / a custom
+# scheme (the B310 concern: local-file read / SSRF via a crafted URL). collect_external_links
+# already yields http(s) only; _probe_once re-asserts it so a non-http(s) URL can never reach
+# urlopen, whatever the caller passes -- which is what makes the nosec on that urlopen honest.
+_PROBE_SCHEMES = frozenset({"http", "https"})
 _TIMEOUT = 10
 _UA = "Mozilla/5.0 (webcheck external-link gate; +https://github.com/org-ai-assisted)"
 
@@ -86,10 +91,14 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
     a 404/410, or a DNS / connection failure, means the resource is gone. A network-level error
     (DNS, timeout, refused) is 'transient' (retried by the caller) -- a one-off blip on a live
     host must not read as rot."""
+    if urlsplit(url).scheme.lower() not in _PROBE_SCHEMES:
+        # Defensive: the collector yields http(s) only. Refuse any other scheme here so urlopen
+        # below never opens file:// or a custom scheme (see _PROBE_SCHEMES).
+        return "dead", "unsupported scheme (only http/https are probed)"
     for method in ("HEAD", "GET"):
         req = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 -- scheme allowlisted to http(s) directly above
                 return "alive", "%s %d" % (method, resp.status)
         except urllib.error.HTTPError as exc:
             if method == "HEAD" and exc.code in (403, 405, 501, 429):
