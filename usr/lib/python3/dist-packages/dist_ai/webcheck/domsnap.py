@@ -356,6 +356,31 @@ def _cmd_diff_baseline(args) -> int:
     return proc.returncode
 
 
+def _git_commit_baseline(site: str) -> None:
+    """Version the promoted baseline in a LOCAL git repo at CACHE_ROOT (no remote -- the
+    raw/fixtures corpora are .gitignored), so a promotion is git-diffable (text axes diff;
+    screenshots show as binary-changed) for review. No remote is ever added, so the git push
+    guard has nothing to push: the large corpus never reaches a hosting service (abuse-ban risk).
+    Best-effort: a git failure must not fail the promote itself."""
+    repo = str(CACHE_ROOT)
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "webcheck-domsnap", "GIT_AUTHOR_EMAIL": "noreply@localhost",
+           "GIT_COMMITTER_NAME": "webcheck-domsnap", "GIT_COMMITTER_EMAIL": "noreply@localhost"}
+    try:
+        if not (CACHE_ROOT / ".git").is_dir():
+            subprocess.run(["git", "-C", repo, "init", "-q"], check=True, env=env)  # nosec B603/B607
+            (CACHE_ROOT / ".gitignore").write_text("raw/\nfixtures/\n", encoding="utf-8")
+        subprocess.run(["git", "-C", repo, "add", ".gitignore", "baseline/" + site],
+                       check=True, env=env)  # nosec B603 B607
+        staged = subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"], env=env)
+        if staged.returncode != 0:  # something changed -> record the promotion
+            subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "domsnap: promote " + site],
+                           check=True, env=env)  # nosec B603 B607
+    except Exception as exc:  # noqa: BLE001 -- versioning is a review convenience, not the gate
+        print("domsnap: baseline committed to files but git versioning skipped: %s" % exc,
+              file=sys.stderr)
+
+
 def _cmd_promote(args) -> int:
     _raw, fix, baseline = _site_dirs(args.site)
     if not fix.is_dir():
@@ -366,6 +391,7 @@ def _cmd_promote(args) -> int:
         shutil.rmtree(baseline)
     baseline.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(fix, baseline)
+    _git_commit_baseline(args.site)
     print("domsnap: promoted %s fixtures -> baseline %s" % (args.site, baseline), file=sys.stderr)
     return 0
 
