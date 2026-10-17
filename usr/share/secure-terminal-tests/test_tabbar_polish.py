@@ -136,7 +136,7 @@ eq(normalize_ptitle('user@host:~/deep/path'), '',
    'a path-only prompt title (no command) normalizes to empty')
 # ai-review grok#1: a leading /path is stripped ONLY inside a user@host: prompt, never
 # from a plain app title / command (else a filename or command reads as disposable cwd).
-eq(normalize_ptitle('/tmp/foo.py - VIM'), '/tmp/foo.py - VIM',
+eq(normalize_ptitle('/tmp/foo.py - VIM'), '/tmp/foo.py - VIM',  # nosec B108 -- test-input window title, not a filesystem path
    'a leading path in a plain title (no user@host:) is content, not stripped')
 # ai-review grok#3: only a SINGLE wrapping paren group is unwrapped, never a title that
 # merely starts "(" and ends ")".

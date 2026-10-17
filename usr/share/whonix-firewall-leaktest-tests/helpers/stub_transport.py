@@ -92,9 +92,9 @@ def serve_udp(family: int, addr: str) -> None:
 def main() -> None:
     for target, family, addr in (
         (serve_tcp, socket.AF_INET6, "::"),
-        (serve_tcp, socket.AF_INET, "0.0.0.0"),
+        (serve_tcp, socket.AF_INET, "0.0.0.0"),  # nosec B104 -- leak-test stub MUST bind every interface to observe egress
         (serve_udp, socket.AF_INET6, "::"),
-        (serve_udp, socket.AF_INET, "0.0.0.0"),
+        (serve_udp, socket.AF_INET, "0.0.0.0"),  # nosec B104 -- leak-test stub MUST bind every interface to observe egress
     ):
         threading.Thread(target=target, args=(family, addr), daemon=True).start()
     while True:

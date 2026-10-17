@@ -32,8 +32,35 @@ from urllib.parse import urlsplit
 
 # Attributes whose value can be an outbound URL.
 _URL_ATTRS = frozenset({"href", "src", "poster", "data"})
+# Only these schemes are ever probed. urlopen would otherwise honor file:// / ftp:// / a custom
+# scheme (the B310 concern: local-file read / SSRF via a crafted URL). collect_external_links
+# already yields http(s) only; _probe_once re-asserts it so a non-http(s) URL can never reach
+# urlopen, whatever the caller passes -- which is what makes the nosec on that urlopen honest.
+_PROBE_SCHEMES = frozenset({"http", "https"})
 _TIMEOUT = 10
 _UA = "Mozilla/5.0 (webcheck external-link gate; +https://github.com/org-ai-assisted)"
+
+
+class _SchemeRestrictedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse a redirect whose target is not http(s).
+
+    The entry guard in _probe_once only checks the INITIAL URL. urllib follows redirects, and
+    its stock HTTPRedirectHandler permits an http(s) -> ftp hop -- so a cited page we probe could
+    30x-redirect the opener onto ftp:// (or, on an older stdlib, another scheme) and open it,
+    defeating the whole point of the http(s) allowlist. Refuse any non-web redirect target; the
+    raised HTTPError is caught by _probe_once (the origin DID respond, so it reads as alive, not
+    rot -- we simply decline to follow it off the web)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme.lower() not in _PROBE_SCHEMES:
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect to non-http(s) scheme refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# A private opener so the redirect restriction applies to every probe. urlopen() uses the global
+# default opener (stock redirect handler), which this must NOT mutate.
+_OPENER = urllib.request.build_opener(_SchemeRestrictedRedirectHandler)
 
 
 class _LinkExtractor(html.parser.HTMLParser):
@@ -86,10 +113,16 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
     a 404/410, or a DNS / connection failure, means the resource is gone. A network-level error
     (DNS, timeout, refused) is 'transient' (retried by the caller) -- a one-off blip on a live
     host must not read as rot."""
+    if urlsplit(url).scheme.lower() not in _PROBE_SCHEMES:
+        # Defensive: the collector yields http(s) only. Refuse any other scheme here so urlopen
+        # below never opens file:// or a custom scheme (see _PROBE_SCHEMES).
+        return "dead", "unsupported scheme (only http/https are probed)"
     for method in ("HEAD", "GET"):
         req = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # _OPENER (not urlopen) so the scheme restriction covers redirect hops too; the entry
+            # guard above + the redirect handler keep every opened URL http(s), closing B310.
+            with _OPENER.open(req, timeout=timeout) as resp:
                 return "alive", "%s %d" % (method, resp.status)
         except urllib.error.HTTPError as exc:
             if method == "HEAD" and exc.code in (403, 405, 501, 429):

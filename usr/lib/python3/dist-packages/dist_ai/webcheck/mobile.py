@@ -38,7 +38,7 @@ import http.server
 import socketserver
 import threading
 import urllib.parse
-from typing import Any
+from typing import Any, NoReturn
 
 VIEWPORT = 390                       # primary phone width (used in messages/checks)
 # Body must never scroll sideways from a narrow phone up to a small tablet.
@@ -204,7 +204,7 @@ _HEADER_OVERLAP_JS = r"""
 """
 
 
-def _skip(msg):
+def _skip(msg: str) -> NoReturn:
     sys.stderr.write('website-mobile-tests: SKIP (%s)\n' % msg)
     raise SystemExit(77)
 

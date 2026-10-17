@@ -206,6 +206,8 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
         try:
             await asyncio.wait_for(page.close(), timeout=5)
         except Exception:
+            # Best-effort teardown: a page that already crashed/closed (or hangs on close) must
+            # not mask the audit result or the real exception in flight. Nothing to recover.
             pass
 
 
@@ -240,6 +242,9 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                 try:
                     await asyncio.wait_for(browser.close(), timeout=5)
                 except Exception:
+                    # This page's audit failed (timeout, navigation or evaluation error); a close
+                    # that also errors or hangs does not change recovery. Discard this browser and
+                    # relaunch a clean one below so the failure cannot cascade to later pages.
                     pass
                 browser = await p.chromium.launch()
                 print("TIMEOUT   %s" % path, flush=True)
@@ -259,6 +264,8 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
         try:
             await asyncio.wait_for(browser.close(), timeout=5)
         except Exception:
+            # Best-effort final teardown: the audit is already complete and its keys are captured;
+            # a close that errors/hangs here must not turn a clean run into a failure. Nothing to do.
             pass
     return keys, problems
 
