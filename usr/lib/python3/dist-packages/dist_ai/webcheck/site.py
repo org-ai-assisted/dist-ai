@@ -1440,37 +1440,42 @@ def check_heading_breaks(root, failures):
                 'on mobile' % (rel, audit.hits))
 
 
-# Elements whose CONTENTS are not part of the document element tree for id purposes:
-# <textarea>/<title> are RCDATA (a raw `<tag id=x>` inside is literal TEXT to a browser,
-# not an element), and a <template>'s contents are a separate DocumentFragment (an id there
-# may validly repeat a document id). html.parser treats <script>/<style> as CDATA already,
-# so their bodies never reach handle_starttag.
-_ID_IGNORE_SCOPES = frozenset({'textarea', 'title', 'template'})
-
-
 class _IdAudit(html.parser.HTMLParser):
-    """Collect every document-tree element id in order (duplicates kept); ids INSIDE an
-    _ID_IGNORE_SCOPES element are skipped (the scope element's OWN id is still counted)."""
+    """Collect every document-tree element id in order (duplicates kept).
+
+    Two element kinds do not contribute document-tree ids and are handled distinctly, because
+    html.parser does NOT model either the way a browser does:
+    - <textarea>/<title> are RCDATA: their body is literal TEXT to a browser, not elements. But
+      html.parser only auto-treats <script>/<style> as opaque, so without help it would emit
+      spurious start/end events for tag-looking text inside them (reporting phantom ids, or a
+      stray </textarea> desyncing a depth counter). Extending CDATA_CONTENT_ELEMENTS makes
+      html.parser skip their bodies as opaque (close-tag matching still works) -- the correct fix.
+    - <template> contents ARE real elements, just a separate DocumentFragment tree (an id there
+      may validly repeat a document id). html.parser parses them normally, so a depth counter
+      over real template start/end events is accurate; skip ids while inside one."""
+
+    # textarea/title added to the stock ('script', 'style') so their RCDATA bodies are opaque.
+    CDATA_CONTENT_ELEMENTS = ('script', 'style', 'textarea', 'title')
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.ids: list[str] = []
-        self._ignore_depth = 0
+        self._template_depth = 0
 
     def handle_starttag(self, tag, attrs):
-        if self._ignore_depth:
-            if tag in _ID_IGNORE_SCOPES:
-                self._ignore_depth += 1
+        if self._template_depth:
+            if tag == 'template':
+                self._template_depth += 1
             return
         for name, value in attrs:
             if name == 'id' and value:
                 self.ids.append(value)
-        if tag in _ID_IGNORE_SCOPES:
-            self._ignore_depth += 1
+        if tag == 'template':
+            self._template_depth += 1
 
     def handle_endtag(self, tag):
-        if tag in _ID_IGNORE_SCOPES and self._ignore_depth:
-            self._ignore_depth -= 1
+        if tag == 'template' and self._template_depth:
+            self._template_depth -= 1
 
 
 def check_duplicate_ids(root, failures):
