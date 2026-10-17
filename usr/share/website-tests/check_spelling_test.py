@@ -119,7 +119,6 @@ def run():
     finally:
         subprocess.run = orig_run
 
-    total = stats["pass"] + stats["fail"]
     print("check_spelling_test: %d pass, %d fail, 0 skip" % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0
 
