@@ -194,14 +194,13 @@ gen_counter() {
    esac
 }
 
-## The script's kept representation of a counter file: an all-digit string is
-## kept verbatim (a decimal count, base 10 -- NOT octal); anything else
-## (non-digit, empty) is reset to "0". A field printed WITHOUT a carry reaching
-## it keeps this verbatim string (leading zeros and all); a field the carry DOES
-## reach is replaced by a normalized integer ($(( 10#value + 1 ))).
+## Mirror read_integer_file(file, 0, max): keep a plain in-range whole number
+## (is_whole_number: no leading zero, no sign; int64-safe; <= max), else reset
+## to 0. $1 = value, $2 = max (59 for seconds/minutes, 23 for hours).
 counter_keep() {
-   if [[ "${1}" =~ ^[0-9]+$ ]]; then
-      printf '%s' "${1}"
+   local v="${1}" max="${2}"
+   if is_whole "${v}" && [ "${#v}" -lt 19 ] && [ "${v}" -le "${max}" ]; then
+      printf '%s' "${v}"
    else
       printf '%s' 0
    fi
@@ -346,22 +345,21 @@ fuzz_counter() {
    printf '%s\n' "${mc}" > "${dir}/minutes_file"
    printf '%s\n' "${hc}" > "${dir}/hours_file"
 
-   ## Oracle mirrors the subject exactly: seconds become total%60 (base-10),
-   ## carrying one minute when the sum reaches 60 (and one hour when minutes do).
-   ## Minutes/hours keep their verbatim string unless a carry reaches them, in
-   ## which case the field becomes a normalized int.
-   ks="$(counter_keep "${sc}")"
-   km="$(counter_keep "${mc}")"
-   kh="$(counter_keep "${hc}")"
-   total_s=$(( 10#${ks} + inc ))
+   ## Oracle mirrors the subject: each counter is validated into range by
+   ## counter_keep (else reset to 0); seconds become total%60, carrying one
+   ## minute when the sum reaches 60 (and one hour when minutes do).
+   ks="$(counter_keep "${sc}" 59)"
+   km="$(counter_keep "${mc}" 59)"
+   kh="$(counter_keep "${hc}" 23)"
+   total_s=$(( ks + inc ))
    s=$(( total_s % 60 ))
    m="${km}"
    h="${kh}"
    if [ "${total_s}" -ge 60 ]; then
-      m=$(( 10#${km} + 1 ))
+      m=$(( km + 1 ))
       if [ "${m}" -ge 60 ]; then
          m=0
-         h=$(( ( 10#${kh} + 1 ) % 24 ))
+         h=$(( ( kh + 1 ) % 24 ))
       fi
    fi
    expected="2013-12-30 ${h}:${m}:${s}"
