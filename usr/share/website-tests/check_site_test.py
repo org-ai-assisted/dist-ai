@@ -1374,7 +1374,10 @@ def run():
             ('non-mapping top level', '- just\n- a\n- list\n'),
             # duplicate `policies:` -- safe_load would silently keep the last and mis-select;
             # the strict loader must reject it, not quietly pick one.
-            ('duplicate policies key', 'policies: [family]\npolicies: [wiki]\n')):
+            ('duplicate policies key', 'policies: [family]\npolicies: [wiki]\n'),
+            # a complex (unhashable list) key must FAIL LOUD as ConfigError, not crash with an
+            # uncaught TypeError from the dup-key `in seen` check (ai-review fix-forward).
+            ('complex unhashable key', '? [a, b]\n: v\npolicies: [family]\n')):
         with tempfile.TemporaryDirectory() as root:
             _write(root, _cfg, _bad)
             raised = False
