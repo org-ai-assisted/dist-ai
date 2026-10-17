@@ -1956,8 +1956,26 @@ def check_seo_current(root, failures):
 # lost its footer is NOT a wiki, so it still runs the family checks and fails loudly rather
 # than being silently skipped. The declarative .github/web-tests.yml `policies:` selector
 # supersedes this heuristic once each site ships it.
-_WIKI_CLASS_TOKEN = re.compile(r'\bmw-[a-z][a-z0-9-]+')
+_WIKI_CLASS_TOKEN = re.compile(r'mw-[a-z][a-z0-9-]*')
 _WIKI_SIGNATURE_QUORUM = 2
+
+
+class _WikiClassProbe(html.parser.HTMLParser):
+    """Collect distinct mw-* CSS class tokens from REAL element class attributes. Parsing
+    (not a raw `class="..."` regex over the markup) is load-bearing: the parser ignores mw-
+    tokens that appear only in an HTML comment, in page text, in a <pre>/<code> sample showing
+    wiki markup, inside a <script>/<style> body, or in a non-class attribute (data-class=...).
+    A raw scan miscounts all of those and would FALSELY mark a real site a wiki -- skipping it
+    and letting its CSP / inline-script issues pass CI silently (the skip-as-green trap)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tokens: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        cls = dict(attrs).get('class')
+        if cls:
+            self.tokens.update(t for t in cls.split() if _WIKI_CLASS_TOKEN.fullmatch(t))
 
 
 def _looks_like_wiki(root):
@@ -1967,12 +1985,9 @@ def _looks_like_wiki(root):
             markup = handle.read()
     except OSError:
         return False
-    tokens: set[str] = set()
-    for match in re.finditer(r'''class\s*=\s*(["'])(.*?)\1''', markup):
-        tokens.update(_WIKI_CLASS_TOKEN.findall(match.group(2)))
-        if len(tokens) >= _WIKI_SIGNATURE_QUORUM:
-            return True
-    return False
+    probe = _WikiClassProbe()
+    probe.feed(markup)
+    return len(probe.tokens) >= _WIKI_SIGNATURE_QUORUM
 
 
 def main():
