@@ -311,6 +311,18 @@ check_loopback_passthrough "loopback bare 127.0.0.1" '127.0.0.1'
 drive_main 0 none '[::1]'
 check_loopback_passthrough "loopback bare [::1]" '[::1]'
 
+## A loopback host behind HTTP basic-auth userinfo (common for local admin APIs)
+## is still loopback -- the userinfo is skipped and the real host matched.
+drive_main 0 none 'http://admin:secret@127.0.0.1:8080/api'
+check_loopback_passthrough "loopback w/ userinfo (127.0.0.1)" 'http://admin:secret@127.0.0.1:8080/api'
+drive_main 0 none 'http://user@localhost/'
+check_loopback_passthrough "loopback w/ userinfo (localhost)" 'http://user@localhost/'
+
+## ... but a REMOTE host with a loopback literal as the USERNAME must keep its
+## isolated circuit (the host is the part after '@', not 'localhost').
+drive_main 0 none 'http://localhost:password@example.com/'
+check "remote host, 'localhost' as username: proxy injected" "$(injected_socks5h)" "yes"
+
 ## A non-loopback host must STILL be injected. Guards against over-match: a
 ## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
 ## a public IP with '127' in a non-leading octet are all REMOTE and must keep
