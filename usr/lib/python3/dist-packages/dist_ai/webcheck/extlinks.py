@@ -67,13 +67,14 @@ _SHARE_HOSTS = frozenset({
     "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com",
     "wa.me", "api.whatsapp.com", "vk.com", "xing.com",
 })
-# A share BUTTON embeds the shared page (its URL or title) in the query:
-# facebook /sharer.php?u=, reddit /submit?url=, HN /submitlink?u=, fosstodon /share?text=,
-# twitter /intent/tweet?url=, t.me /share/url?url=, wa.me/?text=, ... A REAL citation to the
-# same host (a profile fosstodon.org/@x, a thread reddit.com/r/...) has NO such query, so this
-# discriminates a per-page button from a cited resource -- unlike a blunt host match.
-_SHARE_QUERY = re.compile(r"(?:^|&)(?:url|u|text|body|title|link|summary|mini)=|https?%3a",
-                          re.IGNORECASE)
+# A share BUTTON embeds the shared PAGE URL (percent-encoded) in its query -- every observed
+# form does: facebook /sharer.php?u=https%3A, reddit /submit?url=https%3A, HN /submitlink?u=,
+# fosstodon /share?text=...https%3A, twitter /intent/tweet?url=https%3A, t.me /share/url?url=,
+# wa.me/?text=...https%3A. The embedded `http(s)%3a` is the discriminator: a REAL citation to
+# the same host (a profile fosstodon.org/@x, a thread reddit.com/r/...?title=foo) never carries
+# the current page as a percent-encoded URL, so it is KEPT. Keying on generic params (title=,
+# link=, ...) instead would wrongly drop such citations, so match only the embedded URL.
+_SHARE_QUERY = re.compile(r"https?%3a", re.IGNORECASE)
 
 
 def _is_share_button(parts) -> bool:

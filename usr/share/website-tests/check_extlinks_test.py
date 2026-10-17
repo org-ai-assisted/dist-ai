@@ -96,6 +96,11 @@ def run() -> int:
        "_is_share_button: a profile link is NOT a button")
     ck(not el._is_share_button(_us("https://example.test/share?url=x")),
        "_is_share_button: a non-share-host /share?url= is NOT excluded (host must be a platform)")
+    ck(not el._is_share_button(_us("https://www.reddit.com/r/x/comments/1?title=foo&utm=a")),
+       "_is_share_button: a real citation on a share host with a generic ?title= is KEPT "
+       "(only an embedded page URL marks a button)")
+    ck(el._is_share_button(_us("https://www.reddit.com/submit?url=https%3A%2F%2Fp")),
+       "_is_share_button: reddit /submit?url=https%3A IS a button (embedded page URL)")
     ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
         "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
        "_SHARE_HOSTS covers the measured top-8 share hosts")
