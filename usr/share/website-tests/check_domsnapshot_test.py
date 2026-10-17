@@ -24,6 +24,7 @@ Canary cases (each FAILS on a broken predicate):
     the correct relocated-engine (snapshot.py/diff.py/normalize.py) argv; wiki-promote rejects a
     traversal tag
 """
+import argparse
 import json
 import os
 import sys
@@ -121,13 +122,15 @@ def run():
            "normalize_dir copies the screenshot byte-for-byte")
         ck((fmd / "assets" / "abc.css").exists(), "normalize_dir copies the assets dir")
 
-    # --- hardening: anchored + case-insensitive _scrub -----------------------------------------
+    # --- hardening: _scrub anchors on a host/port boundary (case-sensitive) --------------------
     longer = "http://127.0.0.1:382719/x"   # a DIFFERENT port that merely starts with ours
     ck(domsnap._scrub(longer, base) == longer,
        "_scrub does not corrupt a longer port that shares our prefix (:38271 in :382719)")
-    enc_lower = enc.lower()                 # encodeURIComponent emits %3A; a page may carry %3a
-    ck(enc_lower not in domsnap._scrub("ref=" + enc_lower, base),
-       "_scrub collapses a lower-cased percent-encoded base")
+    hostbase = "https://good.example"       # a hostname that is a prefix of a different host
+    ck(domsnap._scrub("x=https://good.example.evil/a", hostbase) == "x=https://good.example.evil/a",
+       "_scrub does not mask a longer hostname sharing our prefix (good.example in good.example.evil)")
+    ck(domsnap._scrub("x=" + hostbase + "/a", hostbase) == "x=" + domsnap.HOST_PLACEHOLDER + "/a",
+       "_scrub still collapses the exact base at a boundary")
 
     # --- hardening: _normalize_manifest scrubs header VALUES + the error string ----------------
     man2 = json.dumps({
@@ -165,12 +168,11 @@ def run():
         except SystemExit:
             ck(True, "_safe_component rejects %r" % bad)
 
-    # --- hardening: _ignore_tls secure-by-default for an https base -----------------------------
+    # --- hardening: _ignore_tls validates TLS unless the explicit opt-in is set -----------------
     os.environ.pop("WEBCHECK_DOMSNAP_INSECURE_TLS", None)
-    ck(domsnap._ignore_tls("http://127.0.0.1:5000") is True, "_ignore_tls True for an http mount")
-    ck(domsnap._ignore_tls("https://stage.example") is False, "_ignore_tls False for an https base")
+    ck(domsnap._ignore_tls() is False, "_ignore_tls validates TLS by default (no context-wide bypass)")
     os.environ["WEBCHECK_DOMSNAP_INSECURE_TLS"] = "1"
-    ck(domsnap._ignore_tls("https://stage.example") is True, "_ignore_tls honors the opt-in")
+    ck(domsnap._ignore_tls() is True, "_ignore_tls honors the explicit opt-in")
     os.environ.pop("WEBCHECK_DOMSNAP_INSECURE_TLS", None)
 
     # --- wiki lane: env contract + engine argv mapping (no browser, no live wiki) ---------------
@@ -200,48 +202,40 @@ def run():
             calls.append((list(cmd), kw.get("env")))
             return _R()
 
-        class NS:
-            pass
-
         domsnap.subprocess.run = rec
         try:
-            ns = NS(); ns.tag = "before"
-            domsnap._cmd_wiki_capture(ns)
+            domsnap._cmd_wiki_capture(argparse.Namespace(tag="before"))
             argv, cenv = calls[-1]
+            assert cenv is not None
             ck(argv == [sys.executable, domsnap.SNAPSHOT_PY], "wiki-capture invokes the engine snapshot.py")
             ck(cenv.get("BASE_URL") == "https://www.kicksecure.com", "wiki-capture passes the wiki env")
             ck(cenv.get("RAW_DIR") == rawd + "/before", "wiki-capture scopes RAW_DIR under the run tag")
 
-            ns = NS(); ns.a = "t1"; ns.b = "t2"; ns.brief = True
-            domsnap._cmd_wiki_diff(ns)
+            domsnap._cmd_wiki_diff(argparse.Namespace(a="t1", b="t2", brief=True))
             argv, _ = calls[-1]
             ck(argv == [sys.executable, domsnap.DIFF_PY, fixd + "/t1", fixd + "/t2", "--brief"],
                "wiki-diff builds the diff.py argv (two fixture tags + --brief)")
 
-            ns = NS(); ns.tag = "cand"; ns.brief = False
-            domsnap._cmd_wiki_diff_baseline(ns)
+            domsnap._cmd_wiki_diff_baseline(argparse.Namespace(tag="cand", brief=False))
             argv, _ = calls[-1]
             ck(argv == [sys.executable, domsnap.DIFF_PY, basel, fixd + "/cand"],
                "wiki-diff-baseline builds the diff.py argv (baseline vs tag)")
 
             os.makedirs(os.path.join(rawd, "before", "Homepage"))
             calls.clear()
-            ns = NS(); ns.tag = "before"
-            domsnap._cmd_wiki_normalise(ns)
+            domsnap._cmd_wiki_normalise(argparse.Namespace(tag="before"))
             ck(any(a[:2] == [sys.executable, domsnap.NORMALIZE_PY]
                    and a[2].endswith("/before/Homepage") and a[3].endswith("/before/Homepage")
                    for a, _ in calls),
                "wiki-normalise invokes normalize.py per raw page dir, scoped under the tag")
 
-            ns = NS(); ns.tag = "../escape"
             try:
-                domsnap._cmd_wiki_promote(ns)
+                domsnap._cmd_wiki_promote(argparse.Namespace(tag="../escape"))
                 ck(False, "wiki-promote rejects a traversal tag")
             except SystemExit:
                 ck(True, "wiki-promote rejects a traversal tag")
-            ns = NS(); ns.tag = "../escape"
             try:
-                domsnap._cmd_wiki_capture(ns)
+                domsnap._cmd_wiki_capture(argparse.Namespace(tag="../escape"))
                 ck(False, "wiki-capture rejects a traversal tag")
             except SystemExit:
                 ck(True, "wiki-capture rejects a traversal tag")

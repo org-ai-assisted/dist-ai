@@ -137,14 +137,13 @@ def _unique_slugs(pages: List[str]) -> None:
         seen[slug] = path
 
 
-def _ignore_tls(base: str) -> bool:
-    """Whether to accept an invalid TLS cert during capture. True only for a NON-https base (the
-    loopback http mount front door) or an explicit WEBCHECK_DOMSNAP_INSECURE_TLS=1 opt-in for a
-    known self-signed stage -- never silently for an https base, or a MITM'd page would be
+def _ignore_tls() -> bool:
+    """Whether to accept an invalid TLS cert during capture. ONLY on the explicit
+    WEBCHECK_DOMSNAP_INSECURE_TLS=1 opt-in (a known self-signed stage). The loopback http mount
+    needs no allowance (no TLS to validate), and enabling it for any non-https base would disable
+    validation CONTEXT-WIDE for every https subresource and redirect -- so a MITM'd page could be
     captured, normalised and promoted as the trusted baseline."""
-    if os.environ.get("WEBCHECK_DOMSNAP_INSECURE_TLS", "") == "1":
-        return True
-    return urllib.parse.urlsplit(base).scheme != "https"
+    return os.environ.get("WEBCHECK_DOMSNAP_INSECURE_TLS", "") == "1"
 
 
 # ---- capture (Playwright; the only part that needs a browser) --------------------------------
@@ -231,7 +230,7 @@ async def _capture_one(context, base: str, path: str, viewport: dict, scheme: st
 async def _capture_all(base: str, pages: List[str], modes: List[Tuple[dict, str, str]],
                        site_raw: Path, timeout_ms: int) -> int:
     from playwright.async_api import async_playwright
-    ignore_tls = _ignore_tls(base)
+    ignore_tls = _ignore_tls()
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         try:
@@ -293,13 +292,17 @@ def _scrub(text: str, base_url: str) -> str:
     """Collapse the per-run mount base URL to HOST_PLACEHOLDER in BOTH plain and percent-encoded
     forms. share.js (and friends) write encodeURIComponent(location.href) into link hrefs, so the
     encoded `http%3A%2F%2F127.0.0.1%3A<port>` must be scrubbed too or the random port diffs.
-    Both matches are ANCHORED with a no-trailing-digit lookahead so our port is not matched inside
-    a longer one that merely starts with it (`:38271` within `:382719`), and the encoded form is
-    matched case-insensitively so a lower-cased `%3a` collapses like encodeURIComponent's `%3A`."""
+    Matches are ANCHORED on a host/port boundary -- a following word char, dot or hyphen could
+    EXTEND the host or port, so matching there would mask a real change: a longer port that merely
+    starts with ours (`:38271` within `:382719`), or a longer hostname (`good.example` within
+    `good.example.evil`). A legit URL continues with '/', a query, a quote, or ends. Case-SENSITIVE
+    on purpose: encodeURIComponent emits a fixed casing, and ignoring case would collapse a real
+    path-case change (`/app` vs `/APP`) into the baseline."""
     enc_base = urllib.parse.quote(base_url, safe="")
     enc_ph = urllib.parse.quote(HOST_PLACEHOLDER, safe="")
-    text = re.sub(re.escape(base_url) + r"(?![0-9])", HOST_PLACEHOLDER, text)
-    text = re.sub(re.escape(enc_base) + r"(?![0-9])", enc_ph, text, flags=re.IGNORECASE)
+    boundary = r"(?![\w.\-])"
+    text = re.sub(re.escape(base_url) + boundary, HOST_PLACEHOLDER, text)
+    text = re.sub(re.escape(enc_base) + boundary, enc_ph, text)
     return text
 
 
@@ -359,6 +362,17 @@ def _safe_component(name: str, what: str) -> str:
     if (not name) or name in (".", "..") or "/" in name or os.sep in name or "\x00" in name:
         raise SystemExit("domsnap: unsafe %s %r (must be a single path component)" % (what, name))
     return name
+
+
+def _safe_dir(path: Path, what: str) -> Path:
+    """Refuse a destructive rmtree/copytree on a dangerous target before it runs. An env-supplied
+    dir that is empty (Path('') resolves to '.'), relative, or the filesystem root would wipe the
+    cwd or '/' -- the former bash wrapper got this protection from safe-rm."""
+    rp = str(path)
+    if rp in ("", ".", "/") or not path.is_absolute():
+        raise SystemExit("domsnap: refusing to operate on %s %r (need an absolute non-root dir)"
+                         % (what, rp))
+    return path
 
 
 def _site_dirs(site: str) -> Tuple[Path, Path, Path]:
@@ -481,9 +495,14 @@ def _cmd_wiki_capture(args) -> int:
     # Scope the capture under a run TAG (RAW_DIR/<tag>) so the same tag names the fixture the
     # diff/promote subcommands read -- the whole sequence (capture -> normalise -> diff-baseline /
     # promote) keys off ONE tag instead of writing to a top-level dir the tagged reads miss.
-    raw_dir = os.path.join(env["RAW_DIR"], _safe_component(args.tag, "tag"))
-    env["RAW_DIR"] = raw_dir
-    os.makedirs(raw_dir, exist_ok=True)
+    raw_dir = Path(env["RAW_DIR"]) / _safe_component(args.tag, "tag")
+    # Clear the tag's raw dir first: a re-capture (fewer modes/pages, e.g. creds now unset) must
+    # not leave a prior run's dirs behind to be normalised + diffed as if still current.
+    _safe_dir(raw_dir, "RAW_DIR/<tag>")
+    if raw_dir.exists():
+        shutil.rmtree(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    env["RAW_DIR"] = str(raw_dir)
     # snapshot.py reads BASE_URL / RAW_DIR / PAGES_FILE / CAPTURE_MODES / WIKI_USER / ... from env.
     return subprocess.run([sys.executable, SNAPSHOT_PY], env=env).returncode  # nosec B603
 
@@ -493,6 +512,11 @@ def _cmd_wiki_normalise(args) -> int:
     tag = _safe_component(args.tag, "tag")
     raw = Path(env["RAW_DIR"]) / tag
     fix = Path(env["FIX_DIR"]) / tag
+    # Rebuild the tag's fixtures from scratch: a page/mode dropped from the raw corpus must not
+    # linger in FIX_DIR and be diffed as current.
+    _safe_dir(fix, "FIX_DIR/<tag>")
+    if fix.exists():
+        shutil.rmtree(fix)
     fix.mkdir(parents=True, exist_ok=True)
     page_dirs = sorted(p for p in raw.iterdir() if p.is_dir()) if raw.is_dir() else []
     if not page_dirs:
@@ -552,6 +576,7 @@ def _cmd_wiki_promote(args) -> int:
         print("domsnap wiki-promote: missing %s -- run wiki-capture/normalise first" % src,
               file=sys.stderr)
         return 1
+    _safe_dir(baseline, "BASELINE_DIR")
     if baseline.exists():
         shutil.rmtree(baseline)
     baseline.parent.mkdir(parents=True, exist_ok=True)
