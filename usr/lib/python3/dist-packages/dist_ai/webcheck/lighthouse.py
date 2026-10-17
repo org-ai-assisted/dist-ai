@@ -356,9 +356,11 @@ def main(argv: List[str]) -> int:
                     help="seed/merge the baseline (MIN over LH_SEED_SAMPLES runs) instead of gating")
     ap.add_argument("roots", nargs="+", help="site checkout root(s) with index.html")
     args = ap.parse_args(argv)
-    roots = [os.path.abspath(r) for r in args.roots if os.path.isdir(r)]
-    if not roots:
-        _skip_77("no site root found")
+    from dist_ai.webcheck import cli
+    # A named root that does not resolve FAILS loud (not a silent drop / skip). The _skip_77
+    # above is for a genuinely-absent lighthouse BINARY (an optional environment tool), a
+    # different thing from a mistyped root -- which is an operator error, so a failure.
+    roots = cli.require_existing_dirs(args.roots, "lighthouse")
     if args.write_baseline:
         return write_roots(roots, args.baseline_dir)
     return check_roots(roots, args.baseline_dir)

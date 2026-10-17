@@ -278,6 +278,27 @@ def run() -> int:
        "interleave_by_host round-robins hosts (first pass covers every host before a repeat): %r"
        % _hosts)
 
+    # silent-green guard (ai-review grok #8): a NAMED root that does not resolve must FAIL loud,
+    # never be filtered out (which would let a surviving root exit 0) nor read as a SKIP.
+    from dist_ai.webcheck import cli
+    with tempfile.TemporaryDirectory() as good:
+        raised = None
+        try:
+            cli.require_existing_dirs([good, "/no/such/typo-root"], "extlinks")
+        except SystemExit as exc:
+            raised = exc.code
+        ck(raised == 1, "require_existing_dirs: a mistyped root exits 1, not drop/skip: %r" % raised)
+        ck(cli.require_existing_dirs([good], "extlinks") == [os.path.abspath(good)],
+           "require_existing_dirs: all-present returns abspath list")
+    # end to end: the lane main() FAILs (not 77) when a named root is a typo.
+    with tempfile.TemporaryDirectory() as good, tempfile.TemporaryDirectory() as bdir:
+        rc = None
+        try:
+            el.main(["--baseline-dir", bdir, good, "/no/such/typo-root"])
+        except SystemExit as exc:
+            rc = exc.code
+        ck(rc == 1, "extlinks main() FAILs (exit 1) on a mistyped root, not SKIP 77: %r" % rc)
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

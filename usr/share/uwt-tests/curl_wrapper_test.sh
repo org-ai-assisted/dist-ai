@@ -280,8 +280,9 @@ check "loopback v6: no proxy injection"          "$(injected_socks5h)" "no"
 
 ## A loopback address anywhere in 127.0.0.0/8, not just 127.0.0.1.
 drive_main 0 none 'http://127.0.0.53:53/'
-check "loopback 127/8: original arg passed through" "${rec_lines[0]:-}" "http://127.0.0.53:53/"
-check "loopback 127/8: no proxy injection"          "$(injected_socks5h)" "no"
+check "loopback 127/8 (.53): no proxy injection" "$(injected_socks5h)" "no"
+drive_main 0 none 'http://127.0.1.1/'
+check "loopback 127/8 (.0.1.1): no proxy injection" "$(injected_socks5h)" "no"
 
 ## The 'localhost' hostname is loopback too.
 drive_main 0 none 'http://localhost:8080/'
@@ -294,10 +295,31 @@ else
 fi
 check "loopback localhost: note printed" "${localhost_note}" "ok"
 
-## A non-loopback host must STILL be injected (guard against an over-broad match
-## swallowing every target): the four isolation args are prepended.
+## A BARE loopback operand (no scheme) must be detected -- the common form for a
+## local service. The old ^[^-].* anchor consumed the first char and missed these.
+drive_main 0 none 'localhost:8080'
+check "loopback bare localhost:port: no proxy injection" "$(injected_socks5h)" "no"
+drive_main 0 none '127.0.0.1'
+check "loopback bare 127.0.0.1: no proxy injection" "$(injected_socks5h)" "no"
+drive_main 0 none '[::1]'
+check "loopback bare [::1]: no proxy injection" "$(injected_socks5h)" "no"
+
+## A non-loopback host must STILL be injected. Guards against over-match: a
+## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
+## a public IP with '127' in a non-leading octet are all REMOTE and must keep
+## their isolated circuit.
 drive_main 0 none 'http://127examplehost.com/'
-check "non-loopback host: proxy still injected" "$(injected_socks5h)" "yes"
+check "non-loopback host (127examplehost): proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'https://example.com/localhost'
+check "remote URL, localhost in PATH: proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'http://example.com/?x=127.2.3.4'
+check "remote URL, 127.x in QUERY: proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'http://localhost.example/'
+check "remote host 'localhost.example': proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'http://127.evil.example/'
+check "remote host '127.evil.example': proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'http://1.127.0.0.1/'
+check "public IP with non-leading 127: proxy injected" "$(injected_socks5h)" "yes"
 
 ## --- Case 6: --ipv6 / -6 -> proxy address becomes [::1]:9050. ---
 drive_main 0 none '--ipv6' 'https://example.com'

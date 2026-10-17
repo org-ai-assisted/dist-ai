@@ -96,6 +96,28 @@ def run():
           'overlaps its icon' in cm._HEADER_OVERLAP_JS
           and 'header items overlap' in cm._HEADER_OVERLAP_JS)
 
+    # _MountHandler containment: an in-tree symlink whose target escapes the served root must be
+    # REFUSED (not served to the network-capable browser) -- a real exfil surface (ai-review grok).
+    with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+        _write(root, 'ok.html')
+        secret = os.path.join(outside, 'secret.txt')
+        with open(secret, 'w', encoding='utf-8') as fh:
+            fh.write('TOP SECRET')
+        os.symlink(secret, os.path.join(root, 'leak.txt'))
+
+        class _Srv:
+            mounts: dict = {}
+        handler = object.__new__(cm._MountHandler)   # bypass __init__ (needs a live socket)
+        handler.directory = root
+        handler.server = _Srv()
+        ok_path = handler.translate_path('/ok.html')
+        leaked = handler.translate_path('/leak.txt')
+        check('_MountHandler serves a normal in-root file',
+              os.path.realpath(ok_path) == os.path.realpath(os.path.join(root, 'ok.html')),
+              repr(ok_path))
+        check('_MountHandler REFUSES an out-of-root symlink (no exfil to the browser)',
+              '__forbidden__' in leaked and 'secret' not in os.path.basename(leaked), repr(leaked))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

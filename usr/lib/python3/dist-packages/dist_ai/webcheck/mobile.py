@@ -228,17 +228,26 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         clean = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
-        for mount, subroot in getattr(self.server, 'mounts', {}).items():
+        mounts = getattr(self.server, 'mounts', {})
+        fs = None
+        for mount, subroot in mounts.items():
             if clean == mount.rstrip('/') or clean.startswith(mount):
-                rel = clean[len(mount):].lstrip('/')
-                fs = os.path.normpath(os.path.join(subroot, rel))
-                # keep the resolved path inside the subsite root
-                if os.path.commonpath([fs, subroot]) != subroot:
-                    return os.path.join(subroot, '__forbidden__')
-                if os.path.isdir(fs):
-                    fs = os.path.join(fs, 'index.html')
-                return fs
-        return super().translate_path(path)
+                fs = os.path.normpath(os.path.join(subroot, clean[len(mount):].lstrip('/')))
+                break
+        if fs is None:
+            fs = super().translate_path(path)
+        # Containment via REALPATH: an in-tree symlink whose TARGET escapes every served root
+        # (e.g. leak.txt -> /etc/passwd) must be refused, not served to the network-capable
+        # browser -- a real exfil surface. normpath above only resolves '..' lexically, not
+        # symlink targets, so the check is on the real path against the docroot + each subroot.
+        allowed = [os.path.realpath(self.directory)]
+        allowed += [os.path.realpath(s) for s in mounts.values()]
+        real = os.path.realpath(fs)
+        if not any(real == a or real.startswith(a + os.sep) for a in allowed):
+            return os.path.join(self.directory, '__forbidden__')
+        if os.path.isdir(real):
+            return os.path.join(real, 'index.html')
+        return real
 
 
 def _page_urls(root, mount=''):
