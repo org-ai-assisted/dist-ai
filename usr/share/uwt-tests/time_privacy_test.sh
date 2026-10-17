@@ -159,9 +159,6 @@ check_err "-i 2^63 overflow value rejected" "increment must be between 0 and 60.
 check_err "-r above 60 rejected" "randomincrement must be between 1 and 60." -r 61
 ## is_whole_number accepts 0, but 'random-between 1 0' crashes; reject it cleanly.
 check_err "-r 0 rejected (not a random-between crash)" "randomincrement must be between 1 and 60." -r 0
-## Year stays strict (is_whole_number): a leading-zero 2-digit year like 01 would
-## be windowed by faketime to 2001, so reject it (month/day zero-pad is allowed).
-check_err "leading-zero 2-digit year rejected" "year is not a digit." -y 01 -m 1 -d 1
 
 ## -h prints usage and exits 0 (needs no TIMEDIR; must not be treated as error).
 help_rc=0
@@ -198,6 +195,13 @@ check "zero-padded -d 05 -m 09 accepted" "${tp_out}" "2026-09-05 0:0:1"
 td="$(make_timedir zeropad_single)"
 run_tp -y 2026 -m 01 -d 09 -i 1 -f "${td}"
 check "zero-padded -d 09 -m 01 accepted" "${tp_out}" "2026-01-09 0:0:1"
+
+## 'date +%Y' zero-pads years 0-999 (e.g. '0500'); those are valid 4-digit years
+## faketime keeps verbatim, so the year must accept a leading zero too (a strict
+## is_whole_number here would break the default date for a clock in years 0-999).
+td="$(make_timedir zeropad_year)"
+run_tp -y 0500 -m 03 -d 09 -i 1 -f "${td}"
+check "zero-padded 4-digit year 0500 accepted" "${tp_out}" "0500-03-09 0:0:1"
 
 ## A non-digit or partial-garbage counter file is treated as 0 (read_date_file's
 ## sed nodigits guard), never propagated.

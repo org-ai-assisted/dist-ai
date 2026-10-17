@@ -268,9 +268,7 @@ fuzz_options() {
       expect_reject=1; expect_msg="randomincrement must be a positive number."
    elif [ "${i_present}" -eq 1 ] && ! is_whole "${iv}"; then
       expect_reject=1; expect_msg="increment is not a digit."
-   elif ! is_whole "${yv}"; then
-      ## Year keeps is_whole_number (no leading zero): always 4-digit from
-      ## 'date +%Y', and a 2-digit value would be windowed by faketime.
+   elif ! is_digits "${yv}"; then
       expect_reject=1; expect_msg="year is not a digit."
    elif ! is_digits "${mv}"; then
       expect_reject=1; expect_msg="month is not a digit."
