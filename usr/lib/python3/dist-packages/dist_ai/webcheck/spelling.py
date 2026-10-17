@@ -42,6 +42,9 @@ def _run_cspell(root: str, config: str) -> List[Tuple[str, str]]:
     # OUTSIDE the process cwd is filtered out entirely -> cspell checks 0 files and exits 0 (a
     # false clean). The config is abspath'd first (cwd changes under it); its relative dictionary
     # paths resolve against the config file's own location, not cwd.
+    # Accepted limitation: an in-document `cspell:disable` directive in the CHECKED HTML would
+    # suppress spell-check to EOF. The input is our own curated/built Pages HTML, which carries no
+    # cspell directives, so this is not a realistic bypass; revisit if that content ever does.
     proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
         ["cspell", "lint", "--no-progress", "--no-color", "--no-summary",
          "--no-must-find-files", "--config", os.path.abspath(config),
