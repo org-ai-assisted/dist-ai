@@ -6,3 +6,10 @@
 roots/output-lies.github.io/share.js
 roots/org-ai-assisted.github.io/share.js
 roots/output-lies.github.io/git-diffs-lie/share.js
+roots/secure-terminal.github.io/share.js
+roots/secure-terminal.github.io/copy.js
+roots/secure-terminal.github.io/chat-view/mockup.js
+roots/secure-terminal.github.io/attacks/pastejack.js
+roots/output-lies.github.io/git-diffs-lie/copy.js
+roots/output-lies.github.io/git-diffs-lie/all/copy.js
+roots/output-lies.github.io/paste/copy.js
