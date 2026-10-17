@@ -44,10 +44,13 @@ def run() -> int:
         p.write_text("# only a comment\n\n", encoding="utf-8")
         ck(s.parse_baseline(p) == set(), "comment/blank-only baseline -> empty set")
 
-    # pure: finding_key prefers gitleaks Fingerprint, else File:RuleID:StartLine.
-    ck(s.finding_key({"Fingerprint": "fp-1"}) == "fp-1", "finding_key uses Fingerprint")
+    # pure: finding_key is <File>:<RuleID>:<StartLine> and IGNORES gitleaks' absolute Fingerprint
+    # (which would embed the checkout path and never match a committed baseline elsewhere).
     ck(s.finding_key({"File": "x.txt", "RuleID": "r", "StartLine": 7}) == "x.txt:r:7",
-       "finding_key falls back to File:RuleID:StartLine")
+       "finding_key is File:RuleID:StartLine")
+    ck(s.finding_key({"Fingerprint": "/abs/x.txt:r:1", "File": "x.txt",
+                      "RuleID": "r", "StartLine": 1}) == "x.txt:r:1",
+       "finding_key ignores gitleaks' absolute Fingerprint")
 
     # integration: a planted secret is detected; baseline excuses it; a clean tree yields
     # nothing. gitleaks is a REQUIRED dependency (dist-ai Depends), so its absence is an
@@ -75,6 +78,27 @@ def run() -> int:
                                                 encoding="utf-8")
             new, all_keys = s.scan_root(root, set())
             ck(new == [] and all_keys == set(), "a clean tree yields no findings: %r" % new)
+        # checkout-INDEPENDENCE: the identical secret at two DIFFERENT absolute roots must yield
+        # the SAME key, so a baseline seeded at one path excuses it at another (claude/codex: the
+        # gitleaks Fingerprint embeds the absolute path and would spuriously re-fail in CI).
+        with tempfile.TemporaryDirectory() as ra, tempfile.TemporaryDirectory() as rb:
+            for r in (ra, rb):
+                Path(r, "leak.txt").write_text(
+                    "token = ghp_1234567890abcdefghijklmnopqrstuvwxyzAB\n", encoding="utf-8")
+            _, keys_a = s.scan_root(ra, set())
+            new_b, _ = s.scan_root(rb, keys_a)
+            ck(new_b == [], "a baseline from one checkout path excuses the identical finding at "
+                            "a different path: %r" % new_b)
+        # a tree shipping its own gitleaks config is REFUSED (it could weaken the scan).
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".gitleaks.toml").write_text("[extend]\nuseDefault = false\n", encoding="utf-8")
+            Path(root, "index.html").write_text("<html></html>", encoding="utf-8")
+            raised = False
+            try:
+                s.scan_root(root, set())
+            except RuntimeError:
+                raised = True
+            ck(raised, "scan refuses a tree shipping .gitleaks.toml (could disable detection)")
         # main(): write-baseline then gate-clean roundtrip on a planted tree.
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as bdir:
             Path(root, "leak.txt").write_text(

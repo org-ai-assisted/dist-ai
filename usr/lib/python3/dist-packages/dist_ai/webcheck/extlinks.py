@@ -72,9 +72,10 @@ _SHARE_HOSTS = frozenset({
 # fosstodon /share?text=...https%3A, twitter /intent/tweet?url=https%3A, t.me /share/url?url=,
 # wa.me/?text=...https%3A. The embedded `http(s)%3a` is the discriminator: a REAL citation to
 # the same host (a profile fosstodon.org/@x, a thread reddit.com/r/...?title=foo) never carries
-# the current page as a percent-encoded URL, so it is KEPT. Keying on generic params (title=,
-# link=, ...) instead would wrongly drop such citations, so match only the embedded URL.
-_SHARE_QUERY = re.compile(r"https?%3a", re.IGNORECASE)
+# the current page as an embedded URL, so it is KEPT. Keying on generic params (title=, link=,
+# ...) instead would wrongly drop such citations, so match only the embedded http(s) URL --
+# whether its scheme colon is percent-encoded (`u=https%3A`) or literal (`url=https://`).
+_SHARE_QUERY = re.compile(r"https?(?::|%3a)", re.IGNORECASE)
 
 
 def _is_share_button(parts) -> bool:

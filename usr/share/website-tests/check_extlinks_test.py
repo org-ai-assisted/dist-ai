@@ -100,7 +100,9 @@ def run() -> int:
        "_is_share_button: a real citation on a share host with a generic ?title= is KEPT "
        "(only an embedded page URL marks a button)")
     ck(el._is_share_button(_us("https://www.reddit.com/submit?url=https%3A%2F%2Fp")),
-       "_is_share_button: reddit /submit?url=https%3A IS a button (embedded page URL)")
+       "_is_share_button: reddit /submit?url=https%3A IS a button (percent-encoded page URL)")
+    ck(el._is_share_button(_us("https://twitter.com/share?url=https://p/page")),
+       "_is_share_button: embedded URL with a LITERAL colon is also a button (ai-review codex)")
     ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
         "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
        "_SHARE_HOSTS covers the measured top-8 share hosts")

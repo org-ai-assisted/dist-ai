@@ -30,24 +30,35 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 # gitleaks finding fields we keep (RuleID + location); Secret/Match are intentionally dropped --
-# never echo a secret value, even redacted upstream.
-_KEEP = ("RuleID", "File", "StartLine", "Fingerprint")
+# never echo a secret value, even redacted upstream. (gitleaks' own Fingerprint is intentionally
+# NOT kept: it embeds the ABSOLUTE source path, so it is not a checkout-stable baseline key.)
+_KEEP = ("RuleID", "File", "StartLine")
+# A config/ignore file shipped IN the scanned tree -- gitleaks auto-loads a source .gitleaks.toml
+# when no trusted --config is given, so the scanned content could weaken its own scan.
+_FORBIDDEN_IN_TREE = (".gitleaks.toml", ".gitleaksignore")
 
 
 def _run_gitleaks(root: str) -> List[dict]:
     """Run gitleaks over `root` (no git, read-only, redacted) and return its JSON findings.
 
     gitleaks is a hard dependency, so it is called directly (no has-X preflight). A missing
-    binary surfaces as FileNotFoundError and a gitleaks error as RuntimeError; main() turns
-    either into a loud exit-1 FAILURE, never a skip."""
+    binary surfaces as FileNotFoundError and any scan ERROR as RuntimeError; main() turns either
+    into a loud exit-1 FAILURE, never a skip. A scan error must NEVER read as 'clean'."""
+    # Refuse a tree that carries its own gitleaks config: it could disable rules and produce a
+    # false clean. A published site tree has no business shipping one.
+    for cfg in _FORBIDDEN_IN_TREE:
+        if os.path.exists(os.path.join(root, cfg)):
+            raise RuntimeError("scanned tree ships %s, which could weaken the scan -- remove it"
+                               % cfg)
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "gitleaks.json")
-        # Debian ships gitleaks 8.16 -> `detect --no-git --source`; --redact keeps secret values
-        # out of the report, --report-path writes JSON we parse (exit code alone is unreliable).
+        # Debian gitleaks 8.16 -> `detect --no-git --source`; --redact keeps secret values out of
+        # the report; --exit-code 1 is gitleaks' leaks-found code (0 = clean) so we can tell a
+        # real scan error (any other outcome) from a clean run and never read an error as clean.
         proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
             ["gitleaks", "detect", "--no-git", "--source", root,
              "--report-format", "json", "--report-path", report,
-             "--redact", "--no-banner", "--exit-code", "0"],
+             "--redact", "--no-banner", "--exit-code", "1"],
             capture_output=True, text=True)
         try:
             with open(report, encoding="utf-8") as handle:
@@ -57,23 +68,34 @@ def _run_gitleaks(root: str) -> List[dict]:
                                % (proc.returncode, (proc.stderr or "")[-300:]))
         except json.JSONDecodeError as exc:
             raise RuntimeError("gitleaks report is not valid JSON: %s" % exc)
-    return data if isinstance(data, list) else []
+    findings = data if isinstance(data, list) else []
+    stderr = proc.stderr or ""
+    # rc 0 = clean, rc 1 = leaks found. Anything else, a fatal (FTL) log, or rc 1 with an EMPTY
+    # report (exited nonzero yet found nothing -- a scan error, e.g. an unreadable file) is an
+    # ERROR -> fail loud, never the false-clean this gate exists to prevent.
+    if proc.returncode not in (0, 1) or "FTL" in stderr:
+        raise RuntimeError("gitleaks errored (rc=%d): %s" % (proc.returncode, stderr[-300:]))
+    if proc.returncode == 1 and not findings:
+        raise RuntimeError("gitleaks exit 1 with an empty report (scan error): %s" % stderr[-300:])
+    return findings
 
 
 def finding_key(finding: dict) -> str:
-    """Stable fingerprint for baselining. Prefer gitleaks' own Fingerprint; else File:RuleID:line
-    (relative, so a different checkout path does not change the key)."""
-    fp = finding.get("Fingerprint")
-    if fp:
-        return str(fp)
+    """Checkout-INDEPENDENT baseline key `<File>:<RuleID>:<StartLine>`, where File is already
+    ROOT-RELATIVE (set by scan_root). Deliberately NOT gitleaks' own Fingerprint, which embeds
+    the ABSOLUTE source path and so never matches a committed baseline on a different checkout."""
     return "%s:%s:%s" % (finding.get("File", ""), finding.get("RuleID", ""),
                          finding.get("StartLine", ""))
 
 
 def scan_root(root: str, baseline: Set[str]) -> Tuple[List[dict], Set[str]]:
     """(new_findings, all_keys): new_findings are those whose key is NOT in `baseline` (the gate
-    failures); all_keys is every finding's key (for re-seeding a baseline). File paths are made
-    root-relative so a finding reads + baselines independent of the checkout location."""
+    failures); all_keys is every finding's key (for re-seeding a baseline).
+
+    A key is <root-relative file>:<rule>:<line> -- checkout-independent AND value-free (the secret
+    is redacted and must never be stored). A baseline thus excuses a LOCATION: re-review a
+    baselined location whenever its content changes, since a different secret at the same
+    file:line would be excused (the inherent limit of a redacted baseline)."""
     findings = _run_gitleaks(root)
     new: List[dict] = []
     all_keys: Set[str] = set()
@@ -81,7 +103,7 @@ def scan_root(root: str, baseline: Set[str]) -> Tuple[List[dict], Set[str]]:
         rel = os.path.relpath(f.get("File", root), root) if f.get("File") else ""
         trimmed = {k: f.get(k) for k in _KEEP}
         trimmed["File"] = rel
-        key = finding_key(f)
+        key = finding_key(trimmed)      # relative -> checkout-independent
         all_keys.add(key)
         if key not in baseline:
             trimmed["_key"] = key
@@ -101,8 +123,9 @@ def parse_baseline(path: Path) -> Set[str]:
 def format_baseline(keys: Set[str], site: Optional[str] = None) -> str:
     who = (" for %s" % site) if site else ""
     header = [
-        "# Secret-scan: accepted gitleaks finding fingerprints%s (one per line)." % who,
-        "# A fingerprint listed here is tolerated (reviewed false positive / test fixture).",
+        "# Secret-scan: accepted finding keys%s, one per line: <relative file>:<rule>:<line>." % who,
+        "# A key listed here is tolerated (reviewed false positive / documentation example). It",
+        "# excuses a LOCATION, not a value -- re-review if the content at that file:line changes.",
         "# The gate flags only a NEWLY-found secret. Prune when the cause is removed.",
     ]
     return "\n".join(header + sorted(keys)) + "\n"
