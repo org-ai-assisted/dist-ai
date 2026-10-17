@@ -261,11 +261,21 @@ check "-U: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
 check "-U: original arg passed through" "${rec_lines[0]:-}" "-U"
 check "-U: no proxy injection"          "$(injected_socks5h)" "no"
 
+## A loopback target disables isolation but the wrapper STILL execs curl with the
+## original argv verbatim. Assert BOTH: no socks5h injection AND the original
+## operand reaches the exec seam unchanged (exactly one recorded arg equal to it).
+## Checking only "no injection" would also pass if a regression dropped or
+## rewrote the request (empty rec_lines), so the passthrough assertion is load-bearing.
+check_loopback_passthrough() {
+   local label="$1" operand="$2"
+   check "${label}: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
+   check "${label}: original arg passed through" "${rec_lines[0]:-}" "${operand}"
+   check "${label}: no proxy injection"          "$(injected_socks5h)" "no"
+}
+
 ## --- Case 5: a loopback 127.0.0.1 / [::1] target disables isolation. ---
 drive_main 0 none 'http://127.0.0.1:8080/'
-check "loopback v4: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
-check "loopback v4: original arg passed through" "${rec_lines[0]:-}" "http://127.0.0.1:8080/"
-check "loopback v4: no proxy injection"          "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback v4" 'http://127.0.0.1:8080/'
 if [[ "${drive_err}" == *"NOTE: Detected loopback address."* ]]; then
    loopback_note=ok
 else
@@ -274,20 +284,17 @@ fi
 check "loopback v4: note printed" "${loopback_note}" "ok"
 
 drive_main 0 none 'http://[::1]:8080/'
-check "loopback v6: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
-check "loopback v6: original arg passed through" "${rec_lines[0]:-}" "http://[::1]:8080/"
-check "loopback v6: no proxy injection"          "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback v6" 'http://[::1]:8080/'
 
 ## A loopback address anywhere in 127.0.0.0/8, not just 127.0.0.1.
 drive_main 0 none 'http://127.0.0.53:53/'
-check "loopback 127/8 (.53): no proxy injection" "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback 127/8 (.53)" 'http://127.0.0.53:53/'
 drive_main 0 none 'http://127.0.1.1/'
-check "loopback 127/8 (.0.1.1): no proxy injection" "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback 127/8 (.0.1.1)" 'http://127.0.1.1/'
 
 ## The 'localhost' hostname is loopback too.
 drive_main 0 none 'http://localhost:8080/'
-check "loopback localhost: original arg passed through" "${rec_lines[0]:-}" "http://localhost:8080/"
-check "loopback localhost: no proxy injection"          "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback localhost" 'http://localhost:8080/'
 if [[ "${drive_err}" == *"NOTE: Detected loopback address."* ]]; then
    localhost_note=ok
 else
@@ -298,11 +305,11 @@ check "loopback localhost: note printed" "${localhost_note}" "ok"
 ## A BARE loopback operand (no scheme) must be detected -- the common form for a
 ## local service. The old ^[^-].* anchor consumed the first char and missed these.
 drive_main 0 none 'localhost:8080'
-check "loopback bare localhost:port: no proxy injection" "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback bare localhost:port" 'localhost:8080'
 drive_main 0 none '127.0.0.1'
-check "loopback bare 127.0.0.1: no proxy injection" "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback bare 127.0.0.1" '127.0.0.1'
 drive_main 0 none '[::1]'
-check "loopback bare [::1]: no proxy injection" "$(injected_socks5h)" "no"
+check_loopback_passthrough "loopback bare [::1]" '[::1]'
 
 ## A non-loopback host must STILL be injected. Guards against over-match: a
 ## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
@@ -312,6 +319,8 @@ drive_main 0 none 'http://127examplehost.com/'
 check "non-loopback host (127examplehost): proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'https://example.com/localhost'
 check "remote URL, localhost in PATH: proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'https://example.com/127.0.0.53'
+check "remote URL, 127.x in PATH: proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'http://example.com/?x=127.2.3.4'
 check "remote URL, 127.x in QUERY: proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'http://localhost.example/'

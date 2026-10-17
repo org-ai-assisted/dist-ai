@@ -47,11 +47,14 @@ if [ "${UW_ENTRY}" != "unset" ]; then
   uwtwrapper["${PARENT}"]="${UW_ENTRY}"
 fi
 
-## time_privacy stub: compute_dispatch captures its stdout in privacy_time.
+## time_privacy stub: compute_dispatch captures its stdout in privacy_time. A
+## fixed, single-token, NON-EMPTY sentinel so the caller can assert that an
+## enabled faketime actually received a real offset (production runs
+## `faketime "${privacy_time}" ...`; an empty privacy_time would be a silent bug).
 time_privacy() {
   printf '%s\n' "-15days"
 }
 
 compute_dispatch
 
-printf '%s\n' "FAKE=${fake_time} TORSOCKS=${torsocks_bin}"
+printf '%s\n' "FAKE=${fake_time} PRIVACY=${privacy_time} TORSOCKS=${torsocks_bin}"

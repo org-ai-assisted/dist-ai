@@ -1,0 +1,90 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the CONFINED JS unit-coverage gate (jsdom + c8, 100% over covered.txt) over the
+## first-party JS in each site checkout, inside the review sandbox under bwrap (no network; node
+## + jsdom + c8 live there via `provision jstest`). Sibling of webcheck-lint-sandbox; a browser
+## is NOT needed (jsdom is in-process), so a plain sandbox-confine profile.
+##
+##   webcheck-jscov-sandbox <site-root> [<site-root> ...]
+##
+## Exit: 0 all covered JS at 100%; 1 a test failure or a coverage shortfall.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_WORKDIR="/home/user/webcheck-jscov-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-jscov-sandbox: $1" >&2
+   exit 1
+}
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests/jscov" ]; then
+   jscov_dir="${script_dir}/../share/website-tests/jscov"
+else
+   jscov_dir='/usr/share/website-tests/jscov'
+fi
+[ -f "${jscov_dir}/run.sh" ] || die "missing jscov harness: ${jscov_dir}/run.sh"
+
+if [ "$#" -eq 0 ]; then
+   die 'usage: webcheck-jscov-sandbox <site-root> [<site-root> ...]'
+fi
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+
+## Stage the jscov harness + each site root (no .git) into one tree, sync it in, run the gate
+## confined. Site-root basenames must be unique (they become roots/<base>). The tests reference
+## roots/<base>/<rel>.js via harness.sitePath(); covered.txt pins exactly which files are gated.
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+mkdir --parents -- "${staging}/jscov" "${staging}/roots"
+cp --archive -- "${jscov_dir}/." "${staging}/jscov/"
+
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+   ## Only the .js files are needed for coverage; rsync them (preserving tree), skip .git.
+   rsync --archive --prune-empty-dirs --include='*/' --include='*.js' --exclude='*' \
+      --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+   bash jscov/run.sh

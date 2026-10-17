@@ -1,0 +1,8 @@
+# JS files the coverage gate requires at 100% (paths relative to the synced workdir). One per
+# line; '#'/blank skipped. This is an EXPLICIT, GROWING covered-set (legacy-adoption pattern):
+# the gate enforces 100% statements/branches/functions/lines on exactly these files, and a file
+# not yet listed is NOT silently green -- it is simply not yet gated, tracked in README.remaining.
+# Add a <name>.test.js (jsdom, via harness.js) for a file, then add its path here.
+roots/output-lies.github.io/share.js
+roots/org-ai-assisted.github.io/share.js
+roots/output-lies.github.io/git-diffs-lie/share.js
