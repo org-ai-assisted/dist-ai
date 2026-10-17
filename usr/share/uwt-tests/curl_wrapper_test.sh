@@ -339,6 +339,16 @@ check "flag --user=...@localhost + remote URL: proxy injected" "$(injected_socks
 drive_main 0 none 'http://localhost:/'
 check_loopback_passthrough "loopback empty port" 'http://localhost:/'
 
+## A SCHEME-LESS remote URL carrying an embedded 'http://loopback' in its
+## query/path is still the remote host -- a buried '://' must not be read as the
+## authority delimiter. Keep isolation.
+drive_main 0 none 'example.com/?next=http://localhost'
+check "scheme-less remote, embedded loopback URL: proxy injected" "$(injected_socks5h)" "yes"
+## ... and the mirror: a scheme-less LOOPBACK URL with an embedded remote URL is
+## still loopback.
+drive_main 0 none 'localhost:8000/?next=https://example.com'
+check_loopback_passthrough "scheme-less loopback, embedded remote URL" 'localhost:8000/?next=https://example.com'
+
 ## A non-loopback host must STILL be injected. Guards against over-match: a
 ## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
 ## a public IP with '127' in a non-leading octet are all REMOTE and must keep
