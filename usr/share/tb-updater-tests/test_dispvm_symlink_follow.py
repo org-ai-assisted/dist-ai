@@ -40,17 +40,22 @@ script's path globals at a scratch tree:
     skips on that (ConditionPathExists), so ANY re-run this boot is a no-op --
     covering a manual restart (incl. retry of a failed first run) that
     --no-start does not. Old code/unit had neither -> FAILS.
-  * Home binds + symlink reject: the user-home bind mounts are
-    'mount --no-canonicalize --bind' onto /home/<user>/.tb and .cache/tb.
-    --no-canonicalize makes mount REFUSE a symlinked target (mountpoint) at the
-    mount layer regardless of timing; it does NOT guard the bind SOURCE. So
-    safety rests on (a) --no-canonicalize on every home bind, (b) the
-    '[ -L ] ... exit 1' reject loop that runs BEFORE the binds and refuses a
-    pre-planted symlink at any bind SOURCE or TARGET path, and (c) the boot-only
-    run-once execution above. This test asserts that structural model
-    (each home bind carries --no-canonicalize; the reject precedes them); the
-    behavioral refusal is driven by test_planted_symlink_is_refused and
-    test_planted_symlink_in_cache_source_is_refused.
+  * Home binds + symlink reject: each user-home bind mount carries a
+    no-canonicalize directive -- either the 'mount --no-canonicalize' flag or
+    the equivalent '-o X-mount.nocanonicalize' option (man mount: the flag
+    entry points at the option; proven equivalent in
+    org-ai-assisted/mount-nocanonicalize-symlink-refusal) -- onto
+    /home/<user>/.tb and .cache/tb. It makes mount REFUSE a symlinked target
+    (mountpoint) at the mount layer regardless of timing; it does NOT guard the
+    bind SOURCE. So safety rests on (a) a no-canonicalize directive on every
+    home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the
+    binds and refuses a pre-planted symlink at any bind SOURCE or TARGET path,
+    and (c) the boot-only run-once execution above. This test asserts that
+    structural model (each home bind carries a no-canonicalize directive; the
+    reject precedes them); the behavioral refusal is driven by
+    test_planted_symlink_is_refused / test_planted_symlink_in_cache_source_is_refused
+    (stubbed mount) and proven against REAL mount by
+    test_dispvm_mount_bind_symlink_refusal.
 """
 
 import os
@@ -93,15 +98,15 @@ mount() { printf 'MOUNT %s\n' "$*" >> "${REC}"; return 0; }
 touch() { printf 'TOUCH %s\n' "$*" >> "${REC}"; return 0; }
 home_base_dir="${TB_TEST_HOME}"
 tb_binary_cache_dir="${TB_TEST_CACHE}"
-rw_home_base_dir="${TB_TEST_RW}"
+qubes_rw_home_base_dir="${TB_TEST_RW}"
 """
 
 ## Containment rests on the subject reading these globals. A dispvm without them
 ## would run 'mkdir'/'[ -L ]' against the REAL /home and /rw/home, so refuse to
 ## drive it.
 REQUIRE = (
-    '[[ -v home_base_dir && -v tb_binary_cache_dir && -v rw_home_base_dir ]] || {\n'
-    '   printf \'%s\\n\' "dispvm lacks home_base_dir/tb_binary_cache_dir/rw_home_base_dir" >&2\n'
+    '[[ -v home_base_dir && -v tb_binary_cache_dir && -v qubes_rw_home_base_dir ]] || {\n'
+    '   printf \'%s\\n\' "dispvm lacks home_base_dir/tb_binary_cache_dir/qubes_rw_home_base_dir" >&2\n'
     f'   exit {T.DRIVE_UNUSABLE}\n'
     '}'
 )
@@ -139,7 +144,7 @@ def _shell_commands(text):
 def _drive(tmp_path, *, planted=None, cache_planted=None, rw_planted=None,
            victim=None, precreate=()):
     """Drive the real dispvm 'main' with its home_base_dir, tb_binary_cache_dir
-    and rw_home_base_dir globals pointed into tmp_path. When `planted` is given
+    and qubes_rw_home_base_dir globals pointed into tmp_path. When `planted` is given
     (e.g. '.tb'), pre-plant it as a symlink to `victim` inside the fake home
     first; `cache_planted` pre-plants inside the fake bind SOURCE (the tb-binary
     cache); `rw_planted` pre-plants inside the fake /rw/home remount base. Each
@@ -185,7 +190,7 @@ def test_path_globals_default_to_production_paths():
     proc = T.drive_sourced_function(
         DISPVM, "true", require=REQUIRE,
         setup='printf \'%s|%s|%s\' "${home_base_dir}" "${tb_binary_cache_dir}"'
-              ' "${rw_home_base_dir}"')
+              ' "${qubes_rw_home_base_dir}"')
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "/home|/var/cache/tb-binary|/rw/home", proc.stdout
 
@@ -387,18 +392,34 @@ def test_dispvm_unit_skips_on_sentinel():
     )
 
 
+def _has_nocanonicalize(cmd):
+    """True if a single mount command carries a no-canonicalize directive as a
+    proper token: the '--no-canonicalize' CLI flag OR the equivalent
+    '-o ...,X-mount.nocanonicalize' mount option. man mount documents them as
+    equivalent, and it is proven against real mount in
+    org-ai-assisted/mount-nocanonicalize-symlink-refusal and by
+    test_dispvm_mount_bind_symlink_refusal here. A whole-token match, not a bare
+    substring, so a lookalike in another word cannot satisfy it (the command is
+    already comment-stripped and separator-split by _shell_commands)."""
+    if re.search(r'(?<![\w.-])--no-canonicalize(?![\w.-])', cmd):
+        return True
+    return bool(re.search(r'(?<![\w.-])X-mount\.nocanonicalize(?![\w.-])', cmd))
+
+
 def test_home_binds_nocanonicalize_and_symlink_reject():
-    """The user-home bind mounts are 'mount --no-canonicalize --bind' onto
-    /home/<user>/.tb and .cache/tb. --no-canonicalize makes mount refuse a
+    """Each user-home bind mount carries a no-canonicalize directive (the
+    'mount --no-canonicalize' flag or the equivalent '-o X-mount.nocanonicalize'
+    option) onto /home/<user>/.tb and .cache/tb. It makes mount refuse a
     symlinked target at the mount layer regardless of timing (it does NOT guard
-    the bind source), so their safety rests on (a) --no-canonicalize on every
-    home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the binds
-    and refuses a pre-planted symlink at any bind source or target, and (c) the
-    service running only at early boot (asserted by the run-once and --no-start
-    tests). This asserts that structural model: each home bind carries
-    --no-canonicalize and the symlink reject precedes every one of them. The
-    behavioral refusal is driven by test_planted_symlink_is_refused and
-    test_planted_symlink_in_cache_source_is_refused."""
+    the bind source), so their safety rests on (a) a no-canonicalize directive on
+    every home bind, (b) the '[ -L ] ... exit 1' reject loop that runs BEFORE the
+    binds and refuses a pre-planted symlink at any bind source or target, and (c)
+    the service running only at early boot (asserted by the run-once and
+    --no-start tests). This asserts that structural model: each home bind carries
+    a no-canonicalize directive and the symlink reject precedes every one of
+    them. The behavioral refusal is driven by test_planted_symlink_is_refused /
+    test_planted_symlink_in_cache_source_is_refused (stubbed mount) and proven
+    against REAL mount by test_dispvm_mount_bind_symlink_refusal."""
     with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
     lines = text.splitlines()
@@ -427,8 +448,8 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
     )
 
     ## Each persistent-cache bind is a 'mount ... --bind' onto the home mount
-    ## point, must carry --no-canonicalize, and must appear AFTER the symlink
-    ## reject.
+    ## point, must carry a no-canonicalize directive, and must appear AFTER the
+    ## symlink reject.
     for target in (".tb", ".cache/tb"):
         pat = re.compile(
             rf'\bmount\b.*--bind\b.*"\$\{{tb_binary_cache_dir\}}/{re.escape(target)}"'
@@ -444,14 +465,17 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
             f"the {target} home bind must be a 'mount ... --bind ... "
             f"${{home_base_dir}}/${{user_name}}/{target}': {DISPVM}"
         )
-        ## The mount-layer symlink-refusal guard: every home bind must pass
-        ## --no-canonicalize (removing it reopens a symlinked-mountpoint follow).
-        ## The flag must be an argument of THIS single mount command -- a flag on
-        ## a different command ('mount --no-canonicalize; mount --bind ...') or in
-        ## a trailing comment cannot satisfy it.
+        ## The mount-layer symlink-refusal guard: every home bind must pass a
+        ## no-canonicalize directive -- the '--no-canonicalize' flag or the
+        ## equivalent '-o X-mount.nocanonicalize' option (removing it reopens a
+        ## symlinked-mountpoint follow). The directive must be an argument of THIS
+        ## single mount command -- one on a different command
+        ## ('mount --no-canonicalize; mount --bind ...') or in a trailing comment
+        ## cannot satisfy it (whole-token, per _has_nocanonicalize).
         for i, cmd in binds:
-            assert "--no-canonicalize" in cmd, (
-                f"the {target} home bind must carry --no-canonicalize as a mount "
+            assert _has_nocanonicalize(cmd), (
+                f"the {target} home bind must carry a no-canonicalize directive "
+                f"(--no-canonicalize or -o X-mount.nocanonicalize) as a mount "
                 f"argument so mount refuses a symlinked mountpoint: "
                 f"{lines[i]!r} ({DISPVM})"
             )
