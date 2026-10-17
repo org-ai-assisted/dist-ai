@@ -142,6 +142,14 @@ assert_eq "## SPDX-FileCopyrightText: troubadour <trobador@riseup.net>" \
 canary_in='readonly foo="Copyright notice in a string"'
 assert_eq "${canary_in}" "$(spdx_reuse_convert_line "${canary_in}" "${K}")" \
    "canary: a non-header line is returned unchanged"
+## A marker inside a CODE string literal (non-comment prefix) must NOT convert,
+## or the tool corrupts its own source when run on developer-meta-files.
+code_cond='   local marker_cond="See the file COPYING for copying conditions."'
+assert_eq "${code_cond}" "$(spdx_reuse_convert_line "${code_cond}" "${K}")" \
+   "code literal mentioning the conditions marker is left unchanged"
+code_copy='msg="Copyright (C) 2020 Acme"'
+assert_eq "${code_copy}" "$(spdx_reuse_convert_line "${code_copy}" "${K}")" \
+   "code literal mentioning a copyright marker is left unchanged"
 
 ## --- INTEGRATION: convert a git fixture tree end to end ---------------------
 workdir="$(mktemp --directory)"
@@ -281,6 +289,26 @@ SPDX-FileCopyrightText = "2012 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.or
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 EOF
 
+## A JS file with a shebang and NO header: the added block comment must go BELOW
+## the shebang (line 1 must stay the shebang, else node breaks).
+cat > "${fixture}/tool.js" <<'EOF'
+#!/usr/bin/env node
+console.log("hi");
+EOF
+
+## A tracked symlink pointing OUTSIDE the repo, whose target carries a legacy
+## header: conversion must NOT follow the link and rewrite the external file.
+external_target="${workdir}/external-target.sh"
+cat > "${external_target}" <<EOF
+#!/bin/bash
+
+## ${co} 2019 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## ${cond}
+
+true
+EOF
+ln -s -- "${external_target}" "${fixture}/link.sh"
+
 ## A git checkout is required (convert_tree enumerates via 'git ls-files').
 ## Hooks disabled persistently (not just -c on one call): the fixture is not
 ## testing the operator's git hooks, and convert_tree runs its own git.
@@ -354,6 +382,23 @@ else
 fi
 assert_grep "${fixture}/Makefile" '## SPDX-FileCopyrightText:' "Makefile: SPDX header added (hash)"
 assert_grep "${fixture}/.gitignore" '## SPDX-FileCopyrightText:' ".gitignore: SPDX header added (hash)"
+## A JS shebang must stay on line 1, with the block comment header below it.
+if [ "$(head -n 1 -- "${fixture}/tool.js")" = '#!/usr/bin/env node' ]; then
+   pass "tool.js: shebang preserved on line 1 (block header below it)"
+else
+   fail "tool.js: shebang was displaced by the header block"
+fi
+assert_grep "${fixture}/tool.js" 'SPDX-FileCopyrightText:' "tool.js: SPDX header added (C block)"
+
+## A tracked symlink is NEVER written through: its external target (carrying a
+## legacy header) must be left verbatim, and the link must still be a symlink.
+assert_grep "${external_target}" 'See the file COPYING for copying conditions.' \
+   "symlink target OUTSIDE the repo not followed/rewritten"
+if [ -L "${fixture}/link.sh" ]; then
+   pass "link.sh: still a symlink (not replaced by a regular file)"
+else
+   fail "link.sh: converted in place (should have been skipped)"
+fi
 
 ## COPYING must be untouched (its AGPL sample line is NOT an SPDX header).
 assert_grep "${fixture}/COPYING" 'Copyright (C) <year>  <name of author>' \
