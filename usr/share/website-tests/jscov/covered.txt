@@ -13,3 +13,10 @@ roots/secure-terminal.github.io/attacks/pastejack.js
 roots/output-lies.github.io/git-diffs-lie/copy.js
 roots/output-lies.github.io/git-diffs-lie/all/copy.js
 roots/output-lies.github.io/paste/copy.js
+roots/output-lies.github.io/analyze/analyzer.js
+roots/output-lies.github.io/analyze/sandbox.js
+roots/output-lies.github.io/analyze/ui.js
+roots/output-lies.github.io/terminal/xray.js
+roots/output-lies.github.io/terminal/playback.js
+roots/output-lies.github.io/quiz/quiz.js
+roots/secure-terminal.github.io/hero.js
