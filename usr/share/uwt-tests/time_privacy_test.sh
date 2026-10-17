@@ -159,6 +159,9 @@ check_err "-i 2^63 overflow value rejected" "increment must be between 0 and 60.
 check_err "-r above 60 rejected" "randomincrement must be between 1 and 60." -r 61
 ## is_whole_number accepts 0, but 'random-between 1 0' crashes; reject it cleanly.
 check_err "-r 0 rejected (not a random-between crash)" "randomincrement must be between 1 and 60." -r 0
+## Year stays strict (is_whole_number): a leading-zero 2-digit year like 01 would
+## be windowed by faketime to 2001, so reject it (month/day zero-pad is allowed).
+check_err "leading-zero 2-digit year rejected" "year is not a digit." -y 01 -m 1 -d 1
 
 ## -h prints usage and exits 0 (needs no TIMEDIR; must not be treated as error).
 help_rc=0
