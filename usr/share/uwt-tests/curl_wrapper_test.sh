@@ -14,8 +14,11 @@
 ## using curl's own URL parser instead of hand-rolled host extraction) before
 ## handing argv to uwtwrapper. The decisions under test:
 ##   - UWT_DEV_PASSTHROUGH=1 on entry   -> exec original argv verbatim.
-##   - a caller-supplied --proxy / -x / --proxy-user / -U / --noproxy
+##   - a caller-supplied --proxy / -x / --proxy-user / -U
 ##                                      -> isolation disabled, original argv.
+##   - a caller-supplied --noproxy      -> STILL injected: curl keeps the proxy
+##                                         and only the last --noproxy wins, so
+##                                         the proxy is not removed (unlike above).
 ##   - --ipv6 / -6                      -> proxy address becomes [::1]:9050.
 ##   - --config / -K                    -> exit 1 (two message variants:
 ##                                         curl.anondist-orig present vs absent).
@@ -278,47 +281,48 @@ check "-U: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
 check "-U: original arg passed through" "${rec_lines[0]:-}" "-U"
 check "-U: no proxy injection"          "$(injected_socks5h)" "no"
 
+## Assert a single-operand invocation got the full 6-arg injection AND the
+## original operand survived unchanged at the tail (index 6). A bare "injected?"
+## check would also pass a broken wrapper that injected the six args but DROPPED
+## the URL (leaving curl no target), so the arg-count + operand checks are
+## load-bearing (codex).
+check_injected_with_operand() {
+   local label="$1" operand="$2"
+   check "${label}: proxy injected"          "$(injected_socks5h)" "yes"
+   check "${label}: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
+   check "${label}: exec gets 7 args (6 injected + 1 operand)" "${#rec_lines[@]}" "7"
+   check "${label}: operand survives at arg[6]" "${rec_lines[6]:-}" "${operand}"
+}
+
 ## --- Case 5: loopback is NO LONGER classified by the wrapper. It injects the
 ## proxy PLUS '--noproxy localhost,127.0.0.0/8,::1' and lets curl bypass the
-## proxy per-URL for loopback. So a loopback operand gets the SAME injection as
-## any other operand, and the loopback list rides along to the exec seam. (The
-## actual proxy-bypass for loopback is curl's own behavior, exercised against a
-## live curl, not this argv-recording unit test.)
+## proxy per-URL for loopback. So a loopback operand gets the SAME injection as a
+## remote one, and the loopback list rides along to the exec seam. (The actual
+## per-URL proxy-bypass is curl's own behavior, exercised against a live curl, not
+## this argv-recording unit test.)
 drive_main 0 none 'http://localhost:8080/'
-check "loopback localhost: proxy injected"          "$(injected_socks5h)" "yes"
-check "loopback localhost: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
-
+check_injected_with_operand "loopback localhost" 'http://localhost:8080/'
 drive_main 0 none 'http://127.0.0.1:8080/'
-check "loopback 127.0.0.1: proxy injected"          "$(injected_socks5h)" "yes"
-check "loopback 127.0.0.1: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
-
+check_injected_with_operand "loopback 127.0.0.1" 'http://127.0.0.1:8080/'
 drive_main 0 none 'http://[::1]:8080/'
-check "loopback [::1]: proxy injected"          "$(injected_socks5h)" "yes"
-check "loopback [::1]: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
-
+check_injected_with_operand "loopback [::1]" 'http://[::1]:8080/'
 ## A non-loopback host is injected identically -- the wrapper does not distinguish
 ## them; curl does, at connect time, from the injected --noproxy list.
 drive_main 0 none 'https://example.com/'
-check "non-loopback: proxy injected"          "$(injected_socks5h)" "yes"
-check "non-loopback: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
+check_injected_with_operand "non-loopback" 'https://example.com/'
 
-## --- Case 5b: a caller-supplied --noproxy disables isolation (passthrough),
-## same policy as --proxy / --proxy-user. curl is last-wins and the injected args
-## are prepended, so the caller's --noproxy would override ours anyway; the
-## wrapper steps aside rather than fight it. Assert verbatim passthrough AND that
-## OUR loopback list is not injected. ---
-drive_main 0 none '--noproxy' 'example.com'
-check "user --noproxy: exec gets exactly 2 args"   "${#rec_lines[@]}" "2"
-check "user --noproxy: arg[0] passed through"      "${rec_lines[0]:-}" "--noproxy"
-check "user --noproxy: arg[1] passed through"      "${rec_lines[1]:-}" "example.com"
-check "user --noproxy: no proxy injection"         "$(injected_socks5h)" "no"
-check "user --noproxy: loopback list NOT injected" "$(injected_noproxy_loopback)" "no"
-if [[ "${drive_err}" == *"WARNING: Detected '--noproxy' argument."* ]]; then
-   noproxy_warn=ok
-else
-   noproxy_warn=bad
-fi
-check "user --noproxy: warning printed" "${noproxy_warn}" "ok"
+## --- Case 5b: a caller-supplied --noproxy does NOT disable isolation. curl keeps
+## the injected --proxy and applies only the LAST --noproxy as the bypass list, so
+## the proxy is not removed -- the wrapper still injects. This is why --noproxy is
+## NOT in the --proxy/-U passthrough set (those REPLACE the proxy; --noproxy does
+## not). Both --noproxy args reach the seam; the caller's wins at connect time. ---
+drive_main 0 none '--noproxy' 'example.com' 'https://example.com/'
+check "caller --noproxy: proxy STILL injected"      "$(injected_socks5h)" "yes"
+check "caller --noproxy: our loopback list injected" "$(injected_noproxy_loopback)" "yes"
+check "caller --noproxy: exec gets 9 args (6 injected + 3 original)" "${#rec_lines[@]}" "9"
+check "caller --noproxy: arg[6] --noproxy (caller, original)" "${rec_lines[6]:-}" "--noproxy"
+check "caller --noproxy: arg[7] value (caller, original)"     "${rec_lines[7]:-}" "example.com"
+check "caller --noproxy: arg[8] url (original)"               "${rec_lines[8]:-}" "https://example.com/"
 
 ## --- Case 6: --ipv6 / -6 -> proxy address becomes [::1]:9050. ---
 drive_main 0 none '--ipv6' 'https://example.com'
