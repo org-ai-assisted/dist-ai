@@ -2078,10 +2078,15 @@ def _family_applies(root):
 
 
 def main():
-    roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
-    if not roots:
-        sys.stderr.write('website-tests: SKIP (no site root found)\n')
+    from dist_ai.webcheck import cli
+    argv_roots = sys.argv[1:]
+    if not argv_roots:
+        # Genuinely nothing requested (the orchestrator passed no root): a legitimate SKIP.
+        sys.stderr.write('website-tests: SKIP (no site root given)\n')
         return 77
+    # But a NAMED root that does not resolve is a mistyped target -> FAIL loud, never a silent
+    # drop that lets a surviving root exit 0 (the silent-green class).
+    roots = cli.require_existing_dirs(argv_roots, 'website-tests')
     # Applicability guard: the family policy runs only where it is selected -- by the
     # site's `.github/web-tests.yml` `policies:` (authoritative) or, absent that, by the
     # markup heuristic. A malformed config FAILS LOUD (never a silent wrong-policy run).

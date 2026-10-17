@@ -145,10 +145,10 @@ def main(argv: List[str]) -> int:
                     help="record the current findings as the accepted baseline instead of gating")
     ap.add_argument("roots", nargs="+")
     args = ap.parse_args(argv)
-    roots = [os.path.abspath(r) for r in args.roots if os.path.isdir(r)]
-    if not roots:
-        print("secrets: SKIP (no site root found)", file=sys.stderr)  ## style-ok: allow-skip: no target tree
-        return 77
+    from dist_ai.webcheck import cli
+    # A named root that does not resolve FAILS loud (not a silent drop / skip). nargs="+"
+    # guarantees at least one named root, so there is no genuinely-empty case to skip.
+    roots = cli.require_existing_dirs(args.roots, "secrets")
     baseline_dir = Path(args.baseline_dir)
     overall = 0
     for root in roots:

@@ -308,13 +308,9 @@ def _baseline_path(baseline_dir: Path, root: str) -> Path:
                            % os.path.basename(os.path.normpath(root)))
 
 
-def _skip_77(msg: str) -> None:
-    print("extlinks: SKIP (%s)" % msg, file=sys.stderr)
-    raise SystemExit(77)
-
-
 def main(argv: List[str]) -> int:
     import argparse
+    from dist_ai.webcheck import cli
     ap = argparse.ArgumentParser(description="External-link reachability (periodic/CI).")
     ap.add_argument("--baseline-dir", required=True,
                     help="dir holding extlinks-baseline-<site>.txt")
@@ -323,9 +319,9 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--timeout", type=int, default=_TIMEOUT)
     ap.add_argument("roots", nargs="+")
     args = ap.parse_args(argv)
-    roots = [os.path.abspath(r) for r in args.roots if os.path.isdir(r)]
-    if not roots:
-        _skip_77("no site root found")
+    # A named root that does not resolve FAILS loud (not a silent drop that lets a surviving
+    # root exit 0, nor a SKIP). nargs="+" guarantees at least one named root.
+    roots = cli.require_existing_dirs(args.roots, "extlinks")
     baseline_dir = Path(args.baseline_dir)
     overall = 0
     for root in roots:
