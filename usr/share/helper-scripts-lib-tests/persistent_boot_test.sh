@@ -237,6 +237,21 @@ else
    fail "prune: wrong set remains"
 fi
 
+## prune self-guards a symlinked boot_dir: a 'boot -> target' must not let the glob
+## + safe-rm delete through it. Both callers route via safe_boot_dir, but prune must
+## not be a raw destructive sink for a future caller. prune_src has no 1.0, so the
+## pre-guard code would delete the link target's vmlinuz-1.0.
+prune_evil="${workdir}/prune-evil-target"
+mkdir --parents -- "${prune_evil}"
+touch -- "${prune_evil}/vmlinuz-1.0" "${prune_evil}/initrd.img-1.0"
+ln --symbolic -- "${prune_evil}" "${workdir}/prune-link"
+persistent_boot_prune "${workdir}/prune-link" "${prune_src}"
+if [ -e "${prune_evil}/vmlinuz-1.0" ]; then
+   pass "prune: refuses a symlinked boot dir (no delete through the link)"
+else
+   fail "prune: deleted through a symlinked boot dir"
+fi
+
 ## --- hardening: injection + misuse ------------------------------------------
 
 ## A token carrying a grub metacharacter is dropped whole (grub separates
@@ -264,6 +279,30 @@ if [ "${label_rc}" -eq 1 ]; then
    pass "cmdline: refuses an unsafe overlay label"
 else
    fail "cmdline unsafe-label not refused (rc=${label_rc})"
+fi
+
+## A ':' in the overlay label is refused: dracut takes devspec=${overlay%%:*}, so
+## 'persist:evil' would truncate to label 'persist'. ':' is valid in a general
+## token but NEVER in a label for this overlay syntax.
+printf '%s\n' 'quiet' > "${cmdline_file}"
+colon_rc=0
+persistent_boot_cmdline 'persist:evil' > /dev/null 2>&1 || colon_rc=$?
+if [ "${colon_rc}" -eq 1 ]; then
+   pass "cmdline: refuses a ':' in the overlay label (dracut truncation)"
+else
+   fail "cmdline colon-label not refused (rc=${colon_rc})"
+fi
+
+## A label that FAILS validation and carries a newline must not forge a second log
+## line: the refusal is sanitized to a single line (non-printables -> '?').
+printf '%s\n' 'quiet' > "${cmdline_file}"
+nl_label=$'bad\nevil'
+label_stderr="$(persistent_boot_cmdline "${nl_label}" 2>&1 >/dev/null || true)"
+nl_lines="$(printf '%s' "${label_stderr}" | wc --lines)"
+if [ "${nl_lines}" -eq 0 ] && [[ "${label_stderr}" == *'?'* ]] && [[ "${label_stderr}" != *'evil'$'\n'* ]]; then
+   pass "cmdline: sanitizes a newline in the refused-label log (no forged line)"
+else
+   fail "cmdline label-log not sanitized (lines=${nl_lines} stderr='${label_stderr}')"
 fi
 
 ## A malformed luks uuid argument is refused (rc 1), not pasted raw.
@@ -395,6 +434,18 @@ if grep --quiet --fixed-strings "${test_cmdline}" "${cfg}"; then
    pass "write_grub_cfg: embeds the given cmdline"
 else
    fail "write_grub_cfg: cmdline missing from entries"
+fi
+
+## Defense-in-depth sink: a cmdline carrying a newline (a grub command separator) is
+## refused (rc 1). boot_dir has valid kernels here, so the pre-guard code would
+## PROCEED (rc 0) and splice the newline into a 'linux' line.
+nl_cmdline=$'quiet\nmalicious'
+nlw_rc=0
+persistent_boot_write_grub_cfg "${boot_dir}" "${nl_cmdline}" > /dev/null 2>&1 || nlw_rc=$?
+if [ "${nlw_rc}" -eq 1 ]; then
+   pass "write_grub_cfg: refuses a cmdline with a newline (control char)"
+else
+   fail "write_grub_cfg newline-cmdline not refused (rc=${nlw_rc})"
 fi
 
 ## B: an empty boot dir yields no config and a nonzero return.
