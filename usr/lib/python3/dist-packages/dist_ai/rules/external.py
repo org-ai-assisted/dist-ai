@@ -313,6 +313,12 @@ _SHELLCHECK_WALL_BACKSTOP_FACTOR = 5
 ## hard check fires first and delivers SIGKILL, not SIGXCPU, so a cap expiry would be
 ## misread as "not a cap expiry" and hard-fail instead of degrading. Keeping soft<hard
 ## makes a cap expiry always arrive as SIGXCPU and leaves SIGKILL unambiguous.
+## Cost: when a finite hard is at/below the requested budget shellcheck gets one
+## CPU-second less, so a run needing (hard-1, hard] CPU seconds degrades to no-follow
+## (VISIBLY noted, never a silent pass) rather than completing. hard-1 is the largest
+## soft still below an integer hard, so this is the MINIMUM budget loss and the
+## irreducible price of a soft-limit cap signal; it bites only under an already-
+## constrained finite hard CPU limit (none in our deployment -- hard is infinite).
 def _limit_cpu_seconds(seconds):
     def apply():
         _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
