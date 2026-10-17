@@ -71,7 +71,9 @@ def load(root):
     _NoDupLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
     try:
         with open(path, encoding='utf-8') as handle:
-            data = yaml.load(handle, Loader=_NoDupLoader)
+            # _NoDupLoader subclasses yaml.SafeLoader (no object construction); it only ADDS
+            # duplicate-key rejection, so this is a safe load -- B506 cannot see through the subclass.
+            data = yaml.load(handle, Loader=_NoDupLoader)  # nosec B506
     except FileNotFoundError:
         return None
     except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
