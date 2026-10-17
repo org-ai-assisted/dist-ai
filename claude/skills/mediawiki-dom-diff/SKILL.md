@@ -15,11 +15,11 @@ license: MIT
 
 - The capture/normalize/diff engine lives in dist-ai at `~/private-sources/dist-ai/usr/share/domsnap-engine/{snapshot,normalize,diff}.py`, driven through the single front door `dist_ai.webcheck.domsnap` -- the former standalone `mediawiki-dom-snapshot` wrapper is gone, its operations are now `domsnap wiki-*` subcommands.
 - Drive it with the **playwright venv** `/home/user/.venvs/playwright/bin/python`:
-  - Installed: `python3 -m dist_ai.webcheck.domsnap wiki-run` (and the other `wiki-*` below).
+  - Installed: `python3 -m dist_ai.webcheck.domsnap wiki-run <tag>` (and the other `wiki-*` below).
   - From a source checkout: point the module + engine at the checkout --
-    `PYTHONPATH=<checkout>/usr/lib/python3/dist-packages WEBCHECK_DOMSNAP_ENGINE=<checkout>/usr/share/domsnap-engine <venv-python> -m dist_ai.webcheck.domsnap wiki-run`. See the `playwright-install` skill for venv wiring.
-- Capture: `wiki-capture` (-> `RAW_DIR`) then `wiki-normalise` (-> `FIX_DIR`); `wiki-run` does both. Env: `BASE_URL`, `PAGES_FILE` (one title/line; default the engine's `wiki-pages.conf`), `RAW_DIR`, `FIX_DIR`, `BASELINE_DIR`, `CONCURRENCY` (default 4; 8 is fine), `TIMEOUT_MS`, plus `CAPTURE_MODES`/`BROWSERS`/`LOCALES`/`WIKI_USER`/`ADMIN_USER`/`POSTEDIT_PAGES` (see the domsnap module docstring).
-- Diff two normalized tags: `domsnap wiki-diff <a> <b> [--brief]`; a candidate vs the promoted baseline: `domsnap wiki-diff-baseline <tag>`; promote a tag to baseline: `domsnap wiki-promote <tag>`. Exit 0 = nothing observably changed; exit 1 = at least one real diff. `--brief` = per-page summary + a footer `N identical, N subpixel-only, N with-real-diffs`.
+    `PYTHONPATH=<checkout>/usr/lib/python3/dist-packages WEBCHECK_DOMSNAP_ENGINE=<checkout>/usr/share/domsnap-engine <venv-python> -m dist_ai.webcheck.domsnap wiki-run <tag>`. See the `playwright-install` skill for venv wiring.
+- A run is keyed by a `<tag>` (e.g. `before` / `after`): `wiki-capture <tag>` (-> `RAW_DIR/<tag>`) then `wiki-normalise <tag>` (-> `FIX_DIR/<tag>`); `wiki-run <tag>` does both. Env: `BASE_URL`, `PAGES_FILE` (one title/line; default the engine's `wiki-pages.conf`), `RAW_DIR`, `FIX_DIR`, `BASELINE_DIR`, `CONCURRENCY` (default 4; 8 is fine), `TIMEOUT_MS`, plus `CAPTURE_MODES`/`BROWSERS`/`LOCALES`/`WIKI_USER`/`ADMIN_USER`/`POSTEDIT_PAGES` (see the domsnap module docstring).
+- Diff two normalized tags: `domsnap wiki-diff <a> <b> [--brief]`; a candidate tag vs the promoted baseline: `domsnap wiki-diff-baseline <tag>`; promote a tag to baseline: `domsnap wiki-promote <tag>`. Exit 0 = nothing observably changed; exit 1 = at least one real diff. `--brief` = per-page summary + a footer `N identical, N subpixel-only, N with-real-diffs`.
 - **pHash distance is the strongest single signal**: `phash_dist=0` (or no pixel tag at all) = visually identical despite any source churn; `>=3` = real layout/colour shift.
 
 ## The order of operations -- do these, in this order

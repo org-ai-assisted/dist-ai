@@ -205,10 +205,12 @@ def run():
 
         domsnap.subprocess.run = rec
         try:
-            domsnap._cmd_wiki_capture(NS())
+            ns = NS(); ns.tag = "before"
+            domsnap._cmd_wiki_capture(ns)
             argv, cenv = calls[-1]
             ck(argv == [sys.executable, domsnap.SNAPSHOT_PY], "wiki-capture invokes the engine snapshot.py")
             ck(cenv.get("BASE_URL") == "https://www.kicksecure.com", "wiki-capture passes the wiki env")
+            ck(cenv.get("RAW_DIR") == rawd + "/before", "wiki-capture scopes RAW_DIR under the run tag")
 
             ns = NS(); ns.a = "t1"; ns.b = "t2"; ns.brief = True
             domsnap._cmd_wiki_diff(ns)
@@ -222,13 +224,14 @@ def run():
             ck(argv == [sys.executable, domsnap.DIFF_PY, basel, fixd + "/cand"],
                "wiki-diff-baseline builds the diff.py argv (baseline vs tag)")
 
-            os.makedirs(os.path.join(rawd, "Homepage"))
+            os.makedirs(os.path.join(rawd, "before", "Homepage"))
             calls.clear()
-            domsnap._cmd_wiki_normalise(NS())
+            ns = NS(); ns.tag = "before"
+            domsnap._cmd_wiki_normalise(ns)
             ck(any(a[:2] == [sys.executable, domsnap.NORMALIZE_PY]
-                   and a[2].endswith("/Homepage") and a[3].endswith("/Homepage")
+                   and a[2].endswith("/before/Homepage") and a[3].endswith("/before/Homepage")
                    for a, _ in calls),
-               "wiki-normalise invokes normalize.py per raw page dir")
+               "wiki-normalise invokes normalize.py per raw page dir, scoped under the tag")
 
             ns = NS(); ns.tag = "../escape"
             try:
@@ -236,6 +239,12 @@ def run():
                 ck(False, "wiki-promote rejects a traversal tag")
             except SystemExit:
                 ck(True, "wiki-promote rejects a traversal tag")
+            ns = NS(); ns.tag = "../escape"
+            try:
+                domsnap._cmd_wiki_capture(ns)
+                ck(False, "wiki-capture rejects a traversal tag")
+            except SystemExit:
+                ck(True, "wiki-capture rejects a traversal tag")
         finally:
             domsnap.subprocess.run = orig_run
             for k in ("RAW_DIR", "FIX_DIR", "BASELINE_DIR"):

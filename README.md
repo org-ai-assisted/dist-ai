@@ -133,10 +133,10 @@ anti-aliasing jitter.
 
 ### Output layout
 
-For each page in `wiki-pages.conf`:
+For each page in `wiki-pages.conf` (under the run tag):
 
 ```
-<RAW_DIR>/<page>/
+<RAW_DIR>/<tag>/<page>/
     dom.html           post-JS rendered HTML (volatile fields
                        scrubbed during normalise step)
     screenshot.png     viewport screenshot (animations disabled)
@@ -152,8 +152,8 @@ For each page in `wiki-pages.conf`:
 Run under the Playwright venv (see the `mediawiki-dom-diff` skill for venv wiring):
 
 ```
-# capture + normalise against the live wiki
-python3 -m dist_ai.webcheck.domsnap wiki-run
+# capture + normalise against the live wiki into a run tag
+python3 -m dist_ai.webcheck.domsnap wiki-run <tag>
 
 # diff a captured set against the baseline
 python3 -m dist_ai.webcheck.domsnap wiki-diff-baseline <tag>

@@ -93,28 +93,28 @@ def run():
 
     orig_run = subprocess.run
     try:
-        subprocess.run = lambda *a, **k: _P(2, "", "boom")
+        subprocess.run = lambda *a, **k: _P(2, "", "boom")  # type: ignore[assignment]
         try:
             spelling._run_cspell("/r", "cfg")
             ck(False, "cspell rc=2 must raise RuntimeError")
         except RuntimeError:
             ck(True, "cspell rc=2 raises RuntimeError (error not read as clean)")
-        subprocess.run = lambda *a, **k: _P(1, "", "Unsupported NodeJS version")
+        subprocess.run = lambda *a, **k: _P(1, "", "Unsupported NodeJS version")  # type: ignore[assignment]
         try:
             spelling._run_cspell("/r", "cfg")
             ck(False, "Unsupported-engine line must raise RuntimeError")
         except RuntimeError:
             ck(True, "Unsupported-engine line raises RuntimeError")
-        subprocess.run = lambda *a, **k: _P(1, "/r/a.html:1:1 - Unknown word (teh)\n", "")
+        subprocess.run = lambda *a, **k: _P(1, "/r/a.html:1:1 - Unknown word (teh)\n", "")  # type: ignore[assignment]
         ck(spelling._run_cspell("/r", "cfg") == [("a.html", "teh")],
            "rc=1 with a parseable issue returns the finding (root-relative)")
-        subprocess.run = lambda *a, **k: _P(1, "", "Error: ENOENT project-dictionary.txt")
+        subprocess.run = lambda *a, **k: _P(1, "", "Error: ENOENT project-dictionary.txt")  # type: ignore[assignment]
         try:
             spelling._run_cspell("/r", "cfg")
             ck(False, "rc=1 with NO parseable issue (config/dict error) must raise")
         except RuntimeError:
             ck(True, "rc=1 with no issues raises (cspell error not read as clean)")
-        subprocess.run = lambda *a, **k: _P(0, "", "")
+        subprocess.run = lambda *a, **k: _P(0, "", "")  # type: ignore[assignment]
         ck(spelling._run_cspell("/r", "cfg") == [], "rc=0 clean returns no findings")
     finally:
         subprocess.run = orig_run

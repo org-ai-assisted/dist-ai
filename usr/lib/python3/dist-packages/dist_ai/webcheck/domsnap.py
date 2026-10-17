@@ -478,20 +478,26 @@ def _wiki_env() -> Dict[str, str]:
 
 def _cmd_wiki_capture(args) -> int:
     env = _wiki_env()
-    os.makedirs(env["RAW_DIR"], exist_ok=True)
+    # Scope the capture under a run TAG (RAW_DIR/<tag>) so the same tag names the fixture the
+    # diff/promote subcommands read -- the whole sequence (capture -> normalise -> diff-baseline /
+    # promote) keys off ONE tag instead of writing to a top-level dir the tagged reads miss.
+    raw_dir = os.path.join(env["RAW_DIR"], _safe_component(args.tag, "tag"))
+    env["RAW_DIR"] = raw_dir
+    os.makedirs(raw_dir, exist_ok=True)
     # snapshot.py reads BASE_URL / RAW_DIR / PAGES_FILE / CAPTURE_MODES / WIKI_USER / ... from env.
     return subprocess.run([sys.executable, SNAPSHOT_PY], env=env).returncode  # nosec B603
 
 
 def _cmd_wiki_normalise(args) -> int:
     env = _wiki_env()
-    raw = Path(env["RAW_DIR"])
-    fix = Path(env["FIX_DIR"])
+    tag = _safe_component(args.tag, "tag")
+    raw = Path(env["RAW_DIR"]) / tag
+    fix = Path(env["FIX_DIR"]) / tag
     fix.mkdir(parents=True, exist_ok=True)
     page_dirs = sorted(p for p in raw.iterdir() if p.is_dir()) if raw.is_dir() else []
     if not page_dirs:
-        print("domsnap wiki-normalise: no raw page dirs under %s -- run wiki-capture first" % raw,
-              file=sys.stderr)
+        print("domsnap wiki-normalise: no raw page dirs under %s -- run 'wiki-capture %s' first"
+              % (raw, tag), file=sys.stderr)
         return 1
     # Per-page dirs are independent; normalise them in parallel (NORMALISE_JOBS, default 8), each
     # via normalize.py <raw/page> <fix/page>, as the old wrapper's xargs -P did.
@@ -575,11 +581,17 @@ def main(argv: List[str]) -> int:
     # Wiki lane: the relocated MediaWiki engine, configured entirely through the environment (see
     # _wiki_env + the engine docstrings: BASE_URL/PAGES_FILE/RAW_DIR/FIX_DIR/BASELINE_DIR/
     # CAPTURE_MODES/BROWSERS/LOCALES/WIKI_USER/ADMIN_USER/POSTEDIT_PAGES/...).
-    sub.add_parser("wiki-capture", help="capture the live wiki (engine snapshot.py)"
-                   ).set_defaults(fn=_cmd_wiki_capture)
-    sub.add_parser("wiki-normalise", help="normalise raw wiki captures -> fixtures"
-                   ).set_defaults(fn=_cmd_wiki_normalise)
-    sub.add_parser("wiki-run", help="wiki-capture then wiki-normalise").set_defaults(fn=_cmd_wiki_run)
+    # capture/normalise/run take a run TAG: raw -> RAW_DIR/<tag>, fixtures -> FIX_DIR/<tag>, so the
+    # same tag is what wiki-diff / wiki-diff-baseline / wiki-promote read.
+    wca = sub.add_parser("wiki-capture", help="capture the live wiki into fixture tag (engine snapshot.py)")
+    wca.add_argument("tag")
+    wca.set_defaults(fn=_cmd_wiki_capture)
+    wno = sub.add_parser("wiki-normalise", help="normalise a tag's raw captures -> fixtures")
+    wno.add_argument("tag")
+    wno.set_defaults(fn=_cmd_wiki_normalise)
+    wru = sub.add_parser("wiki-run", help="wiki-capture then wiki-normalise for a tag")
+    wru.add_argument("tag")
+    wru.set_defaults(fn=_cmd_wiki_run)
     wdf = sub.add_parser("wiki-diff", help="diff two wiki fixture tags")
     wdf.add_argument("a")
     wdf.add_argument("b")
