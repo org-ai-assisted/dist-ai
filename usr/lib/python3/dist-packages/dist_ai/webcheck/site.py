@@ -30,6 +30,8 @@ import re
 import sys
 import urllib.parse
 
+from dist_ai.webcheck import config
+
 # The generated test-results output tree (test-results-site-generate's
 # RESULTS_SUBDIR). Its goldens/ holds reference screenshots that are referenced by
 # sha256 in golden-approvals.json, not by any page/style/script -- so the orphaned
@@ -1990,27 +1992,54 @@ def _looks_like_wiki(root):
     return len(probe.tokens) >= _WIKI_SIGNATURE_QUORUM
 
 
+def _family_applies(root):
+    """True when check_site's family policy should run against `root`.
+
+    The declarative `.github/web-tests.yml` `policies:` is authoritative when present;
+    with no config, fall back to the markup heuristic (a wiki tree with no config is
+    still skipped, never mis-reported). Returns (applies, reason_when_skipped)."""
+    declared = config.policies(root)
+    if declared is not None:
+        if 'family' in declared:
+            return True, ''
+        return False, ('web-tests.yml policies=%s -- family policy not selected for '
+                       'this site' % ','.join(declared))
+    if _looks_like_wiki(root):
+        return False, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
+                       'policy does not apply (declare policies: [wiki])')
+    return True, ''
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
         sys.stderr.write('website-tests: SKIP (no site root found)\n')
         return 77
-    # Applicability guard: skip a positively-identified wiki root (see _looks_like_wiki) so
-    # the family policy never mis-reports on a wiki/stage site.
+    # Applicability guard: the family policy runs only where it is selected -- by the
+    # site's `.github/web-tests.yml` `policies:` (authoritative) or, absent that, by the
+    # markup heuristic. A malformed config FAILS LOUD (never a silent wrong-policy run).
     applicable = []
+    config_failures = 0
     for root in roots:
-        if _looks_like_wiki(root):
-            sys.stderr.write(
-                'website-tests: SKIP %s (MediaWiki site -- the family-policy checker does '
-                'not apply; this site needs the wiki policy)\n' % os.path.basename(root))
+        name = os.path.basename(root)
+        try:
+            applies, reason = _family_applies(root)
+        except config.ConfigError as exc:
+            sys.stderr.write('FAIL %s: %s\n' % (name, exc))
+            config_failures += 1
             continue
-        applicable.append(root)
+        if applies:
+            applicable.append(root)
+        else:
+            sys.stderr.write('website-tests: SKIP %s (%s)\n' % (name, reason))
     if not applicable:
-        sys.stderr.write('website-tests: SKIP (only wiki site root(s) given; the family '
-                         'policy does not apply here)\n')
+        if config_failures:
+            sys.stderr.write('website-tests: %d failure(s)\n' % config_failures)
+            return 1
+        sys.stderr.write('website-tests: SKIP (no family-policy site root given)\n')
         return 77
     by_name = {os.path.basename(r): r for r in applicable}
-    total = 0
+    total = config_failures
     for root in applicable:
         failures: list[str] = []
         # A subsite (git-diffs-lie) verifies its off-mount absolute links against

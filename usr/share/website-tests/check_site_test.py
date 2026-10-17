@@ -1356,7 +1356,67 @@ def run():
         check('main() does NOT wiki-skip a non-wiki root (broken family still fails loudly)',
               'MediaWiki site' not in err and rc != 77, repr((rc, err)))
 
-    check('_looks_like_wiki is invoked from main()', '_looks_like_wiki(root)' in main_body)
+    # Phase-4 declarative selector: `.github/web-tests.yml` `policies:` is authoritative,
+    # the markup heuristic is only the fallback when no config is present.
+    from dist_ai.webcheck import config as webcheck_config
+    _cfg = webcheck_config.CONFIG_REL
+    with tempfile.TemporaryDirectory() as root:
+        check('config.policies is None when no web-tests.yml present',
+              webcheck_config.policies(root) is None)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, _cfg, 'policies: [family]\n')
+        check('config.policies reads a declared family policy',
+              webcheck_config.policies(root) == ['family'])
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, _cfg, 'policies: wiki\n')  # scalar coerces to a one-item list
+        check('config.policies coerces a scalar policy to a list',
+              webcheck_config.policies(root) == ['wiki'])
+    for _bad_label, _bad in (
+            ('missing policies key', 'canonical_host: x\n'),
+            ('empty policies list', 'policies: []\n'),
+            ('unknown policy', 'policies: [bogus]\n'),
+            ('non-mapping top level', '- just\n- a\n- list\n')):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, _cfg, _bad)
+            raised = False
+            try:
+                webcheck_config.policies(root)
+            except webcheck_config.ConfigError:
+                raised = True
+            check('config.policies fails loud on %s' % _bad_label, raised, _bad_label)
+
+    # DECLARATIVE OVERRIDES THE HEURISTIC, both directions:
+    with tempfile.TemporaryDirectory() as root:
+        # wiki MARKUP but policies: [family] -> family policy RUNS (not heuristic-skipped),
+        # so a broken wiki-markup family page fails loudly instead of slipping through.
+        _write(root, 'index.html', _mwpage)
+        _write(root, _cfg, 'policies: [family]\n')
+        applies, _reason = check_site._family_applies(root)
+        check('policies: [family] forces family policy on wiki-looking markup', applies)
+    with tempfile.TemporaryDirectory() as root:
+        # family-looking page but policies: [wiki] -> SKIP, with the DECLARED reason
+        # (not the heuristic "MediaWiki markup" message).
+        _write(root, 'index.html', _page % '<p class="kicker">hand page</p>')
+        _write(root, _cfg, 'policies: [wiki]\n')
+        rc, _out, err = _run_main([root])
+        check('policies: [wiki] skips a family-looking root (rc 77)', rc == 77, repr((rc, err)))
+        check('policies: [wiki] skip names the declared policy, not the heuristic',
+              'policies=wiki' in err and 'markup matches' not in err, repr(err))
+    with tempfile.TemporaryDirectory() as root:
+        # malformed config is a LOUD FAILURE (rc 1 + FAIL line), never a silent 77 skip.
+        _write(root, 'index.html', _page % '<p>x</p>')
+        _write(root, _cfg, 'policies: [nonsense]\n')
+        rc, _out, err = _run_main([root])
+        check('main() fails loud (rc 1) on a malformed web-tests.yml', rc == 1, repr((rc, err)))
+        check('main() emits a FAIL line for a malformed config',
+              'FAIL ' in err and rc != 77, repr(err))
+
+    check('_family_applies is invoked from main()', '_family_applies(root)' in main_body)
+    _fa_body = inspect.getsource(check_site._family_applies)
+    check('_family_applies consults the declarative config',
+          'config.policies(root)' in _fa_body)
+    check('_family_applies falls back to the markup heuristic',
+          '_looks_like_wiki(root)' in _fa_body)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
