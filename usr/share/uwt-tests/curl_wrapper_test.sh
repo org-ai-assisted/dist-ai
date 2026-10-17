@@ -55,6 +55,14 @@ export LC_ALL=C
 if [ -v UWT_DEV_PASSTHROUGH ]; then
    unset UWT_DEV_PASSTHROUGH
 fi
+## Likewise clear an ambient no_proxy/NO_PROXY so it cannot perturb the injected
+## --noproxy value; the env-union case sets them explicitly via drive_extra_env.
+if [ -v no_proxy ]; then
+   unset no_proxy
+fi
+if [ -v NO_PROXY ]; then
+   unset NO_PROXY
+fi
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 probe="${tool_dir}/curl_wrapper_probe.sh"
@@ -165,6 +173,10 @@ make_bin() {
 rec_lines=()
 drive_rc=0
 drive_err=""
+## Extra 'VAR=value' env entries for the NEXT drive_main call only (e.g. a caller
+## no_proxy). Set before the call; drive_main consumes and RESETS it so it never
+## leaks into a later case.
+drive_extra_env=()
 drive_main() {
    local passthrough="$1" curl_mode="$2"
    shift 2
@@ -182,10 +194,15 @@ drive_main() {
    if [ "${passthrough}" = 1 ]; then
       env_prefix+=( "UWT_DEV_PASSTHROUGH=1" )
    fi
+   if [ "${#drive_extra_env[@]}" -gt 0 ]; then
+      env_prefix+=( "${drive_extra_env[@]}" )
+   fi
    drive_rc=0
    env "${env_prefix[@]}" "${probe}" "$@" 2> "${err}" || drive_rc=$?
    mapfile -t rec_lines < "${rec}"
    drive_err="$(cat -- "${err}")"
+   ## Consumed -- reset so the next drive_main starts with a clean env.
+   drive_extra_env=()
 }
 
 ## 'yes' iff any recorded arg is a prepended socks5h proxy URL (the injection
@@ -410,6 +427,24 @@ check "injection: arg[4] --noproxy"      "${rec_lines[4]:-}" "--noproxy"
 check "injection: arg[5] loopback list"  "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1"
 check "injection: arg[6] url (original)" "${rec_lines[6]:-}" "https://example.com"
 check "injection: probe exits 0"         "${drive_rc}" "0"
+
+## --- Case 9b: env no_proxy/NO_PROXY is UNIONED into the injected --noproxy list.
+## Setting --noproxy makes curl ignore the env var, so the wrapper must fold it in
+## or a caller's env bypass is silently lost. Assert the exact merged arg[5]. ---
+drive_extra_env=( 'no_proxy=internal.test' )
+drive_main 0 none 'https://example.com'
+check "env no_proxy: arg[5] unions env"   "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,internal.test"
+check "env no_proxy: proxy still injected" "$(injected_socks5h)" "yes"
+
+## NO_PROXY (uppercase) is honored when lowercase no_proxy is unset.
+drive_extra_env=( 'NO_PROXY=up.test' )
+drive_main 0 none 'https://example.com'
+check "env NO_PROXY: arg[5] unions env" "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,up.test"
+
+## lowercase no_proxy wins over NO_PROXY (curl's precedence).
+drive_extra_env=( 'no_proxy=low.test' 'NO_PROXY=up.test' )
+drive_main 0 none 'https://example.com'
+check "env no_proxy precedence over NO_PROXY" "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,low.test"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
