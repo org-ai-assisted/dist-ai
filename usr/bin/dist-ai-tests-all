@@ -402,7 +402,7 @@ wire() {
          wire_env=(
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
             "SANITIZE_ECHO_BIN=${hs}/usr/bin/sanitize-echo"
-            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
          )
          ## sanitize_family's biased fuzzer defaults to 3000 iterations for the
          ## CORE suite (~5 min in the resource-constrained sandbox, past the 300s
@@ -466,7 +466,7 @@ wire() {
          wire_env=(
             "SET_KEYBOARD_LAYOUT_REPO=${hs}"
             "HELPER_SCRIPTS_PATH=${hs}"
-            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
          )
          ;;
       onion-time-pre-script)
@@ -500,7 +500,7 @@ wire() {
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -622,7 +622,7 @@ wire() {
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -641,7 +641,7 @@ wire() {
          if [ -n "${hs}" ]; then
             wire_env+=(
                "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -656,7 +656,7 @@ wire() {
          ## (green locally only because the package is installed there).
          wire_env=(
             "SDWDATE_GUI_REPO=$( pkg_dir sdwdate-gui )"
-            "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages:${hs}/usr/lib/python3/dist-packages"
+            "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages:${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
          )
          ;;
       serial-console-enable)
@@ -682,7 +682,7 @@ wire() {
          ## at all and the suite skips (never a false green).
          wire_env=( "SDWDATE_REPO=$( pkg_dir sdwdate )" )
          if [ -n "${hs}" ]; then
-            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
+            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}" )
          fi
          ;;
       dist-base-files)
@@ -704,7 +704,7 @@ wire() {
          ## fails and the suite skips (never a false green).
          wire_env=( "SETUP_WIZARD_DIST_REPO=$( pkg_dir setup-wizard-dist )" )
          if [ -n "${hs}" ]; then
-            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
+            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}" )
          fi
          ;;
       mediawiki-shell)
@@ -739,7 +739,7 @@ wire() {
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -761,7 +761,7 @@ wire() {
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -790,7 +790,7 @@ wire() {
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -808,7 +808,7 @@ wire() {
          ## helper-scripts, so put helper-scripts on PYTHONPATH when available.
          wire_env=( "TCP_REPO=$( pkg_dir tor-control-panel )" )
          if [ -n "${hs}" ]; then
-            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
+            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}" )
          fi
          ;;
       git-meld)
@@ -819,7 +819,7 @@ wire() {
             wire_env=(
                "HELPER_SCRIPTS_PATH=${hs}"
                "PATH=${hs}/usr/bin:${PATH}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          ;;
@@ -1056,7 +1056,7 @@ wire() {
             suite_path="${mydir}:${hs}/usr/bin:${PATH}"
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
-               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
          fi
          wire_env+=( "PATH=${suite_path}" )
